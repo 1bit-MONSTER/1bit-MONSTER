@@ -364,7 +364,7 @@ Usage:
   1bit status            Show service status
   1bit pull <model>      Pull a model (auto-routes NPU vs GPU)
   1bit bench             Run the 1-bit / ternary pile bench
-  1bit npu [model]       Start FLM NPU server (default: $DEFAULT_NPU_MODEL)
+  1bit npu [model]       Start FLM NPU server (default: ${DEFAULT_NPU_MODEL})
   1bit webui [up|down|status]  Run Open WebUI on :3000, branded + pointed at proxy
 
 Endpoints (after \`1bit up\`):
