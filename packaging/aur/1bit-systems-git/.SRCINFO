@@ -14,6 +14,7 @@ pkgbase = 1bit-systems-git
 	depends = python
 	provides = 1bit-systems
 	conflicts = 1bit-systems
+	conflicts = 1bit-systems-bin
 	source = 1bit-systems::git+https://github.com/bong-water-water-bong/1bit-systems.git#branch=main
 	sha256sums = SKIP
 

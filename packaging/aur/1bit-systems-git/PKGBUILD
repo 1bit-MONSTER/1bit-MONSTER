@@ -24,7 +24,7 @@ depends=(
 makedepends=('git')
 
 provides=("$_pkgname")
-conflicts=("$_pkgname")
+conflicts=("$_pkgname" "1bit-systems-bin")
 
 source=("$_pkgname::git+https://github.com/bong-water-water-bong/1bit-systems.git#branch=main")
 sha256sums=('SKIP')
