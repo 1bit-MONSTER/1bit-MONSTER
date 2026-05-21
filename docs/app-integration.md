@@ -70,6 +70,26 @@ endpoints such as `/v1/images/generations`, `/v1/images/edits`,
 `/v1/audio/speech`, `/v1/audio/transcriptions`, and `/v1/chat/completions` for
 vision.
 
+## Health Checks
+
+Each service exposes a `/health` endpoint. Poll these before sending inference requests to verify the stack is up.
+
+| Service | URL | Expected response |
+|---------|-----|-------------------|
+| 1bit-proxy | `http://127.0.0.1:13306/health` | `{"status":"ok"}` |
+| Lemonade (lemond) | `http://127.0.0.1:13305/health` | `{"status":"ok", ...}` |
+| FastFlowLM (NPU) | `http://127.0.0.1:52625/health` | `{"status":"ok"}` |
+
+Quick shell check:
+
+```bash
+curl -sf http://127.0.0.1:13306/health | jq .status   # proxy
+curl -sf http://127.0.0.1:13305/health | jq .status   # lemond
+curl -sf http://127.0.0.1:52625/health | jq .status   # flm (if NPU lane active)
+```
+
+`1bit status` runs all three checks and prints a summary.
+
 ## Security
 
 These endpoints are local developer services by default. Do not expose them directly to the internet. Put authentication, TLS, and an explicit reverse proxy policy in front of any remote access.
