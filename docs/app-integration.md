@@ -72,23 +72,23 @@ vision.
 
 ## Health Checks
 
-Each service exposes a `/health` endpoint. Poll these before sending inference requests to verify the stack is up.
+Use these endpoints to verify the stack is up before sending inference requests.
 
 | Service | URL | Expected response |
 |---------|-----|-------------------|
-| 1bit-proxy | `http://127.0.0.1:13306/health` | `{"status":"ok"}` |
-| Lemonade (lemond) | `http://127.0.0.1:13305/health` | `{"status":"ok", ...}` |
+| 1bit-proxy | `http://127.0.0.1:13306/health` | `{"ok":true,...}` |
+| Lemonade (lemond) | `http://127.0.0.1:13305/api/v1/health` | `{"status":"ok",...}` |
 | FastFlowLM (NPU) | `http://127.0.0.1:52625/health` | `{"status":"ok"}` |
 
-Quick shell check:
+Quick shell check (HTTP 200 = service is up):
 
 ```bash
-curl -sf http://127.0.0.1:13306/health | jq .status   # proxy
-curl -sf http://127.0.0.1:13305/health | jq .status   # lemond
-curl -sf http://127.0.0.1:52625/health | jq .status   # flm (if NPU lane active)
+curl -sf http://127.0.0.1:13306/health | jq .ok          # proxy → true
+curl -sf http://127.0.0.1:13305/api/v1/health | jq .status  # lemond → "ok"
+curl -sf http://127.0.0.1:52625/health >/dev/null && echo ok  # flm
 ```
 
-`1bit status` runs all three checks and prints a summary.
+`1bit status` summarizes all three services: lemond via `/v1/models`, flm via process detection, and proxy via `/health`.
 
 ## Security
 
