@@ -7,6 +7,9 @@
 ### One OpenAI-compatible endpoint while the control plane is rebuilt.
 
 **→ [Project Wiki](docs/wiki/README.md)** — architecture, decisions, gotchas, and agent onboarding.
+The wiki is stored in `docs/wiki/`; read it before changing the core
+runtime flow, and update the relevant wiki page whenever a change alters
+architecture, routing behavior, agent handoff, or system decisions.
 
 `1bit.systems` is a toolbox-first local inference workbench for AMD Strix Halo. Apps connect over standard OpenAI-compatible base URLs. The stable surface is the union endpoint; the finished single control plane comes second.
 
