@@ -1,0 +1,1 @@
+/usr/bin/cc -Wl,--dependency-file=CMakeFiles/test_weight_packer.dir/link.d CMakeFiles/test_weight_packer.dir/src/test_weight_packer.c.o -o test_weight_packer  libnpu_model.a -lm

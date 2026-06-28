@@ -1,0 +1,2 @@
+/usr/bin/ar qc libnpu_device.a CMakeFiles/npu_device.dir/src/device.c.o
+/usr/bin/ranlib libnpu_device.a

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libnpu_model.a CMakeFiles/npu_model.dir/src/model.c.o
+/usr/bin/ranlib libnpu_model.a

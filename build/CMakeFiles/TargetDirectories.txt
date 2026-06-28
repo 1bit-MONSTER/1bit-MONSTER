@@ -1,0 +1,8 @@
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/npu_model.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/npu_engine.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/test_weight_packer.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/test_model.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/dump_instrs.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/npu_infer.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/edit_cache.dir
+/home/bcloud/npu-sandbox/npu-infer/build/CMakeFiles/rebuild_cache.dir

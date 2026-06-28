@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/dump_instrs.dir/link.d CMakeFiles/dump_instrs.dir/tools/dump_instrs.cpp.o -o dump_instrs  -ldl

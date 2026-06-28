@@ -1,0 +1,1 @@
+/usr/bin/cc -Wl,--dependency-file=CMakeFiles/test_model.dir/link.d CMakeFiles/test_model.dir/src/test_model.c.o CMakeFiles/test_model.dir/src/model.c.o -o test_model  -lm
