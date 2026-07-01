@@ -77,3 +77,15 @@ LD_LIBRARY_PATH=/opt/rocm/lib ./rocm_engine
 3. **Port CPU ops to GPU** — After correctness, move RMSNorm, RoPE, SiLU, attention mixing to HIP kernels
 4. **Benchmark and profile** — Measure ms/tok breakdown, identify bottlenecks
 5. **Clean up stale NPU engine files** — Remove `src/npu_engine_v*.cpp` and related files (22+ stale variants)
+
+## Fix (commit ff6972f)
+
+**Three weight loading bugs fixed:**
+
+1. **QKV/GU fusion transpose** — dequant returns `(out_feat, in_feat)` = `(qr, H)` but the GEMM needs the weight as `(in_feat, out_feat)` = `(H, tqkv)`. Original code used `memcpy` with stride `qr=2048` which read every other row-pair from the dequant output. Changed to explicit transpose via nested loops: `weight[k][i] = qw[i][k]`.
+
+2. **O projection tile-grid remap** — `dequant_i8_to_float` hardcodes `n_tile_cols=4` (for `in_features=1024`), but O projection has `in_features=NH*HD=2048` (=8 tile cols). The dequant output `(2048, 1024)` has data arranged in the wrong tile grid. Fixed by remapping each element using the correct tile formula: `I8_row = (j/32)*8 + (k/256)`, then finding where dequant placed that I8 row.
+
+3. **Down projection tile-grid remap** — Same issue with `in_features=3072` (=12 tile cols).
+
+**Results:** Logits now have meaningful variance — top-5 tokens have scores 394.14 to 376.62 (vs uniform before). Engine produces token 82291 ("iaux") consistently across decode steps, which is the model's prediction for this prompt. No NaN/Inf, no segfaults, stable 106 ms/tok.
