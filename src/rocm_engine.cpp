@@ -322,31 +322,61 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
         float* vw = dequant_i8_to_float(data + data_start + offsets_[l].vp, 128, &vr, &unused);
         int tqkv = qr + kr + vr;
         layers_[l].qkv.resize((size_t)H * tqkv);
+        // dequant returns (out_features, in_features) = (qr, H=1024).
+        // GEMM needs weight[in_feat=H][out_feat=tqkv], so transpose:
+        // weight[k][i] = qw[i][k], kw[i-qr][k], vw[i-qr-kr][k]
         for (int k = 0; k < H; k++) {
-            memcpy(&layers_[l].qkv[k * tqkv], &qw[k * qr], qr * 4);
-            memcpy(&layers_[l].qkv[k * tqkv + qr], &kw[k * kr], kr * 4);
-            memcpy(&layers_[l].qkv[k * tqkv + qr + kr], &vw[k * vr], vr * 4);
+            for (int i = 0; i < qr; i++)
+                layers_[l].qkv[(size_t)k * tqkv + i] = qw[(size_t)i * H + k];
+            for (int i = 0; i < kr; i++)
+                layers_[l].qkv[(size_t)k * tqkv + qr + i] = kw[(size_t)i * H + k];
+            for (int i = 0; i < vr; i++)
+                layers_[l].qkv[(size_t)k * tqkv + qr + kr + i] = vw[(size_t)i * H + k];
         }
         free(qw); free(kw); free(vw);
 
         float* ow = dequant_i8_to_float(data + data_start + offsets_[l].op, 256, &or_, &unused);
+        // O projection: dequant hardcodes n_tile_cols=4 (in_feat=1024) but
+        // O has in_feat=2048. Need to fix tile layout.
         layers_[l].o.resize((size_t)or_ * H);
-        memcpy(layers_[l].o.data(), ow, or_ * H * 4);
+        {
+            int tile_cols = or_ / 256;  // 8
+            for (int k = 0; k < or_; k++) {
+                for (int j = 0; j < H; j++) {
+                    int i8 = (j / 32) * tile_cols + (k / 256);
+                    int dq_tr = i8 / 4, dq_tc = i8 % 4;
+                    layers_[l].o[(size_t)k * H + j] = ow[(size_t)(dq_tr * 32 + j % 32) * H + (dq_tc * 256 + k % 256)];
+                }
+            }
+        }
         free(ow);
 
         float* gw = dequant_i8_to_float(data + data_start + offsets_[l].gp, 384, &gr, &unused);
         float* uw = dequant_i8_to_float(data + data_start + offsets_[l].up, 384, &ur, &unused);
         int tgu = gr + ur;
         layers_[l].gu.resize((size_t)H * tgu);
+        // GU transpose: same as QKV
         for (int k = 0; k < H; k++) {
-            memcpy(&layers_[l].gu[k * tgu], &gw[k * gr], gr * 4);
-            memcpy(&layers_[l].gu[k * tgu + gr], &uw[k * ur], ur * 4);
+            for (int i = 0; i < gr; i++)
+                layers_[l].gu[(size_t)k * tgu + i] = gw[(size_t)i * H + k];
+            for (int i = 0; i < ur; i++)
+                layers_[l].gu[(size_t)k * tgu + gr + i] = uw[(size_t)i * H + k];
         }
         free(gw); free(uw);
 
         float* dw = dequant_i8_to_float(data + data_start + offsets_[l].dp, 384, &dr, &unused);
+        // Down projection: same tile-grid issue (in_feat=3072, not 1024)
         layers_[l].d.resize((size_t)dr * H);
-        memcpy(layers_[l].d.data(), dw, dr * H * 4);
+        {
+            int tile_cols = dr / 256;  // 12
+            for (int k = 0; k < dr; k++) {
+                for (int j = 0; j < H; j++) {
+                    int i8 = (j / 32) * tile_cols + (k / 256);
+                    int dq_tr = i8 / 4, dq_tc = i8 % 4;
+                    layers_[l].d[(size_t)k * H + j] = dw[(size_t)(dq_tr * 32 + j % 32) * H + (dq_tc * 256 + k % 256)];
+                }
+            }
+        }
         free(dw);
 
         // Norms are BF16 in the file
