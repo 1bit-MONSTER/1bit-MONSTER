@@ -1,36 +1,79 @@
 # SDD Progress — NPU + GPU Hybrid Inference
 
-## Current State (master @ fa85341)
+## Current State (master @ dc3724e)
 
-### Completed and Committed
+### Committed Milestones
 
-- [x] **Phase 1a GEMM Generator** — compile_gemm.py, verify_gemm.py, bench_gemm.py, full test suite (18/18)
-- [x] **BF16/BFP16 GEMM runner** and 4-row MLIR design (n32_core_placed.py)
-- [x] **INT8 GEMM on XDNA2 NPU** — 5 xclbins, 100% correct, 442 ms/tok
-- [x] **INT8 inference engine** — npu_engine_i8.cpp with Chess-compiled vectorized kernel
-- [x] **1-bit ternary analysis** — 1.8-7B sweet spot, 200B not viable on NPU
-- [x] **ROCm GPU inference engine** — RocmInferenceEngine class for Radeon 8060S
+| Milestone | Commit | Status |
+|-----------|--------|--------|
+| Phase 1a GEMM Generator | — | ✅ 18/18 tests passing |
+| NPU INT8 engine + xclbins | — | ✅ 100% correct, 442 ms/tok |
+| NPU context-pool engine | `ce01fbf` | ✅ 219 ms/tok (42% faster) |
+| 1-bit ternary analysis | `4e97844` | ✅ documented |
+| ROCm GPU inference engine (initial) | `fa85341` | ✅ compiles, runs |
+| BF16 norm/embedding fix, HIP GEMM kernels | `dc3724e` | ✅ GPU active, ~335 ms/tok |
 
-### ROCm GPU Engine (NEW)
+### ROCm GPU Engine
 
-**File:** `src/rocm_engine.cpp`, `include/rocm_engine.h`
+**Files:** `src/rocm_engine.cpp`, `include/rocm_engine.h`
 
-Complete FP32 Qwen3-0.6B forward pass with:
-- hipBLAS GEMM (and raw HIP kernel fallback) for all matmuls
-- RMSNorm, RoPE, SwiGLU FFN, GQA attention, KV cache, LM head
-- ~24 s/tok (CPU gemm fallback — no GPU acceleration yet due to rocBLAS Tensile init issue)
+Complete FP32 Qwen3-0.6B forward pass with GPU-accelerated GEMM:
 
-**TheRock compiler:** ROCm 7.13.0 optimized clang++ at `~/.cache/lemonade/bin/therock/gfx1151-7.13.0/`
-**System ROCm:** 7.2.4 at `/opt/rocm/`
-**GPU:** Radeon 8060S (gfx1151, 40 CU, 62 GB VRAM)
+| Component | Implementation |
+|-----------|---------------|
+| **GEMM (M=1 decode)** | `gemv_kernel` — 1×K×N, 256 threads/block, grid over N |
+| **GEMM (M>1 prefill)** | `gemm_kernel` — M×K×N, 16×16 thread blocks |
+| **Weight storage** | All weights pre-uploaded to GPU VRAM at init |
+| **Buffer alloc** | Pre-allocated GPU buffers (no malloc/free in hot path) |
+| **RMSNorm, RoPE, FFN, Attention** | CPU-side (host vectors) |
+| **KV cache** | Host vectors, CPU-managed |
+| **Model loading** | `.q4nx` file, BF16→float32 conversion |
 
-### Blocked
+**Known issues:**
+- **Output tokens all identical** (82291 repeated) — logits nearly uniform, hidden state magnitude grows through layers
+- Likely root cause: CPU-side forward pass bug (RMSNorm, attention softmax, missing QK scaling, or residual connection error)
+- CPU-side operations become bottleneck once GEMM is GPU-accelerated (~105 ms/tok vs ~0.2 ms per GEMM kernel)
 
-- **rocBLAS Tensile initialization fails**: `unordered_map::at` — the system ROCm 7.2.4 has gfx1151 kernel files but no master `TensileLibrary.dat`. TheRock (7.13.0) has the data but its libs are incompatible with system driver.
-- **GPU acceleration not active**: CPU gemm in the inference loop is 24 s/tok. Proper HIP/WMMA kernel or hipBLAS fix needed.
+**Timing: ~335 ms/tok** (105 ms decode step, ~200 ms prefill overhead for 9 tokens) — ~3× faster than NPU's 442 ms/tok, 2× slower than NPU context-pool engine's 219 ms/tok
 
-### Next Immediate Steps
+### Build & Runtime
 
-1. **Fix rocBLAS Tensile** — either create a TensileLibrary.dat pointing at existing gfx1151 files, or switch to a direct HIP GEMM kernel (pre-allocated GPU buffers, no malloc/free per call)
-2. **Add actual GPU GEMM** — replace `gemm_cpu` with a proper HIP kernel or working hipBLAS call
-3. **Verify outputs match NPU** — compare logits between NPU and GPU engines
+```bash
+cd build
+hipcc -D__HIP_PLATFORM_AMD__ -std=c++17 -O2 -I../include -I/opt/rocm/include \
+    -c ../src/rocm_engine.cpp -o rocm_engine.o
+hipcc -o rocm_engine rocm_engine.o dequant_q4nx.o -lm
+LD_LIBRARY_PATH=/opt/rocm/lib ./rocm_engine
+```
+
+- **Compiler:** System `hipcc` (uses ROCm 7.2.4 runtime libs at `/opt/rocm/lib`)
+- **TheRock compiler** (`amdclang++` at `~/.cache/lemonade/bin/therock/gfx1151-7.13.0/`) available for device-code-only HIP kernel optimization
+- **Critical:** Must call `hipSetDevice(0)` before `hipGetDeviceCount` — otherwise GPU init hangs on Radeon 8060S with ROCm 7.2.4
+
+### Key Fixes Applied (commit dc3724e)
+
+1. **BF16 data loading** — `.q4nx` file stores embeddings and norm weights as BF16 (2 bytes/value), not float32. Added proper bf16→float32 conversion via `(uint32_t)src[i] << 16`
+2. **GPU GEMM kernels** — Custom HIP `gemv_kernel` and `gemm_kernel` replace hipBLAS (which crashes due to rocBLAS Tensile init failure on system ROCm 7.2.4)
+3. **Pre-allocated GPU buffers** — All weights uploaded at init, `d_hidden_` sized for max K dimension (3072)
+4. **`hipGetLastError()` clearing** — Added before each GPU operation to prevent stale error state from aborting subsequent calls
+
+### Remaining Issues
+
+- **Correctness:** Output tokens all identical (82291 repeated). Engine runs without crashes/errors but produces wrong logits. Suspect CPU-side forward pass bugs in RMSNorm, attention, or QK scaling. Compare hidden state against NPU reference to isolate.
+- **CPU bottleneck:** At ~105 ms/tok, CPU-side ops (norm, RoPE, attention mixing, SiLU) dominate. Profile with `rocprof` or trace to identify. Options: port to GPU kernels via HIP or use TheRock's `amdclang++` for device-code optimization.
+- **CU count underutilized:** 40 CU available, kernel uses only block-grid over N dimension. Not using shared memory, WMMA, or cooperative groups. Optimize after correctness is fixed.
+
+### Blocked (earlier)
+
+- ~~rocBLAS Tensile init~~ — **Resolved:** bypassed entirely with custom HIP kernels
+- ~~CPU gemm at 24 s/tok~~ — **Resolved:** GPU GEMM at ~0.2 ms per call
+- ~~NaN/Inf in embed table~~ — **Resolved:** BF16→float32 conversion
+- ~~Segfault at model load~~ — **Resolved:** norm vector resize before BF16 read
+
+### Next Steps (prioritized)
+
+1. **Debug output correctness (HIGH)** — hidden state blows up through layers. Compare layer-by-layer outputs against NPU reference engine. Focus on RMSNorm, attention softmax, QK scaling, and residual connections.
+2. **Verify GPU GEMM accuracy** — Run small matrix test (e.g., 1×1024×1024 with known input) and compare against CPU reference
+3. **Port CPU ops to GPU** — After correctness, move RMSNorm, RoPE, SiLU, attention mixing to HIP kernels
+4. **Benchmark and profile** — Measure ms/tok breakdown, identify bottlenecks
+5. **Clean up stale NPU engine files** — Remove `src/npu_engine_v*.cpp` and related files (22+ stale variants)
