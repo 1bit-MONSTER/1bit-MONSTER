@@ -5,9 +5,10 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <hip/hip_runtime.h>
 
 // ROCm GPU Inference Engine for Qwen3-0.6B
-// Uses raw HIP kernels (not hipBLAS) for GEMM
+// Uses pre-allocated GPU buffers with raw HIP GEMM kernels
 // Target: Radeon 8060S (gfx1151, 40 CU)
 class RocmInferenceEngine {
 public:
@@ -44,7 +45,7 @@ private:
         uint64_t in_off, pa_off, qn_off, kn_off;
     };
 
-    // Pre-packed per-layer weights (dequantized FP32)
+    // Pre-packed per-layer weights (dequantized FP32, host-side)
     struct LayerWeights {
         std::vector<float> qkv;  // H × 4096 (fused Q+K+V)
         std::vector<float> o;    // 2048 × H
@@ -54,11 +55,15 @@ private:
         std::vector<float> pa_norm;   // H
         std::vector<float> q_norm;    // HD
         std::vector<float> k_norm;    // HD
+        // GPU buffer for QKV weight
+        float* d_qkv = nullptr;
+        float* d_o = nullptr;
+        float* d_gu = nullptr;
+        float* d_down = nullptr;
     };
 
     // GPU state
-    void* d_handle_ = nullptr;  // placeholder for GPU device handle
-    bool initialized_ = false; // Is engine initialized?
+    bool initialized_ = false;
 
     // Model data (loaded from .q4nx)
     std::vector<float> embed_table_;    // NV × H
@@ -67,28 +72,53 @@ private:
     std::vector<LayerWeights> layers_;
     std::vector<LayerOffsets> offsets_;
 
-    // Buffer pools (host-side)
+    // GPU buffers (pre-allocated at init)
+    float* d_hidden_ = nullptr;     // H (GEMM input buffer, sized for max K)
+    float* d_residual_ = nullptr;   // H (for GPU-side residual)
+    float* d_q_out_ = nullptr;      // 4096 (QKV output)
+    float* d_k_out_ = nullptr;      // NKV*HD = 1024
+    float* d_v_out_ = nullptr;      // NKV*HD = 1024
+    float* d_kv_cache_k_ = nullptr; // NC × MAX_POS × NKV × HD
+    float* d_kv_cache_v_ = nullptr;
+    float* d_attn_scores_ = nullptr; // MAX_POS = 4096
+    float* d_attn_out_ = nullptr;   // NH*HD = 2048
+    float* d_o_out_ = nullptr;      // H = 1024
+    float* d_gate_ = nullptr;       // 6144 (GU fused)
+    float* d_silu_out_ = nullptr;   // IM = 3072
+    float* d_down_ = nullptr;       // H = 1024
+    float* d_logits_ = nullptr;     // NV = 151936
+    float* d_lm_head_ = nullptr;    // H × NV
+
+    // GPU buffer for LM head weights
+    float* d_embed_ = nullptr;      // NV × H (embedding table)
+    float* d_final_norm_ = nullptr; // H
+    float* d_rope_cos_ = nullptr;    // MAX_POS × HD
+    float* d_rope_sin_ = nullptr;
+
+    // Host buffers (for memcpy)
     std::vector<float> hidden_;     // H
     std::vector<float> residual_;   // H
-    std::vector<float> q_out_;      // NH × HD = 2048
-    std::vector<float> k_out_;      // NKV × HD = 1024
-    std::vector<float> v_out_;      // NKV × HD = 1024
-    std::vector<float> attn_scores_; // 4096 max
-    std::vector<float> attn_out_;   // NH × HD = 2048
+    std::vector<float> q_out_;      // 4096
+    std::vector<float> k_out_;      // NKV*HD
+    std::vector<float> v_out_;      // NKV*HD
+    std::vector<float> attn_scores_; // max seq len
+    std::vector<float> attn_out_;   // NH*HD
     std::vector<float> o_out_;      // H
-    std::vector<float> gate_;       // IM
-    std::vector<float> up_;         // IM
+    std::vector<float> gate_;       // 6144
     std::vector<float> silu_out_;   // IM
     std::vector<float> down_;       // H
     std::vector<float> logits_;     // NV
 
-    // KV cache: [layer][position][head][dim]
+    // KV cache host mirror
     struct KVCache {
-        std::vector<float> k;
+        std::vector<float> k;  // MAX_POS * NKV * HD
         std::vector<float> v;
         int len = 0;
     };
     std::vector<KVCache> kv_cache_;
+    static constexpr int MAX_POS = 4096;
+    // Max K dimension in any GEMM (for d_hidden_ sizing)
+    static constexpr int MAX_GEMM_K = IM;  // 3072 for down projection
 
     // Timing
     double last_token_ms_ = 0.0;
@@ -100,30 +130,16 @@ private:
     // Load model from memory-mapped .q4nx
     bool load_model(const uint8_t* data, size_t size);
 
-    // Per-layer forward pass
-    void forward_layer(int layer_idx, int position);
+    // Allocate GPU buffers and upload weights
+    bool gpu_init();
 
-    // Embedding lookup
-    void embedding_lookup(int token_id, float* out);
+    // Per-layer forward pass (GPU-assisted)
+    void forward_layer(int l, int pos);
 
-    // RMS normalization (in-place)
-    void rms_norm(float* x, const float* weight, int n);
-
-    // RoPE (in-place)
-    void apply_rope(float* q, float* k, int position);
-
-    // GEMM: C[M×N] = A[M×K] × B[K×N] via hipBLAS
-    void gemm(const float* A, const float* B, float* C,
+    // GEMM: C[M×N] = A[M×K] × B[K×N] via HIP kernel
+    // A is host-side, B is device-side (pre-uploaded), C is host-side
+    void gemm(const float* A_host, float* d_B, float* C_host,
               int M, int K, int N);
-
-    // Softmax (in-place)
-    void softmax(float* x, int n);
-
-    // SiLU activation
-    float silu(float x);
-
-    // Load JSON offsets from model file
-    void parse_offsets(const char* json, size_t json_len);
 };
 
 #endif // NPU_INFER_ROCM_ENGINE_H

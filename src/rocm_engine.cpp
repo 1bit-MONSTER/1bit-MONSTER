@@ -1,18 +1,15 @@
 /**
  * ROCm GPU Inference Engine for Qwen3-0.6B
- * Uses hipBLAS for GEMM on Radeon 8060S (gfx1151, 40 CU).
+ * Uses raw HIP GEMM kernels (no hipBLAS/rocBLAS dependency) on Radeon 8060S (gfx1151).
  *
- * Part of the therock repo ecosystem (github.com/rocm/therock).
- * Compile with therock's amdclang++ for native gfx1151 codegen.
+ * All weights pre-allocated in GPU VRAM at init time.
+ * GEMM = hipMemcpy hidden->GPU, launch kernel, hipMemcpy result->host.
+ * No malloc/free in hot path.
  *
- * Build (system ROCm runtime + therock device compiler):
- *   cd build
- *   CXX=/path/to/therock/gfx1151-7.13.0/llvm/bin/amdclang++
- *   $CXX -D__HIP_PLATFORM_AMD__ -std=c++17 -O2 \
- *       -I../include -I/home/bcloud/torch2aie/examples \
- *       -I/opt/rocm/include -L/opt/rocm/lib \
- *       ../src/rocm_engine.cpp dequant_q4nx.o \
- *       -lhipblas -lm -o rocm_engine
+ * Build with system hipcc:
+ *   cd build && hipcc -D__HIP_PLATFORM_AMD__ -std=c++17 -O2 \
+ *       -I../include -I/opt/rocm/include \
+ *       ../src/rocm_engine.cpp dequant_q4nx.o -lm -o rocm_engine
  *
  * Run:
  *   LD_LIBRARY_PATH=/opt/rocm/lib ./rocm_engine
@@ -27,35 +24,77 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <hip/hip_runtime.h>
 
 extern "C" float* dequant_i8_to_float(const uint8_t*, int, int*, int*);
 
-// ============================================================
-// ROCm Error checking macros
-// ============================================================
 #define HIP_CHECK(cmd) do {                                    \
-    hipError_t err = cmd;                                      \
-    if (err != hipSuccess) {                                   \
-        fprintf(stderr, "HIP error at %s:%d: %s (%d)\n",     \
-                __FILE__, __LINE__, hipGetErrorString(err), err); \
+    hipError_t _err = cmd;                                     \
+    if (_err != hipSuccess) {                                  \
+        fprintf(stderr, "HIP error at %s:%d: %s (%d)\n",      \
+                __FILE__, __LINE__, hipGetErrorString(_err), _err); \
         return;                                                \
     }                                                          \
 } while(0)
 
+#define HIP_CHECK_RET(cmd, rv) do {                            \
+    hipError_t _err = cmd;                                     \
+    if (_err != hipSuccess) {                                  \
+        fprintf(stderr, "HIP error at %s:%d: %s (%d)\n",      \
+                __FILE__, __LINE__, hipGetErrorString(_err), _err); \
+        return rv;                                             \
+    }                                                          \
+} while(0)
+
 #define HIP_CHECK_BOOL(cmd) do {                               \
-    hipError_t err = cmd;                                      \
-    if (err != hipSuccess) {                                   \
-        fprintf(stderr, "HIP error at %s:%d: %s (%d)\n",     \
-                __FILE__, __LINE__, hipGetErrorString(err), err); \
+    hipError_t _err = cmd;                                     \
+    if (_err != hipSuccess) {                                  \
+        fprintf(stderr, "HIP error at %s:%d: %s (%d)\n",      \
+                __FILE__, __LINE__, hipGetErrorString(_err), _err); \
         return false;                                          \
     }                                                          \
 } while(0)
 
-// No hipBLAS dependency — raw HIP GEMM kernel instead
+// M=1 GEMV kernel for autoregressive decode
+__global__ void gemv_kernel(const float* A, const float* B, float* C,
+                             int K, int N) {
+    int col = threadIdx.x + blockIdx.x * blockDim.x;
+    if (col < N) {
+        float sum = 0.0f;
+        for (int k = 0; k < K; k++)
+            sum += A[k] * B[(size_t)k * N + col];
+        C[col] = sum;
+    }
+}
+
+// General GEMM for M > 1 (prefill)
+__global__ void gemm_kernel(const float* A, const float* B, float* C,
+                             int M, int K, int N) {
+    int col = threadIdx.x + blockIdx.x * blockDim.x;
+    int row = threadIdx.y + blockIdx.y * blockDim.y;
+    if (row < M && col < N) {
+        float sum = 0.0f;
+        for (int k = 0; k < K; k++)
+            sum += A[(size_t)row * K + k] * B[(size_t)k * N + col];
+        C[(size_t)row * N + col] = sum;
+    }
+}
+
+// Host-side RoPE tables
+std::vector<float> g_rope_cos;
+std::vector<float> g_rope_sin;
 
 // ============================================================
-// Helper: find JSON value by name (same format as npu_engine_i8.cpp)
+// BF16 → float32 conversion helper
+// ============================================================
+static float bf16_to_float(const uint16_t* src, size_t n) {
+    // bf16: 1 sign, 8 exponent, 7 mantissa → pack into upper 16 bits of float32
+    union { uint32_t u; float f; } conv;
+    conv.u = (uint32_t)src[n] << 16;
+    return conv.f;
+}
+
+// ============================================================
+// JSON offset finder
 // ============================================================
 static uint64_t find_json_offset(const char* json, size_t json_len, const char* name) {
     size_t nl = strlen(name);
@@ -77,21 +116,29 @@ static uint64_t find_json_offset(const char* json, size_t json_len, const char* 
 }
 
 // ============================================================
-// RocmInferenceEngine: Constructor / Destructor
+// Ctor / Dtor
 // ============================================================
-RocmInferenceEngine::RocmInferenceEngine()
-    : d_handle_(nullptr), initialized_(false) {
+RocmInferenceEngine::RocmInferenceEngine() : initialized_(false) {
     kv_cache_.resize(NC);
     for (auto& kv : kv_cache_) {
-        kv.k.resize(4096 * NKV * HD, 0.0f);
-        kv.v.resize(4096 * NKV * HD, 0.0f);
+        kv.k.resize(MAX_POS * NKV * HD, 0.0f);
+        kv.v.resize(MAX_POS * NKV * HD, 0.0f);
         kv.len = 0;
     }
 }
 
 RocmInferenceEngine::~RocmInferenceEngine() {
-    // no hipBLAS handle to destroy
-    // GPU buffers freed by hipblasDestroy / vector destructors
+    auto fg = [](float*& p) { if (p) { hipFree(p); p = nullptr; } };
+    fg(d_hidden_); fg(d_residual_); fg(d_q_out_);
+    fg(d_k_out_); fg(d_v_out_);
+    fg(d_kv_cache_k_); fg(d_kv_cache_v_);
+    fg(d_attn_scores_); fg(d_attn_out_); fg(d_o_out_);
+    fg(d_gate_); fg(d_silu_out_); fg(d_down_); fg(d_logits_);
+    fg(d_lm_head_); fg(d_embed_); fg(d_final_norm_);
+    fg(d_rope_cos_); fg(d_rope_sin_);
+    for (auto& l : layers_) {
+        fg(l.d_qkv); fg(l.d_o); fg(l.d_gu); fg(l.d_down);
+    }
 }
 
 // ============================================================
@@ -100,14 +147,10 @@ RocmInferenceEngine::~RocmInferenceEngine() {
 bool RocmInferenceEngine::init(const char* model_path) {
     printf("[ROCm] Engine init: model=%s\n", model_path);
 
-    // --- GPU discovery ---
     HIP_CHECK_BOOL(hipSetDevice(0));
     int dev_count = 0;
     HIP_CHECK_BOOL(hipGetDeviceCount(&dev_count));
-    if (dev_count < 1) {
-        fprintf(stderr, "[ROCm] No GPU found\n");
-        return false;
-    }
+    if (dev_count < 1) { fprintf(stderr, "[ROCm] No GPU found\n"); return false; }
 
     hipDeviceProp_t props;
     HIP_CHECK_BOOL(hipGetDeviceProperties(&props, 0));
@@ -116,35 +159,23 @@ bool RocmInferenceEngine::init(const char* model_path) {
            props.multiProcessorCount,
            (double)props.totalGlobalMem / (1024.0 * 1024.0));
 
-    // --- hipBLAS handle ---
-    // No hipBLAS — using raw HIP kernels instead
-
-    // --- Load model ---
     int fd = open(model_path, O_RDONLY);
     if (fd < 0) { fprintf(stderr, "[ROCm] Cannot open %s\n", model_path); return false; }
     struct stat st;
     fstat(fd, &st);
     uint8_t* md = (uint8_t*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-
     bool ok = load_model(md, st.st_size);
     munmap(md, st.st_size);
     if (!ok) return false;
 
-    // --- Host buffers ---
-    hidden_.resize(H);
-    residual_.resize(H);
-    q_out_.resize(4096);            // QKV fused: Q(2048) + K(1024) + V(1024) = 4096
-    k_out_.resize(NKV * HD);      // 1024
-    v_out_.resize(NKV * HD);      // 1024
-    attn_scores_.resize(4096);
-    attn_out_.resize(NH * HD);    // 2048
-    o_out_.resize(H);             // 1024
-    gate_.resize(6144);             // GU fused: Gate(3072) + Up(3072) = 6144
-    up_.resize(IM);               // 3072
-    silu_out_.resize(IM);         // 3072
-    down_.resize(H);              // 1024
-    logits_.resize(NV);           // 151936
+    hidden_.resize(H); residual_.resize(H);
+    q_out_.resize(4096); k_out_.resize(NKV * HD); v_out_.resize(NKV * HD);
+    attn_scores_.resize(MAX_POS); attn_out_.resize(NH * HD);
+    o_out_.resize(H); gate_.resize(6144);
+    silu_out_.resize(IM); down_.resize(H); logits_.resize(NV);
+
+    if (!gpu_init()) return false;
 
     printf("[ROCm] Engine ready.\n");
     initialized_ = true;
@@ -152,7 +183,90 @@ bool RocmInferenceEngine::init(const char* model_path) {
 }
 
 // ============================================================
-// load_model — parse .q4nx, dequant weights with dequant_i8_to_float
+// gpu_init
+// ============================================================
+bool RocmInferenceEngine::gpu_init() {
+    auto gm = [](float*& p, size_t nb) -> bool {
+        if (nb == 0) { p = nullptr; return true; }
+        hipError_t e = hipMalloc(&p, nb);
+        if (e != hipSuccess) { fprintf(stderr, "[ROCm] hipMalloc(%zu): %s\n", nb, hipGetErrorString(e)); return false; }
+        return true;
+    };
+    auto up = [](float* d, const float* s, size_t n) -> bool {
+        if (n == 0) return true;
+        hipError_t e = hipMemcpy(d, s, n * sizeof(float), hipMemcpyHostToDevice);
+        if (e != hipSuccess) { fprintf(stderr, "[ROCm] H2D: %s\n", hipGetErrorString(e)); return false; }
+        return true;
+    };
+
+    for (int l = 0; l < NC; l++) {
+        auto& lw = layers_[l];
+        if (!gm(lw.d_qkv,  lw.qkv.size() * 4)) return false;
+        if (!gm(lw.d_o,    lw.o.size()   * 4)) return false;
+        if (!gm(lw.d_gu,   lw.gu.size()  * 4)) return false;
+        if (!gm(lw.d_down, lw.d.size()   * 4)) return false;
+        if (!up(lw.d_qkv,  lw.qkv.data(), lw.qkv.size())) return false;
+        if (!up(lw.d_o,    lw.o.data(),   lw.o.size())) return false;
+        if (!up(lw.d_gu,   lw.gu.data(),  lw.gu.size())) return false;
+        if (!up(lw.d_down, lw.d.data(),   lw.d.size())) return false;
+        lw.qkv.clear(); lw.qkv.shrink_to_fit();
+        lw.o.clear();   lw.o.shrink_to_fit();
+        lw.gu.clear();  lw.gu.shrink_to_fit();
+        lw.d.clear();   lw.d.shrink_to_fit();
+    }
+
+    if (!gm(d_lm_head_, (size_t)H * NV * 4)) return false;
+    if (!up(d_lm_head_, lm_head_.data(), (size_t)H * NV)) return false;
+    lm_head_.clear(); lm_head_.shrink_to_fit();
+
+    if (!gm(d_embed_, (size_t)NV * H * 4)) return false;
+    if (!up(d_embed_, embed_table_.data(), (size_t)NV * H)) return false;
+
+    if (!gm(d_final_norm_, H * 4)) return false;
+    if (!up(d_final_norm_, final_norm_.data(), H)) return false;
+
+    // RoPE tables
+    int rp_sz = MAX_POS * HD;
+    if (!gm(d_rope_cos_, rp_sz * 4)) return false;
+    if (!gm(d_rope_sin_, rp_sz * 4)) return false;
+    g_rope_cos.resize(rp_sz); g_rope_sin.resize(rp_sz);
+    for (int p = 0; p < MAX_POS; p++) {
+        for (int d = 0; d < HD; d += 2) {
+            float t = 1.0f / powf(1000000.0f, (float)d / (float)HD);
+            float a = p * t;
+            g_rope_cos[p * HD + d] = cosf(a);
+            g_rope_sin[p * HD + d] = sinf(a);
+            g_rope_cos[p * HD + d + 1] = cosf(a);
+            g_rope_sin[p * HD + d + 1] = sinf(a);
+        }
+    }
+    if (!up(d_rope_cos_, g_rope_cos.data(), rp_sz)) return false;
+    if (!up(d_rope_sin_, g_rope_sin.data(), rp_sz)) return false;
+
+    size_t kv_sz = (size_t)NC * MAX_POS * NKV * HD * 4;
+    if (!gm(d_kv_cache_k_, kv_sz)) return false;
+    if (!gm(d_kv_cache_v_, kv_sz)) return false;
+    HIP_CHECK_RET(hipMemset(d_kv_cache_k_, 0, kv_sz), false);
+    HIP_CHECK_RET(hipMemset(d_kv_cache_v_, 0, kv_sz), false);
+
+    if (!gm(d_hidden_,      MAX_GEMM_K * 4)) return false;
+    if (!gm(d_residual_,    H * 4)) return false;
+    if (!gm(d_q_out_,       4096 * 4)) return false;
+    if (!gm(d_k_out_,       NKV * HD * 4)) return false;
+    if (!gm(d_v_out_,       NKV * HD * 4)) return false;
+    if (!gm(d_attn_scores_, MAX_POS * 4)) return false;
+    if (!gm(d_attn_out_,    NH * HD * 4)) return false;
+    if (!gm(d_o_out_,       H * 4)) return false;
+    if (!gm(d_gate_,        6144 * 4)) return false;
+    if (!gm(d_silu_out_,    IM * 4)) return false;
+    if (!gm(d_down_,        H * 4)) return false;
+    if (!gm(d_logits_,      (size_t)NV * 4)) return false;
+
+    return true;
+}
+
+// ============================================================
+// load_model
 // ============================================================
 bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
     uint64_t hdr_len;
@@ -161,12 +275,15 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
     const char* json = (const char*)(data + 8);
     size_t json_len = hdr_len;
 
-    // Embedding table (float32 after header)
-    const float* raw = (const float*)(data + data_start);
+    // Embedding table (BF16 in file, convert to float32)
     embed_table_.resize(NV * H);
-    for (int i = 0; i < NV * H; i++) embed_table_[i] = raw[i];
+    const uint16_t* bf16_embed = (const uint16_t*)(data + data_start);
+    for (size_t i = 0; i < (size_t)NV * H; i++) {
+        union { uint32_t u; float f; } conv;
+        conv.u = (uint32_t)bf16_embed[i] << 16;
+        embed_table_[i] = conv.f;
+    }
 
-    // Parse offsets
     offsets_.resize(NC);
     char key[128];
     for (int l = 0; l < NC; l++) {
@@ -197,11 +314,9 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
     uint64_t fn_off = find_json_offset(json, json_len, "model.norm.weight");
     uint64_t lm_off = find_json_offset(json, json_len, "lm_head.weight");
 
-    // Dequant & pack per-layer weights
     layers_.resize(NC);
     for (int l = 0; l < NC; l++) {
         int qr, kr, vr, or_, gr, ur, dr, unused;
-        // QKV
         float* qw = dequant_i8_to_float(data + data_start + offsets_[l].qp, 256, &qr, &unused);
         float* kw = dequant_i8_to_float(data + data_start + offsets_[l].kp, 128, &kr, &unused);
         float* vw = dequant_i8_to_float(data + data_start + offsets_[l].vp, 128, &vr, &unused);
@@ -213,12 +328,12 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
             memcpy(&layers_[l].qkv[k * tqkv + qr + kr], &vw[k * vr], vr * 4);
         }
         free(qw); free(kw); free(vw);
-        // O
+
         float* ow = dequant_i8_to_float(data + data_start + offsets_[l].op, 256, &or_, &unused);
         layers_[l].o.resize((size_t)or_ * H);
         memcpy(layers_[l].o.data(), ow, or_ * H * 4);
         free(ow);
-        // GU
+
         float* gw = dequant_i8_to_float(data + data_start + offsets_[l].gp, 384, &gr, &unused);
         float* uw = dequant_i8_to_float(data + data_start + offsets_[l].up, 384, &ur, &unused);
         int tgu = gr + ur;
@@ -228,25 +343,38 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
             memcpy(&layers_[l].gu[k * tgu + gr], &uw[k * ur], ur * 4);
         }
         free(gw); free(uw);
-        // D
+
         float* dw = dequant_i8_to_float(data + data_start + offsets_[l].dp, 384, &dr, &unused);
         layers_[l].d.resize((size_t)dr * H);
         memcpy(layers_[l].d.data(), dw, dr * H * 4);
         free(dw);
-        // Norms
-        layers_[l].in_norm.assign(H, 0); layers_[l].pa_norm.assign(H, 0);
-        layers_[l].q_norm.assign(HD, 0); layers_[l].k_norm.assign(HD, 0);
-        memcpy(layers_[l].in_norm.data(), data + data_start + offsets_[l].in_off, H * 4);
-        memcpy(layers_[l].pa_norm.data(), data + data_start + offsets_[l].pa_off, H * 4);
-        memcpy(layers_[l].q_norm.data(), data + data_start + offsets_[l].qn_off, HD * 4);
-        memcpy(layers_[l].k_norm.data(), data + data_start + offsets_[l].kn_off, HD * 4);
+
+        // Norms are BF16 in the file
+        layers_[l].in_norm.resize(H); layers_[l].pa_norm.resize(H);
+        layers_[l].q_norm.resize(HD); layers_[l].k_norm.resize(HD);
+        auto read_bf16 = [data, data_start](uint64_t off, float* dst, int n) {
+            const uint16_t* src = (const uint16_t*)(data + data_start + off);
+            for (int i = 0; i < n; i++) {
+                union { uint32_t u; float f; } conv;
+                conv.u = (uint32_t)src[i] << 16;
+                dst[i] = conv.f;
+            }
+        };
+        read_bf16(offsets_[l].in_off, layers_[l].in_norm.data(), H);
+        read_bf16(offsets_[l].pa_off, layers_[l].pa_norm.data(), H);
+        read_bf16(offsets_[l].qn_off, layers_[l].q_norm.data(), HD);
+        read_bf16(offsets_[l].kn_off, layers_[l].k_norm.data(), HD);
     }
 
-    // Final norm
+    // Final norm (BF16)
     final_norm_.resize(H);
-    memcpy(final_norm_.data(), data + data_start + fn_off, H * 4);
+    const uint16_t* fn_bf16 = (const uint16_t*)(data + data_start + fn_off);
+    for (int i = 0; i < H; i++) {
+        union { uint32_t u; float f; } conv;
+        conv.u = (uint32_t)fn_bf16[i] << 16;
+        final_norm_[i] = conv.f;
+    }
 
-    // LM head: dequant as (NV, H), transpose to (H, NV) for row-major C = A × B
     int lm_r, lm_c;
     float* lm = dequant_i8_to_float(data + data_start + lm_off, 18992, &lm_r, &lm_c);
     lm_head_.resize((size_t)H * NV);
@@ -260,7 +388,7 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
 }
 
 // ============================================================
-// Math helpers (CPU-side)
+// CPU math helpers
 // ============================================================
 inline float silu_f(float x) { return x / (1.0f + expf(-x)); }
 
@@ -290,116 +418,106 @@ void softmax_f(float* x, int n) {
     for (int i = 0; i < n; i++) x[i] *= is;
 }
 
-// RoPE tables
-static std::vector<float> rope_cos, rope_sin;
-static bool rope_init = false;
-
-static void init_rope_f(int max_pos, int hd) {
-    rope_cos.resize(max_pos * hd);
-    rope_sin.resize(max_pos * hd);
-    for (int p = 0; p < max_pos; p++) {
-        for (int d = 0; d < hd; d += 2) {
-            float t = 1.0f / powf(1000000.0f, (float)d / (float)hd);
-            float a = p * t;
-            rope_cos[p * hd + d] = cosf(a);
-            rope_sin[p * hd + d] = sinf(a);
-            rope_cos[p * hd + d + 1] = cosf(a);
-            rope_sin[p * hd + d + 1] = sinf(a);
-        }
-    }
-    rope_init = true;
-}
-
 // ============================================================
-// GEMM: C[M,N] = A[M,K] × B[K,N]  (CPU for now — GPU path needs proper
-// memory pool to avoid malloc/free corruption with 1800+ calls per generation)
+// GEMM
 // ============================================================
-void gemm_cpu(const float* A, const float* B, float* C, int M, int K, int N) {
-    for (int m = 0; m < M; m++) {
-        for (int n = 0; n < N; n++) {
-            float sum = 0.0f;
-            for (int k = 0; k < K; k++) {
-                sum += A[m * K + k] * B[k * N + n];
-            }
-            C[m * N + n] = sum;
-        }
-    }
-}
-
-void RocmInferenceEngine::gemm(const float* A, const float* B, float* C,
+void RocmInferenceEngine::gemm(const float* A_host, float* d_B, float* C_host,
                                 int M, int K, int N) {
-    gemm_cpu(A, B, C, M, K, N);
+    // Clear any prior HIP errors
+    hipGetLastError();
+
+    if (M == 1) {
+        hipMemcpy(d_hidden_, A_host, (size_t)K * sizeof(float), hipMemcpyHostToDevice);
+        hipError_t e1 = hipGetLastError();
+        if (e1 != hipSuccess) {
+            fprintf(stderr, "HIP gemm H2D(%d): %s\n", K, hipGetErrorString(e1));
+            return;
+        }
+        int bs = 256;
+        int gs = (int)(((size_t)N + bs - 1) / bs);
+        hipLaunchKernelGGL(gemv_kernel, gs, bs, 0, 0, d_hidden_, d_B, d_logits_, K, N);
+        hipError_t e2 = hipDeviceSynchronize();
+        if (e2 != hipSuccess) {
+            fprintf(stderr, "HIP gemm kernel<%d,%d>(K=%d,N=%d): %s\n", gs, bs, K, N, hipGetErrorString(e2));
+            return;
+        }
+        hipMemcpy(C_host, d_logits_, (size_t)N * sizeof(float), hipMemcpyDeviceToHost);
+        hipError_t e3 = hipGetLastError();
+        if (e3 != hipSuccess) {
+            fprintf(stderr, "HIP gemm D2H(%d): %s\n", N, hipGetErrorString(e3));
+            return;
+        }
+    } else {
+        hipMemcpy(d_hidden_, A_host, (size_t)M * K * sizeof(float), hipMemcpyHostToDevice);
+        hipError_t e1 = hipGetLastError();
+        if (e1 != hipSuccess) { fprintf(stderr, "HIP gemm H2D(M=%d,K=%d): %s\n", M, K, hipGetErrorString(e1)); return; }
+        dim3 block(16, 16);
+        dim3 grid((N + 15) / 16, (M + 15) / 16);
+        hipLaunchKernelGGL(gemm_kernel, grid, block, 0, 0,
+                           d_hidden_, d_B, d_logits_, M, K, N);
+        hipError_t e2 = hipDeviceSynchronize();
+        if (e2 != hipSuccess) { fprintf(stderr, "HIP gemm kernel: %s\n", hipGetErrorString(e2)); return; }
+        hipMemcpy(C_host, d_logits_, (size_t)M * N * sizeof(float), hipMemcpyDeviceToHost);
+        hipError_t e3 = hipGetLastError();
+        if (e3 != hipSuccess) { fprintf(stderr, "HIP gemm D2H(%d): %s\n", M*N, hipGetErrorString(e3)); return; }
+    }
 }
 
 // ============================================================
-// forward_layer — complete per-layer forward pass
+// forward_layer
 // ============================================================
 void RocmInferenceEngine::forward_layer(int l, int pos) {
     auto& layer = layers_[l];
     auto& kv = kv_cache_[l];
 
-    // 1. Save residual
     memcpy(residual_.data(), hidden_.data(), H * 4);
-
-    // 2. RMSNorm
     rms_norm_f(hidden_.data(), layer.in_norm.data(), H);
 
-    // 3. QKV: hidden[1×H] × W_QKV[H×4096] → q_out[1×4096]
-    gemm(hidden_.data(), layer.qkv.data(), q_out_.data(), 1, H, 4096);
-    for (int i = 0; i < 4096; i++) if (!std::isfinite(q_out_[i])) q_out_[i] = 0.0f;
+    gemm(hidden_.data(), layers_[l].d_qkv, q_out_.data(), 1, H, 4096);
 
-    // 4. Split Q(2048), K(1024), V(1024)
     memcpy(k_out_.data(), &q_out_[2048], NKV * HD * 4);
     memcpy(v_out_.data(), &q_out_[3072], NKV * HD * 4);
 
-    // 5. Q/K norms per head
     for (int h = 0; h < NH; h++) {
         float* hq = &q_out_[h * HD];
         double sq = 0.0;
         for (int d = 0; d < HD; d++) sq += (double)hq[d] * hq[d];
-        float iq = 1.0f / sqrtf((float)(sq / HD) + 1e-6f);
+        float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
         for (int d = 0; d < HD; d++) hq[d] *= iq * layer.q_norm[d];
-
         if (h % GQA == 0) {
             int kvh = h / GQA;
             float* hk = &k_out_[kvh * HD];
             double sk = 0.0;
             for (int d = 0; d < HD; d++) sk += (double)hk[d] * hk[d];
-            float ik = 1.0f / sqrtf((float)(sk / HD) + 1e-6f);
+            float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
             for (int d = 0; d < HD; d++) hk[d] *= ik * layer.k_norm[d];
         }
     }
 
-    // 6. RoPE
-    if (!rope_init) init_rope_f(4096, HD);
     for (int h = 0; h < NH; h++) {
         float* hq = &q_out_[h * HD];
         for (int d = 0; d < HD; d += 2) {
             float a = hq[d], b = hq[d+1];
-            float c = rope_cos[pos * HD + d];
-            float s = rope_sin[pos * HD + d];
-            hq[d]   = a*c - b*s;
-            hq[d+1] = b*c + a*s;
+            float c = g_rope_cos[pos * HD + d];
+            float s = g_rope_sin[pos * HD + d];
+            hq[d] = a*c - b*s; hq[d+1] = b*c + a*s;
         }
     }
     for (int h = 0; h < NKV; h++) {
         float* hk = &k_out_[h * HD];
         for (int d = 0; d < HD; d += 2) {
             float a = hk[d], b = hk[d+1];
-            float c = rope_cos[pos * HD + d];
-            float s = rope_sin[pos * HD + d];
-            hk[d]   = a*c - b*s;
-            hk[d+1] = b*c + a*s;
+            float c = g_rope_cos[pos * HD + d];
+            float s = g_rope_sin[pos * HD + d];
+            hk[d] = a*c - b*s; hk[d+1] = b*c + a*s;
         }
     }
 
-    // 7. KV cache
     memcpy(&kv.k[pos * NKV * HD], k_out_.data(), NKV * HD * 4);
     memcpy(&kv.v[pos * NKV * HD], v_out_.data(), NKV * HD * 4);
     kv.len = pos + 1;
     int cl = kv.len;
 
-    // 8. Attention (CPU — softmax is bandwidth-bound, not compute-bound)
     for (int h = 0; h < NH; h++) {
         int kvh = h / GQA;
         float* hq = &q_out_[h * HD];
@@ -415,39 +533,23 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
         softmax_f(sc, cl);
         for (int d = 0; d < HD; d++) {
             float s = 0.0f;
-            for (int p = 0; p < cl; p++)
-                s += sc[p] * hv[p * NKV * HD + d];
+            for (int p = 0; p < cl; p++) s += sc[p] * hv[p * NKV * HD + d];
             attn_out_[h * HD + d] = s;
         }
     }
 
-    // 9. O projection: attn[1×2048] × W_O[2048×H] → o_out[1×H]
-    gemm(attn_out_.data(), layer.o.data(), o_out_.data(), 1, NH * HD, H);
-    for (int i = 0; i < H; i++) if (!std::isfinite(o_out_[i])) o_out_[i] = 0.0f;
-
-    // 10. Residual
+    gemm(attn_out_.data(), layers_[l].d_o, o_out_.data(), 1, NH * HD, H);
     for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + o_out_[i];
     memcpy(residual_.data(), hidden_.data(), H * 4);
-
-    // 11. Post-attention RMSNorm
     rms_norm_f(hidden_.data(), layer.pa_norm.data(), H);
 
-    // 12. Gate+Up: hidden[1×H] × W_GU[H×6144] → gate[1×6144]
-    gemm(hidden_.data(), layer.gu.data(), gate_.data(), 1, H, 6144);
-    for (int i = 0; i < 6144; i++) if (!std::isfinite(gate_[i])) gate_[i] = 0.0f;
-
-    // 13. SwiGLU
+    gemm(hidden_.data(), layers_[l].d_gu, gate_.data(), 1, H, 6144);
     for (int i = 0; i < IM; i++) {
         float g = gate_[i];
         if (!std::isfinite(g)) g = 0.0f;
         silu_out_[i] = silu_f(g) * gate_[IM + i];
     }
-
-    // 14. Down: silu[1×IM] × W_D[IM×H] → down[1×H]
-    gemm(silu_out_.data(), layer.d.data(), down_.data(), 1, IM, H);
-    for (int i = 0; i < H; i++) if (!std::isfinite(down_[i])) down_[i] = 0.0f;
-
-    // 15. Residual
+    gemm(silu_out_.data(), layers_[l].d_down, down_.data(), 1, IM, H);
     for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + down_[i];
 }
 
@@ -461,7 +563,6 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
     printf("[ROCm] Generate: %d in, %d max out\n", num_input_tokens, max_output_tokens);
     auto gen_start = std::chrono::steady_clock::now();
 
-    // Prefill
     int pos = 0;
     for (int pi = 0; pi < num_input_tokens; pi++) {
         memcpy(hidden_.data(), &embed_table_[input_tokens[pi] * H], H * 4);
@@ -471,20 +572,13 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
     }
     printf("[ROCm] Prefill: %d tokens\n", pos);
 
-    // Decode
     int ngen = 0;
     for (int g = 0; g < max_output_tokens; g++) {
         auto ts = std::chrono::steady_clock::now();
 
-        // Final norm
-        memcpy(hidden_.data(), hidden_.data(), H * 4);
         rms_norm_f(hidden_.data(), final_norm_.data(), H);
+        gemm(hidden_.data(), d_lm_head_, logits_.data(), 1, H, NV);
 
-        // LM head: hidden[1×H] × W_LM[H×NV] → logits[1×NV]
-        gemm(hidden_.data(), lm_head_.data(), logits_.data(), 1, H, NV);
-        for (int i = 0; i < NV; i++) if (!std::isfinite(logits_[i])) logits_[i] = -1e10f;
-
-        // Softmax + sample
         float mx = logits_[0];
         for (int i = 1; i < NV; i++) if (logits_[i] > mx) mx = logits_[i];
         double sum = 0.0;
@@ -499,7 +593,6 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
 
         output_tokens[g] = tok; ngen++;
 
-        // Next token embedding + layers
         memcpy(hidden_.data(), &embed_table_[tok * H], H * 4);
         for (int l = 0; l < NC; l++) forward_layer(l, pos);
         pos++;
@@ -520,10 +613,10 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
 }
 
 // ============================================================
-// main — standalone test run
+// main
 // ============================================================
 int main() {
-    printf("=== ROCm (therock) Inference Engine — Qwen3-0.6B ===\n\n");
+    printf("=== ROCm GPU Inference Engine -- Qwen3-0.6B ===\n\n");
 
     RocmInferenceEngine engine;
     const char* model_path = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
@@ -533,17 +626,14 @@ int main() {
         return 1;
     }
 
-    // Test prompt: <|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n
     int prompt[] = {151643, 872, 198, 11852, 151644, 198, 151643, 77091, 198};
     int prompt_len = sizeof(prompt) / sizeof(prompt[0]);
-
     int output[32];
     int ngen = engine.generate(prompt, prompt_len, output, 4);
 
     printf("\nOutput tokens:");
     for (int i = 0; i < ngen; i++) printf(" %d", output[i]);
     printf("\n");
-
     printf("=== Done (%.0f ms/tok) ===\n", engine.avg_token_ms());
     return 0;
 }
