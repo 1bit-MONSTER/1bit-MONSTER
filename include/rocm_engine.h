@@ -130,6 +130,9 @@ private:
     // Load model from memory-mapped .q4nx
     bool load_model(const uint8_t* data, size_t size);
 
+    // Load model from pre-exported raw float32 files (HF safetensors converted)
+    bool load_model_from_raw(const char* dir);
+
     // Allocate GPU buffers and upload weights
     bool gpu_init();
 

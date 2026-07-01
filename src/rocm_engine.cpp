@@ -25,6 +25,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// Set to 1 to enable per-operation dumps for layer 0
+#define DEBUG_DUMP 1
+
 extern "C" float* dequant_i8_to_float(const uint8_t*, int, int*, int*);
 
 #define HIP_CHECK(cmd) do {                                    \
@@ -159,14 +162,28 @@ bool RocmInferenceEngine::init(const char* model_path) {
            props.multiProcessorCount,
            (double)props.totalGlobalMem / (1024.0 * 1024.0));
 
-    int fd = open(model_path, O_RDONLY);
-    if (fd < 0) { fprintf(stderr, "[ROCm] Cannot open %s\n", model_path); return false; }
-    struct stat st;
-    fstat(fd, &st);
-    uint8_t* md = (uint8_t*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    bool ok = load_model(md, st.st_size);
-    munmap(md, st.st_size);
+    bool ok = false;
+
+    // Detect if model_path is a directory (raw float32 format) or a file (.q4nx)
+    struct stat st_path;
+    if (stat(model_path, &st_path) != 0) {
+        fprintf(stderr, "[ROCm] Cannot access %s\n", model_path);
+        return false;
+    }
+    if (S_ISDIR(st_path.st_mode)) {
+        // Raw float32 directory format (exported by tools/safetensors_to_raw)
+        ok = load_model_from_raw(model_path);
+    } else {
+        // .q4nx file format
+        int fd = open(model_path, O_RDONLY);
+        if (fd < 0) { fprintf(stderr, "[ROCm] Cannot open %s\n", model_path); return false; }
+        struct stat st;
+        fstat(fd, &st);
+        uint8_t* md = (uint8_t*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        ok = load_model(md, st.st_size);
+        munmap(md, st.st_size);
+    }
     if (!ok) return false;
 
     hidden_.resize(H); residual_.resize(H);
@@ -336,19 +353,11 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
         free(qw); free(kw); free(vw);
 
         float* ow = dequant_i8_to_float(data + data_start + offsets_[l].op, 256, &or_, &unused);
-        // O projection: dequant hardcodes n_tile_cols=4 (in_feat=1024) but
-        // O has in_feat=2048. Need to fix tile layout.
+        // O projection: dequant outputs (or_=2048, H=1024). The GEMM B has
+        // shape (K=or_=2048, N=H=1024), which matches the dequant layout.
+        // Direct memcpy is correct — no tile remap needed.
         layers_[l].o.resize((size_t)or_ * H);
-        {
-            int tile_cols = or_ / 256;  // 8
-            for (int k = 0; k < or_; k++) {
-                for (int j = 0; j < H; j++) {
-                    int i8 = (j / 32) * tile_cols + (k / 256);
-                    int dq_tr = i8 / 4, dq_tc = i8 % 4;
-                    layers_[l].o[(size_t)k * H + j] = ow[(size_t)(dq_tr * 32 + j % 32) * H + (dq_tc * 256 + k % 256)];
-                }
-            }
-        }
+        memcpy(layers_[l].o.data(), ow, (size_t)or_ * H * 4);
         free(ow);
 
         float* gw = dequant_i8_to_float(data + data_start + offsets_[l].gp, 384, &gr, &unused);
@@ -365,18 +374,11 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
         free(gw); free(uw);
 
         float* dw = dequant_i8_to_float(data + data_start + offsets_[l].dp, 384, &dr, &unused);
-        // Down projection: same tile-grid issue (in_feat=3072, not 1024)
+        // Down projection: dequant outputs (dr=3072, H=1024). The GEMM B has
+        // shape (K=dr=3072, N=H=1024), which matches the dequant layout.
+        // Direct memcpy is correct — no tile remap needed.
         layers_[l].d.resize((size_t)dr * H);
-        {
-            int tile_cols = dr / 256;  // 12
-            for (int k = 0; k < dr; k++) {
-                for (int j = 0; j < H; j++) {
-                    int i8 = (j / 32) * tile_cols + (k / 256);
-                    int dq_tr = i8 / 4, dq_tc = i8 % 4;
-                    layers_[l].d[(size_t)k * H + j] = dw[(size_t)(dq_tr * 32 + j % 32) * H + (dq_tc * 256 + k % 256)];
-                }
-            }
-        }
+        memcpy(layers_[l].d.data(), dw, (size_t)dr * H * 4);
         free(dw);
 
         // Norms are BF16 in the file
@@ -394,6 +396,10 @@ bool RocmInferenceEngine::load_model(const uint8_t* data, size_t size) {
         read_bf16(offsets_[l].pa_off, layers_[l].pa_norm.data(), H);
         read_bf16(offsets_[l].qn_off, layers_[l].q_norm.data(), HD);
         read_bf16(offsets_[l].kn_off, layers_[l].k_norm.data(), HD);
+        if (l == 0 && DEBUG_DUMP) {
+            printf("[DBG] q_norm[0..7]:"); for (int idx=0;idx<8;idx++) printf(" %.6f", layers_[l].q_norm[idx]); printf("\n");
+            printf("[DBG] k_norm[0..7]:"); for (int idx=0;idx<8;idx++) printf(" %.6f", layers_[l].k_norm[idx]); printf("\n");
+        }
     }
 
     // Final norm (BF16)
@@ -494,19 +500,163 @@ void RocmInferenceEngine::gemm(const float* A_host, float* d_B, float* C_host,
 }
 
 // ============================================================
+// stats helpers for debug dump
+// ============================================================
+static void dump_vec_stats(const char* label, const float* v, int n, int first_n = 8) {
+    if (!DEBUG_DUMP) return;
+    double sum = 0, ss = 0;
+    float mn = v[0], mx = v[0];
+    int nnan = 0, ninf = 0;
+    for (int i = 0; i < n; i++) {
+        float x = v[i];
+        if (std::isnan(x)) { nnan++; continue; }
+        if (!std::isfinite(x)) { ninf++; continue; }
+        sum += x; ss += (double)x * x;
+        if (x < mn) mn = x; if (x > mx) mx = x;
+    }
+    int nvalid = n - nnan - ninf;
+    float mean = (float)(sum / (nvalid > 0 ? nvalid : 1));
+    float norm = sqrtf((float)(ss / (nvalid > 0 ? nvalid : 1)));
+    int pr = first_n < n ? first_n : n;
+    printf("[DBG] %s: n=%d nnan=%d ninf=%d min=%.6f max=%.6f mean=%.6f rms=%.6f first%d=[",
+           label, n, nnan, ninf, mn, mx, mean, norm, pr);
+    for (int i = 0; i < pr; i++) printf("%s%.6f", i?",":"", v[i]);
+    printf("]\n");
+}
+
+// ============================================================
+// load_model_from_raw — load from pre-exported float32 files
+// ============================================================
+static std::vector<float> read_f32_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "[ROCm] Cannot open %s\n", path); return {}; }
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz % 4 != 0) { fprintf(stderr, "[ROCm] %s: size %ld not multiple of 4\n", path, sz); fclose(f); return {}; }
+    std::vector<float> buf(sz / 4);
+    if (fread(buf.data(), 4, buf.size(), f) != buf.size()) {
+        fprintf(stderr, "[ROCm] Short read from %s\n", path); fclose(f); return {};
+    }
+    fclose(f);
+    return buf;
+}
+
+bool RocmInferenceEngine::load_model_from_raw(const char* dir) {
+    printf("[ROCm] Loading model from raw float32 directory: %s\n", dir);
+
+    char path[512];
+
+    // Embedding table (NV × H, row-major)
+    snprintf(path, 512, "%s/embed.F32", dir);
+    auto embed = read_f32_file(path);
+    if (embed.empty()) return false;
+    embed_table_ = std::move(embed);
+    printf("[ROCm]   embed: %zu elements\n", embed_table_.size());
+
+    // LM head (H × NV, already transposed for gemm_kernel layout)
+    snprintf(path, 512, "%s/lm_head.F32", dir);
+    auto lm_head = read_f32_file(path);
+    if (lm_head.empty()) return false;
+    lm_head_ = std::move(lm_head);
+    printf("[ROCm]   lm_head: %zu elements\n", lm_head_.size());
+
+    // Final norm (H)
+    snprintf(path, 512, "%s/final_norm.F32", dir);
+    auto fn = read_f32_file(path);
+    if (fn.empty()) return false;
+    final_norm_ = std::move(fn);
+    printf("[ROCm]   final_norm: %zu elements\n", final_norm_.size());
+
+    // Per-layer weights
+    layers_.resize(NC);
+    for (int l = 0; l < NC; l++) {
+        char layer_dir[512];
+        snprintf(layer_dir, 512, "%s/layer_%d", dir, l);
+
+        auto& lw = layers_[l];
+
+        // QKV (H × 4096)
+        snprintf(path, 512, "%s/qkv.F32", layer_dir);
+        auto qkv = read_f32_file(path);
+        if (qkv.empty()) return false;
+        lw.qkv = std::move(qkv);
+
+        // GU (H × 6144)
+        snprintf(path, 512, "%s/gu.F32", layer_dir);
+        auto gu = read_f32_file(path);
+        if (gu.empty()) return false;
+        lw.gu = std::move(gu);
+
+        // O (2048 × 1024)
+        snprintf(path, 512, "%s/o.F32", layer_dir);
+        auto o = read_f32_file(path);
+        if (o.empty()) return false;
+        lw.o = std::move(o);
+
+        // Down (3072 × 1024)
+        snprintf(path, 512, "%s/down.F32", layer_dir);
+        auto down = read_f32_file(path);
+        if (down.empty()) return false;
+        lw.d = std::move(down);
+
+        // Norms (1D)
+        snprintf(path, 512, "%s/in_norm.F32", layer_dir);
+        lw.in_norm = read_f32_file(path);
+        if (lw.in_norm.empty()) return false;
+
+        snprintf(path, 512, "%s/pa_norm.F32", layer_dir);
+        lw.pa_norm = read_f32_file(path);
+        if (lw.pa_norm.empty()) return false;
+
+        snprintf(path, 512, "%s/q_norm.F32", layer_dir);
+        lw.q_norm = read_f32_file(path);
+        if (lw.q_norm.empty()) return false;
+
+        snprintf(path, 512, "%s/k_norm.F32", layer_dir);
+        lw.k_norm = read_f32_file(path);
+        if (lw.k_norm.empty()) return false;
+
+        printf("[ROCm]   layer %d: qkv=%zu gu=%zu o=%zu down=%zu norms=%zu+%zu+%zu+%zu\n",
+               l, lw.qkv.size(), lw.gu.size(), lw.o.size(), lw.d.size(),
+               lw.in_norm.size(), lw.pa_norm.size(), lw.q_norm.size(), lw.k_norm.size());
+    }
+
+    printf("[ROCm] Raw model loaded successfully.\n");
+    return true;
+}
+
+// ============================================================
 // forward_layer
 // ============================================================
 void RocmInferenceEngine::forward_layer(int l, int pos) {
     auto& layer = layers_[l];
     auto& kv = kv_cache_[l];
+    int dbg = DEBUG_DUMP && l == 0 && pos == 0;
 
     memcpy(residual_.data(), hidden_.data(), H * 4);
+    if (dbg) dump_vec_stats("hidden BEFORE input norm", hidden_.data(), H);
+
     rms_norm_f(hidden_.data(), layer.in_norm.data(), H);
+    if (dbg) dump_vec_stats("hidden AFTER input RMSNorm", hidden_.data(), H);
 
     gemm(hidden_.data(), layers_[l].d_qkv, q_out_.data(), 1, H, 4096);
+    if (dbg) {
+        dump_vec_stats("Q_out AFTER QKV GEMM (first 2048)", q_out_.data(), 2048);
+        dump_vec_stats("K_out AFTER QKV (2048..3071)", q_out_.data() + 2048, 1024);
+        dump_vec_stats("V_out AFTER QKV (3072..4095)", q_out_.data() + 3072, 1024);
+    }
 
     memcpy(k_out_.data(), &q_out_[2048], NKV * HD * 4);
     memcpy(v_out_.data(), &q_out_[3072], NKV * HD * 4);
+
+    if (dbg) {
+        // Dump K head 0 BEFORE QK norm
+        double sk0 = 0;
+        for (int d = 0; d < HD; d++) sk0 += (double)k_out_[d] * k_out_[d];
+        printf("[DBG] K head 0 PRE-norm (before QK norm): sum_sq=%.4f mean_sq=%.4f\n", sk0, sk0/HD);
+        printf("[DBG] K head 0 first 8 PRE-norm:");
+        for (int d = 0; d < 8; d++) printf(" %.6f", k_out_[d]);
+        printf("\n");
+    }
 
     for (int h = 0; h < NH; h++) {
         float* hq = &q_out_[h * HD];
@@ -522,6 +672,20 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
             float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
             for (int d = 0; d < HD; d++) hk[d] *= ik * layer.k_norm[d];
         }
+    }
+    if (dbg) {
+        dump_vec_stats("Q_out AFTER QK norm", q_out_.data(), 2048);
+        dump_vec_stats("K_out AFTER QK norm", k_out_.data(), NKV * HD);
+        // Show k_norm values
+        printf("[DBG] k_norm loaded:"); for (int idx=0;idx<8;idx++) printf(" %.6f", layer.k_norm[idx]); printf("\n");
+        // Compute K norm manually for first kv head
+        double sk_check = 0;
+        for (int d = 0; d < HD; d++) sk_check += (double)k_out_[d] * k_out_[d];
+        float ik_check = 1.0f / sqrtf((float)(sk_check / HD) + EPS);
+        printf("[DBG] K head 0 pre-norm: sum_sq=%.6f mean_sq=%.6f ik=%.6f\n", sk_check, sk_check/HD, ik_check);
+        printf("[DBG] K head 0 first 8 AFTER norm:");
+        for (int idx=0;idx<8;idx++) printf(" %.6f", k_out_[idx]);
+        printf("\n");
     }
 
     for (int h = 0; h < NH; h++) {
@@ -541,6 +705,10 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
             float s = g_rope_sin[pos * HD + d];
             hk[d] = a*c - b*s; hk[d+1] = b*c + a*s;
         }
+    }
+    if (dbg) {
+        dump_vec_stats("Q_out AFTER RoPE", q_out_.data(), 2048);
+        dump_vec_stats("K_out AFTER RoPE", k_out_.data(), NKV * HD);
     }
 
     memcpy(&kv.k[pos * NKV * HD], k_out_.data(), NKV * HD * 4);
@@ -567,20 +735,39 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
             attn_out_[h * HD + d] = s;
         }
     }
+    if (dbg) {
+        dump_vec_stats("attn_scores BEFORE softmax (head 0)", attn_scores_.data(), cl, 1);
+        dump_vec_stats("attn_out AFTER attention mix", attn_out_.data(), NH * HD);
+    }
 
     gemm(attn_out_.data(), layers_[l].d_o, o_out_.data(), 1, NH * HD, H);
+    if (dbg) dump_vec_stats("o_out AFTER O projection GEMM", o_out_.data(), H);
+
     for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + o_out_[i];
+    if (dbg) dump_vec_stats("hidden AFTER +residual (attn)", hidden_.data(), H);
+
     memcpy(residual_.data(), hidden_.data(), H * 4);
     rms_norm_f(hidden_.data(), layer.pa_norm.data(), H);
+    if (dbg) dump_vec_stats("hidden AFTER post-attn RMSNorm", hidden_.data(), H);
 
     gemm(hidden_.data(), layers_[l].d_gu, gate_.data(), 1, H, 6144);
+    if (dbg) {
+        dump_vec_stats("gate[0..3071] AFTER GU GEMM", gate_.data(), IM);
+        dump_vec_stats("up[3072..6143] AFTER GU GEMM", gate_.data() + IM, IM);
+    }
+
     for (int i = 0; i < IM; i++) {
         float g = gate_[i];
         if (!std::isfinite(g)) g = 0.0f;
         silu_out_[i] = silu_f(g) * gate_[IM + i];
     }
+    if (dbg) dump_vec_stats("silu_out AFTER SiLU(gate)*up", silu_out_.data(), IM);
+
     gemm(silu_out_.data(), layers_[l].d_down, down_.data(), 1, IM, H);
+    if (dbg) dump_vec_stats("down AFTER Down projection GEMM", down_.data(), H);
+
     for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + down_[i];
+    if (dbg) dump_vec_stats("hidden FINAL after FFN+residual", hidden_.data(), H);
 }
 
 // ============================================================
@@ -645,12 +832,14 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
 // ============================================================
 // main
 // ============================================================
-int main() {
+int main(int argc, char** argv) {
     printf("=== ROCm GPU Inference Engine -- Qwen3-0.6B ===\n\n");
 
-    RocmInferenceEngine engine;
-    const char* model_path = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
+    // Default: use raw float32 weights exported from HF safetensors
+    const char* default_model = "/tmp/qwen3_raw";
+    const char* model_path = argc > 1 ? argv[1] : default_model;
 
+    RocmInferenceEngine engine;
     if (!engine.init(model_path)) {
         fprintf(stderr, "Init failed\n");
         return 1;
