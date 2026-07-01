@@ -1,6 +1,6 @@
 # SDD Progress — NPU + GPU Hybrid Inference
 
-## Current State (master @ dc3724e)
+## Current State (master @ 9ed49db)
 
 ### Committed Milestones
 
@@ -57,35 +57,20 @@ LD_LIBRARY_PATH=/opt/rocm/lib ./rocm_engine
 3. **Pre-allocated GPU buffers** — All weights uploaded at init, `d_hidden_` sized for max K dimension (3072)
 4. **`hipGetLastError()` clearing** — Added before each GPU operation to prevent stale error state from aborting subsequent calls
 
+### Root Cause Finding
+
+**The `.q4nx` format is a proprietary NPU weight format.** `dequant_i8_to_float` interprets it as INT4 with per-group BF16 scales, producing weights that are 94% negative for gate/up projections → SiLU(gate) ≈ 0 → FFN dead → hidden state blows up.
+
+**This is NOT a forward pass bug or weight-loading bug.** The CPU reference (`tools/cpu_ref_infer.cpp`) produces EXACTLY the same output as the GPU engine — confirming self-consistency. The AIE kernel in the xclbin dequantizes differently internally (its own CPU dequant function `npu_dequant_block` produces NaN/inf from the same bytes, yet `npu_infer` works perfectly).
+
+**Recommended fix:** Export weights from HF Qwen3-0.6B (float32/BF16) and load those directly, bypassing `dequant_i8_to_float` entirely. The model architecture is: 28 layers, 16 Q heads, 8 KV heads (GQA=2), HD=128, H=1024, IM=3072, NV=151936, RoPE base=1000000.
+
 ### Remaining Issues
 
-- **Correctness:** Output tokens all identical (82291 repeated). Engine runs without crashes/errors but produces wrong logits. Suspect CPU-side forward pass bugs in RMSNorm, attention, or QK scaling. Compare hidden state against NPU reference to isolate.
-- **CPU bottleneck:** At ~105 ms/tok, CPU-side ops (norm, RoPE, attention mixing, SiLU) dominate. Profile with `rocprof` or trace to identify. Options: port to GPU kernels via HIP or use TheRock's `amdclang++` for device-code optimization.
-- **CU count underutilized:** 40 CU available, kernel uses only block-grid over N dimension. Not using shared memory, WMMA, or cooperative groups. Optimize after correctness is fixed.
+- Correctness blocked on Q4NX incompatibility (see above). With HF weights, the existing forward pass logic should work.
+- **CPU bottleneck:** At ~105 ms/tok, CPU-side ops (norm, RoPE, attention mixing, SiLU) dominate. Port to GPU kernels after correctness.
+- **CU count underutilized:** 40 CU available, kernel uses only block-grid over N dimension.
 
-### Blocked (earlier)
+### See Also
 
-- ~~rocBLAS Tensile init~~ — **Resolved:** bypassed entirely with custom HIP kernels
-- ~~CPU gemm at 24 s/tok~~ — **Resolved:** GPU GEMM at ~0.2 ms per call
-- ~~NaN/Inf in embed table~~ — **Resolved:** BF16→float32 conversion
-- ~~Segfault at model load~~ — **Resolved:** norm vector resize before BF16 read
-
-### Next Steps (prioritized)
-
-1. **Debug output correctness (HIGH)** — hidden state blows up through layers. Compare layer-by-layer outputs against NPU reference engine. Focus on RMSNorm, attention softmax, QK scaling, and residual connections.
-2. **Verify GPU GEMM accuracy** — Run small matrix test (e.g., 1×1024×1024 with known input) and compare against CPU reference
-3. **Port CPU ops to GPU** — After correctness, move RMSNorm, RoPE, SiLU, attention mixing to HIP kernels
-4. **Benchmark and profile** — Measure ms/tok breakdown, identify bottlenecks
-5. **Clean up stale NPU engine files** — Remove `src/npu_engine_v*.cpp` and related files (22+ stale variants)
-
-## Fix (commit ff6972f)
-
-**Three weight loading bugs fixed:**
-
-1. **QKV/GU fusion transpose** — dequant returns `(out_feat, in_feat)` = `(qr, H)` but the GEMM needs the weight as `(in_feat, out_feat)` = `(H, tqkv)`. Original code used `memcpy` with stride `qr=2048` which read every other row-pair from the dequant output. Changed to explicit transpose via nested loops: `weight[k][i] = qw[i][k]`.
-
-2. **O projection tile-grid remap** — `dequant_i8_to_float` hardcodes `n_tile_cols=4` (for `in_features=1024`), but O projection has `in_features=NH*HD=2048` (=8 tile cols). The dequant output `(2048, 1024)` has data arranged in the wrong tile grid. Fixed by remapping each element using the correct tile formula: `I8_row = (j/32)*8 + (k/256)`, then finding where dequant placed that I8 row.
-
-3. **Down projection tile-grid remap** — Same issue with `in_features=3072` (=12 tile cols).
-
-**Results:** Logits now have meaningful variance — top-5 tokens have scores 394.14 to 376.62 (vs uniform before). Engine produces token 82291 ("iaux") consistently across decode steps, which is the model's prediction for this prompt. No NaN/Inf, no segfaults, stable 106 ms/tok.
+- `docs/superpowers/handoff.md` — Detailed debugging handoff with analysis artifacts, file locations, and recommended next steps
