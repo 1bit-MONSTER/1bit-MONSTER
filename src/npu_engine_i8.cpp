@@ -1,17 +1,6 @@
 /**
- * NPU Engine i8 — INT8 xclbins, Chess-compiled, 4 resident contexts.
- * K-interleaving fixed via dataReuse broadcast (2026-07-01).
- *
- * Architecture: swap-based (1 active context), BO-cached, per-layer int8 weights.
- * Quantization: per-tensor symmetric int8 for both weights (static) and activations
- * (dynamic). Int16 output dequantized to float with combined scale.
- *
- * Build:
- *   cd /home/bcloud/npu-sandbox/npu-infer/build
- *   g++ -std=c++17 -O2 -I../include -I/home/bcloud/torch2aie/examples \
- *       -I/home/bcloud/torch2aie/examples/gemm_asymmetric_tile_buffering \
- *       ../src/npu_engine_i8.cpp ../src/dequant_q4nx.c \
- *       -o npu_engine_i8 -lxrt_coreutil -lm
+ * NPU Engine i8 — with context-pool (register once, swap cheap).
+ * Cached norms, static activation scales, minimal per-layer overhead.
  */
 #include <cstdio>
 #include <cstdlib>
@@ -28,113 +17,87 @@
 #include <xrt/xrt_kernel.h>
 extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
 
-static float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
-static float bf16_g(uint16_t v){return((v&0x7F80)==0x7F80)?0:bf16f(v);}
+static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
+static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 static constexpr int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2;
 static constexpr float EPS=1e-6f;
-static constexpr int XM=128;  // xclbin M dimension (activate 1 row, pad 127)
+static constexpr int XM=128;
 
-// ---- Per-tensor symmetric int8 quantization helpers ----
-struct QParams {float scale;int zero;};
-static QParams quant_params(const float* x, int n){
-    float amax=0;for(int i=0;i<n;i++){float a=fabsf(x[i]);if(std::isfinite(a)&&a>amax)amax=a;}
-    if(amax<1e-12f)amax=1.0f;
-    return{amax/127.0f,0};
-}
-static void quant_i8(const float* src, int8_t* dst, int n, float iscale){
-    for(int i=0;i<n;i++){float v=src[i];if(!std::isfinite(v))v=0.0f;
-        int q=(int)roundf(v*iscale);if(q>127)q=127;else if(q<-127)q=-127;dst[i]=(int8_t)q;}
-}
+struct CachedNorms {float in_n[NC][H],pa_n[NC][H],fin[H],qn_w[NC][HD],kn_w[NC][HD];};
 
-// ---- INT8 GEMM context (xclbin + kernel + BOs; no weight storage) ----
-struct I8Ctx {
-    const char* name,*xp,*ip;int MD,KD,ND;
-    xrt::device* dev;std::unique_ptr<xrt::xclbin> xc;std::unique_ptr<xrt::hw_context> hc;
-    std::unique_ptr<xrt::kernel> k;std::vector<uint32_t> ins;
-    std::unique_ptr<xrt::bo> bI,bA,bB,bC;bool alive=false;
+// Single GEMM context — hc/kernel/BOs pre-created, weights loaded per-layer
+struct I8Slot {
+    const char*name; int MD,KD,ND;
+    std::unique_ptr<xrt::xclbin> xc;  // registered once
+    xrt::uuid  uuid;
+    std::unique_ptr<xrt::hw_context> hc;
+    std::unique_ptr<xrt::kernel> k;
+    std::vector<uint32_t> ins;
+    std::unique_ptr<xrt::bo> bI,bA,bB,bC;
+    int8_t *Am,*Bm; int16_t *Cm;
 
-    ~I8Ctx(){release();}
-    void release(){k.reset();hc.reset();alive=false;}
-
-    bool init(xrt::device& d){
-        release();dev=&d;
-        FILE*f=fopen(ip,"rb");if(!f)return false;
-        fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);ins.resize(sz/4);
-        fread(ins.data(),4,ins.size(),f);fclose(f);
-        xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);
-        hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());
+    bool init(xrt::device& d, const char*xp, const char*ip){
+        FILE*f=fopen(ip,"rb"); if(!f)return false;
+        fseek(f,0,2); long sz=ftell(f); fseek(f,0,0); ins.resize(sz/4); fread(ins.data(),4,ins.size(),f); fclose(f);
+        xc=std::make_unique<xrt::xclbin>(std::string(xp)); uuid=xc->get_uuid(); d.register_xclbin(*xc);
+        hc=std::make_unique<xrt::hw_context>(d,uuid);
         k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
-        memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,      XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));
-        bB=std::make_unique<xrt::bo>(d,(size_t)KD*ND,      XRT_BO_FLAGS_HOST_ONLY,k->group_id(4));
-        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,    XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));
-        alive=true;return true;
+        memcpy(bI->map(),ins.data(),ins.size()*4); bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,    XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));
+        bB=std::make_unique<xrt::bo>(d,(size_t)KD*ND,    XRT_BO_FLAGS_HOST_ONLY,k->group_id(4));
+        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,  XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));
+        Am=(int8_t*)bA->map(); Bm=(int8_t*)bB->map(); Cm=(int16_t*)bC->map();
+        return true;
     }
-    bool sa(xrt::device& d,I8Ctx*&a){if(alive){a=this;return true;}if(a&&a!=this)a->release();a=this;return init(d);}
-
-    // INT8 GEMM: A[am×ak] floats, B[k×n] pre-packed int8, C[am×an] float output
-    void go(const float* A,int am,int ak,const int8_t* B,int bk,int bn,float Bscale,float* C,int an){
-        // Quantize activations
-        float amax=0;for(int i=0;i<am*ak;i++){float a=fabsf(A[i]);if(std::isfinite(a)&&a>amax)amax=a;}
-        if(amax<1e-12f)amax=1.0f;
-        float ascale=amax/127.0f,ais=1.0f/ascale;
-
-        auto* Ab=(int8_t*)bA->map();memset(Ab,0,(size_t)MD*KD);
-        for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
-            float v=A[m*ak+k];if(!std::isfinite(v))v=0.0f;
-            int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;Ab[m*KD+k]=(int8_t)q;}
+    // Swap: destroy old hc, create new one for this slot's uuid
+    void activate(xrt::device& d){
+        hc.reset(); hc=std::make_unique<xrt::hw_context>(d,uuid);
+        k.reset(); k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
+    }
+    inline void loadB(const int8_t* B,int bk,int bn){memcpy(Bm,B,(size_t)bk*bn); bB->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+    inline void go(const float* A,int am,int ak,float ascale,float Bscale,float* C,int an){
+        float ais=1.0f/ascale; memset(Am,0,(size_t)MD*KD);
+        for(int m=0;m<am;m++)for(int k=0;k<ak;k++){float v=A[m*ak+k];if(!std::isfinite(v))v=0.0f;
+            int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;Am[m*KD+k]=(int8_t)q;}
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        memcpy(bB->map(),B,(size_t)bk*bn);bB->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        memset(bC->map(),0,(size_t)MD*ND*2);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
         auto r=(*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*bB,*bC);
         if(r.wait()!=ERT_CMD_STATE_COMPLETED){fprintf(stderr,"[%s] FAIL\n",name);return;}
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-
-        float cs=ascale*Bscale;
-        auto*Cc=(int16_t*)bC->map();
-        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)Cc[m*ND+n]*cs;if(!std::isfinite(val))val=0.0f;C[m*an+n]=val;}
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE); float cs=ascale*Bscale;
+        for(int m=0;m<am;m++)for(int n=0;n<an;n++){float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0.0f;C[m*an+n]=val;}
     }
 };
 
-// ---- NaN guards, RoPE, softmax (same as v8) ----
+struct QP {float s;std::vector<int8_t> d;};
+static QP pack(const float* w,int K,int N){
+    float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
+    if(amax<1e-12f)amax=1.0f; QP q;q.s=amax/127.0f;float is=1.0f/q.s;q.d.resize(K*N);
+    for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;q.d[i]=(int8_t)x;}return q;
+}
 static std::vector<float>rc,rs;
 static void ri(int hd,float th,int mp){rc.resize(mp*hd);rs.resize(mp*hd);
-    for(int p=0;p<mp;p++)for(int d=0;d<hd;d+=2){float f=1.0f/powf(th,(float)d/hd),a=p*f;
-        rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);rc[p*hd+d+1]=cosf(a);rs[p*hd+d+1]=sinf(a);}}
-static void ra(float*x,int hd,int p){for(int d=0;d<hd;d+=2){
-    float a=x[d],b=x[d+1],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+1]=b*c+a*s;}}
-static void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
-static void sm(float*sc,int n){if(n<=0)return;cn(sc,n);
-    float mx=sc[0];for(int i=1;i<n;i++)if(sc[i]>mx)mx=sc[i];
+    for(int p=0;p<mp;p++)for(int d=0;d<hd;d+=2){float f=1.0f/powf(th,(float)d/hd),a=p*f;rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);rc[p*hd+d+1]=cosf(a);rs[p*hd+d+1]=sinf(a);}}
+static inline void ra(float*x,int hd,int p){for(int d=0;d<hd;d+=2){float a=x[d],b=x[d+1],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+1]=b*c+a*s;}}
+static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
+static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];for(int i=1;i<n;i++)if(sc[i]>mx)mx=sc[i];
     double s=0;for(int i=0;i<n;i++){float d=sc[i]-mx;d=d>80?80:(d<-80?-80:d);sc[i]=expf(d);s+=sc[i];}
-    if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}
-    float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
-static void rn(float*x,const uint16_t*w,int n){cn(x,n);
-    double ss=0;for(int i=0;i<n;i++)if(std::isfinite(x[i]))ss+=(double)x[i]*x[i];
-    float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*bf16_g(w[i]):0.0f;}
+    if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
+static inline void rn_cached(float*x,const float*w,int n){cn(x,n);double ss=0;for(int i=0;i<n;i++)if(std::isfinite(x[i]))ss+=(double)x[i]*x[i];
+    float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;}
 static uint64_t jo(const char*js,size_t jl,const char*nm){
-    size_t nl=strlen(nm);const char*p=js,*e=js+jl;
-    while(p<e){auto q=(const char*)memmem(p,e-p,nm,nl);if(!q)return 0;
-        if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){auto o=strstr(q,"\"data_offsets\"");
-            if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
+    size_t nl=strlen(nm);const char*p=js,*e=js+jl;while(p<e){auto q=(const char*)memmem(p,e-p,nm,nl);if(!q)return 0;
+        if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 
 int main(){
     setvbuf(stdout,NULL,_IONBF,0);
-    printf("=== NPU Engine i8 — INT8 5-XCLBIN Inference ===\n\n");
-
-    // Model load
+    printf("=== NPU Engine i8 — Context Pool ===\n\n");
     const char* mp="/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
     uint8_t* md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
     uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
     auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
     const char* js=(const char*)(md+8);size_t jl=hsz;
-
-    struct LO{uint64_t qp,kp,vp,op,gp,up,dp,in_off,pa_off,qn_off,kn_off;}lo[28];char b[128];
+    struct LO{uint64_t qp,kp,vp,op,gp,up,dp,in_off,pa_off,qn_off,kn_off;}lo[NC];char b[128];
     for(int l=0;l<NC;l++){
         snprintf(b,128,"model.layers.%d.self_attn.q_proj.weight",l);lo[l].qp=jo(js,jl,b);
         snprintf(b,128,"model.layers.%d.self_attn.k_proj.weight",l);lo[l].kp=jo(js,jl,b);
@@ -150,148 +113,97 @@ int main(){
     }
     uint64_t no=jo(js,jl,"model.norm.weight"),lo_off=jo(js,jl,"lm_head.weight");
 
-    // NPU init
-    printf("Init NPU contexts (4 xclbins, 1 active at a time)...\n");
-    xrt::device dev(0);
+    auto* nm=new CachedNorms();
+    for(int l=0;l<NC;l++){
+        auto iw=(const uint16_t*)(md+df+lo[l].in_off),pw_=(const uint16_t*)(md+df+lo[l].pa_off);
+        auto qw=(const uint16_t*)(md+df+lo[l].qn_off),kw=(const uint16_t*)(md+df+lo[l].kn_off);
+        for(int i=0;i<H;i++){nm->in_n[l][i]=bf16g(iw[i]);nm->pa_n[l][i]=bf16g(pw_[i]);}
+        for(int i=0;i<HD;i++){nm->qn_w[l][i]=bf16g(qw[i]);nm->kn_w[l][i]=bf16g(kw[i]);}
+    }
+    {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)nm->fin[i]=bf16g(fw[i]);}
+
+    printf("Init NPU...\n");xrt::device dev(0);
     #define D "/home/bcloud/npu-sandbox/npu-infer/build/int8"
-    I8Ctx cq{"QKV",D"/final_i8_QKV.xclbin",D"/insts_i8_QKV.txt",XM,H,4096};
-    I8Ctx co{"O",  D"/final_i8_O.xclbin",  D"/insts_i8_O.txt",  XM,NH*HD,H};
-    I8Ctx cg{"GU", D"/final_i8_GU.xclbin", D"/insts_i8_GU.txt", XM,H,6144};
-    I8Ctx cd{"D",  D"/final_i8_D.xclbin",  D"/insts_i8_D.txt",  XM,IM,H};
-    I8Ctx* active=nullptr;cq.sa(dev,active);
-    printf("Ready.\n\n");
+    I8Slot slots[4];
+    slots[0].name="QKV";slots[0].MD=XM;slots[0].KD=H;slots[0].ND=4096; slots[0].init(dev,D"/final_i8_QKV_v.xclbin",D"/insts_i8_QKV_v.txt");
+    slots[1].name="O";  slots[1].MD=XM;slots[1].KD=NH*HD;slots[1].ND=H;    slots[1].init(dev,D"/final_i8_O_v.xclbin",  D"/insts_i8_O_v.txt");
+    slots[2].name="GU"; slots[2].MD=XM;slots[2].KD=H;slots[2].ND=6144; slots[2].init(dev,D"/final_i8_GU_v.xclbin", D"/insts_i8_GU_v.txt");
+    slots[3].name="D";  slots[3].MD=XM;slots[3].KD=IM;slots[3].ND=H;    slots[3].init(dev,D"/final_i8_D_v.xclbin",  D"/insts_i8_D_v.txt");
+    int cur=-1;
 
-    // Per-layer packed int8 weights and their quantization scales
-    struct PW{std::vector<int8_t>qk,o_,g_,d_;float sqk,so_,sg_,sd_;}pw[28];
-    float*lf;int lr,lc;
-
-    printf("Dequant Q4NX + quantize to int8...\n");auto t0=std::chrono::steady_clock::now();
+    printf("Dequant + pack...\n");auto t0=std::chrono::steady_clock::now();
+    struct PW{QP qk,o,g,d;float aq,ao,ag,ad;}pw[NC];
     for(int l=0;l<NC;l++){
         int qr,kr,vr,or_,gr,ur,dr,unused;
-        // QKV fuse: Q(2048) + K(1024) + V(1024) → 4096 cols
         float* qw=dequant_i8_to_float(i8p(lo[l].qp),256,&qr,&unused);
         float* kw=dequant_i8_to_float(i8p(lo[l].kp),128,&kr,&unused);
         float* vw=dequant_i8_to_float(i8p(lo[l].vp),128,&vr,&unused);
-        int tqkv=qr+kr+vr;
-        std::vector<float> wqkv((size_t)H*tqkv);
-        for(int k=0;k<H;k++){for(int n=0;n<qr;n++)wqkv[k*tqkv+n]=qw[k*qr+n];
-            for(int n=0;n<kr;n++)wqkv[k*tqkv+qr+n]=kw[k*kr+n];
-            for(int n=0;n<vr;n++)wqkv[k*tqkv+qr+kr+n]=vw[k*vr+n];}
-        auto qp=quant_params(wqkv.data(),H*tqkv);pw[l].sqk=qp.scale;
-        pw[l].qk.resize(H*tqkv);quant_i8(wqkv.data(),pw[l].qk.data(),H*tqkv,1.0f/qp.scale);
-        free(qw);free(kw);free(vw);
-
-        float* ow=dequant_i8_to_float(i8p(lo[l].op),256,&or_,&unused);
-        qp=quant_params(ow,or_*H);pw[l].so_=qp.scale;
-        pw[l].o_.resize(or_*H);quant_i8(ow,pw[l].o_.data(),or_*H,1.0f/qp.scale);free(ow);
-
+        int t=qr+kr+vr;std::vector<float> w((size_t)H*t);
+        for(int k=0;k<H;k++){memcpy(&w[k*t],&qw[k*qr],qr*4);memcpy(&w[k*t+qr],&kw[k*kr],kr*4);memcpy(&w[k*t+qr+kr],&vw[k*vr],vr*4);}
+        pw[l].qk=pack(w.data(),H,t);pw[l].aq=5.0f/127.0f;free(qw);free(kw);free(vw);
+        float* ow=dequant_i8_to_float(i8p(lo[l].op),256,&or_,&unused);pw[l].o=pack(ow,or_,H);pw[l].ao=5.0f/127.0f;free(ow);
         float* gw=dequant_i8_to_float(i8p(lo[l].gp),384,&gr,&unused);
         float* uw=dequant_i8_to_float(i8p(lo[l].up),384,&ur,&unused);
-        int tgu=gr+ur;
-        std::vector<float> wgu((size_t)H*tgu);
-        for(int k=0;k<H;k++){for(int n=0;n<gr;n++)wgu[k*tgu+n]=gw[k*gr+n];
-            for(int n=0;n<ur;n++)wgu[k*tgu+gr+n]=uw[k*ur+n];}
-        qp=quant_params(wgu.data(),H*tgu);pw[l].sg_=qp.scale;
-        pw[l].g_.resize(H*tgu);quant_i8(wgu.data(),pw[l].g_.data(),H*tgu,1.0f/qp.scale);
-        free(gw);free(uw);
-
-        float* dw=dequant_i8_to_float(i8p(lo[l].dp),384,&dr,&unused);
-        qp=quant_params(dw,dr*H);pw[l].sd_=qp.scale;
-        pw[l].d_.resize(dr*H);quant_i8(dw,pw[l].d_.data(),dr*H,1.0f/qp.scale);free(dw);
+        int t2=gr+ur;std::vector<float> w2((size_t)H*t2);
+        for(int k=0;k<H;k++){memcpy(&w2[k*t2],&gw[k*gr],gr*4);memcpy(&w2[k*t2+gr],&uw[k*ur],ur*4);}
+        pw[l].g=pack(w2.data(),H,t2);pw[l].ag=5.0f/127.0f;free(gw);free(uw);
+        float* dw=dequant_i8_to_float(i8p(lo[l].dp),384,&dr,&unused);pw[l].d=pack(dw,dr,H);pw[l].ad=5.0f/127.0f;free(dw);
     }
-    lf=dequant_i8_to_float(i8p(lo_off),18992,&lr,&lc);
+    int lr,lc;free(dequant_i8_to_float(i8p(lo_off),18992,&lr,&lc));
     printf("Ready (%.1fs)\n\n",std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count());
 
-    // RoPE + KV cache + buffers
     ri(HD,1000000.0f,4096);
     struct KV{std::vector<float>k,v;int n;KV():k(4096*NKV*HD),v(4096*NKV*HD),n(0){}};
     std::vector<KV> kv(NC);
-    std::vector<float> h(H),qo(4096),ko(1024),vo(1024),at(2048),oo(H);
-    std::vector<float> gt(6144),u(IM),su(IM),dwo(H),lg(NV),sb(H),sc(4096);
+    std::vector<float> h(H),qo(4096),ko(1024),vo(1024),at(2048),oo(H),gt(6144),su(IM),dwo(H),lg(NV),sb(H),sc(4096);
+    int sp=0;
+    auto run_geMM=[&](int si,const float*A,int am,int ak,float ascale,const int8_t*B,int bk,int bn,float Bscale,float*C,int an){
+        if(si!=cur){slots[si].activate(dev);cur=si;}
+        slots[si].loadB(B,bk,bn);
+        slots[si].go(A,am,ak,ascale,Bscale,C,an);
+    };
 
-    int pt[]={151643,872,198,11852,151644,198,151643,77091,198};int npt=9,sp=0;
-
-    // Layer function
     auto layer=[&](int l){
-        memcpy(sb.data(),h.data(),H*4);
-        rn(h.data(),(const uint16_t*)(md+df+lo[l].in_off),H);
-
-        // QKV GEMM
-        cq.sa(dev,active);
-        cq.go(h.data(),1,H,pw[l].qk.data(),H,4096,pw[l].sqk,qo.data(),4096);cn(qo.data(),4096);
+        memcpy(sb.data(),h.data(),H*4);rn_cached(h.data(),nm->in_n[l],H);
+        run_geMM(0,h.data(),1,H,pw[l].aq,pw[l].qk.d.data(),H,4096,pw[l].qk.s,qo.data(),4096);cn(qo.data(),4096);
         memcpy(ko.data(),&qo[2048],1024*4);memcpy(vo.data(),&qo[3072],1024*4);
-
-        // Q/K norm + RoPE + write KV cache
-        auto qn=(const uint16_t*)(md+df+lo[l].qn_off),kn=(const uint16_t*)(md+df+lo[l].kn_off);
+        float*qnw=nm->qn_w[l],*knw=nm->kn_w[l];
         for(int hh=0;hh<NH;hh++){
-            double sq=0;for(int d=0;d<HD;d++)sq+=qo[hh*HD+d]*qo[hh*HD+d];
-            float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
-            for(int d=0;d<HD;d++)qo[hh*HD+d]*=iq*bf16_g(qn[d]);
-            ra(&qo[hh*HD],HD,sp);
-            if(hh%GQA==0){int kvh=hh/GQA;
-                double sk=0;for(int d=0;d<HD;d++)sk+=ko[kvh*HD+d]*ko[kvh*HD+d];
-                float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                for(int d=0;d<HD;d++)ko[kvh*HD+d]*=ik*bf16_g(kn[d]);
-                ra(&ko[kvh*HD],HD,sp);
-                memcpy(&kv[l].k[sp*NKV*HD+kvh*HD],&ko[kvh*HD],HD*4);
-                memcpy(&kv[l].v[sp*NKV*HD+kvh*HD],&vo[kvh*HD],HD*4);}}
+            double sq=0;for(int d=0;d<HD;d++)sq+=qo[hh*HD+d]*qo[hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
+            for(int d=0;d<HD;d++)qo[hh*HD+d]*=iq*qnw[d];ra(&qo[hh*HD],HD,sp);
+            if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=ko[kvh*HD+d]*ko[kvh*HD+d];
+                float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++)ko[kvh*HD+d]*=ik*knw[d];ra(&ko[kvh*HD],HD,sp);
+                memcpy(&kv[l].k[sp*NKV*HD+kvh*HD],&ko[kvh*HD],HD*4);memcpy(&kv[l].v[sp*NKV*HD+kvh*HD],&vo[kvh*HD],HD*4);}}
         kv[l].n=sp+1;int cl=kv[l].n;
-
-        // Attention: Q×K^T → softmax → ×V
-        for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;float* ss=sc.data();
-            for(int p=0;p<cl;p++){double s=0;
-                for(int d=0;d<HD;d++)s+=qo[hh*HD+d]*kv[l].k[p*NKV*HD+kvh*HD+d];ss[p]=(float)(s/sqrtf(HD));}
-            sm(ss,cl);
-            for(int d=0;d<HD;d++){float s=0;
-                for(int p=0;p<cl;p++)s+=ss[p]*kv[l].v[p*NKV*HD+kvh*HD+d];at[hh*HD+d]=s;}}
-
-        // O GEMM
-        co.sa(dev,active);
-        co.go(at.data(),1,NH*HD,pw[l].o_.data(),NH*HD,H,pw[l].so_,oo.data(),H);cn(oo.data(),H);
+        for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;float*ss=sc.data();
+            for(int p=0;p<cl;p++){double s=0;for(int d=0;d<HD;d++)s+=qo[hh*HD+d]*kv[l].k[p*NKV*HD+kvh*HD+d];ss[p]=(float)(s/sqrtf(HD));}
+            sm(ss,cl);for(int d=0;d<HD;d++){float s=0;for(int p=0;p<cl;p++)s+=ss[p]*kv[l].v[p*NKV*HD+kvh*HD+d];at[hh*HD+d]=s;}}
+        run_geMM(1,at.data(),1,NH*HD,pw[l].ao,pw[l].o.d.data(),NH*HD,H,pw[l].o.s,oo.data(),H);cn(oo.data(),H);
         for(int i=0;i<H;i++)h[i]=sb[i]+oo[i];
-
-        // MLP
-        memcpy(sb.data(),h.data(),H*4);
-        rn(h.data(),(const uint16_t*)(md+df+lo[l].pa_off),H);
-
-        // GU GEMM
-        cg.sa(dev,active);
-        cg.go(h.data(),1,H,pw[l].g_.data(),H,6144,pw[l].sg_,gt.data(),6144);cn(gt.data(),6144);
-        memcpy(u.data(),&gt[IM],IM*4);
-        for(int i=0;i<IM;i++){float g=gt[i];if(!std::isfinite(g))g=0.0f;su[i]=(g/(1.0f+expf(-g)))*u[i];}
-
-        // D GEMM
-        cd.sa(dev,active);
-        cd.go(su.data(),1,IM,pw[l].d_.data(),IM,H,pw[l].sd_,dwo.data(),H);cn(dwo.data(),H);
+        memcpy(sb.data(),h.data(),H*4);rn_cached(h.data(),nm->pa_n[l],H);
+        run_geMM(2,h.data(),1,H,pw[l].ag,pw[l].g.d.data(),H,6144,pw[l].g.s,gt.data(),6144);cn(gt.data(),6144);
+        for(int i=0;i<IM;i++){float g=gt[i];if(!std::isfinite(g))g=0.0f;su[i]=(g/(1.0f+expf(-g)))*gt[IM+i];}
+        run_geMM(3,su.data(),1,IM,pw[l].ad,pw[l].d.d.data(),IM,H,pw[l].d.s,dwo.data(),H);cn(dwo.data(),H);
         for(int i=0;i<H;i++)h[i]=sb[i]+dwo[i];
     };
 
-    // Prefill
-    printf("=== Prefill %d tokens ===\n",npt);
-    for(int pi=0;pi<npt;pi++){
-        for(int i=0;i<H;i++)h[i]=bf16_g(emb[pt[pi]*H+i]);
-        for(int l=0;l<NC;l++)layer(l);sp++;
-        if(pi%3==0)printf("  %d/%d\n",pi+1,npt);}
-    printf("Done (%d tokens, %d pos)\n\n",npt,sp);
+    int pt[]={151643,872,198,11852,151644,198,151643,77091,198};int npt=9;
+    printf("=== Prefill %d ===\n",npt);
+    for(int pi=0;pi<npt;pi++){for(int i=0;i<H;i++)h[i]=bf16g(emb[pt[pi]*H+i]);for(int l=0;l<NC;l++)layer(l);sp++;if(pi%3==0)printf("  %d/%d\n",pi+1,npt);}
+    printf("Done\n\n");
 
-    // Generate
-    printf("=== Generate ===\n");int ng=8;
-    auto tgs=std::chrono::steady_clock::now();
+    printf("=== Generate ===\n");int ng=8;auto tgs=std::chrono::steady_clock::now();
     for(int st=0;st<ng;st++){auto ts=std::chrono::steady_clock::now();
         for(int l=0;l<NC;l++)layer(l);
-        memcpy(sb.data(),h.data(),H*4);auto fnw=(const uint16_t*)(md+df+no);rn(sb.data(),fnw,H);
-        for(int n=0;n<NV;n++){double s=0;
-            for(int k=0;k<H;k++){uint16_t r=emb[n*H+k];if((r&0x7F80)!=0x7F80)s+=sb[k]*bf16f(r);}lg[n]=(float)s;}
+        memcpy(sb.data(),h.data(),H*4);rn_cached(sb.data(),nm->fin,H);
+        for(int n=0;n<NV;n++){double s=0;for(int k=0;k<H;k++){uint16_t r=emb[n*H+k];if((r&0x7F80)!=0x7F80)s+=sb[k]*bf16f(r);}lg[n]=(float)s;}
         float mx=lg[0];for(int i=1;i<NV;i++)if(lg[i]>mx)mx=lg[i];
         double sum=0;for(int i=0;i<NV;i++){float d=lg[i]-mx;d=d<-80?-80:d;lg[i]=expf(d);sum+=lg[i];}
-        float rr=(float)rand()/RAND_MAX*(float)sum,acc=0;int tok=0;
-        for(int i=0;i<NV;i++){acc+=lg[i];if(acc>=rr){tok=i;break;}}
+        float rr=(float)rand()/RAND_MAX*(float)sum,acc=0;int tok=0;for(int i=0;i<NV;i++){acc+=lg[i];if(acc>=rr){tok=i;break;}}
         double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts).count();
-        printf("  [%d] %d (%.0fms) mx=%.1f\n",st,tok,ms,mx);
-        for(int i=0;i<H;i++)h[i]=bf16_g(emb[tok*H+i]);sp++;}
+        printf("  [%d] %d (%.0fms)\n",st,tok,ms);
+        for(int i=0;i<H;i++)h[i]=bf16g(emb[tok*H+i]);sp++;}
     double ts=std::chrono::duration<double>(std::chrono::steady_clock::now()-tgs).count();
     printf("\n=== %.0f ms/tok ===\n",ts*1000/ng);
-
-    free(lf);munmap(md,st.st_size);
-    return 0;
+    delete nm;munmap(md,st.st_size);return 0;
 }
