@@ -121,11 +121,10 @@ int main(int argc, char** argv) {
 
     // --- Data layout transformations ---
 
-    // A: layout_A_L1_2x1_8x8block(m=128, k=64) then BF16 encode
-    auto A_shuffled = gemm_atb::layout_A_L1_2x1_8x8block(A_float, M, K, m_tile, k_tile);
+    // A: convert to BF16 directly (NPU-side A_transformations handle the shuffle)
     std::vector<uint16_t> A_bf16(M * K);
     for (int i = 0; i < M * K; i++) {
-        A_bf16[i] = float_to_bf16(A_shuffled[i]);
+        A_bf16[i] = float_to_bf16(A_float[i]);
     }
 
     // B: layout_transpose_L1_1x2_8x8block(k=64, n=128) then BFP16 ebs8 encode
@@ -165,9 +164,16 @@ int main(int argc, char** argv) {
         C_raw_float[i] = bf16_to_float(C_bf16_raw[i]);
     }
 
-    // Unshuffle C via layout_inverse_C_L1_2x2_8x8block
-    auto C_float = gemm_atb::layout_inverse_C_L1_2x2_8x8block(
-        C_raw_float, M, N, L1_block_m, n_tile);
+    // Unshuffle C if transformations were used (1-row design), otherwise direct read
+    std::vector<float> C_float;
+    if (n_aie_rows == 1) {
+        C_float = gemm_atb::layout_inverse_C_L1_2x2_8x8block(
+            C_raw_float, M, N, L1_block_m, n_tile);
+    } else {
+        // For multi-row designs (rows >= 2), C_transformations is empty
+        // so the DMA outputs natural row-major C data
+        C_float = std::move(C_raw_float);
+    }
 
     // Write C to stdout as raw float32
     size_t written = fwrite(C_float.data(), sizeof(float), M * N, stdout);

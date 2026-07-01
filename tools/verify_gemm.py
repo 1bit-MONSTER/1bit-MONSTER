@@ -207,7 +207,7 @@ def main():
     parser.add_argument("--m", type=int, default=128)
     parser.add_argument("--k", type=int, default=64)
     parser.add_argument("--n", type=int, default=128)
-    parser.add_argument("--rows", type=int, default=1, choices=[1, 2])
+    parser.add_argument("--rows", type=int, default=1, choices=[1, 2, 4])
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--A_val", type=float, default=None,
                         help="Constant A value (bypasses ramp vectors)")

@@ -17,7 +17,7 @@ PYTHON = Path("/home/bcloud/torch2aie/.venv/bin/python")
 AIE_PYTHONPATH = "/home/bcloud/torch2aie/toolchain/mlir_aie/python"
 AIE_TOOLCHAIN_BIN = "/home/bcloud/torch2aie/toolchain/bin"
 AIE_TOOLS = "/home/bcloud/torch2aie/toolchain/aietools"
-VALID_ROWS = {1: "n1_core_bf16", 2: "n2_core_placed"}
+VALID_ROWS = {1: "n1_core_bf16", 2: "n2_core_placed", 4: "n32_core_placed"}
 # AIE column count is always 8 in this config
 N_AIE_COLS = 8
 
@@ -107,7 +107,7 @@ def main():
     parser.add_argument("--m", type=int, default=128)
     parser.add_argument("--k", type=int, default=64)
     parser.add_argument("--n", type=int, default=128)
-    parser.add_argument("--rows", type=int, default=1, choices=[1, 2])
+    parser.add_argument("--rows", type=int, default=1, choices=[1, 2, 4])
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     xclbin, insts = generate_xclbin(args.M, args.K, args.N, args.m, args.k, args.n, args.rows, args.force)
