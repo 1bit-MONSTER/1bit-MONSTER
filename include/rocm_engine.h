@@ -120,6 +120,17 @@ private:
     // Max K dimension in any GEMM (for d_hidden_ sizing)
     static constexpr int MAX_GEMM_K = IM;  // 3072 for down projection
 
+    // Profiling accumulators (all times in microseconds)
+    struct {
+        uint64_t rms_norm_us = 0;
+        uint64_t gemm_us = 0;
+        uint64_t qk_norm_us = 0;
+        uint64_t rope_us = 0;
+        uint64_t attention_us = 0;
+        uint64_t silu_us = 0;
+        uint64_t elementwise_us = 0;
+    } perf_;
+
     // Timing
     double last_token_ms_ = 0.0;
     double total_time_ms_ = 0.0;

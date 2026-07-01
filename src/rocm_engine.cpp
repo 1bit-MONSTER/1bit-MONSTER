@@ -28,6 +28,17 @@
 // Set to 1 to enable per-operation dumps for layer 0
 #define DEBUG_DUMP 1
 
+// Profile: accumulate elapsed time in microseconds
+struct PerfTimer {
+    std::chrono::steady_clock::time_point start;
+    uint64_t& accum;
+    PerfTimer(uint64_t& a) : start(std::chrono::steady_clock::now()), accum(a) {}
+    ~PerfTimer() {
+        auto end = std::chrono::steady_clock::now();
+        accum += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    }
+};
+
 extern "C" float* dequant_i8_to_float(const uint8_t*, int, int*, int*);
 
 #define HIP_CHECK(cmd) do {                                    \
@@ -658,6 +669,7 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
         printf("\n");
     }
 
+    { PerfTimer pt(perf_.qk_norm_us);
     for (int h = 0; h < NH; h++) {
         float* hq = &q_out_[h * HD];
         double sq = 0.0;
@@ -672,6 +684,7 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
             float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
             for (int d = 0; d < HD; d++) hk[d] *= ik * layer.k_norm[d];
         }
+    }
     }
     if (dbg) {
         dump_vec_stats("Q_out AFTER QK norm", q_out_.data(), 2048);
@@ -688,6 +701,7 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
         printf("\n");
     }
 
+    { PerfTimer pt(perf_.rope_us);
     for (int h = 0; h < NH; h++) {
         float* hq = &q_out_[h * HD];
         for (int d = 0; d < HD; d += 2) {
@@ -705,6 +719,7 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
             float s = g_rope_sin[pos * HD + d];
             hk[d] = a*c - b*s; hk[d+1] = b*c + a*s;
         }
+    }
     }
     if (dbg) {
         dump_vec_stats("Q_out AFTER RoPE", q_out_.data(), 2048);
@@ -756,17 +771,23 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
         dump_vec_stats("up[3072..6143] AFTER GU GEMM", gate_.data() + IM, IM);
     }
 
+    { PerfTimer pt(perf_.silu_us);
     for (int i = 0; i < IM; i++) {
         float g = gate_[i];
         if (!std::isfinite(g)) g = 0.0f;
         silu_out_[i] = silu_f(g) * gate_[IM + i];
     }
+    }
     if (dbg) dump_vec_stats("silu_out AFTER SiLU(gate)*up", silu_out_.data(), IM);
 
+    { PerfTimer pt(perf_.gemm_us);
     gemm(silu_out_.data(), layers_[l].d_down, down_.data(), 1, IM, H);
+    }
     if (dbg) dump_vec_stats("down AFTER Down projection GEMM", down_.data(), H);
 
+    { PerfTimer pt(perf_.elementwise_us);
     for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + down_[i];
+    }
     if (dbg) dump_vec_stats("hidden FINAL after FFN+residual", hidden_.data(), H);
 }
 
@@ -826,6 +847,22 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
         std::chrono::steady_clock::now() - gen_start).count();
     printf("[ROCm] Done: %d tok, %.0f ms total, %.0f ms/tok\n",
            ngen, gen_ms, ngen > 0 ? gen_ms / ngen : 0);
+
+    // Print profiled per-operation breakdown
+    uint64_t total_perf =
+        perf_.rms_norm_us + perf_.gemm_us + perf_.qk_norm_us +
+        perf_.rope_us + perf_.attention_us + perf_.silu_us + perf_.elementwise_us;
+    printf("\n=== Perf Profile (%d layers x %d tokens) ===\n", NC, pos);
+    printf("  RMSNorm:    %10llu us (%5.1f%%)\n", perf_.rms_norm_us, 100.0 * perf_.rms_norm_us / total_perf);
+    printf("  GEMM:       %10llu us (%5.1f%%)\n", perf_.gemm_us, 100.0 * perf_.gemm_us / total_perf);
+    printf("  QK Norm:    %10llu us (%5.1f%%)\n", perf_.qk_norm_us, 100.0 * perf_.qk_norm_us / total_perf);
+    printf("  RoPE:       %10llu us (%5.1f%%)\n", perf_.rope_us, 100.0 * perf_.rope_us / total_perf);
+    printf("  Attention:  %10llu us (%5.1f%%)\n", perf_.attention_us, 100.0 * perf_.attention_us / total_perf);
+    printf("  SiLU:       %10llu us (%5.1f%%)\n", perf_.silu_us, 100.0 * perf_.silu_us / total_perf);
+    printf("  Elementwise:%10llu us (%5.1f%%)\n", perf_.elementwise_us, 100.0 * perf_.elementwise_us / total_perf);
+    printf("  Total:      %10llu us (%5.1f%% of %llu ms)\n",
+           total_perf, 100.0 * total_perf / (1000 * (uint64_t)last_token_ms_), (uint64_t)last_token_ms_ * 1000);
+
     return ngen;
 }
 
