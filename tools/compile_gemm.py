@@ -7,7 +7,7 @@ Usage:
   python compile_gemm.py --M 128 --K 1024 --N 2048 --rows 1
 """
 
-import argparse, os, subprocess, sys
+import argparse, os, shutil, subprocess, sys
 from pathlib import Path
 
 SRCDIR = Path("/home/bcloud/torch2aie/examples/gemm_asymmetric_tile_buffering/config1")
@@ -70,6 +70,14 @@ def generate_xclbin(M, K, N, m=128, k=64, n=128, rows=1, force=False):
     with open(mlir_path, "w") as f:
         f.write(r.stdout)
     print(f"  [OK] MLIR: {mlir_name}")
+
+    # Ensure chess_intrinsic_wrapper.ll exists where aiecc expects it
+    chess_wrapper_src = Path("/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll")
+    chess_wrapper_dst = Path("/home/bcloud/mlir-aie/build/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll")
+    if not chess_wrapper_dst.exists():
+        chess_wrapper_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(chess_wrapper_src, chess_wrapper_dst)
+        print(f"  [FIX] Copied {chess_wrapper_src} -> {chess_wrapper_dst}")
 
     # Compile via aiecc
     aiecc_env = os.environ.copy()
