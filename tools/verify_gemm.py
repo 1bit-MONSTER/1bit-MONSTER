@@ -7,6 +7,16 @@ on NPU via a C++ binary → reads C output → compares vs CPU BF16 reference.
 
 Usage:
   python tools/verify_gemm.py --M 128 --K 1024 --N 2048 --rows 1
+
+NOTE: Data layout correctness
+The C++ runner (npu_gemm_runner.cpp) applies host-side layout shuffling
+(layout_A_L1_2x1_8x8block, layout_transpose_L1_1x2_8x8block,
+floatToBfp16, layout_inverse_C_L1_2x2_8x8block) following the pattern
+from test_correctness.cpp. However, there is a known mismatch between
+the host-side shuffle and what the MLIR IRON design's on-device object_fifo
+transformations expect for non-constant data. Constant data (where shuffle
+is identity) produces 0 errors. This is documented at:
+.superpowers/sdd/task-3-report.md
 """
 
 import argparse, os, subprocess, sys, time
@@ -111,7 +121,7 @@ def run_npu_gemm(xclbin_path, insts_path, A_f32, B_f32, M, K, N, n_aie_rows=1):
     return C_f32, gflops
 
 
-def verify(M, K, N, m=128, k=64, n=128, rows=1, force=False):
+def verify(M, K, N, m=128, k=64, n=128, rows=1, force=False, A_val=None, B_val=None):
     """
     Full GEMM verification: generate vectors → compile xclbin → run NPU → compare.
 
@@ -120,25 +130,33 @@ def verify(M, K, N, m=128, k=64, n=128, rows=1, force=False):
         m, k, n: tile sizes
         rows: number of AIE rows (1 or 2)
         force: force recompilation of xclbin
+        A_val: if not None, use constant A[m,k] = A_val (bypasses ramp vectors)
+        B_val: if not None, use constant B[k,n] = B_val (bypasses ramp vectors)
 
     Returns:
         dict with passed, errors, total, max_error, gflops, ttft_us
     """
     t_start = time.monotonic()
 
-    # Step 1: Generate test vectors
-    print(f"Generating test vectors for {M}x{K}x{N}...")
-    A_bf16, B_bf16, C_ref_f32 = generate_test_vectors(M, K, N)
-
-    # Convert BF16 to float32 for the C++ runner
-    A_f32 = np.array(
-        [[bf16_to_float(A_bf16[m, k]) for k in range(K)] for m in range(M)],
-        dtype=np.float32
-    )
-    B_f32 = np.array(
-        [[bf16_to_float(B_bf16[k, n]) for n in range(N)] for k in range(K)],
-        dtype=np.float32
-    )
+    # Step 1: Generate test vectors (ramp or constant)
+    if A_val is not None and B_val is not None:
+        print(f"Generating constant test vectors A={A_val}, B={B_val} for {M}x{K}x{N}...")
+        A_f32 = np.full((M, K), A_val, dtype=np.float32)
+        B_f32 = np.full((K, N), B_val, dtype=np.float32)
+        # Compute CPU reference: C[m,n] = K * A_val * B_val
+        C_ref_f32 = np.full((M, N), float(K) * float(A_val) * float(B_val), dtype=np.float32)
+    else:
+        print(f"Generating ramp test vectors for {M}x{K}x{N}...")
+        A_bf16, B_bf16, C_ref_f32 = generate_test_vectors(M, K, N)
+        # Convert BF16 to float32 for the C++ runner
+        A_f32 = np.array(
+            [[bf16_to_float(A_bf16[m, k]) for k in range(K)] for m in range(M)],
+            dtype=np.float32
+        )
+        B_f32 = np.array(
+            [[bf16_to_float(B_bf16[k, n]) for n in range(N)] for k in range(K)],
+            dtype=np.float32
+        )
 
     # Step 2: Compile xclbin
     print(f"Compiling xclbin for {M}x{K}x{N} (rows={rows})...")
@@ -191,9 +209,14 @@ def main():
     parser.add_argument("--n", type=int, default=128)
     parser.add_argument("--rows", type=int, default=1, choices=[1, 2])
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--A_val", type=float, default=None,
+                        help="Constant A value (bypasses ramp vectors)")
+    parser.add_argument("--B_val", type=float, default=None,
+                        help="Constant B value (bypasses ramp vectors)")
     args = parser.parse_args()
 
-    result = verify(args.M, args.K, args.N, args.m, args.k, args.n, args.rows, args.force)
+    result = verify(args.M, args.K, args.N, args.m, args.k, args.n,
+                    args.rows, args.force, args.A_val, args.B_val)
     print(f"\nResult: {'PASS' if result['passed'] else 'FAIL'}")
     print(f"  Errors: {result['errors']} / {result['total']}")
     print(f"  GFLOPS: {result['gflops']:.2f}")

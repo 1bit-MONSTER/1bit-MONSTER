@@ -13,10 +13,12 @@ def test_verify_128x1024x2048():
     Uses the standard ramp test vectors: A[m,k] = m+1, B[k,n] = 1.0.
     Expected: C[m,n] = K * (m+1).
     
-    Note: The current layout transformations have a known pre-existing
-    correctness issue with non-constant A values (the host-side A shuffle
-    doesn't match the MLIR on-device shuffle expectations). This test
-    verifies that the NPU pipeline executes and produces meaningful output.
+    NOTE: This test uses ramp data (A[m,k]=m+1) which exposes a pre-existing
+    layout mismatch between host-side shuffling (gemm_atb_layout.h) and the
+    MLIR IRON design's on-device data layout expectations. See
+    .superpowers/sdd/task-3-report.md for details. As such we only verify
+    the pipeline runs (GFLOPS > 0) — correctness is verified with constant
+    data in test_constant_pipeline_correctness.
     """
     from tools.verify_gemm import verify
     result = verify(M=128, K=1024, N=2048, rows=1)
@@ -26,6 +28,27 @@ def test_verify_128x1024x2048():
     # (known pre-existing issue: not all elements match for ramp data)
     assert result["total"] > 0, "Should have processed elements"
     assert "passed" in result, "Result should have passed field"
+
+
+def test_constant_pipeline_correctness():
+    """
+    Test NPU with constant A=1.0, B=3.0 using the full pipeline verify().
+    
+    Constant data is identity under layout shuffling, so this tests
+    that the full pipeline (compilation → NPU execution → comparison)
+    produces 0 errors.
+    """
+    from tools.verify_gemm import verify
+    result = verify(M=128, K=1024, N=2048, rows=1,
+                    A_val=1.0, B_val=3.0)
+    assert result["passed"] == True, (
+        f"Expected passed=True with constant data, got {result['passed']} "
+        f"({result['errors']}/{result['total']} errors)"
+    )
+    assert result["errors"] == 0, (
+        f"Expected 0 errors with constant data, got {result['errors']}"
+    )
+    assert result["gflops"] > 0, f"Expected gflops > 0, got {result['gflops']}"
 
 
 def test_npu_constant_vectors():
@@ -54,3 +77,26 @@ def test_npu_constant_vectors():
     
     assert errors == 0, f"Expected 0 errors with constant vectors, got {errors}"
     assert gflops > 0, f"Expected gflops > 0, got {gflops}"
+
+
+def test_qkv_128x1024x4096():
+    """
+    QKV projection dimension with constant data — verifies the wider (N=4096) design.
+    
+    NOTE: This test uses rows=1 because the 2-row design has a pre-existing
+    correctness issue even with constant data (the C inverse layout for
+    n_aie_rows=2 appears to use a different block size or ordering than the
+    NPU output). This is a separate issue from the ramp-data layout mismatch
+    documented above, and is tracked for future investigation.
+    
+    Expected: C[m,n] = K * 1.0 * 3.0 = 3072.0 with 0 errors.
+    """
+    from tools.verify_gemm import verify
+    result = verify(M=128, K=1024, N=4096, rows=1,
+                    A_val=1.0, B_val=3.0)
+    assert result["errors"] == 0, (
+        f"Expected 0 errors for QKV constant test, got {result['errors']}"
+    )
+    assert result["gflops"] > 0, (
+        f"Expected gflops > 0, got {result['gflops']}"
+    )
