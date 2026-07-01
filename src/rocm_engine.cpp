@@ -20,6 +20,7 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -93,6 +94,139 @@ __global__ void gemm_kernel(const float* A, const float* B, float* C,
     }
 }
 
+// ============================================================
+// Full GPU-residency HIP kernels
+// ============================================================
+
+// RMSNorm: x[i] = (x[i] / sqrt(mean(x^2) + eps)) * w[i]
+__global__ void rms_norm_kernel(float* x, const float* w, int n, float eps) {
+    int tid = threadIdx.x;
+    int W = blockDim.x;
+    float sum = 0.0f;
+    for (int i = tid; i < n; i += W) sum += x[i] * x[i];
+    for (int offset = W / 2; offset > 0; offset >>= 1)
+        sum += __shfl_xor_sync(0xFFFFFFFFFFFFFFFFULL, sum, offset);
+    float inv_rms = rsqrtf(sum / (float)n + eps);
+    for (int i = tid; i < n; i += W) x[i] = x[i] * inv_rms * w[i];
+}
+
+// Elementwise add: a[i] += b[i]
+__global__ void add_kernel(float* a, const float* b, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) a[i] += b[i];
+}
+
+// QK Norm: head-wise RMSNorm with per-head weight
+__global__ void qk_norm_kernel(float* q, float* k, const float* q_w, const float* k_w,
+                                int nh, int nkv, int hd, int gqa) {
+    int h = blockIdx.x;
+    int tid = threadIdx.x;
+    int W = blockDim.x;
+    float* hq = q + h * hd;
+    float sq = 0.0f;
+    for (int d = tid; d < hd; d += W) sq += hq[d] * hq[d];
+    for (int off = W / 2; off > 0; off >>= 1)
+        sq += __shfl_xor_sync(0xFFFFFFFFFFFFFFFFULL, sq, off);
+    float iq = rsqrtf(sq / (float)hd + 1e-6f);
+    for (int d = tid; d < hd; d += W) hq[d] *= iq * q_w[d];
+
+    if (h % gqa == 0) {
+        int kvh = h / gqa;
+        float* hk = k + kvh * hd;
+        float sk = 0.0f;
+        for (int d = tid; d < hd; d += W) sk += hk[d] * hk[d];
+        for (int off = W / 2; off > 0; off >>= 1)
+            sk += __shfl_xor_sync(0xFFFFFFFFFFFFFFFFULL, sk, off);
+        float ik = rsqrtf(sk / (float)hd + 1e-6f);
+        for (int d = tid; d < hd; d += W) hk[d] *= ik * k_w[d];
+    }
+}
+
+// RoPE: apply rotary embeddings to Q and K heads
+__global__ void rope_kernel(float* q, float* k, const float* cos_t, const float* sin_t,
+                             int pos, int nh, int nkv, int hd) {
+    int h = blockIdx.x;
+    const float* c = cos_t + (size_t)pos * hd;
+    const float* s = sin_t + (size_t)pos * hd;
+    if (h < nh) {
+        float* hq = q + h * hd;
+        for (int d = threadIdx.x * 2; d < hd; d += blockDim.x * 2) {
+            float a = hq[d], b = hq[d+1];
+            hq[d] = a * c[d] - b * s[d];
+            hq[d+1] = b * c[d] + a * s[d];
+        }
+        if (h < nkv) {
+            float* hk = k + h * hd;
+            for (int d = threadIdx.x * 2; d < hd; d += blockDim.x * 2) {
+                float a = hk[d], b = hk[d+1];
+                hk[d] = a * c[d] - b * s[d];
+                hk[d+1] = b * c[d] + a * s[d];
+            }
+        }
+    }
+}
+
+// Attention: scaled dot-product + softmax + weighted sum of V
+__global__ void attention_kernel(float* q, float* k_cache, float* v_cache,
+                                  float* out, int nh, int nkv, int gqa,
+                                  int hd, int ctx_len) {
+    int h = blockIdx.x;
+    int kvh = h / gqa;
+    int tid = threadIdx.x;
+    int W = blockDim.x;
+
+    float* hq = q + h * hd;
+    float* hk_base = k_cache + kvh * hd;
+    float* hv_base = v_cache + kvh * hd;
+
+    extern __shared__ float scores[];
+
+    for (int p = tid; p < ctx_len; p += W) {
+        double s = 0.0;
+        float* hkp = hk_base + (size_t)p * nkv * hd;
+        for (int d = 0; d < hd; d++) s += (double)hq[d] * hkp[d];
+        scores[p] = (float)(s / sqrtf((float)hd));
+    }
+    __syncthreads();
+
+    float mx = scores[0];
+    for (int i = 1; i < ctx_len; i++) if (scores[i] > mx) mx = scores[i];
+    double sum = 0.0;
+    for (int i = 0; i < ctx_len; i++) {
+        scores[i] = __expf(scores[i] - mx);
+        sum += scores[i];
+    }
+    float inv_sum = 1.0f / (float)sum;
+    for (int i = 0; i < ctx_len; i++) scores[i] *= inv_sum;
+    __syncthreads();
+
+    for (int d = tid; d < hd; d += W) {
+        float acc = 0.0f;
+        for (int p = 0; p < ctx_len; p++) {
+            acc += scores[p] * hv_base[(size_t)p * nkv * hd + d];
+        }
+        out[h * hd + d] = acc;
+    }
+}
+
+// SiLU(x) * up: compute silu(gate[i]) * up[i]
+__global__ void silu_mul_kernel(const float* gate, const float* up,
+                                  float* out, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) {
+        float g = gate[i];
+        if (!isfinite(g)) g = 0.0f;
+        float s = g / (1.0f + __expf(-g));
+        out[i] = s * up[i];
+    }
+}
+
+// Embedding lookup: out = embed[token * H + i]
+__global__ void embed_lookup_kernel(const float* embed, int token, float* out, int H_) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < H_) out[i] = embed[(size_t)token * H_ + i];
+}
+
 // Host-side RoPE tables
 std::vector<float> g_rope_cos;
 std::vector<float> g_rope_sin;
@@ -134,24 +268,23 @@ static uint64_t find_json_offset(const char* json, size_t json_len, const char* 
 // ============================================================
 RocmInferenceEngine::RocmInferenceEngine() : initialized_(false) {
     kv_cache_.resize(NC);
-    for (auto& kv : kv_cache_) {
-        kv.k.resize(MAX_POS * NKV * HD, 0.0f);
-        kv.v.resize(MAX_POS * NKV * HD, 0.0f);
-        kv.len = 0;
-    }
 }
 
 RocmInferenceEngine::~RocmInferenceEngine() {
     auto fg = [](float*& p) { if (p) { hipFree(p); p = nullptr; } };
-    fg(d_hidden_); fg(d_residual_); fg(d_q_out_);
-    fg(d_k_out_); fg(d_v_out_);
-    fg(d_kv_cache_k_); fg(d_kv_cache_v_);
+    fg(d_hidden_); fg(d_residual_);
+    fg(d_q_); fg(d_k_); fg(d_v_);
     fg(d_attn_scores_); fg(d_attn_out_); fg(d_o_out_);
     fg(d_gate_); fg(d_silu_out_); fg(d_down_); fg(d_logits_);
     fg(d_lm_head_); fg(d_embed_); fg(d_final_norm_);
     fg(d_rope_cos_); fg(d_rope_sin_);
     for (auto& l : layers_) {
         fg(l.d_qkv); fg(l.d_o); fg(l.d_gu); fg(l.d_down);
+        fg(l.d_in_norm); fg(l.d_pa_norm);
+        fg(l.d_q_norm); fg(l.d_k_norm);
+    }
+    for (auto& kv : kv_cache_) {
+        fg(kv.d_k); fg(kv.d_v);
     }
 }
 
@@ -241,6 +374,19 @@ bool RocmInferenceEngine::gpu_init() {
         lw.o.clear();   lw.o.shrink_to_fit();
         lw.gu.clear();  lw.gu.shrink_to_fit();
         lw.d.clear();   lw.d.shrink_to_fit();
+        // Upload norm weights
+        if (!gm(lw.d_in_norm, H * 4)) return false;
+        if (!gm(lw.d_pa_norm, H * 4)) return false;
+        if (!gm(lw.d_q_norm, HD * 4)) return false;
+        if (!gm(lw.d_k_norm, HD * 4)) return false;
+        if (!up(lw.d_in_norm, lw.in_norm.data(), H)) return false;
+        if (!up(lw.d_pa_norm, lw.pa_norm.data(), H)) return false;
+        if (!up(lw.d_q_norm, lw.q_norm.data(), HD)) return false;
+        if (!up(lw.d_k_norm, lw.k_norm.data(), HD)) return false;
+        lw.in_norm.clear(); lw.in_norm.shrink_to_fit();
+        lw.pa_norm.clear(); lw.pa_norm.shrink_to_fit();
+        lw.q_norm.clear(); lw.q_norm.shrink_to_fit();
+        lw.k_norm.clear(); lw.k_norm.shrink_to_fit();
     }
 
     if (!gm(d_lm_head_, (size_t)H * NV * 4)) return false;
@@ -271,17 +417,23 @@ bool RocmInferenceEngine::gpu_init() {
     if (!up(d_rope_cos_, g_rope_cos.data(), rp_sz)) return false;
     if (!up(d_rope_sin_, g_rope_sin.data(), rp_sz)) return false;
 
-    size_t kv_sz = (size_t)NC * MAX_POS * NKV * HD * 4;
-    if (!gm(d_kv_cache_k_, kv_sz)) return false;
-    if (!gm(d_kv_cache_v_, kv_sz)) return false;
-    HIP_CHECK_RET(hipMemset(d_kv_cache_k_, 0, kv_sz), false);
-    HIP_CHECK_RET(hipMemset(d_kv_cache_v_, 0, kv_sz), false);
+    // KV cache — per-layer GPU buffers
+    kv_cache_.resize(NC);
+    for (int l = 0; l < NC; l++) {
+        auto& kv = kv_cache_[l];
+        kv.cap = MAX_POS;
+        if (!gm(kv.d_k, (size_t)MAX_POS * NKV * HD * 4)) return false;
+        if (!gm(kv.d_v, (size_t)MAX_POS * NKV * HD * 4)) return false;
+        HIP_CHECK_RET(hipMemset(kv.d_k, 0, (size_t)MAX_POS * NKV * HD * 4), false);
+        HIP_CHECK_RET(hipMemset(kv.d_v, 0, (size_t)MAX_POS * NKV * HD * 4), false);
+    }
 
-    if (!gm(d_hidden_,      MAX_GEMM_K * 4)) return false;
+    // GPU temp buffers for full-GPU residency
+    if (!gm(d_hidden_,      H * 4)) return false;
     if (!gm(d_residual_,    H * 4)) return false;
-    if (!gm(d_q_out_,       4096 * 4)) return false;
-    if (!gm(d_k_out_,       NKV * HD * 4)) return false;
-    if (!gm(d_v_out_,       NKV * HD * 4)) return false;
+    if (!gm(d_q_,           4096 * 4)) return false;  // QKV fused
+    if (!gm(d_k_,           NKV * HD * 4)) return false;
+    if (!gm(d_v_,           NKV * HD * 4)) return false;
     if (!gm(d_attn_scores_, MAX_POS * 4)) return false;
     if (!gm(d_attn_out_,    NH * HD * 4)) return false;
     if (!gm(d_o_out_,       H * 4)) return false;
@@ -510,6 +662,19 @@ void RocmInferenceEngine::gemm(const float* A_host, float* d_B, float* C_host,
     }
 }
 
+// GEMM: A and C are device-side pointers (no host transfers, no sync)
+void RocmInferenceEngine::gemm_dev(float* d_A, float* d_B, float* d_C, int M, int K, int N) {
+    if (M == 1) {
+        int bs = 256;
+        int gs = (N + bs - 1) / bs;
+        hipLaunchKernelGGL(gemv_kernel, gs, bs, 0, 0, d_A, d_B, d_C, K, N);
+    } else {
+        dim3 block(16, 16);
+        dim3 grid((N + 15) / 16, (M + 15) / 16);
+        hipLaunchKernelGGL(gemm_kernel, grid, block, 0, 0, d_A, d_B, d_C, M, K, N);
+    }
+}
+
 // ============================================================
 // stats helpers for debug dump
 // ============================================================
@@ -643,152 +808,59 @@ void RocmInferenceEngine::forward_layer(int l, int pos) {
     auto& kv = kv_cache_[l];
     int dbg = DEBUG_DUMP && l == 0 && pos == 0;
 
-    memcpy(residual_.data(), hidden_.data(), H * 4);
-    if (dbg) dump_vec_stats("hidden BEFORE input norm", hidden_.data(), H);
+    // 1. Input RMSNorm (in-place on d_hidden_)
+    rms_norm_kernel<<<1, 64>>>(d_hidden_, layer.d_in_norm, H, 1e-6f);
 
-    rms_norm_f(hidden_.data(), layer.in_norm.data(), H);
-    if (dbg) dump_vec_stats("hidden AFTER input RMSNorm", hidden_.data(), H);
+    // 2. QKV projection: d_q_ = d_hidden_ × d_qkv[K×4096]
+    gemm_dev(d_hidden_, layer.d_qkv, d_q_, 1, H, 4096);
+    hipDeviceSynchronize();
 
-    gemm(hidden_.data(), layers_[l].d_qkv, q_out_.data(), 1, H, 4096);
-    if (dbg) {
-        dump_vec_stats("Q_out AFTER QKV GEMM (first 2048)", q_out_.data(), 2048);
-        dump_vec_stats("K_out AFTER QKV (2048..3071)", q_out_.data() + 2048, 1024);
-        dump_vec_stats("V_out AFTER QKV (3072..4095)", q_out_.data() + 3072, 1024);
-    }
+    // 3. Split Q/K/V: K = d_q_[2048..3072), V = d_q_[3072..4096)
+    hipMemcpy(d_k_, d_q_ + 2048, NKV * HD * 4, hipMemcpyDeviceToDevice);
+    hipMemcpy(d_v_, d_q_ + 3072, NKV * HD * 4, hipMemcpyDeviceToDevice);
 
-    memcpy(k_out_.data(), &q_out_[2048], NKV * HD * 4);
-    memcpy(v_out_.data(), &q_out_[3072], NKV * HD * 4);
+    // 4. QK Norm (head-wise, in-place on d_q_[0:NH*HD] and d_k_)
+    qk_norm_kernel<<<NH, 64>>>(d_q_, d_k_, layer.d_q_norm, layer.d_k_norm,
+                                NH, NKV, HD, GQA);
 
-    if (dbg) {
-        // Dump K head 0 BEFORE QK norm
-        double sk0 = 0;
-        for (int d = 0; d < HD; d++) sk0 += (double)k_out_[d] * k_out_[d];
-        printf("[DBG] K head 0 PRE-norm (before QK norm): sum_sq=%.4f mean_sq=%.4f\n", sk0, sk0/HD);
-        printf("[DBG] K head 0 first 8 PRE-norm:");
-        for (int d = 0; d < 8; d++) printf(" %.6f", k_out_[d]);
-        printf("\n");
-    }
+    // 5. RoPE (in-place on d_q_ and d_k_)
+    rope_kernel<<<std::max(NH, NKV), 64>>>(d_q_, d_k_, d_rope_cos_, d_rope_sin_,
+                                            pos, NH, NKV, HD);
 
-    { PerfTimer pt(perf_.qk_norm_us);
-    for (int h = 0; h < NH; h++) {
-        float* hq = &q_out_[h * HD];
-        double sq = 0.0;
-        for (int d = 0; d < HD; d++) sq += (double)hq[d] * hq[d];
-        float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
-        for (int d = 0; d < HD; d++) hq[d] *= iq * layer.q_norm[d];
-        if (h % GQA == 0) {
-            int kvh = h / GQA;
-            float* hk = &k_out_[kvh * HD];
-            double sk = 0.0;
-            for (int d = 0; d < HD; d++) sk += (double)hk[d] * hk[d];
-            float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
-            for (int d = 0; d < HD; d++) hk[d] *= ik * layer.k_norm[d];
-        }
-    }
-    }
-    if (dbg) {
-        dump_vec_stats("Q_out AFTER QK norm", q_out_.data(), 2048);
-        dump_vec_stats("K_out AFTER QK norm", k_out_.data(), NKV * HD);
-        // Show k_norm values
-        printf("[DBG] k_norm loaded:"); for (int idx=0;idx<8;idx++) printf(" %.6f", layer.k_norm[idx]); printf("\n");
-        // Compute K norm manually for first kv head
-        double sk_check = 0;
-        for (int d = 0; d < HD; d++) sk_check += (double)k_out_[d] * k_out_[d];
-        float ik_check = 1.0f / sqrtf((float)(sk_check / HD) + EPS);
-        printf("[DBG] K head 0 pre-norm: sum_sq=%.6f mean_sq=%.6f ik=%.6f\n", sk_check, sk_check/HD, ik_check);
-        printf("[DBG] K head 0 first 8 AFTER norm:");
-        for (int idx=0;idx<8;idx++) printf(" %.6f", k_out_[idx]);
-        printf("\n");
-    }
-
-    { PerfTimer pt(perf_.rope_us);
-    for (int h = 0; h < NH; h++) {
-        float* hq = &q_out_[h * HD];
-        for (int d = 0; d < HD; d += 2) {
-            float a = hq[d], b = hq[d+1];
-            float c = g_rope_cos[pos * HD + d];
-            float s = g_rope_sin[pos * HD + d];
-            hq[d] = a*c - b*s; hq[d+1] = b*c + a*s;
-        }
-    }
-    for (int h = 0; h < NKV; h++) {
-        float* hk = &k_out_[h * HD];
-        for (int d = 0; d < HD; d += 2) {
-            float a = hk[d], b = hk[d+1];
-            float c = g_rope_cos[pos * HD + d];
-            float s = g_rope_sin[pos * HD + d];
-            hk[d] = a*c - b*s; hk[d+1] = b*c + a*s;
-        }
-    }
-    }
-    if (dbg) {
-        dump_vec_stats("Q_out AFTER RoPE", q_out_.data(), 2048);
-        dump_vec_stats("K_out AFTER RoPE", k_out_.data(), NKV * HD);
-    }
-
-    memcpy(&kv.k[pos * NKV * HD], k_out_.data(), NKV * HD * 4);
-    memcpy(&kv.v[pos * NKV * HD], v_out_.data(), NKV * HD * 4);
+    // 6. Append K/V to KV cache (device-to-device)
+    hipMemcpy(kv.d_k + (size_t)pos * NKV * HD,
+              d_k_, NKV * HD * 4, hipMemcpyDeviceToDevice);
+    hipMemcpy(kv.d_v + (size_t)pos * NKV * HD,
+              d_v_, NKV * HD * 4, hipMemcpyDeviceToDevice);
     kv.len = pos + 1;
-    int cl = kv.len;
 
-    for (int h = 0; h < NH; h++) {
-        int kvh = h / GQA;
-        float* hq = &q_out_[h * HD];
-        float* hk = &kv.k[kvh * HD];
-        float* hv = &kv.v[kvh * HD];
-        float* sc = attn_scores_.data();
-        for (int p = 0; p < cl; p++) {
-            double s = 0.0;
-            for (int d = 0; d < HD; d++)
-                s += (double)hq[d] * hk[p * NKV * HD + d];
-            sc[p] = (float)(s / sqrtf((float)HD));
-        }
-        softmax_f(sc, cl);
-        for (int d = 0; d < HD; d++) {
-            float s = 0.0f;
-            for (int p = 0; p < cl; p++) s += sc[p] * hv[p * NKV * HD + d];
-            attn_out_[h * HD + d] = s;
-        }
-    }
-    if (dbg) {
-        dump_vec_stats("attn_scores BEFORE softmax (head 0)", attn_scores_.data(), cl, 1);
-        dump_vec_stats("attn_out AFTER attention mix", attn_out_.data(), NH * HD);
-    }
+    // 7. Attention: scores + softmax + weighted sum
+    attention_kernel<<<NH, 64, (size_t)(pos + 1) * sizeof(float)>>>(
+        d_q_, kv.d_k, kv.d_v, d_attn_out_, NH, NKV, GQA, HD, pos + 1);
 
-    gemm(attn_out_.data(), layers_[l].d_o, o_out_.data(), 1, NH * HD, H);
-    if (dbg) dump_vec_stats("o_out AFTER O projection GEMM", o_out_.data(), H);
+    // 8. O projection: d_o_out_ = d_attn_out_ × d_o
+    gemm_dev(d_attn_out_, layer.d_o, d_o_out_, 1, NH * HD, H);
 
-    for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + o_out_[i];
-    if (dbg) dump_vec_stats("hidden AFTER +residual (attn)", hidden_.data(), H);
+    // 9. Residual add: d_hidden_ += d_o_out_
+    add_kernel<<<(H+255)/256, 256>>>(d_hidden_, d_o_out_, H);
 
-    memcpy(residual_.data(), hidden_.data(), H * 4);
-    rms_norm_f(hidden_.data(), layer.pa_norm.data(), H);
-    if (dbg) dump_vec_stats("hidden AFTER post-attn RMSNorm", hidden_.data(), H);
+    // 10. Post-attn RMSNorm (in-place on d_hidden_)
+    rms_norm_kernel<<<1, 64>>>(d_hidden_, layer.d_pa_norm, H, 1e-6f);
 
-    gemm(hidden_.data(), layers_[l].d_gu, gate_.data(), 1, H, 6144);
-    if (dbg) {
-        dump_vec_stats("gate[0..3071] AFTER GU GEMM", gate_.data(), IM);
-        dump_vec_stats("up[3072..6143] AFTER GU GEMM", gate_.data() + IM, IM);
-    }
+    // 11. GU projection: d_gate_ = d_hidden_ × d_gu[K×6144]
+    gemm_dev(d_hidden_, layer.d_gu, d_gate_, 1, H, 6144);
 
-    { PerfTimer pt(perf_.silu_us);
-    for (int i = 0; i < IM; i++) {
-        float g = gate_[i];
-        if (!std::isfinite(g)) g = 0.0f;
-        silu_out_[i] = silu_f(g) * gate_[IM + i];
-    }
-    }
-    if (dbg) dump_vec_stats("silu_out AFTER SiLU(gate)*up", silu_out_.data(), IM);
+    // 12. SiLU(gate) × up: d_silu_out_ = silu(d_gate_[0:IM]) × d_gate_[IM:2*IM]
+    silu_mul_kernel<<<(IM+255)/256, 256>>>(d_gate_, d_gate_ + IM, d_silu_out_, IM);
 
-    { PerfTimer pt(perf_.gemm_us);
-    gemm(silu_out_.data(), layers_[l].d_down, down_.data(), 1, IM, H);
-    }
-    if (dbg) dump_vec_stats("down AFTER Down projection GEMM", down_.data(), H);
+    // 13. Down projection: d_down_ = d_silu_out_ × d_down
+    gemm_dev(d_silu_out_, layer.d_down, d_down_, 1, IM, H);
 
-    { PerfTimer pt(perf_.elementwise_us);
-    for (int i = 0; i < H; i++) hidden_[i] = residual_[i] + down_[i];
-    }
-    if (dbg) dump_vec_stats("hidden FINAL after FFN+residual", hidden_.data(), H);
+    // 14. Residual add: d_hidden_ += d_down_
+    add_kernel<<<(H+255)/256, 256>>>(d_hidden_, d_down_, H);
+
+    // Sync after all operations in this layer
+    hipDeviceSynchronize();
 }
 
 // ============================================================
@@ -802,8 +874,9 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
     auto gen_start = std::chrono::steady_clock::now();
 
     int pos = 0;
+    // Prefill: embed lookup directly to GPU, then forward on GPU
     for (int pi = 0; pi < num_input_tokens; pi++) {
-        memcpy(hidden_.data(), &embed_table_[input_tokens[pi] * H], H * 4);
+        embed_lookup_kernel<<<(H+255)/256, 256>>>(d_embed_, input_tokens[pi], d_hidden_, H);
         for (int l = 0; l < NC; l++) forward_layer(l, pos);
         pos++;
         if (pi % 10 == 0) printf("[ROCm]  Prefill %d/%d\n", pi+1, num_input_tokens);
@@ -814,24 +887,25 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
     for (int g = 0; g < max_output_tokens; g++) {
         auto ts = std::chrono::steady_clock::now();
 
-        rms_norm_f(hidden_.data(), final_norm_.data(), H);
-        gemm(hidden_.data(), d_lm_head_, logits_.data(), 1, H, NV);
+        // Final RMSNorm + LM head on GPU
+        rms_norm_kernel<<<1, 64>>>(d_hidden_, d_final_norm_, H, 1e-6f);
+        gemm_dev(d_hidden_, d_lm_head_, d_logits_, 1, H, NV);
 
+        // Sync before reading logits back to host
+        hipDeviceSynchronize();
+
+        // Copy logits to host for argmax sampling
+        hipMemcpy(logits_.data(), d_logits_, NV * 4, hipMemcpyDeviceToHost);
+
+        // Greedy sampling (argmax)
+        int tok = 0;
         float mx = logits_[0];
-        for (int i = 1; i < NV; i++) if (logits_[i] > mx) mx = logits_[i];
-        double sum = 0.0;
-        for (int i = 0; i < NV; i++) {
-            float d = logits_[i] - mx;
-            d = (d > 80.0f) ? 80.0f : ((d < -80.0f) ? -80.0f : d);
-            logits_[i] = expf(d); sum += logits_[i];
-        }
-        float r = (float)rand() / (float)RAND_MAX * (float)sum;
-        float acc = 0.0f; int tok = 0;
-        for (int i = 0; i < NV; i++) { acc += logits_[i]; if (acc >= r) { tok = i; break; } }
+        for (int i = 1; i < NV; i++) if (logits_[i] > mx) { mx = logits_[i]; tok = i; }
 
         output_tokens[g] = tok; ngen++;
 
-        memcpy(hidden_.data(), &embed_table_[tok * H], H * 4);
+        // Next token: embed lookup on GPU
+        embed_lookup_kernel<<<(H+255)/256, 256>>>(d_embed_, tok, d_hidden_, H);
         for (int l = 0; l < NC; l++) forward_layer(l, pos);
         pos++;
 
@@ -847,21 +921,6 @@ int RocmInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
         std::chrono::steady_clock::now() - gen_start).count();
     printf("[ROCm] Done: %d tok, %.0f ms total, %.0f ms/tok\n",
            ngen, gen_ms, ngen > 0 ? gen_ms / ngen : 0);
-
-    // Print profiled per-operation breakdown
-    uint64_t total_perf =
-        perf_.rms_norm_us + perf_.gemm_us + perf_.qk_norm_us +
-        perf_.rope_us + perf_.attention_us + perf_.silu_us + perf_.elementwise_us;
-    printf("\n=== Perf Profile (%d layers x %d tokens) ===\n", NC, pos);
-    printf("  RMSNorm:    %10llu us (%5.1f%%)\n", perf_.rms_norm_us, 100.0 * perf_.rms_norm_us / total_perf);
-    printf("  GEMM:       %10llu us (%5.1f%%)\n", perf_.gemm_us, 100.0 * perf_.gemm_us / total_perf);
-    printf("  QK Norm:    %10llu us (%5.1f%%)\n", perf_.qk_norm_us, 100.0 * perf_.qk_norm_us / total_perf);
-    printf("  RoPE:       %10llu us (%5.1f%%)\n", perf_.rope_us, 100.0 * perf_.rope_us / total_perf);
-    printf("  Attention:  %10llu us (%5.1f%%)\n", perf_.attention_us, 100.0 * perf_.attention_us / total_perf);
-    printf("  SiLU:       %10llu us (%5.1f%%)\n", perf_.silu_us, 100.0 * perf_.silu_us / total_perf);
-    printf("  Elementwise:%10llu us (%5.1f%%)\n", perf_.elementwise_us, 100.0 * perf_.elementwise_us / total_perf);
-    printf("  Total:      %10llu us (%5.1f%% of %llu ms)\n",
-           total_perf, 100.0 * total_perf / (1000 * (uint64_t)last_token_ms_), (uint64_t)last_token_ms_ * 1000);
 
     return ngen;
 }

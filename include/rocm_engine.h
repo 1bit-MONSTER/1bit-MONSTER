@@ -60,6 +60,11 @@ private:
         float* d_o = nullptr;
         float* d_gu = nullptr;
         float* d_down = nullptr;
+        // GPU buffers for norm weights
+        float* d_in_norm = nullptr;
+        float* d_pa_norm = nullptr;
+        float* d_q_norm = nullptr;
+        float* d_k_norm = nullptr;
     };
 
     // GPU state
@@ -73,29 +78,36 @@ private:
     std::vector<LayerOffsets> offsets_;
 
     // GPU buffers (pre-allocated at init)
-    float* d_hidden_ = nullptr;     // H (GEMM input buffer, sized for max K)
+    float* d_hidden_ = nullptr;     // H (hidden state, persistent across layers)
     float* d_residual_ = nullptr;   // H (for GPU-side residual)
-    float* d_q_out_ = nullptr;      // 4096 (QKV output)
-    float* d_k_out_ = nullptr;      // NKV*HD = 1024
-    float* d_v_out_ = nullptr;      // NKV*HD = 1024
-    float* d_kv_cache_k_ = nullptr; // NC × MAX_POS × NKV × HD
-    float* d_kv_cache_v_ = nullptr;
-    float* d_attn_scores_ = nullptr; // MAX_POS = 4096
+    float* d_q_ = nullptr;          // 4096 (QKV fused output)
+    float* d_k_ = nullptr;          // NKV*HD = 1024
+    float* d_v_ = nullptr;          // NKV*HD = 1024
+    float* d_attn_scores_ = nullptr; // MAX_POS
     float* d_attn_out_ = nullptr;   // NH*HD = 2048
     float* d_o_out_ = nullptr;      // H = 1024
     float* d_gate_ = nullptr;       // 6144 (GU fused)
     float* d_silu_out_ = nullptr;   // IM = 3072
     float* d_down_ = nullptr;       // H = 1024
     float* d_logits_ = nullptr;     // NV = 151936
-    float* d_lm_head_ = nullptr;    // H × NV
 
-    // GPU buffer for LM head weights
+    // GPU weight buffers
+    float* d_lm_head_ = nullptr;    // H × NV
     float* d_embed_ = nullptr;      // NV × H (embedding table)
     float* d_final_norm_ = nullptr; // H
     float* d_rope_cos_ = nullptr;    // MAX_POS × HD
     float* d_rope_sin_ = nullptr;
 
-    // Host buffers (for memcpy)
+    // KV cache on GPU (per-layer)
+    struct KVCache {
+        float* d_k = nullptr;
+        float* d_v = nullptr;
+        int len = 0;
+        int cap = 0;
+    };
+    std::vector<KVCache> kv_cache_;
+
+    // Host buffers (for debug dump and logit transfers)
     std::vector<float> hidden_;     // H
     std::vector<float> residual_;   // H
     std::vector<float> q_out_;      // 4096
@@ -108,17 +120,7 @@ private:
     std::vector<float> silu_out_;   // IM
     std::vector<float> down_;       // H
     std::vector<float> logits_;     // NV
-
-    // KV cache host mirror
-    struct KVCache {
-        std::vector<float> k;  // MAX_POS * NKV * HD
-        std::vector<float> v;
-        int len = 0;
-    };
-    std::vector<KVCache> kv_cache_;
     static constexpr int MAX_POS = 4096;
-    // Max K dimension in any GEMM (for d_hidden_ sizing)
-    static constexpr int MAX_GEMM_K = IM;  // 3072 for down projection
 
     // Profiling accumulators (all times in microseconds)
     struct {
@@ -147,13 +149,16 @@ private:
     // Allocate GPU buffers and upload weights
     bool gpu_init();
 
-    // Per-layer forward pass (GPU-assisted)
+    // Per-layer forward pass — all on GPU, hidden state stays in d_hidden_
     void forward_layer(int l, int pos);
 
     // GEMM: C[M×N] = A[M×K] × B[K×N] via HIP kernel
     // A is host-side, B is device-side (pre-uploaded), C is host-side
     void gemm(const float* A_host, float* d_B, float* C_host,
               int M, int K, int N);
+
+    // GEMM: A and C are device-side (no host transfers)
+    void gemm_dev(float* d_A, float* d_B, float* d_C, int M, int K, int N);
 };
 
 #endif // NPU_INFER_ROCM_ENGINE_H
