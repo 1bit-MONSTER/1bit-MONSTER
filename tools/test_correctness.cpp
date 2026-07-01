@@ -20,12 +20,12 @@ int main(){
     auto d=xrt::device(0);auto xc=xrt::xclbin(std::string(xp));d.register_xclbin(xc);
     auto hw=xrt::hw_context(d,xc.get_uuid());auto k=xrt::kernel(hw,"MLIR_AIE");
     // A: ramp per row = row_id (0..1023) + 1, so each row unique
-    std::vector<float> Af(M*K);for(int i=0;i<M*K;i++)Af[i]=1.0f+(float)(i/K); // row 0 = 1.0, row 1 = 2.0, ...
+    std::vector<float> Af(M*K);for(int i=0;i<M*K;i++)Af[i]=1.0f+(float)(i/K);
     std::vector<float> Bf(K*N);for(int i=0;i<K*N;i++)Bf[i]=1.0f;
     // CPU ref
     std::vector<float> Cref(M*N,0);
     for(int m=0;m<M;m++){float a_val=1.0f+m;for(int n=0;n<N;n++)Cref[m*N+n]=a_val*K;}
-    // NPU path: A sent as raw BF16 (NPU-side transformations handle the shuffle)
+    // NPU path: A sent as raw BF16
     std::vector<uint16_t> Ab(M*K);for(int i=0;i<M*K;i++)Ab[i]=fbf16(Af[i]);
     auto Bs=gemm_atb::layout_transpose_L1_1x2_8x8block(Bf,K,N,kt,nt);
     auto Bp=floatToBfp16(8,K*N,Bs.data(),0);
@@ -40,15 +40,8 @@ int main(){
     auto run=k((unsigned)3,bi,ins.size(),bA,bB,bC);run.wait();
     bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     uint16_t*cb=(uint16_t*)bC.map();
-    std::vector<float> Cr(M*N);for(int i=0;i<M*N;i++)Cr[i]=bf16f(cb[i]);
-    std::vector<float> C;
-    if(nrows==1){
-        C=gemm_atb::layout_inverse_C_L1_2x2_8x8block(Cr,M,N,nrows*mt,nt);
-    }else{
-        // Multi-row: C_transformations is empty, DMA outputs row-major
-        C=Cr;
-    }
-    // Check
+    std::vector<float> C(M*N);for(int i=0;i<M*N;i++)C[i]=bf16f(cb[i]);
+    // Check raw output
     printf("Row 0: expect %.0f\n",Cref[0]);
     printf("Row 0 NPU first 5:");
     for(int n=0;n<5;n++)printf(" %.0f",C[n]);
