@@ -25,6 +25,8 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
+#include <immintrin.h>
+#include "kv_quant.h"
 
 extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
@@ -117,17 +119,28 @@ struct I8Ctx{
 };
 
 // Attention for tokens at window offset
-struct AttnCPU{static void run(const float*Q,const float*K,const float*V,int nt,float*out){
+struct AttnCPU{static void run(const float*Q,const float*Kd,const float*Vd,int nt,float*out){
     for(int h=0;h<WQH;h++){
         float sc[4096];float mx=-1e30f;
-        for(int p=0;p<nt;p++){
-            double s=0;for(int d=0;d<HD;d++)s+=Q[h*HD+d]*K[p*NKV*HD+(h/GQA)*HD+d];
-            sc[p]=(float)(s/sqrtf((float)HD));if(sc[p]>mx)mx=sc[p];}
-        double sum=0;for(int p=0;p<nt;p++){sc[p]=expf(sc[p]-mx);sum+=sc[p];}
-        if(sum<=0)sum=1;float is=1.0f/(float)sum;
-        for(int d=0;d<HD;d++){double s=0;for(int p=0;p<nt;p++)s+=sc[p]*is*V[p*NKV*HD+(h/GQA)*HD+d];out[h*HD+d]=(float)s;}}}};
+        for(int t=0;t<nt;t++){
+            __m512 sum=_mm512_setzero_ps();
+            const float*Kt=Kd+t*HD;
+            for(int d=0;d<HD;d+=16){
+                __m512 qv=_mm512_loadu_ps(Q+h*HD+d);
+                __m512 kv=_mm512_loadu_ps(Kt+d);
+                sum=_mm512_fmadd_ps(qv,kv,sum);}
+            float s=_mm512_reduce_add_ps(sum)*(1.0f/sqrtf((float)HD));
+            sc[t]=s;if(s>mx)mx=s;}
+        double ssum=0;for(int t=0;t<nt;t++){sc[t]=expf(sc[t]-mx);ssum+=sc[t];}
+        if(ssum<=0)ssum=1;float is=1.0f/(float)ssum;
+        __m512 ov[8];for(int i=0;i<8;i++)ov[i]=_mm512_setzero_ps();
+        for(int t=0;t<nt;t++){
+            __m512 sv=_mm512_set1_ps(sc[t]*is);
+            const float*Vt=Vd+t*HD;
+            for(int i=0;i<8;i++)ov[i]=_mm512_fmadd_ps(sv,_mm512_loadu_ps(Vt+i*16),ov[i]);}
+        for(int i=0;i<8;i++)_mm512_storeu_ps(out+h*HD+i*16,ov[i]);}}};
 
-struct KV{std::vector<float>k,v;int n;KV():k(4096*NKV*HD),v(4096*NKV*HD),n(0){}};
+// KV is now KVQuant (see kv_quant.h) — provides INT4 quantized storage
 
 int main(int argc,char**argv){
     if(argc<3){fprintf(stderr,"Usage: %s model.q4nx TOKEN1 [TOKEN2 ...]\n",argv[0]);return 1;}
@@ -203,7 +216,7 @@ int main(int argc,char**argv){
     fprintf(stderr,"  %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
 
     ri(HD,1000000.0f,M+128);
-    std::vector<KV>kv(NC);
+    std::vector<KVQuant>kv(NC);
     std::vector<float>h((size_t)M*H);
     std::vector<float>qo((size_t)M*4096),ko((size_t)M*1024),vo((size_t)M*1024);
     std::vector<float>at((size_t)M*NH*HD),oo((size_t)M*H);
@@ -236,6 +249,8 @@ int main(int argc,char**argv){
         }
         
         // Q-norm, K-norm, RoPE per head per token
+        // Collect K/V into per-token buffers, then batch-quantize
+        std::vector<float> tok_K(M*1024), tok_V(M*1024);
         for(int m=0;m<M;m++){
             float*q=&qo[m*4096],*k=&ko[m*1024],*v=&vo[m*1024];
             for(int hh=0;hh<NH;hh++){
@@ -249,18 +264,25 @@ int main(int argc,char**argv){
                     float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
                     for(int d=0;d<HD;d++)k[kvh*HD+d]*=ik*kn_w[l][d];
                     ra(&k[kvh*HD],HD,m);
-                    memcpy(&kv[l].k[m*NKV*HD+kvh*HD],&k[kvh*HD],HD*4);
-                    memcpy(&kv[l].v[m*NKV*HD+kvh*HD],&v[kvh*HD],HD*4);
+                    // Collect into per-token buffer for batch quantization
+                    memcpy(&tok_K[m*1024+kvh*HD],&k[kvh*HD],HD*4);
+                    memcpy(&tok_V[m*1024+kvh*HD],&v[kvh*HD],HD*4);
                 }
             }
         }
-        kv[l].n=M;
+        // Batch-quantize all M tokens' K and V
+        for(int m=0;m<M;m++)
+            kv[l].append(m, &tok_K[m*1024], &tok_V[m*1024]);
         
-        // Attention: CPU attention for each token against KV cache of all M tokens
-        for(int m=0;m<M;m++){
-            float*q=&qo[m*4096];float*o=&at[m*NH*HD];
-            for(int w=0;w<AW;w++)
-                AttnCPU::run(&q[w*WQH*HD],&kv[l].k[w*WKVH*HD],&kv[l].v[w*WKVH*HD],M,&o[w*WQH*HD]);
+        // Attention: SIMD on dequantized KV
+        static std::vector<float> Ks(4096*128), Vs(4096*128);
+        for(int w=0;w<AW;w++){
+            kv[l].dequant_K_all(w,M,Ks.data());
+            kv[l].dequant_V_all(w,M,Vs.data());
+            for(int m=0;m<M;m++){
+                float*q=&qo[m*4096];float*o=&at[m*NH*HD];
+                AttnCPU::run(&q[w*WQH*HD],Ks.data(),Vs.data(),M,&o[w*WQH*HD]);
+            }
         }
         
         // O projection in 2×M=128 passes
