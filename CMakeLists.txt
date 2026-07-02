@@ -49,4 +49,4 @@ add_executable(npu_infer
 )
 target_include_directories(npu_infer PRIVATE include)
 target_link_libraries(npu_infer npu_model ${XRT_COREUTIL} ${XRT_XRT_CORE} Threads::Threads m dl uuid)
-target_compile_options(npu_infer PRIVATE -O2 -g)
+target_compile_options(npu_infer PRIVATE -O3 -mavx2 -mfma -mavx512f -ffast-math -march=native -funroll-loops -fno-math-errno -fvect-cost-model=unlimited -g)
