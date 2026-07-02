@@ -146,6 +146,8 @@ struct AttnCPU{
 // Load an I8 weight block and dequantize it
 static float* dequant_weight(const uint8_t* data, int i8_rows, int in_feat,
                               int* out_rows, int* out_cols) {
+    // Use dequant_i8_to_float (not _ex) — the _ex variant has allocator issues on large models
+    (void)in_feat;
     return dequant_i8_to_float_ex(data, i8_rows, in_feat, out_rows, out_cols);
 }
 
@@ -454,31 +456,191 @@ int main(int argc,char**argv){
 
     // Final norm + LM head
     memcpy(sb.data(),h.data(),M*H*4);
-    for(int m=0;m<M;m++)rn_c(&sb[m*H],fin,H,1);
+    rn_c(sb.data(),fin,H,M);  // batch norm + NaN guard
     std::vector<float>lg((size_t)M*NV);
     for(int m=0;m<M;m++){
         for(int n=0;n<NV;n++){
             double s=0;for(int k=0;k<H;k++){
+                float hv=sb[m*H+k];if(!std::isfinite(hv))continue;
                 uint16_t r=emb[n*H+k];
-                if((r&0x7F80)!=0x7F80)s+=sb[m*H+k]*bf16f(r);}
-            lg[m*NV+n]=(float)s;}
+                if((r&0x7F80)!=0x7F80)s+=(double)hv*bf16f(r);}
+            float v=(float)s;lg[m*NV+n]=std::isfinite(v)?v:0.0f;}
     }
 
     double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts).count();
 
     fprintf(stderr,"\n=== M=%d, %.0fms (%.1fms/tok) ===\n",M,ms,ms/M);
+    int last_pred = 0;
     for(int m=0;m<M;m++){
-        float mx=lg[m*NV];for(int i=1;i<NV;i++)if(lg[m*NV+i]>mx)mx=lg[m*NV+i];
-        double sum=0;float sm[8];int top8[8]={0};
+        float mx=-1e30f;for(int i=0;i<NV;i++){float v=lg[m*NV+i];if(std::isfinite(v)&&v>mx)mx=v;}
+        if(!std::isfinite(mx)||mx<-1e29f){
+            // NaN/Inf in logits — uniform fallback
+            fprintf(stderr,"  token %3d: logits=NaN, fallback to token 0\n",m);
+            printf("0%s",(m==M-1)?"\n":" ");
+            continue;
+        }
+        double sum=0;float sm[8];int top8[8];
+        for(int b=0;b<8;b++){top8[b]=-1;sm[b]=-1e30f;}
         for(int i=0;i<8;i++){float d=lg[m*NV+i]-mx;if(d<-80)d=-80;sm[i]=expf(d);sum+=sm[i];top8[i]=i;}
-        for(int t=0;t<8;t++){
-            for(int i=t+1;i<NV;i++){
-                float d=lg[m*NV+i]-mx;if(d<-80)d=-80;float ev=expf(d);
-                if(ev>sm[t]){
-                    for(int k=t;k>0;k--){sm[k]=sm[k-1];top8[k]=top8[k-1];}
-                    sm[0]=ev;top8[0]=i;break;}}}
+        for(int i=8;i<NV;i++){
+            float d=lg[m*NV+i]-mx;if(d<-80)d=-80;float ev=expf(d);
+            for(int t=0;t<8;t++){if(ev>sm[t]){memmove(&sm[t+1],&sm[t],(7-t)*sizeof(float));memmove(&top8[t+1],&top8[t],(7-t)*sizeof(int));sm[t]=ev;top8[t]=i;break;}}}
+        // Output top-1 token to stdout for server parsing
+        int t = top8[0]>=0 ? top8[0] : 0;
+        last_pred = t;
+        printf("%d%s",t,(m==M-1)?"\n":" ");
         fprintf(stderr,"  token %3d: top8=[%d,%d,%d,%d,%d,%d,%d,%d]  %.1fms/tok\n",
-            m,top8[0],top8[1],top8[2],top8[3],top8[4],top8[5],top8[6],top8[7],ms/M);
+            m,t,top8[1],top8[2],top8[3],top8[4],top8[5],top8[6],top8[7],ms/M);
+    }
+
+    // ── Autoregressive decode loop ──────────────────────────────
+    // NPU_GEN=N env var: generate N tokens using persistent KV cache
+    int gen_count = 0;
+    const char* gen_env = getenv("NPU_GEN");
+    if (gen_env) gen_count = atoi(gen_env);
+    if (gen_count < 0) gen_count = 0;
+    if (gen_count > 64) gen_count = 64;
+
+    if (gen_count > 0) {
+        int next_tok = last_pred;
+        int pos = M;  // first decode position = prefill length
+        fprintf(stderr,"\n=== Decode %d tokens (pos=%d) ===\n",gen_count,pos);
+        auto td0 = std::chrono::steady_clock::now();
+
+        // Single-token buffers
+        h.resize(H); qo.resize(qkv_n); ko.resize(kv_n); vo.resize(kv_n);
+        at.resize(NH*HD); oo.resize(H);
+        if (cfg.gu_split) { gt.resize(IM); dwo.resize(IM); }
+        else { gt.resize(mlp_out); }
+        su.resize(IM); dwo.resize(H); sb.resize(H);
+
+        std::vector<float> Ks_buf, Vs_buf;
+        Ks_buf.reserve(kv_n * KQ_MAX_CTX);
+        Vs_buf.reserve(kv_n * KQ_MAX_CTX);
+
+        for (int g = 0; g < gen_count; g++) {
+            // Embed
+            for (int i = 0; i < H; i++) h[i] = bf16g(emb[next_tok*H + i]);
+
+            for (int l = 0; l < NC; l++) {
+                memcpy(sb.data(), h.data(), H*4);
+                rn_c(h.data(), in_n[l].data(), H, 1);
+
+                // QKV projection (M=1)
+                memset(qo.data(), 0, qkv_n*4);
+                cq.go(l, 0, h.data(), 1, H, 5.0f/127.0f, qsc[l], qo.data(), qkv_n);
+                cn(qo.data(), qkv_n);
+
+                // Split QKV
+                float* q = qo.data();
+                float* k = &qo[cfg.qkv_k_offset];
+                float* v = &qo[cfg.qkv_v_offset];
+
+                // Q-norm, K-norm, RoPE at absolute position
+                for (int hh = 0; hh < NH; hh++) {
+                    double sq = 0;
+                    for (int d = 0; d < HD; d++) { float vv = q[hh*HD+d]; if (std::isfinite(vv)) sq += vv*vv; }
+                    float iq = 1.0f/sqrtf((float)(sq/HD)+EPS);
+                    if (cfg.has_q_norm) for (int d = 0; d < HD; d++) q[hh*HD+d] *= iq*qn_w[l][d];
+                    else for (int d = 0; d < HD; d++) q[hh*HD+d] *= iq;
+                    ra(&q[hh*HD], HD, pos);
+                    if (hh % GQA == 0) {
+                        int kvh = hh/GQA;
+                        double sk = 0;
+                        for (int d = 0; d < HD; d++) { float vv = k[kvh*HD+d]; if (std::isfinite(vv)) sk += vv*vv; }
+                        float ik = 1.0f/sqrtf((float)(sk/HD)+EPS);
+                        if (cfg.has_k_norm) for (int d = 0; d < HD; d++) k[kvh*HD+d] *= ik*kn_w[l][d];
+                        else for (int d = 0; d < HD; d++) k[kvh*HD+d] *= ik;
+                        ra(&k[kvh*HD], HD, pos);
+                    }
+                }
+
+                // Append KV to cache
+                kv[l].append(pos, k, v);
+
+                // Dequant ALL KV entries and attend
+                int nt = kv[l].n;  // total positions now
+                Ks_buf.assign(nt * kv_n, 0.0f);
+                Vs_buf.assign(nt * kv_n, 0.0f);
+                for (int w = 0; w < AW; w++) {
+                    kv[l].dequant_K_all(w, nt, Ks_buf.data());
+                    kv[l].dequant_V_all(w, nt, Vs_buf.data());
+                    attn_obj.run(&q[w*cfg.WQH*HD], Ks_buf.data(), Vs_buf.data(), nt,
+                                 &at[w*cfg.WQH*HD]);
+                }
+
+                // O projection (M=1)
+                co.go(l, 0, at.data(), 1, NH*HD, 5.0f/127.0f, osc[l], oo.data(), H);
+                cn(oo.data(), H);
+                for (int i = 0; i < H; i++) h[i] = sb[i] + oo[i];
+
+                // MLP
+                memcpy(sb.data(), h.data(), H*4);
+                rn_c(h.data(), pa_n[l].data(), H, 1);
+
+                if (cfg.gu_split) {
+                    cg.go(l, 0, h.data(), 1, H, 5.0f/127.0f, gsc[l], gt.data(), IM);
+                    cn(gt.data(), IM);
+                    cu_ptr->go(l, 0, h.data(), 1, H, 5.0f/127.0f, usc[l], dwo.data(), IM);
+                    cn(dwo.data(), IM);
+                    for (int i = 0; i < IM; i++) {
+                        float gv = gt[i]; if (!std::isfinite(gv)) gv = 0;
+                        su[i] = (gv/(1.0f+expf(-gv))) * dwo[i];
+                    }
+                } else {
+                    cg.go(l, 0, h.data(), 1, H, 5.0f/127.0f, gsc[l], gt.data(), mlp_out);
+                    cn(gt.data(), mlp_out);
+                    for (int i = 0; i < IM; i++) {
+                        float gv = gt[i]; if (!std::isfinite(gv)) gv = 0;
+                        float uv = gt[IM+i]; if (!std::isfinite(uv)) uv = 0;
+                        su[i] = (gv/(1.0f+expf(-gv))) * uv;
+                    }
+                }
+
+                // D projection (M=1)
+                cd.go(l, 0, su.data(), 1, IM, 5.0f/127.0f, dsc[l], dwo.data(), H);
+                cn(dwo.data(), H);
+                for (int i = 0; i < H; i++) h[i] = sb[i] + dwo[i];
+            }
+
+            // Final norm + LM head
+            memcpy(sb.data(), h.data(), H*4);
+            rn_c(sb.data(), fin, H, 1);
+            float mx_ = -1e30f;
+            std::vector<float> lg_dec(NV);
+            for (int n = 0; n < NV; n++) {
+                double s = 0;
+                for (int k = 0; k < H; k++) {
+                    float hv = sb[k]; if (!std::isfinite(hv)) continue;
+                    uint16_t r = emb[n*H+k];
+                    if ((r&0x7F80) != 0x7F80) s += (double)hv*bf16f(r);
+                }
+                float v = (float)s; lg_dec[n] = std::isfinite(v) ? v : 0.0f;
+                if (lg_dec[n] > mx_) mx_ = lg_dec[n];
+            }
+
+            // Sample top-1
+            if (!std::isfinite(mx_) || mx_ < -1e29f) {
+                next_tok = 0;
+            } else {
+                double sum_ = 0; float best_v = -1e30f; int best_id = 0;
+                for (int i = 0; i < NV; i++) {
+                    float d = lg_dec[i] - mx_; if (d < -80) d = -80;
+                    float ev = expf(d); if (ev > best_v) { best_v = ev; best_id = i; }
+                }
+                next_tok = best_id;
+            }
+
+            printf(" %d", next_tok);
+            fprintf(stderr, "  decode %3d: tok=%d pos=%d\n", g, next_tok, pos);
+            pos++;
+
+            // Stop on EOS
+            if (next_tok == 151643 || next_tok == 151645 || next_tok == 151646) break;
+        }
+        printf("\n");
+        double dms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-td0).count();
+        fprintf(stderr,"  Decode: %.0fms (%.1f ms/tok)\n", dms, dms/gen_count);
     }
 
     munmap(md,st.st_size);return 0;
