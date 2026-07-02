@@ -1,8 +1,9 @@
-// NPU Engine — Multi-Token (M=256) INT8 Decode via 2×M=128 passes
-// Processes 256 tokens using 2 passes of the M=128 xclbins.
+// NPU Engine — Model-Agnostic Multi-Token INT8 Decode
 //
-// The 8-column NPU has 64KB mem_tile SRAM which maxes out at M=128.
-// M=256 is emulated as 2 consecutive M=128 GEMM calls per layer.
+// Loads model dimensions dynamically from Q4NX JSON header.
+// Selects tagged xclbins by model name from build/int8/.
+// Handles GU split/combined, q_norm/k_norm presence,
+// file-based RoPE, separate vs tied lm_head.
 //
 // Build:
 //   c++ -std=gnu++17 -O3 -mavx2 -mfma -mavx512f -ffast-math -march=native
@@ -27,13 +28,13 @@
 #include <xrt/xrt_kernel.h>
 #include <immintrin.h>
 #include "kv_quant.h"
+#include "model_config.h"
 
-extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
+extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 
-static constexpr int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2,AW=4,WQH=NH/AW,WKVH=NKV/AW;
-static constexpr float EPS=1e-6f; static constexpr int XM=128;
+static constexpr float EPS=1e-6f;
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline void rn_c(float*x,const float*w,int n,int M){
     for(int m=0;m<M;m++){
@@ -42,6 +43,8 @@ static inline void rn_c(float*x,const float*w,int n,int M){
         for(int i=0;i<n;i++){float v=x[m*n+i];x[m*n+i]=std::isfinite(v)?v*ir*w[i]:0.0f;}
     }
 }
+
+// RoPE tables (theta-based), sized dynamically
 static std::vector<float>rc,rs;
 static void ri(int hd,float th,int mp){rc.resize(mp*hd);rs.resize(mp*hd);
     for(int p=0;p<mp;p++)for(int d=0;d<hd;d+=2){
@@ -51,14 +54,9 @@ static void ri(int hd,float th,int mp){rc.resize(mp*hd);rs.resize(mp*hd);
 static inline void ra(float*x,int hd,int p){for(int d=0;d<hd;d+=2){
     float a=x[d],b=x[d+1],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+1]=b*c+a*s;}}
 
-static uint64_t jo(const char*js,size_t jl,const char*nm){
-    size_t nl=strlen(nm);const char*p=js,*e=js+jl;
-    while(p<e){auto q=(const char*)memmem(p,e-p,nm,nl);if(!q)return 0;
-        if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){auto o=strstr(q,"\"data_offsets\"");
-            if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
-
+// NPU GEMM context — one per xclbin type
 struct I8Ctx{
-    int MD,KD,ND;
+    int MD,KD,ND,NL;
     std::unique_ptr<xrt::xclbin>xc;
     std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;
@@ -67,7 +65,8 @@ struct I8Ctx{
     std::vector<std::unique_ptr<xrt::bo>>layerB;
     int8_t*Am;int16_t*Cm;
     
-    bool init(xrt::device&d,const char*xp,const char*ip,int gid_B){
+    bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers){
+        NL=nlayers;
         FILE*f=fopen(ip,"rb");if(!f)return false;
         fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
         ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
@@ -81,7 +80,7 @@ struct I8Ctx{
         bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));
         bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
-        for(int l=0;l<NC;l++)
+        for(int l=0;l<NL;l++)
             layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
         return true;
     }
@@ -96,7 +95,6 @@ struct I8Ctx{
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     
-    // Run M=128 pass (sub-block of M)
     inline void go(int l,int pass_m,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
         float ais=1.0f/ascale;
         memset(Am,0,(size_t)MD*KD);
@@ -118,205 +116,340 @@ struct I8Ctx{
     }
 };
 
-// Attention for tokens at window offset
-struct AttnCPU{static void run(const float*Q,const float*Kd,const float*Vd,int nt,float*out){
-    for(int h=0;h<WQH;h++){
-        float sc[4096];float mx=-1e30f;
-        for(int t=0;t<nt;t++){
-            __m512 sum=_mm512_setzero_ps();
-            const float*Kt=Kd+t*HD;
-            for(int d=0;d<HD;d+=16){
-                __m512 qv=_mm512_loadu_ps(Q+h*HD+d);
-                __m512 kv=_mm512_loadu_ps(Kt+d);
-                sum=_mm512_fmadd_ps(qv,kv,sum);}
-            float s=_mm512_reduce_add_ps(sum)*(1.0f/sqrtf((float)HD));
-            sc[t]=s;if(s>mx)mx=s;}
-        double ssum=0;for(int t=0;t<nt;t++){sc[t]=expf(sc[t]-mx);ssum+=sc[t];}
-        if(ssum<=0)ssum=1;float is=1.0f/(float)ssum;
-        __m512 ov[8];for(int i=0;i<8;i++)ov[i]=_mm512_setzero_ps();
-        for(int t=0;t<nt;t++){
-            __m512 sv=_mm512_set1_ps(sc[t]*is);
-            const float*Vt=Vd+t*HD;
-            for(int i=0;i<8;i++)ov[i]=_mm512_fmadd_ps(sv,_mm512_loadu_ps(Vt+i*16),ov[i]);}
-        for(int i=0;i<8;i++)_mm512_storeu_ps(out+h*HD+i*16,ov[i]);}}};
+// SIMD attention — parameterized head dim and counts
+struct AttnCPU{
+    int WQH, HD;
+    AttnCPU(int wqh, int hd): WQH(wqh), HD(hd) {}
+    void run(const float*Q,const float*Kd,const float*Vd,int nt,float*out) const {
+        for(int h=0;h<WQH;h++){
+            float sc_[4096];
+            float* sc = sc_;
+            float mx=-1e30f;
+            for(int t=0;t<nt;t++){
+                __m512 sum=_mm512_setzero_ps();
+                const float*Kt=Kd+t*HD;
+                for(int d=0;d<HD;d+=16){
+                    __m512 qv=_mm512_loadu_ps(Q+h*HD+d);
+                    __m512 kv=_mm512_loadu_ps(Kt+d);
+                    sum=_mm512_fmadd_ps(qv,kv,sum);}
+                float s=_mm512_reduce_add_ps(sum)*(1.0f/sqrtf((float)HD));
+                sc[t]=s;if(s>mx)mx=s;}
+            double ssum=0;for(int t=0;t<nt;t++){sc[t]=expf(sc[t]-mx);ssum+=sc[t];}
+            if(ssum<=0)ssum=1;float is=1.0f/(float)ssum;
+            __m512 ov[8];for(int i=0;i<8;i++)ov[i]=_mm512_setzero_ps();
+            for(int t=0;t<nt;t++){
+                __m512 sv=_mm512_set1_ps(sc[t]*is);
+                const float*Vt=Vd+t*HD;
+                for(int i=0;i<8;i++)ov[i]=_mm512_fmadd_ps(sv,_mm512_loadu_ps(Vt+i*16),ov[i]);}
+            for(int i=0;i<8;i++)_mm512_storeu_ps(out+h*HD+i*16,ov[i]);}}};
 
-// KV is now KVQuant (see kv_quant.h) — provides INT4 quantized storage
+// Load an I8 weight block and dequantize it
+static float* dequant_weight(const uint8_t* data, int i8_rows, int in_feat,
+                              int* out_rows, int* out_cols) {
+    return dequant_i8_to_float_ex(data, i8_rows, in_feat, out_rows, out_cols);
+}
 
 int main(int argc,char**argv){
     if(argc<3){fprintf(stderr,"Usage: %s model.q4nx TOKEN1 [TOKEN2 ...]\n",argv[0]);return 1;}
     const char*mp=argv[1];
     int M=argc-2;
     if(M>256){fprintf(stderr,"Max 256 tokens, got %d\n",M);return 1;}
+    
+    // Derive model tag from path
+    std::string mp_s(mp);
+    std::string model_tag;
+    auto last_slash = mp_s.rfind('/');
+    auto second_last = mp_s.rfind('/', last_slash - 1);
+    if (second_last != std::string::npos && last_slash != std::string::npos)
+        model_tag = mp_s.substr(second_last + 1, last_slash - second_last - 1);
+    else if (last_slash != std::string::npos)
+        model_tag = mp_s.substr(last_slash + 1);
+    else
+        model_tag = mp_s;
+    for (auto& c : model_tag){
+        c = (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
+        if (c == '-' || c == '.') c = '_';}
+    const char* sfxs[] = {"_npu2","_instruct","_it","_it_npu2"};
+    for (auto sfx : sfxs){
+        size_t sl = strlen(sfx);
+        if (model_tag.size() > sl && model_tag.substr(model_tag.size()-sl) == sfx)
+            model_tag = model_tag.substr(0, model_tag.size()-sl);}
+    
+    // Parse model config from Q4NX header
+    fprintf(stderr,"Parsing model config from %s (tag=%s)...\n",mp,model_tag.c_str());
+    ModelConfig cfg = parse_q4nx_header(mp, model_tag.c_str());
+    if(!cfg.valid()){
+        fprintf(stderr,"ERROR: Failed to parse model config\n");
+        fprintf(stderr,"  H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",
+                cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);
+        return 1;}
+    fprintf(stderr,"  Model: H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",
+            cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);
+    fprintf(stderr,"  Features: qn=%d kn=%d rf=%d lm=%d gs=%d\n",
+            cfg.has_q_norm,cfg.has_k_norm,cfg.has_rope_freqs_file,cfg.has_lm_head,cfg.gu_split);
+    
+    int H=cfg.H, NC=cfg.NC, NH=cfg.NH, NKV=cfg.NKV, HD=cfg.HD;
+    int IM=cfg.IM, NV=cfg.NV, GQA=cfg.GQA, AW=cfg.AW, XM=cfg.XM;
+    
     std::vector<int>input_tokens(M);
     for(int i=0;i<M;i++)input_tokens[i]=atoi(argv[2+i]);
-
+    
+    // Re-open file for mmap (parse_q4nx_header unmapped it)
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
     uint8_t*md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
     uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
-    auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
+    auto i8p=[&](uint64_t o){return md+df+o;};
+    auto emb=(const uint16_t*)(md+df);
     const char*js=(const char*)(md+8);size_t jl=hsz;
 
-    struct LO{uint64_t qp,kp,vp,op,gp,up,dp,in_off,pa_off,qn_off,kn_off;}lo[NC];char b[128];
-    for(int l=0;l<NC;l++){
-        snprintf(b,128,"model.layers.%d.self_attn.q_proj.weight",l);lo[l].qp=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.self_attn.k_proj.weight",l);lo[l].kp=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.self_attn.v_proj.weight",l);lo[l].vp=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.self_attn.o_proj.weight",l);lo[l].op=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.mlp.gate_proj.weight",l);lo[l].gp=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.mlp.up_proj.weight",l);lo[l].up=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.mlp.down_proj.weight",l);lo[l].dp=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.input_layernorm.weight",l);lo[l].in_off=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.post_attention_layernorm.weight",l);lo[l].pa_off=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.self_attn.q_norm.weight",l);lo[l].qn_off=jo(js,jl,b);
-        snprintf(b,128,"model.layers.%d.self_attn.k_norm.weight",l);lo[l].kn_off=jo(js,jl,b);}
-    uint64_t no=jo(js,jl,"model.norm.weight"),lo_off=jo(js,jl,"lm_head.weight");
-    float in_n[NC][H],pa_n[NC][H],fin[H],qn_w[NC][HD],kn_w[NC][HD];
-    for(int l=0;l<NC;l++){
-        auto iw=(const uint16_t*)(md+df+lo[l].in_off),pw_=(const uint16_t*)(md+df+lo[l].pa_off);
-        auto qw=(const uint16_t*)(md+df+lo[l].qn_off),kw=(const uint16_t*)(md+df+lo[l].kn_off);
-        for(int i=0;i<H;i++){in_n[l][i]=bf16g(iw[i]);pa_n[l][i]=bf16g(pw_[i]);}
-        for(int i=0;i<HD;i++){qn_w[l][i]=bf16g(qw[i]);kn_w[l][i]=bf16g(kw[i]);}}
-    {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin[i]=bf16g(fw[i]);}
+    auto jo=[&](const char*nm)->uint64_t{
+        size_t nl=strlen(nm);const char*p=js,*e=js+jl;
+        while(p<e){auto q=(const char*)memmem(p,e-p,nm,nl);if(!q)return 0;
+            if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){auto o=strstr(q,"\"data_offsets\"");
+                if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;};
 
-    fprintf(stderr,"Init 4 contexts (M=%d, XM=%d)...\n",M,XM);
+    std::vector<uint64_t> qp(NC),kp(NC),vp(NC),op(NC),gp(NC),up(NC),dp(NC);
+    std::vector<uint64_t> in_off(NC),pa_off(NC),qn_off(NC),kn_off(NC);
+    char bn[128];
+    for(int l=0;l<NC;l++){
+        snprintf(bn,128,"model.layers.%d.self_attn.q_proj.weight",l); qp[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.self_attn.k_proj.weight",l); kp[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.self_attn.v_proj.weight",l); vp[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.self_attn.o_proj.weight",l); op[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.mlp.gate_proj.weight",l);   gp[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.mlp.up_proj.weight",l);     up[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.mlp.down_proj.weight",l);   dp[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.input_layernorm.weight",l);          in_off[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.post_attention_layernorm.weight",l); pa_off[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.self_attn.q_norm.weight",l);         qn_off[l]=jo(bn);
+        snprintf(bn,128,"model.layers.%d.self_attn.k_norm.weight",l);         kn_off[l]=jo(bn);}
+    uint64_t no=jo("model.norm.weight");
+    
+    // Load norm weights
+    std::vector<std::vector<float>> in_n(NC,std::vector<float>(H));
+    std::vector<std::vector<float>> pa_n(NC,std::vector<float>(H));
+    std::vector<float> fin_v(H); float* fin = fin_v.data();
+    std::vector<std::vector<float>> qn_w(NC,std::vector<float>(HD));
+    std::vector<std::vector<float>> kn_w(NC,std::vector<float>(HD));
+    
+    for(int l=0;l<NC;l++){
+        auto iw=(const uint16_t*)(md+df+in_off[l]),pw=(const uint16_t*)(md+df+pa_off[l]);
+        for(int i=0;i<H;i++){in_n[l][i]=bf16g(iw[i]);pa_n[l][i]=bf16g(pw[i]);}
+        if(cfg.has_q_norm&&qn_off[l]){auto qq=(const uint16_t*)(md+df+qn_off[l]);
+            for(int i=0;i<HD;i++) qn_w[l][i]=bf16g(qq[i]);}
+        if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);
+            for(int i=0;i<HD;i++) kn_w[l][i]=bf16g(kk[i]);}}
+    {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
+
+    // Load rope_freqs if file-based
+    std::vector<float> rope_freqs;
+    if(cfg.has_rope_freqs_file){
+        int rf_rows=0; find_tensor_info(js,jl,"rope_freqs.weight",&rf_rows);
+        if(rf_rows>0){rope_freqs.resize(rf_rows);
+            auto rf=(const uint16_t*)(md+df+jo("rope_freqs.weight"));
+            for(int i=0;i<rf_rows;i++)rope_freqs[i]=bf16g(rf[i]);
+            fprintf(stderr,"  rope_freqs[%zu]\n",rope_freqs.size());}}
+
+    // Determine I8 weight tile rows
+    auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);return r;};
+    int q_i8=gi8("model.layers.0.self_attn.q_proj.weight");
+    int k_i8=gi8("model.layers.0.self_attn.k_proj.weight");
+    int v_i8=gi8("model.layers.0.self_attn.v_proj.weight");
+    int o_i8=gi8("model.layers.0.self_attn.o_proj.weight");
+    int g_i8=gi8("model.layers.0.mlp.gate_proj.weight");
+    int u_i8=gi8("model.layers.0.mlp.up_proj.weight");
+    int d_i8=gi8("model.layers.0.mlp.down_proj.weight");
+
+    fprintf(stderr,"Init NPU contexts (M=%d,XM=%d)...\n",M,XM);
     xrt::device dev(0);
+    std::string xd="/home/bcloud/npu-sandbox/npu-infer/build/int8";
+    
     I8Ctx cq,co,cg,cd;
-    cq.MD=XM;cq.KD=H;cq.ND=4096;
-    co.MD=XM;co.KD=NH*HD;co.ND=H;
-    cg.MD=XM;cg.KD=H;cg.ND=6144;
-    cd.MD=XM;cd.KD=IM;cd.ND=H;
-#define D "/home/bcloud/npu-sandbox/npu-infer/build/int8"
-    if(!cq.init(dev,D"/final_i8_QKV_v.xclbin",D"/insts_i8_QKV_v.txt",4)){fprintf(stderr,"FAIL QKV\n");return 1;}
-    if(!co.init(dev,D"/final_i8_O_v.xclbin",  D"/insts_i8_O_v.txt",  4)){fprintf(stderr,"FAIL O\n");return 1;}
-    if(!cg.init(dev,D"/final_i8_GU_v.xclbin", D"/insts_i8_GU_v.txt", 4)){fprintf(stderr,"FAIL GU\n");return 1;}
-    if(!cd.init(dev,D"/final_i8_D_v.xclbin",  D"/insts_i8_D_v.txt",  4)){fprintf(stderr,"FAIL D\n");return 1;}
-#undef D
+    cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
+    co.MD=XM;co.KD=cfg.xclbin_o_k;  co.ND=cfg.xclbin_o_n;
+    cd.MD=XM;cd.KD=cfg.xclbin_d_k;  cd.ND=cfg.xclbin_d_n;
+    if(cfg.gu_split){cg.MD=XM;cg.KD=cfg.xclbin_g_k;cg.ND=cfg.xclbin_g_n;}
+    else{cg.MD=XM;cg.KD=cfg.xclbin_gu_k;cg.ND=cfg.xclbin_gu_n;}
+    
+    auto xp=[&](const char*t){return xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";};
+    auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
+    
+    if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC)){fprintf(stderr,"FAIL QKV\n");return 1;}
+    if(!co.init(dev,xp("O").c_str(),  ip("O").c_str(),  4,NC)){fprintf(stderr,"FAIL O\n");return 1;}
+    if(cfg.gu_split){
+        if(!cg.init(dev,xp("G").c_str(), ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}
+    } else {
+        if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}
+    }
+    if(!cd.init(dev,xp("D").c_str(),  ip("D").c_str(),  4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
+    
+    // 5th context for U if GU split
+    std::unique_ptr<I8Ctx> cu_ptr;
+    if(cfg.gu_split){
+        cu_ptr=std::make_unique<I8Ctx>();
+        cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;
+        if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}
+    }
 
     fprintf(stderr,"Dequant+pack %d layers...\n",NC);
     auto tp=std::chrono::steady_clock::now();
-    struct WS{float qk,o_,g_,d_;}wsc[NC];
+    
+    std::vector<float> qsc(NC),osc(NC),gsc(NC),dsc(NC),usc(NC);
     for(int l=0;l<NC;l++){
         int qr,kr,vr,or_,gr,ur,dr,unused;
-        float*qw=dequant_i8_to_float(i8p(lo[l].qp),256,&qr,&unused);
-        float*kw=dequant_i8_to_float(i8p(lo[l].kp),128,&kr,&unused);
-        float*vw=dequant_i8_to_float(i8p(lo[l].vp),128,&vr,&unused);
+        float*qw=dequant_weight(i8p(qp[l]),q_i8,H,&qr,&unused);
+        float*kw=dequant_weight(i8p(kp[l]),k_i8,H,&kr,&unused);
+        float*vw=dequant_weight(i8p(vp[l]),v_i8,H,&vr,&unused);
         int t=qr+kr+vr;std::vector<float>w((size_t)H*t);
         for(int k=0;k<H;k++){memcpy(&w[k*t],&qw[k*qr],qr*4);
             memcpy(&w[k*t+qr],&kw[k*kr],kr*4);
             memcpy(&w[k*t+qr+kr],&vw[k*vr],vr*4);}
-        cq.packB(l,w.data(),H,t,wsc[l].qk);free(qw);free(kw);free(vw);
-        float*ow=dequant_i8_to_float(i8p(lo[l].op),256,&or_,&unused);co.packB(l,ow,or_,H,wsc[l].o_);free(ow);
-        float*gw=dequant_i8_to_float(i8p(lo[l].gp),384,&gr,&unused);
-        float*uw=dequant_i8_to_float(i8p(lo[l].up),384,&ur,&unused);
-        int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
-        for(int k=0;k<H;k++){memcpy(&w2[k*t2],&gw[k*gr],gr*4);memcpy(&w2[k*t2+gr],&uw[k*ur],ur*4);}
-        cg.packB(l,w2.data(),H,t2,wsc[l].g_);free(gw);free(uw);
-        float*dw=dequant_i8_to_float(i8p(lo[l].dp),384,&dr,&unused);cd.packB(l,dw,dr,H,wsc[l].d_);free(dw);
+        cq.packB(l,w.data(),H,t,qsc[l]);free(qw);free(kw);free(vw);
+        
+        float*ow=dequant_weight(i8p(op[l]),o_i8,NH*HD,&or_,&unused);
+        co.packB(l,ow,or_,H,osc[l]);free(ow);
+        
+        float*gw=dequant_weight(i8p(gp[l]),g_i8,H,&gr,&unused);
+        if(cfg.gu_split){
+            float*uw=dequant_weight(i8p(up[l]),u_i8,H,&ur,&unused);
+            cg.packB(l,gw,H,gr,gsc[l]);cu_ptr->packB(l,uw,H,ur,usc[l]);free(uw);
+        } else {
+            float*uw=dequant_weight(i8p(up[l]),u_i8,H,&ur,&unused);
+            int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
+            for(int k=0;k<H;k++){memcpy(&w2[k*t2],&gw[k*gr],gr*4);memcpy(&w2[k*t2+gr],&uw[k*ur],ur*4);}
+            cg.packB(l,w2.data(),H,t2,gsc[l]);free(uw);
+        }
+        free(gw);
+        
+        float*dw=dequant_weight(i8p(dp[l]),d_i8,IM,&dr,&unused);
+        cd.packB(l,dw,dr,H,dsc[l]);free(dw);
     }
     fprintf(stderr,"  %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
 
-    ri(HD,1000000.0f,M+128);
-    std::vector<KVQuant>kv(NC);
-    std::vector<float>h((size_t)M*H);
-    std::vector<float>qo((size_t)M*4096),ko((size_t)M*1024),vo((size_t)M*1024);
-    std::vector<float>at((size_t)M*NH*HD),oo((size_t)M*H);
-    std::vector<float>gt((size_t)M*6144),su((size_t)M*IM),dwo((size_t)M*H);
-    std::vector<float>sb((size_t)M*H),sc_(H);
-
+    // Initialize RoPE
+    if(cfg.has_rope_freqs_file&&!rope_freqs.empty()){
+        rc.resize((M+128)*HD);rs.resize((M+128)*HD);
+        for(int p=0;p<M+128;p++) for(int d=0;d<HD;d+=2){
+            int fi=(d/2)%(int)rope_freqs.size();float a=p*rope_freqs[fi];
+            rc[p*HD+d]=cosf(a);rs[p*HD+d]=sinf(a);
+            rc[p*HD+d+1]=cosf(a);rs[p*HD+d+1]=sinf(a);}
+    } else ri(HD,cfg.rope_theta,M+128);
+    
+    // KV quantized caches
+    std::vector<KVQuant> kv(NC);
+    
+    // Dynamic buffers
+    std::vector<float> h((size_t)M*H);
+    int qkv_n=cfg.qkv_total,kv_n=NKV*HD;
+    std::vector<float> qo((size_t)M*qkv_n),ko((size_t)M*kv_n),vo((size_t)M*kv_n);
+    std::vector<float> at((size_t)M*NH*HD),oo((size_t)M*H);
+    int mlp_out=cfg.gu_split?IM:(2*IM);
+    std::vector<float> gt((size_t)M*mlp_out),su((size_t)M*IM);
+    std::vector<float> dwo((size_t)M*H),sb((size_t)M*H);
+    
     // Embed input tokens
-    for(int m=0;m<M;m++)
-        for(int i=0;i<H;i++)h[m*H+i]=bf16g(emb[input_tokens[m]*H+i]);
+    for(int m=0;m<M;m++) for(int i=0;i<H;i++) h[m*H+i]=bf16g(emb[input_tokens[m]*H+i]);
 
     fprintf(stderr,"Inference %d tokens x %d layers...\n",M,NC);
     auto ts=std::chrono::steady_clock::now();
+    AttnCPU attn_obj(cfg.WQH,HD);
+    int tok_nelems=NKV*HD;
 
     for(int l=0;l<NC;l++){
         memcpy(sb.data(),h.data(),M*H*4);
-        rn_c(h.data(),in_n[l],H,M);
+        rn_c(h.data(),in_n[l].data(),H,M);
         
-        // QKV projection in 2×M=128 passes
-        memcpy(qo.data(),h.data(),M*4096*4);
+        // QKV projection
+        memset(qo.data(),0,M*qkv_n*4);
         for(int pass=0;pass<M;pass+=XM){
             int bm=M-pass;if(bm>XM)bm=XM;
-            cq.go(l,pass,&h[pass*H],bm,H,5.0f/127.0f,wsc[l].qk,qo.data(),4096);
-        }
-        for(int m=0;m<M;m++)cn(&qo[m*4096],4096);
+            cq.go(l,pass,&h[pass*H],bm,H,5.0f/127.0f,qsc[l],qo.data(),qkv_n);}
+        for(int m=0;m<M;m++)cn(&qo[m*qkv_n],qkv_n);
         
-        // Split Q(2048), K(1024), V(1024)
+        // Split Q, K, V
         for(int m=0;m<M;m++){
-            memcpy(&ko[m*1024],&qo[m*4096+2048],4096);
-            memcpy(&vo[m*1024],&qo[m*4096+3072],4096);
-        }
+            memcpy(&ko[m*kv_n],&qo[m*qkv_n+cfg.qkv_k_offset],kv_n*4);
+            memcpy(&vo[m*kv_n],&qo[m*qkv_n+cfg.qkv_v_offset],kv_n*4);}
         
-        // Q-norm, K-norm, RoPE per head per token
-        // Collect K/V into per-token buffers, then batch-quantize
-        std::vector<float> tok_K(M*1024), tok_V(M*1024);
+        // Q-norm, K-norm, RoPE
+        std::vector<float> tok_K(M*tok_nelems),tok_V(M*tok_nelems);
         for(int m=0;m<M;m++){
-            float*q=&qo[m*4096],*k=&ko[m*1024],*v=&vo[m*1024];
+            float*q=&qo[m*qkv_n],*k=&ko[m*kv_n],*v=&vo[m*kv_n];
             for(int hh=0;hh<NH;hh++){
-                double sq=0;for(int d=0;d<HD;d++)sq+=q[hh*HD+d]*q[hh*HD+d];
+                double sq=0;for(int d=0;d<HD;d++){float vv=q[hh*HD+d];if(std::isfinite(vv))sq+=vv*vv;}
                 float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
-                for(int d=0;d<HD;d++)q[hh*HD+d]*=iq*qn_w[l][d];
+                if(cfg.has_q_norm){for(int d=0;d<HD;d++)q[hh*HD+d]*=iq*qn_w[l][d];}
+                else for(int d=0;d<HD;d++)q[hh*HD+d]*=iq;
                 ra(&q[hh*HD],HD,m);
                 if(hh%GQA==0){
                     int kvh=hh/GQA;
-                    double sk=0;for(int d=0;d<HD;d++)sk+=k[kvh*HD+d]*k[kvh*HD+d];
+                    double sk=0;for(int d=0;d<HD;d++){float vv=k[kvh*HD+d];if(std::isfinite(vv))sk+=vv*vv;}
                     float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                    for(int d=0;d<HD;d++)k[kvh*HD+d]*=ik*kn_w[l][d];
+                    if(cfg.has_k_norm){for(int d=0;d<HD;d++)k[kvh*HD+d]*=ik*kn_w[l][d];}
+                    else for(int d=0;d<HD;d++)k[kvh*HD+d]*=ik;
                     ra(&k[kvh*HD],HD,m);
-                    // Collect into per-token buffer for batch quantization
-                    memcpy(&tok_K[m*1024+kvh*HD],&k[kvh*HD],HD*4);
-                    memcpy(&tok_V[m*1024+kvh*HD],&v[kvh*HD],HD*4);
-                }
-            }
-        }
-        // Batch-quantize all M tokens' K and V
-        for(int m=0;m<M;m++)
-            kv[l].append(m, &tok_K[m*1024], &tok_V[m*1024]);
+                    memcpy(&tok_K[m*tok_nelems+kvh*HD],&k[kvh*HD],HD*4);
+                    memcpy(&tok_V[m*tok_nelems+kvh*HD],&v[kvh*HD],HD*4);}}}
+        // Batch-quantize K/V
+        for(int m=0;m<M;m++) kv[l].append(m,&tok_K[m*tok_nelems],&tok_V[m*tok_nelems]);
         
-        // Attention: SIMD on dequantized KV
-        static std::vector<float> Ks(4096*128), Vs(4096*128);
+        // SIMD attention
+        std::vector<float> Ks(kv_n*M),Vs(kv_n*M);
         for(int w=0;w<AW;w++){
             kv[l].dequant_K_all(w,M,Ks.data());
             kv[l].dequant_V_all(w,M,Vs.data());
-            for(int m=0;m<M;m++){
-                float*q=&qo[m*4096];float*o=&at[m*NH*HD];
-                AttnCPU::run(&q[w*WQH*HD],Ks.data(),Vs.data(),M,&o[w*WQH*HD]);
-            }
-        }
+            for(int m=0;m<M;m++) attn_obj.run(&qo[m*qkv_n+w*cfg.WQH*HD],
+                Ks.data(),Vs.data(),M,&at[m*NH*HD+w*cfg.WQH*HD]);}
         
-        // O projection in 2×M=128 passes
+        // O projection
         for(int pass=0;pass<M;pass+=XM){
             int bm=M-pass;if(bm>XM)bm=XM;
-            co.go(l,pass,&at[pass*NH*HD],bm,NH*HD,5.0f/127.0f,wsc[l].o_,oo.data(),H);
-        }
+            co.go(l,pass,&at[pass*NH*HD],bm,NH*HD,5.0f/127.0f,osc[l],oo.data(),H);}
         for(int m=0;m<M;m++){
-            cn(&oo[m*H],H);
-            for(int i=0;i<H;i++)h[m*H+i]=sb[m*H+i]+oo[m*H+i];
-        }
+            cn(&oo[m*H],H);for(int i=0;i<H;i++)h[m*H+i]=sb[m*H+i]+oo[m*H+i];}
         
         // MLP
         memcpy(sb.data(),h.data(),M*H*4);
-        rn_c(h.data(),pa_n[l],H,M);
+        rn_c(h.data(),pa_n[l].data(),H,M);
+        
+        if(cfg.gu_split){
+            // G separately
+            memset(gt.data(),0,M*IM*4);
+            for(int pass=0;pass<M;pass+=XM){
+                int bm=M-pass;if(bm>XM)bm=XM;
+                cg.go(l,pass,&h[pass*H],bm,H,5.0f/127.0f,gsc[l],gt.data(),IM);}
+            for(int m=0;m<M;m++)cn(&gt[m*IM],IM);
+            // U separately
+            memset(dwo.data(),0,M*IM*4);
+            for(int pass=0;pass<M;pass+=XM){
+                int bm=M-pass;if(bm>XM)bm=XM;
+                cu_ptr->go(l,pass,&h[pass*H],bm,H,5.0f/127.0f,usc[l],dwo.data(),IM);}
+            for(int m=0;m<M;m++)cn(&dwo[m*IM],IM);
+            // SiLU(G) * U
+            for(int m=0;m<M;m++){
+                float*g=&gt[m*IM],*u=&dwo[m*IM];
+                for(int i=0;i<IM;i++){float gv=g[i];if(!std::isfinite(gv))gv=0;
+                    su[m*IM+i]=(gv/(1.0f+expf(-gv)))*u[i];}}
+        } else {
+            // Combined GU
+            memset(gt.data(),0,M*mlp_out*4);
+            for(int pass=0;pass<M;pass+=XM){
+                int bm=M-pass;if(bm>XM)bm=XM;
+                cg.go(l,pass,&h[pass*H],bm,H,5.0f/127.0f,gsc[l],gt.data(),mlp_out);}
+            for(int m=0;m<M;m++){
+                cn(&gt[m*mlp_out],mlp_out);
+                for(int i=0;i<IM;i++){
+                    float gv=gt[m*mlp_out+i];if(!std::isfinite(gv))gv=0;
+                    float uv=gt[m*mlp_out+IM+i];if(!std::isfinite(uv))uv=0;
+                    su[m*IM+i]=(gv/(1.0f+expf(-gv)))*uv;}}
+        }
+        
+        // D projection
         for(int pass=0;pass<M;pass+=XM){
             int bm=M-pass;if(bm>XM)bm=XM;
-            cg.go(l,pass,&h[pass*H],bm,H,5.0f/127.0f,wsc[l].g_,gt.data(),6144);
-        }
+            cd.go(l,pass,&su[pass*IM],bm,IM,5.0f/127.0f,dsc[l],dwo.data(),H);}
         for(int m=0;m<M;m++){
-            cn(&gt[m*6144],6144);
-            for(int i=0;i<IM;i++){
-                float gv=gt[m*6144+i];if(!std::isfinite(gv))gv=0;
-                su[m*IM+i]=(gv/(1.0f+expf(-gv)))*gt[m*6144+IM+i];
-            }
-        }
-        for(int pass=0;pass<M;pass+=XM){
-            int bm=M-pass;if(bm>XM)bm=XM;
-            cd.go(l,pass,&su[pass*IM],bm,IM,5.0f/127.0f,wsc[l].d_,dwo.data(),H);
-        }
-        for(int m=0;m<M;m++){
-            cn(&dwo[m*H],H);
-            for(int i=0;i<H;i++)h[m*H+i]=sb[m*H+i]+dwo[m*H+i];
-        }
+            cn(&dwo[m*H],H);for(int i=0;i<H;i++)h[m*H+i]=sb[m*H+i]+dwo[m*H+i];}
     }
 
     // Final norm + LM head
