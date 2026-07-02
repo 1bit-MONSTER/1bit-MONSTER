@@ -1,0 +1,52 @@
+_entry_point _main_init
+_symbol core_7_2 _after _main_init
+_symbol _main_init 0
+_reserved DMb 0x00000 0x40000 // Don't put data in code memory
+_stack DM_stack 0x70000 0x400 // stack for core
+
+// mapping neighbors tile memory
+_reserved DMb 0x40000 0x10000  // No tile with memory exists to the south.
+// west -------------------------------------------------
+_reserved DMb 0x50000 0x10000  // Don't allocate variables in west neighbor
+
+_symbol CC6_buff_0 0x50400 8192
+_extern CC6_buff_0
+_reserved DMb 0x50400 8192
+
+_symbol BC6_cons_buff_0 0x52400 8192
+_extern BC6_cons_buff_0
+_reserved DMb 0x52400 8192
+
+_symbol AC6_cons_buff_0 0x54400 2048
+_extern AC6_cons_buff_0
+_reserved DMb 0x54400 2048
+
+_symbol _anonymous6 0x54C00 12
+_extern _anonymous6
+_reserved DMb 0x54C00 12
+
+// north -------------------------------------------------
+_reserved DMb 0x60000 0x10000  // Don't allocate variables in north neighbor
+
+// east -------------------------------------------------
+_symbol CC7_buff_0 0x70400 8192
+_extern CC7_buff_0
+_reserved DMb 0x70400 8192
+
+_symbol BC7_cons_buff_0 0x72400 8192
+_extern BC7_cons_buff_0
+_reserved DMb 0x72400 8192
+
+_symbol AC7_cons_buff_0 0x74400 2048
+_extern AC7_cons_buff_0
+_reserved DMb 0x74400 2048
+
+_symbol _anonymous7 0x74C00 12
+_extern _anonymous7
+_reserved DMb 0x74C00 12
+
+// end mapping neighbors tile memory
+
+_reserved DMb 0x80000 0x80000 // And everything else the core can't see
+_include _file mm_32x64x128.o
+_resolve _main core_7_2

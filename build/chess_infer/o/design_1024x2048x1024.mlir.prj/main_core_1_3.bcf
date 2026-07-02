@@ -1,0 +1,118 @@
+_entry_point _main_init
+_symbol core_1_3 _after _main_init
+_symbol _main_init 0
+_reserved DMb 0x00000 0x40000 // Don't put data in code memory
+_stack DM_stack 0x70000 0xD00 // stack for core
+
+// mapping neighbors tile memory
+// south -------------------------------------------------
+_reserved DMb 0x40000 0x10000  // Don't allocate variables in south neighbor
+
+_symbol C_L1L2_1_0_buff_0 0x40D00 32768
+_extern C_L1L2_1_0_buff_0
+_reserved DMb 0x40D00 32768
+
+_symbol B_L2L1_1_0_cons_buff_0 0x48D00 9216
+_extern B_L2L1_1_0_cons_buff_0
+_reserved DMb 0x48D00 9216
+
+_symbol B_L2L1_1_0_cons_buff_1 0x4B100 9216
+_extern B_L2L1_1_0_cons_buff_1
+_reserved DMb 0x4B100 9216
+
+_symbol A_L2L1_0_1_cons_buff_0 0x4D500 4096
+_extern A_L2L1_0_1_cons_buff_0
+_reserved DMb 0x4D500 4096
+
+_symbol A_L2L1_0_1_cons_buff_1 0x4E500 4096
+_extern A_L2L1_0_1_cons_buff_1
+_reserved DMb 0x4E500 4096
+
+_symbol _anonymous1 0x4F500 12
+_extern _anonymous1
+_reserved DMb 0x4F500 12
+
+// west -------------------------------------------------
+_reserved DMb 0x50000 0x10000  // Don't allocate variables in west neighbor
+
+_symbol C_L1L2_0_1_buff_0 0x50D00 32768
+_extern C_L1L2_0_1_buff_0
+_reserved DMb 0x50D00 32768
+
+_symbol B_L2L1_0_1_cons_buff_0 0x58D00 9216
+_extern B_L2L1_0_1_cons_buff_0
+_reserved DMb 0x58D00 9216
+
+_symbol B_L2L1_0_1_cons_buff_1 0x5B100 9216
+_extern B_L2L1_0_1_cons_buff_1
+_reserved DMb 0x5B100 9216
+
+_symbol A_L2L1_1_0_cons_buff_0 0x5D500 4096
+_extern A_L2L1_1_0_cons_buff_0
+_reserved DMb 0x5D500 4096
+
+_symbol A_L2L1_1_0_cons_buff_1 0x5E500 4096
+_extern A_L2L1_1_0_cons_buff_1
+_reserved DMb 0x5E500 4096
+
+_symbol _anonymous8 0x5F500 12
+_extern _anonymous8
+_reserved DMb 0x5F500 12
+
+// north -------------------------------------------------
+_reserved DMb 0x60000 0x10000  // Don't allocate variables in north neighbor
+
+_symbol C_L1L2_1_2_buff_0 0x60D00 32768
+_extern C_L1L2_1_2_buff_0
+_reserved DMb 0x60D00 32768
+
+_symbol B_L2L1_1_2_cons_buff_0 0x68D00 9216
+_extern B_L2L1_1_2_cons_buff_0
+_reserved DMb 0x68D00 9216
+
+_symbol B_L2L1_1_2_cons_buff_1 0x6B100 9216
+_extern B_L2L1_1_2_cons_buff_1
+_reserved DMb 0x6B100 9216
+
+_symbol A_L2L1_2_1_cons_buff_0 0x6D500 4096
+_extern A_L2L1_2_1_cons_buff_0
+_reserved DMb 0x6D500 4096
+
+_symbol A_L2L1_2_1_cons_buff_1 0x6E500 4096
+_extern A_L2L1_2_1_cons_buff_1
+_reserved DMb 0x6E500 4096
+
+_symbol _anonymous17 0x6F500 12
+_extern _anonymous17
+_reserved DMb 0x6F500 12
+
+// east -------------------------------------------------
+_symbol C_L1L2_1_1_buff_0 0x70D00 32768
+_extern C_L1L2_1_1_buff_0
+_reserved DMb 0x70D00 32768
+
+_symbol B_L2L1_1_1_cons_buff_0 0x78D00 9216
+_extern B_L2L1_1_1_cons_buff_0
+_reserved DMb 0x78D00 9216
+
+_symbol B_L2L1_1_1_cons_buff_1 0x7B100 9216
+_extern B_L2L1_1_1_cons_buff_1
+_reserved DMb 0x7B100 9216
+
+_symbol A_L2L1_1_1_cons_buff_0 0x7D500 4096
+_extern A_L2L1_1_1_cons_buff_0
+_reserved DMb 0x7D500 4096
+
+_symbol A_L2L1_1_1_cons_buff_1 0x7E500 4096
+_extern A_L2L1_1_1_cons_buff_1
+_reserved DMb 0x7E500 4096
+
+_symbol _anonymous9 0x7F500 12
+_extern _anonymous9
+_reserved DMb 0x7F500 12
+
+// end mapping neighbors tile memory
+
+_reserved DMb 0x80000 0x80000 // And everything else the core can't see
+_include _file mm_128x64x128.o
+_resolve _main core_1_3

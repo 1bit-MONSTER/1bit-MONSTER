@@ -1,0 +1,33 @@
+{
+  "aie_partition": {
+    "PDIs": [
+      {
+        "cdo_groups": [
+          {
+            "dpu_kernel_ids": [
+              "0x901"
+            ],
+            "name": "DPU",
+            "pdi_id": "0x01",
+            "pre_cdo_groups": [
+              "0xC1"
+            ],
+            "type": "PRIMARY"
+          }
+        ],
+        "file_name": "/home/bcloud/npu-sandbox/npu-infer/build/chess_infer/gu/design_1024x1024x6144.mlir.prj/main.pdi",
+        "uuid": "53df60ec-5360-493d-94ca-7f490d0d0c53"
+      }
+    ],
+    "inference_fingerprint": "23423",
+    "name": "QoS",
+    "operations_per_cycle": "2048",
+    "partition": {
+      "column_width": 8,
+      "start_columns": [
+        0
+      ]
+    },
+    "pre_post_fingerprint": "12345"
+  }
+}

@@ -1,0 +1,634 @@
+Successfully parsed input file: /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_2048.mlir
+Using temporary directory: design_2048.mlir.prj
+Starting AIE compilation in directory: design_2048.mlir.prj
+  Device 'main' with 32 core(s)
+Found 1 AIE device(s)
+Detected target architecture for device main: AIE2p
+Detected AIE target: AIE2p
+Running resource allocation pipeline in-memory (alloc-scheme=basic-sequential)
+Resource allocation pipeline completed successfully
+Wrote module with addresses to: design_2048.mlir.prj/input_with_addresses.mlir
+Running routing pipeline in-memory
+Routing pipeline completed successfully
+
+Processing device: main
+Compiling 32 core(s) in parallel (8 threads)
+Compiling core (0, 2)
+Compiling core (2, 2)
+Compiling core (5, 2)
+Compiling core (7, 2)
+Compiling core (4, 2)
+Compiling core (3, 2)
+Compiling core (6, 2)
+Compiling core (1, 2)
+Running LLVM lowering pipeline in-memory for core (0, 2)
+Running LLVM lowering pipeline in-memory for core (2, 2)
+Running LLVM lowering pipeline in-memory for core (4, 2)
+Running LLVM lowering pipeline in-memory for core (6, 2)
+Running LLVM lowering pipeline in-memory for core (5, 2)
+Running LLVM lowering pipeline in-memory for core (7, 2)
+Running LLVM lowering pipeline in-memory for core (3, 2)
+Running LLVM lowering pipeline in-memory for core (1, 2)
+LLVM lowering pipeline completed successfully for core (7, 2)
+LLVM lowering pipeline completed successfully for core (5, 2)
+LLVM lowering pipeline completed successfully for core (1, 2)
+LLVM lowering pipeline completed successfully for core (2, 2)
+LLVM lowering pipeline completed successfully for core (3, 2)
+LLVM lowering pipeline completed successfully for core (4, 2)
+LLVM lowering pipeline completed successfully for core (6, 2)
+Generated LLVM IR: design_2048.mlir.prj/main_core_7_2.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_5_2.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_5_5_2.chesshack.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_7_7_2.chesshack.ll
+Discovered aietools installation: /home/bcloud/torch2aie/toolchain/aietools
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_5_5_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_5_2.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_7_7_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_7_2.chesslinked.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_1_2.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_2_2.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_1_1_2.chesshack.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_2_2_2.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_1_1_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_1_2.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_2_2_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_2_2.chesslinked.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_3_2.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_3_3_2.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_3_3_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_3_2.chesslinked.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_4_2.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_4_4_2.chesshack.ll
+LLVM lowering pipeline completed successfully for core (0, 2)
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_4_4_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_4_2.chesslinked.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_6_2.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_6_6_2.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_6_6_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_6_2.chesslinked.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_0_2.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_0_0_2.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_0_0_2.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_0_2.chesslinked.ll
+warning: warning: warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+
+
+warning: warning: warning: warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+
+
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_5_2.chesslinked.ll
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_2_2.chesslinked.ll
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_7_2.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_5_2.chesslinked.ll -o design_2048.mlir.prj/main_core_5_2.o
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_7_2.chesslinked.ll -o design_2048.mlir.prj/main_core_7_2.o
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_2_2.chesslinked.ll -o design_2048.mlir.prj/main_core_2_2.o
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_1_2.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_1_2.chesslinked.ll -o design_2048.mlir.prj/main_core_1_2.o
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_3_2.chesslinked.ll
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_4_2.chesslinked.ll
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_6_2.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_3_2.chesslinked.ll -o design_2048.mlir.prj/main_core_3_2.o
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_4_2.chesslinked.ll -o design_2048.mlir.prj/main_core_4_2.o
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_6_2.chesslinked.ll -o design_2048.mlir.prj/main_core_6_2.o
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_0_2.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_0_2.chesslinked.ll -o design_2048.mlir.prj/main_core_0_2.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+1 warning generated.
+1 warning generated.
+1 warning generated.
+1 warning generated.
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_7_2.o
+Generated BCF: design_2048.mlir.prj/main_core_7_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_7_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_7_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_2.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_3_2.o
+Generated BCF: design_2048.mlir.prj/main_core_3_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_3_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_3_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_2.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_6_2.o
+Generated BCF: design_2048.mlir.prj/main_core_6_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_6_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_6_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_2.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_2.elf
+Compiling core (0, 3)
+Running LLVM lowering pipeline in-memory for core (0, 3)
+LLVM lowering pipeline completed successfully for core (0, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_0_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_0_0_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_0_0_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_0_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_0_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_0_3.chesslinked.ll -o design_2048.mlir.prj/main_core_0_3.o
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_2.elf
+Compiling core (1, 3)
+Running LLVM lowering pipeline in-memory for core (1, 3)
+Compiled with xchesscc: design_2048.mlir.prj/main_core_1_2.o
+Generated BCF: design_2048.mlir.prj/main_core_1_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_1_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_1_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_2.elf
+LLVM lowering pipeline completed successfully for core (1, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_1_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_1_1_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_1_1_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_1_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_1_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_1_3.chesslinked.ll -o design_2048.mlir.prj/main_core_1_3.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_2.elf
+Compiling core (2, 3)
+Running LLVM lowering pipeline in-memory for core (2, 3)
+LLVM lowering pipeline completed successfully for core (2, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_2_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_2_2_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_2_2_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_2_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_2_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_2_3.chesslinked.ll -o design_2048.mlir.prj/main_core_2_3.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Compiled with xchesscc: design_2048.mlir.prj/main_core_5_2.o
+Generated BCF: design_2048.mlir.prj/main_core_5_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_5_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_5_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_2.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_2.elf
+Compiling core (3, 3)
+Running LLVM lowering pipeline in-memory for core (3, 3)
+LLVM lowering pipeline completed successfully for core (3, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_3_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_3_3_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_3_3_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_3_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_3_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_3_3.chesslinked.ll -o design_2048.mlir.prj/main_core_3_3.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_2.elf
+Compiling core (4, 3)
+Running LLVM lowering pipeline in-memory for core (4, 3)
+LLVM lowering pipeline completed successfully for core (4, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_4_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_4_4_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_4_4_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_4_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_4_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_4_3.chesslinked.ll -o design_2048.mlir.prj/main_core_4_3.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Compiled with xchesscc: design_2048.mlir.prj/main_core_0_2.o
+Generated BCF: design_2048.mlir.prj/main_core_0_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_0_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_0_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_2.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_2_2.o
+Generated BCF: design_2048.mlir.prj/main_core_2_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_2_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_2_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_2.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_4_2.o
+Generated BCF: design_2048.mlir.prj/main_core_4_2.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_4_2.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_4_2.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_2.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_2.elf
+Compiling core (5, 3)
+Running LLVM lowering pipeline in-memory for core (5, 3)
+LLVM lowering pipeline completed successfully for core (5, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_5_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_5_5_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_5_5_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_5_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_5_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_5_3.chesslinked.ll -o design_2048.mlir.prj/main_core_5_3.o
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_2.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_2.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_2.elf
+Compiling core (7, 3)
+Compiling core (6, 3)
+Running LLVM lowering pipeline in-memory for core (6, 3)
+Running LLVM lowering pipeline in-memory for core (7, 3)
+LLVM lowering pipeline completed successfully for core (6, 3)
+Generated LLVM IR: design_2048.mlir.prj/main_core_6_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_6_6_3.chesshack.ll
+LLVM lowering pipeline completed successfully for core (7, 3)
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_6_6_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_6_3.chesslinked.ll
+Generated LLVM IR: design_2048.mlir.prj/main_core_7_3.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_7_7_3.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_7_7_3.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_7_3.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_6_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_6_3.chesslinked.ll -o design_2048.mlir.prj/main_core_6_3.o
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_7_3.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_7_3.chesslinked.ll -o design_2048.mlir.prj/main_core_7_3.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+1 warning generated.
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_0_3.o
+Generated BCF: design_2048.mlir.prj/main_core_0_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_0_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_0_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_3.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_2_3.o
+Generated BCF: design_2048.mlir.prj/main_core_2_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_2_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_2_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_3.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_1_3.o
+Generated BCF: design_2048.mlir.prj/main_core_1_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_1_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_1_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_3.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_3.elf
+Compiling core (0, 4)
+Running LLVM lowering pipeline in-memory for core (0, 4)
+LLVM lowering pipeline completed successfully for core (0, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_0_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_0_0_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_0_0_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_0_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_0_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_0_4.chesslinked.ll -o design_2048.mlir.prj/main_core_0_4.o
+Compiled with xchesscc: design_2048.mlir.prj/main_core_3_3.o
+Generated BCF: design_2048.mlir.prj/main_core_3_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_3_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_3_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_3.elf
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_3.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_3.elf
+Compiling core (1, 4)
+Running LLVM lowering pipeline in-memory for core (1, 4)
+Compiling core (2, 4)
+Running LLVM lowering pipeline in-memory for core (2, 4)
+LLVM lowering pipeline completed successfully for core (1, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_1_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_1_1_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_1_1_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_1_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_1_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_1_4.chesslinked.ll -o design_2048.mlir.prj/main_core_1_4.o
+LLVM lowering pipeline completed successfully for core (2, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_2_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_2_2_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_2_2_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_2_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_2_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_2_4.chesslinked.ll -o design_2048.mlir.prj/main_core_2_4.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Compiled with xchesscc: design_2048.mlir.prj/main_core_4_3.o
+Generated BCF: design_2048.mlir.prj/main_core_4_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_4_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_4_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_3.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_3.elf
+Compiling core (3, 4)
+Running LLVM lowering pipeline in-memory for core (3, 4)
+LLVM lowering pipeline completed successfully for core (3, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_3_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_3_3_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_3_3_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_3_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_3_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_3_4.chesslinked.ll -o design_2048.mlir.prj/main_core_3_4.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_3.elf
+Compiling core (4, 4)
+Running LLVM lowering pipeline in-memory for core (4, 4)
+LLVM lowering pipeline completed successfully for core (4, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_4_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_4_4_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_4_4_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_4_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_4_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_4_4.chesslinked.ll -o design_2048.mlir.prj/main_core_4_4.o
+Compiled with xchesscc: design_2048.mlir.prj/main_core_5_3.o
+Generated BCF: design_2048.mlir.prj/main_core_5_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_5_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_5_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_3.elf
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Compiled with xchesscc: design_2048.mlir.prj/main_core_7_3.o
+Generated BCF: design_2048.mlir.prj/main_core_7_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_7_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_7_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_3.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_6_3.o
+Generated BCF: design_2048.mlir.prj/main_core_6_3.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_6_3.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_6_3.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_3.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_3.elf
+Compiling core (5, 4)
+Running LLVM lowering pipeline in-memory for core (5, 4)
+LLVM lowering pipeline completed successfully for core (5, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_5_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_5_5_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_5_5_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_5_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_5_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_5_4.chesslinked.ll -o design_2048.mlir.prj/main_core_5_4.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_3.elf
+Compiling core (6, 4)
+Running LLVM lowering pipeline in-memory for core (6, 4)
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_3.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_3.elf
+LLVM lowering pipeline completed successfully for core (6, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_6_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_6_6_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_6_6_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_6_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_6_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_6_4.chesslinked.ll -o design_2048.mlir.prj/main_core_6_4.o
+Compiling core (7, 4)
+Running LLVM lowering pipeline in-memory for core (7, 4)
+LLVM lowering pipeline completed successfully for core (7, 4)
+Generated LLVM IR: design_2048.mlir.prj/main_core_7_4.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_7_7_4.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_7_7_4.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_7_4.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_7_4.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_7_4.chesslinked.ll -o design_2048.mlir.prj/main_core_7_4.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_0_4.o
+Generated BCF: design_2048.mlir.prj/main_core_0_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_0_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_0_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_4.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_2_4.o
+Generated BCF: design_2048.mlir.prj/main_core_2_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_2_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_2_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_4.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_1_4.o
+Generated BCF: design_2048.mlir.prj/main_core_1_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_1_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_1_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_4.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_4.elf
+Compiling core (0, 5)
+Running LLVM lowering pipeline in-memory for core (0, 5)
+LLVM lowering pipeline completed successfully for core (0, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_0_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_0_0_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_0_0_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_0_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_0_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_0_5.chesslinked.ll -o design_2048.mlir.prj/main_core_0_5.o
+Compiled with xchesscc: design_2048.mlir.prj/main_core_3_4.o
+Generated BCF: design_2048.mlir.prj/main_core_3_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_3_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_3_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_4.elf
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_4.elf
+Compiling core (1, 5)
+Running LLVM lowering pipeline in-memory for core (1, 5)
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_4.elf
+LLVM lowering pipeline completed successfully for core (1, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_1_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_1_1_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_1_1_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_1_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_1_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_1_5.chesslinked.ll -o design_2048.mlir.prj/main_core_1_5.o
+Compiling core (2, 5)
+Running LLVM lowering pipeline in-memory for core (2, 5)
+LLVM lowering pipeline completed successfully for core (2, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_2_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_2_2_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_2_2_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_2_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_2_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_2_5.chesslinked.ll -o design_2048.mlir.prj/main_core_2_5.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Compiled with xchesscc: design_2048.mlir.prj/main_core_4_4.o
+Generated BCF: design_2048.mlir.prj/main_core_4_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_4_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_4_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_4.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_4.elf
+Compiling core (3, 5)
+Running LLVM lowering pipeline in-memory for core (3, 5)
+LLVM lowering pipeline completed successfully for core (3, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_3_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_3_3_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_3_3_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_3_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_3_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_3_5.chesslinked.ll -o design_2048.mlir.prj/main_core_3_5.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_4.elf
+Compiling core (4, 5)
+Running LLVM lowering pipeline in-memory for core (4, 5)
+LLVM lowering pipeline completed successfully for core (4, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_4_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_4_4_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_4_4_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_4_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_4_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_4_5.chesslinked.ll -o design_2048.mlir.prj/main_core_4_5.o
+Compiled with xchesscc: design_2048.mlir.prj/main_core_5_4.o
+Generated BCF: design_2048.mlir.prj/main_core_5_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_5_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_5_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_4.elf
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Compiled with xchesscc: design_2048.mlir.prj/main_core_7_4.o
+Generated BCF: design_2048.mlir.prj/main_core_7_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_7_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_7_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_4.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_6_4.o
+Generated BCF: design_2048.mlir.prj/main_core_6_4.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_6_4.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_6_4.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_4.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_4.elf
+Compiling core (5, 5)
+Running LLVM lowering pipeline in-memory for core (5, 5)
+LLVM lowering pipeline completed successfully for core (5, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_5_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_5_5_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_5_5_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_5_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_5_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_5_5.chesslinked.ll -o design_2048.mlir.prj/main_core_5_5.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_4.elf
+Compiling core (6, 5)
+Running LLVM lowering pipeline in-memory for core (6, 5)
+LLVM lowering pipeline completed successfully for core (6, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_6_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_6_6_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_6_6_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_6_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_6_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_6_5.chesslinked.ll -o design_2048.mlir.prj/main_core_6_5.o
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_4.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_4.elf
+Compiling core (7, 5)
+Running LLVM lowering pipeline in-memory for core (7, 5)
+LLVM lowering pipeline completed successfully for core (7, 5)
+Generated LLVM IR: design_2048.mlir.prj/main_core_7_5.ll
+Applied IR downgrade for Chess: design_2048.mlir.prj/main_core_7_7_5.chesshack.ll
+/home/bcloud/torch2aie/toolchain/aietools/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link design_2048.mlir.prj/main_core_7_7_5.chesshack.ll /home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll -S -o design_2048.mlir.prj/main_core_7_5.chesslinked.ll
+warning: Linking two modules of different target triples: '/home/bcloud/torch2aie/toolchain/mlir_aie/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll' is 'pdarch-unknown-unknown-elf' whereas 'llvm-link' is 'aie2p'
+
+Linked with chess intrinsic wrapper: design_2048.mlir.prj/main_core_7_5.chesslinked.ll
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -c -d +Wclang,-xir -f design_2048.mlir.prj/main_core_7_5.chesslinked.ll -o design_2048.mlir.prj/main_core_7_5.o
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+warning: overriding the module target triple with pdarch-unknown-unknown-elf [-Woverride-module]
+1 warning generated.
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_0_5.o
+Generated BCF: design_2048.mlir.prj/main_core_0_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_0_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_0_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_5.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_1_5.o
+Generated BCF: design_2048.mlir.prj/main_core_1_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_1_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_1_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_5.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Compiled with xchesscc: design_2048.mlir.prj/main_core_2_5.o
+Generated BCF: design_2048.mlir.prj/main_core_2_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_2_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_2_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_5.elf
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop with essential overflow in loop count computation (number of iterations exceeds internal maximum) [-Wloop-count-overflow]
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_0_5.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_3_5.o
+Generated BCF: design_2048.mlir.prj/main_core_3_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_3_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_3_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_1_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_2_5.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_4_5.o
+Generated BCF: design_2048.mlir.prj/main_core_4_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_4_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_4_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_3_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_4_5.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_5_5.o
+Generated BCF: design_2048.mlir.prj/main_core_5_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_5_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_5_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_5.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_6_5.o
+Generated BCF: design_2048.mlir.prj/main_core_6_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_6_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_6_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_5.elf
+Compiled with xchesscc: design_2048.mlir.prj/main_core_7_5.o
+Generated BCF: design_2048.mlir.prj/main_core_7_5.bcf
+/home/bcloud/torch2aie/toolchain/bin/xchesscc_wrapper aie2p +w design_2048.mlir.prj/work -d -f design_2048.mlir.prj/main_core_7_5.o design_2048.mlir.prj/mm_128x64x128.o +l design_2048.mlir.prj/main_core_7_5.bcf -o /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_5_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_6_5.elf
+Linked with xbridge: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_5.elf
+Generated ELF: /home/bcloud/torch2aie/design_2048.mlir.prj/main_core_7_5.elf
+Updating module with ELF paths for device: main
+Generating NPU instructions for device: main
+Running NPU lowering pipeline in-memory
+NPU lowering pipeline completed successfully
+Generating NPU instructions for sequence: sequence -> /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_2048.insts
+Wrote 5508 instructions to: /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_2048.insts
+Generating CDO artifacts for device: main
+Generated JSON metadata files in: design_2048.mlir.prj
+Generated CDO files in: design_2048.mlir.prj
+/home/bcloud/torch2aie/toolchain/bin/bootgen -arch versal -image design_2048.mlir.prj/main_design.bif -o design_2048.mlir.prj/main.pdi -w
+
+
+****** Bootgen v2026.1
+  **** Build date : Mar 16 2026-06:54:08
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+
+[INFO]   : Bootimage generated successfully
+
+Generated PDI: design_2048.mlir.prj/main.pdi
+Generating xclbin for device: main
+/home/bcloud/torch2aie/toolchain/bin/xclbinutil --add-replace-section MEM_TOPOLOGY:JSON:design_2048.mlir.prj/main_mem_topology.json --add-kernel design_2048.mlir.prj/main_kernels.json --add-replace-section AIE_PARTITION:JSON:design_2048.mlir.prj/main_aie_partition.json --force --output /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_2048.xclbin
+XRT Build Version: 2.21.75 ()
+       Build Date: 
+          Hash ID: 
+Creating a default 'in-memory' xclbin image.
+
+Section: 'MEM_TOPOLOGY'(6) was successfully added.
+Size   : 88 bytes
+Format : JSON
+File   : 'design_2048.mlir.prj/main_mem_topology.json'
+
+Section: 'AIE_PARTITION'(32) was successfully added.
+Size   : 409656 bytes
+Format : JSON
+File   : 'design_2048.mlir.prj/main_aie_partition.json'
+Info: Embedded Metadata section is missing project.platform.device.core element, adding it.
+Successfully wrote (415696 bytes) to the output file: /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_2048.xclbin
+Leaving xclbinutil.
+Generated xclbin: /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_2048.xclbin
+Compilation completed successfully

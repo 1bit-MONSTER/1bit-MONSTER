@@ -1,0 +1,33 @@
+{
+  "aie_partition": {
+    "PDIs": [
+      {
+        "cdo_groups": [
+          {
+            "dpu_kernel_ids": [
+              "0x901"
+            ],
+            "name": "DPU",
+            "pdi_id": "0x01",
+            "pre_cdo_groups": [
+              "0xC1"
+            ],
+            "type": "PRIMARY"
+          }
+        ],
+        "file_name": "/home/bcloud/npu-sandbox/npu-infer/build/int8/D_v2.mlir.prj/main.pdi",
+        "uuid": "f119c4f2-15f7-4e90-bd64-bcca546678dd"
+      }
+    ],
+    "inference_fingerprint": "23423",
+    "name": "QoS",
+    "operations_per_cycle": "2048",
+    "partition": {
+      "column_width": 8,
+      "start_columns": [
+        0
+      ]
+    },
+    "pre_post_fingerprint": "12345"
+  }
+}

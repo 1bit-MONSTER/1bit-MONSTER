@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/bcloud/npu-sandbox/npu-infer/build/chess_infer/qkv/_build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
