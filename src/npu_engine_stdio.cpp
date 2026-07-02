@@ -124,7 +124,11 @@ int main(int argc,char**argv){
         }else if(strstr(line,"\"stats\"")&&strstr(line,"true")){
             printf("{\"ms_per_token\":%.0f,\"tokens\":%d}\n",
                    gen_count>0?total_ms/gen_count:0.0,gen_count);
-        }else if(strstr(line,"\"token\"")){
+        }else if(strstr(line,"\"continue\"")||strstr(line,"\"gen\"")){
+            double ms;int tok=generate(-1,&ms);
+            total_ms+=ms;gen_count++;sp++;
+            printf("{\"token\":%d,\"ms\":%.0f}\n",tok,ms);
+                }else if(strstr(line,"\"token\"")){
             const char*val=strstr(line,"\"token\"");if(!val){printf("{\"error\":\"bad\"}\n");continue;}
             const char*colon=strchr(val,':');if(!colon){printf("{\"error\":\"bad\"}\n");continue;}
             int token=atoi(colon+1);double ms;int tok=generate(token,&ms);
