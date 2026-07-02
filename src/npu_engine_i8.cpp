@@ -117,8 +117,9 @@ int main(){
             if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=ko[kvh*HD+d]*ko[kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++)ko[kvh*HD+d]*=ik*kn[d];ra(&ko[kvh*HD],HD,sp);memcpy(&kv[l].k[sp*NKV*HD+kvh*HD],&ko[kvh*HD],HD*4);memcpy(&kv[l].v[sp*NKV*HD+kvh*HD],&vo[kvh*HD],HD*4);}}
         kv[l].n=sp+1;int cl=kv[l].n;
         // CPU attention (faster than NPU for <32 tokens due to BF16 packing overhead)
+        // Kw/Vw start at offset 0 — K/V are stored positionally (token p at offset p*NKV*HD)
         for(int w=0;w<AW;w++){
-            float*Qw=&qo[w*WQH*HD],*Kw=&kv[l].k[sp*NKV*HD+w*WKVH*HD],*Vw=&kv[l].v[sp*NKV*HD+w*WKVH*HD];
+            float*Qw=&qo[w*WQH*HD],*Kw=&kv[l].k[w*WKVH*HD],*Vw=&kv[l].v[w*WKVH*HD];
             AttnK::cpu_attn(Qw,Kw,Vw,cl,&at[w*WQH*HD]);
         }
         co.go(l,at.data(),1,NH*HD,5.0f/127.0f,wsc[l].o_,oo.data(),H);cn(oo.data(),H);for(int i=0;i<H;i++)h[i]=sb[i]+oo[i];

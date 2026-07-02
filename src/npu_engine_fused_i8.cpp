@@ -442,13 +442,12 @@ int main() {
         int cl = kv[l].n;
 
         // CPU attention (faster than NPU for <32 tokens)
+        // Kw/Vw start at offset 0 — K/V are stored positionally (token p at offset p*NKV*HD)
         for (int w = 0; w < AW; w++) {
             float* Qw = &qo[w * WQH * HD];
-            float* Kw = &kv[l].k[0];  // K starts at offset 0
-            float* Vw = &kv[l].v[0];
-            // The Kv pointer uses the window offset; higher tokens take care of indexing
-            AttnCPU::run(Qw, Kw + w * WKVH * HD, Vw + w * WKVH * HD,
-                        cl, &at[w * WQH * HD]);
+            float* Kw = &kv[l].k[w * WKVH * HD];
+            float* Vw = &kv[l].v[w * WKVH * HD];
+            AttnCPU::run(Qw, Kw, Vw, cl, &at[w * WQH * HD]);
         }
 
         // O projection
