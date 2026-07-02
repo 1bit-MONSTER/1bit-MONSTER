@@ -14,14 +14,13 @@
  *     nibbles: lo = row(byte_idx*2), hi = row(byte_idx*2+1)
  *
  * Tile grid: I8 rows row-major.
- *   n_tile_cols = in_features / 256
  *   tile_row = I8_row / n_tile_cols
  *   tile_col = I8_row % n_tile_cols
+ *   n_tile_cols = in_features / 256
  */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 #define TILE_ROWS 32
 #define TILE_COLS 256
@@ -32,68 +31,12 @@ static inline float bf16_to_float(uint16_t v) {
 }
 
 /**
- * Legacy dequant: assumes in_features=1024 (hidden=1024 default).
- * Used by INT8 engine and most callers where in_features=1024.
- * For weights with in_features != 1024 (e.g. O projection with in_feat=2048),
- * use dequant_i8_to_float_ex instead.
+ * Dequantize Q4NX weight matrix.
+ * in_feat: input feature dimension (e.g., 1024 for Q/K/V, 2048 for O, etc.)
+ * n_tile_cols = in_feat / 256
  */
-float* dequant_i8_to_float(const uint8_t* data, int i8_rows,
-                           int* out_rows, int* out_cols) {
-    // Assume n_tile_cols=1024/256=4 (hidden=1024 default, correct for Q/K/V/G/U/D/lm)
-    int n_tile_cols = 1024 / TILE_COLS;
-    int n_tile_rows = i8_rows / n_tile_cols;
-
-    *out_rows = n_tile_rows * TILE_ROWS;
-    *out_cols = n_tile_cols * TILE_COLS;
-
-    float* out = (float*)calloc((*out_rows) * (*out_cols), sizeof(float));
-    if (!out) return NULL;
-
-    for (int ir = 0; ir < i8_rows; ir++) {
-        const uint8_t* rd = data + ir * 5120;
-        int tile_row = ir / n_tile_cols;
-        int tile_col = ir % n_tile_cols;
-
-        const uint16_t* scales = (const uint16_t*)(rd);
-        const uint16_t* zeros  = (const uint16_t*)(rd + 512);
-        const uint8_t* packed  = rd + 1024;
-
-        for (int lr = 0; lr < TILE_ROWS; lr++) {
-            int lane = lr / 16;
-            int lane_row = lr % 16;
-            int byte_idx = lane_row / 2;
-            int nibble_sel = lr % 2;
-
-            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
-
-            for (int col = 0; col < TILE_COLS; col++) {
-                int group = col / 32;
-                float scale = bf16_to_float(scales[group * 32 + lr]);
-                float zp = bf16_to_float(zeros[group * 32 + lr]);
-                if (!isfinite(scale) || fabsf(scale) > 100.0f) scale = 0.0f;
-                if (!isfinite(zp) || fabsf(zp) > 100.0f) zp = 0.0f;
-
-                uint8_t byte_val = lane_data[col * 8 + byte_idx];
-                int8_t val;
-                if (nibble_sel == 0) val = (int8_t)(byte_val & 0x0F);
-                else                 val = (int8_t)((byte_val >> 4) & 0x0F);
-                if (val >= 8) val -= 16;
-
-                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
-                    (tile_col * TILE_COLS + col)] = (float)val * scale + zp;
-            }
-        }
-    }
-    return out;
-}
-
-/**
- * Extended dequant with explicit in_features.
- * Needed when weight matrix has in_features != 1024 (e.g., O projection: 2048).
- * The tile grid depends on in_features: n_tile_cols = in_feat / 256.
- */
-float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_feat,
-                               int* out_rows, int* out_cols) {
+static float* dequant_i8_to_float_impl(const uint8_t* data, int i8_rows,
+                                        int in_feat, int* out_rows, int* out_cols) {
     int n_tile_cols = in_feat / TILE_COLS;
     int n_tile_rows = i8_rows / n_tile_cols;
 
@@ -124,8 +67,6 @@ float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_feat,
                 int group = col / 32;
                 float scale = bf16_to_float(scales[group * 32 + lr]);
                 float zp = bf16_to_float(zeros[group * 32 + lr]);
-                if (!isfinite(scale) || fabsf(scale) > 100.0f) scale = 0.0f;
-                if (!isfinite(zp) || fabsf(zp) > 100.0f) zp = 0.0f;
 
                 uint8_t byte_val = lane_data[col * 8 + byte_idx];
                 int8_t val;
@@ -139,4 +80,16 @@ float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_feat,
         }
     }
     return out;
+}
+
+// Legacy: assumes in_features = 1024
+float* dequant_i8_to_float(const uint8_t* data, int i8_rows,
+                            int* out_rows, int* out_cols) {
+    return dequant_i8_to_float_impl(data, i8_rows, 1024, out_rows, out_cols);
+}
+
+// Extended: explicit in_features
+float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_feat,
+                               int* out_rows, int* out_cols) {
+    return dequant_i8_to_float_impl(data, i8_rows, in_feat, out_rows, out_cols);
 }
