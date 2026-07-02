@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -O0 -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_m256_gemm.dir/link.d CMakeFiles/test_m256_gemm.dir/tools/test_m256_gemm.cpp.o -o test_m256_gemm  /usr/lib/x86_64-linux-gnu/libxrt_coreutil.so /usr/lib/x86_64-linux-gnu/libxrt_core.so -lm -ldl -luuid

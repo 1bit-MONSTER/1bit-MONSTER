@@ -1,3 +1,0 @@
-/home/bcloud/npu-sandbox/npu-infer/build/chess_infer/d/_build/CMakeFiles/n32_core.dir
-/home/bcloud/npu-sandbox/npu-infer/build/chess_infer/d/_build/CMakeFiles/edit_cache.dir
-/home/bcloud/npu-sandbox/npu-infer/build/chess_infer/d/_build/CMakeFiles/rebuild_cache.dir

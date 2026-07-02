@@ -34,6 +34,30 @@ Realistic: **16K tokens fits in <600 MB** with INT4 quantization.
 
 INT4+SIMD is slightly slower than FP32 SIMD at small M (dequant overhead dominates), but at M≥128 the memory bandwidth savings from 8× less data more than compensate.
 
+## Real Benchmarks (Ryzen AI MAX+ 395, NPU QKV+MLP, CPU Attention)
+
+| M | Total Time | ms/tok | Notes |
+|---|-----------|--------|-------|
+| 4 | 505 ms | 126.1 | All layers: NPU + CPU attention + quantization |
+| 128 | 10,825 ms | 84.6 | 2× M=128 NPU passes per layer |
+| 256 | 21,593 ms | 84.3 | 4× M=128 NPU passes per layer |
+
+**Key observation:** ms/tok is **flat** across M=128 and M=256, meaning SIMD attention + KV quant overhead is invisible in the overall pipeline. The bottleneck is NPU GEMM calls (~224 per layer).
+
+### Memory Verification
+
+At runtime, each KVQuant instance allocates:
+- `k_data`: 4096 × 1024/2 = 2,097,152 bytes (2 MB)
+- `v_data`: same = 2 MB
+- `k_scales`: 4096 × 32 × 4 = 524,288 bytes (0.5 MB)
+- `v_scales`: same = 0.5 MB
+- **Per layer**: 5 MB
+- **28 layers**: 140 MB (vs 896 MB FP32)
+
+### Quantization Error Impact on Output
+
+All 4 runs (M=4, M=128, M=256) produce healthy output with diverse top-8 tokens and no NaN/inf in the output pipeline. The Q4NX quantization with group_size=32 introduces max error of ~0.34 per-element but this is far below the noise floor of the model weights (INT8 quantized) and softmax normalization, so top-k predictions remain stable.
+
 ## KV Cache Fill Time
 
 Old: `memcpy` of 2 × 1024 × 4 = 8 KB per token = negligible

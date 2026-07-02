@@ -1,2 +1,0 @@
-/usr/bin/ar qc libflm_bridge.a CMakeFiles/flm_bridge.dir/src/flm_bridge.cpp.o
-/usr/bin/ranlib libflm_bridge.a

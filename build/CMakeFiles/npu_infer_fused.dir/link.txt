@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -O0 -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/npu_infer_fused.dir/link.d CMakeFiles/npu_infer_fused.dir/src/npu_engine_fused.cpp.o CMakeFiles/npu_infer_fused.dir/src/model.c.o CMakeFiles/npu_infer_fused.dir/src/dequant_q4nx.c.o -o npu_infer_fused  /usr/lib/x86_64-linux-gnu/libxrt_coreutil.so /usr/lib/x86_64-linux-gnu/libxrt_core.so -lm -ldl -luuid

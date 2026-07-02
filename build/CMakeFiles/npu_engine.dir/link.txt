@@ -1,2 +1,0 @@
-/usr/bin/ar qc libnpu_engine.a CMakeFiles/npu_engine.dir/src/engine.cpp.o
-/usr/bin/ranlib libnpu_engine.a

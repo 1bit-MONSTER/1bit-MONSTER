@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -O0 -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/npu_engine_v8.dir/link.d CMakeFiles/npu_engine_v8.dir/src/npu_engine_v8_chess.cpp.o CMakeFiles/npu_engine_v8.dir/src/dequant_q4nx.c.o -o npu_engine_v8  /usr/lib/x86_64-linux-gnu/libxrt_coreutil.so /usr/lib/x86_64-linux-gnu/libxrt_core.so -lm -ldl -luuid
