@@ -48,8 +48,10 @@ struct LMCtx{
     float es; // A input scale (fixed at 5.0/127)
 
     bool init(xrt::device&d){
-        const char*xp=(std::string(xd())+"/final_i8_LM_n30k.xclbin").c_str();
-        const char*ip=(std::string(xd())+"/insts_i8_LM_n30k.txt").c_str();
+        std::string xp_s=std::string(xd())+"/final_i8_LM_n30k.xclbin";
+        std::string ip_s=std::string(xd())+"/insts_i8_LM_n30k.txt";
+        const char*xp=xp_s.c_str();
+        const char*ip=ip_s.c_str();
         FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
         ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
         xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);
