@@ -124,24 +124,35 @@ All known host-side math bugs have been fixed across all 19 engine files in `eng
 
 Branch: `fix/npu-engine-bugs` — PR at https://github.com/bong-water-water-bong/1bit-systems/pull/23
 
-### Validation Results — NPU XCLBIN KERNELS PASS
+## Current Status (July 2026)
 
-The full-layer NPU frontier test (`torch2aie/examples/qwen3-decode-layer`) has been
-run with real Qwen3-0.6B Q4NX weights against the CPU oracle. Results:
+### Fused XCLBIN (torch2aie) — Single layer validated
+The full-layer NPU frontier test passes for a single layer against CPU oracle:
+`max_abs=0.0078, mismatches=0`. Multi-layer inference fails because:
 
+**Input norm weights grow exponentially with layer depth:**
 ```
-  final_hidden_out: max_abs=0.007812500 mean_abs=0.000576794 mismatches=0
-  stage_budget: current_k_slot: mismatches=0
-  stage_budget: current_v_slot: mismatches=0
-  stage_budget: valid_k_cache: mismatches=0
-  PASS: real Qwen3 Q4NX weights run through the full-layer NPU frontier
+Layer  0: max_norm=  1.05
+Layer 10: max_norm=  4.09
+Layer 20: max_norm= 25.12
+Layer 23: max_norm= 46.50  ← bf16 overflow starts here
+Layer 26: max_norm=106.50
 ```
 
-All K/V cache stages produce exact matches. The hidden state output matches
-within 0.008 absolute error (tolerance 0.01). The tiny residual is from INT16
-output quantization in the NPU GEMM tiles.
+The fused xclbin uses bf16 internally. Attention scores exceed bf16 range
+(~3.4e38) at layer 23+ due to these large norm weights. This is a hardware
+limitation of the XDNA2 NPU's bf16 compute tiles.
 
-**The V12 correctness blocker is resolved.** All host-side math bugs (7 rounds)
-and the xclbin kernel correctness have been confirmed.
+### C++ Engine (4 standalone INT8 xclbins) — Precision loss
+All 22 engine files have been fixed (8 rounds of bug fixes). The engine builds
+and runs, but per-matrix INT8 quantization loses ~8% relative precision per
+weight matrix. This compounds across 112 matrices (28 layers × 4 GEMMs).
 
-FLM proxy can be swapped for the C++ engine. See PR #23 for the full fix history.
+### Path Forward
+To match FLM's output quality on multi-layer inference, one of these is needed:
+1. **Per-group INT8 weight packing** for the 4 standalone xclbins (preserves Q4NX structure)
+2. **Custom xclbin** with float32 attention path (avoids bf16 overflow)
+3. **Full-model xclbin** that processes all 28 layers in one dispatch (single precision domain)
+
+PR #23 contains all 8 rounds of bug fixes (host-side math) plus the fused xclbin
+runner infrastructure.
