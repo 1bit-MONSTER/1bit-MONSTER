@@ -9,32 +9,13 @@
 #include <algorithm>
 #include <chrono>
 extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
-extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static constexpr int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2;
 static constexpr float EPS=1e-6f; static constexpr int XM=128, BS=32;
-// Dynamic per-call activation quantization scale — computed from actual range
-// Prevents silent clipping of activations outside [-5,5] (measured post-RMSNorm up to [-8.24,7.01])
-// Dynamic INT8 scale — no isfinite() in hot path (assumes finite input)
-static inline float dynamic_ascale(const float* x, int n) {
-    float amax = 0;
-    for (int i = 0; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
-    if (amax < 1e-12f) amax = 1.0f;
-    return amax / 127.0f;
-}
-
-// NaN cleanup — inline guard samples first 4 elems, full scan only if suspicious
-static inline void cn_safe(float* x, int n) {
-    bool ok = true;
-    for (int i = 0; i < n && i < 4; i++) { if (!std::isfinite(x[i])) { ok = false; break; } }
-    if (!ok) for (int i = 0; i < n; i++) if (!std::isfinite(x[i])) x[i] = 0.0f;
-}
-// Softmax — removed cn() guard; hot path assumes finite
-static inline void sm(float*sc,int n){if(n<=0)return;float mx=sc[0];for(int i=1;i<n;i++)if(sc[i]>mx)mx=sc[i];double s=0;for(int i=0;i<n;i++){float d=sc[i]-mx;if(d>80)d=80;else if(d<-80)d=-80;sc[i]=expf(d);s+=sc[i];}if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
-// RMSNorm — removed cn() + per-element isfinite(); hot path assumes finite
-static inline void rn_c(float*x,const float*w,int n){double ss=0;for(int i=0;i<n;i++)ss+=(double)x[i]*x[i];float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=x[i]*ir*w[i];}
-static inline void transpose_pack(const float* src, int out_f, int in_f, float* dst, int dst_stride, int dst_offset){for(int o=0;o<out_f;o++)for(int i=0;i<in_f;i++)dst[(size_t)i*dst_stride+dst_offset+o]=src[(size_t)o*in_f+i];}
-static std::vector<float>rc,rs;static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(mp*hd);for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){float f=1.0f/powf(th,(float)d/hd2),a=p*f;rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);}}
-static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
+static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
+static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];for(int i=1;i<n;i++)if(sc[i]>mx)mx=sc[i];double s=0;for(int i=0;i<n;i++){float d=sc[i]-mx;if(d>80)d=80;else if(d<-80)d=-80;sc[i]=expf(d);s+=sc[i];}if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
+static inline void rn_c(float*x,const float*w,int n){cn(x,n);double ss=0;for(int i=0;i<n;i++)if(std::isfinite(x[i]))ss+=(double)x[i]*x[i];float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;}
+static std::vector<float>rc,rs;static void ri(int hd,float th,int mp){rc.resize(mp*hd);rs.resize(mp*hd);for(int p=0;p<mp;p++)for(int d=0;d<hd;d+=2){float f=1.0f/powf(th,(float)d/hd),a=p*f;rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);rc[p*hd+d+1]=cosf(a);rs[p*hd+d+1]=sinf(a);}}
+static inline void ra(float*x,int hd,int p){for(int d=0;d<hd;d+=2){float a=x[d],b=x[d+1],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+1]=b*c+a*s;}}
 static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);const char*p=js,*e=js+jl;while(p<e){auto q=(const char*)platform_memmem(p,e-p,nm,nl);if(!q)return 0;if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 static std::vector<float> emb_f32;
 static std::vector<float> lm_head_f32;
@@ -104,7 +85,7 @@ int main(int argc,char**argv){
     printf("=== NPU Engine v12 — M=%d + OpenMP attention ===\n",BS);
     printf("Target: sustain >80 tok/s at long context\n\n");
     const char*mp="/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
-    auto fd=platform_open_read(mp);platform_stat st;platform_fstat(fd,&st);
+    int fd=platform_open_read(mp);platform_stat st;platform_fstat(fd,&st);
     uint8_t*md=(uint8_t*)platform_mmap((size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);platform_close(fd);
     uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
     auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
