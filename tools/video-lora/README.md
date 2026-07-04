@@ -2,6 +2,10 @@
 
 Video generation with LoRA support on Strix Halo. Supports **Wan2.2**, **LTX-Video**, **AnimateDiff**, and **CogVideoX**.
 
+> Vendored into [1bit.systems](../../README.md) at `tools/video-lora/` from
+> [bong-water-water-bong/video-lora](https://github.com/bong-water-water-bong/video-lora).
+> CI runs from the repo root via `.github/workflows/video-lora-ci.yml`.
+
 ## Models & LoRAs
 
 | Model | LoRA Support | Size | Notes |
@@ -39,7 +43,7 @@ Requires Zig 0.15.2+ and `glslc` (for shader compilation).
 ## Project Structure
 
 ```
-video-lora/
+tools/video-lora/
 ├── src/video_lora/
 │   ├── __init__.py
 │   ├── cli.py              # CLI entry point
@@ -61,6 +65,7 @@ video-lora/
 │   ├── __init__.py
 │   └── test_models.py
 ├── pyproject.toml
-├── .github/workflows/ci.yml
 └── README.md
 ```
+
+(CI workflow lives at repo root: `.github/workflows/video-lora-ci.yml`.)
