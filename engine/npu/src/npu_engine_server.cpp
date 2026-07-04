@@ -159,9 +159,9 @@ static bool parse_request(const std::string& line, std::vector<int>& tokens, int
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     fprintf(stderr, "=== 1bit.engine (persistent v12 NPU dispatch) ===\n\n");
-    const char* mp = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
-    auto fd = platform_open_read(mp); platform_stat st; platform_fstat(fd, &st);
-    uint8_t* md = (uint8_t*)platform_mmap(st.st_size, PROT_READ, MAP_PRIVATE, fd, 0); platform_close(fd);
+    const char* mp = []{const char*e=getenv("NPU_MODEL_PATH");return e?e:"/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";}();
+    int fd = open(mp, O_RDONLY); struct stat st; fstat(fd, &st);
+    uint8_t* md = (uint8_t*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
     uint64_t hsz; memcpy(&hsz, md, 8); uint64_t df = 8 + hsz;
     auto i8p = [&](uint64_t o) { return md + df + o; }; auto emb = (const uint16_t*)(md + df);
     const char* js = (const char*)(md + 8); size_t jl = hsz;
@@ -195,12 +195,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "  %.0fms\n\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_emb).count());
 
     fprintf(stderr, "Init 4 GEMM...\n"); xrt::device dev(0);
-    std::string xd = []{const char* e = getenv("NPU_XCLBIN_DIR"); return e ? std::string(e) : std::string("/home/bcloud/npu-sandbox/npu-infer/build/int8");}();
-    I8Ctx cq{"QKV", XM, H, 4096}, co{"O", XM, NH * HD, H}, cg{"GU", XM, H, 6144}, cd_d{"D", XM, IM, H};
-    cq.init(dev, (xd+"/final_i8_QKV_v.xclbin").c_str(), (xd+"/insts_i8_QKV_v.txt").c_str(), 4);
-    co.init(dev, (xd+"/final_i8_O_v.xclbin").c_str(), (xd+"/insts_i8_O_v.txt").c_str(), 4);
-    cg.init(dev, (xd+"/final_i8_GU_v.xclbin").c_str(), (xd+"/insts_i8_GU_v.txt").c_str(), 4);
-    cd_d.init(dev, (xd+"/final_i8_D_v.xclbin").c_str(), (xd+"/insts_i8_D_v.txt").c_str(), 4);
+    static const char* xd(){const char*e=getenv("NPU_XCLBIN_DIR");return e?e:"/home/bcloud/npu-sandbox/npu-infer/build/int8";}
+    I8Ctx cq{"QKV", XM, H, 4096}, co{"O", XM, NH * HD, H}, cg{"GU", XM, H, 6144}, cd{"(std::string(xd())+", XM, IM, H};
+    cq.init(dev, D").c_str()/final_i8_QKV_v.xclbin", (std::string(xd())+"/insts_i8_QKV_v.txt").c_str(), 4);
+    co.init(dev, (std::string(xd())+"/final_i8_O_v.xclbin").c_str(), (std::string(xd())+"/insts_i8_O_v.txt").c_str(), 4);
+    cg.init(dev, (std::string(xd())+"/final_i8_GU_v.xclbin").c_str(), (std::string(xd())+"/insts_i8_GU_v.txt").c_str(), 4);
+    cd.init(dev, (std::string(xd())+"/final_i8_D_v.xclbin").c_str(), (std::string(xd())+"/insts_i8_D_v.txt").c_str(), 4);
 
     fprintf(stderr, "Dequant+pack...\n"); auto tp = std::chrono::steady_clock::now();
     struct WS { float qk, o_, g_, d_; } wsc[NC];

@@ -50,12 +50,21 @@ inline void go(int l,const float*A,int am,int ak,float ascale,float Bscale,float
 
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
-    int npt=(argc>1)?atoi(argv[1]):9;if(npt<1)npt=1;if(npt>9)npt=9;
-    int ng=(argc>2)?atoi(argv[2]):16;
-    printf("=== NPU Engine v3 — Continuous Batch (M=%d) ===\n\n",npt+1);
-    const char*mp="/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
-    auto fd=platform_open_read(mp);platform_stat st;platform_fstat(fd,&st);
-    uint8_t*md=(uint8_t*)platform_mmap((size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);platform_close(fd);
+    const char* lora_path = nullptr;
+    int npt = 9, ng = 16;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--lora") == 0 && i + 1 < argc)
+            { lora_path = argv[i + 1]; i++; }
+        else if (npt == 9)
+            npt = atoi(argv[i]);
+        else if (ng == 16)
+            ng = atoi(argv[i]);
+    }
+    if (npt < 1) npt = 1; if (npt > 9) npt = 9;
+    printf("=== NPU Engine v3 — LoRA-ready (M=%d%s) ===\n\n", npt + 1, lora_path ? " + LoRA" : "");
+    const char*mp=[]{const char*e=getenv("NPU_MODEL_PATH");return e?e:"/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";}();
+    int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
+    uint8_t*md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
     uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
     auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
     const char*js=(const char*)(md+8);size_t jl=hsz;
@@ -72,12 +81,12 @@ int main(int argc,char**argv){
     printf("  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t_emb).count());
 
     printf("Init 4 GEMM...\n");xrt::device dev(0);
-    std::string xd=[]{const char*e=getenv("NPU_XCLBIN_DIR");return e?std::string(e):std::string("/home/bcloud/npu-sandbox/npu-infer/build/int8");}();
-    I8Ctx cq{"QKV",XM,H,4096},co{"O",XM,NH*HD,H},cg{"GU",XM,H,6144},cd{"D",XM,IM,H};
-    cq.init(dev,(xd+"/final_i8_QKV_v.xclbin").c_str(),(xd+"/insts_i8_QKV_v.txt").c_str(),4);
-    co.init(dev,(xd+"/final_i8_O_v.xclbin").c_str(),  (xd+"/insts_i8_O_v.txt").c_str(),  4);
-    cg.init(dev,(xd+"/final_i8_GU_v.xclbin").c_str(), (xd+"/insts_i8_GU_v.txt").c_str(), 4);
-    cd.init(dev,(xd+"/final_i8_D_v.xclbin").c_str(),  (xd+"/insts_i8_D_v.txt").c_str(),  4);
+    static const char* xd(){const char*e=getenv("NPU_XCLBIN_DIR");return e?e:"/home/bcloud/npu-sandbox/npu-infer/build/int8";}
+    I8Ctx cq{"QKV",XM,H,4096},co{"O",XM,NH*HD,H},cg{"GU",XM,H,6144},cd{"(std::string(xd())+",XM,IM,H};
+    cq.init(dev,D").c_str()/final_i8_QKV_v.xclbin",(std::string(xd())+"/insts_i8_QKV_v.txt").c_str(),4);
+    co.init(dev,(std::string(xd())+"/final_i8_O_v.xclbin").c_str(),  (std::string(xd())+"/insts_i8_O_v.txt").c_str(),  4);
+    cg.init(dev,(std::string(xd())+"/final_i8_GU_v.xclbin").c_str(), (std::string(xd())+"/insts_i8_GU_v.txt").c_str(), 4);
+    cd.init(dev,(std::string(xd())+"/final_i8_D_v.xclbin").c_str(),  (std::string(xd())+"/insts_i8_D_v.txt").c_str(),  4);
 
     printf("Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
     struct WS{float qk,o_,g_,d_;}wsc[NC];
