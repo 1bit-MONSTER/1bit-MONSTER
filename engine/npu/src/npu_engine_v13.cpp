@@ -25,8 +25,9 @@ int main(int argc,char**argv){
     constexpr int KCACHE_SZ=KCACHE_DW*4, WEIGHT_SZ=WEIGHT_DW*4, OUT_SZ=OUT_DW*4, HID_SZ=HID_DW*4;
 
     // Xclbin path
-    const char*XCL=[]{const char*e=getenv("NPU_XCLBIN_DIR");return e?(std::string(e)+"/design_full_layer.xclbin").c_str():"/home/bcloud/torch2aie/build/qwen3_06b_layer/design_full_layer.xclbin";}();
-    const char*INS=[]{const char*e=getenv("NPU_XCLBIN_DIR");return e?(std::string(e)+"/insts_full_layer.txt").c_str():"/home/bcloud/torch2aie/build/qwen3_06b_layer/insts_full_layer.txt";}();
+    const std::string xd=[]{const char*e=getenv("NPU_XCLBIN_DIR");return e?std::string(e):std::string("/home/bcloud/torch2aie/build/qwen3_06b_layer");}();
+    const std::string XCL=xd+"/design_full_layer.xclbin";
+    const std::string INS=xd+"/insts_full_layer.txt";
 
     printf("Init NPU...\n");
     xrt::device dev(0);
@@ -72,8 +73,8 @@ int main(int argc,char**argv){
     memset(bO->map(),0,OUT_SZ);    memset(bH->map(),0,HID_SZ);
 
     // Load packed weights
-    const char*WF=(std::string(xd())+"/fused_weights_l0.bin").c_str();
-    {int fd=open(WF,O_RDONLY);if(fd<0){printf("No packed weights, zeros\n");}
+    const std::string WF=xd+"/fused_weights_l0.bin";
+    {int fd=open(WF.c_str(),O_RDONLY);if(fd<0){printf("No packed weights, zeros\n");}
      else {struct stat st;fstat(fd,&st);
       size_t rs=std::min((size_t)st.st_size,(size_t)WEIGHT_SZ);
       read(fd,bW->map(),rs);platform_close(fd);
