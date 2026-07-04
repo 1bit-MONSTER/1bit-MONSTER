@@ -65,10 +65,10 @@ int main(int argc,char**argv){
     fprintf(stderr,"Init 4 contexts...\n");xrt::device dev(0);
 #define D "/home/bcloud/npu-sandbox/npu-infer/build/int8"
     I8Ctx cq{"QKV",XM,H,4096},co{"O",XM,NH*HD,H},cg{"GU",XM,H,6144},cd{"D",XM,IM,H};
-    if(!cq.init(dev,D"/final_i8_QKV_v.xclbin",D"/insts_i8_QKV_v.txt",4)){fprintf(stderr,"FAIL QKV\n");return 1;}
-    if(!co.init(dev,D"/final_i8_O_v.xclbin",  D"/insts_i8_O_v.txt",  4)){fprintf(stderr,"FAIL O\n");return 1;}
-    if(!cg.init(dev,D"/final_i8_GU_v.xclbin", D"/insts_i8_GU_v.txt", 4)){fprintf(stderr,"FAIL GU\n");return 1;}
-    if(!cd.init(dev,D"/final_i8_D_v.xclbin",  D"/insts_i8_D_v.txt",  4)){fprintf(stderr,"FAIL D\n");return 1;}
+    if(!cq.init(dev,D"/final_i8_QKV_qwen3_0_6b.xclbin",D"/insts_i8_QKV_qwen3_0_6b.txt",4)){fprintf(stderr,"FAIL QKV\n");return 1;}
+    if(!co.init(dev,D"/final_i8_O_qwen3_0_6b.xclbin",  D"/insts_i8_O_qwen3_0_6b.txt",  4)){fprintf(stderr,"FAIL O\n");return 1;}
+    if(!cg.init(dev,D"/final_i8_GU_qwen3_0_6b.xclbin", D"/insts_i8_GU_qwen3_0_6b.txt", 4)){fprintf(stderr,"FAIL GU\n");return 1;}
+    if(!cd.init(dev,D"/final_i8_D_qwen3_0_6b.xclbin",  D"/insts_i8_D_qwen3_0_6b.txt",  4)){fprintf(stderr,"FAIL D\n");return 1;}
 #undef D
     fprintf(stderr,"Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
     struct WS{float qk,o_,g_,d_;}wsc[NC];
