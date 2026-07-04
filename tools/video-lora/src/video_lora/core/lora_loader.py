@@ -1,9 +1,7 @@
 """Unified LoRA loading for video models."""
 
 from pathlib import Path
-from typing import Optional, Union
-
-import torch
+from typing import Union
 
 
 def load_lora_into_pipe(

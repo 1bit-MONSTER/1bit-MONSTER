@@ -2,7 +2,6 @@
 
 import argparse
 from pathlib import Path
-from typing import Optional
 
 
 def register_models():
@@ -50,7 +49,7 @@ def main():
     gen.add_argument("--output", "-o", type=Path, help="Output path")
 
     # `list-models` subcommand
-    list_cmd = sub.add_parser("list-models", help="List available models")
+    sub.add_parser("list-models", help="List available models")
 
     args = parser.parse_args()
 

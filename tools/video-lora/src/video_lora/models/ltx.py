@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-from diffusers import DiffusionPipeline, LTXPipeline
+from diffusers import DiffusionPipeline
 from diffusers.utils import export_to_video
 
 from ..core.pipeline import VideoPipeline
