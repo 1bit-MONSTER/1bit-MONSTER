@@ -1,4 +1,4 @@
-# 1bit.systems Benchmarks — July 4, 2026 (refresh 2)
+# 1bit.systems Benchmarks — July 4, 2026
 
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo)  
 - NPU: XDNA 2, 32 AIE2P tiles  
