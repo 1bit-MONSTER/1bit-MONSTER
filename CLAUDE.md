@@ -21,7 +21,7 @@ Three inference engines, one chip. NPU (C++) + GPU (Zig). Zero Python.
    - Focus: INT8 quantization, NPU context lifecycle, BFP16 precision, C++ memory safety
 
 ## Engine: NPU (`engine/npu/`)
-C++23 INT8 inference on XDNA 2 NPU. Daemon proxies to FLM (94 tok/s). C++ engine: 28 tok/s all-models, 97 tok/s v12.
+C++23 INT8 inference on XDNA 2 NPU. Daemon replaces FLM proxy (94 tok/s) with fused xclbin runner. C++ engine: 28 tok/s all-models, 97 tok/s v12. Norm weight clip fix prevents bf16 overflow at deep layers. Weight streams pre-generated at /tmp/npu_layer_weights_clipped/ (28 layers, 263 MB).
 - `engine/npu/src/npu_engine_cb.cpp` — Main loop (batched prefill + decode)
 - `engine/npu/src/dequant_q4nx.c` — Q4NX dequantizer
 - `engine/npu/kernel/edge_attention.cc` — NPU attention (Chess C++)
