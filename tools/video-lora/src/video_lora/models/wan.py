@@ -5,7 +5,7 @@ from typing import Optional
 
 import torch
 from diffusers import DiffusionPipeline
-from diffusers.utils import export_to_video
+from diffusers.utils import export_to_video  # type: ignore[attr-defined]
 
 from ..core.pipeline import VideoPipeline
 
@@ -21,7 +21,7 @@ class WanVideo(VideoPipeline):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.pipe = DiffusionPipeline.from_pretrained(
+        self.pipe = DiffusionPipeline.from_pretrained(  # type: ignore[no-untyped-call]
             model_id,
             torch_dtype=torch.bfloat16,
             device_map="auto",

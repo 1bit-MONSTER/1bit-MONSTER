@@ -1,15 +1,15 @@
 """Unified LoRA loading for video models."""
 
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 
 def load_lora_into_pipe(
-    pipe,
+    pipe: Any,
     lora_path: Union[str, Path],
     weight: float = 0.7,
     adapter_name: str = "default",
-):
+) -> Any:
     """Load a LoRA into a diffusers pipeline with optional weight scaling.
 
     Supports:

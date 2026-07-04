@@ -2,11 +2,14 @@
 
 import argparse
 from pathlib import Path
+from typing import Callable, Dict
+
+from .core.pipeline import VideoPipeline
 
 
-def register_models():
+def register_models() -> Dict[str, Callable[[], VideoPipeline]]:
     """Lazy-import model backends so CLI stays fast."""
-    models = {}
+    models: Dict[str, Callable[[], VideoPipeline]] = {}
 
     try:
         from .models.animatediff import AnimateDiffVideo
@@ -29,7 +32,7 @@ def register_models():
     return models
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Video LoRA Generator")
     sub = parser.add_subparsers(dest="command", required=True)
 

@@ -5,7 +5,7 @@ from typing import Optional
 
 import torch
 from diffusers import AnimateDiffPipeline, LCMScheduler, MotionAdapter
-from diffusers.utils import export_to_gif
+from diffusers.utils import export_to_gif  # type: ignore[attr-defined]
 
 from ..core.pipeline import VideoPipeline
 
@@ -22,13 +22,13 @@ class AnimateDiffVideo(VideoPipeline):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        adapter = MotionAdapter.from_pretrained(motion_adapter)
-        self.pipe = AnimateDiffPipeline.from_pretrained(
+        adapter = MotionAdapter.from_pretrained(motion_adapter)  # type: ignore[no-untyped-call]
+        self.pipe = AnimateDiffPipeline.from_pretrained(  # type: ignore[no-untyped-call]
             model_id,
             motion_adapter=adapter,
             torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         )
-        self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
+        self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)  # type: ignore[no-untyped-call]
         if device == "cpu":
             self.pipe.to("cpu")
         else:
