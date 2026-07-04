@@ -60,16 +60,26 @@ class Torch2AIEBackend:
         """Returns {"tokens": [...], "finished": bool} or {"error": str}."""
         if not self.ready:
             return {"error": "NPU engine not ready"}
-
-        req = json.dumps({"tokens": tokens, "max_new_tokens": min(max_new, 64)})
-        proc = subprocess.run(
-            ["/home/bcloud/torch2aie/.venv/bin/python3",
-             "/home/bcloud/1bit-systems/tools/npu_runner.py"],
-            input=req, capture_output=True, text=True, timeout=300,
-            env=self.env, cwd="/home/bcloud/1bit-systems")
-
-        if proc.returncode != 0:
-            return {"error": f"Runner failed: {proc.stderr[:200]}"}
+        # Build Qwen3 chat template
+        prompt_parts = []
+        for m in messages:
+            r = m.get("role", "user")
+            c = m.get("content", "")
+            prompt_parts.append("<|im_start|>" + r + "\n" + c + "<|im_end|>\n")
+        prompt_parts.append("<|im_start|>assistant\n")
+        full_prompt = "".join(prompt_parts)
+        
+        prompt_tokens = self.tokenize(full_prompt)
+        print(f"  [debug] prompt_tokens={prompt_tokens}", flush=True)
+        if not prompt_tokens:
+            return {"error": "Empty prompt"}
+        max_new_tokens = kwargs.get("max_tokens", 256)
+        req = json.dumps({"tokens": prompt_tokens, "max_new_tokens": max_new_tokens})
+        self.process.stdin.write(req + "\n")
+        self.process.stdin.flush()
+        resp_line = self.process.stdout.readline()
+        if not resp_line:
+            return {"error": "Engine closed connection"}
         try:
             return json.loads(proc.stdout.strip())
         except json.JSONDecodeError:
