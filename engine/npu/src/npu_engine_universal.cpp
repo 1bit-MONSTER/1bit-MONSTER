@@ -268,7 +268,7 @@ int main(int argc,char**argv){
         if(pt_vec.empty()){ fprintf(stderr,"Empty input token file: %s\n",input_tok_file); return 1; }
         if((int)pt_vec.size() > 4095) pt_vec.resize(4095);
     }else{
-        pt_vec={151643,872,198,11852,151644,198,151643,77091,198};
+        pt_vec={151644,872,198,13048,151645,198,151644,77091,198}; // "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
     }
     int npt=(int)pt_vec.size(); if(npt<1)npt=1;
     if(input_tok_file && npt > XM) npt = XM;
