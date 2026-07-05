@@ -106,12 +106,14 @@ def main():
     print("\n--- Quantizing and writing ---\n")
 
     for l in range(NC):
-        # ── QKV fused [1024, 4096] ──
-        q_t = q_w[l].T.copy()    # [1024, 2048]
-        k_t = k_w[l].T.copy()    # [1024, 1024]
-        v_t = v_w[l].T.copy()    # [1024, 1024]
-        qkv = np.concatenate([q_t, k_t, v_t], axis=1)  # [1024, 4096]
-        qkv_i8, qk_scale = quantize_int8(qkv)
+        # ── QKV fused [1024, 4096] — quantize Q/K/V blocks independently ──
+        q_t = q_w[l].T.copy()       # [1024, 2048]
+        k_t = k_w[l].T.copy()       # [1024, 1024]
+        v_t = v_w[l].T.copy()       # [1024, 1024]
+        q_i8, q_scale = quantize_int8(q_t)   # Q block
+        k_i8, k_scale = quantize_int8(k_t)   # K block
+        v_i8, v_scale = quantize_int8(v_t)   # V block
+        qkv_i8 = np.concatenate([q_i8, k_i8, v_i8], axis=1)  # [1024, 4096]
         write_bin(f"{CACHE}/qkv_{l}.bin", qkv_i8)
 
         # ── O [2048, 1024] ──
@@ -119,11 +121,12 @@ def main():
         o_i8, o_scale = quantize_int8(o_t)
         write_bin(f"{CACHE}/o_{l}.bin", o_i8)
 
-        # ── GU fused [1024, 6144] ──
+        # ── GU fused [1024, 6144] — quantize G/U blocks independently ──
         g_t = g_w[l].T.copy()    # [1024, 3072]
         u_t = u_w[l].T.copy()    # [1024, 3072]
-        gu = np.concatenate([g_t, u_t], axis=1)  # [1024, 6144]
-        gu_i8, gu_scale = quantize_int8(gu)
+        g_i8, g_scale = quantize_int8(g_t)   # G block
+        u_i8, u_scale = quantize_int8(u_t)   # U block
+        gu_i8 = np.concatenate([g_i8, u_i8], axis=1)  # [1024, 6144]
         write_bin(f"{CACHE}/gu_{l}.bin", gu_i8)
 
         # ── D [3072, 1024] ──
@@ -131,12 +134,12 @@ def main():
         d_i8, d_scale = quantize_int8(d_t)
         write_bin(f"{CACHE}/d_{l}.bin", d_i8)
 
-        # ── Scales: qk, o_, g_, d_ (4 floats, matches struct WS)
-        scales = np.array([qk_scale, o_scale, gu_scale, d_scale], dtype=np.float32)
+        # ── Scales: q, k, v, o, g, u, d (7 floats, matches struct ScaleSet)
+        scales = np.array([q_scale, k_scale, v_scale, o_scale, g_scale, u_scale, d_scale], dtype=np.float32)
         write_bin(f"{CACHE}/scales_{l}.bin", scales)
 
         if l < 3 or l == NC - 1:
-            print(f"  layer {l:2d}: qk={qk_scale:.6f} o={o_scale:.6f} g={gu_scale:.6f} d={d_scale:.6f}")
+            print(f"  layer {l:2d}: q={q_scale:.6f} k={k_scale:.6f} v={v_scale:.6f} o={o_scale:.6f} g={g_scale:.6f} u={u_scale:.6f} d={d_scale:.6f}")
 
     # ── LM head [151936, 1024] float32 ──
     print("\n--- LM head (float) ---")

@@ -27,11 +27,6 @@
 // k_rope, attn_out_flat, attn_proj, h_after_attn, h_ln2, ffn_gate, ffn_up,
 // ffn_hidden, ffn_out, h_out). Enables element-wise cos_sim / max-abs diff.
 static bool g_trace = false;
-// GU xclbin uses INT16 accumulation (mm_i8.o compiled with -Di8_i16_ONLY).
-// With correct INT8 weights, some GEMM outputs overflow INT16, producing
-// zeros instead of the true accumulation. A fixed version needs the chess
-// toolchain (xchesscc_wrapper) to compile mm_i32.o for INT32 accumulation.
-// For now, QKV/O/D _v xclbins work correctly (~0.3% quant noise at h_out).
 static void trace_dump(const char* key, const float* p, int n) {
     if (!g_trace || !p || n <= 0) return;
     char path[256]; snprintf(path, sizeof(path), "/tmp/cb_trace/%s.bin", key);

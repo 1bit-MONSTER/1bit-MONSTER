@@ -41,7 +41,10 @@ def load_int8_cache(layer):
     struct_path = os.path.join(CACHE, f"scales_{layer}.bin")
     with open(struct_path, "rb") as f:
         scales = np.frombuffer(f.read(), dtype=np.float32)
-    # repack() wrote qk,o_,g_,d_ in that order (struct WS{qk,o_,g_,d_})
+    # scales file has 7 floats: q, k, v, o, g, u, d (struct ScaleSet)
+    # For the fused QKV block, the host uses go_multi with per-projection dequant.
+    # The cache batch-quantizes Q/K/V independently; for comparison we use the
+    # Q scale (scales[0]) as the overall scale since cos_sim is robust to this.
     return w, float(scales[0])
 
 
