@@ -187,5 +187,6 @@ cd73e137 fix(npu): match INT8 xclbin generator output width to host's i32 Cm buf
 83b833c9 docs(npu): retract false 'dequant 800x' theory — correct offset verified, GEMM confirmed bit-exact
 21864a41 fix(npu): order decode loop LM-head BEFORE forward pass (off-by-one)
 f668ef76 fix(npu): prefill Q indexing stride — pi*NH*HD → pi*4096 (QKV fused buffer)
-<new>    docs(npu): isolate QKV GEMM blowup to HF INT8 weight cache corruption
+7c701af6 fix(npu): regenerate HF INT8 weight cache from Q4NX-dequant float weights
+13059c29 docs(npu): isolate QKV GEMM blowup to HF INT8 weight cache corruption
 ```
