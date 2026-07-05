@@ -18,8 +18,7 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
-extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
-extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
+#define HF_CACHE "/tmp/hf_weights_cache"
 // See docs/V12-CORRECTNESS-BLOCKER.md. dequant_i8_to_float(_ex) returns row-major
 // [out_features, in_features] (PyTorch nn.Linear convention); packB()/go() need the
 // transpose - [in_features, out_features] - since the GEMM computes A[tokens,in] @ B[in,out].
@@ -54,8 +53,8 @@ static std::vector<float> lm_head_f32;
 static volatile sig_atomic_t g_lora_reload = 0;
 extern "C" void lora_sighup(int) { g_lora_reload = 1; }
 
-struct I8Ctx{const char*name;int MD,KD,ND;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC,layerB[NC];int8_t*Am;int16_t*Cm;
-bool init(xrt::device&d,const char*xp,const char*ip,int gid_B){FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();for(int l=0;l<NC;l++)layerB[l]=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B));return true;}
+struct I8Ctx{const char*name;int MD,KD,ND;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC,layerB[NC];int8_t*Am;int32_t*Cm;
+bool init(xrt::device&d,const char*xp,const char*ip,int gid_B){FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();for(int l=0;l<NC;l++)layerB[l]=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B));return true;}
 void packB(int l,const float*w,int K,int N,float&sout){float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[l]->map();for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
 inline void go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){float ais=1.0f/ascale;memset(Am,0,(size_t)MD*KD);for(int m=0;m<am;m++)for(int k=0;k<ak;k++){float v=A[m*ak+k];if(!std::isfinite(v))v=0;int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;Am[m*KD+k]=(int8_t)q;}bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);auto r=(*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=ascale*Bscale;for(int m=0;m<am;m++)for(int n=0;n<an;n++){float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}}
 };
@@ -163,29 +162,35 @@ int main(int argc,char**argv){
     const int GUOUT=IM;
     const int DOUT=H,DIN=IM;
     auto repack = [&]() {
-        printf("Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
-        for(int l=0;l<NC;l++){int qr,kr,vr,unused;
-            float*qw=dequant_i8_to_float(i8p(lo[l].qp),256,&qr,&unused),*kw=dequant_i8_to_float(i8p(lo[l].kp),128,&kr,&unused),*vw=dequant_i8_to_float(i8p(lo[l].vp),128,&vr,&unused);
-            lora_apply(qw, QOUT, H, l, 0); lora_apply(kw, KVOUT, H, l, 1); lora_apply(vw, KVOUT, H, l, 2);
-            int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
-            transpose_pack(qw,QOUT,H,w.data(),t,0); transpose_pack(kw,KVOUT,H,w.data(),t,QOUT); transpose_pack(vw,KVOUT,H,w.data(),t,QOUT+KVOUT);
-            cq.packB(l,w.data(),H,t,wsc[l].qk);free(qw);free(kw);free(vw);
-            int or2,oc2; float*ow=dequant_i8_to_float_ex(i8p(lo[l].op),256,OIN,&or2,&oc2);
-            lora_apply(ow, OOUT, OIN, l, 3);
-            std::vector<float>wo((size_t)OIN*OOUT); transpose_pack(ow,OOUT,OIN,wo.data(),OOUT,0);
-            co.packB(l,wo.data(),OIN,OOUT,wsc[l].o_);free(ow);
-            int gr,ur; float*gw=dequant_i8_to_float(i8p(lo[l].gp),384,&gr,&unused),*uw=dequant_i8_to_float(i8p(lo[l].up),384,&ur,&unused);
-            lora_apply(gw, GUOUT, H, l, 4); lora_apply(uw, GUOUT, H, l, 5);
-            int t2=GUOUT+GUOUT;std::vector<float>w2((size_t)H*t2);
-            transpose_pack(gw,GUOUT,H,w2.data(),t2,0); transpose_pack(uw,GUOUT,H,w2.data(),t2,GUOUT);
-            cg.packB(l,w2.data(),H,t2,wsc[l].g_);free(gw);free(uw);
-            int dr2,dc2; float*dw=dequant_i8_to_float_ex(i8p(lo[l].dp),384,DIN,&dr2,&dc2);
-            lora_apply(dw, DOUT, DIN, l, 6);
-            std::vector<float>wd((size_t)DIN*DOUT); transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
-            cd.packB(l,wd.data(),DIN,DOUT,wsc[l].d_);free(dw);}
-        int lr,lc; float* lm_raw=dequant_i8_to_float(i8p(lo_off),18992,&lr,&lc);
-        lm_head_f32.resize((size_t)lr*lc);
-        memcpy(lm_head_f32.data(),lm_raw,(size_t)lr*lc*sizeof(float)); free(lm_raw);
+        printf("Load HF-cached INT8 weights...\n");auto tp=std::chrono::steady_clock::now();
+        for(int l=0;l<NC;l++){
+            char path[256];
+            snprintf(path,sizeof(path),HF_CACHE"/qkv_%d.bin",l);
+            {FILE*f=fopen(path,"rb");if(f){fread(cq.layerB[l]->map(),1,(size_t)cq.KD*cq.ND,f);fclose(f);
+              cq.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}}
+            snprintf(path,sizeof(path),HF_CACHE"/o_%d.bin",l);
+            {FILE*f=fopen(path,"rb");if(f){fread(co.layerB[l]->map(),1,(size_t)co.KD*co.ND,f);fclose(f);
+              co.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}}
+            snprintf(path,sizeof(path),HF_CACHE"/gu_%d.bin",l);
+            {FILE*f=fopen(path,"rb");if(f){fread(cg.layerB[l]->map(),1,(size_t)cg.KD*cg.ND,f);fclose(f);
+              cg.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}}
+            snprintf(path,sizeof(path),HF_CACHE"/d_%d.bin",l);
+            {FILE*f=fopen(path,"rb");if(f){fread(cd.layerB[l]->map(),1,(size_t)cd.KD*cd.ND,f);fclose(f);
+              cd.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}}
+            snprintf(path,sizeof(path),HF_CACHE"/scales_%d.bin",l);
+            {FILE*f=fopen(path,"rb");if(f){fread(&wsc[l],sizeof(float),4,f);fclose(f);}}
+        }
+        // LM head and embeddings from HF cache
+        {char path[256];snprintf(path,sizeof(path),HF_CACHE"/lm_head.bin");
+         FILE*f=fopen(path,"rb");
+         if(f){lm_head_f32.resize((size_t)NV*H);fread(lm_head_f32.data(),sizeof(float),(size_t)NV*H,f);fclose(f);
+           printf("  LM head loaded, range: [%.4f, %.4f]\n",
+                  *std::min_element(lm_head_f32.begin(),lm_head_f32.end()),
+                  *std::max_element(lm_head_f32.begin(),lm_head_f32.end()));}
+         snprintf(path,sizeof(path),HF_CACHE"/embeddings.bin");
+         f=fopen(path,"rb");
+         if(f){fread(emb_f32_cb.data(),sizeof(float),(size_t)NV*H,f);fclose(f);
+           printf("  Embeddings loaded from HF cache\n");}}
         printf("  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
     };
     repack();  // initial pack
@@ -208,6 +213,7 @@ int main(int argc,char**argv){
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_buf[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l],H);
         cq.go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),wsc[l].qk,qo_b.data(),4096);cn(qo_b.data(),npt*4096);
+        if(l==0){printf("QKV[0..7]:");for(int di=0;di<8;di++)printf(" %.4f",qo_b[di]);printf(" Cm[0]=%d\n",cq.Cm[0]);}
         float*qn=qn_w[l],*kn=kn_w[l];
         for(int pi=0;pi<npt;pi++){
             for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*NH*HD+hh*HD+d]*qo_b[pi*NH*HD+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qo_b[pi*NH*HD+hh*HD+d]*=iq*qn[d];ra(&qo_b[pi*NH*HD+hh*HD],HD,sp+pi);}
