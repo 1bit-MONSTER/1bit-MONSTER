@@ -73,6 +73,8 @@ make -j$(nproc)
 | **Negative prompt** | ✅ | CLI flag |
 | **LoRA** | ✅ | stable-diffusion.cpp |
 | **ControlNet** | ⏳ | stable-diffusion.cpp SD1.5 |
+| **CacheDiT** | ✅ | DBCache + TaylorSeer + EasyCache + Spectrum |
+| **Flash attention** | ✅ | ggml built-in |
 | **FLUX.2** | ✅ | stable-diffusion.cpp |
 
 ## References
