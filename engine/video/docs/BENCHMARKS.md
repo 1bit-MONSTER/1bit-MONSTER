@@ -1,33 +1,36 @@
-# Video Diffusion Engine — Benchmarks
+# Video Engine Benchmarks
 
-## Performance (Strix Halo, Radeon 8060S)
+## T2V: Wan2.2-1.3B Q4_0 (GGUF)
 
-### CPU Only (OpenMP, 16 threads)
+| Backend | Hardware | Resolution | Frames | Steps | Time (s) | FPS |
+|---------|----------|-----------|-------|-------|---------|-----|
+| CPU | AMD Strix Halo (16C/32T) | 640×480 | 16 | 50 | TBD | TBD |
+| CPU | AMD Strix Halo (16C/32T) | 640×480 | 8 | 10 | TBD | TBD |
+| CUDA | RTX 4090 | 640×480 | 16 | 50 | TBD | TBD |
+| Vulkan | Radeon 8060S | 640×480 | 16 | 50 | TBD | TBD |
 
-| Model | Resolution | Frames | Steps | Total | Per Frame | Notes |
-|-------|-----------|-------|-------|-------|-----------|-------|
-| Wan2.2-1.3B DiT | 640×480 | 8 | 10 | TBD | TBD | Dev test |
-| Wan2.2-1.3B DiT | 640×480 | 8 | 50 | TBD | TBD | Full quality |
-| Wan2.2-1.3B DiT | 640×480 | 16 | 50 | TBD | TBD | Standard video |
+## I2V: Wan2.2-A14B Q4_0 (GGUF)
 
-### NPU (XDNA 2, INT8)
+| Backend | Hardware | Resolution | Frames | Steps | Time (s) | FPS |
+|---------|----------|-----------|-------|-------|---------|-----|
+| CUDA | RTX 4090 | 640×480 | 16 | 50 | TBD | TBD |
+| CUDA | RTX 4090 | 640×480 | 81 | 50 | TBD | TBD |
 
-| Model | Resolution | Frames | Steps | Total | Per Frame | Notes |
-|-------|-----------|-------|-------|-------|-----------|-------|
-| Wan2.2-1.3B DiT | 640×480 | 8 | 50 | TBD | TBD | INT8 quantized |
-| Wan2.2-1.3B DiT | 640×480 | 16 | 50 | TBD | TBD | Production target |
+## Memory Usage
 
-### Memory
+| Model | Quant | GPU VRAM | RAM |
+|-------|-------|---------|-----|
+| Wan2.2 T2V 1.3B | Q4_0 | ~1.5 GB | ~2 GB |
+| Wan2.2 I2V A14B | Q4_0 | ~8 GB | ~10 GB |
 
-| Config | Model RAM | Latent RAM | Total |
-|--------|----------|-----------|-------|
-| CPU (f32) | ~4.2 GB | ~50 MB | ~4.3 GB |
-| NPU (INT8) | ~1.1 GB | ~50 MB | ~1.2 GB |
-
-## Run Your Own
-
+Run your own benchmarks:
 ```bash
-cd engine/video
-g++ -std=c++23 -O3 -march=native -fopenmp -o video_engine src/video_main.cpp -lm
-./video_engine --prompt "test" --frames 8 --steps 10 --benchmark
+# CPU benchmark
+./video_engine -m model.gguf -p test -f 8 -s 10 --benchmark
+
+# CUDA benchmark
+./video_engine -m model.gguf -p test -f 16 -s 50 --benchmark --backend cuda
+
+# Flash attention benchmark
+./video_engine -m model.gguf -p test -f 16 -s 50 --benchmark --flash-attn
 ```

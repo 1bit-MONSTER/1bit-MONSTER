@@ -1,83 +1,81 @@
-# Video Diffusion Engine — Build Guide
+# Build Guide
 
-## Zero Python. Pure C++23. NPU + CPU.
+## Prerequisites
 
-### CPU-Only Build (for development/testing)
+```bash
+# System deps
+sudo apt install build-essential cmake git
+
+# For CUDA backend
+sudo apt install nvidia-cuda-toolkit
+
+# For Vulkan backend
+sudo apt install libvulkan-dev glslc
+```
+
+## Build
 
 ```bash
 cd engine/video
 
-g++ -std=c++23 -O3 -march=native -fopenmp -o video_engine \
-    src/video_main.cpp -lm
+# 1. Init submodule (first time only)
+git submodule update --init --recursive
 
-# Run
-./video_engine --prompt "a cat walking, cinematic" --frames 8 --steps 20
+# 2. Build
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+
+# Enable CUDA
+cmake .. -DCMAKE_BUILD_TYPE=Release -DSD_CUBLAS=ON
+make -j$(nproc)
+
+# Enable Vulkan
+cmake .. -DCMAKE_BUILD_TYPE=Release -DSD_VULKAN=ON
+make -j$(nproc)
 ```
 
-### NPU-Accelerated Build (Strix Halo XDNA 2)
+## Download Models
 
 ```bash
-cd engine/video
+# Wan2.2 T2V 1.3B (2.6 GB, INT4 quantized)
+wget https://huggingface.co/Wan-AI/Wan2.2-T2V-1.3B-GGUF/resolve/main/wan2.2-t2v-1.3b-Q4_0.gguf
 
-g++ -std=c++23 -O3 -march=native -fopenmp -DUSE_NPU -o video_engine \
-    src/video_main.cpp \
-    ../npu/src/npu_engine_universal.cpp \
-    -I$XRT/include -L$XRT/lib64 -lxrt_coreutil -luuid -lm -ldl
-
-# Run with NPU
-./video_engine --prompt "cinematic dolly zoom" --model weights.bin --frames 16
+# Wan2.2 I2V 14B (8.4 GB, INT4 quantized)
+wget https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-GGUF/resolve/main/wan2.2-i2v-a14b-Q4_0.gguf
 ```
 
-### Benchmark Mode
+## Run
 
 ```bash
-./video_engine --prompt "test" --frames 8 --steps 10 --benchmark
+# Text-to-video (CPU, 16 frames, 50 steps)
+./video_engine \
+    --model wan2.2-t2v-1.3b-Q4_0.gguf \
+    --prompt "a cat walking, cinematic lighting" \
+    --frames 16 --steps 50
+
+# Image-to-video (CUDA, 81 frames)
+./video_engine \
+    --model wan2.2-i2v-a14b-Q4_0.gguf \
+    --prompt "a cat walking" \
+    --input-image ./cat.png \
+    --frames 81 --steps 50 \
+    --backend cuda
+
+# Benchmark mode
+./video_engine \
+    --model wan2.2-t2v-1.3b-Q4_0.gguf \
+    --prompt "test" \
+    --frames 8 --steps 10 \
+    --benchmark --flash-attn
 ```
 
-## Architecture
+## Backend Comparison
 
-```
-engine/video/
-├── src/
-│   ├── video_main.cpp      # Entry point + CLI
-│   ├── video_model.h       # Model config + weight loading
-│   ├── video_dit.h         # Diffusion Transformer forward pass
-│   ├── video_sampler.h     # DDIM + Flow Matching denoising
-│   └── video_vae.h         # VAE decoder (latent → pixels)
-├── docs/
-│   └── BENCHMARKS.md       # Performance benchmarks
-└── README.md
-```
-
-## Model Weights
-
-Weights in `.bin` format with `VideoWeightHeader`:
-```
-[8 bytes magic 'VIDWEIGH']
-[4 bytes version]
-[4 bytes num_layers]
-[4 bytes hidden_size]
-[4 bytes num_heads]
-[4 bytes head_dim]
-[4 bytes mlp_hidden]
-[4 bytes text_hidden]
-[8 bytes weight_offset]
-[...float weight data...]
-```
-
-Convert from HuggingFace Diffusers:
-```bash
-python3 tools/convert_weights.py --model wan/Wan2.1-T2V-1.3B --output weights.bin
-```
-
-## Reused Infrastructure
-
-The video engine reuses the NPU engine's INT8 GEMM primitives:
-
-| Component | Source | Purpose |
-|-----------|--------|---------|
-| `I8Ctx` | `engine/npu/src/npu_engine_universal.cpp` | INT8 GEMM on XDNA 2 |
-| `attn_omp()` | `engine/npu/src/npu_engine_universal.cpp` | OpenMP attention |
-| `dynamic_ascale()` | `engine/npu/src/npu_engine_universal.cpp` | Activation quant scale |
-| `platform.h` | `engine/npu/src/platform.h` | Platform abstractions |
-| xclbin infra | `engine/npu/xclbins/` | MLIR-compiled NPU kernels |
+| Backend | Hardware | Speed | Memory |
+|---------|----------|-------|--------|
+| `cpu` | AVX2/AVX512 | 1× baseline | ~4 GB |
+| `cuda` | NVIDIA GPU | 5-10× | ~2 GB VRAM |
+| `vulkan` | AMD/NVIDIA/Intel GPU | 5-8× | ~2 GB VRAM |
+| `metal` | Apple Silicon | 3-5× | ~4 GB unified |
+| `npu` | XDNA 2 (future) | target 10-20× | ~1 GB |

@@ -1,0 +1,3 @@
+[submodule "engine/video/stable-diffusion.cpp"]
+	path = engine/video/stable-diffusion.cpp
+	url = https://github.com/leejet/stable-diffusion.cpp
