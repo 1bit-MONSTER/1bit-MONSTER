@@ -278,6 +278,22 @@ int main(int argc,char**argv){
                 printf("--- LoRA hot-swap done ---\n\n");
             }
         }
+        // LM head FIRST: prefill/post-forward hidden state predicts the NEXT token.
+        // Avoids re-running the forward on an already-finalized hidden state at step 0
+        // (the historical off-by-one: it appended a bogus K/V at position sp before the
+        // LM head ever ran, corrupting decode).
+        memcpy(sb.data(),h.data(),H*4);rn_c(sb.data(),fin,H);
+        float mx=-1e30f;
+        for(int n=0;n<NV;n++){double s=0;const float*e=&lm_head_f32[(size_t)n*H];
+            for(int k=0;k<H;k++)s+=(double)sb[k]*e[k];lg[n]=(float)s;if(lg[n]>mx)mx=lg[n];}
+        double sum=0;for(int i=0;i<NV;i++){float d=lg[i]-mx;if(d<-80)d=-80;lg[i]=expf(d);sum+=lg[i];}
+        float rr=(float)rand()/RAND_MAX*(float)sum,acc=0;int tok=0;for(int i=0;i<NV;i++){acc+=lg[i];if(acc>=rr){tok=i;break;}}
+        double mss=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts).count();
+        printf("  [%d] %d (%.0fms)\n",step,tok,mss);
+        // Sampled token becomes the INPUT at position sp. Run forward on it to produce
+        // the hidden state for position sp, appending K/V at slot sp. This new h is what
+        // the next iteration's LM head consumes.
+        for(int i=0;i<H;i++)h[i]=emb_f32_cb[(size_t)tok*H+i];
         for(int l=0;l<NC;l++){
             memcpy(sb.data(),h.data(),H*4);rn_c(h.data(),in_n[l],H);
             cq.go(l,h.data(),1,H,dynamic_ascale(h.data(),H),wsc[l].qk,qo.data(),4096);cn(qo.data(),4096);
@@ -297,16 +313,7 @@ int main(int argc,char**argv){
             cd.go(l,su_b.data(),1,IM,dynamic_ascale(su_b.data(),IM),wsc[l].d_,dw_b.data(),H);cn(dw_b.data(),H);
             for(int i=0;i<H;i++)h[i]=sb[i]+dw_b[i];
         }
-        // F32-optimized LM head (single pass: compute logits, find max, softmax, sample)
-        memcpy(sb.data(),h.data(),H*4);rn_c(sb.data(),fin,H);
-        float mx=-1e30f;
-        for(int n=0;n<NV;n++){double s=0;const float*e=&lm_head_f32[(size_t)n*H];
-            for(int k=0;k<H;k++)s+=(double)sb[k]*e[k];lg[n]=(float)s;if(lg[n]>mx)mx=lg[n];}
-        double sum=0;for(int i=0;i<NV;i++){float d=lg[i]-mx;if(d<-80)d=-80;lg[i]=expf(d);sum+=lg[i];}
-        float rr=(float)rand()/RAND_MAX*(float)sum,acc=0;int tok=0;for(int i=0;i<NV;i++){acc+=lg[i];if(acc>=rr){tok=i;break;}}
-        double mss=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts).count();
-        printf("  [%d] %d (%.0fms)\n",step,tok,mss);
-        for(int i=0;i<H;i++)h[i]=emb_f32_cb[(size_t)tok*H+i];sp++;
+        sp++;
     }
     double tts=std::chrono::duration<double>(std::chrono::steady_clock::now()-tgs).count();
     printf("\n=== %.0f ms/tok ===\n",tts*1000/ng);
