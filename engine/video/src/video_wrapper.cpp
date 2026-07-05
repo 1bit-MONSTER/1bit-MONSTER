@@ -40,8 +40,10 @@ static void print_usage(const char* prog) {
         "  --height         INT        Height (default: 480)\n"
         "  --cfg           FLOAT      CFG scale (default: 5.0)\n"
         "  --input-image   PATH       Input image for I2V\n"
-        "  --lora          PATH       LoRA weights\n"
-        "  --lora-scale    FLOAT      LoRA scale (default: 0.7)\n"
+        "  --lora          PATH       LoRA path(s) — comma-sep for multiple\n"
+        "  --lora-scale    FLOAT      LoRA scale(s) — comma-sep, default: 0.7\n"
+        "  --lora-high-noise PATH   High-noise LoRA (Wan2.2 MoE)\n"
+        "  --lora-hn-scale FLOAT     High-noise LoRA scale (default: 1.0)\n"
         "  --seed          INT        Random seed\n"
         "  --output, -o    FILE       Output MP4 path\n"
         "  --backend       STR        Backend: cpu, cuda, vulkan, metal\n"
@@ -69,10 +71,10 @@ static void print_usage(const char* prog) {
 
 int main(int argc, char** argv) {
     std::string model_path, prompt, negative_prompt, input_image_path;
-    std::string lora_path, output_path = "output.mp4", backend = "cpu";
+    std::string lora_path, lora_hn_path, output_path = "output.mp4", backend = "cpu";
     std::string cache_mode = "off";
     int num_frames = 16, num_steps = 50, width = 640, height = 480;
-    float cfg_scale = 5.0f, lora_scale = 0.7f;
+    float cfg_scale = 5.0f, lora_scale = 0.7f, lora_hn_scale = 1.0f;
     int seed = 42, threads = 0;
     bool benchmark = false, flash_attn = false;
     int cache_fn = 8, cache_bn = 0;
@@ -90,6 +92,8 @@ int main(int argc, char** argv) {
         {"input-image", required_argument, 0, 'i'},
         {"lora",        required_argument, 0, 257},
         {"lora-scale",  required_argument, 0, 258},
+        {"lora-high-noise", required_argument, 0, 268},
+        {"lora-hn-scale",   required_argument, 0, 269},
         {"seed",        required_argument, 0, 259},
         {"output",      required_argument, 0, 'o'},
         {"backend",     required_argument, 0, 260},
@@ -119,6 +123,8 @@ int main(int argc, char** argv) {
             case 256: cfg_scale = atof(optarg); break;
             case 257: lora_path = optarg; break;
             case 258: lora_scale = atof(optarg); break;
+            case 268: lora_hn_path = optarg; break;
+            case 269: lora_hn_scale = atof(optarg); break;
             case 259: seed = atoi(optarg); break;
             case 260: backend = optarg; break;
             case 261: cache_mode = optarg; break;
@@ -151,6 +157,45 @@ int main(int argc, char** argv) {
     };
 
     sd_cache_mode_t cache_enum = str_to_cache(cache_mode);
+
+    // --- Parse LoRA config before model init ---
+    std::vector<sd_lora_t> lora_list;
+    auto split = [](const std::string& s, char delim) -> std::vector<std::string> {
+        std::vector<std::string> parts;
+        size_t start = 0, end;
+        while ((end = s.find(delim, start)) != std::string::npos) {
+            parts.push_back(s.substr(start, end - start));
+            start = end + 1;
+        }
+        parts.push_back(s.substr(start));
+        return parts;
+    };
+
+    if (!lora_path.empty()) {
+        auto paths = split(lora_path, ',');
+        auto scales = split(std::to_string(lora_scale), ',');
+        for (size_t i = 0; i < paths.size(); i++) {
+            auto& p = paths[i];
+            p.erase(0, p.find_first_not_of(" \t"));
+            p.erase(p.find_last_not_of(" \t") + 1);
+            if (p.empty()) continue;
+            float scale = lora_scale;
+            if (i < scales.size()) scale = atof(scales[i].c_str());
+            lora_list.push_back({false, scale, p.c_str()});
+        }
+    }
+    if (!lora_hn_path.empty()) {
+        lora_list.push_back({true, lora_hn_scale, lora_hn_path.c_str()});
+    }
+
+    if (!lora_list.empty()) {
+        fprintf(stderr, "[LoRA] %zu adapter(s) configured\n", lora_list.size());
+        for (auto& l : lora_list)
+            fprintf(stderr, "  %s%s @ %.2f\n",
+                    l.path,
+                    l.is_high_noise ? " (high-noise)" : "",
+                    l.multiplier);
+    }
 
     fprintf(stderr,
         "\n=== 1bit.systems Video Engine ===\n"
@@ -279,18 +324,14 @@ int main(int argc, char** argv) {
         fprintf(stderr, "\n");
     }
 
-    // LoRA
-    sd_lora_t lora = {false, 1.0f, nullptr};
-    sd_lora_t* loras = nullptr;
-    uint32_t lora_count = 0;
-    if (!lora_path.empty()) {
-        lora.path = lora_path.c_str();
-        lora.multiplier = lora_scale;
-        loras = &lora;
-        lora_count = 1;
+    // Assign pre-parsed LoRA config
+    if (!lora_list.empty()) {
+        vid_params.loras = lora_list.data();
+        vid_params.lora_count = (uint32_t)lora_list.size();
+    } else {
+        vid_params.loras = nullptr;
+        vid_params.lora_count = 0;
     }
-    vid_params.loras = loras;
-    vid_params.lora_count = lora_count;
 
     // --- Generate ---
     fprintf(stderr, "\n[Generate] Starting...\n");
