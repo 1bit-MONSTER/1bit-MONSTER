@@ -18,7 +18,27 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
+#include <sys/stat.h>  // mkdir
 #define HF_CACHE "/tmp/hf_weights_cache"
+
+// ─── --trace: dump layer-0 substage intermediates for diff vs layer_trace.py ─
+// Writes float32 binaries to /tmp/cb_trace/<key>.bin matching keys in the HF
+// reference npz (h_ln1, q_flat, k_flat, v_flat, q_heads, q_normed, q_rope,
+// k_rope, attn_out_flat, attn_proj, h_after_attn, h_ln2, ffn_gate, ffn_up,
+// ffn_hidden, ffn_out, h_out). Enables element-wise cos_sim / max-abs diff.
+static bool g_trace = false;
+static void trace_dump(const char* key, const float* p, int n) {
+    if (!g_trace || !p || n <= 0) return;
+    char path[256]; snprintf(path, sizeof(path), "/tmp/cb_trace/%s.bin", key);
+    FILE* f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "trace: cannot write %s\n", path); return; }
+    fwrite(p, sizeof(float), (size_t)n, f);
+    fclose(f);
+    // report max-abs so first-diverging substage is visible in stdout too
+    float amax = 0; for (int i = 0; i < n; i++) { float a = fabsf(p[i]); if (a > amax) amax = a; }
+    double nrm = 0; for (int i = 0; i < n; i++) nrm += (double)p[i] * p[i];
+    printf("  trace %-14s n=%-5d max|.|=%.5f norm=%.4f\n", key, n, amax, sqrt(nrm));
+}
 // See docs/V12-CORRECTNESS-BLOCKER.md. dequant_i8_to_float(_ex) returns row-major
 // [out_features, in_features] (PyTorch nn.Linear convention); packB()/go() need the
 // transpose - [in_features, out_features] - since the GEMM computes A[tokens,in] @ B[in,out].
@@ -66,12 +86,20 @@ int main(int argc,char**argv){
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--lora") == 0 && i + 1 < argc)
             { lora_path = argv[i + 1]; i++; }
+        else if (strcmp(argv[i], "--trace") == 0)
+            g_trace = true;
         else if (npt == 9)
             npt = atoi(argv[i]);
         else if (ng == 16)
             ng = atoi(argv[i]);
     }
     if (npt < 1) npt = 1; if (npt > 9) npt = 9;
+    if (g_trace) {
+        // Deterministic single-token probe matching tools/layer_trace.py
+        npt = 1; ng = 0;
+        mkdir("/tmp/cb_trace", 0755);
+        printf("=== TRACE MODE: 1 token, layer-0 substage dump → /tmp/cb_trace/ ===\n");
+    }
     printf("=== NPU Engine v3 — LoRA-ready (M=%d%s) ===\n\n", npt + 1, lora_path ? " + LoRA" : "");
     const char*mp="/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx";
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
@@ -203,38 +231,54 @@ int main(int argc,char**argv){
     std::vector<float> sb_buf(XM*H);
     int sp=0;
     int pt[]={151644,872,198,13048,151645,198,151644,77091,198}; // "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
+    if (g_trace) pt[0] = 100;  // match tools/layer_trace.py test token
 
     // ===== PREFILL: batched, all tokens in one pass =====
     printf("=== Prefill %d (batched) ===\n",npt);
     auto t0=std::chrono::steady_clock::now();
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=bf16g(emb[pt[pi]*H+i]);
+    if (g_trace) trace_dump("input_embedding", h_b.data(), H);
 
     for(int l=0;l<NC;l++){
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_buf[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l],H);
+        if(g_trace&&l==0) trace_dump("h_ln1",h_b.data(),H);
         cq.go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),wsc[l].qk,qo_b.data(),4096);cn(qo_b.data(),npt*4096);
         if(l==0){printf("QKV[0..7]:");for(int di=0;di<8;di++)printf(" %.4f",qo_b[di]);printf(" Cm[0]=%d\n",cq.Cm[0]);}
+        if(g_trace&&l==0){trace_dump("q_flat",&qo_b[0],NH*HD);trace_dump("k_flat",&qo_b[2048],NKV*HD);trace_dump("v_flat",&qo_b[3072],NKV*HD);}
         float*qn=qn_w[l],*kn=kn_w[l];
         for(int pi=0;pi<npt;pi++){
-            for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*NH*HD+hh*HD+d]*qo_b[pi*NH*HD+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qo_b[pi*NH*HD+hh*HD+d]*=iq*qn[d];ra(&qo_b[pi*NH*HD+hh*HD],HD,sp+pi);}
-            for(int kvh=0;kvh<NKV;kvh++){float*ks=&qo_b[pi*4096+2048+kvh*HD],*vs=&qo_b[pi*4096+3072+kvh*HD];
-                double sk=0;for(int d=0;d<HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                for(int d=0;d<HD;d++)ks[d]*=ik*kn[d];ra(ks,HD,sp+pi);
-                memcpy(&kv[l].k[(sp+pi)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv[l].v[(sp+pi)*NKV*HD+kvh*HD],vs,HD*4);
-            }
+            // QK norm: per-head RMSNorm (divide by RMS) then × q_norm/k_norm weight.
+            // (Split from RoPE so --trace can snapshot q_normed/k_normed separately.)
+            for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*4096+hh*HD+d]*qo_b[pi*4096+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qo_b[pi*4096+hh*HD+d]*=iq*qn[d];}
+            for(int kvh=0;kvh<NKV;kvh++){float*ks=&qo_b[pi*4096+2048+kvh*HD];double sk=0;for(int d=0;d<HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++)ks[d]*=ik*kn[d];}
+            if(g_trace&&l==0){trace_dump("q_normed",&qo_b[0],NH*HD);trace_dump("k_normed",&qo_b[2048],NKV*HD);}
+            // RoPE + KV cache store
+            for(int hh=0;hh<NH;hh++)ra(&qo_b[pi*4096+hh*HD],HD,sp+pi);
+            for(int kvh=0;kvh<NKV;kvh++){float*ks=&qo_b[pi*4096+2048+kvh*HD],*vs=&qo_b[pi*4096+3072+kvh*HD];ra(ks,HD,sp+pi);
+                memcpy(&kv[l].k[(sp+pi)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv[l].v[(sp+pi)*NKV*HD+kvh*HD],vs,HD*4);}
+            if(g_trace&&l==0){trace_dump("q_rope",&qo_b[0],NH*HD);trace_dump("k_rope",&qo_b[2048],NKV*HD);}
         }
         kv[l].n=sp+npt;int cl=kv[l].n;
         for(int pi=0;pi<npt;pi++){for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;std::vector<float>ss(cl);
-            for(int p=0;p<sp+pi+1;p++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*NH*HD+hh*HD+d]*kv[l].k[p*NKV*HD+kvh*HD+d];ss[p]=(float)(s/sqrtf(HD));}
+            for(int p=0;p<sp+pi+1;p++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*4096+hh*HD+d]*kv[l].k[p*NKV*HD+kvh*HD+d];ss[p]=(float)(s/sqrtf(HD));}
             sm(ss.data(),sp+pi+1);for(int d=0;d<HD;d++){float s=0;for(int p=0;p<sp+pi+1;p++)s+=ss[p]*kv[l].v[p*NKV*HD+kvh*HD+d];at_b[pi*NH*HD+hh*HD+d]=s;}}}
+        if(g_trace&&l==0) trace_dump("attn_out_flat",at_b.data(),NH*HD);
         co.go(l,at_b.data(),npt,NH*HD,dynamic_ascale(at_b.data(),npt*NH*HD),wsc[l].o_,oo_b.data(),H);cn(oo_b.data(),npt*H);
+        if(g_trace&&l==0) trace_dump("attn_proj",oo_b.data(),H);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_buf[pi*H+i]+oo_b[pi*H+i];
+        if(g_trace&&l==0) trace_dump("h_after_attn",h_b.data(),H);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_buf[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l],H);
+        if(g_trace&&l==0) trace_dump("h_ln2",h_b.data(),H);
         cg.go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),wsc[l].g_,gt_b.data(),6144);cn(gt_b.data(),npt*6144);
+        if(g_trace&&l==0){trace_dump("ffn_gate",&gt_b[0],IM);trace_dump("ffn_up",&gt_b[IM],IM);}
         for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*6144+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*6144+IM+i];}}
+        if(g_trace&&l==0) trace_dump("ffn_hidden",su_b.data(),IM);
         cd.go(l,su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),wsc[l].d_,dw_b.data(),H);cn(dw_b.data(),npt*H);
+        if(g_trace&&l==0) trace_dump("ffn_out",dw_b.data(),H);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_buf[pi*H+i]+dw_b[pi*H+i];
+        if(g_trace&&l==0) trace_dump("h_out",h_b.data(),H);
     }
     sp+=npt;memcpy(h.data(),&h_b[(npt-1)*H],H*4);
     double ms_prefill=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
