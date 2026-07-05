@@ -203,19 +203,30 @@ struct NpuEngine {
         }
         printf("  ✅ Kernel MLIR_AIE ready\n");
         
-        // Allocate BOs — instruction buffer needs XCL_BO_FLAGS_CACHEABLE
-        const size_t SZ_IO = 64 * 1024 * 1024;     // 64MB I/O
-        const size_t SZ_W  = 700 * 1024 * 1024;    // 700MB weights
-        const size_t SZ_SCR = 64 * 1024 * 1024;    // 64MB scratch
-        const size_t SZ_INSTR = 512 * 1024;         // 512KB instructions
+        // layer.xclbin DDR bank layout:
+        //   group_id(1)=65537 (DDR bank 1, for instruction buffer)
+        //   group_id(3)=65536 (DDR bank 0, for weight/activation BOs)
+        // Instruction and data MUST be in SEPARATE banks!
+        const size_t SZ_DATA = 1024 * 1024 * 1024ULL; // 1GB shared data (bank 0)
+        const size_t SZ_INSTR = 512 * 1024;           // 512KB instructions (bank 1)
         
         printf("Allocating BOs...\n");
+        int gid_data = kern.group_id(3);  // 65536 = DDR bank 0
+        int gid_inst = kern.group_id(1);  // 65537 = DDR bank 1
+        printf("  data group_id=%d, inst group_id=%d\n", gid_data, gid_inst);
         try {
-            bo_in     = xrt::bo(dev, SZ_IO, XRT_BO_FLAGS_HOST_ONLY, kern.group_id(3));
-            bo_out    = xrt::bo(dev, SZ_IO, XRT_BO_FLAGS_HOST_ONLY, kern.group_id(5));
-            bo_w      = xrt::bo(dev, SZ_W,  XRT_BO_FLAGS_HOST_ONLY, kern.group_id(4));
-            bo_scratch= xrt::bo(dev, SZ_SCR,XRT_BO_FLAGS_HOST_ONLY, kern.group_id(4));
-            bo_instr  = xrt::bo(dev, SZ_INSTR, XCL_BO_FLAGS_CACHEABLE, kern.group_id(1));
+            // All data BOs in the SAME DDR bank (bank 0). The FLM instructions
+            // reference different regions within a single DDR contiguous space.
+            // All 4 data BOs point to ONE shared buffer so FLM instructions
+            // can address any DDR offset within it regardless of BO arg index.
+            // XRT allocates one 1GB physically-contiguous region in DDR bank 0.
+            xrt::bo bo_all(dev, SZ_DATA, XRT_BO_FLAGS_HOST_ONLY, gid_data);
+            bo_in     = bo_all;
+            bo_w      = bo_all;
+            bo_out    = bo_all;
+            bo_scratch= bo_all;
+            // Instruction BO in SEPARATE bank (bank 1, cacheable)
+            bo_instr  = xrt::bo(dev, SZ_INSTR, XCL_BO_FLAGS_CACHEABLE, gid_inst);
         } catch (const std::exception& e) {
             fprintf(stderr, "FAIL: BO: %s\n", e.what()); return false;
         }
