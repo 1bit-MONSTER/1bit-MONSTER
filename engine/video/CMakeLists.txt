@@ -36,8 +36,19 @@ if(SD_NPU)
     )
 endif()
 
+# Smoke test (no model needed — validates API, cache, and config)
+add_executable(smoke_test
+    src/smoke_test.cpp
+)
+target_include_directories(smoke_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.cpp/src
+)
+target_link_libraries(smoke_test PRIVATE
+    stable-diffusion
+)
+
 # Install
-install(TARGETS video_engine RUNTIME DESTINATION bin)
+install(TARGETS video_engine smoke_test RUNTIME DESTINATION bin)
 
 # Copy GGUF model download helper
 configure_file(
