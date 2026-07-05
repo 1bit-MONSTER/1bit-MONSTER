@@ -1,5 +1,6 @@
 # NPU Engine QKV Weight-Cache Corruption — Root Cause (July 5, 2026)
 
+> **STATUS: FIXED** by `tools/gen_hf_cache.py`. See `/tmp/hf_weights_cache/`.
 > Layer-0 substage trace isolates the QKV GEMM blowup to the HF INT8 weight
 > cache, **not** the kernel, **not** `dynamic_ascale`, and **not** the prefill
 > Q-indexing stride. The stride bug (`f668ef76`) was real but independent and

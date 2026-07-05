@@ -69,7 +69,7 @@ decode step.
 from prefill-final h directly), THEN forward pass on the sampled token to
 produce h for the next iteration. Commit `21864a41`.
 
-## Root Cause #4: HF INT8 weight cache corruption — the actual blocker
+## Root Cause #4: HF INT8 weight cache corruption — FIXED
 
 ### Update (July 5)
 
@@ -114,7 +114,22 @@ The cache generation script (not in the repo) produced wrong bytes. This is
 why the engine emits gibberish even at `npt=1` after both the stride fix and
 the decode off-by-one fix.
 
-### Severity
+### Fix
+
+**`tools/gen_hf_cache.py`** — dequantizes Q4NX projection weights to float,
+transposes to `[in, out]` layout, fuses Q/K/V and Gate/Up per the engine's
+GEMM conventions, quantizes to INT8 with a single global scale `amax/127`
+(matching `packB()`), and writes to `/tmp/hf_weights_cache/`. Run once after
+engine build; cache persists across engine runs.
+
+**Verification**:
+```bash
+python3 tools/cb_weight_compare.py   # cos_sim > 0.999 per block
+rm -rf /tmp/cb_trace && engine/npu/build/npu_engine_cb_trace --trace
+python3 tools/cb_trace_diff.py        # h_out cos_sim = 1.000, rel_L2 < 0.01
+```
+
+### Severity (before fix)
 
 Until the HF INT8 weight cache is regenerated with correct weights, no kernel,
 `dynamic_ascale`, stride, or attention fix can produce coherent output. The
