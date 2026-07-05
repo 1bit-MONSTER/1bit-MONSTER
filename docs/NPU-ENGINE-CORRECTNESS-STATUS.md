@@ -69,100 +69,96 @@ decode step.
 from prefill-final h directly), THEN forward pass on the sampled token to
 produce h for the next iteration. Commit `21864a41`.
 
-## Remaining Issue: prefill Q addressing stride mismatch (located, not fixed)
+## Root Cause #4: HF INT8 weight cache corruption — the actual blocker
 
-### Evidence
+### Update (July 5)
 
-Layer-by-layer trace comparing engine dumps (`/tmp/layer_*.bin`) against
-HuggingFace reference produces:
+The prefill Q stride bug below **was real and is now fixed** (commit `f668ef76`).
+However, the single-token `--trace` probe proved it was **not the sole root
+cause**: a deeper, independent weight-cache corruption affects even `npt=1`
+where the stride bug is a no-op (`pi=0` makes both strides equivalent).
+
+### Layer-0 substage trace (npt=1, single token)
+
+Using the `--trace` mode added to `npu_engine_cb.cpp` (+ `tools/cb_trace_diff.py`):
 
 ```
-Layer   HF norm    Eng norm   Cos sim   Status
-  L0     8.45      14.03     0.235     ⚠️  already diverges
-  L1    10.16      16.79     0.135     ⚠️
-  L2    10.54    6934.47     0.580     ❌  catastrophic blowup
-  L3+   grows     ~6930      ~0.6      ❌  stays bloated
+key                n     cos_sim       max_abs    rel_L2  status
+h_ln1           1024     1.00000       0.00000   0.00000  OK          ← RMSNorm bit-exact
+q_flat          2048    -0.20569       4.40518   2.25242  BLOWUP       ← QKV GEMM blowup
+k_flat          1024    -0.11831      14.49391   1.18006  BLOWUP
+v_flat          1024    -0.26305       0.52687   2.49451  BLOWUP
 ```
 
-Cos_sim=0.24 at layer 0 is **far too low for pure INT8 quantization noise**
-(per-tensor INT8 simulation matches float to within 0.01 here). This points
-to an addressing bug.
+`h_ln1` (RMSNorm output) matches the HF float reference bit-exactly; the
+very next stage — `q_flat`, `k_flat`, `v_flat` from the QKV GEMM `cq.go()` —
+blows up to cos_sim ≈ −0.21. Everything downstream inherits the corruption.
 
-### The bug
+### Direct weight comparison (`tools/cb_weight_compare.py`)
 
-In `npu_engine_cb.cpp`, prefill:
+The engine reads INT8 weights from `/tmp/hf_weights_cache/qkv_*.bin` with a
+global scale. Dequantizing those bytes and comparing to the Q4NX INT4-dequant
+float reference gave:
 
-```cpp
-// Line 215: cq.go writes QKV with stride 4096 per token (correct)
-cq.go(l, ..., qo_b.data(), 4096);
+```
+=== layer 0 ===  cache scale (qk) = 0.005075
+  Q block  cos_sim=-0.23716  max_abs=1.40656  rel_L2=1.13865  ← WEIGHTS_DIVERGE
+  K block  cos_sim=-0.24395  max_abs=0.82517  rel_L2=1.14458
+  V block  cos_sim=-0.24367  max_abs=0.27199  rel_L2=1.14214
 
-// Line 219: Q normalization reads with stride NH*HD=2048 ← WRONG
-qo_b[pi*NH*HD + hh*HD + d]  // should be pi*4096
-
-// Line 220: K/V reads with stride 4096 (correct)
-qo_b[pi*4096 + 2048 + kvh*HD]
-
-// Line 228: Attention scores read Q with same wrong stride 2048
-qo_b[pi*NH*HD + hh*HD + d]  // should be pi*4096
-
-// Line 229: attention output stride also uses NH*HD
-at_b[pi*NH*HD + hh*HD + d]
+=== layer 1 (and 2) ===  same pattern: cos_sim ≈ −0.24 across ALL blocks
 ```
 
-The QKV fused buffer stores Q[0:2048], K[2048:3072], V[3072:4096] for each
-token with a per-token stride of 4096. But the Q-norm and attention loops
-read Q with a stride of `NH*HD = 2048`, which is only half the correct stride.
-
-For token 1 (pi=1):
-- Correct Q offset: `1*4096 = 4096` (reads Q from second token's block)
-- Buggy offset: `1*2048 = 2048` (reads K from the FIRST token's block)
-
-For prefill with npt=9, token pi's Q is read from `qo_b[pi*2048+...]`, which
-reads the FIRST half of each 4096-stride QKV block — meaning tokens 1..npt-1
-read K-sections from earlier tokens as if they were Q-sections. This produces
-garbage Q-values for all tokens except pi=0, causing the cos_sim=0.24
-divergence at layer 0.
-
-**The attention output stride `at_b[pi*NH*HD + ...]` is fictional** — at has
-shape `XM*NH*HD` but the O-proj GEMM consumes `at_b.data()` with per-token
-stride `NH*HD`. Since at_b is only ever indexed via `pi*NH*HD`, this stride
-is actually self-consistent (the bug is in qo_b indexing only, not at_b).
+A negative cos_sim means the cached INT8 weights are **uncorrelated garbage**.
+The cache generation script (not in the repo) produced wrong bytes. This is
+why the engine emits gibberish even at `npt=1` after both the stride fix and
+the decode off-by-one fix.
 
 ### Severity
 
-This is the **confirmed root cause** of the incoherent-multilingual-token
-output for any prefill with `npt > 1`. The single-token case (npt=1) is
-unaffected (pi=0 makes both strides equivalent, since `0*2048 == 0*4096`),
-which is why scaling benchmarks "passed" — they only tested npt=1.
+Until the HF INT8 weight cache is regenerated with correct weights, no kernel,
+`dynamic_ascale`, stride, or attention fix can produce coherent output. The
+blowup originates in the QKV GEMM input **weights**, not the GEMM itself.
 
-## Fix Plan
+### Fix
 
-Replace all `qo_b[pi*NH*HD + ...]` with `qo_b[pi*4096 + ...]` in the
-prefill Q-norm loop (line 219) and attention score loop (line 228).
+Regenerate `/tmp/hf_weights_cache/qkv_<l>.bin` from correct BF16 (or Q4NX-
+dequant) float weights. The file format is:
+- 4,194,304 bytes int8 per layer = `[in=1024, out=4096]` (transposed for A@B)
+- Columns [0:2048] = Q, [2048:3072] = K, [3072:4096] = V
+- Single global scale = `amax/127` stored in `scales_<l>.bin` (4 float32s: qk, o_, g_, d_)
 
-```cpp
-// Before:
-qo_b[pi*NH*HD + hh*HD + d]
-
-// After:
-qo_b[pi*4096 + hh*HD + d]
+Then verify with:
+```bash
+python3 tools/cb_weight_compare.py     # expect cos_sim > 0.95 per block
+python3 tools/cb_trace_diff.py          # expect h_ln1 through h_out all OK
 ```
 
-The `at_b[pi*NH*HD + ...]` indexing is self-consistent and can remain as-is
-(it just describes the activation buffer layout — the O-proj GEMM uses
-`at_b.data()` with stride `NH*HD`, so the buffer's effective stride IS
-`NH*HD`).
+### Bug No. 3 (bonus): prefill Q addressing stride mismatch (FIXED)
+
+Independent bug that only affected `npt > 1`. The QKV fused buffer stores rows
+with per-token stride 4096, but the Q-norm and attention-score loops read Q
+with stride `NH*HD=2048` (`qo_b[pi*NH*HD + hh*HD + d]` instead of
+`qo_b[pi*4096 + hh*HD + d]`). Token `pi >= 1` reads K from token `pi-1`'s
+block as if it were Q.
+
+**Fix**: Replace `pi*NH*HD` with `pi*4096` in the two loops. `at_b` indexing
+is self-consistent (it's a dedicated buffer, not a shared buffer). Commit
+`f668ef76`.
 
 ## Files Changed
 
 | File | Change |
 |------|--------|
 | `engine/npu/xclbins/n1_core_i8_v2.py` | Switch to matmul_i8_i32 + int32 output |
-| `engine/npu/src/npu_engine_cb.cpp` | RMSNorm clipping, i32 Cm buffer, decode off-by-one fix, HF cache loader |
+| `engine/npu/src/npu_engine_cb.cpp` | RMSNorm clipping, i32 Cm buffer, decode off-by-one fix, HF cache loader, `--trace` mode + substage dump |
 | `engine/npu/src/i4_loader.h` | New: raw I4 expander (for when correct Q4NX format is known) |
 | `tools/layer_trace.py` | Layer-by-layer trace with HF reference comparison |
 | `tools/chunk_dequant.py` | Python Q4NX dequant (byte-for-byte match with C, for debugging) |
-| `docs/NPU-ENGINE-CORRECTNESS-STATUS.md` | This document |
+| `tools/cb_trace_diff.py` | Per-substage engine-vs-HF cos_sim/max_abs diff |
+| `tools/cb_weight_compare.py` | INT8-cache vs Q4NX-dequant weight comparison |
+| `docs/NPU-QKV-CACHE-WEIGHTS-BROKEN.md` | Focused deep-trace documenting the weight-cache corruption |
+| `docs/NPU-ENGINE-CORRECTNESS-STATUS.md` | This document (updated) |
 
 ## Commits
 
@@ -175,4 +171,6 @@ cd73e137 fix(npu): match INT8 xclbin generator output width to host's i32 Cm buf
 060898fc docs(npu): comprehensive correctness investigation report + raw I4 loader + layer trace tools
 83b833c9 docs(npu): retract false 'dequant 800x' theory — correct offset verified, GEMM confirmed bit-exact
 21864a41 fix(npu): order decode loop LM-head BEFORE forward pass (off-by-one)
+f668ef76 fix(npu): prefill Q indexing stride — pi*NH*HD → pi*4096 (QKV fused buffer)
+<new>    docs(npu): isolate QKV GEMM blowup to HF INT8 weight cache corruption
 ```
