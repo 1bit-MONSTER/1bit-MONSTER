@@ -144,6 +144,23 @@ pub const Dispatcher = struct {
         };
     }
 
+    /// Get the assignment for a specific layer from a policy (no dispatcher instance needed).
+    pub fn getPolicyAssignment(policy: DispatchPolicy, layer: u32) LayerAssignment {
+        return switch (policy) {
+            .npu_only => .{ .attention = .npu, .ffn = .npu, .qkv = .npu },
+            .gpu_only => .{ .attention = .gpu, .ffn = .gpu, .qkv = .gpu },
+            .layer_by_layer => if (layer % 2 == 0)
+                .{ .attention = .npu, .ffn = .npu, .qkv = .npu }
+            else
+                .{ .attention = .gpu, .ffn = .gpu, .qkv = .gpu },
+            .attention_on_npu => .{ .attention = .npu, .ffn = .gpu, .qkv = .gpu },
+            .ffn_on_npu => .{ .attention = .gpu, .ffn = .npu, .qkv = .gpu },
+            .qkv_on_npu => .{ .attention = .gpu, .ffn = .gpu, .qkv = .npu },
+            .prefill_npu_decode_gpu => .{ .attention = .gpu, .ffn = .gpu, .qkv = .gpu },
+            .auto => .{ .attention = .gpu, .ffn = .npu, .qkv = .npu },
+        };
+    }
+
     /// Get the assignment for a specific layer.
     pub fn getAssignment(self: *const Dispatcher, layer: u32) LayerAssignment {
         if (layer >= self.n_layers) {

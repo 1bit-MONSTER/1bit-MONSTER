@@ -11,6 +11,26 @@
 
 ---
 
+## Headline Numbers — July 5-6, 2026 (single source of truth: docs/wiki/performance.md)
+
+| Engine | Speed | Status | Model |
+|--------|:-----:|--------|-------|
+| **NPU FLM** (production) | **94 tok/s** | ✅ measured, coherent | Qwen3-0.6B |
+| **GPU ternary** (Vulkan) | **279 tok/s** | ✅ measured, coherent | Bonsai-1.7B Q2_0 (1.58-bit) |
+| **GPU 1-bit** (llama.cpp) | **381 tok/s** | measured (llama.cpp) | Qwen2-0.5B IQ1_S |
+| **GPU ZINC** (Vulkan) | **22 tok/s** | ✅ measured, coherent | Bonsai-1.7B F16 |
+| **DSpark spec-decode** | **~572 tok/s** | 📊 projected (94×5.9; draft training) | Qwen3-0.6B |
+| **NPU fused** | **291 tok/s** | ⚙️ raw throughput — output not yet coherent | Qwen3-0.6B |
+| **NPU v12** | **97 tok/s** | ⚙️ raw throughput — output not yet coherent | Qwen3-0.6B |
+
+**Only ✅ numbers are quoted as production.** The validated 1-bit headline is
+**279 tok/s** native ternary on the Radeon 8060S (12.6× over the 22 tok/s F16 of
+the same model). DSpark 572 is a projection (5.90× acceptance is measured, the
+572 tok/s end-to-end is not). Fused 291 / v12 97 are raw kernel throughput on a
+path whose output is not yet coherent. See docs/wiki/performance.md.
+
+---
+
 ## 1-Bit Model Benchmarks — July 4, 2026 (refresh 2)
 
 Every model at ≤1.5625 bpw (true 1-bit class). Measured on **Radeon 8060S GPU** via Vulkan. All numbers fresh from live runs with 3 repetitions — no cached data.
@@ -175,15 +195,21 @@ NPU forward call hangs on this system (driver/firmware issue) — needs `xbutil 
 
 ## Raw C++ Engine — All 5 Models (M=32 batch, OpenMP)
 
-These are the open-source C++ engine numbers — no FLM, no proprietary code. Single binary, auto-detect.
+Uses the torch2aie fused xclbin with norm weight clipping for 28-layer inference.
+Weight stream pre-generated at `/tmp/npu_layer_weights_clipped/` (263 MB).
 
-| Model | H | IM | Size | Prefill | Decode | Tok/s | Layers | Status |
-|-------|---|----|------|---------|--------|-------|--------|--------|
-| **Qwen3-0.6B** | 1024 | 3072 | 610 MB | 14 ms/tok | **36 ms/tok** | **28** | 28/28 | ✅ |
-| **Gemma4-E2B** | 1536 | 6144 | 4.7 GB | 20 ms/tok | **62 ms/tok** | **16** | 35/35 | ✅ |
-| **Qwen3-VL-4B** | 2560 | 9728 | 3.2 GB | 34 ms/tok | **93 ms/tok** | **11** | 36/36 | ✅ |
-| **Llama-3.1-8B** | 4096 | 14336 | 5.7 GB | 47 ms/tok | **100 ms/tok** | **10** | 32/32 | ✅ |
-| **Qwen3-8B** | 4096 | 12288 | 6.0 GB | 49 ms/tok | **127 ms/tok** | **8** | 36/36 | ✅ |
+| Metric | Value |
+|--------|-------|
+| Boot time | 1.5s (model + 263MB weights + kernel) |
+| Prefill | 497 ms/tok (20 tok prompt) |
+| Decode | **1.9 tok/s** (514 ms/tok) |
+| Bottleneck | NPU cleanup between layer dispatches (28 × 20ms = 560ms/tok) |
+
+Norm weight clipping (max 2.0) prevents bf16 overflow at deep layers. All 28 layers
+produce valid output. First token validated: 51614 = "-built".
+
+**Next**: Use 8 concurrent NPU hw_contexts to pipeline layer dispatches and avoid
+cleanup overhead, targeting 8× improvement → ~15 tok/s.
 
 **All 5 models verified on Strix Halo NPU. Zero crashes. Single auto-detecting engine.**
 **Scale is linear with model size — 36→127 ms/tok from 0.6B→8B.**
@@ -215,7 +241,7 @@ These are the open-source C++ engine numbers — no FLM, no proprietary code. Si
 | Open-source engine | ✅ C++23, MIT, 97 tok/s | ❌ |
 | Models supported | **5** (0.6B, 8B, VL-4B, Llama, Gemma4) | 10+ (8B-focused) |
 | Auto-detect | ✅ Q4NX header parse | ❌ Per-model Python build |
-| Binary size | 120 KB | Python + 114KB xclbins |
+| Binary size | 38 KB (fused) / 120 KB (standalone) | Python + 114KB xclbins |
 | Python deps | **0** | Full MLIR-AIE + torch toolchain |
 | Daemon (HTTP API) | ✅ OpenAI-compatible, port 9090 | ✅ Built-in |
 | Systemd unit | ✅ turbo by default | ❌ Manual start |

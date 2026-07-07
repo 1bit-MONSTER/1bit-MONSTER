@@ -3,6 +3,7 @@
  *  Weight format: Q4NX compact (9.4MB per layer, from pack_fused_weights.py).
  *  Target: 1 dispatch/layer vs 4. Then M=32 batch on top. */
 #include <cstdio>
+#include <string>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -24,8 +25,9 @@ int main(int argc,char**argv){
     constexpr int KCACHE_SZ=KCACHE_DW*4, WEIGHT_SZ=WEIGHT_DW*4, OUT_SZ=OUT_DW*4, HID_SZ=HID_DW*4;
 
     // Xclbin path
-    const char*XCL="/home/bcloud/torch2aie/build/qwen3_06b_layer/design_full_layer.xclbin";
-    const char*INS="/home/bcloud/torch2aie/build/qwen3_06b_layer/insts_full_layer.txt";
+    const std::string xd=[]{const char*e=getenv("NPU_XCLBIN_DIR");return e?std::string(e):std::string("/home/bcloud/torch2aie/build/qwen3_06b_layer");}();
+    const std::string XCL=xd+"/design_full_layer.xclbin";
+    const std::string INS=xd+"/insts_full_layer.txt";
 
     printf("Init NPU...\n");
     xrt::device dev(0);
@@ -33,14 +35,14 @@ int main(int argc,char**argv){
     // Load instruction stream
     printf("Load instructions...\n");
     std::vector<uint32_t> ins;
-    {FILE*f=fopen(INS,"rb");if(!f){printf("FAIL: no insts\n");return 1;}
+    {FILE*f=fopen(INS.c_str(),"rb");if(!f){printf("FAIL: no insts\n");return 1;}
      fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
      ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
      printf("  insts: %zu dwords\n",ins.size());}
 
     // Register xclbin
     printf("Register xclbin...\n");
-    auto xc=std::make_unique<xrt::xclbin>(std::string(XCL));
+    auto xc=std::make_unique<xrt::xclbin>(XCL);
     dev.register_xclbin(*xc);
     auto hc=std::make_unique<xrt::hw_context>(dev,xc->get_uuid());
     auto k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
@@ -71,9 +73,9 @@ int main(int argc,char**argv){
     memset(bO->map(),0,OUT_SZ);    memset(bH->map(),0,HID_SZ);
 
     // Load packed weights
-    const char*WF="/home/bcloud/npu-sandbox/npu-infer/build/int8/fused_weights_l0.bin";
-    {auto fd=platform_open_read(WF);if(fd<0){printf("No packed weights, zeros\n");}
-     else {platform_stat st;platform_fstat(fd,&st);
+    const std::string WF=xd+"/fused_weights_l0.bin";
+    {int fd=open(WF.c_str(),O_RDONLY);if(fd<0){printf("No packed weights, zeros\n");}
+     else {struct stat st;fstat(fd,&st);
       size_t rs=std::min((size_t)st.st_size,(size_t)WEIGHT_SZ);
       read(fd,bW->map(),rs);platform_close(fd);
       printf("  weights: %zu bytes loaded\n",rs);}}

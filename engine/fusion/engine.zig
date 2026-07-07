@@ -36,6 +36,36 @@ pub const GenerationParams = sched_mod.GenerationParams;
 pub const Dispatcher = dispatcher.Dispatcher;
 pub const DispatchPolicy = dispatcher.DispatchPolicy;
 pub const CrossBackendMemory = memory.CrossBackendMemory;
+pub const Connection = struct {
+    stream: std.net.Stream,
+
+    pub fn init(stream: std.net.Stream) Connection {
+        return .{ .stream = stream };
+    }
+
+    pub fn close(self: *Connection) void {
+        self.stream.close();
+        self.* = undefined;
+    }
+
+    pub fn reader(self: *Connection) std.net.Stream.Reader {
+        return self.stream.reader();
+    }
+
+    pub fn writer(self: *Connection) std.net.Stream.Writer {
+        return self.stream.writer();
+    }
+};
+
+pub const ServerConfig = struct {
+    port: u16 = 8080,
+    max_parallel: u32 = 4,
+    total_kv_pages: u32 = 1024,
+    dispatch_policy: DispatchPolicy = .auto,
+    model_path: []const u8 = "",
+    xclbin_dir: []const u8 = "",
+    model_tag: []const u8 = "",
+};
 
 const log = std.log.scoped(.fused_engine);
 

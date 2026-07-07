@@ -35,3 +35,7 @@ zig-out/
 !packaging/**/*.tar.gz
 1bit-agent/
 spec-decode/build/
+engine/lora/adapters/
+*.lora
+zinc/
+zaya-llama.cpp/

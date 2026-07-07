@@ -1,321 +1,311 @@
 //! Unified HTTP server for NPU+GPU fused inference.
-//! Serves the OpenAI-compatible /v1/chat/completions API through the FusedEngine,
-//! routing requests to NPU, GPU, or both based on the dispatch policy.
+//! Proxies inference requests to FLM (working NPU backend at 82 tok/s),
+//! adding dispatch policy metadata and support for fused:// routing.
+//!
+//! When true NPU+GPU layer fusion is ready, the proxy path is replaced
+//! with direct FusedEngine.prefill()/decodeStep() calls.
 //!
 //! @section Fused Engine
 const std = @import("std");
 
 const eng = @import("engine.zig");
 const dispatcher = @import("dispatcher.zig");
+const flm_proxy = @import("flm_proxy.zig");
 
 pub const FusedEngine = eng.FusedEngine;
-pub const Dispatcher = dispatcher.Dispatcher;
+pub const FlmProxy = flm_proxy.FlmProxy;
+pub const FlmConfig = flm_proxy.FlmConfig;
 pub const DispatchPolicy = dispatcher.DispatchPolicy;
-pub const KvPagePool = eng.KvPagePool;
-pub const Scheduler = eng.Scheduler;
-pub const Request = eng.Request;
-pub const RequestState = eng.RequestState;
-pub const GenerationParams = eng.GenerationParams;
 
 const log = std.log.scoped(.fusion_server);
 
-/// HTTP connection wrapper (similar to the GPU engine's http.zig).
-pub const Connection = struct {
-    fd: std.posix.fd_t,
-    buf_reader: std.io.BufferedReader(4096, std.fs.File.Reader),
-    conn_writer: std.fs.File.Writer,
-
-    pub fn init(fd: std.posix.fd_t) Connection {
-        const file = std.fs.File{ .handle = fd };
-        return .{
-            .fd = fd,
-            .buf_reader = std.io.bufferedReader(file.reader()),
-            .conn_writer = file.writer(),
-        };
-    }
-
-    pub fn close(self: *Connection) void {
-        std.posix.close(self.fd);
-        self.* = undefined;
-    }
-
-    pub fn reader(self: *Connection) std.io.BufferedReader(4096, std.fs.File.Reader).Reader {
-        return self.buf_reader.reader();
-    }
-
-    pub fn writer(self: *Connection) std.fs.File.Writer {
-        return self.conn_writer;
-    }
-};
-
-/// Response buffer for building HTTP responses.
-pub const ResponseBuilder = struct {
-    buf: std.ArrayList(u8),
-
-    pub fn init(allocator: std.mem.Allocator) ResponseBuilder {
-        return .{ .buf = std.ArrayList(u8).init(allocator) };
-    }
-
-    pub fn deinit(self: *ResponseBuilder) void {
-        self.buf.deinit();
-    }
-
-    pub fn reset(self: *ResponseBuilder) void {
-        self.buf.clearRetainingCapacity();
-    }
-
-    pub fn writeStatus(self: *ResponseBuilder, status: u16, status_text: []const u8) !void {
-        try self.buf.writer().print("HTTP/1.1 {d} {s}\r\n", .{ status, status_text });
-    }
-
-    pub fn writeHeader(self: *ResponseBuilder, name: []const u8, value: []const u8) !void {
-        try self.buf.writer().print("{s}: {s}\r\n", .{ name, value });
-    }
-
-    pub fn writeBody(self: *ResponseBuilder, body: []const u8) !void {
-        try self.writeHeader("Content-Length", &[_]u8{});
-        const len_str = try std.fmt.allocPrint(self.buf.allocator, "{d}", .{body.len});
-        defer self.buf.allocator.free(len_str);
-        // Re-write Content-Length with actual value by replacing the header
-        // For simplicity: append body after headers
-        try self.buf.appendSlice("\r\n");
-        try self.buf.appendSlice(body);
-    }
-
-    pub fn finish(self: *ResponseBuilder) ![]const u8 {
-        // Finalize headers if not already done
-        // Simple approach: return the buffer contents
-        return self.buf.items;
-    }
-
-    pub fn sendJson(self: *ResponseBuilder, conn: *Connection, status: u16, json_body: []const u8) !void {
-        try self.writeStatus(status, if (status == 200) "OK" else if (status == 400) "Bad Request" else if (status == 404) "Not Found" else if (status == 500) "Internal Server Error" else "Unknown");
-        try self.writeHeader("Content-Type", "application/json");
-        try self.writeHeader("Access-Control-Allow-Origin", "*");
-        try self.writeHeader("Content-Length", &[_]u8{});
-        const len_str = try std.fmt.allocPrint(self.buf.allocator, "{d}", .{json_body.len});
-        defer self.buf.allocator.free(len_str);
-        try self.writeHeader("Content-Length", len_str);
-        try self.buf.appendSlice("\r\n");
-        try self.buf.appendSlice(json_body);
-        try conn.writer().writeAll(self.buf.items);
-        self.reset();
-    }
-};
-
-/// Fused engine server configuration.
-pub const ServerConfig = struct {
-    port: u16 = 8080,
-    max_parallel: u32 = 4,
-    total_kv_pages: u32 = 1024,
-    dispatch_policy: DispatchPolicy = .auto,
-    model_path: []const u8 = "",
-    xclbin_dir: []const u8 = "",
-    model_tag: []const u8 = "",
-};
-
-/// Handle one HTTP request on the fused engine server.
-pub fn handleRequest(
-    conn: *Connection,
-    engine: *FusedEngine,
+/// Parsed HTTP request.
+const HttpRequest = struct {
+    method: []const u8,
+    path: []const u8,
+    body: []const u8,
     allocator: std.mem.Allocator,
-) !void {
-    var resp = ResponseBuilder.init(allocator);
-    defer resp.deinit();
+
+    fn deinit(self: *HttpRequest) void {
+        self.allocator.free(self.body);
+    }
+};
+
+/// Parse an HTTP request from a connection.
+fn parseRequest(conn: *eng.Connection, allocator: std.mem.Allocator) !HttpRequest {
+    const reader = conn.reader();
 
     // Read request line
-    const reader = conn.reader();
-    const request_line = reader.readUntilDelimiterAlloc(allocator, '\n', 4096) catch |err| {
-        log.warn("Failed to read request line: {s}", .{@errorName(err)});
-        try resp.sendJson(conn, 400, "{\"error\":\"bad request\"}");
-        return;
-    };
+    const request_line = try reader.readUntilDelimiterAlloc(allocator, '\n', 4096);
     defer allocator.free(request_line);
     const req = std.mem.trim(u8, request_line, "\r\n ");
 
-    // Parse method and path
     var parts = std.mem.splitScalar(u8, req, ' ');
-    const method = parts.next() orelse {
-        try resp.sendJson(conn, 400, "{\"error\":\"bad request\"}");
+    const method = try allocator.dupe(u8, parts.next() orelse return error.BadRequest);
+    const path = try allocator.dupe(u8, parts.next() orelse return error.BadRequest);
+
+    // Read headers
+    var content_length: usize = 0;
+    while (true) {
+        const header_line = try reader.readUntilDelimiterAlloc(allocator, '\n', 4096);
+        defer allocator.free(header_line);
+        const trimmed = std.mem.trim(u8, header_line, "\r\n ");
+        if (trimmed.len == 0) break;
+
+        // Parse Content-Length
+        if (std.ascii.indexOfIgnoreCase(trimmed, "content-length:")) |_| {
+            const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse continue;
+            const value_str = std.mem.trim(u8, trimmed[colon + 1 ..], " ");
+            content_length = std.fmt.parseInt(usize, value_str, 10) catch 0;
+        }
+    }
+
+    // Read body
+    const body = if (content_length > 0 and content_length < 65536)
+        try reader.readNoEofAlloc(allocator, content_length)
+    else
+        try allocator.alloc(u8, 0);
+
+    return HttpRequest{
+        .method = method,
+        .path = path,
+        .body = body,
+        .allocator = allocator,
+    };
+}
+
+/// Format an HTTP response.
+fn formatResponse(allocator: std.mem.Allocator, status: u16, content_type: []const u8, body: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    const status_text = switch (status) {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        else => "Unknown",
+    };
+    try buf.writer().print("HTTP/1.1 {d} {s}\r\n", .{ status, status_text });
+    try buf.writer().print("Content-Type: {s}\r\n", .{content_type});
+    try buf.writer().print("Content-Length: {d}\r\n", .{body.len});
+    try buf.writer().print("Access-Control-Allow-Origin: *\r\n", .{});
+    try buf.writer().print("Connection: close\r\n", .{});
+    try buf.writer().print("\r\n", .{});
+    try buf.writer().writeAll(body);
+    return buf.items;
+}
+
+/// Tag a response with dispatch policy metadata.
+fn tagWithPolicy(allocator: std.mem.Allocator, body: []const u8, policy: DispatchPolicy, device: []const u8) ![]u8 {
+    // Insert x-dispatch-policy and x-device into the JSON response
+    // Simple: prepend a header-like prefix. But for JSON, we add fields.
+    // Since we're proxying, just return the body as-is and let the metadata
+    // come through the x- headers. For now, no JSON transformation needed.
+    _ = allocator;
+    _ = policy;
+    _ = device;
+    return body;
+}
+
+/// Handle one HTTP request.
+pub fn handleRequest(
+    conn: *eng.Connection,
+    proxy: *FlmProxy,
+    policy: DispatchPolicy,
+    allocator: std.mem.Allocator,
+) !void {
+    const req = parseRequest(conn, allocator) catch |err| {
+        log.warn("Failed to parse request: {s}", .{@errorName(err)});
+        const resp = try formatResponse(allocator, 400, "application/json", "{\"error\":\"bad request\"}");
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
         return;
     };
-    const path = parts.next() orelse {
-        try resp.sendJson(conn, 400, "{\"error\":\"bad request\"}");
-        return;
-    };
+    defer req.deinit();
+    defer allocator.free(req.method);
+    defer allocator.free(req.path);
 
-    _ = method;
-
-    // Route to handler
+    const path = req.path;
+    // Route
     if (std.mem.eql(u8, path, "/health")) {
-        try resp.sendJson(conn, 200, "{\"status\":\"ok\"}");
+        const resp = try formatResponse(allocator, 200, "application/json",
+            "{\"status\":\"ok\",\"backend\":\"npu-flm\",\"dispatch_policy\":\"" ++ @tagName(policy) ++ "\"}");
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
+
     } else if (std.mem.eql(u8, path, "/v1/chat/completions")) {
-        try handleChatCompletions(conn, engine, &resp, reader, allocator);
+        try handleChatCompletions(conn, proxy, req.body, policy, allocator);
+
     } else if (std.mem.eql(u8, path, "/v1/completions")) {
-        try handleCompletions(conn, engine, &resp, reader, allocator);
+        try handleCompletions(conn, proxy, req.body, policy, allocator);
+
     } else if (std.mem.eql(u8, path, "/v1/models")) {
-        try handleModels(conn, engine, &resp, allocator);
+        try handleModels(conn, proxy, policy, allocator);
+
     } else {
-        try resp.sendJson(conn, 404, "{\"error\":\"not found\"}");
+        const resp = try formatResponse(allocator, 404, "application/json", "{\"error\":\"not found\"}");
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
     }
 }
 
 fn handleChatCompletions(
-    conn: *Connection,
-    _: *FusedEngine,
-    resp: *ResponseBuilder,
-    reader: anytype,
+    conn: *eng.Connection,
+    proxy: *FlmProxy,
+    body: []const u8,
+    policy: DispatchPolicy,
     allocator: std.mem.Allocator,
 ) !void {
-    // engine unused until routing is wired
-    // Read headers and body
-    skipHeaders(reader, allocator) catch {};
-
-    const body = reader.readUntilDelimiterAlloc(allocator, '\n', 65536) catch |err| {
-        log.warn("Failed to read request body: {s}", .{@errorName(err)});
-        try resp.sendJson(conn, 400, "{\"error\":\"bad request\"}");
-        return;
-    };
-    defer allocator.free(body);
-
-    // Parse JSON body
-    const parsed = std.json.parseFromSlice(
-        std.json.Value,
-        allocator,
-        body,
-        .{ .ignore_unknown_fields = true },
-    ) catch |err| {
-        log.warn("Failed to parse JSON: {s}", .{@errorName(err)});
-        try resp.sendJson(conn, 400, "{\"error\":\"invalid json\"}");
-        return;
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value;
-
-    // Extract prompt from messages
-    const messages = root.object.get("messages") orelse {
-        try resp.sendJson(conn, 400, "{\"error\":\"missing messages\"}");
-        return;
-    };
-
-    // Simple extraction: take last user message content
-    const msg_array = messages.array.items;
-    // Extract prompt from last user message
-    for (msg_array) |msg| {
-        if (msg.object.get("role")) |role| {
-            if (std.mem.eql(u8, role.string, "user")) {
-                if (msg.object.get("content")) |_| {
-                    // prompt found — will wire through tokenizer
-                }
+    // Parse the request to extract model name for routing
+    var model_name: []const u8 = "qwen3:0.6b";
+    if (body.len > 0) {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{ .ignore_unknown_fields = true }) catch null;
+        if (parsed) |p| {
+            defer p.deinit();
+            if (p.value.object.get("model")) |m| {
+                model_name = m.string;
             }
         }
     }
 
-    // TODO: Tokenize, run inference, produce response
-    // For now, return a placeholder
-    try resp.sendJson(conn, 200,
-        \\{"id":"chatcmpl-fused","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from the fused NPU+GPU engine!"},"finish_reason":"stop"}]}
-    );
-    // prompt_text will be used once tokenize/route is wired
-}
+    // Determine if we should use FLM or another backend
+    const use_flm = !std.mem.startsWith(u8, model_name, "fused://");
 
-fn handleCompletions(
-    conn: *Connection,
-    _: *FusedEngine,
-    resp: *ResponseBuilder,
-    reader: anytype,
-    allocator: std.mem.Allocator,
-) !void {
-    // engine unused until routing is wired
-    skipHeaders(reader, allocator) catch {};
+    if (use_flm) {
+        // Proxy to FLM
+        const start = std.time.milliTimestamp();
+        const flm_resp = proxy.chatCompletions(body) catch |err| {
+            log.err("FLM proxy failed: {s}", .{@errorName(err)});
+            const resp = try formatResponse(allocator, 502, "application/json",
+                "{\"error\":\"backend unavailable\",\"detail\":\"" ++ @errorName(err) ++ "\"}");
+            defer allocator.free(resp);
+            try conn.writer().writeAll(resp);
+            return;
+        };
+        defer flm_resp.deinit();
+        const elapsed = std.time.milliTimestamp() - start;
 
-    const body = reader.readUntilDelimiterAlloc(allocator, '\n', 65536) catch |err| {
-        log.warn("Failed to read request body: {s}", .{@errorName(err)});
-        try resp.sendJson(conn, 400, "{\"error\":\"bad request\"}");
-        return;
-    };
-    defer allocator.free(body);
-    try resp.sendJson(conn, 200,
-        \\{"id":"cmpl-fused","object":"text_completion","choices":[{"text":"Fused NPU+GPU engine active.","index":0,"finish_reason":"stop"}]}
-    );
-}
+        // Tag response with dispatch policy via x-headers
+        // For proper JSON: add fields to FLM's response
+        // Simple approach: return FLM's response with policy in a wrapper
+        const tagged = try tagWithPolicy(allocator, flm_resp.body, policy, "npu-flm");
+        defer allocator.free(tagged);
 
-fn handleModels(
-    conn: *Connection,
-    _: *FusedEngine,
-    resp: *ResponseBuilder,
-    allocator: std.mem.Allocator,
-) !void {
-    // caps unused until routing is wired
-    // engine unused until routing is wired
+        // Rewrite body to include dispatch metadata
+        // Find the closing } and insert metadata
+        var resp_body: []const u8 = flm_resp.body;
+        if (std.mem.lastIndexOfScalar(u8, resp_body, '}')) |close_brace| {
+            const meta = try std.fmt.allocPrint(allocator,
+                ",\"x_dispatch_policy\":\"{s}\",\"x_device\":\"npu-flm\",\"x_backend_ms\":{d}",
+                .{ @tagName(policy), elapsed },
+            );
+            defer allocator.free(meta);
+            // Insert before closing brace
+            const new_body = try std.mem.concat(allocator, u8, &[_][]const u8{
+                resp_body[0..close_brace],
+                meta,
+                "}",
+            });
+            defer allocator.free(new_body);
+            resp_body = new_body;
+        }
 
-    const model_list = try std.fmt.allocPrint(allocator,
-        \\{{"object":"list","data":[{{"id":"fused-engine","object":"model","created":{d},"owned_by":"1bit.systems","description":"NPU+GPU fused inference engine (NPU INT8 GEMM + GPU attention)"}}]}}
-    , .{@as(u64, @intCast(std.time.timestamp()))});
-    defer allocator.free(model_list);
-
-    try resp.sendJson(conn, 200, model_list);
-}
-
-fn skipHeaders(reader: anytype, allocator: std.mem.Allocator) !void {
-    while (true) {
-        const line = reader.readUntilDelimiterAlloc(allocator, '\n', 4096) catch return;
-        defer allocator.free(line);
-        const trimmed = std.mem.trim(u8, line, "\r\n ");
-        if (trimmed.len == 0) return;
+        const resp = try formatResponse(allocator, flm_resp.status, "application/json", resp_body);
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
+        log.info("Chat completion proxied to FLM: {d}ms, policy={s}", .{ elapsed, @tagName(policy) });
+    } else {
+        // Fused mode: route through FusedEngine (future)
+        const resp = try formatResponse(allocator, 200, "application/json",
+            "{\"id\":\"chatcmpl-fused\",\"object\":\"chat.completion\",\"choices\":[" ++
+            "{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Fused engine active. " ++
+            "Dispatch policy: " ++ @tagName(policy) ++ "\"},\"finish_reason\":\"stop\"}]," ++
+            "\"x_dispatch_policy\":\"" ++ @tagName(policy) ++ "\",\"x_device\":\"fusion\"}");
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
     }
 }
 
+fn handleCompletions(
+    conn: *eng.Connection,
+    proxy: *FlmProxy,
+    body: []const u8,
+    policy: DispatchPolicy,
+    allocator: std.mem.Allocator,
+) !void {
+    _ = policy;
+    const flm_resp = proxy.completions(body) catch |err| {
+        log.err("FLM proxy failed: {s}", .{@errorName(err)});
+        const resp = try formatResponse(allocator, 502, "application/json",
+            "{\"error\":\"backend unavailable\",\"detail\":\"" ++ @errorName(err) ++ "\"}");
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
+        return;
+    };
+    defer flm_resp.deinit();
+
+    const resp = try formatResponse(allocator, flm_resp.status, "application/json", flm_resp.body);
+    defer allocator.free(resp);
+    try conn.writer().writeAll(resp);
+}
+
+fn handleModels(
+    conn: *eng.Connection,
+    proxy: *FlmProxy,
+    policy: DispatchPolicy,
+    allocator: std.mem.Allocator,
+) !void {
+    _ = policy;
+    const flm_resp = proxy.listModels() catch |err| {
+        log.err("FLM proxy failed: {s}", .{@errorName(err)});
+        const resp = try formatResponse(allocator, 502, "application/json",
+            "{\"error\":\"backend unavailable\",\"detail\":\"" ++ @errorName(err) ++ "\"}");
+        defer allocator.free(resp);
+        try conn.writer().writeAll(resp);
+        return;
+    };
+    defer flm_resp.deinit();
+
+    const resp = try formatResponse(allocator, flm_resp.status, "application/json", flm_resp.body);
+    defer allocator.free(resp);
+    try conn.writer().writeAll(resp);
+}
+
 /// Run the fused engine HTTP server.
-pub fn runServer(config: ServerConfig, allocator: std.mem.Allocator) !void {
-    log.info("Starting fused NPU+GPU server on port {d} (policy: {s})", .{
-        config.port, @tagName(config.dispatch_policy),
+pub fn runServer(config: eng.ServerConfig, allocator: std.mem.Allocator) !void {
+    // Initialize FLM proxy
+    const flm_config = FlmConfig{
+        .host = "127.0.0.1",
+        .port = 52625,
+        .default_model = "qwen3:0.6b",
+    };
+    var proxy = FlmProxy.init(allocator, flm_config);
+
+    const policy = config.dispatch_policy;
+
+    log.info("Fused server starting on port {d} (policy: {s}, FLM proxy: {s}:{d})", .{
+        config.port, @tagName(policy), flm_config.host, flm_config.port,
     });
 
-    // Initialize the fused engine
-    var fused = try FusedEngine.init(
-        allocator,
-        config.model_path,
-        config.xclbin_dir,
-        config.model_tag,
-        config.max_parallel,
-        config.total_kv_pages,
-        config.dispatch_policy,
-    );
-    defer fused.deinit();
-
-    // Bind and listen
-    const addr = std.posix.sockaddr_in.init(
-        std.posix.INADDR_LOOPBACK,
-        std.posix.htons(config.port),
-    );
-    const sock_fd = try std.posix.socket(
-        std.posix.AF.INET,
-        std.posix.SOCK.STREAM,
-        std.posix.IPPROTO.TCP,
-    );
-    defer std.posix.close(sock_fd);
-
-    const reuse: c_int = 1;
-    try std.posix.setsockopt(sock_fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, std.mem.asBytes(&reuse));
-
-    try std.posix.bind(sock_fd, @ptrCast(&addr), @sizeOf(@TypeOf(addr)));
-    try std.posix.listen(sock_fd, 128);
+    // Bind and listen using std.net
+    const address = try std.net.Address.parseIp("127.0.0.1", config.port);
+    var listener = try address.listen(.{
+        .reuse_address = true,
+    });
+    defer listener.deinit();
 
     log.info("Fused server listening on 0.0.0.0:{d}", .{config.port});
+    log.info("Dispatch policy: {s} — see dispatcher.zig for description", .{@tagName(policy)});
 
     // Accept loop
     while (true) {
-        var client_addr: std.posix.sockaddr = undefined;
-        var client_addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr);
-        const client_fd = std.posix.accept(sock_fd, &client_addr, &client_addr_len, 0) catch |err| {
+        var client = listener.accept() catch |err| {
             log.warn("Accept failed: {s}", .{@errorName(err)});
             continue;
         };
 
-        var conn = Connection.init(client_fd);
-        handleRequest(&conn, &fused, allocator) catch |err| {
+        var conn = eng.Connection.init(client.stream);
+        handleRequest(&conn, &proxy, policy, allocator) catch |err| {
             log.warn("Request failed: {s}", .{@errorName(err)});
         };
         conn.close();
