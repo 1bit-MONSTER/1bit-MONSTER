@@ -17,7 +17,7 @@ EPS = 1e-6
 XCLBIN = Path('/home/bcloud/torch2aie/examples/qwen3-decode-layer/build/qwen3-decode-layer-capacity-token127/design.xclbin')
 INSTS = Path('/home/bcloud/torch2aie/examples/qwen3-decode-layer/build/qwen3-decode-layer-capacity-token127/design-token127-to-token0.bin')
 MODEL_DIR = Path(os.environ.get('NPU_MODEL_DIR', os.path.expanduser('~/.config/flm/models/Qwen3-0.6B-NPU2')))
-WEIGHT_DIR = Path('/tmp/npu_layer_weights_clipped')
+WEIGHT_DIR = Path('/tmp/npu_layer_weights')
 
 class NPURunner:
     def __init__(self):
