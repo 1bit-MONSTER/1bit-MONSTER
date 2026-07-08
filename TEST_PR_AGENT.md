@@ -1,1 +1,1 @@
-# Test PR for local runner
+# PR Agent local runner test - Docker ready
