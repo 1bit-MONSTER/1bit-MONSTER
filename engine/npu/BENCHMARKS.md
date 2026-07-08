@@ -96,7 +96,7 @@ Every model at ≤1.5625 bpw (true 1-bit class). Measured on **Radeon 8060S GPU*
 - BitNet b1.58 2B (i2_s, 132 MB) and 3B (Q2_K, 1.79 GB) downloaded — `bitnet-b1.58` architecture not supported by this llama.cpp build.
 - All models found are at the IQ1_S (~1.06 bpw) and Q1_0 (1.25 bpw) levels. IQ1_M (~1.125 bpw) models exist but only as multi-sharded files too large to test.
 - Every model runs on a consumer laptop GPU (Radeon 8060S, 32 CUs, monolithic VRAM).
-- gemma3 4B is slow (26 tok/s) due to its multi-modal architecture, not the quantization.
+- gemma3 4B decodes at 122 tok/s (1.3× NPU speed) — an earlier run had measured 26 tok/s before a llama.cpp Vulkan backend update; that number is stale and has been superseded by the fresh 3-repetition measurement above.
 - All benchmarks: single GPU, Radeon 8060S, Vulkan backend. Decode measured at 64 tokens.
 
 ## Production Stack — FLM Proxy Benchmarks (July 3, 2026)
