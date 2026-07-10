@@ -206,26 +206,18 @@
 <section id="top" class="hero wrap">
   <div class="hero-grid">
     <div>
-      <span class="eyebrow">ROCm 3.5 · Radeon 8060S · gfx1151</span>
-      <h1><span class="g"><span id="decode-tok">113 tok/s</span> ROCm Ternary</span> engine.</h1>
-      <p style="margin-top:2px;font-size:clamp(22px,2.8vw,34px);font-weight:800;letter-spacing:-.025em;line-height:1.04;color:var(--blue);">Custom HIP C++ kernels. Zero Python.</p>
-      <p style="margin-top:8px;font-size:clamp(14px,1.2vw,16px);color:var(--dim);font-family:var(--mono);">AMD Strix Halo · <span id="npu-fused-tok">113 tok/s</span> ROCm decode · <span id="npu-validated-tok">28.4 TFlops</span> prefill · TQ2 · MIT</p>
-      <p class="sub">Bonsai-1.7B TQ2 ternary. 48.5 GB/s GEMV bandwidth. TQ2 packed LM head (82 MB). K_packed=512. All-ROCm runtime. Zero Python.</p>
-      <blockquote class="hero-quote">
-        <span class="qmark">"</span>
-        <div class="qbody">
-          Custom HIP C++ ternary kernels on AMD Strix Halo. <strong>113 tok/s decode</strong> (8.8 ms/tok).
-          <br><strong>28.4 TFlops</strong> prefill GEMM. <strong>48.5 GB/s</strong> GEMV bandwidth.
-          <br><span class="nop">No hipBLAS. No Python. No cloud.</span> Your GPU. <a href="https://github.com/bong-water-water-bong/1bit/blob/main/LICENSE">MIT licensed</a>.
-          <br><span style="color:var(--green);font-weight:700;font-size:13px;">▲ <span id="visitors-hero">—</span> · <a href="https://github.com/bong-water-water-bong/1bit-systems/stargazers" style="color:var(--blue);"><span id="stars-hero">—</span> stars</a></span>
-        </div>
-      </blockquote>
+      <span class="eyebrow">Strix Halo · Ryzen AI Max+ 395</span>
+      <h1><span class="g"><span data-num="binary.fused_kb">82</span>kb Binary</span> to rule them all.</h1>
+      <h1 style="margin-top:4px;font-size:clamp(22px,2.8vw,34px);"><span class="b">Fused</span></h1>
+      <h1 style="margin-top:2px;font-size:clamp(28px,3.6vw,44px);"><span class="b">NPU+GPU+CPU</span></h1>
+      <p class="sub">Auto-detect. Zero dependencies. <span data-num="benchmarks.rocm_tflops">28.4</span> TFlops ternary prefill · <span data-num="benchmarks.rocm_gemv_bw_gbps">48.5</span> GB/s GEMV. <span data-num="site.models">73</span>+ models across <span data-num="site.backends">6</span> backends. No Python. No pip. No Docker. Just g++ and run. Open source. Pure C++.</p>
       <div class="row" style="margin-top:18px;">
         <span class="pill ok"><span class="dot"></span>verified on-device</span>
-        <span class="pill info"><span class="dot"></span><span id="gemv-bw">48.5 GB/s</span> GEMV BW</span>
-        <span class="pill dark"><span class="dot"></span><span id="fused-size">82 MB</span> LM head (TQ2)</span>
-        <span class="pill ok"><span class="dot"></span><span id="npu-validated-tok2">5/6</span> kernel tests pass</span>
+        <span class="pill dark"><span class="dot"></span><span data-num="binary.fused_kb">82</span>kb fused layer · no Python · no pip</span>
+        <span class="pill info"><span class="dot"></span><span data-num="site.models">73</span>+ models · auto-detect</span>
+        <span class="pill warn" style="margin-top:6px"><span class="dot"></span><span id="npu-fused-tok">113 tok/s</span> ROCm decode</span>
       </div>
+      <div style="margin-top:10px;font-size:13px;font-weight:700;color:var(--green);">▲ <span id="visitors-hero">—</span> · <a href="https://github.com/bong-water-water-bong/1bit-systems/stargazers" style="color:var(--blue);"><span id="stars-hero">—</span> stars</a></div>
       <div class="cta-row">
         <a class="btn btn-primary btn-lg" href="https://github.com/bong-water-water-bong/1bit" target="_blank" rel="noopener">View on GitHub →</a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/bong-water-water-bong/1bit/blob/main/README.md" target="_blank" rel="noopener">README →</a>
