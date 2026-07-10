@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>1bit.systems — ROCm 113 tok/s · 28.4 TFlops · 0 Python</title>
-<meta name="description" content="Custom ROCm ternary engine: 113 tok/s decode (8.8 ms/tok), 28.4 TFlops prefill GEMM, 48.5 GB/s GEMV bandwidth. Bonsai-1.7B TQ2 on Radeon 8060S. TQ2 packed LM head (82 MB). Zero Python.">
+<title>1bit.systems — 258 KB Fused Binary · 38.49 TFlops · 0 Python</title>
+<meta name="description" content="Fused NPU+GPU+CPU inference: 258 KB binary, 38.49 TFlops ternary prefill GEMM, 196.8 GB/s TQ1 GEMV, 149.3 GB/s Sherry GEMV on AMD Strix Halo (gfx1151). Re-measured every 24h. Zero Python.">
 <meta name="google-site-verification" content="REPLACE_WITH_YOUR_GSC_CODE">
 <meta name="keywords" content="AMD Strix Halo, NPU inference, 1-bit LLM, ternary inference, local AI, NPU GPU fused engine, ROCm, XDNA 2, C++ LLM inference, AI inference without Python">
-<meta property="og:title" content="1bit.systems — ROCm 113 tok/s · 28.4 TFlops">
-<meta property="og:description" content="Custom ROCm ternary engine: 113 tok/s decode, 28.4 TFlops prefill, 48.5 GB/s GEMV. Bonsai-1.7B TQ2 on Radeon 8060S. Zero Python.">
+<meta property="og:title" content="1bit.systems — 258 KB Fused Binary · 38.49 TFlops">
+<meta property="og:description" content="Fused NPU+GPU+CPU ternary engine: 258 KB binary, 38.49 TFlops prefill GEMM, 196.8 GB/s TQ1 GEMV on Radeon 8060S. Zero Python.">
 <meta property="og:image" content="https://1bit.systems/assets/brand-lockup.svg">
 <meta property="og:url" content="https://1bit.systems">
 <meta property="og:type" content="website">
@@ -16,8 +16,8 @@
 <meta name="theme-color" content="#021621">
 <link rel="canonical" href="https://1bit.systems">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="1bit.systems — ROCm 113 tok/s ternary engine">
-<meta name="twitter:description" content="ROCm ternary: 113 tok/s decode, 28.4 TFlops prefill, 48.5 GB/s GEMV. Bonsai-1.7B TQ2 on Radeon 8060S. Zero Python.">
+<meta name="twitter:title" content="1bit.systems — 258 KB fused ternary engine">
+<meta name="twitter:description" content="Fused ternary: 258 KB binary, 38.49 TFlops prefill, 196.8 GB/s TQ1 GEMV on Radeon 8060S. Zero Python.">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
 <link rel="alternate icon" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -133,13 +133,13 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "1bit.systems",
-    "description": "Custom ROCm ternary inference engine for AMD Strix Halo (gfx1151). 113 tok/s decode, 28.4 TFlops prefill GEMM, 48.5 GB/s GEMV bandwidth. TQ2 packed. Zero Python.",
+    "description": "Fused NPU+GPU+CPU ternary inference engine for AMD Strix Halo (gfx1151). 38.49 TFlops prefill GEMM, 196.8 GB/s TQ1 GEMV, 258 KB binary. TQ2 packed. Zero Python.",
     "url": "https://1bit.systems",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux",
     "author": { "@type": "Person", "name": "bong-water-water-bong" },
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-    "featureList": ["ROCm ternary inference", "113 tok/s decode", "28.4 TFlops prefill", "48.5 GB/s GEMV", "TQ2 packed weights", "gfx1151 target", "Zero Python"]
+    "featureList": ["Fused NPU+GPU+CPU inference", "258 KB binary", "38.49 TFlops prefill", "196.8 GB/s TQ1 GEMV", "TQ2 packed weights", "gfx1151 target", "Zero Python"]
   },
   {
     "@context": "https://schema.org",
@@ -160,7 +160,7 @@
         "name": "What is 1bit.systems?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "A custom ROCm ternary inference engine for AMD Strix Halo (gfx1151). 113 tok/s decode (8.8 ms/tok), 28.4 TFlops prefill GEMM, 48.5 GB/s GEMV bandwidth. Bonsai-1.7B TQ2. Zero Python. MIT licensed."
+          "text": "A fused NPU+GPU+CPU ternary inference engine for AMD Strix Halo (gfx1151). 258 KB binary, 38.49 TFlops prefill GEMM, 196.8 GB/s TQ1 GEMV. Zero Python. MIT licensed."
         }
       },
       {
@@ -184,7 +184,7 @@
         "name": "How fast is NPU inference on Strix Halo?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "113 tok/s decode (8.8 ms/tok) on Bonsai-1.7B TQ2 ternary (Radeon 8060S, gfx1151). 28.4 TFlops prefill GEMM (2560\u00d76912\u00d72560). 48.5 GB/s GEMV bandwidth. TQ2 packed LM head (82 MB vs 621 MB FP16). K_packed=512 with per-block fp16 scales."
+          "text": "38.49 TFlops ternary prefill GEMM (2560\u00d76912\u00d72560, variant 4i-I8-APRE) on Radeon 8060S, gfx1151. 196.8 GB/s TQ1 GEMV. 149.3 GB/s Sherry GEMV, 1.85\u00d7 over the 142.9 GB/s halo baseline. 258 KB fused NPU+GPU+CPU binary. Re-measured every 24h."
         }
       }
     ]
@@ -207,15 +207,15 @@
   <div class="hero-grid">
     <div>
       <span class="eyebrow">Strix Halo · Ryzen AI Max+ 395</span>
-      <h1><span class="g"><span data-num="binary.fused_kb">82</span>kb Binary</span> to rule them all.</h1>
+      <h1><span class="g"><span data-num="binary.fused_kb">258</span> KB Binary</span> to rule them all.</h1>
       <h1 style="margin-top:4px;font-size:clamp(22px,2.8vw,34px);"><span class="b">Fused</span></h1>
       <h1 style="margin-top:2px;font-size:clamp(28px,3.6vw,44px);"><span class="b">NPU+GPU+CPU</span></h1>
-      <p class="sub">Auto-detect. Zero dependencies. <span data-num="benchmarks.rocm_tflops">28.4</span> TFlops ternary prefill · <span data-num="benchmarks.rocm_gemv_bw_gbps">48.5</span> GB/s GEMV. <span data-num="site.models">73</span>+ models across <span data-num="site.backends">6</span> backends. No Python. No pip. No Docker. Just g++ and run. Open source. Pure C++.</p>
+      <p class="sub">Auto-detect. Zero dependencies. <span data-num="benchmarks.prefill_tflops_i8apre">38.49</span> TFlops ternary prefill · <span data-num="benchmarks.tq1_gemv_gbps">196.8</span> GB/s TQ1 GEMV. <span data-num="site.models">73</span>+ models across <span data-num="site.backends">6</span> backends. No Python. No pip. No Docker. Just g++ and run. Open source. Pure C++.</p>
       <div class="row" style="margin-top:18px;">
-        <span class="pill ok"><span class="dot"></span>verified on-device</span>
-        <span class="pill dark"><span class="dot"></span><span data-num="binary.fused_kb">82</span>kb fused layer · no Python · no pip</span>
+        <span class="pill ok"><span class="dot"></span>re-measured every 24h</span>
+        <span class="pill dark"><span class="dot"></span><span data-num="binary.fused_kb">258</span> KB fused binary · no Python · no pip</span>
         <span class="pill info"><span class="dot"></span><span data-num="site.models">73</span>+ models · auto-detect</span>
-        <span class="pill warn" style="margin-top:6px"><span class="dot"></span><span id="npu-fused-tok">113 tok/s</span> ROCm decode</span>
+        <span class="pill warn" style="margin-top:6px"><span class="dot"></span><span data-num="benchmarks.prefill_tflops_i8apre">38.49</span> TFlops prefill</span>
       </div>
       <div style="margin-top:10px;font-size:13px;font-weight:700;color:var(--green);">▲ <span id="visitors-hero">—</span> · <a href="https://github.com/bong-water-water-bong/1bit-systems/stargazers" style="color:var(--blue);"><span id="stars-hero">—</span> stars</a></div>
       <div class="cta-row">
@@ -227,16 +227,16 @@
       <div style="padding:18px 20px;">
         <div class="console-hd"><span class="dots"><span style="background:var(--pink)"></span><span style="background:var(--blue)"></span><span style="background:var(--green)"></span></span><span class="mono" style="font-size:12px;color:var(--muted);">1bit.systems engine stats</span><span style="flex:1"></span><span class="eyebrow">Strix Halo</span></div>
         <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--green);font-size:10px;">ROCm decode · 8.8 ms/tok</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--green);"><span id="npu-fused-tok2">113 tok/s</span></span></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--green);font-size:10px;">Prefill (1 tok)</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--green);"><span id="npu-validated-tok3">98 tok/s</span></span></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--pink);font-size:10px;">Prefill GEMM 2560×6912×2560</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--pink);"><span id="gpu-ternary-tok">28.4 TFlops</span></span></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--muted);font-size:10px;">Bonsai TQ2 GEMV 6912×6912</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--muted);"><span id="gpu-1bit-tok">48.5 GB/s</span></span></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--blue);font-size:10px;">Ternary GEMM small M=16</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--blue);"><span id="gpu-f16-tok">51,779 tok/s</span></span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--green);font-size:10px;">Fused binary · ReleaseSmall</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--green);"><span id="npu-fused-tok2">258 KB</span></span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--green);font-size:10px;">Prefill GEMM · 4i-I8-APRE</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--green);"><span id="npu-validated-tok3">38.49 TFlops</span></span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--pink);font-size:10px;">Prefill GEMM · 4h variant</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--pink);"><span id="gpu-ternary-tok">25.04 TFlops</span></span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--muted);font-size:10px;">TQ1 GEMV 6912×2560</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--muted);"><span id="gpu-1bit-tok">196.8 GB/s</span></span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--blue);font-size:10px;">Sherry GEMV · 1.85× halo</span><span class="mono" style="font-size:14px;font-weight:800;color:var(--blue);"><span id="gpu-f16-tok">149.3 GB/s</span></span></div>
         </div>
         <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;">
           <span class="pill ok" style="font-size:10px;"><span class="dot"></span>TQ2 ternary</span>
           <span class="pill info" style="font-size:10px;"><span class="dot"></span><span id="weight-read">436 MB</span>/tok</span>
-          <span class="pill warn" style="font-size:10px;"><span class="dot"></span><span id="tflops">28.4 TFlops</span></span>
+          <span class="pill warn" style="font-size:10px;"><span class="dot"></span><span id="tflops">38.49 TFlops</span></span>
           <span class="pill dark" style="font-size:10px;"><span class="dot"></span><span id="fused-size2">82 MB</span> LM head</span>
           <span class="pill ok" style="font-size:10px;"><span class="dot"></span><span id="visitors-count">—</span> visitors (14d)</span>
         </div>
@@ -253,7 +253,7 @@
   <h2 style="margin:16px 0 8px;">One APU. Custom HIP C++ kernels on RDNA 3.5.</h2>
   <p class="lead">32 compute units on Strix Halo's Radeon 8060S. Custom ternary kernels using WMMA 16x16x16. No hipBLAS. No rocBLAS. Pure ROCm.</p>
   <div class="grid2" style="margin-top:28px;">
-    <div class="card" style="padding:24px;"><div style="display:flex;align-items:center;justify-content:space-between;"><span class="caps" style="color:var(--pink);">ROCm Ternary · RDNA 3.5</span><span class="pill ok"><span class="dot"></span>validated</span></div><div style="display:flex;align-items:baseline;gap:10px;margin-top:16px;"><span class="mono" style="font-size:46px;font-weight:800;line-height:1;color:var(--green);">113</span><span style="font-size:16px;font-weight:700;color:var(--muted);">tok/s decode</span></div><p style="margin-top:14px;font-size:14.5px;line-height:1.5;color:var(--muted);">Custom HIP C++ kernels on Radeon 8060S (gfx1151). Bonsai-1.7B TQ2 ternary. <strong>28.4 TFlops prefill GEMM</strong> (2560×6912×2560, 4h variant). <strong>48.5 GB/s GEMV bandwidth</strong>. TQ2 packed LM head reduced from 621 MB to 82 MB. K_packed=512 with per-block fp16 scales — 8× fewer dispatches.</p></div>
+    <div class="card" style="padding:24px;"><div style="display:flex;align-items:center;justify-content:space-between;"><span class="caps" style="color:var(--pink);">ROCm Ternary · RDNA 3.5</span><span class="pill ok"><span class="dot"></span>validated</span></div><div style="display:flex;align-items:baseline;gap:10px;margin-top:16px;"><span class="mono" style="font-size:46px;font-weight:800;line-height:1;color:var(--green);">38.49</span><span style="font-size:16px;font-weight:700;color:var(--muted);">TFlops prefill</span></div><p style="margin-top:14px;font-size:14.5px;line-height:1.5;color:var(--muted);">Custom HIP C++ kernels on Radeon 8060S (gfx1151). <strong>38.49 TFlops prefill GEMM</strong> (2560×6912×2560, variant 4i-I8-APRE); the 4h variant measures 25.04. <strong>196.8 GB/s TQ1 GEMV</strong>. TQ2 packed LM head reduced from 621 MB to 82 MB. K_packed=512 with per-block fp16 scales — 8× fewer dispatches.</p></div>
     <div class="card" style="padding:24px;"><div style="display:flex;align-items:center;justify-content:space-between;"><span class="caps" style="color:var(--pink);">GPU · RDNA 3.5</span><span class="pill info"><span class="dot"></span>open</span></div><div style="display:flex;align-items:baseline;gap:10px;margin-top:16px;"><span class="mono" style="font-size:46px;font-weight:800;line-height:1;color:var(--green);">32</span><span style="font-size:16px;font-weight:700;color:var(--muted);">compute units</span></div><p style="margin-top:14px;font-size:14.5px;line-height:1.5;color:var(--muted);">ROCm 7.2+ (gfx1151). Wave32 WMMA 16×16×16. Ternary GEMV/GEMM, Sherry 3:4 sparse, KV cache, prefill, Medusa. 100 exported HIP symbols in zaya-llama.cpp ggml-rocm backend. 5/6 kernel tests pass.</p></div>
   </div>
 </section>
@@ -262,12 +262,12 @@
   <span class="eyebrow">Measured on-device</span>
   <h2 style="margin:16px 0 24px;">The numbers. Verified.</h2>
   <div class="stats">
-    <div class="stat"><span class="lbl caps">ROCm decode</span><span class="val">113 <span>tok/s</span></span><span class="foot"><span class="dot" style="background:var(--green)"></span>8.8 ms/tok · Bonsai-1.7B TQ2</span></div>
-    <div class="stat"><span class="lbl caps">Prefill (1 tok)</span><span class="val">98 <span>tok/s</span></span><span class="foot"><span class="dot" style="background:var(--green)"></span>10.2 ms · Bonsai-1.7B TQ2</span></div>
-    <div class="stat"><span class="lbl caps">Prefill GEMM</span><span class="val">28.4 <span>TFlops</span></span><span class="foot"><span class="dot" style="background:var(--pink)"></span>2560×6912×2560 · 4h variant</span></div>
-    <div class="stat"><span class="lbl caps">GEMV bandwidth</span><span class="val">48.5 <span>GB/s</span></span><span class="foot"><span class="dot" style="background:var(--blue)"></span>Bonsai TQ2 · 6912×6912</span></div>
-    <div class="stat"><span class="lbl caps">Ternary M=16</span><span class="val">51,779 <span>tok/s</span></span><span class="foot"><span class="dot" style="background:var(--blue)"></span>Peak kernel throughput</span></div>
-    <div class="stat"><span class="lbl caps">Sherry GEMV</span><span class="val">19.3 <span>GB/s</span></span><span class="foot"><span class="dot" style="background:var(--pink)"></span>3:4 N:M sparse · ~2,588 tok/s</span></div>
+    <div class="stat"><span class="lbl caps">Fused binary</span><span class="val">258 <span>KB</span></span><span class="foot"><span class="dot" style="background:var(--green)"></span>NPU+GPU+CPU · ReleaseSmall</span></div>
+    <div class="stat"><span class="lbl caps">Prefill GEMM</span><span class="val">38.49 <span>TFlops</span></span><span class="foot"><span class="dot" style="background:var(--green)"></span>2560×6912×2560 · 4i-I8-APRE</span></div>
+    <div class="stat"><span class="lbl caps">Prefill GEMM</span><span class="val">25.04 <span>TFlops</span></span><span class="foot"><span class="dot" style="background:var(--pink)"></span>2560×6912×2560 · 4h variant</span></div>
+    <div class="stat"><span class="lbl caps">TQ1 GEMV</span><span class="val">196.8 <span>GB/s</span></span><span class="foot"><span class="dot" style="background:var(--blue)"></span>M=6912 K=2560 · fastest variant</span></div>
+    <div class="stat"><span class="lbl caps">halo GEMV</span><span class="val">142.9 <span>GB/s</span></span><span class="foot"><span class="dot" style="background:var(--blue)"></span>baseline kernel</span></div>
+    <div class="stat"><span class="lbl caps">Sherry GEMV</span><span class="val">149.3 <span>GB/s</span></span><span class="foot"><span class="dot" style="background:var(--pink)"></span>shipped kernel · 1.85× halo</span></div>
     <div class="stat"><span class="lbl caps">Weight read</span><span class="val">436 <span>MB</span></span><span class="foot"><span class="dot" style="background:var(--green)"></span>−54% vs FP16 LM head</span></div>
     <div class="stat"><span class="lbl caps">LM head</span><span class="val">82 <span>MB</span></span><span class="foot"><span class="dot" style="background:var(--pink)"></span>TQ2 packed · was 621 MB</span></div>
     <div class="stat"><span class="lbl caps">Kernel tests</span><span class="val">5/6</span><span class="foot"><span class="dot" style="background:var(--green)"></span>RoPE fp16 tolerance</span></div>
@@ -278,8 +278,8 @@
 
 <section id="engine" class="block">
   <span class="eyebrow">Fused Layer Engine</span>
-  <h2 style="margin:16px 0 8px;"><span id="npu-fused-tok3">113 tok/s</span>. <span id="binary-size4">28.4 TFlops</span>. TQ2. MIT.</h2>
-  <p class="lead" style="margin-bottom:28px;">Custom HIP C++ ternary kernels. Bonsai-1.7B at 113 tok/s on Radeon 8060S. TQ2 packed weights, per-block fp16 scales, 28.4 TFlops prefill GEMM.</p>
+  <h2 style="margin:16px 0 8px;"><span id="npu-fused-tok3">38.49 TFlops</span>. <span id="binary-size4">196.8 GB/s</span>. TQ2. MIT.</h2>
+  <p class="lead" style="margin-bottom:28px;">Custom HIP C++ ternary kernels on Radeon 8060S. TQ2 packed weights, per-block fp16 scales, 38.49 TFlops prefill GEMM (4i-I8-APRE), 196.8 GB/s TQ1 GEMV.</p>
   <div class="grid2" style="margin-top:0;">
     <div class="card" style="padding:24px;">
       <span class="caps" style="color:var(--green);">Optimizations applied (Jul 2026)</span>
@@ -326,7 +326,7 @@
         <div class="check" style="padding:6px 0;"><span class="ck">📱</span><span class="txt" style="font-size:13px;"><strong>Mobile</strong> — Flutter app on iOS & Android. Connect via ngrok tunnel + QR code.</span></div>
       </div>
       <div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;">
-        <span class="pill ok" style="font-size:10px;"><span class="dot"></span>113 tok/s on ROCm</span>
+        <span class="pill ok" style="font-size:10px;"><span class="dot"></span>38.49 TFlops on ROCm</span>
         <span class="pill info" style="font-size:10px;"><span class="dot"></span>Open Knowledge Format</span>
         <span class="pill warn" style="font-size:10px;"><span class="dot"></span>Zero data leaves machine</span>
       </div>
@@ -426,7 +426,7 @@
     </div>
     <div class="foot-fine">
       <div>Built with DeepSeek v4 (99.9%) · Shipped with Claude (0.1%) · One human.</div>
-      <div><span id="binary-size6">1.6 GB</span> model · <span id="npu-fused-tok4">113 tok/s</span> ROCm decode · <span id="npu-validated-tok4">28.4 TFlops</span> prefill · <span id="tflops3">28.4 TFlops</span> · MIT</div>
+      <div><span id="binary-size6">258 KB</span> fused binary · <span id="npu-fused-tok4">38.49 TFlops</span> prefill · <span id="npu-validated-tok4">196.8 GB/s</span> TQ1 GEMV · <span id="tflops3">149.3 GB/s</span> Sherry · MIT</div>
       <div style="margin-top:8px;">—bong-water-water-bong · <span class="p">"Sorry but not Sorry :)"</span></div>
       <div style="margin-top:8px;"><a href="mailto:admin@1bit.systems" style="color:var(--muted);">admin@1bit.systems</a> · <a href="/s/" style="color:#21262d;font-size:10px;" title="stats for nerds">.</a></div>
     </div>
@@ -455,8 +455,10 @@
         N=JSON.parse(nx.responseText);
         var b=N.binary,B=N.benchmarks,R=N.repo,S=N.site;
 
-        // Update meta tags
-        var title='1bit.systems — '+b.fused_kb+'kb Fused Binary · '+B.rocm_decode_tok_s+' tok/s ROCm decode · '+B.rocm_tflops+' TFlops prefill · '+S.models+'+ models';
+        // Update meta tags. Only keys present in numbers.json are used: anything
+        // validate_claims.py cannot re-measure is absent by construction.
+        var fused=b.fused_kb+' KB', pf=B.prefill_tflops_i8apre+' TFlops', tq1=B.tq1_gemv_gbps+' GB/s';
+        var title='1bit.systems — '+fused+' Fused Binary · '+pf+' prefill · '+tq1+' TQ1 GEMV · '+S.models+'+ models';
         document.title=title;
         var mt=document.querySelector('meta[property="og:title"]');if(mt)mt.content=title;
         var tt=document.querySelector('meta[name="twitter:title"]');if(tt)tt.content=title;
@@ -469,26 +471,27 @@
           if(val!==undefined)el.textContent=val;
         }
 
-        // Named IDs — binary sizes
-        var kb='1.6 GB', fkb=B.rocm_lm_head_mb+' MB';
-        set('binary-size',kb); set('binary-size2',kb); set('binary-size3',kb);
-        set('binary-size4',B.rocm_tflops+' TFlops'); set('binary-size5',kb); set('binary-size6',kb);
-        set('fused-size',fkb); set('fused-size2',fkb);
+        // Named IDs — binary size (null when the artifact was not built)
+        if(b.fused_kb!=null){
+          set('binary-size',fused); set('binary-size2',fused); set('binary-size3',fused);
+          set('binary-size5',fused); set('binary-size6',fused);
+          set('fused-size',fused); set('fused-size2',fused);
+        }
+        set('binary-size4',tq1);
 
-        // ROCm benchmark numbers
-        var dt=B.rocm_decode_tok_s+' tok/s';
-        set('npu-fused-tok',dt); set('npu-fused-tok2',dt); set('npu-fused-tok3',dt); set('npu-fused-tok4',dt);
-        set('npu-validated-tok','28.4 TFlops'); set('npu-validated-tok2','5/6'); set('npu-validated-tok3',B.rocm_prefill_tok_s+' tok/s'); set('npu-validated-tok4','28.4 TFlops');
-        set('gpu-ternary-tok',B.rocm_tflops+' TFlops');
-        set('gpu-1bit-tok',B.rocm_gemv_bw_gbps+' GB/s');
-        set('gpu-f16-tok',B.rocm_gemm_smallm_tok_s.toLocaleString()+' tok/s');
+        // Verified kernel benchmarks
+        set('npu-fused-tok',fused); set('npu-fused-tok2',fused);
+        set('npu-fused-tok3',pf); set('npu-fused-tok4',pf);
+        set('npu-validated-tok',tq1); set('npu-validated-tok3',pf); set('npu-validated-tok4',tq1);
+        set('gpu-ternary-tok',B.prefill_tflops_4h+' TFlops');
+        set('gpu-1bit-tok',tq1);
+        set('gpu-f16-tok',B.sherry_gemv_gbps+' GB/s');
 
         // TFLOPs
-        var tf=B.rocm_tflops+' TFlops', tfs=''+B.rocm_tflops;
-        set('tflops',tf); set('tflops2',tfs); set('tflops3',tf);
+        set('tflops',pf); set('tflops2',''+B.prefill_tflops_i8apre); set('tflops3',B.sherry_gemv_gbps+' GB/s');
 
         // Update meta description
-        var desc='ROCm ternary: '+B.rocm_decode_tok_s+' tok/s decode, '+B.rocm_tflops+' TFlops prefill, '+B.rocm_gemv_bw_gbps+' GB/s GEMV. Bonsai-1.7B TQ2 on Radeon 8060S. Zero Python.';
+        var desc='Fused NPU+GPU+CPU ternary: '+fused+' binary, '+pf+' prefill GEMM (4i-I8-APRE), '+tq1+' TQ1 GEMV, '+B.sherry_gemv_gbps+' GB/s Sherry on Radeon 8060S. Re-measured every 24h. Zero Python.';
         var md=document.querySelector('meta[name="description"]');if(md)md.content=desc;
         var od=document.querySelector('meta[property="og:description"]');if(od)od.content=desc;
         var td=document.querySelector('meta[name="twitter:description"]');if(td)td.content=desc;

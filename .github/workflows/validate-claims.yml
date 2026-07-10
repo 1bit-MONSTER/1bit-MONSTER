@@ -1,0 +1,32 @@
+name: Validate claims
+
+on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'benchmarks/latest.json'
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'benchmarks/latest.json'
+  workflow_dispatch:
+
+# Blocks unverifiable performance claims from reaching the deployed site.
+#
+# benchmarks/latest.json splits figures into `benchmarks` (re-measurable on real
+# gfx1151 hardware by tools/validate_claims.py) and `_unverified` (falsified, unit
+# errors, or with no source in the repo). Only the former may be published.
+#
+# This check needs no GPU: it asserts that no `_unverified` claim appears as a
+# literal in site/index.html, and that every numbers.json key the page reads
+# actually exists.
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No retired or unverifiable figure may appear in the site
+        run: python3 .github/scripts/check_claims.py
