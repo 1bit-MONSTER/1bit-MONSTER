@@ -456,7 +456,7 @@
         var b=N.binary,B=N.benchmarks,R=N.repo,S=N.site;
 
         // Update meta tags
-        var title='1bit.systems — '+b.decode_kb+' KB Single Binary · '+B.npu_fused_raw_tok_s+' tok/s NPU · '+B.npu_validated_tok_s+' tok/s validated · '+S.models+'+ models';
+        var title='1bit.systems — '+b.fused_kb+'kb Fused Binary · '+B.rocm_decode_tok_s+' tok/s ROCm decode · '+B.rocm_tflops+' TFlops prefill · '+S.models+'+ models';
         document.title=title;
         var mt=document.querySelector('meta[property="og:title"]');if(mt)mt.content=title;
         var tt=document.querySelector('meta[name="twitter:title"]');if(tt)tt.content=title;
