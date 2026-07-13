@@ -12,8 +12,8 @@ jobs:
   server:
     name: Build release (Rust server + HIP kernels)
     runs-on: ubuntu-24.04
-    container: rocm/dev-ubuntu-24.04:7.2.4
-    timeout-minutes: 45
+    container: rocm/dev-ubuntu-24.04:7.2.4-complete   # complete = all ROCm libs (rocwmma/CK/rocBLAS) so headers like rocwmma/rocwmma.hpp resolve
+    timeout-minutes: 60
     steps:
       # The stock ubuntu-24.04 runner's apt ROCm 7.2 repo is broken on noble
       # (rocm-dev/hip-dev/composablekernel-dev all hit "held broken packages" — #100),
