@@ -41,6 +41,16 @@
 #include <cmath>
 #include <vector>
 #include <chrono>
+#include <cassert>
+
+
+// Default xclbin/instr paths (override via env NPU_XCLBIN/NPU_INSTR)
+#ifndef CUSTOM_XCLBIN_PATH
+#define CUSTOM_XCLBIN_PATH getenv("NPU_XCLBIN") ?: "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin"
+#endif
+#ifndef CUSTOM_INSTR_PATH
+#define CUSTOM_INSTR_PATH getenv("NPU_INSTR") ?: "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/insts.txt"
+#endif
 
 // ---- NPU Kernel Manager ----
 struct NpuKernel {
@@ -372,7 +382,7 @@ int main(int argc, char** argv) {
         // -- Sample --
         for (int i = 0; i < cfg.vocab_size; i++)
             logits_f32[i] = bf16_to_float(lm_logits[i]);
-        token = argmax(logits_f32.data(), cfg.vocab_size);
+        token = argmax_f32(logits_f32.data(), cfg.vocab_size);
 
         if (step == 0) {
             printf("  Token %d: %d\n", step, token);
