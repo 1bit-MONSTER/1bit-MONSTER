@@ -170,42 +170,6 @@ struct NpuKernel {
     }
 };
 
-// ---- Softmax (CPU) ----
-static void softmax(float* x, int n) {
-    float mx = x[0];
-    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
-    double sum = 0;
-    for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); sum += x[i]; }
-    for (int i = 0; i < n; i++) x[i] /= (float)sum;
-}
-
-// ---- SiLU (CPU) ----
-static void silu_bf16(uint16_t* x, int n) {
-    for (int i = 0; i < n; i++) {
-        float v = bf16_to_float(x[i]);
-        x[i] = float_to_bf16(v / (1.0f + expf(-v)));
-    }
-}
-
-// ---- Argmax ----
-static int argmax(const float* x, int n) {
-    int mi = 0; float mv = x[0];
-    for (int i = 1; i < n; i++) if (x[i] > mv) { mv = x[i]; mi = i; }
-    return mi;
-}
-
-// ---- Element-wise multiply ----
-static void elem_mul_bf16(uint16_t* out, const uint16_t* a, const uint16_t* b, int n) {
-    for (int i = 0; i < n; i++)
-        out[i] = float_to_bf16(bf16_to_float(a[i]) * bf16_to_float(b[i]));
-}
-
-// ---- Element-wise add ----
-static void elem_add_bf16(uint16_t* out, const uint16_t* a, const uint16_t* b, int n) {
-    for (int i = 0; i < n; i++)
-        out[i] = float_to_bf16(bf16_to_float(a[i]) + bf16_to_float(b[i]));
-}
-
 // ---- Main ----
 int main(int argc, char** argv) {
     printf("=== NPU Engine v2 — Qwen3-0.6B (torch2aie custom kernel) ===\n\n");

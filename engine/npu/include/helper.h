@@ -27,15 +27,15 @@ static constexpr int WEIGHT_GROUP_ID = 4;
 static constexpr int OUT_GROUP_ID    = 5;
 
 // ── BF16 conversion (inline, matches engine/npu/src/npu_engine_universal.cpp) ──
-static inline float bf16_to_float(uint16_t v) {
+inline float bf16_to_float(uint16_t v) {
     uint32_t bits = (uint32_t)v << 16;
     float f; memcpy(&f, &bits, 4); return f;
 }
-static inline uint16_t float_to_bf16(float f) {
+inline uint16_t float_to_bf16(float f) {
     uint32_t bits; memcpy(&bits, &f, 4);
     return (uint16_t)(bits >> 16);
 }
-static inline float bf16_to_float_safe(uint16_t v) {
+inline float bf16_to_float_safe(uint16_t v) {
     // NaN/Inf guard: BF16 exponent 0x7F80 → float exponent 0xFF
     return (v & 0x7F80) == 0x7F80 ? 0.0f : bf16_to_float(v);
 }
