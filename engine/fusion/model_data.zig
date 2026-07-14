@@ -342,9 +342,10 @@ pub const ModelData = struct {
 /// Dequantize one 5120-byte I8 tile into the output matrix.
 ///
 /// Each tile is a 32×256 block of 4-bit quantized values.
-/// Layout (per tile):
-///   [0..512)     = 256 BF16 scales (uint16), indexed as [g*32 + lr]
-///   [512..1024)  = 256 BF16 zero-points, indexed as [g*32 + lr]
+/// Layout (per tile) — FLM Q4NX format:
+///   [0..6)       = 6-byte header (3 bf16 values — per-block metadata)
+///   [6..512)     = 253 BF16 scales (uint16), indexed as [6 + g*32 + lr*2]
+///   [512..1024)  = 256 BF16 zero-points, indexed as [512 + g*32*2 + lr*2]
 ///   [1024..5120) = 4096 bytes packed I4 data
 ///     For row lr (0..31):
 ///       lane = lr / 16, lr2 = lr % 16, bi = lr2 / 2, ns = lr % 2
@@ -378,7 +379,14 @@ fn dequantizeI8Block(block: *const [5120]u8, out: []f32, tr: u32, tc: u32, out_r
 
         var g: u32 = 0;
         while (g < 8) : (g += 1) {
-            const s_raw = bf16ToF32(readU16(block, (g * 32 + lr) * 2));
+            // FLM Q4NX format: 6-byte header at start of scale region (offsets 0-5).
+            // Real scales start at byte 6. Last 3 entries (g=7,lr=29-31) wrap
+            // around to the header bytes 0-5. Zero-point region has no header.
+            const scale_off: usize = 6 + (g * 32 + lr) * 2;
+            const s_raw = if (scale_off < 512)
+                bf16ToF32(readU16(block, scale_off))
+            else
+                bf16ToF32(readU16(block, scale_off - 512));  // wrap to header
             const z_raw = bf16ToF32(readU16(block, 512 + (g * 32 + lr) * 2));
             // The earlier "widespread corrupt scale" diagnosis (issue #153) was
             // wrong: on-disk models carry a clean scale distribution (0 out of

@@ -26,11 +26,7 @@ echo ""
 # ── Step 2: Record in awareness.json ──────────────────────────────────────
 # Append discoveries as events so agents see them at session start.
 record_discovery() {
-    local title="$1"
-    local url="$2"
-    local relevance="$3"
-    local tags="$4"
-    local summary="$5"
+    local title="$1" url="$2" relevance="$3" tags="$4" summary="$5"
     local now
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')"
 
@@ -71,7 +67,6 @@ data['events'].append({
     'message': '🌍 ' + os.environ.get('D_SUMMARY', '')
 })
 
-# Keep only last 500 events
 if len(data['events']) > 500:
     data['events'] = data['events'][-500:]
 

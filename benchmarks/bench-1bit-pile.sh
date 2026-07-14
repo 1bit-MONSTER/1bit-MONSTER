@@ -1,3 +1,5 @@
+#!/bin/bash
+set -euo pipefail
 #!/usr/bin/env bash
 set -euo pipefail
 # bench-1bit-pile.sh — sweep llama-bench across the ternary/sub-2-bit pile

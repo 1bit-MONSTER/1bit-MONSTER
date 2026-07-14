@@ -13,7 +13,7 @@ on:
 # traffic only. The built-in token keeps its least-privilege scope below.
 permissions:
   issues: write
-  contents: read
+  contents: read   # downgraded from write — use TRAFFIC_PAT secret for API
   pull-requests: read
 
 jobs:

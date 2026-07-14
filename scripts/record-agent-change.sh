@@ -39,26 +39,29 @@ get_agent_name() {
 # Write payload as JSON to temp file, then have python3 merge it into awareness
 # This avoids all shell escaping issues with commit messages, filenames, etc.
 write_payload() {
-    local type="$1"   # "commit" or "checkout"
+    local type="$1"
+    local agent_name
+    agent_name="$(get_agent_name)"
     shift
     # Pass ALL untrusted values (type, agent name, and the key=value args) as
     # process arguments / environment, never interpolated into Python source.
     # A commit author name (or filename/message) containing a quote or
     # backslash previously broke the literal or allowed code injection (#128).
     PAYLOAD_TYPE="$type" \
-    PAYLOAD_AGENT="$(get_agent_name)" \
+    PAYLOAD_AGENT="$agent_name" \
     PAYLOAD_OUT="$AWARENESS_PAYLOAD" \
     python3 -c "
 import json, os, sys
+from datetime import datetime, timezone
 
-payload = {'type': os.environ['PAYLOAD_TYPE'], 'agent': os.environ['PAYLOAD_AGENT']}
-
+payload = {
+    'type': os.environ['PAYLOAD_TYPE'],
+    'agent': os.environ['PAYLOAD_AGENT'],
+    'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+}
 for arg in sys.argv[1:]:
     k, _, v = arg.partition('=')
     payload[k] = v
-
-from datetime import datetime, timezone
-payload['timestamp'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 with open(os.environ['PAYLOAD_OUT'], 'w') as f:
     json.dump(payload, f)

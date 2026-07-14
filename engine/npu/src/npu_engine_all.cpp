@@ -41,6 +41,14 @@ static inline float dynamic_ascale(const float* x, int n) {
     if (amax < 1e-12f) amax = 1.0f;
     return amax / 127.0f;
 }
+// dequant_i8_to_float(_ex) returns row-major [out_features, in_features] (PyTorch nn.Linear);
+// packB() needs the transpose — [in_features, out_features] — since the GEMM computes
+// A[tokens,in] @ B[in,out]. Without this, every projection past the first uses scrambled weights.
+static void transpose_pack(const float* src, int out_f, int in_f, float* dst, int dst_stride, int dst_offset) {
+    for (int o = 0; o < out_f; o++)
+        for (int i = 0; i < in_f; i++)
+            dst[(size_t)i * dst_stride + dst_offset + o] = src[(size_t)o * in_f + i];
+}
 static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];for(int i=1;i<n;i++)if(sc[i]>mx)mx=sc[i];
     double s=0;for(int i=0;i<n;i++){float d=sc[i]-mx;if(d>80)d=80;else if(d<-80)d=-80;sc[i]=expf(d);s+=sc[i];}
     if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
@@ -265,6 +273,7 @@ int main(int argc,char**argv){
         float*kw=dq(kp[l],k_i8,H,&kr,&unused);
         float*vw=dq(vp[l],v_i8,H,&vr,&unused);
         int t=qr+kr+vr;std::vector<float>w((size_t)H*t);
+        // QKV pack with proper transpose (fixes #109)
         transpose_pack(qw,qr,H,w.data(),t,0);
         transpose_pack(kw,kr,H,w.data(),t,qr);
         transpose_pack(vw,vr,H,w.data(),t,qr+kr);
