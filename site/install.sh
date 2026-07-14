@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # 1bit.systems bootstrap — GAIA + Lemonade + FastFlowLM on Strix Halo.
 #
 # Usage: curl -fsSL https://1bit.systems/install.sh | bash

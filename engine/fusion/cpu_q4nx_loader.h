@@ -18,6 +18,8 @@
 //
 // @section Fused Engine
 
+#pragma once
+
 #include "cpu_layer.h"
 #include <cstdio>
 #include <cstdlib>

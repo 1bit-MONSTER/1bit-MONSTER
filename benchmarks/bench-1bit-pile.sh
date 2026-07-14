@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # bench-1bit-pile.sh — sweep llama-bench across the ternary/sub-2-bit pile
 # Output: $OUT_DIR/bench-1bit-<DATE>.json (one JSON object per model)
 set -uo pipefail
