@@ -63,3 +63,6 @@ npu-infer/build/
 /1bit/build/
 /dist/
 **/build/
+
+# Node dependencies (npm ci)
+node_modules/
