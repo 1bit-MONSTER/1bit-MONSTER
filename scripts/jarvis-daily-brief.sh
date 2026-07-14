@@ -39,26 +39,36 @@ record_discovery() {
         printf '{"events":[],"lastSeen":{},"agents":{}}\n' > "$AWARENESS_FILE"
     fi
 
+    # All fields (title/url/tags/summary may be untrusted external text from
+    # web_search) are passed via environment, not interpolated into Python
+    # source — prevents SyntaxError swallowing and code injection (#128).
+    D_FILE="$AWARENESS_FILE" D_NOW="$now" D_TITLE="$title" D_URL="$url" \
+    D_RELEVANCE="$relevance" D_TAGS="$tags" D_SUMMARY="$summary" \
     python3 -c "
-import json, sys
+import json, os
 
-with open('$AWARENESS_FILE') as f:
+with open(os.environ['D_FILE']) as f:
     data = json.load(f)
 
 data.setdefault('events', [])
 ids = [e.get('id', 0) for e in data['events']]
 next_id = max(ids, default=0) + 1
 
+try:
+    relevance = float(os.environ.get('D_RELEVANCE', '0') or '0')
+except ValueError:
+    relevance = 0
+
 data['events'].append({
     'id': next_id,
-    'timestamp': '$now',
+    'timestamp': os.environ.get('D_NOW', ''),
     'type': 'discovery',
     'agent': 'jarvis',
-    'title': '$title',
-    'url': '$url',
-    'relevance': $relevance,
-    'tags': '$tags',
-    'message': '🌍 $summary'
+    'title': os.environ.get('D_TITLE', ''),
+    'url': os.environ.get('D_URL', ''),
+    'relevance': relevance,
+    'tags': os.environ.get('D_TAGS', ''),
+    'message': '🌍 ' + os.environ.get('D_SUMMARY', '')
 })
 
 # Keep only last 500 events
@@ -68,7 +78,7 @@ if len(data['events']) > 500:
 data.setdefault('lastSeen', {})
 data['lastSeen']['jarvis'] = 'discovery-' + str(next_id)
 
-with open('$AWARENESS_FILE', 'w') as f:
+with open(os.environ['D_FILE'], 'w') as f:
     json.dump(data, f, indent=2)
 " 2>/dev/null || true
 }
