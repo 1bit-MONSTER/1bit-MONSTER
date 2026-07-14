@@ -295,8 +295,22 @@ int main(int argc,char**argv){
     ri(HD,cfg.rope_theta,4096);
     int kv_dwords=NKV*HD/2;
 
-    // v12: M=32 batch decode
-    int BS=32;
+    // Decode batch width.
+    //
+    // WARNING (issue #111): the "M=32 batched decode" path is NOT a correct
+    // decoding algorithm. It embeds the 32 top-K candidates for a *single*
+    // next position as if they were 32 *sequential* tokens (see the loop that
+    // does h_b[b*H+i]=emb_f32[top_ids[b]*H+i]), writes all 32 into the KV cache
+    // at consecutive positions, and runs attention with cl=sp+batch_size --
+    // i.e. every position attends over 31 not-yet-decoded, mutually-exclusive
+    // "future" positions (non-causal). This corrupts even position 0's output,
+    // so the reported 32x throughput described tokens that were never valid.
+    //
+    // Until a real speculative draft+verify is implemented (accept only the
+    // longest matching prefix, roll the KV cache back on a miss), BS is pinned
+    // to 1 -> plain causal single-token greedy decode, which is correct.
+    // Do not raise this without implementing verification.
+    int BS=1;
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
     int kv_size=4096*NKV*HD;
     std::vector<KVCache> kv_caches;for(int i=0;i<NC;i++)kv_caches.emplace_back(kv_size);
@@ -535,11 +549,9 @@ int main(int argc,char**argv){
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+dw_b[b*H+i];
         }
 
-        // ──         // LM head on batch[0] -> top-32 for next batch.
-        // Greedy batched decode (no draft verification): run batch_size tokens
-        // through the model in parallel, take batch[0]'s output for the next
-        // batch.  Positions 1..batch_size-1 compute on draft top_ids and are
-        // discarded -- they consume NPU cycles without contributing output.
+        // LM head on the (single, BS=1) decoded position -> greedy next token.
+        // total_verified == total_generated because every emitted token is a
+        // real causal decode, not a speculative candidate (issue #111).
         memcpy(sb_data.data(),&h_b[0],H*4);rn_c(sb_data.data(),fin_v.data(),H);
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
 
