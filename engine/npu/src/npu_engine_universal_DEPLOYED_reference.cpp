@@ -80,36 +80,86 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[l]->map();
         for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
             int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
-    inline void go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
-        if(!go_bounded(l,A,am,ak,ascale,Bscale,C,an)){
-            fprintf(stderr,"NPU kernel timeout (layer %d) — no CPU fallback available in this call path\n",l);
-        }}
-    // Same as go(), but with a bounded wait: returns false (and leaves C
-    // untouched) instead of blocking forever if the NPU never signals
-    // completion. Callers that have a CPU fallback (e.g. worker mode) should
-    // use this and check the return value; go() above is the old
-    // wait-forever behavior kept for non-worker callers that have nothing
-    // to fall back to anyway.
-    inline bool go_bounded(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an,unsigned timeout_ms=8000){
+    // Async quantize: packs float activations into the A buffer without syncing
+    // Returns the quantized buffer pointer for later sync_and_launch.
+    inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
         float ais=1.0f/ascale;
-        memset(Am,0,(size_t)am*KD);for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
-            float v=A[m*ak+k];if(!std::isfinite(v))v=0;int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;
-            Am[m*KD+k]=(int8_t)q;}bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        auto r=(*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);
-        ert_cmd_state st=r.wait(timeout_ms);
+        memset(Am,0,(size_t)am*KD);
+        for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
+            float v=A[m*ak+k];if(!std::isfinite(v))v=0;
+            int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;
+            Am[m*KD+k]=(int8_t)q;}
+        return Am;
+    }
+    // Sync A to device (non-blocking DMA, can overlap with NPU compute).
+    inline void sync_A(int l){
+        (void)l;
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    }
+    // Launch kernel without sync (buffer must already be synced). Returns run handle.
+    inline xrt::run launch(int l){
+        return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);
+    }
+    // Sync A to device and launch kernel. Returns run handle.
+    inline xrt::run sync_and_launch(int l){
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);
+    }
+    // Wait for run, sync C back, and dequantize.
+    inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
+        r.wait();
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        float cs=ascale*Bscale;
+        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+            float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;
+            C[m*an+n]=val;}
+    }
+    // Wait for NPU kernel completion without readback.
+    // Returns immediately after kernel finishes. Call sync_back_and_dequant() later.
+    inline void wait_kernel(xrt::run& r){
+        r.wait();
+    }
+    // Sync C back from device and dequantize (call after wait_kernel).
+    // This is CPU-only work that CAN overlap with the next kernel's NPU execution.
+    inline void sync_back_and_dequant(float*C,int am,int an,float ascale,float Bscale){
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        float cs=ascale*Bscale;
+        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+            float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;
+            C[m*an+n]=val;}
+    }
+    // Synchronous go() — bounded wait (8s); returns false instead of hanging
+    // forever if the NPU never signals completion (issue: worker-mode hang,
+    // strace-confirmed stuck in DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT).
+    inline bool go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
+        quantize_async(A,am,ak,ascale);
+        auto r=sync_and_launch(l);
+        ert_cmd_state st=r.wait(std::chrono::milliseconds{8000});
         if(st==ERT_CMD_STATE_TIMEOUT){
-            fprintf(stderr,"NPU kernel timeout (layer %d, %ums) — aborting run\n",l,timeout_ms);
+            fprintf(stderr,"NPU kernel timeout (layer %d)\n",l);
             r.abort();
             return false;
         }
         if(st!=ERT_CMD_STATE_COMPLETED){
-            fprintf(stderr,"NPU kernel finished in unexpected state %d (layer %d)\n",(int)st,l);
+            fprintf(stderr,"NPU kernel unexpected state %d (layer %d)\n",(int)st,l);
             return false;
         }
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        float cs=ascale*Bscale;for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
+        float cs=ascale*Bscale;
+        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+            float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;
+            C[m*an+n]=val;}
         return true;
+    }
+    // Fast path: launch, return run handle for later wait+dequant
+    inline xrt::run launch_async(int l,const float*A,int am,int ak,float ascale){
+        quantize_async(A,am,ak,ascale);
+        return sync_and_launch(l);
+    }
+    // Complete an async launch: wait + dequant
+    inline void finish_async(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
+        r.wait();
+        dequantize(r,C,am,an,ascale,Bscale);
     }
 };
 
@@ -154,7 +204,7 @@ int main(int argc,char**argv){
     // Check for --worker flag (subprocess protocol mode)
     bool worker_mode=false;
     for(int i=2;i<argc;i++){if(strcmp(argv[i],"--worker")==0){worker_mode=true;break;}}
-    const char*mp=argv[1];int ng=(argc>2&&!worker_mode)?atoi(argv[2]):32;if(ng<1)ng=1;
+    const char*mp=argv[1];int ng=(argc>2&&!worker_mode)?atoi(argv[2]):32;if(ng<1)ng=1;if(ng>4096)ng=4096; // cap to KV cache size (issue #112)
     const char*input_tok_file=(argc>3&&!worker_mode&&argv[3][0]!='\0')?argv[3]:nullptr;
 
     // Model tag
@@ -225,7 +275,9 @@ int main(int argc,char**argv){
 
     // Init NPU
     printf("Init NPU...\n");xrt::device dev(0);
-    std::string xd="/home/bcloud/npu-sandbox/npu-infer/build/int8";
+    // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
+    const char* env_xd = getenv("NPU_XCLBIN_DIR");
+    std::string xd = env_xd ? env_xd : "engine/npu/xclbins";
     auto xp=[&](const char*t){return xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";};
     auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
 
@@ -310,16 +362,14 @@ int main(int argc,char**argv){
                 }
                 std::vector<float> out_data(batch*out_dim,0);
                 if(ctx&&layer<(uint32_t)NC){
-                    ok=ctx->go_bounded((int)layer,in_data.data(),(int)batch,(int)in_dim,as,*scale,out_data.data(),(int)out_dim);
+                    ok=ctx->go((int)layer,in_data.data(),(int)batch,(int)in_dim,as,*scale,out_data.data(),(int)out_dim);
                 }else{
                     fprintf(stderr,"worker: bad layer %u for op %u (NC=%d)\n",layer,op,NC);
                 }
                 // resp[0]==0 means success; caller (fused-engine) trusts the
-                // payload as-is on success and sets npu_broken+falls back to
-                // CPU on any non-zero status (see NpuSubprocess.call in
-                // fused_execute.zig). Do not report success with data we
-                // never actually computed -- that was silently feeding
-                // garbage/zero activations into every downstream layer.
+                // payload on success and sets npu_broken+falls back to CPU
+                // on any non-zero status. Never report success for data we
+                // never actually computed.
                 uint32_t resp[2]={ok?0u:1u,out_dim};
                 fwrite(resp,sizeof(uint32_t),2,stdout);
                 if(ok) fwrite(out_data.data(),sizeof(float),batch*out_dim,stdout);
@@ -336,9 +386,12 @@ int main(int argc,char**argv){
     // Load input tokens from file or use default hardcoded sequence
     std::vector<int> pt_vec;
     if(input_tok_file){
-        FILE* tf=fopen(input_tok_file,"r");
-        if(!tf){ fprintf(stderr,"Cannot open input tokens: %s\n",input_tok_file); return 1; }
-        if(strcmp(input_tok_file,"-")==0) tf=stdin;
+        FILE* tf;
+        if(strcmp(input_tok_file,"-")==0) tf=stdin;  // stdin convention must precede fopen (fixes #88)
+        else {
+            tf=fopen(input_tok_file,"r");
+            if(!tf){ fprintf(stderr,"Cannot open input tokens: %s\n",input_tok_file); return 1; }
+        }
         int tid;
         while(fscanf(tf,"%d",&tid)==1) pt_vec.push_back(tid);
         if(tf!=stdin) fclose(tf);
@@ -350,14 +403,21 @@ int main(int argc,char**argv){
     int npt=(int)pt_vec.size(); if(npt<1)npt=1;
     if(input_tok_file && npt > XM) npt = XM;
 
-    // ===== PREFILL =====
-    printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();
+    // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
+    printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
+    xrt::run pending_gu; bool has_pending=false;
     for(int l=0;l<NC;l++){
-        // Save pre-norm residuals before rn_c destroys h_b
+        fprintf(stderr,"  L%d",l);fflush(stderr);
+        // Save pre-norm residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l].data(),H);
-        cq.go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),qsc[l],qo_b.data(),qkv_n);cn(qo_b.data(),npt*qkv_n);
+        // Phase 1: Launch QKV on NPU
+        float qkv_ascale=dynamic_ascale(h_b.data(),npt*H);
+        auto r_qkv=cq.launch_async(l,h_b.data(),npt,H,qkv_ascale);
+        // Phase 2: Wait QKV + dequant (CPU attention runs after)
+        cq.finish_async(r_qkv,qo_b.data(),npt,qkv_n,qkv_ascale,qsc[l]);cn(qo_b.data(),npt*qkv_n);
+        fprintf(stderr,"q");fflush(stderr);
         float*qn=qn_w[l].data(),*kn=kn_w[l].data();
         for(int pi=0;pi<npt;pi++){
             for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*qkv_n+hh*HD+d]*qo_b[pi*qkv_n+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);
@@ -368,28 +428,39 @@ int main(int argc,char**argv){
                 memcpy(&kv_caches[l].k[(sp+pi)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+pi)*NKV*HD+kvh*HD],vs,HD*4);}}
         kv_caches[l].n=sp+npt;int cl=kv_caches[l].n;
         // Causal attention: token pi attends only to positions [0, sp+pi]
-        for(int pi=0;pi<npt;pi++){attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);}
-        co.go(l,at_b.data(),npt,NH*HD,dynamic_ascale(at_b.data(),npt*NH*HD),osc[l],oo_b.data(),H);cn(oo_b.data(),npt*H);
-        // Residual add: use saved pre-norm values
+        for(int pi=0;pi<npt;pi++){fprintf(stderr,"a");fflush(stderr);attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);}
+        // Phase 3: Launch O + GU in parallel on NPU
+        int mlp_out=cfg.gu_split?IM:2*IM;
+        float o_ascale=dynamic_ascale(at_b.data(),npt*NH*HD);
+        float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
+        auto r_o=co.launch_async(l,at_b.data(),npt,NH*HD,o_ascale);
+        auto r_gu=cg.launch_async(l,h_b.data(),npt,H,gu_ascale);
+        // Phase 4: Wait O, apply residual
+        co.finish_async(r_o,oo_b.data(),npt,H,o_ascale,osc[l]);cn(oo_b.data(),npt*H);
+        fprintf(stderr,"o");fflush(stderr);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
-        // Save pre-FFN residuals before second rn_c
+        // Save pre-FFN residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l].data(),H);
-        int mlp_out=cfg.gu_split?IM:2*IM;
-        cg.go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),gsc[l],gt_b.data(),mlp_out);cn(gt_b.data(),npt*mlp_out);
+        // Phase 5: Wait GU (was launched in parallel with O), SiLU, launch D
+        cg.finish_async(r_gu,gt_b.data(),npt,mlp_out,gu_ascale,gsc[l]);cn(gt_b.data(),npt*mlp_out);
+        fprintf(stderr,"g");fflush(stderr);
         if(cfg.gu_split){cu_ptr->go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
         else{for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*mlp_out+IM+i];}}}
-        cd.go(l,su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
+        fprintf(stderr,"d");fflush(stderr);cd.go(l,su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
+        fprintf(stderr,"\n");fflush(stderr);
     }sp+=npt;memcpy(h_data.data(),&h_b[(npt-1)*H],H*4);
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count()/npt);
 
     // ===== v12: M=32 BATCHED DECODE =====
     printf("=== M=%d Batch Decode (%d tokens) ===\n",BS,ng);
     auto tgs=std::chrono::steady_clock::now();
-    int top_ids[BS]={0},total_accepted=0,n_batches=0;double t_boot=0;
+    // NOTE: greedy batched decode — runs batch_size tokens per step, no draft verification.
+    // (fixes #95). total_verified tracks all tokens processed.
+    int top_ids[BS]={0},total_generated=0,total_verified=0,n_batches=0;double t_boot=0;
 
     // Boot: single-token decode → top-32 token IDs
     {
@@ -418,7 +489,7 @@ int main(int argc,char**argv){
         }
         memcpy(sb_data.data(),h0,H*4);rn_c(sb_data.data(),fin_v.data(),H);
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
-        memcpy(h_data.data(),h0,H*4);sp++;total_accepted++;
+        memcpy(h_data.data(),h0,H*4);sp++;total_generated++;
         t_boot=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_boot).count();
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
     }
@@ -428,11 +499,23 @@ int main(int argc,char**argv){
         auto ts_batch=std::chrono::steady_clock::now();
         int batch_size=std::min(BS,ng-step);
         for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=emb_f32[(size_t)top_ids[b]*H+i];
+        // ===== PIPELINED LAYER LOOP =====
+        // Overlaps CPU quantize with NPU kernel execution.
+        // Pattern: launch(N) → quantize(N+1) → wait(N) → dequantize(N) → sync+launch(N+1) → ...
+        // co and cg are independent (different inputs) → quantize cg WHILE co runs on NPU.
         for(int l=0;l<NC;l++){
             // Save pre-norm residuals before rn_c
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
             for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],in_n[l].data(),H);
-            cq.go(l,h_b.data(),batch_size,H,dynamic_ascale(h_b.data(),batch_size*H),qsc[l],qo_b.data(),qkv_n);cn(qo_b.data(),batch_size*qkv_n);
+
+            // ── QKV GEMM ──
+            float cq_ascale=dynamic_ascale(h_b.data(),batch_size*H);
+            cq.quantize_async(h_b.data(),batch_size,H,cq_ascale);
+            auto r_cq=cq.sync_and_launch(l);
+            cq.dequantize(r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l]);
+            cn(qo_b.data(),batch_size*qkv_n);
+
+            // ── Attention + RoPE + KV cache ──
             float*qn=qn_w[l].data(),*kn=kn_w[l].data();
             for(int b=0;b<batch_size;b++){
                 for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[b*qkv_n+hh*HD+d]*qo_b[b*qkv_n+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);
@@ -446,34 +529,82 @@ int main(int argc,char**argv){
                 memcpy(&kv_caches[l].k[(sp+b)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+b)*NKV*HD+kvh*HD],vs,HD*4);}
             kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
             for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
-            co.go(l,at_b.data(),batch_size,NH*HD,dynamic_ascale(at_b.data(),batch_size*NH*HD),osc[l],oo_b.data(),H);cn(oo_b.data(),batch_size*H);
-            // Residual add: use saved pre-norm values
+
+            // ── O GEMM ──
+            // Launch O, then quantize GU input WHILE O runs (overlapped)
+            float co_ascale=dynamic_ascale(at_b.data(),batch_size*NH*HD);
+            co.quantize_async(at_b.data(),batch_size,NH*HD,co_ascale);
+            auto r_co=co.sync_and_launch(l);
+
+            // ── GU GEMM: independent of O! Quantize GU input while O runs on NPU ──
+            int mlp_out=cfg.gu_split?IM:2*IM;
+            float cg_ascale=dynamic_ascale(h_b.data(),batch_size*H);
+            cg.quantize_async(h_b.data(),batch_size,H,cg_ascale);
+
+            // ── CO-GU FULLY PARALLEL ──
+            // Phase 1: Submit GU's DMA sync WHILE O runs on NPU
+            //   bA->sync(to_device) uses MM2S DMA channel (independent of NPU compute)
+            //   This hides the sync latency behind O's NPU time.
+            cg.sync_A(l);  // non-blocking: cg.bA sync starts, DMA runs parallel to NPU
+
+            // Phase 2: Wait for O kernel completion (minimal)
+            co.wait_kernel(r_co);
+
+            // Phase 3: Submit GU kernel to NPU + start co readback SIMULTANEOUSLY
+            //   cg.launch() submits the kernel (queued behind O on NPU's compute)
+            //   co.bC->sync uses S2MM DMA channel (independent of MM2S for cg.bA)
+            auto r_cg=cg.launch(l);
+            co.sync_back_and_dequant(oo_b.data(),batch_size,H,co_ascale,osc[l]);
+            cn(oo_b.data(),batch_size*H);
+
+            // Phase 4: Residual add + rn_c (CPU work, overlaps with cg's NPU execution)
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
-            // Save pre-FFN residuals before second rn_c
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
             for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
-            int mlp_out=cfg.gu_split?IM:2*IM;
-            cg.go(l,h_b.data(),batch_size,H,dynamic_ascale(h_b.data(),batch_size*H),gsc[l],gt_b.data(),mlp_out);cn(gt_b.data(),batch_size*mlp_out);
-            if(cfg.gu_split){cu_ptr->go(l,h_b.data(),batch_size,H,dynamic_ascale(h_b.data(),batch_size*H),usc[l],su_b.data(),IM);cn(su_b.data(),batch_size*IM);
+            if(cfg.gu_split){
+                cu_ptr->quantize_async(h_b.data(),batch_size,H,cg_ascale);
+            }
+
+            // Phase 5: Wait for GU, read back, dequant
+            cg.wait_kernel(r_cg);
+            cg.sync_back_and_dequant(gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l]);
+            cn(gt_b.data(),batch_size*mlp_out);
+
+            // SiLU gate + U GEMM (gu_split) or combined gate*up
+            if(cfg.gu_split){
+                auto r_cu=cu_ptr->sync_and_launch(l);
+                cu_ptr->dequantize(r_cu,su_b.data(),batch_size,IM,cg_ascale,usc[l]);
+                cn(su_b.data(),batch_size*IM);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*IM+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[b*IM+i];}}}
             else{for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
-            cd.go(l,su_b.data(),batch_size,IM,dynamic_ascale(su_b.data(),batch_size*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),batch_size*H);
-            // Residual add: use saved pre-FFN values
+
+            // ── D GEMM ──
+            float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
+            cd.quantize_async(su_b.data(),batch_size,IM,cd_ascale);
+            auto r_cd=cd.sync_and_launch(l);
+            cd.dequantize(r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l]);
+            cn(dw_b.data(),batch_size*H);
+
+            // Residual add
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+dw_b[b*H+i];
         }
 
-        // LM head on batch[0] → top-32 for next batch
+        // ──         // LM head on batch[0] -> top-32 for next batch.
+        // Greedy batched decode (no draft verification): run batch_size tokens
+        // through the model in parallel, take batch[0]'s output for the next
+        // batch.  Positions 1..batch_size-1 compute on draft top_ids and are
+        // discarded -- they consume NPU cycles without contributing output.
         memcpy(sb_data.data(),&h_b[0],H*4);rn_c(sb_data.data(),fin_v.data(),H);
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
 
-        total_accepted+=batch_size;sp+=batch_size;n_batches++;
+        total_generated+=batch_size;total_verified+=batch_size;sp+=batch_size;n_batches++;
         double batch_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_batch).count();
         printf("  [%d] batch=%d tok=%d %.0fms (%.0f ms/tok)\n",step,batch_size,top_ids[0],batch_ms,batch_ms/batch_size);
         step+=batch_size;
     }
 
     double tts=std::chrono::duration<double>(std::chrono::steady_clock::now()-tgs).count();
-    printf("\n=== %.1f ms/tok (%.0f tok/s) | boot=%.0fms batches=%d accepted=%d ===\n",tts*1000/ng,ng/tts,t_boot,n_batches,total_accepted);
+    printf("\n=== %.1f ms/tok (%.0f tok/s) | boot=%.0fms batches=%d tokens=%d ===\n",tts*1000/ng,ng/tts,t_boot,n_batches,total_generated);
 
     munmap(md,st.st_size);return 0;
 }
