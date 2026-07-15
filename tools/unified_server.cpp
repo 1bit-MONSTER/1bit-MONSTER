@@ -630,7 +630,8 @@ int main(int argc, char** argv) {
 
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
-    auto discovered = discover_models(g_weights_dir);
+    static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
+    static ModelConfig current_cfg = default_model_config();
     for (auto& m : discovered) {
         printf("  ✓  %s (%s)\n", m.model_name.c_str(), m.model_path.c_str());
     }
@@ -640,7 +641,7 @@ int main(int argc, char** argv) {
 
     // Phase 3: Initialize
     printf("\n── Initialize ──\n");
-    ModelConfig cfg = default_model_config();
+    ModelConfig cfg = current_cfg;
     bool inited = mgr.init(cfg, g_weights_dir);
     if (inited) {
         // Ensure active_idx_ points to the initialized backend
@@ -790,6 +791,21 @@ int main(int argc, char** argv) {
         std::string backend_id = resolve_backend_id(req);
         SelectionStrategy strategy = resolve_strategy(req);
         mgr.set_strategy(strategy);
+
+        // Look up the requested model from body["model"] and switch config if needed
+        std::string req_model = body.value("model", "");
+        if (!req_model.empty()) {
+            for (auto& dm : discovered) {
+                if (dm.model_name == req_model &&
+                    (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
+                    printf("[model] switching to %s (%d layers, %d hidden)\n",
+                           dm.model_name.c_str(), dm.n_layers, dm.hidden);
+                    current_cfg = dm;
+                    mgr.init(current_cfg, g_weights_dir);
+                    break;
+                }
+            }
+        }
 
         // Check for strategy engine routing
         std::string strategy_name = resolve_strategy_name(req);
