@@ -59,11 +59,12 @@ static void forward_mamba_layer(
 }
 
 // Forward helper: apply one hybrid layer (Mamba2 decoder + shared attention + MLP)
+// In the GGUF format, shared block weights are duplicated per hybrid layer,
+// so we use the per-layer weights from HybridLayerWeights directly.
 static void forward_hybrid_layer(
     const float* input,
     float* output,
     const HybridLayerWeights& hw,
-    const SharedBlockWeights& sw,
     const Zamba2Config& cfg,
     float* conv_state,
     float* ssm_state,
@@ -130,17 +131,17 @@ static void forward_hybrid_layer(
         projected[i] = sum;
     }
 
-    // ── Step 4: Shared transformer ──
-    // Input norm
-    rms_norm(projected.data(), ff_in.data(), sw.input_norm_w.data(), n, cfg.rms_norm_eps);
+    // ── Step 4: Transformer (attention + FFN) ──
+    // Input norm for attention
+    rms_norm(projected.data(), ff_in.data(), hw.shared_transformer_ffn_norm.data(), n, cfg.rms_norm_eps);
 
-    // Self-attention
+    // Self-attention with per-layer weights (duplicated shared blocks)
     {
         int n_heads = cfg.n_attn_heads;
         int n_kv = cfg.n_kv_heads;
         int hd = cfg.attn_head_dim;
 
-        // QKV projections
+        // QKV projections using per-hybrid-layer weights
         std::vector<float> q(n_heads * hd, 0.0f);
         std::vector<float> k(n_kv * hd, 0.0f);
         std::vector<float> v(n_kv * hd, 0.0f);
@@ -149,7 +150,7 @@ static void forward_hybrid_layer(
             for (int d = 0; d < hd; ++d) {
                 float sum = 0.0f;
                 for (int j = 0; j < n; ++j) {
-                    sum += sw.q_proj_w[(h * hd + d) * n + j] * ff_in[j];
+                    sum += hw.shared_transformer_q[(h * hd + d) * n + j] * ff_in[j];
                 }
                 q[h * hd + d] = sum;
             }
@@ -158,8 +159,8 @@ static void forward_hybrid_layer(
             for (int d = 0; d < hd; ++d) {
                 float sum_k = 0.0f, sum_v = 0.0f;
                 for (int j = 0; j < n; ++j) {
-                    sum_k += sw.k_proj_w[(h * hd + d) * n + j] * ff_in[j];
-                    sum_v += sw.v_proj_w[(h * hd + d) * n + j] * ff_in[j];
+                    sum_k += hw.shared_transformer_k[(h * hd + d) * n + j] * ff_in[j];
+                    sum_v += hw.shared_transformer_v[(h * hd + d) * n + j] * ff_in[j];
                 }
                 k[h * hd + d] = sum_k;
                 v[h * hd + d] = sum_v;
@@ -186,7 +187,7 @@ static void forward_hybrid_layer(
         for (int i = 0; i < n; ++i) {
             float sum = 0.0f;
             for (int j = 0; j < n; ++j) {
-                sum += sw.o_proj_w[i * n + j] * attn_out[j];
+                sum += hw.shared_transformer_o[i * n + j] * attn_out[j];
             }
             attn_proj[i] = sum;
         }
@@ -197,54 +198,46 @@ static void forward_hybrid_layer(
         }
     }
 
-    // ── Step 5: Shared MLP with LoRA ──
+    // ── Step 5: Shared MLP (with separate gate/up/down weights) ──
     {
         std::vector<float> ff_normed(n);
-        rms_norm(ff_in.data(), ff_normed.data(), sw.pre_ff_norm_w.data(), n, cfg.rms_norm_eps);
+        rms_norm(ff_in.data(), ff_normed.data(), hw.shared_transformer_pre_ff_norm.data(), n, cfg.rms_norm_eps);
 
-        int d_ff = n;  // Zamba2 uses d_model for FFN hidden as well
-        // gate_up_proj: fused gate + up projections [2*d_ff, d_model]
-        std::vector<float> gate_up(2 * d_ff, 0.0f);
+        int d_ff = (int)hw.shared_transformer_up.size() / n;  // hidden size from up_proj
+        if (d_ff <= 0) d_ff = n;
 
-        for (int i = 0; i < 2 * d_ff; ++i) {
+        // Gate projection: gate = gate_w @ x
+        std::vector<float> gate_act(d_ff, 0.0f);
+        for (int i = 0; i < d_ff; ++i) {
             float sum = 0.0f;
             for (int j = 0; j < n; ++j) {
-                sum += sw.gate_up_proj_w[i * n + j] * ff_normed[j];
+                sum += hw.shared_transformer_gate[i * n + j] * ff_normed[j];
             }
-
-            // Add LoRA adapter
-            if (hw.lora_a_w.size() > 0 && hw.lora_b_w.size() > 0) {
-                int lora_rank = cfg.lora_rank;
-                // LoRA: B * A * x
-                // A: [lora_rank, d_model]
-                // B: [2*d_ff, lora_rank]
-                float lora_sum = 0.0f;
-                for (int r = 0; r < lora_rank; ++r) {
-                    float a_val = 0.0f;
-                    for (int j = 0; j < n; ++j) {
-                        a_val += hw.lora_a_w[r * n + j] * ff_normed[j];
-                    }
-                    lora_sum += hw.lora_b_w[i * lora_rank + r] * a_val;
-                }
-                sum += lora_sum;
-            }
-
-            gate_up[i] = sum;
+            // SiLU activation
+            gate_act[i] = sum / (1.0f + std::exp(-sum));
         }
 
-        // SiLU gate: gate = silu(gate_up[:d_ff]) * gate_up[d_ff:]
+        // Up projection: up = up_w @ x
+        std::vector<float> up_act(d_ff, 0.0f);
+        for (int i = 0; i < d_ff; ++i) {
+            float sum = 0.0f;
+            for (int j = 0; j < n; ++j) {
+                sum += hw.shared_transformer_up[i * n + j] * ff_normed[j];
+            }
+            up_act[i] = sum;
+        }
+
+        // Element-wise multiply: act = gate * up
         std::vector<float> act(d_ff, 0.0f);
         for (int i = 0; i < d_ff; ++i) {
-            float g = gate_up[i];
-            float silu = g / (1.0f + std::exp(-g));
-            act[i] = silu * gate_up[d_ff + i];
+            act[i] = gate_act[i] * up_act[i];
         }
 
         // Down projection
         for (int i = 0; i < n; ++i) {
             float sum = 0.0f;
             for (int j = 0; j < d_ff; ++j) {
-                sum += sw.down_proj_w[i * d_ff + j] * act[j];
+                sum += hw.shared_transformer_down[i * d_ff + j] * act[j];
             }
             ff_out[i] = sum;
         }
@@ -275,35 +268,31 @@ bool Zamba2Model::forward(int token_id, float* logits) {
 
     // ── Layer loop ──
     for (int layer = 0; layer < n_layers; ++layer) {
-        // Check if this is a hybrid layer
-        bool is_hybrid = false;
-        int hybrid_idx = -1;
-        for (int h = 0; h < cfg.n_hybrid; ++h) {
-            if (cfg.hyb_layer_ids[h] == layer) {
-                is_hybrid = true;
-                hybrid_idx = h;
-                break;
-            }
-        }
+        // Check if this is a hybrid layer — use actual loaded dictionaries
+        bool is_hybrid = hybrid_layers.find(layer) != hybrid_layers.end();
 
         if (is_hybrid) {
-            // Hybrid layer
+            // Hybrid layer (weights stored per-layer by GGUF converter)
             auto& hl = hybrid_layers[layer];
-            auto& sb = shared_blocks[hl.shared_block_idx];
 
-            // KV cache offset for this shared block
-            int sb_idx = hl.shared_block_idx;
+            // KV cache — sequential index into hybrid layers
+            int hyb_idx = 0;
+            for (int ll = 0; ll <= layer; ++ll) {
+                if (hybrid_layers.find(ll) != hybrid_layers.end()) hyb_idx++;
+            }
+            hyb_idx--;  // 0-based
+
             int max_seq = cfg.max_seq_len;
             int n_kv = cfg.n_kv_heads;
             int hd = cfg.attn_head_dim;
-            int kv_offset = sb_idx * 2 * max_seq * n_kv * hd;
+            int kv_offset = hyb_idx * 2 * max_seq * n_kv * hd;
             float* k_cache = kv_cache.data() + kv_offset;
             float* v_cache = kv_cache.data() + kv_offset + max_seq * n_kv * hd;
 
             std::vector<float> layer_out(d_model);
             forward_hybrid_layer(
                 hidden.data(), layer_out.data(),
-                hl, sb, cfg,
+                hl, cfg,
                 conv_states.data() + layer * (cfg.d_conv - 1) * conv_dim,
                 ssm_states.data() + layer * cfg.d_state * cfg.d_inner,
                 k_cache, v_cache,
