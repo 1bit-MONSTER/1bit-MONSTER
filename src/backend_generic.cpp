@@ -15,6 +15,7 @@
 // Tensor lookup by name: gguf_tensor("blk.0.attn_q.weight", data, shape)
 
 #include <cstring>
+#include <chrono>
 #include <cstdint>
 
 static float fp16_to_fp32(uint16_t h) {
@@ -153,11 +154,108 @@ struct GgufReader {
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <chrono>
 #include <vector>
 #include <string>
 #include <fstream>
-#include <algorithm>
+
+// ── SafeTensors reader ──────────────────────────────────────────────────────
+// Reads HuggingFace SafeTensors format (torchtune / HF output) directly.
+// No Python dependency. Parses header JSON + reads raw tensor data.
+// Supports F32, F16, BF16 dtypes.
+
+#include <cstring>
 #include <chrono>
+
+struct SafeTensorsReader {
+    FILE* f = nullptr;
+    size_t data_start = 0;
+    std::unordered_map<std::string, std::pair<size_t, size_t>> tensors; // name -> (offset, nbytes)
+    std::unordered_map<std::string, std::vector<uint64_t>> shapes;
+    std::unordered_map<std::string, std::string> dtypes;
+    std::vector<float> scratch;
+    
+    ~SafeTensorsReader() { close(); }
+    
+    bool open(const std::string& path) {
+        f = fopen(path.c_str(), "rb");
+        if (!f) return false;
+        uint64_t hdr_size;
+        if (fread(&hdr_size, 8, 1, f) != 1) { fclose(f); return false; }
+        std::string json_str(hdr_size, '\0');
+        if (fread(&json_str[0], 1, hdr_size, f) != hdr_size) { fclose(f); return false; }
+        
+        // Parse tensor entries from JSON
+        size_t pos = 0;
+        while ((pos = json_str.find('"', pos)) != std::string::npos) {
+            size_t ks = pos + 1, ke = json_str.find('"', ks);
+            if (ke == std::string::npos) break;
+            std::string key = json_str.substr(ks, ke - ks);
+            pos = ke + 1;
+            if (key == "__metadata__") continue;
+            
+            auto dq = json_str.find('"dtype"', pos);
+            if (dq == std::string::npos) continue;
+            auto vs = json_str.find('"', dq + 7) + 1, ve = json_str.find('"', vs);
+            dtypes[key] = json_str.substr(vs, ve - vs);
+            
+            auto shq = json_str.find('"shape"', ve);
+            if (shq == std::string::npos) continue;
+            auto sb = json_str.find('[', shq), eb = json_str.find(']', sb);
+            std::vector<uint64_t> sh;
+            for (size_t sp = sb + 1; sp < eb;) {
+                while (sp < eb && (json_str[sp] == ' ' || json_str[sp] == ',')) sp++;
+                if (sp >= eb) break;
+                sh.push_back(std::stoull(&json_str[sp]));
+                while (sp < eb && isdigit(json_str[sp])) sp++;
+            }
+            shapes[key] = sh;
+            
+            auto doq = json_str.find('"data_offsets"', eb);
+            if (doq == std::string::npos) continue;
+            auto dob = json_str.find('[', doq), doeb = json_str.find(']', dob);
+            std::string ds = json_str.substr(dob + 1, doeb - dob - 1);
+            uint64_t os, oe; sscanf(ds.c_str(), "%lu, %lu", &os, &oe);
+            tensors[key] = {os, oe - os};
+        }
+        data_start = 8 + hdr_size;
+        return !tensors.empty();
+    }
+    
+    float* get(const std::string& name, size_t* out_n = nullptr) {
+        auto it = tensors.find(name);
+        if (it == tensors.end()) return nullptr;
+        auto [offset, nbytes] = it->second;
+        auto dit = dtypes.find(name);
+        std::string dtype = (dit != dtypes.end()) ? dit->second : "F32";
+        auto sit = shapes.find(name);
+        size_t n = 1;
+        if (sit != shapes.end())
+            for (auto d : sit->second) n *= d;
+        if (out_n) *out_n = n;
+        
+        scratch.resize(n);
+        fseek(f, data_start + offset, SEEK_SET);
+        
+        if (dtype == "F32" || dtype == "float32") {
+            fread(scratch.data(), 4, n, f);
+        } else if (dtype == "F16" || dtype == "float16") {
+            std::vector<uint16_t> buf(n);
+            fread(buf.data(), 2, n, f);
+            for (size_t i = 0; i < n; i++) scratch[i] = fp16_to_fp32(buf[i]);
+        } else if (dtype == "BF16" || dtype == "bfloat16") {
+            std::vector<uint16_t> buf(n);
+            fread(buf.data(), 2, n, f);
+            for (size_t i = 0; i < n; i++) {
+                uint32_t f32 = (uint32_t)buf[i] << 16;
+                memcpy(&scratch[i], &f32, 4);
+            }
+        }
+        return scratch.data();
+    }
+    
+    void close() { if (f) { fclose(f); f = nullptr; } }
+};
 
 // ── Generic CPU Backend ──────────────────────────────────────────────────────
 struct GenericBackend : Backend {
