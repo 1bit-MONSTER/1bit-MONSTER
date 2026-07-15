@@ -80,6 +80,12 @@ set(CMAKE_HIP_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Register the test_* targets with CTest (issue #233). Tests that need a
+# physical gfx1151 GPU or a model file are labeled so CI can run only the
+# headless subset (ctest -L host) and leave gpu_required / model_required
+# tests for the Strix Halo self-hosted runner.
+enable_testing()
+
 # CK's host-tensor reference code uses 1D access into 2D tensors — only valid
 # when assertions are disabled. Match upstream Release build.
 add_compile_definitions(NDEBUG)
@@ -440,6 +446,42 @@ rocm_hip_target(test_bonsai_e2e tests/test_bonsai_e2e.cpp)
 add_executable(test_medusa_skeleton tests/test_medusa_skeleton.cpp)
 target_compile_options(test_medusa_skeleton PRIVATE -Wall -Wextra -Wno-unused-result)
 target_link_libraries(test_medusa_skeleton PRIVATE rocm_cpp)
+
+# ─── CTest registration (issue #233) ─────────────────────────────────────
+# Labels:
+#   host           — no GPU / no model: always runnable (the CI gate).
+#   gpu_required   — links HIP kernels; needs a physical gfx1151 to pass.
+#   model_required — needs an external .h1b model path (see cache vars below);
+#                    returns SKIP code 77 when none is supplied, so `ctest`
+#                    reports SKIPPED instead of failing.
+# The two e2e tests default their model arg from these cache vars:
+set(BONSAI_H1B_MODEL "" CACHE FILEPATH "Path to a Bonsai .h1b model for test_bonsai_e2e (empty = skip)")
+set(SHERRY_H1B_MODEL "" CACHE FILEPATH "Path to a Sherry .h1b model for test_sherry_e2e (empty = skip)")
+
+add_test(NAME test_medusa_skeleton         COMMAND test_medusa_skeleton)
+set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
+
+add_test(NAME test_standalone_nock         COMMAND test_standalone_nock)
+set_tests_properties(test_standalone_nock   PROPERTIES LABELS "gpu_required")
+add_test(NAME test_prim_and_attn           COMMAND test_prim_and_attn)
+set_tests_properties(test_prim_and_attn     PROPERTIES LABELS "gpu_required")
+add_test(NAME test_ternary_gemm_smallm     COMMAND test_ternary_gemm_smallm)
+set_tests_properties(test_ternary_gemm_smallm PROPERTIES LABELS "gpu_required")
+add_test(NAME test_sherry_gemv             COMMAND test_sherry_gemv)
+set_tests_properties(test_sherry_gemv       PROPERTIES LABELS "gpu_required")
+add_test(NAME test_bonsai_gemv             COMMAND test_bonsai_gemv)
+set_tests_properties(test_bonsai_gemv       PROPERTIES LABELS "gpu_required")
+add_test(NAME test_zaya_moe_gemv           COMMAND test_zaya_moe_gemv)
+set_tests_properties(test_zaya_moe_gemv     PROPERTIES LABELS "gpu_required")
+add_test(NAME test_cca_attn                COMMAND test_cca_attn)
+set_tests_properties(test_cca_attn          PROPERTIES LABELS "gpu_required")
+add_test(NAME test_wmma_i8_gemv            COMMAND test_wmma_i8_gemv)
+set_tests_properties(test_wmma_i8_gemv     PROPERTIES LABELS "gpu_required")
+
+add_test(NAME test_bonsai_e2e              COMMAND test_bonsai_e2e ${BONSAI_H1B_MODEL})
+set_tests_properties(test_bonsai_e2e       PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
+add_test(NAME test_sherry_e2e              COMMAND test_sherry_e2e ${SHERRY_H1B_MODEL})
+set_tests_properties(test_sherry_e2e       PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
 
 # -- tools/bitnet_decode : end-to-end MVP decode CLI ---------------------------
 add_executable(bitnet_decode tools/bitnet_decode.cpp)

@@ -36,7 +36,7 @@ badges = {
     },
     'badge_prefill.json': {
         'label': 'Prefill',
-        'message': f\"{engines.get('prefill_i8', {}).get('tok_s', '?')} TFLOPS\",
+        'message': f\"{engines.get('prefill_i8', {}).get('tflops') or bm.get('system', {}).get('tflops_int8', '?')} TFLOPS\",
         'color': '00ff00'
     },
 }

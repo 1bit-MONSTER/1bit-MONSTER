@@ -155,7 +155,10 @@ public:
         }
 
         loaded_ = true;
-        fprintf(stderr, "  NPU: FLM ready (%s, %.1f tok/s)\n",
+        // estimated_tok_s() is a prior, not a measurement (issue #231). Real
+        // throughput is reported per-request via InferenceResult.tok_s; until
+        // then this is just the selection heuristic + a labelled estimate.
+        fprintf(stderr, "  NPU: FLM ready (%s, ~%.0f tok/s est. — measured per-request)\n",
                 model_tag_.c_str(), estimated_tok_s());
         return true;
     }
