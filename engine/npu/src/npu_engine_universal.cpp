@@ -463,7 +463,8 @@ int main(int argc,char**argv){
 
     // GEMM contexts (I8Ctx = NPU xclbin + kernel + buffer set)
     I8Ctx cq,co,cg,cd;
-    std::unique_ptr<I8Ctx> cu_ptr, ca_ptr;
+    std::unique_ptr<I8Ctx> cu_ptr;
+    std::unique_ptr<AttnCtx> ca_ptr;
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
     co.MD=XM;co.KD=cfg.xclbin_o_k;co.ND=cfg.xclbin_o_n;
     cd.MD=XM;cd.KD=cfg.xclbin_d_k;cd.ND=cfg.xclbin_d_n;
