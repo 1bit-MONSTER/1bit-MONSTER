@@ -65,7 +65,7 @@ Backend* create_cpu_backend();
 Backend* create_vulkan_backend();
 
 // ── HIP backend ──
-Backend* create_hip_backend();
+extern "C" Backend* create_hip_backend();
 
 // ── NPU backend ──
 Backend* create_npu_backend();

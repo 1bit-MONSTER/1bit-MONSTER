@@ -109,4 +109,4 @@ struct HIPBackend : Backend {
     }
 };
 
-Backend* create_hip_backend() { return new HIPBackend(); }
+extern "C" Backend* create_hip_backend() { return new HIPBackend(); }
