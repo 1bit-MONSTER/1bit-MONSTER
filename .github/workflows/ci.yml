@@ -67,7 +67,15 @@ jobs:
           if [ -d /opt/rocm ] && [ -f /opt/rocm/lib/cmake/hip/hip-config.cmake ]; then
             echo "ROCm detected — full cmake configure + build."
             cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
-            ninja -C build test_medusa_skeleton
+            # Build the server AND every test_* target so a dropped source or a
+            # compile break fails CI (issue #236). Previously only the wiring
+            # skeleton (test_medusa_skeleton) was built, so a broken engine
+            # could ship behind a green badge.
+            ninja -C build zaya_server \
+              test_medusa_skeleton test_standalone_nock test_prim_and_attn \
+              test_ternary_gemm_smallm test_sherry_gemv test_bonsai_gemv \
+              test_zaya_moe_gemv test_cca_attn test_wmma_i8_gemv \
+              test_bonsai_e2e test_sherry_e2e
           else
             echo "ROCm not available on this runner — reference checks only."
             # Verify that test_medusa_skeleton source exists (wiring proof
@@ -80,6 +88,14 @@ jobs:
               exit 1
             fi
           fi
+      - name: Run headless tests (ctest -L host)
+        # Only the 'host'-labeled tests run without a physical GPU or model
+        # file (issue #233). gpu_required / model_required tests are left for
+        # the Strix Halo self-hosted runner; running them here would always
+        # fail (no device) and teach us nothing.
+        if: ${{ success() }}
+        working-directory: build
+        run: ctest -L host --output-on-failure
       - name: ShellCheck
         uses: ludeeus/action-shellcheck@2.0.0
         with:
@@ -130,10 +146,16 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm ci 2>&1 || echo 'npm ci failed — continuing'
+      # npm ci / tsc are allowed to fail without failing CI, but the masking
+      # is now explicit (continue-on-error) instead of `|| echo '... continuing'`,
+      # which previously hid real errors behind a green step (issue #236).
+      - name: Install deps
+        run: npm ci
+        continue-on-error: true
       - name: Type-check
         if: hashFiles('tsconfig.json') != ''
-        run: npx tsc --noEmit 2>&1 || echo 'tsc failed — continuing'
+        run: npx tsc --noEmit
+        continue-on-error: true
 
   fusion:
     name: Fused engine (build + smoke)
@@ -148,8 +170,11 @@ jobs:
         working-directory: engine/fusion
         run: zig build -Doptimize=ReleaseSafe 2>&1 | tail -5
       - name: Smoke test (--help)
+        # Explicit non-blocking instead of `|| true` so the masking is visible
+        # in the run summary (issue #236).
         working-directory: engine/fusion
-        run: ./zig-out/bin/fused-engine --help 2>&1 || true
+        run: ./zig-out/bin/fused-engine --help
+        continue-on-error: true
 
   # NOTE: site deployment lives in the dedicated `deploy.yml`, which is path-
   # filtered to `site/**` so an unrelated Rust/TS failure never blocks a site

@@ -80,11 +80,19 @@ static void bonsai_gemv(rcpp_weight_format_t fmt,
 }
 
 int main(int argc, char** argv) {
-    const char* path = (argc > 1)
-        ? argv[1]
-        : (getenv("HOME") ? getenv("HOME") : "/tmp");
-    // Note: default path above is a fallback; call with actual model path.
-
+    // Regression guard for issue #229: never feed $HOME (a directory) to the
+    // loader. When no model path is supplied, print usage and return CTest's
+    // SKIP code (77) so `ctest` reports SKIPPED instead of a bogus "Bad .h1b
+    // magic" failure.
+    if (argc < 2) {
+        fprintf(stderr,
+            "Usage: %s <model.h1b>\n"
+            "  Loads a Bonsai (Qwen3) .h1b model and runs a one-token decode.\n"
+            "  No default model is shipped — pass a path (or run via ctest with\n"
+            "  the BONSAI_H1B environment variable set).\n", argv[0]);
+        return 77;
+    }
+    const char* path = argv[1];
     fprintf(stderr, "[test_bonsai_e2e] loading %s\n", path);
 
     rcpp_bitnet_model_t m{};
