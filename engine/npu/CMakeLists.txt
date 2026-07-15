@@ -58,7 +58,8 @@ if(EXISTS "${NPU_TORCH2AIE_DIR}/examples/helper.h")
 endif()
 
 # ── npu_engine_cb (v4) — dynamic instructions, xrt::ext::kernel ──
-find_library(AIEBU aiebu REQUIRED)
+find_package(OpenMP REQUIRED)
+find_library(AIEBU aiebu)
 find_library(XRT_COREUTIL xrt_coreutil)
 
 set(NPU_CB_SOURCES
