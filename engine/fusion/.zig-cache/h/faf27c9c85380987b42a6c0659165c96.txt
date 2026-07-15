@@ -825,7 +825,7 @@
 13745 71437212 1784127143263816476 e7916e1a15d379864e6de8b961a9ca7b 0 /home/bcloud/1bit-systems/engine/fusion/main.zig
 72776 71437213 1784127011489238251 a20111c5982861ee8358c02cc6334fd8 0 /home/bcloud/1bit-systems/engine/fusion/model_data.zig
 51889 71442150 1784061708242973930 8606b3cca0dacf5bbeedcce39a5ba40c 0 /home/bcloud/1bit-systems/engine/fusion/gpu_attn.zig
-115524 71437210 1784128493851561683 59fa0abf1a3e9a2cf7288e2d9362ad36 0 /home/bcloud/1bit-systems/engine/fusion/fused_execute.zig
+114835 71437210 1784129171270120100 5f0184c2d87136feeb0d24f8497f513d 0 /home/bcloud/1bit-systems/engine/fusion/fused_execute.zig
 8908 71442121 1784061708241973964 3c0b5fb2f45472f823a47966eba73382 0 /home/bcloud/1bit-systems/engine/fusion/dispatcher.zig
 7274 71437215 1784075372359539866 7008f1d4c97b4c17073ec44850499bec 0 /home/bcloud/1bit-systems/engine/fusion/tokenizer.zig
 11025 71442194 1784061708244973864 1bfe06badc07e762c2d402bd8a34cc8e 0 /home/bcloud/1bit-systems/engine/fusion/vulkan_c.zig
