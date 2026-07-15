@@ -60,6 +60,7 @@ Backend* create_backend(BackendType type);
 
 // ── CPU backend ──
 Backend* create_cpu_backend();
+Backend* create_generic_backend();
 
 // ── Vulkan backend ──
 Backend* create_vulkan_backend();
