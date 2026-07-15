@@ -22,6 +22,7 @@
 #include "backend_monitor.h"
 #include "backend_plugin.h"
 #include "backend.h"
+#include "model_discovery.h"
 #include "rocm_cpp/tokenizer.h"
 
 #include <cstdio>
@@ -627,6 +628,16 @@ int main(int argc, char** argv) {
     mgr.set_strategy(SelectionStrategy::FASTEST);
     mgr.set_fallback_policy(FallbackPolicy::SEQUENTIAL);
 
+    // Phase 2.5: Scan for model files
+    printf("\n── Model Discovery ──\n");
+    auto discovered = discover_models(g_weights_dir);
+    for (auto& m : discovered) {
+        printf("  ✓  %s (%s)\n", m.model_name.c_str(), m.model_path.c_str());
+    }
+    if (discovered.empty()) {
+        printf("  (no .gguf/.h1b files in %s)\n", g_weights_dir.c_str());
+    }
+
     // Phase 3: Initialize
     printf("\n── Initialize ──\n");
     ModelConfig cfg = default_model_config();
@@ -734,7 +745,29 @@ int main(int argc, char** argv) {
         json j;
         j["object"] = "list";
         json models = json::array();
-        models.push_back(model_info_json(active));
+        // Add all discovered models
+        for (auto& m : discovered) {
+            json info;
+            info["id"] = m.model_name;
+            info["object"] = "model";
+            info["created"] = 0;
+            info["owned_by"] = "1bit-systems";
+            info["backend"] = "auto";
+            info["details"] = {{
+                {"hidden", m.hidden}, {"layers", m.n_layers},
+                {"heads", m.n_heads}, {"kv_heads", m.n_kv_heads},
+                {"vocab", m.vocab}, {"max_seq_len", m.max_seq_len}
+            }};
+            models.push_back(info);
+        }
+        // Also add the active backend model if different
+        if (active) {
+            bool found = false;
+            for (auto& m : discovered) {
+                if (m.model_name == active->id) { found = true; break; }
+            }
+            if (!found) models.push_back(model_info_json(active));
+        }
         j["data"] = models;
         res.set_content(j.dump(2), "application/json");
         add_cors(res);
