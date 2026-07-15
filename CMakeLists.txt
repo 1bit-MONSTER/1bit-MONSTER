@@ -246,7 +246,8 @@ add_library(backend_manager STATIC
     src/backend_manager.cpp
     src/backend_monitor.cpp
     src/backend_plugin.cpp
-    src/backend_cpu.cpp)          # pure C++ reference backend, always compiled in
+    src/backend_cpu.cpp
+    src/model_discovery.cpp)     # model file scanner + GGUF header reader
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
