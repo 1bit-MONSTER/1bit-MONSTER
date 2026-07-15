@@ -57,3 +57,11 @@ site/docs/.build/
 *.bak
 *.tmp
 node_modules/
+
+# Build artifacts
+build-*/
+.zig-cache/
+*.o
+*.a
+*.so
+*.o.d
