@@ -79,7 +79,13 @@ struct ZayaState {
     __half *d_hs = nullptr, *d_ao = nullptr, *d_tmp = nullptr;
     __half *d_fnw = nullptr, *d_lm_out = nullptr, *d_embed = nullptr;
     __half *d_conv = nullptr, *d_phs = nullptr, *d_lm_vocab = nullptr;
+    // CCA attention KV cache + prepared Q/K/V + delayed-V recurrent state
+    __half *d_kcache = nullptr, *d_vcache = nullptr;  // [n_layers, max_seq, NKV, HD]
+    __half *d_vrec = nullptr;                         // [n_layers, KD/2] prev token's v_proj_delayed
+    __half *d_qout = nullptr, *d_kout = nullptr, *d_vout = nullptr; // per-step prepared Q,K,V
     float *d_prev_rs = nullptr;
+    int *d_skip_flag = nullptr;  // fixup_skip_expert flag (0=normal, 1=skip expert)
+    int pos = 0, max_seq = 4096;
     int *d_argmax_idx = nullptr;
     float *d_argmax_val = nullptr;
     int *d_expert_idx = nullptr; float *d_expert_wt = nullptr;
