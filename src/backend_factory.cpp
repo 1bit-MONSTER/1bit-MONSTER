@@ -148,6 +148,7 @@ BackendType detect_backends() {
         {BackendType::NPU_XRT,    "NPU XDNA (XRT)",    has_npu},
         {BackendType::CPU_AVX512, "CPU AVX-512",       has_avx512},
         {BackendType::CPU_SCALAR, "CPU (scalar)",      []()->bool{return true;}},
+        {BackendType::GENERIC,   "Generic CPU",       []()->bool{return true;}},
     };
 
     BackendType best = BackendType::NONE;
@@ -194,6 +195,8 @@ Backend* create_backend(BackendType type) {
         case BackendType::CPU_AVX512:
         case BackendType::CPU_SCALAR:
             return create_cpu_backend();
+        case BackendType::GENERIC:
+            return create_generic_backend();
         default:
             return nullptr;
     }

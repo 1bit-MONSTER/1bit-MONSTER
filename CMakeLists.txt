@@ -247,6 +247,7 @@ add_library(backend_manager STATIC
     src/backend_monitor.cpp
     src/backend_plugin.cpp
     src/backend_cpu.cpp
+    src/backend_generic.cpp
     src/model_discovery.cpp)     # model file scanner + GGUF header reader
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -561,9 +562,11 @@ add_executable(unified_server
     src/agent_watchdog.cpp
     src/backend_hip.cpp
     src/zaya_engine.cpp
-    src/backend_npu.cpp)
+    src/backend_npu.cpp
+    src/backend_generic.cpp)
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_npu.cpp PROPERTIES LANGUAGE CXX)
 target_include_directories(unified_server PRIVATE
@@ -591,9 +594,11 @@ add_executable(zaya_agent
     src/agent_watchdog.cpp
     src/backend_hip.cpp
     src/zaya_engine.cpp
-    src/backend_npu.cpp)
+    src/backend_npu.cpp
+    src/backend_generic.cpp)
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/strategy_engine.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/agent_watchdog.cpp PROPERTIES LANGUAGE CXX)

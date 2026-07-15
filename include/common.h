@@ -14,6 +14,7 @@ enum class BackendType : uint8_t {
     CPU_AVX512 = 4,
     CPU = 4,
     CPU_SCALAR = 5,
+    GENERIC = 6,
 };
 
 inline const char* backend_name(BackendType t) {
