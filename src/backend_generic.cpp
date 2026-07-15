@@ -412,62 +412,59 @@ struct GenericBackend : Backend {
     }
 
     bool load_gguf(const std::string& path) {
-        fprintf(stderr, "load_gguf: opening %s\n", path.c_str());
-        GgufReader r;
-        if (!r.open(path)) { fprintf(stderr, "load_gguf: open failed\n"); return false; }
-        fprintf(stderr, "load_gguf: opened GGUF with %zu tensors\n", r.tensors.size());
+        ModelConfig hdr_cfg;
+        if (!read_gguf_header(path, hdr_cfg)) return false;
+        fprintf(stderr, "load_gguf: %s, %d layers, %d hidden\n", hdr_cfg.model_name.c_str(), hdr_cfg.n_layers, hdr_cfg.hidden);
         
         int H = cfg.hidden, L = cfg.n_layers, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim;
         int FF = cfg.intermediate_size, V = cfg.vocab;
         
-        // Helper: get tensor, remap common names
-        auto get = [&](const std::string& name) -> float* {
-            // Try common naming conventions
-            std::vector<std::string> prefixes = {"", "model.", "transformer."};
-            for (auto& p : prefixes) {
-                float* d = r.get(p + name);
-                if (d) return d;
-            }
-            return nullptr;
+        auto load = [&](const std::string& name, std::vector<float>& dst, size_t expected) -> bool {
+            std::vector<float> buf;
+            size_t n = 0;
+            if (!read_gguf_tensor(path, name, buf, &n)) return false;
+            if (n != expected) { fprintf(stderr, "  %s: expected %zu, got %zu\n", name.c_str(), expected, n); return false; }
+            dst = std::move(buf);
+            return true;
         };
         
         // Embedding
-        { auto* d = get("token_embd.weight"); if (d) { embed.assign(d, d + V * H); } }
+        load("token_embd.weight", embed, (size_t)V * H);
         
         // Final norm
-        { auto* d = get("output_norm.weight"); if (d) final_norm.assign(d, d + H); }
+        load("output_norm.weight", final_norm, H);
         
-        // LM head (might be tied)
-        if (!get("output.weight")) {
-            // Tied embeddings — lm_head = embed.T
-        }
+
         
         // Per-layer weights
         layers.resize(L);
         flat_weights.clear();
+        
+        auto load_tensor = [&](const std::string& name, size_t expected) -> size_t {
+            std::vector<float> buf;
+            size_t n = 0;
+            if (!read_gguf_tensor(path, name, buf, &n)) return 0;
+            if (n != expected) { fprintf(stderr, "  %s: expected %zu, got %zu\n", name.c_str(), expected, n); return 0; }
+            size_t idx = flat_weights.size();
+            flat_weights.insert(flat_weights.end(), buf.begin(), buf.end());
+            return idx;
+        };
+        
         for (int i = 0; i < L; i++) {
             std::string p = "blk." + std::to_string(i) + ".";
             LayerW lw;
-            lw.rms_attn = push_vec(get(p + "attn_norm.weight"), H);
-            lw.rms_ffn  = push_vec(get(p + "ffn_norm.weight"), H);
-            lw.wq = push_vec(get(p + "attn_q.weight"), NH*HD*H);
-            lw.wk = push_vec(get(p + "attn_k.weight"), NKV*HD*H);
-            lw.wv = push_vec(get(p + "attn_v.weight"), NKV*HD*H);
-            lw.wo = push_vec(get(p + "attn_output.weight"), H*NH*HD);
-            lw.w1 = push_vec(get(p + "ffn_gate.weight"), FF*H);
-            lw.w2 = push_vec(get(p + "ffn_up.weight"), FF*H);
-            lw.w3 = push_vec(get(p + "ffn_down.weight"), H*FF);
+            lw.rms_attn = load_tensor(p + "attn_norm.weight", H);
+            lw.rms_ffn  = load_tensor(p + "ffn_norm.weight", H);
+            lw.wq = load_tensor(p + "attn_q.weight", NH*HD*H);
+            lw.wk = load_tensor(p + "attn_k.weight", NKV*HD*H);
+            lw.wv = load_tensor(p + "attn_v.weight", NKV*HD*H);
+            lw.wo = load_tensor(p + "attn_output.weight", H*NH*HD);
+            lw.w1 = load_tensor(p + "ffn_gate.weight", FF*H);
+            lw.w2 = load_tensor(p + "ffn_up.weight", FF*H);
+            lw.w3 = load_tensor(p + "ffn_down.weight", H*FF);
             layers[i] = lw;
         }
         
-        // If embedding is still empty, try vocab_embedding or similar
-        if (embed.empty()) {
-            auto* d = get("token_embd.weight");
-            if (!d) d = r.get("gpt.neox.token_embd.weight");
-            if (d) embed.assign(d, d + V * H);
-        }
-        
-        r.close();
         printf("Generic: loaded %zu layers, embed=%zu, final_norm=%zu\n",
                layers.size(), embed.size(), final_norm.size());
         return !embed.empty() && layers.size() == (size_t)L;

@@ -15,6 +15,8 @@ enum class BackendType : uint8_t {
     CPU = 4,
     CPU_SCALAR = 5,
     GENERIC = 6,
+    ZAMBA2 = 7,   // Zamba2 hybrid Mamba2+attention (CPU ref)
+    ZAMBA2_GPU = 8, // Zamba2 with HIP acceleration
 };
 
 inline const char* backend_name(BackendType t) {
@@ -24,6 +26,8 @@ inline const char* backend_name(BackendType t) {
         case BackendType::NPU_XRT: return "NPU XDNA (XRT)";
         case BackendType::CPU_AVX512: return "CPU AVX-512";
         case BackendType::CPU_SCALAR: return "CPU (scalar)";
+        case BackendType::ZAMBA2: return "Zamba2 (Mamba2 CPU)";
+        case BackendType::ZAMBA2_GPU: return "Zamba2 (Mamba2 GPU)";
         default: return "none";
     }
 }
