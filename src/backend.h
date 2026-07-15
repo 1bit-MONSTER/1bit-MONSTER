@@ -71,5 +71,8 @@ extern "C" Backend* create_hip_backend();
 // ── NPU backend ──
 Backend* create_npu_backend();
 
+// ── Zamba2 backend ──
+Backend* create_zamba2_backend();
+
 // ── Auto-detect ──
 BackendType detect_backends();
