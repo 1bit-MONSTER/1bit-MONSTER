@@ -137,6 +137,17 @@ struct HybridLayerWeights {
     // input_layernorm for the full hybrid layer
     std::vector<float> input_norm_w;  // layers.N.input_layernorm
 
+    // Shared transformer weights (duplicated per layer by GGUF converter)
+    std::vector<float> shared_transformer_q;     // self_attn.q_proj
+    std::vector<float> shared_transformer_k;     // self_attn.k_proj
+    std::vector<float> shared_transformer_v;     // self_attn.v_proj
+    std::vector<float> shared_transformer_o;     // self_attn.o_proj
+    std::vector<float> shared_transformer_pre_ff_norm;  // post_attention_norm
+    std::vector<float> shared_transformer_ffn_norm;     // ffn_norm (input norm for FFN)
+    std::vector<float> shared_transformer_gate;  // ffn_gate (SiLU gate)
+    std::vector<float> shared_transformer_up;    // ffn_up
+    std::vector<float> shared_transformer_down;  // ffn_down
+
     bool loaded = false;
 };
 
@@ -163,8 +174,8 @@ struct Zamba2Model {
     std::vector<float> conv_states;     // [n_layers, d_conv-1, conv_dim]
     std::vector<float> ssm_states;      // [n_layers, d_state, d_inner]
 
-    // KV cache for shared attention blocks
-    std::vector<float> kv_cache;        // [n_shared_blocks, 2, max_seq, n_kv_heads * attn_head_dim]
+    // KV cache for attention layers (one per hybrid layer, since weights are duplicated)
+    std::vector<float> kv_cache;        // [n_hybrid, 2, max_seq, n_kv_heads * attn_head_dim]
 
     int pos = 0;  // current position in sequence
 
@@ -175,7 +186,9 @@ struct Zamba2Model {
         int64_t conv_dim = cfg.d_inner + 2 * cfg.n_group * cfg.d_state;
         conv_states.resize(cfg.n_layers * (cfg.d_conv - 1) * conv_dim, 0.0f);
         ssm_states.resize(cfg.n_layers * cfg.d_state * cfg.d_inner, 0.0f);
-        kv_cache.resize(cfg.n_shared_blocks * 2 * cfg.max_seq_len * cfg.n_kv_heads * cfg.attn_head_dim, 0.0f);
+        // Allocate KV cache: one slot per hybrid layer
+        int n_hybrid_layers = num_hybrid_layers();
+        kv_cache.resize(n_hybrid_layers * 2 * cfg.max_seq_len * cfg.n_kv_heads * cfg.attn_head_dim, 0.0f);
         pos = 0;
         return true;
     }
@@ -186,6 +199,11 @@ struct Zamba2Model {
         std::fill(ssm_states.begin(), ssm_states.end(), 0.0f);
         std::fill(kv_cache.begin(), kv_cache.end(), 0.0f);
         pos = 0;
+    }
+
+    // Get number of hybrid layers
+    int num_hybrid_layers() const {
+        return (int)hybrid_layers.size();
     }
 
     // ── Forward pass for one token ──

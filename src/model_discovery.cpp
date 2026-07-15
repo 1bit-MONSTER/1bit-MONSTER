@@ -157,6 +157,8 @@ static bool read_gguf_metadata(const std::string& path, ModelConfig& cfg) {
         }
     }
 
+    }
+
     // Derive head_dim from hidden / heads
     cfg.head_dim = cfg.hidden / cfg.n_heads;
     // Default KV heads to full if not set
