@@ -256,6 +256,9 @@ target_link_libraries(backend_manager PUBLIC dl)
 # consumers like backend_demo can link without HIP symbols.
 # ROCM_CPP_STATIC_HIP is set only on targets (e.g., unified_server)
 # that also link src/backend_hip.cpp directly.
+# consumers like backend_demo can link without HIP symbols.
+# ROCM_CPP_STATIC_HIP is set only on targets (e.g., unified_server)
+# that also link src/backend_hip.cpp directly.
 target_compile_options(backend_manager PRIVATE -O3 -Wall -Wno-unused-result -std=c++17)
 
 # Derive HIP source list from RCPP_SOURCES to avoid maintaining a duplicate list.
