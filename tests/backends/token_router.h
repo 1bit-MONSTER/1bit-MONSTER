@@ -45,7 +45,10 @@ struct TokenRouter {
 
         fprintf(stderr, "\nAvailable backends:\n");
         for (auto* b : backends) {
-            fprintf(stderr, "  %-12s %-30s ~%.0f tok/s  %s\n",
+            // estimated_tok_s() is a prior used for backend selection, not a
+            // measurement (issue #231). Label it so the startup banner never
+            // reads as a validated throughput figure.
+            fprintf(stderr, "  %-12s %-30s ~%.0f tok/s (est.)  %s\n",
                 b->name(), b->is_available() ? "ready" : "unavailable",
                 b->estimated_tok_s(),
                 b->is_coherent() ? "[coherent]" : "[raw]");
@@ -53,7 +56,7 @@ struct TokenRouter {
 
         primary = select_best_backend();
         if (primary) {
-            fprintf(stderr, "\n  Primary: %s (%.0f tok/s)\n\n",
+            fprintf(stderr, "\n  Primary: %s (~%.0f tok/s est.)\n\n",
                 primary->name(), primary->estimated_tok_s());
         }
 

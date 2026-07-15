@@ -271,11 +271,23 @@ int main(int argc, char** argv) {
         }
     }
     if (!detected) {
-        fprintf(stderr, "No model specified — using Zaya1-8B defaults.\n");
-        fprintf(stderr, "  Provide --model or --manifest for auto-detection.\n\n");
+        // No model path was given. The backends will still start (the CPU
+        // fallback always "loads"), but with no real weights the server only
+        // ever produces empty/garbage output — which is exactly the silent
+        // failure mode issue #232 reported. Warn loudly and remember the
+        // state so /v1/chat/completions can return an actionable 503 instead
+        // of an empty 200, and / health can report model_loaded=false.
+        fprintf(stderr,
+            "\n  *** No model specified — running WITHOUT weights. ***\n"
+            "  The server will start, but /v1/chat/completions will return an\n"
+            "  error until you pass a real model, e.g.:\n"
+            "      %s --model /path/to/model.h1b\n"
+            "      %s --manifest model.json\n\n",
+            argv[0], argv[0]);
         cfg.model_name = "Zaya1-8B";
         cfg.weights_dir = weights_dir;
     }
+    const bool model_loaded = detected;
     if (cfg.weights_dir.empty()) cfg.weights_dir = weights_dir;
     fprintf(stderr, "Weights directory: %s\n\n", cfg.weights_dir.c_str());
 
@@ -375,7 +387,7 @@ int main(int argc, char** argv) {
         if (r.find("OPTIONS") == 0) { send_json(200, "{\"ok\":true}"); continue; }
 
         if (r.find("GET / ") != std::string::npos || r.find("GET / HTTP") != std::string::npos) {
-            std::string resp = "{\"status\":\"ok\",\"model\":\"" + json_escape(cfg.model_name) + "\","
+            std::string resp = "{\"status\":\"" + std::string(model_loaded ? "ok" : "no_model") + "\",\"model_loaded\":" + (model_loaded ? "true" : "false") + ",\"model\":\"" + json_escape(cfg.model_name) + "\","
                 "\"backend\":\"" + std::string(router.primary ? router.primary->name() : "none") + "\","
                 "\"hidden_size\":" + std::to_string(cfg.hidden_size) + ","
                 "\"layers\":" + std::to_string(cfg.num_layers) + ","
@@ -403,6 +415,17 @@ int main(int argc, char** argv) {
         }
 
         if (r.find("POST /v1/chat/completions") != std::string::npos) {
+            // No real model loaded → return an actionable error instead of an
+            // empty 200 (issue #232). The CPU fallback always "loads", so we
+            // gate on whether a model path/manifest was actually provided.
+            if (!model_loaded) {
+                send_json(503,
+                    "{\"error\":{\"message\":\"No model loaded. Restart with --model "
+                    "<path.h1b> or --manifest <model.json> (the README quick-start runs "
+                    "without weights by default).\",\"type\":\"no_model\","
+                    "\"code\":\"model_not_loaded\"}}");
+                continue;
+            }
             int max_tokens = 256;
             try {
                 json jbody = json::parse(body);
