@@ -4,13 +4,18 @@
 #include "common.h"
 #include <string>
 #include <vector>
+#include <cstdint>
 
-// Discover models available in a directory. Scans for .gguf, .h1b, .safetensors files
-// and reads their headers to populate ModelConfig. Returns discovered models.
+// Discover models available in a directory.
 std::vector<ModelConfig> discover_models(const std::string& dir);
 
-// Quick check: read a GGUF file header and populate ModelConfig without loading weights.
-// Returns true if the file was read successfully.
+// Read GGUF header (model config + tensor metadata).
 bool read_gguf_header(const std::string& path, ModelConfig& cfg);
+
+// Read a GGUF tensor's data into a float vector (dequantized).
+// Returns true if the tensor was found and read.
+// Tensor names are llama.cpp-style: "token_embd.weight", "blk.0.attn_q.weight", etc.
+bool read_gguf_tensor(const std::string& gguf_path, const std::string& tensor_name,
+                      std::vector<float>& output, size_t* out_n = nullptr);
 
 #endif

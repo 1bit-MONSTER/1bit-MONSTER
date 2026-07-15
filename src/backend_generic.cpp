@@ -68,14 +68,39 @@ struct GgufReader {
             uint64_t klen; fread(&klen, 8, 1, f); fseek(f, klen, SEEK_CUR);
             uint32_t vtype; fread(&vtype, 4, 1, f);
             switch (vtype) {
-                case 0: case 1: case 2: fseek(f, 1, SEEK_CUR); break;
-                case 3: case 4: fseek(f, 4, SEEK_CUR); break;
-                case 5: fseek(f, 4, SEEK_CUR); break;
-                case 6: fseek(f, 4, SEEK_CUR); break;
-                case 7: fseek(f, 8, SEEK_CUR); break;
-                case 8: fseek(f, 8, SEEK_CUR); break;
-                case 9: { uint32_t at, an; fread(&at, 4, 1, f); fread(&an, 4, 1, f); fseek(f, an*4, SEEK_CUR); break; }
-                case 10: { uint64_t sl; fread(&sl, 8, 1, f); fseek(f, sl, SEEK_CUR); break; }
+                case 0: fseek(f, 1, SEEK_CUR); break;   // uint8
+                case 1: fseek(f, 1, SEEK_CUR); break;   // int8
+                case 2: fseek(f, 2, SEEK_CUR); break;   // uint16
+                case 3: fseek(f, 2, SEEK_CUR); break;   // int16
+                case 4: fseek(f, 4, SEEK_CUR); break;   // uint32
+                case 5: fseek(f, 4, SEEK_CUR); break;   // int32
+                case 6: fseek(f, 4, SEEK_CUR); break;   // float32
+                case 7: fseek(f, 1, SEEK_CUR); break;   // bool
+                case 8: { uint64_t sl; fread(&sl, 8, 1, f); fseek(f, sl, SEEK_CUR); break; } // string
+                case 9: {  // array: uint32 elem_type + uint64 count + elements
+                    uint32_t at; fread(&at, 4, 1, f);
+                    uint64_t an; fread(&an, 8, 1, f);
+                    if (at == 8) { // array of strings — skip each string (len prefix + data)
+                        for (uint64_t j = 0; j < an; j++) { 
+                            uint64_t sl; fread(&sl, 8, 1, f); 
+                            fseek(f, sl, SEEK_CUR); 
+                        }
+                    } else {
+                        // Element sizes by GGUF type
+                        static const int elem_sizes[] = {1,1,2,2,4,4,4,1,0,8,8,8,8};
+                        int es = (at < 13) ? elem_sizes[at] : 4;
+                        if (es == 0) { // should not happen
+                            fprintf(stderr, "[GGUF] skipping array of type %u, %llu elements\n", at, (unsigned long long)an);
+                            fseek(f, an * 4, SEEK_CUR);
+                        } else {
+                            fseek(f, an * es, SEEK_CUR);
+                        }
+                    }
+                    break;
+                }
+                case 10: fseek(f, 8, SEEK_CUR); break;  // uint64
+                case 11: fseek(f, 8, SEEK_CUR); break;  // int64
+                case 12: fseek(f, 8, SEEK_CUR); break;  // float64
                 default: break;
             }
         }
@@ -84,6 +109,7 @@ struct GgufReader {
         for (uint64_t i = 0; i < tensor_count; i++) {
             GgufTensor t;
             uint64_t nlen; fread(&nlen, 8, 1, f);
+            if (nlen > 512) { fprintf(stderr, "[GGUF] bad nlen=%llu at tensor %llu, stopping\n", (unsigned long long)nlen, (unsigned long long)i); break; }
             t.name.resize(nlen); fread(&t.name[0], 1, nlen, f);
             uint32_t n_dims; fread(&n_dims, 4, 1, f);
             t.dtype = 0; fread(&t.dtype, 4, 1, f);
@@ -91,6 +117,27 @@ struct GgufReader {
             for (int j = 0; j < n_dims; j++) fread(&t.shape[j], 8, 1, f);
             tensors[t.name] = t;
         }
+        // GGUF block sizes and bytes per block for each quantization type
+        auto block_info = [](uint32_t dtype) -> std::pair<int,int> {
+            switch (dtype) {
+                case 0: return {1, 4};      // F32
+                case 1: return {1, 2};      // F16
+                case 2: return {32, 18};    // Q4_0
+                case 3: return {32, 20};    // Q4_1
+                case 6: return {32, 34};    // Q8_0
+                case 7: return {32, 22};    // Q5_0
+                case 8: return {32, 24};    // Q5_1
+                case 9: return {256, 72};   // Q2_K
+                case 10: return {256, 104}; // Q3_K
+                case 11: return {256, 144}; // Q4_K
+                case 12: return {256, 176}; // Q5_K
+                case 13: return {256, 210}; // Q6_K
+                case 14: return {256, 292}; // Q8_K
+                case 15: return {256, 0};   // unknown
+                default: return {32, 0};    // unknown
+            }
+        };
+        
         // Compute actual data offsets — align to 32 bytes
         data_offset = ftell(f);
         data_offset = (data_offset + 31) & ~31;
@@ -98,11 +145,15 @@ struct GgufReader {
             t.file_offset = data_offset;
             uint64_t n_elems = 1;
             for (auto s : t.shape) n_elems *= s;
-            int bytes_per_elem = (t.dtype == GGUF_TYPE_F32) ? 4 :
-                                 (t.dtype == GGUF_TYPE_F16) ? 2 :
-                                 (t.dtype == GGUF_TYPE_Q4_0) ? 18/*bytes/32elems*/ : 34/*Q8_0*/;
-            data_offset += (n_elems * bytes_per_elem / (t.dtype == GGUF_TYPE_F32 || t.dtype == GGUF_TYPE_F16 ? 1 : 32)) + 31;
-            data_offset &= ~31;
+            auto [block_size, bytes_per_block] = block_info(t.dtype);
+            if (bytes_per_block == 0) {
+                fprintf(stderr, "[GGUF] unknown dtype %u for tensor %s, treating as F32\n", t.dtype, name.c_str());
+                bytes_per_block = 4; block_size = 1;
+            }
+            uint64_t n_blocks = (n_elems + block_size - 1) / block_size;
+            data_offset += n_blocks * bytes_per_block;
+            // Align to 32 bytes (GGUF alignment)
+            data_offset = (data_offset + 31) & ~31;
         }
         return true;
     }
@@ -361,9 +412,10 @@ struct GenericBackend : Backend {
     }
 
     bool load_gguf(const std::string& path) {
+        fprintf(stderr, "load_gguf: opening %s\n", path.c_str());
         GgufReader r;
-        if (!r.open(path)) return false;
-        printf("Generic: opened GGUF with %zu tensors\n", r.tensors.size());
+        if (!r.open(path)) { fprintf(stderr, "load_gguf: open failed\n"); return false; }
+        fprintf(stderr, "load_gguf: opened GGUF with %zu tensors\n", r.tensors.size());
         
         int H = cfg.hidden, L = cfg.n_layers, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim;
         int FF = cfg.intermediate_size, V = cfg.vocab;
