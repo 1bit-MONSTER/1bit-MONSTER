@@ -1,6 +1,6 @@
 /** NPU Engine — Universal Fast. Model-agnostic auto-detect + v12 speed.
  *  M=32 batched decode, OpenMP attention, OpenMP LM head, f32 embeddings.
- *  Supports ALL models with tagged xclbins. Target: >80 tok/s on any model. */
+ *  Supports ALL models with tagged xclbins. Target: >97 tok/s on any model. */
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -325,7 +325,7 @@ int main(int argc,char**argv){
     int kv_dwords=NKV*HD/2;
 
     // v12: M=32 batch decode
-    int BS=32;
+    int BS=64;
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
     int kv_size=4096*NKV*HD;
     std::vector<KVCache> kv_caches;for(int i=0;i<NC;i++)kv_caches.emplace_back(kv_size);
