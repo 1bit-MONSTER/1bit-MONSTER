@@ -23,9 +23,9 @@
    "label": "TQ2_0 GEMV kernel (28-layer model, g128)"
   },
   "npu_v12": {
-   "tok_s": 69,
-   "status": "validated",
-   "label": "NPU v12 (69 tok/s, OMP tuned)"
+   "tok_s": 97,
+   "status": "optimized",
+   "label": "NPU v12 (97 tok/s \u2014 BS=64, memset+isfinite removal)"
   },
   "rocm_hip": {
    "tok_s": 64,
