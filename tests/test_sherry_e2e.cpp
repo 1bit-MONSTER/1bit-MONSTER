@@ -94,11 +94,18 @@ static void sherry_gemv(const void* packed, const void* act_fp16,
 }
 
 int main(int argc, char** argv) {
-    std::string path_str = (argc > 1)
-        ? argv[1]
-        : std::string(getenv("HOME") ? getenv("HOME") : "/tmp") + "/halo-ai/models/halo-1bit-2b-sherry-v4.h1b";
-    const char* path = path_str.c_str();
-
+    // No default model is shipped. The previous code hardcoded a developer
+    // path ($HOME/halo-ai/models/...) that exists on no other machine, so the
+    // test could never pass outside the author's box. Print usage and return
+    // CTest's SKIP code (77) instead of trying to load a missing file.
+    if (argc < 2) {
+        fprintf(stderr,
+            "Usage: %s <model.h1b>\n"
+            "  Loads a Sherry fp16 .h1b model and runs a one-token decode.\n"
+            "  Pass a path (or run via ctest with SHERRY_H1B set).\n", argv[0]);
+        return 77;
+    }
+    const char* path = argv[1];
     fprintf(stderr, "[test_sherry_e2e] loading %s\n", path);
 
     rcpp_bitnet_model_t m{};

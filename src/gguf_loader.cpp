@@ -474,9 +474,28 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
     out_model->tie_embeddings = 1;
     out_model->format_version = 5;
     out_model->flags = 0;
-    out_model->weight_format = RCPP_WEIGHT_FORMAT_HALO_V2;
-    out_model->arch = RCPP_ARCH_QWEN3;
-    out_model->is_qwen3 = 1;
+    // Resolve architecture from the GGUF header instead of hardcoding it
+    // (issue #240). The engine ships a single transformer weight path — the
+    // Qwen-family "model.layers.N.*" tensor layout that modern Llama/Mistral/
+    // DeepSeek GGUFs also use — so every loadable transformer model is tagged
+    // QWEN3. We DO read and log the real arch string, and warn when it is not a
+    // family we have validated, so the README's "auto-detects model
+    // architecture from the model header" is true rather than discarded.
+    {
+        const std::string& a = reader.arch;
+        const bool is_qwen = (a == "qwen2" || a == "qwen3" || a == "qwen");
+        const bool known_transformer = is_qwen || a == "llama" || a == "mistral" ||
+            a == "deepseek" || a == "deepseek2" || a == "gemma" ||
+            a == "gemma2" || a == "phi2" || a == "phi3";
+        out_model->weight_format = RCPP_WEIGHT_FORMAT_HALO_V2;
+        out_model->arch = RCPP_ARCH_QWEN3;   // shared transformer weight path
+        out_model->is_qwen3 = 1;
+        if (!known_transformer && !a.empty()) {
+            fprintf(stderr, "[gguf] arch '%s' is not a validated family — header + "
+                            "embedding will load, but per-arch attention/FFN paths "
+                            "are untested (issue #240).\n", a.c_str());
+        }
+    }
     
     fprintf(stderr, "[gguf]  H=%d L=%d NH=%d NKV=%d HD=%d IM=%d V=%d\\n",
             hidden_size, n_layers, n_heads, n_kv_heads, head_dim, inter_size, vocab_size);

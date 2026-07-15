@@ -53,6 +53,7 @@
    "label": "Zaya pure C++ server"
   },
   "prefill_i8": {
+   "tflops": 42.21,
    "tok_s": 0,
    "status": "validated",
    "label": "Prefill I8-APRE: 42.2 TFLOPS INT8 WMMA"

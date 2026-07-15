@@ -65,6 +65,44 @@ jobs:
           # in _unverified. Hardware-free. (issues #185, #190)
           python3 tools/validate_claims.py --check-readme
 
+      - name: Badge files match benchmarks.json
+        # The badge generator in .github/workflows/update-badges.yml reads
+        # site/benchmarks.json and writes site/badge_*.json. If they drift
+        # (e.g. the prefill badge was hand-edited to 42.2 while the generator
+        # reads prefill_i8.tok_s which is 0), the badge wouldn't match what a
+        # fresh generation produces. Re-run the offline badge logic here and
+        # fail if the committed files differ (issue #238).
+        run: |
+          python3 - <<'PY'
+          import json, sys
+
+          with open('site/benchmarks.json') as f:
+              bm = json.load(f)
+          engines = bm.get('engines', {})
+
+          expected = {
+              'badge_gpu.json': {
+                  'message': f"{engines.get('q1_gemv', {}).get('tok_s', '?')} tok/s",
+              },
+              'badge_npu.json': {
+                  'message': f"{engines.get('npu_v12', {}).get('tok_s', '?')} tok/s",
+              },
+              'badge_prefill.json': {
+                  'message': f"{engines.get('prefill_i8', {}).get('tflops') or bm.get('system', {}).get('tflops_int8', '?')} TFLOPS",
+              },
+          }
+
+          fail = 0
+          for fname, want in expected.items():
+              got = json.load(open(f'site/{fname}'))
+              if got.get('message') != want['message']:
+                  print(f"FAIL: {fname} says '{got.get('message')}' but generator produces '{want['message']}'")
+                  fail = 1
+              else:
+                  print(f"ok: {fname} → '{want['message']}'")
+          sys.exit(fail)
+          PY
+
       - name: Retired claims must not reappear on the site
         run: |
           set -e

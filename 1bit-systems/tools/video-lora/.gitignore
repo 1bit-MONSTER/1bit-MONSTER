@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-dist/
-*.egg-info/
-*.mp4
-*.gif
-outputs/
