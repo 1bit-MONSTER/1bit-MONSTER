@@ -233,6 +233,52 @@ std::vector<ModelConfig> discover_models(const std::string& dir) {
     return models;
 }
 
+
+
+// ── Read vocab size from GGUF embedding tensor shape ──────────────────────
+// Faster than parsing all KV pairs. Reads the first tensor's second dimension.
+int read_gguf_vocab(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return 0;
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "GGUF", 4) != 0) { fclose(f); return 0; }
+    uint32_t ver; fread(&ver, 4, 1, f);
+    uint64_t tc, kc; fread(&tc, 8, 1, f); fread(&kc, 8, 1, f);
+    // Skip all KVs (use correct v3 types)
+    char kbuf[256];
+    for (uint64_t i = 0; i < kc; i++) {
+        uint64_t kl; fread(&kl, 8, 1, f);
+        if (kl > 255) { fseek(f, kl, SEEK_CUR); } else { fread(kbuf, 1, kl, f); }
+        uint32_t vt; fread(&vt, 4, 1, f);
+        switch (vt) {
+            case 0: fseek(f,1,SEEK_CUR);break; case 1: fseek(f,1,SEEK_CUR);break;
+            case 2: fseek(f,2,SEEK_CUR);break; case 3: fseek(f,2,SEEK_CUR);break;
+            case 4:case 5:case 6: fseek(f,4,SEEK_CUR);break;
+            case 7: fseek(f,1,SEEK_CUR);break;
+            case 8: { uint64_t sl; fread(&sl,8,1,f); fseek(f,sl,SEEK_CUR); break; }
+            case 9: {
+                uint32_t at; fread(&at,4,1,f); uint64_t an; fread(&an,8,1,f);
+                if (at == 8) for (uint64_t j=0;j<an;j++){uint64_t sl;fread(&sl,8,1,f);fseek(f,sl,SEEK_CUR);}
+                else fseek(f, an*4, SEEK_CUR);
+                break;
+            }
+            case 10:case 11:case 12: fseek(f,8,SEEK_CUR);break;
+            default: fseek(f,4,SEEK_CUR);break;
+        }
+    }
+    // Read first tensor's shape
+    for (uint64_t i = 0; i < tc && i < 1; i++) {
+        uint64_t nl; fread(&nl, 8, 1, f); if (nl > 512) break;
+        fseek(f, nl, SEEK_CUR); // skip name
+        uint32_t nd; fread(&nd, 4, 1, f);
+        for (int j = 0; j < nd; j++) {
+            uint64_t dim; fread(&dim, 8, 1, f);
+            if (j == 1) { fclose(f); return (int)dim; } // second dim = vocab
+        }
+    }
+    fclose(f);
+    return 0;
+}
 bool read_gguf_header(const std::string& path, ModelConfig& cfg) {
     return read_gguf_metadata(path, cfg);
 }

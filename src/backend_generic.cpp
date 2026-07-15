@@ -429,7 +429,9 @@ struct GenericBackend : Backend {
         };
         
         // Embedding
-        load("token_embd.weight", embed, (size_t)V * H);
+        int real_vocab = read_gguf_vocab(path);
+        if (real_vocab > 0) cfg.vocab = cfg.vocab_size = real_vocab;
+        load("token_embd.weight", embed, (size_t)real_vocab * H);
         
         // Final norm
         load("output_norm.weight", final_norm, H);
