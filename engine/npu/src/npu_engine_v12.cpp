@@ -16,7 +16,7 @@
 extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:[&]{uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}();}
 static constexpr int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2;
-static constexpr float EPS=1e-6f; static constexpr int XM=128, BS=32;
+static constexpr float EPS=1e-6f; static constexpr int XM=128, BS=64;
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline float dynamic_ascale(const float* x, int n) {
     float amax = 0;
@@ -37,8 +37,8 @@ bool init(xrt::device&d,const char*xp,const char*ip,int gid_B){
 }
 void packB(int l,const float*w,int K,int N,float&sout){float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[l]->map();for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
 inline void go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
-    float ais=1.0f/ascale;memset(Am,0,(size_t)am*KD);
-    for(int m=0;m<am;m++)for(int k=0;k<ak;k++){float v=A[m*ak+k];if(!std::isfinite(v))v=0;int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;Am[m*KD+k]=(int8_t)q;}
+    float ais=1.0f/ascale;// memset(Am,0,(size_t)am*KD); // removed: every element is written
+    for(int m=0;m<am;m++)for(int k=0;k<ak;k++){float v=A[m*ak+k];int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;Am[m*KD+k]=(int8_t)q;}
     bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);auto r=(*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     float cs=ascale*Bscale;
     for(int m=0;m<am;m++)for(int n=0;n<an;n++){float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
