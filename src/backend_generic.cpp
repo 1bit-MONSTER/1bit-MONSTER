@@ -556,11 +556,13 @@ struct GenericBackend : Backend {
         float eps = cfg.rms_norm_eps, theta = cfg.rope_theta;
         int rot_dim = cfg.head_dim;  // full RoPE by default
 
+        fprintf(stderr, "fwd: start\n");
         std::vector<float> x(H), x2(H), q(NH*HD), k(NKV*HD), v(NKV*HD), scores(HD);
         std::vector<float> att(NH*HD);
         std::vector<float> gate_up(FF*2);
 
         // Embed
+        fprintf(stderr, "fwd: embed token=%d\n", token);
         for (int i = 0; i < H; i++) x[i] = embed[token * (size_t)H + i];
 
         for (int il = 0; il < cfg.n_layers; il++) {
@@ -613,8 +615,9 @@ struct GenericBackend : Backend {
             rmsnorm(x2.data(), x.data(), w(l.rms_ffn), H, eps);
             matmul(gate_up.data(), x2.data(), w(l.w1), FF, H);
             matmul(&gate_up[FF], x2.data(), w(l.w2), FF, H);
-            silu(x2.data(), gate_up.data(), &gate_up[FF], FF);
-            matmul(x2.data(), x2.data(), w(l.w3), H, FF);
+            std::vector<float> silu_buf(FF);
+            silu(silu_buf.data(), gate_up.data(), &gate_up[FF], FF);
+            matmul(x2.data(), silu_buf.data(), w(l.w3), H, FF);
             for (int i = 0; i < H; i++) x[i] += x2[i];
         }
 
