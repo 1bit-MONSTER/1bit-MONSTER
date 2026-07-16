@@ -231,7 +231,7 @@ struct TrgModel {
         if (!f) { fprintf(stderr, "Cannot open: %s\n", path); return false; }
 
         f.read((char*)&hdr, sizeof(hdr));
-        if (memcmp(hdr.magic, "TRG1", 4) != 0) {
+        if (memcmp(hdr.magic, "TRG1", 4) != 0 && memcmp(hdr.magic, "TRG2", 4) != 0) {
             fprintf(stderr, "Invalid .trg file (magic: %.4s)\n", hdr.magic);
             return false;
         }
