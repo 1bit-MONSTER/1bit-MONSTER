@@ -707,14 +707,15 @@ target_include_directories(dspark_gpu_bench PRIVATE
     ${CMAKE_SOURCE_DIR}/spec-decode/draft
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/spec-decode)
+    ${CMAKE_SOURCE_DIR}/spec-decode
+    ${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/include)
 target_compile_options(dspark_gpu_bench PRIVATE
     -O3 -march=native -ffast-math -std=c++23 -fopenmp)
 target_link_libraries(dspark_gpu_bench PRIVATE
     rocm_cpp
-    ${CMAKE_DL_LIBS} m pthread)
+    ${CMAKE_DL_LIBS} m pthread hipblas)
 target_link_options(dspark_gpu_bench PRIVATE
-    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
+    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -lhipblas -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
 set_target_properties(dspark_gpu_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
@@ -731,3 +732,31 @@ target_link_libraries(trg_save PRIVATE
     ${CMAKE_DL_LIBS} m pthread)
 set_target_properties(trg_save PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
+
+# ── OSCAR calibration tool ─────────────────────────────────────────────────
+add_executable(oscar_calib
+    tools/oscar_calib.cpp
+    engine/fusion/cpu_layer.cpp)
+target_include_directories(oscar_calib PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/fusion
+    ${CMAKE_SOURCE_DIR})
+target_compile_options(oscar_calib PRIVATE
+    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+target_link_libraries(oscar_calib PRIVATE
+    ${CMAKE_DL_LIBS} m pthread)
+set_target_properties(oscar_calib PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
+
+# ── OSCAR INT2 quant + decode HIP library ─────────────────────────────────
+add_library(oscar SHARED
+    src/oscar.cpp
+    kernels/oscar_quant.hip)
+target_include_directories(oscar PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR})
+target_compile_options(oscar PRIVATE
+    -O3 -ffast-math -std=c++23)
+target_link_libraries(oscar PRIVATE
+    ${CMAKE_DL_LIBS} m pthread)
+target_link_options(oscar PRIVATE
+    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)

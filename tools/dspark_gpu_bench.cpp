@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #define SYNC hipStreamSynchronize(s)
+#include <hipblas/hipblas.h>
 
 int main(int argc, char** argv) {
     const char* path=argc>1?argv[1]:"/tmp/model.trg";
@@ -133,7 +134,8 @@ int main(int argc, char** argv) {
     ALIGNED_UPLOAD(d_fn,F(o_fn),(size_t)H*4);
     ALIGNED_UPLOAD(d_lm,F(o_lm),(size_t)V*H*4);
 
-    // GPU forward lambda
+    // GPU forward lambda — runs full model on GPU, returns logits in d_logits
+    hipblasHandle_t blas; hipblasCreate(&blas);
     auto gpu_fwd=[&](float*hd,int pos){
             hipMemcpy(d_hf,hd,H*4,hipMemcpyHostToDevice);hipStreamSynchronize(s);rcpp_fp32_to_fp16(d_hf,d_h,H,s);SYNC;
         for(int l=0;l<L;l++){
@@ -177,9 +179,16 @@ int main(int argc, char** argv) {
             rcpp_fp32_to_fp16(d_hf,d_h,H,s);SYNC;
             rcpp_residual_add_fp16(d_h,d_ffg,H,s);SYNC;
         }
+        // Final RMS norm + LM head on GPU via hipBLAS
         rcpp_rmsnorm_fp16(d_h,d_fn,d_h,1e-6f,H,s);SYNC;
         rcpp_fp16_to_fp32(d_h,d_hf,H,s);SYNC;
-        hipMemcpy(hd,d_hf,H*4,hipMemcpyDeviceToHost);SYNC;
+        // d_logits = d_hf @ d_lm^T  (row-vector * matrix = [H] @ [V×H] → [V])
+        // hipblasSgemv: y = α·op(A)·x + β·y  (column-major)
+        // Our lm_head is [V, H] row-major. We want: logits[v] = sum_h(hidden[h] * lm_head[v*H+h])
+        // In column-major terms: same layout, so op(A)=N, A is V×H, x is H, y is V
+        float _a=1.0f,_b=0.0f;
+        hipblasSgemv(blas,HIPBLAS_OP_N,V,H,&_a,d_lm,V,d_hf,1,&_b,d_logits,1);
+        hipStreamSynchronize(s);
     };
 
     // ── CPU draft forward (real Eagle3) ──
@@ -257,10 +266,9 @@ int main(int argc, char** argv) {
         t0=std::chrono::high_resolution_clock::now();
         for(int i=0;i<M;i++){
             gpu_fwd(gh,pos+i);
-            float fh[4096];memcpy(fh,gh,H*4);cpu_rmsnorm(fh,F(o_fn),fh,H,1e-6f);
-            std::vector<float>lg(V);cpu_lm_head(fh,F(o_lm),lg.data(),V,H);
-            // Rejection sampling: accept draft token t if uniform(0,1) < min(1, p_full(t)/p_draft(t))
-            // For now, use argmax approximation (underestimates acceptance but is safe)
+            // Read GPU-computed logits directly (avoids CPU lm_head, 311M matmul)
+            std::vector<float> lg(V);
+            hipMemcpy(lg.data(),d_logits,(size_t)V*4,hipMemcpyDeviceToHost);hipStreamSynchronize(s);
             int b=0;for(int j=1;j<V;j++)if(lg[j]>lg[b])b=j;
             if(b==dtok[i]){nac++;last_acc_tok=b;}else break;
         }
