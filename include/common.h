@@ -62,4 +62,5 @@ struct ModelConfig {
     std::string model_name = "unknown";
     std::string model_path;
     std::string weights_dir;
+    std::string lora_path;   // optional .lora file for adapter merge
 };

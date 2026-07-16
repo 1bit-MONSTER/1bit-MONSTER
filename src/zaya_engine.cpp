@@ -552,6 +552,191 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
             logits_out[b * (size_t)eng.vocab + v] = __half2float(lh[b * (size_t)eng.vocab + v]);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ── LoRA adapter merge ──
+// Reads a .lora file (from merge_lora.py) and merges B*A*scale deltas
+// into the GPU-resident weight matrices. Called after zaya_init().
+//
+// .lora binary format:
+//   magic:   b'LORA' (4 bytes)
+//   layers:  uint32
+//   scale:   float32
+//   For each layer:
+//     num_mod: uint32
+//     For each module:
+//       mod_id: uint32 (0=q,1=k,2=v,3=o,4=gate,5=up,6=down)
+//       rank:   uint32
+//       in_dim: uint32 (input dimension of A = hidden_size)
+//       out_dim:uint32 (output dimension of B = projection_size)
+//       A[rank][in_dim]:  float32
+//       B[out_dim][rank]: float32
+// ═══════════════════════════════════════════════════════════════════════
+
+// Per-module LoRA data
+struct LoraModule {
+    int mod_id;        // 0=q, 1=k, 2=v, 3=o, 4=gate, 5=up, 6=down
+    int rank;
+    int in_dim;
+    int out_dim;
+    std::vector<float> A;  // [rank * in_dim]
+    std::vector<float> B;  // [out_dim * rank]
+};
+
+// Per-layer LoRA data
+struct LoraLayer {
+    std::vector<LoraModule> modules;
+};
+
+// Read a .lora file; returns empty vector on failure
+static std::vector<LoraLayer> zaya_read_lora_file(const char* path, float& out_scale) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        fprintf(stderr, "zaya_apply_lora: cannot open %s\n", path);
+        return {};
+    }
+    
+    char magic[4];
+    f.read(magic, 4);
+    if (std::string(magic, 4) != "LORA") {
+        fprintf(stderr, "zaya_apply_lora: bad magic in %s\n", path);
+        return {};
+    }
+    
+    uint32_t num_layers;
+    float scale;
+    f.read((char*)&num_layers, 4);
+    f.read((char*)&scale, 4);
+    out_scale = scale;
+    
+    std::vector<LoraLayer> layers(num_layers);
+    for (uint32_t l = 0; l < num_layers; l++) {
+        uint32_t num_mod;
+        f.read((char*)&num_mod, 4);
+        layers[l].modules.resize(num_mod);
+        for (uint32_t m = 0; m < num_mod; m++) {
+            LoraModule& mod = layers[l].modules[m];
+            f.read((char*)&mod.mod_id, 4);
+            f.read((char*)&mod.rank, 4);
+            f.read((char*)&mod.in_dim, 4);
+            f.read((char*)&mod.out_dim, 4);
+            mod.A.resize((size_t)mod.rank * mod.in_dim);
+            mod.B.resize((size_t)mod.out_dim * mod.rank);
+            f.read((char*)mod.A.data(), mod.A.size() * 4);
+            f.read((char*)mod.B.data(), mod.B.size() * 4);
+        }
+    }
+    
+    fprintf(stderr, "zaya_apply_lora: read %u layers from %s (scale=%.4f)\n",
+            num_layers, path, scale);
+    return layers;
+}
+
+// Compute delta = B * A * scale for a LoRA module
+// Result: [out_dim * in_dim] row-major
+static std::vector<float> compute_lora_delta(const LoraModule& mod, float scale) {
+    std::vector<float> delta((size_t)mod.out_dim * mod.in_dim, 0.0f);
+    // B[out_dim, rank] * A[rank, in_dim] → delta[out_dim, in_dim]
+    for (int o = 0; o < mod.out_dim; o++) {
+        for (int r = 0; r < mod.rank; r++) {
+            float br = mod.B[(size_t)o * mod.rank + r] * scale;
+            if (br == 0.0f) continue;
+            const float* A_row = mod.A.data() + (size_t)r * mod.in_dim;
+            float* delta_row = delta.data() + (size_t)o * mod.in_dim;
+            for (int i = 0; i < mod.in_dim; i++) {
+                delta_row[i] += br * A_row[i];
+            }
+        }
+    }
+    return delta;
+}
+
+// Apply LoRA deltas to GPU-resident layer weights
+// Supported module -> weight mapping:
+//   0 (q_proj)   → lw[].wq   FP16 [QD, H]
+//   1 (k_proj)   → lw[].wk   FP16 [KD, H]
+//   3 (o_proj)   → lw[].wo   FP16 [H, QD]
+//   6 (down)     → lw[].gdw  FP32 [H, RTR_H] (transposed on GPU)
+extern "C" int zaya_apply_lora(ZayaState* s, const char* lora_path) {
+    if (!s || !lora_path) return -1;
+    
+    float scale;
+    auto layers = zaya_read_lora_file(lora_path, scale);
+    if (layers.empty()) {
+        fprintf(stderr, "zaya_apply_lora: failed to load %s\n", lora_path);
+        return -1;
+    }
+    
+    int total_applied = 0;
+    int n_layers = (int)std::min((size_t)eng.n_layers, layers.size());
+    
+    for (int il = 0; il < n_layers; il++) {
+        auto& l = s->lw[il];
+        for (auto& mod : layers[il].modules) {
+            std::vector<float> delta = compute_lora_delta(mod, scale);
+            
+            if (mod.mod_id == 0) {  // q_proj → wq [QD, H]
+                if ((size_t)mod.out_dim == eng.qd && (size_t)mod.in_dim == eng.h) {
+                    // Download GPU weight, add delta, upload back
+                    std::vector<__half> gpu_w(eng.qd * eng.h);
+                    HIP_OK(hipMemcpy(gpu_w.data(), l.wq, eng.qd * eng.h * 2, hipMemcpyDeviceToHost));
+                    for (int i = 0; i < eng.qd * eng.h; i++) {
+                        float v = __half2float(gpu_w[i]) + delta[i];
+                        gpu_w[i] = __float2half(v);
+                    }
+                    HIP_OK(hipMemcpy(l.wq, gpu_w.data(), eng.qd * eng.h * 2, hipMemcpyHostToDevice));
+                    total_applied++;
+                    fprintf(stderr, "  layer %d q_proj: merged LoRA delta [%dx%d]\n", il, eng.qd, eng.h);
+                }
+            } else if (mod.mod_id == 1) {  // k_proj → wk [KD, H]
+                if ((size_t)mod.out_dim == eng.kd && (size_t)mod.in_dim == eng.h) {
+                    std::vector<__half> gpu_w(eng.kd * eng.h);
+                    HIP_OK(hipMemcpy(gpu_w.data(), l.wk, eng.kd * eng.h * 2, hipMemcpyDeviceToHost));
+                    for (int i = 0; i < eng.kd * eng.h; i++) {
+                        float v = __half2float(gpu_w[i]) + delta[i];
+                        gpu_w[i] = __float2half(v);
+                    }
+                    HIP_OK(hipMemcpy(l.wk, gpu_w.data(), eng.kd * eng.h * 2, hipMemcpyHostToDevice));
+                    total_applied++;
+                    fprintf(stderr, "  layer %d k_proj: merged LoRA delta [%dx%d]\n", il, eng.kd, eng.h);
+                }
+            } else if (mod.mod_id == 3) {  // o_proj → wo [H, QD]
+                if ((size_t)mod.out_dim == eng.h && (size_t)mod.in_dim == eng.qd) {
+                    std::vector<__half> gpu_w(eng.h * eng.qd);
+                    HIP_OK(hipMemcpy(gpu_w.data(), l.wo, eng.h * eng.qd * 2, hipMemcpyDeviceToHost));
+                    for (int i = 0; i < eng.h * eng.qd; i++) {
+                        float v = __half2float(gpu_w[i]) + delta[i];
+                        gpu_w[i] = __float2half(v);
+                    }
+                    HIP_OK(hipMemcpy(l.wo, gpu_w.data(), eng.h * eng.qd * 2, hipMemcpyHostToDevice));
+                    total_applied++;
+                    fprintf(stderr, "  layer %d o_proj: merged LoRA delta [%dx%d]\n", il, eng.h, eng.qd);
+                }
+            } else if (mod.mod_id == 6) {  // down (gate_down_proj) → gdw GPU is [H, RTR_H] transposed
+                // File stores raw gate_down_proj weight as [RTR_H, H]. LoRA delta is [RTR_H, H].
+                // On GPU, gdw is transposed to [H, RTR_H]. We need to apply delta then retranspose.
+                if ((size_t)mod.out_dim == eng.rtr_h && (size_t)mod.in_dim == eng.h) {
+                    std::vector<float> gpu_w(eng.h * eng.rtr_h);
+                    HIP_OK(hipMemcpy(gpu_w.data(), l.gdw, eng.h * eng.rtr_h * 4, hipMemcpyDeviceToHost));
+                    // delta is [RTR_H, H]; gpu_w is [H, RTR_H] (transposed)
+                    // We add delta^T to gpu_w: gpu_w[j][i] += delta[i][j]
+                    for (int i = 0; i < eng.rtr_h; i++) {
+                        for (int j = 0; j < eng.h; j++) {
+                            gpu_w[(size_t)j * eng.rtr_h + i] += delta[(size_t)i * eng.h + j];
+                        }
+                    }
+                    HIP_OK(hipMemcpy(l.gdw, gpu_w.data(), eng.h * eng.rtr_h * 4, hipMemcpyHostToDevice));
+                    total_applied++;
+                    fprintf(stderr, "  layer %d gate_down: merged LoRA delta [%dx%d]\n", il, eng.rtr_h, eng.h);
+                }
+            }
+        }
+    }
+    
+    HIP_OK(hipStreamSynchronize(s->st));
+    fprintf(stderr, "zaya_apply_lora: applied %d LoRA deltas\n", total_applied);
+    return total_applied > 0 ? 0 : -1;
+}
+
 // ── Reset state (new sequence) ──
 // ── Set sentinel for expert caching (no previous expert for any layer) ──
 __global__ void init_expert_cache_sentinel(float* prev_rs, int n_layers, int rtr_h) {

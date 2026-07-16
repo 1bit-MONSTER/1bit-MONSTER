@@ -220,7 +220,7 @@ struct SimpleTokenizer {
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
-    std::string model_arg, manifest_arg, weights_dir = "/tmp/zaya_weights/";
+    std::string model_arg, manifest_arg, weights_dir = "/tmp/zaya_weights/", lora_path;
     RouteStrategy strategy = RouteStrategy::AUTO;
 
     for (int i = 1; i < argc; i++) {
@@ -289,7 +289,10 @@ int main(int argc, char** argv) {
     }
     const bool model_loaded = detected;
     if (cfg.weights_dir.empty()) cfg.weights_dir = weights_dir;
-    fprintf(stderr, "Weights directory: %s\n\n", cfg.weights_dir.c_str());
+    cfg.lora_path = lora_path;
+    fprintf(stderr, "Weights directory: %s\n", cfg.weights_dir.c_str());
+    if (!cfg.lora_path.empty()) fprintf(stderr, "LoRA adapter: %s\n", cfg.lora_path.c_str());
+    fprintf(stderr, "\n");
 
     if (model_loaded && !router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
 
