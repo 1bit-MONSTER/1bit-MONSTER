@@ -120,7 +120,7 @@ class HipBackend : public InferenceBackend {
 public:
     BackendType type() const override { return BackendType::HIP; }
     const char* name() const override { return "ROCm HIP"; }
-    float estimated_tok_s() const override { return 113.0f; }
+    float estimated_tok_s() const override { return 64.0f; }  // estimate; measured end-to-end on Zaya1-8B
     bool is_coherent() const override { return true; }
 
     bool is_available() override {
@@ -174,7 +174,7 @@ public:
         embed_loaded_ = true;
 
         HIP_OK(hipMalloc(&d_hs, H * 2)); HIP_OK(hipMalloc(&d_ao, H * 2)); HIP_OK(hipMalloc(&d_tmp, H * 2));
-        HIP_OK(hipMalloc(&d_conv, (size_t)N_LAYERS * 2 * QKV * 2));
+        HIP_OK(hipMalloc(&d_conv, (size_t)N_LAYERS * 2 * QKV * 4));  // ×2 for separate in/out state
         HIP_OK(hipMalloc(&d_phs, (size_t)N_LAYERS * H * 2));
         HIP_OK(hipMalloc(&d_prev_rs, (size_t)N_LAYERS * RTR_H * 4));
         HIP_OK(hipMalloc(&d_expert_idx, 4)); HIP_OK(hipMalloc(&d_expert_wt, 4));
@@ -280,7 +280,7 @@ public:
             moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
             moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
             v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
-            cca_custom_kernel<<<1, 256, 0, st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV, d_phs+(size_t)il*H, il, 1);
+            cca_custom_kernel<<<1, 256, 0, st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV*2, d_phs+(size_t)il*H, il, 1);
             moe_tiled_gemv<<<H/16, 128, 0, st_>>>(d_ao, d_ao, l.wo, H, QD);
             residual_scale_k<<<g1, BLK, 0, st_>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
             copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_ao, H);

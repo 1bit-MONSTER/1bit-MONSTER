@@ -1,13 +1,10 @@
 #!/bin/bash
-set -euo pipefail
-#!/usr/bin/env bash
 # 1bit environment setup — source this before running the engine.
 # Usage: source env.sh
 #    or: source env.sh /path/to/1bit  # override install dir
 #
-# NOTE: this file is meant to be `source`d, so `set -e` is applied only when
-# it is executed directly (not sourced) — otherwise an error here would kill
-# the caller's interactive shell. See issue #171.
+# When executed directly (not sourced), fail on first error.
+# When sourced, let the caller's shell handle error handling.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   set -euo pipefail
 fi
@@ -15,7 +12,18 @@ fi
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINK_DIR="${1:-$DIR}"
 
-export HSA_OVERRIDE_GFX_VERSION=11.5.1
+# HSA_OVERRIDE_GFX_VERSION: only needed for ROCm <7.x where the kernel driver
+# doesn't report the correct GPU target for Strix Halo (gfx1151).
+# For ROCm 7.2+, the driver reports gfx1151 correctly and overriding
+# to gfx1100 causes wrong code paths (see issue #251).
+if command -v hipconfig &>/dev/null; then
+    ROCM_VER=$(hipconfig --version 2>/dev/null | cut -d. -f1)
+    if [ -n "$ROCM_VER" ] && [ "$ROCM_VER" -lt 7 ] 2>/dev/null; then
+        export HSA_OVERRIDE_GFX_VERSION=11.5.1
+    fi
+elif [ -d /opt/rocm-6.2 ] || [ -d /opt/rocm-6.1 ] || [ -d /opt/rocm-6.0 ]; then
+    export HSA_OVERRIDE_GFX_VERSION=11.5.1
+fi
 export HSA_ENABLE_SDMA=0
 export LD_LIBRARY_PATH="$LINK_DIR/build:${LD_LIBRARY_PATH:-}"
 export PATH="$LINK_DIR/build:$PATH"

@@ -488,12 +488,13 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
             a == "deepseek" || a == "deepseek2" || a == "gemma" ||
             a == "gemma2" || a == "phi2" || a == "phi3";
         out_model->weight_format = RCPP_WEIGHT_FORMAT_HALO_V2;
-        out_model->arch = RCPP_ARCH_QWEN3;   // shared transformer weight path
-        out_model->is_qwen3 = 1;
+        out_model->arch = RCPP_ARCH_QWEN3;   // unified transformer: all known architectures share
+        out_model->is_qwen3 = 1;              // the same "model.layers.N.*" tensor path
         if (!known_transformer && !a.empty()) {
             fprintf(stderr, "[gguf] arch '%s' is not a validated family — header + "
                             "embedding will load, but per-arch attention/FFN paths "
-                            "are untested (issue #240).\n", a.c_str());
+                            "are untested (issue #240). Validated: qwen2/3, llama, "
+                            "mistral, deepseek, gemma, phi2/3.\n", a.c_str());
         }
     }
     
