@@ -655,7 +655,7 @@ endif()
 # GPU: MoE FFN via HIP kernels (router, gate/up, down)
 # CPU: OpenMP attention + LM head
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/gpu_moe.o
-    COMMAND hipcc -std=c++20 -O3 -c -o ${CMAKE_BINARY_DIR}/gpu_moe.o
+    COMMAND ${_RC_ROCM_DEFAULT}/bin/hipcc --rocm-device-lib-path=${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_core/lib/llvm/amdgcn/bitcode -std=c++20 -O3 -c -o ${CMAKE_BINARY_DIR}/gpu_moe.o
         ${CMAKE_SOURCE_DIR}/engine/npu/src/gpu_moe.hip
         -I${CMAKE_SOURCE_DIR} -I${CMAKE_SOURCE_DIR}/engine/npu
         -D__HIP_PLATFORM_AMD__ --offload-arch=gfx1151
@@ -675,6 +675,6 @@ target_compile_options(npu_engine_hybrid PRIVATE
 target_link_libraries(npu_engine_hybrid PRIVATE
     xrt_coreutil uuid rt pthread)
 target_link_options(npu_engine_hybrid PRIVATE
-    -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib -fopenmp)
+    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -fopenmp)
 set_target_properties(npu_engine_hybrid PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)

@@ -66,7 +66,16 @@ int main() {
     constexpr size_t BUF = N_FLOATS * sizeof(float);
 
     xrt::device npu_dev(0);
-    (void)hipSetDevice(0);
+
+    // Check GPU availability before using hipSetDevice (fixes #282)
+    int ndev = 0;
+    hipError_t err = hipGetDeviceCount(&ndev);
+    if (err != hipSuccess || ndev < 1) {
+        fprintf(stderr, "No HIP GPU found (err=%d, count=%d) — skipping GPU portion\n", err, ndev);
+        // Continue without GPU — NPU-only test fallback
+    } else {
+        (void)hipSetDevice(0);
+    }
 
     fusion::SharedBO* shbo = fusion::SharedBO::create(npu_dev, BUF);
     if (!shbo) { fprintf(stderr, "SharedBO failed\n"); return 1; }

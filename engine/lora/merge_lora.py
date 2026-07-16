@@ -14,20 +14,29 @@ before re-quantizing to INT8 for the NPU GEMM.
 import os, sys, struct, json, numpy as np
 from safetensors import safe_open
 
+KNOWN_MODULES = {'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'}
+
 def parse_module_key(key):
-    """Parse 'base_model.model.model.layers.23.self_attn.q_proj.lora_A.weight'
-    → (layer=23, module='q_proj', part='A')"""
+    """Parse PEFT LoRA keys into (layer, module, part).
+
+    Standard:  base_model.model.model.layers.23.self_attn.q_proj.lora_A.weight
+    ZAYA:      base_model.model.model.layers.0.self_attn.qkv_proj.q_proj.lora_A.weight
+               base_model.model.model.layers.0.mlp.gate.down_proj.lora_A.weight
+    → (layer, module, part) e.g. (23, 'q_proj', 'A')
+    """
     parts = key.split('.')
+    layer = None
+    module = None
+    part = None
     for i, p in enumerate(parts):
         if p == 'layers' and i + 1 < len(parts):
             layer = int(parts[i + 1])
-    module = None
-    part = None
-    for p in parts:
-        if p in ('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'):
-            module = p
+    # Module name is the token right before .lora_A or .lora_B
+    for i, p in enumerate(parts):
         if p in ('lora_A', 'lora_B'):
             part = p.replace('lora_', '')
+            if i > 0 and parts[i - 1] in KNOWN_MODULES:
+                module = parts[i - 1]
     return layer, module, part
 
 # Module name → group_id for the NPU engine
@@ -80,9 +89,9 @@ def compute_deltas(lora_path):
     
     return ab_mats, rank, lora_alpha, scale
 
-def write_lora_file(ab_mats, scale, output_path, num_layers=28):
+def write_lora_file(ab_mats, scale, output_path):
     """Write A/B matrices to a compact binary .lora file.
-    
+
     Format:
       magic: b'LORA'
       num_layers: uint32
@@ -96,7 +105,7 @@ def write_lora_file(ab_mats, scale, output_path, num_layers=28):
           out_dim: uint32
           A_data: rank * in_dim * float32
           B_data: out_dim * rank * float32
-    
+
     Size for rank=8: ~5 MB per adapter (vs 20 MB for PEFT safetensors)
     """
     MODULE_IDS = {
@@ -106,9 +115,10 @@ def write_lora_file(ab_mats, scale, output_path, num_layers=28):
     }
     
     with open(output_path, 'wb') as f:
+        num_layers = max(l for (l, _) in ab_mats) + 1
         f.write(b'LORA')
         f.write(struct.pack('<If', num_layers, scale))
-        
+
         for layer in range(num_layers):
             layer_modules = [(mod, mats) for (l, mod), mats in ab_mats.items() if l == layer]
             f.write(struct.pack('<I', len(layer_modules)))

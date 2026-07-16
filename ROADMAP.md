@@ -14,23 +14,38 @@
 ### 1.1 Voice Capture & Training
 | Task | Status | Tech |
 |------|--------|------|
-| Record ~30min high-quality voice samples | ❌ Not started | 48kHz, clean room |
-| Train voice cloning model (XTTS-v2 / Coqui-AI) | ❌ Not started | ONNX export for NPU/GPU |
-| Export to ONNX / GGUF for local inference | ❌ Not started | Target: <500ms per utterance |
-| Validate clone quality (MOS score >4.0) | ❌ Not started | Blind A/B test vs original |
+| Record ~30min high-quality voice samples | 🔲 Prompt set ready | 24kHz mono, arecord |
+| Train audio codec on voice samples | 🔲 | Pure PyTorch RVQ-VAE (5.87M params) |
+| Train ZAYA voice adapter (QLoRA: text→codec tokens) | 🔲 | QLoRA on AMD ROCm, 4-bit NF4 |
+| Export to ONNX for agnostic inference | 🔲 | Pure PyTorch → ONNX, runs anywhere |
+| Validate clone quality (MOS score >4.0) | 🔲 | Blind A/B test vs original |
 
 **Deliverable:** A single voice pack file (`.voice`) containing:
+- Codec decoder weights (5.87M params — pure PyTorch)
 - Speaker embedding (~512 bytes)
-- ONNX model weights (~50-100 MB)
-- Voice metadata (name, pitch range, speaking rate)
+- Voice metadata (name, sample rate, pitch range)
+- **Total: ~25 MB** (vs 50-100 MB for XTTS-v2)
 
-### 1.2 Local TTS Engine (replaces Piper)
+### Why our codec instead of XTTS-v2
+
+| Factor | XTTS-v2 | Our RVQ-VAE Codec |
+|--------|---------|-------------------|
+| **Params** | ~1.2B | **5.87M** |
+| **Voice pack size** | 50-100 MB | **~25 MB** |
+| **Vendor lock-in** | Coqui-AI specific | **Agnostic** (pure PyTorch) |
+| **Hardware** | Needs GPU for training | **AMD ROCm, CUDA, CPU** |
+| **LLM integration** | Separate model | **Tight — tokens flow through ZAYA** |
+| **Streaming** | Chunked utterance | **Frame-level (13ms frames)** |
+| **License** | CC-BY-NC 4.0 | **MIT** |
+
+### 1.2 Agnostic TTS Engine (replaces Piper)
 | Task | Status | Notes |
 |------|--------|-------|
-| C++ TTS engine with cloned voice loading | ❌ Not started | Based on Coqui-AI / XTTS |
-| NPU-accelerated audio generation | ❌ Not started | XDNA 2 xclbin path |
-| Streaming audio output (chunked HTTP/WS) | ❌ Not started | SSE / WebSocket |
-| Voice quality / latency benchmarks | ❌ Not started | Target: <100ms to first audio |
+| Python codec decoder → ONNX export | ✅ Built | `zaya_audio/codec.py` — 5.87M params |
+| ONNX decoder for GPU/NPU/CPU inference | 🔲 | ONNX export path |
+| C++ codec decoder for embedded | 🔲 | llama.cpp-style GGUF conversion |
+| Streaming audio output (chunked HTTP/WS) | 🔲 | SSE / WebSocket |
+| Voice quality / latency benchmarks | 🔲 | Target: <100ms to first audio |
 
 ### 1.3 Jarvis Audio Server Updates
 - [ ] Add `/v1/voice/clone` — upload samples, train, download `.voice` pack
@@ -146,14 +161,31 @@
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│                 Zaya Co-Host Server                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
-│  │ Whisper  │  │ Zaya LLM │  │ Voice    │              │
-│  │ STT (NPU)│  │(GPU/NPU) │  │ TTS (NPU)│              │
-│  └──────────┘  └──────────┘  └──────────┘              │
+│              Zaya Co-Host Server (Agnostic)              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
+│  │ Whisper  │  │ Any LLM  │  │ Voice Codec (5.87M)  │  │
+│  │ STT (NPU)│  │(agnostic)│  │ tokens ↔ audio       │  │
+│  └──────────┘  └──────────┘  └──────────────────────┘  │
 │  ┌──────────────────────────────────────────┐           │
 │  │  Persona Engine │ Context Memory │ RAG    │           │
 │  └──────────────────────────────────────────┘           │
+└─────────────────────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│                 Voice Pipeline Flow                      │
+│                                                         │
+│  ┌──────┐    ┌──────────┐    ┌──────────┐    ┌──────┐  │
+│  │ Mic  │───→│  Codec   │───→│   Any    │───→│ Codec│──→│
+│  │      │    │ Encoder  │    │   LLM    │    │Decoder│  │
+│  │      │    │ audio→   │    │ tokens→  │    │ tokens│  │
+│  │      │    │ tokens   │    │ tokens   │    │→audio │  │
+│  └──────┘    └──────────┘    └──────────┘    └──────┘  │
+│               ▲                             ▲           │
+│         ┌─────┴──────────┐          ┌──────┴────────┐  │
+│         │  Voice Pack     │          │  Voice Pack   │  │
+│         │  (speaker       │          │  (decoder     │  │
+│         │   embedding)    │          │   weights)    │  │
+│         └────────────────┘          └───────────────┘  │
 └─────────────────────────────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
@@ -168,7 +200,7 @@
 |-----------|-------------|-----------------|
 | LLM Inference | NPU or GPU | ✅ Strix Halo (69 tok/s NPU, 426 tok/s GPU) |
 | STT (Whisper) | NPU recommended | ⚠️ Runs on CPU (faster-whisper) |
-| TTS (Voice Clone) | CPU or NPU | ❌ Piper only, no clone support |
+| TTS (Voice Clone) | CPU, GPU, or NPU | 🟡 Codec decoder (5.87M params) — pure PyTorch, ONNX pending |
 | Streaming | Network | ✅ Local server running |
 
 ## Success Metrics
@@ -183,14 +215,28 @@
 | Monthly revenue | — | $200 | $2,000 | $20,000+ |
 | Uptime SLA | — | 99% | 99.5% | 99.9% |
 
+## Business Model
+
+**Price:** $19.85/mo per user.
+**Hardware:** Strix Halo (owned) → MI300X (scale).
+**Inference cost:** $0 on owned hardware.
+**Strix Halo capacity:** 28 voice users @ 426 tok/s.
+**MI300X break-even:** 37 users ($720/mo rent).
+
+See [docs/business-plan.md](docs/business-plan.md) for full economics.
+
 ## Immediate Next Steps (This Week)
 
-1. **Record voice samples** — 30 min clean audio, 48kHz, multiple speaking styles
-2. **Train first voice clone** — Use XTTS-v2 or Coqui-AI, export to ONNX
-3. **Integrate voice TTS into Jarvis** — Replace Piper with cloned voice engine
-4. **Test end-to-end pipeline** — 🎤 → STT → Zaya → TTS → 🔊 on local hardware
-5. **Set up Stripe billing** — Already have Stripe account (acct_1TUvAmJnXt3bWED8)
+1. **Record voice samples** — 30 min clean audio, 24kHz mono, use `jarvis/voice/record.py`
+2. **Train audio codec** — Fit our 5.87M RVQ-VAE on voice data (AMD ROCm)
+3. **Train ZAYA voice adapter** — QLoRA fine-tune (text→codec tokens) on Radeon 8060S
+4. **Export codec to ONNX** — Agnostic inference path (CPU, GPU, NPU)
+5. **Integrate voice pipeline into Jarvis** — Replace Piper with codec-based voice engine
+6. **Test end-to-end** — 🎤 → Codec Encode → ZAYA → Codec Decode → 🔊
+7. **Set up Stripe billing** — Already have Stripe account (acct_1TUvAmJnXt3bWED8)
+
+*Agnostic by design — voice packs work with any LLM, any hardware, any platform.*
 
 ---
 
-*Built on 1bit.systems · AMD Strix Halo · NPU + GPU + CPU · Zaya inference engine · Jarvis audio server*
+*Built on 1bit.systems · AMD Strix Halo · NPU + GPU + CPU · Zaya inference engine · Jarvis audio server · MI300X scale*

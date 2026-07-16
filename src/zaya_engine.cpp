@@ -181,6 +181,15 @@ ZayaState* zaya_init(const char* weights_dir = nullptr) {
         return nullptr;
     }
 
+    // Verify a GPU is available before attempting allocations
+    int ndev = 0;
+    HIP_OK_R(hipGetDeviceCount(&ndev), nullptr);
+    if (ndev < 1) {
+        fprintf(stderr, "zaya_init: No HIP-capable GPU found (device count=%d).\n", ndev);
+        zaya_destroy(s);
+        return nullptr;
+    }
+
     // Dimension validation: check loaded weights match compile-time constants.
     // The engine uses compile-time #{H}x#{NQ}x#{NKV} kernel dimensions and cannot
     // dynamically adapt to different model sizes. (Issue #249)
@@ -195,29 +204,44 @@ ZayaState* zaya_init(const char* weights_dir = nullptr) {
         return nullptr;
     }
 
-    HIP_OK_R(hipMalloc(&s->d_hs,eng.h*2), nullptr); HIP_OK_R(hipMalloc(&s->d_ao,eng.h*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_tmp,size_t(std::max(eng.h,2*eng.n_ff))*2), nullptr); HIP_OK_R(hipMalloc(&s->d_fnw,eng.h*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_lm_out,4096*2), nullptr);
-    // lm-head / argmax / batching buffers — formerly static locals in forward functions (fixes #59,#63)
-    HIP_OK_R(hipMalloc(&s->d_lm_vocab,(size_t)eng.vocab*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_argmax_idx,4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_argmax_val,4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_sorted_ids,(size_t)8*4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_expert_counts,(size_t)17*4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_expert_offsets,(size_t)17*4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_embed,(size_t)eng.vocab*eng.h*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_conv,(size_t)eng.n_layers*2*eng.qkv*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_phs,(size_t)eng.n_layers*eng.h*2), nullptr);
-    s->max_seq=4096;
-    HIP_OK_R(hipMalloc(&s->d_kcache,(size_t)eng.n_layers*s->max_seq*eng.nkv*eng.hd*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_vcache,(size_t)eng.n_layers*s->max_seq*eng.nkv*eng.hd*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_vrec,(size_t)eng.n_layers*(eng.kd/2)*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_qout,eng.qd*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_kout,eng.kd*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_vout,eng.kd*2), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_skip_flag,4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_prev_rs,(size_t)eng.n_layers*eng.rtr_h*4), nullptr);
-    HIP_OK_R(hipMalloc(&s->d_expert_idx,4), nullptr); HIP_OK_R(hipMalloc(&s->d_expert_wt,4), nullptr);
+    // Allocate GPU buffers with cleanup on failure (fixes #279 — leak on alloc error)
+    auto alloc_f16 = [&](auto& p, int n) -> bool {
+        hipError_t _e = hipMalloc(&p, n*2);
+        if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
+        return true;
+    };
+    auto alloc_f32 = [&](auto& p, int n) -> bool {
+        hipError_t _e = hipMalloc(&p, n*4);
+        if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
+        return true;
+    };
+    #define ALLOC_OR_FAIL(s, alloc_fn, ptr, n) do { if (!alloc_fn(ptr, n)) { zaya_destroy(s); return nullptr; } } while(0)
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp, std::max(eng.h, 2*eng.n_ff));
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_idx, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_val, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, 8);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, 17);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, 17);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_embed, eng.vocab * eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_conv, eng.n_layers * 2 * eng.qkv);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_phs, eng.n_layers * eng.h);
+    s->max_seq = 4096;
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, eng.n_layers * s->max_seq * eng.nkv * eng.hd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, eng.n_layers * s->max_seq * eng.nkv * eng.hd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_vrec, eng.n_layers * (eng.kd / 2));
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_qout, eng.qd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_kout, eng.kd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_vout, eng.kd);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_skip_flag, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, eng.n_layers * eng.rtr_h);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
+    #undef ALLOC_OR_FAIL
     
     upf16(s->embed,s->d_embed,eng.vocab*eng.h,s->st);
     std::vector<__half>hf(eng.h);for(int i=0;i<eng.h;i++)hf[i]=__float2half(fnorm[i]);
