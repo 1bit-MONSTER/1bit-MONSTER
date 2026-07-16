@@ -43,7 +43,19 @@ int main(int argc, char** argv) {
     auto U=[&](auto oo){return(const uint32_t*)(p+oo);};
     int per_layer=0,rows[7]={NH*HD,NKV*HD,NKV*HD,H,IM,IM,H},KK[7]={H,H,H,NH*HD,H,H,IM};
     for(int i=7;i--;)per_layer+=ps[i];
-    int per_sc=0;for(int i=7;i--;)per_sc+=rows[i];
+    // For TRG1: per_sc = sum(rows). For TRG2: per_sc = sum(M * block_sizes[i]) from header
+    int ps7[7]; for(int i=7;i--;) ps7[i] = r4(36 + i*4); // pack_size (same as ps)
+    int bs7[7]; for(int i=7;i--;) bs7[i] = r4(64 + i*4); // block_sizes (TRG2 only, garbage for TRG1)
+    int per_sc = 0;
+    if (trg_version == 2) {
+        // TRG2: per-block scales, each block = 256 values
+        // Scales are [M * block_size] floats per projection
+        int sc_rows[7] = {NH*HD, NKV*HD, NKV*HD, H, IM, IM, H};
+        for(int i=7;i--;) per_sc += sc_rows[i] * bs7[i];
+    } else {
+        // TRG1: per-row scales, one scale per output row
+        for(int i=7;i--;) per_sc += rows[i];
+    }
 
     printf("=== DSpark GPU Bench ===\n  H=%d L=%d M=%d\n\n",H,L,M);
 
@@ -101,8 +113,17 @@ int main(int argc, char** argv) {
     HIPM(d_kc,(size_t)L*MP*NKV*HD*2); hipMemset(d_kc,0,(size_t)L*MP*NKV*HD*2);
     HIPM(d_vc,(size_t)L*MP*NKV*HD*2); hipMemset(d_vc,0,(size_t)L*MP*NKV*HD*2);
     HIPMS();
-    // Use aligned temp buffer for GPU DMA (fixes hipMemcpy crash on mmap'd source)
-    #define ALIGNED_UPLOAD(dst,src,nbytes) do{        size_t _n=(size_t)(nbytes);        void* _b=aligned_alloc(4096,_n);        memcpy(_b,(src),_n);        hipMemcpy((dst),_b,_n,hipMemcpyHostToDevice);        hipStreamSynchronize(s);        free(_b);    }while(0)
+    // Aligned temp buffer for GPU DMA (page-aligned source avoids GPU memcpy issues)
+    #define ALIGNED_UPLOAD(dst,src,nbytes) do{ \
+        size_t _n=(size_t)(nbytes); \
+        size_t _a=(_n+4095)&~4095; \
+        void* _b=aligned_alloc(4096,_a?_a:4096); \
+        if(!_b){fprintf(stderr,"aligned_alloc(%zu) failed\\n",_a);exit(1);} \
+        memcpy(_b,(src),_n); \
+        hipMemcpy((dst),_b,_n,hipMemcpyHostToDevice); \
+        hipStreamSynchronize(s); \
+        free(_b); \
+    }while(0)
     ALIGNED_UPLOAD(d_pk,U(o_pk),(size_t)L*per_layer*4);
     ALIGNED_UPLOAD(d_sc,F(o_sc),(size_t)L*per_sc*4);
     ALIGNED_UPLOAD(d_inorm,F(o_norms),(size_t)L*H*4);
@@ -238,6 +259,8 @@ int main(int argc, char** argv) {
             gpu_fwd(gh,pos+i);
             float fh[4096];memcpy(fh,gh,H*4);cpu_rmsnorm(fh,F(o_fn),fh,H,1e-6f);
             std::vector<float>lg(V);cpu_lm_head(fh,F(o_lm),lg.data(),V,H);
+            // Rejection sampling: accept draft token t if uniform(0,1) < min(1, p_full(t)/p_draft(t))
+            // For now, use argmax approximation (underestimates acceptance but is safe)
             int b=0;for(int j=1;j<V;j++)if(lg[j]>lg[b])b=j;
             if(b==dtok[i]){nac++;last_acc_tok=b;}else break;
         }
