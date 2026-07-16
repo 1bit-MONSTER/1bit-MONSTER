@@ -404,6 +404,7 @@ struct LayerGPU {
 #include "../kernels/zaya_gpu_router.hip"
 #include "../kernels/zaya_router_moe.hip"
 #include "../kernels/zaya_moe_expert_ffn.hip"
+#include "../kernels/zaya_nan_clean.hip"
 #include "../kernels/argmax_kernel.hip"
 
 // ── Utility kernels (inlined from zaya_server) ──
@@ -766,6 +767,7 @@ int main(int argc, char** argv) {
             if (l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks) {
                 moe_tiled_gemv<<<QD/16, 128, 0, stream>>>(d_tmp, d_hs, l.wq, QD, H);
                 moe_tiled_gemv<<<KD/16, 128, 0, stream>>>(d_tmp+QD, d_hs, l.wk, KD, H);
+            nan_clean_k<<<(KD+255)/256, 256, 0, stream>>>(d_tmp+QD, KD);
                 moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
                 moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
                 v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, stream>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
