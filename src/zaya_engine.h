@@ -103,6 +103,7 @@ extern "C" {
 #endif
 
 ZayaState* zaya_init(const char* weights_dir);
+int   zaya_apply_lora(ZayaState* s, const char* lora_path);
 void zaya_forward(ZayaState* s, int token_id, float* logits_out);
 int  zaya_forward_greedy(ZayaState* s, int token_id);
 void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, int B);

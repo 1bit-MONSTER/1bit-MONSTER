@@ -415,6 +415,16 @@ target_include_directories(zaya_gpu_decode PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/i
 target_link_libraries(zaya_gpu_decode PRIVATE rocm_cpp hip::host hip::device)
 set_target_properties(zaya_gpu_decode PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
+# -- tests/test_lora_merge : LoRA adapter merge smoke test --
+# Build: cmake --build . --target test_lora_merge -j8
+# Run:   ./test_lora_merge <weights_dir> [lora_path]
+add_executable(test_lora_merge tests/test_lora_merge.cpp src/zaya_engine.cpp)
+set_source_files_properties(tests/test_lora_merge.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
+target_include_directories(test_lora_merge PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_compile_options(test_lora_merge PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
+target_link_libraries(test_lora_merge PRIVATE rocm_cpp hip::host hip::device)
+set_target_properties(test_lora_merge PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+
 # -- tests/zaya_server : Zaya HTTP server (multi-backend: HIP + CPU fallback) --
 # Build: cmake --build . --target zaya_server -j8
 # Run:   ./zaya_server
