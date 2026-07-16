@@ -486,6 +486,11 @@ struct CPUBackend : Backend {
             initialized = false;
             return false;
         }
+        if (!embed || !fnorm) {
+            printf("CPU: FATAL - missing critical weight files (embed/fnorm)\n");
+            initialized = false;
+            return false;
+        }
         printf("CPU: %d layers loaded\n", N_LAYERS);
         initialized = true;
         return true;
