@@ -73,7 +73,7 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_HIP_STANDARD 17)
@@ -251,8 +251,12 @@ add_library(backend_manager STATIC
     src/model_discovery.cpp)     # model file scanner + GGUF header reader
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:include>)
+# src/ is PRIVATE because src/backend.h transitively includes <hip/hip_runtime.h>,
+# which would require HIP SDK for any consumer of backend_manager.
+# Pure-C++ consumers should only need include/backend_types.h
+target_include_directories(backend_manager PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 target_link_libraries(backend_manager PUBLIC dl)
 # backend_manager stays HIP-free (no ROCM_CPP_STATIC_HIP) so pure-C++
 # consumers like backend_demo can link without HIP symbols.
@@ -585,40 +589,18 @@ target_link_libraries(unified_server PRIVATE
 target_link_options(unified_server PRIVATE -rdynamic)
 set_target_properties(unified_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
-# -- tools/zaya_agent : One binary to rule them all — strategy engine + agent watchdog
-# Fuses BackendManager + tokenizer + strategy dispatch + watchog adaptation.
-# Set strategy with X-Router-Strategy header or POST /v1/strategy/select.
-add_executable(zaya_agent
-    tools/unified_server.cpp
-    src/strategy_engine.cpp
-    src/agent_watchdog.cpp
-    src/backend_hip.cpp
-    src/zaya_engine.cpp
-    src/backend_npu.cpp
-    src/backend_generic.cpp)
-set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
-set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
-set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
-set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
-set_source_files_properties(src/strategy_engine.cpp PROPERTIES LANGUAGE CXX)
-set_source_files_properties(src/agent_watchdog.cpp PROPERTIES LANGUAGE CXX)
-set_source_files_properties(src/backend_npu.cpp PROPERTIES LANGUAGE CXX)
-target_include_directories(zaya_agent PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-    $<INSTALL_INTERFACE:include>)
-target_compile_options(zaya_agent PRIVATE
-    $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result -Wno-unused-parameter -Wno-unused-variable>
-    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++17>)
-target_compile_definitions(zaya_agent PRIVATE ROCM_CPP_STATIC_HIP=1 ROCM_CPP_STATIC_NPU=1)
-target_link_libraries(zaya_agent PRIVATE
-    backend_manager dl
-    httplib::httplib
-    nlohmann_json::nlohmann_json
-    rocm_cpp hip::host hip::device)
-target_link_options(zaya_agent PRIVATE -rdynamic)
-target_link_options(zaya_agent PRIVATE "-Wl,-rpath,\$ORIGIN")
-set_target_properties(zaya_agent PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+# -- tools/zaya_agent : Alias for unified_server (same binary + rpath).
+# Build with: cmake --build build --target zaya_agent
+add_custom_target(zaya_agent ALL
+    DEPENDS unified_server
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE:unified_server>"
+        "${CMAKE_BINARY_DIR}/zaya_agent"
+    COMMENT "Creating zaya_agent → unified_server copy")
+# Add rpath to unified_server for standalone deployment
+set_property(TARGET unified_server APPEND PROPERTY
+    LINK_OPTIONS "-Wl,-rpath,\$ORIGIN")
+
 
 # -- tools/backend_demo : Backend Manager live dashboard (Task Manager NPU tab) ---
 # Pure C++ (no HIP) — demonstrates auto-detect, selection, failover, monitoring.
@@ -643,3 +625,32 @@ endif()
 # Usage: rocm_hip_target(name source1 [source2 ...])
 # Creates an executable linked against rocm_cpp + HIP with standard flags.
 
+
+# -- npu_engine_hybrid : NPU+GPU hybrid inference engine ------------------
+# NPU: INT8 GEMMs via XRT xclbins (QKV, O, GU, KV, D)
+# GPU: MoE FFN via HIP kernels (router, gate/up, down)
+# CPU: OpenMP attention + LM head
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/gpu_moe.o
+    COMMAND hipcc -std=c++20 -O3 -c -o ${CMAKE_BINARY_DIR}/gpu_moe.o
+        ${CMAKE_SOURCE_DIR}/engine/npu/src/gpu_moe.hip
+        -I${CMAKE_SOURCE_DIR} -I${CMAKE_SOURCE_DIR}/engine/npu
+        -D__HIP_PLATFORM_AMD__ --offload-arch=gfx1151
+    DEPENDS ${CMAKE_SOURCE_DIR}/engine/npu/src/gpu_moe.hip
+    COMMENT "Compiling GPU MoE wrapper (hipcc)"
+)
+add_executable(npu_engine_hybrid
+    engine/npu/src/npu_engine_hybrid.cpp
+    engine/npu/build/dequant_q4nx.o
+    ${CMAKE_BINARY_DIR}/gpu_moe.o)
+target_include_directories(npu_engine_hybrid PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/npu
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR})
+target_compile_options(npu_engine_hybrid PRIVATE
+    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+target_link_libraries(npu_engine_hybrid PRIVATE
+    xrt_coreutil uuid rt pthread)
+target_link_options(npu_engine_hybrid PRIVATE
+    -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib -fopenmp)
+set_target_properties(npu_engine_hybrid PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
