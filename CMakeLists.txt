@@ -252,16 +252,13 @@ add_library(backend_manager STATIC
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-# src/ is PRIVATE because src/backend.h transitively includes <hip/hip_runtime.h>,
-# which would require HIP SDK for any consumer of backend_manager.
-# Pure-C++ consumers should only need include/backend_types.h
+# src/ is PRIVATE because src/backend.h includes common.h (which transitively
+# includes hip_runtime.h in GPU builds). Pure-C++ consumers of backend_manager
+# should include <backend_manager.h> and <backend.h> from src/.
 target_include_directories(backend_manager PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 target_link_libraries(backend_manager PUBLIC dl)
 # backend_manager stays HIP-free (no ROCM_CPP_STATIC_HIP) so pure-C++
-# consumers like backend_demo can link without HIP symbols.
-# ROCM_CPP_STATIC_HIP is set only on targets (e.g., unified_server)
-# that also link src/backend_hip.cpp directly.
 # consumers like backend_demo can link without HIP symbols.
 # ROCM_CPP_STATIC_HIP is set only on targets (e.g., unified_server)
 # that also link src/backend_hip.cpp directly.
