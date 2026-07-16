@@ -53,13 +53,13 @@ int main(int argc, char** argv) {
         draft_path=fallback_draft_path.c_str();
     }
     MTPDraftConfig draft_cfg;
-    MTPDraft draft;
-    if(!draft.load(draft_path,draft_cfg)){
+    MTPDraftModel draft(draft_cfg);
+    MTPDraftState draft_state;
+    if(!draft.load_weights(draft_path)){
         fprintf(stderr,"Failed to load draft checkpoint: %s\n",draft_path);
         fprintf(stderr,"Specify a path as argv[5] or place a trained .bin at ~/spec-decode/checkpoints/\n");
         return 1;
     }
-    MTPDraftState draft_state;
     fprintf(stderr,"Draft checkpoint loaded: %s (vocab=%d hidden=%d target_layers=%d)\n",
             draft_path,draft_cfg.vocab_size,draft_cfg.hidden_size,draft_cfg.num_target_layers);
 
@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
             memcpy(&layer_out[(size_t)l*H],hidden,H*4);
         }
         std::vector<float> draft_hidden(draft_cfg.hidden_size),draft_logits(draft_cfg.vocab_size);
-        draft.forward(layer_out.data(),input_id,pos,draft_state,draft_hidden.data(),draft_logits.data());
+        draft.forward(layer_out.data(),input_id,pos,draft_state,draft_logits.data(),draft_hidden.data());
         int best=0;for(int i=1;i<draft_cfg.vocab_size;i++)if(draft_logits[i]>draft_logits[best])best=i;
         return best;
     };

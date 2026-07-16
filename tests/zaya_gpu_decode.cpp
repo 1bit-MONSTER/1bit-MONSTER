@@ -812,6 +812,16 @@ int main(int argc, char** argv) {
         // ── Read logits and sample ──
         std::vector<__half> logits_half(VOCAB);
         HIP_OK(hipMemcpy(logits_half.data(), d_all_logits, (size_t)VOCAB * 2, hipMemcpyDeviceToHost));
+        if (pos == 0) {
+            std::vector<std::pair<float,int>> scored;
+            for (int v = 0; v < VOCAB; v++) {
+                scored.push_back({__half2float(logits_half[v]), v});
+            }
+            std::sort(scored.begin(), scored.end(), std::greater<>());
+            printf("  Top-5:");
+            for (int i = 0; i < 5; i++) printf(" %d:%.1f", scored[i].second, scored[i].first);
+            printf("\n");
+        }
         
         int best = 0;
         float best_val = -1e30f;
