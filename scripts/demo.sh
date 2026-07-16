@@ -22,7 +22,12 @@ echo "" | tee -a "$LOGFILE"
 
 # ── Step 1: System info ──
 echo "=== 1. Hardware ===" | tee -a "$LOGFILE"
-/opt/rocm/bin/rocminfo 2>/dev/null | grep "Marketing Name" | head -2 | tee -a "$LOGFILE"
+# TheRock 7.15.0a C++ SDK
+THEROCK_BIN="/opt/rocm-therock/bin"
+if [ ! -f "$THEROCK_BIN/rocminfo" ]; then
+    THEROCK_BIN="/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_core/bin"
+fi
+"$THEROCK_BIN/rocminfo" 2>/dev/null | grep "Marketing Name" | head -2 | tee -a "$LOGFILE"
 echo "GPU temp: $(cat /sys/class/drm/card1/device/hwmon/hwmon*/temp1_input 2>/dev/null | head -1 | awk '{print $1/1000 "°C"}')" | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"
 
@@ -91,8 +96,8 @@ int main() {
 }
 EOF
 g++ -std=c++17 -I include -O2 /tmp/test_gguf_demo.cpp -o /tmp/test_gguf_demo \
-  -L build -lrocm_cpp -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib 2>&1 | tail -1
-LD_LIBRARY_PATH=build:/opt/rocm/lib timeout 15 /tmp/test_gguf_demo 2>&1 | tee -a "$LOGFILE"
+  -L build -lrocm_cpp -L/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib 2>&1 | tail -1
+LD_LIBRARY_PATH=build:/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib timeout 15 /tmp/test_gguf_demo 2>&1 | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"
 
 # ── Step 7: Server health check ──
