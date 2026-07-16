@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
     if (cfg.weights_dir.empty()) cfg.weights_dir = weights_dir;
     fprintf(stderr, "Weights directory: %s\n\n", cfg.weights_dir.c_str());
 
-    if (!router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
+    if (model_loaded && !router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1; setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));

@@ -14,7 +14,7 @@
 [![GPU Kernels](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/site/badge_gpu.json)](site/benchmarks.json)
 [![NPU Engine](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/site/badge_npu.json)](site/benchmarks.json)
 [![GGUF](https://img.shields.io/badge/GGUF-Qwen2%20%7C%20Qwen3%20layout-00ff00)](src/gguf_loader.cpp)
-[![ONNX](https://img.shields.io/badge/ONNX-supported-f00fd2)](src/onnx_loader.cpp)
+[![ONNX](https://img.shields.io/badge/ONNX%20weight%20extraction-ff9900)](src/onnx_loader.cpp)
 [![Tests](https://img.shields.io/badge/tests-9%2F11-yellow)](tests/)  <!-- 2 e2e tests need model files (issue #233) -->
 
 **One server binary (zaya_server) unifies GPU + CPU inference.**

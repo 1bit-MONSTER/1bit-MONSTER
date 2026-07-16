@@ -15,7 +15,7 @@
 #define HD   128
 #define GQA  4
 #define N_EXP    16
-#define N_EXP_T  17
+#define N_EXPERT_SLOTS  17
 #define N_FF  2048
 #define RTR_H 256
 #define BLK   256
@@ -56,8 +56,8 @@ __global__ void eda_router_moe_kernel(
     const float*rf1b,          // [RTR_H]
     const float*rf2,           // [RTR_H, RTR_H] fc2
     const float*rf2b,          // [RTR_H]
-    const float*rout,          // [N_EXP_T, RTR_H]
-    const float*bb,            // [N_EXP_T] balancing biases
+    const float*rout,          // [N_EXPERT_SLOTS, RTR_H]
+    const float*bb,            // [N_EXPERT_SLOTS] balancing biases
     // MoE weights (fp16)
     const __half*gu,           // [N_EXP, 2*N_FF, H]
     const __half*dn,           // [N_EXP, H, N_FF]
@@ -71,8 +71,8 @@ __global__ void eda_router_moe_kernel(
     __shared__ float sh[32];
     __shared__ float rs[RTR_H];
     __shared__ float tmp[RTR_H];
-    __shared__ float scores[N_EXP_T];
-    __shared__ float probs[N_EXP_T];
+    __shared__ float scores[N_EXPERT_SLOTS];
+    __shared__ float probs[N_EXPERT_SLOTS];
 
     // ── 1. gate_down: rs[RTR_H] = hs[H] @ gdw^T + gdb ──
     for(int i=tx; i<RTR_H; i+=blockDim.x){
@@ -116,7 +116,7 @@ __global__ void eda_router_moe_kernel(
     __syncthreads();
 
     // ── 6. out_proj → scores + balancing_biases ──
-    for(int i=tx; i<N_EXP_T; i+=blockDim.x){
+    for(int i=tx; i<N_EXPERT_SLOTS; i+=blockDim.x){
         float s = 0;
         for(int j=0;j<RTR_H;j++) s += rs[j]*rout[i*(size_t)RTR_H+j];
         scores[i] = s + bb[i];
@@ -125,15 +125,15 @@ __global__ void eda_router_moe_kernel(
 
     // ── 7. softmax ──
     float maxv = scores[0];
-    for(int i=1;i<N_EXP_T;i++) if(scores[i]>maxv) maxv=scores[i];
+    for(int i=1;i<N_EXPERT_SLOTS;i++) if(scores[i]>maxv) maxv=scores[i];
     float sumv = 0;
-    for(int i=tx; i<N_EXP_T; i+=blockDim.x){
+    for(int i=tx; i<N_EXPERT_SLOTS; i+=blockDim.x){
         probs[i] = expf(scores[i]-maxv);
         sumv += probs[i];
     }
     sumv = block_sum(sumv, sh);
     float inv_sum = 1.0f/(sumv+1e-10f);
-    for(int i=tx; i<N_EXP_T; i+=blockDim.x) probs[i] *= inv_sum;
+    for(int i=tx; i<N_EXPERT_SLOTS; i+=blockDim.x) probs[i] *= inv_sum;
     __syncthreads();
 
     // ── 8. top-1 ──
@@ -141,7 +141,7 @@ __global__ void eda_router_moe_kernel(
     if(tx == 0){
         int best = 0;
         float bestv = probs[0];
-        for(int i=1;i<N_EXP_T;i++){
+        for(int i=1;i<N_EXPERT_SLOTS;i++){
             if(probs[i] > bestv){ bestv = probs[i]; best = i; }
         }
         *expert_idx = best;
