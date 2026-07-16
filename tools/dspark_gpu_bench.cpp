@@ -9,6 +9,7 @@
 #include "../spec-decode/draft/mtp_draft.h"
 #include <hip/hip_runtime.h>
 #include <cstdio>
+#include <cerrno>
 #include <cstring>
 #include <cmath>
 #include <vector>
@@ -26,9 +27,11 @@ int main(int argc, char** argv) {
     int n_rounds=argc>3?atoi(argv[3]):10;
 
     int fd=open(path,O_RDONLY);
+    if (fd<0) { fprintf(stderr,"Cannot open: %s\n",path); return 1; }
     size_t fsz=lseek(fd,0,SEEK_END);
     auto p=(const char*)mmap(0,fsz,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
-    if(memcmp(p,"TRG1",4))return 1;
+    if(p==MAP_FAILED){perror("mmap");fprintf(stderr,"mmap failed for %s\n",path);return 1;}
+    if(memcmp(p,"TRG1",4) && memcmp(p,"TRG2",4)){fprintf(stderr,"Bad magic: %.4s\n",p);return 1;}
     auto r4=[&](int o){uint32_t v;memcpy(&v,p+o,4);return(int)v;};
     auto r8=[&](int o){uint64_t v;memcpy(&v,p+o,8);return v;};
     int H=r4(4),IM=r4(8),NH=r4(12),NKV=r4(16),HD=r4(20),V=r4(24),L=r4(28),GQA=r4(32);
@@ -63,11 +66,17 @@ int main(int argc, char** argv) {
     fprintf(stderr,"Draft checkpoint loaded: %s (vocab=%d hidden=%d target_layers=%d)\n",
             draft_path,draft_cfg.vocab_size,draft_cfg.hidden_size,draft_cfg.num_target_layers);
 
+    fprintf(stderr, "Starting GPU init...\n");
     // ── GPU init ──
     hipStream_t s; hipStreamCreate(&s);
     float *d_pk,*d_sc,*d_inorm,*d_pan,*d_qn,*d_kn,*d_fn,*d_lm,*d_hf,*d_xs;
     _Float16 *d_h,*d_q,*d_at,*d_ffg,*d_ag,*d_kc,*d_vc; int8_t *d_i8; float xsh;
-    auto ml=[&](auto&p_,size_t b){hipMalloc(&p_,b);SYNC;};
+    auto ml=[&](auto&p_,size_t b){
+        hipError_t _e=hipMalloc(&p_,b);
+        if(_e!=hipSuccess){fprintf(stderr,"GPU OOM at %s:%d (%s)\n",__FILE__,__LINE__,hipGetErrorString(_e));exit(1);}
+        _e=hipStreamSynchronize(s);
+        if(_e!=hipSuccess){fprintf(stderr,"GPU SYNC fail at %s:%d (%s)\n",__FILE__,__LINE__,hipGetErrorString(_e));exit(1);}
+    };
     ml(d_pk,L*per_layer*4);ml(d_sc,L*per_sc*4);
     ml(d_inorm,L*H*4);ml(d_pan,L*H*4);ml(d_qn,L*HD*4);ml(d_kn,L*HD*4);
     ml(d_fn,H*4);ml(d_lm,V*H*4);ml(d_hf,8192*4);float*d_logits;ml(d_logits,V*4);ml(d_h,H*2);
