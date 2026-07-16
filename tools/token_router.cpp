@@ -66,8 +66,12 @@ static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata
 
 // ── Configuration ──
 static int listen_port = 13306;
-static std::string npu_engine_bin = getenv("HOME")?std::string(getenv("HOME"))+"/engine/npu/build/npu_engine_server";
-static std::string gpu_engine_bin = getenv("HOME")?std::string(getenv("HOME"))+"/build/zaya_server";  // GPU backend binary
+static std::string get_home_prefix() {
+    const char* home = getenv("HOME");
+    return home ? std::string(home) : std::string();
+}
+static std::string npu_engine_bin = get_home_prefix() + "/engine/npu/build/npu_engine_server";
+static std::string gpu_engine_bin = get_home_prefix() + "/build/zaya_server";  // GPU backend binary
 // Tokenizer: pure C++ via rocm_cpp/tokenizer.h (zero Python)
 static int max_workers = 4;
 

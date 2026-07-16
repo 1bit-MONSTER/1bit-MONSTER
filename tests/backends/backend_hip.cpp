@@ -118,7 +118,7 @@ class HipBackend : public InferenceBackend {
     bool embed_loaded_=false;
 
 public:
-    BackendType type() const override { return BackendType::HIP; }
+    BackendType type() const override { return BackendType::HIP_GPU; }
     const char* name() const override { return "ROCm HIP"; }
     float estimated_tok_s() const override { return 64.0f; }  // estimate; measured end-to-end on Zaya1-8B
     bool is_coherent() const override { return true; }

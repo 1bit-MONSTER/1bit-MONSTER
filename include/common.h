@@ -6,13 +6,9 @@
 enum class BackendType : uint8_t {
     NONE = 0,
     HIP_GPU = 1,
-    HIP = 1,
     VULKAN = 2,
-    Vulkan = 2,
     NPU_XRT = 3,
-    NPU = 3,
     CPU_AVX512 = 4,
-    CPU = 4,
     CPU_SCALAR = 5,
     GENERIC = 6,
     ZAMBA2 = 7,   // Zamba2 hybrid Mamba2+attention (CPU ref)

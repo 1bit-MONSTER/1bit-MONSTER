@@ -292,9 +292,6 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
     for(int i=0;i<eng.h;i++){float raw=s->embed[token_id*(size_t)eng.h+i];hh[i]=__float2half((raw+s->ibias[i])*s->iscale[i]);}
     hipMemcpyAsync(s->d_hs,hh.data(),eng.h*2,hipMemcpyHostToDevice,s->st);
     
-    s->lw.resize(eng.n_layers);
-    s->has_eda.resize(eng.n_layers);
-    s->eda_scale.resize(eng.n_layers);
     for(int il=0;il<eng.n_layers;il++){
         auto& l=s->lw[il];
         // ── CCA attention: q/k/v proj → cca_prep → KV-cache stash → flash-decode → o_proj ──
@@ -357,9 +354,6 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
     for(int i=0;i<eng.h;i++){float raw=s->embed[token_id*(size_t)eng.h+i];hh[i]=__float2half((raw+s->ibias[i])*s->iscale[i]);}
     hipMemcpyAsync(s->d_hs,hh.data(),eng.h*2,hipMemcpyHostToDevice,s->st);
     
-    s->lw.resize(eng.n_layers);
-    s->has_eda.resize(eng.n_layers);
-    s->eda_scale.resize(eng.n_layers);
     for(int il=0;il<eng.n_layers;il++){
         auto& l=s->lw[il];
         // ── CCA attention: q/k/v proj → cca_prep → KV-cache stash → flash-decode → o_proj ──
@@ -417,7 +411,10 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
 // B <= 8 recommended (constrained by shared memory in union kernel).
 void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, int B) {
     int g1 = (eng.h+BLK-1)/BLK;
-    if (B > 8) B = 8; // safety cap
+    if (B > 8) {
+        fprintf(stderr, "zaya_forward_batch: B=%d > 8, truncating to 8 (tokens %d-%d will NOT be processed)\n", B, 8, B-1);
+        B = 8;
+    }
 
     // ── Embedding lookup for all B tokens ──
     std::vector<__half> hh(B * eng.h);

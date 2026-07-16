@@ -74,7 +74,7 @@ class VulkanBackend : public InferenceBackend {
     std::string shader_dir_;
 
 public:
-    BackendType type() const override { return BackendType::Vulkan; }
+    BackendType type() const override { return BackendType::VULKAN; }
     const char* name() const override { return "Vulkan GPU"; }
     float estimated_tok_s() const override { return 22.0f; }
     bool is_coherent() const override { return true; }

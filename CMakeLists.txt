@@ -615,6 +615,7 @@ set_property(TARGET unified_server APPEND PROPERTY
 # -- tools/backend_demo : Backend Manager live dashboard (Task Manager NPU tab) ---
 # Pure C++ (no HIP) — demonstrates auto-detect, selection, failover, monitoring.
 add_executable(backend_demo tools/backend_demo.cpp)
+target_include_directories(backend_demo PRIVATE src/)
 target_compile_options(backend_demo PRIVATE -O3 -Wall -Wno-unused-result -std=c++17)
 target_link_libraries(backend_demo PRIVATE backend_manager dl)
 
