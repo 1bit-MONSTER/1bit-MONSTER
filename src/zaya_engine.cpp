@@ -30,7 +30,7 @@
 
 // ── Architecture (compile-time constants for kernels ──
 static constexpr int H=2048,NQ=8,NKV=2,HD=128,QD=NQ*HD,KD=NKV*HD,QKV=QD+KD;
-static constexpr int N_LAYERS=40,VOCAB=262272,N_EXP=16,N_EXP_T=17,N_FF=2048,RTR_H=256;
+static constexpr int N_LAYERS=40,VOCAB=262272,N_EXP=16,N_EXP_T=17,N_FF=2048,RTR_H=256; // N_EXP_T=17 = 16 experts + 1 MOD skip token
 static constexpr float RMD_EPS=1e-5f; static constexpr int BLK=256;
 
 // ── Runtime config (host code uses these) ──
