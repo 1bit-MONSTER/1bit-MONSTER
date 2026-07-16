@@ -11,7 +11,10 @@ inference engine and achieves verified performance on this hardware.
 | Zamba2-1.2B-Strix | Zyphra/Zamba2-1.2B | 0.71B | Q4_0 GGUF | ~1800 tok/s GEMV | ✅ Training |
 | Zamba2-2.7B-Strix | Zyphra/Zamba2-2.7B | 2.7B | Q4_0 GGUF | ~900 tok/s GEMV | 🔲 Planned |
 | Zamba2-7B-Strix | Zyphra/Zamba2-7B | 7B | Q4_0 GGUF | ~350 tok/s GEMV | 🔲 Planned |
-| ZR1-1.5B-Strix | Zyphra/ZR1-1.5B | 1.5B | Q4_K_M GGUF | ~1200 tok/s GEMV | 🔲 Planned |
+| **ZR1-1.5B-Strix** 🏆 | Zyphra/ZR1-1.5B | 1.5B | LoRA adapter | 1.86s/it training | ✅ **Done** |
+| Zamba2-1.2B-Strix | Zyphra/Zamba2-1.2B | 0.71B | Q4_0 GGUF | ~1800 tok/s GEMV | ⚠️ Mamba2 ROCm-limited |
+| Zamba2-2.7B-Strix | Zyphra/Zamba2-2.7B | 2.7B | Q4_0 GGUF | ~900 tok/s GEMV | 🔲 Planned |
+| Zamba2-7B-Strix | Zyphra/Zamba2-7B | 7B | Q4_0 GGUF | ~350 tok/s GEMV | 🔲 Planned |
 | Zaya1-8B-Strix | Proprietary | 8B | Q4_K_M GGUF | ~64 tok/s decode | ✅ Available |
 
 ## How to Use
@@ -29,15 +32,28 @@ llama-cli -m models/zamba2-1.2b-strix-q4_0.gguf -p "Your prompt here"
 
 ## Fine-Tuning Pipeline
 
-All models are fine-tuned using **torchtune 0.6.1** on AMD ROCm TheRock 7.15a:
+All models are fine-tuned on **AMD ROCm TheRock 7.15a** using PyTorch 2.11 + PEFT LoRA.
 
+### ZR1-1.5B (standard attention — recommended)
 ```bash
-# Fine-tune Zamba2-1.2B (200 steps, Alpaca instruct)
-bash scripts/finetune_zamba2.sh 1.2b
+# Fine-tune ZR1-1.5B (200 steps, Alpaca instruct, 6.2 min on Strix Halo)
+source /opt/rocm-therock/activate.sh
+source /tmp/therock-train/bin/activate
+python scripts/finetune_zr1.py
 
 # Push to Hugging Face
-bash scripts/push_to_hub.sh Zamba2-1.2B-Strix /tmp/zamba2-1.2b-finetune
+bash scripts/push_to_hub.sh ZR1-1.5B-Strix /tmp/zr1-1.5b-finetune
 ```
+
+### Zamba2 (Mamba2 — ROCm fallback, slow)
+```bash
+# Fine-tune Zamba2-1.2B (200 steps, ~3 hours on Strix Halo)
+bash scripts/finetune_zamba2.sh 1.2b
+```
+
+> **Note:** Zamba2 uses Mamba2 SSD layers which lack optimized ROCm kernels.
+> The PyTorch fallback is 73× slower than standard attention.
+> For best ROCm performance, use ZR1-1.5B (Qwen2 arch) instead.
 
 ## Hardware
 
