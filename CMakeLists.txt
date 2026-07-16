@@ -717,3 +717,17 @@ target_link_options(dspark_gpu_bench PRIVATE
     -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
 set_target_properties(dspark_gpu_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
+
+# ── Q4NX → TRG converter ───────────────────────────────────────────────
+add_executable(trg_save
+    tools/trg_save.cpp
+    engine/fusion/cpu_layer.cpp)
+target_include_directories(trg_save PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/fusion
+    ${CMAKE_SOURCE_DIR})
+target_compile_options(trg_save PRIVATE
+    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+target_link_libraries(trg_save PRIVATE
+    ${CMAKE_DL_LIBS} m pthread)
+set_target_properties(trg_save PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
