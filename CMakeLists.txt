@@ -2,10 +2,12 @@ cmake_minimum_required(VERSION 3.21)
 
 # Pin HIP compiler to TheRock's clang for native gfx1151. Discover TheRock
 # from multiple locations in priority order:
-#   1. pip-installed TheRock ROCm SDK (from rocm.nightlies.amd.com)
-#   2. lemonade cache (~/.cache/lemonade/bin/therock)
-#   3. legacy therock path (~/therock/build/dist/rocm)
-#   4. system ROCm (/opt/rocm)
+#   1. /opt/rocm-therock — TheRock nightly C++ SDK (this repo)
+#   2. THEROCK_PIP_ROOT env var — pip-installed TheRock
+#   3. lemonade cache (~/.cache/lemonade/bin/therock)
+#   4. legacy therock path (~/therock/build/dist/rocm)
+#   5. system ROCm (/opt/rocm)
+set(_RC_THEROCK_OPT     "/opt/rocm-therock" CACHE PATH "TheRock opt install root")
 set(_RC_THEROCK_PIP     "$ENV{HOME}/.cache/pip/therock" CACHE PATH "pip-installed TheRock root")
 set(_RC_LEMONADE_THEROCK "$ENV{HOME}/.cache/lemonade/bin/therock")
 set(_RC_THEROCK_LEGACY "$ENV{HOME}/therock/build/dist/rocm")
@@ -14,8 +16,15 @@ set(_RC_SYSTEM_BIN     "/opt/rocm/lib/llvm/bin")
 set(_RC_LLVM_BIN "")
 set(_RC_ROCM_DEFAULT "")
 
-# 1. Try pip-installed TheRock (from virtual env) — check for rocm-sdk path
-if(DEFINED ENV{THEROCK_PIP_ROOT})
+# 1. /opt/rocm-therock — TheRock nightly C++ SDK (system-wide install)
+if(EXISTS "${_RC_THEROCK_OPT}/bin/amdclang++")
+    set(_RC_LLVM_BIN "${_RC_THEROCK_OPT}/bin")
+    set(_RC_ROCM_DEFAULT "${_RC_THEROCK_OPT}")
+    message(STATUS "rocm-cpp: using TheRock opt at ${_RC_ROCM_DEFAULT}")
+endif()
+
+# 2. Try pip-installed TheRock (from virtual env) — check for rocm-sdk path
+if(NOT _RC_LLVM_BIN AND DEFINED ENV{THEROCK_PIP_ROOT})
     set(_RC_PIP_PATH "$ENV{THEROCK_PIP_ROOT}")
     if(EXISTS "${_RC_PIP_PATH}/bin/amdclang++")
         set(_RC_LLVM_BIN "${_RC_PIP_PATH}/bin")
