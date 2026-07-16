@@ -117,7 +117,7 @@ public:
             // Attention: Q @ K^T → softmax → @ V (simplified, no RoPE)
             if (!l.wq.empty() && !l.wk.empty() && !l.wv1.empty() && !l.wo.empty()) {
                 int NQ = cfg_.num_attention_heads;
-                int NKV = cfg_.num_key_value_heads;
+                int NKV = cfg_.num_kv_heads;
                 int HD = cfg_.head_dim;
                 int QK = NQ * HD, KK = NKV * HD, VK = NKV * HD;
                 std::vector<float> q(QK, 0), k(KK, 0), v(VK, 0);

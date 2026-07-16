@@ -7,7 +7,7 @@
 #include <cmath>
 
 #define H 2048
-#define N_EXP_T 2
+#define ROUTER_TOP_K 2
 #define N_FF 2048
 #define RTR_H 256
 
@@ -39,7 +39,7 @@ __global__ void eda_router_gpu_kernel(
     __shared__ float rbuf[32];
     __shared__ float rs[RTR_H];
     __shared__ float r2[RTR_H];
-    __shared__ float probs[N_EXP_T];
+    __shared__ float probs[ROUTER_TOP_K];
 
     // 1. gate_down
     for(int i=tx;i<RTR_H;i+=blockDim.x){
@@ -97,17 +97,17 @@ __global__ void eda_router_gpu_kernel(
     __syncthreads();
 
     // 5. out_proj → scores + bb
-    for(int i=tx;i<N_EXP_T;i+=blockDim.x){
+    for(int i=tx;i<ROUTER_TOP_K;i+=blockDim.x){
         float s=0; for(int j=0;j<RTR_H;j++)s+=rs[j]*rout[i*(size_t)RTR_H+j];
         probs[i]=s+bb[i];
     }
     __syncthreads();
 
     // 6. softmax
-    float mv=probs[0];for(int i=1;i<N_EXP_T;i++)if(probs[i]>mv)mv=probs[i];
-    float sv=0;for(int i=tx;i<N_EXP_T;i+=blockDim.x){probs[i]=expf(probs[i]-mv);sv+=probs[i];}
+    float mv=probs[0];for(int i=1;i<ROUTER_TOP_K;i++)if(probs[i]>mv)mv=probs[i];
+    float sv=0;for(int i=tx;i<ROUTER_TOP_K;i+=blockDim.x){probs[i]=expf(probs[i]-mv);sv+=probs[i];}
     sv=bsum_f(sv,rbuf);float is=1.0f/(sv+1e-10f);
-    for(int i=tx;i<N_EXP_T;i+=blockDim.x)probs[i]*=is;
+    for(int i=tx;i<ROUTER_TOP_K;i+=blockDim.x)probs[i]*=is;
     __syncthreads();
 
     // 7. argmax with expert caching
@@ -116,7 +116,7 @@ __global__ void eda_router_gpu_kernel(
         // We compute a cached_ok flag: reuse if the cached expert's score
         // is within 90% of the best expert's score.
         int best=0;float bv=probs[0];
-        for(int i=1;i<N_EXP_T;i++)if(probs[i]>bv){bv=probs[i];best=i;}
+        for(int i=1;i<ROUTER_TOP_K;i++)if(probs[i]>bv){bv=probs[i];best=i;}
         
         // Expert caching: if prev_expert's score is close to best, reuse it
         // This exploits temporal correlation in expert selection across layers.

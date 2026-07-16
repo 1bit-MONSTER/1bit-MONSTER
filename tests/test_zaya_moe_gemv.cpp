@@ -1,7 +1,7 @@
 // Zaya MoE Ternary GEMV — functional correctness test
 //
 // Build & run:
-//   cd /home/bcloud/1bit/build-rocm
+//   cd ~/1bit/build-rocm
 //   cmake --build . --target test_zaya_moe_gemv -j8
 //   ./test_zaya_moe_gemv
 

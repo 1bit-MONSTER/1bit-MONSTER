@@ -20,7 +20,7 @@
 #define H          2048
 #define N_LAYERS   40
 #define N_EXP      16
-#define N_EXP_T    17
+#define N_EXPERT_SLOTS    17
 #define N_FF       2048
 #define RTR_H      256
 #define BLK        256
@@ -92,8 +92,8 @@ __global__ void persistent_moe_kernel(
     const float* __restrict__ rf1b,        // [N_LAYERS, RTR_H]
     const float* __restrict__ rf2,         // [N_LAYERS, RTR_H, RTR_H]
     const float* __restrict__ rf2b,        // [N_LAYERS, RTR_H]
-    const float* __restrict__ rout,        // [N_LAYERS, N_EXP_T, RTR_H]
-    const float* __restrict__ bb,          // [N_LAYERS, N_EXP_T]
+    const float* __restrict__ rout,        // [N_LAYERS, N_EXPERT_SLOTS, RTR_H]
+    const float* __restrict__ bb,          // [N_LAYERS, N_EXPERT_SLOTS]
     const __half* __restrict__ gu,         // [N_LAYERS, N_EXP, 2*N_FF, H]
     const __half* __restrict__ dn,         // [N_LAYERS, N_EXP, H, N_FF]
     float* __restrict__ d_prev_rs,         // [N_LAYERS, RTR_H] (output)

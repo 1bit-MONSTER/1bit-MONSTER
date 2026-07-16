@@ -5,7 +5,7 @@
 //   g++ -O3 -march=native -std=c++17 -Iengine/fusion \
 //        -o tools/dspark_gpu tools/dspark_gpu.cpp \
 //        engine/fusion/cpu_layer.cpp -lm \
-//        -L/home/bcloud/1bit/build -lgpu_verify -Wl,-rpath,/home/bcloud/1bit/build
+//        -L~/1bit/build -lgpu_verify -Wl,-rpath,~/1bit/build
 //
 // Run:   ./tools/dspark_gpu model.trg [draft_layers=2] [M=8] [rounds=10]
 

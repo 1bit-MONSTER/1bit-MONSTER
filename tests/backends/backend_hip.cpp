@@ -46,7 +46,7 @@ __global__ void residual_scale_k(__half* out, const __half* res, const float* hs
 #define N_LAYERS 40
 #define VOCAB 262272
 #define N_EXP 16
-#define N_EXP_T 2
+#define ROUTER_TOP_K 2
 #define N_FF  2048
 #define RTR_H 256
 #endif
@@ -73,7 +73,7 @@ __global__ void residual_scale_k(__half* out, const __half* res, const float* hs
 #undef N_LAYERS
 #undef VOCAB
 #undef N_EXP
-#undef N_EXP_T
+#undef ROUTER_TOP_K
 #undef N_FF
 #undef RTR_H
 
@@ -156,7 +156,7 @@ public:
         int H=cfg.hidden_size, NQ=cfg.num_heads, NKV=cfg.num_kv_heads, HD=cfg.head_dim;
         int QD=NQ*HD, KD=NKV*HD, QKV=QD+KD;
         int N_LAYERS=cfg.num_layers, VOCAB=cfg.vocab_size;
-        int N_EXP=cfg.num_experts, N_EXP_T=cfg.num_experts_top, N_FF=cfg.intermediate_size;
+        int N_EXP=cfg.num_experts, ROUTER_TOP_K=cfg.num_experts_top, N_FF=cfg.intermediate_size;
         int RTR_H=cfg.router_hidden;
         std::string W = cfg.weights_dir;
         if (!W.empty() && W.back() != '/') W += '/';
@@ -212,8 +212,8 @@ public:
             B(l.rf1b, RTR_H, W+lp+"mlp_gate_router_mlp_fc1_bias.bin");
             B(l.rf2, RTR_H*RTR_H, W+lp+"mlp_gate_router_mlp_fc2_weight.bin");
             B(l.rf2b, RTR_H, W+lp+"mlp_gate_router_mlp_fc2_bias.bin");
-            B(l.rout, N_EXP_T*RTR_H, W+lp+"mlp_gate_router_mlp_out_proj_weight.bin");
-            B(l.bb, N_EXP_T, W+lp+"mlp_gate_balancing_biases.bin");
+            B(l.rout, ROUTER_TOP_K*RTR_H, W+lp+"mlp_gate_router_mlp_out_proj_weight.bin");
+            B(l.bb, ROUTER_TOP_K, W+lp+"mlp_gate_balancing_biases.bin");
             auto sz_gu=N_EXP*2*N_FF*H, sz_dn=N_EXP*H*N_FF;
             if(hipMalloc(&l.gu,sz_gu*2)==hipSuccess&&hipMalloc(&l.dn,sz_dn*2)==hipSuccess){
                 auto gud=load_bin(W+lp+"mlp_experts_gate_up_proj.bin");
