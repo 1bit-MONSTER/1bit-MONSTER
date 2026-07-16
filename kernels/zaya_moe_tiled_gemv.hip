@@ -43,7 +43,7 @@ __global__ void moe_tiled_gemv_batch(
     for (int k = tx; k < K; k += WMMA_THREADS) {
         float v_in = (float)in_b[k];
         for (int j = 0; j < WMMA_M; j++) {
-            acc[j] += v_in * (float)wt[(row + j) * (size_t)K + k];
+            acc[j] = __fmaf_rn(v_in, (float)wt[(row+j)*(size_t)K + k], acc[j]);
         }
     }
 
@@ -88,7 +88,7 @@ __global__ void moe_tiled_gemv(
     for (int k = tx; k < K; k += WMMA_THREADS) {
         float v_in = (float)in[k];
         for (int j = 0; j < WMMA_M; j++)
-            acc[j] += v_in * (float)wt[(row + j) * (size_t)K + k];
+            acc[j] = __fmaf_rn(v_in, (float)wt[(row+j)*(size_t)K + k], acc[j]);
     }
 
     for (int j = 0; j < WMMA_M; j++)
