@@ -45,6 +45,16 @@ struct HIPBackend : Backend {
         zs = zaya_init(wd.c_str());  // loads weights, allocates GPU memory
         if (!zs) { fprintf(stderr,"HIP: zaya_init failed\n"); return false; }
 
+        // Apply optional LoRA adapter after base weights are loaded
+        if (!cfg.lora_path.empty()) {
+            printf("HIP: Applying LoRA adapter from %s...\n", cfg.lora_path.c_str());
+            if (zaya_apply_lora(zs, cfg.lora_path.c_str()) != 0) {
+                fprintf(stderr, "HIP: zaya_apply_lora failed — continuing without LoRA\n");
+            } else {
+                printf("HIP: LoRA adapter applied successfully\n");
+            }
+        }
+
         // Keep copies for lm_head (tied embeddings) — loaded by zaya_init
         embed = zs->embed;
         iscale = zs->iscale;
