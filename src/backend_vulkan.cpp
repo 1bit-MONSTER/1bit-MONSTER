@@ -352,6 +352,12 @@ struct VKBackend : Backend {
             load(l.pmrss, B+"post_mlp_residual_scale_residual_scale.bin");
             load(l.pmrsb, B+"post_mlp_residual_scale_residual_bias.bin");
         }
+        // Validate that critical weight files loaded (issue #274)
+        if (!embed || !fnorm) {
+            fprintf(stderr, "Vulkan: missing critical weight files (embed/fnorm)\n");
+            initialized = false;
+            return false;
+        }
         printf("Vulkan: %d layers loaded\n", N_LAYERS);
         initialized = true;
         return true;
