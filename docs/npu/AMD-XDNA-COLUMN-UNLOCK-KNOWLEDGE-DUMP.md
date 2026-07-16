@@ -515,3 +515,83 @@ Searched `npu.dev.sbin` (copied to `data/npu_current_dev.sbin`) for code referen
 3. If available, a way to single-step or trace the firmware during an actual failing `MSG_OP_CREATE_CONTEXT` call (even coarse-grained, e.g. via any debug/trace registers the firmware exposes) would confirm which code path actually executes, rather than guessing from static analysis alone.
 
 Candidates preserved here for whoever picks this up with more time/better ISA confidence.
+
+---
+
+## Appendix: 40-Column Unlock — Verified Working (2026-07-16)
+
+On **2026-07-16**, the full 40-column driver-level unlock was achieved and verified.
+
+### The Two Kernel Patches
+
+Two source files were modified in the local xdna-driver checkout. These are the patches that make `amdxdna-40col.ko` work:
+
+#### Patch 1: AIE2 Path — `drivers/accel/amdxdna/aie2_pci.c`
+
+```c
+/* NPU column unlock: if aie2_max_col > fw-reported cols, override metadata */
+if (aie2_max_col > ndev->aie.metadata.cols) {
+    XDNA_WARN(ndev->aie.xdna,
+              "NPU UNLOCK: overriding metadata.cols from %d to %d",
+              ndev->aie.metadata.cols, aie2_max_col);
+    ndev->aie.metadata.cols = aie2_max_col;
+}
+ndev->total_col = min(aie2_max_col, ndev->aie.metadata.cols);
+XDNA_WARN(ndev->aie.xdna, "NPU: %d total_col (aie2_max_col=%d, metadata.cols=%d)",
+          ndev->total_col, aie2_max_col, ndev->aie.metadata.cols);
+```
+
+#### Patch 2: VE2 Path — `src/driver/amdxdna/ve2_of.c`
+
+```c
+/* NPU column unlock: override aie_dev_info cols if max_col is larger */
+if (max_col > 0 && max_col > (int)xdna_hdl->aie_dev_info.cols) {
+    XDNA_INFO(xdna, "NPU UNLOCK: overriding aie_dev_info.cols from %d to %d",
+              xdna_hdl->aie_dev_info.cols, max_col);
+    xdna_hdl->aie_dev_info.cols = (u32)max_col;
+}
+```
+
+### Exact Loading Sequence
+
+| Time | Action | Result |
+|------|--------|--------|
+| 09:27:41 | Boot with kernel params `aie2_max_col=40 fw_patches_enable=1` | In-tree 0.7.0 loads, 8 cols |
+| 10:09:50 | `sudo modprobe -r amdxdna` | Unload in-tree module |
+| 10:10:00 | `sudo insmod amdxdna-40col.ko aie2_max_col=40` | FAIL: unknown symbol `amd_pmf_get_npu_data` |
+| 10:10:03 | `sudo modprobe gpu-sched && sudo modprobe amd-pmf` | Load dependencies |
+| 10:10:03 | `sudo insmod amdxdna-40col.ko aie2_max_col=40` (2nd attempt) | **SUCCESS — 40 columns!** |
+| 10:10:22 | HW context creation attempt | FW `AIE2_STATUS_MGMT_ERT_NOAVAIL` |
+| 10:10:29 | `sudo modprobe -r amdxdna` | Unload custom module |
+| 10:10:30 | `sudo modprobe amdxdna aie2_max_col=40` (in-tree) | Back to 8 cols (safe baseline) |
+
+### Key Artifacts
+
+| Artifact | Path |
+|----------|------|
+| Custom module | `/home/bcloud/amdxdna-40col.ko` (10.9 MB, v0.1) |
+| Dev firmware | `/lib/firmware/amdnpu/17f0_11/npu.dev.sbin` (430 KB) |
+| Patched src (AIE2) | `/home/bcloud/xdna-driver/drivers/accel/amdxdna/aie2_pci.c` |
+| Patched src (VE2) | `/home/bcloud/xdna-driver/src/driver/amdxdna/ve2_of.c` |
+| 40-col xclbin | `/home/bcloud/npu-sandbox/npu-infer/bf16_kernel_dev/col40_gemm/final_40col_v2.xclbin` |
+
+### Current Blocker
+
+Creating a 40-col HW context fails with firmware status `0x2000003` (`AIE2_STATUS_MGMT_ERT_NOAVAIL`). The firmware's internal resource allocation tables are still hardcoded for 8 columns. Fix requires patching the firmware binary `npu.dev.sbin` — same methodology as the serialization-gate patch (see `npu_re_workspace/data/PATCH_README.md`).
+
+### Firmware RE Candidates
+
+Strings from `npu.dev.sbin` pointing to the column-limit validation code:
+- `"Invalid column count: %u >= %u"` — file offset `0x1d6d1`
+- `"Max cols used for partition %d = %d"` — file offset `0x1d520` (hits at code offsets `0x00cc6`, `0x00cf4`, `0x01f02`, `0x07306`)
+- `"[MGT-ERT]: Column index out of range, Col: %u (Num Columns: %u)"` — file offset `0x20bdd`
+- `"Invalid Start Column/Numcols"` — file offset `0x4e495`
+
+### Verbatim dmesg from the unlock
+
+```
+amdxdna 0000:c6:00.1: [drm] Load firmware amdnpu/17f0_11/npu.dev.sbin
+amdxdna 0000:c6:00.1: [drm] aie2_mgmt_fw_query: NPU UNLOCK: overriding metadata.cols from 8 to 40
+amdxdna 0000:c6:00.1: [drm] aie2_mgmt_fw_query: NPU: 40 total_col (aie2_max_col=40, metadata.cols=40)
+[drm] Initialized amdxdna_accel_driver 0.15.0 for 0000:c6:00.1 on minor 0
+```
