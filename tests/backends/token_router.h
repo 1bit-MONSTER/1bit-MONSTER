@@ -63,10 +63,10 @@ struct TokenRouter {
         // ── Detect GPU and NPU for parallel MoE ──────────────────
         for (auto* b : backends) {
             if (b->is_available()) {
-                if (b->type() == BackendType::HIP || b->type() == BackendType::Vulkan) {
+                if (b->type() == BackendType::HIP_GPU || b->type() == BackendType::VULKAN) {
                     if (!gpu_backend) gpu_backend = b;
                 }
-                if (b->type() == BackendType::NPU) {
+                if (b->type() == BackendType::NPU_XRT) {
                     if (!npu_backend) npu_backend = b;
                 }
             }

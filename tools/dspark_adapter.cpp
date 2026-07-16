@@ -208,7 +208,8 @@ int main(int argc, char** argv) {
     memcpy(ph,F(o_emb)+1*H,H*4);
 
     for(int r=0;r<rounds;r++){
-        float dh[32][4096]; int dt[32], dta[32];
+        std::vector<float> dh_vec(32 * 4096); float (*dh)[4096] = (float (*)[4096])dh_vec.data();
+        int dt[32], dta[32];
         auto t0=std::chrono::high_resolution_clock::now();
         memcpy(dh[0],ph,H*4);
         for(int i=0;i<M;i++){
@@ -224,7 +225,7 @@ int main(int argc, char** argv) {
         auto t1=std::chrono::high_resolution_clock::now();
         t_d+=std::chrono::duration<double,std::milli>(t1-t0).count();
 
-        float*ghs[32];float gh[32][4096];
+        float*ghs[32]; std::vector<float> gh_vec(32 * 4096); float (*gh)[4096] = (float (*)[4096])gh_vec.data();
         for(int i=0;i<M;i++){memcpy(gh[i],ph,H*4);ghs[i]=gh[i];}
         t0=std::chrono::high_resolution_clock::now();
         bf(ghs,pos);

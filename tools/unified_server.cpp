@@ -408,44 +408,51 @@ static json generate_completion(BackendManager& mgr,
 
         // First token (i==0): compute logprob from the last prompt token's
         // forward pass so cascade has a real confidence signal immediately.
+        int vs = 262272, hs = 2048;
+        auto* ai = mgr.active_info();
+        if (ai && ai->instance) {
+            auto& mcfg = ai->instance->cfg;
+            if (mcfg.vocab_size > 0) vs = mcfg.vocab_size;
+            else if (mcfg.vocab > 0) vs = mcfg.vocab;
+            if (mcfg.hidden_size > 0) hs = mcfg.hidden_size;
+            else if (mcfg.hidden > 0) hs = mcfg.hidden;
+        }
         if (i == 0 && need_logprobs && output_logprobs.empty()) {
-            float hidden_buf[2048];
-            if (mgr.forward(last_token, hidden_buf)) {
-                float* logits_buf = new float[262272];
+            std::vector<float> hidden_buf(hs);
+            std::vector<float> logits_buf(vs);
+            if (mgr.forward(last_token, hidden_buf.data())) {
                 int tmp_id = -1;
-                if (mgr.lm_head(hidden_buf, logits_buf, &tmp_id)) {
+                if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &tmp_id)) {
                     float max_l = -1e30f;
-                    for (int v = 0; v < 262272; v++)
+                    for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
                     double sum_exp = 0.0;
-                    for (int v = 0; v < 262272; v++)
+                    for (int v = 0; v < vs; v++)
                         sum_exp += exp((double)(logits_buf[v] - max_l));
-                    if (sum_exp > 0 && tmp_id >= 0 && tmp_id < 262272)
+                    if (sum_exp > 0 && tmp_id >= 0 && tmp_id < vs)
                         token_logprob = (double)(logits_buf[tmp_id] - max_l) - log(sum_exp);
                     else
                         token_logprob = -20.0;
                 }
-                delete[] logits_buf;
                 next = tmp_id;
             }
         } else if (need_logprobs) {
             // Slow path: forward + lm_head + softmax for real logprobs
-            float hidden_buf[2048];  // ZAYA_H
-            if (mgr.forward(last_token, hidden_buf)) {
-                float* logits_buf = new float[262272];
-                if (mgr.lm_head(hidden_buf, logits_buf, &next)) {
+            std::vector<float> hidden_buf(hs);
+            std::vector<float> logits_buf(vs);
+            if (mgr.forward(last_token, hidden_buf.data())) {
+                if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &next)) {
                     float max_l = -1e30f;
-                    for (int v = 0; v < 262272; v++)
+                    for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
                     double sum_exp = 0.0;
-                    for (int v = 0; v < 262272; v++)
+                    for (int v = 0; v < vs; v++)
                         sum_exp += exp((double)(logits_buf[v] - max_l));
-                    if (sum_exp > 0 && next >= 0 && next < 262272)
+                    if (sum_exp > 0 && next >= 0 && next < vs)
                         token_logprob = (double)(logits_buf[next] - max_l) - log(sum_exp);
                     else
                         token_logprob = -20.0;
                 }
-                delete[] logits_buf;
             }
         } else {
             // Fast path: generate() does forward+lm_head+argmax in one call

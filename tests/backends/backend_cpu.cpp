@@ -40,7 +40,7 @@ class CpuBackend : public InferenceBackend {
     }
 
 public:
-    BackendType type() const override { return BackendType::CPU; }
+    BackendType type() const override { return BackendType::CPU_AVX512; }
     const char* name() const override { return "CPU (scalar)"; }
     float estimated_tok_s() const override { return 3.0f; }  // estimate; actual varies by model size
     bool is_coherent() const override { return true; }

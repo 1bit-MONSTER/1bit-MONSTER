@@ -298,6 +298,13 @@ struct NPUBackend : Backend {
         has_k_norm = cfg.has_k_norm;
         gu_split = cfg.gu_split;
 
+        // Validate hidden size against stack buffer limits
+        if (H > 8192) {
+            fprintf(stderr, "NPU: hidden_size %d exceeds max 8192 — refusing to init\n", H);
+            worker.shutdown();
+            return false;
+        }
+
         // Spawn NPU worker (must happen after dimensions known)
         if (!worker.spawn(model_path)) {
             fprintf(stderr, "NPU: failed to spawn worker engine\n");
@@ -515,11 +522,10 @@ struct NPUBackend : Backend {
         if (!initialized || embed.empty()) return false;
 
         // Final norm
-        float tmp[8192];
-        if (H > 8192) return false;
-        memcpy(tmp, hidden, H * sizeof(float));
+        std::vector<float> tmp(H);
+        memcpy(tmp.data(), hidden, H * sizeof(float));
         if (!final_norm.empty())
-            rmsnorm(tmp, final_norm.data(), H);
+            rmsnorm(tmp.data(), final_norm.data(), H);
 
         // LM head: dot product with embed table
         #pragma omp parallel for
@@ -538,11 +544,10 @@ struct NPUBackend : Backend {
     }
 
     int generate(int token_id) override {
-        float hidden[8192];
-        if (H > 8192) return -1;
-        if (!forward(token_id, hidden)) return -1;
+        std::vector<float> hidden(H);
+        if (!forward(token_id, hidden.data())) return -1;
         int result;
-        lm_head(hidden, logits_buf.data(), &result);
+        lm_head(hidden.data(), logits_buf.data(), &result);
         return result;
     }
 
