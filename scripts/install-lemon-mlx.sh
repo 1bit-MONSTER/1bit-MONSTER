@@ -36,18 +36,13 @@ if [ "$SKIP_BUILD" = "1" ]; then
   echo "SKIP_BUILD=1 — linking pre-built binaries"
 else
   # Check for ROCm
-  if [ ! -d /opt/rocm-therock ] && [ ! -d /opt/rocm ]; then
-    echo "ERROR: ROCm/TheRock not found at /opt/rocm-therock or /opt/rocm"
+  if [ ! -d /opt/rocm-therock ]; then
+    echo "ERROR: TheRock not found at /opt/rocm-therock"
+    echo "       Install: sudo bash scripts/setup-therock.sh"
     exit 1
   fi
-  ROCM_LIB=""
-  if [ -d /opt/rocm-therock ]; then
-    ROCM_LIB="/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib"
-    echo "TheRock detected: $(ls $ROCM_LIB/libamdhip64* 2>/dev/null | head -1)"
-  elif [ -d /opt/rocm ]; then
-    ROCM_LIB="/opt/rocm/lib"
-    echo "ROCm detected: $(ls $ROCM_LIB/libamdhip64* 2>/dev/null | head -1)"
-  fi
+  ROCM_LIB="/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib"
+  echo "TheRock detected: $(ls $ROCM_LIB/libamdhip64* 2>/dev/null | head -1)"
 
   # Build
   BUILD_DIR="$REPO_DIR/build"

@@ -18,7 +18,7 @@ from pathlib import Path
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent / "voice" / "samples"
 DEFAULT_DURATION = 300   # 5 minutes per session
-SAMPLE_RATE = 48000      # Record at 48kHz (will be downsampled to 24kHz for training)
+SAMPLE_RATE = 24000      # Codec native sample rate (no downsampling needed)
 
 
 def list_audio_devices():

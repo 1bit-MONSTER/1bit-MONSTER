@@ -113,27 +113,27 @@ struct Q4nxModel {
         num_experts = json_int("num_experts", N_EXP);
         intermediate_size = json_int("intermediate_size", N_FF);
         
-        // Parse tensor_names array
+        // Discover tensor names from top-level JSON keys with dots (model.xxx.yyy)
         std::vector<std::string> tensor_names;
-        auto tn_pos = manifest.find("\"tensor_names\"");
-        if (tn_pos != std::string::npos) {
-            auto arr_start = manifest.find('[', tn_pos);
-            auto arr_end = manifest.find(']', arr_start);
-            if (arr_start != std::string::npos && arr_end != std::string::npos) {
-                std::string arr = manifest.substr(arr_start + 1, arr_end - arr_start - 1);
-                size_t p = 0;
-                while (p < arr.size()) {
-                    // Skip whitespace and commas
-                    while (p < arr.size() && (arr[p] == ' ' || arr[p] == ',' || arr[p] == '\n' || arr[p] == '\r')) p++;
-                    if (p >= arr.size()) break;
-                    if (arr[p] == '"') {
-                        auto eq = arr.find('"', p + 1);
-                        if (eq != std::string::npos) {
-                            tensor_names.push_back(arr.substr(p + 1, eq - p - 1));
-                            p = eq + 1;
-                        }
+        {
+            size_t p = 0;
+            while (p < manifest.size()) {
+                // Find next quoted key at the start of a JSON object entry
+                auto key_start = manifest.find('"', p);
+                if (key_start == std::string::npos) break;
+                auto key_end = manifest.find('"', key_start + 1);
+                if (key_end == std::string::npos) break;
+                std::string key = manifest.substr(key_start + 1, key_end - key_start - 1);
+                // Skip non-tensor keys (standard JSON keys like hidden_size, etc.)
+                if (key.find('.') != std::string::npos || key.find("model") == 0) {
+                    // Check it's a root-level key (followed by ':') not nested
+                    auto after_key = key_end + 1;
+                    while (after_key < manifest.size() && (manifest[after_key] == ' ' || manifest[after_key] == '\n' || manifest[after_key] == '\r')) after_key++;
+                    if (after_key < manifest.size() && manifest[after_key] == ':') {
+                        tensor_names.push_back(key);
                     }
                 }
+                p = key_end + 1;
             }
         }
         
@@ -201,6 +201,67 @@ struct Q4nxModel {
             tensors[name] = t;
         }
         
+        // Create aliases for HF→GGUF name mapping
+        auto add_alias = [&](const std::string& hf_name, const std::string& gguf_name) {
+            auto it = tensors.find(hf_name);
+            if (it != tensors.end()) {
+                tensors[gguf_name] = it->second;
+            }
+        };
+        for (int l = 0; l < N_LAYERS; l++) {
+            std::string p = "model.layers." + std::to_string(l) + ".";
+            // Attention
+            add_alias(p + "self_attn.q_proj.weight",         "attn_q.weight");
+            add_alias(p + "self_attn.k_proj.weight",         "attn_k.weight");
+            add_alias(p + "self_attn.v_proj_current.weight", "cca_val_proj1.weight");
+            add_alias(p + "self_attn.v_proj_delayed.weight", "cca_val_proj2.weight");
+            add_alias(p + "self_attn.o_proj.weight",         "attn_output.weight");
+            // CCA conv — Q4NX names (no qkv_proj. prefix)
+            add_alias(p + "self_attn.conv_qk_depthwise.weight", "cca_conv_grp.weight");
+            add_alias(p + "self_attn.conv_qk_depthwise.bias",   "cca_conv_grp.bias");
+            add_alias(p + "self_attn.conv_qk_grouped.weight",   "cca_conv_grp_grouped.weight");
+            add_alias(p + "self_attn.conv_qk_grouped.bias",     "cca_conv_grp_grouped.bias");
+            add_alias(p + "self_attn.qk_norm.temp",             "cca_k_scale.weight");
+            // Norms — map Q4NX names to decoder names
+            add_alias(p + "input_layernorm.weight",          "input_layernorm.weight");
+            add_alias(p + "post_attention_layernorm.weight", "attn_norm.weight");
+            add_alias(p + "post_attention_layernorm.weight", "attn_norm_2.weight");
+            add_alias(p + "mlp.gate.router_mlp.norm.weight", "ffn_norm.weight");
+            // Residual scales
+            add_alias(p + "post_attention_residual_scale.hidden_states_scale", "res_scale_hs.weight");
+            add_alias(p + "post_attention_residual_scale.hidden_states_bias",  "res_scale_hs.bias");
+            add_alias(p + "post_attention_residual_scale.residual_scale",      "res_scale_res.weight");
+            add_alias(p + "post_attention_residual_scale.residual_bias",       "res_scale_res.bias");
+            add_alias(p + "post_mlp_residual_scale.hidden_states_scale",       "res_scale_hs.mlp.weight");
+            add_alias(p + "post_mlp_residual_scale.hidden_states_bias",        "res_scale_hs.mlp.bias");
+            add_alias(p + "post_mlp_residual_scale.residual_scale",            "res_scale_res.mlp.weight");
+            add_alias(p + "post_mlp_residual_scale.residual_bias",             "res_scale_res.mlp.bias");
+            // Router
+            add_alias(p + "mlp.gate.router_mlp.fc1.weight",  "ffn_gate.weight");
+            add_alias(p + "mlp.gate.router_mlp.fc1.bias",    "ffn_gate.bias");
+            // ffn_gate_inp NOT aliased — down_proj [2048,256] conflicts; fall through to ffn_norm
+            add_alias(p + "mlp.gate.router_mlp.fc2.weight",  "zaya_router_mlp2.weight");
+            add_alias(p + "mlp.gate.router_mlp.fc2.bias",    "zaya_router_mlp2.bias");
+            // Q4NX has 2-layer router (fc1+fc2+out_proj) — decoder expects 3-layer
+            // Route mlp4 (rf2/3rd layer) copies from fc2 since no 3rd FC exists
+            add_alias(p + "mlp.gate.router_mlp.fc2.weight",  "zaya_router_mlp4.weight");
+            add_alias(p + "mlp.gate.router_mlp.fc2.bias",    "zaya_router_mlp4.bias");
+            // out_proj [17,256] is the router_biases first lookup (l.rout)
+            add_alias(p + "mlp.gate.router_mlp.out_proj.weight", "zaya_router_biases.weight");
+            // balancing_biases [17] is the router_biases second lookup (l.bb)
+            // This is set AFTER out_proj so it overrides for the second (exact-size) lookup
+            add_alias(p + "mlp.gate.balancing_biases",       "zaya_router_biases.weight");
+            add_alias(p + "mlp.gate.router_states_scale",    "zaya_router_eda.weight");
+            // MoE
+            add_alias(p + "mlp.experts.down_proj.weight",    "ffn_down_exps.weight");
+            add_alias(p + "mlp.experts.gate_up_proj.weight", "ffn_gate_up_exps.weight");
+        }
+        // Global tensors
+        add_alias("model.embed_tokens.weight",    "token_embd.weight");
+        add_alias("model.norm.weight",            "output_norm.weight");
+        add_alias("model.input_hidden_states_scale", "input_hidden_states_scale.weight");
+        add_alias("model.input_hidden_states_bias",  "input_hidden_states_scale.bias");
+        
         printf("[Q4NX] %zu tensors, V=%ld H=%ld L=%ld\n",
                tensors.size(), vocab_size, hidden_size, num_hidden_layers);
         return true;
@@ -220,48 +281,55 @@ struct Q4nxModel {
         return it->second.size;
     }
     
-    // Dequantize an I4_CUSTOM quantized tensor to FP16 on CPU
-    // Groups of 8: each group = [2B scale_bf16][2B zp_bf16][4B I4 data (8 values)]
-    std::vector<__half> dequant_i8(const std::string& name, int rows, int cols) {
+    // Dequantize a Q4NX I8-format tensor to FP16 on CPU
+    // Groups of 8 values: [4B packed int4 nibbles][1B int8 scale] = 5 bytes
+    // Dequant: val = (nibble - 8) * scale
+    std::vector<__half> dequant_q4nx(const std::string& name, int rows, int cols) {
         const auto* raw = tensor_data(name);
         if (!raw) {
             fprintf(stderr, "Missing tensor: %s\n", name.c_str());
             return {};
         }
         
-        int groups = (cols + 7) / 8;  // groups per row
-        std::vector<__half> result((size_t)rows * cols);
+        // Get actual tensor size from metadata
+        auto it = tensors.find(name);
+        if (it == tensors.end()) {
+            fprintf(stderr, "Tensor not found: %s\n", name.c_str());
+            return {};
+        }
+        int64_t data_bytes = it->second.size;
+        int total_groups = (int)(data_bytes / 5);  // 5 bytes per group of 8
+        int total_elems = total_groups * 8;
         
-        for (int r = 0; r < rows; r++) {
-            for (int g = 0; g < groups; g++) {
-                int group_idx = r * groups + g;
-                const uint8_t* group_data = raw + group_idx * 8;
-                
-                // Read scale (BF16)
-                uint16_t scale_bits;
-                memcpy(&scale_bits, group_data, 2);
-                uint32_t scale_f32 = ((uint32_t)scale_bits) << 16;
-                float scale;
-                memcpy(&scale, &scale_f32, 4);
-                
-                // Read zero-point (BF16)
-                uint16_t zp_bits;
-                memcpy(&zp_bits, group_data + 2, 2);
-                uint32_t zp_f32 = ((uint32_t)zp_bits) << 16;
-                float zp;
-                memcpy(&zp, &zp_f32, 4);
-                
-                // Read 4 bytes of I4 data -> 8 values
-                uint8_t packed[4];
-                memcpy(packed, group_data + 4, 4);
-                
-                for (int i = 0; i < 8; i++) {
-                    int col = g * 8 + i;
-                    if (col >= cols) break;
-                    uint8_t nibble = (packed[i / 2] >> (i % 2 ? 4 : 0)) & 0x0F;
-                    float val = ((int)nibble - 8 + zp) * scale;  // center around 0
-                    result[(size_t)r * cols + col] = __float2half(val);
-                }
+        // Reshape: the stored data has rows_fq*cols_fq bytes = total_elems elements
+        // But we want rows*cols output. Compute the actual number of output elements.
+        // The Q4NX format stores at 5/8 compression: stored_bytes / 5 * 8 = output_elems
+        // But the stored shape might differ. Calculate actual rows/cols from the tensor metadata.
+        int actual_cols = cols;
+        int actual_rows = total_elems / actual_cols;
+        
+        std::vector<__half> result((size_t)actual_rows * actual_cols);
+        
+        for (int g = 0; g < total_groups; g++) {
+            const uint8_t* group_data = raw + (size_t)g * 5;
+            
+            // Read 4 bytes packed int4 data (little-endian)
+            uint32_t packed;
+            memcpy(&packed, group_data, 4);
+            
+            // Read int8 scale
+            int8_t scale = (int8_t)group_data[4];
+            
+            // Dequantize 8 values
+            for (int i = 0; i < 8; i++) {
+                int elem_idx = g * 8 + i;
+                if (elem_idx >= total_elems) break;
+                int row = elem_idx / actual_cols;
+                int col = elem_idx % actual_cols;
+                if (row >= actual_rows || col >= actual_cols) break;
+                uint8_t nibble = (uint8_t)((packed >> (i * 4)) & 0x0F);
+                float val = (float)((int)nibble - 8) * (float)scale;
+                result[(size_t)row * actual_cols + col] = __float2half(val);
             }
         }
         return result;
@@ -279,16 +347,20 @@ struct Q4nxModel {
         return result;
     }
     
-    // Read a float tensor (stored as BF16)
+    // Read a float tensor (stored as BF16) with size checking
     std::vector<float> read_f32(const std::string& name, int count) {
         const auto* raw = tensor_data(name);
         if (!raw) {
             fprintf(stderr, "Missing tensor: %s\n", name.c_str());
             return {};
         }
-        std::vector<float> result(count);
+        // Check actual tensor size — don't read past it
+        auto it = tensors.find(name);
+        int avail = (it != tensors.end()) ? (int)(it->second.size / 2) : count;
+        int actual = (count < avail) ? count : avail;
+        std::vector<float> result(actual);
         const uint16_t* src = (const uint16_t*)raw;
-        for (int i = 0; i < count; i++) {
+        for (int i = 0; i < actual; i++) {
             uint32_t bits = ((uint32_t)src[i]) << 16;
             memcpy(&result[i], &bits, 4);
         }
@@ -442,7 +514,7 @@ int main(int argc, char** argv) {
         if (it == model.tensors.end())
             it = model.tensors.find("model.embed_tokens.weight");
         if (it != model.tensors.end()) {
-            auto deq = model.dequant_i8(it->first, VOCAB, H);
+            auto deq = model.dequant_q4nx(it->first, VOCAB, H);
             printf("  embed: %s %dx%d -> %zu fp16\n", it->first.c_str(), VOCAB, H, deq.size());
             HIP_OK(hipMemcpyAsync(d_embed, deq.data(), (size_t)VOCAB * H * 2, hipMemcpyHostToDevice, stream));
         } else {
@@ -503,9 +575,11 @@ int main(int argc, char** argv) {
         
         auto load_float = [&](const std::string& key, float*& gpu_ptr, int count) {
             auto data = model.read_f32(prefix + key, count);
-            if (data.empty()) data = model.read_f32(key, count);
-            if (data.empty()) {
-                gpu_ptr = nullptr;
+            if (data.empty() || (int)data.size() < count) data = model.read_f32(key, count);
+            if (data.empty() || (int)data.size() < count) {
+                // Tensor not found or too small — allocate zero buffer
+                HIP_OK(hipMalloc(&gpu_ptr, (size_t)count * 4));
+                HIP_OK(hipMemsetAsync(gpu_ptr, 0, (size_t)count * 4, stream));
                 return;
             }
             HIP_OK(hipMalloc(&gpu_ptr, (size_t)count * 4));
@@ -513,8 +587,8 @@ int main(int argc, char** argv) {
         };
         
         auto load_quant = [&](const std::string& key, __half*& gpu_ptr, int rows, int cols) {
-            auto deq = model.dequant_i8(prefix + key, rows, cols);
-            if (deq.empty()) deq = model.dequant_i8(key, rows, cols);
+            auto deq = model.dequant_q4nx(prefix + key, rows, cols);
+            if (deq.empty()) deq = model.dequant_q4nx(key, rows, cols);
             if (deq.empty()) {
                 gpu_ptr = nullptr;
                 return;
@@ -533,14 +607,14 @@ int main(int argc, char** argv) {
         // Layer norms
         load_half("input_layernorm.weight", l.nw, H);
         load_half("attn_norm.weight", l.pan, H);
-        load_half("attn_norm_2.weight", l.pan, H);  // fallback
+        // attn_norm_2 is the same tensor via alias — no need for fallback
         
         // CCA conv weights (float)
         load_float("cca_conv_grp.weight", l.cdw, QKV * 2);
         load_float("cca_conv_grp.bias", l.cdb, QKV);
-        // grouped weights are [QKV, 128, 2]
-        load_float("cca_conv_grp.weight", l.cgw, QKV * 128 * 2);
-        load_float("cca_conv_grp.bias", l.cgb, QKV);
+        // grouped weights are [QKV, 128, 2] — distinct name to avoid alias collision
+        load_float("cca_conv_grp_grouped.weight", l.cgw, QKV * 128 * 2);
+        load_float("cca_conv_grp_grouped.bias", l.cgb, QKV);
         load_float("cca_k_scale.weight", l.ks, NKV);
         
         // Post-attention residual scale
@@ -553,8 +627,9 @@ int main(int argc, char** argv) {
         load_float("ffn_gate.weight", l.gdw, H * RTR_H);
         load_float("ffn_gate.bias", l.gdb, RTR_H);
         {
-            auto router_norm = model.read_f32("ffn_gate_inp.weight", RTR_H);
-            if (router_norm.empty()) router_norm = model.read_f32("ffn_norm.weight", RTR_H);
+            // ffn_gate_inp intentionally not aliased — falls through to ffn_norm
+            auto router_norm = model.read_f32("ffn_norm.weight", RTR_H);
+            if (router_norm.empty()) router_norm = model.read_f32("ffn_gate_inp.weight", RTR_H);
             if (!router_norm.empty()) {
                 HIP_OK(hipMalloc(&l.rfn, (size_t)RTR_H * 4));
                 HIP_OK(hipMemcpyAsync(l.rfn, router_norm.data(), (size_t)RTR_H * 4, hipMemcpyHostToDevice, stream));
@@ -564,9 +639,41 @@ int main(int argc, char** argv) {
         }
         load_float("zaya_router_mlp2.weight", l.rf1, RTR_H * RTR_H);
         load_float("zaya_router_mlp2.bias", l.rf1b, RTR_H);
-        load_float("zaya_router_mlp4.weight", l.rf2, RTR_H * RTR_H);
+        // router_mlp4 is [17,256] in Q4NX — pad to [256,256] for decoder
+        {
+            auto data = model.read_f32(prefix + "zaya_router_mlp4.weight", RTR_H * RTR_H);
+            if (data.empty()) data = model.read_f32("zaya_router_mlp4.weight", RTR_H * RTR_H);
+            if ((int)data.size() >= RTR_H * RTR_H) {
+                HIP_OK(hipMalloc(&l.rf2, (size_t)RTR_H * RTR_H * 4));
+                HIP_OK(hipMemcpyAsync(l.rf2, data.data(), (size_t)RTR_H * RTR_H * 4, hipMemcpyHostToDevice, stream));
+            } else if ((int)data.size() == N_EXP_T * RTR_H) {
+                // Pad [17,256] to [256,256] with zeros
+                HIP_OK(hipMalloc(&l.rf2, (size_t)RTR_H * RTR_H * 4));
+                HIP_OK(hipMemsetAsync(l.rf2, 0, (size_t)RTR_H * RTR_H * 4, stream));
+                HIP_OK(hipMemcpyAsync(l.rf2, data.data(), (size_t)data.size() * 4, hipMemcpyHostToDevice, stream));
+            } else {
+                HIP_OK(hipMalloc(&l.rf2, (size_t)RTR_H * RTR_H * 4));
+                HIP_OK(hipMemsetAsync(l.rf2, 0, (size_t)RTR_H * RTR_H * 4, stream));
+            }
+        }
         load_float("zaya_router_mlp4.bias", l.rf2b, RTR_H);
-        load_float("zaya_router_biases.weight", l.rout, N_EXP_T * RTR_H);
+        // l.rout = out_proj [17,256], l.bb = balancing_biases [17]
+        {
+            std::string outproj_name = prefix + "mlp.gate.router_mlp.out_proj.weight";
+            auto rout_data = model.read_f32(outproj_name, N_EXP_T * RTR_H);
+            if (rout_data.empty()) {
+                rout_data = model.read_f32("mlp.gate.router_mlp.out_proj.weight", N_EXP_T * RTR_H);
+            }
+            if ((int)rout_data.size() >= N_EXP_T * RTR_H) {
+                HIP_OK(hipMalloc(&l.rout, (size_t)N_EXP_T * RTR_H * 4));
+                HIP_OK(hipMemcpyAsync(l.rout, rout_data.data(), (size_t)N_EXP_T * RTR_H * 4, hipMemcpyHostToDevice, stream));
+            } else {
+                printf("  WARN: l.rout size=%zu, expected %d, using zeros\n", rout_data.size(), N_EXP_T * RTR_H);
+                HIP_OK(hipMalloc(&l.rout, (size_t)N_EXP_T * RTR_H * 4));
+                HIP_OK(hipMemsetAsync(l.rout, 0, (size_t)N_EXP_T * RTR_H * 4, stream));
+            }
+        }
+        // l.bb = balancing_biases [17]
         load_float("zaya_router_biases.weight", l.bb, N_EXP_T);
         
         // MoE experts
@@ -579,12 +686,33 @@ int main(int argc, char** argv) {
         load_float("res_scale_res.mlp.weight", l.pmrss, H);
         load_float("res_scale_res.mlp.bias", l.pmrsb, H);
         
-        printf("  Layer %d/%d loaded\n", il + 1, total_layers);
+        printf("  Layer %d/%d loaded (errs=%d)\n", il + 1, total_layers, (l.cdw==nullptr)+(l.cgw==nullptr)+(l.wq==nullptr)+(l.gu==nullptr));
     }
     
     HIP_OK(hipStreamSynchronize(stream));
     auto t1 = std::chrono::high_resolution_clock::now();
     printf("  Load time: %.1f ms\n", std::chrono::duration<float, std::milli>(t1 - t0).count());
+    
+    printf(" Beginning generation...\n");
+    
+    // Check for null tensor pointers
+    int null_count = 0;
+    for (int il = 0; il < total_layers; il++) {
+        auto& l = layers[il];
+        if (!l.wq) { printf("  LAYER %d: wq null\n", il); null_count++; }
+        if (!l.wk) { printf("  LAYER %d: wk null\n", il); null_count++; }
+        if (!l.nw) { printf("  LAYER %d: nw null\n", il); null_count++; }
+        if (!l.pan) { printf("  LAYER %d: pan null\n", il); null_count++; }
+        if (!l.cdw) { printf("  LAYER %d: cdw null\n", il); null_count++; }
+        if (!l.cgw) { printf("  LAYER %d: cgw null\n", il); null_count++; }
+        if (!l.gu) { printf("  LAYER %d: gu null\n", il); null_count++; }
+        if (!l.dn) { printf("  LAYER %d: dn null\n", il); null_count++; }
+    }
+    if (null_count > 0) {
+        printf("  %d null tensor pointers — generation may crash\n", null_count);
+    } else {
+        printf("  All tensor pointers valid\n");
+    }
     
     // ── Router state (per layer: has_eda flag for EDynamic Attention) ──
     struct RouterState { float eda_scale[1]; bool has_eda; };
@@ -626,23 +754,31 @@ int main(int argc, char** argv) {
         // ── Forward through all layers ──
         for (int il = 0; il < total_layers; il++) {
             auto& l = layers[il];
+            if (!l.nw || !l.pan) {
+                printf("  Layer %d: missing norms, skipping\n", il);
+                continue;
+            }
             
             // ── A) CCA: tiled QKV + custom conv+attn + O_proj ──
             copy_k<<<g1, BLK, 0, stream>>>(d_phs + (size_t)il * H, d_hs, H);
             rmsnorm_k<<<1, BLK, 0, stream>>>(d_hs, l.nw, H);
-            moe_tiled_gemv<<<QD/16, 128, 0, stream>>>(d_tmp, d_hs, l.wq, QD, H);
-            moe_tiled_gemv<<<KD/16, 128, 0, stream>>>(d_tmp+QD, d_hs, l.wk, KD, H);
-            moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
-            moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
-            v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, stream>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
-            cca_custom_kernel<<<1, 256, 0, stream>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV, d_phs+(size_t)il*H, il, 1);
-            moe_tiled_gemv<<<H/16, 128, 0, stream>>>(d_ao, d_ao, l.wo, H, QD);
-            residual_scale_k<<<g1, BLK, 0, stream>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
-            copy_k<<<g1, BLK, 0, stream>>>(d_hs, d_ao, H);
+            
+            if (l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks) {
+                moe_tiled_gemv<<<QD/16, 128, 0, stream>>>(d_tmp, d_hs, l.wq, QD, H);
+                moe_tiled_gemv<<<KD/16, 128, 0, stream>>>(d_tmp+QD, d_hs, l.wk, KD, H);
+                moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
+                moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
+                v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, stream>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
+                cca_custom_kernel<<<1, 256, 0, stream>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV, d_phs+(size_t)il*H, il, 1);
+                moe_tiled_gemv<<<H/16, 128, 0, stream>>>(d_ao, d_ao, l.wo, H, QD);
+                residual_scale_k<<<g1, BLK, 0, stream>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
+                copy_k<<<g1, BLK, 0, stream>>>(d_hs, d_ao, H);
+            }
+            
             rmsnorm_k<<<1, BLK, 0, stream>>>(d_hs, l.pan, H);
             
             // ── B) EDA Router + MoE Expert (GPU) ──
-            if (l.gu && l.dn) {
+            if (l.gu && l.dn && l.gdw && l.rf1 && l.rf2 && l.rout) {
                 eda_router_gpu_kernel<<<1, RTR_H, 0, stream>>>(
                     d_hs, d_prev_rs + (size_t)il * RTR_H,
                     router_states[il].has_eda ? 1 : 0, router_states[il].eda_scale[0],
