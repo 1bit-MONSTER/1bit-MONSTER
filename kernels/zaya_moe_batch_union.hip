@@ -17,7 +17,7 @@
 
 #define H        2048
 #define N_EXP    16
-#define N_EXP_T  17
+#define N_EXPERT_SLOTS  17
 #define N_FF     2048
 #define RTR_H    256
 #define BLK      256
@@ -72,8 +72,8 @@ __global__ void batched_moe_router_kernel(
     const float* __restrict__ rf1b,       // [RTR_H]
     const float* __restrict__ rf2,        // [RTR_H, RTR_H]
     const float* __restrict__ rf2b,       // [RTR_H]
-    const float* __restrict__ rout,       // [N_EXP_T, RTR_H]
-    const float* __restrict__ bb,         // [N_EXP_T]
+    const float* __restrict__ rout,       // [N_EXPERT_SLOTS, RTR_H]
+    const float* __restrict__ bb,         // [N_EXPERT_SLOTS]
     float* __restrict__ next_rs,          // [RTR_H]
     int*   __restrict__ expert_idx,       // [B]
     float* __restrict__ expert_wt,        // [B]
@@ -86,8 +86,8 @@ __global__ void batched_moe_router_kernel(
     __shared__ float sh[32];
     __shared__ float rs[RTR_H];
     __shared__ float tmp[RTR_H];
-    __shared__ float scores[N_EXP_T];
-    __shared__ float probs[N_EXP_T];
+    __shared__ float scores[N_EXPERT_SLOTS];
+    __shared__ float probs[N_EXPERT_SLOTS];
 
     const __half* hs_b = hs + (size_t)b * H;
 
@@ -141,7 +141,7 @@ __global__ void batched_moe_router_kernel(
     __syncthreads();
 
     // ── 6. out_proj → scores ──
-    for (int i = tx; i < N_EXP_T; i += blockDim.x) {
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x) {
         float s = 0;
         for (int j = 0; j < RTR_H; j++) s += rs[j] * rout[i * (size_t)RTR_H + j];
         scores[i] = s + bb[i];
@@ -150,22 +150,22 @@ __global__ void batched_moe_router_kernel(
 
     // ── 7. softmax ──
     float maxv = scores[0];
-    for (int i = 1; i < N_EXP_T; i++) if (scores[i] > maxv) maxv = scores[i];
+    for (int i = 1; i < N_EXPERT_SLOTS; i++) if (scores[i] > maxv) maxv = scores[i];
     float sumv = 0;
-    for (int i = tx; i < N_EXP_T; i += blockDim.x) {
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x) {
         probs[i] = expf(scores[i] - maxv);
         sumv += probs[i];
     }
     sumv = block_sum_f(sumv, sh);
     float inv_sum = 1.0f / (sumv + 1e-10f);
-    for (int i = tx; i < N_EXP_T; i += blockDim.x) probs[i] *= inv_sum;
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x) probs[i] *= inv_sum;
     __syncthreads();
 
     // ── 8. top-1 ──
     if (tx == 0) {
         int best = 0;
         float bestv = probs[0];
-        for (int i = 1; i < N_EXP_T; i++)
+        for (int i = 1; i < N_EXPERT_SLOTS; i++)
             if (probs[i] > bestv) { bestv = probs[i]; best = i; }
         expert_idx[b] = best;
         expert_wt[b]  = bestv;
@@ -296,8 +296,8 @@ __global__ void batched_moe_fused_kernel(
     __shared__ float sh[32];
     __shared__ float rs[RTR_H];
     __shared__ float tmp[RTR_H];
-    __shared__ float scores[N_EXP_T];
-    __shared__ float probs[N_EXP_T];
+    __shared__ float scores[N_EXPERT_SLOTS];
+    __shared__ float probs[N_EXPERT_SLOTS];
     __shared__ int local_expert;
 
     const __half* hs_b = hs + (size_t)b * H;
@@ -346,8 +346,8 @@ __global__ void batched_moe_fused_kernel(
     __syncthreads();
 
     // ── 6. out_proj + softmax + top-1 ──
-    float scores_local[N_EXP_T];
-    for (int i = tx; i < N_EXP_T; i += blockDim.x) {
+    float scores_local[N_EXPERT_SLOTS];
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x) {
         float s = 0;
         for (int j = 0; j < RTR_H; j++) s += rs[j] * rout[i * (size_t)RTR_H + j];
         scores[i] = s + bb[i];
@@ -355,21 +355,21 @@ __global__ void batched_moe_fused_kernel(
     __syncthreads();
 
     float maxv = scores[0];
-    for (int i = 1; i < N_EXP_T; i++) if (scores[i] > maxv) maxv = scores[i];
+    for (int i = 1; i < N_EXPERT_SLOTS; i++) if (scores[i] > maxv) maxv = scores[i];
     float sumv = 0;
-    for (int i = tx; i < N_EXP_T; i += blockDim.x) {
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x) {
         probs[i] = expf(scores[i] - maxv);
         sumv += probs[i];
     }
     sumv = block_sum_f(sumv, sh);
     float inv_sum = 1.0f / (sumv + 1e-10f);
-    for (int i = tx; i < N_EXP_T; i += blockDim.x) probs[i] *= inv_sum;
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x) probs[i] *= inv_sum;
     __syncthreads();
 
     if (tx == 0) {
         int best = 0;
         float bestv = probs[0];
-        for (int i = 1; i < N_EXP_T; i++)
+        for (int i = 1; i < N_EXPERT_SLOTS; i++)
             if (probs[i] > bestv) { bestv = probs[i]; best = i; }
         expert_idx[b] = best;
         expert_wt[b]  = bestv;
@@ -442,35 +442,35 @@ __global__ void batched_moe_fused_kernel(
 //   expert_offsets[e] = prefix sum (start index in sorted array)
 //   sorted_token_ids[b] = token index b, sorted by expert group
 //
-// Launch with 1 block of (max(B, N_EXP_T) + 31)/32 × 32 threads.
-// For B <= 8 and N_EXP_T = 17, a single warp suffices.
+// Launch with 1 block of (max(B, N_EXPERT_SLOTS) + 31)/32 × 32 threads.
+// For B <= 8 and N_EXPERT_SLOTS = 17, a single warp suffices.
 // ────────────────────────────────────────────────────────────────
 
 __global__ void moe_sort_histogram_kernel(
     const int*  __restrict__ expert_idx,   // [B]
-    int*        __restrict__ expert_counts, // [N_EXP_T]
-    int*        __restrict__ expert_offsets,// [N_EXP_T]
+    int*        __restrict__ expert_counts, // [N_EXPERT_SLOTS]
+    int*        __restrict__ expert_offsets,// [N_EXPERT_SLOTS]
     int*        __restrict__ sorted_token_ids, // [B]
     int B)
 {
     int tx = threadIdx.x;
 
     // ── Zero counts ──
-    for (int i = tx; i < N_EXP_T; i += blockDim.x)
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x)
         expert_counts[i] = 0;
     __syncthreads();
 
     // ── Histogram: count tokens per expert ──
     // B <= 8, so each thread can atomically increment.
     // Using shared memory atomics for speed.
-    __shared__ int sh_counts[N_EXP_T];
-    for (int i = tx; i < N_EXP_T; i += blockDim.x)
+    __shared__ int sh_counts[N_EXPERT_SLOTS];
+    for (int i = tx; i < N_EXPERT_SLOTS; i += blockDim.x)
         sh_counts[i] = 0;
     __syncthreads();
 
     for (int b = tx; b < B; b += blockDim.x) {
         int e = expert_idx[b];
-        if (e >= 0 && e < N_EXP_T)
+        if (e >= 0 && e < N_EXPERT_SLOTS)
             atomicAdd(&sh_counts[e], 1);
     }
     __syncthreads();
@@ -478,7 +478,7 @@ __global__ void moe_sort_histogram_kernel(
     // ── Store counts and compute prefix sum ──
     if (tx == 0) {
         int running = 0;
-        for (int e = 0; e < N_EXP_T; e++) {
+        for (int e = 0; e < N_EXPERT_SLOTS; e++) {
             expert_counts[e] = sh_counts[e];
             expert_offsets[e] = running;
             running += sh_counts[e];
@@ -492,8 +492,8 @@ __global__ void moe_sort_histogram_kernel(
     // within each expert's group.
     if (tx == 0) {
         // Local counters for each expert's current write position
-        int pos[N_EXP_T];
-        for (int e = 0; e < N_EXP_T; e++)
+        int pos[N_EXPERT_SLOTS];
+        for (int e = 0; e < N_EXPERT_SLOTS; e++)
             pos[e] = expert_offsets[e];
 
         for (int b = 0; b < B; b++) {
@@ -511,14 +511,14 @@ __global__ void moe_sort_histogram_kernel(
 // Loads expert weights ONCE, then processes all tokens for that expert
 // consecutively — no redundant weight loads, no L2 thrashing.
 //
-// Launch with N_EXP_T blocks (only those with count > 0 do work).
+// Launch with N_EXPERT_SLOTS blocks (only those with count > 0 do work).
 // ────────────────────────────────────────────────────────────────
 
 __global__ void moe_sorted_expert_kernel(
     const __half* __restrict__ hs,              // [B, H]
     const int*    __restrict__ sorted_token_ids, // [B]
-    const int*    __restrict__ expert_counts,    // [N_EXP_T]
-    const int*    __restrict__ expert_offsets,   // [N_EXP_T]
+    const int*    __restrict__ expert_counts,    // [N_EXPERT_SLOTS]
+    const int*    __restrict__ expert_offsets,   // [N_EXPERT_SLOTS]
     const __half* __restrict__ gu,              // [N_EXP, 2*N_FF, H]
     const __half* __restrict__ dn,              // [N_EXP, H, N_FF]
     __half* __restrict__ moe_out,               // [B, H]

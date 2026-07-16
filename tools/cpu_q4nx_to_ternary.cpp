@@ -10,7 +10,7 @@
 //        engine/fusion/cpu_layer.cpp -lm
 //
 // Run:   ./tools/cpu_q4nx_to_ternary \
-//        /home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
+//        ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
 
 #include "cpu_layer.h"
 #include "cpu_q4nx_loader.h"

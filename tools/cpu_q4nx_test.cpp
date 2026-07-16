@@ -4,7 +4,7 @@
 // Build: g++ -O3 -march=native -std=c++17 -I. -o cpu_q4nx_test \
 //        cpu_q4nx_test.cpp cpu_layer.cpp -lm
 //
-// Run:   ./cpu_q4nx_test /home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
+// Run:   ./cpu_q4nx_test ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
 
 #include "cpu_layer.h"
 #include "cpu_q4nx_loader.h"
