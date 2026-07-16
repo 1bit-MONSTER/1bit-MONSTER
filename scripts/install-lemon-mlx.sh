@@ -36,11 +36,18 @@ if [ "$SKIP_BUILD" = "1" ]; then
   echo "SKIP_BUILD=1 — linking pre-built binaries"
 else
   # Check for ROCm
-  if [ ! -d /opt/rocm ]; then
-    echo "ERROR: ROCm not found at /opt/rocm"
+  if [ ! -d /opt/rocm-therock ] && [ ! -d /opt/rocm ]; then
+    echo "ERROR: ROCm/TheRock not found at /opt/rocm-therock or /opt/rocm"
     exit 1
   fi
-  echo "ROCm detected: $(ls /opt/rocm/lib/libamdhip64* 2>/dev/null | head -1)"
+  ROCM_LIB=""
+  if [ -d /opt/rocm-therock ]; then
+    ROCM_LIB="/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib"
+    echo "TheRock detected: $(ls $ROCM_LIB/libamdhip64* 2>/dev/null | head -1)"
+  elif [ -d /opt/rocm ]; then
+    ROCM_LIB="/opt/rocm/lib"
+    echo "ROCm detected: $(ls $ROCM_LIB/libamdhip64* 2>/dev/null | head -1)"
+  fi
 
   # Build
   BUILD_DIR="$REPO_DIR/build"
@@ -51,7 +58,7 @@ else
     -DCMAKE_BUILD_TYPE=Release \
     -DMLX_BUILD_CUDA=OFF \
     -DMLX_BUILD_METAL=OFF \
-    -DCMAKE_PREFIX_PATH="/opt/rocm" \
+    -DCMAKE_PREFIX_PATH="${ROCM_LIB%/*}" \
     -DCMAKE_HIP_ARCHITECTURES="$GFX"
 
   # Patch mlx parallel-jobs flag for clang compatibility
