@@ -56,15 +56,19 @@ __global__ void cca_custom_kernel(
     __shared__ float rc[64], rs[64];
 
     for(int i=tx;i<QKV;i+=BS) sqk[i] = (i<QD) ? __half2float(q_b[i]) : __half2float(k_b[i-QD]);
-    // conv_state is shared across tokens (single sequence for now)
-    for(int c=tx;c<QKV;c+=BS){ ncs[c]=csi[QKV+c]; ncs[QKV+c]=__float2half(sqk[c]); }
     __syncthreads();
 
+    // Read conv state BEFORE updating it (csi and ncs point to same buffer at same offset)
+    // Otherwise the shift+store at lines 52-53 would clobber the old state (issue #250).
     for(int c=tx;c<QKV;c+=BS){
         float p0=__half2float(csi[c]),p1=__half2float(csi[QKV+c]),p2=sqk[c];
         dw0[c]=cdw[c*2]*p0+cdw[c*2+1]*p1+cdb[c];
         dw1[c]=cdw[c*2]*p1+cdw[c*2+1]*p2+cdb[c];
     }
+    __syncthreads();
+
+    // Update conv state AFTER reading (shift old second half to front, store new sqk at back)
+    for(int c=tx;c<QKV;c+=BS){ ncs[c]=csi[QKV+c]; ncs[QKV+c]=__float2half(sqk[c]); }
     __syncthreads();
 
     for(int oc=tx;oc<QKV;oc+=BS){
