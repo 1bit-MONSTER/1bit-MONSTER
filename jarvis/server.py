@@ -6,6 +6,24 @@ from jarvis.routing import resolve_model, flm_chat, ollama_chat, ollama_chat_str
 from jarvis.stt import transcribe_audio
 from jarvis.tts import synthesize_speech
 from jarvis.ui import CHAT_HTML
+from jarvis.voice.engine import VoiceEngine
+
+# ── Voice Engine (Phase 1) ─────────────────────────────────────────
+_voice = VoiceEngine()
+
+# Try to load default voice pack if it exists
+def _init_voice():
+    packs = _voice.list_available_packs()
+    if packs:
+        try:
+            _voice.load_pack(packs[0]["path"])
+            print(f"  Voice engine: {packs[0]['name']} loaded")
+        except Exception as e:
+            print(f"  Voice engine: no pack loaded ({e})")
+    else:
+        print("  Voice engine: no voice packs found (run jarvis/voice/record.py)")
+
+_init_voice()
 
 NPU_URL = os.environ.get("NPU_URL", "http://127.0.0.1:52625")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
@@ -35,6 +53,9 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/health": return self._j(200, {"status": "ok"})
         if self.path == "/v1/models":
             return self._j(200, {"data": [{"id": m, "object": "model", "backend": c["backend"]} for m, c in MODEL_ROUTING.items()]})
+        if self.path == "/v1/voice/packs":
+            return self._j(200, {"voices": _voice.list_available_packs(),
+                                 "active": _voice.active_voice})
         if self.path == "/v1/knowledge":
             entries = []
             for f in _kb.all_files():
@@ -55,6 +76,8 @@ class H(BaseHTTPRequestHandler):
         p = self.path
         if p == "/v1/audio/transcriptions": return self._stt()
         if p == "/v1/audio/speech": return self._tts()
+        if p == "/v1/voice/packs": return self._voice_packs()
+        if p == "/v1/voice/activate": return self._voice_activate()
         if p in ("/v1/chat/completions", "/api/chat"): return self._chat()
         if p == "/v1/knowledge/search": return self._kbs()
         if p == "/v1/knowledge/upload": return self._kbu()
@@ -158,9 +181,75 @@ class H(BaseHTTPRequestHandler):
         body = self.rfile.read(l) if l else b"{}"
         try: d = json.loads(body)
         except: return self._j(400, {"error": "json"})
-        w = synthesize_speech(d.get("input", ""), d.get("voice", "en_US-lessac-medium"))
+        text = d.get("input", "")
+        voice = d.get("voice", "")
+        speed = d.get("speed", 1.0)
+
+        # Try cloned voice first
+        if voice and voice in _voice.voices:
+            try:
+                audio, sr = _voice.synthesize(text, voice=voice, speed=speed)
+                import wave, io
+                buf = io.BytesIO()
+                with wave.open(buf, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sr)
+                    wf.writeframes((audio * 32767).astype(np.int16).tobytes())
+                return self._s(200, {"Content-Type": "audio/wav"}, buf.getvalue())
+            except Exception as e:
+                return self._j(500, {"error": f"voice TTS failed: {e}"})
+
+        # Fallback to Piper
+        w = synthesize_speech(text, voice or "en_US-lessac-medium")
         if not w: return self._j(500, {"error": "tts failed"})
         self._s(200, {"Content-Type": "audio/wav"}, w)
+
+    def _voice_packs(self):
+        """List and manage voice packs."""
+        ct = self.headers.get("Content-Type", "")
+        if "multipart" in ct or self.command == "POST":
+            # Upload a new voice pack
+            bd = ct.split("boundary=")[-1].strip()
+            l = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(l)
+            pack_data = None
+            for p in body.split(b"--" + bd.encode()):
+                if b"filename" in p or b"pack" in p:
+                    i = p.find(b"\r\n\r\n")
+                    if i > 0: pack_data = p[i+4:].rstrip(b"\r\n--"); break
+            if pack_data:
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(suffix=".voice", delete=False)
+                tmp.write(pack_data)
+                tmp.close()
+                try:
+                    name = _voice.load_pack(tmp.name)
+                    os.unlink(tmp.name)
+                    return self._j(200, {"status": "loaded", "voice": name})
+                except Exception as e:
+                    os.unlink(tmp.name)
+                    return self._j(500, {"error": str(e)})
+            return self._j(400, {"error": "no pack file in upload"})
+
+        # List available packs
+        packs = _voice.list_available_packs()
+        return self._j(200, {"voices": packs, "active": _voice.active_voice})
+
+    def _voice_activate(self):
+        """Activate a loaded voice pack."""
+        l = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(l) if l else b"{}"
+        try: d = json.loads(body)
+        except: return self._j(400, {"error": "json"})
+        name = d.get("voice", "")
+        if not name:
+            return self._j(400, {"error": "voice name required"})
+        try:
+            _voice.activate(name)
+            return self._j(200, {"status": "activated", "voice": name})
+        except KeyError:
+            return self._j(404, {"error": f"voice '{name}' not loaded"})
 
     def _kbs(self):
         l = int(self.headers.get("Content-Length", 0))
