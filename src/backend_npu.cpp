@@ -55,22 +55,30 @@ struct Q4nxReader {
     }
 
     // Find data offset for a JSON key in the model header
+    // Uses standard C string search instead of GNU memmem extension.
     uint64_t find_offset(const char* key) const {
-        if (!data) return 0;
+        if (!data || !key) return 0;
         size_t kl = strlen(key);
+        if (kl == 0) return 0;
         const char* p = data;
         const char* e = data + (size > 65536 ? 65536 : size); // header within first 64KB
-        while (p < e) {
-            const char* q = (const char*)memmem(p, e - p, key, kl);
-            if (!q) return 0;
-            if (q > data && *(q - 1) == '"' && *(q + kl) == '"') {
-                const char* o = strstr(q, "\"data_offsets\"");
-                if (o) {
-                    const char* a = strchr(o, '[');
-                    if (a) return strtoull(a + 1, NULL, 10);
+        while (p + kl <= e) {
+            // Find first character match
+            const char* q = (const char*)memchr(p, key[0], e - p);
+            if (!q || q + kl > e) return 0;
+            // Check full key match
+            if (memcmp(q, key, kl) == 0) {
+                if (q > data && *(q - 1) == '"' && *(q + kl) == '"') {
+                    const char* o = strstr(q, "\"data_offsets\"");
+                    if (o) {
+                        const char* a = strchr(o, '[');
+                        if (a) return strtoull(a + 1, NULL, 10);
+                    }
                 }
+                p = q + 1;
+            } else {
+                p = q + 1;
             }
-            p = q + 1;
         }
         return 0;
     }
