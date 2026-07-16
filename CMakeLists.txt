@@ -106,6 +106,13 @@ foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" 
         message(STATUS "rocm-cpp: rocWMMA found at ${ROCWMMA_INCLUDE_DIR}")
         break()
     endif()
+    # TheRock pip SDK: rocWMMA lives under _rocm_sdk_devel/include/
+    if(_rc_base AND EXISTS "${_rc_base}/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocwmma/rocwmma.hpp")
+        set(ROCWMMA_INCLUDE_DIR "${_rc_base}/lib/python3.14/site-packages/_rocm_sdk_devel/include")
+        set(ROCWMMA_FOUND TRUE)
+        message(STATUS "rocm-cpp: rocWMMA found at ${ROCWMMA_INCLUDE_DIR} (TheRock SDK)")
+        break()
+    endif()
 endforeach()
 if(NOT ROCWMMA_FOUND)
     # Fallback: search in pip site-packages under ~/.local
