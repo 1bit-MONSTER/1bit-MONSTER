@@ -36,7 +36,9 @@ int main(int argc, char** argv) {
     auto r8=[&](int o){uint64_t v;memcpy(&v,p+o,8);return v;};
     int H=r4(4),IM=r4(8),NH=r4(12),NKV=r4(16),HD=r4(20),V=r4(24),L=r4(28),GQA=r4(32);
     int ps[7];for(int i=7;i--;)ps[i]=r4(36+i*4);
-    uint64_t o_emb=r8(64),o_fn=r8(72),o_lm=r8(80),o_norms=r8(88),o_pk=r8(96),o_sc=r8(104);
+    int trg_version = memcmp(p,"TRG1",4)==0 ? 1 : 2;
+    int offset_base = (trg_version == 2) ? 92 : 64;
+    uint64_t o_emb=r8(offset_base),o_fn=r8(offset_base+8),o_lm=r8(offset_base+16),o_norms=r8(offset_base+24),o_pk=r8(offset_base+32),o_sc=r8(offset_base+40);
     auto F=[&](auto oo){return(const float*)(p+oo);};
     auto U=[&](auto oo){return(const uint32_t*)(p+oo);};
     int per_layer=0,rows[7]={NH*HD,NKV*HD,NKV*HD,H,IM,IM,H},KK[7]={H,H,H,NH*HD,H,H,IM};
@@ -55,9 +57,14 @@ int main(int argc, char** argv) {
         fallback_draft_path=std::string(home?home:"/tmp")+"/spec-decode/checkpoints/eagle3_draft_trained_420.bin";
         draft_path=fallback_draft_path.c_str();
     }
+    // GPU warmup
+    hipSetDevice(0);
+    {hipStream_t ws;hipStreamCreate(&ws);float*wb;hipMalloc(&wb,64<<20);hipStreamSynchronize(ws);hipFree(wb);hipStreamDestroy(ws);}
+
     MTPDraftConfig draft_cfg;
     MTPDraftModel draft(draft_cfg);
     MTPDraftState draft_state;
+    draft_state.resize(draft_cfg.num_kv_heads, draft_cfg.head_dim, draft_cfg.max_seq);
     if(!draft.load_weights(draft_path)){
         fprintf(stderr,"Failed to load draft checkpoint: %s\n",draft_path);
         fprintf(stderr,"Specify a path as argv[5] or place a trained .bin at ~/spec-decode/checkpoints/\n");
@@ -71,28 +78,43 @@ int main(int argc, char** argv) {
     hipStream_t s; hipStreamCreate(&s);
     float *d_pk,*d_sc,*d_inorm,*d_pan,*d_qn,*d_kn,*d_fn,*d_lm,*d_hf,*d_xs;
     _Float16 *d_h,*d_q,*d_at,*d_ffg,*d_ag,*d_kc,*d_vc; int8_t *d_i8; float xsh;
-    auto ml=[&](auto&p_,size_t b){
-        hipError_t _e=hipMalloc(&p_,b);
-        if(_e!=hipSuccess){fprintf(stderr,"GPU OOM at %s:%d (%s)\n",__FILE__,__LINE__,hipGetErrorString(_e));exit(1);}
-        _e=hipStreamSynchronize(s);
-        if(_e!=hipSuccess){fprintf(stderr,"GPU SYNC fail at %s:%d (%s)\n",__FILE__,__LINE__,hipGetErrorString(_e));exit(1);}
-    };
-    ml(d_pk,L*per_layer*4);ml(d_sc,L*per_sc*4);
-    ml(d_inorm,L*H*4);ml(d_pan,L*H*4);ml(d_qn,L*HD*4);ml(d_kn,L*HD*4);
-    ml(d_fn,H*4);ml(d_lm,V*H*4);ml(d_hf,8192*4);float*d_logits;ml(d_logits,V*4);ml(d_h,H*2);
-    ml(d_q,(NH*HD+2*NKV*HD)*2);ml(d_at,NH*HD*2);ml(d_ffg,2*IM*2);ml(d_ag,IM*2);
-    ml(d_i8,H);ml(d_xs,4);int MP=4096;
-    ml(d_kc,L*MP*NKV*HD*2);hipMemset(d_kc,0,L*MP*NKV*HD*2);
-    ml(d_vc,L*MP*NKV*HD*2);hipMemset(d_vc,0,L*MP*NKV*HD*2);
-    auto up=[&](auto d,auto h,size_t b){hipMemcpy(d,h,b,hipMemcpyHostToDevice);SYNC;};
-    up(d_pk,U(o_pk),L*per_layer*4);up(d_sc,F(o_sc),L*per_sc*4);
-    up(d_inorm,F(o_norms),L*H*4);up(d_pan,F(o_norms)+L*H,L*H*4);
-    up(d_qn,F(o_norms)+2*L*H,L*HD*4);up(d_kn,F(o_norms)+2*L*H+L*HD,L*HD*4);
-    up(d_fn,F(o_fn),H*4);up(d_lm,F(o_lm),V*H*4);
+    #define HIPM(p,s) do{hipError_t _e=hipMalloc(&(p),(size_t)(s));if(_e!=hipSuccess){fprintf(stderr,"HIP OOM %s:%d\n",__FILE__,__LINE__);exit(1);}}while(0)
+    #define HIPMS() do{hipError_t _e=hipStreamSynchronize(s);if(_e!=hipSuccess){fprintf(stderr,"HIP SYNC %s:%d\n",__FILE__,__LINE__);exit(1);}}while(0)
+    HIPM(d_pk,(size_t)L*per_layer*4);
+    HIPM(d_sc,(size_t)L*per_sc*4);
+    HIPM(d_inorm,(size_t)L*H*4);
+    HIPM(d_pan,(size_t)L*H*4);
+    HIPM(d_qn,(size_t)L*HD*4);
+    HIPM(d_kn,(size_t)L*HD*4);
+    HIPM(d_fn,(size_t)H*4);
+    HIPM(d_lm,(size_t)V*H*4);
+    HIPM(d_hf,8192*4);
+    float* d_logits; HIPM(d_logits,(size_t)V*4);
+    HIPM(d_h,(size_t)H*2);
+    HIPM(d_q,(size_t)(NH*HD+2*NKV*HD)*2);
+    HIPM(d_at,(size_t)NH*HD*2);
+    HIPM(d_ffg,(size_t)2*IM*2);
+    HIPM(d_ag,(size_t)IM*2);
+    HIPM(d_i8,(size_t)H);
+    HIPM(d_xs,4);
+    int MP=4096;
+    HIPM(d_kc,(size_t)L*MP*NKV*HD*2); hipMemset(d_kc,0,(size_t)L*MP*NKV*HD*2);
+    HIPM(d_vc,(size_t)L*MP*NKV*HD*2); hipMemset(d_vc,0,(size_t)L*MP*NKV*HD*2);
+    HIPMS();
+    // Use aligned temp buffer for GPU DMA (fixes hipMemcpy crash on mmap'd source)
+    #define ALIGNED_UPLOAD(dst,src,nbytes) do{        size_t _n=(size_t)(nbytes);        void* _b=aligned_alloc(4096,_n);        memcpy(_b,(src),_n);        hipMemcpy((dst),_b,_n,hipMemcpyHostToDevice);        hipStreamSynchronize(s);        free(_b);    }while(0)
+    ALIGNED_UPLOAD(d_pk,U(o_pk),(size_t)L*per_layer*4);
+    ALIGNED_UPLOAD(d_sc,F(o_sc),(size_t)L*per_sc*4);
+    ALIGNED_UPLOAD(d_inorm,F(o_norms),(size_t)L*H*4);
+    ALIGNED_UPLOAD(d_pan,F(o_norms)+L*H,(size_t)L*H*4);
+    ALIGNED_UPLOAD(d_qn,F(o_norms)+2*L*H,(size_t)L*HD*4);
+    ALIGNED_UPLOAD(d_kn,F(o_norms)+2*L*H+L*HD,(size_t)L*HD*4);
+    ALIGNED_UPLOAD(d_fn,F(o_fn),(size_t)H*4);
+    ALIGNED_UPLOAD(d_lm,F(o_lm),(size_t)V*H*4);
 
     // GPU forward lambda
     auto gpu_fwd=[&](float*hd,int pos){
-        up(d_hf,hd,H*4);rcpp_fp32_to_fp16(d_hf,d_h,H,s);SYNC;
+            hipMemcpy(d_hf,hd,H*4,hipMemcpyHostToDevice);hipStreamSynchronize(s);rcpp_fp32_to_fp16(d_hf,d_h,H,s);SYNC;
         for(int l=0;l<L;l++){
             hipMemcpy(d_ffg,d_h,H*2,hipMemcpyDeviceToDevice);SYNC;
             rcpp_rmsnorm_fp16(d_h,d_inorm+l*H,d_h,1e-6f,H,s);SYNC;
