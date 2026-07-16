@@ -45,7 +45,7 @@ class NpuFlmBackend : public InferenceBackend {
     size_t generated_pos_ = 0;
 
 public:
-    BackendType type() const override { return BackendType::NPU; }
+    BackendType type() const override { return BackendType::NPU_XRT; }
     const char* name() const override { return "NPU FLM"; }
     float estimated_tok_s() const override { return 57.0f; }  // estimate; FLM Qwen3:0.6B
     bool is_coherent() const override { return true; }

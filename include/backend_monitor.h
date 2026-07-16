@@ -33,31 +33,39 @@ struct MetricWindow {
     float avg() const {
         if (count == 0) return 0;
         float sum = 0;
-        for (size_t i = 0; i < count; i++) sum += samples[i];
+        for (size_t i = 0; i < count; i++) sum += samples[ring_idx(i)];
         return sum / count;
     }
 
     float min() const {
         if (count == 0) return 0;
-        float m = samples[0];
-        for (size_t i = 1; i < count; i++)
-            if (samples[i] < m) m = samples[i];
+        float m = samples[ring_idx(0)];
+        for (size_t i = 1; i < count; i++) {
+            float v = samples[ring_idx(i)];
+            if (v < m) m = v;
+        }
         return m;
     }
 
     float max() const {
         if (count == 0) return 0;
-        float m = samples[0];
-        for (size_t i = 1; i < count; i++)
-            if (samples[i] > m) m = samples[i];
+        float m = samples[ring_idx(0)];
+        for (size_t i = 1; i < count; i++) {
+            float v = samples[ring_idx(i)];
+            if (v > m) m = v;
+        }
         return m;
     }
 
 private:
+    // Index in ring order: oldest = (head - count + i + N) % N, newest = (head - 1 + N) % N
+    size_t ring_idx(size_t i) const { return (head - count + i + N) % N; }
+
     float percentile(float p) const {
         if (count == 0) return 0;
-        // Copy to sorted buffer (only on the last N, not the full window)
-        std::vector<float> sorted(samples.begin(), samples.begin() + count);
+        // Collect samples in ring order, then sort
+        std::vector<float> sorted(count);
+        for (size_t i = 0; i < count; i++) sorted[i] = samples[ring_idx(i)];
         std::sort(sorted.begin(), sorted.end());
         size_t idx = std::min(size_t(p * (count - 1)), count - 1);
         return sorted[idx];

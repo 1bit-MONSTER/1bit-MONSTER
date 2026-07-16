@@ -51,7 +51,7 @@ struct Zamba2Backend : Backend {
     int pos = 0;
 
     Zamba2Backend() {
-        type = BackendType::CPU;  // starts as CPU; GPU path uses HIP
+        type = BackendType::CPU_AVX512;  // starts as CPU; GPU path uses HIP
         name = "Zamba2 (Mamba2 SSD)";
     }
 
