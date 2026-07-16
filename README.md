@@ -15,9 +15,13 @@
 [![NPU Engine](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/site/badge_npu.json)](site/benchmarks.json)
 [![GGUF](https://img.shields.io/badge/GGUF-Qwen2%20%7C%20Qwen3%20layout-00ff00)](src/gguf_loader.cpp)
 [![ONNX](https://img.shields.io/badge/ONNX-supported-f00fd2)](src/onnx_loader.cpp)
-[![Tests](https://img.shields.io/badge/tests-11%2F11-00ff00)](tests/)
+[![Tests](https://img.shields.io/badge/tests-9%2F11-yellow)](tests/)  <!-- 2 e2e tests need model files (issue #233) -->
 
-**One server binary (zaya_server) unifies GPU + CPU inference. The NPU path delegates to the FastFlowLM engine (external subprocess running standard Qwen3 models — not 1-bit).** Auto-detects model architecture from the model header — no config files, no model registry.
+**One server binary (zaya_server) unifies GPU + CPU inference.**
+
+The default NPU path delegates to **[FastFlowLM](https://github.com/amd/fastflowlm)** (external subprocess, runs standard Qwen3 Q4NX models, not 1-bit). The project's own NPU engine (`engine/npu/`) is a standalone C++23 INT8 engine that works on Strix Halo NPU but is not yet integrated into the unified server's cascade. See [`engine/npu/README.md`](engine/npu/) for details.
+
+Auto-detects model architecture from the model header — no config files, no model registry.
 
 Reverse-engineered AMD's XDNA 2 NPU in 4 days with no documentation. The project's in-process NPU engine (npu_engine_universal, XRT-based) is available for direct integration; the server's default NPU path uses the FastFlowLM subprocess for model dispatch and xclbin management. 1800+ hours of engineering across 28 layers of GEMM kernels, Vulkan flash attention, and a self-healing agent watchdog.
 

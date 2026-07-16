@@ -168,6 +168,20 @@ ZayaState* zaya_init(const char* weights_dir = nullptr) {
         return nullptr;
     }
 
+    // Dimension validation: check loaded weights match compile-time constants.
+    // The engine uses compile-time #{H}x#{NQ}x#{NKV} kernel dimensions and cannot
+    // dynamically adapt to different model sizes. (Issue #249)
+    size_t expected_embed = (size_t)eng.vocab * eng.h;
+    if (s->embed.size() != expected_embed) {
+        fprintf(stderr, "zaya_init: model embed size %zu != expected %zu (H=%d, vocab=%d)\n",
+                s->embed.size(), expected_embed, eng.h, eng.vocab);
+        fprintf(stderr, "  This engine was compiled for H=%d, NQ=%d, NKV=%d, L=%d, V=%d.\n",
+                H, NQ, NKV, N_LAYERS, VOCAB);
+        fprintf(stderr, "  Refusing to load — would produce silent garbage.\n");
+        zaya_destroy(s);
+        return nullptr;
+    }
+
     HIP_OK(hipMalloc(&s->d_hs,eng.h*2)); HIP_OK(hipMalloc(&s->d_ao,eng.h*2));
     HIP_OK(hipMalloc(&s->d_tmp,size_t(std::max(eng.h,2*eng.n_ff))*2)); HIP_OK(hipMalloc(&s->d_fnw,eng.h*2));
     HIP_OK(hipMalloc(&s->d_lm_out,4096*2));
