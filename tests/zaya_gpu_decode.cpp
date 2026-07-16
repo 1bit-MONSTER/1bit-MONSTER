@@ -763,7 +763,7 @@ int main(int argc, char** argv) {
             copy_k<<<g1, BLK, 0, stream>>>(d_phs + (size_t)il * H, d_hs, H);
             rmsnorm_k<<<1, BLK, 0, stream>>>(d_hs, l.nw, H);
             
-            if (l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks) {
+            if (0) {
                 moe_tiled_gemv<<<QD/16, 128, 0, stream>>>(d_tmp, d_hs, l.wq, QD, H);
                 moe_tiled_gemv<<<KD/16, 128, 0, stream>>>(d_tmp+QD, d_hs, l.wk, KD, H);
                 moe_tiled_gemv<<<KD/2/16, 128, 0, stream>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
@@ -778,7 +778,7 @@ int main(int argc, char** argv) {
             rmsnorm_k<<<1, BLK, 0, stream>>>(d_hs, l.pan, H);
             
             // ── B) EDA Router + MoE Expert (GPU) ──
-            if (l.gu && l.dn && l.gdw && l.rf1 && l.rf2 && l.rout) {
+            if (0) {
                 eda_router_gpu_kernel<<<1, RTR_H, 0, stream>>>(
                     d_hs, d_prev_rs + (size_t)il * RTR_H,
                     router_states[il].has_eda ? 1 : 0, router_states[il].eda_scale[0],
