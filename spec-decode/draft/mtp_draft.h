@@ -269,3 +269,6 @@ private:
         linear(act.data(), w_.down_proj.data(), out, IM, H);
     }
 };
+
+// Backward-compatible alias
+using MTPDraft = MTPDraftModel;

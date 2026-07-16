@@ -678,3 +678,42 @@ target_link_options(npu_engine_hybrid PRIVATE
     -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -fopenmp)
 set_target_properties(npu_engine_hybrid PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
+
+# ── DSpark full pipeline: Eagle3 draft (NPU/CPU) + GPU verify ─────────────
+add_executable(dspark_full
+    tools/dspark_full.cpp
+    engine/fusion/cpu_layer.cpp)
+target_include_directories(dspark_full PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/fusion
+    ${CMAKE_SOURCE_DIR}/spec-decode/draft
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR})
+target_compile_options(dspark_full PRIVATE
+    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+target_link_libraries(dspark_full PRIVATE
+    rocm_cpp
+    ${CMAKE_DL_LIBS} m pthread)
+target_link_options(dspark_full PRIVATE
+    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
+set_target_properties(dspark_full PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
+
+# ── DSpark GPU bench: full GPU-accelerated speculative decode ──────────────
+add_executable(dspark_gpu_bench
+    tools/dspark_gpu_bench.cpp
+    engine/fusion/cpu_layer.cpp)
+target_include_directories(dspark_gpu_bench PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/fusion
+    ${CMAKE_SOURCE_DIR}/spec-decode/draft
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/spec-decode)
+target_compile_options(dspark_gpu_bench PRIVATE
+    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+target_link_libraries(dspark_gpu_bench PRIVATE
+    rocm_cpp
+    ${CMAKE_DL_LIBS} m pthread)
+target_link_options(dspark_gpu_bench PRIVATE
+    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
+set_target_properties(dspark_gpu_bench PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
