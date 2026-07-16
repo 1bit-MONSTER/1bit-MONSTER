@@ -60,7 +60,14 @@ struct HIPBackend : Backend {
         iscale = zs->iscale;
         ibias = zs->ibias;
 
-        logits_buf = new float[ZAYA_VOCAB];
+        try {
+            logits_buf = new float[ZAYA_VOCAB];
+        } catch (std::bad_alloc&) {
+            fprintf(stderr, "HIP: failed to allocate logits buffer (%zu bytes)\n",
+                    size_t(ZAYA_VOCAB) * sizeof(float));
+            zaya_destroy(zs);
+            return false;
+        }
         initialized = true;
         printf("HIP: Engine ready\n");
         return true;
