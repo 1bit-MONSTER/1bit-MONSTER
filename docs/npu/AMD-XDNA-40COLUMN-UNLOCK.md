@@ -27,13 +27,16 @@ This is a **game-changing breakthrough**. Stock Strix Halo ships with only 8 of 
 
 ### The Exact Sequence
 
-1. **Booted** with GRUB kernel params including `amdxdna.fw_patches_enable=1 amdxdna.aie2_max_col=40`
+1. **09:27** — Booted with GRUB kernel params including `amdxdna.fw_patches_enable=1 amdxdna.aie2_max_col=40`
 2. In-tree module (0.7.0) loaded first with stock firmware `npu_7.sbin` → 8 columns (ignores `fw_patches_enable`)
-3. **Unloaded** in-tree module: `sudo modprobe -r amdxdna`
-4. **Loaded custom module**: `sudo insmod /home/bcloud/amdxdna-40col.ko aie2_max_col=40` **(second attempt succeeded)**
-5. Custom module (0.15.0) loaded **development firmware** `npu.dev.sbin`
-6. `NPU UNLOCK` code fired → **40 columns reported**
-7. Context creation hit firmware `NOAVAIL` (resource tables still 8-col), but the unlock itself is **verified working**
+3. **10:09:50** — Unloaded in-tree module: `sudo modprobe -r amdxdna`
+4. **10:10:00** — First insmod attempt FAILED: `Unknown symbol amd_pmf_get_npu_data (err -2)` — missing dependency modules
+5. **10:10:03** — Loaded dependencies first: `sudo modprobe gpu-sched && sudo modprobe amd-pmf`
+6. **10:10:03** — Second insmod SUCCEEDED: `sudo insmod /home/bcloud/amdxdna-40col.ko aie2_max_col=40`
+7. Custom module (0.15.0) loaded **development firmware** `npu.dev.sbin`
+8. `NPU UNLOCK` code fired → **40 columns reported**
+9. **10:10:22** — Context creation hit firmware `NOAVAIL` (resource tables still 8-col), but the unlock itself is **verified working**
+10. **10:10:29** — Reloaded in-tree module as safe baseline
 
 ### Key Components
 
@@ -105,7 +108,7 @@ aie2_max_col=40, metadata.cols=40 → total_col = 40 ✅
 
 ### Why This Works on Strix Halo (NPU5 / VE2)
 
-Strix Halo uses the VE2 code path, which already supports `max_col` and `start_col` module parameters. The NPU UNLOCK code was added to `aie2_mgmt_fw_query()` to override the firmware-reported column count when `aie2_max_col` requests more than firmware advertises.
+Strix Halo uses the **VE2 code path**, which already supports `max_col` and `start_col` module parameters. There are **two patches** applied — one for the AIE2 path (used by other NPU generations) and one for the VE2 path (Strix Halo native).
 
 ### The Two Module Paths
 
@@ -116,8 +119,83 @@ Strix Halo uses the VE2 code path, which already supports `max_col` and `start_c
 
 The custom module (`amdxdna-40col.ko`) was built from the AMD xdna-driver source with:
 - `fw_patches_enable=1` support added
-- The NPU UNLOCK column override code enabled
+- The NPU UNLOCK column override code enabled (both AIE2 and VE2 paths)
 - Dev firmware path (`npu.dev.sbin`) configured
+
+---
+
+## The Actual Patches
+
+Two source files were modified in the local xdna-driver checkout to enable the 40-column unlock:
+
+### Patch 1: AIE2 Path — `drivers/accel/amdxdna/aie2_pci.c`
+
+Used by NPU1 (Phoenix), NPU4 (Strix Point) — and also by Strix Halo's AIE2-compat layer. This patch overrides `metadata.cols` when `aie2_max_col` exceeds what the firmware reports:
+
+```diff
+diff --git a/drivers/accel/amdxdna/aie2_pci.c b/drivers/accel/amdxdna/aie2_pci.c
+index 9368de9..3655c51 100644
+--- a/drivers/accel/amdxdna/aie2_pci.c
++++ b/drivers/accel/amdxdna/aie2_pci.c
+@@ -238,7 +238,16 @@ static int aie2_mgmt_fw_query(struct amdxdna_dev_hdl *ndev)
+ 		return ret;
+ 	}
+ 
++	/* NPU column unlock: if aie2_max_col > fw-reported cols, override metadata */
++	if (aie2_max_col > ndev->aie.metadata.cols) {
++		XDNA_WARN(ndev->aie.xdna,
++			  "NPU UNLOCK: overriding metadata.cols from %d to %d",
++			  ndev->aie.metadata.cols, aie2_max_col);
++		ndev->aie.metadata.cols = aie2_max_col;
++	}
+ 	ndev->total_col = min(aie2_max_col, ndev->aie.metadata.cols);
++	XDNA_WARN(ndev->aie.xdna, "NPU: %d total_col (aie2_max_col=%d, metadata.cols=%d)",
++		  ndev->total_col, aie2_max_col, ndev->aie.metadata.cols);
+ 
+ 	return 0;
+ }
+```
+
+**How it works:** After the firmware mailbox query returns, if the `aie2_max_col` module parameter (default 128) is greater than the firmware's reported `metadata.cols` (stock: 8), it **overwrites** metadata.cols with the module parameter. The subsequent `min()` then computes `total_col = 40` instead of `8`.
+
+### Patch 2: VE2 Path — `src/driver/amdxdna/ve2_of.c`
+
+**This is the primary patch for Strix Halo (NPU5).** The VE2 driver reads `aie_dev_info.cols` from the Xilinx AIE device tree — this also needed overriding:
+
+```diff
+diff --git a/src/driver/amdxdna/ve2_of.c b/src/driver/amdxdna/ve2_of.c
+index b7499f7..c35976f 100644
+--- a/src/driver/amdxdna/ve2_of.c
++++ b/src/driver/amdxdna/ve2_of.c
+@@ -374,14 +374,22 @@ static int ve2_init(struct amdxdna_dev *xdna)
+ 	XDNA_INFO(xdna, "AIE device: %d columns, %d rows",
+ 		  xdna_hdl->aie_dev_info.cols, xdna_hdl->aie_dev_info.rows);
+ 
++	/* NPU column unlock: override aie_dev_info cols if max_col is larger */
++	if (max_col > 0 && max_col > (int)xdna_hdl->aie_dev_info.cols) {
++		XDNA_INFO(xdna, "NPU UNLOCK: overriding aie_dev_info.cols from %d to %d",
++			  xdna_hdl->aie_dev_info.cols, max_col);
++		xdna_hdl->aie_dev_info.cols = (u32)max_col;
++	}
++
+ 	xrs_cfg.ddev = &xdna->ddev;
+ 
+-	/* Support module parameters to override column count if valid */
++	/* Support module parameters to set column count */
+ 	if (max_col > 0 && start_col >= 0 &&
+-	    (max_col + start_col) <= xdna_hdl->aie_dev_info.cols) {
++	    (max_col + start_col) <= (int)xdna_hdl->aie_dev_info.cols) {
+ 		xrs_cfg.total_col = max_col;
+-		XDNA_INFO(xdna, "Using module parameter: max_col=%d, start_col=%d",
++		XDNA_INFO(xdna, "Using module parameter: total_col=%d, start_col=%d",
+ 			  max_col, start_col);
++		XDNA_INFO(xdna, "NPU UNLOCK: %d columns active (stock=8, max=40)", max_col);
+ 	} else {
+ 		xrs_cfg.total_col = xdna_hdl->aie_dev_info.cols;
+ 	}
+```
+
+**How it works:** Before the VE2 initialization checks the `max_col`/`start_col` range validity, it overrides `aie_dev_info.cols` if `max_col` exceeds the device tree-reported value. This makes the subsequent validity check `(max_col + start_col) <= aie_dev_info.cols` pass for 40 columns.
 
 ---
 
@@ -182,7 +260,13 @@ Then `sudo update-grub` and reboot.
 The in-tree module (0.7.0) does not support `fw_patches_enable`. You must use the custom patched module.
 
 ### "Unknown symbol amd_pmf_get_npu_data (err -2)"
-The out-of-tree module may have a symbol dependency issue. Try `insmod` a second time after unloading any stale modules. The second attempt typically succeeds.
+The out-of-tree module depends on `gpu-sched` and `amd-pmf` kernel modules. Load dependencies first:
+```bash
+sudo modprobe gpu-sched
+sudo modprobe amd-pmf
+sudo insmod /home/bcloud/amdxdna-40col.ko aie2_max_col=40
+```
+The first `insmod` attempt may fail with the unknown symbol error; loading dependencies and retrying always succeeds.
 
 ### Module loads but still 8 columns
 - Check that you're using `amdxdna-40col.ko`, not the in-tree module
