@@ -381,8 +381,8 @@ struct VKBackend : Backend {
         float sd=sqrtf((float)HD);
         for(int hh=0;hh<NQ;hh++){float s2=0;for(int d=0;d<HD;d++)s2+=sk[hh*HD+d]*sk[hh*HD+d];float iv=sd/(sqrtf(s2)+1e-12f);for(int d=0;d<HD;d++)sk[hh*HD+d]*=iv;}
         for(int khv=0;khv<NKV;khv++){float s2=0;for(int d=0;d<HD;d++)s2+=sk[QD+khv*HD+d]*sk[QD+khv*HD+d];float iv=sd*ks[khv]/(sqrtf(s2)+1e-12f);for(int d=0;d<HD;d++)sk[QD+khv*HD+d]*=iv;}
-        for(int hh=0;hh<NQ;hh++){float*ba=sk+hh*HD;for(int d=0;d<32;d++){float th=l*powf(5e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
-        for(int khv=0;khv<NKV;khv++){float*ba=sk+QD+khv*HD;for(int d=0;d<32;d++){float th=l*powf(5e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
+        for(int hh=0;hh<NQ;hh++){float*ba=sk+hh*HD;for(int d=0;d<32;d++){float th=(float)l*powf(1e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
+        for(int khv=0;khv<NKV;khv++){float*ba=sk+QD+khv*HD;for(int d=0;d<32;d++){float th=(float)l*powf(1e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
         float ao[H]; for(int hh=0;hh<NQ;hh++){int kv=hh/GQA;for(int d=0;d<HD;d++)ao[hh*HD+d]=v[kv*HD+d];}
         float fo[H]; mm(fo,ao,wo,H,QD); memcpy(h,fo,H*4); memcpy(phs,h,H*4);
         memcpy(cs,cs+QKV,QKV*4); memcpy(cs+QKV,sk,QKV*4);
@@ -469,8 +469,8 @@ struct VKBackend : Backend {
             float sd=sqrtf((float)HD);
             for(int hh=0;hh<NQ;hh++){float s2=0;for(int d=0;d<HD;d++)s2+=sqk[hh*HD+d]*sqk[hh*HD+d];float iv=sd/(sqrtf(s2)+1e-12f);for(int d=0;d<HD;d++)sqk[hh*HD+d]*=iv;}
             for(int khv=0;khv<NKV;khv++){float s2=0;for(int d=0;d<HD;d++)s2+=sqk[QD+khv*HD+d]*sqk[QD+khv*HD+d];float iv=sd*l.ks[khv]/(sqrtf(s2)+1e-12f);for(int d=0;d<HD;d++)sqk[QD+khv*HD+d]*=iv;}
-            for(int hh=0;hh<NQ;hh++){float*ba=sqk+hh*HD;for(int d=0;d<32;d++){float th=il*powf(5e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
-            for(int khv=0;khv<NKV;khv++){float*ba=sqk+QD+khv*HD;for(int d=0;d<32;d++){float th=il*powf(5e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
+            for(int hh=0;hh<NQ;hh++){float*ba=sqk+hh*HD;for(int d=0;d<32;d++){float th=pos*powf(1e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
+            for(int khv=0;khv<NKV;khv++){float*ba=sqk+QD+khv*HD;for(int d=0;d<32;d++){float th=pos*powf(1e6f,-2.0f*d/64);float c=cosf(th),s=sinf(th);float xv=ba[d],xw=ba[d+32];ba[d]=xv*c-xw*s;ba[d+32]=xv*s+xw*c;}}
             float attn_out[H];
             for(int hh=0;hh<NQ;hh++){int kv=hh/GQA;for(int d=0;d<HD;d++)attn_out[hh*HD+d]=v[kv*HD+d];}
 

@@ -467,7 +467,25 @@ static json generate_completion(BackendManager& mgr,
                         mgr.select_backend(b.id);
                         active_backend_id = b.id;
                         next = mgr.generate(last_token);
-                        if (next >= 0) { token_logprob = -5.0; break; }
+                        if (next >= 0) {
+                            // Compute actual logprob for cascade/adaptive strategy
+                            std::vector<float> hb(hs);
+                            std::vector<float> lb(vs);
+                            if (need_logprobs && mgr.forward(next, hb.data())) {
+                                int argmax;
+                                if (mgr.lm_head(hb.data(), lb.data(), &argmax)) {
+                                    float max_l = -1e30f;
+                                    for (int v = 0; v < vs; v++) if (lb[v] > max_l) max_l = lb[v];
+                                    double sum_exp = 0.0;
+                                    for (int v = 0; v < vs; v++) sum_exp += exp((double)(lb[v] - max_l));
+                                    if (sum_exp > 0 && next >= 0 && next < vs)
+                                        token_logprob = (double)(lb[next] - max_l) - log(sum_exp);
+                                }
+                            } else {
+                                token_logprob = -10.0;  // uncertain
+                            }
+                            break;
+                        }
                     }
                 }
             }
