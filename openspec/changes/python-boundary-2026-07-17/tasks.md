@@ -35,9 +35,14 @@ Ordered by value/risk. Each is independent; do not batch.
 
 - [ ] **T7. Move lm_head off CPU** in the NPU engine (151,936-vocab dot product is
       ~2.2 s/token on CPU today).
-- [ ] **T10. Fix repeating-token output** in `npu_engine_stdio.cpp` (predicts 9707
-      every step in testing). Check RoPE position advance (`sp`), KV write, and the
-      rand() multinomial sampler. Surfaced during T4 verification.
+- [ ] **T10. Fix repeating-token output** in `npu_engine_stdio.cpp`. ROOT-CAUSED
+      (findings §3a): the int8 NPU GEMM only does a single K=1024 tile, so O-proj
+      (K=2048) and D-proj (K=3072) return EXACTLY ZERO — attention & MLP contribute
+      nothing, residual stays ≈ input embedding, tied lm_head predicts the input token
+      back (emits last prompt token forever). NOT a sampler/RoPE bug. Fix = K-tiling +
+      accumulation in `I8Ctx::go()`, OR xclbins that handle K>1024, OR retarget the FLM
+      engine. Also fix hardcoded `5.0/127` activation scale (D-proj input ~8/elem
+      saturates). This is NPU-kernel work, not a CPU one-liner.
 - [ ] **T8. Reconcile the "Zero Python" README claim** — it is not yet literally true
       while `daemon/npu-cppd.py` + tokenization Python remain. Update the claim OR
       finish T3/T6 first. Do not edit the claim silently.
