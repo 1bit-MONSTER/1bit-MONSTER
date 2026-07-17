@@ -91,9 +91,12 @@ jobs:
         # the Strix Halo self-hosted runner; running them here would always
         # fail (no device) and teach us nothing.
         # Guarded by existence of build/ dir so we don't fail on ROCm-less runners.
-        if: $; [ -d build ]
-        working-directory: build
-        run: ctest -L host --output-on-failure
+        run: |
+          if [ -d build ]; then
+            ctest --test-dir build -L host --output-on-failure
+          else
+            echo "No build/ directory (ROCm unavailable on this runner) - skipping host ctest."
+          fi
       - name: ShellCheck
         uses: ludeeus/action-shellcheck@2.0.0
         with:
