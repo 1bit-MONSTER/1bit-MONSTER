@@ -71,8 +71,21 @@ generation = the 40-column NPU2 compiler (separate strategic project, weeks+).
 
 **Recommendation:** for a working Python-free serving path, use A (flm serve + Rust
 router) now. For your own engine, invest in `npu_engine_universal` (now unblocked), NOT
-npu_engine_stdio. Next step: build + run npu_engine_universal end-to-end on a clean NPU
-and verify coherent output (as done for FLM in A).
+npu_engine_stdio.
+
+**UPDATE (2026-07-17): built + ran npu_engine_universal end-to-end (findings §3b).**
+It builds (build_npu.sh is stale: needs -laiebu -fopenmp; include off-by-one; must pass
+--model-tag), initializes via runtime aiebu ELF assembly (handles arbitrary K incl. O/D),
+and executes prefill L0-L3 correctly — then HANGS at L4 with fresh AMD-Vi IO_PAGE_FAULT.
+Same systemic NPU DMA/IOMMU fault that hits stdio + fusion. FLM does NOT hit it.
+
+So the real B blocker is NOT kernel shapes (solved) but NPU DMA/IOMMU buffer management
+(candidate: XRT_BO_FLAGS_HOST_ONLY vs FLM's scheme). New tasks:
+- [ ] **T11. Fix build_npu.sh**: add -laiebu -fopenmp; fix flm_bridge.h include path;
+      default/require a correct --model-tag (don't derive from model.q4nx filename).
+- [ ] **T12. Root-cause the IO_PAGE_FAULT** in home-grown engines: compare BO allocation
+      flags/lifetimes against FLM (dlopen'd libs). Likely HOST_ONLY vs cacheable/mapped
+      DMA + missing sync, or hwctx/tile budget. This is the true gate for an own-engine.
 
 ## Follow-ups
 
