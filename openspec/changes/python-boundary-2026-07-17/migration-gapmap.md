@@ -92,6 +92,32 @@ need to become `8`. Resolve with the migrator's intent; do not guess.
    (full NPU run with real weights) and confirm fault-free + coherent output.
 5. Then T14 (C++ engine driving this kernel) becomes possible.
 
+### C3. Column-tile BD uniqueness (pre-existing bug, blocks aiecc)
+
+Source: `MLIR-AIE isBdChannelAccessible` for NPU2 memtiles:
+```
+even channel: bd_id < 24
+odd  channel: bd_id >= 24
+```
+Each memtile has 48 BDs (0-47), banked as 0-23 (even channels) / 24-47 (odd).
+
+The `AIEAssignBufferDescriptorIDs` pass uses ONE `BdIdGenerator` per tile
+(each MemTileDMAOp creates a generator for its col/row). It walks ALL DMABDOps
+on that tile and calls `assignBdId(bd_id)`. If two DMA blocks on the same tile
+(both channels share a tile) specify the same bd_id → assertion failure
+`"bdId has already been assigned"`.
+
+The full-layer generator assigns BDs per-channel independently (e.g., column
+tiles in the 8-col design assign BDs 0-5 to BOTH the even and odd DMA channels
+on the same tile) → duplication → blocks aiecc.
+
+**Fix:** the BD allocation in the generator must ensure UNIQUE bd_ids per tile
+across ALL DMA channels on that tile. Track the used-BD set per (col,row) in
+the Python generator.
+
+Note: my C1 hub BD remap (BDs 24/34/35/36) is CORRECT per this spec — hub is a
+memtile, odd channels need BDs ≥ 24, and the chosen ids don't collide on hub.
+
 ## Safety — read before "just make it build"
 
 The validators in sections C/D exist **precisely** to prevent the DMA/IOMMU
