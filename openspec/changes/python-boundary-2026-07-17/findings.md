@@ -173,6 +173,39 @@ live via its own libs (`libgemm.so` `Gemm::generate_seq`, `move_weights`) throug
 context and does not fault. Notably, universal ALREADY routes ATTENTION through FlmBridge
 (live gen) successfully — only the projection GEMMs use the faulting static-insts path.
 
+### 3d. T12 DEFINITIVE root cause (2026-07-17): the static instruction stream
+
+Dumped kernel metadata (`xclbinutil --dump-section EMBEDDED_METADATA`) for both
+universal's `final_i8_QKV_qwen3_0_6b.xclbin` and FLM's `mm.xclbin`: **byte-identical
+kernel signature** — same `MLIR_AIE`, `dpu_kernel_id=0x901`, same args
+`opcode,instr,ninstr,bo0..bo4`. So the xclbin/kernel is NOT the problem.
+
+The generic kernel declares 5 BOs but this GEMM class uses 3. Confirmed by the WORKING
+torch2aie reference `run_kernel_main16_q4nx.py`, which runs the SAME kernel class on the
+NPU and PASSES numeric validation with exactly 3 buffers:
+`npu_build.run(handle,[activation_buf, weight_buf, record_buf])`. universal's 3-BO launch
+(`k(3,0,0,*bA,*bB,*bC)`) matches — the 5-vs-3 concern is a red herring.
+
+The decisive difference: the torch2aie reference REGENERATES instructions to match the
+xclbin (`_build_kernel`), while universal ships PRE-GENERATED `insts_i8_*.txt` paired with
+`final_i8_*.xclbin`. So the fault is the **static instruction stream** — stale/mismatched
+vs. what the kernel expects (wrong DMA descriptors -> out-of-range NPU DMA -> IO_PAGE_FAULT).
+All other hypotheses (kernel, xclbin, BO count/type, concurrency, weight footprint, M-pad)
+are eliminated.
+
+**Two concrete fixes (both are toolchain work, need hardware iteration):**
+1. **Regenerate matching instructions via FLM**: `FlmBridge::gen_gemm_instrs(512,N,K,0)`
+   produces instructions for THIS kernel. Since the kernel takes weights as a BO arg
+   (bo1, per the torch2aie reference), the earlier "weights fused into FLM context" worry
+   is likely wrong — `move_weights` should emit DMA-from-bo1. TOP EXPERIMENT: init one
+   GEMM ctx (QKV) with `gen_gemm_instrs` + AttnCtx-style `init_with_instrs`, supply
+   universal's own weight BO as bo1, verify no fault + correct output. If weight LAYOUT
+   differs, fix packB to FLM's tiling (output wrong but NO fault would already prove it).
+2. **Regenerate via torch2aie** (`_build_kernel` path) to get a matching xclbin+insts pair.
+
+This supersedes the "mm.xclbin single-kernel" note below (the kernels are already identical;
+the issue was always the instruction stream, not the xclbin).
+
 **The fix (concrete, confirmed by FLM's xclbin layout):** FLM ships ONE generic GEMM
 kernel per model — `<xclbins>/Qwen3-0.6B-NPU2/{attn,dequant,layer,mm}.xclbin`. `mm.xclbin`
 handles ALL GEMM shapes; the K/N are parameterized by instructions generated live by
