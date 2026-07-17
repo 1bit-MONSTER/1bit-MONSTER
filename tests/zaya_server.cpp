@@ -31,6 +31,106 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+// ─── A2A (Agent-to-Agent) Protocol v1.0 support ───────────────
+// Google's open standard for agent interoperability.
+// Agent Card + task-based inference via /a2a/v1/message:send
+
+struct SimpleTokenizer;
+
+static std::string a2a_agent_card(const ModelConfig& cfg, int port) {
+    json card = {
+        {"name", "1bit-systems Inference Agent"},
+        {"description", "Multi-backend AI inference server with auto-detection (ROCm HIP > Vulkan > NPU > CPU). Supports text generation, speculative decoding, cascade routing, and MoE parallel pipeline across heterogeneous hardware."},
+        {"version", "1.0.0"},
+        {"protocolVersion", "1.0"},
+        {"documentationUrl", "https://github.com/bong-water-water-bong/1bit-systems"},
+        {"provider", {{"organization", "1bit.systems"}, {"url", "https://1bit.systems"}}},
+        {"capabilities", {{"streaming", true}, {"pushNotifications", false}}},
+        {"securitySchemes", json::object()},
+        {"defaultInputModes", json::array({"application/json", "text/plain"})},
+        {"defaultOutputModes", json::array({"application/json", "text/plain"})},
+        {"supportedInterfaces", json::array({{
+            {"url", "http://127.0.0.1:" + std::to_string(port) + "/a2a/v1"},
+            {"protocolBinding", "JSONRPC"},
+            {"protocolVersion", "1.0"}
+        }})},
+        {"skills", json::array({
+            {{
+                {"id", "text-generation"},
+                {"name", "Text Generation"},
+                {"description", "Generates text given a prompt or chat messages. Supports system prompts, temperature, top-k sampling, and max tokens. Routes to the fastest available backend."},
+                {"tags", json::array({"inference", "llm", "text", "generation", "chat"})},
+                {"inputModes", json::array({"application/json", "text/plain"})},
+                {"outputModes", json::array({"application/json", "text/plain"})},
+                {"examples", json::array({
+                    "Write a poem about neural networks",
+                    "Translate 'hello' to French"
+                })},
+                {"configuration", {{
+                    {"maxTokens", 4096},
+                    {"temperature", {{"type", "number"}, {"default", 0.7}, {"description", "Sampling temperature (0.0 = greedy)"}}},
+                    {"topK", {{"type", "integer"}, {"default", 40}, {"description", "Top-k sampling"}}},
+                    {"strategy", {{"type", "string"}, {"default", "auto"}, {"enum", json::array({"auto", "cascade", "spec_decode", "parallel_moe"})}}}
+                }}}
+            }},
+            {{
+                {"id", "model-discovery"},
+                {"name", "Model Discovery"},
+                {"description", "Lists all loaded models and their configurations (hidden size, layers, heads, backend)."},
+                {"tags", json::array({"models", "discovery", "config"})},
+                {"inputModes", json::array({"application/json"})},
+                {"outputModes", json::array({"application/json"})}
+            }}
+        })}
+    };
+    return card.dump(2);
+}
+
+// Build A2A task response from inference result
+static std::string a2a_task_response(const std::string& task_id, const std::string& context_id,
+                                       const std::string& state, const std::string& text,
+                                       int prompt_tokens, int completion_tokens) {
+    json resp = {
+        {"task", {{
+            {"id", task_id},
+            {"contextId", context_id},
+            {"status", {{"state", state}}},
+            {"artifacts", json::array({{
+                {"artifactId", task_id + "-artifact"},
+                {"name", "generation-result"},
+                {"parts", json::array({{
+                    {"text", text}
+                }})},
+                {"metadata", {{
+                    {"promptTokens", prompt_tokens},
+                    {"completionTokens", completion_tokens}
+                }}}
+            }})}
+        }}}
+    };
+    return resp.dump();
+}
+
+static std::string a2a_task_status(const std::string& task_id, const std::string& context_id,
+                                    const std::string& state, const std::string& msg) {
+    json resp = {
+        {"task", {{
+            {"id", task_id},
+            {"contextId", context_id},
+            {"status", {{
+                {"state", state},
+                {"message", {{"role", "ROLE_AGENT"}, {"parts", json::array({{"text", msg}})}}}
+            }}}
+        }}}
+    };
+    return resp.dump();
+}
+
+// Handle A2A sendMessage - declared here, implemented after SimpleTokenizer
+static std::string a2a_handle_message(const std::string& body, const std::string& task_id,
+                                        ModelConfig& cfg, TokenRouter& router,
+                                        SimpleTokenizer& tok, bool model_loaded);
+
 // ─── .h1b header auto-detection (no external deps) ────────────────
 static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     std::ifstream f(path, std::ios::binary);
@@ -217,6 +317,52 @@ struct SimpleTokenizer {
     }
 };
 
+// ─── A2A handle_message implementation (after SimpleTokenizer) ────
+static std::string a2a_handle_message(const std::string& body, const std::string& task_id,
+                                        ModelConfig& cfg, TokenRouter& router,
+                                        SimpleTokenizer& tok, bool model_loaded) {
+    if (!model_loaded) {
+        return a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_FAILED",
+                               "No model loaded. Restart with --model <path.h1b>");
+    }
+
+    try {
+        json j = json::parse(body);
+        std::string user_text;
+        int max_tokens = 256;
+        double temperature = 0.7;
+
+        if (j.contains("message") && j["message"].contains("parts") && j["message"]["parts"].is_array()) {
+            for (auto& part : j["message"]["parts"]) {
+                if (part.contains("text"))
+                    user_text += part["text"].get<std::string>();
+            }
+        }
+
+        if (j.contains("configuration")) {
+            auto& config = j["configuration"];
+            if (config.contains("maxTokens")) max_tokens = config["maxTokens"].get<int>();
+            if (config.contains("temperature")) temperature = config["temperature"].get<double>();
+        }
+
+        if (user_text.empty()) {
+            return a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_INPUT_REQUIRED",
+                                   "Please provide a message with text content.");
+        }
+
+        std::string prompt = "<|im_start|>user\n" + user_text + "<|im_end|>\n<|im_start|>assistant\n";
+        std::vector<int> tokens = tok.encode(prompt);
+        InferenceResult result = router.infer(tokens, max_tokens, RouteStrategy::AUTO);
+        std::string text = tok.decode(result.tokens);
+
+        return a2a_task_response(task_id, "ctx-" + task_id, "TASK_STATE_COMPLETED",
+                                  text, (int)tokens.size(), (int)result.tokens.size());
+    } catch (const std::exception& e) {
+        return a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_FAILED",
+                               std::string("Internal error: ") + e.what());
+    }
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
@@ -251,6 +397,9 @@ int main(int argc, char** argv) {
             printf("Endpoints:\n");
             printf("  GET  /v1/models                      List loaded models\n");
             printf("  POST /v1/chat/completions            OpenAI-compatible chat\n");
+            printf("  GET  /.well-known/agent-card.json    A2A Agent Card (Google A2A v1.0)\n");
+            printf("  POST /a2a/v1/message:send            A2A send message (task-based)\n");
+            printf("  POST /a2a/v1/message:sendStream      A2A streaming (SSE)\n");
             printf("  GET  /                               Server health\n");
             return 0;
         } else if (a[0] != '-' && model_arg.empty()) port = atoi(argv[i]);
@@ -303,9 +452,11 @@ int main(int argc, char** argv) {
     listen(sock, 8);
 
     fprintf(stderr, "\nListening on http://127.0.0.1:%d\n", port);
-    fprintf(stderr, "   GET  /                  — health\n");
-    fprintf(stderr, "   GET  /v1/models          — model list\n");
-    fprintf(stderr, "   POST /v1/chat/completions — OpenAI-compatible\n");
+    fprintf(stderr, "   GET  /                      — health\n");
+    fprintf(stderr, "   GET  /v1/models              — model list\n");
+    fprintf(stderr, "   GET  /.well-known/agent-card  — A2A Agent Card (v1.0)\n");
+    fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
+    fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
     fprintf(stderr, "   Strategy: %s\n\n",
         strategy == RouteStrategy::AUTO ? "auto (fastest available)" :
         strategy == RouteStrategy::CASCADE ? "cascade (per-token fallback)" :
@@ -389,7 +540,56 @@ int main(int argc, char** argv) {
 
         if (r.find("OPTIONS") == 0) { send_json(200, "{\"ok\":true}"); continue; }
 
+        if (r.find("GET /.well-known/agent-card") != std::string::npos) {
+            send_json(200, a2a_agent_card(cfg, port));
+            continue;
+        }
+
+        if (r.find("POST /a2a/v1/message:send") != std::string::npos) {
+            // Generate a unique task ID from timestamp + random
+            std::string task_id = "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(rand() % 10000);
+            std::string resp = a2a_handle_message(body, task_id, cfg, router, tok, model_loaded);
+            send_json(200, resp);
+            continue;
+        }
+
+        if (r.find("POST /a2a/v1/message:sendStream") != std::string::npos) {
+            // Streaming A2A: use SSE to stream task status updates
+            std::string task_id = "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(rand() % 10000);
+            const char* h = "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Connection: close\r\n"
+                "Access-Control-Allow-Origin: *\r\n\r\n";
+            write(cl, h, strlen(h));
+
+            // Send SUBMITTED event
+            std::string e1 = "event: taskStatus\ndata: " + a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_SUBMITTED", "Task accepted") + "\n\n";
+            write(cl, e1.data(), e1.size());
+            usleep(10000); // 10ms
+
+            // Send WORKING event
+            std::string e2 = "event: taskStatus\ndata: " + a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_WORKING", "Processing inference") + "\n\n";
+            write(cl, e2.data(), e2.size());
+            usleep(10000);
+
+            // Process
+            std::string result = a2a_handle_message(body, task_id, cfg, router, tok, model_loaded);
+
+            // Send artifact update
+            std::string e3 = "event: taskArtifact\ndata: " + result + "\n\n";
+            write(cl, e3.data(), e3.size());
+            usleep(10000);
+
+            // Send final COMPLETED event
+            std::string e4 = "event: taskStatus\ndata: " + a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_COMPLETED", "Done") + "\n\n";
+            write(cl, e4.data(), e4.size());
+            close(cl);
+            continue;
+        }
+
         if (r.find("GET / ") != std::string::npos || r.find("GET / HTTP") != std::string::npos) {
+            // Add A2A agent card URL to health response
             std::string resp = "{\"status\":\"" + std::string(model_loaded ? "ok" : "no_model") + "\",\"model_loaded\":" + (model_loaded ? "true" : "false") + ",\"model\":\"" + json_escape(cfg.model_name) + "\","
                 "\"backend\":\"" + std::string(router.primary ? router.primary->name() : "none") + "\","
                 "\"hidden_size\":" + std::to_string(cfg.hidden_size) + ","
