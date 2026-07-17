@@ -48,10 +48,10 @@ jobs:
           import re, pathlib, sys
           root = pathlib.Path('.')
           missing = []
-          txt = root.joinfile('CMakeLists.txt').read_text()
+          txt = root.joinpath('CMakeLists.txt').read_text()
           for m in re.findall(r'add_subdirectory\(\s*([^\s\)\s]+)', txt):
               if not (root / m / 'CMakeLists.txt').exists():
-                  missing.append(f'add_subdirectory({m) -> missing CMakeLists.txt')
+                  missing.append(f'add_subdirectory({m}) -> missing CMakeLists.txt')
           for m in re.findall(r'(?:add_executable|add_library)\((.*?)\)', txt, re.S):
               for tok in re.findall(r'([A-Za-z0-9_/+.-]+\.(?:cpp|cc|hip|mm|rc))', m):
                   if not (root / tok).exists():
