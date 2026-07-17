@@ -33,13 +33,34 @@ bool FlmBridge::init(const Config& cfg) {
     cfg_ = cfg;
     
     LOG_INFO("Loading FLM libraries...");
-    
-    handle_ge_ = dlopen("/opt/fastflowlm/lib/flm/libgemm.so", RTLD_LAZY | RTLD_GLOBAL);
-    handle_qw_ = dlopen("/opt/fastflowlm/lib/flm/libqwen3_npu.so", RTLD_LAZY | RTLD_GLOBAL);
-    dlopen("/opt/fastflowlm/lib/flm/libmha.so", RTLD_LAZY | RTLD_GLOBAL);
-    dlopen("/opt/fastflowlm/lib/flm/libdequant.so", RTLD_LAZY | RTLD_GLOBAL);
-    dlopen("/opt/fastflowlm/lib/flm/liblm_head.so", RTLD_LAZY | RTLD_GLOBAL);
-    
+
+    // Robust FLM lib resolution. The hardcoded /opt/fastflowlm/lib/flm/ no longer
+    // exists on current installs (libs moved to /opt/fastflowlm/lib/). Try, in order:
+    //   $FLM_LIB_DIR/<name>, /opt/fastflowlm/lib/<name>, /opt/fastflowlm/lib/flm/<name>,
+    //   ~/fastflowlm-build/src/lib/<name>, then bare soname (honors LD_LIBRARY_PATH).
+    auto flm_dlopen = [](const char* name) -> void* {
+        const char* env = getenv("FLM_LIB_DIR");
+        const char* dirs[] = {
+            env,
+            "/opt/fastflowlm/lib",
+            "/opt/fastflowlm/lib/flm",
+            "/home/bcloud/fastflowlm-build/src/lib",
+        };
+        char path[512];
+        for (const char* d : dirs) {
+            if (!d || !*d) continue;
+            snprintf(path, sizeof(path), "%s/%s", d, name);
+            if (void* h = dlopen(path, RTLD_LAZY | RTLD_GLOBAL)) return h;
+        }
+        return dlopen(name, RTLD_LAZY | RTLD_GLOBAL); // bare soname via LD_LIBRARY_PATH
+    };
+
+    handle_ge_ = flm_dlopen("libgemm.so");
+    handle_qw_ = flm_dlopen("libqwen3_npu.so");
+    flm_dlopen("libmha.so");
+    flm_dlopen("libdequant.so");
+    flm_dlopen("liblm_head.so");
+
     if (!handle_ge_) { LOG_ERROR("Cannot load libgemm.so: %s", dlerror()); return false; }
     if (!handle_qw_) { LOG_ERROR("Cannot load libqwen3_npu.so: %s", dlerror()); return false; }
     
