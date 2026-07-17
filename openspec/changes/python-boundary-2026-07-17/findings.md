@@ -149,9 +149,36 @@ freshly-reloaded (clean) NPU. Results:
 **Key contrast:** FastFlowLM (`flm run`) does NOT hit this — it ran clean and coherent on
 the same box (A). So the blocker for a home-grown engine is NOT K-tiling or wiring (both
 solved: aiebu gives arbitrary K, flm_bridge now compiles). It is the **NPU DMA/IOMMU
-buffer management** that FLM has solved and the home-grown engines have not (candidate:
-`XRT_BO_FLAGS_HOST_ONLY` allocation vs. FLM's scheme). That is the real gap for B, and
-it is deep XRT/driver work.
+buffer management** in the static-xclbin + aiebu submission path.
+
+### 3c. T12 investigation — four hypotheses tested on hardware, all ruled out (2026-07-17)
+
+The IO_PAGE_FAULT is intermittent (faults at varying layer/context: L4-QKV, L2-GU),
+always in a `HOST_ONLY` BO page. Tested, each with a fresh `modprobe -r/amdxdna` reload:
+
+1. **Concurrency** (parallel O+GU across 2 hwctxs) — serialized O then GU. STILL FAULTS.
+   -> not a concurrent-submission race.
+2. **BO type** — `HOST_ONLY` -> `CACHEABLE`. `CREATE_BO err=-28 ENOSPC` (weights exceed
+   the NPU carveout). -> can't use CACHEABLE for full-resident weights; not the fix.
+3. **Weight footprint** — refactored to STREAM weights (one resident weight BO per
+   context, upload current layer on demand, ~24MB vs ~420MB). STILL FAULTS.
+   -> not total IOMMU footprint of weights.
+4. **M-size overrun** — `flm_bridge.h` says FLM assembles at M=512 padded; padded bA/bC
+   to M>=512 (XM default is 128). STILL FAULTS. -> not a simple bA/bC row overrun.
+
+**Narrowed root cause:** the fault is in the **static xclbin + aiebu-assembled-ELF +
+`xrt::ext::kernel` submission path**, which BOTH broken engines (npu_engine_stdio,
+npu_engine_universal GEMMs) share, and which FLM does NOT use. FLM generates instructions
+live via its own libs (`libgemm.so` `Gemm::generate_seq`, `move_weights`) through ONE
+context and does not fault. Notably, universal ALREADY routes ATTENTION through FlmBridge
+(live gen) successfully — only the projection GEMMs use the faulting static-insts path.
+
+**The fix direction (well-defined, substantial):** route the projection GEMMs (QKV/O/GU/D)
+through `FlmBridge::gen_gemm_instrs` + the AttnCtx-style `init_with_instrs` path, exactly
+as attention already is — instead of the pre-generated `insts_i8_*.txt` + aiebu ELF. That
+replaces the faulting submission path with FLM's proven one while keeping universal's C++
+orchestration. Experiments live in /tmp/uni_{serial,cache,stream,pad}.cpp (not committed;
+none fixed the fault, so the engine source is unchanged).
 
 **Bottom line:** for a working Python-free NPU serving path, use A (FLM). Pursue B only
 as a strategic own-the-stack effort, and target the IOMMU/DMA stability problem, not the

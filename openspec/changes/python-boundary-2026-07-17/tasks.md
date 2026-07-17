@@ -83,9 +83,17 @@ So the real B blocker is NOT kernel shapes (solved) but NPU DMA/IOMMU buffer man
 (candidate: XRT_BO_FLAGS_HOST_ONLY vs FLM's scheme). New tasks:
 - [ ] **T11. Fix build_npu.sh**: add -laiebu -fopenmp; fix flm_bridge.h include path;
       default/require a correct --model-tag (don't derive from model.q4nx filename).
-- [ ] **T12. Root-cause the IO_PAGE_FAULT** in home-grown engines: compare BO allocation
-      flags/lifetimes against FLM (dlopen'd libs). Likely HOST_ONLY vs cacheable/mapped
-      DMA + missing sync, or hwctx/tile budget. This is the true gate for an own-engine.
+- [~] **T12. Root-cause the IO_PAGE_FAULT** in home-grown engines. INVESTIGATED
+      (findings §3c) — 4 hypotheses tested on hardware & ruled out: (1) concurrency
+      [serialized O+GU -> still faults], (2) BO type [CACHEABLE -> ENOSPC], (3) weight
+      footprint [streamed 420MB->24MB -> still faults], (4) M=512 padding [-> still
+      faults]. Narrowed to: the STATIC xclbin + aiebu-ELF + xrt::ext::kernel submission
+      path (shared by stdio + universal GEMMs) faults; FLM's live-instruction path does
+      NOT. universal already runs ATTENTION through FlmBridge fine.
+      FIX (do this): **route projection GEMMs (QKV/O/GU/D) through
+      FlmBridge::gen_gemm_instrs + init_with_instrs**, like attention already is, instead
+      of insts_i8_*.txt. Replaces the faulting submission path with FLM's proven one.
+      This is the true gate for a working own-engine; until then, ship A (flm serve).
 
 ## Follow-ups
 
