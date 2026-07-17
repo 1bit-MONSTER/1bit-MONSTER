@@ -173,12 +173,23 @@ live via its own libs (`libgemm.so` `Gemm::generate_seq`, `move_weights`) throug
 context and does not fault. Notably, universal ALREADY routes ATTENTION through FlmBridge
 (live gen) successfully — only the projection GEMMs use the faulting static-insts path.
 
-**The fix direction (well-defined, substantial):** route the projection GEMMs (QKV/O/GU/D)
-through `FlmBridge::gen_gemm_instrs` + the AttnCtx-style `init_with_instrs` path, exactly
-as attention already is — instead of the pre-generated `insts_i8_*.txt` + aiebu ELF. That
-replaces the faulting submission path with FLM's proven one while keeping universal's C++
-orchestration. Experiments live in /tmp/uni_{serial,cache,stream,pad}.cpp (not committed;
-none fixed the fault, so the engine source is unchanged).
+**The fix (concrete, confirmed by FLM's xclbin layout):** FLM ships ONE generic GEMM
+kernel per model — `<xclbins>/Qwen3-0.6B-NPU2/{attn,dequant,layer,mm}.xclbin`. `mm.xclbin`
+handles ALL GEMM shapes; the K/N are parameterized by instructions generated live by
+`libgemm.so` (`Gemm::generate_seq`). universal instead uses 4 shape-baked xclbins
+(`final_i8_{QKV,O,GU,D}_*.xclbin`) + static `insts_i8_*.txt` — that is the faulting path.
+universal ALREADY runs attention through FLM's `attn.xclbin` + FlmBridge without faulting.
+
+So: replace the 4 static GEMM contexts with a single `mm.xclbin` context driven by
+`FlmBridge::gen_gemm_instrs(M,N,K)` + the `init_with_instrs` pattern (as AttnCtx does),
+and adopt FLM's weight path (`move_weights`/`gen_dequant`). This swaps the faulting
+submission path for FLM's proven one while keeping universal's C++ orchestration — i.e.
+a semi-independent own-engine (your C++ + FLM's kernels). Full independence (own
+instruction gen) remains the 40-col-compiler project.
+
+Effort: substantial refactor of I8Ctx + the per-layer weight path, with intermittent-fault
+hardware validation. Experiments live in /tmp/uni_{serial,cache,stream,pad}.cpp (not
+committed; none fixed the fault, so the engine source is unchanged).
 
 **Bottom line:** for a working Python-free NPU serving path, use A (FLM). Pursue B only
 as a strategic own-the-stack effort, and target the IOMMU/DMA stability problem, not the
