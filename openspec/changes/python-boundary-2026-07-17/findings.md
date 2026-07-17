@@ -83,6 +83,40 @@ Qwen3-0.6B dims (H=1024, NC=28, NV=151936).
 Also: lm_head runs the full 151,936-vocab dot product on **CPU** (~2.2 s/token). That
 belongs on GPU/NPU for a "perfect" engine.
 
+### 3a. T10 root cause (2026-07-17): O/D projections return exactly zero (K>1024)
+
+Repeating-token output was root-caused by instrumenting layer 0 (per-tensor L2):
+
+```
+[L0] h_in=0.729                              input embedding OK
+[L0] qkv_out=34.493   (K=1024,N=4096)        WORKS
+[L0] attn_in(at)=29.312                      O-proj input healthy
+[L0] attn_out=0.000   (K=2048,N=1024)        O-proj kernel returns ZERO
+[L0] mlp_in(su)=440.123 gu_out=187.838       D-proj input healthy (GU K=1024 WORKS)
+[L0] mlp_out=0.000    (K=3072,N=1024)        D-proj kernel returns ZERO
+```
+
+**The NPU int8 GEMM only computes a single K=1024 tile.** QKV and GU (K=1024) work;
+O (K=2048) and D (K=3072) return exactly zero because the `int8_32tile` xclbin does no
+K-accumulation across tiles. With attention and MLP outputs zeroed, the residual stream
+stays ≈ the input embedding, so the tied-embedding lm_head predicts the input token back
+→ the model emits the last prompt token forever (`374 374 374...` / "is is is").
+
+Secondary issue seen in the same trace: activation scale is hardcoded `5.0/127` for every
+matmul, but `mlp_in(su)` L2=440 over 3072 (~8/elem) far exceeds 5.0 — D-proj activations
+would saturate even once the kernel works. Per-matmul (ideally dynamic per-token)
+activation scale is needed.
+
+**Fix paths (both are real NPU-kernel work, not CPU one-liners):**
+1. K-tiling + accumulation in `I8Ctx::go()`: split K into 1024-wide chunks, run the
+   K=1024 kernel per chunk against the matching weight slice, accumulate int results
+   before dequant. Requires per-shape instruction streams / BO sizing that support this.
+2. Build/obtain xclbins that natively handle K=2048 (O) and K=3072 (D).
+3. Or retarget the validated FLM engine (94 tok/s) which already generates coherent text.
+
+Until one of these lands, `npu_engine_stdio` builds and runs cleanly (T4) but does NOT
+produce correct output. Do not wire it into serving yet.
+
 **Alternative:** retarget the already-validated FLM engine (94 tok/s) instead of
 hardening this orphan.
 
