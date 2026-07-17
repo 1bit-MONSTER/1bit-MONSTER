@@ -12,6 +12,7 @@ void ternary_gemv_phase5_halo_f16_launch(const void*, const void*, float, const 
 void ternary_gemv_sherry_f16_launch(const void*, const void*, float, const void*, void*, int, int, void*);
 void ternary_gemv_tq1_halo_f16_launch(const void*, const void*, float, const void*, void*, int, int, void*);
 void ternary_gemv_wmma_launch(const void*, const void*, float, const void*, void*, int, int, void*);
+void ternary_gemv_block_scaled_launch(const void*, const void*, float, void*, int, int, void*);
 void rcpp_standalone_launch_wmma_4x4_vec(const void*, const void*, void*, int, int, int, void*);
 }
 
@@ -52,6 +53,27 @@ extern "C" rcpp_status_t rcpp_ternary_gemv_tq1_halo_f16(const void* packed, cons
     if(M <= 0 || K_padded <= 0) return RCPP_INVALID_ARG;
     if(K_padded % 20 != 0) return RCPP_INVALID_ARG;
     ternary_gemv_tq1_halo_f16_launch(packed, x_i8, x_scale, row_scales, y_f16, M, K_padded, stream);
+    return RCPP_OK;
+}
+
+// Block-scaled ternary GEMV: no row_scales (scales are per-block, in packed data).
+extern "C" rcpp_status_t rcpp_ternary_gemv_block_scaled(const void* packed, const void* x_i8, float x_scale, void* y, int M, int K, void* stream) {
+    if(!packed || !x_i8 || !y) return RCPP_INVALID_ARG;
+    if(M <= 0 || K <= 0) return RCPP_INVALID_ARG;
+    ternary_gemv_block_scaled_launch(packed, x_i8, x_scale, y, M, K, stream);
+    return RCPP_OK;
+}
+
+// Standard-arity wrapper matching rcpp_ternary_gemv_* dispatch convention.
+// row_scales is unused (BST has per-block scales inline in packed data).
+extern "C" rcpp_status_t rcpp_ternary_gemv_bst(
+    const void* packed, const void* x_i8, float x_scale,
+    const void* row_scales, void* y, int M, int K, void* stream)
+{
+    (void)row_scales;
+    if(!packed || !x_i8 || !y) return RCPP_INVALID_ARG;
+    if(M <= 0 || K <= 0) return RCPP_INVALID_ARG;
+    ternary_gemv_block_scaled_launch(packed, x_i8, x_scale, y, M, K, stream);
     return RCPP_OK;
 }
 
@@ -102,7 +124,6 @@ extern "C" rcpp_status_t rcpp_ternary_pack_pk_i4(const int8_t* ternary_host, int
                        unpermuted.data() + (std::size_t)i * (K / 2) + (std::size_t)j * K1_bytes,
                        K1_bytes);
 
-    // Stage C: within-8 nibble permute, accounting for block-reshape layout
     for(int i = 0; i < N; ++i)
         for(int j = 0; j < K; j += 8) {
             const int j_group = j / K1;
