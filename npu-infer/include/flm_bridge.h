@@ -100,6 +100,10 @@ private:
     void (*gemm_generate_seq_)(void*, void*, unsigned, unsigned, unsigned,
                                 unsigned, bool, int, unsigned) = nullptr;
     void (*cmds2seq_)(void*) = nullptr;
+    // MHA sequence generator (qwen3_npu_sequence::gen_mha_engine_seq).
+    // Was used in flm_bridge.cpp (init + gen_attn_instrs) but never declared here,
+    // so the file did not compile. Signature matches the dlsym cast in init().
+    void (*gen_mha_seq_)(void*, void*, unsigned, unsigned) = nullptr;
 };
 
 #endif // FLM_BRIDGE_H

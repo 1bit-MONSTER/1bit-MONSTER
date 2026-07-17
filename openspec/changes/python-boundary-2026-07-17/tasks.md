@@ -42,6 +42,38 @@ Ordered by value/risk. Each is independent; do not batch.
       `qwen3-0.6b-FLM`). Eliminates torch + the Python HTTP wrapper + the Python
       decode loop in one move — a fully Python-free serving path.
 
+## B. The correct native engine + what was blocking it (2026-07-17)
+
+B was framed as "K-tile the O/D kernels in npu_engine_stdio." Investigation showed that
+is the WRONG engine to invest in, and the right one already exists:
+
+- `npu_engine_stdio.cpp` uses STATIC pre-compiled xclbins that only do K=1024 -> O/D
+  return zero (T10). Dead-end for correctness.
+- `engine/npu/src/npu_engine_universal.cpp` (999 LoC, the audit's ~42 tok/s auto-detect
+  engine) uses **`FlmBridge::gen_gemm_instrs(M,N,K)`** which dlopens FLM's `libgemm.so`
+  and generates NPU instructions for **arbitrary K** (incl. O K=2048, D K=3072). It also
+  already uses the SAME `_exit(0)` teardown fix we applied in T4 (independent
+  confirmation that fix is correct). This is the right "own-C++-engine" base.
+
+Two pre-existing bugs were blocking `flm_bridge` (and thus npu_engine_universal). BOTH
+FIXED this change:
+1. **Wrong dlopen paths** — hardcoded `/opt/fastflowlm/lib/flm/*.so` no longer exists;
+   libs are at `/opt/fastflowlm/lib/`. `init()` returned false ("Cannot load libgemm.so").
+   Fix: `flm_dlopen()` helper tries `$FLM_LIB_DIR`, `/opt/fastflowlm/lib`,
+   `/opt/fastflowlm/lib/flm`, `~/fastflowlm-build/src/lib`, then bare soname.
+2. **Header missing `gen_mha_seq_`** — used in flm_bridge.cpp (init + gen_attn_instrs)
+   but never declared in flm_bridge.h, so the file never compiled. Added the member.
+   `flm_bridge.cpp` now compiles clean.
+
+Dependency note: npu_engine_universal is "your C++ orchestration + FLM's dlopen'd
+kernels" — semi-independent. FULL FastFlowLM independence = your own instruction
+generation = the 40-column NPU2 compiler (separate strategic project, weeks+).
+
+**Recommendation:** for a working Python-free serving path, use A (flm serve + Rust
+router) now. For your own engine, invest in `npu_engine_universal` (now unblocked), NOT
+npu_engine_stdio. Next step: build + run npu_engine_universal end-to-end on a clean NPU
+and verify coherent output (as done for FLM in A).
+
 ## Follow-ups
 
 - [ ] **T7. Move lm_head off CPU** in the NPU engine (151,936-vocab dot product is
