@@ -20,7 +20,7 @@ echo "Repo: bong-water-water-bong/$MODEL_NAME"
 huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
 
 # Create model card
-cat > /tmp/model_card.md << EOF
+cat > /tmp/model_card.md <<'EOF'
 ---
 language: en
 license: apache-2.0
@@ -84,6 +84,11 @@ This model is part of the [1bit.systems](https://github.com/bong-water-water-bon
 model catalog for AMD Strix Halo — an open-source inference engine optimized
 for AMD Ryzen AI Max+ processors.
 EOF
+
+# The heredoc above is quoted (<<'EOF') so the markdown code-fence backticks
+# are written literally instead of being run as command substitution. Inject
+# the dynamic model name afterward.
+sed -i "s|\$MODEL_NAME|$MODEL_NAME|g" /tmp/model_card.md
 
 # Upload
 huggingface-cli upload "bong-water-water-bong/$MODEL_NAME" "$MODEL_DIR" \
