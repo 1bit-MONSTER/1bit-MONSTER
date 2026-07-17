@@ -102,6 +102,28 @@ So the real B blocker is NOT kernel shapes (solved) but NPU DMA/IOMMU buffer man
       rebuild insts+xclbin as a matched pair via torch2aie _build_kernel. Until then, ship
       A (flm serve).
 
+## T12 FIX PROVEN (2026-07-17) + integration plan
+
+The fix is validated on hardware (findings §3e): the torch2aie toolchain builds matched
+xclbin+insts that run fault-free & bit-exact on the NPU, including a FULL-LAYER q4nx
+kernel (all 6 projections, one hw_context). This is the path to a working own-engine.
+
+- [x] **T12a. Prove toolchain + matched kernel on hardware.** DONE:
+      run_kernel_main16_q4nx.py --mode q and --mode full both PASS (mismatches=0, no
+      IO_PAGE_FAULT). render group = no sudo. Same 0x901 kernel signature as universal.
+- [ ] **T13. Build production full-layer q4nx kernel at qwen3-0.6b dims** via
+      cases/full_layer_engine_generate.py + npu_build.compile_mlir (the microbench uses a
+      fixed fixture; need real dims). Output: matched design.xclbin + design.bin.
+- [ ] **T14. New C++ engine driving the full-layer kernel.** Replace universal's 4 int8
+      contexts with ONE full-layer q4nx context: load q4nx weight chunks (make_q4nx_chunk
+      layout, NOT int8 packB), one hw_context, launch per layer via xrt::ext::kernel
+      (bo0=activation, bo1=q4nx weights, bo2=output records), parse the 17-dword record
+      output. This is FLM's layer.xclbin architecture, self-built. Eliminates stale-insts
+      fault + multi-hwctx collision + int8 roundtrip in one move.
+- [ ] **T15. Wire attention + lm_head + sampler** around the full-layer kernel (attention
+      already works via FlmBridge; lm_head can stay CPU initially) and validate coherent
+      end-to-end generation, then benchmark vs FLM.
+
 ## Follow-ups
 
 - [ ] **T7. Move lm_head off CPU** in the NPU engine (151,936-vocab dot product is
