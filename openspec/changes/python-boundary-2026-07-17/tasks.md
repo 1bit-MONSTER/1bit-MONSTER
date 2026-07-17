@@ -33,9 +33,14 @@ Ordered by value/risk. Each is independent; do not batch.
 - [ ] **T5. Pin known-good xclbin set + add `r.wait()` timeout** in the NPU engine so a
       faulting kernel fails loudly instead of hanging the device. (findings §3, bug 2)
 - [ ] **T6. Replace the torch decode loop** (`tools/npu_runner.py`) in
-      `daemon/npu-cppd.py` with the native `npu_engine_stdio` binary — ONLY after T4+T5.
-      Note protocol mismatch: daemon speaks `{tokens,max_new_tokens}`; engine speaks
-      per-token `{token}`/`{continue}`. Prompt-feed + sample loop must move to C++.
+      `daemon/npu-cppd.py`. RETARGETED (2026-07-17): do NOT use the buggy
+      `npu_engine_stdio` (T10). Instead proxy to `flm serve` — FastFlowLM is the
+      validated native NPU engine and VERIFIED coherent on hardware today
+      (`The capital of France is **Paris**.`). It already speaks OpenAI HTTP
+      (`flm serve <tag> --port N`). Simplest path: retire the Python daemon entirely,
+      run `flm serve` behind the Rust unified-router (which already routes to
+      `qwen3-0.6b-FLM`). Eliminates torch + the Python HTTP wrapper + the Python
+      decode loop in one move — a fully Python-free serving path.
 
 ## Follow-ups
 
@@ -55,6 +60,19 @@ Ordered by value/risk. Each is independent; do not batch.
 - [ ] **T9. De-orphan the good engines.** `npu_engine_stdio.cpp` and `tokenize.cpp`
       are not referenced by any CMake/Makefile/build.sh. Add build targets so the next
       engine attempt starts from the last working one instead of a fresh `engine_final_*`.
+
+## A. Native decode target established (2026-07-17)
+
+FLM (FastFlowLM, `/usr/bin/flm` + `fastflowlm-build`) is the native NPU decode engine:
+- Verified coherent: `echo 'The capital of France is' | flm run qwen3:0.6b` -> "**Paris**".
+- Native C++/NPU, no Python, no torch in its decode path.
+- Exposes `flm run` (interactive) and `flm serve` (OpenAI `/v1/chat/completions`).
+- The Rust router's SMALL_MODEL (`qwen3-0.6b-FLM`) already targets it.
+
+Consequence: `npu_engine_stdio` (the orphan we fixed in T4 / diagnosed in T10) is
+EXPERIMENTAL ONLY — an independent-engine effort, not required for a working serving
+path. B (K-tiling the O/D kernels) is now OPTIONAL/strategic: pursue it only to own the
+full stack independent of FastFlowLM; it is not on the critical path to Python-free serving.
 
 ## Decisions taken in this change
 
