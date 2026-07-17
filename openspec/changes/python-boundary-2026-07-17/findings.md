@@ -68,11 +68,14 @@ Qwen3-0.6B dims (H=1024, NC=28, NV=151936).
 - With base `int8_32tile` xclbins → **works**: `{"token":9707,"ms":2242}` then
   `free(): invalid size` (heap corruption on the C++ side).
 
-**Two fixes required before this can replace the Python decode path:**
-1. **`free(): invalid size`** — heap bug. Likely a bad free/size in the
-   `dequant_i8_to_float` buffers, the per-layer packB path, or KV/vector sizing.
-   Reproduce with base `int8_32tile` xclbins, run under `valgrind` or ASan
-   (`-fsanitize=address`) to localize.
+**Fixes:**
+1. **`free(): invalid size`** — FIXED (2026-07-17). ASan showed it is NOT a data heap
+   bug: it's a null-vtable SEGV in `I8Ctx::~I8Ctx()` at exit, destroying
+   `shared_ptr<xrt::xclbin_impl>`. Root cause = XRT static-destruction-order fiasco
+   (XRT globals torn down before these local dtors run). Fix = `std::_Exit(0)` after
+   the stdin loop, skipping the cross-boundary teardown (OS reclaims). Token gen itself
+   was already correct; only shutdown crashed. Verified: exit 0, no ASan/glibc error.
+   NOTE: output repeats token 9707 — separate sampling/RoPE bug (tracked T10).
 2. **xclbin pinning** — the engine hardcodes `int8/` + `qwen3_0_6b` names; `v6`
    IOMMU-faults. Pin a known-good set (base `int8_32tile`) and add a `wait()` timeout
    so a bad kernel dispatch fails loudly instead of hanging.
