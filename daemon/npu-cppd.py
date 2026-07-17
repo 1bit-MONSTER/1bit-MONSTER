@@ -90,40 +90,39 @@ class CppEngineBackend:
     def stop(self):
         self.ready = False
 
+    # Native tokenizer: engine/fusion/tokenize (pure C++17, bit-exact with HF).
+    # Build with: make -C engine/fusion tokenize
+    # This replaces the previously-wired paths, which were BOTH BROKEN:
+    #   - fused-engine --tokenize-only : emitted no token output
+    #   - engine/npu/tokenizer/detokenize : mangled byte-level spaces (Hello,\xc4\xa0world)
+    _TOKENIZE_BIN = str(REPO_ROOT / "engine/fusion/tokenize")
+
     def tokenize(self, text: str) -> list:
         if not _TOKENIZER_JSON:
             return []
         try:
             r = subprocess.run(
-                [str(REPO_ROOT / "engine/fusion/zig-out/bin/fused-engine"),
-                 "--tokenize-only", text],
-                input=text.encode(), capture_output=True, timeout=10)
+                [self._TOKENIZE_BIN, "--model", _TOKENIZER_JSON, "--encode", text],
+                capture_output=True, timeout=10)
             if r.returncode == 0:
                 return [int(t) for t in r.stdout.decode().strip().split() if t.strip()]
         except Exception:
             pass
-
-        # Fallback: use C++ tokenizer CLI
-        try:
-            r = subprocess.run(
-                [str(REPO_ROOT / "engine/fusion/zig-out/bin/fused-engine"),
-                 "--tokenize-only", "--tokenizer", _TOKENIZER_JSON, text],
-                input=text.encode(), capture_output=True, timeout=10)
-            return [int(t) for t in r.stdout.decode().strip().split() if t.strip()]
-        except Exception:
-            return []
+        return []
 
     def detokenize(self, tokens: list) -> str:
         if not _TOKENIZER_JSON or not tokens:
             return ""
         try:
-            inp = " ".join(str(t) for t in tokens)
             r = subprocess.run(
-                [str(REPO_ROOT / "engine/npu/tokenizer/detokenize"), _TOKENIZER_JSON],
-                input=inp.encode(), capture_output=True, timeout=10)
-            return r.stdout.decode().strip()
+                [self._TOKENIZE_BIN, "--model", _TOKENIZER_JSON, "--decode",
+                 *[str(t) for t in tokens]],
+                capture_output=True, timeout=10)
+            if r.returncode == 0:
+                return r.stdout.decode()
         except Exception:
-            return " ".join(str(t) for t in tokens)
+            pass
+        return " ".join(str(t) for t in tokens)
 
     def chat(self, model: str, messages: list, **kwargs) -> dict:
         if not self.ready or not _TORCH2AIE_ROOT:
