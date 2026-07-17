@@ -228,6 +228,7 @@ set(RCPP_SOURCES
     kernels/ternary_gemv_sherry.hip
     kernels/ternary_gemv_tq1_halo.hip
     kernels/ternary_gemv_wmma.hip
+    kernels/ternary_gemv_block_scaled.hip
     kernels/rotorquant_pack.hip
     kernels/hadamard_rotate_butterfly.hip
     kernels/zaya_moe_ternary_gemv.hip
@@ -404,6 +405,9 @@ rocm_hip_target(test_sherry_e2e tests/test_sherry_e2e.cpp)
 # -- tests/test_zaya_moe_gemv : Zaya MoE ternary GEMV functional test ---------
 rocm_hip_target(test_zaya_moe_gemv tests/test_zaya_moe_gemv.cpp)
 
+# -- test_block_scaled_ternary : Block-scaled ternary GEMV functional test ----
+rocm_hip_target(test_block_scaled_ternary tests/test_block_scaled_ternary.cpp)
+
 # -- tests/test_cca_attn : Zaya CCA attention kernel test ---------------------
 add_executable(test_cca_attn tests/test_cca_attn.cpp kernels/zaya_cca_attn.hip)
 set_source_files_properties(tests/test_cca_attn.cpp kernels/zaya_cca_attn.hip PROPERTIES LANGUAGE HIP)
@@ -450,12 +454,7 @@ target_compile_options(zaya_server PRIVATE
 target_link_libraries(zaya_server PRIVATE rocm_cpp hip::host hip::device httplib::httplib nlohmann_json::nlohmann_json)
 set_target_properties(zaya_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
-# -- kernels/zaya_moe_tiled_gemv.hip : WMMA-tiled MoE expert FFN kernel ---------------
-# Part of zaya_full/zaya_server at link time; no standalone target needed.
-# The WMMA kernel is compiled into the `rocm_cpp` device library or linked
-# directly. To verify the WMMA kernel in isolation, use test_zaya_moe_gemv.
-
-# -- tests/test_wmma_i8_gemv : WMMA INT8×INT8 GEMV functional test -------------
+# -- tests/test_wmma_i8_gemv : WMMA INT8*INT8 GEMV functional test -------------
 # Verifies Hadamard-rotated INT8 decode against scalar reference.
 # Build: cmake --build . --target test_wmma_i8_gemv -j8
 # Run:   ./test_wmma_i8_gemv
@@ -479,7 +478,7 @@ add_executable(test_medusa_skeleton tests/test_medusa_skeleton.cpp)
 target_compile_options(test_medusa_skeleton PRIVATE -Wall -Wextra -Wno-unused-result)
 target_link_libraries(test_medusa_skeleton PRIVATE rocm_cpp)
 
-# ─── CTest registration (issue #233) ─────────────────────────────────────
+# --- CTest registration (issue #233) ---
 # Labels:
 #   host           — no GPU / no model: always runnable (the CI gate).
 #   gpu_required   — links HIP kernels; needs a physical gfx1151 to pass.
@@ -505,6 +504,8 @@ add_test(NAME test_bonsai_gemv             COMMAND test_bonsai_gemv)
 set_tests_properties(test_bonsai_gemv       PROPERTIES LABELS "gpu_required")
 add_test(NAME test_zaya_moe_gemv           COMMAND test_zaya_moe_gemv)
 set_tests_properties(test_zaya_moe_gemv     PROPERTIES LABELS "gpu_required")
+add_test(NAME test_block_scaled_ternary    COMMAND test_block_scaled_ternary)
+set_tests_properties(test_block_scaled_ternary PROPERTIES LABELS "gpu_required")
 add_test(NAME test_cca_attn                COMMAND test_cca_attn)
 set_tests_properties(test_cca_attn          PROPERTIES LABELS "gpu_required")
 add_test(NAME test_wmma_i8_gemv            COMMAND test_wmma_i8_gemv)
@@ -524,7 +525,7 @@ target_link_libraries(bitnet_decode PRIVATE rocm_cpp hip::host hip::device
                                             httplib::httplib nlohmann_json::nlohmann_json)
 set_target_properties(bitnet_decode PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
-# -- tools/hadamard_export : F16 GGUF → Hadamard-rotated INT8 .h1b converter --
+# -- tools/hadamard_export : F16 GGUF -> Hadamard-rotated INT8 .h1b converter --
 add_executable(hadamard_export tools/hadamard_export.cpp)
 target_compile_options(hadamard_export PRIVATE -O3 -Wall -Wno-unused-result -std=c++17)
 target_link_libraries(hadamard_export PRIVATE rocm_cpp)
@@ -619,7 +620,7 @@ add_custom_target(zaya_agent ALL
     COMMAND ${CMAKE_COMMAND} -E copy
         "$<TARGET_FILE:unified_server>"
         "${CMAKE_BINARY_DIR}/zaya_agent"
-    COMMENT "Creating zaya_agent → unified_server copy")
+    COMMENT "Creating zaya_agent -> unified_server copy")
 # Add rpath to unified_server for standalone deployment
 set_property(TARGET unified_server APPEND PROPERTY
     LINK_OPTIONS "-Wl,-rpath,\$ORIGIN")
@@ -645,7 +646,7 @@ if(RCPP_HAVE_CK)
     add_subdirectory(ck-prefill)
 endif()
 
-# ── Helper: create a HIP test/bench executable ────────────────────────
+# --- Helper: create a HIP test/bench executable ---
 # Usage: rocm_hip_target(name source1 [source2 ...])
 # Creates an executable linked against rocm_cpp + HIP with standard flags.
 
@@ -679,7 +680,7 @@ target_link_options(npu_engine_hybrid PRIVATE
 set_target_properties(npu_engine_hybrid PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 
-# ── DSpark full pipeline: Eagle3 draft (NPU/CPU) + GPU verify ─────────────
+# -- DSpark full pipeline: Eagle3 draft (NPU/CPU) + GPU verify ---------------
 add_executable(dspark_full
     tools/dspark_full.cpp
     engine/fusion/cpu_layer.cpp)
@@ -698,7 +699,7 @@ target_link_options(dspark_full PRIVATE
 set_target_properties(dspark_full PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
-# ── DSpark GPU bench: full GPU-accelerated speculative decode ──────────────
+# -- DSpark GPU bench: full GPU-accelerated speculative decode --------------
 add_executable(dspark_gpu_bench
     tools/dspark_gpu_bench.cpp
     engine/fusion/cpu_layer.cpp)
@@ -719,7 +720,7 @@ target_link_options(dspark_gpu_bench PRIVATE
 set_target_properties(dspark_gpu_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
-# ── Q4NX → TRG converter ───────────────────────────────────────────────
+# -- Q4NX -> TRG converter --
 add_executable(trg_save
     tools/trg_save.cpp
     engine/fusion/cpu_layer.cpp)
@@ -733,7 +734,7 @@ target_link_libraries(trg_save PRIVATE
 set_target_properties(trg_save PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
-# ── OSCAR calibration tool ─────────────────────────────────────────────────
+# -- OSCAR calibration tool --
 add_executable(oscar_calib
     tools/oscar_calib.cpp
     engine/fusion/cpu_layer.cpp)
@@ -747,7 +748,7 @@ target_link_libraries(oscar_calib PRIVATE
 set_target_properties(oscar_calib PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
-# ── OSCAR INT2 quant + decode HIP library ─────────────────────────────────
+# -- OSCAR INT2 quant + decode HIP library --
 add_library(oscar SHARED
     src/oscar.cpp
     kernels/oscar_quant.hip)
