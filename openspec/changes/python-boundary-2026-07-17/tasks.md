@@ -151,6 +151,36 @@ kernel (all 6 projections, one hw_context). This is the path to a working own-en
       already works via FlmBridge; lm_head can stay CPU initially) and validate coherent
       end-to-end generation, then benchmark vs FLM.
 
+## Session end state (2026-07-17) — handoff to agent ba
+
+### Proven on hardware
+- T12: matched instruction stream → **zero IO_PAGE_FAULT**. Microbench full-mode passes
+  (658μs, mismatches=0, on clean NPU). The stale static insts_i8_*.txt root cause is
+  confirmed and fix mechanism validated.
+- T13: self-built full-layer Q4NX kernel at qwen3-0.6b dims **builds clean** via
+  torch2aie toolchain. For the first time, it submits to the NPU without DMA faults.
+- C1/C2/C3 fixes: hub BD bank remap, lock validator sync, column-tile BD uniqueness.
+  All committed to torch2aie fork (355b143).
+
+### Remaining: the ERT timeout
+Full-layer kernel (`run_full_layer.py --layer 0 --current-token 31`) and weight-stream
+microbench both return `ERT_CMD_STATE_TIMEOUT` — NPU hardware watchdog, not software.
+Key diagnostics established:
+- Not cache-size dependent (fails at token 1 too)
+- Not token-position dependent (same with current-token=1)
+- Not weight-volume (168 chunks vs microbench's 120 — both same pipeline design)
+- Not alloc-scheme (only `basic-sequential` is used)
+- Probability: inter-tile lock deadlock in the 28-tile full infrastructure
+  (not an issue in the 16-tile microbench)
+
+### Suggested next for ba
+1. Build main16-only full-layer (skip hub/shape/attention) via modified generator —
+   if it works, stall is in hub/attention path.
+2. Systematic lock-value trace through compact_dataflow.py across all 28 tiles.
+3. If resolution is deep ERT/deadlock, consider: FLM `flm serve` path (A) works now.
+
+All commits in torch2aie (355b143 + MIGRATION-4to8-GAPMAP.md for the gap-map).
+
 ## Follow-ups
 
 - [ ] **T7. Move lm_head off CPU** in the NPU engine (151,936-vocab dot product is
