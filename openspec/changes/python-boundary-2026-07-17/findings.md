@@ -173,6 +173,37 @@ live via its own libs (`libgemm.so` `Gemm::generate_seq`, `move_weights`) throug
 context and does not fault. Notably, universal ALREADY routes ATTENTION through FlmBridge
 (live gen) successfully — only the projection GEMMs use the faulting static-insts path.
 
+### 3e. T12 FIX PROVEN ON HARDWARE (2026-07-17): toolchain-built matched kernel runs fault-free
+
+The torch2aie/mlir-aie toolchain works on THIS box and builds matched xclbin+insts pairs
+that run on the NPU with ZERO IO_PAGE_FAULT and bit-exact output:
+
+```
+cd ~/torch2aie/examples/qwen3-decode-layer
+export PYTHONPATH=~/torch2aie/toolchain/mlir_aie/python:$PWD:$PWD/cases
+export LD_LIBRARY_PATH=~/torch2aie/toolchain/xrt/lib
+~/torch2aie/.venv/bin/python3 run_kernel_main16_q4nx.py --mode q      # PASS mismatches=0
+~/torch2aie/.venv/bin/python3 run_kernel_main16_q4nx.py --mode full   # PASS mismatches=0
+```
+
+- `--mode full` runs ALL SIX projections (q,k,v,o,upgate,down) in ONE kernel / ONE
+  hw_context: `PASS ... mismatches=0, max_abs=7.6e-06, NPU 579.7us`, no fault.
+- Access: user is in `render` group -> NO sudo needed. Toolchain in
+  `~/torch2aie/toolchain/{aietools,mlir_aie,xrt}`, venv `~/torch2aie/.venv`.
+- The generated kernel has the SAME `dpu_kernel_id=0x901` / bo0..bo4 signature as
+  universal's and FLM's -> universal's `xrt::ext::kernel` launch path can drive it.
+- Native **Q4NX** (matches `model.q4nx`) — no int8 roundtrip.
+- Artifacts: `build/qwen3-kernel-main16-q4nx-full/{design.xclbin,design.bin}`.
+
+This is the end of the T12 mystery: a freshly-built MATCHED instruction stream runs
+fault-free, confirming the fault was the stale/mismatched static `insts_i8_*.txt`. The
+full-layer single-kernel design ALSO eliminates the multi-hwctx column collision (one
+context, not four). Integration plan in tasks.md (T13).
+
+Note: the `--mode full` microbench uses a fixed test fixture (120 weight chunks). The
+production full-layer design is `cases/full_layer_engine_generate.py` — that is the target
+to build at real qwen3-0.6b dims for integration.
+
 ### 3d. T12 DEFINITIVE root cause (2026-07-17): the static instruction stream
 
 Dumped kernel metadata (`xclbinutil --dump-section EMBEDDED_METADATA`) for both
