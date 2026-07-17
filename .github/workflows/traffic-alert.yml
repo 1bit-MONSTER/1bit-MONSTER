@@ -23,13 +23,10 @@ jobs:
       - name: Fetch GitHub Traffic Data
         id: traffic
         env:
-          # Fine-grained PAT scoped to traffic (repo Administration: read) only.
-          # Falls back to GITHUB_TOKEN so the workflow still parses if the
-          # secret is unset, but the API calls will then fail loudly (see #159).
           GH_TOKEN: ${{ secrets.TRAFFIC_PAT || secrets.GITHUB_TOKEN }}
         run: |
           if [ -z "${{ secrets.TRAFFIC_PAT }}" ]; then
-            echo "::warning::TRAFFIC_PAT secret not set — falling back to GITHUB_TOKEN, which no longer has push-level access; traffic reads will fail. Add a fine-grained PAT scoped to Administration:read. (#159)"
+            echo "::warning::TRAFFIC_PAT not set — falling back to GITHUB_TOKEN (may lack traffic permissions)"
           fi
           # Use github.repository (always available) and extract the repo name
           OWNER="${GITHUB_REPOSITORY_OWNER}"
