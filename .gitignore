@@ -68,3 +68,4 @@ build-*/
 
 # native tokenizer tool binary (build via: make -C engine/fusion)
 engine/fusion/tokenize
+changes/
