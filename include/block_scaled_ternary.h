@@ -1,26 +1,3 @@
-// Block-Scaled Ternary Format — 16-element blocks with FP8 shared scale.
-//
-// Motivated by NVFP4/MXFP4 research (arXiv:2509.23202, 0xsero deep-dive):
-// per-block scaling at 16-element granularity provides ~0.3-0.5 perplexity
-// improvement over per-row or per-tensor scaling, with only ~7% storage
-// overhead (5 bytes per 16 values = 2.5 b/elem vs 2 b/elem raw ternary).
-//
-// Layout per block (5 bytes):
-//   [3:0]  packed16       : 16 ternary values, 2 bits each, packed uint32 (LE)
-//   [4]    block_scale    : FP8 E4M3 (1+4+3, ±max FP8 value)
-//
-// Ternary encoding (2 bits per value):
-//   00  ->  0
-//   01  -> +1
-//   10  -> -1
-//   11  ->  0  (reserved)
-//
-// For a weight matrix [rows, cols]:
-//   blocks_per_row = (cols + 15) / 16
-//   Total storage = rows * blocks_per_row * 5 bytes
-//
-// Dequant: out[i] = ternary_decode(packed[bid][i]) * block_scale[bid]
-
 #ifndef BLOCK_SCALED_TERNARY_H
 #define BLOCK_SCALED_TERNARY_H
 
@@ -34,33 +11,64 @@ static constexpr int BST_BLOCK_BYTES  = 5;
 static constexpr int BST_BITS_PER_VAL = 2;
 static constexpr uint8_t FP8_E4M3_NAN = 0xFF;
 
+// Precomputed FP32 normal bit patterns for FP8 E4M3 subnormal mantissas (e=0).
+// For m in 1..7: value = m/8 * 2^(-6). These are encoded as FP32 normals
+// with the appropriate exponent and mantissa.
+static const uint32_t FP8_SUBNORM_FP32[8] = {
+    0,           // m=0 -> 0.0
+    0x3B000000u, // m=1 -> 1/8 * 2^-6 = 2^-9
+    0x3B800000u, // m=2 -> 2/8 * 2^-6 = 2^-8
+    0x3BC00000u, // m=3 -> 3/8 * 2^-6 = 3*2^-9
+    0x3C000000u, // m=4 -> 4/8 * 2^-6 = 2^-7
+    0x3C200000u, // m=5 -> 5/8 * 2^-6 = 5*2^-9
+    0x3C400000u, // m=6 -> 6/8 * 2^-6 = 3*2^-8
+    0x3C600000u, // m=7 -> 7/8 * 2^-6 = 7*2^-9
+};
+
 inline float fp8e4m3_to_fp32(uint8_t fp8) {
-    if (fp8 == FP8_E4M3_NAN) return NAN;
-    uint32_t sign     = (fp8 >> 7) & 1;
-    uint32_t exponent = (fp8 >> 3) & 0xF;
-    uint32_t mantissa = fp8 & 0x7;
-    uint32_t fp32_bits;
-    if (exponent == 0)
-        fp32_bits = (sign << 31) | ((127 - 6 - 1) << 23) | (mantissa << 20);
-    else if (exponent == 0xF)
-        fp32_bits = 0x7FFFFFFF;
-    else
-        fp32_bits = (sign << 31) | ((exponent + 120) << 23) | (mantissa << 20);
-    float result;
-    std::memcpy(&result, &fp32_bits, sizeof(result));
-    return result;
+    if (fp8 == FP8_E4M3_NAN) {
+        uint32_t bits = 0x7FC00000u;  // quiet NaN
+        float r; std::memcpy(&r, &bits, sizeof(r)); return r;
+    }
+    uint32_t s = (fp8 >> 7) & 1, e = (fp8 >> 3) & 0xF, m = fp8 & 0x7;
+    uint32_t bits;
+    if (e == 0) {
+        // Subnormal: lookup table (pre-verified against float computation)
+        bits = FP8_SUBNORM_FP32[m] | (s << 31);
+    } else {
+        // Normal: value = (-1)^s * 2^(e-7) * (1 + m/8)
+        bits = (s << 31) | ((e + 120) << 23) | (m << 20);
+    }
+    float r; std::memcpy(&r, &bits, sizeof(r)); return r;
 }
 
 inline uint8_t fp32_to_fp8e4m3(float v) {
     if (std::isnan(v)) return FP8_E4M3_NAN;
+    if (v > 448.0f) v = 448.0f;
+    if (v < -448.0f) v = -448.0f;
+    if (v > -0.0009765625f && v < 0.0009765625f) v = 0.0f;
+
     uint32_t bits;
     std::memcpy(&bits, &v, sizeof(bits));
-    uint32_t sign     = (bits >> 31) & 1;
-    int32_t  exponent = ((bits >> 23) & 0xFF) - 127;
-    uint32_t mantissa = (bits >> 20) & 0x7;
-    if (exponent > 8)  exponent = 8;
-    if (exponent < -6) exponent = -6;
-    return (sign << 7) | ((uint32_t)(exponent + 7) << 3) | mantissa;
+    uint32_t s        = (bits >> 31) & 1;
+    int32_t  exp      = ((bits >> 23) & 0xFF) - 127;
+    uint32_t mant_rne = (bits >> 19) & 0xF;  // top 4 bits for RNE
+
+    // Round to nearest even on bit 19
+    uint32_t lsb    = (bits >> 20) & 1;
+    uint32_t round  = (bits >> 19) & 1;
+    uint32_t sticky = (bits & 0x7FFFF) != 0 ? 1 : 0;
+    int rne = (int)(round & (lsb | sticky));
+    mant_rne = (mant_rne + rne);
+    if (mant_rne > 15) { mant_rne >>= 1; exp++; }
+    mant_rne >>= 1;  // now 3 bits
+    if (mant_rne > 7) { mant_rne = 0; exp++; }
+
+    // Clamp to E4M3 range
+    if (exp < -6) return (s << 7);  // underflow to signed zero
+    if (exp > 8) { exp = 8; mant_rne = 7; }
+
+    return (s << 7) | ((uint32_t)(exp + 7) << 3) | (mant_rne & 0x7);
 }
 
 inline uint32_t ternary_pack_16(const int8_t values[16]) {
@@ -82,20 +90,24 @@ inline void ternary_unpack_16(uint32_t packed, int8_t out[16]) {
     }
 }
 
-inline float block_scaled_ternary_dequant(const uint8_t block[BST_BLOCK_BYTES], int elem_idx) {
+inline float block_scaled_ternary_dequant(
+    const uint8_t block[BST_BLOCK_BYTES], int elem_idx)
+{
     assert(elem_idx >= 0 && elem_idx < 16);
     uint32_t packed;
     std::memcpy(&packed, block, sizeof(packed));
     uint32_t bits = (packed >> (elem_idx * 2)) & 0x3;
-    int8_t   tv   = (bits == 1) ? 1 : (bits == 2) ? -1 : 0;
+    int8_t tv = (bits == 1) ? 1 : (bits == 2) ? -1 : 0;
     return (float)tv * fp8e4m3_to_fp32(block[4]);
 }
 
-inline int block_scaled_ternary_pack_row(const float* row, uint8_t* blocks, int cols) {
+inline int block_scaled_ternary_pack_row(
+    const float* row, uint8_t* blocks, int cols)
+{
     int n_blocks = (cols + BST_BLOCK_K - 1) / BST_BLOCK_K;
     for (int b = 0; b < n_blocks; ++b) {
         int start = b * BST_BLOCK_K;
-        int end   = (start + BST_BLOCK_K <= cols) ? start + BST_BLOCK_K : cols;
+        int end = (start + BST_BLOCK_K <= cols) ? start + BST_BLOCK_K : cols;
         float amax = 0.0f;
         for (int i = start; i < end; ++i) {
             float absv = std::abs(row[i]);
@@ -116,11 +128,13 @@ inline int block_scaled_ternary_pack_row(const float* row, uint8_t* blocks, int 
     return n_blocks;
 }
 
-inline void block_scaled_ternary_dequant_row(const uint8_t* blocks, float* row, int cols) {
+inline void block_scaled_ternary_dequant_row(
+    const uint8_t* blocks, float* row, int cols)
+{
     int n_blocks = (cols + BST_BLOCK_K - 1) / BST_BLOCK_K;
     for (int b = 0; b < n_blocks; ++b) {
         int start = b * BST_BLOCK_K;
-        int end   = (start + BST_BLOCK_K <= cols) ? start + BST_BLOCK_K : cols;
+        int end = (start + BST_BLOCK_K <= cols) ? start + BST_BLOCK_K : cols;
         float scale = fp8e4m3_to_fp32(blocks[b * BST_BLOCK_BYTES + 4]);
         uint32_t packed;
         std::memcpy(&packed, blocks + b * BST_BLOCK_BYTES, 4);
@@ -131,4 +145,4 @@ inline void block_scaled_ternary_dequant_row(const uint8_t* blocks, float* row, 
     }
 }
 
-#endif // BLOCK_SCALED_TERNARY_H
+#endif
