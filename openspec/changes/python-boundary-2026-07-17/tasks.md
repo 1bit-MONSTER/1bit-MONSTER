@@ -111,9 +111,24 @@ kernel (all 6 projections, one hw_context). This is the path to a working own-en
 - [x] **T12a. Prove toolchain + matched kernel on hardware.** DONE:
       run_kernel_main16_q4nx.py --mode q and --mode full both PASS (mismatches=0, no
       IO_PAGE_FAULT). render group = no sudo. Same 0x901 kernel signature as universal.
-- [ ] **T13. Build production full-layer q4nx kernel at qwen3-0.6b dims** via
-      cases/full_layer_engine_generate.py + npu_build.compile_mlir (the microbench uses a
-      fixed fixture; need real dims). Output: matched design.xclbin + design.bin.
+- [~] **T13. Build production full-layer q4nx kernel at qwen3-0.6b dims.** ATTEMPTED,
+      BLOCKED on upstream WIP. The runner defaults to the LOCAL 0.6b model
+      (~/.config/flm/models/Qwen3-0.6B-NPU2, reads model.q4nx directly); env:
+      QWEN3_MODEL_PATH + PYTHONPATH=toolchain/mlir_aie/python + venv, no sudo (render).
+      `run_full_layer.py --build-only` FAILS in the generator's own structural validation
+      (7 errors: source-side replay lock acquire/release counts != 4, hub_dma memtile BD
+      wrong-bank x4, 'hub BD contract mismatch'). `full_layer_engine_generate.py` is
+      active WIP (last commit 'Fix Qwen3 0.6B contract validation') and does NOT yet emit
+      valid MLIR for the real full layer. So a self-built real-weight full-layer kernel is
+      blocked on completing that upstream generator.
+      WHAT WORKS: the microbench full-projection-chain kernel (kernel_main16_q4nx --mode
+      full) at 0.6b per-phase dims (matches contract_06b PHASE_CHUNKS), PASSES fault-free
+      — but it is ABI/fixture-scale, not real weight volume.
+      IMPLICATION: FLM's `layer.xclbin` IS the finished version of exactly this full-layer
+      kernel. Two real paths: (a) finish the torch2aie full-layer generator (deep upstream
+      frontier work), or (b) ship A (FLM) which already provides the completed kernel.
+      Per-projection full-size kernels (drive sequentially, 1 hwctx) is a possible
+      workaround but no full-size single-projection generator exists either.
 - [ ] **T14. New C++ engine driving the full-layer kernel.** Replace universal's 4 int8
       contexts with ONE full-layer q4nx context: load q4nx weight chunks (make_q4nx_chunk
       layout, NOT int8 packB), one hw_context, launch per layer via xrt::ext::kernel
