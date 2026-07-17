@@ -26,15 +26,20 @@ jobs:
           # (gfx1151) parity with the documented build and the verified ROCm
           # version on our hardware. Steps below degrade gracefully if the
           # ROCm packages can't be installed on the runner.
-          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg || true
+          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null || true
+          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg 2>/dev/null || true
           # Use noble (Ubuntu 24.04) repo — jammy (22.04) repos may have
           # missing or incompatible packages on the ubuntu-24.04 Runner.
-          cat <<'ROCM_APT' | sudo tee /etc/apt/sources.list.d/rocm.list || true
-          deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 noble main
-          deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/7.2.4/ubuntu noble main
-          ROCM_APT
-          sudo apt-get update -qq || true
-          sudo apt-get install -y -qq rocm-dev hip-dev composablekernel-dev || true
+          if [ -f /etc/apt/keyrings/rocm.gpg ]; then
+            cat <<'ROCM_APT' | sudo tee /etc/apt/sources.list.d/rocm.list
+            deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 noble main
+            deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/7.2.4/ubuntu noble main
+            ROCM_APT
+            sudo apt-get update -qq || true
+            sudo apt-get install -y -qq rocm-dev hip-dev composablekernel-dev || true
+          else
+            echo "ROCm key not available — skipping ROCm install on this runner."
+          fi
       - name: Verify CMakeLists references resolve
         run: |
           # Guard against the missing-file class of build break: every
