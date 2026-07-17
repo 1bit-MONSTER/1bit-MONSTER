@@ -1,12 +1,21 @@
+
 // BitNet model loader — pure C ABI.
 // Reads .h1b files (halo-1bit format) and returns device pointers
 // suitable for direct use with rocm_cpp kernels (rcpp_ternary_gemv,
 // rcpp_rmsnorm_fp16, etc).
+//
+// NOTE: Including this header transitively pulls in PolyForm
+// Noncommercial-licensed code (rocm_cpp/ck_gemm.h). If you need a
+// standalone MIT build, define ROCM_CPP_NO_SHERRY before including
+// this header, or use the Halo fallback path exclusively.
+// See docs/build/sherry-exclusion.md for details.
 
 #ifndef ROCM_CPP_BITNET_MODEL_H
 #define ROCM_CPP_BITNET_MODEL_H
 
+#ifndef ROCM_CPP_NO_SHERRY
 #include "rocm_cpp/ck_gemm.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
