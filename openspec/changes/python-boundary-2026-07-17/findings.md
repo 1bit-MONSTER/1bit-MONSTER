@@ -120,6 +120,43 @@ produce correct output. Do not wire it into serving yet.
 **Alternative:** retarget the already-validated FLM engine (94 tok/s) instead of
 hardening this orphan.
 
+## 3b. npu_engine_universal end-to-end run (2026-07-17): builds + runs, but IOMMU-faults
+
+Built and ran the CORRECT engine (`engine/npu/src/npu_engine_universal.cpp`) on a
+freshly-reloaded (clean) NPU. Results:
+
+- **Build**: `build_npu.sh` is STALE — missing `-laiebu` and `-fopenmp`, and the source's
+  `#include "../../npu-infer/include/flm_bridge.h"` is off-by-one for the canonical
+  layout. Working build:
+  ```
+  g++ -std=c++23 -O3 -fopenmp -DMODEL_qwen3_0_6b \
+    -Iengine/npu -Inpu-infer/include -Iengine/npu/src -I/usr/include \
+    -o npu_engine_universal engine/npu/src/npu_engine_universal.cpp \
+    npu-infer/src/flm_bridge.cpp dequant_q4nx.o \
+    -lxrt_coreutil -lxrt_core -luuid -lm -ldl -laiebu
+  ```
+- **model_tag gotcha**: derived from the model FILENAME (`model.q4nx` -> "model"), so it
+  looks for `insts_i8_QKV_model.txt` and prints `FAIL QKV`. Must pass
+  `--model-tag qwen3_0_6b` explicitly (or rename the model file).
+- **Runtime**: with the tag fixed it initializes all contexts (aiebu assembles the insts
+  into ELF modules at runtime — this IS the arbitrary-shape mechanism, and it handles the
+  O/D K>1024 shapes that the static-xclbin stdio engine could not), and correctly
+  executes prefill layers L0-L3 (all 5 projections q,a,o,g,d each), then **HANGS at L4
+  with fresh `AMD-Vi: IO_PAGE_FAULT` events** — an NPU DMA/IOMMU fault, not a compute
+  hang. Same systemic fault class that hits `npu_engine_stdio` and the fusion engine
+  (2026-07-14 audit).
+
+**Key contrast:** FastFlowLM (`flm run`) does NOT hit this — it ran clean and coherent on
+the same box (A). So the blocker for a home-grown engine is NOT K-tiling or wiring (both
+solved: aiebu gives arbitrary K, flm_bridge now compiles). It is the **NPU DMA/IOMMU
+buffer management** that FLM has solved and the home-grown engines have not (candidate:
+`XRT_BO_FLAGS_HOST_ONLY` allocation vs. FLM's scheme). That is the real gap for B, and
+it is deep XRT/driver work.
+
+**Bottom line:** for a working Python-free NPU serving path, use A (FLM). Pursue B only
+as a strategic own-the-stack effort, and target the IOMMU/DMA stability problem, not the
+kernel-shape problem.
+
 ## 4. Router — PORTED TO RUST + TESTED
 
 `unified-router.py` → std-only Rust (zero external crates, 427 KB static binary).
