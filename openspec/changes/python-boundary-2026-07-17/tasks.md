@@ -4,10 +4,16 @@ Ordered by value/risk. Each is independent; do not batch.
 
 ## Ready now (low risk)
 
-- [ ] **T1. Wire native tokenizer into `src/server/rest_handler.cpp`.**
-      Link `engine/fusion/tokenize.cpp` C ABI (`tokenizer_load/encode/free`), delete
-      `simple_tokenize()` (line ~518). Verified bit-exact (findings §2). Add a build
-      target for `tokenize.cpp` in CMakeLists.
+- [x] **T1/T3. Native tokenizer wired (DONE, 2026-07-17).** Re-scoped after inspecting
+      canonical: `src/server` already tokenizes natively via the FLM engine (no Python).
+      The real gap was `daemon/npu-cppd.py`, which was wired to TWO BROKEN native
+      tokenizers: `fused-engine --tokenize-only` (emitted nothing) and
+      `engine/npu/tokenizer/detokenize` (mangled byte-level spaces:
+      `9707 11 1879 0` -> `Hello,\u0120world\\\`). The C tokenizer
+      `engine/npu/tokenizer/tokenize` also mis-encodes (`world!` -> wrong ids).
+      Fix: point the daemon at `engine/fusion/tokenize` (pure C++17, verified bit-exact
+      encode+decode, clean roundtrip), added `engine/fusion/Makefile` build target,
+      gitignored the binary. No Python tokenizer lib anywhere in the serving path now.
 - [ ] **T2. Ship the Rust router.** Fold `unified-router.py` routing policy into
       `rust/onebit` (or land `reference/unified-router-rs/` as a bin). Retire the `.py`.
 - [ ] **T3. Remove `tokenizers` / tokenize-subprocess from `daemon/npu-cppd.py`** —
