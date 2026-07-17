@@ -129,6 +129,18 @@ kernel (all 6 projections, one hw_context). This is the path to a working own-en
       frontier work), or (b) ship A (FLM) which already provides the completed kernel.
       Per-projection full-size kernels (drive sequentially, 1 hwctx) is a possible
       workaround but no full-size single-projection generator exists either.
+      PRECISE CAUSE (2026-07-17 deeper dig): the full-layer generator is mid a 4->8
+      NPU-COLUMN migration. `full_layer_engine_generate.py` now imports the 8-column
+      HUB_Q_OUT_BDS=(25,2,26,3,1,5,7,8) from compact_dataflow, but its own validator
+      (line ~1566) still checks the 4-column contract (25,2,26,3) -> 'hub BD contract
+      mismatch'. The source-side-replay lock-count and memtile-BD-bank errors are real
+      gaps in the incomplete 8-col generation (mlir_utils validators inspecting the MLIR).
+      This is the same 'more NPU columns' direction as the 40-col-NPU2 effort. DO NOT
+      force it by editing the validators — those contracts exist to prevent exactly the
+      DMA/IOMMU faults T12 diagnosed; bypassing them yields a build-but-fault kernel.
+      T13 is therefore gated on COMPLETING the 4->8 column migration (upstream design
+      work), which needs the migrator's intent. FLM's layer.xclbin is the finished
+      equivalent. Recommendation stands: ship A.
 - [ ] **T14. New C++ engine driving the full-layer kernel.** Replace universal's 4 int8
       contexts with ONE full-layer q4nx context: load q4nx weight chunks (make_q4nx_chunk
       layout, NOT int8 packB), one hw_context, launch per layer via xrt::ext::kernel
