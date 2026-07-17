@@ -43,6 +43,9 @@ struct BackendInfo {
     float score;               // benchmark score (ms/token, 0 = untested)
     bool available;            // detected at startup
     bool functional;           // passed health check
+    bool auto_selectable = true; // false = never tried by init()'s auto-loop or
+                                  // select_best() (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md);
+                                  // true manual opt-in needs on-demand lazy init, not yet built
     uint64_t total_inferences; // lifetime counter
     uint64_t failed_inferences;
     double cumulative_ms;      // total inference time in ms

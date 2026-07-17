@@ -14,6 +14,7 @@
 #include "backends/backend.h"
 #include "backends/token_router.h"
 #include "rocm_cpp/tokenizer.h"
+#include "a2a_client.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -368,6 +369,8 @@ int main(int argc, char** argv) {
     int port = 8088;
     std::string model_arg, manifest_arg, weights_dir = "/tmp/zaya_weights/", lora_path;
     RouteStrategy strategy = RouteStrategy::AUTO;
+    A2AClient a2a;
+    std::vector<std::string> a2a_peers;
 
     for (int i = 1; i < argc; i++) {
         std::string a(argv[i]);
@@ -375,6 +378,7 @@ int main(int argc, char** argv) {
         else if (a == "--model" && i+1 < argc) model_arg = argv[++i];
         else if (a == "--manifest" && i+1 < argc) manifest_arg = argv[++i];
         else if (a == "--weights-dir" && i+1 < argc) weights_dir = argv[++i];
+        else if (a == "--a2a-peer" && i+1 < argc) a2a_peers.push_back(argv[++i]);
         else if (a == "--strategy" && i+1 < argc) {
             std::string s(argv[++i]);
             if (s == "auto") strategy = RouteStrategy::AUTO;
@@ -391,7 +395,8 @@ int main(int argc, char** argv) {
             printf("  --manifest PATH     Load model config from JSON manifest\n");
             printf("  --weights-dir DIR   Directory for weight .bin files\n\n");
             printf("Routing:\n");
-            printf("  --strategy auto|cascade|spec_decode|content|parallel_moe|passthrough\n\n");
+            printf("  --strategy auto|cascade|spec_decode|content|parallel_moe|passthrough\n");
+            printf("  --a2a-peer URL        Register remote A2A agent peer (can repeat)\n\n");
             printf("Server:\n");
             printf("  --port N            Listen port (default: 8088)\n\n");
             printf("Endpoints:\n");
@@ -400,6 +405,7 @@ int main(int argc, char** argv) {
             printf("  GET  /.well-known/agent-card.json    A2A Agent Card (Google A2A v1.0)\n");
             printf("  POST /a2a/v1/message:send            A2A send message (task-based)\n");
             printf("  POST /a2a/v1/message:sendStream      A2A streaming (SSE)\n");
+            printf("  POST /a2a/v1/tasks:route              A2A route to best peer by skill\n");
             printf("  GET  /                               Server health\n");
             return 0;
         } else if (a[0] != '-' && model_arg.empty()) port = atoi(argv[i]);
@@ -456,15 +462,33 @@ int main(int argc, char** argv) {
     fprintf(stderr, "   GET  /v1/models              — model list\n");
     fprintf(stderr, "   GET  /.well-known/agent-card  — A2A Agent Card (v1.0)\n");
     fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
+    fprintf(stderr, "   POST /a2a/v1/tasks:route       — A2A route to peer agent\n");
     fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
-    fprintf(stderr, "   Strategy: %s\n\n",
+    fprintf(stderr, "   Strategy: %s\n",
         strategy == RouteStrategy::AUTO ? "auto (fastest available)" :
         strategy == RouteStrategy::CASCADE ? "cascade (per-token fallback)" :
         strategy == RouteStrategy::SPEC_DECODE ? "spec_decode (draft+verify)" :
         strategy == RouteStrategy::CONTENT ? "content (keyword-based)" :
         strategy == RouteStrategy::PARALLEL_MOE ? "parallel_moe (GPU+NPU)" : "passthrough");
+    if (!a2a_peers.empty()) {
+        fprintf(stderr, "   A2A peers:\n");
+        for (auto& p : a2a.peers)
+            fprintf(stderr, "     - %s @ %s (%zu skills)\n", p.name.c_str(), p.base_url.c_str(), p.skill_ids.size());
+    }
+    fprintf(stderr, "\n");
 
     SimpleTokenizer tok;
+
+    // Discover A2A peers
+    for (const auto& peer_url : a2a_peers) {
+        fprintf(stderr, "  [a2a] discovering peer: %s\n", peer_url.c_str());
+        if (!a2a.discover(peer_url)) {
+            fprintf(stderr, "  [a2a] WARNING: could not discover %s\n", peer_url.c_str());
+        }
+    }
+    if (!a2a_peers.empty()) {
+        fprintf(stderr, "  [a2a] %zu peer(s) registered\n", a2a.peers.size());
+    }
 
     // Maximum request body size: 1MB (fixes #197: stack buffer + incomplete read + no limit)
     const size_t MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -542,6 +566,38 @@ int main(int argc, char** argv) {
 
         if (r.find("GET /.well-known/agent-card") != std::string::npos) {
             send_json(200, a2a_agent_card(cfg, port));
+            continue;
+        }
+
+        // A2A route: delegate inference to the best peer agent by skill
+        if (r.find("POST /a2a/v1/tasks:route") != std::string::npos) {
+            if (a2a.peers.empty()) {
+                send_json(503, json({{"error", "No A2A peers. Use --a2a-peer"}}).dump());
+                continue;
+            }
+            try {
+                json jbody = json::parse(body);
+                std::string skill = jbody.value("skill", "");
+                std::string text;
+                int mt = jbody.value("maxTokens", 256);
+                if (jbody.contains("message") && jbody["message"].contains("parts"))
+                    for (auto& p : jbody["message"]["parts"])
+                        if (p.contains("text")) text += p["text"].get<std::string>();
+                if (text.empty()) { send_json(400, json({{"error","empty message"}}).dump()); continue; }
+                auto r2 = a2a.route_by_skill(text, skill, mt);
+                if (r2.success) {
+                    json resp = {{"task", {{"id", r2.task_id}, {"status", {{"state","TASK_STATE_COMPLETED"}}},
+                        {"artifacts", json::array({{{"parts", json::array({{{"text",r2.text}}})},
+                            {"metadata", {{"promptTokens",r2.prompt_tokens},{"completionTokens",r2.completion_tokens}}}
+                        }})}
+                    }}};
+                    send_json(200, resp.dump());
+                } else {
+                    send_json(502, json({{"error", r2.error}}).dump());
+                }
+            } catch (const std::exception& e) {
+                send_json(500, json({{"error", std::string(e.what())}}).dump());
+            }
             continue;
         }
 

@@ -50,6 +50,10 @@ void BackendManager::discover() {
         info.priority = tier_priority(info.tier) + 50;
         info.available = has_npu();
         info.functional = false;  // needs init to confirm
+        // Compiled INT8 GEMM kernels are confirmed producing wrong output on real
+        // hardware (docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md) — never auto-select
+        // until that's resolved. NPU inference goes through the FLM backend instead.
+        info.auto_selectable = false;
         info.score = 0;
         info.total_inferences = 0;
         info.failed_inferences = 0;
@@ -161,7 +165,7 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
 
     // Try each backend in priority order until one initializes
     for (auto& info : backends_) {
-        if (!info.available) continue;
+        if (!info.available || !info.auto_selectable) continue;
 
         printf("BackendManager: trying %s (%s)...\n", info.id.c_str(), info.description.c_str());
         // Try to create via dlsym (GPU/NPU backends live in librocm_cpp.so or standalone)
@@ -217,7 +221,7 @@ bool BackendManager::select_best() {
             float best_score = 1e30f;
             for (size_t i = 0; i < backends_.size(); i++) {
                 auto& b = backends_[i];
-                if (!b.available || !b.functional) continue;
+                if (!b.available || !b.functional || !b.auto_selectable) continue;
                 if (b.score > 0 && b.score < best_score) {
                     best_score = b.score;
                     best_idx = i;
@@ -226,7 +230,7 @@ bool BackendManager::select_best() {
             // If no backend has a score, fall back to first available+functional
             if (best_idx == backends_.size()) {
                 for (size_t i = 0; i < backends_.size(); i++) {
-                    if (backends_[i].available && backends_[i].functional) {
+                    if (backends_[i].available && backends_[i].functional && backends_[i].auto_selectable) {
                         best_idx = i;
                         break;
                     }
@@ -244,7 +248,7 @@ bool BackendManager::select_best() {
         case SelectionStrategy::LOWEST_POWER: {
             // Pick the highest-priority available+functional backend (NPU > GPU > CPU)
             for (size_t i = 0; i < backends_.size(); i++) {
-                if (backends_[i].available && backends_[i].functional) {
+                if (backends_[i].available && backends_[i].functional && backends_[i].auto_selectable) {
                     active_idx_ = i;
                     return true;
                 }
@@ -257,7 +261,7 @@ bool BackendManager::select_best() {
             size_t start = (active_idx_ + 1) % backends_.size();
             for (size_t i = 0; i < backends_.size(); i++) {
                 size_t idx = (start + i) % backends_.size();
-                if (backends_[idx].available && backends_[idx].functional) {
+                if (backends_[idx].available && backends_[idx].functional && backends_[idx].auto_selectable) {
                     active_idx_ = idx;
                     return true;
                 }

@@ -2,6 +2,7 @@
 // and read their headers to populate ModelConfig without loading full weights.
 
 #include "model_discovery.h"
+#include "q4nx_reader.h"
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
