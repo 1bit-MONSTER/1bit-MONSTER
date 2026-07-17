@@ -139,5 +139,11 @@ int main(int argc,char**argv){
         }
         fflush(stdout);
     }
+    // FIX(T4): XRT's global singletons are torn down before these local
+    // xclbin/hw_context/kernel dtors run at exit, causing a null-vtable SEGV
+    // in I8Ctx::~I8Ctx (glibc: 'free(): invalid size'). Exit directly and let
+    // the OS reclaim everything, skipping the buggy cross-boundary teardown.
+    fflush(stdout);fflush(stderr);
+    std::_Exit(0);
     munmap(md,st.st_size);return 0;
 }
