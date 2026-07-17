@@ -90,10 +90,17 @@ So the real B blocker is NOT kernel shapes (solved) but NPU DMA/IOMMU buffer man
       faults]. Narrowed to: the STATIC xclbin + aiebu-ELF + xrt::ext::kernel submission
       path (shared by stdio + universal GEMMs) faults; FLM's live-instruction path does
       NOT. universal already runs ATTENTION through FlmBridge fine.
-      FIX (do this): **route projection GEMMs (QKV/O/GU/D) through
-      FlmBridge::gen_gemm_instrs + init_with_instrs**, like attention already is, instead
-      of insts_i8_*.txt. Replaces the faulting submission path with FLM's proven one.
-      This is the true gate for a working own-engine; until then, ship A (flm serve).
+      DEFINITIVE (findings §3d): dumped EMBEDDED_METADATA — universal's xclbin and FLM's
+      mm.xclbin have BYTE-IDENTICAL kernel signatures (MLIR_AIE, id 0x901, bo0..bo4).
+      The torch2aie ref run_kernel_main16_q4nx.py runs the SAME kernel class and PASSES
+      with 3 BOs (activation,weight,output) = universal's launch. So kernel/xclbin/BOs are
+      all fine. The ONLY difference: the ref REGENERATES instructions to match; universal
+      ships stale/mismatched static insts_i8_*.txt -> wrong DMA descriptors -> IO_PAGE_FAULT.
+      FIX (do this): regenerate matching instructions. TOP EXPERIMENT: init QKV ctx with
+      FlmBridge::gen_gemm_instrs(512,N,K,0) + init_with_instrs, pass universal's weight BO
+      as bo1; if no fault -> confirmed (then fix weight layout for correctness). Alt:
+      rebuild insts+xclbin as a matched pair via torch2aie _build_kernel. Until then, ship
+      A (flm serve).
 
 ## Follow-ups
 
