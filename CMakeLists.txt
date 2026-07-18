@@ -106,13 +106,14 @@ foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" 
         message(STATUS "rocm-cpp: rocWMMA found at ${ROCWMMA_INCLUDE_DIR}")
         break()
     endif()
-    if(_rc_base AND EXISTS "${_rc_base}/lib/python3.14/site-packages/_rocm_sdk_devel/include/rocwmma/rocwmma.hpp")
-        set(ROCWMMA_INCLUDE_DIR "${_rc_base}/lib/python3.14/site-packages/_rocm_sdk_devel/include")
+    if(_rc_base AND EXISTS "${_rc_base}/include/rocwmma/rocwmma.hpp")
+        set(ROCWMMA_INCLUDE_DIR "${_rc_base}/include")
         set(ROCWMMA_FOUND TRUE)
         message(STATUS "rocm-cpp: rocWMMA found at ${ROCWMMA_INCLUDE_DIR} (TheRock SDK)")
         break()
     endif()
 endforeach()
+
 if(NOT ROCWMMA_FOUND)
     file(GLOB_RECURSE _RC_ROCWMMA_HPP "$ENV{HOME}/.local/lib/python*/site-packages/_rocm_sdk_devel/include/rocwmma/rocwmma.hpp")
     list(LENGTH _RC_ROCWMMA_HPP _RC_ROCWMMA_N)
@@ -128,6 +129,41 @@ if(NOT ROCWMMA_FOUND)
     message(STATUS "rocm-cpp: rocWMMA NOT found — WMMA intrinsics disabled")
 endif()
 
+
+# -- Discover TheRock SDK under Python site-packages (any Python version) --
+# TheRock's ROCm SDK may install under a Python-versioned path like
+#   lib/python3.X/site-packages/_rocm_sdk_devel/
+# Instead of hardcoding a specific Python version (issue #355), search
+# under all Python site-packages for the _rocm_sdk_devel directory.
+function(_find_therock_sdk_base out_var)
+    if(DEFINED CACHE{THEROCK_SDK_BASE})
+        set(${out_var} "${THEROCK_SDK_BASE}" PARENT_SCOPE)
+        return()
+    endif()
+    # Search common locations, preferring newest Python version
+    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib")
+        file(GLOB _py_dirs LIST_DIRECTORIES true "${_base}/python*")
+        list(SORT _py_dirs)
+        list(REVERSE _py_dirs)
+        foreach(_py_dir IN LISTS _py_dirs)
+            set(_candidate "${_py_dir}/site-packages/_rocm_sdk_devel")
+            if(EXISTS "${_candidate}/include/rocwmma/rocwmma.hpp" OR EXISTS "${_candidate}")
+                set(${out_var} "${_candidate}" PARENT_SCOPE)
+                set(THEROCK_SDK_BASE "${_candidate}" CACHE INTERNAL "Found TheRock SDK base")
+                message(STATUS "rocm-cpp: TheRock SDK found at ${_candidate}")
+                return()
+            endif()
+        endforeach()
+    endforeach()
+    # Fallback: system ROCm
+    if(EXISTS "/opt/rocm/lib/llvm/bin/amdclang++")
+        set(${out_var} "/opt/rocm" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out_var} "" PARENT_SCOPE)
+endfunction()
+
+_find_therock_sdk_base(THEROCK_SDK_BASE)
 
 include(FetchContent)
 FetchContent_Declare(cpp_httplib
@@ -574,7 +610,7 @@ if(TARGET npu_engine_hybrid)
         -O3 -march=native -ffast-math -std=c++23 -fopenmp)
     target_link_libraries(npu_engine_hybrid PRIVATE xrt_coreutil uuid rt pthread)
     target_link_options(npu_engine_hybrid PRIVATE
-        -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -fopenmp)
+        -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)
     set_target_properties(npu_engine_hybrid PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 endif()
@@ -594,7 +630,7 @@ target_link_libraries(dspark_full PRIVATE
     rocm_cpp
     ${CMAKE_DL_LIBS} m pthread)
 target_link_options(dspark_full PRIVATE
-    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
+    -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib)
 set_target_properties(dspark_full PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
@@ -608,14 +644,14 @@ target_include_directories(dspark_gpu_bench PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/spec-decode
-    ${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/include)
+    ${THEROCK_SDK_BASE}/include)
 target_compile_options(dspark_gpu_bench PRIVATE
     -O3 -march=native -ffast-math -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
 target_link_libraries(dspark_gpu_bench PRIVATE
     rocm_cpp
     ${CMAKE_DL_LIBS} m pthread hipblas)
 target_link_options(dspark_gpu_bench PRIVATE
-    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -lhipblas -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
+    -L${THEROCK_SDK_BASE}/lib -lamdhip64 -lhipblas -Wl,-rpath,${THEROCK_SDK_BASE}/lib)
 set_target_properties(dspark_gpu_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
@@ -659,4 +695,4 @@ target_compile_options(oscar PRIVATE
 target_link_libraries(oscar PRIVATE
     ${CMAKE_DL_LIBS} m pthread)
 target_link_options(oscar PRIVATE
-    -L${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib -lamdhip64 -Wl,-rpath,${_RC_ROCM_DEFAULT}/lib/python3.14/site-packages/_rocm_sdk_devel/lib)
+    -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib)
