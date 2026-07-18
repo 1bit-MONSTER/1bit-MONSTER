@@ -321,7 +321,7 @@ struct GenericBackend : Backend {
     struct LayerW { size_t wq, wk, wv, wo, w1, w2, w3, rms_attn, rms_ffn; };
     std::vector<LayerW> layers;
 
-    GenericBackend() { type = BackendType::CPU_AVX512; name = "Generic CPU (AVX-512)"; }
+    GenericBackend() { type = BackendType::GENERIC; name = "Generic CPU (GGUF)"; }
 
     void load_weights(const std::string& base) {
         // Weights stored as flat float vectors: model_layers_N_name.bin
