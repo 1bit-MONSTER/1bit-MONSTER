@@ -1,5 +1,14 @@
 # INT8 GEMM Kernel Correctness — Confirmed Hardware Bug (July 5, 2026)
 
+> **Status as of 2026-07-18**: superseded in part — see the bottom-most
+> "Status" section for the current, most accurate picture. Short version: the
+> single-core-vs-multi-core bug this doc originally described has fixes for
+> all four shapes now, but they were developed on two separate branches and
+> reconciled after the fact; the *combined* result (all 4 shapes at 8-core
+> together) has not been independently re-verified on real hardware. Read the
+> final "Status" section before trusting any throughput/correctness claim in
+> the body of this doc.
+
 ## TL;DR
 
 Started chasing a "repeated token" decode symptom in `npu_engine_cb.cpp`/
@@ -297,3 +306,45 @@ ref = Am.astype(np.int64) @ Bm.astype(np.int64)
   See `bf16_kernel_dev/CORRECT-v6-VECTORIZED-ANALYSIS.md` for detailed analysis.
 - `backend_manager.cpp` now auto-selects `npu_xrt` (single-core path). Throughput is
   ~12 tok/s on Strix Halo (vs 97 tok/s multi-core target).
+
+## Status (Updated 2026-07-18) — reconciled branch state, unverified in combination
+
+This work continued past the 07-17 status above, but split across two separate,
+divergent local branches that were only discovered and reconciled after the
+fact (both had gone dangling — orphaned by unrelated `git reset --hard`
+operations elsewhere in the repo's history — and were recovered via `git
+reflog`). Recording exactly what was independently verified vs. what is a
+claim from the reconciliation, since the two are not the same thing:
+
+- ✅ **O and D shapes at 8-core, independently verified.** One branch fixed
+  and verified the 8-core xclbins for the `O` and `D` GEMM shapes specifically
+  (2.47x faster than single-core), leaving `QKV` and `GU` on the single-core
+  path because 8-core still had the multi-N-group bug described above for
+  those two shapes.
+- ✅ **Root cause of the multi-N-group bug identified and independently
+  fixed for all 4 shapes**, on the *other* branch: for `N > 1024` (multiple
+  N-groups per output column), the broadcast-A fifo's B-descriptor BDs for
+  different N-groups were firing concurrently on the same fifo, causing the
+  core to read B subtiles from the wrong N-group mid-K-iteration. Fix:
+  sequence A + B + C strictly per N-group, awaiting each N-group's C
+  completion before starting the next N-group. This branch's own testing
+  reported all 4 shapes (QKV, O, GU, D) passing the INT32 oracle at 8-core.
+- ⚠️ **These two branches were never combined until this reconciliation.**
+  The second branch's N-group sequencing fix was built on top of an older
+  base that did NOT include the first branch's O/D 8-core xclbin work — so
+  its "all 4 shapes PASS" result was demonstrated against its own (single-core
+  QKV/GU, differently-built O/D) xclbin set, not the specific xclbin/instruction
+  combination now sitting in this repo after reconciliation. The reconciliation
+  took the first branch's binary `.xclbin` files (including its 8-core O/D
+  builds) as the base and layered the second branch's newer `insts_i8_*.txt`
+  instruction streams on top, since the instruction-stream fix is what
+  actually encodes the N-group sequencing correction. **This exact combined
+  set of files has not been run against the INT32 oracle on real hardware.**
+  Until that re-run happens, treat "all 4 shapes correct at 8-core" as a
+  plausible-but-unverified claim for this specific combination, not a
+  confirmed one — even though each half was separately confirmed on its own
+  differently-based branch.
+- **Before trusting this in production**: re-run the Test A/Test B
+  reproduction steps above against all four current `.xclbin` +
+  `insts_i8_*.txt` pairs in `engine/npu/xclbins/` and confirm 0 errors across
+  all four, on real Strix Halo hardware, in this exact combined form.
