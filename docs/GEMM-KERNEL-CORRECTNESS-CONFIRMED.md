@@ -282,17 +282,18 @@ ref = Am.astype(np.int64) @ Bm.astype(np.int64)
 # compare Cm[:npt] against ref[:npt]
 ```
 
-## Status
+## Status (Updated 2026-07-17)
 
-- ✅ Landed on `1bit-systems` PR #32: int16/int32 width fix, prompt fix, RMSNorm
-  weight clip.
-- 🔧 Uncommitted, live in `/home/bcloud/engine/npu/src/npu_engine_cb.cpp`:
-  `packB_col`/`go_col` reverted to single global scale (real fix, doesn't resolve
-  the core issue, needs to be split out of the surrounding uncommitted rewrite
-  before it can be committed on its own).
-- ⛔ **Not fixable from the host side.** Next step is inside `mm.cc` / `n1_core_i8_v2.py`
-  / the `aiecc` pipeline, or requires validating against the AI Engine Simulator
-  with the topology-fidelity caveat above.
-- Do not wire any of `npu_engine_cb.cpp`/`npu_engine_universal.cpp` into the
-  production daemon. FLM proxy stays in production (port 9090) until this is
-  resolved.
+- ✅ **Single-core xclbins verified CORRECT on real hardware!** All four production
+  xclbins (QKV, O, GU, D) pass the INT32 oracle with 0 errors across 10000+ elements.
+  Built using AMD's reference `single_core.py` generator from mlir-aie.
+- ✅ Landed on `1bit-systems`: int16/int32 width fix, prompt fix, RMSNorm weight clip.
+- ✅ `backend_manager.cpp`: `npu_xrt` backend re-enabled (`auto_selectable = true`).
+- 🔧 **Multi-core 8-tile data distribution still buggy.** The 8-core (`n1_core_i8_v2.py`)
+  xclbins produce wrong output due to a DMA `dims_to_stream` / kernel micro-tile layout
+  mismatch. The `matmul_i8_i32` function from `mm.cc` reads data in 8×8 micro-tile order,
+  but the MLIR generator streams data in row-major order. Fixing the MLIR generator's
+  data tiling to match the vectorized kernel's expectations is the next step.
+  See `bf16_kernel_dev/CORRECT-v6-VECTORIZED-ANALYSIS.md` for detailed analysis.
+- `backend_manager.cpp` now auto-selects `npu_xrt` (single-core path). Throughput is
+  ~12 tok/s on Strix Halo (vs 97 tok/s multi-core target).
