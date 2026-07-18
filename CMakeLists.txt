@@ -310,7 +310,7 @@ target_include_directories(backend_manager PUBLIC
 target_include_directories(backend_manager PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 target_link_libraries(backend_manager PUBLIC dl rocm_cpp)
-target_compile_options(backend_manager PRIVATE -O3 -Wall -Wno-unused-result -std=c++17)
+target_compile_options(backend_manager PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 
 if(ZINC_ENABLED)
     target_sources(backend_manager PRIVATE src/backend_zinc.cpp)
@@ -480,7 +480,7 @@ target_link_libraries(bitnet_decode PRIVATE rocm_cpp hip::host hip::device httpl
 set_target_properties(bitnet_decode PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
 add_executable(hadamard_export tools/hadamard_export.cpp)
-target_compile_options(hadamard_export PRIVATE -O3 -Wall -Wno-unused-result -std=c++17)
+target_compile_options(hadamard_export PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(hadamard_export PRIVATE rocm_cpp)
 
 add_executable(bitnet_debate tools/bitnet_debate.cpp)
@@ -544,7 +544,7 @@ target_include_directories(unified_server PRIVATE
     $<INSTALL_INTERFACE:include>)
 target_compile_options(unified_server PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result -Wno-unused-parameter -Wno-unused-variable>
-    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++17>)
+    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
 target_compile_definitions(unified_server PRIVATE ROCM_CPP_STATIC_HIP=1 ROCM_CPP_STATIC_NPU=1)
 target_link_libraries(unified_server PRIVATE
     backend_manager dl
@@ -571,7 +571,7 @@ set_property(TARGET unified_server APPEND PROPERTY
 
 add_executable(backend_demo tools/backend_demo.cpp)
 target_include_directories(backend_demo PRIVATE src/)
-target_compile_options(backend_demo PRIVATE -O3 -Wall -Wno-unused-result -std=c++17)
+target_compile_options(backend_demo PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(backend_demo PRIVATE backend_manager dl)
 if(ZINC_ENABLED)
     set_target_properties(backend_demo PROPERTIES
@@ -635,6 +635,8 @@ set_target_properties(dspark_full PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
 
 # -- DSpark GPU bench: full GPU-accelerated speculative decode --------------
+find_package(hipblas QUIET)
+if(hipblas_FOUND)
 add_executable(dspark_gpu_bench
     tools/dspark_gpu_bench.cpp
     engine/fusion/cpu_layer.cpp)
@@ -654,6 +656,9 @@ target_link_options(dspark_gpu_bench PRIVATE
     -L${THEROCK_SDK_BASE}/lib -lamdhip64 -lhipblas -Wl,-rpath,${THEROCK_SDK_BASE}/lib)
 set_target_properties(dspark_gpu_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
+else()
+    message(STATUS "rocm-cpp: hipblas NOT found — skipping dspark_gpu_bench (needs ROCm hipblas)")
+endif()
 
 # -- Q4NX -> TRG converter --
 add_executable(trg_save
