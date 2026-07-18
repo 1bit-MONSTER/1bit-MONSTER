@@ -565,6 +565,11 @@ int main(int argc, char** argv) {
     // Phase 3: Initialize
     printf("\n── Initialize ──\n");
     ModelConfig cfg = current_cfg;
+    // Prefer the model's own embedded GGUF vocab over the fixed .htok/ASCII
+    // tokenizer loaded above — correct per-model tokenization matters as
+    // much as backend routing for arbitrary (non-Zaya) models. Falls back
+    // silently (keeps whatever tokenizer was already loaded) if unavailable.
+    g_tokenizer.load_from_gguf(cfg.model_path);
     BackendRoute route = select_backend_route(cfg);
     printf("  Router: %s\n", route.reason.c_str());
     bool inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
@@ -726,6 +731,7 @@ int main(int argc, char** argv) {
                     printf("[model] switching to %s (%d layers, %d hidden)\n",
                            dm.model_name.c_str(), dm.n_layers, dm.hidden);
                     current_cfg = dm;
+                    g_tokenizer.load_from_gguf(current_cfg.model_path);
                     BackendRoute swrt = select_backend_route(current_cfg);
                     mgr.init(current_cfg, g_weights_dir, swrt.backend_ids_in_order);
                     break;
