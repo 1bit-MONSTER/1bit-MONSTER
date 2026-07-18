@@ -1,72 +1,67 @@
 # Reddit r/LocalLLaMA Post Draft
 
 ## Title:
-**74KB C++23 binary. 22 models. No Python. I unlocked AMD's NPU in 4 days.**
+**Model-agnostic C++ inference engine for AMD Strix Halo — drop in any GGUF, it routes to NPU/GPU/CPU automatically**
 
 ## Body:
 
-**tl;dr**: 74KB binary runs 22+ model architectures (LLMs, video gen, image gen,
-audio gen) on an AMD Strix Halo NPU + GPU + CPU. Zero Python. MIT.
+**tl;dr**: single C++ binary, no Python at runtime, auto-detects any GGUF
+model's architecture/quantization and routes it to whichever of NPU
+(via FastFlowLM), GPU (ROCm HIP / Vulkan), or CPU can actually run it. MIT.
 
-```
-curl -sL https://1bit.systems/npu-install.sh | bash
-1bit pull qwen3-0.6b
-1bit chat
+```bash
+git clone https://github.com/bong-water-water-bong/1bit-systems
+cd 1bit-systems
+cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+cmake --build build --target zaya_server -j8
+./build/zaya_server --model /path/to/model.h1b
 ```
 
 ### Why this exists
 
-I bought a Strix Halo laptop because the NPU promised 50 TOPS. What I got was
-a vendor-locked runtime that only works with their proprietary model format,
-behind a closed-source binary, and INT8 physically works on the silicon but
-the software stack won't let you use it without paying for FastFlowLM.
+Bought a Strix Halo laptop for the NPU. Found the official stack ties you to
+one proprietary model format and doesn't let you mix NPU/GPU/CPU in the same
+request. So I built a router that reads a model's own on-disk metadata and
+picks a backend — no manifest files, no per-model config.
 
-So I reverse-engineered it. Took 4 days.
+### What's actually in it (verified, not vibes)
 
-### What's in the 74KB
+| Piece | Detail |
+|-------|--------|
+| **Quant format support** | Q4_0/Q5_0/Q5_1/Q8_0/Q4_K/Q5_K/Q6_K/Q2_K/Q3_K/Q8_K/BF16 — each dequantizer checked bit-exact against the independent `gguf` Python package |
+| **CPU reference backend** | Llama/Mistral/Qwen2/Qwen3/Gemma/Phi, incl. MoE routing + Qwen3 Q/K-norm, verified against an independent numpy forward pass |
+| **GPU backend** | ROCm HIP kernels + a Vulkan (ZINC) path |
+| **NPU backend** | Delegates to FastFlowLM — see "the catch" below for why |
+| **Video generation** | `tools/video-lora/` — Wan2.2, LTX-Video, AnimateDiff, CogVideoX, Stable Video Diffusion, with LoRA support |
+| **Dependencies at runtime** | 0. No Python, no pip, no Docker |
 
-| Feature | Detail |
-|---------|--------|
-| **NPU inference** | 94 tok/s via FLM proxy (production), 97 tok/s C++ engine |
-| **GPU inference** | 22 tok/s on Radeon 8060S via Vulkan compute (Zig) |
-| **CPU scheduler** | Unified KV cache, RadixAttention, H2O eviction |
-| **Video generation** | Wan2.2, CogVideoX, HunyuanVideo, LTX-Video, Sana, Mochi, ... (14 models) |
-| **Image generation** | Flux, Flux Schnell, SDXL, SD3.5, Flux.2 |
-| **Audio generation** | Stable Audio Open (44.1kHz stereo), AudioLDM2 |
-| **LoRA support** | All models, unified loader |
-| **Dependencies** | 0. No Python. No pip. No Docker. No MLIR. |
+### The catch — said plainly
 
-### The model-agnostic bit
+The project's own in-process NPU engine (`engine/npu/`) has a **confirmed
+GEMM kernel correctness bug** on real hardware — not "needs tuning," actually
+produces wrong output. That's why the default NPU path is FastFlowLM (external
+subprocess, already correct) instead of our own kernel. It's disclosed in the
+README, not something you find out after building it.
 
-I built a single `AgnosticPipeline` that accepts any HuggingFace model ID and
-auto-detects the correct pipeline, defaults, and modality. `--model flux` works
-the same as `--model stabilityai/stable-audio-open-1.0` or
-`--model Wan-AI/Wan2.1-T2V-1.3B-Diffusers`.
+Real numbers, current as of this post (`site/benchmarks.json`):
 
-```bash
-# LLM
-1bit chat
+| Backend | tok/s | Status |
+|---------|:-----:|--------|
+| ROCm HIP (kernel-level) | 64 | validated |
+| NPU via FastFlowLM | 57 | validated |
+| GPU Vulkan (ZINC) | 22 | validated |
+| zaya_server end-to-end, Qwen 27B Q4_K | 30 | real prompt |
+| zaya_server end-to-end, Qwen 35B MoE Q4_K | 20 | real prompt |
 
-# Video
-video-lora generate --model wan --prompt "cat walking, cinematic"
-
-# Photography
-video-lora generate --model flux --prompt "portrait, soft lighting"
-
-# Audio
-video-lora generate --model stable-audio --prompt "rain on window" --audio-end-s 30
-```
-
-### The catch
-
-The C++ NPU engine (97 tok/s) has a coherence bug — output is garbled.
-Tracking in docs/journey.md. The FLM proxy (94 tok/s) is production-ready.
-If you're an XRT/XDNA low-level person, I could use the help.
+`llama.cpp` on the same hardware hits 229 tok/s end-to-end. We're behind it
+and saying so, rather than publishing a kernel-level microbenchmark next to
+it without the disclaimer (we used to do that — a self-filed issue caught it
+and the README's been fixed since).
 
 ### Links
 
-GitHub: https://github.com/1bit-systems/1bit  
-Benchmarks: docs/wiki/performance.md  
-Audit trail: docs/journey.md (1,200+ lines, every crash and fix)
+GitHub: https://github.com/bong-water-water-bong/1bit-systems
+Audit trail: `docs/journey.md` — every real bug and fix, including the ones
+that were embarrassing
 
-MIT. Open source. Your hardware. Not AMD's.
+MIT. Your hardware, your model, your choice of backend.

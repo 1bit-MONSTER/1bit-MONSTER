@@ -4,86 +4,68 @@
 
 **Tweet 1** 🧵
 
-AMD shipped Strix Halo with a 50 TOPS NPU.
-Then locked INT8 behind proprietary software.
+Bought an AMD Strix Halo laptop for the NPU.
+The official stack: one model format, no mixing NPU/GPU/CPU per request.
 
-I bought one. I got angry. I fixed it.
+So I built a router. Drop in any GGUF model, it picks the backend automatically.
 
-4 days. 74KB. 94 tok/s. Open source.
-
-The silicon was never the bottleneck. The business model was. 👇
+Zero Python at runtime. MIT licensed. 👇
 
 ---
 
 **Tweet 2**
 
-74KB binary. Think about that.
+The router reads a model's own on-disk metadata — architecture, quantization,
+tensor shapes — and routes it to NPU, GPU, or CPU. No config files, no
+manifest, no model registry.
 
-Your browser's favicon is bigger.
-A 240p JPEG of a cat is bigger.
-
-This binary runs 22 model architectures across video generation, photography, audio synthesis, and LLMs — all on your laptop.
-
-Zero Python. Zero Docker. Zero pip. Just g++ and run.
+11 GGUF quant formats supported, each dequantizer checked bit-exact against
+an independent Python reference. Not "looks right" — actually diffed.
 
 ---
 
 **Tweet 3**
 
-Model-agnostic isn't a buzzword here.
+The honest part: our own in-process NPU kernel has a confirmed correctness
+bug on real hardware. Numbers looked great, output was garbage.
 
-```
-video-lora generate --model flux --prompt "cinematic portrait"
-video-lora generate --model wan --prompt "cat walking"
-video-lora generate --model stable-audio --prompt "rain on window"
-```
-
-Same CLI. Same engine. Auto-detected. LoRA on every backend.
-
-22 models, 3 modalities, one 74KB binary.
+So the default NPU path delegates to FastFlowLM (already correct) instead —
+disclosed in the README, not discovered after you build it.
 
 ---
 
 **Tweet 4**
 
-The NPU hits 94 tok/s on Qwen3-0.6B.
-The GPU (Radeon 8060S) hits 22 tok/s on 1.7B.
-The CPU scheduler fuses KV cache across all three.
+Real, validated numbers on Radeon 8060S + XDNA 2:
 
-On a consumer laptop. While it's on battery.
+GPU ROCm HIP: 64 tok/s (kernel-level)
+NPU via FastFlowLM: 57 tok/s
+zaya_server end-to-end, Qwen 27B: 30 tok/s (real prompt, not synthetic)
 
-No data center. No A100. Just a ThinkPad with an NPU.
+llama.cpp on the same box: 229 tok/s. We're behind it and say so.
 
 ---
 
 **Tweet 5**
 
-"I reverse-engineered AMD's proprietary NPU stack in 4 days."
+Also ships a video generation path (Wan2.2, LTX-Video, AnimateDiff,
+CogVideoX) with LoRA support, vendored in as its own module.
 
-That sentence gets reactions. People think I'm exaggerating.
-
-Day 1: downloaded their toolchain. Nothing worked.
-Day 2: probed ioctl calls. Found the NPU interface.
-Day 3: first inference. 244 ms/tok (terrible).
-Day 4: 24× speedup. 16 ms/tok.
-
-No NDAs. No inside access. Just a C++ compiler and spite.
+One repo, one build, LLM inference + video gen, both model-agnostic where
+the underlying pipeline allows it.
 
 ---
 
 **Tweet 6**
 
-This is MIT licensed. Not "community license." Not "source available."
-MIT. Do whatever you want.
+MIT licensed. Not "community license." Not "source available." MIT.
 
-https://github.com/1bit-systems/1bit
+https://github.com/bong-water-water-bong/1bit-systems
 
-`curl -sL https://1bit.systems/npu-install.sh | bash`
-
-Your hardware. Not AMD's.
+The bugs are in the issue tracker too — including the ones we found in our
+own published benchmarks.
 
 ---
 
 **Hashtags (in reply to last tweet):**
-#74kbBinary #OneBinaryToRuleThemAll #FusedEngine #ModelAgnostic
-#NoPython #ZeroDeps #AMDNPU #StrixHalo #AntiVendorLock #Cpp23 #TheUnlock
+#OneBinary #ModelAgnostic #NoPython #ZeroDeps #AMDNPU #StrixHalo #Cpp23 #OpenSource
