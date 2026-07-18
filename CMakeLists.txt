@@ -443,11 +443,27 @@ add_executable(test_medusa_skeleton tests/test_medusa_skeleton.cpp)
 target_compile_options(test_medusa_skeleton PRIVATE -Wall -Wextra -Wno-unused-result)
 target_link_libraries(test_medusa_skeleton PRIVATE rocm_cpp)
 
+# -- test_backend: CPU-only backend validation (issue #347) --
+# Previously only had a broken standalone build command that couldn't link
+# due to transitive HIP deps through backend_factory → backend_generic → gguf_loader.
+# Now wired as a proper ninja target linking backend_manager (which already handles
+# the rocm_cpp dependency). Run without a model to see usage.
+add_executable(test_backend tests/test_backend.cpp)
+target_include_directories(test_backend PRIVATE src)
+target_compile_options(test_backend PRIVATE -O3 -Wall -Wno-unused-result -std=c++23 -DZINC_DISABLED)
+target_link_libraries(test_backend PRIVATE backend_manager)
+
 set(BONSAI_H1B_MODEL "" CACHE FILEPATH "Path to a Bonsai .h1b model for test_bonsai_e2e (empty = skip)")
 set(SHERRY_H1B_MODEL "" CACHE FILEPATH "Path to a Sherry .h1b model for test_sherry_e2e (empty = skip)")
 
 add_test(NAME test_medusa_skeleton         COMMAND test_medusa_skeleton)
 set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
+
+add_test(NAME test_backend                 COMMAND test_backend)
+set_tests_properties(test_backend           PROPERTIES LABELS "host" SKIP_RETURN_CODE 77)
+
+# test_backend needs weights at /tmp/zaya_weights or the passed path
+# Skips gracefully (exit 77) when weights aren't found.
 
 add_test(NAME test_standalone_nock         COMMAND test_standalone_nock)
 set_tests_properties(test_standalone_nock   PROPERTIES LABELS "gpu_required")
