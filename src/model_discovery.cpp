@@ -416,41 +416,61 @@ bool read_gguf_tensor(const std::string& path, const std::string& tensor_name,
             break;
         }
         case 2: { // Q4_0: 32 elems, 2 bytes scale + 16 bytes nibbles = 18 bytes/block
+            // ggml's block_q4_0 de-interleaves nibbles into two halves, NOT
+            // sequential (j, j+1, j+2...): output[j] is qs[j]'s low nibble,
+            // output[j+16] is qs[j]'s high nibble (see dequantize_row_q4_0
+            // in ggml-quants.c). Verified against the independent `gguf`
+            // Python reference (bit-exact) for Q4_K/Q6_K — same verification
+            // needed here caught this was using the wrong pattern.
             uint64_t nb = (target->n + 31) / 32;
             for (uint64_t b = 0; b < nb; b++) {
                 float scale = rd_f16();
                 uint8_t q[16]; fread(q, 1, 16, f);
-                for (int j = 0; j < 32 && b*32+j < target->n; j++) {
-                    int8_t v = (j&1) ? (q[j>>1]>>4) : (q[j>>1]&0xf);
-                    output[b*32+j] = (v - 8) * scale;
+                for (int j = 0; j < 16; j++) {
+                    size_t i0 = b*32+j, i1 = b*32+j+16;
+                    if (i0 < target->n) output[i0] = ((int)(q[j] & 0xF) - 8) * scale;
+                    if (i1 < target->n) output[i1] = ((int)(q[j] >> 4) - 8) * scale;
                 }
             }
             break;
         }
-        case 6: { // Q5_0: 32 elems, 2 bytes scale + 16 bytes ql + 4 bytes qh = 22 bytes/block
+        case 6: { // Q5_0: 32 elems, 2 bytes scale + 4 bytes qh + 16 bytes qs = 22 bytes/block
+            // Same de-interleaved low/high split as Q4_0, plus a 5th bit from
+            // qh (read as one little-endian u32, bit j for the low half,
+            // bit j+16 for the high half — see dequantize_row_q5_0).
             uint64_t nb = (target->n + 31) / 32;
             for (uint64_t b = 0; b < nb; b++) {
                 float d = rd_f16();
-                uint8_t ql[16]; fread(ql, 1, 16, f);
-                uint8_t qh[4]; fread(qh, 1, 4, f);
-                for (int j = 0; j < 32 && b*32+j < target->n; j++) {
-                    uint8_t lo = (ql[j/2] >> (4*(j%2))) & 0xF;
-                    uint8_t hi = (qh[j/8] >> (j%8)) & 1;
-                    output[b*32+j] = (float)((int)(lo | (hi << 4)) - 16) * d;
+                uint8_t qh_bytes[4]; fread(qh_bytes, 1, 4, f);
+                uint32_t qh; memcpy(&qh, qh_bytes, 4);
+                uint8_t qs[16]; fread(qs, 1, 16, f);
+                for (int j = 0; j < 16; j++) {
+                    uint8_t xh_0 = (uint8_t)(((qh >> j) << 4) & 0x10);
+                    uint8_t xh_1 = (uint8_t)((qh >> (j + 12)) & 0x10);
+                    int32_t x0 = (int32_t)((qs[j] & 0xF) | xh_0) - 16;
+                    int32_t x1 = (int32_t)((qs[j] >> 4) | xh_1) - 16;
+                    size_t i0 = b*32+j, i1 = b*32+j+16;
+                    if (i0 < target->n) output[i0] = x0 * d;
+                    if (i1 < target->n) output[i1] = x1 * d;
                 }
             }
             break;
         }
-        case 7: { // Q5_1: 32 elems, 2 bytes d + 2 bytes m + 4 bytes qh + 16 bytes ql = 24 bytes/block
+        case 7: { // Q5_1: 32 elems, 2 bytes d + 2 bytes m + 4 bytes qh + 16 bytes qs = 24 bytes/block
             uint64_t nb = (target->n + 31) / 32;
             for (uint64_t b = 0; b < nb; b++) {
                 float d = rd_f16(); float m = rd_f16();
-                uint8_t qh[4]; fread(qh, 1, 4, f);
-                uint8_t ql[16]; fread(ql, 1, 16, f);
-                for (int j = 0; j < 32 && b*32+j < target->n; j++) {
-                    int lo = (ql[j/2] >> (4*(j%2))) & 0xF;
-                    int hi = (qh[j/8] >> (j%8)) & 1;
-                    output[b*32+j] = (float)((lo | (hi << 4)) - 16) * d + m;
+                uint8_t qh_bytes[4]; fread(qh_bytes, 1, 4, f);
+                uint32_t qh; memcpy(&qh, qh_bytes, 4);
+                uint8_t qs[16]; fread(qs, 1, 16, f);
+                for (int j = 0; j < 16; j++) {
+                    uint8_t xh_0 = (uint8_t)(((qh >> j) << 4) & 0x10);
+                    uint8_t xh_1 = (uint8_t)((qh >> (j + 12)) & 0x10);
+                    int32_t x0 = (int32_t)((qs[j] & 0xF) | xh_0);
+                    int32_t x1 = (int32_t)((qs[j] >> 4) | xh_1);
+                    size_t i0 = b*32+j, i1 = b*32+j+16;
+                    if (i0 < target->n) output[i0] = x0 * d + m;
+                    if (i1 < target->n) output[i1] = x1 * d + m;
                 }
             }
             break;
