@@ -36,7 +36,7 @@ Reverse-engineered AMD's XDNA 2 NPU in 4 days with no documentation. The project
 
 *Numbers auto-update from [`site/benchmarks.json`](site/benchmarks.json) on every push.*
 
-> ⚠️ **The table below mixes kernel-level synthetic microbenchmarks with end-to-end inference.** Rows marked with † are kernel-level only — they exclude KV-cache attention, softmax, RoPE, FFN non-GEMM ops, sampler, tokenizer, and host↔device transfers. **Real end-to-end throughput is substantially lower.** The separator row distinguishes the two categories. See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235) for discussion.
+> ⚠️ **The table below mixes kernel-level synthetic microbenchmarks with end-to-end inference.** Rows in the first table are kernel-level only — they exclude KV-cache attention, softmax, RoPE, FFN non-GEMM ops, sampler, tokenizer, and host↔device transfers. **Real end-to-end throughput is substantially lower** — see the second table. See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235) for discussion.
 
 ### 🧪 Kernel-Level Microbenchmarks (synthetic 28-layer weight buffer)
 
