@@ -228,7 +228,7 @@ static void patch_embed(const VisionModel& vm, const float* img, int W, int H,
             for (int kw = 0; kw < P; kw++) {
                 int px = pcol * P + kw;
                 float pix = img[((size_t)py * W + px) * 3 + cin];
-                size_t kbase = (size_t)kw + P * kh + P * P * cin;
+                size_t kbase = (size_t)kw + (size_t)P * kh + (size_t)P * P * cin;
                 const float* k0 = &vm.patch_embd0[kbase];
                 const float* k1 = &vm.patch_embd1[kbase];
                 for (int o = 0; o < Hd; o++)
@@ -300,8 +300,8 @@ static std::vector<float> vit_forward(const VisionModel& vm, const float* img, i
             matmul(&Vall[(size_t)t * Hd], x2.data(), l.v_w.data(), Hd, Hd);
             for (int i = 0; i < Hd; i++) { Qall[(size_t)t*Hd+i] += l.q_b[i]; Kall[(size_t)t*Hd+i] += l.k_b[i]; Vall[(size_t)t*Hd+i] += l.v_b[i]; }
             for (int h = 0; h < NH; h++) {
-                rope2d_apply(&Qall[(size_t)t * Hd + h * HD], HD, row_of[t], col_of[t], 10000.0f);
-                rope2d_apply(&Kall[(size_t)t * Hd + h * HD], HD, row_of[t], col_of[t], 10000.0f);
+                rope2d_apply(&Qall[(size_t)t * Hd + (size_t)h * HD], HD, row_of[t], col_of[t], 10000.0f);
+                rope2d_apply(&Kall[(size_t)t * Hd + (size_t)h * HD], HD, row_of[t], col_of[t], 10000.0f);
             }
         }
 
@@ -309,9 +309,9 @@ static std::vector<float> vit_forward(const VisionModel& vm, const float* img, i
         for (int t = 0; t < n_patches; t++) {
             std::fill(att.begin(), att.end(), 0.0f);
             for (int h = 0; h < NH; h++) {
-                float* Q = &Qall[(size_t)t * Hd + h * HD];
+                float* Q = &Qall[(size_t)t * Hd + (size_t)h * HD];
                 for (int s = 0; s < n_patches; s++) {
-                    float* K = &Kall[(size_t)s * Hd + h * HD];
+                    float* K = &Kall[(size_t)s * Hd + (size_t)h * HD];
                     float acc = 0; for (int d = 0; d < HD; d++) acc += Q[d] * K[d];
                     scores[s] = acc * scale;
                 }
@@ -320,7 +320,7 @@ static std::vector<float> vit_forward(const VisionModel& vm, const float* img, i
                 float inv = 1.0f / sum;
                 for (int d = 0; d < HD; d++) {
                     float acc = 0;
-                    for (int s = 0; s < n_patches; s++) acc += scores[s] * inv * Vall[(size_t)s * Hd + h * HD + d];
+                    for (int s = 0; s < n_patches; s++) acc += scores[s] * inv * Vall[(size_t)s * Hd + (size_t)h * HD + d];
                     att[h * HD + d] = acc;
                 }
             }
