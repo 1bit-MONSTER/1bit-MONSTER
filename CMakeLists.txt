@@ -666,19 +666,20 @@ endif()
 
 # -- test_pipeline_real: GPU+NPU fused pipeline with real kernels (#446) ------
 # Requires HIP, XRT, and the zero-copy pipeline sources.
+# Uses relative paths (no variable indirection) so the CI reference checker
+# can verify they resolve.
 find_package(aiebu QUIET)
 find_package(xrt QUIET)
 if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
-    set(PIPELINE_REAL_SRC_DIR ${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy)
-    if(EXISTS "${PIPELINE_REAL_SRC_DIR}/shared_bo.cpp" AND
-       EXISTS "${PIPELINE_REAL_SRC_DIR}/pipeline_overlap.cpp")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/shared_bo.cpp" AND
+       EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/pipeline_overlap.cpp")
         add_executable(test_pipeline_real
-            ${PIPELINE_REAL_SRC_DIR}/test_pipeline_real.cpp
-            ${PIPELINE_REAL_SRC_DIR}/shared_bo.cpp
-            ${PIPELINE_REAL_SRC_DIR}/pipeline_overlap.cpp
+            engine/fusion/zero_copy/test_pipeline_real.cpp
+            engine/fusion/zero_copy/shared_bo.cpp
+            engine/fusion/zero_copy/pipeline_overlap.cpp
         )
         target_include_directories(test_pipeline_real PRIVATE
-            ${PIPELINE_REAL_SRC_DIR}
+            engine/fusion/zero_copy
             ${CMAKE_SOURCE_DIR}/include
             ${THEROCK_SDK_BASE}/include)
         target_compile_options(test_pipeline_real PRIVATE

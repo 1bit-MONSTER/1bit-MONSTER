@@ -43,11 +43,12 @@ jobs:
           echo "XRT found"
 
       - name: Build dequantizer
-        run: gcc -c -O3 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.c
+        run: |
+          mkdir -p engine/npu/build
+          gcc -c -O3 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.c
 
       - name: Build engine (continuous batch)
         run: |
-          mkdir -p engine/npu/build
           # npu_engine_v12.cpp is a struct-only header — the actual engine
           # with main() is npu_engine_all.cpp
           g++ -std=c++23 -O3 -march=native -fopenmp -ffast-math \
