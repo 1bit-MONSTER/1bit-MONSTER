@@ -122,12 +122,13 @@ jobs:
             xargs clang-format --dry-run --Werror 2>&1 | head -20 || true
       - name: Python lint (ruff)
         run: |
-          set -o pipefail
           pip install -q ruff
-          ruff check --select=E,F,W --ignore=E501 tools/ scripts/ --output-format=concise 2>&1 | tee /tmp/ruff.log
-          # Real syntax errors (E999) must fail the build even though E/F/W style
-          # noise elsewhere is only advisory; grep the log rather than relying on
-          # ruff's own exit code so we don't gate on style, only on parse failures.
+          # ruff exits 1 on ANY finding (style included), not just syntax errors —
+          # `|| true` here is deliberate and scoped to just this line, so the step's
+          # gating decision is made explicitly below by grep, not by ruff's own
+          # exit code or a blanket swallow of the whole step.
+          ruff check --select=E,F,W --ignore=E501 tools/ scripts/ --output-format=concise > /tmp/ruff.log 2>&1 || true
+          cat /tmp/ruff.log
           if grep -q 'E999' /tmp/ruff.log; then
             echo "::error::Python SyntaxError(s) found (E999) — see ruff output above"
             exit 1
