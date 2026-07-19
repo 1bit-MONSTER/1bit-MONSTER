@@ -163,21 +163,25 @@ int main(int argc,char**argv){
             return true;
         }
         void run(float*qo,float*at,int cl,const float*kv_k,const float*kv_v,int max_pos=-1) {
-            // NPU attention via KV xclbin: Q@K^T on NPU, softmax+V on CPU
-            // TODO(#kv-xclbin): Wire the NPU KV xclbin for Q@K^T attention-score
-            // computation.  The xclbin and instruction format exist in the FLM
-            // toolchain (see setup_npu_xclbins.sh) but the kernel-call plumbing
-            // from npu_engine_i8.cpp hasn't been adapted yet.
-            // Fall back to CPU for now
-            #pragma omp parallel for
-            for(int hh=0;hh<NH;hh++){
-                int kvh=hh/GQA;float sc[4096];float mx=-1e30f;
-                for(int p=0;p<cl;p++){
-                    if(p>=max_pos){sc[p]=-1e30f;continue;}double s=0;int qoff=hh*HD,koff=kvh*NKV*HD+p*HD;
-                    for(int d=0;d<HD;d++)s+=(double)qo[qoff+d]*kv_k[koff+d];sc[p]=(float)(s*0.0883883476f);if(sc[p]>mx)mx=sc[p];}
-                double sw=0;for(int p=0;p<cl;p++){sc[p]=expf(sc[p]-mx);sw+=sc[p];}float iw=sw>0?1.0f/(float)sw:1.0f/cl;
-                for(int d=0;d<HD;d++){float acc=0;int aoff=hh*HD+d;for(int p=0;p<cl;p++)acc+=sc[p]*kv_v[kvh*NKV*HD+p*HD+d];at[aoff]=acc*iw;}
-            }
+            if(max_pos<0)max_pos=cl;
+            // NPU attention via KV xclbin: full attention on NPU (Q@K^T → softmax → @V)
+            // Pre-compiled instructions at insts_i8_KV_v.txt drive the AIE array.
+            // Q, K, V quantized to i8; output is i32, dequantized to f32.
+            float q_max=0;for(int i=0;i<NH*HD;i++){float a=fabsf(qo[i]);if(a>q_max)q_max=a;}
+            float qs=q_max<1e-12f?1.0f:q_max/127.0f;float q_is=1.0f/qs;
+            for(int i=0;i<NH*HD;i++){float v=qo[i];if(!std::isfinite(v))v=0;int x=(int)roundf(v*q_is);if(x>127)x=127;else if(x<-127)x=-127;Q[i]=(int8_t)x;}
+            bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            memset(K,0,(size_t)NKV*4096*HD);
+            for(size_t i=0;i<(size_t)max_pos*NKV*HD;i++){float v=kv_k[i];if(!std::isfinite(v))v=0;int x=(int)roundf(v);if(x>127)x=127;else if(x<-127)x=-127;K[i]=(int8_t)x;}
+            bK->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            memset(V,0,(size_t)NKV*4096*HD);
+            for(size_t i=0;i<(size_t)max_pos*NKV*HD;i++){float v=kv_v[i];if(!std::isfinite(v))v=0;int x=(int)roundf(v);if(x>127)x=127;else if(x<-127)x=-127;V[i]=(int8_t)x;}
+            bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            // Launch: Q, K, V → NPU attention → i32 output
+            (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bQ,*bK,*bV,*bOut).wait();
+            bOut->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            float cs=qs/127.0f;
+            for(int i=0;i<NH*HD;i++){float v=(float)Out[i]*cs;at[i]=std::isfinite(v)?v:0.0f;}
         }
     } attn;
     attn.init(dev,sctx,D"/final_i8_KV_v.xclbin",D"/insts_i8_KV_v.txt");
