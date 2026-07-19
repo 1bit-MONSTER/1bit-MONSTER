@@ -1,12 +1,14 @@
 // backend_hip.cpp — AMD ROCm HIP backend for RDNA 3.5+ GPUs
 // Part of the unified zaya_server binary. Compiled when USE_HIP=ON.
 #include "backend.h"
+#include "rocm_cpp/ck_gemm.h"
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -103,6 +105,8 @@ static void upf32(const std::vector<float>& s, float* d, int n, hipStream_t h = 
 
 struct HipLayer {
     __half *nw=nullptr,*wq=nullptr,*wk=nullptr,*wv1=nullptr,*wv2=nullptr,*wo=nullptr,*pan=nullptr;
+    __half *up=nullptr;  // generic (non-Zaya) SwiGLU up_proj (l.gu=gate_proj, l.dn=down_proj there)
+    __half *qb=nullptr,*kb=nullptr,*vb=nullptr;  // optional QKV bias (Qwen2/2.5)
     float *cdw=nullptr,*cdb=nullptr,*cgw=nullptr,*cgb=nullptr,*ks=nullptr;
     float *pahss=nullptr,*pahsb=nullptr,*parss=nullptr,*parsb=nullptr;
     float *gdw=nullptr,*gdb=nullptr,*rfn=nullptr,*rf1=nullptr,*rf1b=nullptr,*rf2=nullptr,*rf2b=nullptr,*rout=nullptr,*bb=nullptr;
@@ -117,6 +121,7 @@ class HipBackend : public InferenceBackend {
     hipStream_t st_ = 0;
     __half *d_hs=nullptr,*d_ao=nullptr,*d_tmp=nullptr,*d_fnw=nullptr,*d_embed_gpu=nullptr;
     __half *d_conv=nullptr,*d_phs=nullptr;
+    __half *d_kcache=nullptr,*d_vcache=nullptr;  // generic-path KV cache: [N_LAYERS, max_seq_len, NKV, HD]
     float *d_prev_rs=nullptr;
     int *d_expert_idx=nullptr;
     float *d_expert_wt=nullptr;
@@ -186,10 +191,18 @@ public:
         HIP_OK(hipMemcpy(d_fnw, fnorm_cpu_.data(), H * 2, hipMemcpyHostToDevice));
         embed_loaded_ = true;
 
-        HIP_OK(hipMalloc(&d_hs, H * 2)); HIP_OK(hipMalloc(&d_ao, H * 2)); HIP_OK(hipMalloc(&d_tmp, H * 2));
+        // Scratch buffers must hold the largest thing ever written into them:
+        // QKV concat (QD+2*KD) for attention, or gate+up concat (2*N_FF) for
+        // the generic FFN path — both exceed H, unlike the old H-only sizing.
+        size_t scratch_elems = std::max<size_t>({(size_t)QD + 2*(size_t)KD, (size_t)2*N_FF, (size_t)H});
+        HIP_OK(hipMalloc(&d_hs, H * 2));
+        HIP_OK(hipMalloc(&d_ao, scratch_elems * 2));
+        HIP_OK(hipMalloc(&d_tmp, scratch_elems * 2));
         HIP_OK(hipMalloc(&d_conv, (size_t)N_LAYERS * 2 * QKV * 4));  // ×2 for separate in/out state
         HIP_OK(hipMalloc(&d_phs, (size_t)N_LAYERS * H * 2));
         HIP_OK(hipMalloc(&d_prev_rs, (size_t)N_LAYERS * RTR_H * 4));
+        HIP_OK(hipMalloc(&d_kcache, (size_t)N_LAYERS * cfg.max_seq_len * KD * 2));
+        HIP_OK(hipMalloc(&d_vcache, (size_t)N_LAYERS * cfg.max_seq_len * KD * 2));
         HIP_OK(hipMalloc(&d_expert_idx, 4)); HIP_OK(hipMalloc(&d_expert_wt, 4));
         HIP_OK(hipMalloc(&d_all_logits, (size_t)VOCAB * 2));
         HIP_OK(hipMalloc(&d_best_idx, 4)); HIP_OK(hipMalloc(&d_best_val, 4));
@@ -252,13 +265,14 @@ public:
         auto f = [](void* p) { if (p) { hipError_t _e = hipFree(p); if(_e != hipSuccess) fprintf(stderr, "hipFree failed: %s\n", hipGetErrorString(_e)); } };
         f(d_hs); f(d_ao); f(d_tmp); f(d_fnw); f(d_embed_gpu);
         f(d_conv); f(d_phs); f(d_prev_rs); f(d_expert_idx); f(d_expert_wt);
-        f(d_all_logits); f(d_best_idx); f(d_best_val);
+        f(d_all_logits); f(d_best_idx); f(d_best_val); f(d_kcache); f(d_vcache);
         d_hs=d_ao=d_tmp=d_fnw=d_embed_gpu=nullptr;
         d_conv=d_phs=nullptr; d_prev_rs=nullptr;
         d_expert_idx=nullptr; d_expert_wt=nullptr;
         d_all_logits=nullptr; d_best_idx=nullptr; d_best_val=nullptr;
+        d_kcache=nullptr; d_vcache=nullptr;
         for (auto& l : layers_) {
-            for (auto* p : {&l.nw,&l.wq,&l.wk,&l.wv1,&l.wv2,&l.wo,&l.pan,&l.gu,&l.dn}) f(*p);
+            for (auto* p : {&l.nw,&l.wq,&l.wk,&l.wv1,&l.wv2,&l.wo,&l.pan,&l.gu,&l.dn,&l.up,&l.qb,&l.kb,&l.vb}) f(*p);
             for (auto* p : {&l.cdw,&l.cdb,&l.cgw,&l.cgb,&l.ks,&l.pahss,&l.pahsb,&l.parss,&l.parsb,&l.gdw,&l.gdb,&l.rfn,&l.rf1,&l.rf1b,&l.rf2,&l.rf2b,&l.rout,&l.bb,&l.pmhss,&l.pmhsb,&l.pmrss,&l.pmrsb}) f(*p);
         }
         layers_.clear(); embed_loaded_ = false; loaded_ = false;
@@ -278,33 +292,51 @@ public:
         for (uint64_t i = 0; i < nkv; i++) {
             uint64_t kl; fread(&kl, 8, 1, gf); fseek(gf, kl, SEEK_CUR);
             uint32_t vt; fread(&vt, 4, 1, gf);
-            if (vt == 2 || vt == 8) { uint64_t sl; fread(&sl, 8, 1, gf); fseek(gf, sl, SEEK_CUR); }
-            else if (vt >= 3 && vt <= 6) fseek(gf, 4, SEEK_CUR);
+            // GGUF scalar type widths: 0/1=u8/i8 (1B), 2/3=u16/i16 (2B),
+            // 4/5/6=u32/i32/f32 (4B), 7=bool (1B), 8=string (u64 len + bytes),
+            // 10/11/12=u64/i64/f64 (8B). vt==2 (UINT16) was previously lumped
+            // in with vt==8 (STRING) and misread as a length-prefixed value.
+            if (vt == 8) { uint64_t sl; fread(&sl, 8, 1, gf); fseek(gf, sl, SEEK_CUR); }
+            else if (vt == 2 || vt == 3) fseek(gf, 2, SEEK_CUR);
+            else if (vt >= 4 && vt <= 6) fseek(gf, 4, SEEK_CUR);
             else if (vt == 7) fseek(gf, 1, SEEK_CUR);
             else if (vt == 9) {
-                uint32_t n_arr; fread(&n_arr, 4, 1, gf); uint32_t at; fread(&at, 4, 1, gf); uint64_t al = n_arr;
-                if (at == 2 || at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, gf); fseek(gf, ss, SEEK_CUR); } }
-                else if (at <= 7) fseek(gf, al, SEEK_CUR);
+                // GGUF array value layout: element_type (u32), length (u64),
+                // THEN `length` elements — was reading both as u32 in the
+                // wrong order, desyncing the file offset for everything
+                // after the first array-valued KV pair (e.g. tokenizer
+                // token/merge lists), which then corrupted tensor-header
+                // parsing downstream.
+                uint32_t at; fread(&at, 4, 1, gf); uint64_t al; fread(&al, 8, 1, gf);
+                if (at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, gf); fseek(gf, ss, SEEK_CUR); } }
+                else if (at == 2 || at == 3) fseek(gf, al * 2, SEEK_CUR);
+                else if (at >= 4 && at <= 6) fseek(gf, al * 4, SEEK_CUR);
                 else if (at >= 10 && at <= 12) fseek(gf, al * 8, SEEK_CUR);
-                else fseek(gf, al * 4, SEEK_CUR);
+                else fseek(gf, al, SEEK_CUR);  // 0/1/7 (u8/i8/bool) — 1 byte each
             } else if (vt >= 10 && vt <= 12) fseek(gf, 8, SEEK_CUR);
-            else if (vt <= 1) fseek(gf, 1, SEEK_CUR);
-            else fseek(gf, 8, SEEK_CUR);
+            else fseek(gf, 1, SEEK_CUR);  // 0/1 (u8/i8)
         }
         // Read tensor headers
         struct TInfo { std::string name; uint64_t off; uint32_t dtype; uint64_t ne; };
         std::unordered_map<std::string, TInfo> tmap;
-        uint64_t data_off = ftell(gf);
         for (uint64_t i = 0; i < nt; i++) {
             uint64_t nl; fread(&nl, 8, 1, gf);
             TInfo ti; ti.name.resize(nl); fread(&ti.name[0], 1, nl, gf);
             uint32_t nd; fread(&nd, 4, 1, gf);
             ti.ne = 1; for (uint32_t j = 0; j < nd; j++) { uint64_t d; fread(&d, 8, 1, gf); ti.ne *= d; }
-            fread(&ti.dtype, 4, 1, gf); fseek(gf, 4, SEEK_CUR);
+            fread(&ti.dtype, 4, 1, gf);
+            fread(&ti.off, 8, 1, gf);  // GGUF's own authoritative per-tensor offset (relative to data section start)
             tmap[ti.name] = ti;
         }
-        data_off = ftell(gf); data_off = (data_off + 31) & ~31;
-        for (auto& [n, t] : tmap) { t.off = data_off; int bs = 32, bpb = t.dtype == 1 ? 2 : t.dtype == 8 ? 34 : 4; if (t.dtype == 1) bs = 1; data_off += ((t.ne + bs - 1) / bs) * bpb; data_off = (data_off + 31) & ~31; }
+        // The previous version discarded this real offset field and instead
+        // recomputed offsets by accumulating per-dtype size estimates while
+        // iterating `tmap` — a std::unordered_map, whose iteration order is
+        // unspecified and does NOT match the file's actual physical tensor
+        // layout, so every computed offset was wrong (and the size estimates
+        // didn't cover K-quants anyway). Using the file's own offset is both
+        // simpler and correct regardless of quantization format.
+        uint64_t data_section_base = ftell(gf); data_section_base = (data_section_base + 31) & ~31;
+        for (auto& [n, t] : tmap) t.off += data_section_base;
 
         int H = cfg.hidden_size, V = cfg.vocab_size, L = cfg.num_layers;
         int NQ = cfg.num_heads, NKV = cfg.num_kv_heads, HD = cfg.head_dim;
@@ -365,25 +397,42 @@ public:
             if (it != tmap.end()) load_half("model.norm.weight", d_fnw, H);
         }
 
-        HIP_OK(hipMalloc(&d_hs, H * 2)); HIP_OK(hipMalloc(&d_ao, H * 2)); HIP_OK(hipMalloc(&d_tmp, H * 2));
+        size_t scratch_elems = std::max<size_t>({(size_t)QD + 2*(size_t)KD, (size_t)2*FF, (size_t)H});
+        HIP_OK(hipMalloc(&d_hs, H * 2));
+        HIP_OK(hipMalloc(&d_ao, scratch_elems * 2));
+        HIP_OK(hipMalloc(&d_tmp, scratch_elems * 2));
         HIP_OK(hipMalloc(&d_conv, (size_t)L * 2 * QKV * 4));
         HIP_OK(hipMalloc(&d_phs, (size_t)L * H * 2));
         HIP_OK(hipMalloc(&d_all_logits, (size_t)V * 2));
         HIP_OK(hipMalloc(&d_best_idx, 4)); HIP_OK(hipMalloc(&d_best_val, 4));
+        HIP_OK(hipMalloc(&d_kcache, (size_t)L * cfg.max_seq_len * KD * 2));
+        HIP_OK(hipMalloc(&d_vcache, (size_t)L * cfg.max_seq_len * KD * 2));
 
         layers_.resize(L);
         for (int il = 0; il < L; il++) {
             auto& lw = layers_[il];
-            char pfx[128]; snprintf(pfx, sizeof(pfx), "model.layers.%d.", il);
+            // GGUF's own tensor-naming convention (llama.cpp), NOT the
+            // HuggingFace-safetensors dotted names this used to look for
+            // (model.layers.N.self_attn.q_proj.weight etc) — those never
+            // match a real GGUF file, so every per-layer weight below was
+            // silently null for every GGUF-loaded model, always.
+            char pfx[64]; snprintf(pfx, sizeof(pfx), "blk.%d.", il);
             std::string p(pfx);
-            load_half((p + "input_layernorm.weight").c_str(), lw.nw, H);
-            load_half((p + "post_attention_layernorm.weight").c_str(), lw.pan, H);
-            load_half((p + "self_attn.q_proj.weight").c_str(), lw.wq, (size_t)QD * H);
-            load_half((p + "self_attn.k_proj.weight").c_str(), lw.wk, (size_t)KD * H);
-            load_half((p + "self_attn.v_proj.weight").c_str(), lw.wv1, (size_t)KD * H);
-            load_half((p + "self_attn.o_proj.weight").c_str(), lw.wo, (size_t)H * QD);
-            load_half((p + "mlp.gate_proj.weight").c_str(), lw.gu, (size_t)FF * H);
-            load_half((p + "mlp.down_proj.weight").c_str(), lw.dn, (size_t)H * FF);
+            load_half((p + "attn_norm.weight").c_str(), lw.nw, H);
+            load_half((p + "ffn_norm.weight").c_str(), lw.pan, H);
+            load_half((p + "attn_q.weight").c_str(), lw.wq, (size_t)QD * H);
+            load_half((p + "attn_k.weight").c_str(), lw.wk, (size_t)KD * H);
+            load_half((p + "attn_v.weight").c_str(), lw.wv1, (size_t)KD * H);
+            load_half((p + "attn_output.weight").c_str(), lw.wo, (size_t)H * QD);
+            load_half((p + "ffn_gate.weight").c_str(), lw.gu, (size_t)FF * H);
+            load_half((p + "ffn_up.weight").c_str(), lw.up, (size_t)FF * H);
+            load_half((p + "ffn_down.weight").c_str(), lw.dn, (size_t)H * FF);
+            // Optional QKV bias (Qwen2/2.5 use it; most other architectures
+            // don't — load_half returns false and leaves the pointer null
+            // when the tensor doesn't exist, which the forward pass checks).
+            load_half((p + "attn_q.bias").c_str(), lw.qb, (size_t)QD);
+            load_half((p + "attn_k.bias").c_str(), lw.kb, (size_t)KD);
+            load_half((p + "attn_v.bias").c_str(), lw.vb, (size_t)KD);
         }
         fclose(gf);
         embed_loaded_ = true;
@@ -409,17 +458,28 @@ public:
         int N_FF=cfg_.intermediate_size, RTR_H=cfg_.router_hidden;
         bool is_zaya = (H == 2048 && N_LAYERS == 40 && VOCAB == 262272);
         int g1 = (H+BLK-1)/BLK;
-        __half* src = embed_cpu_.data() + (size_t)token_id * H;
-        HIP_OK(hipMemcpyAsync(d_hs, src, H * 2, hipMemcpyHostToDevice, st_));
+        // d_embed_gpu is populated by both loaders (unlike the host-side
+        // embed_cpu_, which only the .bin loader fills in) — a GPU-side
+        // lookup works for both instead of reading past the end of an
+        // empty embed_cpu_ for GGUF-loaded models.
+        rcpp_embedding_lookup_fp16(d_embed_gpu, token_id, d_hs, H, st_);
+        size_t kv_layer_stride = (size_t)cfg_.max_seq_len * KD;  // elements, generic-path KV cache only
         for (int il = 0; il < N_LAYERS; il++) {
             auto& l = layers_[il];
+            // Pre-attention-norm residual, captured before rmsnorm below mutates
+            // d_hs in place. Zaya's CCA path uses this as its own "previous
+            // hidden state" input; the generic path below reuses the same slot
+            // as a true pre-norm transformer residual (cheap, unconditional,
+            // and harmless for Zaya since it already needed this copy anyway).
             copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
             rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H);
             moe_tiled_gemv<<<QD/16, 128, 0, st_>>>(d_tmp, d_hs, l.wq, QD, H);
             moe_tiled_gemv<<<KD/16, 128, 0, st_>>>(d_tmp+QD, d_hs, l.wk, KD, H);
-            moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
-            moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
+            if (l.qb) add_k<<<(QD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp, l.qb, QD);
+            if (l.kb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, l.kb, KD);
             if (is_zaya) {
+                moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
+                moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
                 // Zaya-specific CCA attention + fused router MoE (fast path)
                 v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
                 cca_custom_kernel<<<1, 256, cca_custom_smem_bytes(NQ, NKV, HD, 64), st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV*2, d_phs+(size_t)il*H, il, 1, NQ, NKV, HD, 64, 5000000.0f, 128);
@@ -438,17 +498,47 @@ public:
                     copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_tmp, H);
                 }
             } else {
-                // Generic FFN path for non-Zaya models (gate + SiLU + down)
+                // Generic path: real self-attention (RoPE + KV cache + causal
+                // GQA attention) + standard SwiGLU FFN, both pre-norm with
+                // residual. Previously this branch skipped attention entirely
+                // (QKV was computed and thrown away) and had a broken FFN
+                // (read an uninitialized "up" buffer) — see the commit that
+                // added this comment for the full writeup.
+                __half* kc = d_kcache + (size_t)il * kv_layer_stride;
+                __half* vc = d_vcache + (size_t)il * kv_layer_stride;
+
+                // Single full V projection (generic models load one v_proj,
+                // not Zaya's split current/delayed halves).
+                moe_tiled_gemv<<<KD/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD, H);
+                if (l.vb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD+KD, l.vb, KD);
+
+                // RoPE Q+K in place, write RoPE'd K + raw V into this layer's
+                // KV cache at position `pos`.
+                rcpp_rope_kv_append_fp16(d_tmp, kc, d_tmp+QD+KD, vc, pos, cfg_.rope_theta, NQ, NKV, HD, st_);
+
+                // Causal GQA attention against positions [0, pos] of this
+                // layer's KV cache.
+                rcpp_kv_cache_attn_decode(d_tmp, kc, vc, d_ao, NQ, NKV, HD, pos + 1, 1.0f / sqrtf((float)HD), st_);
+
+                // O-projection + residual.
+                moe_tiled_gemv<<<H/16, 128, 0, st_>>>(d_tmp, d_ao, l.wo, H, QD);
+                add_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_tmp, H);
+                copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_phs + (size_t)il*H, H);
+
+                // Pre-FFN-norm residual, same reused per-layer slot (its
+                // pre-attention value is no longer needed at this point).
+                copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
                 rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H);
-                if (l.gu && l.dn) {
+                if (l.gu && l.dn && l.up) {
                     int ffb = (N_FF+15)/16;
-                    moe_tiled_gemv<<<ffb, 128, 0, st_>>>(d_tmp, d_hs, l.gu, N_FF, H);
+                    moe_tiled_gemv<<<ffb, 128, 0, st_>>>(d_tmp, d_hs, l.gu, N_FF, H);        // gate
+                    moe_tiled_gemv<<<ffb, 128, 0, st_>>>(d_tmp+N_FF, d_hs, l.up, N_FF, H);   // up
                     silu_mul_k<<<(N_FF+BLK-1)/BLK, BLK, 0, st_>>>(d_ao, d_tmp, d_tmp+N_FF, N_FF);
                     int db = (H+15)/16;
                     moe_tiled_gemv<<<db, 128, 0, st_>>>(d_tmp, d_ao, l.dn, H, N_FF);
-                    // Element-wise residual add: d_hs += d_tmp
-                    add_k<<<g1, BLK, 0, st_>>>(d_hs, d_tmp, H);
+                    add_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_tmp, H);
                 }
+                copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_phs + (size_t)il*H, H);
             }
         }
         rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, d_fnw, H);
