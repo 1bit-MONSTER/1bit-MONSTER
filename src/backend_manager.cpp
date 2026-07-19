@@ -312,6 +312,18 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             auto* pm = monitor_.for_backend(info.id);
             if (pm) pm->healthy = true;
 
+            // Initialize cross-layer prefetch pilot
+            if (raw) {
+                raw->set_pilot(&pilot_);
+                pilot_.init(cfg.num_layers, info.type,
+                    [raw](int layer, PilotBackend pb) -> bool {
+                        return raw->preload_layer(layer);
+                    });
+                pilot_.start_worker();
+                pilot_active_ = true;
+                printf("  → PILOT prefetch active (%d layers)\n", cfg.num_layers);
+            }
+
             return true;
         }
 
@@ -574,6 +586,8 @@ bool BackendManager::reset() {
     if (ok && active_idx_ < backends_.size()) {
         backends_[active_idx_].functional = true;
     }
+    // Reset pilot for new sequence
+    pilot_.reset();
     return ok;
 }
 
