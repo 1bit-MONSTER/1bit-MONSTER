@@ -1058,7 +1058,7 @@ int main(int argc, char** argv) {
     printf("  Press Ctrl+C to stop.\n");
     printf("──────────────────────────────────────────────\n\n");
 
-    if (!svr.listen("0.0.0.0", g_port)) {
+    if (!svr.listen("127.0.0.1", g_port)) {
         fprintf(stderr, "Failed to start server on port %d\n", g_port);
         return 1;
     }

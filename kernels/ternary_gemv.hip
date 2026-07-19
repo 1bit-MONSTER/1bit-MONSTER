@@ -26,6 +26,9 @@
 
 // LDS tile for activation vector — 512 floats shared across all warps
 #define LDS_TILE 512
+#ifndef HIP_CHECK
+#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
+#endif
 
 __attribute__((amdgpu_flat_work_group_size(BLOCK_SIZE, BLOCK_SIZE)))
 __global__ void ternary_gemv_kernel(
@@ -216,6 +219,7 @@ void ternary_gemv(
     dim3 block(BLOCK_SIZE);
     hipLaunchKernelGGL(ternary_gemv_kernel, grid, block, 0, stream,
         packed, x, scales, y, M, K);
+    HIP_CHECK(hipGetLastError());
 }
 
 void ternary_gemv_batched(
@@ -226,6 +230,7 @@ void ternary_gemv_batched(
     dim3 block(BLOCK_SIZE);
     hipLaunchKernelGGL(ternary_gemv_batched_kernel, grid, block, 0, stream,
         packed, x, scales, y, M, K, B);
+    HIP_CHECK(hipGetLastError());
 }
 
 } // extern "C"

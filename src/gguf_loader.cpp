@@ -142,6 +142,13 @@ struct GgufReader {
     std::string read_string() {
         uint64_t len;
         f.read(reinterpret_cast<char*>(&len), 8);
+        // Cap at 16 MiB — prevents OOM from malformed/crafted GGUF files
+        constexpr uint64_t MAX_STRING_LEN = 16ULL * 1024 * 1024;
+        if (len > MAX_STRING_LEN) {
+            fprintf(stderr, "[gguf] FATAL: string length %llu exceeds max %llu — file may be corrupted\n",
+                    (unsigned long long)len, (unsigned long long)MAX_STRING_LEN);
+            len = 0;
+        }
         std::string s(len, '\0');
         if (len > 0) f.read(&s[0], len);
         return s;

@@ -204,4 +204,5 @@ extern "C" void bonsai_q1_gemv_soa_launch(
                        reinterpret_cast<const __half*>(act_fp16),
                        reinterpret_cast<__half*>(out_fp16),
                        N_out, K_in);
+    HIP_CHECK(hipGetLastError());
 }

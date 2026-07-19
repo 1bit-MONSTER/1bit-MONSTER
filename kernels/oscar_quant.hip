@@ -203,6 +203,7 @@ void oscar_attn_decode_kernel(
             m = new_m;
             s_m[0] = m; s_l[0] = l;
         }
+        __syncthreads(); // ensure all warps' lane 0 have written before broadcast read
         // Broadcast
         if (lane < 2) { s_m[lane] = s_m[0]; s_l[lane] = s_l[0]; }
         __syncthreads();
@@ -257,6 +258,7 @@ extern "C" void rcpp_oscar_quantize_launch(
     hipLaunchKernelGGL(oscar_quantize_kernel, grid, WARP, smem, (hipStream_t)stream,
                        (const __half*)in_fp16, (uint8_t*)out_idx, (__half*)out_scale,
                        seq_len, num_kv_heads, HD, layer_idx, R_dev);
+    HIP_CHECK(hipGetLastError());
 
     HIP_CHECK(hipStreamSynchronize((hipStream_t)stream));
     HIP_CHECK(hipFree(R_dev));
@@ -291,6 +293,7 @@ extern "C" int rcpp_oscar_attn_decode_launch(
                        num_q_heads, num_kv_heads, HD, seq_len,
                        layer_idx, scale,
                        R_K_dev, R_V_dev);
+    HIP_CHECK(hipGetLastError());
 
     HIP_CHECK(hipStreamSynchronize((hipStream_t)stream));
     HIP_CHECK(hipFree(R_K_dev));

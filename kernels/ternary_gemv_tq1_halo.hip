@@ -236,4 +236,5 @@ extern "C" void ternary_gemv_tq1_halo_f16_launch(
                        static_cast<const float*>(scales),
                        static_cast<__half*>(y_f16),
                        M, K_padded);
+    HIP_CHECK(hipGetLastError());
 }

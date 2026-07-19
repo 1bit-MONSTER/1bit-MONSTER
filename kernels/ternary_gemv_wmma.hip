@@ -28,6 +28,9 @@ using int32x8_t = __attribute__((ext_vector_type(8))) int32_t;
 // per LDS load. Each wave stores 16 rows × 32 tiles × 4 bytes = 2KB in LDS.
 // With 2 waves and double buffering = 8KB total — well within 64KB LDS on gfx1151.
 #define WEIGHT_TILES_PER_BATCH 32
+#ifndef HIP_CHECK
+#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
+#endif
 
 // ─── Packed ternary unpack ──────────────────────────────────────────────────
 static __device__ __forceinline__ int8x16_t unpack_ternary_4(uint32_t word) {
@@ -295,6 +298,7 @@ extern "C" void ternary_gemv_wmma_launch(
                            static_cast<const float*>(scales),
                            static_cast<__half*>(y_fp16),
                            M, K);
+        HIP_CHECK(hipGetLastError());
     } else if (M >= 32) {
         dim3 grid((M + 31) / 32, 1, 1);
         dim3 block(64, 1, 1);
@@ -306,6 +310,7 @@ extern "C" void ternary_gemv_wmma_launch(
                            static_cast<const float*>(scales),
                            static_cast<__half*>(y_fp16),
                            M, K);
+        HIP_CHECK(hipGetLastError());
     } else {
         dim3 grid((M + 15) / 16, 1, 1);
         dim3 block(WARP_SIZE, 1, 1);
@@ -317,5 +322,6 @@ extern "C" void ternary_gemv_wmma_launch(
                            static_cast<const float*>(scales),
                            static_cast<__half*>(y_fp16),
                            M, K);
+        HIP_CHECK(hipGetLastError());
     }
 }

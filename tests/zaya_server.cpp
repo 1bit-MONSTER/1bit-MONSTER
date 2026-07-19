@@ -703,7 +703,9 @@ int main(int argc, char** argv) {
         try {
             json jbody = json::parse(body);
             max_tokens = jbody.value("max_tokens", 256);
-        } catch (...) {}
+        } catch (...) {
+            fprintf(stderr, "[zaya_server] JSON parse error in /v1/chat/completions max_tokens extraction\n");
+        }
 
         RouteStrategy use_strat = strategy;
         if (use_strat == RouteStrategy::CONTENT) {
@@ -714,7 +716,9 @@ int main(int argc, char** argv) {
                     user_msg = jbody["messages"][0].value("content", std::string());
                 else
                     user_msg = jbody.value("content", std::string());
-            } catch (...) {}
+            } catch (...) {
+                fprintf(stderr, "[zaya_server] JSON parse error in /v1/chat/completions content routing\n");
+            }
             fprintf(stderr, "  [content] routing: %s\n", should_use_large_model(user_msg) ? "large model" : "small model (NPU)");
             use_strat = RouteStrategy::AUTO;
         }
@@ -776,13 +780,17 @@ int main(int argc, char** argv) {
                 input = tok.encode(jbody["prompt"].get<std::string>());
             }
             np = jbody.value("n_predict", 16);
-        } catch (...) {}
+        } catch (...) {
+            fprintf(stderr, "[zaya_server] JSON parse error in /completion\n");
+        }
         if (input.empty()) {
             std::string prompt;
             try {
                 json jbody = json::parse(body);
                 prompt = jbody.value("prompt", std::string());
-            } catch (...) {}
+            } catch (...) {
+                fprintf(stderr, "[zaya_server] JSON parse error in /completion prompt fallback\n");
+            }
             if (prompt.empty()) {
                 res.status = 400;
                 res.set_content("{\"error\":\"need prompt or tokens\"}", "application/json");
@@ -808,7 +816,7 @@ int main(int argc, char** argv) {
             res.set_content("{\"error\":\"not found\"}", "application/json");
     });
 
-    if (!svr.listen("0.0.0.0", port)) {
+    if (!svr.listen("127.0.0.1", port)) {
         fprintf(stderr, "FATAL: failed to bind/listen on port %d\n", port);
         return 1;
     }

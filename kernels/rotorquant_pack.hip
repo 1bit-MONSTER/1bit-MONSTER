@@ -23,6 +23,9 @@
 #include <cmath>
 
 #include "rocm_cpp/kv_rotorquant.h"
+#ifndef HIP_CHECK
+#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
+#endif
 
 namespace {
 
@@ -174,4 +177,5 @@ extern "C" void rcpp_pq3_requantize_launch(
                        static_cast<const __half*>(in_fp16),
                        static_cast<uint8_t*>(out_idx),
                        seq_len, num_kv_heads, head_dim, layer_idx);
+    HIP_CHECK(hipGetLastError());
 }

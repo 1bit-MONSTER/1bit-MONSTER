@@ -265,4 +265,5 @@ extern "C" void ternary_gemv_sherry_f16_launch(
                        static_cast<const float*>(scales),
                        static_cast<__half*>(y_f16),
                        M, K);
+    HIP_CHECK(hipGetLastError());
 }
