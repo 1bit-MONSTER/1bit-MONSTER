@@ -42,6 +42,7 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <mutex>
 #include <cstdio>
 #include <deque>
 #include <functional>
