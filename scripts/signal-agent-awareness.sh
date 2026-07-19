@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # signal-agent-awareness.sh — Signal all running agents about a codebase change
 #
 # Use this in CI pipelines, post-push hooks, or any external process

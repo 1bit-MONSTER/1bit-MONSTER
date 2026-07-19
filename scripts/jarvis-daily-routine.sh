@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # jarvis-daily-routine.sh — JARVIS complete daily routine
 #
 # Runs all JARVIS sweeps in sequence:

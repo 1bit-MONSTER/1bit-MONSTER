@@ -151,11 +151,22 @@ public:
         cfg_ = cfg;
         unload_model();
 
-        // Accept any model dimensions — use runtime cfg_ fields.
-        bool is_zaya = (cfg.hidden_size == 2048 && cfg.num_layers == 40 && cfg.vocab_size == 262272);
+        // Validate model dimensions match compile-time kernel constants.
+        // The kernels are compiled for Zaya1-8B dimensions; mismatched models
+        // will produce incorrect results.
+        // Compile-time constants (from the #define block above): H=2048, NQ=8, NKV=2,
+        // HD=128, N_LAYERS=40, VOCAB=262272, N_EXP=16, N_FF=2048, RTR_H=256
+        bool is_zaya = (cfg.hidden_size == 2048 && cfg.num_layers == 40 && cfg.vocab_size == 262272
+                        && cfg.num_heads == 8 && cfg.num_kv_heads == 2 && cfg.head_dim == 128
+                        && cfg.num_experts == 16 && cfg.intermediate_size == 2048
+                        && cfg.router_hidden == 256);
         if (!is_zaya) {
-            fprintf(stderr, "  HIP: non-Zaya model (H=%d L=%d V=%d) — using generic GPU path\n",
-                    cfg.hidden_size, cfg.num_layers, cfg.vocab_size);
+            fprintf(stderr, "  HIP: non-Zaya model (H=%d L=%d V=%d NQ=%d NKV=%d HD=%d N_EXP=%d N_FF=%d RTR_H=%d)\n",
+                    cfg.hidden_size, cfg.num_layers, cfg.vocab_size,
+                    cfg.num_heads, cfg.num_kv_heads, cfg.head_dim,
+                    cfg.num_experts, cfg.intermediate_size, cfg.router_hidden);
+            fprintf(stderr, "  HIP: WARNING — kernels compiled for Zaya1-8B dimensions;"
+                    " results may be incorrect for non-matching models.\n");
         }
 
         HIP_OK(hipStreamCreate(&st_));

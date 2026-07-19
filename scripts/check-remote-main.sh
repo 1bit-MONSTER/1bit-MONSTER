@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # check-remote-main.sh — Poll origin/main for new commits and signal agents
 #
 # Run this periodically (e.g., via cron, or after `git fetch`) to detect
