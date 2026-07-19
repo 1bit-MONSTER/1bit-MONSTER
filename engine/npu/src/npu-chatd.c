@@ -44,12 +44,20 @@ static int load(const char*p){
     snprintf(bn,sizeof(bn),"model.layers.%d.post_attention_layernorm.weight",l);paw[l]=rd(bn,H);}return em?0:-1;}
 
 // Worker
-static void* drain(void*a){int m=1048576;fcntl(fd,F_SETPIPE_SZ,drain(void*a){m);
-    // Discard init data (xclbin headers), forward only GEMM responses
-    int fd=*(int*)a;free(a);char buf[131072];ssize_t n;int inited=0;
+static void* drain(void*a){
+    int fd=*(int*)a;free(a);int m=1048576;fcntl(fd,F_SETPIPE_SZ,&m);
+    char buf[131072];ssize_t n;int inited=0;
     while((n=read(fd,buf,sizeof(buf)))>0){
-        fprintf(stderr,"DRAIN: got %zu bytes\n",n);if(!inited){
-            if(strstr(buf,"READY\n")){ready=1;inited=1;}
+        if(!inited){
+            char* rp = strstr(buf,"READY\n");
+            if(rp){
+                ready=1;inited=1;
+                // Forward any data after READY marker
+                size_t skip = rp - buf + 6;
+                if((size_t)n > skip){
+                    if(write(resp_w,buf+skip,n-skip)!=n-skip)break;
+                }
+            }
         }else{
             if(write(resp_w,buf,n)!=n)break;
         }
@@ -75,11 +83,11 @@ static int spawn(const char*mo,const char*ta){
 
 static int gemm(int op,int l,int b,int id,const float*in,float*out,int*od){
     uint32_t h[4]={(uint32_t)op,(uint32_t)l,(uint32_t)b,(uint32_t)id};
-    if(write(wsi,h,16)!=16)return -1;
-    if(write(wsi,in,(size_t)b*id*4)!=(ssize_t)(b*id*4))return -1;
-    uint32_t r[2];if(read(resp_r,r,8)!=8)return -1;
+    if(write(wsi,h,16)!=16{fprintf(stderr,"W1FAIL\n");return -1;}
+    if(write(wsi,in,(size_t)b*id*4)!=(ssize_t)(b*id*4){fprintf(stderr,"W2FAIL\n");return -1;}
+    uint32_t r[2];size_t rr=0;while(rr<8){ssize_t n=read(resp_r,(char*)r+rr,8-rr);if(n<=0){if(n<0&&errno==EINTR)continue;fprintf(stderr,"RFAIL(%zd)\n",n);return -1;}rr+=n;}
     if(r[0]!=0)return -1;*od=(int)r[1];
-    if(read(resp_r,out,(size_t)(*od)*4)!=(ssize_t)(*od)*4)return -1;
+    size_t dr=0;while(dr<(size_t)(*od)*4){ssize_t n=read(resp_r,(char*)out+dr,(size_t)(*od)*4-dr);if(n<=0){if(n<0&&errno==EINTR)continue;return -1;}dr+=n;}
     return 0;}
 
 // Math + inference (same as before)

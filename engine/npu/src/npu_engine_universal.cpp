@@ -466,6 +466,16 @@ int main(int argc,char**argv){
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
     std::unique_ptr<AttnCtx> ca_ptr;
+    std::vector<uint32_t> attn_instrs;
+    auto load_attn_instrs = [&](const char* path) -> bool {
+        FILE* f = fopen(path, "rb");
+        if (!f) { fprintf(stderr, "  No attn insts: %s\n", path); return false; }
+        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+        attn_instrs.resize(sz / 4);
+        fread(attn_instrs.data(), 4, attn_instrs.size(), f);
+        fclose(f);
+        return true;
+    };
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
     co.MD=XM;co.KD=cfg.xclbin_o_k;co.ND=cfg.xclbin_o_n;
     cd.MD=XM;cd.KD=cfg.xclbin_d_k;cd.ND=cfg.xclbin_d_n;
@@ -569,7 +579,10 @@ int main(int argc,char**argv){
         fprintf(stderr,"WORKER_READY\n");
         fflush(stderr);
         // Startup handshake: parent waits for this before sending ops (issue #365)
-        printf("READY\n");
+        write(1, "READY\n", 6);
+        setbuf(stdout, NULL);
+        clearerr(stdout);
+        write(1, "EADY\n", 5);
         fflush(stdout);
         uint32_t hdr[4];
         while(fread(hdr,sizeof(uint32_t),4,stdin)==4){
@@ -758,7 +771,7 @@ int main(int argc,char**argv){
         // CPU attn_omp() fallback is always available.
         if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
             // Regenerate instructions for current seq_len
-            auto attn_instrs = // Instructions pre-loaded at init; cl passed to launch
+
             if (!attn_instrs.empty()) {
                 // Compute dynamic scales for Q and K/V quantization
                 float q_ascale = dynamic_ascale(qo_b.data(), npt * NH * HD);
