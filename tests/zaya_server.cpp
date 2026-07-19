@@ -130,7 +130,18 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
             else if (vtype == 7) fseek(f, 1, SEEK_CUR);
             else if (vtype == 9) {
                 uint64_t n; fread(&n, 8, 1, f); uint32_t at; fread(&at, 4, 1, f); uint64_t al; fread(&al, 8, 1, f);
-                if (at == 2 || at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); } }
+                // Fast skip: for large string arrays (tokenizer vocab), iterate only first 100
+                // then estimate remaining size and fseek past
+                if ((at == 2 || at == 8) && al > 100) {
+                    uint64_t total_bytes = 0;
+                    uint64_t sample = al < 100 ? al : 100;
+                    for (uint64_t j = 0; j < sample; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); total_bytes += 8 + ss; }
+                    // Estimate remaining: average size × remaining elements
+                    uint64_t avg = total_bytes / sample;
+                    fseek(f, avg * (al - sample), SEEK_CUR);
+                } else if (at == 2 || at == 8) {
+                    for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); }
+                }
                 else if (at <= 7) fseek(f, al, SEEK_CUR);
                 else if (at >= 10 && at <= 12) fseek(f, al * 8, SEEK_CUR);
                 else fseek(f, al * 4, SEEK_CUR);
@@ -147,6 +158,21 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
         else if (key.find("vocab") != std::string::npos) vocab = read_dim();
         else skip_val();
     }
+    // Read first few tensor headers to get vocab from embedding shape
+    if (vocab <= 0) {
+        for (uint64_t i = 0; i < std::min(n_tensors, (uint64_t)5); i++) {
+            uint64_t nl; fread(&nl, 8, 1, f);
+            std::string tname(nl, '\0'); fread(&tname[0], 1, nl, f);
+            uint32_t nd; fread(&nd, 4, 1, f);
+            std::vector<uint64_t> shape(nd);
+            for (uint32_t j = 0; j < nd; j++) fread(&shape[j], 8, 1, f);
+            uint32_t dt; fread(&dt, 4, 1, f); fseek(f, 4, SEEK_CUR);
+            if (tname == "token_embd.weight" || tname.find("embed_tokens") != std::string::npos) {
+                if (shape.size() >= 2) vocab = (int)shape[0];
+                break;
+            }
+        }
+    }
     fclose(f);
 
     if (hidden <= 0 || layers <= 0) return false;
@@ -156,6 +182,9 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
     cfg.num_kv_heads = kv_heads > 0 ? kv_heads : cfg.num_heads;
     cfg.head_dim = hidden / cfg.num_heads;
     cfg.intermediate_size = ffn > 0 ? ffn : hidden * 8 / 3;
+    // If vocab is unrealistically small (< 100), it was not properly detected.
+    // Read it from the embedding tensor shape instead.
+    if (vocab < 100) vocab = 0;
     cfg.vocab_size = vocab > 0 ? vocab : 32000;
     cfg.model_path = path; cfg.model_name = arch_str;
     cfg.weights_dir = path.substr(0, path.find_last_of('/') + 1);

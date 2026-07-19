@@ -339,6 +339,22 @@ public:
             return true;
         };
 
+        // Detect actual vocab size from the first tensor loaded to d_embed_gpu
+        {
+            int tcount = 0;
+            for (auto& [tname, tinfo] : tmap) {
+                if (tcount++ < 5) fprintf(stderr, "  HIP: tensor[%d] %s ne=%lu\n", tcount-1, tname.c_str(), tinfo.ne);
+                if (tname.find("embed") != std::string::npos && tname.find("norm") == std::string::npos
+                    && tinfo.ne > 0 && H > 0) {
+                    int actual_v = (int)(tinfo.ne / H);
+                    fprintf(stderr, "  HIP: %s ne=%lu H=%d -> V=%d (was %d)\n", tname.c_str(), tinfo.ne, H, actual_v, V);
+                    if (actual_v > 100 && actual_v != V) {
+                        V = actual_v; cfg_.vocab_size = V; cfg_.vocab = V;
+                    }
+                    break;
+                }
+            }
+        }
         if (!load_half("token_embd.weight", d_embed_gpu, (size_t)V * H))
             load_half("model.embed_tokens.weight", d_embed_gpu, (size_t)V * H);
 
