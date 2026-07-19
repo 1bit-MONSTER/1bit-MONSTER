@@ -49,6 +49,11 @@ __global__ void add_k(__half* a, const __half* b, int n) { int i = blockIdx.x * 
 // in load_model() against the compile-time contract defined there.
 #include "zaya1_dims.h"
 
+// CCA custom-kernel params not carried by zaya1_dims.h (Zaya1-8B fast path only).
+#define ZAYA_GC 128
+#define ZAYA_NROT 64
+#define ZAYA_ROPE_BASE 5000000.0f
+
 // WMMA tile dimensions (hardware-dependent, not model-dependent)
 #define WMMA_M 16
 #define WMMA_THREADS 128
@@ -427,13 +432,14 @@ public:
             if (is_zaya) {
                 // Zaya-specific CCA attention + fused router MoE (fast path)
                 v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
-                cca_custom_kernel<<<1, 256, 0, st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV*2, d_phs+(size_t)il*H, il, 1);
+                cca_custom_kernel<<<1, 256, cca_custom_smem_bytes(NQ, NKV, HD, ZAYA_NROT), st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV*2, d_phs+(size_t)il*H, il, 1, NQ, NKV, HD, ZAYA_NROT, ZAYA_ROPE_BASE, ZAYA_GC);
                 moe_tiled_gemv<<<H/16, 128, 0, st_>>>(d_ao, d_ao, l.wo, H, QD);
                 residual_scale_k<<<g1, BLK, 0, st_>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
                 copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_ao, H);
                 rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H);
                 if (l.gu && l.dn) {
-                    eda_router_gpu_kernel<<<1, RTR_H, 0, st_>>>(d_hs, d_prev_rs+(size_t)il*RTR_H, l.has_eda?1:0, l.eda_scale[0], l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b, l.rf2, l.rf2b, l.rout, l.bb, d_prev_rs+(size_t)il*RTR_H, d_expert_idx, d_expert_wt);
+                    int N_EXP=cfg_.num_experts, ROUTER_TOP_K=cfg_.num_experts_top;
+                    eda_router_gpu_kernel<<<1, RTR_H, eda_router_smem_bytes(RTR_H, ROUTER_TOP_K), st_>>>(d_hs, d_prev_rs+(size_t)il*RTR_H, l.has_eda?1:0, l.eda_scale[0], l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b, l.rf2, l.rf2b, l.rout, l.bb, d_prev_rs+(size_t)il*RTR_H, d_expert_idx, d_expert_wt, N_EXP, H, RTR_H, ROUTER_TOP_K);
                     encode_expert_cache_kernel<<<1, 32, 0, st_>>>(d_prev_rs+(size_t)il*RTR_H, d_expert_idx, RTR_H);
                     { int gb=(2*N_FF+15)/16, db=(H+15)/16, sb=(N_FF+BLK-1)/BLK;
                     wmma_gateup_kernel<<<gb,128,0,st_>>>(d_tmp,d_hs,l.gu,d_expert_idx);

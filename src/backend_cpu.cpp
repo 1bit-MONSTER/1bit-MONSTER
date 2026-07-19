@@ -1,6 +1,11 @@
-// backend_cpu.cpp — CPU scalar backend for Zaya1-8B
+// backend_cpu.cpp — CPU scalar reference backend for Zaya architecture
 // Reference implementation. No GPU, no NPU, no special hardware.
 // Uses the same weight format as GPU backends.
+//
+// NOTE: The CCA attention and MoE router use compile-time stack-allocated
+// arrays and shared-memory patterns that require fixed dimensions. For
+// arbitrary architectures, use backend_generic.cpp instead.
+// The validation gate in init() rejects unsupported configs.
 
 #include "backend.h"
 #include <cstdio>
@@ -16,7 +21,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// ── Architecture constants ──
+// ── Architecture constants (Zaya1-8B reference dimensions) ──
+// These remain constexpr for stack-allocated array sizes in CCA/MoE.
 static constexpr int H = 2048;
 static constexpr int NQ = 8;
 static constexpr int NKV = 2;
