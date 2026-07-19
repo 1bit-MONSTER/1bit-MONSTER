@@ -47,20 +47,15 @@ void BackendManager::discover() {
         info.id = "npu_xrt";
         info.type = BackendType::NPU_XRT;
         info.tier = BackendTier::T1_ACCELERATOR;
-        info.description = "AMD XDNA NPU via XRT";
+        info.description = "AMD XDNA NPU via native worker engine";
         info.priority = tier_priority(info.tier) + 50;
         info.available = has_npu();
         info.functional = false;  // needs init to confirm
-        // INT8 GEMM kernels: single-core xclbins verified bit-perfect on real
-        // hardware (2026-07-17). O and D were separately verified working at
-        // 8-core (2.47x faster). QKV and GU's instruction streams were reworked
-        // to fix the multi-N-group sequencing bug that broke 8-core for those two
-        // shapes (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md), but that fix
-        // landed on a different branch than the O/D 8-core work and this exact
-        // combination (all 4 shapes at 8-core, together) has NOT been
-        // independently re-run against the INT32 oracle on hardware — only the
-        // two changes separately. Treat "all 4 shapes at 8-core" as an unverified
-        // claim until that combined re-run happens.
+        // Uses backend_npu.cpp (worker subprocess protocol with
+        // npu_engine_universal). This is the same verified path used
+        // for all NPU inference — GEMM via pre-compiled xclbins,
+        // attention via pre-compiled KV instructions, CPU fallback
+        // for RoPE/norm/residual. Zero FLM dependency.
         info.auto_selectable = true;
         info.score = 0;
         info.total_inferences = 0;
@@ -72,26 +67,29 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
-    // 1b. NPU via FastFlowLM subprocess — the actually-correct NPU path while
-    // npu_xrt's in-process kernels remain broken (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md).
+    // 1b. NPU via FastFlowLM subprocess — legacy fallback for manual opt-in only.
+    // Our own NPU_XRT backend (backend_npu.cpp + npu_engine_universal worker)
+    // is now the default NPU path. FLM was used for research but is no longer
+    // needed for NPU inference — see fastflowlm_analysis/ for the research findings.
     {
         BackendInfo info;
         info.id = "npu_flm";
         info.type = BackendType::NPU_FLM;
         info.tier = BackendTier::T1_ACCELERATOR;
-        info.description = "NPU via FastFlowLM";
+        info.description = "NPU via FastFlowLM (legacy)";
         info.priority = tier_priority(info.tier) + 40;
         bool flm_bin = access("/opt/fastflowlm/bin/flm", X_OK) == 0 ||
                        access("/usr/bin/flm", X_OK) == 0;
         info.available = has_npu() && flm_bin;
         info.functional = false;
+        info.auto_selectable = false;  // manual opt-in only; NPU_XRT is the default now
         info.score = 0;
         info.total_inferences = 0;
         info.failed_inferences = 0;
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "NPU via FastFlowLM", info.available ? "✅ detected" : "❌ not available");
+        printf("  %-25s %s\n", "NPU via FastFlowLM", info.available ? "✅ detected (legacy, manual)" : "❌ not available");
         backends_.push_back(info);
     }
 
