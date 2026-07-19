@@ -267,8 +267,8 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
         : RCPP_WEIGHT_FORMAT_HALO_V2;
     if (reader.has_bst_tensor)
         out_model->flags |= H1B_FLAG_BLOCK_SCALED;
-    out_model->arch = RCPP_ARCH_QWEN3;
-    out_model->is_qwen3 = 1;
+    out_model->arch = rcpp_arch_from_string(reader.arch.c_str());
+    out_model->is_qwen3 = (out_model->arch == RCPP_ARCH_QWEN3) ? 1 : 0;
     
     const size_t MAX_EL = 1ULL << 34; // 16B elements ~64 GB
     {
