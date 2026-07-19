@@ -1,20 +1,20 @@
 {
   "_generated_by": "tools/gen_numbers.py",
-  "_generated_at": "2026-07-16T16:06:50Z",
+  "_generated_at": "2026-07-19T09:07:10Z",
   "_warning": "Generated file. Do not hand-edit; run tools/gen_numbers.py.",
   "_missing": [],
   "binary": {
-    "zaya_bytes": 471760,
-    "zaya_kb": 461,
-    "zaya_stripped_kb": 392,
-    "fused_bytes": 650920,
-    "fused_kb": 636,
-    "decode_bytes": 703904,
-    "decode_kb": 687,
-    "decode_stripped_kb": 495,
-    "tui_bytes": 1117872,
-    "tui_kb": 1092,
-    "tui_stripped_kb": 793
+    "zaya_bytes": 1141752,
+    "zaya_kb": 1115,
+    "zaya_stripped_kb": 878,
+    "fused_bytes": 25603362,
+    "fused_kb": 25003,
+    "decode_bytes": 715240,
+    "decode_kb": 698,
+    "decode_stripped_kb": 507,
+    "tui_bytes": 1153392,
+    "tui_kb": 1126,
+    "tui_stripped_kb": 829
   },
   "benchmarks": {
     "bonsai_end_to_end_decode": "PASS (argmax=76213, coherent logits)",
