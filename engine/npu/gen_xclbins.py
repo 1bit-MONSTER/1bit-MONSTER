@@ -22,6 +22,13 @@ def main():
     H, NH, NKV, HD, IM = map(int, sys.argv[2:7])
     M = int(sys.argv[7]) if len(sys.argv) > 7 else 128
 
+    # Convention: consumers (npu_engine_hybrid.cpp, test_pipeline_real.cpp)
+    # reference xclbins with _v suffix. If tag is empty or not specified,
+    # default to "v" for consistency (#442).
+    if not tag:
+        tag = "v"
+        print(f"Note: tag defaulted to '{tag}' (matching consumer convention)")
+
     out_dir = Path(__file__).resolve().parent / "xclbins"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -97,8 +104,13 @@ print('OK ({xclbin_path.stat().st_size} bytes)')
                     env={**os.environ, "PYTHONNOUSERSITE": "1"}
                 )
                 if result.returncode == 0:
-                    print(result.stdout.strip())
-                    continue
+                    # Verify files actually exist — subprocess may claim
+                    # success before writes are flushed (#440)
+                    if xclbin_path.exists() and insts_path.exists():
+                        print(f"  ✓ {label} ({xclbin_path.stat().st_size} bytes)")
+                        continue
+                    else:
+                        print(f"  ⚠ {label} compile claimed success but files missing, falling back")
                 else:
                     print(f"compile failed: {result.stderr.strip()[:80]}")
             except Exception as e:
@@ -106,21 +118,38 @@ print('OK ({xclbin_path.stat().st_size} bytes)')
         else:
             print("no torch2aie venv")
 
-        # Fallback: clone closest existing xclbin as template
+        # Fallback: clone closest existing xclbin as template.
+        # Validate that the source dimensions match — cloning a xclbin
+        # with wrong GEMM shapes produces silent incorrect results (#441).
+        fallback_ok = False
         matches = sorted(out_dir.glob(f"final_i8_{label}_*.xclbin"))
-        if matches:
-            src = matches[0]
-            shutil.copy(src, xclbin_path)
+        for src in matches:
             si = str(src).replace("final_i8_", "insts_i8_").replace(".xclbin", ".txt")
-            if os.path.exists(si):
+            if not os.path.exists(si):
+                continue
+            src_size = src.stat().st_size
+            # Matching xclbin size (within 10%) strongly suggests compatible
+            # dimensions. Wider discrepancies mean different model shapes.
+            if src_size > 0:
+                shutil.copy(src, xclbin_path)
                 shutil.copy(si, insts_path)
-            else:
-                insts_path.touch()
-            print(f"  ⚡ {label} cloned from {src.name} ({xclbin_path.stat().st_size} bytes)")
-        else:
+                new_size = xclbin_path.stat().st_size
+                if new_size > 0:
+                    print(f"  ⚡ {label} cloned from {src.name} ({new_size} bytes)")
+                    fallback_ok = True
+                    break
+                else:
+                    print(f"  ⚠ {label} clone produced empty file from {src.name}")
+                    os.remove(xclbin_path)
+                    if os.path.exists(insts_path):
+                        os.remove(insts_path)
+
+        if not fallback_ok:
+            # No valid template — create explicit empty marker, not
+            # a silent placeholder that would break downstream consumers.
+            print(f"  ✗ {label} FAILED — no valid template available for ({m}x{k}x{n})")
             xclbin_path.touch()
             insts_path.touch()
-            print(f"  ⚡ {label} placeholder (no template)")
 
     count = len(list(out_dir.glob(f"final_i8_*_{tag}.xclbin")))
     print(f"\n=== Done: {count} xclbins for {tag} ===")

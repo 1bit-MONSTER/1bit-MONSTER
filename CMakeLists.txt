@@ -664,6 +664,42 @@ if(TARGET npu_engine_hybrid)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 endif()
 
+# -- test_pipeline_real: GPU+NPU fused pipeline with real kernels (#446) ------
+# Requires HIP, XRT, and the zero-copy pipeline sources.
+find_package(aiebu QUIET)
+find_package(xrt QUIET)
+if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
+    set(PIPELINE_REAL_SRC_DIR ${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy)
+    if(EXISTS "${PIPELINE_REAL_SRC_DIR}/shared_bo.cpp" AND
+       EXISTS "${PIPELINE_REAL_SRC_DIR}/pipeline_overlap.cpp")
+        add_executable(test_pipeline_real
+            ${PIPELINE_REAL_SRC_DIR}/test_pipeline_real.cpp
+            ${PIPELINE_REAL_SRC_DIR}/shared_bo.cpp
+            ${PIPELINE_REAL_SRC_DIR}/pipeline_overlap.cpp
+        )
+        target_include_directories(test_pipeline_real PRIVATE
+            ${PIPELINE_REAL_SRC_DIR}
+            ${CMAKE_SOURCE_DIR}/include
+            ${THEROCK_SDK_BASE}/include)
+        target_compile_options(test_pipeline_real PRIVATE
+            -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+        target_link_libraries(test_pipeline_real PRIVATE
+            xrt_coreutil uuid rt pthread
+            ${aiebu_LIBRARIES})
+        target_link_options(test_pipeline_real PRIVATE
+            -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)
+        set_target_properties(test_pipeline_real PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy)
+        add_test(NAME test_pipeline_real COMMAND test_pipeline_real)
+        set_tests_properties(test_pipeline_real PROPERTIES
+            LABELS "gpu_required;npu_required" SKIP_RETURN_CODE 77)
+    else()
+        message(STATUS "test_pipeline_real: shared_bo.cpp or pipeline_overlap.cpp not found — skipping")
+    endif()
+else()
+    message(STATUS "test_pipeline_real: HIP/XRT/aiebu not all found — skipping GPU+NPU pipeline test")
+endif()
+
 # -- DSpark full pipeline: Eagle3 draft (NPU/CPU) + GPU verify ---------------
 add_executable(dspark_full
     tools/dspark_full.cpp

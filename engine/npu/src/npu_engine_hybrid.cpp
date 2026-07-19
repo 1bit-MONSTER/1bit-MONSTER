@@ -20,7 +20,8 @@
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
 
-static constexpr int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2,XM=128;
+// Model dimensions — defaults for Qwen3-0.6B, override via env vars (#443)
+static int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2,XM=128;
 static constexpr float EPS = 1e-6f;
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:[&]{uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}();}
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
@@ -98,6 +99,19 @@ int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
     int npt=9,ng=(argc>1)?atoi(argv[1]):32;
     fprintf(stderr,"=== NPU+GPU Hybrid Engine ===\n");
+
+    // Override model dimensions from env vars (#443)
+    if (const char* e = getenv("NPU_H")) H = atoi(e);
+    if (const char* e = getenv("NPU_NC")) NC = atoi(e);
+    if (const char* e = getenv("NPU_NH")) NH = atoi(e);
+    if (const char* e = getenv("NPU_NKV")) NKV = atoi(e);
+    if (const char* e = getenv("NPU_HD")) HD = atoi(e);
+    if (const char* e = getenv("NPU_IM")) IM = atoi(e);
+    if (const char* e = getenv("NPU_NV")) NV = atoi(e);
+    GQA = NH / NKV;
+    fprintf(stderr,"  Dims: H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GQA=%d\n",
+            H, NC, NH, NKV, HD, IM, NV, GQA);
+
     fprintf(stderr,"Loading model...\n");
 
     const char*mp=getenv("NPU_MODEL_PATH")?:"model.q4nx";

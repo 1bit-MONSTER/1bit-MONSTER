@@ -272,11 +272,38 @@ struct NPUBackend : Backend {
         printf("NPU: Initializing worker subprocess...\n");
 
         const char* model_path = getenv("NPU_MODEL_PATH");
+        std::string discovered_path;
         if (!model_path) {
-            // Try weights_dir
-            std::string fallback = weights_dir + "/model.q4nx";
-            fprintf(stderr, "NPU: set NPU_MODEL_PATH (tried: %s)\n", fallback.c_str());
-            return false;
+            // Auto-discovery: search common paths for model.q4nx (#447)
+            static const char* search_paths[] = {
+                "model.q4nx",                    // current directory
+                "models/model.q4nx",             // models/ subdirectory
+                "/opt/1bit/models/model.q4nx",   // system-wide install
+                "/tmp/zaya_weights/model.q4nx",  // test weights
+            };
+            // weights_dir fallback (#444)
+            std::string wd_path = weights_dir + "/model.q4nx";
+            const char* candidates[] = {
+                wd_path.c_str(),
+                search_paths[0], search_paths[1], search_paths[2], search_paths[3],
+            };
+            for (const char* cand : candidates) {
+                if (!cand || !cand[0]) continue;
+                if (access(cand, R_OK) == 0) {
+                    discovered_path = cand;
+                    model_path = discovered_path.c_str();
+                    fprintf(stderr, "NPU: auto-discovered model at: %s\n", model_path);
+                    break;
+                }
+            }
+            if (!model_path) {
+                fprintf(stderr, "NPU: no model found — set NPU_MODEL_PATH or place model.q4nx in:\n");
+                for (const char* cand : candidates) {
+                    if (cand && cand[0])
+                        fprintf(stderr, "  • %s\n", cand);
+                }
+                return false;
+            }
         }
 
         // Read model dimensions from config
@@ -367,6 +394,35 @@ struct NPUBackend : Backend {
                 snprintf(key, sizeof(key), "model.layers.%d.self_attn.k_norm.weight", l);
                 off = model.find_offset(key);
                 if (off) k_norms[l] = model.read_floats(off, HD);
+            }
+        }
+
+        // Verify GEMM weights exist in model file (managed by worker subprocess).
+        // The GB-scale QKV/O/GU/D projection weights are loaded by the NPU worker
+        // engine via its own mmap; the backend only verifies they're present (#445).
+        {
+            char key[256];
+            bool all_found = true;
+            for (int l = 0; l < NC && all_found; l++) {
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.q_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.k_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.v_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.o_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.mlp.gate_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.mlp.up_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.mlp.down_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+            }
+            if (!all_found) {
+                fprintf(stderr, "NPU: GEMM weights missing from model file — worker may fail\n");
+            } else {
+                printf("NPU: verified GEMM weight offsets for %d layers\n", NC);
             }
         }
 
