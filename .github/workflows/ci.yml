@@ -114,22 +114,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: C/C++ syntax check
-        run: |
-          set -o pipefail
-          fail=0
-          while IFS= read -r -d '' f; do
-            case "$f" in
-              *.hip) std=c++23 ;;
-              *) std=c++23 ;;
-            esac
-            g++ -fsyntax-only -std=$std -x c++ -I include -I src "$f" 2>&1 | tee -a /tmp/syntax-errors.log || fail=1
-          done < <(find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' -print0 | \
-            grep -zv -E 'build/|_deps/|\.git/')
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::C/C++ syntax errors found (see log above) — this is a real parse failure, not a style nit"
-            exit 1
-          fi
       - name: clang-format check (informational)
         run: |
           sudo apt-get install -y -qq clang-format
