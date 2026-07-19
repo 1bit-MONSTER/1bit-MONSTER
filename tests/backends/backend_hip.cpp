@@ -22,12 +22,67 @@ static float fp16_to_fp32(uint16_t h) {
     else{float r;uint32_t f=(s<<31)|((e+127-15)<<23)|(m<<13);memcpy(&r,&f,4);return r;}
 }
 
+// K-quant dequantization (GGML_TYPE_Q4_K=12, Q6_K=14 — 256-elem superblocks).
+// Ported from src/gguf_loader.cpp's dequant_q4_k/dequant_q6_k, but using the
+// fp16_to_fp32 above for the per-block scale/min fields instead of that
+// file's read_f16 helper, which does a bfloat16-style bit-shift ("<<16,
+// reinterpret as f32") on data that's actually real IEEE754 float16 — wrong
+// exponent bias/width, silently corrupting every K-quant scale. Q2_K/Q3_K/
+// Q5_K/Q8_K aren't handled here (or in gguf_loader.cpp) yet.
+static void dequant_q4_k_to_f32(const uint8_t* bd, float* out, int count) {
+    const int BS = 256;
+    int nb = (count + BS - 1) / BS;
+    const uint8_t* p = bd;
+    for (int b = 0; b < nb; b++) {
+        uint16_t dh, dminh; memcpy(&dh, p, 2); p += 2; memcpy(&dminh, p, 2); p += 2;
+        float d = fp16_to_fp32(dh), dmin = fp16_to_fp32(dminh);
+        uint8_t scales[12]; memcpy(scales, p, 12); p += 12;
+        uint8_t qs[128]; memcpy(qs, p, 128); p += 128;
+        auto get_scale_min = [&](int j, uint8_t& sc, uint8_t& m) {
+            if (j < 4) { sc = scales[j] & 63; m = scales[j + 4] & 63; }
+            else { sc = (uint8_t)((scales[j + 4] & 0xF) | ((scales[j - 4] >> 6) << 4));
+                   m = (uint8_t)((scales[j + 4] >> 4) | ((scales[j] >> 6) << 4)); }
+        };
+        int base = b * BS;
+        int is = 0; const uint8_t* q = qs;
+        for (int off = 0; off < BS && base + off < count; off += 64) {
+            uint8_t sc, m;
+            get_scale_min(is, sc, m); float d1 = d * sc, m1 = dmin * m;
+            get_scale_min(is + 1, sc, m); float d2 = d * sc, m2 = dmin * m;
+            for (int l = 0; l < 32 && base + off + l < count; l++)
+                out[base + off + l] = d1 * (q[l] & 0xF) - m1;
+            for (int l = 0; l < 32 && base + off + 32 + l < count; l++)
+                out[base + off + 32 + l] = d2 * (q[l] >> 4) - m2;
+            q += 32; is += 2;
+        }
+    }
+}
+
+static void dequant_q6_k_to_f32(const uint8_t* bd, float* out, int count) {
+    const int BS = 256;
+    int nb = (count + BS - 1) / BS;
+    const uint8_t* p = bd;
+    for (int b = 0; b < nb; b++) {
+        uint8_t ql[128]; memcpy(ql, p, 128); p += 128;
+        uint8_t qh[64]; memcpy(qh, p, 64); p += 64;
+        int8_t scales[16]; memcpy(scales, p, 16); p += 16;
+        uint16_t dh; memcpy(&dh, p, 2); p += 2; float d = fp16_to_fp32(dh);
+        int base = b * BS;
+        for (int n = 0; n < BS; n += 128) {
+            for (int l = 0; l < 32 && base + n + l < count; l++) {
+                int8_t sc = scales[l / 2];
+                int v = (ql[n / 2 + l] & 0xF) | ((qh[n / 2 + l / 4] >> (4 * (l & 1))) & 0x30);
+                out[base + n + l] = d * sc * (v - 32);
+            }
+        }
+    }
+}
+
 #define HIP_OK(e) do { auto _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %d\n", _s); abort(); } } while (0)
-constexpr float RMD_EPS = 1e-5f;
 constexpr int BLK = 256;
 
 // Kernels (from ../kernels/)
-__global__ void rmsnorm_k(__half* x, const __half* w, int n) {
+__global__ void rmsnorm_k(__half* x, const __half* w, int n, float eps) {
     __shared__ float r[32];
     int tx = threadIdx.x, wid = tx / 32, l = tx % 32;
     float ss = 0;
@@ -37,8 +92,25 @@ __global__ void rmsnorm_k(__half* x, const __half* w, int n) {
     __syncthreads();
     if (wid == 0) { ss = (l < (256 / 32)) ? r[l] : 0; for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor(ss, o); if (l == 0) r[0] = ss; }
     __syncthreads();
-    float iv = 1.0f / sqrtf(r[0] / n + RMD_EPS);
+    float iv = 1.0f / sqrtf(r[0] / n + eps);
     for (int i = tx; i < n; i += blockDim.x) x[i] = __float2half((float)x[i] * iv * (float)w[i]);
+}
+// Per-head RMSNorm (Qwen3-style Q/K-norm): x is [num_heads, head_dim]; each
+// block independently normalizes one head's head_dim-sized slice against the
+// same shared, learned weight vector w[head_dim]. One block per head.
+__global__ void qk_norm_k(__half* x, const __half* w, int head_dim, float eps) {
+    __shared__ float r[32];
+    __half* row = x + (size_t)blockIdx.x * head_dim;
+    int tx = threadIdx.x, wid = tx / 32, l = tx % 32;
+    float ss = 0;
+    for (int i = tx; i < head_dim; i += blockDim.x) ss += (float)row[i] * (float)row[i];
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor(ss, o);
+    if (l == 0) r[wid] = ss;
+    __syncthreads();
+    if (wid == 0) { ss = (l < (256 / 32)) ? r[l] : 0; for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor(ss, o); if (l == 0) r[0] = ss; }
+    __syncthreads();
+    float iv = 1.0f / sqrtf(r[0] / head_dim + eps);
+    for (int i = tx; i < head_dim; i += blockDim.x) row[i] = __float2half((float)row[i] * iv * (float)w[i]);
 }
 __global__ void copy_k(__half* d, const __half* s, int n) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return; d[i] = s[i]; }
 __global__ void silu_mul_k(__half* out, const __half* g, const __half* u, int n) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return; float v = (float)g[i]; out[i] = __float2half((v / (1.0f + expf(-v))) * (float)u[i]); }
@@ -107,6 +179,7 @@ struct HipLayer {
     __half *nw=nullptr,*wq=nullptr,*wk=nullptr,*wv1=nullptr,*wv2=nullptr,*wo=nullptr,*pan=nullptr;
     __half *up=nullptr;  // generic (non-Zaya) SwiGLU up_proj (l.gu=gate_proj, l.dn=down_proj there)
     __half *qb=nullptr,*kb=nullptr,*vb=nullptr;  // optional QKV bias (Qwen2/2.5)
+    __half *qn=nullptr,*kn=nullptr;  // optional per-head Q/K-norm weight [head_dim] (Qwen3)
     float *cdw=nullptr,*cdb=nullptr,*cgw=nullptr,*cgb=nullptr,*ks=nullptr;
     float *pahss=nullptr,*pahsb=nullptr,*parss=nullptr,*parsb=nullptr;
     float *gdw=nullptr,*gdb=nullptr,*rfn=nullptr,*rf1=nullptr,*rf1b=nullptr,*rf2=nullptr,*rf2b=nullptr,*rout=nullptr,*bb=nullptr;
@@ -272,7 +345,7 @@ public:
         d_all_logits=nullptr; d_best_idx=nullptr; d_best_val=nullptr;
         d_kcache=nullptr; d_vcache=nullptr;
         for (auto& l : layers_) {
-            for (auto* p : {&l.nw,&l.wq,&l.wk,&l.wv1,&l.wv2,&l.wo,&l.pan,&l.gu,&l.dn,&l.up,&l.qb,&l.kb,&l.vb}) f(*p);
+            for (auto* p : {&l.nw,&l.wq,&l.wk,&l.wv1,&l.wv2,&l.wo,&l.pan,&l.gu,&l.dn,&l.up,&l.qb,&l.kb,&l.vb,&l.qn,&l.kn}) f(*p);
             for (auto* p : {&l.cdw,&l.cdb,&l.cgw,&l.cgb,&l.ks,&l.pahss,&l.pahsb,&l.parss,&l.parsb,&l.gdw,&l.gdb,&l.rfn,&l.rf1,&l.rf1b,&l.rf2,&l.rf2b,&l.rout,&l.bb,&l.pmhss,&l.pmhsb,&l.pmrss,&l.pmrsb}) f(*p);
         }
         layers_.clear(); embed_loaded_ = false; loaded_ = false;
@@ -351,8 +424,10 @@ public:
             if (it->second.dtype == 1) {
                 std::vector<uint16_t> buf(n); fread(buf.data(), 2, n, gf);
                 HIP_OK(hipMemcpy(dptr, buf.data(), n * 2, hipMemcpyHostToDevice));
-            } else if (it->second.dtype == 8) {
-                // Q8_0 dequant to FP16
+            } else if (it->second.dtype == 7) {
+                // Q8_0 dequant to FP16. (dtype 7, not 8 — 8 is Q5_0, a
+                // different block layout this branch was silently
+                // misreading as Q8_0 whenever a model actually used it.)
                 std::vector<__half> buf(n);
                 int blks = (n + 31) / 32;
                 for (int b = 0; b < blks; b++) {
@@ -361,8 +436,22 @@ public:
                     for (int j = 0; j < 32 && b * 32 + j < (int)n; j++) buf[b * 32 + j] = __float2half(q[j] * sc);
                 }
                 HIP_OK(hipMemcpy(dptr, buf.data(), n * 2, hipMemcpyHostToDevice));
+            } else if (it->second.dtype == 12 || it->second.dtype == 14) {
+                // Q4_K / Q6_K: read the whole compressed tensor, dequant to
+                // f32 host-side, then convert to fp16 for upload.
+                int bpb = it->second.dtype == 12 ? 144 : 210;
+                size_t nblocks = (n + 255) / 256;
+                std::vector<uint8_t> raw(nblocks * bpb); fread(raw.data(), 1, raw.size(), gf);
+                std::vector<float> f32(n);
+                if (it->second.dtype == 12) dequant_q4_k_to_f32(raw.data(), f32.data(), (int)n);
+                else dequant_q6_k_to_f32(raw.data(), f32.data(), (int)n);
+                std::vector<__half> buf(n);
+                for (size_t i = 0; i < n; i++) buf[i] = __float2half(f32[i]);
+                HIP_OK(hipMemcpy(dptr, buf.data(), n * 2, hipMemcpyHostToDevice));
             } else {
-                // F32 → FP16
+                // F32 → FP16. NOTE: also wrongly hit by any *other* unhandled
+                // quant type (Q2_K/Q3_K/Q5_K/Q8_K/Q4_0/Q5_0/legacy formats) —
+                // those aren't decoded correctly, they just don't crash.
                 std::vector<__half> buf(n);
                 std::vector<float> f32(n); fread(f32.data(), 4, n, gf);
                 for (size_t i = 0; i < n; i++) buf[i] = __float2half(f32[i]);
@@ -433,6 +522,10 @@ public:
             load_half((p + "attn_q.bias").c_str(), lw.qb, (size_t)QD);
             load_half((p + "attn_k.bias").c_str(), lw.kb, (size_t)KD);
             load_half((p + "attn_v.bias").c_str(), lw.vb, (size_t)KD);
+            // Optional per-head Q/K-norm (Qwen3 uses it; most other
+            // architectures don't — null pointer means "skip" below).
+            load_half((p + "attn_q_norm.weight").c_str(), lw.qn, (size_t)HD);
+            load_half((p + "attn_k_norm.weight").c_str(), lw.kn, (size_t)HD);
         }
         fclose(gf);
         embed_loaded_ = true;
@@ -472,11 +565,14 @@ public:
             // as a true pre-norm transformer residual (cheap, unconditional,
             // and harmless for Zaya since it already needed this copy anyway).
             copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
-            rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H);
+            rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H, cfg_.rms_norm_eps);
             moe_tiled_gemv<<<QD/16, 128, 0, st_>>>(d_tmp, d_hs, l.wq, QD, H);
             moe_tiled_gemv<<<KD/16, 128, 0, st_>>>(d_tmp+QD, d_hs, l.wk, KD, H);
             if (l.qb) add_k<<<(QD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp, l.qb, QD);
             if (l.kb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, l.kb, KD);
+            // Per-head Q/K-norm (Qwen3), applied before RoPE.
+            if (l.qn) qk_norm_k<<<NQ, BLK, 0, st_>>>(d_tmp, l.qn, HD, cfg_.rms_norm_eps);
+            if (l.kn) qk_norm_k<<<NKV, BLK, 0, st_>>>(d_tmp+QD, l.kn, HD, cfg_.rms_norm_eps);
             if (is_zaya) {
                 moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
                 moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
@@ -486,7 +582,7 @@ public:
                 moe_tiled_gemv<<<H/16, 128, 0, st_>>>(d_ao, d_ao, l.wo, H, QD);
                 residual_scale_k<<<g1, BLK, 0, st_>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
                 copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_ao, H);
-                rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H);
+                rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H, cfg_.rms_norm_eps);
                 if (l.gu && l.dn) {
                     eda_router_gpu_kernel<<<1, RTR_H, eda_router_smem_bytes(RTR_H, 2), st_>>>(d_hs, d_prev_rs+(size_t)il*RTR_H, l.has_eda?1:0, l.eda_scale[0], l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b, l.rf2, l.rf2b, l.rout, l.bb, d_prev_rs+(size_t)il*RTR_H, d_expert_idx, d_expert_wt, 16, H, RTR_H, 2);
                     encode_expert_cache_kernel<<<1, 32, 0, st_>>>(d_prev_rs+(size_t)il*RTR_H, d_expert_idx, RTR_H);
@@ -528,7 +624,7 @@ public:
                 // Pre-FFN-norm residual, same reused per-layer slot (its
                 // pre-attention value is no longer needed at this point).
                 copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
-                rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H);
+                rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H, cfg_.rms_norm_eps);
                 if (l.gu && l.dn && l.up) {
                     int ffb = (N_FF+15)/16;
                     moe_tiled_gemv<<<ffb, 128, 0, st_>>>(d_tmp, d_hs, l.gu, N_FF, H);        // gate
@@ -541,7 +637,7 @@ public:
                 copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_phs + (size_t)il*H, H);
             }
         }
-        rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, d_fnw, H);
+        rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, d_fnw, H, cfg_.rms_norm_eps);
         lm_head_fused_kernel<<<VOCAB, 256, 0, st_>>>(d_all_logits, d_hs, d_embed_gpu, H, VOCAB);
         argmax_kernel<<<1, 256, 0, st_>>>(d_all_logits, VOCAB, d_best_idx, d_best_val);
         HIP_OK(hipStreamSynchronize(st_));
