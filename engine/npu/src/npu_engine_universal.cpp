@@ -632,18 +632,21 @@ int main(int argc,char**argv){
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
                     cd.go(layer,in_data.data(),batch,(int)in_dim,ascale,dsc[layer],out_data.data(),(int)out_dim);
-                }else if(op==6 && use_npu_attn && ca_ptr && ca_ptr->isReady()){ // Attention (experimental)
-                    // NPU attention: in_data = QKV concatenated [QD + KD + KD]
-                    // out_data = attention_out [QD]
+                }else if(op==6){ // Attention — CPU path (worker protocol doesn't carry seq_len)
+                    // Worker subprocess receives individual layer ops without KV cache
+                    // context. NPU attention requires the full KV cache. Use CPU fallback.
                     int qd = cfg.xclbin_qkv_k / 4;  // approximate: NH*HD
                     out_dim = qd;
                     out_data.resize(batch*out_dim,0);
-                    // For now, just pass through Q as output (identity attention).
-                    // FIXME(#npu-attention): Replace with an actual NPU attention
-                    // kernel call once the instruction format for the attention
-                    // xclbin is documented.  The xclbin is already compiled (see
-                    // final_i8_QKV_*.xclbin in engine/npu/xclbins/).
-                    memcpy(out_data.data(), in_data.data(), batch * qd * sizeof(float));
+                    // in_data layout: [Q:QD, K:KD, V:KD]
+                    float* q_ptr = in_data.data();
+                    float* k_ptr = in_data.data() + qd;
+                    float* v_ptr = in_data.data() + qd + NKV * HD;
+                    // Infer seq_len from K data size (passed as in_dim - qd - NKV*HD)
+                    int kd = NKV * HD;
+                    int cl = kd > 0 ? (int)(in_dim - qd - kd) / (NKV * HD) : 1;
+                    if (cl < 1) cl = 1;
+                    attn_omp(q_ptr, out_data.data(), cl, k_ptr, v_ptr, NH, NKV, HD, GQA);
                 }else if(op==20&&cq.isReady()){ // QKV all layers (batch, op=20)
                     int n_layers = NC;
                     out_dim = cfg.qkv_total;

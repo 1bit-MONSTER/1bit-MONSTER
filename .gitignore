@@ -50,8 +50,16 @@ zig-out/
 # Machine-specific MCP config (absolute paths)
 .mcp.json
 
+# Clangd/LSP cache
+.cache/
+
 # Cloudflare Pages build artifact
 site/docs/.build/
+
+# Compiled tool binaries (tracking issue #438)
+/tools/dspark_full
+/tools/oscar_calib
+/tools/trg_save
 
 # temp files
 *.bak
