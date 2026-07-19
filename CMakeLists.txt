@@ -263,6 +263,11 @@ set(RCPP_SOURCES
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
+
+# NPU backend (worker subprocess) + Q4NX reader — compiled into shared lib
+list(APPEND RCPP_SOURCES src/backend_npu.cpp)
+list(APPEND RCPP_SOURCES src/q4nx_reader.cpp)
+
 add_library(rocm_cpp SHARED ${RCPP_SOURCES})
 if(ROCWMMA_FOUND)
     target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCWMMA_INCLUDE_DIR}")
