@@ -26,7 +26,7 @@ jobs:
 
       - name: Check NPU driver
         run: |
-          if ! ls /dev/accel/accel0 2>/dev/null; then
+          if ! ls /dev/accel/accel* >/dev/null 2>&1; then
             echo "::warning::NPU device not found — driver may need reload"
             echo "DRIVER_OK=false" >> $GITHUB_ENV
           else
@@ -54,8 +54,10 @@ jobs:
           g++ -std=c++23 -O3 -march=native -fopenmp -ffast-math \
             -o engine/npu/build/npu_engine_v12 \
             engine/npu/src/npu_engine_universal.cpp engine/npu/build/dequant_q4nx.o \
+            npu-infer/src/flm_bridge.cpp \
+            -Iengine/npu/include -Inpu-infer/include -Iinclude \
             -I/opt/xrt/include -Iengine/npu -I. \
-            -L/opt/xrt/lib -lxrt_coreutil -luuid -lm -ldl
+            -L/opt/xrt/lib -lxrt_coreutil -luuid -lm -ldl -lpthread -laiebu
 
       - name: Benchmark
         if: env.DRIVER_OK == 'true'
