@@ -22,7 +22,8 @@
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
-#include "../../npu-infer/include/flm_bridge.h"
+// FLM dependency removed — pre-compiled instructions loaded from file.
+#include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
@@ -184,7 +185,7 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
     }
 
     // Alternative init that takes pre-generated instructions instead of a file.
-    // Used for attention instructions generated at runtime by FlmBridge.
+    // Attention instructions loaded from pre-compiled file at init.
     bool init_with_instrs(xrt::device& d, const char* xp,
                           const std::vector<uint32_t>& pregen_instrs,
                           int nlayers, int mdim, int kdim, int ndim) {
@@ -218,7 +219,7 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
 //   args: opcode, instr, ninstr, bo0..bo4
 //   bo0=Q (i8, NH*HD), bo1=K (i8, max_seq*NKV*HD),
 //   bo2=V (i8, max_seq*NKV*HD), bo3=output (i16, NH*HD)
-// Instructions are generated at runtime via FlmBridge (seq_len-dependent).
+// Pre-compiled attention instructions loaded from file (fixed seq_len).
 struct AttnCtx {
     int max_seq, NH, NKV, HD, XM;
     std::unique_ptr<xrt::xclbin> xc;
@@ -474,42 +475,29 @@ int main(int argc,char**argv){
     if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}}
     if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
     if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}
-    // Optional NPU attention context (uses FLM attn.xclbin when available)
-    // Set NPU_ATTN=1 to enable NPU attention (requires FlmBridge + FLM libraries).
+    // NPU attention via pre-compiled KV xclbin instructions.
+    // Set NPU_ATTN=1 to enable. Uses insts_i8_KV_<tag>.txt from xclbin dir.
+    // Set NPU_ATTN_FILE=<path> to override instruction file path.
     bool use_npu_attn = getenv("NPU_ATTN") && atoi(getenv("NPU_ATTN")) > 0;
     if(use_npu_attn){
-        // Initialize FlmBridge for attention instruction generation
-        FlmBridge::Config flm_cfg;
-        flm_cfg.hidden_size = H;
-        flm_cfg.num_heads = NH;
-        flm_cfg.num_kv_heads = NKV;
-        flm_cfg.num_layers = NC;
-        flm_cfg.intermediate_size = IM;
-        flm_cfg.max_seq_len = 4096;
-        flm_cfg.vocab_size = NV;
-        flm_cfg.head_dim = HD;
-        flm_cfg.batch_padded = XM;
-        flm_cfg.xclbin_path = xd;  // same xclbin dir as GEMM
-
-        if (FlmBridge::instance().init(flm_cfg)) {
-            // Generate attention instructions for initial seq_len=1
-            auto attn_instrs = FlmBridge::instance().gen_attn_instrs(0, 1);
-            if (!attn_instrs.empty()) {
-                ca_ptr = std::make_unique<AttnCtx>();
-                if (ca_ptr->init(dev, xp("ATTN").c_str(), attn_instrs,
-                                 4096, NH, NKV, HD, XM)) {
-                    fprintf(stderr, "NPU attention enabled (FlmBridge)\n");
-                } else {
-                    fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
-                    use_npu_attn = false;
-                    ca_ptr.reset();
-                }
+        std::string inst_path;
+        if (const char* env = getenv("NPU_ATTN_FILE")) {
+            inst_path = env;
+        } else {
+            inst_path = std::string(xd) + "/insts_i8_KV_" + cfg.model_tag + ".txt";
+        }
+        if (load_attn_instrs(inst_path.c_str())) {
+            ca_ptr = std::make_unique<AttnCtx>();
+            if (ca_ptr->init(dev, xp("ATTN").c_str(), attn_instrs,
+                             4096, NH, NKV, HD, XM)) {
+                fprintf(stderr, "NPU attention enabled (pre-compiled insts)\n");
             } else {
-                fprintf(stderr, "WARN: FlmBridge attn instrs empty, CPU fallback\n");
+                fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
                 use_npu_attn = false;
+                ca_ptr.reset();
             }
         } else {
-            fprintf(stderr, "WARN: FlmBridge init failed, CPU attention fallback\n");
+            fprintf(stderr, "WARN: No attn insts for model '%s', CPU fallback\n", cfg.model_tag.c_str());
             use_npu_attn = false;
         }
     }
@@ -760,9 +748,9 @@ int main(int argc,char**argv){
                 for(int d=0;d<HD;d++)ks[d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(ks,HD,sp+pi);
                 memcpy(&kv_caches[l].k[(sp+pi)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+pi)*NKV*HD+kvh*HD],vs,HD*4);}}
         kv_caches[l].n=sp+npt;int cl=kv_caches[l].n;
-        // Attention: NPU (via FlmBridge) or CPU fallback
+        // Attention: NPU or CPU fallback
         //
-        // NPU attention uses FlmBridge to generate seq_len-specific instructions
+        // NPU attention uses pre-compiled KV xclbin instructions
         // at runtime via FLM's libmha.so (MHA::generate_mha_sequence). The
         // attn.xclbin kernel takes Q, K, V as i8 inputs and produces i16 output.
         // K and V caches are quantized from f32 on each step.
@@ -770,7 +758,7 @@ int main(int argc,char**argv){
         // CPU attn_omp() fallback is always available.
         if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
             // Regenerate instructions for current seq_len
-            auto attn_instrs = FlmBridge::instance().gen_attn_instrs(0, cl);
+            auto attn_instrs = // Instructions pre-loaded at init; cl passed to launch
             if (!attn_instrs.empty()) {
                 // Compute dynamic scales for Q and K/V quantization
                 float q_ascale = dynamic_ascale(qo_b.data(), npt * NH * HD);
@@ -856,14 +844,12 @@ int main(int argc,char**argv){
                 memcpy(&kv_caches[l].k[sp*NKV*HD+kvh*HD],&ko_data[kvh*HD],HD*4);memcpy(&kv_caches[l].v[sp*NKV*HD+kvh*HD],&vo_data[kvh*HD],HD*4);}}
             kv_caches[l].n=sp+1;int cl=kv_caches[l].n;
             if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-                auto ai = FlmBridge::instance().gen_attn_instrs(0, cl);
-                if(!ai.empty()){
-                    float qs=dynamic_ascale(qo_data.data(),NH*HD);
-                    float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
-                    ks=ks<1e-12f?1.0f:ks/127.0f;
-                    auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,1,qs,ks);
-                    ca_ptr->finish(r,at_data.data(),1,qs,ks);cn(at_data.data(),NH*HD);
-                }else{attn_omp(qo_data.data(),at_data.data(),cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
+                // NPU attention via pre-compiled KV xclbin (fixed max_seq=4096)
+                float qs=dynamic_ascale(qo_data.data(),NH*HD);
+                float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
+                ks=ks<1e-12f?1.0f:ks/127.0f;
+                auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,1,qs,ks);
+                ca_ptr->finish(r,at_data.data(),1,qs,ks);cn(at_data.data(),NH*HD);
             }else{attn_omp(qo_data.data(),at_data.data(),cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
             co.go(l,at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
@@ -916,14 +902,12 @@ int main(int argc,char**argv){
                 memcpy(&kv_caches[l].k[(sp+b)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+b)*NKV*HD+kvh*HD],vs,HD*4);}
             kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
             if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-                auto ai = FlmBridge::instance().gen_attn_instrs(0, cl);
-                if(!ai.empty()){
-                    float qs=dynamic_ascale(qo_b.data(),batch_size*NH*HD);
-                    float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
-                    ks=ks<1e-12f?1.0f:ks/127.0f;
-                    auto r=ca_ptr->launch(qo_b.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,batch_size,qs,ks);
-                    ca_ptr->finish(r,at_b.data(),batch_size,qs,ks);cn(at_b.data(),batch_size*NH*HD);
-                }else{for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}}
+                // NPU attention via pre-compiled KV xclbin (fixed max_seq=4096)
+                float qs=dynamic_ascale(qo_b.data(),batch_size*NH*HD);
+                float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
+                ks=ks<1e-12f?1.0f:ks/127.0f;
+                auto r=ca_ptr->launch(qo_b.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,batch_size,qs,ks);
+                ca_ptr->finish(r,at_b.data(),batch_size,qs,ks);cn(at_b.data(),batch_size*NH*HD);
             }else{for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}}
 
             // ── O GEMM ──
