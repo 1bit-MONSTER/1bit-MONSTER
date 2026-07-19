@@ -83,8 +83,8 @@ static int spawn(const char*mo,const char*ta){
 
 static int gemm(int op,int l,int b,int id,const float*in,float*out,int*od){
     uint32_t h[4]={(uint32_t)op,(uint32_t)l,(uint32_t)b,(uint32_t)id};
-    if(write(wsi,h,16)!=16{fprintf(stderr,"W1FAIL\n");return -1;}
-    if(write(wsi,in,(size_t)b*id*4)!=(ssize_t)(b*id*4){fprintf(stderr,"W2FAIL\n");return -1;}
+    if(write(wsi,h,16)!=16){fprintf(stderr,"W1FAIL\n");return -1;}
+    if(write(wsi,in,(size_t)b*id*4)!=(ssize_t)(b*id*4)){fprintf(stderr,"W2FAIL\n");return -1;}
     uint32_t r[2];size_t rr=0;while(rr<8){ssize_t n=read(resp_r,(char*)r+rr,8-rr);if(n<=0){if(n<0&&errno==EINTR)continue;fprintf(stderr,"RFAIL(%zd)\n",n);return -1;}rr+=n;}
     if(r[0]!=0)return -1;*od=(int)r[1];
     size_t dr=0;while(dr<(size_t)(*od)*4){ssize_t n=read(resp_r,(char*)out+dr,(size_t)(*od)*4-dr);if(n<=0){if(n<0&&errno==EINTR)continue;return -1;}dr+=n;}
