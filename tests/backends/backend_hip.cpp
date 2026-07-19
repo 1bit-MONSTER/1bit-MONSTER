@@ -282,7 +282,7 @@ public:
             else if (vt >= 3 && vt <= 6) fseek(gf, 4, SEEK_CUR);
             else if (vt == 7) fseek(gf, 1, SEEK_CUR);
             else if (vt == 9) {
-                uint64_t n; fread(&n, 8, 1, gf); uint32_t at; fread(&at, 4, 1, gf); uint64_t al; fread(&al, 8, 1, gf);
+                uint32_t n_arr; fread(&n_arr, 4, 1, gf); uint32_t at; fread(&at, 4, 1, gf); uint64_t al = n_arr;
                 if (at == 2 || at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, gf); fseek(gf, ss, SEEK_CUR); } }
                 else if (at <= 7) fseek(gf, al, SEEK_CUR);
                 else if (at >= 10 && at <= 12) fseek(gf, al * 8, SEEK_CUR);

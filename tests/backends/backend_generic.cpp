@@ -6,6 +6,7 @@
 // Uses unified memory for GPU+NPU hybrid operation on Strix Halo.
 
 #include "backend.h"
+#include "colibri_kernels.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,12 @@
 #include <cstdint>
 #include <dirent.h>
 #include <sys/stat.h>
+
+// USE_COLIBRI_Q4=1: quantize GGUF weights to int4 at load time (8x smaller)
+// Set to 0 for original f32 behavior.
+#ifndef USE_COLIBRI_Q4
+#define USE_COLIBRI_Q4 1
+#endif
 
 // ─── GGUF weight reader (shared with src/backend_generic.cpp) ────────────────
 
@@ -74,7 +81,7 @@ struct GgufReader {
             else if (vtype >= 3 && vtype <= 6) { fseek(f, 4, SEEK_CUR); }
             else if (vtype == 7) { fseek(f, 1, SEEK_CUR); }
             else if (vtype == 9) {
-                uint64_t n; fread(&n, 8, 1, f); uint32_t at; fread(&at, 4, 1, f); uint64_t al; fread(&al, 8, 1, f);
+                uint32_t n_arr; fread(&n_arr, 4, 1, f); uint32_t at; fread(&at, 4, 1, f); uint64_t al = n_arr;
                 if (at == 2 || at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); } }
                 else if (at <= 7) { fseek(f, al, SEEK_CUR); }
                 else if (at >= 10 && at <= 12) { fseek(f, al * 8, SEEK_CUR); }
@@ -165,11 +172,22 @@ class UniversalBackend : public InferenceBackend {
     std::vector<float> embed_;       // [vocab * hidden]
     std::vector<float> final_norm_;  // [hidden]
     std::vector<float> output_w_;    // [vocab * hidden] — optional lm_head
+#if USE_COLIBRI_Q4
+    std::vector<uint8_t> q4_embed_, q4_output_;
+    std::vector<float> qs_embed_, qs_output_;
+#endif
 
     struct LayerW {
         std::vector<float> attn_norm, ffn_norm;  // RMSNorm weights
         std::vector<float> wq, wk, wv, wo;        // Attention Q/K/V/O
         std::vector<float> gate, up, down;         // FFN
+#if USE_COLIBRI_Q4
+        // int4 quantized versions — 8x smaller, cosim > 0.997
+        std::vector<uint8_t> q4_wq, q4_wk, q4_wv, q4_wo;
+        std::vector<float>  qs_wq, qs_wk, qs_wv, qs_wo;
+        std::vector<uint8_t> q4_gate, q4_up, q4_down;
+        std::vector<float>  qs_gate, qs_up, qs_down;
+#endif
     };
     std::vector<LayerW> layers_;
 
@@ -243,6 +261,16 @@ public:
         if (!emb_data) emb_data = gguf_.get("model.embed_tokens.weight", &emb_n);
         if (emb_data) { embed_.assign(emb_data, emb_data + emb_n); V = emb_n / H; cfg_.vocab_size = V; }
 
+#if USE_COLIBRI_Q4
+        // Quantize embedding to int4
+        if (!embed_.empty()) {
+            int VO = (int)embed_.size() / H;
+            q4_embed_.resize((size_t)VO * ((H+1)/2));
+            qs_embed_.resize(VO);
+            colibri_quantize_matrix_q4(embed_.data(), q4_embed_.data(), qs_embed_.data(), VO, H);
+        }
+#endif
+
         // Final norm
         load_t("output_norm.weight", final_norm_, H);
         if (final_norm_.empty()) load_t("model.norm.weight", final_norm_, H);
@@ -251,6 +279,13 @@ public:
         size_t out_n = 0;
         float* out_data = gguf_.get("output.weight", &out_n);
         if (out_data && out_n == (size_t)V * H) output_w_.assign(out_data, out_data + out_n);
+#if USE_COLIBRI_Q4
+        if (!output_w_.empty()) {
+            q4_output_.resize((size_t)V * ((H+1)/2));
+            qs_output_.resize(V);
+            colibri_quantize_matrix_q4(output_w_.data(), q4_output_.data(), qs_output_.data(), V, H);
+        }
+#endif
 
         // Count actual layers
         L = 0;
@@ -281,6 +316,26 @@ public:
             load_t(p + "mlp.gate_proj.weight", lw.gate, (size_t)FF * H);
             load_t(p + "mlp.up_proj.weight", lw.up, (size_t)FF * H);
             load_t(p + "mlp.down_proj.weight", lw.down, (size_t)H * FF);
+
+#if USE_COLIBRI_Q4
+            // Quantize this layer's weights to int4
+            auto q4_row = [&](std::vector<float>& f32, int I,
+                              std::vector<uint8_t>& q4, std::vector<float>& qs) {
+                if (f32.empty()) return;
+                int O = (int)f32.size() / I;
+                q4.resize((size_t)O * ((I+1)/2));
+                qs.resize(O);
+                colibri_quantize_matrix_q4(f32.data(), q4.data(), qs.data(), O, I);
+            };
+            int QK = NH * HD, KK = NKV * HD, VK = NKV * HD;
+            q4_row(lw.wq, H, lw.q4_wq, lw.qs_wq);
+            q4_row(lw.wk, H, lw.q4_wk, lw.qs_wk);
+            q4_row(lw.wv, H, lw.q4_wv, lw.qs_wv);
+            q4_row(lw.wo, QK, lw.q4_wo, lw.qs_wo);
+            q4_row(lw.gate, H, lw.q4_gate, lw.qs_gate);
+            q4_row(lw.up, H, lw.q4_up, lw.qs_up);
+            q4_row(lw.down, FF, lw.q4_down, lw.qs_down);
+#endif
         }
 
         gguf_.close();
@@ -329,14 +384,23 @@ public:
             // QKV projection
             int QD = NH * HD, KD = NKV * HD;
             std::vector<float> q(QD), k(KD), v(KD);
-            for (int j = 0; j < QD && j < (int)lw.wq.size() / H; j++) {
-                float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wq[j * H + i]; q[j] = s;
-            }
-            for (int j = 0; j < KD && j < (int)lw.wk.size() / H; j++) {
-                float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wk[j * H + i]; k[j] = s;
-            }
-            for (int j = 0; j < KD && j < (int)lw.wv.size() / H; j++) {
-                float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wv[j * H + i]; v[j] = s;
+#if USE_COLIBRI_Q4
+            if (!lw.q4_wq.empty()) {
+                colibri_matmul_q4(q.data(), norm.data(), lw.q4_wq.data(), lw.qs_wq.data(), 1, H, QD);
+                colibri_matmul_q4(k.data(), norm.data(), lw.q4_wk.data(), lw.qs_wk.data(), 1, H, KD);
+                colibri_matmul_q4(v.data(), norm.data(), lw.q4_wv.data(), lw.qs_wv.data(), 1, H, KD);
+            } else
+#endif
+            {
+                for (int j = 0; j < QD && j < (int)lw.wq.size() / H; j++) {
+                    float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wq[j * H + i]; q[j] = s;
+                }
+                for (int j = 0; j < KD && j < (int)lw.wk.size() / H; j++) {
+                    float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wk[j * H + i]; k[j] = s;
+                }
+                for (int j = 0; j < KD && j < (int)lw.wv.size() / H; j++) {
+                    float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wv[j * H + i]; v[j] = s;
+                }
             }
 
             // RoPE
@@ -392,8 +456,15 @@ public:
 
             // O projection + residual
             std::vector<float> ao(H, 0);
-            for (int j = 0; j < H && j < (int)lw.wo.size() / QD; j++) {
-                float s = 0; for (int i = 0; i < QD; i++) s += attn_out[i] * lw.wo[j * QD + i]; ao[j] = s;
+#if USE_COLIBRI_Q4
+            if (!lw.q4_wo.empty())
+                colibri_matmul_q4(ao.data(), attn_out.data(), lw.q4_wo.data(), lw.qs_wo.data(), 1, QD, H);
+            else
+#endif
+            {
+                for (int j = 0; j < H && j < (int)lw.wo.size() / QD; j++) {
+                    float s = 0; for (int i = 0; i < QD; i++) s += attn_out[i] * lw.wo[j * QD + i]; ao[j] = s;
+                }
             }
             for (int i = 0; i < H; i++) hs[i] += ao[i];
 
@@ -406,11 +477,19 @@ public:
             }
 
             std::vector<float> g(FF, 0), u(FF, 0), d(H, 0);
-            for (int j = 0; j < FF && j < (int)lw.gate.size() / H; j++) {
-                float s = 0; for (int i = 0; i < H; i++) s += fn[i] * lw.gate[j * H + i]; g[j] = s;
-            }
-            for (int j = 0; j < FF && j < (int)lw.up.size() / H; j++) {
-                float s = 0; for (int i = 0; i < H; i++) s += fn[i] * lw.up[j * H + i]; u[j] = s;
+#if USE_COLIBRI_Q4
+            if (!lw.q4_gate.empty() && !lw.q4_up.empty()) {
+                colibri_matmul_q4(g.data(), fn.data(), lw.q4_gate.data(), lw.qs_gate.data(), 1, H, FF);
+                colibri_matmul_q4(u.data(), fn.data(), lw.q4_up.data(), lw.qs_up.data(), 1, H, FF);
+            } else
+#endif
+            {
+                for (int j = 0; j < FF && j < (int)lw.gate.size() / H; j++) {
+                    float s = 0; for (int i = 0; i < H; i++) s += fn[i] * lw.gate[j * H + i]; g[j] = s;
+                }
+                for (int j = 0; j < FF && j < (int)lw.up.size() / H; j++) {
+                    float s = 0; for (int i = 0; i < H; i++) s += fn[i] * lw.up[j * H + i]; u[j] = s;
+                }
             }
 
             // Architecture-specific activation
@@ -420,8 +499,15 @@ public:
                 default:              for (int i = 0; i < FF; i++) g[i] = silu(g[i]) * u[i]; break;
             }
 
-            for (int j = 0; j < H && j < (int)lw.down.size() / FF; j++) {
-                float s = 0; for (int i = 0; i < FF; i++) s += g[i] * lw.down[j * FF + i]; d[j] = s;
+#if USE_COLIBRI_Q4
+            if (!lw.q4_down.empty())
+                colibri_matmul_q4(d.data(), g.data(), lw.q4_down.data(), lw.qs_down.data(), 1, FF, H);
+            else
+#endif
+            {
+                for (int j = 0; j < H && j < (int)lw.down.size() / FF; j++) {
+                    float s = 0; for (int i = 0; i < FF; i++) s += g[i] * lw.down[j * FF + i]; d[j] = s;
+                }
             }
             for (int i = 0; i < H; i++) hs[i] += d[i];
         }
@@ -435,11 +521,26 @@ public:
 
         auto& head_w = !output_w_.empty() ? output_w_ : embed_;
         int best = 0; float best_val = -1e30f;
-        for (int t = 0; t < V; t++) {
-            float s = 0; const float* row = head_w.data() + (size_t)t * H;
-            if ((size_t)t * H + H > head_w.size()) break;
-            for (int i = 0; i < H; i++) s += hs[i] * row[i];
-            if (s > best_val) { best_val = s; best = t; }
+#if USE_COLIBRI_Q4
+        bool has_head_q4 = !output_w_.empty() && !q4_output_.empty();
+        bool has_embed_q4 = !q4_embed_.empty();
+        if (has_head_q4) {
+            std::vector<float> logits(V, 0);
+            colibri_matmul_q4(logits.data(), hs.data(), q4_output_.data(), qs_output_.data(), 1, H, V);
+            for (int t = 0; t < V; t++) if (logits[t] > best_val) { best_val = logits[t]; best = t; }
+        } else if (has_embed_q4) {
+            std::vector<float> logits(V, 0);
+            colibri_matmul_q4(logits.data(), hs.data(), q4_embed_.data(), qs_embed_.data(), 1, H, V);
+            for (int t = 0; t < V; t++) if (logits[t] > best_val) { best_val = logits[t]; best = t; }
+        } else
+#endif
+        {
+            for (int t = 0; t < V; t++) {
+                float s = 0; const float* row = head_w.data() + (size_t)t * H;
+                if ((size_t)t * H + H > head_w.size()) break;
+                for (int i = 0; i < H; i++) s += hs[i] * row[i];
+                if (s > best_val) { best_val = s; best = t; }
+            }
         }
 
         seq_len_++;
