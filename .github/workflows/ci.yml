@@ -114,7 +114,23 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: clang-format check
+      - name: C/C++ syntax check
+        run: |
+          set -o pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              *.hip) std=c++23 ;;
+              *) std=c++23 ;;
+            esac
+            g++ -fsyntax-only -std=$std -x c++ -I include -I src "$f" 2>&1 | tee -a /tmp/syntax-errors.log || fail=1
+          done < <(find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' -print0 | \
+            grep -zv -E 'build/|_deps/|\.git/')
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::C/C++ syntax errors found (see log above) — this is a real parse failure, not a style nit"
+            exit 1
+          fi
+      - name: clang-format check (informational)
         run: |
           sudo apt-get install -y -qq clang-format
           find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
@@ -122,8 +138,16 @@ jobs:
             xargs clang-format --dry-run --Werror 2>&1 | head -20 || true
       - name: Python lint (ruff)
         run: |
+          set -o pipefail
           pip install -q ruff
-          ruff check --select=E,F,W --ignore=E501 tools/ scripts/ --output-format=concise 2>&1 | head -30 || true
+          ruff check --select=E,F,W --ignore=E501 tools/ scripts/ --output-format=concise 2>&1 | tee /tmp/ruff.log
+          # Real syntax errors (E999) must fail the build even though E/F/W style
+          # noise elsewhere is only advisory; grep the log rather than relying on
+          # ruff's own exit code so we don't gate on style, only on parse failures.
+          if grep -q 'E999' /tmp/ruff.log; then
+            echo "::error::Python SyntaxError(s) found (E999) — see ruff output above"
+            exit 1
+          fi
 
   version:
     name: Version consistency
