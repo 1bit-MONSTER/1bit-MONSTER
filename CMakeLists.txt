@@ -695,7 +695,8 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             HIP_ARCHITECTURES "gfx1151")
         add_test(NAME test_pipeline_real COMMAND test_pipeline_real)
         set_tests_properties(test_pipeline_real PROPERTIES
-            LABELS "gpu_required;npu_required" SKIP_RETURN_CODE 77)
+            LABELS "gpu_required;npu_required" SKIP_RETURN_CODE 77
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     else()
         message(STATUS "test_pipeline_real: shared_bo.cpp or pipeline_overlap.cpp not found — skipping")
     endif()
