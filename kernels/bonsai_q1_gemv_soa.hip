@@ -1,5 +1,5 @@
 #include <cstdio>
-#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
+#include "hip_check.h"
 
 // bonsai_q1_gemv_soa.hip — SoA Q1_0 GEMV, 4 rows per CTA, gfx1151 wave32.
 //

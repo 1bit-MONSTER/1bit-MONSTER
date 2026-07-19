@@ -317,6 +317,8 @@ add_library(backend_manager STATIC
     src/backend_generic.cpp
     src/backend_flm.cpp
     src/simple_tokenizer.cpp
+    src/q4nx_reader.cpp
+    src/safetensors_reader.cpp
     src/model_discovery.cpp)
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

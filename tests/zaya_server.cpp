@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <mutex>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -587,6 +588,9 @@ int main(int argc, char** argv) {
 
     SimpleTokenizer tok;
 
+    // Protect TokenRouter from concurrent access by cpp-httplib thread pool (fixes #364)
+    static std::mutex g_router_mutex;
+
     svr.Get("/", [&](const httplib::Request&, httplib::Response& res) {
         std::string resp = "{\"status\":\"" + std::string(model_loaded ? "ok" : "no_model") + "\",\"model_loaded\":" + (model_loaded ? "true" : "false") + ",\"model\":\"" + json_escape(cfg.model_name) + "\","
             "\"backend\":\"" + std::string(router.primary ? router.primary->name() : "none") + "\","
@@ -622,6 +626,8 @@ int main(int argc, char** argv) {
 
     svr.Post("/a2a/v1/message:send", [&](const httplib::Request& req, httplib::Response& res) {
         std::string task_id = a2a_new_task_id();
+        // Lock router for the duration of inference (fixes #364)
+        std::lock_guard<std::mutex> lock(g_router_mutex);
         res.set_content(a2a_handle_message(req.body, task_id, router, tok, model_loaded), "application/json");
     });
 
@@ -636,6 +642,8 @@ int main(int argc, char** argv) {
                 std::string e2 = "event: taskStatus\ndata: " + a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_WORKING", "Processing inference") + "\n\n";
                 sink.write(e2.data(), e2.size());
 
+                // Lock router for inference (captured by copy in chunked content provider)
+                std::lock_guard<std::mutex> lock(g_router_mutex);
                 std::string result = a2a_handle_message(body, task_id, router, tok, model_loaded);
                 std::string e3 = "event: taskArtifact\ndata: " + result + "\n\n";
                 sink.write(e3.data(), e3.size());
@@ -740,6 +748,8 @@ int main(int argc, char** argv) {
         std::vector<int> tokens = tok.encode(prompt);
         fprintf(stderr, "  → %d prompt tokens, max %d new\n", (int)tokens.size(), max_tokens);
 
+        // Lock router for the duration of inference (fixes #364)
+        std::lock_guard<std::mutex> lock(g_router_mutex);
         InferenceResult result = router.infer(tokens, max_tokens, use_strat);
         std::string text = tok.decode(result.tokens);
         std::string finish_reason = "stop";
@@ -798,6 +808,8 @@ int main(int argc, char** argv) {
             }
             input = tok.encode(prompt);
         }
+        // Lock router for the duration of inference (fixes #364)
+        std::lock_guard<std::mutex> lock(g_router_mutex);
         InferenceResult result = router.infer(input, np, RouteStrategy::AUTO);
         std::string text = tok.decode(result.tokens);
         std::string rsp = "{\"tokens\":[";

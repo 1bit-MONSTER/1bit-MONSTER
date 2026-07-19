@@ -55,8 +55,20 @@ using json = nlohmann::json;
 
 // ── Globals ──
 static std::atomic<bool> keep_running{true};
-static std::string g_weights_dir = "/tmp/zaya_weights";
+static std::string g_weights_dir = []() -> std::string {
+    const char* env = getenv("ZAYA_WEIGHTS_DIR");
+    if (env && env[0]) return env;
+    const char* xdg = getenv("XDG_DATA_HOME");
+    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-systems/weights/";
+    const char* home = getenv("HOME");
+    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/weights/";
+    return "/tmp/zaya_weights";
+}();
 static int g_port = 8088;
+
+// Protect global state accessed from HTTP handler threads (fixes #364)
+static std::mutex g_strategy_mutex;   // protects g_strategy_engine + g_watchdog
+static std::mutex g_config_mutex;     // protects current_cfg, g_tokenizer, model switching
 
 // ── Strategy engine + agent watchdog (global for HTTP handler access) ──
 static StrategyEngine g_strategy_engine;
@@ -726,6 +738,8 @@ int main(int argc, char** argv) {
         std::string req_model = body.value("model", "");
         if (!req_model.empty()) {
             for (auto& dm : discovered) {
+                // Lock config mutex while switching model (fixes #364)
+                std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
                 if (dm.model_name == req_model &&
                     (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
                     printf("[model] switching to %s (%d layers, %d hidden)\n",
@@ -883,6 +897,8 @@ int main(int argc, char** argv) {
     // ── GET /v1/router — Strategy engine status ──
     svr.Get("/v1/router", [&](const httplib::Request&, httplib::Response& res) {
         json j;
+        // Lock strategy mutex for consistent read of strategy state + watchdog (fixes #364)
+        std::lock_guard<std::mutex> lock(g_strategy_mutex);
         j["strategy"] = g_strategy_engine.name();
         j["state"] = json::parse(g_strategy_engine.state_json());
         j["watchdog_running"] = g_watchdog ? g_watchdog->running() : false;
@@ -930,6 +946,8 @@ int main(int argc, char** argv) {
 
         // Build performance table for strategy init
         auto perf_table = build_performance_table(mgr, "zaya");
+        // Lock strategy mutex while reinitializing the engine (fixes #364)
+        std::lock_guard<std::mutex> lock(g_strategy_mutex);
         bool ok = g_strategy_engine.init(name, mgr, perf_table);
 
         json j;
@@ -975,6 +993,8 @@ int main(int argc, char** argv) {
     // ── GET /v1/backend/status — Full backend report ──
     svr.Get("/v1/backend/status", [&](const httplib::Request& req, httplib::Response& res) {
         json j;
+        // Lock strategy mutex for consistent read of strategy name + watchdog (fixes #364)
+        std::lock_guard<std::mutex> lock(g_strategy_mutex);
         j["strategy"] = g_strategy_engine.name();
         j["watchdog_running"] = g_watchdog ? g_watchdog->running() : false;
         j["report"] = mgr.report();
@@ -1012,6 +1032,8 @@ int main(int argc, char** argv) {
         json j;
         j["service"] = "1bit.systems --- One binary, all backends, intelligent routing";
         j["version"] = "1.0";
+        // Lock strategy mutex for consistent read (fixes #364)
+        std::lock_guard<std::mutex> lock(g_strategy_mutex);
         j["status"] = mgr.active_backend() ? "ready" : "initializing";
         j["strategy"] = g_strategy_engine.name();
         j["endpoints"] = {

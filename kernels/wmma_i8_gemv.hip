@@ -16,9 +16,7 @@
 
 #define BLOCK_SIZE     128
 #define LDS_TILE_I8    2560    // 128 threads × 20 bytes = 2560
-#ifndef HIP_CHECK
-#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
-#endif
+#include "hip_check.h"
 
 __attribute__((amdgpu_flat_work_group_size(BLOCK_SIZE, BLOCK_SIZE)))
 __global__ void wmma_i8_gemv_kernel(

@@ -12,9 +12,7 @@
 #define ROWS_PER_WARP  2
 #define VALS_PER_U32 16
 #define LDS_TILE_I8 2048
-#ifndef HIP_CHECK
-#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
-#endif
+#include "hip_check.h"
 
 // Pack 4 int8 values into uint32 (little-endian)
 static __device__ __forceinline__ uint32_t pack4(int8_t a, int8_t b, int8_t c, int8_t d) {

@@ -28,9 +28,7 @@ using int32x8_t = __attribute__((ext_vector_type(8))) int32_t;
 // per LDS load. Each wave stores 16 rows × 32 tiles × 4 bytes = 2KB in LDS.
 // With 2 waves and double buffering = 8KB total — well within 64KB LDS on gfx1151.
 #define WEIGHT_TILES_PER_BATCH 32
-#ifndef HIP_CHECK
-#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
-#endif
+#include "hip_check.h"
 
 // ─── Packed ternary unpack ──────────────────────────────────────────────────
 static __device__ __forceinline__ int8x16_t unpack_ternary_4(uint32_t word) {
@@ -45,7 +43,7 @@ static __device__ __forceinline__ int8x16_t unpack_ternary_4(uint32_t word) {
 
 // ─── Main kernel: 32 rows per block (2 waves), LDS-tiled ────────────────────
 __attribute__((amdgpu_flat_work_group_size(64, 64)))
-__global__ void ternary_gemv_wmma_kernel(
+__launch_bounds__(64) __global__ void ternary_gemv_wmma_kernel(
     const uint32_t* __restrict__ packed_weights,  // [M, K/16] row-major
     const int8_t*   __restrict__ x_i8,            // [K] INT8 activations
     float                        x_scale,
@@ -136,7 +134,7 @@ __global__ void ternary_gemv_wmma_kernel(
 
 // ─── 16-row fallback for M < 32 ──────────────────────────────────────────────
 __attribute__((amdgpu_flat_work_group_size(WARP_SIZE, WARP_SIZE)))
-__global__ void ternary_gemv_wmma_kernel_16row(
+__launch_bounds__(WARP_SIZE) __global__ void ternary_gemv_wmma_kernel_16row(
     const uint32_t* __restrict__ packed_weights,
     const int8_t*   __restrict__ x_i8,
     float                        x_scale,
@@ -211,7 +209,7 @@ __global__ void ternary_gemv_wmma_kernel_16row(
 // Used when K is small enough that LDS tiling overhead doesn't pay off.
 // ────────────────────────────────────────────────────────────────────────────
 __attribute__((amdgpu_flat_work_group_size(WARP_SIZE, WARP_SIZE)))
-__global__ void ternary_gemv_wmma_kernel_v2(
+__launch_bounds__(WARP_SIZE) __global__ void ternary_gemv_wmma_kernel_v2(
     const uint32_t* __restrict__ packed_weights,
     const int8_t*   __restrict__ x_i8,
     float                        x_scale,
