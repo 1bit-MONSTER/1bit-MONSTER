@@ -302,7 +302,7 @@ class NPUBackend:
     def start(self):
         if not os.path.exists(self.ENGINE_BIN):
             print(f"  ⚠️  NPU engine binary not found: {self.ENGINE_BIN}")
-            print(f"     Run: cd os.path.expanduser("~/engine/npu && make")
+            print(f"     Run: cd ~/engine/npu && make")
             return
         if not os.path.exists(self.TOKENIZER_PATH):
             print(f"  ⚠️  Tokenizer not found: {self.TOKENIZER_PATH}")
@@ -700,7 +700,7 @@ class Handler(BaseHTTPRequestHandler):
             import subprocess
             env = os.environ.copy()
             env["LD_LIBRARY_PATH"] = (
-                os.path.expanduser("~/torch2aie/toolchain/mlir_aie.libs:")
+                os.path.expanduser("~/torch2aie/toolchain/mlir_aie.libs:") +
                 os.path.expanduser("~/torch2aie/toolchain/sysroot/usr/lib64:") +
                 env.get("LD_LIBRARY_PATH", ""))
             engine = os.path.expanduser("~/npu-sandbox/npu-infer/build/npu_engine_mt")
