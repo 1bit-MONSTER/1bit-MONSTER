@@ -28,6 +28,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/select.h>
 #include <signal.h>
@@ -274,34 +275,61 @@ struct NPUBackend : Backend {
         const char* model_path = getenv("NPU_MODEL_PATH");
         std::string discovered_path;
         if (!model_path) {
-            // Auto-discovery: search common paths for model.q4nx (#447)
+            // Auto-discovery: search common paths for model.q4nx (#444)
+            // 1. Current dir + common paths
             static const char* search_paths[] = {
-                "model.q4nx",                    // current directory
-                "models/model.q4nx",             // models/ subdirectory
-                "/opt/1bit/models/model.q4nx",   // system-wide install
-                "/tmp/zaya_weights/model.q4nx",  // test weights
+                "model.q4nx",
+                "models/model.q4nx",
+                "/opt/1bit/models/model.q4nx",
+                "/tmp/zaya_weights/model.q4nx",
             };
-            // weights_dir fallback (#444)
+            // 2. FLM model directory (users already have models here)
+            std::string flm_dir = std::string(getenv("HOME") ?: "") + "/.config/flm/models";
+            std::string flm_candidates[8];
+            int n_flm = 0;
+            if (!flm_dir.empty()) {
+                auto* dir = opendir(flm_dir.c_str());
+                if (dir) {
+                    struct dirent* entry;
+                    while ((entry = readdir(dir)) && n_flm < 8) {
+                        if (entry->d_name[0] == '.') continue;
+                        std::string mp = flm_dir + "/" + entry->d_name + "/model.q4nx";
+                        if (access(mp.c_str(), R_OK) == 0)
+                            flm_candidates[n_flm++] = mp;
+                    }
+                    closedir(dir);
+                }
+            }
+            // 3. weights_dir fallback
             std::string wd_path = weights_dir + "/model.q4nx";
-            const char* candidates[] = {
-                wd_path.c_str(),
-                search_paths[0], search_paths[1], search_paths[2], search_paths[3],
-            };
-            for (const char* cand : candidates) {
-                if (!cand || !cand[0]) continue;
-                if (access(cand, R_OK) == 0) {
-                    discovered_path = cand;
+            // Try FLM models first (largest = most capable), then common paths
+            for (int i = 0; i < n_flm; i++) {
+                if (access(flm_candidates[i].c_str(), R_OK) == 0) {
+                    discovered_path = flm_candidates[i];
                     model_path = discovered_path.c_str();
                     fprintf(stderr, "NPU: auto-discovered model at: %s\n", model_path);
                     break;
                 }
             }
             if (!model_path) {
-                fprintf(stderr, "NPU: no model found — set NPU_MODEL_PATH or place model.q4nx in:\n");
-                for (const char* cand : candidates) {
-                    if (cand && cand[0])
-                        fprintf(stderr, "  • %s\n", cand);
+                const char* std_paths[] = {
+                    wd_path.c_str(),
+                    search_paths[0], search_paths[1], search_paths[2], search_paths[3],
+                };
+                for (const char* cand : std_paths) {
+                    if (!cand || !cand[0]) continue;
+                    if (access(cand, R_OK) == 0) {
+                        discovered_path = cand;
+                        model_path = discovered_path.c_str();
+                        fprintf(stderr, "NPU: auto-discovered model at: %s\n", model_path);
+                        break;
+                    }
                 }
+            }
+            if (!model_path) {
+                fprintf(stderr, "NPU: no model found — set NPU_MODEL_PATH or place model.q4nx in FLM models dir (~/.config/flm/models/)\n");
+                // FLM models dir is the recommended default — list it
+                fprintf(stderr, "  • ~/.config/flm/models/<model>/model.q4nx\n");
                 return false;
             }
         }
