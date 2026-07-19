@@ -775,6 +775,27 @@ bool read_gguf_tensor(const std::string& path, const std::string& tensor_name,
             }
             break;
         }
+        case 24: { // I8: 1 byte/elem, raw signed int8, no scale
+            for (size_t i = 0; i < target->n; i++) {
+                int8_t v; fread(&v, 1, 1, f);
+                output[i] = (float)v;
+            }
+            break;
+        }
+        case 25: { // I16: 2 bytes/elem, raw signed int16, no scale
+            for (size_t i = 0; i < target->n; i++) {
+                int16_t v; fread(&v, 2, 1, f);
+                output[i] = (float)v;
+            }
+            break;
+        }
+        case 26: { // I32: 4 bytes/elem, raw signed int32, no scale
+            for (size_t i = 0; i < target->n; i++) {
+                int32_t v; fread(&v, 4, 1, f);
+                output[i] = (float)v;
+            }
+            break;
+        }
         default:
             fprintf(stderr, "[gguf] unhandled dtype %u for %s\n", target->dtype, tensor_name.c_str());
             fclose(f); return false;

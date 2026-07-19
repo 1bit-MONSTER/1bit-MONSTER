@@ -12,7 +12,7 @@
 #   ./scripts/jarvis-daily-routine.sh           # Full routine
 #   ./scripts/jarvis-daily-routine.sh --quiet   # No stdout
 
-set -e
+set -euo pipefail
 
 DATE_STR="$(date -u '+%Y-%m-%d')"
 TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

@@ -412,7 +412,7 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
 
 // ── Forward greedy: same as forward but only returns argmax (much faster) ──
 int zaya_forward_greedy(ZayaState* s, int token_id) {
-    if (token_id < 0 || token_id >= [redacted]
+    if (token_id < 0 || token_id >= eng.vocab) return -1;
     int g1 = (eng.h+BLK-1)/BLK;
     std::vector<__half> hh(eng.h);
     for(int i=0;i<eng.h;i++){float raw=s->embed[token_id*(size_t)eng.h+i];hh[i]=__float2half((raw+s->ibias[i])*s->iscale[i]);}
