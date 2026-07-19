@@ -35,7 +35,7 @@ import urllib.error
 from tokenizers import Tokenizer
 
 # Paths — set env vars or edit defaults for your machine (see docs/install.md)
-NPU_ENGINE_BIN = os.environ.get("NPU_ENGINE_BIN", os.path.expanduser("~/engine/npu/build/npu_engine_server"))
+NPU_ENGINE_BIN = os.environ.get("NPU_ENGINE_BIN", os.path.expanduser("~/1bit-systems/engine/npu/build/npu_engine_universal"))
 NPU_MODEL_PATH = os.environ.get("NPU_MODEL_PATH", os.path.expanduser("~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx"))
 NPU_TOKENIZER_PATH = os.environ.get("NPU_TOKENIZER_PATH", os.path.expanduser("~/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json"))
 

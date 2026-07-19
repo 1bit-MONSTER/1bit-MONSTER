@@ -20,9 +20,23 @@
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
 
-// Model dimensions — defaults for Qwen3-0.6B, override via env vars (#443)
+// Model dimensions — read from Q4NX header at runtime (#443)
+// Defaults for Qwen3-0.6B; override via env vars for other models.
 static int H=1024,NC=28,NH=16,NKV=8,HD=128,IM=3072,NV=151936,GQA=2,XM=128;
+static constexpr int LAYERB_SIZE=112;  // max NC across all supported models
 static constexpr float EPS = 1e-6f;
+
+// Load model dimensions from environment (set by model_config.h discovery)
+static void load_model_dims() {
+    if (const char* e = getenv("NPU_H")) H = atoi(e);
+    if (const char* e = getenv("NPU_NC")) NC = atoi(e);
+    if (const char* e = getenv("NPU_NH")) NH = atoi(e);
+    if (const char* e = getenv("NPU_NKV")) NKV = atoi(e);
+    if (const char* e = getenv("NPU_HD")) HD = atoi(e);
+    if (const char* e = getenv("NPU_IM")) IM = atoi(e);
+    if (const char* e = getenv("NPU_NV")) NV = atoi(e);
+    GQA = NH / NKV;
+}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:[&]{uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}();}
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline float dyn_scale(const float*x,int n){float a=0;for(int i=0;i<n;i++){float f=fabsf(x[i]);if(std::isfinite(f)&&f>a)a=f;}return a<1e-12f?1.0f:a/127.0f;}
@@ -48,7 +62,7 @@ struct SharedCtx {
 
 struct I8Ctx {
     const char*name;int MD,KD,ND;
-    std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC,layerB[NC];int8_t*Am;int32_t*Cm;
+    std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am;int32_t*Cm;
     std::unique_ptr<xrt::kernel>k;
     bool init(xrt::device&d,SharedCtx&sctx,const char*xp,const char*ip,int gid_B){
         FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
@@ -56,7 +70,7 @@ struct I8Ctx {
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));
         bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();
-        for(int l=0;l<NC;l++)layerB[l]=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B));return true;
+        for(int l=0;l<NC;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));return true;
     }
     void packB(int l,const float*w,int K,int N,float&sout){
         float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
@@ -100,15 +114,8 @@ int main(int argc,char**argv){
     int npt=9,ng=(argc>1)?atoi(argv[1]):32;
     fprintf(stderr,"=== NPU+GPU Hybrid Engine ===\n");
 
-    // Override model dimensions from env vars (#443)
-    if (const char* e = getenv("NPU_H")) H = atoi(e);
-    if (const char* e = getenv("NPU_NC")) NC = atoi(e);
-    if (const char* e = getenv("NPU_NH")) NH = atoi(e);
-    if (const char* e = getenv("NPU_NKV")) NKV = atoi(e);
-    if (const char* e = getenv("NPU_HD")) HD = atoi(e);
-    if (const char* e = getenv("NPU_IM")) IM = atoi(e);
-    if (const char* e = getenv("NPU_NV")) NV = atoi(e);
-    GQA = NH / NKV;
+    // Load model dimensions from env vars (#443)
+    load_model_dims();
     fprintf(stderr,"  Dims: H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GQA=%d\n",
             H, NC, NH, NKV, HD, IM, NV, GQA);
 

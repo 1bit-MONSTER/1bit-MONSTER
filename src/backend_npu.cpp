@@ -136,13 +136,27 @@ struct NpuWorker {
     int stdout_fd = -1;  // read from worker's stdout
     bool ready = false;
 
-    bool spawn(const std::string& model_path) {
+    bool spawn(const std::string& model_path,
+              int H, int NC, int NQ, int NKV, int HD, int IM, int NV) {
         const char* engine_bin = getenv("NPU_ENGINE_BIN");
         std::string bin = engine_bin ? engine_bin : "./npu_engine_universal";
 
         int to_child[2], from_child[2];
         if (pipe(to_child) < 0) { perror("NPU: pipe(to_child)"); return false; }
         if (pipe(from_child) < 0) { perror("NPU: pipe(from_child)"); close(to_child[0]); close(to_child[1]); return false; }
+
+        // Set env vars so worker loads matching dimensions (#445)
+        auto set_env_int = [](const char* k, int v) {
+            char buf[32]; snprintf(buf, sizeof(buf), "%d", v);
+            setenv(k, buf, 1);
+        };
+        set_env_int("NPU_H", H);
+        set_env_int("NPU_NC", NC);
+        set_env_int("NPU_NH", NQ);
+        set_env_int("NPU_NKV", NKV);
+        set_env_int("NPU_HD", HD);
+        set_env_int("NPU_IM", IM);
+        set_env_int("NPU_NV", NV);
 
         pid = fork();
         if (pid < 0) { perror("NPU: fork"); close(to_child[0]); close(to_child[1]); close(from_child[0]); close(from_child[1]); return false; }
@@ -358,7 +372,7 @@ struct NPUBackend : Backend {
         }
 
         // Spawn NPU worker (must happen after dimensions known)
-        if (!worker.spawn(model_path)) {
+        if (!worker.spawn(model_path, H, NC, NQ, NKV, HD, mlp_dim, NV)) {
             fprintf(stderr, "NPU: failed to spawn worker engine\n");
             return false;
         }

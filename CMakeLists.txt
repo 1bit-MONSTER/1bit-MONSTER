@@ -687,7 +687,7 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             -O3 -march=native -ffast-math -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
         target_link_libraries(test_pipeline_real PRIVATE
             xrt_coreutil xrt_core uuid rt pthread
-            ${aiebu_LIBRARIES})
+            /usr/lib/x86_64-linux-gnu/libaiebu.a)
         target_link_options(test_pipeline_real PRIVATE
             -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)
         set_target_properties(test_pipeline_real PROPERTIES
