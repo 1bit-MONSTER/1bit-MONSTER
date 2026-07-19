@@ -78,27 +78,27 @@ __global__ void silu_mul_k(__half*out,const __half*g,const __half*u,int n){int i
 __global__ void residual_scale_k(__half*out,const __half*res,const float*hs_s,const float*hs_b,const float*res_s,const float*res_b,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;out[i]=__float2half((float)out[i]*hs_s[i]+hs_b[i]+(float)res[i]*res_s[i]+res_b[i]);}
 
 // ── Complex kernels from .hip files ──
-#include "../kernels/zaya_cca_attn.hip"
-#include "../kernels/zaya_gpu_router.hip"
-#include "../kernels/zaya_router_moe.hip"
-#include "../kernels/zaya_moe_tiled_gemv.hip"
-#include "../kernels/zaya_moe_expert_ffn.hip"
-#include "../kernels/zaya_moe_batch_union.hip"
-#include "../kernels/argmax_kernel.hip"
-#include "../kernels/zaya_cca_custom.hip"
-#include "../kernels/v_interleave_kernel.hip"
+#include "zaya_cca_attn.hip"
+#include "zaya_gpu_router.hip"
+#include "zaya_router_moe.hip"
+#include "zaya_moe_tiled_gemv.hip"
+#include "zaya_moe_expert_ffn.hip"
+#include "zaya_moe_batch_union.hip"
+#include "argmax_kernel.hip"
+#include "zaya_cca_custom.hip"
+#include "v_interleave_kernel.hip"
 
 // ── Persistent thread blocks for MoE expert FFN (single grid, all layers) ──
-#include "../kernels/zaya_persistent_moe.hip"
+#include "zaya_persistent_moe.hip"
 
 // ── Reference-faithful CCA Q/K/V prep. ──
-#include "../kernels/zaya_cca_prep.hip"
+#include "zaya_cca_prep.hip"
 
 // ── Post-router skip-expert fixup. ──
-#include "../kernels/zaya_skip_fixup.hip"
+#include "zaya_skip_fixup.hip"
 
 // ── GQA V-broadcast for batch path. ──
-#include "../kernels/zaya_batch_v_attn.hip"
+#include "zaya_batch_v_attn.hip"
 
 // ── Flash-decoding KV-cache attention (ensure kv_cache_attn_fd.hip is linked). ──
 extern "C" int rcpp_kv_cache_attn_decode_fd(const void* Q,const void* K,const void* V,void* out,
@@ -110,7 +110,7 @@ extern "C" int rcpp_kv_cache_attn_decode_fd(const void* Q,const void* K,const vo
 // If rocWMMA is not available, this kernel is skipped and the engine
 // falls back to the scalar-tiled batched GEMV.
 #if __has_include(<rocwmma/rocwmma.hpp>)
-#include "../kernels/zaya_moe_wmma_batched.hip"
+#include "zaya_moe_wmma_batched.hip"
 #endif
 
 // ── Weight loading ──

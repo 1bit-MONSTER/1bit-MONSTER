@@ -768,7 +768,6 @@ int main(int argc, char** argv) {
         }
 
         int max_tokens = body.value("max_tokens", 256);
-        float temperature = body.value("temperature", 0.7f);
 
         // Tokenize with logprobs for cascade strategy
         std::vector<int> prompt_tokens;
@@ -864,7 +863,6 @@ int main(int argc, char** argv) {
         }
 
         int max_tokens = body.value("n_predict", 256);
-        float temperature = body.value("temperature", 0.7f);
 
         std::vector<double> empty_logprobs;
         json gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs,

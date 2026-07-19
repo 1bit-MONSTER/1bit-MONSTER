@@ -45,7 +45,11 @@ struct VK {
         app.pApplicationName = "ZayaVK"; app.apiVersion = VK_API_VERSION_1_2;
         VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ici.pApplicationInfo = &app;
-        if (vkCreateInstance(&ici, nullptr, &inst) != VK_SUCCESS) return false;
+        VkResult res = vkCreateInstance(&ici, nullptr, &inst);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "[vk] vkCreateInstance failed: %d\n", (int)res);
+            return false;
+        }
 
         uint32_t nd; vkEnumeratePhysicalDevices(inst, &nd, nullptr);
         if (!nd) return false;
