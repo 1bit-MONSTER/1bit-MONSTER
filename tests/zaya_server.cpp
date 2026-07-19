@@ -20,7 +20,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include <mutex>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -131,18 +130,7 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
             else if (vtype == 7) fseek(f, 1, SEEK_CUR);
             else if (vtype == 9) {
                 uint64_t n; fread(&n, 8, 1, f); uint32_t at; fread(&at, 4, 1, f); uint64_t al; fread(&al, 8, 1, f);
-                // Fast skip: for large string arrays (tokenizer vocab), iterate only first 100
-                // then estimate remaining size and fseek past
-                if ((at == 2 || at == 8) && al > 100) {
-                    uint64_t total_bytes = 0;
-                    uint64_t sample = al < 100 ? al : 100;
-                    for (uint64_t j = 0; j < sample; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); total_bytes += 8 + ss; }
-                    // Estimate remaining: average size × remaining elements
-                    uint64_t avg = total_bytes / sample;
-                    fseek(f, avg * (al - sample), SEEK_CUR);
-                } else if (at == 2 || at == 8) {
-                    for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); }
-                }
+                if (at == 2 || at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); } }
                 else if (at <= 7) fseek(f, al, SEEK_CUR);
                 else if (at >= 10 && at <= 12) fseek(f, al * 8, SEEK_CUR);
                 else fseek(f, al * 4, SEEK_CUR);
@@ -159,21 +147,6 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
         else if (key.find("vocab") != std::string::npos) vocab = read_dim();
         else skip_val();
     }
-    // Read first few tensor headers to get vocab from embedding shape
-    if (vocab <= 0) {
-        for (uint64_t i = 0; i < std::min(n_tensors, (uint64_t)5); i++) {
-            uint64_t nl; fread(&nl, 8, 1, f);
-            std::string tname(nl, '\0'); fread(&tname[0], 1, nl, f);
-            uint32_t nd; fread(&nd, 4, 1, f);
-            std::vector<uint64_t> shape(nd);
-            for (uint32_t j = 0; j < nd; j++) fread(&shape[j], 8, 1, f);
-            uint32_t dt; fread(&dt, 4, 1, f); fseek(f, 4, SEEK_CUR);
-            if (tname == "token_embd.weight" || tname.find("embed_tokens") != std::string::npos) {
-                if (shape.size() >= 2) vocab = (int)shape[0];
-                break;
-            }
-        }
-    }
     fclose(f);
 
     if (hidden <= 0 || layers <= 0) return false;
@@ -183,9 +156,6 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
     cfg.num_kv_heads = kv_heads > 0 ? kv_heads : cfg.num_heads;
     cfg.head_dim = hidden / cfg.num_heads;
     cfg.intermediate_size = ffn > 0 ? ffn : hidden * 8 / 3;
-    // If vocab is unrealistically small (< 100), it was not properly detected.
-    // Read it from the embedding tensor shape instead.
-    if (vocab < 100) vocab = 0;
     cfg.vocab_size = vocab > 0 ? vocab : 32000;
     cfg.model_path = path; cfg.model_name = arch_str;
     cfg.weights_dir = path.substr(0, path.find_last_of('/') + 1);
@@ -448,7 +418,6 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
     std::string model_arg, manifest_arg, weights_dir = "/tmp/zaya_weights/", lora_path;
-    std::string cors_origin;  // empty = no CORS headers (fixes #7: only enable on demand)
     RouteStrategy strategy = RouteStrategy::AUTO;
     A2AClient a2a;
     std::vector<std::string> a2a_peers;
@@ -460,7 +429,6 @@ int main(int argc, char** argv) {
         else if (a == "--manifest" && i+1 < argc) manifest_arg = argv[++i];
         else if (a == "--weights-dir" && i+1 < argc) weights_dir = argv[++i];
         else if (a == "--a2a-peer" && i+1 < argc) a2a_peers.push_back(argv[++i]);
-        else if (a == "--cors-origin" && i+1 < argc) cors_origin = argv[++i];
         else if (a == "--strategy" && i+1 < argc) {
             std::string s(argv[++i]);
             if (s == "auto") strategy = RouteStrategy::AUTO;
@@ -480,8 +448,7 @@ int main(int argc, char** argv) {
             printf("  --strategy auto|cascade|spec_decode|content|parallel_moe|passthrough\n");
             printf("  --a2a-peer URL       Register remote A2A agent peer (can repeat)\n\n");
             printf("Server:\n");
-            printf("  --port N            Listen port (default: 8088)\n");
-            printf("  --cors-origin ORIGIN Enable CORS for origin (e.g. '*', 'https://app.example.com')\n\n");
+            printf("  --port N            Listen port (default: 8088)\n\n");
             printf("Endpoints:\n");
             printf("  GET  /v1/models                      List loaded models\n");
             printf("  POST /v1/chat/completions            OpenAI-compatible chat\n");
@@ -549,22 +516,17 @@ int main(int argc, char** argv) {
     const size_t MAX_BODY_BYTES = 1 * 1024 * 1024;
     svr.set_payload_max_length(MAX_BODY_BYTES);
 
-    // CORS: only enabled when --cors-origin is explicitly set (fixes #7)
-    if (!cors_origin.empty()) {
-        svr.set_pre_routing_handler([cors_origin](const httplib::Request& req, httplib::Response& res) {
-            res.set_header("Access-Control-Allow-Origin", cors_origin);
-            if (cors_origin == "*") {
-                res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-            }
-            if (req.method == "OPTIONS") {
-                res.status = 200;
-                res.set_content("{\"ok\":true}", "application/json");
-                return httplib::Server::HandlerResponse::Handled;
-            }
-            return httplib::Server::HandlerResponse::Unhandled;
-        });
-    }
+    svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        if (req.method == "OPTIONS") {
+            res.status = 200;
+            res.set_content("{\"ok\":true}", "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
 
     fprintf(stderr, "\nListening on http://127.0.0.1:%d\n", port);
     fprintf(stderr, "   GET  /                      — health\n");
@@ -595,9 +557,6 @@ int main(int argc, char** argv) {
     fprintf(stderr, "\n");
 
     SimpleTokenizer tok;
-
-    // Protect TokenRouter from concurrent access by cpp-httplib thread pool (fixes #364)
-    static std::mutex g_router_mutex;
 
     svr.Get("/", [&](const httplib::Request&, httplib::Response& res) {
         std::string resp = "{\"status\":\"" + std::string(model_loaded ? "ok" : "no_model") + "\",\"model_loaded\":" + (model_loaded ? "true" : "false") + ",\"model\":\"" + json_escape(cfg.model_name) + "\","
@@ -634,8 +593,6 @@ int main(int argc, char** argv) {
 
     svr.Post("/a2a/v1/message:send", [&](const httplib::Request& req, httplib::Response& res) {
         std::string task_id = a2a_new_task_id();
-        // Lock router for the duration of inference (fixes #364)
-        std::lock_guard<std::mutex> lock(g_router_mutex);
         res.set_content(a2a_handle_message(req.body, task_id, router, tok, model_loaded), "application/json");
     });
 
@@ -650,8 +607,6 @@ int main(int argc, char** argv) {
                 std::string e2 = "event: taskStatus\ndata: " + a2a_task_status(task_id, "ctx-" + task_id, "TASK_STATE_WORKING", "Processing inference") + "\n\n";
                 sink.write(e2.data(), e2.size());
 
-                // Lock router for inference (captured by copy in chunked content provider)
-                std::lock_guard<std::mutex> lock(g_router_mutex);
                 std::string result = a2a_handle_message(body, task_id, router, tok, model_loaded);
                 std::string e3 = "event: taskArtifact\ndata: " + result + "\n\n";
                 sink.write(e3.data(), e3.size());
@@ -719,9 +674,7 @@ int main(int argc, char** argv) {
         try {
             json jbody = json::parse(body);
             max_tokens = jbody.value("max_tokens", 256);
-        } catch (...) {
-            fprintf(stderr, "[zaya_server] JSON parse error in /v1/chat/completions max_tokens extraction\n");
-        }
+        } catch (...) {}
 
         RouteStrategy use_strat = strategy;
         if (use_strat == RouteStrategy::CONTENT) {
@@ -732,9 +685,7 @@ int main(int argc, char** argv) {
                     user_msg = jbody["messages"][0].value("content", std::string());
                 else
                     user_msg = jbody.value("content", std::string());
-            } catch (...) {
-                fprintf(stderr, "[zaya_server] JSON parse error in /v1/chat/completions content routing\n");
-            }
+            } catch (...) {}
             fprintf(stderr, "  [content] routing: %s\n", should_use_large_model(user_msg) ? "large model" : "small model (NPU)");
             use_strat = RouteStrategy::AUTO;
         }
@@ -756,8 +707,6 @@ int main(int argc, char** argv) {
         std::vector<int> tokens = tok.encode(prompt);
         fprintf(stderr, "  → %d prompt tokens, max %d new\n", (int)tokens.size(), max_tokens);
 
-        // Lock router for the duration of inference (fixes #364)
-        std::lock_guard<std::mutex> lock(g_router_mutex);
         InferenceResult result = router.infer(tokens, max_tokens, use_strat);
         std::string text = tok.decode(result.tokens);
         std::string finish_reason = "stop";
@@ -798,17 +747,13 @@ int main(int argc, char** argv) {
                 input = tok.encode(jbody["prompt"].get<std::string>());
             }
             np = jbody.value("n_predict", 16);
-        } catch (...) {
-            fprintf(stderr, "[zaya_server] JSON parse error in /completion\n");
-        }
+        } catch (...) {}
         if (input.empty()) {
             std::string prompt;
             try {
                 json jbody = json::parse(body);
                 prompt = jbody.value("prompt", std::string());
-            } catch (...) {
-                fprintf(stderr, "[zaya_server] JSON parse error in /completion prompt fallback\n");
-            }
+            } catch (...) {}
             if (prompt.empty()) {
                 res.status = 400;
                 res.set_content("{\"error\":\"need prompt or tokens\"}", "application/json");
@@ -816,8 +761,6 @@ int main(int argc, char** argv) {
             }
             input = tok.encode(prompt);
         }
-        // Lock router for the duration of inference (fixes #364)
-        std::lock_guard<std::mutex> lock(g_router_mutex);
         InferenceResult result = router.infer(input, np, RouteStrategy::AUTO);
         std::string text = tok.decode(result.tokens);
         std::string rsp = "{\"tokens\":[";
@@ -836,7 +779,7 @@ int main(int argc, char** argv) {
             res.set_content("{\"error\":\"not found\"}", "application/json");
     });
 
-    if (!svr.listen("127.0.0.1", port)) {
+    if (!svr.listen("0.0.0.0", port)) {
         fprintf(stderr, "FATAL: failed to bind/listen on port %d\n", port);
         return 1;
     }

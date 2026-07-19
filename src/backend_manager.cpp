@@ -61,7 +61,7 @@ void BackendManager::discover() {
         // independently re-run against the INT32 oracle on hardware — only the
         // two changes separately. Treat "all 4 shapes at 8-core" as an unverified
         // claim until that combined re-run happens.
-        info.auto_selectable = false;
+        info.auto_selectable = true;
         info.score = 0;
         info.total_inferences = 0;
         info.failed_inferences = 0;
@@ -650,25 +650,9 @@ bool BackendManager::health_check() {
 }
 
 void BackendManager::monitor() {
-    // Hold lock across health_check + failover to prevent TOCTOU race:
-    // another thread could change active_idx_ or backend state between
-    // the check and the failover if we released the lock.
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto* b = active_backend();
-    bool healthy = false;
-    if (b && b->can_infer()) {
-        if (active_idx_ < backends_.size()) {
-            auto& info = backends_[active_idx_];
-            bool ok = b->reset();
-            info.functional = ok;
-            auto* pm = monitor_.for_backend(info.id);
-            if (pm) pm->healthy = ok;
-            healthy = ok;
-        }
-    } else if (b && !b->can_infer()) {
-        if (active_idx_ < backends_.size()) backends_[active_idx_].functional = false;
-    }
-    if (!healthy) {
+    // health_check acquires its own lock; failover needs us to hold the lock.
+    if (!health_check()) {
+        std::lock_guard<std::mutex> lock(mtx_);
         fprintf(stderr, "BackendManager: health check failed, failing over...\n");
         failover();
     }
@@ -906,7 +890,7 @@ int BackendManager::load_plugins(const std::string& directory) {
         BackendInfo info;
         info.id = plugin.id;
         info.type = loader->type();
-        info.tier = (info.type == BackendType::NPU_XRT) ? BackendTier::T1_ACCELERATOR : BackendTier::T2_GPU;
+        info.tier = (loader->type() == BackendType::NPU_XRT || loader->type() == BackendType::NPU_FLM) ? BackendTier::T1_ACCELERATOR : BackendTier::T2_GPU;
         info.description = loader->description();
         info.priority = tier_priority(info.tier);
         info.available = true;
