@@ -249,12 +249,12 @@ struct SafeTensorsReader {
             pos = ke + 1;
             if (key == "__metadata__") continue;
             
-            auto dq = json_str.find('"dtype"', pos);
+            auto dq = json_str.find("\"dtype\"", pos);
             if (dq == std::string::npos) continue;
             auto vs = json_str.find('"', dq + 7) + 1, ve = json_str.find('"', vs);
             dtypes[key] = json_str.substr(vs, ve - vs);
             
-            auto shq = json_str.find('"shape"', ve);
+            auto shq = json_str.find("\"shape\"", ve);
             if (shq == std::string::npos) continue;
             auto sb = json_str.find('[', shq), eb = json_str.find(']', sb);
             std::vector<uint64_t> sh;
@@ -266,7 +266,7 @@ struct SafeTensorsReader {
             }
             shapes[key] = sh;
             
-            auto doq = json_str.find('"data_offsets"', eb);
+            auto doq = json_str.find("\"data_offsets\"", eb);
             if (doq == std::string::npos) continue;
             auto dob = json_str.find('[', doq), doeb = json_str.find(']', dob);
             std::string ds = json_str.substr(dob + 1, doeb - dob - 1);
@@ -360,8 +360,7 @@ struct GenericBackend : Backend {
         embed = W("model_embed_tokens_weight.bin");
         final_norm = W("model_norm_weight.bin");
 
-        int H = cfg.hidden, L = cfg.n_layers, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim;
-        int FF = cfg.intermediate_size;
+        int L = cfg.n_layers;
         layers.resize(L);
         for (int i = 0; i < L; i++) {
             std::string p = "model_layers_" + std::to_string(i) + "_";
@@ -439,8 +438,8 @@ struct GenericBackend : Backend {
         if (!read_gguf_header(path, hdr_cfg)) return false;
         fprintf(stderr, "load_gguf: %s, %d layers, %d hidden\n", hdr_cfg.model_name.c_str(), hdr_cfg.n_layers, hdr_cfg.hidden);
         
-        int H = cfg.hidden, L = cfg.n_layers, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim;
-        int FF = cfg.intermediate_size, V = cfg.vocab;
+        (void)cfg.hidden; (void)cfg.n_heads; (void)cfg.n_kv_heads; (void)cfg.head_dim;
+        (void)cfg.intermediate_size; (void)cfg.vocab;
         
         auto load = [&](const std::string& name, std::vector<float>& dst, size_t expected) -> bool {
             std::vector<float> buf;

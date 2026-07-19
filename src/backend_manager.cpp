@@ -890,7 +890,7 @@ int BackendManager::load_plugins(const std::string& directory) {
         BackendInfo info;
         info.id = plugin.id;
         info.type = loader->type();
-        info.tier = BackendTier::T2_GPU; // default for plugins
+        info.tier = (loader->type() == BackendType::NPU_XDNA) ? BackendTier::T1_NPU : BackendTier::T2_GPU; // infer from type
         info.description = loader->description();
         info.priority = tier_priority(info.tier);
         info.available = true;

@@ -134,7 +134,7 @@ static bool read_gguf_metadata(const std::string& path, ModelConfig& cfg) {
         auto read_f32 = [&]() -> float {
             float v; fread(&v, 4, 1, f); return v;
         };
-        auto read_arr = [&]() -> uint32_t {
+        [[maybe_unused]] auto read_arr = [&]() -> uint32_t {
             uint32_t vtype, n; fread(&vtype, 4, 1, f); fread(&n, 4, 1, f);
             if (vtype == 4 && n >= 1) { uint32_t v; fread(&v, 4, 1, f); return v; }
             fseek(f, n * 4, SEEK_CUR);
