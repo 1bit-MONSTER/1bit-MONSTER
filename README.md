@@ -60,20 +60,6 @@ Reverse-engineered AMD's XDNA 2 NPU in 4 days with no documentation. 1800+ hours
 | zaya_server (Qwen 35B MoE Q4_K) | **20 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |
 | llama.cpp ROCm (PrismML) | **229 tok/s** | PrismML on same hardware | See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235) |
 
-### 🏆 Top 5 — Raw NPU Engine, No FLM (single binary, auto-detected)
-
-*From [`engine/npu/BENCHMARKS.md`](engine/npu/BENCHMARKS.md), measured 2026-07-03/07-12 — predates the 2026-07-19 GGUF dequant correctness fixes (Q2_K/Q3_K/Q5_K, RoPE, dtype enums), so treat as directionally right pending re-measurement, not re-verified today.*
-
-| Model | Family | Decode | Tok/s | Correctness |
-|-------|--------|:------:|:-----:|:-----------:|
-| Qwen3-0.6B | Qwen3 | 36 ms/tok | **28** | 28/28 ✅ |
-| Gemma4-E2B | Gemma | 62 ms/tok | **16** | 35/35 ✅ |
-| Qwen3-VL-4B | Qwen3 (vision) | 93 ms/tok | **11** | 36/36 ✅ |
-| Llama-3.1-8B | Llama | 100 ms/tok | **10** | 32/32 ✅ |
-| Qwen3-8B | Qwen3 | 127 ms/tok | **8** | 36/36 ✅ |
-
-Same binary, same auto-detect path, no per-model glue — the loader reads architecture off the model header for all five.
-
 ---
 
 ## Quick Start
@@ -142,6 +128,20 @@ Model-agnostic isn't just a claim about the loader — it's been exercised acros
 | Zaya1 Preview 74B-A4B (MoE) | 74.79B (4.89 BPW) | GGUF Q4_K_M | 17.9 tok/s (iGPU, llama.cpp fork, 2026-07-03) | 🗄️ Archived — no longer runs on current hardware |
 
 Zaya1-8B is the model this project was built around: it's the one validated end-to-end through Q4NX, GGUF, and 1BP, and the one `tools/gguf_to_onebp.py` targets first when converting into the native format.
+
+### 🏆 Top 5 — Raw NPU Engine, No FLM (single binary, auto-detected)
+
+*From [`engine/npu/BENCHMARKS.md`](engine/npu/BENCHMARKS.md), measured 2026-07-03/07-12 — predates the 2026-07-19 GGUF dequant correctness fixes (Q2_K/Q3_K/Q5_K, RoPE, dtype enums), so treat as directionally right pending re-measurement, not re-verified today.*
+
+| Model | Family | Decode | Tok/s | Correctness |
+|-------|--------|:------:|:-----:|:-----------:|
+| Qwen3-0.6B | Qwen3 | 36 ms/tok | **28** | 28/28 ✅ |
+| Gemma4-E2B | Gemma | 62 ms/tok | **16** | 35/35 ✅ |
+| Qwen3-VL-4B | Qwen3 (vision) | 93 ms/tok | **11** | 36/36 ✅ |
+| Llama-3.1-8B | Llama | 100 ms/tok | **10** | 32/32 ✅ |
+| Qwen3-8B | Qwen3 | 127 ms/tok | **8** | 36/36 ✅ |
+
+Same binary, same auto-detect path, no per-model glue — the loader reads architecture off the model header for all five.
 
 ### Also validated
 
