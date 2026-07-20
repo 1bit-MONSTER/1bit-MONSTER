@@ -25,6 +25,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <utility>
 
 // ── Optional HIP runtime for GPU upload/download ──
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
@@ -56,9 +57,32 @@ public:
     VlProcessor() = default;
     ~VlProcessor() { release_gpu(); }
 
-    // Disable copy
+    // Disable copy (owns a raw GPU pointer)
     VlProcessor(const VlProcessor&) = delete;
     VlProcessor& operator=(const VlProcessor&) = delete;
+
+    // Move: transfer ownership, null out source so its destructor's
+    // release_gpu() doesn't double-free.
+    VlProcessor(VlProcessor&& other) noexcept
+        : pixels_(std::move(other.pixels_)),
+          dev_pixels_(other.dev_pixels_),
+          w_(other.w_), h_(other.h_),
+          out_w_(other.out_w_), out_h_(other.out_h_),
+          orig_w_(other.orig_w_), orig_h_(other.orig_h_) {
+        other.dev_pixels_ = nullptr;
+    }
+    VlProcessor& operator=(VlProcessor&& other) noexcept {
+        if (this != &other) {
+            release_gpu();
+            pixels_ = std::move(other.pixels_);
+            dev_pixels_ = other.dev_pixels_;
+            w_ = other.w_; h_ = other.h_;
+            out_w_ = other.out_w_; out_h_ = other.out_h_;
+            orig_w_ = other.orig_w_; orig_h_ = other.orig_h_;
+            other.dev_pixels_ = nullptr;
+        }
+        return *this;
+    }
 
     // ── Load image from file + resize + normalize (CPU) ──
     // Returns true on success. Processed pixels available via pixels().
