@@ -95,8 +95,13 @@ def main():
     total = 0
     for tn in rd.tensors:
         if len(tn.shape) != 2: continue
-        rows, cols = int(tn.shape[0]), int(tn.shape[1])
-        if rows * cols > 200_000_000: continue
+        rows = int(tn.shape[1]) if len(tn.shape) >= 2 else 1
+        cols = int(tn.shape[0]) if len(tn.shape) >= 2 else int(tn.shape[0])
+        if len(tn.shape) == 1:
+            rows, cols = 1, int(tn.shape[0])
+        elif rows * cols > 600_000_000:  # allow up to 600M (covers token_embd)
+            print(f"  SKIP oversized: {tn.name} {rows}x{cols}")
+            continue
         ntr = (rows + tr - 1) // tr; ntc = (cols + tc - 1) // tc
         tsz = ntr * ntc * (tr * (tc // gs) * 4 + tr * tc // 2)
         tlist.append((tn.name, rows, cols, total, tsz))
@@ -113,7 +118,7 @@ def main():
         fout.write(struct.pack('<I', nb))
         fout.write(name.encode())
         fout.write(b'\0')
-        fout.write(struct.pack('<II', nr, nc))
+        fout.write(struct.pack('<III', 2, nr, nc))  # ndim=2 + dims
         fout.write(struct.pack('<QQ', off, sz))
     
     # Quantize tensors
