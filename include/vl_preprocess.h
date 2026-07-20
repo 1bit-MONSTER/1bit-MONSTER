@@ -34,6 +34,7 @@
 // .cpp file (vl_processor.cpp). This header only declares the API.
 extern "C" {
     unsigned char* stbi_load(const char* filename, int* x, int* y, int* comp, int req_comp);
+    unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len, int* x, int* y, int* comp, int req_comp);
     void stbi_image_free(void* data);
 }
 
