@@ -273,7 +273,11 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_BODY_SIZE:
             self.send_error(413, "Payload too large")
             return
-        body = json.loads(self.rfile.read(length))
+        try:
+            body = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError) as e:
+            self.send_json({"error": f"Invalid JSON: {e}"}, status=400)
+            return
         prompt = self._get_prompt(body)
         stream = body.get("stream", False)
         max_tokens = body.get("max_tokens", 256)
@@ -339,16 +343,28 @@ def main():
         inf = Inference(wk, model)
     print(f"  Inference ready: {inf.NC} layers, {inf.NH} heads, H={inf.H}")
 
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    print(f"\n  🚀 1bit NPU chat server: http://127.0.0.1:{args.port}")
+    import signal
+    bind_addr = os.environ.get("NPU_BIND_ADDR", "127.0.0.1")
+    if bind_addr != "127.0.0.1":
+        print("⚠️  WARNING: binding to non-localhost. Ensure firewall rules are in place.", file=sys.stderr)
+
+    server = ThreadingHTTPServer((bind_addr, args.port), Handler)
+    print(f"\n  🚀 1bit NPU chat server: http://{bind_addr}:{args.port}")
     print(f"  Zero FLM dependency — using npu_engine_universal worker\n")
+
+    def shutdown(sig, frame):
+        print("\nShutting down NPU server...")
+        wk.stop()
+        server.shutdown()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
-    finally:
-        wk.stop()
-        server.server_close()
+        shutdown(None, None)
 
 if __name__ == "__main__":
     main()

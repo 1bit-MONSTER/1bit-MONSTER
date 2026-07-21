@@ -487,7 +487,10 @@ int main(int argc, char** argv) {
     svr.set_payload_max_length(MAX_BODY_BYTES);
 
     svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
-        res.set_header("Access-Control-Allow-Origin", "*");
+        // Restrictive CORS by default — only allow same-origin (localhost) access.
+        // Set ZAYA_CORS_ORIGIN env var to "*" or a specific origin if needed.
+        const char* cors_origin = getenv("ZAYA_CORS_ORIGIN");
+        res.set_header("Access-Control-Allow-Origin", cors_origin ? cors_origin : "http://127.0.0.1");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
         if (req.method == "OPTIONS") {
@@ -498,13 +501,6 @@ int main(int argc, char** argv) {
         return httplib::Server::HandlerResponse::Unhandled;
     });
 
-    fprintf(stderr, "\nListening on http://127.0.0.1:%d\n", port);
-    fprintf(stderr, "   GET  /                      — health\n");
-    fprintf(stderr, "   GET  /v1/models              — model list\n");
-    fprintf(stderr, "   GET  /.well-known/agent-card — A2A Agent Card (v1.0)\n");
-    fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
-    fprintf(stderr, "   POST /a2a/v1/tasks:route      — A2A route to peer agent\n");
-    fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
     fprintf(stderr, "   Strategy: %s\n",
         strategy == RouteStrategy::AUTO ? "auto (fastest available)" :
         strategy == RouteStrategy::CASCADE ? "cascade (per-token fallback)" :
@@ -768,8 +764,25 @@ int main(int argc, char** argv) {
             res.set_content("{\"error\":\"not found\"}", "application/json");
     });
 
-    if (!svr.listen("0.0.0.0", port)) {
-        fprintf(stderr, "FATAL: failed to bind/listen on port %d\n", port);
+    // Bind to localhost by default — use --bind 0.0.0.0 to expose publicly.
+    // Binding to all interfaces without auth or TLS is a security risk (AUDIT #7).
+    const char* bind_addr = getenv("ZAYA_BIND_ADDR");
+    if (!bind_addr || !bind_addr[0]) bind_addr = "127.0.0.1";
+    fprintf(stderr, "\nListening on http://%s:%d\n", bind_addr, port);
+    fprintf(stderr, "   GET  /                      — health\n");
+    fprintf(stderr, "   GET  /v1/models              — model list\n");
+    fprintf(stderr, "   GET  /.well-known/agent-card — A2A Agent Card (v1.0)\n");
+    fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
+    fprintf(stderr, "   POST /a2a/v1/tasks:route      — A2A route to peer agent\n");
+    fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
+    if (strcmp(bind_addr, "0.0.0.0") == 0) {
+        fprintf(stderr,
+            "\n  *** WARNING: binding to 0.0.0.0 — server is publicly reachable. ***\n"
+            "  No authentication, no TLS, no rate limiting is enabled.\n"
+            "  Use a reverse proxy or set ZAYA_BIND_ADDR=127.0.0.1 for local-only access.\n\n");
+    }
+    if (!svr.listen(bind_addr, port)) {
+        fprintf(stderr, "FATAL: failed to bind/listen on %s:%d\n", bind_addr, port);
         return 1;
     }
     return 0;
