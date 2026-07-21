@@ -27,6 +27,9 @@
 /docs/architecture          /#engine                   301!
 /docs/models.html           /#platform                 301!
 /docs/models                /#platform                 301!
+/models.html                /#platform                 301!
+/models/                    /#platform                 301!
+/models                     /#platform                 301!
 /docs/api.html              /#platform                 301!
 /docs/api                   /#platform                 301!
 /docs/benchmarks.html       /#benchmarks               301!
