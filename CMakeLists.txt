@@ -262,7 +262,8 @@ set(RCPP_SOURCES
     src/fused_gemv_tq2_1024.hip
     src/bonsai_tq2_1024_opt.hip
     kernels/vl_resize_norm.hip
-    src/laguna_gemv.hip)
+    src/laguna_gemv.hip
+    src/laguna_fused.hip)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()

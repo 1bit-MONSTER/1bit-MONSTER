@@ -399,22 +399,53 @@ struct LagunaBackend : Backend {
     }
 
     // ─── Q4NX matmul helper: dequant + matmul from 2D tiled tensor ───
+    // GPU batch state for async matmul pipeline
+    struct GpuBatch {
+        const float* current_x = nullptr;  // currently on GPU
+        size_t current_x_sz = 0;
+        int pending_launches = 0;
+        bool synced = true;
+    } gpu_batch;
+    
+    // Sync all pending GPU operations
+    void gpu_sync() {
+        if (!hip_active || gpu_batch.synced) return;
+        hipDeviceSynchronize();
+        gpu_batch.pending_launches = 0;
+        gpu_batch.synced = true;
+    }
+    
+    // GPU-accelerated matmul with async batching
     void w2d_mul(float* y, const float* x, const std::string& name, int M_expected, int K_expected) {
         for (auto& t : model.tensors) {
             if (t.name == name && t.ndim == 2) {
                 int K = (int)t.dims[0];
                 int M = (int)t.dims[1];
                 (void)M_expected; (void)K_expected;
-                // Use GPU if weight is uploaded
+                
                 auto it = gpu_weights.find(name);
                 if (it != gpu_weights.end() && hip_active) {
-                    // GPU path: copy x to device, launch kernel, copy y back
-                    hipMemcpy(hip_x_buf, x, (size_t)K * sizeof(float), 1);  // H2D
+                    // Upload x to GPU if changed
+                    if (x != gpu_batch.current_x) {
+                        gpu_sync();  // sync before changing input
+                        if (x != nullptr && K > 0) {
+                            hipMemcpy(hip_x_buf, x, (size_t)K * sizeof(float), 1);
+                        }
+                        gpu_batch.current_x = x;
+                        gpu_batch.current_x_sz = K;
+                    }
+                    // Zero output buffer on GPU  
                     hipMemset(hip_y_buf, 0, (size_t)M * sizeof(float));
+                    // Launch kernel (async, no sync)
                     launch_gemv((const float*)hip_x_buf, (const uint8_t*)it->second,
                                 (float*)hip_y_buf, K, M, nullptr);
-                    hipDeviceSynchronize();
-                    hipMemcpy(y, hip_y_buf, (size_t)M * sizeof(float), 2);  // D2H
+                    gpu_batch.pending_launches++;
+                    gpu_batch.synced = false;
+                    // Copy result back (will block on next sync if called again)
+                    // For now, keep sync-per-call but remove memset overhead
+                    // Actually, batch: copy back only if we need the result NOW
+                    // For immediate use, sync now. For chained matmuls, defer.
+                    hipMemcpy(y, hip_y_buf, (size_t)M * sizeof(float), 2);
                 } else {
                     matmul_q4nx(y, x, model.tensor_data(t), M, K, TR, TC, GS);
                 }
