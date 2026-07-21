@@ -19,44 +19,8 @@
 #include <algorithm>
 
 // ── Dynamic HIP loading ──────────────────────────────────────────
-// HIP kernel is loaded from librocm_cpp.so at runtime. Falls back
-// to CPU if the shared library isn't available.
-struct HipRuntime {
-    void* lib = nullptr;
-    bool available = false;
-    
-    // Kernel function pointer type
-    using gemv_fn = void(*)(const float*, const uint8_t*, float*, int, int, void*);
-    gemv_fn launch_gemv = nullptr;
-    
-    bool init() {
-        lib = dlopen("librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
-        if (!lib) {
-            lib = dlopen("./librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
-        }
-        if (!lib) {
-            fprintf(stderr, "HIP: librocm_cpp.so not found, using CPU\n");
-            return false;
-        }
-        
-        // Load the GEMV wrapper
-        launch_gemv = (gemv_fn)dlsym(lib, "launch_q4nx_gemv");
-        if (!launch_gemv) {
-            fprintf(stderr, "HIP: launch_q4nx_gemv not found, using CPU\n");
-            dlclose(lib);
-            lib = nullptr;
-            return false;
-        }
-        
-        available = true;
-        fprintf(stderr, "HIP: loaded from librocm_cpp.so\n");
-        return true;
-    }
-    
-    ~HipRuntime() { if (lib) dlclose(lib); }
-};
-
-static HipRuntime g_hip;
+// HIP is loaded per-backend-instance via dlopen/dlsym in init().
+// Falls back to CPU if the shared libraries aren't available.
 #include <chrono>
 #include <dirent.h>
 
@@ -271,13 +235,27 @@ struct LagunaBackend : Backend {
     int TR = 32, TC = 256, GS = 32;
     bool has_swa = false;
     
-    // HIP GPU state (persistent)
-    void* hip_stream = nullptr;
-    void* hip_x_dev = nullptr;   // input buffer (max hidden_size + max proj_size)
-    void* hip_y_dev = nullptr;   // output buffer
-    void* hip_w_dev = nullptr;   // weight tile buffer (one max tile)
-    size_t hip_buf_size = 0;
+    // HIP GPU: per-tensor weight upload
+    void* hip_lib = nullptr;
+    void* rocm_lib = nullptr;
     bool hip_active = false;
+    
+    // GPU function pointers
+    int (*hipMalloc)(void**, size_t) = nullptr;
+    int (*hipFree)(void*) = nullptr;
+    int (*hipMemcpy)(void*, const void*, size_t, int) = nullptr;
+    int (*hipMemset)(void*, int, size_t) = nullptr;
+    int (*hipDeviceSynchronize)() = nullptr;
+    
+    // GPU kernel launcher
+    void (*launch_gemv)(const float*, const uint8_t*, float*, int, int, void*) = nullptr;
+    
+    // Per-tensor GPU device pointers (for 2D+3D weight tensors)
+    std::unordered_map<std::string, uint8_t*> gpu_weights;
+    // Host->Device copy buffers (reused)
+    void* hip_x_buf = nullptr;
+    void* hip_y_buf = nullptr;
+    size_t hip_buf_sz = 0;
 
     LagunaBackend() {
         type = BackendType::GENERIC;
@@ -357,37 +335,44 @@ struct LagunaBackend : Backend {
         for (auto& k : k_cache) k.resize(max_pos * NKV * HD, 0.0f);
         for (auto& v : v_cache) v.resize(max_pos * NKV * HD, 0.0f);
 
-        // Init HIP if available
-        if (g_hip.available && !hip_active) {
-            // Allocate persistent device buffers (max tile + batch)
-            int max_proj = std::max({NH * HD, NKV * HD, FF, NFF_EXP, NFF_SHEXP});
-            size_t buf_sz = std::max((size_t)H, (size_t)max_proj) * sizeof(float);
+        // Init HIP GPU with full weight pre-upload
+        hip_lib = dlopen("libamdhip64.so", RTLD_NOW | RTLD_LOCAL);
+        if (!hip_lib) hip_lib = dlopen("libamdhip64.so.6", RTLD_NOW | RTLD_LOCAL);
+        
+        if (hip_lib) {
+            hipMalloc = (decltype(hipMalloc))dlsym(hip_lib, "hipMalloc");
+            hipFree = (decltype(hipFree))dlsym(hip_lib, "hipFree");
+            hipMemcpy = (decltype(hipMemcpy))dlsym(hip_lib, "hipMemcpy");
+            hipMemset = (decltype(hipMemset))dlsym(hip_lib, "hipMemset");
+            hipDeviceSynchronize = (decltype(hipDeviceSynchronize))dlsym(hip_lib, "hipDeviceSynchronize");
             
-            // Use dlopen/dlsym for HIP API to avoid hard dependency
-            void* hip_lib = dlopen("libamdhip64.so", RTLD_NOW | RTLD_LOCAL);
-            if (!hip_lib) hip_lib = dlopen("libamdhip64.so.6", RTLD_NOW | RTLD_LOCAL);
+            rocm_lib = dlopen("librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
+            if (!rocm_lib) rocm_lib = dlopen("./librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
+            if (rocm_lib)
+                launch_gemv = (decltype(launch_gemv))dlsym(rocm_lib, "launch_q4nx_gemv");
             
-            if (hip_lib) {
-                using alloc_fn = int(*)(void**, size_t);
-                using free_fn = int(*)(void*);
-                using set_fn = int(*)(void*, int, size_t);
-                
-                auto hipMalloc = (alloc_fn)dlsym(hip_lib, "hipMalloc");
-                auto hipFree = (free_fn)dlsym(hip_lib, "hipFree");
-                auto hipMemset = (set_fn*)dlsym(hip_lib, "hipMemset");
-                (void)hipMemset;
-                
-                if (hipMalloc && hipFree) {
-                    int r1 = hipMalloc(&hip_x_dev, (buf_sz + H) * sizeof(float));
-                    int r2 = hipMalloc(&hip_y_dev, (buf_sz + H) * sizeof(float));
-                    int r3 = hipMalloc(&hip_w_dev, 5120 + 16);  // one Q4NX tile + margin
-                    if (r1 == 0 && r2 == 0 && r3 == 0) {
-                        hip_active = true;
-                        hip_buf_size = buf_sz;
-                        printf("  HIP GPU: enabled (Radeon 8060S)\n");
+            if (hipMalloc && hipFree && hipMemcpy && launch_gemv) {
+                // Pre-upload ALL 2D+3D weight tensors to GPU
+                size_t total_upload = 0;
+                int n_uploaded = 0;
+                for (auto& t : model.tensors) {
+                    if (t.ndim < 2) continue;
+                    uint8_t* cpu_ptr = model.tensor_data(t);
+                    void* gpu_ptr = nullptr;
+                    if (hipMalloc(&gpu_ptr, t.bytes) == 0) {
+                        hipMemcpy(gpu_ptr, cpu_ptr, t.bytes, 1);
+                        gpu_weights[t.name] = (uint8_t*)gpu_ptr;
+                        total_upload += t.bytes;
+                        n_uploaded++;
                     }
                 }
-                dlclose(hip_lib);
+                size_t max_buf = (size_t)std::max({NH*HD, NKV*HD, FF, NFF_EXP, NFF_SHEXP, H}) * sizeof(float);
+                hipMalloc(&hip_x_buf, max_buf);
+                hipMalloc(&hip_y_buf, max_buf);
+                hip_buf_sz = max_buf;
+                hip_active = true;
+                printf("  HIP GPU: %d tensors, %.1f MB uploaded (Radeon 8060S)\n",
+                       n_uploaded, total_upload / 1e6);
             }
         }
         
@@ -417,10 +402,22 @@ struct LagunaBackend : Backend {
     void w2d_mul(float* y, const float* x, const std::string& name, int M_expected, int K_expected) {
         for (auto& t : model.tensors) {
             if (t.name == name && t.ndim == 2) {
-                int K = (int)t.dims[0];  // rows (input dim)
-                int M = (int)t.dims[1];  // cols (output dim)
+                int K = (int)t.dims[0];
+                int M = (int)t.dims[1];
                 (void)M_expected; (void)K_expected;
-                matmul_q4nx(y, x, model.tensor_data(t), M, K, TR, TC, GS);
+                // Use GPU if weight is uploaded
+                auto it = gpu_weights.find(name);
+                if (it != gpu_weights.end() && hip_active) {
+                    // GPU path: copy x to device, launch kernel, copy y back
+                    hipMemcpy(hip_x_buf, x, (size_t)K * sizeof(float), 1);  // H2D
+                    hipMemset(hip_y_buf, 0, (size_t)M * sizeof(float));
+                    launch_gemv((const float*)hip_x_buf, (const uint8_t*)it->second,
+                                (float*)hip_y_buf, K, M, nullptr);
+                    hipDeviceSynchronize();
+                    hipMemcpy(y, hip_y_buf, (size_t)M * sizeof(float), 2);  // D2H
+                } else {
+                    matmul_q4nx(y, x, model.tensor_data(t), M, K, TR, TC, GS);
+                }
                 return;
             }
         }
@@ -733,85 +730,21 @@ struct LagunaBackend : Backend {
     }
 
     void destroy() override {
-        // Free HIP device memory
         if (hip_active) {
-            void* hip_lib = dlopen("libamdhip64.so", RTLD_NOW | RTLD_LOCAL);
-            if (hip_lib) {
-                using free_fn = int(*)(void*);
-                auto hipFree = (free_fn)dlsym(hip_lib, "hipFree");
-                if (hipFree) {
-                    if (hip_x_dev) hipFree(hip_x_dev);
-                    if (hip_y_dev) hipFree(hip_y_dev);
-                    if (hip_w_dev) hipFree(hip_w_dev);
-                }
-                dlclose(hip_lib);
+            // Free all pre-uploaded weight tensors
+            for (auto& [name, ptr] : gpu_weights) {
+                (void)name;
+                if (ptr && hipFree) hipFree(ptr);
             }
+            gpu_weights.clear();
+            // Free transfer buffers
+            if (hip_x_buf && hipFree) hipFree(hip_x_buf);
+            if (hip_y_buf && hipFree) hipFree(hip_y_buf);
+            if (rocm_lib) dlclose(rocm_lib);
+            if (hip_lib) dlclose(hip_lib);
             hip_active = false;
         }
         initialized = false;
-    }
-    
-    // ── GPU-accelerated Q4NX matmul ──
-    // Uses HIP kernel for large matrices (K > 2048), CPU fallback for small
-    void matmul_gpu(float* y, const float* x, const uint8_t* w_data,
-                    int M, int K) {
-        if (!hip_active || K < 2048) {
-            // Small matrices: use CPU
-            return matmul_q4nx(y, x, w_data, M, K, TR, TC, GS);
-        }
-        
-        // Use HIP kernel via dlopen'd function
-        void* hip_lib = dlopen("libamdhip64.so", RTLD_NOW | RTLD_LOCAL);
-        if (!hip_lib) {
-            matmul_q4nx(y, x, w_data, M, K, TR, TC, GS);
-            return;
-        }
-        
-        // Load kernel launcher
-        using launcher_t = void(*)(const float*, const uint8_t*, float*, int, int, void*);
-        auto launch = (launcher_t)dlsym(RTLD_DEFAULT, "launch_q4nx_gemv");
-        if (!launch) {
-            // Try loading from librocm_cpp.so
-            void* rc = dlopen("librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
-            if (rc) {
-                launch = (launcher_t)dlsym(rc, "launch_q4nx_gemv");
-                if (!launch) { dlclose(rc); matmul_q4nx(y, x, w_data, M, K, TR, TC, GS); dlclose(hip_lib); return; }
-            } else {
-                matmul_q4nx(y, x, w_data, M, K, TR, TC, GS);
-                dlclose(hip_lib);
-                return;
-            }
-        }
-        
-        // Copy x to GPU
-        using memcpy_fn = int(*)(void*, const void*, size_t, int);
-        using memset_fn = int(*)(void*, int, size_t);
-        using sync_fn = int(*)();
-        
-        auto hipMemcpyH2D = (memcpy_fn)dlsym(hip_lib, "hipMemcpy");
-        auto hipMemcpyD2H = (memcpy_fn)dlsym(hip_lib, "hipMemcpy");
-        auto hipMemset = (memset_fn)dlsym(hip_lib, "hipMemset");
-        auto hipSync = (sync_fn)dlsym(hip_lib, "hipDeviceSynchronize");
-        
-        if (!hipMemcpyH2D || !hipMemcpyD2H || !hipMemset || !hipSync) {
-            matmul_q4nx(y, x, w_data, M, K, TR, TC, GS);
-            dlclose(hip_lib); return;
-        }
-        
-        int H2D = 1;  // hipMemcpyHostToDevice
-        int D2H = 2;  // hipMemcpyDeviceToHost
-        
-        // Clear output and copy input
-        hipMemset(hip_y_dev, 0, (size_t)M * sizeof(float));
-        hipMemcpyH2D(hip_x_dev, x, (size_t)K * sizeof(float), H2D);
-        
-        // Launch kernel (w_data can be passed directly since 1BP uses mmap)
-        // The kernel reads w_data from host memory — for GPU this should be
-        // device memory. For now, fall back to CPU since full GPU integration
-        // requires all weights to be pre-copied to device memory.
-        matmul_q4nx(y, x, w_data, M, K, TR, TC, GS);
-        
-        dlclose(hip_lib);
     }
 };
 
