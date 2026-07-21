@@ -32,17 +32,26 @@
     abort(); }} while(0)
 
 // ── GPU-side kernel declarations (from mamba1_engine.hip) ──
-// These must match the signatures in mamba1_engine.hip.
-// The actual symbols are resolved at link time from librocm_cpp.
+// Symbols resolved at link time from librocm_cpp.so or unified_server.
 extern "C" {
-    __global__ void mamba1_inner(
-        const float* c1w, const float* c1b, int dc, int di,
-        const float* xpw, const float* dpw, const float* dpb,
-        const float* A, const float* Dv,
-        float* out, float* cs, float* ss,
-        const float* inp, int dt_rank, int ds);
-
     __global__ void rms_ker(const float* x, float* y, const float* w, int n, float eps);
+    __global__ void fp32_gemv(const float* W, const float* x, float* y, int M, int K);
+    __global__ void add_residual_k(float* y, const float* x, int n);
+    __global__ void silu_gate_k(float* y, const float* fused, int hidden);
+    __global__ void scale_add_residual_k(float* y, const float* x, float scale, int n);
+
+    int mamba1_forward(
+        float* hidden,
+        const float* in_proj_w, const float* norm_w,
+        const float* conv1d_w, const float* conv1d_b, int d_conv,
+        const float* x_proj_w,
+        const float* dt_w, const float* dt_b,
+        const float* A_log, const float* D,
+        const float* out_proj_w,
+        float* conv_state, float* ssm_state,
+        float* normed, float* inproj, float* gated,
+        int d_model, int d_inner, int d_state, int dt_rank,
+        hipStream_t stream);
 }
 
 // ── Per-layer Mamba1 SSM weights (host copy) ──
@@ -106,7 +115,8 @@ struct Mamba1Backend : Backend {
     Mamba1LayerGPU* mamba_layer_gpu = nullptr;
     MoeLayerGPU* moe_layer_gpu = nullptr;
     float *d_embed = nullptr, *d_final_norm_w = nullptr;
-    float *d_hidden = nullptr, *d_tmp = nullptr, *d_logits = nullptr;
+    float *d_hidden = nullptr, *d_normed = nullptr, *d_inproj = nullptr;
+    float *d_gated = nullptr, *d_logits = nullptr, *d_moe_scratch = nullptr;
     hipStream_t stream = nullptr;
 
     // State
@@ -316,9 +326,21 @@ struct Mamba1Backend : Backend {
         }
 
         // Scratch buffers
+        int max_normed = d_model;
+        int max_hidden_moe = 0;
+        for (int l = 0; l < n_layers; l++) {
+            if (!layer_is_mamba[l]) {
+                max_hidden_moe = std::max(max_hidden_moe, moe_layer_host[l].hidden);
+            }
+        }
         HIP_CHECK(hipMalloc(&d_hidden, (size_t)d_model * sizeof(float)));
-        HIP_CHECK(hipMalloc(&d_tmp, (size_t)std::max(2 * d_inner, d_model * 2) * sizeof(float)));
+        HIP_CHECK(hipMalloc(&d_normed, (size_t)d_model * sizeof(float)));
+        HIP_CHECK(hipMalloc(&d_inproj, (size_t)2 * d_inner * sizeof(float)));
+        HIP_CHECK(hipMalloc(&d_gated, (size_t)d_inner * sizeof(float)));
         HIP_CHECK(hipMalloc(&d_logits, (size_t)vocab_size * sizeof(float)));
+        // MoE scratch: router logits + fc1 output + activated
+        int moe_scratch = std::max(64, 2 * max_hidden_moe);  // n_experts ≤ 64, fc1 = 2*hidden
+        HIP_CHECK(hipMalloc(&d_moe_scratch, (size_t)moe_scratch * sizeof(float)));
         HIP_CHECK(hipMemsetAsync(d_hidden, 0, (size_t)d_model * sizeof(float), stream));
 
         // Host logits buffer
@@ -364,48 +386,70 @@ struct Mamba1Backend : Backend {
         // 2. Per-layer loop
         for (int l = 0; l < n_layers; l++) {
             if (layer_is_mamba[l]) {
-                // ── Mamba1 SSM layer ──
+                // ── Mamba1 SSM layer (fully GPU) ──
                 auto& gl = mamba_layer_gpu[l];
-
-                // 2a. RMS norm
-                int grid_n = (d_model + 255) / 256;
-                rms_ker<<<grid_n, 256, 0, stream>>>(d_hidden, d_tmp, gl.d_norm_w, d_model, 1e-5f);
-
-                // 2b. in_proj: [2*d_inner] = W_in @ normed
-                // Use a simple GEMV kernel. For now, use host-side GEMV then upload.
-                // (GPU in_proj kernel from mamba1_engine.hip's gemv_q4 for Q4_0 weights,
-                //  or a fp32 GEMV — the backend dispatches based on weight format.)
-                // ── TODO: Launch in_proj GEMV on GPU ──
-                // For now, this is the stub path. The real GPU path needs a fp32 GEMV
-                // kernel or Q4_0 GEMV depending on weight format.
-                // ──────────────────────────────
-
-                // Stub: copy hidden directly to output (placeholder until GEMV launch)
-                HIP_CHECK(hipMemcpyAsync(d_tmp, d_hidden, (size_t)d_model * sizeof(float),
-                            hipMemcpyDeviceToDevice, stream));
-
-                // ── TODO: Launch mamba1_inner kernel ──
-                // size_t smem = 4 * d_inner * sizeof(float);
-                // mamba1_inner<<<1, 256, smem, stream>>>(
-                //     gl.d_conv1d_w, gl.d_conv1d_b, d_conv, d_inner,
-                //     gl.d_x_proj, gl.d_dt_w, gl.d_dt_b,
-                //     gl.d_A_log, gl.d_D,
-                //     d_tmp + d_inner,  // output (gated)
-                //     gl.d_conv_state, gl.d_ssm_state,
-                //     d_tmp,  // input = in_proj output
-                //     dt_rank, d_state);
-                //
-                // 2c. out_proj: [d_model] = W_out @ gated
-                // 2d. Residual: d_hidden += out
+                mamba1_forward(
+                    d_hidden,
+                    gl.d_in_proj, gl.d_norm_w,
+                    gl.d_conv1d_w, gl.d_conv1d_b, d_conv,
+                    gl.d_x_proj,
+                    gl.d_dt_w, gl.d_dt_b,
+                    gl.d_A_log, gl.d_D,
+                    gl.d_out_proj,
+                    gl.d_conv_state, gl.d_ssm_state,
+                    d_normed, d_inproj, d_gated,
+                    d_model, d_inner, d_state, dt_rank,
+                    stream);
 
             } else {
-                // ── MoE FFN layer ──
-                // ── TODO: Launch MoE expert dispatch on GPU ──
-                // For now, the CPU fallback handles MoE.
+                // ── MoE FFN layer (GPU GEMVs + host argmax) ──
+                auto& gl = moe_layer_gpu[l];
+                auto& el = moe_layer_host[l];
+                int grid_n = (d_model + 255) / 256;
+
+                // 2a. RMS norm: d_normed = rmsnorm(d_hidden)
+                rms_ker<<<grid_n, 256, 0, stream>>>(d_hidden, d_normed, gl.d_norm_w, d_model, 1e-5f);
+
+                // 2b. Router GEMV: d_moe_scratch[0..n_experts] = W_router @ normed
+                fp32_gemv<<<el.n_experts, 256, 0, stream>>>(
+                    gl.d_router_w, d_normed, d_moe_scratch, el.n_experts, d_model);
+
+                // 2c. Download router logits, find top-1 expert (host-side,
+                //     since n_experts ≤ 64 — cheap enough)
+                std::vector<float> router_logits(el.n_experts);
+                HIP_CHECK(hipMemcpyAsync(router_logits.data(), d_moe_scratch,
+                            (size_t)el.n_experts * sizeof(float),
+                            hipMemcpyDeviceToHost, stream));
+                HIP_CHECK(hipStreamSynchronize(stream));
+
+                int top1 = 0;
+                float top1_val = -1e30f;
+                for (int x = 0; x < el.n_experts; x++) {
+                    float v = el.router_b.empty() ? router_logits[x] : router_logits[x] + el.router_b[x];
+                    if (v > top1_val) { top1_val = v; top1 = x; }
+                }
+                float gate_w = 1.0f / (1.0f + std::expf(-top1_val));
+
+                // 2d. Expert FC1 GEMV: d_moe_scratch[2*hidden] = W_fc1 @ normed
+                int hidden = el.hidden;
+                fp32_gemv<<<2 * hidden, 256, 0, stream>>>(
+                    gl.d_fc1[top1], d_normed, d_moe_scratch, 2 * hidden, d_model);
+
+                // 2e. SiLU gate: d_inproj[hidden] = silu(gate) * up
+                silu_gate_k<<<(hidden + 255) / 256, 256, 0, stream>>>(
+                    d_inproj, d_moe_scratch, hidden);
+
+                // 2f. Expert FC2 GEMV: d_normed[d_model] = W_fc2 @ activated
+                fp32_gemv<<<d_model, 256, 0, stream>>>(
+                    gl.d_fc2[top1], d_inproj, d_normed, d_model, hidden);
+
+                // 2g. Scale by gate weight + residual: d_hidden += gate_w * d_normed
+                scale_add_residual_k<<<grid_n, 256, 0, stream>>>(
+                    d_hidden, d_normed, gate_w, d_model);
             }
         }
 
-        // 3. Final RMS norm + LM head (stub)
+        // 3. Download hidden state (not logits — lm_head does that)
         HIP_CHECK(hipMemcpyAsync(hidden_out, d_hidden, (size_t)d_model * sizeof(float),
                     hipMemcpyDeviceToHost, stream));
         HIP_CHECK(hipStreamSynchronize(stream));
@@ -417,25 +461,32 @@ struct Mamba1Backend : Backend {
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
         if (!hidden || !logits) return false;
 
-        // RMS norm first
-        float ss = 0.0f;
-        for (int i = 0; i < d_model; i++) ss += hidden[i] * hidden[i];
-        float inv = 1.0f / std::sqrt(ss / d_model + 1e-5f);
-        std::vector<float> normed(d_model);
-        for (int i = 0; i < d_model; i++)
-            normed[i] = hidden[i] * inv * final_norm_w[i];
+        // Upload hidden state to GPU
+        HIP_CHECK(hipMemcpyAsync(d_hidden, hidden, (size_t)d_model * sizeof(float),
+                    hipMemcpyHostToDevice, stream));
 
-        // LM head = embed @ normed (tied embeddings)
-        int best = 0;
-        float best_val = -1e30f;
-        for (int v = 0; v < vocab_size; v++) {
-            double acc = 0.0;
-            for (int j = 0; j < d_model; j++)
-                acc += (double)embed[(size_t)v * d_model + j] * normed[j];
-            logits[v] = (float)acc;
-            if (logits[v] > best_val) { best_val = logits[v]; best = v; }
+        // Final RMS norm: d_normed = rmsnorm(d_hidden)
+        int grid_n = (d_model + 255) / 256;
+        rms_ker<<<grid_n, 256, 0, stream>>>(d_hidden, d_normed, d_final_norm_w, d_model, 1e-5f);
+
+        // LM head GEMV: d_logits[v] = embed[v,:] @ d_normed
+        // One block per vocab row, 256 threads reducing across d_model
+        fp32_gemv<<<vocab_size, 256, 0, stream>>>(
+            d_embed, d_normed, d_logits, vocab_size, d_model);
+
+        // Download logits
+        HIP_CHECK(hipMemcpyAsync(logits, d_logits, (size_t)vocab_size * sizeof(float),
+                    hipMemcpyDeviceToHost, stream));
+        HIP_CHECK(hipStreamSynchronize(stream));
+
+        // Argmax
+        if (argmax) {
+            *argmax = 0;
+            float best = logits[0];
+            for (int v = 1; v < vocab_size; v++) {
+                if (logits[v] > best) { best = logits[v]; *argmax = v; }
+            }
         }
-        if (argmax) *argmax = best;
         return true;
     }
 
@@ -500,8 +551,11 @@ struct Mamba1Backend : Backend {
         safe_free(d_embed);
         safe_free(d_final_norm_w);
         safe_free(d_hidden);
-        safe_free(d_tmp);
+        safe_free(d_normed);
+        safe_free(d_inproj);
+        safe_free(d_gated);
         safe_free(d_logits);
+        safe_free(d_moe_scratch);
         if (stream) { hipStreamDestroy(stream); stream = nullptr; }
         initialized = false;
     }

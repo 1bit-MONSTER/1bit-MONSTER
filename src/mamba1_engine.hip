@@ -21,27 +21,6 @@
 // Shared memory: (2*d_inner) for xz + d_inner for x_proj_out + d_inner for y
 // Max: 4*d_inner ≈ 4*3712 = 14.8 KB for Zamba-7B (well within 64KB)
 
-// ─── Mamba1 per-layer GPU state ───
-// Allocated on device, one per SSM layer.
-struct Mamba1GPUState {
-    float* conv_state;        // [d_conv-1, d_inner] — conv1d ring buffer
-    float* ssm_state;         // [d_state, d_inner] — SSM hidden state
-};
-
-// ─── Mamba1 per-layer GPU weights (device pointers) ───
-struct Mamba1GPUWeights {
-    float* in_proj;           // [2*d_inner, d_model]
-    float* conv1d_w;          // [d_conv, d_inner]
-    float* conv1d_b;          // [d_inner]
-    float* x_proj;            // [dt_rank+2*d_state, d_inner]
-    float* dt_w;              // [d_inner, dt_rank]
-    float* dt_b;              // [d_inner]
-    float* A_log;             // [d_state, d_inner] — stored as log
-    float* D;                 // [d_inner]
-    float* out_proj;          // [d_model, d_inner]
-    float* norm_w;            // [d_model] — input RMS norm weight
-};
-
 // Q4_0 GEMV: 16-row tiled (for when weights are Q4_0 quantized)
 #define QK 32
 #define QB 18
@@ -168,6 +147,58 @@ __global__ void mamba1_inner(
     }
 }
 
+// ── FP32 GEMV: y[m] = sum_k W[m,k] * x[k] ──
+// One block per output row, 256 threads reducing across K.
+#define GEMV_BLOCK 256
+__global__ void fp32_gemv(
+    const float* __restrict__ W,
+    const float* __restrict__ x,
+    float* __restrict__ y,
+    int M, int K)
+{
+    int m = blockIdx.x;
+    if (m >= M) return;
+    int tid = threadIdx.x;
+    __shared__ float s_sum[GEMV_BLOCK / 32];
+    float acc = 0.0f;
+    const float* row = W + (size_t)m * K;
+    for (int k = tid; k < K; k += GEMV_BLOCK)
+        acc += row[k] * x[k];
+    // Warp reduction
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor(acc, o);
+    if ((tid & 31) == 0) s_sum[tid / 32] = acc;
+    __syncthreads();
+    if (tid < GEMV_BLOCK / 32) {
+        float v = s_sum[tid];
+        for (int o = (GEMV_BLOCK / 32) / 2; o > 0; o >>= 1) v += __shfl_xor(v, o);
+        if (tid == 0) y[m] = v;
+    }
+}
+
+// ── Residual add: y[i] += x[i] ──
+__global__ void add_residual_k(float* y, const float* x, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] += x[i];
+}
+
+// ── SiLU gate: given fused [gate; up], produce y = silu(gate) * up ──
+// Input layout: [0..hidden) = gate, [hidden..2*hidden) = up
+__global__ void silu_gate_k(float* y, const float* fused, int hidden) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < hidden) {
+        float g = fused[i];
+        float u = fused[hidden + i];
+        float silu_g = g / (1.0f + expf(-g));
+        y[i] = silu_g * u;
+    }
+}
+
+// ── Scale and add residual: y[i] += scale * x[i] ──
+__global__ void scale_add_residual_k(float* y, const float* x, float scale, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] += scale * x[i];
+}
+
 // ── RMS norm ──
 __global__ void rms_ker(const float*x,float*y,const float*w,int n,float eps){
     __shared__ float rd[256];int t=threadIdx.x;float s=0;
@@ -177,35 +208,52 @@ __global__ void rms_ker(const float*x,float*y,const float*w,int n,float eps){
 }
 
 // ── Mamba1 layer forward (host-side wrapper) ──
-// Launches mamba1_inner kernel, then out_proj GEMV, then residual add.
-// Returns 0 on success, -1 on launch error.
+// Launches the full Mamba1 SSM chain: rmsnorm → in_proj → mamba1_inner
+// → out_proj → residual add. Updates hidden state in-place.
+//
+// All pointers (hidden, weight ptrs, state ptrs, scratch) are device pointers.
+// scratch buffers:
+//   normed: [d_model]
+//   inproj: [2*d_inner]
+//   gated:  [d_inner]
+//
+// Returns 0 on success.
 extern "C" int mamba1_forward(
-    const float* input_d,       // [d_model] — device input
-    float* output_d,            // [d_model] — device output (includes residual)
-    const Mamba1GPUWeights* w,  // device weights
-    Mamba1GPUState* st,         // device state (conv + ssm, updated in-place)
-    int d_model,
-    int d_inner,
-    int d_state,
-    int d_conv,
-    int dt_rank,
+    float* hidden,
+    const float* in_proj_w, const float* norm_w,
+    const float* conv1d_w, const float* conv1d_b, int d_conv,
+    const float* x_proj_w,
+    const float* dt_w, const float* dt_b,
+    const float* A_log, const float* D,
+    const float* out_proj_w,
+    float* conv_state, float* ssm_state,
+    float* normed, float* inproj, float* gated,
+    int d_model, int d_inner, int d_state, int dt_rank,
     hipStream_t stream
 ) {
+    int grid_n = (d_model + 255) / 256;
+    
     // 1. RMS norm
-    int grid_norm = (d_model + 255) / 256;
-    rms_ker<<<grid_norm, 256, 0, stream>>>(input_d, output_d, w->norm_w, d_model, 1e-5f);
+    rms_ker<<<grid_n, 256, 0, stream>>>(hidden, normed, norm_w, d_model, 1e-5f);
     
-    // 2. in_proj: [2*d_inner] = W_in @ normed
-    // Use a temp buffer (output_d is reused: normed input is in output_d,
-    //   in_proj output goes to st->conv_state area temporarily)
-    // We need a temp of size 2*d_inner. Use a buffer beyond the state.
-    // For now, kernel launches are coalesced; the caller ensures enough scratch.
+    // 2. in_proj GEMV
+    fp32_gemv<<<2 * d_inner, GEMV_BLOCK, 0, stream>>>(in_proj_w, normed, inproj, 2 * d_inner, d_model);
     
-    // ── For a full production wrapper, launch gemv/inner/out_proj/residual
-    //    with proper temp buffer management. This API provides the kernels;
-    //    the caller (backend_mamba1.cpp) manages buffer allocation.
+    // 3. mamba1_inner: conv1d → silu → x_proj → dt_proj → scan → gate
+    size_t smem = 4 * d_inner * sizeof(float);
+    mamba1_inner<<<1, 256, smem, stream>>>(
+        conv1d_w, conv1d_b, d_conv, d_inner,
+        x_proj_w, dt_w, dt_b,
+        A_log, D,
+        gated, conv_state, ssm_state,
+        inproj, dt_rank, d_state);
     
-    return 0;  // stub — kernels are available; the backend orchestrates them
+    // 4. out_proj GEMV
+    fp32_gemv<<<d_model, GEMV_BLOCK, 0, stream>>>(out_proj_w, gated, normed, d_model, d_inner);
+    
+    // 5. Residual
+    add_residual_k<<<grid_n, 256, 0, stream>>>(hidden, normed, d_model);
+    return 0;
 }
 
 // ── Standalone test ──
