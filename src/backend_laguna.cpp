@@ -10,6 +10,7 @@
 
 #include "backend.h"
 #include <dlfcn.h>
+#include "laguna_matmul.h"
 #include "onebp_loader.h"
 #include <cstdio>
 #include <cstring>
