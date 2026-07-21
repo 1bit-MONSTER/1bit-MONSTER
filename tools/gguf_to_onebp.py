@@ -265,6 +265,7 @@ def _read_metadata(rd):
     meta['expert_weights_scale'] = _gf_f32(rd, "laguna.expert_weights_scale")
     meta['rope_freq_base_swa'] = r_f32_p("rope.freq_base_swa")
     meta['n_rot_swa'] = r("rope.dimension_count_swa")
+    meta['n_rot_full'] = r("rope.dimension_count")
 
     # Expert gating function - read as uint32 value
     gate_val = r_direct(f"{arch}.expert_gating_func")
@@ -442,9 +443,10 @@ def main():
         meta.get('attn_gate_type', 0),
         rope_swa_f,
         meta.get('n_rot_swa', 0),
+        meta.get('n_rot_full', HD if HD else 64),
     ]
 
-    # Pad Laguna fields to 52 bytes (13 uint32), then 48 reserved, then 64 model_tag
+    # Pad Laguna fields to 56 bytes (14 uint32), then 44 reserved, then 64 model_tag
     hdr += struct.pack(f'<{len(laguna_fields)}I', *laguna_fields)
     hdr += b'\x00' * (256 - len(hdr))
     hdr = bytearray(hdr[:256])

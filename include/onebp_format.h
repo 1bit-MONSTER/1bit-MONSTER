@@ -143,7 +143,8 @@ struct OnebpHeader {
     uint32_t attn_gate_type;        // OnebpAttnGate (per-head vs per-element)
     uint32_t rope_freq_base_swa_f;  // SWA layer RoPE freq base * 1000
     uint32_t n_rot_swa;             // SWA layer RoPE dimension count
-    uint8_t  reserved[48];          // remaining pad to 256 bytes
+    uint32_t n_rot_full;            // FULL attention layer RoPE dim count (0 = use head_dim)
+    uint8_t  reserved[44];          // remaining pad to 256 bytes
     char     model_tag[64];         // model identifier string
     
     bool valid() const {
