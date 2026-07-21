@@ -2,7 +2,7 @@ class OnebitSystems < Formula
   desc "Model-agnostic NPU+GPU+CPU inference engine for AMD Strix Halo"
   homepage "https://1bit.systems"
   head "https://github.com/bong-water-water-bong/1bit-systems.git"
-  url "https://github.com/bong-water-water-bong/1bit-systems/archive/refs/tags/v2026.07.20.tar.gz"
+  url "https://github.com/bong-water-water-bong/1bit-systems/archive/refs/tags/v2026.07.20"
   sha256 "SKIP"
   license "MIT"
   version "2026.07.20"
