@@ -58,19 +58,22 @@ Reverse-engineered AMD's XDNA 2 NPU in 4 days with no documentation. 1800+ hours
 
 | Benchmark | Value | Backend |
 |-----------|:-----:|---------|
-| BlackMamba 1.5B (end-to-end) | **79.8 tok/s** | Mamba1 HIP (Strix Halo) |
-| BlackMamba 2.8B (end-to-end) | **46.4 tok/s** | Mamba1 HIP (Strix Halo) |
-| Prefill GEMV (2560×6912) | **41.45 TFLOPS** | INT8 WMMA (fastest variant) |
-| Fused engine (NPU) | **291 tok/s** | XDNA 2 (fused layer dispatch) |
 | Q1 GEMV | **417 tok/s** | ROCm HIP (fused kernel) |
 | Fused TQ2 | **415 tok/s** | ROCm HIP (QKV+GU fused) |
+| GPU ternary | **318 tok/s** | Vulkan ZINC |
+| TQ2 GEMV | **355 tok/s** | ROCm HIP |
+| NPU v12 | **97 tok/s** | XDNA 2 (32 tiles) |
+| Prefill | **42.21 TFLOPS** | INT8 WMMA |
+| ROCm HIP | **64 tok/s** | ROCm HIP (kernels) |
 
 ### 🏁 End-to-End Inference (real model, real prompts)
 
 | Benchmark | Value | Backend | Notes |
 |-----------|:-----:|---------|-------|
-| unified_server (ZR1 1.5B Q4_K) | **~30 tok/s** | ZINC GPU (Vulkan) | Full decode, Strix Halo |
-| zaya_server (Qwen 27B Q4_K) | **30 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo (historical) |
+| BlackMamba 1.5B | **79.80 tok/s** | Mamba1 HIP (Strix Halo) | Full decode, ROCm HIP, alternating SSM/MoE dispatch |
+| BlackMamba 2.8B | **46.40 tok/s** | Mamba1 HIP (Strix Halo) | Full decode, ROCm HIP, alternating SSM/MoE dispatch |
+| zaya_server (Qwen 27B Q4_K) | **30 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |
+| zaya_server (Qwen 35B MoE Q4_K) | **20 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |
 | llama.cpp ROCm (PrismML) | **229 tok/s** | PrismML on same hardware | See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235) |
 
 ---
