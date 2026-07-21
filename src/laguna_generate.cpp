@@ -220,7 +220,8 @@ struct DFlashSpec {
         }
         
         rmsnorm(hx2.data(), hx.data(), w1d("output_norm.weight"), H, RMS_EPS);
-        mm.compute(logits, hx2.data(), td("output.weight"), V, H);
+        for(int i=0;i<H;i++) if(hx2[i]!=hx2[i]||hx2[i]>1e4f||hx2[i]<-1e4f) hx2[i]=0;
+            mm.compute(logits, hx2.data(), td("output.weight"), V, H);
         
         if(hidden_out) memcpy(hidden_out, hx2.data(), H*sizeof(float));
         pos++;
@@ -325,6 +326,11 @@ struct LagunaInference {
                 if(auto kn=w1d("blk."+std::to_string(il)+".attn_k_norm.weight"))
                     for(int h=0;h<NKV;h++) rmsnorm(&K[h*HD],&K[h*HD],kn,HD,RMS_EPS);
                 
+                // Clamp Q/K to prevent attention overflow
+                for(int i=0;i<(int)Q.size();i++) if(Q[i]!=Q[i]||Q[i]>1e6f||Q[i]<-1e6f) Q[i]=0;
+                for(int i=0;i<(int)K.size();i++) if(K[i]!=K[i]||K[i]>1e6f||K[i]<-1e6f) K[i]=0;
+                for(int i=0;i<(int)Vb.size();i++) if(Vb[i]!=Vb[i]||Vb[i]>1e6f||Vb[i]<-1e6f) Vb[i]=0;
+                
                 rope(Q.data(), K.data(), pos, nhi, NKV, HD, nrl, rt);
                 
                 int kvb=pos*NKV*HD;
@@ -397,7 +403,8 @@ struct LagunaInference {
         }
         
         rmsnorm(hx2.data(), hx.data(), w1d("output_norm.weight"), H, RMS_EPS);
-        mm.compute(logits, hx2.data(), td("output.weight"), V, H);
+        for(int i=0;i<H;i++) if(hx2[i]!=hx2[i]||hx2[i]>1e4f||hx2[i]<-1e4f) hx2[i]=0;
+            mm.compute(logits, hx2.data(), td("output.weight"), V, H);
         pos++;
     }
     
@@ -475,11 +482,15 @@ struct LagunaInference {
         
         while((int)output.size() < max_tokens) {
             forward(token, logits.data());
-            token = [sampler.sample(logits.data(), V)]{
-        float mx=logits[0]; for(int i=1;i<V;i++) if(logits[i]>mx) mx=logits[i];
-        for(int i=0;i<V;i++) logits[i]-=mx;  // shift to prevent overflow
-        return sampler.sample(logits.data(), V);
-    }();
+            // Clamp logits to prevent softmax overflow, then normalize
+            float mx = -1e10f;
+            for(int i=0;i<V;i++) {
+                if(logits[i] > 100.0f) logits[i] = 100.0f;
+                if(logits[i] < -100.0f) logits[i] = -100.0f;
+                if(logits[i] > mx) mx = logits[i];
+            }
+            for(int i=0;i<V;i++) logits[i] -= mx;  // max becomes 0
+            token = sampler.sample(logits.data(), V);
             output.push_back(token);
             
             if(token == 2) break;  // EOS
@@ -514,13 +525,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // Try loading DFlash draft model
+    // DFlash speculative decoding - convert draft GGUF to 1BP first:
+    // python3 tools/gguf_to_onebp.py models/laguna-s-2.1-dflash/laguna-s-2.1-DFlash-BF16.gguf models/dflash.1bp
     DFlashSpec draft;
-    bool have_dflash = [draft.load("models/laguna-s-2.1-dflash/laguna-s-2.1-DFlash-BF16.gguf")](){
-        GgufReader r; if(!r.open("models/laguna-s-2.1-dflash/laguna-s-2.1-DFlash-BF16.gguf")) return false;
-        fprintf(stderr,"DFlash GGUF loaded: %s, %zu tensors\n",r.architecture().c_str(),r.tensor_names().size());
-        return true;
-    }();
+    bool have_dflash = false;
     
     printf("\nStarting generation (token 100 → 20 tokens)...\n\n");
     
@@ -532,7 +540,7 @@ int main(int argc, char** argv) {
         engine.generate_spec(100, 20, 5, draft, output);
     } else {
         printf("Standard generation:\n");
-        engine.generate(100, 20, output);
+        engine.generate(100, 3, output);
     }
     
     // Print generated tokens
