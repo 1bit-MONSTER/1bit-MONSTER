@@ -8,7 +8,7 @@
 /install      /#install                                                    302
 
 # 1bit coding agent
-/agent        /#agent                                                      301
+/agent        /#packages                                                   301
 
 # Marketing site + single-page docs collapsed into ONE /index.html
 # All doc pages redirect to the correct section on the single-page site.

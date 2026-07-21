@@ -573,7 +573,11 @@
         }
 
         // Named IDs — binary sizes
-        var kb=b.zaya_kb+' KB', fkb=b.fused_kb+' KB';
+        var kb=b.zaya_kb+' KB';
+        // fused_kb is the whole fused-engine binary (~25 MB), not a per-layer
+        // artifact — show it in MB so it doesn't render as an absurd
+        // "25003 KB" next to copy that reads as a small, single-layer number.
+        var fkb=(b.fused_kb>=1024)?(b.fused_kb/1024).toFixed(1)+' MB':b.fused_kb+' KB';
         set('binary-size',kb); set('binary-size2',kb); set('binary-size3',kb);
         set('binary-size4',kb); set('binary-size5',kb); set('binary-size6',kb);
         set('binary-size7',kb);
@@ -588,7 +592,7 @@
 
         // TFLOPs
         var tf=B.tflops+' TFLOPS', tfs=''+B.tflops;
-        set('tflops',tf); set('tflops2',tfs); set('tflops3',tf);
+        set('tflops',tf); set('tflops2',tfs); set('tflops2-alt',tf); set('tflops3',tf);
 
         // Counts
         var mc=''+S.models, bc=''+S.backends;
