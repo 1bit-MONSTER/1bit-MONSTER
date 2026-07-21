@@ -25,6 +25,13 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <utility>
+
+// ── Optional HIP runtime for GPU upload/download ──
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#include <hip/hip_runtime.h>
+#define VL_HIP_AVAILABLE 1
+#endif
 
 // ── Qwen2-VL default normalization constants ──
 // (used by vision_qwen2vl_poc.cpp)
@@ -50,9 +57,32 @@ public:
     VlProcessor() = default;
     ~VlProcessor() { release_gpu(); }
 
-    // Disable copy
+    // Disable copy (owns a raw GPU pointer)
     VlProcessor(const VlProcessor&) = delete;
     VlProcessor& operator=(const VlProcessor&) = delete;
+
+    // Move: transfer ownership, null out source so its destructor's
+    // release_gpu() doesn't double-free.
+    VlProcessor(VlProcessor&& other) noexcept
+        : pixels_(std::move(other.pixels_)),
+          dev_pixels_(other.dev_pixels_),
+          w_(other.w_), h_(other.h_),
+          out_w_(other.out_w_), out_h_(other.out_h_),
+          orig_w_(other.orig_w_), orig_h_(other.orig_h_) {
+        other.dev_pixels_ = nullptr;
+    }
+    VlProcessor& operator=(VlProcessor&& other) noexcept {
+        if (this != &other) {
+            release_gpu();
+            pixels_ = std::move(other.pixels_);
+            dev_pixels_ = other.dev_pixels_;
+            w_ = other.w_; h_ = other.h_;
+            out_w_ = other.out_w_; out_h_ = other.out_h_;
+            orig_w_ = other.orig_w_; orig_h_ = other.orig_h_;
+            other.dev_pixels_ = nullptr;
+        }
+        return *this;
+    }
 
     // ── Load image from file + resize + normalize (CPU) ──
     // Returns true on success. Processed pixels available via pixels().
@@ -103,12 +133,11 @@ public:
     int orig_height() const { return orig_h_; }
     int channels() const { return 3; }
 
-    // ── GPU upload/download (requires HIP runtime) ──
-    // Upload processed pixels to device. Returns device pointer.
-    // Caller must free with release_gpu().
+    // ── GPU upload/download (only available when compiled with HIP) ──
+#if defined(VL_HIP_AVAILABLE)
     float* upload_to_gpu() {
         if (pixels_.empty()) return nullptr;
-        if (dev_pixels_) return dev_pixels_;  // already uploaded
+        if (dev_pixels_) return dev_pixels_;
         size_t bytes = pixels_.size() * sizeof(float);
         if (hipMalloc(&dev_pixels_, bytes) != hipSuccess) return nullptr;
         if (hipMemcpy(dev_pixels_, pixels_.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {
@@ -118,36 +147,38 @@ public:
         }
         return dev_pixels_;
     }
-
-    // Download GPU pixels back to CPU (e.g., after GPU resize)
     bool download_from_gpu() {
         if (!dev_pixels_ || pixels_.empty()) return false;
         size_t bytes = pixels_.size() * sizeof(float);
         return hipMemcpy(pixels_.data(), dev_pixels_, bytes, hipMemcpyDeviceToHost) == hipSuccess;
     }
-
-    // Release GPU memory
     void release_gpu() {
         if (dev_pixels_) {
             hipFree(dev_pixels_);
             dev_pixels_ = nullptr;
         }
     }
-
     float* dev_pixels() const { return dev_pixels_; }
+#else
+    // Stubs — HIP not available at compile time
+    float* upload_to_gpu() { return nullptr; }
+    bool download_from_gpu() { return false; }
+    void release_gpu() {}
+    float* dev_pixels() const { return nullptr; }
+#endif
 
 private:
     std::vector<float> pixels_;
+#if defined(VL_HIP_AVAILABLE)
     float* dev_pixels_ = nullptr;
+#else
+    float* dev_pixels_ = nullptr;  // unused but keeps ABI consistent
+#endif
     int w_ = 0, h_ = 0;
     int out_w_ = 0, out_h_ = 0;
     int orig_w_ = 0, orig_h_ = 0;
 };
 
-// ── Utility: inline decode a base64 image URL from OpenAI API ──
-// OpenAI sends images as data:image/...;base64,<data>
-// This extracts the raw bytes and returns them.
-// Returns empty vector on failure.
 // ── Decode a base64 data URL to raw image bytes ──
 // Handles data:image/png;base64,<data> format from OpenAI API.
 // Returns empty vector on failure.
