@@ -25,6 +25,7 @@
 #include <string>
 #include <chrono>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 
 #include <httplib.h>
@@ -40,9 +41,10 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     if (std::strncmp(magic, "H1B", 3) != 0) return false;
     int32_t version;
     f.read(reinterpret_cast<char*>(&version), 4);
-    if (version < 1 || version > 5) return false;
+    if (!f.good() || version < 1 || version > 5) return false;
     int32_t hdr[9];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    if (!f.good()) return false;
     cfg.hidden_size       = hdr[0];
     cfg.intermediate_size = hdr[1];
     cfg.num_layers        = hdr[2];
@@ -57,8 +59,10 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     if (version >= 2) {
         float extras[2];
         f.read(reinterpret_cast<char*>(extras), sizeof(extras));
-        cfg.rope_theta   = extras[0] > 0 ? extras[0] : 500000.0f;
-        cfg.rms_norm_eps = extras[1] > 0 ? extras[1] : 1e-5f;
+        if (f.good()) {
+            cfg.rope_theta   = extras[0] > 0 ? extras[0] : 500000.0f;
+            cfg.rms_norm_eps = extras[1] > 0 ? extras[1] : 1e-5f;
+        }
     }
     auto slash = path.find_last_of('/');
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
@@ -366,7 +370,8 @@ static std::string a2a_handle_message(const std::string& body, const std::string
 }
 
 static std::string a2a_new_task_id() {
-    return "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(rand() % 10000);
+    static std::atomic<uint64_t> counter{0};
+    return "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
 int main(int argc, char** argv) {
@@ -650,7 +655,7 @@ int main(int argc, char** argv) {
         try {
             json jbody = json::parse(body);
             max_tokens = jbody.value("max_tokens", 256);
-        } catch (...) {}
+        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in max_tokens\n"); }
 
         RouteStrategy use_strat = strategy;
         if (use_strat == RouteStrategy::CONTENT) {
@@ -661,7 +666,7 @@ int main(int argc, char** argv) {
                     user_msg = jbody["messages"][0].value("content", std::string());
                 else
                     user_msg = jbody.value("content", std::string());
-            } catch (...) {}
+            } catch (...) { fprintf(stderr, "[zaya] JSON parse error in content routing\n"); }
             fprintf(stderr, "  [content] routing: %s\n", should_use_large_model(user_msg) ? "large model" : "small model (NPU)");
             use_strat = RouteStrategy::AUTO;
         }
@@ -671,7 +676,7 @@ int main(int argc, char** argv) {
             try {
                 json jbody = json::parse(body);
                 prompt = jbody.value("prompt", std::string());
-            } catch (...) {}
+            } catch (...) { fprintf(stderr, "[zaya] JSON parse error in prompt fallback\n"); }
             if (prompt.empty()) {
                 res.status = 400;
                 res.set_content("{\"error\":\"No messages or prompt\"}", "application/json");
@@ -727,13 +732,13 @@ int main(int argc, char** argv) {
                 input = tok.encode(jbody["prompt"].get<std::string>());
             }
             np = jbody.value("n_predict", 16);
-        } catch (...) {}
+        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in /v1/completions\n"); }
         if (input.empty()) {
             std::string prompt;
             try {
                 json jbody = json::parse(body);
                 prompt = jbody.value("prompt", std::string());
-            } catch (...) {}
+            } catch (...) { fprintf(stderr, "[zaya] JSON parse error in /v1/completions prompt fallback\n"); }
             if (prompt.empty()) {
                 res.status = 400;
                 res.set_content("{\"error\":\"need prompt or tokens\"}", "application/json");

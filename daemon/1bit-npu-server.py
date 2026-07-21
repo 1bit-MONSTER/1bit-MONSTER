@@ -74,6 +74,11 @@ class NpuWorker:
         self.proc = None
 
     def start(self):
+        # Validate ENGINE and MODEL paths before spawning
+        if not os.path.isfile(ENGINE) or not os.access(ENGINE, os.X_OK):
+            raise FileNotFoundError(f"ENGINE not found or not executable: {ENGINE}")
+        if not os.path.isfile(MODEL):
+            raise FileNotFoundError(f"MODEL not found: {MODEL}")
         os.environ['NPU_XCLBIN_DIR'] = XCLBIN
         model_tag = os.environ.get('NPU_MODEL_TAG', 'qwen3_0_6b')
         
@@ -250,6 +255,7 @@ class Inference:
 # ── HTTP Handler ──
 inf = None
 tok = None
+_inf_tok_lock = threading.Lock()
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -272,9 +278,10 @@ class Handler(BaseHTTPRequestHandler):
         stream = body.get("stream", False)
         max_tokens = body.get("max_tokens", 256)
 
-        # Tokenize
-        ids = tok.encode(prompt).ids[:512]
-        out_ids = inf.generate(ids, max_tokens)
+        # Tokenize (lock-guarded: tok/inf are shared across handler threads)
+        with _inf_tok_lock:
+            ids = tok.encode(prompt).ids[:512]
+            out_ids = inf.generate(ids, max_tokens)
         text = tok.decode(out_ids)
 
         if stream:
@@ -317,8 +324,9 @@ def main():
 
     global tok, inf
     from tokenizers import Tokenizer
-    tok = Tokenizer.from_file(TOKENIZER)
-    tok.no_truncation()
+    with _inf_tok_lock:
+        tok = Tokenizer.from_file(TOKENIZER)
+        tok.no_truncation()
 
     model = Q4NXReader(MODEL)
     print(f"  Model loaded: {Path(MODEL).name}")
@@ -327,7 +335,8 @@ def main():
     wk.start()
 
     global inf
-    inf = Inference(wk, model)
+    with _inf_tok_lock:
+        inf = Inference(wk, model)
     print(f"  Inference ready: {inf.NC} layers, {inf.NH} heads, H={inf.H}")
 
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)

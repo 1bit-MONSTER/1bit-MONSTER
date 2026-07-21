@@ -154,6 +154,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             try:
                 body = json.loads(body_bytes)
             except json.JSONDecodeError:
+                print(f"[{time.strftime('%H:%M:%S')}] WARNING: invalid JSON in /chat/completions request", file=sys.stderr)
                 body = {}
             self._handle_chat_completion(body)
         elif "/completions" in self.path:

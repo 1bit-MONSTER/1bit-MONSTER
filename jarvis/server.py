@@ -237,6 +237,12 @@ class H(BaseHTTPRequestHandler):
                 if i > 0: audio = p[i+4:].rstrip(b"\r\n--"); break
         if not audio: return self._j(400, {"error": "no audio"})
         wav = audio
+        # Accept WAV (RIFF) and MP3 (sync frame or ID3 tag); reject anything else
+        if audio[:4] != b"RIFF" and not (
+            audio[:3] == b"ID3" or
+            (len(audio) >= 2 and audio[0] == 0xff and (audio[1] & 0xfe) == 0xfa)
+        ):
+            return self._j(400, {"error": "unsupported audio format (WAV/MP3 only)"})
         if audio[:4] != b"RIFF":
             try:
                 p = subprocess.run(["ffmpeg", "-i", "pipe:0", "-f", "wav", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "pipe:1"], input=audio, capture_output=True, timeout=30)
