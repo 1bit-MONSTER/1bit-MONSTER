@@ -244,6 +244,12 @@ bool ModelLoader::load(const std::string& gguf_path, ModelGPU& model) {
             size_t q4k_per_row = ((dims.hidden + 255) / 256) * 144;
             layer.qkv_fused = GpuBuffer(device_, total_rows * q4k_per_row, rw, dev);
         }
+        // Allocate fused gate+up buffer (gate + up concatenated)
+        {
+            size_t total_rows = (size_t)2 * dims.inter;
+            size_t q4k_per_row = ((dims.hidden + 255) / 256) * 144;
+            layer.gate_up_fused = GpuBuffer(device_, total_rows * q4k_per_row, rw, dev);
+        }
         
         if (have_reader) {
             std::string p = "blk." + std::to_string(l) + ".";
@@ -261,6 +267,29 @@ bool ModelLoader::load(const std::string& gguf_path, ModelGPU& model) {
                 (size_t)dims.inter * dims.hidden, device_, queue_, cmd_pool_);
             upload_tensor_q4k(reader, p + "ffn_down.weight", layer.w3,
                 (size_t)dims.hidden * dims.inter, device_, queue_, cmd_pool_);
+            
+            // Fuse gate+up weights into single buffer for fused gate_up shader
+            if (have_reader && layer.gate_up_fused) {
+                std::vector<float> g_tmp, u_tmp;
+                if (reader.get_tensor_f32(p + "ffn_gate.weight", g_tmp) && g_tmp.size() >= (size_t)dims.inter * dims.hidden &&
+                    reader.get_tensor_f32(p + "ffn_up.weight", u_tmp) && u_tmp.size() >= (size_t)dims.inter * dims.hidden) {
+                    std::vector<float> fused(g_tmp.size() + u_tmp.size());
+                    memcpy(fused.data(), g_tmp.data(), g_tmp.size() * 4);
+                    memcpy(fused.data() + g_tmp.size(), u_tmp.data(), u_tmp.size() * 4);
+                    size_t q4k_bytes = q4k_quantize(fused.data(), nullptr, fused.size());
+                    std::vector<uint8_t> q4k_buf(q4k_bytes);
+                    if (q4k_quantize(fused.data(), q4k_buf.data(), fused.size()) == q4k_bytes) {
+                        GpuBuffer staging(device_, q4k_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                        memcpy(staging.map(), q4k_buf.data(), q4k_bytes);
+                        staging.unmap();
+                        VkCommandBuffer cmd = cmd_pool_.begin_once();
+                        VkBufferCopy cp = {0, 0, q4k_bytes};
+                        vkCmdCopyBuffer(cmd, staging.buffer(), layer.gate_up_fused.buffer(), 1, &cp);
+                        cmd_pool_.submit_and_wait(cmd, queue_);
+                    }
+                }
+            }
             
             // Fuse Q, K, V weights into single buffer for fused QKV shader
             if (have_reader && layer.qkv_fused) {
