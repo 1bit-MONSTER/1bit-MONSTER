@@ -15,6 +15,10 @@
 mod config;
 mod mcp;
 mod npu;
+mod provider;
+mod secrets;
+mod server;
+mod session;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -99,6 +103,46 @@ enum Commands {
         /// Value to set (omit to get current value)
         value: Option<String>,
     },
+
+    /// Serve the agent runtime over HTTP/SSE
+    Serve {
+        /// Port to bind
+        #[arg(short, long, default_value_t = 7878)]
+        port: u16,
+
+        /// Host to bind (default 127.0.0.1; use 0.0.0.0 for LAN)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Model to use for chat completions
+        #[arg(short, long)]
+        model: Option<String>,
+    },
+
+    /// Manage API keys for providers
+    Auth {
+        /// Provider name (e.g. "deepseek", "openai")
+        provider: Option<String>,
+
+        /// Set API key (reads from stdin if not provided)
+        #[arg(short, long)]
+        set: Option<String>,
+
+        /// Remove stored API key
+        #[arg(short, long)]
+        remove: bool,
+
+        /// List all configured providers
+        #[arg(short, long)]
+        list: bool,
+    },
+
+    /// Update 1bit to the latest version
+    Update {
+        /// Check for updates without installing
+        #[arg(short, long)]
+        check: bool,
+    },
 }
 
 // ── Main ─────────────────────────────────────────────────────────
@@ -123,6 +167,11 @@ async fn main() -> Result<()> {
         Some(Commands::Status) => cmd_status().await?,
         Some(Commands::Build { dir }) => cmd_build(dir)?,
         Some(Commands::Config { key, value }) => cmd_config(key.as_deref(), value.as_deref())?,
+        Some(Commands::Serve { port, host, model }) => cmd_serve(*port, host, model.as_deref()).await?,
+        Some(Commands::Auth { provider, set, remove, list }) => {
+            cmd_auth(provider.as_deref(), set.as_deref(), *remove, *list)?;
+        }
+        Some(Commands::Update { check }) => cmd_update(*check).await?,
         None => {
             if !cli.prompt.is_empty() {
                 let prompt = cli.prompt.join(" ");
@@ -730,6 +779,14 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> Result<()> {
                     settings.packages.join(", ")
                 }
             );
+            println!(
+                "  Fallback providers:   {}",
+                if settings.fallback_providers.is_empty() {
+                    "none".to_string()
+                } else {
+                    settings.fallback_providers.join(", ")
+                }
+            );
             println!("\n  NPU settings:");
             println!("    bitnet_decode:      {}", settings.npu.bitnet_decode_path);
             println!("    daemon path:        {}", settings.npu.daemon_path);
@@ -765,6 +822,253 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> Result<()> {
             println!("       Usage: 1bit config <key> <value>");
         }
     }
+
+    Ok(())
+}
+
+// ── Command: serve (HTTP/SSE app server) ─────────────────────────
+
+async fn cmd_serve(port: u16, host: &str, model_override: Option<&str>) -> Result<()> {
+    let settings = config::Settings::load()?;
+    let model = model_override
+        .map(|s| s.to_string())
+        .unwrap_or(settings.default_model.clone());
+
+    println!("  🚀 Starting 1bit API server...\n");
+
+    let sessions = session::SessionStore::open()?;
+    let npu_client = npu::NpuClient::new(&settings.npu_endpoint)?;
+
+    let provider_router = std::sync::Arc::new(tokio::sync::Mutex::new(
+        provider::ProviderRouter::new(&settings.default_provider, vec![], vec![])?,
+    ));
+
+    let app = server::build_router(sessions, npu_client, provider_router, model);
+
+    let addr: std::net::SocketAddr = format!("{host}:{port}")
+        .parse()
+        .context("Invalid host:port")?;
+
+    println!("  📍 API:     http://{addr}/v1");
+    println!("  📍 Health:  http://{addr}/health");
+    println!("  📍 Models:  http://{addr}/v1/models");
+    println!("  📍 Sessions: http://{addr}/v1/sessions");
+    println!();
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+// ── Command: auth (secrets management) ───────────────────────────
+
+fn cmd_auth(
+    provider: Option<&str>,
+    set: Option<&str>,
+    remove: bool,
+    list: bool,
+) -> Result<()> {
+    if list || (provider.is_none() && !remove && set.is_none()) {
+        // List all providers
+        let secrets = secrets::SecretsStore::open()?;
+        let stored = secrets.list_providers()?;
+        let router = provider::ProviderRouter::new("npu", vec![], vec![])?;
+        let all_providers = router.list_providers();
+
+        println!("  Provider API Keys\n");
+        println!("  {:<20} {:<10} {}", "Provider", "Status", "Source");
+        println!("  {}", "-".repeat(50));
+
+        for p in &all_providers {
+            let has_env = p.env_var.as_ref().map_or(false, |env| {
+                std::env::var(env).is_ok_and(|v| !v.is_empty())
+            });
+            let has_stored = stored.contains(&p.id);
+            let (status, source) = if has_env {
+                ("✅", "env")
+            } else if has_stored {
+                ("✅", "file")
+            } else {
+                ("⬜", "not set")
+            };
+            println!("  {:<20} {:<10} {}", p.id, status, source);
+        }
+
+        println!();
+        println!("  Commands:");
+        println!("    1bit auth <provider> --set <key>    Store API key");
+        println!("    1bit auth <provider> --remove       Remove stored key");
+        println!("    1bit auth --list                    Show all providers");
+        println!("    Or set {}_API_KEY env var", all_providers.first().map(|p| p.env_var.as_deref().unwrap_or("PROVIDER")).unwrap_or("PROVIDER"));
+
+        return Ok(());
+    }
+
+    let secrets = secrets::SecretsStore::open()?;
+
+    if let Some(prov) = provider {
+        if remove {
+            secrets.remove_key(prov)?;
+            println!("  ✅ Removed API key for '{prov}'");
+        } else if let Some(key) = set {
+            secrets.set_key(prov, key)?;
+            println!("  ✅ Saved API key for '{prov}'");
+        } else {
+            // Show status for this provider
+            if secrets.has_key(prov) {
+                println!("  ✅ '{prov}' has a key configured");
+            } else {
+                println!("  ⬜ No key configured for '{prov}'");
+                if let Some(def) = provider::ProviderRouter::new("npu", vec![], vec![])?.get_provider(prov) {
+                    if let Some(env) = def.env_var {
+                        println!("     Set ${env} or use: 1bit auth {prov} --set <key>");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Command: update (auto-update) ────────────────────────────────
+
+async fn cmd_update(check: bool) -> Result<()> {
+    println!("  🔄 Checking for updates...\n");
+
+    // Fetch latest release from GitHub
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.github.com/repos/bong-water-water-bong/1bit-systems/releases/latest")
+        .header("User-Agent", "1bit-cli")
+        .header("Accept", "application/vnd.github.v3+json")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await;
+
+    match resp {
+        Ok(resp) if resp.status().is_success() => {
+            let data: serde_json::Value = resp.json().await.unwrap_or_default();
+            let latest_tag = data
+                .get("tag_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let html_url = data
+                .get("html_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            println!("  Current version:  v{VERSION}");
+            println!("  Latest release:   {latest_tag}");
+
+            if check {
+                println!();
+                if html_url.is_empty() {
+                    println!("  📍 https://github.com/bong-water-water-bong/1bit-systems/releases");
+                } else {
+                    println!("  📍 {html_url}");
+                }
+                return Ok(());
+            }
+
+            // Check if we need to update: compare versions
+            let latest_ver = latest_tag.trim_start_matches('v');
+            if latest_ver != VERSION || latest_tag.contains("nightly") {
+                println!("\n  📥 A new version is available!");
+                println!();
+
+                // Try to find a release asset matching our platform
+                if let Some(assets) = data.get("assets").and_then(|a| a.as_array()) {
+                    // Look for linux-amd64 or x86_64-linux binary
+                    let asset = assets.iter().find(|a| {
+                        a.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|n| {
+                                n.contains("x86_64") || n.contains("amd64") || n.contains("linux")
+                            })
+                            .unwrap_or(false)
+                    });
+
+                    if let Some(asset) = asset {
+                        let download_url = asset
+                            .get("browser_download_url")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("");
+
+                        if !download_url.is_empty() {
+                            println!("  Downloading update...");
+                            match download_and_install(download_url).await {
+                                Ok(()) => {
+                                    println!("  ✅ Update complete! Restart 1bit to use the new version.");
+                                    return Ok(());
+                                }
+                                Err(e) => {
+                                    println!("  ⚠️  Auto-update failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                println!("  Manual update:");
+                println!("    cd /path/to/1bit-systems && git pull && cargo build --release");
+                println!("    Or download from:");
+                if !html_url.is_empty() {
+                    println!("    {html_url}");
+                }
+            } else {
+                println!("\n  ✅ You're up to date!");
+            }
+        }
+        Ok(resp) => {
+            println!("  ⚠️  GitHub API returned {}", resp.status());
+            println!("       Manual: https://github.com/bong-water-water-bong/1bit-systems/releases");
+        }
+        Err(e) => {
+            println!("  ⚠️  Could not check for updates: {e}");
+            println!("       Manual: https://github.com/bong-water-water-bong/1bit-systems/releases");
+        }
+    }
+
+    Ok(())
+}
+
+/// Download a binary release and replace the current executable.
+async fn download_and_install(url: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .header("User-Agent", "1bit-cli")
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .context("Failed to download update")?;
+
+    let bytes = resp
+        .bytes()
+        .await
+        .context("Failed to read update data")?;
+
+    // Get current executable path
+    let current_exe = std::env::current_exe()?;
+    let backup_path = current_exe.with_extension("bak");
+
+    // Backup current binary
+    std::fs::rename(&current_exe, &backup_path)?;
+
+    // Write new binary
+    std::fs::write(&current_exe, &bytes)?;
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Remove backup on success
+    std::fs::remove_file(&backup_path).ok();
 
     Ok(())
 }

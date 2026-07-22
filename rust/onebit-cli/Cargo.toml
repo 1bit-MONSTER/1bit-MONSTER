@@ -20,6 +20,19 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 
+# Session store (SQLite)
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+
+# App server (HTTP/SSE API)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+futures = "0.3"
+
+# Secrets
+sha2 = "0.10"
+base64 = "0.22"
+
 [[bin]]
 name = "1bit"
 path = "src/main.rs"

@@ -41,6 +41,9 @@ pub struct Settings {
     pub thinking_level: String,
     /// Registered packages
     pub packages: Vec<String>,
+    /// Fallback providers in order (e.g. ["openai", "anthropic"])
+    #[serde(default)]
+    pub fallback_providers: Vec<String>,
     /// NPU-specific settings
     pub npu: NpuSettings,
 }
@@ -73,6 +76,7 @@ impl Default for Settings {
             npu_endpoint: "http://127.0.0.1:9090/v1".into(),
             thinking_level: "medium".into(),
             packages: vec![],
+            fallback_providers: vec!["openai".into(), "deepseek".into()],
             npu: NpuSettings::default(),
         }
     }
@@ -133,6 +137,9 @@ impl Settings {
             "npu.fp16_weights" | "npu.fp16-weights" => Ok(self.npu.fp16_weights.to_string()),
             "npu.api_port" | "npu.api-port" => Ok(self.npu.api_port.to_string()),
             "npu.lemond_port" | "npu.lemond-port" => Ok(self.npu.lemond_port.to_string()),
+            "fallback_providers" | "fallback-providers" => {
+                Ok(self.fallback_providers.join(", "))
+            }
             _ => anyhow::bail!("Unknown config key: {key}"),
         }
     }
@@ -165,6 +172,13 @@ impl Settings {
             }
             "npu.lemond_port" | "npu.lemond-port" => {
                 self.npu.lemond_port = value.parse()?;
+            }
+            "fallback_providers" | "fallback-providers" => {
+                self.fallback_providers = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             _ => anyhow::bail!("Unknown config key: {key}"),
         }
