@@ -58,7 +58,7 @@ struct GpuState {
             void* gp=nullptr;
             if(hipMalloc(&gp,t.bytes)==0){hipMemcpy(gp,m.tensor_data(t),t.bytes,1);gw[t.name]=(uint8_t*)gp;}
         }
-        size_t bs = std::max(m.header.hidden_size*m.header.vocab_size, (size_t)1024*1024)*4;
+        size_t bs = m.header.hidden_size > 1024*1024 ? (size_t)m.header.hidden_size * 4 : (size_t)1024*1024*4;
         hipMalloc(&xb,bs); hipMalloc(&yb,bs);
         return true;
     }
