@@ -47,16 +47,17 @@ static thread_local VkCommandBuffer s_batch_cmd = VK_NULL_HANDLE;
 static thread_local bool s_batching = false;
 
 // Shader name map — inference op names to .spv filenames
+// Uses production ZINC shaders from engine/gpu/shaders/
 static const std::map<std::string,std::string> shader_map = {
-    {"gemv", "gemv_f32"},
-    {"rms_norm", "rms_norm"},
-    {"rope", "rope_fused"},
-    {"flash_attn", "flash_attn"},
-    {"silu_mul", "silu_mul"},
-    {"argmax", "argmax"},
-    {"add_residual", "vadd_f32"},
-    {"copy_buffer", "vadd_f32"},
-    {"embed", "embed"},
+    {"gemv", "dmmv_f32"},           // FP32 GEMV (production)
+    {"rms_norm", "rms_norm_mul"},   // RMS norm + weight multiply (fused)
+    {"rope", "rope_fused"},          // fused RoPE
+    {"flash_attn", "flash_attn"},    // flash attention
+    {"silu_mul", "swiglu"},          // SiLU gate multiply
+    {"argmax", "argmax"},            // argmax reduction
+    {"add_residual", "vadd"},        // vector add
+    {"copy_buffer", "vadd"},         // copy via add
+    {"embed", "embed"},              // embedding lookup
 };
 
 void ComputeEngine::dispatch(const std::string& shader, const PushConstants& push,
