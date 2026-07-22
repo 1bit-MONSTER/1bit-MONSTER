@@ -319,10 +319,14 @@ int InferenceEngine::generate(int token_id) {
                           hidden.buffer(), residual.buffer(), VK_NULL_HANDLE, 1);
         
         compute->rms_norm(hidden.buffer(), layer.rms_ffn.buffer(), d.hidden, d.rms_eps);
-        compute->gemv(gate_up.buffer(), hidden.buffer(), layer.w1.buffer(),
-                       d.inter, 1, d.hidden);
-        compute->gemv(VK_NULL_HANDLE, hidden.buffer(), layer.w2.buffer(),
-                       d.inter, 1, d.hidden);
+        // Fused gate+up: single dispatch for gate and up projections
+        {
+            uint32_t gu_rows = 2 * d.inter;
+            PushConstants pc_gu{};
+            pc_gu.M = gu_rows; pc_gu.K = (uint32_t)d.hidden;
+            compute->dispatch_batch("fused_gate_up", pc_gu, hidden.buffer(), gate_up.buffer(),
+                                   layer.gate_up_fused.buffer(), (gu_rows + 255) / 256, 1, 1);
+        }
         compute->silu_mul(silu_buf.buffer(), gate_up.buffer(), VK_NULL_HANDLE, d.inter);
         compute->gemv(hidden.buffer(), silu_buf.buffer(), layer.w3.buffer(),
                        d.hidden, 1, d.inter);
