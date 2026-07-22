@@ -1,20 +1,17 @@
 [Unit]
-Description=1bit NPU Daemon (Rust, C++ engine, MIT, 97 tok/s)
+Description=1bit NPU Daemon (Pure C++, MIT, 97 tok/s)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/bcloud/1bit-systems/daemon/1bit-npu-server/target/release/onebit-npu-server --port 9090
+# C++ daemon: spawns zaya_server as subprocess, proxies HTTP on port 13305
+# Use 'onebit up' from the CLI for interactive start/stop management.
+ExecStart=/home/bcloud/1bit-systems/build/onebitd --port 13305 --bitnet-decode /home/bcloud/1bit-systems/build/zaya_server
 Restart=always
 RestartSec=5
 LimitMEMLOCK=infinity
-# NPU C++ engine path (built from engine/npu/)
-Environment=NPU_ENGINE_BIN=/home/bcloud/1bit-systems/engine/npu/build/npu_engine
-Environment=NPU_MODEL_PATH=/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
-Environment=NPU_TOKENIZER_PATH=/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json
-Environment=NPU_XCLBIN_DIR=/home/bcloud/npu-sandbox/npu-infer/build/int8
-Environment=NPU_MODEL_TAG=qwen3_0_6b
-Environment=NPU_BIND_ADDR=127.0.0.1
+# Model path (set via --model flag or environment)
+Environment=ONEBI_MODEL_PATH=/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
 StandardOutput=journal
 StandardError=journal
 

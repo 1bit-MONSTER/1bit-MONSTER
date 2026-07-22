@@ -32,7 +32,6 @@
 // ── Configuration ────────────────────────────────────────────────────────
 static constexpr int kDefaultPort        = 13305;
 static constexpr int kHealthTimeoutSecs  = 120;
-static constexpr int kHealthIntervalMs   = 1000;
 
 // ── Global state ─────────────────────────────────────────────────────────
 static pid_t g_child_pid = -1;
