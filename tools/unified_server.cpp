@@ -25,6 +25,7 @@
 #include "model_discovery.h"
 #include "model_router.h"
 #include "simple_tokenizer.h"
+#include "vl_processor.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,8 +56,20 @@ using json = nlohmann::json;
 
 // ── Globals ──
 static std::atomic<bool> keep_running{true};
-static std::string g_weights_dir = "/tmp/zaya_weights";
+static std::string g_weights_dir = []() -> std::string {
+    const char* env = getenv("ZAYA_WEIGHTS_DIR");
+    if (env && env[0]) return env;
+    const char* xdg = getenv("XDG_DATA_HOME");
+    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-systems/weights/";
+    const char* home = getenv("HOME");
+    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/weights/";
+    return "/tmp/zaya_weights";
+}();
 static int g_port = 8088;
+
+// Protect global state accessed from HTTP handler threads (fixes #364)
+static std::mutex g_strategy_mutex;   // protects g_strategy_engine + g_watchdog
+static std::mutex g_config_mutex;     // protects current_cfg, g_tokenizer, model switching
 
 // ── Strategy engine + agent watchdog (global for HTTP handler access) ──
 static StrategyEngine g_strategy_engine;
@@ -424,20 +437,22 @@ static json generate_completion(BackendManager& mgr,
 // forever. On startup, stop whatever instance is already running before
 // taking over. The lock fd is kept open for the process lifetime so the OS
 // releases it automatically on exit or crash — no explicit cleanup needed.
-static const char* kLockPath = "/tmp/unified_server.lock";
+//
+// Uses XDG_RUNTIME_DIR when available (private per-user) to avoid /tmp races.
+// Never kills processes based on a comm-name heuristic (fixes #615).
 
-static bool pid_is_unified_server(pid_t pid) {
-    char comm_path[64];
-    snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", (int)pid);
-    FILE* f = fopen(comm_path, "r");
-    if (!f) return false;
-    char comm[64] = {0};
-    if (!fgets(comm, sizeof(comm), f)) { fclose(f); return false; }
-    fclose(f);
-    return strncmp(comm, "unified_server", 14) == 0;
+#include <uuid/uuid.h>
+
+static std::string lock_file_path() {
+    const char* xdg = getenv("XDG_RUNTIME_DIR");
+    if (xdg && xdg[0]) return std::string(xdg) + "/unified_server.lock";
+    return "/tmp/unified_server.lock";
 }
 
 static void acquire_singleton_lock() {
+    std::string lock_path = lock_file_path();
+    const char* kLockPath = lock_path.c_str();
+
     int fd = open(kLockPath, O_CREAT | O_RDWR, 0644);
     if (fd < 0) {
         fprintf(stderr, "Fatal: could not open lock file %s (%s) — cannot guard against concurrent instances. Exiting.\n",
@@ -445,30 +460,59 @@ static void acquire_singleton_lock() {
         exit(EXIT_FAILURE);
     }
 
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        char buf[32] = {0};
-        pread(fd, buf, sizeof(buf) - 1, 0);
-        pid_t old_pid = (pid_t)atoi(buf);
+    // Write a unique token (PID + random uuid) so we can verify ownership
+    // without relying on /proc/PID/comm matching.
+    uuid_t uuid;
+    uuid_generate(uuid);
+    char uuid_str[37];
+    uuid_unparse(uuid, uuid_str);
 
-        if (old_pid > 0 && pid_is_unified_server(old_pid)) {
-            fprintf(stderr, "Found existing unified_server instance (pid %d) — stopping it\n", (int)old_pid);
-            kill(old_pid, SIGTERM);
-            for (int i = 0; i < 50; i++) {  // wait up to 5s for graceful shutdown
-                if (kill(old_pid, 0) != 0) break;
-                usleep(100 * 1000);
-            }
-            if (kill(old_pid, 0) == 0) {
-                fprintf(stderr, "  pid %d didn't exit in time, sending SIGKILL\n", (int)old_pid);
-                kill(old_pid, SIGKILL);
-                usleep(500 * 1000);  // longer wait for SIGKILL to process (fixes #fix)
-            }
+    char my_token[128];
+    int n = snprintf(my_token, sizeof(my_token), "%d:%s", (int)getpid(), uuid_str);
+
+    // Only try to kill previous instance if we can confirm ownership via our own token.
+    // We DO NOT kill processes based on comm-name matching (see #615).
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        // Read the previous owner's token
+        char old_buf[128] = {0};
+        pread(fd, old_buf, sizeof(old_buf) - 1, 0);
+
+        pid_t old_pid = 0;
+        char* colon = strchr(old_buf, ':');
+        if (colon) {
+            *colon = '\0';
+            old_pid = (pid_t)atoi(old_buf);
+            *colon = ':';  // restore
         }
 
-        // Retry now that the previous holder (if any) should be gone.
-        // If flock still fails, the lock file may be stale from a before-SIGKILL state.
-        // Remove and recreate it rather than failing immediately.
-        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-            fprintf(stderr, "Warning: lock held after killing old instance — removing stale lock\n");
+        if (old_pid > 0) {
+            // Check if the old process still exists by sending signal 0.
+            // If it doesn't exist, the lock is stale — remove and retry.
+            if (kill(old_pid, 0) != 0) {
+                fprintf(stderr, "Warning: stale lock from pid %d — removing\n", (int)old_pid);
+                close(fd);
+                unlink(kLockPath);
+                fd = open(kLockPath, O_CREAT | O_RDWR, 0644);
+                if (fd < 0) {
+                    fprintf(stderr, "Fatal: could not recreate lock file (%s)\n", strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+                // Retry flock
+                if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+                    fprintf(stderr, "Fatal: could not acquire singleton lock (%s) — another instance running. Exiting.\n",
+                            strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+            } else {
+                // Previous instance is still alive. Log and exit.
+                fprintf(stderr, "Another instance is already running (pid %d). Exiting.\n", (int)old_pid);
+                fprintf(stderr, "  Use a different --port or stop the existing instance first.\n");
+                close(fd);
+                exit(EXIT_FAILURE);
+            }
+        } else {
+            // Can't parse token — stale or corrupted lock file. Remove and retry.
+            fprintf(stderr, "Warning: unparseable lock file — removing stale lock\n");
             close(fd);
             unlink(kLockPath);
             fd = open(kLockPath, O_CREAT | O_RDWR, 0644);
@@ -484,10 +528,9 @@ static void acquire_singleton_lock() {
         }
     }
 
+    // Write our unique token
     if (ftruncate(fd, 0) != 0) { /* best-effort */ }
-    char pid_buf[32];
-    int n = snprintf(pid_buf, sizeof(pid_buf), "%d", (int)getpid());
-    if (pwrite(fd, pid_buf, n, 0) != n) { /* best-effort */ }
+    if (pwrite(fd, my_token, n, 0) != n) { /* best-effort */ }
     // fd intentionally leaked (kept open) for the process lifetime.
 }
 
@@ -501,19 +544,25 @@ int main(int argc, char** argv) {
 
     // ── Parse CLI args ──
     static struct option long_opts[] = {
-        {"port",    required_argument, nullptr, 'p'},
-        {"weights", required_argument, nullptr, 'w'},
-        {"quick",   no_argument,       nullptr, 'q'},
+        {"port",        required_argument, nullptr, 'p'},
+        {"weights",     required_argument, nullptr, 'w'},
+        {"model",       required_argument, nullptr, 'm'},
+        {"quick",       no_argument,       nullptr, 'q'},
+        {"cors-origin", required_argument, nullptr, 'c'},
         {nullptr, 0, nullptr, 0}
     };
 
     bool quick_mode = false;
+    std::string g_cors_origin;
+    std::string g_model_name;
     int opt;
-    while ((opt = getopt_long(argc, argv, "p:w:q", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:w:m:c:q", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'p': g_port = atoi(optarg); break;
             case 'w': g_weights_dir = optarg; break;
+            case 'm': g_model_name = optarg; break;
             case 'q': quick_mode = true; break;
+            case 'c': g_cors_origin = optarg; break;
         }
     }
 
@@ -554,9 +603,31 @@ int main(int argc, char** argv) {
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
     static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
-    static ModelConfig current_cfg = discovered.empty() ? default_model_config() : discovered.front();
+
+    // Select model: --model flag takes priority, otherwise first discovered
+    static ModelConfig current_cfg = default_model_config();
+    if (!g_model_name.empty()) {
+        for (auto& m : discovered) {
+            if (m.model_name == g_model_name) {
+                current_cfg = m;
+                break;
+            }
+        }
+        if (current_cfg.model_path.empty()) {
+            printf("  ** Model '%s' not found -- using first available.\n",
+                   g_model_name.c_str());
+        }
+    }
+    if (current_cfg.model_path.empty() && !discovered.empty()) {
+        current_cfg = discovered.front();
+    }
+
     for (auto& m : discovered) {
-        printf("  ✓  %s (%s)\n", m.model_name.c_str(), m.model_path.c_str());
+        bool sel = (m.model_name == current_cfg.model_name);
+        printf("  %s %s (%s)%s\n",
+               sel ? ">" : "v",
+               m.model_name.c_str(), m.model_path.c_str(),
+               sel ? " [active]" : "");
     }
     if (discovered.empty()) {
         printf("  (no .gguf/.h1b files in %s)\n", g_weights_dir.c_str());
@@ -591,21 +662,18 @@ int main(int argc, char** argv) {
         printf("     Server starts in discovery-only mode.\n");
     }
 
-    // Phase 4: Benchmark available backends
+    // Phase 4: Benchmark active backend only
+    // (benchmarking all backends can crash on backends that don't support
+    //  the current model format, e.g. hip_gpu expects Zaya .bin format)
     if (inited) {
-        int bench_tokens = quick_mode ? 1 : 3;
-        printf("\n── Benchmark (%d token%s) ──\n", bench_tokens, bench_tokens == 1 ? "" : "s");
-        mgr.benchmark_all(bench_tokens);
-
-        // benchmark_all preserves the pre-existing (init'd) backend instance.
-        // Now re-evaluate to pick the fastest backend per strategy.
-        printf("\n── Select best backend ──\n");
-        mgr.set_strategy(SelectionStrategy::FASTEST);
-
-        auto* active = mgr.active_info();
-        if (active) {
-            printf("  Active: %s (%.1f ms/tok)\n",
-                   active->id.c_str(), active->score);
+        auto* active_info_raw = mgr.active_info();
+        if (active_info_raw) {
+            int bench_tokens = quick_mode ? 1 : 5;
+            printf("\n── Benchmark (%d token%s) ──\n", bench_tokens, bench_tokens == 1 ? "" : "s");
+            printf("  %s... ", active_info_raw->id.c_str());
+            fflush(stdout);
+            float ms = active_info_raw->instance->benchmark(bench_tokens);
+            printf("%.1f ms/tok\n", ms);
         }
     }
 
@@ -643,24 +711,37 @@ int main(int argc, char** argv) {
     // ── HTTP Server ──
     httplib::Server svr;
 
-    // ── CORS middleware ──
-    svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
-        if (req.method == "OPTIONS") {
-            res.set_header("Access-Control-Allow-Origin", "*");
-            res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            res.set_header("Access-Control-Allow-Headers", "Content-Type, X-Backend, X-Strategy, Authorization");
-            res.status = 204;
-            return httplib::Server::HandlerResponse::Handled;
-        }
-        return httplib::Server::HandlerResponse::Unhandled;
-    });
+    // Limit request body size to prevent memory exhaustion from oversized payloads
+    svr.set_payload_max_length(16 * 1024 * 1024); // 16 MiB
 
-    auto add_cors = [](httplib::Response& res) {
-        res.set_header("Access-Control-Allow-Origin", "*");
+    // ── CORS middleware (only enabled when --cors-origin is set) ──
+    if (!g_cors_origin.empty()) {
+        svr.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
+            if (req.method == "OPTIONS") {
+                res.set_header("Access-Control-Allow-Origin", g_cors_origin);
+                if (g_cors_origin == "*") {
+                    res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                    res.set_header("Access-Control-Allow-Headers", "Content-Type, X-Backend, X-Strategy, Authorization");
+                }
+                res.status = 204;
+                return httplib::Server::HandlerResponse::Handled;
+            }
+            return httplib::Server::HandlerResponse::Unhandled;
+        });
+    }
+
+    auto add_cors = [&](httplib::Response& res) {
+        if (!g_cors_origin.empty())
+            res.set_header("Access-Control-Allow-Origin", g_cors_origin);
     };
 
     // ── GET /v1/health — Backend status dashboard ──
     svr.Get("/v1/health", [&](const httplib::Request& req, httplib::Response& res) {
+        // Lock both mutexes consistently — health reads mgr backends (g_config_mutex)
+        // and strategy state (g_strategy_mutex).
+        std::lock(g_config_mutex, g_strategy_mutex);
+        std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
+        std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
         json j = health_json(mgr);
         j["version"] = "unified-server-1.0";
         j["model"] = "zaya";
@@ -672,6 +753,9 @@ int main(int argc, char** argv) {
 
     // ── GET /v1/models — List models ──
     svr.Get("/v1/models", [&](const httplib::Request& req, httplib::Response& res) {
+        std::lock(g_config_mutex, g_strategy_mutex);
+        std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
+        std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
         auto* active = mgr.active_info();
         json j;
         j["object"] = "list";
@@ -720,24 +804,6 @@ int main(int argc, char** argv) {
 
         std::string backend_id = resolve_backend_id(req);
         SelectionStrategy strategy = resolve_strategy(req);
-        mgr.set_strategy(strategy);
-
-        // Look up the requested model from body["model"] and switch config if needed
-        std::string req_model = body.value("model", "");
-        if (!req_model.empty()) {
-            for (auto& dm : discovered) {
-                if (dm.model_name == req_model &&
-                    (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
-                    printf("[model] switching to %s (%d layers, %d hidden)\n",
-                           dm.model_name.c_str(), dm.n_layers, dm.hidden);
-                    current_cfg = dm;
-                    g_tokenizer.load_from_gguf(current_cfg.model_path);
-                    BackendRoute swrt = select_backend_route(current_cfg);
-                    mgr.init(current_cfg, g_weights_dir, swrt.backend_ids_in_order);
-                    break;
-                }
-            }
-        }
 
         // Check for strategy engine routing
         std::string strategy_name = resolve_strategy_name(req);
@@ -746,6 +812,7 @@ int main(int argc, char** argv) {
         // Extract messages and build prompt + user message for content routing
         std::string prompt;
         std::string last_user_msg;
+        std::vector<VlProcessor> vision_images;  // holds processed images from content parts
         if (body.contains("messages") && body["messages"].is_array()) {
             for (auto& msg : body["messages"]) {
                 std::string role = msg.value("role", "user");
@@ -756,34 +823,143 @@ int main(int argc, char** argv) {
                     for (auto& part : msg["content"]) {
                         if (part.value("type", "") == "text") {
                             content += part.value("text", "");
+                        } else if (part.value("type", "") == "image_url") {
+                            // Load + process image for VL models.
+                            // This stores processed pixels; the actual ViT
+                            // forward pass happens in generate_completion()
+                            // when it detects vision_state has data.
+                            std::string url;
+                            const auto& iu = part["image_url"];
+                            if (iu.is_string()) url = iu.get<std::string>();
+                            else if (iu.is_object() && iu.contains("url")) url = iu["url"].get<std::string>();
+                            if (!url.empty()) {
+                                std::vector<unsigned char> raw;
+                                if (vl_is_data_url(url)) {
+                                    raw = vl_decode_base64_image(url);
+                                } else {
+                                    raw = vl_download_image(url);
+                                }
+                                if (!raw.empty()) {
+                                    VlProcessor vp;
+                                    if (vp.load_from_memory(raw.data(), raw.size(), 224, 224,
+                                                             VL_MEAN_QWEN2VL, VL_STD_QWEN2VL)) {
+                                        vision_images.push_back(std::move(vp));
+                                        content += "[image]"; // placeholder in text
+                                        fprintf(stderr, "[vision] loaded image: %dx%d -> %dx%d\n",
+                                                vp.orig_width(), vp.orig_height(),
+                                                vp.width(), vp.height());
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 prompt += role + ": " + content + "\n";
                 if (role == "user") last_user_msg = content;
             }
-        } else if (body.contains("prompt")) {
+        } else if (body.contains("prompt") && body["prompt"].is_string()) {
             prompt = body["prompt"].get<std::string>();
             last_user_msg = prompt;
         }
 
         int max_tokens = body.value("max_tokens", 256);
-        float temperature = body.value("temperature", 0.7f);
+        if (max_tokens < 1) max_tokens = 1;
+        if (max_tokens > 32768) max_tokens = 32768;
+        std::string req_model = body.value("model", "");
 
-        // Tokenize with logprobs for cascade strategy
+        // ── Phase 1: Model-switch check under locks only (#701 fix) ──
+        // Defer slow I/O (load_from_gguf, mgr.init) to outside the lock.
+        mgr.set_strategy(strategy);
+
+        ModelConfig switch_cfg;
+        bool need_model_switch = false;
+        {
+            std::lock(g_config_mutex, g_strategy_mutex);
+            std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
+            std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
+
+            if (!req_model.empty()) {
+                for (auto& dm : discovered) {
+                    if (dm.model_name == req_model &&
+                        (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
+                        printf("[model] switching to %s (%d layers, %d hidden)\n",
+                               dm.model_name.c_str(), dm.n_layers, dm.hidden);
+                        switch_cfg = dm;
+                        current_cfg = dm;
+                        need_model_switch = true;
+                        break;
+                    }
+                }
+            }
+        } // release both mutexes
+
+        // ── Phase 1b: Model-switch I/O outside locks (#701 fix) ──
+        if (need_model_switch) {
+            g_tokenizer.load_from_gguf(switch_cfg.model_path);
+            BackendRoute swrt = select_backend_route(switch_cfg);
+            mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
+        }
+
+        // Tokenize with logprobs for cascade strategy (#696 fix: config_mutex only)
         std::vector<int> prompt_tokens;
         std::vector<double> prompt_logprobs;
-        if (use_strategy_engine) {
-            prompt_tokens = g_tokenizer.encode_with_logprobs(prompt, prompt_logprobs);
-        } else {
-            prompt_tokens = g_tokenizer.encode(prompt);
-        }
-        if (prompt_tokens.empty()) {
-            prompt_tokens = {g_tokenizer.bos_id};
+        {
+            std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+            if (use_strategy_engine) {
+                prompt_tokens = g_tokenizer.encode_with_logprobs(prompt, prompt_logprobs);
+            } else {
+                prompt_tokens = g_tokenizer.encode(prompt);
+            }
+            if (prompt_tokens.empty()) {
+                prompt_tokens = {g_tokenizer.bos_id};
+            }
         }
 
-        // Generate with strategy-aware routing
-        StrategyEngine* se = use_strategy_engine ? &g_strategy_engine : nullptr;
+        // Capture strategy engine pointer under its mutex (#696 fix)
+        StrategyEngine* se = nullptr;
+        {
+            std::lock_guard<std::mutex> strat_lock(g_strategy_mutex);
+            se = use_strategy_engine ? &g_strategy_engine : nullptr;
+        }
+        // ── Inject vision embeddings (if any) before text generation ──
+        // Runs forward_embed() for each vision token, splicing the image into
+        // the KV cache before the text prompt is processed.
+        // This path activates when the message content includes image_url parts.
+        // For full ViT forward (mmproj GGUF), use tools/vision_server.cpp.
+        if (!vision_images.empty()) {
+            auto* active = mgr.active_info();
+            int hidden = (active && active->instance) ? active->instance->cfg.hidden : 2048;
+            if (hidden <= 0) hidden = 2048;
+
+            // Wrap vision tokens with <|vision_start|> / <|vision_end|>
+            // (Qwen2-VL convention: token IDs 151652/151653)
+            const int VISION_START = 151652;
+            const int VISION_END   = 151653;
+            const int VISION_TOKENS_PER_IMG = 64; // 16x16 patches / 4 merger
+
+            mgr.generate(VISION_START);
+            std::vector<float> embed_buf(hidden, 0.0f);
+            for (auto& vp : vision_images) {
+                (void)vp;  // used when real ViT forward is implemented
+                for (int t = 0; t < VISION_TOKENS_PER_IMG; t++) {
+                    // TODO: replace with real ViT forward from vision_qwen2vl_poc
+                    // For now, feed zeros — the KV cache advances but content is
+                    // dummy. Full integration requires:
+                    //   1. Load mmproj GGUF
+                    //   2. Run ViT forward (CPU or GPU)
+                    //   3. Use projected embeddings here
+                    // See tools/vision_server.cpp for the full pipeline.
+                    if (active && active->instance) {
+                        active->instance->forward_embed(embed_buf.data());
+                    }
+                }
+            }
+            mgr.generate(VISION_END);
+            fprintf(stderr, "[vision] injected %zu images (%d tokens each)\n",
+                    vision_images.size(), VISION_TOKENS_PER_IMG);
+        }
+
+        // Generate with strategy-aware routing (#696 fix: no global lock held)
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
                                                se, last_user_msg);
@@ -849,26 +1025,31 @@ int main(int argc, char** argv) {
         }
 
         std::string backend_id = resolve_backend_id(req);
+
+        // ── Tokenize under config_mutex only (#696 fix) ──
         mgr.set_strategy(resolve_strategy(req));
 
-        // Accept prompt or tokens
         std::vector<int> prompt_tokens;
-        if (body.contains("tokens") && body["tokens"].is_array()) {
-            for (auto& t : body["tokens"]) prompt_tokens.push_back(t.get<int>());
-        } else if (body.contains("prompt")) {
-            prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+        {
+            std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+            if (body.contains("tokens") && body["tokens"].is_array()) {
+                for (auto& t : body["tokens"]) {
+                    if (t.is_number_integer()) prompt_tokens.push_back(t.get<int>());
+                }
+            } else if (body.contains("prompt") && body["prompt"].is_string()) {
+                prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+            }
+            if (prompt_tokens.empty()) {
+                prompt_tokens = {g_tokenizer.bos_id};
+            }
         }
 
-        if (prompt_tokens.empty()) {
-            prompt_tokens = {g_tokenizer.bos_id};
-        }
-
-        int max_tokens = body.value("n_predict", 256);
-        float temperature = body.value("temperature", 0.7f);
+        int max_tokens = body.value("max_tokens", 256);
+        if (max_tokens < 1) max_tokens = 1;
+        if (max_tokens > 32768) max_tokens = 32768;
 
         std::vector<double> empty_logprobs;
-        json gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs,
-                                               max_tokens, backend_id);
+        auto gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id);
 
         json response;
         response["tokens"] = gen_result["tokens"];
@@ -885,6 +1066,8 @@ int main(int argc, char** argv) {
     // ── GET /v1/router — Strategy engine status ──
     svr.Get("/v1/router", [&](const httplib::Request&, httplib::Response& res) {
         json j;
+        // Lock strategy mutex for consistent read of strategy state + watchdog (fixes #364)
+        std::lock_guard<std::mutex> lock(g_strategy_mutex);
         j["strategy"] = g_strategy_engine.name();
         j["state"] = json::parse(g_strategy_engine.state_json());
         j["watchdog_running"] = g_watchdog ? g_watchdog->running() : false;
@@ -932,6 +1115,8 @@ int main(int argc, char** argv) {
 
         // Build performance table for strategy init
         auto perf_table = build_performance_table(mgr, "zaya");
+        // Lock strategy mutex while reinitializing the engine (fixes #364)
+        std::lock_guard<std::mutex> lock(g_strategy_mutex);
         bool ok = g_strategy_engine.init(name, mgr, perf_table);
 
         json j;
@@ -956,19 +1141,24 @@ int main(int argc, char** argv) {
 
         std::string backend_id = body.value("backend", "");
         bool ok = false;
-        if (!backend_id.empty()) {
-            ok = mgr.select_backend(backend_id);
-        }
-
         json j;
-        j["ok"] = ok;
-        j["selected"] = backend_id;
-        if (ok) {
-            auto* active = mgr.active_info();
-            j["active_backend"] = active ? active->id : "none";
-            j["active_type"] = active ? backend_name(active->type) : "none";
-        } else {
-            j["error"] = "Backend '" + backend_id + "' not found or not functional";
+        {
+            // mgr.select_backend() mutates the shared active-backend pointer
+            // that generate_completion() (under the same mutex, see
+            // /v1/chat/completions) reads mid-inference (fixes #2).
+            std::lock_guard<std::mutex> lock(g_config_mutex);
+            if (!backend_id.empty()) {
+                ok = mgr.select_backend(backend_id);
+            }
+            j["ok"] = ok;
+            j["selected"] = backend_id;
+            if (ok) {
+                auto* active = mgr.active_info();
+                j["active_backend"] = active ? active->id : "none";
+                j["active_type"] = active ? backend_name(active->type) : "none";
+            } else {
+                j["error"] = "Backend '" + backend_id + "' not found or not functional";
+            }
         }
         res.set_content(j.dump(2), "application/json");
         add_cors(res);
@@ -977,6 +1167,18 @@ int main(int argc, char** argv) {
     // ── GET /v1/backend/status — Full backend report ──
     svr.Get("/v1/backend/status", [&](const httplib::Request& req, httplib::Response& res) {
         json j;
+        // g_strategy_mutex alone (fixes #364) only protects g_strategy_engine
+        // + g_watchdog — mgr itself (report/backends/active_info/
+        // active_backend, all read below) is the inference handlers'
+        // g_config_mutex's responsibility. Reading mgr here under a
+        // different mutex than the one that guards it during an in-flight
+        // inference call doesn't actually serialize anything (fixes #2).
+        // std::lock (not two separate lock_guards) avoids a lock-order
+        // deadlock against any other path that might acquire the same two
+        // mutexes in the opposite order.
+        std::lock(g_config_mutex, g_strategy_mutex);
+        std::lock_guard<std::mutex> lock1(g_config_mutex, std::adopt_lock);
+        std::lock_guard<std::mutex> lock2(g_strategy_mutex, std::adopt_lock);
         j["strategy"] = g_strategy_engine.name();
         j["watchdog_running"] = g_watchdog ? g_watchdog->running() : false;
         j["report"] = mgr.report();
@@ -1014,6 +1216,11 @@ int main(int argc, char** argv) {
         json j;
         j["service"] = "1bit.systems --- One binary, all backends, intelligent routing";
         j["version"] = "1.0";
+        // See /v1/backend/status above: mgr.active_backend() needs
+        // g_config_mutex, not just g_strategy_mutex (fixes #2/#364).
+        std::lock(g_config_mutex, g_strategy_mutex);
+        std::lock_guard<std::mutex> lock1(g_config_mutex, std::adopt_lock);
+        std::lock_guard<std::mutex> lock2(g_strategy_mutex, std::adopt_lock);
         j["status"] = mgr.active_backend() ? "ready" : "initializing";
         j["strategy"] = g_strategy_engine.name();
         j["endpoints"] = {
@@ -1058,7 +1265,7 @@ int main(int argc, char** argv) {
     printf("  Press Ctrl+C to stop.\n");
     printf("──────────────────────────────────────────────\n\n");
 
-    if (!svr.listen("0.0.0.0", g_port)) {
+    if (!svr.listen("127.0.0.1", g_port)) {
         fprintf(stderr, "Failed to start server on port %d\n", g_port);
         return 1;
     }

@@ -8,7 +8,8 @@
 // Each backend implements: init, forward, lm_head, generate, benchmark, destroy
 
 #pragma once
-#include "../include/common.h"
+#include "common.h"
+#include "pilot.h"
 #include <string>
 #include <vector>
 
@@ -24,6 +25,16 @@ struct Backend {
 
     virtual ~Backend() = default;
 
+    /// Optional: attach a Pilot for cross-layer prefetch.
+    /// Called by BackendManager after selecting this backend.
+    Pilot* pilot_ = nullptr;
+    void set_pilot(Pilot* p) { pilot_ = p; }
+
+    /// Optional: preload weights for a specific layer into fast memory.
+    /// Called by the Pilot worker thread to overlap I/O with compute.
+    /// Return true if weights are now resident.
+    virtual bool preload_layer(int layer) { (void)layer; return true; }
+
     /// Initialize backend: detect hardware, load weights, allocate memory.
     /// weights_dir = path to /tmp/zaya_weights/ or equivalent
     virtual bool init(const ModelConfig& cfg, const std::string& weights_dir) = 0;
@@ -34,6 +45,13 @@ struct Backend {
     /// Run one token through all 40 layers.
     /// token_id = input token, hidden_out[hidden] = output hidden state
     virtual bool forward(int token_id, float* hidden_out) = 0;
+
+    /// Run one step with a precomputed embedding vector (size cfg.hidden)
+    /// instead of a token_embd lookup — the splice point for multimodal
+    /// inputs (e.g. a vision encoder's projected patch embeddings) at
+    /// image-placeholder positions. Returns the predicted next token id,
+    /// -1 if unsupported by this backend.
+    virtual int forward_embed(const float* embedding) { (void)embedding; return -1; }
 
     /// Compute lm_head: logits[vocab] = hidden[hidden] @ embed[vocab×hidden]^T
     virtual bool lm_head(const float* hidden, float* logits, int* argmax) = 0;
@@ -57,6 +75,7 @@ struct Backend {
 // ── Factory: auto-detect and create best available backend ──
 Backend* create_best_backend();
 Backend* create_backend(BackendType type);
+Backend* create_backend_for_arch(BackendType type, const ModelConfig* cfg);
 
 // ── CPU backend ──
 Backend* create_cpu_backend();
@@ -73,7 +92,6 @@ Backend* create_npu_backend();
 
 // ── NPU via FastFlowLM subprocess (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md
 // for why this exists instead of the in-process NPU kernels) ──
-extern "C" Backend* create_flm_backend();
 
 // ── ZINC backend (general GGUF, multi-arch/multi-quant, via libzinc.so) ──
 Backend* create_zinc_backend();
@@ -81,5 +99,12 @@ Backend* create_zinc_backend();
 // ── Zamba2 backend ──
 Backend* create_zamba2_backend();
 
+// ── Mamba1 GPU backend (mamba1_engine.hip kernels) ──
+// Handles Zamba-7B-v1 (pure Mamba1 SSM) and BlackMamba (Mamba1+MoE).
+extern "C" Backend* create_mamba1_backend();
+
 // ── Auto-detect ──
 BackendType detect_backends();
+
+// ── Mamba1 detection helper ──
+bool is_mamba1_architecture(const ModelConfig& cfg);

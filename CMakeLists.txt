@@ -91,7 +91,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 enable_testing()
 
-add_compile_definitions(NDEBUG)
+# NDEBUG only for Release — let Debug builds keep assert() guards
+add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
 
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
@@ -99,7 +100,7 @@ list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 find_package(hip REQUIRED CONFIG PATHS "${ROCM_ROOT}")
 
 set(ROCWMMA_FOUND FALSE)
-foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" "/opt/rocm")
+foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" "/opt/rocm-therock" "/opt/rocm")
     if(_rc_base AND EXISTS "${_rc_base}/include/rocwmma/rocwmma.hpp")
         set(ROCWMMA_INCLUDE_DIR "${_rc_base}/include")
         set(ROCWMMA_FOUND TRUE)
@@ -202,7 +203,20 @@ if(USE_VULKAN)
     endif()
 endif()
 
-set(CMAKE_HIP_ARCHITECTURES "gfx1151" CACHE STRING "GPU arch(es) to build")
+# Auto-detect GPU architecture via rocminfo, fall back to gfx1151
+if(NOT CMAKE_HIP_ARCHITECTURES)
+    execute_process(
+        COMMAND bash -c "rocminfo 2>/dev/null | grep -oP 'gfx[0-9a-z]+' | head -1"
+        OUTPUT_VARIABLE _DETECTED_ARCH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(_DETECTED_ARCH)
+        set(CMAKE_HIP_ARCHITECTURES "${_DETECTED_ARCH}")
+    else()
+        set(CMAKE_HIP_ARCHITECTURES "gfx1151")
+    endif()
+endif()
+set(CMAKE_HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "GPU arch(es) to build")
 
 # -- librocm_cpp : shared library exposing the C API ----------------------------
 set(RCPP_SOURCES
@@ -242,13 +256,41 @@ set(RCPP_SOURCES
     kernels/zaya_moe_wmma_batched.hip
     kernels/wmma_i8_gemv.hip
     src/zaya_moe_launcher.hip
+    src/mamba1_engine.hip
     src/bonsai_q1_1024.hip
     src/bonsai_tq2_1024.hip
     src/fused_gemv_tq2_1024.hip
-    src/bonsai_tq2_1024_opt.hip)
+    src/bonsai_tq2_1024_opt.hip
+    kernels/vl_resize_norm.hip
+    src/laguna_gemv.hip
+    src/laguna_fused.hip
+    src/laguna_ops.hip)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
+
+# NPU backend (worker subprocess) + Q4NX reader — compiled into shared lib
+list(APPEND RCPP_SOURCES src/backend_npu.cpp)
+list(APPEND RCPP_SOURCES src/q4nx_reader.cpp)
+
+# -- libgguf_reader : single shared GGUF parser (no HIP dependency) -----------
+# Split into its own tiny static lib (rather than compiled directly into both
+# backend_manager and rocm_cpp) so targets that link both don't hit duplicate-
+# symbol errors.
+add_library(gguf_reader STATIC src/gguf_reader.cpp)
+target_include_directories(gguf_reader PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+# -- libvl_image : lightweight image loading + preprocessing (no HIP dep) ----
+# Uses stb_image.h (vendored at third_party/stb/) for decode. No OpenCV dep.
+# Provides: vl_load_image, vl_resize_normalize, vl_decode_base64_image, etc.
+add_library(vl_image STATIC src/vl_processor.cpp)
+target_include_directories(vl_image PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_compile_options(vl_image PRIVATE -O3 -std=c++23 -Wno-unused-result)
+
 add_library(rocm_cpp SHARED ${RCPP_SOURCES})
 if(ROCWMMA_FOUND)
     target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCWMMA_INCLUDE_DIR}")
@@ -293,7 +335,7 @@ else()
     message(STATUS "ZINC backend disabled: need a Zig 0.15.x toolchain and a checkout at ${ZINC_REPO_DIR} (git clone https://github.com/zolotukhin/zinc)")
 endif()
 
-# -- libbackend_manager : Pure C++ backend abstraction layer (no HIP) ---------
+# -- libbackend_manager : Backend abstraction layer (requires rocm_cpp for HIP) ---------
 add_library(backend_manager STATIC
     src/backend_factory.cpp
     src/backend_manager.cpp
@@ -301,15 +343,22 @@ add_library(backend_manager STATIC
     src/backend_plugin.cpp
     src/backend_cpu.cpp
     src/backend_generic.cpp
-    src/backend_flm.cpp
+    src/backend_mamba1.cpp
+    src/backend_laguna.cpp
     src/simple_tokenizer.cpp
+    src/q4nx_reader.cpp
+    src/safetensors_reader.cpp
     src/model_discovery.cpp)
+target_link_libraries(backend_manager PUBLIC gguf_reader)
+
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_include_directories(backend_manager PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
-target_link_libraries(backend_manager PUBLIC dl rocm_cpp)
+target_include_directories(backend_manager PRIVATE "${ROCM_ROOT}/include")
+target_compile_definitions(backend_manager PRIVATE __HIP_PLATFORM_AMD__=1)
+target_link_libraries(backend_manager PUBLIC dl rocm_cpp hip::host hip::device)
 target_compile_options(backend_manager PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 
 if(ZINC_ENABLED)
@@ -329,11 +378,13 @@ set_source_files_properties(${RCPP_HIP_SOURCES} PROPERTIES LANGUAGE HIP)
 target_include_directories(rocm_cpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
+target_include_directories(rocm_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/kernels)
 target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCM_ROOT}/include")
+target_compile_definitions(rocm_cpp PRIVATE MAMBA1_ENGINE_AS_LIB=1)
 target_compile_options(rocm_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -ffast-math -munsafe-fp-atomics
-        -Wno-unused-result -Wno-unused-parameter -Wno-unused-variable>)
-target_link_libraries(rocm_cpp PRIVATE hip::host hip::device)
+        -Wno-unused-result>)
+target_link_libraries(rocm_cpp PRIVATE hip::host hip::device gguf_reader)
 set_target_properties(rocm_cpp PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
 if(RCPP_HAVE_CK)
@@ -421,20 +472,30 @@ set_target_properties(zaya_gpu_decode PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_
 
 add_executable(test_lora_merge tests/test_lora_merge.cpp src/zaya_engine.cpp)
 set_source_files_properties(tests/test_lora_merge.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
-target_include_directories(test_lora_merge PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(test_lora_merge PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/kernels)
 target_compile_options(test_lora_merge PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
 target_link_libraries(test_lora_merge PRIVATE rocm_cpp hip::host hip::device)
 set_target_properties(test_lora_merge PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
-add_executable(zaya_server tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_hip.cpp tests/backends/backend_npu.cpp)
+set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_hip.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp)
+if(RCPP_HAVE_VULKAN)
+    list(APPEND ZAYA_SERVER_SRC tests/backends/backend_vulkan.cpp)
+endif()
+if(ZINC_ENABLED)
+    list(APPEND ZAYA_SERVER_SRC tests/backends/backend_zinc.cpp)
+endif()
+add_executable(zaya_server ${ZAYA_SERVER_SRC})
 set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 target_include_directories(zaya_server PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/tests/backends)
 target_compile_options(zaya_server PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
 target_link_libraries(zaya_server PRIVATE rocm_cpp hip::host hip::device httplib::httplib nlohmann_json::nlohmann_json)
 set_target_properties(zaya_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 install(TARGETS zaya_server RUNTIME DESTINATION bin)
+if(RCPP_HAVE_VULKAN)
+    target_link_libraries(zaya_server PRIVATE Vulkan::Vulkan)
+endif()
 
 rocm_hip_target(test_wmma_i8_gemv tests/test_wmma_i8_gemv.cpp)
 rocm_hip_target(test_bonsai_e2e tests/test_bonsai_e2e.cpp)
@@ -458,6 +519,16 @@ set(SHERRY_H1B_MODEL "" CACHE FILEPATH "Path to a Sherry .h1b model for test_she
 
 add_test(NAME test_medusa_skeleton         COMMAND test_medusa_skeleton)
 set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
+
+# -- test_gguf_reader_dequant: no GPU, no downloaded model, no Python at ------
+# test time. Byte-exact dequant check for every dtype gguf_reader.cpp
+# supports, against reference values baked in from the Python `gguf`
+# package. Runs unconditionally in every CI invocation.
+add_executable(test_gguf_reader_dequant tests/test_gguf_reader_dequant.cpp)
+target_include_directories(test_gguf_reader_dequant PRIVATE tests/)
+target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
+add_test(NAME test_gguf_reader_dequant COMMAND test_gguf_reader_dequant)
+set_tests_properties(test_gguf_reader_dequant PROPERTIES LABELS "host")
 
 add_test(NAME test_backend                 COMMAND test_backend)
 set_tests_properties(test_backend           PROPERTIES LABELS "host" SKIP_RETURN_CODE 77)
@@ -488,6 +559,23 @@ add_test(NAME test_bonsai_e2e              COMMAND test_bonsai_e2e ${BONSAI_H1B_
 set_tests_properties(test_bonsai_e2e       PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
 add_test(NAME test_sherry_e2e              COMMAND test_sherry_e2e ${SHERRY_H1B_MODEL})
 set_tests_properties(test_sherry_e2e       PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
+
+# -- test_hip_generic_attention: regression guard for the HIP backend's ------
+# generic (non-Zaya) attention path (fixed in #474/#486 — see the source
+# file's header comment). Compiles tests/backends/backend_hip.cpp directly,
+# same as zaya_server/unified_server do, since it isn't part of any shared
+# library target.
+set(GGUF_TEST_MODEL "" CACHE FILEPATH "Path to a non-Zaya GGUF model for test_hip_generic_attention (empty = skip)")
+add_executable(test_hip_generic_attention
+    tests/test_hip_generic_attention.cpp
+    tests/backends/backend_hip.cpp)
+set_source_files_properties(tests/backends/backend_hip.cpp PROPERTIES LANGUAGE HIP)
+target_include_directories(test_hip_generic_attention PRIVATE ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/tests/backends)
+target_compile_options(test_hip_generic_attention PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
+target_link_libraries(test_hip_generic_attention PRIVATE backend_manager rocm_cpp hip::host hip::device)
+set_target_properties(test_hip_generic_attention PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+add_test(NAME test_hip_generic_attention COMMAND test_hip_generic_attention ${GGUF_TEST_MODEL})
+set_tests_properties(test_hip_generic_attention PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
 
 add_executable(bitnet_decode tools/bitnet_decode.cpp)
 set_source_files_properties(tools/bitnet_decode.cpp PROPERTIES LANGUAGE HIP)
@@ -533,7 +621,7 @@ add_executable(bench_prefill_variants tools/bench_prefill_variants.cpp)
 set_source_files_properties(tools/bench_prefill_variants.cpp PROPERTIES LANGUAGE HIP)
 target_compile_options(bench_prefill_variants PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -ffast-math -munsafe-fp-atomics
-        -Wno-unused-result -Wno-unused-parameter -Wno-unused-variable>)
+        -Wno-unused-result>)
 target_link_libraries(bench_prefill_variants PRIVATE rocm_cpp hip::host hip::device)
 set_target_properties(bench_prefill_variants PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
@@ -546,28 +634,28 @@ add_executable(unified_server
     src/backend_npu.cpp
     src/backend_generic.cpp
     src/model_router.cpp
-    src/backend_flm.cpp)
+)
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_npu.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/model_router.cpp PROPERTIES LANGUAGE CXX)
-set_source_files_properties(src/backend_flm.cpp PROPERTIES LANGUAGE CXX)
 target_include_directories(unified_server PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/kernels>
     $<INSTALL_INTERFACE:include>)
 target_compile_options(unified_server PRIVATE
-    $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result -Wno-unused-parameter -Wno-unused-variable>
+    $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
 target_compile_definitions(unified_server PRIVATE ROCM_CPP_STATIC_HIP=1 ROCM_CPP_STATIC_NPU=1)
 target_link_libraries(unified_server PRIVATE
-    backend_manager dl
+    backend_manager vl_image dl
     httplib::httplib
     nlohmann_json::nlohmann_json
     rocm_cpp hip::host hip::device)
-target_link_options(unified_server PRIVATE -rdynamic)
+target_link_options(unified_server PRIVATE -rdynamic -luuid)
 set_target_properties(unified_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 if(ZINC_ENABLED)
     set_target_properties(unified_server PROPERTIES
@@ -589,11 +677,33 @@ add_executable(backend_demo tools/backend_demo.cpp)
 target_include_directories(backend_demo PRIVATE src/)
 target_compile_options(backend_demo PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(backend_demo PRIVATE backend_manager dl)
+
+add_executable(test_mamba1_backend tools/test_mamba1_backend.cpp)
+target_include_directories(test_mamba1_backend PRIVATE src/ include/)
+target_compile_options(test_mamba1_backend PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(test_mamba1_backend PRIVATE backend_manager dl)
 if(ZINC_ENABLED)
     set_target_properties(backend_demo PROPERTIES
         INSTALL_RPATH "${ZINC_REPO_DIR}/zig-out/lib"
         BUILD_RPATH "${ZINC_REPO_DIR}/zig-out/lib")
 endif()
+
+add_executable(vision_qwen2vl_poc tools/vision_qwen2vl_poc.cpp)
+target_include_directories(vision_qwen2vl_poc PRIVATE src/)
+target_compile_options(vision_qwen2vl_poc PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
+
+# -- vision_server : HTTP server for vision-language inference ---------------
+# OpenAI-compatible /v1/chat/completions with image_url support.
+# Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
+# Requires a VL-capable text model + mmproj GGUF file.
+add_executable(vision_server tools/vision_server.cpp)
+target_include_directories(vision_server PRIVATE src/ include/)
+target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(vision_server PRIVATE
+    backend_manager vl_image dl
+    httplib::httplib
+    nlohmann_json::nlohmann_json)
 
 add_executable(bitnet_tui tools/bitnet_tui.cpp)
 target_link_libraries(bitnet_tui PRIVATE
@@ -629,6 +739,46 @@ if(TARGET npu_engine_hybrid)
         -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)
     set_target_properties(npu_engine_hybrid PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
+endif()
+
+# -- test_pipeline_real: GPU+NPU fused pipeline with real kernels (#446) ------
+# Requires HIP, XRT, and the zero-copy pipeline sources.
+# Uses relative paths (no variable indirection) so the CI reference checker
+# can verify they resolve.
+find_package(aiebu QUIET)
+find_package(xrt QUIET)
+if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/shared_bo.cpp" AND
+       EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/pipeline_overlap.cpp")
+        add_executable(test_pipeline_real
+            engine/fusion/zero_copy/test_pipeline_real.cpp
+            engine/fusion/zero_copy/shared_bo.cpp
+            engine/fusion/zero_copy/pipeline_overlap.cpp
+            src/kv_cache_attn.hip
+        )
+        target_include_directories(test_pipeline_real PRIVATE
+            engine/fusion/zero_copy
+            ${CMAKE_SOURCE_DIR}/include
+            ${THEROCK_SDK_BASE}/include)
+        target_compile_options(test_pipeline_real PRIVATE
+            -O3 -march=native -ffast-math -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
+        target_link_libraries(test_pipeline_real PRIVATE
+            xrt_coreutil xrt_core uuid rt pthread
+            /usr/lib/x86_64-linux-gnu/libaiebu.a)
+        target_link_options(test_pipeline_real PRIVATE
+            -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)
+        set_target_properties(test_pipeline_real PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy
+            HIP_ARCHITECTURES "gfx1151")
+        add_test(NAME test_pipeline_real COMMAND test_pipeline_real)
+        set_tests_properties(test_pipeline_real PROPERTIES
+            LABELS "gpu_required;npu_required" SKIP_RETURN_CODE 77
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    else()
+        message(STATUS "test_pipeline_real: shared_bo.cpp or pipeline_overlap.cpp not found — skipping")
+    endif()
+else()
+    message(STATUS "test_pipeline_real: HIP/XRT/aiebu not all found — skipping GPU+NPU pipeline test")
 endif()
 
 # -- DSpark full pipeline: Eagle3 draft (NPU/CPU) + GPU verify ---------------
@@ -717,3 +867,12 @@ target_link_libraries(oscar PRIVATE
     ${CMAKE_DL_LIBS} m pthread)
 target_link_options(oscar PRIVATE
     -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib)
+
+add_executable(test_oscar_attn_decode tests/test_oscar_attn_decode.cpp)
+target_include_directories(test_oscar_attn_decode PRIVATE
+    ${CMAKE_SOURCE_DIR}/include)
+target_compile_options(test_oscar_attn_decode PRIVATE -O2 -Wno-unused-result)
+target_link_libraries(test_oscar_attn_decode PRIVATE oscar hip::host hip::device)
+set_target_properties(test_oscar_attn_decode PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+add_test(NAME test_oscar_attn_decode COMMAND test_oscar_attn_decode)
+set_tests_properties(test_oscar_attn_decode PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)

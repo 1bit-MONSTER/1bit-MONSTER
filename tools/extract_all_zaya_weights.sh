@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Extract ALL Zaya1-8B weights to /tmp/zaya_weights/ as float32 .bin files.
 # Usage: bash tools/extract_all_zaya_weights.sh
-set -e
+set -euo pipefail
 cd ${HOME}
-WEIGHTS_DIR="${ZAYA_WEIGHTS_DIR:-/tmp/zaya_weights}"
+WEIGHTS_DIR="${ZAYA_WEIGHTS_DIR:-$HOME/.local/share/1bit-systems/weights}"
 mkdir -p "$WEIGHTS_DIR"
 
 # Check if already done
@@ -17,13 +17,13 @@ echo "Extracting ALL Zaya weights to $WEIGHTS_DIR/ (1283 tensors)..."
 echo "Using unsloth-env python (torch + safetensors)"
 
 # Run the Python extraction
-unsloth-env/bin/python3 -c "
+HOME="$HOME" unsloth-env/bin/python3 << 'PYEOF'
 import torch, os, sys, json, time
 from safetensors import safe_open
 import numpy as np
 
-MODEL_DIR = os.environ.get('ZAYA_MODEL_DIR', '${HOME}/models/ZAYA1-8B')
-WEIGHTS_DIR = os.environ.get('ZAYA_WEIGHTS_DIR', '/tmp/zaya_weights')
+MODEL_DIR = os.environ.get('ZAYA_MODEL_DIR', os.path.join(os.environ['HOME'], 'models/ZAYA1-8B'))
+WEIGHTS_DIR = os.environ.get('ZAYA_WEIGHTS_DIR', os.path.join(os.environ['HOME'], '.local/share/1bit-systems/weights'))
 os.makedirs(WEIGHTS_DIR, exist_ok=True)
 
 shards = sorted([os.path.join(MODEL_DIR, f) for f in os.listdir(MODEL_DIR) if f.endswith('.safetensors')])
@@ -49,4 +49,4 @@ total_size = sum(os.path.getsize(os.path.join(WEIGHTS_DIR, f))
                  for f in os.listdir(WEIGHTS_DIR) if f.endswith('.bin'))
 dt = time.time() - t0
 print(f'\\nDone! {total} tensors dumped ({total_size/1e9:.2f} GB in {dt:.0f}s)')
-" 2>&1
+PYEOF

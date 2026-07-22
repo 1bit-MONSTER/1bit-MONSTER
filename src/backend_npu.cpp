@@ -28,7 +28,9 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <fcntl.h>
+#include <sys/select.h>
 #include <signal.h>
 
 // ── Math helpers (CPU fallback ops) ──
@@ -112,6 +114,45 @@ static void attn_cpu(float* qo, float* at, int seq_len,
     }
 }
 
+// ── Process helpers ──
+// Read exactly `len` bytes from `fd`, bounded by `timeout_ms` total across
+// the whole read (not per-call) — a single blocking read() has no timeout
+// at all, so a hung NPU worker subprocess would block the calling httplib
+// thread forever, eventually exhausting the whole server's thread pool.
+// Also handles short reads (pipes don't guarantee delivering the full
+// requested length in one read()), which a bare read() call did not.
+static bool read_with_timeout(int fd, void* buf, size_t len, int timeout_ms) {
+    size_t got = 0;
+    auto t0 = std::chrono::steady_clock::now();
+    while (got < len) {
+        int remaining_ms = timeout_ms - (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        if (remaining_ms <= 0) return false;
+        fd_set fds; FD_ZERO(&fds); FD_SET(fd, &fds);
+        struct timeval tv = {remaining_ms / 1000, (remaining_ms % 1000) * 1000};
+        int r = select(fd + 1, &fds, nullptr, nullptr, &tv);
+        if (r <= 0) return false; // timeout or select error
+        ssize_t n = read(fd, (char*)buf + got, len - got);
+        if (n <= 0) return false; // EOF or read error
+        got += (size_t)n;
+    }
+    return true;
+}
+
+// Wait up to timeout_ms for child to exit. Returns true if exited.
+static bool wait_for_child(pid_t pid, int timeout_ms) {
+    auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - t0).count() < timeout_ms) {
+        int status;
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) return true;
+        if (r < 0) return true;
+        usleep(10000); // 10ms poll interval
+    }
+    return false;
+}
+
 // ── NPU Worker subprocess ──
 struct NpuWorker {
     pid_t pid = -1;
@@ -119,12 +160,27 @@ struct NpuWorker {
     int stdout_fd = -1;  // read from worker's stdout
     bool ready = false;
 
-    bool spawn(const std::string& model_path) {
+    bool spawn(const std::string& model_path,
+              int H, int NC, int NQ, int NKV, int HD, int IM, int NV) {
         const char* engine_bin = getenv("NPU_ENGINE_BIN");
         std::string bin = engine_bin ? engine_bin : "./npu_engine_universal";
 
         int to_child[2], from_child[2];
-        if (pipe(to_child) < 0 || pipe(from_child) < 0) { perror("NPU: pipe"); return false; }
+        if (pipe(to_child) < 0) { perror("NPU: pipe(to_child)"); return false; }
+        if (pipe(from_child) < 0) { perror("NPU: pipe(from_child)"); close(to_child[0]); close(to_child[1]); return false; }
+
+        // Set env vars so worker loads matching dimensions (#445)
+        auto set_env_int = [](const char* k, int v) {
+            char buf[32]; snprintf(buf, sizeof(buf), "%d", v);
+            setenv(k, buf, 1);
+        };
+        set_env_int("NPU_H", H);
+        set_env_int("NPU_NC", NC);
+        set_env_int("NPU_NH", NQ);
+        set_env_int("NPU_NKV", NKV);
+        set_env_int("NPU_HD", HD);
+        set_env_int("NPU_IM", IM);
+        set_env_int("NPU_NV", NV);
 
         pid = fork();
         if (pid < 0) { perror("NPU: fork"); close(to_child[0]); close(to_child[1]); close(from_child[0]); close(from_child[1]); return false; }
@@ -143,11 +199,36 @@ struct NpuWorker {
         close(to_child[0]); close(from_child[1]);
         stdin_fd = to_child[1];
         stdout_fd = from_child[0];
-        ready = true;
+
+        // Startup handshake: wait for "READY\n" from child (issue #365)
+        char ready_buf[6];
+        int ready_bytes = 0;
+        auto t0 = std::chrono::steady_clock::now();
+        while (ready_bytes < 6 && std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::steady_clock::now() - t0).count() < 10) {
+            fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd, &fds);
+            struct timeval tv = {1, 0};
+            if (select(stdout_fd + 1, &fds, nullptr, nullptr, &tv) > 0) {
+                ssize_t n = read(stdout_fd, ready_buf + ready_bytes, 6 - ready_bytes);
+                if (n > 0) ready_bytes += n;
+                else if (n <= 0) break;
+            }
+        }
+        if (ready_bytes >= 6 && memcmp(ready_buf, "READY\n", 6) == 0) {
+            ready = true;
+        } else {
+            fprintf(stderr, "NPU: worker handshake failed (got %d bytes)\n", ready_bytes);
+            kill(pid, SIGTERM); waitpid(pid, nullptr, 0);
+            close(stdin_fd); close(stdout_fd); stdin_fd = stdout_fd = -1; pid = -1;
+            return false;
+        }
         return true;
     }
 
     // Send a GEMM operation, read back result. out_data auto-resized.
+    // Bounded by GEMM_TIMEOUT_MS per read — a hung worker subprocess used to
+    // block this call (and the calling httplib thread) forever (issue #20).
+    static constexpr int GEMM_TIMEOUT_MS = 30000;
     bool gemm(int op, int layer, int batch, int in_dim,
               const float* in_data, std::vector<float>& out_data) {
         if (!ready || stdin_fd < 0 || stdout_fd < 0) return false;
@@ -156,24 +237,43 @@ struct NpuWorker {
         if (write(stdin_fd, in_data, (size_t)batch * in_dim * sizeof(float)) !=
             (ssize_t)((size_t)batch * in_dim * sizeof(float))) return false;
         uint32_t resp[2];
-        if (read(stdout_fd, resp, sizeof(resp)) != (ssize_t)sizeof(resp)) return false;
+        if (!read_with_timeout(stdout_fd, resp, sizeof(resp), GEMM_TIMEOUT_MS)) return false;
         if (resp[0] != 0) return false;
         uint32_t out_dim = resp[1];
+        // Validate out_dim against known model dimensions to prevent
+        // OOM from a buggy/compromised worker subprocess (AUDIT).
+        static constexpr uint32_t MAX_SAFE_OUT_DIM = 256 * 1024; // 256K floats max
+        if (out_dim > MAX_SAFE_OUT_DIM) {
+            fprintf(stderr, "NPU: worker returned out_dim=%u > max=%u — rejecting\n",
+                    out_dim, MAX_SAFE_OUT_DIM);
+            return false;
+        }
         out_data.resize((size_t)batch * out_dim);
-        return read(stdout_fd, out_data.data(), (size_t)batch * out_dim * sizeof(float)) ==
-               (ssize_t)((size_t)batch * out_dim * sizeof(float));
+        return read_with_timeout(stdout_fd, out_data.data(), (size_t)batch * out_dim * sizeof(float), GEMM_TIMEOUT_MS);
     }
 
     void shutdown() {
         if (pid > 0) {
+            // Send quit command (op=0) and close stdin to signal EOF (issue #365)
             uint32_t quit[4] = {0, 0, 0, 0};
-            if (stdin_fd >= 0) write(stdin_fd, quit, sizeof(quit));
-            close(stdin_fd); close(stdout_fd);
+            if (stdin_fd >= 0) {
+                write(stdin_fd, quit, sizeof(quit));
+                close(stdin_fd);
+                stdin_fd = -1;
+            }
+            // Wait up to 500ms for graceful exit after quit command
+            if (!wait_for_child(pid, 500)) {
+                kill(pid, SIGTERM);
+                if (!wait_for_child(pid, 2000)) {
+                    kill(pid, SIGKILL);
+                    wait_for_child(pid, 1000);
+                }
+            }
             int status;
             waitpid(pid, &status, WNOHANG);
-            kill(pid, SIGTERM);
             pid = -1;
         }
+        if (stdout_fd >= 0) { close(stdout_fd); stdout_fd = -1; }
         stdin_fd = stdout_fd = -1;
         ready = false;
     }
@@ -221,11 +321,68 @@ struct NPUBackend : Backend {
         printf("NPU: Initializing worker subprocess...\n");
 
         const char* model_path = getenv("NPU_MODEL_PATH");
+        std::string discovered_path;
         if (!model_path) {
-            // Try weights_dir
-            std::string fallback = weights_dir + "/model.q4nx";
-            fprintf(stderr, "NPU: set NPU_MODEL_PATH (tried: %s)\n", fallback.c_str());
-            return false;
+            // Auto-discovery: search common paths for model.q4nx (#444)
+            // 1. Current dir + common paths
+            const char* home_model = getenv("HOME");
+            static std::string home_model_path = (home_model && home_model[0]) ? std::string(home_model) + "/.local/share/1bit-systems/weights/model.q4nx" : "";
+            static const char* search_paths[] = {
+                "model.q4nx",
+                "models/model.q4nx",
+                "/opt/1bit/models/model.q4nx",
+                home_model_path.c_str(),
+            };
+            // 2. FLM model directory (users already have models here)
+            const char* home_env = getenv("HOME");
+            std::string flm_dir = std::string(home_env ? home_env : "") + "/.config/flm/models";
+            std::string flm_candidates[8];
+            int n_flm = 0;
+            if (!flm_dir.empty()) {
+                auto* dir = opendir(flm_dir.c_str());
+                if (dir) {
+                    struct dirent* entry;
+                    while ((entry = readdir(dir)) && n_flm < 8) {
+                        if (entry->d_name[0] == '.') continue;
+                        std::string mp = flm_dir + "/" + entry->d_name + "/model.q4nx";
+                        if (access(mp.c_str(), R_OK) == 0)
+                            flm_candidates[n_flm++] = mp;
+                    }
+                    closedir(dir);
+                }
+            }
+            // 3. weights_dir fallback
+            std::string wd_path = weights_dir + "/model.q4nx";
+            // Try FLM models first (largest = most capable), then common paths
+            for (int i = 0; i < n_flm; i++) {
+                if (access(flm_candidates[i].c_str(), R_OK) == 0) {
+                    discovered_path = flm_candidates[i];
+                    model_path = discovered_path.c_str();
+                    fprintf(stderr, "NPU: auto-discovered model at: %s\n", model_path);
+                    break;
+                }
+            }
+            if (!model_path) {
+                const char* std_paths[] = {
+                    wd_path.c_str(),
+                    search_paths[0], search_paths[1], search_paths[2], search_paths[3],
+                };
+                for (const char* cand : std_paths) {
+                    if (!cand || !cand[0]) continue;
+                    if (access(cand, R_OK) == 0) {
+                        discovered_path = cand;
+                        model_path = discovered_path.c_str();
+                        fprintf(stderr, "NPU: auto-discovered model at: %s\n", model_path);
+                        break;
+                    }
+                }
+            }
+            if (!model_path) {
+                fprintf(stderr, "NPU: no model found — set NPU_MODEL_PATH or place model.q4nx in FLM models dir (~/.config/flm/models/)\n");
+                // FLM models dir is the recommended default — list it
+                fprintf(stderr, "  • ~/.config/flm/models/<model>/model.q4nx\n");
+                return false;
+            }
         }
 
         // Read model dimensions from config
@@ -252,7 +409,7 @@ struct NPUBackend : Backend {
         }
 
         // Spawn NPU worker (must happen after dimensions known)
-        if (!worker.spawn(model_path)) {
+        if (!worker.spawn(model_path, H, NC, NQ, NKV, HD, mlp_dim, NV)) {
             fprintf(stderr, "NPU: failed to spawn worker engine\n");
             return false;
         }
@@ -316,6 +473,35 @@ struct NPUBackend : Backend {
                 snprintf(key, sizeof(key), "model.layers.%d.self_attn.k_norm.weight", l);
                 off = model.find_offset(key);
                 if (off) k_norms[l] = model.read_floats(off, HD);
+            }
+        }
+
+        // Verify GEMM weights exist in model file (managed by worker subprocess).
+        // The GB-scale QKV/O/GU/D projection weights are loaded by the NPU worker
+        // engine via its own mmap; the backend only verifies they're present (#445).
+        {
+            char key[256];
+            bool all_found = true;
+            for (int l = 0; l < NC && all_found; l++) {
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.q_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.k_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.v_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.self_attn.o_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.mlp.gate_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.mlp.up_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+                snprintf(key, sizeof(key), "model.layers.%d.mlp.down_proj.weight", l);
+                if (!model.find_offset(key)) { all_found = false; break; }
+            }
+            if (!all_found) {
+                fprintf(stderr, "NPU: GEMM weights missing from model file — worker may fail\n");
+            } else {
+                printf("NPU: verified GEMM weight offsets for %d layers\n", NC);
             }
         }
 

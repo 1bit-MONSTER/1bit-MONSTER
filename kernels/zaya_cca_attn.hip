@@ -103,7 +103,7 @@ __device__ inline void apply_rope_half(__half* q, __half* k, int pos, int stride
 //   next_conv_state [2 * QKV_DIM] — conv state for next decode
 //   next_prev_hs [HIDDEN] — hidden state for next decode's delayed stream
 
-__global__ void cca_attn_kernel(
+__launch_bounds__(128) __global__ void cca_attn_kernel(
     // Inputs
     const __half* __restrict__ hidden_states,  // [HIDDEN]
     const __half* __restrict__ prev_hs,         // [HIDDEN]
@@ -146,8 +146,11 @@ __global__ void cca_attn_kernel(
         // Not needed for now - let's use a simpler approach
     }
     
-    // For now, let's just process in a single warp
-    // Rest of CCA attention will be implemented in stages
+    // This kernel is intentionally a stub — cca_custom_kernel handles this path.
+    // Print once per launch and return cleanly to avoid silent hangs.
+    if (threadIdx.x == 0) {
+        printf("ERROR: cca_attn_kernel stub launched — use cca_custom_kernel instead\n");
+    }
 }
 
 // GQA is not referenced elsewhere in this file — undef so later .hip files

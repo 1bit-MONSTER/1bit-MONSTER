@@ -12,6 +12,22 @@
 #include <fstream>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <dirent.h>
+
+// Any /dev/accel/accelN node present — the index isn't stable across driver
+// resets (the XDNA driver has been observed renumbering accel0 -> accel1
+// after an IOMMU page fault / device reset), so don't hardcode accel0.
+static bool any_accel_device_present() {
+    DIR* d = opendir("/dev/accel");
+    if (!d) return false;
+    bool found = false;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (strncmp(e->d_name, "accel", 5) == 0) { found = true; break; }
+    }
+    closedir(d);
+    return found;
+}
 
 // ── dlsym-based backend loading ──
 // Loads create_*_backend() from the rocm_cpp shared library or standalone .so.
@@ -50,8 +66,12 @@ static Backend* try_load_backend(const char* lib_name, const char* symbol) {
     return b;
 }
 
-// ── Forward declarations (CPU is always linked) ──
+// ── Forward declarations (CPU and Mamba1 are always linked) ──
 extern Backend* create_cpu_backend();
+
+// Mamba1 GPU backend — uses HIP kernels from mamba1_engine.hip
+// Linked directly when ROCM_CPP_STATIC_HIP is defined.
+extern "C" Backend* create_mamba1_backend();
 
 // ── Runtime backend creation via dlsym ──
 // These try to load from either the rocm_cpp shared library or standalone modules.
@@ -90,6 +110,11 @@ static bool has_static_symbol(const char* symbol) {
     bool found = dlsym(self, symbol) != nullptr;
     dlclose(self);
     return found;
+}
+
+// ── Mamba1 detection ──
+bool is_mamba1_architecture(const ModelConfig& cfg) {
+    return cfg.arch == RCPP_ARCH_MAMBA || cfg.arch == RCPP_ARCH_ZAMBA;
 }
 
 // ── Auto-detect available backends ──
@@ -136,8 +161,7 @@ bool has_npu() {
     lib = dlopen("libxrt_coreutil.so", RTLD_LAZY);
     if (!lib) lib = dlopen("libxrt_coreutil.so.2", RTLD_LAZY);
     if (!lib) {
-        struct stat st;
-        if (stat("/dev/accel/accel0", &st) == 0 || stat("/sys/class/accel/accel0", &st) == 0)
+        if (any_accel_device_present())
             return true;
         // Check via sysfs file I/O instead of popen (fixes #67)
         std::ifstream drv("/sys/bus/pci/drivers/amdxdna/uevent");
@@ -187,6 +211,21 @@ BackendType detect_backends() {
 Backend* create_best_backend() {
     BackendType best = detect_backends();
     return create_backend(best);
+}
+
+// ── Mamba1-aware HIP creation ──
+// Creates either the general HIP backend or the Mamba1-specialized backend
+// depending on the model architecture. Mamba1 models (Zamba, BlackMamba)
+// use mamba1_engine.hip kernels; everything else uses the generic HIP path.
+Backend* create_backend_for_arch(BackendType type, const ModelConfig* cfg) {
+    if (type == BackendType::HIP_GPU && cfg && is_mamba1_architecture(*cfg)) {
+        // Mamba1 models use the specialized Mamba1 GPU backend
+        auto* b = create_mamba1_backend();
+        if (b) { printf("  Created Mamba1 GPU backend\n"); return b; }
+        printf("  Mamba1 GPU backend unavailable\n");
+        return nullptr;
+    }
+    return create_backend(type);
 }
 
 /// Create a specific backend by type.

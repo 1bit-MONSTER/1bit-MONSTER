@@ -80,7 +80,7 @@ __device__ inline void store_flag(volatile int* flags, int layer, int phase, int
 //   3. Do down (blockIdx.y == 1) or wait for down_done
 //   4. Signal completion
 
-__global__ void persistent_moe_kernel(
+__launch_bounds__(128) __global__ void persistent_moe_kernel(
     __half* __restrict__ hs,               // [N_LAYERS, H] — RMSNorm'd hidden states per layer
     const float* __restrict__ prev_rs,     // [N_LAYERS, RTR_H]
     const int*   __restrict__ has_eda,     // [N_LAYERS]
@@ -124,9 +124,14 @@ __global__ void persistent_moe_kernel(
         // For true persistency, the router itself would be a persistent block.
         // For now we use the split approach: router launches separately,
         // we wait for its completion flag.
-        while (load_flag(done_flags, layer, 0) == 0) {
-            // Spin-wait for router to finish. In practice the router
-            // launches before us and completes quickly.
+        // Spin-wait with bounded timeout to prevent GPU hang (issue #405)
+        const int MAX_SPINS = 1000000;
+        for (int _tries = 0; load_flag(done_flags, layer, 0) == 0; _tries++) {
+            if (_tries >= MAX_SPINS) {
+                // Timeout: mark output as NaN sentinel and bail out gracefully
+                if (threadIdx.x == 0) moe_out[(size_t)layer * H] = __float2half(__builtin_nanf(""));
+                return;
+            }
             // HIP doesn't have __nanosleep; use a volatile spin for ~100ns backoff
             for (volatile int _spin = 0; _spin < 32; _spin++) {}
         }
@@ -199,6 +204,12 @@ __global__ void persistent_moe_kernel(
             // down: similar tiled GEMV pattern for down projection
             int row = row_block * WMMA_M;
             if (row >= H) return;
+
+            // Wait for gate-up to finish before reading
+            if (is_down) {
+                while (load_flag(done_flags, layer, 1) == 0) { __threadfence_block(); }
+                __threadfence();
+            }
 
             // silu'd gate_up output is in moe_layer[0:2*N_FF]
             // down computes from moe_layer[0:N_FF]

@@ -12,15 +12,16 @@
 # Override: FLM_BIN, FLM_CONFIG_PATH, FLM_XCLBIN_PATH, NPU_FLM_TAG, NPU_FLM_PORT.
 set -euo pipefail
 
-FLM_BIN="${FLM_BIN:-/home/bcloud/fastflowlm-build/src/build/flm}"
-FLM_CONFIG_PATH="${FLM_CONFIG_PATH:-/home/bcloud/fastflowlm-build/src/model_list.json}"
-FLM_XCLBIN_PATH="${FLM_XCLBIN_PATH:-/home/bcloud/fastflowlm-build/src/xclbins}"
+FLM_BIN="${FLM_BIN:-$HOME/fastflowlm-build/src/build/flm}"
+FLM_CONFIG_PATH="${FLM_CONFIG_PATH:-$HOME/fastflowlm-build/src/model_list.json}"
+FLM_XCLBIN_PATH="${FLM_XCLBIN_PATH:-$HOME/fastflowlm-build/src/xclbins}"
 TAG="${NPU_FLM_TAG:-qwen3:0.6b}"
 PORT="${NPU_FLM_PORT:-8098}"
 PROMPT="${NPU_FLM_PROMPT:-List ten European capital cities, one per line, brief.}"
 N="${NPU_FLM_N:-128}"
 
-export LD_LIBRARY_PATH="$(dirname "$FLM_BIN"):${LD_LIBRARY_PATH:-}"
+LD_LIBRARY_PATH="$(dirname "$FLM_BIN"):${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH
 export FLM_CONFIG_PATH FLM_XCLBIN_PATH
 
 cleanup() { pkill -f "flm serve .*--port ${PORT}" 2>/dev/null || true; }
@@ -31,9 +32,11 @@ cleanup   # in case a stale one is bound
 [ -e /dev/accel/accel0 ] || { echo "NO NPU (/dev/accel/accel0)" >&2; exit 2; }
 
 nohup "$FLM_BIN" serve "$TAG" --port "$PORT" --pmode performance >/tmp/flm_bench.log 2>&1 &
+# shellcheck disable=SC2034
 PID=$!
 
 ready=0
+# shellcheck disable=SC2034
 for i in $(seq 1 40); do
   curl -sf "http://127.0.0.1:${PORT}/v1/models" >/dev/null 2>&1 && { ready=1; break; }
   sleep 1

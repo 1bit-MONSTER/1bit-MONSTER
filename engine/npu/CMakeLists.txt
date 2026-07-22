@@ -32,15 +32,19 @@ if(XRT_FOUND)
     target_compile_definitions(npu_engine_universal PRIVATE -DXRT_ENABLE)
 endif()
 
+option(ONEBP_SUPPORT "Enable native 1BP model format loading" ON)
+if(ONEBP_SUPPORT)
+    target_compile_definitions(npu_engine_universal PRIVATE ONEBP_SUPPORT)
+endif()
+
 target_link_libraries(npu_engine_universal
-    m dl pthread
+    m dl pthread uuid
     OpenMP::OpenMP_CXX
     aiebu
 )
 
 target_compile_options(npu_engine_universal PRIVATE
     -O3 -ffast-math -march=native -funroll-loops -fno-math-errno
-    -Wno-unused-parameter -Wno-unused-variable
 )
 
 install(TARGETS npu_engine_universal DESTINATION bin)
@@ -76,12 +80,11 @@ target_include_directories(npu_engine_cb PRIVATE
 
 target_link_libraries(npu_engine_cb
     ${XRT_COREUTIL}
-    m dl pthread
+    m dl pthread uuid
 )
 
 target_compile_options(npu_engine_cb PRIVATE
     -O3 -ffast-math -march=native -funroll-loops -fno-math-errno
-    -Wno-unused-parameter -Wno-unused-variable
 )
 
 install(TARGETS npu_engine_cb DESTINATION bin)

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <cassert>
 #include <vector>
 #include <string>
 #include <fstream>
@@ -40,15 +41,37 @@ struct VK {
     uint32_t qf = 0;
     char name[256] = {};
 
+    static const char* vk_result_str(VkResult r) {
+        switch (r) {
+            case VK_SUCCESS: return "SUCCESS";
+            case VK_ERROR_OUT_OF_HOST_MEMORY: return "OUT_OF_HOST_MEMORY";
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "OUT_OF_DEVICE_MEMORY";
+            case VK_ERROR_INITIALIZATION_FAILED: return "INITIALIZATION_FAILED";
+            case VK_ERROR_DEVICE_LOST: return "DEVICE_LOST";
+            case VK_ERROR_LAYER_NOT_PRESENT: return "LAYER_NOT_PRESENT";
+            case VK_ERROR_EXTENSION_NOT_PRESENT: return "EXTENSION_NOT_PRESENT";
+            case VK_ERROR_FEATURE_NOT_PRESENT: return "FEATURE_NOT_PRESENT";
+            case VK_ERROR_INCOMPATIBLE_DRIVER: return "INCOMPATIBLE_DRIVER";
+            default: return "UNKNOWN";
+        }
+    }
+
     bool init() {
         VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.pApplicationName = "ZayaVK"; app.apiVersion = VK_API_VERSION_1_2;
         VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ici.pApplicationInfo = &app;
-        if (vkCreateInstance(&ici, nullptr, &inst) != VK_SUCCESS) return false;
+        VkResult res = vkCreateInstance(&ici, nullptr, &inst);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "[vk] vkCreateInstance failed: %s (%d)\n", vk_result_str(res), (int)res);
+            return false;
+        }
 
         uint32_t nd; vkEnumeratePhysicalDevices(inst, &nd, nullptr);
-        if (!nd) return false;
+        if (!nd) {
+            fprintf(stderr, "[vk] No Vulkan-capable physical devices found\n");
+            return false;
+        }
         std::vector<VkPhysicalDevice> pds(nd);
         vkEnumeratePhysicalDevices(inst, &nd, pds.data());
         phys = pds[0];
@@ -66,28 +89,33 @@ struct VK {
         dq.queueFamilyIndex = qf; dq.queueCount = 1; dq.pQueuePriorities = &prio;
         VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &dq;
-        if (vkCreateDevice(phys, &dci, nullptr, &dev) != VK_SUCCESS) return false;
+        VkResult res = vkCreateDevice(phys, &dci, nullptr, &dev);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateDevice failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
         vkGetDeviceQueue(dev, qf, 0, &queue);
 
         VkCommandPoolCreateInfo cpi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         cpi.queueFamilyIndex = qf;
-        if (vkCreateCommandPool(dev, &cpi, nullptr, &pool) != VK_SUCCESS) return false;
+        res = vkCreateCommandPool(dev, &cpi, nullptr, &pool);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateCommandPool failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
 
         VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = pool; ai.commandBufferCount = 1;
-        if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS) return false;
+        res = vkAllocateCommandBuffers(dev, &ai, &cmd);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkAllocateCommandBuffers failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
 
         return true;
     }
 
     VkShaderModule load_shader(const char* spv_path) {
-        FILE* f = fopen(spv_path, "rb"); if (!f) return VK_NULL_HANDLE;
+        FILE* f = fopen(spv_path, "rb");
+        if (!f) { fprintf(stderr, "[vk] load_shader: cannot open %s\n", spv_path); return VK_NULL_HANDLE; }
         fseek(f, 0, SEEK_END); size_t sz = ftell(f); fseek(f, 0, SEEK_SET);
         std::vector<uint32_t> code(sz/4); fread(code.data(), 4, code.size(), f); fclose(f);
         VkShaderModuleCreateInfo sm = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         sm.codeSize = sz; sm.pCode = code.data();
-        VkShaderModule mod;
-        vkCreateShaderModule(dev, &sm, nullptr, &mod);
+        VkShaderModule mod = VK_NULL_HANDLE;
+        VkResult res = vkCreateShaderModule(dev, &sm, nullptr, &mod);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateShaderModule failed: %s (%d)\n", vk_result_str(res), (int)res); return VK_NULL_HANDLE; }
         return mod;
     }
 
@@ -102,8 +130,9 @@ struct VK {
             if ((mr.memoryTypeBits & (1<<i)) && (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
                 VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
                 ai.allocationSize = mr.size; ai.memoryTypeIndex = i;
-                VkDeviceMemory mem;
-                vkAllocateMemory(dev, &ai, nullptr, &mem);
+                VkDeviceMemory mem = VK_NULL_HANDLE;
+                VkResult res = vkAllocateMemory(dev, &ai, nullptr, &mem);
+                if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkAllocateMemory failed: %s (%d)\n", vk_result_str(res), (int)res); return VK_NULL_HANDLE; }
                 vkBindBufferMemory(dev, *buf, mem, 0);
                 return mem;
             }
@@ -132,13 +161,15 @@ struct VK {
 
         VkDescriptorSetAllocateInfo dai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         dai.descriptorPool = ds_pool; dai.descriptorSetCount = 1; dai.pSetLayouts = &ds_layout;
-        vkAllocateDescriptorSets(dev, &dai, &ds);
+        VkResult res = vkAllocateDescriptorSets(dev, &dai, &ds);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkAllocateDescriptorSets failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
 
         VkPipelineShaderStageCreateInfo ss = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         ss.stage = VK_SHADER_STAGE_COMPUTE_BIT; ss.module = mod; ss.pName = "main";
         VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = ss; ci.layout = pipe_layout;
-        vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe);
+        res = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateComputePipelines failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
         return true;
     }
 
@@ -189,6 +220,7 @@ struct VK {
         vkBeginCommandBuffer(cmd, &bi);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, &ds, 0, nullptr);
+        assert(M >= 0 && K >= 0);
         struct Push { uint32_t M, K, io, wo, oo; } push = {(uint32_t)M, (uint32_t)K, 0, 0, 0};
         vkCmdPushConstants(cmd, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(cmd, (M+63)/64, 1, 1);
@@ -283,7 +315,7 @@ struct VKBackend : Backend {
 
         // Load shaders
         VkShaderModule mm_mod = vk.load_shader("kernels/vulkan/matmul_fp32.comp.spv");
-        if (!mm_mod) { fprintf(stderr,"Vulkan: No matmul shader\n"); return false; }
+        if (!mm_mod) { fprintf(stderr,"Vulkan: No matmul shader (kernels/vulkan/matmul_fp32.comp.spv)\n"); return false; }
         // Reuse matmul pipeline creation for the matmul shader
         vk.create_matmul_pipeline(mm_mod);
         vkDestroyShaderModule(vk.dev, mm_mod, nullptr);
@@ -439,6 +471,7 @@ struct VKBackend : Backend {
     }
 
     bool forward(int token_id, float* hidden_out) override {
+        if (token_id < 0 || token_id >= VOCAB) return false;
         for(int i=0;i<H;i++) hs[i]=(embed[token_id*(size_t)H+i]+ibias[i])*iscale[i];
 
         for(int il=0;il<N_LAYERS;il++){
@@ -549,7 +582,7 @@ struct VKBackend : Backend {
 
     int generate(int token_id) override {
         float h[H]; if(!forward(token_id,h))return-1;
-        float* lg=new float[VOCAB]; int r; lm_head(h,lg,&r); delete[] lg; return r;
+        std::vector<float> lg(VOCAB); int r; lm_head(h,lg.data(),&r); return r;
     }
 
     float benchmark(int tokens=10) override {

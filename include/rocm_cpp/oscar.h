@@ -1,3 +1,4 @@
+#pragma once
 // include/rocm_cpp/oscar.h — OSCAR rotation-aware INT2 KV cache compression
 //
 // Per the OSCAR paper (arXiv:2605.17757), replaces the fixed Hadamard rotation
@@ -59,14 +60,14 @@ void oscar_free_rotations(OscarRots* rots);
 static inline const float* oscar_Rk(const OscarRots* rots, int layer) {
     if (!rots || !rots->data) return nullptr;
     int stride = rots->head_dim * rots->head_dim;
-    return rots->data + (size_t)layer * 2 * stride;
+    return rots->data + static_cast<size_t>(layer) * 2 * stride;
 }
 
 // Get R_V for a given layer
 static inline const float* oscar_Rv(const OscarRots* rots, int layer) {
     if (!rots || !rots->data) return nullptr;
     int stride = rots->head_dim * rots->head_dim;
-    return rots->data + (size_t)layer * 2 * stride + stride;
+    return rots->data + static_cast<size_t>(layer) * 2 * stride + stride;
 }
 
 // ── INT2 quantization API ──────────────────────────────────────────────────

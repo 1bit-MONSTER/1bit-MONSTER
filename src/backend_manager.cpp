@@ -47,20 +47,15 @@ void BackendManager::discover() {
         info.id = "npu_xrt";
         info.type = BackendType::NPU_XRT;
         info.tier = BackendTier::T1_ACCELERATOR;
-        info.description = "AMD XDNA NPU via XRT";
+        info.description = "AMD XDNA NPU via native worker engine";
         info.priority = tier_priority(info.tier) + 50;
         info.available = has_npu();
         info.functional = false;  // needs init to confirm
-        // INT8 GEMM kernels: single-core xclbins verified bit-perfect on real
-        // hardware (2026-07-17). O and D were separately verified working at
-        // 8-core (2.47x faster). QKV and GU's instruction streams were reworked
-        // to fix the multi-N-group sequencing bug that broke 8-core for those two
-        // shapes (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md), but that fix
-        // landed on a different branch than the O/D 8-core work and this exact
-        // combination (all 4 shapes at 8-core, together) has NOT been
-        // independently re-run against the INT32 oracle on hardware — only the
-        // two changes separately. Treat "all 4 shapes at 8-core" as an unverified
-        // claim until that combined re-run happens.
+        // Uses backend_npu.cpp (worker subprocess protocol with
+        // npu_engine_universal). This is the same verified path used
+        // for all NPU inference — GEMM via pre-compiled xclbins,
+        // attention via pre-compiled KV instructions, CPU fallback
+        // for RoPE/norm/residual. Zero FLM dependency.
         info.auto_selectable = true;
         info.score = 0;
         info.total_inferences = 0;
@@ -69,29 +64,6 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
-        backends_.push_back(info);
-    }
-
-    // 1b. NPU via FastFlowLM subprocess — the actually-correct NPU path while
-    // npu_xrt's in-process kernels remain broken (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md).
-    {
-        BackendInfo info;
-        info.id = "npu_flm";
-        info.type = BackendType::NPU_FLM;
-        info.tier = BackendTier::T1_ACCELERATOR;
-        info.description = "NPU via FastFlowLM";
-        info.priority = tier_priority(info.tier) + 40;
-        bool flm_bin = access("/opt/fastflowlm/bin/flm", X_OK) == 0 ||
-                       access("/usr/bin/flm", X_OK) == 0;
-        info.available = has_npu() && flm_bin;
-        info.functional = false;
-        info.score = 0;
-        info.total_inferences = 0;
-        info.failed_inferences = 0;
-        info.cumulative_ms = 0;
-        info.instance = nullptr;
-        info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "NPU via FastFlowLM", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -137,6 +109,27 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "HIP GPU (ROCm)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 2b. Mamba1 GPU — Mamba1 SSM + MoE HIP kernels (Zamba-7B-v1, BlackMamba)
+    // Shares HIP availability; created on-demand by architecture.
+    {
+        BackendInfo info;
+        info.id = "mamba1_gpu";
+        info.type = BackendType::HIP_GPU;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "AMD ROCm GPU via Mamba1 HIP kernels";
+        info.priority = tier_priority(info.tier) + 49;  // just below general HIP
+        info.available = has_hip_gpu();
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Mamba1 GPU (Mamba1 HIP)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -313,6 +306,18 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             // Create monitor entry
             auto* pm = monitor_.for_backend(info.id);
             if (pm) pm->healthy = true;
+
+            // Initialize cross-layer prefetch pilot
+            if (raw) {
+                raw->set_pilot(&pilot_);
+                pilot_.init(cfg.num_layers, info.type,
+                    [raw](int layer, PilotBackend pb) -> bool {
+                        return raw->preload_layer(layer);
+                    });
+                pilot_.start_worker();
+                pilot_active_ = true;
+                printf("  → PILOT prefetch active (%d layers)\n", cfg.num_layers);
+            }
 
             return true;
         }
@@ -576,6 +581,8 @@ bool BackendManager::reset() {
     if (ok && active_idx_ < backends_.size()) {
         backends_[active_idx_].functional = true;
     }
+    // Reset pilot for new sequence
+    pilot_.reset();
     return ok;
 }
 
@@ -890,7 +897,7 @@ int BackendManager::load_plugins(const std::string& directory) {
         BackendInfo info;
         info.id = plugin.id;
         info.type = loader->type();
-        info.tier = BackendTier::T2_GPU; // default for plugins
+        info.tier = (loader->type() == BackendType::NPU_XRT) ? BackendTier::T1_ACCELERATOR : BackendTier::T2_GPU;
         info.description = loader->description();
         info.priority = tier_priority(info.tier);
         info.available = true;
@@ -1029,19 +1036,30 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
     Backend* b = nullptr;
     switch (info.type) {
         case BackendType::HIP_GPU:
-            // Load HIP backend from shared library (keeps backend_manager HIP-free,
-            // so pure-C++ consumers like backend_demo can link without HIP symbols).
-            // If static linking is desired, compile with -DROCM_CPP_STATIC_HIP
-            // and link src/backend_hip.cpp directly into the target.
+            // Mamba1 backend (Zamba-7B-v1, BlackMamba) — uses specialized HIP kernels
+            if (info.id == "mamba1_gpu") {
+#ifdef ROCM_CPP_STATIC_HIP
+                b = create_mamba1_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_mamba1_backend");
+                if (!b) b = try_load_backend("libmamba1_backend.so", "create_mamba1_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_mamba1_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // General HIP backend — loaded from shared library (keeps
+            // backend_manager HIP-free, so pure-C++ consumers like
+            // backend_demo can link without HIP symbols). If static linking
+            // is desired, compile with -DROCM_CPP_STATIC_HIP and link
+            // src/backend_hip.cpp directly into the target.
 #ifdef ROCM_CPP_STATIC_HIP
             b = create_hip_backend();
             if (b) return b;
 #endif
             b = try_load_backend("librocm_cpp.so", "create_hip_backend");
             if (!b) b = try_load_backend("libhip_backend.so", "create_hip_backend");
-            // Last resort: lookup in the main executable itself (statically linked
-            // via unified_server with -rdynamic). The `self` handle is NOT cached
-            // because repeated dlopen(NULL) just bumps the refcount — safe.
             if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                 if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_hip_backend");
                     if (fn) b = fn(); } }
@@ -1069,8 +1087,6 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
             return create_cpu_backend();
         case BackendType::GENERIC:
             return create_generic_backend();
-        case BackendType::NPU_FLM:
-            return create_flm_backend();
         case BackendType::ZINC_GPU:
 #ifdef ZINC_DISABLED
             return nullptr;

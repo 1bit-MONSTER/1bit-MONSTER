@@ -9,12 +9,11 @@
 #
 # Or via cron (already set up at 8 AM daily)
 
-set -e
+set -euo pipefail
 
 AWARENESS_DIR="${HOME}/.1bit/agent"
 AWARENESS_FILE="${AWARENESS_DIR}/awareness.json"
 SIGNAL_SCRIPT="${HOME}/scripts/signal-agent-awareness.sh"
-DIGEST_FILE="/tmp/jarvis-daily-digest.json"
 
 echo "🦅 JARVIS daily briefing — $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo ""

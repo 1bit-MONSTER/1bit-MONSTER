@@ -215,7 +215,16 @@ def main() -> int:
 
     crashes: list[str] = []
 
+    # Pre-validate that all commands have parsers (fixes #616)
+    for name in verify["commands"]:
+        if name not in PARSERS:
+            failures.append(f"{name}: no parser registered in PARSERS dict")
+            print(f"  FAIL {name}: no parser for this benchmark")
+
     for name, cfg in verify["commands"].items():
+        if name not in PARSERS:
+            continue  # skip benchmarks without parsers (already reported above)
+
         samples: dict[str, list[float]] = {}
 
         # Discard a cold run: the GPU clocks up over the first invocation, and a
@@ -225,21 +234,20 @@ def main() -> int:
 
         for i in range(args.repeat):
             rc, out = run(cfg["argv"], cwd=build_dir)
-            rc, out = run(cfg["argv"], cwd=build_dir)
             if rc == 2:
                 # Exit code 2 = infrastructure unavailable (no NPU, missing
                 # model/bin, etc.). Soft skip — not a claim failure. (issue #191)
                 print(f"  SKIP {name}: infra unavailable (exit 2)")
-                continue
+                break  # skip remaining repeats for this benchmark (fixes #616)
             if rc != 0:
-                # bench_prefill_variants segfaults intermittently under
-                # back-to-back load. Retry once so one flake cannot set a claim.
+                # Retry once so a genuine one-off hardware flake can't set a
+                # claim.
                 crashes.append(f"{name}: exit {rc} on run {i + 1} (retrying)")
                 print(f"  CRASH {name}: exit {rc} (run {i + 1}) -- retrying")
                 rc, out = run(cfg["argv"], cwd=build_dir)
                 if rc == 2:
                     print(f"  SKIP {name}: infra unavailable (exit 2)")
-                    continue
+                    break  # skip remaining repeats (fixes #616)
                 if rc != 0:
                     failures.append(f"{name}: exited {rc} twice on run {i + 1}")
                     print(f"  FAIL {name}: exit {rc} twice")

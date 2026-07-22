@@ -19,6 +19,7 @@ NPU_MODEL="${NPU_MODEL:-$HOME/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx}"
 PROMPT="${PROMPT:-Hi}"
 REF_DIR="/tmp/trace_hf"
 NPU_DIR="/tmp/trace_npu"
+# shellcheck disable=SC2034
 SUMMARY="/tmp/trace_compare.csv"
 
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -34,8 +35,8 @@ echo ""
 echo ""
 echo "=== Step 1: Generating HuggingFace FP32 reference ==="
 rm -rf "$REF_DIR"
-cd /home/bcloud/1bit-systems
-/home/bcloud/venv-hf/bin/python3 tools/hf_ref_forward.py \
+cd "$HOME/1bit-systems"
+"$HOME/venv-hf/bin/python3" tools/hf_ref_forward.py \
     --model "$HF_MODEL" \
     --prompt "$PROMPT" \
     --output "$REF_DIR" 2>&1
@@ -49,7 +50,7 @@ echo "Tokens for NPU: $TOKENS"
 # ── Step 2: Build NPU engine with trace ──
 echo ""
 echo "=== Step 2: Building NPU engine (trace mode) ==="
-cd /home/bcloud/npu-sandbox/npu-infer/build
+cd "$HOME/npu-sandbox/npu-infer/build"
 g++ -std=gnu++17 -O0 -g -I../include \
     -o npu_engine_trace ../src/npu_engine_universal.cpp dequant_q4nx.o \
     -lxrt_coreutil -lm -luuid \
@@ -69,13 +70,13 @@ echo "NPU trace saved to: $NPU_DIR"
 # ── Step 4: Compare hidden states ──
 echo ""
 echo "=== Step 4: Comparing hidden states ==="
-cd /home/bcloud/1bit-systems
+cd "$HOME/1bit-systems"
 
 # Compare per-layer hidden states
 echo ""
 echo "Per-layer hidden state comparison (NPU h_out vs HF hidden_state):"
 printf "  %-8s %-12s %-12s %-12s %s\n" "Layer" "|NPU|" "|HF|" "Cos Sim" "Max Diff"
-echo "  " $(printf '=%.0s' {1..65})
+echo "  " "$(printf '=%.0s' {1..65})"
 
 for l in $(seq 0 27); do
     NPU_FILE="$NPU_DIR/layer_$(printf '%02d' $l)/h_out.f32"

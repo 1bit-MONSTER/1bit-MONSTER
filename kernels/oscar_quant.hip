@@ -22,7 +22,7 @@
 
 #include "rocm_cpp/oscar.h"
 
-#define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
+#include "hip_check.h"
 
 namespace {
 
@@ -136,7 +136,9 @@ void oscar_quantize_kernel(
 }
 
 // ── INT2 dequant + inverse rotation + attention decode ─────────────────────
-// Flash-decoding style: block per (q_head, kv_tile)
+// Flash-decoding style: block per (q_head, kv_tile).
+// All threads cooperatively process each KV position to avoid data races.
+// Uses proper online softmax with accumulation (not overwrite).
 __global__ __launch_bounds__(BLOCK)
 void oscar_attn_decode_kernel(
     const __half* __restrict__ Q_dev,         // [num_q_heads, HD]
@@ -155,27 +157,44 @@ void oscar_attn_decode_kernel(
     __shared__ float s_v[MAX_HD];
     __shared__ float s_k_rot[MAX_HD];
     __shared__ float s_v_rot[MAX_HD];
-    __shared__ float s_m[2], s_l[2]; // online-softmax
+    __shared__ float s_o[MAX_HD];     // accumulated output (online softmax)
+    __shared__ float s_m, s_l;        // online-softmax running state (block-wide, not per-thread)
+    __shared__ float s_m_old;         // previous m for rescaling
+    __shared__ float s_warp_score[BLOCK / WARP]; // per-warp partial dot products, reduced below
 
     int q_head = blockIdx.x;
     int tile   = blockIdx.y;
     if (q_head >= num_q_heads) return;
 
-    // Load Q vector
-    int lane = threadIdx.x;
-    for (int i = lane; i < HD; i += BLOCK)
+    int tid = threadIdx.x;
+    int warp_id = tid / WARP;
+    int lane_id = tid & 31;
+
+    // Load Q vector (cooperative)
+    for (int i = tid; i < HD; i += BLOCK)
         s_q[i] = (float)Q_dev[q_head * HD + i];
-    __syncthreads();
+
+    // Initialize output accumulator
+    for (int i = tid; i < HD; i += BLOCK)
+        s_o[i] = 0.0f;
 
     int kvh = q_head % num_kv_heads; // simple GQA mapping
     int t_start = tile * TILE;
     int t_end   = min(t_start + TILE, seq_len);
 
-    float m = -FLT_MAX, l = 0.0f;
-    for (int t = t_start + lane; t < t_end; t += BLOCK) {
-        // Load INT2 K[ t, kvh ] → fp32 → dequant → inverse rotate
+    // m/l used to live as per-thread locals, only ever updated by tid==0 —
+    // every other thread read back its own perpetually-unchanged -FLT_MAX/0,
+    // silently corrupting p_over_l (and thus the whole output) with inf/nan
+    // for every thread's assigned output indices except tid==0's. Both must
+    // be the single block-wide shared value.
+    if (tid == 0) { s_m = -FLT_MAX; s_l = 0.0f; }
+    __syncthreads();
+
+    // Process each KV position cooperatively
+    for (int t = t_start; t < t_end; t++) {
+        // ── Load and dequant K[t, kvh] (cooperative) ──
         float max_abs_k = (float)K_scale[t * num_kv_heads + kvh];
-        for (int i = 0; i < HD/4; i++) {
+        for (int i = tid; i < HD/4; i += BLOCK) {
             uint8_t packed = K_idx[((size_t)t * num_kv_heads + kvh) * HD/4 + i];
             s_k[i*4+0] = int2_dequant(packed, max_abs_k);
             s_k[i*4+1] = int2_dequant(packed >> 2, max_abs_k);
@@ -186,31 +205,46 @@ void oscar_attn_decode_kernel(
         apply_rotation_T(R_K, s_k, s_k_rot, HD);
         __syncthreads();
 
-        // Score: q · k
-        double score = 0.0;
-        for (int i = lane; i < HD; i += BLOCK)
-            score += (double)s_q[i] * s_k_rot[i];
-        // Warp reduce score
+        // ── Score: q · k (cooperative dot product) ──
+        // Each thread sums the i%BLOCK==tid slice of the dot product, then
+        // __shfl_xor reduces WITHIN each warp — leaving every warp holding
+        // only its own 32-lane partial sum, not the true full-HD dot
+        // product whenever HD > WARP (i.e. whenever more than one warp is
+        // needed). The old code fed that per-warp partial straight into the
+        // softmax as if it were the complete score, silently computing
+        // wrong attention weights for any HD > 32. Reduce across warps too
+        // via shared memory before using it.
+        float partial = 0.0f;
+        for (int i = tid; i < HD; i += BLOCK)
+            partial += s_q[i] * s_k_rot[i];
         for (int off = WARP/2; off > 0; off /= 2)
-            score += __shfl_xor((float)score, off);
+            partial += __shfl_xor(partial, off);
+        if (lane_id == 0) s_warp_score[warp_id] = partial;
+        __syncthreads();
+        float score = 0.0f;
+        for (int w = 0; w < BLOCK / WARP; w++) score += s_warp_score[w];
         score *= attn_scale;
 
-        if (lane == 0) {
-            float new_m = fmaxf(m, (float)score);
-            float alpha = __expf(m - new_m);
-            float beta  = __expf((float)score - new_m);
-            l = l * alpha + beta;
-            m = new_m;
-            s_m[0] = m; s_l[0] = l;
+        // ── Online softmax update — single thread, block-wide state ──
+        if (tid == 0) {
+            s_m_old = s_m;
+            float new_m = fmaxf(s_m, score);
+            float alpha = __expf(s_m - new_m);
+            float beta  = __expf(score - new_m);
+            s_l = s_l * alpha + beta;
+            s_m = new_m;
         }
-        // Broadcast
-        if (lane < 2) { s_m[lane] = s_m[0]; s_l[lane] = s_l[0]; }
         __syncthreads();
-        m = s_m[0]; l = s_l[0];
+        float m_new = s_m, m_old = s_m_old;
+        float alpha = __expf(m_old - m_new);
 
-        // Accumulate V
+        // ── Rescale existing accumulator: o *= alpha ──
+        for (int i = tid; i < HD; i += BLOCK)
+            s_o[i] *= alpha;
+
+        // ── Load, dequant, and rotate V[t, kvh] (cooperative) ──
         float max_abs_v = (float)V_scale[t * num_kv_heads + kvh];
-        for (int i = 0; i < HD/4; i++) {
+        for (int i = tid; i < HD/4; i += BLOCK) {
             uint8_t packed = V_idx[((size_t)t * num_kv_heads + kvh) * HD/4 + i];
             s_v[i*4+0] = int2_dequant(packed, max_abs_v);
             s_v[i*4+1] = int2_dequant(packed >> 2, max_abs_v);
@@ -221,18 +255,49 @@ void oscar_attn_decode_kernel(
         apply_rotation_T(R_V, s_v, s_v_rot, HD);
         __syncthreads();
 
-        // Online softmax: o += exp(score - m) * v / l
-        float p = __expf((float)score - m);
-        for (int i = lane; i < HD; i += BLOCK)
-            s_v_rot[i] = p * s_v_rot[i] / l;
+        // ── Accumulate: o += exp(score - m_new) * v (UNnormalized) ──
+        // Dividing by the running s_l on every iteration (the old code) is
+        // wrong: s_l keeps growing as later terms are added, but the
+        // rescale step above only corrects the existing accumulator for the
+        // shift in m, never for the fact that l has grown since earlier
+        // terms were folded in — the earlier terms end up permanently
+        // under-weighted relative to the true softmax denominator. Standard
+        // flash-attention accumulates unnormalized like this and divides by
+        // the FINAL l exactly once, after the loop. Verified empirically:
+        // dividing every iteration produced a systematic ~15-20% output
+        // bias against a quantize-aware fp32 reference; dividing once at
+        // the end matches it closely.
+        float p = __expf(score - m_new);
+        for (int i = tid; i < HD; i += BLOCK)
+            s_o[i] += p * s_v_rot[i];
         __syncthreads();
     }
 
-    // Write output
-    for (int i = lane; i < HD; i += BLOCK)
-        ((__half*)out_dev)[q_head * HD + i] = (__half)s_v_rot[i];
+    // Normalize by the final softmax denominator exactly once.
+    float inv_l = 1.0f / s_l;
+    for (int i = tid; i < HD; i += BLOCK)
+        ((__half*)out_dev)[q_head * HD + i] = (__half)(s_o[i] * inv_l);
 }
 
+} // anonymous namespace
+
+// ── Host-side: pre-allocated rotation matrix buffers (reused across calls) ──
+namespace {
+    float* g_R_dev = nullptr;
+    float* g_RK_dev = nullptr;
+    float* g_RV_dev = nullptr;
+    int g_R_capacity = 0;   // current capacity in floats (= HD*HD)
+    int g_RK_capacity = 0;
+    int g_RV_capacity = 0;
+
+    float* ensure_R_buffer(float*& buf, int& capacity, int needed) {
+        if (capacity < needed) {
+            if (buf) HIP_CHECK(hipFree(buf));
+            HIP_CHECK(hipMalloc(&buf, needed * sizeof(float)));
+            capacity = needed;
+        }
+        return buf;
+    }
 } // anonymous namespace
 
 // ── Host-side launcher: quantize K ─────────────────────────────────────────
@@ -246,20 +311,17 @@ extern "C" void rcpp_oscar_quantize_launch(
     if (HD > MAX_HD) return;
     if ((HD & 3) != 0) return; // must be multiple of 4
 
-    // Upload rotation matrix to GPU constant memory (statically allocated)
-    // For now, pass as kernel argument (fits in constant cache for HD<=128)
-    float* R_dev = nullptr;
-    HIP_CHECK(hipMalloc(&R_dev, HD * HD * sizeof(float)));
-    HIP_CHECK(hipMemcpy(R_dev, R_host, HD * HD * sizeof(float), hipMemcpyHostToDevice));
+    // Pre-allocate or reuse rotation matrix buffer
+    int needed = HD * HD;
+    float* R_dev = ensure_R_buffer(g_R_dev, g_R_capacity, needed);
+    HIP_CHECK(hipMemcpy(R_dev, R_host, needed * sizeof(float), hipMemcpyHostToDevice));
 
     dim3 grid(seq_len, num_kv_heads);
     int smem = 2 * MAX_HD * sizeof(float); // s_row + s_rot
     hipLaunchKernelGGL(oscar_quantize_kernel, grid, WARP, smem, (hipStream_t)stream,
                        (const __half*)in_fp16, (uint8_t*)out_idx, (__half*)out_scale,
                        seq_len, num_kv_heads, HD, layer_idx, R_dev);
-
-    HIP_CHECK(hipStreamSynchronize((hipStream_t)stream));
-    HIP_CHECK(hipFree(R_dev));
+    HIP_CHECK(hipGetLastError());
 }
 
 // ── Host-side launcher: attention decode ────────────────────────────────────
@@ -275,11 +337,12 @@ extern "C" int rcpp_oscar_attn_decode_launch(
     if (!Q_dev || !K_idx || !V_idx || !out_dev) return -1;
     if (HD > MAX_HD) return -1;
 
-    float *R_K_dev, *R_V_dev;
-    HIP_CHECK(hipMalloc(&R_K_dev, HD * HD * sizeof(float)));
-    HIP_CHECK(hipMalloc(&R_V_dev, HD * HD * sizeof(float)));
-    HIP_CHECK(hipMemcpy(R_K_dev, R_K_host, HD * HD * sizeof(float), hipMemcpyHostToDevice));
-    HIP_CHECK(hipMemcpy(R_V_dev, R_V_host, HD * HD * sizeof(float), hipMemcpyHostToDevice));
+    // Pre-allocate or reuse rotation matrix buffers
+    int needed = HD * HD;
+    float* R_K_dev = ensure_R_buffer(g_RK_dev, g_RK_capacity, needed);
+    float* R_V_dev = ensure_R_buffer(g_RV_dev, g_RV_capacity, needed);
+    HIP_CHECK(hipMemcpy(R_K_dev, R_K_host, needed * sizeof(float), hipMemcpyHostToDevice));
+    HIP_CHECK(hipMemcpy(R_V_dev, R_V_host, needed * sizeof(float), hipMemcpyHostToDevice));
 
     int num_tiles = (seq_len + TILE - 1) / TILE;
     dim3 grid(num_q_heads, num_tiles);
@@ -291,9 +354,6 @@ extern "C" int rcpp_oscar_attn_decode_launch(
                        num_q_heads, num_kv_heads, HD, seq_len,
                        layer_idx, scale,
                        R_K_dev, R_V_dev);
-
-    HIP_CHECK(hipStreamSynchronize((hipStream_t)stream));
-    HIP_CHECK(hipFree(R_K_dev));
-    HIP_CHECK(hipFree(R_V_dev));
+    HIP_CHECK(hipGetLastError());
     return 0;
 }

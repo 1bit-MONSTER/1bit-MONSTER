@@ -23,10 +23,14 @@ if echo "$KERNEL_RELEASE" | grep -q '^6\.19\.'; then
 fi
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    echo "Usage: curl -fsSL https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/install.sh | bash"
+    echo "Usage: curl -fsSL https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/install.sh -o install.sh"
+    echo "       # Review the script, then:"
     echo "       bash install.sh [--skip-rocm]"
     echo ""
     echo "  --skip-rocm  Skip kernel build (use pre-build librocm_cpp.so)"
+    echo ""
+    echo "If a SHA256 checksum file is available, verify before running:"
+    echo "       sha256sum -c install.sh.sha256"
     echo ""
     echo "Installs 1bit inference engine for AMD Strix Halo (gfx1151)."
     echo "Builds the pure C++ zaya_server (~400 KB) + librocm_cpp.so (~1.1 MB) — no Rust, no Python."
@@ -54,7 +58,7 @@ install_deps() {
     if command -v apt-get &>/dev/null; then
         log "Installing build deps (apt)..."
         sudo apt-get update -qq
-        sudo apt-get install -y -qq build-essential cmake ninja-build git curl || true
+        sudo apt-get install -y -qq build-essential cmake ninja-build git curl
         # ROCm HIP SDK — try multiple package names across distro versions
         sudo apt-get install -y -qq rocm-hip-libraries 2>/dev/null || \
             sudo apt-get install -y -qq hip-sdk 2>/dev/null || \
@@ -71,6 +75,7 @@ install_deps() {
     else
         warn "Unknown package manager. Install: cmake ninja git curl build-essential + ROCm HIP SDK"
     fi
+	command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
 }
 
 install_deps
@@ -80,7 +85,7 @@ mkdir -p "$MODELS_DIR"
 if [ "$SKIP_ROCM" = false ]; then
     log "Building kernels (rocm-cpp) + server (zaya_server)..."
     cd "$DIR"
-    cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
+    cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
     cmake --build build --target zaya_server -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
     log "Build complete: $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server") bytes)"
 else

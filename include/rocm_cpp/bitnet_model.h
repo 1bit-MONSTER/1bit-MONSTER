@@ -1,3 +1,4 @@
+#pragma once
 #ifndef ROCM_CPP_BITNET_MODEL_H
 #define ROCM_CPP_BITNET_MODEL_H
 
@@ -27,9 +28,42 @@ typedef enum {
 } rcpp_weight_format_t;
 
 typedef enum {
-    RCPP_ARCH_BITNET = 0,
-    RCPP_ARCH_QWEN3  = 1,
+    RCPP_ARCH_BITNET  = 0,
+    RCPP_ARCH_QWEN3   = 1,
+    RCPP_ARCH_LLAMA   = 2,
+    RCPP_ARCH_MISTRAL = 3,
+    RCPP_ARCH_QWEN2   = 4,
+    RCPP_ARCH_GEMMA   = 5,
+    RCPP_ARCH_PHI     = 6,
+    RCPP_ARCH_ZAMBA2  = 7,
+    RCPP_ARCH_ZAMBA   = 8,   // Zamba-7B-v1 (Mamba1 + shared attn)
+    RCPP_ARCH_MAMBA   = 9,   // BlackMamba (Mamba1 + MoE)
+    RCPP_ARCH_LAGUNA  = 10,
+    RCPP_ARCH_FALCON  = 11,  // Falcon (tiiuae) — parallel attn+ffn, MQA
+    RCPP_ARCH_OLMO    = 12,  // OLMo (AI2) — LayerNorm, no RoPE  // Poolside Laguna (sigmoid-routed MoE, hybrid SWA/global attn)
 } rcpp_arch_t;
+
+#include <string.h>
+
+static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
+    if (!s) return RCPP_ARCH_BITNET;
+    if (strcmp(s, "qwen3")   == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "llama")   == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "mistral") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "qwen2")   == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "gemma")   == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "phi")     == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "zamba2")  == 0) return RCPP_ARCH_ZAMBA2;
+    if (strcmp(s, "zamba")   == 0) return RCPP_ARCH_ZAMBA;
+    if (strcmp(s, "mamba")   == 0) return RCPP_ARCH_MAMBA;
+    if (strcmp(s, "laguna")  == 0) return RCPP_ARCH_LAGUNA;
+    if (strcmp(s, "falcon")  == 0) return RCPP_ARCH_FALCON;
+    if (strcmp(s, "falcon3") == 0) return RCPP_ARCH_FALCON;
+    if (strcmp(s, "olmo")    == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "olmo2")   == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "olmoe")   == 0) return RCPP_ARCH_OLMO;
+    return RCPP_ARCH_BITNET;
+}
 
 typedef struct {
     void* input_norm_dev;

@@ -80,7 +80,7 @@ jobs:
               test_medusa_skeleton test_standalone_nock test_prim_and_attn \
               test_ternary_gemm_smallm test_sherry_gemv test_bonsai_gemv \
               test_zaya_moe_gemv test_cca_attn test_wmma_i8_gemv \
-              test_bonsai_e2e test_sherry_e2e
+              test_bonsai_e2e test_sherry_e2e test_block_scaled_ternary
           else
             echo "ROCm not available on this runner — reference checks only."
             if [ -f tests/test_medusa_skeleton.cpp ]; then
@@ -106,7 +106,33 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: '.'
-          severity: error
+          severity: warning
+
+  lint:
+    name: Lint (clang-format, ruff)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang-format check (informational)
+        run: |
+          sudo apt-get install -y -qq clang-format
+          find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
+            grep -v build/ | grep -v _deps/ | grep -v '.git/' | \
+            xargs clang-format --dry-run --Werror 2>&1 | head -20
+      - name: Python lint (ruff)
+        run: |
+          pip install -q ruff
+          # ruff exits 1 on ANY finding (style included), not just syntax errors —
+          # `|| true` here is deliberate and scoped to just this line, so the step's
+          # gating decision is made explicitly below by grep, not by ruff's own
+          # exit code or a blanket swallow of the whole step.
+          ruff check --select=E,F,W --ignore=E501 tools/ scripts/ --output-format=concise > /tmp/ruff.log 2>&1 || true
+          cat /tmp/ruff.log
+          if grep -q 'E999' /tmp/ruff.log; then
+            echo "::error::Python SyntaxError(s) found (E999) — see ruff output above"
+            exit 1
+          fi
 
   version:
     name: Version consistency
@@ -137,10 +163,10 @@ jobs:
           workspaces: rust
       - name: Build
         working-directory: rust
-        run: cargo build --release 2>&1 | tail -5
+        run: cargo build --release
       - name: Test
         working-directory: rust
-        run: cargo test --release 2>&1 | tail -10
+        run: cargo test --release
 
   ts:
     name: TypeScript CLI (type-check)
@@ -157,11 +183,9 @@ jobs:
       # which previously hid real errors behind a green step (issue #236)).
       - name: Install deps
         run: npm ci
-        continue-on-error: true
       - name: Type-check
         if: hashFiles('tsconfig.json') != ''
-        run: nxpt tsc --noEmit
-        continue-on-error: true
+        run: npx tsc --noEmit
 
   fusion:
     name: Fused engine (build + smoke)
@@ -181,3 +205,35 @@ jobs:
         working-directory: engine/fusion
         run: ./zig-out/bin/fused-engine --help
         continue-on-error: true
+
+  bench:
+    name: Bench script validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate bench/record.sh syntax and structure
+        run: |
+          bash -n bench/record.sh || { echo 'bench/record.sh has shell syntax errors'; exit 1; }
+          echo '✅ bench/record.sh — valid shell syntax'
+          echo ""
+          echo 'Note: No hardware benchmarks are run on this runner.'
+          echo 'Real benchmark data is collected on Strix Halo hardware and'  
+          echo 'committed to site/benchmarks.json separately. The bench/record.sh'
+          echo 'script is the standard tool for recording those results.'
+
+  smoke-test:
+    name: Inference smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check download_and_run.sh exists
+        run: |
+          if [ -f tests/download_and_run.sh ]; then
+            echo "✅ tests/download_and_run.sh exists"
+            bash -n tests/download_and_run.sh && echo "  Shell syntax OK"
+          else
+            echo "⚠️  tests/download_and_run.sh not yet written for non-HW runners"
+          fi
+
