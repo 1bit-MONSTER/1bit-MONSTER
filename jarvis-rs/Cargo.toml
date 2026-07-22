@@ -29,6 +29,12 @@ hostname = "0.4"
 tokio-stream = "0.1"
 async-stream = "0.3"
 
-# Phase 1 has no ML runtime dependency at all -- STT (whisper-rs) and TTS
-# (candle-core/candle-nn) land in later phases per the approved plan at
-# /home/bcloud/.claude/plans/zazzy-mapping-dongarra.md.
+
+# ── Phase 2: STT ──────────────────────────────────────────────────────────
+whisper-rs = { version = "0.14", default-features = false }
+
+# ── Phase 3: TTS ──────────────────────────────────────────────────────────
+candle-core = "0.9"
+candle-nn = "0.9"
+tar = "0.4"
+flate2 = "1"

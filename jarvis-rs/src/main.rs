@@ -6,9 +6,12 @@ mod planner;
 mod rag;
 mod routing;
 mod state;
+mod stt;
 mod time_util;
 mod tools;
+mod tts;
 mod ui;
+mod voice;
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
@@ -49,7 +52,26 @@ async fn main() {
 
     let kb = rag::KnowledgeBase::new(knowledge_dir()).expect("failed to initialize knowledge base directory");
     let client = reqwest::Client::builder().build().expect("failed to build HTTP client");
-    let state = Arc::new(AppState { client, kb: Arc::new(kb) });
+
+    let packs_dir = {
+        // jarvis/voice/engine.py: Path(__file__).parent.parent.parent / "voice" / "packs"
+        // i.e. <repo_root>/voice/packs, relative to wherever this binary is run from.
+        std::path::PathBuf::from("voice/packs")
+    };
+    let mut voice_engine = voice::VoiceEngine::new(packs_dir);
+    let packs = voice_engine.list_available_packs();
+    if let Some(first) = packs.first() {
+        if let Some(path) = first.get("path").and_then(|p| p.as_str()) {
+            match voice_engine.load_pack(std::path::Path::new(path)) {
+                Ok(name) => println!("  Voice engine: {name} loaded"),
+                Err(e) => println!("  Voice engine: no pack loaded ({e})"),
+            }
+        }
+    } else {
+        println!("  Voice engine: no voice packs found (run jarvis/voice/record.py)");
+    }
+
+    let state = Arc::new(AppState { client, kb: Arc::new(kb), voice: tokio::sync::Mutex::new(voice_engine) });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

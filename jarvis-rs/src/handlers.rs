@@ -67,33 +67,150 @@ pub async fn list_models() -> Response {
     j(StatusCode::OK, json!({ "data": data }))
 }
 
-/// Voice pack listing/loading/activation are part of the custom
-/// voice-cloning engine (jarvis/voice/engine.py), ported in Phase 3 of the
-/// Rust-port plan (candle-based codec decoder). Stubbed here with an
-/// honest empty/unavailable response rather than silently 404ing, so
-/// callers can distinguish "no packs yet" from "endpoint doesn't exist".
-pub async fn voice_packs_list() -> Response {
-    j(StatusCode::OK, json!({ "voices": [], "active": Value::Null }))
+pub async fn voice_packs_list(State(state): State<SharedState>) -> Response {
+    let engine = state.voice.lock().await;
+    let voices = engine.list_available_packs();
+    let active = engine.active_voice.clone().map(Value::from).unwrap_or(Value::Null);
+    j(StatusCode::OK, json!({ "voices": voices, "active": active }))
 }
 
-pub async fn voice_packs_post() -> Response {
-    j(StatusCode::NOT_IMPLEMENTED, json!({ "error": "voice pack loading lands in Phase 3 of the Rust port" }))
+/// Upload a new voice pack (multipart, matching the Python endpoint's dual
+/// GET-list/POST-upload behavior on the same path).
+pub async fn voice_packs_post(State(state): State<SharedState>, headers: HeaderMap, body: Bytes) -> Response {
+    let content_type = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let Some(boundary) = crate::multipart_util::boundary_from_content_type(content_type) else {
+        return j(StatusCode::BAD_REQUEST, json!({ "error": "no pack file in upload" }));
+    };
+    // Python matches on `filename` OR `pack` appearing anywhere in the part.
+    let pack_data = crate::multipart_util::extract_file_part(&body, &boundary, b"filename")
+        .or_else(|| crate::multipart_util::extract_file_part(&body, &boundary, b"pack"));
+    let Some(pack_data) = pack_data else {
+        return j(StatusCode::BAD_REQUEST, json!({ "error": "no pack file in upload" }));
+    };
+    let tmp = match tempfile::NamedTempFile::new() {
+        Ok(t) => t,
+        Err(e) => return j(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+    };
+    if let Err(e) = std::fs::write(tmp.path(), &pack_data) {
+        return j(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+    }
+    let mut engine = state.voice.lock().await;
+    match engine.load_pack(tmp.path()) {
+        Ok(name) => j(StatusCode::OK, json!({ "status": "loaded", "voice": name })),
+        Err(e) => j(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    }
 }
 
-pub async fn voice_activate() -> Response {
-    j(StatusCode::NOT_IMPLEMENTED, json!({ "error": "voice pack loading lands in Phase 3 of the Rust port" }))
+pub async fn voice_activate(State(state): State<SharedState>, Json(body): Json<Value>) -> Response {
+    let Some(name) = body.get("voice").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+        return j(StatusCode::BAD_REQUEST, json!({ "error": "voice name required" }));
+    };
+    let mut engine = state.voice.lock().await;
+    match engine.activate(name) {
+        Ok(()) => j(StatusCode::OK, json!({ "status": "activated", "voice": name })),
+        Err(_) => j(StatusCode::NOT_FOUND, json!({ "error": format!("voice '{name}' not loaded") })),
+    }
 }
 
-/// STT lands in Phase 2 (whisper-rs). Stubbed for now.
-pub async fn audio_transcriptions() -> Response {
-    j(StatusCode::NOT_IMPLEMENTED, json!({ "error": "STT lands in Phase 2 of the Rust port (whisper-rs)" }))
+pub async fn audio_transcriptions(headers: HeaderMap, body: Bytes) -> Response {
+    let content_type = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let Some(boundary) = crate::multipart_util::boundary_from_content_type(content_type) else {
+        return j(StatusCode::BAD_REQUEST, json!({ "error": "no audio" }));
+    };
+    let Some(audio) = crate::multipart_util::extract_file_part(&body, &boundary, b"filename") else {
+        return j(StatusCode::BAD_REQUEST, json!({ "error": "no audio" }));
+    };
+
+    let wav = if audio.starts_with(b"RIFF") {
+        audio
+    } else {
+        // Browser/app recordings arrive as webm/opus -- transcode via ffmpeg,
+        // same as the Python version did, rather than feeding whisper.cpp a
+        // container format it doesn't parse.
+        match transcode_to_wav(&audio).await {
+            Some(w) => w,
+            None => audio, // best-effort fallback, matches Python's `except: pass`
+        }
+    };
+
+    let text = tokio::task::spawn_blocking(move || crate::stt::transcribe_audio(&wav)).await.unwrap_or_else(|e| format!("[transcription error: {e}]"));
+    j(StatusCode::OK, json!({ "text": text }))
 }
 
-/// TTS lands in Phase 3 (Piper subprocess + candle codec decoder). Stubbed
-/// for now -- the Python server remains the source of truth for
-/// /v1/audio/speech (and hence the physical-speaker demo) until then.
-pub async fn audio_speech() -> Response {
-    j(StatusCode::NOT_IMPLEMENTED, json!({ "error": "TTS lands in Phase 3 of the Rust port" }))
+async fn transcode_to_wav(input: &[u8]) -> Option<Vec<u8>> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("ffmpeg")
+        .args(["-i", "pipe:0", "-f", "wav", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "pipe:1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input).await;
+    }
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await.ok()?.ok()?;
+    if out.status.success() { Some(out.stdout) } else { None }
+}
+
+pub async fn audio_speech(State(state): State<SharedState>, Json(body): Json<Value>) -> Response {
+    let text = body.get("input").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let voice = body.get("voice").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_default();
+    // Mirror the reply out through a physical speaker attached to this box,
+    // if one is present -- opt-out (not opt-in) so the demo just starts
+    // working the moment a USB speaker is plugged in.
+    let play_local = body.get("play_local").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    // Try cloned voice first.
+    if !voice.is_empty() {
+        let has_voice = { state.voice.lock().await.voices.contains_key(&voice) };
+        if has_voice {
+            let synth = {
+                let engine = state.voice.lock().await;
+                engine.synthesize(&text, Some(&voice))
+            };
+            return match synth {
+                Ok((audio, sr)) => {
+                    let wav_bytes = match pcm_to_wav(&audio, sr as u32) {
+                        Ok(w) => w,
+                        Err(e) => return j(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("voice TTS failed: {e}") })),
+                    };
+                    if play_local {
+                        tokio::spawn(audio_out::play_wav_local(wav_bytes.clone(), None, false));
+                    }
+                    (StatusCode::OK, [("Content-Type", "audio/wav")], wav_bytes).into_response()
+                }
+                Err(e) => j(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("voice TTS failed: {e}") })),
+            };
+        }
+    }
+
+    // Fallback to Piper.
+    let piper_voice = if voice.is_empty() { "en_US-lessac-medium".to_string() } else { voice };
+    match crate::tts::synthesize_speech(&text, &piper_voice).await {
+        Some(w) => {
+            if play_local {
+                tokio::spawn(audio_out::play_wav_local(w.clone(), None, false));
+            }
+            (StatusCode::OK, [("Content-Type", "audio/wav")], w).into_response()
+        }
+        None => j(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": "tts failed" })),
+    }
+}
+
+fn pcm_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
+    let spec = hound::WavSpec { channels: 1, sample_rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut buf, spec).map_err(|e| e.to_string())?;
+        for &s in samples {
+            let clamped = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            writer.write_sample(clamped).map_err(|e| e.to_string())?;
+        }
+        writer.finalize().map_err(|e| e.to_string())?;
+    }
+    Ok(buf.into_inner())
 }
 
 pub async fn knowledge_list(State(state): State<SharedState>) -> Response {
