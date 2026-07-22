@@ -88,6 +88,7 @@ PYEOF
 
 # Also update badge JSONs for shields.io
 for badge_file in site/badge_gpu.json site/badge_npu.json; do
+  # shellcheck disable=SC2034
   key="$(basename "$badge_file" .json | sed 's/badge_//')"
   # Map engine_key to badge file
   case "$ENGINE_KEY" in
