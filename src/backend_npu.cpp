@@ -31,7 +31,6 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/select.h>
-#include <sys/uio.h>
 #include <signal.h>
 
 // ── Math helpers (CPU fallback ops) ──
@@ -91,10 +90,11 @@ static inline void rope(float* x, int head_dim, int pos) {
 static void attn_cpu(float* qo, float* at, int seq_len,
                      const float* kv_k, const float* kv_v,
                      int NQ, int NKV, int HD, int GQA) {
+    constexpr int MAX_CTX = 4096;
     #pragma omp parallel for
     for (int hh = 0; hh < NQ; hh++) {
         int kvh = hh / GQA;
-        std::vector<float> scores(seq_len);
+        float scores[MAX_CTX];
         float mx = -1e30f;
         for (int p = 0; p < seq_len; p++) {
             double s = 0;
@@ -233,28 +233,10 @@ struct NpuWorker {
     bool gemm(int op, int layer, int batch, int in_dim,
               const float* in_data, std::vector<float>& out_data) {
         if (!ready || stdin_fd < 0 || stdout_fd < 0) return false;
-        // Framed protocol: [total_len(uint32)] [op, layer, batch, in_dim] [data...]
-        // total_len covers everything after the length field itself.
-        // Single write() call prevents protocol desync from pipe coalescing (fix #728).
-        uint32_t payload[5] = {(uint32_t)op, (uint32_t)layer, (uint32_t)batch, (uint32_t)in_dim, 0};
-        size_t data_bytes = (size_t)batch * (size_t)in_dim * sizeof(float);
-        size_t hdr_bytes = sizeof(payload);
-        // Write total_len + full message as one unit
-        uint32_t total_len = (uint32_t)(hdr_bytes + data_bytes);
-        struct iovec iov[2];
-        iov[0].iov_base = &total_len;
-        iov[0].iov_len = sizeof(total_len);
-        iov[1].iov_base = payload;
-        iov[1].iov_len = hdr_bytes;
-        // Data as third vector
-        struct iovec iov_data[3];
-        memcpy(iov_data, iov, sizeof(iov));
-        iov_data[2].iov_base = (void*)in_data;
-        iov_data[2].iov_len = data_bytes;
-        ssize_t total = 0;
-        for (int v = 0; v < 3; v++) total += iov_data[v].iov_len;
-        ssize_t written = writev(stdin_fd, iov_data, 3);
-        if (written != total) return false;
+        uint32_t hdr[4] = {(uint32_t)op, (uint32_t)layer, (uint32_t)batch, (uint32_t)in_dim};
+        if (write(stdin_fd, hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr)) return false;
+        if (write(stdin_fd, in_data, (size_t)batch * in_dim * sizeof(float)) !=
+            (ssize_t)((size_t)batch * in_dim * sizeof(float))) return false;
         uint32_t resp[2];
         if (!read_with_timeout(stdout_fd, resp, sizeof(resp), GEMM_TIMEOUT_MS)) return false;
         if (resp[0] != 0) return false;
