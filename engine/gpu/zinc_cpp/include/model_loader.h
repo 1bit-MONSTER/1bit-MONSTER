@@ -47,6 +47,7 @@ struct LayerWeightsGPU {
     GpuBuffer rms_attn, rms_ffn;  // RMS norm [hidden]
     GpuBuffer bq, bk, bv;         // optional QKV biases
     GpuBuffer qkv_fused;          // fused QKV weights [Q+K+V, hidden]
+    GpuBuffer gate_up_fused;      // fused gate+up weights [2*inter, hidden]
     bool has_bias = false;
 };
 
