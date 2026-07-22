@@ -236,6 +236,15 @@ bool ModelLoader::load(const std::string& gguf_path, ModelGPU& model) {
         a(layer.rms_ffn, (size_t)dims.hidden * sizeof(float));
         
 #ifdef HAS_GGUF_READER
+        // Allocate fused QKV buffer (Q + K + V concatenated, Q4_K format)
+        {
+            size_t q_rows = dims.n_heads * dims.head_dim;
+            size_t kv_rows = dims.n_kv_heads * dims.head_dim;
+            size_t total_rows = q_rows + 2 * kv_rows;
+            size_t q4k_per_row = ((dims.hidden + 255) / 256) * 144;
+            layer.qkv_fused = GpuBuffer(device_, total_rows * q4k_per_row, rw, dev);
+        }
+        
         if (have_reader) {
             std::string p = "blk." + std::to_string(l) + ".";
             upload_tensor_q4k(reader, p + "attn_q.weight", layer.wq,
@@ -252,6 +261,37 @@ bool ModelLoader::load(const std::string& gguf_path, ModelGPU& model) {
                 (size_t)dims.inter * dims.hidden, device_, queue_, cmd_pool_);
             upload_tensor_q4k(reader, p + "ffn_down.weight", layer.w3,
                 (size_t)dims.hidden * dims.inter, device_, queue_, cmd_pool_);
+            
+            // Fuse Q, K, V weights into single buffer for fused QKV shader
+            if (have_reader && layer.qkv_fused) {
+                size_t q_rows = dims.n_heads * dims.head_dim;
+                size_t kv_rows = dims.n_kv_heads * dims.head_dim;
+                size_t q4k_per_row = ((dims.hidden + 255) / 256) * 144;
+                
+                std::vector<float> q_tmp, k_tmp, v_tmp;
+                if (reader.get_tensor_f32(p + "attn_q.weight", q_tmp) && q_tmp.size() >= (size_t)q_rows * dims.hidden &&
+                    reader.get_tensor_f32(p + "attn_k.weight", k_tmp) && k_tmp.size() >= (size_t)kv_rows * dims.hidden &&
+                    reader.get_tensor_f32(p + "attn_v.weight", v_tmp) && v_tmp.size() >= (size_t)kv_rows * dims.hidden) {
+                    
+                    std::vector<float> fused(q_tmp.size() + k_tmp.size() + v_tmp.size());
+                    memcpy(fused.data(), q_tmp.data(), q_tmp.size() * 4);
+                    memcpy(fused.data() + q_tmp.size(), k_tmp.data(), k_tmp.size() * 4);
+                    memcpy(fused.data() + q_tmp.size() + k_tmp.size(), v_tmp.data(), v_tmp.size() * 4);
+                    
+                    size_t q4k_bytes = q4k_quantize(fused.data(), nullptr, fused.size());
+                    std::vector<uint8_t> q4k_buf(q4k_bytes);
+                    if (q4k_quantize(fused.data(), q4k_buf.data(), fused.size()) == q4k_bytes) {
+                        GpuBuffer staging(device_, q4k_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                        memcpy(staging.map(), q4k_buf.data(), q4k_bytes);
+                        staging.unmap();
+                        VkCommandBuffer cmd = cmd_pool_.begin_once();
+                        VkBufferCopy cp = {0, 0, q4k_bytes};
+                        vkCmdCopyBuffer(cmd, staging.buffer(), layer.qkv_fused.buffer(), 1, &cp);
+                        cmd_pool_.submit_and_wait(cmd, queue_);
+                    }
+                }
+            }
             upload_tensor(reader, p + "attn_norm.weight", layer.rms_attn,
                 dims.hidden, device_, queue_, cmd_pool_);
             upload_tensor(reader, p + "ffn_norm.weight", layer.rms_ffn,
