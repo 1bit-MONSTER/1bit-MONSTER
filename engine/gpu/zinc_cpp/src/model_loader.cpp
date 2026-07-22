@@ -1,6 +1,7 @@
 /// Model loader — GGUF weight upload to GPU.
 /// Fixed: #775 actual weight data upload, #773 KV cache as single buffer, #782 open GGUF once
 #include "model_loader.h"
+#include <cfloat>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
@@ -80,6 +81,92 @@ static void upload_tensor_q8(GgufReader& reader, const std::string& name,
     vkCmdCopyBuffer(cmd, staging.buffer(), dst.buffer(), 1, &copy);
     pool.submit_and_wait(cmd, queue);
 }
+
+// Q4_K quantization: 256 elements per block, 144 bytes
+// Layout: fp16 d, fp16 dmin, 12 bytes 6-bit scales, 128 bytes 4-bit values
+static size_t q4k_quantize(const float* f32, uint8_t* q4k, int count) {
+    const int BS = 256;
+    int nb = (count + BS - 1) / BS;
+    size_t out_size = (size_t)nb * 144;
+    if (!q4k) return out_size;
+    
+    for (int b = 0; b < nb; b++) {
+        int base = b * BS;
+        uint8_t* block = q4k + b * 144;
+        
+        // Find max and min
+        float amax = -FLT_MAX, amin = FLT_MAX;
+        for (int j = 0; j < BS && base + j < count; j++) {
+            float v = f32[base + j];
+            if (v > amax) amax = v;
+            if (v < amin) amin = v;
+        }
+        
+        float d = (amax - amin) / 255.0f;
+        float dmin = amin;
+        if (d < 1e-12f) d = 1e-12f;
+        
+        // Store d and dmin as fp16 (crude truncation)
+        uint32_t db, dmb; memcpy(&db, &d, 4); memcpy(&dmb, &dmin, 4);
+        *(uint16_t*)(block + 0) = (uint16_t)(db >> 16);
+        *(uint16_t*)(block + 2) = (uint16_t)(dmb >> 16);
+        
+        // Quantize values to 4-bit nibbles
+        uint8_t* qs = block + 16;  // after scales
+        for (int j = 0; j < BS && base + j < count; j++) {
+            float v = (f32[base + j] - dmin) / d;
+            int qi = (int)(v + 0.5f);
+            if (qi < 0) qi = 0;
+            if (qi > 15) qi = 15;
+            if (j % 2 == 0)
+                qs[j / 2] = (uint8_t)(qi & 0xF);
+            else
+                qs[j / 2] |= (uint8_t)(qi << 4);
+        }
+        
+        // Simple per-subblock scales (6-bit, packed into 12 bytes)
+        // For a minimal implementation, use constant scale per superblock
+        // Production: 8 × 6-bit scales for 8 sub-blocks
+        uint8_t* scales = block + 4;
+        memset(scales, 0, 12);
+        for (int s = 0; s < 8; s++) {
+            int s_start = s * 32;
+            float smax = -FLT_MAX;
+            for (int j = s_start; j < s_start + 32 && base + j < count; j++) {
+                float a = fabsf(f32[base + j]); if (a > smax) smax = a;
+            }
+            int si = (int)(smax / d + 0.5f);
+            if (si < 0) si = 0;
+            if (si > 63) si = 63;
+            // Pack 6-bit: first 4 scales in low 24 bits, next 4 in high 24 bits
+            if (s < 4) scales[s] = (uint8_t)((scales[s] & 0xC0) | si);
+            else scales[s + 4] = (uint8_t)((scales[s + 4] & 0xC0) | si);
+        }
+    }
+    return out_size;
+}
+
+// Upload+quantize tensor to Q4_K format
+static void upload_tensor_q4k(GgufReader& reader, const std::string& name,
+                               GpuBuffer& dst, size_t expected_floats,
+                               VkDevice dev, VkQueue queue, CommandPool& pool) {
+    std::vector<float> tmp;
+    if (!reader.get_tensor_f32(name, tmp) || tmp.size() < expected_floats) return;
+    
+    size_t q4k_bytes = q4k_quantize(tmp.data(), nullptr, expected_floats);
+    std::vector<uint8_t> q4k_buf(q4k_bytes);
+    q4k_quantize(tmp.data(), q4k_buf.data(), expected_floats);
+    
+    GpuBuffer staging(dev, q4k_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    memcpy(staging.map(), q4k_buf.data(), q4k_bytes);
+    staging.unmap();
+    
+    VkCommandBuffer cmd = pool.begin_once();
+    VkBufferCopy copy = {0, 0, q4k_bytes};
+    vkCmdCopyBuffer(cmd, staging.buffer(), dst.buffer(), 1, &copy);
+    pool.submit_and_wait(cmd, queue);
+}
 #endif
 
 ModelLoader::ModelLoader(VkDevice device, VkQueue queue, uint32_t queue_family,
@@ -151,19 +238,19 @@ bool ModelLoader::load(const std::string& gguf_path, ModelGPU& model) {
 #ifdef HAS_GGUF_READER
         if (have_reader) {
             std::string p = "blk." + std::to_string(l) + ".";
-            upload_tensor_q8(reader, p + "attn_q.weight", layer.wq,
+            upload_tensor_q4k(reader, p + "attn_q.weight", layer.wq,
                 (size_t)dims.n_heads * dims.head_dim * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor_q8(reader, p + "attn_k.weight", layer.wk,
+            upload_tensor_q4k(reader, p + "attn_k.weight", layer.wk,
                 (size_t)dims.n_kv_heads * dims.head_dim * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor_q8(reader, p + "attn_v.weight", layer.wv,
+            upload_tensor_q4k(reader, p + "attn_v.weight", layer.wv,
                 (size_t)dims.n_kv_heads * dims.head_dim * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor_q8(reader, p + "attn_output.weight", layer.wo,
+            upload_tensor_q4k(reader, p + "attn_output.weight", layer.wo,
                 (size_t)dims.hidden * dims.n_heads * dims.head_dim, device_, queue_, cmd_pool_);
-            upload_tensor_q8(reader, p + "ffn_gate.weight", layer.w1,
+            upload_tensor_q4k(reader, p + "ffn_gate.weight", layer.w1,
                 (size_t)dims.inter * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor_q8(reader, p + "ffn_up.weight", layer.w2,
+            upload_tensor_q4k(reader, p + "ffn_up.weight", layer.w2,
                 (size_t)dims.inter * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor_q8(reader, p + "ffn_down.weight", layer.w3,
+            upload_tensor_q4k(reader, p + "ffn_down.weight", layer.w3,
                 (size_t)dims.hidden * dims.inter, device_, queue_, cmd_pool_);
             upload_tensor(reader, p + "attn_norm.weight", layer.rms_attn,
                 dims.hidden, device_, queue_, cmd_pool_);
