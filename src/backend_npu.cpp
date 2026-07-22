@@ -45,15 +45,17 @@ static inline void rmsnorm(float* x, const float* w, int n) {
     for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * w[i] : 0.0f;
 }
 static inline void softmax(float* x, int n) {
-    cn(x, n); float mx = x[0];
-    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
+    cn(x, n); float mx = -1e30f;
+    for (int i = 0; i < n; i++) if (std::isfinite(x[i]) && x[i] > mx) mx = x[i];
     double s = 0;
     for (int i = 0; i < n; i++) {
-        float d = x[i] - mx; if (d > 80) d = 80; else if (d < -80) d = -80;
-        x[i] = expf(d); s += x[i];
+        float d = x[i] - mx; if (d > 80.0f) d = 80.0f; else if (d < -80.0f) d = -80.0f;
+        double e = (double)expf(d); 
+        if (!std::isfinite((float)e)) e = 0.0;
+        x[i] = (float)e; s += e;
     }
     if (s <= 0) { float iv = 1.0f / n; for (int i = 0; i < n; i++) x[i] = iv; return; }
-    float is = 1.0f / (float)s; for (int i = 0; i < n; i++) x[i] *= is;
+    float is = (float)(1.0 / s); for (int i = 0; i < n; i++) x[i] *= is;
 }
 static inline float silu(float x) { return x / (1.0f + expf(-x)); }
 
@@ -130,7 +132,9 @@ static bool read_with_timeout(int fd, void* buf, size_t len, int timeout_ms) {
         if (remaining_ms <= 0) return false;
         fd_set fds; FD_ZERO(&fds); FD_SET(fd, &fds);
         struct timeval tv = {remaining_ms / 1000, (remaining_ms % 1000) * 1000};
-        int r = select(fd + 1, &fds, nullptr, nullptr, &tv);
+        int r;
+        do { r = select(fd + 1, &fds, nullptr, nullptr, &tv); }
+        while (r < 0 && errno == EINTR);
         if (r <= 0) return false; // timeout or select error
         ssize_t n = read(fd, (char*)buf + got, len - got);
         if (n <= 0) return false; // EOF or read error
