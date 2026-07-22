@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <optional>
 
 // ─── Convenience error checking ──────────────────────────────────
@@ -55,7 +56,7 @@ private:
 // ─── Pipeline cache (compute pipelines from shaders) ─────────────
 class ComputePipelineCache {
 public:
-    ComputePipelineCache(VkDevice device) : device_(device) {}
+    ComputePipelineCache(VkDevice device) : device_(device), shaders_(device) {}
     ~ComputePipelineCache();
 
     VkPipeline get(const std::string& shader_name,
@@ -175,6 +176,8 @@ public:
     VkDevice device() const { return device_; }
     VkQueue queue() const { return queue_; }
     uint32_t queue_family() const { return queue_family_; }
+    CommandPool* cmd_pool() { return cmd_pool_.get(); }
+    ComputePipelineCache* pipeline_cache() { return pipeline_cache_.get(); }
 
 private:
     // Vulkan state
