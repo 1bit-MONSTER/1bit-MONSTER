@@ -49,7 +49,7 @@ static thread_local bool s_batching = false;
 // Shader name map — inference op names to .spv filenames
 // Uses production ZINC shaders from engine/gpu/shaders/
 static const std::map<std::string,std::string> shader_map = {
-    {"gemv", "dmmv_f32"},           // FP32 GEMV (production)
+    {"gemv", "dmmv_q8_0"},           // Q8_0 quantized GEMV (2x faster than FP32)
     {"rms_norm", "rms_norm_mul"},   // RMS norm + weight multiply (fused)
     {"rope", "rope_fused"},          // fused RoPE
     {"flash_attn", "flash_attn"},    // flash attention
