@@ -1,11 +1,11 @@
 //! 1bit — terminal coding agent for the 1bit.systems NPU+GPU+CPU inference stack.
 //!
 //! A single static binary that replaces the old TypeScript wrapper (which depended
-//! on pi's npm packages).  Handles NPU stack management, interactive chat, config,
-//! and engine builds — all in one Rust binary with no Node.js dependency.
+//! on pi's npm packages).  Handles NPU stack management, interactive chat with tool
+//! execution via MCP, config, and engine builds — all in one Rust binary.
 //!
 //! Architecture:
-//!   1bit chat        → interactive REPL → NPU API (onebitd proxy → bitnet_decode)
+//!   1bit chat        → interactive REPL → NPU API + MCP tool execution
 //!   1bit up          → spawn onebitd + bitnet_decode daemon
 //!   1bit down        → kill NPU processes
 //!   1bit status      → check NPU stack health
@@ -13,6 +13,7 @@
 //!   1bit config      → view / set settings
 
 mod config;
+mod mcp;
 mod npu;
 
 use anyhow::{Context, Result};
@@ -123,7 +124,6 @@ async fn main() -> Result<()> {
         Some(Commands::Build { dir }) => cmd_build(dir)?,
         Some(Commands::Config { key, value }) => cmd_config(key.as_deref(), value.as_deref())?,
         None => {
-            // No subcommand + trailing args = chat prompt
             if !cli.prompt.is_empty() {
                 let prompt = cli.prompt.join(" ");
                 cmd_chat_once(&prompt).await?;
@@ -136,13 +136,24 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// ── Command: chat (interactive REPL) ─────────────────────────────
+// ── Command: chat (interactive REPL with MCP tools) ──────────────
 
 async fn cmd_chat(model_override: Option<&str>) -> Result<()> {
     let settings = config::Settings::load()?;
     let model = model_override
         .map(|s| s.to_string())
         .unwrap_or(settings.default_model.clone());
+
+    // Initialize MCP tools
+    let mut mcp_manager = mcp::McpManager::load()?;
+    let tools = mcp_manager.all_tools();
+    if !tools.is_empty() {
+        println!("  🔌 MCP tools loaded: {}", tools.len());
+        for (server, tool) in &tools {
+            println!("     • {}/{}", server, tool.name);
+        }
+        println!();
+    }
 
     println!("{}", BANNER.replace("VERSION", VERSION));
 
@@ -158,9 +169,11 @@ async fn cmd_chat(model_override: Option<&str>) -> Result<()> {
         }
     }
 
-    // Initialize rustyline
     let mut rl = rustyline::DefaultEditor::new()
         .context("Failed to initialize readline editor")?;
+
+    // Conversation history for tool-aware chat
+    let mut history: Vec<npu::Message> = Vec::new();
 
     println!("  Type /help for commands, /exit to quit.\n");
 
@@ -182,20 +195,38 @@ async fn cmd_chat(model_override: Option<&str>) -> Result<()> {
                             println!("  ⚠️  NPU stack not running. Type /up to start.\n");
                             continue;
                         }
-                        println!("  🤔 Thinking...");
-                        match client
-                            .chat(
-                                &model,
-                                vec![npu::Message {
-                                    role: "user".into(),
-                                    content: trimmed,
-                                }],
-                                None,
+
+                        // Add user message to history
+                        history.push(npu::Message::user(&trimmed));
+
+                        // Prepare tool definitions for the model
+                        let tool_defs = if !tools.is_empty() {
+                            Some(
+                                tools
+                                    .iter()
+                                    .map(|(_server, t)| npu::ToolDefinition {
+                                        tool_type: "function".into(),
+                                        function: npu::ToolFunction {
+                                            name: t.name.clone(),
+                                            description: t
+                                                .description
+                                                .clone()
+                                                .unwrap_or_default(),
+                                            parameters: Some(t.input_schema.clone()),
+                                        },
+                                    })
+                                    .collect(),
                             )
-                            .await
-                        {
-                            Ok(response) => {
-                                println!("\n  {}\n", response);
+                        } else {
+                            None
+                        };
+
+                        println!("  🤔 Thinking...");
+
+                        // Run the tool loop: model may request tool calls, we execute them
+                        match run_tool_loop(&client, &model, &mut history, tool_defs, &mut mcp_manager).await {
+                            Ok(final_text) => {
+                                println!("\n  {}\n", final_text);
                             }
                             Err(e) => {
                                 println!("  ⚠️  Error: {e}\n");
@@ -219,6 +250,78 @@ async fn cmd_chat(model_override: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Run the model ↔ tool loop until the model produces a text response.
+async fn run_tool_loop(
+    client: &npu::NpuClient,
+    model: &str,
+    history: &mut Vec<npu::Message>,
+    tool_defs: Option<Vec<npu::ToolDefinition>>,
+    mcp_manager: &mut mcp::McpManager,
+) -> Result<String> {
+    let max_iterations = 10;
+    for _i in 0..max_iterations {
+        match client.chat(model, history.clone(), tool_defs.clone(), None).await? {
+            npu::ChatResult::Text(text) => {
+                history.push(npu::Message::assistant(&text));
+                return Ok(text);
+            }
+            npu::ChatResult::ToolCalls(tool_calls) => {
+                // Record the assistant's tool calls in history
+                history.push(npu::Message::assistant_with_tools(tool_calls.clone()));
+
+                for tc in &tool_calls {
+                    println!("  🛠️  Calling {}()...", tc.function.name);
+
+                    // Parse arguments
+                    let args: serde_json::Value = match serde_json::from_str(&tc.function.arguments) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            let err = format!("Failed to parse arguments: {e}");
+                            history.push(npu::Message::tool_result(&tc.id, &err));
+                            continue;
+                        }
+                    };
+
+                    // Execute via MCP
+                    match mcp_manager.call_tool_by_name(&tc.function.name, args) {
+                        Ok(result) => {
+                            let mut output = String::new();
+                            for content in &result.content {
+                                if let Some(text) = &content.text {
+                                    output.push_str(text);
+                                    output.push('\n');
+                                }
+                            }
+                            if output.trim().is_empty() {
+                                output = "[tool returned no output]".to_string();
+                            }
+                            if result.is_error {
+                                println!("  ⚠️  Tool {} failed: {}", tc.function.name, output.trim());
+                            } else {
+                                let preview: String = output.chars().take(200).collect();
+                                if output.len() > 200 {
+                                    println!("  ✅ {} → {}... ({} chars)", tc.function.name, preview, output.len());
+                                } else {
+                                    println!("  ✅ {} → {}", tc.function.name, preview.trim());
+                                }
+                            }
+                            history.push(npu::Message::tool_result(&tc.id, output.trim().to_string()));
+                        }
+                        Err(e) => {
+                            let err = format!("Tool execution error: {e}");
+                            println!("  ⚠️  {}", err);
+                            history.push(npu::Message::tool_result(&tc.id, err));
+                        }
+                    }
+                }
+                // Loop back — let the model respond after tool results
+            }
+        }
+    }
+
+    anyhow::bail!("Tool loop exceeded max iterations ({max_iterations}) — possible infinite tool call loop");
+}
+
 /// One-shot chat (for `1bit "prompt"` or `1bit -- "prompt"`)
 async fn cmd_chat_once(prompt: &str) -> Result<()> {
     let settings = config::Settings::load()?;
@@ -228,18 +331,18 @@ async fn cmd_chat_once(prompt: &str) -> Result<()> {
         anyhow::bail!("NPU stack is not running. Start it with `1bit up`");
     }
 
-    let response = client
-        .chat(
-            &settings.default_model,
-            vec![npu::Message {
-                role: "user".into(),
-                content: prompt.to_string(),
-            }],
-            None,
-        )
-        .await?;
+    let history = vec![npu::Message::user(prompt)];
+    match client.chat(&settings.default_model, history, None, None).await? {
+        npu::ChatResult::Text(text) => {
+            println!("{}", text);
+        }
+        npu::ChatResult::ToolCalls(tcs) => {
+            for tc in &tcs {
+                println!("  🛠️  Tool call: {}({})", tc.function.name, tc.function.arguments);
+            }
+        }
+    }
 
-    println!("{}", response);
     Ok(())
 }
 
@@ -264,6 +367,7 @@ async fn handle_chat_command(line: &str, _client: &npu::NpuClient, _model: &str)
     /down              Stop NPU stack
     /clear             Clear the screen
     /models            List available models
+    /tools             List available MCP tools
     /exit              Exit 1bit chat
   "
             );
@@ -319,6 +423,34 @@ async fn handle_chat_command(line: &str, _client: &npu::NpuClient, _model: &str)
             }
             Action::Continue
         }
+        "/tools" => {
+            match mcp::McpManager::load() {
+                Ok(manager) => {
+                    let all_tools = manager.all_tools();
+                    if all_tools.is_empty() {
+                        println!("  ℹ️  No MCP tools available");
+                        println!("     Configure servers in ~/.1bit/mcp.json");
+                    } else {
+                        println!("  Available MCP tools:");
+                        for (server, tool) in &all_tools {
+                            let desc = tool
+                                .description
+                                .as_ref()
+                                .filter(|d| !d.is_empty())
+                                .map(|d| format!(" — {d}"))
+                                .unwrap_or_default();
+                            println!("    • {}/{}", server, tool.name);
+                            println!("      {desc}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("  ⚠️  Could not load MCP config: {e}");
+                    println!("     Create ~/.1bit/mcp.json with MCP server definitions");
+                }
+            }
+            Action::Continue
+        }
         "/exit" | "/quit" => {
             println!("  Goodbye.\n");
             Action::Break
@@ -371,13 +503,11 @@ async fn cmd_up(model: Option<&str>, bitnet_decode: Option<&str>) -> Result<()> 
             cmd.arg("--fp16-weights");
         }
 
-        // Set ROCm env vars
         cmd.env("HSA_OVERRIDE_GFX_VERSION", "11.5.1");
         cmd.env("HSA_ENABLE_SDMA", "0");
 
         match cmd.spawn() {
             Ok(mut child) => {
-                // Detach
                 child.stdin = None;
                 println!("  ✅ bitnet_decode started (pid {}) on port {api_port}", child.id());
             }
@@ -388,10 +518,8 @@ async fn cmd_up(model: Option<&str>, bitnet_decode: Option<&str>) -> Result<()> 
         }
     }
 
-    // Wait briefly and check
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Verify it's running
     let client = npu::NpuClient::new(&settings.npu_endpoint)?;
     match client.health_check().await {
         Ok(true) => {
@@ -425,7 +553,6 @@ async fn cmd_down() -> Result<()> {
     let mut any_killed = false;
 
     for port in ports {
-        // Try fuser first
         let output = Command::new("fuser")
             .args(["-k", &format!("{port}/tcp")])
             .stdout(Stdio::null())
@@ -439,7 +566,6 @@ async fn cmd_down() -> Result<()> {
             }
         }
 
-        // Also try pkill -f bitnet_decode and onebitd
         for proc in &["bitnet_decode", "onebitd"] {
             let _ = Command::new("pkill")
                 .args(["-f", proc])
@@ -465,7 +591,6 @@ async fn cmd_status() -> Result<()> {
 
     println!("  ┌─ 1bit NPU Stack Status ──────────────────────────┐\n");
 
-    // Check NPU API health
     let client = npu::NpuClient::new(&settings.npu_endpoint)?;
     match client.health_check().await {
         Ok(true) => {
@@ -489,12 +614,27 @@ async fn cmd_status() -> Result<()> {
         }
     }
 
-    // Check other ports
     for &(port, name) in &[(13305, "Lemond (Chat UI)"), (9000, "Lemond WebSocket")] {
         if is_port_in_use(port).await {
             println!("  ✅  {name:<27} port {port} — running");
         } else {
             println!("  ❌  {name:<27} port {port} — not running");
+        }
+    }
+
+    // Show MCP tools status
+    match mcp::McpManager::load() {
+        Ok(manager) => {
+            let all_tools = manager.all_tools();
+            if !all_tools.is_empty() {
+                println!();
+                for (server, tool) in &all_tools {
+                    println!("  🔌  MCP: {}/{}", server, tool.name);
+                }
+            }
+        }
+        Err(e) => {
+            println!("  ⚠️  MCP: {e}");
         }
     }
 
@@ -510,7 +650,6 @@ async fn cmd_status() -> Result<()> {
 fn cmd_build(dir: &str) -> Result<()> {
     println!("  🔨 Building NPU engine from source...\n");
 
-    // Look for build scripts
     let build_sh = format!("{dir}/build_npu.sh");
     let cmake_dir = dir;
 
@@ -529,7 +668,6 @@ fn cmd_build(dir: &str) -> Result<()> {
             anyhow::bail!("Build script exited with status {status}");
         }
     } else if std::path::Path::new(cmake_dir).join("CMakeLists.txt").exists() {
-        // cmake build
         println!("  Running cmake...");
         let status = Command::new("cmake")
             .args(["-B", "build", "-G", "Ninja"])
@@ -577,7 +715,6 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> Result<()> {
     let mut settings = config::Settings::load()?;
 
     match (key, value) {
-        // Show all
         (None, None) => {
             println!("  1bit Configuration\n");
             println!("  Theme:                {}", settings.theme);
@@ -613,22 +750,16 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> Result<()> {
                 config::settings_path().unwrap_or_default().display()
             );
         }
-
-        // Get single key
         (Some(k), None) => {
             match settings.get(k) {
                 Ok(val) => println!("{k} = {val}"),
                 Err(e) => println!("  ⚠️  {e}"),
             }
         }
-
-        // Set key=value
         (Some(k), Some(v)) => {
             settings.set(k, v)?;
             println!("  ✅ {k} = {v}");
         }
-
-        // Value without key (shouldn't happen via clap but handle it)
         (None, Some(v)) => {
             println!("  ⚠️  Cannot set value without a key: {v}");
             println!("       Usage: 1bit config <key> <value>");
@@ -640,10 +771,8 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> Result<()> {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-/// Check if a TCP port is in use by attempting a connection.
 async fn is_port_in_use(port: u16) -> bool {
-    use tokio::net::TcpStream;
-    TcpStream::connect(format!("127.0.0.1:{port}"))
+    tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
         .await
         .is_ok()
 }
