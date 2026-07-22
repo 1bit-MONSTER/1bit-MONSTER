@@ -53,6 +53,7 @@ extern "C" void launch_q4nx_gemv(const float* x, const uint8_t* w, float* y,
                                    int K, int M, hipStream_t stream) {
     int n_tr = (K + TR - 1) / TR, n_tc = (M + TC - 1) / TC;
     hipLaunchKernelGGL(q4nx_gemv, dim3(n_tc, n_tr), TR, 0, stream, x, w, y, K, M, n_tr, n_tc);
+    HIP_CHECK(hipGetLastError());
 }
 
 #ifndef __HIP_DEVICE_COMPILE__
