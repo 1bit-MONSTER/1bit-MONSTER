@@ -2,6 +2,7 @@
 /// Fixed: #775 actual weight data upload, #773 KV cache as single buffer, #782 open GGUF once
 #include "model_loader.h"
 #include <cstring>
+#include <cmath>
 #include <cstdio>
 
 #ifdef HAS_GGUF_READER
@@ -32,6 +33,52 @@ static void upload_tensor(GgufReader& reader, const std::string& name,
     std::vector<float> tmp;
     if (reader.get_tensor_f32(name, tmp) && tmp.size() >= expected_floats)
         upload_float_data(dev, queue, pool, dst, tmp.data(), expected_floats);
+}
+
+// Q8_0 quantization: block size 32, each block = fp16 scale + 32 int8 values = 34 bytes
+static size_t q8_0_quantize(const float* f32, int8_t* q8, int count) {
+    int blocks = (count + 31) / 32;
+    size_t out_size = (size_t)blocks * 34;
+    if (!q8) return out_size;  // query size only
+    for (int b = 0; b < blocks; b++) {
+        int start = b * 32;
+        int end = (start + 32 < count) ? start + 32 : count;
+        float amax = 0.0f;
+        for (int i = start; i < end; i++) { float a = fabsf(f32[i]); if (a > amax) amax = a; }
+        int8_t* block = q8 + b * 34;
+        float scale = amax / 127.0f;
+        if (scale < 1e-12f) scale = 1e-12f;
+        uint32_t scale_bits; memcpy(&scale_bits, &scale, 4);
+        uint16_t fp16 = (uint16_t)(scale_bits >> 16);
+        memcpy(block, &fp16, 2);
+        float inv = 1.0f / scale;
+        for (int i = start; i < end; i++)
+            block[2 + (i - start)] = (int8_t)(f32[i] * inv + (f32[i] >= 0 ? 0.5f : -0.5f));
+    }
+    return out_size;
+}
+
+// Upload+quantize tensor to Q8_0 format
+static void upload_tensor_q8(GgufReader& reader, const std::string& name,
+                              GpuBuffer& dst, size_t expected_floats,
+                              VkDevice dev, VkQueue queue, CommandPool& pool) {
+    std::vector<float> tmp;
+    if (!reader.get_tensor_f32(name, tmp) || tmp.size() < expected_floats) return;
+    
+    size_t q8_bytes = q8_0_quantize(tmp.data(), nullptr, expected_floats);
+    std::vector<int8_t> q8_buf(q8_bytes);
+    q8_0_quantize(tmp.data(), q8_buf.data(), expected_floats);
+    
+    // Upload to GPU
+    GpuBuffer staging(dev, q8_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    memcpy(staging.map(), q8_buf.data(), q8_bytes);
+    staging.unmap();
+    
+    VkCommandBuffer cmd = pool.begin_once();
+    VkBufferCopy copy = {0, 0, q8_bytes};
+    vkCmdCopyBuffer(cmd, staging.buffer(), dst.buffer(), 1, &copy);
+    pool.submit_and_wait(cmd, queue);
 }
 #endif
 
@@ -104,19 +151,19 @@ bool ModelLoader::load(const std::string& gguf_path, ModelGPU& model) {
 #ifdef HAS_GGUF_READER
         if (have_reader) {
             std::string p = "blk." + std::to_string(l) + ".";
-            upload_tensor(reader, p + "attn_q.weight", layer.wq,
+            upload_tensor_q8(reader, p + "attn_q.weight", layer.wq,
                 (size_t)dims.n_heads * dims.head_dim * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor(reader, p + "attn_k.weight", layer.wk,
+            upload_tensor_q8(reader, p + "attn_k.weight", layer.wk,
                 (size_t)dims.n_kv_heads * dims.head_dim * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor(reader, p + "attn_v.weight", layer.wv,
+            upload_tensor_q8(reader, p + "attn_v.weight", layer.wv,
                 (size_t)dims.n_kv_heads * dims.head_dim * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor(reader, p + "attn_output.weight", layer.wo,
+            upload_tensor_q8(reader, p + "attn_output.weight", layer.wo,
                 (size_t)dims.hidden * dims.n_heads * dims.head_dim, device_, queue_, cmd_pool_);
-            upload_tensor(reader, p + "ffn_gate.weight", layer.w1,
+            upload_tensor_q8(reader, p + "ffn_gate.weight", layer.w1,
                 (size_t)dims.inter * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor(reader, p + "ffn_up.weight", layer.w2,
+            upload_tensor_q8(reader, p + "ffn_up.weight", layer.w2,
                 (size_t)dims.inter * dims.hidden, device_, queue_, cmd_pool_);
-            upload_tensor(reader, p + "ffn_down.weight", layer.w3,
+            upload_tensor_q8(reader, p + "ffn_down.weight", layer.w3,
                 (size_t)dims.hidden * dims.inter, device_, queue_, cmd_pool_);
             upload_tensor(reader, p + "attn_norm.weight", layer.rms_attn,
                 dims.hidden, device_, queue_, cmd_pool_);
@@ -154,19 +201,39 @@ bool ModelLoader::scan_gguf(const std::string& path, ModelDims& dims,
         return false;
     }
     dims.arch = reader.architecture();
+    
+    // Architecture-aware key lookup (fix #785)
+    auto arch_u32 = [&](const std::string& key, uint32_t& out) -> bool {
+        std::string arch_key = dims.arch + "." + key;
+        if (reader.get_u32(arch_key, out)) return true;
+        return reader.get_u32(key, out);
+    };
+    auto arch_f32 = [&](const std::string& key, float& out) -> bool {
+        std::string arch_key = dims.arch + "." + key;
+        if (reader.get_f32(arch_key, out)) return true;
+        return reader.get_f32(key, out);
+    };
+    
     uint32_t val = 0; float fval = 0;
-    if (reader.get_u32("llama.attention.head_count", val)) dims.n_heads = val; val = 0;
-    if (reader.get_u32("llama.attention.head_count_kv", val)) dims.n_kv_heads = val; val = 0;
-    if (reader.get_u32("llama.block_count", val)) dims.n_layers = val; val = 0;
-    if (reader.get_u32("llama.feed_forward_length", val)) dims.inter = val; val = 0;
-    if (reader.get_f32("llama.rope.freq_base", fval)) dims.rope_theta = fval;
-    if (reader.get_u32("llama.embedding_length", val)) dims.hidden = val; val = 0;
+    if (arch_u32("attention.head_count", val)) dims.n_heads = val; val = 0;
+    if (arch_u32("attention.head_count_kv", val)) dims.n_kv_heads = val; val = 0;
+    if (arch_u32("block_count", val)) dims.n_layers = val; val = 0;
+    if (arch_u32("feed_forward_length", val)) dims.inter = val; val = 0;
+    if (arch_f32("rope.freq_base", fval)) dims.rope_theta = fval;
+    if (arch_u32("embedding_length", val)) dims.hidden = val; val = 0;
     if (dims.n_heads > 0 && dims.hidden > 0) dims.head_dim = dims.hidden / dims.n_heads;
     else dims.head_dim = 128;
     if (reader.get_u32("tokenizer.ggml.vocab_size", val)) dims.vocab = val; val = 0;
-    if (dims.vocab == 0) { reader.get_u32("llama.vocab_size", val); dims.vocab = val; }
-    if (reader.get_u32("llama.context_length", val)) dims.max_seq = val > 0 ? val : 4096;
-    if (reader.get_f32("llama.attention.layer_norm_rms_epsilon", fval)) dims.rms_eps = fval;
+    if (dims.vocab == 0) { arch_u32("vocab_size", val); dims.vocab = val; }
+    // Fallback: common vocab sizes for known architectures
+    if (dims.vocab == 0) {
+        if (dims.arch == "qwen3" || dims.arch == "qwen2") dims.vocab = 152064;
+        else if (dims.arch == "llama") dims.vocab = 32000;
+        else if (dims.arch == "gemma2") dims.vocab = 256000;
+        else dims.vocab = 32000;
+    }
+    if (arch_u32("context_length", val)) dims.max_seq = val > 0 ? val : 4096;
+    if (arch_f32("attention.layer_norm_rms_epsilon", fval)) dims.rms_eps = fval;
     printf("  GGUF: %s, %d layers, H=%d, heads=%d/%d, V=%d\n",
            dims.arch.c_str(), dims.n_layers, dims.hidden,
            dims.n_heads, dims.n_kv_heads, dims.vocab);
