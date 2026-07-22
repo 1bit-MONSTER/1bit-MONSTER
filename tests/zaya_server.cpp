@@ -229,6 +229,8 @@ struct SimpleTokenizer {
     int eos_id = 106;
     bool use_bpe = false;
     rcpp_tokenizer_t* bpe_tok = nullptr;
+    // Vocab lookup: maps token_id -> token string (loaded from GGUF)
+    std::vector<std::string> id_to_token;
 
     ~SimpleTokenizer() { if (bpe_tok) rcpp_tokenizer_free(bpe_tok); }
 
@@ -246,32 +248,26 @@ struct SimpleTokenizer {
         return false;
     }
 
-    /// Load BOS/EOS from GGUF metadata (works for any model with
-    /// tokenizer.ggml.bos_token_id / eos_token_id KV entries).
-    /// The actual BPE merge/vocab tables are NOT loaded from GGUF
-    /// by this path — encoding falls back to a character-level
-    /// scheme with correct BOS/EOS sentinels, which is sufficient
-    /// for testing and basic interaction with small models.
+    /// Load BOS/EOS from GGUF metadata.
     bool load_from_gguf(GgufReader& reader) {
         uint32_t bos = 2, eos = 106;
-        if (reader.get_u32("tokenizer.ggml.bos_token_id", bos)) {
-            bos_id = (int)bos;
-        } else {
-            // Also try alternative key names used by some models
-            uint32_t alt = 0;
-            if (reader.get_u32("tokenizer.ggml.bos_id", alt)) bos_id = (int)alt;
-        }
-        if (reader.get_u32("tokenizer.ggml.eos_token_id", eos)) {
-            eos_id = (int)eos;
-        } else {
-            uint32_t alt = 0;
-            if (reader.get_u32("tokenizer.ggml.eos_id", alt)) eos_id = (int)alt;
-        }
+        if (reader.get_u32("tokenizer.ggml.bos_token_id", bos)) bos_id = (int)bos;
+        else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.bos_id", alt)) bos_id=(int)alt; }
+        if (reader.get_u32("tokenizer.ggml.eos_token_id", eos)) eos_id = (int)eos;
+        else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.eos_id", alt)) eos_id=(int)alt; }
         fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d\n", bos_id, eos_id);
-
-        // Try to find a .htok file alongside the model for full BPE
-        if (use_bpe) return true;  // already loaded
+        if (use_bpe) return true;
         return false;
+    }
+
+    /// Load vocab table from GGUF's tokenizer.ggml.tokens array.
+    /// This enables readable decode output without a .htok BPE file.
+    bool load_vocab_from_gguf(GgufReader& reader) {
+        std::vector<std::string> tokens;
+        if (!reader.get_string_array("tokenizer.ggml.tokens", tokens)) return false;
+        id_to_token = std::move(tokens);
+        fprintf(stderr, "  Vocab loaded: %zu tokens from GGUF\n", id_to_token.size());
+        return true;
     }
 
     std::vector<int> encode(const std::string& text) {
@@ -301,12 +297,22 @@ struct SimpleTokenizer {
             size_t out_len = 0;
             rcpp_status_t st = rcpp_tokenizer_decode(bpe_tok, tokens.data(), tokens.size(),
                                                       r.data(), r.size(), &out_len);
-            if (st == RCPP_OK && out_len > 0) {
-                r.resize(out_len);
-                return r;
-            }
+            if (st == RCPP_OK && out_len > 0) { r.resize(out_len); return r; }
             return "";
         }
+        // Vocab-based decode (from GGUF tokenizer.ggml.tokens)
+        if (!id_to_token.empty()) {
+            std::string r;
+            for (int v : tokens) {
+                if (v == bos_id || v == eos_id) continue;
+                if (v >= 0 && v < (int)id_to_token.size())
+                    r += id_to_token[v];
+                else
+                    { r += '<'; r += std::to_string(v); r += '>'; }
+            }
+            return r;
+        }
+        // Character-level fallback
         std::string r;
         for (int v : tokens) {
             if (v == bos_id || v == eos_id) continue;
@@ -591,9 +597,11 @@ int main(int argc, char** argv) {
                     tok.load_htok(htok_path);
                 }
                 tok.load_from_gguf(reader);
-                fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d (from GGUF)%s\n",
+                tok.load_vocab_from_gguf(reader);
+                fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d %s(vocab=%zu)\n",
                         tok.bos_id, tok.eos_id,
-                        tok.use_bpe ? " + BPE" : " (char-level)");
+                        tok.use_bpe ? "+ BPE " : "",
+                        tok.id_to_token.size());
             }
         } else {
             fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no GGUF metadata)\n",
