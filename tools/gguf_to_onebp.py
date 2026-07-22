@@ -376,6 +376,14 @@ def main():
     
     if is_laguna:
         arch_enum = 6  # ONEBP_LAGUNA
+    elif arch in ("falcon", "falcon3", "falcon_h1"):
+        arch_enum = 0  # ONEBP_DENSE (dense transformer)
+        print(f"  Falcon arch detected — using dense forward pass")
+    elif arch in ("olmo", "olmo2", "olmoe"):
+        arch_enum = 0  # ONEBP_DENSE
+        if "olmoe" in arch:
+            arch_enum = 1  # ONEBP_MOE (MoE version)
+        print(f"  OLMo arch detected — using {'MoE' if arch_enum else 'dense'} forward pass")
     elif is_ternary:
         arch_enum = 4  # ONEBP_TERNARY
     elif is_moe:

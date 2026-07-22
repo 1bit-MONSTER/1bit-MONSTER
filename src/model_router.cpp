@@ -85,3 +85,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
     // Default: try HIP GPU first, fall back to generic CPU
     return {{"hip_gpu", "cpu_generic"}, "generic model — HIP GPU, generic CPU fallback"};
 }
+  // Falcon (tiiuae) — parallel attention+ffn, MQA
+  if (cfg.arch == RCPP_ARCH_FALCON) {
+      return {{"hip_gpu", "cpu_generic"}, "Falcon — dense, parallel attn+ffn"};
+  }
+  // OLMo (AI2) — LayerNorm, no RoPE
+  if (cfg.arch == RCPP_ARCH_OLMO) {
+      return {{"hip_gpu", "cpu_generic"}, "OLMo — LayerNorm, learned positions"};
+  }
