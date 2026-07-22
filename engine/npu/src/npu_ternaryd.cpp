@@ -191,6 +191,11 @@ struct TernaryCtx {
     const uint8_t* weights_host_ptr = nullptr;
     const uint16_t* scales_host_ptr = nullptr;
 
+    ~TernaryCtx() {
+        delete[] weights_host_ptr;
+        delete[] scales_host_ptr;
+    }
+
     bool init(xrt::device& dev,
               const xrt::uuid& single_uuid, const std::vector<uint32_t>& single_instr,
               const xrt::uuid& multi_uuid,  const std::vector<uint32_t>& multi_instr,
