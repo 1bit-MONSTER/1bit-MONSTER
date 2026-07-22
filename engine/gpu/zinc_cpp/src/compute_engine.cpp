@@ -49,7 +49,9 @@ static thread_local bool s_batching = false;
 // Shader name map — inference op names to .spv filenames
 // Uses production ZINC shaders from engine/gpu/shaders/
 static const std::map<std::string,std::string> shader_map = {
-    {"gemv", "dmmv_q4k"},           // Q4_K quantized GEMV (4-bit, 2x faster than Q8_0)
+    {"gemv", "dmmv_q4k"},           // Q4_K quantized GEMV
+    {"fused_qkv", "fused_qkv"},     // Fused QKV projection
+    {"fused_gate_up", "fused_gate_up"}, // Fused gate+up projection
     {"rms_norm", "rms_norm_mul"},   // RMS norm + weight multiply (fused)
     {"rope", "rope_fused"},          // fused RoPE
     {"flash_attn", "flash_attn"},    // flash attention
@@ -297,12 +299,14 @@ int InferenceEngine::generate(int token_id) {
                           hidden.buffer(), residual.buffer(), VK_NULL_HANDLE, 1);
         
         compute->rms_norm(hidden.buffer(), layer.rms_attn.buffer(), d.hidden, d.rms_eps);
-        compute->gemv(qkv.buffer(), hidden.buffer(), layer.wq.buffer(),
-                       d.n_heads * d.head_dim, 1, d.hidden);
-        compute->gemv(VK_NULL_HANDLE, hidden.buffer(), layer.wk.buffer(),
-                       d.n_kv_heads * d.head_dim, 1, d.hidden);
-        compute->gemv(VK_NULL_HANDLE, hidden.buffer(), layer.wv.buffer(),
-                       d.n_kv_heads * d.head_dim, 1, d.hidden);
+        // Fused QKV: single dispatch for Q, K, V projections
+        {
+            uint32_t qkv_rows = d.n_heads * d.head_dim + 2 * d.n_kv_heads * d.head_dim;
+            PushConstants pc_qkv{};
+            pc_qkv.M = qkv_rows; pc_qkv.K = (uint32_t)d.hidden;
+            compute->dispatch_batch("fused_qkv", pc_qkv, hidden.buffer(), qkv.buffer(), layer.qkv_fused.buffer(), 
+                                   (qkv_rows + 255) / 256, 1, 1);
+        }
         compute->rope(qkv.buffer(), VK_NULL_HANDLE, d.head_dim, pos,
                       d.n_heads, d.n_kv_heads, d.rope_theta);
         compute->flash_attn(qkv.buffer(), model->kv_cache.buffer(), model->kv_cache.buffer(),
