@@ -136,12 +136,35 @@ void ComputeEngine::begin_batch() {
     s_batching = true;
 }
 
+// Async fence for double-buffered dispatch
+static thread_local VkFence s_async_fence = VK_NULL_HANDLE;
+
 void ComputeEngine::end_batch() {
     if (!s_batching) return;
-    cmd_pool_.submit_and_wait(s_batch_cmd, queue_);
+    
+    if (s_async_fence == VK_NULL_HANDLE) {
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        vkCreateFence(device_, &fci, nullptr, &s_async_fence);
+    } else {
+        // Wait for previous token's batch to finish (overlaps CPU prep with GPU exec)
+        vkWaitForFences(device_, 1, &s_async_fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(device_, 1, &s_async_fence);
+    }
+    
+    cmd_pool_.submit(s_batch_cmd, queue_, s_async_fence);
     s_batching = false;
     s_batch_cmd = VK_NULL_HANDLE;
     reset_descriptors();
+}
+
+// Called before shutdown to drain last async batch
+void ComputeEngine::sync() {
+    if (s_async_fence) {
+        vkWaitForFences(device_, 1, &s_async_fence, VK_TRUE, UINT64_MAX);
+        vkDestroyFence(device_, s_async_fence, nullptr);
+        s_async_fence = VK_NULL_HANDLE;
+    }
 }
 
 void ComputeEngine::dispatch_batch(const std::string& shader, const PushConstants& push,
@@ -341,7 +364,6 @@ int InferenceEngine::generate(int token_id) {
     // End batch — submits all recorded dispatches
     compute->end_batch();
     
-    // Argmax reads back to CPU — separate sync
     pos++;
     return compute->argmax(logits.buffer(), d.vocab);
 }
