@@ -15,6 +15,7 @@ set(ZINC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(ZINC_SOURCES
     ${ZINC_SRC_DIR}/vulkan_wrapper.cpp
     ${ZINC_SRC_DIR}/compute_engine.cpp
+    ${ZINC_SRC_DIR}/model_loader.cpp
     ${ZINC_SRC_DIR}/main.cpp
 )
 
