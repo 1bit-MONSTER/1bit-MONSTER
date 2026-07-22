@@ -115,15 +115,66 @@ static bool detect_from_manifest(const std::string& path, ModelConfig& cfg) {
 }
 
 static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
-    // Signal that a GGUF model was found. The actual loading is done by
-    // the universal backend (backend_generic.cpp) in router.load_model().
-    // Just extract the filename as the model name so the API has a label.
+    // Read model dimensions from GGUF KV metadata so the backends get
+    // the correct H, L, NH, NKV, V upfront (fixes models whose
+    // dimensions differ from the default 2048/40/8/2/262272).
     cfg.model_path = path;
     cfg.weights_dir = path.substr(0, path.find_last_of('/') + 1);
     auto slash = path.find_last_of('/');
     auto dot = path.find_last_of('.');
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1, dot - slash - 1) : "gguf-model";
-    cfg.hidden_size = 0;  // will be detected by the backend
+    cfg.hidden_size = 0;
+    // Read dimensions from GGUF metadata using the shared reader.
+    // Keys are architecture-prefixed (e.g. llama.embedding_length,
+    // qwen2.attention.head_count, zr1.block_count).
+    GgufReader reader;
+    if (reader.open(path)) {
+        std::string arch = reader.architecture();
+        if (arch.empty()) arch = "llm";
+        auto gu = [&](const std::string& k, int def) -> int {
+            // Try with architecture prefix first, then bare key
+            uint32_t v;
+            if (reader.get_u32(arch + "." + k, v)) return (int)v;
+            if (reader.get_u32(k, v)) return (int)v;
+            return def;
+        };
+        cfg.hidden_size       = gu("embedding_length", 0);
+        cfg.num_layers        = gu("block_count", 40);
+        cfg.num_heads         = gu("attention.head_count", 0);
+        cfg.num_kv_heads      = gu("attention.head_count_kv", 0);
+        cfg.intermediate_size = gu("feed_forward_length", 0);
+        cfg.vocab_size        = gu("vocab_size", 0);
+        // If vocab_size wasn't in KV metadata, derive it from token_embd.weight
+        // If vocab_size wasn't in KV metadata, derive it from output.weight
+        // or token_embd.weight shape: numel = V * H, so V = numel / H.
+        if (cfg.vocab_size == 0 && cfg.hidden_size > 0) {
+            int H = cfg.hidden_size;
+            // output.weight has shape [H, V] in GGUF (fastest-first), numel = V*H
+            const GgufTensorInfo* out = reader.tensor_info("output.weight");
+            if (out && out->numel > 0)
+                cfg.vocab_size = (int)(out->numel / H);
+            if (cfg.vocab_size == 0) {
+                const GgufTensorInfo* emb = reader.tensor_info("token_embd.weight");
+                if (!emb) emb = reader.tensor_info("model.embed_tokens.weight");
+                if (emb && emb->numel > 0)
+                    cfg.vocab_size = (int)(emb->numel / H);
+            }
+        }
+        uint32_t max_seq = 0;
+        if (reader.get_u32(arch + ".context_length", max_seq) ||
+            reader.get_u32("context_length", max_seq))
+            cfg.max_seq_len = (int)max_seq;
+        // Cap max_seq_len to prevent excessive KV cache allocation.
+        // The backend can dynamically allocate more if needed.
+        if (cfg.max_seq_len > 32768) cfg.max_seq_len = 32768;
+        if (cfg.hidden_size > 0) {
+            fprintf(stderr, "  GGUF dims: H=%d L=%d NH=%d NKV=%d FF=%d V=%d CTX=%d (arch=%s)\n",
+                    cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
+                    cfg.intermediate_size, cfg.vocab_size, cfg.max_seq_len, arch.c_str());
+        }
+    } else {
+        fprintf(stderr, "  GGUF: could not open for dimension detection\n");
+    }
     return true;
 }
 static std::string json_escape(const std::string& s) {

@@ -14,7 +14,8 @@
 #include <vector>
 #include <string>
 
-#define HIP_OK(e) do { auto _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %d\n", _s); abort(); } } while (0)
+#define HIP_OK_LINE(e, line) do { auto _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %d at line %d: %s\n", _s, line, hipGetErrorString(_s)); abort(); } } while (0)
+#define HIP_OK(e) HIP_OK_LINE(e, __LINE__)
 constexpr int BLK = 256;
 
 // Kernels (from ../kernels/)
@@ -347,6 +348,9 @@ public:
         HIP_OK(hipMalloc(&d_best_idx, 4)); HIP_OK(hipMalloc(&d_best_val, 4));
         HIP_OK(hipMalloc(&d_kcache, (size_t)L * cfg.max_seq_len * KD * 2));
         HIP_OK(hipMalloc(&d_vcache, (size_t)L * cfg.max_seq_len * KD * 2));
+        // d_prev_rs is needed by reset_state() even for non-Zaya models
+        int RTR_H = cfg.router_hidden > 0 ? cfg.router_hidden : 256;
+        HIP_OK(hipMalloc(&d_prev_rs, (size_t)L * RTR_H * 4));
 
         layers_.resize(L);
         for (int il = 0; il < L; il++) {
