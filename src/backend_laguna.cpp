@@ -426,26 +426,11 @@ struct LagunaBackend : Backend {
                 
                 auto it = gpu_weights.find(name);
                 if (it != gpu_weights.end() && hip_active) {
-                    // Upload x to GPU if changed
-                    if (x != gpu_batch.current_x) {
-                        gpu_sync();  // sync before changing input
-                        if (x != nullptr && K > 0) {
-                            hipMemcpy(hip_x_buf, x, (size_t)K * sizeof(float), 1);
-                        }
-                        gpu_batch.current_x = x;
-                        gpu_batch.current_x_sz = K;
-                    }
-                    // Zero output buffer on GPU  
+                    // Optimized GEMV: single launch with shared memory reduction
+                    hipMemcpy(hip_x_buf, x, (size_t)K * sizeof(float), 1);
                     hipMemset(hip_y_buf, 0, (size_t)M * sizeof(float));
-                    // Launch kernel (async, no sync)
                     launch_gemv((const float*)hip_x_buf, (const uint8_t*)it->second,
                                 (float*)hip_y_buf, K, M, nullptr);
-                    gpu_batch.pending_launches++;
-                    gpu_batch.synced = false;
-                    // Copy result back (will block on next sync if called again)
-                    // For now, keep sync-per-call but remove memset overhead
-                    // Actually, batch: copy back only if we need the result NOW
-                    // For immediate use, sync now. For chained matmuls, defer.
                     hipMemcpy(y, hip_y_buf, (size_t)M * sizeof(float), 2);
                 } else {
                     matmul_q4nx(y, x, model.tensor_data(t), M, K, TR, TC, GS);
