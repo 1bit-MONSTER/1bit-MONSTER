@@ -264,7 +264,10 @@ struct SimpleTokenizer {
     /// This enables readable decode output without a .htok BPE file.
     bool load_vocab_from_gguf(GgufReader& reader) {
         std::vector<std::string> tokens;
-        if (!reader.get_string_array("tokenizer.ggml.tokens", tokens)) return false;
+        if (!reader.get_string_array("tokenizer.ggml.tokens", tokens)) {
+            fprintf(stderr, "  Vocab: tokenizer.ggml.tokens not found\n");
+            return false;
+        }
         id_to_token = std::move(tokens);
         fprintf(stderr, "  Vocab loaded: %zu tokens from GGUF\n", id_to_token.size());
         return true;
@@ -291,13 +294,41 @@ struct SimpleTokenizer {
         return r;
     }
 
+    // GPT-2 byte decoding: replaces byte-encoded Unicode chars (U+0100-U+017F)
+    // which appear as UTF-8 sequences 0xC4 0x80..0xC5 0xBF back to raw bytes.
+    // This converts "Ġ" (U+0120 = space) back to ' ' and "Ċ" (U+010A = \n) back.
+    static std::string gpt2_byte_decode(const std::string& s) {
+        std::string r;
+        r.reserve(s.size());
+        for (size_t i = 0; i < s.size();) {
+            unsigned char c = (unsigned char)s[i];
+            if ((c == 0xC4 || c == 0xC5) && i + 1 < s.size()) {
+                unsigned char lo = (unsigned char)s[i+1];
+                int cp = ((int)(c & 0x1F) << 6) | (int)(lo & 0x3F);
+                r += (char)(cp - 256);
+                i += 2;
+            } else if (c < 128) {
+                r += (char)c;
+                i += 1;
+            } else {
+                int n = 1;
+                if ((c & 0xE0) == 0xC0) n = 2;
+                else if ((c & 0xF0) == 0xE0) n = 3;
+                else if ((c & 0xF8) == 0xF0) n = 4;
+                r.append(s.c_str() + i, n);
+                i += n;
+            }
+        }
+        return r;
+    }
+
     std::string decode(const std::vector<int>& tokens) {
         if (use_bpe && bpe_tok) {
             std::string r(4096, '\0');
             size_t out_len = 0;
             rcpp_status_t st = rcpp_tokenizer_decode(bpe_tok, tokens.data(), tokens.size(),
                                                       r.data(), r.size(), &out_len);
-            if (st == RCPP_OK && out_len > 0) { r.resize(out_len); return r; }
+            if (st == RCPP_OK && out_len > 0) { r.resize(out_len); return gpt2_byte_decode(r); }
             return "";
         }
         // Vocab-based decode (from GGUF tokenizer.ggml.tokens)
@@ -305,12 +336,12 @@ struct SimpleTokenizer {
             std::string r;
             for (int v : tokens) {
                 if (v == bos_id || v == eos_id) continue;
-                if (v >= 0 && v < (int)id_to_token.size())
+                if (v >= 0 && v < (int)id_to_token.size()) {
                     r += id_to_token[v];
-                else
-                    { r += '<'; r += std::to_string(v); r += '>'; }
+                } else {
+                    r += '<'; r += std::to_string(v); r += '>'; }
             }
-            return r;
+            return gpt2_byte_decode(r);
         }
         // Character-level fallback
         std::string r;
