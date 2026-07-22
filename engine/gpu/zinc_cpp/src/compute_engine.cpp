@@ -40,22 +40,28 @@ void ComputeEngine::reset_descriptors() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Batched dispatch thread-local state
+// ═══════════════════════════════════════════════════════════════════
+static thread_local VkCommandBuffer s_batch_cmd = VK_NULL_HANDLE;
+static thread_local bool s_batching = false;
+
+// Shader name map — inference op names to .spv filenames
+static const std::map<std::string,std::string> shader_map = {
+    {"gemv", "gemv_f32"},
+    {"rms_norm", "rms_norm"},
+    {"rope", "rope_fused"},
+    {"flash_attn", "flash_attn"},
+    {"silu_mul", "silu_mul"},
+    {"argmax", "argmax"},
+    {"add_residual", "vadd_f32"},
+    {"copy_buffer", "vadd_f32"},
+    {"embed", "embed"},
+};
+
 void ComputeEngine::dispatch(const std::string& shader, const PushConstants& push,
                               VkBuffer input, VkBuffer output, VkBuffer weights,
                               uint32_t group_x, uint32_t group_y, uint32_t group_z) {
-    // Map inference op names to actual .spv filenames (fix #789)
-    static const std::map<std::string,std::string> shader_map = {
-        {"gemv", "gemv_f32"},           // FP32 GEMV
-        {"rms_norm", "rms_norm"},       // RMS normalization
-        {"rope", "rope_fused"},          // fused RoPE
-        {"flash_attn", "flash_attn"},    // flash attention
-        {"silu_mul", "silu_mul"},        // SiLU gate multiply
-        {"argmax", "argmax"},            // argmax reduction
-        {"add_residual", "vadd_f32"},    // vector add
-        {"copy_buffer", "vadd_f32"},     // copy via add
-        {"embed", "embed"},              // embedding lookup
-    };
-    
     std::string actual_shader = shader;
     auto it = shader_map.find(shader);
     if (it != shader_map.end()) actual_shader = it->second;
@@ -116,6 +122,72 @@ void ComputeEngine::dispatch(const std::string& shader, const PushConstants& pus
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
     vkCmdDispatch(cmd, group_x, group_y, group_z);
     cmd_pool_.submit_and_wait(cmd, queue_);
+}
+
+
+
+
+void ComputeEngine::begin_batch() {
+    if (s_batching) return;
+    s_batch_cmd = cmd_pool_.begin_once();
+    s_batching = true;
+}
+
+void ComputeEngine::end_batch() {
+    if (!s_batching) return;
+    cmd_pool_.submit_and_wait(s_batch_cmd, queue_);
+    s_batching = false;
+    s_batch_cmd = VK_NULL_HANDLE;
+    reset_descriptors();
+}
+
+void ComputeEngine::dispatch_batch(const std::string& shader, const PushConstants& push,
+                                    VkBuffer input, VkBuffer output, VkBuffer weights,
+                                    uint32_t group_x, uint32_t group_y, uint32_t group_z) {
+    // Fall back to regular dispatch if not batching
+    if (!s_batching) {
+        dispatch(shader, push, input, output, weights, group_x, group_y, group_z);
+        return;
+    }
+    
+    // Resolve shader name
+    auto it = shader_map.find(shader);
+    std::string actual_shader = (it != shader_map.end()) ? it->second : shader;
+    VkPipeline pipe = pipelines_.get(actual_shader);
+    VkPipelineLayout layout = pipelines_.pipeline_layout();
+
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = desc_pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &desc_set_layout_;
+    VkDescriptorSet desc_set;
+    VK_CHECK(vkAllocateDescriptorSets(device_, &ai, &desc_set));
+
+    VkDescriptorBufferInfo buf_infos[3] = {};
+
+    VkWriteDescriptorSet writes[3] = {};
+    int nwrites = 0;
+    auto add_desc = [&](VkBuffer buf) {
+        if (!buf) return;
+        buf_infos[nwrites].buffer = buf; buf_infos[nwrites].range = VK_WHOLE_SIZE;
+        writes[nwrites].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[nwrites].dstSet = desc_set;
+        writes[nwrites].dstBinding = nwrites;
+        writes[nwrites].descriptorCount = 1;
+        writes[nwrites].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[nwrites].pBufferInfo = &buf_infos[nwrites];
+        nwrites++;
+    };
+    add_desc(input); add_desc(output); add_desc(weights);
+    if (nwrites > 0) vkUpdateDescriptorSets(device_, nwrites, writes, 0, nullptr);
+
+    vkCmdBindPipeline(s_batch_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    vkCmdBindDescriptorSets(s_batch_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                             layout, 0, 1, &desc_set, 0, nullptr);
+    vkCmdPushConstants(s_batch_cmd, layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    vkCmdDispatch(s_batch_cmd, group_x, group_y, group_z);
 }
 
 void ComputeEngine::rms_norm(VkBuffer x, VkBuffer w, int n, float eps) {
@@ -203,7 +275,6 @@ int InferenceEngine::generate(int token_id) {
     auto& d = model->dims;
     
     compute->embed_lookup(hidden.buffer(), model->embed.buffer(), token_id, d.hidden);
-    
     for (int l = 0; l < d.n_layers; l++) {
         auto& layer = model->layers[l];
         
@@ -246,6 +317,7 @@ int InferenceEngine::generate(int token_id) {
     compute->rms_norm(hidden.buffer(), model->final_norm.buffer(), d.hidden, d.rms_eps);
     compute->gemv(logits.buffer(), hidden.buffer(),
                    model->embed.buffer(), d.vocab, 1, d.hidden);
+    // Argmax needs separate sync — it reads back to CPU
     pos++;
     return compute->argmax(logits.buffer(), d.vocab);
 }
