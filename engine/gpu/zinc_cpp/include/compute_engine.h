@@ -87,6 +87,8 @@ public:
     /// Embedding lookup: x = embed[token_id]
     void embed_lookup(VkBuffer out, VkBuffer embed, int token_id, int hidden);
 
+    VkDevice device() const { return device_; }
+
 private:
     VkDevice device_;
     VkQueue queue_;
