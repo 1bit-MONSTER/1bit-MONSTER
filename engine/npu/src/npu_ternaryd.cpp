@@ -1128,6 +1128,14 @@ int main(int argc, char** argv) {
     char line[65536];
     while (fgets(line, sizeof(line), stdin)) {
         size_t ll = strlen(line);
+        // Detect truncation: if the line doesn't end with \n and we're not at EOF,
+        // the request exceeded our buffer. Drain the rest and error.
+        if (ll == sizeof(line) - 1 && line[ll - 1] != '\n' && !feof(stdin)) {
+            fprintf(stderr, "[npu_ternaryd] ERROR: request exceeds %zu byte buffer, draining\n", sizeof(line) - 1);
+            int c;
+            while ((c = fgetc(stdin)) != EOF && c != '\n') {}
+            continue;
+        }
         while (ll > 0 && (line[ll-1] == '\n' || line[ll-1] == '\r')) line[--ll] = 0;
         if (ll == 0) continue;
 

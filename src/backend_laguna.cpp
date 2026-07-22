@@ -208,14 +208,23 @@ struct TensorRef {
     bool is_moe;     // 3D expert stack → per-expert tiled
 };
 
-static TensorRef find_tensor(OnebpModel& model, const std::string& name) {
+static std::unordered_map<std::string, TensorRef> tensor_index;
+
+static void build_tensor_index(OnebpModel& model) {
+    tensor_index.clear();
     for (auto& t : model.tensors) {
-        if (t.name == name) {
-            return {model.tensor_data(t), t.ndim, t.dims,
-                    t.ndim == 1,
-                    t.ndim == 3};
-        }
+        tensor_index[t.name] = {
+            model.tensor_data(t), t.ndim, t.dims,
+            t.ndim == 1,
+            t.ndim == 3
+        };
     }
+}
+
+static TensorRef find_tensor(OnebpModel& model, const std::string& name) {
+    (void)model;
+    auto it = tensor_index.find(name);
+    if (it != tensor_index.end()) return it->second;
     return {nullptr, 0, {}, false, false};
 }
 
@@ -293,6 +302,9 @@ struct LagunaBackend : Backend {
             fprintf(stderr, "Laguna: failed to load %s\n", bp_path.c_str());
             return false;
         }
+
+        // Build O(1) index for tensor lookups instead of O(n) linear scan
+        build_tensor_index(model);
 
         auto& h = model.header;
         if (h.arch != 6) {
