@@ -15,6 +15,7 @@
 #include "backends/token_router.h"
 #include "rocm_cpp/tokenizer.h"
 #include "a2a_client.h"
+#include "gguf_reader.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -194,6 +195,34 @@ struct SimpleTokenizer {
         return false;
     }
 
+    /// Load BOS/EOS from GGUF metadata (works for any model with
+    /// tokenizer.ggml.bos_token_id / eos_token_id KV entries).
+    /// The actual BPE merge/vocab tables are NOT loaded from GGUF
+    /// by this path — encoding falls back to a character-level
+    /// scheme with correct BOS/EOS sentinels, which is sufficient
+    /// for testing and basic interaction with small models.
+    bool load_from_gguf(GgufReader& reader) {
+        uint32_t bos = 2, eos = 106;
+        if (reader.get_u32("tokenizer.ggml.bos_token_id", bos)) {
+            bos_id = (int)bos;
+        } else {
+            // Also try alternative key names used by some models
+            uint32_t alt = 0;
+            if (reader.get_u32("tokenizer.ggml.bos_id", alt)) bos_id = (int)alt;
+        }
+        if (reader.get_u32("tokenizer.ggml.eos_token_id", eos)) {
+            eos_id = (int)eos;
+        } else {
+            uint32_t alt = 0;
+            if (reader.get_u32("tokenizer.ggml.eos_id", alt)) eos_id = (int)alt;
+        }
+        fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d\n", bos_id, eos_id);
+
+        // Try to find a .htok file alongside the model for full BPE
+        if (use_bpe) return true;  // already loaded
+        return false;
+    }
+
     std::vector<int> encode(const std::string& text) {
         if (use_bpe && bpe_tok) {
             std::vector<int> r(4096);
@@ -206,6 +235,7 @@ struct SimpleTokenizer {
             }
             return {bos_id};
         }
+        // Character-level fallback with correct BOS/EOS from GGUF metadata
         std::vector<int> r = {bos_id};
         for (unsigned char c : text) {
             if (c >= 32 && c <= 126) r.push_back((int)c + 100);
@@ -417,6 +447,7 @@ int main(int argc, char** argv) {
             printf("Endpoints:\n");
             printf("  GET  /v1/models                      List loaded models\n");
             printf("  POST /v1/chat/completions            OpenAI-compatible chat\n");
+            printf("  POST /v1/batch/completions           Batch inference (multi-prompt)\n");
             printf("  GET  /.well-known/agent-card.json    A2A Agent Card (Google A2A v1.0)\n");
             printf("  POST /a2a/v1/message:send            A2A send message (task-based)\n");
             printf("  POST /a2a/v1/message:sendStream      A2A streaming (SSE)\n");
@@ -485,6 +516,40 @@ int main(int argc, char** argv) {
 
     if (model_loaded && !router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
 
+    SimpleTokenizer tok;
+
+    // Try to load tokenizer from GGUF metadata if available
+    {
+        std::string gguf_path;
+        if (!model_arg.empty()) {
+            std::string ext = model_arg.size() > 5 ? model_arg.substr(model_arg.size() - 5) : "";
+            if (ext == ".gguf") gguf_path = model_arg;
+        }
+        if (gguf_path.empty() && cfg.model_path.size() > 5) {
+            std::string ext = cfg.model_path.substr(cfg.model_path.size() - 5);
+            if (ext == ".gguf") gguf_path = cfg.model_path;
+        }
+        if (!gguf_path.empty()) {
+            GgufReader reader;
+            if (reader.open(gguf_path)) {
+                // Try .htok file alongside the GGUF for full BPE tokenizer
+                std::string htok_path = gguf_path.substr(0, gguf_path.size() - 5) + ".htok";
+                FILE* htok_test = fopen(htok_path.c_str(), "rb");
+                if (htok_test) {
+                    fclose(htok_test);
+                    tok.load_htok(htok_path);
+                }
+                tok.load_from_gguf(reader);
+                fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d (from GGUF)%s\n",
+                        tok.bos_id, tok.eos_id,
+                        tok.use_bpe ? " + BPE" : " (char-level)");
+            }
+        } else {
+            fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no GGUF metadata)\n",
+                    tok.bos_id, tok.eos_id);
+        }
+    }
+
     httplib::Server svr;
 
     // Maximum request body size: 1MB (fixes #197: stack buffer + incomplete read + no limit)
@@ -526,8 +591,6 @@ int main(int argc, char** argv) {
             fprintf(stderr, "     - %s @ %s (%zu skills)\n", p.name.c_str(), p.base_url.c_str(), p.skill_ids.size());
     }
     fprintf(stderr, "\n");
-
-    SimpleTokenizer tok;
 
     svr.Get("/", [&](const httplib::Request&, httplib::Response& res) {
         std::lock_guard<std::mutex> lock(g_router_mutex);
@@ -766,6 +829,63 @@ int main(int argc, char** argv) {
         res.set_content(rsp, "application/json");
     });
 
+    // ── Batch endpoint: POST /v1/batch/completions ───────────────
+    // Accepts an array of prompts, returns an array of completions.
+    // Uses TokenRouter::infer_batch() for efficient multi-prompt processing.
+    svr.Post("/v1/batch/completions", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!model_loaded) {
+            res.status = 503;
+            res.set_content("{\"error\":\"no model loaded\"}", "application/json");
+            return;
+        }
+        try {
+            json jbody = json::parse(req.body);
+            int max_tokens = jbody.value("max_tokens", 256);
+            if (max_tokens < 1) max_tokens = 1;
+            if (max_tokens > 32768) max_tokens = 32768;
+
+            std::vector<std::vector<int>> prompts;
+            if (jbody.contains("prompts") && jbody["prompts"].is_array()) {
+                for (auto& p : jbody["prompts"]) {
+                    std::string text = p.is_string() ? p.get<std::string>() : p.dump();
+                    prompts.push_back(tok.encode(text));
+                }
+            }
+
+            if (prompts.empty()) {
+                res.status = 400;
+                res.set_content("{\"error\":\"need 'prompts' array\"}", "application/json");
+                return;
+            }
+
+            std::string resp_body;
+            {
+                std::lock_guard<std::mutex> lock(g_router_mutex);
+                auto results = router.infer_batch(prompts, max_tokens);
+                json arr = json::array();
+                for (size_t i = 0; i < results.size(); i++) {
+                    std::string text = tok.decode(results[i].tokens);
+                    arr.push_back({
+                        {"index", i},
+                        {"text", text},
+                        {"tokens", results[i].tokens},
+                        {"prompt_tokens", results[i].prompt_tokens},
+                        {"completion_tokens", (int)results[i].tokens.size()},
+                        {"gen_ms", results[i].gen_ms},
+                        {"tok_s", results[i].tok_s}
+                    });
+                }
+                json r = {{"object", "list"}, {"data", arr}};
+                resp_body = r.dump();
+                fprintf(stderr, "  [batch] %zu prompts, %d max_tokens\n", prompts.size(), max_tokens);
+            }
+            res.set_content(resp_body, "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404)
             res.set_content("{\"error\":\"not found\"}", "application/json");
@@ -782,6 +902,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
     fprintf(stderr, "   POST /a2a/v1/tasks:route      — A2A route to peer agent\n");
     fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
+    fprintf(stderr, "   POST /v1/batch/completions    — Batch inference (multi-prompt)\n");
     if (strcmp(bind_addr, "0.0.0.0") == 0) {
         fprintf(stderr,
             "\n  *** WARNING: binding to 0.0.0.0 — server is publicly reachable. ***\n"
