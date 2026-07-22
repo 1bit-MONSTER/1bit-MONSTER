@@ -21,7 +21,7 @@
 // ── Runtime config (set by zaya_init from model header) ──
 static constexpr float RMD_EPS=1e-5f;
 static constexpr int BLK=256;
-static ZayaConfig eng;  // populated by zaya_init from ZayaConfig parameter
+static thread_local ZayaConfig eng;  // populated by zaya_init from ZayaConfig parameter
 
 // ── Helper kernels ──
 __global__ void rmsnorm_k(__half*x,const __half*w,int n){__shared__ float r[32];int tx=threadIdx.x,wid=tx/32,l=tx%32;float ss=0;for(int i=tx;i<n;i+=blockDim.x)ss+=(float)x[i]*(float)x[i];for(int o=16;o>0;o>>=1)ss+=__shfl_xor(ss,o);if(l==0)r[wid]=ss;__syncthreads();if(wid==0){ss=(l<(256/32))?r[l]:0;for(int o=16;o>0;o>>=1)ss+=__shfl_xor(ss,o);if(l==0)r[0]=ss;}__syncthreads();float iv=1.0f/sqrtf(r[0]/n+1e-5f);for(int i=tx;i<n;i+=blockDim.x)x[i]=__float2half((float)x[i]*iv*(float)w[i]);}
@@ -169,6 +169,9 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab);
+    // d_argmax_idx, d_sorted_ids, d_expert_counts, d_expert_offsets are
+    // declared as int* (and used as int by kernels) but allocated via
+    // alloc_f32 since hipMalloc works in bytes and both int/float are 4 B.
     ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_idx, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_val, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, 8);

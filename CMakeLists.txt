@@ -100,7 +100,7 @@ list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 find_package(hip REQUIRED CONFIG PATHS "${ROCM_ROOT}")
 
 set(ROCWMMA_FOUND FALSE)
-foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" "/opt/rocm")
+foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" "/opt/rocm-therock" "/opt/rocm")
     if(_rc_base AND EXISTS "${_rc_base}/include/rocwmma/rocwmma.hpp")
         set(ROCWMMA_INCLUDE_DIR "${_rc_base}/include")
         set(ROCWMMA_FOUND TRUE)
@@ -261,7 +261,10 @@ set(RCPP_SOURCES
     src/bonsai_tq2_1024.hip
     src/fused_gemv_tq2_1024.hip
     src/bonsai_tq2_1024_opt.hip
-    kernels/vl_resize_norm.hip)
+    kernels/vl_resize_norm.hip
+    src/laguna_gemv.hip
+    src/laguna_fused.hip
+    src/laguna_ops.hip)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
@@ -340,8 +343,8 @@ add_library(backend_manager STATIC
     src/backend_plugin.cpp
     src/backend_cpu.cpp
     src/backend_generic.cpp
-    src/backend_flm.cpp
     src/backend_mamba1.cpp
+    src/backend_laguna.cpp
     src/simple_tokenizer.cpp
     src/q4nx_reader.cpp
     src/safetensors_reader.cpp
@@ -631,14 +634,13 @@ add_executable(unified_server
     src/backend_npu.cpp
     src/backend_generic.cpp
     src/model_router.cpp
-    src/backend_flm.cpp)
+)
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_npu.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/model_router.cpp PROPERTIES LANGUAGE CXX)
-set_source_files_properties(src/backend_flm.cpp PROPERTIES LANGUAGE CXX)
 target_include_directories(unified_server PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
@@ -653,7 +655,7 @@ target_link_libraries(unified_server PRIVATE
     httplib::httplib
     nlohmann_json::nlohmann_json
     rocm_cpp hip::host hip::device)
-target_link_options(unified_server PRIVATE -rdynamic)
+target_link_options(unified_server PRIVATE -rdynamic -luuid)
 set_target_properties(unified_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 if(ZINC_ENABLED)
     set_target_properties(unified_server PROPERTIES
