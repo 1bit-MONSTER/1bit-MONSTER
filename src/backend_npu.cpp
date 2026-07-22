@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <sys/uio.h>
 #include <signal.h>
 
 // ── Math helpers (CPU fallback ops) ──
@@ -45,17 +46,15 @@ static inline void rmsnorm(float* x, const float* w, int n) {
     for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * w[i] : 0.0f;
 }
 static inline void softmax(float* x, int n) {
-    cn(x, n); float mx = -1e30f;
-    for (int i = 0; i < n; i++) if (std::isfinite(x[i]) && x[i] > mx) mx = x[i];
+    cn(x, n); float mx = x[0];
+    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
     double s = 0;
     for (int i = 0; i < n; i++) {
-        float d = x[i] - mx; if (d > 80.0f) d = 80.0f; else if (d < -80.0f) d = -80.0f;
-        double e = (double)expf(d); 
-        if (!std::isfinite((float)e)) e = 0.0;
-        x[i] = (float)e; s += e;
+        float d = x[i] - mx; if (d > 80) d = 80; else if (d < -80) d = -80;
+        x[i] = expf(d); s += x[i];
     }
     if (s <= 0) { float iv = 1.0f / n; for (int i = 0; i < n; i++) x[i] = iv; return; }
-    float is = (float)(1.0 / s); for (int i = 0; i < n; i++) x[i] *= is;
+    float is = 1.0f / (float)s; for (int i = 0; i < n; i++) x[i] *= is;
 }
 static inline float silu(float x) { return x / (1.0f + expf(-x)); }
 
@@ -132,9 +131,7 @@ static bool read_with_timeout(int fd, void* buf, size_t len, int timeout_ms) {
         if (remaining_ms <= 0) return false;
         fd_set fds; FD_ZERO(&fds); FD_SET(fd, &fds);
         struct timeval tv = {remaining_ms / 1000, (remaining_ms % 1000) * 1000};
-        int r;
-        do { r = select(fd + 1, &fds, nullptr, nullptr, &tv); }
-        while (r < 0 && errno == EINTR);
+        int r = select(fd + 1, &fds, nullptr, nullptr, &tv);
         if (r <= 0) return false; // timeout or select error
         ssize_t n = read(fd, (char*)buf + got, len - got);
         if (n <= 0) return false; // EOF or read error
@@ -236,10 +233,28 @@ struct NpuWorker {
     bool gemm(int op, int layer, int batch, int in_dim,
               const float* in_data, std::vector<float>& out_data) {
         if (!ready || stdin_fd < 0 || stdout_fd < 0) return false;
-        uint32_t hdr[4] = {(uint32_t)op, (uint32_t)layer, (uint32_t)batch, (uint32_t)in_dim};
-        if (write(stdin_fd, hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr)) return false;
-        if (write(stdin_fd, in_data, (size_t)batch * in_dim * sizeof(float)) !=
-            (ssize_t)((size_t)batch * in_dim * sizeof(float))) return false;
+        // Framed protocol: [total_len(uint32)] [op, layer, batch, in_dim] [data...]
+        // total_len covers everything after the length field itself.
+        // Single write() call prevents protocol desync from pipe coalescing (fix #728).
+        uint32_t payload[5] = {(uint32_t)op, (uint32_t)layer, (uint32_t)batch, (uint32_t)in_dim, 0};
+        size_t data_bytes = (size_t)batch * (size_t)in_dim * sizeof(float);
+        size_t hdr_bytes = sizeof(payload);
+        // Write total_len + full message as one unit
+        uint32_t total_len = (uint32_t)(hdr_bytes + data_bytes);
+        struct iovec iov[2];
+        iov[0].iov_base = &total_len;
+        iov[0].iov_len = sizeof(total_len);
+        iov[1].iov_base = payload;
+        iov[1].iov_len = hdr_bytes;
+        // Data as third vector
+        struct iovec iov_data[3];
+        memcpy(iov_data, iov, sizeof(iov));
+        iov_data[2].iov_base = (void*)in_data;
+        iov_data[2].iov_len = data_bytes;
+        ssize_t total = 0;
+        for (int v = 0; v < 3; v++) total += iov_data[v].iov_len;
+        ssize_t written = writev(stdin_fd, iov_data, 3);
+        if (written != total) return false;
         uint32_t resp[2];
         if (!read_with_timeout(stdout_fd, resp, sizeof(resp), GEMM_TIMEOUT_MS)) return false;
         if (resp[0] != 0) return false;
