@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
     // ── Load model ──
     printf("\n── Loading Model ──\n");
     ModelLoader loader(engine.device(), engine.queue(),
-                        engine.queue_family(), *engine.cmd_pool_);
+                        engine.queue_family(), *engine.cmd_pool());
     ModelGPU model;
     if (!loader.load(model_path, model)) {
         fprintf(stderr, "Failed to load model\n");
@@ -223,8 +223,8 @@ int main(int argc, char** argv) {
     // ── Init compute engine ──
     printf("\n── Init Compute ──\n");
     ComputeEngine compute(engine.device(), engine.queue(),
-                          engine.queue_family(), *engine.cmd_pool_,
-                          *engine.pipeline_cache_);
+                          engine.queue_family(), *engine.cmd_pool(),
+                          *engine.pipeline_cache());
     InferenceEngine infer;
     infer.init(compute, model);
 
