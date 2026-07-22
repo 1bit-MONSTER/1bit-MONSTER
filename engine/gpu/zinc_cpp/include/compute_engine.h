@@ -50,6 +50,7 @@ public:
     /// Batch multiple dispatches into one command buffer (avoids per-dispatch sync)
     void begin_batch();
     void end_batch();
+    void sync();
     void dispatch_batch(const std::string& shader, const PushConstants& push,
                         VkBuffer input, VkBuffer output, VkBuffer weights,
                         uint32_t group_x, uint32_t group_y = 1, uint32_t group_z = 1);
