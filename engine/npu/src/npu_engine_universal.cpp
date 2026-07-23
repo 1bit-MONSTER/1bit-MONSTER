@@ -642,7 +642,15 @@ int main(int argc,char**argv){
     // longest matching prefix, roll the KV cache back on a miss), BS is pinned
     // to 1 -> plain causal single-token greedy decode, which is correct.
     // Do not raise this without implementing verification.
-    int BS=1;
+    // Override via NPU_BATCH_SIZE env var (for testing only — produces garbage).
+    int BS = 1;
+    if (const char* e = getenv("NPU_BATCH_SIZE")) {
+        int v = atoi(e);
+        if (v > 1) {
+            fprintf(stderr, "WARNING: NPU_BATCH_SIZE=%d — non-causal KV corruption, see issue #111\n", v);
+            BS = v;
+        }
+    }
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
     int kv_size=4096*NKV*HD;
     std::vector<KVCache> kv_caches;for(int i=0;i<NC;i++)kv_caches.emplace_back(kv_size);
