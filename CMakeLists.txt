@@ -892,3 +892,11 @@ target_link_libraries(test_oscar_attn_decode PRIVATE oscar hip::host hip::device
 set_target_properties(test_oscar_attn_decode PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 add_test(NAME test_oscar_attn_decode COMMAND test_oscar_attn_decode)
 set_tests_properties(test_oscar_attn_decode PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
+
+# -- gguf_to_onebp : GGUF → 1BP converter -----------------------------------
+# Converts any supported GGUF model to the project's native 1BP format.
+# Handles Dense, MoE (Mamba1), and Qwen3 architectures.
+add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp src/gguf_reader.cpp)
+target_include_directories(gguf_to_onebp PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_options(gguf_to_onebp PRIVATE -O3 -mavx2 -Wall -Wno-unused-result -std=c++17)
+target_link_libraries(gguf_to_onebp PRIVATE pthread)
