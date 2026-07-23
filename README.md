@@ -15,9 +15,24 @@
 [![1BP](https://img.shields.io/badge/1BP-single%20file%2C%20zero%20config-00ffaa)](include/onebp_format.h)
 [![Tests](https://img.shields.io/badge/tests-16%2F17-00ff00)](tests/)
 
+**[🌐 Website](https://1bit.systems)** · **[🤗 1BP Models](https://huggingface.co/bong-water-water-bong)** · **[📚 Docs](docs/README.md)** · **[🛠️ Journey](docs/journey.md)** · **[📊 Benchmarks](docs/wiki/performance.md)** · **[🗺️ Roadmap](ROADMAP.md)**
+
 **One binary unifies NPU + GPU + CPU inference — no external subprocess, no proprietary runtime. C++23, zero Python at runtime.**
 
 **35 supported models** (30 1BP + 5 GGUF native) — see [`models/catalog/README.md`](models/catalog/README.md) for the full list.
+
+### 🚀 Flagship 1BP models — built, quantized & hosted by us
+
+| Model | Family | Arch | Measured | Download |
+|-------|--------|------|:--------:|:--------:|
+| **BlackMamba-1.5B** | Zyphra | Mamba1 · MoE | **79.8 tok/s** ✅ | [🤗 HF](https://huggingface.co/bong-water-water-bong/BlackMamba-1.5B-1BP) |
+| **BlackMamba-2.8B** | Zyphra | Mamba1 · MoE | **46.4 tok/s** ✅ | [🤗 HF](https://huggingface.co/bong-water-water-bong/BlackMamba-2.8B-1BP) |
+| **Zaya1-8B** | Zyphra | MoE (16-expert) | ~64 tok/s | [🤗 HF](https://huggingface.co/bong-water-water-bong/ZAYA1-8B-1BP) |
+| **Bonsai-1.7B** | Deepgrove | Ternary TQ2 (2-bit) | 21.9 tok/s | [🤗 HF](https://huggingface.co/bong-water-water-bong/Bonsai-1.7B-TQ2-1BP) |
+| **Zamba2-2.7B** | Zyphra | Mamba2-hybrid | Instruct v2 | [🤗 HF](https://huggingface.co/bong-water-water-bong/Zamba2-2.7B-Instruct-v2-1BP) |
+| **ZR1-1.5B** | Zyphra | Dense · reasoning | reasoning-tuned | [🤗 HF](https://huggingface.co/bong-water-water-bong/ZR1-1.5B-1BP) |
+
+Whole families brought to 1BP — the full **Zyphra** lineup (Zaya1, Zamba2, BlackMamba, ZR1) plus **Poolside Laguna** (sigmoid-routed MoE, hybrid SWA/global attention). All converted with a pure-C++ toolchain, zero Python. **[Browse all on Hugging Face →](https://huggingface.co/bong-water-water-bong)**
 
 ### Why 1BP?
 
