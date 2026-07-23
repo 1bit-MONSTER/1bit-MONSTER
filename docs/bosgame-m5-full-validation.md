@@ -162,3 +162,46 @@ curl http://HOST:80/v1/completions \
 | `nginx.service` | Gateway | nginx+lua | 80 |
 
 All auto-start on boot, auto-restart on crash.
+
+---
+
+## 8. NPU+GPU Hybrid Inference
+
+Despite IOMMU being off (which disables SVA), the NPU is fully operational.
+The 1bit-systems engine uses explicit DMA instead of SVA, enabling zero-copy
+GPU↔NPU cooperation through unified LPDDR5X memory.
+
+### NPU Status
+
+| Check | Result |
+|-------|--------|
+| Hardware detected | ✅ `c6:00.1 AMD Strix Halo NPU` |
+| Driver loaded | ✅ `amdxdna` |
+| Device node | ✅ `/dev/accel/accel0` |
+| 1bit-systems backend | ✅ NPU FLM ready (~57 t/s est.) |
+| GPU+NPU Hybrid pipeline | ✅ Active — zero-copy DMA |
+| Pipeline strategy | GPU→attention layers, NPU→expert FFNs |
+| Estimated speedup | 1.4× (pipeline overlap + zero-copy) |
+
+### How it works without IOMMU
+
+The amdxdna SVA bind errors in dmesg are from other processes, not the
+1bit-systems engine. The engine uses explicit DMA transfers via the
+unified memory pool, bypassing the need for IOMMU-mediated SVA.
+
+### Production Setup
+
+| Service | Model | Backend | Port |
+|---------|-------|---------|------|
+| `llama-server-gpu.service` | Qwen3-4B | ROCm HIP | 8080 |
+| `llama-server-74b.service` | ZAYA1-74B | Vulkan | 8081 |
+| nginx gateway | Routing | Lua | 80 |
+| 1bit-systems zaya_server | Hybrid | NPU+GPU | (manual) |
+
+### Model Routing (nginx on port 80)
+
+| Model Name | Routes To |
+|------------|-----------|
+| `qwen3-4b`, `qwen`, `4b`, `fast` | 8080 — Qwen3-4B (ROCm HIP) |
+| `zaya1-74b`, `zaya`, `74b`, `moe`, `large` | 8081 — ZAYA1-74B (Vulkan) |
+| (no model specified) | 8080 — default |
