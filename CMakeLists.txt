@@ -285,6 +285,13 @@ target_include_directories(gguf_reader PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
+# -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (Q4NX + TQ2 ternary) -------
+# Replaces the old tools/gguf_to_onebp.py. No Python anywhere in the convert
+# path. `--tq2` emits symmetric 2-bit ternary (half the size of Q4NX).
+add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
+target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
+target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
+
 # -- libvl_image : lightweight image loading + preprocessing (no HIP dep) ----
 # Uses stb_image.h (vendored at third_party/stb/) for decode. No OpenCV dep.
 # Provides: vl_load_image, vl_resize_normalize, vl_decode_base64_image, etc.
