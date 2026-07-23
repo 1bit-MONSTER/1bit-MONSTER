@@ -1,11 +1,11 @@
-# Packaging — 1bit.systems v2026.07.02-all5models
+# Packaging — 1bit.systems v2026.07.20
 
 **One binary. 35 models. ~400 KB. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
 
 | Format | Status | Command |
 |--------|--------|---------|
-| **GitHub Release** | ✅ [v2026.07.02-all5models](https://github.com/bong-water-water-bong/1bit-systems/releases/tag/v2026.07.02-all5models) | `gh release download v2026.07.02-all5models` |
+| **GitHub Release** | ✅ [v2026.07.20](https://github.com/bong-water-water-bong/1bit-systems/releases/tag/v2026.07.20) | `gh release download v2026.07.20` |
 | **One-liner install** | ✅ | `curl -sL https://1bit.systems/install.sh \| bash` |
 | **Debian (.deb)** | ✅ Control ready | `make package-deb` |
 | **Binary tarball** | ✅ | `make package-tarball` |
@@ -59,8 +59,8 @@ make package-tarball
 make package-deb
 
 # Docker image
-docker build -t 1bit-systems/npu:2026.07.02 -f packaging/docker/Dockerfile .
-docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.07.02
+docker build -t 1bit-systems/npu:2026.07.20 -f packaging/docker/Dockerfile .
+docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.07.20
 
 # Snap
 make package-snap
