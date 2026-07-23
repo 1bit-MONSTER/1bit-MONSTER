@@ -155,6 +155,7 @@ class HipBackend : public InferenceBackend {
     int *d_expert_idx=nullptr;
     float *d_expert_wt=nullptr;
     __half *d_all_logits=nullptr;
+    int *d_pos=nullptr;  // device-side position for hipGraph
     int *d_best_idx=nullptr;
     float *d_best_val=nullptr;
     std::vector<HipLayer> layers_;
