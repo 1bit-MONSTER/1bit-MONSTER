@@ -21,11 +21,23 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build build-essential python3
-          # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151 (Strix Halo)
-          # Falls back gracefully if the pip index is inaccessible.
+          # Try TheRock 7.15.0a pip install first (native gfx1151).
+          # Fall back to apt ROCm 7.2.4 if the gfx1151 index is inaccessible (CI runners).
           python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-            rocm[devel,libraries] 2>/dev/null || \
-            echo "TheRock pip install failed on this runner — reference-only checks"
+            rocm[devel,libraries] 2>/dev/null && echo "TheRock 7.15.0a installed" || {
+            echo "TheRock pip index unreachable — falling back to apt ROCm"
+            wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg 2>/dev/null || true
+            if [ -f /etc/apt/keyrings/rocm.gpg ]; then
+              printf '%s\n' \
+                'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 noble main' \
+                'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/7.2.4/ubuntu noble main' \
+                | sudo tee /etc/apt/sources.list.d/rocm.list
+              sudo apt-get update -qq || true
+              sudo apt-get install -y -qq rocm-dev hip-dev composablekernel-dev || true
+            else
+              echo "ROCm key not available — skipping ROCm install"
+            fi
+          }
           else
             echo "ROCm key not available — skipping ROCm install on this runner."
           fi
