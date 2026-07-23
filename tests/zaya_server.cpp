@@ -31,7 +31,6 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
-#include "onebp_format.h"
 using json = nlohmann::json;
 
 // ─── .h1b header auto-detection (no external deps) ────────────────
@@ -73,41 +72,6 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d\n",
             cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
             cfg.head_dim, cfg.vocab_size);
-    return true;
-}
-
-// ── 1BP model detection ───────────────────────────────────
-static bool detect_from_onebp(const std::string& path, ModelConfig& cfg) {
-    // 1BP format: 256-byte binary header + tensor index + Q4NX-tiled weight data
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return false;
-    OnebpHeader hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-    fclose(f);
-    if (!hdr.valid()) return false;
-    
-    cfg.hidden_size       = hdr.hidden_size;
-    cfg.intermediate_size = hdr.intermediate_size;
-    cfg.num_layers        = hdr.num_layers;
-    cfg.num_heads         = hdr.num_attention_heads;
-    cfg.num_kv_heads      = hdr.num_kv_heads;
-    cfg.vocab_size        = hdr.vocab_size;
-    cfg.max_seq_len       = hdr.max_seq_len;
-    cfg.head_dim          = hdr.head_dim ? hdr.head_dim : (hdr.num_attention_heads ? hdr.hidden_size / hdr.num_attention_heads : 64);
-    cfg.rope_theta        = hdr.rope_theta();
-    cfg.rms_norm_eps      = 1e-6f;
-    cfg.arch              = hdr.arch == ONEBP_MOE ? RCPP_ARCH_ZAYA : RCPP_ARCH_QWEN3;
-    
-    auto slash = path.find_last_of('/');
-    cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
-    cfg.model_path = path;
-    auto dot = cfg.model_name.find_last_of('.');
-    if (dot != std::string::npos) cfg.model_name = cfg.model_name.substr(0, dot);
-    
-    fprintf(stderr, "  Auto-detected from .1bp: %s\n", cfg.model_name.c_str());
-    fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d arch=%u\n",
-            cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
-            cfg.head_dim, cfg.vocab_size, hdr.arch);
     return true;
 }
 
@@ -602,14 +566,9 @@ int main(int argc, char** argv) {
     if (!detected && !model_arg.empty()) {
         // Try GGUF detection first (most universal path)
         std::string ext = model_arg.size() > 5 ? model_arg.substr(model_arg.size() - 5) : "";
-        std::string ext4 = model_arg.size() > 4 ? model_arg.substr(model_arg.size() - 4) : "";
         if (ext == ".gguf") {
             detected = detect_from_gguf(model_arg, cfg);
             fprintf(stderr, "  GGUF detection: %s\n", detected ? "ok" : "failed");
-        }
-        if (!detected && ext4 == ".1bp") {
-            detected = detect_from_onebp(model_arg, cfg);
-            fprintf(stderr, "  1BP detection: %s\n", detected ? "ok" : "failed");
         }
     }
     if (!detected && !model_arg.empty()) {
