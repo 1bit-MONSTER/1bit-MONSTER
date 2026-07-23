@@ -36,45 +36,41 @@ jobs:
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y -qq g++ cmake ninja-build 2>/dev/null || true
-        # Try TheRock — full build if available
+
+        # Try to install TheRock (AMD ROCm) — full build if available
+        # Otherwise, compile individual files for CodeQL tracing
         if python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-          rocm[devel,libraries] 2>/dev/null; then
-          echo "TheRock installed — discovering SDK path"
-          # Find the pip-installed SDK and export THEROCK_PIP_ROOT so CMake can find amdclang++
-          SDK_PATH=$(python3 -c "
-import site, glob, os
-for d in site.getsitepackages():
-    p = os.path.join(d, '_rocm_sdk_devel')
-    if os.path.isdir(p):
-        print(p)
-        break
-" 2>/dev/null || true)
-          if [ -z "$SDK_PATH" ]; then
-            SDK_PATH=$(find ~/.local/lib -name '_rocm_sdk_devel' -type d 2>/dev/null | head -1)
+          "rocm[devel,libraries]" 2>/dev/null; then
+          echo "TheRock installed - discovering SDK path"
+
+          # Find amdclang++ in pip site-packages
+          SDK_DIR=""
+          for d in $(python3 -c "import site; print('\n'.join(site.getsitepackages()))" 2>/dev/null); do
+            candidate="$d/_rocm_sdk_devel"
+            if [ -f "$candidate/bin/amdclang++" ]; then
+              SDK_DIR="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDK_DIR" ]; then
+            SDK_DIR=$(find "$HOME/.local/lib" -path "*/_rocm_sdk_devel" -type d 2>/dev/null | head -1)
           fi
-          echo "SDK_PATH=$SDK_PATH"
-          if [ -n "$SDK_PATH" ] && [ -f "$SDK_PATH/bin/amdclang++" ]; then
-            export THEROCK_PIP_ROOT="$SDK_PATH"
-            echo "THEROCK_PIP_ROOT=$THEROCK_PIP_ROOT"
+
+          if [ -n "$SDK_DIR" ] && [ -f "$SDK_DIR/bin/amdclang++" ]; then
+            echo "SDK_DIR=$SDK_DIR"
+            export THEROCK_PIP_ROOT="$SDK_DIR"
             cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
             ninja -C build -j$(nproc) 2>&1 || true
           else
-            echo "amdclang++ not found in SDK path — tracing individual files instead"
-            find src/ -maxdepth 1 -name '*.cpp' | while read -r f; do
-              g++ -std=c++23 -c -fsyntax-only -I src -I include "$f" 2>&1 | tail -2 || true
-            done
-            find tests/ -maxdepth 1 -name '*.cpp' | while read -r f; do
-              g++ -std=c++23 -c -fsyntax-only -I src -I include "$f" 2>&1 | tail -2 || true
-            done
+            echo "amdclang++ not found - tracing individual source files instead"
+            find src/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
+            find tests/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
           fi
         else
-          echo "TheRock pip install failed — compiling individual C++ sources for CodeQL tracing"
-          find src/ -maxdepth 1 -name '*.cpp' | while read -r f; do
-            g++ -std=c++23 -c -fsyntax-only -I src -I include "$f" 2>&1 | tail -2 || true
-          done
-          find tests/ -maxdepth 1 -name '*.cpp' | while read -r f; do
-            g++ -std=c++23 -c -fsyntax-only -I src -I include "$f" 2>&1 | tail -2 || true
-          done
+          echo "TheRock not available - tracing individual source files"
+          find src/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
+          find tests/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
         fi
 
     - name: Autobuild (JavaScript/TypeScript/Actions)
