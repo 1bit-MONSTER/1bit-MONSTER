@@ -526,17 +526,17 @@ public:
                     // Use packed Q4_K kernel for gate/up/down (3.6x less memory BW)
                     int gb = (N_FF+15)/16;
                     if (l.pk_wgate && l.pk_wup) {
-                        int gb32 = (N_FF + 31) / 32;
-                        q4k_gemv<<<gb32, 64, 0, st_>>>(d_tmp, d_hs, l.pk_wgate, N_FF, H);
-                        q4k_gemv<<<gb32, 64, 0, st_>>>(d_tmp+N_FF, d_hs, l.pk_wup, N_FF, H);
+                        int gb16 = (N_FF + 15) / 16;
+                        q4k_gemv_wmma<<<gb16, 32, 0, st_>>>(d_tmp, d_hs, l.pk_wgate, N_FF, H);
+                        q4k_gemv_wmma<<<gb16, 32, 0, st_>>>(d_tmp+N_FF, d_hs, l.pk_wup, N_FF, H);
                     } else {
                         fused_gate_up_gemv<<<(2*N_FF + 255) / 256, 256, 0, st_>>>(d_tmp, d_hs, l.gu, l.up, N_FF, H);
                     }
                     silu_mul_k<<<(N_FF+BLK-1)/BLK, BLK, 0, st_>>>(d_ao, d_tmp, d_tmp+N_FF, N_FF);
                     int db = (H+15)/16;
                     if (l.pk_wdown) {
-                        int db32 = (H + 31) / 32;
-                        q4k_gemv<<<db32, 64, 0, st_>>>(d_tmp, d_ao, l.pk_wdown, H, N_FF);
+                        int db16 = (H + 15) / 16;
+                        q4k_gemv_wmma<<<db16, 32, 0, st_>>>(d_tmp, d_ao, l.pk_wdown, H, N_FF);
                     } else {
                         moe_tiled_gemv<<<db, 128, 0, st_>>>(d_tmp, d_ao, l.dn, H, N_FF);
                     }
