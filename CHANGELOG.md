@@ -5,6 +5,20 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
 
 ## Unreleased
 
+- **Lemonade compatibility synced to upstream v11.5.0.** Refreshed
+  `docs/Lemonade-Compat.md` from the v10.9.0 target to Lemonade **v11.5.0**
+  (released 2026-07-22). Documented the integration-relevant deltas: the
+  **breaking CORS change** (default `Access-Control-Allow-Origin: *` removed —
+  non-loopback origins now need `LEMONADE_ALLOWED_ORIGINS`), the **Lemonade
+  Router** (`collection.router`, into which a 1bit OpenAI-compatible endpoint
+  drops in as a candidate with zero 1bit-side changes), `POST /v1/classify`,
+  `/health` now exposing `is_busy`/`is_streaming` (#2720), the server-side job
+  engine, `lemond` as an MCP client host, and CLI HTTPS/TLS. Updated the
+  version-compatibility table and contributor status (`bong-water-water-bong`
+  credited as a reviewer on the v11.5.0 Router milestone). Flagged two Anthropic/
+  SSE agent-client fixes staged on our fork and pending upstream — inline
+  `role:system` + adaptive-thinking handling (lemonade-sdk#2662) and SSE
+  backend-error surfacing (lemonade-sdk#2674).
 - **Pure-C++ 1BP toolchain, end to end.** Ported the `--tq2` symmetric-ternary
   quant path into `tools/gguf_to_onebp.cpp` (was Q4NX-only) and registered it as
   a first-class CMake target — the advertised `gguf_to_onebp model.gguf out.1bp
