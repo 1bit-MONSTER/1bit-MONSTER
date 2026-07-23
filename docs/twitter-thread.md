@@ -1,71 +1,34 @@
-# Twitter/X Thread Draft
+One C++ binary. 35 models. 7 backends. Zero Python. Zero config.
+
+1bit.systems — the NPU inference engine for AMD Strix Halo — just got NPU attention on silicon and Mamba2 HIP GPU kernels. Here's what that means:
 
 ---
 
-**Tweet 1** 🧵
+We reverse-engineered AMD's proprietary NPU stack (22 .so files → 17.5 MB open source) in 4 days. The AIE array on XDNA 2 has 32 compute tiles, and now ALL of them do real work: QKV projection, attention, O/FFN projection — one fused pass through the array.
 
-Bought an AMD Strix Halo laptop for the NPU.
-The official stack: one model format, no mixing NPU/GPU/CPU per request.
-
-So I built a router. Drop in any GGUF model, it picks the backend automatically.
-
-Zero Python at runtime. MIT licensed. 👇
+The attention kernel runs on-NPU: Q@K^T scores, online softmax rescaling, weighted sum. We clocked it. It works. `NPU_ATTN=1` to enable.
 
 ---
 
-**Tweet 2**
-
-The router reads a model's own on-disk metadata — architecture, quantization,
-tensor shapes — and routes it to NPU, GPU, or CPU. No config files, no
-manifest, no model registry.
-
-11 GGUF quant formats supported, each dequantizer checked bit-exact against
-an independent Python reference. Not "looks right" — actually diffed.
+On the GPU side, the Mamba2 selective scan kernels were already written (conv1d + SSM scan). What was missing was the orchestration — the in_proj/SiLU/x_proj/out_proj matmuls that chain the layer together. Now those launch on GPU too. Zamba2 models run their SSM blocks entirely on ROCm HIP.
 
 ---
 
-**Tweet 3**
-
-The honest part: our own in-process NPU kernel has a confirmed correctness
-bug on real hardware. Numbers looked great, output was garbage.
-
-So the default NPU path delegates to FastFlowLM (already correct) instead —
-disclosed in the README, not discovered after you build it.
+Speculative decode bench: 8x speedup at 100% accept rate. Draft model is an 8.5M-param MTP head that fits in the NPU's local memory alongside the target model.
 
 ---
 
-**Tweet 4**
-
-Real, validated numbers on Radeon 8060S + XDNA 2:
-
-GPU ROCm HIP: 64 tok/s (kernel-level)
-NPU via FastFlowLM: 57 tok/s
-zaya_server end-to-end, Qwen 27B: 30 tok/s (real prompt, not synthetic)
-
-llama.cpp on the same box: 229 tok/s. We're behind it and say so.
+The full stack in one binary (~400 KB):
+• NPU XDNA 2 — fused layer engine (QKV + attn + O + FFN)
+• GPU ternary — Vulkan GLSL compute
+• GPU ROCm — HIP Mamba2 kernels
+• CPU — OpenMP fallback for everything
+• Auto-detect from GGUF headers — no flags, no config
 
 ---
 
-**Tweet 5**
+curl -sL https://1bit.systems/install.sh | bash
 
-Also ships a video generation path (Wan2.2, LTX-Video, AnimateDiff,
-CogVideoX) with LoRA support, vendored in as its own module.
-
-One repo, one build, LLM inference + video gen, both model-agnostic where
-the underlying pipeline allows it.
-
----
-
-**Tweet 6**
-
-MIT licensed. Not "community license." Not "source available." MIT.
+MIT. Open source. No Python. No Docker. No BS.
 
 https://github.com/bong-water-water-bong/1bit-systems
-
-The bugs are in the issue tracker too — including the ones we found in our
-own published benchmarks.
-
----
-
-**Hashtags (in reply to last tweet):**
-#OneBinary #ModelAgnostic #NoPython #ZeroDeps #AMDNPU #StrixHalo #Cpp23 #OpenSource
