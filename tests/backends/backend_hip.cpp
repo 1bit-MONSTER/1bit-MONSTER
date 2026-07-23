@@ -451,6 +451,8 @@ public:
         }
         embed_loaded_ = true;
         fprintf(stderr, "  HIP: GGUF loaded (%d layers, %d vocab)\n", L, V);
+        // Pre-build hipGraphs after load (avoids capture overhead on first token)
+        build_graphs();
         return true;
     }
 
@@ -478,10 +480,11 @@ public:
         size_t kls = (size_t)cfg_.max_seq_len * KD;
         g_n_ = N_LAYERS;
 
-        // Allocate device pos buffer
+        // Allocate device pos buffer (initial pos=0 for graph capture)
         if (!d_pos) HIP_OK(hipMalloc(&d_pos, 8));
         int pd[2] = {0, 0};
         HIP_OK(hipMemcpy(d_pos, pd, 8, hipMemcpyHostToDevice));
+        HIP_OK(hipStreamSynchronize(st_));
 
         for (int il = 0; il < N_LAYERS; il++) {
             auto& l = layers_[il];
