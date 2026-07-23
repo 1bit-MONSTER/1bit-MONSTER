@@ -265,7 +265,9 @@ set(RCPP_SOURCES
     kernels/vl_resize_norm.hip
     src/laguna_gemv.hip
     src/laguna_fused.hip
-    src/laguna_ops.hip)
+    src/laguna_ops.hip
+    src/mamba2_kernels.cpp
+    src/zamba2_engine.cpp)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
@@ -315,6 +317,7 @@ add_library(backend_manager STATIC
     src/backend_generic.cpp
     src/backend_mamba1.cpp
     src/backend_laguna.cpp
+    src/backend_zamba2.cpp
     src/simple_tokenizer.cpp
     src/q4nx_reader.cpp
     src/safetensors_reader.cpp
