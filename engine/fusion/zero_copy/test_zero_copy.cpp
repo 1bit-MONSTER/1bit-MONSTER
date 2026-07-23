@@ -11,7 +11,7 @@
 // GPU access uses the integrated-GPU zero-copy idiom:
 //     hipHostRegister(npu_host_ptr) + hipHostGetDevicePointer() -> gpu_dev
 // which on gfx1151 (APU) yields a device pointer aliasing the NPU's pages.
-// (ROCm 7.2.4's HIP lacks a DmaBuf external-memory handle type, so we can't
+// (TheRock 7.1.5a's HIP lacks a DmaBuf external-memory handle type, so we can't
 //  import the dma-buf via HIP; the production path is Vulkan dma-buf import,
 //  and this idiom validates the underlying memory model is genuinely shared.)
 //
