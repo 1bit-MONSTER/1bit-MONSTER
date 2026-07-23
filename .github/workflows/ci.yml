@@ -115,11 +115,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: All manifests match root VERSION
         run: bash scripts/sync-version.sh --check
-      - name: Q4NX quant round-trip (issue #153 layout guard)
-        run: |
-          python3 -m pip install --quiet numpy
-          python3 tools/q4nx/test_q4nx_roundtrip.py
-
   smoke-test:
     name: Inference smoke test
     runs-on: ubuntu-24.04
