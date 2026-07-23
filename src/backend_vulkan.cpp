@@ -582,7 +582,7 @@ struct VKBackend : Backend {
 
     int generate(int token_id) override {
         float h[H]; if(!forward(token_id,h))return-1;
-        std::vector<float> lg(VOCAB); int r; lm_head(h,lg.data(),&r); return r;
+        std::vector<float> lg(VOCAB); int r = 0; lm_head(h,lg.data(),&r); return r;
     }
 
     float benchmark(int tokens=10) override {
