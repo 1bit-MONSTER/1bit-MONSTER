@@ -21,8 +21,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build build-essential python3
-          # AMD ROCm 7.2 provides the hip + composable_kernel CMake packages
-          # this project requires. Pinned to the 7.2.4 apt repo for Strix Halo
+          # AMD TheRock provides the hip + composable_kernel CMake packages
+          # this project requires. Pinned to TheRock for Strix Halo
           # (gfx1151) parity with the documented build and the verified ROCm
           # version on our hardware. Steps below degrade gracefully if the
           # ROCm packages can't be installed on the runner.
