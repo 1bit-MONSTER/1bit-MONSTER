@@ -11,7 +11,7 @@
 //            (a) Vulkan import:  VkImportMemoryFdInfoKHR with
 //                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT  (the
 //                production path — matches engine/fusion/gpu_attn.zig; this is
-//                the ONLY route that works under TheRock 7.1.5a, whose HIP lacks a
+//                the ONLY route that works under ROCm 7.2.4, whose HIP lacks a
 //                DmaBuf external-memory handle type).
 //            (b) hipHostRegister()+hipHostGetDevicePointer() on the host ptr:
 //                the integrated-GPU zero-copy idiom, used in the test to PROVE

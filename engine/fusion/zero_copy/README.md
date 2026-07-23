@@ -31,7 +31,7 @@ This directory contains the **correct, empirically-verified zero-copy substrate*
        (coherent, system RAM)           → HIP hipHostRegister() (test)
                                         → Vulkan VK_KHR_external_memory_fd
                                           (production — only API that works
-                                           on TheRock 7.1.5a, which lacks HIP
+                                           on ROCm 7.2.4, which lacks HIP
                                            DmaBuf external memory)
                  │                              │
                  └──────────┬───────────────────┘
@@ -56,9 +56,9 @@ The state-of-the-stack doc (2026-07-14) hypothesized that `npu_engine_universal.
 
 **The fix**: Use xclbins whose `num_col` the driver accepts. The `xclbin_health` tool validates this at startup so the engine diagnoses (not SIGABRTs) bad xclbins.
 
-### 2. `hipExternalMemoryHandleTypeDmaBuf` → DOES NOT EXIST in TheRock 7.1.5a
+### 2. `hipExternalMemoryHandleTypeDmaBuf` → DOES NOT EXIST in ROCm 7.2.4
 
-The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExternalMemoryHandleTypeDmaBuf` never compiled. TheRock 7.1.5a's HIP lacks that enum value. The only Linux handle type is `OpaqueFd` (inter-ROCm internal), which doesn't accept cross-device dma-buf fds from other drivers.
+The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExternalMemoryHandleTypeDmaBuf` never compiled. ROCm 7.2.4's HIP lacks that enum value. The only Linux handle type is `OpaqueFd` (inter-ROCm internal), which doesn't accept cross-device dma-buf fds from other drivers.
 
 **The production GPU import path must be Vulkan** (`VK_KHR_external_memory_fd`), matching `engine/fusion/gpu_attn.zig` and the stub in `interop.zig`.
 
@@ -79,7 +79,7 @@ The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExter
 | `xclbin_health.cpp` | Validate any xclbin against the running driver. Detects `Invalid num_col` rejection. |
 | `probe_contexts.cpp` | Probe max concurrent `hw_context`s (empirically disproves the "5 contexts collide" myth). |
 | `probe_multi_xclbin.cpp` | Probe mixing distinct xclbins (tests what the real engine does). |
-| `Makefile` | Build everything. Needs XRT + TheRock 7.1.5a. |
+| `Makefile` | Build everything. Needs XRT + ROCm 7.2.4. |
 
 ---
 

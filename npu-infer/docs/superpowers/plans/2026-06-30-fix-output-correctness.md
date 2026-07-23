@@ -6,11 +6,11 @@
 
 **Architecture:** The engine uses GPU GEMM kernels for matrix multiplies but CPU-side operations for everything else (RMSNorm, RoPE, Q/K norm, attention softmax and mixing, SiLU activation, residual connections). The forward pass in `forward_layer()` is the suspect — GPU GEMM is verified accurate. We'll add instrumentation to compare hidden states layer-by-layer, commit fixes as they're found.
 
-**Tech Stack:** C++17, HIP, TheRock 7.1.5a, Radeon 8060S (gfx1151), `.q4nx` model format
+**Tech Stack:** C++17, HIP, TheRock 7.15.0a, Radeon 8060S (gfx1151), `.q4nx` model format
 
 ## Global Constraints
 
-- Compile with system `hipcc` (TheRock 7.1.5a runtime at `/opt/rocm-therock/lib`, includes `-I/opt/rocm-therock/include`)
+- Compile with system `hipcc` (TheRock 7.15.0a runtime at `/opt/rocm-therock/lib`, includes `-I/opt/rocm-therock/include`)
 - Run with `LD_LIBRARY_PATH=/opt/rocm-therock/lib`
 - Must call `hipSetDevice(0)` before `hipGetDeviceCount`
 - All weights are FP32 in engine (BF16→FP32 conversion at load time)

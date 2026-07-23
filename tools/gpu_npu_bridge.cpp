@@ -5,7 +5,7 @@
 //         Real NPU integration was never completed; the ternary xclbins
 //         needed by the TQ1 path were never built/verified for Zaya.
 //   Memory: THE DMA-BUF ZERO-COPY APPROACH BELOW DOES NOT COMPILE.
-//         TheRock 7.1.5a HIP lacks `hipExternalMemoryHandleTypeDmaBuf` (enum value
+//         TheRock 7.15.0a HIP lacks `hipExternalMemoryHandleTypeDmaBuf` (enum value
 //         absent).  Even if it compiled, the GPU-owner→NPU-importer direction
 //         produces AMD-Vi IO_PAGE_FAULTs (verified on Strix Halo).
 //         The proven zero-copy architecture (see engine/fusion/zero_copy/):

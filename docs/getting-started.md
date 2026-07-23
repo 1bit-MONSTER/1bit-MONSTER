@@ -36,7 +36,7 @@ cd 1bit-systems
 
 ---
 
-## 2. Install TheRock 7.1.5a
+## 2. Install TheRock 7.15.0a
 
 ```bash
 pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \

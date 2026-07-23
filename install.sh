@@ -71,9 +71,9 @@ install_deps() {
     fi
     command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
     
-    # TheRock ROCm 7.1.5a — pip-installed HIP SDK for gfx1151
+    # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151
     if ! command -v amdclang++ &>/dev/null; then
-        log "Installing TheRock ROCm 7.1.5a SDK..."
+        log "Installing TheRock 7.15.0a SDK..."
         python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
             rocm[devel,libraries] 2>/dev/null || {
             warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."

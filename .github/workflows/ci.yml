@@ -21,7 +21,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build build-essential python3
-          # TheRock 7.1.5a — pip-installed HIP SDK for gfx1151 (Strix Halo)
+          # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151 (Strix Halo)
           # Falls back gracefully if the pip index is inaccessible.
           python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
             rocm[devel,libraries] 2>/dev/null || \

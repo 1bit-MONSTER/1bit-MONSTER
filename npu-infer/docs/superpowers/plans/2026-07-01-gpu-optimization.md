@@ -6,13 +6,13 @@
 
 **Architecture:** Two-phase approach: (A) profile to get hard numbers on the bottleneck, (C) full GPU residency — keep hidden state on-device across all layers, port all ops (RMSNorm, SiLU, RoPE, QK norm, attention) to HIP kernels as part of that transition.
 
-**Tech Stack:** HIP/CUDA-like kernels, TheRock 7.1.5a, gfx1151 (Radeon 8060S), single-file engine (`src/rocm_engine.cpp`)
+**Tech Stack:** HIP/CUDA-like kernels, TheRock 7.15.0a, gfx1151 (Radeon 8060S), single-file engine (`src/rocm_engine.cpp`)
 
 ## Global Constraints
 
 - No Python, no Rust — pure C++/HIP only
 - No hipBLAS/rocBLAS dependency — raw HIP kernels only
-- System TheRock 7.1.5a from /opt/rocm-therock, hipcc from system
+- System TheRock 7.15.0a from /opt/rocm-therock, hipcc from system
 - Target gfx1151 (Radeon 8060S, 20 CUs, RDNA 3.5)
 - All weights as float32, already on GPU (d_* buffers)
 - Run with LD_LIBRARY_PATH=/opt/rocm-therock/lib

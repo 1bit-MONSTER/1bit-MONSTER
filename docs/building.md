@@ -2,7 +2,7 @@
 
 This document covers building **zaya_server** — a pure C++ inference server with optional
 GPU decoding support. No Rust, no Python at runtime. The host CPU is **AMD Strix Halo**
-(Ryzen AI Max+ 395) and GPU acceleration uses **TheRock 7.1.5a** targeting `gfx1151`.
+(Ryzen AI Max+ 395) and GPU acceleration uses **TheRock 7.15.0a** targeting `gfx1151`.
 
 ---
 
@@ -27,7 +27,7 @@ sudo apt install -y cmake ninja-build build-essential git
 
 ---
 
-## TheRock 7.1.5a
+## TheRock 7.15.0a
 
 ```bash
 # Install TheRock HIP SDK for gfx1151 (Strix Halo)
@@ -152,7 +152,7 @@ message at startup confirming GPU decode is active.
 ### `hipErrorNoBinaryForGPU`
 
 The `CMAKE_HIP_ARCHITECTURES` variable was not set, or was set to the wrong target.
-Ensure it is `gfx1151` and that TheRock 7.1.5a is installed (older ROCm releases may
+Ensure it is `gfx1151` and that TheRock 7.15.0a is installed (older ROCm releases may
 not include code-objects for gfx1151).
 
 ### `cannot find -lamdhip64`

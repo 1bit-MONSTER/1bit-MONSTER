@@ -103,12 +103,12 @@ See [docs/building.md](docs/building.md) for full prerequisites and [docs/gettin
 | Ubuntu | 24.04 LTS or later (kernel 7.0.0+) | Host OS |
 | CMake | ≥ 3.21 | Build system |
 | Ninja | latest | Fast builds |
-| ROCm | **TheRock 7.1.5a** | HIP compiler (pip) |
+| ROCm | **TheRock 7.15.0a** | HIP compiler (pip) |
 | GCC | ≥ 13 | C++20 host compiler |
 | AMD XRT | ≥ 2.21 | NPU runtime (`libxrt_coreutil`) |
 | Git LFS | latest | Model file storage |
 
-**TheRock 7.1.5a installation (pip):**
+**TheRock 7.15.0a installation (pip):**
 ```bash
 pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
   rocm[devel,libraries]
