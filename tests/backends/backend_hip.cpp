@@ -302,7 +302,7 @@ public:
         for (auto& l : layers_) {
             for (auto* p : {&l.nw,&l.wq,&l.wk,&l.wv1,&l.wv2,&l.wo,&l.pan,&l.gu,&l.dn,&l.up,&l.qb,&l.kb,&l.vb,&l.qn,&l.kn}) f(*p);
             for (auto* p : {&l.cdw,&l.cdb,&l.cgw,&l.cgb,&l.ks,&l.pahss,&l.pahsb,&l.parss,&l.parsb,&l.gdw,&l.gdb,&l.rfn,&l.rf1,&l.rf1b,&l.rf2,&l.rf2b,&l.rout,&l.bb,&l.pmhss,&l.pmhsb,&l.pmrss,&l.pmrsb}) f(*p);
-            for (auto* p : {&l.pk_wgate,&l.pk_wup,&l.pk_wdown}) f(*p);
+            for (auto* p : {&l.pk_wq,&l.pk_wk,&l.pk_wv,&l.pk_wo,&l.pk_wgate,&l.pk_wup,&l.pk_wdown}) f(*p);
         }
         layers_.clear(); embed_loaded_ = false; loaded_ = false;
         if (st_) { HIP_OK(hipStreamDestroy(st_)); st_ = 0; }
@@ -404,10 +404,15 @@ public:
             std::string p(pfx);
             load_half((p + "attn_norm.weight").c_str(), lw.nw, H);
             load_half((p + "ffn_norm.weight").c_str(), lw.pan, H);
-            load_half((p + "attn_q.weight").c_str(), lw.wq, (size_t)QD * H);
-            load_half((p + "attn_k.weight").c_str(), lw.wk, (size_t)KD * H);
-            load_half((p + "attn_v.weight").c_str(), lw.wv1, (size_t)KD * H);
-            load_half((p + "attn_output.weight").c_str(), lw.wo, (size_t)H * QD);
+            // Try packed Q4_K/Q6_K first, fall back to fp16
+            if (!load_packed((p + "attn_q.weight").c_str(), lw.pk_wq, (size_t)QD * H))
+                load_half((p + "attn_q.weight").c_str(), lw.wq, (size_t)QD * H);
+            if (!load_packed((p + "attn_k.weight").c_str(), lw.pk_wk, (size_t)KD * H))
+                load_half((p + "attn_k.weight").c_str(), lw.wk, (size_t)KD * H);
+            if (!load_packed((p + "attn_v.weight").c_str(), lw.pk_wv, (size_t)KD * H))
+                load_half((p + "attn_v.weight").c_str(), lw.wv1, (size_t)KD * H);
+            if (!load_packed((p + "attn_output.weight").c_str(), lw.pk_wo, (size_t)H * QD))
+                load_half((p + "attn_output.weight").c_str(), lw.wo, (size_t)H * QD);
             // Try packed Q4_K/Q6_K first (3.6x less memory), fall back to fp16
             if (!load_packed((p + "ffn_gate.weight").c_str(), lw.pk_wgate, (size_t)FF * H))
                 load_half((p + "ffn_gate.weight").c_str(), lw.gu, (size_t)FF * H);
@@ -464,9 +469,16 @@ public:
             // and harmless for Zaya since it already needed this copy anyway).
             copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
             rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H, cfg_.rms_norm_eps);
-            // Fused QKV: compute Q, K, V in one launch (saves 2 launches + 2 activation re-reads).
-            fused_qkv_gemv<<<(QD + 2*KD + 255) / 256, 256, 0, st_>>>(
-                d_tmp, d_hs, l.wq, l.wk, l.wv1, QD, KD, H);
+            // Q/K/V: use packed Q4_K kernel or fused fp16
+            if (l.pk_wq && l.pk_wk && l.pk_wv) {
+                int q64 = (QD + 63) / 64, k64 = (KD + 63) / 64;
+                q4k_gemv_wmma<<<q64, 128, 0, st_>>>(d_tmp, d_hs, l.pk_wq, QD, H);
+                q4k_gemv_wmma<<<k64, 128, 0, st_>>>(d_tmp+QD, d_hs, l.pk_wk, KD, H);
+                q4k_gemv_wmma<<<k64, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.pk_wv, KD, H);
+            } else {
+                fused_qkv_gemv<<<(QD + 2*KD + 255) / 256, 256, 0, st_>>>(
+                    d_tmp, d_hs, l.wq, l.wk, l.wv1, QD, KD, H);
+            }
             if (l.qb) add_k<<<(QD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp, l.qb, QD);
             if (l.kb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, l.kb, KD);
             if (l.vb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD+KD, l.vb, KD);
@@ -479,7 +491,9 @@ public:
                 // Zaya-specific CCA attention + fused router MoE (fast path)
                 v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
                 cca_custom_kernel<<<1, 256, cca_custom_smem_bytes(NQ, NKV, HD, 64), st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV*2, d_phs+(size_t)il*H, il, 1, NQ, NKV, HD, 64, 5000000.0f, 128);
-                moe_tiled_gemv<<<H/16, 128, 0, st_>>>(d_ao, d_ao, l.wo, H, QD);
+                // O projection: packed or fp16
+                if (l.pk_wo) { int o64=(H+63)/64; q4k_gemv_wmma<<<o64,128,0,st_>>>(d_ao,d_ao,l.pk_wo,H,QD); }
+                else moe_tiled_gemv<<<H/16,128,0,st_>>>(d_ao,d_ao,l.wo,H,QD);
                 residual_scale_k<<<g1, BLK, 0, st_>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
                 copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_ao, H);
                 rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H, cfg_.rms_norm_eps);
@@ -503,8 +517,6 @@ public:
                 __half* kc = d_kcache + (size_t)il * kv_layer_stride;
                 __half* vc = d_vcache + (size_t)il * kv_layer_stride;
 
-                // V is now computed by fused_qkv_gemv above (replaces 3 separate GEMVs).
-
                 // RoPE Q+K in place, write RoPE'd K + raw V into this layer's
                 // KV cache at position `pos`.
                 rcpp_rope_kv_append_fp16(d_tmp, kc, d_tmp+QD+KD, vc, pos, cfg_.rope_theta, NQ, NKV, HD, st_);
@@ -514,7 +526,8 @@ public:
                 rcpp_kv_cache_attn_decode(d_tmp, kc, vc, d_ao, NQ, NKV, HD, pos + 1, 1.0f / sqrtf((float)HD), st_);
 
                 // O-projection + residual.
-                moe_tiled_gemv<<<H/16, 128, 0, st_>>>(d_tmp, d_ao, l.wo, H, QD);
+                if (l.pk_wo) { int o64=(H+63)/64; q4k_gemv_wmma<<<o64,128,0,st_>>>(d_tmp,d_ao,l.pk_wo,H,QD); }
+                else moe_tiled_gemv<<<H/16,128,0,st_>>>(d_tmp,d_ao,l.wo,H,QD);
                 add_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_tmp, H);
                 copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_phs + (size_t)il*H, H);
 
@@ -526,17 +539,17 @@ public:
                     // Use packed Q4_K kernel for gate/up/down (3.6x less memory BW)
                     int gb = (N_FF+15)/16;
                     if (l.pk_wgate && l.pk_wup) {
-                        int gb16 = (N_FF + 15) / 16;
-                        q4k_gemv_wmma<<<gb16, 32, 0, st_>>>(d_tmp, d_hs, l.pk_wgate, N_FF, H);
-                        q4k_gemv_wmma<<<gb16, 32, 0, st_>>>(d_tmp+N_FF, d_hs, l.pk_wup, N_FF, H);
+                        int gb64 = (N_FF + 63) / 64;
+                        q4k_gemv_wmma<<<gb64, 128, 0, st_>>>(d_tmp, d_hs, l.pk_wgate, N_FF, H);
+                        q4k_gemv_wmma<<<gb64, 128, 0, st_>>>(d_tmp+N_FF, d_hs, l.pk_wup, N_FF, H);
                     } else {
                         fused_gate_up_gemv<<<(2*N_FF + 255) / 256, 256, 0, st_>>>(d_tmp, d_hs, l.gu, l.up, N_FF, H);
                     }
                     silu_mul_k<<<(N_FF+BLK-1)/BLK, BLK, 0, st_>>>(d_ao, d_tmp, d_tmp+N_FF, N_FF);
                     int db = (H+15)/16;
                     if (l.pk_wdown) {
-                        int db16 = (H + 15) / 16;
-                        q4k_gemv_wmma<<<db16, 32, 0, st_>>>(d_tmp, d_ao, l.pk_wdown, H, N_FF);
+                        int db64 = (H + 63) / 64;
+                        q4k_gemv_wmma<<<db64, 128, 0, st_>>>(d_tmp, d_ao, l.pk_wdown, H, N_FF);
                     } else {
                         moe_tiled_gemv<<<db, 128, 0, st_>>>(d_tmp, d_ao, l.dn, H, N_FF);
                     }
