@@ -82,11 +82,24 @@ __global__ void add_k(__half* a, const __half* b, int n) { int i = blockIdx.x * 
 #include "../../kernels/zaya_moe_expert_ffn.hip"
 #include "../../kernels/argmax_kernel.hip"
 #include "../../kernels/lm_head_fused.hip"
-
-// Undefine compile-time constants — we use runtime config from ModelConfig
+// fused_qkv_gemv uses H as a parameter name — undef the compile-time
+// constant first so it doesn't expand to "int 2048"
 #undef H
 #undef NQ
 #undef NKV
+#undef HD
+#undef QD
+#undef KD
+#undef QKV
+#undef N_LAYERS
+#undef VOCAB
+#undef N_EXP
+#undef ROUTER_TOP_K
+#undef N_FF
+#undef RTR_H
+#include "../../kernels/fused_qkv_gemv.hip"
+
+// These are re-defined by HipBackend::forward() at runtime
 #undef HD
 #undef QD
 #undef KD
@@ -115,6 +128,10 @@ static void upf32(const std::vector<float>& s, float* d, int n, hipStream_t h = 
 struct HipLayer {
     __half *nw=nullptr,*wq=nullptr,*wk=nullptr,*wv1=nullptr,*wv2=nullptr,*wo=nullptr,*pan=nullptr;
     __half *up=nullptr;  // generic (non-Zaya) SwiGLU up_proj (l.gu=gate_proj, l.dn=down_proj there)
+    // Packed Q4_K/Q6_K weight pointers (non-null = use packed kernel instead of fp16)
+    uint8_t *pk_wq=nullptr, *pk_wk=nullptr, *pk_wv=nullptr, *pk_wo=nullptr;
+    uint8_t *pk_wgate=nullptr, *pk_wup=nullptr, *pk_wdown=nullptr;
+    int pk_q4k_blocks = 0; // number of Q4_K blocks per row (ceil(K/256))
     __half *qb=nullptr,*kb=nullptr,*vb=nullptr;  // optional QKV bias (Qwen2/2.5)
     __half *qn=nullptr,*kn=nullptr;  // optional per-head Q/K-norm weight [head_dim] (Qwen3)
     float *cdw=nullptr,*cdb=nullptr,*cgw=nullptr,*cgb=nullptr,*ks=nullptr;
@@ -420,10 +437,12 @@ public:
             // and harmless for Zaya since it already needed this copy anyway).
             copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
             rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H, cfg_.rms_norm_eps);
-            moe_tiled_gemv<<<QD/16, 128, 0, st_>>>(d_tmp, d_hs, l.wq, QD, H);
-            moe_tiled_gemv<<<KD/16, 128, 0, st_>>>(d_tmp+QD, d_hs, l.wk, KD, H);
+            // Fused QKV: compute Q, K, V in one launch (saves 2 launches + 2 activation re-reads).
+            fused_qkv_gemv<<<(QD + 2*KD + 255) / 256, 256, 0, st_>>>(
+                d_tmp, d_hs, l.wq, l.wk, l.wv1, QD, KD, H);
             if (l.qb) add_k<<<(QD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp, l.qb, QD);
             if (l.kb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, l.kb, KD);
+            if (l.vb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD+KD, l.vb, KD);
             // Per-head Q/K-norm (Qwen3), applied before RoPE.
             if (l.qn) qk_norm_k<<<NQ, BLK, 0, st_>>>(d_tmp, l.qn, HD, cfg_.rms_norm_eps);
             if (l.kn) qk_norm_k<<<NKV, BLK, 0, st_>>>(d_tmp+QD, l.kn, HD, cfg_.rms_norm_eps);
@@ -457,10 +476,7 @@ public:
                 __half* kc = d_kcache + (size_t)il * kv_layer_stride;
                 __half* vc = d_vcache + (size_t)il * kv_layer_stride;
 
-                // Single full V projection (generic models load one v_proj,
-                // not Zaya's split current/delayed halves).
-                moe_tiled_gemv<<<KD/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD, H);
-                if (l.vb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD+KD, l.vb, KD);
+                // V is now computed by fused_qkv_gemv above (replaces 3 separate GEMVs).
 
                 // RoPE Q+K in place, write RoPE'd K + raw V into this layer's
                 // KV cache at position `pos`.
@@ -481,8 +497,7 @@ public:
                 rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H, cfg_.rms_norm_eps);
                 if (l.gu && l.dn && l.up) {
                     int ffb = (N_FF+15)/16;
-                    moe_tiled_gemv<<<ffb, 128, 0, st_>>>(d_tmp, d_hs, l.gu, N_FF, H);        // gate
-                    moe_tiled_gemv<<<ffb, 128, 0, st_>>>(d_tmp+N_FF, d_hs, l.up, N_FF, H);   // up
+                    fused_gate_up_gemv<<<(2*N_FF + 255) / 256, 256, 0, st_>>>(d_tmp, d_hs, l.gu, l.up, N_FF, H);
                     silu_mul_k<<<(N_FF+BLK-1)/BLK, BLK, 0, st_>>>(d_ao, d_tmp, d_tmp+N_FF, N_FF);
                     int db = (H+15)/16;
                     moe_tiled_gemv<<<db, 128, 0, st_>>>(d_tmp, d_ao, l.dn, H, N_FF);
