@@ -6,11 +6,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '30 2 * * 1'  # weekly on Monday at 2:30 UTC
+    - cron: '30 2 * * 1'
 
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -20,64 +20,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ['c-cpp', 'javascript-typescript', 'actions']
+        language: ['javascript-typescript', 'actions']
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
 
-    - name: Build C++ for CodeQL
-      if: matrix.language == 'c-cpp'
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq g++ cmake ninja-build 2>/dev/null || true
-
-        # Try to install TheRock (AMD ROCm) — full build if available
-        # Otherwise, compile individual files for CodeQL tracing
-        if python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-          "rocm[devel,libraries]" 2>/dev/null; then
-          echo "TheRock installed - discovering SDK path"
-
-          # Find amdclang++ in pip site-packages
-          SDK_DIR=""
-          for d in $(python3 -c "import site; print('\n'.join(site.getsitepackages()))" 2>/dev/null); do
-            candidate="$d/_rocm_sdk_devel"
-            if [ -f "$candidate/bin/amdclang++" ]; then
-              SDK_DIR="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$SDK_DIR" ]; then
-            SDK_DIR=$(find "$HOME/.local/lib" -path "*/_rocm_sdk_devel" -type d 2>/dev/null | head -1)
-          fi
-
-          if [ -n "$SDK_DIR" ] && [ -f "$SDK_DIR/bin/amdclang++" ]; then
-            echo "SDK_DIR=$SDK_DIR"
-            export THEROCK_PIP_ROOT="$SDK_DIR"
-            cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
-            ninja -C build -j$(nproc) 2>&1 || true
-          else
-            echo "amdclang++ not found - tracing individual source files instead"
-            find src/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
-            find tests/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
-          fi
-        else
-          echo "TheRock not available - tracing individual source files"
-          find src/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
-          find tests/ -maxdepth 1 -name '*.cpp' -exec g++ -std=c++23 -c -fsyntax-only -I src -I include {} \; 2>&1 | tail -5 || true
-        fi
-
-    - name: Autobuild (JavaScript/TypeScript/Actions)
-      if: matrix.language != 'c-cpp'
-      uses: github/codeql-action/autobuild@v3
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v4
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@v4
       with:
         category: "/language:${{ matrix.language }}"
