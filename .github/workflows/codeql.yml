@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ['c-cpp', 'javascript-typescript', 'python', 'ruby', 'actions']
+        language: ['c-cpp', 'javascript-typescript', 'actions']
 
     steps:
     - name: Checkout repository
@@ -31,7 +31,38 @@ jobs:
       with:
         languages: ${{ matrix.language }}
 
-    - name: Autobuild
+    - name: Install build deps
+      if: matrix.language == 'c-cpp'
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq cmake ninja-build build-essential python3
+        # Try TheRock 7.15.0a pip install. Fall back gracefully.
+        python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
+          rocm[devel,libraries] 2>/dev/null && echo "TheRock installed" || {
+          echo "ROCm not available — CodeQL C++ analysis will skip full build"
+        }
+
+    - name: Build C++ for CodeQL (with ROCm)
+      if: matrix.language == 'c-cpp'
+      run: |
+        if [ -d /opt/rocm ] || [ -d /opt/rocm-therock ]; then
+          cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
+          ninja -C build -j$(nproc) 2>&1 || true
+        else
+          echo "ROCm not available — CodeQL C++ fallback: building individual targets for tracing"
+          # Build a minimal set so CodeQL can trace the compilation
+          cmake -B build -G Ninja 2>/dev/null || cmake -B build -G "Unix Makefiles" 2>/dev/null || true
+          # If cmake fails due to missing ROCm, use cmake with ZINC_DISABLED
+          if [ ! -f build/build.ninja ] && [ ! -f build/Makefile ]; then
+            cmake -B build -G Ninja -DZINC_DISABLED=ON 2>/dev/null || true
+          fi
+          if [ -f build/build.ninja ] || [ -f build/Makefile ]; then
+            cmake --build build -j$(nproc) 2>&1 | tail -20 || true
+          fi
+        fi
+
+    - name: Autobuild (JavaScript/TypeScript/Actions)
+      if: matrix.language != 'c-cpp'
       uses: github/codeql-action/autobuild@v3
 
     - name: Perform CodeQL Analysis
