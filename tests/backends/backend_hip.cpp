@@ -148,6 +148,7 @@ class HipBackend : public InferenceBackend {
     bool loaded_ = false;
     hipStream_t st_ = 0;
     __half *d_hs=nullptr,*d_ao=nullptr,*d_tmp=nullptr,*d_fnw=nullptr,*d_embed_gpu=nullptr;
+    uint8_t *pk_embed=nullptr;  // packed Q4_K embedding for lm_head
     __half *d_conv=nullptr,*d_phs=nullptr;
     __half *d_kcache=nullptr,*d_vcache=nullptr;  // generic-path KV cache: [N_LAYERS, max_seq_len, NKV, HD]
     float *d_prev_rs=nullptr;
@@ -294,6 +295,7 @@ public:
         f(d_hs); f(d_ao); f(d_tmp); f(d_fnw); f(d_embed_gpu);
         f(d_conv); f(d_phs); f(d_prev_rs); f(d_expert_idx); f(d_expert_wt);
         f(d_all_logits); f(d_best_idx); f(d_best_val); f(d_kcache); f(d_vcache);
+        f(pk_embed); pk_embed=nullptr;
         d_hs=d_ao=d_tmp=d_fnw=d_embed_gpu=nullptr;
         d_conv=d_phs=nullptr; d_prev_rs=nullptr;
         d_expert_idx=nullptr; d_expert_wt=nullptr;
@@ -372,6 +374,9 @@ public:
         }
         if (!load_half("token_embd.weight", d_embed_gpu, (size_t)V * H))
             load_half("model.embed_tokens.weight", d_embed_gpu, (size_t)V * H);
+        // Packed lm_head (Q4_K only for correctness)
+        load_packed("token_embd.weight", pk_embed, (size_t)V * H);
+        if (!pk_embed) load_packed("output.weight", pk_embed, (size_t)V * H);
 
         if (!load_half("output_norm.weight", d_fnw, H)) {
             load_half("model.norm.weight", d_fnw, H);
@@ -403,10 +408,16 @@ public:
             std::string p(pfx);
             load_half((p + "attn_norm.weight").c_str(), lw.nw, H);
             load_half((p + "ffn_norm.weight").c_str(), lw.pan, H);
+            // Q/K/V/O packed Q4_K only for Q4_K dtypes (V is often Q6_K)
             load_half((p + "attn_q.weight").c_str(), lw.wq, (size_t)QD * H);
             load_half((p + "attn_k.weight").c_str(), lw.wk, (size_t)KD * H);
             load_half((p + "attn_v.weight").c_str(), lw.wv1, (size_t)KD * H);
             load_half((p + "attn_output.weight").c_str(), lw.wo, (size_t)H * QD);
+            // Also try packed versions for Q4_K projections
+            load_packed((p + "attn_q.weight").c_str(), lw.pk_wq, (size_t)QD * H);
+            load_packed((p + "attn_k.weight").c_str(), lw.pk_wk, (size_t)KD * H);
+            load_packed((p + "attn_v.weight").c_str(), lw.pk_wv, (size_t)KD * H);
+            load_packed((p + "attn_output.weight").c_str(), lw.pk_wo, (size_t)H * QD);
             // Try packed Q4_K/Q6_K first (3.6x less memory), fall back to fp16
             if (!load_packed((p + "ffn_gate.weight").c_str(), lw.pk_wgate, (size_t)FF * H))
                 load_half((p + "ffn_gate.weight").c_str(), lw.gu, (size_t)FF * H);
@@ -554,7 +565,12 @@ public:
             }
         }
         rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, d_fnw, H, cfg_.rms_norm_eps);
-        lm_head_fused_kernel<<<VOCAB, 256, 0, st_>>>(d_all_logits, d_hs, d_embed_gpu, H, VOCAB);
+        if (pk_embed) {
+            int v64 = (VOCAB + 63) / 64;
+            q4k_gemv_wmma<<<v64, 128, 0, st_>>>((__half*)d_all_logits, d_hs, pk_embed, VOCAB, H);
+        } else {
+            lm_head_fused_kernel<<<VOCAB, 256, 0, st_>>>(d_all_logits, d_hs, d_embed_gpu, H, VOCAB);
+        }
         argmax_kernel<<<1, 256, 0, st_>>>(d_all_logits, VOCAB, d_best_idx, d_best_val);
         HIP_OK(hipStreamSynchronize(st_));
         int best = 0;
