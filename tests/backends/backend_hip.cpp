@@ -155,7 +155,12 @@ class HipBackend : public InferenceBackend {
     int *d_expert_idx=nullptr;
     float *d_expert_wt=nullptr;
     __half *d_all_logits=nullptr;
-    int *d_pos=nullptr;  // device-side position for hipGraph
+    // hipGraph: pre-attn graph (norm+QKV) and post-attn graph (O+FFN)
+    hipGraph_t g_pre_[48], g_post_[48];  // max N_LAYERS each
+    hipGraphExec_t ge_pre_[48], ge_post_[48];
+    int g_n_ = 0;  // actual N_LAYERS
+    bool graph_built_ = false;
+    int *d_pos=nullptr;  // device [pos, pos+1] for graph-compatible kernels
     int *d_best_idx=nullptr;
     float *d_best_val=nullptr;
     std::vector<HipLayer> layers_;
@@ -295,6 +300,13 @@ public:
         auto f = [](void* p) { if (p) { hipError_t _e = hipFree(p); if(_e != hipSuccess) fprintf(stderr, "hipFree failed: %s\n", hipGetErrorString(_e)); } };
         f(d_hs); f(d_ao); f(d_tmp); f(d_fnw); f(d_embed_gpu);
         f(d_conv); f(d_phs); f(d_prev_rs); f(d_expert_idx); f(d_expert_wt);
+        for (int i = 0; i < g_n_; i++) {
+            if (ge_pre_[i]) { hipGraphExecDestroy(ge_pre_[i]); ge_pre_[i]=nullptr; }
+            if (ge_post_[i]) { hipGraphExecDestroy(ge_post_[i]); ge_post_[i]=nullptr; }
+            if (g_pre_[i]) { hipGraphDestroy(g_pre_[i]); g_pre_[i]=nullptr; }
+            if (g_post_[i]) { hipGraphDestroy(g_post_[i]); g_post_[i]=nullptr; }
+        }
+        g_n_ = 0; graph_built_ = false;
         f(d_all_logits); f(d_best_idx); f(d_best_val); f(d_kcache); f(d_vcache);
         d_hs=d_ao=d_tmp=d_fnw=d_embed_gpu=nullptr;
         f(pk_embed); pk_embed=nullptr;
@@ -452,6 +464,110 @@ public:
         HIP_OK(hipMemsetAsync(d_prev_rs, 0, (size_t)N_LAYERS*RTR_H*4, st_));
     }
 
+    // ── Build per-layer hipGraphs — ONE graph per layer (all captured) ──
+    // Uses graph-compatible RoPE + attention kernels that read d_pos from
+    // device memory. The caller updates d_pos before each replay.
+    void build_graphs() {
+        if (graph_built_) return;
+        int H=cfg_.hidden_size, NQ=cfg_.num_heads, NKV=cfg_.num_kv_heads, HD=cfg_.head_dim;
+        int QD=NQ*HD, KD=NKV*HD, QKV=QD+KD;
+        int N_LAYERS=cfg_.num_layers, VOCAB=cfg_.vocab_size;
+        int N_FF=cfg_.intermediate_size, RTR_H=cfg_.router_hidden;
+        bool is_zaya = (H == 2048 && N_LAYERS == 40 && VOCAB == 262272);
+        int g1 = (H+BLK-1)/BLK;
+        size_t kls = (size_t)cfg_.max_seq_len * KD;
+        g_n_ = N_LAYERS;
+
+        // Allocate device pos buffer
+        if (!d_pos) HIP_OK(hipMalloc(&d_pos, 8));
+        int pd[2] = {0, 0};
+        HIP_OK(hipMemcpy(d_pos, pd, 8, hipMemcpyHostToDevice));
+
+        for (int il = 0; il < N_LAYERS; il++) {
+            auto& l = layers_[il];
+            // ── ONE graph per layer: norm → QKV → norms → RoPE → attn → O → FFN ──
+            HIP_OK(hipStreamBeginCapture(st_, hipStreamCaptureModeGlobal));
+            copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
+            rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H, cfg_.rms_norm_eps);
+            if (l.pk_wq && l.pk_wk && l.pk_wv) {
+                int q64=(QD+63)/64, k64=(KD+63)/64;
+                q4k_gemv_wmma<<<q64,128,0,st_>>>(d_tmp,d_hs,l.pk_wq,QD,H);
+                q4k_gemv_wmma<<<k64,128,0,st_>>>(d_tmp+QD,d_hs,l.pk_wk,KD,H);
+                q4k_gemv_wmma<<<k64,128,0,st_>>>(d_tmp+QD+KD,d_hs,l.pk_wv,KD,H);
+            } else if (l.wq && l.wk && l.wv1)
+                fused_qkv_gemv<<<(QD+2*KD+255)/256,256,0,st_>>>(d_tmp,d_hs,l.wq,l.wk,l.wv1,QD,KD,H);
+            if (l.qb) add_k<<<(QD+BLK-1)/BLK,BLK,0,st_>>>(d_tmp,l.qb,QD);
+            if (l.kb) add_k<<<(KD+BLK-1)/BLK,BLK,0,st_>>>(d_tmp+QD,l.kb,KD);
+            if (l.vb) add_k<<<(KD+BLK-1)/BLK,BLK,0,st_>>>(d_tmp+QD+KD,l.vb,KD);
+            if (l.qn) qk_norm_k<<<NQ,BLK,0,st_>>>(d_tmp,l.qn,HD,cfg_.rms_norm_eps);
+            if (l.kn) qk_norm_k<<<NKV,BLK,0,st_>>>(d_tmp+QD,l.kn,HD,cfg_.rms_norm_eps);
+
+            if (is_zaya) {
+                moe_tiled_gemv<<<KD/2/16,128,0,st_>>>(d_tmp+QD+KD,d_hs,l.wv1,KD/2,H);
+                moe_tiled_gemv<<<KD/2/16,128,0,st_>>>(d_tmp+QD+KD+KD/2,d_phs+(size_t)il*H,l.wv2,KD/2,H);
+                v_interleave_kernel<<<(KD/2+BLK-1)/BLK,BLK,0,st_>>>(d_tmp+QD,d_tmp+QD+KD,d_tmp+QD+KD+KD/2,KD/2);
+                cca_custom_kernel<<<1,256,cca_custom_smem_bytes(NQ,NKV,HD,64),st_>>>(d_tmp,d_tmp+QD,d_tmp+QD,d_phs+(size_t)il*H,d_conv+(size_t)il*2*QKV,l.cdw,l.cdb,l.cgw,l.cgb,l.ks,d_ao,d_conv+(size_t)il*2*QKV*2,d_phs+(size_t)il*H,il,1,NQ,NKV,HD,64,5000000.0f,128);
+                (l.pk_wo ? (q4k_gemv_wmma<<<(H+63)/64,128,0,st_>>>(d_ao,d_ao,l.pk_wo,H,QD),0)
+                         : (moe_tiled_gemv<<<H/16,128,0,st_>>>(d_ao,d_ao,l.wo,H,QD),0));
+                residual_scale_k<<<g1,BLK,0,st_>>>(d_ao,d_hs,l.pahss,l.pahsb,l.parss,l.parsb,H);
+                copy_k<<<g1,BLK,0,st_>>>(d_hs,d_ao,H);
+                rmsnorm_k<<<1,BLK,0,st_>>>(d_hs,l.pan,H,cfg_.rms_norm_eps);
+                if (l.gu && l.dn) {
+                    eda_router_gpu_kernel<<<1,RTR_H,eda_router_smem_bytes(RTR_H,2),st_>>>(d_hs,d_prev_rs+(size_t)il*RTR_H,l.has_eda?1:0,l.eda_scale[0],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,d_prev_rs+(size_t)il*RTR_H,d_expert_idx,d_expert_wt,16,H,RTR_H,2);
+                    encode_expert_cache_kernel<<<1,32,0,st_>>>(d_prev_rs+(size_t)il*RTR_H,d_expert_idx,RTR_H);
+                    { int gb=(2*N_FF+15)/16, db=(H+15)/16, sb=(N_FF+BLK-1)/BLK;
+                    wmma_gateup_kernel<<<gb,128,0,st_>>>(d_tmp,d_hs,l.gu,d_expert_idx);
+                    silu_mul_k<<<sb,BLK,0,st_>>>(d_ao,d_tmp,d_tmp+N_FF,N_FF);
+                    wmma_down_kernel<<<db,128,0,st_>>>(d_tmp,d_ao,l.dn,d_expert_idx); }
+                    residual_scale_k<<<g1,BLK,0,st_>>>(d_tmp,d_hs,l.pmhss,l.pmhsb,l.pmrss,l.pmrsb,H);
+                    copy_k<<<g1,BLK,0,st_>>>(d_hs,d_tmp,H);
+                }
+            } else {
+                // Generic: RoPE + attention use device-ptr kernels (graph-safe)
+                __half* kc = d_kcache + (size_t)il * kls;
+                __half* vc = d_vcache + (size_t)il * kls;
+                rcpp_rope_kv_append_fp16_graph(d_tmp, kc, d_tmp+QD+KD, vc,
+                    d_pos, cfg_.rope_theta, NQ, NKV, HD, st_);
+                rcpp_kv_cache_attn_decode_graph(d_tmp, kc, vc, d_ao,
+                    NQ, NKV, HD, d_pos+1, 1.0f/sqrtf((float)HD), st_);
+                (l.pk_wo ? (q4k_gemv_wmma<<<(H+63)/64,128,0,st_>>>(d_tmp,d_ao,l.pk_wo,H,QD),0)
+                         : (moe_tiled_gemv<<<H/16,128,0,st_>>>(d_tmp,d_ao,l.wo,H,QD),0));
+                add_k<<<g1,BLK,0,st_>>>(d_phs+(size_t)il*H,d_tmp,H);
+                copy_k<<<g1,BLK,0,st_>>>(d_hs,d_phs+(size_t)il*H,H);
+                copy_k<<<g1,BLK,0,st_>>>(d_phs+(size_t)il*H,d_hs,H);
+                rmsnorm_k<<<1,BLK,0,st_>>>(d_hs,l.pan,H,cfg_.rms_norm_eps);
+                if (l.gu && l.dn && l.up) {
+                    if (l.pk_wgate && l.pk_wup) {
+                        int gb64=(N_FF+63)/64;
+                        q4k_gemv_wmma<<<gb64,128,0,st_>>>(d_tmp,d_hs,l.pk_wgate,N_FF,H);
+                        q4k_gemv_wmma<<<gb64,128,0,st_>>>(d_tmp+N_FF,d_hs,l.pk_wup,N_FF,H);
+                    } else
+                        fused_gate_up_gemv<<<(2*N_FF+255)/256,256,0,st_>>>(d_tmp,d_hs,l.gu,l.up,N_FF,H);
+                    silu_mul_k<<<(N_FF+BLK-1)/BLK,BLK,0,st_>>>(d_ao,d_tmp,d_tmp+N_FF,N_FF);
+                    (l.pk_wdown ? (q4k_gemv_wmma<<<(H+63)/64,128,0,st_>>>(d_tmp,d_ao,l.pk_wdown,H,N_FF),0)
+                               : (moe_tiled_gemv<<<(H+15)/16,128,0,st_>>>(d_tmp,d_ao,l.dn,H,N_FF),0));
+                    add_k<<<g1,BLK,0,st_>>>(d_phs+(size_t)il*H,d_tmp,H);
+                }
+                copy_k<<<g1,BLK,0,st_>>>(d_hs,d_phs+(size_t)il*H,H);
+            }
+            HIP_OK(hipStreamEndCapture(st_, &g_pre_[il]));
+            HIP_OK(hipGraphInstantiate(&ge_pre_[il], g_pre_[il], NULL, NULL, 0));
+        }
+        // Final graph: rmsnorm + lm_head + argmax (no pos needed)
+        HIP_OK(hipStreamBeginCapture(st_, hipStreamCaptureModeGlobal));
+        rmsnorm_k<<<1,BLK,0,st_>>>(d_hs,d_fnw,H,cfg_.rms_norm_eps);
+        if (pk_embed) {
+            int v64=(VOCAB+63)/64;
+            q4k_gemv_wmma<<<v64,128,0,st_>>>((__half*)d_all_logits,d_hs,pk_embed,VOCAB,H);
+        } else
+            lm_head_fused_kernel<<<VOCAB,256,0,st_>>>(d_all_logits,d_hs,d_embed_gpu,H,VOCAB);
+        argmax_kernel<<<1,256,0,st_>>>(d_all_logits,VOCAB,d_best_idx,d_best_val);
+        HIP_OK(hipStreamEndCapture(st_, &g_pre_[N_LAYERS]));
+        HIP_OK(hipGraphInstantiate(&ge_pre_[N_LAYERS], g_pre_[N_LAYERS], NULL, NULL, 0));
+        graph_built_ = true;
+        fprintf(stderr, "  hipGraph: %d layers × 1 graph + 1 final = ready\n", N_LAYERS);
+    }
+
     int forward(int token_id, int pos) override {
         if (!loaded_ || !embed_loaded_) return 0;
         int H=cfg_.hidden_size, NQ=cfg_.num_heads, NKV=cfg_.num_kv_heads, HD=cfg_.head_dim;
@@ -459,120 +575,18 @@ public:
         int N_LAYERS=cfg_.num_layers, VOCAB=cfg_.vocab_size;
         int N_FF=cfg_.intermediate_size, RTR_H=cfg_.router_hidden;
         bool is_zaya = (H == 2048 && N_LAYERS == 40 && VOCAB == 262272);
-        int g1 = (H+BLK-1)/BLK;
-        // d_embed_gpu is populated by both loaders (unlike the host-side
-        // embed_cpu_, which only the .bin loader fills in) — a GPU-side
-        // lookup works for both instead of reading past the end of an
-        // empty embed_cpu_ for GGUF-loaded models.
         rcpp_embedding_lookup_fp16(d_embed_gpu, token_id, d_hs, H, st_);
-        size_t kv_layer_stride = (size_t)cfg_.max_seq_len * KD;  // elements, generic-path KV cache only
-        for (int il = 0; il < N_LAYERS; il++) {
-            auto& l = layers_[il];
-            // Pre-attention-norm residual, captured before rmsnorm below mutates
-            // d_hs in place. Zaya's CCA path uses this as its own "previous
-            // hidden state" input; the generic path below reuses the same slot
-            // as a true pre-norm transformer residual (cheap, unconditional,
-            // and harmless for Zaya since it already needed this copy anyway).
-            copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
-            rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.nw, H, cfg_.rms_norm_eps);
-            // Q/K/V: use packed Q4_K kernel or fused fp16
-            if (l.pk_wq && l.pk_wk && l.pk_wv) {
-                int q64 = (QD + 63) / 64, k64 = (KD + 63) / 64;
-                q4k_gemv_wmma<<<q64, 128, 0, st_>>>(d_tmp, d_hs, l.pk_wq, QD, H);
-                q4k_gemv_wmma<<<k64, 128, 0, st_>>>(d_tmp+QD, d_hs, l.pk_wk, KD, H);
-                q4k_gemv_wmma<<<k64, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.pk_wv, KD, H);
-            } else {
-                fused_qkv_gemv<<<(QD + 2*KD + 255) / 256, 256, 0, st_>>>(
-                    d_tmp, d_hs, l.wq, l.wk, l.wv1, QD, KD, H);
-            }
-            if (l.qb) add_k<<<(QD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp, l.qb, QD);
-            if (l.kb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, l.kb, KD);
-            if (l.vb) add_k<<<(KD+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD+KD, l.vb, KD);
-            // Per-head Q/K-norm (Qwen3), applied before RoPE.
-            if (l.qn) qk_norm_k<<<NQ, BLK, 0, st_>>>(d_tmp, l.qn, HD, cfg_.rms_norm_eps);
-            if (l.kn) qk_norm_k<<<NKV, BLK, 0, st_>>>(d_tmp+QD, l.kn, HD, cfg_.rms_norm_eps);
-            if (is_zaya) {
-                moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD, d_hs, l.wv1, KD/2, H);
-                moe_tiled_gemv<<<KD/2/16, 128, 0, st_>>>(d_tmp+QD+KD+KD/2, d_phs+(size_t)il*H, l.wv2, KD/2, H);
-                // Zaya-specific CCA attention + fused router MoE (fast path)
-                v_interleave_kernel<<<(KD/2+BLK-1)/BLK, BLK, 0, st_>>>(d_tmp+QD, d_tmp+QD+KD, d_tmp+QD+KD+KD/2, KD/2);
-                cca_custom_kernel<<<1, 256, cca_custom_smem_bytes(NQ, NKV, HD, 64), st_>>>(d_tmp, d_tmp+QD, d_tmp+QD, d_phs+(size_t)il*H, d_conv+(size_t)il*2*QKV, l.cdw, l.cdb, l.cgw, l.cgb, l.ks, d_ao, d_conv+(size_t)il*2*QKV*2, d_phs+(size_t)il*H, il, 1, NQ, NKV, HD, 64, 5000000.0f, 128);
-                // O projection: packed or fp16
-                if (l.pk_wo) { int o64=(H+63)/64; q4k_gemv_wmma<<<o64,128,0,st_>>>(d_ao,d_ao,l.pk_wo,H,QD); }
-                else moe_tiled_gemv<<<H/16,128,0,st_>>>(d_ao,d_ao,l.wo,H,QD);
-                residual_scale_k<<<g1, BLK, 0, st_>>>(d_ao, d_hs, l.pahss, l.pahsb, l.parss, l.parsb, H);
-                copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_ao, H);
-                rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H, cfg_.rms_norm_eps);
-                if (l.gu && l.dn) {
-                    eda_router_gpu_kernel<<<1, RTR_H, eda_router_smem_bytes(RTR_H, 2), st_>>>(d_hs, d_prev_rs+(size_t)il*RTR_H, l.has_eda?1:0, l.eda_scale[0], l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b, l.rf2, l.rf2b, l.rout, l.bb, d_prev_rs+(size_t)il*RTR_H, d_expert_idx, d_expert_wt, 16, H, RTR_H, 2);
-                    encode_expert_cache_kernel<<<1, 32, 0, st_>>>(d_prev_rs+(size_t)il*RTR_H, d_expert_idx, RTR_H);
-                    { int gb=(2*N_FF+15)/16, db=(H+15)/16, sb=(N_FF+BLK-1)/BLK;
-                    wmma_gateup_kernel<<<gb,128,0,st_>>>(d_tmp,d_hs,l.gu,d_expert_idx);
-                    silu_mul_k<<<sb,BLK,0,st_>>>(d_ao,d_tmp,d_tmp+N_FF,N_FF);
-                    wmma_down_kernel<<<db,128,0,st_>>>(d_tmp,d_ao,l.dn,d_expert_idx); }
-                    residual_scale_k<<<g1, BLK, 0, st_>>>(d_tmp, d_hs, l.pmhss, l.pmhsb, l.pmrss, l.pmrsb, H);
-                    copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_tmp, H);
-                }
-            } else {
-                // Generic path: real self-attention (RoPE + KV cache + causal
-                // GQA attention) + standard SwiGLU FFN, both pre-norm with
-                // residual. Previously this branch skipped attention entirely
-                // (QKV was computed and thrown away) and had a broken FFN
-                // (read an uninitialized "up" buffer) — see the commit that
-                // added this comment for the full writeup.
-                __half* kc = d_kcache + (size_t)il * kv_layer_stride;
-                __half* vc = d_vcache + (size_t)il * kv_layer_stride;
 
-                // RoPE Q+K in place, write RoPE'd K + raw V into this layer's
-                // KV cache at position `pos`.
-                rcpp_rope_kv_append_fp16(d_tmp, kc, d_tmp+QD+KD, vc, pos, cfg_.rope_theta, NQ, NKV, HD, st_);
+        if (!graph_built_) build_graphs();
 
-                // Causal GQA attention against positions [0, pos] of this
-                // layer's KV cache.
-                rcpp_kv_cache_attn_decode(d_tmp, kc, vc, d_ao, NQ, NKV, HD, pos + 1, 1.0f / sqrtf((float)HD), st_);
+        // Update device pos for all layers (read by graph-compatible kernels)
+        int pd[2] = {pos, pos + 1};
+        HIP_OK(hipMemcpyAsync(d_pos, pd, 8, hipMemcpyHostToDevice, st_));
 
-                // O-projection + residual.
-                if (l.pk_wo) { int o64=(H+63)/64; q4k_gemv_wmma<<<o64,128,0,st_>>>(d_tmp,d_ao,l.pk_wo,H,QD); }
-                else moe_tiled_gemv<<<H/16,128,0,st_>>>(d_tmp,d_ao,l.wo,H,QD);
-                add_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_tmp, H);
-                copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_phs + (size_t)il*H, H);
-
-                // Pre-FFN-norm residual, same reused per-layer slot (its
-                // pre-attention value is no longer needed at this point).
-                copy_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_hs, H);
-                rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, l.pan, H, cfg_.rms_norm_eps);
-                if (l.gu && l.dn && l.up) {
-                    // Use packed Q4_K kernel for gate/up/down (3.6x less memory BW)
-                    int gb = (N_FF+15)/16;
-                    if (l.pk_wgate && l.pk_wup) {
-                        int gb64 = (N_FF + 63) / 64;
-                        q4k_gemv_wmma<<<gb64, 128, 0, st_>>>(d_tmp, d_hs, l.pk_wgate, N_FF, H);
-                        q4k_gemv_wmma<<<gb64, 128, 0, st_>>>(d_tmp+N_FF, d_hs, l.pk_wup, N_FF, H);
-                    } else {
-                        fused_gate_up_gemv<<<(2*N_FF + 255) / 256, 256, 0, st_>>>(d_tmp, d_hs, l.gu, l.up, N_FF, H);
-                    }
-                    silu_mul_k<<<(N_FF+BLK-1)/BLK, BLK, 0, st_>>>(d_ao, d_tmp, d_tmp+N_FF, N_FF);
-                    int db = (H+15)/16;
-                    if (l.pk_wdown) {
-                        int db64 = (H + 63) / 64;
-                        q4k_gemv_wmma<<<db64, 128, 0, st_>>>(d_tmp, d_ao, l.pk_wdown, H, N_FF);
-                    } else {
-                        moe_tiled_gemv<<<db, 128, 0, st_>>>(d_tmp, d_ao, l.dn, H, N_FF);
-                    }
-                    add_k<<<g1, BLK, 0, st_>>>(d_phs + (size_t)il*H, d_tmp, H);
-                }
-                copy_k<<<g1, BLK, 0, st_>>>(d_hs, d_phs + (size_t)il*H, H);
-            }
-        }
-        rmsnorm_k<<<1, BLK, 0, st_>>>(d_hs, d_fnw, H, cfg_.rms_norm_eps);
-        // lm_head: use packed Q4_K kernel if available (3.6x less BW for this 233M-element GEMV)
-        if (pk_embed) {
-            int v64 = (VOCAB + 63) / 64;
-            q4k_gemv_wmma<<<v64, 128, 0, st_>>>((__half*)d_all_logits, d_hs, pk_embed, VOCAB, H);
-        } else {
-            lm_head_fused_kernel<<<VOCAB, 256, 0, st_>>>(d_all_logits, d_hs, d_embed_gpu, H, VOCAB);
-        }
-        argmax_kernel<<<1, 256, 0, st_>>>(d_all_logits, VOCAB, d_best_idx, d_best_val);
+        // Replay all graphs: one per layer + final
+        for (int il = 0; il < N_LAYERS; il++)
+            HIP_OK(hipGraphLaunch(ge_pre_[il], st_));
+        HIP_OK(hipGraphLaunch(ge_pre_[N_LAYERS], st_));
         HIP_OK(hipStreamSynchronize(st_));
         int best = 0;
         HIP_OK(hipMemcpy(&best, d_best_idx, 4, hipMemcpyDeviceToHost));

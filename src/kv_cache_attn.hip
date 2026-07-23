@@ -148,6 +148,82 @@ rcpp_kv_cache_attn_decode(const void* Q_dev, const void* K_dev, const void* V_de
     return (err == hipSuccess) ? RCPP_OK : RCPP_HIP_ERROR;
 }
 
+// ─── Graph-compatible attention: reads seq_len from device memory ─────────
+__global__ __launch_bounds__(BLOCK)
+void kv_cache_attn_decode_graph_kernel(
+    const __half* __restrict__ Q,
+    const __half* __restrict__ K,
+    const __half* __restrict__ V,
+    __half*       __restrict__ out,
+    int num_q_heads, int num_kv_heads, int head_dim,
+    const int* d_seq_len, float scale)
+{
+    int seq_len = *d_seq_len;
+    if (seq_len <= 0) return;
+    const int h = blockIdx.x;
+    if (h >= num_q_heads) return;
+    const int tid  = threadIdx.x;
+    const int lane = tid & 31;
+    const int wid  = tid / 32;
+    const int gqa_ratio = num_q_heads / num_kv_heads;
+    const int kv_head   = h / gqa_ratio;
+
+    __shared__ __half Q_shared[256];
+    for (int d = tid; d < head_dim; d += 128)
+        Q_shared[d] = Q[(size_t)h * head_dim + d];
+    __syncthreads();
+
+    float m = -FLT_MAX, l = 0.0f;
+    const int ept = (head_dim + 127) / 128;
+    float o_local[8] = {0};
+    __shared__ float s_max[4], s_sum[4];
+
+    for (int t = 0; t < seq_len; ++t) {
+        const __half* K_row = K + ((size_t)t * num_kv_heads + kv_head) * head_dim;
+        float partial = 0.0f;
+        for (int d = tid; d < head_dim; d += 128)
+            partial += (float)Q_shared[d] * (float)K_row[d];
+        for (int o = 16; o > 0; o >>= 1) partial += __shfl_xor(partial, o);
+        if (lane == 0) s_sum[wid] = partial;
+        __syncthreads();
+        if (wid == 0) {
+            float v = (lane < 4) ? s_sum[lane] : 0.0f;
+            for (int o = 2; o > 0; o >>= 1) v += __shfl_xor(v, o);
+            if (lane == 0) s_max[0] = v * scale;
+        }
+        __syncthreads();
+        const float s = s_max[0];
+        const float m_new = fmaxf(s, m);
+        const float alpha = expf(m - m_new), beta = expf(s - m_new);
+        l = l * alpha + beta;
+        for (int k = 0; k < 8; ++k) o_local[k] *= alpha;
+        const __half* V_row = V + ((size_t)t * num_kv_heads + kv_head) * head_dim;
+        for (int ei = 0; ei < ept; ++ei) { int d = tid + ei * 128; if (d < head_dim) o_local[ei] += beta * (float)V_row[d]; }
+        m = m_new;
+    }
+    float inv_l = 1.0f / l;
+    for (int ei = 0; ei < ept; ++ei) { int d = tid + ei * 128; if (d < head_dim) out[(size_t)h * head_dim + d] = __float2half(o_local[ei] * inv_l); }
+}
+
+extern "C" rcpp_status_t
+rcpp_kv_cache_attn_decode_graph(
+    const void* Q_dev, const void* K_dev, const void* V_dev, void* out_dev,
+    int num_q_heads, int num_kv_heads, int head_dim,
+    const int* d_seq_len, float scale, void* stream)
+{
+    if (!Q_dev || !K_dev || !V_dev || !out_dev || !d_seq_len) return RCPP_INVALID_ARG;
+    if (num_q_heads <= 0 || num_kv_heads <= 0 || num_q_heads % num_kv_heads != 0) return RCPP_INVALID_ARG;
+    if (head_dim <= 0 || head_dim > 256) return RCPP_INVALID_ARG;
+    dim3 grid(num_q_heads, 1, 1), block(128, 1, 1);
+    hipLaunchKernelGGL(kv_cache_attn_decode_graph_kernel,
+        grid, block, 0, (hipStream_t)stream,
+        (const __half*)Q_dev, (const __half*)K_dev, (const __half*)V_dev,
+        (__half*)out_dev, num_q_heads, num_kv_heads, head_dim,
+        d_seq_len, scale);
+    hipError_t err = hipGetLastError();
+    return (err == hipSuccess) ? RCPP_OK : RCPP_HIP_ERROR;
+}
+
 // ============================================================================
 // Prefill attention — multi-token, causal mask.
 //   Q: [seq_len, num_q_heads, head_dim]

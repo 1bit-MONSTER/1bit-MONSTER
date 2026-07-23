@@ -336,6 +336,20 @@ rcpp_kv_cache_attn_decode_fd(const void* Q_dev, const void* K_dev, const void* V
                              int num_q_heads, int num_kv_heads, int head_dim,
                              int seq_len, float scale, void* stream);
 
+// Graph-compatible variants: read pos/seq_len from device memory
+rcpp_status_t
+rcpp_rope_kv_append_fp16_graph(
+    void* x_dev, void* k_cache_dev,
+    const void* v_src_dev, void* v_cache_dev,
+    const int* d_pos, float theta,
+    int num_q_heads, int num_kv_heads, int head_dim,
+    void* stream);
+rcpp_status_t
+rcpp_kv_cache_attn_decode_graph(
+    const void* Q_dev, const void* K_dev, const void* V_dev, void* out_dev,
+    int num_q_heads, int num_kv_heads, int head_dim,
+    const int* d_seq_len, float scale, void* stream);
+
 // Prefill attention — multi-token, causal mask. Each output position t attends
 // only to K/V[0..t]. All tensors in [seq_len, heads, head_dim] layout (Q uses
 // num_q_heads, K/V use num_kv_heads). Grid scales as seq_len * num_q_heads.
