@@ -842,6 +842,14 @@ target_link_libraries(test_vit_encoder PRIVATE
     vision_encoder backend_manager vl_image dl
     ${CMAKE_DL_LIBS})
 
+# -- vl_pipeline_test : End-to-end VL pipeline architecture test -------------------
+add_executable(vl_pipeline_test tools/vl_pipeline_test.cpp)
+target_include_directories(vl_pipeline_test PRIVATE src/ include/)
+target_compile_options(vl_pipeline_test PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(vl_pipeline_test PRIVATE
+    vision_encoder backend_manager vl_image dl
+    ${CMAKE_DL_LIBS})
+
 
 # -- onebit : NPU-native terminal coding agent CLI -------------------------
 # Pure C++ replacement for rust/onebit-cli. Single binary — chat, up, down,
