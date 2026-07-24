@@ -1,4 +1,4 @@
-# 1bit.systems Model Catalog — 40 Models (1BP)
+# 1bit.systems Model Catalog — 38 Models (1BP)
 
 All models available in **1BP format** — single-file, zero-config, memory-mappable.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
@@ -27,14 +27,14 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Mistral-7B-Instruct-v0.3 | 7B | 4.3 GB | ZINC / NPU / HIP | mistral |
 | Mixtral-8x7B-Instruct-v0.1 | 46.7B | 27.8 GB | ZINC / NPU / HIP | mistral (MoE) |
 
-### Gemma — 4
+### Gemma — 3
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | Gemma-2-2B-it | 2B | 1.2 GB | ZINC / NPU / HIP | gemma2 |
 | Gemma-3-4B-it | 4B | 1.9 GB | ZINC / NPU / HIP | gemma |
 | Gemma-3-1B-it | 1B | 447 MB | ZINC / NPU | gemma |
 
-### Phi — 3
+### Phi — 2
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | Phi-3-mini-4k-instruct | 3.8B | 2.3 GB | ZINC / NPU / HIP | phi3 |
@@ -107,7 +107,7 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Qwen2-VL-2B | 2B | 781 MB | ZINC (vision) | qwen2vl ✅ |
 | Qwen3-VL-4B | 4B | 2.2 GB | ZINC (vision) | qwen2vl |
 
-## Total: 40 models
+## Total: 38 models
 All converted via C++ toolchain (`tools/gguf_to_onebp`).
 
 ## Conversion Pipeline (C++ only)
