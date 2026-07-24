@@ -244,7 +244,8 @@ for f in d.get('siblings',[]):
         
         info "  Downloading: $smallest"
         local url="https://huggingface.co/$model_id/resolve/main/$smallest"
-        local out_path="$MODELS_DIR/$(echo $smallest | sed 's/.*\///')"
+        local out_path
+        out_path="$MODELS_DIR/$(echo "$smallest" | sed 's/.*\///')"
         
         if command -v wget &>/dev/null; then
             wget -q --show-progress "$url" -O "$out_path"
