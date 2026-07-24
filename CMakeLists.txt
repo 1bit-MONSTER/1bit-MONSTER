@@ -318,6 +318,10 @@ set(RCPP_SOURCES
     kernels/vl_resize_norm.hip
     kernels/whisper_kernels.hip
     kernels/deepseek_mla.hip
+    kernels/vitallm_sparse_kv.hip
+    kernels/twla_int4_gemv.hip
+    kernels/turboquant_kv.hip
+    kernels/tq2_bwopt.hip
     src/laguna_gemv.hip
     src/laguna_fused.hip
     src/laguna_ops.hip
