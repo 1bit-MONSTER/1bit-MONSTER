@@ -883,7 +883,7 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             ${CMAKE_SOURCE_DIR}/include
             ${THEROCK_SDK_BASE}/include)
         target_compile_options(test_pipeline_real PRIVATE
-            -O3 -march=native -ffast-math -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
+            -O3 -march=native -fno-signed-zeros -fno-trapping-math -fassociative-math -freciprocal-math -fno-math-errno -fno-rounding-math -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
         target_link_libraries(test_pipeline_real PRIVATE
             xrt_coreutil xrt_core uuid rt pthread
             /usr/lib/x86_64-linux-gnu/libaiebu.a)

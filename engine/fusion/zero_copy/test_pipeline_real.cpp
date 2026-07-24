@@ -82,7 +82,7 @@ static inline float dyn_scale(const float* x, int n) {
 static inline void rmsnorm_f32(float* x, const float* w, int n) {
     double ss = 0; for (int i = 0; i < n; i++) { if (!std::isfinite(x[i])) x[i] = 0; ss += (double)x[i] * x[i]; }
     float ir = 1.0f / sqrtf((float)(ss / n) + EPS);
-    for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * w[i] : 0.0f;
+    for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * (w ? w[i] : 1.0f) : 0.0f;
 }
 
 // ── NPU GEMM context (single-layer ops) ──
@@ -164,8 +164,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "No HIP devices\n"); return 77;
     }
     he = hipSetDevice(0); // Strix Halo integrated GPU
+    if (he != hipSuccess) { fprintf(stderr, "FAIL hipSetDevice\n"); return 1; }
     hipStream_t gpu_stream;
-    hipStreamCreate(&gpu_stream);
+    he = hipStreamCreate(&gpu_stream);
+    if (he != hipSuccess) { fprintf(stderr, "FAIL hipStreamCreate\n"); return 1; }
     fprintf(stderr, "GPU: HIP device 0, stream created\n");
     
     // Init NPU
@@ -204,17 +206,17 @@ int main(int argc, char** argv) {
     int max_seq = 4096;
     size_t kv_bytes = (size_t)max_seq * NKV * HD * sizeof(__half);
     if (hipSuccess != hipMalloc(&d_K, kv_bytes)) { fprintf(stderr,"FAIL hipMalloc K\n"); return 1; }
-    hipMemsetAsync(d_K, 0, kv_bytes, gpu_stream);
+    if (hipSuccess != hipMemsetAsync(d_K, 0, kv_bytes, gpu_stream)) { fprintf(stderr,"FAIL hipMemsetAsync K\n"); return 1; }
     if (hipSuccess != hipMalloc(&d_V, kv_bytes)) { fprintf(stderr,"FAIL hipMalloc V\n"); return 1; }
-    hipMemsetAsync(d_V, 0, kv_bytes, gpu_stream);
+    if (hipSuccess != hipMemsetAsync(d_V, 0, kv_bytes, gpu_stream)) { fprintf(stderr,"FAIL hipMemsetAsync V\n"); return 1; }
     
     // GPU buffer for Q (f16) and attention output (f16)
     __half *d_Q=nullptr, *d_AttnOut=nullptr;
     size_t q_bytes = (size_t)NH * HD * sizeof(__half);
     if (hipSuccess != hipMalloc(&d_Q, q_bytes)) { fprintf(stderr,"FAIL hipMalloc Q\n"); return 1; }
-    hipMemsetAsync(d_Q, 0, q_bytes, gpu_stream);
+    if (hipSuccess != hipMemsetAsync(d_Q, 0, q_bytes, gpu_stream)) { fprintf(stderr,"FAIL hipMemsetAsync Q\n"); return 1; }
     if (hipSuccess != hipMalloc(&d_AttnOut, q_bytes)) { fprintf(stderr,"FAIL hipMalloc AttnOut\n"); return 1; }
-    hipMemsetAsync(d_AttnOut, 0, q_bytes, gpu_stream);
+    if (hipSuccess != hipMemsetAsync(d_AttnOut, 0, q_bytes, gpu_stream)) { fprintf(stderr,"FAIL hipMemsetAsync AttnOut\n"); return 1; }
     
     // Pipeline config
     fusion::PipelineConfig cfg;
@@ -236,11 +238,15 @@ int main(int argc, char** argv) {
         
         // Launch Flash-Decoding attention on GPU
         // Q=[NH,HD], K_cache/V_cache=[seq_len,NKV,HD]
-        rcpp_kv_cache_attn_decode(
+        if (rcpp_kv_cache_attn_decode(
             d_Q, d_K, d_V, d_AttnOut,
-            NH, NKV, HD, seq_len, attn_scale, gpu_stream);
+            NH, NKV, HD, seq_len, attn_scale, gpu_stream) != 0) {
+            fprintf(stderr, "FAIL rcpp_kv_cache_attn_decode layer %d\n", layer); return;
+        }
         
-        hipStreamSynchronize(gpu_stream);
+        if (hipSuccess != hipStreamSynchronize(gpu_stream)) {
+            fprintf(stderr, "FAIL hipStreamSynchronize layer %d\n", layer); return;
+        }
         
         // F16→F32 conversion (result back to shared buffer)
         for (int i = 0; i < NH * HD; i++)
@@ -295,6 +301,7 @@ int main(int argc, char** argv) {
     // Cleanup
     auto hip_free = [](void* p) { if (p) { hipError_t e = hipFree(p); if (e != hipSuccess) fprintf(stderr, "hipFree: %s\n", hipGetErrorString(e)); } };
     hip_free(d_K); hip_free(d_V); hip_free(d_Q); hip_free(d_AttnOut);
-    hipStreamDestroy(gpu_stream);
+    he = hipStreamDestroy(gpu_stream);
+    if (he != hipSuccess) fprintf(stderr, "hipStreamDestroy: %s\n", hipGetErrorString(he));
     return 0;
 }
