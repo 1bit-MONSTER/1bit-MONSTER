@@ -594,14 +594,15 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
     HIP_OK_R(hipMemcpy(&best,s->d_argmax_idx,4,hipMemcpyDeviceToHost), -1);
     if(s->pos < s->max_seq-1) s->pos++;
 
-    // End HIP graph capture on first call, instantiate for replay (#2)
-    if (!s->graph_captured) {
-        HIP_OK_R(hipStreamEndCapture(s->st, &s->graph), -1);
-        HIP_OK_R(hipGraphInstantiate(&s->graph_exec, s->graph, NULL, NULL, 0), -1);
-        s->graph_captured = true;
-        fprintf(stderr, "  HIP graph captured (%d layers) — %.0f MB exec, replay active\n",
-                eng.n_layers, (double)sizeof(ZayaState) / (1024*1024));
-    }
+    // NOTE (#2): HIP graph capture is NOT implemented — hipStreamBeginCapture is
+    // never called on s->st, so the matching hipStreamEndCapture here failed with
+    // hipErrorIllegalState (401) on every call, returning -1 and discarding the
+    // valid token in `best`. That -1 was fed back as the next token_id and tripped
+    // the guard at the top of this function, so every subsequent token returned -1
+    // instantly with no GPU work (which inflated the reported tok/s).
+    // Re-enabling capture requires a matching hipStreamBeginCapture at function
+    // entry AND removing the synchronous hipStreamSynchronize/hipMemcpy above,
+    // which are illegal during capture.
     return best;
 }
 
