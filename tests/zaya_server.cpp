@@ -53,7 +53,12 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     cfg.num_kv_heads      = hdr[4];
     cfg.vocab_size        = hdr[5];
     cfg.max_seq_len       = hdr[6];
-    cfg.head_dim          = cfg.hidden_size / cfg.num_heads;
+    // hdr[7] is a reserved slot for head_dim; converters before this change leave it 0.
+    // Do NOT derive head_dim from hidden_size/num_heads: Zaya1 uses head_dim=128 with
+    // hidden=2048 and 8 query heads, so q_dim (1024) != hidden_size. The derived value
+    // (256) doubles qkv and makes every weight upload expect 2x the data on disk, which
+    // aborts all 270 uploads and leaves the engine running on uninitialised buffers.
+    cfg.head_dim          = (hdr[7] > 0) ? hdr[7] : 128;
     cfg.num_experts       = 16;
     cfg.num_experts_top   = 2;
     cfg.router_hidden     = 256;
@@ -664,8 +669,42 @@ int main(int argc, char** argv) {
                         tok.id_to_token.size());
             }
         } else {
-            fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no GGUF metadata)\n",
-                    tok.bos_id, tok.eos_id);
+            // No GGUF (e.g. a .h1b model): fall back to the project's own .htok BPE vocab.
+            // Without this, decode() drops to the byte fallback and renders every token as
+            // garbage. The .htok normally ships in the weights directory as tokenizer.htok.
+            std::vector<std::string> cands;
+            if (!cfg.model_path.empty()) {
+                size_t dot = cfg.model_path.find_last_of('.');
+                size_t sl  = cfg.model_path.find_last_of('/');
+                if (dot != std::string::npos && (sl == std::string::npos || dot > sl))
+                    cands.push_back(cfg.model_path.substr(0, dot) + ".htok");
+                if (sl != std::string::npos)
+                    cands.push_back(cfg.model_path.substr(0, sl + 1) + "tokenizer.htok");
+            }
+            // Same resolution order as g_weights_dir in zaya_engine.cpp
+            const char* wenv = getenv("ZAYA_WEIGHTS_DIR");
+            const char* xdg  = getenv("XDG_DATA_HOME");
+            const char* home = getenv("HOME");
+            if (wenv && wenv[0]) cands.push_back(std::string(wenv) + "/tokenizer.htok");
+            if (xdg  && xdg[0])  cands.push_back(std::string(xdg)  + "/1bit-systems/weights/tokenizer.htok");
+            if (home && home[0]) cands.push_back(std::string(home) + "/.local/share/1bit-systems/weights/tokenizer.htok");
+
+            bool loaded = false;
+            for (const std::string& c : cands) {
+                FILE* t = fopen(c.c_str(), "rb");
+                if (!t) continue;
+                fclose(t);
+                if (tok.load_htok(c)) {
+                    fprintf(stderr, "  Tokenizer: loaded BPE vocab from %s\n", c.c_str());
+                    loaded = true;
+                    break;
+                }
+                fprintf(stderr, "  Tokenizer: %s exists but failed to load\n", c.c_str());
+            }
+            if (!loaded)
+                fprintf(stderr, "  Tokenizer: no .htok or GGUF vocab found (tried %zu paths) — "
+                                "decode output WILL be garbage; using default BOS=%d EOS=%d\n",
+                        cands.size(), tok.bos_id, tok.eos_id);
         }
     }
 
