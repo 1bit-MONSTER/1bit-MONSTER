@@ -62,12 +62,12 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 |-------|:------:|:--------:|---------|:------------:|
 | Granite-3.2-2B-Instruct | 2B | 1.5 GB | ZINC / NPU / HIP | granite (gemma) |
 
-### Laguna (poolside) — 3
-| Model | Params | 1BP Size | Backend | Architecture |
-|-------|:------:|:--------:|---------|:------------:|
-| Laguna-S-2.1 | 48×256ex | 73.5 GB | ZINC / NPU / HIP | laguna (MoE) |
-| Laguna-XS-2.1 | 40×256ex | 20.9 GB | ZINC / NPU / HIP | laguna (MoE) |
-| Laguna-S-2.1-DFlash (draft) | 6L dense | 665 MB | ZINC / NPU / HIP | dflash |
+### Laguna (MoE, poolside) — 3
+| Model | Params | 1BP Size | 1BP TQ2 Size | Backend | Architecture |
+|-------|:------:|:--------:|:------------:|---------|:------------:|
+| Laguna-S-2.1 | 48×256ex | 73.5 GB | 36.7 GB | ZINC / NPU / HIP | laguna (MoE) |
+| Laguna-XS-2.1 | 40×256ex | 20.9 GB | 10.5 GB | ZINC / NPU / HIP | laguna (MoE) |
+| Laguna-S-2.1-DFlash (draft) | 6L dense | 665 MB | 665 MB | ZINC / NPU / HIP | dflash |
 
 ### Zaya — 2
 | Model | Params | 1BP Size | Backend | Architecture |
