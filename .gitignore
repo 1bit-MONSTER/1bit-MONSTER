@@ -74,3 +74,11 @@ tools/gguf_to_h1b
 /tools/trg_save
 *.trg
 .vscode/
+
+# Build directories
+build_test/
+build_clean/
+
+# Python virtual envs
+.venv/
+venv/
