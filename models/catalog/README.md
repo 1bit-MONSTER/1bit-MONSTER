@@ -1,4 +1,4 @@
-# 1bit.systems Model Catalog — 32 Models (1BP)
+# 1bit.systems Model Catalog — 37 Models (1BP)
 
 All models available in **1BP format** — single-file, zero-config, memory-mappable.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
@@ -72,13 +72,13 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Ternary-Bonsai-4B-Q2 | 4B | 2.2 GB | HIP GPU | qwen3 (ternary) |
 | Ternary-Bonsai-8B-Q2 | 8B | 4.1 GB | HIP GPU | qwen3 (ternary) |
 
-### Gemma — 1
+### Gemma — 2
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | **Gemma-3-4B-it** | 4B | **1.9 GB** | ZINC / NPU / HIP | gemma |
 | **Gemma-3-1B-it** | 1B | **447 MB** | ZINC / NPU | gemma |
 
-### Vision-Language — 1
+### Vision-Language — 2
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | Qwen2-VL-2B | 2B | 781 MB | ZINC (vision) | qwen2vl ✅ |
@@ -94,7 +94,7 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 |-------|:------:|:--------:|---------|:------------:|
 | **Phi-4-mini-instruct** | 3.8B | **1.9 GB** | ZINC / NPU / HIP | phi3 |
 
-## Total: 32 models
+## Total: 37 models
 All converted via C++ toolchain (`tools/gguf_to_onebp`).
 
 ## Conversion Pipeline (C++ only)
