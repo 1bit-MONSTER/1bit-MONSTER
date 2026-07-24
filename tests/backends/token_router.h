@@ -195,14 +195,22 @@ struct TokenRouter {
 
         switch (use_strat) {
             case RouteStrategy::PASSTHROUGH:
-            case RouteStrategy::AUTO:
+            case RouteStrategy::AUTO: {
+                // Prefill: feed every prompt token except the last so the KV cache holds
+                // the full context. reset_state() above clears the cache, and previously
+                // only prompt_tokens.back() was fed — the model generated from a single
+                // token of context, which yields valid vocabulary with no meaning.
+                int pos = 0;
+                for (size_t p = 0; p + 1 < prompt_tokens.size(); ++p)
+                    primary->forward(prompt_tokens[p], pos++);
                 for (int i = 0; i < max_tokens; i++) {
-                    int next = primary->forward(last_token, i);
+                    int next = primary->forward(last_token, pos++);
                     out_tokens.push_back(next);
                     last_token = next;
                     if (next == 106) break;
                 }
                 break;
+            }
 
             case RouteStrategy::CASCADE: {
                 InferenceBackend* fallback = nullptr;
