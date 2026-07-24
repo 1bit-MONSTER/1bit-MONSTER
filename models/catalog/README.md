@@ -1,4 +1,4 @@
-# 1bit.systems Model Catalog — 21 Models (1BP)
+# 1bit.systems Model Catalog — 24 Models (1BP)
 
 All models available in **1BP format** — single-file, zero-config, memory-mappable.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
@@ -14,6 +14,13 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Qwen2.5-0.5B | 0.5B | 328 MB | ZINC / NPU | qwen2 |
 | TinyLlama-1.1B | 1.1B | 328 MB | ZINC / NPU | qwen2 (compat) |
 | ZR1-1.5B | 1.5B | 781 MB | ZINC / NPU | qwen2 |
+
+### Laguna (MoE, poolside) — 3
+| Model | Params | 1BP Size | 1BP TQ2 Size | Backend | Architecture |
+|-------|:------:|:--------:|:------------:|---------|:------------:|
+| Laguna-S-2.1 | 48×256ex | 73.5 GB | 36.7 GB | ZINC / NPU / HIP | laguna (MoE) |
+| Laguna-XS-2.1 | 40×256ex | 20.9 GB | 10.5 GB | ZINC / NPU / HIP | laguna (MoE) |
+| Laguna-S-2.1-DFlash (draft) | 6L dense | 665 MB | 665 MB | ZINC / NPU / HIP | dflash |
 
 ### MoE — 1
 | Model | Params | 1BP Size | Backend | Architecture |
@@ -54,7 +61,7 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 |-------|:------:|:--------:|---------|:------------:|
 | Qwen2-VL-2B | 2B | 781 MB | ZINC (vision) | qwen2vl ✅ |
 
-## Total: 21 models
+## Total: 24 models
 All converted via C++ toolchain (`tools/gguf_to_onebp`).
 
 ## Conversion Pipeline (C++ only)
