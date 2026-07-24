@@ -24,6 +24,7 @@ MODELS=(
     "qwen3_vl_4b"
     "llama"
     "gemma4_e2b"
+    "zr1"
 )
 
 CXX="${CXX:-g++}"
