@@ -1,11 +1,11 @@
-# 1bit.systems Model Catalog — 21 Models (1BP)
+# 1bit.systems Model Catalog — 32 Models (1BP)
 
 All models available in **1BP format** — single-file, zero-config, memory-mappable.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 
 ## Model Families
 
-### Dense Transformer — 6
+### Dense Transformer — 10
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | Qwen3-0.6B | 0.6B | 356 MB | ZINC / NPU / HIP | qwen3 |
@@ -14,6 +14,29 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Qwen2.5-0.5B | 0.5B | 328 MB | ZINC / NPU | qwen2 |
 | TinyLlama-1.1B | 1.1B | 328 MB | ZINC / NPU | qwen2 (compat) |
 | ZR1-1.5B | 1.5B | 781 MB | ZINC / NPU | qwen2 |
+| **Phi-3-mini-4k-instruct** | 3.8B | **2.3 GB** | ZINC / NPU / HIP | phi3 |
+| **Gemma-2-2B-it** | 2B | **1.2 GB** | ZINC / NPU / HIP | gemma2 |
+| **DeepSeek-R1-Distill-Qwen-7B** | 7B | **3.8 GB** | ZINC / NPU / HIP | qwen2 |
+| **Llama-3.1-8B-Instruct** | 8B | **4.1 GB** | ZINC / NPU / HIP | llama |
+
+### Llama Family — 2
+| Model | Params | 1BP Size | Backend | Architecture |
+|-------|:------:|:--------:|---------|:------------:|
+| **Llama-3.2-3B-Instruct** | 3B | **1.7 GB** | ZINC / NPU / HIP | llama |
+| **Llama-3.2-1B-Instruct** | 1B | **581 MB** | ZINC / NPU | llama |
+
+### Mistral / Mixtral — 2
+| Model | Params | 1BP Size | Backend | Architecture |
+|-------|:------:|:--------:|---------|:------------:|
+| **Mistral-7B-Instruct-v0.3** | 7B | **4.3 GB** | ZINC / NPU / HIP | mistral |
+| **Mixtral-8x7B-Instruct-v0.1** | 46.7B | **27.8 GB** | ZINC / NPU / HIP | mistral (MoE) |
+
+### Laguna (MoE, poolside) — 3
+| Model | Params | 1BP Size | Backend | Architecture |
+|-------|:------:|:--------:|---------|:------------:|
+| **Laguna-S-2.1** | 48×256ex | **73.5 GB** | ZINC / NPU / HIP | laguna (MoE) |
+| **Laguna-XS-2.1** | 40×256ex | **20.9 GB** | ZINC / NPU / HIP | laguna (MoE) |
+| **Laguna-S-2.1-DFlash** (draft) | 6L dense | **665 MB** | ZINC / NPU / HIP | dflash |
 
 ### MoE — 1
 | Model | Params | 1BP Size | Backend | Architecture |
@@ -49,12 +72,29 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Ternary-Bonsai-4B-Q2 | 4B | 2.2 GB | HIP GPU | qwen3 (ternary) |
 | Ternary-Bonsai-8B-Q2 | 8B | 4.1 GB | HIP GPU | qwen3 (ternary) |
 
+### Gemma — 1
+| Model | Params | 1BP Size | Backend | Architecture |
+|-------|:------:|:--------:|---------|:------------:|
+| **Gemma-3-4B-it** | 4B | **1.9 GB** | ZINC / NPU / HIP | gemma |
+| **Gemma-3-1B-it** | 1B | **447 MB** | ZINC / NPU | gemma |
+
 ### Vision-Language — 1
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | Qwen2-VL-2B | 2B | 781 MB | ZINC (vision) | qwen2vl ✅ |
+| **Qwen3-VL-4B** | 4B | **2.2 GB** | ZINC (vision) | qwen2vl |
 
-## Total: 21 models
+### IBM Granite — 1
+| Model | Params | 1BP Size | Backend | Architecture |
+|-------|:------:|:--------:|---------|:------------:|
+| **Granite-3.2-2B-Instruct** | 2B | **1.5 GB** | ZINC / NPU / HIP | granite (gemma) |
+
+### Microsoft Phi-4 — 1
+| Model | Params | 1BP Size | Backend | Architecture |
+|-------|:------:|:--------:|---------|:------------:|
+| **Phi-4-mini-instruct** | 3.8B | **1.9 GB** | ZINC / NPU / HIP | phi3 |
+
+## Total: 32 models
 All converted via C++ toolchain (`tools/gguf_to_onebp`).
 
 ## Conversion Pipeline (C++ only)
