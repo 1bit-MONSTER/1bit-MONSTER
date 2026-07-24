@@ -405,7 +405,14 @@ int InferenceEngine::generate(int token_id) {
         compute->dispatch_batch("add_residual", pc_res,
                           hidden.buffer(), residual.buffer(), VK_NULL_HANDLE, 1);
     }
-    
+
+    if (getenv("ZINC_DEBUG_HID")) {
+        compute->end_batch();
+        int hi = compute->argmax(hidden.buffer(), d.hidden);  // prints max|hidden| via [zinc] argmax
+        (void)hi;
+        compute->begin_batch();
+    }
+
     compute->rms_norm(hidden.buffer(), model->final_norm.buffer(), d.hidden, d.rms_eps);
     // lm_head: untied output.weight if present, else tied embeddings (both F32).
     VkBuffer head = model->has_lm_head ? model->lm_head.buffer() : model->embed.buffer();
