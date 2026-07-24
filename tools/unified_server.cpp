@@ -56,6 +56,7 @@ using json = nlohmann::json;
 
 // ── Globals ──
 static std::atomic<bool> keep_running{true};
+static httplib::Server* g_server = nullptr;  // for signal-handler shutdown
 static std::string g_weights_dir = []() -> std::string {
     const char* env = getenv("ZAYA_WEIGHTS_DIR");
     if (env && env[0]) return env;
@@ -95,6 +96,9 @@ static AgentWatchdog* g_watchdog = nullptr;
 // ── Signal handler ──
 static void handle_sigint(int) {
     keep_running = false;
+    if (g_server) {
+        g_server->stop();
+    }
 }
 
 // ── Helpers ──
@@ -1329,6 +1333,12 @@ int main(int argc, char** argv) {
     printf("\n  Quick start: add --quick to skip full benchmark\n");
     printf("  Press Ctrl+C to stop.\n");
     printf("──────────────────────────────────────────────\n\n");
+
+    // Register server for signal-handler shutdown (SIGTERM/SIGINT)
+    g_server = &svr;
+
+    // Set idle interval so accept() wakes periodically even without signals
+    svr.set_idle_interval(1, 0);
 
     if (!svr.listen("127.0.0.1", g_port)) {
         fprintf(stderr, "Failed to start server on port %d\n", g_port);
