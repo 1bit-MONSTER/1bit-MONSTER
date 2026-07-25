@@ -276,7 +276,13 @@ static json generate_completion(BackendManager& mgr,
     int last_token = prompt_tokens.empty() ? g_tokenizer.bos_id : prompt_tokens.back();
 
     // Prefill: process prompt tokens
-    for (size_t i = 0; i + 1 < prompt_tokens.size(); i++) {
+    // Skip BOS token (first token == bos_id) for SSM models where
+    // feeding BOS as a regular token corrupts the recurrent state.
+    size_t prefill_start = 0;
+    if (!prompt_tokens.empty() && prompt_tokens[0] == g_tokenizer.bos_id) {
+        prefill_start = 1;
+    }
+    for (size_t i = prefill_start; i + 1 < prompt_tokens.size(); i++) {
         int result_id = mgr.generate(prompt_tokens[i]);
         if (result_id < 0) {
             float ms = std::chrono::duration<float, std::milli>(
@@ -711,13 +717,16 @@ int main(int argc, char** argv) {
     }
 
     // ── Phase 6: Start Agent Watchdog ──
-    printf("\n── Agent Watchdog ──\n");
-    {
-        if (!g_watchdog) {
-            g_watchdog = new AgentWatchdog(g_strategy_engine, mgr);
-        }
-        g_watchdog->start();
-    }
+    // NOTE: Disabled pending investigation of heap corruption (issue #932).
+    // The watchdog thread races with httplib completion handlers when it
+    // calls benchmark_all() while a generate() call is in progress.
+    // printf("\n── Agent Watchdog ──\n");
+    // {
+    //     if (!g_watchdog) {
+    //         g_watchdog = new AgentWatchdog(g_strategy_engine, mgr);
+    //     }
+    //     g_watchdog->start();
+    // }
 
     // Quick mode: re-profile in background after server starts
     if (quick_mode) {
