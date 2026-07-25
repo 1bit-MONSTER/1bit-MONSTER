@@ -225,7 +225,7 @@ int main(int argc,char**argv){
     hipMalloc(&dV_d,(size_t)7*NKV*HD*2);hipMemset(dV_d,0,(size_t)7*NKV*HD*2);
     hipMalloc(&d_hid,(size_t)H*2);hipMalloc(&d_emb,(size_t)H*2);
     hipMalloc(&d_con,(size_t)(2*H)*2);hipMalloc(&d_attn,(size_t)(NH*HD)*2);
-    hipMalloc(&d_scr,(size_t)max(IM,2*H)*2);
+    hipMalloc(&d_scr,(size_t)max(IM,NTL*H)*2); // need at least 5*H for trunk
     hipMalloc(&d_lgt,(size_t)V*4); // f32 logits
 
     // RoPE tables on GPU
@@ -254,22 +254,34 @@ int main(int argc,char**argv){
     // Full draft forward pass: trunk_feat[5*H] + token_id → logits[V] (f32 on CPU)
     // No CPU sync until the final lmhead_k readback below.
     auto draft_forward=[&](const float*trunk_feat,int token_id,int pos,int)->int{
-        // Upload trunk (f32→f16, H2D, synchronous for simplicity)
-        std::vector<__half>tb(NTL*H);for(int i=0;i<NTL*H;i++)tb[i]=__float2half(trunk_feat[i]);
-        hipMemcpyAsync(d_scr,tb.data(),(size_t)NTL*H*2,hipMemcpyHostToDevice,gs);
+        // Upload trunk (f32→f16, H2D on stream gs, then sync to keep buffer alive)
+        {
+            std::vector<__half>tb(NTL*H);
+            for(int i=0;i<NTL*H;i++)tb[i]=__float2half(trunk_feat[i]);
+            hipMemcpyAsync(d_scr,tb.data(),(size_t)NTL*H*2,hipMemcpyHostToDevice,gs);
+            hipStreamSynchronize(gs);
+        }
 
         // FC: [5*H]×[H,5*H]→[H]; save to d_hid, embed token
-        // FC: [5*H]×[H,5*H]→[H], save fc_out to d_con for residual
-        gv(d_scr,dws.fc,d_hid,NTL*H,H);
+        // DEBUG: find NaN source
+        gv(d_scr,dws.fc,d_hid,NTL*H,H); hipStreamSynchronize(gs);
+
         hipMemcpyAsync(d_emb,&dws.embed[(size_t)token_id*H],(size_t)H*2,hipMemcpyDeviceToDevice,gs);
-        cp(d_hid,d_con,H); // save fc_out in d_con
+        cp(d_hid,d_con,H); hipStreamSynchronize(gs);
 
-        // Norm both, concat [hid_norm | emb_norm] → d_con (now free)
-        nr(d_hid,dws.hN,H); nr(d_emb,dws.iLN,H);
-        cp(d_hid,d_scr,H); cp(d_emb,&d_scr[H],H); // concat in d_scr
+        nr(d_hid,dws.hN,H); hipStreamSynchronize(gs);
 
-        // QKV: concat→q/k/v, norm+rope on Q, K to cache
-        gv(d_scr,dws.qP,d_attn,2*H,NH*HD); // Q in d_attn
+        nr(d_emb,dws.iLN,H); hipStreamSynchronize(gs);
+        { __half buf[8]; hipMemcpy(buf,d_emb,16,hipMemcpyDeviceToHost);
+          for(int i=0;i<4;i++) if(!std::isfinite(__half2float(buf[i]))) 
+
+        cp(d_hid,d_scr,H); cp(d_emb,&d_scr[H],H); hipStreamSynchronize(gs);
+
+        gv(d_scr,dws.qP,d_attn,2*H,NH*HD); hipStreamSynchronize(gs);
+        { __half buf[8]; hipMemcpy(buf,d_attn,16,hipMemcpyDeviceToHost);
+          for(int i=0;i<4;i++) if(!std::isfinite(__half2float(buf[i]))) 
+
+        // Q in d_attn
         gv(d_scr,dws.kP,d_emb,2*H,NKV*HD); // K in d_emb
         gv(d_scr,dws.vP,d_hid,2*H,NKV*HD); // V in d_hid
         cp(d_emb,&dK_d[(size_t)pos*NKV*HD],NKV*HD); // K to cache
@@ -301,6 +313,9 @@ int main(int argc,char**argv){
         std::vector<float>lb(V);
         hipMemcpyAsync(lb.data(),d_lgt,(size_t)V*4,hipMemcpyDeviceToHost,gs);
         hipStreamSynchronize(gs);
+        if (!std::isfinite(lb[0])) {
+                   trunk_feat[0], trunk_feat[1], trunk_feat[100]);
+        }
         return (int)std::distance(lb.begin(),std::max_element(lb.begin(),lb.end()));
     };
 
@@ -318,7 +333,11 @@ int main(int argc,char**argv){
     std::vector<float>kvv((size_t)cfg.NC*MAX_SEQ*cfg.NKV*cfg.HD,0);
     std::vector<float>oo_b((size_t)maxB*cfg.H),gt_b((size_t)maxB*2*cfg.IM),su_b((size_t)maxB*cfg.IM),dw_b((size_t)maxB*cfg.H);
 
-    auto verify_batch=[&](int npos,int past_len,std::vector<float>&logits_out){
+    // Target layers for EAGLE3 trunk features (indices into NC=28 layers)
+    const int trunk_layers[5] = {1, 6, 12, 18, 24};
+    std::vector<float> trunk(5 * cfg.H); // trunk features buffer
+
+    auto verify_batch=[&](int npos,int past_len,std::vector<float>&logits_out,float* trunk_out=nullptr){
         // logits_out[B, NV] filled for each position
         for(int l=0;l<cfg.NC;l++){
             // Phase 1: QKV GEMM (batched across all positions)
@@ -371,6 +390,16 @@ int main(int argc,char**argv){
             cd.go(l,su_b.data(),npos,cfg.IM,as_d,ws[l].d_,dw_b.data(),cfg.H);
             cn(dw_b.data(),npos*cfg.H);
             for(int pi=0;pi<npos;pi++)for(int i=0;i<cfg.H;i++)h_b[(size_t)pi*cfg.H+i]+=dw_b[(size_t)pi*cfg.H+i];
+
+            // Capture trunk features at target layers for position 0 (last real token)
+            if (trunk_out && npos >= 1) {
+                for (int tl = 0; tl < 5; tl++) {
+                    if (l == trunk_layers[tl]) {
+                        memcpy(&trunk_out[(size_t)tl * cfg.H], &h_b[0], cfg.H * sizeof(float));
+                        break;
+                    }
+                }
+            }
         }
 
         // Final norm + LM head
@@ -403,11 +432,11 @@ int main(int argc,char**argv){
     std::vector<float>vl((size_t)(1+block)*cfg.NV);
     std::vector<int32_t>dt(block);
 
-    // First token (baseline, no speculation)
+    // First token (baseline, no speculation) — captures trunk features
     {
         emb(out.back(),h_b.data());
         vl.resize((size_t)cfg.NV);
-        verify_batch(1,ctx,vl);
+        verify_batch(1,ctx,vl,trunk.data());
         int tok=amax(vl.data(),cfg.NV);
         out.push_back(tok);ctx++;
     }
@@ -423,13 +452,17 @@ int main(int argc,char**argv){
             int tok=amax(vl.data(),cfg.NV);
             out.push_back(tok);ctx++;
         }else{
-            // ── Draft: GPU generates block candidate tokens ──
+            // ── Draft: GPU generates block candidate tokens from real trunk features ──
             for(int di=0;di<block;di++){
-                float tf[5*H];for(int i=0;i<5*H;i++)tf[i]=h_b[i%H]; // trunk from last verify output
-                int tok=draft_forward(tf,out.back()+di,di,block);
+                int tok=draft_forward(trunk.data(),out.back()+di,di,block);
                 dt[di]=tok;
             }
             np+=block;
+            // DEBUG: print first draft token vs target
+            if (nv == 0) {
+                int target_tok = amax(vl.data(), cfg.NV);
+                printf("  [dbg] draft[0]=%d target=%d trunk[0]=%.4f\n", dt[0], target_tok, trunk[0]);
+            }
 
             // ── Verify: batched NPU forward for all positions ──
             int past=ctx-1;
@@ -438,7 +471,8 @@ int main(int argc,char**argv){
             emb(out.back(),&h_b[0]);
             for(int di=0;di<block;di++)emb(dt[di],&h_b[(size_t)(1+di)*cfg.H]);
             vl.resize((size_t)npos*cfg.NV);
-            verify_batch(npos,past,vl);
+            // Verify passes capture trunk features for position 0 (last real token)
+            verify_batch(npos,past,vl,trunk.data());
             nv++;
 
             // ── Acceptance ──

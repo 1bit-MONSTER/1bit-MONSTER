@@ -55,6 +55,7 @@ __global__ void lmhead_k(const __half *__restrict__ h, const __half *__restrict_
 __global__ void rms_norm_k(__half *__restrict__ x, const __half *__restrict__ w,
                            int n, float eps) {
     __shared__ float ss_buf[256];
+    __shared__ float s_ir;
     float l = 0;
     for (int j = threadIdx.x; j < n; j += blockDim.x) {
         float v = __half2float(x[j]); l += v * v;
@@ -63,10 +64,13 @@ __global__ void rms_norm_k(__half *__restrict__ x, const __half *__restrict__ w,
     __syncthreads();
     if (threadIdx.x == 0) {
         double ss = 0; for (int j = 0; j < blockDim.x; j++) ss += ss_buf[j];
-        ss /= n; float ir = 1.0f / sqrtf((float)ss + eps);
-        for (int j = 0; j < n; j++)
-            x[j] = __float2half(__half2float(x[j]) * ir * __half2float(w[j]));
+        ss /= n; s_ir = 1.0f / sqrtf((float)ss + eps);
     }
+    __syncthreads();
+    // All threads participate to avoid early-return race on AMD
+    float ir = s_ir;
+    for (int j = threadIdx.x; j < n; j += blockDim.x)
+        x[j] = __float2half(__half2float(x[j]) * ir * __half2float(w[j]));
 }
 
 // Element-wise add (in-place)
