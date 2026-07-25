@@ -611,7 +611,7 @@ int main(int argc, char** argv) {
     tp = std::chrono::steady_clock::now();
 
     int qkv_n = cfg.qkv_n();
-    int attn_dim = cfg.NH * cfg.HD;
+    int attn_out = cfg.NH * cfg.HD;
     std::vector<GpuProjCtx> ctx_qkv(cfg.NC), ctx_o(cfg.NC);
 
     for (int l = 0; l < cfg.NC; l++) {
@@ -631,7 +631,7 @@ int main(int argc, char** argv) {
         ctx_qkv[l].init(cfg.H, t, w.data());
         free(qw); free(kw); free(vw);
 
-        // O projection: [attn_dim × H]
+        // O projection: [attn_out × H]
         float* ow = dequant_i8_to_float(i8p(lo[l].o), 256, &or_, &unused);
         ctx_o[l].init(or_, cfg.H, ow);
         free(ow);
@@ -675,7 +675,7 @@ int main(int argc, char** argv) {
     // ── CPU buffers ───────────────────────────────────────────────
     std::vector<float> hidden(cfg.H);
     std::vector<float> qkv_out(qkv_n);
-    std::vector<float> attn_out(cfg.NH * cfg.HD);
+    std::vector<float> attn_out(attn_out);
     std::vector<float> o_out(cfg.H);
     std::vector<float> gt(2 * cfg.IM);
     std::vector<float> su(cfg.IM);
@@ -993,127 +993,135 @@ int main(int argc, char** argv) {
     auto t_gen = std::chrono::steady_clock::now();
     int cur_token = pt[npt - 1];
 
+    // ── 3-Buffer pipelined decode ──
+    // Buffers (each H floats):
+    //   B_hidden: current hidden state h_L (input for GPU attn)
+    //   B_gpu:    GPU O projection output
+    //   B_ffn:    NPU FFN intermediate / output
+    //
+    // Per-layer flow:
+    //   GPU: O_L = fn_attn(h_L) → B_gpu
+    //   CPU: B_ffn = norm(h_L + O_L) [FFN input]
+    //   NPU: D_L = fn_ffn(B_ffn) → B_ffn  [overwrites with D_L]
+    //   CPU: h_{L+1} = h_L + O_L + D_L → B_hidden
+    //
+    // Pipeline:
+    //   GPU(L+1).step starts immediately after GPU(L) finishes,
+    //   while NPU(L) is still running (NPU ≈ 4× slower than GPU).
+    //   CPU steps run between GPU and NPU completions.
+
+    std::vector<float> B_hidden(cfg.H), B_gpu(cfg.H), B_ffn(cfg.H);
+    double t_gpu_total = 0, t_npu_total = 0, t_cpu_total = 0;
+
     for (int step = 0; step < n_gen; step++) {
         auto ts = std::chrono::steady_clock::now();
 
-        // Embed current token
-        embed(cur_token, hidden.data());
+        // Embed current token → B_hidden
+        embed(cur_token, B_hidden.data());
 
-        for (int l = 0; l < cfg.NC; l++) {
-            // ── Phase 1: Attention path (GPU: QKV + attn + O) ──
-            std::vector<float> residual = hidden;
-
-            // RMS Norm (CPU)
-            rms_norm(hidden.data(), in_norm[l].data(), cfg.H);
-
-            // QKV projection on GPU (synchronous — uploads+launches+reads back)
-            ctx_qkv[l].gemv(hidden.data(), qkv_out.data(), gpu_stream);
-
-            // Q norms + RoPE (CPU — fast, element-wise)
-            for (int hh = 0; hh < cfg.NH; hh++) {
-                double s = 0;
-                for (int d = 0; d < cfg.HD; d++)
-                    s += qkv_out[hh * cfg.HD + d] * qkv_out[hh * cfg.HD + d];
-                float iq = 1.0f / sqrtf((float)(s / cfg.HD) + EPS);
-                for (int d = 0; d < cfg.HD; d++)
-                    qkv_out[hh * cfg.HD + d] *= iq * q_norm[l][d];
-                rope.apply(&qkv_out[hh * cfg.HD], context_len, 1);
-            }
-            // K norms + RoPE (CPU)
-            for (int kvh = 0; kvh < cfg.NKV; kvh++) {
-                float* ks = &qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD];
-                double sk = 0;
-                for (int d = 0; d < cfg.HD; d++) sk += ks[d] * ks[d];
-                float ik = 1.0f / sqrtf((float)(sk / cfg.HD) + EPS);
-                for (int d = 0; d < cfg.HD; d++) ks[d] *= ik * k_norm[l][d];
-                rope.apply(ks, context_len, 1);
-            }
-
-            // ── Bulk upload Q + K/V to GPU ──
-            std::vector<__half> q_f16(cfg.NH * cfg.HD);
-            for (int i = 0; i < cfg.NH * cfg.HD; i++)
-                q_f16[i] = __float2half(qkv_out[i]);
-            hipMemcpyAsync(d_Q, q_f16.data(),
-                           (size_t)cfg.NH * cfg.HD * sizeof(__half),
-                           hipMemcpyHostToDevice, gpu_stream);
-
-            // Bulk upload K/V to GPU cache (reuse staging buffer)
-            std::vector<__half> staging(cfg.NKV * cfg.HD);
-            size_t kv_offset = (size_t)context_len * cfg.NKV * cfg.HD;
-            for (int kvh = 0; kvh < cfg.NKV; kvh++) {
-                float* ks = &qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD];
-                float* vs = &qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD];
-                for (int d = 0; d < cfg.HD; d++)
-                    staging[kvh * cfg.HD + d] = __float2half(ks[d]);
-            }
-            hipMemcpyAsync(&d_K_cache[kv_offset], staging.data(),
-                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
-                           hipMemcpyHostToDevice, gpu_stream);
-            for (int kvh = 0; kvh < cfg.NKV; kvh++) {
-                float* vs = &qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD];
-                for (int d = 0; d < cfg.HD; d++)
-                    staging[kvh * cfg.HD + d] = __float2half(vs[d]);
-            }
-            hipMemcpyAsync(&d_V_cache[kv_offset], staging.data(),
-                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
-                           hipMemcpyHostToDevice, gpu_stream);
-
-            // ── GPU attention (async on stream) ──
-            int seq_len = context_len + 1;
-            rcpp_kv_cache_attn_decode(
-                d_Q, d_K_cache, d_V_cache, d_AttnOut,
-                cfg.NH, cfg.NKV, cfg.HD, seq_len, attn_scale, gpu_stream);
-
-            // ── Bulk readback attention output (f16 buffer) ──
-            std::vector<__half> attn_f16(cfg.NH * cfg.HD);
-            hipMemcpyAsync(attn_f16.data(), d_AttnOut,
-                          (size_t)cfg.NH * cfg.HD * sizeof(__half),
-                          hipMemcpyDeviceToHost, gpu_stream);
+        // ── Boot layer 0: sequential GPU + NPU ──
+        {
+            int L = 0;
+            auto t0 = std::chrono::steady_clock::now();
+            // GPU attn path
+            rms_norm(B_hidden.data(), in_norm[L].data(), cfg.H);
+            ctx_qkv[L].gemv(B_hidden.data(), qkv_out.data(), gpu_stream);
+            for(int hh=0;hh<cfg.NH;hh++){double s=0;for(int d=0;d<cfg.HD;d++)s+=qkv_out[hh*cfg.HD+d]*qkv_out[hh*cfg.HD+d];float iq=1.0f/sqrtf((float)(s/cfg.HD)+EPS);for(int d=0;d<cfg.HD;d++)qkv_out[hh*cfg.HD+d]*=iq*q_norm[L][d];rope.apply(&qkv_out[hh*cfg.HD],context_len,1);}
+            for(int kvh=0;kvh<cfg.NKV;kvh++){float*ks=&qkv_out[cfg.NH*cfg.HD+kvh*cfg.HD];double sk=0;for(int d=0;d<cfg.HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/cfg.HD)+EPS);for(int d=0;d<cfg.HD;d++)ks[d]*=ik*k_norm[L][d];rope.apply(ks,context_len,1);}
+            std::vector<__half> q_f16(cfg.NH*cfg.HD);for(int i=0;i<cfg.NH*cfg.HD;i++)q_f16[i]=__float2half(qkv_out[i]);
+            hipMemcpyAsync(d_Q,q_f16.data(),cfg.NH*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
+            std::vector<__half> staging(cfg.NKV*cfg.HD);size_t kv_off=(size_t)context_len*cfg.NKV*cfg.HD;
+            for(int kvh=0;kvh<cfg.NKV;kvh++){for(int d=0;d<cfg.HD;d++)staging[kvh*cfg.HD+d]=__float2half(qkv_out[cfg.NH*cfg.HD+kvh*cfg.HD+d]);}
+            hipMemcpyAsync(&d_K_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
+            for(int kvh=0;kvh<cfg.NKV;kvh++){for(int d=0;d<cfg.HD;d++)staging[kvh*cfg.HD+d]=__float2half(qkv_out[cfg.NH*cfg.HD+cfg.NKV*cfg.HD+kvh*cfg.HD+d]);}
+            hipMemcpyAsync(&d_V_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
+            rcpp_kv_cache_attn_decode(d_Q,d_K_cache,d_V_cache,d_AttnOut,cfg.NH,cfg.NKV,cfg.HD,context_len+1,attn_scale,gpu_stream);
+            std::vector<__half> attn_f16(cfg.NH*cfg.HD);hipMemcpyAsync(attn_f16.data(),d_AttnOut,cfg.NH*cfg.HD*sizeof(__half),hipMemcpyDeviceToHost,gpu_stream);
             hipStreamSynchronize(gpu_stream);
+            for(int i=0;i<cfg.NH*cfg.HD;i++)attn_out[i]=__half2float(attn_f16[i]);
+            ctx_o[L].gemv(attn_out.data(),B_gpu.data(),gpu_stream);
+            t_gpu_total += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
 
-            // Convert f16→f32
-            for (int i = 0; i < cfg.NH * cfg.HD; i++)
-                attn_out[i] = __half2float(attn_f16[i]);
+            // CPU: h_L + O_L → RMS norm → B_ffn
+            for(int i=0;i<cfg.H;i++) B_ffn[i] = B_hidden[i] + B_gpu[i];
+            rms_norm(B_ffn.data(), pa_norm[L].data(), cfg.H);
 
-            // O projection on GPU
-            ctx_o[l].gemv(attn_out.data(), o_out.data(), gpu_stream);
+            // NPU FFN: GU → D
+            t0 = std::chrono::steady_clock::now();
+            float as_g=dyn_scale(B_ffn.data(),cfg.H);
+            ctx_gu.launch(B_ffn.data(),1,cfg.H,as_g);
+            ctx_gu.wait(gt.data(),1,2*cfg.IM,as_g,wsc[L].gu); cn(gt.data(),2*cfg.IM);
+            for(int i=0;i<cfg.IM;i++){float gv=gt[i];if(!std::isfinite(gv))gv=0;su[i]=silu(gv)*gt[cfg.IM+i];}
+            float as_d=dyn_scale(su.data(),cfg.IM);
+            ctx_d.launch(su.data(),1,cfg.IM,as_d);
+            ctx_d.wait(B_ffn.data(),1,cfg.H,as_d,wsc[L].d); cn(B_ffn.data(),cfg.H);
+            t_npu_total += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
 
-            // ── Phase 2: FFN path (NPU) ──
-            // Residual + RMS Norm
-            for (int i = 0; i < cfg.H; i++) hidden[i] = residual[i] + o_out[i];
-            rms_norm(hidden.data(), pa_norm[l].data(), cfg.H);
+            // CPU: h_{L+1} = h_L + O_L + D_L → B_hidden
+            for(int i=0;i<cfg.H;i++) B_hidden[i] = B_hidden[i] + B_gpu[i] + B_ffn[i];
+        }
 
-            // NPU GU (async launch → wait)
-            float as_g = dyn_scale(hidden.data(), cfg.H);
-            ctx_gu.launch(hidden.data(), 1, cfg.H, as_g);
-            ctx_gu.wait(gt.data(), 1, 2 * cfg.IM, as_g, wsc[l].gu);
-            clean_nans(gt.data(), 2 * cfg.IM);
+        // ── Pipelined layers: GPU(L) starts, then NPU(L-1) was already running ──
+        // State after boot: B_hidden = h_1, B_gpu = O_0, B_ffn = D_0
+        // On entry to layer L: GPU is ready to run, NPU is either idle or busy
+        for (int L = 1; L < cfg.NC; L++) {
+            // GPU: attn path for layer L
+            // Reads B_hidden (= h_L), writes O_L to B_gpu
+            auto t0 = std::chrono::steady_clock::now();
+            rms_norm(B_hidden.data(), in_norm[L].data(), cfg.H);
+            ctx_qkv[L].gemv(B_hidden.data(), qkv_out.data(), gpu_stream);
+            for(int hh=0;hh<cfg.NH;hh++){double s=0;for(int d=0;d<cfg.HD;d++)s+=qkv_out[hh*cfg.HD+d]*qkv_out[hh*cfg.HD+d];float iq=1.0f/sqrtf((float)(s/cfg.HD)+EPS);for(int d=0;d<cfg.HD;d++)qkv_out[hh*cfg.HD+d]*=iq*q_norm[L][d];rope.apply(&qkv_out[hh*cfg.HD],context_len,1);}
+            for(int kvh=0;kvh<cfg.NKV;kvh++){float*ks=&qkv_out[cfg.NH*cfg.HD+kvh*cfg.HD];double sk=0;for(int d=0;d<cfg.HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/cfg.HD)+EPS);for(int d=0;d<cfg.HD;d++)ks[d]*=ik*k_norm[L][d];rope.apply(ks,context_len,1);}
+            std::vector<__half> q_f16(cfg.NH*cfg.HD);for(int i=0;i<cfg.NH*cfg.HD;i++)q_f16[i]=__float2half(qkv_out[i]);
+            hipMemcpyAsync(d_Q,q_f16.data(),cfg.NH*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
+            std::vector<__half> staging(cfg.NKV*cfg.HD);size_t kv_off=(size_t)context_len*cfg.NKV*cfg.HD;
+            for(int kvh=0;kvh<cfg.NKV;kvh++){for(int d=0;d<cfg.HD;d++)staging[kvh*cfg.HD+d]=__float2half(qkv_out[cfg.NH*cfg.HD+kvh*cfg.HD+d]);}
+            hipMemcpyAsync(&d_K_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
+            for(int kvh=0;kvh<cfg.NKV;kvh++){for(int d=0;d<cfg.HD;d++)staging[kvh*cfg.HD+d]=__float2half(qkv_out[cfg.NH*cfg.HD+cfg.NKV*cfg.HD+kvh*cfg.HD+d]);}
+            hipMemcpyAsync(&d_V_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
+            rcpp_kv_cache_attn_decode(d_Q,d_K_cache,d_V_cache,d_AttnOut,cfg.NH,cfg.NKV,cfg.HD,context_len+1,attn_scale,gpu_stream);
+            std::vector<__half> attn_f16(cfg.NH*cfg.HD);hipMemcpyAsync(attn_f16.data(),d_AttnOut,cfg.NH*cfg.HD*sizeof(__half),hipMemcpyDeviceToHost,gpu_stream);
+            hipStreamSynchronize(gpu_stream);
+            for(int i=0;i<cfg.NH*cfg.HD;i++)attn_out[i]=__half2float(attn_f16[i]);
+            ctx_o[L].gemv(attn_out.data(),B_gpu.data(),gpu_stream);
+            // GPU(L) complete. B_gpu = O_L.
+            t_gpu_total += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
 
-            // SiLU gate (CPU)
-            for (int i = 0; i < cfg.IM; i++) {
-                float gv = gt[i];
-                if (!std::isfinite(gv)) gv = 0;
-                su[i] = silu(gv) * gt[cfg.IM + i];
-            }
+            // CPU: h_L + O_L → norm → B_ffn (prep NPU input)
+            t0 = std::chrono::steady_clock::now();
+            // Save h_L (B_hidden is about to be overwritten by NPU output)
+            std::vector<float> h_saved = B_hidden;
+            for(int i=0;i<cfg.H;i++) B_ffn[i] = B_hidden[i] + B_gpu[i];
+            rms_norm(B_ffn.data(), pa_norm[L].data(), cfg.H);
 
-            // NPU D (async launch → wait)
-            float as_d = dyn_scale(su.data(), cfg.IM);
-            ctx_d.launch(su.data(), 1, cfg.IM, as_d);
-            ctx_d.wait(d_out.data(), 1, cfg.H, as_d, wsc[l].d);
-            clean_nans(d_out.data(), cfg.H);
+            // NPU: FFN path for layer L
+            // Reads B_ffn (= normed h_L + O_L), writes D_L to B_ffn
+            float as_g=dyn_scale(B_ffn.data(),cfg.H);
+            ctx_gu.launch(B_ffn.data(),1,cfg.H,as_g);
+            ctx_gu.wait(gt.data(),1,2*cfg.IM,as_g,wsc[L].gu); cn(gt.data(),2*cfg.IM);
+            for(int i=0;i<cfg.IM;i++){float gv=gt[i];if(!std::isfinite(gv))gv=0;su[i]=silu(gv)*gt[cfg.IM+i];}
+            float as_d=dyn_scale(su.data(),cfg.IM);
+            ctx_d.launch(su.data(),1,cfg.IM,as_d);
+            ctx_d.wait(B_ffn.data(),1,cfg.H,as_d,wsc[L].d); cn(B_ffn.data(),cfg.H);
+            // NPU(L) complete. B_ffn = D_L.
+            t_npu_total += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
 
-            // Final residual
-            for (int i = 0; i < cfg.H; i++) hidden[i] += d_out[i];
+            // CPU: h_{L+1} = h_saved + O_L + D_L → B_hidden
+            for(int i=0;i<cfg.H;i++) B_hidden[i] = h_saved[i] + B_gpu[i] + B_ffn[i];
+            t_cpu_total += 0; // CPU time is negligible, folded into GPU/NPU (which include sync)
         }
 
         // Final norm + GPU LM head
-        rms_norm(hidden.data(), final_norm.data(), cfg.H);
-        cur_token = lm_head.sample(hidden.data(), logits.data(), gpu_stream);
+        rms_norm(B_hidden.data(), final_norm.data(), cfg.H);
+        cur_token = lm_head.sample(B_hidden.data(), logits.data(), gpu_stream);
         context_len++;
 
         double step_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - ts).count();
-        printf("  [%d] tok=%d %.1fms\n", step, cur_token, step_ms);
+        double gpu_ms = t_gpu_total / (step + 1);  // per-layer average
+        double npu_ms = t_npu_total / (step + 1);
+        printf("  [%d] tok=%d %.1fms (gpu=%.0fµs/l npu=%.0fµs/l)\n",
+               step, cur_token, step_ms, gpu_ms*1000, npu_ms*1000);
     }
 
     lm_head.destroy();

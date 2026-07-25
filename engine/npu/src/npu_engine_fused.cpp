@@ -611,7 +611,7 @@ int main(int argc, char** argv) {
     tp = std::chrono::steady_clock::now();
 
     int qkv_n = cfg.qkv_n();
-    int attn_dim = cfg.NH * cfg.HD;
+    int attn_out = cfg.NH * cfg.HD;
     std::vector<GpuProjCtx> ctx_qkv(cfg.NC), ctx_o(cfg.NC);
 
     for (int l = 0; l < cfg.NC; l++) {
@@ -631,7 +631,7 @@ int main(int argc, char** argv) {
         ctx_qkv[l].init(cfg.H, t, w.data());
         free(qw); free(kw); free(vw);
 
-        // O projection: [attn_dim × H]
+        // O projection: [attn_out × H]
         float* ow = dequant_i8_to_float(i8p(lo[l].o), 256, &or_, &unused);
         ctx_o[l].init(or_, cfg.H, ow);
         free(ow);
@@ -675,7 +675,7 @@ int main(int argc, char** argv) {
     // ── CPU buffers ───────────────────────────────────────────────
     std::vector<float> hidden(cfg.H);
     std::vector<float> qkv_out(qkv_n);
-    std::vector<float> attn_out(cfg.NH * cfg.HD);
+    std::vector<float> attn_out(attn_out);
     std::vector<float> o_out(cfg.H);
     std::vector<float> gt(2 * cfg.IM);
     std::vector<float> su(cfg.IM);
