@@ -295,6 +295,7 @@ struct GpuProjCtx {
     __half* d_W = nullptr;     // column-major f16 weight [N, K]
     __half* d_A = nullptr;     // f16 activation [K]
     __half* d_C = nullptr;     // f16 output [N]
+    __half* h_C = nullptr;     // host readback buffer [N] (persistent, avoids per-call alloc)
 
     bool init(int k, int n, const float* W_f32) {
         K = k; N = n;
@@ -303,6 +304,7 @@ struct GpuProjCtx {
         if (hipSuccess != hipMalloc(&d_W, w_sz)) return false;
         if (hipSuccess != hipMalloc(&d_A, (size_t)K * sizeof(__half))) return false;
         if (hipSuccess != hipMalloc(&d_C, (size_t)N * sizeof(__half))) return false;
+        hipHostMalloc(&h_C, (size_t)N * sizeof(__half)); // pinned memory for fast readback
 
         // Convert FP32 → FP16 AND transpose to column-major: W_col[n][k] = W_row[k][n]
         // Column-major means output column n reads contiguous f16 values [n][0..K-1]
@@ -362,12 +364,9 @@ struct GpuProjCtx {
 
     // Readback after async launch + stream sync
     void readback(float* C_f32, hipStream_t stream) {
-        std::vector<__half> C_f16(N);
-        hipMemcpyAsync(C_f16.data(), d_C, N * sizeof(__half),
-                       hipMemcpyDeviceToHost, stream);
+        hipMemcpyAsync(h_C, d_C, N * sizeof(__half), hipMemcpyDeviceToHost, stream);
         hipStreamSynchronize(stream);
-        for (int i = 0; i < N; i++)
-            C_f32[i] = __half2float(C_f16[i]);
+        for (int i = 0; i < N; i++) C_f32[i] = __half2float(h_C[i]);
         clean_nans(C_f32, N);
     }
 
@@ -375,6 +374,7 @@ struct GpuProjCtx {
         if (d_W) hipFree(d_W);
         if (d_A) hipFree(d_A);
         if (d_C) hipFree(d_C);
+        if (h_C) hipHostFree(h_C);
     }
 
 private:
@@ -999,6 +999,11 @@ int main(int argc, char** argv) {
         // Embed current token
         embed(cur_token, hidden.data());
 
+        // ── Pre-allocated staging buffers (avoid vector alloc per layer) ──
+        std::vector<__half> q_f16(cfg.NH * cfg.HD);
+        std::vector<__half> kv_staging(cfg.NKV * cfg.HD);
+        std::vector<__half> attn_f16(cfg.NH * cfg.HD);
+
         for (int l = 0; l < cfg.NC; l++) {
             // ── Phase 1: Attention path (GPU: QKV + attn + O) ──
             std::vector<float> residual = hidden;
@@ -1006,10 +1011,15 @@ int main(int argc, char** argv) {
             // RMS Norm (CPU)
             rms_norm(hidden.data(), in_norm[l].data(), cfg.H);
 
-            // QKV projection on GPU (synchronous — uploads+launches+reads back)
-            ctx_qkv[l].gemv(hidden.data(), qkv_out.data(), gpu_stream);
+            // QKV: launch async (don't wait yet)
+            ctx_qkv[l].launch_gemv(hidden.data(), gpu_stream);
 
-            // Q norms + RoPE (CPU — fast, element-wise)
+            // While GPU does QKV, CPU does norms (overlap!)
+            // Q norms + RoPE will use the QKV output... but we don't have it yet.
+            // We need to read QKV back first.
+            ctx_qkv[l].readback(qkv_out.data(), gpu_stream);
+
+            // Q norms + RoPE (CPU)
             for (int hh = 0; hh < cfg.NH; hh++) {
                 double s = 0;
                 for (int d = 0; d < cfg.HD; d++)
@@ -1019,7 +1029,6 @@ int main(int argc, char** argv) {
                     qkv_out[hh * cfg.HD + d] *= iq * q_norm[l][d];
                 rope.apply(&qkv_out[hh * cfg.HD], context_len, 1);
             }
-            // K norms + RoPE (CPU)
             for (int kvh = 0; kvh < cfg.NKV; kvh++) {
                 float* ks = &qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD];
                 double sk = 0;
@@ -1029,54 +1038,47 @@ int main(int argc, char** argv) {
                 rope.apply(ks, context_len, 1);
             }
 
-            // ── Bulk upload Q + K/V to GPU ──
-            std::vector<__half> q_f16(cfg.NH * cfg.HD);
+            // ── Batch upload Q, K, V → GPU attention → readback (ONE sync) ──
+            // Upload Q
             for (int i = 0; i < cfg.NH * cfg.HD; i++)
                 q_f16[i] = __float2half(qkv_out[i]);
             hipMemcpyAsync(d_Q, q_f16.data(),
-                           (size_t)cfg.NH * cfg.HD * sizeof(__half),
-                           hipMemcpyHostToDevice, gpu_stream);
+                          (size_t)cfg.NH * cfg.HD * sizeof(__half),
+                          hipMemcpyHostToDevice, gpu_stream);
 
-            // Bulk upload K/V to GPU cache (reuse staging buffer)
-            std::vector<__half> staging(cfg.NKV * cfg.HD);
-            size_t kv_offset = (size_t)context_len * cfg.NKV * cfg.HD;
-            for (int kvh = 0; kvh < cfg.NKV; kvh++) {
-                float* ks = &qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD];
-                float* vs = &qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD];
+            // Upload K
+            size_t kv_off = (size_t)context_len * cfg.NKV * cfg.HD;
+            for (int kvh = 0; kvh < cfg.NKV; kvh++)
                 for (int d = 0; d < cfg.HD; d++)
-                    staging[kvh * cfg.HD + d] = __float2half(ks[d]);
-            }
-            hipMemcpyAsync(&d_K_cache[kv_offset], staging.data(),
-                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
-                           hipMemcpyHostToDevice, gpu_stream);
-            for (int kvh = 0; kvh < cfg.NKV; kvh++) {
-                float* vs = &qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD];
+                    kv_staging[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD + d]);
+            hipMemcpyAsync(&d_K_cache[kv_off], kv_staging.data(),
+                          (size_t)cfg.NKV * cfg.HD * sizeof(__half),
+                          hipMemcpyHostToDevice, gpu_stream);
+
+            // Upload V
+            for (int kvh = 0; kvh < cfg.NKV; kvh++)
                 for (int d = 0; d < cfg.HD; d++)
-                    staging[kvh * cfg.HD + d] = __float2half(vs[d]);
-            }
-            hipMemcpyAsync(&d_V_cache[kv_offset], staging.data(),
-                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
-                           hipMemcpyHostToDevice, gpu_stream);
+                    kv_staging[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD + d]);
+            hipMemcpyAsync(&d_V_cache[kv_off], kv_staging.data(),
+                          (size_t)cfg.NKV * cfg.HD * sizeof(__half),
+                          hipMemcpyHostToDevice, gpu_stream);
 
-            // ── GPU attention (async on stream) ──
-            int seq_len = context_len + 1;
-            rcpp_kv_cache_attn_decode(
-                d_Q, d_K_cache, d_V_cache, d_AttnOut,
-                cfg.NH, cfg.NKV, cfg.HD, seq_len, attn_scale, gpu_stream);
+            // GPU attention (async — runs after uploads complete on stream)
+            rcpp_kv_cache_attn_decode(d_Q, d_K_cache, d_V_cache, d_AttnOut,
+                cfg.NH, cfg.NKV, cfg.HD, context_len + 1, attn_scale, gpu_stream);
 
-            // ── Bulk readback attention output (f16 buffer) ──
-            std::vector<__half> attn_f16(cfg.NH * cfg.HD);
+            // Readback attention (async then sync ONCE for the whole batch)
             hipMemcpyAsync(attn_f16.data(), d_AttnOut,
                           (size_t)cfg.NH * cfg.HD * sizeof(__half),
                           hipMemcpyDeviceToHost, gpu_stream);
             hipStreamSynchronize(gpu_stream);
 
-            // Convert f16→f32
             for (int i = 0; i < cfg.NH * cfg.HD; i++)
                 attn_out[i] = __half2float(attn_f16[i]);
 
-            // O projection on GPU
-            ctx_o[l].gemv(attn_out.data(), o_out.data(), gpu_stream);
+            // O projection: launch + readback (one more sync)
+            ctx_o[l].launch_gemv(attn_out.data(), gpu_stream);
+            ctx_o[l].readback(o_out.data(), gpu_stream);
 
             // ── Phase 2: FFN path (NPU) ──
             // Residual + RMS Norm

@@ -65,6 +65,13 @@
 #include <omp.h>
 #include <immintrin.h>
 
+// GPU kernel wrappers (defined in gpu_kernels_fused.hip, compiled with hipcc)
+extern "C" {
+    void launch_gemv_tiled(const __half*, const __half*, __half*, int, int, int, int, hipStream_t);
+    void launch_lmhead(const __half*, const __half*, float*, int, int, int, int, hipStream_t);
+    void launch_gemv_simple(const __half*, const __half*, __half*, int, int, hipStream_t);
+}
+
 // ── Forward declarations ──────────────────────────────────────────
 extern "C" float* dequant_i8_to_float(const uint8_t*, int, int*, int*);
 extern "C" int rcpp_kv_cache_attn_decode(
@@ -378,44 +385,20 @@ struct GpuProjCtx {
     }
 
 private:
-    // Tiled f16 GEMV kernel.
-    // Weight is column-major: W[N][K]
-    // Activation A[K] is loaded into shared memory once.
-    // Each block handles BN output columns, iterating K in tiles of BK.
-    //
-    // Thread layout: 128 threads = 4 warps
-    // Each warp handles BN/4 = 64 output columns (2 __half2 per thread for BN=256)
-    // Within a warp: 32 threads each handle 2 output columns
-    //
-    // For each K-tile, we load BK/2 activations as __half2 into shmem
-    // Then each thread iterates its output columns × BK/2 elements
     static __global__ void gemv_kernel_tiled(
-        const __half* __restrict__ A,   // [K]
-        const __half* __restrict__ W,   // [N, K] column-major
-        __half* __restrict__ C,         // [N]
-        int K, int N,
+        const __half* __restrict__ A, const __half* __restrict__ W,
+        __half* __restrict__ C, int K, int N,
         int BK, int BN)
     {
-        __shared__ __half s_A[1024]; // max BK
-
+        __shared__ __half s_A[1024];
         int n0 = blockIdx.x * BN;
         int n = n0 + threadIdx.x;
-
-        // Each thread accumulates partial sums for 2 output columns
-        // (thread 0 handles col N0, N0+128; thread 1 handles N0+1, N0+129; etc.)
         float sum0 = 0.0f, sum1 = 0.0f;
-        int n1 = n + blockDim.x; // stride = 128
-
+        int n1 = n + blockDim.x;
         for (int k0 = 0; k0 < K; k0 += BK) {
             int kt = min(BK, K - k0);
-
-            // Cooperative load activation tile into shared memory
-            for (int i = threadIdx.x; i < kt; i += blockDim.x)
-                s_A[i] = A[k0 + i];
+            for (int i = threadIdx.x; i < kt; i += blockDim.x) s_A[i] = A[k0 + i];
             __syncthreads();
-
-            // Accumulate over activation tile for our output columns
-            #pragma unroll 8
             for (int k = 0; k < kt; k++) {
                 float a = __half2float(s_A[k]);
                 if (n < N) sum0 += a * __half2float(W[(size_t)n * K + (k0 + k)]);
@@ -423,10 +406,8 @@ private:
             }
             __syncthreads();
         }
-
         if (n < N)  C[n]  = __float2half(sum0);
         if (n1 < N) C[n1] = __float2half(sum1);
-        // Each thread handles 2 outputs. 128 threads × 2 = 256 output columns per block.
     }
 };
 
@@ -675,7 +656,7 @@ int main(int argc, char** argv) {
     // ── CPU buffers ───────────────────────────────────────────────
     std::vector<float> hidden(cfg.H);
     std::vector<float> qkv_out(qkv_n);
-    std::vector<float> attn_out(attn_out);
+    std::vector<float> attn_out(cfg.NH * cfg.HD);
     std::vector<float> o_out(cfg.H);
     std::vector<float> gt(2 * cfg.IM);
     std::vector<float> su(cfg.IM);
@@ -774,41 +755,10 @@ int main(int argc, char** argv) {
         }
 
     private:
-        static __global__ void lm_head_kernel(
-            const __half* __restrict__ hidden,  // [H]
-            const __half* __restrict__ W,       // [NV, H] column-major
-            float* __restrict__ logits,          // [NV] f32 output
-            int H, int NV, int BK, int BN)
-        {
-            __shared__ __half s_hidden[1024];
-
-            int n0 = blockIdx.x * BN;
-            int tid = threadIdx.x;
-            int stride = blockDim.x;
-
-            // Each thread handles 2 output values (like tiled GEMV)
-            int n  = n0 + tid;
-            int n1 = n + stride;
-            float sum0 = 0.0f, sum1 = 0.0f;
-
-            for (int k0 = 0; k0 < H; k0 += BK) {
-                int kt = min(BK, H - k0);
-                for (int i = tid; i < kt; i += stride)
-                    s_hidden[i] = hidden[k0 + i];
-                __syncthreads();
-
-                for (int k = 0; k < kt; k++) {
-                    float h = __half2float(s_hidden[k]);
-                    if (n < NV)  sum0 += h * __half2float(W[(size_t)n * H + (k0 + k)]);
-                    if (n1 < NV) sum1 += h * __half2float(W[(size_t)n1 * H + (k0 + k)]);
-                }
-                __syncthreads();
-            }
-
-            if (n < NV)  logits[n] = sum0;
-            if (n1 < NV) logits[n1] = sum1;
-        }
     };
+    
+    // GPU kernels (defined in gpu_kernels_fused.hip)
+
 
     // CPU fallback for LM head (used when GPU LM head not available)
     auto sample_cpu = [&](const float* hid) -> int {

@@ -44,6 +44,14 @@
 #include <omp.h>
 #include <immintrin.h>
 
+// GPU kernel wrappers (defined in gpu_kernels_fused.hip)
+extern "C" {
+    void launch_gemv_tiled(const __half*, const __half*, __half*, int, int, int, int, hipStream_t);
+    void launch_lmhead(const __half*, const __half*, float*, int, int, int, int, hipStream_t);
+    void launch_gemv_simple(const __half*, const __half*, __half*, int, int, hipStream_t);
+    void launch_gemv_k(const __half*, const __half*, __half*, int, int, hipStream_t);
+}
+
 extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
 extern "C" int rcpp_kv_cache_attn_decode(
     const void*,const void*,const void*,void*,int,int,int,int,float,void*);
