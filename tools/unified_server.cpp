@@ -1080,7 +1080,11 @@ int main(int argc, char** argv) {
                     if (t.is_number_integer()) prompt_tokens.push_back(t.get<int>());
                 }
             } else if (body.contains("prompt") && body["prompt"].is_string()) {
-                prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+                try {
+                    prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "[completions] encode error: %s\n", e.what());
+                }
             }
             if (prompt_tokens.empty()) {
                 prompt_tokens = {g_tokenizer.bos_id};
@@ -1092,7 +1096,16 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
 
         std::vector<double> empty_logprobs;
-        auto gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id);
+        json gen_result;
+        try {
+            gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[completions] generate error: %s\n", e.what());
+            gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
+        } catch (...) {
+            fprintf(stderr, "[completions] unknown error\n");
+            gen_result = {{"error", "Generation failed: unknown error"}};
+        }
 
         json response;
         response["tokens"] = gen_result["tokens"];
