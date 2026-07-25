@@ -32,6 +32,10 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
+#include <xrt/experimental/xrt_ext.h>
+#include <xrt/experimental/xrt_module.h>
+#include <xrt/experimental/xrt_elf.h>
+#include <aiebu/aiebu_assembler.h>
 #include <immintrin.h>
 
 extern "C" float* dequant_i8_to_float(const uint8_t*,int,int*,int*);
@@ -153,7 +157,9 @@ struct I8Ctx {
     int MD, KD, ND;
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
-    std::unique_ptr<xrt::kernel> k;
+    std::unique_ptr<xrt::module> mdl;
+    std::unique_ptr<xrt::elf> elf;
+    std::unique_ptr<xrt::ext::kernel> k;
     std::vector<uint32_t> ins;
     std::unique_ptr<xrt::bo> bI, bA, bC;
     std::vector<std::unique_ptr<xrt::bo>> layerB;
@@ -170,20 +176,27 @@ struct I8Ctx {
         ins.resize(sz / 4);
         if (fread(ins.data(), 4, ins.size(), f) != ins.size()) { fclose(f); return false; }
         fclose(f);
-        xc = std::make_unique<xrt::xclbin>(std::string(xp));
-        d.register_xclbin(*xc);
-        hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-        k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
+        try {
+            std::vector<char> iraw((char*)ins.data(), (char*)ins.data() + ins.size() * 4);
+            aiebu::aiebu_assembler asmblr(aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
+            auto e = asmblr.get_elf();
+            xc = std::make_unique<xrt::xclbin>(std::string(xp));
+            d.register_xclbin(*xc);
+            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
+            elf = std::make_unique<xrt::elf>(e.data(), e.size());
+        } catch (...) { return false; }
+        mdl = std::make_unique<xrt::module>(*elf);
+        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
         bI = std::make_unique<xrt::bo>(d, ins.size() * 4, XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
         memcpy(bI->map(), ins.data(), ins.size() * 4);
         bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
+        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, 0);
+        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, 0);
         Am = (int8_t*)bA->map();
         Cm = (int16_t*)bC->map();
         layerB.resize(n_layers);
         for (int l = 0; l < n_layers; l++)
-            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(4));
+            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, 0);
         return true;
     }
 
@@ -208,7 +221,7 @@ struct I8Ctx {
         for (int m = 0; m < am; m++)
             quantize_avx(&A[m * ak], &Am[m * KD], ak, ascale);
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        run_ = (*k)((unsigned)3, *bI, (unsigned)ins.size(), *bA, *layerB[0], *bC);
+        run_ = k->operator()(3, 0, 0, *bA, *layerB[0], *bC);
         busy_ = true;
     }
 
@@ -367,10 +380,10 @@ int main(int argc, char** argv) {
         static char b[256]; snprintf(b, 256, "%s/insts_i8_%s_v.txt", D, t); return b;
     };
 
-    cq.init(dev, xp("QKV"), ip("QKV"), 4);
-    co.init(dev, xp("O"),   ip("O"),   4);
-    cg.init(dev, xp("GU"),  ip("GU"),  4);
-    cd.init(dev, xp("D"),   ip("D"),   4);
+    if (!cq.init(dev, xp("QKV"), ip("QKV"), 4)) { fprintf(stderr, "FAIL cq\n"); return 1; }
+    if (!co.init(dev, xp("O"),   ip("O"),   4)) { fprintf(stderr, "FAIL co\n"); return 1; }
+    if (!cg.init(dev, xp("GU"),  ip("GU"),  4)) { fprintf(stderr, "FAIL cg\n"); return 1; }
+    if (!cd.init(dev, xp("D"),   ip("D"),   4)) { fprintf(stderr, "FAIL cd\n"); return 1; }
 
     // ── Pack weights ──────────────────────────────────────────────
     auto tp = std::chrono::steady_clock::now();
