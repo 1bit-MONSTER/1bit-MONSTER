@@ -217,6 +217,12 @@ struct Mamba1Backend : Backend {
         n_layers = cfg.num_layers;
         vocab_size = cfg.vocab_size;
 
+        // Bind HIP primary context on the startup thread before creating the stream
+        // and allocating GPU memory. Without this, hipStreamCreate may bind the context
+        // to a device that later hipMemcpyAsync/hipStreamSynchronize calls on httplib
+        // worker threads can't find, causing hangs (issue #922).
+        HIP_CHECK(hipSetDevice(0));
+
         std::string model_path = cfg.model_path;
         fprintf(stderr, "[mamba1] Initializing Mamba1 GPU backend: %s\n", model_path.c_str());
 
@@ -359,6 +365,7 @@ struct Mamba1Backend : Backend {
 
     bool reset() override {
         if (!initialized) return false;
+
         pos = 0;
         // Reset SSM states
         for (int l = 0; l < n_layers; l++) {
@@ -380,6 +387,12 @@ struct Mamba1Backend : Backend {
 
     bool forward(int token_id, float* hidden_out) override {
         if (!initialized) return false;
+        // Clamp OOB tokens that confuse the model into generating nonsense (issue #932)
+        int max_tok = (int)(embed.size() / d_model) - 1;
+        if (token_id < 0 || token_id > max_tok) {
+            fprintf(stderr, "[mamba1] OOB token %d, clamping to %d\n", token_id, max_tok);
+            token_id = (token_id < 0) ? 0 : max_tok;
+        }
 
         // 1. Embedding lookup
         HIP_CHECK(hipMemcpyAsync(d_hidden, &embed[(size_t)token_id * d_model],
@@ -457,6 +470,7 @@ struct Mamba1Backend : Backend {
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
         if (!hidden || !logits) return false;
 
+
         // Upload hidden state to GPU
         HIP_CHECK(hipMemcpyAsync(d_hidden, hidden, (size_t)d_model * sizeof(float),
                     hipMemcpyHostToDevice, stream));
@@ -485,6 +499,7 @@ struct Mamba1Backend : Backend {
     }
 
     int generate(int token_id) override {
+        HIP_CHECK(hipSetDevice(0));
         std::vector<float> hidden(d_model);
         if (!forward(token_id, hidden.data())) return -1;
         if (!lm_head(hidden.data(), logits_buf.data(), nullptr)) return -1;
@@ -496,6 +511,7 @@ struct Mamba1Backend : Backend {
 
     float benchmark(int tokens = 10) override {
         if (!initialized) return 0;
+
         reset();
         auto t0 = std::chrono::high_resolution_clock::now();
         int tok = 1;

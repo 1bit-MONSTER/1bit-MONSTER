@@ -595,3 +595,78 @@ amdxdna 0000:c6:00.1: [drm] aie2_mgmt_fw_query: NPU UNLOCK: overriding metadata.
 amdxdna 0000:c6:00.1: [drm] aie2_mgmt_fw_query: NPU: 40 total_col (aie2_max_col=40, metadata.cols=40)
 [drm] Initialized amdxdna_accel_driver 0.15.0 for 0000:c6:00.1 on minor 0
 ```
+
+**Important clarification (added 2026-07-25):** the "SUCCESS — 40 columns!" line above means the driver-level metadata override worked — it does not mean a real 40-column compute context ever ran. The very next row in the table (`HW context creation attempt` → `NOAVAIL`) shows the actual firmware gate rejecting real use immediately. This distinction matters: every later session that "re-achieves" the 40-column driver override is repeating this same, already-solved half of the problem, not making new progress on the actual blocker. See the next appendix for the full firmware-patch effort against that gate, none of which has succeeded yet.
+
+---
+
+## Appendix: Firmware Patch Attempts v5/v5a/v5b/v5c (2026-07-21 through 2026-07-25) — still blocked
+
+Following on from the previous appendix's "Current Blocker," this section tracks the actual attempt to defeat the firmware-side column-count gate (`AIE2_STATUS_MGMT_ERT_NOAVAIL`) via binary patching, plus the driver-side rebuild work needed to keep testing it across a kernel upgrade.
+
+### The firmware patches
+
+On 2026-07-21, static analysis of `npu.dev.sbin` identified the actual gate: a comparison constant at file offset `0x31E0` (hardcoded `8`) and a conditional branch to an error path at `0x31E4`. Four patched variants were built (all 429680 bytes, distinct hashes):
+
+| Variant | Patch applied | Result (as tested) |
+|---|---|---|
+| `npu_patched_40col_v5.sbin` | offset `0x31E0` only (8→0x28) | `fw return error 0x5` (`aie2_smu_exec: smu cmd 4 timed out`, `Power off failed, ret -110`) |
+| `npu_patched_40col_v5a.sbin` | same patch, alternate build | `fw return error 0x5` (same signature; v5/v5a not individually distinguished in the surviving logs — the staged file from that test was overwritten before it could be hashed) |
+| `npu_patched_40col_v5b.sbin` | offset `0x31E4` only (branch NOP'd) | `fw return error 0x63` (`failed to validate fw, ret -5`, `aie2_hw_start: failed to start psp`) — confirmed 2026-07-25 06:24 |
+| `npu_patched_40col_v5c.sbin` | both changes combined | `fw return error 0x63` (same as v5b) — confirmed 2026-07-24 |
+
+**All four fail PSP firmware validation before a context can even be attempted.** `0x5` and `0x63` are different PSP-side rejection codes — neither variant gets past firmware signature/integrity checking to reach the actual column-count logic. This is a **harder failure than the 2026-07-16 baseline** (`NOAVAIL`, which at least reached context creation) — the current patches trip PSP validation first.
+
+**Hardware hazard confirmed twice**: loading a firmware image that fails PSP validation this way wedges the SMU, which on this Strix Halo box is shared between the NPU and the GPU — the GPU goes down too (`SMU: No response`, `Failed to disable gfxoff!`, eventual `GPU Recovery Failed`). Only a full cold power-cycle reliably clears it; a warm reboot has been observed to *not* clear the wedge. Treat any live firmware-load test on this class of patch as needing to be attended, with the user aware a hard power-cycle may be required afterward.
+
+### Driver-side blocker (separate from the firmware issue, now fixed)
+
+Rebuilding the cols-only out-of-tree driver (`unlock-cols-only-cleanctx` branch, `~/xdna-driver`) after the box moved from kernel `7.0.0-27` to `7.0.0-28` hit an unrelated blocker: `insmod` failed with `Unknown symbol amd_pmf_get_npu_data (err -2)`. Root cause: `drivers/accel/amdxdna/config_kernel.h` was auto-generated against `7.0.0-27` and never regenerated. Fix:
+
+```
+sh drivers/accel/tools/configure_kernel.sh    # regenerates config_kernel.h for the running kernel
+cd ~/xdna-driver/drivers/accel/amdxdna && make -C /lib/modules/$(uname -r)/build M=$(pwd) \
+    CFLAGS_MODULE="-DAMDXDNA_DEVEL" OFT_CONFIG_AMDXDNA_PCI=y OFT_CONFIG_AMDXDNA_OF=n modules
+```
+
+Note the explicit `OFT_CONFIG_AMDXDNA_PCI=y OFT_CONFIG_AMDXDNA_OF=n` — invoking `make` without them skips this repo's own `Kbuild` gating and silently drops the entire AIE2/AIE4/NPU-regs object group, producing a different-looking (but spurious) undefined-symbol storm. Validated live 2026-07-25 05:56: the rebuilt module loaded cleanly (no symbol error), reached the same driver-level "40 total_col" milestone as 2026-07-16, then immediately hit a fourth, distinct failure: `aie2_error_worker: Did not get error column` repeated ~32 times, then the boot went silent (no panic/oops logged) — not yet investigated (likely `aie2_ctx.c`/`aie2_error.c` async error-reporting sized for 8 columns).
+
+**This driver-side rebuild is unrelated to the firmware PSP-validation problem above** — fixing it only restores the ability to reach the driver-level milestone on the current kernel; it does not touch why v5/v5a/v5b/v5c fail PSP validation.
+
+### Kernel version is not the blocker
+
+It might look like downgrading back to `7.0.0-27` (the kernel in use during the 2026-07-16 baseline) would help, since the rebuild friction above was triggered by the `.27`→`.28` upgrade. It would not: `NOAVAIL` (2026-07-16, on `.27`) and `0x5`/`0x63` (2026-07-24/25, on `.28`) are all firmware/PSP-side rejections, independent of the host kernel version. The `.27`/`.28` distinction only affects whether the out-of-tree **driver module** loads at all (vermagic/symbol matching); it has no bearing on what the **PSP** does with a given firmware image.
+
+### Current state (2026-07-25 ~06:30)
+
+- Both confirmed-bad firmware files renamed out of the driver's search path: `npu.dev.sbin.bad_v5b_0x63`, `npu.dev.sbin.bad_v5c_0x63` (under `/lib/firmware/amdnpu/17f0_11/`).
+- System restored to stock: in-tree signed driver (`sig_id: PKCS#7`, matches package), stock firmware (`npu_7.sbin`, hash-verified identical to the packaged `npu.sbin.1.1.2.65.zst`), no active `aie2_max_col` override in `/etc/modprobe.d/` or GRUB.
+- **Untested-fresh candidates**: none remain among v5/v5a/v5b/v5c — all four have now been live-tested and all fail PSP validation. Continuing this approach would mean either a different patch offset/strategy, or accepting the GPU-inference-only path (measured 371–441 tok/s) as the near-term outcome — an option raised during the 2026-07-24 GPU/SMU-wedge incident as a pragmatic fallback if the firmware patch route stalls.
+
+---
+
+## Appendix: PSP signature validation is the actual gate (2026-07-25) — work paused here
+
+After v5/v5a/v5b/v5c all failed (see above), it's worth being explicit about *why*, because it changes what "continuing this research" means.
+
+### Why byte-patching the column constant can't work as attempted
+
+`npu.dev.sbin` is not loaded directly by the NPU — it's handed to the PSP (Platform Security Processor), a separate on-die ARM core that acts as AMD's hardware root of trust. Standard PSP firmware-loading flow validates the image against a signature chain anchored in on-die fused keys before anything in the image is allowed to execute. That signature covers the image as a whole (or large signed regions of it), not just the specific bytes any single patch touched.
+
+This matches what was actually observed, not just architectural theory:
+- The 2026-07-16 baseline patch (driver-side `aie2_max_col` override only, firmware untouched) reached real context creation and failed on `AIE2_STATUS_MGMT_ERT_NOAVAIL` — a firmware **logic** rejection, well past validation.
+- Every firmware **binary** patch since (v5/v5a's `0x5`, v5b/v5c's `0x63`) fails earlier and differently — `fw return error`, `failed to validate fw, ret -5`, PSP refusing to even start the image. These are validation-stage codes, not the column-count logic the patches were targeting. Changing *where* in the file the patch lands (offset `0x31E0` vs `0x31E4` vs both) changed the specific rejection code but never got past this stage — consistent with any modification invalidating a signature check, regardless of which bytes changed.
+
+### What "PSP signature unlock" would actually require
+
+To get a patched image past this, one of two things would be needed:
+1. **A legitimately re-signed image** — i.e., AMD's private signing key for this PSP firmware family, which is not available to us and has no known public leak for this hardware generation. Not something this project can obtain.
+2. **An actual vulnerability in the PSP's signature-verification path** that lets an unsigned or modified image load anyway. This is a distinct, much larger security-research problem — PSP firmware exploitation — unrelated to the column-count patch this effort has been iterating on. It would mean auditing PSP's own boot/validation code (which is itself closed and only reachable via the very interface it's gatekeeping), not adjusting offsets in an NPU firmware blob. Publicly known PSP exploits (where they exist, for other AMD platform generations) came out of dedicated PSP-focused research, not incremental patching of a downstream firmware image.
+
+Neither path is a natural continuation of the v5/v5a/v5b/v5c work — patching different offsets in `npu.dev.sbin` will keep tripping the same signature check no matter which byte moves. **This is why the column-unlock effort is paused as of 2026-07-25, not just low on untested variants.**
+
+### Status
+
+Secure Boot has been re-enabled on the test box (it was only disabled to permit loading the unsigned out-of-tree `amdxdna` driver module during testing — unrelated to the PSP signature question, but no longer needed with this line of attack closed). System verified back to a clean stock baseline: in-tree signed driver, stock firmware, no errors.
+
+If this is picked up again, scope it explicitly as one of the two options above rather than another firmware-byte-patch variant — variant 6, 7, 8 of the same offset-guessing approach will hit the same wall as v5 through v5c.

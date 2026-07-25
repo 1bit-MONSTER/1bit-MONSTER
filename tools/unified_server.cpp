@@ -154,9 +154,9 @@ static std::string resolve_strategy_name(const httplib::Request& req) {
 }
 
 // ── Build model info JSON ──
-static json model_info_json(const BackendInfo* active) {
+static json model_info_json(const BackendInfo* active, const std::string& model_name = "unknown") {
     json j;
-    j["id"] = "zaya";
+    j["id"] = model_name;
     j["object"] = "model";
     j["created"] = time(nullptr);
     j["owned_by"] = "1bit-systems";
@@ -276,7 +276,13 @@ static json generate_completion(BackendManager& mgr,
     int last_token = prompt_tokens.empty() ? g_tokenizer.bos_id : prompt_tokens.back();
 
     // Prefill: process prompt tokens
-    for (size_t i = 0; i + 1 < prompt_tokens.size(); i++) {
+    // Skip BOS token (first token == bos_id) for SSM models where
+    // feeding BOS as a regular token corrupts the recurrent state.
+    size_t prefill_start = 0;
+    if (!prompt_tokens.empty() && prompt_tokens[0] == g_tokenizer.bos_id) {
+        prefill_start = 1;
+    }
+    for (size_t i = prefill_start; i + 1 < prompt_tokens.size(); i++) {
         int result_id = mgr.generate(prompt_tokens[i]);
         if (result_id < 0) {
             float ms = std::chrono::duration<float, std::milli>(
@@ -684,13 +690,19 @@ int main(int argc, char** argv) {
             fflush(stdout);
             float ms = active_info_raw->instance->benchmark(bench_tokens);
             printf("%.1f ms/tok\n", ms);
+            // Phase 5's build_performance_table() reads BackendInfo::score, which
+            // benchmark_all() would normally set — but Phase 4 deliberately benchmarks
+            // only the active backend (see comment above) and bypasses benchmark_all(),
+            // so without this the score stays 0 and the performance table prints a
+            // bogus "0 tok/s" for the very backend we just measured.
+            mgr.set_score(active_info_raw->id, ms);
         }
     }
 
     // ── Phase 5: Initialize Strategy Engine ──
     printf("\n── Strategy Engine ──\n");
     {
-        auto perf_table = build_performance_table(mgr, "zaya");
+        auto perf_table = build_performance_table(mgr, current_cfg.model_name);
         printf("  Performance table (%zu backends):\n", perf_table.size());
         for (auto& r : perf_table) {
             printf("    %-20s -> %-12s (%.0f tok/s)\n",
@@ -705,13 +717,16 @@ int main(int argc, char** argv) {
     }
 
     // ── Phase 6: Start Agent Watchdog ──
-    printf("\n── Agent Watchdog ──\n");
-    {
-        if (!g_watchdog) {
-            g_watchdog = new AgentWatchdog(g_strategy_engine, mgr);
-        }
-        g_watchdog->start();
-    }
+    // NOTE: Disabled pending investigation of heap corruption (issue #932).
+    // The watchdog thread races with httplib completion handlers when it
+    // calls benchmark_all() while a generate() call is in progress.
+    // printf("\n── Agent Watchdog ──\n");
+    // {
+    //     if (!g_watchdog) {
+    //         g_watchdog = new AgentWatchdog(g_strategy_engine, mgr);
+    //     }
+    //     g_watchdog->start();
+    // }
 
     // Quick mode: re-profile in background after server starts
     if (quick_mode) {
@@ -754,7 +769,7 @@ int main(int argc, char** argv) {
         std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
         json j = health_json(mgr);
         j["version"] = "unified-server-1.0";
-        j["model"] = "zaya";
+        j["model"] = current_cfg.model_name;
         j["weights_dir"] = g_weights_dir;
         j["uptime"] = std::to_string(time(nullptr)) + "s";
         res.set_content(j.dump(2), "application/json");
@@ -791,7 +806,7 @@ int main(int argc, char** argv) {
             for (auto& m : discovered) {
                 if (m.model_name == active->id) { found = true; break; }
             }
-            if (!found) models.push_back(model_info_json(active));
+            if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
         }
         j["data"] = models;
         res.set_content(j.dump(2), "application/json");
@@ -991,7 +1006,7 @@ int main(int argc, char** argv) {
         response["id"] = "cmpl-" + std::to_string(time(nullptr));
         response["object"] = "chat.completion";
         response["created"] = time(nullptr);
-        response["model"] = "zaya";
+        response["model"] = current_cfg.model_name;
 
         json choice;
         choice["index"] = 0;
@@ -1065,7 +1080,11 @@ int main(int argc, char** argv) {
                     if (t.is_number_integer()) prompt_tokens.push_back(t.get<int>());
                 }
             } else if (body.contains("prompt") && body["prompt"].is_string()) {
-                prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+                try {
+                    prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "[completions] encode error: %s\n", e.what());
+                }
             }
             if (prompt_tokens.empty()) {
                 prompt_tokens = {g_tokenizer.bos_id};
@@ -1077,7 +1096,16 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
 
         std::vector<double> empty_logprobs;
-        auto gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id);
+        json gen_result;
+        try {
+            gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[completions] generate error: %s\n", e.what());
+            gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
+        } catch (...) {
+            fprintf(stderr, "[completions] unknown error\n");
+            gen_result = {{"error", "Generation failed: unknown error"}};
+        }
 
         json response;
         response["tokens"] = gen_result["tokens"];
@@ -1142,7 +1170,7 @@ int main(int argc, char** argv) {
         }
 
         // Build performance table for strategy init
-        auto perf_table = build_performance_table(mgr, "zaya");
+        auto perf_table = build_performance_table(mgr, current_cfg.model_name);
         // Lock strategy mutex while reinitializing the engine (fixes #364)
         std::lock_guard<std::mutex> lock(g_strategy_mutex);
         bool ok = g_strategy_engine.init(name, mgr, perf_table);
