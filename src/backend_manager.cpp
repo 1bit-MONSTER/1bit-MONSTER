@@ -5,6 +5,7 @@
 #include "backend_plugin.h"
 #include "backend_detect.h"
 #include "backend.h"
+#include "model_router.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -497,6 +498,7 @@ int BackendManager::generate(int token_id) {
     // actually ran the inference, not whatever select_backend() may have
     // switched to in the meantime (issue #357).
     std::shared_ptr<Backend> snap;
+    std::shared_ptr<std::mutex> compute_mtx;
     size_t snap_idx = 0;
     bool need_failover = false;
     size_t prev_idx = 0;
@@ -507,14 +509,19 @@ int BackendManager::generate(int token_id) {
         auto& info = backends_[active_idx_];
         if (info.functional && info.instance) {
             snap = info.instance;  // shared_ptr copy — keeps Backend alive
+            compute_mtx = info.compute_mtx;
         } else {
             need_failover = true;
             prev_idx = active_idx_;
         }
     }
 
-    // Phase 2: inference WITHOUT the lock — snap keeps the Backend alive.
+    // Phase 2: inference WITHOUT mtx_ — snap keeps the Backend alive.
+    // compute_mtx IS held here: it serializes against health_check()'s
+    // reset() and benchmark_all()'s benchmark()/init() on this same
+    // instance, which mtx_ alone can't do since it's released for this call.
     if (snap) {
+        std::lock_guard<std::mutex> compute_lock(*compute_mtx);
         auto t0 = std::chrono::high_resolution_clock::now();
         int result = -1;
         // A backend that throws (e.g. a missing Vulkan shader, a HIP fault)
@@ -708,8 +715,14 @@ bool BackendManager::health_check() {
 
     if (active_idx_ < backends_.size()) {
         auto& info = backends_[active_idx_];
-        // Simple probe: try reset
-        bool ok = b->reset();
+        // Simple probe: try reset. Hold compute_mtx — reset() mutates the
+        // same instance state (e.g. HIPBackend's ZayaState/pos) that a
+        // concurrent generate() call may be using via Phase 2's lock-free path.
+        bool ok;
+        {
+            std::lock_guard<std::mutex> compute_lock(*info.compute_mtx);
+            ok = b->reset();
+        }
         info.functional = ok;
         auto* pm = monitor_.for_backend(info.id);
         if (pm) pm->healthy = ok;
@@ -734,8 +747,35 @@ void BackendManager::benchmark_all(int tokens) {
     printf("║   Backend Manager — Benchmark Suite      ║\n");
     printf("╚══════════════════════════════════════════╝\n");
 
+    // Only speculatively init()/benchmark() a backend if the router
+    // considers it compatible with the currently loaded model's architecture
+    // (same table BackendManager::init() used to pick the active backend),
+    // or it already has a live instance (proved compatible by successfully
+    // init'ing already). The generic CPU tier is architecture-agnostic by
+    // design, so it's always eligible regardless of what the router lists.
+    // Without this, benchmark_all() would freely try e.g. the Zaya HIP
+    // kernels or the Zamba2 kernels against a Mamba1 model's weights —
+    // neither backend's init()/benchmark() is hardened against that, and
+    // both crashed with a real SIGSEGV (not a catchable C++ exception) when
+    // this was reproduced under gdb: an OOB vector read in zaya_destroy()
+    // and a segfault in mamba2_cpu_forward(), both on the agent-watchdog
+    // thread, both taking the whole process down with them.
+    auto route = select_backend_route(cfg_);
+    auto architecture_compatible = [&](const BackendInfo& info) {
+        if (info.tier == BackendTier::T3_CPU) return true;
+        if (info.instance) return true;
+        return std::find(route.backend_ids_in_order.begin(),
+                          route.backend_ids_in_order.end(),
+                          info.id) != route.backend_ids_in_order.end();
+    };
+
     for (auto& info : backends_) {
         if (!info.available) continue;
+
+        if (!architecture_compatible(info)) {
+            printf("  %s... ⏭️  (skipped — not compatible with loaded model architecture)\n", info.id.c_str());
+            continue;
+        }
 
         // Skip CPU_SCALAR if CPU_AVX512 already benchmarked
         // (they share the same CPUBackend code, only the above is meaningful)
@@ -749,6 +789,12 @@ void BackendManager::benchmark_all(int tokens) {
 
         printf("  %s... ", info.id.c_str());
         fflush(stdout);
+
+        // Hold compute_mtx for init()/benchmark() below — if info.instance
+        // is already live (e.g. this is the currently-active backend), it
+        // may be in concurrent use via generate()'s lock-free Phase 2; this
+        // serializes against that instead of racing on shared instance state.
+        std::lock_guard<std::mutex> compute_lock(*info.compute_mtx);
 
         // Create instance if needed. init()/benchmark() may THROW (missing
         // Vulkan shader, driver fault, OOM) — a broken backend must be skipped,
