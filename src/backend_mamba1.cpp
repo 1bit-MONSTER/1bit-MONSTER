@@ -387,7 +387,12 @@ struct Mamba1Backend : Backend {
 
     bool forward(int token_id, float* hidden_out) override {
         if (!initialized) return false;
-
+        // Clamp OOB tokens that confuse the model into generating nonsense (issue #932)
+        int max_tok = (int)(embed.size() / d_model) - 1;
+        if (token_id < 0 || token_id > max_tok) {
+            fprintf(stderr, "[mamba1] OOB token %d, clamping to %d\n", token_id, max_tok);
+            token_id = (token_id < 0) ? 0 : max_tok;
+        }
 
         // 1. Embedding lookup
         HIP_CHECK(hipMemcpyAsync(d_hidden, &embed[(size_t)token_id * d_model],
