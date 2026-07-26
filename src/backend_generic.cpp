@@ -138,8 +138,8 @@ struct GenericBackend : Backend {
         logits_buf.resize(cfg.vocab);
         k_cache.resize(cfg.n_layers);
         v_cache.resize(cfg.n_layers);
-        for (auto& k : k_cache) k.resize(cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
-        for (auto& v : v_cache) v.resize(cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
+        for (auto& k : k_cache) k.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
+        for (auto& v : v_cache) v.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
         initialized = true;
         return true;
     }
