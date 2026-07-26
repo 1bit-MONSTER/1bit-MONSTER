@@ -391,7 +391,24 @@ struct GenericBackend : Backend {
     }
 
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
-        return false;  // not implemented — use generate() instead
+        // LM head: logits = lm_weight @ hidden
+        // Uses untied output.weight when the model has one, else tied embedding
+        // (issue #958 — was always returning false, breaking cascade/adaptive
+        //  strategy routing which needs per-token logprobs).
+        const float* lm_w = output_weight.empty() ? embed.data() : output_weight.data();
+        if (!lm_w) return false;
+        matmul(logits, hidden, lm_w, cfg.vocab, cfg.hidden);
+        if (argmax) {
+            *argmax = 0;
+            float max_val = logits[0];
+            for (int i = 1; i < cfg.vocab; ++i) {
+                if (logits[i] > max_val) {
+                    max_val = logits[i];
+                    *argmax = i;
+                }
+            }
+        }
+        return true;
     }
 
     int forward(int token) {
