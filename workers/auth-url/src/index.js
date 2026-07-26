@@ -55,7 +55,7 @@ async function handleRequest(request) {
   }
 
   // ── Health check ──
-  if (pathname === '/auth/status' || pathname === '/auth/') {
+  if (pathname === '/auth/status' || pathname === '/auth/' || pathname === '/status') {
     return new Response(
       JSON.stringify({
         status: 'ok',
@@ -129,9 +129,23 @@ async function handleRequest(request) {
     );
   }
 
+  // ── BingSiteAuth.xml (root or /auth) ──
+  if (pathname === '/BingSiteAuth.xml' || pathname === '/auth/BingSiteAuth.xml') {
+    return new Response(
+      `<?xml version="1.0"?>\n<users>\n  <user>YOUR_BING_CODE</user>\n</users>`,
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=86400',
+        },
+      }
+    );
+  }
+
   // ── SEO verification files ──
-  // /auth/googleXXXXX.html, /auth/bingXXXXX.html, etc.
-  const verifyMatch = pathname.match(/^\/auth\/(\w+)\.html$/);
+  // /auth/googleXXXXX.html, /auth/bingXXXXX.html, /googleXXXXX.html (root), etc.
+  const verifyMatch = pathname.match(/^(?:\/auth)?\/(\w+)\.html$/);
   if (verifyMatch) {
     const fileId = verifyMatch[1];
 
