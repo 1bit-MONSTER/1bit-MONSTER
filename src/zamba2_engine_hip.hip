@@ -115,7 +115,7 @@ struct Zamba2HIPState {
 };
 
 // ── Upload weights from Zamba2Model to GPU ──
-static Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
+extern "C" Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
     Zamba2HIPState* s = new Zamba2HIPState();
     auto& cfg = model.cfg;
     s->cfg = cfg;
@@ -213,7 +213,7 @@ static Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
 // Launches GPU kernels for each layer. Designed for autoregressive decode.
 // Hybrid layers (attention + FFN) fall back to CPU since GPU kernels are not
 // yet implemented for the shared transformer portion.
-void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int token_id,
+extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int token_id,
                          float* logits_out, int pos) {
     auto& cfg = s->cfg;
     int d_model = cfg.d_model;
@@ -314,4 +314,8 @@ void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int token_id,
     hipMemcpyAsync(logits_out, s->d_logits, vocab * sizeof(float),
                    hipMemcpyDeviceToHost, st);
     hipStreamSynchronize(st);
+}
+
+extern "C" void zamba2_hip_destroy(Zamba2HIPState* s) {
+    if (s) { s->destroy(); }
 }

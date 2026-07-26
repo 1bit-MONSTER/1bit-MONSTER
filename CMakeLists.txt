@@ -751,6 +751,13 @@ target_compile_options(bench_mamba2_kernels PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O
 target_link_libraries(bench_mamba2_kernels PRIVATE rocm_cpp hip::host hip::device)
 set_target_properties(bench_mamba2_kernels PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
+add_executable(bench_zamba2_e2e tools/bench_zamba2_e2e.cpp)
+set_source_files_properties(tools/bench_zamba2_e2e.cpp PROPERTIES LANGUAGE HIP)
+target_compile_options(bench_zamba2_e2e PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
+target_include_directories(bench_zamba2_e2e PRIVATE src/)
+target_link_libraries(bench_zamba2_e2e PRIVATE rocm_cpp hip::host hip::device)
+set_target_properties(bench_zamba2_e2e PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+
 add_executable(bench_kv_i8 tools/bench_kv_i8.cpp)
 set_source_files_properties(tools/bench_kv_i8.cpp PROPERTIES LANGUAGE HIP)
 target_compile_options(bench_kv_i8 PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
