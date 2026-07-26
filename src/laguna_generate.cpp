@@ -326,7 +326,6 @@ struct LagunaInference {
     void reset() { pos=0; for(auto&k:k_cache)std::fill(k.begin(),k.end(),0.0f);
                   for(auto&v:v_cache)std::fill(v.begin(),v.end(),0.0f); }
     
-    bool grow_cache() { return grow_cache_impl(k_cache, v_cache, max_pos, pos, NKV, HD); }
     
     bool is_swa(int il) { return SW>0 && (il%SW_PERIOD)!=0; }
     bool is_moe(int il) { return il>=N_DENSE_LEAD; }
