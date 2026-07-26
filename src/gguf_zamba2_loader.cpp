@@ -392,8 +392,33 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
     cfg.n_layers      = gu32("block_count", 54);
     cfg.n_attn_heads  = gu32("attention.head_count", 32);
     cfg.n_kv_heads    = gu32("attention.head_count_kv", 32);
-    // head_dim from rope.dimension_count (zamba2 stores it there), fallback to d_inner/n_heads
-    cfg.attn_head_dim = gu32("rope.dimension_count", (int)(cfg.d_inner / cfg.n_attn_heads));
+    // head_dim from rope.dimension_count (zamba2 stores it there), fallback to
+    // deriving from the actual attn_q tensor shape or defaulting to 80.
+    // The old fallback d_inner/n_attn_heads gives 160 for Zamba2-2.7B (5120/32)
+    // but the real head_dim is 80 — so RoPE had wrong frequencies on all hybrid
+    // layers when the GGUF lacked rope.dimension_count (issue #946).
+    cfg.attn_head_dim = gu32("rope.dimension_count", 0);
+    if (cfg.attn_head_dim <= 0) {
+        // Try to derive from the attn_q tensor shape
+        if (reader.has_tensor("blk.6.attn_q.weight")) {
+            // GGUF stores attn_q as [d_model, n_heads * head_dim] (output, input)
+            // or [n_heads * head_dim, d_model] (input, output).
+            // head_dim = tensor_numel / (d_model * n_attn_heads)
+            auto& ti = reader.tensors.at("blk.6.attn_q.weight");
+            uint64_t numel = 1;
+            for (auto d : ti.shape) numel *= d;
+            int derived_hd = (int)(numel / ((uint64_t)cfg.d_model * cfg.n_attn_heads));
+            if (derived_hd > 0 && derived_hd <= cfg.d_model) {
+                cfg.attn_head_dim = derived_hd;
+                fprintf(stderr, "[zamba2] Derived attn_head_dim=%d from attn_q tensor shape\n",
+                        cfg.attn_head_dim);
+            }
+        }
+    }
+    if (cfg.attn_head_dim <= 0) {
+        cfg.attn_head_dim = 80;  // safe default for all Zamba2 variants
+        fprintf(stderr, "[zamba2] Using default attn_head_dim=%d\n", cfg.attn_head_dim);
+    }
     cfg.vocab_size    = gu32("vocab_size", gu32("llm.vocab_size", 32000));
     cfg.max_seq_len   = gu32("context_length", 4096);
     cfg.rope_theta    = gf32("rope.freq_base", 10000.0f);
