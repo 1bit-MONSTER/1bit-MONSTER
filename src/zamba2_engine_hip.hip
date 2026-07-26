@@ -303,14 +303,15 @@ void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int token_id,
     HIP_CHECK(hipGetLastError());
     hipMemcpyDtoDAsync(s->d_hidden, s->d_tmp, d_model * sizeof(float), st);
 
-    // ── LM head on CPU (tied embedding) ──
+    // ── LM head on GPU (tiled GEMV on tied embedding) ──
+    // logits[V] = embed[V, d_model] @ hidden[d_model]
+    int gemv_blocks = (vocab + 2 - 1) / 2;
+    hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
+        dim3(gemv_blocks), dim3(256), 0, st,
+        s->d_embed, s->d_hidden, s->d_logits, vocab, d_model);
+
+    // Async D2H copy of logits
+    hipMemcpyAsync(logits_out, s->d_logits, vocab * sizeof(float),
+                   hipMemcpyDeviceToHost, st);
     hipStreamSynchronize(st);
-    std::vector<float> hidden_cpu(d_model);
-    hipMemcpy(hidden_cpu.data(), s->d_hidden, d_model * sizeof(float), hipMemcpyDeviceToHost);
-    for (int v = 0; v < vocab; ++v) {
-        float sum = 0.0f;
-        for (int j = 0; j < d_model; ++j)
-            sum += model.embed_w[(size_t)v * d_model + j] * hidden_cpu[j];
-        logits_out[v] = sum;
-    }
 }
