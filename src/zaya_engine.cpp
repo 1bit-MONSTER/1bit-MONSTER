@@ -461,17 +461,13 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         // RMSNorm (separate launch to avoid cross-block data race, issue #870)
         rmsnorm_fused_kernel<<<1, 256, 0, s->st>>>(s->d_hs, l.nw, eng.h);
         HIP_CHECK(hipGetLastError());
-        // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
-        { int hv2=eng.kd/2;
-          mm_k<<<(eng.qd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);
-          HIP_CHECK(hipGetLastError());
-          mm_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd,s->d_hs,l.wk,eng.kd,eng.h);
-          HIP_CHECK(hipGetLastError());
-          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd,s->d_hs,l.wv1,hv2,eng.h);
-          HIP_CHECK(hipGetLastError());
-          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+hv2,s->d_hs,l.wv2,hv2,eng.h);
-          HIP_CHECK(hipGetLastError()); }
-          nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
+        // Fused Q/K/V1/V2 with __shfl_xor_sync (AMD HIP fixed)
+        {
+            int total_blocks = (eng.qd + WMMA_M - 1) / WMMA_M + (eng.kd + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M;
+            fused_qkv_kernel<<<total_blocks, WMMA_THREADS, 0, s->st>>>(s->d_hs, s->d_tmp, l.wq, l.wk, l.wv1, l.wv2, eng.h, eng.qd, eng.kd);
+            HIP_CHECK(hipGetLastError());
+            nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
+        }
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
             l.cdw,l.cdb,l.cgw,l.cgb,l.ks,
@@ -555,17 +551,13 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         // RMSNorm (separate launch to avoid cross-block data race, issue #870)
         rmsnorm_fused_kernel<<<1, 256, 0, s->st>>>(s->d_hs, l.nw, eng.h);
         HIP_CHECK(hipGetLastError());
-        // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
-        { int hv2=eng.kd/2;
-          mm_k<<<(eng.qd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);
-          HIP_CHECK(hipGetLastError());
-          mm_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd,s->d_hs,l.wk,eng.kd,eng.h);
-          HIP_CHECK(hipGetLastError());
-          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd,s->d_hs,l.wv1,hv2,eng.h);
-          HIP_CHECK(hipGetLastError());
-          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+hv2,s->d_hs,l.wv2,hv2,eng.h);
-          HIP_CHECK(hipGetLastError()); }
-          nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
+        // Fused Q/K/V1/V2 with __shfl_xor_sync (AMD HIP fixed)
+        {
+            int total_blocks = (eng.qd + WMMA_M - 1) / WMMA_M + (eng.kd + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M;
+            fused_qkv_kernel<<<total_blocks, WMMA_THREADS, 0, s->st>>>(s->d_hs, s->d_tmp, l.wq, l.wk, l.wv1, l.wv2, eng.h, eng.qd, eng.kd);
+            HIP_CHECK(hipGetLastError());
+            nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
+        }
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
             l.cdw,l.cdb,l.cgw,l.cgb,l.ks,
