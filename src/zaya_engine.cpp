@@ -466,6 +466,7 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
             int total_blocks = (eng.qd + WMMA_M - 1) / WMMA_M + (eng.kd + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M;
             fused_qkv_kernel<<<total_blocks, WMMA_THREADS, 0, s->st>>>(s->d_hs, s->d_tmp, l.wq, l.wk, l.wv1, l.wv2, eng.h, eng.qd, eng.kd);
             HIP_CHECK(hipGetLastError());
+            nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
         }
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
@@ -555,6 +556,7 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
             int total_blocks = (eng.qd + WMMA_M - 1) / WMMA_M + (eng.kd + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M + ((eng.kd/2) + WMMA_M - 1) / WMMA_M;
             fused_qkv_kernel<<<total_blocks, WMMA_THREADS, 0, s->st>>>(s->d_hs, s->d_tmp, l.wq, l.wk, l.wv1, l.wv2, eng.h, eng.qd, eng.kd);
             HIP_CHECK(hipGetLastError());
+            nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
         }
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
@@ -581,6 +583,7 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         HIP_CHECK(hipGetLastError());
         copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_ao,eng.h);
         HIP_CHECK(hipGetLastError());
+        nan_clean_k<<<g1,BLK,0,s->st>>>(s->d_hs,eng.h);
         rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,l.pan,eng.h);
         HIP_CHECK(hipGetLastError());
         if(l.gu&&l.dn){
