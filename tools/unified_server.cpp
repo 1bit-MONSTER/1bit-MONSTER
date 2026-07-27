@@ -687,10 +687,12 @@ int main(int argc, char** argv) {
         {"quick",         no_argument,       nullptr, 'q'},
         {"cors-origin",   required_argument, nullptr, 'c'},
         {"gen-timeout-ms", required_argument, nullptr, 't'},
+        {"free-npu",      no_argument,       nullptr, 'F'},
         {nullptr, 0, nullptr, 0}
     };
 
     bool quick_mode = false;
+    bool free_npu = false;
     std::string g_cors_origin;
     std::string g_model_name;
     int opt;
@@ -702,6 +704,7 @@ int main(int argc, char** argv) {
             case 'q': quick_mode = true; break;
             case 'c': g_cors_origin = optarg; break;
             case 't': cli_gen_timeout_ms = atoi(optarg); break;
+            case 'F': free_npu = true; break;
         }
     }
 
@@ -861,7 +864,10 @@ int main(int argc, char** argv) {
                 closedir(fddir);
             }
 
-            // Step 2: Unmap any /dev/accel/accel* memory mappings.
+            // Step 2 (--free-npu only): Unmap any /dev/accel/accel* memory
+            // mappings. This is risky — forcibly unmapping regions the HSA
+            // runtime may still reference can crash the process. Only enable
+            // with --free-npu when NPU coexistence is explicitly needed.
             // The HSA runtime mmaps ~64MB from the NPU device for DMA buffers
             // even on GPU-only workloads. Closing the fd (step 1) releases
             // the file reference but the kernel still considers the device
