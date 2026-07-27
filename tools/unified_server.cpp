@@ -82,6 +82,7 @@ static int getopt_long(int argc, char* const argv[], const char* optstring, cons
 #include <fstream>
 #include <fcntl.h>
 #ifndef _WIN32
+#include <dirent.h>
 #include <sys/file.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -823,6 +824,40 @@ int main(int argc, char** argv) {
         printf("  ✓  Active backend: %s (%s)\n",
                active ? active->id.c_str() : "?",
                active ? active->description.c_str() : "?");
+#ifndef _WIN32
+        // Release /dev/accel/accel0 if the NPU backend is not active.
+        // The HSA runtime opens this device during GPU backend init (even
+        // for non-NPU backends like Mamba1) as a side effect of accelerator
+        // enumeration on Strix Halo. When the NPU isn't being used, close
+        // any spurious fds so standalone tools (npu_engine_universal) can
+        // access the NPU. The GPU backends don't need it for compute.
+        // See issue #1029.
+        if (!active || active->type != BackendType::NPU_XRT) {
+            // Walk /proc/self/fd and close any open /dev/accel/accel* handles
+            DIR* fddir = opendir("/proc/self/fd");
+            if (fddir) {
+                struct dirent* entry;
+                while ((entry = readdir(fddir)) != nullptr) {
+                    if (entry->d_name[0] == '.') continue;
+                    char link[256], target[128];
+                    snprintf(link, sizeof(link), "/proc/self/fd/%s", entry->d_name);
+                    ssize_t n = readlink(link, target, sizeof(target) - 1);
+                    if (n > 0) {
+                        target[n] = '\0';
+                        if (strncmp(target, "/dev/accel/accel", 16) == 0) {
+                            int fd = atoi(entry->d_name);
+                            if (fd > 2) { // never close stdin/stdout/stderr
+                                close(fd);
+                                printf("  ✓  Released NPU device %s (fd %d) — NPU free for standalone tools\n",
+                                       target, fd);
+                            }
+                        }
+                    }
+                }
+                closedir(fddir);
+            }
+        }
+#endif
     } else {
         printf("  ⚠  No backend initialized (weights missing or no hardware)\n");
         printf("     Server starts in discovery-only mode.\n");
