@@ -119,6 +119,9 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         return Am;}
     inline void sync_A(int l){(void)l;bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
     inline xrt::run launch(int l){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);}
+    // Note: bI (instruction buffer, CACHEABLE) is synced once in init().
+    // Re-syncing it per-launch is unnecessary (read-only by NPU) and risks
+    // cache-coherency issues on some XRT driver versions.
     inline xrt::run sync_and_launch(int l){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);}
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
         r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=ascale*Bscale;
@@ -917,11 +920,9 @@ int main(int argc,char**argv){
         // Save pre-norm residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l].data(),H);
-        // Phase 1: Launch QKV on NPU
+        // Phase 1-2: QKV on NPU (synchronous go for debugging #1029)
         float qkv_ascale=dynamic_ascale(h_b.data(),npt*H);
-        auto r_qkv=cq.launch_async(l,h_b.data(),npt,H,qkv_ascale);
-        // Phase 2: Wait QKV + dequant (CPU attention runs after)
-        cq.finish_async(r_qkv,qo_b.data(),npt,qkv_n,qkv_ascale,qsc[l]);cn(qo_b.data(),npt*qkv_n);
+        cq.go(l,h_b.data(),npt,H,qkv_ascale,qsc[l],qo_b.data(),qkv_n);cn(qo_b.data(),npt*qkv_n);
         fprintf(stderr,"q");fflush(stderr);
         float*qn=qn_w[l].data(),*kn=kn_w[l].data();
         for(int pi=0;pi<npt;pi++){
@@ -992,22 +993,22 @@ int main(int argc,char**argv){
                 attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);
             }
         }
-        // Phase 3: Launch O + GU in parallel on NPU
+        // Phase 3-4-5: O + GU + D on NPU (synchronous go for debugging #1029)
+        // NOTE: O and GU both use pre-norm h_b (same input). GU runs after O
+        // but before residual add, preserving the original async semantics.
         int mlp_out=cfg.gu_split?IM:2*IM;
         float o_ascale=dynamic_ascale(at_b.data(),npt*NH*HD);
         float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
-        auto r_o=co.launch_async(l,at_b.data(),npt,NH*HD,o_ascale);
-        auto r_gu=cg.launch_async(l,h_b.data(),npt,H,gu_ascale);
-        // Phase 4: Wait O, apply residual
-        co.finish_async(r_o,oo_b.data(),npt,H,o_ascale,osc[l]);cn(oo_b.data(),npt*H);
+        // Run O and GU sequentially (both use current h_b = pre-norm QKV output)
+        co.go(l,at_b.data(),npt,NH*HD,o_ascale,osc[l],oo_b.data(),H);cn(oo_b.data(),npt*H);
         fprintf(stderr,"o");fflush(stderr);
+        cg.go(l,h_b.data(),npt,H,gu_ascale,gsc[l],gt_b.data(),mlp_out);cn(gt_b.data(),npt*mlp_out);
+        fprintf(stderr,"g");fflush(stderr);
+        // Apply residual: h_b = pre-norm + o_proj (saved in sb_data)
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
         // Save pre-FFN residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l].data(),H);
-        // Phase 5: Wait GU (was launched in parallel with O), SiLU, launch D
-        cg.finish_async(r_gu,gt_b.data(),npt,mlp_out,gu_ascale,gsc[l]);cn(gt_b.data(),npt*mlp_out);
-        fprintf(stderr,"g");fflush(stderr);
         if(cfg.gu_split){cu_ptr->go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
         else{for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*mlp_out+IM+i];}}}
@@ -1140,10 +1141,14 @@ int main(int argc,char**argv){
             cg.quantize_async(h_b.data(),batch_size,H,cg_ascale);
 
             // ── CO-GU FULLY PARALLEL ──
-            // Phase 1: Submit GU's DMA sync WHILE O runs on NPU
-            //   bA->sync(to_device) uses MM2S DMA channel (independent of NPU compute)
+            // Phase 1: Submit GU's DMA syncs WHILE O runs on NPU
+            //   sync(to_device) uses MM2S DMA channels (independent of NPU compute)
             //   This hides the sync latency behind O's NPU time.
-            cg.sync_A(l);  // non-blocking: cg.bA sync starts, DMA runs parallel to NPU
+            //   Sync bA (activations), bC (output), layerB (weights).
+            //   bI (instruction buffer) is CACHEABLE and read-only — skip re-sync.
+            cg.bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            cg.bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            cg.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
             // Phase 2: Wait for O kernel completion (minimal)
             co.wait_kernel(r_co);
