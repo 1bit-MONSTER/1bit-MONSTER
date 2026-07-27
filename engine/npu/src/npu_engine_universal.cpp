@@ -942,26 +942,31 @@ int main(int argc,char**argv){
 
             try{
                 if(op==1&&cq.isReady()){ // QKV projection
+                    pack_layer_weights((int)layer);
                     out_dim=cfg.qkv_total;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
                     cq.go(in_data.data(),batch,(int)in_dim,ascale,qsc[layer],out_data.data(),(int)out_dim);
                 }else if(op==2&&co.isReady()){ // O projection
+                    pack_layer_weights((int)layer);
                     out_dim=H;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
                     co.go(in_data.data(),batch,(int)in_dim,ascale,osc[layer],out_data.data(),(int)out_dim);
                 }else if(op==3&&cg.isReady()){ // Gate+Up
+                    pack_layer_weights((int)layer);
                     out_dim=cfg.gu_split?IM:(2*IM);
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
                     cg.go(in_data.data(),batch,(int)in_dim,ascale,gsc[layer],out_data.data(),(int)out_dim);
                 }else if(op==4&&cfg.gu_split&&cu_ptr&&cu_ptr->isReady()){ // Up
+                    pack_layer_weights((int)layer);
                     out_dim=IM;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
                     cu_ptr->go(in_data.data(),batch,(int)in_dim,ascale,usc[layer],out_data.data(),(int)out_dim);
                 }else if(op==5&&cd.isReady()){ // Down
+                    pack_layer_weights((int)layer);
                     out_dim=H;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
@@ -986,6 +991,7 @@ int main(int argc,char**argv){
                     out_dim = cfg.qkv_total;
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
+                        pack_layer_weights(l);
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
                         cq.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, qsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
@@ -995,6 +1001,7 @@ int main(int argc,char**argv){
                     out_dim = H;
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
+                        pack_layer_weights(l);
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
                         co.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, osc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
@@ -1004,6 +1011,7 @@ int main(int argc,char**argv){
                     out_dim = cfg.gu_split ? IM : (2 * IM);
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
+                        pack_layer_weights(l);
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
                         cg.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, gsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
@@ -1013,6 +1021,7 @@ int main(int argc,char**argv){
                     out_dim = H;
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
+                        pack_layer_weights(l);
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
                         cd.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
