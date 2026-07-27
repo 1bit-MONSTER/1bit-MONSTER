@@ -118,28 +118,22 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
 
-        // Try CACHEABLE first for layer B. If the GEM heap is exhausted
-        // (ENOSPC from leaked allocations), fall back to HOST_ONLY.
-        // HOST_ONLY is slower but works without a driver reload (#1029).
+        // Single reusable buffer (not NL copies). Weights are re-packed
+        // per-layer before each GEMM. Cuts heap usage from ~112 MB to ~4 MB.
         layerB_cached = true;
-        for(int l=0;l<NL;l++){
-            try {
-                layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
-            } catch(std::exception&) {
-                layerB.clear(); layerB_cached = false;
-                fprintf(stderr,"  I8Ctx: CACHEABLE heap full, using HOST_ONLY (slower)\n");
-                for(int ll=0;ll<NL;ll++)
-                    layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
-                break;
-            }
+        try {
+            layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
+        } catch(std::exception&) {
+            layerB_cached = false;
+            layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
         }
         }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
-    void packB(int l,const float*w,int K,int N,float&sout){float amax=0;
+    void packB(const float*w,int K,int N,float&sout){float amax=0;
         for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
-        if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[l]->map();
+        if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[0]->map();
         for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
-            int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+            int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
     inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
         float ais=1.0f/ascale;memset(Am,0,(size_t)am*KD);
         for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
@@ -148,20 +142,20 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
             Am[m*KD+k]=(int8_t)q;}
         return Am;}
     inline void sync_A(int l){(void)l;bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
-    inline xrt::run launch(int l){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);}
+    inline xrt::run launch(){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
     // Note: bI (instruction buffer, CACHEABLE) is synced once in init().
     // Re-syncing it per-launch is unnecessary (read-only by NPU) and risks
     // cache-coherency issues on some XRT driver versions.
-    inline xrt::run sync_and_launch(int l){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);}
+    inline xrt::run sync_and_launch(){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
         r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=ascale*Bscale;
         for(int m=0;m<am;m++)for(int n=0;n<an;n++){
             float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}}
-    inline bool go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
-        quantize_async(A,am,ak,ascale);auto r=sync_and_launch(l);r.wait();
+    inline bool go(const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
+        quantize_async(A,am,ak,ascale);auto r=sync_and_launch();r.wait();
         dequantize(r,C,am,an,ascale,Bscale);return true;}
-    inline xrt::run launch_async(int l,const float*A,int am,int ak,float ascale){
-        quantize_async(A,am,ak,ascale);return sync_and_launch(l);}
+    inline xrt::run launch_async(const float*A,int am,int ak,float ascale){
+        quantize_async(A,am,ak,ascale);return sync_and_launch();}
     inline void finish_async(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
         r.wait();dequantize(r,C,am,an,ascale,Bscale);}
     inline void wait_kernel(xrt::run& r){r.wait();}
@@ -817,13 +811,13 @@ int main(int argc,char**argv){
         }
     }
 
-    fprintf(stderr,"Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
+    // Per-layer dequant+pack lambda for single-buffer architecture.
     std::vector<float> qsc(NC),osc(NC),gsc(NC),dsc(NC),usc(NC);
     const int QOUT=NH*HD,KVOUT=NKV*HD;   // QKV out_features, in_features=H (default dequant correct)
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
-    for(int l=0;l<NC;l++){int qr,kr,vr,unused;
+    auto pack_layer_weights = [&](int l) {int qr,kr,vr,unused;
         float*qw,*kw,*vw,*ow,*gw,*uw,*dw;
         std::vector<float> qw_v,kw_v,vw_v,ow_v,gw_v,uw_v,dw_v;
         int gr,ur;
@@ -852,21 +846,21 @@ int main(int argc,char**argv){
 #endif
         int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
         transpose_pack(qw,QOUT,H,w.data(),t,0); transpose_pack(kw,KVOUT,H,w.data(),t,QOUT); transpose_pack(vw,KVOUT,H,w.data(),t,QOUT+KVOUT);
-        cq.packB(l,w.data(),H,t,qsc[l]);
+        cq.packB(w.data(),H,t,qsc[l]);
         std::vector<float>wo((size_t)OIN*OOUT);transpose_pack(ow,OOUT,OIN,wo.data(),OOUT,0);
-        co.packB(l,wo.data(),OIN,OOUT,osc[l]);
+        co.packB(wo.data(),OIN,OOUT,osc[l]);
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
-            cg.packB(l,wg.data(),H,gr,gsc[l]);
+            cg.packB(wg.data(),H,gr,gsc[l]);
             std::vector<float>wu((size_t)H*ur);transpose_pack(uw,GUOUT,H,wu.data(),ur,0);
-            cu_ptr->packB(l,wu.data(),H,ur,usc[l]);
+            cu_ptr->packB(wu.data(),H,ur,usc[l]);
         }else{
             int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
             transpose_pack(gw,GUOUT,H,w2.data(),t2,0);transpose_pack(uw,GUOUT,H,w2.data(),t2,GUOUT);
-            cg.packB(l,w2.data(),H,t2,gsc[l]);
+            cg.packB(w2.data(),H,t2,gsc[l]);
         }
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
-        cd.packB(l,wd.data(),DIN,DOUT,dsc[l]);
+        cd.packB(wd.data(),DIN,DOUT,dsc[l]);
 #ifdef ONEBP_SUPPORT
         if (!is_onebp) {
 #endif
@@ -874,8 +868,7 @@ int main(int argc,char**argv){
 #ifdef ONEBP_SUPPORT
         }
 #endif
-    }
-    fprintf(stderr,"  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
+    };
 
     // RoPE
     ri(HD,cfg.rope_theta,4096);
@@ -952,27 +945,27 @@ int main(int argc,char**argv){
                     out_dim=cfg.qkv_total;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
-                    cq.go(layer,in_data.data(),batch,(int)in_dim,ascale,qsc[layer],out_data.data(),(int)out_dim);
+                    cq.go(in_data.data(),batch,(int)in_dim,ascale,qsc[layer],out_data.data(),(int)out_dim);
                 }else if(op==2&&co.isReady()){ // O projection
                     out_dim=H;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
-                    co.go(layer,in_data.data(),batch,(int)in_dim,ascale,osc[layer],out_data.data(),(int)out_dim);
+                    co.go(in_data.data(),batch,(int)in_dim,ascale,osc[layer],out_data.data(),(int)out_dim);
                 }else if(op==3&&cg.isReady()){ // Gate+Up
                     out_dim=cfg.gu_split?IM:(2*IM);
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
-                    cg.go(layer,in_data.data(),batch,(int)in_dim,ascale,gsc[layer],out_data.data(),(int)out_dim);
+                    cg.go(in_data.data(),batch,(int)in_dim,ascale,gsc[layer],out_data.data(),(int)out_dim);
                 }else if(op==4&&cfg.gu_split&&cu_ptr&&cu_ptr->isReady()){ // Up
                     out_dim=IM;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
-                    cu_ptr->go(layer,in_data.data(),batch,(int)in_dim,ascale,usc[layer],out_data.data(),(int)out_dim);
+                    cu_ptr->go(in_data.data(),batch,(int)in_dim,ascale,usc[layer],out_data.data(),(int)out_dim);
                 }else if(op==5&&cd.isReady()){ // Down
                     out_dim=H;
                     out_data.resize(batch*out_dim,0);
                     float ascale=dynamic_ascale(in_data.data(),batch*in_dim);
-                    cd.go(layer,in_data.data(),batch,(int)in_dim,ascale,dsc[layer],out_data.data(),(int)out_dim);
+                    cd.go(in_data.data(),batch,(int)in_dim,ascale,dsc[layer],out_data.data(),(int)out_dim);
                 }else if(op==6){ // Attention — CPU path (worker protocol doesn't carry seq_len)
                     // Worker subprocess receives individual layer ops without KV cache
                     // context. NPU attention requires the full KV cache. Use CPU fallback.
@@ -994,7 +987,7 @@ int main(int argc,char**argv){
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
-                        cq.go(l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
+                        cq.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, qsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
                 }else if(op==21&&co.isReady()){ // O all layers (batch)
@@ -1003,7 +996,7 @@ int main(int argc,char**argv){
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
-                        co.go(l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
+                        co.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, osc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
                 }else if(op==22&&cg.isReady()){ // Gate+Up all layers (batch)
@@ -1012,7 +1005,7 @@ int main(int argc,char**argv){
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
-                        cg.go(l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
+                        cg.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, gsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
                 }else if(op==23&&cd.isReady()){ // Down all layers (batch)
@@ -1021,7 +1014,7 @@ int main(int argc,char**argv){
                     out_data.resize(batch * out_dim * (size_t)n_layers, 0);
                     for (int l = 0; l < n_layers; l++) {
                         float ascale = dynamic_ascale(in_data.data() + (size_t)l * batch * in_dim, batch * in_dim);
-                        cd.go(l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
+                        cd.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
                 }else{
@@ -1082,13 +1075,14 @@ int main(int argc,char**argv){
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
     xrt::run pending_gu; bool has_pending=false;
     for(int l=0;l<NC;l++){
+        pack_layer_weights(l);
         fprintf(stderr,"  L%d",l);fflush(stderr);
         // Save pre-norm residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l].data(),H);
         // Phase 1-2: QKV on NPU (synchronous go for debugging #1029)
         float qkv_ascale=dynamic_ascale(h_b.data(),npt*H);
-        cq.go(l,h_b.data(),npt,H,qkv_ascale,qsc[l],qo_b.data(),qkv_n);cn(qo_b.data(),npt*qkv_n);
+        cq.go(h_b.data(),npt,H,qkv_ascale,qsc[l],qo_b.data(),qkv_n);cn(qo_b.data(),npt*qkv_n);
         fprintf(stderr,"q");fflush(stderr);
         float*qn=qn_w[l].data(),*kn=kn_w[l].data();
         for(int pi=0;pi<npt;pi++){
@@ -1167,15 +1161,15 @@ int main(int argc,char**argv){
         float o_ascale=dynamic_ascale(at_b.data(),npt*NH*HD);
         float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
         co.quantize_async(at_b.data(),npt,NH*HD,o_ascale);
-        auto r_co=co.sync_and_launch(l);
+        auto r_co=co.sync_and_launch();
         // Quantize GU while O runs — independent input (h_b, not at_b)
         cg.quantize_async(h_b.data(),npt,H,gu_ascale);
         cg.bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         cg.bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        cg.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        cg.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         // Wait for O, then launch GU while reading O back
         co.wait_kernel(r_co);
-        auto r_cg=cg.launch(l);
+        auto r_cg=cg.launch();
         co.sync_back_and_dequant(oo_b.data(),npt,H,o_ascale,osc[l]);
         cn(oo_b.data(),npt*H);
         fprintf(stderr,"o");fflush(stderr);
@@ -1190,10 +1184,10 @@ int main(int argc,char**argv){
         cn(gt_b.data(),npt*mlp_out);
         fprintf(stderr,"g");fflush(stderr);
         // SiLU gate (CPU) + optional U GEMM
-        if(cfg.gu_split){cu_ptr->go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
+        if(cfg.gu_split){cu_ptr->go(h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
         else{for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*mlp_out+IM+i];}}}
-        fprintf(stderr,"d");fflush(stderr);cd.go(l,su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
+        fprintf(stderr,"d");fflush(stderr);cd.go(su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
         fprintf(stderr,"\n");fflush(stderr);
@@ -1212,8 +1206,9 @@ int main(int argc,char**argv){
         auto ts_boot=std::chrono::steady_clock::now();
         float h0[H];memcpy(h0,h_data.data(),H*4);
         for(int l=0;l<NC;l++){
+            pack_layer_weights(l);
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,in_n[l].data(),H);
-            cq.go(l,h0,1,H,dynamic_ascale(h0,H),qsc[l],qo_data.data(),qkv_n);cn(qo_data.data(),qkv_n);
+            cq.go(h0,1,H,dynamic_ascale(h0,H),qsc[l],qo_data.data(),qkv_n);cn(qo_data.data(),qkv_n);
             memcpy(ko_data.data(),&qo_data[cfg.qkv_k_offset],NKV*HD*4);memcpy(vo_data.data(),&qo_data[cfg.qkv_v_offset],NKV*HD*4);
             float*qn=qn_w[l].data(),*kn=kn_w[l].data();
             for(int hh=0;hh<NH;hh++){double sq=0;for(int d=0;d<HD;d++)sq+=qo_data[hh*HD+d]*qo_data[hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
@@ -1240,14 +1235,14 @@ int main(int argc,char**argv){
                 auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,1,qs,ks);
                 ca_ptr->finish(r,at_data.data(),1,qs,ks);cn(at_data.data(),NH*HD);
             }else{attn_omp(qo_data.data(),at_data.data(),cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
-            co.go(l,at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
+            co.go(at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
             int mlp_out=cfg.gu_split?IM:2*IM;
-            cg.go(l,h0,1,H,dynamic_ascale(h0,H),gsc[l],gt_data.data(),mlp_out);cn(gt_data.data(),mlp_out);
-            if(cfg.gu_split){cu_ptr->go(l,h0,1,H,dynamic_ascale(h0,H),usc[l],su_data.data(),IM);cn(su_data.data(),IM);
+            cg.go(h0,1,H,dynamic_ascale(h0,H),gsc[l],gt_data.data(),mlp_out);cn(gt_data.data(),mlp_out);
+            if(cfg.gu_split){cu_ptr->go(h0,1,H,dynamic_ascale(h0,H),usc[l],su_data.data(),IM);cn(su_data.data(),IM);
                 for(int i=0;i<IM;i++){float gv=gt_data[i];if(!std::isfinite(gv))gv=0;su_data[i]=(gv/(1.0f+expf(-gv)))*su_data[i];}}
             else{for(int i=0;i<IM;i++){float gv=gt_data[i];if(!std::isfinite(gv))gv=0;su_data[i]=(gv/(1.0f+expf(-gv)))*gt_data[IM+i];}}
-            cd.go(l,su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
+            cd.go(su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
         }
         memcpy(sb_data.data(),h0,H*4);rn_c(sb_data.data(),fin_v.data(),H);
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
@@ -1267,6 +1262,7 @@ int main(int argc,char**argv){
         // co and cg are independent (different inputs) → quantize cg WHILE co runs on NPU.
         try {
         for(int l=0;l<NC;l++){
+            pack_layer_weights(l);
             // Save pre-norm residuals before rn_c
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
             for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],in_n[l].data(),H);
@@ -1274,7 +1270,7 @@ int main(int argc,char**argv){
             // ── QKV GEMM ──
             float cq_ascale=dynamic_ascale(h_b.data(),batch_size*H);
             cq.quantize_async(h_b.data(),batch_size,H,cq_ascale);
-            auto r_cq=cq.sync_and_launch(l);
+            auto r_cq=cq.sync_and_launch();
             cq.dequantize(r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l]);
             cn(qo_b.data(),batch_size*qkv_n);
 
@@ -1314,7 +1310,7 @@ int main(int argc,char**argv){
             // Launch O, then quantize GU input WHILE O runs (overlapped)
             float co_ascale=dynamic_ascale(at_b.data(),batch_size*NH*HD);
             co.quantize_async(at_b.data(),batch_size,NH*HD,co_ascale);
-            auto r_co=co.sync_and_launch(l);
+            auto r_co=co.sync_and_launch();
 
             // ── GU GEMM: independent of O! Quantize GU input while O runs on NPU ──
             int mlp_out=cfg.gu_split?IM:2*IM;
@@ -1329,7 +1325,7 @@ int main(int argc,char**argv){
             //   bI (instruction buffer) is CACHEABLE and read-only — skip re-sync.
             cg.bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
             cg.bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            cg.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            cg.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
             // Phase 2: Wait for O kernel completion (minimal)
             co.wait_kernel(r_co);
@@ -1337,7 +1333,7 @@ int main(int argc,char**argv){
             // Phase 3: Submit GU kernel to NPU + start co readback SIMULTANEOUSLY
             //   cg.launch() submits the kernel (queued behind O on NPU's compute)
             //   co.bC->sync uses S2MM DMA channel (independent of MM2S for cg.bA)
-            auto r_cg=cg.launch(l);
+            auto r_cg=cg.launch();
             co.sync_back_and_dequant(oo_b.data(),batch_size,H,co_ascale,osc[l]);
             cn(oo_b.data(),batch_size*H);
 
@@ -1356,7 +1352,7 @@ int main(int argc,char**argv){
 
             // SiLU gate + U GEMM (gu_split) or combined gate*up
             if(cfg.gu_split){
-                auto r_cu=cu_ptr->sync_and_launch(l);
+                auto r_cu=cu_ptr->sync_and_launch();
                 cu_ptr->dequantize(r_cu,su_b.data(),batch_size,IM,cg_ascale,usc[l]);
                 cn(su_b.data(),batch_size*IM);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*IM+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[b*IM+i];}}}
@@ -1365,7 +1361,7 @@ int main(int argc,char**argv){
             // ── D GEMM ──
             float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
             cd.quantize_async(su_b.data(),batch_size,IM,cd_ascale);
-            auto r_cd=cd.sync_and_launch(l);
+            auto r_cd=cd.sync_and_launch();
             cd.dequantize(r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l]);
             cn(dw_b.data(),batch_size*H);
 
