@@ -780,9 +780,11 @@ int main(int argc,char**argv){
     if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
     if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}
     // NPU attention via pre-compiled KV xclbin instructions.
-    // Auto-enabled when attention xclbin + insts exist for the model tag.
-    // Set NPU_ATTN=0 to force-disable, NPU_ATTN_FILE=<path> to override insts.
-    bool use_npu_attn = !(getenv("NPU_ATTN") && atoi(getenv("NPU_ATTN")) == 0);
+    // NPU attention via pre-compiled KV xclbin instructions.
+    // Set NPU_ATTN=1 to enable. Disabled by default — the attention xclbin
+    // has the same XRT compatibility issue as the GEMM xclbins on some
+    // driver versions. Auto-enable when confirmed working per-model.
+    bool use_npu_attn = getenv("NPU_ATTN") && atoi(getenv("NPU_ATTN")) > 0;
     if(use_npu_attn){
         std::string inst_path;
         if (const char* env = getenv("NPU_ATTN_FILE")) {
