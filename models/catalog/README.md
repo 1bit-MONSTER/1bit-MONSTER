@@ -130,8 +130,25 @@ Vision-Language entries are the text decoder only — the vision tower/mmproj is
 wired into any inference path in this repo yet (`tools/vision_server.cpp` has a
 TODO for it). Text-only inference works the same as any other catalog entry.
 
-## Total: 46 models
-All converted via C++ toolchain (`tools/gguf_to_onebp`).
+### Moonshot Kimi — 5
+| Model | Params | Active | 1BP Size | Backend | Architecture |
+|-------|:------:|:------:|:--------:|---------|:------------:|
+| Kimi-K3 | 2.8T | 104B | ~840 GB (MXFP4) | ❌ (too large for Strix Halo) | kimi_k3 |
+| Moonlight-16B-A3B | 16B | 3B | ~9 GB (Q4NX) / ~4.5 GB (TQ2) | ZINC / NPU / HIP (when implemented) | moonlight |
+| Moonlight-16B-A3B-Instruct | 16B | 3B | ~9 GB (Q4NX) | ZINC / NPU / HIP | moonlight |
+| Kimi-VL-A3B-Thinking | 16B | 3B | ~9 GB (Q4NX) | ZINC (vision) / NPU | kimi_vl |
+| Kimi-VL-A3B-Thinking-2506 | 16B | 3B | ~9 GB (Q4NX) | ZINC (vision) / NPU | kimi_vl |
+
+> **Strix Halo fit note**: Moonlight-16B-A3B and Kimi-VL-A3B-Thinking activate only 3B params
+> per token. At Q4NX (4-bit), the full 16B model fits in ~9 GB + ~3 GB KV cache = well within
+> the 32 GB Strix Halo unified memory. At TQ2 (2-bit): ~4.5 GB.
+
+> **Kimi-K3**: 2.8T total params at MXFP4 (~1.4 TB) — requires multi-node inference.
+> Architecture support (KDA + Gated MLA + Stable LatentMoE) is implemented for future
+> smaller variants and distillations. See `tools/download_moonshot.sh` and `tools/hf_to_onebp.py`.
+
+## Total: 51 models
+All converted via C++ toolchain (`tools/gguf_to_onebp` or Python `tools/hf_to_onebp.py`).
 
 ## Conversion Pipeline (C++ only)
 ```bash
