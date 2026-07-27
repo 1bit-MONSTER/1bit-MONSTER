@@ -92,6 +92,7 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
     std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am;int16_t*Cm;
     bool initialized=false;
+    bool layerB_cached = true;  // true=CACHEABLE, false=HOST_ONLY fallback
     ~I8Ctx(){}
     bool isReady(){return initialized&&k&&bA&&bC;}
     bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers){
@@ -117,12 +118,21 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
 
-        // Use CACHEABLE for layer B buffers — the NPU kernel needs fast
-        // access to weight data. HOST_ONLY causes extreme slowdown (~60s
-        // per GEMM) because every NPU read triggers a DMA from system memory.
-        // The GEM heap may be exhausted from leaked allocations; if so,
-        // reload the amdxdna driver to reset it (issue #1029).
-        for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
+        // Try CACHEABLE first for layer B. If the GEM heap is exhausted
+        // (ENOSPC from leaked allocations), fall back to HOST_ONLY.
+        // HOST_ONLY is slower but works without a driver reload (#1029).
+        layerB_cached = true;
+        for(int l=0;l<NL;l++){
+            try {
+                layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
+            } catch(std::exception&) {
+                layerB.clear(); layerB_cached = false;
+                fprintf(stderr,"  I8Ctx: CACHEABLE heap full, using HOST_ONLY (slower)\n");
+                for(int ll=0;ll<NL;ll++)
+                    layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
+                break;
+            }
+        }
         }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
     void packB(int l,const float*w,int K,int N,float&sout){float amax=0;
