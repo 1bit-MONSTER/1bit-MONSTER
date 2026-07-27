@@ -95,9 +95,13 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
     ~I8Ctx(){}
     bool isReady(){return initialized&&k&&bA&&bC;}
     bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers){
-        NL=nlayers;FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
+        NL=nlayers;
+        FILE*f=fopen(ip,"rb");if(!f){fprintf(stderr,"  I8Ctx::init: fopen(%s) failed\n",ip);return false;}
+        fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
         ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
-        xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);
+        try{
+        xc=std::make_unique<xrt::xclbin>(std::string(xp));
+        d.register_xclbin(*xc);
         hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());
         k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
@@ -106,6 +110,7 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
         for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
+        }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
     void packB(int l,const float*w,int K,int N,float&sout){float amax=0;
         for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
@@ -563,6 +568,13 @@ int main(int argc,char**argv){
     if(model_tag.empty()){
         auto ls=mp_s.rfind('/');model_tag=(ls!=std::string::npos)?mp_s.substr(ls+1):mp_s;
         auto dot=model_tag.rfind('.');if(dot!=std::string::npos)model_tag=model_tag.substr(0,dot);
+        // FLM/convention: model files are typically named "model.q4nx" inside
+        // a directory named after the model (e.g. Qwen3-0.6B-NPU2/model.q4nx).
+        // If the filename-derived tag is "model", use the parent directory name.
+        if (model_tag == "model" && ls != std::string::npos && ls > 0) {
+            auto prev=mp_s.rfind('/',ls-1);
+            model_tag=mp_s.substr(prev+1,ls-prev-1);
+        }
     }
     for(auto&c:model_tag){c=tolower(c);if(c=='-'||c=='.'||c=='\\')c='_';}
     const char*sfxs[]={"_npu2","_instruct","_it","_it_npu2"};
