@@ -29,6 +29,7 @@
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 #include <sys/file.h>
+#include <dirent.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
@@ -459,24 +460,73 @@ static void check_npu_contention() {
     close(fd);
 
     if (holder_pid > 0 && kill(holder_pid, 0) == 0) {
-        // Holder is alive — this IS unified_server. Refuse to run.
+        // Holder is alive. Check if it actually has the NPU device open.
+        // unified_server may have released it (see issue #1029 part 3):
+        // when using a GPU-only backend, it closes the fd and unmaps
+        // the device, so the NPU is free for standalone tools.
+        bool actually_holds_npu = false;
+        char proc_path[256];
+
+        // Check /proc/<pid>/fd for /dev/accel/accel* symlinks
+        snprintf(proc_path, sizeof(proc_path), "/proc/%d/fd", (int)holder_pid);
+        DIR* fddir = opendir(proc_path);
+        if (fddir) {
+            struct dirent* entry;
+            while ((entry = readdir(fddir)) != nullptr) {
+                if (entry->d_name[0] == '.') continue;
+                char link[512], target[128];
+                snprintf(link, sizeof(link), "%s/%s", proc_path, entry->d_name);
+                ssize_t n = readlink(link, target, sizeof(target) - 1);
+                if (n > 0 && strncmp(target, "/dev/accel/accel", 16) == 0) {
+                    actually_holds_npu = true;
+                    break;
+                }
+            }
+            closedir(fddir);
+        }
+
+        // Check /proc/<pid>/maps for /dev/accel/accel* mmap regions
+        if (!actually_holds_npu) {
+            snprintf(proc_path, sizeof(proc_path), "/proc/%d/maps", (int)holder_pid);
+            FILE* maps = fopen(proc_path, "r");
+            if (maps) {
+                char line[512];
+                while (fgets(line, sizeof(line), maps)) {
+                    if (strstr(line, "/dev/accel/accel")) {
+                        actually_holds_npu = true;
+                        break;
+                    }
+                }
+                fclose(maps);
+            }
+        }
+
+        if (actually_holds_npu) {
+            fprintf(stderr,
+                "\n"
+                "  NPU DEVICE IN USE\n"
+                "  unified_server is already holding the NPU (pid %d).\n"
+                "\n"
+                "  The amdxdna driver cannot safely share the NPU between\n"
+                "  concurrent processes. Starting another NPU process will\n"
+                "  cause an IOMMU page fault and a permanently wedged fence.\n"
+                "\n"
+                "  To run npu_engine_universal, stop unified_server first:\n"
+                "    $ sudo systemctl stop unified-server\n"
+                "    (or) $ kill %d\n"
+                "\n"
+                "  See issue #1029 for details.\n"
+                "\n",
+                (int)holder_pid, (int)holder_pid);
+            _exit(1);
+        }
+
+        // unified_server is running but has released the NPU device.
+        // Safe to proceed.
         fprintf(stderr,
-            "\n"
-            "  NPU DEVICE IN USE\n"
-            "  unified_server is already holding the NPU (pid %d).\n"
-            "\n"
-            "  The amdxdna driver cannot safely share the NPU between\n"
-            "  concurrent processes. Starting another NPU process will\n"
-            "  cause an IOMMU page fault and a permanently wedged fence.\n"
-            "\n"
-            "  To run npu_engine_universal, stop unified_server first:\n"
-            "    $ sudo systemctl stop unified-server\n"
-            "    (or) $ kill %d\n"
-            "\n"
-            "  See issue #1029 for details.\n"
-            "\n",
-            (int)holder_pid, (int)holder_pid);
-        _exit(1);
+            "Note: unified_server (pid %d) is running but has released the NPU device.\n"
+            "      Proceeding with standalone NPU inference.\n",
+            (int)holder_pid);
     }
 
     // Holder process is dead — lock is stale. unified_server's own

@@ -84,6 +84,7 @@ static int getopt_long(int argc, char* const argv[], const char* optstring, cons
 #ifndef _WIN32
 #include <dirent.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #else
@@ -833,7 +834,10 @@ int main(int argc, char** argv) {
         // access the NPU. The GPU backends don't need it for compute.
         // See issue #1029.
         if (!active || active->type != BackendType::NPU_XRT) {
-            // Walk /proc/self/fd and close any open /dev/accel/accel* handles
+            // Step 1: Close any open /dev/accel/accel* file descriptors.
+            // These are opened by the HSA runtime during GPU backend init
+            // as a side effect of accelerator enumeration on Strix Halo.
+            int n_closed = 0;
             DIR* fddir = opendir("/proc/self/fd");
             if (fddir) {
                 struct dirent* entry;
@@ -846,15 +850,51 @@ int main(int argc, char** argv) {
                         target[n] = '\0';
                         if (strncmp(target, "/dev/accel/accel", 16) == 0) {
                             int fd = atoi(entry->d_name);
-                            if (fd > 2) { // never close stdin/stdout/stderr
+                            if (fd > 2) {
                                 close(fd);
-                                printf("  ✓  Released NPU device %s (fd %d) — NPU free for standalone tools\n",
-                                       target, fd);
+                                n_closed++;
+                                printf("  ✓  Closed NPU fd %d (%s)\n", fd, target);
                             }
                         }
                     }
                 }
                 closedir(fddir);
+            }
+
+            // Step 2: Unmap any /dev/accel/accel* memory mappings.
+            // The HSA runtime mmaps ~64MB from the NPU device for DMA buffers
+            // even on GPU-only workloads. Closing the fd (step 1) releases
+            // the file reference but the kernel still considers the device
+            // "in use" while any process has it mmap'd. Force-unmap those
+            // regions so the device is truly free for standalone tools.
+            // See issue #1029.
+            FILE* maps = fopen("/proc/self/maps", "r");
+            if (maps) {
+                char line[512];
+                while (fgets(line, sizeof(line), maps)) {
+                    // Parse: "7c2f74000000-7c2f78000000 rw-s ... /dev/accel/accel0"
+                    unsigned long start = 0, end = 0;
+                    char perms[8] = {0}, path[256] = {0};
+                    if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %255s",
+                               &start, &end, perms, path) >= 3) {
+                        if (strstr(path, "/dev/accel/accel") == path) {
+                            size_t len = end - start;
+                            if (munmap((void*)start, len) == 0) {
+                                n_closed++;
+                                printf("  ✓  Unmapped NPU region 0x%lx-0x%lx (%zu MB) — device %s freed\n",
+                                       start, end, len / (1024*1024), path);
+                            } else {
+                                fprintf(stderr, "  ⚠  munmap of 0x%lx failed: %s\n",
+                                        start, strerror(errno));
+                            }
+                        }
+                    }
+                }
+                fclose(maps);
+            }
+
+            if (n_closed > 0) {
+                printf("  ✓  NPU device released (%d handles) — free for standalone tools\n", n_closed);
             }
         }
 #endif
