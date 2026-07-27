@@ -20,6 +20,7 @@
 #include <xrt/experimental/xrt_module.h>
 #include <xrt/experimental/xrt_elf.h>
 #include <aiebu/aiebu_assembler.h>
+#include "bfp16_pack.h"
 #include <omp.h>
 #include "model_config.h"
 #ifdef ONEBP_SUPPORT
@@ -88,15 +89,20 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
         if(!q)return 0;if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){
             auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 
-struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
+struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
+    std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
     std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am;int16_t*Cm;
     bool initialized=false;
-    bool layerB_cached = true;  // true=CACHEABLE, false=HOST_ONLY fallback
+    bool layerB_cached = true;
     ~I8Ctx(){}
     bool isReady(){return initialized&&k&&bA&&bC;}
-    bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers){
-        NL=nlayers;
+    // Buffer sizes: INT8 vs BF16/BFP16
+    size_t a_size() const { return use_bf16 ? (size_t)MD*KD*2 : (size_t)MD*KD; }
+    size_t b_size() const { return use_bf16 ? ((size_t)KD*ND*6+7)/8 : (size_t)KD*ND; }
+    size_t c_size() const { return (size_t)MD*ND*2; }
+    bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers,bool bf16=false){
+        use_bf16=bf16; NL=nlayers;
         FILE*f=fopen(ip,"rb");if(!f){fprintf(stderr,"  I8Ctx::init: fopen(%s) failed\n",ip);return false;}
         fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
         ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
@@ -112,46 +118,81 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         fprintf(stderr,"  I8Ctx: allocating bI (%zu bytes, gid=%d)\n",ins.size()*4,k->group_id(1));
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
         memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        fprintf(stderr,"  I8Ctx: allocating bA (%zu bytes)\n",(size_t)MD*KD);
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
-        fprintf(stderr,"  I8Ctx: allocating bC (%zu bytes)\n",(size_t)MD*ND*2);
-        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
+        fprintf(stderr,"  I8Ctx: allocating bA (%zu bytes, bf16=%d)\n",a_size(),(int)use_bf16);
+        bA=std::make_unique<xrt::bo>(d,a_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
+        fprintf(stderr,"  I8Ctx: allocating bC (%zu bytes)\n",c_size());
+        bC=std::make_unique<xrt::bo>(d,c_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
 
-        // Single reusable buffer (not NL copies). Weights are re-packed
-        // per-layer before each GEMM. Cuts heap usage from ~112 MB to ~4 MB.
         layerB_cached = true;
         try {
-            layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
-        } catch(std::exception&) {
+            fprintf(stderr,"  I8Ctx: allocating layerB (%zu bytes, gid=%d)\n",b_size(),k->group_id(gid_B));
+            layerB.emplace_back(std::make_unique<xrt::bo>(d,b_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
+        } catch(std::exception&e1) {
+            fprintf(stderr,"  I8Ctx: CACHEABLE failed (%s), trying HOST_ONLY\n",e1.what());
             layerB_cached = false;
-            layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
+            try {
+                layerB.emplace_back(std::make_unique<xrt::bo>(d,b_size(),XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
+            } catch(std::exception&e2) {
+                fprintf(stderr,"  I8Ctx: HOST_ONLY also failed: %s\n",e2.what());
+                return false;
+            }
         }
         }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
-    void packB(const float*w,int K,int N,float&sout){float amax=0;
-        for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
-        if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[0]->map();
-        for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
-            int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+    void packB(const float*w,int K,int N,float&sout){
+        if(use_bf16){
+            // BFP16 packing for BF16 xclbins
+            auto Bm = (uint8_t*)layerB[0]->map();
+            pack_bfp16_weights(w, K, N, Bm, b_size());
+            sout = 1.0f;  // BF16 output doesn't need scale
+        }else{
+            // INT8 packing
+            float amax=0;
+            for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
+            if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[0]->map();
+            for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
+                int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}
+        }
+        layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
     inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
-        float ais=1.0f/ascale;memset(Am,0,(size_t)am*KD);
-        for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
-            float v=A[m*ak+k];if(!std::isfinite(v))v=0;
-            int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;
-            Am[m*KD+k]=(int8_t)q;}
+        if(use_bf16){
+            // BF16 quantize: just convert f32 to bf16
+            auto*ABuf = (uint16_t*)Am;
+            for(int i=0;i<am*ak;i++){
+                ABuf[i] = f32_to_bf16(A[i]);
+            }
+        }else{
+            // INT8 quantize
+            float ais=1.0f/ascale;memset(Am,0,(size_t)am*KD);
+            for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
+                float v=A[m*ak+k];if(!std::isfinite(v))v=0;
+                int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;
+                Am[m*KD+k]=(int8_t)q;}
+        }
         return Am;}
     inline void sync_A(int l){(void)l;bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
     inline xrt::run launch(){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
-    // Note: bI (instruction buffer, CACHEABLE) is synced once in init().
-    // Re-syncing it per-launch is unnecessary (read-only by NPU) and risks
-    // cache-coherency issues on some XRT driver versions.
     inline xrt::run sync_and_launch(){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
-        r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=ascale*Bscale;
-        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}}
+        r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        if(use_bf16){
+            // BF16→f32: just convert
+            auto*COut = (uint16_t*)Cm;
+            for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+                uint32_t bits = (uint32_t)COut[m*ND+n] << 16;
+                float val; memcpy(&val, &bits, 4);
+                if(!std::isfinite(val))val=0;
+                C[m*an+n]=val;
+            }
+        }else{
+            // INT16→f32 with scale
+            float cs=ascale*Bscale;
+            for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+                float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
+        }}
     inline bool go(const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
+        (void)ascale;  // BF16 doesn't use activation scale
         quantize_async(A,am,ak,ascale);auto r=sync_and_launch();r.wait();
         dequantize(r,C,am,an,ascale,Bscale);return true;}
     inline xrt::run launch_async(const float*A,int am,int ak,float ascale){
@@ -160,9 +201,20 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         r.wait();dequantize(r,C,am,an,ascale,Bscale);}
     inline void wait_kernel(xrt::run& r){r.wait();}
     inline void sync_back_and_dequant(float*C,int am,int an,float ascale,float Bscale){
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=ascale*Bscale;
-        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}}
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        if(use_bf16){
+            auto*COut = (uint16_t*)Cm;
+            for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+                uint32_t bits = (uint32_t)COut[m*ND+n] << 16;
+                float val; memcpy(&val, &bits, 4);
+                if(!std::isfinite(val))val=0;
+                C[m*an+n]=val;
+            }
+        }else{
+            float cs=ascale*Bscale;
+            for(int m=0;m<am;m++)for(int n=0;n<an;n++){
+                float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
+        }}
 };
 
 // AttnCtx — NPU attention context with 4 BOs (Q, K, V, output).
@@ -746,8 +798,24 @@ int main(int argc,char**argv){
     // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
     const char* env_xd = getenv("NPU_XCLBIN_DIR");
     std::string xd = env_xd ? env_xd : "engine/npu/xclbins";
-    auto xp=[&](const char*t){return xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";};
-    auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
+    bool use_bf16_xclbins = true;  // Use recompiled BF16 xclbins
+    // Check if BF16 xclbins exist in q4nx subdirectory
+    {
+        std::string test_path = xd+"/q4nx/bf16_QKV_"+cfg.model_tag+".xclbin";
+        FILE* tf = fopen(test_path.c_str(), "rb");
+        if(!tf) { use_bf16_xclbins = false; }
+        else { fclose(tf); fprintf(stderr,"  Using BF16 Q4NX xclbins\n"); }
+    }
+    auto xp=[&](const char*t){
+        if(use_bf16_xclbins)
+            return xd+"/q4nx/bf16_"+std::string(t)+"_"+cfg.model_tag+".xclbin";
+        return xd+"/final_i8_"+std::string(t)+"_"+cfg.model_tag+".xclbin";
+    };
+    auto ip=[&](const char*t){
+        if(use_bf16_xclbins)
+            return xd+"/q4nx/insts_bf16_"+std::string(t)+"_"+cfg.model_tag+".bin";
+        return xd+"/insts_i8_"+std::string(t)+"_"+cfg.model_tag+".txt";
+    };
 
     // GEMM contexts (I8Ctx = NPU xclbin + kernel + buffer set)
     I8Ctx cq,co,cg,cd;
@@ -768,11 +836,11 @@ int main(int argc,char**argv){
     co.MD=XM;co.KD=cfg.xclbin_o_k;co.ND=cfg.xclbin_o_n;
     cd.MD=XM;cd.KD=cfg.xclbin_d_k;cd.ND=cfg.xclbin_d_n;
     if(cfg.gu_split){cg.MD=XM;cg.KD=cfg.xclbin_g_k;cg.ND=cfg.xclbin_g_n;}else{cg.MD=XM;cg.KD=cfg.xclbin_gu_k;cg.ND=cfg.xclbin_gu_n;}
-    if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC)){fprintf(stderr,"FAIL QKV\n");return 1;}
-    if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC)){fprintf(stderr,"FAIL O\n");return 1;}
-    if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}}
-    if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
-    if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}
+    if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL QKV\n");return 1;}
+    if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL O\n");return 1;}
+    if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL GU\n");return 1;}}
+    if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL D\n");return 1;}
+    if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL U\n");return 1;}}
     // NPU attention via pre-compiled KV xclbin instructions.
     // NPU attention via pre-compiled KV xclbin instructions.
     // Set NPU_ATTN=1 to enable. Disabled by default — the attention xclbin
