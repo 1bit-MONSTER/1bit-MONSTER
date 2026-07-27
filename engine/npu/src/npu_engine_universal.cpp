@@ -28,6 +28,7 @@
 #endif
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
+#include <sys/file.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
@@ -100,10 +101,10 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
         memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));
-        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));
+        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
+        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
-        for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
+        for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
         initialized=true;return true;}
     void packB(int l,const float*w,int K,int N,float&sout){float amax=0;
         for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
@@ -188,10 +189,10 @@ struct AttnCtx {
         size_t q_bytes = (size_t)XM * NH * HD;            // Q: batch * NH * HD
         size_t kv_bytes = (size_t)max_seq * NKV * HD;     // K/V: max_seq * NKV * HD
         size_t out_bytes = (size_t)XM * NH * HD * 2;       // output: i16
-        bQ = std::make_unique<xrt::bo>(d, q_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bK = std::make_unique<xrt::bo>(d, kv_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bV = std::make_unique<xrt::bo>(d, kv_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bOut = std::make_unique<xrt::bo>(d, out_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
+        bQ = std::make_unique<xrt::bo>(d, q_bytes, 0, 0);
+        bK = std::make_unique<xrt::bo>(d, kv_bytes, 0, 0);
+        bV = std::make_unique<xrt::bo>(d, kv_bytes, 0, 0);
+        bOut = std::make_unique<xrt::bo>(d, out_bytes, 0, 0);
         initialized = true;
         return true;
     }
@@ -322,9 +323,9 @@ struct RuntimeAttnCtx {
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
             k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
             bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4,
-                XRT_BO_FLAGS_HOST_ONLY, k->group_id(0));
+                0, k->group_id(0));
             bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4,
-                XRT_BO_FLAGS_HOST_ONLY, k->group_id(1));
+                0, k->group_id(1));
             ok = true;
             return true;
         } catch (std::exception& ex) {
@@ -407,6 +408,83 @@ static inline void npu_attn_rt(
         for (int w = 0; w < nw; w++)
             ra.run_win(qb, kk, kv, ab, w * RT_ATTN_HEADS, cl, HD, NKV);
     }
+}
+
+// Check if unified_server (production NPU service) is already holding
+// the NPU device. The amdxdna driver + XRT 2.x does not handle concurrent
+// access from multiple processes gracefully — attempting to open the device
+// while unified_server is running produces an IOMMU page fault and a
+// permanently wedged kernel, causing this process to hang forever waiting
+// on ioctl(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT). See issue #1029.
+//
+// This function uses the same lock file that unified_server's
+// acquire_singleton_lock() creates, so we can detect it without process-name
+// heuristics or killing anything.
+static void check_npu_contention() {
+    const char* xdg = getenv("XDG_RUNTIME_DIR");
+    std::string lock_path = (xdg && xdg[0])
+        ? std::string(xdg) + "/unified_server.lock"
+        : std::string("/tmp/unified_server.lock");
+
+    int fd = open(lock_path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        // Lock file doesn't exist — no unified_server running, safe to proceed.
+        return;
+    }
+
+    // Try to acquire the lock. If unified_server holds it, this will fail
+    // immediately (LOCK_NB). We don't want to actually take the lock — just
+    // probe whether it's held.
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        // We got the lock, which means unified_server is NOT holding it.
+        // Release immediately and continue.
+        flock(fd, LOCK_UN);
+        close(fd);
+        return;
+    }
+
+    // Lock is held. Read the owner token (PID:UUID) and check if the
+    // holding process is still alive.
+    char buf[128] = {0};
+    pread(fd, buf, sizeof(buf) - 1, 0);
+
+    pid_t holder_pid = 0;
+    char* colon = strchr(buf, ':');
+    if (colon) {
+        *colon = '\0';
+        holder_pid = (pid_t)atoi(buf);
+        *colon = ':';
+    }
+
+    close(fd);
+
+    if (holder_pid > 0 && kill(holder_pid, 0) == 0) {
+        // Holder is alive — this IS unified_server. Refuse to run.
+        fprintf(stderr,
+            "\n"
+            "  NPU DEVICE IN USE\n"
+            "  unified_server is already holding the NPU (pid %d).\n"
+            "\n"
+            "  The amdxdna driver cannot safely share the NPU between\n"
+            "  concurrent processes. Starting another NPU process will\n"
+            "  cause an IOMMU page fault and a permanently wedged fence.\n"
+            "\n"
+            "  To run npu_engine_universal, stop unified_server first:\n"
+            "    $ sudo systemctl stop unified-server\n"
+            "    (or) $ kill %d\n"
+            "\n"
+            "  See issue #1029 for details.\n"
+            "\n",
+            (int)holder_pid, (int)holder_pid);
+        _exit(1);
+    }
+
+    // Holder process is dead — lock is stale. unified_server's own
+    // singleton lock code will clean it up on next restart. We can
+    // safely proceed; the real device may be free (or not — see below).
+    fprintf(stderr,
+        "Note: stale unified_server lock found (pid %d no longer running).\n",
+        (int)holder_pid);
 }
 
 int main(int argc,char**argv){
@@ -583,7 +661,8 @@ int main(int argc,char**argv){
     if(lm_head_f32.empty()){fprintf(stderr,"  lm_head: using emb_f32 (tied embeddings)\n");}
     const float* lm_emb = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
 
-    // Init NPU
+    // Init NPU — check for contention with unified_server first (issue #1029)
+    check_npu_contention();
     fprintf(stderr,"Init NPU...\n");xrt::device dev(0);
     // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
     const char* env_xd = getenv("NPU_XCLBIN_DIR");
