@@ -8,6 +8,7 @@
 #include <vector>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -885,7 +886,7 @@ int main(int argc,char**argv){
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
-    auto pack_layer_weights = [&](int l) {int qr,kr,vr,unused;
+    std::function<void(int)> pack_layer_weights = [&](int l) {int qr,kr,vr,unused;
         float*qw,*kw,*vw,*ow,*gw,*uw,*dw;
         std::vector<float> qw_v,kw_v,vw_v,ow_v,gw_v,uw_v,dw_v;
         int gr,ur;
@@ -937,6 +938,47 @@ int main(int argc,char**argv){
         }
 #endif
     };
+
+    // Pre-pack all layer weights at load time (eliminates per-layer Q4NX dequant + BFP16 pack)
+    struct PrepackedW {
+        std::vector<uint8_t> q, o, g, d, u;
+    };
+    std::vector<PrepackedW> prepacked;
+    if (use_bf16_xclbins) {
+        fprintf(stderr,"Pre-packing weights...\n");
+        auto tp=std::chrono::steady_clock::now();
+        prepacked.resize(NC);
+        for (int l = 0; l < NC; l++) {
+            pack_layer_weights(l);
+            prepacked[l].q.assign((const uint8_t*)cq.layerB[0]->map(),
+                (const uint8_t*)cq.layerB[0]->map() + cq.b_size());
+            prepacked[l].o.assign((const uint8_t*)co.layerB[0]->map(),
+                (const uint8_t*)co.layerB[0]->map() + co.b_size());
+            prepacked[l].g.assign((const uint8_t*)cg.layerB[0]->map(),
+                (const uint8_t*)cg.layerB[0]->map() + cg.b_size());
+            prepacked[l].d.assign((const uint8_t*)cd.layerB[0]->map(),
+                (const uint8_t*)cd.layerB[0]->map() + cd.b_size());
+            if (cfg.gu_split && cu_ptr) {
+                prepacked[l].u.assign((const uint8_t*)cu_ptr->layerB[0]->map(),
+                    (const uint8_t*)cu_ptr->layerB[0]->map() + cu_ptr->b_size());
+            }
+        }
+        fprintf(stderr,"  Prep: %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
+        // Replace pack_layer_weights with fast memcpy path
+        pack_layer_weights = [&](int l) {
+            memcpy(cq.layerB[0]->map(),prepacked[l].q.data(),prepacked[l].q.size());
+            cq.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            memcpy(co.layerB[0]->map(),prepacked[l].o.data(),prepacked[l].o.size());
+            co.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            memcpy(cg.layerB[0]->map(),prepacked[l].g.data(),prepacked[l].g.size());
+            cg.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            memcpy(cd.layerB[0]->map(),prepacked[l].d.data(),prepacked[l].d.size());
+            cd.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            if(cfg.gu_split&&cu_ptr&&!prepacked[l].u.empty()){
+                memcpy(cu_ptr->layerB[0]->map(),prepacked[l].u.data(),prepacked[l].u.size());
+                cu_ptr->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+        };
+    }
 
     // RoPE
     ri(HD,cfg.rope_theta,4096);
