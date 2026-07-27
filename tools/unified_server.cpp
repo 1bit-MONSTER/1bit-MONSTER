@@ -658,6 +658,23 @@ int main(int argc, char** argv) {
     signal(SIGINT, handle_sigint);
     signal(SIGTERM, handle_sigint);
 
+    // ── Help flag — must be handled FIRST, before any hardware init ──
+    // Scan for -h/--help so we never open /dev/accel, acquire locks,
+    // or init NPU/GPU just to print usage info.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: %s [OPTIONS]\n", argv[0]);
+            printf("  -p, --port PORT         HTTP port (default: 8088)\n");
+            printf("  -w, --weights DIR       Model weights directory\n");
+            printf("  -m, --model NAME        Model name to load\n");
+            printf("  -q, --quick             Quick mode (skip full init)\n");
+            printf("  -c, --cors-origin ORG   CORS origin header value\n");
+            printf("  -t, --gen-timeout-ms MS Generation timeout (default: 600000)\n");
+            printf("  -h, --help              Show this help and exit\n");
+            exit(0);
+        }
+    }
+
     // ── Parse CLI args ──
     // Generation timeout: CLI override of g_generation_timeout_ms (issue #948)
     int cli_gen_timeout_ms = -1;
