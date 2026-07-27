@@ -100,15 +100,28 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
         ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
         try{
+        fprintf(stderr,"  I8Ctx: loading xclbin %s\n",xp);
         xc=std::make_unique<xrt::xclbin>(std::string(xp));
+        fprintf(stderr,"  I8Ctx: registering xclbin\n");
         d.register_xclbin(*xc);
+        fprintf(stderr,"  I8Ctx: creating hw context\n");
         hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());
+        fprintf(stderr,"  I8Ctx: getting kernel MLIR_AIE\n");
         k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
+        fprintf(stderr,"  I8Ctx: allocating bI (%zu bytes, gid=%d)\n",ins.size()*4,k->group_id(1));
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
         memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        fprintf(stderr,"  I8Ctx: allocating bA (%zu bytes)\n",(size_t)MD*KD);
         bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
+        fprintf(stderr,"  I8Ctx: allocating bC (%zu bytes)\n",(size_t)MD*ND*2);
         bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
+
+        // Use CACHEABLE for layer B buffers — the NPU kernel needs fast
+        // access to weight data. HOST_ONLY causes extreme slowdown (~60s
+        // per GEMM) because every NPU read triggers a DMA from system memory.
+        // The GEM heap may be exhausted from leaked allocations; if so,
+        // reload the amdxdna driver to reset it (issue #1029).
         for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
         }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
