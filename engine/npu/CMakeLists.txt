@@ -12,7 +12,10 @@ set(NPU_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(NPU_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 set(NPU_CXX_SOURCES
-    ${NPU_SRC_DIR}/xrt_wrapper.cpp
+    # xrt_wrapper.cpp removed: its custom C API symbols (xrtKernelOpen,
+    # xrtXclbinAlloc, xrtHwContextCreate) don't exist in the system XRT
+    # library (2.21.75). All active engine sources use the standard
+    # xrt:: C++ API (xrt::device, xrt::kernel, xrt::bo, etc.) directly.
 )
 
 # ── npu_engine_universal (flagship — all ops: QKV, O, GU, D, attention) ──
@@ -156,8 +159,10 @@ if(HIPCC AND HIP_LIB_DIR)
         )
         
         add_dependencies(${target_name} ${target_name}_build)
-        
-        install(TARGETS ${target_name} DESTINATION bin)
+
+        # install the built binary directly — add_executable(... IMPORTED) targets
+        # cannot be installed with install(TARGETS ...) in CMake 4.x
+        install(PROGRAMS ${TARGET_BIN} DESTINATION bin)
     endmacro()
 
     add_npu_hip_target(npu_engine_fused npu_engine_fused)
