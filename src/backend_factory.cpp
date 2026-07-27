@@ -165,11 +165,19 @@ bool has_vulkan() {
     // 1. Static symbol check (fast, no library load)
     if (has_static_symbol("create_vulkan_backend")) return true;
 
-    // 2. Probe via libvulkan — just check that the loader exists
+    // 2. Check render nodes first — fast stat() call, no library load.
+    //    On systems with a GPU (Strix Halo, dGPU), this succeeds instantly.
+    struct stat st;
+    if (stat("/dev/dri/renderD128", &st) == 0) return true;
+    if (stat("/dev/dri/renderD129", &st) == 0) return true;
+
+    // 3. Probe via libvulkan — lightweight symbol check only.
+    //    dlopen("libvulkan.so") can hang on some systems if the Vulkan
+    //    loader tries to initialize GPU drivers, so only do this if
+    //    render nodes weren't found (headless/VM fallback).
     void* lib = dlopen("libvulkan.so.1", RTLD_LAZY);
     if (!lib) lib = dlopen("libvulkan.so", RTLD_LAZY);
     if (lib) {
-        // Check that core symbols exist (sign of a working Vulkan loader)
         bool has_syms =
             dlsym(lib, "vkCreateInstance") &&
             dlsym(lib, "vkEnumeratePhysicalDevices") &&
@@ -177,11 +185,6 @@ bool has_vulkan() {
         dlclose(lib);
         if (has_syms) return true;
     }
-
-    // 3. Check render nodes (same as has_hip_gpu)
-    struct stat st;
-    if (stat("/dev/dri/renderD128", &st) == 0) return true;
-    if (stat("/dev/dri/renderD129", &st) == 0) return true;
 
     // 4. Last resort: probe the full shared library (will trigger HSA init)
     lib = dlopen("librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
