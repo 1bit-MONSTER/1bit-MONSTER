@@ -1157,22 +1157,37 @@ int main(int argc,char**argv){
                 attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);
             }
         }
-        // Phase 3-4-5: O + GU + D on NPU (synchronous go for debugging #1029)
-        // NOTE: O and GU both use pre-norm h_b (same input). GU runs after O
-        // but before residual add, preserving the original async semantics.
+        // Phase 3-4: O + GU pipelined — independent inputs (at_b vs h_b)
+        // Launch O first, then quantize GU while O runs on NPU.
+        // Pattern: launch(O) → quantize(GU) → sync(GU) → wait(O) → launch(GU) → read(O) → ...
+        // Mirrors the decode loop's proven O+GU pipelining.
         int mlp_out=cfg.gu_split?IM:2*IM;
         float o_ascale=dynamic_ascale(at_b.data(),npt*NH*HD);
         float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
-        // Run O and GU sequentially (both use current h_b = pre-norm QKV output)
-        co.go(l,at_b.data(),npt,NH*HD,o_ascale,osc[l],oo_b.data(),H);cn(oo_b.data(),npt*H);
+        co.quantize_async(at_b.data(),npt,NH*HD,o_ascale);
+        auto r_co=co.sync_and_launch(l);
+        // Quantize GU while O runs — independent input (h_b, not at_b)
+        cg.quantize_async(h_b.data(),npt,H,gu_ascale);
+        cg.bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        cg.bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        cg.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // Wait for O, then launch GU while reading O back
+        co.wait_kernel(r_co);
+        auto r_cg=cg.launch(l);
+        co.sync_back_and_dequant(oo_b.data(),npt,H,o_ascale,osc[l]);
+        cn(oo_b.data(),npt*H);
         fprintf(stderr,"o");fflush(stderr);
-        cg.go(l,h_b.data(),npt,H,gu_ascale,gsc[l],gt_b.data(),mlp_out);cn(gt_b.data(),npt*mlp_out);
-        fprintf(stderr,"g");fflush(stderr);
-        // Apply residual: h_b = pre-norm + o_proj (saved in sb_data)
+        // Apply residual + pre-FFN norm while GU runs on NPU
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
         // Save pre-FFN residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l].data(),H);
+        // Wait for GU to complete (launched before residual add)
+        cg.wait_kernel(r_cg);
+        cg.sync_back_and_dequant(gt_b.data(),npt,mlp_out,gu_ascale,gsc[l]);
+        cn(gt_b.data(),npt*mlp_out);
+        fprintf(stderr,"g");fflush(stderr);
+        // SiLU gate (CPU) + optional U GEMM
         if(cfg.gu_split){cu_ptr->go(l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
         else{for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*mlp_out+IM+i];}}}
