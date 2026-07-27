@@ -11,12 +11,16 @@ find_package(XRT QUIET)
 set(NPU_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(NPU_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-set(NPU_CXX_SOURCES
-    # xrt_wrapper.cpp removed: its custom C API symbols (xrtKernelOpen,
-    # xrtXclbinAlloc, xrtHwContextCreate) don't exist in the system XRT
-    # library (2.21.75). All active engine sources use the standard
-    # xrt:: C++ API (xrt::device, xrt::kernel, xrt::bo, etc.) directly.
-)
+# xrt_wrapper.cpp (hand-rolled extern "C" wrappers around raw XRT symbols,
+# incl. the newer xrtHwContextCreate/xrtKernelOpen HW-context API) is not
+# referenced by any target below — they all use XRT's own official C++
+# headers (<xrt/xrt_device.h> etc.) directly instead. Left unlinked here:
+# the wrapper is written against a newer XRT API than what's installed on
+# this box (2.21.75 only exports the older xrtPLKernelOpen-style API, no
+# xrtHwContext* symbols at all — see issue #1023), so linking it in was a
+# pure liability with zero upside. If something starts actually using
+# XrtDevice/XrtKernel/etc., this needs the older-API rewrite instead.
+set(NPU_CXX_SOURCES)
 
 # ── npu_engine_universal (flagship — all ops: QKV, O, GU, D, attention) ──
 set(NPU_ENGINE_SOURCES
@@ -34,8 +38,14 @@ target_include_directories(npu_engine_universal PRIVATE
 )
 
 if(XRT_FOUND)
+    # find_package(XRT) does not export an XRT_CORE_LIBRARIES variable —
+    # linking against it silently links nothing, leaving xrtHwContextCreate/
+    # xrtKernelOpen/etc. undefined at link time (issue #1022/#1023
+    # investigation). find_library() for the real library, same pattern
+    # npu_engine_cb already uses successfully below.
+    find_library(XRT_COREUTIL xrt_coreutil)
     target_include_directories(npu_engine_universal PRIVATE ${XRT_INCLUDE_DIRS})
-    target_link_libraries(npu_engine_universal ${XRT_CORE_LIBRARIES})
+    target_link_libraries(npu_engine_universal ${XRT_COREUTIL})
     target_compile_definitions(npu_engine_universal PRIVATE -DXRT_ENABLE)
 endif()
 
@@ -160,9 +170,13 @@ if(HIPCC AND HIP_LIB_DIR)
         
         add_dependencies(${target_name} ${target_name}_build)
 
-        # install the built binary directly — add_executable(... IMPORTED) targets
-        # cannot be installed with install(TARGETS ...) in CMake 4.x
-        install(PROGRAMS ${TARGET_BIN} DESTINATION bin)
+        # No install(TARGETS ...) here: ${target_name} is an IMPORTED
+        # executable (the real binary comes from the hipcc custom command
+        # above, not from CMake's own add_executable/link step), and
+        # install(TARGETS ...) is only valid for targets CMake itself
+        # builds. It already lands at ${TARGET_BIN} in the build dir,
+        # which is where this project actually consumes it from — see
+        # issue #1022.
     endmacro()
 
     add_npu_hip_target(npu_engine_fused npu_engine_fused)

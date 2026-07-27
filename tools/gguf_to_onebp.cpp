@@ -100,8 +100,12 @@ int main(int argc, char** argv) {
     gu("vocab_size", hdr.vocab_size);
     if (!hdr.vocab_size) {
         // Some GGUF files omit vocab_size — infer from token_embd.weight shape.
+        // GGUF ne[] convention: shape[0] = embedding_length (hidden), shape[1] =
+        // vocab_size — this used to read shape[0], silently writing hidden_size
+        // into the vocab_size field (e.g. 1024 instead of the real 151936).
         auto* emb = reader.tensor_info("token_embd.weight");
-        if (emb && emb->shape.size() >= 1) hdr.vocab_size = (int)emb->shape[0];
+        if (emb && emb->shape.size() >= 2) hdr.vocab_size = (int)emb->shape[1];
+        else if (emb && emb->shape.size() >= 1) hdr.vocab_size = (int)emb->shape[0];
     }
     if (!hdr.vocab_size) {
         // Fallback: try tokenizer.ggml.tokens array count
@@ -121,6 +125,12 @@ int main(int argc, char** argv) {
     FILE* fout = fopen(argv[2], "wb");
     if (!fout) { perror("fopen"); return 1; }
 
+    // ndim=1 (norm weights, biases) are stored as raw float32 — no tiling/
+    // quantization, matching OnebpModel::get_tensor_f32's ndim==1 branch
+    // (a plain memcpy). Previously these were unconditionally dropped
+    // (shape.size() != 2 filtered out every 1D tensor), which meant every
+    // .1bp file ever produced was missing all its normalization weights —
+    // structurally incapable of correct inference. See issue #1023.
     struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; };
     std::vector<TInfo> tensors;
     uint64_t data_off = 0;
@@ -130,7 +140,14 @@ int main(int argc, char** argv) {
         auto* inf = reader.tensor_info(tn);
         if (!inf) continue;
         int ndim = (int)inf->shape.size();
-        if (ndim == 1) continue;  // raw vectors (norm weights) handled elsewhere
+        if (ndim == 1) {
+            int len = (int)inf->shape[0];
+            if (len <= 0) continue;
+            uint64_t raw_bytes = (uint64_t)len * 4;  // f32, unquantized
+            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes});
+            data_off += raw_bytes;
+            continue;
+        }
         if (ndim != 2 && ndim != 3) continue;  // skip unknown shapes
         if (ndim == 2) {
             int c = (int)inf->shape[0], r = (int)inf->shape[1];
@@ -158,16 +175,26 @@ int main(int argc, char** argv) {
     // Write header NOW with correct tensor_count
     fwrite(&hdr, sizeof(hdr), 1, fout);
 
-    // Compute index size and fix up tensor offsets to account for header + index
+    // Offsets are written RELATIVE to the start of the data section — do NOT
+    // add header+index size here. OnebpModel's reader (onebp_loader.cpp)
+    // already does exactly that conversion itself ("Fix offsets: they are
+    // relative to data_start", t.file_offset += data_start), by design. This
+    // used to also add data_base here, so every stored offset was absolute
+    // already — the reader then added data_start a second time on top,
+    // landing every tensor read ~(header+index size) bytes past its real
+    // data, into the middle of whichever tensor happened to be there. That's
+    // why every dequantized value was garbage regardless of which model or
+    // even whether the tensor was 1D or 2D — confirmed by hand: reading the
+    // *true* (non-double-counted) offset for token_embd.weight lines up
+    // exactly with the scale bytes the quantizer actually wrote.
+    //
+    // dims[] is ndim*4 bytes, not always 8 — the reader parses exactly
+    // `ndim` uint32 dims per entry, so a fixed 8-byte assumption here would
+    // additionally desync every entry after the first ndim==1 tensor.
     uint64_t index_size = 0;
     for (auto& t : tensors) {
         uint32_t nl = std::min((uint32_t)t.name.size(), (uint32_t)63);
-        // name_len + name + \0 + ndim + dims[ndim] + offset + bytes
-        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8;
-    }
-    uint64_t data_base = sizeof(OnebpHeader) + index_size;
-    for (auto& t : tensors) {
-        t.offset += data_base;
+        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8;  // name_len + name + \0 + ndim + dims[ndim] + offset + bytes
     }
 
     // Write tensor index — ndim==2 (dense) or ndim==3 (MoE expert stack)
@@ -178,7 +205,10 @@ int main(int argc, char** argv) {
         fwrite("\0", 1, 1, fout);
         uint32_t nd = (uint32_t)t.ndim;
         fwrite(&nd, 4, 1, fout);
-        if (t.ndim == 2) {
+        if (t.ndim == 1) {
+            uint32_t d1 = (uint32_t)t.cols;  // length
+            fwrite(&d1, 4, 1, fout);
+        } else if (t.ndim == 2) {
             uint32_t d[2] = {(uint32_t)t.rows, (uint32_t)t.cols};
             fwrite(d, 8, 1, fout);
         } else {
@@ -204,6 +234,12 @@ int main(int argc, char** argv) {
         fflush(stdout);
         if (!reader.get_tensor_f32(ti.name, fw)) {
             printf("SKIP (get_tensor_f32 failed)\n"); continue;
+        }
+        if (ti.ndim == 1) {
+            // Raw, unquantized float32 — no tiling (norm weights, biases).
+            fwrite(fw.data(), 4, fw.size(), fout);
+            printf("  %-50s %4d     (raw f32) -> %zu KB\n", ti.name.c_str(), (int)fw.size(), ti.tiled / 1024);
+            continue;
         }
         printf("got %zu floats, tiling...\n", fw.size()); fflush(stdout);
         int R = ti.rows, C = ti.cols;
