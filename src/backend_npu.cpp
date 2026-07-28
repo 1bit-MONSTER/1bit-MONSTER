@@ -443,6 +443,7 @@ struct NPUBackend : Backend {
         {
             // JSON keys used by Q4NX format
             uint64_t emb_off = model.find_offset("model_embed_tokens_weight");
+            if (!emb_off) emb_off = model.find_offset("model.embed_tokens.weight");
             if (!emb_off) emb_off = model.find_offset("gte");
             if (emb_off) {
                 embed = model.read_floats(emb_off, (size_t)NV * H);
@@ -633,4 +634,4 @@ struct NPUBackend : Backend {
     }
 };
 
-Backend* create_npu_backend() { return new NPUBackend(); }
+extern "C" Backend* create_npu_backend() { return new NPUBackend(); }

@@ -93,7 +93,8 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
             auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 
 struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
-    std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
+    std::unique_ptr<xrt::xclbin>xc;
+    std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
     std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int16_t*Cm;
     bool initialized=false;
@@ -117,9 +118,7 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         d.register_xclbin(*xc);
         fprintf(stderr,"  I8Ctx: creating hw context\n");
         hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());
-        fprintf(stderr,"  I8Ctx: getting kernel MLIR_AIE\n");
         k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");
-        fprintf(stderr,"  I8Ctx: allocating bI (%zu bytes, gid=%d)\n",ins.size()*4,k->group_id(1));
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
         memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         fprintf(stderr,"  I8Ctx: allocating bA (%zu bytes, bf16=%d)\n",a_size(),(int)use_bf16);
@@ -128,10 +127,8 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         bC=std::make_unique<xrt::bo>(d,c_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
 
-        layerB_cached = true;
         // Allocate per-layer weight BOs — same group_id so instructions
         // work identically across layers. Weights loaded once, never re-DMA'd.
-        layerB_cached = false;  // per-layer weights exceed NPU cache; use host memory
         fprintf(stderr,"  I8Ctx: allocating %d x layerB (%zu bytes each, gid=%d, HOST_ONLY)\n",NL,b_size(),k->group_id(gid_B));
         layerB.reserve(NL);
         for (int l = 0; l < NL; l++) {
@@ -153,6 +150,13 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
             for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
                 int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}
         }
+        // Push the freshly-packed weights to wherever the AIE's DMA
+        // actually reads from. Dropped during the per-layer-BO refactor
+        // on the assumption every caller pre-packs once at startup — true
+        // only for the BF16 pre-pack path; the INT8 path (this model)
+        // calls packB() per-op with no other sync, so without this the
+        // kernel launch waits on a DMA read that never resolves (#1061).
+        layerB[cur_layer]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         }
     inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
         if(use_bf16){
@@ -216,46 +220,59 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         }}
 };
 
-// AttnCtx — NPU attention using regular kernel(3, insts, ...) interface.
-// The attn.xclbin kernel signature:
+// AttnCtx — NPU attention using xrt::kernel with instruction BO (same as I8Ctx).
+// The xclbin kernel signature:
 //   kernel(3, insts_bo, insts_size, bo0=Q, bo1=K, bo2=V, bo3=output, bo4=unused)
+//
+// Two launch paths:
+//   1. launch_all() — quantizes full K/V cache each call (O(seq_len))
+//   2. append_kv() + launch() — incremental, O(NKV*HD) per token
 struct AttnCtx {
     int max_seq, NH, NKV, HD, XM;
+    int cur_seq = 0;
+    float cur_kv_scale = 1.0f;
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
-    std::unique_ptr<xrt::kernel> k;
-    std::vector<uint32_t> ins;
-    std::unique_ptr<xrt::bo> bI, bQ, bK, bV, bOut, bDummy;
+    std::unique_ptr<xrt::elf> elf;
+    std::unique_ptr<xrt::module> mdl;
+    std::unique_ptr<xrt::ext::kernel> k;
+    std::unique_ptr<xrt::ext::bo> bQ, bK, bV, bOut;
     bool initialized = false;
 
     ~AttnCtx() {}
-    bool isReady() { return initialized && k && bI && bQ && bK && bV && bOut; }
+    bool isReady() { return initialized && k && bQ && bK && bV && bOut; }
 
+    // NOTE: the raw instruction words from mha_generate_*() aren't a
+    // complete xrt::kernel submission by themselves — they need assembling
+    // into a proper ELF (aiebu) and loading via xrt::module/xrt::ext::kernel.
+    // The old manual-bI + xrt::kernel(3ULL,...) path submits the command but
+    // the AIE array never signals completion for this xclbin, so
+    // DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT hangs forever (see PR #1047).
     bool init(xrt::device& d, const char* xp,
               const std::vector<uint32_t>& instrs,
               int max_seq_len, int nh, int nkv, int hd, int xm) {
         max_seq = max_seq_len;
         NH = nh; NKV = nkv; HD = hd; XM = xm;
-        ins = instrs;
         try {
+            std::vector<char> iraw((char*)instrs.data(),
+                                   (char*)instrs.data() + instrs.size() * sizeof(uint32_t));
+            aiebu::aiebu_assembler asmblr(
+                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
+            auto e = asmblr.get_elf();
             xc = std::make_unique<xrt::xclbin>(std::string(xp));
             d.register_xclbin(*xc);
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
-            // Instruction BO
-            bI = std::make_unique<xrt::bo>(d, ins.size()*4, XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
-            memcpy(bI->map(), ins.data(), ins.size()*4);
-            bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            // Data BOs
+            elf = std::make_unique<xrt::elf>(e.data(), e.size());
+            mdl = std::make_unique<xrt::module>(*elf);
+            k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
             size_t q_bytes = (size_t)XM * NH * HD;
             size_t kv_bytes = (size_t)max_seq * NKV * HD;
             size_t out_bytes = (size_t)XM * NH * HD * 2;
-            int gid = k->group_id(5);
-            bQ = std::make_unique<xrt::bo>(d, q_bytes, XRT_BO_FLAGS_HOST_ONLY, gid);
-            bK = std::make_unique<xrt::bo>(d, kv_bytes, XRT_BO_FLAGS_HOST_ONLY, gid);
-            bV = std::make_unique<xrt::bo>(d, kv_bytes, XRT_BO_FLAGS_HOST_ONLY, gid);
-            bOut = std::make_unique<xrt::bo>(d, out_bytes, XRT_BO_FLAGS_HOST_ONLY, gid);
-            bDummy = std::make_unique<xrt::bo>(d, 64, XRT_BO_FLAGS_HOST_ONLY, gid);
+            bQ = std::make_unique<xrt::ext::bo>(*hc, q_bytes);
+            bK = std::make_unique<xrt::ext::bo>(*hc, kv_bytes);
+            bV = std::make_unique<xrt::ext::bo>(*hc, kv_bytes);
+            bOut = std::make_unique<xrt::ext::bo>(*hc, out_bytes);
+            cur_seq = 0;
         } catch (std::exception& ex) {
             fprintf(stderr, "  AttnCtx init failed: %s\n", ex.what());
             return false;
@@ -264,54 +281,74 @@ struct AttnCtx {
         return true;
     }
 
-    xrt::run launch(const float* Q_f32, const float* K_cache, const float* V_cache,
-                    int seq_len, int batch, float q_scale, float kv_scale) {
-        // Quantize Q
-        auto* q_i8 = (int8_t*)bQ->map();
-        float q_is = 1.0f / q_scale;
+    void append_kv(const float* K_token, const float* V_token, float kv_scale) {
+        cur_kv_scale = kv_scale; float kv_is = 1.0f / kv_scale;
+        auto* k_i8 = (int8_t*)bK->map(); auto* v_i8 = (int8_t*)bV->map();
+        size_t off = (size_t)cur_seq * NKV * HD;
+        for (size_t i = 0; i < (size_t)NKV * HD; i++) {
+            float kv = K_token[i]; if (!std::isfinite(kv)) kv = 0;
+            int q = (int)roundf(kv * kv_is); k_i8[off+i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+            kv = V_token[i]; if (!std::isfinite(kv)) kv = 0;
+            q = (int)roundf(kv * kv_is); v_i8[off+i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+        }
+        cur_seq++;
+    }
+    void append_kv_batch(const float* K_batch, const float* V_batch, int npt, int qkv_n, float kv_scale) {
+        cur_kv_scale = kv_scale; float kv_is = 1.0f / kv_scale;
+        auto* k_i8 = (int8_t*)bK->map(); auto* v_i8 = (int8_t*)bV->map();
+        for (int pi = 0; pi < npt; pi++) {
+            size_t off = (size_t)(cur_seq+pi) * NKV * HD;
+            for (size_t i = 0; i < (size_t)NKV * HD; i++) {
+                float kv = K_batch[pi*qkv_n+i]; if (!std::isfinite(kv)) kv = 0;
+                int q = (int)roundf(kv * kv_is); k_i8[off+i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+                kv = V_batch[pi*qkv_n+i]; if (!std::isfinite(kv)) kv = 0;
+                q = (int)roundf(kv * kv_is); v_i8[off+i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+            }
+        }
+        cur_seq += npt;
+    }
+    xrt::run launch(const float* Q_f32, int seq_len, int batch, float q_scale) {
+        auto* q_i8 = (int8_t*)bQ->map(); float q_is = 1.0f / q_scale;
         for (int i = 0; i < batch * NH * HD; i++) {
             float v = Q_f32[i]; if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * q_is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            q_i8[i] = (int8_t)q;
+            int q = (int)roundf(v * q_is); q_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
         }
         bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        // Quantize K cache
-        auto* k_i8 = (int8_t*)bK->map();
-        float kv_is = 1.0f / kv_scale;
-        size_t kv_len = (size_t)seq_len * NKV * HD;
+        size_t kv_bytes = (size_t)cur_seq * NKV * HD;
+        if (kv_bytes > 0) { bK->sync(XCL_BO_SYNC_BO_TO_DEVICE, kv_bytes, 0); bV->sync(XCL_BO_SYNC_BO_TO_DEVICE, kv_bytes, 0); }
+        return k->operator()(3, 0, 0, *bQ, *bK, *bV, *bOut);
+    }
+    void fast_finish(xrt::run& r, float* out, int batch, float q_scale) { r.wait(); bOut->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        auto* out_i16 = (int16_t*)bOut->map(); float cs = q_scale * cur_kv_scale;
+        for (int i = 0; i < batch * NH * HD; i++) {
+            float val = (float)out_i16[i] * cs; if (!std::isfinite(val)) val = 0; out[i] = val;
+        }
+    }
+    xrt::run launch_all(const float* Q_f32, const float* K_cache, const float* V_cache,
+                        int seq_len, int batch, float q_scale, float kv_scale) {
+        cur_kv_scale = kv_scale; cur_seq = seq_len;
+        auto* q_i8 = (int8_t*)bQ->map(); float q_is = 1.0f / q_scale;
+        for (int i = 0; i < batch * NH * HD; i++) {
+            float v = Q_f32[i]; if (!std::isfinite(v)) v = 0;
+            int q = (int)roundf(v * q_is); q_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+        }
+        bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        float kv_is = 1.0f / kv_scale; size_t kv_len = (size_t)seq_len * NKV * HD;
+        auto* k_i8 = (int8_t*)bK->map(); auto* v_i8 = (int8_t*)bV->map();
         for (size_t i = 0; i < kv_len; i++) {
             float v = K_cache[i]; if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * kv_is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            k_i8[i] = (int8_t)q;
+            int q = (int)roundf(v * kv_is); k_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+            v = V_cache[i]; if (!std::isfinite(v)) v = 0;
+            q = (int)roundf(v * kv_is); v_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
         }
-        bK->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        // Quantize V cache
-        auto* v_i8 = (int8_t*)bV->map();
-        for (size_t i = 0; i < kv_len; i++) {
-            float v = V_cache[i]; if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * kv_is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            v_i8[i] = (int8_t)q;
-        }
-        bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        return (*k)(3ULL, *bI, (unsigned)ins.size(), *bQ, *bK, *bV, *bOut, *bDummy);
+        bK->sync(XCL_BO_SYNC_BO_TO_DEVICE); bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        return k->operator()(3, 0, 0, *bQ, *bK, *bV, *bOut);
     }
-
-    void finish(xrt::run& r, float* out, int batch,
-                float q_scale, float kv_scale) {
-        r.wait();
-        bOut->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        auto* out_i16 = (int16_t*)bOut->map();
-        float cs = q_scale * kv_scale;
+    void finish_all(xrt::run& r, float* out, int batch, float q_scale, float kv_scale) {
+        (void)kv_scale; r.wait(); bOut->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        auto* out_i16 = (int16_t*)bOut->map(); float cs = q_scale * cur_kv_scale;
         for (int i = 0; i < batch * NH * HD; i++) {
-            float val = (float)out_i16[i] * cs;
-            if (!std::isfinite(val)) val = 0;
-            out[i] = val;
+            float val = (float)out_i16[i] * cs; if (!std::isfinite(val)) val = 0; out[i] = val;
         }
     }
 };
@@ -381,8 +418,8 @@ struct RuntimeAttnCtx {
             d.register_xclbin(*xc);
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
             k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
-            bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4, 0, k->group_id(0));
-            bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4, 0, k->group_id(1));
+            bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(0));
+            bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(1));
             ok = true;
             return true;
         } catch (std::exception& ex) {
@@ -467,6 +504,52 @@ static inline void npu_attn_rt(
     }
 }
 
+// ── Consolidated NPU attention dispatch ──
+// Picks NPU attention (ca_ptr) or CPU fallback.
+// Uses AttnCtx's incremental KV API: caller must call append_kv() first.
+// This splits the work: append_kv is called DURING the decode loop's
+// KV cache update, hiding the quantize latency.
+static inline void npu_attn_dispatch(
+    float* qo,                // [bs][qn] Q data (batch * qkv_n, Q at front)
+    float* at,                // [bs][NH*HD] output attention
+    int cl,                   // current sequence length
+    int bs,                   // batch size
+    int qn,                   // qkv_n stride per batch item
+    int sp,                   // start position in KV cache (for max_pos mask)
+    const std::vector<float>& kv_k,  // flat K cache vector (unused for NPU path)
+    const std::vector<float>& kv_v,  // flat V cache vector (unused for NPU path)
+    int NH, int NKV, int HD, int GQA,
+    RuntimeAttnCtx& rta,
+    AttnCtx* ca_ptr)
+{
+    (void)kv_k; (void)kv_v; (void)sp;  // CPU fallback uses these via attn_omp
+    if (ca_ptr && ca_ptr->isReady()) {
+        float q_ascale = 0;
+        for (int i = 0; i < bs * NH * HD; i++) {
+            float a = fabsf(qo[i]);
+            if (std::isfinite(a) && a > q_ascale) q_ascale = a;
+        }
+        if (q_ascale < 1e-12f) q_ascale = 1.0f;
+        q_ascale = q_ascale / 127.0f;
+        float kv_ascale = 0;
+        for (int i = 0; i < cl * NKV * HD; i++) {
+            float a = fabsf(kv_k[i]);
+            if (std::isfinite(a) && a > kv_ascale) kv_ascale = a;
+        }
+        if (kv_ascale < 1e-12f) kv_ascale = 1.0f;
+        kv_ascale = kv_ascale / 127.0f;
+        auto r_attn = ca_ptr->launch_all(qo, kv_k.data(), kv_v.data(), cl, bs, q_ascale, kv_ascale);
+        ca_ptr->finish_all(r_attn, at, bs, q_ascale, kv_ascale);
+        cn(at, bs * NH * HD);
+        return;
+    }
+    // CPU attention fallback
+    for (int b = 0; b < bs; b++) {
+        attn_omp(&qo[b * qn], &at[b * NH * HD], cl,
+                 kv_k.data(), kv_v.data(), NH, NKV, HD, GQA);
+    }
+}
+
 // Check if unified_server (production NPU service) is already holding
 // the NPU device. The amdxdna driver + XRT 2.x does not handle concurrent
 // access from multiple processes gracefully — attempting to open the device
@@ -514,6 +597,15 @@ static void check_npu_contention() {
     }
 
     close(fd);
+
+    // If the lock is held by our own direct parent, this isn't a rogue
+    // second process — it's unified_server's own deferred worker-spawn
+    // path (issue #1029: NPUBackend forks this exact binary as its worker
+    // subprocess). That parent commonly has /dev/accel/accel0 open just
+    // from HSA/ROCm device enumeration (HIP backend init touches all accel
+    // nodes on Strix Halo, not just the one it's using), which used to be
+    // misread as fatal contention and made every worker spawn fail (#1056).
+    if (holder_pid > 0 && holder_pid == getppid()) return;
 
     if (holder_pid > 0 && kill(holder_pid, 0) == 0) {
         // Holder is alive. Check if it actually has the NPU device open.
@@ -611,6 +703,22 @@ int main(int argc,char**argv){
     for(int i=2;i<argc;i++){if(strcmp(argv[i],"--worker")==0){worker_mode=true;break;}}
     const char*mp=argv[1];int ng=(argc>2&&!worker_mode)?atoi(argv[2]):32;if(ng<1)ng=1;if(ng>16384)ng=16384; // cap to KV cache size
     const char*input_tok_file=(argc>3&&!worker_mode&&argv[3][0]!='\0')?argv[3]:nullptr;
+
+    // In --worker mode, fd 1 IS the binary protocol pipe backend_npu.cpp
+    // reads (GEMM headers/floats, and the READY handshake). AttnCtx's
+    // aiebu::aiebu_assembler (ELF-building for the NPU attention xclbin)
+    // writes its own trace lines ("Header version...", "Device
+    // Generation...", "NumOps:...", "UID:...") straight to fd 1, ahead of
+    // the "READY\n" handshake bytes — the parent then reads those instead
+    // of "READY\n" and treats every worker spawn as a handshake failure.
+    // Redirect fd 1 to /dev/null for the init section below and restore
+    // the real pipe right before the handshake write (#1059).
+    int worker_real_stdout_fd = -1;
+    if (worker_mode) {
+        worker_real_stdout_fd = dup(1);
+        int devnull_fd = open("/dev/null", O_WRONLY);
+        if (devnull_fd >= 0) { dup2(devnull_fd, 1); close(devnull_fd); }
+    }
 
     // Model tag
     // Accept --model-tag CLI override (passed by the Zig fused executor)
@@ -850,18 +958,35 @@ int main(int argc,char**argv){
                 ca_ptr.reset();
             }
         } else {
-            use_npu_attn = false;
+            // Fallback: generate attention instructions at runtime
+            fprintf(stderr, "  No attn insts file, trying runtime generation...\n");
+            extern void mha_generate_attn_instrs(
+                std::vector<uint32_t>&, uint32_t, int, uint32_t, uint32_t, uint32_t, uint32_t);
+            try {
+                mha_generate_attn_instrs(attn_instrs, (uint32_t)HD, 4,
+                    (uint32_t)NH, (uint32_t)NKV, 4096, 4096);
+                if (!attn_instrs.empty()) {
+                    ca_ptr = std::make_unique<AttnCtx>();
+                    if (ca_ptr->init(dev, attn_xp.c_str(), attn_instrs,
+                                     4096, NH, NKV, HD, XM)) {
+                        fprintf(stderr, "NPU attention enabled (runtime-generated insts)\n");
+                    } else {
+                        fprintf(stderr, "WARN: AttnCtx runtime init failed, CPU fallback\n");
+                        use_npu_attn = false;
+                        ca_ptr.reset();
+                    }
+                } else {
+                    use_npu_attn = false;
+                }
+            } catch (std::exception& ex) {
+                fprintf(stderr, "  Runtime attn instr gen failed: %s\n", ex.what());
+                use_npu_attn = false;
+            }
         }
     }
-    // Also try loading the runtime sequence attention xclbin
-    if(use_npu_attn){
-        std::string runtime_xp = std::string(xd) + "/final_i8_ATTN_" + cfg.model_tag + ".xclbin";
-        if(rta.init(dev, runtime_xp.c_str(), HD)){
-            fprintf(stderr, "NPU runtime attention enabled\n");
-        }else{
-            fprintf(stderr, "WARN: Runtime attn init failed, using ext::kernel path\n");
-        }
-    }
+    // Runtime attention (edge_attention_06b_compact) disabled — uses incompatible kernel signature.
+    // All attention goes through ca_ptr (pre-compiled instructions via xrt::kernel).
+    (void)rta;  // suppress unused warning
 
     // Per-layer dequant+pack lambda for single-buffer architecture.
     std::vector<float> qsc(NC),osc(NC),gsc(NC),dsc(NC),usc(NC);
@@ -869,7 +994,15 @@ int main(int argc,char**argv){
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
-    std::function<void(int)> pack_layer_weights = [&](int l) {int qr,kr,vr,unused;
+    std::function<void(int)> pack_layer_weights = [&](int l) {
+        // Keep cur_layer in sync with the layer actually being packed on
+        // EVERY path — the pre-pack-once loop below only runs when
+        // use_bf16_xclbins is true; for INT8 xclbins (this model) this
+        // closure is the only place cur_layer ever gets updated, and
+        // without it every layer silently packs into layerB[0] (#1061).
+        cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+        if (cu_ptr) cu_ptr->set_layer(l);
+        int qr,kr,vr,unused;
         float*qw,*kw,*vw,*ow,*gw,*uw,*dw;
         std::vector<float> qw_v,kw_v,vw_v,ow_v,gw_v,uw_v,dw_v;
         int gr,ur;
@@ -987,6 +1120,10 @@ int main(int argc,char**argv){
         fprintf(stderr,"WORKER_READY\n");
         fflush(stderr);
         fflush(stdout);
+        // Restore the real pipe onto fd 1 now that init's vendor-library
+        // stdout noise (see above) is done — the handshake write below
+        // must be the first thing the parent reads on this fd (#1059).
+        if (worker_real_stdout_fd >= 0) { dup2(worker_real_stdout_fd, 1); close(worker_real_stdout_fd); }
         setbuf(stdout, NULL);
         write(1, "READY\n", 6);
         uint32_t hdr[4];
@@ -1153,10 +1290,10 @@ int main(int argc,char**argv){
                     kv_caches[l].n = sp + 1;
                     int cl = kv_caches[l].n;
                     
-                    // CPU Attention
-                    attn_omp(qo_data.data(), at_data.data(), cl,
-                             kv_caches[l].k.data(), kv_caches[l].v.data(),
-                             NH, NKV, HD, GQA);
+                    // NPU attention (or CPU fallback)
+                    npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
+                        kv_caches[l].k, kv_caches[l].v,
+                        NH, NKV, HD, GQA, rta, ca_ptr.get());
                     
                     // O projection
                     ascale = dynamic_ascale(at_data.data(), NH * HD);
@@ -1245,9 +1382,10 @@ int main(int argc,char**argv){
                         kv_caches[l].n = sp + 1;
                         int cl = kv_caches[l].n;
                         
-                        attn_omp(qo_data.data(), at_data.data(), cl,
-                                 kv_caches[l].k.data(), kv_caches[l].v.data(),
-                                 NH, NKV, HD, GQA);
+                        // NPU attention (or CPU fallback)
+                        npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
+                            kv_caches[l].k, kv_caches[l].v,
+                            NH, NKV, HD, GQA, rta, ca_ptr.get());
                         
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
@@ -1321,7 +1459,10 @@ int main(int argc,char**argv){
                         }
                         kv_caches[l].n = sp+1;
                         int cl = kv_caches[l].n;
-                        attn_omp(qo_data.data(), at_data.data(), cl, kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA);
+                        // NPU attention (or CPU fallback)
+                        npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
+                            kv_caches[l].k, kv_caches[l].v,
+                            NH, NKV, HD, GQA, rta, ca_ptr.get());
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
                         cn(h_data.data(), H);
@@ -1436,55 +1577,14 @@ int main(int argc,char**argv){
                     fprintf(stderr, "KV cache overflow at layer %d pos %d\n", l, sp+pi);
                 }}}
         kv_caches[l].n=sp+npt;int cl=kv_caches[l].n;
-        // Attention: NPU or CPU fallback
-        //
-        // NPU attention uses pre-compiled KV xclbin instructions
-        // at runtime via FLM's libmha.so (MHA::generate_mha_sequence). The
-        // attn.xclbin kernel takes Q, K, V as i8 inputs and produces i16 output.
-        // K and V caches are quantized from f32 on each step.
-        //
-        // CPU attn_omp() fallback is always available.
-        if(use_npu_attn && rta.isReady()){
-            // NPU attention via runtime sequence
-            if (cl > RT_ATTN_MAX_TK) {
-                #pragma omp parallel for
-                for(int pi=0;pi<npt;pi++){
-                    if (omp_get_thread_num() == 0) { fprintf(stderr,"a"); fflush(stderr); }
-                    attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);
-                }
-            } else {
-                npu_attn_rt(rta, qo_b.data(), at_b.data(), cl,
-                    kv_caches[l].k.data(), kv_caches[l].v.data(),
-                    NH, NKV, HD, GQA, npt, qkv_n, sp);
-                cn(at_b.data(), npt * NH * HD);
-                fprintf(stderr,"A"); fflush(stderr);
-            }
-        } else if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-            // Old ext::kernel path
-            if (!attn_instrs.empty()) {
-                float q_ascale = dynamic_ascale(qo_b.data(), npt * NH * HD);
-                float kv_ascale = 0;
-                for (int i = 0; i < (size_t)cl * NKV * HD; i++) {
-                    float a = fabsf(kv_caches[l].k[i]);
-                    if (std::isfinite(a) && a > kv_ascale) kv_ascale = a;
-                }
-                if (kv_ascale < 1e-12f) kv_ascale = 1.0f;
-                kv_ascale = kv_ascale / 127.0f;
-                auto r_attn = ca_ptr->launch(
-                    qo_b.data(), kv_caches[l].k.data(), kv_caches[l].v.data(),
-                    cl, npt, q_ascale, kv_ascale);
-                ca_ptr->finish(r_attn, at_b.data(), npt, q_ascale, kv_ascale);
-                cn(at_b.data(), npt * NH * HD);
-                fprintf(stderr,"A"); fflush(stderr);
-            } else {
-                #pragma omp parallel for
-                for(int pi=0;pi<npt;pi++){
-                    if (omp_get_thread_num() == 0) { fprintf(stderr,"a"); fflush(stderr); }
-                    attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);
-                }
-            }
+        // NPU attention dispatch or CPU fallback with causal mask
+        if(ca_ptr && ca_ptr->isReady()){
+            npu_attn_dispatch(qo_b.data(), at_b.data(), cl, npt, qkv_n, sp,
+                kv_caches[l].k, kv_caches[l].v,
+                NH, NKV, HD, GQA, rta, ca_ptr.get());
+            fprintf(stderr,"A"); fflush(stderr);
         } else {
-            // CPU attention (default fallback)
+            // CPU attention fallback with per-position causal mask
             #pragma omp parallel for
             for(int pi=0;pi<npt;pi++){
                 if (omp_get_thread_num() == 0) { fprintf(stderr,"a"); fflush(stderr); }
@@ -1554,24 +1654,10 @@ int main(int argc,char**argv){
                 for(int d=0;d<HD;d++)ko_data[kvh*HD+d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(&ko_data[kvh*HD],HD,sp);
                 memcpy(&kv_caches[l].k[sp*NKV*HD+kvh*HD],&ko_data[kvh*HD],HD*4);memcpy(&kv_caches[l].v[sp*NKV*HD+kvh*HD],&vo_data[kvh*HD],HD*4);}}
             kv_caches[l].n=sp+1;int cl=kv_caches[l].n;
-            if(use_npu_attn && rta.isReady()){
-                // NPU attention via runtime sequence
-                if (cl <= RT_ATTN_MAX_TK) {
-                    npu_attn_rt(rta, qo_data.data(), at_data.data(), cl,
-                        kv_caches[l].k.data(), kv_caches[l].v.data(),
-                        NH, NKV, HD, GQA, 1, NH*HD, 0);
-                    cn(at_data.data(), NH*HD);
-                    fprintf(stderr,"A");
-                } else {
-                    attn_omp(qo_data.data(),at_data.data(),cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);
-                }
-            }else if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-                float qs=dynamic_ascale(qo_data.data(),NH*HD);
-                float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
-                ks=ks<1e-12f?1.0f:ks/127.0f;
-                auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,1,qs,ks);
-                ca_ptr->finish(r,at_data.data(),1,qs,ks);cn(at_data.data(),NH*HD);
-            }else{attn_omp(qo_data.data(),at_data.data(),cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
+            npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, 0,
+                kv_caches[l].k, kv_caches[l].v,
+                NH, NKV, HD, GQA, rta, ca_ptr.get());
+            if(ca_ptr && ca_ptr->isReady()) fprintf(stderr,"A");
             co.go(at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
             int mlp_out=cfg.gu_split?IM:2*IM;
@@ -1624,24 +1710,10 @@ int main(int argc,char**argv){
                 float*ks=&qo_b[b*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[b*qkv_n+cfg.qkv_v_offset+kvh*HD];
                 memcpy(&kv_caches[l].k[(sp+b)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+b)*NKV*HD+kvh*HD],vs,HD*4);}
             kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
-            if(use_npu_attn && rta.isReady()){
-                // NPU attention via runtime sequence
-                if (cl <= RT_ATTN_MAX_TK) {
-                    npu_attn_rt(rta, qo_b.data(), at_b.data(), cl,
-                        kv_caches[l].k.data(), kv_caches[l].v.data(),
-                        NH, NKV, HD, GQA, batch_size, qkv_n, sp);
-                    cn(at_b.data(), batch_size*NH*HD);
-                    fprintf(stderr,"A");
-                } else {
-                    for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
-                }
-            }else if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-                float qs=dynamic_ascale(qo_b.data(),batch_size*NH*HD);
-                float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
-                ks=ks<1e-12f?1.0f:ks/127.0f;
-                auto r=ca_ptr->launch(qo_b.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,batch_size,qs,ks);
-                ca_ptr->finish(r,at_b.data(),batch_size,qs,ks);cn(at_b.data(),batch_size*NH*HD);
-            }else{for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}}
+            npu_attn_dispatch(qo_b.data(), at_b.data(), cl, batch_size, qkv_n, sp,
+                kv_caches[l].k, kv_caches[l].v,
+                NH, NKV, HD, GQA, rta, ca_ptr.get());
+            if(ca_ptr && ca_ptr->isReady()) fprintf(stderr,"A");
 
             // ── O GEMM ──
             // Launch O, then quantize GU input WHILE O runs (overlapped)
