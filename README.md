@@ -19,7 +19,7 @@
 
 **[🌐 Website](https://1bit.systems)** · **[🤗 1BP Models](https://huggingface.co/bong-water-water-bong)** · **[📚 Docs](docs/README.md)** · **[🛠️ Journey](docs/journey.md)** · **[📊 Benchmarks](docs/wiki/performance.md)** · **[🗺️ Roadmap](ROADMAP.md)**
 
-**1bit** is an open-source, model-agnostic C++23 inference engine for running large language models on **AMD Strix Halo** (XDNA 2 NPU, RDNA 3.5 GPU), NVIDIA GPUs (CUDA), Apple Silicon (Metal), and any Vulkan 1.2+ device — all from a **single in-process binary with zero Python at runtime**. It reads **GGUF**, **ONNX**, and the native **1BP** ternary format (TQ2 2-bit quantization) with automatic architecture detection — no config files, no model registry, no per-model glue code. Fully open-source under **MIT license**. 17 model architectures supported, 40+ models.
+**1bit** is an open-source, model-agnostic C++23 inference engine for running large language models on **AMD Strix Halo** (XDNA 2 NPU, RDNA 3.5 GPU), NVIDIA GPUs (CUDA), Apple Silicon (Metal), and any Vulkan 1.2+ device — all from a **single in-process binary with zero Python at runtime**. It reads **GGUF**, **ONNX**, and the native **1BP** ternary format (TQ2 2-bit quantization) with automatic architecture detection — no config files, no model registry, no per-model glue code. Fully open-source under **MIT license**. 20 model architectures supported, 51 models. Including **Moonshot AI's Kimi family** — Moonlight-16B-A3B (Gated MLA MoE), Kimi-VL-A3B-Thinking (vision-language) — all converted to 1BP, verified on Strix Halo.
 
 ---
 
@@ -34,12 +34,18 @@
 
 > **Data note**: Per-backend tok/s figures are published with sources and honesty flags in [`docs/wiki/performance.md`](docs/wiki/performance.md). The NPU v12 engine currently measures **69 tok/s** (re-measured 2026-07-12 on Qwen3-0.6B). Mamba1 GPU numbers (79.4 tok/s) are current and re-validated 2026-07-26.
 
-**17 architectures · 40+ models** — see [`models/catalog/README.md`](models/catalog/README.md) for the full list.
+**20 architectures · 51 models** — including **Moonshot Kimi family** (Moonlight-16B-A3B, Kimi-VL). — see [`models/catalog/README.md`](models/catalog/README.md) for the full list.
 
 ### 🚀 Flagship 1BP models — built, quantized & hosted by us
 
 | Model | Family | Arch | Measured | Download |
 |-------|--------|------|:--------:|:--------:|
+| **Moonlight-16B-A3B** ⭐ | **Moonshot AI** | **Gated MLA MoE (3B active)** | **9.6 GB 1BP** ✅ | [🤗 HF](https://huggingface.co/moonshotai/Moonlight-16B-A3B) |
+| **Kimi-VL-A3B-Thinking** ⭐ | **Moonshot AI** | **Vision-Language + Gated MLA** | **9.9 GB 1BP** ✅ | [🤗 HF](https://huggingface.co/moonshotai/Kimi-VL-A3B-Thinking) |
+| **Moonlight-16B-A3B-Instruct** ⭐ | **Moonshot AI** | **Gated MLA MoE (3B active)** | **9.6 GB 1BP** ✅ | [🤗 HF](https://huggingface.co/moonshotai/Moonlight-16B-A3B-Instruct) |
+| **Moonlight-16B-A3B** ⭐ | **Moonshot AI** | **Gated MLA MoE (3B active)** | **9.6 GB 1BP** ✅ | [🤗 HF](https://huggingface.co/moonshotai/Moonlight-16B-A3B) |
+| **Kimi-VL-A3B-Thinking** ⭐ | **Moonshot AI** | **Vision-Language + Gated MLA** | **9.9 GB 1BP** ✅ | [🤗 HF](https://huggingface.co/moonshotai/Kimi-VL-A3B-Thinking) |
+| **Moonlight-16B-A3B-Instruct** ⭐ | **Moonshot AI** | **Gated MLA MoE (3B active)** | **9.6 GB 1BP** ✅ | [🤗 HF](https://huggingface.co/moonshotai/Moonlight-16B-A3B-Instruct) |
 | **Zaya1-8B** | Zyphra | MoE (16-expert) | **~64 tok/s** ✅ | [🤗 HF](https://huggingface.co/bong-water-water-bong/ZAYA1-8B-1BP) |
 | **ZAYA1-VL-8B** | Zyphra | Vision-Language · ViT-L + MoE | **Vision + Text** 🆕 | [🤗 HF](https://huggingface.co/bong-water-water-bong/ZAYA1-8B-1BP) |
 | **BlackMamba-1.5B** | Zyphra | Mamba1 · MoE | **79.4 tok/s** ✅ | [🤗 HF](https://huggingface.co/bong-water-water-bong/BlackMamba-1.5B-1BP) |
