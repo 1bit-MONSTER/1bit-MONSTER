@@ -26,6 +26,7 @@ set(NPU_CXX_SOURCES)
 set(NPU_ENGINE_SOURCES
     ${NPU_SRC_DIR}/npu_engine_universal.cpp
     ${NPU_SRC_DIR}/dequant_q4nx.cpp
+    ${NPU_SRC_DIR}/gemm_npu_instructions.cpp
     ${NPU_CXX_SOURCES}
 )
 
