@@ -66,6 +66,56 @@ target_compile_options(npu_engine_universal PRIVATE
 
 install(TARGETS npu_engine_universal DESTINATION bin)
 
+# ── npu_engine_multimodal — vision + audio + text via NPU ──
+# Uses the same GEMM contexts as universal, plus vision_encoder + whisper
+find_library(STB_IMAGE stb_image QUIET)
+
+set(NPU_MM_SOURCES
+    ${NPU_SRC_DIR}/npu_engine_multimodal.cpp
+    ${NPU_SRC_DIR}/dequant_q4nx.cpp
+    ${NPU_SRC_DIR}/model_config.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/vision_encoder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/whisper.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/vl_processor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gguf_reader.cpp
+)
+
+add_executable(npu_engine_multimodal ${NPU_MM_SOURCES})
+
+target_include_directories(npu_engine_multimodal PRIVATE
+    ${NPU_INCLUDE_DIR}
+    ${NPU_SRC_DIR}  # model_config.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..   # vision_encoder.h, whisper.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party  # stb_image.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/include
+)
+
+if(XRT_FOUND)
+    find_library(XRT_COREUTIL_M xrt_coreutil)
+    target_include_directories(npu_engine_multimodal PRIVATE ${XRT_INCLUDE_DIRS})
+    target_link_libraries(npu_engine_multimodal ${XRT_COREUTIL_M})
+    target_compile_definitions(npu_engine_multimodal PRIVATE -DXRT_ENABLE)
+endif()
+
+option(ONEBP_SUPPORT_M "Enable native 1BP model format loading" ON)
+if(ONEBP_SUPPORT_M)
+    target_compile_definitions(npu_engine_multimodal PRIVATE ONEBP_SUPPORT)
+endif()
+
+target_link_libraries(npu_engine_multimodal
+    m dl pthread uuid
+    OpenMP::OpenMP_CXX
+    aiebu
+    # stb_image is header-only, included via third_party/
+)
+
+target_compile_options(npu_engine_multimodal PRIVATE
+    -O3 -ffast-math -march=native -funroll-loops -fno-math-errno -fopenmp
+)
+
+install(TARGETS npu_engine_multimodal DESTINATION bin)
+
 # ── Optional: torch2aie integration for bf16 kernel generation ──
 set(NPU_TORCH2AIE_DIR "$ENV{HOME}/torch2aie" CACHE PATH "Path to torch2aie repo root")
 if(EXISTS "${NPU_TORCH2AIE_DIR}/examples/helper.h")
