@@ -96,7 +96,7 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     std::unique_ptr<xrt::xclbin>xc;
     std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
-    std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int16_t*Cm;
+    std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int32_t*Cm;
     bool initialized=false;
     bool layerB_cached = true;
     ~I8Ctx(){}
@@ -105,7 +105,10 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     // Buffer sizes: INT8 vs BF16/BFP16
     size_t a_size() const { return use_bf16 ? (size_t)MD*KD*2 : (size_t)MD*KD; }
     size_t b_size() const { return use_bf16 ? ((size_t)KD*ND*6+7)/8 : (size_t)KD*ND; }
-    size_t c_size() const { return (size_t)MD*ND*2; }
+    // BF16 output is packed uint16 (2B/elem); INT8 GEMM output is int32 accumulator (4B/elem).
+    // See issue #1063 — this used to be a flat *2 (int16), which silently misread the
+    // int32 output every real INT8 xclbin (matmul_i8_i32/zero_i32) actually produces.
+    size_t c_size() const { return use_bf16 ? (size_t)MD*ND*2 : (size_t)MD*ND*4; }
     bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers,bool bf16=false){
         use_bf16=bf16; NL=nlayers;
         FILE*f=fopen(ip,"rb");if(!f){fprintf(stderr,"  I8Ctx::init: fopen(%s) failed\n",ip);return false;}
@@ -125,7 +128,7 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         bA=std::make_unique<xrt::bo>(d,a_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
         fprintf(stderr,"  I8Ctx: allocating bC (%zu bytes)\n",c_size());
         bC=std::make_unique<xrt::bo>(d,c_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
-        Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
+        Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();
 
         // Allocate per-layer weight BOs — same group_id so instructions
         // work identically across layers. Weights loaded once, never re-DMA'd.
