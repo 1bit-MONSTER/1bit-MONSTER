@@ -1,7 +1,13 @@
-# 1bit.systems Model Catalog — 46 Models (1BP)
+# 1bit.systems Model Catalog — 46+ Models (1BP + Documented)
 
-All models available in **1BP format** — single-file, zero-config, memory-mappable.
+All models available in **1BP format** — single-file, zero-config, memory-mappable —
+plus documented models from the Zyphra ecosystem (EEG, TTS) that aren't convertible to 1BP.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
+
+**Legend:**
+- ✅ = Converted to 1BP, published on HuggingFace
+- 📝 = Documented model — not convertible to 1BP (different domain: EEG, TTS)
+- ⏳ = Planned for 1BP conversion
 
 > **Data-correctness fix (2026-07-26, issue #1023)**: every `.1bp` file produced before
 > this date had two bugs — every normalization weight was silently dropped, and a
@@ -87,11 +93,13 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Laguna-XS-2.1 | 40×256ex | 20.9 GB | 10.5 GB | ZINC / NPU / HIP | laguna (MoE) |
 | Laguna-S-2.1-DFlash (draft) | 6L dense | 665 MB | 665 MB | ZINC / NPU / HIP | dflash |
 
-### Zaya — 2
+### Zaya — 4
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | ZAYA1-8B | 8.8B | 149 MB | ZINC | zaya ✅ |
 | ZAYA1-74B-preview | 74B | 739 MB | ZINC | zaya |
+| ZAYA1-base | 8.8B | — | — | zaya (dense) ⏳ |
+| ZAYA1-reasoning-base | 8.8B | — | — | zaya (dense, reasoning) ⏳ |
 
 ### Mamba — 2
 | Model | Params | 1BP Size | Backend | Architecture |
@@ -99,12 +107,15 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | BlackMamba-1.5B | 1.5B | 970 MB | Mamba1 HIP (79.8 tok/s) | mamba |
 | BlackMamba-2.8B | 2.8B | 1.8 GB | Mamba1 HIP (46.4 tok/s) | mamba |
 
-### Zamba (Mamba2-Hybrid) — 3
+### Zamba (Mamba2-Hybrid) — 6
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
-| Zamba2-1.2B-Instruct-v2 | 1.2B | 1.1 GB | ZINC ✅ / NPU | zamba2 (attn every 6th) |
-| Zamba2-2.7B-Instruct-v2 | 2.7B | 2.4 GB | ZINC ✅ / NPU | zamba2 |
-| Zamba2-7B-Instruct-v2 | 7B | 6.6 GB | ZINC ✅ / NPU | zamba2 |
+| Zamba2-1.2B-Instruct-v2 | 1.2B | 1.1 GB | ZINC ✅ / NPU | zamba2 (attn every 6th) ✅ |
+| Zamba2-2.7B-Instruct-v2 | 2.7B | 2.4 GB | ZINC ✅ / NPU | zamba2 ✅ |
+| Zamba2-7B-Instruct-v2 | 7B | 6.6 GB | ZINC ✅ / NPU | zamba2 ✅ |
+| Zamba2-1.2B-instruct (v1) | 1.2B | — | — | zamba2 ⏳ |
+| Zamba2-2.7B-instruct (v1) | 2.7B | — | — | zamba2 ⏳ |
+| Zamba2-7B-Instruct (v1) | 7B | — | — | zamba2 ⏳ |
 
 ### Zamba (Mamba1+Attn) — 1
 | Model | Params | 1BP Size | Backend | Architecture |
@@ -119,19 +130,49 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 | Bonsai-8B | 8B | 4.1 GB | HIP GPU | qwen3 (ternary) |
 | Bonsai-27B | 27B | 15 GB | HIP GPU | qwen3 (ternary) |
 
-### Vision-Language — 3
+### Vision-Language — 6
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
 | Qwen2-VL-2B | 2B | 781 MB | ZINC (vision) | qwen2vl ✅ |
 | Qwen3-VL-4B | 4B | 2.2 GB | ZINC (vision) | qwen2vl |
 | Qwen2-VL-7B-Instruct | 7B | 3.9 GB | ZINC (vision) | qwen2vl |
+| ZAYA1-VL-8B | 8.8B | — | ZINC (vision) | zaya1_vl ✅ built-in |
+| Zamba2-VL-1.2B | 1.2B | — | — | zamba2_vl ⏳ |
+| Zamba2-VL-2.7B | 2.7B | — | — | zamba2_vl ⏳ |
+| Zamba2-VL-7B | 7B | — | — | zamba2_vl ⏳ |
 
 Vision-Language entries are the text decoder only — the vision tower/mmproj isn't
 wired into any inference path in this repo yet (`tools/vision_server.cpp` has a
 TODO for it). Text-only inference works the same as any other catalog entry.
 
-## Total: 46 models
-All converted via C++ toolchain (`tools/gguf_to_onebp`).
+### Zyphra — Non-LLM / Other Domain (documented, not 1BP)
+
+Zyphra publishes several models outside the LLM domain. These **cannot be converted
+to 1BP** (different architectures, modalities, or inference pipelines) but are listed
+here for completeness of the Zyphra ecosystem reference.
+
+| Model | Params | Domain | Format | Why not 1BP |
+|-------|:------:|--------|:------:|:------------|
+| **ZUNA1.1** | 380M | 🧠 **EEG** | safetensors | **Diffusion autoencoder** for EEG signals — 1024-dim, 16-layer transformer with 4D RoPE (x,y,z,t). Processes continuous biological signals, not text. Rectified-flow diffusion objective. <br>→ [Zyphra/ZUNA1.1](https://huggingface.co/Zyphra/ZUNA1.1) · [GitHub](https://github.com/Zyphra/zuna) · ⭐ 320 · 489 HF downloads |
+| **ZUNA (v1)** | — | 🧠 **EEG** | safetensors | Earlier EEG foundation model (arXiv:2602.18478). Same paradigm as ZUNA1.1. <br>→ [Zyphra/ZUNA](https://huggingface.co/Zyphra/ZUNA) · ⭐ 158 · 1,105 HF downloads |
+| **Zonos-v0.1-hybrid** | — | 🗣️ **TTS** | safetensors | Flagship text-to-speech model. Neural audio codec + transformer hybrid. Needs audio pipeline. GGUF version available via `zonos.cpp`. <br>→ [Zyphra/Zonos-v0.1-hybrid](https://huggingface.co/Zyphra/Zonos-v0.1-hybrid) · ⭐ 1,106 · 1,450 HF downloads |
+| **Zonos-v0.1-transformer** | — | 🗣️ **TTS** | safetensors | Transformer-only TTS variant. Same pipeline constraints. GGUF available. <br>→ [Zyphra/Zonos-v0.1-transformer](https://huggingface.co/Zyphra/Zonos-v0.1-transformer) · ⭐ 434 · 18,963 HF downloads |
+| **ZONOS2** | — | 🗣️ **TTS MoE** | .pth | Next-gen TTS with Mixture of Experts. GGUF version available via `zonos2.cpp`. <br>→ [Zyphra/ZONOS2](https://huggingface.co/Zyphra/ZONOS2) · ⭐ 135 · 580 HF downloads |
+| **Zonos-v0.1-speaker-embedding** | — | 🗣️ **Speaker embedding** | safetensors | Speaker embedding model used by Zonos pipeline. <br>→ [Zyphra/Zonos-v0.1-speaker-embedding](https://huggingface.co/Zyphra/Zonos-v0.1-speaker-embedding) · ⭐ 31 |
+
+#### Zyphra — 1BP Conversion Status (Summary)
+
+| Status | Count | Models |
+|--------|:-----:|--------|
+| ✅ Already in 1BP | 11 | ZAYA1-8B, ZAYA1-74B-preview, ZAYA1-VL-8B, ZR1-1.5B, BlackMamba-1.5B, BlackMamba-2.8B, Zamba2-1.2B/2.7B/7B-Instruct-v2, Zamba-7B-v1 |
+| ⏳ Planned for 1BP | 11 | ZAYA1-base, ZAYA1-reasoning-base, Zamba2-1.2B/2.7B/7B-Instruct (v1), Zamba2-VL-1.2B/2.7B/7B, Zamba2-1.2B/2.7B/7B (base) |
+| 📝 Documented (non-LLM) | 6 | ZUNA1.1, ZUNA (v1), Zonos-v0.1-hybrid, Zonos-v0.1-transformer, ZONOS2, Zonos-v0.1-speaker-embedding |
+| **Total Zyphra models** | **28** | Complete HF portfolio (excl. legacy/quants) |
+
+## Total: 46 1BP models + 12 documented = 58 entries
+
+Zyphra LLMs converted via C++ toolchain (`tools/gguf_to_onebp`).
+Zyphra EEG/TTS models documented as ecosystem reference (not 1BP convertible).
 
 ## Conversion Pipeline (C++ only)
 ```bash

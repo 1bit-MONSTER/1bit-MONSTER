@@ -1,9 +1,14 @@
 # New 1BP Model Additions — Phase 1 Plan
 
-## Goal: Expand 40 → 60+ 1BP models
+## Goal: Expand 46+ → 60+ 1BP models
 
 Targeting the most impactful VLMs, reasoning models, and small efficient models
 that this engine's existing backends can already handle (or need minimal additions for).
+
+> **Zyphra ecosystem documented**: Zyphra's **ZUNA1.1** (🧠 EEG, diffusion autoencoder),
+> **ZUNA**, and **Zonos-v0.1** / **ZONOS2** (🗣️ TTS) are now documented in the model catalog
+> as non-1BP-convertible reference entries. These are not LLMs and cannot run on this engine,
+> but are listed for completeness of the Zyphra ecosystem.
 
 ---
 

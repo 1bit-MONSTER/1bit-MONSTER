@@ -35,6 +35,8 @@
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
+// ── SiLU activation ──
+static inline float silu_f(float x) { return x / (1.0f + expf(-x)); }
 static constexpr float EPS=1e-6f;
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
@@ -93,11 +95,12 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
 struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
-    std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am;int16_t*Cm;
+    std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int16_t*Cm;
     bool initialized=false;
     bool layerB_cached = true;
     ~I8Ctx(){}
     bool isReady(){return initialized&&k&&bA&&bC;}
+    inline void set_layer(int l){if(l>=0&&l<(int)layerB.size())cur_layer=l;}
     // Buffer sizes: INT8 vs BF16/BFP16
     size_t a_size() const { return use_bf16 ? (size_t)MD*KD*2 : (size_t)MD*KD; }
     size_t b_size() const { return use_bf16 ? ((size_t)KD*ND*6+7)/8 : (size_t)KD*ND; }
@@ -126,36 +129,31 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();
 
         layerB_cached = true;
-        try {
-            fprintf(stderr,"  I8Ctx: allocating layerB (%zu bytes, gid=%d)\n",b_size(),k->group_id(gid_B));
-            layerB.emplace_back(std::make_unique<xrt::bo>(d,b_size(),XCL_BO_FLAGS_CACHEABLE,k->group_id(gid_B)));
-        } catch(std::exception&e1) {
-            fprintf(stderr,"  I8Ctx: CACHEABLE failed (%s), trying HOST_ONLY\n",e1.what());
-            layerB_cached = false;
-            try {
-                layerB.emplace_back(std::make_unique<xrt::bo>(d,b_size(),XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
-            } catch(std::exception&e2) {
-                fprintf(stderr,"  I8Ctx: HOST_ONLY also failed: %s\n",e2.what());
-                return false;
-            }
+        // Allocate per-layer weight BOs — same group_id so instructions
+        // work identically across layers. Weights loaded once, never re-DMA'd.
+        layerB_cached = false;  // per-layer weights exceed NPU cache; use host memory
+        fprintf(stderr,"  I8Ctx: allocating %d x layerB (%zu bytes each, gid=%d, HOST_ONLY)\n",NL,b_size(),k->group_id(gid_B));
+        layerB.reserve(NL);
+        for (int l = 0; l < NL; l++) {
+            layerB.emplace_back(std::make_unique<xrt::bo>(d,b_size(),XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
         }
         }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
     void packB(const float*w,int K,int N,float&sout){
         if(use_bf16){
             // BFP16 packing for BF16 xclbins
-            auto Bm = (uint8_t*)layerB[0]->map();
+            auto Bm = (uint8_t*)layerB[cur_layer]->map();
             pack_bfp16_weights(w, K, N, Bm, b_size());
             sout = 1.0f;  // BF16 output doesn't need scale
         }else{
             // INT8 packing
             float amax=0;
             for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
-            if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[0]->map();
+            if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[cur_layer]->map();
             for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
                 int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}
         }
-        layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+        }
     inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
         if(use_bf16){
             // BF16 quantize: just convert f32 to bf16
@@ -173,8 +171,8 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         }
         return Am;}
     inline void sync_A(int l){(void)l;bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
-    inline xrt::run launch(){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
-    inline xrt::run sync_and_launch(){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
+    inline xrt::run launch(){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[cur_layer],*bC);}
+    inline xrt::run sync_and_launch(){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[cur_layer],*bC);}
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
         r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         if(use_bf16){
@@ -383,10 +381,8 @@ struct RuntimeAttnCtx {
             d.register_xclbin(*xc);
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
             k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
-            bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4,
-                0, k->group_id(0));
-            bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4,
-                0, k->group_id(1));
+            bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4, 0, k->group_id(0));
+            bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4, 0, k->group_id(1));
             ok = true;
             return true;
         } catch (std::exception& ex) {
@@ -926,47 +922,25 @@ int main(int argc,char**argv){
 #endif
     };
 
-    // Pre-pack all layer weights at load time (eliminates per-layer Q4NX dequant + BFP16 pack)
-    struct PrepackedW {
-        std::vector<uint8_t> q, o, g, d, u;
-    };
-    std::vector<PrepackedW> prepacked;
+    // Pre-pack all layer weights into per-layer NPU-resident BOs.
+    // pack_layer_weights writes to layerB[cur_layer] via set_layer();
+    // once loaded, weights stay resident — no per-token memcpy or DMA needed.
     if (use_bf16_xclbins) {
-        fprintf(stderr,"Pre-packing weights...\n");
+        fprintf(stderr,"Pre-packing weights into NPU-resident BOs...\n");
         auto tp=std::chrono::steady_clock::now();
-        prepacked.resize(NC);
         for (int l = 0; l < NC; l++) {
+            cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+            if (cu_ptr) cu_ptr->set_layer(l);
             pack_layer_weights(l);
-            prepacked[l].q.assign((const uint8_t*)cq.layerB[0]->map(),
-                (const uint8_t*)cq.layerB[0]->map() + cq.b_size());
-            prepacked[l].o.assign((const uint8_t*)co.layerB[0]->map(),
-                (const uint8_t*)co.layerB[0]->map() + co.b_size());
-            prepacked[l].g.assign((const uint8_t*)cg.layerB[0]->map(),
-                (const uint8_t*)cg.layerB[0]->map() + cg.b_size());
-            prepacked[l].d.assign((const uint8_t*)cd.layerB[0]->map(),
-                (const uint8_t*)cd.layerB[0]->map() + cd.b_size());
-            if (cfg.gu_split && cu_ptr) {
-                prepacked[l].u.assign((const uint8_t*)cu_ptr->layerB[0]->map(),
-                    (const uint8_t*)cu_ptr->layerB[0]->map() + cu_ptr->b_size());
-            }
         }
         fprintf(stderr,"  Prep: %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
-        // Replace pack_layer_weights with fast memcpy path
+        // Replace pack_layer_weights with per-layer BO selection only.
+        // Weights are already resident in layerB[l] — no memcpy, no DMA sync.
         pack_layer_weights = [&](int l) {
-            memcpy(cq.layerB[0]->map(),prepacked[l].q.data(),prepacked[l].q.size());
-            cq.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            memcpy(co.layerB[0]->map(),prepacked[l].o.data(),prepacked[l].o.size());
-            co.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            memcpy(cg.layerB[0]->map(),prepacked[l].g.data(),prepacked[l].g.size());
-            cg.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            memcpy(cd.layerB[0]->map(),prepacked[l].d.data(),prepacked[l].d.size());
-            cd.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            if(cfg.gu_split&&cu_ptr&&!prepacked[l].u.empty()){
-                memcpy(cu_ptr->layerB[0]->map(),prepacked[l].u.data(),prepacked[l].u.size());
-                cu_ptr->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+            cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+            if (cu_ptr) cu_ptr->set_layer(l);
         };
     }
-
     // RoPE
     ri(HD,cfg.rope_theta,4096);
     int kv_dwords=NKV*HD/2;
@@ -1008,6 +982,7 @@ int main(int argc,char**argv){
     // operations (QKV, OPROJ, GATEUP, DOWN) via this protocol. Each request
     // is header[4] (op, layer, batch, in_dim) followed by float input data.
     // Response is header[2] (0=ok, out_dim) followed by float output data.
+    static int worker_pos = 0;
     if(worker_mode){
         fprintf(stderr,"WORKER_READY\n");
         fflush(stderr);
@@ -1123,6 +1098,263 @@ int main(int argc,char**argv){
                         cd.go( in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
+                }else if(op==30){ // Fused forward: one layer, one IPC call
+                    // Bundles all 4 GEMMs + CPU ops for ONE layer into a single call.
+                    // Eliminates 4 pipe roundtrips per layer.
+                    int l = (int)layer;
+                    if(l >= NC){ ok=false; break; }
+                    out_dim = H;
+                    out_data.resize(H, 0);
+                    
+                    // Copy input
+                    memcpy(h_data.data(), in_data.data(), H * sizeof(float));
+                    
+                    // Save residual
+                    memcpy(sb_data.data(), h_data.data(), H * sizeof(float));
+                    
+                    // RMS Norm (pre-attention)
+                    rn_c(h_data.data(), in_n[l].data(), H);
+                    
+                    // QKV GEMM
+                    pack_layer_weights(l);
+                    float ascale = dynamic_ascale(h_data.data(), H);
+                    cq.go(h_data.data(), 1, H, ascale, qsc[l], qo_data.data(), qkv_n);
+                    cn(qo_data.data(), qkv_n);
+                    
+                    // Q norm + RoPE
+                    for(int hh=0; hh<NH; hh++){
+                        float* q = qo_data.data() + hh * HD;
+                        double sq = 0;
+                        for(int d=0; d<HD; d++) sq += (double)q[d] * q[d];
+                        float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
+                        const float* qn = qn_w[l].empty() ? nullptr : qn_w[l].data();
+                        for(int d=0; d<HD; d++) q[d] *= iq * (qn ? qn[d] : 1.0f);
+                        ra(q, HD, worker_pos);
+                    }
+                    // K norm + RoPE
+                    for(int kvh=0; kvh<NKV; kvh++){
+                        float* k = qo_data.data() + NH * HD + kvh * HD;
+                        double sk = 0;
+                        for(int d=0; d<HD; d++) sk += (double)k[d] * k[d];
+                        float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
+                        const float* kn = kn_w[l].empty() ? nullptr : kn_w[l].data();
+                        for(int d=0; d<HD; d++) k[d] *= ik * (kn ? kn[d] : 1.0f);
+                        ra(k, HD, worker_pos);
+                    }
+                    
+                    // Store KV
+                    int sp = kv_caches[l].n;
+                    for(int kvh=0; kvh<NKV; kvh++){
+                        memcpy(&kv_caches[l].k[(size_t)sp * NKV * HD + (size_t)kvh * HD],
+                               qo_data.data() + NH * HD + kvh * HD, HD * 4);
+                        memcpy(&kv_caches[l].v[(size_t)sp * NKV * HD + (size_t)kvh * HD],
+                               qo_data.data() + NH * HD + NKV * HD + kvh * HD, HD * 4);
+                    }
+                    kv_caches[l].n = sp + 1;
+                    int cl = kv_caches[l].n;
+                    
+                    // CPU Attention
+                    attn_omp(qo_data.data(), at_data.data(), cl,
+                             kv_caches[l].k.data(), kv_caches[l].v.data(),
+                             NH, NKV, HD, GQA);
+                    
+                    // O projection
+                    ascale = dynamic_ascale(at_data.data(), NH * HD);
+                    co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
+                    cn(h_data.data(), H);
+                    
+                    // Residual add (post-attention)
+                    for(int i=0; i<H; i++) h_data[i] += sb_data[i];
+                    
+                    // Save residual for post-FFN
+                    memcpy(sb_data.data(), h_data.data(), H * sizeof(float));
+                    
+                    // RMS Norm (post-attention)
+                    rn_c(h_data.data(), pa_n[l].data(), H);
+                    
+                    // Gate+Up projection
+                    ascale = dynamic_ascale(h_data.data(), H);
+                    int gu_dim = cfg.gu_split ? IM : (2*IM);
+                    cg.go(h_data.data(), 1, H, ascale, gsc[l], gt_data.data(), gu_dim);
+                    cn(gt_data.data(), gu_dim);
+                    
+                    // SiLU gate (+ Up if split)
+                    if(cfg.gu_split){
+                        ascale = dynamic_ascale(h_data.data(), H);
+                        cu_ptr->go(h_data.data(), 1, H, ascale, usc[l], su_data.data(), IM);
+                        cn(su_data.data(), IM);
+                        for(int i=0; i<IM; i++)
+                            gt_data[i] = silu_f(gt_data[i]) * su_data[i];
+                    }else{
+                        for(int i=0; i<IM; i++)
+                            gt_data[i] = silu_f(gt_data[i]) * gt_data[IM + i];
+                    }
+                    
+                    // Down projection
+                    ascale = dynamic_ascale(gt_data.data(), IM);
+                    cd.go(gt_data.data(), 1, IM, ascale, dsc[l], h_data.data(), H);
+                    cn(h_data.data(), H);
+                    
+                    // Residual add (post-FFN)
+                    for(int i=0; i<H; i++) h_data[i] += sb_data[i];
+                    
+                    // Output
+                    memcpy(out_data.data(), h_data.data(), H * sizeof(float));
+                }else if(op==31){ // Fused forward: ALL layers, one IPC call
+                    // Does a complete forward pass (all 36 layers) in one shot.
+                    // Input: token embedding [H]
+                    // Output: hidden state after all layers [H]
+                    // Also updates KV cache internally.
+                    out_dim = H;
+                    out_data.resize(H, 0);
+                    memcpy(h_data.data(), in_data.data(), H * sizeof(float));
+                    
+                    for(int l=0; l<NC; l++){
+                        memcpy(sb_data.data(), h_data.data(), H * sizeof(float));
+                        rn_c(h_data.data(), in_n[l].data(), H);
+                        
+                        pack_layer_weights(l);
+                        float ascale = dynamic_ascale(h_data.data(), H);
+                        cq.go(h_data.data(), 1, H, ascale, qsc[l], qo_data.data(), qkv_n);
+                        cn(qo_data.data(), qkv_n);
+                        
+                        for(int hh=0; hh<NH; hh++){
+                            float* q = qo_data.data() + hh * HD;
+                            double sq = 0;
+                            for(int d=0; d<HD; d++) sq += (double)q[d] * q[d];
+                            float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
+                            for(int d=0; d<HD; d++) q[d] *= iq;
+                            ra(q, HD, worker_pos);
+                        }
+                        for(int kvh=0; kvh<NKV; kvh++){
+                            float* k = qo_data.data() + NH * HD + kvh * HD;
+                            double sk = 0;
+                            for(int d=0; d<HD; d++) sk += (double)k[d] * k[d];
+                            float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
+                            for(int d=0; d<HD; d++) k[d] *= ik;
+                            ra(k, HD, worker_pos);
+                        }
+                        
+                        int sp = kv_caches[l].n;
+                        for(int kvh=0; kvh<NKV; kvh++){
+                            memcpy(&kv_caches[l].k[(size_t)sp*NKV*HD+(size_t)kvh*HD],
+                                   qo_data.data()+NH*HD+kvh*HD, HD*4);
+                            memcpy(&kv_caches[l].v[(size_t)sp*NKV*HD+(size_t)kvh*HD],
+                                   qo_data.data()+NH*HD+NKV*HD+kvh*HD, HD*4);
+                        }
+                        kv_caches[l].n = sp + 1;
+                        int cl = kv_caches[l].n;
+                        
+                        attn_omp(qo_data.data(), at_data.data(), cl,
+                                 kv_caches[l].k.data(), kv_caches[l].v.data(),
+                                 NH, NKV, HD, GQA);
+                        
+                        ascale = dynamic_ascale(at_data.data(), NH*HD);
+                        co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
+                        cn(h_data.data(), H);
+                        for(int i=0; i<H; i++) h_data[i] += sb_data[i];
+                        
+                        memcpy(sb_data.data(), h_data.data(), H*sizeof(float));
+                        rn_c(h_data.data(), pa_n[l].data(), H);
+                        
+                        ascale = dynamic_ascale(h_data.data(), H);
+                        int gu_dim = cfg.gu_split ? IM : (2*IM);
+                        cg.go(h_data.data(), 1, H, ascale, gsc[l], gt_data.data(), gu_dim);
+                        cn(gt_data.data(), gu_dim);
+                        
+                        if(cfg.gu_split){
+                            ascale = dynamic_ascale(h_data.data(), H);
+                            cu_ptr->go(h_data.data(), 1, H, ascale, usc[l], su_data.data(), IM);
+                            cn(su_data.data(), IM);
+                            for(int i=0; i<IM; i++)
+                                gt_data[i] = silu_f(gt_data[i]) * su_data[i];
+                        }else{
+                            for(int i=0; i<IM; i++)
+                                gt_data[i] = silu_f(gt_data[i]) * gt_data[IM + i];
+                        }
+                        
+                        ascale = dynamic_ascale(gt_data.data(), IM);
+                        cd.go(gt_data.data(), 1, IM, ascale, dsc[l], h_data.data(), H);
+                        cn(h_data.data(), H);
+                        for(int i=0; i<H; i++) h_data[i] += sb_data[i];
+                    }
+                    worker_pos++;
+                    memcpy(out_data.data(), h_data.data(), H * sizeof(float));
+                }else if(op==32){ // Complete forward: embed→all layers→lm_head→token
+                    // Input: token_id (int passed as first float)
+                    // Output: next_token_id (float)
+                    // Entire forward pass inside subprocess. Backend just gets the token.
+                    int input_token = (int)in_data[0];
+                    out_dim = 1;
+                    out_data.resize(1, 0);
+                    
+                    if(input_token >= 0 && (size_t)input_token * H < emb_f32.size())
+                        memcpy(h_data.data(), &emb_f32[(size_t)input_token * H], H * sizeof(float));
+                    else
+                        memset(h_data.data(), 0, H * sizeof(float));
+                    
+                    for(int l=0; l<NC; l++){
+                        memcpy(sb_data.data(), h_data.data(), H * sizeof(float));
+                        if(!in_n[l].empty()) rn_c(h_data.data(), in_n[l].data(), H);
+                        pack_layer_weights(l);
+                        float ascale = dynamic_ascale(h_data.data(), H);
+                        cq.go(h_data.data(), 1, H, ascale, qsc[l], qo_data.data(), qkv_n);
+                        cn(qo_data.data(), qkv_n);
+                        for(int hh=0; hh<NH; hh++){
+                            float* q = qo_data.data() + hh * HD;
+                            double sq=0; for(int d=0; d<HD; d++) sq+=(double)q[d]*q[d];
+                            float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
+                            for(int d=0; d<HD; d++) q[d]*=iq;
+                            ra(q, HD, worker_pos);
+                        }
+                        for(int kvh=0; kvh<NKV; kvh++){
+                            float* k = qo_data.data() + NH*HD + kvh*HD;
+                            double sk=0; for(int d=0; d<HD; d++) sk+=(double)k[d]*k[d];
+                            float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
+                            for(int d=0; d<HD; d++) k[d]*=ik;
+                            ra(k, HD, worker_pos);
+                        }
+                        int sp = kv_caches[l].n;
+                        for(int kvh=0; kvh<NKV; kvh++){
+                            memcpy(&kv_caches[l].k[(size_t)sp*NKV*HD+(size_t)kvh*HD], qo_data.data()+NH*HD+kvh*HD, HD*4);
+                            memcpy(&kv_caches[l].v[(size_t)sp*NKV*HD+(size_t)kvh*HD], qo_data.data()+NH*HD+NKV*HD+kvh*HD, HD*4);
+                        }
+                        kv_caches[l].n = sp+1;
+                        int cl = kv_caches[l].n;
+                        attn_omp(qo_data.data(), at_data.data(), cl, kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA);
+                        ascale = dynamic_ascale(at_data.data(), NH*HD);
+                        co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
+                        cn(h_data.data(), H);
+                        for(int i=0; i<H; i++) h_data[i] += sb_data[i];
+                        memcpy(sb_data.data(), h_data.data(), H*sizeof(float));
+                        rn_c(h_data.data(), pa_n[l].data(), H);
+                        ascale = dynamic_ascale(h_data.data(), H);
+                        cg.go(h_data.data(), 1, H, ascale, gsc[l], gt_data.data(), cfg.gu_split?IM:(2*IM));
+                        cn(gt_data.data(), cfg.gu_split?IM:(2*IM));
+                        if(cfg.gu_split){
+                            ascale = dynamic_ascale(h_data.data(), H);
+                            cu_ptr->go(h_data.data(), 1, H, ascale, usc[l], su_data.data(), IM);
+                            cn(su_data.data(), IM);
+                            for(int i=0; i<IM; i++) gt_data[i] = silu_f(gt_data[i]) * su_data[i];
+                        }else{
+                            for(int i=0; i<IM; i++) gt_data[i] = silu_f(gt_data[i]) * gt_data[IM+i];
+                        }
+                        ascale = dynamic_ascale(gt_data.data(), IM);
+                        cd.go(gt_data.data(), 1, IM, ascale, dsc[l], h_data.data(), H);
+                        cn(h_data.data(), H);
+                        for(int i=0; i<H; i++) h_data[i] += sb_data[i];
+                    }
+                    worker_pos++;
+                    // Final norm
+                    rn_c(h_data.data(), fin_v.data(), H);
+                    // LM head: argmax
+                    double max_l = -1e30; int best_t = 0;
+                    for(int n=0; n<NV; n++){
+                        double s = 0; const float* e = emb_f32.data() + (size_t)n*H;
+                        for(int k=0; k<H; k++) s += (double)h_data[k]*e[k];
+                        if(s > max_l){ max_l = s; best_t = n; }
+                    }
+                    out_data[0] = (float)best_t;
                 }else{
                     ok=false;
                 }
@@ -1272,7 +1504,6 @@ int main(int argc,char**argv){
         cg.quantize_async(h_b.data(),npt,H,gu_ascale);
         cg.bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         cg.bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        cg.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         // Wait for O, then launch GU while reading O back
         co.wait_kernel(r_co);
         auto r_cg=cg.launch();
@@ -1431,7 +1662,6 @@ int main(int argc,char**argv){
             //   bI (instruction buffer) is CACHEABLE and read-only — skip re-sync.
             cg.bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
             cg.bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-            cg.layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
             // Phase 2: Wait for O kernel completion (minimal)
             co.wait_kernel(r_co);

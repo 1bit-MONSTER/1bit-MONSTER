@@ -188,10 +188,18 @@ install(TARGETS npu_engine_v13 DESTINATION bin)
 # ── npu_engine_fused — GPU+NPU fused zero-copy decode ──
 # GPU does QKV+Attn+O, NPU does GU+D, SharedBO zero-copy overlap.
 # ── GPU-accelerated targets — compiled with hipcc (handles __global__ + C++) ──
-execute_process(COMMAND hipconfig --rocmlibdir OUTPUT_VARIABLE HIP_LIB_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND hipconfig --rocmpath OUTPUT_VARIABLE ROCM_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
 find_program(HIPCC hipcc)
 
-if(HIPCC AND HIP_LIB_DIR)
+# Determine ROCm lib directory: check common locations
+if(HIPCC AND ROCM_PATH)
+    set(HIP_LIB_DIR "${ROCM_PATH}/lib")
+    if(NOT EXISTS "${HIP_LIB_DIR}/libamdhip64.so" AND NOT EXISTS "${HIP_LIB_DIR}/libamdhip64.so.7")
+        set(HIP_LIB_DIR "${ROCM_PATH}/lib/x86_64-linux-gnu")
+    endif()
+    if(NOT EXISTS "${HIP_LIB_DIR}/libamdhip64.so" AND NOT EXISTS "${HIP_LIB_DIR}/libamdhip64.so.7")
+        message(WARNING "libamdhip64 not found under ${HIP_LIB_DIR} — HIP targets may fail")
+    endif()
     macro(add_npu_hip_target target_name source_name)
         set(NPU_HIP_SRC
             "${CMAKE_CURRENT_SOURCE_DIR}/src/${source_name}.cpp"
@@ -208,10 +216,11 @@ if(HIPCC AND HIP_LIB_DIR)
                 -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
                 -I/opt/rocm/include
                 ${NPU_HIP_SRC}
+                ${ARGN}
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dequant_q4nx.cpp
                 -O3 -ffast-math -march=native -funroll-loops -fno-math-errno -mavx512f
                 `pkg-config --cflags --libs xrt-core 2>/dev/null || echo "-lxrt_coreutil -lxrt_core -luuid -lpthread"`
-                -L${HIP_LIB_DIR} -lamdhip64 -lOpenMP -laiebu -lm -ldl
+                -L${HIP_LIB_DIR} -lamdhip64 -laiebu -lm -ldl
                 -fopenmp
                 -o ${TARGET_BIN}
             DEPENDS ${NPU_HIP_SRC}
@@ -229,7 +238,17 @@ if(HIPCC AND HIP_LIB_DIR)
         # issue #1022.
     endmacro()
 
-    add_npu_hip_target(npu_engine_fused npu_engine_fused)
-    add_npu_hip_target(npu_engine_overlap npu_engine_overlap)
-    add_npu_hip_target(npu_engine_spec npu_engine_spec)
+    # gpu_kernels_fused.hip provides launch_lmhead/launch_gemv_tiled wrappers
+    # attn_stub.cpp provides rcpp_kv_cache_attn_decode CPU fallback
+    set(NPU_HIP_GPU_DEPS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_kernels_fused.hip"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/attn_stub.cpp"
+    )
+    add_npu_hip_target(npu_engine_fused npu_engine_fused ${NPU_HIP_GPU_DEPS})
+    add_npu_hip_target(npu_engine_overlap npu_engine_overlap ${NPU_HIP_GPU_DEPS})
+    # Spec engine: compiled with hipcc but WITHOUT gpu_kernels_fused.hip
+    # (has its own __global__ kernels defined inline)
+    add_npu_hip_target(npu_engine_spec npu_engine_spec
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/attn_stub.cpp"
+    )
 endif()
