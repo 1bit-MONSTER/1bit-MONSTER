@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Standalone BlackMamba → GGUF converter."""
-import struct, sys, json, torch, numpy as np
+import os, struct, sys, json, torch, numpy as np
 from huggingface_hub import hf_hub_download
 
 GGML_Q4_0 = 2
@@ -199,6 +199,24 @@ def convert(model_id, output):
     # LM head
     w.add_tensor("output.weight", emb, GGML_Q4_0)
     w.close()
+
+    # ── Validate output file ──
+    if os.path.getsize(output) == 0:
+        raise RuntimeError(f"Output file {output} is 0 bytes! Conversion failed.")
+    min_size = 100 * 1024 * 1024  # 100 MB minimum for a 2.8B model
+    actual_size = os.path.getsize(output)
+    if actual_size < min_size:
+        # Try to extract model size from model_id, e.g. "Zyphra/BlackMamba-2.8B"
+        model_size_label = next((p for p in model_id.replace('-', ' ').split() if any(c.isdigit() for c in p)), "?")
+        print(f"WARNING: Output file size ({actual_size} bytes / {actual_size/1024/1024:.1f} MB) "
+              f"is suspiciously small for a {model_size_label}B model")
+    with open(output, 'rb') as f:
+        magic = f.read(4)
+        if magic != b'GGUF':
+            print(f"WARNING: File does not start with GGUF magic bytes (got {magic.hex()})")
+        else:
+            print(f"GGUF magic bytes verified: {magic}")
+    print(f"Validation passed: {output} ({actual_size} bytes)")
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:

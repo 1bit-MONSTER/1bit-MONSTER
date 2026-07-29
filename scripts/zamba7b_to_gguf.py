@@ -8,7 +8,7 @@ Zamba-7B-v1 architecture:
 - No MoE, d_state=16, d_conv=4, hidden=3712, d_inner=7424, dt_rank=232
 - Vocab: 32000, RoPE, RMS norm
 """
-import struct, sys, json, torch, numpy as np
+import os, struct, sys, json, torch, numpy as np
 from huggingface_hub import hf_hub_download
 
 GGML_F16 = 1
@@ -239,6 +239,22 @@ def convert(output):
         print(f"  Layer {l}/{nl} {'[hybrid]' if is_hybrid else '[mamba]'} done")
 
     w.close()
+
+    # ── Validate output file ──
+    if os.path.getsize(output) == 0:
+        raise RuntimeError(f"Output file {output} is 0 bytes! Conversion failed.")
+    min_size = 100 * 1024 * 1024  # 100 MB minimum for a 7B model
+    actual_size = os.path.getsize(output)
+    if actual_size < min_size:
+        print(f"WARNING: Output file size ({actual_size} bytes / {actual_size/1024/1024:.1f} MB) "
+              f"is suspiciously small for a 7B model")
+    with open(output, 'rb') as f:
+        magic = f.read(4)
+        if magic != b'GGUF':
+            print(f"WARNING: File does not start with GGUF magic bytes (got {magic.hex()})")
+        else:
+            print(f"GGUF magic bytes verified: {magic}")
+    print(f"Validation passed: {output} ({actual_size} bytes)")
 
 
 if __name__ == "__main__":

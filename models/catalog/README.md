@@ -57,3 +57,39 @@ Models in **1BP format** — the project's native single-file format (256-byte h
 **Total: 24 models** (8 new additions: Gemma3-1B, Gemma3-4B, Granite3.2-2B, Llama-3.2-1B/3B, Mistral-7B, Qwen2.5-7B, Qwen2.5-Coder-7B)
 
 *Last updated: 2026-07-21*
+
+---
+
+## ⚠️ Handling 0-byte / Corrupt Models
+
+If a HuggingFace repo contains a 0-byte or truncated model file:
+
+1. **Never upload empty files.** All converters in `scripts/` now validate output files
+   before exiting — they raise `RuntimeError` if the result is 0 bytes and warn if it's
+   suspiciously small.
+
+2. **Validate any downloaded model file** with the standalone validation script:
+
+   ```bash
+   ./scripts/validate_model_file.sh path/to/model.gguf
+   ```
+
+   This checks file existence, zero-byte detection, magic bytes (GGUF, 1BP, H1B,
+   safetensors, etc.), and prints human-readable size.
+
+3. **If you find a 0-byte model in the catalog**, delete it from HuggingFace:
+
+   ```bash
+   huggingface-cli delete bong-water-water-bong/RepoName --yes
+   ```
+
+   Then re-run the conversion and validate before uploading.
+
+4. **Before pushing a model to HuggingFace**, always run:
+
+   ```bash
+   ./scripts/validate_model_file.sh ./converted_model.gguf
+   ```
+
+   And verify the output says `GGUF ✅` (or the appropriate format) with a
+   reasonable file size for the parameter count.
