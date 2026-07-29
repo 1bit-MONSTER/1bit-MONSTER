@@ -5,17 +5,16 @@
 # One Binary to rule them all
 
 ### Pure C++23 inference engine · NPU + GPU + CPU in a single binary · Zero Python · Zero Rust · Zero config files
+# 1bit.systems — One Binary. All Backends.
 
 [![CI](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-00ff00.svg)](LICENSE)
-[![Site](https://img.shields.io/badge/site-1bit.systems-12a0ed.svg)](https://1bit.systems)
 [![ROCm](https://img.shields.io/badge/rocm-7.15.0a-f00fd2.svg)](https://github.com/bong-water-water-bong/TheRock)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76b900.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Metal](https://img.shields.io/badge/Metal-Apple%20Silicon-ff9500.svg)](https://developer.apple.com/metal/)
 [![Strix Halo](https://img.shields.io/badge/strix%20halo-gfx1151%20%2B%20XDNA%202-12a0ed.svg)](https://www.amd.com/en/products/processors/laptop/ryzen/ai-max-series.html)
 [![GGUF](https://img.shields.io/badge/GGUF-Qwen2%20%7C%20Qwen3%20%7C%20Mamba-00ff00)](src/gguf_loader.cpp)
 [![1BP](https://img.shields.io/badge/1BP-single%20file%2C%20zero%20config-00ffaa)](include/onebp_format.h)
-[![Tests](https://img.shields.io/github/actions/workflow/status/bong-water-water-bong/1bit-systems/ci.yml?branch=main&label=tests)](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml)
 
 **[🌐 Website](https://1bit.systems)** · **[🤗 1BP Models](https://huggingface.co/bong-water-water-bong)** · **[📚 Docs](docs/README.md)** · **[🛠️ Journey](docs/journey.md)** · **[📊 Benchmarks](docs/wiki/performance.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
@@ -86,6 +85,22 @@ Model-agnostic end to end: the engine auto-detects architecture and quantization
 </div>
 
 ---
+## What is this?
+
+A single C++23 binary (~207 KB) that runs LLMs and VLMs on AMD NPU (XDNA 2),
+ROCm/CUDA/Metal/Vulkan GPU, and CPU — zero Python, zero config files.
+Auto-detects 18 model architectures from GGUF/1BP headers.
+
+We reverse-engineered AMD's closed-source NPU stack (FastFlowLM), extracted 37
+pre-built models with 209 NPU xclbins, and created our own 1BP ternary weight
+format to transform AMD's open-source models into high-performance binaries.
+MIT licensed.
+
+**Key numbers:**
+- 18 model architectures · 46+ 1BP models · 4 backends
+- 433 tok/s peak kernel (Q1 GEMV, ROCm HIP)
+- 79.4 tok/s end-to-end (BlackMamba 1.5B, Strix Halo)
+- 37 FLM models extracted (209 NPU xclbins)
 
 ## Quick Start
 
@@ -114,6 +129,17 @@ See the [Installation Guide](docs/wiki/Installation.md) for full instructions.
 | Laguna | Dense | GPU HIP (kernel) | 543 | ✅ |
 | Falcon | Dense + MQA | GPU HIP (kernel) | 543 | ✅ |
 | OLMo | Dense (no RoPE) | GPU HIP (kernel) | 543 | ✅ |
+| Zamba2 | Mamba2 hybrid | GPU Vulkan | ~30 | ✅ |
+| Qwen2/Qwen3 | Dense / VL | GPU HIP / NPU | — | ✅ |
+| Llama 3.1/3.2 | Dense | GPU HIP / NPU | — | ✅ |
+| DeepSeek V2/V3/R1 | MoE + MLA | GPU HIP | — | ✅ |
+| Mistral / Pixtral | Dense | GPU HIP | — | ✅ |
+| Gemma 3/4 | Dense | NPU / GPU | — | ✅ |
+| Phi4-Mini | Dense | NPU | — | ✅ |
+| Bonsai (Deepgrove) | Ternary-native | GPU HIP | 21.9 | ✅ |
+| Laguna | Dense | GPU HIP | — | ✅ |
+| Falcon | Dense + MQA | GPU HIP | — | ✅ |
+| OLMo | Dense (no RoPE) | GPU HIP | — | ✅ |
 | ZR1 | Dense reasoning | GPU Vulkan | 26 | ✅ |
 | Qwen2-VL / Qwen3-VL | Vision-Language | GPU HIP | — | ✅ |
 | Whisper | Speech-to-text | NPU / GPU | — | ✅ |

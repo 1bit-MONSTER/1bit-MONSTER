@@ -3,6 +3,7 @@
 # Supported Models & Performance
 
 The 1bit-systems engine auto-detects 19 model architectures from GGUF/1BP headers — no config files needed. We reverse-engineered AMD's NPU stack, extracted 37 FLM models with 209 pre-compiled XDNA 2 xclbins, and created our own 1BP ternary format to make AMD's open-source models run at maximum throughput on NPU + GPU.
+The 1bit-systems engine auto-detects 18 model architectures from GGUF/1BP headers — no config files needed. We reverse-engineered AMD's NPU stack, extracted 37 FLM models with 209 pre-compiled XDNA 2 xclbins, and created our own 1BP ternary format to make AMD's open-source models run at maximum throughput on NPU + GPU.
 
 ## Backend Availability Legend
 
@@ -77,6 +78,8 @@ Next-gen dense transformers with improved multi-lingual and reasoning performanc
 - **Qwen3-VL:** 4B-Instruct on NPU (`peano_dims` ready, 6 xclbins) — vision-language
 - **GPU HIP:** GGUF through ROCm HIP — validated (kernel bench: 431 tok/s Q1, 543 tok/s TQ2)
 - **GPU Vulkan:** Qwen3-0.6B at 259 tok/s decode, 333 tok/s prefill — ✅ validated (ZINC bench)
+- **GPU HIP:** GGUF through ROCm HIP — validated
+- **GPU Vulkan:** GGUF — functional, perf data pending
 
 #### 3. Llama 3.1 / 3.2
 
@@ -147,6 +150,10 @@ Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end valida
 
 - **NPU:** ❌ not yet (Peano dims pending)
 - **GPU HIP:** GGUF — validated (kernel bench: 431 tok/s Q1, 345 tok/s fused TQ2)
+Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end validated at ~26 tok/s on Vulkan ZINC.
+
+- **NPU:** ❌ not yet
+- **GPU HIP:** GGUF — functional, perf data pending
 - **GPU Vulkan:** 1.5B at ~26 tok/s — ✅ validated end-to-end
 - **CPU:** ❌ not yet
 
@@ -166,6 +173,7 @@ Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end valida
 #### 12. Zaya1
 
 Zyphra MoE architecture with CCA (Cross-Channel Attention) + MoE FFN. Our flagship 1BP ternary format model. Tile8 GEMV benchmark (28-layer, Zaya1-8B shaped) measured at 57 tok/s on ROCm HIP.
+Zyphra MoE architecture with CCA (Cross-Channel Attention) + MoE FFN. Our flagship 1BP ternary format model.
 
 - **Zaya1-8B:** ~64 tok/s on ROCm HIP — ✅ validated
 - **Zaya1-74B-A4B:** ~17.9 tok/s on ROCm HIP — 🔬 preliminary (historical measurement)
@@ -220,6 +228,7 @@ Mamba1 SSM + top-1 MoE gating. **No attention mechanism** — alternating SSM sc
 #### 17. Zamba2
 
 Mamba2-hybrid architecture: Mamba2 SSM layers with sparse attention every 6 layers. End-to-end validated at ~30 tok/s on Vulkan ZINC. Mamba2 decode block benchmark measured at 1293 tok/s on ROCm HIP.
+Mamba2-hybrid architecture: Mamba2 SSM layers with sparse attention every 6 layers. End-to-end validated at ~30 tok/s on Vulkan ZINC.
 
 - **Zamba2-1.2B:** Vulkan ZINC — ✅ validated
 - **Zamba2-2.7B:** ~30 tok/s on Vulkan ZINC — ✅ validated
@@ -227,6 +236,7 @@ Mamba2-hybrid architecture: Mamba2 SSM layers with sparse attention every 6 laye
 - **NPU:** ❌ not yet
 - **GPU HIP:** Mamba2 decode block: 1293 tok/s — ✅ kernel verified
 - **GPU Vulkan:** ~30 tok/s (2.7B e2e) — ✅ validated
+- **GPU HIP:** GGUF — functional, perf data pending
 - **CPU:** ❌ not yet
 
 #### 18. Zamba
@@ -375,6 +385,34 @@ Models marked 🏃 live were downloaded fresh from HuggingFace, benchmarked with
 | Qwen 35B MoE Q4_K | — | 20 | zaya_server | Q4_K | ⚙️ optimized | 📋 prior |
 | Bonsai-1.7B (ZINC) | — | 21.7 | Vulkan ZINC | TQ2 | ✅ validated | 📋 prior |
 | CPU Zaya1-8B (generic) | — | 2.5 | CPU AVX-512 | 1BP | ✅ validated | 📋 prior |
+## Performance Data
+
+### Kernel-Level Microbenchmarks (synthetic, 28-layer buffer)
+
+> ⚠️ These measure single-GEMM-kernel throughput, isolated and correctness-verified bit-exact against a CPU reference. They exclude KV-cache attention, softmax, RoPE, non-GEMM FFN ops, sampler, tokenizer, and host↔device transfers — **not** an end-to-end decode number. See [performance methodology →](performance.md).
+
+| Benchmark | tok/s | Backend | Validated |
+|-----------|:-----:|---------|:---------:|
+| Q1 GEMV (fused) | 433 | ROCm HIP | 2026-07-24 |
+| Fused TQ2 (QKV+GU) | 420 | ROCm HIP | 2026-07-24 |
+| TQ2 GEMV | 367 | ROCm HIP | 2026-07-24 |
+| GPU ternary (Vulkan) | 318 | Vulkan ZINC | validated |
+| ROCm HIP (kernels) | 64 | ROCm HIP | validated |
+| NPU INT8 GEMM | 0/10000 errors (22/22 shapes) | XDNA 2 (Peano) | 2026-07-28 |
+
+### End-to-End (real models, real prompts, Strix Halo)
+
+| Model | tok/s | Backend | Status |
+|-------|:-----:|---------|--------|
+| BlackMamba 1.5B | 79.4 | ROCm HIP | ✅ validated |
+| BlackMamba 2.8B | 46.0 | ROCm HIP | ✅ validated |
+| ZR1-1.5B | ~26 | Vulkan ZINC | ✅ validated |
+| Zamba2-2.7B | ~30 | Vulkan ZINC | ✅ validated |
+| Bonsai-1.7B Q1_0 | 21.9 | ROCm HIP | ✅ validated |
+| Qwen 27B Q4_K | 30 | zaya_server (ROCm HIP) | ⚙️ optimized |
+| Qwen 35B MoE Q4_K | 20 | zaya_server (ROCm HIP) | ⚙️ optimized |
+| Zaya1-8B | ~64 | ROCm HIP | ✅ validated |
+| Zaya1-74B-A4B | 17.9 | ROCm HIP | 🔬 preliminary |
 
 ---
 
