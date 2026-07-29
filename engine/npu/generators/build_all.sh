@@ -33,7 +33,7 @@ build_one() {
     
     if [ -f "$XDIR/final_i8_${proj}_${tag}.xclbin" ]; then
         local sz=$(stat -c%s "$XDIR/final_i8_${proj}_${tag}.xclbin" 2>/dev/null)
-        echo "  ✅ $proj $tag ($(numfmt --to=iec $sz))"
+        echo "  ✅ $proj $tag ($(numfmt --to=iec "$sz"))"
     else
         echo "  ❌ $proj $tag"
     fi
@@ -81,5 +81,5 @@ done
 
 echo ""
 echo "=== Done: $ok OK, $fail FAILED ==="
-ls "$XDIR"/final_i8_*.xclbin 2>/dev/null | grep -v backup | wc -l
+find "$XDIR" -name "final_i8_*.xclbin" -not -path "*backup*" 2>/dev/null | wc -l
 echo "total xclbins"

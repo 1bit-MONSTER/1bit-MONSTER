@@ -1,0 +1,94 @@
+
+MEMORY
+{
+   program (RX) : ORIGIN = 0, LENGTH = 0x0020000
+   data (!RX) : ORIGIN = 0x7F00C, LENGTH = 0xFF4
+}
+ENTRY(__start)
+SECTIONS
+{
+  . = 0x0;
+  .text : {
+     /* the __start symbol has to come at address zero. */
+     *crt0.o(.text*)
+     _ctors_start = .;
+     _init_array_start = .;
+     KEEP(SORT(*.init_array))
+     _ctors_end = .;
+     _init_array_end = .;
+     _dtors_start = .;
+     _dtors_end = .;
+     *(.text*)
+  } > program
+  .data : {
+     *(.data*)
+     *(.rodata*)
+  } > data
+  .comment : {
+     *(.comment*)
+  }
+  .symtab : {
+     *(.symtab)
+  }
+  .shstrtab : {
+     *(.shstrtab)
+  }
+  .strtab : {
+     *(.strtab)
+  }
+  .stack_sizes : {
+     *(.stack_sizes)
+  }
+
+. = 0x70000;
+_sp_start_value_DM_stack = .;
+. += 0x2000; /* stack */
+/* No tile with memory exists to the south. */
+. = 0x40000;
+. += 0x10000;
+. = 0x52000;
+C_C1_buff_0 = .;
+. += 0x4000;
+. = 0x56000;
+C_C1_buff_1 = .;
+. += 0x4000;
+. = 0x5A000;
+B_C1_cons_buff_0 = .;
+. += 0x2000;
+. = 0x5C000;
+B_C1_cons_buff_1 = .;
+. += 0x2000;
+. = 0x5E000;
+A_C_1_cons_buff_0 = .;
+. += 0x800;
+. = 0x5E800;
+A_C_1_cons_buff_1 = .;
+. += 0x800;
+. = 0x5F000;
+_anonymous1 = .;
+. += 0xC;
+. = 0x72000;
+C_C2_buff_0 = .;
+. += 0x4000;
+. = 0x76000;
+C_C2_buff_1 = .;
+. += 0x4000;
+. = 0x7A000;
+B_C2_cons_buff_0 = .;
+. += 0x2000;
+. = 0x7C000;
+B_C2_cons_buff_1 = .;
+. += 0x2000;
+. = 0x7E000;
+A_C_2_cons_buff_0 = .;
+. += 0x800;
+. = 0x7E800;
+A_C_2_cons_buff_1 = .;
+. += 0x800;
+. = 0x7F000;
+_anonymous2 = .;
+. += 0xC;
+  .bss : { *(.bss*) } > data
+}
+INPUT(/home/bcloud/1bit-systems/engine/npu/generators/mm_32x64x128.o)
+PROVIDE(main = core_2_2);

@@ -74,7 +74,7 @@ build_one() {
     
     if [ -f "$xclbin" ]; then
         local size=$(stat -c%s "$xclbin" 2>/dev/null)
-        echo "  ✅ $(basename $xclbin) ($(numfmt --to=iec $size))"
+        echo "  ✅ $(basename "$xclbin") ($(numfmt --to=iec "$size"))"
         return 0
     else
         echo "  ❌ FAILED"
@@ -96,5 +96,5 @@ done
 echo ""
 echo "══════ RESULTS: ${ok} OK, ${fail} FAILED ══════"
 echo "Xclbins in: $XCLBIN_DIR"
-ls "$XCLBIN_DIR"/final_i8_*.xclbin 2>/dev/null | grep -v backup | wc -l
+find "$XCLBIN_DIR" -name "final_i8_*.xclbin" -not -path "*backup*" 2>/dev/null | wc -l
 echo "total xclbins"

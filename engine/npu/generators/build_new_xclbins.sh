@@ -117,8 +117,9 @@ build_xclbin() {
     
     local status=$?
     if [ $status -eq 0 ]; then
-        local size=$(stat -c%s "$XCLBIN_DIR/$xclbin_name" 2>/dev/null || echo "0")
-        echo "  ✅ ${xclbin_name} ($(numfmt --to=iec $size))"
+        local size
+        size=$(stat -c%s "$XCLBIN_DIR/$xclbin_name" 2>/dev/null || echo "0")
+        echo "  ✅ ${xclbin_name} ($(numfmt --to=iec "$size"))"
     else
         echo "  ❌ FAILED (exit=$status)"
     fi
@@ -152,6 +153,6 @@ echo "  Build complete: ${total_ok} OK, ${total_fail} failed"
 echo "================================================"
 echo ""
 echo "New xclbins in: $XCLBIN_DIR"
-ls -la "$XCLBIN_DIR"/final_i8_*.xclbin 2>/dev/null | grep -v backup | tail -30
+find "$XCLBIN_DIR" -name "final_i8_*.xclbin" -not -path "*backup*" -exec ls -la {} \; 2>/dev/null | tail -30
 echo ""
-echo "Total xclbins: $(ls "$XCLBIN_DIR"/final_i8_*.xclbin 2>/dev/null | grep -v backup | wc -l)"
+echo "Total xclbins: $(find "$XCLBIN_DIR" -name "final_i8_*.xclbin" -not -path "*backup*" 2>/dev/null | wc -l)"

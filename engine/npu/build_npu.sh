@@ -4,10 +4,10 @@ set -euo pipefail
 
 SRCDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SRCDIR/build"
-SRC="$SRCDIR/src/npu_engine_universal.cpp"
-DEQUANT="$SRCDIR/src/dequant_q4nx.cpp"
+SRC=""$SRCDIR"/src/npu_engine_universal.cpp"
+DEQUANT=""$SRCDIR"/src/dequant_q4nx.cpp"
 DEQUANT_O="$BUILDDIR/dequant_q4nx.o"
-INSTR_GEN="$SRCDIR/src/gemm_npu_instructions.cpp"
+INSTR_GEN=""$SRCDIR"/src/gemm_npu_instructions.cpp"
 INSTR_GEN_O="$BUILDDIR/gemm_npu_instructions.o"
 
 # XRT headers at /usr/include, libs at system default path
@@ -22,7 +22,7 @@ fi
 # One-time: compile NPU instruction generator
 if [ ! -f "$INSTR_GEN_O" ] || [ "$INSTR_GEN" -nt "$INSTR_GEN_O" ]; then
     echo "g++ -c -std=c++23 -O3 -o $INSTR_GEN_O $INSTR_GEN"
-    g++ -c -std=c++23 -O3 -fopenmp -I$SRCDIR/src -I$SRCDIR/include -I$XRT_INC \
+    g++ -c -std=c++23 -O3 -fopenmp -I"$SRCDIR"/src -I"$SRCDIR"/include -I$XRT_INC \
         -o "$INSTR_GEN_O" "$INSTR_GEN"
 fi
 
@@ -44,7 +44,7 @@ MODELS=(
 CXX="${CXX:-g++}"
 # XRT uses shared libs (must come AFTER source on command line)
 LIBS=(-lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl)
-CXXFLAGS=(-std=c++23 -O3 -fopenmp -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$XRT_INC")
+CXXFLAGS=(-std=c++23 -O3 -fopenmp -I""$SRCDIR"/src" -I""$SRCDIR"/include" -I"$XRT_INC")
 
 echo "=== Building NPU engine variants ==="
 mkdir -p "$BUILDDIR"
