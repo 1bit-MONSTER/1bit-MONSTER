@@ -33,6 +33,12 @@ MODELS=(
     "qwen3_vl_4b"
     "llama"
     "gemma4_e2b"
+    "qwen3_6_moe_35b"
+    "qwen3_5_4b"
+    "gemma4_e4b"
+    "phi4_mini_4b"
+    "nanbeige4_1_3b"
+    "zr1"
 )
 
 CXX="${CXX:-g++}"
