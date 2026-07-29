@@ -27,6 +27,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC2034
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # ── Default paths ────────────────────────────────────────────────────
