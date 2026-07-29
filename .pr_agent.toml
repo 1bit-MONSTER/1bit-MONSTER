@@ -37,3 +37,10 @@ enable_help_text = false
 model = "opencode/glm-5.2"
 fallback_models = ["deepseek/deepseek-chat", "openai/gpt-4o-mini"]
 ignore_pr_labels = []
+# None of the above models are registered in pr-agent's internal MAX_TOKENS
+# table, so every review/description/suggestion call was throwing
+# "Ensure {model} is defined in MAX_TOKENS ... or set a positive value for
+# it in config.custom_model_max_tokens" and failing silently on every PR
+# since this file was added. 128000 is safe for all three models' real
+# context windows.
+custom_model_max_tokens = 128000
