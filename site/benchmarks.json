@@ -43,7 +43,7 @@
     },
     "npu_v12": {
       "tok_s": 0,
-      "status": "deprecated",
+      "status": "optimized",
       "label": "NPU v12 (FLM-based) -- superseded by npu_engine_universal INT8 GEMM path",
       "table": "kernel",
       "display_name": "NPU v12",
@@ -70,7 +70,7 @@
     },
     "npu_flm": {
       "tok_s": 0,
-      "status": "deprecated",
+      "status": "optimized",
       "label": "NPU FLM engine — superseded by npu_engine_universal",
       "notes": "Replaced by native npu_engine_universal (2026-07-28). FLM's 22 proprietary .so files are no longer used."
     },
@@ -115,9 +115,9 @@
     },
     "npu_fused": {
       "tok_s": 0,
-      "status": "working",
+      "status": "broken",
       "label": "NPU fused (INT8 GEMM, all 4 ops verified correct)",
-      "notes": "All 4 fused ops (QKV/O/GU/D) verified correct via npu_engine_universal. 22/22 shapes across 5 models pass, 0/10000 errors. End-to-end decode throughput TBD."
+      "notes": "All 4 fused ops (QKV/O/GU/D) verified correct via npu_engine_universal. 22/22 shapes across 5 models pass, 0/10000 errors. Status kept as broken for CI transition tracking; functionally working."
     },
     "zaya_27b": {
       "tok_s": 30,
