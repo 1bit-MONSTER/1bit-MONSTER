@@ -49,6 +49,9 @@
 #include "jarvis/tools.h"
 #include "jarvis/tts.h"
 #include "jarvis/vad.h"
+#include "jarvis/auth.h"
+#include "jarvis/usage.h"
+#include "jarvis/billing.h"
 #include "whisper.h"
 
 using json = nlohmann::json;
@@ -161,6 +164,37 @@ static jarvis::CodecTts g_codec_tts;
 // ── Co-Host Intelligence (Phase 2.2) ─────────────────────────────────
 static jarvis::PersonaManager g_persona_mgr;
 static jarvis::ContextMemory g_context_mem(50);
+
+// ── Commercial API / SaaS Layer (Phase 2.3) ─────────────────────────
+static jarvis::AuthManager g_auth_mgr;
+static jarvis::UsageTracker g_usage_tracker;
+static jarvis::BillingManager g_billing_mgr;
+
+// Thread-local current owner, set by auth pre-routing handler
+static thread_local std::string tls_current_owner;
+static const std::string& current_owner() { return tls_current_owner; }
+
+// PlanTier string conversion helpers
+static const char* plan_tier_to_string(jarvis::PlanTier tier) {
+    using jarvis::PlanTier;
+    switch (tier) {
+        case PlanTier::FREE:       return "free";
+        case PlanTier::BASIC:      return "basic";
+        case PlanTier::PRO:        return "pro";
+        case PlanTier::ENTERPRISE: return "enterprise";
+        case PlanTier::CUSTOM:     return "custom";
+    }
+    return "free";
+}
+
+static jarvis::PlanTier string_to_plan_tier(const std::string& s) {
+    using jarvis::PlanTier;
+    if (s == "basic")      return PlanTier::BASIC;
+    if (s == "pro")        return PlanTier::PRO;
+    if (s == "enterprise") return PlanTier::ENTERPRISE;
+    if (s == "custom")     return PlanTier::CUSTOM;
+    return PlanTier::FREE;
+}
 
 // ── Whisper STT (lazy singleton, matches the original's threading.Lock-
 // guarded lazy load in the deleted jarvis/stt.py) ─────────────────────
@@ -440,6 +474,9 @@ static json handle_chat(const json& body) {
         }
         g_kb.save_turn(session_id, "assistant", final_text);
         g_context_mem.add_turn("assistant", final_text);
+        // Track usage (estimate ~4 chars per token)
+        g_usage_tracker.record_usage(current_owner(), 0.0,
+                                      (int64_t)(final_text.size() / 4));
     } else {
         ChatFn fn{[](const std::string& m, const json& msgs, int mt, float t) { return unified_chat(m, msgs, mt, t); }};
         json result = fn.fn(route.target_model, full_messages, max_tokens, temperature);
@@ -457,6 +494,9 @@ static json handle_chat(const json& body) {
         }
         g_kb.save_turn(session_id, "assistant", final_text);
         g_context_mem.add_turn("assistant", final_text);
+        // Track usage (estimate ~4 chars per token)
+        g_usage_tracker.record_usage(current_owner(), 0.0,
+                                      (int64_t)(final_text.size() / 4));
     }
 
     json response = {
@@ -488,17 +528,84 @@ int main(int argc, char** argv) {
     httplib::Server svr;
     svr.set_payload_max_length(16 * 1024 * 1024); // 16 MiB, matches original MAX_BODY_SIZE
 
-    // CORS: scoped to exactly one origin (http://127.0.0.1), not "*" —
-    // deliberate in the original, preserved here.
+    // ── Auth middleware + CORS as pre-routing handler ────────────────
+    // All /v1/chat/*, /v1/audio/*, /v1/voice/*, /v1/api-key/*,
+    // /v1/usage, /v1/billing/* require API key auth.
+    // Free tier: /, /chat, /health, /live, /v1/models, /v1/pricing,
+    // /v1/billing/webhook, /v1/audio/devices — public, no auth.
     static const std::string kAllowedOrigin = "http://127.0.0.1";
     svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
+        // CORS preflight
         if (req.method == "OPTIONS") {
             res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
             res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            res.set_header("Access-Control-Allow-Headers", "Content-Type");
+            res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
             res.status = 204;
             return httplib::Server::HandlerResponse::Handled;
         }
+
+        // Public endpoints: no auth required
+        std::string path = req.path;
+        bool public_path = (path == "/" || path == "/chat" ||
+            path == "/health" || path == "/live" ||
+            path == "/v1/models" ||
+            path == "/v1/pricing" ||
+            path == "/v1/billing/webhook" ||
+            path.rfind("/v1/audio/devices", 0) == 0);
+        if (public_path) {
+            return httplib::Server::HandlerResponse::Unhandled;
+        }
+
+        // Auth-protected paths:
+        bool protected_path = (path.rfind("/v1/chat", 0) == 0 ||
+            path.rfind("/v1/audio/", 0) == 0 ||
+            path.rfind("/v1/voice/", 0) == 0 ||
+            path.rfind("/v1/api-key", 0) == 0 ||
+            path == "/v1/usage" ||
+            path.rfind("/v1/billing/", 0) == 0);
+
+        if (protected_path) {
+            auto auth_it = req.headers.find("Authorization");
+            if (auth_it == req.headers.end()) {
+                res.status = 401;
+                res.set_content(json{{"error", "missing Authorization header"}}.dump(), "application/json");
+                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                return httplib::Server::HandlerResponse::Handled;
+            }
+
+            const jarvis::ApiKey* key = g_auth_mgr.validate(auth_it->second);
+            if (!key) {
+                res.status = 401;
+                res.set_content(json{{"error", "invalid or expired API key"}}.dump(), "application/json");
+                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                return httplib::Server::HandlerResponse::Handled;
+            }
+
+            // Rate limit check
+            if (!g_auth_mgr.check_rate_limit(key->owner_id)) {
+                res.status = 429;
+                res.set_content(json{{"error", "rate limit exceeded"}}.dump(), "application/json");
+                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                return httplib::Server::HandlerResponse::Handled;
+            }
+
+            // Usage limit check — return 402 Payment Required when over limit
+            std::string limit_err = g_usage_tracker.check_limits(key->owner_id, key->tier);
+            if (!limit_err.empty()) {
+                res.status = 402;
+                json err_body = {
+                    {"error", limit_err},
+                    {"upgrade", "Please upgrade your plan at https://zaya.ai/billing"}
+                };
+                res.set_content(err_body.dump(), "application/json");
+                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                return httplib::Server::HandlerResponse::Handled;
+            }
+
+            // Store authenticated owner for downstream handlers
+            tls_current_owner = key->owner_id;
+        }
+
         return httplib::Server::HandlerResponse::Unhandled;
     });
     auto add_cors = [](httplib::Response& res) { res.set_header("Access-Control-Allow-Origin", kAllowedOrigin); };
@@ -730,15 +837,22 @@ int main(int argc, char** argv) {
         std::filesystem::remove(in_path, ec);
 
         std::string text;
+        double audio_minutes = 0.0;
         if (rc == 0 && std::filesystem::exists(out_path)) {
             int sr = 16000;
             auto pcm = whisper_load_wav(out_path, &sr);
             std::filesystem::remove(out_path, ec);
-            if (!pcm.empty()) text = whisper_transcribe(*model, pcm.data(), (int)pcm.size());
+            if (!pcm.empty()) {
+                text = whisper_transcribe(*model, pcm.data(), (int)pcm.size());
+                audio_minutes = pcm.size() / (16000.0 * 60.0);
+            }
         } else {
             std::filesystem::remove(out_path, ec);
         }
         if (text.empty()) text = "[silence]";
+
+        // Track usage: estimate audio duration from PCM size
+        g_usage_tracker.record_usage(current_owner(), audio_minutes, 0);
 
         res.set_content(json{{"text", text}}.dump(), "application/json");
         add_cors(res);
@@ -903,6 +1017,14 @@ int main(int argc, char** argv) {
             // A full base64 implementation would go here
             audio_b64 = "[wav:" + std::to_string(wav.size()) + " bytes]";
         }
+
+        // Track usage for this audio chat turn
+        double est_minutes = 1.0; // estimate ~1 min per voice turn
+        int64_t est_tokens = (int64_t)(reply.size() / 3);
+        if (!full_pcm.empty()) {
+            est_minutes = full_pcm.size() / (16000.0 * 60.0);
+        }
+        g_usage_tracker.record_usage(current_owner(), est_minutes, est_tokens);
 
         res.set_content(json{{"text", reply}, {"audio", audio_b64}}.dump(), "application/json");
         add_cors(res);
@@ -1091,7 +1213,206 @@ int main(int argc, char** argv) {
 
         if (play_local) play_wav_local(wav); // fire-and-forget, never blocks this response
 
+        // Track TTS usage: estimate from WAV duration
+        if (!wav.empty()) {
+            // WAV header at bytes 40-43 contains sample rate (24000 default)
+            int sample_rate = 24000;
+            if (wav.size() >= 44) {
+                uint32_t sr = *(const uint32_t*)(wav.data() + 24);
+                if (sr > 0) sample_rate = (int)sr;
+            }
+            size_t data_size = (wav.size() > 44) ? (wav.size() - 44) : 0;
+            double est_minutes = data_size / (double)(sample_rate * 2) / 60.0; // S16LE = 2 bytes/sample
+            g_usage_tracker.record_usage(current_owner(), est_minutes, 0);
+        }
+
         res.set_content(wav, "audio/wav");
+        add_cors(res);
+    });
+
+    // ── SaaS / Commercial API endpoints (Phase 2.3) ─────────────────
+
+    // POST /v1/api-key/create — create new API key (requires existing key)
+    svr.Post("/v1/api-key/create", [&](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) { body = json::object(); }
+
+        std::string owner_id = current_owner();
+        if (owner_id.empty()) {
+            res.status = 403;
+            res.set_content(json{{"error", "authentication required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        std::string tier_str = body.value("tier", "free");
+        PlanTier tier = string_to_plan_tier(tier_str);
+        int valid_days = body.value("valid_days", 365);
+
+        std::string key = g_auth_mgr.create_key(owner_id, tier, valid_days);
+        g_auth_mgr.save_keys("keys.json");
+
+        res.set_content(json{{"key", key}, {"owner_id", owner_id}, {"tier", tier_str}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // POST /v1/api-key/revoke — revoke API key
+    svr.Post("/v1/api-key/revoke", [&](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) { body = json::object(); }
+
+        std::string key = body.value("key", "");
+        if (key.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "key required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        if (!g_auth_mgr.revoke_key(key)) {
+            res.status = 404;
+            res.set_content(json{{"error", "key not found"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        g_auth_mgr.save_keys("keys.json");
+
+        res.set_content(json{{"status", "revoked"}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // GET /v1/api-key/list — list my API keys
+    svr.Get("/v1/api-key/list", [&](const httplib::Request&, httplib::Response& res) {
+        std::string owner_id = current_owner();
+        if (owner_id.empty()) {
+            res.status = 403;
+            res.set_content(json{{"error", "authentication required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        auto keys = g_auth_mgr.list_keys(owner_id);
+        json arr = json::array();
+        for (auto& ak : keys) {
+            arr.push_back({
+                {"key", ak.key.substr(0, 12) + "..."},  // masked
+                {"owner_id", ak.owner_id},
+                {"tier", static_cast<int>(ak.tier)},
+                {"active", ak.active},
+                {"created_at", ak.created_at},
+                {"expires_at", ak.expires_at},
+            });
+        }
+        res.set_content(json{{"keys", arr}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // GET /v1/usage — get current usage for authenticated owner
+    svr.Get("/v1/usage", [&](const httplib::Request&, httplib::Response& res) {
+        std::string owner_id = current_owner();
+        if (owner_id.empty()) {
+            res.status = 403;
+            res.set_content(json{{"error", "authentication required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        auto usage = g_usage_tracker.get_usage(owner_id);
+        json j;
+        j["owner_id"] = usage.owner_id;
+        j["minutes_used"] = usage.minutes_used;
+        j["tokens_processed"] = usage.tokens_processed;
+        j["requests_count"] = usage.requests_count;
+        j["period_start"] = usage.period_start;
+        j["period_end"] = usage.period_end;
+
+        // Include tier limits for context
+        auto keys = g_auth_mgr.list_keys(owner_id);
+        PlanTier tier = PlanTier::FREE;
+        if (!keys.empty()) tier = keys[0].tier;
+        auto limits = TierLimits::for_tier(tier);
+        j["limits"] = {
+            {"max_minutes", limits.max_minutes},
+            {"max_tokens", limits.max_tokens},
+            {"max_voices", limits.max_voices},
+        };
+
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    // GET /v1/pricing — get pricing info (public, no auth needed)
+    svr.Get("/v1/pricing", [&](const httplib::Request&, httplib::Response& res) {
+        auto pricing = g_billing_mgr.get_pricing();
+        json j;
+        j["basic_monthly"] = pricing.basic_monthly;
+        j["pro_monthly"] = pricing.pro_monthly;
+        j["enterprise_monthly"] = pricing.enterprise_monthly;
+        j["voice_clone_fee"] = pricing.voice_clone_fee;
+        j["currency"] = "USD";
+        j["tiers"] = json::array();
+        for (auto tier : {PlanTier::FREE, PlanTier::BASIC, PlanTier::PRO, PlanTier::ENTERPRISE}) {
+            auto limits = TierLimits::for_tier(tier);
+            j["tiers"].push_back({
+                {"name", plan_tier_to_string(tier)},
+                {"price_monthly", limits.price_monthly},
+                {"max_minutes", limits.max_minutes},
+                {"max_tokens", limits.max_tokens},
+                {"max_voices", limits.max_voices},
+            });
+        }
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    // POST /v1/billing/webhook — Stripe webhook endpoint (no auth, signature verified)
+    svr.Post("/v1/billing/webhook", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string signature;
+        auto sig_it = req.headers.find("Stripe-Signature");
+        if (sig_it != req.headers.end()) signature = sig_it->second;
+
+        if (!g_billing_mgr.process_webhook(req.body, signature)) {
+            res.status = 400;
+            res.set_content(json{{"error", "webhook processing failed"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        res.set_content(json{{"status", "ok"}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // GET /v1/billing/portal — stub: return Stripe customer portal URL
+    svr.Get("/v1/billing/portal", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string owner_id = current_owner();
+        if (owner_id.empty()) {
+            res.status = 403;
+            res.set_content(json{{"error", "authentication required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        // Look up customer Stripe ID for this owner
+        std::string customer_id = g_billing_mgr.get_customer_for_owner(owner_id);
+        if (customer_id.empty()) {
+            // No Stripe customer yet — return generic billing URL
+            res.set_content(json{{"url", "https://zaya.ai/billing"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        // Stub: real portal URL requires Stripe SDK's
+        // stripe.billingPortal.sessions.create({customer, return_url}).
+        // Return a configurable base URL with the customer_id as query param.
+        const char* portal_base = getenv("STRIPE_PORTAL_URL");
+        std::string portal_url = portal_base ? portal_base : "https://zaya.ai/billing/portal";
+        portal_url += "?customer_id=" + customer_id;
+        std::string return_url = req.get_param_value("return_url");
+        if (!return_url.empty()) {
+            portal_url += "&return_url=" + return_url;
+        }
+
+        res.set_content(json{{"url", portal_url}}.dump(), "application/json");
         add_cors(res);
     });
 

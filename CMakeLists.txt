@@ -964,6 +964,9 @@ add_executable(jarvis_server
     tools/jarvis/persona.cpp
     tools/jarvis/vad.cpp
     tools/jarvis/context.cpp
+    tools/jarvis/auth.cpp
+    tools/jarvis/usage.cpp
+    tools/jarvis/billing.cpp
     src/codec_decoder.cpp)
 target_include_directories(jarvis_server PRIVATE tools/ src/)
 target_compile_options(jarvis_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23 -fopenmp)
