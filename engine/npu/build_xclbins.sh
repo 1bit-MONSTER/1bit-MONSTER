@@ -455,6 +455,7 @@ echo ""
 echo "=== Build Summary ==="
 for tag in $BUILT_TAGS; do
     count=$(ls "${INT8_DIR}"/final_i8_*_${tag}.xclbin 2>/dev/null | wc -l)
+    # shellcheck disable=SC2034
     size_total=$(du -sh "${INT8_DIR}"/final_i8_*_${tag}.xclbin 2>/dev/null | tail -1 | awk '{print $1}')
     echo "  $tag: $count xclbins"
 done
