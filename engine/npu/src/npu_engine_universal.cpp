@@ -106,10 +106,8 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
 struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     std::unique_ptr<xrt::xclbin>xc;
     std::unique_ptr<xrt::hw_context>hc;
-    std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
     std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int32_t*Cm;
-    std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int16_t*Cm;
     bool initialized=false;
     bool layerB_cached = true;
     // ── Per-group quantization fields (#1074, #1054) ──
@@ -121,23 +119,6 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     std::vector<uint32_t> group_ins;
     std::unique_ptr<xrt::bo> bI_group;
 
-    ~I8Ctx(){}
-    bool isReady(){return initialized&&k&&bA&&bC;}
-    inline void set_layer(int l){if(l>=0&&l<(int)layerB.size())cur_layer=l;}
-    // Buffer sizes: INT8 vs BF16/BFP16
-    size_t a_size() const { return use_bf16 ? (size_t)MD*KD*2 : (size_t)MD*KD; }
-    size_t b_size() const { return use_bf16 ? ((size_t)KD*ND*6+7)/8 : (size_t)KD*ND; }
-    size_t a_group_size() const { return (size_t)MD * 32; }  // per-group A = M x 32 int8
-    size_t b_group_size() const { return (size_t)32 * ND; }   // per-group B = 32 x N int8
-    // BF16 output is packed uint16 (2B/elem); INT8 GEMM output is int32 accumulator (4B/elem).
-    // See issue #1063 — this used to be a flat *2 (int16), which silently misread the
-    // int32 output every real INT8 xclbin (matmul_i8_i32/zero_i32) actually produces.
-    size_t c_size() const { return use_bf16 ? (size_t)MD*ND*2 : (size_t)MD*ND*4; }
-
-    // ── Generate per-group instructions for K=32 ──
-    // Called once per operation at init, generates instructions for M=XM, K=32, N=ND
-    // using the runtime instruction generator from gemm_npu_instructions.cpp.
-    // Falls back to pre-compiled full-K instructions if generation fails.
     bool init_group_instructions(xrt::device& d) {
         if (use_bf16 || k == nullptr) return false;
         try {
@@ -160,13 +141,6 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
             return false;
         }
     }
-
-    ~I8Ctx(){}
-    bool isReady(){return initialized&&k&&bA&&bC;}
-    // Buffer sizes: INT8 vs BF16/BFP16
-    size_t a_size() const { return use_bf16 ? (size_t)MD*KD*2 : (size_t)MD*KD; }
-    size_t b_size() const { return use_bf16 ? ((size_t)KD*ND*6+7)/8 : (size_t)KD*ND; }
-    size_t c_size() const { return (size_t)MD*ND*2; }
     bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers,bool bf16=false){
         use_bf16=bf16; NL=nlayers;
         FILE*f=fopen(ip,"rb");if(!f){fprintf(stderr,"  I8Ctx::init: fopen(%s) failed\n",ip);return false;}
@@ -363,8 +337,6 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         return (*k)((unsigned)3, *bI_group, (unsigned)group_ins.size(),
                     *bA, *layerB[cur_layer], *bC);
     }
-    inline xrt::run launch(){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
-    inline xrt::run sync_and_launch(){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[0],*bC);}
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
         r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         if(use_bf16){
@@ -377,10 +349,10 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
                 C[m*an+n]=val;
             }
         }else{
-            // INT16→f32 with scale
+            // INT32→f32 with scale
             float cs=ascale*Bscale;
             for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-                float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
+                float val=(float)((int32_t*)Cm)[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
         }}
     // Per-group dequant: applies per-group scales to int32 accumulator
     inline void dequantize_grouped(xrt::run& r, float* C, int am, int an,
@@ -440,10 +412,6 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         free(C_accum);
         return true;
     }
-    inline bool go(const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
-        (void)ascale;  // BF16 doesn't use activation scale
-        quantize_async(A,am,ak,ascale);auto r=sync_and_launch();r.wait();
-        dequantize(r,C,am,an,ascale,Bscale);return true;}
     inline xrt::run launch_async(const float*A,int am,int ak,float ascale){
         quantize_async(A,am,ak,ascale);return sync_and_launch();}
     inline void finish_async(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
