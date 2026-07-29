@@ -32,14 +32,47 @@ aiecc --aietools="$AIETOOLS_DIR" --peano="$PEANO_INSTALL_DIR" \
   design.mlir
 ```
 
-## Why Peano + scalar kernel, not Chess + vectorized
+> **Build reproducibility note (#1076):** The documented recipe produces
+> **byte-identical instruction streams** and **JSON metadata** compared to the
+> checked-in xclbins, but the **PDI binary (AIE core machine code)** differs
+> substantially (~22KB varying out of ~31KB). The generated xclbin may
+> not match the verified-correct checked-in binary even with the same
+> generator, MLIR, kernel object, and toolchain flags.
+>
+> Root cause not isolated. Likely candidates: `aiecc`'s internal linking depends
+> on specific LLVM-AIE commit hashes, a post-processing step is not captured,
+> or an environment variable affects the `aie2xclbin` stage.
+>
+> **Until root-caused**: after a fresh build, verify xclbin numerically with
+> `test_gemm_i32` using the same M/K/N. See issue #1076 for full PDI diffs.
 
-Chess hangs on real NPU2 hardware for this kernel/loop pattern (root cause
-still open — see project notes). Peano doesn't. The vectorized
-`matmul_i8_i32` kernel needs data pre-arranged in AIE microtile (8x8) order,
-which this generator doesn't produce — use the `matmul_scalar_i8_i32` /
-`zero_scalar_i32` entry points (already what's linked into the checked-in
-xclbins). Correct, not yet at vectorized-kernel throughput.
+## Why Peano, not Chess
+
+Chess (Vitis 2026.1 `xchesscc`) produces xclbins that **hang on real NPU2
+hardware** — root-caused to multi-dimensional BD repeat descriptors that
+stall the NPU2 DMA controller. This affects every Chess-compiled design
+tested, including AMD's own official `single_core` example. Peano (LLVM-AIE
+`clang --target=aie2p`) does not have this issue.
+
+Additionally, Chess's `xchesscc_wrapper` symlink in the local toolchain is
+broken, the compiler has multiple known unresolved bugs (CRVO-4933, CRVO-4932,
+CRVO-3177) for this architecture, and aie2ps (arch 22) has incompatible
+intrinsic support. **Chess is a dead end for this project's NPU2 target.**
+
+## Vectorized kernel verified working via Peano
+
+The generator calls `matmul_i8_i32` and `zero_i32` — the vectorized
+`aie::mmul<8,8,8,int8,int8,accauto>` kernel entry points. These are linked
+into the checked-in xclbins and verified correct (0/10000 errors on all 22
+shapes across all 5 models) via Peano compilation. The vectorized kernel
+works correctly with **flat row-major data tiles** — no microtile pre-shuffle
+is needed. This was confirmed by differential testing: shuffled
+(microtile-order) data produces wrong results, flat data produces correct
+results, all on the same xclbins.
+
+If you need a scalar fallback for debugging, use `matmul_scalar_i8_i32` /
+`zero_scalar_i32` (both symbols exist in `mm_32x64x128.o`), but the shipped
+xclbins use the vectorized path.
 
 ## Per-model shapes verified 2026-07-28 (0 errors on real hardware, all 22)
 
