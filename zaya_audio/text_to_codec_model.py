@@ -337,7 +337,9 @@ class TextToCodecModel(nn.Module):
         durations_to_use = (
             target_durations if target_durations is not None else pred_durations
         )
-        expanded = self._expand_by_durations(x, durations_to_use)  # (B, L', d_model)
+        expanded = self._expand_by_durations(
+            x, durations_to_use, text_lengths=text_lengths
+        )  # (B, L', d_model)
 
         # ── Codec head ──
         logits = self.codec_head(expanded)  # (B, L', n_books * book_size)
@@ -459,7 +461,8 @@ class TextToCodecModel(nn.Module):
     # ─── Internals ───────────────────────────────────────────────
 
     def _expand_by_durations(
-        self, x: torch.Tensor, durations: torch.Tensor
+        self, x: torch.Tensor, durations: torch.Tensor,
+        text_lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Expand each position's hidden vector by its duration.
 
@@ -470,6 +473,12 @@ class TextToCodecModel(nn.Module):
         durations : Tensor
             Duration per position, ``(B, L)``.  Values are floats
             (will be rounded to nearest integer for expansion).
+            Padded positions (beyond sequence length) must have
+            duration 0.
+        text_lengths : Tensor, optional
+            Actual sequence lengths, ``(B,)``.  If provided, padded
+            positions are zeroed before clamping to avoid inflating
+            the expanded length.
 
         Returns
         -------
@@ -479,8 +488,24 @@ class TextToCodecModel(nn.Module):
         B, L, D = x.shape
         device = x.device
 
-        # Round durations to integers (with minimum of 1)
-        durations_int = durations.round().long().clamp(min=1)  # (B, L)
+        # Zero out durations beyond the actual sequence length
+        if text_lengths is not None:
+            pad_mask = (
+                torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+                >= text_lengths.unsqueeze(1)
+            )  # (B, L)
+            durations = durations.clone()
+            durations[pad_mask] = 0.0
+
+        # Round durations to integers.  Only clamp to min=1 for
+        # positions that actually have a duration (avoid inflating
+        # padded positions from 0 to 1).
+        durations_int = durations.round().long().clamp(min=0)  # (B, L)
+        durations_int = torch.where(
+            durations_int > 0,
+            durations_int.clamp(min=1),
+            durations_int,
+        )
 
         # Build expanded tensor batch-by-batch (avoids complex scatter logic)
         max_expanded = durations_int.sum(dim=1).max().item()

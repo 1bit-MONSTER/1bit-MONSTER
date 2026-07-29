@@ -759,20 +759,23 @@ class RVQVAE(nn.Module):
         z_q = self.post_vq(z_q)
         return z_q, indices_list
 
-    # ─── Full reconstruction (inference: waveform → waveform) ───────
+    # ─── Full reconstruction (inference: indices → audio) ──────────
 
     def reconstruct_audio(
         self,
-        x: torch.Tensor,
+        codec_indices: torch.Tensor,
         speaker_emb: Optional[torch.Tensor] = None,
         speaker_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Full encode-quantise-decode pipeline (inference).
+        """Reconstruct audio from pre-computed codec indices.
+
+        Looks up codebook embeddings, applies post-VQ projection,
+        then runs through the decoder.  No encoding step needed.
 
         Parameters
         ----------
-        x : Tensor
-            Input waveform, ``(B, 1, T)``.
+        codec_indices : Tensor
+            Codebook indices, ``(B, T_latent, n_codebooks)``, dtype long.
         speaker_emb : Tensor, optional
             Speaker embedding, ``(B, speaker_dim)``.
         speaker_ids : Tensor, optional
@@ -783,7 +786,21 @@ class RVQVAE(nn.Module):
         x_hat : Tensor
             Reconstructed waveform, ``(B, 1, T_out)``.
         """
-        z_q, _ = self.encode_audio(x)
+        B, T, n_cb = codec_indices.shape
+        device = codec_indices.device
+
+        # Look up codebook embeddings and sum across codebooks
+        z_q = torch.zeros(B, self.config.code_dim, T, device=device)
+        for cb in range(self.config.n_codebooks):
+            embed = self.res_vq.embed[cb]  # (K, code_dim)
+            idx = codec_indices[:, :, cb].clamp(min=0, max=self.config.codebook_size - 1)
+            z_q_cb = F.embedding(idx, embed)  # (B, T, code_dim)
+            z_q = z_q + z_q_cb.permute(0, 2, 1)  # (B, code_dim, T)
+
+        # Post-VQ projection
+        z_q = self.post_vq(z_q)  # (B, latent_dim, T)
+
+        # Resolve speaker embedding and decode
         emb = self._resolve_speaker_emb(speaker_emb, speaker_ids)
         return self.decode(z_q, emb)
 

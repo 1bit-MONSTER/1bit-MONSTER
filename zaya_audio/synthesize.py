@@ -298,7 +298,8 @@ class VoiceSynthesizer:
             raise RuntimeError("Adapter not loaded — voice pack missing adapter weights")
 
         # ── Decode to audio ──
-        audio = self._decode_to_audio(codec_indices)  # (1, T_audio)
+        raw_audio = self._decode_to_audio(codec_indices)  # (1, 1, T_audio)
+        audio = raw_audio.squeeze(1)  # (1, T_audio)
 
         # ── Reshape codec tokens to (n_codebooks, T_latent) ──
         tokens_out = codec_indices.squeeze(0).permute(1, 0)  # (n_books, L')
