@@ -617,6 +617,12 @@ int main(int argc, char** argv) {
     svr.Get("/", serve_ui);
     svr.Get("/chat", serve_ui);
 
+    // ── Dashboard static file server ────────────────────────────────
+    svr.set_mount_point("/dashboard", "./site/dashboard");
+    svr.Get("/dashboard", [&](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect("/dashboard/");
+    });
+
     svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
         res.set_content(json{{"status", "ok"}}.dump(), "application/json");
         add_cors(res);
