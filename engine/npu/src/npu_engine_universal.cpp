@@ -410,6 +410,13 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         }}
 };
 
+// AttnCtx — NPU attention using xrt::kernel with instruction BO (same as I8Ctx).
+// The xclbin kernel signature:
+//   kernel(3, insts_bo, insts_size, bo0=Q, bo1=K, bo2=V, bo3=output, bo4=unused)
+//
+// Two launch paths:
+//   1. launch_all() — quantizes full K/V cache each call (O(seq_len))
+//   2. append_kv() + launch() — incremental, O(NKV*HD) per token
 // AttnKernel — the expensive, hardware-context-limited shared resource: one
 // xclbin/hw_context/kernel for ALL layers. Found live (issue #1053 follow-up)
 // that giving every layer its own hw_context hits a real driver limit --
