@@ -961,6 +961,9 @@ add_executable(jarvis_server
     tools/jarvis/audio_out.cpp
     tools/jarvis/audio_stream.cpp
     tools/jarvis/codec_tts.cpp
+    tools/jarvis/persona.cpp
+    tools/jarvis/vad.cpp
+    tools/jarvis/context.cpp
     src/codec_decoder.cpp)
 target_include_directories(jarvis_server PRIVATE tools/ src/)
 target_compile_options(jarvis_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23 -fopenmp)

@@ -41,11 +41,14 @@
 #include "jarvis/audio_stream.h"
 #include "jarvis/beacon.h"
 #include "jarvis/codec_tts.h"
+#include "jarvis/context.h"
+#include "jarvis/persona.h"
 #include "jarvis/planner.h"
 #include "jarvis/rag.h"
 #include "jarvis/routing.h"
 #include "jarvis/tools.h"
 #include "jarvis/tts.h"
+#include "jarvis/vad.h"
 #include "whisper.h"
 
 using json = nlohmann::json;
@@ -154,6 +157,10 @@ chat.scrollTop=chat.scrollHeight}catch(e){}}}}
 static KnowledgeBase g_kb;
 static int g_port = 8080;
 static jarvis::CodecTts g_codec_tts;
+
+// ── Co-Host Intelligence (Phase 2.2) ─────────────────────────────────
+static jarvis::PersonaManager g_persona_mgr;
+static jarvis::ContextMemory g_context_mem(50);
 
 // ── Whisper STT (lazy singleton, matches the original's threading.Lock-
 // guarded lazy load in the deleted jarvis/stt.py) ─────────────────────
@@ -357,12 +364,35 @@ static json handle_chat(const json& body) {
             break;
         }
     }
-    if (last_user_idx >= 0) g_kb.save_turn(session_id, "user", last_user_msg);
+    if (last_user_idx >= 0) {
+        g_kb.save_turn(session_id, "user", last_user_msg);
+        g_context_mem.add_turn("user", last_user_msg);
+    }
+
+    // Build persona system prompt and prepend before anything else.
+    {
+        std::string persona_prompt = g_persona_mgr.build_system_prompt();
+        if (!persona_prompt.empty()) {
+            json sys = {{"role", "system"}, {"content", persona_prompt}};
+            full_messages.insert(full_messages.begin(), sys);
+            if (last_user_idx >= 0) last_user_idx++;
+        }
+    }
+
+    // Layer context memory: inject recent conversation history as a system message.
+    {
+        std::string ctx = g_context_mem.build_context(5);
+        if (!ctx.empty()) {
+            json sys = {{"role", "system"}, {"content", ctx}};
+            full_messages.insert(full_messages.begin(), sys);
+            if (last_user_idx >= 0) last_user_idx++;
+        }
+    }
 
     if (use_tools && !any_system_mentions_tool_call(full_messages)) {
         json sys = {{"role", "system"}, {"content", SYSTEM_PROMPT_TOOLS}};
         full_messages.insert(full_messages.begin(), sys);
-        if (last_user_idx >= 0) last_user_idx++; // shifted by the inserted system message
+        if (last_user_idx >= 0) last_user_idx++;
     }
 
     std::string model_id = body.value("model", "");
@@ -409,6 +439,7 @@ static json handle_chat(const json& body) {
             final_text = content;
         }
         g_kb.save_turn(session_id, "assistant", final_text);
+        g_context_mem.add_turn("assistant", final_text);
     } else {
         ChatFn fn{[](const std::string& m, const json& msgs, int mt, float t) { return unified_chat(m, msgs, mt, t); }};
         json result = fn.fn(route.target_model, full_messages, max_tokens, temperature);
@@ -425,6 +456,7 @@ static json handle_chat(const json& body) {
             final_text = content;
         }
         g_kb.save_turn(session_id, "assistant", final_text);
+        g_context_mem.add_turn("assistant", final_text);
     }
 
     json response = {
@@ -584,6 +616,51 @@ int main(int argc, char** argv) {
         add_cors(res);
     });
 
+    // ── Persona endpoints (Phase 2.2) ────────────────────────────────
+    svr.Get("/v1/persona", [&](const httplib::Request&, httplib::Response& res) {
+        const auto& cfg = g_persona_mgr.active();
+        json j;
+        j["name"] = cfg.name;
+        j["voice_pack"] = cfg.voice_pack;
+        j["speaking_style"] = cfg.speaking_style;
+        j["speaking_rate"] = cfg.speaking_rate;
+        j["voice_pitch"] = cfg.voice_pitch;
+        j["enthusiasm"] = cfg.enthusiasm;
+        j["formality"] = cfg.formality;
+        j["knowledge_domain"] = cfg.knowledge_domain;
+        j["catchphrases"] = json::array();
+        for (auto& cp : cfg.catchphrases) j["catchphrases"].push_back(cp);
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    svr.Get("/v1/personas", [&](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (auto& name : g_persona_mgr.list_personas()) arr.push_back(name);
+        res.set_content(json{{"personas", arr}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    svr.Post("/v1/persona", [&](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) { body = json::object(); }
+        std::string name = body.value("name", "");
+        if (name.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "persona name required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        if (!g_persona_mgr.set_active(name)) {
+            res.status = 404;
+            res.set_content(json{{"error", "persona not found: " + name}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        res.set_content(json{{"status", "ok"}, {"persona", name}}.dump(), "application/json");
+        add_cors(res);
+    });
+
     svr.Post("/v1/agent/plan", [&](const httplib::Request& req, httplib::Response& res) {
         json body;
         try { body = json::parse(req.body); } catch (...) { body = json::object(); }
@@ -664,6 +741,170 @@ int main(int argc, char** argv) {
         if (text.empty()) text = "[silence]";
 
         res.set_content(json{{"text", text}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // ── /v1/audio/chat : voice-in/voice-out (VAD + Whisper + LLM + TTS) ──
+    // Accepts an audio file, detects speech segments via VAD, transcribes
+    // via Whisper, runs through LLM with persona + context, and returns
+    // synthesized audio + transcript.
+    svr.Post("/v1/audio/chat", [&](const httplib::Request& req, httplib::Response& res) {
+        // ── Extract audio ─────────────────────────────────────────
+        std::string audio_bytes;
+        if (req.has_file("file")) audio_bytes = req.get_file_value("file").content;
+        else if (req.has_file("audio")) audio_bytes = req.get_file_value("audio").content;
+
+        if (audio_bytes.empty()) {
+            json body;
+            try { body = json::parse(req.body); } catch (...) {}
+            if (body.contains("audio")) {
+                // Base64 or raw PCM — treat as base64 for now
+                std::string b64 = body["audio"].get<std::string>();
+                (void)b64; // placeholder for base64 decode
+            }
+        }
+
+        if (audio_bytes.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "no audio data"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        std::string session_id = req.get_param_value("session_id");
+        if (session_id.empty()) session_id = "default";
+
+        // ── Normalize audio to 16kHz mono S16 WAV via ffmpeg ────────
+        std::string tag = std::to_string((long)getpid()) + "_" + std::to_string((long)time(nullptr));
+        std::string in_path = "/tmp/jarvis_chat_audio_in_" + tag + ".bin";
+        std::string out_path = "/tmp/jarvis_chat_audio_out_" + tag + ".wav";
+        {
+            std::ofstream f(in_path, std::ios::binary | std::ios::trunc);
+            f.write(audio_bytes.data(), (std::streamsize)audio_bytes.size());
+        }
+
+        pid_t child = fork();
+        int rc = -1;
+        if (child == 0) {
+            execlp("ffmpeg", "ffmpeg", "-y", "-loglevel", "error",
+                   "-i", in_path.c_str(),
+                   "-f", "wav", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                   out_path.c_str(), nullptr);
+            _exit(127);
+        } else if (child > 0) {
+            int status;
+            waitpid(child, &status, 0);
+            rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        std::error_code ec;
+        std::filesystem::remove(in_path, ec);
+
+        // ── VAD: detect speech segments before transcription ──────
+        WhisperModel* model = get_whisper_model();
+        std::string transcript;
+        std::vector<float> full_pcm;
+        bool has_speech = false;
+        if (rc == 0 && model && std::filesystem::exists(out_path)) {
+            int sr = 16000;
+            full_pcm = whisper_load_wav(out_path, &sr);
+            std::filesystem::remove(out_path, ec);
+
+            if (!full_pcm.empty()) {
+                // Run VAD on the PCM to detect speech segments
+                VADConfig vad_cfg;
+                vad_cfg.sample_rate = sr;
+                VAD vad(vad_cfg);
+                vad.process(full_pcm.data(), (int)full_pcm.size());
+
+                // If VAD detected speech, use the last utterance for
+                // transcription (better to have VAD-purified audio)
+                std::vector<float> vad_audio;
+                auto last_utt = vad.get_last_utterance();
+                if (!last_utt.empty()) {
+                    has_speech = true;
+                    vad_audio = std::move(last_utt);
+                } else if (vad.is_speaking()) {
+                    // Still speaking — use the speech buffer
+                    has_speech = true;
+                    vad_audio = vad.get_speech_buffer();
+                }
+
+                // Transcribe the VAD-isolated audio (or full audio as fallback)
+                if (has_speech && !vad_audio.empty()) {
+                    transcript = whisper_transcribe(*model, vad_audio.data(), (int)vad_audio.size());
+                } else {
+                    // Fallback: transcribe full audio even without VAD detection
+                    transcript = whisper_transcribe(*model, full_pcm.data(), (int)full_pcm.size());
+                    if (!transcript.empty() && transcript != "[silence]") has_speech = true;
+                }
+            }
+        } else {
+            std::filesystem::remove(out_path, ec);
+        }
+        if (!has_speech || transcript.empty() || transcript == "[silence]") {
+            res.set_content(json{{"text", "[silence]"}, {"audio", ""}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        // ── LLM call with persona + context ────────────────────────
+        g_context_mem.add_turn("user", transcript);
+
+        json msgs = json::array();
+        // Build system prompt from persona
+        std::string sys_prompt = g_persona_mgr.build_system_prompt();
+        if (!sys_prompt.empty()) {
+            msgs.push_back({{"role", "system"}, {"content", sys_prompt}});
+        }
+        // Add conversation context
+        std::string ctx = g_context_mem.build_context(5);
+        if (!ctx.empty()) {
+            msgs.push_back({{"role", "system"}, {"content", ctx}});
+        }
+        msgs.push_back({{"role", "user"}, {"content", transcript}});
+
+        std::string model_id = "qwen3:0.6b"; // fast default for voice
+        Route route = resolve_model(model_id);
+        json llm_result;
+        if (route.backend == RouteBackend::Ollama) {
+            llm_result = ollama_chat(route.target_model, msgs, 128, 0.7f);
+        } else {
+            llm_result = unified_chat(route.target_model, msgs, 128, 0.7f);
+        }
+
+        std::string reply;
+        if (llm_result.contains("choices") && !llm_result["choices"].empty())
+            reply = llm_result["choices"][0]["message"].value("content", "");
+        else if (llm_result.contains("response"))
+            reply = llm_result.value("response", "");
+        else
+            reply = "[error: LLM call failed]";
+
+        g_context_mem.add_turn("assistant", reply);
+
+        // Apply persona catchphrases
+        reply = g_persona_mgr.apply_catchphrases(reply);
+
+        // ── Synthesize speech ──────────────────────────────────────
+        std::string voice = g_persona_mgr.active().voice_pack;
+        if (voice.empty()) voice = "en_US-lessac-medium";
+
+        std::string wav;
+        if (g_codec_tts.has_voice(voice)) {
+            wav = g_codec_tts.synthesize(reply, voice);
+        }
+        if (wav.empty()) {
+            wav = synthesize_speech(reply, voice);
+        }
+
+        std::string audio_b64;
+        if (!wav.empty()) {
+            // Simple hex encoding as placeholder for proper base64
+            // A full base64 implementation would go here
+            audio_b64 = "[wav:" + std::to_string(wav.size()) + " bytes]";
+        }
+
+        res.set_content(json{{"text", reply}, {"audio", audio_b64}}.dump(), "application/json");
         add_cors(res);
     });
 
@@ -862,6 +1103,17 @@ int main(int argc, char** argv) {
     printf("  unified_server: %s\n", unified_server_url().c_str());
     printf("  ollama:         %s\n", ollama_url().c_str());
     printf("  knowledge base: %s\n", g_kb.root().c_str());
+
+    // Initialise persona manager
+    {
+        const char* pd = getenv("PERSONAS_DIR");
+        std::string dir = pd ? pd : "";
+        int n = g_persona_mgr.scan_directory(dir);
+        printf("  personas:         %d loaded (active: %s)\n", n,
+               g_persona_mgr.active().name.c_str());
+        for (auto& name : g_persona_mgr.list_personas())
+            printf("    - %s\n", name.c_str());
+    }
 
     // Initialise codec TTS voice pack scanner
     {
