@@ -59,7 +59,7 @@ build_one() {
         2>/dev/null > "$design"
     
     # aiecc needs kernel .o in CWD and runs from the design directory
-    local workdir=$(dirname "$design")
+    local workdir; workdir=$(dirname "$design")
     cp "$KERNEL_O" "$workdir/mm_32x64x128.o" 2>/dev/null || true
     
     cd "$workdir"
@@ -73,7 +73,7 @@ build_one() {
     cd "$GENERATOR_DIR"
     
     if [ -f "$xclbin" ]; then
-        local size=$(stat -c%s "$xclbin" 2>/dev/null)
+        local size; size=$(stat -c%s "$xclbin" 2>/dev/null)
         echo "  ✅ $(basename "$xclbin") ($(numfmt --to=iec "$size"))"
         return 0
     else

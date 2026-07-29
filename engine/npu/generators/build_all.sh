@@ -32,7 +32,7 @@ build_one() {
         design.mlir > /dev/null 2>&1
     
     if [ -f "$XDIR/final_i8_${proj}_${tag}.xclbin" ]; then
-        local sz=$(stat -c%s "$XDIR/final_i8_${proj}_${tag}.xclbin" 2>/dev/null)
+        local sz; sz=$(stat -c%s "$XDIR/final_i8_${proj}_${tag}.xclbin" 2>/dev/null)
         echo "  ✅ $proj $tag ($(numfmt --to=iec "$sz"))"
     else
         echo "  ❌ $proj $tag"
