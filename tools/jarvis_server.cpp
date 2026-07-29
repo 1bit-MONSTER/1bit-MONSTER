@@ -38,6 +38,7 @@
 #include <sys/wait.h>
 
 #include "jarvis/audio_out.h"
+#include "jarvis/audio_stream.h"
 #include "jarvis/beacon.h"
 #include "jarvis/codec_tts.h"
 #include "jarvis/planner.h"
@@ -49,6 +50,14 @@
 
 using json = nlohmann::json;
 using namespace jarvis;
+
+// ── WebSocket audio stream server (runs on separate port) ────────────
+//
+// httplib v0.18.1 does not include built-in WebSocket support, so we
+// run a lightweight WebSocket server on a separate background thread.
+// The main HTTP server exposes /v1/audio/stream as an HTTP streaming
+// alternative and /v1/audio/stream/info for WebSocket connection info.
+static std::unique_ptr<WebSocketServer> g_ws_server;
 
 // ── UI (exact port of jarvis/ui.py's CHAT_HTML) ──────────────────────────
 static const char* CHAT_HTML = R"HTML(<!DOCTYPE html>
@@ -674,6 +683,137 @@ int main(int argc, char** argv) {
         add_cors(res);
     });
 
+    // ── /v1/audio/stream : HTTP chunked streaming audio ────────────────
+    //
+    // httplib v0.18.1 lacks built-in WebSocket support, so this endpoint
+    // uses HTTP chunked transfer encoding for real-time audio streaming.
+    // A separate WebSocket server runs on a different port for native
+    // WebSocket clients (see ws_server below).
+    //
+    // Protocol:
+    //   Content-Type: application/octet-stream
+    //   - First frame: JSON metadata string (length-prefixed with a 4-byte LE
+    //     uint32 header)
+    //   - Subsequent frames: raw float32 PCM data (4-byte LE uint32 size header
+    //     + data)
+    //   - Final frame: empty (size=0)
+    //
+    // Client cancels by disconnecting.
+    //
+    svr.Get("/v1/audio/stream", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string voice = req.get_param_value("voice");
+        std::string text = req.get_param_value("text");
+
+        if (voice.empty() || text.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "voice and text query params required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        // Check if voice pack exists
+        if (!g_codec_tts.has_voice(voice)) {
+            res.status = 404;
+            res.set_content(json{{"error", "voice pack not found: " + voice}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        // Stream audio via chunked content provider
+        res.set_chunked_content_provider("application/octet-stream",
+            [&, voice, text](size_t /*offset*/, httplib::DataSink& sink) -> bool {
+                // ── Synthesize ─────────────────────────────────
+                std::string wav = g_codec_tts.synthesize(text, voice);
+                if (wav.empty()) {
+                    // Try Piper fallback
+                    wav = synthesize_speech(text, voice);
+                }
+                if (wav.empty()) {
+                    sink.done();
+                    return true;
+                }
+
+                // ── Parse WAV header ────────────────────────────
+                if (wav.size() < 44) {
+                    sink.done();
+                    return true;
+                }
+
+                size_t pcm_offset = 0;
+                size_t pcm_size = 0;
+                size_t data_start = 12;
+                while (data_start + 8 <= wav.size()) {
+                    uint32_t chunk_size = *(const uint32_t*)(wav.data() + data_start + 4);
+                    if (wav.substr(data_start, 4) == "data") {
+                        pcm_offset = data_start + 8;
+                        pcm_size = (size_t)chunk_size;
+                        break;
+                    }
+                    data_start += 8 + (size_t)chunk_size;
+                }
+
+                if (pcm_offset == 0 || pcm_offset >= wav.size()) {
+                    sink.done();
+                    return true;
+                }
+
+                size_t num_samples = pcm_size / 2; // S16LE mono
+                const int16_t* s16 = reinterpret_cast<const int16_t*>(wav.data() + pcm_offset);
+
+                // ── Send metadata frame ────────────────────────
+                std::string meta = R"({"sample_rate":24000,"channels":1,"format":"float32"})";
+                uint32_t meta_len = (uint32_t)meta.size();
+                sink.write((const char*)&meta_len, 4);
+                sink.write(meta.data(), meta.size());
+
+                // ── Send audio chunks ────────────────────────────
+                static constexpr int kFrameSamples = 312; // 13ms @ 24kHz
+                size_t sample_offset = 0;
+                while (sample_offset < num_samples) {
+                    size_t chunk = std::min((size_t)kFrameSamples, num_samples - sample_offset);
+
+                    // Convert S16 to float32
+                    std::vector<float> float_buf(chunk);
+                    for (size_t i = 0; i < chunk; i++)
+                        float_buf[i] = s16[sample_offset + i] / 32768.0f;
+
+                    uint32_t data_len = (uint32_t)(chunk * sizeof(float));
+                    sink.write((const char*)&data_len, 4);
+                    sink.write((const char*)float_buf.data(), data_len);
+
+                    sample_offset += chunk;
+
+                    // Pace at real-time
+                    int sleep_ms = (int)(chunk * 1000 / 24000);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+                }
+
+                // ── End frame ───────────────────────────────────
+                uint32_t end_marker = 0;
+                sink.write((const char*)&end_marker, 4);
+                sink.done();
+                return true;
+            }
+        );
+        add_cors(res);
+    });
+
+    // ── /v1/audio/stream/info : WebSocket server info ───────────────────
+    svr.Get("/v1/audio/stream/info", [&](const httplib::Request&, httplib::Response& res) {
+        int ws_port = 0;
+        if (g_ws_server) ws_port = g_ws_server->port();
+        res.set_content(json{{
+            {"websocket_port", ws_port},
+            {"protocol", "ws"},
+            {"path", "/v1/audio/stream"},
+            {"sample_rate", 24000},
+            {"channels", 1},
+            {"format", "float32"},
+            {"http_stream", "/v1/audio/stream?voice=X&text=Y"},
+        }}.dump(), "application/json");
+        add_cors(res);
+    });
+
     // ── /v1/audio/speech : text-to-speech (codec TTS with Piper fallback) ─
     svr.Post("/v1/audio/speech", [&](const httplib::Request& req, httplib::Response& res) {
         json body;
@@ -736,6 +876,21 @@ int main(int argc, char** argv) {
         } else {
             printf("  codec TTS:        no voice packs found in %s\n",
                    vp_dir ? vp_dir : "~/voice-packs");
+        }
+    }
+
+    // Start WebSocket audio streaming server (separate port for raw WS)
+    {
+        int ws_port = 8082;
+        const char* ws_port_env = getenv("WS_STREAM_PORT");
+        if (ws_port_env && *ws_port_env) ws_port = atoi(ws_port_env);
+
+        g_ws_server = std::make_unique<WebSocketServer>();
+        int actual_port = g_ws_server->start(ws_port, &g_codec_tts);
+        if (actual_port > 0) {
+            printf("  WS stream:        ws://127.0.0.1:%d/v1/audio/stream?voice=X&text=Y\n", actual_port);
+        } else {
+            printf("  WS stream:        FAILED to start\n");
         }
     }
 

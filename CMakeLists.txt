@@ -959,6 +959,7 @@ add_executable(jarvis_server
     tools/jarvis/beacon.cpp
     tools/jarvis/tts.cpp
     tools/jarvis/audio_out.cpp
+    tools/jarvis/audio_stream.cpp
     tools/jarvis/codec_tts.cpp
     src/codec_decoder.cpp)
 target_include_directories(jarvis_server PRIVATE tools/ src/)
