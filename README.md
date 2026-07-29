@@ -36,6 +36,10 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 - 79.4 tok/s end-to-end (BlackMamba 1.5B, Strix Halo)
 - 37 FLM models extracted (209 NPU xclbins)
 - Moonshot Kimi family (Gated MLA MoE) — architecture reverse-engineered, converter built, see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md)
+- 433 tok/s peak kernel (Q1 GEMV, ROCm HIP)
+- 79.4 tok/s end-to-end (BlackMamba 1.5B, Strix Halo)
+- 37 FLM models extracted (209 NPU xclbins)
+- Moonshot Kimi family (Gated MLA MoE) — architecture support in progress, see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md)
 
 </div>
 
@@ -73,6 +77,7 @@ See the [Installation Guide](docs/wiki/Installation.md) for full instructions.
 | Whisper | Speech-to-text | NPU / GPU | — | ✅ |
 | Nanbeige4.1 | Dense | NPU | — | ✅ |
 | Moonshot Kimi (Moonlight, Kimi-VL) | Gated MLA MoE | GPU HIP | — | ✅ architecture analyzed |
+| Moonshot Kimi (Moonlight, Kimi-VL) | Gated MLA MoE | GPU HIP | — | 🚧 in progress |
 
 **[→ Full model details and per-model benchmarks](docs/wiki/models.md)**
 
