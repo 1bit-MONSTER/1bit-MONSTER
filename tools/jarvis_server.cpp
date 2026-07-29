@@ -39,6 +39,7 @@
 
 #include "jarvis/audio_out.h"
 #include "jarvis/beacon.h"
+#include "jarvis/codec_tts.h"
 #include "jarvis/planner.h"
 #include "jarvis/rag.h"
 #include "jarvis/routing.h"
@@ -143,6 +144,7 @@ chat.scrollTop=chat.scrollHeight}catch(e){}}}}
 // ── Global state ──────────────────────────────────────────────────────
 static KnowledgeBase g_kb;
 static int g_port = 8080;
+static jarvis::CodecTts g_codec_tts;
 
 // ── Whisper STT (lazy singleton, matches the original's threading.Lock-
 // guarded lazy load in the deleted jarvis/stt.py) ─────────────────────
@@ -656,6 +658,23 @@ int main(int argc, char** argv) {
         add_cors(res);
     });
 
+    // ── /v1/voice/packs : list available voice packs ──────────────────
+    svr.Get("/v1/voice/packs", [&](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (auto& vp : g_codec_tts.list_voice_packs()) {
+            arr.push_back({
+                {"name", vp.name},
+                {"speaker_name", vp.speaker_name},
+                {"language", vp.language},
+                {"sample_rate", vp.sample_rate},
+                {"path", vp.path}
+            });
+        }
+        res.set_content(json{{"voice_packs", arr}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // ── /v1/audio/speech : text-to-speech (codec TTS with Piper fallback) ─
     svr.Post("/v1/audio/speech", [&](const httplib::Request& req, httplib::Response& res) {
         json body;
         try { body = json::parse(req.body); } catch (...) { body = json::object(); }
@@ -670,10 +689,20 @@ int main(int argc, char** argv) {
             return;
         }
 
-        std::string wav = synthesize_speech(text, voice);
+        // Try codec TTS first (native ONNX inference)
+        std::string wav;
+        if (g_codec_tts.has_voice(voice)) {
+            wav = g_codec_tts.synthesize(text, voice);
+        }
+
+        // Fall back to Piper if codec TTS returned nothing
+        if (wav.empty()) {
+            wav = synthesize_speech(text, voice);
+        }
+
         if (wav.empty()) {
             res.status = 502;
-            res.set_content(json{{"error", "speech synthesis failed (voice model missing or piper failed)"}}.dump(),
+            res.set_content(json{{"error", "speech synthesis failed (no voice pack, no piper)"}}.dump(),
                              "application/json");
             add_cors(res);
             return;
@@ -693,6 +722,22 @@ int main(int argc, char** argv) {
     printf("  unified_server: %s\n", unified_server_url().c_str());
     printf("  ollama:         %s\n", ollama_url().c_str());
     printf("  knowledge base: %s\n", g_kb.root().c_str());
+
+    // Initialise codec TTS voice pack scanner
+    {
+        const char* vp_dir = getenv("VOICE_PACKS_DIR");
+        if (vp_dir && *vp_dir) g_codec_tts.set_voice_packs_dir(vp_dir);
+        g_codec_tts.scan_voice_packs();
+        auto packs = g_codec_tts.list_voice_packs();
+        if (!packs.empty()) {
+            printf("  codec TTS:        %zu voice pack(s) loaded\n", packs.size());
+            for (auto& vp : packs)
+                printf("    - %s (speaker=%s, lang=%s)\n", vp.name.c_str(), vp.speaker_name.c_str(), vp.language.c_str());
+        } else {
+            printf("  codec TTS:        no voice packs found in %s\n",
+                   vp_dir ? vp_dir : "~/voice-packs");
+        }
+    }
 
     if (!no_beacon) start_beacon(g_port);
 
