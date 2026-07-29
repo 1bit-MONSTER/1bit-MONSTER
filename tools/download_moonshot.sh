@@ -24,8 +24,6 @@ KIMI_VL_REPO="moonshotai/Kimi-VL-A3B-Thinking"
 KIMI_VL_2506_REPO="moonshotai/Kimi-VL-A3B-Thinking-2506"
 MOONLIGHT_INSTRUCT_REPO="moonshotai/Moonlight-16B-A3B-Instruct"
 
-HF_BASE="https://huggingface.co"
-
 # ══════════════════════════════════════════════════════════════════════════
 # Model Definitions
 # ══════════════════════════════════════════════════════════════════════════
@@ -124,7 +122,8 @@ convert_model() {
         2>&1 | sed 's/^/    /'
 
     if [ -f "$output_file" ]; then
-        local size=$(du -h "$output_file" | cut -f1)
+        local size
+        size=$(du -h "$output_file" | cut -f1)
         echo "  ✓ Converted: $model_name.1bp ($size)"
     else
         echo "  ✗ Conversion failed: $model_name"
