@@ -9,6 +9,7 @@
 #include <chrono>
 #include <exception>
 #include <functional>
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -32,6 +33,16 @@
 #include <sys/wait.h>
 #include <sys/file.h>
 #include <dirent.h>
+
+// Runtime NPU instruction generation (#1054, #1074)
+#include "npu_utils/npu_instr_utils.hpp"
+namespace npu_seq {
+    // Forward declare the per-group instruction generator from gemm_npu_instructions.cpp
+    extern void gemm_generate_sequence_i8_kblock(
+        npu_sequence*, uint32_t, uint32_t, uint32_t, uint32_t,
+        float, float, uint32_t);
+}
+
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
@@ -99,16 +110,55 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int32_t*Cm;
     bool initialized=false;
     bool layerB_cached = true;
+    // ── Per-group quantization fields (#1074, #1054) ──
+    bool use_grouped = false;       // enable per-group K-split GEMM
+    int num_groups = 0;              // ceil(KD / 32)
+    std::vector<std::vector<float>> group_scales;  // [layer][group*ND + n]
+    // Runtime-generated instruction buffers for per-group K-slice
+    bool group_instrs_valid = false;
+    std::vector<uint32_t> group_ins;
+    std::unique_ptr<xrt::bo> bI_group;
+
     ~I8Ctx(){}
     bool isReady(){return initialized&&k&&bA&&bC;}
     inline void set_layer(int l){if(l>=0&&l<(int)layerB.size())cur_layer=l;}
     // Buffer sizes: INT8 vs BF16/BFP16
     size_t a_size() const { return use_bf16 ? (size_t)MD*KD*2 : (size_t)MD*KD; }
     size_t b_size() const { return use_bf16 ? ((size_t)KD*ND*6+7)/8 : (size_t)KD*ND; }
+    size_t a_group_size() const { return (size_t)MD * 32; }  // per-group A = M x 32 int8
+    size_t b_group_size() const { return (size_t)32 * ND; }   // per-group B = 32 x N int8
     // BF16 output is packed uint16 (2B/elem); INT8 GEMM output is int32 accumulator (4B/elem).
     // See issue #1063 — this used to be a flat *2 (int16), which silently misread the
     // int32 output every real INT8 xclbin (matmul_i8_i32/zero_i32) actually produces.
     size_t c_size() const { return use_bf16 ? (size_t)MD*ND*2 : (size_t)MD*ND*4; }
+
+    // ── Generate per-group instructions for K=32 ──
+    // Called once per operation at init, generates instructions for M=XM, K=32, N=ND
+    // using the runtime instruction generator from gemm_npu_instructions.cpp.
+    // Falls back to pre-compiled full-K instructions if generation fails.
+    bool init_group_instructions(xrt::device& d) {
+        if (use_bf16 || k == nullptr) return false;
+        try {
+            npu_sequence seq(npu_device::device_npu2);
+            // Generate instructions for a single K=32 block
+            npu_seq::gemm_generate_sequence_i8_kblock(&seq, (uint32_t)MD, 32, (uint32_t)ND,
+                0, 1.0f, 1.0f, 0);
+            auto [data, size] = seq.dump();
+            if (size == 0) return false;
+            group_ins.assign(data, data + size);
+            bI_group = std::make_unique<xrt::bo>(d, group_ins.size() * 4,
+                XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
+            memcpy(bI_group->map(), group_ins.data(), group_ins.size() * 4);
+            bI_group->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            group_instrs_valid = true;
+            fprintf(stderr,"    Per-group instrs generated: %zu words\n", group_ins.size());
+            return true;
+        } catch (std::exception& e) {
+            fprintf(stderr,"    Group instr gen failed: %s\n", e.what());
+            return false;
+        }
+    }
+
     bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers,bool bf16=false){
         use_bf16=bf16; NL=nlayers;
         FILE*f=fopen(ip,"rb");if(!f){fprintf(stderr,"  I8Ctx::init: fopen(%s) failed\n",ip);return false;}
@@ -137,19 +187,85 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         for (int l = 0; l < NL; l++) {
             layerB.emplace_back(std::make_unique<xrt::bo>(d,b_size(),XRT_BO_FLAGS_HOST_ONLY,k->group_id(gid_B)));
         }
+
+        // Per-group quantization (#1074, #1054) requires FLM's mm.xclbin
+        // for compatible instruction generation — disabled for custom xclbins.
+        // Enable with NPU_GROUPED=1 when using FLM's xclbin path.
+        const char* grouped_env = getenv("NPU_GROUPED");
+        if (!use_bf16 && grouped_env && atoi(grouped_env) == 1) {
+            use_grouped = true;
+            num_groups = (KD + 31) / 32;
+            group_scales.resize(NL);
+            for (int l = 0; l < NL; l++) group_scales[l].resize(num_groups * ND, 0.0f);
+            if (!init_group_instructions(d)) {
+                fprintf(stderr,"    Per-group instr gen failed, falling back to flat quantization\n");
+                use_grouped = false;
+            } else {
+                fprintf(stderr,"    Per-group quantization ENABLED (%d groups of 32, FLM xclbin path)\n", num_groups);
+            }
+        }
         }catch(std::exception&e){fprintf(stderr,"  I8Ctx::init: %s (%s)\n",e.what(),xp);return false;}
         initialized=true;return true;}
     void packB(const float*w,int K,int N,float&sout){
-        if(use_bf16){
+        if(use_grouped){
+            // ── Per-group INT8 quantization (#1074) ──
+            // Each 32-element group of K gets its own scale, matching Q4NX's
+            // group structure. Stores INT8 data in layerB and per-group
+            // scales in group_scales[cur_layer].
+            auto*Bm=(int8_t*)layerB[cur_layer]->map();
+            auto& gs = group_scales[cur_layer];
+            int ng = (K + 31) / 32;
+            for (int g = 0; g < ng; g++) {
+                int k_start = g * 32;
+                int k_size = std::min(32, K - k_start);
+                for (int n = 0; n < N; n++) {
+                    // Find amax for this (k_size x 1) group segment
+                    float amax = 0;
+                    for (int k = 0; k < k_size; k++) {
+                        float v = w[(k_start + k) * (size_t)N + n];
+                        if (std::isfinite(v)) {
+                            float a = fabsf(v);
+                            if (a > amax) amax = a;
+                        }
+                    }
+                    if (amax < 1e-12f) amax = 1.0f;
+                    float scale = amax / 127.0f;
+                    float is = 127.0f / amax;
+                    gs[(size_t)g * N + n] = scale;
+                    for (int k = 0; k < k_size; k++) {
+                        float v = w[(k_start + k) * (size_t)N + n];
+                        if (!std::isfinite(v)) v = 0;
+                        int x = (int)roundf(v * is);
+                        if (x > 127) x = 127;
+                        else if (x < -127) x = -127;
+                        Bm[(k_start + k) * (size_t)N + n] = (int8_t)x;
+                    }
+                }
+            }
+            sout = 1.0f;  // Per-group scales applied at dequant time
+        }else if(use_bf16){
             // BFP16 packing for BF16 xclbins
             auto Bm = (uint8_t*)layerB[cur_layer]->map();
             pack_bfp16_weights(w, K, N, Bm, b_size());
             sout = 1.0f;  // BF16 output doesn't need scale
         }else{
-            // INT8 packing
-            float amax=0;
-            for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
-            if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[cur_layer]->map();
+            // INT8 packing with outlier clipping.
+            // Q4NX weights have per-group (32-element) BF16 scales; flattening
+            // to per-layer INT8 lets a single outlier compress the usable range
+            // for 99.9% of weights. Use percentile-based clipping: find the
+            // 99.9th percentile of absolute values and clip anything beyond.
+            // This preserves ~10 bits of effective precision for the bulk of
+            // weights instead of being dominated by one outlier.
+            std::vector<float> abs_vals; abs_vals.reserve(K*N);
+            for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a))abs_vals.push_back(a);}
+            float amax;
+            if(abs_vals.empty()){amax=1.0f;}else{
+                size_t p99_idx = (size_t)(abs_vals.size() * 0.999);
+                if(p99_idx >= abs_vals.size()) p99_idx = abs_vals.size() - 1;
+                std::nth_element(abs_vals.begin(), abs_vals.begin() + p99_idx, abs_vals.end());
+                amax = std::max(abs_vals[p99_idx], 1e-12f);
+            }
+            sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[cur_layer]->map();
             for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
                 int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}
         }
@@ -169,7 +285,7 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
                 ABuf[i] = f32_to_bf16(A[i]);
             }
         }else{
-            // INT8 quantize
+            // INT8 quantize — same for flat and grouped (ascale is per-call)
             float ais=1.0f/ascale;memset(Am,0,(size_t)am*KD);
             for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
                 float v=A[m*ak+k];if(!std::isfinite(v))v=0;
@@ -180,6 +296,23 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     inline void sync_A(int l){(void)l;bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
     inline xrt::run launch(){return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[cur_layer],*bC);}
     inline xrt::run sync_and_launch(){bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);return (*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[cur_layer],*bC);}
+    // Per-group GEMM launch: uses K=32 instructions, processes one K-group
+    // Per-group GEMM launch: copies the group's B slice to offset 0 of
+    // the B BO, then uses the k_offset=0 instructions from bI_group.
+    inline xrt::run sync_and_launch_group(int g, int k_start, int k_size) {
+        // Copy B[group] to B[0] within layerB buffer so k_offset=0 instrs work
+        int8_t* Bm = (int8_t*)layerB[cur_layer]->map();
+        size_t group_bytes = (size_t)k_size * ND;
+        size_t src_off = (size_t)k_start * ND;
+        if (g > 0 && src_off > 0) {
+            memmove(Bm, Bm + src_off, group_bytes);
+        }
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        layerB[cur_layer]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        bC->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        return (*k)((unsigned)3, *bI_group, (unsigned)group_ins.size(),
+                    *bA, *layerB[cur_layer], *bC);
+    }
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
         r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         if(use_bf16){
@@ -197,10 +330,64 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
             for(int m=0;m<am;m++)for(int n=0;n<an;n++){
                 float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}
         }}
+    // Per-group dequant: applies per-group scales to int32 accumulator
+    inline void dequantize_grouped(xrt::run& r, float* C, int am, int an,
+                                    float ascale, const float* gs, int group_idx) {
+        r.wait(); bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        for (int m = 0; m < am; m++) {
+            for (int n = 0; n < an; n++) {
+                float val = (float)Cm[(size_t)m * ND + n] * ascale * gs[(size_t)group_idx * an + n];
+                if (!std::isfinite(val)) val = 0;
+                C[(size_t)m * an + n] += val;
+            }
+        }
+    }
     inline bool go(const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
+        if (use_grouped) {
+            return go_grouped(A, am, ak, ascale, C, an);
+        }
         (void)ascale;  // BF16 doesn't use activation scale
         quantize_async(A,am,ak,ascale);auto r=sync_and_launch();r.wait();
         dequantize(r,C,am,an,ascale,Bscale);return true;}
+    // ── Per-group K-split GEMM (#1074) ──
+    // Splits K into 32-element groups, does per-group NPU GEMM, and
+    // accumulates with per-group dequant scales. This preserves Q4NX's
+    // per-group precision structure instead of collapsing to one scale.
+    inline bool go_grouped(const float* A, int am, int ak, float ascale, float* C, int an) {
+        if (!group_instrs_valid || !bI_group) return false;
+        float* C_accum = (float*)calloc((size_t)am * an, sizeof(float));
+        if (!C_accum) return false;
+        int ng = (ak + 31) / 32;
+        auto& gs = group_scales[cur_layer];
+        // Zero bC before starting (bC accumulates per-group int32 results)
+        memset(Cm, 0, (size_t)MD * ND * 4);
+        for (int g = 0; g < ng && g < num_groups; g++) {
+            int k_start = g * 32;
+            int k_size = std::min(32, ak - k_start);
+            // Quantize A for this K-slice into the first 32 columns of bA
+            float ais = 1.0f / ascale;
+            memset(Am, 0, (size_t)am * MD);  // MD >= 32, zero pad
+            for (int m = 0; m < am; m++) {
+                for (int k = 0; k < k_size; k++) {
+                    float v = A[(size_t)m * ak + k_start + k];
+                    if (!std::isfinite(v)) v = 0;
+                    int q = (int)roundf(v * ais);
+                    if (q > 127) q = 127; else if (q < -127) q = -127;
+                    Am[(size_t)m * MD + k] = (int8_t)q;
+                }
+            }
+            // Launch per-group GEMM
+            auto r = sync_and_launch_group(g, k_start, k_size);
+            // Dequant and accumulate with per-group scale
+            dequantize_grouped(r, C_accum, am, an, ascale, gs.data(), g);
+            // Re-zero bC for next group
+            memset(Cm, 0, (size_t)MD * ND * 4);
+        }
+        // Copy accumulated result to output
+        for (int i = 0; i < am * an; i++) C[i] = C_accum[i];
+        free(C_accum);
+        return true;
+    }
     inline xrt::run launch_async(const float*A,int am,int ak,float ascale){
         quantize_async(A,am,ak,ascale);return sync_and_launch();}
     inline void finish_async(xrt::run& r,float*C,int am,int an,float ascale,float Bscale){
@@ -223,27 +410,24 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         }}
 };
 
-// AttnCtx — NPU attention using xrt::kernel with instruction BO (same as I8Ctx).
-// The xclbin kernel signature:
-//   kernel(3, insts_bo, insts_size, bo0=Q, bo1=K, bo2=V, bo3=output, bo4=unused)
-//
-// Two launch paths:
-//   1. launch_all() — quantizes full K/V cache each call (O(seq_len))
-//   2. append_kv() + launch() — incremental, O(NKV*HD) per token
-struct AttnCtx {
-    int max_seq, NH, NKV, HD, XM;
-    int cur_seq = 0;
-    float cur_kv_scale = 1.0f;
+// AttnKernel — the expensive, hardware-context-limited shared resource: one
+// xclbin/hw_context/kernel for ALL layers. Found live (issue #1053 follow-up)
+// that giving every layer its own hw_context hits a real driver limit --
+// DRM_IOCTL_AMDXDNA_CREATE_HWCTX failed with EINVAL around the 12th
+// concurrent context on this hardware, silently forcing CPU-fallback
+// attention for the whole run. Per-layer K/V buffers (AttnCtx below) are
+// cheap device memory, not a limited driver resource, so only they are
+// per-layer -- the xclbin/hw_context/kernel triple is created once and
+// shared.
+struct AttnKernel {
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
     std::unique_ptr<xrt::elf> elf;
     std::unique_ptr<xrt::module> mdl;
     std::unique_ptr<xrt::ext::kernel> k;
-    std::unique_ptr<xrt::ext::bo> bQ, bK, bV, bOut;
     bool initialized = false;
 
-    ~AttnCtx() {}
-    bool isReady() { return initialized && k && bQ && bK && bV && bOut; }
+    bool isReady() { return initialized && hc && k; }
 
     // NOTE: the raw instruction words from mha_generate_*() aren't a
     // complete xrt::kernel submission by themselves — they need assembling
@@ -251,11 +435,7 @@ struct AttnCtx {
     // The old manual-bI + xrt::kernel(3ULL,...) path submits the command but
     // the AIE array never signals completion for this xclbin, so
     // DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT hangs forever (see PR #1047).
-    bool init(xrt::device& d, const char* xp,
-              const std::vector<uint32_t>& instrs,
-              int max_seq_len, int nh, int nkv, int hd, int xm) {
-        max_seq = max_seq_len;
-        NH = nh; NKV = nkv; HD = hd; XM = xm;
+    bool init(xrt::device& d, const char* xp, const std::vector<uint32_t>& instrs) {
         try {
             std::vector<char> iraw((char*)instrs.data(),
                                    (char*)instrs.data() + instrs.size() * sizeof(uint32_t));
@@ -268,6 +448,35 @@ struct AttnCtx {
             elf = std::make_unique<xrt::elf>(e.data(), e.size());
             mdl = std::make_unique<xrt::module>(*elf);
             k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
+        } catch (std::exception& ex) {
+            fprintf(stderr, "  AttnKernel init failed: %s\n", ex.what());
+            return false;
+        }
+        initialized = true;
+        return true;
+    }
+};
+
+struct AttnCtx {
+    int max_seq, NH, NKV, HD, XM;
+    int cur_seq = 0;
+    float cur_kv_scale = 1.0f;
+    xrt::hw_context* hc = nullptr;   // shared, owned by the AttnKernel
+    xrt::ext::kernel* k = nullptr;   // shared, owned by the AttnKernel
+    std::unique_ptr<xrt::ext::bo> bQ, bK, bV, bOut;
+    bool initialized = false;
+
+    ~AttnCtx() {}
+    bool isReady() { return initialized && k && bQ && bK && bV && bOut; }
+
+    // Per-layer buffer set only -- the xclbin/hw_context/kernel come from a
+    // shared AttnKernel (see above), not created here.
+    bool init(AttnKernel& shared, int max_seq_len, int nh, int nkv, int hd, int xm) {
+        max_seq = max_seq_len;
+        NH = nh; NKV = nkv; HD = hd; XM = xm;
+        if (!shared.isReady()) { fprintf(stderr, "  AttnCtx init failed: shared AttnKernel not ready\n"); return false; }
+        hc = shared.hc.get(); k = shared.k.get();
+        try {
             size_t q_bytes = (size_t)XM * NH * HD;
             size_t kv_bytes = (size_t)max_seq * NKV * HD;
             size_t out_bytes = (size_t)XM * NH * HD * 2;
@@ -277,7 +486,7 @@ struct AttnCtx {
             bOut = std::make_unique<xrt::ext::bo>(*hc, out_bytes);
             cur_seq = 0;
         } catch (std::exception& ex) {
-            fprintf(stderr, "  AttnCtx init failed: %s\n", ex.what());
+            fprintf(stderr, "  AttnCtx buffer init failed: %s\n", ex.what());
             return false;
         }
         initialized = true;
@@ -309,6 +518,26 @@ struct AttnCtx {
             }
         }
         cur_seq += npt;
+    }
+    // Re-quantize the full K/V history at a new scale (issue #1053). Needed
+    // because append_kv() quantizes each token in-place against whatever
+    // cur_kv_scale was active at the time it was appended -- if a later
+    // token's magnitude would exceed that scale (and clip), every previously
+    // appended token must be re-quantized too, not just the new one. Callers
+    // keep the full-precision K/V history on the host (kv_caches[l].k/.v)
+    // already, so this just replays that existing launch_all()-style
+    // quantization loop on demand instead of every step.
+    void requantize_kv(const float* K_cache, const float* V_cache, int seq_len, float kv_scale) {
+        cur_kv_scale = kv_scale; cur_seq = seq_len;
+        float kv_is = 1.0f / kv_scale; size_t kv_len = (size_t)seq_len * NKV * HD;
+        auto* k_i8 = (int8_t*)bK->map(); auto* v_i8 = (int8_t*)bV->map();
+        for (size_t i = 0; i < kv_len; i++) {
+            float v = K_cache[i]; if (!std::isfinite(v)) v = 0;
+            int q = (int)roundf(v * kv_is); k_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+            v = V_cache[i]; if (!std::isfinite(v)) v = 0;
+            q = (int)roundf(v * kv_is); v_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+        }
+        bK->sync(XCL_BO_SYNC_BO_TO_DEVICE); bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     xrt::run launch(const float* Q_f32, int seq_len, int batch, float q_scale) {
         auto* q_i8 = (int8_t*)bQ->map(); float q_is = 1.0f / q_scale;
@@ -551,7 +780,6 @@ static inline void npu_attn_dispatch(
     RuntimeAttnCtx& rta,
     AttnCtx* ca_ptr)
 {
-    (void)kv_k; (void)kv_v; (void)sp;  // CPU fallback uses these via attn_omp
     if (ca_ptr && ca_ptr->isReady()) {
         float q_ascale = 0;
         for (int i = 0; i < bs * NH * HD; i++) {
@@ -560,6 +788,38 @@ static inline void npu_attn_dispatch(
         }
         if (q_ascale < 1e-12f) q_ascale = 1.0f;
         q_ascale = q_ascale / 127.0f;
+
+        // Single new token per call (the decode loop's shape): use the
+        // incremental append_kv()+launch() path instead of re-quantizing the
+        // entire KV cache every step (issue #1053). Multi-token calls
+        // (prefill/batched-speculative, bs>1) keep using launch_all() --
+        // those already pass one shared `cl` for per-position-variable
+        // causal windows via the CPU fallback's max_pos, a behavior this
+        // patch doesn't change.
+        if (bs == 1 && cl == sp + 1) {
+            float new_max = 0;
+            for (int i = sp * NKV * HD; i < cl * NKV * HD; i++) {
+                float a = fabsf(kv_k[i]); if (std::isfinite(a) && a > new_max) new_max = a;
+                a = fabsf(kv_v[i]); if (std::isfinite(a) && a > new_max) new_max = a;
+            }
+            float needed_scale = new_max / 127.0f;
+            if (needed_scale < 1e-12f) needed_scale = 1e-12f;
+            if (ca_ptr->cur_seq == 0 || ca_ptr->cur_seq != sp || needed_scale > ca_ptr->cur_kv_scale) {
+                // First token, a scale gap from an out-of-band cur_seq
+                // (shouldn't happen in normal use, but keeps this safe if a
+                // caller ever skips a step), or the new token would clip
+                // under the established scale -- (re)quantize full history.
+                float new_scale = needed_scale * 1.5f;  // headroom vs. next few tokens
+                ca_ptr->requantize_kv(kv_k.data(), kv_v.data(), cl, new_scale);
+            } else {
+                ca_ptr->append_kv(&kv_k[sp * NKV * HD], &kv_v[sp * NKV * HD], ca_ptr->cur_kv_scale);
+            }
+            auto r_attn = ca_ptr->launch(qo, cl, bs, q_ascale);
+            ca_ptr->fast_finish(r_attn, at, bs, q_ascale);
+            cn(at, bs * NH * HD);
+            return;
+        }
+
         float kv_ascale = 0;
         for (int i = 0; i < cl * NKV * HD; i++) {
             float a = fabsf(kv_k[i]);
@@ -828,6 +1088,30 @@ int main(int argc,char**argv){
     auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
     const char*js=(const char*)(md+8);size_t jl=hsz;
 
+    // Optional direct-BF16-source GEMM weights (issue #1074): the Q4NX file
+    // stores GEMM weights as INT4 (dequant_i8_to_float_ex reconstructs a
+    // float array from that), which packB() then re-quantizes to INT8 --
+    // two lossy quantization passes stacked. Skipping the INT4 intermediate
+    // and quantizing straight from the original BF16 checkpoint removes one
+    // of those passes, no kernel/xclbin changes needed. Layout: fixed
+    // per-layer tensor order (q,k,v,o,gate,up,down), each raw float32
+    // [out_features,in_features] row-major, back to back -- see
+    // tools/convert_bf16_direct.py in the repo history / issue #1074.
+    const char* bf16d_path = getenv("NPU_BF16_DIRECT_WEIGHTS");
+    const float* bf16d = nullptr;
+    if (bf16d_path) {
+        int bfd = open(bf16d_path, O_RDONLY);
+        if (bfd >= 0) {
+            struct stat bst; fstat(bfd, &bst);
+            void* m = mmap(NULL, bst.st_size, PROT_READ, MAP_PRIVATE, bfd, 0);
+            close(bfd);
+            if (m != MAP_FAILED) { bf16d = (const float*)m; fprintf(stderr, "  BF16-direct weights: %s (%lld bytes)\n", bf16d_path, (long long)bst.st_size); }
+            else fprintf(stderr, "  BF16-direct weights: mmap failed for %s\n", bf16d_path);
+        } else {
+            fprintf(stderr, "  BF16-direct weights: cannot open %s\n", bf16d_path);
+        }
+    }
+
     // Pre-convert embeddings f32 (v12 optimization)
     fprintf(stderr,"Pre-convert emb f32...\n");auto te=std::chrono::steady_clock::now();
     #ifdef ONEBP_SUPPORT
@@ -900,11 +1184,23 @@ int main(int argc,char**argv){
     o_i8=gi8("model.layers.0.self_attn.o_proj.weight");g_i8=gi8("model.layers.0.mlp.gate_proj.weight");u_i8=gi8("model.layers.0.mlp.up_proj.weight");d_i8=gi8("model.layers.0.mlp.down_proj.weight");
     int lm_i8=gi8("lm_head.weight");
 
-    // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
-    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=dequant_i8_to_float_ex(i8p(lo),lm_i8,H,&lr,&lc);if(lm_raw){
-        lm_head_f32.assign(lm_raw,lm_raw+(size_t)lr*lc);free(lm_raw);
-        fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
-    }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
+    // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model.
+    // Q4NX file may have lm_head.weight with wrong dimensions (observed: [18992,5120]
+    // instead of [151936,1024]). Check the actual JSON shape's second dimension — if
+    // it doesn't match H, the tensor is from a different model and we use tied embeddings.
+    if(lo&&lm_i8>0){
+        int lm_dim1 = get_shape_dim1(js, jl, "lm_head.weight");
+        if(lm_dim1 == H){
+            int lr,lc; float* lm_raw = dequant_i8_to_float_ex(i8p(lo), lm_i8, H, &lr, &lc);
+            if(lm_raw){
+                lm_head_f32.assign(lm_raw, lm_raw + (size_t)lr * lc);
+                fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
+                free(lm_raw);
+            }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}
+        }else{
+            fprintf(stderr,"  lm_head: JSON dim1=%d != H=%d — using tied embeddings (separate lm_head present but mismatched)\n",lm_dim1,H);
+        }
+    }
 #ifdef ONEBP_SUPPORT
     }
 #endif
@@ -917,29 +1213,39 @@ int main(int argc,char**argv){
     // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
     const char* env_xd = getenv("NPU_XCLBIN_DIR");
     std::string xd = env_xd ? env_xd : "engine/npu/xclbins";
-    bool use_bf16_xclbins = true;  // Use recompiled BF16 xclbins
-    // Check if BF16 xclbins exist in q4nx subdirectory
+    bool use_bf16_xclbins = true;  // Use BF16 xclbins for higher precision (#1074)
+    // Check if BF16 xclbins exist (in q4nx_bak/ — Chess-compiled, may hang)
     {
-        std::string test_path = xd+"/q4nx/bf16_QKV_"+cfg.model_tag+".xclbin";
+        std::string test_path = xd+"/q4nx_bak/bf16_QKV_"+cfg.model_tag+".xclbin";
         FILE* tf = fopen(test_path.c_str(), "rb");
         if(!tf) { use_bf16_xclbins = false; }
-        else { fclose(tf); fprintf(stderr,"  Using BF16 Q4NX xclbins\n"); }
+        else { fclose(tf); fprintf(stderr,"  Using BF16 xclbins (q4nx_bak/, higher precision, issue #1074)\n"); }
     }
     auto xp=[&](const char*t){
         if(use_bf16_xclbins)
-            return xd+"/q4nx/bf16_"+std::string(t)+"_"+cfg.model_tag+".xclbin";
+            return xd+"/q4nx_bak/bf16_"+std::string(t)+"_"+cfg.model_tag+".xclbin";
         return xd+"/final_i8_"+std::string(t)+"_"+cfg.model_tag+".xclbin";
     };
     auto ip=[&](const char*t){
         if(use_bf16_xclbins)
-            return xd+"/q4nx/insts_bf16_"+std::string(t)+"_"+cfg.model_tag+".bin";
+            return xd+"/q4nx_bak/insts_bf16_"+std::string(t)+"_"+cfg.model_tag+".bin";
         return xd+"/insts_i8_"+std::string(t)+"_"+cfg.model_tag+".txt";
     };
 
     // GEMM contexts (I8Ctx = NPU xclbin + kernel + buffer set)
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
-    std::unique_ptr<AttnCtx> ca_ptr;
+    // One AttnCtx per layer (issue #1053): each layer's on-device K/V buffer
+    // must hold that layer's incremental history independently. A single
+    // shared AttnCtx only worked because launch_all() fully overwrote its
+    // one buffer with whichever layer's cache was passed in on every call --
+    // that's incompatible with incremental append_kv(), which relies on
+    // cur_seq/the buffer contents persisting across calls for the SAME
+    // layer. Memory cost is small: ~8MB/layer at max_seq=4096 (NKV*HD*2
+    // bytes/token), ~224MB total for a 28-layer model -- trivial against
+    // this hardware's unified system memory.
+    AttnKernel attn_kernel;
+    std::vector<std::unique_ptr<AttnCtx>> ca_ptrs;
     RuntimeAttnCtx rta;
     std::vector<uint32_t> attn_instrs;
     auto load_attn_instrs = [&](const char* path) -> bool {
@@ -955,6 +1261,20 @@ int main(int argc,char**argv){
     co.MD=XM;co.KD=cfg.xclbin_o_k;co.ND=cfg.xclbin_o_n;
     cd.MD=XM;cd.KD=cfg.xclbin_d_k;cd.ND=cfg.xclbin_d_n;
     if(cfg.gu_split){cg.MD=XM;cg.KD=cfg.xclbin_g_k;cg.ND=cfg.xclbin_g_n;}else{cg.MD=XM;cg.KD=cfg.xclbin_gu_k;cg.ND=cfg.xclbin_gu_n;}
+    // FLM xclbin path: use FLM's universal mm.xclbin with runtime instruction
+    // generation (#1054, #1074). Controlled by NPU_FLM_XCLBIN env var.
+    bool use_flm_xclbin = false;
+    const char* flm_xp_env = getenv("NPU_FLM_XCLBIN");
+    if (flm_xp_env) {
+        std::string flm_xp(flm_xp_env);
+        // Try with model name appended
+        std::string flm_dir = flm_xp + "/" + cfg.model_tag;
+        // Convert model_tag like "qwen3_0_6b" to "Qwen3-0.6B-NPU2"
+        // FLM uses hyphenated model dir names
+        use_flm_xclbin = true;
+        fprintf(stderr,"  Trying FLM xclbin from %s\n", flm_xp_env);
+    }
+
     if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL QKV\n");return 1;}
     if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL O\n");return 1;}
     if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC,use_bf16_xclbins)){fprintf(stderr,"FAIL GU\n");return 1;}}
@@ -966,6 +1286,10 @@ int main(int argc,char**argv){
     // has the same XRT compatibility issue as the GEMM xclbins on some
     // driver versions. Auto-enable when confirmed working per-model.
     // NPU attention: auto-enable if attn xclbin exists. Override with NPU_ATTN=0.
+    // Always sized NC (null entries where unused) so every call site's
+    // ca_ptrs[l] is safe to index regardless of whether NPU attention ended
+    // up enabled -- npu_attn_dispatch() itself handles a null AttnCtx*.
+    ca_ptrs.resize(NC);
     bool use_npu_attn = true;
     const char* npu_attn_env = getenv("NPU_ATTN");
     if(npu_attn_env && atoi(npu_attn_env) == 0) use_npu_attn = false;
@@ -976,45 +1300,47 @@ int main(int argc,char**argv){
         FILE* tf = fopen(attn_xp.c_str(), "rb");
         if(!tf) { use_npu_attn = false; fprintf(stderr,"  No attn xclbin for %s\n",cfg.model_tag.c_str()); }
         else { fclose(tf); }
-        if(use_npu_attn && load_attn_instrs(inst_path.c_str())) {
-            ca_ptr = std::make_unique<AttnCtx>();
-            if (ca_ptr->init(dev, attn_xp.c_str(), attn_instrs,
-                             4096, NH, NKV, HD, XM)) {
-                fprintf(stderr, "NPU attention enabled\n");
-            } else {
-                fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
-                use_npu_attn = false;
-                ca_ptr.reset();
-            }
-        } else {
+        if(!use_npu_attn || !load_attn_instrs(inst_path.c_str())) {
             // Fallback: generate attention instructions at runtime
             fprintf(stderr, "  No attn insts file, trying runtime generation...\n");
             extern void mha_generate_attn_instrs(
                 std::vector<uint32_t>&, uint32_t, int, uint32_t, uint32_t, uint32_t, uint32_t);
+            attn_instrs.clear();
             try {
                 mha_generate_attn_instrs(attn_instrs, (uint32_t)HD, 4,
                     (uint32_t)NH, (uint32_t)NKV, 4096, 4096);
-                if (!attn_instrs.empty()) {
-                    ca_ptr = std::make_unique<AttnCtx>();
-                    if (ca_ptr->init(dev, attn_xp.c_str(), attn_instrs,
-                                     4096, NH, NKV, HD, XM)) {
-                        fprintf(stderr, "NPU attention enabled (runtime-generated insts)\n");
-                    } else {
-                        fprintf(stderr, "WARN: AttnCtx runtime init failed, CPU fallback\n");
-                        use_npu_attn = false;
-                        ca_ptr.reset();
-                    }
-                } else {
-                    use_npu_attn = false;
-                }
+                use_npu_attn = !attn_instrs.empty();
             } catch (std::exception& ex) {
                 fprintf(stderr, "  Runtime attn instr gen failed: %s\n", ex.what());
                 use_npu_attn = false;
             }
         }
+        if (use_npu_attn) {
+            // One shared AttnKernel (xclbin/hw_context/kernel -- a limited
+            // driver resource, see AttnKernel's declaration comment), then
+            // one AttnCtx per layer for just the K/V buffers against that
+            // shared context. ca_ptrs stays sized NC either way (resized
+            // unconditionally above); on failure just reset every entry
+            // back to null rather than shrinking the vector, so ca_ptrs[l]
+            // stays a safe no-op index at every call site.
+            if (!attn_kernel.init(dev, attn_xp.c_str(), attn_instrs)) {
+                fprintf(stderr, "WARN: AttnKernel init failed, CPU fallback\n");
+                use_npu_attn = false;
+            }
+            for (int l = 0; use_npu_attn && l < NC; l++) {
+                ca_ptrs[l] = std::make_unique<AttnCtx>();
+                if (!ca_ptrs[l]->init(attn_kernel, 4096, NH, NKV, HD, XM)) {
+                    fprintf(stderr, "WARN: AttnCtx buffer init failed for layer %d, CPU fallback\n", l);
+                    use_npu_attn = false;
+                    for (auto& p : ca_ptrs) p.reset();
+                    break;
+                }
+            }
+            if (use_npu_attn) fprintf(stderr, "NPU attention enabled (1 shared context, %d per-layer buffer sets)\n", NC);
+        }
     }
     // Runtime attention (edge_attention_06b_compact) disabled — uses incompatible kernel signature.
-    // All attention goes through ca_ptr (pre-compiled instructions via xrt::kernel).
+    // All attention goes through ca_ptrs[l] (pre-compiled instructions via xrt::kernel).
     (void)rta;  // suppress unused warning
 
     // Per-layer dequant+pack lambda for single-buffer architecture.
@@ -1023,6 +1349,18 @@ int main(int argc,char**argv){
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
+
+    // Per-layer tensor sizes/offsets into bf16d, matching
+    // tools/convert_bf16_direct.py's fixed q,k,v,o,gate,up,down order.
+    const size_t bf16d_sizes[7] = {
+        (size_t)QOUT*H, (size_t)KVOUT*H, (size_t)KVOUT*H,
+        (size_t)OOUT*OIN, (size_t)GUOUT*H, (size_t)GUOUT*H, (size_t)DOUT*DIN
+    };
+    size_t bf16d_off[7]; { size_t acc=0; for(int i=0;i<7;i++){bf16d_off[i]=acc;acc+=bf16d_sizes[i];} }
+    size_t bf16d_per_layer = bf16d_off[6] + bf16d_sizes[6];
+    auto bf16d_tensor = [&](int l, int idx) -> const float* {
+        return bf16d + (size_t)l * bf16d_per_layer + bf16d_off[idx];
+    };
     std::function<void(int)> pack_layer_weights = [&](int l) {
         // Keep cur_layer in sync with the layer actually being packed on
         // EVERY path — the pre-pack-once loop below only runs when
@@ -1035,6 +1373,7 @@ int main(int argc,char**argv){
         float*qw,*kw,*vw,*ow,*gw,*uw,*dw;
         std::vector<float> qw_v,kw_v,vw_v,ow_v,gw_v,uw_v,dw_v;
         int gr,ur;
+        bool bf16d_owned = false;  // issue #1074: bf16d_tensor() pointers alias an mmap, must not be free()d
 #ifdef ONEBP_SUPPORT
         if (is_onebp) {
             // Tensors are already correctly shaped [out_features, in_features]
@@ -1051,10 +1390,21 @@ int main(int argc,char**argv){
             gr = ur = GUOUT;
         } else {
 #endif
+        if (bf16d) {
+            // Direct-BF16-source path (issue #1074) -- points straight into
+            // the mmap'd float32 blob, no dequant, no free() needed.
+            qw=const_cast<float*>(bf16d_tensor(l,0)); kw=const_cast<float*>(bf16d_tensor(l,1)); vw=const_cast<float*>(bf16d_tensor(l,2));
+            ow=const_cast<float*>(bf16d_tensor(l,3));
+            gw=const_cast<float*>(bf16d_tensor(l,4)); uw=const_cast<float*>(bf16d_tensor(l,5));
+            dw=const_cast<float*>(bf16d_tensor(l,6));
+            gr=ur=GUOUT;
+        } else {
         qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused);kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused);vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
         {int or2,oc2;ow=dequant_i8_to_float_ex(i8p(op[l]),o_i8,OIN,&or2,&oc2);}
         gw=dequant_i8_to_float_ex(i8p(gp[l]),g_i8,H,&gr,&unused);uw=dequant_i8_to_float_ex(i8p(up[l]),u_i8,H,&ur,&unused);
         {int dr2,dc2;dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);}
+        bf16d_owned = true;
+        }
 #ifdef ONEBP_SUPPORT
         }
 #endif
@@ -1078,7 +1428,7 @@ int main(int argc,char**argv){
 #ifdef ONEBP_SUPPORT
         if (!is_onebp) {
 #endif
-        free(qw);free(kw);free(vw);free(ow);free(gw);free(uw);free(dw);
+        if (bf16d_owned) { free(qw);free(kw);free(vw);free(ow);free(gw);free(uw);free(dw); }
 #ifdef ONEBP_SUPPORT
         }
 #endif
@@ -1086,23 +1436,25 @@ int main(int argc,char**argv){
 
     // Pre-pack all layer weights into per-layer NPU-resident BOs.
     // pack_layer_weights writes to layerB[cur_layer] via set_layer();
-    // once loaded, weights stay resident — no per-token memcpy or DMA needed.
-    if (use_bf16_xclbins) {
-        fprintf(stderr,"Pre-packing weights into NPU-resident BOs...\n");
-        auto tp=std::chrono::steady_clock::now();
-        for (int l = 0; l < NC; l++) {
-            cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
-            if (cu_ptr) cu_ptr->set_layer(l);
-            pack_layer_weights(l);
-        }
-        fprintf(stderr,"  Prep: %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
-        // Replace pack_layer_weights with per-layer BO selection only.
-        // Weights are already resident in layerB[l] — no memcpy, no DMA sync.
-        pack_layer_weights = [&](int l) {
-            cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
-            if (cu_ptr) cu_ptr->set_layer(l);
-        };
+    // once loaded, weights stay resident — no per-token memcpy, dequant, or
+    // requant needed on the decode path. This applies to BOTH BF16 and INT8
+    // xclbins — INT8 weights get their per-layer scale computed once here.
+    // Previously gated on use_bf16_xclbins, which left the INT8 path doing
+    // a dequant->requant->copy cycle per token per layer (~1s/layer = 21s/tok).
+    fprintf(stderr,"Pre-packing weights into NPU-resident BOs...\n");
+    auto tp=std::chrono::steady_clock::now();
+    for (int l = 0; l < NC; l++) {
+        cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+        if (cu_ptr) cu_ptr->set_layer(l);
+        pack_layer_weights(l);
     }
+    fprintf(stderr,"  Prep: %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
+    // Replace pack_layer_weights with per-layer BO selection only.
+    // Weights are already resident in layerB[l] — no memcpy, no DMA sync.
+    pack_layer_weights = [&](int l) {
+        cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+        if (cu_ptr) cu_ptr->set_layer(l);
+    };
     // RoPE
     ri(HD,cfg.rope_theta,4096);
     int kv_dwords=NKV*HD/2;
@@ -1322,7 +1674,7 @@ int main(int argc,char**argv){
                     // NPU attention (or CPU fallback)
                     npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                         kv_caches[l].k, kv_caches[l].v,
-                        NH, NKV, HD, GQA, rta, ca_ptr.get());
+                        NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
                     
                     // O projection
                     ascale = dynamic_ascale(at_data.data(), NH * HD);
@@ -1414,7 +1766,7 @@ int main(int argc,char**argv){
                         // NPU attention (or CPU fallback)
                         npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                             kv_caches[l].k, kv_caches[l].v,
-                            NH, NKV, HD, GQA, rta, ca_ptr.get());
+                            NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
                         
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
@@ -1491,7 +1843,7 @@ int main(int argc,char**argv){
                         // NPU attention (or CPU fallback)
                         npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                             kv_caches[l].k, kv_caches[l].v,
-                            NH, NKV, HD, GQA, rta, ca_ptr.get());
+                            NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
                         cn(h_data.data(), H);
@@ -1517,10 +1869,16 @@ int main(int argc,char**argv){
                     worker_pos++;
                     // Final norm
                     rn_c(h_data.data(), fin_v.data(), H);
-                    // LM head: argmax
+                    // LM head: argmax over vocab.
+                    // Use lm_head_f32 if available (separate weight matrix for this
+                    // model), otherwise fall back to embedding table (tied weights).
+                    // Using emb_f32 for a model with a separate lm_head produces
+                    // wrong token IDs (different weight matrices for input embed vs
+                    // output projection).
+                    const float* lm_head_data = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
                     double max_l = -1e30; int best_t = 0;
                     for(int n=0; n<NV; n++){
-                        double s = 0; const float* e = emb_f32.data() + (size_t)n*H;
+                        double s = 0; const float* e = lm_head_data + (size_t)n*H;
                         for(int k=0; k<H; k++) s += (double)h_data[k]*e[k];
                         if(s > max_l){ max_l = s; best_t = n; }
                     }
@@ -1607,10 +1965,10 @@ int main(int argc,char**argv){
                 }}}
         kv_caches[l].n=sp+npt;int cl=kv_caches[l].n;
         // NPU attention dispatch or CPU fallback with causal mask
-        if(ca_ptr && ca_ptr->isReady()){
+        if(l < (int)ca_ptrs.size() && ca_ptrs[l] && ca_ptrs[l]->isReady()){
             npu_attn_dispatch(qo_b.data(), at_b.data(), cl, npt, qkv_n, sp,
                 kv_caches[l].k, kv_caches[l].v,
-                NH, NKV, HD, GQA, rta, ca_ptr.get());
+                NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
             fprintf(stderr,"A"); fflush(stderr);
         } else {
             // CPU attention fallback with per-position causal mask
@@ -1685,8 +2043,8 @@ int main(int argc,char**argv){
             kv_caches[l].n=sp+1;int cl=kv_caches[l].n;
             npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, 0,
                 kv_caches[l].k, kv_caches[l].v,
-                NH, NKV, HD, GQA, rta, ca_ptr.get());
-            if(ca_ptr && ca_ptr->isReady()) fprintf(stderr,"A");
+                NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+            if(l < (int)ca_ptrs.size() && ca_ptrs[l] && ca_ptrs[l]->isReady()) fprintf(stderr,"A");
             co.go(at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
             int mlp_out=cfg.gu_split?IM:2*IM;
@@ -1741,8 +2099,8 @@ int main(int argc,char**argv){
             kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
             npu_attn_dispatch(qo_b.data(), at_b.data(), cl, batch_size, qkv_n, sp,
                 kv_caches[l].k, kv_caches[l].v,
-                NH, NKV, HD, GQA, rta, ca_ptr.get());
-            if(ca_ptr && ca_ptr->isReady()) fprintf(stderr,"A");
+                NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+            if(l < (int)ca_ptrs.size() && ca_ptrs[l] && ca_ptrs[l]->isReady()) fprintf(stderr,"A");
 
             // ── O GEMM ──
             // Launch O, then quantize GU input WHILE O runs (overlapped)
