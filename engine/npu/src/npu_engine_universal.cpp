@@ -108,6 +108,7 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
     std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bI,bA,bC;
     std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int32_t*Cm;
+    std::vector<std::unique_ptr<xrt::bo>>layerB;int cur_layer=0;int8_t*Am;int16_t*Cm;
     bool initialized=false;
     bool layerB_cached = true;
     // ── Per-group quantization fields (#1074, #1054) ──
@@ -182,6 +183,10 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
 
         // Allocate per-layer weight BOs — same group_id so instructions
         // work identically across layers. Weights loaded once, never re-DMA'd.
+        layerB_cached = true;
+        // Allocate per-layer weight BOs — same group_id so instructions
+        // work identically across layers. Weights loaded once, never re-DMA'd.
+        layerB_cached = false;  // per-layer weights exceed NPU cache; use host memory
         fprintf(stderr,"  I8Ctx: allocating %d x layerB (%zu bytes each, gid=%d, HOST_ONLY)\n",NL,b_size(),k->group_id(gid_B));
         layerB.reserve(NL);
         for (int l = 0; l < NL; l++) {
@@ -276,6 +281,13 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
         // calls packB() per-op with no other sync, so without this the
         // kernel launch waits on a DMA read that never resolves (#1061).
         layerB[cur_layer]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            // INT8 packing
+            float amax=0;
+            for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}
+            if(amax<1e-12f)amax=1.0f;sout=amax/127.0f;float is=127.0f/amax;auto*Bm=(int8_t*)layerB[cur_layer]->map();
+            for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;
+                int x=(int)roundf(v*is);if(x>127)x=127;else if(x<-127)x=-127;Bm[i]=(int8_t)x;}
+        }
         }
     inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
         if(use_bf16){
@@ -685,6 +697,8 @@ struct RuntimeAttnCtx {
             k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
             bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(0));
             bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(1));
+            bIn = std::make_unique<xrt::bo>(d, (size_t)id * 4, 0, k->group_id(0));
+            bOut = std::make_unique<xrt::bo>(d, (size_t)od * 4, 0, k->group_id(1));
             ok = true;
             return true;
         } catch (std::exception& ex) {
@@ -1462,6 +1476,23 @@ int main(int argc,char**argv){
         cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
         if (cu_ptr) cu_ptr->set_layer(l);
     };
+    // once loaded, weights stay resident — no per-token memcpy or DMA needed.
+    if (use_bf16_xclbins) {
+        fprintf(stderr,"Pre-packing weights into NPU-resident BOs...\n");
+        auto tp=std::chrono::steady_clock::now();
+        for (int l = 0; l < NC; l++) {
+            cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+            if (cu_ptr) cu_ptr->set_layer(l);
+            pack_layer_weights(l);
+        }
+        fprintf(stderr,"  Prep: %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
+        // Replace pack_layer_weights with per-layer BO selection only.
+        // Weights are already resident in layerB[l] — no memcpy, no DMA sync.
+        pack_layer_weights = [&](int l) {
+            cq.set_layer(l); co.set_layer(l); cg.set_layer(l); cd.set_layer(l);
+            if (cu_ptr) cu_ptr->set_layer(l);
+        };
+    }
     // RoPE
     ri(HD,cfg.rope_theta,4096);
     int kv_dwords=NKV*HD/2;
@@ -1682,6 +1713,10 @@ int main(int argc,char**argv){
                     npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                         kv_caches[l].k, kv_caches[l].v,
                         NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+                    // CPU Attention
+                    attn_omp(qo_data.data(), at_data.data(), cl,
+                             kv_caches[l].k.data(), kv_caches[l].v.data(),
+                             NH, NKV, HD, GQA);
                     
                     // O projection
                     ascale = dynamic_ascale(at_data.data(), NH * HD);
@@ -1774,6 +1809,9 @@ int main(int argc,char**argv){
                         npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                             kv_caches[l].k, kv_caches[l].v,
                             NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+                        attn_omp(qo_data.data(), at_data.data(), cl,
+                                 kv_caches[l].k.data(), kv_caches[l].v.data(),
+                                 NH, NKV, HD, GQA);
                         
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
@@ -1851,6 +1889,7 @@ int main(int argc,char**argv){
                         npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                             kv_caches[l].k, kv_caches[l].v,
                             NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+                        attn_omp(qo_data.data(), at_data.data(), cl, kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA);
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
                         cn(h_data.data(), H);
@@ -1886,6 +1925,10 @@ int main(int argc,char**argv){
                     double max_l = -1e30; int best_t = 0;
                     for(int n=0; n<NV; n++){
                         double s = 0; const float* e = lm_head_data + (size_t)n*H;
+                    // LM head: argmax
+                    double max_l = -1e30; int best_t = 0;
+                    for(int n=0; n<NV; n++){
+                        double s = 0; const float* e = emb_f32.data() + (size_t)n*H;
                         for(int k=0; k<H; k++) s += (double)h_data[k]*e[k];
                         if(s > max_l){ max_l = s; best_t = n; }
                     }
