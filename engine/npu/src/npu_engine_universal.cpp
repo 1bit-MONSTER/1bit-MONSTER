@@ -244,20 +244,24 @@ struct I8Ctx{int MD,KD,ND,NL;bool use_bf16=false;
 // Two launch paths:
 //   1. launch_all() — quantizes full K/V cache each call (O(seq_len))
 //   2. append_kv() + launch() — incremental, O(NKV*HD) per token
-struct AttnCtx {
-    int max_seq, NH, NKV, HD, XM;
-    int cur_seq = 0;
-    float cur_kv_scale = 1.0f;
+// AttnKernel — the expensive, hardware-context-limited shared resource: one
+// xclbin/hw_context/kernel for ALL layers. Found live (issue #1053 follow-up)
+// that giving every layer its own hw_context hits a real driver limit --
+// DRM_IOCTL_AMDXDNA_CREATE_HWCTX failed with EINVAL around the 12th
+// concurrent context on this hardware, silently forcing CPU-fallback
+// attention for the whole run. Per-layer K/V buffers (AttnCtx below) are
+// cheap device memory, not a limited driver resource, so only they are
+// per-layer -- the xclbin/hw_context/kernel triple is created once and
+// shared.
+struct AttnKernel {
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
     std::unique_ptr<xrt::elf> elf;
     std::unique_ptr<xrt::module> mdl;
     std::unique_ptr<xrt::ext::kernel> k;
-    std::unique_ptr<xrt::ext::bo> bQ, bK, bV, bOut;
     bool initialized = false;
 
-    ~AttnCtx() {}
-    bool isReady() { return initialized && k && bQ && bK && bV && bOut; }
+    bool isReady() { return initialized && hc && k; }
 
     // NOTE: the raw instruction words from mha_generate_*() aren't a
     // complete xrt::kernel submission by themselves — they need assembling
@@ -265,11 +269,7 @@ struct AttnCtx {
     // The old manual-bI + xrt::kernel(3ULL,...) path submits the command but
     // the AIE array never signals completion for this xclbin, so
     // DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT hangs forever (see PR #1047).
-    bool init(xrt::device& d, const char* xp,
-              const std::vector<uint32_t>& instrs,
-              int max_seq_len, int nh, int nkv, int hd, int xm) {
-        max_seq = max_seq_len;
-        NH = nh; NKV = nkv; HD = hd; XM = xm;
+    bool init(xrt::device& d, const char* xp, const std::vector<uint32_t>& instrs) {
         try {
             std::vector<char> iraw((char*)instrs.data(),
                                    (char*)instrs.data() + instrs.size() * sizeof(uint32_t));
@@ -282,6 +282,35 @@ struct AttnCtx {
             elf = std::make_unique<xrt::elf>(e.data(), e.size());
             mdl = std::make_unique<xrt::module>(*elf);
             k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
+        } catch (std::exception& ex) {
+            fprintf(stderr, "  AttnKernel init failed: %s\n", ex.what());
+            return false;
+        }
+        initialized = true;
+        return true;
+    }
+};
+
+struct AttnCtx {
+    int max_seq, NH, NKV, HD, XM;
+    int cur_seq = 0;
+    float cur_kv_scale = 1.0f;
+    xrt::hw_context* hc = nullptr;   // shared, owned by the AttnKernel
+    xrt::ext::kernel* k = nullptr;   // shared, owned by the AttnKernel
+    std::unique_ptr<xrt::ext::bo> bQ, bK, bV, bOut;
+    bool initialized = false;
+
+    ~AttnCtx() {}
+    bool isReady() { return initialized && k && bQ && bK && bV && bOut; }
+
+    // Per-layer buffer set only -- the xclbin/hw_context/kernel come from a
+    // shared AttnKernel (see above), not created here.
+    bool init(AttnKernel& shared, int max_seq_len, int nh, int nkv, int hd, int xm) {
+        max_seq = max_seq_len;
+        NH = nh; NKV = nkv; HD = hd; XM = xm;
+        if (!shared.isReady()) { fprintf(stderr, "  AttnCtx init failed: shared AttnKernel not ready\n"); return false; }
+        hc = shared.hc.get(); k = shared.k.get();
+        try {
             size_t q_bytes = (size_t)XM * NH * HD;
             size_t kv_bytes = (size_t)max_seq * NKV * HD;
             size_t out_bytes = (size_t)XM * NH * HD * 2;
@@ -291,7 +320,7 @@ struct AttnCtx {
             bOut = std::make_unique<xrt::ext::bo>(*hc, out_bytes);
             cur_seq = 0;
         } catch (std::exception& ex) {
-            fprintf(stderr, "  AttnCtx init failed: %s\n", ex.what());
+            fprintf(stderr, "  AttnCtx buffer init failed: %s\n", ex.what());
             return false;
         }
         initialized = true;
@@ -323,6 +352,26 @@ struct AttnCtx {
             }
         }
         cur_seq += npt;
+    }
+    // Re-quantize the full K/V history at a new scale (issue #1053). Needed
+    // because append_kv() quantizes each token in-place against whatever
+    // cur_kv_scale was active at the time it was appended -- if a later
+    // token's magnitude would exceed that scale (and clip), every previously
+    // appended token must be re-quantized too, not just the new one. Callers
+    // keep the full-precision K/V history on the host (kv_caches[l].k/.v)
+    // already, so this just replays that existing launch_all()-style
+    // quantization loop on demand instead of every step.
+    void requantize_kv(const float* K_cache, const float* V_cache, int seq_len, float kv_scale) {
+        cur_kv_scale = kv_scale; cur_seq = seq_len;
+        float kv_is = 1.0f / kv_scale; size_t kv_len = (size_t)seq_len * NKV * HD;
+        auto* k_i8 = (int8_t*)bK->map(); auto* v_i8 = (int8_t*)bV->map();
+        for (size_t i = 0; i < kv_len; i++) {
+            float v = K_cache[i]; if (!std::isfinite(v)) v = 0;
+            int q = (int)roundf(v * kv_is); k_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+            v = V_cache[i]; if (!std::isfinite(v)) v = 0;
+            q = (int)roundf(v * kv_is); v_i8[i] = (int8_t)(q > 127 ? 127 : (q < -127 ? -127 : q));
+        }
+        bK->sync(XCL_BO_SYNC_BO_TO_DEVICE); bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     xrt::run launch(const float* Q_f32, int seq_len, int batch, float q_scale) {
         auto* q_i8 = (int8_t*)bQ->map(); float q_is = 1.0f / q_scale;
@@ -565,7 +614,6 @@ static inline void npu_attn_dispatch(
     RuntimeAttnCtx& rta,
     AttnCtx* ca_ptr)
 {
-    (void)kv_k; (void)kv_v; (void)sp;  // CPU fallback uses these via attn_omp
     if (ca_ptr && ca_ptr->isReady()) {
         float q_ascale = 0;
         for (int i = 0; i < bs * NH * HD; i++) {
@@ -574,6 +622,38 @@ static inline void npu_attn_dispatch(
         }
         if (q_ascale < 1e-12f) q_ascale = 1.0f;
         q_ascale = q_ascale / 127.0f;
+
+        // Single new token per call (the decode loop's shape): use the
+        // incremental append_kv()+launch() path instead of re-quantizing the
+        // entire KV cache every step (issue #1053). Multi-token calls
+        // (prefill/batched-speculative, bs>1) keep using launch_all() --
+        // those already pass one shared `cl` for per-position-variable
+        // causal windows via the CPU fallback's max_pos, a behavior this
+        // patch doesn't change.
+        if (bs == 1 && cl == sp + 1) {
+            float new_max = 0;
+            for (int i = sp * NKV * HD; i < cl * NKV * HD; i++) {
+                float a = fabsf(kv_k[i]); if (std::isfinite(a) && a > new_max) new_max = a;
+                a = fabsf(kv_v[i]); if (std::isfinite(a) && a > new_max) new_max = a;
+            }
+            float needed_scale = new_max / 127.0f;
+            if (needed_scale < 1e-12f) needed_scale = 1e-12f;
+            if (ca_ptr->cur_seq == 0 || ca_ptr->cur_seq != sp || needed_scale > ca_ptr->cur_kv_scale) {
+                // First token, a scale gap from an out-of-band cur_seq
+                // (shouldn't happen in normal use, but keeps this safe if a
+                // caller ever skips a step), or the new token would clip
+                // under the established scale -- (re)quantize full history.
+                float new_scale = needed_scale * 1.5f;  // headroom vs. next few tokens
+                ca_ptr->requantize_kv(kv_k.data(), kv_v.data(), cl, new_scale);
+            } else {
+                ca_ptr->append_kv(&kv_k[sp * NKV * HD], &kv_v[sp * NKV * HD], ca_ptr->cur_kv_scale);
+            }
+            auto r_attn = ca_ptr->launch(qo, cl, bs, q_ascale);
+            ca_ptr->fast_finish(r_attn, at, bs, q_ascale);
+            cn(at, bs * NH * HD);
+            return;
+        }
+
         float kv_ascale = 0;
         for (int i = 0; i < cl * NKV * HD; i++) {
             float a = fabsf(kv_k[i]);
@@ -965,7 +1045,17 @@ int main(int argc,char**argv){
     // GEMM contexts (I8Ctx = NPU xclbin + kernel + buffer set)
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
-    std::unique_ptr<AttnCtx> ca_ptr;
+    // One AttnCtx per layer (issue #1053): each layer's on-device K/V buffer
+    // must hold that layer's incremental history independently. A single
+    // shared AttnCtx only worked because launch_all() fully overwrote its
+    // one buffer with whichever layer's cache was passed in on every call --
+    // that's incompatible with incremental append_kv(), which relies on
+    // cur_seq/the buffer contents persisting across calls for the SAME
+    // layer. Memory cost is small: ~8MB/layer at max_seq=4096 (NKV*HD*2
+    // bytes/token), ~224MB total for a 28-layer model -- trivial against
+    // this hardware's unified system memory.
+    AttnKernel attn_kernel;
+    std::vector<std::unique_ptr<AttnCtx>> ca_ptrs;
     RuntimeAttnCtx rta;
     std::vector<uint32_t> attn_instrs;
     auto load_attn_instrs = [&](const char* path) -> bool {
@@ -992,6 +1082,10 @@ int main(int argc,char**argv){
     // has the same XRT compatibility issue as the GEMM xclbins on some
     // driver versions. Auto-enable when confirmed working per-model.
     // NPU attention: auto-enable if attn xclbin exists. Override with NPU_ATTN=0.
+    // Always sized NC (null entries where unused) so every call site's
+    // ca_ptrs[l] is safe to index regardless of whether NPU attention ended
+    // up enabled -- npu_attn_dispatch() itself handles a null AttnCtx*.
+    ca_ptrs.resize(NC);
     bool use_npu_attn = true;
     const char* npu_attn_env = getenv("NPU_ATTN");
     if(npu_attn_env && atoi(npu_attn_env) == 0) use_npu_attn = false;
@@ -1002,45 +1096,47 @@ int main(int argc,char**argv){
         FILE* tf = fopen(attn_xp.c_str(), "rb");
         if(!tf) { use_npu_attn = false; fprintf(stderr,"  No attn xclbin for %s\n",cfg.model_tag.c_str()); }
         else { fclose(tf); }
-        if(use_npu_attn && load_attn_instrs(inst_path.c_str())) {
-            ca_ptr = std::make_unique<AttnCtx>();
-            if (ca_ptr->init(dev, attn_xp.c_str(), attn_instrs,
-                             4096, NH, NKV, HD, XM)) {
-                fprintf(stderr, "NPU attention enabled\n");
-            } else {
-                fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
-                use_npu_attn = false;
-                ca_ptr.reset();
-            }
-        } else {
+        if(!use_npu_attn || !load_attn_instrs(inst_path.c_str())) {
             // Fallback: generate attention instructions at runtime
             fprintf(stderr, "  No attn insts file, trying runtime generation...\n");
             extern void mha_generate_attn_instrs(
                 std::vector<uint32_t>&, uint32_t, int, uint32_t, uint32_t, uint32_t, uint32_t);
+            attn_instrs.clear();
             try {
                 mha_generate_attn_instrs(attn_instrs, (uint32_t)HD, 4,
                     (uint32_t)NH, (uint32_t)NKV, 4096, 4096);
-                if (!attn_instrs.empty()) {
-                    ca_ptr = std::make_unique<AttnCtx>();
-                    if (ca_ptr->init(dev, attn_xp.c_str(), attn_instrs,
-                                     4096, NH, NKV, HD, XM)) {
-                        fprintf(stderr, "NPU attention enabled (runtime-generated insts)\n");
-                    } else {
-                        fprintf(stderr, "WARN: AttnCtx runtime init failed, CPU fallback\n");
-                        use_npu_attn = false;
-                        ca_ptr.reset();
-                    }
-                } else {
-                    use_npu_attn = false;
-                }
+                use_npu_attn = !attn_instrs.empty();
             } catch (std::exception& ex) {
                 fprintf(stderr, "  Runtime attn instr gen failed: %s\n", ex.what());
                 use_npu_attn = false;
             }
         }
+        if (use_npu_attn) {
+            // One shared AttnKernel (xclbin/hw_context/kernel -- a limited
+            // driver resource, see AttnKernel's declaration comment), then
+            // one AttnCtx per layer for just the K/V buffers against that
+            // shared context. ca_ptrs stays sized NC either way (resized
+            // unconditionally above); on failure just reset every entry
+            // back to null rather than shrinking the vector, so ca_ptrs[l]
+            // stays a safe no-op index at every call site.
+            if (!attn_kernel.init(dev, attn_xp.c_str(), attn_instrs)) {
+                fprintf(stderr, "WARN: AttnKernel init failed, CPU fallback\n");
+                use_npu_attn = false;
+            }
+            for (int l = 0; use_npu_attn && l < NC; l++) {
+                ca_ptrs[l] = std::make_unique<AttnCtx>();
+                if (!ca_ptrs[l]->init(attn_kernel, 4096, NH, NKV, HD, XM)) {
+                    fprintf(stderr, "WARN: AttnCtx buffer init failed for layer %d, CPU fallback\n", l);
+                    use_npu_attn = false;
+                    for (auto& p : ca_ptrs) p.reset();
+                    break;
+                }
+            }
+            if (use_npu_attn) fprintf(stderr, "NPU attention enabled (1 shared context, %d per-layer buffer sets)\n", NC);
+        }
     }
     // Runtime attention (edge_attention_06b_compact) disabled — uses incompatible kernel signature.
-    // All attention goes through ca_ptr (pre-compiled instructions via xrt::kernel).
+    // All attention goes through ca_ptrs[l] (pre-compiled instructions via xrt::kernel).
     (void)rta;  // suppress unused warning
 
     // Per-layer dequant+pack lambda for single-buffer architecture.
@@ -1350,7 +1446,7 @@ int main(int argc,char**argv){
                     // NPU attention (or CPU fallback)
                     npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                         kv_caches[l].k, kv_caches[l].v,
-                        NH, NKV, HD, GQA, rta, ca_ptr.get());
+                        NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
                     
                     // O projection
                     ascale = dynamic_ascale(at_data.data(), NH * HD);
@@ -1442,7 +1538,7 @@ int main(int argc,char**argv){
                         // NPU attention (or CPU fallback)
                         npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                             kv_caches[l].k, kv_caches[l].v,
-                            NH, NKV, HD, GQA, rta, ca_ptr.get());
+                            NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
                         
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
@@ -1519,7 +1615,7 @@ int main(int argc,char**argv){
                         // NPU attention (or CPU fallback)
                         npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, sp,
                             kv_caches[l].k, kv_caches[l].v,
-                            NH, NKV, HD, GQA, rta, ca_ptr.get());
+                            NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
                         ascale = dynamic_ascale(at_data.data(), NH*HD);
                         co.go(at_data.data(), 1, NH*HD, ascale, osc[l], h_data.data(), H);
                         cn(h_data.data(), H);
@@ -1641,10 +1737,10 @@ int main(int argc,char**argv){
                 }}}
         kv_caches[l].n=sp+npt;int cl=kv_caches[l].n;
         // NPU attention dispatch or CPU fallback with causal mask
-        if(ca_ptr && ca_ptr->isReady()){
+        if(l < (int)ca_ptrs.size() && ca_ptrs[l] && ca_ptrs[l]->isReady()){
             npu_attn_dispatch(qo_b.data(), at_b.data(), cl, npt, qkv_n, sp,
                 kv_caches[l].k, kv_caches[l].v,
-                NH, NKV, HD, GQA, rta, ca_ptr.get());
+                NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
             fprintf(stderr,"A"); fflush(stderr);
         } else {
             // CPU attention fallback with per-position causal mask
@@ -1719,8 +1815,8 @@ int main(int argc,char**argv){
             kv_caches[l].n=sp+1;int cl=kv_caches[l].n;
             npu_attn_dispatch(qo_data.data(), at_data.data(), cl, 1, NH*HD, 0,
                 kv_caches[l].k, kv_caches[l].v,
-                NH, NKV, HD, GQA, rta, ca_ptr.get());
-            if(ca_ptr && ca_ptr->isReady()) fprintf(stderr,"A");
+                NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+            if(l < (int)ca_ptrs.size() && ca_ptrs[l] && ca_ptrs[l]->isReady()) fprintf(stderr,"A");
             co.go(at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
             int mlp_out=cfg.gu_split?IM:2*IM;
@@ -1775,8 +1871,8 @@ int main(int argc,char**argv){
             kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
             npu_attn_dispatch(qo_b.data(), at_b.data(), cl, batch_size, qkv_n, sp,
                 kv_caches[l].k, kv_caches[l].v,
-                NH, NKV, HD, GQA, rta, ca_ptr.get());
-            if(ca_ptr && ca_ptr->isReady()) fprintf(stderr,"A");
+                NH, NKV, HD, GQA, rta, ca_ptrs[l].get());
+            if(l < (int)ca_ptrs.size() && ca_ptrs[l] && ca_ptrs[l]->isReady()) fprintf(stderr,"A");
 
             // ── O GEMM ──
             // Launch O, then quantize GU input WHILE O runs (overlapped)
