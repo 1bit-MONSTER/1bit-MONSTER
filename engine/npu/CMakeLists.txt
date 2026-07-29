@@ -15,6 +15,7 @@ set(NPU_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(NPU_ENGINE_SOURCES
     ${NPU_SRC_DIR}/npu_engine_universal.cpp
     ${NPU_SRC_DIR}/dequant_q4nx.c
+    ${NPU_SRC_DIR}/gemm_npu_instructions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/src/flm_bridge.cpp
 )
 
