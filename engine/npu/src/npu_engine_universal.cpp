@@ -922,6 +922,30 @@ int main(int argc,char**argv){
     auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
     const char*js=(const char*)(md+8);size_t jl=hsz;
 
+    // Optional direct-BF16-source GEMM weights (issue #1074): the Q4NX file
+    // stores GEMM weights as INT4 (dequant_i8_to_float_ex reconstructs a
+    // float array from that), which packB() then re-quantizes to INT8 --
+    // two lossy quantization passes stacked. Skipping the INT4 intermediate
+    // and quantizing straight from the original BF16 checkpoint removes one
+    // of those passes, no kernel/xclbin changes needed. Layout: fixed
+    // per-layer tensor order (q,k,v,o,gate,up,down), each raw float32
+    // [out_features,in_features] row-major, back to back -- see
+    // tools/convert_bf16_direct.py in the repo history / issue #1074.
+    const char* bf16d_path = getenv("NPU_BF16_DIRECT_WEIGHTS");
+    const float* bf16d = nullptr;
+    if (bf16d_path) {
+        int bfd = open(bf16d_path, O_RDONLY);
+        if (bfd >= 0) {
+            struct stat bst; fstat(bfd, &bst);
+            void* m = mmap(NULL, bst.st_size, PROT_READ, MAP_PRIVATE, bfd, 0);
+            close(bfd);
+            if (m != MAP_FAILED) { bf16d = (const float*)m; fprintf(stderr, "  BF16-direct weights: %s (%lld bytes)\n", bf16d_path, (long long)bst.st_size); }
+            else fprintf(stderr, "  BF16-direct weights: mmap failed for %s\n", bf16d_path);
+        } else {
+            fprintf(stderr, "  BF16-direct weights: cannot open %s\n", bf16d_path);
+        }
+    }
+
     // Pre-convert embeddings f32 (v12 optimization)
     fprintf(stderr,"Pre-convert emb f32...\n");auto te=std::chrono::steady_clock::now();
     #ifdef ONEBP_SUPPORT
@@ -1145,6 +1169,18 @@ int main(int argc,char**argv){
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
+
+    // Per-layer tensor sizes/offsets into bf16d, matching
+    // tools/convert_bf16_direct.py's fixed q,k,v,o,gate,up,down order.
+    const size_t bf16d_sizes[7] = {
+        (size_t)QOUT*H, (size_t)KVOUT*H, (size_t)KVOUT*H,
+        (size_t)OOUT*OIN, (size_t)GUOUT*H, (size_t)GUOUT*H, (size_t)DOUT*DIN
+    };
+    size_t bf16d_off[7]; { size_t acc=0; for(int i=0;i<7;i++){bf16d_off[i]=acc;acc+=bf16d_sizes[i];} }
+    size_t bf16d_per_layer = bf16d_off[6] + bf16d_sizes[6];
+    auto bf16d_tensor = [&](int l, int idx) -> const float* {
+        return bf16d + (size_t)l * bf16d_per_layer + bf16d_off[idx];
+    };
     std::function<void(int)> pack_layer_weights = [&](int l) {
         // Keep cur_layer in sync with the layer actually being packed on
         // EVERY path — the pre-pack-once loop below only runs when
@@ -1157,6 +1193,7 @@ int main(int argc,char**argv){
         float*qw,*kw,*vw,*ow,*gw,*uw,*dw;
         std::vector<float> qw_v,kw_v,vw_v,ow_v,gw_v,uw_v,dw_v;
         int gr,ur;
+        bool bf16d_owned = false;  // issue #1074: bf16d_tensor() pointers alias an mmap, must not be free()d
 #ifdef ONEBP_SUPPORT
         if (is_onebp) {
             // Tensors are already correctly shaped [out_features, in_features]
@@ -1173,10 +1210,21 @@ int main(int argc,char**argv){
             gr = ur = GUOUT;
         } else {
 #endif
+        if (bf16d) {
+            // Direct-BF16-source path (issue #1074) -- points straight into
+            // the mmap'd float32 blob, no dequant, no free() needed.
+            qw=const_cast<float*>(bf16d_tensor(l,0)); kw=const_cast<float*>(bf16d_tensor(l,1)); vw=const_cast<float*>(bf16d_tensor(l,2));
+            ow=const_cast<float*>(bf16d_tensor(l,3));
+            gw=const_cast<float*>(bf16d_tensor(l,4)); uw=const_cast<float*>(bf16d_tensor(l,5));
+            dw=const_cast<float*>(bf16d_tensor(l,6));
+            gr=ur=GUOUT;
+        } else {
         qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused);kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused);vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
         {int or2,oc2;ow=dequant_i8_to_float_ex(i8p(op[l]),o_i8,OIN,&or2,&oc2);}
         gw=dequant_i8_to_float_ex(i8p(gp[l]),g_i8,H,&gr,&unused);uw=dequant_i8_to_float_ex(i8p(up[l]),u_i8,H,&ur,&unused);
         {int dr2,dc2;dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);}
+        bf16d_owned = true;
+        }
 #ifdef ONEBP_SUPPORT
         }
 #endif
@@ -1200,7 +1248,7 @@ int main(int argc,char**argv){
 #ifdef ONEBP_SUPPORT
         if (!is_onebp) {
 #endif
-        free(qw);free(kw);free(vw);free(ow);free(gw);free(uw);free(dw);
+        if (bf16d_owned) { free(qw);free(kw);free(vw);free(ow);free(gw);free(uw);free(dw); }
 #ifdef ONEBP_SUPPORT
         }
 #endif
