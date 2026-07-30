@@ -7,3 +7,4 @@
 [submodule "third_party/FastFlowLM"]
 	path = third_party/FastFlowLM
 	url = https://github.com/ROCm/FastFlowLM.git
+	branch = main

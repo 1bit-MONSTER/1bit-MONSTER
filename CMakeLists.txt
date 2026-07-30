@@ -863,6 +863,20 @@ if(EXISTS "${FLM_BINARY}")
         BYPRODUCTS ${FLM_BINARY}
     )
     add_dependencies(unified_server build_flm)
+    
+    # ── hotpatch target: update FLM submodule to latest main + rebuild ──
+    # Keeps npu_flm backend on the latest ROCm/FLM source.
+    # Run: cmake --build build --target update_flm
+    add_custom_target(update_flm
+        COMMAND git submodule update --remote third_party/FastFlowLM
+        COMMAND cd ${FLM_SOURCE_DIR} && cmake -B build -G Ninja
+            -DFLM_VERSION=0.9.46 -DNPU_VERSION=1.1.2
+        COMMAND cd ${FLM_SOURCE_DIR} && cmake --build build -j8
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Updating FLM submodule to latest + rebuilding"
+        BYPRODUCTS ${FLM_BINARY}
+    )
+    add_dependencies(unified_server update_flm)
 else()
     message(STATUS "flm: FLM binary not available — skipping build_flm target")
 endif()
