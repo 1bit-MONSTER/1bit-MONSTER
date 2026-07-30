@@ -43,17 +43,21 @@ jobs:
       - name: Check XRT
         run: |
           if ! ldconfig -p | grep -q xrt_coreutil; then
-            echo "::error::XRT not found in ldconfig"
-            exit 1
+            echo "::warning::XRT not found in ldconfig — NPU benchmarks unavailable on this runner"
+            echo "XRT_OK=false" >> $GITHUB_ENV
+          else
+            echo "XRT found"
+            echo "XRT_OK=true" >> $GITHUB_ENV
           fi
-          echo "XRT found"
 
       - name: Build dequantizer
+        if: env.XRT_OK == 'true'
         run: |
           mkdir -p engine/npu/build
           g++ -c -O3 -std=c++23 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.cpp
 
       - name: Build engine (continuous batch)
+        if: env.XRT_OK == 'true'
         run: |
           # npu_engine_v12.cpp is a struct-only header — the actual engine
           # with main() is npu_engine_all.cpp
