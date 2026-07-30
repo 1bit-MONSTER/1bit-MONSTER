@@ -930,7 +930,7 @@ target_link_libraries(test_mamba2_kernels PRIVATE rocm_cpp hip::host hip::device
 set_target_properties(test_mamba2_kernels PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
 # Register as ctest (requires GGUF model path via env or default)
-set(MAMBA1_TEST_MODEL "models/blackmamba-1.5b.gguf" CACHE FILEPATH "GGUF model for test_mamba1_backend")
+set(MAMBA1_TEST_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/blackmamba-1.5b.gguf" CACHE FILEPATH "GGUF model for test_mamba1_backend")
 if(MAMBA1_TEST_MODEL AND EXISTS "${MAMBA1_TEST_MODEL}")
     add_test(NAME test_mamba1_backend_regression COMMAND test_mamba1_backend ${MAMBA1_TEST_MODEL} 8)
     set_tests_properties(test_mamba1_backend_regression PROPERTIES LABELS "gpu_required;model_required;regression" SKIP_RETURN_CODE 77)

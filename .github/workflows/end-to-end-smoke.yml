@@ -10,6 +10,7 @@ on:
       - "src/zamba2_engine*"
       - "src/gguf_*.cpp"
       - "CMakeLists.txt"
+      - ".github/workflows/end-to-end-smoke.yml"
   workflow_dispatch:
 
 jobs:
@@ -31,10 +32,13 @@ jobs:
         # The npu_flm backend spawns FLM with the model tag. Pre-pull ensures
         # the model is cached locally so the server starts within the timeout.
         run: |
-          source env.sh
           FLM_BIN=third_party/FastFlowLM/src/build/flm
           if [ -x "$FLM_BIN" ]; then
-            "$FLM_BIN" pull llama3.2:1b 2>&1 | tail -3
+            echo "Pulling llama3.2:1b..."
+            "$FLM_BIN" pull llama3.2:1b 2>&1 | tail -5
+            echo "Pull complete"
+          else
+            echo "FLM binary not found at $FLM_BIN — will download at server start"
           fi
 
       - name: Stop production service (issue #1036)
