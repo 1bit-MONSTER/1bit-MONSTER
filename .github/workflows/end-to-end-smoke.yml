@@ -57,17 +57,16 @@ jobs:
       - name: Dump server model info
         run: |
           echo "=== Active backend ==="
-          health=$(curl -sf http://127.0.0.1:8099/v1/health)
-          echo "$health" | python3 -c "
+          curl -sf http://127.0.0.1:8099/v1/health | python3 -c '
           import json,sys; d=json.load(sys.stdin)
-          print('Model:', d.get('model', '?'))
-          ab = d.get('active_backend', {})
-          print('Active backend:', ab.get('id', '?'))
-          print('All backends:')
-          for b in d.get('backends', []):
-              mark = '>' if b.get('id') == ab.get('id') else ' '
-              print(f'  {mark} {b.get("id","?")} functional={b.get("functional")} available={b.get("available")}')
-          "
+          print("Model: " + str(d.get("model", "?")))
+          ab = d.get("active_backend", {})
+          print("Active backend: " + str(ab.get("id", "?")))
+          print("All backends:")
+          for b in d.get("backends", []):
+              mark = ">" if b.get("id") == ab.get("id") else " "
+              print("  " + mark + " " + str(b.get("id","?")) + " functional=" + str(b.get("functional")) + " available=" + str(b.get("available")))
+          '
 
       - name: Test health endpoint
         run: |
@@ -98,7 +97,7 @@ jobs:
           print('Content length:', len(c['message']['content']))
           print('Content:', repr(c['message']['content'][:100]))
           # Accept stop, timeout, or error
-          assert fr in ('stop', 'timeout', 'error'), f'unknown finish: {fr}'
+          assert fr in ('stop', 'timeout', 'error'), 'unknown finish: ' + str(fr)
           print('OK: chat completion endpoint')
           "
 
