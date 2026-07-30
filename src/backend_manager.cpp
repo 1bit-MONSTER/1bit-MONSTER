@@ -168,6 +168,32 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
+    // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
+    // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
+    // expects this id ("laguna_gpu") for RCPP_ARCH_LAGUNA models; previously this
+    // backend was compiled but never registered here, so the router's preferred id
+    // was silently skipped and every Laguna model fell through to zinc_gpu/cpu_generic,
+    // which don't understand the .1bp format (see #1204).
+    {
+        BackendInfo info;
+        info.id = "laguna_gpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "Laguna (.1bp) — sigmoid-MoE + hybrid SWA/global attention";
+        info.priority = tier_priority(info.tier) + 47;  // just below zamba2_gpu
+        info.available = has_hip_gpu();
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Laguna (.1bp)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 3. Vulkan GPU — portable fallback (runs on any GPU vendor)
     {
         BackendInfo info;
@@ -1312,6 +1338,19 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
         case BackendType::CPU_SCALAR:
             return create_cpu_backend();
         case BackendType::GENERIC:
+            if (info.id == "laguna_gpu") {
+#ifdef ROCM_CPP_STATIC_HIP
+                extern Backend* create_laguna_backend();
+                b = create_laguna_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_laguna_backend");
+                if (!b) b = try_load_backend("liblaguna_backend.so", "create_laguna_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_laguna_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
             return create_generic_backend();
         case BackendType::ZINC_GPU:
 #ifdef ZINC_DISABLED
