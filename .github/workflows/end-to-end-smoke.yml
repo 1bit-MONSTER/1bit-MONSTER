@@ -27,6 +27,16 @@ jobs:
           cmake -B build -G Ninja
           cmake --build build --target unified_server -j$(nproc)
 
+      - name: Pre-pull FLM model (Llama 3.2 1B)
+        # The npu_flm backend spawns FLM with the model tag. Pre-pull ensures
+        # the model is cached locally so the server starts within the timeout.
+        run: |
+          source env.sh
+          FLM_BIN=third_party/FastFlowLM/src/build/flm
+          if [ -x "$FLM_BIN" ]; then
+            "$FLM_BIN" pull llama3.2:1b 2>&1 | tail -3
+          fi
+
       - name: Stop production service (issue #1036)
         # This runner is the same box as the always-on production
         # 1bit-systems.service (unified_server, port 8088). Every historical
