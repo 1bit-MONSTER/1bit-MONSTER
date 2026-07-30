@@ -39,6 +39,36 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
     int H = cfg.hidden_size;
     const std::string& arch = cfg.architecture;
 
+    // Llama family
+    if (arch == "llama") {
+        if (H <= 2048) return "llama3.2:1b";
+        if (H <= 3072) return "llama3.2:3b";
+        if (H <= 4096) return "llama3.1:8b";
+        return "llama3.1:8b";
+    }
+
+    // Mistral family
+    if (arch == "mistral") {
+        if (H <= 4096) return "mistral:7b";
+        return "mistral:7b";
+    }
+
+    // Phi family
+    if (arch == "phi3") {
+        return "phi4-mini-it:4b";
+    }
+
+    // DeepSeek family
+    if (arch == "deepseek2") {
+        return "deepseek-r1:8b";
+    }
+
+    // Gemma3
+    if (arch == "gemma3") {
+        if (H <= 2048) return "gemma3:1b";
+        return "gemma3:4b";
+    }
+
     // Qwen3.5 Gate-Delta family
     if (arch == "qwen35" || arch == "qwen35moe") {
         if (H <= 1024) return "qwen3.5:0.8b";
