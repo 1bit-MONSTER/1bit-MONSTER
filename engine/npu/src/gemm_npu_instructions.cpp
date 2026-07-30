@@ -312,3 +312,28 @@ void mha_generate_sequence(
 
     seq->cmds2seq();
 }
+
+// ── Compatibility wrapper: split A/B offset variant ──
+// Called by HybridFlmCtx (npu_engine_hybrid_flm.h).
+// The unified gemm_generate_sequence uses a single weight offset.
+// This wrapper adapts the split-offset call to the unified API.
+void gemm_generate_sequence_i8_split(
+    npu_sequence*           seq,
+    uint32_t                M,
+    uint32_t                K,
+    uint32_t                N,
+    uint32_t                a_ddr_offset,
+    uint32_t                b_base_offset,
+    bool                    add_bias,
+    int                     activation,
+    uint32_t                bias_offset,
+    uint32_t                output_offset
+) {
+    // Unified function computes B = weight_offset + K*M + ...
+    // Caller wants A at a_ddr_offset, B at b_base_offset.
+    // Adjust weight_offset so B lands where caller expects.
+    uint32_t layer_b_offset = b_base_offset - (a_ddr_offset + K * M);
+    gemm_generate_sequence(seq, M, K, N,
+        a_ddr_offset + layer_b_offset,
+        add_bias, activation, bias_offset, output_offset);
+}
