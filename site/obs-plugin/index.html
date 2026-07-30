@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zaya AI Co-Host — OBS Plugin</title>
+<style>
+/* ── Dracula dark theme — OBS Browser Source, 1920×1080 ──────────────── */
+:root {
+  --bg: #0f111a;
+  --panel: #1a1c2c;
+  --border: #2a2d3e;
+  --text: #e7f6fd;
+  --muted: #6272a4;
+  --dim: #44475a;
+  --green: #00ff88;
+  --pink: #ff79c6;
+  --blue: #12a0ed;
+  --yellow: #f1fa8c;
+  --red: #ff5555;
+  --purple: #bd93f9;
+  --orange: #ffb86c;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{
+  width:1920px;height:1080px;
+  overflow:hidden;
+  background:transparent;
+  color:var(--text);
+  font-family:var(--font);
+  font-size:16px;
+  line-height:1.4;
+  -webkit-font-smoothing:antialiased;
+  user-select:none;
+}
+/* ── Root overlay — bottom-right anchored ───────────────────────────── */
+#root{
+  position:absolute;
+  bottom:80px;right:60px;
+  width:440px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  pointer-events:none;
+}
+/* ── Status bar ───────────────────────────────────────────────────────── */
+#status-bar{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:8px 14px;
+  background:rgba(15,17,26,.82);
+  border:1px solid var(--border);
+  border-radius:12px;
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  pointer-events:auto;
+}
+#status-dot{
+  width:10px;height:10px;
+  border-radius:50%;
+  flex-shrink:0;
+  transition:background .3s, box-shadow .3s;
+}
+#status-dot.connecting{background:var(--yellow);box-shadow:0 0 8px var(--yellow);animation:pulse-yellow 1.2s infinite}
+#status-dot.connected{background:var(--green);box-shadow:0 0 8px var(--green)}
+#status-dot.disconnected{background:var(--red);box-shadow:0 0 6px var(--red)}
+#status-dot.speaking{background:var(--pink);box-shadow:0 0 12px var(--pink);animation:pulse-pink .8s infinite}
+@keyframes pulse-yellow{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes pulse-pink{0%,100%{opacity:.6;transform:scale(1)}50%{opacity:1;transform:scale(1.2)}}
+#status-label{
+  font-size:12px;
+  font-weight:600;
+  color:var(--muted);
+  flex:1;
+}
+#status-label.connected{color:var(--green)}
+#status-label.speaking{color:var(--pink)}
+#co-host-name{
+  font-weight:800;
+  font-size:13px;
+  color:var(--text);
+  letter-spacing:.02em;
+}
+#co-host-name .accent{color:var(--pink)}
+/* ── Volume meter ─────────────────────────────────────────────────────── */
+#volume-meter{
+  width:60px;
+  height:6px;
+  background:var(--dim);
+  border-radius:3px;
+  overflow:hidden;
+  position:relative;
+}
+#volume-fill{
+  height:100%;
+  width:0%;
+  border-radius:3px;
+  background:var(--green);
+  transition:width 80ms ease, background .15s;
+}
+#volume-fill.loud{background:var(--orange)}
+#volume-fill.clipping{background:var(--red)}
+/* ── Waveform canvas ──────────────────────────────────────────────────── */
+#waveform-wrap{
+  position:relative;
+  width:100%;
+  height:60px;
+  border-radius:10px;
+  overflow:hidden;
+  background:rgba(15,17,26,.72);
+  border:1px solid var(--border);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+}
+#waveform{
+  width:100%;height:100%;
+  display:block;
+}
+#waveform-label{
+  position:absolute;
+  top:4px;left:8px;
+  font-size:9px;
+  font-weight:700;
+  color:var(--muted);
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  pointer-events:none;
+}
+/* ── Transcription overlay ────────────────────────────────────────────── */
+#transcript{
+  padding:10px 14px;
+  background:rgba(15,17,26,.72);
+  border:1px solid var(--border);
+  border-radius:10px;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  min-height:40px;
+  max-height:80px;
+  overflow-y:auto;
+  font-size:13px;
+  line-height:1.5;
+  color:var(--muted);
+  scrollbar-width:thin;
+  scrollbar-color:var(--dim) transparent;
+  transition:color .2s;
+  pointer-events:auto;
+}
+#transcript::-webkit-scrollbar{width:4px}
+#transcript::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
+#transcript.active{color:var(--text)}
+#transcript .speaker-label{color:var(--pink);font-weight:700;margin-right:6px}
+#transcript .timestamp{color:var(--dim);font-size:10px;margin-right:8px}
+/* ── Settings panel (hidden by default) ───────────────────────────────── */
+#settings-toggle{
+  position:absolute;
+  top:0;right:0;
+  width:24px;height:24px;
+  border:none;
+  background:transparent;
+  color:var(--dim);
+  cursor:pointer;
+  font-size:14px;
+  pointer-events:auto;
+  z-index:10;
+  border-radius:0 10px 0 6px;
+  transition:color .15s,background .15s;
+}
+#settings-toggle:hover{color:var(--text);background:rgba(255,255,255,.06)}
+#settings-panel{
+  position:absolute;
+  bottom:100%;
+  right:0;
+  margin-bottom:8px;
+  width:320px;
+  background:rgba(26,28,44,.95);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:16px;
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+  display:none;
+  pointer-events:auto;
+  z-index:20;
+}
+#settings-panel.open{display:block}
+#settings-panel h3{
+  font-size:12px;
+  font-weight:700;
+  color:var(--muted);
+  margin-bottom:12px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
+.setting-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:10px;
+}
+.setting-row label{
+  font-size:12px;
+  color:var(--muted);
+  font-weight:600;
+}
+.setting-row input,.setting-row select{
+  width:160px;
+  padding:5px 10px;
+  font-size:12px;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:6px;
+  color:var(--text);
+  outline:none;
+  font-family:var(--font);
+}
+.setting-row input:focus,.setting-row select:focus{border-color:var(--green)}
+.setting-row input[type=range]{width:120px;padding:0;height:4px;-webkit-appearance:none;appearance:none;background:var(--dim);border-radius:2px;border:none}
+.setting-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--green);cursor:pointer}
+.setting-row .val{font-size:11px;color:var(--muted);width:30px;text-align:right;font-family:var(--mono)}
+#debug-btn{
+  margin-top:8px;
+  width:100%;
+  padding:6px;
+  border:1px solid var(--border);
+  border-radius:6px;
+  background:transparent;
+  color:var(--muted);
+  font-size:11px;
+  cursor:pointer;
+  font-family:var(--font);
+  font-weight:600;
+  transition:all .15s;
+}
+#debug-btn:hover{border-color:var(--green);color:var(--green);background:rgba(0,255,136,.06)}
+/* ── Hide scrollbar for OBS ──────────────────────────────────────────── */
+::-webkit-scrollbar{width:0;height:0}
+</style>
+</head>
+<body>
+<div id="root">
+  <!-- Status bar -->
+  <div id="status-bar">
+    <span id="status-dot" class="disconnected"></span>
+    <span id="status-label">Disconnected</span>
+    <span id="co-host-name"><span class="accent">●</span> Zaya</span>
+    <div id="volume-meter"><div id="volume-fill"></div></div>
+  </div>
+
+  <!-- Waveform -->
+  <div id="waveform-wrap">
+    <canvas id="waveform"></canvas>
+    <span id="waveform-label">Audio Waveform</span>
+    <button id="settings-toggle" title="Settings">⚙</button>
+    <div id="settings-panel">
+      <h3>Co-Host Settings</h3>
+      <div class="setting-row">
+        <label>Server</label>
+        <input type="text" id="cfg-server" value="localhost:8082">
+      </div>
+      <div class="setting-row">
+        <label>Voice</label>
+        <input type="text" id="cfg-voice" value="zaya_default">
+      </div>
+      <div class="setting-row">
+        <label>Persona</label>
+        <input type="text" id="cfg-persona" value="Zaya">
+      </div>
+      <div class="setting-row">
+        <label>Volume</label>
+        <input type="range" id="cfg-volume" min="0" max="100" value="80">
+        <span class="val" id="cfg-volume-val">80%</span>
+      </div>
+      <button id="debug-btn">Reconnect</button>
+    </div>
+  </div>
+
+  <!-- Transcript -->
+  <div id="transcript">Waiting for AI co-host...</div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════
+// Zaya AI Co-Host — OBS Browser Source Plugin
+// Single self-contained HTML widget. No external dependencies.
+// ════════════════════════════════════════════════════════════════════════
+
+(function(){
+'use strict';
+
+// ── Config from URL query params ────────────────────────────────────────
+const params = new URLSearchParams(window.location.search);
+const CONFIG = {
+  server:   params.get('server')  || 'localhost:8082',
+  voice:    params.get('voice')   || 'zaya_default',
+  persona:  params.get('persona') || 'Zaya',
+  volume:   parseFloat(params.get('volume')) || 1.0,
+  autoReconnect: true,
+  reconnectDelay: 3000, // ms
+};
+
+// ── DOM refs ────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const statusDot = $('status-dot');
+const statusLabel = $('status-label');
+const coHostName = $('co-host-name');
+const volumeFill = $('volume-fill');
+const transcript = $('transcript');
+const waveformCanvas = $('waveform');
+const settingsToggle = $('settings-toggle');
+const settingsPanel = $('settings-panel');
+
+// Config inputs
+const cfgServer = $('cfg-server');
+const cfgVoice = $('cfg-voice');
+const cfgPersona = $('cfg-persona');
+const cfgVolume = $('cfg-volume');
+const cfgVolumeVal = $('cfg-volume-val');
+const debugBtn = $('debug-btn');
+
+// Set initial values
+cfgServer.value = CONFIG.server;
+cfgVoice.value = CONFIG.voice;
+cfgPersona.value = CONFIG.persona;
+cfgVolume.value = Math.round(CONFIG.volume * 100);
+cfgVolumeVal.textContent = cfgVolume.value + '%';
+
+// ── State ───────────────────────────────────────────────────────────────
+let ws = null;
+let audioCtx = null;
+let audioQueue = [];            // ArrayBuffer queue of PCM float32 chunks
+let isPlaying = false;
+let isSpeaking = false;
+let reconnectTimer = null;
+let currentTranscript = '';
+let connectionAttempts = 0;
+let lastSampleRate = 24000;
+let lastChannels = 1;
+
+// Toroidal ring buffer state
+const RING_SIZE = 16;
+let ringBuffer = [];
+let ringWriteIdx = 0;
+let ringReadIdx = 0;
+
+// ── Audio Context (lazy init, must be after user gesture in OBS CEF) ───
+function getAudioContext() {
+  if (audioCtx) return audioCtx;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 24000,
+      latencyHint: 'playback'
+    });
+  } catch(e) {
+    console.error('[Zaya] AudioContext creation failed:', e);
+    return null;
+  }
+  return audioCtx;
+}
+
+// ── Set status ──────────────────────────────────────────────────────────
+function setStatus(state, label) {
+  statusDot.className = state;
+  statusLabel.textContent = label;
+  statusLabel.className = state ? state : '';
+  if (state === 'speaking') {
+    statusDot.className = 'speaking';
+    statusLabel.textContent = 'Speaking';
+    statusLabel.className = 'speaking';
+  }
+}
+
+function setSpeaking(speaking) {
+  isSpeaking = speaking;
+  if (speaking) {
+    setStatus('speaking', 'Speaking');
+  } else {
+    setStatus('connected', 'Connected');
+  }
+}
+
+// ── Volume meter ────────────────────────────────────────────────────────
+let volumeMeterRAF = null;
+
+function updateVolumeMeter(average) {
+  // average: 0.0 - 1.0 (RMS)
+  const pct = Math.min(average * 100, 100);
+  volumeFill.style.width = pct + '%';
+  volumeFill.className = '';
+  if (average > 0.8) volumeFill.classList.add('clipping');
+  else if (average > 0.5) volumeFill.classList.add('loud');
+}
+
+function resetVolumeMeter() {
+  volumeFill.style.width = '0%';
+  volumeFill.className = '';
+}
+
+// ── Waveform renderer ──────────────────────────────────────────────────
+const WAVEFORM_BARS = 64;
+let waveformData = new Float32Array(WAVEFORM_BARS);
+let waveformRAF = null;
+
+function resizeWaveform() {
+  const rect = waveformCanvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  waveformCanvas.width = rect.width * dpr;
+  waveformCanvas.height = rect.height * dpr;
+  waveformCanvas.style.width = rect.width + 'px';
+  waveformCanvas.style.height = rect.height + 'px';
+  const ctx = waveformCanvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+}
+
+function drawWaveform() {
+  const ctx = waveformCanvas.getContext('2d');
+  const w = waveformCanvas.width / (window.devicePixelRatio || 1);
+  const h = waveformCanvas.height / (window.devicePixelRatio || 1);
+  const cx = w / 2, cy = h / 2;
+
+  ctx.clearRect(0, 0, w, h);
+
+  const barW = (w - 20) / WAVEFORM_BARS;
+  const gap = Math.max(1, barW * 0.25);
+  const actualBarW = barW - gap;
+
+  // Draw bars from center
+  for (let i = 0; i < WAVEFORM_BARS; i++) {
+    const val = waveformData[i] || 0;
+    const barH = Math.max(1, val * (cy - 4));
+
+    // Gradient: green at low → pink at high
+    const t = Math.min(val * 3, 1);
+    const r = Math.round(0 + t * 255);
+    const g = Math.round(255 - t * 150);
+    const b = Math.round(136 - t * 136);
+    ctx.fillStyle = `rgba(${r},${g},${b},${0.7 + t * 0.3})`;
+
+    const x = 10 + i * barW;
+    ctx.fillRect(x, cy - barH, actualBarW, barH * 2);
+  }
+
+  // Center line glow when speaking
+  if (isSpeaking) {
+    ctx.fillStyle = 'rgba(255,121,198,0.08)';
+    ctx.fillRect(0, cy - 1, w, 2);
+  }
+}
+
+function updateWaveform(samples) {
+  if (!samples || samples.length === 0) return;
+
+  // Downsample to WAVEFORM_BARS
+  const step = Math.max(1, Math.floor(samples.length / WAVEFORM_BARS));
+  for (let i = 0; i < WAVEFORM_BARS && i * step < samples.length; i++) {
+    let sum = 0, count = 0;
+    for (let j = i * step; j < (i + 1) * step && j < samples.length; j++) {
+      sum += Math.abs(samples[j]);
+      count++;
+    }
+    waveformData[i] = count > 0 ? sum / count : 0;
+  }
+
+  if (!waveformRAF) {
+    waveformRAF = requestAnimationFrame(function loop() {
+      drawWaveform();
+      waveformRAF = requestAnimationFrame(loop);
+    });
+  }
+}
+
+// ── Transcript ──────────────────────────────────────────────────────────
+function appendTranscript(text, isFinal) {
+  if (!text) return;
+  if (currentTranscript === text) return;
+
+  currentTranscript = text;
+
+  const time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const name = CONFIG.persona || 'Zaya';
+
+  let html = '';
+  html += `<span class="timestamp">${time}</span>`;
+  html += `<span class="speaker-label">${name}:</span>`;
+  html += text;
+
+  transcript.innerHTML = html;
+  transcript.classList.add('active');
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function setTranscriptPlaceholder(text) {
+  transcript.innerHTML = text;
+  transcript.classList.remove('active');
+  currentTranscript = '';
+}
+
+// ── Audio playback engine ───────────────────────────────────────────────
+// Uses a queue of AudioBufferSourceNodes scheduled sequentially.
+function playPCMChunk(pcmData, sampleRate) {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+
+  const vol = CONFIG.volume;
+
+  // Convert Float32Array to AudioBuffer
+  const buf = ctx.createBuffer(1, pcmData.length, sampleRate || 24000);
+  const channelData = buf.getChannelData(0);
+  channelData.set(pcmData);
+
+  const source = ctx.createBufferSource();
+  source.buffer = buf;
+
+  // Gain node for volume control
+  const gain = ctx.createGain();
+  gain.gain.value = vol;
+
+  // Analyser for waveform + volume
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.8;
+
+  source.connect(analyser);
+  analyser.connect(gain);
+  gain.connect(ctx.destination);
+
+  // Volume meter + waveform update
+  const timeData = new Float32Array(analyser.frequencyBinCount);
+  function processAnalyser() {
+    analyser.getFloatTimeDomainData(timeData);
+    let sum = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      sum += timeData[i] * timeData[i];
+    }
+    const rms = Math.sqrt(sum / timeData.length);
+    updateVolumeMeter(rms);
+    updateWaveform(timeData);
+  }
+
+  // Schedule updates during playback
+  const updateInterval = setInterval(processAnalyser, 80);
+
+  source.onended = () => {
+    clearInterval(updateInterval);
+  };
+
+  source.start(0);
+}
+
+// ── WebSocket client ────────────────────────────────────────────────────
+function buildWSUrl(text) {
+  const encodedVoice = encodeURIComponent(CONFIG.voice);
+  const encodedText = encodeURIComponent(text || ' ');
+  return `ws://${CONFIG.server}/v1/audio/stream?voice=${encodedVoice}&text=${encodedText}`;
+}
+
+let pcmBuffer = []; // Accumulated PCM chunks for current utterance
+
+function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const text = currentTranscript || ' ';
+  const url = buildWSUrl(text);
+
+  setStatus('connecting', 'Connecting...');
+  connectionAttempts++;
+
+  // Initialize PCM buffer
+  pcmBuffer = [];
+
+  try {
+    ws = new WebSocket(url);
+  } catch(e) {
+    console.error('[Zaya] WebSocket creation failed:', e);
+    setStatus('disconnected', 'Connection failed');
+    scheduleReconnect();
+    return;
+  }
+
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    console.log('[Zaya] Connected');
+    setStatus('connected', 'Connected');
+    connectionAttempts = 0;
+    setTranscriptPlaceholder('Connected — waiting for audio...');
+  };
+
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // Binary frame: float32 PCM data
+      const pcm = new Float32Array(event.data);
+      if (pcm.length > 0) {
+        pcmBuffer.push(pcm);
+        setSpeaking(true);
+      }
+    } else {
+      // Text frame: JSON meta or end
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'meta') {
+          lastSampleRate = msg.sample_rate || 24000;
+          lastChannels = msg.channels || 1;
+          console.log('[Zaya] Meta:', msg);
+        } else if (msg.type === 'end') {
+          // End of stream — flush PCM buffer and play
+          setSpeaking(false);
+          if (pcmBuffer.length > 0) {
+            // Concatenate all PCM chunks
+            let totalLen = 0;
+            for (const chunk of pcmBuffer) totalLen += chunk.length;
+            const combined = new Float32Array(totalLen);
+            let offset = 0;
+            for (const chunk of pcmBuffer) {
+              combined.set(chunk, offset);
+              offset += chunk.length;
+            }
+
+            playPCMChunk(combined, lastSampleRate);
+            pcmBuffer = [];
+
+            // Clear waveform after playback
+            setTimeout(() => {
+              waveformData = new Float32Array(WAVEFORM_BARS);
+              resetVolumeMeter();
+            }, 500);
+          }
+
+          console.log('[Zaya] Stream ended:', msg.reason || 'done');
+
+          // Schedule reconnect for next utterance
+          setTimeout(() => {
+            if (CONFIG.autoReconnect) {
+              connect();
+            }
+          }, CONFIG.reconnectDelay);
+        }
+      } catch(e) {
+        console.warn('[Zaya] Invalid message:', event.data);
+      }
+    }
+  };
+
+  ws.onerror = (err) => {
+    console.error('[Zaya] WS error');
+    setStatus('disconnected', 'Error');
+  };
+
+  ws.onclose = (event) => {
+    console.log('[Zaya] Disconnected (code:', event.code, ')');
+    if (isSpeaking) {
+      setSpeaking(false);
+      // Flush any remaining PCM
+      pcmBuffer = [];
+    }
+    setStatus('disconnected', 'Disconnected');
+
+    if (CONFIG.autoReconnect) {
+      scheduleReconnect();
+    }
+  };
+}
+
+function disconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) {
+    try {
+      ws.close();
+    } catch(e) {}
+    ws = null;
+  }
+  setStatus('disconnected', 'Disconnected');
+  isSpeaking = false;
+  pcmBuffer = [];
+  waveformData = new Float32Array(WAVEFORM_BARS);
+  resetVolumeMeter();
+  setTranscriptPlaceholder('Disconnected');
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  const delay = Math.min(1000 * Math.pow(1.5, connectionAttempts), 15000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
+
+function sendCancel() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type: 'cancel'}));
+  }
+}
+
+// ── Settings panel ──────────────────────────────────────────────────────
+settingsToggle.addEventListener('click', (e) => {
+  e.stopPropagation();
+  settingsPanel.classList.toggle('open');
+});
+
+document.addEventListener('click', (e) => {
+  if (!settingsPanel.contains(e.target) && e.target !== settingsToggle) {
+    settingsPanel.classList.remove('open');
+  }
+});
+
+cfgVolume.addEventListener('input', () => {
+  const val = parseInt(cfgVolume.value);
+  cfgVolumeVal.textContent = val + '%';
+  CONFIG.volume = val / 100;
+});
+
+cfgServer.addEventListener('change', () => {
+  CONFIG.server = cfgServer.value || 'localhost:8082';
+  reconnectWithConfig();
+});
+
+cfgVoice.addEventListener('change', () => {
+  CONFIG.voice = cfgVoice.value || 'zaya_default';
+  reconnectWithConfig();
+});
+
+cfgPersona.addEventListener('change', () => {
+  CONFIG.persona = cfgPersona.value || 'Zaya';
+  coHostName.innerHTML = `<span class="accent">●</span> ${CONFIG.persona}`;
+  reconnectWithConfig();
+});
+
+debugBtn.addEventListener('click', () => {
+  reconnectWithConfig();
+});
+
+function reconnectWithConfig() {
+  disconnect();
+  setTimeout(() => connect(), 300);
+}
+
+// ── Init ────────────────────────────────────────────────────────────────
+function init() {
+  // Set persona name
+  coHostName.innerHTML = `<span class="accent">●</span> ${CONFIG.persona}`;
+
+  // Resize waveform canvas
+  resizeWaveform();
+  window.addEventListener('resize', resizeWaveform);
+
+  // Start waveform render loop (idle)
+  function idleWaveform() {
+    drawWaveform();
+    if (!isSpeaking) {
+      waveformRAF = requestAnimationFrame(idleWaveform);
+    }
+  }
+  waveformRAF = requestAnimationFrame(idleWaveform);
+
+  // Connect
+  connect();
+}
+
+// Auto-init on DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+
+})();
+</script>
+</body>
+</html>
