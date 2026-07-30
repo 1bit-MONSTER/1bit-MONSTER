@@ -32,12 +32,11 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 
 **Key numbers:**
 - 19 model architectures · 35+ 1BP models · **6 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, CPU)
-- 598 tok/s peak end-to-end (SmolLM2-135M, **GGML-Vulkan**)
-- 543 tok/s peak kernel (TQ2 GEMV, ROCm HIP)
-- 337 tok/s (Qwen3-0.6B, **GGML-Vulkan**)
-- 79.4 tok/s (BlackMamba 1.5B, ROCm HIP)
+- **584 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**) 🏆
+- **320 tok/s** (Qwen3-0.6B, **GGML-Vulkan**)
+- **78.9 tok/s** (BlackMamba 1.5B, Mamba1 HIP)
 - 37 FLM models extracted (209 NPU xclbins)
-- Moonshot Kimi family (Gated MLA MoE) — architecture reverse-engineered, converter built, see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md)
+- Moonshot Kimi family (Gated MLA MoE) — architecture reverse-engineered, converter built
 
 </div>
 
@@ -71,7 +70,7 @@ Zyphra's model portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, M
 | **ZAYA1-74B-preview** | 74B | 739 MB² | ZINC / HIP | 🧠🗣️ | — |
 | **ZAYA1-VL-8B** | 8.8B | — | ZINC (vision) | 👁️🧠🗣️ | — |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 🧠🗣️ | 26 tok/s ZINC |
-| **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **79.4 tok/s** 🏁 |
+| **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **78.9 tok/s** 🏁 |
 | **BlackMamba-2.8B** | 2.8B | 1.8 GB | Mamba1 HIP | 🧠🗣️ | 46.0 tok/s 🏁 |
 | **Zamba2-1.2B-v2** | 1.2B | 1.1 GB | ZINC ✅ / NPU | 🧠 | 30 tok/s ZINC |
 | **Zamba2-2.7B-v2** | 2.7B | 2.4 GB | ZINC ✅ / NPU | 🧠 | — |
@@ -96,7 +95,7 @@ The most versatile ecosystem: dense models from 0.5B to 72B, vision-language var
 | Model | Params | 1BP Size | Backend(s) | Perf |
 |-------|:------:|:--------:|------------|:----:|
 | **Qwen2.5-0.5B** | 0.5B | 328 MB | ZINC / NPU | — |
-| **Qwen3-0.6B** | 0.6B | 356 MB | **GGML-Vulkan** / ZINC / NPU / HIP | **332 tok/s** 🆕 |
+| **Qwen3-0.6B** | 0.6B | 356 MB | **GGML-Vulkan** / ZINC / NPU / HIP | **320 tok/s** |
 | **Qwen3-4B** | 4B | 2.2 GB | ZINC / NPU / HIP | — |
 | **Qwen3-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | 423 tok/s ZINC |
 | **Qwen2-VL-2B** | 2B | 781 MB | ZINC (vision) | — |
@@ -115,9 +114,9 @@ General-purpose dense transformer models — Llama-derived, Mistral, Gemma, Phi,
 
 | Model | Params | 1BP Size | Backend(s) | Peak tok/s |
 |-------|:------:|:--------:|------------|:----------:|
-| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **571** 🆕 |
-| **SmolLM2-360M** | 360M | 259 MiB | **GGML-Vulkan** / ZINC / CPU | **390** 🆕 |
-| **SmolLM2-1.7B** | 1.7B | 1007 MiB | **GGML-Vulkan** / ZINC / CPU | **169** 🆕 |
+| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **584** 🏆 |
+| **SmolLM2-360M** | 360M | 259 MiB | **GGML-Vulkan** / ZINC / CPU | **389** |
+| **SmolLM2-1.7B** | 1.7B | 1007 MiB | **GGML-Vulkan** / ZINC / CPU | **167** |
 | **Llama-3.2-1B** | 1B | 581 MB | ZINC / NPU | 543 (kernel) |
 | **Llama-3.2-3B** | 3B | 1.7 GB | ZINC / NPU / HIP | 543 (kernel) |
 | **Llama-3.1-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | 543 (kernel) |
@@ -169,14 +168,14 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 | **Bonsai-8B** | 8B | 4.1 GB | HIP GPU | — |
 | **Bonsai-27B** | 27B | 15 GB | HIP GPU | — |
 
-**GGML-Vulkan (end-to-end) benchmarks:**
-| Model | tok/s | Backend |
-|-------|:-----:|---------|
-| SmolLM2-135M Q4_K_M | **571** | GGML-Vulkan 🆕 |
-| SmolLM2-360M Q4_K_M | **390** | GGML-Vulkan 🆕 |
-| SmolLM2-1.7B Q4_K_M | **169** | GGML-Vulkan 🆕 |
-| Qwen3-0.6B Q4_K_M | **332** | GGML-Vulkan 🆕 |
-| Qwen2.5-VL-3B Q4_K_M | **96** | GGML-Vulkan 🆕 |
+**GGML-Vulkan (end-to-end) benchmarks — Radeon 8060S:**
+| Model | tok/s | ms/tok |
+|-------|:-----:|-------:|
+| SmolLM2-135M Q4_K_M | **584** 🏆 | 1.7 |
+| SmolLM2-360M Q4_K_M | **389** | 2.6 |
+| SmolLM2-1.7B Q4_K_M | **167** | 6.0 |
+| Qwen3-0.6B Q4_K_M | **320** | 3.1 |
+| Qwen2.5-VL-3B Q4_K_M | **95** | 10.5 |
 
 **Ternary kernel benchmarks:**
 | Kernel | tok/s | Backend |
@@ -194,15 +193,15 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 
 | Benchmark | tok/s | Backend | Status |
 |-----------|:-----:|---------|--------|
-| SmolLM2-135M Q4_K_M | **571** | **GGML-Vulkan** | ✅ new |
-| SmolLM2-360M Q4_K_M | **390** | **GGML-Vulkan** | ✅ new |
-| SmolLM2-1.7B Q4_K_M | **169** | **GGML-Vulkan** | ✅ new |
-| Qwen3-0.6B Q4_K_M | **332** | **GGML-Vulkan** | ✅ new |
-| Qwen2.5-VL-3B Q4_K_M | **96** | **GGML-Vulkan** | ✅ new |
+| SmolLM2-135M Q4_K_M | **584** | **GGML-Vulkan** | ✅ new peak |
+| SmolLM2-360M Q4_K_M | **389** | **GGML-Vulkan** | ✅ new |
+| SmolLM2-1.7B Q4_K_M | **167** | **GGML-Vulkan** | ✅ new |
+| Qwen3-0.6B Q4_K_M | **320** | **GGML-Vulkan** | ✅ new |
+| Qwen2.5-VL-3B Q4_K_M | **95** | **GGML-Vulkan** | ✅ new |
+| BlackMamba 1.5B e2e | **78.9** | Mamba1 HIP | ✅ verified |
 | Q1 GEMV kernel | 433 | ROCm HIP | ✅ |
 | Fused TQ2 kernel | 420 | ROCm HIP | ✅ |
 | GPU ternary (Vulkan) | 318 | Vulkan ZINC | ✅ |
-| BlackMamba 1.5B e2e | 79.4 | ROCm HIP | ✅ |
 | BlackMamba 2.8B e2e | 46.0 | ROCm HIP | ✅ |
 
 **[→ Full benchmarks](docs/wiki/performance.md)**
