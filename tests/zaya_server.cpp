@@ -114,6 +114,7 @@ static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
     auto slash = path.find_last_of('/');
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
     cfg.model_path = path;
+    cfg.weights_dir = (slash != std::string::npos) ? path.substr(0, slash + 1) : "./";
     fprintf(stderr, "  Auto-detected from .1bp: %s\n", cfg.model_name.c_str());
     fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d eos=%d\n",
             cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
