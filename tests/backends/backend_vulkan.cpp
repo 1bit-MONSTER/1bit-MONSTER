@@ -82,6 +82,10 @@ class VulkanBackend : public InferenceBackend {
     // Resolve shader path relative to repo root
     std::string shader_dir_;
 
+    // KV cache: per-layer [max_seq * n_kv * hd]
+    std::vector<std::vector<float>> k_cache_, v_cache_;
+    int max_seq_ = 2048;
+
 public:
     BackendType type() const override { return BackendType::VULKAN; }
     const char* name() const override { return "Vulkan GPU"; }
@@ -200,11 +204,14 @@ public:
         layers_.clear();
         embed_.clear();
         fnorm_.clear();
+        k_cache_.clear();
+        v_cache_.clear();
         loaded_ = false;
     }
 
     void reset_state() override {
-        // No persistent state needed for single-token inference
+        k_cache_.clear();
+        v_cache_.clear();
     }
 
     // ─── Vulkan GEMM: out[M] = in[K] @ wt[M×K]^T ──────────────────
@@ -254,32 +261,46 @@ public:
         }
     }
 
-    // ─── Scaled dot-product attention (CPU, single token) ──────────
-    static void attend_cpu(
-        const float* q, const float* k, const float* v,
-        float* out, int nq, int nkv, int hd, int max_seq, int pos
+    // ─── Scaled dot-product attention (CPU, with KV cache) ─────────
+    static void attend_cpu_cached(
+        const float* q, const float* k_cache, const float* v_cache,
+        float* out, int nq, int nkv, int hd, int seq_len
     ) {
-        // Simple single-token attention: for each query head, attend to
-        // all KV heads (GQA: nq/nkv heads map to same K,V).
-        // In single-token decode, the full KV sequence is just [pos].
+        // Multi-head attention with GQA: nq query heads, nkv KV heads
+        // k_cache/v_cache: [nkv * hd * seq_len] — K,V for all past positions
         float scale = 1.0f / sqrtf((float)hd);
         for (int h = 0; h < nq; h++) {
-            int kv_h = h * nkv / nq;  // GQA group mapping
+            int kv_h = h * nkv / nq;
             const float* qh = q + h * hd;
-            const float* kh = k + kv_h * hd;
-            const float* vh = v + kv_h * hd;
             float* oh = out + h * hd;
 
-            // Score = q·k / sqrt(d)
-            float score = 0;
-            for (int i = 0; i < hd; i++) score += qh[i] * kh[i];
-            score *= scale;
+            // Compute scores against all cached positions
+            std::vector<float> scores(seq_len);
+            float max_score = -1e30f;
+            for (int t = 0; t < seq_len; t++) {
+                const float* kh = k_cache + (kv_h * seq_len + t) * hd;
+                float s = 0;
+                for (int i = 0; i < hd; i++) s += qh[i] * kh[i];
+                s *= scale;
+                scores[t] = s;
+                if (s > max_score) max_score = s;
+            }
 
-            // Softmax (single token = sigmoid-like, just pass through)
-            float attn = 1.0f / (1.0f + expf(-score));
+            // Softmax over sequence
+            float sum = 0;
+            for (int t = 0; t < seq_len; t++) {
+                scores[t] = expf(scores[t] - max_score);
+                sum += scores[t];
+            }
+            float inv_sum = 1.0f / (sum + 1e-10f);
 
-            // V weighted by attention
-            for (int i = 0; i < hd; i++) oh[i] = attn * vh[i];
+            // Weighted sum of V
+            memset(oh, 0, hd * sizeof(float));
+            for (int t = 0; t < seq_len; t++) {
+                float a = scores[t] * inv_sum;
+                const float* vh = v_cache + (kv_h * seq_len + t) * hd;
+                for (int i = 0; i < hd; i++) oh[i] += a * vh[i];
+            }
         }
     }
 
@@ -291,10 +312,15 @@ public:
         int N_LAYERS = cfg_.num_layers, VOCAB = cfg_.vocab_size;
         int N_FF = cfg_.intermediate_size;
 
-        // hidden state (CPU-side)
-        std::vector<float> hidden(H);
+        // Grow KV cache if needed
+        if ((int)k_cache_.size() < N_LAYERS) {
+            k_cache_.resize(N_LAYERS);
+            v_cache_.resize(N_LAYERS);
+        }
+        int cache_stride = NKV * HD;
 
         // Embedding lookup
+        std::vector<float> hidden(H);
         if (!embed_.empty() && embed_.size() >= (size_t)(token_id + 1) * H) {
             for (int i = 0; i < H; i++)
                 hidden[i] = embed_[(size_t)token_id * H + i];
@@ -332,10 +358,25 @@ public:
             // ── RoPE ──
             apply_rope(q.data(), k.data(), NQ, NKV, HD, pos);
 
-            // ── Attention ──
+            // ── Store K,V in cache ──
+            auto& kc = k_cache_[il];
+            auto& vc = v_cache_[il];
+            int seq = pos + 1;
+            if ((int)kc.size() < seq * cache_stride) {
+                kc.resize(seq * cache_stride);
+                vc.resize(seq * cache_stride);
+            }
+            for (int h = 0; h < NKV; h++) {
+                for (int i = 0; i < HD; i++) {
+                    kc[(h * seq + pos) * HD + i] = k[h * HD + i];
+                    vc[(h * seq + pos) * HD + i] = v[h * HD + i];
+                }
+            }
+
+            // ── Attention with full KV cache ──
             std::vector<float> attn_out(QD);
-            attend_cpu(q.data(), k.data(), v.data(), attn_out.data(),
-                       NQ, NKV, HD, 0, pos);
+            attend_cpu_cached(q.data(), kc.data(), vc.data(), attn_out.data(),
+                              NQ, NKV, HD, seq);
 
             // ── Output projection Wo ──
             if (!l.wo.empty() && l.wo.size() >= (size_t)H * QD) {
@@ -344,41 +385,36 @@ public:
                 vk_gemm(pipe_gemm_, buf_hs_, buf_wt_, buf_out_, H, QD);
                 buf_out_.download(hidden.data());
             } else {
-                // Fallback: copy attn_out projected through hidden dims
                 for (int i = 0; i < H && i < QD; i++) hidden[i] = attn_out[i];
                 for (int i = QD; i < H; i++) hidden[i] = 0;
             }
 
-            // ── Residual + post-attention RMSNorm ──
+            // ── Residual ──
             for (int i = 0; i < H; i++) hidden[i] += residual[i];
             std::vector<float> attn_residual = hidden;
             if (!l.pan.empty()) rmsnorm_cpu(hidden, l.pan, H, cfg_.rms_norm_eps);
 
-            // ── FFN ──
+            // ── FFN with SiLU ──
             if (!l.g.empty() && !l.up.empty() && l.g.size() >= (size_t)N_FF * H) {
-                // Gate projection via Vulkan GEMM
                 buf_wt_.upload(l.g.data());
                 buf_hs_.upload(hidden.data());
                 vk_gemm(pipe_gemm_, buf_hs_, buf_wt_, buf_out_, N_FF, H);
                 std::vector<float> gate(N_FF);
                 buf_out_.download(gate.data());
 
-                // Up projection via Vulkan GEMM
                 buf_wt_.upload(l.up.data());
                 buf_hs_.upload(hidden.data());
                 vk_gemm(pipe_gemm_, buf_hs_, buf_wt_, buf_out_, N_FF, H);
                 std::vector<float> up(N_FF);
                 buf_out_.download(up.data());
 
-                // SiLU(gate) * up (CPU)
                 std::vector<float> ffn_act(N_FF);
                 for (int i = 0; i < N_FF; i++) {
                     float g = gate[i];
-                    float silu = g / (1.0f + expf(-g));  // SiLU = x * sigmoid(x)
+                    float silu = g / (1.0f + expf(-g));
                     ffn_act[i] = silu * up[i];
                 }
 
-                // Down projection via Vulkan GEMM
                 if (!l.dn.empty() && l.dn.size() >= (size_t)H * N_FF) {
                     buf_wt_.upload(l.dn.data());
                     buf_tmp_.upload(ffn_act.data());
@@ -386,7 +422,6 @@ public:
                     buf_out_.download(hidden.data());
                 }
             } else if (!l.gu.empty() && l.gu.size() >= (size_t)(2 * N_FF) * H) {
-                // Fallback: stacked gate+up (MoE style)
                 int gus = (int)(l.gu.size() / H);
                 buf_wt_.upload(l.gu.data());
                 buf_hs_.upload(hidden.data());
