@@ -93,7 +93,7 @@ Microsoft's 4B dense transformer. NPU-only at present.
 - **NPU:** Phi4-Mini-Instruct (build stanza in build_xclbins.sh, 4 xclbins)
 - **GPU HIP:** ❌ not yet
 - **GPU Vulkan:** ❌ not yet
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 #### 7. Laguna
 
@@ -129,7 +129,7 @@ Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end valida
 - **NPU:** ZR1-1.5B (dense Qwen2 arch) — build via existing Qwen3-0.6B xclbin stanzas (same tile template, different K/N dims in config)
 - **GPU HIP:** GGUF — validated (kernel bench: 431 tok/s Q1, 426 tok/s fused TQ2)
 - **GPU Vulkan:** 1.5B at ~26 tok/s — ✅ validated end-to-end
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 #### 11. Nanbeige4.1
 
@@ -138,7 +138,7 @@ Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end valida
 - **NPU:** Nanbeige4.1-3B (build stanza in `build_xclbins.sh`)
 - **GPU HIP:** ❌ not yet
 - **GPU Vulkan:** ❌ not yet
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 ---
 
@@ -172,7 +172,7 @@ MoE with Multi-Head Latent Attention (MLA). DeepSeek-R1 distill variants on NPU.
 - **NPU:** Qwen3.6-35B-A3B (build stanza in `build_xclbins.sh`, 9 xclbins). GateDeltaNet attention via existing `GateDeltaNet_prefill.xclbin` pattern.
 - **GPU HIP:** Q4_K_S through ROCm HIP — 20 tok/s — ⚙️ optimized
 - **GPU Vulkan:** ❌ not yet
-- **CPU:** ❌ not yet (insufficient unified memory for 35B at Q4)
+- **CPU:** ✅ universal GGUF backend
 
 #### 15. GPT-OSS-20B
 
@@ -181,7 +181,7 @@ MoE architecture. Both base and safeguard variants pre-compiled for NPU.
 - **NPU:** GPT-OSS-20B, GPT-OSS-Safeguard-20B (6 xclbins each including expert.xclbin for MoE dispatch). MoE expert batched GEMM MLIR generator in `generators/n1_core_moe_expert.py`.
 - **GPU HIP:** ❌ not yet
 - **GPU Vulkan:** ❌ not yet
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 ---
 
@@ -196,7 +196,7 @@ Mamba1 SSM + top-1 MoE gating. **No attention mechanism** — alternating SSM sc
 - **NPU:** SSM scan kernel in `kernel/ssm_selective_scan.cc` supports the selective-scan primitive for both Mamba1 and Mamba2. MoE FFN layers via `generators/n1_core_moe_expert.py`. Build with existing GPT-OSS MoE xclbin patterns.
 - **GPU HIP:** 79.4 tok/s (1.5B) / 46.0 tok/s (2.8B) — ✅ validated (Mamba1 HIP backend)
 - **GPU Vulkan:** ❌ not yet (Mamba1 scan requires HIP cooperative-groups; Vulkan port pending)
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 #### 17. Zamba2
 
@@ -208,7 +208,7 @@ Mamba2-hybrid architecture: Mamba2 SSM layers with sparse attention every 6 laye
 - **NPU:** Zamba2-2.7B build stanza in `build_xclbins.sh` (`build_zamba2_2_7b`). AIE2 selective scan kernel in `kernel/ssm_selective_scan.cc` (per-head d_state=64 vectorized, 32 heads/tile). SSM scan MLIR generator in `generators/n1_core_ssm_scan.py` (16 tiles parallel). NPU GEMM handles in_proj/out_proj; SSM recurrence runs on AIE tiles.
 - **GPU HIP:** Mamba2 decode block: 1270 tok/s — ✅ kernel verified
 - **GPU Vulkan:** ~30 tok/s (2.7B e2e) — ✅ validated
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 #### 18. Zamba
 
@@ -233,7 +233,7 @@ Ternary b1.58 architecture — weights constrained to {-1, 0, +1}. Our Q1_0 1024
 - **Bonsai-27B:** ROCm HIP — 🔬 experimental
 - **NPU:** Bonsai (ternary 1.58-bit / TQ1) uses `mm_ternary_tq1.cc` (base-3 LUT decode + ping-pong). TQ2 models via `gemm_generate_sequence_tq2()` and `--native-tq2` flag in `npu_ternaryd.cpp`. 4× smaller DDR footprint vs INT8 bridge.
 - **GPU Vulkan:** Q1_0 binary kernel — ✅ validated (318 tok/s kernel-level)
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 ---
 
@@ -246,7 +246,7 @@ Vision transformers + Qwen text decoder. The full VL pipeline (ViT encoder → m
 - **Qwen2.5-VL-3B-Instruct:** NPU (build stanza ready, 7 xclbins) · GPU HIP — validated
 - **Qwen3-VL-4B-Instruct:** NPU (build stanza ready, 6 xclbins) · GPU HIP — validated
 - **GPU Vulkan:** ❌ not yet (ViT encoder not yet ported to Vulkan)
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 ---
 
@@ -259,7 +259,7 @@ OpenAI Whisper V3 Turbo. Speech-to-text pipeline (FFT, STFT, encoder-decoder) th
 - **NPU:** Whisper-V3-Turbo (build stanza ready, 5 xclbins)
 - **GPU HIP:** FFT/STFT kernels — validated
 - **GPU Vulkan:** ❌ not yet
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 ---
 
@@ -272,7 +272,7 @@ Text embedding model based on Gemma architecture.
 - **NPU:** Embedding-Gemma-300M (build stanza ready, 4 xclbins)
 - **GPU HIP:** ❌ not yet (embedding extraction pipeline pending)
 - **GPU Vulkan:** ❌ not yet
-- **CPU:** ❌ not yet
+- **CPU:** ✅ universal GGUF backend
 
 ---
 
