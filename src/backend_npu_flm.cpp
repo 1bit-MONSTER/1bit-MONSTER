@@ -160,6 +160,17 @@ public:
         model_tag_ = flm_tag_for_model(cfg);
         fprintf(stderr, "NPU: launching FLM %s...\n", model_tag_.c_str());
 
+        // Auto-pull model if not cached (up to 60s for download)
+        // If pull fails, return false so BackendManager tries next backend.
+        {
+            std::string pull_cmd = std::string(flm_bin_) + " pull " + model_tag_ + " 2>/dev/null";
+            int pull_rc = system(pull_cmd.c_str());
+            if (pull_rc != 0) {
+                fprintf(stderr, "NPU: FLM pull %s failed (rc=%d) — trying run anyway\n",
+                        model_tag_.c_str(), pull_rc);
+            }
+        }
+
         // Spawn FLM subprocess
         int to_child[2], from_child[2], err_child[2];
         if (pipe(to_child) < 0 || pipe(from_child) < 0 || pipe(err_child) < 0) {
