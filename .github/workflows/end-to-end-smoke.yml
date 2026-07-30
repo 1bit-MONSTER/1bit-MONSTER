@@ -31,14 +31,16 @@ jobs:
       - name: Pre-pull FLM model (Llama 3.2 1B)
         # The npu_flm backend spawns FLM with the model tag. Pre-pull ensures
         # the model is cached locally so the server starts within the timeout.
+        # Uses a generous 5-minute timeout for the 1.2GB download.
         run: |
           FLM_BIN=third_party/FastFlowLM/src/build/flm
           if [ -x "$FLM_BIN" ]; then
-            echo "Pulling llama3.2:1b..."
-            "$FLM_BIN" pull llama3.2:1b 2>&1 | tail -5
+            echo "Pulling llama3.2:1b (may take 2-5 min for 1.2GB)..."
+            timeout 300 "$FLM_BIN" pull llama3.2:1b 2>&1 | tail -5
             echo "Pull complete"
+            "$FLM_BIN" list 2>&1 | grep llama3.2:1b
           else
-            echo "FLM binary not found at $FLM_BIN — will download at server start"
+            echo "FLM binary not found at $FLM_BIN — falling back to CPU backend"
           fi
 
       - name: Stop production service (issue #1036)
