@@ -18,6 +18,13 @@ bool OnebpModel::load(const char* path) {
     data = (uint8_t*)mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (data == MAP_FAILED) { fprintf(stderr, "mmap failed\n"); return false; }
 
+    // File must be at least as large as the header (issue #1157).
+    if (file_size < sizeof(OnebpHeader)) {
+        fprintf(stderr, "1BP: file too small (%llu bytes, need %zu)\n",
+                (unsigned long long)file_size, sizeof(OnebpHeader));
+        return false;
+    }
+
     memcpy(&header, data, sizeof(OnebpHeader));
     if (!header.valid()) {
         fprintf(stderr, "Invalid 1BP header (magic=0x%08X)\n", header.magic);
