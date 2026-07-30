@@ -1206,6 +1206,34 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
         set_tests_properties(test_pipeline_real PROPERTIES
             LABELS "gpu_required;npu_required" SKIP_RETURN_CODE 77
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+        # -- test_npu_ffn_real_weights: NPU FFN correctness vs real model weights --
+        # Loads real blk.0 FFN weights from models/Qwen3-0.6B.1bp (shape-matched
+        # to this pipeline demo's H=1024/IM=3072) and checks the NPU's
+        # int8-quantized GEMM output against a CPU float32 reference computed
+        # from the same real, dequantized weights (see file header for the
+        # GGUF [out,in] -> packB [K,N] transpose this depends on).
+        add_executable(test_npu_ffn_real_weights
+            engine/fusion/zero_copy/test_npu_ffn_real_weights.cpp
+        )
+        target_include_directories(test_npu_ffn_real_weights PRIVATE
+            engine/fusion/zero_copy
+            ${CMAKE_SOURCE_DIR}/include
+            ${THEROCK_SDK_BASE}/include)
+        target_compile_options(test_npu_ffn_real_weights PRIVATE
+            -g -O2 -std=c++23 -D__HIP_PLATFORM_AMD__)
+        target_link_libraries(test_npu_ffn_real_weights PRIVATE
+            xrt_coreutil xrt_core uuid rt pthread
+            /usr/lib/x86_64-linux-gnu/libaiebu.a)
+        set_target_properties(test_npu_ffn_real_weights PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/models/Qwen3-0.6B.1bp")
+            add_test(NAME test_npu_ffn_real_weights COMMAND test_npu_ffn_real_weights
+                     ${CMAKE_SOURCE_DIR}/models/Qwen3-0.6B.1bp)
+            set_tests_properties(test_npu_ffn_real_weights PROPERTIES
+                LABELS "npu_required;model_required;regression" SKIP_RETURN_CODE 77
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+        endif()
     else()
         message(STATUS "test_pipeline_real: shared_bo.cpp or pipeline_overlap.cpp not found — skipping")
     endif()
