@@ -42,10 +42,6 @@ jobs:
       - name: Start server
         run: |
           rm -f /tmp/unified_server.lock
-          # Use first available model (no --model flag) so the server picks a
-          # compatible model automatically. On this runner the Llama-3.2-1B
-          # 1BP file loads but no backend can generate from it, so let the
-          # model discovery pick whatever works with available backends.
           ./build/unified_server --port 8099 --weights models/ \
             --gen-timeout-ms 10000 --quick &>/tmp/smoke_server.log &
           echo "pid=$!"
@@ -61,14 +57,16 @@ jobs:
       - name: Dump server model info
         run: |
           echo "=== Active backend ==="
-          curl -sf http://127.0.0.1:8099/v1/health | python3 -c "
+          health=$(curl -sf http://127.0.0.1:8099/v1/health)
+          echo "$health" | python3 -c "
           import json,sys; d=json.load(sys.stdin)
           print('Model:', d.get('model', '?'))
-          print('Active backend:', d.get('active_backend', {}).get('id', '?'))
+          ab = d.get('active_backend', {})
+          print('Active backend:', ab.get('id', '?'))
           print('All backends:')
           for b in d.get('backends', []):
-              mark = '>' if b.get('id') == d.get('active_backend', {}).get('id') else ' '
-              print(f'  {mark} {b["id"]:20s} functional={b.get("functional")} available={b.get("available")}')
+              mark = '>' if b.get('id') == ab.get('id') else ' '
+              print(f'  {mark} {b.get("id","?")} functional={b.get("functional")} available={b.get("available")}')
           "
 
       - name: Test health endpoint
