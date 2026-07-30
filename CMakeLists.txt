@@ -797,6 +797,7 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_hip.cpp
     src/zaya_engine.cpp
     src/backend_npu.cpp
+    src/backend_npu_flm.cpp
     src/backend_generic.cpp
 )
 
@@ -808,6 +809,7 @@ set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_npu.cpp PROPERTIES LANGUAGE CXX)
+set_source_files_properties(src/backend_npu_flm.cpp PROPERTIES LANGUAGE CXX)
 target_include_directories(unified_server PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
@@ -816,7 +818,47 @@ target_include_directories(unified_server PRIVATE
 target_compile_options(unified_server PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
-target_compile_definitions(unified_server PRIVATE ROCM_CPP_STATIC_HIP=1 ROCM_CPP_STATIC_NPU=1)
+# Build FLM from submodule
+set(FLM_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src")
+set(FLM_BUILD_DIR "${FLM_SOURCE_DIR}/build")
+set(FLM_BINARY "${FLM_BUILD_DIR}/flm")
+set(FLM_CONFIG "${FLM_SOURCE_DIR}/model_list.json")
+set(FLM_XCLBINS "${FLM_SOURCE_DIR}/xclbins")
+
+if(NOT EXISTS "${FLM_BINARY}")
+    message(STATUS "flm: building FastFlowLM from submodule...")
+    execute_process(COMMAND ${CMAKE_COMMAND} -B build -G Ninja
+        -DFLM_VERSION=0.9.46 -DNPU_VERSION=1.1.2
+        WORKING_DIRECTORY ${FLM_SOURCE_DIR}
+        OUTPUT_QUIET ERROR_QUIET)
+    execute_process(COMMAND ${CMAKE_COMMAND} --build build -j8
+        WORKING_DIRECTORY ${FLM_SOURCE_DIR}
+        OUTPUT_QUIET ERROR_QUIET)
+    if(EXISTS "${FLM_BINARY}")
+        message(STATUS "flm: built at ${FLM_BINARY}")
+    else()
+        message(WARNING "flm: build failed — FLM backend unavailable")
+    endif()
+else()
+    message(STATUS "flm: using existing binary at ${FLM_BINARY}")
+endif()
+
+# Add flm as a build dependency so rebuilds happen automatically
+add_custom_target(build_flm ALL
+    COMMAND ${CMAKE_COMMAND} --build ${FLM_BUILD_DIR} -j8
+    WORKING_DIRECTORY ${FLM_SOURCE_DIR}
+    COMMENT "Building FastFlowLM NPU engine"
+    BYPRODUCTS ${FLM_BINARY}
+)
+add_dependencies(unified_server build_flm)
+
+target_compile_definitions(unified_server PRIVATE
+    ROCM_CPP_STATIC_HIP=1
+    ROCM_CPP_STATIC_NPU=1
+    FLM_BINARY_PATH="${FLM_BINARY}"
+    FLM_CONFIG_PATH="${FLM_CONFIG}"
+    FLM_XCLBIN_PATH="${FLM_XCLBINS}"
+)
 target_link_libraries(unified_server PRIVATE
     backend_manager vl_image dl
     httplib::httplib
@@ -938,6 +980,18 @@ target_link_libraries(onebitd PRIVATE httplib::httplib)
 # history at c252174aa~1 — see .claude/plans/swirling-tumbling-frost.md).
 # Talks to unified_server (127.0.0.1:8088) and Ollama over HTTP rather than
 # embedding a second BackendManager; own port 8080.
+# ── Optional: ONNX Runtime for codec decoder (voice cloning TTS) ──
+# The codec decoder compiles without it — decode() returns empty PCM.
+# Set ONNXRUNTIME_ROOT_DIR to help find_package locate the SDK.
+set(ONNXRUNTIME_ROOT_DIR "" CACHE PATH "ONNX Runtime install root")
+find_package(onnxruntime QUIET HINTS "${ONNXRUNTIME_ROOT_DIR}")
+if(onnxruntime_FOUND)
+    message(STATUS "codec: ONNX Runtime FOUND — building codec decoder with real inference")
+    add_definitions(-DUSE_ONNXRUNTIME)
+else()
+    message(STATUS "codec: ONNX Runtime NOT found — codec decoder will return empty PCM")
+endif()
+
 add_executable(jarvis_server
     tools/jarvis_server.cpp
     tools/jarvis/rag.cpp
@@ -946,13 +1000,25 @@ add_executable(jarvis_server
     tools/jarvis/planner.cpp
     tools/jarvis/beacon.cpp
     tools/jarvis/tts.cpp
-    tools/jarvis/audio_out.cpp)
-target_include_directories(jarvis_server PRIVATE tools/)
+    tools/jarvis/audio_out.cpp
+    tools/jarvis/audio_stream.cpp
+    tools/jarvis/codec_tts.cpp
+    tools/jarvis/persona.cpp
+    tools/jarvis/vad.cpp
+    tools/jarvis/context.cpp
+    tools/jarvis/auth.cpp
+    tools/jarvis/usage.cpp
+    tools/jarvis/billing.cpp
+    src/codec_decoder.cpp)
+target_include_directories(jarvis_server PRIVATE tools/ src/)
 target_compile_options(jarvis_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23 -fopenmp)
 target_link_libraries(jarvis_server PRIVATE
     httplib::httplib
     nlohmann_json::nlohmann_json
     whisper)
+if(onnxruntime_FOUND)
+    target_link_libraries(jarvis_server PRIVATE onnxruntime::onnxruntime)
+endif()
 
 # -- zaya1_vl_demo : ZAYA1-VL-8B vision-language inference demo -------------
 add_executable(zaya1_vl_demo tools/zaya1_vl_demo.cpp)
@@ -1349,6 +1415,44 @@ if(USE_DIFFUSION)
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Phase 2.3 Commercial API tests (auth + billing)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Auth module unit tests
+add_executable(test_auth
+    tests/test_auth.cpp
+    tools/jarvis/auth.cpp)
+target_include_directories(test_auth PRIVATE tools/ src/ include/)
+target_compile_options(test_auth PRIVATE -O3 -std=c++23)
+target_link_libraries(test_auth PRIVATE nlohmann_json::nlohmann_json)
+add_test(NAME test_auth COMMAND test_auth)
+set_tests_properties(test_auth PROPERTIES LABELS "host")
+
+# Billing module unit tests
+add_executable(test_billing
+    tests/test_billing.cpp
+    tools/jarvis/auth.cpp
+    tools/jarvis/billing.cpp)
+target_include_directories(test_billing PRIVATE tools/ src/ include/)
+target_compile_options(test_billing PRIVATE -O3 -std=c++23)
+target_link_libraries(test_billing PRIVATE nlohmann_json::nlohmann_json)
+add_test(NAME test_billing COMMAND test_billing)
+set_tests_properties(test_billing PROPERTIES LABELS "host")
+
+message(STATUS "tests: Phase 2.3 Commercial API tests enabled")
+
+# ═══════════════════════════════════════════════════════════════════════════
 # TRACK 2: New 1BP model architecture additions
 # ═══════════════════════════════════════════════════════════════════════════
 message(STATUS "models: 35+ architectures supported for 1BP conversion")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NPU Engine (XRT required)
+# ═══════════════════════════════════════════════════════════════════════════
+find_package(XRT QUIET)
+if(XRT_FOUND)
+    add_subdirectory(engine/npu EXCLUDE_FROM_ALL)
+    message(STATUS "npu: XRT found — NPU engine targets available via 'cmake --build build --target npu_engine_universal'")
+else()
+    message(STATUS "npu: XRT NOT found — skipping NPU engine build")
+endif()
