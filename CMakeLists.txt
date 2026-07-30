@@ -645,7 +645,7 @@ set_target_properties(test_lora_merge PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_
 
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
-set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp)
+set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
 if(RCPP_HAVE_VULKAN)
     list(APPEND ZAYA_SERVER_SRC tests/backends/backend_vulkan.cpp)
 endif()
