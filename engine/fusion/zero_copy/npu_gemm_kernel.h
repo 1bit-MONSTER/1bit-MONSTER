@@ -110,6 +110,8 @@ public:
             Am[mi * KD + ki] = (int8_t)q;
         }
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // Re-sync instruction buffer — XDNA AIE hardware consumes it on each run
+        bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         auto r = (*k)((unsigned)3, *bI, (unsigned)ins.size(), *bA, *bB, *bC);
         r.wait();
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);

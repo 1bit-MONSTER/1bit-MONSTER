@@ -87,6 +87,37 @@ int main(int argc, char** argv) {
     gu("hidden_size", hdr.hidden_size) || gu("embedding_length", hdr.hidden_size);
     gu("num_hidden_layers", hdr.num_layers) || gu("block_count", hdr.num_layers);
 
+    // ── MoE 3D shape convention detection ──
+    // GGUF stores 3D MoE tensor shapes either as row-major [experts, rows, cols]
+    // (Qwen, Gemma) or column-major [cols, rows, experts] (Laguna, Nemotron).
+    // Detect by checking whether shape[0] or shape[2] is consistent across
+    // gate/down/up MoE tensors.
+    bool moe_shape_colmajor = false;  // row-major [experts, rows, cols] by default
+    {
+        int s0_first = 0, s2_first = 0;
+        int s0_count = 0, s2_count = 0;
+        int first_gate_s0 = 0;
+        for (auto& tn : reader.tensor_names()) {
+            auto* inf = reader.tensor_info(tn);
+            if (!inf || inf->shape.size() != 3) continue;
+            if (tn.find("exps.") == std::string::npos && tn.find("shexp") == std::string::npos) continue;
+            int s0 = (int)inf->shape[0], s2 = (int)inf->shape[2];
+            if (s0_first == 0) { s0_first = s0; s2_first = s2; }
+            if (s0 == s0_first && s0 > 0) s0_count++;
+            if (s2 == s2_first && s2 > 0) s2_count++;
+            if (tn.find("gate_exps") != std::string::npos) {
+                if (first_gate_s0 == 0) first_gate_s0 = s0;
+            }
+        }
+        // If shape[2] is more consistent than shape[0], use column-major
+        // Require at least 2 matching tensors and shape[2] being plausible as expert count
+        // (expert count should be smaller than feature dimensions)
+        if (s2_count > s0_count && s2_count >= 2 &&
+            (first_gate_s0 == 0 || s2_first < first_gate_s0)) {
+            moe_shape_colmajor = true;
+        }
+    }
+
     // ── MoE architecture auto-detection (works for any arch name, issue #1144) ──
     // Detect MoE by checking for expert-stacked tensors (ndim==3 in GGUF).
     {
@@ -101,9 +132,19 @@ int main(int argc, char** argv) {
                 auto* exps = reader.tensor_info("blk.0.ffn_gate_exps.weight");
                 if (!exps) exps = reader.tensor_info("blk.0.ffn_down_exps.weight");
                 if (!exps) exps = reader.tensor_info("blk.0.ffn_up_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.1.ffn_gate_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.1.ffn_down_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.1.ffn_up_exps.weight");
                 if (exps && exps->shape.size() >= 3) {
-                    if (!hdr.intermediate_size) hdr.intermediate_size = (int)exps->shape[1];
-                    if (!hdr.num_experts)       hdr.num_experts = (int)exps->shape[0];
+                    // Use shape convention from MoE detection
+                    int s0 = (int)exps->shape[0], s1 = (int)exps->shape[1], s2 = (int)exps->shape[2];
+                    if (moe_shape_colmajor) {
+                        if (!hdr.intermediate_size) hdr.intermediate_size = s0;  // cols
+                        if (!hdr.num_experts)       hdr.num_experts = s2;         // experts
+                    } else {
+                        if (!hdr.intermediate_size) hdr.intermediate_size = s1;  // rows
+                        if (!hdr.num_experts)       hdr.num_experts = s0;         // experts
+                    }
                     printf("  MoE: %d experts, FFN dim=%d (from tensor shape)\n",
                            hdr.num_experts, hdr.intermediate_size);
                 }
@@ -202,6 +243,12 @@ int main(int argc, char** argv) {
     uint64_t data_off = 0;
     int tr = 32, tc = 256, gs = 32;
 
+    if (moe_shape_colmajor) {
+        printf("  MoE shape: column-major [cols, rows, experts] (experts=%d from 3rd dim)\n", 0);
+    } else {
+        printf("  MoE shape: row-major [experts, rows, cols]\n");
+    }
+
     for (auto& tn : reader.tensor_names()) {
         auto* inf = reader.tensor_info(tn);
         if (!inf) continue;
@@ -225,7 +272,18 @@ int main(int argc, char** argv) {
             if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu\n", tn.c_str(), r, c, tiled);
         } else {
             // ndim == 3: MoE expert-stacked tensor [num_experts, rows, cols]
-            int ne = (int)inf->shape[0], r = (int)inf->shape[1], c = (int)inf->shape[2];
+            int ne, r, c;
+            if (moe_shape_colmajor) {
+                // column-major [cols, rows, experts]
+                ne = (int)inf->shape[2];  // experts
+                r  = (int)inf->shape[1];  // rows
+                c  = (int)inf->shape[0];  // cols
+            } else {
+                // row-major [experts, rows, cols]
+                ne = (int)inf->shape[0];
+                r  = (int)inf->shape[1];
+                c  = (int)inf->shape[2];
+            }
             if (ne <= 0 || r <= 0 || c <= 0) continue;
             uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, quant);
             uint64_t total_tiled = (uint64_t)ne * per_expert;

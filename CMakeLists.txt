@@ -424,7 +424,8 @@ set(BACKEND_MANAGER_SOURCES
     src/q4nx_reader.cpp
     src/safetensors_reader.cpp
     src/model_discovery.cpp
-    src/model_router.cpp)
+    src/model_router.cpp
+    src/dynamic_router.cpp)
 
 if(RCPP_HAVE_CUDA)
     list(APPEND BACKEND_MANAGER_SOURCES src/backend_cuda.cpp)
@@ -662,6 +663,16 @@ target_link_libraries(test_medusa_skeleton PRIVATE rocm_cpp)
 # due to transitive HIP deps through backend_factory → backend_generic → gguf_loader.
 # Now wired as a proper ninja target linking backend_manager (which already handles
 # the rocm_cpp dependency). Run without a model to see usage.
+# -- bench_hip_1bp: GPU 1BP engine standalone benchmark --
+add_executable(bench_hip_1bp tools/bench_hip_1bp.cpp src/backend_hip_1bp.cpp src/hip_1bp_kernels.hip src/kv_cache_attn.hip)
+target_include_directories(bench_hip_1bp PRIVATE src include engine/fusion/zero_copy engine/npu/src)
+target_compile_options(bench_hip_1bp PRIVATE -O3 -ffast-math -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
+target_link_libraries(bench_hip_1bp PRIVATE hip::host hip::device hipblas rocm_cpp)
+set_source_files_properties(tools/bench_hip_1bp.cpp PROPERTIES LANGUAGE CXX)
+set_target_properties(bench_hip_1bp PROPERTIES
+    HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+
 add_executable(test_backend tests/test_backend.cpp)
 target_include_directories(test_backend PRIVATE src)
 target_compile_options(test_backend PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
@@ -802,6 +813,12 @@ set(UNIFIED_SERVER_SOURCES
     src/strategy_engine.cpp
     src/agent_watchdog.cpp
     src/backend_hip.cpp
+    src/backend_hip_1bp.cpp
+    src/hip_1bp_kernels.hip
+    src/unified_pool.cpp
+    src/backend_fused.cpp
+    src/backend_fused_npu.cpp
+    src/backend_vulkan_hpp.cpp
     src/zaya_engine.cpp
     src/backend_npu.cpp
     src/backend_npu_flm.cpp
@@ -812,15 +829,21 @@ set(UNIFIED_SERVER_SOURCES
 # so they don't appear in sources or link line here.
 add_executable(unified_server ${UNIFIED_SERVER_SOURCES})
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/backend_hip_1bp.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/hip_1bp_kernels.hip PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_npu.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_npu_flm.cpp PROPERTIES LANGUAGE CXX)
+set_source_files_properties(src/unified_pool.cpp PROPERTIES LANGUAGE CXX)
+set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
+set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
 target_include_directories(unified_server PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/kernels>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/engine/npu/src>
     $<INSTALL_INTERFACE:include>)
 target_compile_options(unified_server PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
@@ -892,7 +915,8 @@ target_link_libraries(unified_server PRIVATE
     backend_manager vl_image dl
     httplib::httplib
     nlohmann_json::nlohmann_json
-    rocm_cpp hip::host hip::device)
+    rocm_cpp hip::host hip::device hipblas)
+
 target_link_options(unified_server PRIVATE -rdynamic -luuid)
 set_target_properties(unified_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 if(ZINC_CPP_AVAILABLE)
@@ -1168,6 +1192,26 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
         target_link_libraries(fusion_zero_copy PUBLIC
             xrt_coreutil xrt_core uuid rt pthread
             /usr/lib/x86_64-linux-gnu/libaiebu.a)
+
+        # Link fusion_zero_copy into unified_server for fused backend
+        if(TARGET unified_server)
+            target_link_libraries(unified_server PRIVATE fusion_zero_copy)
+            target_include_directories(unified_server PRIVATE engine/fusion/zero_copy)
+            target_compile_definitions(unified_server PRIVATE RCPP_HAVE_FUSION_ZERO_COPY=1)
+        endif()
+
+        # bench_fused: Fused GPU attn ∥ NPU FFN benchmark
+        add_executable(bench_fused tools/bench_fused.cpp src/backend_fused.cpp src/backend_fused_npu.cpp src/hip_1bp_kernels.hip src/kv_cache_attn.hip)
+        set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
+        set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
+        set_source_files_properties(src/kv_cache_attn.hip PROPERTIES LANGUAGE HIP)
+        target_include_directories(bench_fused PRIVATE src include engine/fusion/zero_copy engine/npu/src)
+        target_compile_options(bench_fused PRIVATE -O2 -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
+        target_link_libraries(bench_fused PRIVATE fusion_zero_copy hip::host hip::device hipblas rocm_cpp)
+        set_source_files_properties(tools/bench_fused.cpp PROPERTIES LANGUAGE CXX)
+        set_target_properties(bench_fused PROPERTIES
+            HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
     endif()
 endif()
 
@@ -1538,3 +1582,5 @@ if(XRT_FOUND)
 else()
     message(STATUS "npu: XRT NOT found — skipping NPU engine build")
 endif()
+
+
