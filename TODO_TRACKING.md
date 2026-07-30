@@ -16,7 +16,10 @@
     → Same as above — NPU integration via FLM subprocess.
 - [x] `src/backend_zamba2.cpp:36` — tokenizer.ggml.* not read from GGUF
     → Fixed: replaced inline GGUF reader with GgufReader. Reads BOS/EOS + full token list.
-- [ ] `src/zamba2_engine_hip.hip:244` — fused Mamba2 HIP kernel
+- [x] `src/zamba2_engine_hip.hip:244` — fused Mamba2 HIP kernel
+    → Implemented: `mamba2_gpu_decode_block` runs the entire Mamba2 decode
+      block on GPU (tiled GEMV, conv1d, selective scan, group norm, gate,
+      out_proj) with zero CPU round-trips. norm_w threading completed.
 - [x] `src/server/server.cpp:114` — tools logging: only print tool name, elide args
     → Already implemented (fn["parameters"] = "...elided...").
 - [x] `src/server/server.cpp:115` — debug level support
