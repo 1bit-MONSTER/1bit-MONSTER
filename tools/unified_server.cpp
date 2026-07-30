@@ -775,13 +775,76 @@ int main(int argc, char** argv) {
     printf("\n── Model Discovery ──\n");
     static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
 
+    // Helper: normalize name separators for matching (hyphens/underscores → spaces)
+    auto normalize = [](std::string s) -> std::string {
+        for (auto& c : s) { if (c == '-' || c == '_') c = ' '; }
+        return s;
+    };
     // Select model: --model flag takes priority, otherwise first discovered
     static ModelConfig current_cfg = default_model_config();
     if (!g_model_name.empty()) {
+        std::string user_name = normalize(g_model_name);
+        // 1. Exact match (case-sensitive)
         for (auto& m : discovered) {
-            if (m.model_name == g_model_name) {
+            if (normalize(m.model_name) == user_name) {
+                printf("  (matched \"%s\" via exact → \"%s\")\n",
+                       g_model_name.c_str(), m.model_name.c_str());
                 current_cfg = m;
                 break;
+            }
+        }
+        // 2. Case-insensitive match
+        if (current_cfg.model_path.empty()) {
+            auto ci_eq = [&](const std::string& a, const std::string& b) -> bool {
+                std::string na = normalize(a), nb = normalize(b);
+                if (na.size() != nb.size()) return false;
+                for (size_t i = 0; i < na.size(); i++) {
+                    if (tolower((unsigned char)na[i]) != tolower((unsigned char)nb[i]))
+                        return false;
+                }
+                return true;
+            };
+            for (auto& m : discovered) {
+                if (ci_eq(m.model_name, g_model_name)) {
+                    printf("  (matched \"%s\" via case-insensitive → \"%s\")\n",
+                           g_model_name.c_str(), m.model_name.c_str());
+                    current_cfg = m;
+                    break;
+                }
+            }
+        }
+        // 3. Prefix match (user name is a prefix of a discovered name, normalized)
+        if (current_cfg.model_path.empty()) {
+            for (auto& m : discovered) {
+                std::string mn = normalize(m.model_name);
+                if (mn.size() >= user_name.size() &&
+                    mn.compare(0, user_name.size(), user_name) == 0) {
+                    printf("  (matched \"%s\" as prefix → \"%s\")\n",
+                           g_model_name.c_str(), m.model_name.c_str());
+                    current_cfg = m;
+                    break;
+                }
+            }
+        }
+        // 4. Case-insensitive prefix match (normalized)
+        if (current_cfg.model_path.empty()) {
+            for (auto& m : discovered) {
+                std::string mn = normalize(m.model_name);
+                if (mn.size() >= user_name.size()) {
+                    bool match = true;
+                    for (size_t i = 0; i < user_name.size(); i++) {
+                        if (tolower((unsigned char)mn[i]) !=
+                            tolower((unsigned char)user_name[i])) {
+                            match = false; break;
+                        }
+                    }
+                    if (match) {
+                        printf("  (matched \"%s\" as case-insensitive prefix → \"%s\")\n",
+                               g_model_name.c_str(), m.model_name.c_str());
+                        current_cfg = m;
+                        break;
+                    }
+                }
             }
         }
         if (current_cfg.model_path.empty()) {
@@ -816,12 +879,28 @@ int main(int argc, char** argv) {
     printf("  Router: %s\n", route.reason.c_str());
     bool inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
     if (inited) {
-        // Ensure active_idx_ points to the initialized backend
-        // (init() returns true but doesn't update active_idx_)
-        for (auto& b : mgr.backends()) {
-            if (b.available && b.functional && b.instance) {
-                mgr.select_backend(b.id);
-                break;
+        // Select active backend from the route's ordered list (not global
+        // priority order), so the backend that matches the model format is
+        // chosen first. Without this, npu_flm (T1_ACCELERATOR priority) gets
+        // picked for every model even though it only supports Q4NX format.
+        bool selected = false;
+        for (const auto& bid : route.backend_ids_in_order) {
+            for (auto& b : mgr.backends()) {
+                if (b.id == bid && b.available && b.functional && b.instance) {
+                    mgr.select_backend(b.id);
+                    selected = true;
+                    break;
+                }
+            }
+            if (selected) break;
+        }
+        if (!selected) {
+            // Fallback: any functional backend
+            for (auto& b : mgr.backends()) {
+                if (b.available && b.functional && b.instance) {
+                    mgr.select_backend(b.id);
+                    break;
+                }
             }
         }
         auto* active = mgr.active_info();
@@ -909,25 +988,13 @@ int main(int argc, char** argv) {
         printf("     Server starts in discovery-only mode.\n");
     }
 
-    // Phase 4: Benchmark active backend only
-    // (benchmarking all backends can crash on backends that don't support
-    //  the current model format, e.g. hip_gpu expects Zaya .bin format)
+    // Phase 4: Benchmark — skipped. DynamicRouter is ready with active backends.
+    // Benchmarks can be triggered at runtime via the API.
     if (inited) {
-        auto* active_info_raw = mgr.active_info();
-        if (active_info_raw) {
-            int bench_tokens = quick_mode ? 1 : 5;
-            printf("\n── Benchmark (%d token%s) ──\n", bench_tokens, bench_tokens == 1 ? "" : "s");
-            printf("  %s... ", active_info_raw->id.c_str());
-            fflush(stdout);
-            float ms = active_info_raw->instance->benchmark(bench_tokens);
-            printf("%.1f ms/tok\n", ms);
-            // Phase 5's build_performance_table() reads BackendInfo::score, which
-            // benchmark_all() would normally set — but Phase 4 deliberately benchmarks
-            // only the active backend (see comment above) and bypasses benchmark_all(),
-            // so without this the score stays 0 and the performance table prints a
-            // bogus "0 tok/s" for the very backend we just measured.
-            mgr.set_score(active_info_raw->id, ms);
-        }
+        printf("\n── DynamicRouter Ready ──\n");
+        mgr.router().report();
+        printf("  ➤ Set strategy: curl -X POST http://localhost:%d/v1/strategy/select -d '{\"strategy\":\"gpu_only\"}'\n", g_port);
+        printf("  ➤ Generate:     curl http://localhost:%d/v1/completions -d '{\"prompt\":\"Hello\",\"max_tokens\":8}'\n", g_port);
     }
 
     // ── Phase 5: Initialize Strategy Engine ──

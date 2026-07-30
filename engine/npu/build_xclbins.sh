@@ -420,9 +420,73 @@ build_gemma4_e2b() {
     build "$TAG" 128 6144 1536   D
 }
 
+# ── NEW ARCHITECTURES ────────────────────────────────────────────────
+#
+# IMPORTANT: These stanzas define dimensions for Peano xclbin compilation.
+# The runtime instruction generator (gemm_generate_sequence_i8() in
+# npu_engine_i8.cpp) generates NPU instructions at runtime for ANY
+# dimension using FLM's universal mm.xclbin fused kernel (501KB).
+# Per-model xclbins are an OPTIONAL optimization — the runtime generator
+# is the working production path TODAY.
+#
+# To compile these stanzas into actual xclbins, you need:
+#   - The torch2aie examples directory installed
+#   - Peano compiler (aiecc) with all dependencies
+#   - Run: ./build_xclbins.sh <model_tag>
+#
+# Without Peano compilation, these models still work via:
+#   npu_engine_i8.cpp init_with_generator() — generates instructions
+#   at runtime using FLM's mm.xclbin fused kernel
+#
+build_mistral_7b() {
+    echo "=== Mistral-7B (H=4096, NH=32, NKV=8, HD=128, IM=14336, SWA) ==="
+    echo "  Runtime: uses Llama xclbins (identical GEMM dims) + SWA via CPU attention"
+    echo "  Peano: GEMM dims match Llama but attn uses sliding window (needs SWA xclbin)"
+    local TAG="mistral_7b"
+    build "$TAG" 128 4096 6144   QKV
+    build "$TAG" 128 4096 4096   O
+    build "$TAG" 128 4096 14336  G
+    build "$TAG" 128 4096 14336  U
+    build "$TAG" 128 14336 4096  D
+}
+
+build_falcon_7b() {
+    echo "=== Falcon-7B (H=4544, NH=71, NKV=1, HD=64, IM=18176) ==="
+    echo "  Runtime: uses gemm_generate_sequence_i8_split() with padded dims"
+    echo "  Peano: H=4544 NOT multiple of 128 — uses padded dims (4608)"
+    local TAG="falcon_7b"
+    build "$TAG" 128 4608 4736   QKV
+    build "$TAG" 128 4608 4608   O
+    build "$TAG" 128 4608 18176  G
+    build "$TAG" 128 4608 18176  U
+    build "$TAG" 128 18304 4608  D
+}
+
+build_olmoe() {
+    echo "=== OLMoE-1B (H=2048, NH=16, NKV=16, HD=128, IM=2048, MoE) ==="
+    echo "  Runtime: uses gemm_generate_sequence_i8_split() with MoE dispatch"
+    echo "  Peano: Reuses GPT-OSS expert pattern: 4 GEMM + expert.xclbin"
+    local TAG="olmoe_1b"
+    build "$TAG" 128 2048 4096   QKV
+    build "$TAG" 128 2048 2048   O
+    build "$TAG" 128 2048 4096   GU
+    build "$TAG" 128 2048 2048   D
+}
+
+build_zamba2_2_7b() {
+    echo "=== Zamba2-2.7B (H=2560, NH=32, NKV=32, HD=80, IM=5120, SSM hybrid) ==="
+    echo "  Runtime: uses gemm_generate_sequence_i8_split() + CPU SSM scan"
+    echo "  Peano: Attn layers QKV=2560×7680, O=2560×2560, GU=2560×10240, D=5120×2560"
+    local TAG="zamba2_2_7b"
+    build "$TAG" 128 2560 7680   QKV
+    build "$TAG" 128 2560 2560   O
+    build "$TAG" 128 2560 10240  GU
+    build "$TAG" 128 5120 2560   D
+}
+
 # ── Execute ──────────────────────────────────────────────────────────
 
-BUILD_ALL_MODELS="qwen3_0_6b qwen3_8b qwen3_vl_4b llama gemma4_e2b"
+BUILD_ALL_MODELS="qwen3_0_6b qwen3_8b qwen3_vl_4b llama gemma4_e2b mistral_7b falcon_7b olmoe_1b zamba2_2_7b"
 
 if [ -n "$REQUESTED_TAG" ]; then
     # Build only the requested model
@@ -432,6 +496,10 @@ if [ -n "$REQUESTED_TAG" ]; then
         qwen3_vl_4b) build_qwen3_vl_4b ;;
         llama)       build_llama ;;
         gemma4_e2b)  build_gemma4_e2b ;;
+        mistral_7b)  build_mistral_7b ;;
+        falcon_7b)   build_falcon_7b ;;
+        olmoe_1b)    build_olmoe ;;
+        zamba2_2_7b) build_zamba2_2_7b ;;
         *)
             echo "ERROR: Unknown model tag: $REQUESTED_TAG"
             echo "  Valid tags: $BUILD_ALL_MODELS"
