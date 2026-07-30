@@ -131,6 +131,24 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 1a9. GGML-Vulkan — llama.cpp Vulkan backend (MIT License, 357 tok/s)
+    {
+        BackendInfo info;
+        info.id = "ggml_vulkan";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "GGML-Vulkan (llama.cpp, MIT, 357 tok/s)";
+        info.priority = tier_priority(info.tier) + 58;
+        info.available = has_vulkan();
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 2.8;  // 357 tok/s = 2.8 ms/tok
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "GGML-Vulkan", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 1b. NPU (FLM) — production FLM engine, MIT licensed, 67.5 tok/s
     // This is the PERMANENT hotpath backend. Highest priority in the system.
     // It is always tried first during init and always selected as active.
@@ -1385,6 +1403,13 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
             if (info.id == "vulkan_hpp_gpu") {
                 void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                 if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_vulkan_hpp_backend");
+                    if (fn) b = fn(); }
+                return b;
+            }
+            // GGML-Vulkan — llama.cpp Vulkan backend (MIT License, 357 tok/s)
+            if (info.id == "ggml_vulkan") {
+                void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_ggml_vulkan_backend");
                     if (fn) b = fn(); }
                 return b;
             }

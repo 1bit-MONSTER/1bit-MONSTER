@@ -8,3 +8,6 @@
 	path = third_party/FastFlowLM
 	url = https://github.com/ROCm/FastFlowLM.git
 	branch = main
+[submodule "third_party/llama.cpp"]
+	path = third_party/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp.git

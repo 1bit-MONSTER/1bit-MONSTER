@@ -114,7 +114,7 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
     }
     if (cfg.format == ModelFormat::GGUF || cfg.format == ModelFormat::H1B) {
-        return {{"zinc_gpu", "cpu_generic"}, "GGUF/H1B model — ZINC GPU, generic CPU fallback"};
+        return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"}, "GGUF/H1B model — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};
     }
     if (cfg.format == ModelFormat::ONEBP) {
         return {{"fused_gpu_npu", "vulkan_hpp_gpu", "hip_1bp_gpu", "hip_gpu", "cpu_generic"},

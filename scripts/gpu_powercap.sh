@@ -1,128 +1,79 @@
-#!/usr/bin/env bash
-# gpu_powercap.sh — Strix Halo iGPU SCLK cap for consistent benchmark results.
-#
-# Problem: Radeon 8060S iGPU boosts to 2900 MHz / 180W / 111°C under sustained
-# inference, causing thermal throttling and unreliable benchmark numbers.
-#
-# Fix: cap SCLK to 2400 MHz via amdgpu overdrive.
-#   decode  (memory-bandwidth-bound): flat ~30 tok/s regardless of clock
-#   prefill (compute-bound):          ~126 tok/s at 2400 MHz (vs 134 @ 2600 MHz
-#                                     which heat-soaks)
-#
-# Usage:
-#   sudo ./scripts/gpu_powercap.sh           # apply cap once
-#   sudo ./scripts/gpu_powercap.sh --watch   # apply + re-apply every 60s (survives GPU resets)
-#   sudo ./scripts/gpu_powercap.sh --status  # print current clock / temp / power
-#   sudo ./scripts/gpu_powercap.sh --restore # remove OD cap, return to driver defaults
-#
-# Requirements:
-#   - amdgpu.ppfeaturemask=0xffffffff  kernel boot param (enables overdrive)
-#   - root / sudo
-#   - hwmon sysfs exposed by amdgpu driver
-#
+#!/bin/bash
+# gpu_powercap.sh — Set iGPU SCLK cap to prevent thermal throttling on Strix Halo.
 # Reference: https://github.com/hogeheer499-commits/strix-halo-guide/issues/24
 #
-# SCLK table at the recommended cap:
-#   SCLK  | Temp | Power | Prefill  | Decode
-#   2200   | 68°C |  85W  | 117 t/s  | 30 t/s
-#   2400   | 70°C | 100W  | 126 t/s  | 30 t/s   ← default cap
-#   2500   | 70°C | 107W  | 130 t/s  | 30 t/s
-#   2600   | 80°C | 120W  | 134 t/s  | 30 t/s   (heat-soaks over sustained run)
+# The Radeon 8060S iGPU silently heat-soaks above 2500 MHz under sustained load.
+# Cap at 2400 MHz for reliable, consistent benchmarks.
+#
+# Usage: sudo ./scripts/gpu_powercap.sh [cap_mhz] [--install]
+#   cap_mhz:  SCLK ceiling in MHz (default: 2400)
+#   --install: Install as a systemd oneshot + timer (re-applies every 60s)
 
 set -euo pipefail
 
-# ── Target SCLK in MHz ────────────────────────────────────────────────────────
-SCLK_MIN=600
-SCLK_MAX=2400
+CAP=${1:-2400}
+PCI_PATH="0000:c5:00.0"
+SYSFS_OD="/sys/bus/pci/devices/${PCI_PATH}/pp_od_clk_voltage"
+SYSFS_PERF="/sys/class/drm/card1/device/power_dpm_force_performance_level"
 
-# ── Locate the Strix Halo iGPU via stable PCI path ───────────────────────────
-# card0/card1 enumeration is NOT stable across reboots.  Use the PCI BDF.
-PCI_BDF="0000:c5:00.0"
-OD_PATH="/sys/bus/pci/devices/${PCI_BDF}/pp_od_clk_voltage"
-PERF_PATH="/sys/class/drm/card1/device/power_dpm_force_performance_level"
+# Check if OD sysfs is available (needs amdgpu.ppfeaturemask=0xffffffff)
+if [ ! -w "$SYSFS_OD" ]; then
+    echo "❌ OD sysfs not writable at ${SYSFS_OD}"
+    echo "   Add 'amdgpu.ppfeaturemask=0xffffffff' to kernel cmdline and reboot."
+    echo "   Or: echo 0xffffffff | sudo tee /sys/module/amdgpu/parameters/ppfeaturemask"
+    exit 1
+fi
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+# Set performance level to manual
+echo "manual" > "$SYSFS_PERF" 2>/dev/null || true
 
-check_root() {
-    [[ $EUID -eq 0 ]] || die "This script must be run as root (sudo $0 $*)"
-}
+# Set clock cap: floor → ceiling → commit (order matters!)
+echo "s 0 600"    > "$SYSFS_OD"  # min clock
+echo "s 1 ${CAP}" > "$SYSFS_OD"  # max clock
+echo "c"          > "$SYSFS_OD"  # commit
 
-find_perf_path() {
-    # Resolve the correct card sysfs path via PCI device
-    local pci_dev="/sys/bus/pci/devices/${PCI_BDF}"
-    [[ -d "$pci_dev" ]] || die "PCI device ${PCI_BDF} not found. Check lspci | grep VGA"
-    local card
-    card=$(basename "$(readlink -f "${pci_dev}/drm/card"* 2>/dev/null | head -1)" 2>/dev/null || true)
-    if [[ -n "$card" ]]; then
-        PERF_PATH="/sys/class/drm/${card}/device/power_dpm_force_performance_level"
-    fi
-}
+echo "✅ SCLK capped at ${CAP} MHz (PCI ${PCI_PATH})"
 
-apply_cap() {
-    find_perf_path
+# Verify
+CURRENT=$(cat "$SYSFS_OD" | grep "SCLK.*:" | tail -1 | awk '{print $3}')
+echo "   Current ceiling: ${CURRENT} MHz"
 
-    # Enable manual performance level so OD writes are accepted
-    echo "manual" > "${PERF_PATH}" || die "Failed to set manual perf level (is amdgpu.ppfeaturemask=0xffffffff set?)"
+if [ "${2:-}" = "--install" ]; then
+    UNIT="gpu_powercap.service"
+    TIMER="gpu_powercap.timer"
+    
+    # Create systemd service
+    cat > /tmp/${UNIT} << UNITEOF
+[Unit]
+Description=GPU Power Cap — iGPU SCLK limiter for Strix Halo
+After=multi-user.target
 
-    # OD voltage table: set min first, then max, then commit.
-    # ORDER MATTERS — driver rejects max < current min.
-    echo "s 0 ${SCLK_MIN}" > "${OD_PATH}" || die "Failed to write SCLK min"
-    echo "s 1 ${SCLK_MAX}" > "${OD_PATH}" || die "Failed to write SCLK max"
-    echo "c"                > "${OD_PATH}" || die "Failed to commit OD"
+[Service]
+Type=oneshot
+ExecStart=${PWD}/scripts/gpu_powercap.sh ${CAP}
+User=root
 
-    echo "[gpu_powercap] SCLK capped: ${SCLK_MIN}–${SCLK_MAX} MHz"
-}
+[Install]
+WantedBy=multi-user.target
+UNITEOF
 
-restore() {
-    find_perf_path
-    echo "r" > "${OD_PATH}" 2>/dev/null || true
-    echo "auto" > "${PERF_PATH}" 2>/dev/null || true
-    echo "[gpu_powercap] OD reset to driver defaults"
-}
+    # Create systemd timer (re-apply every 60s — GPU reset reverts OD)
+    cat > /tmp/${TIMER} << TIMEREOF
+[Unit]
+Description=GPU Power Cap timer — re-apply every 60s
 
-status() {
-    local hwmon
-    hwmon=$(find /sys/bus/pci/devices/${PCI_BDF}/hwmon -name "temp1_input" 2>/dev/null | head -1 || true)
-    if [[ -n "$hwmon" ]]; then
-        local temp_mc power_uw
-        temp_mc=$(cat "$(dirname "$hwmon")/temp1_input" 2>/dev/null || echo "?")
-        power_uw=$(cat "$(dirname "$hwmon")/power1_average" 2>/dev/null || echo "?")
-        local temp_c power_w
-        [[ "$temp_mc" != "?" ]] && temp_c=$(echo "scale=1; $temp_mc / 1000" | bc) || temp_c="?"
-        [[ "$power_uw" != "?" ]] && power_w=$(echo "scale=1; $power_uw / 1000000" | bc) || power_w="?"
-        echo "Temp:  ${temp_c}°C"
-        echo "Power: ${power_w}W"
-    fi
-    if [[ -f "$OD_PATH" ]]; then
-        echo "--- OD table ---"
-        cat "$OD_PATH"
-    fi
-}
+[Timer]
+OnBootSec=10
+OnUnitActiveSec=60
+Unit=${UNIT}
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-CMD="${1:-}"
-case "$CMD" in
-    --status)
-        status
-        ;;
-    --restore)
-        check_root
-        restore
-        ;;
-    --watch)
-        check_root
-        echo "[gpu_powercap] Applying cap every 60s (GPU resets revert OD). Ctrl-C to stop."
-        while true; do
-            apply_cap
-            sleep 60
-        done
-        ;;
-    "")
-        check_root
-        apply_cap
-        ;;
-    *)
-        echo "Usage: $0 [--status | --restore | --watch]"
-        exit 1
-        ;;
-esac
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+    sudo mv /tmp/${UNIT} /etc/systemd/system/
+    sudo mv /tmp/${TIMER} /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now ${UNIT} ${TIMER}
+    echo "✅ Systemd ${UNIT} + ${TIMER} installed (re-applies every 60s)"
+fi

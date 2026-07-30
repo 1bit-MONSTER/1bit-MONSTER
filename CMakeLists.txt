@@ -408,6 +408,25 @@ target_sources(rocm_cpp PRIVATE src/prefill_dispatcher.cpp)
 add_subdirectory(engine/gpu/zinc_cpp zinc_cpp_build)
 set(ZINC_CPP_AVAILABLE TRUE)
 
+# -- llama.cpp ggml-vulkan integration (MIT License) -----------------------------------
+set(GGML_VULKAN_DIR "${CMAKE_SOURCE_DIR}/third_party/llama.cpp")
+set(GGML_BUILD_DIR "${GGML_VULKAN_DIR}/build")
+
+if(EXISTS "${GGML_BUILD_DIR}/ggml/src/ggml-vulkan/libggml-vulkan.a")
+    add_library(ggml_vulkan STATIC IMPORTED GLOBAL)
+    set_target_properties(ggml_vulkan PROPERTIES IMPORTED_LOCATION "${GGML_BUILD_DIR}/ggml/src/ggml-vulkan/libggml-vulkan.a")
+    add_library(ggml STATIC IMPORTED GLOBAL)
+    set_target_properties(ggml PROPERTIES IMPORTED_LOCATION "${GGML_BUILD_DIR}/ggml/src/libggml.a")
+    add_library(ggml_cpu STATIC IMPORTED GLOBAL)
+    set_target_properties(ggml_cpu PROPERTIES IMPORTED_LOCATION "${GGML_BUILD_DIR}/ggml/src/libggml-cpu.a")
+    add_library(ggml_base STATIC IMPORTED GLOBAL)
+    set_target_properties(ggml_base PROPERTIES IMPORTED_LOCATION "${GGML_BUILD_DIR}/ggml/src/libggml-base.a")
+    target_include_directories(ggml INTERFACE "${GGML_VULKAN_DIR}/ggml/include")
+    message(STATUS "llama.cpp ggml-vulkan: FOUND")
+else()
+    message(WARNING "llama.cpp ggml-vulkan not built — cd third_party/llama.cpp && cmake -B build -G Ninja -DGGML_VULKAN=ON && cmake --build build -j8")
+endif()
+
 # -- libbackend_manager : Backend abstraction layer (requires rocm_cpp for HIP) ---------
 set(BACKEND_MANAGER_SOURCES
     src/backend_factory.cpp
@@ -819,6 +838,7 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_fused.cpp
     src/backend_fused_npu.cpp
     src/backend_vulkan_hpp.cpp
+    src/backend_ggml_vulkan.cpp
     src/zaya_engine.cpp
     src/backend_npu.cpp
     src/backend_npu_flm.cpp
@@ -844,10 +864,21 @@ target_include_directories(unified_server PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/kernels>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/engine/npu/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_options(unified_server PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
+if(TARGET ggml_vulkan)
+    target_link_libraries(unified_server PRIVATE ggml_vulkan ggml ggml_cpu ggml_base)
+    # Also link llama.cpp lib for model loading
+    target_link_libraries(unified_server PRIVATE
+        "${GGML_BUILD_DIR}/src/libllama.a"
+        "${GGML_BUILD_DIR}/common/libllama-common.a"
+        "${GGML_BUILD_DIR}/common/libllama-common-base.a"
+        -lvulkan -ldl -lpthread -lm)
+endif()
 # Build FLM from submodule
 set(FLM_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src")
 set(FLM_BUILD_DIR "${FLM_SOURCE_DIR}/build")
@@ -1213,6 +1244,29 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
     endif()
+endif()
+
+# -- bench_ggml_vk: GGML-Vulkan backend benchmark (llama.cpp MIT License) ---
+if(TARGET ggml_vulkan)
+    add_executable(bench_ggml_vk tools/bench_ggml_vk.cpp src/backend_ggml_vulkan.cpp)
+    target_include_directories(bench_ggml_vk PRIVATE
+        include
+        src
+        third_party/llama.cpp/include
+        third_party/llama.cpp/ggml/include)
+    target_link_options(bench_ggml_vk PRIVATE -Wl,--allow-multiple-definition)
+    target_link_libraries(bench_ggml_vk PRIVATE
+        "${GGML_BUILD_DIR}/ggml/src/ggml-vulkan/libggml-vulkan.a"
+        "${GGML_BUILD_DIR}/ggml/src/libggml.a"
+        "${GGML_BUILD_DIR}/ggml/src/libggml-cpu.a"
+        "${GGML_BUILD_DIR}/ggml/src/libggml-base.a"
+        "${GGML_BUILD_DIR}/src/libllama.a"
+        -lvulkan -ldl -lpthread -lm)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(bench_ggml_vk PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    set_target_properties(bench_ggml_vk PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+    message(STATUS "bench_ggml_vk: GGML-Vulkan benchmark enabled")
 endif()
 
 # -- test_pipeline_real: GPU+NPU fused pipeline with real kernels (#446) ------
