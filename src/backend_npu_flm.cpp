@@ -39,36 +39,6 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
     int H = cfg.hidden_size;
     const std::string& arch = cfg.architecture;
 
-    // Llama family
-    if (arch == "llama") {
-        if (H <= 2048) return "llama3.2:1b";
-        if (H <= 3072) return "llama3.2:3b";
-        if (H <= 4096) return "llama3.1:8b";
-        return "llama3.1:8b";
-    }
-
-    // Mistral family
-    if (arch == "mistral") {
-        if (H <= 4096) return "mistral:7b";
-        return "mistral:7b";
-    }
-
-    // Phi family
-    if (arch == "phi3") {
-        return "phi4-mini-it:4b";
-    }
-
-    // DeepSeek family
-    if (arch == "deepseek2") {
-        return "deepseek-r1:8b";
-    }
-
-    // Gemma3
-    if (arch == "gemma3") {
-        if (H <= 2048) return "gemma3:1b";
-        return "gemma3:4b";
-    }
-
     // Qwen3.5 Gate-Delta family
     if (arch == "qwen35" || arch == "qwen35moe") {
         if (H <= 1024) return "qwen3.5:0.8b";
@@ -159,23 +129,6 @@ public:
         // Map model to FLM tag
         model_tag_ = flm_tag_for_model(cfg);
         fprintf(stderr, "NPU: launching FLM %s...\n", model_tag_.c_str());
-
-        // Auto-pull model if not cached — non-blocking check first
-        {
-            std::string check_cmd = std::string(flm_bin_) + " list 2>/dev/null | grep -q '" + model_tag_ + " \\u2705'";
-            int cached = system(check_cmd.c_str());
-            if (cached != 0) {
-                fprintf(stderr, "NPU: model %s not cached — auto-pulling (may take a few minutes)...\n",
-                        model_tag_.c_str());
-                std::string pull_cmd = std::string(flm_bin_) + " pull " + model_tag_ + " 2>&1 | tail -3";
-                int pull_rc = system(pull_cmd.c_str());
-                if (pull_rc != 0) {
-                    fprintf(stderr, "NPU: FLM pull %s failed (rc=%d) — falling back to next backend\n",
-                            model_tag_.c_str(), pull_rc);
-                    return false;
-                }
-            }
-        }
 
         // Spawn FLM subprocess
         int to_child[2], from_child[2], err_child[2];

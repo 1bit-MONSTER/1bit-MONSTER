@@ -169,10 +169,17 @@ int main(int argc, char** argv) {
         std::string arch_str = reader.architecture();
         if (arch_str == "qwen35moe") {
             hdr.arch = ONEBP_MOE;
-        } else if (arch_str == "qwen3" || arch_str == "qwen2") {
+        } else if (arch_str == "qwen3" || arch_str == "qwen2" || arch_str == "qwen35") {
             hdr.arch = ONEBP_DENSE;  // default is already 0
         } else if (arch_str == "deepseek2" || arch_str == "deepseek3") {
             hdr.arch = ONEBP_DEEPSEEK2;
+        } else if (arch_str == "gemma4") {
+            // gemma4: can be dense (31B) or MoE (26B) — auto-detect handles MoE
+            hdr.arch = ONEBP_DENSE;
+        } else if (arch_str == "laguna") {
+            hdr.arch = ONEBP_LAGUNA;
+        } else if (arch_str == "bailing_hybrid" || arch_str == "cohere2_moe") {
+            hdr.arch = ONEBP_MOE;
         }
         // else keep default ONEBP_DENSE (0) for standard dense transformers
     }

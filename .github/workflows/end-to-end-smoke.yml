@@ -43,7 +43,7 @@ jobs:
         run: |
           rm -f /tmp/unified_server.lock
           ./build/unified_server --port 8099 --weights models/ \
-            --model "qwen3_0_6b" \
+            --model "Llama 3.2 1B Instruct" \
             --gen-timeout-ms 10000 --quick &>/tmp/smoke_server.log &
           echo "pid=$!"
           # Wait for startup (GPU init can take ~90s on Strix Halo)
