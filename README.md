@@ -24,16 +24,18 @@
 We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 207 KB open-source binary. We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 35+ 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
 
 **Platform support:**
-- **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU (79 tok/s BlackMamba 1.5B)
+- **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + **GGML-Vulkan (llama.cpp)**
 - **NVIDIA GPU** — CUDA backend (sm_70+)
 - **Apple Silicon** — Metal GPU backend
-- **Any Vulkan 1.2+ GPU** — ZINC engine
+- **Any Vulkan 1.2+ GPU** — ZINC engine + **GGML-Vulkan (llama.cpp)**
 - **x86 CPU** — OpenMP fallback
 
 **Key numbers:**
-- 19 model architectures · 35+ 1BP models · 4 backends
+- 19 model architectures · 35+ 1BP models · **6 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, CPU)
+- 598 tok/s peak end-to-end (SmolLM2-135M, **GGML-Vulkan**)
 - 543 tok/s peak kernel (TQ2 GEMV, ROCm HIP)
-- 79.4 tok/s end-to-end (BlackMamba 1.5B, Strix Halo)
+- 337 tok/s (Qwen3-0.6B, **GGML-Vulkan**)
+- 79.4 tok/s (BlackMamba 1.5B, ROCm HIP)
 - 37 FLM models extracted (209 NPU xclbins)
 - Moonshot Kimi family (Gated MLA MoE) — architecture reverse-engineered, converter built, see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md)
 
@@ -94,7 +96,7 @@ The most versatile ecosystem: dense models from 0.5B to 72B, vision-language var
 | Model | Params | 1BP Size | Backend(s) | Perf |
 |-------|:------:|:--------:|------------|:----:|
 | **Qwen2.5-0.5B** | 0.5B | 328 MB | ZINC / NPU | — |
-| **Qwen3-0.6B** | 0.6B | 356 MB | ZINC / NPU / HIP | — |
+| **Qwen3-0.6B** | 0.6B | 356 MB | **GGML-Vulkan** / ZINC / NPU / HIP | **332 tok/s** 🆕 |
 | **Qwen3-4B** | 4B | 2.2 GB | ZINC / NPU / HIP | — |
 | **Qwen3-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | 423 tok/s ZINC |
 | **Qwen2-VL-2B** | 2B | 781 MB | ZINC (vision) | — |
@@ -113,6 +115,9 @@ General-purpose dense transformer models — Llama-derived, Mistral, Gemma, Phi,
 
 | Model | Params | 1BP Size | Backend(s) | Peak tok/s |
 |-------|:------:|:--------:|------------|:----------:|
+| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **571** 🆕 |
+| **SmolLM2-360M** | 360M | 259 MiB | **GGML-Vulkan** / ZINC / CPU | **390** 🆕 |
+| **SmolLM2-1.7B** | 1.7B | 1007 MiB | **GGML-Vulkan** / ZINC / CPU | **169** 🆕 |
 | **Llama-3.2-1B** | 1B | 581 MB | ZINC / NPU | 543 (kernel) |
 | **Llama-3.2-3B** | 3B | 1.7 GB | ZINC / NPU / HIP | 543 (kernel) |
 | **Llama-3.1-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | 543 (kernel) |
@@ -164,6 +169,15 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 | **Bonsai-8B** | 8B | 4.1 GB | HIP GPU | — |
 | **Bonsai-27B** | 27B | 15 GB | HIP GPU | — |
 
+**GGML-Vulkan (end-to-end) benchmarks:**
+| Model | tok/s | Backend |
+|-------|:-----:|---------|
+| SmolLM2-135M Q4_K_M | **571** | GGML-Vulkan 🆕 |
+| SmolLM2-360M Q4_K_M | **390** | GGML-Vulkan 🆕 |
+| SmolLM2-1.7B Q4_K_M | **169** | GGML-Vulkan 🆕 |
+| Qwen3-0.6B Q4_K_M | **332** | GGML-Vulkan 🆕 |
+| Qwen2.5-VL-3B Q4_K_M | **96** | GGML-Vulkan 🆕 |
+
 **Ternary kernel benchmarks:**
 | Kernel | tok/s | Backend |
 |--------|:-----:|---------|
@@ -180,6 +194,11 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 
 | Benchmark | tok/s | Backend | Status |
 |-----------|:-----:|---------|--------|
+| SmolLM2-135M Q4_K_M | **571** | **GGML-Vulkan** | ✅ new |
+| SmolLM2-360M Q4_K_M | **390** | **GGML-Vulkan** | ✅ new |
+| SmolLM2-1.7B Q4_K_M | **169** | **GGML-Vulkan** | ✅ new |
+| Qwen3-0.6B Q4_K_M | **332** | **GGML-Vulkan** | ✅ new |
+| Qwen2.5-VL-3B Q4_K_M | **96** | **GGML-Vulkan** | ✅ new |
 | Q1 GEMV kernel | 433 | ROCm HIP | ✅ |
 | Fused TQ2 kernel | 420 | ROCm HIP | ✅ |
 | GPU ternary (Vulkan) | 318 | Vulkan ZINC | ✅ |
