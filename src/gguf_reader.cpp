@@ -431,8 +431,8 @@ bool GgufReader::read_kv_value(uint32_t vtype, KV& out) {
         case 7: { uint8_t v; if (fread(&v, 1, 1, f_) != 1) return false; out.u = v; return true; }
         case 8: { out.s = read_string(); return true; }
         case 9: {
-            uint32_t at; fread(&at, 4, 1, f_);
-            uint64_t an; fread(&an, 8, 1, f_);
+            uint32_t at; if (fread(&at, 4, 1, f_) != 1) return false;
+            uint64_t an; if (fread(&an, 8, 1, f_) != 1) return false;
             static constexpr uint64_t MAX_ARRAY_COUNT = 1000000;
             if (an > MAX_ARRAY_COUNT) {
                 for (uint64_t j = 0; j < an; j++) skip_kv_value(at);
@@ -460,8 +460,8 @@ void GgufReader::skip_kv_value(uint32_t vtype) {
         case 4: case 5: case 6: fseeko(f_, 4, SEEK_CUR); break;
         case 8: { read_string(); break; }
         case 9: {
-            uint32_t at; fread(&at, 4, 1, f_);
-            uint64_t an; fread(&an, 8, 1, f_);
+            uint32_t at; if (fread(&at, 4, 1, f_) != 1) return;
+            uint64_t an; if (fread(&an, 8, 1, f_) != 1) return;
             static constexpr uint64_t MAX_ARRAY_COUNT = 1000000;
             if (an > MAX_ARRAY_COUNT) an = 0;
             if (at == 8) { for (uint64_t j = 0; j < an; j++) read_string(); }

@@ -72,10 +72,29 @@ bool OnebpModel::load(const char* path) {
     // The index position (pos) now points to the start of data.
     data_section_offset = pos;
 
+    // Validate all tensor offsets against file size (issue #1145).
+    for (auto& t : tensors) {
+        uint64_t abs_off = data_section_offset + t.offset;
+        if (abs_off + t.bytes > file_size || abs_off < data_section_offset) {
+            fprintf(stderr, "1BP: tensor '%s' offset=%lu bytes=%lu exceeds file size %lu\n",
+                    t.name.c_str(), (unsigned long)t.offset, (unsigned long)t.bytes,
+                    (unsigned long)file_size);
+            return false;
+        }
+    }
+
     return true;
 }
 
 uint8_t* OnebpModel::tensor_data(const OnebpTensor& t) {
-    // t.offset is relative to the start of the data section
-    return data + data_section_offset + t.offset;
+    // t.offset is relative to the start of the data section.
+    // Guard against out-of-bounds access from a crafted 1BP file (issue #1145).
+    uint64_t abs_off = data_section_offset + t.offset;
+    if (abs_off + t.bytes > file_size || abs_off < data_section_offset) {
+        fprintf(stderr, "1BP: OOB tensor '%s' offset=%lu bytes=%lu file=%lu\n",
+                t.name.c_str(), (unsigned long)t.offset, (unsigned long)t.bytes,
+                (unsigned long)file_size);
+        return nullptr;
+    }
+    return data + abs_off;
 }
