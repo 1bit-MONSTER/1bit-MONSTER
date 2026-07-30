@@ -131,8 +131,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Read attention head counts and FFN dim from metadata (skipped in MoE path above if already set).
+    if (!hdr.num_attention_heads) gu("num_attention_heads", hdr.num_attention_heads);
+    if (!hdr.num_kv_heads)       gu("num_key_value_heads", hdr.num_kv_heads);
+    if (!hdr.head_dim)           gu("head_dim", hdr.head_dim);
+    if (!hdr.intermediate_size)  gu("intermediate_size", hdr.intermediate_size);
     // Attention heads are optional — Mamba/MoE architectures have none.
     // Key-value heads default to attention heads; head_dim derived if absent.
+    if (!hdr.num_kv_heads && hdr.num_attention_heads) hdr.num_kv_heads = hdr.num_attention_heads;
 
     // Try explicit vocab_size; fall back to token_embd.weight rows or tokens array.
     gu("vocab_size", hdr.vocab_size);
@@ -152,8 +158,9 @@ int main(int argc, char** argv) {
             hdr.vocab_size = (int)tokens.size();
     }
     if (!hdr.valid()) {
-        fprintf(stderr, "Bad config: H=%d L=%d NH=%d V=%d\n",
-                hdr.hidden_size, hdr.num_layers, hdr.num_attention_heads, hdr.vocab_size);
+        fprintf(stderr, "Bad config: H=%d L=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",
+                hdr.hidden_size, hdr.num_layers, hdr.num_attention_heads,
+                hdr.num_kv_heads, hdr.head_dim, hdr.intermediate_size, hdr.vocab_size);
         return 1;
     }
 
