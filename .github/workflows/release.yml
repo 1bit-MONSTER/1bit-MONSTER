@@ -27,6 +27,11 @@ jobs:
           apt-get install -y -qq git cmake ninja-build build-essential \
             libvulkan-dev uuid-dev python3-pip python3-venv
 
+          # XRT (Xilinx Runtime) for NPU fused engine compilation.
+          # backend_fused.cpp/backend_fused_npu.cpp need xrt headers at compile time.
+          apt-get install -y -qq libxrt-dev 2>/dev/null || \
+            echo "::warning::libxrt-dev not available — fused NPU backends stubbed"
+
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo)
           # This replaces the system ROCm at /opt/rocm with TheRock 7.15.0a
           # at /opt/rocm-therock. CMakeLists.txt auto-detects /opt/rocm-therock
