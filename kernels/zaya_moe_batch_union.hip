@@ -19,7 +19,7 @@
 
 // ── Helper: warp-level sum ──
 __device__ inline float warp_sum_f(float v) {
-    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor(v, o);
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffULL, v, o);
     return v;
 }
 __device__ inline float block_sum_f(float v, float* sh) {
@@ -234,10 +234,10 @@ __global__ void batched_moe_union_kernel(
         __syncthreads();
 
         // ── Step 2: SiLU(gate) * up → moe_buf[n_ff] ──
-        if (tx < n_ff) {
-            float g = __half2float(gate_up_buf[tx]);
-            float u = __half2float(gate_up_buf[n_ff + tx]);
-            gate_up_buf[tx] = __float2half((g / (1.0f + expf(-g))) * u);
+        for (int i = tx; i < n_ff; i += blockDim.x) {
+            float g = __half2float(gate_up_buf[i]);
+            float u = __half2float(gate_up_buf[n_ff + i]);
+            gate_up_buf[i] = __float2half((g / (1.0f + expf(-g))) * u);
         }
         __syncthreads();
 
@@ -245,7 +245,7 @@ __global__ void batched_moe_union_kernel(
         __half* moe_b = moe_out + (size_t)b * h_dim;
         for (int i = tx; i < h_dim; i += blockDim.x) {
             float s = 0;
-            const __half* w = dn + ((size_t)expert * H + i) * (size_t)n_ff;
+            const __half* w = dn + ((size_t)expert * h_dim + i) * (size_t)n_ff;
             for (int j = 0; j < n_ff; j++)
                 s += __half2float(gate_up_buf[j]) * __half2float(w[j]);
             moe_b[i] = __float2half(s);
@@ -396,10 +396,10 @@ __global__ void batched_moe_fused_kernel(
         __syncthreads();
 
         // SiLU(gate) * up → moe_buf
-        if (tx < n_ff) {
-            float g = __half2float(gate_up_tmp[tx]);
-            float u = __half2float(gate_up_tmp[n_ff + tx]);
-            gate_up_tmp[tx] = __float2half((g / (1.0f + expf(-g))) * u);
+        for (int i = tx; i < n_ff; i += blockDim.x) {
+            float g = __half2float(gate_up_tmp[i]);
+            float u = __half2float(gate_up_tmp[n_ff + i]);
+            gate_up_tmp[i] = __float2half((g / (1.0f + expf(-g))) * u);
         }
         __syncthreads();
 
@@ -407,7 +407,7 @@ __global__ void batched_moe_fused_kernel(
         __half* moe_b = moe_out + (size_t)b * h_dim;
         for (int i = tx; i < h_dim; i += blockDim.x) {
             float s = 0;
-            const __half* w = dn + ((size_t)my_expert * H + i) * (size_t)n_ff;
+            const __half* w = dn + ((size_t)my_expert * h_dim + i) * (size_t)n_ff;
             for (int j = 0; j < n_ff; j++)
                 s += __half2float(gate_up_tmp[j]) * __half2float(w[j]);
             moe_b[i] = __float2half(s);
@@ -555,10 +555,10 @@ __global__ void moe_sorted_expert_kernel(
         __syncthreads();
 
         // ── SiLU(gate) * up → gate_up_buf[n_ff] ──
-        if (tx < n_ff) {
-            float g = __half2float(gate_up_buf[tx]);
-            float u = __half2float(gate_up_buf[n_ff + tx]);
-            gate_up_buf[tx] = __float2half((g / (1.0f + expf(-g))) * u);
+        for (int i = tx; i < n_ff; i += blockDim.x) {
+            float g = __half2float(gate_up_buf[i]);
+            float u = __half2float(gate_up_buf[n_ff + i]);
+            gate_up_buf[i] = __float2half((g / (1.0f + expf(-g))) * u);
         }
         __syncthreads();
 
@@ -566,7 +566,7 @@ __global__ void moe_sorted_expert_kernel(
         __half* moe_b = moe_out + (size_t)b * h_dim;
         for (int i = tx; i < h_dim; i += blockDim.x) {
             float s = 0;
-            const __half* w = dn + ((size_t)expert * H + i) * (size_t)n_ff;
+            const __half* w = dn + ((size_t)expert * h_dim + i) * (size_t)n_ff;
             for (int j = 0; j < n_ff; j++)
                 s += __half2float(gate_up_buf[j]) * __half2float(w[j]);
             moe_b[i] = __float2half(s);
@@ -588,14 +588,15 @@ __global__ void moe_modskip_passthrough_kernel(
     const __half* __restrict__ hs,       // [B, h_dim]
     const int*   __restrict__ expert_idx, // [B]
     int skip_expert,
-    int B)
+    int B,
+    int h_dim)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= B * H) return;
-    int b = i / H;
-    int h = i % H;
+    if (i >= B * h_dim) return;
+    int b = i / h_dim;
+    int h = i % h_dim;
     if (expert_idx[b] == skip_expert) {
-        moe_out[b * (size_t)H + h] = hs[b * (size_t)H + h];
+        moe_out[b * (size_t)h_dim + h] = hs[b * (size_t)h_dim + h];
     }
 }
 

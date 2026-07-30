@@ -44,7 +44,14 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
     int n_heads = gu("llm.attention.head_count", 8);
     int inter_size = gu("llm.feed_forward_length", 2048);
     int vocab_size = gu("llm.vocab_size", 262272);
+    if (n_heads <= 0) { fprintf(stderr, "[gguf] invalid head_count=%d\n", n_heads); return RCPP_INVALID_ARG; }
+    if (hidden_size <= 0) { fprintf(stderr, "[gguf] invalid hidden_size=%d\n", hidden_size); return RCPP_INVALID_ARG; }
     int head_dim = hidden_size / n_heads;
+
+    // Read n_kv_heads for GQA support (issue #1173)
+    uint32_t n_kv_heads_u32 = 0;
+    reader.get_u32("llm.attention.head_count_kv", n_kv_heads_u32);
+    int n_kv_heads = n_kv_heads_u32 > 0 ? (int)n_kv_heads_u32 : n_heads;
 
     out_model->hidden_size = hidden_size;
     out_model->intermediate_size = inter_size;
@@ -105,18 +112,45 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
         HIP_CHECK(hipMalloc(&out_model->final_norm_weight_dev, f16.size() * sizeof(_Float16)));
         HIP_CHECK(hipMemcpy(out_model->final_norm_weight_dev, f16.data(), f16.size() * sizeof(_Float16), hipMemcpyHostToDevice));
     }
-    out_model->layers = new rcpp_bitnet_layer_t[n_layers]();
+    out_model->layers = static_cast<rcpp_bitnet_layer_t*>(std::calloc(n_layers, sizeof(rcpp_bitnet_layer_t)));
+    if (!out_model->layers) return RCPP_INTERNAL;
+
+    // Detect tensor naming convention: llama.cpp uses "blk.{n}." prefix,
+    // HuggingFace/ONNX uses "model.layers.{n}." prefix (issue #1169).
+    enum class TensorNaming { LLAMACPP, HF, UNKNOWN } naming = TensorNaming::UNKNOWN;
+    {
+        std::vector<float> probe;
+        if (reader.get_tensor_f32("blk.0.attn_q.weight", probe)) naming = TensorNaming::LLAMACPP;
+        else if (reader.get_tensor_f32("model.layers.0.self_attn.q_proj.weight", probe)) naming = TensorNaming::HF;
+    }
+    if (naming == TensorNaming::UNKNOWN) {
+        fprintf(stderr, "GGUF: could not determine tensor naming convention "
+                "(tried blk.0.attn_q.weight and model.layers.0.self_attn.q_proj.weight)\n");
+        return RCPP_INVALID_ARG;
+    }
+    const bool is_llamacpp = (naming == TensorNaming::LLAMACPP);
+    fprintf(stderr, "GGUF: using %s tensor naming convention\n",
+            is_llamacpp ? "llama.cpp (blk.)" : "HuggingFace (model.layers.)");
+
+    int tensors_loaded = 0;
     for (int l = 0; l < n_layers; ++l) {
         auto& layer = out_model->layers[l];
-        auto prefix = [&](const char* n) -> std::string {
-            return std::string("model.layers.") + std::to_string(l) + "." + n;
+        auto prefix = [&](const char* llama_name, const char* hf_name) -> std::string {
+            std::string layer_pfx = is_llamacpp
+                ? "blk." + std::to_string(l) + "."
+                : "model.layers." + std::to_string(l) + ".";
+            return layer_pfx + (is_llamacpp ? llama_name : hf_name);
         };
         // Select target pointers based on weight format
         // BST format writes to bst_*_packed_dev, standard writes to *_packed_dev
         auto lw = [&](const std::string& gn, void** std_ptr, void** bst_ptr, int r, int c) -> rcpp_status_t {
-            (void)r; (void)c;
             std::vector<float> data;
             if (!read_tensor_f32(gn, data)) return RCPP_OK;
+            size_t expected = (size_t)r * c;
+            if (data.size() != expected) {
+                fprintf(stderr, "GGUF: tensor %s dim mismatch: expected %dx%d=%zu, got %zu\n", gn.c_str(), r, c, expected, data.size());
+                return RCPP_INVALID_ARG;
+            }
             if (data.size() > MAX_EL) { fprintf(stderr, "GGUF: tensor %s too large (%zu el)\n", gn.c_str(), data.size()); return RCPP_INVALID_ARG; }
             std::vector<_Float16> f16(data.size());
             for (size_t i = 0; i < data.size(); ++i) f16[i] = (_Float16)data[i];
@@ -125,18 +159,25 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
             HIP_CHECK(hipMemcpy(*target, f16.data(), f16.size() * sizeof(_Float16), hipMemcpyHostToDevice));
             return RCPP_OK;
         };
-        lw(prefix("input_layernorm.weight"), &layer.input_norm_dev, &layer.input_norm_dev, hidden_size, 1);
-        lw(prefix("post_attention_layernorm.weight"), &layer.post_attn_norm_dev, &layer.post_attn_norm_dev, hidden_size, 1);
-        // Weight projections: select pointer based on format
-        lw(prefix("self_attn.q_proj.weight"), &layer.q_packed_dev, &layer.bst_q_packed_dev, n_heads * head_dim, hidden_size);
-        lw(prefix("self_attn.k_proj.weight"), &layer.k_packed_dev, &layer.bst_k_packed_dev, hidden_size, hidden_size);
-        lw(prefix("self_attn.v_proj.weight"), &layer.v_packed_dev, &layer.bst_v_packed_dev, hidden_size, hidden_size);
-        lw(prefix("self_attn.o_proj.weight"), &layer.o_packed_dev, &layer.bst_o_packed_dev, hidden_size, n_heads * head_dim);
-        lw(prefix("mlp.gate_proj.weight"), &layer.gate_packed_dev, &layer.bst_gate_packed_dev, inter_size, hidden_size);
-        lw(prefix("mlp.up_proj.weight"), &layer.up_packed_dev, &layer.bst_up_packed_dev, inter_size, hidden_size);
-        lw(prefix("mlp.down_proj.weight"), &layer.down_packed_dev, &layer.bst_down_packed_dev, hidden_size, inter_size);
+        lw(prefix("attn_norm.weight", "input_layernorm.weight"), &layer.input_norm_dev, &layer.input_norm_dev, hidden_size, 1);
+        lw(prefix("ffn_norm.weight", "post_attention_layernorm.weight"), &layer.post_attn_norm_dev, &layer.post_attn_norm_dev, hidden_size, 1);
+        // Weight projections: use GQA-aware K/V sizes (issue #1173)
+        int q_out = n_heads * head_dim;
+        int kv_out = n_kv_heads * head_dim;
+        lw(prefix("attn_q.weight", "self_attn.q_proj.weight"), &layer.q_packed_dev, &layer.bst_q_packed_dev, q_out, hidden_size);
+        lw(prefix("attn_k.weight", "self_attn.k_proj.weight"), &layer.k_packed_dev, &layer.bst_k_packed_dev, kv_out, hidden_size);
+        lw(prefix("attn_v.weight", "self_attn.v_proj.weight"), &layer.v_packed_dev, &layer.bst_v_packed_dev, kv_out, hidden_size);
+        lw(prefix("attn_output.weight", "self_attn.o_proj.weight"), &layer.o_packed_dev, &layer.bst_o_packed_dev, hidden_size, q_out);
+        lw(prefix("ffn_gate.weight", "mlp.gate_proj.weight"), &layer.gate_packed_dev, &layer.bst_gate_packed_dev, inter_size, hidden_size);
+        lw(prefix("ffn_up.weight", "mlp.up_proj.weight"), &layer.up_packed_dev, &layer.bst_up_packed_dev, inter_size, hidden_size);
+        lw(prefix("ffn_down.weight", "mlp.down_proj.weight"), &layer.down_packed_dev, &layer.bst_down_packed_dev, hidden_size, inter_size);
+        tensors_loaded++;
     }
-    fprintf(stderr, "[gguf] Model load complete\n");
+    if (tensors_loaded == 0) {
+        fprintf(stderr, "GGUF: no layer tensors loaded — possible naming convention mismatch\n");
+        return RCPP_INVALID_ARG;
+    }
+    fprintf(stderr, "[gguf] Model load complete (%d layers, %d tensors)\n", n_layers, tensors_loaded);
     return RCPP_OK;
 }
 } // extern "C"

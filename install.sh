@@ -23,13 +23,18 @@ if echo "$KERNEL_RELEASE" | grep -q '^6\.19\.'; then
 fi
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    echo "Usage: curl -fsSL https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/install.sh | bash"
+    echo "Usage: curl -fsSL https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/install.sh -o install.sh"
+    echo "       # Review the script, then:"
     echo "       bash install.sh [--skip-rocm]"
     echo ""
     echo "  --skip-rocm  Skip kernel build (use pre-build librocm_cpp.so)"
     echo ""
+    echo "If a SHA256 checksum file is available, verify before running:"
+    echo "       sha256sum -c install.sh.sha256"
+    echo ""
     echo "Installs 1bit inference engine for AMD Strix Halo (gfx1151)."
-    echo "Builds the pure C++ zaya_server (~400 KB) + librocm_cpp.so (~1.1 MB) — no Rust, no Python."
+    echo "Builds pure C++ end-to-end: zaya_server, onebit (CLI), onebitd (daemon),"
+    echo "unified_router (proxy), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
     exit 0
 fi
 
@@ -54,23 +59,31 @@ install_deps() {
     if command -v apt-get &>/dev/null; then
         log "Installing build deps (apt)..."
         sudo apt-get update -qq
-        sudo apt-get install -y -qq build-essential cmake ninja-build git curl || true
-        # ROCm HIP SDK — try multiple package names across distro versions
-        sudo apt-get install -y -qq rocm-hip-libraries 2>/dev/null || \
-            sudo apt-get install -y -qq hip-sdk 2>/dev/null || \
-            sudo apt-get install -y -qq rocm-dev 2>/dev/null || \
-            warn "No ROCm HIP package found. Install manually: rocm-hip-libraries"
+        sudo apt-get install -y -qq build-essential cmake ninja-build git curl python3-pip
     elif command -v pacman &>/dev/null; then
         log "Installing build deps (pacman)..."
-        sudo pacman -Sy --noconfirm base-devel cmake ninja git curl rocm-hip-sdk 2>/dev/null || \
-            warn "ROCm HIP package not found. Install rocm-hip-sdk manually"
+        sudo pacman -Sy --noconfirm base-devel cmake ninja git curl python-pip
     elif command -v dnf &>/dev/null; then
         log "Installing build deps (dnf)..."
-        sudo dnf install -y gcc-c++ cmake ninja-build git curl rocm-hip-devel 2>/dev/null || \
-            warn "ROCm HIP package not found. Install rocm-hip-devel manually"
+        sudo dnf install -y gcc-c++ cmake ninja-build git curl python3-pip
     else
-        warn "Unknown package manager. Install: cmake ninja git curl build-essential + ROCm HIP SDK"
+        warn "Unknown package manager. Install: cmake ninja git curl build-essential python3-pip"
     fi
+    command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
+    
+    # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151
+    if ! command -v amdclang++ &>/dev/null; then
+        log "Installing TheRock 7.15.0a SDK..."
+        python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
+            rocm[devel,libraries] 2>/dev/null || {
+            warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
+            warn "See: https://github.com/bong-water-water-bong/TheRock"
+        }
+        export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+    else
+        log "amdclang++ found — TheRock SDK already installed"
+    fi
+	command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
 }
 
 install_deps
@@ -78,11 +91,16 @@ mkdir -p "$MODELS_DIR"
 
 # ── Build kernels + server (pure C++, no Rust) ───────────────────────────────
 if [ "$SKIP_ROCM" = false ]; then
-    log "Building kernels (rocm-cpp) + server (zaya_server)..."
+    log "Building C++ inference stack (server + CLI + daemon)..."
     cd "$DIR"
-    cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
-    cmake --build build --target zaya_server -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
-    log "Build complete: $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server") bytes)"
+    cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
+    cmake --build build --target zaya_server onebitd onebit onebit_bin unified_router -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    log "Build complete:"
+    log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/onebitd      ($(stat -c%s "$DIR/build/onebitd" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/onebit       ($(stat -c%s "$DIR/build/onebit" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/1bit         → onebit"
+    log "  $DIR/build/unified_router"
 else
     warn "--skip-rocm: kernel build skipped."
     warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running zaya_server."

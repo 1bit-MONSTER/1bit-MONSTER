@@ -43,7 +43,6 @@ class RestHandler;
 class HttpSession;
 
 // Global NPU access control
-extern std::mutex g_npu_access_mutex;
 extern std::atomic<bool> g_npu_in_use;
 extern std::atomic<int> g_npu_active_requests;
 
@@ -208,6 +207,8 @@ private:
     ///@brief stream buffer
     std::shared_ptr<streaming_buf> stream_buf_;
     std::shared_ptr<CancellationToken> cancellation_token_;
+    ///@brief request timeout timer
+    net::steady_timer request_timer_;
 };
 
 // Forward declarations

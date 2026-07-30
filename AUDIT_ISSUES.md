@@ -16,6 +16,48 @@ Full codebase audit: **build ✓** (68/68 targets, 10/13 tests passed, 3 skipped
 
 ---
 
+## 2026-07-23 status sweep
+
+Re-verified every item against the current tree (the audit above is a
+2026-07-18 snapshot and is stale in many places). **All HIGH and MEDIUM
+findings are resolved.** The only remainders are cosmetic: two LOW items
+(#22, #24) and the tail of #15 — a single XRT-only header that cannot be
+compile-validated without NPU hardware, so it is intentionally not swept
+blind.
+
+| # | Sev | Status | Notes |
+|---|-----|--------|-------|
+| 1 | HIGH | ✅ fixed | `catch(...)` blocks now log instead of swallowing |
+| 2 | HIGH | ✅ fixed | `g_router_mutex` (zaya) + new `g_inference_mutex` (unified) serialize the shared backend |
+| 3 | HIGH | ✅ fixed | READY handshake + graceful escalation already present; **SIGPIPE crash** closed |
+| 4 | HIGH | ✅ fixed | `gguf_reader`/`safetensors`/`h1b` already capped; **zamba2 loader** capped now; `tokenizer` len is `uint16_t` (≤64 KB, inherently bounded) |
+| 5 | HIGH | ✅ fixed | every real launcher already has `HIP_CHECK(hipGetLastError())`; the lone "unchecked" hit was a `>>>` inside a **comment** |
+| 6 | HIGH | ✅ fixed | oscar kernel is fully `__syncthreads`'d; the flagged `s_m[0]/s_l[0]` pattern no longer exists |
+| 7 | HIGH | ✅ fixed | binds `127.0.0.1` by default, `--bind` to expose, CORS is configurable (`g_cors_origin`) |
+| 8 | MED | ✅ fixed | `NDEBUG` is now `$<$<CONFIG:Release>:NDEBUG>` |
+| 9 | MED | ✅ fixed | all 12 headers carry include guards |
+| 10 | MED | ✅ fixed | `set -euo pipefail` added to 34 executable scripts (sourced env files excluded) |
+| 11 | MED | ✅ fixed | prod paths already use `$HOME`/XDG; dev-tool default → `$HOME`, bench model path → `NPU_MODEL_PATH`; remaining hits are comments |
+| 12 | MED | ✅ fixed | heredocs are quoted (`<< 'PYEOF'`) with `os.environ` — no interpolation |
+| 13 | MED | ✅ fixed | already done — `simple_tokenizer.h` is declarations-only (bodies in `src/simple_tokenizer.cpp`); `q4nx_reader.h`/`safetensors_reader.h` have no inline function bodies |
+| 14 | MED | ✅ fixed | `rocminfo` auto-detect + true cache variable |
+| 15 | MED | 🔶 mostly fixed | flagged headers are already clean (0–1 casts each) except `spec-decode/engine/npu_target_model.h` (~55 casts) — an XRT-only header not buildable in the doc-CI env, so a sweep there can't be compile-validated; left as the sole cosmetic remainder |
+| 16 | MED | ✅ fixed | default weights dir = env → XDG → `$HOME/.local/share` → `/tmp` (prod); `/tmp` only in test fixtures |
+| 17 | MED | ✅ fixed | only `-Wno-unused-result` remains (intentional for checked-but-ignored `write()`s) |
+| 18 | MED | ✅ fixed | no `../include/common.h` include remains |
+| 19 | MED | ✅ fixed | `g_weights_dir` is now `static const` |
+| 20 | MED | ✅ fixed | `read_with_timeout()` (`select()`-based) replaced the blocking read |
+| 21 | MED | ✅ fixed | listed kernels carry `__restrict__` |
+| 22 | LOW | ⏳ deferred | `static_assert(warpSize==32)` isn't reliably valid on HIP host (`warpSize` not guaranteed constexpr); low value |
+| 23 | LOW | ✅ fixed | `tests/download_and_run.sh`, `scripts/download_zamba2.sh`, `packaging/model-download.sh` exist |
+| 24 | LOW | ⏳ tracking | TODO markers → issues; not a code fix |
+| 25 | LOW | ✅ moot | no `1bit/` sub-monorepo; single root `package.json` |
+| 26 | LOW | ✅ fixed | same fix as #8 |
+| 27 | LOW | ✅ moot | zero Python files tracked in the repo |
+| 28 | LOW | ✅ fixed | Vulkan paths log `vk_result_str(res)` and null-check handles |
+
+---
+
 ## HIGH Severity
 
 ### #1 — Empty catch blocks silently swallow all errors
@@ -37,10 +79,24 @@ Four `catch (...) {}` blocks in the server's JSON parsing path silently drop all
 
 ---
 
-### #2 — Thread-unsafe TokenRouter accessed from HTTP handler threads
+### #2 — Thread-unsafe TokenRouter accessed from HTTP handler threads — ✅ FIXED
 
 **Files:** `tests/zaya_server.cpp:405-406, 549-718`, `tools/unified_server.cpp:57-63,726-739`
 **Category:** Concurrency / Data Race
+
+> **Resolution:** `zaya_server.cpp` serializes every `router.*` access behind
+> `g_router_mutex`. `unified_server.cpp` now serializes all shared-backend
+> compute (decode `mgr.reset`/`mgr.generate`, model reload `mgr.init`, and
+> active-backend switch `mgr.select_backend`) behind a dedicated, outermost
+> `g_inference_mutex`; the existing `g_config_mutex`/`g_strategy_mutex` nest
+> inside it (lock order verified, no deadlock). The earlier `#696` change had
+> released the lock around the hot decode path, reintroducing the race — the
+> decode is inherently single-context, so it must be serialized. Metadata
+> endpoints (`/v1/health`, `/v1/models`) still take only config+strategy, so
+> they are not blocked by an in-flight decode.
+> **Residual (low):** `/v1/backend/status` and `/v1/models` read
+> `mgr.active_info()` under config+strategy only — a benign stale pointer read;
+> fully closing it wants an atomic active-backend pointer inside BackendManager.
 
 `TokenRouter router` is a stack variable captured by reference in httplib handler lambdas. Cpp-httplib uses a thread pool — multiple concurrent requests race on `router.infer()`, `router.primary`, and `router.loaded_models`.
 
@@ -52,10 +108,34 @@ In `unified_server.cpp`, `static` globals (`g_weights_dir`, `g_strategy_engine`,
 
 ---
 
-### #3 — NPU worker shutdown race: SIGTERM before quit message delivered
+### #3 — NPU worker shutdown race: SIGTERM before quit message delivered — ✅ FIXED
 
 **Files:** `src/backend_npu.cpp:167-176`, `src/backend_flm.cpp:280-291`
 **Category:** Correctness / Process Management
+
+> **Resolution:** Most of this was already addressed and the audit text is now
+> stale: `NpuWorker::spawn()` performs a `READY\n` startup handshake and sets
+> `ready` **only** on success (not unconditionally after fork); `shutdown()`
+> escalates gracefully — quit command + stdin EOF → `wait_for_child(500ms)` →
+> `SIGTERM` → `wait_for_child(2000ms)` → `SIGKILL` → `wait_for_child(1000ms)`,
+> each `wait_for_child` reaping via `waitpid`; and the double-pipe path already
+> closes the first pipe if the second `pipe()` fails (no FD leak). `backend_flm.cpp`
+> no longer exists (FLM was replaced).
+>
+> The remaining real bug was **SIGPIPE**: once the worker dies, the `write()`
+> calls in `gemm()`/`shutdown()` hit a pipe with no reader, and SIGPIPE's default
+> action **terminates the entire host process**. Only `tools/token_router.cpp`
+> ignored it — `unified_server`/`zaya_server` (the real NPU hosts) did not, so a
+> crashed worker took the whole server down. `spawn()` now ignores SIGPIPE
+> process-wide once (thread-safe local static), so those writes return
+> `-1/EPIPE` and are caught by the existing short-write checks. Verified with a
+> standalone repro: default disposition is killed-by-signal-13; with the ignore,
+> `write()` returns `EPIPE` and the process survives.
+>
+> **Residual (low):** if a worker is wedged in uninterruptible sleep (D-state)
+> even `SIGKILL` won't reap within the 1s bound and a zombie can linger — the
+> bounded escalation deliberately prefers not hanging shutdown over a guaranteed
+> reap. Acceptable for a hardware-hang edge case.
 
 Both NPU and FLM backends write a quit command then immediately close file descriptors and send SIGTERM before the child process has time to read the quit message. FLM's `destroy()` goes further: sends SIGTERM then immediately SIGKILL without giving the process a chance to clean up.
 
@@ -67,7 +147,7 @@ NPU worker `ready = true` is set unconditionally after fork — no handshake con
 
 ---
 
-### #4 — OOM from untrusted GGUF string length
+### #4 — OOM from untrusted GGUF string length — ✅ FIXED
 
 **Files:** `src/gguf_loader.cpp:145-146`, `src/backend_generic.cpp:62-100`
 **Category:** Security / Resource Exhaustion
@@ -87,7 +167,7 @@ A crafted GGUF file with `len=2^62` causes immediate OOM / process kill. Same is
 
 ---
 
-### #5 — Missing HIP kernel launch error checking across entire codebase
+### #5 — Missing HIP kernel launch error checking across entire codebase — ✅ FIXED
 
 **Files:** 20+ kernel launchers in `kernels/`, `src/`
 **Category:** Correctness / GPU
@@ -113,7 +193,7 @@ Every `hipLaunchKernelGGL` call returns `hipError_t` but none is checked. Functi
 
 ---
 
-### #6 — Cross-warp shared memory race in OSCAR attention kernel
+### #6 — Cross-warp shared memory race in OSCAR attention kernel — ✅ FIXED
 
 **Files:** `kernels/oscar_quant.hip:198-209`
 **Category:** Correctness / GPU
@@ -136,7 +216,7 @@ float l_prev = s_l[0];
 
 ---
 
-### #7 — Server binds to 0.0.0.0 with CORS `*` and no authentication
+### #7 — Server binds to 0.0.0.0 with CORS `*` and no authentication — ✅ FIXED
 
 **Files:** `tests/zaya_server.cpp:452-461,714`, `tools/unified_server.cpp`
 **Category:** Security

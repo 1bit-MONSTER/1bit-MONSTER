@@ -26,13 +26,27 @@ int run_gpu_on_shared(fusion::SharedBO* shbo, int N, int iter) {
     float* host   = (float*)shbo->host_ptr();
     float *d = nullptr;
 
-    (void)hipHostRegister(host, N * sizeof(float), hipHostRegisterMapped);
-    (void)hipHostGetDevicePointer((void**)&d, host, 0);
+    hipError_t reg_err = hipHostRegister(host, N * sizeof(float), hipHostRegisterMapped);
+    if (reg_err != hipSuccess) {
+        fprintf(stderr, "hipHostRegister failed: %s\n", hipGetErrorString(reg_err));
+        return reg_err == hipErrorOutOfMemory ? -1 : 999;
+    }
+    hipError_t dev_err = hipHostGetDevicePointer((void**)&d, host, 0);
+    if (dev_err != hipSuccess || d == nullptr) {
+        fprintf(stderr, "hipHostGetDevicePointer failed: %s\n", hipGetErrorString(dev_err));
+        hipHostUnregister(host);
+        return 998;
+    }
 
     // CPU writes → GPU reads via dev ptr (aliased pages, zero copy)
     for (int i = 0; i < N; i++) host[i] = (float)(iter * 1000000 + i);
-    float check[16];
-    (void)hipMemcpy(check, d, sizeof(check), hipMemcpyDeviceToHost);
+    float check[16] = {0};
+    hipError_t mc = hipMemcpy(check, d, sizeof(check), hipMemcpyDeviceToHost);
+    if (mc != hipSuccess) {
+        fprintf(stderr, "hipMemcpy D2H failed: %s\n", hipGetErrorString(mc));
+        hipHostUnregister(host);
+        return 997;
+    }
     int errs = 0;
     for (int i = 0; i < 16; i++) {
         if (fabsf(check[i] - (float)(iter * 1000000 + i)) > 1e-3f && ++errs <= 3)
@@ -42,8 +56,17 @@ int run_gpu_on_shared(fusion::SharedBO* shbo, int N, int iter) {
 
     // GPU writes via H2D → CPU reads back (zero copy, no D2H needed)
     for (int i = 0; i < N; i++) host[i] = (float)(iter * N + i) * 2.0f;
-    (void)hipMemcpy(d, host, N * sizeof(float), hipMemcpyHostToDevice);
-    (void)hipDeviceSynchronize();
+    mc = hipMemcpy(d, host, N * sizeof(float), hipMemcpyHostToDevice);
+    if (mc != hipSuccess) {
+        fprintf(stderr, "hipMemcpy H2D failed: %s\n", hipGetErrorString(mc));
+        hipHostUnregister(host);
+        return 996;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        fprintf(stderr, "hipDeviceSynchronize failed\n");
+        hipHostUnregister(host);
+        return 995;
+    }
 
     // CPU reads same pages — should see GPU's writes
     for (int i = 0; i < N; i += 32) {
@@ -53,7 +76,7 @@ int run_gpu_on_shared(fusion::SharedBO* shbo, int N, int iter) {
                     i, host[i], expected);
     }
 
-    (void)hipHostUnregister(host);
+    hipHostUnregister(host);
     return errs;
 }
 
@@ -74,7 +97,7 @@ int main() {
         fprintf(stderr, "No HIP GPU found (err=%d, count=%d) — skipping GPU portion\n", err, ndev);
         // Continue without GPU — NPU-only test fallback
     } else {
-        (void)hipSetDevice(0);
+        hipSetDevice(0);
     }
 
     fusion::SharedBO* shbo = fusion::SharedBO::create(npu_dev, BUF);
@@ -83,10 +106,18 @@ int main() {
 
     // Start FLM serve (NPU worker, real XDNA2 inference)
     fprintf(stderr, "Starting FLM serve on NPU...\n");
-    system("pkill -f 'flm serve.*8097' 2>/dev/null; sleep 0.5");
-    // FIXME: hardcoded paths below — replace with env vars or CLI args
-    const char* flm_build = getenv("FLM_BUILD_DIR");
+    int flm_port = 8097;
+    if (const char* env_port = getenv("FLM_SERVE_PORT")) flm_port = atoi(env_port);
+    char kill_cmd[128];
+    snprintf(kill_cmd, sizeof(kill_cmd), "pkill -f 'flm serve.*%d' 2>/dev/null; sleep 0.5", flm_port);
+    system(kill_cmd);
+    // Weights dir from env (ZAYA_WEIGHTS_DIR), fallback to FASTFLOWLM dir
+    const char* flm_build = getenv("FASTFLOWLM_DIR");
     if (!flm_build) flm_build = "/opt/fastflowlm";
+    const char* log_dir = getenv("LOG_DIR");
+    if (!log_dir) log_dir = "/tmp";
+    char flm_log[256];
+    snprintf(flm_log, sizeof(flm_log), "%s/flm_par.log", log_dir);
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
            "cd %s/build && "
@@ -94,8 +125,8 @@ int main() {
            "FLM_XCLBIN_PATH=%s/xclbins "
            "LD_LIBRARY_PATH=%s/build:/opt/rocm/lib "
            "nohup ./flm serve qwen3:0.6b --port 8097 --pmode performance "
-           ">/tmp/flm_par.log 2>&1 &",
-           flm_build, flm_build, flm_build, flm_build);
+           ">%s 2>&1 &",
+           flm_build, flm_build, flm_build, flm_build, flm_log);
     system(cmd);
     sleep(3);
 
@@ -105,7 +136,9 @@ int main() {
     if (flm_pid <= 0) {
         fprintf(stderr, "FLM not started — check env/log\n");
         fprintf(stderr, "  log: "); fflush(stderr);
-        system("tail -3 /tmp/flm_par.log");
+        char tail_cmd[256];
+        snprintf(tail_cmd, sizeof(tail_cmd), "tail -3 %s", flm_log);
+        system(tail_cmd);
         delete shbo;
         return 1;
     }

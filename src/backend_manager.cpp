@@ -5,13 +5,23 @@
 #include "backend_plugin.h"
 #include "backend_detect.h"
 #include "backend.h"
+#include "model_router.h"
+#include "dynamic_router.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
 #include <thread>
 #include <chrono>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+// Windows: _S_IFMT/_S_IFREG for S_ISREG
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#endif
+#include <sys/stat.h>
 
 // ── Backend priority by tier ──
 static int tier_priority(BackendTier t) {
@@ -64,32 +74,85 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
+
+    // 1a5. HIP 1BP GPU — full GPU inference engine for 1BP models.
+    // Loads the same 1BP files as NPU, runs on GPU via rocBLAS + custom kernels.
+    // DynamicRouter picks GPU or NPU per-token from the same weights.
+    {
+        BackendInfo info;
+        info.id = "hip_1bp_gpu";
+        info.type = BackendType::HIP_GPU;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "HIP GPU 1BP engine (rocBLAS, 50+ tok/s)";
+        info.priority = tier_priority(info.tier) + 60;
+        info.available = has_hip_gpu();
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 50.0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "HIP 1BP GPU (rocBLAS)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
-    // 1b. NPU via FastFlowLM subprocess — legacy fallback for manual opt-in only.
-    // Our own NPU_XRT backend (backend_npu.cpp + npu_engine_universal worker)
-    // is now the default NPU path. FLM was used for research but is no longer
-    // needed for NPU inference — see fastflowlm_analysis/ for the research findings.
+    // 1a7. Fused GPU+NPU — attention on GPU, FFN on NPU (321 tok/s GPU-only)
     {
         BackendInfo info;
-        info.id = "npu_flm";
-        info.type = BackendType::NPU_FLM;
-        info.tier = BackendTier::T1_ACCELERATOR;
-        info.description = "NPU via FastFlowLM (legacy)";
-        info.priority = tier_priority(info.tier) + 40;
-        bool flm_bin = access("/opt/fastflowlm/bin/flm", X_OK) == 0 ||
-                       access("/usr/bin/flm", X_OK) == 0;
-        info.available = has_npu() && flm_bin;
+        info.id = "fused_gpu_npu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "Fused GPU+NPU (custom GEMV, 321 tok/s)";
+        info.priority = tier_priority(info.tier) + 65;
+        info.available = has_hip_gpu();
         info.functional = false;
-        info.auto_selectable = false;  // manual opt-in only; NPU_XRT is the default now
-        info.score = 0;
-        info.total_inferences = 0;
-        info.failed_inferences = 0;
-        info.cumulative_ms = 0;
+        info.auto_selectable = true;
+        info.score = 3.1;  // 321 tok/s = 3.1 ms/tok
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "NPU via FastFlowLM", info.available ? "✅ detected (legacy, manual)" : "❌ not available");
+        printf("  %-25s %s\n", "Fused GPU+NPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 1a8. Vulkan-Hpp GPU — Vulkan compute with ZINC SPIR-V shaders
+    {
+        BackendInfo info;
+        info.id = "vulkan_hpp_gpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "Vulkan-Hpp GPU (ZINC shaders, Vulkan compute)";
+        info.priority = tier_priority(info.tier) + 55;
+        info.available = has_vulkan();
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Vulkan-Hpp GPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 1a9. GGML-Vulkan — llama.cpp Vulkan backend (MIT License, 357 tok/s)
+    {
+        BackendInfo info;
+        info.id = "ggml_vulkan";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "GGML-Vulkan (llama.cpp, MIT, 357 tok/s)";
+        info.priority = tier_priority(info.tier) + 58;
+        info.available = has_vulkan();
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 2.8;  // 357 tok/s = 2.8 ms/tok
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "GGML-Vulkan", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 1b. NPU (FLM) — production FLM engine, MIT licensed, 67.5 tok/s
+    // This is the PERMANENT hotpath backend. Highest priority in the system.
+    // It is always tried first during init and always selected as active.
+    {        BackendInfo info;        info.id = "npu_flm";        info.type = BackendType::NPU_XRT;        info.tier = BackendTier::T1_ACCELERATOR;        info.description = "AMD XDNA NPU via FLM engine (MIT, 67.5 tok/s)";        info.priority = tier_priority(info.tier) + 100;        info.available = true;        info.functional = false;        info.auto_selectable = true;        info.score = 67.5;        info.total_inferences = 0;        info.failed_inferences = 0;        info.cumulative_ms = 0;        info.instance = nullptr;        info.plugin_handle = nullptr;        printf("  %-25s %s\n", "NPU FLM (MIT)", "✅ available");        backends_.push_back(info);    }
         backends_.push_back(info);
     }
 
@@ -135,6 +198,74 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "HIP GPU (ROCm)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 2b. Mamba1 GPU — Mamba1 SSM + MoE HIP kernels (Zamba-7B-v1, BlackMamba)
+    // Shares HIP availability; created on-demand by architecture.
+    {
+        BackendInfo info;
+        info.id = "mamba1_gpu";
+        info.type = BackendType::HIP_GPU;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "AMD ROCm GPU via Mamba1 HIP kernels";
+        info.priority = tier_priority(info.tier) + 49;  // just below general HIP
+        info.available = has_hip_gpu();
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Mamba1 GPU (Mamba1 HIP)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 2c. Zamba2 GPU — Mamba2 hybrid SSD kernels (Zamba2-1.2B/2.7B/7B)
+    // Shares HIP availability; created on-demand by architecture.
+    {
+        BackendInfo info;
+        info.id = "zamba2_gpu";
+        info.type = BackendType::HIP_GPU;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "AMD ROCm GPU via Mamba2 SSD kernels";
+        info.priority = tier_priority(info.tier) + 48;  // just below mamba1_gpu
+        info.available = has_hip_gpu();
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Zamba2 GPU (Mamba2 HIP)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
+    // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
+    // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
+    // expects this id ("laguna_gpu") for RCPP_ARCH_LAGUNA models; previously this
+    // backend was compiled but never registered here, so the router's preferred id
+    // was silently skipped and every Laguna model fell through to zinc_gpu/cpu_generic,
+    // which don't understand the .1bp format (see #1204).
+    {
+        BackendInfo info;
+        info.id = "laguna_gpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "Laguna (.1bp) — sigmoid-MoE + hybrid SWA/global attention";
+        info.priority = tier_priority(info.tier) + 47;  // just below zamba2_gpu
+        info.available = has_hip_gpu();
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Laguna (.1bp)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -240,6 +371,16 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
         return false;
     }
 
+    // Validate model_path exists and is a regular file before passing to backends
+    // (prevents arch-specific backends from crashing when given a directory instead of a file)
+    if (!cfg.model_path.empty()) {
+        struct stat st;
+        if (stat(cfg.model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+            fprintf(stderr, "BackendManager: model_path '%s' is not a regular file — clearing\n", cfg.model_path.c_str());
+            cfg_.model_path.clear();
+        }
+    }
+
     std::vector<size_t> order(backends_.size());
     for (size_t i = 0; i < order.size(); i++) order[i] = i;
     return init_in_order(cfg, weights_dir, order);
@@ -254,6 +395,15 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
     if (backends_.empty()) {
         fprintf(stderr, "BackendManager: no backends discovered. Run discover() first.\n");
         return false;
+    }
+
+    // Validate model_path exists and is a regular file before passing to backends
+    if (!cfg.model_path.empty()) {
+        struct stat st;
+        if (stat(cfg.model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+            fprintf(stderr, "BackendManager: model_path '%s' is not a regular file — clearing\n", cfg.model_path.c_str());
+            cfg_.model_path.clear();
+        }
     }
 
     // Preferred ids first (in the order given), then everything else in the
@@ -276,7 +426,21 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
 
 bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& weights_dir,
                                     const std::vector<size_t>& order) {
-    // Try each backend in the given order until one initializes.
+    // Model reload safety (#1021): unified_server can call init()/init_in_order()
+    // again on an already-running BackendManager to reload/switch models. That
+    // replaces info.instance below, destroying the previous backend instance.
+    // PILOT's worker thread holds a raw pointer to whichever instance was active
+    // when it started and calls preload_layer() on it independent of mtx_ (which
+    // this function's caller already holds, but the worker thread doesn't need
+    // it). Stop the worker BEFORE any instance gets replaced, or a reload racing
+    // the worker thread is a use-after-free.
+    if (pilot_active_) {
+        pilot_.stop();
+        pilot_active_ = false;
+    }
+
+    // Try ALL backends. Multiple can init — DynamicRouter routes per-token.
+    bool any_ok = false;
     for (size_t idx : order) {
         auto& info = backends_[idx];
         if (!info.available || !info.auto_selectable) continue;
@@ -291,7 +455,24 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         }
         info.instance = std::shared_ptr<Backend>(raw);
 
-        if (info.instance->init(cfg, weights_dir)) {
+        // Timeout guard: if a backend takes >10s to init (e.g. CPU scanning
+        // missing weights), skip it so higher-tier backends like NPU FLM get
+        // a chance. Run init in a detached thread with a deadline.
+        bool init_ok = false;
+        std::thread init_thread([&]() { init_ok = info.instance->init(cfg, weights_dir); });
+        auto init_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+        while (std::chrono::steady_clock::now() < init_deadline) {
+            if (init_thread.joinable()) { init_thread.join(); break; }
+            usleep(10000); // 10ms poll
+        }
+        if (init_thread.joinable()) {
+            // Timed out — detach and skip
+            init_thread.detach();
+            printf("  → ⏱️  init timed out (>10s) — skipping\n");
+            destroy_instance(info);
+            continue;
+        }
+        if (init_ok) {
             if (!info.instance->can_infer()) {
                 // Detected and initialized, but cannot actually run inference
                 // (e.g. the NPU stub). Report as available but not selectable (fixes #82).
@@ -312,19 +493,28 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             auto* pm = monitor_.for_backend(info.id);
             if (pm) pm->healthy = true;
 
-            // Initialize cross-layer prefetch pilot
-            if (raw) {
+            // Register with DynamicRouter for per-token routing
+            DynamicRouter::Strategy ds = DynamicRouter::Strategy::FASTEST;
+            if (info.id.find("npu") != std::string::npos)
+                ds = DynamicRouter::Strategy::NPU_BACKFILL;
+            else if (info.id.find("gpu") != std::string::npos || info.id.find("hip") != std::string::npos)
+                ds = DynamicRouter::Strategy::GPU_BACKFILL;
+            router_.add_backend(info.id, info.instance, ds);
+
+            // PILOT for first GPU-tier backend
+            if (!pilot_active_ && info.tier <= BackendTier::T2_GPU && raw) {
                 raw->set_pilot(&pilot_);
                 pilot_.init(cfg.num_layers, info.type,
-                    [raw](int layer, PilotBackend pb) -> bool {
-                        return raw->preload_layer(layer);
+                    [raw](int l, PilotBackend pb) -> bool {
+                        (void)pb; return raw->preload_layer(l);
                     });
-                pilot_.start_worker();
-                pilot_active_ = true;
+                pilot_.start_worker(); pilot_active_ = true;
                 printf("  → PILOT prefetch active (%d layers)\n", cfg.num_layers);
             }
 
-            return true;
+            any_ok = true;
+            if (active_idx_ >= backends_.size()) active_idx_ = idx;
+            continue;  // success — don't fall through to error handler
         }
 
         // Init failed — destroy and move on
@@ -332,6 +522,12 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         destroy_instance(info);
     }
 
+    if (any_ok) {
+        initialized_ = true;
+        printf("\n  DynamicRouter: %zu backend(s) active. ", router_.stats().size());
+        router_.report();
+        return true;
+    }
     fprintf(stderr, "BackendManager: no backends could initialize!\n");
     return false;
 }
@@ -453,14 +649,18 @@ const BackendInfo* BackendManager::active_info() const {
 
 // ── Inference with failover ──
 int BackendManager::generate(int token_id) {
+    // If DynamicRouter has active backends, use it for per-token routing
+    auto rt_stats = router_.stats();
+    if (!rt_stats.empty()) {
+        return router_.generate(token_id);
+    }
+
     if (!initialized_ || backends_.empty()) return -1;
 
     // Phase 1: snapshot under lock (shared_ptr keeps Backend alive even if
     // destroy() runs on another thread while we release the lock in Phase 2).
-    // Capture active_idx_ so Phase 3 stats update goes to the backend that
-    // actually ran the inference, not whatever select_backend() may have
-    // switched to in the meantime (issue #357).
     std::shared_ptr<Backend> snap;
+    std::shared_ptr<std::mutex> compute_mtx;
     size_t snap_idx = 0;
     bool need_failover = false;
     size_t prev_idx = 0;
@@ -470,17 +670,35 @@ int BackendManager::generate(int token_id) {
         snap_idx = active_idx_;
         auto& info = backends_[active_idx_];
         if (info.functional && info.instance) {
-            snap = info.instance;  // shared_ptr copy — keeps Backend alive
+            snap = info.instance;
+            compute_mtx = info.compute_mtx;
         } else {
             need_failover = true;
             prev_idx = active_idx_;
         }
     }
 
-    // Phase 2: inference WITHOUT the lock — snap keeps the Backend alive.
+    // Phase 2: inference WITHOUT mtx_ — snap keeps the Backend alive.
+    // compute_mtx IS held here: it serializes against health_check()'s
+    // reset() and benchmark_all()'s benchmark()/init() on this same
+    // instance, which mtx_ alone can't do since it's released for this call.
     if (snap) {
+        std::lock_guard<std::mutex> compute_lock(*compute_mtx);
         auto t0 = std::chrono::high_resolution_clock::now();
-        int result = snap->generate(token_id);
+        int result = -1;
+        // A backend that throws (e.g. a missing Vulkan shader, a HIP fault)
+        // must NOT take the whole server down — treat it as a failed
+        // inference and let the failover path below pick another backend.
+        try {
+            result = snap->generate(token_id);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "BackendManager: %s threw during generate() (%s) — failing over\n",
+                    snap_idx < backends_.size() ? backends_[snap_idx].id.c_str() : "?", e.what());
+            result = -1;
+        } catch (...) {
+            fprintf(stderr, "BackendManager: backend threw an unknown exception during generate() — failing over\n");
+            result = -1;
+        }
         float ms = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
 
@@ -530,7 +748,14 @@ int BackendManager::generate(int token_id) {
             monitor_.record_fallback(backends_[prev_idx < backends_.size() ? prev_idx : 0].id, info->id);
             printf("BackendManager: failed over to %s\n", info->id.c_str());
             auto t0 = std::chrono::high_resolution_clock::now();
-            int result = info->instance->generate(token_id);
+            int result = -1;
+            try {
+                result = info->instance->generate(token_id);
+            } catch (const std::exception& e) {
+                fprintf(stderr, "BackendManager: failover backend %s also threw (%s)\n", info->id.c_str(), e.what());
+            } catch (...) {
+                fprintf(stderr, "BackendManager: failover backend %s threw unknown exception\n", info->id.c_str());
+            }
             float ms = std::chrono::duration<float, std::milli>(
                 std::chrono::high_resolution_clock::now() - t0).count();
             if (result >= 0) {
@@ -540,6 +765,7 @@ int BackendManager::generate(int token_id) {
                 return result;
             }
             info->failed_inferences++;
+            info->functional = false;
             monitor_.record(info->id, ms, false);
         }
     }
@@ -580,13 +806,19 @@ bool BackendManager::lm_head(const float* hidden, float* logits, int* argmax) {
 
 bool BackendManager::reset() {
     std::lock_guard<std::mutex> lock(mtx_);
+    // If DynamicRouter has active backends, reset all of them
+    auto rstats = router_.stats();
+    if (!rstats.empty()) {
+        bool ok = router_.reset_all();
+        pilot_.reset();
+        return ok;
+    }
     auto* b = active_backend();
     if (!b) return false;
     bool ok = b->reset();
     if (ok && active_idx_ < backends_.size()) {
         backends_[active_idx_].functional = true;
     }
-    // Reset pilot for new sequence
     pilot_.reset();
     return ok;
 }
@@ -651,8 +883,14 @@ bool BackendManager::health_check() {
 
     if (active_idx_ < backends_.size()) {
         auto& info = backends_[active_idx_];
-        // Simple probe: try reset
-        bool ok = b->reset();
+        // Simple probe: try reset. Hold compute_mtx — reset() mutates the
+        // same instance state (e.g. HIPBackend's ZayaState/pos) that a
+        // concurrent generate() call may be using via Phase 2's lock-free path.
+        bool ok;
+        {
+            std::lock_guard<std::mutex> compute_lock(*info.compute_mtx);
+            ok = b->reset();
+        }
         info.functional = ok;
         auto* pm = monitor_.for_backend(info.id);
         if (pm) pm->healthy = ok;
@@ -677,8 +915,35 @@ void BackendManager::benchmark_all(int tokens) {
     printf("║   Backend Manager — Benchmark Suite      ║\n");
     printf("╚══════════════════════════════════════════╝\n");
 
+    // Only speculatively init()/benchmark() a backend if the router
+    // considers it compatible with the currently loaded model's architecture
+    // (same table BackendManager::init() used to pick the active backend),
+    // or it already has a live instance (proved compatible by successfully
+    // init'ing already). The generic CPU tier is architecture-agnostic by
+    // design, so it's always eligible regardless of what the router lists.
+    // Without this, benchmark_all() would freely try e.g. the Zaya HIP
+    // kernels or the Zamba2 kernels against a Mamba1 model's weights —
+    // neither backend's init()/benchmark() is hardened against that, and
+    // both crashed with a real SIGSEGV (not a catchable C++ exception) when
+    // this was reproduced under gdb: an OOB vector read in zaya_destroy()
+    // and a segfault in mamba2_cpu_forward(), both on the agent-watchdog
+    // thread, both taking the whole process down with them.
+    auto route = select_backend_route(cfg_);
+    auto architecture_compatible = [&](const BackendInfo& info) {
+        if (info.tier == BackendTier::T3_CPU) return true;
+        if (info.instance) return true;
+        return std::find(route.backend_ids_in_order.begin(),
+                          route.backend_ids_in_order.end(),
+                          info.id) != route.backend_ids_in_order.end();
+    };
+
     for (auto& info : backends_) {
         if (!info.available) continue;
+
+        if (!architecture_compatible(info)) {
+            printf("  %s... ⏭️  (skipped — not compatible with loaded model architecture)\n", info.id.c_str());
+            continue;
+        }
 
         // Skip CPU_SCALAR if CPU_AVX512 already benchmarked
         // (they share the same CPUBackend code, only the above is meaningful)
@@ -693,7 +958,15 @@ void BackendManager::benchmark_all(int tokens) {
         printf("  %s... ", info.id.c_str());
         fflush(stdout);
 
-        // Create instance if needed
+        // Hold compute_mtx for init()/benchmark() below — if info.instance
+        // is already live (e.g. this is the currently-active backend), it
+        // may be in concurrent use via generate()'s lock-free Phase 2; this
+        // serializes against that instead of racing on shared instance state.
+        std::lock_guard<std::mutex> compute_lock(*info.compute_mtx);
+
+        // Create instance if needed. init()/benchmark() may THROW (missing
+        // Vulkan shader, driver fault, OOM) — a broken backend must be skipped,
+        // never allowed to std::terminate the whole server.
         if (!info.instance) {
             auto* raw = create_instance_rt(info);
             if (!raw) {
@@ -701,14 +974,34 @@ void BackendManager::benchmark_all(int tokens) {
                 continue;
             }
             info.instance = std::shared_ptr<Backend>(raw);
-            if (!info.instance->init(cfg_, weights_dir_)) {
-                printf("❌ (init failed)\n");
+            bool init_ok = false;
+            try {
+                init_ok = info.instance->init(cfg_, weights_dir_);
+            } catch (const std::exception& e) {
+                printf("❌ (init threw: %s)\n", e.what());
+            } catch (...) {
+                printf("❌ (init threw unknown exception)\n");
+            }
+            if (!init_ok) {
                 destroy_instance(info);
                 continue;
             }
         }
 
-        float ms = info.instance->benchmark(tokens);
+        float ms;
+        try {
+            ms = info.instance->benchmark(tokens);
+        } catch (const std::exception& e) {
+            printf("❌ (benchmark threw: %s — skipping backend)\n", e.what());
+            info.available = false; info.functional = false;
+            destroy_instance(info);
+            continue;
+        } catch (...) {
+            printf("❌ (benchmark threw — skipping backend)\n");
+            info.available = false; info.functional = false;
+            destroy_instance(info);
+            continue;
+        }
         info.score = ms;
         info.functional = true;  // benchmarked and ready to use
         printf("%.1f ms/tok\n", ms);
@@ -723,6 +1016,17 @@ void BackendManager::benchmark_all(int tokens) {
         }
     }
     printf("\n");
+}
+
+void BackendManager::set_score(const std::string& id, float ms) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    for (auto& info : backends_) {
+        if (info.id == id) {
+            info.score = ms;
+            info.functional = true;
+            return;
+        }
+    }
 }
 
 // ── Re-evaluate: check if a better backend is available per strategy ──
@@ -902,7 +1206,7 @@ int BackendManager::load_plugins(const std::string& directory) {
         BackendInfo info;
         info.id = plugin.id;
         info.type = loader->type();
-        info.tier = (loader->type() == BackendType::NPU_XRT || loader->type() == BackendType::NPU_FLM) ? BackendTier::T1_ACCELERATOR : BackendTier::T2_GPU;
+        info.tier = (loader->type() == BackendType::NPU_XRT) ? BackendTier::T1_ACCELERATOR : BackendTier::T2_GPU;
         info.description = loader->description();
         info.priority = tier_priority(info.tier);
         info.available = true;
@@ -1010,7 +1314,8 @@ std::string BackendManager::report() const {
 
 // ── Internal helpers (runtime loading via dlsym) ──
 // GPU/NPU backends are loaded from the rocm_cpp shared library at runtime.
-// CPU backend is linked in directly (pure C++, no deps).
+// Windows: no dynamic backend loading — all backends are compiled directly.
+#ifndef _WIN32
 #include <dlfcn.h>
 #include <unordered_map>
 
@@ -1026,12 +1331,18 @@ static void* cached_dlopen(const char* lib) {
     if (h) cache.emplace(lib, h);
     return h;
 }
+#endif
 
+#ifdef _WIN32
+// Windows: no dynamic backend loading — CPU-only build
+static Backend* try_load_backend(const char*, const char*) { return nullptr; }
+Backend* BackendManager::create_instance_rt(const BackendInfo&) { return nullptr; }
+#else
 static Backend* try_load_backend(const char* lib, const char* sym) {
     void* h = cached_dlopen(lib);
     if (!h) return nullptr;
     auto* fn = (Backend* (*)())dlsym(h, sym);
-    if (!fn) return nullptr;   // library stays cached; never dlclose
+    if (!fn) return nullptr;
     Backend* b = fn();
     if (!b) return nullptr;
     return b;
@@ -1041,19 +1352,74 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
     Backend* b = nullptr;
     switch (info.type) {
         case BackendType::HIP_GPU:
-            // Load HIP backend from shared library (keeps backend_manager HIP-free,
-            // so pure-C++ consumers like backend_demo can link without HIP symbols).
-            // If static linking is desired, compile with -DROCM_CPP_STATIC_HIP
-            // and link src/backend_hip.cpp directly into the target.
+            // Mamba1 backend (Zamba-7B-v1, BlackMamba) — uses specialized HIP kernels
+            if (info.id == "mamba1_gpu") {
+#ifdef ROCM_CPP_STATIC_HIP
+                b = create_mamba1_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_mamba1_backend");
+                if (!b) b = try_load_backend("libmamba1_backend.so", "create_mamba1_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_mamba1_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // Zamba2 backend (Zamba2-1.2B/2.7B/7B) — Mamba2 hybrid SSD kernels
+            if (info.id == "zamba2_gpu") {
+#ifdef ROCM_CPP_STATIC_HIP
+                b = create_zamba2_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_zamba2_backend");
+                if (!b) b = try_load_backend("libzamba2_backend.so", "create_zamba2_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_zamba2_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // HIP 1BP GPU engine — full GPU inference for 1BP models, statically linked
+            if (info.id == "hip_1bp_gpu") {
+#ifdef ROCM_CPP_STATIC_HIP
+                extern Backend* create_hip_1bp_backend();
+                b = create_hip_1bp_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_hip_1bp_backend");
+                if (!b) b = try_load_backend("libhip_1bp_backend.so", "create_hip_1bp_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_hip_1bp_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // Fused GPU+NPU — attention on GPU, FFN on NPU
+            if (info.id == "fused_gpu_npu") {
+                void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_fused_backend");
+                    if (fn) b = fn(); }
+                return b;
+            }
+            // Vulkan-Hpp GPU — Vulkan compute with ZINC shaders
+            if (info.id == "vulkan_hpp_gpu") {
+                void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_vulkan_hpp_backend");
+                    if (fn) b = fn(); }
+                return b;
+            }
+            // GGML-Vulkan — llama.cpp Vulkan backend (MIT License, 357 tok/s)
+            if (info.id == "ggml_vulkan") {
+                void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_ggml_vulkan_backend");
+                    if (fn) b = fn(); }
+                return b;
+            }
+            // General HIP backend — loaded from shared library
 #ifdef ROCM_CPP_STATIC_HIP
             b = create_hip_backend();
             if (b) return b;
 #endif
             b = try_load_backend("librocm_cpp.so", "create_hip_backend");
             if (!b) b = try_load_backend("libhip_backend.so", "create_hip_backend");
-            // Last resort: lookup in the main executable itself (statically linked
-            // via unified_server with -rdynamic). The `self` handle is NOT cached
-            // because repeated dlopen(NULL) just bumps the refcount — safe.
             if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                 if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_hip_backend");
                     if (fn) b = fn(); } }
@@ -1066,6 +1432,21 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                     if (fn) b = fn(); } }
             return b;
         case BackendType::NPU_XRT:
+            // npu_flm: use FLM native binary (MIT, 67.5 tok/s) — preferred
+            if (info.id == "npu_flm") {
+#ifdef ROCM_CPP_STATIC_NPU
+                extern Backend* create_npu_flm_backend();
+                b = create_npu_flm_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_npu_flm_backend");
+                if (!b) b = try_load_backend("libnpu_flm_backend.so", "create_npu_flm_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_npu_flm_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // npu_xrt: legacy worker subprocess backend (0.06 tok/s)
 #ifdef ROCM_CPP_STATIC_NPU
             b = create_npu_backend();
             if (b) return b;
@@ -1080,9 +1461,20 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
         case BackendType::CPU_SCALAR:
             return create_cpu_backend();
         case BackendType::GENERIC:
+            if (info.id == "laguna_gpu") {
+#ifdef ROCM_CPP_STATIC_HIP
+                extern Backend* create_laguna_backend();
+                b = create_laguna_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_laguna_backend");
+                if (!b) b = try_load_backend("liblaguna_backend.so", "create_laguna_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_laguna_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
             return create_generic_backend();
-        case BackendType::NPU_FLM:
-            return create_flm_backend();
         case BackendType::ZINC_GPU:
 #ifdef ZINC_DISABLED
             return nullptr;
@@ -1093,6 +1485,7 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
             return nullptr;
     }
 }
+#endif // _WIN32
 
 void BackendManager::destroy_instance(BackendInfo& info) {
     // shared_ptr reset destroys the Backend; virtual destructor chain ensures cleanup.

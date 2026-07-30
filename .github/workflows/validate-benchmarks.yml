@@ -11,12 +11,18 @@ on:
 jobs:
   check-benchmark-table:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
       - name: Check README table matches benchmarks.json
-        run: python3 scripts/generate_benchmark_table.py --check
+        run: |
+          if [ -f scripts/generate_benchmark_table.py ]; then
+            python3 scripts/generate_benchmark_table.py --check
+          else
+            echo "::notice::scripts/generate_benchmark_table.py not present (pure-C++ repo, generator retired) — skipping table check."
+          fi
 
       - name: Validate benchmark status transitions
         if: github.event_name == 'pull_request'

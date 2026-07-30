@@ -71,12 +71,13 @@ struct PbReader {
         return v;
     }
 
-    // Skip current field
+    // Skip current field — with bounds check to prevent OOB reads
+    // from crafted/malformed ONNX files (issue #960).
     void skip_field(uint32_t wire_type) {
-        if (wire_type == 0) varint();
-        else if (wire_type == 1) pos += 8;
-        else if (wire_type == 2) { uint64_t sz = varint(); pos += sz; }
-        else if (wire_type == 5) pos += 4;
+        if (wire_type == 0) { varint(); }
+        else if (wire_type == 1) { if (pos + 8 > len) { pos = len; return; } pos += 8; }
+        else if (wire_type == 2) { uint64_t sz = varint(); if (pos + sz > len) sz = len - pos; pos += sz; }
+        else if (wire_type == 5) { if (pos + 4 > len) { pos = len; return; } pos += 4; }
     }
 };
 
@@ -175,16 +176,43 @@ static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors, in
                         auto bd = tp.bytes();
                     } else if (tf == 14) { // raw_data (bytes, field 14)
                         auto raw = tp.bytes();
-                        if (t.data_type == ONNX_FLOAT16 || t.data_type == ONNX_BFLOAT16) {
+                        if (t.data_type == ONNX_FLOAT16) {
+                            // Proper IEEE float16 → float32 (not bfloat16 shift trick)
                             t.float_data.resize(raw.size() / 2);
                             for (size_t i = 0; i + 2 <= raw.size(); i += 2) {
                                 uint16_t f16; memcpy(&f16, &raw[i], 2);
-                                uint32_t bits = (uint32_t)f16 << 16;
+                                uint32_t s = (f16 >> 15) & 1, e = (f16 >> 10) & 0x1f, m = f16 & 0x3ff;
+                                float sign = s ? -1.0f : 1.0f;
+                                float v;
+                                if (e == 0)
+                                    v = sign * (float)m * 5.9604644775390625e-08f;
+                                else if (e == 31)
+                                    v = m ? NAN : sign * INFINITY;
+                                else
+                                    v = sign * (1.0f + (float)m / 1024.0f) * powf(2.0f, (float)((int)e - 15));
+                                t.float_data[i / 2] = v;
+                            }
+                        } else if (t.data_type == ONNX_BFLOAT16) {
+                            // bfloat16: upper 16 bits of float32
+                            t.float_data.resize(raw.size() / 2);
+                            for (size_t i = 0; i + 2 <= raw.size(); i += 2) {
+                                uint16_t bf16; memcpy(&bf16, &raw[i], 2);
+                                uint32_t bits = (uint32_t)bf16 << 16;
                                 float v; memcpy(&v, &bits, 4);
                                 t.float_data[i / 2] = v;
                             }
+                        } else if (t.data_type == ONNX_INT8 || t.data_type == ONNX_UINT8) {
+                            // INT8/UINT8: expand 1 byte per value to float
+                            t.float_data.resize(raw.size());
+                            float scale = (t.data_type == ONNX_UINT8) ? 1.0f : 1.0f;
+                            for (size_t i = 0; i < raw.size(); i++) {
+                                int8_t byte = (int8_t)raw[i];
+                                t.float_data[i] = (float)byte;
+                            }
                         } else {
-                            t.float_data.resize(raw.size() / 4);
+                            // Default: F32 (4 bytes per value)
+                            size_t n_floats = raw.size() / 4;
+                            t.float_data.resize(n_floats);
                             for (size_t i = 0; i + 4 <= raw.size(); i += 4) {
                                 float v; memcpy(&v, &raw[i], 4);
                                 t.float_data[i / 4] = v;
@@ -305,20 +333,18 @@ rcpp_status_t rcpp_bitnet_load_onnx(const char* path, rcpp_bitnet_model_t* out_m
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
             if (hipMemcpy(dev_ptr, f16_buf.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         } else if (t->data_type == ONNX_BFLOAT16) {
-            // TODO: BF16 support — need proper conversion; store as F32 for now
-            fprintf(stderr, "[onnx] WARNING: %s is BF16 — storing as F32 (TODO: proper BF16 support)\n", t->name.c_str());
-            bytes = n_elems * sizeof(float);
+            // BF16 was already converted to F32 by the raw_data parser
+            bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
             if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
-        } else if (t->data_type == ONNX_INT8) {
-            // TODO: INT8 support — need proper quantized storage
-            fprintf(stderr, "[onnx] WARNING: %s is INT8 — storing as F32 (TODO: proper INT8 support)\n", t->name.c_str());
-            bytes = n_elems * sizeof(float);
+        } else if (t->data_type == ONNX_INT8 || t->data_type == ONNX_UINT8) {
+            // INT8/UINT8 was already dequantized to F32 by the raw_data parser
+            bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
             if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         } else {
             // F32 (ONNX_FLOAT) or fallback
-            bytes = n_elems * sizeof(float);
+            bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
             if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         }

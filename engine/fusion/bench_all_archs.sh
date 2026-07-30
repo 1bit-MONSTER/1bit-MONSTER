@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # ───────────────────────────────────────────────────────────────
 # bench_all_archs.sh — Run inference benchmark on all available
 # Q4NX model directories, mapping each to its architecture tag.
@@ -107,6 +108,7 @@ declare -A RESULTS_STATUS
 declare -A RESULTS_ARCH
 declare -A RESULTS_MODEL_SIZE
 
+# shellcheck disable=SC2034
 for name in "${MODELS[@]}"; do
   model_file="${MODEL_DIR}/${name}/model.q4nx"
   arch="${MODEL_ARCH_MAP[$name]:-}"

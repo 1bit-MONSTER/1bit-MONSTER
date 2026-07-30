@@ -1,0 +1,531 @@
+/** gguf_to_onebp.cpp — Convert GGUF models to 1BP format.
+ *  Build target: `gguf_to_onebp` (see CMakeLists.txt) — pure C++, no Python.
+ *  Run:   ./build/gguf_to_onebp model.gguf output.1bp          (Q4NX 4-bit)
+ *         ./build/gguf_to_onebp model.gguf output.1bp --tq2    (symmetric ternary)
+ *         ./build/gguf_to_onebp model.gguf output.1bp --tq1    (1.58-bit base-3)
+ */
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <string>
+#include <vector>
+#include <chrono>
+#include <cstring>
+#include "onebp_format.h"
+#include <signal.h>
+#include "gguf_reader.h"
+
+static void sigfpe_handler(int sig) {
+#ifdef _WIN32
+    fprintf(stderr, "SIGFPE\n");
+#else
+    fprintf(stderr, "SIGFPE at %p\n", __builtin_return_address(0));
+#endif
+    fflush(stderr);
+    _exit(1);
+}
+
+static inline uint16_t f32b(float v) {
+    uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
+}
+
+int main(int argc, char** argv) {
+    //signal(SIGFPE, sigfpe_handler);
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq1]\n", argv[0]);
+        return 1;
+    }
+    // --- Parse quant selection (Q4NX default, --tq2 for symmetric ternary, --tq1 for 1.58-bit) ---
+    OnebpQuant quant = ONEBP_Q4NX;
+    for (int ai = 3; ai < argc; ai++) {
+        if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
+        else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
+        else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
+        else { fprintf(stderr, "Unknown option: %s\n", argv[ai]); return 1; }
+    }
+    const char* quant_name = (quant == ONEBP_TQ2) ? "TQ2 (ternary 2-bit)" :
+                             (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
+                             "Q4NX (4-bit)";
+    GgufReader reader;
+    if (!reader.open(argv[1])) {
+        fprintf(stderr, "Failed to open GGUF: %s\n", argv[1]);
+        return 1;
+    }
+    printf("GGUF opened: arch=%s tensors=%zu\n",
+           reader.architecture().c_str(), reader.tensor_names().size());
+    fflush(stdout);
+
+    OnebpHeader hdr;
+    hdr.init();
+    hdr.quant = quant;
+    auto gu = [&](const char* k, int& v) {
+        uint32_t x; if (reader.get_u32(k, x)) { v = (int)x; return true; }
+        // Try architecture-specific prefix
+        std::string arch = reader.architecture();
+        if (!arch.empty()) {
+            std::string ak = arch + "." + k;
+            // Map generic names to arch-specific keys
+            if (strcmp(k, "hidden_size") == 0)
+                ak = arch + ".embedding_length";
+            else if (strcmp(k, "num_hidden_layers") == 0)
+                ak = arch + ".block_count";
+            else if (strcmp(k, "num_attention_heads") == 0)
+                ak = arch + ".attention.head_count";
+            else if (strcmp(k, "num_key_value_heads") == 0)
+                ak = arch + ".attention.head_count_kv";
+            else if (strcmp(k, "head_dim") == 0)
+                ak = arch + ".attention.key_length";
+            else if (strcmp(k, "intermediate_size") == 0)
+                ak = arch + ".feed_forward_length";
+            else if (strcmp(k, "vocab_size") == 0)
+                ak = arch + ".vocab_size";
+            if (reader.get_u32(ak, x)) { v = (int)x; return true; }
+        }
+        return false;
+    };
+    gu("hidden_size", hdr.hidden_size) || gu("embedding_length", hdr.hidden_size);
+    gu("num_hidden_layers", hdr.num_layers) || gu("block_count", hdr.num_layers);
+
+    // ── MoE 3D shape convention detection ──
+    // GGUF stores 3D MoE tensor shapes either as row-major [experts, rows, cols]
+    // (Qwen, Gemma) or column-major [cols, rows, experts] (Laguna, Nemotron).
+    // Detect by checking whether shape[0] or shape[2] is consistent across
+    // gate/down/up MoE tensors.
+    bool moe_shape_colmajor = false;  // row-major [experts, rows, cols] by default
+    {
+        int s0_first = 0, s2_first = 0;
+        int s0_count = 0, s2_count = 0;
+        int first_gate_s0 = 0;
+        for (auto& tn : reader.tensor_names()) {
+            auto* inf = reader.tensor_info(tn);
+            if (!inf || inf->shape.size() != 3) continue;
+            if (tn.find("exps.") == std::string::npos && tn.find("shexp") == std::string::npos) continue;
+            int s0 = (int)inf->shape[0], s2 = (int)inf->shape[2];
+            if (s0_first == 0) { s0_first = s0; s2_first = s2; }
+            if (s0 == s0_first && s0 > 0) s0_count++;
+            if (s2 == s2_first && s2 > 0) s2_count++;
+            if (tn.find("gate_exps") != std::string::npos) {
+                if (first_gate_s0 == 0) first_gate_s0 = s0;
+            }
+        }
+        // If shape[2] is more consistent than shape[0], use column-major
+        // Require at least 2 matching tensors and shape[2] being plausible as expert count
+        // (expert count should be smaller than feature dimensions)
+        if (s2_count > s0_count && s2_count >= 2 &&
+            (first_gate_s0 == 0 || s2_first < first_gate_s0)) {
+            moe_shape_colmajor = true;
+        }
+    }
+
+    // ── MoE architecture auto-detection (works for any arch name, issue #1144) ──
+    // Detect MoE by checking for expert-stacked tensors (ndim==3 in GGUF).
+    {
+        bool is_moe = false;
+        for (auto& tn : reader.tensor_names()) {
+            auto* inf = reader.tensor_info(tn);
+            if (inf && inf->shape.size() == 3) { is_moe = true; break; }
+        }
+        if (is_moe) {
+            // Infer intermediate_size and expert count from first MoE tensor
+            if (!hdr.intermediate_size || !hdr.num_experts) {
+                auto* exps = reader.tensor_info("blk.0.ffn_gate_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.0.ffn_down_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.0.ffn_up_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.1.ffn_gate_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.1.ffn_down_exps.weight");
+                if (!exps) exps = reader.tensor_info("blk.1.ffn_up_exps.weight");
+                if (exps && exps->shape.size() >= 3) {
+                    // Use shape convention from MoE detection
+                    int s0 = (int)exps->shape[0], s1 = (int)exps->shape[1], s2 = (int)exps->shape[2];
+                    if (moe_shape_colmajor) {
+                        if (!hdr.intermediate_size) hdr.intermediate_size = s0;  // cols
+                        if (!hdr.num_experts)       hdr.num_experts = s2;         // experts
+                    } else {
+                        if (!hdr.intermediate_size) hdr.intermediate_size = s1;  // rows
+                        if (!hdr.num_experts)       hdr.num_experts = s0;         // experts
+                    }
+                    printf("  MoE: %d experts, FFN dim=%d (from tensor shape)\n",
+                           hdr.num_experts, hdr.intermediate_size);
+                }
+            }
+            // Infer attention heads from Q projection shape
+            if ((!hdr.num_attention_heads || !hdr.head_dim) && hdr.hidden_size > 0) {
+                auto* q = reader.tensor_info("blk.0.attn_q.weight");
+                if (q && q->shape.size() >= 2) {
+                    int q_dim = (int)q->shape[1];
+                    int hd = 128;
+                    if (hdr.hidden_size >= 8192) hd = 256;
+                    else if (hdr.hidden_size >= 4096) hd = 128;
+                    else hd = 64;
+                    if (!hdr.head_dim) hdr.head_dim = hd;
+                    if (!hdr.num_attention_heads && hdr.head_dim > 0)
+                        hdr.num_attention_heads = q_dim / hdr.head_dim;
+                    if (!hdr.num_kv_heads && hdr.head_dim > 0) {
+                        auto* k = reader.tensor_info("blk.0.attn_k.weight");
+                        if (k && k->shape.size() >= 2)
+                            hdr.num_kv_heads = (int)k->shape[1] / hdr.head_dim;
+                    }
+                }
+            }
+            if (!hdr.n_expert_used) hdr.n_expert_used = 8;
+        }
+    }
+
+    // Read attention head counts and FFN dim from metadata (skipped in MoE path above if already set).
+    if (!hdr.num_attention_heads) gu("num_attention_heads", hdr.num_attention_heads);
+    if (!hdr.num_kv_heads)       gu("num_key_value_heads", hdr.num_kv_heads);
+    if (!hdr.head_dim)           gu("head_dim", hdr.head_dim);
+    if (!hdr.intermediate_size)  gu("intermediate_size", hdr.intermediate_size);
+    // Attention heads are optional — Mamba/MoE architectures have none.
+    // Key-value heads default to attention heads; head_dim derived if absent.
+    if (!hdr.num_kv_heads && hdr.num_attention_heads) hdr.num_kv_heads = hdr.num_attention_heads;
+
+    // Try explicit vocab_size; fall back to token_embd.weight rows or tokens array.
+    gu("vocab_size", hdr.vocab_size);
+    if (!hdr.vocab_size) {
+        // Some GGUF files omit vocab_size — infer from token_embd.weight shape.
+        // GGUF ne[] convention: shape[0] = embedding_length (hidden), shape[1] =
+        // vocab_size — this used to read shape[0], silently writing hidden_size
+        // into the vocab_size field (e.g. 1024 instead of the real 151936).
+        auto* emb = reader.tensor_info("token_embd.weight");
+        if (emb && emb->shape.size() >= 2) hdr.vocab_size = (int)emb->shape[1];
+        else if (emb && emb->shape.size() >= 1) hdr.vocab_size = (int)emb->shape[0];
+    }
+    if (!hdr.vocab_size) {
+        // Fallback: try tokenizer.ggml.tokens array count
+        std::vector<std::string> tokens;
+        if (reader.get_string_array("tokenizer.ggml.tokens", tokens))
+            hdr.vocab_size = (int)tokens.size();
+    }
+    if (!hdr.valid()) {
+        fprintf(stderr, "Bad config: H=%d L=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",
+                hdr.hidden_size, hdr.num_layers, hdr.num_attention_heads,
+                hdr.num_kv_heads, hdr.head_dim, hdr.intermediate_size, hdr.vocab_size);
+        return 1;
+    }
+
+    // Set architecture type based on GGUF arch string
+    {
+        std::string arch_str = reader.architecture();
+        if (arch_str == "qwen35moe") {
+            hdr.arch = ONEBP_MOE;
+        } else if (arch_str == "qwen3" || arch_str == "qwen2" || arch_str == "qwen35") {
+            hdr.arch = ONEBP_DENSE;  // default is already 0
+        } else if (arch_str == "deepseek2" || arch_str == "deepseek3") {
+            hdr.arch = ONEBP_DEEPSEEK2;
+        } else if (arch_str == "gemma4") {
+            // gemma4: can be dense (31B) or MoE (26B) — auto-detect handles MoE
+            hdr.arch = ONEBP_DENSE;
+        } else if (arch_str == "laguna") {
+            hdr.arch = ONEBP_LAGUNA;
+        } else if (arch_str == "bailing_hybrid" || arch_str == "cohere2_moe") {
+            hdr.arch = ONEBP_MOE;
+        }
+        // else keep default ONEBP_DENSE (0) for standard dense transformers
+    }
+
+    printf("Model: H=%d L=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",
+           hdr.hidden_size, hdr.num_layers, hdr.num_attention_heads,
+           hdr.num_kv_heads, hdr.head_dim, hdr.intermediate_size, hdr.vocab_size);
+
+    FILE* fout = fopen(argv[2], "wb");
+    if (!fout) { perror("fopen"); return 1; }
+
+    // ndim=1 (norm weights, biases) are stored as raw float32 — no tiling/
+    // quantization, matching OnebpModel::get_tensor_f32's ndim==1 branch
+    // (a plain memcpy). Previously these were unconditionally dropped
+    // (shape.size() != 2 filtered out every 1D tensor), which meant every
+    // .1bp file ever produced was missing all its normalization weights —
+    // structurally incapable of correct inference. See issue #1023.
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; };
+    std::vector<TInfo> tensors;
+    uint64_t data_off = 0;
+    int tr = 32, tc = 256, gs = 32;
+
+    if (moe_shape_colmajor) {
+        printf("  MoE shape: column-major [cols, rows, experts] (experts=%d from 3rd dim)\n", 0);
+    } else {
+        printf("  MoE shape: row-major [experts, rows, cols]\n");
+    }
+
+    for (auto& tn : reader.tensor_names()) {
+        auto* inf = reader.tensor_info(tn);
+        if (!inf) continue;
+        int ndim = (int)inf->shape.size();
+        if (ndim == 1) {
+            int len = (int)inf->shape[0];
+            if (len <= 0) continue;
+            uint64_t raw_bytes = (uint64_t)len * 4;  // f32, unquantized
+            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes});
+            data_off += raw_bytes;
+            continue;
+        }
+        if (ndim != 2 && ndim != 3) continue;  // skip unknown shapes
+        if (ndim == 2) {
+            int c = (int)inf->shape[0], r = (int)inf->shape[1];
+            if (r <= 0 || c <= 0) continue;
+            if ((uint64_t)r * (uint64_t)c > 200000000) continue;
+            uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, quant);
+            tensors.push_back({tn, 2, r, c, 1, data_off, tiled});
+            data_off += tiled;
+            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu\n", tn.c_str(), r, c, tiled);
+        } else {
+            // ndim == 3: MoE expert-stacked tensor [num_experts, rows, cols]
+            int ne, r, c;
+            if (moe_shape_colmajor) {
+                // column-major [cols, rows, experts]
+                ne = (int)inf->shape[2];  // experts
+                r  = (int)inf->shape[1];  // rows
+                c  = (int)inf->shape[0];  // cols
+            } else {
+                // row-major [experts, rows, cols]
+                ne = (int)inf->shape[0];
+                r  = (int)inf->shape[1];
+                c  = (int)inf->shape[2];
+            }
+            if (ne <= 0 || r <= 0 || c <= 0) continue;
+            uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, quant);
+            uint64_t total_tiled = (uint64_t)ne * per_expert;
+            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled});
+            data_off += total_tiled;
+            printf("  tensor %s: %d experts x %dx%d per-expert=%lu total=%lu\n",
+                   tn.c_str(), ne, r, c, per_expert, total_tiled);
+        }
+    }
+    printf("  Total tensors: %zu, data size: %.1f MB\n", tensors.size(), data_off / (1024.0*1024.0));
+    fflush(stdout);
+    hdr.tensor_count = (uint32_t)tensors.size();
+    // Write header NOW with correct tensor_count
+    fwrite(&hdr, sizeof(hdr), 1, fout);
+
+    // Offsets are written RELATIVE to the start of the data section — do NOT
+    // add header+index size here. OnebpModel's reader (onebp_loader.cpp)
+    // already does exactly that conversion itself ("Fix offsets: they are
+    // relative to data_start", t.file_offset += data_start), by design. This
+    // used to also add data_base here, so every stored offset was absolute
+    // already — the reader then added data_start a second time on top,
+    // landing every tensor read ~(header+index size) bytes past its real
+    // data, into the middle of whichever tensor happened to be there. That's
+    // why every dequantized value was garbage regardless of which model or
+    // even whether the tensor was 1D or 2D — confirmed by hand: reading the
+    // *true* (non-double-counted) offset for token_embd.weight lines up
+    // exactly with the scale bytes the quantizer actually wrote.
+    //
+    // dims[] is ndim*4 bytes, not always 8 — the reader parses exactly
+    // `ndim` uint32 dims per entry, so a fixed 8-byte assumption here would
+    // additionally desync every entry after the first ndim==1 tensor.
+    uint64_t index_size = 0;
+    for (auto& t : tensors) {
+        uint32_t nl = std::min((uint32_t)t.name.size(), (uint32_t)63);
+        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8;  // name_len + name + \0 + ndim + dims[ndim] + offset + bytes
+    }
+
+    // Write tensor index — ndim==2 (dense) or ndim==3 (MoE expert stack)
+    for (auto& t : tensors) {
+        uint32_t nl = std::min((uint32_t)t.name.size(), (uint32_t)63);
+        fwrite(&nl, 4, 1, fout);
+        fwrite(t.name.data(), 1, nl, fout);
+        fwrite("\0", 1, 1, fout);
+        uint32_t nd = (uint32_t)t.ndim;
+        fwrite(&nd, 4, 1, fout);
+        if (t.ndim == 1) {
+            uint32_t d1 = (uint32_t)t.cols;  // length
+            fwrite(&d1, 4, 1, fout);
+        } else if (t.ndim == 2) {
+            uint32_t d[2] = {(uint32_t)t.rows, (uint32_t)t.cols};
+            fwrite(d, 8, 1, fout);
+        } else {
+            uint32_t d[3] = {(uint32_t)t.num_experts, (uint32_t)t.rows, (uint32_t)t.cols};
+            fwrite(d, 12, 1, fout);
+        }
+        fwrite(&t.offset, 8, 1, fout);
+        fwrite(&t.tiled, 8, 1, fout);
+    }
+
+    printf("Quantizing %zu tensors as %s...\n", tensors.size(), quant_name);
+    fflush(stdout);
+    auto t0 = std::chrono::steady_clock::now();
+
+    int count = 0;
+    for (auto& ti : tensors) {
+        count++;
+        printf("  [%d/%zu] %s... ", count, tensors.size(), ti.name.c_str()); fflush(stdout);
+        // All tensors processed
+        std::vector<float> fw;
+        auto* inf = reader.tensor_info(ti.name);
+        if (inf) printf("%lu elements at offset %lu\n", inf->numel, inf->abs_offset);
+        fflush(stdout);
+        if (!reader.get_tensor_f32(ti.name, fw)) {
+            printf("SKIP (get_tensor_f32 failed)\n"); continue;
+        }
+        if (ti.ndim == 1) {
+            // Raw, unquantized float32 — no tiling (norm weights, biases).
+            fwrite(fw.data(), 4, fw.size(), fout);
+            printf("  %-50s %4d     (raw f32) -> %zu KB\n", ti.name.c_str(), (int)fw.size(), ti.tiled / 1024);
+            continue;
+        }
+        printf("got %zu floats, tiling...\n", fw.size()); fflush(stdout);
+        int R = ti.rows, C = ti.cols;
+        int NE = ti.num_experts;
+        int ntr = (R + tr - 1) / tr, ntc = (C + tc - 1) / tc;
+        printf("  tiles: %dx%d experts=%d fout=%p\n", ntr, ntc, NE, (void*)fout); fflush(stdout);
+        for (int ei = 0; ei < NE; ei++) {
+            size_t expert_off = (size_t)ei * (size_t)R * (size_t)C;
+            for (int r = 0; r < ntr; r++) {
+                for (int c = 0; c < ntc; c++) {
+                    int r0 = r * tr, c0 = c * tc;
+                int grps = tc / gs;
+                if (grps <= 0) grps = 1;
+                if (quant == ONEBP_TQ2) {
+                    // ── TQ2: symmetric ternary (-scale, 0, +scale), no zero-point ──
+                    // Per tile: [scales: tr*grps*bf16][codes: tr*tc packed 4/byte].
+                    // Scale = max|v| per 32-group => lossless when the source is
+                    // already ternary within the group, round-to-nearest otherwise.
+                    // code: 0=-scale, 1=0, 2=+scale (LSB-first, 4 codes per byte).
+                    size_t sb = (size_t)tr * grps * 2, cb = (size_t)tr * tc / 4;
+                    std::vector<uint8_t> tdata(sb + cb, 0);
+                    uint16_t* sc = (uint16_t*)tdata.data();
+                    uint8_t*  qd = tdata.data() + sb;
+                    for (int rr = 0; rr < tr; rr++) {
+                        for (int g = 0; g < grps; g++) {
+                            int ar = r0 + rr, acs = c0 + g * gs;
+                            float maxabs = 0.0f;
+                            for (int i = 0; i < gs; i++) {
+                                int ac = acs + i;
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) { float a = fabsf(v); if (a > maxabs) maxabs = a; }
+                                }
+                            }
+                            float s = maxabs;
+                            if (s < 1e-20f) s = 1.0f;  // all-zero / padding group
+                            float inv_s = 1.0f / s;
+                            sc[rr * grps + g] = f32b(s);
+                            for (int i = 0; i < gs; i++) {
+                                int ac = acs + i;
+                                uint8_t code = 1;  // default 0 == +0
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) {
+                                        int t = (int)roundf(v * inv_s);
+                                        if (t < -1) t = -1; else if (t > 1) t = 1;
+                                        code = (uint8_t)(t + 1);  // -1->0, 0->1, +1->2
+                                    }
+                                }
+                                int local_c = (acs - c0) + i;
+                                size_t pos = (size_t)rr * tc + local_c;
+                                qd[pos / 4] |= (uint8_t)(code << ((pos & 3) * 2));
+                            }
+                        }
+                    }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
+                if (quant == ONEBP_TQ1) {
+                    // ── TQ1: 1.58-bit base-3 ternary (5 codes/byte) ──
+                    // Groups of 5 elements: bf16 scale + 1 byte with 5 base-3 codes.
+                    // code: 0=-scale, 1=0, 2=+scale
+                    // packed = code0 + code1*3 + code2*9 + code3*27 + code4*81
+                    static const int tq1_pow3[5] = {1, 3, 9, 27, 81};
+                    int tq1_grps = (tc + 4) / 5;  // ceil(tc/5)
+                    size_t sb = (size_t)tr * tq1_grps * 2;
+                    size_t cb = (size_t)tr * tq1_grps;
+                    std::vector<uint8_t> tdata(sb + cb, 0);
+                    uint16_t* sc = (uint16_t*)tdata.data();
+                    uint8_t*  qd = tdata.data() + sb;
+                    for (int rr = 0; rr < tr; rr++) {
+                        for (int g = 0; g < tq1_grps; g++) {
+                            int ar = r0 + rr, acs = c0 + g * 5;
+                            float maxabs = 0.0f;
+                            for (int i = 0; i < 5; i++) {
+                                int ac = acs + i;
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) { float a = fabsf(v); if (a > maxabs) maxabs = a; }
+                                }
+                            }
+                            float s = maxabs > 1e-20f ? maxabs : 1.0f;
+                            float inv_s = 1.0f / s;
+                            sc[rr * tq1_grps + g] = f32b(s);
+                            uint8_t packed = 0;
+                            for (int i = 0; i < 5; i++) {
+                                int ac = acs + i;
+                                uint8_t code = 1;  // default: 0
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) {
+                                        float q = v * inv_s;
+                                        if (q > 0.5f) code = 2;       // +1
+                                        else if (q < -0.5f) code = 0;  // -1
+                                        else code = 1;                 // 0
+                                    }
+                                }
+                                packed += (uint8_t)(code * tq1_pow3[i]);
+                            }
+                            qd[rr * tq1_grps + g] = packed;
+                        }
+                    }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
+                // ── Q4NX: asymmetric 4-bit (min + scale per group) ──
+                size_t sb = (size_t)tr * grps * 2, zb = sb, db = (size_t)tr * tc / 2;
+                std::vector<uint8_t> tdata(sb + zb + db, 0);
+                uint16_t* sc = (uint16_t*)tdata.data();
+                uint16_t* zp = (uint16_t*)(tdata.data() + sb);
+                uint8_t*  qd = tdata.data() + sb + zb;
+                for (int rr = 0; rr < tr; rr++) {
+                    for (int g = 0; g < grps; g++) {
+                        int ar = r0 + rr, acs = c0 + g * gs;
+                        float mx = -1e10f, mn = 1e10f;
+                        int valid_cnt = 0;
+                        for (int i = 0; i < gs; i++) {
+                            int ac = acs + i;
+                            if (ar < R && ac < C) {
+                                float v = fw[expert_off + (size_t)ar * C + ac];
+                                if (std::isfinite(v)) { if (v > mx) mx = v; if (v < mn) mn = v; valid_cnt++; }
+                            }
+                        }
+                        // Handle degenerate groups (all zeros or padding)
+                        float s;
+                        if (valid_cnt < 2 || mx == mn) { s = 1.0f; mn = 0.0f; }
+                        else { s = (mx - mn) / 15.0f; }
+                        if (s < 1e-10f) { s = 1.0f; mn = 0.0f; }
+                        sc[rr * grps + g] = f32b(s);
+                        zp[rr * grps + g] = f32b(mn);
+                        for (int i = 0; i < gs; i += 2) {
+                            int ac0 = acs + i, ac1 = acs + i + 1;
+                            uint8_t v0 = 0, v1 = 0;
+                            float inv_s = 1.0f / s;
+                            if (ar < R && ac0 < C) {
+                                float v = fw[expert_off + (size_t)ar * C + ac0];
+                                v0 = (uint8_t)std::max(0, std::min(15, (int)roundf((v - mn) * inv_s)));
+                            }
+                            if (ar < R && ac1 < C) {
+                                float v = fw[expert_off + (size_t)ar * C + ac1];
+                                v1 = (uint8_t)std::max(0, std::min(15, (int)roundf((v - mn) * inv_s)));
+                            }
+                            int local_c = (acs - c0) + i; // column within tile
+                            qd[((size_t)rr * tc + local_c) / 2] = (v1 << 4) | v0;
+                        }
+                    }
+                }
+                fwrite(tdata.data(), 1, tdata.size(), fout);
+            }
+        }
+        }  // end expert loop
+        printf("  %-50s %4dx%-4d -> %zu KB\n", ti.name.c_str(), R, C, ti.tiled / 1024);
+    }
+
+    fseek(fout, 0, SEEK_SET);
+    fwrite(&hdr, sizeof(hdr), 1, fout);
+    fclose(fout);
+    FILE* fc = fopen(argv[2], "rb"); fseek(fc, 0, SEEK_END);
+    long fsz = ftell(fc); fclose(fc);
+    auto t1 = std::chrono::steady_clock::now();
+    printf("\n=== DONE: %s (%.1f MB) in %.0f seconds ===\n",
+           argv[2], fsz / (1024.0*1024.0),
+           std::chrono::duration<double>(t1 - t0).count());
+    return 0;
+}

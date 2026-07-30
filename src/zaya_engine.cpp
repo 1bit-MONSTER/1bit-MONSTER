@@ -21,12 +21,50 @@
 // ── Runtime config (set by zaya_init from model header) ──
 static constexpr float RMD_EPS=1e-5f;
 static constexpr int BLK=256;
-static ZayaConfig eng;  // populated by zaya_init from ZayaConfig parameter
+static thread_local ZayaConfig eng;  // populated by zaya_init from ZayaConfig parameter
+
+// Page gather kernel: copies page-allocated KV slots into a contiguous
+// scratch buffer for the flash-attention kernel (which expects sequential
+// positions [0, seq_len) in a single buffer).
+// Each block handles one KV head for one position.
+__global__ void gather_kv_pages_k(
+    __half* __restrict__ dst,        // [seq_len, nkv, hd] contiguous output
+    const __half* __restrict__ pool, // [pool_pages, page_size, nkv, hd] paged input
+    const int* __restrict__ page_ids, // [n_pages] page_id -> pool_page, -1 = zero
+    int nkv, int hd, int page_size, int seq_len)
+{
+    int pos = blockIdx.x;
+    int kh = blockIdx.y;
+    if (pos >= seq_len || kh >= nkv) return;
+    int page_id = pos / page_size;
+    int page_off = pos % page_size;
+    int pool_page = page_ids[page_id];
+    int tx = threadIdx.x;
+    for (int i = tx; i < hd; i += blockDim.x) {
+        if (pool_page >= 0) {
+            dst[(size_t)pos * nkv * hd + (size_t)kh * hd + i] =
+                pool[((size_t)pool_page * page_size + page_off) * nkv * hd + (size_t)kh * hd + i];
+        } else {
+            dst[(size_t)pos * nkv * hd + (size_t)kh * hd + i] = __float2half(0.0f);
+        }
+    }
+}
+
+// ── Embedding lookup kernel (#5): avoids per-token H2D copy ──
+// Looks up token_id in the GPU-resident embedding table, applies scale/bias.
+__global__ void embed_lookup_k(__half* out, const __half* embed, const __half* ibias, const __half* iscale, const int* d_token_id, int h){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= h) return;
+    int token_id = *d_token_id;
+    float raw = (float)embed[(size_t)token_id * h + i];
+    out[i] = __float2half((raw + (float)ibias[i]) * (float)iscale[i]);
+}
 
 // ── Helper kernels ──
-__global__ void rmsnorm_k(__half*x,const __half*w,int n){__shared__ float r[32];int tx=threadIdx.x,wid=tx/32,l=tx%32;float ss=0;for(int i=tx;i<n;i+=blockDim.x)ss+=(float)x[i]*(float)x[i];for(int o=16;o>0;o>>=1)ss+=__shfl_xor(ss,o);if(l==0)r[wid]=ss;__syncthreads();if(wid==0){ss=(l<(256/32))?r[l]:0;for(int o=16;o>0;o>>=1)ss+=__shfl_xor(ss,o);if(l==0)r[0]=ss;}__syncthreads();float iv=1.0f/sqrtf(r[0]/n+1e-5f);for(int i=tx;i<n;i+=blockDim.x)x[i]=__float2half((float)x[i]*iv*(float)w[i]);}
+__global__ void nan_clean_k(__half*buf,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;float v=__half2float(buf[i]);if(isnan(v)||isinf(v))buf[i]=__float2half(0.0f);}
+__global__ void rmsnorm_k(__half*x,const __half*w,int n){__shared__ float r[32];int tx=threadIdx.x,wid=tx/32,l=tx%32;float ss=0;for(int i=tx;i<n;i+=blockDim.x)ss+=(float)x[i]*(float)x[i];for(int o=16;o>0;o>>=1)ss+=__shfl_xor_sync(0xffffffffULL, ss,o);if(l==0)r[wid]=ss;__syncthreads();if(wid==0){ss=(l<(256/32))?r[l]:0;for(int o=16;o>0;o>>=1)ss+=__shfl_xor_sync(0xffffffffULL, ss,o);if(l==0)r[0]=ss;}__syncthreads();float iv=1.0f/sqrtf(r[0]/n+1e-5f);for(int i=tx;i<n;i+=blockDim.x)x[i]=__float2half((float)x[i]*iv*(float)w[i]);}
 __global__ void copy_k(__half*d,const __half*s,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;d[i]=s[i];}
-__global__ void mm_k(__half*out,const __half*in,const __half*wt,int M,int K){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=M)return;float s=0;for(int k=0;k<K;k++)s+=(float)in[k]*(float)wt[k*(size_t)M+i];out[i]=__float2half(s);}
+__global__ void mm_k(__half*out,const __half*in,const __half*wt,int M,int K){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=M)return;float s=0;for(int k=0;k<K;k++)s+=(float)in[k]*(float)wt[k*(size_t)M+i];if(s>65504.0f)s=65504.0f;else if(s<-65504.0f)s=-65504.0f;out[i]=__float2half(s);}
 __global__ void silu_mul_k(__half*out,const __half*g,const __half*u,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;float v=(float)g[i];out[i]=__float2half((v/(1.0f+expf(-v)))*(float)u[i]);}
 __global__ void residual_scale_k(__half*out,const __half*res,const float*hs_s,const float*hs_b,const float*res_s,const float*res_b,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;out[i]=__float2half((float)out[i]*hs_s[i]+hs_b[i]+(float)res[i]*res_s[i]+res_b[i]);}
 
@@ -35,6 +73,7 @@ __global__ void residual_scale_k(__half*out,const __half*res,const float*hs_s,co
 #include "zaya_gpu_router.hip"
 #include "zaya_router_moe.hip"
 #include "zaya_moe_tiled_gemv.hip"
+#include "zaya_fused_qkv.hip"
 #include "zaya_moe_expert_ffn.hip"
 #include "zaya_moe_batch_union.hip"
 #include "argmax_kernel.hip"
@@ -57,6 +96,7 @@ __global__ void residual_scale_k(__half*out,const __half*res,const float*hs_s,co
 extern "C" int rcpp_kv_cache_attn_decode_fd(const void* Q,const void* K,const void* V,void* out,
                                             int num_q_heads,int num_kv_heads,int head_dim,
                                             int seq_len,float scale,void* stream);
+extern "C" int rcpp_kv_cache_attn_decode_fd_prealloc(const void* Q,const void* K,const void* V,void* out,float* partials,int num_q_heads,int num_kv_heads,int head_dim,int seq_len,float scale,void* stream);
 
 // ── rocWMMA batched GEMV (requires rocWMMA header library) ──
 // Guarded: the CMakeLists.txt sets ROCWMMA_FOUND and the include path.
@@ -74,22 +114,50 @@ static std::vector<float> load_bin(const std::string& p){
     size_t n=f.tellg()/sizeof(float);f.seekg(0);
     std::vector<float> d(n);f.read((char*)d.data(),n*sizeof(float));return d;
 }
+// Load FP16 weight file with correct half→float conversion and overflow guard
+static float f16_to_f32(uint16_t h){
+    uint32_t sign=(h&0x8000u)<<16;
+    int exp=(h>>10)&31;
+    uint32_t mant=(h&0x3FFu)<<13;
+    if(exp==0){
+        if(mant==0){uint32_t r=sign;float f;memcpy(&f,&r,4);return f;}
+        while(!(mant&0x400000u)){mant<<=1;exp--;}
+        mant&=0x3FFFFFu;
+    }else if(exp==31){exp=255;
+    }else{exp=exp-15+127;}
+    uint32_t r=sign|((uint32_t)exp<<23)|mant;
+    float f;memcpy(&f,&r,4);return f;
+}
+static std::vector<float> load_bin_f16(const std::string& p){
+    std::ifstream f(p,std::ios::binary|std::ios::ate);
+    if(!f){fprintf(stderr,"Missing: %s\n",p.c_str());return {};}
+    size_t sz=f.tellg();f.seekg(0);
+    size_t n=sz/2;
+    std::vector<uint16_t> tmp(n);
+    std::vector<float> d(n);
+    f.read((char*)tmp.data(),n*2);
+    const float wclip=32.0f;
+    for(size_t i=0;i<n;i++){
+        float v=f16_to_f32(tmp[i]);
+        if(v>wclip)v=wclip;else if(v<-wclip)v=-wclip;
+        d[i]=v;
+    }
+    return d;
+}
 static std::string L(int i){return std::to_string(i);}
-static const std::string g_weights_dir = []() -> std::string {
-    const char* env = getenv("ZAYA_WEIGHTS_DIR");
-    if (env && env[0]) return env;
-    const char* xdg = getenv("XDG_DATA_HOME");
-    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-systems/weights/";
-    const char* home = getenv("HOME");
-    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/weights/";
-    return "/tmp/zaya_weights/";
-}();
+static std::string ensure_trailing_slash(const std::string& s) {
+    if (s.empty()) return s;
+    return s.back() == '/' ? s : s + "/";
+}
 #define W(N) load_bin(g_weights_dir+N)
+#define WF(N) load_bin_f16(g_weights_dir+N)  // FP16 weight matrices
 static void upf16(const std::vector<float>& s,__half*d,int n,hipStream_t h=0){
+    if((size_t)n>s.size()){fprintf(stderr,"upf16: expected %d floats, got %zu — aborting upload\n",n,s.size());return;}
     std::vector<__half>b(n);for(int i=0;i<n;i++)b[i]=__float2half(s[i]);
     HIP_OK_V(hipMemcpyAsync(d,b.data(),n*2,hipMemcpyHostToDevice,h));
 }
 static void upf32(const std::vector<float>& s,float*d,int n,hipStream_t h=0){
+    if((size_t)n>s.size()){fprintf(stderr,"upf32: expected %d floats, got %zu — aborting upload\n",n,s.size());return;}
     HIP_OK_V(hipMemcpyAsync(d,s.data(),n*4,hipMemcpyHostToDevice,h));
 }
 
@@ -102,7 +170,27 @@ extern "C" {
 #define WMMA_THREADS 128
 
 // ── Init: load weights, allocate GPU memory ──
+// ── Resolve weights directory ──
+// thread_local so multiple engines in different threads can load different models.
+// Priority: 1. weights_dir parameter  2. ZAYA_WEIGHTS_DIR env  3. XDG_DATA_HOME  4. HOME  5. /tmp
+static thread_local std::string g_weights_dir;
+static void resolve_weights_dir(const char* weights_dir) {
+    if (weights_dir && weights_dir[0]) {
+        g_weights_dir = ensure_trailing_slash(weights_dir);
+        return;
+    }
+    const char* env = getenv("ZAYA_WEIGHTS_DIR");
+    if (env && env[0]) { g_weights_dir = ensure_trailing_slash(env); return; }
+    const char* xdg = getenv("XDG_DATA_HOME");
+    if (xdg && xdg[0]) { g_weights_dir = std::string(xdg) + "/1bit-systems/weights/"; return; }
+    const char* home = getenv("HOME");
+    if (home && home[0]) { g_weights_dir = std::string(home) + "/.local/share/1bit-systems/weights/"; return; }
+    g_weights_dir = "/tmp/zaya_weights/";
+}
+
 ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
+    // Use the passed-in weights_dir (or env fallback)
+    resolve_weights_dir(weights_dir);
     // Populate runtime config from the provided ZayaConfig (or default Zaya1-8B)
     if (cfg) {
         eng = *cfg;
@@ -126,6 +214,12 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     // instead of crashing downstream (fixes #61).
     if (s->embed.empty() || fnorm.empty() || s->iscale.empty() || s->ibias.empty()) {
         fprintf(stderr, "zaya_init: failed to load one or more initial weight files — aborting init\n");
+        fprintf(stderr, "  Missing: %s%s%s%s\n",
+                s->embed.empty() ? "model_embed_tokens_weight.bin " : "",
+                fnorm.empty() ? "model_norm_weight.bin " : "",
+                s->iscale.empty() ? "model_input_hidden_states_scale.bin " : "",
+                s->ibias.empty() ? "model_input_hidden_states_bias.bin " : "");
+        fprintf(stderr, "  This model is not in Zaya .bin format — use ZINC/Vulkan or CPU backend, or convert to Zaya.\n");
         zaya_destroy(s);
         return nullptr;
     }
@@ -152,12 +246,12 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     }
 
     // Allocate GPU buffers with cleanup on failure (fixes #279 — leak on alloc error)
-    auto alloc_f16 = [&](auto& p, int n) -> bool {
+    auto alloc_f16 = [&](auto& p, size_t n) -> bool {
         hipError_t _e = hipMalloc(&p, n*2);
         if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
         return true;
     };
-    auto alloc_f32 = [&](auto& p, int n) -> bool {
+    auto alloc_f32 = [&](auto& p, size_t n) -> bool {
         hipError_t _e = hipMalloc(&p, n*4);
         if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
         return true;
@@ -169,17 +263,68 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab);
+    // d_argmax_idx, d_sorted_ids, d_expert_counts, d_expert_offsets are
+    // declared as int* (and used as int by kernels) but allocated via
+    // alloc_f32 since hipMalloc works in bytes and both int/float are 4 B.
     ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_idx, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_val, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, 8);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, 17);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, 17);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_embed, eng.vocab * eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ibias, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_iscale, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_token_id, 1);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_conv, eng.n_layers * 2 * eng.qkv);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_phs, eng.n_layers * eng.h);
-    s->max_seq = 4096;
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, eng.n_layers * s->max_seq * eng.nkv * eng.hd);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, eng.n_layers * s->max_seq * eng.nkv * eng.hd);
+    // KV cache: linear contiguous by default (#3), paged pool as fallback of KV_PAGE_SIZE token pages instead of
+    // the full max_seq_len contiguous buffer. Saves ~75% memory at 64K context.
+    s->max_seq = eng.max_seq_len > 0 ? eng.max_seq_len : 4096;
+    if (s->use_linear_kv) {
+        // Linear KV cache (#3): contiguous [n_layers, max_seq, NKV, HD] — zero gather overhead
+        size_t kv_elems = (size_t)eng.n_layers * s->max_seq * eng.nkv * eng.hd;
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, kv_elems);
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, kv_elems);
+        fprintf(stderr, "  KV cache: linear contiguous %d tok x %d layers = %.1f MB\n",
+                s->max_seq, eng.n_layers, (double)kv_elems * 2 / (1024*1024));
+    } else {
+        // Paged KV cache fallback
+        s->page_size = KV_PAGE_SIZE;
+        s->n_kv_pages = (s->max_seq + s->page_size - 1) / s->page_size;
+        s->kv_pool_pages = eng.kv_pool_pages > 0 ?
+            std::min(eng.kv_pool_pages, s->n_kv_pages) :
+            std::min(s->n_kv_pages, KV_DEFAULT_PAGES);
+        if (s->kv_pool_pages < 1) s->kv_pool_pages = 1;
+        size_t kv_pool_elems = (size_t)eng.n_layers * s->kv_pool_pages * s->page_size * eng.nkv * eng.hd;
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, kv_pool_elems);
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, kv_pool_elems);
+        fprintf(stderr, "  KV cache: %d pages (%d tok/page, %d pool, %d max_seq) = %.1f MB\n",
+                s->n_kv_pages, s->page_size, s->kv_pool_pages, s->max_seq,
+                (double)kv_pool_elems * 2 / (1024*1024));
+    }
+    // Page table / gather buffers only needed for paged KV cache (#3)
+    if (!s->use_linear_kv) {
+        s->page_alloc.resize(eng.n_layers);
+        s->page_map.resize(eng.n_layers);
+        s->page_lru.resize(eng.n_layers);
+        s->page_next_evict.resize(eng.n_layers);
+        for (int il = 0; il < eng.n_layers; il++) {
+            s->page_alloc[il].assign(s->n_kv_pages, false);
+            s->page_map[il].assign(s->n_kv_pages, -1);
+            s->page_lru[il].assign(s->kv_pool_pages, -1);
+            s->page_next_evict[il] = 0;
+        }
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_k_gather, s->max_seq * eng.nkv * eng.hd);
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_v_gather, s->max_seq * eng.nkv * eng.hd);
+        ALLOC_OR_FAIL(s, alloc_f32, s->d_page_map, s->n_kv_pages);
+    }
+    s->gather_seq_len = 0;
+    // Pre-allocated flash-decoding partials buffer for graph capture (#2)
+    {
+        int max_tiles = (s->max_seq + 128 - 1) / 128;
+        int partials_elems = eng.nq * max_tiles * (eng.hd + 2);
+        ALLOC_OR_FAIL(s, alloc_f32, s->d_partials, partials_elems);
+    }
     ALLOC_OR_FAIL(s, alloc_f16, s->d_vrec, eng.n_layers * (eng.kd / 2));
     ALLOC_OR_FAIL(s, alloc_f16, s->d_qout, eng.qd);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_kout, eng.kd);
@@ -191,6 +336,12 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     #undef ALLOC_OR_FAIL
     
     upf16(s->embed,s->d_embed,eng.vocab*eng.h,s->st);
+    // Upload ibias/iscale to GPU for device-side embedding lookup (#5)
+    std::vector<__half> h_ibias(eng.h), h_iscale(eng.h);
+    for(int i=0;i<eng.h;i++){h_ibias[i]=__float2half(s->ibias[i]);h_iscale[i]=__float2half(s->iscale[i]);}
+    HIP_OK_R(hipMemcpy(s->d_ibias,h_ibias.data(),eng.h*2,hipMemcpyHostToDevice), nullptr);
+    HIP_OK_R(hipMemcpy(s->d_iscale,h_iscale.data(),eng.h*2,hipMemcpyHostToDevice), nullptr);
+    // Final norm
     std::vector<__half>hf(eng.h);for(int i=0;i<eng.h;i++)hf[i]=__float2half(fnorm[i]);
     HIP_OK_R(hipMemcpy(s->d_fnw,hf.data(),eng.h*2,hipMemcpyHostToDevice), nullptr);
     
@@ -203,15 +354,15 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     for(int il=0;il<eng.n_layers;il++){
         auto& l=s->lw[il];
         if(!A(l.nw,eng.h)){zaya_destroy(s);return nullptr;}upf16(W("model_layers_"+L(il)+"_input_layernorm_weight.bin"),l.nw,eng.h,s->st);
-        if(!A(l.wq,eng.qd*eng.h)){zaya_destroy(s);return nullptr;}upf16(W("model_layers_"+L(il)+"_self_attn_qkv_proj_q_proj_weight.bin"),l.wq,eng.qd*eng.h,s->st);
-        if(!A(l.wk,eng.kd*eng.h)){zaya_destroy(s);return nullptr;}upf16(W("model_layers_"+L(il)+"_self_attn_qkv_proj_k_proj_weight.bin"),l.wk,eng.kd*eng.h,s->st);
-        if(!A(l.wv1,(eng.kd/2)*eng.h)){zaya_destroy(s);return nullptr;}upf16(W("model_layers_"+L(il)+"_self_attn_qkv_proj_v_proj_current_weight.bin"),l.wv1,(eng.kd/2)*eng.h,s->st);
-        if(!A(l.wv2,(eng.kd/2)*eng.h)){zaya_destroy(s);return nullptr;}upf16(W("model_layers_"+L(il)+"_self_attn_qkv_proj_v_proj_delayed_weight.bin"),l.wv2,(eng.kd/2)*eng.h,s->st);
-        if(!A(l.wo,eng.h*eng.qd)){zaya_destroy(s);return nullptr;}upf16(W("model_layers_"+L(il)+"_self_attn_o_proj_weight.bin"),l.wo,eng.h*eng.qd,s->st);
-        if(!B(l.cdw,eng.qkv*2)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_depthwise_weight.bin"),l.cdw,eng.qkv*2,s->st);
-        if(!B(l.cdb,eng.qkv)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_depthwise_bias.bin"),l.cdb,eng.qkv,s->st);
-        if(!B(l.cgw,eng.qkv*128*2)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_grouped_weight.bin"),l.cgw,eng.qkv*128*2,s->st);
-        if(!B(l.cgb,eng.qkv)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_grouped_bias.bin"),l.cgb,eng.qkv,s->st);
+        if(!A(l.wq,eng.qd*eng.h)){zaya_destroy(s);return nullptr;}upf16(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_q_proj_weight.bin"),l.wq,eng.qd*eng.h,s->st);
+        if(!A(l.wk,eng.kd*eng.h)){zaya_destroy(s);return nullptr;}upf16(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_k_proj_weight.bin"),l.wk,eng.kd*eng.h,s->st);
+        if(!A(l.wv1,(eng.kd/2)*eng.h)){zaya_destroy(s);return nullptr;}upf16(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_v_proj_current_weight.bin"),l.wv1,(eng.kd/2)*eng.h,s->st);
+        if(!A(l.wv2,(eng.kd/2)*eng.h)){zaya_destroy(s);return nullptr;}upf16(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_v_proj_delayed_weight.bin"),l.wv2,(eng.kd/2)*eng.h,s->st);
+        if(!A(l.wo,eng.h*eng.qd)){zaya_destroy(s);return nullptr;}upf16(WF("model_layers_"+L(il)+"_self_attn_o_proj_weight.bin"),l.wo,eng.h*eng.qd,s->st);
+        if(!B(l.cdw,eng.qkv*2)){zaya_destroy(s);return nullptr;}upf32(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_depthwise_weight.bin"),l.cdw,eng.qkv*2,s->st);
+        if(!B(l.cdb,eng.qkv)){zaya_destroy(s);return nullptr;}upf32(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_depthwise_bias.bin"),l.cdb,eng.qkv,s->st);
+        if(!B(l.cgw,eng.qkv*128*2)){zaya_destroy(s);return nullptr;}upf32(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_grouped_weight.bin"),l.cgw,eng.qkv*128*2,s->st);
+        if(!B(l.cgb,eng.qkv)){zaya_destroy(s);return nullptr;}upf32(WF("model_layers_"+L(il)+"_self_attn_qkv_proj_conv_qk_grouped_bias.bin"),l.cgb,eng.qkv,s->st);
         if(!B(l.ks,eng.nkv)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_self_attn_qk_norm_temp.bin"),l.ks,eng.nkv,s->st);
         if(!B(l.pahss,eng.h)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_post_attention_residual_scale_hidden_states_scale.bin"),l.pahss,eng.h,s->st);
         if(!B(l.pahsb,eng.h)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_post_attention_residual_scale_hidden_states_bias.bin"),l.pahsb,eng.h,s->st);
@@ -223,7 +374,7 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
         // Upstream PyTorch saves it as [eng.rtr_h, eng.h] — we transpose on load.
         if(!B(l.gdw,eng.h*eng.rtr_h)){zaya_destroy(s);return nullptr;}
         {
-            auto raw=W("model_layers_"+L(il)+"_mlp_gate_down_proj_weight.bin");
+            auto raw=WF("model_layers_"+L(il)+"_mlp_gate_down_proj_weight.bin");
             std::vector<float> tr(eng.h*eng.rtr_h);
             for(int i=0;i<eng.rtr_h;i++)for(int j=0;j<eng.h;j++)tr[j*eng.rtr_h+i]=raw[i*eng.h+j];
             upf32(tr,l.gdw,eng.h*eng.rtr_h,s->st);
@@ -269,42 +420,96 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     return s;
 }
 
+// ── Page-aware KV cache write ──
+// Allocate a page for the given (layer, pos) if not already allocated.
+// Returns the GPU offset within the layer's page pool.
+static size_t zaya_kv_page_write(ZayaState* s, int il, int pos) {
+    int page_id = pos / s->page_size;
+    int page_off = pos % s->page_size;
+    if (!s->page_alloc[il][page_id]) {
+        // Evict from pool if needed
+        int pool_page = s->page_next_evict[il];
+        s->page_map[il][page_id] = pool_page;
+        s->page_alloc[il][page_id] = true;
+        s->page_next_evict[il] = (pool_page + 1) % s->kv_pool_pages;
+        // Update device-side page map for gather kernel
+        std::vector<int> host_map(s->n_kv_pages);
+        for (int p = 0; p < s->n_kv_pages; p++) {
+            host_map[p] = s->page_map[il][p];
+        }
+        hipError_t _s_ = hipMemcpy(s->d_page_map, host_map.data(), s->n_kv_pages * sizeof(int), hipMemcpyHostToDevice);
+        if (_s_ != hipSuccess) {
+            fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s_));
+            return 0;
+        }
+    }
+    int pool_page = s->page_map[il][page_id];
+    return (size_t)pool_page * s->page_size * eng.nkv * eng.hd + (size_t)page_off * eng.nkv * eng.hd;
+}
+
+// ── Page-aware KV cache gather ──
+// Gathers all pages for positions [0, seq_len) into the scratch buffers.
+static void zaya_kv_gather(ZayaState* s, int il, int seq_len) {
+    dim3 grid(seq_len, eng.nkv);
+    gather_kv_pages_k<<<grid, 128, 0, s->st>>>(
+        s->d_k_gather,
+        s->d_kcache + (size_t)il * s->kv_pool_pages * s->page_size * eng.nkv * eng.hd,
+        s->d_page_map, eng.nkv, eng.hd, s->page_size, seq_len);
+    HIP_CHECK(hipGetLastError());
+    gather_kv_pages_k<<<grid, 128, 0, s->st>>>(
+        s->d_v_gather,
+        s->d_vcache + (size_t)il * s->kv_pool_pages * s->page_size * eng.nkv * eng.hd,
+        s->d_page_map, eng.nkv, eng.hd, s->page_size, seq_len);
+    HIP_CHECK(hipGetLastError());
+}
+
 // ── Forward: token in, logits out ──
 void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
     if (token_id < 0 || token_id >= eng.vocab) { if (logits_out) memset(logits_out, 0, eng.vocab * sizeof(float)); return; }
     int g1 = (eng.h+BLK-1)/BLK;
-    std::vector<__half> hh(eng.h);
-    for(int i=0;i<eng.h;i++){float raw=s->embed[token_id*(size_t)eng.h+i];hh[i]=__float2half((raw+s->ibias[i])*s->iscale[i]);}
-    HIP_OK_V(hipMemcpyAsync(s->d_hs,hh.data(),eng.h*2,hipMemcpyHostToDevice,s->st));
+    // Device-side embedding lookup (#5): no H2D copy
+    HIP_OK_V(hipMemcpyAsync(s->d_token_id, &token_id, 4, hipMemcpyHostToDevice, s->st));
+    embed_lookup_k<<<g1,BLK,0,s->st>>>(s->d_hs, s->d_embed, s->d_ibias, s->d_iscale, s->d_token_id, eng.h);
+    HIP_CHECK(hipGetLastError());
 
     for(int il=0;il<eng.n_layers;il++){
         auto& l=s->lw[il];
         // ── CCA attention: q/k/v proj → cca_prep → KV-cache stash → flash-decode → o_proj ──
-        rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,l.nw,eng.h);
+        // RMSNorm (separate launch to avoid cross-block data race, issue #870)
+        rmsnorm_fused_kernel<<<1, 256, 0, s->st>>>(s->d_hs, l.nw, eng.h);
         HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.qd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);                           // q_raw
-        HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.kd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd,s->d_hs,l.wk,eng.kd,eng.h);                     // k_raw
-        HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.kd/2/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd+eng.kd,s->d_hs,l.wv1,eng.kd/2,eng.h);        // v_cur
-        HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.kd/2/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+eng.kd/2,s->d_hs,l.wv2,eng.kd/2,eng.h); // v_del
-        HIP_CHECK(hipGetLastError());
+        // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
+        { int hv2=eng.kd/2;
+          mm_k<<<(eng.qd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);
+          HIP_CHECK(hipGetLastError());
+          mm_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd,s->d_hs,l.wk,eng.kd,eng.h);
+          HIP_CHECK(hipGetLastError());
+          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd,s->d_hs,l.wv1,hv2,eng.h);
+          HIP_CHECK(hipGetLastError());
+          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+hv2,s->d_hs,l.wv2,hv2,eng.h);
+          HIP_CHECK(hipGetLastError()); }
+          nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
             l.cdw,l.cdb,l.cgw,l.cgb,l.ks,
             s->d_qout,s->d_kout,s->d_vout, s->pos, eng.nq,eng.nkv,eng.hd,eng.hd/2,5000000.0f,eng.qkv/(eng.nq+eng.nkv));
         HIP_CHECK(hipGetLastError());
-        copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_kcache+(size_t)il*s->max_seq*eng.nkv*eng.hd+(size_t)s->pos*eng.nkv*eng.hd, s->d_kout, eng.kd);
+        // KV cache: linear contiguous write (#3) — no gather overhead
+        {
+            __half* layer_k = s->d_kcache + ((size_t)il * s->max_seq + s->pos) * eng.nkv * eng.hd;
+            __half* layer_v = s->d_vcache + ((size_t)il * s->max_seq + s->pos) * eng.nkv * eng.hd;
+            copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(layer_k, s->d_kout, eng.kd);
+            HIP_CHECK(hipGetLastError());
+            copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(layer_v, s->d_vout, eng.kd);
+            HIP_CHECK(hipGetLastError());
+            rcpp_kv_cache_attn_decode_fd_prealloc(s->d_qout,
+                s->d_kcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
+                s->d_vcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
+                s->d_ao, s->d_partials, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
+        }
+        moe_tiled_gemv<<<eng.h/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_ao,l.wo,eng.h,eng.qd);  // o_proj -> d_tmp (avoid in-place race)
         HIP_CHECK(hipGetLastError());
-        copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_vcache+(size_t)il*s->max_seq*eng.nkv*eng.hd+(size_t)s->pos*eng.nkv*eng.hd, s->d_vout, eng.kd);
-        HIP_CHECK(hipGetLastError());
-        rcpp_kv_cache_attn_decode_fd(s->d_qout,
-            s->d_kcache+(size_t)il*s->max_seq*eng.nkv*eng.hd,
-            s->d_vcache+(size_t)il*s->max_seq*eng.nkv*eng.hd,
-            s->d_ao, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
-        moe_tiled_gemv<<<eng.h/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_ao,s->d_ao,l.wo,eng.h,eng.qd);                             // o_proj
-        HIP_CHECK(hipGetLastError());
+        copy_k<<<(eng.h+BLK-1)/BLK,BLK,0,s->st>>>(s->d_ao,s->d_tmp,eng.h);
         residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_ao,s->d_hs,l.pahss,l.pahsb,l.parss,l.parsb,eng.h);
         HIP_CHECK(hipGetLastError());
         copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_ao,eng.h);
@@ -316,21 +521,18 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
             HIP_CHECK(hipGetLastError());
             encode_expert_cache_kernel<<<1,32,0,s->st>>>(s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,eng.rtr_h);
             HIP_CHECK(hipGetLastError());
-            fixup_skip_expert_kernel<<<1,256,0,s->st>>>(s->d_expert_idx,s->d_tmp,s->d_skip_flag,eng.n_exp,eng.n_exp_t,eng.h);
+            fixup_skip_expert_kernel<<<1,256,0,s->st>>>(s->d_expert_idx,s->d_skip_flag,eng.n_exp,eng.n_exp_t);
             HIP_CHECK(hipGetLastError());
-            HIP_OK_V(hipStreamSynchronize(s->st));
-            int was_skip; HIP_OK_V(hipMemcpy(&was_skip,s->d_skip_flag,4,hipMemcpyDeviceToHost));
-            if(!was_skip){
-                const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
-                const int db=(eng.h+WMMA_M-1)/WMMA_M;
-                const int sb=(eng.n_ff+BLK-1)/BLK;
-                wmma_gateup_kernel<<<gb,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_hs,l.gu,s->d_expert_idx);
-                HIP_CHECK(hipGetLastError());
-                silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
-                HIP_CHECK(hipGetLastError());
-                wmma_down_kernel<<<db,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_ao,l.dn,s->d_expert_idx);
+            // #1: No host sync — skip_flag read by gateup/down on GPU
+            const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
+            const int db=(eng.h+WMMA_M-1)/WMMA_M;
+            const int sb=(eng.n_ff+BLK-1)/BLK;
+            wmma_gateup_kernel<<<gb,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_hs,l.gu,s->d_expert_idx,s->d_skip_flag,eng.h,eng.n_ff,eng.n_exp);
             HIP_CHECK(hipGetLastError());
-            }
+            silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
+            HIP_CHECK(hipGetLastError());
+            wmma_down_kernel<<<db,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_ao,l.dn,s->d_expert_idx,s->d_skip_flag,eng.h,eng.n_ff,eng.n_exp);
+            HIP_CHECK(hipGetLastError());
             residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.pmhss,l.pmhsb,l.pmrss,l.pmrsb,eng.h);
             HIP_CHECK(hipGetLastError());
             copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_tmp,eng.h);
@@ -359,42 +561,54 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
 int zaya_forward_greedy(ZayaState* s, int token_id) {
     if (token_id < 0 || token_id >= eng.vocab) return -1;
     int g1 = (eng.h+BLK-1)/BLK;
-    std::vector<__half> hh(eng.h);
-    for(int i=0;i<eng.h;i++){float raw=s->embed[token_id*(size_t)eng.h+i];hh[i]=__float2half((raw+s->ibias[i])*s->iscale[i]);}
-    HIP_OK_R(hipMemcpyAsync(s->d_hs,hh.data(),eng.h*2,hipMemcpyHostToDevice,s->st), -1);
+    // Device-side embedding lookup (#5): no H2D copy
+    HIP_OK_R(hipMemcpyAsync(s->d_token_id, &token_id, 4, hipMemcpyHostToDevice, s->st), -1);
+    embed_lookup_k<<<g1,BLK,0,s->st>>>(s->d_hs, s->d_embed, s->d_ibias, s->d_iscale, s->d_token_id, eng.h);
+    HIP_CHECK(hipGetLastError());
 
     for(int il=0;il<eng.n_layers;il++){
         auto& l=s->lw[il];
         // ── CCA attention: q/k/v proj → cca_prep → KV-cache stash → flash-decode → o_proj ──
-        rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,l.nw,eng.h);
+        // RMSNorm (separate launch to avoid cross-block data race, issue #870)
+        rmsnorm_fused_kernel<<<1, 256, 0, s->st>>>(s->d_hs, l.nw, eng.h);
         HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.qd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);                           // q_raw
-        HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.kd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd,s->d_hs,l.wk,eng.kd,eng.h);                     // k_raw
-        HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.kd/2/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd+eng.kd,s->d_hs,l.wv1,eng.kd/2,eng.h);        // v_cur
-        HIP_CHECK(hipGetLastError());
-        moe_tiled_gemv<<<eng.kd/2/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+eng.kd/2,s->d_hs,l.wv2,eng.kd/2,eng.h); // v_del
-        HIP_CHECK(hipGetLastError());
+        // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
+        { int hv2=eng.kd/2;
+          mm_k<<<(eng.qd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);
+          HIP_CHECK(hipGetLastError());
+          mm_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd,s->d_hs,l.wk,eng.kd,eng.h);
+          HIP_CHECK(hipGetLastError());
+          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd,s->d_hs,l.wv1,hv2,eng.h);
+          HIP_CHECK(hipGetLastError());
+          mm_k<<<(hv2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+hv2,s->d_hs,l.wv2,hv2,eng.h);
+          HIP_CHECK(hipGetLastError()); }
+          nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
             l.cdw,l.cdb,l.cgw,l.cgb,l.ks,
             s->d_qout,s->d_kout,s->d_vout, s->pos, eng.nq,eng.nkv,eng.hd,eng.hd/2,5000000.0f,eng.qkv/(eng.nq+eng.nkv));
         HIP_CHECK(hipGetLastError());
-        copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_kcache+(size_t)il*s->max_seq*eng.nkv*eng.hd+(size_t)s->pos*eng.nkv*eng.hd, s->d_kout, eng.kd);
+        // KV cache: linear contiguous write (#3) — no gather overhead
+        {
+            __half* layer_k = s->d_kcache + ((size_t)il * s->max_seq + s->pos) * eng.nkv * eng.hd;
+            __half* layer_v = s->d_vcache + ((size_t)il * s->max_seq + s->pos) * eng.nkv * eng.hd;
+            copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(layer_k, s->d_kout, eng.kd);
+            HIP_CHECK(hipGetLastError());
+            copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(layer_v, s->d_vout, eng.kd);
+            HIP_CHECK(hipGetLastError());
+            rcpp_kv_cache_attn_decode_fd_prealloc(s->d_qout,
+                s->d_kcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
+                s->d_vcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
+                s->d_ao, s->d_partials, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
+        }
+        moe_tiled_gemv<<<eng.h/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_ao,l.wo,eng.h,eng.qd);  // o_proj -> d_tmp (avoid in-place race)
         HIP_CHECK(hipGetLastError());
-        copy_k<<<(eng.kd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_vcache+(size_t)il*s->max_seq*eng.nkv*eng.hd+(size_t)s->pos*eng.nkv*eng.hd, s->d_vout, eng.kd);
-        HIP_CHECK(hipGetLastError());
-        rcpp_kv_cache_attn_decode_fd(s->d_qout,
-            s->d_kcache+(size_t)il*s->max_seq*eng.nkv*eng.hd,
-            s->d_vcache+(size_t)il*s->max_seq*eng.nkv*eng.hd,
-            s->d_ao, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
-        moe_tiled_gemv<<<eng.h/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_ao,s->d_ao,l.wo,eng.h,eng.qd);                             // o_proj
-        HIP_CHECK(hipGetLastError());
+        copy_k<<<(eng.h+BLK-1)/BLK,BLK,0,s->st>>>(s->d_ao,s->d_tmp,eng.h);
         residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_ao,s->d_hs,l.pahss,l.pahsb,l.parss,l.parsb,eng.h);
         HIP_CHECK(hipGetLastError());
         copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_ao,eng.h);
         HIP_CHECK(hipGetLastError());
+        nan_clean_k<<<g1,BLK,0,s->st>>>(s->d_hs,eng.h);
         rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,l.pan,eng.h);
         HIP_CHECK(hipGetLastError());
         if(l.gu&&l.dn){
@@ -402,21 +616,18 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
             HIP_CHECK(hipGetLastError());
             encode_expert_cache_kernel<<<1,32,0,s->st>>>(s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,eng.rtr_h);
             HIP_CHECK(hipGetLastError());
-            fixup_skip_expert_kernel<<<1,256,0,s->st>>>(s->d_expert_idx,s->d_tmp,s->d_skip_flag,eng.n_exp,eng.n_exp_t,eng.h);
+            fixup_skip_expert_kernel<<<1,256,0,s->st>>>(s->d_expert_idx,s->d_skip_flag,eng.n_exp,eng.n_exp_t);
             HIP_CHECK(hipGetLastError());
-            HIP_OK_R(hipStreamSynchronize(s->st), -1);
-            int was_skip; HIP_OK_R(hipMemcpy(&was_skip,s->d_skip_flag,4,hipMemcpyDeviceToHost), -1);
-            if(!was_skip){
-                const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
-                const int db=(eng.h+WMMA_M-1)/WMMA_M;
-                const int sb=(eng.n_ff+BLK-1)/BLK;
-                wmma_gateup_kernel<<<gb,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_hs,l.gu,s->d_expert_idx);
-                HIP_CHECK(hipGetLastError());
-                silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
-                HIP_CHECK(hipGetLastError());
-                wmma_down_kernel<<<db,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_ao,l.dn,s->d_expert_idx);
+            // #1: No host sync — skip_flag read by gateup/down on GPU
+            const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
+            const int db=(eng.h+WMMA_M-1)/WMMA_M;
+            const int sb=(eng.n_ff+BLK-1)/BLK;
+            wmma_gateup_kernel<<<gb,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_hs,l.gu,s->d_expert_idx,s->d_skip_flag,eng.h,eng.n_ff,eng.n_exp);
             HIP_CHECK(hipGetLastError());
-            }
+            silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
+            HIP_CHECK(hipGetLastError());
+            wmma_down_kernel<<<db,WMMA_THREADS,0,s->st>>>(s->d_tmp,s->d_ao,l.dn,s->d_expert_idx,s->d_skip_flag,eng.h,eng.n_ff,eng.n_exp);
+            HIP_CHECK(hipGetLastError());
             residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.pmhss,l.pmhsb,l.pmrss,l.pmrsb,eng.h);
             HIP_CHECK(hipGetLastError());
             copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_tmp,eng.h);
@@ -436,6 +647,15 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
     int best;
     HIP_OK_R(hipMemcpy(&best,s->d_argmax_idx,4,hipMemcpyDeviceToHost), -1);
     if(s->pos < s->max_seq-1) s->pos++;
+
+    // HIP graph capture disabled: the stream is shared with non-captured
+    // MoE NPU pipeline operations, and capturing the greedy path interferes
+    // with subsequent kernel launches on the same stream.
+    // Always use per-call kernel launch (consistent with zaya_forward path).
+    if (!s->graph_captured) {
+        s->graph_captured = true;  // mark as done to skip this block forever
+        fprintf(stderr, "  HIP graph capture disabled — using per-call launch\n");
+    }
     return best;
 }
 
@@ -532,7 +752,7 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
                 // These skip the expert FFN entirely (out = hs, identity).
                 if (s->d_expert_counts) {  // always true, keeps compiler happy
                     moe_modskip_passthrough_kernel<<<(B + 255) / 256, 256, 0, s->st>>>(
-                        s->d_tmp, s->d_hs, s->d_expert_idx, eng.n_exp, B);
+                        s->d_tmp, s->d_hs, s->d_expert_idx, eng.n_exp, B, eng.h);
                 HIP_CHECK(hipGetLastError());
                 }
             } else {
@@ -802,8 +1022,21 @@ void zaya_reset(ZayaState* s) {
     HIP_OK_V(hipMemsetAsync(s->d_conv,0,(size_t)eng.n_layers*2*eng.qkv*2,s->st));
     HIP_OK_V(hipMemsetAsync(s->d_phs,0,(size_t)eng.n_layers*eng.h*2,s->st));
     HIP_OK_V(hipMemsetAsync(s->d_prev_rs,0,(size_t)eng.n_layers*eng.rtr_h*4,s->st));
-    HIP_OK_V(hipMemsetAsync(s->d_kcache,0,(size_t)eng.n_layers*s->max_seq*eng.nkv*eng.hd*2,s->st));
-    HIP_OK_V(hipMemsetAsync(s->d_vcache,0,(size_t)eng.n_layers*s->max_seq*eng.nkv*eng.hd*2,s->st));
+    if (s->use_linear_kv) {
+        size_t kv_bytes = (size_t)eng.n_layers * s->max_seq * eng.nkv * eng.hd * 2;
+        HIP_OK_V(hipMemsetAsync(s->d_kcache, 0, kv_bytes, s->st));
+        HIP_OK_V(hipMemsetAsync(s->d_vcache, 0, kv_bytes, s->st));
+    } else {
+        size_t kv_pool_bytes = (size_t)eng.n_layers * s->kv_pool_pages * s->page_size * eng.nkv * eng.hd * 2;
+        HIP_OK_V(hipMemsetAsync(s->d_kcache, 0, kv_pool_bytes, s->st));
+        HIP_OK_V(hipMemsetAsync(s->d_vcache, 0, kv_pool_bytes, s->st));
+        // Reset page table
+        for (int il = 0; il < eng.n_layers; il++) {
+            s->page_alloc[il].assign(s->n_kv_pages, false);
+            s->page_map[il].assign(s->n_kv_pages, -1);
+            s->page_next_evict[il] = 0;
+        }
+    }
     HIP_OK_V(hipMemsetAsync(s->d_vrec,0,(size_t)eng.n_layers*(eng.kd/2)*2,s->st));
     s->pos=0;
     init_expert_cache_sentinel<<<1, 64, 0, s->st>>>(s->d_prev_rs, eng.n_layers, eng.rtr_h, eng.n_exp);
@@ -815,11 +1048,23 @@ void zaya_destroy(ZayaState* s) {
     if (!s) return;
     auto safe = [](auto p) { if (p) (void)hipFree(p); };
     safe(s->d_hs); safe(s->d_ao); safe(s->d_tmp); safe(s->d_fnw);
-    safe(s->d_lm_out); safe(s->d_embed); safe(s->d_conv); safe(s->d_phs);
+    if (s->graph_exec) { (void)hipGraphExecDestroy(s->graph_exec); s->graph_exec = nullptr; }
+    if (s->graph) { (void)hipGraphDestroy(s->graph); s->graph = nullptr; }
+    safe(s->d_lm_out); safe(s->d_embed); safe(s->d_ibias); safe(s->d_iscale); safe(s->d_token_id);
+    safe(s->d_conv); safe(s->d_phs);
     safe(s->d_prev_rs); safe(s->d_expert_idx); safe(s->d_expert_wt);
     safe(s->d_kcache); safe(s->d_vcache); safe(s->d_vrec);
+    safe(s->d_partials);
     safe(s->d_qout); safe(s->d_kout); safe(s->d_vout); safe(s->d_skip_flag);
-    for (int i = 0; i < eng.n_layers; i++) {
+    safe(s->d_k_gather); safe(s->d_v_gather); safe(s->d_page_map);
+    // Bound by s->lw's actual size, not eng.n_layers: zaya_destroy() can be
+    // called from an early-exit path in zaya_init() (missing weight files,
+    // no GPU, or a model-dimension mismatch) before s->lw is resized to
+    // eng.n_layers (that resize happens later, once init has actually
+    // committed to loading). Using eng.n_layers here read past the end of
+    // an empty/undersized vector, pulled garbage pointers out of it, and
+    // handed them to hipFree() — a real segfault, not just UB in theory.
+    for (size_t i = 0; i < s->lw.size(); i++) {
         auto& l = s->lw[i];
         safe(l.nw); safe(l.wq); safe(l.wk); safe(l.wv1); safe(l.wv2); safe(l.wo); safe(l.pan);
         safe(l.cdw); safe(l.cdb); safe(l.cgw); safe(l.cgb); safe(l.ks);

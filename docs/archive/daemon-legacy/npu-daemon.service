@@ -1,0 +1,19 @@
+[Unit]
+Description=1bit NPU Daemon (Pure C++, MIT, 97 tok/s)
+After=network.target
+
+[Service]
+Type=simple
+# C++ daemon: spawns zaya_server as subprocess, proxies HTTP on port 13305
+# Use 'onebit up' from the CLI for interactive start/stop management.
+ExecStart=/home/bcloud/1bit-systems/build/onebitd --port 13305 --bitnet-decode /home/bcloud/1bit-systems/build/zaya_server
+Restart=always
+RestartSec=5
+LimitMEMLOCK=infinity
+# Model path (set via --model flag or environment)
+Environment=ONEBI_MODEL_PATH=/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

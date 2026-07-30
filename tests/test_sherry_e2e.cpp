@@ -106,6 +106,13 @@ int main(int argc, char** argv) {
         return 77;
     }
     const char* path = argv[1];
+    {
+        int dev_count = 0;
+        if (hipGetDeviceCount(&dev_count) != hipSuccess || dev_count == 0) {
+            fprintf(stderr, "no HIP device available, skipping\n");
+            return 77;
+        }
+    }
     fprintf(stderr, "[test_sherry_e2e] loading %s\n", path);
 
     rcpp_bitnet_model_t m{};
@@ -273,7 +280,7 @@ int main(int argc, char** argv) {
     // Housekeeping. HIP frees on process exit are fine, but explicit is nicer.
     // Ignore hipFree returns — if a free fails on shutdown there's nothing
     // productive to do. Cast to void to silence [[nodiscard]].
-    auto hfree = [](void* p) { (void)hipFree(p); };
+    auto hfree = [](void* p) { if (p) { hipError_t _e = hipFree(p); if (_e != hipSuccess) fprintf(stderr, "hipFree: %s\n", hipGetErrorString(_e)); } };
     for (int l = 0; l < L; ++l) { hfree(Ks[l]); hfree(Vs[l]); }
     hfree(x_fp32); hfree(x); hfree(normed); hfree(x_i8); hfree(x_scale_dev);
     hfree(q_fp16); hfree(k_fp16); hfree(v_fp16); hfree(o_fp16);

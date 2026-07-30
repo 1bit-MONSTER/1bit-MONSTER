@@ -192,16 +192,17 @@ static void forward_hybrid_layer(
             attn_proj[i] = sum;
         }
 
-        // Attention residual
+        // Attention residual — add to projected (the original pre-norm input),
+        // not ff_in (the normalized version). Pre-LN: x = x + attn(x_normed)
         for (int i = 0; i < n; ++i) {
-            ff_in[i] = ff_in[i] + attn_proj[i];
+            projected[i] = projected[i] + attn_proj[i];
         }
     }
 
     // ── Step 5: Shared MLP (with separate gate/up/down weights) ──
     {
         std::vector<float> ff_normed(n);
-        rms_norm(ff_in.data(), ff_normed.data(), hw.shared_transformer_pre_ff_norm.data(), n, cfg.rms_norm_eps);
+        rms_norm(projected.data(), ff_normed.data(), hw.shared_transformer_pre_ff_norm.data(), n, cfg.rms_norm_eps);
 
         int d_ff = (int)hw.shared_transformer_up.size() / n;  // hidden size from up_proj
         if (d_ff <= 0) d_ff = n;
@@ -260,8 +261,6 @@ bool Zamba2Model::forward(int token_id, float* logits) {
 
     // ── Embedding ──
     std::vector<float> hidden(d_model, 0.0f);
-    // embed_w layout: [vocab_size, d_model] or [d_model, vocab_size]
-    // We assume [vocab_size, d_model]
     for (int i = 0; i < d_model; ++i) {
         hidden[i] = embed_w[token_id * d_model + i];
     }
@@ -285,9 +284,9 @@ bool Zamba2Model::forward(int token_id, float* logits) {
             int max_seq = cfg.max_seq_len;
             int n_kv = cfg.n_kv_heads;
             int hd = cfg.attn_head_dim;
-            int kv_offset = hyb_idx * 2 * max_seq * n_kv * hd;
+            size_t kv_offset = (size_t)hyb_idx * 2 * max_seq * n_kv * hd;
             float* k_cache = kv_cache.data() + kv_offset;
-            float* v_cache = kv_cache.data() + kv_offset + max_seq * n_kv * hd;
+            float* v_cache = kv_cache.data() + kv_offset + (size_t)max_seq * n_kv * hd;
 
             std::vector<float> layer_out(d_model);
             forward_hybrid_layer(

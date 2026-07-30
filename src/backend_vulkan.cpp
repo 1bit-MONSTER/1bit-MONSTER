@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <cassert>
 #include <vector>
 #include <string>
 #include <fstream>
@@ -35,6 +36,7 @@ struct VK {
     VkDescriptorSetLayout ds_layout = VK_NULL_HANDLE;
     VkDescriptorPool ds_pool = VK_NULL_HANDLE;
     VkDescriptorSet ds = VK_NULL_HANDLE;
+    VkShaderModule shader_mod = VK_NULL_HANDLE; // stored for cleanup (issue #963)
     VkBuffer buf_w = VK_NULL_HANDLE, buf_in = VK_NULL_HANDLE, buf_out = VK_NULL_HANDLE;
     VkDeviceMemory mem_w = VK_NULL_HANDLE, mem_in = VK_NULL_HANDLE, mem_out = VK_NULL_HANDLE;
     uint32_t qf = 0;
@@ -69,14 +71,14 @@ struct VK {
         uint32_t nd; vkEnumeratePhysicalDevices(inst, &nd, nullptr);
         if (!nd) {
             fprintf(stderr, "[vk] No Vulkan-capable physical devices found\n");
-            return false;
+            destroy(); return false;
         }
         std::vector<VkPhysicalDevice> pds(nd);
         vkEnumeratePhysicalDevices(inst, &nd, pds.data());
         phys = pds[0];
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(phys, &props);
-        strncpy(name, props.deviceName, sizeof(name)-1);
+        snprintf(name, sizeof(name), "%s", props.deviceName);
 
         uint32_t nq; vkGetPhysicalDeviceQueueFamilyProperties(phys, &nq, nullptr);
         std::vector<VkQueueFamilyProperties> qps(nq);
@@ -88,16 +90,19 @@ struct VK {
         dq.queueFamilyIndex = qf; dq.queueCount = 1; dq.pQueuePriorities = &prio;
         VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &dq;
-        if (vkCreateDevice(phys, &dci, nullptr, &dev) != VK_SUCCESS) return false;
+        VkResult res = vkCreateDevice(phys, &dci, nullptr, &dev);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateDevice failed: %s (%d)\n", vk_result_str(res), (int)res); destroy(); return false; }
         vkGetDeviceQueue(dev, qf, 0, &queue);
 
         VkCommandPoolCreateInfo cpi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         cpi.queueFamilyIndex = qf;
-        if (vkCreateCommandPool(dev, &cpi, nullptr, &pool) != VK_SUCCESS) return false;
+        res = vkCreateCommandPool(dev, &cpi, nullptr, &pool);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateCommandPool failed: %s (%d)\n", vk_result_str(res), (int)res); destroy(); return false; }
 
         VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = pool; ai.commandBufferCount = 1;
-        if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS) return false;
+        res = vkAllocateCommandBuffers(dev, &ai, &cmd);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkAllocateCommandBuffers failed: %s (%d)\n", vk_result_str(res), (int)res); destroy(); return false; }
 
         return true;
     }
@@ -105,12 +110,25 @@ struct VK {
     VkShaderModule load_shader(const char* spv_path) {
         FILE* f = fopen(spv_path, "rb");
         if (!f) { fprintf(stderr, "[vk] load_shader: cannot open %s\n", spv_path); return VK_NULL_HANDLE; }
-        fseek(f, 0, SEEK_END); size_t sz = ftell(f); fseek(f, 0, SEEK_SET);
-        std::vector<uint32_t> code(sz/4); fread(code.data(), 4, code.size(), f); fclose(f);
+        fseek(f, 0, SEEK_END);
+        long sz_l = ftell(f);
+        if (sz_l <= 0 || (sz_l & 3) != 0) {
+            fprintf(stderr, "[vk] load_shader: invalid SPIR-V size %ld for %s\n", sz_l, spv_path);
+            fclose(f); return VK_NULL_HANDLE;
+        }
+        fseek(f, 0, SEEK_SET);
+        size_t sz = (size_t)sz_l;
+        std::vector<uint32_t> code(sz/4);
+        size_t nread = fread(code.data(), 4, code.size(), f);
+        fclose(f);
+        if (nread == 0) { fprintf(stderr, "[vk] load_shader: failed to read %s\n", spv_path); return VK_NULL_HANDLE; }
+        code.resize(nread);
+        sz = nread * 4;
         VkShaderModuleCreateInfo sm = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         sm.codeSize = sz; sm.pCode = code.data();
-        VkShaderModule mod;
-        vkCreateShaderModule(dev, &sm, nullptr, &mod);
+        VkShaderModule mod = VK_NULL_HANDLE;
+        VkResult res = vkCreateShaderModule(dev, &sm, nullptr, &mod);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateShaderModule failed: %s (%d)\n", vk_result_str(res), (int)res); return VK_NULL_HANDLE; }
         return mod;
     }
 
@@ -125,8 +143,9 @@ struct VK {
             if ((mr.memoryTypeBits & (1<<i)) && (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
                 VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
                 ai.allocationSize = mr.size; ai.memoryTypeIndex = i;
-                VkDeviceMemory mem;
-                vkAllocateMemory(dev, &ai, nullptr, &mem);
+                VkDeviceMemory mem = VK_NULL_HANDLE;
+                VkResult res = vkAllocateMemory(dev, &ai, nullptr, &mem);
+                if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkAllocateMemory failed: %s (%d)\n", vk_result_str(res), (int)res); return VK_NULL_HANDLE; }
                 vkBindBufferMemory(dev, *buf, mem, 0);
                 return mem;
             }
@@ -155,17 +174,27 @@ struct VK {
 
         VkDescriptorSetAllocateInfo dai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         dai.descriptorPool = ds_pool; dai.descriptorSetCount = 1; dai.pSetLayouts = &ds_layout;
-        vkAllocateDescriptorSets(dev, &dai, &ds);
+        VkResult res = vkAllocateDescriptorSets(dev, &dai, &ds);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkAllocateDescriptorSets failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
 
         VkPipelineShaderStageCreateInfo ss = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         ss.stage = VK_SHADER_STAGE_COMPUTE_BIT; ss.module = mod; ss.pName = "main";
         VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = ss; ci.layout = pipe_layout;
-        vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe);
+        res = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe);
+        if (res != VK_SUCCESS) { fprintf(stderr, "[vk] vkCreateComputePipelines failed: %s (%d)\n", vk_result_str(res), (int)res); return false; }
+        // Shader module is no longer needed after pipeline creation — destroy it
+        // to prevent Vulkan object leak (issue #963). The pipeline keeps its own
+        // internal reference to the compiled bytecode.
+        if (mod != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(dev, mod, nullptr);
+            shader_mod = VK_NULL_HANDLE;
+        }
         return true;
     }
 
     void destroy() {
+        if (shader_mod) vkDestroyShaderModule(dev, shader_mod, nullptr);
         if (pipe) vkDestroyPipeline(dev, pipe, nullptr);
         if (pipe_layout) vkDestroyPipelineLayout(dev, pipe_layout, nullptr);
         if (ds_layout) vkDestroyDescriptorSetLayout(dev, ds_layout, nullptr);
@@ -212,6 +241,7 @@ struct VK {
         vkBeginCommandBuffer(cmd, &bi);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, &ds, 0, nullptr);
+        assert(M >= 0 && K >= 0);
         struct Push { uint32_t M, K, io, wo, oo; } push = {(uint32_t)M, (uint32_t)K, 0, 0, 0};
         vkCmdPushConstants(cmd, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(cmd, (M+63)/64, 1, 1);
@@ -439,9 +469,11 @@ struct VKBackend : Backend {
         float su=0;for(int i=0;i<17;i++){sc[i]=expf(sc[i]-mv);su+=sc[i];} for(int i=0;i<17;i++)sc[i]/=su;
         int be=0;for(int i=1;i<17;i++)if(sc[i]>sc[be])be=i;
         memset(mo,0,H*4); if(be<16){
-            float gb[4096]; mm(gb,h,gu+(size_t)be*2*N_FF*H,2*N_FF,H);
-            float mb[2048]; for(int i=0;i<2048;i++)mb[i]=(gb[i]/(1+expf(-gb[i])))*gb[2048+i];
-            mm(mo,mb,dn+(size_t)be*H*N_FF,H,2048);
+            std::vector<float> gbv(2*N_FF); float* gb=gbv.data();
+            mm(gb,h,gu+(size_t)be*2*N_FF*H,2*N_FF,H);
+            std::vector<float> mbv(N_FF); float* mb=mbv.data();
+            for(int i=0;i<N_FF;i++)mb[i]=(gb[i]/(1+expf(-gb[i])))*gb[N_FF+i];
+            mm(mo,mb,dn+(size_t)be*H*N_FF,H,N_FF);
             for(int i=0;i<H;i++)mo[i]*=sc[be];
         } else memcpy(mo,h,H*4);
     }
@@ -462,6 +494,7 @@ struct VKBackend : Backend {
     }
 
     bool forward(int token_id, float* hidden_out) override {
+        if (token_id < 0 || token_id >= VOCAB) return false;
         for(int i=0;i<H;i++) hs[i]=(embed[token_id*(size_t)H+i]+ibias[i])*iscale[i];
 
         for(int il=0;il<N_LAYERS;il++){
@@ -572,7 +605,7 @@ struct VKBackend : Backend {
 
     int generate(int token_id) override {
         float h[H]; if(!forward(token_id,h))return-1;
-        float* lg=new float[VOCAB]; int r; lm_head(h,lg,&r); delete[] lg; return r;
+        std::vector<float> lg(VOCAB); int r = 0; lm_head(h,lg.data(),&r); return r;
     }
 
     float benchmark(int tokens=10) override {

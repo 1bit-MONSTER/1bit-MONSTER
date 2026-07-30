@@ -15,8 +15,9 @@ enum class BackendType : uint8_t {
     ZAMBA2 = 7,   // Zamba2 hybrid Mamba2+attention (CPU ref)
     ZAMBA2_GPU = 8, // Zamba2 with HIP acceleration
     ZINC_GPU = 9,   // General GGUF backend via engine/gpu (ZINC), multi-arch/multi-quant
-    NPU_FLM = 10,   // NPU inference via FastFlowLM subprocess (in-process kernels are broken, see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md)
     Q4NX_FUSION = 11, // Q4NX format via engine/fusion, forced cpu_only policy
+    CUDA_GPU = 12,    // NVIDIA CUDA GPU backend
+    METAL_GPU = 13,   // Apple Metal GPU backend
 };
 
 inline const char* backend_name(BackendType t) {
@@ -30,8 +31,9 @@ inline const char* backend_name(BackendType t) {
         case BackendType::ZAMBA2: return "Zamba2 (Mamba2 CPU)";
         case BackendType::ZAMBA2_GPU: return "Zamba2 (Mamba2 GPU)";
         case BackendType::ZINC_GPU: return "ZINC GPU (Vulkan, multi-arch)";
-        case BackendType::NPU_FLM: return "NPU via FastFlowLM";
         case BackendType::Q4NX_FUSION: return "Q4NX Fusion (CPU)";
+        case BackendType::CUDA_GPU: return "CUDA GPU (NVIDIA)";
+        case BackendType::METAL_GPU: return "Metal GPU (Apple)";
         default: return "none";
     }
 }
@@ -43,14 +45,18 @@ enum class ModelFormat : uint8_t {
     Q4NX = 3,
     SAFETENSORS = 4,
     RAW_BIN = 5,
+    ONEBP = 6,
 };
 
 struct ModelConfig {
     // ── DEPRECATED SHORT-NAME FIELDS ────────────────────────────
-    // These are aliases for the long-name fields below. Both sets MUST
-    // be kept in sync. Prefer the long names in new code; use the
-    // set_dim() helper to set both at once. Will be removed after all
-    // usage is migrated to the long-name equivalents (issue #358).
+    // WARNING: These are aliases for the long-name fields below.
+    // Both sets MUST be kept in sync — any change to a long-name
+    // default MUST also update the corresponding short-name default
+    // (and vice versa).  Forgetting to sync will cause silent data
+    // corruption.  Prefer the long names in new code; use the
+    // set_dim() helper to set both at once.  These will be removed
+    // after all usage migrates to the long-name equivalents (#358).
     int hidden            = 2048;   // use hidden_size
     int n_heads           = 8;      // use num_heads
     int n_kv_heads        = 2;      // use num_kv_heads
@@ -76,6 +82,7 @@ struct ModelConfig {
     bool has_k_norm = false;
     bool gu_split = false;
     int max_seq_len       = 2048;
+    int eos_token_id      = 106;   // Zaya1 default; set from model header
     float rope_theta      = 500000.0f;
     float rms_norm_eps    = 1e-5f;
     std::string model_name = "unknown";

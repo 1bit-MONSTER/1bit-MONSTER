@@ -107,8 +107,7 @@ inline const char* pilot_backend_name(PilotBackend pb) {
 
 static inline PilotBackend backend_type_to_pilot(BackendType bt) {
     switch (bt) {
-        case BackendType::NPU_XRT:
-        case BackendType::NPU_FLM:     return PilotBackend::NPU;
+        case BackendType::NPU_XRT:     return PilotBackend::NPU;
         case BackendType::HIP_GPU:
         case BackendType::VULKAN:
         case BackendType::ZINC_GPU:
@@ -205,7 +204,7 @@ public:
     ///                  (may differ from active_backend_ in DSpark per-layer dispatch)
     /// @param sub       Sub-layer type (optional, for future per-sub-layer dispatch)
     void on_layer_start(int layer, PilotBackend actual = PilotBackend::UNKNOWN,
-                         SubLayer sub = SubLayer::ROUTER) {
+                         SubLayer /*sub*/ = SubLayer::ROUTER) {
         if (layer >= n_layers_) return;
         auto& h = history_[layer];
         h.backend = (actual != PilotBackend::UNKNOWN) ? actual : active_backend_;
@@ -214,7 +213,7 @@ public:
 
     /// Call AFTER layer L's compute finishes.
     /// Records latency and triggers prediction for next layer.
-    void on_layer_done(int layer, SubLayer sub = SubLayer::ROUTER) {
+    void on_layer_done(int layer, SubLayer /*sub*/ = SubLayer::ROUTER) {
         if (layer >= n_layers_) return;
         auto& h = history_[layer];
         double elapsed = now_ms() - layer_timing_start_;

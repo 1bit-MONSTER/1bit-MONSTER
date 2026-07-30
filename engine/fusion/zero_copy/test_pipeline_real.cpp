@@ -31,6 +31,7 @@
 
 #include "pipeline_overlap.h"
 #include "shared_bo.h"
+#include "npu_gemm_kernel.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -82,75 +83,15 @@ static inline float dyn_scale(const float* x, int n) {
 static inline void rmsnorm_f32(float* x, const float* w, int n) {
     double ss = 0; for (int i = 0; i < n; i++) { if (!std::isfinite(x[i])) x[i] = 0; ss += (double)x[i] * x[i]; }
     float ir = 1.0f / sqrtf((float)(ss / n) + EPS);
-    for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * w[i] : 0.0f;
+    if (w) {
+        for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * w[i] : 0.0f;
+    } else {
+        for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir : 0.0f;
+    }
 }
 
-// ── NPU GEMM context (single-layer ops) ──
-struct NpuGemmCtx {
-    int MD, KD, ND;
-    std::vector<uint32_t> ins;
-    std::unique_ptr<xrt::xclbin> xc;
-    std::unique_ptr<xrt::hw_context> hc;
-    std::unique_ptr<xrt::module> mdl;
-    std::unique_ptr<xrt::elf> elf;
-    std::unique_ptr<xrt::ext::kernel> k;
-    std::unique_ptr<xrt::bo> bA, bB, bC;
-    int8_t* Am = nullptr; int16_t* Cm = nullptr;
-    bool ok = false;
-
-    bool init(xrt::device& d, const char* xp, const char* ip, int md, int kd, int nd) {
-        MD = md; KD = kd; ND = nd;
-        FILE* f = fopen(ip, "rb"); if (!f) return false;
-        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-        ins.resize(sz / 4); fread(ins.data(), 4, ins.size(), f); fclose(f);
-        try {
-            std::vector<char> iraw((char*)ins.data(), (char*)ins.data() + ins.size() * 4);
-            aiebu::aiebu_assembler asmblr(aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
-            xc = std::make_unique<xrt::xclbin>(std::string(xp)); d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (...) { return false; }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, 0);
-        Am = (int8_t*)bA->map(); Cm = (int16_t*)bC->map(); ok = true; return true;
-    }
-
-    void packB(const float* w, int K, int N, float& sout) {
-        float amax = 0;
-        for (int i = 0; i < K * N; i++) { float a = fabsf(w[i]); if (std::isfinite(a) && a > amax) amax = a; }
-        sout = (amax < 1e-12f) ? 1.0f : amax / 127.0f;
-        float is = 127.0f / (amax < 1e-12f ? 1.0f : amax);
-        auto* Bm = (int8_t*)bB->map();
-        for (int i = 0; i < K * N; i++) {
-            float v = w[i]; if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * is); if (q > 127) q = 127; else if (q < -127) q = -127;
-            Bm[i] = (int8_t)q;
-        }
-        bB->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    }
-
-    void go(const float* A, int am, int ak, float as_, float Bs, float* C, int an) {
-        float ais = 1.0f / as_;
-        memset(Am, 0, (size_t)am * KD);
-        for (int m = 0; m < am; m++) for (int k = 0; k < ak; k++) {
-            float v = A[m * ak + k]; if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * ais); if (q > 127) q = 127; else if (q < -127) q = -127;
-            Am[m * KD + k] = (int8_t)q;
-        }
-        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        auto r = k->operator()(3, 0, 0, *bA, *bB, *bC); r.wait();
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        float cs = as_ * Bs;
-        for (int m = 0; m < am; m++) for (int n = 0; n < an; n++) {
-            float val = (float)Cm[m * ND + n] * cs;
-            C[m * an + n] = std::isfinite(val) ? val : 0.0f;
-        }
-    }
-};
+// NPU GEMM context now lives in npu_gemm_kernel.h (fusion::NpuGemmKernel) so
+// it can be shared with the FFN-weight correctness test and future backends.
 
 // ── Main ──
 int main(int argc, char** argv) {
@@ -164,8 +105,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "No HIP devices\n"); return 77;
     }
     he = hipSetDevice(0); // Strix Halo integrated GPU
+    if (he != hipSuccess) { fprintf(stderr, "hipSetDevice: %s\n", hipGetErrorString(he)); return 1; }
     hipStream_t gpu_stream;
-    hipStreamCreate(&gpu_stream);
+    if (hipSuccess != hipStreamCreate(&gpu_stream)) { fprintf(stderr, "hipStreamCreate failed\n"); return 1; }
     fprintf(stderr, "GPU: HIP device 0, stream created\n");
     
     // Init NPU
@@ -183,7 +125,7 @@ int main(int argc, char** argv) {
     if (const char* e = getenv("NPU_NKV")) NKV = atoi(e);
     if (const char* e = getenv("NPU_HD")) HD = atoi(e);
     if (const char* e = getenv("NPU_IM")) IM = atoi(e);
-    int GQA = NH / NKV;
+    int GQA __attribute__((unused)) = NH / NKV;
     float attn_scale = 1.0f / sqrtf((float)HD);
     
     // Init NPU GEMM contexts
@@ -191,7 +133,7 @@ int main(int argc, char** argv) {
     auto xp = [&](const char* t) { static char b[256]; snprintf(b,256,"%s/final_i8_%s_v.xclbin",xd,t); return b; };
     auto ip = [&](const char* t) { static char b[256]; snprintf(b,256,"%s/insts_i8_%s_v.txt",xd,t); return b; };
     int XM = 128;
-    NpuGemmCtx cg, cd;
+    fusion::NpuGemmKernel cg, cd;
     if (!cg.init(npu, xp("GU"), ip("GU"), XM, H, 2*IM)) { fprintf(stderr,"FAIL GU\n"); return 1; }
     if (!cd.init(npu, xp("D"), ip("D"), XM, IM, H)) { fprintf(stderr,"FAIL D\n"); return 1; }
     float gs, ds;
@@ -199,22 +141,49 @@ int main(int argc, char** argv) {
     std::vector<float> dw2(IM*H, 0.01f); cd.packB(dw2.data(), IM, H, ds);
     fprintf(stderr, "NPU GEMM: GU(%dx%d) D(%dx%d)\n", H, 2*IM, IM, H);
     
-    // Allocate GPU KV cache
-    float *d_K, *d_V;
+    // Allocate GPU KV cache as host-pinned, GPU-mapped memory (hipHostMalloc):
+    // gpu_attn() below dereferences these pointers directly from the CPU
+    // (lines writing d_K/d_V/d_Q and reading d_AttnOut) while also passing
+    // device-side aliases to the GPU kernel — plain hipMalloc gives
+    // device-private VRAM that isn't CPU-addressable, which segfaulted here
+    // (host read of d_AttnOut after the kernel wrote it). hipHostMalloc +
+    // hipHostGetDevicePointer is the documented "zero-copy idiom" this file's
+    // own header comment calls for (see shared_bo.h), just applied directly
+    // instead of via the fuller SharedBO path.
+    // d_K/d_V must be __half* (not float*): sized via sizeof(__half) and fed
+    // __half values below, and rcpp_kv_cache_attn_decode's kernel casts
+    // K_dev/V_dev to const __half* internally — a float* here silently wrote
+    // valid-looking but wrongly-strided/wrongly-typed data.
+    __half *d_K=nullptr, *d_V=nullptr;
+    __half *dev_K=nullptr, *dev_V=nullptr;
     int max_seq = 4096;
     size_t kv_bytes = (size_t)max_seq * NKV * HD * sizeof(__half);
-    hipMalloc(&d_K, kv_bytes); hipMemsetAsync(d_K, 0, kv_bytes, gpu_stream);
-    hipMalloc(&d_V, kv_bytes); hipMemsetAsync(d_V, 0, kv_bytes, gpu_stream);
-    
-    // GPU buffer for Q (f16) and attention output (f16)
-    __half *d_Q, *d_AttnOut;
+    if (hipSuccess != hipHostMalloc(&d_K, kv_bytes, hipHostMallocMapped)) { fprintf(stderr,"FAIL hipHostMalloc K\n"); return 1; }
+    memset(d_K, 0, kv_bytes);
+    if (hipSuccess != hipHostGetDevicePointer((void**)&dev_K, d_K, 0)) { fprintf(stderr,"FAIL hipHostGetDevicePointer K\n"); return 1; }
+    if (hipSuccess != hipHostMalloc(&d_V, kv_bytes, hipHostMallocMapped)) { fprintf(stderr,"FAIL hipHostMalloc V\n"); return 1; }
+    memset(d_V, 0, kv_bytes);
+    if (hipSuccess != hipHostGetDevicePointer((void**)&dev_V, d_V, 0)) { fprintf(stderr,"FAIL hipHostGetDevicePointer V\n"); return 1; }
+
+    // Host-pinned, GPU-mapped buffer for Q (f16) and attention output (f16) — same reasoning as above.
+    __half *d_Q=nullptr, *d_AttnOut=nullptr;
+    __half *dev_Q=nullptr, *dev_AttnOut=nullptr;
     size_t q_bytes = (size_t)NH * HD * sizeof(__half);
-    hipMalloc(&d_Q, q_bytes); hipMemsetAsync(d_Q, 0, q_bytes, gpu_stream);
-    hipMalloc(&d_AttnOut, q_bytes); hipMemsetAsync(d_AttnOut, 0, q_bytes, gpu_stream);
+    if (hipSuccess != hipHostMalloc(&d_Q, q_bytes, hipHostMallocMapped)) { fprintf(stderr,"FAIL hipHostMalloc Q\n"); return 1; }
+    memset(d_Q, 0, q_bytes);
+    if (hipSuccess != hipHostGetDevicePointer((void**)&dev_Q, d_Q, 0)) { fprintf(stderr,"FAIL hipHostGetDevicePointer Q\n"); return 1; }
+    if (hipSuccess != hipHostMalloc(&d_AttnOut, q_bytes, hipHostMallocMapped)) { fprintf(stderr,"FAIL hipHostMalloc AttnOut\n"); return 1; }
+    memset(d_AttnOut, 0, q_bytes);
+    if (hipSuccess != hipHostGetDevicePointer((void**)&dev_AttnOut, d_AttnOut, 0)) { fprintf(stderr,"FAIL hipHostGetDevicePointer AttnOut\n"); return 1; }
     
     // Pipeline config
     fusion::PipelineConfig cfg;
     cfg.layer_count = NC; cfg.hidden_dim = H; cfg.inter_size = IM; cfg.batch_size = 1;
+    // gpu_attn below writes NH*HD floats into out_f32 (raw attention output,
+    // no output projection in this demo) — wider than hidden_dim, so the
+    // slot buffer must be sized off that, not hidden_dim. See
+    // pipeline_overlap.h's attn_scratch doc.
+    cfg.attn_scratch = (size_t)NH * HD;
     fusion::PipelineOverlap pl(cfg, npu);
     fprintf(stderr, "Pipeline: %d layers, H=%d, NH=%d, NKV=%d, HD=%d, IM=%d\n",
             NC, H, NH, NKV, HD, IM);
@@ -232,11 +201,15 @@ int main(int argc, char** argv) {
         
         // Launch Flash-Decoding attention on GPU
         // Q=[NH,HD], K_cache/V_cache=[seq_len,NKV,HD]
-        rcpp_kv_cache_attn_decode(
-            d_Q, d_K, d_V, d_AttnOut,
+        // Device-side aliases (dev_*) of the same host-pinned pages — the
+        // kernel needs the GPU-mapped pointer, not the host one.
+        int ar = rcpp_kv_cache_attn_decode(
+            dev_Q, dev_K, dev_V, dev_AttnOut,
             NH, NKV, HD, seq_len, attn_scale, gpu_stream);
-        
-        hipStreamSynchronize(gpu_stream);
+        if (ar != 0) fprintf(stderr, "rcpp_kv_cache_attn_decode: rc=%d\n", ar);
+
+        if (hipSuccess != hipStreamSynchronize(gpu_stream))
+            fprintf(stderr, "hipStreamSynchronize failed\n");
         
         // F16→F32 conversion (result back to shared buffer)
         for (int i = 0; i < NH * HD; i++)
@@ -288,8 +261,9 @@ int main(int argc, char** argv) {
     if (ms < seq) fprintf(stderr, "✅ REAL GPU+NPU OVERLAP — attention on GPU, FFN on NPU\n");
     else fprintf(stderr, "⚠️  Sequential — tune work sizes for overlap\n");
     
-    // Cleanup
-    hipFree(d_K); hipFree(d_V); hipFree(d_Q); hipFree(d_AttnOut);
-    hipStreamDestroy(gpu_stream);
+    // Cleanup — hipHostFree, matching the hipHostMalloc allocations above.
+    auto hip_host_free = [](void* p) { if (p) { hipError_t e = hipHostFree(p); if (e != hipSuccess) fprintf(stderr, "hipHostFree: %s\n", hipGetErrorString(e)); } };
+    hip_host_free(d_K); hip_host_free(d_V); hip_host_free(d_Q); hip_host_free(d_AttnOut);
+    if (hipSuccess != hipStreamDestroy(gpu_stream)) fprintf(stderr, "hipStreamDestroy failed\n");
     return 0;
 }

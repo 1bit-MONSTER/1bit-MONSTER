@@ -15,6 +15,7 @@
 #include "backends/token_router.h"
 #include "rocm_cpp/tokenizer.h"
 #include "a2a_client.h"
+#include "gguf_reader.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +26,7 @@
 #include <string>
 #include <chrono>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 
 #include <httplib.h>
@@ -40,9 +42,10 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     if (std::strncmp(magic, "H1B", 3) != 0) return false;
     int32_t version;
     f.read(reinterpret_cast<char*>(&version), 4);
-    if (version < 1 || version > 5) return false;
+    if (!f.good() || version < 1 || version > 5) return false;
     int32_t hdr[9];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    if (!f.good()) return false;
     cfg.hidden_size       = hdr[0];
     cfg.intermediate_size = hdr[1];
     cfg.num_layers        = hdr[2];
@@ -57,8 +60,10 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     if (version >= 2) {
         float extras[2];
         f.read(reinterpret_cast<char*>(extras), sizeof(extras));
-        cfg.rope_theta   = extras[0] > 0 ? extras[0] : 500000.0f;
-        cfg.rms_norm_eps = extras[1] > 0 ? extras[1] : 1e-5f;
+        if (f.good()) {
+            cfg.rope_theta   = extras[0] > 0 ? extras[0] : 500000.0f;
+            cfg.rms_norm_eps = extras[1] > 0 ? extras[1] : 1e-5f;
+        }
     }
     auto slash = path.find_last_of('/');
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
@@ -67,6 +72,53 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
     fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d\n",
             cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
             cfg.head_dim, cfg.vocab_size);
+    return true;
+}
+
+// ─── .1bp header auto-detection ─────────────────────────────────
+// 1BP format: 256-byte OnebpHeader. Magic = 0x00504231 = "1BP\0".
+// Header layout (all uint32/int32):
+//   [0]:  magic  [1]: version  [2]: arch  [3]: quant
+//   [4]:  scale_type  [5..17]: hidden_size..max_seq_len (13 int32)
+//   [18]: tile_rows  [19]: tile_cols  [20]: group_size
+//   [21]: has_q_norm  [22]: has_k_norm  [23]: has_bias
+//   [19]: rope_theta_f  [20]: bos_token_id  [21]: eos_token_id
+//   [22]: tensor_count
+//   [28]: num_experts  [29]: n_expert_used  [30..35]: expert config
+//   [36]: rope_freq_base_swa_f  [37]: n_rot_swa  [38]: n_rot_full
+//   [39..50]: reserved[12]  [51..63]: reserved[13]
+//   [64..79]: model_tag[64] as chars (offset 192)
+static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    uint32_t header[64]; // 256 bytes / 4
+    f.read(reinterpret_cast<char*>(header), 256);
+    if (!f.good()) return false;
+    if (header[0] != 0x00504231) return false; // magic "1BP\0"
+    // Read dimensions from header[5..17]
+    cfg.hidden_size       = (int32_t)header[5];
+    cfg.num_layers        = (int32_t)header[6];
+    cfg.num_heads         = (int32_t)header[7];
+    cfg.num_kv_heads      = (int32_t)header[8];
+    cfg.head_dim          = (int32_t)header[9];
+    cfg.intermediate_size = (int32_t)header[10];
+    cfg.vocab_size        = (int32_t)header[11];
+    cfg.max_seq_len       = (int32_t)header[12];
+    cfg.num_experts       = (int32_t)header[28];
+    cfg.num_experts_top   = (int32_t)header[29];
+    uint32_t eos_u        = header[21];  // eos_token_id at index 21 per OnebpHeader
+    cfg.eos_token_id      = (int)eos_u;
+    // router_hidden default (not in 1BP header for older models)
+    cfg.router_hidden     = 256;
+    f.close();
+    auto slash = path.find_last_of('/');
+    cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
+    cfg.model_path = path;
+    cfg.weights_dir = (slash != std::string::npos) ? path.substr(0, slash + 1) : "./";
+    fprintf(stderr, "  Auto-detected from .1bp: %s\n", cfg.model_name.c_str());
+    fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d eos=%d\n",
+            cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
+            cfg.head_dim, cfg.vocab_size, cfg.eos_token_id);
     return true;
 }
 
@@ -95,7 +147,10 @@ static bool detect_from_manifest(const std::string& path, ModelConfig& cfg) {
             auto slash = path.find_last_of('/');
             cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
         }
-        if (cfg.weights_dir.empty()) cfg.weights_dir = "/tmp/zaya_weights/";
+        if (cfg.weights_dir.empty()) {
+            const char* home = getenv("HOME");
+            cfg.weights_dir = (home && home[0]) ? std::string(home) + "/.local/share/1bit-systems/weights/" : "/tmp/zaya_weights/";
+        }
         fprintf(stderr, "  Loaded manifest: %s\n", cfg.model_name.c_str());
         fprintf(stderr, "    hidden=%d layers=%d heads=%d vocab=%d\n",
                 cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.vocab_size);
@@ -107,15 +162,79 @@ static bool detect_from_manifest(const std::string& path, ModelConfig& cfg) {
 }
 
 static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
-    // Signal that a GGUF model was found. The actual loading is done by
-    // the universal backend (backend_generic.cpp) in router.load_model().
-    // Just extract the filename as the model name so the API has a label.
+    // Read model dimensions from GGUF KV metadata so the backends get
+    // the correct H, L, NH, NKV, V upfront (fixes models whose
+    // dimensions differ from the default 2048/40/8/2/262272).
     cfg.model_path = path;
     cfg.weights_dir = path.substr(0, path.find_last_of('/') + 1);
     auto slash = path.find_last_of('/');
     auto dot = path.find_last_of('.');
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1, dot - slash - 1) : "gguf-model";
-    cfg.hidden_size = 0;  // will be detected by the backend
+    cfg.hidden_size = 0;
+    // Read dimensions from GGUF metadata using the shared reader.
+    // Keys are architecture-prefixed (e.g. llama.embedding_length,
+    // qwen2.attention.head_count, zr1.block_count).
+    GgufReader reader;
+    if (reader.open(path)) {
+        std::string arch = reader.architecture();
+        if (arch.empty()) arch = "llm";
+        auto gu = [&](const std::string& k, int def) -> int {
+            // Try with architecture prefix first, then bare key
+            uint32_t v;
+            if (reader.get_u32(arch + "." + k, v)) return (int)v;
+            if (reader.get_u32(k, v)) return (int)v;
+            return def;
+        };
+        cfg.hidden_size       = gu("embedding_length", 0);
+        cfg.num_layers        = gu("block_count", 40);
+        cfg.num_heads         = gu("attention.head_count", 0);
+        cfg.num_kv_heads      = gu("attention.head_count_kv", 0);
+        cfg.intermediate_size = gu("feed_forward_length", 0);
+        cfg.vocab_size        = gu("vocab_size", 0);
+        // If vocab_size wasn't in KV metadata, derive it from token_embd.weight
+        // If vocab_size wasn't in KV metadata, derive it from output.weight
+        // or token_embd.weight shape: numel = V * H, so V = numel / H.
+        if (cfg.vocab_size == 0 && cfg.hidden_size > 0) {
+            int H = cfg.hidden_size;
+            // output.weight has shape [H, V] in GGUF (fastest-first), numel = V*H
+            const GgufTensorInfo* out = reader.tensor_info("output.weight");
+            if (out && out->numel > 0)
+                cfg.vocab_size = (int)(out->numel / H);
+            if (cfg.vocab_size == 0) {
+                const GgufTensorInfo* emb = reader.tensor_info("token_embd.weight");
+                if (!emb) emb = reader.tensor_info("model.embed_tokens.weight");
+                if (emb && emb->numel > 0)
+                    cfg.vocab_size = (int)(emb->numel / H);
+            }
+        }
+        uint32_t max_seq = 0;
+        if (reader.get_u32(arch + ".context_length", max_seq) ||
+            reader.get_u32("context_length", max_seq))
+            cfg.max_seq_len = (int)max_seq;
+        // Cap max_seq_len to prevent excessive KV cache allocation.
+        // The backend can dynamically allocate more if needed.
+        if (cfg.max_seq_len > 32768) cfg.max_seq_len = 32768;
+        if (cfg.hidden_size > 0) {
+            // Set numeric architecture enum for backend routing
+    // Map GGUF arch string to rcpp_arch_t
+    if (arch == "zamba2")      cfg.arch = RCPP_ARCH_ZAMBA2;
+    else if (arch == "zamba")  cfg.arch = RCPP_ARCH_ZAMBA;
+    else if (arch == "mamba")  cfg.arch = RCPP_ARCH_MAMBA;
+    else if (arch == "llama")  cfg.arch = RCPP_ARCH_LLAMA;
+    else if (arch == "qwen3") cfg.arch = RCPP_ARCH_QWEN3;
+    else if (arch == "qwen2") cfg.arch = RCPP_ARCH_QWEN2;
+    else if (arch == "mistral") cfg.arch = RCPP_ARCH_MISTRAL;
+    else if (arch == "gemma" || arch == "gemma2" || arch == "gemma3") cfg.arch = RCPP_ARCH_GEMMA;
+    else if (arch == "zr1")    cfg.arch = RCPP_ARCH_ZAMBA2;
+    else cfg.arch = RCPP_ARCH_BITNET;  // default / unknown
+
+    fprintf(stderr, "  GGUF dims: H=%d L=%d NH=%d NKV=%d FF=%d V=%d CTX=%d (arch=%s)\n",
+                    cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
+                    cfg.intermediate_size, cfg.vocab_size, cfg.max_seq_len, arch.c_str());
+        }
+    } else {
+        fprintf(stderr, "  GGUF: could not open for dimension detection\n");
+    }
     return true;
 }
 static std::string json_escape(const std::string& s) {
@@ -170,6 +289,8 @@ struct SimpleTokenizer {
     int eos_id = 106;
     bool use_bpe = false;
     rcpp_tokenizer_t* bpe_tok = nullptr;
+    // Vocab lookup: maps token_id -> token string (loaded from GGUF)
+    std::vector<std::string> id_to_token;
 
     ~SimpleTokenizer() { if (bpe_tok) rcpp_tokenizer_free(bpe_tok); }
 
@@ -187,6 +308,31 @@ struct SimpleTokenizer {
         return false;
     }
 
+    /// Load BOS/EOS from GGUF metadata.
+    bool load_from_gguf(GgufReader& reader) {
+        uint32_t bos = 2, eos = 106;
+        if (reader.get_u32("tokenizer.ggml.bos_token_id", bos)) bos_id = (int)bos;
+        else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.bos_id", alt)) bos_id=(int)alt; }
+        if (reader.get_u32("tokenizer.ggml.eos_token_id", eos)) eos_id = (int)eos;
+        else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.eos_id", alt)) eos_id=(int)alt; }
+        fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d\n", bos_id, eos_id);
+        if (use_bpe) return true;
+        return false;
+    }
+
+    /// Load vocab table from GGUF's tokenizer.ggml.tokens array.
+    /// This enables readable decode output without a .htok BPE file.
+    bool load_vocab_from_gguf(GgufReader& reader) {
+        std::vector<std::string> tokens;
+        if (!reader.get_string_array("tokenizer.ggml.tokens", tokens)) {
+            fprintf(stderr, "  Vocab: tokenizer.ggml.tokens not found\n");
+            return false;
+        }
+        id_to_token = std::move(tokens);
+        fprintf(stderr, "  Vocab loaded: %zu tokens from GGUF\n", id_to_token.size());
+        return true;
+    }
+
     std::vector<int> encode(const std::string& text) {
         if (use_bpe && bpe_tok) {
             std::vector<int> r(4096);
@@ -199,10 +345,39 @@ struct SimpleTokenizer {
             }
             return {bos_id};
         }
+        // Character-level fallback with correct BOS/EOS from GGUF metadata
         std::vector<int> r = {bos_id};
         for (unsigned char c : text) {
             if (c >= 32 && c <= 126) r.push_back((int)c + 100);
             else if (c != 0) r.push_back((int)c + 200);
+        }
+        return r;
+    }
+
+    // GPT-2 byte decoding: replaces byte-encoded Unicode chars (U+0100-U+017F)
+    // which appear as UTF-8 sequences 0xC4 0x80..0xC5 0xBF back to raw bytes.
+    // This converts "Ġ" (U+0120 = space) back to ' ' and "Ċ" (U+010A = \n) back.
+    static std::string gpt2_byte_decode(const std::string& s) {
+        std::string r;
+        r.reserve(s.size());
+        for (size_t i = 0; i < s.size();) {
+            unsigned char c = (unsigned char)s[i];
+            if ((c == 0xC4 || c == 0xC5) && i + 1 < s.size()) {
+                unsigned char lo = (unsigned char)s[i+1];
+                int cp = ((int)(c & 0x1F) << 6) | (int)(lo & 0x3F);
+                r += (char)(cp - 256);
+                i += 2;
+            } else if (c < 128) {
+                r += (char)c;
+                i += 1;
+            } else {
+                int n = 1;
+                if ((c & 0xE0) == 0xC0) n = 2;
+                else if ((c & 0xF0) == 0xE0) n = 3;
+                else if ((c & 0xF8) == 0xF0) n = 4;
+                r.append(s.c_str() + i, n);
+                i += n;
+            }
         }
         return r;
     }
@@ -213,12 +388,22 @@ struct SimpleTokenizer {
             size_t out_len = 0;
             rcpp_status_t st = rcpp_tokenizer_decode(bpe_tok, tokens.data(), tokens.size(),
                                                       r.data(), r.size(), &out_len);
-            if (st == RCPP_OK && out_len > 0) {
-                r.resize(out_len);
-                return r;
-            }
+            if (st == RCPP_OK && out_len > 0) { r.resize(out_len); return gpt2_byte_decode(r); }
             return "";
         }
+        // Vocab-based decode (from GGUF tokenizer.ggml.tokens)
+        if (!id_to_token.empty()) {
+            std::string r;
+            for (int v : tokens) {
+                if (v == bos_id || v == eos_id) continue;
+                if (v >= 0 && v < (int)id_to_token.size()) {
+                    r += id_to_token[v];
+                } else {
+                    r += '<'; r += std::to_string(v); r += '>'; }
+            }
+            return gpt2_byte_decode(r);
+        }
+        // Character-level fallback
         std::string r;
         for (int v : tokens) {
             if (v == bos_id || v == eos_id) continue;
@@ -366,13 +551,16 @@ static std::string a2a_handle_message(const std::string& body, const std::string
 }
 
 static std::string a2a_new_task_id() {
-    return "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(rand() % 10000);
+    static std::atomic<uint64_t> counter{0};
+    return "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
-    std::string model_arg, manifest_arg, weights_dir = "/tmp/zaya_weights/", lora_path;
+    const char* home_default = getenv("HOME");
+    std::string default_weights = (home_default && home_default[0]) ? std::string(home_default) + "/.local/share/1bit-systems/weights/" : "/tmp/zaya_weights/";
+    std::string model_arg, manifest_arg, draft_model_arg, weights_dir = default_weights, lora_path;
     RouteStrategy strategy = RouteStrategy::AUTO;
     A2AClient a2a;
     std::vector<std::string> a2a_peers;
@@ -381,6 +569,7 @@ int main(int argc, char** argv) {
         std::string a(argv[i]);
         if (a == "--port" && i+1 < argc) port = atoi(argv[++i]);
         else if (a == "--model" && i+1 < argc) model_arg = argv[++i];
+        else if (a == "--draft-model" && i+1 < argc) draft_model_arg = argv[++i];
         else if (a == "--manifest" && i+1 < argc) manifest_arg = argv[++i];
         else if (a == "--weights-dir" && i+1 < argc) weights_dir = argv[++i];
         else if (a == "--a2a-peer" && i+1 < argc) a2a_peers.push_back(argv[++i]);
@@ -397,6 +586,7 @@ int main(int argc, char** argv) {
             printf("Usage: %s [flags]\n\n", argv[0]);
             printf("Model detection:\n");
             printf("  --model PATH.h1b    Auto-detect architecture from .h1b header\n");
+            printf("  --draft-model PATH  Load draft model for speculative decoding\n");
             printf("  --manifest PATH     Load model config from JSON manifest\n");
             printf("  --weights-dir DIR   Directory for weight .bin files\n\n");
             printf("Routing:\n");
@@ -407,6 +597,7 @@ int main(int argc, char** argv) {
             printf("Endpoints:\n");
             printf("  GET  /v1/models                      List loaded models\n");
             printf("  POST /v1/chat/completions            OpenAI-compatible chat\n");
+            printf("  POST /v1/batch/completions           Batch inference (multi-prompt)\n");
             printf("  GET  /.well-known/agent-card.json    A2A Agent Card (Google A2A v1.0)\n");
             printf("  POST /a2a/v1/message:send            A2A send message (task-based)\n");
             printf("  POST /a2a/v1/message:sendStream      A2A streaming (SSE)\n");
@@ -431,7 +622,7 @@ int main(int argc, char** argv) {
     std::mutex g_router_mutex;
 
     ModelConfig cfg;
-    fprintf(stderr, "DEBUG: about to detect model...\n"); fflush(stderr);
+    // Model detection
     bool detected = false;
     if (!manifest_arg.empty()) detected = detect_from_manifest(manifest_arg, cfg);
     if (!detected && !model_arg.empty()) {
@@ -440,6 +631,12 @@ int main(int argc, char** argv) {
         if (ext == ".gguf") {
             detected = detect_from_gguf(model_arg, cfg);
             fprintf(stderr, "  GGUF detection: %s\n", detected ? "ok" : "failed");
+        }
+    }
+    if (!detected && !model_arg.empty()) {
+        std::string ext = model_arg.size() > 4 ? model_arg.substr(model_arg.size() - 4) : "";
+        if (ext == ".1bp") {
+            detected = detect_from_1bp(model_arg, cfg);
         }
     }
     if (!detected && !model_arg.empty()) {
@@ -475,6 +672,108 @@ int main(int argc, char** argv) {
 
     if (model_loaded && !router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
 
+    // ── Load draft model for speculative decoding ────────────────
+    bool draft_loaded = false;
+    if (!draft_model_arg.empty()) {
+        ModelConfig draft_cfg;
+        bool draft_detected = false;
+        std::string ext = draft_model_arg.size() > 5 ? draft_model_arg.substr(draft_model_arg.size() - 5) : "";
+        if (ext == ".gguf") {
+            draft_detected = detect_from_gguf(draft_model_arg, draft_cfg);
+        }
+        if (!draft_detected) {
+            draft_detected = detect_from_h1b(draft_model_arg, draft_cfg);
+        }
+        if (draft_detected) {
+            draft_cfg.weights_dir = cfg.weights_dir;
+            draft_loaded = router.load_draft_model(draft_cfg);
+        }
+        if (!draft_loaded) {
+            fprintf(stderr, "WARNING: Failed to load draft model — running without spec decode\n");
+        } else {
+            // Auto-enable spec_decode strategy when draft model is loaded
+            if (strategy == RouteStrategy::AUTO) {
+                router.strategy = RouteStrategy::SPEC_DECODE;
+                strategy = RouteStrategy::SPEC_DECODE;
+            }
+        }
+    }
+
+    SimpleTokenizer tok;
+
+    // Try to load tokenizer from GGUF metadata if available
+    {
+        std::string gguf_path;
+        if (!model_arg.empty()) {
+            std::string ext = model_arg.size() > 5 ? model_arg.substr(model_arg.size() - 5) : "";
+            if (ext == ".gguf") gguf_path = model_arg;
+        }
+        if (gguf_path.empty() && cfg.model_path.size() > 5) {
+            std::string ext = cfg.model_path.substr(cfg.model_path.size() - 5);
+            if (ext == ".gguf") gguf_path = cfg.model_path;
+        }
+        if (!gguf_path.empty()) {
+            GgufReader reader;
+            if (reader.open(gguf_path)) {
+                // Try .htok file alongside the GGUF for full BPE tokenizer
+                std::string htok_path = gguf_path.substr(0, gguf_path.size() - 5) + ".htok";
+                FILE* htok_test = fopen(htok_path.c_str(), "rb");
+                if (htok_test) {
+                    fclose(htok_test);
+                    tok.load_htok(htok_path);
+                }
+                tok.load_from_gguf(reader);
+                tok.load_vocab_from_gguf(reader);
+                fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d %s(vocab=%zu)\n",
+                        tok.bos_id, tok.eos_id,
+                        tok.use_bpe ? "+ BPE " : "",
+                        tok.id_to_token.size());
+            }
+        } else {
+            // Non-GGUF model: search for .htok tokenizer alongside model or in weights_dir
+            std::vector<std::string> htok_candidates;
+            // Priority 1: <model_path>.htok (same basename, .htok extension)
+            std::string model_base = cfg.model_path;
+            auto dot = model_base.find_last_of('.');
+            if (dot != std::string::npos) {
+                htok_candidates.push_back(model_base.substr(0, dot) + ".htok");
+            }
+            // Priority 2: <model_dir>/tokenizer.htok
+            auto slash = cfg.model_path.find_last_of('/');
+            std::string model_dir = (slash != std::string::npos) ? cfg.model_path.substr(0, slash) : ".";
+            htok_candidates.push_back(model_dir + "/tokenizer.htok");
+            // Priority 3: weights_dir/tokenizer.htok
+            if (!cfg.weights_dir.empty()) {
+                htok_candidates.push_back(cfg.weights_dir + "tokenizer.htok");
+            }
+            // Priority 4: XDG/HOME fallback
+            const char* xdg = getenv("XDG_DATA_HOME");
+            if (xdg && xdg[0]) htok_candidates.push_back(std::string(xdg) + "/1bit-systems/weights/tokenizer.htok");
+            const char* home = getenv("HOME");
+            if (home && home[0]) htok_candidates.push_back(std::string(home) + "/.local/share/1bit-systems/weights/tokenizer.htok");
+
+            bool found = false;
+            for (const auto& htok_path : htok_candidates) {
+                FILE* htok_test = fopen(htok_path.c_str(), "rb");
+                if (htok_test) {
+                    fclose(htok_test);
+                    fprintf(stderr, "  Tokenizer: found .htok at %s\n", htok_path.c_str());
+                    if (tok.load_htok(htok_path)) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d + BPE(vocab loaded from .htok)\n",
+                        tok.bos_id, tok.eos_id);
+            } else {
+                fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no .htok/GGUF found)\n",
+                        tok.bos_id, tok.eos_id);
+            }
+        }
+    }
+
     httplib::Server svr;
 
     // Maximum request body size: 1MB (fixes #197: stack buffer + incomplete read + no limit)
@@ -482,7 +781,10 @@ int main(int argc, char** argv) {
     svr.set_payload_max_length(MAX_BODY_BYTES);
 
     svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
-        res.set_header("Access-Control-Allow-Origin", "*");
+        // Restrictive CORS by default — only allow same-origin (localhost) access.
+        // Set ZAYA_CORS_ORIGIN env var to "*" or a specific origin if needed.
+        const char* cors_origin = getenv("ZAYA_CORS_ORIGIN");
+        res.set_header("Access-Control-Allow-Origin", cors_origin ? cors_origin : "http://127.0.0.1");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
         if (req.method == "OPTIONS") {
@@ -493,17 +795,11 @@ int main(int argc, char** argv) {
         return httplib::Server::HandlerResponse::Unhandled;
     });
 
-    fprintf(stderr, "\nListening on http://127.0.0.1:%d\n", port);
-    fprintf(stderr, "   GET  /                      — health\n");
-    fprintf(stderr, "   GET  /v1/models              — model list\n");
-    fprintf(stderr, "   GET  /.well-known/agent-card — A2A Agent Card (v1.0)\n");
-    fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
-    fprintf(stderr, "   POST /a2a/v1/tasks:route      — A2A route to peer agent\n");
-    fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
     fprintf(stderr, "   Strategy: %s\n",
         strategy == RouteStrategy::AUTO ? "auto (fastest available)" :
         strategy == RouteStrategy::CASCADE ? "cascade (per-token fallback)" :
-        strategy == RouteStrategy::SPEC_DECODE ? "spec_decode (draft+verify)" :
+        strategy == RouteStrategy::SPEC_DECODE ?
+            (draft_loaded ? "spec_decode (ZR1 draft + Zaya verify)" : "spec_decode (draft+verify)") :
         strategy == RouteStrategy::CONTENT ? "content (keyword-based)" :
         strategy == RouteStrategy::PARALLEL_MOE ? "parallel_moe (GPU+NPU)" : "passthrough");
 
@@ -521,11 +817,11 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "\n");
 
-    SimpleTokenizer tok;
-
     svr.Get("/", [&](const httplib::Request&, httplib::Response& res) {
         std::lock_guard<std::mutex> lock(g_router_mutex);
         std::string resp = "{\"status\":\"" + std::string(model_loaded ? "ok" : "no_model") + "\",\"model_loaded\":" + (model_loaded ? "true" : "false") + ",\"model\":\"" + json_escape(cfg.model_name) + "\","
+            "\"draft_model_loaded\":" + (draft_loaded ? "true" : "false") + ","
+            "\"draft_model\":\"" + (draft_loaded && !router.draft_loaded_models.empty() ? json_escape(router.draft_loaded_models[0].model_name) : "") + "\","
             "\"backend\":\"" + std::string(router.primary ? router.primary->name() : "none") + "\","
             "\"hidden_size\":" + std::to_string(cfg.hidden_size) + ","
             "\"layers\":" + std::to_string(cfg.num_layers) + ","
@@ -650,7 +946,9 @@ int main(int argc, char** argv) {
         try {
             json jbody = json::parse(body);
             max_tokens = jbody.value("max_tokens", 256);
-        } catch (...) {}
+            if (max_tokens < 1) max_tokens = 1;
+            if (max_tokens > 32768) max_tokens = 32768;
+        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in max_tokens\n"); }
 
         RouteStrategy use_strat = strategy;
         if (use_strat == RouteStrategy::CONTENT) {
@@ -661,7 +959,7 @@ int main(int argc, char** argv) {
                     user_msg = jbody["messages"][0].value("content", std::string());
                 else
                     user_msg = jbody.value("content", std::string());
-            } catch (...) {}
+            } catch (...) { fprintf(stderr, "[zaya] JSON parse error in content routing\n"); }
             fprintf(stderr, "  [content] routing: %s\n", should_use_large_model(user_msg) ? "large model" : "small model (NPU)");
             use_strat = RouteStrategy::AUTO;
         }
@@ -671,7 +969,7 @@ int main(int argc, char** argv) {
             try {
                 json jbody = json::parse(body);
                 prompt = jbody.value("prompt", std::string());
-            } catch (...) {}
+            } catch (...) { fprintf(stderr, "[zaya] JSON parse error in prompt fallback\n"); }
             if (prompt.empty()) {
                 res.status = 400;
                 res.set_content("{\"error\":\"No messages or prompt\"}", "application/json");
@@ -727,13 +1025,13 @@ int main(int argc, char** argv) {
                 input = tok.encode(jbody["prompt"].get<std::string>());
             }
             np = jbody.value("n_predict", 16);
-        } catch (...) {}
+        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in /v1/completions\n"); }
         if (input.empty()) {
             std::string prompt;
             try {
                 json jbody = json::parse(body);
                 prompt = jbody.value("prompt", std::string());
-            } catch (...) {}
+            } catch (...) { fprintf(stderr, "[zaya] JSON parse error in /v1/completions prompt fallback\n"); }
             if (prompt.empty()) {
                 res.status = 400;
                 res.set_content("{\"error\":\"need prompt or tokens\"}", "application/json");
@@ -758,13 +1056,93 @@ int main(int argc, char** argv) {
         res.set_content(rsp, "application/json");
     });
 
+    // ── Batch endpoint: POST /v1/batch/completions ───────────────
+    // Accepts an array of prompts, returns an array of completions.
+    // Uses TokenRouter::infer_batch() for efficient multi-prompt processing.
+    svr.Post("/v1/batch/completions", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!model_loaded) {
+            res.status = 503;
+            res.set_content("{\"error\":\"no model loaded\"}", "application/json");
+            return;
+        }
+        try {
+            json jbody = json::parse(req.body);
+            int max_tokens = jbody.value("max_tokens", 256);
+            if (max_tokens < 1) max_tokens = 1;
+            if (max_tokens > 32768) max_tokens = 32768;
+
+            std::vector<std::vector<int>> prompts;
+            if (jbody.contains("prompts") && jbody["prompts"].is_array()) {
+                for (auto& p : jbody["prompts"]) {
+                    std::string text = p.is_string() ? p.get<std::string>() : p.dump();
+                    prompts.push_back(tok.encode(text));
+                }
+            }
+
+            if (prompts.empty()) {
+                res.status = 400;
+                res.set_content("{\"error\":\"need 'prompts' array\"}", "application/json");
+                return;
+            }
+
+            std::string resp_body;
+            {
+                std::lock_guard<std::mutex> lock(g_router_mutex);
+                auto results = router.infer_batch(prompts, max_tokens);
+                json arr = json::array();
+                for (size_t i = 0; i < results.size(); i++) {
+                    std::string text = tok.decode(results[i].tokens);
+                    arr.push_back({
+                        {"index", i},
+                        {"text", text},
+                        {"tokens", results[i].tokens},
+                        {"prompt_tokens", results[i].prompt_tokens},
+                        {"completion_tokens", (int)results[i].tokens.size()},
+                        {"gen_ms", results[i].gen_ms},
+                        {"tok_s", results[i].tok_s}
+                    });
+                }
+                json r = {{"object", "list"}, {"data", arr}};
+                resp_body = r.dump();
+                fprintf(stderr, "  [batch] %zu prompts, %d max_tokens\n", prompts.size(), max_tokens);
+            }
+            res.set_content(resp_body, "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404)
             res.set_content("{\"error\":\"not found\"}", "application/json");
     });
 
-    if (!svr.listen("0.0.0.0", port)) {
-        fprintf(stderr, "FATAL: failed to bind/listen on port %d\n", port);
+    // Bind to localhost by default — use --bind 0.0.0.0 to expose publicly.
+    // Binding to all interfaces without auth or TLS is a security risk (AUDIT #7).
+    const char* bind_addr = getenv("ZAYA_BIND_ADDR");
+    if (!bind_addr || !bind_addr[0]) bind_addr = "127.0.0.1";
+    fprintf(stderr, "\nListening on http://%s:%d\n", bind_addr, port);
+    if (draft_loaded) {
+        fprintf(stderr, "   Speculative decode ACTIVE\n");
+        fprintf(stderr, "     Draft: %s\n", router.draft_loaded_models[0].model_name.c_str());
+        fprintf(stderr, "     Target: %s\n", cfg.model_name.c_str());
+    }
+    fprintf(stderr, "   GET  /                      — health\n");
+    fprintf(stderr, "   GET  /v1/models              — model list\n");
+    fprintf(stderr, "   GET  /.well-known/agent-card — A2A Agent Card (v1.0)\n");
+    fprintf(stderr, "   POST /a2a/v1/message:send     — A2A task inference\n");
+    fprintf(stderr, "   POST /a2a/v1/tasks:route      — A2A route to peer agent\n");
+    fprintf(stderr, "   POST /v1/chat/completions     — OpenAI-compatible\n");
+    fprintf(stderr, "   POST /v1/batch/completions    — Batch inference (multi-prompt)\n");
+    if (strcmp(bind_addr, "0.0.0.0") == 0) {
+        fprintf(stderr,
+            "\n  *** WARNING: binding to 0.0.0.0 — server is publicly reachable. ***\n"
+            "  No authentication, no TLS, no rate limiting is enabled.\n"
+            "  Use a reverse proxy or set ZAYA_BIND_ADDR=127.0.0.1 for local-only access.\n\n");
+    }
+    if (!svr.listen(bind_addr, port)) {
+        fprintf(stderr, "FATAL: failed to bind/listen on %s:%d\n", bind_addr, port);
         return 1;
     }
     return 0;

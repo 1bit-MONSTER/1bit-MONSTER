@@ -75,6 +75,7 @@ struct Backend {
 // ── Factory: auto-detect and create best available backend ──
 Backend* create_best_backend();
 Backend* create_backend(BackendType type);
+Backend* create_backend_for_arch(BackendType type, const ModelConfig* cfg);
 
 // ── CPU backend ──
 Backend* create_cpu_backend();
@@ -87,17 +88,29 @@ Backend* create_vulkan_backend();
 extern "C" Backend* create_hip_backend();
 
 // ── NPU backend ──
-Backend* create_npu_backend();
+extern "C" Backend* create_npu_backend();
 
 // ── NPU via FastFlowLM subprocess (see docs/GEMM-KERNEL-CORRECTNESS-CONFIRMED.md
 // for why this exists instead of the in-process NPU kernels) ──
-extern "C" Backend* create_flm_backend();
 
 // ── ZINC backend (general GGUF, multi-arch/multi-quant, via libzinc.so) ──
 Backend* create_zinc_backend();
 
-// ── Zamba2 backend ──
-Backend* create_zamba2_backend();
+// ── Zamba2 backend (mamba2_kernels.hip Mamba2 SSD kernels) ──
+extern "C" Backend* create_zamba2_backend();
+
+// ── Mamba1 GPU backend (mamba1_engine.hip kernels) ──
+// Handles Zamba-7B-v1 (pure Mamba1 SSM) and BlackMamba (Mamba1+MoE).
+extern "C" Backend* create_mamba1_backend();
+
+// ── CUDA backend ──
+extern "C" Backend* create_cuda_backend();
+
+// ── Metal backend ──
+extern "C" Backend* create_metal_backend();
 
 // ── Auto-detect ──
 BackendType detect_backends();
+
+// ── Mamba1 detection helper ──
+bool is_mamba1_architecture(const ModelConfig& cfg);

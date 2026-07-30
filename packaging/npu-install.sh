@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # 1bit.systems — NPU Engine Install
 # Pure NPU inference engine. No Python. No Node. No Docker. No dependencies.
 #
@@ -19,7 +20,7 @@ die()  { printf "${RED}✗${NC} %s\n" "$*"; exit 1; }
 echo ""
 printf "${GREEN}╔══════════════════════════════════════════════╗${NC}\n"
 printf "${GREEN}║  1bit.systems — NPU Inference Engine        ║${NC}\n"
-printf "${GREEN}║  120 KB · 5 models · 94 tok/s · Zero deps  ║${NC}\n"
+printf "${GREEN}║  ~400 KB · 35 models · 9 backends · Zero deps  ║${NC}\n"
 printf "${GREEN}╚══════════════════════════════════════════════╝${NC}\n"
 echo ""
 
@@ -81,7 +82,7 @@ done
 # ── Add to PATH ──
 if [[ ":$PATH:" != *":${HOME}/.local/bin:"* ]]; then
   SHELL_CONFIG="${HOME}/.bashrc"
-  [ -n "$ZSH_VERSION" ] && SHELL_CONFIG="${HOME}/.zshrc"
+  [ -n "${ZSH_VERSION:-}" ] && SHELL_CONFIG="${HOME}/.zshrc"
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "${SHELL_CONFIG}"
   say "Added ~/.local/bin to PATH in ${SHELL_CONFIG}"
 fi

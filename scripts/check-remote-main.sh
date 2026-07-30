@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # check-remote-main.sh — Poll origin/main for new commits and signal agents
 #
 # Run this periodically (e.g., via cron, or after `git fetch`) to detect
@@ -18,7 +19,7 @@ SIGNAL_SCRIPT="${HOME}/scripts/signal-agent-awareness.sh"
 RECORD_SCRIPT="${HOME}/scripts/record-agent-change.sh"
 
 # Repos to monitor — add more as needed
-REPOS="${1:-${HOME} ${HOME}/colibri}"
+REPOS="${1:-${HOME}/1bit-systems ${HOME}/colibri}"
 
 for REPO in $REPOS; do
     if [ ! -d "$REPO/.git" ] && [ ! -f "$REPO/.git" ]; then

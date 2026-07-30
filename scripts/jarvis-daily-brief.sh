@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # jarvis-daily-brief.sh — JARVIS daily AI/LLM engineering briefing
 #
 # Queries multiple sources, compiles a structured digest,
@@ -14,7 +15,6 @@ set -euo pipefail
 AWARENESS_DIR="${HOME}/.1bit/agent"
 AWARENESS_FILE="${AWARENESS_DIR}/awareness.json"
 SIGNAL_SCRIPT="${HOME}/scripts/signal-agent-awareness.sh"
-DIGEST_FILE="/tmp/jarvis-daily-digest.json"
 
 echo "🦅 JARVIS daily briefing — $(date -u '+%Y-%m-%d %H:%M UTC')"
 echo ""

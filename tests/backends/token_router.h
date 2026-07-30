@@ -24,10 +24,13 @@ enum class RouteStrategy {
 struct TokenRouter {
     std::vector<InferenceBackend*> backends;
     InferenceBackend* primary = nullptr;
+    InferenceBackend* draft_backend_ = nullptr;  // draft model for spec_decode
     InferenceBackend* gpu_backend = nullptr;
     InferenceBackend* npu_backend = nullptr;
     std::vector<ModelConfig> loaded_models;
+    std::vector<ModelConfig> draft_loaded_models;
     RouteStrategy strategy = RouteStrategy::AUTO;
+    int eos_token_id = 106;  // Zaya1 default; set after tokenizer loads
     MoePipeline moe_pipeline_;
 
     // ── Initialize: detect hardware, load backends ─────────────────
@@ -66,7 +69,7 @@ struct TokenRouter {
                 if (b->type() == BackendType::HIP_GPU || b->type() == BackendType::VULKAN || b->type() == BackendType::ZINC_GPU) {
                     if (!gpu_backend) gpu_backend = b;
                 }
-                if (b->type() == BackendType::NPU_XRT || b->type() == BackendType::NPU_FLM) {
+                if (b->type() == BackendType::NPU_XRT) {
                     if (!npu_backend) npu_backend = b;
                 }
             }
@@ -123,6 +126,8 @@ struct TokenRouter {
         }
 
         loaded_models.push_back(cfg);
+        // Pick up EOS token ID from the loaded model config
+        eos_token_id = cfg.eos_token_id > 0 ? cfg.eos_token_id : eos_token_id;
 
         // ── Initialize MoE pipeline if GPU+NPU are available ─────
         if (gpu_backend && npu_backend &&
@@ -134,6 +139,45 @@ struct TokenRouter {
             }
         }
 
+        return true;
+    }
+
+    // ── Load draft model on a SECOND backend (for spec_decode) ────
+    bool load_draft_model(const ModelConfig& cfg) {
+        InferenceBackend* draft_host = nullptr;
+        for (auto* b : backends) {
+            if (b != primary && b->is_available() && b->type() == BackendType::GENERIC) {
+                draft_host = b; break;
+            }
+        }
+        if (!draft_host) {
+            for (auto* b : backends) {
+                if (b != primary && b->is_available()) {
+                    draft_host = b; break;
+                }
+            }
+        }
+        if (!draft_host) {
+            fprintf(stderr, "  [spec_decode] No secondary backend for draft model!\n");
+            return false;
+        }
+        fprintf(stderr, "Loading draft model %s (H=%d L=%d V=%d) on %s backend...\n",
+            cfg.model_name.c_str(), cfg.hidden_size, cfg.num_layers, cfg.vocab_size,
+            draft_host->name());
+        bool loaded = false;
+        try {
+            loaded = draft_host->load_model(cfg);
+        } catch (std::exception& e) {
+            fprintf(stderr, "  %s: exception: %s\n", draft_host->name(), e.what());
+            loaded = false;
+        }
+        if (!loaded) {
+            fprintf(stderr, "  Failed to load draft model on %s\n", draft_host->name());
+            return false;
+        }
+        draft_backend_ = draft_host;
+        draft_loaded_models.push_back(cfg);
+        fprintf(stderr, "  Draft model loaded successfully\n");
         return true;
     }
 
@@ -149,8 +193,15 @@ struct TokenRouter {
         auto t0 = std::chrono::high_resolution_clock::now();
         primary->reset_state();
 
+        // ── Prefill: feed all prompt tokens except the last to build KV cache ──
+        // Without this, only the final prompt token has context and generation
+        // starts from an empty KV cache, producing garbage.
+        for (size_t pi = 0; pi + 1 < prompt_tokens.size(); pi++) {
+            primary->forward(prompt_tokens[pi], (int)pi);
+        }
+
         std::vector<int> out_tokens;
-        int last_token = prompt_tokens.empty() ? 2 : prompt_tokens.back();
+        int last_token = prompt_tokens.empty() ? eos_token_id : prompt_tokens.back();
 
         switch (use_strat) {
             case RouteStrategy::PASSTHROUGH:
@@ -159,7 +210,7 @@ struct TokenRouter {
                     int next = primary->forward(last_token, i);
                     out_tokens.push_back(next);
                     last_token = next;
-                    if (next == 106) break;
+                    if (next == eos_token_id) break;
                 }
                 break;
 
@@ -199,22 +250,25 @@ struct TokenRouter {
                         }
                     }
                     last_token = next;
-                    if (next == 106) break;
+                    if (next == eos_token_id) break;
                 }
                 break;
             }
 
             case RouteStrategy::SPEC_DECODE: {
-                InferenceBackend* drafter = primary;
-                InferenceBackend* verifier = nullptr;
-                for (auto* b : backends) {
-                    if (b != drafter && b->is_available()) { verifier = b; break; }
+                InferenceBackend* drafter = draft_backend_ ? draft_backend_ : primary;
+                InferenceBackend* verifier = primary;
+                if (drafter == verifier) {
+                    // No separate draft backend — fall back to single-model decode
+                    for (auto* b : backends) {
+                        if (b != drafter && b->is_available()) { verifier = b; break; }
+                    }
                 }
-                if (!verifier) {
+                if (!verifier || verifier == drafter) {
                     for (int i = 0; i < max_tokens; i++) {
                         int next = drafter->forward(last_token, i);
                         out_tokens.push_back(next); last_token = next;
-                        if (next == 106) break;
+                        if (next == eos_token_id) break;
                     }
                 } else {
                     int n_draft = 4, generated = 0;
@@ -224,7 +278,7 @@ struct TokenRouter {
                         for (int d = 0; d < n_draft && generated + d < max_tokens; d++) {
                             int next = drafter->forward(draft_last, generated + d);
                             drafts.push_back(next); draft_last = next;
-                            if (next == 106) break;
+                            if (next == eos_token_id) break;
                         }
                         if (!drafts.empty()) {
                             int verified = verifier->forward(last_token, generated);
@@ -241,7 +295,7 @@ struct TokenRouter {
                             } else {
                                 out_tokens.push_back(verified); last_token = verified; generated++;
                             }
-                            if (last_token == 106) break;
+                            if (last_token == eos_token_id) break;
                         } else break;
                     }
                 }
@@ -253,7 +307,7 @@ struct TokenRouter {
                     int next = primary->forward(last_token, i);
                     out_tokens.push_back(next);
                     last_token = next;
-                    if (next == 106) break;
+                    if (next == eos_token_id) break;
                 }
                 break;
 
@@ -272,7 +326,7 @@ struct TokenRouter {
                     int next = primary->forward(last_token, i);
                     out_tokens.push_back(next);
                     last_token = next;
-                    if (next == 106) break;
+                    if (next == eos_token_id) break;
                 }
                 break;
         }
@@ -284,6 +338,53 @@ struct TokenRouter {
         result.gen_ms = ms;
         result.tok_s = ms > 0 ? out_tokens.size() / (ms / 1000.0f) : 0;
         return result;
+    }
+
+    // ── Batch inference: process multiple prompts efficiently ──
+    // Groups B sequences into one forward pass where possible.
+    // Useful for prefill-heavy workloads (chat templates, few-shot).
+    std::vector<InferenceResult> infer_batch(
+        const std::vector<std::vector<int>>& prompts,
+        int max_tokens_per_seq)
+    {
+        std::vector<InferenceResult> results(prompts.size());
+        if (prompts.empty() || !primary) return results;
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        for (size_t b = 0; b < prompts.size(); b++) {
+            const auto& prompt = prompts[b];
+            if (prompt.empty()) continue;
+
+            primary->reset_state();
+            // Prefill all prompt tokens except the last
+            for (size_t pi = 0; pi + 1 < prompt.size(); pi++) {
+                primary->forward(prompt[pi], (int)pi);
+            }
+            std::vector<int> out_tokens;
+            int last_token = prompt.back();
+
+            for (int i = 0; i < max_tokens_per_seq; i++) {
+                int next = primary->forward(last_token, i);
+                out_tokens.push_back(next);
+                last_token = next;
+                if (next == eos_token_id) break;
+            }
+
+            results[b].tokens = out_tokens;
+            results[b].prompt_tokens = (int)prompt.size();
+            results[b].completion_tokens = (int)out_tokens.size();
+        }
+
+        float ms = std::chrono::duration<float, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+
+        for (auto& r : results) {
+            r.gen_ms = ms;
+            r.tok_s = r.tokens.size() > 0
+                ? r.tokens.size() / (ms / 1000.0f) : 0;
+        }
+        return results;
     }
 };
 

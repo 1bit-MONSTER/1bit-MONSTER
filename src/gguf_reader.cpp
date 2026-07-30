@@ -4,6 +4,11 @@
 #include <cmath>
 #include <algorithm>
 
+// Portable fseeko: MSVC uses _fseeki64, POSIX uses fseeko
+#ifdef _WIN32
+#define fseeko _fseeki64
+#endif
+
 namespace {
 
 // Reads a real IEEE754 half-precision float16 (5-bit exponent, bias 15).
@@ -290,21 +295,53 @@ bool dequant_q8_k(const uint8_t* bd, float* out, int count) {
 
 } // namespace
 
+inline float bf16_to_fp32(uint16_t bf16) {
+    // bfloat16 -> float32: reinterpret the bits by shifting left 16.
+    // No special handling needed for NaN/Inf — the bit pattern is identical.
+    float result;
+    uint32_t f32 = (uint32_t)bf16 << 16;
+    memcpy(&result, &f32, 4);
+    return result;
+}
+
 GgufBlockInfo gguf_block_info(uint32_t dtype) {
     switch (dtype) {
-        case GGUF_DTYPE_F32:  return {1, 4};
-        case GGUF_DTYPE_F16:  return {1, 2};
-        case GGUF_DTYPE_Q4_0: return {32, 18};
-        case GGUF_DTYPE_Q4_1: return {32, 20};
-        case GGUF_DTYPE_Q5_0: return {32, 22};
-        case GGUF_DTYPE_Q5_1: return {32, 24};
-        case GGUF_DTYPE_Q8_0: return {32, 34};
-        case GGUF_DTYPE_Q2_K: return {256, 84};
-        case GGUF_DTYPE_Q3_K: return {256, 110};
-        case GGUF_DTYPE_Q4_K: return {256, 144};
-        case GGUF_DTYPE_Q5_K: return {256, 176};
-        case GGUF_DTYPE_Q6_K: return {256, 210};
-        case GGUF_DTYPE_Q8_K: return {256, 292};
+        case GGUF_DTYPE_F32:    return {1, 4};
+        case GGUF_DTYPE_F16:    return {1, 2};
+        case GGUF_DTYPE_BF16:   return {1, 2};
+        case GGUF_DTYPE_Q4_0:   return {32, 18};
+        case GGUF_DTYPE_Q4_1:   return {32, 20};
+        case GGUF_DTYPE_Q5_0:   return {32, 22};
+        case GGUF_DTYPE_Q5_1:   return {32, 24};
+        case GGUF_DTYPE_Q8_0:   return {32, 34};
+        case GGUF_DTYPE_Q8_1:   return {32, 36};
+        case GGUF_DTYPE_Q2_K:   return {256, 84};
+        case GGUF_DTYPE_Q3_K:   return {256, 110};
+        case GGUF_DTYPE_Q4_K:   return {256, 144};
+        case GGUF_DTYPE_Q5_K:   return {256, 176};
+        case GGUF_DTYPE_Q6_K:   return {256, 210};
+        case GGUF_DTYPE_Q8_K:   return {256, 292};
+        // IQ format block sizes (for correct file offset computation).
+        // Dequantization is not implemented here — these return false
+        // from gguf_dequant; callers can use get_tensor_raw() for
+        // custom dequant.
+        case GGUF_DTYPE_IQ1_S:  return {256, 206};
+        case GGUF_DTYPE_IQ1_M:  return {256, 230};
+        case GGUF_DTYPE_IQ2_XXS: return {256, 166};
+        case GGUF_DTYPE_IQ2_S:  return {256, 214};
+        case GGUF_DTYPE_IQ3_XXS: return {256, 198};
+        case GGUF_DTYPE_IQ3_S:  return {256, 238};
+        case GGUF_DTYPE_IQ4_NL: return {32, 22};
+        case GGUF_DTYPE_IQ4_XS: return {256, 214};
+        case GGUF_DTYPE_Q4_0_4_4: return {256, 208};
+        case GGUF_DTYPE_Q4_0_4_8: return {256, 208};
+        case GGUF_DTYPE_Q4_0_8_8: return {256, 272};
+        // Project-specific ternary/binary formats (h1b weight format)
+        // TQ2_0_g128: ternary, 2-bit packed, group=128 → blocks of 128 el, 33 bytes
+        // TQ2_0 ternary: fp16 scale (2) + 2-bit codes (128*2/8=32) = 34 bytes
+        case GGUF_DTYPE_TQ2_0_G128: return {128, 34};
+        // Q1_0 binary: fp16 scale (2) + 1-bit codes (128/8=16) = 18 bytes
+        case GGUF_DTYPE_Q1_0_G128: return {128, 18};
         default: return {0, 0};
     }
 }
@@ -315,17 +352,54 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
         case GGUF_DTYPE_F16:
             for (int i = 0; i < count; i++) out[i] = read_f16(data + (size_t)i * 2);
             return true;
+        case GGUF_DTYPE_BF16:
+            for (int i = 0; i < count; i++) out[i] = bf16_to_fp32(((const uint16_t*)data)[i]);
+            return true;
         case GGUF_DTYPE_Q4_0: return dequant_q4_0(data, out, count);
         case GGUF_DTYPE_Q4_1: return dequant_q4_1(data, out, count);
         case GGUF_DTYPE_Q5_0: return dequant_q5_0(data, out, count);
         case GGUF_DTYPE_Q5_1: return dequant_q5_1(data, out, count);
         case GGUF_DTYPE_Q8_0: return dequant_q8_0(data, out, count);
+        case GGUF_DTYPE_Q8_1: {
+            // Q8_1: fp16 d (scale) + fp16 s (unused for dequant) + int8[32]
+            for (int i = 0; i < count; i++) {
+                int bi = i / 32, ei = i % 32;
+                const uint8_t* blk = data + (size_t)bi * 36;
+                float d = read_f16(blk);
+                out[i] = (float)((int8_t)blk[4 + ei]) * d;
+            }
+            return true;
+        }
         case GGUF_DTYPE_Q2_K: return dequant_q2_k(data, out, count);
         case GGUF_DTYPE_Q3_K: return dequant_q3_k(data, out, count);
         case GGUF_DTYPE_Q4_K: return dequant_q4_k(data, out, count);
         case GGUF_DTYPE_Q5_K: return dequant_q5_k(data, out, count);
         case GGUF_DTYPE_Q6_K: return dequant_q6_k(data, out, count);
         case GGUF_DTYPE_Q8_K: return dequant_q8_k(data, out, count);
+        case GGUF_DTYPE_Q1_0_G128: {
+            // Q1_0 binary: fp16 scale + sign bits (1 bit per element)
+            for (int i = 0; i < count; i++) {
+                int bi = i / 128, ei = i % 128;
+                const uint8_t* blk = data + (size_t)bi * 18;
+                float sc = read_f16(blk);
+                const uint8_t* bits = blk + 2;
+                out[i] = (bits[ei / 8] >> (ei % 8)) & 1 ? sc : -sc;
+            }
+            return true;
+        }
+        case GGUF_DTYPE_TQ2_0_G128: {
+            // TQ2_0 ternary: fp16 scale + 2-bit codes (0=-s, 1=0, 2=+s, 3=0)
+            for (int i = 0; i < count; i++) {
+                int bi = i / 128, ei = i % 128;
+                const uint8_t* blk = data + (size_t)bi * 34;
+                float sc = read_f16(blk);
+                uint8_t c = (blk[2 + ei/4] >> ((ei%4)*2)) & 3;
+                if (c == 0) out[i] = -sc;
+                else if (c == 2) out[i] = sc;
+                else out[i] = 0.0f;
+            }
+            return true;
+        }
         default: return false;
     }
 }
@@ -334,11 +408,11 @@ GgufReader::~GgufReader() { if (f_) fclose(f_); }
 
 std::string GgufReader::read_string() {
     uint64_t len = 0;
-    fread(&len, 8, 1, f_);
+    if (fread(&len, 8, 1, f_) != 1) return {};
     static constexpr uint64_t MAX_STRING_LEN = 1ULL * 1024 * 1024;
-    if (len > MAX_STRING_LEN) { len = 0; }
+    if (len > MAX_STRING_LEN) { fseeko(f_, (off_t)len, SEEK_CUR); return "truncated"; }
     std::string s(len, '\0');
-    if (len > 0) fread(&s[0], 1, len, f_);
+    if (len > 0 && fread(&s[0], 1, len, f_) != len) return {};
     return s;
 }
 
@@ -347,51 +421,65 @@ std::string GgufReader::read_string() {
 bool GgufReader::read_kv_value(uint32_t vtype, KV& out) {
     out.vtype = vtype;
     switch (vtype) {
-        case 0: { uint8_t v; fread(&v, 1, 1, f_); out.u = v; return true; }
-        case 1: { int8_t v; fread(&v, 1, 1, f_); out.u = (uint64_t)(int64_t)v; return true; }
-        case 2: { uint16_t v; fread(&v, 2, 1, f_); out.u = v; return true; }
-        case 3: { int16_t v; fread(&v, 2, 1, f_); out.u = (uint64_t)(int64_t)v; return true; }
-        case 4: { uint32_t v; fread(&v, 4, 1, f_); out.u = v; return true; }
-        case 5: { int32_t v; fread(&v, 4, 1, f_); out.u = (uint64_t)(int64_t)v; return true; }
-        case 6: { float v; fread(&v, 4, 1, f_); out.f = v; return true; }
-        case 7: { uint8_t v; fread(&v, 1, 1, f_); out.u = v; return true; }
+        case 0: { uint8_t v; if (fread(&v, 1, 1, f_) != 1) return false; out.u = v; return true; }
+        case 1: { int8_t v; if (fread(&v, 1, 1, f_) != 1) return false; out.u = (uint64_t)(int64_t)v; return true; }
+        case 2: { uint16_t v; if (fread(&v, 2, 1, f_) != 1) return false; out.u = v; return true; }
+        case 3: { int16_t v; if (fread(&v, 2, 1, f_) != 1) return false; out.u = (uint64_t)(int64_t)v; return true; }
+        case 4: { uint32_t v; if (fread(&v, 4, 1, f_) != 1) return false; out.u = v; return true; }
+        case 5: { int32_t v; if (fread(&v, 4, 1, f_) != 1) return false; out.u = (uint64_t)(int64_t)v; return true; }
+        case 6: { float v; if (fread(&v, 4, 1, f_) != 1) return false; out.f = v; return true; }
+        case 7: { uint8_t v; if (fread(&v, 1, 1, f_) != 1) return false; out.u = v; return true; }
         case 8: { out.s = read_string(); return true; }
         case 9: {
-            uint32_t at; fread(&at, 4, 1, f_);
-            uint64_t an; fread(&an, 8, 1, f_);
+            uint32_t at; if (fread(&at, 4, 1, f_) != 1) return false;
+            uint64_t an; if (fread(&an, 8, 1, f_) != 1) return false;
             static constexpr uint64_t MAX_ARRAY_COUNT = 1000000;
-            if (an > MAX_ARRAY_COUNT) an = 0;
+            if (an > MAX_ARRAY_COUNT) {
+                for (uint64_t j = 0; j < an; j++) skip_kv_value(at);
+                an = 0;
+            }
             if (at == 8) {
                 out.arr_str.resize(an);
                 for (uint64_t j = 0; j < an; j++) out.arr_str[j] = read_string();
+            } else if (an == 1) {
+                // Single-element numeric array: store as scalar u
+                out.vtype = at;  // override to inner type
+                switch (at) {
+                    case 4: { uint32_t v; fread(&v, 4, 1, f_); out.u = v; break; }
+                    case 5: { int32_t v; fread(&v, 4, 1, f_); out.u = (uint64_t)(int64_t)v; break; }
+                    case 10: { uint64_t v; fread(&v, 8, 1, f_); out.u = v; break; }
+                    case 11: { int64_t v; fread(&v, 8, 1, f_); out.u = (uint64_t)v; break; }
+                    case 6: { float v; fread(&v, 4, 1, f_); out.f = v; break; }
+                    default: skip_kv_value(at); break;
+                }
             } else {
                 for (uint64_t j = 0; j < an; j++) skip_kv_value(at);
             }
             return true;
         }
-        case 10: { uint64_t v; fread(&v, 8, 1, f_); out.u = v; return true; }
-        case 11: { int64_t v; fread(&v, 8, 1, f_); out.u = (uint64_t)v; return true; }
-        case 12: { double v; fread(&v, 8, 1, f_); out.f = v; return true; }
+        case 10: { uint64_t v; if (fread(&v, 8, 1, f_) != 1) return false; out.u = v; return true; }
+        case 11: { int64_t v; if (fread(&v, 8, 1, f_) != 1) return false; out.u = (uint64_t)v; return true; }
+        case 12: { double v; if (fread(&v, 8, 1, f_) != 1) return false; out.f = v; return true; }
         default: return false;
     }
 }
 
 void GgufReader::skip_kv_value(uint32_t vtype) {
     switch (vtype) {
-        case 0: case 1: case 7: fseek(f_, 1, SEEK_CUR); break;
-        case 2: case 3: fseek(f_, 2, SEEK_CUR); break;
-        case 4: case 5: case 6: fseek(f_, 4, SEEK_CUR); break;
+        case 0: case 1: case 7: fseeko(f_, 1, SEEK_CUR); break;
+        case 2: case 3: fseeko(f_, 2, SEEK_CUR); break;
+        case 4: case 5: case 6: fseeko(f_, 4, SEEK_CUR); break;
         case 8: { read_string(); break; }
         case 9: {
-            uint32_t at; fread(&at, 4, 1, f_);
-            uint64_t an; fread(&an, 8, 1, f_);
+            uint32_t at; if (fread(&at, 4, 1, f_) != 1) return;
+            uint64_t an; if (fread(&an, 8, 1, f_) != 1) return;
             static constexpr uint64_t MAX_ARRAY_COUNT = 1000000;
             if (an > MAX_ARRAY_COUNT) an = 0;
             if (at == 8) { for (uint64_t j = 0; j < an; j++) read_string(); }
             else { for (uint64_t j = 0; j < an; j++) skip_kv_value(at); }
             break;
         }
-        case 10: case 11: case 12: fseek(f_, 8, SEEK_CUR); break;
+        case 10: case 11: case 12: fseeko(f_, 8, SEEK_CUR); break;
         default: break;
     }
 }
@@ -401,17 +489,16 @@ bool GgufReader::open(const std::string& path) {
     if (!f_) return false;
     char magic[4];
     if (fread(magic, 1, 4, f_) != 4 || memcmp(magic, "GGUF", 4) != 0) { fclose(f_); f_ = nullptr; return false; }
-    uint32_t version; fread(&version, 4, 1, f_);
+    uint32_t version; if (fread(&version, 4, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
     if (version != 2 && version != 3) { fclose(f_); f_ = nullptr; return false; }
     uint64_t tensor_count, kv_count;
-    fread(&tensor_count, 8, 1, f_);
-    fread(&kv_count, 8, 1, f_);
+    if (fread(&tensor_count, 8, 1, f_) != 1 || fread(&kv_count, 8, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
     static constexpr uint64_t MAX_TENSOR_COUNT = 200000, MAX_KV_COUNT = 200000;
     if (tensor_count > MAX_TENSOR_COUNT || kv_count > MAX_KV_COUNT) { fclose(f_); f_ = nullptr; return false; }
 
     for (uint64_t i = 0; i < kv_count; i++) {
         std::string key = read_string();
-        uint32_t vtype; fread(&vtype, 4, 1, f_);
+        uint32_t vtype; if (fread(&vtype, 4, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
         KV kv;
         if (!read_kv_value(vtype, kv)) { fclose(f_); f_ = nullptr; return false; }
         kv_[key] = std::move(kv);
@@ -425,16 +512,16 @@ bool GgufReader::open(const std::string& path) {
     static constexpr uint64_t MAX_DIM_SIZE = 1ULL << 24;
     for (uint64_t i = 0; i < tensor_count; i++) {
         std::string name = read_string();
-        uint32_t ndim; fread(&ndim, 4, 1, f_);
+        uint32_t ndim; if (fread(&ndim, 4, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
         if (ndim > MAX_NDIM) { fclose(f_); f_ = nullptr; return false; }
         GgufTensorInfo ti;
         ti.shape.resize(ndim);
         for (uint32_t d = 0; d < ndim; d++) {
-            fread(&ti.shape[d], 8, 1, f_);
+            if (fread(&ti.shape[d], 8, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
             if (ti.shape[d] > MAX_DIM_SIZE) { fclose(f_); f_ = nullptr; return false; }
         }
-        fread(&ti.dtype, 4, 1, f_);
-        uint64_t rel_offset; fread(&rel_offset, 8, 1, f_);
+        if (fread(&ti.dtype, 4, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
+        uint64_t rel_offset; if (fread(&rel_offset, 8, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
         ti.numel = 1;
         for (auto s : ti.shape) ti.numel *= (s ? s : 1);
         ti.abs_offset = rel_offset; // fixed up to absolute after the loop
@@ -459,34 +546,55 @@ const GgufTensorInfo* GgufReader::tensor_info(const std::string& name) const {
     return it == tensors_.end() ? nullptr : &it->second;
 }
 
-bool GgufReader::get_u32(const std::string& key, uint32_t& out) const {
+// ── KV lookup with architecture-prefix fallback ──
+// GGUF files may store metadata keys with or without the architecture prefix.
+// E.g. "block_count" vs "mamba.block_count". We try both forms:
+//   - If key contains a dot (e.g. "mamba.block_count"): try exact, then suffix.
+//   - If key has no dot: try exact, then arch + "." + key.
+const GgufReader::KV* GgufReader::find_kv(const std::string& key) const {
     auto it = kv_.find(key);
-    if (it == kv_.end()) return false;
-    const KV& kv = it->second;
-    if (kv.vtype <= 5 || kv.vtype == 7 || kv.vtype == 10 || kv.vtype == 11) { out = (uint32_t)kv.u; return true; }
+    if (it != kv_.end()) return &it->second;
+    auto dot = key.find('.');
+    if (dot != std::string::npos) {
+        std::string suf = key.substr(dot + 1);
+        if (!suf.empty()) {
+            it = kv_.find(suf);
+            if (it != kv_.end()) return &it->second;
+        }
+    } else if (!arch_.empty()) {
+        std::string pre = arch_ + "." + key;
+        it = kv_.find(pre);
+        if (it != kv_.end()) return &it->second;
+    }
+    return nullptr;
+}
+
+bool GgufReader::get_u32(const std::string& key, uint32_t& out) const {
+    const KV* kv = find_kv(key);
+    if (!kv) return false;
+    if (kv->vtype <= 5 || kv->vtype == 7 || kv->vtype == 10 || kv->vtype == 11) { out = (uint32_t)kv->u; return true; }
     return false;
 }
 
 bool GgufReader::get_f32(const std::string& key, float& out) const {
-    auto it = kv_.find(key);
-    if (it == kv_.end()) return false;
-    const KV& kv = it->second;
-    if (kv.vtype == 6 || kv.vtype == 12) { out = (float)kv.f; return true; }
-    if (kv.vtype <= 5 || kv.vtype == 10 || kv.vtype == 11) { out = (float)(int64_t)kv.u; return true; }
+    const KV* kv = find_kv(key);
+    if (!kv) return false;
+    if (kv->vtype == 6 || kv->vtype == 12) { out = (float)kv->f; return true; }
+    if (kv->vtype <= 5 || kv->vtype == 10 || kv->vtype == 11) { out = (float)(int64_t)kv->u; return true; }
     return false;
 }
 
 bool GgufReader::get_string(const std::string& key, std::string& out) const {
-    auto it = kv_.find(key);
-    if (it == kv_.end() || it->second.vtype != 8) return false;
-    out = it->second.s;
+    const KV* kv = find_kv(key);
+    if (!kv || kv->vtype != 8) return false;
+    out = kv->s;
     return true;
 }
 
 bool GgufReader::get_string_array(const std::string& key, std::vector<std::string>& out) const {
-    auto it = kv_.find(key);
-    if (it == kv_.end() || it->second.vtype != 9) return false;
-    out = it->second.arr_str;
+    const KV* kv = find_kv(key);
+    if (!kv || kv->vtype != 9) return false;
+    out = kv->arr_str;
     return true;
 }
 
@@ -505,7 +613,7 @@ bool GgufReader::get_tensor_raw(const std::string& name, int block_size, int blo
     if (out_numel) *out_numel = ti.numel;
     uint64_t n_blocks = (ti.numel + block_size - 1) / block_size;
     out.resize(n_blocks * (uint64_t)block_bytes);
-    fseek(f_, (long)ti.abs_offset, SEEK_SET);
+    fseeko(f_, (off_t)ti.abs_offset, SEEK_SET);
     return fread(out.data(), 1, out.size(), f_) == out.size();
 }
 
@@ -520,7 +628,7 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
 
     GgufBlockInfo bi = gguf_block_info(ti.dtype);
     if (bi.block_bytes <= 0) return false;
-    fseek(f_, (long)ti.abs_offset, SEEK_SET);
+    fseeko(f_, (off_t)ti.abs_offset, SEEK_SET);
     uint64_t n_blocks = (ti.numel + bi.block_size - 1) / bi.block_size;
     std::vector<uint8_t> block_buf((size_t)bi.block_bytes);
     for (uint64_t b = 0; b < n_blocks; b++) {

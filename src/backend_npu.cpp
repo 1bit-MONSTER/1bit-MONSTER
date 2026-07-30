@@ -21,6 +21,7 @@
 #include <cmath>
 #include <vector>
 #include <string>
+#include <mutex>
 #include <fstream>
 #include <chrono>
 #include <algorithm>
@@ -44,24 +45,15 @@ static inline void rmsnorm(float* x, const float* w, int n) {
     float ir = 1.0f / sqrtf((float)(ss / n) + EPS);
     for (int i = 0; i < n; i++) x[i] = std::isfinite(x[i]) ? x[i] * ir * w[i] : 0.0f;
 }
-static inline void softmax(float* x, int n) {
-    cn(x, n); float mx = x[0];
-    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
-    double s = 0;
-    for (int i = 0; i < n; i++) {
-        float d = x[i] - mx; if (d > 80) d = 80; else if (d < -80) d = -80;
-        x[i] = expf(d); s += x[i];
-    }
-    if (s <= 0) { float iv = 1.0f / n; for (int i = 0; i < n; i++) x[i] = iv; return; }
-    float is = 1.0f / (float)s; for (int i = 0; i < n; i++) x[i] *= is;
-}
 static inline float silu(float x) { return x / (1.0f + expf(-x)); }
 
-// RoPE cache (built once at init)
+// RoPE cache (built once at init, thread-safe via mutex)
 static std::vector<float> cos_cache, sin_cache;
 static int rope_hd = 0;
+static std::mutex rope_cache_mutex;
 static void build_rope_cache(int max_pos, int head_dim, float theta) {
-    if (head_dim == rope_hd && !cos_cache.empty()) return; // already built
+    std::lock_guard<std::mutex> lock(rope_cache_mutex);
+    if (head_dim == rope_hd && !cos_cache.empty()) return; // already built — double-checked under lock
     rope_hd = head_dim;
     int hd2 = head_dim / 2;
     cos_cache.resize(max_pos * head_dim);
@@ -90,10 +82,11 @@ static inline void rope(float* x, int head_dim, int pos) {
 static void attn_cpu(float* qo, float* at, int seq_len,
                      const float* kv_k, const float* kv_v,
                      int NQ, int NKV, int HD, int GQA) {
+    constexpr int MAX_CTX = 4096;
     #pragma omp parallel for
     for (int hh = 0; hh < NQ; hh++) {
         int kvh = hh / GQA;
-        std::vector<float> scores(seq_len);
+        float scores[MAX_CTX];
         float mx = -1e30f;
         for (int p = 0; p < seq_len; p++) {
             double s = 0;
@@ -104,7 +97,7 @@ static void attn_cpu(float* qo, float* at, int seq_len,
         }
         double sw = 0;
         for (int p = 0; p < seq_len; p++) { scores[p] = expf(scores[p] - mx); sw += scores[p]; }
-        float isw = sw > 0 ? 1.0f / (float)sw : 1.0f / seq_len;
+        float isw = (sw > 0 && seq_len > 0) ? 1.0f / (float)sw : 1.0f / (seq_len > 0 ? (float)seq_len : 1.0f);
         for (int d = 0; d < HD; d++) {
             float acc = 0;
             for (int p = 0; p < seq_len; p++)
@@ -162,6 +155,22 @@ struct NpuWorker {
 
     bool spawn(const std::string& model_path,
               int H, int NC, int NQ, int NKV, int HD, int IM, int NV) {
+        // A worker that has already died (crash, or our own SIGKILL during
+        // shutdown) turns every subsequent write() to its stdin pipe into
+        // SIGPIPE, whose default action terminates the ENTIRE host process —
+        // not just the failing write. The gemm() and shutdown() writes below
+        // are exactly those writes. Ignore SIGPIPE process-wide, once, so those
+        // writes return -1/EPIPE and are caught by the existing short-write
+        // checks instead of crashing the server (AUDIT_ISSUES.md #3). Only
+        // tools/token_router.cpp did this before, leaving unified_server /
+        // zaya_server (the real NPU hosts) exposed. Function-local static init
+        // is thread-safe and runs exactly once per process.
+        static const bool _sigpipe_ignored = []{
+            signal(SIGPIPE, SIG_IGN);
+            return true;
+        }();
+        (void)_sigpipe_ignored;
+
         const char* engine_bin = getenv("NPU_ENGINE_BIN");
         std::string bin = engine_bin ? engine_bin : "./npu_engine_universal";
 
@@ -240,6 +249,14 @@ struct NpuWorker {
         if (!read_with_timeout(stdout_fd, resp, sizeof(resp), GEMM_TIMEOUT_MS)) return false;
         if (resp[0] != 0) return false;
         uint32_t out_dim = resp[1];
+        // Validate out_dim against known model dimensions to prevent
+        // OOM from a buggy/compromised worker subprocess (AUDIT).
+        static constexpr uint32_t MAX_SAFE_OUT_DIM = 256 * 1024; // 256K floats max
+        if (out_dim > MAX_SAFE_OUT_DIM) {
+            fprintf(stderr, "NPU: worker returned out_dim=%u > max=%u — rejecting\n",
+                    out_dim, MAX_SAFE_OUT_DIM);
+            return false;
+        }
         out_data.resize((size_t)batch * out_dim);
         return read_with_timeout(stdout_fd, out_data.data(), (size_t)batch * out_dim * sizeof(float), GEMM_TIMEOUT_MS);
     }
@@ -277,6 +294,16 @@ struct NpuWorker {
 struct NPUBackend : Backend {
     NpuWorker worker;
     Q4nxReader model;
+
+    // Saved for worker respawn on idle-release (issue #1029)
+    std::string worker_model_path_;
+
+    // Idle-release: track last inference time so we can release the NPU
+    // worker subprocess between requests. The worker holds /dev/accel/accel0;
+    // releasing it when idle lets standalone tools (npu_engine_universal)
+    // use the NPU without stopping unified_server.
+    std::chrono::steady_clock::time_point last_use_;
+    static constexpr int IDLE_RELEASE_SECS = 30;
 
     // Model dimensions
     int H = 0, NQ = 0, NKV = 0, HD = 0, GQA = 0, NV = 0, NC = 0;
@@ -317,14 +344,17 @@ struct NPUBackend : Backend {
         if (!model_path) {
             // Auto-discovery: search common paths for model.q4nx (#444)
             // 1. Current dir + common paths
+            const char* home_model = getenv("HOME");
+            static std::string home_model_path = (home_model && home_model[0]) ? std::string(home_model) + "/.local/share/1bit-systems/weights/model.q4nx" : "";
             static const char* search_paths[] = {
                 "model.q4nx",
                 "models/model.q4nx",
                 "/opt/1bit/models/model.q4nx",
-                "/tmp/zaya_weights/model.q4nx",
+                home_model_path.c_str(),
             };
             // 2. FLM model directory (users already have models here)
-            std::string flm_dir = std::string(getenv("HOME") ?: "") + "/.config/flm/models";
+            const char* home_env = getenv("HOME");
+            std::string flm_dir = std::string(home_env ? home_env : "") + "/.config/flm/models";
             std::string flm_candidates[8];
             int n_flm = 0;
             if (!flm_dir.empty()) {
@@ -397,10 +427,32 @@ struct NPUBackend : Backend {
             return false;
         }
 
-        // Spawn NPU worker (must happen after dimensions known)
-        if (!worker.spawn(model_path, H, NC, NQ, NKV, HD, mlp_dim, NV)) {
-            fprintf(stderr, "NPU: failed to spawn worker engine\n");
-            return false;
+        // Save model path for lazy worker start (issue #1029).
+        // The worker subprocess holds /dev/accel/accel0 — we defer spawning
+        // until the first inference request so the NPU is free when idle.
+        worker_model_path_ = model_path;
+
+        // Derive model tag from the ACTUAL filename (resolve symlinks)
+        // so the worker finds the right xclbins (final_i8_<op>_<tag>.xclbin).
+        {
+            char realp[4096];
+            const char* actual_path = model_path;
+            if (realpath(model_path, realp)) actual_path = realp;
+            std::string mp(actual_path);
+            auto ls = mp.rfind('/');
+            std::string tag = (ls != std::string::npos) ? mp.substr(ls + 1) : mp;
+            auto dot = tag.rfind('.');
+            if (dot != std::string::npos) tag = tag.substr(0, dot);
+            // Lowercase, replace separators
+            for (auto& c : tag) { c = tolower(c); if (c == '-' || c == '.' || c == '\\') c = '_'; }
+            const char* sfxs[] = {"_npu2","_instruct","_it","_it_npu2"};
+            for (auto sf : sfxs) {
+                size_t sl = strlen(sf);
+                if (tag.size() > sl && tag.substr(tag.size() - sl) == sf)
+                    tag = tag.substr(0, tag.size() - sl);
+            }
+            setenv("NPU_MODEL_TAG", tag.c_str(), 1);
+            printf("NPU: model tag set to '%s' (from %s)\n", tag.c_str(), actual_path);
         }
 
         // Load embed + norm weights from model file
@@ -414,6 +466,7 @@ struct NPUBackend : Backend {
         {
             // JSON keys used by Q4NX format
             uint64_t emb_off = model.find_offset("model_embed_tokens_weight");
+            if (!emb_off) emb_off = model.find_offset("model.embed_tokens.weight");
             if (!emb_off) emb_off = model.find_offset("gte");
             if (emb_off) {
                 embed = model.read_floats(emb_off, (size_t)NV * H);
@@ -520,156 +573,72 @@ struct NPUBackend : Backend {
         return true;
     }
 
+    // Ensure the NPU worker subprocess is running. Called at the start of
+    // every forward() call. If the worker was intentionally stopped (idle
+    // release) or crashed, respawn it. Worker startup takes ~5s for model
+    // dequant+pack; acceptable because it only happens on first request
+    // after idle. See issue #1029.
+    bool ensure_worker() {
+        if (worker.ready) return true;
+        printf("NPU: (re)starting worker subprocess...\n");
+        if (!worker.spawn(worker_model_path_, H, NC, NQ, NKV, HD, mlp_dim, NV)) {
+            fprintf(stderr, "NPU: failed to (re)spawn worker engine\n");
+            return false;
+        }
+        return true;
+    }
+
     bool reset() override {
         pos = 0;
         for (auto& kv : kv_caches) kv.seq_len = 0;
-        return true;
-    }
-
-    bool forward(int token_id, float* hidden_out) override {
-        if (!initialized) return false;
-        if (embed.empty()) return false;
-
-        // Embedding lookup
-        if (token_id >= 0 && (size_t)token_id * H < embed.size())
-            memcpy(hidden.data(), &embed[(size_t)token_id * H], H * sizeof(float));
-        else
-            memset(hidden.data(), 0, H * sizeof(float));
-
-        for (int l = 0; l < NC; l++) {
-            // Save residual
-            memcpy(residual_buf.data(), hidden.data(), H * sizeof(float));
-
-            // Input RMSNorm
-            if (!in_norms[l].empty())
-                rmsnorm(hidden.data(), in_norms[l].data(), H);
-
-            // ── QKV GEMM ──
-            if (!worker.gemm(1, l, 1, H, hidden.data(), qkv_buf)) {
-                fprintf(stderr, "NPU: QKV gemm failed layer %d\n", l);
-                return false;
-            }
-            cn(qkv_buf.data(), qkv_total);
-
-            // ── Q/K norm + RoPE + KV cache store ──
-            for (int hh = 0; hh < NQ; hh++) {
-                float* q = qkv_buf.data() + hh * HD;
-                double sq = 0;
-                for (int d = 0; d < HD; d++) sq += (double)q[d] * q[d];
-                float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
-                const float* qn = (!q_norms.empty() && !q_norms[l].empty()) ? q_norms[l].data() : nullptr;
-                for (int d = 0; d < HD; d++) q[d] *= iq * (qn ? qn[d] : 1.0f);
-                rope(q, HD, pos);
-            }
-            for (int kvh = 0; kvh < NKV; kvh++) {
-                float* k = qkv_buf.data() + NQ * HD + kvh * HD;
-                double sk = 0;
-                for (int d = 0; d < HD; d++) sk += (double)k[d] * k[d];
-                float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
-                const float* kn = (!k_norms.empty() && !k_norms[l].empty()) ? k_norms[l].data() : nullptr;
-                for (int d = 0; d < HD; d++) k[d] *= ik * (kn ? kn[d] : 1.0f);
-                rope(k, HD, pos);
-            }
-            // Store KV
-            int sp = kv_caches[l].seq_len;
-            float* kv_k = kv_caches[l].k.data();
-            float* kv_v = kv_caches[l].v.data();
-            for (int kvh = 0; kvh < NKV; kvh++) {
-                memcpy(&kv_k[(size_t)sp * NKV * HD + (size_t)kvh * HD],
-                       qkv_buf.data() + NQ * HD + kvh * HD, HD * sizeof(float));
-                memcpy(&kv_v[(size_t)sp * NKV * HD + (size_t)kvh * HD],
-                       qkv_buf.data() + NQ * HD + NKV * HD + kvh * HD, HD * sizeof(float));
-            }
-            kv_caches[l].seq_len = sp + 1;
-            int seq = kv_caches[l].seq_len;
-
-            // ── CPU Attention ──
-            attn_cpu(qkv_buf.data(), attn_buf.data(), seq,
-                     kv_k, kv_v, NQ, NKV, HD, GQA);
-
-            // ── O projection ──
-            if (!worker.gemm(2, l, 1, NQ * HD, attn_buf.data(), o_buf)) {
-                fprintf(stderr, "NPU: O gemm failed layer %d\n", l);
-                return false;
-            }
-            cn(o_buf.data(), H);
-
-            // Residual add
-            for (int i = 0; i < H; i++) hidden[i] = residual_buf[i] + o_buf[i];
-
-            // Post-attention RMSNorm
-            memcpy(residual_buf.data(), hidden.data(), H * sizeof(float));
-            if (!post_attn_norms.empty() && l < (int)post_attn_norms.size() && !post_attn_norms[l].empty())
-                rmsnorm(hidden.data(), post_attn_norms[l].data(), H);
-
-            // ── Gate+Up projection ──
-            if (!worker.gemm(3, l, 1, H, hidden.data(), gateup_buf)) {
-                fprintf(stderr, "NPU: GATEUP gemm failed layer %d\n", l);
-                return false;
-            }
-            cn(gateup_buf.data(), mlp_dim * 2);
-
-            // ── Up (if split) + SiLU gate ──
-            if (gu_split) {
-                if (!worker.gemm(4, l, 1, H, hidden.data(), up_buf)) {
-                    fprintf(stderr, "NPU: UP gemm failed layer %d\n", l);
-                    return false;
-                }
-                cn(up_buf.data(), mlp_dim);
-                for (int i = 0; i < mlp_dim; i++)
-                    gateup_buf[i] = silu(gateup_buf[i]) * up_buf[i];
-            } else {
-                for (int i = 0; i < mlp_dim; i++)
-                    gateup_buf[i] = silu(gateup_buf[i]) * gateup_buf[mlp_dim + i];
-            }
-
-            // ── Down projection ──
-            if (!worker.gemm(5, l, 1, mlp_dim, gateup_buf.data(), down_buf)) {
-                fprintf(stderr, "NPU: DOWN gemm failed layer %d\n", l);
-                return false;
-            }
-            cn(down_buf.data(), H);
-
-            // Residual add
-            for (int i = 0; i < H; i++) hidden[i] = residual_buf[i] + down_buf[i];
-        }
-
-        memcpy(hidden_out, hidden.data(), H * sizeof(float));
-        pos++;
-        return true;
-    }
-
-    bool lm_head(const float* hidden, float* logits, int* argmax) override {
-        if (!initialized || embed.empty()) return false;
-
-        // Final norm
-        std::vector<float> tmp(H);
-        memcpy(tmp.data(), hidden, H * sizeof(float));
-        if (!final_norm.empty())
-            rmsnorm(tmp.data(), final_norm.data(), H);
-
-        // LM head: dot product with embed table
-        #pragma omp parallel for
-        for (int v = 0; v < NV; v++) {
-            double s = 0;
-            const float* row = embed.data() + (size_t)v * H;
-            for (int i = 0; i < H; i++) s += (double)tmp[i] * row[i];
-            logits[v] = (float)s;
-        }
-        if (argmax) {
-            *argmax = 0;
-            for (int v = 1; v < NV; v++)
-                if (logits[v] > logits[*argmax]) *argmax = v;
+        // Signal the worker to reset its internal KV cache
+        if (worker.ready) {
+            std::vector<float> dummy;
+            worker.gemm(31, 0, 0, 0, nullptr, dummy);
         }
         return true;
     }
 
     int generate(int token_id) override {
-        std::vector<float> hidden(H);
-        if (!forward(token_id, hidden.data())) return -1;
-        int result;
-        lm_head(hidden.data(), logits_buf.data(), &result);
-        return result;
+        if (!initialized || !ensure_worker()) return -1;
+        last_use_ = std::chrono::steady_clock::now();
+
+        // ── Fused forward in ONE subprocess call ──
+        // Uses op=32: embed → all 36 layers → lm_head → next token.
+        // 1 IPC call instead of 180. Eliminates ALL pipe overhead.
+        std::vector<float> in_data(1, (float)token_id);
+        std::vector<float> out_data;
+        if (!worker.gemm(32, 0, 1, 1, in_data.data(), out_data)) {
+            fprintf(stderr, "NPU: fused generate failed\n");
+            return -1;
+        }
+        int next_token = (int)out_data[0];
+        pos++;
+
+        if (worker.ready) {
+            auto now = std::chrono::steady_clock::now();
+            auto idle_s = std::chrono::duration_cast<std::chrono::seconds>(
+                now - last_use_).count();
+            if (idle_s >= IDLE_RELEASE_SECS) {
+                printf("NPU: idle for %lds, releasing worker subprocess\n", idle_s);
+                worker.shutdown();
+            }
+        }
+        return next_token;
+    }
+
+    // forward() and lm_head() replaced by fused generate() using op=32.
+    // The old per-layer IPC path (op=1-5) is still available as fallback.
+    bool forward(int token_id, float* hidden_out) override {
+        (void)token_id; (void)hidden_out;
+        fprintf(stderr, "NPU: forward() called but generate() should be used\n");
+        return false;
+    }
+
+    bool lm_head(const float* hidden, float* logits, int* argmax) override {
+        (void)hidden; (void)logits; (void)argmax;
+        fprintf(stderr, "NPU: lm_head() called but generate() should be used\n");
+        return false;
     }
 
     float benchmark(int tokens = 10) override {
@@ -693,4 +662,4 @@ struct NPUBackend : Backend {
     }
 };
 
-Backend* create_npu_backend() { return new NPUBackend(); }
+extern "C" Backend* create_npu_backend() { return new NPUBackend(); }

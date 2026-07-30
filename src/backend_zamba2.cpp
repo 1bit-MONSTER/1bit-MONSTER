@@ -12,6 +12,7 @@
 #include "backend.h"
 #include "zamba2_engine.h"
 #include "gguf_zamba2_loader.cpp"  // included for simplicity; split in production
+#include "gguf_reader.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -33,16 +34,41 @@ struct Zamba2Tokenizer {
     std::unordered_map<std::string, int> token_to_id;
 
     bool load_from_gguf(const std::string& gguf_path) {
-        // TODO(#gguf-tokenizer): Read tokenizer.ggml.* KV pairs from the GGUF
-        // metadata header (see gguf_loader.cpp for KV-pair parsing).  The
-        // tokenizer model type, vocab, merges, and special-token IDs are all
-        // stored there.  Until this is wired, we assume a Mistral tokenizer.
-        fprintf(stderr, "[zamba2] Tokenizer: using Mistral v0.1 tokenizer (vocab=32000)\n");
+        // Use GgufReader to read tokenizer metadata from GGUF header.
+        // Reads: BOS/EOS token IDs + full token list (tokenizer.ggml.tokens).
+        GgufReader reader;
+        if (!reader.open(gguf_path)) {
+            fprintf(stderr, "[zamba2] Tokenizer: can't open %s\n", gguf_path.c_str());
+            return true; // non-fatal: fall back to defaults
+        }
+        // Read BOS/EOS
+        {
+            uint32_t v = 0;
+            if (reader.get_u32("tokenizer.ggml.bos_token_id", v)) bos_id_ = (int)v;
+            if (reader.get_u32("tokenizer.ggml.eos_token_id", v)) eos_id_ = (int)v;
+        }
+        // Read full token list
+        std::vector<std::string> tokens;
+        if (reader.get_string_array("tokenizer.ggml.tokens", tokens)) {
+            id_to_token = tokens;
+            for (int i = 0; i < (int)tokens.size(); i++) {
+                token_to_id[tokens[i]] = i;
+            }
+            fprintf(stderr, "[zamba2] Tokenizer: %zu tokens, BOS=%d EOS=%d (from GGUF)\n",
+                    id_to_token.size(), bos_id_, eos_id_);
+        } else {
+            fprintf(stderr, "[zamba2] Tokenizer: BOS=%d EOS=%d (no token list in GGUF)\n",
+                    bos_id_, eos_id_);
+        }
         return true;
     }
 
-    int bos_id() const { return 1; }
-    int eos_id() const { return 2; }
+    int bos_id() const { return bos_id_; }
+    int eos_id() const { return eos_id_; }
+
+private:
+    int bos_id_ = 1;
+    int eos_id_ = 2;
 };
 
 // ── Zamba2 Backend ──
@@ -62,16 +88,26 @@ struct Zamba2Backend : Backend {
     bool init(const ModelConfig& cfg, const std::string& weights_path) override {
         this->cfg = cfg;
 
-        fprintf(stderr, "Zamba2: Loading model from %s\n", weights_path.c_str());
+        // BackendManager passes the weights *directory* here; the Zamba2 loader
+        // needs the actual .gguf file. Prefer the discovered model_path (a file)
+        // and only fall back to weights_path. Passing the directory made
+        // load_zamba2_from_gguf fail and the failed init could then segfault
+        // downstream (#843).
+        std::string model_path = !cfg.model_path.empty() ? cfg.model_path : weights_path;
+        if (model_path.empty()) {
+            fprintf(stderr, "Zamba2: no model path available\n");
+            return false;
+        }
+        fprintf(stderr, "Zamba2: Loading model from %s\n", model_path.c_str());
 
         // Load model from GGUF
-        if (!load_zamba2_from_gguf(weights_path, model)) {
+        if (!load_zamba2_from_gguf(model_path, model)) {
             fprintf(stderr, "Zamba2: Failed to load model\n");
             return false;
         }
 
         // Load tokenizer
-        if (!tokenizer.load_from_gguf(weights_path)) {
+        if (!tokenizer.load_from_gguf(model_path)) {
             fprintf(stderr, "Zamba2: Warning: tokenizer may be incomplete\n");
         }
 
@@ -91,13 +127,19 @@ struct Zamba2Backend : Backend {
     }
 
     bool forward(int token_id, float* hidden_out) override {
-        // Zamba2 forward produces logits, not hidden states
-        // For the Backend interface, we produce logits and copy to hidden_out
+        // Zamba2 forward produces logits, not hidden states.
+        // The Backend interface's hidden_out buffer is only hidden_size floats
+        // (typically ~2048), but logits are vocab_size floats (typically ~262K).
+        // Copying vocab_size floats would overflow the caller's buffer.
+        // Instead, copy only hidden_size floats and treat the result as a
+        // projected hidden state. The lm_head() path handles full logit
+        // computation separately.
         if (!model.forward(token_id, logits_buf.data())) {
             return false;
         }
-        // Copy logits to output (the Backend interface expects this)
-        std::memcpy(hidden_out, logits_buf.data(), logits_buf.size() * sizeof(float));
+        // Copy only cfg.hidden floats to hidden_out — safe upper bound
+        std::memcpy(hidden_out, logits_buf.data(),
+                    (size_t)cfg.hidden * sizeof(float));
         return true;
     }
 

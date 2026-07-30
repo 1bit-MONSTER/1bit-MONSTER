@@ -25,6 +25,9 @@ typedef enum {
     RCPP_WEIGHT_FORMAT_BONSAI_TQ2 = 5,
     RCPP_WEIGHT_FORMAT_WMMA_I8    = 6,
     RCPP_WEIGHT_FORMAT_BLOCK_SCALED_TERNARY = 7,
+    RCPP_WEIGHT_FORMAT_Q1_0_BINARY  = 8,   // 1-bit binary (Q1_0, 128-block, fp16 scale + sign bits)
+    RCPP_WEIGHT_FORMAT_TQ2_0_LLAMA  = 9,   // llama.cpp TQ2_0 native (2.0625 bpw, 256-block)
+    RCPP_WEIGHT_FORMAT_TQ1_0_LLAMA  = 10,  // llama.cpp TQ1_0 native (1.6875 bpw, 256-block)
 } rcpp_weight_format_t;
 
 typedef enum {
@@ -36,6 +39,20 @@ typedef enum {
     RCPP_ARCH_GEMMA   = 5,
     RCPP_ARCH_PHI     = 6,
     RCPP_ARCH_ZAMBA2  = 7,
+    RCPP_ARCH_ZAMBA   = 8,   // Zamba-7B-v1 (Mamba1 + shared attn)
+    RCPP_ARCH_MAMBA   = 9,   // BlackMamba (Mamba1 + MoE)
+    RCPP_ARCH_LAGUNA  = 10,
+    RCPP_ARCH_FALCON  = 11,  // Falcon (tiiuae) — parallel attn+ffn, MQA
+    RCPP_ARCH_OLMO    = 12,  // OLMo (AI2) — LayerNorm, no RoPE
+    RCPP_ARCH_ZAYA    = 13,  // Zaya MoE (Zyphra — MoE FFN with CCA attention)
+    RCPP_ARCH_QWEN2VL = 14,  // Qwen2-VL (vision-language)
+    RCPP_ARCH_WHISPER  = 15,  // OpenAI Whisper (speech-to-text)
+    RCPP_ARCH_DEEPSEEK = 16,  // DeepSeek V2/V3/R1 — MoE with Multi-Head Latent Attention
+    RCPP_ARCH_QWEN3VL  = 17,  // Qwen3-VL (vision-language, Qwen3 text decoder)
+    RCPP_ARCH_KIMI_K3  = 18,  // Moonshot Kimi K3 — 2.8T MoE with KDA + Gated MLA + LatentMoE
+    RCPP_ARCH_MOONLIGHT = 19, // Moonshot Moonlight-16B-A3B — Gated MLA MoE
+    RCPP_ARCH_KIMI_VL  = 20,  // Moonshot Kimi-VL — Moonlight + MoonViT vision encoder
+    RCPP_ARCH_QWEN35   = 21,  // Qwen3.5 Gate-Delta Net — fused QKV, SSM path, GDN attention
 } rcpp_arch_t;
 
 #include <string.h>
@@ -49,6 +66,57 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "gemma")   == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "phi")     == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "zamba2")  == 0) return RCPP_ARCH_ZAMBA2;
+    if (strcmp(s, "zamba")   == 0) return RCPP_ARCH_ZAMBA;
+    if (strcmp(s, "mamba")   == 0) return RCPP_ARCH_MAMBA;
+    if (strcmp(s, "laguna")  == 0) return RCPP_ARCH_LAGUNA;
+    if (strcmp(s, "falcon")  == 0) return RCPP_ARCH_FALCON;
+    if (strcmp(s, "falcon3") == 0) return RCPP_ARCH_FALCON;
+    if (strcmp(s, "olmo")    == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "olmo2")   == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "olmoe")   == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "zaya")    == 0) return RCPP_ARCH_ZAYA;
+    if (strcmp(s, "qwen2vl") == 0) return RCPP_ARCH_QWEN2VL;
+    if (strcmp(s, "qwen3vl") == 0) return RCPP_ARCH_QWEN3VL;
+    // DeepSeek LLM (V1, Coder) uses standard attention — map to Qwen2-like
+    if (strcmp(s, "deepseek")   == 0) return RCPP_ARCH_QWEN2;
+    // DeepSeek V2/V3/R1 use Multi-Head Latent Attention (MLA) — native support
+    if (strcmp(s, "deepseek2")  == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "deepseek3")  == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "stablelm")  == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "mosaic")    == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "mpt")       == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "pixtral")   == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "whisper")   == 0) return RCPP_ARCH_WHISPER;
+    if (strcmp(s, "granite")  == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "granitemoe") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "phi3")    == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "phi4")    == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "starcoder") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "starcoder2") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "command-r") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "dbrx")    == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "jamba")   == 0) return RCPP_ARCH_LLAMA;
+    // ── New VLM architectures ──
+    if (strcmp(s, "smolvlm")   == 0) return RCPP_ARCH_QWEN2VL;
+    if (strcmp(s, "llava")     == 0) return RCPP_ARCH_QWEN2VL;
+    if (strcmp(s, "molmo")     == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "ovis")      == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "paligemma") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "florence")  == 0) return RCPP_ARCH_QWEN2VL;
+    // ── New MoE reasoning ──
+    if (strcmp(s, "phi_moe")   == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "deepseek_v3") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "smollm")    == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "smollm2")   == 0) return RCPP_ARCH_LLAMA;
+    // ── Moonshot Kimi family ──
+    if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
+    if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;
+    if (strcmp(s, "moonlight") == 0) return RCPP_ARCH_MOONLIGHT;
+    if (strcmp(s, "kimi_vl")   == 0) return RCPP_ARCH_KIMI_VL;
+    if (strcmp(s, "kimi_vl_a3b") == 0) return RCPP_ARCH_KIMI_VL;
+    // ── Qwen3.6-MoE (shared-expert MoE, Qwen2-compatible attention) ──
+    if (strcmp(s, "qwen35")   == 0) return RCPP_ARCH_QWEN35;
+    if (strcmp(s, "qwen35moe") == 0) return RCPP_ARCH_QWEN35;
     return RCPP_ARCH_BITNET;
 }
 

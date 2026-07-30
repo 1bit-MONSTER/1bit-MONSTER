@@ -34,7 +34,7 @@ echo "" | tee -a "$LOGFILE"
 # ── Step 2: Build ──
 echo "=== 2. Build ===" | tee -a "$LOGFILE"
 echo "  cmake --build build --target zaya_server -j\$(nproc)" | tee -a "$LOGFILE"
-cmake --build build --target zaya_server -j$(nproc) 2>&1 | tail -3 | tee -a "$LOGFILE"
+cmake --build build --target zaya_server -j"$(nproc)" 2>&1 | tail -3 | tee -a "$LOGFILE"
 echo "  Binary: $(ls -lh build/zaya_server | awk '{print $5}')" | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"
 
@@ -44,12 +44,12 @@ PASS=0; FAIL=0; for t in build/test_*; do
   name=$(basename $t)
   result=$(timeout 20 $t 2>&1 | grep -E "PASS|FAIL|Verdict" | tail -1)
   if echo "$result" | grep -q "PASS"; then
-    echo "  ✅ $name" | tee -a "$LOGFILE"; ((PASS++))
+    echo "  ✅ $name" | tee -a "$LOGFILE"; PASS=$((PASS + 1))
   else
-    echo "  ➖ $name" | tee -a "$LOGFILE"
+    echo "  ➖ $name" | tee -a "$LOGFILE"; FAIL=$((FAIL + 1))
   fi
 done
-echo "  $PASS/$PASS tests passed" | tee -a "$LOGFILE"
+echo "  $PASS/$((PASS+FAIL)) tests passed" | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"
 
 # ── Step 4: Kernel benchmarks ──

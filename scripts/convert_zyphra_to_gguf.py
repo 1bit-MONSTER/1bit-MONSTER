@@ -17,6 +17,34 @@ import torch
 import numpy as np
 from pathlib import Path
 
+
+def validate_gguf_file(path: str, min_size_mb: int = 100):
+    """Validate a GGUF output file for integrity.
+
+    Checks:
+    - File exists and is not 0 bytes
+    - Size meets minimum threshold
+    - Starts with GGUF magic bytes
+
+    Raises RuntimeError on critical failures, prints warnings otherwise.
+    """
+    if not os.path.exists(path):
+        raise RuntimeError(f"Output file {path} does not exist!")
+    if os.path.getsize(path) == 0:
+        raise RuntimeError(f"Output file {path} is 0 bytes! Conversion failed.")
+    min_size = min_size_mb * 1024 * 1024
+    actual_size = os.path.getsize(path)
+    if actual_size < min_size:
+        print(f"WARNING: Output file size ({actual_size} bytes / {actual_size/1024/1024:.1f} MB) "
+              f"is below {min_size_mb} MB minimum — file may be truncated or corrupt.")
+    with open(path, 'rb') as f:
+        magic = f.read(4)
+        if magic != b'GGUF':
+            print(f"WARNING: File does not start with GGUF magic bytes (got {magic.hex()})")
+        else:
+            print(f"GGUF magic bytes verified: {magic}")
+    print(f"Validation passed: {path} ({actual_size} bytes)")
+
 # ── GGUF constants ──
 GGUF_MAGIC = b'GGUF'
 GGUF_VERSION = 3
@@ -276,6 +304,9 @@ def convert_zamba_v1(model_id: str, output: str):
     writer.add_tensor("output.weight", emb, GGML_TYPE_Q4_0)
     
     writer.close()
+    
+    # ── Validate output file ──
+    validate_gguf_file(output)
 
 
 def convert_blackmamba(model_id: str, output: str):
@@ -316,7 +347,7 @@ def convert_blackmamba(model_id: str, output: str):
         if sf.endswith('.safetensors'):
             sd = safetensors.torch.load_file(path)
         else:
-            sd = torch.load(path, map_location='cpu')
+            sd = torch.load(path, map_location='cpu', weights_only=True)
         state_dict.update(sd)
     
     writer = GgufWriter(output, "mamba")  # Use "mamba" arch (Mamba1)
@@ -388,6 +419,9 @@ def convert_blackmamba(model_id: str, output: str):
     writer.add_tensor("output.weight", output_w.numpy(), GGML_TYPE_Q4_0)
     
     writer.close()
+    
+    # ── Validate output file ──
+    validate_gguf_file(output)
 
 
 if __name__ == "__main__":

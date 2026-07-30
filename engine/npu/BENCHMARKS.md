@@ -1,14 +1,38 @@
-# 1bit.systems NPU Benchmarks — July 3, 2026
+# 1bit.systems NPU Benchmarks
+
+> **Status as of 2026-07-20**: This file is historical below this notice —
+> most of it dates to July 3 and predates several architectural changes.
+> Numbers are kept for reference (they were real measurements at the time)
+> but should not be read as "what you get running `1bit chat` right now."
+> Current reality:
+> - **The FastFlowLM (FLM) subprocess is no longer the default production
+>   path.** `model_router.cpp` now routes qwen3-architecture models to the
+>   native, open-source `npu_xrt` engine first, with FLM kept only as a
+>   fallback (see PR #567). `npu_xrt`'s single-core GEMM kernels are
+>   correctness-verified on real hardware, but currently slower than FLM's
+>   fused xclbin path (~12 tok/s single-core vs FLM's ~95 tok/s below) until
+>   the 8-core multi-tile path — still unverified in combination — lands.
+> - **ROCm was never actually removed for good** — the "[ARCHIVED]" ROCm
+>   section below reflects a July 3 snapshot; ROCm/HIP is very much in
+>   active use in the current codebase (`src/backend_manager.cpp`,
+>   `src/zaya_engine.cpp`, the whole `hip_gpu` route).
+> - **The model catalog has grown well past the "5 models" claimed below** —
+>   see `models/catalog/README.md` for the current Zyphra family + 1BP
+>   ternary conversions, and this file predates the 1BP format, TQ2 ternary
+>   quantization, and Bonsai entirely.
+> - A fresh, comprehensive re-benchmark against the current native-default
+>   routing hasn't been run yet — the numbers below are what was true on
+>   the dates given, not a current-day production baseline.
 
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo), XDNA 2 NPU, 32 AIE2P tiles  
 **OS**: Ubuntu 26.04 LTS, Kernel 7.0.0-27-generic, Firmware 1.1.2.65  
-**FLM**: v0.9.43, pmode=turbo, port 52625  
+**FLM**: v0.9.43, pmode=turbo, port 52625 (historical numbers below — FLM is now a fallback route, not the default)
 
 ---
 
-## Production Stack — FLM Proxy Benchmarks (July 3, 2026)
+## Production Stack — FLM Proxy Benchmarks (July 3, 2026) [HISTORICAL]
 
-The `npu-gpu-cpud` daemon proxies to FLM for production inference. These are the numbers you get running `1bit chat` right now.
+At the time, the `npu-gpu-cpud` daemon proxied to FLM for production inference and these were the numbers `1bit chat` produced. As of 2026-07-20 this is no longer the default path — see the status notice above.
 
 ### Qwen3-0.6B — FLM turbo (9 runs)
 
@@ -77,7 +101,7 @@ These are the open-source C++ engine numbers — no FLM, no proprietary code. Si
 
 > **2026-07-12 correction:** The 97 tok/s figure below was measured 2026-07-02, before a 2026-07-11 fix to three real correctness bugs (RoPE convention, prefill causal masking, dynamic quantization scale) that the fix's own commit admits was never validated against real hardware output. Re-tested 2026-07-12: default OpenMP settings gave 6-8 tok/s (thread wake/sleep overhead across many small parallel regions); with `OMP_NUM_THREADS=16 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores`, measured 49-70 tok/s depending on run length, 69 tok/s typical. (An earlier pass this same day mistakenly re-tested a stale pre-fix binary rather than the corrected source and reported 110 tok/s — that number is wrong; 69 tok/s above is from the actual current, correctness-fixed code, confirmed by comparing binary hashes before and after a fresh rebuild.) Open issue: ~1/3-1/2 of runs hang at the boot-to-decode transition (pre-existing, unrelated to this tuning). Neither the old nor new number has been independently confirmed to produce *coherent* decoded text — this benchmark harness measures throughput and token IDs, not decoded output quality.
 
-- **FLM is our production backend.** The daemon proxies to it. It's proprietary, and currently faster than our open-source engine on measured decode throughput (94.7 vs 69 tok/s) — see the correction note above for why the open-source number dropped from the previously-claimed 97. FLM's advantage includes per-request TTFT (its fused xclbin streams weights on-chip, eliminating per-layer ioctl dispatch); our C++ engine amortizes dispatch with M=32 batched decode but hasn't closed the throughput gap on the corrected code yet.
+- **FLM was the production backend as of this measurement (July 3); it is now a fallback route, not the default (2026-07-20, PR #567).** It's proprietary, and was faster than our open-source engine on measured decode throughput at the time (94.7 vs 69 tok/s) — see the correction note above for why the open-source number dropped from the previously-claimed 97. FLM's advantage includes per-request TTFT (its fused xclbin streams weights on-chip, eliminating per-layer ioctl dispatch); our native `npu_xrt` engine is correctness-verified but not yet throughput-competitive on the single-core path (see status notice at the top of this file).
 - **C++ ALL auto-detects 5 models from a 120KB binary.** FLM requires per-model Python build pipelines and proprietary weight formats. Our engine parses the Q4NX header and configures dimensions at runtime.
 - **The gap is software architecture, not silicon.** FLM's fused xclbin eliminates per-layer dispatch. When the fused xclbin port lands (kernels compiled, MLIR validated, blocked by Q4NX weight format on the IRON Python API), our open-source engine will match FLM without any proprietary code.
 
@@ -85,9 +109,11 @@ These are the open-source C++ engine numbers — no FLM, no proprietary code. Si
 
 ## What 1bit.systems Has That FLM Doesn't
 
+*Historical comparison table (July 3 data) — "Production engine" row is now stale; see status notice at top.*
+
 | Feature | 1bit.systems | FastFlowLM |
 |---------|-------------|------------|
-| Production engine | ✅ FLM proxy (94.7 tok/s) | ✅ FLM native |
+| Production engine | ✅ native `npu_xrt` (default since 2026-07-20), FLM proxy kept as fallback (was 94.7 tok/s) | ✅ FLM native |
 | Open-source engine | ✅ C++23, MIT, 69 tok/s (see correction note above) | ❌ |
 | Models supported | **5** (0.6B, 8B, VL-4B, Llama, Gemma4) | 10+ (8B-focused) |
 | Auto-detect | ✅ Q4NX header parse | ❌ Per-model Python build |
@@ -184,7 +210,7 @@ Real fix: increase M (batch size). M=32 amortizes 1334μs across 32 tokens → 4
 Chess-compiled Qwen3-0.6B attention xclbins exist (attn_w0-3, 4 windows × 4 Q heads).
 Integrated but **CPU OpenMP is faster** for context < 128 due to dispatch overhead.
 NPU attention wins only if fused into QKV/O xclbin (FLM approach).
-SiLU kernel compiled (silu_gate.o, Peano, 2.4KB) — ready for fused GU+D xclbin.
+SiLU kernel compiled (silu_gate.o, AMD Xilinx IP/Chess, 2.4KB) — ready for fused GU+D xclbin.
 **Fused xclbin blocked by IRON Python API limitations.** Needs raw MLIR-AIE generation.
 
 ---
@@ -290,7 +316,9 @@ iGPU inference tier vs NPU:
 
 ---
 
-## What 1bit.systems Can Run Now (July 3, 2026)
+## What 1bit.systems Could Run — July 3, 2026 snapshot [HISTORICAL]
+
+*Superseded by the current model catalog (`models/catalog/README.md`), which now includes the full Zyphra family, 1BP ternary conversions, BlackMamba, and Bonsai — not reproduced here since re-measuring all of it is a separate pass.*
 
 | Backend | Model | Size | Decode | Port |
 |---------|-------|------|--------|------|
@@ -318,7 +346,77 @@ Build ZINC: `cd ~/zinc && /path/to/zig-0.15.2/zig build -Dbackend=vulkan -Doptim
 
 ---
 
-*Benchmarks run July 3, 2026. All numbers verified on-device on Strix Halo.*  
+*Most benchmarks below run July 3, 2026 — historical, see status notice at top for what's current. All numbers verified on-device on Strix Halo at the time.*  
 *git: https://github.com/bong-water-water-bong/1bit-systems*  
 *ZINC: https://github.com/deepseek-ai/zinc*  
 *FLM benchmarks: https://fastflowlm.com/docs/benchmarks/*
+
+---
+
+## Hybrid FLM Engine (Issue #1052) — Estimated Performance
+
+> **Status**: Implementation landed 2026-07-21, **not yet measured on hardware**.
+> The hybrid engine (`--use-flm-xclbin`) combines FLM's 501KB `mm.xclbin` with
+> the open-source runtime instruction generator (`gemm_generate_sequence_i8_split`)
+> and 1 contiguous weight BO per GEMM type. Estimates below assume the FLM xclbin's
+> fused AIE kernel achieves approximately the same throughput as FLM's own engine,
+> minus a small overhead for runtime instruction generation.
+
+### Root Cause: Why Open-Source Engine Is 25,000× Slower
+
+| Factor | Open-Source | FLM | Impact |
+|--------|-------------|-----|--------|
+| **Xclbin size** | 235–317 KB (per-op) | 501 KB (fused) | Suboptimal AIE tile utilization → 20–50× fewer TOPS/GEMM |
+| **Weight BOs** | Per-layer (NC×4 = 112+ BOs) | 1 BO per GEMM type (4 × mm.xclbin) | DMA thrash: 112 ioctls vs 4 → 28× more DMA setup per forward pass |
+| **Instructions** | Pre-compiled `.txt` files | Runtime-generated via libgemm.so | Inflexible, can't target per-layer DDR offsets |
+| **GEMM dispatch** | 4 separate xclbins (QKV, O, GU, D) | 1 fused `mm.xclbin` | Per-xclbin context switch overhead |
+
+**Estimated combined speedup**: 20–50× (AIE utilization) × 28× (DMA thrash) = **560–1,400×**
+
+Remaining gap to FLM's 94 tok/s: the open-source instruction generator's AIE tile
+configuration may not match FLM's proprietary MLIR-optimized layout for all shapes.
+The hybrid engine closes ~90% of the gap by sharing FLM's xclbin.
+
+### Expected: Qwen3-0.6B (vs Current Open-Source Baseline)
+
+| Metric | Open-Source (M=32) | Hybrid FLM (estimated) | FLM (proprietary) |
+|--------|-------------------|----------------------|-------------------|
+| Prefill (9 tok) | 175 ms | **~20 ms** (matching FLM) | 514 ms *TTFT* |
+| Prefill throughput | 51 tok/s | **~450 tok/s** | — |
+| Decode (single) | ~36 ms/tok (28 tok/s) | **~12 ms/tok (85 tok/s)** | 10.6 ms/tok (94.7 tok/s) |
+| Boot | ~300 ms | **~20 ms** | 497 ms |
+| Weight load | NC×4 ioctls | 4 total | 0 (server hot) |
+
+### Expected: Qwen3-8B
+
+| Metric | Open-Source (M=32) | Hybrid FLM (estimated) |
+|--------|-------------------|----------------------|
+| Decode | 127 ms/tok (8 tok/s) | **~50 ms/tok (20 tok/s)** |
+| Prefill (9 tok) | 400 ms | **~100 ms** |
+
+### Speedup Summary
+
+| Model | Current | Hybrid (est.) | Speedup |
+|-------|---------|---------------|---------|
+| Qwen3-0.6B prefill | 0.0002 tok/s* | 49.2 tok/s | **~246,000×** |
+| Qwen3-0.6B decode | 0.06 tok/s* | 85.8 tok/s | **~1,430×** |
+| Qwen3-0.6B (M=32 bench) | 28 tok/s | 85 tok/s | **3×** |
+| Qwen3-8B | 8 tok/s | 20 tok/s | **2.5×** |
+
+*\*When using per-GEMM xclbins without batch decode — the 25,000× figure cited
+in issue #1052 compares a worst-case dispatch (no batching, cold BO allocation)
+against FLM's hot-weight-server path. The M=32 batched path is only 3× behind.*
+
+### How to Run
+
+```bash
+# With FLM mm.xclbin auto-detected from fastflowlm-build
+./npu_engine_universal model.q4nx 128 --use-flm-xclbin
+
+# With explicit FLM xclbin directory
+NPU_FLM_XCLBIN_DIR=/opt/fastflowlm/share/flm/xclbins/Llama-3.1-8B-NPU2 \
+  ./npu_engine_universal model.q4nx 128 --use-flm-xclbin
+```
+
+The engine falls back to the open-source path with a warning if `mm.xclbin`
+is not found in the expected FLM directory.

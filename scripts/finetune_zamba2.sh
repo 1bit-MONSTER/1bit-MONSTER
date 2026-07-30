@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Finetune Zamba2 with QLoRA on AMD ROCm
 # Then convert to GGUF for 1bit.systems engine (77 tok/s 🚀)
 #
@@ -42,6 +43,9 @@ echo "=========================================="
 # Activate environment
 PYTHON=/tmp/torchtune-env/bin/python
 
+# Export variables for safe Python access (no shell interpolation)
+export HF_MODEL OUTDIR STEPS DATASET PUSH_HUB
+
 $PYTHON -c "
 import torch, transformers, os, json, time, math
 from dataclasses import dataclass
@@ -59,11 +63,11 @@ import transformers.utils.generic as tf_utils
 tf_utils._is_mlx_available = False
 tf_utils._is_mlx = lambda x: False
 
-MODEL_ID = '${HF_MODEL}'
-OUTPUT_DIR = '${OUTDIR}'
-MAX_STEPS = ${STEPS}
-DATASET = '${DATASET}'
-PUSH_HUB = '${PUSH_HUB}'
+MODEL_ID = os.environ['HF_MODEL']
+OUTPUT_DIR = os.environ['OUTDIR']
+MAX_STEPS = int(os.environ['STEPS'])
+DATASET = os.environ['DATASET']
+PUSH_HUB = os.environ.get('PUSH_HUB', '')
 
 # Quantization
 bnb_config = BitsAndBytesConfig(

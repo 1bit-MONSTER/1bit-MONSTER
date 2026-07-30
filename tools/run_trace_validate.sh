@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # run_trace_validate.sh — NPU vs HuggingFace FP32 end-to-end validation
 #
 # 1. Generate HF FP32 reference traces (ground truth)
@@ -18,7 +19,11 @@ HF_MODEL="${HF_MODEL:-$HOME/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snap
 NPU_MODEL="${NPU_MODEL:-$HOME/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx}"
 PROMPT="${PROMPT:-Hi}"
 REF_DIR="/tmp/trace_hf"
-NPU_DIR="/tmp/trace_npu"
+# NPU_DIR is created later via mktemp right before the sudo-privileged write
+# (#1009: a fixed, predictable /tmp path here was a TOCTOU symlink race —
+# rm -rf as the invoking user followed by sudo writing through the same path
+# lets a local attacker swap in a symlink between the two).
+# shellcheck disable=SC2034
 SUMMARY="/tmp/trace_compare.csv"
 
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -59,7 +64,7 @@ echo "  Built: npu_engine_trace"
 # ── Step 3: Run NPU engine with --trace ──
 echo ""
 echo "=== Step 3: Running NPU engine with --trace ==="
-rm -rf "$NPU_DIR"
+NPU_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trace_npu.XXXXXX")"
 echo "$TOKENS" | tr ',' '\n' > /tmp/trace_tokens.txt
 
 sudo ./npu_engine_trace "$NPU_MODEL" 1 /tmp/trace_tokens.txt --trace "$NPU_DIR" \
@@ -75,7 +80,7 @@ cd "$HOME/1bit-systems"
 echo ""
 echo "Per-layer hidden state comparison (NPU h_out vs HF hidden_state):"
 printf "  %-8s %-12s %-12s %-12s %s\n" "Layer" "|NPU|" "|HF|" "Cos Sim" "Max Diff"
-echo "  " $(printf '=%.0s' {1..65})
+echo "  " "$(printf '=%.0s' {1..65})"
 
 for l in $(seq 0 27); do
     NPU_FILE="$NPU_DIR/layer_$(printf '%02d' $l)/h_out.f32"

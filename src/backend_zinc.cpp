@@ -1,56 +1,73 @@
-// backend_zinc.cpp — general-purpose GGUF backend via ZINC (engine/gpu),
-// the multi-architecture, multi-quant Vulkan compute engine. Unlike
-// zaya_engine's hand-tuned HIP kernels (hardcoded to one architecture), ZINC
-// derives its runtime config from GGUF metadata itself — no dims rejection
-// needed here, matching that generality.
-//
-// ZINC is a genuinely separate open-source project (github.com/zolotukhin/zinc,
-// forked to bong-water-water-bong/zinc — see /home/bcloud/zinc, NOT the stale
-// vendored copy at engine/gpu inside this repo). This backend links against
-// libzinc.so, built from that fork's src/c_abi.zig (a thin C ABI shim added
-// there, mirroring zaya_engine.h's opaque-state init/generate/destroy
-// convention — no changes to ZINC's own compute internals).
-//
-// The C ABI exposes a single fused generate call (prompt text in, response
-// text out) rather than per-token stepping — ZINC's own compute.forward.generate()
-// already does a real batched prefill + full decode loop in one call, and
-// text is the only safe boundary since ZINC's native tokenizer vocabulary
-// (derived per-model from each GGUF's own embedded vocab) won't generally
-// match whatever tokenizer produced the token IDs Backend::generate() receives.
-// So, like backend_flm.cpp, this bridges token IDs <-> text via g_tokenizer,
-// batching queries at word/punctuation boundaries rather than one interior
-// call per prompt token. Unlike FLM (an external subprocess with its own
-// persistent conversational state), each zinc_generate_text() call is a
-// fresh, stateless computation over exactly the tokens passed in — so the
-// FLM backend's context-pollution problem doesn't apply here; redundant
-// calls during prefill accumulation are pure wasted compute, not a
-// correctness bug.
-
+/// backend_zinc.cpp — C++ ZINC GPU backend.
+/// Fixed: #763 proper includes via CMake, shader path from build config
 #include "backend.h"
 #include "simple_tokenizer.h"
+#include "vulkan_wrapper.h"
+#include "compute_engine.h"
+#include "model_loader.h"
 #include <cstdio>
 #include <cstring>
-#include <cctype>
 #include <string>
 #include <vector>
 #include <chrono>
+#include <memory>
+#include <cstdlib>
+#include <sys/stat.h>
 
-extern "C" {
-    void* zinc_init(const char* gguf_path);
-    void zinc_destroy(void* state);
-    long long zinc_generate_text(void* state, const char* prompt_text, unsigned int max_tokens,
-                                  char* out_buf, size_t out_cap);
+// Resolve a shader directory that actually contains the compiled ZINC .spv
+// files. backend_zinc.cpp is compiled into libbackend_manager (which does NOT
+// get the ZINC_SHADER_DIR compile define that the standalone zinc_cpp target
+// gets), so the old `#ifdef ZINC_SHADER_DIR / else "shaders"` fell back to a
+// CWD-relative "shaders" that rarely exists. When no valid dir is found we
+// return "" so the caller can fail the backend GRACEFULLY instead of letting
+// a missing-shader std::runtime_error escape a worker thread and call
+// std::terminate on the whole server.
+// Every .spv the ZINC compute path dispatches (post shader_map translation in
+// compute_engine.cpp). If ANY is missing the backend will throw mid-decode on
+// the PILOT worker thread — an uncatchable cross-thread std::terminate — so we
+// require the whole set up front and otherwise disable ZINC cleanly.
+static const char* kZincRequiredShaders[] = {
+    "embed", "gemv_f32", "rms_norm_mul", "rope_fused", "flash_attn",
+    "swiglu", "argmax", "vadd", "copy_buffer",
+};
+
+static std::string zinc_resolve_shader_dir() {
+    auto has_shaders = [](const std::string& d) -> bool {
+        if (d.empty()) return false;
+        struct stat st;
+        return stat((d + "/embed.spv").c_str(), &st) == 0;
+    };
+    // 1. Explicit runtime override always wins.
+    if (const char* env = std::getenv("ZINC_SHADER_DIR"); env && has_shaders(env))
+        return env;
+    // 2. Compile-time location (set for the zinc_cpp target's own build).
+#ifdef ZINC_SHADER_DIR
+    if (has_shaders(ZINC_SHADER_DIR)) return ZINC_SHADER_DIR;
+#endif
+    // 3. Common build / install locations, relative to CWD and typical prefixes.
+    static const char* candidates[] = {
+        "shaders",
+        "build_cmake/zinc_cpp_build/shaders",
+        "build/zinc_cpp_build/shaders",
+        "engine/gpu/zinc_cpp/build/shaders",
+        "engine/gpu/shaders",
+        "/usr/share/1bit-systems/shaders",
+        "/usr/local/share/1bit-systems/shaders",
+    };
+    for (const char* c : candidates)
+        if (has_shaders(c)) return c;
+    return "";
 }
 
 struct ZincBackend : Backend {
-    void* zinc_state_ = nullptr;
+    std::unique_ptr<ZincEngine> engine_;
+    std::unique_ptr<ComputeEngine> compute_;
+    std::unique_ptr<ModelLoader> loader_;
+    std::unique_ptr<ModelGPU> model_;
+    std::unique_ptr<InferenceEngine> infer_;
+    bool vulkan_initialized_ = false;
 
-    std::vector<int> prompt_tokens_;
-    std::vector<int> response_tokens_;
-    size_t response_pos_ = 0;
-    int last_returned_ = -1;
-
-    ZincBackend() { type = BackendType::ZINC_GPU; name = "ZINC GPU (Vulkan, multi-arch)"; }
+    ZincBackend() { type = BackendType::ZINC_GPU; name = "ZINC GPU (Vulkan, C++)"; }
     ~ZincBackend() override { destroy(); }
 
     bool init(const ModelConfig& model_cfg, const std::string& weights_dir) override {
@@ -58,96 +75,150 @@ struct ZincBackend : Backend {
         cfg = model_cfg;
         destroy();
 
-        if (cfg.model_path.empty() ||
-            (cfg.format != ModelFormat::GGUF && cfg.format != ModelFormat::H1B)) {
+        if (cfg.model_path.empty()) {
             fprintf(stderr, "ZINC: no GGUF model path available\n");
             return false;
         }
 
-        printf("ZINC: loading %s...\n", cfg.model_path.c_str());
-        zinc_state_ = zinc_init(cfg.model_path.c_str());
-        if (!zinc_state_) {
-            fprintf(stderr, "ZINC: zinc_init failed (model load or Vulkan init error — see stderr above)\n");
+        // The dense ZINC GPU path runs the full transformer on Vulkan (embed,
+        // F32 matmuls, RoPE, causal GQA attention, SwiGLU, argmax) and is
+        // validated token-for-token against cpu_generic on ZR1/Qwen2 (#844).
+        // Enabled by default; set ZINC_DISABLE=1 to force the HIP/CPU path.
+        if (getenv("ZINC_DISABLE")) {
+            fprintf(stderr, "ZINC: disabled via ZINC_DISABLE — using HIP/CPU.\n");
             return false;
         }
-        initialized = true;
-        printf("ZINC: ready\n");
-        return true;
+
+        // Architecture allowlist. ZINC implements the standard dense stack:
+        // RMSNorm + full-head_dim RoPE + SwiGLU + GQA + optional QKV bias. It
+        // does NOT implement qk-norm (qwen3), GeGLU (gemma), partial RoPE /
+        // LayerNorm (phi), etc. — those would produce silently-wrong output.
+        // Only claim architectures ZINC computes correctly; everything else
+        // falls back to the exact cpu_generic path. (ZINC_FORCE=1 overrides.)
+        {
+            const std::string& a = cfg.architecture;
+            bool ok = (a == "llama" || a == "mistral" || a == "qwen2");
+            if (!ok && !getenv("ZINC_FORCE")) {
+                fprintf(stderr, "ZINC: architecture '%s' not in the validated "
+                    "dense set (llama/mistral/qwen2) — using cpu_generic to stay "
+                    "correct (ZINC_FORCE=1 to override). See #844.\n",
+                    a.empty() ? "(unknown)" : a.c_str());
+                // Known architectures that ZINC can't support (different attention):
+                if (a == "qwen35" || a == "qwen35moe")
+                    fprintf(stderr, "  (Qwen3.5 Gate-Delta architecture has fused QKV + SSM "
+                            "path — requires NPU FLM or HIP backend)\n");
+                return false;
+            }
+        }
+
+        printf("ZINC C++: initializing Vulkan...\n");
+
+        // Validate shaders are present BEFORE we spin up Vulkan + the PILOT
+        // prefetch worker thread. If they're missing, a later lazy shader load
+        // throws on a worker thread and std::terminates the whole process
+        // (there's no way to catch a cross-thread throw at the call site).
+        // Failing here just marks ZINC unavailable and lets BackendManager
+        // fall back to HIP/CPU — the server stays up.
+        std::string shader_dir = zinc_resolve_shader_dir();
+        if (shader_dir.empty()) {
+            fprintf(stderr,
+                "ZINC: compiled Vulkan shaders (embed.spv) not found — disabling ZINC "
+                "backend (set ZINC_SHADER_DIR to enable). Falling back to HIP/CPU.\n");
+            return false;
+        }
+        // Require the FULL dispatch set before we touch Vulkan / start the PILOT
+        // worker — a shader that's missing but only requested mid-decode throws
+        // on a worker thread and std::terminates the whole server (#844).
+        {
+            std::string missing;
+            for (const char* s : kZincRequiredShaders) {
+                struct stat st;
+                if (stat((shader_dir + "/" + s + ".spv").c_str(), &st) != 0) {
+                    if (!missing.empty()) missing += ", ";
+                    missing += s;
+                }
+            }
+            if (!missing.empty()) {
+                fprintf(stderr,
+                    "ZINC: incomplete Vulkan shader set in %s (missing: %s) — disabling "
+                    "ZINC backend, falling back to HIP/CPU. See issue #844.\n",
+                    shader_dir.c_str(), missing.c_str());
+                return false;
+            }
+        }
+
+        try {
+            engine_ = std::make_unique<ZincEngine>();
+            engine_->init(shader_dir, -1);
+
+            loader_ = std::make_unique<ModelLoader>(
+                engine_->device(), engine_->queue(),
+                engine_->queue_family(), *engine_->cmd_pool());
+
+            model_ = std::make_unique<ModelGPU>();
+            if (!loader_->load(cfg.model_path, *model_)) {
+                fprintf(stderr, "ZINC: failed to load model\n");
+                return false;
+            }
+
+            compute_ = std::make_unique<ComputeEngine>(
+                engine_->device(), engine_->queue(),
+                engine_->queue_family(), *engine_->cmd_pool(),
+                *engine_->pipeline_cache());
+
+            infer_ = std::make_unique<InferenceEngine>();
+            if (!infer_->init(*compute_, *model_)) {
+                fprintf(stderr, "ZINC: failed to init inference engine\n");
+                return false;
+            }
+
+            vulkan_initialized_ = true;
+            initialized = true;
+            printf("ZINC C++: ready — %d layers, H=%d\n",
+                   model_->dims.n_layers, model_->dims.hidden);
+            return true;
+
+        } catch (const std::exception& e) {
+            fprintf(stderr, "ZINC C++: init failed: %s\n", e.what());
+            destroy();
+            return false;
+        }
     }
 
-    bool reset() override {
-        prompt_tokens_.clear();
-        response_tokens_.clear();
-        response_pos_ = 0;
-        last_returned_ = -1;
-        return true;
-    }
-
-    bool forward(int, float*) override { return false; } // no hidden states — use generate()
-    bool lm_head(const float*, float*, int*) override { return false; } // use generate()
+    bool reset() override { if (infer_) { infer_->reset(); return true; } return false; }
+    bool forward(int, float*) override { return false; }
+    bool lm_head(const float*, float*, int*) override { return false; }
 
     int generate(int token_id) override {
-        if (!initialized) return -1;
-
-        if (token_id == last_returned_ && !response_tokens_.empty()) {
-            if (response_pos_ < response_tokens_.size()) {
-                last_returned_ = response_tokens_[response_pos_++];
-                return last_returned_;
-            }
-            last_returned_ = g_tokenizer.eos_id;
-            return last_returned_;
-        }
-
-        prompt_tokens_.push_back(token_id);
-        std::string prompt = g_tokenizer.decode(prompt_tokens_);
-        if (prompt.empty()) prompt = " ";
-
-        // Batch queries at word/punctuation boundaries rather than every
-        // token (see file header) — pure perf optimization here, not a
-        // correctness requirement like it was for FlmBackend.
-        char last_ch = prompt.back();
-        bool at_boundary = last_ch == ' ' || last_ch == '\n' || ispunct((unsigned char)last_ch);
-        if (!at_boundary && !response_tokens_.empty()) {
-            last_returned_ = response_tokens_[0];
-            return last_returned_;
-        }
-
-        static thread_local std::vector<char> out_buf(1 << 20); // 1MB
-        long long n = zinc_generate_text(zinc_state_, prompt.c_str(), 64,
-                                          out_buf.data(), out_buf.size());
-        if (n < 0) {
-            fprintf(stderr, "ZINC: generate failed (code %lld)\n", n);
-            last_returned_ = g_tokenizer.eos_id;
-            return last_returned_;
-        }
-        std::string text(out_buf.data(), (size_t)n);
-        response_tokens_ = g_tokenizer.encode(text);
-        response_pos_ = 0;
-        if (response_tokens_.empty()) { last_returned_ = g_tokenizer.eos_id; return last_returned_; }
-        last_returned_ = response_tokens_[response_pos_++];
-        return last_returned_;
+        if (!initialized || !infer_) return -1;
+        return infer_->generate(token_id);
     }
 
     void destroy() override {
-        if (zinc_state_) {
-            zinc_destroy(zinc_state_);
-            zinc_state_ = nullptr;
-        }
+        infer_.reset();
+        compute_.reset();
+        model_.reset();
+        loader_.reset();
+        engine_.reset();
+        vulkan_initialized_ = false;
         initialized = false;
     }
 
     float benchmark(int tokens) override {
-        if (!initialized) return -1.0f;
+        if (!initialized || !infer_) return 0.0f;
         reset();
         auto t0 = std::chrono::high_resolution_clock::now();
-        int tok = g_tokenizer.bos_id;
-        for (int i = 0; i < tokens; i++) tok = generate(tok);
+        int tok = 1; // BOS (Llama convention)
+        for (int i = 0; i < tokens; i++) {
+            tok = infer_->generate(tok);
+            if (tok < 0) break;
+        }
         float ms = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
         return tokens > 0 ? ms / tokens : 0.0f;
     }
 
-    bool can_infer() const override { return initialized; }
+    bool can_infer() const override { return initialized && vulkan_initialized_; }
 };
 
 Backend* create_zinc_backend() { return new ZincBackend(); }

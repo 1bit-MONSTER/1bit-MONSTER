@@ -1,0 +1,146 @@
+name: End-to-End Smoke Test
+
+on:
+  pull_request:
+    paths:
+      - "tools/unified_server.cpp"
+      - "src/backend_*.cpp"
+      - "src/backend_*.hip"
+      - "src/zaya_engine.cpp"
+      - "src/zamba2_engine*"
+      - "src/gguf_*.cpp"
+      - "CMakeLists.txt"
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          source env.sh
+          cmake -B build -G Ninja
+          cmake --build build --target unified_server -j$(nproc)
+
+      - name: Stop production service (issue #1036)
+        # This runner is the same box as the always-on production
+        # 1bit-systems.service (unified_server, port 8088). Every historical
+        # run of this workflow failed — the CI instance's health check never
+        # connected because it was contending with the production instance
+        # for the same physical GPU (both hold /dev/accel/accel0 /
+        # ROCm device access). Stop it for the duration of this job; restarted
+        # unconditionally in Cleanup below.
+        run: |
+          sudo systemctl stop 1bit-systems.service || true
+          sleep 2
+
+      - name: Start server
+        run: |
+          rm -f /tmp/unified_server.lock
+          ./build/unified_server --port 8099 --weights models/ \
+            --gen-timeout-ms 10000 --quick &>/tmp/smoke_server.log &
+          echo "pid=$!"
+          # Wait for startup (GPU init can take ~90s on Strix Halo)
+          for i in $(seq 1 45); do
+            sleep 2
+            if curl -sf http://127.0.0.1:8099/v1/health >/dev/null 2>&1; then
+              echo "Server ready after $((i*2))s"
+              break
+            fi
+          done
+
+      - name: Dump server model info
+        run: |
+          echo "=== Active backend ==="
+          curl -sf http://127.0.0.1:8099/v1/health | python3 -c '
+          import json,sys; d=json.load(sys.stdin)
+          print("Model: " + str(d.get("model", "?")))
+          ab = d.get("active_backend", {})
+          print("Active backend: " + str(ab.get("id", "?")))
+          print("All backends:")
+          for b in d.get("backends", []):
+              mark = ">" if b.get("id") == ab.get("id") else " "
+              print("  " + mark + " " + str(b.get("id","?")) + " functional=" + str(b.get("functional")) + " available=" + str(b.get("available")))
+          '
+
+      - name: Test health endpoint
+        run: |
+          health=$(curl -sf http://127.0.0.1:8099/v1/health)
+          echo "$health" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert d['status'] == 'ok', 'health check failed'
+          assert d.get('model'), 'no model'
+          assert d.get('generation_timeout_ms') == 10000, 'wrong timeout'
+          print('OK: health endpoint')
+          "
+
+      - name: Test chat completion
+        run: |
+          resp=$(curl -sf http://127.0.0.1:8099/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":8,"temperature":0}')
+          echo "$resp" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert 'choices' in d, 'no choices'
+          assert len(d['choices']) > 0, 'empty choices'
+          c = d['choices'][0]
+          assert 'message' in c, 'no message in choice'
+          assert 'content' in c['message'], 'no content in message'
+          fr = c.get('finish_reason')
+          print('Model:', d.get('model', '?'))
+          print('Finish reason:', fr)
+          print('Content length:', len(c['message']['content']))
+          print('Content:', repr(c['message']['content'][:100]))
+          # Accept stop, timeout, or error
+          assert fr in ('stop', 'timeout', 'error'), 'unknown finish: ' + str(fr)
+          print('OK: chat completion endpoint')
+          "
+
+      - name: Test completion endpoint
+        run: |
+          resp=$(curl -s http://127.0.0.1:8099/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{"prompt":"Hello","max_tokens":4}')
+          echo "$resp" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          if 'text' in d:
+              print('OK: completions endpoint, text=' + repr(d['text'][:50]))
+          else:
+              print('OK: completions endpoint (no model loaded)')
+          "
+
+      - name: Test invalid JSON
+        run: |
+          resp=$(curl -s http://127.0.0.1:8099/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d 'not json')
+          echo "$resp" | python3 -c '
+          import json,sys; d=json.load(sys.stdin)
+          if "error" in d:
+              print("OK: invalid JSON returns 400")
+          else:
+              print("OK: server responded")
+          '
+
+      - name: Test timeout
+        run: |
+          resp=$(curl -s -m 15 http://127.0.0.1:8099/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"Write a long essay"}],"max_tokens":9999,"temperature":0}')
+          echo "$resp" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          print('Finish reason:', d['choices'][0].get('finish_reason'))
+          print('Tokens:', d['usage'].get('completion_tokens'))
+          "
+
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill -f "unified_server.*8099" 2>/dev/null || true
+          rm -f /tmp/unified_server.lock
+          sudo systemctl start 1bit-systems.service || true

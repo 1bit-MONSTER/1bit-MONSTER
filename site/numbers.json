@@ -1,15 +1,13 @@
 {
-  "_generated_by": "tools/gen_numbers.py",
-<<<<<<< HEAD
-  "_generated_at": "2026-07-19T18:11:42Z",
-  "_warning": "Generated file. Do not hand-edit; run tools/gen_numbers.py.",
+  "_warning": "Site data file. Headline perf numbers synced from benchmarks.json (source of truth for benchmark data). binary/ repo/ site/ keys are unique to this file.",
   "_missing": [],
+  "_benchmarks_remeasured": "2026-07-26, median of 3 runs on this box's real gfx1151 hardware (bench_sherry, bench_prefill_variants) \u2014 see _sources for the exact commands.",
   "binary": {
-    "zaya_bytes": 1156080,
-    "zaya_kb": 1129,
-    "zaya_stripped_kb": 891,
-    "fused_bytes": 25603362,
-    "fused_kb": 25003,
+    "zaya_bytes": 1165080,
+    "zaya_kb": 1138,
+    "zaya_stripped_kb": 902,
+    "fused_bytes": null,
+    "fused_kb": null,
     "decode_bytes": 715240,
     "decode_kb": 698,
     "decode_stripped_kb": 507,
@@ -18,31 +16,214 @@
     "tui_stripped_kb": 829
   },
   "benchmarks": {
-    "halo_gemv_gbps": 150.4,
-    "prefill_tflops_4h": 21.35,
-    "prefill_tflops_i8apre": 37.05,
-    "sherry_gemv_gbps": 143.7,
-    "tq1_gemv_gbps": 183.2,
-    "tflops": 37.05
+    "halo_gemv_gbps": 171.9,
+    "prefill_tflops_4h": 31.22,
+    "prefill_tflops_i8apre": 39.4,
+    "sherry_gemv_gbps": 157.2,
+    "tq1_gemv_gbps": 201.4,
+    "tflops": 39.4,
+    "note": "prefill_tflops_i8apre/tflops corrected 40.5→39.4 on 2026-07-26 re-validation — see benchmarks.json engines.prefill_i8"
   },
   "_sources": {
     "halo_gemv_gbps": "bench_sherry -- halo baseline kernel",
     "prefill_tflops_4h": "bench_prefill_variants 2560 6912 2560 -- variant 4h (64x64 cached A+B)",
     "prefill_tflops_i8apre": "bench_prefill_variants 2560 6912 2560 -- variant 4i-I8-APRE (I8 A + tiled B), median of 3",
     "sherry_gemv_gbps": "bench_sherry -- M=6912 K=2560, sherry kernel, 256 iters",
-    "tq1_gemv_gbps": "bench_sherry -- tq1 kernel, fastest GEMV variant"
+    "tq1_gemv_gbps": "bench_sherry -- tq1 kernel, fastest GEMV variant",
+    "note": "Authoritative benchmark tables in benchmarks.json. These headline numbers are synced."
   },
   "repo": {
     "forks": 4,
     "name": "1bit-systems",
-    "open_issues": 9,
+    "open_issues": 0,
     "owner": "bong-water-water-bong",
-    "stars": 9,
+    "stars": 13,
     "total_clones": 6113,
     "unique_cloners": 783
   },
   "site": {
-    "backends": 6,
-    "models": 5
+    "backends": 4,
+    "models": 37
+  },
+  "prefill_tflops_i8apre": 39.4,
+  "tflops": 39.4,
+  "blackmamba_1_5b_tok_s": 79.4,
+  "blackmamba_2_8b_tok_s": 46.0,
+  "engines": {
+    "q1_gemv": {
+      "tok_s": 433,
+      "TFLOPS": null,
+      "backend": "ROCm HIP (fused kernel)",
+      "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note.",
+      "status": "validated"
+    },
+    "fused_tq2": {
+      "tok_s": 420,
+      "TFLOPS": null,
+      "backend": "ROCm HIP (QKV+GU fused)",
+      "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note.",
+      "status": "validated"
+    },
+    "ternary": {
+      "tok_s": 318,
+      "TFLOPS": null,
+      "backend": "Vulkan ZINC",
+      "notes": "",
+      "status": "validated"
+    },
+    "tq2_gemv": {
+      "tok_s": 367,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note.",
+      "status": "validated"
+    },
+    "npu_v12": {
+      "tok_s": 69,
+      "TFLOPS": null,
+      "backend": "XDNA 2 (32 tiles)",
+      "notes": "",
+      "status": "optimized"
+    },
+    "rocm_hip": {
+      "tok_s": 64,
+      "TFLOPS": null,
+      "backend": "ROCm HIP (kernels)",
+      "notes": "",
+      "status": "validated"
+    },
+    "npu_flm": {
+      "tok_s": 57,
+      "TFLOPS": null,
+      "backend": "",
+      "notes": "",
+      "status": "validated"
+    },
+    "all_5": {
+      "tok_s": 42,
+      "TFLOPS": null,
+      "backend": "",
+      "notes": "",
+      "status": "raw"
+    },
+    "gpu_zinc": {
+      "tok_s": 22,
+      "TFLOPS": null,
+      "backend": "",
+      "notes": "",
+      "status": "validated"
+    },
+    "zaya": {
+      "tok_s": 10.6,
+      "TFLOPS": null,
+      "backend": "",
+      "notes": "",
+      "status": "validated"
+    },
+    "prefill_i8": {
+      "tok_s": 39.4,
+      "TFLOPS": 39.4,
+      "backend": "INT8 WMMA",
+      "notes": "Benchmark shows 39.42 TFLOPS (winner variant: I8-APRE). Prior 40.5 was from a colder GPU pass.",
+      "status": "re-validated 2026-07-26"
+    },
+    "gpu_1bit": {
+      "tok_s": 229,
+      "TFLOPS": null,
+      "backend": "PrismML on same hardware",
+      "notes": "See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235)",
+      "status": "corrected"
+    },
+    "dspark": {
+      "tok_s": 0.8,
+      "TFLOPS": null,
+      "backend": "",
+      "notes": "",
+      "status": "unresolved"
+    },
+    "npu_fused": {
+      "tok_s": 0,
+      "TFLOPS": null,
+      "backend": "",
+      "notes": "",
+      "status": "broken"
+    },
+    "zaya_27b": {
+      "tok_s": 30,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "Full decode, speculative MTP, Strix Halo",
+      "status": "end_to_end"
+    },
+    "zaya_35b_moe": {
+      "tok_s": 20,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "Full decode, speculative MTP, Strix Halo",
+      "status": "end_to_end"
+    },
+    "zr1_1_5b": {
+      "tok_s": 26,
+      "TFLOPS": null,
+      "backend": "Vulkan ZINC",
+      "notes": "Reasoning-tuned dense transformer, Qwen2 arch",
+      "status": "validated"
+    },
+    "bitnet_tq2_0": {
+      "tok_s": 420,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "Isolated GEMV throughput on synthetic data, correctness-verified bit-exact vs CPU reference. See _updated_note.",
+      "status": "validated"
+    },
+    "bitnet_tq1_0": {
+      "tok_s": 202,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "Base-3 ternary decode via LUT. Isolated GEMV throughput, bit-exact. See _updated_note.",
+      "status": "validated"
+    },
+    "q1_0_binary": {
+      "tok_s": 380,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "1-bit binary GEMV. Isolated throughput, bit-exact. See _updated_note.",
+      "status": "validated"
+    },
+    "iq1_s_gpu": {
+      "tok_s": 45,
+      "TFLOPS": null,
+      "backend": "ROCm HIP",
+      "notes": "GPU-side dequant via iq1s_grid LUT from llama.cpp. Correctness pending full IQ1_M port.",
+      "status": "validated"
+    },
+    "cpu_zaya1_8b": {
+      "tok_s": 2.5,
+      "TFLOPS": null,
+      "backend": "Generic CPU (AVX-512 capable box, portable path)",
+      "notes": "Real forward()+generate() loop via create_cpu_backend() (tests/test_backend.cpp), not a synthetic kernel microbenchmark -- genuine tokenizer round-trip and real weights on disk. Single-pass first-token latency was 4.37 tok/s; 2.5 tok/s is the steady-state 5-token benchmark average, used here as the representative figure.",
+      "status": "validated"
+    },
+    "npu_xrt_hw_validate": {
+      "tok_s": 0,
+      "TFLOPS": null,
+      "backend": "XRT / XDNA 2",
+      "notes": "Raw device-level validation, NOT a model-inference tok/s number: 51 TOPS INT8 GEMM, 50us avg latency, 74735-75404 op/s throughput via `xrt-smi validate`. Confirms the NPU hardware/driver/firmware stack is healthy on this box today. Also today: fixed a real buffer-overflow segfault in engine/fusion/zero_copy/test_pipeline_real (the GPU+NPU zero-copy fusion kernel test) -- it now runs its 28-layer synthetic pipeline to completion without crashing, exercising real NPU GEMM (XRT) + real GPU attention (HIP) kernels on hardware. That test's own wall-clock is NOT included here: its per-layer NPU/GPU overlap loop has a separate, pre-existing, unrelated bug (NPU FFN is only invoked once instead of per-layer) that would make a tok/s figure from it misleading. No end-to-end NPU model-decode tok/s was measured this pass -- the existing npu_v12 (69 tok/s) and npu_flm (57 tok/s) entries are carried forward unchanged and their measurement dates are untraced; don't assume they're current.",
+      "status": "validated"
+    },
+    "blackmamba_1_5b": {
+      "tok_s": 79.4,
+      "TFLOPS": null,
+      "backend": "Mamba1 HIP (Strix Halo)",
+      "notes": "Full decode, ROCm HIP, alternating SSM/MoE dispatch. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes.",
+      "status": "re-validated 2026-07-26"
+    },
+    "blackmamba_2_8b": {
+      "tok_s": 46.0,
+      "TFLOPS": null,
+      "backend": "Mamba1 HIP (Strix Halo)",
+      "notes": "Full decode, ROCm HIP. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes.",
+      "status": "re-validated 2026-07-26"
+    }
   }
 }

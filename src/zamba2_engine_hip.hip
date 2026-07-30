@@ -1,4 +1,5 @@
 // zamba2_engine_hip.hip — GPU-accelerated Zamba2 forward pass
+#include "zamba2_hybrid_gpu.hip"
 //
 // Uses the Mamba2 selective scan HIP kernels for GPU inference.
 // Replaces the CPU reference implementation with GPU kernel launches.
@@ -20,6 +21,23 @@
 #ifndef HIP_CHECK
 #define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
 #endif
+
+// Local RMS norm kernel — avoids link dependency on laguna_ops.hip's device stub.
+__global__ void zamba2_rms_norm_kernel(float* __restrict__ out, const float* __restrict__ x,
+                                        const float* __restrict__ w, int N, float eps) {
+    __shared__ float s_ss[256];
+    int tid = threadIdx.x;
+    float l = 0.0f;
+    for (int i = tid; i < N; i += blockDim.x) l += x[i] * x[i];
+    s_ss[tid] = l;
+    __syncthreads();
+    if (tid == 0) {
+        double ss = 0.0;
+        for (int i = 0; i < blockDim.x; i++) ss += s_ss[i];
+        float ir = 1.0f / sqrtf((float)(ss / N) + eps);
+        for (int i = 0; i < N; i++) out[i] = x[i] * ir * w[i];
+    }
+}
 
 // ── HIP state for Zamba2 ──
 struct Zamba2HIPState {
@@ -97,7 +115,7 @@ struct Zamba2HIPState {
 };
 
 // ── Upload weights from Zamba2Model to GPU ──
-static Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
+extern "C" Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
     Zamba2HIPState* s = new Zamba2HIPState();
     auto& cfg = model.cfg;
     s->cfg = cfg;
@@ -169,31 +187,34 @@ static Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
     int d_inner = cfg.d_inner;
     int d_state = cfg.d_state;
 
-    hipMalloc(&s->d_conv_state, n_layers * (cfg.d_conv - 1) * conv_dim * sizeof(float));
-    hipMemset(s->d_conv_state, 0, n_layers * (cfg.d_conv - 1) * conv_dim * sizeof(float));
-    hipMalloc(&s->d_ssm_state, n_layers * d_state * d_inner * sizeof(float));
-    hipMemset(s->d_ssm_state, 0, n_layers * d_state * d_inner * sizeof(float));
-    hipMalloc(&s->d_k_cache, s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
-    hipMemset(s->d_k_cache, 0, s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
-    hipMalloc(&s->d_v_cache, s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
-    hipMemset(s->d_v_cache, 0, s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
+    hipMalloc(&s->d_conv_state, (size_t)n_layers * (cfg.d_conv - 1) * conv_dim * sizeof(float));
+    hipMemset(s->d_conv_state, 0, (size_t)n_layers * (cfg.d_conv - 1) * conv_dim * sizeof(float));
+    hipMalloc(&s->d_ssm_state, (size_t)n_layers * d_state * d_inner * sizeof(float));
+    hipMemset(s->d_ssm_state, 0, (size_t)n_layers * d_state * d_inner * sizeof(float));
+    hipMalloc(&s->d_k_cache, (size_t)s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
+    hipMemset(s->d_k_cache, 0, (size_t)s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
+    hipMalloc(&s->d_v_cache, (size_t)s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
+    hipMemset(s->d_v_cache, 0, (size_t)s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
 
     // Working buffers
-    hipMalloc(&s->d_hidden, d_model * sizeof(float));
-    hipMalloc(&s->d_tmp, std::max(d_model, d_inner) * 4 * sizeof(float));  // multiple temps
-    hipMalloc(&s->d_logits, cfg.vocab_size * sizeof(float));
+    hipMalloc(&s->d_hidden, (size_t)d_model * sizeof(float));
+    hipMalloc(&s->d_tmp, (size_t)std::max(d_model, d_inner) * 4 * sizeof(float));  // multiple temps
+    hipMalloc(&s->d_logits, (size_t)cfg.vocab_size * sizeof(float));
 
     fprintf(stderr, "[zamba2-hip] GPU buffers allocated: conv=%zu ssm=%zu kv=%zu\n",
-            n_layers * (cfg.d_conv-1) * conv_dim * sizeof(float),
-            n_layers * d_state * d_inner * sizeof(float),
-            s->n_hybrid * max_seq * n_kv * hd * 2 * sizeof(float));
+            (size_t)n_layers * (cfg.d_conv-1) * conv_dim * sizeof(float),
+            (size_t)n_layers * d_state * d_inner * sizeof(float),
+            (size_t)s->n_hybrid * max_seq * n_kv * hd * 2 * sizeof(float));
 
     return s;
 }
 
 // ── HIP: forward one token ──
 // Launches GPU kernels for each layer. Designed for autoregressive decode.
-void zamba2_hip_forward(Zamba2HIPState* s, int token_id, float* logits_out, int pos) {
+// Hybrid layers (attention + FFN) fall back to CPU since GPU kernels are not
+// yet implemented for the shared transformer portion.
+extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int token_id,
+                         float* logits_out, int pos) {
     auto& cfg = s->cfg;
     int d_model = cfg.d_model;
     int vocab = cfg.vocab_size;
@@ -208,78 +229,93 @@ void zamba2_hip_forward(Zamba2HIPState* s, int token_id, float* logits_out, int 
     hipStream_t st = s->stream;
 
     // ── Embedding lookup ──
-    // Copy token_id-th row of embedding to d_hidden
     hipMemcpyDtoDAsync(s->d_hidden, s->d_embed + (size_t)token_id * d_model,
                        d_model * sizeof(float), st);
 
     // ── Layer loop ──
-    int hyb_counter = 0;
+    int hyb_idx = 0;
+    int max_seq = cfg.max_seq_len;
+    int n_attn_heads = cfg.n_attn_heads;
+    int n_kv_heads = cfg.n_kv_heads;
+    int attn_head_dim = cfg.attn_head_dim;
     for (int l = 0; l < n_layers; ++l) {
         auto& lw = s->layer_weights[l];
 
-        // Input RMS norm: d_hidden = rms_norm(d_hidden) * input_norm_w
-        // Using a simple HIP kernel for RMS norm
+        // Input RMS norm
         int threads = 256;
         int blocks = (d_model + threads - 1) / threads;
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(rms_norm_kernel), dim3(blocks), dim3(threads), 0, st,
+        hipLaunchKernelGGL(zamba2_rms_norm_kernel, dim3(blocks), dim3(threads), 0, st,
             s->d_hidden, s->d_tmp, lw.input_norm_w, d_model, cfg.rms_norm_eps);
         HIP_CHECK(hipGetLastError());
-        // Copy back: d_hidden = d_tmp (normalized)
         hipMemcpyDtoDAsync(s->d_hidden, s->d_tmp, d_model * sizeof(float), st);
-
-        // ── Mamba2 block ──
-        // in_proj: [d_in_proj] = W @ hidden
-        int d_in_proj = d_inner + conv_dim + n_head;
-        // Simple matmul via HIP: we use gemm for now, or unrolled for small batches
-        // For single-token decode, we use a fused kernel approach
-        // Launch mamba2 fused layer kernel (defined in mamba2_kernels.hip)
 
         float* conv_state = s->d_conv_state + (size_t)l * (cfg.d_conv - 1) * conv_dim;
         float* ssm_state  = s->d_ssm_state + (size_t)l * d_state * d_inner;
 
-        // ── Fused Mamba2 layer forward ──
-        // For GPU, we decompose into:
-        // 1. in_proj matmul
-        // 2. conv1d kernel
-        // 3. x_proj + selective_scan kernel
-        // 4. out_proj matmul
+        // ── Mamba2 GPU forward (single-token decode) ──
+        mamba2_gpu_decode_block(
+            s->d_hidden, lw.in_proj_w, lw.conv1d_w, lw.conv1d_b,
+            lw.dt_bias, lw.A_log, lw.D, lw.norm_w, lw.out_proj_w,
+            conv_state, ssm_state,
+            s->d_hidden, s->d_tmp,
+            d_model, d_inner, d_state, cfg.d_conv,
+            n_head, n_group, head_dim, conv_dim, st);
 
-        // For now, fall back to CPU for Mamba2 blocks on this first GPU pass
-        // TODO: implement fused Mamba2 HIP kernel
-        // For the GPU path, the mamba2_cpu_forward is replaced by kernel launches
-        // This is a stub that will be filled with actual kernel launches once compiled
-
-        // ── Hybrid layer: attention + FFN ──
+        // ── Hybrid layer: attention + FFN (CPU fallback) ──
+        // ── Hybrid layer: GPU attention + FFN (zero CPU round-trips) ──
         if (lw.is_hybrid) {
-            hyb_counter++;
+            auto hit = model.hybrid_layers.find(l);
+            if (hit == model.hybrid_layers.end()) continue;
+            const HybridLayerWeights& hl = hit->second;
+
+            int d_ff_layer = (int)hl.shared_transformer_up.size() / d_model;
+            float* k_cache_gpu = s->d_k_cache + (size_t)hyb_idx * 2 * max_seq * n_kv_heads * attn_head_dim;
+            float* v_cache_gpu = s->d_v_cache + (size_t)hyb_idx * 2 * max_seq * n_kv_heads * attn_head_dim;
+
+            // Get the mamba sub-weights from the hybrid layer
+            const float* mamba_inp_norm = nullptr;  // not needed separately - hybrid uses own norm
+
+            zamba2_hybrid_forward_gpu(
+                lw.in_proj_w, lw.conv1d_w, lw.conv1d_b,
+                lw.dt_bias, lw.A_log, lw.D, lw.norm_w, lw.out_proj_w,
+                conv_state, ssm_state,
+                lw.input_norm_w,
+                lw.linear_w,
+                lw.attn_q, lw.attn_k, lw.attn_v, lw.attn_o,
+                lw.post_attn_norm, lw.ffn_norm,
+                lw.ffn_gate, lw.ffn_up, lw.ffn_down,
+                k_cache_gpu, v_cache_gpu,
+                s->d_hidden, s->d_tmp + d_model * 2,
+                d_model, d_inner, d_state, cfg.d_conv,
+                n_head, n_group, head_dim, conv_dim,
+                n_attn_heads, n_kv_heads, attn_head_dim,
+                d_ff_layer, pos, max_seq, st);
+
+            hyb_idx++;
         }
     }
 
     // ── Final norm ──
     int threads = 256;
     int blocks = (d_model + threads - 1) / threads;
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(rms_norm_kernel), dim3(blocks), dim3(threads), 0, st,
+    hipLaunchKernelGGL(zamba2_rms_norm_kernel, dim3(blocks), dim3(threads), 0, st,
         s->d_hidden, s->d_tmp, s->d_final_norm, d_model, cfg.rms_norm_eps);
     HIP_CHECK(hipGetLastError());
     hipMemcpyDtoDAsync(s->d_hidden, s->d_tmp, d_model * sizeof(float), st);
 
-    // ── LM head: logits = embed @ hidden ──
-    // Simple GEMV: vocab x d_model @ d_model -> vocab
-    // For now, do on CPU
+    // ── LM head on GPU (tiled GEMV on tied embedding) ──
+    // logits[V] = embed[V, d_model] @ hidden[d_model]
+    int gemv_blocks = (vocab + 2 - 1) / 2;
+    hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
+        dim3(gemv_blocks), dim3(256), 0, st,
+        s->d_embed, s->d_hidden, s->d_logits, vocab, d_model);
+
+    // Async D2H copy of logits
+    hipMemcpyAsync(logits_out, s->d_logits, vocab * sizeof(float),
+                   hipMemcpyDeviceToHost, st);
     hipStreamSynchronize(st);
-
-    std::vector<float> hidden_cpu(d_model);
-    hipMemcpy(hidden_cpu.data(), s->d_hidden, d_model * sizeof(float), hipMemcpyDeviceToHost);
-
-    for (int v = 0; v < vocab; ++v) {
-        float sum = 0.0f;
-        for (int j = 0; j < d_model; ++j) {
-            sum += model.embed_w[v * d_model + j] * hidden_cpu[j];
-        }
-        logits_out[v] = sum;
-    }
 }
 
-// ── HIP kernel: RMS Norm ──
-// __global__ void rms_norm_kernel(float* x, float* y, const float* w, int n, float eps)
-// Defined in mamba2_kernels.hip
+extern "C" void zamba2_hip_destroy(Zamba2HIPState* s) {
+    if (s) { s->destroy(); }
+}

@@ -12,10 +12,18 @@
 // unnecessary copy -- consistent with the zero-copy direction already
 // explored for this engine. If this ever needs to run well on a discrete
 // GPU, add a staging-upload path then; don't build it speculatively now.
+//
+// External memory (dma-buf) support for NPU zero-copy (issue #1217):
+// VkCtx::init() enables VK_KHR_external_memory_fd and the related instance
+// extension when available.  GpuBuffer::create_from_dma_buf() imports a
+// SharedBO dma-buf fd as Vulkan device memory so the GPU shader can read and
+// write it without any CPU copy.
 #ifndef VULKAN_RT_H
 #define VULKAN_RT_H
 
+#define VK_USE_PLATFORM_XLIB_KHR 0
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -26,17 +34,19 @@
 
 namespace vkrt {
 
-#define VKRT_BAIL(fmt, ...) do { fprintf(stderr, "vulkan_rt FATAL: " fmt "\n", ##__VA_ARGS__); exit(1); } while (0)
+// Log Vulkan errors instead of killing the process, so transient GPU issues
+// (e.g. VK_ERROR_DEVICE_LOST) don't take down the server.
+#define VKRT_BAIL(fmt, ...) do { fprintf(stderr, "vulkan_rt FATAL: " fmt "\n", ##__VA_ARGS__); return; } while (0)
 #define VKRT_CK(call) do { VkResult r_ = (call); if (r_ != VK_SUCCESS) { \
-    fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, #call, r_); exit(1); } } while (0)
+    fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, #call, r_); return; } } while (0)
 
 inline std::vector<uint32_t> loadSpirv(const char* path) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) VKRT_BAIL("Cannot open %s", path);
-    size_t sz = (size_t)f.tellg();
+    if (!f) { fprintf(stderr, "vulkan_rt FATAL: Cannot open %s\n", path); return {}; }
+    size_t sz = static_cast<size_t>(f.tellg());
     f.seekg(0);
     std::vector<uint32_t> code(sz / 4);
-    f.read(reinterpret_cast<char*>(code.data()), (std::streamsize)sz);
+    f.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(sz));
     return code;
 }
 
@@ -44,7 +54,7 @@ inline uint32_t findMemType(const VkPhysicalDeviceMemoryProperties& mp, uint32_t
     for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
         if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return i;
     }
-    VKRT_BAIL("No suitable memory type");
+    fprintf(stderr, "vulkan_rt FATAL: No suitable memory type\n");
     return 0;
 }
 
@@ -53,6 +63,7 @@ struct GpuBuffer {
     VkDeviceMemory mem = VK_NULL_HANDLE;
     size_t size = 0;
     VkDevice dev = VK_NULL_HANDLE;
+    bool imported_ = false;  // true when memory was imported (not owned by us)
 
     void create(VkDevice d, const VkPhysicalDeviceMemoryProperties& mp, size_t sz, VkBufferUsageFlags usage) {
         dev = d;
@@ -70,6 +81,61 @@ struct GpuBuffer {
         VKRT_CK(vkAllocateMemory(dev, &ai, nullptr, &mem));
         VKRT_CK(vkBindBufferMemory(dev, buf, mem, 0));
     }
+
+    // Import a Linux dma-buf fd (e.g. from SharedBO::dma_buf_fd()) as Vulkan
+    // device memory — zero-copy NPU↔GPU path (issue #1217).
+    // Requires VK_KHR_external_memory_fd on the device (enabled in VkCtx::init).
+    // Returns false if the extension is unavailable or the import fails.
+    bool create_from_dma_buf(VkDevice d,
+                              const VkPhysicalDeviceMemoryProperties& mp,
+                              size_t sz, int dma_fd,
+                              VkBufferUsageFlags usage) {
+        dev = d; size = sz;
+
+        // Buffer with VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT declared.
+        VkExternalMemoryBufferCreateInfo ext_bi{
+            VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+        ext_bi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.pNext = &ext_bi;
+        bi.size  = sz;
+        bi.usage = usage;
+        if (vkCreateBuffer(dev, &bi, nullptr, &buf) != VK_SUCCESS) {
+            fprintf(stderr, "vulkan_rt: create_from_dma_buf: vkCreateBuffer failed\n");
+            return false;
+        }
+
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(dev, buf, &mr);
+
+        // Import the dma-buf fd as Vulkan device memory.
+        VkImportMemoryFdInfoKHR import_info{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
+        import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        import_info.fd         = dma_fd;
+
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.pNext          = &import_info;
+        ai.allocationSize = mr.size;
+        // SharedBO pages are HOST_ONLY coherent system RAM — pick the first
+        // memory type that matches the buffer's requirements and is host-visible.
+        ai.memoryTypeIndex = findMemType(mp, mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(dev, &ai, nullptr, &mem) != VK_SUCCESS) {
+            fprintf(stderr, "vulkan_rt: create_from_dma_buf: vkAllocateMemory failed\n");
+            vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE;
+            return false;
+        }
+        if (vkBindBufferMemory(dev, buf, mem, 0) != VK_SUCCESS) {
+            fprintf(stderr, "vulkan_rt: create_from_dma_buf: vkBindBufferMemory failed\n");
+            vkFreeMemory(dev, mem, nullptr); mem = VK_NULL_HANDLE;
+            vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE;
+            return false;
+        }
+        imported_ = true;
+        return true;
+    }
+
     void upload(const void* data) {
         void* p;
         VKRT_CK(vkMapMemory(dev, mem, 0, size, 0, &p));
@@ -83,10 +149,9 @@ struct GpuBuffer {
         vkUnmapMemory(dev, mem);
     }
     void destroy() {
-        if (mem) vkFreeMemory(dev, mem, nullptr);
-        if (buf) vkDestroyBuffer(dev, buf, nullptr);
-        mem = VK_NULL_HANDLE;
-        buf = VK_NULL_HANDLE;
+        if (mem) { vkFreeMemory(dev, mem, nullptr); mem = VK_NULL_HANDLE; }
+        if (buf) { vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE; }
+        imported_ = false;
     }
 };
 
@@ -102,13 +167,30 @@ struct VkCtx {
     float timestampPeriodNs = 1.0f;
     char deviceName[256] = {0};
 
+    // Whether VK_KHR_external_memory_fd is available on the chosen device.
+    bool ext_mem_fd = false;
+
     void init() {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "1bit-vulkan-rt";
         ai.apiVersion = VK_API_VERSION_1_2;
+
+        // VK_KHR_external_memory_capabilities is an instance extension needed
+        // before VK_KHR_external_memory_fd (device extension) can be used.
+        const char* inst_exts[] = {
+            "VK_KHR_external_memory_capabilities",
+            "VK_KHR_get_physical_device_properties2",
+        };
         VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-        ici.pApplicationInfo = &ai;
-        VKRT_CK(vkCreateInstance(&ici, nullptr, &inst));
+        ici.pApplicationInfo        = &ai;
+        ici.enabledExtensionCount   = 2;
+        ici.ppEnabledExtensionNames = inst_exts;
+        // If the instance extensions are unsupported, fall back to no extensions.
+        if (vkCreateInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
+            ici.enabledExtensionCount   = 0;
+            ici.ppEnabledExtensionNames = nullptr;
+            VKRT_CK(vkCreateInstance(&ici, nullptr, &inst));
+        }
 
         uint32_t nd = 0;
         VKRT_CK(vkEnumeratePhysicalDevices(inst, &nd, nullptr));
@@ -130,6 +212,19 @@ struct VkCtx {
         }
         if (!phys) VKRT_BAIL("No integrated/discrete GPU found");
 
+        // Probe for VK_KHR_external_memory_fd device extension (needed for
+        // dma-buf import — issue #1217).
+        uint32_t ext_count = 0;
+        vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, nullptr);
+        std::vector<VkExtensionProperties> avail_exts(ext_count);
+        vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, avail_exts.data());
+        for (auto& e : avail_exts) {
+            if (strcmp(e.extensionName, "VK_KHR_external_memory_fd") == 0) {
+                ext_mem_fd = true;
+                break;
+            }
+        }
+
         float qp = 1.0f;
         VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         qci.queueCount = 1;
@@ -137,7 +232,22 @@ struct VkCtx {
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
-        VKRT_CK(vkCreateDevice(phys, &dci, nullptr, &dev));
+
+        const char* dev_exts[] = {
+            "VK_KHR_external_memory",
+            "VK_KHR_external_memory_fd",
+        };
+        if (ext_mem_fd) {
+            dci.enabledExtensionCount   = 2;
+            dci.ppEnabledExtensionNames = dev_exts;
+        }
+        if (vkCreateDevice(phys, &dci, nullptr, &dev) != VK_SUCCESS) {
+            // Retry without the external-memory extensions if unavailable.
+            dci.enabledExtensionCount   = 0;
+            dci.ppEnabledExtensionNames = nullptr;
+            ext_mem_fd = false;
+            VKRT_CK(vkCreateDevice(phys, &dci, nullptr, &dev));
+        }
         vkGetDeviceQueue(dev, 0, 0, &queue);
 
         VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -181,12 +291,12 @@ struct Pipeline {
         sm.pCode = spv.data();
         VKRT_CK(vkCreateShaderModule(ctx.dev, &sm, nullptr, &shader));
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings((size_t)numBindings);
+        std::vector<VkDescriptorSetLayoutBinding> bindings(static_cast<size_t>(numBindings));
         for (int i = 0; i < numBindings; i++) {
-            bindings[(size_t)i] = {(uint32_t)i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+            bindings[static_cast<size_t>(i)] = {static_cast<uint32_t>(i), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
         }
         VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        dslci.bindingCount = (uint32_t)numBindings;
+        dslci.bindingCount = static_cast<uint32_t>(numBindings);
         dslci.pBindings = bindings.data();
         VKRT_CK(vkCreateDescriptorSetLayout(ctx.dev, &dslci, nullptr, &dsl));
 
@@ -223,16 +333,16 @@ inline VkDescriptorSet createDescriptorSet(VkCtx& ctx, Pipeline& p, GpuBuffer** 
     dai.descriptorPool = ctx.dpool;
     dai.descriptorSetCount = 1;
     dai.pSetLayouts = &p.dsl;
-    VKRT_CK(vkAllocateDescriptorSets(ctx.dev, &dai, &ds));
+    { VkResult r_ = vkAllocateDescriptorSets(ctx.dev, &dai, &ds); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkAllocateDescriptorSets", r_); return VK_NULL_HANDLE; } }
 
-    std::vector<VkDescriptorBufferInfo> dbis((size_t)n);
-    std::vector<VkWriteDescriptorSet> writes((size_t)n);
+    std::vector<VkDescriptorBufferInfo> dbis(static_cast<size_t>(n));
+    std::vector<VkWriteDescriptorSet> writes(static_cast<size_t>(n));
     for (int i = 0; i < n; i++) {
-        dbis[(size_t)i] = {bufs[i]->buf, 0, VK_WHOLE_SIZE};
-        writes[(size_t)i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ds, (uint32_t)i, 0, 1,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &dbis[(size_t)i], nullptr};
+        dbis[static_cast<size_t>(i)] = {bufs[i]->buf, 0, VK_WHOLE_SIZE};
+        writes[static_cast<size_t>(i)] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ds, static_cast<uint32_t>(i), 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &dbis[static_cast<size_t>(i)], nullptr};
     }
-    vkUpdateDescriptorSets(ctx.dev, (uint32_t)n, writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(ctx.dev, static_cast<uint32_t>(n), writes.data(), 0, nullptr);
     return ds;
 }
 
@@ -274,11 +384,11 @@ inline double dispatchRepeatedTimed(VkCtx& ctx, Pipeline& p, VkDescriptorSet ds,
     cba.commandPool = ctx.cmdPool;
     cba.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cba.commandBufferCount = 1;
-    VKRT_CK(vkAllocateCommandBuffers(ctx.dev, &cba, &cmd));
+    { VkResult r_ = vkAllocateCommandBuffers(ctx.dev, &cba, &cmd); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkAllocateCommandBuffers", r_); return 0.0; } }
 
     VkCommandBufferBeginInfo cbb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     cbb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VKRT_CK(vkBeginCommandBuffer(cmd, &cbb));
+    { VkResult r_ = vkBeginCommandBuffer(cmd, &cbb); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkBeginCommandBuffer", r_); return 0.0; } }
     vkCmdResetQueryPool(cmd, ctx.queryPool, 0, 2);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 1, &ds, 0, nullptr);
@@ -288,20 +398,20 @@ inline double dispatchRepeatedTimed(VkCtx& ctx, Pipeline& p, VkDescriptorSet ds,
         vkCmdDispatch(cmd, gx, gy, gz);
     }
     vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ctx.queryPool, 1);
-    VKRT_CK(vkEndCommandBuffer(cmd));
+    { VkResult r_ = vkEndCommandBuffer(cmd); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkEndCommandBuffer", r_); return 0.0; } }
 
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    VKRT_CK(vkQueueSubmit(ctx.queue, 1, &si, VK_NULL_HANDLE));
-    VKRT_CK(vkQueueWaitIdle(ctx.queue));
+    { VkResult r_ = vkQueueSubmit(ctx.queue, 1, &si, VK_NULL_HANDLE); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkQueueSubmit", r_); return 0.0; } }
+    { VkResult r_ = vkQueueWaitIdle(ctx.queue); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkQueueWaitIdle", r_); return 0.0; } }
 
     uint64_t timestamps[2];
-    VKRT_CK(vkGetQueryPoolResults(ctx.dev, ctx.queryPool, 0, 2, sizeof(timestamps), timestamps, sizeof(uint64_t),
-                                   VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+    { VkResult r_ = vkGetQueryPoolResults(ctx.dev, ctx.queryPool, 0, 2, sizeof(timestamps), timestamps, sizeof(uint64_t),
+                                   VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkGetQueryPoolResults", r_); return 0.0; } }
     vkFreeCommandBuffers(ctx.dev, ctx.cmdPool, 1, &cmd);
 
-    double elapsed_ns = (double)(timestamps[1] - timestamps[0]) * (double)ctx.timestampPeriodNs;
+    double elapsed_ns = static_cast<double>(timestamps[1] - timestamps[0]) * static_cast<double>(ctx.timestampPeriodNs);
     return elapsed_ns / 1e6; // ms
 }
 

@@ -4,12 +4,25 @@
 
 namespace {
 
-constexpr int32_t kHeads = 8;
-constexpr int32_t kContext = 16;
-constexpr int32_t kHeadDim = 128;
-constexpr int32_t kGqaRatio = 4;
-constexpr int32_t kWeightDwords = 64;
-constexpr int32_t kVecLanes = 32;
+// Model selection: define MODEL_QWEN3_8B or MODEL_QWEN3_0_6B before including.
+// Default: Qwen3-0.6B (4 heads per attention worker, WQH = NH/AW = 16/4 = 4)
+#ifdef MODEL_QWEN3_8B
+  constexpr int32_t kHeads = 8;       // NH=32, AW=4, WQH=32/4=8
+  constexpr int32_t kContext = 16;
+  constexpr int32_t kHeadDim = 128;
+  constexpr int32_t kGqaRatio = 4;     // NH/NKV = 32/8
+  constexpr int32_t kWeightDwords = 64;
+  constexpr int32_t kVecLanes = 32;
+#else
+  // Qwen3-0.6B default
+  constexpr int32_t kHeads = 4;        // NH=16, AW=4, WQH=16/4=4
+  constexpr int32_t kContext = 16;
+  constexpr int32_t kHeadDim = 128;
+  constexpr int32_t kGqaRatio = 2;     // NH/NKV = 16/8
+  constexpr int32_t kWeightDwords = 32;
+  constexpr int32_t kVecLanes = 32;
+#endif
+
 constexpr int32_t kAccumLanes = kHeads * kHeadDim;
 constexpr int32_t kStateDwords = kHeads * 2;
 constexpr float kRsqrtHeadDim = 0.0883883476f;

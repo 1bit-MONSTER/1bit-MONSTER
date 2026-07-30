@@ -10,6 +10,7 @@
 #pragma once
 #include "backend.h"
 #include "pilot.h"
+#include "dynamic_router.h"
 #include "backend_monitor.h"
 #include <string>
 #include <vector>
@@ -53,6 +54,17 @@ struct BackendInfo {
 
     std::shared_ptr<Backend> instance;  // shared_ptr enables lock-free inference (fixes #96)
     void* plugin_handle;       // dlopen handle if loaded as plugin
+
+    // Guards actual compute calls (generate/reset/benchmark/init) on `instance`.
+    // generate() intentionally releases BackendManager::mtx_ during inference
+    // (fixes #96) so slow calls don't block bookkeeping, but that means mtx_
+    // alone can't stop AgentWatchdog's health_check()/benchmark_all() from
+    // calling reset()/benchmark()/init() on the same live instance concurrently
+    // with an in-flight generate() — a data race on the backend's internal
+    // state (e.g. HIPBackend's ZayaState/pos) that crashed the agent-watchdog
+    // thread inside zaya_init on 2026-07-24. shared_ptr so BackendInfo stays
+    // movable/copyable in the vector.
+    std::shared_ptr<std::mutex> compute_mtx = std::make_shared<std::mutex>();
 };
 
 // ── Fallback policy ──
@@ -141,6 +153,8 @@ public:
     const Pilot& pilot() const { return pilot_; }
     Pilot& pilot() { return pilot_; }
     bool pilot_active() const { return pilot_active_; }
+    std::vector<DynamicRouter::BackendStats> router_stats() const { return router_.stats(); }
+    DynamicRouter& router() { return router_; }
 
     /// Re-evaluate active backend against strategy and current scores.
     /// For FASTEST: switches to the backend with best (lowest) benchmark score.
@@ -152,6 +166,10 @@ public:
     // ── Benchmarking ──
     /// Run benchmark on all backends, updating their scores
     void benchmark_all(int tokens = 10);
+    /// Record a benchmark score for a single backend (e.g. a caller that
+    /// benchmarked only the active backend directly via its Backend instance,
+    /// bypassing benchmark_all() — see unified_server.cpp Phase 4).
+    void set_score(const std::string& id, float ms);
     /// Get the best backend for a given tier
     const BackendInfo* best_for_tier(BackendTier tier) const;
 
@@ -194,7 +212,8 @@ private:
     FallbackPolicy fallback_policy_ = FallbackPolicy::SEQUENTIAL;
 
     BackendMonitor monitor_;      // live performance tracking
-    Pilot pilot_;                 // cross-layer prefetch engine
+    DynamicRouter router_;        // per-token GPU ↔ NPU router
+    Pilot pilot_;
     bool pilot_active_ = false;
     bool initialized_ = false;
     mutable std::mutex mtx_;

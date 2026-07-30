@@ -14,14 +14,6 @@
 // Internal helpers
 // ═══════════════════════════════════════════════════════════════════
 
-// Decode one packed uint32 → 16 float signs in { -1, 0, +1 }
-static inline void decode_ternary_word(uint32_t word, float* signs_out) {
-    for (int v = 0; v < 16; v++) {
-        uint32_t bits = (word >> (v * 2)) & 0x3;
-        signs_out[v] = (float)((bits == 1) ? 1 : (bits == 2) ? -1 : 0);
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // CPU ternary GEMV — scalar + SIMD (AVX2 / AVX-512)
 // ═══════════════════════════════════════════════════════════════════
@@ -309,7 +301,7 @@ void cpu_attention(
         const int MAX_SEQ = 4096; // stack limit — should match model max_seq_len
         float scores_stack[4096];
 
-        float max_score = -INFINITY;
+        float max_score = -1e30f;
         for (int pos = 0; pos < max_pos && pos < MAX_SEQ; pos++) {
             const float* k_row = k_cache + pos * n_kv_heads * head_dim + kvh * head_dim;
             double dot = 0.0;
@@ -379,7 +371,6 @@ int cpu_layer_forward_qwen3(
     // ── RMSNorm + QKV ternary GEMV ──
     cpu_rmsnorm(hidden, in_norm_weight, hidden, hidden_dim, rms_norm_eps);
 
-    int qkv_dim = n_heads * head_dim + 2 * n_kv_heads * head_dim;
     cpu_ternary_gemv(q_packed, hidden, q_scales, scratch_qkv, n_heads * head_dim, hidden_dim);
     cpu_ternary_gemv(k_packed, hidden, k_scales, scratch_qkv + n_heads * head_dim, n_kv_heads * head_dim, hidden_dim);
     cpu_ternary_gemv(v_packed, hidden, v_scales, scratch_qkv + n_heads * head_dim + n_kv_heads * head_dim, n_kv_heads * head_dim, hidden_dim);
@@ -496,7 +487,7 @@ int cpu_argmax(const float* values, int N) {
 // Softmax (in-place)
 // ═══════════════════════════════════════════════════════════════════
 void cpu_softmax(float* values, int N) {
-    float max_val = -INFINITY;
+    float max_val = -1e30f;
     for (int i = 0; i < N; i++) {
         if (values[i] > max_val) max_val = values[i];
     }

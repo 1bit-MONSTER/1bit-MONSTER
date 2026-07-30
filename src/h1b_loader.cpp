@@ -43,7 +43,7 @@ int read_fp32_as_fp16(std::ifstream& f, size_t n, __half** out) {
 // attn_sub_norm copies the exporter writes 4× for legacy reasons).
 void skip_fp32(std::ifstream& f, size_t n) {
     f.seekg(n * sizeof(float), std::ios::cur);
-    if (!f) f.clear(std::ios::failbit);  // mark stream bad if seek past EOF
+    if (!f) f.setstate(std::ios::failbit);  // mark stream bad if seek past EOF
 }
 
 // Read a packed ternary weight (halo-1bit format: uint8[rows, (cols+3)/4] + float[rows] scales).
@@ -202,6 +202,10 @@ class GgufSidecar {
             if (!read_string(name)) return false;
             uint32_t ndim;
             if (!read_u32(ndim)) return false;
+            if (ndim > 8) {
+                fprintf(stderr, "[h1b] invalid ndim=%u, rejecting\n", ndim);
+                return false;
+            }
             GgufTensorInfo info;
             info.shape.resize(ndim);
             for (uint32_t d = 0; d < ndim; ++d) {
@@ -231,8 +235,22 @@ class GgufSidecar {
     {
         const auto* ti = info(name);
         if (!ti) return false;
+        // Validate offset before seek (issue #1175)
+        uint64_t file_start = (uint64_t)f_.tellg();
+        if (file_start == (uint64_t)-1) return false;  // stream error
+        f_.seekg(0, std::ios::end);
+        uint64_t file_size = (uint64_t)f_.tellg();
+        if (file_size == (uint64_t)-1) return false;
+        uint64_t seek_pos = data_start_ + ti->offset;
+        // Check for overflow and bounds
+        if (seek_pos < data_start_ || seek_pos + nbytes > file_size ||
+            seek_pos + nbytes < seek_pos) {  // overflow check
+            fprintf(stderr, "[rocm-cpp][gguf] tensor %s: offset %lu + %zu > file_size %lu\n",
+                    name.c_str(), (unsigned long)seek_pos, nbytes, (unsigned long)file_size);
+            return false;
+        }
+        f_.seekg((std::streamoff)seek_pos, std::ios::beg);
         out.resize(nbytes);
-        f_.seekg((std::streamoff)(data_start_ + ti->offset), std::ios::beg);
         f_.read(reinterpret_cast<char*>(out.data()), (std::streamsize)nbytes);
         return (bool)f_;
     }
@@ -249,6 +267,14 @@ class GgufSidecar {
     bool read_string(std::string& s) {
         uint64_t n;
         if (!read_u64(n)) return false;
+        static constexpr uint64_t MAX_STRING_LEN = 1ULL * 1024 * 1024; // 1 MiB cap
+        if (n > MAX_STRING_LEN) {
+            fprintf(stderr, "[rocm-cpp][h1b] string too long (%lu > %lu), skipping\n",
+                    (unsigned long)n, (unsigned long)MAX_STRING_LEN);
+            f_.seekg((std::streamoff)n, std::ios::cur);
+            s.clear();
+            return true; // skip but don't fail
+        }
         s.resize((size_t)n);
         if (n) f_.read(s.data(), (std::streamsize)n);
         return (bool)f_;

@@ -25,8 +25,10 @@ std::atomic<int> g_npu_active_requests{0};
 std::string get_current_time_string() {
     auto now = std::chrono::system_clock::now();
     auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_buf;
+    localtime_r(&in_time_t, &tm_buf);
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&in_time_t), "%H:%M:%S %m:%d:%Y");
+    ss << std::put_time(&tm_buf, "%H:%M:%S %m:%d:%Y");
     return ss.str();
 }
 
@@ -111,15 +113,33 @@ void brief_print_message_request(nlohmann::json request) {
         }
     }
 
-    // TODO: improve tools logging like only print the tool name and elide the arguments
-    // TODO: Support debug level
-    if (request.contains("tools")) {
-        request["tools"] = "...";
+    // Elide tool arguments in logging: keep only tool names, omit params/schema.
+    if (request.contains("tools") && request["tools"].is_array()) {
+        for (auto& tool : request["tools"]) {
+            if (tool.contains("function")) {
+                json fn;
+                fn["name"] = tool["function"]["name"];
+                fn["parameters"] = "...elided...";
+                tool["function"] = fn;
+            }
+        }
     }
+    // Debug-level logging: enabled by setting ZAYA_DEBUG=1 env var.
+    // When disabled, the brief body dump below is skipped entirely
+    // (only the endpoint name and token count are printed).
+    static const bool zaya_debug = []() {
+        const char* e = getenv("ZAYA_DEBUG");
+        return e && e[0] == '1';
+    }();
 
-    header_print("LOG", "Body: ");
-    std::string brief_body = request.dump(4);
-    std::cout << brief_body << std::endl;
+    if (zaya_debug) {
+        header_print("LOG", "Body: ");
+        std::string brief_body = request.dump(4);
+        std::cout << brief_body << std::endl;
+    } else {
+        std::string model = request.value("model", "unknown");
+        header_print("REQ", model + " — " + std::to_string(request.value("max_tokens", 256)) + " max_tokens");
+    }
 }
 
 ///@brief brief print request
@@ -176,7 +196,8 @@ bool requires_npu_access(const std::string& method, const std::string& path) {
 HttpSession::HttpSession(tcp::socket socket, WebServer& server)
     : socket_(std::move(socket))
     , server_(server)
-    , is_streaming_(false) {
+    , is_streaming_(false)
+    , request_timer_(server.ioc) {
     // Set socket timeout
     socket_.set_option(tcp::socket::keep_alive(false));
     // Avoid abortive close that can lead to client-side broken pipe on large uploads
@@ -213,9 +234,24 @@ void HttpSession::read_request(bool cors) {
     auto parser = std::make_shared<http::request_parser<http::string_body>>();
     parser->body_limit(self->server_.get_max_body_size_bytes());
 
+    // Wire the request timeout: cancel the operation if it takes too long
+    self->request_timer_.expires_after(self->server_.request_timeout_);
+    self->request_timer_.async_wait([self](beast::error_code ec) {
+        if (!ec) {
+            // Timer fired — abort the read operation
+            boost::system::error_code close_ec;
+            self->socket_.close(close_ec);
+            self->server_.active_connections_.fetch_sub(1);
+            header_print("⏰", "Request timed out — connection closed");
+        }
+    });
+
     http::async_read(self->socket_, self->buffer_, *parser,
         [self, parser, cors](beast::error_code ec, std::size_t bytes_transferred) {
             if (!ec) {
+                // Cancel the timeout timer
+                boost::system::error_code timer_ec;
+                self->request_timer_.cancel(timer_ec);
                 header_print("TCP", "Read " + std::to_string(bytes_transferred) + " bytes from socket");
                 // Move the parsed message into our request object
                 self->req_ = parser->release();
@@ -260,7 +296,8 @@ void HttpSession::handle_request(bool cors) {
         options_res->result(http::status::ok); 
         options_res->keep_alive(req_.keep_alive());
 
-        options_res->set("Access-Control-Allow-Origin", "*");
+        const char* cors_origin = getenv("ZAYA_CORS_ORIGIN");
+        options_res->set("Access-Control-Allow-Origin", cors_origin ? cors_origin : "http://127.0.0.1");
         options_res->set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         options_res->set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
 
@@ -323,7 +360,8 @@ void HttpSession::write_response() {
 
     std::cout << "================================================" << std::endl;
 
-    res_.set("Access-Control-Allow-Origin", "*");
+    const char* cors_origin = getenv("ZAYA_CORS_ORIGIN");
+    res_.set("Access-Control-Allow-Origin", cors_origin ? cors_origin : "http://127.0.0.1");
     res_.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res_.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
 
@@ -406,7 +444,10 @@ void HttpSession::write_streaming_response(const json& data, bool is_final) {
         headers += "Cache-Control: no-cache\r\n";
         headers += "Connection: keep-alive\r\n";
         headers += "Transfer-Encoding: chunked\r\n";
-        headers += "Access-Control-Allow-Origin: *\r\n";
+        const char* cors_origin = getenv("ZAYA_CORS_ORIGIN");
+        headers += "Access-Control-Allow-Origin: ";
+        headers += cors_origin ? cors_origin : "http://127.0.0.1";
+        headers += "\r\n";
         headers += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
         headers += "Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\n";
         headers += "\r\n";
@@ -414,7 +455,7 @@ void HttpSession::write_streaming_response(const json& data, bool is_final) {
         // Send headers synchronously via raw socket write
         boost::system::error_code ec;
         net::write(socket_, net::buffer(headers), ec);
-        if (ec) return;
+        if (ec) { server_.active_connections_.fetch_sub(1); return; }
     }
     
     // Send this chunk immediately
@@ -463,8 +504,8 @@ void HttpSession::send_chunk_data(const json& data, bool is_final) {
             cancellation_token_->cancel(); 
         }
 
-        //socket_.shutdown(tcp::socket::shutdown_both, ec);
-        //server_.active_connections_.fetch_sub(1);
+        socket_.shutdown(tcp::socket::shutdown_both, ec);
+        server_.active_connections_.fetch_sub(1);
 
         boost::system::error_code ignore_ec;
         socket_.close(ignore_ec);

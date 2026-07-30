@@ -6,6 +6,35 @@
 
 // ── Q4nxReader methods ─────────────────────────────────────────────────────
 
+#ifdef _WIN32
+// Windows implementation using CreateFileMapping + MapViewOfFile
+#include <windows.h>
+
+bool Q4nxReader::open(const std::string& path) {
+    HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) { fprintf(stderr, "Q4NX: open model failed\n"); return false; }
+    LARGE_INTEGER li; GetFileSizeEx(hFile, &li);
+    size = (size_t)li.QuadPart;
+    HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMap) { CloseHandle(hFile); fprintf(stderr, "Q4NX: CreateFileMapping failed\n"); return false; }
+    data = (const char*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(hMap);
+    CloseHandle(hFile);
+    if (!data) { fprintf(stderr, "Q4NX: MapViewOfFile failed\n"); return false; }
+    if (size >= 8) {
+        uint64_t hdr_len = 0;
+        memcpy(&hdr_len, data, 8);
+        if (8 + hdr_len <= size) data_start = (size_t)(8 + hdr_len);
+    }
+    return true;
+}
+
+void Q4nxReader::close() {
+    if (data) { UnmapViewOfFile(data); data = nullptr; size = 0; }
+}
+#else
+// POSIX implementation using mmap
 bool Q4nxReader::open(const std::string& path) {
     int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) { perror("Q4NX: open model"); return false; }
@@ -13,14 +42,20 @@ bool Q4nxReader::open(const std::string& path) {
     fstat(fd, &st);
     data = (const char*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     size = st.st_size;
-    ::close(fd);  // global POSIX close, not the member function
+    ::close(fd);
     if (data == MAP_FAILED) { perror("Q4NX: mmap model"); data = nullptr; return false; }
+    if (size >= 8) {
+        uint64_t hdr_len = 0;
+        memcpy(&hdr_len, data, 8);
+        if (8 + hdr_len <= size) data_start = (size_t)(8 + hdr_len);
+    }
     return true;
 }
 
 void Q4nxReader::close() {
     if (data && size > 0) { munmap((void*)data, size); data = nullptr; size = 0; }
 }
+#endif
 
 // Find data offset for a JSON key in the model header
 // Uses standard C string search instead of GNU memmem extension.
@@ -40,7 +75,11 @@ uint64_t Q4nxReader::find_offset(const char* key) const {
                 const char* o = strstr(q, "\"data_offsets\"");
                 if (o) {
                     const char* a = strchr(o, '[');
-                    if (a) return strtoull(a + 1, NULL, 10);
+                    // data_offsets are relative to the end of the safetensors
+                    // header (data_start), not to byte 0 of the file — adding
+                    // data_start also makes 0 an unambiguous "not found"
+                    // sentinel, since no valid tensor can start there (#1058).
+                    if (a) return data_start + strtoull(a + 1, NULL, 10);
                 }
             }
             p = q + 1;
@@ -51,13 +90,73 @@ uint64_t Q4nxReader::find_offset(const char* key) const {
     return 0;
 }
 
-// Read float32 array at offset into a vector
+// Read a BF16 array at offset, widened to float32, into a vector.
+// Every tensor in this Q4NX format (embed table, all norm weights) is
+// stored as BF16 (2 bytes/elem), confirmed against data_offsets byte
+// spans — not float32, despite the name (#1058).
 std::vector<float> Q4nxReader::read_floats(uint64_t offset, size_t count) const {
     std::vector<float> v;
-    if (!data || offset == 0 || offset + count * 4 > size) return v;
+    if (!data || offset == 0) return v;
+    // Prevent integer overflow: if count * 2 wraps around, the bounds check
+    // below would pass for maliciously large count values (CRITICAL).
+    static constexpr size_t MAX_FLOATS = 256ULL * 1024 * 1024; // 256M elems = 512 MiB BF16
+    if (count > MAX_FLOATS) return v;
+    uint64_t byte_len = (uint64_t)count * 2;
+    if (offset + byte_len > size) return v;
     v.resize(count);
-    memcpy(v.data(), data + offset, count * sizeof(float));
+    const uint16_t* bf16 = (const uint16_t*)(data + offset);
+    for (size_t i = 0; i < count; i++) {
+        uint32_t bits = (uint32_t)bf16[i] << 16;
+        memcpy(&v[i], &bits, sizeof(float));
+    }
     return v;
+}
+
+// ── Tensor shape query ─────────────────────────────────────────────────────
+
+// Parse [rows, cols] from a JSON header string for the named tensor.
+// The JSON format is safetensors-style:
+//   {"tensor_name":{"dtype":"F32","shape":[R,C],"data_offsets":[O,E]},...}
+std::vector<uint64_t> Q4nxReader::get_tensor_shape(
+    const std::string& json_header,
+    const std::string& tensor_name) const
+{
+    std::vector<uint64_t> result;
+    // Find the tensor name key (must be a quoted JSON key)
+    auto pos = json_header.find(tensor_name);
+    if (pos == std::string::npos || pos == 0) return result;
+    if (json_header[pos - 1] != '"') {
+        // Scan forward for a proper "key" match
+        pos = json_header.find('"' + tensor_name + '"');
+        if (pos == std::string::npos) return result;
+    } else if (json_header[pos - 1] == '"') {
+        pos = pos - 1;  // back up to include the opening quote
+    }
+    // Look for "shape":[ after the tensor entry
+    // First ensure we're past the tensor name by finding the next '{'
+    auto brace = json_header.find('{', pos);
+    if (brace == std::string::npos) return result;
+    // Find "shape":[ starting from the opening brace
+    auto shape_key = json_header.find("\"shape\":[", brace);
+    if (shape_key == std::string::npos) return result;
+    auto start = shape_key + strlen("\"shape\":[");
+    uint64_t r = 0, c = 0;
+    if (sscanf(json_header.c_str() + start, "%lu,%lu", &r, &c) == 2) {
+        result.push_back(r);
+        result.push_back(c);
+    }
+    return result;
+}
+
+bool Q4nxReader::validate_tensor_shape(
+    const std::string& json_header,
+    const std::string& tensor_name,
+    size_t expected_rows,
+    size_t expected_cols) const
+{
+    auto shape = get_tensor_shape(json_header, tensor_name);
+    if (shape.size() != 2) return false;
+    return shape[0] == expected_rows && shape[1] == expected_cols;
 }
 
 // ── read_q4nx_metadata ─────────────────────────────────────────────────────

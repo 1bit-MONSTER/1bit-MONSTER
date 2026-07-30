@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # record-agent-change.sh — Log git changes to the cross-agent awareness file.
 #
 # Called from git hooks (post-commit, post-merge, post-checkout, pre-push).
@@ -183,7 +184,6 @@ record_merge() {
 
 record_checkout() {
     local old_ref="$1"
-    local new_ref="$2"
     local flag="${3:-0}"
     [ "$flag" != "1" ] && return 0
 

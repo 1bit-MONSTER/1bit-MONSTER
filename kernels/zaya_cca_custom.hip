@@ -9,7 +9,7 @@
 
 #define BS 256
 
-__device__ inline float wsum_cca(float v){for(int o=16;o>0;o>>=1)v+=__shfl_xor(v,o);return v;}
+__device__ inline float wsum_cca(float v){for(int o=16;o>0;o>>=1)v+=__shfl_xor_sync(0xffffffffULL, v, o);return v;}
 __device__ inline float bsum_cca(float v,float*r){
     int tx=threadIdx.x,w=tx/32,l=tx%32;v=wsum_cca(v);if(!l)r[w]=v;
     __syncthreads();float s=0;
@@ -77,7 +77,7 @@ __global__ void cca_custom_kernel(
     }
     __syncthreads();
 
-    for(int h=0;h<nq;h++){int kv=h/gqa;for(int d=0;d<hd;d++) sqk[h*hd+d]=sqk[h*hd+d]+0.5f*__half2float(q_b[h*hd+d])+0.5f*__half2float(k_b[kv*hd+d]);}
+    for(int d=tx;d<hd;d+=BS){for(int h=0;h<nq;h++){int kv=h/gqa;sqk[h*hd+d]=sqk[h*hd+d]+0.5f*__half2float(q_b[h*hd+d])+0.5f*__half2float(k_b[kv*hd+d]);}}
     for(int khv=0;khv<nkv;khv++){for(int d=0;d<hd;d++){float sm=0;for(int g=0;g<gqa;g++)sm+=__half2float(q_b[(khv*gqa+g)*hd+d]);sqk[qd+khv*hd+d]=sqk[qd+khv*hd+d]+0.5f*sm/(float)gqa+0.5f*__half2float(k_b[khv*hd+d]);}}
     __syncthreads();
 

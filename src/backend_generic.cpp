@@ -12,6 +12,9 @@
 #include "model_discovery.h"
 #include "rocm_cpp/tokenizer.h"
 
+// 1BP loader with full TQ2/Q4NX tile dequant (unity build)
+#include "../engine/npu/src/onebp_loader.cpp"
+
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -74,16 +77,17 @@ struct GenericBackend : Backend {
         layers.resize(L);
         for (int i = 0; i < L; i++) {
             std::string p = "model_layers_" + std::to_string(i) + "_";
+            // LayerW order: wq, wk, wv, wo, rms_attn, rms_ffn, w1, w2, w3
             layers[i] = {
-                push(W(p + "self_attn_q_proj.weight")),
-                push(W(p + "self_attn_k_proj.weight")),
-                push(W(p + "self_attn_v_proj.weight")),
-                push(W(p + "self_attn_o_proj.weight")),
-                push(W(p + "mlp_gate_proj.weight")),
-                push(W(p + "mlp_up_proj.weight")),
-                push(W(p + "mlp_down_proj.weight")),
-                push(W(p + "input_layernorm.weight")),
-                push(W(p + "post_attention_layernorm.weight")),
+                push(W(p + "self_attn_q_proj.weight")),          // wq
+                push(W(p + "self_attn_k_proj.weight")),          // wk
+                push(W(p + "self_attn_v_proj.weight")),          // wv
+                push(W(p + "self_attn_o_proj.weight")),          // wo
+                push(W(p + "input_layernorm.weight")),            // rms_attn
+                push(W(p + "post_attention_layernorm.weight")),   // rms_ffn
+                push(W(p + "mlp_gate_proj.weight")),              // w1
+                push(W(p + "mlp_up_proj.weight")),                // w2
+                push(W(p + "mlp_down_proj.weight")),              // w3
             };
         }
     }
@@ -94,7 +98,15 @@ struct GenericBackend : Backend {
         return idx;
     }
     std::vector<float> flat_weights;
-    float* w(size_t idx) { return flat_weights.data() + idx; }
+    float* w(size_t idx) {
+        if (idx >= flat_weights.size()) {
+            fprintf(stderr, "[generic] FATAL: weight index %zu out of range (size=%zu)\n",
+                    idx, flat_weights.size());
+            static float g_zero = 0.0f;
+            return &g_zero;
+        }
+        return flat_weights.data() + idx;
+    }
 
     bool init(const ModelConfig& model_cfg, const std::string& weights_dir) override {
         cfg = model_cfg;
@@ -125,6 +137,10 @@ struct GenericBackend : Backend {
             printf("Generic: trying GGUF path: %s\n", gguf_path.c_str());
             loaded = load_gguf(gguf_path);
         }
+        if (!loaded && cfg.format == ModelFormat::ONEBP && !cfg.model_path.empty()) {
+            // Try loading from 1BP format (shared with NPU engine)
+            loaded = load_1bp(cfg.model_path);
+        }
         if (!loaded) {
             // Fall back: old .bin format
             load_weights(weights_dir);
@@ -137,15 +153,99 @@ struct GenericBackend : Backend {
         logits_buf.resize(cfg.vocab);
         k_cache.resize(cfg.n_layers);
         v_cache.resize(cfg.n_layers);
-        for (auto& k : k_cache) k.resize(cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
-        for (auto& v : v_cache) v.resize(cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
+        for (auto& k : k_cache) k.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
+        for (auto& v : v_cache) v.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
         initialized = true;
+        return true;
+    }
+
+    bool load_1bp(const std::string& path) {
+        printf("Generic: loading 1BP: %s\n", path.c_str());
+        OnebpModel model;
+        if (!model.open(path.c_str())) {
+            fprintf(stderr, "Generic: failed to open 1BP\n");
+            return false;
+        }
+        auto& h = model.header();
+        if (cfg.hidden == 0) {
+            cfg.hidden = cfg.hidden_size = h.hidden_size;
+            cfg.n_layers = cfg.num_layers = h.num_layers;
+            cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = h.num_attention_heads;
+            cfg.n_kv_heads = cfg.num_kv_heads = h.num_kv_heads ? h.num_kv_heads : h.num_attention_heads;
+            cfg.head_dim = h.head_dim ? h.head_dim : 128;
+            cfg.n_ff = cfg.intermediate_size = h.intermediate_size;
+            cfg.vocab = cfg.vocab_size = h.vocab_size;
+        }
+        printf("Generic: 1BP H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d quant=%u\n",
+               cfg.hidden, cfg.n_layers, cfg.n_heads, cfg.n_kv_heads,
+               cfg.head_dim, cfg.n_ff, cfg.vocab, h.quant);
+
+        // Load embedding
+        if (!model.get_tensor_f32("token_embd.weight", embed)) {
+            fprintf(stderr, "Generic: missing token_embd.weight\n");
+            return false;
+        }
+
+        // Load final norm + output weight
+        if (!model.get_tensor_f32("token_embd_norm.weight", final_norm))
+            model.get_tensor_f32("model.norm.weight", final_norm);
+        if (!model.get_tensor_f32("output.weight", output_weight))
+            model.get_tensor_f32("lm_head.weight", output_weight);
+
+        // Per-layer weights
+        layers.resize(cfg.n_layers);
+        char buf[128];
+        for (int l = 0; l < cfg.n_layers; l++) {
+            auto& lw = layers[l];
+            auto load = [&](const char* blk, const char* legacy, size_t& idx,
+                            int rows, int cols) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "blk.%d.%s", l, blk);
+                if (!model.get_tensor_f32(buf, w)) {
+                    snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, legacy);
+                    model.get_tensor_f32(buf, w);
+                }
+                if ((int)w.size() == rows * cols)
+                    idx = push(std::move(w));
+            };
+            int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads;
+            int HD = cfg.head_dim, IM = cfg.n_ff;
+            load("attn_q.weight", "self_attn.q_proj.weight", lw.wq, H, NH*HD);
+            load("attn_k.weight", "self_attn.k_proj.weight", lw.wk, H, NKV*HD);
+            load("attn_v.weight", "self_attn.v_proj.weight", lw.wv, H, NKV*HD);
+            load("attn_output.weight", "self_attn.o_proj.weight", lw.wo, NH*HD, H);
+            load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
+            load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
+            load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+
+            // RMS norm weights
+            load("input_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);
+            load("post_attention_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1);
+        }
+        printf("Generic: 1BP loaded — %d layers, %.1fM params\n",
+               cfg.n_layers, (double)embed.size() / 1e6);
         return true;
     }
 
     bool load_gguf(const std::string& path) {
         ModelConfig hdr_cfg;
         if (!read_gguf_header(path, hdr_cfg)) return false;
+
+        // Architecture guard: refuse architectures with tensor layouts this
+        // backend doesn't understand (issue #947). ZAYA MoE uses a non-standard
+        // GGUF tensor layout (e.g. ffn_gate_inp with shape [NE*NE*H] instead
+        // of [NE*H]) that would produce garbage. Zamba/Mamba2 are handled by
+        // their own dedicated backends.
+        if (hdr_cfg.arch == RCPP_ARCH_ZAYA || hdr_cfg.arch == RCPP_ARCH_ZAMBA2 ||
+            hdr_cfg.arch == RCPP_ARCH_ZAMBA || hdr_cfg.arch == RCPP_ARCH_MAMBA ||
+            hdr_cfg.arch == RCPP_ARCH_QWEN35) {
+            const char* hint = "";
+            if (hdr_cfg.arch == RCPP_ARCH_QWEN35)
+                hint = " — Qwen3.5 Gate-Delta requires NPU (FLM/XRT) or HIP backend";
+            fprintf(stderr, "  [generic] Refusing to load %s (arch=%d)%s\n",
+                    path.c_str(), (int)hdr_cfg.arch, hint);
+            return false;
+        }
         fprintf(stderr, "load_gguf: %s, %d layers, %d hidden\n", hdr_cfg.model_name.c_str(), hdr_cfg.n_layers, hdr_cfg.hidden);
         
         int H = hdr_cfg.hidden_size, L = hdr_cfg.n_layers, NH = hdr_cfg.n_heads;
@@ -186,8 +286,11 @@ struct GenericBackend : Backend {
         auto load_tensor = [&](const std::string& name, size_t expected) -> size_t {
             std::vector<float> buf;
             size_t n = 0;
-            if (!read_gguf_tensor(path, name, buf, &n)) return 0;
-            if (n != expected) { fprintf(stderr, "  %s: expected %zu, got %zu\n", name.c_str(), expected, n); return 0; }
+            if (!read_gguf_tensor(path, name, buf, &n)) return SIZE_MAX;
+            if (n != expected) {
+                fprintf(stderr, "  %s: expected %zu, got %zu — ABORTING LOAD\n", name.c_str(), expected, n);
+                return SIZE_MAX;
+            }
             size_t idx = flat_weights.size();
             flat_weights.insert(flat_weights.end(), buf.begin(), buf.end());
             return idx;
@@ -208,13 +311,32 @@ struct GenericBackend : Backend {
         int NE = cfg.n_experts;
         for (int i = 0; i < L; i++) {
             std::string p = "blk." + std::to_string(i) + ".";
-            LayerW lw;
+            LayerW lw = {};  // zero-initialize all indices to SIZE_MAX
+            lw.wq = SIZE_MAX; lw.wk = SIZE_MAX; lw.wv = SIZE_MAX; lw.wo = SIZE_MAX;
+            lw.rms_attn = SIZE_MAX; lw.rms_ffn = SIZE_MAX;
+            lw.w1 = SIZE_MAX; lw.w2 = SIZE_MAX; lw.w3 = SIZE_MAX;
+            lw.moe_gate_inp = SIZE_MAX; lw.moe_gate_exps = SIZE_MAX;
+            lw.moe_up_exps = SIZE_MAX; lw.moe_down_exps = SIZE_MAX;
+            lw.q_norm = SIZE_MAX; lw.k_norm = SIZE_MAX;
+
             lw.rms_attn = load_tensor(p + "attn_norm.weight", H);
             lw.rms_ffn  = load_tensor(p + "ffn_norm.weight", H);
             lw.wq = load_tensor(p + "attn_q.weight", NH*HD*H);
             lw.wk = load_tensor(p + "attn_k.weight", NKV*HD*H);
             lw.wv = load_tensor(p + "attn_v.weight", NKV*HD*H);
             lw.wo = load_tensor(p + "attn_output.weight", H*NH*HD);
+
+            // Check that all required tensors loaded correctly. If any shape
+            // mismatch occurred, load_tensor returns SIZE_MAX and the model
+            // will produce garbage — abort early (issue #947).
+            bool layer_ok = (lw.rms_attn != SIZE_MAX) && (lw.rms_ffn != SIZE_MAX)
+                         && (lw.wq != SIZE_MAX) && (lw.wk != SIZE_MAX)
+                         && (lw.wv != SIZE_MAX) && (lw.wo != SIZE_MAX);
+            if (!layer_ok) {
+                fprintf(stderr, "  [generic] Layer %d: required tensor shape mismatch — ABORTING LOAD\n", i);
+                return false;
+            }
+
             if (NE > 0) {
                 // MoE layer: no dense ffn_gate/up/down — route through the
                 // stacked per-expert "_exps" tensors instead.
@@ -222,10 +344,22 @@ struct GenericBackend : Backend {
                 lw.moe_gate_exps = load_tensor(p + "ffn_gate_exps.weight", (size_t)NE*FF*H);
                 lw.moe_up_exps   = load_tensor(p + "ffn_up_exps.weight", (size_t)NE*FF*H);
                 lw.moe_down_exps = load_tensor(p + "ffn_down_exps.weight", (size_t)NE*H*FF);
+
+                // Also check MoE tensor shapes
+                if (lw.moe_gate_inp == SIZE_MAX || lw.moe_gate_exps == SIZE_MAX ||
+                    lw.moe_up_exps == SIZE_MAX || lw.moe_down_exps == SIZE_MAX) {
+                    fprintf(stderr, "  [generic] Layer %d: MoE tensor shape mismatch — ABORTING LOAD\n", i);
+                    return false;
+                }
             } else {
                 lw.w1 = load_tensor(p + "ffn_gate.weight", FF*H);
                 lw.w2 = load_tensor(p + "ffn_up.weight", FF*H);
                 lw.w3 = load_tensor(p + "ffn_down.weight", H*FF);
+
+                if (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX) {
+                    fprintf(stderr, "  [generic] Layer %d: FFN tensor shape mismatch — ABORTING LOAD\n", i);
+                    return false;
+                }
             }
             lw.bq = load_tensor_optional(p + "attn_q.bias", NH*HD);
             lw.bk = load_tensor_optional(p + "attn_k.bias", NKV*HD);
@@ -307,9 +441,15 @@ struct GenericBackend : Backend {
     }
 
     static void matmul(float* out, const float* in, const float* w, int M, int K) {
+        // Each output row is independent and its dot-product accumulates in a
+        // fixed order, so parallelizing the row loop is bit-identical to the
+        // scalar version — just uses all cores. This is the dominant cost of
+        // the generic CPU decode path (QKV/O/gate/up/down/lm_head).
+        #pragma omp parallel for schedule(static)
         for (int i = 0; i < M; i++) {
             float s = 0;
-            for (int j = 0; j < K; j++) s += in[j] * w[i * (size_t)K + j];
+            const float* wr = w + (size_t)i * K;
+            for (int j = 0; j < K; j++) s += in[j] * wr[j];
             out[i] = s;
         }
     }
@@ -384,10 +524,31 @@ struct GenericBackend : Backend {
     }
 
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
-        return false;  // not implemented — use generate() instead
+        // LM head: logits = lm_weight @ hidden
+        // Uses untied output.weight when the model has one, else tied embedding
+        // (issue #958 — was always returning false, breaking cascade/adaptive
+        //  strategy routing which needs per-token logprobs).
+        const float* lm_w = output_weight.empty() ? embed.data() : output_weight.data();
+        if (!lm_w) return false;
+        matmul(logits, hidden, lm_w, cfg.vocab, cfg.hidden);
+        if (argmax) {
+            *argmax = 0;
+            float max_val = logits[0];
+            for (int i = 1; i < cfg.vocab; ++i) {
+                if (logits[i] > max_val) {
+                    max_val = logits[i];
+                    *argmax = i;
+                }
+            }
+        }
+        return true;
     }
 
     int forward(int token) {
+        if (token < 0 || token >= (int)cfg.vocab) {
+            fprintf(stderr, "[generic] token_id=%d out of range [0,%d)\n", token, (int)cfg.vocab);
+            return -1;
+        }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
         return forward_embed(x0.data());
@@ -397,7 +558,12 @@ struct GenericBackend : Backend {
     // embedding vector directly instead of doing a token_embd lookup —
     // the splice point for injecting vision embeddings (mm.2 output) at
     // image-placeholder positions instead of a text token's row.
-    int forward_embed(const float* x_in) override {
+     int forward_embed(const float* x_in) override {
+        // Bounds-check KV cache position before writing (fixes OOB/overflow)
+        if (pos >= cfg.max_seq_len) {
+            fprintf(stderr, "[generic] KV cache overflow: pos=%d >= max_seq_len=%d\n", pos, cfg.max_seq_len);
+            return -1;
+        }
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim;
         int GQA = NH / NKV, FF = cfg.intermediate_size, V = cfg.vocab;
         float eps = cfg.rms_norm_eps, theta = cfg.rope_theta;
@@ -409,12 +575,17 @@ struct GenericBackend : Backend {
 
         for (int i = 0; i < H; i++) x[i] = x_in[i];
 
-        for (int il = 0; il < cfg.n_layers; il++) {
+        static const char* _nl = getenv("CPU_NUM_LAYERS");
+        int _n_layers = (_nl && _nl[0]) ? atoi(_nl) : cfg.n_layers;
+        for (int il = 0; il < _n_layers; il++) {
             auto& l = layers[il];
             int kv_begin = pos * NKV * HD;
 
             // RMSNorm → QKV
             rmsnorm(x2.data(), x.data(), w(l.rms_attn), H, eps);
+            if (il == 0 && getenv("CPU_DEBUG_OPS"))
+                fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g]\n",
+                        pos, x[0], x[1], x[2], x2[0], x2[1], x2[2]);
             matmul(q.data(), x2.data(), w(l.wq), NH*HD, H);
             matmul(k.data(), x2.data(), w(l.wk), NKV*HD, H);
             matmul(v.data(), x2.data(), w(l.wv), NKV*HD, H);
@@ -437,8 +608,15 @@ struct GenericBackend : Backend {
                 for (int h = 0; h < NKV; h++) rmsnorm(&k[h*HD], &k[h*HD], kn, HD, eps);
             }
 
+            bool _dbg_ops = (il == 0 && getenv("CPU_DEBUG_OPS"));
+            if (_dbg_ops) fprintf(stderr,
+                "[cpu] L0 q_pre=[%g %g %g] k_pre=[%g %g %g] v=[%g %g %g]\n",
+                q[0], q[1], q[2], k[0], k[1], k[2], v[0], v[1], v[2]);
+
             // RoPE
             rope(q.data(), k.data(), pos, NH, NKV, HD, rot_dim, theta);
+            if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
+                q[0], q[1], q[2], k[0], k[1], k[2]);
 
             // KV cache
             memcpy(&k_cache[il][kv_begin], k.data(), NKV * HD * sizeof(float));
@@ -467,6 +645,8 @@ struct GenericBackend : Backend {
                     att[h * HD + d] = sum;
                 }
             }
+            if (_dbg_ops) fprintf(stderr, "[cpu] L0 att=[%g %g %g] att128=[%g %g %g]\n",
+                att[0], att[1], att[2], att[128], att[129], att[130]);
 
             // O proj
             matmul(x2.data(), att.data(), w(l.wo), H, NH*HD);
@@ -534,6 +714,7 @@ struct GenericBackend : Backend {
         for (int i = 1; i < V; i++) {
             if (logits_buf[i] > bestv) { bestv = logits_buf[i]; best = i; }
         }
+        if (getenv("CPU_DEBUG")) fprintf(stderr, "[cpu] argmax idx=%d maxlogit=%g\n", best, bestv);
         return best;
     }
 

@@ -1,13 +1,14 @@
-# Packaging — 1bit.systems v2026.07.02-all5models
+# Packaging — 1bit.systems v2026.07.26
 
-**One binary. 5 models. 120KB. 28 tok/s.** Auto-detect. Zero Python. Zero pip. No Docker required.
+**One binary. 46+ 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
 
 | Format | Status | Command |
 |--------|--------|---------|
-| **GitHub Release** | ✅ [v2026.07.02-all5models](https://github.com/bong-water-water-bong/1bit-systems/releases/tag/v2026.07.02-all5models) | `gh release download v2026.07.02-all5models` |
+| **GitHub Release** | ✅ [Latest](https://github.com/bong-water-water-bong/1bit-systems/releases/latest) | `gh release download` |
 | **One-liner install** | ✅ | `curl -sL https://1bit.systems/install.sh \| bash` |
-| **Debian (.deb)** | ✅ Control ready | `make package-deb` |
+| **Debian (.deb)** | ✅ Built by CI on every tagged release | `sudo dpkg -i 1bit-systems_*_amd64.deb` |
+| **AppImage** | ✅ Built by CI on every tagged release | `chmod +x 1bit-systems-*.AppImage && ./1bit-systems-*.AppImage` |
 | **Binary tarball** | ✅ | `make package-tarball` |
 | **Docker** | ✅ Dockerfile ready | `docker run 1bit-systems/npu` |
 | **Ollama** | ✅ Modelfile | `ollama create qwen3-npu -f Modelfile` |
@@ -45,7 +46,7 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 
 | Binary | Purpose | Size |
 |--------|---------|------|
-| `1bit-npu` | CLI inference engine (5 models, auto-detect) | 108 KB (stripped) |
+| `1bit-npu` | CLI inference engine (46+ 1BP models, auto-detect) | 17.5 MB (stripped) |
 | `1bit-server` | HTTP API server (OpenAI-compatible) | 43 KB |
 | `dequant_q4nx.o` | Q4NX weight dequantizer | 2.8 KB |
 

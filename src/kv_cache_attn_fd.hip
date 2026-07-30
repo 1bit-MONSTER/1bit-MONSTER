@@ -116,13 +116,13 @@ void kv_cache_attn_decode_split_kernel(
             partial += (float)Q_shared[d] * (float)K_row[d];
         }
         #pragma unroll
-        for (int o = WARP / 2; o > 0; o >>= 1) partial += __shfl_xor(partial, o);
+        for (int o = WARP / 2; o > 0; o >>= 1) partial += __shfl_xor_sync(0xffffffffULL, partial, o);
         if (lane == 0) s_sum[wid] = partial;
         __syncthreads();
         if (wid == 0) {
             float v = (lane < BLOCK / WARP) ? s_sum[lane] : 0.0f;
             #pragma unroll
-            for (int o = (BLOCK / WARP) / 2; o > 0; o >>= 1) v += __shfl_xor(v, o);
+            for (int o = (BLOCK / WARP) / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffULL, v, o);
             if (lane == 0) s_scalar[0] = v * scale;
         }
         __syncthreads();
@@ -267,6 +267,49 @@ PartialsCache& partials_cache() {
 }
 
 }  // namespace
+
+// ── Pre-allocated variant: no dynamic hipMalloc, graph-capturable (#2) ──
+// Caller provides partials_dev buffer sized for max_seq_len.
+// Buffer size needed: num_q_heads * max_tiles * (head_dim + 2) floats.
+// If partials_dev is NULL, uses the legacy dynamic cache (not capturable).
+extern "C" rcpp_status_t
+rcpp_kv_cache_attn_decode_fd_prealloc(
+    const void* Q_dev, const void* K_dev, const void* V_dev,
+    void* out_dev, float* partials_dev,
+    int num_q_heads, int num_kv_heads, int head_dim,
+    int seq_len, float scale, void* stream)
+{
+    if (!Q_dev || !K_dev || !V_dev || !out_dev || !partials_dev) return RCPP_INVALID_ARG;
+    if (num_q_heads <= 0 || num_kv_heads <= 0)           return RCPP_INVALID_ARG;
+    if (num_q_heads % num_kv_heads != 0)                 return RCPP_INVALID_ARG;
+    if (head_dim <= 0 || head_dim > MAX_HEAD_DIM)        return RCPP_INVALID_ARG;
+    if (seq_len <= 0)                                    return RCPP_INVALID_ARG;
+
+    const int num_kv_tiles = (seq_len + TILE - 1) / TILE;
+
+    // Pass 1
+    dim3 grid1(num_q_heads, num_kv_tiles, 1), block(BLOCK, 1, 1);
+    hipLaunchKernelGGL(kv_cache_attn_decode_split_kernel,
+                       grid1, block, 0, (hipStream_t)stream,
+                       static_cast<const __half*>(Q_dev),
+                       static_cast<const __half*>(K_dev),
+                       static_cast<const __half*>(V_dev),
+                       partials_dev,
+                       num_q_heads, num_kv_heads, head_dim,
+                       seq_len, num_kv_tiles, scale);
+    HIP_CHECK(hipGetLastError());
+
+    // Pass 2
+    dim3 grid2(num_q_heads, 1, 1);
+    hipLaunchKernelGGL(kv_cache_attn_reduce_kernel,
+                       grid2, block, 0, (hipStream_t)stream,
+                       partials_dev,
+                       static_cast<__half*>(out_dev),
+                       num_q_heads, head_dim, num_kv_tiles);
+    HIP_CHECK(hipGetLastError());
+
+    return RCPP_OK;
+}
 
 extern "C" rcpp_status_t
 rcpp_kv_cache_attn_decode_fd(const void* Q_dev, const void* K_dev, const void* V_dev,

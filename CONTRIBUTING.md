@@ -85,7 +85,7 @@ cmake --build build --target zaya_server -j$(nproc)
 ./build/zaya_server --model /path/to/model.h1b
 ```
 
-See [docs/building.md](docs/building.md) for full prerequisites and [docs/getting-started.md](docs/getting-started.md) for first-run instructions.
+See [docs/guides/building.md](docs/guides/building.md) for full prerequisites and [docs/guides/getting-started.md](docs/guides/getting-started.md) for first-run instructions.
 
 ---
 
@@ -103,23 +103,19 @@ See [docs/building.md](docs/building.md) for full prerequisites and [docs/gettin
 | Ubuntu | 24.04 LTS or later (kernel 7.0.0+) | Host OS |
 | CMake | ≥ 3.21 | Build system |
 | Ninja | latest | Fast builds |
-| ROCm | **7.2.4** | HIP compiler + composable kernel |
+| ROCm | **TheRock 7.15.0a** | HIP compiler (pip) |
 | GCC | ≥ 13 | C++20 host compiler |
 | AMD XRT | ≥ 2.21 | NPU runtime (`libxrt_coreutil`) |
 | Git LFS | latest | Model file storage |
 
-**ROCm 7.2.4 installation:**
+**TheRock 7.15.0a installation (pip):**
 ```bash
-wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
-  https://repo.radeon.com/rocm/apt/7.2.4 noble main" \
-  | sudo tee /etc/apt/sources.list.d/rocm.list
-sudo apt update
-sudo apt install rocm-dev hip-dev composablekernel-dev
+pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
+  rocm[devel,libraries]
+export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 ```
 
-The project auto-discovers the HIP compiler in this order:
+The project auto-discovers the HIP compiler in this order (see CMakeLists.txt):
 1. TheRock pip SDK (`$HOME/.cache/pip/therock`)
 2. Lemonade cache (`$HOME/.cache/lemonade/bin/therock`)
 3. Legacy TheRock path (`$HOME/therock/build/dist/rocm`)
@@ -148,9 +144,20 @@ ls -lh build/zaya_server
 > Requires Strix Halo with XDNA 2 NPU, XRT 2.21+, and the torch2aie toolchain.
 
 ```bash
-# Build xclbins (one-time per projection shape)
+# xclbins for the standard model shapes are pre-built and checked into
+# engine/npu/xclbins/ — list what's available:
 cd engine/npu
 ./build_xclbins.sh
+
+# New projection shape not covered by the checked-in xclbins? Compile the
+# microkernel, then build via the torch2aie make flow directly (the aiecc
+# toolchain has a pre-existing version mismatch that blocks a wrapper script —
+# see docs/research/npu-ternary-roadmap.md):
+./build_npu_ternary.sh tq2 <tag> <H> <NH> <NKV> <HD> <IM> --compile-only
+make -C ~/torch2aie/examples/gemm_asymmetric_tile_buffering/config1 \
+  M=<M> K=<K> N=<N> m=128 k=64 n=128 use_placed=1 targetname=n1_core \
+  kernelsrc=mm_ternary_tq2.cc aie_py_src=n1_core_tq2_placed.py \
+  build/final_<M>x<K>x<N>_128x64x128.xclbin
 
 # Build the engine
 cd ../..
@@ -162,7 +169,7 @@ g++ -std=c++23 -O3 -o build/npu_engine \
   -lxrt_coreutil -luuid -lm -ldl
 ```
 
-See [docs/building.md](docs/building.md#step-3-build-int8-xclbins-one-time) for detailed xclbin generation steps.
+See [docs/guides/building.md](docs/guides/building.md#step-3-build-int8-xclbins-one-time) for detailed xclbin generation steps.
 
 ### Build Tests & Benchmarks
 
@@ -451,5 +458,5 @@ This project is MIT-licensed. Sherry-specific kernels in `src/sherry_*.hip` are 
 ## Questions?
 
 - Open a [GitHub Discussion](https://github.com/bong-water-water-bong/1bit-systems/discussions)
-- Read the [architecture docs](docs/architecture.md)
+- Read the [architecture docs](docs/guides/architecture.md)
 - See the [roadmap](ROADMAP.md)

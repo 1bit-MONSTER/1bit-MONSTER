@@ -1,5 +1,5 @@
 // CCA Attention GPU Test - Zaya CCA Attention GPU Kernel + CPU Reference
-// Build: /opt/rocm-7.2.4/bin/hipcc -O3 --offload-arch=gfx1151 test_cca_attn.cpp -o test_cca_attn
+// Build: /opt/rocm-therock/bin/hipcc -O3 --offload-arch=gfx1151 test_cca_attn.cpp -o test_cca_attn
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
@@ -329,6 +329,11 @@ __global__ void norm_kernel(const __half* x, const __half* w, __half* out, int n
 
 // ── Test ──
 int main() {
+    int dev_count = 0;
+    if (hipGetDeviceCount(&dev_count) != hipSuccess || dev_count == 0) {
+        fprintf(stderr, "no HIP device available, skipping\n");
+        return 77;
+    }
     printf("=== CCA Attention GPU Test ===\n");
     std::mt19937 rng(42);
     auto rand = [&](int n, float s=1.0f) {
