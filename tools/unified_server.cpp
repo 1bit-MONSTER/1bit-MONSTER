@@ -879,12 +879,28 @@ int main(int argc, char** argv) {
     printf("  Router: %s\n", route.reason.c_str());
     bool inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
     if (inited) {
-        // Ensure active_idx_ points to the initialized backend
-        // (init() returns true but doesn't update active_idx_)
-        for (auto& b : mgr.backends()) {
-            if (b.available && b.functional && b.instance) {
-                mgr.select_backend(b.id);
-                break;
+        // Select active backend from the route's ordered list (not global
+        // priority order), so the backend that matches the model format is
+        // chosen first. Without this, npu_flm (T1_ACCELERATOR priority) gets
+        // picked for every model even though it only supports Q4NX format.
+        bool selected = false;
+        for (const auto& bid : route.backend_ids_in_order) {
+            for (auto& b : mgr.backends()) {
+                if (b.id == bid && b.available && b.functional && b.instance) {
+                    mgr.select_backend(b.id);
+                    selected = true;
+                    break;
+                }
+            }
+            if (selected) break;
+        }
+        if (!selected) {
+            // Fallback: any functional backend
+            for (auto& b : mgr.backends()) {
+                if (b.available && b.functional && b.instance) {
+                    mgr.select_backend(b.id);
+                    break;
+                }
             }
         }
         auto* active = mgr.active_info();
