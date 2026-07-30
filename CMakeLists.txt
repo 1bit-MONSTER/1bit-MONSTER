@@ -1142,19 +1142,43 @@ if(TARGET npu_engine_hybrid)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 endif()
 
-# -- test_pipeline_real: GPU+NPU fused pipeline with real kernels (#446) ------
-# Requires HIP, XRT, and the zero-copy pipeline sources.
-# Uses relative paths (no variable indirection) so the CI reference checker
-# can verify they resolve.
+# -- libfusion_zero_copy: zero-copy NPU<->GPU shared-buffer substrate --------
+# Promotes the proven SharedBO/PipelineOverlap primitives (engine/fusion/zero_copy/,
+# see its README — hardware-verified zero-copy, 3/3 runs, zero IO_PAGE_FAULTs)
+# from "only reachable via the test_pipeline_real binary" to a real linkable
+# library, so backend_manager and future hybrid GPU+NPU backends can use them
+# without pulling in test_pipeline_real.cpp's demo/harness code.
 find_package(aiebu QUIET)
 find_package(xrt QUIET)
 if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
     if(EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/shared_bo.cpp" AND
        EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/pipeline_overlap.cpp")
-        add_executable(test_pipeline_real
-            engine/fusion/zero_copy/test_pipeline_real.cpp
+        add_library(fusion_zero_copy STATIC
             engine/fusion/zero_copy/shared_bo.cpp
             engine/fusion/zero_copy/pipeline_overlap.cpp
+        )
+        target_include_directories(fusion_zero_copy PUBLIC
+            engine/fusion/zero_copy
+            ${CMAKE_SOURCE_DIR}/include
+            ${THEROCK_SDK_BASE}/include)
+        target_compile_options(fusion_zero_copy PRIVATE
+            -g -O3 -march=native -fno-signed-zeros -fno-trapping-math -fassociative-math
+            -freciprocal-math -fno-math-errno -fno-rounding-math
+            -std=c++23 -D__HIP_PLATFORM_AMD__)
+        target_link_libraries(fusion_zero_copy PUBLIC
+            xrt_coreutil xrt_core uuid rt pthread
+            /usr/lib/x86_64-linux-gnu/libaiebu.a)
+    endif()
+endif()
+
+# -- test_pipeline_real: GPU+NPU fused pipeline with real kernels (#446) ------
+# Requires HIP, XRT, and the zero-copy pipeline sources.
+# Uses relative paths (no variable indirection) so the CI reference checker
+# can verify they resolve.
+if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
+    if(TARGET fusion_zero_copy)
+        add_executable(test_pipeline_real
+            engine/fusion/zero_copy/test_pipeline_real.cpp
             src/kv_cache_attn.hip
         )
         target_include_directories(test_pipeline_real PRIVATE
@@ -1170,6 +1194,7 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             -freciprocal-math -fno-math-errno -fno-rounding-math
             -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
         target_link_libraries(test_pipeline_real PRIVATE
+            fusion_zero_copy
             xrt_coreutil xrt_core uuid rt pthread
             /usr/lib/x86_64-linux-gnu/libaiebu.a)
         target_link_options(test_pipeline_real PRIVATE
