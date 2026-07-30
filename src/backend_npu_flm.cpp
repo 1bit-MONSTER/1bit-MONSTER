@@ -160,14 +160,20 @@ public:
         model_tag_ = flm_tag_for_model(cfg);
         fprintf(stderr, "NPU: launching FLM %s...\n", model_tag_.c_str());
 
-        // Auto-pull model if not cached (up to 60s for download)
-        // If pull fails, return false so BackendManager tries next backend.
+        // Auto-pull model if not cached — non-blocking check first
         {
-            std::string pull_cmd = std::string(flm_bin_) + " pull " + model_tag_ + " 2>/dev/null";
-            int pull_rc = system(pull_cmd.c_str());
-            if (pull_rc != 0) {
-                fprintf(stderr, "NPU: FLM pull %s failed (rc=%d) — trying run anyway\n",
-                        model_tag_.c_str(), pull_rc);
+            std::string check_cmd = std::string(flm_bin_) + " list 2>/dev/null | grep -q '" + model_tag_ + " \\u2705'";
+            int cached = system(check_cmd.c_str());
+            if (cached != 0) {
+                fprintf(stderr, "NPU: model %s not cached — auto-pulling (may take a few minutes)...\n",
+                        model_tag_.c_str());
+                std::string pull_cmd = std::string(flm_bin_) + " pull " + model_tag_ + " 2>&1 | tail -3";
+                int pull_rc = system(pull_cmd.c_str());
+                if (pull_rc != 0) {
+                    fprintf(stderr, "NPU: FLM pull %s failed (rc=%d) — falling back to next backend\n",
+                            model_tag_.c_str(), pull_rc);
+                    return false;
+                }
             }
         }
 
