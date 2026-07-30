@@ -46,9 +46,7 @@ public:
     const char* name() const override { return "Zamba2 GPU"; }
 
     bool is_available() override {
-        // Check if a GGUF or 1BP model path was provided and it's Zamba2
-        // The model architecture is checked at load_model time.
-        // Always report available — will fail gracefully at load if unsupported.
+        fprintf(stderr, "  Zamba2 adapter: checking availability\n");
         return true;
     }
 
@@ -56,8 +54,13 @@ public:
         cfg_ = cfg;
         unload_model();
 
+        fprintf(stderr, "  Zamba2 adapter: load_model called, arch=%d (want RCPP_ARCH_ZAMBA2=%d), name=%s\n",
+                (int)cfg.arch, (int)RCPP_ARCH_ZAMBA2, cfg.model_name.c_str());
+
         // Only handle Zamba2 architecture
         if (cfg.arch != RCPP_ARCH_ZAMBA2) {
+            fprintf(stderr, "  Zamba2 adapter: arch mismatch (%d != %d), skipping\n",
+                    (int)cfg.arch, (int)RCPP_ARCH_ZAMBA2);
             return false;
         }
 

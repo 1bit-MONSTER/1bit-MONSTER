@@ -119,13 +119,13 @@ jobs:
           resp=$(curl -s http://127.0.0.1:8099/v1/chat/completions \
             -H "Content-Type: application/json" \
             -d 'not json')
-          echo "$resp" | python3 -c "
+          echo "$resp" | python3 -c '
           import json,sys; d=json.load(sys.stdin)
-          if 'error' in d:
-              print('OK: invalid JSON returns 400')
+          if "error" in d:
+              print("OK: invalid JSON returns 400")
           else:
-              print('OK: server responded (status=' + str(d.get("error", {}).get("code", "?")) + ')')
-          "
+              print("OK: server responded")
+          '
 
       - name: Test timeout
         run: |
