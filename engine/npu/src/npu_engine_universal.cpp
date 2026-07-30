@@ -759,29 +759,41 @@ int main(int argc,char**argv){
         if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
         if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}}
     // NPU attention via pre-compiled KV xclbin instructions.
-    // Set NPU_ATTN=1 to enable. Uses insts_i8_KV_<tag>.txt from xclbin dir.
-    // Set NPU_ATTN_FILE=<path> to override instruction file path.
-    bool use_npu_attn = getenv("NPU_ATTN") && atoi(getenv("NPU_ATTN")) > 0;
-    if(use_npu_attn){
-        std::string inst_path;
-        if (const char* env = getenv("NPU_ATTN_FILE")) {
-            inst_path = env;
+    // Auto-detected when both final_i8_ATTN_<tag>.xclbin and insts_i8_KV_<tag>.txt exist.
+    // Explicitly disable with NPU_ATTN=0; override inst path with NPU_ATTN_FILE=<path>.
+    bool use_npu_attn = false;
+    {
+        const char* npu_attn_env = getenv("NPU_ATTN");
+        if (npu_attn_env && atoi(npu_attn_env) == 0) {
+            fprintf(stderr, "NPU attention disabled via NPU_ATTN=0\n");
         } else {
-            inst_path = std::string(xd) + "/insts_i8_KV_" + cfg.model_tag + ".txt";
-        }
-        if (load_attn_instrs(inst_path.c_str())) {
-            ca_ptr = std::make_unique<AttnCtx>();
-            if (ca_ptr->init(dev, xp("ATTN").c_str(), attn_instrs,
-                             4096, NH, NKV, HD, XM)) {
-                fprintf(stderr, "NPU attention enabled (pre-compiled insts)\n");
+            // Check if the ATTN xclbin exists before trying
+            std::string xclbin_path = xp("ATTN");
+            FILE* xc_test = fopen(xclbin_path.c_str(), "rb");
+            if (xc_test) {
+                fclose(xc_test);
+                std::string inst_path;
+                if (const char* env = getenv("NPU_ATTN_FILE")) {
+                    inst_path = env;
+                } else {
+                    inst_path = std::string(xd) + "/insts_i8_KV_" + cfg.model_tag + ".txt";
+                }
+                if (load_attn_instrs(inst_path.c_str())) {
+                    ca_ptr = std::make_unique<AttnCtx>();
+                    if (ca_ptr->init(dev, xclbin_path.c_str(), attn_instrs,
+                                     4096, NH, NKV, HD, XM)) {
+                        fprintf(stderr, "NPU attention enabled (pre-compiled insts)\n");
+                        use_npu_attn = true;
+                    } else {
+                        fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
+                        ca_ptr.reset();
+                    }
+                } else {
+                    fprintf(stderr, "  ATTN xclbin found but no KV insts for '%s', CPU fallback\n", cfg.model_tag.c_str());
+                }
             } else {
-                fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
-                use_npu_attn = false;
-                ca_ptr.reset();
+                fprintf(stderr, "  No ATTN xclbin for '%s', CPU fallback\n", cfg.model_tag.c_str());
             }
-        } else {
-            fprintf(stderr, "WARN: No attn insts for model '%s', CPU fallback\n", cfg.model_tag.c_str());
-            use_npu_attn = false;
         }
     }
 
