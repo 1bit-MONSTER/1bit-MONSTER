@@ -9,19 +9,29 @@
 // + xrt::module + xrt::ext::kernel to bake the instruction stream into an ELF,
 // then called k->operator()(3, 0, 0, A, B, C) — passing 0,0 where an
 // instruction buffer + size would otherwise go. That path runs without
-// crashing but produces wrong output (verified: cosine similarity ~0 against
-// a CPU float32 reference computed from real model weights, plus a
-// heap-corruption abort at kernel-object teardown) — i.e. it was never
-// actually validated, just assumed correct because the zero-copy *memory*
-// story was proven separately. bench_gemm's plain xrt::kernel + explicit
-// instruction xrt::bo (loaded once, synced to device, passed as kernel args
-// 1 and 2) is the pattern actually exercised by this repo's GEMM correctness
-// tooling, so this class now matches that instead.
+// crashing but produced wrong output, which turned out to be a SEPARATE bug
+// from the API choice (see below) — both were fixed together.
+//
+// THE ACTUAL BUG (found by rebuilding an xclbin from source and reading its
+// own generated MLIR): the GEMM kernel's output tensor is int32
+// (`matmul_i8_i32`, `aie.runtime_sequence(..., memref<MD*NDxi32>)`), not
+// int16. The original NpuGemmCtx/bench_gemm.cpp code allocated the output
+// buffer as `MD*ND*2` bytes and read it as `int16_t*` — half the required
+// size, read at half the correct element width. That produces exactly the
+// symptom observed: a buffer that's structurally too small, reinterpreted at
+// the wrong stride, giving a plausible-looking-but-wrong alternating pattern
+// (every other 16-bit slot ends up reading the high/low half of an adjacent
+// int32). Confirmed by rebuilding final_i8_{GU,D}_qwen3_0_6b.xclbin from
+// scratch via generators/n1_core_i8_v23.py + aiecc (see engine/npu/README.md)
+// — the freshly-built xclbin's own MLIR source declares the output memref as
+// `xi32`, and switching this class from int16 to int32 output fixed
+// test_npu_ffn_real_weights (cosine similarity ~0 -> matches CPU reference).
 //
 // Loads a pre-built xclbin + instruction-transaction blob (e.g.
 // engine/npu/xclbins/final_i8_{GU,D}_*.xclbin + insts_i8_{GU,D}_*.txt) and
-// runs int8-quantized GEMM: C[M,N] = quant(A[M,K]) @ quant(B[K,N]), with a
-// single dynamic per-call scale for A and a scale fixed at packB() time for B.
+// runs int8-quantized GEMM: C[M,N] (int32 accumulator) = quant(A[M,K]) @
+// quant(B[K,N]), with a single dynamic per-call scale for A and a scale
+// fixed at packB() time for B.
 //
 // Weight layout: B must be [K,N] row-major (input-major, i.e. y = x @ W where
 // W is [in_features, out_features]) — the transpose of GGUF/PyTorch's
@@ -48,7 +58,7 @@ public:
     std::unique_ptr<xrt::hw_context> hc;
     std::unique_ptr<xrt::kernel> k;
     std::unique_ptr<xrt::bo> bI, bA, bB, bC;
-    int8_t* Am = nullptr; int16_t* Cm = nullptr;
+    int8_t* Am = nullptr; int32_t* Cm = nullptr;
     bool ok = false;
 
     bool init(xrt::device& d, const char* xp, const char* ip, int md, int kd, int nd) {
@@ -70,10 +80,10 @@ public:
 
         bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
         bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(4));
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
+        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
         memset(bA->map(), 0, (size_t)MD * KD);
-        memset(bC->map(), 0, (size_t)MD * ND * 2);
-        Am = (int8_t*)bA->map(); Cm = (int16_t*)bC->map(); ok = true; return true;
+        memset(bC->map(), 0, (size_t)MD * ND * 4);
+        Am = (int8_t*)bA->map(); Cm = (int32_t*)bC->map(); ok = true; return true;
     }
 
     // `w` must be [K,N] row-major (see file header re: transpose from GGUF layout).
