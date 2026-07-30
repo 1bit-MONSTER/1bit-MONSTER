@@ -963,6 +963,18 @@ add_custom_target(zaya_agent ALL
     COMMENT "Creating zaya_agent -> unified_server copy")
 set_property(TARGET unified_server APPEND PROPERTY
     LINK_OPTIONS "-Wl,-rpath,\$ORIGIN")
+# TheRock SDK runtime lib path — find libhipblas.so.3 and add its dir to rpath
+find_library(THEROCK_HIPBLAS_LIB hipblas PATHS
+    "${THEROCK_SDK_BASE}/lib"
+    "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib"
+    "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_libraries/lib"
+    NO_DEFAULT_PATH)
+if(THEROCK_HIPBLAS_LIB)
+    get_filename_component(THEROCK_LIB_DIR "${THEROCK_HIPBLAS_LIB}" DIRECTORY)
+    set_property(TARGET unified_server APPEND PROPERTY
+        LINK_OPTIONS "-Wl,-rpath,${THEROCK_LIB_DIR}")
+    message(STATUS "unified_server rpath: ${THEROCK_LIB_DIR}")
+endif()
 
 
 add_executable(backend_demo tools/backend_demo.cpp)
