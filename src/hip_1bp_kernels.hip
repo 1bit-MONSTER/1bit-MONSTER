@@ -8,7 +8,7 @@
 
 // ── Custom GEMV: y[M] = W[M,N] @ x[N], row-major W ──
 // One thread per row, block-wide reduction over columns.
-__global__ void gemv_kernel(float* y, const float* W, const float* x, int M, int N) {
+__global__ void h1bp_gemv_kernel(float* y, const float* W, const float* x, int M, int N) {
     int row = blockIdx.x;
     if (row >= M) return;
     double sum = 0;
@@ -27,7 +27,7 @@ __global__ void gemv_kernel(float* y, const float* W, const float* x, int M, int
 // ── RMSNorm (GPU cooperative reduction) ──
 static constexpr int RMS_BLOCK = 256;
 __launch_bounds__(RMS_BLOCK)
-__global__ void rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
+__global__ void h1bp_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
                                 int N, float eps) {
     __shared__ float ssum[32];
     int tid = threadIdx.x;
@@ -63,7 +63,7 @@ __global__ void rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ 
 }
 
 // ── RoPE ──
-__global__ void rope_kernel(float* __restrict__ x, int head_dim, int pos,
+__global__ void h1bp_rope_kernel(float* __restrict__ x, int head_dim, int pos,
                              float theta_base, int num_heads) {
     int h = blockIdx.x;
     int d = threadIdx.x;
@@ -79,7 +79,7 @@ __global__ void rope_kernel(float* __restrict__ x, int head_dim, int pos,
 }
 
 // ── SiLU ──
-__global__ void silu_kernel(float* __restrict__ out,
+__global__ void h1bp_silu_kernel(float* __restrict__ out,
                              const float* __restrict__ gate,
                              const float* __restrict__ up, int N) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -89,26 +89,26 @@ __global__ void silu_kernel(float* __restrict__ out,
 }
 
 // ── Element-wise add ──
-__global__ void add_kernel(float* __restrict__ x, const float* __restrict__ y, int N) {
+__global__ void h1bp_add_kernel(float* __restrict__ x, const float* __restrict__ y, int N) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) return;
     x[i] += y[i];
 }
 
 // ── Float→Half conversion (device-to-device) ──
-__global__ void f2h_kernel(__half* dst, const float* src, int N) {
+__global__ void h1bp_f2h_kernel(__half* dst, const float* src, int N) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i<N) dst[i]=__float2half(src[i]);
 }
 
 // ── Half→Float conversion (device-to-device) ──
-__global__ void h2f_kernel(float* dst, const __half* src, int N) {
+__global__ void h1bp_h2f_kernel(float* dst, const __half* src, int N) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i<N) dst[i]=__half2float(src[i]);
 }
 
 // ── Fused K,V store: convert f32→f16 and store in KV cache ──
-__global__ void kv_store_kernel(__half* __restrict__ dK, __half* __restrict__ dV,
+__global__ void h1bp_kv_store_kernel(__half* __restrict__ dK, __half* __restrict__ dV,
                                  const float* __restrict__ k, const float* __restrict__ v,
                                  int pos, int NKV, int HD, int max_seq) {
     int h = blockIdx.x;
@@ -120,7 +120,7 @@ __global__ void kv_store_kernel(__half* __restrict__ dK, __half* __restrict__ dV
 }
 
 // ── Copy embedding row to output ──
-__global__ void embed_copy_kernel(float* __restrict__ dst,
+__global__ void h1bp_embed_copy_kernel(float* __restrict__ dst,
                                    const float* __restrict__ embed,
                                    int token_id, int H) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
