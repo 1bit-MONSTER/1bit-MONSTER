@@ -71,8 +71,17 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
         C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         kernel_o = "mm_32x64x128.o"
-        zero = external_func("zero_i32", inputs=[C_ty], link_with=kernel_o)
-        matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
+        # Use the SCALAR entry points (matmul_scalar_i8_i32 / zero_scalar_i32),
+        # NOT the vectorized matmul_i8_i32.  The vectorized 8x8x8 mmul kernel
+        # requires A/B data pre-arranged in AIE microtile (8x8) order; this
+        # generator emits plain row-major tiles, so the vectorized kernel
+        # silently reduces only 8 of its 64 K elements (issue #1207: output
+        # is ~K/n_aie_cols, cosine ~0 vs CPU reference).  Documented in
+        # commit 4ae299e9b (#1064): "use the matmul_scalar_i8_i32 /
+        # zero_scalar_i32 entry points".  Verified on hardware 2026-07-31:
+        # scalar rebuild gives cosine 0.9993 with real Qwen3-0.6B weights.
+        zero = external_func("zero_scalar_i32", inputs=[C_ty], link_with=kernel_o)
+        matmul = external_func("matmul_scalar_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(3)]
         shim_tiles, mem_tiles, core_tiles = tiles[0], tiles[1], tiles[2]
