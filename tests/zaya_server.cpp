@@ -34,6 +34,9 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+
+extern "C" void npu_flm_set_prompt_text(const char*);
+
 using json = nlohmann::json;
 
 // ─── .h1b header auto-detection (no external deps) ────────────────
@@ -194,7 +197,7 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
         cfg.set_kv_heads(gu("attention.head_count_kv", 0));
         cfg.set_ff(gu("feed_forward_length", 0));
         cfg.set_vocab(gu("vocab_size", 0));
-        cfg.set_experts(gu("expert_count", 0));
+        cfg.set_experts(gu("expert_count", 0));   // MoE: e.g. qwen3.6-35B-A3B = 256
         cfg.num_experts_top = gu("expert_used_count", 0);
         // If vocab_size wasn't in KV metadata, derive it from token_embd.weight
         // If vocab_size wasn't in KV metadata, derive it from output.weight
@@ -402,6 +405,29 @@ struct SimpleTokenizer {
         }
         // Vocab-based decode (from GGUF tokenizer.ggml.tokens)
         if (!id_to_token.empty()) {
+            // NPU FLM backend convention: shifted char-tokens, not vocab IDs
+            // (ASCII -> +100, raw bytes -> +200, EOS=106). Real token streams
+            // from a 248320-vocab model are never confined to this narrow set,
+            // so all-in-range is a safe detector.
+            bool npu_shifted = true;
+            for (int v : tokens) {
+                if (v == 106) continue;
+                // NPU FLM shift: printable ASCII 32-126 -> 132-226 (+100),
+                // control chars 0-31 and raw bytes 127-255 -> 300-555 (+300).
+                if (!((v >= 132 && v <= 226) || (v >= 300 && v <= 555))) {
+                    npu_shifted = false;
+                    break;
+                }
+            }
+            if (npu_shifted && !tokens.empty()) {
+                std::string r;
+                for (int v : tokens) {
+                    if (v == 106) continue;
+                    if (v >= 132 && v <= 226) r += (char)(v - 100);
+                    else if (v >= 300 && v <= 555) r += (char)(v - 300);
+                }
+                return r;
+            }
             std::string r;
             for (int v : tokens) {
                 if (v == bos_id || v == eos_id) continue;
@@ -416,7 +442,9 @@ struct SimpleTokenizer {
         std::string r;
         for (int v : tokens) {
             if (v == bos_id || v == eos_id) continue;
-            if (v > 100 && v < 200) r += (char)(v - 100);
+            if (v >= 132 && v <= 226) r += (char)(v - 100);
+            else if (v >= 300 && v <= 555) r += (char)(v - 300);
+            else if (v > 100 && v < 200) r += (char)(v - 100);
             else if (v > 200 && v < 456) r += (char)(v - 200);
             else { r += '['; r += std::to_string(v); r += ']'; }
         }
@@ -548,6 +576,7 @@ static std::string a2a_handle_message(const std::string& body, const std::string
 
         std::string prompt = "<|im_start|>user\n" + user_text + "<|im_end|>\n<|im_start|>assistant\n";
         std::vector<int> tokens = tok.encode(prompt);
+        npu_flm_set_prompt_text(user_text.c_str());
         InferenceResult result = router.infer(tokens, max_tokens, RouteStrategy::AUTO);
         std::string text = tok.decode(result.tokens);
 
@@ -1044,12 +1073,14 @@ int main(int argc, char** argv) {
             return;
         }
         int max_tokens = 256;
+        bool stream = false;
         try {
             json jbody = json::parse(body);
             max_tokens = jbody.value("max_tokens", 256);
             if (max_tokens < 1) max_tokens = 1;
             if (max_tokens > 32768) max_tokens = 32768;
-        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in max_tokens\n"); }
+            stream = jbody.value("stream", false);
+        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in request body\n"); }
 
         RouteStrategy use_strat = strategy;
         if (use_strat == RouteStrategy::CONTENT) {
@@ -1079,8 +1110,19 @@ int main(int argc, char** argv) {
             prompt = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n";
         }
 
+        std::string user_text = prompt;
+        // strip the ChatML wrapper if present, so text backends get the raw user text
+        {
+            std::string m = "<|im_start|>user\n";
+            if (user_text.rfind(m, 0) == 0) user_text = user_text.substr(m.size());
+            std::string e = "<|im_end|>\n<|im_start|>assistant\n";
+            if (user_text.size() >= e.size() &&
+                user_text.compare(user_text.size() - e.size(), e.size(), e) == 0)
+                user_text = user_text.substr(0, user_text.size() - e.size());
+        }
         std::vector<int> tokens = tok.encode(prompt);
         fprintf(stderr, "  → %d prompt tokens, max %d new\n", (int)tokens.size(), max_tokens);
+        npu_flm_set_prompt_text(user_text.c_str());
 
         std::string resp_body;
         {
@@ -1091,25 +1133,75 @@ int main(int argc, char** argv) {
             if (!result.tokens.empty() && result.tokens.back() != tok.eos_id && (int)result.tokens.size() >= max_tokens)
                 finish_reason = "length";
 
-            // Dynamic buffer -- no fixed-size limit (fixes #194: truncation of long output)
-            resp_body =
-                std::string("{\"id\":\"chatcmpl-") + std::to_string((long long)time(nullptr)) +
-                "\",\"object\":\"chat.completion\",\"created\":" + std::to_string((long long)time(nullptr)) +
-                ",\"model\":\"" + json_escape(cfg.model_name) +
-                "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"" +
-                json_escape(text) +
-                "\"},\"finish_reason\":\"" + finish_reason +
-                "\"}],\"usage\":{\"prompt_tokens\":" + std::to_string((int)tokens.size()) +
-                ",\"completion_tokens\":" + std::to_string((int)result.tokens.size()) +
-                ",\"total_tokens\":" + std::to_string((int)(tokens.size() + result.tokens.size())) +
-                "},\"x-backend\":\"" + (router.primary ? router.primary->name() : "none") +
-                "\",\"x-ms\":" + std::to_string((long long)result.gen_ms) +
-                ",\"x-tok-s\":" + std::to_string((double)result.tok_s) + "}";
+            // llama.cpp-compatible `timings` block (server-measured, burst-immune;
+            // consumed by benchmarks/engine_comparison). NOTE: gen_ms/tok_s span
+            // prompt prefill + decode - the router's infer() timer starts before
+            // the prompt forward pass - so `predicted_per_second` is end-to-end
+            // generation throughput, honest but not a pure decode rate.
+            const long long now_sec = (long long)time(nullptr);
+            const std::string model_json = json_escape(cfg.model_name);
+            const int prompt_n = (int)tokens.size();
+            const int pred_n = (int)result.tokens.size();
+            const std::string timings =
+                "\"timings\":{\"prompt_n\":" + std::to_string(prompt_n) +
+                ",\"predicted_n\":" + std::to_string(pred_n) +
+                ",\"prompt_ms\":0.0" +
+                ",\"predicted_ms\":" + std::to_string((double)result.gen_ms) +
+                ",\"prompt_per_second\":0.0" +
+                ",\"predicted_per_second\":" + std::to_string((double)result.tok_s) + "}";
+
+            if (stream) {
+                // SSE: per-token content deltas, then a final chunk with
+                // finish_reason + usage + timings, then [DONE]. Tokens are replayed
+                // from the completed generation (router.infer is all-or-nothing), so
+                // TTFT/prefill_tps are NOT meaningful for zaya - the harness derives
+                // decode_tps from `timings.predicted_per_second` instead.
+                const std::string chunk_id = "chatcmpl-" + std::to_string(now_sec);
+                std::string sse;
+                sse.reserve(text.size() + 1024);
+                for (int t : result.tokens) {
+                    if (t == tok.eos_id) continue;
+                    std::string piece = tok.decode(std::vector<int>{t});
+                    if (piece.empty()) continue;
+                    sse += "data: {\"id\":\"" + chunk_id +
+                           "\",\"object\":\"chat.completion.chunk\",\"created\":" +
+                           std::to_string(now_sec) + ",\"model\":\"" + model_json +
+                           "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" +
+                           json_escape(piece) + "\"},\"finish_reason\":null}]}\n\n";
+                }
+                sse += "data: {\"id\":\"" + chunk_id +
+                       "\",\"object\":\"chat.completion.chunk\",\"created\":" +
+                       std::to_string(now_sec) + ",\"model\":\"" + model_json +
+                       "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"" +
+                       finish_reason + "\"}],\"usage\":{\"prompt_tokens\":" +
+                       std::to_string(prompt_n) + ",\"completion_tokens\":" +
+                       std::to_string(pred_n) + ",\"total_tokens\":" +
+                       std::to_string(prompt_n + pred_n) + "}," + timings + "}\n\n";
+                sse += "data: [DONE]\n\n";
+                res.set_header("Cache-Control", "no-cache");
+                res.set_content(sse, "text/event-stream");
+            } else {
+                // Dynamic buffer -- no fixed-size limit (fixes #194: truncation of long output)
+                resp_body =
+                    std::string("{\"id\":\"chatcmpl-") + std::to_string(now_sec) +
+                    "\",\"object\":\"chat.completion\",\"created\":" + std::to_string(now_sec) +
+                    ",\"model\":\"" + model_json +
+                    "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"" +
+                    json_escape(text) +
+                    "\"},\"finish_reason\":\"" + finish_reason +
+                    "\"}],\"usage\":{\"prompt_tokens\":" + std::to_string(prompt_n) +
+                    ",\"completion_tokens\":" + std::to_string(pred_n) +
+                    ",\"total_tokens\":" + std::to_string(prompt_n + pred_n) +
+                    "},\"x-backend\":\"" + (router.primary ? router.primary->name() : "none") +
+                    "\",\"x-ms\":" + std::to_string((long long)result.gen_ms) +
+                    ",\"x-tok-s\":" + std::to_string((double)result.tok_s) + "," + timings + "}";
+            }
             fprintf(stderr, "  ← %d tokens in %.0fms (%.1f tok/s) [%s]\n",
                     (int)result.tokens.size(), result.gen_ms, result.tok_s,
                     router.primary ? router.primary->name() : "none");
         }
-        res.set_content(resp_body, "application/json");
+        if (!stream)
+            res.set_content(resp_body, "application/json");
     });
 
     svr.Post("/completion", [&](const httplib::Request& req, httplib::Response& res) {
