@@ -167,11 +167,11 @@ MoE with Multi-Head Latent Attention (MLA). DeepSeek-R1 distill variants on NPU.
 
 #### 14. Qwen3.6-MoE-35B
 
-35B total parameters, 256 experts, 3B active. 40 layers, 262k context window. Peano-compiled INT8 xclbins with Q4_K_S quantization.
+35B total parameters, 256 experts (8 active/token), 3B active. 40 layers (30 GatedDeltaNet linear-attn + 10 full-attn), 262k context window. Official model `Qwen/Qwen3.6-35B-A3B` (released 2026-04-16, Apache-2.0, 35.95B params BF16) — **verified byte-identical config to Qwen3.5-35B-A3B** (same `qwen3_5_moe` arch, dims, vocab). Vision-capable (image-text-to-text). Peano-compiled INT8 xclbins with Q4_K_S quantization.
 
-- **NPU:** Qwen3.6-35B-A3B (build stanza in `build_xclbins.sh`, 9 xclbins). GateDeltaNet attention via existing `GateDeltaNet_prefill.xclbin` pattern.
-- **GPU HIP:** Q4_K_S through ROCm HIP — 20 tok/s — ⚙️ optimized
-- **GPU Vulkan:** ❌ not yet
+- **NPU:** ✅ validated — 11.66 tok/s decode @1k ctx (12.17 @2k → 8.82 @32k), prefill 98.05 → 239.79 tok/s, FastFlowLM v0.9.46 official stack + official Q4_K_S weights, Strix Halo, measured 2026-07-31 — see `benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md`. **zaya_server integration works end-to-end** (per-request `flm run` spawn with file stdio; see `docs/research/qwen36-npu-zaya-integration.md` for the FLM pipe/serve-mode workarounds). Native `npu_engine_universal` MoE path still open (no expert routing yet).
+- **GPU HIP:** ❌ untested e2e. The **20 tok/s** number previously listed here was measured on **Qwen3.5-35B-A3B Q4_K** (zaya_server, identical arch) — corrected attribution.
+- **GPU Vulkan:** ✅ validated — Q4_K_M GGUF at **75.65 tok/s decode** (75.95 @8k), 1105.71 tok/s prefill, llama.cpp Vulkan on Strix Halo, measured 2026-07-30 — see `benchmarks/RESULTS-qwen3.6-35b-a3b-vulkan-2026-07-30.md`
 - **CPU:** ✅ universal GGUF backend
 
 #### 15. GPT-OSS-20B

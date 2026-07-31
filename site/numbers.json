@@ -22,7 +22,7 @@
     "sherry_gemv_gbps": 157.2,
     "tq1_gemv_gbps": 201.4,
     "tflops": 39.4,
-    "note": "prefill_tflops_i8apre/tflops corrected 40.5→39.4 on 2026-07-26 re-validation — see benchmarks.json engines.prefill_i8"
+    "note": "prefill_tflops_i8apre/tflops corrected 40.5\u219239.4 on 2026-07-26 re-validation \u2014 see benchmarks.json engines.prefill_i8"
   },
   "_sources": {
     "halo_gemv_gbps": "bench_sherry -- halo baseline kernel",
@@ -224,6 +224,13 @@
       "backend": "Mamba1 HIP (Strix Halo)",
       "notes": "Full decode, ROCm HIP. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes.",
       "status": "re-validated 2026-07-26"
+    },
+    "qwen36_vulkan": {
+      "tok_s": 75.65,
+      "TFLOPS": null,
+      "backend": "llama.cpp Vulkan (RADV STRIX_HALO)",
+      "notes": "tg64=75.65, tg128@8k ctx=75.95, pp512=1105.71, pp8192=1038.50 tok/s. 21.2 GB Q4_K_M, 99 layers offloaded, 8 threads, Strix Halo (Ryzen AI MAX+ 395, Radeon 8060S). Same qwen35moe arch as zaya_server path. See benchmarks/RESULTS-qwen3.6-35b-a3b-vulkan-2026-07-30.md",
+      "status": "validated"
     }
   }
 }
