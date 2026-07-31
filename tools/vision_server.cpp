@@ -34,6 +34,7 @@
 #include "vision_encoder.h"
 #include "vl_processor.h"
 #include "onebp_loader.h"
+#include "rocm_cpp/tokenizer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -63,6 +64,8 @@ static std::atomic<bool> keep_running{true};
 static int g_port = 8089;
 static std::string g_mmproj_path;
 static std::string g_model_path;
+static std::string g_tokenizer_path;
+static rcpp_tokenizer_t* g_htok = nullptr;
 
 static void handle_sigint(int) { keep_running = false; }
 
@@ -271,24 +274,53 @@ static std::string extract_text(const json& content) {
 }
 #endif
 
+// ── Tokenizer helpers: .htok (merge-BPE) when loaded, else GGUF greedy ──
+static std::vector<int> encode_text(SimpleTokenizer& st, const std::string& text) {
+    if (g_htok) {
+        std::vector<int> ids(text.size() * 2 + 16);
+        size_t n = 0;
+        rcpp_tokenizer_encode(g_htok, text.data(), text.size(), 1,
+                              ids.data(), ids.size(), &n);
+        ids.resize(n);
+        return ids;
+    }
+    return st.encode(text);
+}
+
+static std::string decode_text(SimpleTokenizer& st, const std::vector<int>& ids) {
+    if (g_htok) {
+        char buf[65536];
+        size_t l = 0;
+        rcpp_tokenizer_decode(g_htok, ids.data(), ids.size(), buf, sizeof(buf), &l);
+        return std::string(buf, l);
+    }
+    return st.decode(ids);
+}
+
+static int eos_id_of(SimpleTokenizer& st) {
+    return g_htok ? rcpp_tokenizer_eos_id(g_htok) : st.eos_id;
+}
+
 // ── Main ──
 int main(int argc, char** argv) {
     signal(SIGINT, handle_sigint);
     signal(SIGTERM, handle_sigint);
 
     static struct option long_opts[] = {
-        {"port",    required_argument, nullptr, 'p'},
-        {"mmproj",  required_argument, nullptr, 'm'},
-        {"model",   required_argument, nullptr, 'M'},
+        {"port",      required_argument, nullptr, 'p'},
+        {"mmproj",    required_argument, nullptr, 'm'},
+        {"model",     required_argument, nullptr, 'M'},
+        {"tokenizer", required_argument, nullptr, 't'},
         {nullptr, 0, nullptr, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "p:m:M:", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:m:M:t:", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'p': g_port = atoi(optarg); break;
             case 'm': g_mmproj_path = optarg; break;
             case 'M': g_model_path = optarg; break;
+            case 't': g_tokenizer_path = optarg; break;
         }
     }
 
@@ -298,8 +330,20 @@ int main(int argc, char** argv) {
     }
 
     // ── Load tokenizer ──
+    // .htok (Qwen3/Mage-VL BPE via rcpp_tokenizer) takes precedence over the
+    // GGUF-embedded vocab fallback.
+    if (g_tokenizer_path.size() >= 5 &&
+        g_tokenizer_path.substr(g_tokenizer_path.size() - 5) == ".htok") {
+        if (rcpp_tokenizer_load(g_tokenizer_path.c_str(), &g_htok) == 0 && g_htok)
+            fprintf(stderr, "Loaded htok tokenizer %s (BOS=%d EOS=%d)\n",
+                    g_tokenizer_path.c_str(), rcpp_tokenizer_bos_id(g_htok),
+                    rcpp_tokenizer_eos_id(g_htok));
+        else
+            fprintf(stderr, "WARNING: failed to load htok %s — falling back\n",
+                    g_tokenizer_path.c_str());
+    }
     SimpleTokenizer tokenizer;
-    if (!tokenizer.load(g_model_path)) {
+    if (!g_htok && !tokenizer.load(g_model_path)) {
         fprintf(stderr, "WARNING: could not load tokenizer from %s\n", g_model_path.c_str());
     }
 
@@ -482,7 +526,7 @@ int main(int argc, char** argv) {
         }
 
         // 2. Tokenize and feed text prompt
-        auto prompt_ids = tokenizer.encode(text_prompt);
+        auto prompt_ids = encode_text(tokenizer, text_prompt);
         if (prompt_ids.empty()) prompt_ids = {tokenizer.bos_id};
 
         fprintf(stderr, "Prompt: '%s' -> %zu tokens\n", text_prompt.c_str(), prompt_ids.size());
@@ -495,7 +539,7 @@ int main(int argc, char** argv) {
             int next = be->generate(output_tokens.empty() ? prompt_ids.back() : output_tokens.back());
             if (next < 0) break;
             output_tokens.push_back(next);
-            if (next == tokenizer.eos_id) break;
+            if (next == eos_id_of(tokenizer)) break;
         }
 
         // ── Build response ──
@@ -509,7 +553,7 @@ int main(int argc, char** argv) {
         choice["index"] = 0;
         json message;
         message["role"] = "assistant";
-        message["content"] = tokenizer.decode(output_tokens);
+        message["content"] = decode_text(tokenizer, output_tokens);
         choice["message"] = message;
         choice["finish_reason"] = "stop";
 
