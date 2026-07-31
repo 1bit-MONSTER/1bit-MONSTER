@@ -221,6 +221,30 @@ int main(int argc, char** argv) {
 
     // Try explicit vocab_size; fall back to token_embd.weight rows or tokens array.
     gu("vocab_size", hdr.vocab_size);
+
+    // Context length, RoPE, BOS/EOS — previously never written (headers
+    // shipped max_seq_len=0 and rope_theta=0, breaking KV-cache sizing in
+    // every loader and RoPE in the generic backend).
+    {
+        std::string arch = reader.architecture();
+        uint32_t ctx = 0;
+        if (!reader.get_u32(arch + ".context_length", ctx))
+            reader.get_u32("context_length", ctx);
+        hdr.max_seq_len = ctx ? (int)ctx : 131072;
+        float rope = 0.0f;
+        if (!reader.get_f32(arch + ".rope.freq_base", rope))
+            reader.get_f32("rope.freq_base", rope);
+        hdr.rope_theta_f = (uint32_t)((rope > 0.0f ? rope : 10000.0f) * 1000.0f);
+        uint32_t bos = 0, eos = 0;
+        if (!reader.get_u32(arch + ".bos_token_id", bos))
+            if (!reader.get_u32("bos_token_id", bos))
+                reader.get_u32("tokenizer.ggml.bos_token_id", bos);
+        if (!reader.get_u32(arch + ".eos_token_id", eos))
+            if (!reader.get_u32("eos_token_id", eos))
+                reader.get_u32("tokenizer.ggml.eos_token_id", eos);
+        hdr.bos_token_id = bos;
+        hdr.eos_token_id = eos;
+    }
     if (!hdr.vocab_size) {
         // Some GGUF files omit vocab_size — infer from token_embd.weight shape.
         // GGUF ne[] convention: shape[0] = embedding_length (hidden), shape[1] =

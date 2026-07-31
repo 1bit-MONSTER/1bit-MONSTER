@@ -72,6 +72,15 @@ bool OnebpModel::load(const char* path) {
         }
         memcpy(&t.offset, data + pos, 8); pos += 8;
         memcpy(&t.bytes, data + pos, 8); pos += 8;
+        // v2 (ONEBP_VERSION 2): per-entry quant field (mixed-quant files).
+        // v1 readers must skip it or every entry after the first desyncs.
+        if (header.version >= 2) {
+            if (pos + 4 > file_size) {
+                fprintf(stderr, "1BP: truncated at per-tensor quant at entry %u/%u\n", i, header.tensor_count);
+                return false;
+            }
+            memcpy(&t.quant, data + pos, 4); pos += 4;
+        }
         tensors.push_back(t);
     }
 
