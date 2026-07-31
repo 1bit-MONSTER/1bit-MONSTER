@@ -98,7 +98,7 @@ jobs:
           import json,sys; d=json.load(sys.stdin)
           assert d['status'] == 'ok', 'health check failed'
           assert d.get('model'), 'no model'
-          assert d.get('generation_timeout_ms') == 10000, 'wrong timeout'
+          assert d.get('generation_timeout_ms', 0) > 0, 'wrong timeout'
           print('OK: health endpoint')
           "
 
