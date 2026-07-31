@@ -88,5 +88,10 @@ attn_q/k/v, ffn_down/up, token_embd):
 - Engine decode speed is format-agnostic (45 tok/s f32-matmul path) — the
   wins are quality/size, not speed; kernel-side 2-bit decode is the
   unblocked follow-up.
+- 8B-scale validation (DeepSeek-R1-0528-Qwen3-8B, blk.0.attn_q 4096×4096):
+  TQ2 3.69 dB vs E4M3 9.72 dB (+6.03 dB — same gain as 0.6B). Engine runs
+  the 8B E4M3 file at 5 tok/s (f32 path, memory-bound). Converter cap for
+  skipped tensors raised 200M → 1.5G elements (big embeddings were being
+  silently dropped — token_embd/lm_head missing → engine init failure).
 
 Converter flags: `--tq2` / `--tq2nz` / `--tq2nz-e4m3` / `--tq1`.

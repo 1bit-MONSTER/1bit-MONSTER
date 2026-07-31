@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
         if (ndim == 2) {
             int c = (int)inf->shape[0], r = (int)inf->shape[1];
             if (r <= 0 || c <= 0) continue;
-            if ((uint64_t)r * (uint64_t)c > 200000000) continue;
+            if ((uint64_t)r * (uint64_t)c > 1500000000ull) continue;  // cap: 1.5G elements (~6 GB f32)
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, quant);
             tensors.push_back({tn, 2, r, c, 1, data_off, tiled});
             data_off += tiled;
