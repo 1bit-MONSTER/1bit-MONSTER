@@ -124,3 +124,34 @@ libqwen3_6_moe_npu.so):
    repo already pipelines (PR #1231).
 5. Q8_0 attention projections: needed for on-NPU attention; blocked on the
    value permutation above.
+
+## Decisive next step: NPU-as-oracle harness (spec)
+
+The layout lives in the AIE kernel inside `dequant_mm.xclbin` (the
+"torch2aie chunk format" per `dequant_q4nx.cpp`'s own header). Every host-side
+permutation search has failed (~60 variants). The definitive oracle: run the
+kernel on the NPU and read back the dequantized output.
+
+Harness spec (all pieces are MIT and in-tree):
+
+1. **Kernel signature**: read `dequant_mm.xclbin`'s embedded metadata (xclbin
+   is a zip; kernel name + args are in the XML/JSON metadata) — the engine's
+   `npu_engine_universal.cpp` HybridFlmCtx shows the pattern for `mm.xclbin`
+   (args: bA, bW, bC). `dequant_mm` likely takes (data, scales, out) or a
+   single weight BO + dequantized out BO.
+2. **Instruction sequence**: dlopen `libqwen3_6_moe_npu.so` and call
+   `qwen3_6_moe_npu_sequence::gen_dequant_mm(npu_sequence*, M, K, N, off, m,
+   flm_dtype_t)` with dtype=1 (Q8_0) and dtype=2 (INT4) — `npu_sequence` is in
+   `third_party/FastFlowLM/src/include/npu_utils/npu_instr_utils.hpp`.
+   `get_quantization_byte_size` (already probed) confirms dtypes.
+3. **Submit**: XRT (`xrt::device(0)`, register the xclbin, one BO for the
+   raw 8704-B rows + one for the output) — same pattern as HybridFlmCtx.
+4. **Compare**: the read-back dequantized values vs the GGUF ground truth →
+   yields the exact value↔position mapping in one shot.
+5. Fallback if the sequence call is finicky: `_move_weights_q80` (same .so)
+   generates the weight-load path directly.
+
+Expected result: the layout mapping (likely a per-8/16-element DMA chunk
+interleave for the AIE array), unblocking BOTH the Q8_0 attention projections
+and the INT4 expert tensors, and thereby the native MoE engine's weight
+loader.
