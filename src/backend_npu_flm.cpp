@@ -41,6 +41,12 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
 
     // Qwen3.5 Gate-Delta family
     if (arch == "qwen35" || arch == "qwen35moe") {
+        // Qwen3.6-35B-A3B MoE: same qwen3_5_moe GGUF arch, but 256 experts
+        // and hidden 2048 — must NOT fall into the dense H-based mapping below
+        // (which would pick qwen3.5:4b). Discriminate on expert count.
+        if (cfg.num_experts >= 100) {
+            return "qwen3.6-moe:35b-a3b";
+        }
         if (H <= 1024) return "qwen3.5:0.8b";
         if (H <= 1536) return "qwen3.5:2b";
         if (H <= 2560) return "qwen3.5:4b";
