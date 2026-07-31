@@ -318,7 +318,21 @@ struct HybridFlmCtx {
     inline void dequantize(xrt::run& r, float* C, int am, int an,
                            float ascale, float Bscale, int layer = -1) {
         r.wait();
+        readback();
+        dequant_only(C, am, an, ascale, Bscale, layer);
+    }
+
+    /// Phase-split (cross-layer pipeline, roadmap step 3): bC DMA readback only.
+    /// Call after wait_kernel(), then dequant_only() or a fused consumer pass.
+    inline void readback() {
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    }
+
+    /// CPU-only dequant loop (call after readback()). CAN overlap with the next
+    /// kernel's NPU execution. layer: if >= 0, uses average of per-group scales
+    /// instead of Bscale.
+    inline void dequant_only(float* C, int am, int an,
+                             float ascale, float Bscale, int layer = -1) {
         if (layer >= 0 && (size_t)layer < group_scales.size() &&
             !group_scales[layer].empty()) {
             float ssum = 0;
@@ -360,19 +374,7 @@ struct HybridFlmCtx {
     /// Sync back and dequant (after wait_kernel).
     inline void sync_back_and_dequant(float* C, int am, int an,
                                       float ascale, float Bscale, int layer = -1) {
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        if (layer >= 0 && (size_t)layer < group_scales.size() &&
-            !group_scales[layer].empty()) {
-            float ssum = 0;
-            for (float s : group_scales[layer]) ssum += s;
-            Bscale = ssum / group_scales[layer].size();
-        }
-        float cs = ascale * Bscale;
-        for (int m = 0; m < am; m++) {
-            for (int n = 0; n < an; n++) {
-                float val = (float)Cm[m * ND + n] * cs;
-                C[m * an + n] = std::isfinite(val) ? val : 0.0f;
-            }
-        }
+        readback();
+        dequant_only(C, am, an, ascale, Bscale, layer);
     }
 };
