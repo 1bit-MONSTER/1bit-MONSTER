@@ -17,13 +17,21 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 #include "backend.h"
 #include "backend_generic.cpp"   // for GenericBackend::compute_ppl
 
 int main(int argc, char** argv) {
     if (argc < 3) { fprintf(stderr, "usage: %s model.1bp samples.jsonl [threads]\n", argv[0]); return 1; }
-    if (argc > 3) omp_set_num_threads(atoi(argv[3]));
+    if (argc > 3) {
+#ifdef _OPENMP
+        omp_set_num_threads(atoi(argv[3]));
+#else
+        fprintf(stderr, "note: built without OpenMP — ignoring thread count\n");
+#endif
+    }
 
     ModelConfig cfg;
     cfg.model_path = argv[1];
