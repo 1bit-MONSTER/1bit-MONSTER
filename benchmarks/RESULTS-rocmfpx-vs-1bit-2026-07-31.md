@@ -47,6 +47,37 @@ short-context only. (The 1bit repo's own 75.65 t/s was also short-context.)
   q4nx NPU layout already does (attn=Q8_0, experts=INT4) — validates the
   direction.
 
+## Qwen3-0.6B cross-check (same model, all formats, tg128 @ pp512, r3)
+
+Small-model decode is partly latency-bound, so format deltas shrink on Vulkan
+but stay visible on HIP. Same-model comparison including the 1BP engine:
+
+| Engine / format | Backend | tg128 (tok/s) | vs fork Q4_K_M |
+|---|---|---:|---:|
+| 1bit llama.cpp 5f55650a7, Q4_K_M | Vulkan | 356.38 | +7.0%* |
+| ROCmFPX fork, Q4_K_M | Vulkan | 333.03 | 1.00× |
+| ROCmFPX fork, ROCmFP4_FAST | Vulkan | 358.41 | **+7.6%** |
+| ROCmFPX fork, ROCmFP2 | Vulkan | 336.15 | +0.9% |
+| ROCmFPX fork, Q4_K_M | ROCm | 255.80 | 1.00× |
+| ROCmFPX fork, ROCmFP4_FAST | ROCm | 294.11 | **+15.0%** |
+| ROCmFPX fork, ROCmFP2 | ROCm | 307.53 | **+20.2%** |
+| 1bit 1BP engine (backend_hip_1bp), TQ1 1.58-bit | HIP | 45.0 | — |
+
+_*build delta: the 1bit llama.cpp build is ~5-7% faster on identical Q4_K_M
+files at both 0.6B and 35B._ The 1BP engine is a research kernel path (no
+batching, small KV), not a tuned production backend — the 45 t/s is its
+current state on this box, not a format ceiling.
+
+## Read
+
+- FP2 (no-zero S40 codebook) is the consistent format win on the 35B
+  (+28-33% decode, both backends) — the strongest mining-motivated argument
+  for a no-zero 2-bit variant in the 1BP converter (TQ2 is {-s,0,+s}).
+- FP4 wins on HIP across sizes; on Vulkan it wins at short context and loses
+  at 8k context (35B) — the dual-scale STRIX layout helps HIP, not Vulkan.
+- The 1bit llama.cpp build beats the ROCmFPX fork on identical Q4_K_M files
+  by ~5-7% — same-file comparisons are the only fair ones.
+
 ## Files
 
 - `/home/bcloud/ROCmFPX/build-strix/bin` — built tools
