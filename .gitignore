@@ -110,3 +110,8 @@ build-npu/
 engine/npu/build-npu/
 build/*.ninja*
 .workspace/
+
+# Build caches / packaged artifacts (never commit; they balloon .git)
+.zig-cache/
+**/.zig-cache/
+*.AppImage
