@@ -182,7 +182,7 @@ DDR ──► Shim ──► MemTile ──► Main16 (Q4NX GEMM)
 |------|------------|------------|--------|
 | 1 | Pipelined DMA — async quantize/dequantize overlap | 46→50 | ✅ Done (C++) |
 | 2 | O+GU parallel launch — hide readback behind NPU | 50→55 | ✅ Done |
-| 3 | Cross-layer pipeline — overlap cd dequant + cq quantize | 55→58 | 🔧 Next |
+| 3 | Cross-layer pipeline — overlap cd dequant + cq quantize | 55→58 | ✅ Done (C++) |
 | 4 | Software pipeline — II=1 inner loop, 4 MACs/cycle | 58→65 | ❌ (kernel change) |
 | 5 | Full 32-tile grid | 65→70 | ❌ (xclbin rebuild) |
 | 6 | INT8 via Triton-XDNA (2.5× MAC density) | 70→85+ | ❌ (toolchain fix) |
@@ -318,10 +318,9 @@ sudo modprobe -r amdxdna && sudo modprobe amdxdna
 
 ## Remaining Work
 
-1. **Cross-layer pipeline** — overlap cd dequant + cq quantize between layers
-2. **Fused xclbin edge kernel tuning** — attention bottleneck (17.5ms)
-3. **Prefill instruction format** — fused xclbin hangs at token0
-4. **Per-channel quantization** — eliminate ~2%/layer hidden state growth
-5. **Block-vectorized MAC path** — replace scalar fallback in NPU ternary kernels with full mac_8x8_8x8T pipeline
-6. **Zig NPU engine** — fix XRT C API symbol names
-7. **INT8 via Triton-XDNA** — unblock MLIR parser `i8` type rejection
+1. **Fused xclbin edge kernel tuning** — attention bottleneck (17.5ms)
+2. **Prefill instruction format** — fused xclbin hangs at token0
+3. **Per-channel quantization** — eliminate ~2%/layer hidden state growth
+4. **Block-vectorized MAC path** — replace scalar fallback in NPU ternary kernels with full mac_8x8_8x8T pipeline
+5. **Zig NPU engine** — fix XRT C API symbol names
+6. **INT8 via Triton-XDNA** — unblock MLIR parser `i8` type rejection
