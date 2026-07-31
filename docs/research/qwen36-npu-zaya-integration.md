@@ -175,5 +175,12 @@ BUILT AND RUNNING — kernel executes, output verified:
   config) — the exact write pattern needs the WRITE_DMA BD stride decode
   from the instruction stream (npu_dma_block_cmd fields in
   npu_cmd_write_dma.hpp), which is the remaining step.
+- BD decode (instruction words 1077-1105): 8 XAIE_CONFIG_SHIMDMA_BD
+  descriptors at 64 KB address strides (0x0, 0x10000, ..., 0x70000) = 8 ×
+  64 KB DMA segments per 512 KB output chunk. 64 KB = 4 tiles of
+  [32×256] BF16 (16 KB each). The kernel's output write pattern is
+  BD-segment driven; the observed "every 3rd f32 slot" interleave in the
+  readback is consistent with the in-place output mode writing BF16 tiles
+  over the input BO.
 - The dtype oracle (get_quantization_byte_size) remains the format key:
   dtype 1 = Q8_0 (8704-B rows), dtype 2/4 = INT4 (5120-B rows).
