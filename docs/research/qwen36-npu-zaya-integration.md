@@ -80,8 +80,13 @@ Discovered via ground-truth correlation (GGUF dequant vs Q4NX bytes) + the
 `get_quantization_byte_size(m, dtype)` oracle (dlopen'd from
 libqwen3_6_moe_npu.so):
 
-- **All Q4NX tensors are stored transposed** vs llama.cpp GGUF (verified:
-  router BF16 corr=1.0000 on transpose).
+- **BF16 tensors (e.g. moe_router) use a stride-8 row interleave**: the
+  logical matrix W[i][j] (i=in 0..2047, j=expert 0..255) is stored as
+  `flat[(i%8)*65536 + j*256 + i/8]` — rows split into 8 blocks by
+  `i mod 8`. Cracked and VALIDATED: router corr=1.000000 vs the GGUF F32
+  router, top-8 expert selection identical (152 131 101 115 42 218 127 173).
+  Tool: `tools/moe_router_test.cpp`. (Earlier "transposed" note was a
+  flatten-ordering illusion — the actual layout is the stride-8 interleave.)
 - **Expert FFN tensors (5120-byte rows, dtype 2/4, INT4)**: the existing
   `dequant_q4nx.cpp` dequantizes them correctly — gate/up/down_exps verified
   plausible, 0 NaNs. Layout: [512 B BF16 scales 8g×32r][512 B zeros][4096 B
