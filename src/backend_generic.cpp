@@ -388,7 +388,10 @@ struct GenericBackend : Backend {
             return idx;
         };
 
-        int NE = cfg.n_experts;
+        // MoE detection must use the FILE's expert count, not the member cfg:
+        // the member defaults to 16 (Zaya .bin convention) and callers may not
+        // have synced it — a dense GGUF would hit the MoE branch and abort.
+        int NE = hdr_cfg.n_experts;
         for (int i = 0; i < L; i++) {
             std::string p = "blk." + std::to_string(i) + ".";
             LayerW lw = {};  // zero-initialize all indices to SIZE_MAX
@@ -462,6 +465,22 @@ struct GenericBackend : Backend {
         printf("Generic: loaded %zu layers, embed=%zu, final_norm=%zu, lm_head=%s\n",
                layers.size(), embed.size(), final_norm.size(),
                output_weight.empty() ? "tied" : "untied");
+
+        // The GGUF header is authoritative for dims — the member cfg may still
+        // hold caller defaults (e.g. ppl_generic passes a default-constructed
+        // cfg). Without this sync, forward() runs with cfg.n_layers=40 on a
+        // 28-layer model → OOB on layers[] (found via the Bonsai ppl gate).
+        cfg.set_hidden(hdr_cfg.hidden_size);
+        cfg.set_heads(hdr_cfg.num_heads);
+        cfg.set_kv_heads(hdr_cfg.num_kv_heads ? hdr_cfg.num_kv_heads : hdr_cfg.num_heads);
+        cfg.set_layers(hdr_cfg.num_layers);
+        cfg.head_dim = hdr_cfg.head_dim ? hdr_cfg.head_dim : hdr_cfg.hidden_size / hdr_cfg.num_heads;
+        cfg.set_ff(hdr_cfg.intermediate_size);
+        cfg.set_experts(hdr_cfg.num_experts);
+        cfg.num_experts_top = hdr_cfg.num_experts_top;
+        cfg.rms_norm_eps = hdr_cfg.rms_norm_eps;
+        cfg.rope_theta = hdr_cfg.rope_theta;
+        if (hdr_cfg.max_seq_len > 0) cfg.max_seq_len = hdr_cfg.max_seq_len;
         return !embed.empty() && layers.size() == (size_t)L;
     }
 
@@ -897,6 +916,65 @@ struct GenericBackend : Backend {
             }
         }
         return n ? exp(total_nll / (double)n) : 0.0;
+    }
+
+    // WS-05 P1 (issue #1245): apply TQ2 residual correction planes to the fp32
+    // weight pool. File format "PNL1" (little-endian): magic[4] = "PNL1",
+    // u32 n_entries, then per entry: u32 layer, u32 kind (0=q 1=k 2=v 3=o
+    // 4=w1 5=w2 6=w3), u32 rows, u32 cols, u32 k, i8 B[rows*k], i8 C[k*cols],
+    // f32 d[k]. Each entry adds W += B·diag(d)·C (row-major [rows,cols]).
+    // Forcing packed_ off keeps the decode on the corrected fp32 pool (the
+    // packed path reads raw tiles and would ignore the correction).
+    bool apply_plane_corrections(const char* path) {
+        FILE* f = fopen(path, "rb");
+        if (!f) { fprintf(stderr, "planes: cannot open %s\n", path); return false; }
+        char magic[4];
+        if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "PNL1", 4) != 0) {
+            fprintf(stderr, "planes: bad magic in %s\n", path); fclose(f); return false;
+        }
+        uint32_t n_entries = 0;
+        if (fread(&n_entries, 4, 1, f) != 1) { fclose(f); return false; }
+        int applied = 0;
+        for (uint32_t e = 0; e < n_entries; e++) {
+            uint32_t lyr, kind, rows, cols, k;
+            if (fread(&lyr, 4, 1, f) != 1 || fread(&kind, 4, 1, f) != 1 ||
+                fread(&rows, 4, 1, f) != 1 || fread(&cols, 4, 1, f) != 1 ||
+                fread(&k, 4, 1, f) != 1) { fclose(f); return false; }
+            if (lyr >= (uint32_t)layers.size()) { fclose(f); return false; }
+            size_t idx = SIZE_MAX;
+            const char* names[7] = {"q", "k", "v", "o", "w1", "w2", "w3"};
+            size_t* slots[7] = {&layers[lyr].wq, &layers[lyr].wk, &layers[lyr].wv,
+                                &layers[lyr].wo, &layers[lyr].w1, &layers[lyr].w2,
+                                &layers[lyr].w3};
+            if (kind < 7) idx = *slots[kind];
+            size_t nbytes = (size_t)rows * k + (size_t)k * cols;
+            std::vector<int8_t> bc(nbytes);
+            std::vector<float> d(k);
+            if (fread(bc.data(), 1, nbytes, f) != nbytes ||
+                fread(d.data(), 4, k, f) != k) { fclose(f); return false; }
+            if (idx == SIZE_MAX || layer_w[idx].size() != (size_t)rows * cols) {
+                fprintf(stderr, "planes: layer %u kind=%s mismatch (rows=%u cols=%u, pool=%zu) — skipping\n",
+                        lyr, kind < 7 ? names[kind] : "?", rows, cols, idx == SIZE_MAX ? 0 : layer_w[idx].size());
+                continue;
+            }
+            float* w = layer_w[idx].data();
+            const int8_t* B = bc.data();
+            const int8_t* C = bc.data() + (size_t)rows * k;
+            for (uint32_t i = 0; i < rows; i++)
+                for (uint32_t j = 0; j < k; j++) {
+                    float bij = (float)B[(size_t)i * k + j];
+                    if (bij == 0.0f) continue;
+                    const int8_t* cj = C + (size_t)j * cols;
+                    float dj = d[j];
+                    float* wr = w + (size_t)i * cols;
+                    for (uint32_t c = 0; c < cols; c++) wr[c] += bij * dj * (float)cj[c];
+                }
+            applied++;
+        }
+        fclose(f);
+        packed_ = false;   // decode must use the corrected fp32 pool
+        printf("planes: applied %d/%u corrections — decode switched to fp32 pool\n", applied, n_entries);
+        return applied > 0;
     }
 
     void destroy() override { initialized = false; }
