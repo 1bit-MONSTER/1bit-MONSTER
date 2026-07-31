@@ -683,10 +683,14 @@ target_link_libraries(test_medusa_skeleton PRIVATE rocm_cpp)
 # Now wired as a proper ninja target linking backend_manager (which already handles
 # the rocm_cpp dependency). Run without a model to see usage.
 # -- bench_hip_1bp: GPU 1BP engine standalone benchmark --
-add_executable(bench_hip_1bp tools/bench_hip_1bp.cpp src/backend_hip_1bp.cpp src/hip_1bp_kernels.hip src/kv_cache_attn.hip)
+add_executable(bench_hip_1bp tools/bench_hip_1bp.cpp src/backend_hip_1bp.cpp src/kv_cache_attn.hip)
 target_include_directories(bench_hip_1bp PRIVATE src include engine/fusion/zero_copy engine/npu/src)
 target_compile_options(bench_hip_1bp PRIVATE -O3 -ffast-math -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
 target_link_libraries(bench_hip_1bp PRIVATE hip::host hip::device hipblas rocm_cpp)
+if(THEROCK_HIPBLAS_LIB)
+    get_filename_component(_l "${THEROCK_HIPBLAS_LIB}" DIRECTORY)
+    set_property(TARGET bench_hip_1bp APPEND PROPERTY LINK_OPTIONS "-Wl,-rpath,${_l}")
+endif()
 set_source_files_properties(tools/bench_hip_1bp.cpp PROPERTIES LANGUAGE CXX)
 set_target_properties(bench_hip_1bp PROPERTIES
     HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
@@ -833,7 +837,6 @@ set(UNIFIED_SERVER_SOURCES
     src/agent_watchdog.cpp
     src/backend_hip.cpp
     src/backend_hip_1bp.cpp
-    src/hip_1bp_kernels.hip
     src/unified_pool.cpp
     src/backend_fused.cpp
     src/backend_fused_npu.cpp
@@ -850,7 +853,6 @@ set(UNIFIED_SERVER_SOURCES
 add_executable(unified_server ${UNIFIED_SERVER_SOURCES})
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_hip_1bp.cpp PROPERTIES LANGUAGE HIP)
-set_source_files_properties(src/hip_1bp_kernels.hip PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_generic.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(tools/unified_server.cpp PROPERTIES LANGUAGE CXX)
@@ -1244,7 +1246,7 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
         endif()
 
         # bench_fused: Fused GPU attn ∥ NPU FFN benchmark
-        add_executable(bench_fused tools/bench_fused.cpp src/backend_fused.cpp src/backend_fused_npu.cpp src/hip_1bp_kernels.hip src/kv_cache_attn.hip)
+        add_executable(bench_fused tools/bench_fused.cpp src/backend_fused.cpp src/backend_fused_npu.cpp src/kv_cache_attn.hip)
         set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
         set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
         set_source_files_properties(src/kv_cache_attn.hip PROPERTIES LANGUAGE HIP)

@@ -152,8 +152,8 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 | Model | Params | 1BP Size | Backend(s) | Perf |
 |-------|:------:|:--------:|------------|:----:|
 | **DeepSeek-V2/V3/R1** | — | — | GPU HIP | 20 tok/s |
-| **DeepSeek-R1-Distill-Llama-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | — |
-| **Mixtral-8x7B** | 46.7B | 27.8 GB | ZINC / NPU / HIP | — |
+| **DeepSeek-R1-Distill-Llama-8B** | 8B | 4.1 GB | **GGML-Vulkan** / ZINC / NPU / HIP | **44 tok/s** |
+| **Mixtral-8x7B** | 46.7B | 27.8 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
 | **Laguna-S-2.1** | 48×256ex | 73.5 GB | ZINC / NPU / HIP | — |
 | **Laguna-XS-2.1** | 40×256ex | 20.9 GB | ZINC / NPU / HIP | — |
 | **Laguna-S-dflash (draft)** | 6L dense | 665 MB | ZINC / NPU / HIP | — |
@@ -176,6 +176,7 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 | SmolLM2-1.7B Q4_K_M | **167** | 6.0 |
 | Qwen3-0.6B Q4_K_M | **320** | 3.1 |
 | Qwen2.5-VL-3B Q4_K_M | **95** | 10.5 |
+| DeepSeek-R1-Distill-Llama-8B Q4_K_M | **44** | 22.8 |
 
 **Ternary kernel benchmarks:**
 | Kernel | tok/s | Backend |
@@ -198,6 +199,7 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 | SmolLM2-1.7B Q4_K_M | **167** | **GGML-Vulkan** | ✅ new |
 | Qwen3-0.6B Q4_K_M | **320** | **GGML-Vulkan** | ✅ new |
 | Qwen2.5-VL-3B Q4_K_M | **95** | **GGML-Vulkan** | ✅ new |
+| DeepSeek-R1-Distill-Llama-8B Q4_K_M | **44** | **GGML-Vulkan** | ✅ new |
 | BlackMamba 1.5B e2e | **78.9** | Mamba1 HIP | ✅ verified |
 | Q1 GEMV kernel | 433 | ROCm HIP | ✅ |
 | Fused TQ2 kernel | 420 | ROCm HIP | ✅ |
