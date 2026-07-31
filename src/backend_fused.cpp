@@ -19,6 +19,7 @@
 #include <vector>
 #include <memory>
 #include <chrono>
+#include <future>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -234,6 +235,10 @@ struct FusedBackend : Backend {
     void* slot_dev[2] = {};
 
     // CPU weights (for NPU pack + lm_head)
+    // NPU async future — tracks the in-flight NPU FFN so we can await it
+    // before starting the next layer's NPU (pipeline: GPU attn_L+1 ∥ NPU FFN_L).
+    std::future<bool> npu_future_;
+
     std::vector<float> cpu_embed, cpu_final_norm, cpu_output;
     struct CpuL { std::vector<float> w1, w2, w3; };
     std::vector<CpuL> cpu_L;
@@ -453,58 +458,105 @@ struct FusedBackend : Backend {
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, H_);
             }
 
-            // ── FFN (GPU by default, NPU backfill with env flag) ──
-            // Set USE_NPU_FFN=1 to use NPU for FFN (slower due to PCIe copies,
-            // but lower power). The NPU code runs in a separate C++ translation
-            // unit to avoid HIP/XRT context conflicts.
-            bool ffn_done = false;
-            if (npu && npu_ok && getenv("USE_NPU_FFN")) {
-                HIP_CHECK(hipStreamSynchronize(stream));
-                int si = l & 1;
-                float* host_buf = (float*)slot[si]->host_ptr();
-                // Zero-copy path (issue #1215): GPU writes the post-attention hidden
-                // state directly into the SharedBO pages via the HIP-registered device
-                // pointer.  NPU then reads from host_ptr (same physical pages on Strix
-                // Halo unified memory) without an intermediate bounce buffer.
-                // If registration failed at init time, fall back to hipMemcpy to CPU.
-                if (slot_dev[si]) {
-                    HIP_CHECK(hipMemcpy(slot_dev[si], doproj, H_*sizeof(float),
-                                        hipMemcpyDeviceToDevice));
+            // ── FFN (pipelined NPU backfill with GPU fallback) ──
+            // With USE_NPU_FFN=1: NPU FFN for layer L runs ASYNCHRONOUSLY on
+            // a std::thread while GPU does attention for layer L+1.  Two SharedBO
+            // slots (slot[0], slot[1]) carry the hidden state to/from the NPU.
+            //
+            // Pipeline:
+            //   L=0: GPU attn → copy to slot[0] → launch NPU FFN(0) on thread
+            //   L=1..NC-1: wait NPU(L-1) → copy result to dh → GPU attn(L)
+            //               → copy to slot[L&1] → launch NPU FFN(L)
+            //   Post-loop: wait NPU(NC-1) → copy result to dh
+            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+
+            // Phase 1: Wait for PREVIOUS NPU FFN to finish (layer L-1)
+            if (use_npu && l > 0) {
+                int prev_si = (l - 1) & 1;
+                bool npu_ok_l = npu_future_.get();
+                if (!npu_ok_l) {
+                    fprintf(stderr, "[fused] NPU FFN l=%d failed — GPU fallback from now\n", l-1);
+                    npu_ok = false;
+                    use_npu = false;
                 } else {
-                    HIP_CHECK(hipMemcpy(host_buf, doproj, H_*sizeof(float),
-                                        hipMemcpyDeviceToHost));
-                }
-                if (npu_state_ffn(npu, l, host_buf, H_)) {
-                    // Read result back to the GPU hidden-state buffer.
-                    if (slot_dev[si]) {
-                        HIP_CHECK(hipMemcpy(dh, slot_dev[si], H_*sizeof(float),
+                    // Copy NPU result from SharedBO slot back to GPU dh
+                    if (slot_dev[prev_si]) {
+                        HIP_CHECK(hipMemcpy(dh, slot_dev[prev_si], H_*sizeof(float),
                                             hipMemcpyDeviceToDevice));
                     } else {
-                        HIP_CHECK(hipMemcpy(dh, host_buf, H_*sizeof(float),
+                        HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(), H_*sizeof(float),
                                             hipMemcpyHostToDevice));
                     }
-                    ffn_done = true;
-                } else {
-                    fprintf(stderr, "[fused] NPU FFN l=%d failed — fallback GPU\n", l);
-                    npu_ok = false;
                 }
             }
-            if (!ffn_done) {
-            // ── GPU FFN ──
-            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
-            if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
-            else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
-            if (gl.w1 && gl.w2 && gl.w3) {
-                gemv(dgate, gl.w1, dh, IM_, H_, stream);
-                gemv(dup_,  gl.w2, dh, IM_, H_, stream);
-                fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                gemv(dh, gl.w3, datt, H_, IM_, stream);
-                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+
+            // Phase 2: GPU FFN (used when NPU unavailable, or for layer 0
+            // which hasn't been processed by NPU yet)
+            if (!use_npu) {
+                // ── GPU FFN ──
+                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
+                else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                if (gl.w1 && gl.w2 && gl.w3) {
+                    gemv(dgate, gl.w1, dh, IM_, H_, stream);
+                    gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                    fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                    gemv(dh, gl.w3, datt, H_, IM_, stream);
+                    fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                }
+            } else {
+                // ── NPU FFN (async on std::thread) ──
+                int si = l & 1;
+                float* host_buf = (float*)slot[si]->host_ptr();
+                // Copy post-attention hidden state (doproj currently holds the
+                // post-attention + residual output, which was saved to dh above)
+                // Actually dh already has the result after the fused_copy_kernel.
+                if (slot_dev[si]) {
+                    HIP_CHECK(hipMemcpy(slot_dev[si], dh, H_*sizeof(float),
+                                        hipMemcpyDeviceToDevice));
+                } else {
+                    HIP_CHECK(hipMemcpy(host_buf, dh, H_*sizeof(float),
+                                        hipMemcpyDeviceToHost));
+                }
+                // Launch NPU FFN async.  The GPU attention for the next layer
+                // runs concurrently on the HIP stream while the NPU computes.
+                npu_future_ = std::async(std::launch::async, [this, l, host_buf, H_]() {
+                    return npu_state_ffn(npu, l, host_buf, H_);
+                });
             }
-            } // end if (!ffn_done)
         } // end for (int l = 0; l < NC_; l++)
 
-        // Final RMSNorm + readback (runs after ALL NC_ layers, not inside the loop)
+        // Phase 3: Wait for LAST NPU FFN (layer NC-1) if pipelining was active
+        if (npu && npu_ok && getenv("USE_NPU_FFN")) {
+            int last_si = (NC_ - 1) & 1;
+            bool ok = npu_future_.get();
+            if (ok) {
+                if (slot_dev[last_si]) {
+                    HIP_CHECK(hipMemcpy(dh, slot_dev[last_si], H_*sizeof(float),
+                                        hipMemcpyDeviceToDevice));
+                } else {
+                    HIP_CHECK(hipMemcpy(dh, slot[last_si]->host_ptr(), H_*sizeof(float),
+                                        hipMemcpyHostToDevice));
+                }
+            } else {
+                // GPU FFN fallback for the last layer — dh still holds the
+                // post-attention hidden state (input to FFN).
+                fprintf(stderr, "[fused] NPU FFN final layer failed — GPU fallback\n");
+                auto& gll = L[NC_ - 1];
+                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
+                else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                if (gll.w1 && gll.w2 && gll.w3) {
+                    gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                    gemv(dup_,  gll.w2, dh, IM_, H_, stream);
+                    fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                    gemv(dh, gll.w3, datt, H_, IM_, stream);
+                    fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                }
+            }
+        }
+
+        // Final RMSNorm + readback (runs after ALL NC_ layers)
         fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
         HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));
         HIP_CHECK(hipStreamSynchronize(stream));
@@ -563,6 +615,8 @@ struct FusedBackend : Backend {
             }
             delete slot[i]; slot[i] = nullptr;
         }
+        // Await any in-flight NPU FFN before destroying NPU state
+        if (npu_future_.valid()) { npu_future_.wait(); }
         if (stream) { HIP_CHECK_D(hipStreamDestroy(stream)); stream = nullptr; }
         npu_state_destroy(npu); npu = nullptr;
         cpu_L.clear(); cpu_embed.clear(); cpu_final_norm.clear(); cpu_output.clear();
