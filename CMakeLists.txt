@@ -1066,6 +1066,12 @@ target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
 # Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
 # Requires a VL-capable text model + mmproj GGUF file.
 add_executable(vision_server tools/vision_server.cpp src/tokenizer.cpp)
+
+# -- vl_logit_check : logit-level 1BP-vs-BF16 decoder validation -----------
+add_executable(vl_logit_check tools/vl_logit_check.cpp src/tokenizer.cpp)
+target_include_directories(vl_logit_check PRIVATE src/ include/ engine/npu/src)
+target_compile_options(vl_logit_check PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(vl_logit_check PRIVATE backend_manager onebp_model dl)
 target_include_directories(vision_server PRIVATE src/ include/ engine/npu/src)
 target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(vision_server PRIVATE
