@@ -277,11 +277,14 @@ static std::string extract_text(const json& content) {
 // ── Tokenizer helpers: .htok (merge-BPE) when loaded, else GGUF greedy ──
 static std::vector<int> encode_text(SimpleTokenizer& st, const std::string& text) {
     if (g_htok) {
+        // Buffer is 2x text + 16: BPE output can never exceed 1 token/byte.
         std::vector<int> ids(text.size() * 2 + 16);
         size_t n = 0;
         rcpp_tokenizer_encode(g_htok, text.data(), text.size(), 1,
                               ids.data(), ids.size(), &n);
-        ids.resize(n);
+        // rcpp reports the TRUE count even when the buffer is too small —
+        // clamp so resize() never materializes unwritten elements.
+        ids.resize(std::min(n, ids.size()));
         return ids;
     }
     return st.encode(text);
@@ -292,7 +295,9 @@ static std::string decode_text(SimpleTokenizer& st, const std::vector<int>& ids)
         char buf[65536];
         size_t l = 0;
         rcpp_tokenizer_decode(g_htok, ids.data(), ids.size(), buf, sizeof(buf), &l);
-        return std::string(buf, l);
+        // l is the TRUE byte count and may exceed the buffer — clamp before
+        // constructing the string to avoid an out-of-bounds read.
+        return std::string(buf, std::min(l, sizeof(buf)));
     }
     return st.decode(ids);
 }
