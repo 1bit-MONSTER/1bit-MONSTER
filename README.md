@@ -117,26 +117,26 @@ General-purpose dense transformer models — Llama-derived, Mistral, Gemma, Phi,
 | **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **584** 🏆 |
 | **SmolLM2-360M** | 360M | 259 MiB | **GGML-Vulkan** / ZINC / CPU | **389** |
 | **SmolLM2-1.7B** | 1.7B | 1007 MiB | **GGML-Vulkan** / ZINC / CPU | **167** |
-| **Llama-3.2-1B** | 1B | 581 MB | ZINC / NPU | 543 (kernel) |
-| **Llama-3.2-3B** | 3B | 1.7 GB | ZINC / NPU / HIP | 543 (kernel) |
-| **Llama-3.1-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | 543 (kernel) |
-| **TinyLlama-1.1B** | 1.1B | 328 MB | ZINC / NPU | — |
-| **Mistral-7B-v0.3** | 7B | 4.3 GB | ZINC / NPU / HIP | 543 (kernel) |
-| **Ministral-8B** | 8B | 4.7 GB | ZINC / NPU / HIP | — |
-| **Gemma-2-2B** | 2B | 1.2 GB | ZINC / NPU / HIP | 67.5 (NPU) |
-| **Gemma-3-1B** | 1B | 447 MB | ZINC / NPU | — |
-| **Gemma-3-4B** | 4B | 1.9 GB | ZINC / NPU / HIP | 67.5 (NPU) |
-| **Phi-3-mini** | 3.8B | 2.3 GB | ZINC / NPU / HIP | — |
-| **Phi-3.5-mini** | 3.8B | 2.3 GB | ZINC / NPU / HIP | — |
-| **Phi-4-mini** | 3.8B | 1.9 GB | ZINC / NPU / HIP | 67.5 (NPU) |
-| **Falcon3-1B** | 1B | 675 MB | ZINC / NPU / HIP | — |
-| **Falcon3-3B** | 3B | 1.4 GB | ZINC / NPU / HIP | — |
-| **Falcon3-7B** | 7B | 4.0 GB | ZINC / NPU / HIP | — |
-| **Falcon3-10B** | 10B | 5.7 GB | ZINC / NPU / HIP | — |
-| **OLMo-2-7B** | 7B | 3.9 GB | ZINC / NPU / HIP | — |
-| **OLMo-2-13B** | 13B | 7.6 GB | ZINC / NPU / HIP | — |
-| **Granite-3.2-2B** | 2B | 1.5 GB | ZINC / NPU / HIP | — |
-| **Granite-3.2-8B** | 8B | 4.8 GB | ZINC / NPU / HIP | — |
+| **Llama-3.2-1B** | 1B | 581 MB | **GGML-Vulkan** / ZINC / NPU | — |
+| **Llama-3.2-3B** | 3B | 1.7 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Llama-3.1-8B** | 8B | 4.1 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **TinyLlama-1.1B** | 1.1B | 328 MB | **GGML-Vulkan** / ZINC / NPU | — |
+| **Mistral-7B-v0.3** | 7B | 4.3 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Ministral-8B** | 8B | 4.7 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Gemma-2-2B** | 2B | 1.2 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Gemma-3-1B** | 1B | 447 MB | **GGML-Vulkan** / ZINC / NPU | — |
+| **Gemma-3-4B** | 4B | 1.9 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Phi-3-mini** | 3.8B | 2.3 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Phi-3.5-mini** | 3.8B | 2.3 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Phi-4-mini** | 3.8B | 1.9 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Falcon3-1B** | 1B | 675 MB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Falcon3-3B** | 3B | 1.4 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Falcon3-7B** | 7B | 4.0 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Falcon3-10B** | 10B | 5.7 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **OLMo-2-7B** | 7B | 3.9 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **OLMo-2-13B** | 13B | 7.6 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Granite-3.2-2B** | 2B | 1.5 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
+| **Granite-3.2-8B** | 8B | 4.8 GB | **GGML-Vulkan** / ZINC / NPU / HIP | — |
 | **Nanbeige4.1** | — | — | NPU | — |
 
 **[→ Full per-model benchmarks](docs/wiki/models.md)**
