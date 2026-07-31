@@ -71,3 +71,25 @@ The decode is bandwidth-bound; packed 2-bit cuts weight traffic 8× (0.5 vs 4 B/
 
 ### P1 next step
 Wire `gemv_tq2_packed` into the CPU backend's TQ2 path (backend_generic.cpp: keep packed tiles resident + per-group scales, replace the fp32 matmul for TQ2 models) → e2e target ≥60 tok/s on Qwen3-0.6B TQ2 (from ~20-ish today).
+
+---
+
+## Update — WS-04 P1 COMPLETE: packed TQ2 integrated into the CPU backend (2026-07-31)
+
+**`src/backend_generic.cpp` now runs multiplication-free packed GEMVs for 1BP TQ2 models** (keeps the mmap + raw tiles via `get_tile_ptr`, per-group BF16 scales, pext-mask decode; `GENERIC_NO_PACKED=1` env forces the old fp32 path for A/B). Verified with `bench_generic_e2e.cpp` on Qwen3-0.6B.1bp (28 layers, 16 threads):
+
+| Path | tok/s | ms/token |
+|---|---:|---:|
+| fp32-resident (old) | 37.4 | 23-25 |
+| **packed TQ2** | **84.2** | **10-16 |
+
+**2.25× e2e speedup, bit-identical outputs** (same argmax sequence: 7833, 31972, ...). Matches the kernel-level prediction (2.3×, 47→105 ceiling vs 37→84 e2e with attention/norms overhead).
+
+### Real bugs fixed along the way (in `src/backend_generic.cpp`)
+1. **Config corruption**: `init()` GGUF-parsed a `.1bp` path, overwriting cfg with garbage (ModelConfig has ZAYA-ish defaults 40/2048/8); the 1BP header must be authoritative → GGUF attempt skipped for `ONEBP` format + header overrides cfg.
+2. **Norm name mismatches** (1BP writer conventions vs loader): `attn_norm.weight`/`ffn_norm.weight` (layer norms) and `output_norm.weight` (final norm) now fall back correctly. Without these the generic backend couldn't run ANY Qwen3-0.6B.1bp.
+3. `src/safetensors_reader.cpp`: missing `<climits>` include (build fix).
+
+### Files
+- `src/backend_generic.cpp` — packed path (gemv_packed + mm dispatcher + load-time packed slots)
+- `research/ws04-cpu-ternary-kernels/bench_generic_e2e.cpp` — e2e A/B harness (build cmd in header)

@@ -24,12 +24,23 @@
 #include <vector>
 #include <string>
 #include <fstream>
+#include <memory>
+#include <immintrin.h>
 
 // ── Generic CPU Backend ──────────────────────────────────────────────────────
 struct GenericBackend : Backend {
     ModelConfig cfg;
     std::vector<float> embed, final_norm, output_weight;
     std::vector<std::vector<float>> layer_w;  // flat per-layer weights
+    // Packed TQ2 path (WS-04): keep the 1BP mmap alive and run multiplication-free
+    // GEMV on raw 2-bit tiles instead of dequantizing to fp32. Used only when
+    // packed_ is true (1BP TQ2 models); all other formats use the fp32 path.
+    std::unique_ptr<OnebpModel> tq2_;
+    bool packed_ = false;
+    int tr_ = 32, tc_ = 256, gs_ = 32;
+    struct PackedW { const uint8_t* base = nullptr; int N = 0, K = 0; };
+    std::vector<PackedW> packed_w_;
+    int pk_lm_ = -1;
     std::vector<std::vector<float>> k_cache, v_cache; // KV cache [n_layers][max_seq * n_kv * hd]
     int pos = 0;
     std::vector<float> logits_buf;
@@ -54,6 +65,7 @@ struct GenericBackend : Backend {
         size_t bq = SIZE_MAX, bk = SIZE_MAX, bv = SIZE_MAX;
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
+        int pk_q = -1, pk_k = -1, pk_v = -1, pk_o = -1, pk_w1 = -1, pk_w2 = -1, pk_w3 = -1;  // packed TQ2 slots
     };
     std::vector<LayerW> layers;
 
@@ -99,6 +111,7 @@ struct GenericBackend : Backend {
     }
     std::vector<float> flat_weights;
     float* w(size_t idx) {
+
         if (idx >= flat_weights.size()) {
             fprintf(stderr, "[generic] FATAL: weight index %zu out of range (size=%zu)\n",
                     idx, flat_weights.size());
@@ -161,13 +174,19 @@ struct GenericBackend : Backend {
 
     bool load_1bp(const std::string& path) {
         printf("Generic: loading 1BP: %s\n", path.c_str());
-        OnebpModel model;
-        if (!model.open(path.c_str())) {
+        tq2_ = std::make_unique<OnebpModel>();
+        if (!tq2_->open(path.c_str())) {
             fprintf(stderr, "Generic: failed to open 1BP\n");
             return false;
         }
+        OnebpModel& model = *tq2_;
         auto& h = model.header();
-        if (cfg.hidden == 0) {
+        packed_ = (h.quant == ONEBP_TQ2) && !getenv("GENERIC_NO_PACKED");
+        if (packed_) {
+            tr_ = h.tile_rows; tc_ = h.tile_cols; gs_ = h.group_size;
+            printf("Generic: TQ2 packed path ON (tile %dx%d gs=%d)\n", tr_, tc_, gs_);
+        }
+        if (cfg.hidden == 0 || cfg.format == ModelFormat::ONEBP) {   // header is authoritative for 1BP
             cfg.hidden = cfg.hidden_size = h.hidden_size;
             cfg.n_layers = cfg.num_layers = h.num_layers;
             cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = h.num_attention_heads;
@@ -188,9 +207,19 @@ struct GenericBackend : Backend {
 
         // Load final norm + output weight
         if (!model.get_tensor_f32("token_embd_norm.weight", final_norm))
-            model.get_tensor_f32("model.norm.weight", final_norm);
+            if (!model.get_tensor_f32("model.norm.weight", final_norm))
+                model.get_tensor_f32("output_norm.weight", final_norm);   // 1BP writer convention
         if (!model.get_tensor_f32("output.weight", output_weight))
             model.get_tensor_f32("lm_head.weight", output_weight);
+        if (packed_) {
+            if (const uint8_t* b = model.get_tile_ptr("output.weight", 0, 0)) {
+                packed_w_.push_back({b, cfg.vocab, cfg.hidden});
+                pk_lm_ = (int)packed_w_.size() - 1;
+            } else if (const uint8_t* b = model.get_tile_ptr("lm_head.weight", 0, 0)) {
+                packed_w_.push_back({b, cfg.vocab, cfg.hidden});
+                pk_lm_ = (int)packed_w_.size() - 1;
+            }
+        }
 
         // Per-layer weights
         layers.resize(cfg.n_layers);
@@ -207,6 +236,9 @@ struct GenericBackend : Backend {
                 }
                 if ((int)w.size() == rows * cols)
                     idx = push(std::move(w));
+                else if (getenv("CPU_DEBUG_OPS"))
+                    fprintf(stderr, "[generic] load fail: %s (%d elems, want %d)\n",
+                            buf, (int)w.size(), rows * cols);
             };
             int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads;
             int HD = cfg.head_dim, IM = cfg.n_ff;
@@ -217,13 +249,35 @@ struct GenericBackend : Backend {
             load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
             load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
             load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            if (packed_) {
+                auto pk = [&](const char* blk, const char* legacy, int& idx, int M, int K) {
+                    char b2[128];
+                    snprintf(b2, sizeof(b2), "blk.%d.%s", l, blk);
+                    const uint8_t* base = model.get_tile_ptr(b2, 0, 0);
+                    if (!base) {
+                        snprintf(b2, sizeof(b2), "model.layers.%d.%s", l, legacy);
+                        base = model.get_tile_ptr(b2, 0, 0);
+                    }
+                    if (base) { packed_w_.push_back({base, M, K}); idx = (int)packed_w_.size() - 1; }
+                };
+                pk("attn_q.weight", "self_attn.q_proj.weight", lw.pk_q, NH*HD, H);
+                pk("attn_k.weight", "self_attn.k_proj.weight", lw.pk_k, NKV*HD, H);
+                pk("attn_v.weight", "self_attn.v_proj.weight", lw.pk_v, NKV*HD, H);
+                pk("attn_output.weight", "self_attn.o_proj.weight", lw.pk_o, H, NH*HD);
+                pk("ffn_gate.weight", "mlp.gate_proj.weight", lw.pk_w1, IM, H);
+                pk("ffn_up.weight", "mlp.up_proj.weight", lw.pk_w2, IM, H);
+                pk("ffn_down.weight", "mlp.down_proj.weight", lw.pk_w3, H, IM);
+            }
 
             // RMS norm weights
             load("input_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);
+            load("attn_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);   // 1BP writer convention
             load("post_attention_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1);
+            load("ffn_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1); // 1BP writer convention
         }
         printf("Generic: 1BP loaded — %d layers, %.1fM params\n",
                cfg.n_layers, (double)embed.size() / 1e6);
+        if (!packed_) tq2_.reset();  // Q4NX: fp32 pool is self-contained
         return true;
     }
 
@@ -454,6 +508,50 @@ struct GenericBackend : Backend {
         }
     }
 
+    // Packed TQ2 GEMV (WS-04): multiplication-free, pext masks + maskz add/sub,
+    // per-(row,32-group) BF16 scales. TQ2 code mapping: 0=-s, 1=0, 2=+s, 3=0.
+    void gemv_packed(const PackedW& pw, const float* x, float* y) {
+        int N = pw.N, K = pw.K;
+        int ntc = (K + tc_ - 1) / tc_;
+        int groups = tc_ / gs_;
+        size_t tb = (size_t)tr_ * groups * 2 + (size_t)tr_ * tc_ / 4;
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < N; i++) {
+            float acc_row = 0;
+            int trr = i / tr_, rr = i % tr_;
+            for (int tcc = 0; tcc < ntc; tcc++) {
+                const uint8_t* tile = pw.base + ((size_t)trr * ntc + tcc) * tb;
+                const uint16_t* sc = (const uint16_t*)tile;
+                const uint8_t* qd = tile + (size_t)tr_ * groups * 2;
+                int c0 = tcc * tc_;
+                for (int g = 0; g < groups; g++) {
+                    float s = bf16_to_f32(sc[rr * groups + g]);
+                    const uint8_t* q = qd + (size_t)(rr * tc_ + g * gs_) / 4;
+                    __m512 acc = _mm512_setzero_ps();
+                    for (int hh = 0; hh < gs_ / 16; hh++) {
+                        uint32_t v;
+                        memcpy(&v, q + 4 * hh, 4);
+                        uint32_t lo = _pext_u32(v, 0x55555555u);
+                        uint32_t hi = _pext_u32(v, 0xAAAAAAAAu);
+                        uint32_t pos = hi & ~lo;
+                        uint32_t neg = ~(hi | lo);
+                        __m512 acts = _mm512_loadu_ps(x + c0 + g * gs_ + 16 * hh);
+                        acc = _mm512_add_ps(acc, _mm512_maskz_mov_ps((__mmask16)pos, acts));
+                        acc = _mm512_sub_ps(acc, _mm512_maskz_mov_ps((__mmask16)neg, acts));
+                    }
+                    acc_row += _mm512_reduce_add_ps(acc) * s;
+                }
+            }
+            y[i] = acc_row;
+        }
+    }
+
+    // Weight-GEMV dispatcher: packed TQ2 path when a packed slot exists, else fp32.
+    void mm(float* out, const float* in, const float* W, int N, int K, int pk) {
+        if (packed_ && pk >= 0) gemv_packed(packed_w_[pk], in, out);
+        else matmul(out, in, W, N, K);
+    }
+
     static void silu(float* out, const float* gate, const float* up, int n) {
         for (int i = 0; i < n; i++) {
             float g = gate[i];
@@ -530,7 +628,7 @@ struct GenericBackend : Backend {
         //  strategy routing which needs per-token logprobs).
         const float* lm_w = output_weight.empty() ? embed.data() : output_weight.data();
         if (!lm_w) return false;
-        matmul(logits, hidden, lm_w, cfg.vocab, cfg.hidden);
+        mm(logits, hidden, lm_w, cfg.vocab, cfg.hidden, pk_lm_);
         if (argmax) {
             *argmax = 0;
             float max_val = logits[0];
@@ -586,9 +684,9 @@ struct GenericBackend : Backend {
             if (il == 0 && getenv("CPU_DEBUG_OPS"))
                 fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g]\n",
                         pos, x[0], x[1], x[2], x2[0], x2[1], x2[2]);
-            matmul(q.data(), x2.data(), w(l.wq), NH*HD, H);
-            matmul(k.data(), x2.data(), w(l.wk), NKV*HD, H);
-            matmul(v.data(), x2.data(), w(l.wv), NKV*HD, H);
+            mm(q.data(), x2.data(), w(l.wq), NH*HD, H, l.pk_q);
+            mm(k.data(), x2.data(), w(l.wk), NKV*HD, H, l.pk_k);
+            mm(v.data(), x2.data(), w(l.wv), NKV*HD, H, l.pk_v);
 
             // Optional QKV bias (Qwen2 and others use biased attention
             // projections; absent for architectures like Llama).
@@ -649,7 +747,7 @@ struct GenericBackend : Backend {
                 att[0], att[1], att[2], att[128], att[129], att[130]);
 
             // O proj
-            matmul(x2.data(), att.data(), w(l.wo), H, NH*HD);
+            mm(x2.data(), att.data(), w(l.wo), H, NH*HD, l.pk_o);
             // Residual
             for (int i = 0; i < H; i++) x[i] += x2[i];
 
@@ -660,7 +758,7 @@ struct GenericBackend : Backend {
             if (l.moe_gate_inp != SIZE_MAX) {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
                 std::vector<float> router_probs(NE);
-                matmul(router_probs.data(), x2.data(), w(l.moe_gate_inp), NE, H);
+                mm(router_probs.data(), x2.data(), w(l.moe_gate_inp), NE, H, -1);
                 softmax(router_probs.data(), NE);
 
                 // Top-k expert selection by router probability (descending),
@@ -683,19 +781,19 @@ struct GenericBackend : Backend {
                     float* wg = w(l.moe_gate_exps) + (size_t)e * FF * H;
                     float* wu = w(l.moe_up_exps)   + (size_t)e * FF * H;
                     float* wd = w(l.moe_down_exps) + (size_t)e * H * FF;
-                    matmul(gate_buf.data(), x2.data(), wg, FF, H);
-                    matmul(up_buf.data(), x2.data(), wu, FF, H);
+                    mm(gate_buf.data(), x2.data(), wg, FF, H, -1);
+                    mm(up_buf.data(), x2.data(), wu, FF, H, -1);
                     ffn_activate(silu_buf.data(), gate_buf.data(), up_buf.data(), FF, cfg.arch);
-                    matmul(down_buf.data(), silu_buf.data(), wd, H, FF);
+                    mm(down_buf.data(), silu_buf.data(), wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
                 }
                 for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
             } else {
-                matmul(gate_up.data(), x2.data(), w(l.w1), FF, H);
-                matmul(&gate_up[FF], x2.data(), w(l.w2), FF, H);
+                mm(gate_up.data(), x2.data(), w(l.w1), FF, H, l.pk_w1);
+                mm(&gate_up[FF], x2.data(), w(l.w2), FF, H, l.pk_w2);
                 std::vector<float> silu_buf(FF);
                 ffn_activate(silu_buf.data(), gate_up.data(), &gate_up[FF], FF, cfg.arch);
-                matmul(x2.data(), silu_buf.data(), w(l.w3), H, FF);
+                mm(x2.data(), silu_buf.data(), w(l.w3), H, FF, l.pk_w3);
                 for (int i = 0; i < H; i++) x[i] += x2[i];
             }
         }
@@ -705,7 +803,7 @@ struct GenericBackend : Backend {
 
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();
-        matmul(logits_buf.data(), x2.data(), lm_head, V, H);
+        mm(logits_buf.data(), x2.data(), lm_head, V, H, pk_lm_);
 
         pos++;
 
