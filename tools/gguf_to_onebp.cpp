@@ -31,21 +31,54 @@ static inline uint16_t f32b(float v) {
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
+// ── Legacy imatrix (.dat) loader — llama.cpp format ──
+// i32 n_entries; per entry: i32 name_len, name, i32 ncall, i32 nval,
+// nval x f32 sums; optional i32 n_calls + dataset. Weights = sums / ncall.
+static bool load_imatrix_dat(const char* path,
+                             std::unordered_map<std::string, std::vector<float>>& out) {
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "Cannot open imatrix %s\n", path); return false; }
+    int32_t n = 0;
+    if (fread(&n, 4, 1, f) != 1 || n < 1) { fclose(f); return false; }
+    for (int i = 0; i < n; i++) {
+        int32_t ln = 0; fread(&ln, 4, 1, f);
+        std::string name(ln, '\0');
+        fread(name.data(), 1, ln, f);
+        int32_t ncall = 0, nval = 0;
+        fread(&ncall, 4, 1, f); fread(&nval, 4, 1, f);
+        std::vector<float> sums(nval);
+        fread(sums.data(), 4, nval, f);
+        auto& v = out[name];
+        v.resize(nval);
+        float inv = ncall > 0 ? 1.0f / (float)ncall : 1.0f;
+        for (int j = 0; j < nval; j++) v[j] = sums[j] * inv;
+    }
+    fclose(f);
+    return true;
+}
+
 int main(int argc, char** argv) {
     //signal(SIGFPE, sigfpe_handler);
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq2nz-e4m3 | --tq1]\n", argv[0]);
+        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq2nz-e4m3 | --tq1] [--imatrix file.dat]\n", argv[0]);
         return 1;
     }
     // --- Parse quant selection (Q4NX default, --tq2 for symmetric ternary, --tq1 for 1.58-bit) ---
     OnebpQuant quant = ONEBP_Q4NX;
+    std::string imatrix_path;
     for (int ai = 3; ai < argc; ai++) {
         if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
         else if (strcmp(argv[ai], "--tq2nz") == 0) quant = ONEBP_TQ2NZ;
         else if (strcmp(argv[ai], "--tq2nz-e4m3") == 0) quant = ONEBP_TQ2NZ_E4M3;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
+        else if (strcmp(argv[ai], "--imatrix") == 0 && ai + 1 < argc) imatrix_path = argv[++ai];
         else { fprintf(stderr, "Unknown option: %s\n", argv[ai]); return 1; }
+    }
+    std::unordered_map<std::string, std::vector<float>> imatrix;
+    if (!imatrix_path.empty()) {
+        if (!load_imatrix_dat(imatrix_path.c_str(), imatrix)) { fprintf(stderr, "imatrix load failed\n"); return 1; }
+        printf("imatrix: %zu tensors loaded\n", imatrix.size());
     }
     const char* quant_name = (quant == ONEBP_TQ2) ? "TQ2 (ternary 2-bit)" :
                              (quant == ONEBP_TQ2NZ) ? "TQ2NZ (no-zero 2-bit S40)" :
@@ -471,7 +504,14 @@ int main(int argc, char** argv) {
                             if (s < 1e-20f) { s = 0.0f; scale_byte = 0; }
                             else if (e4m3) {
                                 // FP2-style MSE search: start at nearest UE4M3(max/4),
-                                // walk ±8 entries, pick min reconstruction MSE.
+                                // walk ±8 entries, pick min reconstruction MSE. With
+                                // --imatrix, weight the per-element error by the
+                                // activation importance (mean-normalized per group).
+                                const std::vector<float>* imw = nullptr;
+                                if (!imatrix.empty()) {
+                                    auto it = imatrix.find(ti.name);
+                                    if (it != imatrix.end() && (int)it->second.size() == C) imw = &it->second;
+                                }
                                 uint8_t start_e = onebp_nearest_ue4m3(s);
                                 float best_err = INFINITY;
                                 for (int d = -8; d <= 8; d++) {
@@ -480,6 +520,7 @@ int main(int argc, char** argv) {
                                     float scv = onebp_ue4m3_to_f32((uint8_t)e);
                                     if (scv <= 0.0f) continue;
                                     float inv = 1.0f / scv, err = 0.0f;
+                                    float wsum = 0.0f;
                                     for (int i = 0; i < gs; i++) {
                                         int ac = acs + i;
                                         if (ar >= R || ac >= C) continue;
@@ -488,8 +529,11 @@ int main(int argc, char** argv) {
                                         float q = v * inv;
                                         float code = (q > 2.5f) ? 4.0f : (q < -2.5f) ? -4.0f : (q > 0.0f) ? 1.0f : -1.0f;
                                         float dv = v - code * scv;
-                                        err += dv * dv;
+                                        float w = imw ? (*imw)[ac] : 1.0f;
+                                        err += w * dv * dv;
+                                        wsum += w;
                                     }
+                                    if (imw && wsum > 0.0f) err /= wsum;
                                     if (err < best_err) { best_err = err; scale_byte = (uint8_t)e; }
                                 }
                                 tdata[(size_t)rr * grps + g] = scale_byte;

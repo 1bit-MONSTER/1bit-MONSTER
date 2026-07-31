@@ -80,8 +80,11 @@ attn_q/k/v, ffn_down/up, token_embd):
 - Idea 1 (no-zero codebook): VALIDATED (+3.73 dB at same bpw).
 - Idea 2 (UE4M3 scales): VALIDATED (+2.2 dB over bf16 AND 10% smaller — the
   MSE scale search over the 127-value table beats the crude max/4).
-- Idea 3 (imatrix weighting): not yet ported (the MSE search already covers
-  the scale-selection half).
+- Idea 3 (imatrix weighting): PORTED (--imatrix, legacy .dat; weighted MSE
+  scale search with mean-normalized activation weights). Measured on
+  Qwen3-0.6B E4M3: raw SNR 9.61->9.45 dB (unimportant elements traded), but
+  imatrix-weighted SNR 9.46->10.14 dB (+0.68 dB — the PPL-relevant metric),
+  and the generated token stream stops collapsing to a single token.
 - Idea 4 (tensor routing): already how the q4nx NPU layout works; converter
   applies one quant to all tensors — a per-tensor map is the natural next
   step if mixed-precision files are wanted.
