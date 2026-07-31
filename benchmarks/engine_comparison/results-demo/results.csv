@@ -1,0 +1,7 @@
+engine,backend,model,scenario,mtp,concurrency,status,detail,prompt_tokens,completion_tokens,ttft_ms,prefill_tps,decode_tps,aggregate_decode_tps,requests_ok,total_wall_ms,finish_reason,tool_call_ok,steps,edit_total_ms,edit_first_total_ms,edit_text_encode_ms,edit_vae_encode_ms,edit_sampling_ms,edit_per_step_ms,edit_vae_decode_ms,edit_width,edit_height,edit_image
+llamacpp,gpu,qwen3-06b,prefill_128,False,1,ok,,180,8,91.3,1972.2,357.6,357.6,1,107.0,length,,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,
+llamacpp,gpu,qwen3-06b,prefill_512,False,1,ok,,541,8,70.8,7640.7,335.1,335.1,1,87.6,length,,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,
+llamacpp,gpu,qwen3-06b,text_short,False,1,ok,,1982,16,203.4,9744.6,253.4,253.4,1,257.7,length,,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,
+zaya,gpu,qwen3-06b,prefill_128,False,1,ok,,185,8,48217.5,3.8,0.2,0.2,1,48217.6,length,,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,
+zaya,gpu,qwen3-06b,prefill_512,False,1,ok,,546,8,172695.1,3.2,0.0,0.0,1,172695.4,length,,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,
+zaya,gpu,qwen3-06b,text_short,False,1,ok,,1987,16,1097495.1,1.8,0.0,0.0,1,1097495.2,length,,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,
