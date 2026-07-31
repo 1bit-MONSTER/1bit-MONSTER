@@ -10,6 +10,7 @@ on:
       - "src/zamba2_engine*"
       - "src/gguf_*.cpp"
       - "CMakeLists.txt"
+      - ".github/workflows/*"
   workflow_dispatch:
 
 jobs:
