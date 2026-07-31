@@ -155,3 +155,25 @@ Expected result: the layout mapping (likely a per-8/16-element DMA chunk
 interleave for the AIE array), unblocking BOTH the Q8_0 attention projections
 and the INT4 expert tensors, and thereby the native MoE engine's weight
 loader.
+
+### Harness status (2026-07-31, tools/dequant_oracle.cpp)
+
+BUILT AND RUNNING — kernel executes, output verified:
+
+- `Dequant::generate_dequant_q80_packed_in_q4nx_seq(seq, D_in, D_out, w_off,
+  mode)` (libdequant.so, MIT) generates the instruction stream; D_in must be
+  a multiple of the kernel's `desired_k_dequant` (D_in=2048 ✓).
+- The dequant.xclbin kernel (MLIR_AIE, 5 BOs + instr) executes with
+  opcode=3; the instruction stream's DDR_PATCH commands (0x81, word8=arg_idx,
+  word10=offset) reveal the BO usage: **arg0 = output region (16 patches,
+  512 KB stride, 8 MB total), arg1 = input region (17 patches, 320 KB
+  stride)**. The input must be in bo1 (leaving it empty = zeros out).
+- With a zeroed bo0: chunks 0-7 are fully written (f32, ~131k values each),
+  chunks 8-15 partial. The output values are real dequantized weights
+  (e.g. 4.48e-3, 2.8e-4, 3.09e-3) but written in an interleaved/strided
+  pattern over the BO (every 3rd f32 slot holds a sane value in the current
+  config) — the exact write pattern needs the WRITE_DMA BD stride decode
+  from the instruction stream (npu_dma_block_cmd fields in
+  npu_cmd_write_dma.hpp), which is the remaining step.
+- The dtype oracle (get_quantization_byte_size) remains the format key:
+  dtype 1 = Q8_0 (8704-B rows), dtype 2/4 = INT4 (5120-B rows).

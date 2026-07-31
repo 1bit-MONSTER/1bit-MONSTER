@@ -99,6 +99,12 @@ int main(int argc, char** argv) {
     auto [dp, dsz] = seq.dump();
     fprintf(stderr, "dequant sequence: %zu instructions (%zu B)\n", dsz / 4, dsz);
     if (dsz == 0) { fprintf(stderr, "empty sequence!\n"); return 1; }
+    {
+        FILE* sf = fopen("/tmp/deq_seq.bin", "wb");
+        fwrite(dp, 1, dsz, sf);
+        fclose(sf);
+        fprintf(stderr, "sequence saved to /tmp/deq_seq.bin\n");
+    }
 
     // ── XRT: load dequant.xclbin ──
     try {
@@ -129,19 +135,30 @@ int main(int argc, char** argv) {
         xrt::bo b3(dev, out_bytes * 2, XRT_BO_FLAGS_HOST_ONLY, grp_3);
         xrt::bo b4(dev, out_bytes * 2, XRT_BO_FLAGS_HOST_ONLY, grp_4);
 
-        // fill bo0 with the first 8704-byte row of the tensor
-        memcpy(b0.map(), raw.data(), row_bytes);
+        // bo1 = input region (the arg1 patches read here); bo0 = output region
+        memset(b0.map(), 0, row_bytes);
         b0.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        memcpy(b1.map(), raw.data(), row_bytes);
+        b1.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         // run: opcode 3 = run-with-instructions
         auto run = k(3, bIns, (uint32_t)(dsz), b0, b1, b2, b3, b4);
         run.wait();
 
         // read back and dump each BO's first values
+        b0.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         b1.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         b2.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         b3.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         b4.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        // save bo0 and bo1 (the args the instruction stream references)
+        for (int i = 0; i <= 1; i++) {
+            auto* bo = i == 0 ? &b0 : &b1;
+            char fn[64]; snprintf(fn, sizeof(fn), "/tmp/deq_bo%d.bin", i);
+            FILE* fo = fopen(fn, "wb");
+            fwrite(bo->map(), 1, i == 0 ? row_bytes : out_bytes * 2, fo);
+            fclose(fo);
+        }
         for (int i = 1; i <= 4; i++) {
             auto* bo = i == 1 ? &b1 : i == 2 ? &b2 : i == 3 ? &b3 : &b4;
             const float* f = (const float*)bo->map();
