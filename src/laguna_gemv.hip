@@ -60,8 +60,12 @@ extern "C" void launch_q4nx_gemv(const float* x, const uint8_t* w, float* y,
 #ifndef __HIP_DEVICE_COMPILE__
 extern "C" int test_q4nx_gemv_hip() {
     float x_h[32]; for(int i=0;i<32;i++) x_h[i]=(i==4)?1.0f:0.0f;
-    float *x_d,*y_d; uint8_t*w_d;
-    hipMalloc(&x_d,32*4); hipMalloc(&y_d,256*4); hipMalloc(&w_d,TB);
+    float *x_d=nullptr,*y_d=nullptr; uint8_t*w_d=nullptr;
+    if (hipMalloc(&x_d,32*4) != hipSuccess || hipMalloc(&y_d,256*4) != hipSuccess ||
+        hipMalloc(&w_d,TB) != hipSuccess) {
+        fprintf(stderr, "[laguna] test hipMalloc failed\n");
+        return 1;
+    }
     uint8_t th[TB]; memset(th,0,TB);
     for(int r=0;r<TR;r++){for(int g=0;g<NG;g++){((uint16_t*)(th+r*RB))[g]=0x3F80;}
         uint8_t*pk=th+r*RB+NG*4;for(int i=0;i<256;i++){int bi=i/2;if(i&1)pk[bi]|=(1<<4);else pk[bi]|=1;}}
