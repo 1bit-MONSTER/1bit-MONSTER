@@ -23,13 +23,13 @@
  *    Symmetric ternary: every value is exactly -scale, 0, or +scale — no
  *    zero_point needed (unlike Q4NX's asymmetric min/scale). One scale per
  *    32-element group.
- *    Per tile row:
- *      [0..15]:    8 BF16 scales (one per 32-element group)
- *      [16..79]:   64 bytes packed 2-bit codes (4 per byte, LSB-first:
+ *    Per tile (block layout — scales for all 32 rows first, then codes):
+ *      [0..511]:   256 BF16 scales (32 rows x 8 groups; scale[r][g] = r*8+g)
+ *      [512..2559]: 2048 bytes packed 2-bit codes (4 per byte, LSB-first:
  *                  code = byte & 3, (byte>>2) & 3, (byte>>4) & 3, (byte>>6) & 3)
  *                  code 0 = -scale, 1 = 0, 2 = +scale, 3 = unused (encoder
  *                  never emits it; a decoder should treat it as 0)
- *    Total per tile row: 80 bytes → 2560 bytes per tile (exactly half of
+ *    Total per tile: 2560 bytes (exactly half of
  *    Q4NX's 5120 — the real "1-bit-ish" storage win Q4NX doesn't give you).
  *    This is a generic symmetric-ternary quantizer (round to nearest of
  *    {-scale,0,scale} per group) — lossless when the source is already

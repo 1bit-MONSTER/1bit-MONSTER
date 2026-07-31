@@ -46,3 +46,28 @@ Correctness: all variants verified vs scalar ref — maxdiff ≤ 1e-4 (float32 a
 2. VNNI reference used `(int8_t)x_u8[j] - 128` — int8 wrap (−120−128=−248) vs the kernel's unsigned treatment. Reference must use `(int)x_u8[j] - 128`. Kernel was correct.
 3. Initial "LUT float" variant read 16 floats from a 4-float table row (out-of-bounds) — replaced with the proper T-MAC mask-LUT design.
 4. Kernels initially lacked `#pragma omp parallel for` — no scaling at 16 threads; added (row-parallel).
+
+---
+
+## Update — WS-04 P1: real-model integration benchmark (done 2026-07-31)
+
+**Tool:** `tq2_gemv_real.cpp` — uses the repo's own `OnebpModel` (get_tensor_f32 + get_tile_ptr) on the real `Qwen3-0.6B.1bp` (TQ2, H=1024 L=28).
+
+### Per-token layer GEMMs (7 ops/layer × 28 layers, 16 threads, Zen 5)
+
+| Path | ms/token | decode ceiling |
+|---|---:|---:|
+| dequant-per-call + matmul (bench artifact) | 39.6 | 25 tok/s |
+| **fp32-resident matmul (current engine)** | 21.4 | **47 tok/s** |
+| **packed FairyFuse-style GEMV** | 9.5 | **105 tok/s** |
+
+Per-op: packed is **1.5-3.2×** faster than fp32-resident (q_proj 2.6×, ffn_down 3.2×, ffn_gate 2.3×). Correctness: maxdiff 16-48 on 1e8-magnitude outputs = relative 2-5e-7 (float32 accumulation noise) — **bit-consistent with the loader's dequant path on real weights**.
+
+### Why 2.3× (not 8×)
+The decode is bandwidth-bound; packed 2-bit cuts weight traffic 8× (0.5 vs 4 B/weight) — but the fp32-resident matmul runs at ~44 GB/s and the packed path also lands at ~44 GB/s (decode-compute limited). The win is the memory-traffic reduction, real but not linear: **2.3× on this shape mix**.
+
+### Repo bug found & fixed
+`onebp_format.h` documented the TQ2 tile as **per-row interleaved** [8 scales][64 codes]; the actual on-disk layout (per `onebp_loader.cpp` and verified against the file) is **block-separated**: [512 B scales (32r×8g)][2048 B codes]. Doc corrected in `include/onebp_format.h`. (My first manual decoder failed because of this stale doc — a future reader would hit the same wall.)
+
+### P1 next step
+Wire `gemv_tq2_packed` into the CPU backend's TQ2 path (backend_generic.cpp: keep packed tiles resident + per-group scales, replace the fp32 matmul for TQ2 models) → e2e target ≥60 tok/s on Qwen3-0.6B TQ2 (from ~20-ish today).
