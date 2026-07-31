@@ -63,6 +63,12 @@ This is a device-level number, not a model-inference tok/s figure.
 | zaya_server (Qwen 35B MoE Q4_K) | **20 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |
 | CPU (generic backend), ZAYA1-8B-shaped | **2.5 tok/s** | AVX-512 CPU, portable path | Real `forward()`+`generate()` loop, not a synthetic kernel. Steady-state 5-token average; single-pass first-token latency was 4.37 tok/s. |
 
+> ⚠️ **TQ2/TQ1 speed rows are kernel-level compute numbers for ternary-NATIVE
+> models (BitNet/Bonsai) — they say nothing about dense-model quality.**
+> Per the [1BP format policy](models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured),
+> TQ2-quantizing a dense model destroys it (ppl 2.6e8 vs Q4NX 62); dense
+> models run Q4NX. These rows measure ternary *throughput*, not quality.
+
 ---
 
 ## DDR Bandwidth Savings — Binary/Ternary Formats

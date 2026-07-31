@@ -1,0 +1,118 @@
+{
+ "int8": {
+  "0": {
+   "native": 0.00394,
+   "gauged": 0.00139,
+   "gauged_tensor_scale": 0.03561,
+   "conc_native": 0.289,
+   "conc_gauged": 0.2642
+  },
+  "1": {
+   "native": 0.00388,
+   "gauged": 0.00143,
+   "gauged_tensor_scale": 0.0228,
+   "conc_native": 0.2892,
+   "conc_gauged": 0.2627
+  },
+  "2": {
+   "native": 0.00416,
+   "gauged": 0.0012,
+   "gauged_tensor_scale": 0.01137,
+   "conc_native": 0.2879,
+   "conc_gauged": 0.2608
+  },
+  "3": {
+   "native": 0.00383,
+   "gauged": 0.00118,
+   "gauged_tensor_scale": 0.01113,
+   "conc_native": 0.2894,
+   "conc_gauged": 0.2615
+  },
+  "4": {
+   "native": 0.00398,
+   "gauged": 0.00141,
+   "gauged_tensor_scale": 0.0239,
+   "conc_native": 0.2873,
+   "conc_gauged": 0.2637
+  },
+  "5": {
+   "native": 0.00371,
+   "gauged": 0.00108,
+   "gauged_tensor_scale": 0.00755,
+   "conc_native": 0.2884,
+   "conc_gauged": 0.2608
+  },
+  "6": {
+   "native": 0.00385,
+   "gauged": 0.00117,
+   "gauged_tensor_scale": 0.02163,
+   "conc_native": 0.2906,
+   "conc_gauged": 0.2617
+  },
+  "7": {
+   "native": 0.00411,
+   "gauged": 0.0018,
+   "gauged_tensor_scale": 0.04966,
+   "conc_native": 0.2903,
+   "conc_gauged": 0.2656
+  }
+ },
+ "int4": {
+  "0": {
+   "native": 0.5007,
+   "gauged": 0.3036,
+   "gauged_tensor_scale": 0.76255,
+   "conc_native": 0.289,
+   "conc_gauged": 0.2642
+  },
+  "1": {
+   "native": 0.47986,
+   "gauged": 0.30661,
+   "gauged_tensor_scale": 0.72351,
+   "conc_native": 0.2892,
+   "conc_gauged": 0.2627
+  },
+  "2": {
+   "native": 0.49151,
+   "gauged": 0.31822,
+   "gauged_tensor_scale": 0.63917,
+   "conc_native": 0.2879,
+   "conc_gauged": 0.2608
+  },
+  "3": {
+   "native": 0.51794,
+   "gauged": 0.32925,
+   "gauged_tensor_scale": 0.67561,
+   "conc_native": 0.2894,
+   "conc_gauged": 0.2615
+  },
+  "4": {
+   "native": 0.48947,
+   "gauged": 0.32341,
+   "gauged_tensor_scale": 0.71386,
+   "conc_native": 0.2873,
+   "conc_gauged": 0.2637
+  },
+  "5": {
+   "native": 0.49127,
+   "gauged": 0.30155,
+   "gauged_tensor_scale": 0.59826,
+   "conc_native": 0.2884,
+   "conc_gauged": 0.2608
+  },
+  "6": {
+   "native": 0.49442,
+   "gauged": 0.29899,
+   "gauged_tensor_scale": 0.72124,
+   "conc_native": 0.2906,
+   "conc_gauged": 0.2617
+  },
+  "7": {
+   "native": 0.46428,
+   "gauged": 0.31883,
+   "gauged_tensor_scale": 0.73719,
+   "conc_native": 0.2903,
+   "conc_gauged": 0.2656
+  }
+ }
+}

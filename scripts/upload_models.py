@@ -20,7 +20,10 @@ MODELS = [
     ("SmolLM2-1.7B.1bp",        "SmolLM2-1.7B-1BP",          "SmolLM2-1.7B",          "1.7B",  "llama",  "apache-2.0",   "HuggingFaceTB/SmolLM2-1.7B",             "Small efficient LM"),
     ("TinyLlama-1.1B.1bp",      "TinyLlama-1.1B-1BP",        "TinyLlama-1.1B",        "1.1B",  "llama",  "apache-2.0",   "TinyLlama/TinyLlama-1.1B-Chat-v1.0",     "Compact llama-based"),
     ("Gemma-2-2B-it.1bp",       "Gemma-2-2B-it-1BP",         "Gemma-2-2B-it",         "2B",    "gemma2", "gemma",        "google/gemma-2-2b-it",                   "Google Gemma 2"),
-    ("Qwen2.5-0.5B-Instruct.1bp", "Qwen2.5-0.5B-Instruct-1BP", "Qwen2.5-0.5B-Instruct", "0.5B", "qwen2",  "apache-2.0",   "Qwen/Qwen2.5-0.5B-Instruct",             "Small Qwen instruct"),
+    # REMOVED 2026-07-31 (issue #1241/#1243): Qwen2.5-0.5B-Instruct.1bp was
+    # value-corrupt (ppl 2.0e7 on the gate set) + structurally wrong (head_dim
+    # 64 vs true 128) — deleted; re-convert from Q8_0 with the C++ converter
+    # before re-uploading.
     ("Qwen3-VL-2B.1bp",         "Qwen3-VL-2B-1BP",           "Qwen3-VL-2B",           "2B",    "qwen2vl", "apache-2.0",  "Qwen/Qwen3-VL-2B",                       "Vision-language 2B"),
     ("Gemma-3-1B-it.1bp",       "Gemma-3-1B-it-1BP",         "Gemma-3-1B-it",         "1B",    "gemma",  "gemma",        "google/gemma-3-1b-it",                   "Google Gemma 3 1B"),
     ("Gemma-3-4B-it.1bp",       "Gemma-3-4B-it-1BP",         "Gemma-3-4B-it",         "4B",    "gemma",  "gemma",        "google/gemma-3-4b-it",                   "Google Gemma 3 4B"),

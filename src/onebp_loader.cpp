@@ -16,6 +16,8 @@ int main(int argc, char** argv) {
            h.num_attention_heads, h.num_kv_heads,
            h.head_dim, h.intermediate_size, h.vocab_size);
     const char* qname = h.quant == ONEBP_TQ2 ? "TQ2 (ternary 2-bit)" :
+                        h.quant == ONEBP_TQ2NZ ? "TQ2NZ (no-zero 2-bit S40)" :
+                        h.quant == ONEBP_TQ2NZ_E4M3 ? "TQ2NZ-E4M3 (UE4M3 scales)" :
                         h.quant == ONEBP_TQ1 ? "TQ1 (ternary 1.58-bit)" :
                         h.quant == ONEBP_Q4NX ? "Q4NX (4-bit)" :
                         h.quant == ONEBP_I8 ? "INT8" :

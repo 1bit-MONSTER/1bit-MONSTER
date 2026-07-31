@@ -276,9 +276,22 @@ Text embedding model based on Gemma architecture.
 
 ---
 
+## 1BP Format Policy (2026-07-31 verdict, ppl-measured)
+
+**Dense (non-ternary-trained) models → Q4NX, converted from Q8_0/bf16 sources. TQ2/TQ2NZ are only for ternary-native checkpoints (BitNet/Bonsai-class).** Converting a dense model to TQ2/TQ2NZ is **catastrophically destructive** — measured on a controlled experiment (Qwen3-0.6B, same Q8_0 source, same converter, same harness, 300 Alpaca samples):
+
+| Format | PPL | Verdict |
+|---|---|---|
+| fp16 (reference) | **21.8** | gold |
+| **Q4NX** 1BP (from Q8_0 GGUF) | **62.0** | ✅ usable (textbook Q4 ≈ 3× fp16) |
+| TQ2 1BP (from Q8_0 GGUF) | 2.6e8 | ❌ destroyed |
+| TQ2NZ 1BP (S40) | 1.5e6 | ❌ destroyed (170× better than TQ2, still 24,000× worse than Q4NX) |
+
+Mechanism: ternary mapping inflates row norms (mean\|x\| 0.19 @ L0 → 86 @ L28) → flat logits. The Q4NX control exonerates the converter/reader pipeline — the destruction is the quant scheme, not a bug. Note the catalog's "Verified" column below means *loads/runs*; **quality is gated by the ppl harness** (`ppl_generic`, CI job `ppl-gate`), not by load success. Legacy TQ2 files of dense models (e.g. the old `Qwen3-0.6B.1bp`, ppl 3.7e8) are garbage — use `Qwen3-0.6B-q8-q4nx.1bp` (ppl 62, and 16.3 on the 48-sample gate set).
+
 ## 1BP Model Catalog
 
-Our HuggingFace organization ([bong-water-water-bong](https://huggingface.co/bong-water-water-bong)) hosts **37 1BP format models** across all supported families. Each is a self-contained single-file model (magic `1BP\0`, Q4NX 4-bit quant, or TQ2 ternary 2-bit for Bonsai).
+Our HuggingFace organization ([bong-water-water-bong](https://huggingface.co/bong-water-water-bong)) hosts **37 1BP format models** across all supported families. Each is a self-contained single-file model (magic `1BP\0`, Q4NX 4-bit quant for dense models, or TQ2 ternary 2-bit **for ternary-native Bonsai only** — see the format policy above).
 
 | Family | 1BP Models | Typical Size | Verified |
 |--------|-----------|:------------:|:--------:|
@@ -286,7 +299,7 @@ Our HuggingFace organization ([bong-water-water-bong](https://huggingface.co/bon
 | Zyphra ZR1 | ZR1-1.5B | 373 MB | hosted |
 | Zyphra Zamba2 | Zamba2-1.2B/2.7B/7B v2 | 375 MB – 1.8 GB | hosted |
 | BlackMamba | BlackMamba-1.5B, BlackMamba-2.8B | 1.0 / 1.9 GB | ✅ loads |
-| Qwen3 | Qwen3-0.6B, Qwen3-4B | 373 MB / 2.1 GB | ✅ loads |
+| Qwen3 | Qwen3-0.6B, Qwen3-4B | 373 MB / 2.1 GB | ✅ loads · ppl 16.3 (Q4NX, gate set) |
 | Qwen2.5 | Qwen2.5-7B-Instruct, Qwen2.5-Coder-7B | 3.6 GB | hosted |
 | Llama | Llama-3.1-8B, Llama-3.2-1B/3B | 530 MB – 4.1 GB | hosted |
 | DeepSeek | DeepSeek-R1-Distill-Qwen-7B, -Llama-8B | 3.6 / 4.1 GB | hosted |
