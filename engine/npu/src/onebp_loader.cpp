@@ -187,12 +187,14 @@ public:
         }
     }
 
-    // ── Dequantize a single TQ2 tile (32×256) to float32 ──
-    // Symmetric ternary: code 0=-scale, 1=0, 2=+scale, 3=unused->0.
+    // ── Dequantize a single TQ2/TQ2NZ tile (32×256) to float32 ──
+    // TQ2 symmetric ternary: code 0=-scale, 1=0, 2=+scale, 3=unused->0.
+    // TQ2NZ no-zero S40: code 0=-4s, 1=-1s, 2=+1s, 3=+4s.
     // Packed 2 bits/value, 4 per byte LSB-first (see onebp_format.h).
     static void dequant_tile_tq2(const uint8_t* tile_data, float* output,
                                  int out_rows, int out_cols,
-                                 int tile_rows = 32, int tile_cols = 256, int group_size = 32) {
+                                 int tile_rows = 32, int tile_cols = 256, int group_size = 32,
+                                 bool no_zero = false) {
         int groups = tile_cols / group_size;
         const uint16_t* scales = (const uint16_t*)tile_data;
         const uint8_t*  qdata  = tile_data + (size_t)tile_rows * groups * 2;
@@ -207,7 +209,13 @@ public:
                     uint8_t packed = qdata[byte_idx];
                     for (int k = 0; k < 4 && col + k < out_cols; k++) {
                         uint8_t code = (packed >> (2 * k)) & 0x3;
-                        float v = (code == 0) ? -scale : (code == 2) ? scale : 0.0f;
+                        float v;
+                        if (no_zero) {
+                            static const float cb[4] = { -4.0f, -1.0f, 1.0f, 4.0f };
+                            v = cb[code] * scale;
+                        } else {
+                            v = (code == 0) ? -scale : (code == 2) ? scale : 0.0f;
+                        }
                         output[r * out_cols + col + k] = v;
                     }
                 }
@@ -221,7 +229,8 @@ public:
         int tr = hdr_.tile_rows, tc = hdr_.tile_cols, gs = hdr_.group_size;
         int ntr = (R + tr - 1) / tr;
         int ntc = (C + tc - 1) / tc;
-        bool is_tq2 = hdr_.quant == ONEBP_TQ2;
+        bool is_tq2 = hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ;
+        bool tq2nz = hdr_.quant == ONEBP_TQ2NZ;
         size_t tile_bytes = is_tq2
             ? (size_t)tr * (tc / gs) * 2 + (size_t)tr * tc / 4
             : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
@@ -236,7 +245,7 @@ public:
                 int cw = (C - c0) < tc ? (C - c0) : tc;
 
                 float tile_buf[32 * 256];  // max tile size
-                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, cw, tr, tc, gs);
+                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, cw, tr, tc, gs, tq2nz);
                 else        dequant_tile(base, tile_buf, rh, cw, tr, tc, gs);
 
                 for (int r = 0; r < rh; r++)
@@ -290,7 +299,7 @@ public:
 
         int tr = hdr_.tile_rows, tc = hdr_.tile_cols, gs = hdr_.group_size;
         int ntc = (te->cols + tc - 1) / tc;
-        size_t tile_bytes = hdr_.quant == ONEBP_TQ2
+        size_t tile_bytes = (hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ)
             ? (size_t)tr * (tc / gs) * 2 + (size_t)tr * tc / 4
             : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
 
@@ -308,7 +317,7 @@ public:
 
         int tr = hdr_.tile_rows, tc = hdr_.tile_cols, gs = hdr_.group_size;
         int ntc = (te->cols + tc - 1) / tc;
-        size_t tile_bytes = hdr_.quant == ONEBP_TQ2
+        size_t tile_bytes = (hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ)
             ? (size_t)tr * (tc / gs) * 2 + (size_t)tr * tc / 4
             : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
         uint64_t per_expert_bytes = te->total_bytes / (uint64_t)te->num_experts;

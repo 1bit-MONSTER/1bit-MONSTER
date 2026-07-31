@@ -2,6 +2,7 @@
  *  Build target: `gguf_to_onebp` (see CMakeLists.txt) — pure C++, no Python.
  *  Run:   ./build/gguf_to_onebp model.gguf output.1bp          (Q4NX 4-bit)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq2    (symmetric ternary)
+ *         ./build/gguf_to_onebp model.gguf output.1bp --tq2nz  (no-zero 2-bit S40)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq1    (1.58-bit base-3)
  */
 #include <cstdio>
@@ -33,18 +34,20 @@ static inline uint16_t f32b(float v) {
 int main(int argc, char** argv) {
     //signal(SIGFPE, sigfpe_handler);
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq1]\n", argv[0]);
+        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq1]\n", argv[0]);
         return 1;
     }
     // --- Parse quant selection (Q4NX default, --tq2 for symmetric ternary, --tq1 for 1.58-bit) ---
     OnebpQuant quant = ONEBP_Q4NX;
     for (int ai = 3; ai < argc; ai++) {
         if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
+        else if (strcmp(argv[ai], "--tq2nz") == 0) quant = ONEBP_TQ2NZ;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
         else { fprintf(stderr, "Unknown option: %s\n", argv[ai]); return 1; }
     }
     const char* quant_name = (quant == ONEBP_TQ2) ? "TQ2 (ternary 2-bit)" :
+                             (quant == ONEBP_TQ2NZ) ? "TQ2NZ (no-zero 2-bit S40)" :
                              (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
                              "Q4NX (4-bit)";
     GgufReader reader;
@@ -419,6 +422,56 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
+                if (quant == ONEBP_TQ2NZ) {
+                    // ── TQ2NZ: no-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2
+                    // style) — uses ALL four 2-bit codes (TQ2 wastes code 3).
+                    // Per tile: [scales: tr*grps*bf16][codes: tr*tc packed 4/byte].
+                    // Scale = max|v|/4 per 32-group so +4 covers the max;
+                    // nearest-of-{-4,-1,+1,+4} with the FP2 2.5f split.
+                    // code: 0=-4s, 1=-1s, 2=+1s, 3=+4s (LSB-first, 4 codes/byte).
+                    // All-zero / padding groups use scale=0 (code×0=0).
+                    size_t sb = (size_t)tr * grps * 2, cb = (size_t)tr * tc / 4;
+                    std::vector<uint8_t> tdata(sb + cb, 0);
+                    uint16_t* sc = (uint16_t*)tdata.data();
+                    uint8_t*  qd = tdata.data() + sb;
+                    for (int rr = 0; rr < tr; rr++) {
+                        for (int g = 0; g < grps; g++) {
+                            int ar = r0 + rr, acs = c0 + g * gs;
+                            float maxabs = 0.0f;
+                            for (int i = 0; i < gs; i++) {
+                                int ac = acs + i;
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) { float a = fabsf(v); if (a > maxabs) maxabs = a; }
+                                }
+                            }
+                            float s = maxabs * 0.25f;  // outer code ±4 covers max
+                            if (s < 1e-20f) s = 0.0f;  // all-zero / padding group
+                            float inv_s = s > 0.0f ? 1.0f / s : 0.0f;
+                            sc[rr * grps + g] = f32b(s);
+                            for (int i = 0; i < gs; i++) {
+                                int ac = acs + i;
+                                uint8_t code = 1;  // default -1s (s=0 → ±0)
+                                if (ar < R && ac < C && s > 0.0f) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) {
+                                        float q = v * inv_s;
+                                        if (q > 2.5f)      code = 3;  // +4
+                                        else if (q < -2.5f) code = 0;  // -4
+                                        else if (q > 0.0f)  code = 2;  // +1
+                                        else               code = 1;  // -1
+                                    }
+                                }
+                                int local_c = (acs - c0) + i;
+                                size_t pos = (size_t)rr * tc + local_c;
+                                qd[pos / 4] |= (uint8_t)(code << ((pos & 3) * 2));
+                            }
+                        }
+                    }
+
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }

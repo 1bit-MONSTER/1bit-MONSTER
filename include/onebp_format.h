@@ -42,6 +42,13 @@
  *  The 256-column tile boundary is handled by padding the last group
  *  of 5 with zero codes.
  *
+ *  TQ2NZ (header.quant == ONEBP_TQ2NZ), 32×256 — no-zero 2-bit:
+ *  ROCmFPX-FP2-style S40 codebook {-4,-1,+1,+4} using ALL four 2-bit
+ *  codes (TQ2 wastes code 3). Same 80-byte tile row as TQ2: [8 BF16
+ *  scales][64 B packed codes]. code 0=-4s, 1=-1s, 2=+1s, 3=+4s.
+ *  Scale = max|v|/4 per 32-group so the outer code covers the max.
+ *  Same 2.50 bpw as TQ2/FP2; all-zero groups use scale=0 (code×0=0).
+ *
  *  Tensor index entry (variable-length):
  *    [name_len:u32][name:str][ndim:u32][dims:u32 × ndim][offset:u64][bytes:u64]
  *
@@ -72,6 +79,7 @@ enum OnebpQuant : uint32_t {
     ONEBP_TQ2  = 3,   // Ternary TQ2
     ONEBP_F16  = 4,   // Float16 (no quant)
     ONEBP_F32  = 5,   // Float32 (no quant)
+    ONEBP_TQ2NZ= 6,   // No-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2-style)
 };
 
 // ─── Scale types ───────────────────────────────────────────────────
@@ -238,6 +246,7 @@ static inline uint64_t onebp_tiled_size(
             tile_bytes = (uint64_t)tile_rows * tile_cols;  // 1 byte per element
             break;
         case ONEBP_TQ2:
+        case ONEBP_TQ2NZ:
             // scales (bf16 x groups x rows) + 2-bit packed codes (4/byte)
             tile_bytes = (uint64_t)tile_rows * groups_per_row * 2   // scales
                        + (uint64_t)tile_rows * tile_cols / 4;       // 2-bit packed
