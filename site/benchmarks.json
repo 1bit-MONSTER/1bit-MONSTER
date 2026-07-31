@@ -224,6 +224,26 @@
       "display_name": "BlackMamba 2.8B",
       "backend": "Mamba1 HIP (Strix Halo)",
       "notes": "Full decode, ROCm HIP. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes."
+    },
+    "qwen36_vulkan": {
+      "tok_s": 75.65,
+      "status": "validated",
+      "remeasured": "2026-07-30",
+      "label": "Qwen3.6-35B-A3B Q4_K_M decode, llama.cpp Vulkan (our measurement)",
+      "table": "end_to_end",
+      "display_name": "Qwen3.6-35B-A3B Q4_K_M (Vulkan, measured)",
+      "backend": "llama.cpp Vulkan (RADV STRIX_HALO)",
+      "notes": "tg64=75.65, tg128@8k ctx=75.95, pp512=1105.71, pp8192=1038.50 tok/s. 21.2 GB Q4_K_M, 99 layers offloaded, 8 threads, Strix Halo (Ryzen AI MAX+ 395, Radeon 8060S). Same qwen35moe arch as zaya_server path. See benchmarks/RESULTS-qwen3.6-35b-a3b-vulkan-2026-07-30.md"
+    },
+    "qwen36_npu_flm": {
+      "tok_s": 11.66,
+      "status": "validated",
+      "remeasured": "2026-07-31",
+      "label": "Qwen3.6-35B-A3B NPU decode @1k ctx, FLM v0.9.46 (official stack, our run)",
+      "table": "end_to_end",
+      "display_name": "Qwen3.6-35B-A3B NPU (FLM v0.9.46, measured)",
+      "backend": "NPU XDNA 2 (FastFlowLM v0.9.46)",
+      "notes": "Decode 11.66@1k \u2192 8.82@32k; prefill 98.05@1k \u2192 239.79@32k tok/s. 8 iters/ctx, performance mode, Strix Halo MAX+ 395. Prefill beats AMD official (Kraken Point) +8..24%; decode trails 7-15%. Official Q4_K_S weights (FastFlowLM/Qwen3.6-35B-A3B-NPU2). See benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md"
     }
   },
   "table_kernel": [
@@ -241,7 +261,9 @@
     "npu_xrt_hw_validate"
   ],
   "table_end_to_end": [
+    "qwen36_npu_flm",
     "zaya_27b",
+    "qwen36_vulkan",
     "zaya_35b_moe",
     "gpu_1bit",
     "zr1_1_5b",
@@ -264,8 +286,8 @@
       {
         "name": "llama.cpp Vulkan",
         "model": "Qwen3.6-35B-A3B Q4_K_M",
-        "tok_s": 60.4,
-        "source": "precision inversion"
+        "tok_s": 75.65,
+        "source": "measured 2026-07-30 on Strix Halo (llama.cpp Vulkan, this repo) \u2014 replaces external reference (60.4)"
       }
     ]
   },

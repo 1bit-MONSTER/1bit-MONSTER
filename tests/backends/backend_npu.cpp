@@ -12,6 +12,15 @@
 // Part of the unified zaya_server binary.
 
 #include "backend.h"
+
+// Raw prompt text for the NPU FLM backend (set by the server via a plain
+// extern function — a virtual method would change the vtable layout and
+// break the hipcc-compiled adapter TUs, whose vtables emit garbage slots).
+static std::string g_npu_prompt_text;
+extern "C" void npu_flm_set_prompt_text(const char* s) {
+    g_npu_prompt_text = s ? s : "";
+}
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +32,9 @@
 #include <algorithm>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/select.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -51,12 +63,15 @@ class NpuFlmBackend : public InferenceBackend {
     int stderr_fd_ = -1;
     std::string flm_bin_ = "/opt/fastflowlm/bin/flm";
     std::string model_tag_ = "qwen3:0.6b";
-    int timeout_ms_ = 120000;
+    int timeout_ms_ = 300000;
+    int port_ = 0;  // 5 min: 23 GB Qwen3.6-35B-A3B load takes ~60-90s
 
     // Cached generation state
     std::vector<int> pending_prompt_;
     std::string generated_text_;
     size_t generated_pos_ = 0;
+    bool saw_prior_call_ = false;   // for prompt-complete detection (pos reset)
+    bool queried_ = false;          // one query per request
 
 public:
     BackendType type() const override { return BackendType::NPU_XRT; }
@@ -86,7 +101,11 @@ public:
             if (p) { char buf[4]={0}; fread(buf,1,3,p); pclose(p); if(buf[0]=='y') hw=true; }
         }
         if (!hw) { fprintf(stderr, "  NPU: no XDNA 2 detected\n"); return false; }
-        if (access(flm_bin_.c_str(), X_OK) != 0) {
+        // Honor NPU_FLM_BIN env (e.g. v0.9.46 extracted install), else defaults
+        const char* env_bin = getenv("NPU_FLM_BIN");
+        if (env_bin && env_bin[0] && access(env_bin, X_OK) == 0) {
+            flm_bin_ = env_bin;
+        } else if (access(flm_bin_.c_str(), X_OK) != 0) {
             flm_bin_ = "/usr/bin/flm";
             if (access(flm_bin_.c_str(), X_OK) != 0) {
                 fprintf(stderr, "  NPU: FLM not installed\n");
@@ -103,88 +122,29 @@ public:
         if (!is_available()) return false;
 
         // Map model dimensions to FLM tag
-        if (cfg.hidden_size <= 1024)      model_tag_ = "qwen3:0.6b";
+        // Qwen3.6-35B-A3B MoE: 256 experts (GGUF expert_count). Must not fall
+        // into the dense H-based mapping below (would pick qwen3:4b).
+        // FLM's catalog has no other model with >= 100 experts.
+        if (cfg.num_experts >= 100) {
+            model_tag_ = "qwen3.6-moe:35b-a3b";
+        } else if (cfg.architecture == "qwen35moe" || cfg.architecture == "qwen36moe") {
+            if (cfg.hidden_size <= 1024) model_tag_ = "qwen3.5:0.8b";
+            else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3.5:2b";
+            else if (cfg.hidden_size <= 2560) model_tag_ = "qwen3.5:4b";
+            else model_tag_ = "qwen3.5:9b";
+        } else if (cfg.hidden_size <= 1024)      model_tag_ = "qwen3:0.6b";
         else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3:1.7b";
         else if (cfg.hidden_size <= 2560) model_tag_ = "qwen3:4b";
         else                              model_tag_ = "qwen3:8b";
 
-        fprintf(stderr, "  NPU: launching FLM %s...\n", model_tag_.c_str());
-
-        int to_child[2] = {-1,-1}, from_child[2] = {-1,-1}, err_child[2] = {-1,-1};
-        if (pipe(to_child)) { perror("NPU: pipe"); return false; }
-        if (pipe(from_child)) {
-            perror("NPU: pipe");
-            close(to_child[0]); close(to_child[1]);
-            return false;
-        }
-        if (pipe(err_child)) {
-            perror("NPU: pipe");
-            close(to_child[0]); close(to_child[1]);
-            close(from_child[0]); close(from_child[1]);
-            return false;
-        }
-
-        pid_ = fork();
-        if (pid_ < 0) {
-            perror("NPU: fork");
-            close(to_child[0]); close(to_child[1]);
-            close(from_child[0]); close(from_child[1]);
-            close(err_child[0]); close(err_child[1]);
-            return false;
-        }
-        if (pid_ == 0) {
-            dup2(to_child[0], STDIN_FILENO);
-            dup2(from_child[1], STDOUT_FILENO);
-            dup2(err_child[1], STDERR_FILENO);
-            close(to_child[0]); close(to_child[1]);
-            close(from_child[0]); close(from_child[1]);
-            close(err_child[0]); close(err_child[1]);
-            execl(flm_bin_.c_str(), "flm", "run", model_tag_.c_str(), nullptr);
-            _exit(1);
-        }
-        close(to_child[0]); close(from_child[1]); close(err_child[1]);
-        stdin_fd_  = to_child[1];
-        stdout_fd_ = from_child[0];
-        stderr_fd_ = err_child[0];
-
-        // Wait for ">>> " prompt — model loading takes ~8-10s
-        std::string buf; char c;
-        auto t0 = std::chrono::steady_clock::now();
-        bool ready = false;
-        while (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - t0).count() < 45) {
-            fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd_, &fds);
-            struct timeval tv = {1, 0};
-            if (select(stdout_fd_ + 1, &fds, nullptr, nullptr, &tv) > 0) {
-                if (read(stdout_fd_, &c, 1) > 0) {
-                    buf += c;
-                    if (buf.size() >= 4 && buf.substr(buf.size()-4) == ">>> ") {
-                        ready = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Drain stderr (FLM prints "[FLM] Loading model..." etc)
-        char drain[4096];
-        while (true) {
-            fd_set fds; FD_ZERO(&fds); FD_SET(stderr_fd_, &fds);
-            struct timeval tv = {0, 0};
-            if (select(stderr_fd_ + 1, &fds, nullptr, nullptr, &tv) > 0) {
-                int n = read(stderr_fd_, drain, sizeof(drain)-1);
-                if (n <= 0) break;
-                drain[n] = 0;
-                // Pass through for visibility
-                fprintf(stderr, "%s", drain);
-            } else break;
-        }
-
-        if (!ready) {
-            fprintf(stderr, "  NPU: FLM init timeout\n");
-            unload_model();
-            return false;
-        }
+        // FLM spawn strategy: per-request `flm run` with FILE stdio.
+        // Known FLM v0.9.46 issues on Strix Halo:
+        //  - fork+exec children with PIPE stdio hang on the NPU prefill kernel
+        //  - `flm serve` mode degenerates into repeated-token loops ("plplpl")
+        // FILE stdio works correctly ("2+2 equals 4" verified), so each query
+        // spawns a fresh CLI process (warm model load ~11s).
+        fprintf(stderr, "  NPU: FLM ready (%s, per-request spawn)\n", model_tag_.c_str());
+        loaded_ = true;
 
         loaded_ = true;
         // estimated_tok_s() is a prior, not a measurement (issue #231). Real
@@ -231,85 +191,261 @@ public:
         pending_prompt_.clear();
         generated_text_.clear();
         generated_pos_ = 0;
+        saw_prior_call_ = false;
+        queried_ = false;
     }
 
     // Send accumulated prompt to FLM, get full response
     // FLM uses ">>> " as its prompt delimiter. This function reads until
     // it sees ">>> " at the START of a line, which distinguishes it from
     // ">>> " that may appear mid-response (the actual bug this fixes).
-    std::string query_flm(const std::string& prompt) {
-        std::string req = prompt + "\n";
-        write(stdin_fd_, req.c_str(), req.size());
-
+    // Minimal HTTP/1.1 POST helper for the flm serve OpenAI API.
+    static std::string http_post_json(int port, const std::string& path,
+                                      const std::string& body) {
+        int s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s < 0) return "";
+        sockaddr_in a{}; a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = htons((uint16_t)port);
+        if (connect(s, (sockaddr*)&a, sizeof(a)) != 0) { close(s); return ""; }
+        struct timeval tv = {60, 0};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        std::string req = "POST " + path + " HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n"
+            "Connection: close\r\n\r\n" + body;
+        send(s, req.data(), req.size(), 0);
         std::string resp;
-        char c;
-        auto t0 = std::chrono::steady_clock::now();
-        while (std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - t0).count() < timeout_ms_) {
-            fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd_, &fds);
-            struct timeval tv = {1, 0};
-            if (select(stdout_fd_ + 1, &fds, nullptr, nullptr, &tv) > 0) {
-                if (read(stdout_fd_, &c, 1) > 0) {
-                    resp += c;
-                    // Only match ">>> " at the START of a line (preceded by \n
-                    // or at position 0). This prevents mid-content ">>> " from
-                    // being mistaken for FLM's prompt delimiter.
-                    if (resp.size() >= 4) {
-                        size_t pos = resp.rfind('\n');
-                        size_t check_start = (pos == std::string::npos) ? 0 : pos + 1;
-                        if (resp.substr(check_start) == ">>> ")
-                            break;
+        char buf[16384];
+        int n;
+        while ((n = (int)recv(s, buf, sizeof(buf), 0)) > 0) resp.append(buf, (size_t)n);
+        close(s);
+        size_t hdr = resp.find("\r\n\r\n");
+        return (hdr == std::string::npos) ? resp : resp.substr(hdr + 4);
+    }
+
+    // Extract and unescape "content" from an OpenAI chat completion JSON.
+    static std::string extract_content(const std::string& json) {
+        std::string key = "\"content\":\"";
+        size_t p = json.find(key);
+        if (p == std::string::npos) return "";
+        p += key.size();
+        std::string out;
+        for (size_t i = p; i < json.size() && json[i] != '"'; i++) {
+            if (json[i] == '\\' && i + 1 < json.size()) {
+                char c = json[++i];
+                if (c == 'n') out += '\n';
+                else if (c == 't') out += '\t';
+                else if (c == 'r') out += '\r';
+                else if (c == 'u' && i + 4 < json.size()) {
+                    unsigned v = (unsigned)strtoul(json.c_str() + i + 1, nullptr, 16);
+                    i += 4;
+                    if (v < 0x80) out += (char)v;
+                    else if (v < 0x800) {
+                        out += (char)(0xC0 | (v >> 6));
+                        out += (char)(0x80 | (v & 0x3F));
+                    } else {
+                        out += (char)(0xE0 | (v >> 12));
+                        out += (char)(0x80 | ((v >> 6) & 0x3F));
+                        out += (char)(0x80 | (v & 0x3F));
                     }
+                } else out += c;
+            } else out += json[i];
+        }
+        return out;
+    }
+
+    static std::string json_escape(const std::string& s) {
+        std::string out;
+        for (unsigned char c : s) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", c); out += b; }
+                    else out += (char)c;
+            }
+        }
+        return out;
+    }
+
+    // Send the prompt to the FLM serve HTTP API, get the full response.
+    // Per-request spawn: `flm run <tag>` with FILE stdio (pipes hang in
+    // fork children; serve mode degenerates). Writes the prompt to a file,
+    // waits for the session transcript to reach the final ">>> ", parses
+    // the response from after "Model RAW Output: ", then kills the child.
+    std::string query_flm(const std::string& prompt) {
+        fprintf(stderr, "  NPU: query_flm(prompt=%zu B): %.120s\n", prompt.size(), prompt.c_str());
+
+        std::string in_path  = "/tmp/flm_in_"  + std::to_string(getpid()) + ".txt";
+        std::string out_path = "/tmp/flm_out_" + std::to_string(getpid()) + ".txt";
+        std::string err_path = "/tmp/flm_err_" + std::to_string(getpid()) + ".txt";
+
+        {
+            FILE* f = fopen(in_path.c_str(), "wb");
+            if (!f) return "";
+            fwrite(prompt.data(), 1, prompt.size(), f);
+            fwrite("\n/bye\n", 1, 7, f);
+            fclose(f);
+        }
+        unlink(out_path.c_str());
+        unlink(err_path.c_str());
+
+        // Sanitize LD_LIBRARY_PATH: the parent may have the-rock HIP libs
+        // (needed for zaya's GPU backends) which corrupt FLM's NPU runtime.
+        if (const char* cur = getenv("LD_LIBRARY_PATH")) {
+            std::string s(cur), keep;
+            size_t pos = 0;
+            while (pos <= s.size()) {
+                size_t colon = s.find(':', pos);
+                std::string part = s.substr(pos, colon == std::string::npos
+                    ? std::string::npos : colon - pos);
+                std::string low = part;
+                for (auto& c : low) c = (char)tolower(c);
+                if (low.find("flm") != std::string::npos)
+                    keep += (keep.empty() ? "" : ":") + part;
+                if (colon == std::string::npos) break;
+                pos = colon + 1;
+            }
+            if (!keep.empty()) setenv("LD_LIBRARY_PATH", keep.c_str(), 1);
+            else unsetenv("LD_LIBRARY_PATH");
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) return "";
+        if (pid == 0) {
+            int in = open(in_path.c_str(), O_RDONLY);
+            int out = open(out_path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
+            int err = open(err_path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
+            dup2(in, STDIN_FILENO);
+            dup2(out, STDOUT_FILENO);
+            dup2(err, STDERR_FILENO);
+            if (in > 2) close(in);
+            if (out > 2) close(out);
+            if (err > 2) close(err);
+            for (int fd = 3; fd < 1024; fd++) close(fd);
+            execl(flm_bin_.c_str(), "flm", "run", model_tag_.c_str(), nullptr);
+            _exit(1);
+        }
+
+        // Poll the transcript file for the final ">>> " prompt
+        std::string resp;
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - t0).count() < timeout_ms_ / 1000) {
+            FILE* f = fopen(out_path.c_str(), "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                if (sz > 0) {
+                    resp.resize((size_t)sz);
+                    fseek(f, 0, SEEK_SET);
+                    size_t rd = fread(&resp[0], 1, (size_t)sz, f);
+                    resp.resize(rd);
                 }
-            } else break;
+                fclose(f);
+                // Completion: the transcript ends with ">>> " (possibly with
+                // a trailing newline) after the response.
+                std::string tail = resp;
+                while (!tail.empty() && (tail.back() == '\n' || tail.back() == '\r'))
+                    tail.pop_back();
+                if (tail.size() >= 4 && tail.substr(tail.size()-4) == ">>> ")
+                    break;
+                // Dead child: keep the last transcript read and finish.
+                int st = 0;
+                if (waitpid(pid, &st, WNOHANG) == pid) break;
+            }
+            usleep(250000);
         }
 
-        // Find the last newline before ">>> " and strip everything from there
-        size_t prompt_pos = resp.rfind("\n>>> ");
-        if (prompt_pos != std::string::npos) {
-            resp = resp.substr(0, prompt_pos);
-        } else if (resp.size() >= 4 && resp.substr(0, 4) == ">>> ") {
-            // Leading prompt
-            resp = resp.substr(4);
+        kill(pid, SIGTERM);
+        waitpid(pid, nullptr, 0);
+
+        // Parse: response = text after the LAST "Model RAW Output:" line,
+        // up to the final "\n>>> ". Strip ANSI codes.
+        std::string content;
+        size_t raw = resp.rfind("Model RAW Output:");
+        if (raw != std::string::npos) {
+            size_t nl = resp.find('\n', raw);
+            if (nl != std::string::npos) content = resp.substr(nl + 1);
         }
+        if (content.empty()) {
+            // Fallback: text between the last [FLM] log line and ">>> "
+            size_t flm = resp.rfind("[FLM]");
+            if (flm != std::string::npos) {
+                size_t nl = resp.find('\n', flm);
+                if (nl != std::string::npos) content = resp.substr(nl + 1);
+            }
+        }
+        size_t endp = content.rfind("\n>>> ");
+        if (endp != std::string::npos) content = content.substr(0, endp);
+        // trailing newline + the "/bye" quit echo
+        while (!content.empty() && (content.back() == '\n' || content.back() == '\r'))
+            content.pop_back();
+        // strip the /bye quit echo (the CLI echoes it after processing)
+        {
+            size_t bye = content.rfind("/bye");
+            if (bye != std::string::npos && bye + 4 >= content.size())
+                content = content.substr(0, bye);
+        }
+        while (!content.empty() && (content.back() == '\n' || content.back() == ' '))
+            content.pop_back();
 
-        // Remove trailing whitespace
-        while (!resp.empty() && (resp.back() == '\n' || resp.back() == ' '))
-            resp.pop_back();
-
-        return resp;
+        // Debug dump
+        if (const char* dump = getenv("NPU_FLM_DEBUG_DUMP")) {
+            FILE* df = fopen(dump, "ab");
+            if (df) { fwrite(resp.data(), 1, resp.size(), df); fclose(df); }
+        }
+        return content;
     }
 
     // Forward: returns chars as token IDs matching SimpleTokenizer::decode() range
-    // (100-199 for printable ASCII). NPU FLM returns raw chars -> shift to match.
+    // (printable ASCII 32-126 -> 132-226; raw bytes 127-255 -> 327-455).
     int forward(int token_id, int pos) override {
         if (!loaded_) return 106;
 
         // Accumulate prompt tokens
         pending_prompt_.push_back(token_id);
 
-        // On first call (pos==0) or when cache exhausted, query FLM
-        if (pos == 0 || generated_pos_ >= generated_text_.size()) {
-            std::string prompt = "Hello";
-            if (!pending_prompt_.empty()) {
-                prompt.clear();
+        // Query FLM when the full prompt has arrived: the router feeds prefill
+        // tokens at pos 0..P-2, then generation restarts at pos 0. A pos reset
+        // to 0 after any prior call means generation start = prompt complete.
+        bool prompt_complete = (pos == 0 && saw_prior_call_);
+        saw_prior_call_ = true;
+
+        if (prompt_complete && !queried_) {
+            fprintf(stderr, "  NPU: trigger pos=%d saw_prior=%d queried=%d pending=%zu\n",
+                    pos, (int)saw_prior_call_, (int)queried_, pending_prompt_.size());
+            // Prefer the raw user text from the server; fall back to the
+            // char-shifted token reconstruction.
+            std::string prompt = g_npu_prompt_text;
+            if (prompt.empty() && !pending_prompt_.empty()) {
                 for (int t : pending_prompt_) {
-                    if (t == 2) continue;
-                    if (t == 106) break;
-                    if (t > 100 && t < 200) prompt += (char)(t - 100);
+                    if (t == 2 || t == 106) continue;
+                    if (t >= 132 && t <= 226) prompt += (char)(t - 100);
+                    else if (t >= 327 && t <= 455) prompt += (char)(t - 200);
                 }
-                if (prompt.empty()) prompt = "Hello";
             }
+            if (prompt.empty()) prompt = "Hello";
 
             generated_text_ = query_flm(prompt);
             generated_pos_ = 0;
+            queried_ = true;
         }
 
-        // Return characters shifted to SimpleTokenizer-compatible range (100-199)
+        // Return characters shifted to SimpleTokenizer-compatible range.
+        // Collision-free scheme: printable ASCII 32-126 -> 132-226 (+100);
+        // everything else (control chars 0-31, raw bytes 127-255) -> +300
+        // -> [300, 555]. (The old +200 scheme collided: 'e'-'~' -> 201-226
+        // overlapped control chars 1-26 -> 201-226.)
         if (generated_pos_ < generated_text_.size()) {
             unsigned char c = (unsigned char)generated_text_[generated_pos_++];
             if (c >= 32 && c <= 126) return c + 100;  // printable ASCII -> 132-226
-            return (int)c + 200;  // non-printable: > 200 (decode shows [N])
+            return (int)c + 300;  // control/raw -> 300-555
         }
         return 106; // EOS
     }

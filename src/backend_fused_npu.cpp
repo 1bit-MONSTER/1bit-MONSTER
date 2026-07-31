@@ -42,8 +42,11 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
 
     s->gu = std::make_unique<fusion::NpuGemmKernel>();
     s->d  = std::make_unique<fusion::NpuGemmKernel>();
-    if (!s->gu->init(s->dev, xgu.c_str(), igu.c_str(), 128, H, 2*IM) ||
-        !s->d->init(s->dev, xdd.c_str(), idd.c_str(), 128, IM, H)) {
+    // Batch dimension: the xclbins are built for M=16 (decode uses 1 row, but
+    // the 2x2 mmul kernel needs M % 16 == 0).  MD=16 shrinks the bC readback
+    // from 128 rows to 16 (3MB -> 393KB per sync), which dominated the call.
+    if (!s->gu->init(s->dev, xgu.c_str(), igu.c_str(), 16, H, 2*IM) ||
+        !s->d->init(s->dev, xdd.c_str(), idd.c_str(), 16, IM, H)) {
         delete s; return nullptr;
     }
 

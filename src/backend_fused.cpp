@@ -421,6 +421,31 @@ struct FusedBackend : Backend {
         for (int l = 0; l < NC_; l++) {
             auto& gl = L[l];
             int s1 = NH_ * HD_, s2 = NKV_ * HD_;
+            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+
+            // ── NPU PIPELINE PHASE A: await FFN(L-1) result BEFORE attention(L).
+            //    attention(L) consumes the hidden state produced by FFN(L-1), so
+            //    this wait MUST precede the attention section.  (Regression in
+            //    #1231: the wait was placed after attention, feeding attention
+            //    stale pre-FFN state and collapsing the token stream.)
+            if (use_npu && l > 0) {
+                int prev_si = (l - 1) & 1;
+                bool npu_ok_l = npu_future_.get();
+                if (!npu_ok_l) {
+                    fprintf(stderr, "[fused] NPU FFN l=%d failed — GPU fallback from now\n", l-1);
+                    npu_ok = false;
+                    use_npu = false;
+                } else {
+                    // Copy NPU result from SharedBO slot back to GPU dh
+                    if (slot_dev[prev_si]) {
+                        HIP_CHECK(hipMemcpy(dh, slot_dev[prev_si], H_*sizeof(float),
+                                            hipMemcpyDeviceToDevice));
+                    } else {
+                        HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(), H_*sizeof(float),
+                                            hipMemcpyHostToDevice));
+                    }
+                }
+            }
 
             // ── ATTENTION ──────────────────────────────────
             // 1. RMSNorm (in-place on dh, destroys input — save first)
@@ -458,40 +483,13 @@ struct FusedBackend : Backend {
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, H_);
             }
 
-            // ── FFN (pipelined NPU backfill with GPU fallback) ──
-            // With USE_NPU_FFN=1: NPU FFN for layer L runs ASYNCHRONOUSLY on
-            // a std::thread while GPU does attention for layer L+1.  Two SharedBO
-            // slots (slot[0], slot[1]) carry the hidden state to/from the NPU.
-            //
-            // Pipeline:
-            //   L=0: GPU attn → copy to slot[0] → launch NPU FFN(0) on thread
-            //   L=1..NC-1: wait NPU(L-1) → copy result to dh → GPU attn(L)
-            //               → copy to slot[L&1] → launch NPU FFN(L)
-            //   Post-loop: wait NPU(NC-1) → copy result to dh
-            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
-
-            // Phase 1: Wait for PREVIOUS NPU FFN to finish (layer L-1)
-            if (use_npu && l > 0) {
-                int prev_si = (l - 1) & 1;
-                bool npu_ok_l = npu_future_.get();
-                if (!npu_ok_l) {
-                    fprintf(stderr, "[fused] NPU FFN l=%d failed — GPU fallback from now\n", l-1);
-                    npu_ok = false;
-                    use_npu = false;
-                } else {
-                    // Copy NPU result from SharedBO slot back to GPU dh
-                    if (slot_dev[prev_si]) {
-                        HIP_CHECK(hipMemcpy(dh, slot_dev[prev_si], H_*sizeof(float),
-                                            hipMemcpyDeviceToDevice));
-                    } else {
-                        HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(), H_*sizeof(float),
-                                            hipMemcpyHostToDevice));
-                    }
-                }
-            }
-
-            // Phase 2: GPU FFN (used when NPU unavailable, or for layer 0
-            // which hasn't been processed by NPU yet)
+            // ── FFN (NPU backfill with GPU fallback) ──
+            // With USE_NPU_FFN=1 the NPU computes FFN for layer L on a worker
+            // thread (std::async) using the SharedBO slots.  NOTE: for a single
+            // token the transformer chain is strictly serial — attention(L+1)
+            // needs FFN(L)'s output — so the only overlap this buys is hiding
+            // the NPU launch latency; correctness requires the Phase A wait
+            // above to happen before attention(L) reads dh.
             if (!use_npu) {
                 // ── GPU FFN ──
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
@@ -508,9 +506,8 @@ struct FusedBackend : Backend {
                 // ── NPU FFN (async on std::thread) ──
                 int si = l & 1;
                 float* host_buf = (float*)slot[si]->host_ptr();
-                // Copy post-attention hidden state (doproj currently holds the
-                // post-attention + residual output, which was saved to dh above)
-                // Actually dh already has the result after the fused_copy_kernel.
+                // Copy post-attention hidden state to the slot.  dh holds the
+                // post-attention + residual output (copied from doproj above).
                 if (slot_dev[si]) {
                     HIP_CHECK(hipMemcpy(slot_dev[si], dh, H_*sizeof(float),
                                         hipMemcpyDeviceToDevice));
@@ -518,8 +515,8 @@ struct FusedBackend : Backend {
                     HIP_CHECK(hipMemcpy(host_buf, dh, H_*sizeof(float),
                                         hipMemcpyDeviceToHost));
                 }
-                // Launch NPU FFN async.  The GPU attention for the next layer
-                // runs concurrently on the HIP stream while the NPU computes.
+                // Launch NPU FFN async.  The next iteration's Phase A wait
+                // collects the result before attention(L+1) reads dh.
                 npu_future_ = std::async(std::launch::async, [this, l, host_buf, H_]() {
                     return npu_state_ffn(npu, l, host_buf, H_);
                 });
