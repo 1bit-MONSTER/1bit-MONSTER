@@ -741,10 +741,20 @@ static bool find_tensor_1bp(OnebpModel& mdl, const std::string& suffix,
         if (t.ndim == 1) {
             int n = (int)t.dims[0];
             dst.resize(n);
-            const uint16_t* f16 = (const uint16_t*)raw;
-            for (int i = 0; i < n; i++) {
-                uint32_t bits = (uint32_t)f16[i] << 16;
-                memcpy(&dst[i], &bits, 4);
+            // Converter writes F32 raw (4 B/elem); older converters wrote
+            // F16 (2 B/elem) — accept either, keyed on byte size.
+            if (t.bytes == (size_t)n * 4) {
+                memcpy(dst.data(), raw, (size_t)n * 4);
+            } else if (t.bytes == (size_t)n * 2) {
+                const uint16_t* f16 = (const uint16_t*)raw;
+                for (int i = 0; i < n; i++) {
+                    uint32_t bits = (uint32_t)f16[i] << 16;
+                    memcpy(&dst[i], &bits, 4);
+                }
+            } else {
+                fprintf(stderr, "[1bp] bad 1-D tensor '%s' bytes=%llu\n",
+                        t.name.c_str(), (unsigned long long)t.bytes);
+                return false;
             }
             return true;
         }
@@ -799,22 +809,26 @@ bool mage_vit_load_weights_1bp(const char* path, VisionWeights& vw) {
         return false;
     }
     auto& h = mdl.header;
-    // Model dimensions come from OnebpHeader::reserved[0..5].
+    // Model dimensions come from OnebpHeader::reserved[0..5] (stored as
+    // uint32 values — read via memcpy: reserved is uint8_t[44], so direct
+    // h.reserved[i] indexing truncates any dim > 255 (issue #1244).
     // If ALL are 0 (e.g., freshly converted .1bp without ViT metadata),
     // fail with a clear message rather than silently using wrong fallback (issue #1158).
+    uint32_t rv[6] = {0, 0, 0, 0, 0, 0};
+    memcpy(rv, h.reserved, sizeof(rv));
     bool all_zero = true;
-    for (int i = 0; i < 6; i++) { if (h.reserved[i] != 0) { all_zero = false; break; } }
+    for (int i = 0; i < 6; i++) { if (rv[i] != 0) { all_zero = false; break; } }
     if (all_zero) {
         fprintf(stderr, "[mage_vit] FAIL: 1BP reserved fields all zero — "
                 "ViT model dimensions not populated.\n"
                 "Re-convert with a converter that writes ViT metadata.\n");
         return false;
     }
-    int H = h.reserved[0] > 0 ? h.reserved[0] : 1024;
-    int NL = h.reserved[1] > 0 ? h.reserved[1] : 24;
-    int NH = h.reserved[2] > 0 ? h.reserved[2] : 16;
-    int FF = h.reserved[3] > 0 ? h.reserved[3] : 4096;
-    int PS = h.reserved[5] > 0 ? h.reserved[5] : 16;
+    int H  = rv[0] > 0 ? (int)rv[0] : 1024;
+    int NL = rv[1] > 0 ? (int)rv[1] : 24;
+    int NH = rv[2] > 0 ? (int)rv[2] : 16;
+    int FF = rv[3] > 0 ? (int)rv[3] : 4096;
+    int PS = rv[5] > 0 ? (int)rv[5] : 16;
     vw.config = VitConfig::mage_vit();
     vw.config.hidden_size = H;
     vw.config.num_layers = NL;
@@ -830,8 +844,8 @@ bool mage_vit_load_weights_1bp(const char* path, VisionWeights& vw) {
         find("visual.layernorm_pre.bias", vw.pre_ln_b);
         if (vw.pre_ln_b.empty()) vw.pre_ln_b.resize(H, 0.0f);
     }
-    find("visual.layernorm_pre.weight", vw.post_ln_w);
-    find("visual.layernorm_pre.bias", vw.post_ln_b);
+    find("visual.layernorm_post.weight", vw.post_ln_w);
+    find("visual.layernorm_post.bias", vw.post_ln_b);
     if (vw.post_ln_b.empty() && !vw.post_ln_w.empty()) vw.post_ln_b.resize(H, 0.0f);
     find("visual.merger.ln_q.weight", vw.mm1_w);
     find("visual.merger.ln_q.bias", vw.mm1_b);
@@ -854,14 +868,16 @@ bool mage_vit_load_weights_1bp(const char* path, VisionWeights& vw) {
         if (l.ln2_b.empty() && !l.ln2_w.empty()) l.ln2_b.resize(H, 0.0f);
         std::vector<float> qkv_w, qkv_b;
         if (find(p + "self_attn.qkv.weight", qkv_w)) {
+            // qkv.weight is [3H, H] row-major (torch Linear: out = x @ W^T),
+            // so Q row i = W row i (stride H), K = rows H..2H, V = 2H..3H.
             l.attn_q_w.resize((size_t)H * H);
             l.attn_k_w.resize((size_t)H * H);
             l.attn_v_w.resize((size_t)H * H);
             for (int i = 0; i < H; i++) {
                 for (int j = 0; j < H; j++) {
-                    l.attn_q_w[(size_t)i * H + j] = qkv_w[(size_t)i * 3 * H + j];
-                    l.attn_k_w[(size_t)i * H + j] = qkv_w[(size_t)i * 3 * H + H + j];
-                    l.attn_v_w[(size_t)i * H + j] = qkv_w[(size_t)i * 3 * H + 2*H + j];
+                    l.attn_q_w[(size_t)i * H + j] = qkv_w[(size_t)i * H + j];
+                    l.attn_k_w[(size_t)i * H + j] = qkv_w[(size_t)(H + i) * H + j];
+                    l.attn_v_w[(size_t)i * H + j] = qkv_w[(size_t)(2*H + i) * H + j];
                 }
             }
             if (find(p + "self_attn.qkv.bias", qkv_b)) {
@@ -890,35 +906,29 @@ bool mage_vit_load_weights_1bp(const char* path, VisionWeights& vw) {
 }
 
 // ═══ Mage-ViT: 3D interleaved RoPE ═══════════════════════════════
+// HF reference (modeling_mage_vit.py / modeling_mage_vl.py) rotate:
+//   q_embed = q*cos + rotate_half(q)*sin   with rotate_half pairing (2j, 2j+1)
+// and freq vector f = cat(half, half), so dim d uses f[d mod half] — i.e. the
+// EVEN and ODD component of a pair use DIFFERENT freqs (f[2j] vs f[2j+1]).
+// half freqs come from per-segment 4:6:6 T:H:W tables: freq(i) = pos*theta^(-i/seg).
 static void mage_vit_rope_one(float* x, int head_dim,
                                int t, int h, int w, float theta_base) {
-    int half = head_dim / 2;
-    int t_pairs = head_dim * 4 / 32;
-    int h_pairs = head_dim * 6 / 32;
-    int w_pairs = head_dim * 6 / 32;
-    int off = 0;
-    for (int i = 0; i < t_pairs; i++) {
-        float freq = t * powf(theta_base, -2.0f * (float)(off + i) / (float)head_dim);
-        float c = cosf(freq), s = sinf(freq);
-        float x0 = x[off + i], x1 = x[off + i + half];
-        x[off + i] = x0 * c - x1 * s;
-        x[off + i + half] = x0 * s + x1 * c;
-    }
-    off += t_pairs;
-    for (int i = 0; i < h_pairs; i++) {
-        float freq = h * powf(theta_base, -2.0f * (float)(off + i) / (float)head_dim);
-        float c = cosf(freq), s = sinf(freq);
-        float x0 = x[off + i], x1 = x[off + i + half];
-        x[off + i] = x0 * c - x1 * s;
-        x[off + i + half] = x0 * s + x1 * c;
-    }
-    off += h_pairs;
-    for (int i = 0; i < w_pairs; i++) {
-        float freq = w * powf(theta_base, -2.0f * (float)(off + i) / (float)head_dim);
-        float c = cosf(freq), s = sinf(freq);
-        float x0 = x[off + i], x1 = x[off + i + half];
-        x[off + i] = x0 * c - x1 * s;
-        x[off + i + half] = x0 * s + x1 * c;
+    int half = head_dim / 2;          // 32 for head_dim 64
+    int t_pairs = head_dim * 4 / 32;  //  8
+    int h_pairs = head_dim * 6 / 32;  // 12
+    auto seg_freq = [&](int i) {      // i in 0..half-1
+        float freq;
+        if (i < t_pairs)            freq = t * powf(theta_base, -(float)i / (float)t_pairs);
+        else if (i < t_pairs + h_pairs) freq = h * powf(theta_base, -(float)(i - t_pairs) / (float)h_pairs);
+        else                        freq = w * powf(theta_base, -(float)(i - t_pairs - h_pairs) / (float)(half - t_pairs - h_pairs));
+        return freq;
+    };
+    for (int j = 0; j < half; j++) {
+        float ce = cosf(seg_freq((2*j) % half)),     se = sinf(seg_freq((2*j) % half));
+        float co = cosf(seg_freq((2*j + 1) % half)), so = sinf(seg_freq((2*j + 1) % half));
+        float x0 = x[2*j], x1 = x[2*j + 1];
+        x[2*j] = x0 * ce - x1 * se;
+        x[2*j + 1] = x1 * co + x0 * so;
     }
 }
 
@@ -1041,13 +1051,23 @@ std::vector<float> mage_vit_forward(
         }
     }
     // (No post-LN — goes directly to merger)
-    // 2x2 spatial merger
+    // 2x2 spatial merger (Mage-VL / Qwen2-VL style)
     if (!weights.mm0_w.empty()) {
         int pm = (int)(weights.mm0_w.size() / (4 * H));
         int mph = ph / 2, mpw = pw / 2;
         int mpf = mph * mpw, tm = mpf * time;
         int th = weights.mm2_w.empty() ? pm : (int)(weights.mm2_w.size() / pm);
+        // Mage-VL reference: merger.ln_q is a LayerNorm over H applied to each
+        // patch BEFORE the 2x2 concat (ln_q.weight has H elems). Qwen2-VL
+        // style mmproj instead has a 4H layernorm after concat — detect by size.
+        bool per_patch_ln = !weights.mm1_w.empty() &&
+                            (int)weights.mm1_w.size() == H;
         std::vector<float> merged((size_t)tm * th), mb(4*H), lb(4*H), hid(pm);
+        std::vector<float> ln_b;
+        if (per_patch_ln && weights.mm1_b.empty()) ln_b.resize(H, 0.0f);
+        const float* ln_b_p = per_patch_ln
+            ? (weights.mm1_b.empty() ? ln_b.data() : weights.mm1_b.data())
+            : nullptr;
         for (int t = 0; t < time; t++)
             for (int mr = 0; mr < mph; mr++)
                 for (int mc = 0; mc < mpw; mc++) {
@@ -1057,15 +1077,27 @@ std::vector<float> mage_vit_forward(
                             std::copy(seq.begin() + (size_t)si * H, seq.begin() + (size_t)si * H + H,
                                       mb.begin() + (size_t)(dr * 2 + dc) * H);
                         }
-                    float mn = 0; for (int i = 0; i < 4*H; i++) mn += mb[i];
-                    mn /= (4*H);
-                    float vr = 0; for (int i = 0; i < 4*H; i++) { float d = mb[i] - mn; vr += d*d; }
-                    vr /= (4*H);
-                    float inv = 1.0f / sqrtf(vr + 1e-6f);
-                    for (int i = 0; i < 4*H; i++) lb[i] = (mb[i] - mn) * inv;
-                    if (!weights.mm1_w.empty() && (int)weights.mm1_w.size() == 4*H) {
-                        for (int i = 0; i < 4*H; i++)
-                            lb[i] = lb[i] * weights.mm1_w[i] + (weights.mm1_b.empty() ? 0.0f : weights.mm1_b[i % (int)weights.mm1_b.size()]);
+                    if (per_patch_ln) {
+                        // ln_q per patch (H), then concat -> mlp (Mage-VL).
+                        for (int p = 0; p < 4; p++) {
+                            layernorm(&lb[(size_t)p * H], &mb[(size_t)p * H],
+                                      weights.mm1_w.data(), ln_b_p, H,
+                                      cfg.layer_norm_eps);
+                        }
+                    } else {
+                        // Qwen2-VL style: LN over the concatenated 4H (learned
+                        // params when mm.1 has 4H elems, else unit-gain).
+                        float mn = 0; for (int i = 0; i < 4*H; i++) mn += mb[i];
+                        mn /= (4*H);
+                        float vr = 0; for (int i = 0; i < 4*H; i++) { float d = mb[i] - mn; vr += d*d; }
+                        vr /= (4*H);
+                        float inv = 1.0f / sqrtf(vr + 1e-6f);
+                        for (int i = 0; i < 4*H; i++) lb[i] = (mb[i] - mn) * inv;
+                        if (!weights.mm1_w.empty() && (int)weights.mm1_w.size() == 4*H) {
+                            for (int i = 0; i < 4*H; i++)
+                                lb[i] = lb[i] * weights.mm1_w[i] +
+                                        (weights.mm1_b.empty() ? 0.0f : weights.mm1_b[i % (int)weights.mm1_b.size()]);
+                        }
                     }
                     matmul(hid.data(), lb.data(), weights.mm0_w.data(), pm, 4*H);
                     if (!weights.mm0_b.empty() && (int)weights.mm0_b.size() == pm)

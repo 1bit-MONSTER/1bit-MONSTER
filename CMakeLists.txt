@@ -1066,10 +1066,10 @@ target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
 # Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
 # Requires a VL-capable text model + mmproj GGUF file.
 add_executable(vision_server tools/vision_server.cpp)
-target_include_directories(vision_server PRIVATE src/ include/)
+target_include_directories(vision_server PRIVATE src/ include/ engine/npu/src)
 target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(vision_server PRIVATE
-    backend_manager vl_image dl
+    backend_manager vl_image vision_encoder dl
     httplib::httplib
     nlohmann_json::nlohmann_json)
 
