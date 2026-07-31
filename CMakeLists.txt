@@ -1065,7 +1065,7 @@ target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
 # OpenAI-compatible /v1/chat/completions with image_url support.
 # Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
 # Requires a VL-capable text model + mmproj GGUF file.
-add_executable(vision_server tools/vision_server.cpp)
+add_executable(vision_server tools/vision_server.cpp src/tokenizer.cpp)
 target_include_directories(vision_server PRIVATE src/ include/ engine/npu/src)
 target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(vision_server PRIVATE
