@@ -6,7 +6,7 @@
 
 | ID | Item | Status | Notes |
 |----|------|:------:|-------|
-| P0.1 | NPU exec fault path (IO_PAGE_FAULT per exec, ~10 s/layer) | 🔄 | Diagnosed: not a hang — 1000x-slow faulting exec; engine works e2e at 0.1 tok/s; see P01-DIG-FINDINGS.md |
+| P0.1 | NPU exec fault path (IO_PAGE_FAULT per exec, ~10 s/layer) | 🔄 | Fix staged: amd_iommu=off in grub (backup grub.bak-20260731-1418); reboot + validate_npu_after_reboot.sh | Diagnosed: not a hang — 1000x-slow faulting exec; engine works e2e at 0.1 tok/s; see P01-DIG-FINDINGS.md |
 | P0.2 | One router, retire the other two | 🔲 | cascade vs `tools/token_router.cpp` vs `unified-router.py` |
 | P0.3 | 40-column decision in writing | 🔲 | NPU2-40 compiler or formally closed |
 | P0.4 | Re-baseline raw numbers (HIP 113, DSpark 0.8, fusion 291) | 🔲 | After WS-00 harness lands |
@@ -20,7 +20,7 @@
 | WS-01 | NPU fused attention | 🔄 | 🔲 | 🔲 | swap done (53-248x, FINDINGS.md); e2e blocked on NPU IOMMU hang (P0.1) |
 | WS-02 | XDNA quantized GEMM/GEMV | 🔲 | 🔲 | 🔲 | gated on P0.3 |
 | WS-03 | Native ternary AIE microkernel | 🔲 | 🔲 | 🔲 | design exists (npu-ternary-roadmap.md) |
-| WS-04 | CPU ternary kernel sweep | 🔲 | 🔲 | 🔲 | — |
+| WS-04 | CPU ternary kernel sweep | ✅ | 🔲 | 🔲 | sweep done: fairy 54-57x, vnni 45-62x, lut 31-41x vs scalar @ ~41 GB/s (FINDINGS.md) |
 | WS-05 | 1BP v2 (ExTernD) | ✅ | 🔲 | 🔲 | probe done + full-matrix confirmation → FINDINGS.md |
 | WS-06 | Precision-profile router | 🔲 | 🔲 | 🔲 | gets correction-planes option from WS-05 |
 | WS-07 | MoE decode & spec | 🔲 | 🔲 | 🔲 | issue #938 entry gate |
@@ -53,7 +53,7 @@
 - [ ] P2: RSR redundant-segment accumulation vs LUT unpack
 
 ### WS-04 — CPU ternary kernel sweep
-- [ ] P0: Port FairyFuse + Litespark variants as microbenchmarks (vs 417 tok/s Q1 GEMV)
+- [x] P0: ternary_cpu_sweep.cpp — FairyFuse (pext) / Litespark (VNNI) / T-MAC-LUT vs scalar; all correct (<=1e-4); GU-like 37.7us @16T; ~41 GB/s
 - [ ] P1: Publish comparison; adopt winner
 - [ ] P2: Block-scaled ternary on CPU
 
