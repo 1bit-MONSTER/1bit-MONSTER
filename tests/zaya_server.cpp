@@ -28,6 +28,9 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <tuple>
+#include <unordered_map>
+#include <unistd.h>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -188,14 +191,14 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
             if (reader.get_u32(k, v)) return (int)v;
             return def;
         };
-        cfg.hidden_size       = gu("embedding_length", 0);
-        cfg.num_layers        = gu("block_count", 40);
-        cfg.num_heads         = gu("attention.head_count", 0);
-        cfg.num_kv_heads      = gu("attention.head_count_kv", 0);
-        cfg.intermediate_size = gu("feed_forward_length", 0);
-        cfg.vocab_size        = gu("vocab_size", 0);
-        cfg.num_experts       = gu("expert_count", 0);   // MoE: e.g. qwen3.6-35B-A3B = 256
-        cfg.num_experts_top   = gu("expert_used_count", 0);
+        cfg.set_hidden(gu("embedding_length", 0));
+        cfg.set_layers(gu("block_count", 40));
+        cfg.set_heads(gu("attention.head_count", 0));
+        cfg.set_kv_heads(gu("attention.head_count_kv", 0));
+        cfg.set_ff(gu("feed_forward_length", 0));
+        cfg.set_vocab(gu("vocab_size", 0));
+        cfg.set_experts(gu("expert_count", 0));
+        cfg.num_experts_top = gu("expert_used_count", 0);
         // If vocab_size wasn't in KV metadata, derive it from token_embd.weight
         // If vocab_size wasn't in KV metadata, derive it from output.weight
         // or token_embd.weight shape: numel = V * H, so V = numel / H.
@@ -204,12 +207,12 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
             // output.weight has shape [H, V] in GGUF (fastest-first), numel = V*H
             const GgufTensorInfo* out = reader.tensor_info("output.weight");
             if (out && out->numel > 0)
-                cfg.vocab_size = (int)(out->numel / H);
+                cfg.set_vocab((int)(out->numel / H));
             if (cfg.vocab_size == 0) {
                 const GgufTensorInfo* emb = reader.tensor_info("token_embd.weight");
                 if (!emb) emb = reader.tensor_info("model.embed_tokens.weight");
                 if (emb && emb->numel > 0)
-                    cfg.vocab_size = (int)(emb->numel / H);
+                    cfg.set_vocab((int)(emb->numel / H));
             }
         }
         uint32_t max_seq = 0;
@@ -293,6 +296,7 @@ struct SimpleTokenizer {
     int bos_id = 2;
     int eos_id = 106;
     bool use_bpe = false;
+    bool add_bos = true;   // tokenizer.ggml.add_bos_token (false for Qwen3)
     rcpp_tokenizer_t* bpe_tok = nullptr;
     // Vocab lookup: maps token_id -> token string (loaded from GGUF)
     std::vector<std::string> id_to_token;
@@ -320,7 +324,10 @@ struct SimpleTokenizer {
         else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.bos_id", alt)) bos_id=(int)alt; }
         if (reader.get_u32("tokenizer.ggml.eos_token_id", eos)) eos_id = (int)eos;
         else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.eos_id", alt)) eos_id=(int)alt; }
-        fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d\n", bos_id, eos_id);
+        bool ab = true;
+        if (reader.get_bool("tokenizer.ggml.add_bos_token", ab)) add_bos = ab;
+        else if (reader.get_bool("tokenizer.ggml.add_bos", ab)) add_bos = ab;
+        fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d add_bos=%d\n", bos_id, eos_id, (int)add_bos);
         if (use_bpe) return true;
         return false;
     }
@@ -343,7 +350,7 @@ struct SimpleTokenizer {
             std::vector<int> r(4096);
             size_t out_n = 0;
             rcpp_status_t st = rcpp_tokenizer_encode(bpe_tok, text.c_str(), text.size(),
-                                                      1, r.data(), r.size(), &out_n);
+                                                      add_bos ? 1 : 0, r.data(), r.size(), &out_n);
             if (st == RCPP_OK && out_n > 0) {
                 r.resize(out_n);
                 return r;
@@ -586,6 +593,90 @@ static std::string a2a_new_task_id() {
     return "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
+// ── GGUF → .htok builder ──────────────────────────────────────────────
+// The runtime BPE encoder (rcpp_tokenizer) reads the .htok format. GGUFs
+// carry the same data (tokenizer.ggml.tokens + tokenizer.ggml.merges), so
+// when no .htok ships alongside the model we synthesize one in /tmp. This
+// replaces the character-level fallback (c+100 token ids) that fed models
+// random vocab entries -> garbage output.
+static bool build_htok_from_gguf(GgufReader& reader, const std::string& out_path,
+                                 int bos_id, int eos_id) {
+    std::vector<std::string> tokens, merges;
+    if (!reader.get_string_array("tokenizer.ggml.tokens", tokens) || tokens.empty()) {
+        fprintf(stderr, "  [tok] tokenizer.ggml.tokens not found - keeping char fallback\n");
+        return false;
+    }
+    if (!reader.get_string_array("tokenizer.ggml.merges", merges) || merges.empty()) {
+        fprintf(stderr, "  [tok] tokenizer.ggml.merges not found - keeping char fallback\n");
+        return false;
+    }
+    std::unordered_map<std::string, uint32_t> id_map;
+    id_map.reserve(tokens.size());
+    for (size_t i = 0; i < tokens.size(); i++) id_map[tokens[i]] = (uint32_t)i;
+
+    std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> merge_triples;
+    merge_triples.reserve(merges.size());
+    size_t skipped = 0;
+    for (auto& m : merges) {
+        auto sp = m.find(' ');
+        if (sp == std::string::npos || sp == 0) { skipped++; continue; }
+        std::string a = m.substr(0, sp), b = m.substr(sp + 1);
+        auto ia = id_map.find(a), ib = id_map.find(b);
+        if (ia == id_map.end() || ib == id_map.end()) { skipped++; continue; }
+        auto im = id_map.find(a + b);
+        if (im == id_map.end()) { skipped++; continue; }   // BPE merge result not in vocab
+        merge_triples.emplace_back(ia->second, ib->second, im->second);
+    }
+    if (merge_triples.empty()) {
+        fprintf(stderr, "  [tok] no usable merges - keeping char fallback\n");
+        return false;
+    }
+    // Special tokens (htok v2): chat-marker strings ("<|im_start|>" and
+    // friends) that the pre-tokenizer would fragment. Heuristic: any vocab
+    // token containing '<', '>' or '|'. The encoder matches them as whole
+    // substrings before pre-tokenization (like llama.cpp's specials cache).
+    std::vector<uint32_t> specials;
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (tokens[i].find('<') != std::string::npos ||
+            tokens[i].find('>') != std::string::npos ||
+            tokens[i].find('|') != std::string::npos)
+            specials.push_back((uint32_t)i);
+    }
+    // Longest first so "<|im_start|>" wins over "<|" if both are specials.
+    std::sort(specials.begin(), specials.end(), [&](uint32_t a, uint32_t b) {
+        return tokens[a].size() > tokens[b].size();
+    });
+
+    FILE* f = fopen(out_path.c_str(), "wb");
+    if (!f) { fprintf(stderr, "  [tok] cannot write %s\n", out_path.c_str()); return false; }
+    fwrite("HTOK", 1, 4, f);
+    uint32_t version = 2;
+    uint32_t vn = (uint32_t)tokens.size(), mn = (uint32_t)merge_triples.size();
+    uint32_t bos = (uint32_t)(bos_id >= 0 ? bos_id : 0), eos = (uint32_t)(eos_id >= 0 ? eos_id : 0);
+    fwrite(&version, 4, 1, f);
+    fwrite(&vn, 4, 1, f);
+    fwrite(&mn, 4, 1, f);
+    fwrite(&bos, 4, 1, f);
+    fwrite(&eos, 4, 1, f);
+    for (auto& t : tokens) {
+        uint16_t len = (uint16_t)std::min<size_t>(t.size(), 65535);
+        fwrite(&len, 2, 1, f);
+        fwrite(t.data(), 1, len, f);
+    }
+    for (auto& [a, b, merged] : merge_triples) {
+        fwrite(&a, 4, 1, f);
+        fwrite(&b, 4, 1, f);
+        fwrite(&merged, 4, 1, f);
+    }
+    uint32_t num_special = (uint32_t)specials.size();
+    fwrite(&num_special, 4, 1, f);
+    for (auto sid : specials) fwrite(&sid, 4, 1, f);
+    fclose(f);
+    fprintf(stderr, "  [tok] built .htok v2 from GGUF: %zu tokens, %zu merges (%zu skipped), %zu specials -> %s\n",
+            tokens.size(), merge_triples.size(), skipped, specials.size(), out_path.c_str());
+    return true;
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
@@ -755,6 +846,14 @@ int main(int argc, char** argv) {
                 }
                 tok.load_from_gguf(reader);
                 tok.load_vocab_from_gguf(reader);
+                if (!tok.use_bpe) {
+                    // No .htok shipped with the GGUF: synthesize one from the
+                    // GGUF's own tokens + merges so real BPE runs (the char
+                    // fallback feeds random vocab ids and produces garbage).
+                    std::string tmp_htok = "/tmp/ts_tok_" + std::to_string(getpid()) + ".htok";
+                    if (build_htok_from_gguf(reader, tmp_htok, tok.bos_id, tok.eos_id))
+                        tok.load_htok(tmp_htok);
+                }
                 fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d %s(vocab=%zu)\n",
                         tok.bos_id, tok.eos_id,
                         tok.use_bpe ? "+ BPE " : "",

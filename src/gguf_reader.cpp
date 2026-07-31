@@ -569,6 +569,13 @@ const GgufReader::KV* GgufReader::find_kv(const std::string& key) const {
     return nullptr;
 }
 
+bool GgufReader::get_bool(const std::string& key, bool& out) const {
+    const KV* kv = find_kv(key);
+    if (!kv) return false;
+    out = kv->u != 0;
+    return true;
+}
+
 bool GgufReader::get_u32(const std::string& key, uint32_t& out) const {
     const KV* kv = find_kv(key);
     if (!kv) return false;
