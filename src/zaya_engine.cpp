@@ -21,6 +21,7 @@
 // ── Runtime config (set by zaya_init from model header) ──
 static constexpr float RMD_EPS=1e-5f;
 static constexpr int BLK=256;
+static constexpr size_t ZAYA_B_MAX = 8;  // batch cap for zaya_forward_batch (also sizes d_hs/d_lm_vocab)
 static thread_local ZayaConfig eng;  // populated by zaya_init from ZayaConfig parameter
 
 // Page gather kernel: copies page-allocated KV slots into a contiguous
