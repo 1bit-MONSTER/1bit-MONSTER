@@ -41,6 +41,10 @@ int main(int argc, char** argv) {
 
     GenericBackend b;
     if (!b.init(cfg, argv[1])) { fprintf(stderr, "init failed\n"); return 1; }
+    const char* planes = getenv("PPL_PLANES");
+    if (planes) {
+        if (!b.apply_plane_corrections(planes)) { fprintf(stderr, "plane application failed\n"); return 1; }
+    }
 
     std::vector<std::vector<int>> samples;
     std::ifstream f(argv[2]);

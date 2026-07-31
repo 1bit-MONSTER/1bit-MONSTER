@@ -952,12 +952,13 @@ struct GenericBackend : Backend {
             std::vector<float> d(k);
             if (fread(bc.data(), 1, nbytes, f) != nbytes ||
                 fread(d.data(), 4, k, f) != k) { fclose(f); return false; }
-            if (idx == SIZE_MAX || layer_w[idx].size() != (size_t)rows * cols) {
-                fprintf(stderr, "planes: layer %u kind=%s mismatch (rows=%u cols=%u, pool=%zu) — skipping\n",
-                        lyr, kind < 7 ? names[kind] : "?", rows, cols, idx == SIZE_MAX ? 0 : layer_w[idx].size());
+            if (idx == SIZE_MAX || idx + (size_t)rows * cols > flat_weights.size()) {
+                fprintf(stderr, "planes: layer %u kind=%s mismatch (rows=%u cols=%u, idx=%zu total=%zu) — skipping\n",
+                        lyr, kind < 7 ? names[kind] : "?", rows, cols,
+                        idx, flat_weights.size());
                 continue;
             }
-            float* w = layer_w[idx].data();
+            float* w = flat_weights.data() + idx;
             const int8_t* B = bc.data();
             const int8_t* C = bc.data() + (size_t)rows * k;
             for (uint32_t i = 0; i < rows; i++)
