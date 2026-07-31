@@ -50,3 +50,13 @@ healthy, attention geometry is wrong.
    exists to validate every output.
 4. Non-Qwen families need per-vocab gate sample sets (tokenize with each
    model's own GGUF vocab) before ppl claims can be made for them.
+
+## Cleanup executed 2026-07-31 (issue #1241)
+
+- `models/Qwen3-0.6B.1bp`: **regenerated in place** from Q8_0 with the C++
+  converter (--tq2) — same name keeps the TQ2 kernel benches working; ppl
+  1.1e8 (inherent to TQ2-of-dense, now a correct-format file).
+- `models/Qwen2.5-0.5B-Instruct.1bp`: **deleted** (corrupt values + head_dim).
+- `models/Qwen3-4B.1bp`: **deleted** (missing token_embd, unloadable).
+- `scripts/upload_models.py`: Qwen2.5-0.5B entry removed; re-upload requires
+  re-conversion.
