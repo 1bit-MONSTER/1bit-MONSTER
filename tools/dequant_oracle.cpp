@@ -96,8 +96,10 @@ int main(int argc, char** argv) {
     // D_in = 256 (cols), D_out = 32 (rows), weight_offset = 0, mode = 0
     deq.generate_dequant_q80_packed_in_q4nx_seq(&seq, 2048, 8192, 0, 0);
     fprintf(stderr, "sequence generated\n"); fflush(stderr);
-    auto [dp, dsz] = seq.dump();
-    fprintf(stderr, "dequant sequence: %zu instructions (%zu B)\n", dsz / 4, dsz);
+    auto [dp, dsz_words] = seq.dump();
+    // NOTE: dump() returns the size in WORDS (uint32_t), not bytes!
+    size_t dsz = dsz_words * sizeof(uint32_t);
+    fprintf(stderr, "dequant sequence: %zu words (%zu B)\n", dsz_words, dsz);
     if (dsz == 0) { fprintf(stderr, "empty sequence!\n"); return 1; }
     {
         FILE* sf = fopen("/tmp/deq_seq.bin", "wb");

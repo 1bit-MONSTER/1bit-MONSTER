@@ -184,3 +184,52 @@ BUILT AND RUNNING — kernel executes, output verified:
   over the input BO.
 - The dtype oracle (get_quantization_byte_size) remains the format key:
   dtype 1 = Q8_0 (8704-B rows), dtype 2/4 = INT4 (5120-B rows).
+
+### Session 2026-07-31 (post-reboot) — HARNESS BUG FOUND + REAL PATH IDENTIFIED
+
+**CRITICAL BUG in the harness**: `npu_sequence::dump()` returns the size in
+WORDS (`npu_seq.size()`), but tools/dequant_oracle.cpp treated it as BYTES:
+- BO allocated 1137 B, `memcpy` copied 4548 B (heap overflow), kernel got
+  size=1137 → only parsed the first ~2 rounds of the stream.
+- FIXED: `dsz = dsz_words * sizeof(uint32_t)` → full 4548-word (18192 B)
+  stream now executes.
+
+With the full stream (decoded with the exact op formats from
+npu_cmd_*.hpp):
+
+- **64 input windows** of 81920 B at 327680-B stride (17 rounds × 8 cols),
+  read as 32 × 2560-B chunks per window. Chunk = [512 B bf16 scales]
+  [2048 B q8]. The 17th round reads past the 17.8 MB tensor (BO must be
+  ≥ 20.7 MB).
+- **64 output windows** of 131072 B at 524288-B stride (8 rounds × 8 cols),
+  dense writes (D0 128 B @1, D1 128 @256, D2 2 @128 → even+odd granules).
+  Output span = **33.5 MB** — the 17.8 MB output BO was OVERRUN by the
+  kernel (→ the post-reboot segfaults; ctrl harness uses 34 MB BOs).
+- The old "chunks 8-15 partial" and "every 3rd f32 slot" observations were
+  ARTIFACTS of the truncated stream + reading byte pairs as bf16.
+
+**Controlled-oracle runs** (tools/dequant_oracle_ctrl.cpp, synthetic input:
+scales=1.0, q8 ramp 0..255):
+
+- Modes 0/1/2 all produce the SAME output: a **byte repacking into u16
+  pairs** — NOT dequant values. The "sane dequant values" (4.48e-3 …) in
+  the earlier session were the bf16 reinterpretation of raw q8 byte pairs
+  (numerical coincidence — e.g. pair (0x92,0x3b) = bf16 4.456e-3 ≈
+  13 × scale[1]). The kernel in this config is a data-mover/repacker.
+- Output pattern (first 256 B, unambiguous via the ramp): 16-B groups,
+  64-B sub-blocks at q8 bases 0/64/128/192; base positions {0,1,2,3,6,7,
+  10,11,14,15} carry input bytes, positions {4,5,8,9,12,13} carry
+  sign-bit-set q8 values from elsewhere (0x80|q8[63], 0x80|q8[16|64]…).
+- File layout confirmed: 2048 rows × 8704 B = [512 B scales][8192 B q8]
+  (row 1 scales at byte 8704 are sane bf16). Kernel windowing (2560-B
+  chunks) is NOT aligned to the 8704-B rows → most chunks contain
+  misaligned "scales".
+
+**REAL RUNTIME PATH IDENTIFIED**: the FLM model plugin
+(libqwen3_6_moe_npu.so) does NOT use the standalone dequant.xclbin +
+`generate_dequant_q80_packed_in_q4nx_seq`. It calls
+`qwen3_6_moe_npu_sequence::gen_dequant_mm(seq, M, K, N, off, m, dtype)` /
+`gen_dequant_mm_512` / `_move_weights_q80` against **dequant_mm.xclbin**
+(present in Qwen3.6-35B-A3B-NPU2/). Next step: drive gen_dequant_mm with
+real dims (M/K/N for the qkv tensor) and read back the dequant_mm kernel
+output — that is the true oracle for the value↔position mapping.
