@@ -687,6 +687,10 @@ add_executable(bench_hip_1bp tools/bench_hip_1bp.cpp src/backend_hip_1bp.cpp src
 target_include_directories(bench_hip_1bp PRIVATE src include engine/fusion/zero_copy engine/npu/src)
 target_compile_options(bench_hip_1bp PRIVATE -O3 -ffast-math -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
 target_link_libraries(bench_hip_1bp PRIVATE hip::host hip::device hipblas rocm_cpp)
+if(THEROCK_HIPBLAS_LIB)
+    get_filename_component(_l "${THEROCK_HIPBLAS_LIB}" DIRECTORY)
+    set_property(TARGET bench_hip_1bp APPEND PROPERTY LINK_OPTIONS "-Wl,-rpath,${_l}")
+endif()
 set_source_files_properties(tools/bench_hip_1bp.cpp PROPERTIES LANGUAGE CXX)
 set_target_properties(bench_hip_1bp PROPERTIES
     HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
