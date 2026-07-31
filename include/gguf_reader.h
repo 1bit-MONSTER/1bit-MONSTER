@@ -108,6 +108,7 @@ public:
     // different type than requested (arrays/strings for scalar accessors,
     // etc). Integer accessors accept any of GGUF's int/uint scalar types.
     bool get_u32(const std::string& key, uint32_t& out) const;
+    bool get_bool(const std::string& key, bool& out) const;
     bool get_f32(const std::string& key, float& out) const;
     bool get_string(const std::string& key, std::string& out) const;
     bool get_string_array(const std::string& key, std::vector<std::string>& out) const;

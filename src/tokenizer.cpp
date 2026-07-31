@@ -112,6 +112,11 @@ struct rcpp_tokenizer {
     int32_t bos_id = 128000;
     int32_t eos_id = 128001;
 
+    // Special tokens (htok v2): matched as whole substrings BEFORE the
+    // pre-tokenizer splits the text, so chat markers like "<|im_start|>"
+    // map to their single ids instead of fragmenting through BPE merges.
+    std::vector<int32_t> special_ids;
+
     // Reverse map: token_id → merge rank (for logprob estimation, fixes #81).
     // Built once after merges are loaded. Tokens not in the map (e.g. special
     // tokens) get a base rank equal to max_rank + 1 (least likely).
@@ -181,6 +186,7 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
     auto t = new rcpp_tokenizer();
     t->bos_id = (int32_t)bos;
     t->eos_id = (int32_t)eos;
+    const bool v2 = (version >= 2);
     t->id_to_bytes.resize(vocab_size);
     t->bytes_to_id.reserve(vocab_size);
 
@@ -206,6 +212,17 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
         if (!f) { fprintf(stderr, "[tokenizer] short read at merge %u\n", i); return RCPP_INVALID_ARG; }
         t->merges.emplace(MergeKey{(int32_t)a, (int32_t)b},
                           std::make_pair((int32_t)merged, (int32_t)i));
+    }
+
+    if (v2) {
+        uint32_t num_special = 0;
+        f.read(reinterpret_cast<char*>(&num_special), 4);
+        t->special_ids.reserve(num_special);
+        for (uint32_t i = 0; i < num_special; ++i) {
+            uint32_t sid = 0;
+            f.read(reinterpret_cast<char*>(&sid), 4);
+            t->special_ids.push_back((int32_t)sid);
+        }
     }
 
     ensure_rank_map(t);
@@ -572,7 +589,37 @@ rcpp_tokenizer_encode(const rcpp_tokenizer_t* t,
 
     std::string s(text, text_len);
     if (s.empty()) return RCPP_OK;
-    auto chunks = llama3_pre_tokenize(s);
+
+    // Special-token pre-pass: the pre-tokenizer's punctuation splitting
+    // fragments chat markers ("<|im_start|>") into pieces the merge table
+    // cannot rebuild. Match special strings as whole substrings first and
+    // emit their ids directly; normal spans go through pre-tokenizer + BPE.
+    struct Seg { std::string text; bool special; int32_t sid; };
+    std::vector<Seg> segs;
+    if (!t->special_ids.empty()) {
+        size_t pos = 0;
+        while (pos < s.size()) {
+            size_t best = std::string::npos;
+            int32_t best_id = -1;
+            for (int32_t sid : t->special_ids) {
+                const std::string& sp = t->id_to_bytes[(size_t)sid];
+                if (sp.empty()) continue;
+                size_t hit = s.find(sp, pos);
+                if (hit != std::string::npos && (best == std::string::npos || hit < best)) {
+                    best = hit; best_id = sid;
+                }
+            }
+            if (best == std::string::npos) {
+                if (pos < s.size()) segs.push_back({s.substr(pos), false, -1});
+                break;
+            }
+            if (best > pos) segs.push_back({s.substr(pos, best - pos), false, -1});
+            segs.push_back({"", true, best_id});
+            pos = best + t->id_to_bytes[(size_t)best_id].size();
+        }
+    } else {
+        segs.push_back({s, false, -1});
+    }
 
     // BPE-merge a single chunk's byte pieces in place. Merges do NOT
     // cross chunk boundaries — that's the whole point of the pre-
@@ -615,9 +662,16 @@ rcpp_tokenizer_encode(const rcpp_tokenizer_t* t,
 
     std::vector<int32_t> all_ids;
     if (add_bos) all_ids.push_back(t->bos_id);
-    for (const auto& chunk : chunks) {
-        auto pieces = byte_level_split(chunk);
-        if (!bpe_chunk(pieces, all_ids)) return RCPP_INTERNAL;
+    for (const auto& seg : segs) {
+        if (seg.special) {
+            all_ids.push_back(seg.sid);
+            continue;
+        }
+        auto chunks = llama3_pre_tokenize(seg.text);
+        for (const auto& chunk : chunks) {
+            auto pieces = byte_level_split(chunk);
+            if (!bpe_chunk(pieces, all_ids)) return RCPP_INTERNAL;
+        }
     }
 
     *out_count = all_ids.size();
