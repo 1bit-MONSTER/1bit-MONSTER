@@ -87,8 +87,10 @@ static std::string hmac_sha256_hex(const std::string& key, const std::string& ms
 static bool verify_stripe_signature(const std::string& payload, const std::string& sig_header) {
     const char* secret = getenv("STRIPE_WEBHOOK_SECRET");
     if (!secret || !*secret) {
-        // No secret configured — accept all webhooks (dev mode)
-        return true;
+        // Fail closed (issue #1279): without a secret every webhook would
+        // rewrite customer tier state. Dev mode must set the secret too.
+        fprintf(stderr, "[billing] STRIPE_WEBHOOK_SECRET not set — refusing webhook\n");
+        return false;
     }
 
     if (sig_header.empty()) return false;
@@ -115,6 +117,18 @@ static bool verify_stripe_signature(const std::string& payload, const std::strin
     } while (comma != std::string::npos);
 
     if (timestamp.empty() || expected_sig.empty()) return false;
+
+    // Replay protection: Stripe mandates rejecting timestamps older than
+    // ~5 minutes (issue #1279).
+    errno = 0;
+    char* end = nullptr;
+    long long ts = strtoll(timestamp.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    long long now = (long long)time(nullptr);
+    if (ts < now - 300 || ts > now + 300) {
+        fprintf(stderr, "[billing] webhook timestamp %lld outside 5-min window\n", ts);
+        return false;
+    }
 
     // Build the signed payload string: "<timestamp>.<payload>"
     std::string signed_payload = timestamp + "." + payload;

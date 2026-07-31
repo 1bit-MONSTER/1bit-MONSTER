@@ -111,15 +111,18 @@ __global__ void zaya_moe_ternary_gemv_kernel(
     __shared__ int8_t x_shared[LDS_TILE_I8];
 
     for (int kw = 0; kw < experts_per_wave; ++kw) {
+        // Validity is WAVE-uniform (same token + slot for every lane), so mask
+        // the work instead of break/continue: a data-dependent early exit
+        // skipped __syncthreads() for some waves and deadlocked the block
+        // (issue #1262).
         const int expert_slot = wave * experts_per_wave + kw;
-        if (expert_slot >= top_k) break;
-
-        const int expert_idx = expert_indices[(size_t)token * top_k + expert_slot];
-        const float router_wt = expert_weights[(size_t)token * top_k + expert_slot];
-        // Guard: ignore invalid expert indices
-        if (expert_idx < 0 || expert_idx >= num_experts) continue;
-
-        const float per_expert_scale = expert_scales[expert_idx];
+        const bool slot_ok = expert_slot < top_k;
+        const int expert_idx = slot_ok
+            ? expert_indices[(size_t)token * top_k + expert_slot] : -1;
+        const float router_wt = slot_ok
+            ? expert_weights[(size_t)token * top_k + expert_slot] : 0.0f;
+        const bool expert_ok = slot_ok && expert_idx >= 0 && expert_idx < num_experts;
+        const float per_expert_scale = expert_ok ? expert_scales[expert_idx] : 0.0f;
 
         int32_t acc = 0;
 
@@ -156,6 +159,7 @@ __global__ void zaya_moe_ternary_gemv_kernel(
             }
             __syncthreads();
 
+            if (!expert_ok) continue;  // wave-uniform skip — barrier above already ran
             const int tile_macrogroups = LDS_TILE_I8 / WEIGHTS_PER_MACROGROUP;  // 128
             const int tile_mg_start   = k_base / WEIGHTS_PER_MACROGROUP;
 
@@ -200,20 +204,22 @@ __global__ void zaya_moe_ternary_gemv_kernel(
             }
         }
 
-        // Warp reduction
-        #pragma unroll
-        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-            acc += __shfl_xor_sync(0xffffffffULL, acc, offset);
-        }
+        if (expert_ok) {
+            // Warp reduction
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+                acc += __shfl_xor_sync(0xffffffffULL, acc, offset);
+            }
 
-        if (lane == 0) {
-            // Apply activation scale, per-expert scale, and router weight
-            // Clamp to FP16 range to prevent NaN propagation through RMSNorm
-            constexpr float FP16_MAX = 65504.0f;
-            float out = (float)acc * x_scale * per_expert_scale * router_wt;
-            out = fminf(fmaxf(out, -FP16_MAX), FP16_MAX);
-            // Write to y_f16[token][expert_idx]
-            y_f16[(size_t)token * num_experts + expert_idx] = __float2half(out);
+            if (lane == 0) {
+                // Apply activation scale, per-expert scale, and router weight
+                // Clamp to FP16 range to prevent NaN propagation through RMSNorm
+                constexpr float FP16_MAX = 65504.0f;
+                float out = (float)acc * x_scale * per_expert_scale * router_wt;
+                out = fminf(fmaxf(out, -FP16_MAX), FP16_MAX);
+                // Write to y_f16[token][expert_idx]
+                y_f16[(size_t)token * num_experts + expert_idx] = __float2half(out);
+            }
         }
     }
 }

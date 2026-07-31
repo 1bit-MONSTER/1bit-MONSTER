@@ -302,8 +302,10 @@ static json generate_completion(BackendManager& mgr,
                                  const std::string& user_message = "") {
     json result;
 
-    // Select fixed backend if specified (overrides strategy routing)
+    // Select fixed backend if specified (overrides strategy routing).
+    // Mutates mgr state read by /v1/health + /v1/models under g_config_mutex (issue #1271).
     if (backend_id != "auto" && backend_id != "") {
+        std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
         mgr.select_backend(backend_id);
     }
 
@@ -315,6 +317,9 @@ static json generate_completion(BackendManager& mgr,
         TokenContext init_ctx{-1, 0.0, -1.0, 0,
                              prompt_tokens.size(), (size_t)max_tokens,
                              user_message};
+        // route() reads strategy state that /v1/strategy/select mutates under
+        // g_strategy_mutex — same lock here (issue #1271).
+        std::lock_guard<std::mutex> strat_lock(g_strategy_mutex);
         auto decision = strategy_engine->route(init_ctx);
         active_backend_id = decision.backend;
         if (!decision.draft_backend.empty()) {
@@ -405,6 +410,8 @@ static json generate_completion(BackendManager& mgr,
             TokenContext ctx{last_token, last_lp, last_entropy,
                             (size_t)i, prompt_tokens.size(), (size_t)max_tokens,
                             user_message};
+            // issue #1271: strategy state is mutated under g_strategy_mutex
+            std::lock_guard<std::mutex> strat_lock(g_strategy_mutex);
             auto decision = strategy_engine->route(ctx);
 
             // Select the decided backend
@@ -878,7 +885,13 @@ int main(int argc, char** argv) {
     g_tokenizer.load_from_gguf(cfg.model_path);
     BackendRoute route = select_backend_route(cfg);
     printf("  Router: %s\n", route.reason.c_str());
-    bool inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
+    // mgr state is read by /v1/health + /v1/models under g_config_mutex —
+    // mutate under the same lock (issue #1271).
+    bool inited;
+    {
+        std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+        inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
+    }
     if (inited) {
         // Select active backend from the route's ordered list (not global
         // priority order), so the backend that matches the model format is
