@@ -17,11 +17,11 @@
 | WS | Name | P0 | P1 | P2 | Status |
 |----|------|:--:|:--:|:--:|:------:|
 | WS-00 | Baseline & measurement | 🔄 | 🔲 | — | runner done, ppl wiring next |
-| WS-01 | NPU fused attention | 🔲 | 🔲 | 🔲 | gated on P0.5 |
+| WS-01 | NPU fused attention | 🔄 | 🔲 | 🔲 | swap done (53-248x, FINDINGS.md); e2e blocked on NPU IOMMU hang (P0.1) |
 | WS-02 | XDNA quantized GEMM/GEMV | 🔲 | 🔲 | 🔲 | gated on P0.3 |
 | WS-03 | Native ternary AIE microkernel | 🔲 | 🔲 | 🔲 | design exists (npu-ternary-roadmap.md) |
 | WS-04 | CPU ternary kernel sweep | 🔲 | 🔲 | 🔲 | — |
-| WS-05 | 1BP v2 (ExTernD) | ✅ | 🔲 | 🔲 | probe done → FINDINGS.md |
+| WS-05 | 1BP v2 (ExTernD) | ✅ | 🔲 | 🔲 | probe done + full-matrix confirmation → FINDINGS.md |
 | WS-06 | Precision-profile router | 🔲 | 🔲 | 🔲 | gets correction-planes option from WS-05 |
 | WS-07 | MoE decode & spec | 🔲 | 🔲 | 🔲 | issue #938 entry gate |
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
@@ -37,7 +37,7 @@
 - [ ] P1: Single-source-of-truth benchmark table; kill stale numbers
 
 ### WS-01 — NPU fused attention
-- [ ] P0: GPU flash-decoding attention kernel (issue #936) → 40-60 tok/s fused
+- [x] P0: GPU flash-decoding swap — isolated bench 53-248x (23.7 -> 0.2 ms @ ctx 1024); engine patched + builds (build/npu_engine_overlap_fd); e2e blocked on pre-existing NPU IOMMU hang (P0.1)
 - [ ] P1: STEEL-style fused attention on XDNA (`attn.xclbin` ABI)
 - [ ] P2: SANTA sampled-value attention for 32k+ contexts
 

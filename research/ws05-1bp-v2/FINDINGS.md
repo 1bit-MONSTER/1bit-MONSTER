@@ -25,6 +25,15 @@ Implementation: SVD-initialized greedy deflation on the explicit residual (power
 
 Monotone decrease in k: **validated** (both gaussian and real weights). Full-size matrix runs: `probe_qproj_full.log`, `probe_gate_full.log`.
 
+**Full-matrix confirmation (2026-07-31):**
+
+| Matrix | mu=0.5 | mu=1.0 | mu=1.5 | bits/w at mu=1.0 |
+|---|---|---|---|---|
+| q_proj [4096x2560] | 0.6117 | 0.4464 | 0.3672 | 3.26 |
+| gate_proj [9728x2560] | 0.6314 | 0.4525 | -- | 2.53 |
+
+Same pattern as slices: monotone decrease; larger matrices need relatively more planes. Logs: `probe_qproj_full.log`, `probe_gate_full.log`.
+
 ## Findings
 
 1. **Core claim validated.** Residual decreases monotonically with k; μ=3 reaches 0.062 — and the curve is still falling, consistent with the paper's "approaches bf16" bound. No fixed-plane-count ternary scheme can do this.
