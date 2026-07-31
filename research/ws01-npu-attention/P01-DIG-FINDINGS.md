@@ -27,7 +27,28 @@ The documented "~1/3-1/2 of runs hang at boot-to-decode transition" is **not a h
 
 6. **Not the model file** (qwen3_0_6b.q4nx, Jul 28, untouched).
 
-## Root-cause hypothesis (ranked)
+## ✅ ROOT CAUSE CONFIRMED (2026-07-31 14:20) — IOMMU mode regression from grub edit
+
+**The NPU exec slowdown is caused by the AMD IOMMU being re-enabled on 2026-07-30, breaking the amdxdna BO/DMA path.**
+
+| Date | `/etc/default/grub` cmdline | NPU behavior |
+|---|---|---|
+| Jul 16 | `... amdxdna.aie2_max_col=40` (experiment) | — |
+| **Jul 24/25** (5 tok/s benchmark era) | **`amd_iommu=off`** + amdgpu tuning | ✅ 7.2 ms/layer, no faults |
+| **Jul 30 18:32** (grub edited, 4 reboots since) | `amd_iommu=off` **removed** | ❌ IO_PAGE_FAULT per exec, ~350 ms/layer |
+
+Evidence:
+- `grub.bak-20260724-203711` (day before the bench) contains `amd_iommu=off`; current grub (edited Jul 30 18:32) does not — diffs verified.
+- The NPU's IOMMU group (`/sys/kernel/iommu_groups/26`) is the **only `identity`-type group** on the box (GPU groups are `DMA-FQ`) — identity domain + the amdxdna driver's BO/IOVA mapping path = BDs land on unmapped addresses → every exec faults → fault-recovery ~50× slowdown.
+- Everything else eliminated: driver pristine (md5 == package), firmware stock 1.1.2.65 (md5 == decompressed .zst), XRT unchanged (Mar 20 build), 3 xclbin generations, engine code (07-25 era), model file, unified_server contention, module reload (sysfs rebind).
+
+**Fix applied (2026-07-31 14:18):** `amd_iommu=off` restored to `GRUB_CMDLINE_LINUX_DEFAULT` (backup: `/etc/default/grub.bak-20260731-1418`), `update-grub` done. **Requires reboot to take effect.**
+
+**Post-reboot validation:** `sudo dmesg | grep -c IO_PAGE_FAULT` before/after a run + `./build/npu_engine_overlap_fd models/qwen3_0_6b.q4nx 32` — expect prefill ~2 s, decode in the 5-40 tok/s class, zero faults.
+
+Note: `unified-router.service` (systemd) also holds NPU-adjacent state; it was not implicated in this regression (faults identical with/without unified_server).
+
+## Root-cause hypothesis (superseded — see above)
 
 1. **BD addresses reference unmapped IOMMU IOVAs.** The per-exec `CREATE_BO`/`GEM_CLOSE` churn means a BD from a previous exec can reference a closed BO's IOVA → unmapped → fault on every exec. XRT's `ext::kernel` path creating/freeing temp BOs (instruction buffer or partials) per submit, with the AIE still touching the old IOVA.
 2. **Generator/ABI mismatch**: today's xclbins come from `n1_core_i8_v25/v26.py` (insts 4× smaller, 509 KB→128 KB). If the BD template layout doesn't match XRT's arg-patching convention (`k->operator()(3, 0, 0, *bA, *bB, *bC)`), some BDs keep generator-default addresses → faults. (But pre-rebuild xclbins fault too, so this can't be the whole story.)
