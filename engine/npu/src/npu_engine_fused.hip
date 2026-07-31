@@ -722,7 +722,9 @@ int main(int argc, char** argv) {
             std::vector<__half> W_f16((size_t)NV * H);
             for (int n = 0; n < NV; n++)
                 for (int k = 0; k < H; k++)
-                    W_f16[(size_t)n * H + k] = __float2half(embed_f32[(size_t)k * NV + n]);
+                    // embed is row-major [NV][H] — the old k*NV+n stride transposed
+                    // against the wrong axis (issue #1270: garbage logits)
+                    W_f16[(size_t)n * H + k] = __float2half(embed_f32[(size_t)n * H + k]);
             hipMemcpy(d_W, W_f16.data(), wsz, hipMemcpyHostToDevice);
             return true;
         }

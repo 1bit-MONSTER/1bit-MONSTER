@@ -523,7 +523,16 @@ bool GgufReader::open(const std::string& path) {
         if (fread(&ti.dtype, 4, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
         uint64_t rel_offset; if (fread(&rel_offset, 8, 1, f_) != 1) { fclose(f_); f_ = nullptr; return false; }
         ti.numel = 1;
-        for (auto s : ti.shape) ti.numel *= (s ? s : 1);
+        for (auto s : ti.shape) {
+            // Saturating multiply (issue #1280): dims are up to 2^24 and
+            // ndim up to 16 — an unchecked chain can wrap to a small numel
+            // that slips past the MAX_TENSOR_ELEMENTS cap below.
+            if (s > 0 && ti.numel > (uint64_t)-1 / (uint64_t)s) {
+                ti.numel = (uint64_t)-1;  // saturate; caps reject it downstream
+                break;
+            }
+            ti.numel *= (s ? s : 1);
+        }
         ti.abs_offset = rel_offset; // fixed up to absolute after the loop
         tensor_order_.push_back(name);
         tensors_[name] = ti; // abs_offset placeholder for now

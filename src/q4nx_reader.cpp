@@ -102,7 +102,9 @@ std::vector<float> Q4nxReader::read_floats(uint64_t offset, size_t count) const 
     static constexpr size_t MAX_FLOATS = 256ULL * 1024 * 1024; // 256M elems = 512 MiB BF16
     if (count > MAX_FLOATS) return v;
     uint64_t byte_len = (uint64_t)count * 2;
-    if (offset + byte_len > size) return v;
+    // Check offset > size BEFORE the sum — offset + byte_len wraps for
+    // offsets near 2^64 and let the guard pass (issue #1283).
+    if (offset > size || byte_len > size - offset) return v;
     v.resize(count);
     const uint16_t* bf16 = (const uint16_t*)(data + offset);
     for (size_t i = 0; i < count; i++) {

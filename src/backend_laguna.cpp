@@ -523,6 +523,11 @@ struct LagunaBackend : Backend {
     }
 
     int forward(int token) {
+        // grow_cache_if_needed caps at MAX_KV_POS (issue #1267)
+        if (pos >= MAX_KV_POS) {
+            fprintf(stderr, "[laguna] KV overflow: pos=%d >= MAX_KV_POS=%d\n", pos, MAX_KV_POS);
+            return -1;
+        }
         grow_cache_if_needed();
 
         // Embedding lookup

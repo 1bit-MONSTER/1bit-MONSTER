@@ -725,7 +725,10 @@ struct GenericBackend : Backend {
         float eps = cfg.rms_norm_eps, theta = cfg.rope_theta;
         int rot_dim = cfg.head_dim;  // full RoPE by default
 
-        std::vector<float> x(H), x2(H), q(NH*HD), k(NKV*HD), v(NKV*HD), scores(HD);
+        // scores indexed by past position (t <= pos) — must hold max_seq_len,
+        // not HD (issue #1263: heap OOB for prompts > head_dim tokens).
+        std::vector<float> x(H), x2(H), q(NH*HD), k(NKV*HD), v(NKV*HD);
+        std::vector<float> scores((size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD);
         std::vector<float> att(NH*HD);
         std::vector<float> gate_up(FF*2);
 

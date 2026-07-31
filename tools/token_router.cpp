@@ -85,6 +85,9 @@ static std::string json_str(const std::string& j, const std::string& k);
 
 // ── NPU Engine Subprocess ──
 struct NpuEngine {
+    // Engine pipes are shared by all request threads — serialize access
+    // (issue #1275: concurrent infer() interleaved NPU request/response).
+    std::mutex mu;
     pid_t pid = 0;
     int stdin_fd = -1;
     int stdout_fd = -1;
@@ -158,6 +161,7 @@ struct NpuEngine {
     // Send tokens to NPU engine, get back generated tokens + logprobs
     // Returns empty on failure
     std::string infer(const std::vector<int>& prompt_tokens, int max_new) {
+        std::lock_guard<std::mutex> lock(mu);
         if (!ready) return "";
 
         // Build request JSON
@@ -214,6 +218,8 @@ struct NpuEngine {
 
 // ── GPU Engine (zaya_server HTTP subprocess) ──
 struct GpuEngine {
+    // libcurl easy handles are not thread-safe — serialize (issue #1275)
+    std::mutex mu;
     pid_t pid = 0;
     int port = 13307;
     bool ready = false;
@@ -289,6 +295,7 @@ struct GpuEngine {
 
     // Send tokens to zaya_server, get back JSON response
     std::string infer(const std::vector<int>& tokens, int n_predict) {
+        std::lock_guard<std::mutex> lock(mu);
         if (!ready || !curl) return "";
 
         // Build request JSON: {"tokens":[...],"n_predict":N}
@@ -339,6 +346,7 @@ struct GpuEngine {
     //   On accept: gpu_token matches first draft token; tokens = gpu-generated continuation
     //   On reject: gpu_token is the GPU's preferred token; replacement_tokens = GPU continuation
     std::string verify(const std::vector<int>& context, const std::vector<int>& draft_tokens) {
+        std::lock_guard<std::mutex> lock(mu);
         if (!ready || draft_tokens.empty()) {
             return "{\"accept\":false,\"gpu_token\":0,\"replacement_tokens\":[]}";
         }
@@ -999,20 +1007,26 @@ int main(int argc, char** argv) {
         auto bp = req.find("\r\n\r\n");
         std::string body = (bp == std::string::npos) ? "" : req.substr(bp+4);
 
-        // Parse Content-Length for body
+        // Parse Content-Length for body. The extra read is capped to the room
+        // left in buf — an attacker-controlled Content-Length used to smash
+        // the stack (issue #1261); a missing header terminator is rejected.
         std::string cl_header = "Content-Length: ";
         auto clp = req.find(cl_header);
-        if (clp != std::string::npos) {
+        if (bp != std::string::npos && clp != std::string::npos) {
             auto cl_end = req.find("\r\n", clp);
             if (cl_end != std::string::npos) {
                 int body_len = atoi(req.substr(clp + cl_header.size(), cl_end - clp - cl_header.size()).c_str());
+                size_t head = bp + 4;
+                int cap = (int)(sizeof(buf) - head);
+                if (body_len < 0) body_len = 0;
+                if (body_len > cap) body_len = cap;
                 if ((int)body.size() < body_len) {
                     // Read remaining body
                     int remaining = body_len - (int)body.size();
-                    int more = (int)read(cl, buf + bp + 4, remaining);
+                    int more = (int)read(cl, buf + head, remaining);
                     if (more > 0) {
-                        buf[bp + 4 + more] = 0;
-                        body = std::string(buf + bp + 4);
+                        buf[head + more] = 0;
+                        body = std::string(buf + head);
                     }
                 }
             }
