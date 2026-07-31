@@ -28,6 +28,20 @@
 #include <immintrin.h>
 
 // ── Generic CPU Backend ──────────────────────────────────────────────────────
+
+// #1240: the packed TQ2 GEMV uses BMI2 (_pext_u32) + AVX-512 (_mm512_*). Gate
+// it at runtime so CPUs without that ISA (pre-Haswell Intel, Haswell has BMI2
+// but no AVX-512, older AMD, future non-x86 ports) fall back to the fp32 path
+// instead of SIGILL. This is the cross-platform CPU backend — it must never
+// crash on the packed path.
+static bool cpu_has_packed_isa() {
+#if defined(__x86_64__) || defined(__i386__)
+    return __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("avx512f");
+#else
+    return false;
+#endif
+}
+
 struct GenericBackend : Backend {
     ModelConfig cfg;
     std::vector<float> embed, final_norm, output_weight;
@@ -181,7 +195,10 @@ struct GenericBackend : Backend {
         }
         OnebpModel& model = *tq2_;
         auto& h = model.header();
-        packed_ = (h.quant == ONEBP_TQ2) && !getenv("GENERIC_NO_PACKED");
+        packed_ = (h.quant == ONEBP_TQ2) && !getenv("GENERIC_NO_PACKED") && cpu_has_packed_isa();
+        if (h.quant == ONEBP_TQ2 && !packed_)
+            printf("Generic: TQ2 packed path OFF (%s) — using fp32 path\n",
+                   cpu_has_packed_isa() ? "GENERIC_NO_PACKED set" : "CPU lacks BMI2+AVX-512");
         if (packed_) {
             tr_ = h.tile_rows; tc_ = h.tile_cols; gs_ = h.group_size;
             printf("Generic: TQ2 packed path ON (tile %dx%d gs=%d)\n", tr_, tc_, gs_);
@@ -519,40 +536,49 @@ struct GenericBackend : Backend {
 
     // Packed TQ2 GEMV (WS-04): multiplication-free, pext masks + maskz add/sub,
     // per-(row,32-group) BF16 scales. TQ2 code mapping: 0=-s, 1=0, 2=+s, 3=0.
+    // The AVX-512/BMI2 body lives in a target-attributed free function — the
+    // caller only reaches it after cpu_has_packed_isa() (issue #1240). (A
+    // target attribute on the member itself doesn't survive OpenMP outlining.)
+    __attribute__((target("avx512f,bmi2")))
+    static float gemv_packed_row(const uint8_t* base, const float* x, int row,
+                                 int ntc, int tc, int gs, int tr) {
+        float acc_row = 0;
+        int trr = row / tr, rr = row % tr;
+        int groups = tc / gs;
+        size_t tb = (size_t)tr * groups * 2 + (size_t)tr * tc / 4;
+        for (int tcc = 0; tcc < ntc; tcc++) {
+            const uint8_t* tile = base + ((size_t)trr * ntc + tcc) * tb;
+            const uint16_t* sc = (const uint16_t*)tile;
+            const uint8_t* qd = tile + (size_t)tr * groups * 2;
+            int c0 = tcc * tc;
+            for (int g = 0; g < groups; g++) {
+                float s = bf16_to_f32(sc[rr * groups + g]);
+                const uint8_t* q = qd + (size_t)(rr * tc + g * gs) / 4;
+                __m512 acc = _mm512_setzero_ps();
+                for (int hh = 0; hh < gs / 16; hh++) {
+                    uint32_t v;
+                    memcpy(&v, q + 4 * hh, 4);
+                    uint32_t lo = _pext_u32(v, 0x55555555u);
+                    uint32_t hi = _pext_u32(v, 0xAAAAAAAAu);
+                    uint32_t pos = hi & ~lo;
+                    uint32_t neg = ~(hi | lo);
+                    __m512 acts = _mm512_loadu_ps(x + c0 + g * gs + 16 * hh);
+                    acc = _mm512_add_ps(acc, _mm512_maskz_mov_ps((__mmask16)pos, acts));
+                    acc = _mm512_sub_ps(acc, _mm512_maskz_mov_ps((__mmask16)neg, acts));
+                }
+                acc_row += _mm512_reduce_add_ps(acc) * s;
+            }
+        }
+        return acc_row;
+    }
+
     void gemv_packed(const PackedW& pw, const float* x, float* y) {
         int N = pw.N, K = pw.K;
         int ntc = (K + tc_ - 1) / tc_;
         int groups = tc_ / gs_;
-        size_t tb = (size_t)tr_ * groups * 2 + (size_t)tr_ * tc_ / 4;
         #pragma omp parallel for schedule(static)
-        for (int i = 0; i < N; i++) {
-            float acc_row = 0;
-            int trr = i / tr_, rr = i % tr_;
-            for (int tcc = 0; tcc < ntc; tcc++) {
-                const uint8_t* tile = pw.base + ((size_t)trr * ntc + tcc) * tb;
-                const uint16_t* sc = (const uint16_t*)tile;
-                const uint8_t* qd = tile + (size_t)tr_ * groups * 2;
-                int c0 = tcc * tc_;
-                for (int g = 0; g < groups; g++) {
-                    float s = bf16_to_f32(sc[rr * groups + g]);
-                    const uint8_t* q = qd + (size_t)(rr * tc_ + g * gs_) / 4;
-                    __m512 acc = _mm512_setzero_ps();
-                    for (int hh = 0; hh < gs_ / 16; hh++) {
-                        uint32_t v;
-                        memcpy(&v, q + 4 * hh, 4);
-                        uint32_t lo = _pext_u32(v, 0x55555555u);
-                        uint32_t hi = _pext_u32(v, 0xAAAAAAAAu);
-                        uint32_t pos = hi & ~lo;
-                        uint32_t neg = ~(hi | lo);
-                        __m512 acts = _mm512_loadu_ps(x + c0 + g * gs_ + 16 * hh);
-                        acc = _mm512_add_ps(acc, _mm512_maskz_mov_ps((__mmask16)pos, acts));
-                        acc = _mm512_sub_ps(acc, _mm512_maskz_mov_ps((__mmask16)neg, acts));
-                    }
-                    acc_row += _mm512_reduce_add_ps(acc) * s;
-                }
-            }
-            y[i] = acc_row;
-        }
+        for (int i = 0; i < N; i++)
+            y[i] = gemv_packed_row(pw.base, x, i, ntc, tc_, gs_, tr_);
     }
 
     // Weight-GEMV dispatcher: packed TQ2 path when a packed slot exists, else fp32.
