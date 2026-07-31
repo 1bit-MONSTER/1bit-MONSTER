@@ -15,6 +15,9 @@
 #include "vl_processor.h"
 
 #include <cstdio>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <cstring>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -92,18 +95,55 @@ std::vector<unsigned char> vl_download_image(const std::string& url, int timeout
         size_t host_end = url.find('/', host_start);
         if (host_end == std::string::npos) host_end = url.find(':', host_start);
         std::string host = url.substr(host_start, host_end - host_start);
-        // Block loopback, link-local, private ranges by hostname
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" ||
-            host.find("10.") == 0 || host.find("172.16.") == 0 ||
-            host.find("172.17.") == 0 || host.find("172.18.") == 0 ||
-            host.find("172.19.") == 0 || host.find("172.20.") == 0 ||
-            host.find("172.21.") == 0 || host.find("172.22.") == 0 ||
-            host.find("172.23.") == 0 || host.find("172.24.") == 0 ||
-            host.find("172.25.") == 0 || host.find("172.26.") == 0 ||
-            host.find("172.27.") == 0 || host.find("172.28.") == 0 ||
-            host.find("172.29.") == 0 || host.find("172.30.") == 0 ||
-            host.find("172.31.") == 0 || host.find("192.168.") == 0 ||
-            host.find("169.254.") == 0 || host.find("0.0.0.0") == 0) {
+        // Strip the port (and IPv6 brackets) so getaddrinfo sees a bare host.
+        if (!host.empty() && host[0] == '[') {
+            auto br = host.find(']');
+            host = (br == std::string::npos) ? host : host.substr(1, br - 1);
+        } else {
+            auto colon = host.find(':');
+            if (colon != std::string::npos) host = host.substr(0, colon);
+        }
+        // SSRF guard (issue #1278): resolve and reject private/loopback/link-
+        // local ADDRESSES. Literal hostname prefix matching was bypassable
+        // (127.0.0.1.nip.io, hex/octal literals, userinfo tricks).
+        bool blocked = false;
+        struct addrinfo hints{}, * res = nullptr;
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host.c_str(), nullptr, &hints, &res) == 0) {
+            for (auto* ai = res; ai; ai = ai->ai_next) {
+                void* addr = nullptr;
+                if (ai->ai_family == AF_INET)
+                    addr = &((struct sockaddr_in*)ai->ai_addr)->sin_addr;
+                else if (ai->ai_family == AF_INET6)
+                    addr = &((struct sockaddr_in6*)ai->ai_addr)->sin6_addr;
+                if (!addr) continue;
+                char ip[INET6_ADDRSTRLEN] = {};
+                inet_ntop(ai->ai_family, addr, ip, sizeof(ip));
+                // inet_pton on the numeric form; classify by prefix
+                unsigned char b[16] = {};
+                if (ai->ai_family == AF_INET) {
+                    b[0] = ((struct sockaddr_in*)ai->ai_addr)->sin_addr.s_addr & 0xFF;
+                    b[1] = (((struct sockaddr_in*)ai->ai_addr)->sin_addr.s_addr >> 8) & 0xFF;
+                }
+                bool priv = false;
+                if (ai->ai_family == AF_INET) {
+                    priv = b[0] == 127 || b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
+                           (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254) || b[0] == 0;
+                } else {
+                    const unsigned char* s6 = (const unsigned char*)addr;
+                    priv = s6[0] == 0xFE && (s6[1] & 0xC0) == 0x80;  // link-local fe80::/10
+                    bool loop = true;
+                    for (int i = 0; i < 15; i++) if (s6[i] != 0) loop = false;
+                    if (loop && s6[15] == 1) priv = true;  // ::1
+                }
+                if (priv) { blocked = true; break; }
+            }
+            freeaddrinfo(res);
+        } else {
+            blocked = true;  // unresolvable — refuse rather than let curl guess
+        }
+        if (blocked) {
             fprintf(stderr, "[vl] ERROR: blocked internal/private host: '%s'\n", host.c_str());
             return {};
         }

@@ -46,7 +46,8 @@ __global__ void fused_norm_q4k_gemv(
     // ── Step 2: Q4_K packed GEMV ──
     float8_t acc = {};
     for (int b = 0; b < nb; b++) {
-        const uint8_t* blk = W + ((size_t)(blockIdx.x * 64) * nb + b) * 144;
+                // warp*16 row offset (issue #1274)
+        const uint8_t* blk = W + (((size_t)(blockIdx.x * 64) + (size_t)warp * 16) * nb + b) * 144;
         float d = (float)*(const __fp16*)blk;
         float dm = (float)*(const __fp16*)(blk + 2);
         uint8_t sc[12];

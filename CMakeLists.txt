@@ -947,7 +947,8 @@ if(EXISTS "${FLM_BINARY}")
         COMMAND cd ${FLM_SOURCE_DIR} && cmake --build build -j8
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Updating FLM submodule to latest + rebuilding"
-        BYPRODUCTS ${FLM_BINARY}
+        # no BYPRODUCTS: build_flm already declares ${FLM_BINARY}, and a
+        # second rule for the same output breaks the Ninja generator (issue #1284)
     )
     add_dependencies(unified_server update_flm)
 else()
@@ -1066,6 +1067,12 @@ target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
 # Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
 # Requires a VL-capable text model + mmproj GGUF file.
 add_executable(vision_server tools/vision_server.cpp src/tokenizer.cpp)
+
+# -- vl_logit_check : logit-level 1BP-vs-BF16 decoder validation -----------
+add_executable(vl_logit_check tools/vl_logit_check.cpp src/tokenizer.cpp)
+target_include_directories(vl_logit_check PRIVATE src/ include/ engine/npu/src)
+target_compile_options(vl_logit_check PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(vl_logit_check PRIVATE backend_manager onebp_model dl)
 target_include_directories(vision_server PRIVATE src/ include/ engine/npu/src)
 target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(vision_server PRIVATE
@@ -1219,8 +1226,10 @@ if(TARGET npu_engine_hybrid)
         ${CMAKE_SOURCE_DIR}/engine/npu
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR})
+    // -ffast-math implies -ffinite-math-only and compiles the std::isfinite
+    // NaN/Inf masks out (issue #1277) — keep them alive.
     target_compile_options(npu_engine_hybrid PRIVATE
-        -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+        -O3 -march=native -std=c++23 -fopenmp)
     target_link_libraries(npu_engine_hybrid PRIVATE xrt_coreutil uuid rt pthread)
     target_link_options(npu_engine_hybrid PRIVATE
         -L${THEROCK_SDK_BASE}/lib -lamdhip64 -Wl,-rpath,${THEROCK_SDK_BASE}/lib -fopenmp)

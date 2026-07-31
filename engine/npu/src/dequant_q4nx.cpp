@@ -88,10 +88,14 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
                 if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
 
                 uint8_t byte_val = lane_data[col * 8 + byte_idx];
-                int8_t val;
-                if (nibble_sel == 0) val = (int8_t)(byte_val & 0x0F);
-                else                 val = (int8_t)((byte_val >> 4) & 0x0F);
-                if (val >= 8) val -= 16;
+                // UNSIGNED asymmetric Q4NX — the zero-point is carried in the
+                // per-group `zeros` array; the old `val >= 8 -> val -= 16`
+                // signed reinterpretation decoded the same bytes differently
+                // from onebp_loader's round-trip-verified decoder and the
+                // cpu_q4nx_loader (issue #1268).
+                uint8_t val;
+                if (nibble_sel == 0) val = (byte_val & 0x0F);
+                else                 val = ((byte_val >> 4) & 0x0F);
 
                 out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
                     (tile_col * TILE_COLS + col)] = (float)val * scale + zp;

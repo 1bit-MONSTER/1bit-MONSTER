@@ -512,6 +512,18 @@ static json handle_chat(const json& body) {
 }
 
 // ── main ───────────────────────────────────────────────────────────────
+// The vendored httplib has no has_file()/get_file_value() — multipart
+// files live in req.form.files (multimap name -> FormData).
+static bool has_file(const httplib::Request& req, const std::string& name) {
+    return req.is_multipart_form_data() &&
+           req.form.files.find(name) != req.form.files.end();
+}
+static httplib::FormData get_file_value(const httplib::Request& req,
+                                        const std::string& name) {
+    auto it = req.form.files.find(name);
+    return it == req.form.files.end() ? httplib::FormData{} : it->second;
+}
+
 int main(int argc, char** argv) {
     bool no_beacon = false;
     for (int i = 1; i < argc; i++) {
@@ -544,7 +556,7 @@ int main(int argc, char** argv) {
             return httplib::Server::HandlerResponse::Handled;
         }
 
-        // Public endpoints: no auth required
+// Public endpoints: no auth required
         std::string path = req.path;
         bool public_path = (path == "/" || path == "/chat" ||
             path == "/health" || path == "/live" ||
@@ -556,13 +568,21 @@ int main(int argc, char** argv) {
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
-        // Auth-protected paths:
+        // Auth-protected paths: default-deny — everything not explicitly
+        // public requires a key (issue #1272: /v1/knowledge, /v1/persona,
+        // /v1/agent/plan and /api/chat fell through as "Unhandled" and ran
+        // unauthenticated).
         bool protected_path = (path.rfind("/v1/chat", 0) == 0 ||
             path.rfind("/v1/audio/", 0) == 0 ||
             path.rfind("/v1/voice/", 0) == 0 ||
             path.rfind("/v1/api-key", 0) == 0 ||
             path == "/v1/usage" ||
-            path.rfind("/v1/billing/", 0) == 0);
+            path.rfind("/v1/billing/", 0) == 0 ||
+            path.rfind("/v1/knowledge", 0) == 0 ||
+            path.rfind("/v1/persona", 0) == 0 ||
+            path.rfind("/v1/agent", 0) == 0 ||
+            path == "/api/chat" ||
+            path == "/dashboard");
 
         if (protected_path) {
             auto auth_it = req.headers.find("Authorization");
@@ -708,8 +728,8 @@ int main(int argc, char** argv) {
 
     svr.Post("/v1/knowledge/upload", [&](const httplib::Request& req, httplib::Response& res) {
         std::string filename, content;
-        if (req.has_file("file") || req.has_file("filename")) {
-            const auto& file = req.has_file("file") ? req.get_file_value("file") : req.get_file_value("filename");
+        if (has_file(req, "file") || has_file(req, "filename")) {
+            const auto& file = has_file(req, "file") ? get_file_value(req, "file") : get_file_value(req, "filename");
             filename = file.filename;
             content = file.content;
         } else {
@@ -791,8 +811,8 @@ int main(int argc, char** argv) {
 
     svr.Post("/v1/audio/transcriptions", [&](const httplib::Request& req, httplib::Response& res) {
         std::string audio_bytes;
-        if (req.has_file("file")) audio_bytes = req.get_file_value("file").content;
-        else if (req.has_file("audio")) audio_bytes = req.get_file_value("audio").content;
+        if (has_file(req, "file")) audio_bytes = get_file_value(req, "file").content;
+        else if (has_file(req, "audio")) audio_bytes = get_file_value(req, "audio").content;
 
         if (audio_bytes.empty()) {
             res.status = 400;
@@ -871,8 +891,8 @@ int main(int argc, char** argv) {
     svr.Post("/v1/audio/chat", [&](const httplib::Request& req, httplib::Response& res) {
         // ── Extract audio ─────────────────────────────────────────
         std::string audio_bytes;
-        if (req.has_file("file")) audio_bytes = req.get_file_value("file").content;
-        else if (req.has_file("audio")) audio_bytes = req.get_file_value("audio").content;
+        if (has_file(req, "file")) audio_bytes = get_file_value(req, "file").content;
+        else if (has_file(req, "audio")) audio_bytes = get_file_value(req, "audio").content;
 
         if (audio_bytes.empty()) {
             json body;

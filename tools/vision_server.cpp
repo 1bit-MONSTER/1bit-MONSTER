@@ -43,6 +43,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include <signal.h>
 #include <getopt.h>
 
@@ -59,8 +60,18 @@ static const int VL_VISION_START = 151652;
 static const int VL_VISION_END   = 151653;
 static const int VL_EOS_ID       = 151645; // Qwen2 <|im_end|>
 
+// Qwen3/Mage-VL chat template (applied when the .htok tokenizer is loaded,
+// i.e. the special tokens exist in vocab) — matches chat_template.jinja:
+//   <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n
+//   <|im_start|>user\n<|vision_start|>...<|vision_end|>{text}<|im_end|>\n
+//   <|im_start|>assistant\n
+static const char* VL_TMPL_SYS       = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n";
+static const char* VL_TMPL_USER_OPEN = "<|im_start|>user\n";
+static const char* VL_TMPL_ASSIST    = "<|im_end|>\n<|im_start|>assistant\n";
+
 // ── Globals ──
 static std::atomic<bool> keep_running{true};
+static std::mutex g_inference_mutex;  // serialize backend access (httplib thread pool, issue #1276)
 static int g_port = 8089;
 static std::string g_mmproj_path;
 static std::string g_model_path;
@@ -440,6 +451,7 @@ int main(int argc, char** argv) {
 
     // ── POST /v1/chat/completions ──
     svr.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
+        std::lock_guard<std::mutex> infer_lock(g_inference_mutex);
         json body;
         try {
             body = json::parse(req.body);
@@ -491,6 +503,16 @@ int main(int argc, char** argv) {
         //    Real ViT forward: pixels -> mage_vit_forward (patch embed + 28
         //    transformer layers + 2x2 merger + projector) -> text-hidden
         //    embeddings, one forward_embed per token.
+        //    With the Qwen3 template the vision block sits inside the user
+        //    turn: <|im_start|>user\n <vision_start> embeds <vision_end> \n{text}
+        std::vector<int> prompt_ids;
+        int next = -1;
+        if (g_htok) {
+            // system + user-turn opener before the vision block (or the text
+            // when there are no images)
+            auto open = encode_text(tokenizer, std::string(VL_TMPL_SYS) + VL_TMPL_USER_OPEN);
+            for (int t : open) be->generate(t);
+        }
         for (auto& vr : images) {
             be->generate(VL_VISION_START);
             std::vector<float> embs = mage_vit_forward(
@@ -530,21 +552,37 @@ int main(int argc, char** argv) {
             be->generate(VL_VISION_END);
         }
 
-        // 2. Tokenize and feed text prompt
-        auto prompt_ids = encode_text(tokenizer, text_prompt);
+        // 2. Tokenize and feed text prompt (template close for htok models)
+        if (g_htok) text_prompt += VL_TMPL_ASSIST;
+        prompt_ids = encode_text(tokenizer, text_prompt);
         if (prompt_ids.empty()) prompt_ids = {tokenizer.bos_id};
 
         fprintf(stderr, "Prompt: '%s' -> %zu tokens\n", text_prompt.c_str(), prompt_ids.size());
-        for (size_t i = 0; i < prompt_ids.size(); i++)
-            be->generate(prompt_ids[i]);
+        for (size_t i = 0; i < prompt_ids.size(); i++) {
+            int r = be->generate(prompt_ids[i]);
+            if (r >= 0) next = r;   // keep the last prediction for step 3
+        }
 
-        // 3. Generate response
+        // 3. Generate response. `next` already holds the prediction after the
+        //    last prompt token (kept from step 2) — it is the first output token.
         std::vector<int> output_tokens;
-        for (int i = 0; i < max_tokens; i++) {
-            int next = be->generate(output_tokens.empty() ? prompt_ids.back() : output_tokens.back());
-            if (next < 0) break;
+        if (next >= 0) {
             output_tokens.push_back(next);
-            if (next == eos_id_of(tokenizer)) break;
+            for (int i = 0; i < max_tokens - 1; i++) {
+                int nxt = be->generate(next);
+                if (nxt < 0) break;
+                next = nxt;
+                output_tokens.push_back(nxt);
+                if (nxt == eos_id_of(tokenizer)) break;
+            }
+        } else {
+            // No prediction from the prompt feed — degenerate fallback.
+            for (int i = 0; i < max_tokens; i++) {
+                int nxt = be->generate(prompt_ids.back());
+                if (nxt < 0) break;
+                output_tokens.push_back(nxt);
+                if (nxt == eos_id_of(tokenizer)) break;
+            }
         }
 
         // ── Build response ──
