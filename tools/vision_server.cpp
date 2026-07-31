@@ -43,6 +43,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include <signal.h>
 #include <getopt.h>
 
@@ -70,6 +71,7 @@ static const char* VL_TMPL_ASSIST    = "<|im_end|>\n<|im_start|>assistant\n";
 
 // ── Globals ──
 static std::atomic<bool> keep_running{true};
+static std::mutex g_inference_mutex;  // serialize backend access (httplib thread pool, issue #1276)
 static int g_port = 8089;
 static std::string g_mmproj_path;
 static std::string g_model_path;
@@ -449,6 +451,7 @@ int main(int argc, char** argv) {
 
     // ── POST /v1/chat/completions ──
     svr.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
+        std::lock_guard<std::mutex> infer_lock(g_inference_mutex);
         json body;
         try {
             body = json::parse(req.body);
