@@ -2,6 +2,7 @@
 // to avoid recompilation cascades (issue #375).
 #include "safetensors_reader.h"
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

@@ -2,6 +2,7 @@
  *  Build target: `gguf_to_onebp` (see CMakeLists.txt) — pure C++, no Python.
  *  Run:   ./build/gguf_to_onebp model.gguf output.1bp          (Q4NX 4-bit)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq2    (symmetric ternary)
+ *         ./build/gguf_to_onebp model.gguf output.1bp --tq2nz  (no-zero 2-bit S40)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq1    (1.58-bit base-3)
  */
 #include <cstdio>
@@ -30,21 +31,58 @@ static inline uint16_t f32b(float v) {
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
+// ── Legacy imatrix (.dat) loader — llama.cpp format ──
+// i32 n_entries; per entry: i32 name_len, name, i32 ncall, i32 nval,
+// nval x f32 sums; optional i32 n_calls + dataset. Weights = sums / ncall.
+static bool load_imatrix_dat(const char* path,
+                             std::unordered_map<std::string, std::vector<float>>& out) {
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "Cannot open imatrix %s\n", path); return false; }
+    int32_t n = 0;
+    if (fread(&n, 4, 1, f) != 1 || n < 1) { fclose(f); return false; }
+    for (int i = 0; i < n; i++) {
+        int32_t ln = 0; fread(&ln, 4, 1, f);
+        std::string name(ln, '\0');
+        fread(name.data(), 1, ln, f);
+        int32_t ncall = 0, nval = 0;
+        fread(&ncall, 4, 1, f); fread(&nval, 4, 1, f);
+        std::vector<float> sums(nval);
+        fread(sums.data(), 4, nval, f);
+        auto& v = out[name];
+        v.resize(nval);
+        float inv = ncall > 0 ? 1.0f / (float)ncall : 1.0f;
+        for (int j = 0; j < nval; j++) v[j] = sums[j] * inv;
+    }
+    fclose(f);
+    return true;
+}
+
 int main(int argc, char** argv) {
     //signal(SIGFPE, sigfpe_handler);
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq1]\n", argv[0]);
+        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq2nz-e4m3 | --tq1] [--imatrix file.dat]\n", argv[0]);
         return 1;
     }
     // --- Parse quant selection (Q4NX default, --tq2 for symmetric ternary, --tq1 for 1.58-bit) ---
     OnebpQuant quant = ONEBP_Q4NX;
+    std::string imatrix_path;
     for (int ai = 3; ai < argc; ai++) {
         if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
+        else if (strcmp(argv[ai], "--tq2nz") == 0) quant = ONEBP_TQ2NZ;
+        else if (strcmp(argv[ai], "--tq2nz-e4m3") == 0) quant = ONEBP_TQ2NZ_E4M3;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
+        else if (strcmp(argv[ai], "--imatrix") == 0 && ai + 1 < argc) imatrix_path = argv[++ai];
         else { fprintf(stderr, "Unknown option: %s\n", argv[ai]); return 1; }
     }
+    std::unordered_map<std::string, std::vector<float>> imatrix;
+    if (!imatrix_path.empty()) {
+        if (!load_imatrix_dat(imatrix_path.c_str(), imatrix)) { fprintf(stderr, "imatrix load failed\n"); return 1; }
+        printf("imatrix: %zu tensors loaded\n", imatrix.size());
+    }
     const char* quant_name = (quant == ONEBP_TQ2) ? "TQ2 (ternary 2-bit)" :
+                             (quant == ONEBP_TQ2NZ) ? "TQ2NZ (no-zero 2-bit S40)" :
+                             (quant == ONEBP_TQ2NZ_E4M3) ? "TQ2NZ-E4M3 (no-zero 2-bit, UE4M3 scales)" :
                              (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
                              "Q4NX (4-bit)";
     GgufReader reader;
@@ -238,7 +276,7 @@ int main(int argc, char** argv) {
     // (shape.size() != 2 filtered out every 1D tensor), which meant every
     // .1bp file ever produced was missing all its normalization weights —
     // structurally incapable of correct inference. See issue #1023.
-    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; };
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; };
     std::vector<TInfo> tensors;
     uint64_t data_off = 0;
     int tr = 32, tc = 256, gs = 32;
@@ -257,7 +295,7 @@ int main(int argc, char** argv) {
             int len = (int)inf->shape[0];
             if (len <= 0) continue;
             uint64_t raw_bytes = (uint64_t)len * 4;  // f32, unquantized
-            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes});
+            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes, quant});
             data_off += raw_bytes;
             continue;
         }
@@ -265,11 +303,18 @@ int main(int argc, char** argv) {
         if (ndim == 2) {
             int c = (int)inf->shape[0], r = (int)inf->shape[1];
             if (r <= 0 || c <= 0) continue;
-            if ((uint64_t)r * (uint64_t)c > 200000000) continue;
-            uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, quant);
-            tensors.push_back({tn, 2, r, c, 1, data_off, tiled});
+            if ((uint64_t)r * (uint64_t)c > 1500000000ull) continue;  // cap: 1.5G elements (~6 GB f32)
+            // Tensor routing (ROCmFPX recipe mining): no-zero 2-bit codebooks
+            // destroy sparse/embedding tensors (TQ2NZ model collapse test).
+            // Keep token embeddings + lm_head on asymmetric Q4NX.
+            OnebpQuant tq = quant;
+            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
+                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
+                tq = ONEBP_Q4NX;
+            uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
+            tensors.push_back({tn, 2, r, c, 1, data_off, tiled, tq});
             data_off += tiled;
-            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu\n", tn.c_str(), r, c, tiled);
+            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
             // ndim == 3: MoE expert-stacked tensor [num_experts, rows, cols]
             int ne, r, c;
@@ -285,9 +330,13 @@ int main(int argc, char** argv) {
                 c  = (int)inf->shape[2];
             }
             if (ne <= 0 || r <= 0 || c <= 0) continue;
-            uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, quant);
+            OnebpQuant tq = quant;
+            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
+                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
+                tq = ONEBP_Q4NX;
+            uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, tq);
             uint64_t total_tiled = (uint64_t)ne * per_expert;
-            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled});
+            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled, tq});
             data_off += total_tiled;
             printf("  tensor %s: %d experts x %dx%d per-expert=%lu total=%lu\n",
                    tn.c_str(), ne, r, c, per_expert, total_tiled);
@@ -318,7 +367,7 @@ int main(int argc, char** argv) {
     uint64_t index_size = 0;
     for (auto& t : tensors) {
         uint32_t nl = std::min((uint32_t)t.name.size(), (uint32_t)63);
-        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8;  // name_len + name + \0 + ndim + dims[ndim] + offset + bytes
+        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8 + 4;  // + v2 per-tensor quant
     }
 
     // Write tensor index — ndim==2 (dense) or ndim==3 (MoE expert stack)
@@ -341,6 +390,8 @@ int main(int argc, char** argv) {
         }
         fwrite(&t.offset, 8, 1, fout);
         fwrite(&t.tiled, 8, 1, fout);
+        uint32_t tq = (uint32_t)t.tq;
+        fwrite(&tq, 4, 1, fout);   // v2: per-tensor quant
     }
 
     printf("Quantizing %zu tensors as %s...\n", tensors.size(), quant_name);
@@ -377,7 +428,7 @@ int main(int argc, char** argv) {
                     int r0 = r * tr, c0 = c * tc;
                 int grps = tc / gs;
                 if (grps <= 0) grps = 1;
-                if (quant == ONEBP_TQ2) {
+                if (ti.tq == ONEBP_TQ2) {
                     // ── TQ2: symmetric ternary (-scale, 0, +scale), no zero-point ──
                     // Per tile: [scales: tr*grps*bf16][codes: tr*tc packed 4/byte].
                     // Scale = max|v| per 32-group => lossless when the source is
@@ -422,7 +473,98 @@ int main(int argc, char** argv) {
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }
-                if (quant == ONEBP_TQ1) {
+                if (ti.tq == ONEBP_TQ2NZ || ti.tq == ONEBP_TQ2NZ_E4M3) {
+                    // ── TQ2NZ family: no-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2
+                    // style) — uses ALL four 2-bit codes (TQ2 wastes code 3).
+                    // Per tile: [scales][codes: tr*tc packed 4/byte].
+                    // Scale = max|v|/4 per 32-group so +4 covers the max;
+                    // nearest-of-{-4,-1,+1,+4} with the FP2 2.5f split.
+                    // code: 0=-4s, 1=-1s, 2=+1s, 3=+4s (LSB-first, 4 codes/byte).
+                    // All-zero / padding groups use scale=0 (code×0=0).
+                    // TQ2NZ uses BF16 scales (2 B); TQ2NZ_E4M3 uses 1-byte UE4M3
+                    // scales picked by MSE search over the 127-value table.
+                    bool e4m3 = (ti.tq == ONEBP_TQ2NZ_E4M3);
+                    size_t sb = (size_t)tr * grps * (e4m3 ? 1 : 2), cb = (size_t)tr * tc / 4;
+                    std::vector<uint8_t> tdata(sb + cb, 0);
+                    uint8_t*  qd = tdata.data() + sb;
+                    for (int rr = 0; rr < tr; rr++) {
+                        for (int g = 0; g < grps; g++) {
+                            int ar = r0 + rr, acs = c0 + g * gs;
+                            float maxabs = 0.0f;
+                            for (int i = 0; i < gs; i++) {
+                                int ac = acs + i;
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) { float a = fabsf(v); if (a > maxabs) maxabs = a; }
+                                }
+                            }
+                            float s = maxabs * 0.25f;  // outer code ±4 covers max
+                            uint8_t scale_byte = 0;
+                            float inv_s = 0.0f;
+                            if (s < 1e-20f) { s = 0.0f; scale_byte = 0; }
+                            else if (e4m3) {
+                                // FP2-style MSE search: start at nearest UE4M3(max/4),
+                                // walk ±8 entries, pick min reconstruction MSE. With
+                                // --imatrix, weight the per-element error by the
+                                // activation importance (mean-normalized per group).
+                                const std::vector<float>* imw = nullptr;
+                                if (!imatrix.empty()) {
+                                    auto it = imatrix.find(ti.name);
+                                    if (it != imatrix.end() && (int)it->second.size() == C) imw = &it->second;
+                                }
+                                uint8_t start_e = onebp_nearest_ue4m3(s);
+                                float best_err = INFINITY;
+                                for (int d = -8; d <= 8; d++) {
+                                    int e = (int)start_e + d;
+                                    if (e < 0 || e > 126) continue;
+                                    float scv = onebp_ue4m3_to_f32((uint8_t)e);
+                                    if (scv <= 0.0f) continue;
+                                    float inv = 1.0f / scv, err = 0.0f;
+                                    float wsum = 0.0f;
+                                    for (int i = 0; i < gs; i++) {
+                                        int ac = acs + i;
+                                        if (ar >= R || ac >= C) continue;
+                                        float v = fw[expert_off + (size_t)ar * C + ac];
+                                        if (!std::isfinite(v)) continue;
+                                        float q = v * inv;
+                                        float code = (q > 2.5f) ? 4.0f : (q < -2.5f) ? -4.0f : (q > 0.0f) ? 1.0f : -1.0f;
+                                        float dv = v - code * scv;
+                                        float w = imw ? (*imw)[ac] : 1.0f;
+                                        err += w * dv * dv;
+                                        wsum += w;
+                                    }
+                                    if (imw && wsum > 0.0f) err /= wsum;
+                                    if (err < best_err) { best_err = err; scale_byte = (uint8_t)e; }
+                                }
+                                tdata[(size_t)rr * grps + g] = scale_byte;
+                                inv_s = 1.0f / onebp_ue4m3_to_f32(scale_byte);
+                            } else {
+                                ((uint16_t*)tdata.data())[rr * grps + g] = f32b(s);
+                                inv_s = 1.0f / s;
+                            }
+                            for (int i = 0; i < gs; i++) {
+                                int ac = acs + i;
+                                uint8_t code = 1;  // default -1s (s=0 → ±0)
+                                if (ar < R && ac < C && s > 0.0f) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    if (std::isfinite(v)) {
+                                        float q = v * inv_s;
+                                        if (q > 2.5f)      code = 3;  // +4
+                                        else if (q < -2.5f) code = 0;  // -4
+                                        else if (q > 0.0f)  code = 2;  // +1
+                                        else               code = 1;  // -1
+                                    }
+                                }
+                                int local_c = (acs - c0) + i;
+                                size_t pos = (size_t)rr * tc + local_c;
+                                qd[pos / 4] |= (uint8_t)(code << ((pos & 3) * 2));
+                            }
+                        }
+                    }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
+                if (ti.tq == ONEBP_TQ1) {
                     // ── TQ1: 1.58-bit base-3 ternary (5 codes/byte) ──
                     // Groups of 5 elements: bf16 scale + 1 byte with 5 base-3 codes.
                     // code: 0=-scale, 1=0, 2=+scale

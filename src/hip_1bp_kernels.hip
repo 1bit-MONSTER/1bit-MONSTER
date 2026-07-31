@@ -126,3 +126,78 @@ __global__ void h1bp_embed_copy_kernel(float* __restrict__ dst,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < H) dst[i] = embed[(size_t)token_id * H + i];
 }
+
+// ═══ TQ2NZ / TQ2NZ_E4M3 packed-decode GEMV (2-bit S40 {-4,-1,+1,+4}) ═══
+// Reads the 1BP tile layout directly from the mmap'd file — no CPU dequant.
+// Tile = 32 rows × 256 cols: [scales: 32×8 × (2B bf16 | 1B UE4M3)][codes:
+// 32×256/4 B, 4 codes/byte LSB-first]. Each warp covers up to 4 tiles
+// (K ≤ 1024: 1 warp per row, no atomics); K > 1024 uses ceil(K/1024) warps
+// per row with atomicAdd — caller must zero the output first.
+__device__ __forceinline__ float h1bp_tq2nz_scale(uint32_t e) {
+    // UE4M3: exp==0 -> mant*2^-10 ; else (8+mant)*2^(exp-11). No
+    // transcendental in device code — precomputed 2^(exp-11) table.
+    static const float p2[16] = {
+        0.0009765625f, 0.001953125f, 0.00390625f, 0.0078125f,
+        0.015625f,     0.03125f,     0.0625f,      0.125f,
+        0.25f,         0.5f,         1.0f,         2.0f,
+        4.0f,          8.0f,         16.0f,        32.0f };
+    uint32_t exp = e >> 3, mant = e & 7;
+    return exp == 0 ? (float)mant * 0.0009765625f
+                    : (8.0f + (float)mant) * p2[exp - 1];
+}
+__device__ __forceinline__ float h1bp_bf16_to_f32(uint16_t u) {
+    return __uint_as_float((uint32_t)u << 16);
+}
+
+template <bool E4M3>
+__global__ void h1bp_tq2nz_part_kernel(const uint8_t* __restrict__ w,
+                                       const float* __restrict__ x,
+                                       float* __restrict__ part,
+                                       int N, int ntc) {
+    // Per-lane partials: 32 lanes = up to 4 tiles x 8 groups; one warp per
+    // row (K <= 1024). K > 1024 uses wpr = ceil(ntc/4) warps per row.
+    const int lane = threadIdx.x & 31;
+    const int wpr  = (ntc + 3) >> 2;
+    const int warp = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    const int row  = warp / wpr;
+    if (row >= N) return;
+    const int tw = (warp % wpr) * 4 + (lane >> 3);
+    const int g  = lane & 7;
+    if (tw >= ntc) { part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = 0.0f; return; }
+
+    const int tile_bytes = 32 * 8 * (E4M3 ? 1 : 2) + 32 * 256 / 4;
+    const int scb        = 32 * 8 * (E4M3 ? 1 : 2);
+    const int tile_row   = row >> 5;
+    const int rri        = row & 31;
+    const uint8_t* tb = w + (size_t)(tile_row * ntc + tw) * tile_bytes;
+
+    float scale;
+    if (E4M3) scale = h1bp_tq2nz_scale(tb[rri * 8 + g]);
+    else      scale = h1bp_bf16_to_f32(((const uint16_t*)tb)[rri * 8 + g]);
+
+    const uint8_t* codes = tb + scb + rri * 64 + g * 8;
+    const float*   xp    = x + tw * 256 + g * 32;
+    float acc = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        uint8_t b = codes[i];
+#pragma unroll
+        for (int k = 0; k < 4; k++) {
+            int c = (b >> (2 * k)) & 3;
+            float v = (c == 0 ? -4.0f : c == 1 ? -1.0f : c == 2 ? 1.0f : 4.0f) * scale;
+            acc += v * xp[i * 4 + k];
+        }
+    }
+    part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = acc;
+}
+
+__global__ void h1bp_tq2nz_sum_kernel(const float* __restrict__ part,
+                                      float* __restrict__ out,
+                                      int N, int wpr) {
+    // One thread per row; sums the 32*wpr partials. No sync/atomic needed.
+    const int row = blockIdx.x * (int)blockDim.x + threadIdx.x;
+    if (row >= N) return;
+    float s = 0.0f;
+    for (int i = 0; i < 32 * wpr; i++) s += part[(size_t)row * 32 * wpr + i];
+    out[row] = s;
+}

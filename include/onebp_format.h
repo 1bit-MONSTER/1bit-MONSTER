@@ -23,13 +23,13 @@
  *    Symmetric ternary: every value is exactly -scale, 0, or +scale — no
  *    zero_point needed (unlike Q4NX's asymmetric min/scale). One scale per
  *    32-element group.
- *    Per tile row:
- *      [0..15]:    8 BF16 scales (one per 32-element group)
- *      [16..79]:   64 bytes packed 2-bit codes (4 per byte, LSB-first:
+ *    Per tile (block layout — scales for all 32 rows first, then codes):
+ *      [0..511]:   256 BF16 scales (32 rows x 8 groups; scale[r][g] = r*8+g)
+ *      [512..2559]: 2048 bytes packed 2-bit codes (4 per byte, LSB-first:
  *                  code = byte & 3, (byte>>2) & 3, (byte>>4) & 3, (byte>>6) & 3)
  *                  code 0 = -scale, 1 = 0, 2 = +scale, 3 = unused (encoder
  *                  never emits it; a decoder should treat it as 0)
- *    Total per tile row: 80 bytes → 2560 bytes per tile (exactly half of
+ *    Total per tile: 2560 bytes (exactly half of
  *    Q4NX's 5120 — the real "1-bit-ish" storage win Q4NX doesn't give you).
  *    This is a generic symmetric-ternary quantizer (round to nearest of
  *    {-scale,0,scale} per group) — lossless when the source is already
@@ -41,6 +41,19 @@
  *  for codes. Each byte packs 5 ternary values (3^5 = 243 < 256).
  *  The 256-column tile boundary is handled by padding the last group
  *  of 5 with zero codes.
+ *
+ *  TQ2NZ (header.quant == ONEBP_TQ2NZ), 32×256 — no-zero 2-bit:
+ *  ROCmFPX-FP2-style S40 codebook {-4,-1,+1,+4} using ALL four 2-bit
+ *  codes (TQ2 wastes code 3). Same 80-byte tile row as TQ2: [8 BF16
+ *  scales][64 B packed codes]. code 0=-4s, 1=-1s, 2=+1s, 3=+4s.
+ *  Scale = max|v|/4 per 32-group so the outer code covers the max.
+ *  Same 2.50 bpw as TQ2/FP2; all-zero groups use scale=0 (code×0=0).
+ *
+ *  TQ2NZ_E4M3 (header.quant == ONEBP_TQ2NZ_E4M3), 32×256 — same S40
+ *  codebook, but scales are 1-byte unsigned E4M3 (exp==0 → mant·2^-10,
+ *  else (8+mant)·2^(exp-11); 127 finite values) instead of BF16 → tile
+ *  row = [8 UE4M3 scales][64 B codes] = 72 B → 2.25 bpw. Scale picked by
+ *  MSE search over the 127-value table starting at max|v|/4.
  *
  *  Tensor index entry (variable-length):
  *    [name_len:u32][name:str][ndim:u32][dims:u32 × ndim][offset:u64][bytes:u64]
@@ -60,9 +73,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <cmath>
 
 static constexpr uint32_t ONEBP_MAGIC        = 0x00504231;  // "1BP\0"
-static constexpr uint32_t ONEBP_VERSION      = 1;
+static constexpr uint32_t ONEBP_VERSION      = 2;  // v2: per-entry quant field (mixed-quant files)
 
 // ─── Quantization types ────────────────────────────────────────────
 enum OnebpQuant : uint32_t {
@@ -72,6 +86,8 @@ enum OnebpQuant : uint32_t {
     ONEBP_TQ2  = 3,   // Ternary TQ2
     ONEBP_F16  = 4,   // Float16 (no quant)
     ONEBP_F32  = 5,   // Float32 (no quant)
+    ONEBP_TQ2NZ= 6,   // No-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2-style)
+    ONEBP_TQ2NZ_E4M3 = 7, // TQ2NZ with 1-byte UE4M3 scales (2.25 bpw)
 };
 
 // ─── Scale types ───────────────────────────────────────────────────
@@ -182,7 +198,7 @@ struct OnebpHeader {
     // validity: core dims always required; attention heads are optional
     // (Mamba/MoE architectures have no attention, set NH=0, HD=0).
     bool valid() const {
-        if (magic != ONEBP_MAGIC || version != ONEBP_VERSION) return false;
+        if (magic != ONEBP_MAGIC || version < 1 || version > ONEBP_VERSION) return false;
         if (hidden_size <= 0 || num_layers <= 0 || vocab_size <= 0) return false;
         if (num_attention_heads > 0 && head_dim <= 0) return false;
         if (head_dim > 0 && num_attention_heads <= 0) return false;
@@ -215,6 +231,30 @@ static_assert(sizeof(OnebpHeader) == 256, "OnebpHeader must be exactly 256 bytes
 // Variable-length: [name_len:u32][name:str][ndim:u32][shape:u32[]][offset:u64][bytes:u64]
 // Not a fixed struct — written element by element in the converter.
 
+// ─── UE4M3 scale codec (ROCmFPX-FP2-style, shared by converter + loader) ──
+// exp==0 → mant·2^-10 ; else (8+mant)·2^(exp-11). 127 finite values (0x00..0x7e).
+static inline float onebp_ue4m3_to_f32(uint8_t e) {
+    if (e > 0x7e) return 0.0f;
+    uint32_t exp = e >> 3, mant = e & 7;
+    float v = exp == 0 ? (float)mant * 0.0009765625f   // 2^-10
+                       : (8.0f + mant) * ldexpf(1.0f, (int)exp - 11);
+    return v;
+}
+
+static inline uint8_t onebp_nearest_ue4m3(float target) {
+    // binary search over the monotonic 127-value table
+    if (target <= 0.0f) return 0;
+    uint8_t lo = 0, hi = 126;
+    while (lo < hi) {
+        uint8_t mid = (lo + hi + 1) >> 1;
+        if (onebp_ue4m3_to_f32(mid) <= target) lo = mid; else hi = mid - 1;
+    }
+    if (lo < 126 &&
+        fabsf(onebp_ue4m3_to_f32(lo + 1) - target) < fabsf(onebp_ue4m3_to_f32(lo) - target))
+        return lo + 1;
+    return lo;
+}
+
 // ─── Compute tiled size for a weight matrix ──────────────────────
 // Returns bytes needed after tiling rows×cols to tile_rows×tile_cols
 static inline uint64_t onebp_tiled_size(
@@ -238,8 +278,14 @@ static inline uint64_t onebp_tiled_size(
             tile_bytes = (uint64_t)tile_rows * tile_cols;  // 1 byte per element
             break;
         case ONEBP_TQ2:
+        case ONEBP_TQ2NZ:
             // scales (bf16 x groups x rows) + 2-bit packed codes (4/byte)
             tile_bytes = (uint64_t)tile_rows * groups_per_row * 2   // scales
+                       + (uint64_t)tile_rows * tile_cols / 4;       // 2-bit packed
+            break;
+        case ONEBP_TQ2NZ_E4M3:
+            // scales (1-byte UE4M3 x groups x rows) + 2-bit packed codes
+            tile_bytes = (uint64_t)tile_rows * groups_per_row * 1   // scales
                        + (uint64_t)tile_rows * tile_cols / 4;       // 2-bit packed
             break;
         case ONEBP_TQ1: {

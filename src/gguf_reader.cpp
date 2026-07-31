@@ -340,8 +340,8 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         // TQ2_0_g128: ternary, 2-bit packed, group=128 → blocks of 128 el, 33 bytes
         // TQ2_0 ternary: fp16 scale (2) + 2-bit codes (128*2/8=32) = 34 bytes
         case GGUF_DTYPE_TQ2_0_G128: return {128, 34};
-        // Q1_0 binary: fp16 scale (2) + 1-bit codes (128/8=16) = 18 bytes
-        case GGUF_DTYPE_Q1_0_G128: return {128, 18};
+        // Q1_0: fp16 scale (2) + 1-bit sign codes (128/8=16) = 18 bytes
+        case GGUF_DTYPE_Q1_0: return {128, 18};
         default: return {0, 0};
     }
 }
@@ -376,8 +376,8 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
         case GGUF_DTYPE_Q5_K: return dequant_q5_k(data, out, count);
         case GGUF_DTYPE_Q6_K: return dequant_q6_k(data, out, count);
         case GGUF_DTYPE_Q8_K: return dequant_q8_k(data, out, count);
-        case GGUF_DTYPE_Q1_0_G128: {
-            // Q1_0 binary: fp16 scale + sign bits (1 bit per element)
+        case GGUF_DTYPE_Q1_0: {
+            // llama.cpp Q1_0 (QK1_0=128): fp16 scale + sign bits (1 bit per element)
             for (int i = 0; i < count; i++) {
                 int bi = i / 128, ei = i % 128;
                 const uint8_t* blk = data + (size_t)bi * 18;

@@ -75,7 +75,7 @@ extern "C" {
 
 // ── Forward declarations ──────────────────────────────────────────
 extern "C" float* dequant_i8_to_float(const uint8_t*, int, int*, int*);
-extern "C" int rcpp_kv_cache_attn_decode(
+extern "C" int rcpp_kv_cache_attn_decode_fd(
     const void* Q_dev, const void* K_dev, const void* V_dev,
     void* out_dev, int num_q_heads, int num_kv_heads,
     int head_dim, int seq_len, float scale, void* stream);
@@ -1013,7 +1013,7 @@ int main(int argc, char** argv) {
             hipMemcpyAsync(&d_K_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
             for(int kvh=0;kvh<cfg.NKV;kvh++){for(int d=0;d<cfg.HD;d++)staging[kvh*cfg.HD+d]=__float2half(qkv_out[cfg.NH*cfg.HD+cfg.NKV*cfg.HD+kvh*cfg.HD+d]);}
             hipMemcpyAsync(&d_V_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
-            rcpp_kv_cache_attn_decode(d_Q,d_K_cache,d_V_cache,d_AttnOut,cfg.NH,cfg.NKV,cfg.HD,context_len+1,attn_scale,gpu_stream);
+            rcpp_kv_cache_attn_decode_fd(d_Q,d_K_cache,d_V_cache,d_AttnOut,cfg.NH,cfg.NKV,cfg.HD,context_len+1,attn_scale,gpu_stream);
             std::vector<__half> attn_f16(cfg.NH*cfg.HD);hipMemcpyAsync(attn_f16.data(),d_AttnOut,cfg.NH*cfg.HD*sizeof(__half),hipMemcpyDeviceToHost,gpu_stream);
             hipStreamSynchronize(gpu_stream);
             for(int i=0;i<cfg.NH*cfg.HD;i++)attn_out[i]=__half2float(attn_f16[i]);
@@ -1057,7 +1057,7 @@ int main(int argc, char** argv) {
             hipMemcpyAsync(&d_K_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
             for(int kvh=0;kvh<cfg.NKV;kvh++){for(int d=0;d<cfg.HD;d++)staging[kvh*cfg.HD+d]=__float2half(qkv_out[cfg.NH*cfg.HD+cfg.NKV*cfg.HD+kvh*cfg.HD+d]);}
             hipMemcpyAsync(&d_V_cache[kv_off],staging.data(),cfg.NKV*cfg.HD*sizeof(__half),hipMemcpyHostToDevice,gpu_stream);
-            rcpp_kv_cache_attn_decode(d_Q,d_K_cache,d_V_cache,d_AttnOut,cfg.NH,cfg.NKV,cfg.HD,context_len+1,attn_scale,gpu_stream);
+            rcpp_kv_cache_attn_decode_fd(d_Q,d_K_cache,d_V_cache,d_AttnOut,cfg.NH,cfg.NKV,cfg.HD,context_len+1,attn_scale,gpu_stream);
             std::vector<__half> attn_f16(cfg.NH*cfg.HD);hipMemcpyAsync(attn_f16.data(),d_AttnOut,cfg.NH*cfg.HD*sizeof(__half),hipMemcpyDeviceToHost,gpu_stream);
             hipStreamSynchronize(gpu_stream);
             for(int i=0;i<cfg.NH*cfg.HD;i++)attn_out[i]=__half2float(attn_f16[i]);

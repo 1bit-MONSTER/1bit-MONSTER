@@ -24,12 +24,37 @@
 #include <vector>
 #include <string>
 #include <fstream>
+#include <memory>
+#include <immintrin.h>
 
 // ── Generic CPU Backend ──────────────────────────────────────────────────────
+
+// #1240: the packed TQ2 GEMV uses BMI2 (_pext_u32) + AVX-512 (_mm512_*). Gate
+// it at runtime so CPUs without that ISA (pre-Haswell Intel, Haswell has BMI2
+// but no AVX-512, older AMD, future non-x86 ports) fall back to the fp32 path
+// instead of SIGILL. This is the cross-platform CPU backend — it must never
+// crash on the packed path.
+static bool cpu_has_packed_isa() {
+#if defined(__x86_64__) || defined(__i386__)
+    return __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("avx512f");
+#else
+    return false;
+#endif
+}
+
 struct GenericBackend : Backend {
     ModelConfig cfg;
     std::vector<float> embed, final_norm, output_weight;
     std::vector<std::vector<float>> layer_w;  // flat per-layer weights
+    // Packed TQ2 path (WS-04): keep the 1BP mmap alive and run multiplication-free
+    // GEMV on raw 2-bit tiles instead of dequantizing to fp32. Used only when
+    // packed_ is true (1BP TQ2 models); all other formats use the fp32 path.
+    std::unique_ptr<OnebpModel> tq2_;
+    bool packed_ = false;
+    int tr_ = 32, tc_ = 256, gs_ = 32;
+    struct PackedW { const uint8_t* base = nullptr; int N = 0, K = 0; };
+    std::vector<PackedW> packed_w_;
+    int pk_lm_ = -1;
     std::vector<std::vector<float>> k_cache, v_cache; // KV cache [n_layers][max_seq * n_kv * hd]
     int pos = 0;
     std::vector<float> logits_buf;
@@ -54,6 +79,7 @@ struct GenericBackend : Backend {
         size_t bq = SIZE_MAX, bk = SIZE_MAX, bv = SIZE_MAX;
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
+        int pk_q = -1, pk_k = -1, pk_v = -1, pk_o = -1, pk_w1 = -1, pk_w2 = -1, pk_w3 = -1;  // packed TQ2 slots
     };
     std::vector<LayerW> layers;
 
@@ -99,6 +125,7 @@ struct GenericBackend : Backend {
     }
     std::vector<float> flat_weights;
     float* w(size_t idx) {
+
         if (idx >= flat_weights.size()) {
             fprintf(stderr, "[generic] FATAL: weight index %zu out of range (size=%zu)\n",
                     idx, flat_weights.size());
@@ -161,13 +188,22 @@ struct GenericBackend : Backend {
 
     bool load_1bp(const std::string& path) {
         printf("Generic: loading 1BP: %s\n", path.c_str());
-        OnebpModel model;
-        if (!model.open(path.c_str())) {
+        tq2_ = std::make_unique<OnebpModel>();
+        if (!tq2_->open(path.c_str())) {
             fprintf(stderr, "Generic: failed to open 1BP\n");
             return false;
         }
+        OnebpModel& model = *tq2_;
         auto& h = model.header();
-        if (cfg.hidden == 0) {
+        packed_ = (h.quant == ONEBP_TQ2) && !getenv("GENERIC_NO_PACKED") && cpu_has_packed_isa();
+        if (h.quant == ONEBP_TQ2 && !packed_)
+            printf("Generic: TQ2 packed path OFF (%s) — using fp32 path\n",
+                   cpu_has_packed_isa() ? "GENERIC_NO_PACKED set" : "CPU lacks BMI2+AVX-512");
+        if (packed_) {
+            tr_ = h.tile_rows; tc_ = h.tile_cols; gs_ = h.group_size;
+            printf("Generic: TQ2 packed path ON (tile %dx%d gs=%d)\n", tr_, tc_, gs_);
+        }
+        if (cfg.hidden == 0 || cfg.format == ModelFormat::ONEBP) {   // header is authoritative for 1BP
             cfg.hidden = cfg.hidden_size = h.hidden_size;
             cfg.n_layers = cfg.num_layers = h.num_layers;
             cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = h.num_attention_heads;
@@ -185,12 +221,27 @@ struct GenericBackend : Backend {
             fprintf(stderr, "Generic: missing token_embd.weight\n");
             return false;
         }
+        if (getenv("CPU_DEBUG_OPS")) {
+            double s = 0, mx = 0;
+            for (size_t i = 0; i < embed.size(); i++) { s += fabs(embed[i]); if (fabs(embed[i]) > mx) mx = fabs(embed[i]); }
+            fprintf(stderr, "[cpu] embed mean|.|=%g max|.|=%g\n", s / embed.size(), mx);
+        }
 
         // Load final norm + output weight
         if (!model.get_tensor_f32("token_embd_norm.weight", final_norm))
-            model.get_tensor_f32("model.norm.weight", final_norm);
+            if (!model.get_tensor_f32("model.norm.weight", final_norm))
+                model.get_tensor_f32("output_norm.weight", final_norm);   // 1BP writer convention
         if (!model.get_tensor_f32("output.weight", output_weight))
             model.get_tensor_f32("lm_head.weight", output_weight);
+        if (packed_) {
+            if (const uint8_t* b = model.get_tile_ptr("output.weight", 0, 0)) {
+                packed_w_.push_back({b, cfg.vocab, cfg.hidden});
+                pk_lm_ = (int)packed_w_.size() - 1;
+            } else if (const uint8_t* b = model.get_tile_ptr("lm_head.weight", 0, 0)) {
+                packed_w_.push_back({b, cfg.vocab, cfg.hidden});
+                pk_lm_ = (int)packed_w_.size() - 1;
+            }
+        }
 
         // Per-layer weights
         layers.resize(cfg.n_layers);
@@ -207,6 +258,9 @@ struct GenericBackend : Backend {
                 }
                 if ((int)w.size() == rows * cols)
                     idx = push(std::move(w));
+                else if (getenv("CPU_DEBUG_OPS"))
+                    fprintf(stderr, "[generic] load fail: %s (%d elems, want %d)\n",
+                            buf, (int)w.size(), rows * cols);
             };
             int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads;
             int HD = cfg.head_dim, IM = cfg.n_ff;
@@ -217,13 +271,39 @@ struct GenericBackend : Backend {
             load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
             load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
             load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            if (packed_) {
+                auto pk = [&](const char* blk, const char* legacy, int& idx, int M, int K) {
+                    char b2[128];
+                    snprintf(b2, sizeof(b2), "blk.%d.%s", l, blk);
+                    const uint8_t* base = model.get_tile_ptr(b2, 0, 0);
+                    if (!base) {
+                        snprintf(b2, sizeof(b2), "model.layers.%d.%s", l, legacy);
+                        base = model.get_tile_ptr(b2, 0, 0);
+                    }
+                    if (base) { packed_w_.push_back({base, M, K}); idx = (int)packed_w_.size() - 1; }
+                };
+                pk("attn_q.weight", "self_attn.q_proj.weight", lw.pk_q, NH*HD, H);
+                pk("attn_k.weight", "self_attn.k_proj.weight", lw.pk_k, NKV*HD, H);
+                pk("attn_v.weight", "self_attn.v_proj.weight", lw.pk_v, NKV*HD, H);
+                pk("attn_output.weight", "self_attn.o_proj.weight", lw.pk_o, H, NH*HD);
+                pk("ffn_gate.weight", "mlp.gate_proj.weight", lw.pk_w1, IM, H);
+                pk("ffn_up.weight", "mlp.up_proj.weight", lw.pk_w2, IM, H);
+                pk("ffn_down.weight", "mlp.down_proj.weight", lw.pk_w3, H, IM);
+            }
 
             // RMS norm weights
             load("input_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);
+            load("attn_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);   // 1BP writer convention
             load("post_attention_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1);
+            load("ffn_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1); // 1BP writer convention
+            // Qwen3 per-head QK-norm (raw fp32 vectors in 1BP); required for
+            // attention stability — without it Qwen3 logits collapse (flat).
+            load("attn_q_norm.weight", "self_attn.q_norm.weight", lw.q_norm, HD, 1);
+            load("attn_k_norm.weight", "self_attn.k_norm.weight", lw.k_norm, HD, 1);
         }
         printf("Generic: 1BP loaded — %d layers, %.1fM params\n",
                cfg.n_layers, (double)embed.size() / 1e6);
+        if (!packed_) tq2_.reset();  // Q4NX: fp32 pool is self-contained
         return true;
     }
 
@@ -308,7 +388,10 @@ struct GenericBackend : Backend {
             return idx;
         };
 
-        int NE = cfg.n_experts;
+        // MoE detection must use the FILE's expert count, not the member cfg:
+        // the member defaults to 16 (Zaya .bin convention) and callers may not
+        // have synced it — a dense GGUF would hit the MoE branch and abort.
+        int NE = hdr_cfg.n_experts;
         for (int i = 0; i < L; i++) {
             std::string p = "blk." + std::to_string(i) + ".";
             LayerW lw = {};  // zero-initialize all indices to SIZE_MAX
@@ -382,6 +465,22 @@ struct GenericBackend : Backend {
         printf("Generic: loaded %zu layers, embed=%zu, final_norm=%zu, lm_head=%s\n",
                layers.size(), embed.size(), final_norm.size(),
                output_weight.empty() ? "tied" : "untied");
+
+        // The GGUF header is authoritative for dims — the member cfg may still
+        // hold caller defaults (e.g. ppl_generic passes a default-constructed
+        // cfg). Without this sync, forward() runs with cfg.n_layers=40 on a
+        // 28-layer model → OOB on layers[] (found via the Bonsai ppl gate).
+        cfg.set_hidden(hdr_cfg.hidden_size);
+        cfg.set_heads(hdr_cfg.num_heads);
+        cfg.set_kv_heads(hdr_cfg.num_kv_heads ? hdr_cfg.num_kv_heads : hdr_cfg.num_heads);
+        cfg.set_layers(hdr_cfg.num_layers);
+        cfg.head_dim = hdr_cfg.head_dim ? hdr_cfg.head_dim : hdr_cfg.hidden_size / hdr_cfg.num_heads;
+        cfg.set_ff(hdr_cfg.intermediate_size);
+        cfg.set_experts(hdr_cfg.num_experts);
+        cfg.num_experts_top = hdr_cfg.num_experts_top;
+        cfg.rms_norm_eps = hdr_cfg.rms_norm_eps;
+        cfg.rope_theta = hdr_cfg.rope_theta;
+        if (hdr_cfg.max_seq_len > 0) cfg.max_seq_len = hdr_cfg.max_seq_len;
         return !embed.empty() && layers.size() == (size_t)L;
     }
 
@@ -452,6 +551,59 @@ struct GenericBackend : Backend {
             for (int j = 0; j < K; j++) s += in[j] * wr[j];
             out[i] = s;
         }
+    }
+
+    // Packed TQ2 GEMV (WS-04): multiplication-free, pext masks + maskz add/sub,
+    // per-(row,32-group) BF16 scales. TQ2 code mapping: 0=-s, 1=0, 2=+s, 3=0.
+    // The AVX-512/BMI2 body lives in a target-attributed free function — the
+    // caller only reaches it after cpu_has_packed_isa() (issue #1240). (A
+    // target attribute on the member itself doesn't survive OpenMP outlining.)
+    __attribute__((target("avx512f,bmi2")))
+    static float gemv_packed_row(const uint8_t* base, const float* x, int row,
+                                 int ntc, int tc, int gs, int tr) {
+        float acc_row = 0;
+        int trr = row / tr, rr = row % tr;
+        int groups = tc / gs;
+        size_t tb = (size_t)tr * groups * 2 + (size_t)tr * tc / 4;
+        for (int tcc = 0; tcc < ntc; tcc++) {
+            const uint8_t* tile = base + ((size_t)trr * ntc + tcc) * tb;
+            const uint16_t* sc = (const uint16_t*)tile;
+            const uint8_t* qd = tile + (size_t)tr * groups * 2;
+            int c0 = tcc * tc;
+            for (int g = 0; g < groups; g++) {
+                float s = bf16_to_f32(sc[rr * groups + g]);
+                const uint8_t* q = qd + (size_t)(rr * tc + g * gs) / 4;
+                __m512 acc = _mm512_setzero_ps();
+                for (int hh = 0; hh < gs / 16; hh++) {
+                    uint32_t v;
+                    memcpy(&v, q + 4 * hh, 4);
+                    uint32_t lo = _pext_u32(v, 0x55555555u);
+                    uint32_t hi = _pext_u32(v, 0xAAAAAAAAu);
+                    uint32_t pos = hi & ~lo;
+                    uint32_t neg = ~(hi | lo);
+                    __m512 acts = _mm512_loadu_ps(x + c0 + g * gs + 16 * hh);
+                    acc = _mm512_add_ps(acc, _mm512_maskz_mov_ps((__mmask16)pos, acts));
+                    acc = _mm512_sub_ps(acc, _mm512_maskz_mov_ps((__mmask16)neg, acts));
+                }
+                acc_row += _mm512_reduce_add_ps(acc) * s;
+            }
+        }
+        return acc_row;
+    }
+
+    void gemv_packed(const PackedW& pw, const float* x, float* y) {
+        int N = pw.N, K = pw.K;
+        int ntc = (K + tc_ - 1) / tc_;
+        int groups = tc_ / gs_;
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < N; i++)
+            y[i] = gemv_packed_row(pw.base, x, i, ntc, tc_, gs_, tr_);
+    }
+
+    // Weight-GEMV dispatcher: packed TQ2 path when a packed slot exists, else fp32.
+    void mm(float* out, const float* in, const float* W, int N, int K, int pk) {
+        if (packed_ && pk >= 0) gemv_packed(packed_w_[pk], in, out);
+        else matmul(out, in, W, N, K);
     }
 
     static void silu(float* out, const float* gate, const float* up, int n) {
@@ -530,7 +682,7 @@ struct GenericBackend : Backend {
         //  strategy routing which needs per-token logprobs).
         const float* lm_w = output_weight.empty() ? embed.data() : output_weight.data();
         if (!lm_w) return false;
-        matmul(logits, hidden, lm_w, cfg.vocab, cfg.hidden);
+        mm(logits, hidden, lm_w, cfg.vocab, cfg.hidden, pk_lm_);
         if (argmax) {
             *argmax = 0;
             float max_val = logits[0];
@@ -586,9 +738,9 @@ struct GenericBackend : Backend {
             if (il == 0 && getenv("CPU_DEBUG_OPS"))
                 fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g]\n",
                         pos, x[0], x[1], x[2], x2[0], x2[1], x2[2]);
-            matmul(q.data(), x2.data(), w(l.wq), NH*HD, H);
-            matmul(k.data(), x2.data(), w(l.wk), NKV*HD, H);
-            matmul(v.data(), x2.data(), w(l.wv), NKV*HD, H);
+            mm(q.data(), x2.data(), w(l.wq), NH*HD, H, l.pk_q);
+            mm(k.data(), x2.data(), w(l.wk), NKV*HD, H, l.pk_k);
+            mm(v.data(), x2.data(), w(l.wv), NKV*HD, H, l.pk_v);
 
             // Optional QKV bias (Qwen2 and others use biased attention
             // projections; absent for architectures like Llama).
@@ -649,9 +801,13 @@ struct GenericBackend : Backend {
                 att[0], att[1], att[2], att[128], att[129], att[130]);
 
             // O proj
-            matmul(x2.data(), att.data(), w(l.wo), H, NH*HD);
+            mm(x2.data(), att.data(), w(l.wo), H, NH*HD, l.pk_o);
             // Residual
             for (int i = 0; i < H; i++) x[i] += x2[i];
+            if (getenv("CPU_DEBUG_OPS") && il < 3) {
+                double s = 0; for (int i = 0; i < H; i++) s += fabs(x[i]);
+                fprintf(stderr, "[cpu] L%d after attn: mean|.|=%g\n", il, s / H);
+            }
 
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
@@ -660,7 +816,7 @@ struct GenericBackend : Backend {
             if (l.moe_gate_inp != SIZE_MAX) {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
                 std::vector<float> router_probs(NE);
-                matmul(router_probs.data(), x2.data(), w(l.moe_gate_inp), NE, H);
+                mm(router_probs.data(), x2.data(), w(l.moe_gate_inp), NE, H, -1);
                 softmax(router_probs.data(), NE);
 
                 // Top-k expert selection by router probability (descending),
@@ -683,29 +839,40 @@ struct GenericBackend : Backend {
                     float* wg = w(l.moe_gate_exps) + (size_t)e * FF * H;
                     float* wu = w(l.moe_up_exps)   + (size_t)e * FF * H;
                     float* wd = w(l.moe_down_exps) + (size_t)e * H * FF;
-                    matmul(gate_buf.data(), x2.data(), wg, FF, H);
-                    matmul(up_buf.data(), x2.data(), wu, FF, H);
+                    mm(gate_buf.data(), x2.data(), wg, FF, H, -1);
+                    mm(up_buf.data(), x2.data(), wu, FF, H, -1);
                     ffn_activate(silu_buf.data(), gate_buf.data(), up_buf.data(), FF, cfg.arch);
-                    matmul(down_buf.data(), silu_buf.data(), wd, H, FF);
+                    mm(down_buf.data(), silu_buf.data(), wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
                 }
                 for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
             } else {
-                matmul(gate_up.data(), x2.data(), w(l.w1), FF, H);
-                matmul(&gate_up[FF], x2.data(), w(l.w2), FF, H);
+                mm(gate_up.data(), x2.data(), w(l.w1), FF, H, l.pk_w1);
+                mm(&gate_up[FF], x2.data(), w(l.w2), FF, H, l.pk_w2);
                 std::vector<float> silu_buf(FF);
                 ffn_activate(silu_buf.data(), gate_up.data(), &gate_up[FF], FF, cfg.arch);
-                matmul(x2.data(), silu_buf.data(), w(l.w3), H, FF);
+                mm(x2.data(), silu_buf.data(), w(l.w3), H, FF, l.pk_w3);
+                if (getenv("CPU_DEBUG_OPS") && il < 3) {
+                    double sg = 0, sd = 0;
+                    for (int i = 0; i < FF; i++) sg += fabs(gate_up[i]);
+                    for (int i = 0; i < H; i++) sd += fabs(x2[i]);
+                    fprintf(stderr, "[cpu] L%d ffn gate mean|.|=%g down mean|.|=%g\n", il, sg / FF, sd / H);
+                }
                 for (int i = 0; i < H; i++) x[i] += x2[i];
             }
         }
 
+        if (getenv("CPU_DEBUG_OPS")) {
+            double s = 0, mx = 0;
+            for (int i = 0; i < H; i++) { s += fabs(x[i]); if (fabs(x[i]) > mx) mx = fabs(x[i]); }
+            fprintf(stderr, "[cpu] final hidden mean|.|=%g max|.|=%g\n", s / H, mx);
+        }
         // Final RMSNorm
         rmsnorm(x2.data(), x.data(), final_norm.data(), H, eps);
 
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();
-        matmul(logits_buf.data(), x2.data(), lm_head, V, H);
+        mm(logits_buf.data(), x2.data(), lm_head, V, H, pk_lm_);
 
         pos++;
 
@@ -716,6 +883,99 @@ struct GenericBackend : Backend {
         }
         if (getenv("CPU_DEBUG")) fprintf(stderr, "[cpu] argmax idx=%d maxlogit=%g\n", best, bestv);
         return best;
+    }
+
+    // Perplexity over per-sample token-id sequences (WS-05/WS-00 harness).
+    // logits_buf holds the previous token's logits after each forward().
+    double compute_ppl(const std::vector<std::vector<int>>& samples) {
+        if (!initialized) return 0.0;
+        double total_nll = 0.0;
+        long long n = 0;
+        int V = cfg.vocab;
+        for (auto& ids : samples) {
+            reset();
+            for (size_t i = 0; i + 1 < ids.size(); i++) {
+                if (forward(ids[i]) < 0) continue;
+                // logits_buf = logits for ids[i]; NLL of ids[i+1]
+                int nxt = ids[i + 1];
+                if (nxt >= 0 && nxt < V) {
+                    float mx = logits_buf[0];
+                    for (int j = 1; j < V; j++) if (logits_buf[j] > mx) mx = logits_buf[j];
+                    double s = 0;
+                    for (int j = 0; j < V; j++) s += expf(logits_buf[j] - mx);
+                    double lse = mx + log(s);
+                    total_nll += lse - logits_buf[nxt];
+                    n++;
+                    if (n <= 5 && getenv("CPU_DEBUG_PPL")) {
+                        int am = 0;
+                        for (int j = 1; j < V; j++) if (logits_buf[j] > logits_buf[am]) am = j;
+                        fprintf(stderr, "[ppl] tok=%d argmax=%d next=%d logit_next=%g lse=%g nll=%g\n",
+                                ids[i], am, nxt, logits_buf[nxt], lse, lse - logits_buf[nxt]);
+                    }
+                }
+            }
+        }
+        return n ? exp(total_nll / (double)n) : 0.0;
+    }
+
+    // WS-05 P1 (issue #1245): apply TQ2 residual correction planes to the fp32
+    // weight pool. File format "PNL1" (little-endian): magic[4] = "PNL1",
+    // u32 n_entries, then per entry: u32 layer, u32 kind (0=q 1=k 2=v 3=o
+    // 4=w1 5=w2 6=w3), u32 rows, u32 cols, u32 k, i8 B[rows*k], i8 C[k*cols],
+    // f32 d[k]. Each entry adds W += B·diag(d)·C (row-major [rows,cols]).
+    // Forcing packed_ off keeps the decode on the corrected fp32 pool (the
+    // packed path reads raw tiles and would ignore the correction).
+    bool apply_plane_corrections(const char* path) {
+        FILE* f = fopen(path, "rb");
+        if (!f) { fprintf(stderr, "planes: cannot open %s\n", path); return false; }
+        char magic[4];
+        if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "PNL1", 4) != 0) {
+            fprintf(stderr, "planes: bad magic in %s\n", path); fclose(f); return false;
+        }
+        uint32_t n_entries = 0;
+        if (fread(&n_entries, 4, 1, f) != 1) { fclose(f); return false; }
+        int applied = 0;
+        for (uint32_t e = 0; e < n_entries; e++) {
+            uint32_t lyr, kind, rows, cols, k;
+            if (fread(&lyr, 4, 1, f) != 1 || fread(&kind, 4, 1, f) != 1 ||
+                fread(&rows, 4, 1, f) != 1 || fread(&cols, 4, 1, f) != 1 ||
+                fread(&k, 4, 1, f) != 1) { fclose(f); return false; }
+            if (lyr >= (uint32_t)layers.size()) { fclose(f); return false; }
+            size_t idx = SIZE_MAX;
+            const char* names[7] = {"q", "k", "v", "o", "w1", "w2", "w3"};
+            size_t* slots[7] = {&layers[lyr].wq, &layers[lyr].wk, &layers[lyr].wv,
+                                &layers[lyr].wo, &layers[lyr].w1, &layers[lyr].w2,
+                                &layers[lyr].w3};
+            if (kind < 7) idx = *slots[kind];
+            size_t nbytes = (size_t)rows * k + (size_t)k * cols;
+            std::vector<int8_t> bc(nbytes);
+            std::vector<float> d(k);
+            if (fread(bc.data(), 1, nbytes, f) != nbytes ||
+                fread(d.data(), 4, k, f) != k) { fclose(f); return false; }
+            if (idx == SIZE_MAX || idx + (size_t)rows * cols > flat_weights.size()) {
+                fprintf(stderr, "planes: layer %u kind=%s mismatch (rows=%u cols=%u, idx=%zu total=%zu) — skipping\n",
+                        lyr, kind < 7 ? names[kind] : "?", rows, cols,
+                        idx, flat_weights.size());
+                continue;
+            }
+            float* w = flat_weights.data() + idx;
+            const int8_t* B = bc.data();
+            const int8_t* C = bc.data() + (size_t)rows * k;
+            for (uint32_t i = 0; i < rows; i++)
+                for (uint32_t j = 0; j < k; j++) {
+                    float bij = (float)B[(size_t)i * k + j];
+                    if (bij == 0.0f) continue;
+                    const int8_t* cj = C + (size_t)j * cols;
+                    float dj = d[j];
+                    float* wr = w + (size_t)i * cols;
+                    for (uint32_t c = 0; c < cols; c++) wr[c] += bij * dj * (float)cj[c];
+                }
+            applied++;
+        }
+        fclose(f);
+        packed_ = false;   // decode must use the corrected fp32 pool
+        printf("planes: applied %d/%u corrections — decode switched to fp32 pool\n", applied, n_entries);
+        return applied > 0;
     }
 
     void destroy() override { initialized = false; }

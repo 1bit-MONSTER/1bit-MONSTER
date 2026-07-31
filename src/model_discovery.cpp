@@ -121,7 +121,7 @@ static bool read_gguf_metadata(const std::string& path, ModelConfig& cfg) {
         for (const auto& tn : r.tensor_names()) {
             auto* ti = r.tensor_info(tn);
             if (!ti) continue;
-            if (ti->dtype == GGUF_DTYPE_Q1_0_G128)   has_q1_0 = true;
+            if (ti->dtype == GGUF_DTYPE_Q1_0)        has_q1_0 = true;
             if (ti->dtype == GGUF_DTYPE_TQ2_0_G128)  has_tq2_0 = true;
             if (ti->dtype == GGUF_DTYPE_TQ1_0_LLAMA)  has_tq1_0 = true;
             if (ti->dtype == GGUF_DTYPE_TQ2_0_LLAMA)  has_tq2_0 = true;
