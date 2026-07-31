@@ -18,7 +18,7 @@ build_one() {
     rm -rf "$workdir"
     mkdir -p "$workdir"
     
-    $PYTHON "$GEN/n1_core_i8_v23.py" -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" \
+    $PYTHON "$GEN/n1_core_i8_v26.py" -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -b 5 \
         2>/dev/null > "$workdir/design.mlir"
     cp "$KERNEL" "$workdir/"
     

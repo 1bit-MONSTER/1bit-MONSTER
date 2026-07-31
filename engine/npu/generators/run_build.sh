@@ -54,8 +54,8 @@ build_one() {
     echo "══════ Building ${tag} ${proj} K=${K} N=${N} cols=${cols} ══════"
     
     # Generate clean MLIR (stderr to /dev/null, stdout to file)
-    $PYTHON "$GENERATOR_DIR/n1_core_i8_v23.py" \
-        -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" \
+    $PYTHON "$GENERATOR_DIR/n1_core_i8_v26.py" \
+        -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -b 5 \
         2>/dev/null > "$design"
     
     # aiecc needs kernel .o in CWD and runs from the design directory
