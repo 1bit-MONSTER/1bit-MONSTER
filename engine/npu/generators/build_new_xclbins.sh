@@ -101,10 +101,10 @@ build_xclbin() {
     echo "═══════════════════════════════════════════════"
     
     # Generate MLIR
-    python3 "$GENERATOR_DIR/n1_core_i8_v23.py" \
+    python3 "$GENERATOR_DIR/n1_core_i8_v26.py" \
         -M 128 -K "$K" -N "$N" \
         -m 32 -k 64 -n 128 \
-        -c "$cols" > "$GENERATOR_DIR/design_${proj}_${model_tag}.mlir" 2>&1
+        -c "$cols" -b 5 > "$GENERATOR_DIR/design_${proj}_${model_tag}.mlir" 2>&1
     
     # Compile to xclbin
     aiecc --aietools="$AIETOOLS_DIR" --peano="$PEANO_INSTALL_DIR" \
