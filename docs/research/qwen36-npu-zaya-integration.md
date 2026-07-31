@@ -87,10 +87,20 @@ libqwen3_6_moe_npu.so):
   router, top-8 expert selection identical (152 131 101 115 42 218 127 173).
   Tool: `tools/moe_router_test.cpp`. (Earlier "transposed" note was a
   flatten-ordering illusion — the actual layout is the stride-8 interleave.)
-- **Expert FFN tensors (5120-byte rows, dtype 2/4, INT4)**: the existing
-  `dequant_q4nx.cpp` dequantizes them correctly — gate/up/down_exps verified
-  plausible, 0 NaNs. Layout: [512 B BF16 scales 8g×32r][512 B zeros][4096 B
-  packed INT4].
+- **Expert FFN tensors (5120-byte rows, dtype 2/4, INT4)**: structure =
+  [512 B][512 B][4096 B packed] = [scales][mins][row-major nibbles], and the
+  1BP converter (`tools/gguf_to_onebp.cpp`, Q4NX branch) writes exactly this
+  layout: `value = q*scale + min`, scale=(max-min)/15, `qd[(rr*256+c)/2]` low
+  nibble = even col. The dequant value DISTRIBUTION matches the GGUF ground
+  truth (rms 0.0108 vs 0.0069 for the TQ2-quantized GGUF twin), but the value
+  POSITIONS still do not correlate with the GGUF under ~40 tested orderings
+  (row/col/group-major, stride-8 sub-blocks, expert permutations, scale/min
+  swaps, formula variants). Suspected cause: experts are interleaved in
+  8-expert NPU-dispatch blocks (FLM_SECRETS `parallel_size 16`,
+  `num_groups_per_row_parallel 2`). Next lead: capture the dequant_mm.xclbin
+  input/output on the NPU (gen_dequant_mm sequence) as the ground-truth
+  oracle, or brute-force expert-block interleavings (256! too big — but the
+  block structure constrains it).
 - **Attention projections (8704-byte rows) = Q8_0** (dtype 1, 1.0625 B/val =
   34 B per 32 = INT8 + BF16 scale). Scales confirmed at bytes [0:512] (values
   ~1.4e-4..6e-4). The INT8 value→position permutation is NOT yet cracked
