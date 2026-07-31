@@ -62,7 +62,9 @@ __global__ void q4k_gemv_wmma(
     float8_t acc = {};
 
     for (int b = 0; b < nb; b++) {
-        const uint8_t* blk = W + ((size_t)(blockIdx.x * 64) * nb + b) * 144;
+        // warp*16 row offset — all 4 warps used to read warp 0's weights
+        // (issue #1274), so every row of the block got dot(x, W[row0]).
+        const uint8_t* blk = W + (((size_t)(blockIdx.x * 64) + (size_t)warp * 16) * nb + b) * 144;
 
         // Read header: all lanes get d, dm, scales (broadcast from lane 0)
         float d, dm; uint8_t sc[12];

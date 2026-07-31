@@ -130,8 +130,11 @@ __global__ void wmma_gemv_single(
     // of a row_major fragment. Each warp lane contributes one input value
     // from the vector, and we use __shfl to broadcast it.
     //
-    // A quicker approach: use LDS to stage the input, then broadcast.
-    __shared__ __half s_in[WMMA_N]; // 16 input values (one 16-wide slice)
+    // 16×16 LDS staging: all 16 rows hold the same in[k:k+16] slice so a
+    // row_major fragment load is valid. The old 16-half s_in made
+    // load_matrix_sync read a 16×16 fragment out of a 16-element buffer
+    // (issue #1265: OOB shared read + garbage fragments past K=16).
+    __shared__ __half s_in_tile[WMMA_M][WMMA_N];
     int tx = threadIdx.x;
 
     fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, half, row_major> frag_a;
@@ -142,21 +145,17 @@ __global__ void wmma_gemv_single(
             // Load weights — same as batched version
             load_matrix_sync(frag_a, &wt[m_base * (size_t)K + k], K);
 
-            // For single-token GEMV, we load the input as B=16 where
-            // rows 1..15 are copies of row 0. Since the input vector
-            // is K elements, we load in[k:k+16] and broadcast.
-            //
-            // We load frag_b as row_major 16×16 from a shared memory
-            // staging area where all 16 rows contain in[k:k+16].
+            // Stage in[k:k+16] into row 0, broadcast to all 16 rows, then
+            // load a valid row_major 16×16 fragment.
             if (tx < WMMA_N && (k + tx) < K) {
-                s_in[tx] = in[k + tx];
+                s_in_tile[0][tx] = in[k + tx];
             }
             __syncthreads();
-            // s_in now has in[k:k+15]. Fill all 16 rows by loading
-            // from s_in with stride 0 (same 16 values repeated).
-            // rocWMMA doesn't support stride=0, so we load into LDS
-            // as 16 contiguous rows.
-            load_matrix_sync(frag_b, s_in, WMMA_N); // row_major, 16×16 from 16-element "stride"
+            for (int r = 0; r < WMMA_M; r++) {
+                if (tx < WMMA_N) s_in_tile[r][tx] = s_in_tile[0][tx];
+            }
+            __syncthreads();
+            load_matrix_sync(frag_b, &s_in_tile[0][0], WMMA_N);
 
             mma_sync(acc, frag_a, frag_b, acc);
         }

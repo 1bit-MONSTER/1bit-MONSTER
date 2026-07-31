@@ -69,15 +69,15 @@ __launch_bounds__(32) __global__ void fp8_wmma_gemv_kernel(
                 }
             }
         }
-        // Activation tile broadcast from x_fp8 (same for all output rows)
-        fp8x16_t x_tile;
-        int x_base = tile_base * 16;
-        if (lane == 0)
-            for (int i = 0; i < 16; i++) x_tile[i] = x_fp8[x_base + i];
-        for (int i = 0; i < 16; i++) x_tile[i] = __shfl(x_tile[i], 0);
-        __syncthreads();
-
         for (int t = 0; t < n_tiles; t++) {
+            // Activation tile must be reloaded per K-tile: x[t*16:(t+1)*16],
+            // not the first tile (issue #1273 — reusing x[0:16] for every K
+            // tile silently corrupted any model with hidden size > 16).
+            fp8x16_t x_tile;
+            int x_base = (tile_base + t) * 16;
+            if (lane == 0)
+                for (int i = 0; i < 16; i++) x_tile[i] = x_fp8[x_base + i];
+            for (int i = 0; i < 16; i++) x_tile[i] = __shfl(x_tile[i], 0);
             fp8x16_t W_frag;
             for (int i = 0; i < 16; i++)
                 W_frag[i] = W_lds[lane * FP8_TILES_PER_BATCH * 16 + t * 16 + i];
