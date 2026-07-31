@@ -73,7 +73,11 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipMalloc(&dQ,qb));   HIP_CHECK(hipMalloc(&dAttn,qb));
         HIP_CHECK(hipMalloc(&dh,H*4));  HIP_CHECK(hipMalloc(&datt,NH*HD*4));
         HIP_CHECK(hipMalloc(&datt2,NH*HD*4));
-        HIP_CHECK(hipMalloc(&dgate,NKV*HD*4)); HIP_CHECK(hipMalloc(&dup,NKV*HD*4));
+        // FFN gate/up buffers must hold IM elements (not just NKV*HD) — the
+        // gate/up GEMVs write IM=3072 floats.  Sizing them NKV*HD (1024) was
+        // an out-of-bounds write every layer (HW exception on TheRock).
+        size_t gb=(size_t)std::max(NKV*HD, IM)*4;
+        HIP_CHECK(hipMalloc(&dgate,gb)); HIP_CHECK(hipMalloc(&dup,gb));
         HIP_CHECK(hipMalloc(&dsilu,IM*4)); HIP_CHECK(hipMalloc(&doproj,H*4));
         HIP_CHECK(hipMalloc(&dffn,H*4));
         HIP_CHECK(hipMalloc(&dlogits,VOCAB*4));
@@ -134,7 +138,7 @@ struct Hip1bpBackend : Backend {
 
         // Embedding
         if(token_id>=0&&token_id<VOCAB&&d_embed)
-            embed_copy_kernel<<<(H_+block-1)/block,block,0,stream>>>(dh,d_embed,token_id,H_);
+            h1bp_embed_copy_kernel<<<(H_+block-1)/block,block,0,stream>>>(dh,d_embed,token_id,H_);
         else
             HIP_CHECK(hipMemset(dh,0,H_*4));
 
@@ -142,50 +146,50 @@ struct Hip1bpBackend : Backend {
             auto& ll=L[l];
 
             // 1. Pre-attention RMSNorm
-            if(ll.pn)rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pn,H_,EPS);
-            else rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
+            if(ll.pn)h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pn,H_,EPS);
+            else h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
 
             // 2. QKV via custom GEMV (device-only, no CPU copies)
-            if(ll.wq) gemv_kernel<<<NH_*HD_,256,0,stream>>>(datt,ll.wq,dh,NH_*HD_,H_);
-            if(ll.wk) gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dgate,ll.wk,dh,NKV_*HD_,H_);
-            if(ll.wv) gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dup,ll.wv,dh,NKV_*HD_,H_);
+            if(ll.wq) h1bp_gemv_kernel<<<NH_*HD_,256,0,stream>>>(datt,ll.wq,dh,NH_*HD_,H_);
+            if(ll.wk) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dgate,ll.wk,dh,NKV_*HD_,H_);
+            if(ll.wv) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dup,ll.wv,dh,NKV_*HD_,H_);
 
             // 3. RoPE
-            if(ll.wq) rope_kernel<<<NH_,HD_/2,0,stream>>>(datt,HD_,pos,rope_theta,NH_);
-            if(ll.wk) rope_kernel<<<NKV_,HD_/2,0,stream>>>(dgate,HD_,pos,rope_theta,NKV_);
+            if(ll.wq) h1bp_rope_kernel<<<NH_,HD_/2,0,stream>>>(datt,HD_,pos,rope_theta,NH_);
+            if(ll.wk) h1bp_rope_kernel<<<NKV_,HD_/2,0,stream>>>(dgate,HD_,pos,rope_theta,NKV_);
 
             // 4. Attention — all on stream, no syncs needed
             if(ll.wo){
-                f2h_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(dQ,datt,NH_*HD_);
-                kv_store_kernel<<<NKV_,HD_,0,stream>>>(dK,dV,dgate,dup,pos,NKV_,HD_,max_seq);
+                h1bp_f2h_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(dQ,datt,NH_*HD_);
+                h1bp_kv_store_kernel<<<NKV_,HD_,0,stream>>>(dK,dV,dgate,dup,pos,NKV_,HD_,max_seq);
 
                 float scl=1.0f/sqrtf((float)HD_);
                 rcpp_kv_cache_attn_decode(dQ,dK,dV,dAttn,NH_,NKV_,HD_,pos+1,scl,stream);
 
                 // Use separate datt2 for attn output — avoids RAW hazard with datt (used by Q GEMV next layer)
-                h2f_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt2,dAttn,NH_*HD_);
-                gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
-                add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,H_);
+                h1bp_h2f_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt2,dAttn,NH_*HD_);
+                h1bp_gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
+                h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,H_);
             }
 
             // 5. Post-attention RMSNorm
-            if(ll.pon)rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pon,H_,EPS);
-            else rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
+            if(ll.pon)h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pon,H_,EPS);
+            else h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
 
             // 6. FFN (all on-device)
             if(ll.w1&&ll.w2&&ll.w3){
-                gemv_kernel<<<IM_,256,0,stream>>>(dgate,ll.w1,dh,IM_,H_);
-                gemv_kernel<<<IM_,256,0,stream>>>(dup,ll.w2,dh,IM_,H_);
-                // Gemv on same stream → ordering guaranteed, no sync needed
-                // Use datt2 for SiLU output (separate from dgate/dup which are used in Q/K GEMV next layer)
-                silu_kernel<<<(IM_+255)/256,256,0,stream>>>(datt2,dgate,dup,IM_);
-                gemv_kernel<<<H_,256,0,stream>>>(dffn,ll.w3,datt2,H_,IM_);
-                add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dffn,H_);
+                h1bp_gemv_kernel<<<IM_,256,0,stream>>>(dgate,ll.w1,dh,IM_,H_);
+                h1bp_gemv_kernel<<<IM_,256,0,stream>>>(dup,ll.w2,dh,IM_,H_);
+                // Silu output into dsilu (IM-sized, dedicated) — datt2 is only
+                // NH*HD wide and would overflow when IM > NH*HD.
+                h1bp_silu_kernel<<<(IM_+255)/256,256,0,stream>>>(dsilu,dgate,dup,IM_);
+                h1bp_gemv_kernel<<<H_,256,0,stream>>>(dffn,ll.w3,dsilu,H_,IM_);
+                h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dffn,H_);
             }
         }
 
         // Final RMSNorm
-        rmsnorm_kernel<<<1,256,0,stream>>>(dh,d_final_norm,H_,EPS);
+        h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,d_final_norm,H_,EPS);
         HIP_CHECK(hipMemcpy(hidden_out,dh,H_*4,hipMemcpyDeviceToHost));
         pos++;
         return true;
@@ -194,7 +198,7 @@ struct Hip1bpBackend : Backend {
     bool lm_head(const float* hidden,float* logits,int* argmax)override{
         if(!d_output){memset(logits,0,VOCAB*4);logits[0]=1;if(argmax)*argmax=0;return true;}
         HIP_CHECK(hipMemcpy(dh,hidden,H*4,hipMemcpyHostToDevice));
-        gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output,dh,VOCAB,H);
+        h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output,dh,VOCAB,H);
         HIP_CHECK(hipMemcpy(logits,dlogits,VOCAB*4,hipMemcpyDeviceToHost));
         if(argmax){*argmax=0;for(int v=1;v<VOCAB;v++)if(logits[v]>logits[*argmax])*argmax=v;}
         return true;
