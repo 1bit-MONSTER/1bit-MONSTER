@@ -50,6 +50,9 @@ jobs:
         # unconditionally in Cleanup below.
         run: |
           sudo systemctl stop 1bit-systems.service || true
+          # Also kill stray manual servers (vision_server etc.) that can
+          # squat on 8099 and answer health checks with the wrong schema.
+          pkill -f "vision_server.*8099" || true
           sleep 2
 
       - name: Start server
