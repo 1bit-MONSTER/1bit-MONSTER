@@ -764,7 +764,12 @@ struct CPUBackend : Backend {
     }
 
     bool forward(int token_id, float* hidden_out) override {
-        // Embed
+        // Embed — validate against the embedding table (issue #1266:
+        // /v1/completions accepted arbitrary client token ids).
+        if (token_id < 0 || token_id >= cfg.vocab_size) {
+            fprintf(stderr, "[cpu] token_id %d out of range [0,%d)\n", token_id, cfg.vocab_size);
+            return false;
+        }
         for (int i = 0; i < H; i++)
             hs[i] = (embed[token_id * (size_t)H + i] + ibias[i]) * iscale[i];
 

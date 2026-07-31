@@ -12,6 +12,7 @@
 #include <cstring>
 #include <algorithm>
 #include <thread>
+#include <future>
 #include <chrono>
 #ifndef _WIN32
 #include <unistd.h>
@@ -455,20 +456,21 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         }
         info.instance = std::shared_ptr<Backend>(raw);
 
-        // Timeout guard: if a backend takes >10s to init (e.g. CPU scanning
+        // Timeout guard: if a backend takes >6s to init (e.g. CPU scanning
         // missing weights), skip it so higher-tier backends like NPU FLM get
-        // a chance. Run init in a detached thread with a deadline.
+        // a chance. std::async + wait_for — the old std::thread joinable()
+        // poll joined on the first iteration (joinable() is true right after
+        // construction), so the deadline was dead code and a hung init blocked
+        // the manager forever; its by-ref captures would UAF after detach
+        // (issue #1282). By-value captures keep the backend alive on timeout.
+        auto init_fut = std::async(std::launch::async, [info, cfg, weights_dir]() {
+            return info.instance->init(cfg, weights_dir);
+        });
         bool init_ok = false;
-        std::thread init_thread([&]() { init_ok = info.instance->init(cfg, weights_dir); });
-        auto init_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
-        while (std::chrono::steady_clock::now() < init_deadline) {
-            if (init_thread.joinable()) { init_thread.join(); break; }
-            usleep(10000); // 10ms poll
-        }
-        if (init_thread.joinable()) {
-            // Timed out — detach and skip
-            init_thread.detach();
-            printf("  → ⏱️  init timed out (>10s) — skipping\n");
+        if (init_fut.wait_for(std::chrono::seconds(6)) == std::future_status::ready) {
+            init_ok = init_fut.get();
+        } else {
+            printf("  → ⏱️  init timed out (>6s) — skipping\n");
             destroy_instance(info);
             continue;
         }

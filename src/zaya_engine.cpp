@@ -257,12 +257,16 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
         return true;
     };
     #define ALLOC_OR_FAIL(s, alloc_fn, ptr, n) do { if (!alloc_fn(ptr, n)) { zaya_destroy(s); return nullptr; } } while(0)
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h);
+    // Batch path (zaya_forward_batch) writes per-token slices d_hs + b*eng.h
+    // and d_lm_vocab + b*eng.vocab for up to B_MAX tokens — size for B_MAX,
+    // not one (issue #1264: OOB GPU writes for any B >= 2).
+    constexpr size_t ZAYA_B_MAX = 8;
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h * ZAYA_B_MAX);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h * ZAYA_B_MAX);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp, std::max(eng.h, 2*eng.n_ff));
     ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab * ZAYA_B_MAX);
     // d_argmax_idx, d_sorted_ids, d_expert_counts, d_expert_offsets are
     // declared as int* (and used as int by kernels) but allocated via
     // alloc_f32 since hipMalloc works in bytes and both int/float are 4 B.
@@ -670,9 +674,17 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
     }
 
     // ── Embedding lookup for all B tokens ──
+    if (B < 1 || B > (int)ZAYA_B_MAX) {
+        fprintf(stderr, "[zaya] batch B=%d out of range [1,%zu]\n", B, ZAYA_B_MAX);
+        return;
+    }
     std::vector<__half> hh(B * eng.h);
     for (int b = 0; b < B; b++) {
         int tid = token_ids[b];
+        if (tid < 0 || tid >= eng.vocab) {
+            fprintf(stderr, "[zaya] token id %d out of range [0,%d)\n", tid, eng.vocab);
+            return;
+        }
         for (int i = 0; i < eng.h; i++) {
             float raw = s->embed[tid * (size_t)eng.h + i];
             hh[b * (size_t)eng.h + i] = __float2half((raw + s->ibias[i]) * s->iscale[i]);

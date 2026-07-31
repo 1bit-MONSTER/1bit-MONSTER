@@ -109,10 +109,14 @@ extern "C" int vitallm_sparse_attention(
     // Returns number of KV entries selected (K or seq_len if K >= seq_len)
     if (top_k >= seq_len) return seq_len;  // no filtering needed
     
-    // Allocate temp buffers
-    float* scores; int* indices;
-    hipMallocAsync(&scores, seq_len * 4, (hipStream_t)stream);
-    hipMallocAsync(&indices, top_k * 4, (hipStream_t)stream);
+    // Allocate temp buffers — check returns (issue #1256: on OOM the
+    // downstream kernel would write through null/garbage pointers).
+    float* scores = nullptr; int* indices = nullptr;
+    if (hipMallocAsync(&scores, seq_len * 4, (hipStream_t)stream) != hipSuccess ||
+        hipMallocAsync(&indices, top_k * 4, (hipStream_t)stream) != hipSuccess) {
+        fprintf(stderr, "[vitallm] hipMallocAsync failed (seq_len=%d top_k=%d)\n", seq_len, top_k);
+        return -1;
+    }
     
     // Compute surrogate scores (simplified: launch one block per head)
     // ...

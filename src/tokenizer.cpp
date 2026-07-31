@@ -183,6 +183,17 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
     f.read(reinterpret_cast<char*>(&bos), 4);
     f.read(reinterpret_cast<char*>(&eos), 4);
 
+    // Sizes come straight from the file — cap them so a crafted .htok cannot
+    // force unbounded allocations or OOB id_to_bytes indexing (issue #1281).
+    constexpr uint32_t MAX_HTOK_VOCAB = 1u << 20;    // 1M tokens
+    constexpr uint32_t MAX_HTOK_MERGES = 1u << 22;   // 4M merges
+    if (vocab_size == 0 || vocab_size > MAX_HTOK_VOCAB ||
+        num_merges > MAX_HTOK_MERGES) {
+        fprintf(stderr, "[tokenizer] implausible .htok sizes: vocab=%u merges=%u\n",
+                vocab_size, num_merges);
+        return RCPP_INVALID_ARG;
+    }
+
     auto t = new rcpp_tokenizer();
     t->bos_id = (int32_t)bos;
     t->eos_id = (int32_t)eos;
@@ -210,6 +221,11 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
         f.read(reinterpret_cast<char*>(&b), 4);
         f.read(reinterpret_cast<char*>(&merged), 4);
         if (!f) { fprintf(stderr, "[tokenizer] short read at merge %u\n", i); return RCPP_INVALID_ARG; }
+        if (a >= vocab_size || b >= vocab_size || merged >= vocab_size) {
+            fprintf(stderr, "[tokenizer] merge %u references id outside vocab\n", i);
+            delete t;
+            return RCPP_INVALID_ARG;
+        }
         t->merges.emplace(MergeKey{(int32_t)a, (int32_t)b},
                           std::make_pair((int32_t)merged, (int32_t)i));
     }
@@ -221,6 +237,11 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
         for (uint32_t i = 0; i < num_special; ++i) {
             uint32_t sid = 0;
             f.read(reinterpret_cast<char*>(&sid), 4);
+            if (sid >= vocab_size) {
+                fprintf(stderr, "[tokenizer] special id %u outside vocab\n", sid);
+                delete t;
+                return RCPP_INVALID_ARG;
+            }
             t->special_ids.push_back((int32_t)sid);
         }
     }
