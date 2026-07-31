@@ -11,6 +11,7 @@ struct OnebpTensor {
     std::vector<uint32_t> dims;
     uint64_t offset;
     uint64_t bytes;
+    uint32_t quant = 0;   // v2: per-tensor quant (0 = use header quant)
 };
 
 struct OnebpModel {
