@@ -28,9 +28,15 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <tuple>
+#include <unordered_map>
+#include <unistd.h>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+
+extern "C" void npu_flm_set_prompt_text(const char*);
+
 using json = nlohmann::json;
 
 // ─── .h1b header auto-detection (no external deps) ────────────────
@@ -185,12 +191,14 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
             if (reader.get_u32(k, v)) return (int)v;
             return def;
         };
-        cfg.hidden_size       = gu("embedding_length", 0);
-        cfg.num_layers        = gu("block_count", 40);
-        cfg.num_heads         = gu("attention.head_count", 0);
-        cfg.num_kv_heads      = gu("attention.head_count_kv", 0);
-        cfg.intermediate_size = gu("feed_forward_length", 0);
-        cfg.vocab_size        = gu("vocab_size", 0);
+        cfg.set_hidden(gu("embedding_length", 0));
+        cfg.set_layers(gu("block_count", 40));
+        cfg.set_heads(gu("attention.head_count", 0));
+        cfg.set_kv_heads(gu("attention.head_count_kv", 0));
+        cfg.set_ff(gu("feed_forward_length", 0));
+        cfg.set_vocab(gu("vocab_size", 0));
+        cfg.set_experts(gu("expert_count", 0));   // MoE: e.g. qwen3.6-35B-A3B = 256
+        cfg.num_experts_top = gu("expert_used_count", 0);
         // If vocab_size wasn't in KV metadata, derive it from token_embd.weight
         // If vocab_size wasn't in KV metadata, derive it from output.weight
         // or token_embd.weight shape: numel = V * H, so V = numel / H.
@@ -199,12 +207,12 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
             // output.weight has shape [H, V] in GGUF (fastest-first), numel = V*H
             const GgufTensorInfo* out = reader.tensor_info("output.weight");
             if (out && out->numel > 0)
-                cfg.vocab_size = (int)(out->numel / H);
+                cfg.set_vocab((int)(out->numel / H));
             if (cfg.vocab_size == 0) {
                 const GgufTensorInfo* emb = reader.tensor_info("token_embd.weight");
                 if (!emb) emb = reader.tensor_info("model.embed_tokens.weight");
                 if (emb && emb->numel > 0)
-                    cfg.vocab_size = (int)(emb->numel / H);
+                    cfg.set_vocab((int)(emb->numel / H));
             }
         }
         uint32_t max_seq = 0;
@@ -288,6 +296,7 @@ struct SimpleTokenizer {
     int bos_id = 2;
     int eos_id = 106;
     bool use_bpe = false;
+    bool add_bos = true;   // tokenizer.ggml.add_bos_token (false for Qwen3)
     rcpp_tokenizer_t* bpe_tok = nullptr;
     // Vocab lookup: maps token_id -> token string (loaded from GGUF)
     std::vector<std::string> id_to_token;
@@ -315,7 +324,10 @@ struct SimpleTokenizer {
         else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.bos_id", alt)) bos_id=(int)alt; }
         if (reader.get_u32("tokenizer.ggml.eos_token_id", eos)) eos_id = (int)eos;
         else { uint32_t alt=0; if(reader.get_u32("tokenizer.ggml.eos_id", alt)) eos_id=(int)alt; }
-        fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d\n", bos_id, eos_id);
+        bool ab = true;
+        if (reader.get_bool("tokenizer.ggml.add_bos_token", ab)) add_bos = ab;
+        else if (reader.get_bool("tokenizer.ggml.add_bos", ab)) add_bos = ab;
+        fprintf(stderr, "  GGUF tokenizer metadata: BOS=%d EOS=%d add_bos=%d\n", bos_id, eos_id, (int)add_bos);
         if (use_bpe) return true;
         return false;
     }
@@ -338,7 +350,7 @@ struct SimpleTokenizer {
             std::vector<int> r(4096);
             size_t out_n = 0;
             rcpp_status_t st = rcpp_tokenizer_encode(bpe_tok, text.c_str(), text.size(),
-                                                      1, r.data(), r.size(), &out_n);
+                                                      add_bos ? 1 : 0, r.data(), r.size(), &out_n);
             if (st == RCPP_OK && out_n > 0) {
                 r.resize(out_n);
                 return r;
@@ -393,6 +405,29 @@ struct SimpleTokenizer {
         }
         // Vocab-based decode (from GGUF tokenizer.ggml.tokens)
         if (!id_to_token.empty()) {
+            // NPU FLM backend convention: shifted char-tokens, not vocab IDs
+            // (ASCII -> +100, raw bytes -> +200, EOS=106). Real token streams
+            // from a 248320-vocab model are never confined to this narrow set,
+            // so all-in-range is a safe detector.
+            bool npu_shifted = true;
+            for (int v : tokens) {
+                if (v == 106) continue;
+                // NPU FLM shift: printable ASCII 32-126 -> 132-226 (+100),
+                // control chars 0-31 and raw bytes 127-255 -> 300-555 (+300).
+                if (!((v >= 132 && v <= 226) || (v >= 300 && v <= 555))) {
+                    npu_shifted = false;
+                    break;
+                }
+            }
+            if (npu_shifted && !tokens.empty()) {
+                std::string r;
+                for (int v : tokens) {
+                    if (v == 106) continue;
+                    if (v >= 132 && v <= 226) r += (char)(v - 100);
+                    else if (v >= 300 && v <= 555) r += (char)(v - 300);
+                }
+                return r;
+            }
             std::string r;
             for (int v : tokens) {
                 if (v == bos_id || v == eos_id) continue;
@@ -407,7 +442,9 @@ struct SimpleTokenizer {
         std::string r;
         for (int v : tokens) {
             if (v == bos_id || v == eos_id) continue;
-            if (v > 100 && v < 200) r += (char)(v - 100);
+            if (v >= 132 && v <= 226) r += (char)(v - 100);
+            else if (v >= 300 && v <= 555) r += (char)(v - 300);
+            else if (v > 100 && v < 200) r += (char)(v - 100);
             else if (v > 200 && v < 456) r += (char)(v - 200);
             else { r += '['; r += std::to_string(v); r += ']'; }
         }
@@ -539,6 +576,7 @@ static std::string a2a_handle_message(const std::string& body, const std::string
 
         std::string prompt = "<|im_start|>user\n" + user_text + "<|im_end|>\n<|im_start|>assistant\n";
         std::vector<int> tokens = tok.encode(prompt);
+        npu_flm_set_prompt_text(user_text.c_str());
         InferenceResult result = router.infer(tokens, max_tokens, RouteStrategy::AUTO);
         std::string text = tok.decode(result.tokens);
 
@@ -553,6 +591,90 @@ static std::string a2a_handle_message(const std::string& body, const std::string
 static std::string a2a_new_task_id() {
     static std::atomic<uint64_t> counter{0};
     return "task-" + std::to_string((long long)time(nullptr)) + "-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
+}
+
+// ── GGUF → .htok builder ──────────────────────────────────────────────
+// The runtime BPE encoder (rcpp_tokenizer) reads the .htok format. GGUFs
+// carry the same data (tokenizer.ggml.tokens + tokenizer.ggml.merges), so
+// when no .htok ships alongside the model we synthesize one in /tmp. This
+// replaces the character-level fallback (c+100 token ids) that fed models
+// random vocab entries -> garbage output.
+static bool build_htok_from_gguf(GgufReader& reader, const std::string& out_path,
+                                 int bos_id, int eos_id) {
+    std::vector<std::string> tokens, merges;
+    if (!reader.get_string_array("tokenizer.ggml.tokens", tokens) || tokens.empty()) {
+        fprintf(stderr, "  [tok] tokenizer.ggml.tokens not found - keeping char fallback\n");
+        return false;
+    }
+    if (!reader.get_string_array("tokenizer.ggml.merges", merges) || merges.empty()) {
+        fprintf(stderr, "  [tok] tokenizer.ggml.merges not found - keeping char fallback\n");
+        return false;
+    }
+    std::unordered_map<std::string, uint32_t> id_map;
+    id_map.reserve(tokens.size());
+    for (size_t i = 0; i < tokens.size(); i++) id_map[tokens[i]] = (uint32_t)i;
+
+    std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> merge_triples;
+    merge_triples.reserve(merges.size());
+    size_t skipped = 0;
+    for (auto& m : merges) {
+        auto sp = m.find(' ');
+        if (sp == std::string::npos || sp == 0) { skipped++; continue; }
+        std::string a = m.substr(0, sp), b = m.substr(sp + 1);
+        auto ia = id_map.find(a), ib = id_map.find(b);
+        if (ia == id_map.end() || ib == id_map.end()) { skipped++; continue; }
+        auto im = id_map.find(a + b);
+        if (im == id_map.end()) { skipped++; continue; }   // BPE merge result not in vocab
+        merge_triples.emplace_back(ia->second, ib->second, im->second);
+    }
+    if (merge_triples.empty()) {
+        fprintf(stderr, "  [tok] no usable merges - keeping char fallback\n");
+        return false;
+    }
+    // Special tokens (htok v2): chat-marker strings ("<|im_start|>" and
+    // friends) that the pre-tokenizer would fragment. Heuristic: any vocab
+    // token containing '<', '>' or '|'. The encoder matches them as whole
+    // substrings before pre-tokenization (like llama.cpp's specials cache).
+    std::vector<uint32_t> specials;
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (tokens[i].find('<') != std::string::npos ||
+            tokens[i].find('>') != std::string::npos ||
+            tokens[i].find('|') != std::string::npos)
+            specials.push_back((uint32_t)i);
+    }
+    // Longest first so "<|im_start|>" wins over "<|" if both are specials.
+    std::sort(specials.begin(), specials.end(), [&](uint32_t a, uint32_t b) {
+        return tokens[a].size() > tokens[b].size();
+    });
+
+    FILE* f = fopen(out_path.c_str(), "wb");
+    if (!f) { fprintf(stderr, "  [tok] cannot write %s\n", out_path.c_str()); return false; }
+    fwrite("HTOK", 1, 4, f);
+    uint32_t version = 2;
+    uint32_t vn = (uint32_t)tokens.size(), mn = (uint32_t)merge_triples.size();
+    uint32_t bos = (uint32_t)(bos_id >= 0 ? bos_id : 0), eos = (uint32_t)(eos_id >= 0 ? eos_id : 0);
+    fwrite(&version, 4, 1, f);
+    fwrite(&vn, 4, 1, f);
+    fwrite(&mn, 4, 1, f);
+    fwrite(&bos, 4, 1, f);
+    fwrite(&eos, 4, 1, f);
+    for (auto& t : tokens) {
+        uint16_t len = (uint16_t)std::min<size_t>(t.size(), 65535);
+        fwrite(&len, 2, 1, f);
+        fwrite(t.data(), 1, len, f);
+    }
+    for (auto& [a, b, merged] : merge_triples) {
+        fwrite(&a, 4, 1, f);
+        fwrite(&b, 4, 1, f);
+        fwrite(&merged, 4, 1, f);
+    }
+    uint32_t num_special = (uint32_t)specials.size();
+    fwrite(&num_special, 4, 1, f);
+    for (auto sid : specials) fwrite(&sid, 4, 1, f);
+    fclose(f);
+    fprintf(stderr, "  [tok] built .htok v2 from GGUF: %zu tokens, %zu merges (%zu skipped), %zu specials -> %s\n",
+            tokens.size(), merge_triples.size(), skipped, specials.size(), out_path.c_str());
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -724,6 +846,14 @@ int main(int argc, char** argv) {
                 }
                 tok.load_from_gguf(reader);
                 tok.load_vocab_from_gguf(reader);
+                if (!tok.use_bpe) {
+                    // No .htok shipped with the GGUF: synthesize one from the
+                    // GGUF's own tokens + merges so real BPE runs (the char
+                    // fallback feeds random vocab ids and produces garbage).
+                    std::string tmp_htok = "/tmp/ts_tok_" + std::to_string(getpid()) + ".htok";
+                    if (build_htok_from_gguf(reader, tmp_htok, tok.bos_id, tok.eos_id))
+                        tok.load_htok(tmp_htok);
+                }
                 fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d %s(vocab=%zu)\n",
                         tok.bos_id, tok.eos_id,
                         tok.use_bpe ? "+ BPE " : "",
@@ -943,12 +1073,14 @@ int main(int argc, char** argv) {
             return;
         }
         int max_tokens = 256;
+        bool stream = false;
         try {
             json jbody = json::parse(body);
             max_tokens = jbody.value("max_tokens", 256);
             if (max_tokens < 1) max_tokens = 1;
             if (max_tokens > 32768) max_tokens = 32768;
-        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in max_tokens\n"); }
+            stream = jbody.value("stream", false);
+        } catch (...) { fprintf(stderr, "[zaya] JSON parse error in request body\n"); }
 
         RouteStrategy use_strat = strategy;
         if (use_strat == RouteStrategy::CONTENT) {
@@ -978,8 +1110,19 @@ int main(int argc, char** argv) {
             prompt = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n";
         }
 
+        std::string user_text = prompt;
+        // strip the ChatML wrapper if present, so text backends get the raw user text
+        {
+            std::string m = "<|im_start|>user\n";
+            if (user_text.rfind(m, 0) == 0) user_text = user_text.substr(m.size());
+            std::string e = "<|im_end|>\n<|im_start|>assistant\n";
+            if (user_text.size() >= e.size() &&
+                user_text.compare(user_text.size() - e.size(), e.size(), e) == 0)
+                user_text = user_text.substr(0, user_text.size() - e.size());
+        }
         std::vector<int> tokens = tok.encode(prompt);
         fprintf(stderr, "  → %d prompt tokens, max %d new\n", (int)tokens.size(), max_tokens);
+        npu_flm_set_prompt_text(user_text.c_str());
 
         std::string resp_body;
         {
@@ -990,25 +1133,75 @@ int main(int argc, char** argv) {
             if (!result.tokens.empty() && result.tokens.back() != tok.eos_id && (int)result.tokens.size() >= max_tokens)
                 finish_reason = "length";
 
-            // Dynamic buffer -- no fixed-size limit (fixes #194: truncation of long output)
-            resp_body =
-                std::string("{\"id\":\"chatcmpl-") + std::to_string((long long)time(nullptr)) +
-                "\",\"object\":\"chat.completion\",\"created\":" + std::to_string((long long)time(nullptr)) +
-                ",\"model\":\"" + json_escape(cfg.model_name) +
-                "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"" +
-                json_escape(text) +
-                "\"},\"finish_reason\":\"" + finish_reason +
-                "\"}],\"usage\":{\"prompt_tokens\":" + std::to_string((int)tokens.size()) +
-                ",\"completion_tokens\":" + std::to_string((int)result.tokens.size()) +
-                ",\"total_tokens\":" + std::to_string((int)(tokens.size() + result.tokens.size())) +
-                "},\"x-backend\":\"" + (router.primary ? router.primary->name() : "none") +
-                "\",\"x-ms\":" + std::to_string((long long)result.gen_ms) +
-                ",\"x-tok-s\":" + std::to_string((double)result.tok_s) + "}";
+            // llama.cpp-compatible `timings` block (server-measured, burst-immune;
+            // consumed by benchmarks/engine_comparison). NOTE: gen_ms/tok_s span
+            // prompt prefill + decode - the router's infer() timer starts before
+            // the prompt forward pass - so `predicted_per_second` is end-to-end
+            // generation throughput, honest but not a pure decode rate.
+            const long long now_sec = (long long)time(nullptr);
+            const std::string model_json = json_escape(cfg.model_name);
+            const int prompt_n = (int)tokens.size();
+            const int pred_n = (int)result.tokens.size();
+            const std::string timings =
+                "\"timings\":{\"prompt_n\":" + std::to_string(prompt_n) +
+                ",\"predicted_n\":" + std::to_string(pred_n) +
+                ",\"prompt_ms\":0.0" +
+                ",\"predicted_ms\":" + std::to_string((double)result.gen_ms) +
+                ",\"prompt_per_second\":0.0" +
+                ",\"predicted_per_second\":" + std::to_string((double)result.tok_s) + "}";
+
+            if (stream) {
+                // SSE: per-token content deltas, then a final chunk with
+                // finish_reason + usage + timings, then [DONE]. Tokens are replayed
+                // from the completed generation (router.infer is all-or-nothing), so
+                // TTFT/prefill_tps are NOT meaningful for zaya - the harness derives
+                // decode_tps from `timings.predicted_per_second` instead.
+                const std::string chunk_id = "chatcmpl-" + std::to_string(now_sec);
+                std::string sse;
+                sse.reserve(text.size() + 1024);
+                for (int t : result.tokens) {
+                    if (t == tok.eos_id) continue;
+                    std::string piece = tok.decode(std::vector<int>{t});
+                    if (piece.empty()) continue;
+                    sse += "data: {\"id\":\"" + chunk_id +
+                           "\",\"object\":\"chat.completion.chunk\",\"created\":" +
+                           std::to_string(now_sec) + ",\"model\":\"" + model_json +
+                           "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" +
+                           json_escape(piece) + "\"},\"finish_reason\":null}]}\n\n";
+                }
+                sse += "data: {\"id\":\"" + chunk_id +
+                       "\",\"object\":\"chat.completion.chunk\",\"created\":" +
+                       std::to_string(now_sec) + ",\"model\":\"" + model_json +
+                       "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"" +
+                       finish_reason + "\"}],\"usage\":{\"prompt_tokens\":" +
+                       std::to_string(prompt_n) + ",\"completion_tokens\":" +
+                       std::to_string(pred_n) + ",\"total_tokens\":" +
+                       std::to_string(prompt_n + pred_n) + "}," + timings + "}\n\n";
+                sse += "data: [DONE]\n\n";
+                res.set_header("Cache-Control", "no-cache");
+                res.set_content(sse, "text/event-stream");
+            } else {
+                // Dynamic buffer -- no fixed-size limit (fixes #194: truncation of long output)
+                resp_body =
+                    std::string("{\"id\":\"chatcmpl-") + std::to_string(now_sec) +
+                    "\",\"object\":\"chat.completion\",\"created\":" + std::to_string(now_sec) +
+                    ",\"model\":\"" + model_json +
+                    "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"" +
+                    json_escape(text) +
+                    "\"},\"finish_reason\":\"" + finish_reason +
+                    "\"}],\"usage\":{\"prompt_tokens\":" + std::to_string(prompt_n) +
+                    ",\"completion_tokens\":" + std::to_string(pred_n) +
+                    ",\"total_tokens\":" + std::to_string(prompt_n + pred_n) +
+                    "},\"x-backend\":\"" + (router.primary ? router.primary->name() : "none") +
+                    "\",\"x-ms\":" + std::to_string((long long)result.gen_ms) +
+                    ",\"x-tok-s\":" + std::to_string((double)result.tok_s) + "," + timings + "}";
+            }
             fprintf(stderr, "  ← %d tokens in %.0fms (%.1f tok/s) [%s]\n",
                     (int)result.tokens.size(), result.gen_ms, result.tok_s,
                     router.primary ? router.primary->name() : "none");
         }
-        res.set_content(resp_body, "application/json");
+        if (!stream)
+            res.set_content(resp_body, "application/json");
     });
 
     svr.Post("/completion", [&](const httplib::Request& req, httplib::Response& res) {

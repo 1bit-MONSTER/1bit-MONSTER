@@ -1,0 +1,80 @@
+{
+  "_comment": "1bit-systems fork of the cross-engine inference benchmark. EVERY setting (host paths, model / scenario / engine / backend registries, and run defaults) lives here rather than in code. The harness compares engines on the *same* GGUF files through one uniform OpenAI /v1/chat/completions surface. The primary engine is 1bit-systems' zaya_server (build/zaya_server); llama.cpp (the vendored third_party/llama.cpp llama-server) is the reference. Paths may use ${repo_root}, ${here}, ${model_root} placeholders; a path may also be written as {\"path\": \"...\", \"env\": \"BENCH_X\"} so the named environment variable can override it for host retargeting.",
+
+  "paths": {
+    "model_root": "${repo_root}/models",
+    "results_dir": null,
+    "zaya_server_exe": {"path": "${repo_root}/build/zaya_server", "env": "BENCH_ZAYA_SERVER"},
+    "zaya_port": 8090,
+    "llama_server_exe": {"path": "${repo_root}/third_party/llama.cpp/build/bin/Release/llama-server", "env": "BENCH_LLAMA_SERVER"},
+    "llama_port": 5001,
+    "vllm_base_url": "http://127.0.0.1:8000",
+    "media": {
+      "image": "${repo_root}/benchmarks/engine_comparison/assets/long_text.txt",
+      "audio": "",
+      "video": ""
+    }
+  },
+
+  "models": {
+    "smollm2-135m": {
+      "display": "SmolLM2-135M (Q4_K_M, dense)",
+      "family": "smollm2",
+      "gguf": {"path": "${model_root}/SmolLM2-135M-Instruct-Q4_K_M.gguf", "env": "BENCH_SMOLLM2_135M"},
+      "modalities": ["text"],
+      "size_class": "small"
+    },
+    "qwen35-9b": {
+      "display": "Qwen 3.5 9B (Q4_K_M, dense)",
+      "family": "qwen35",
+      "gguf": {"path": "${model_root}/Qwen3.5-9B-Q4_K_M.gguf", "env": "BENCH_QWEN35_9B"},
+      "modalities": ["text"],
+      "size_class": "small"
+    },
+    "qwen36-35b-a3b": {
+      "display": "Qwen 3.6 35B-A3B (Q4_K_M, MoE)",
+      "family": "qwen36",
+      "gguf": {"path": "${model_root}/Qwen3.6-35B-A3B-Q4_K_M.gguf", "env": "BENCH_QWEN36_35B"},
+      "modalities": ["text"],
+      "size_class": "large"
+    }
+  },
+
+  "scenarios": {
+    "text_short": {"kind": "text", "description": "Short single-turn text prompt (~2k-token context preamble)", "max_tokens": 1280},
+    "text_long": {"kind": "text", "description": "Long-context single-turn text prompt (~2k-token context preamble + passage)", "max_tokens": 1280},
+    "multi_turn": {"kind": "multi_turn", "description": "3-turn conversation (~2k-token context preamble), timed on the final turn", "max_tokens": 1280},
+    "function_call": {"kind": "function_call", "description": "Tool/function-calling (get_weather) with ~2k-token context preamble", "max_tokens": 1280},
+    "json_mode": {"kind": "json_mode", "description": "Structured output (response_format json_object) with ~2k-token context preamble", "max_tokens": 1280}
+  },
+
+  "engines": {
+    "zaya": {"display": "1bit-systems zaya_server", "transport": "server", "backends": []},
+    "llamacpp": {"display": "llama.cpp", "transport": "server", "backends": []}
+  },
+
+  "backends": {
+    "_comment": "Registry of concrete compute backends. `zaya: true` (or a sub-object with exe/extra_args/env) marks a backend zaya_server can run on; `llamacpp: N` sets -ngl (N = layer count to offload). zaya auto-selects its backend at startup from the same process, so the column label reflects the launch context (a zaya cell labelled hip vs cpu may still pick the same fastest backend internally).",
+    "hip": {"display": "HIP", "kind": "gpu", "zaya": true, "llamacpp": 999},
+    "cpu": {"display": "CPU", "kind": "cpu", "zaya": true, "llamacpp": 0}
+  },
+
+  "llama": {
+    "context_size": 8192,
+    "extra_args": ["--jinja"]
+  },
+
+  "ready_timeout_s": {"small": 300, "medium": 600, "large": 1200},
+
+  "defaults": {
+    "engines": ["zaya", "llamacpp"],
+    "models": ["smollm2-135m", "qwen35-9b"],
+    "scenarios": ["text_short", "text_long", "multi_turn"],
+    "backends": ["hip"],
+    "mtp_modes": [false],
+    "concurrency": [1],
+    "max_tokens": 128,
+    "warmup": 1,
+    "server_max_tokens": 512
+  }
+}

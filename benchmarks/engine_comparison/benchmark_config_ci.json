@@ -1,0 +1,102 @@
+{
+  "_comment": "CI variant of benchmark_config.json used by .github/workflows/test-matrix.yml: TensorSharp vs llama.cpp only, on the ggml_cuda backend, text + prefill scenarios only (no local media assets on the runner). The model registry points at files the workflow downloads from the Hugging Face repos named in each model's `_hf` field, laid out as ${model_root}/<hf-repo-name>/<file> (the `_hf` fields are documentation only — the loader ignores them; keep them in sync with the download step in the workflow). Retarget per host with the usual env overrides: BENCH_MODEL_ROOT, BENCH_LLAMA_SERVER, BENCH_TS_SERVER_DLL, BENCH_RESULTS.",
+
+  "paths": {
+    "model_root": "${here}/models",
+    "results_dir": null,
+    "tensorsharp_server_dll": null,
+    "tensorsharp_port": 5000,
+    "llama_server_exe": "${repo_root}/../llama.cpp/build/bin/llama-server",
+    "llama_port": 5001
+  },
+
+  "models": {
+    "gemma4-12b": {
+      "display": "Gemma 4 12B it (QAT UD-Q4_K_XL, dense)",
+      "family": "gemma4",
+      "_hf": "unsloth/gemma-4-12B-it-qat-GGUF",
+      "gguf": "${model_root}/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+      "mmproj": "${model_root}/gemma-4-12B-it-qat-GGUF/mmproj-BF16.gguf",
+      "modalities": ["text", "image"],
+      "size_class": "small",
+      "mtp_supported": false,
+      "mtp_draft": null
+    },
+    "qwen36-35b-a3b": {
+      "display": "Qwen 3.6 35B-A3B (UD-IQ2_XXS, MoE)",
+      "family": "qwen36",
+      "_hf": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "gguf": "${model_root}/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf",
+      "mmproj": "${model_root}/Qwen3.6-35B-A3B-MTP-GGUF/mmproj-F16.gguf",
+      "modalities": ["text", "image"],
+      "size_class": "large",
+      "mtp_supported": true,
+      "mtp_draft": null
+    },
+    "qwen36-27b": {
+      "display": "Qwen 3.6 27B (UD-IQ2_XXS, dense)",
+      "family": "qwen36",
+      "_hf": "unsloth/Qwen3.6-27B-MTP-GGUF",
+      "gguf": "${model_root}/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-IQ2_XXS.gguf",
+      "mmproj": "${model_root}/Qwen3.6-27B-MTP-GGUF/mmproj-F16.gguf",
+      "modalities": ["text", "image"],
+      "size_class": "large",
+      "mtp_supported": true,
+      "mtp_draft": null
+    }
+  },
+
+  "scenarios": {
+    "text_short": {"kind": "text", "description": "Short single-turn text prompt (~2k-token context preamble)", "max_tokens": 512},
+    "text_long": {"kind": "text", "description": "Long-context single-turn text prompt (~2k-token context preamble + passage)", "max_tokens": 512},
+    "multi_turn": {"kind": "multi_turn", "description": "3-turn conversation (~2k-token context preamble), timed on the final turn", "max_tokens": 512},
+    "function_call": {"kind": "function_call", "description": "Tool/function-calling (get_weather) with ~2k-token context preamble", "max_tokens": 512},
+    "json_mode": {"kind": "json_mode", "description": "Structured output (response_format json_object) with ~2k-token context preamble", "max_tokens": 512}
+  },
+
+  "engines": {
+    "tensorsharp": {"display": "TensorSharp", "transport": "server", "backends": ["gpu", "cpu"]},
+    "llamacpp": {"display": "llama.cpp", "transport": "server", "backends": ["gpu", "cpu"]}
+  },
+
+  "backends": {
+    "_comment": "Only ggml_cuda is in defaults.backends (the CI runner). ggml_metal and mlx are registered so the same config verifies the macOS path: run with --backends ggml_metal,mlx on an Apple Silicon host (BENCH_LLAMA_SERVER pointing at a Metal llama-server build). llama.cpp has no MLX backend, so the mlx column is TensorSharp-only; the apples-to-apples reference on that host is llama.cpp on ggml_metal.",
+    "ggml_cuda": {
+      "display": "CUDA",
+      "kind": "gpu",
+      "aliases": ["gpu"],
+      "tensorsharp": {"backend": "ggml_cuda"},
+      "llamacpp": {"ngl": 999}
+    },
+    "ggml_metal": {
+      "display": "Metal",
+      "kind": "gpu",
+      "tensorsharp": {"backend": "ggml_metal"},
+      "llamacpp": {"ngl": 999}
+    },
+    "mlx": {
+      "display": "MLX",
+      "kind": "gpu",
+      "tensorsharp": {"backend": "mlx"}
+    }
+  },
+
+  "llama": {
+    "context_size": 16384,
+    "extra_args": ["--jinja"]
+  },
+
+  "ready_timeout_s": {"small": 600, "medium": 900, "large": 1200},
+
+  "defaults": {
+    "engines": ["tensorsharp", "llamacpp"],
+    "models": ["gemma4-12b", "qwen36-35b-a3b"],
+    "scenarios": ["text_short", "text_long", "multi_turn", "function_call", "json_mode", "prefill_2k", "prefill_4k", "prefill_8k"],
+    "backends": ["ggml_cuda"],
+    "mtp_modes": [false],
+    "concurrency": [1],
+    "max_tokens": 128,
+    "warmup": 1,
+    "server_max_tokens": 1024
+  }
+}

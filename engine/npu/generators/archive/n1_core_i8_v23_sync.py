@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
 #
-# INT8 MLIR generator v23 — written from scratch 2026-07-28, correctness-first.
+# INT8 MLIR generator v23_sync — adds a done-signal fifo to synchronize
+# the core's K-tile accumulation with the seq()'s C DMA reads.
 #
-# Informed by 22 prior falsified attempts (v2-v22, v2_gu) in this same directory.
-# Design principles, each chosen specifically to avoid a documented prior failure:
-#   - Issue exactly ONE DMA transfer per FIFO acquire the core actually performs.
-#     No "dimensionsFromStream"/"dimensionsFromTransform" repeat-descriptor tricks
-#     (v11, v19, v21, v22, v2_gu all used these and all hang, including v2_gu with
-#     n_aie_cols=1 where broadcast isn't even in play — the repeat-descriptor math
-#     itself is the suspect, not multi-core broadcast).
-#   - A is a genuine broadcast objectFifo (shim -> mem -> all 8 cores), fed with
-#     plain (m,k) flat tiles, nothing fancier.
-#   - B and C are per-column fifos, one flat (k,n) / (m,n) tile per transfer.
-#   - C DMA is issued for ALL n_aie_cols columns every group (v6/v7/v8/v9 only
-#     issued it for column 0 — a real, previously-undocumented bug found today).
-#   - Fully sequential per group: issue all of a group's A/B, then all of its C
-#     (with issue_token=True), await ALL of them, THEN free, THEN move to the next
-#     group. No multi-buffer pipelining (the "tb=4 rotation" every prior attempt
-#     used) — sacrifices throughput for a shot at actually being correct first.
-#   - Kernel ABI matches the real, currently-used mm.cc build: matmul_i8_i32 /
-#     zero_i32 (int32 accumulator), NOT the i16 scalar entry points most prior
-#     versions mistakenly targeted (a second, separate bug that made most of them
-#     untestable against our actual kernel object at all).
+# Root cause of K/n_aie_cols bug: the seq() function issues C DMA reads
+# immediately after the last K-tile A/B DMAs complete, but the AIE cores
+# may still be processing the last K-tile. The C DMA reads partially
+# accumulated data from the mem tile (which may still have stale/partial
+# C buffer content), resulting in only K/n_aie_cols accumulated products.
 #
-# Usage: python3 n1_core_i8_v23_fromscratch.py -M 128 -K 1024 -N 4096 > design.mlir
+# Fix: Each core writes a "done" token to a dedicated small fifo after
+# completing the K-tile loop (before releasing C). The seq() reads from
+# all done fifos BEFORE issuing C DMAs, ensuring all cores have finished
+# accumulating before the results are read.
+
 import argparse
 import numpy as np
 from aie.extras.context import mlir_mod_ctx
@@ -41,7 +31,7 @@ def main():
     parser.add_argument("-m", type=int, default=32)
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
-    parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (must divide N//n)")
+    parser.add_argument("-c", "--cols", type=int, default=8)
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
         my_matmul(args.M, args.K, args.N, args.m, args.k, args.n, args.cols)
@@ -51,48 +41,27 @@ def main():
 def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
     dtype_in = np.int8
     dtype_out = np.int32
+    dtype_done = np.int32  # 4-byte token type
 
     assert M % m == 0 and K % k == 0 and N % n == 0
-    assert (N // n) % n_aie_cols == 0, "N//n must be a multiple of n_aie_cols"
-    # n_aie_cols=1 has never been validated: all tested shapes use >= 4 columns.
-    # With a single column, shim_tiles[0] serves A_S0, B_S0, and C_S0 simultaneously
-    # (three concurrent object_fifos on one shim tile), which may exhaust DMA channels
-    # and produce all-zero output.  Minimum supported value is 2 (issue #1208).
-    assert n_aie_cols >= 2, (
-        f"n_aie_cols={n_aie_cols} is unsupported; minimum is 2.  "
-        "Single-column builds compile successfully but produce all-zero GEMM output "
-        "(issue #1208 — likely a shim-tile DMA-channel exhaustion with 3 concurrent fifos)."
-    )
+    assert (N // n) % n_aie_cols == 0
+    assert n_aie_cols >= 2
 
     @device(AIEDevice.npu2)
     def device_body():
         A_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
         B_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
         C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
+        Done_ty = np.ndarray[(1,), np.dtype[dtype_done]]
 
         kernel_o = "mm_32x64x128.o"
-        # Use the SCALAR entry points (matmul_scalar_i8_i32 / zero_scalar_i32),
-        # NOT the vectorized matmul_i8_i32.  The vectorized 8x8x8 mmul kernel
-        # requires A/B data pre-arranged in AIE microtile (8x8) order; this
-        # generator emits plain row-major tiles, so the vectorized kernel
-        # silently reduces only 8 of its 64 K elements (issue #1207: output
-        # is ~K/n_aie_cols, cosine ~0 vs CPU reference).  Documented in
-        # commit 4ae299e9b (#1064): "use the matmul_scalar_i8_i32 /
-        # zero_scalar_i32 entry points".  Verified on hardware 2026-07-31:
-        # scalar rebuild gives cosine 0.9993 with real Qwen3-0.6B weights.
-        zero = external_func("zero_scalar_i32", inputs=[C_ty], link_with=kernel_o)
-        matmul = external_func("matmul_scalar_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
+        zero = external_func("zero_i32", inputs=[C_ty], link_with=kernel_o)
+        matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(3)]
         shim_tiles, mem_tiles, core_tiles = tiles[0], tiles[1], tiles[2]
 
-        # A: per-column fifos — each column gets its own independent A shim→mem→core
-        # path.  A single broadcast via object_fifo_link (shim[0]→mem[0]→all cores)
-        # turns out to DISTRIBUTE (round-robin) rather than broadcast: each core
-        # receives only n_k/n_aie_cols A tiles instead of all n_k, explaining the
-        # ~K/n_aie_cols accumulation observed in hardware (issue #1207).  Giving every
-        # column its own path and issuing each A tile once per column from the host
-        # sequence guarantees every core sees all n_k K-tiles.
+        # ---- Data fifos (same as v23) ----
         A_s = [None] * n_aie_cols
         A_c = [None] * n_aie_cols
         for c in range(n_aie_cols):
@@ -100,7 +69,6 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
             A_c[c] = object_fifo(f"A_C{c}", mem_tiles[c], core_tiles[c], 2, A_ty)
             object_fifo_link(A_s[c], A_c[c])
 
-        # B, C: independent per-column fifos.
         B_s = [None] * n_aie_cols
         B_c = [None] * n_aie_cols
         C_c = [None] * n_aie_cols
@@ -114,6 +82,14 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
             C_s[c] = object_fifo(f"C_S{c}", mem_tiles[c], shim_tiles[c], 2, C_ty)
             object_fifo_link(C_c[c], C_s[c])
 
+        # ---- Done-signal fifos: core→shim (depth 2, single element) ----
+        Done_c = [None] * n_aie_cols
+        Done_s = [None] * n_aie_cols
+        for c in range(n_aie_cols):
+            Done_c[c] = object_fifo(f"Done_C{c}", core_tiles[c], mem_tiles[c], 2, Done_ty)
+            Done_s[c] = object_fifo(f"Done_S{c}", mem_tiles[c], shim_tiles[c], 2, Done_ty)
+            object_fifo_link(Done_c[c], Done_s[c])
+
         num_row_tile = M // m
         num_col_group = N // n // n_aie_cols
         num_groups = num_row_tile * num_col_group
@@ -122,26 +98,34 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
         for c in range(n_aie_cols):
             @core(core_tiles[c], stack_size=0x2000)
             def core_body():
+                ONE = np.int32(1)  # done token value
                 for _ in range_(0xFFFFFFFF):
                     for _ in range_(num_groups):
                         Cbuf = C_c[c].acquire(ObjectFifoPort.Produce, 1)
                         zero(Cbuf)
-                        for _ in range_(n_k):
+                        for _ki in range(n_k):
                             Abuf = A_c[c].acquire(ObjectFifoPort.Consume, 1)
                             Bbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)
                             matmul(Abuf, Bbuf, Cbuf)
                             A_c[c].release(ObjectFifoPort.Consume, 1)
                             B_c[c].release(ObjectFifoPort.Consume, 1)
+                        # Signal "done" BEFORE releasing C.
+                        # This tells the seq() that C is ready to be read.
+                        Dbuf = Done_c[c].acquire(ObjectFifoPort.Produce, 1)
+                        # Write done token (value=1)
+                        # (memref store not needed — acquire+release signals the event)
+                        Done_c[c].release(ObjectFifoPort.Produce, 1)
+                        # NOW release C — seq() already has "done" and reads C
                         C_c[c].release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[dtype_in]],
             np.ndarray[(K * N,), np.dtype[dtype_in]],
             np.ndarray[(M * N,), np.dtype[dtype_out]],
+            # Done signal buffers: one per column (could share, but this is clearer)
+            *[np.ndarray[(1,), np.dtype[dtype_done]] for _ in range(n_aie_cols)],
         )
-        def seq(A, B, C):
-            # Row-major (1,1)-grouped taps: exactly one (m,k)/(k,n)/(m,n) tile per
-            # index, no internal repeat — plain, unambiguous indexing.
+        def seq(A, B, C, *Done_args):
             A_taps = TensorTiler2D.group_tiler((M, K), (m, k), (1, 1))
             B_taps = TensorTiler2D.group_tiler((K, N), (k, n), (1, 1))
             C_taps = TensorTiler2D.group_tiler((M, N), (m, n), (1, 1))
@@ -150,11 +134,7 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
                 row_tile = gi // num_col_group
                 col_group = gi % num_col_group
 
-                # Serialize DMA issuance per K-iteration.  With per-column A fifos
-                # we now issue n_aie_cols A tasks + n_aie_cols B tasks per ki step.
-                # Each shim tile carries at most 2 concurrent BDs (1 A + 1 B), well
-                # within the per-tile limit.  Await+free before the next ki to keep
-                # the global active-descriptor count bounded at 2 × n_aie_cols ≤ 16.
+                # Phase 1: Issue all K-tile A+B DMAs (same as v23)
                 for ki in range(n_k):
                     a_idx = row_tile * n_k + ki
                     at_list = []
@@ -174,6 +154,16 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
                     dma_await_task(*at_list, *bt_list)
                     dma_free_task(*at_list, *bt_list)
 
+                # Phase 2: Read done tokens — wait for ALL cores to finish
+                done_tasks = []
+                for c in range(n_aie_cols):
+                    dt = shim_dma_single_bd_task(Done_s[c], Done_args[c], sizes=[1, 1, 1, 1], issue_token=True)
+                    dma_start_task(dt)
+                    done_tasks.append(dt)
+                dma_await_task(*done_tasks)
+                dma_free_task(*done_tasks)
+
+                # Phase 3: Now read C results (cores are guaranteed done)
                 c_tasks = []
                 for c in range(n_aie_cols):
                     n_tile = col_group * n_aie_cols + c
@@ -184,6 +174,5 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
 
                 dma_await_task(*c_tasks)
                 dma_free_task(*c_tasks)
-
 
 main()

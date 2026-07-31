@@ -87,7 +87,9 @@ engine/fusion/zero_copy/test_pipeline
 engine/fusion/zero_copy/test_pipeline_real
 engine/fusion/zero_copy/test_npu_ffn_real_weights
 engine/fusion/zero_copy/test_zero_copy
+engine/fusion/zero_copy/test_vk_dma_buf_import
 engine/fusion/zero_copy/xclbin_health
+engine/fusion/zero_copy/shaders/*.spv
 engine/npu/tokenizer/tokenize
 engine/npu/tokenizer/detokenize
 

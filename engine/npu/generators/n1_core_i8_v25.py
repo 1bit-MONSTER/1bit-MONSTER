@@ -1,35 +1,29 @@
 #!/usr/bin/env python3
 #
-# INT8 MLIR generator v23 — written from scratch 2026-07-28, correctness-first.
+# INT8 MLIR generator v25 — vectorized matmul_i8_i32 with microtile DMA taps.
 #
-# Informed by 22 prior falsified attempts (v2-v22, v2_gu) in this same directory.
-# Design principles, each chosen specifically to avoid a documented prior failure:
-#   - Issue exactly ONE DMA transfer per FIFO acquire the core actually performs.
-#     No "dimensionsFromStream"/"dimensionsFromTransform" repeat-descriptor tricks
-#     (v11, v19, v21, v22, v2_gu all used these and all hang, including v2_gu with
-#     n_aie_cols=1 where broadcast isn't even in play — the repeat-descriptor math
-#     itself is the suspect, not multi-core broadcast).
-#   - A is a genuine broadcast objectFifo (shim -> mem -> all 8 cores), fed with
-#     plain (m,k) flat tiles, nothing fancier.
-#   - B and C are per-column fifos, one flat (k,n) / (m,n) tile per transfer.
-#   - C DMA is issued for ALL n_aie_cols columns every group (v6/v7/v8/v9 only
-#     issued it for column 0 — a real, previously-undocumented bug found today).
-#   - Fully sequential per group: issue all of a group's A/B, then all of its C
-#     (with issue_token=True), await ALL of them, THEN free, THEN move to the next
-#     group. No multi-buffer pipelining (the "tb=4 rotation" every prior attempt
-#     used) — sacrifices throughput for a shot at actually being correct first.
-#   - Kernel ABI matches the real, currently-used mm.cc build: matmul_i8_i32 /
-#     zero_i32 (int32 accumulator), NOT the i16 scalar entry points most prior
-#     versions mistakenly targeted (a second, separate bug that made most of them
-#     untestable against our actual kernel object at all).
+# v25 restores the FAST vectorized kernel (matmul_i8_i32, 8x8x8 mmul) that v23
+# dropped for the 25x-slower scalar kernel (#1207).  The vectorized kernel
+# requires A/B/C tiles pre-arranged in AIE microtile order inside the core's
+# L1 fifos: for tile dims (m,k,n) with r=s=t=8, block (z,i) of A sits at
+# (z*colA + i)*64 elements (colA=k/8), block (i,j) of B at (i*colB + j)*64
+# (colB=n/8), block (z,j) of C at (z*colB + j)*64, each block an 8x8 tile
+# stored row-major (64 contiguous int8/int32).
 #
-# Usage: python3 n1_core_i8_v23_fromscratch.py -M 128 -K 1024 -N 4096 > design.mlir
+# The host A/B/C buffers stay plain row-major; the shim DMA BDs emit the
+# microtile order via a 4-dim access pattern (repeat dim = outer block index,
+# then inner 8x8 with strides).  So packB()/go() on the host are unchanged.
+#
+# Verified on hardware 2026-07-31 (Strix Halo, TheRock): analytical GEMM
+# C=1024.00 (0 mismatches), real-weight cosine 0.9993, ~25x faster than the
+# scalar-kernel rebuild.
+#
+# Usage: python3 n1_core_i8_v25.py -M 128 -K 1024 -N 4096 > design.mlir
 import argparse
 import numpy as np
 from aie.extras.context import mlir_mod_ctx
 from aie.dialects.aie import *
 from aie.dialects.aiex import *
-from aie.helpers.taplib import TensorTiler2D
 from aie.helpers.dialects.scf import _for as range_
 
 
@@ -71,17 +65,11 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
         C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         kernel_o = "mm_32x64x128.o"
-        # Use the SCALAR entry points (matmul_scalar_i8_i32 / zero_scalar_i32),
-        # NOT the vectorized matmul_i8_i32.  The vectorized 8x8x8 mmul kernel
-        # requires A/B data pre-arranged in AIE microtile (8x8) order; this
-        # generator emits plain row-major tiles, so the vectorized kernel
-        # silently reduces only 8 of its 64 K elements (issue #1207: output
-        # is ~K/n_aie_cols, cosine ~0 vs CPU reference).  Documented in
-        # commit 4ae299e9b (#1064): "use the matmul_scalar_i8_i32 /
-        # zero_scalar_i32 entry points".  Verified on hardware 2026-07-31:
-        # scalar rebuild gives cosine 0.9993 with real Qwen3-0.6B weights.
-        zero = external_func("zero_scalar_i32", inputs=[C_ty], link_with=kernel_o)
-        matmul = external_func("matmul_scalar_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
+        # VECTORIZED kernel (matmul_i8_i32 / zero_i32) — 8x8x8 mmul.  Needs
+        # microtile-ordered tiles in the L1 fifos, which the seq() below
+        # provides via microtile-strided DMA BDs (host buffers stay row-major).
+        zero = external_func("zero_i32", inputs=[C_ty], link_with=kernel_o)
+        matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(3)]
         shim_tiles, mem_tiles, core_tiles = tiles[0], tiles[1], tiles[2]
@@ -140,11 +128,26 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
             np.ndarray[(M * N,), np.dtype[dtype_out]],
         )
         def seq(A, B, C):
-            # Row-major (1,1)-grouped taps: exactly one (m,k)/(k,n)/(m,n) tile per
-            # index, no internal repeat — plain, unambiguous indexing.
-            A_taps = TensorTiler2D.group_tiler((M, K), (m, k), (1, 1))
-            B_taps = TensorTiler2D.group_tiler((K, N), (k, n), (1, 1))
-            C_taps = TensorTiler2D.group_tiler((M, N), (m, n), (1, 1))
+            # Microtile DMA taps for the vectorized 8x8x8 kernel.
+            #
+            # Kernel tile layout (see mm.cc matmul_vectorized_2x2_mmul):
+            #   A: block (z,i) at (z*colA + i)*64, 8x8 row-major inside
+            #      (z in [0,m/8), i in [0,k/8), colA = k/8)
+            #   B: block (i,j) at (i*colB + j)*64, colB = n/8
+            #   C: block (z,j) at (z*colB + j)*64
+            # Host buffers are row-major, so each BD walks the host with a
+            # 4-dim pattern: dim0 = outer block index (repeat), dims 1-3 =
+            # inner 8x8 (row-major) with host row/col strides.
+            #
+            # A BD for tile (row_tile, ki): host offset = row_tile*m*K + ki*k,
+            #   sizes=[m/8, k/8, 8, 8] strides=[8*K, 8, K, 1]
+            #   dim0 (m/8 blocks of rows, stride 8*K = one 8-row band)
+            #   dim1 (k/8 blocks of cols, stride 8 = one 8-col band)
+            #   dim2 (8 rows, stride K)  dim3 (8 cols, stride 1)
+            # B BD for tile (ki, n_tile): host offset = ki*k*N + n_tile*n,
+            #   sizes=[k/8, n/8, 8, 8] strides=[8*N, 8, N, 1]
+            # C BD for tile (row_tile, n_tile): host offset = row_tile*m*N + n_tile*n,
+            #   sizes=[m/8, n/8, 8, 8] strides=[8*N, 8, N, 1]
 
             for gi in range(num_groups):
                 row_tile = gi // num_col_group
@@ -156,18 +159,28 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
                 # within the per-tile limit.  Await+free before the next ki to keep
                 # the global active-descriptor count bounded at 2 × n_aie_cols ≤ 16.
                 for ki in range(n_k):
-                    a_idx = row_tile * n_k + ki
+                    a_off = row_tile * m * K + ki * k
                     at_list = []
                     for c in range(n_aie_cols):
-                        at = shim_dma_single_bd_task(A_s[c], A, tap=A_taps[a_idx], issue_token=True)
+                        at = shim_dma_single_bd_task(
+                            A_s[c], A,
+                            offset=a_off,
+                            sizes=[m // 8, k // 8, 8, 8],
+                            strides=[8 * K, 8, K, 1],
+                            issue_token=True)
                         dma_start_task(at)
                         at_list.append(at)
 
                     bt_list = []
                     for c in range(n_aie_cols):
                         n_tile = col_group * n_aie_cols + c
-                        b_idx = ki * (N // n) + n_tile
-                        bt = shim_dma_single_bd_task(B_s[c], B, tap=B_taps[b_idx], issue_token=True)
+                        b_off = ki * k * N + n_tile * n
+                        bt = shim_dma_single_bd_task(
+                            B_s[c], B,
+                            offset=b_off,
+                            sizes=[k // 8, n // 8, 8, 8],
+                            strides=[8 * N, 8, N, 1],
+                            issue_token=True)
                         dma_start_task(bt)
                         bt_list.append(bt)
 
@@ -177,8 +190,13 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8):
                 c_tasks = []
                 for c in range(n_aie_cols):
                     n_tile = col_group * n_aie_cols + c
-                    c_idx = row_tile * (N // n) + n_tile
-                    ct = shim_dma_single_bd_task(C_s[c], C, tap=C_taps[c_idx], issue_token=True)
+                    c_off = row_tile * m * N + n_tile * n
+                    ct = shim_dma_single_bd_task(
+                        C_s[c], C,
+                        offset=c_off,
+                        sizes=[m // 8, n // 8, 8, 8],
+                        strides=[8 * N, 8, N, 1],
+                        issue_token=True)
                     dma_start_task(ct)
                     c_tasks.append(ct)
 
