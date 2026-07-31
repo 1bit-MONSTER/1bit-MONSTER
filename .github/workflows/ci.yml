@@ -80,7 +80,7 @@ jobs:
               test_ternary_gemm_smallm test_sherry_gemv test_bonsai_gemv \
               test_zaya_moe_gemv test_cca_attn test_wmma_i8_gemv \
               test_bonsai_e2e test_sherry_e2e test_block_scaled_ternary \
-              onebitd onebit onebit_bin unified_router
+              onebitd onebit onebit_bin unified_router ppl_generic gguf_to_onebp
           else
             echo "ROCm not available on this runner — reference checks only."
             if [ -f tests/test_medusa_skeleton.cpp ]; then
@@ -138,3 +138,51 @@ jobs:
           else
             echo "⚠️  tests/download_and_run.sh not yet written for non-HW runners"
           fi
+
+  # PPL format gate (issue #1242): the 30-second quality gate that caught the
+  # TQ2 catastrophe (ppl 3.7e8 vs Q4NX 62 vs fp16 21.8). Rebuilds the converter
+  # + harness with plain g++ (CPU-only, no ROCm needed), converts a fresh Q8_0
+  # GGUF to Q4NX 1BP, and asserts the perplexity window on the fixed 48-sample
+  # gate set. Measured locally: Q4NX-from-Q8_0 ppl 16.34; TQ2-of-dense 1.1e8.
+  # A TQ2-class regression (or a corrupt converter/reader) blows the window.
+  ppl-gate:
+    name: PPL format gate (Q8_0 → Q4NX 1BP)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake
+      - name: Build ppl_generic (baseline x86-64 flags — packed path is target-attributed)
+        run: |
+          mkdir -p build
+          g++ -O3 -std=c++23 -fopenmp -I src -I include -I engine/npu/src \
+            research/ws00-baseline/ppl_generic.cpp \
+            src/model_discovery.cpp src/gguf_reader.cpp \
+            src/q4nx_reader.cpp src/safetensors_reader.cpp \
+            -o build/ppl_generic
+      - name: Build gguf_to_onebp
+        run: |
+          g++ -O3 -std=c++23 -I src -I include -I engine/npu/src \
+            tools/gguf_to_onebp.cpp src/gguf_reader.cpp -o build/gguf_to_onebp
+      - name: Download Qwen3-0.6B Q8_0 GGUF (converter source)
+        run: |
+          curl -fL --retry 3 -o qwen3-0.6b-q8_0.gguf \
+            https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
+          ls -la qwen3-0.6b-q8_0.gguf
+      - name: Convert Q8_0 → Q4NX 1BP
+        run: |
+          ./build/gguf_to_onebp qwen3-0.6b-q8_0.gguf qwen3-0.6b-q4nx.1bp
+      - name: Run perplexity gate (assert 10 < ppl < 40)
+        run: |
+          ./build/ppl_generic qwen3-0.6b-q4nx.1bp \
+            research/ws00-baseline/samples/ppl-gate-48.jsonl 4 | tee /tmp/ppl-out.txt
+          PPL=$(grep -oE 'PPL = [0-9.]+' /tmp/ppl-out.txt | grep -oE '[0-9.]+')
+          echo "PPL=$PPL"
+          python3 - <<PY
+          ppl = float("$PPL")
+          assert 10.0 < ppl < 40.0, f"ppl {ppl} outside gate window (10, 40) — quant corruption or pipeline regression"
+          print(f"✅ ppl {ppl} inside gate window")
+          PY

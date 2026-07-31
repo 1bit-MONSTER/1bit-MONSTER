@@ -31,7 +31,9 @@
 
 #include "backend.h"
 #include "model_discovery.h"
+#include "vision_encoder.h"
 #include "vl_processor.h"
+#include "onebp_loader.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -304,7 +306,30 @@ int main(int argc, char** argv) {
     // ── Load text model (GenericBackend CPU) ──
     fprintf(stderr, "Loading text model from %s ...\n", g_model_path.c_str());
     ModelConfig cfg;
-    if (!read_gguf_header(g_model_path, cfg)) {
+    bool is_1bp = g_model_path.size() > 4 &&
+                  g_model_path.substr(g_model_path.size() - 4) == ".1bp";
+    if (is_1bp) {
+        // 1BP text model: dims come from the OnebpHeader.
+        OnebpModel mdl;
+        if (!mdl.load(g_model_path.c_str())) {
+            fprintf(stderr, "FAIL: could not read model header\n");
+            return 1;
+        }
+        const auto& h = mdl.header;
+        cfg.hidden = cfg.hidden_size = h.hidden_size;
+        cfg.n_layers = cfg.num_layers = h.num_layers;
+        cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = h.num_attention_heads;
+        cfg.n_kv_heads = cfg.num_kv_heads = h.num_kv_heads ? h.num_kv_heads : h.num_attention_heads;
+        cfg.head_dim = h.head_dim ? h.head_dim : 128;
+        cfg.n_ff = cfg.intermediate_size = h.intermediate_size;
+        cfg.vocab = cfg.vocab_size = h.vocab_size;
+        cfg.max_seq_len = h.max_seq_len;
+        cfg.eos_token_id = h.eos_token_id;
+        cfg.rope_theta = h.rope_theta();
+        cfg.model_path = g_model_path;
+        cfg.format = ModelFormat::ONEBP;
+        cfg.model_name = g_model_path.substr(g_model_path.find_last_of('/') + 1);
+    } else if (!read_gguf_header(g_model_path, cfg)) {
         fprintf(stderr, "FAIL: could not read model header\n");
         return 1;
     }
@@ -316,6 +341,24 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "Text model loaded: hidden=%d layers=%d vocab=%d\n",
             cfg.hidden, cfg.n_layers, cfg.vocab);
+
+    // ── Load vision encoder weights (issue #1244) ──
+    // .1bp -> Mage-ViT 1BP container (reserved[0..5] carry ViT dims);
+    // otherwise a llama.cpp-style mmproj GGUF.
+    VisionWeights vit;
+    bool vit_ok = false;
+    if (g_mmproj_path.size() > 4 &&
+        g_mmproj_path.substr(g_mmproj_path.size() - 4) == ".1bp")
+        vit_ok = mage_vit_load_weights_1bp(g_mmproj_path.c_str(), vit);
+    else
+        vit_ok = vit.load_from_gguf(g_mmproj_path);
+    if (!vit_ok) {
+        fprintf(stderr, "FAIL: mmproj load failed (%s)\n", g_mmproj_path.c_str());
+        return 1;
+    }
+    fprintf(stderr, "Vision encoder loaded: H=%d L=%d NH=%d P=%d merger=%s\n",
+            vit.config.hidden_size, vit.config.num_layers, vit.config.num_heads,
+            vit.config.patch_size, vit.mm0_w.empty() ? "no" : "yes");
 
     // ── HTTP server ──
     httplib::Server svr;
@@ -395,21 +438,45 @@ int main(int argc, char** argv) {
         // Reset backend
         be->reset();
 
-        // 1. Feed vision tokens through the text decoder
+        // 1. Feed vision embeddings through the text decoder (issue #1244).
+        //    Real ViT forward: pixels -> mage_vit_forward (patch embed + 28
+        //    transformer layers + 2x2 merger + projector) -> text-hidden
+        //    embeddings, one forward_embed per token.
         for (auto& vr : images) {
-            int n_vis_tokens = (int)(vr.proc.size() / cfg.hidden);
-            // We need ViT forward pass to get vision embeddings
-            // This is model-specific — for now, use placeholder sine embeddings
-            // TODO: wire up the actual ViT from vision_qwen2vl_poc.cpp as a
-            // shared library. For the GPU kernel, add a HIP-based ViT forward.
-            fprintf(stderr, "[vision] TODO: forward %d vision tokens through ViT\n", n_vis_tokens);
-
-            // Placeholder: feed dummy tokens to advance KV cache
             be->generate(VL_VISION_START);
-            std::vector<float> dummy(cfg.hidden, 0.0f);
-            int n_tiles = 64; // 16x16 patches / 4 (merger)
+            std::vector<float> embs = mage_vit_forward(
+                vit, vr.proc.pixels(), 3, 1,
+                vr.proc.height(), vr.proc.width(), 1);
+            if (embs.empty()) {
+                fprintf(stderr, "[vision] FAIL: ViT forward produced no embeddings\n");
+                continue;
+            }
+            int th = vit.config.hidden_size;
+            // Projector output dim: merger mlp.2 rows (mm0 is [4H, 4H] ->
+            // mlp.2 is [th, 4H]) when a merger exists, else the tower hidden.
+            if (!vit.mm0_w.empty() && !vit.mm2_w.empty()) {
+                int pm = (int)(vit.mm0_w.size() / (4 * vit.config.hidden_size));
+                if (pm > 0) th = (int)(vit.mm2_w.size() / pm);
+            }
+            if (th != cfg.hidden) {
+                fprintf(stderr, "[vision] WARNING: projector dim %d != text hidden %d — "
+                                "mismatched mmproj/model pair?\n", th, cfg.hidden);
+            }
+            int n_tiles = (int)(embs.size() / th);
+            fprintf(stderr, "[vision] ViT: %d embeddings x %d dims through decoder\n",
+                    n_tiles, th);
+            std::vector<float> tok(th);
             for (int i = 0; i < n_tiles; i++) {
-                be->forward_embed(dummy.data());
+                const float* e = embs.data() + (size_t)i * th;
+                // forward_embed wants cfg.hidden floats — pad/truncate on mismatch
+                if (th == cfg.hidden) {
+                    be->forward_embed(e);
+                } else {
+                    int n = std::min(th, cfg.hidden);
+                    for (int j = 0; j < n; j++) tok[j] = e[j];
+                    for (int j = n; j < cfg.hidden; j++) tok[j] = 0.0f;
+                    be->forward_embed(tok.data());
+                }
             }
             be->generate(VL_VISION_END);
         }

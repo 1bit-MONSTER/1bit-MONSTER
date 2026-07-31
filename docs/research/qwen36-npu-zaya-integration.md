@@ -124,3 +124,112 @@ libqwen3_6_moe_npu.so):
    repo already pipelines (PR #1231).
 5. Q8_0 attention projections: needed for on-NPU attention; blocked on the
    value permutation above.
+
+## Decisive next step: NPU-as-oracle harness (spec)
+
+The layout lives in the AIE kernel inside `dequant_mm.xclbin` (the
+"torch2aie chunk format" per `dequant_q4nx.cpp`'s own header). Every host-side
+permutation search has failed (~60 variants). The definitive oracle: run the
+kernel on the NPU and read back the dequantized output.
+
+Harness spec (all pieces are MIT and in-tree):
+
+1. **Kernel signature**: read `dequant_mm.xclbin`'s embedded metadata (xclbin
+   is a zip; kernel name + args are in the XML/JSON metadata) — the engine's
+   `npu_engine_universal.cpp` HybridFlmCtx shows the pattern for `mm.xclbin`
+   (args: bA, bW, bC). `dequant_mm` likely takes (data, scales, out) or a
+   single weight BO + dequantized out BO.
+2. **Instruction sequence**: dlopen `libqwen3_6_moe_npu.so` and call
+   `qwen3_6_moe_npu_sequence::gen_dequant_mm(npu_sequence*, M, K, N, off, m,
+   flm_dtype_t)` with dtype=1 (Q8_0) and dtype=2 (INT4) — `npu_sequence` is in
+   `third_party/FastFlowLM/src/include/npu_utils/npu_instr_utils.hpp`.
+   `get_quantization_byte_size` (already probed) confirms dtypes.
+3. **Submit**: XRT (`xrt::device(0)`, register the xclbin, one BO for the
+   raw 8704-B rows + one for the output) — same pattern as HybridFlmCtx.
+4. **Compare**: the read-back dequantized values vs the GGUF ground truth →
+   yields the exact value↔position mapping in one shot.
+5. Fallback if the sequence call is finicky: `_move_weights_q80` (same .so)
+   generates the weight-load path directly.
+
+Expected result: the layout mapping (likely a per-8/16-element DMA chunk
+interleave for the AIE array), unblocking BOTH the Q8_0 attention projections
+and the INT4 expert tensors, and thereby the native MoE engine's weight
+loader.
+
+### Harness status (2026-07-31, tools/dequant_oracle.cpp)
+
+BUILT AND RUNNING — kernel executes, output verified:
+
+- `Dequant::generate_dequant_q80_packed_in_q4nx_seq(seq, D_in, D_out, w_off,
+  mode)` (libdequant.so, MIT) generates the instruction stream; D_in must be
+  a multiple of the kernel's `desired_k_dequant` (D_in=2048 ✓).
+- The dequant.xclbin kernel (MLIR_AIE, 5 BOs + instr) executes with
+  opcode=3; the instruction stream's DDR_PATCH commands (0x81, word8=arg_idx,
+  word10=offset) reveal the BO usage: **arg0 = output region (16 patches,
+  512 KB stride, 8 MB total), arg1 = input region (17 patches, 320 KB
+  stride)**. The input must be in bo1 (leaving it empty = zeros out).
+- With a zeroed bo0: chunks 0-7 are fully written (f32, ~131k values each),
+  chunks 8-15 partial. The output values are real dequantized weights
+  (e.g. 4.48e-3, 2.8e-4, 3.09e-3) but written in an interleaved/strided
+  pattern over the BO (every 3rd f32 slot holds a sane value in the current
+  config) — the exact write pattern needs the WRITE_DMA BD stride decode
+  from the instruction stream (npu_dma_block_cmd fields in
+  npu_cmd_write_dma.hpp), which is the remaining step.
+- BD decode (instruction words 1077-1105): 8 XAIE_CONFIG_SHIMDMA_BD
+  descriptors at 64 KB address strides (0x0, 0x10000, ..., 0x70000) = 8 ×
+  64 KB DMA segments per 512 KB output chunk. 64 KB = 4 tiles of
+  [32×256] BF16 (16 KB each). The kernel's output write pattern is
+  BD-segment driven; the observed "every 3rd f32 slot" interleave in the
+  readback is consistent with the in-place output mode writing BF16 tiles
+  over the input BO.
+- The dtype oracle (get_quantization_byte_size) remains the format key:
+  dtype 1 = Q8_0 (8704-B rows), dtype 2/4 = INT4 (5120-B rows).
+
+### Session 2026-07-31 (post-reboot) — HARNESS BUG FOUND + REAL PATH IDENTIFIED
+
+**CRITICAL BUG in the harness**: `npu_sequence::dump()` returns the size in
+WORDS (`npu_seq.size()`), but tools/dequant_oracle.cpp treated it as BYTES:
+- BO allocated 1137 B, `memcpy` copied 4548 B (heap overflow), kernel got
+  size=1137 → only parsed the first ~2 rounds of the stream.
+- FIXED: `dsz = dsz_words * sizeof(uint32_t)` → full 4548-word (18192 B)
+  stream now executes.
+
+With the full stream (decoded with the exact op formats from
+npu_cmd_*.hpp):
+
+- **64 input windows** of 81920 B at 327680-B stride (17 rounds × 8 cols),
+  read as 32 × 2560-B chunks per window. Chunk = [512 B bf16 scales]
+  [2048 B q8]. The 17th round reads past the 17.8 MB tensor (BO must be
+  ≥ 20.7 MB).
+- **64 output windows** of 131072 B at 524288-B stride (8 rounds × 8 cols),
+  dense writes (D0 128 B @1, D1 128 @256, D2 2 @128 → even+odd granules).
+  Output span = **33.5 MB** — the 17.8 MB output BO was OVERRUN by the
+  kernel (→ the post-reboot segfaults; ctrl harness uses 34 MB BOs).
+- The old "chunks 8-15 partial" and "every 3rd f32 slot" observations were
+  ARTIFACTS of the truncated stream + reading byte pairs as bf16.
+
+**Controlled-oracle runs** (tools/dequant_oracle_ctrl.cpp, synthetic input:
+scales=1.0, q8 ramp 0..255):
+
+- Modes 0/1/2 all produce the SAME output: a **byte repacking into u16
+  pairs** — NOT dequant values. The "sane dequant values" (4.48e-3 …) in
+  the earlier session were the bf16 reinterpretation of raw q8 byte pairs
+  (numerical coincidence — e.g. pair (0x92,0x3b) = bf16 4.456e-3 ≈
+  13 × scale[1]). The kernel in this config is a data-mover/repacker.
+- Output pattern (first 256 B, unambiguous via the ramp): 16-B groups,
+  64-B sub-blocks at q8 bases 0/64/128/192; base positions {0,1,2,3,6,7,
+  10,11,14,15} carry input bytes, positions {4,5,8,9,12,13} carry
+  sign-bit-set q8 values from elsewhere (0x80|q8[63], 0x80|q8[16|64]…).
+- File layout confirmed: 2048 rows × 8704 B = [512 B scales][8192 B q8]
+  (row 1 scales at byte 8704 are sane bf16). Kernel windowing (2560-B
+  chunks) is NOT aligned to the 8704-B rows → most chunks contain
+  misaligned "scales".
+
+**REAL RUNTIME PATH IDENTIFIED**: the FLM model plugin
+(libqwen3_6_moe_npu.so) does NOT use the standalone dequant.xclbin +
+`generate_dequant_q80_packed_in_q4nx_seq`. It calls
+`qwen3_6_moe_npu_sequence::gen_dequant_mm(seq, M, K, N, off, m, dtype)` /
+`gen_dequant_mm_512` / `_move_weights_q80` against **dequant_mm.xclbin**
+(present in Qwen3.6-35B-A3B-NPU2/). Next step: drive gen_dequant_mm with
+real dims (M/K/N for the qkv tensor) and read back the dequant_mm kernel
+output — that is the true oracle for the value↔position mapping.

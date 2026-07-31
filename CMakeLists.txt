@@ -499,6 +499,23 @@ else()
     message(STATUS "backend_manager: OpenMP NOT found — generic CPU decode stays single-threaded")
 endif()
 
+# -- ppl_generic : perplexity gate for the generic CPU backend (WS-00/WS-05) --
+# Quality harness for 1BP models (GenericBackend::compute_ppl). CI's ppl-gate
+# job runs it on a fresh gguf_to_onebp conversion and asserts the window —
+# catches catastrophic quant corruption in 30 s (measured on the 48-sample
+# gate set: Q4NX-from-Q8_0 ppl 16.34 vs TQ2-of-dense ppl 1.1e8).
+add_executable(ppl_generic
+    research/ws00-baseline/ppl_generic.cpp
+    src/model_discovery.cpp
+    src/gguf_reader.cpp
+    src/q4nx_reader.cpp
+    src/safetensors_reader.cpp)
+target_include_directories(ppl_generic PRIVATE src include engine/npu/src)
+target_compile_options(ppl_generic PRIVATE -O3 -std=c++23)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(ppl_generic PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
@@ -1049,10 +1066,10 @@ target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
 # Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
 # Requires a VL-capable text model + mmproj GGUF file.
 add_executable(vision_server tools/vision_server.cpp)
-target_include_directories(vision_server PRIVATE src/ include/)
+target_include_directories(vision_server PRIVATE src/ include/ engine/npu/src)
 target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(vision_server PRIVATE
-    backend_manager vl_image dl
+    backend_manager vl_image vision_encoder dl
     httplib::httplib
     nlohmann_json::nlohmann_json)
 
