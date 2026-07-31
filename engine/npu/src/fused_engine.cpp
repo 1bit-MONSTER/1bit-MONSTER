@@ -275,6 +275,17 @@ public:
     void chunked_dma(npu_sequence& seq, uint32_t elem_sz, uint32_t arg,
                      uint32_t rows, uint32_t cols, uint64_t ddr_off,
                      int bd_id, bool issue_token = false) {
+        // The DMA descriptor carries a 32-bit DDR offset (issue #1285): for
+        // models whose per-layer weight offsets exceed 4 GiB the cast below
+        // wrapped and loaded wrong tiles silently. Refuse loudly instead.
+        uint64_t last_off = ddr_off + (uint64_t)(cols - 1) * rows * elem_sz;
+        if (last_off > 0xFFFFFFFFull) {
+            fprintf(stderr, "[fused] DDR offset %llu exceeds 32-bit DMA "
+                            "descriptor — fused path cannot load >4 GiB "
+                            "weights (issue #1285)\n",
+                    (unsigned long long)last_off);
+            exit(1);
+        }
         for (uint32_t c = 0; c < cols; c += TILE_N) {
             uint32_t chunk = std::min(TILE_N, cols - c);
             uint32_t bd = bd_id;

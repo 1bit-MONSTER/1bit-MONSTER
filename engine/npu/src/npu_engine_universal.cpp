@@ -1004,7 +1004,10 @@ int main(int argc,char**argv){
                 }else if(op==6){ // Attention — CPU path (worker protocol doesn't carry seq_len)
                     // Worker subprocess receives individual layer ops without KV cache
                     // context. NPU attention requires the full KV cache. Use CPU fallback.
-                    int qd = cfg.xclbin_qkv_k / 4;  // approximate: NH*HD
+                    // Q width is NH*HD, not xclbin_qkv_k/4 (issue #1269: the
+                    // old value sized the output 8x too small — heap OOB write
+                    // — and read K from inside Q).
+                    int qd = NH * HD;
                     out_dim = qd;
                     out_data.resize(batch*out_dim,0);
                     // in_data layout: [Q:QD, K:KD, V:KD]
@@ -1131,6 +1134,11 @@ int main(int argc,char**argv){
                                     ks[d] *= ik * (cfg.has_k_norm ? kn[d] : 1.0f);
                                 ra(ks, HD, fuse_pos);
                                 float* vs = &fqo[qkv_v_off + kvh * HD];
+                                // fuse KV capacity is 4096 positions (issue #1267)
+                                if (fuse_pos >= 4096) {
+                                    fprintf(stderr, "[npu] fuse KV overflow (pos=%d) — restarting context\n", fuse_pos);
+                                    fuse_pos = 0;
+                                }
                                 memcpy(&fuse_kv[l].k[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
                                 memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
                             }
@@ -1440,6 +1448,12 @@ int main(int argc,char**argv){
                 for(int kvh=0;kvh<NKV;kvh++){float*ks=&qo_b[b*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[b*qkv_n+cfg.qkv_v_offset+kvh*HD];
                     double sk=0;for(int d=0;d<HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
                     for(int d=0;d<HD;d++)ks[d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(ks,HD,sp+b);}
+            }
+            // KV capacity is 4096 positions (issue #1267) — restart the
+            // context instead of writing OOB once exhausted.
+            if (sp + batch_size > 4096) {
+                fprintf(stderr, "[npu] KV overflow at layer %d (sp=%d) — restarting context\n", l, sp);
+                sp = 0;
             }
             for(int b=0;b<batch_size;b++)for(int kvh=0;kvh<NKV;kvh++){
                 float*ks=&qo_b[b*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[b*qkv_n+cfg.qkv_v_offset+kvh*HD];
