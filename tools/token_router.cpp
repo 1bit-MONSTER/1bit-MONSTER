@@ -999,20 +999,26 @@ int main(int argc, char** argv) {
         auto bp = req.find("\r\n\r\n");
         std::string body = (bp == std::string::npos) ? "" : req.substr(bp+4);
 
-        // Parse Content-Length for body
+        // Parse Content-Length for body. The extra read is capped to the room
+        // left in buf — an attacker-controlled Content-Length used to smash
+        // the stack (issue #1261); a missing header terminator is rejected.
         std::string cl_header = "Content-Length: ";
         auto clp = req.find(cl_header);
-        if (clp != std::string::npos) {
+        if (bp != std::string::npos && clp != std::string::npos) {
             auto cl_end = req.find("\r\n", clp);
             if (cl_end != std::string::npos) {
                 int body_len = atoi(req.substr(clp + cl_header.size(), cl_end - clp - cl_header.size()).c_str());
+                size_t head = bp + 4;
+                int cap = (int)(sizeof(buf) - head);
+                if (body_len < 0) body_len = 0;
+                if (body_len > cap) body_len = cap;
                 if ((int)body.size() < body_len) {
                     // Read remaining body
                     int remaining = body_len - (int)body.size();
-                    int more = (int)read(cl, buf + bp + 4, remaining);
+                    int more = (int)read(cl, buf + head, remaining);
                     if (more > 0) {
-                        buf[bp + 4 + more] = 0;
-                        body = std::string(buf + bp + 4);
+                        buf[head + more] = 0;
+                        body = std::string(buf + head);
                     }
                 }
             }
