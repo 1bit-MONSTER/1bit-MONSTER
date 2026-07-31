@@ -31,7 +31,7 @@ namespace npu_target_detail {
 static inline void transpose_pack(const float* src, int out_f, int in_f, float* dst, int dst_stride, int dst_offset) {
     for (int o = 0; o < out_f; o++)
         for (int i = 0; i < in_f; i++)
-            dst[(size_t)i * dst_stride + dst_offset + o] = src[(size_t)o * in_f + i];
+            dst[static_cast<size_t>(i) * dst_stride + dst_offset + o] = src[static_cast<size_t>(o) * in_f + i];
 }
 // Dynamic per-call activation quantization scale (see docs/V12-CORRECTNESS-BLOCKER.md) -
 // a hardcoded 5.0f/127.0f assumes activations stay within [-5,5], but measured post-RMSNorm
@@ -43,7 +43,7 @@ static inline float dynamic_ascale(const float* x, int n) {
     return amax / 127.0f;
 }
 
-static inline float bf16f(uint16_t v){uint32_t b=(uint32_t)v<<16;float f;memcpy(&f,&b,4);return f;}
+static inline float bf16f(uint16_t v){uint32_t b=static_cast<uint32_t>(v)<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline void sm(float*sc,int n){
@@ -51,11 +51,11 @@ static inline void sm(float*sc,int n){
     float mx=sc[0]; for(int i=1;i<n;i++) if(sc[i]>mx) mx=sc[i];
     double s=0; for(int i=0;i<n;i++){float d=sc[i]-mx; if(d>80)d=80; else if(d<-80)d=-80; sc[i]=expf(d); s+=sc[i];}
     if(s<=0){float iv=1.0f/n; for(int i=0;i<n;i++)sc[i]=iv; return;}
-    float is=1.0f/(float)s; for(int i=0;i<n;i++)sc[i]*=is;
+    float is=1.0f/static_cast<float>(s); for(int i=0;i<n;i++)sc[i]*=is;
 }
 static inline void rn_c(float*x,const float*w,int n){
-    cn(x,n); double ss=0; for(int i=0;i<n;i++) if(std::isfinite(x[i])) ss+=(double)x[i]*x[i];
-    float ir=1.0f/sqrtf((float)(ss/n)+1e-6f);
+    cn(x,n); double ss=0; for(int i=0;i<n;i++) if(std::isfinite(x[i])) ss+=static_cast<double>(x[i])*x[i];
+    float ir=1.0f/sqrtf(static_cast<float>((ss/n))+1e-6f);
     for(int i=0;i<n;i++) x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;
 }
 static uint64_t jo(const char*js,size_t jl,const char*nm){
@@ -94,36 +94,36 @@ struct I8Ctx {
         bI = std::make_unique<xrt::bo>(d, ins.size()*4, XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
         memcpy(bI->map(), ins.data(), ins.size()*4);
         bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD*KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD*ND*2, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
+        bA = std::make_unique<xrt::bo>(d, static_cast<size_t>(MD)*KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
+        bC = std::make_unique<xrt::bo>(d, static_cast<size_t>(MD)*ND*2, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
         Am = (int8_t*)bA->map(); Cm = (int16_t*)bC->map();
         layerB.resize(num_layers);
         for (int l=0;l<num_layers;l++)
-            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD*ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(gid_B));
+            layerB[l] = std::make_unique<xrt::bo>(d, static_cast<size_t>(KD)*ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(gid_B));
         return true;
     }
     void packB(int l, const float* w, int K, int N, float& sout) {
         float amax=0; for(int i=0;i<K*N;i++){float a=fabsf(w[i]); if(std::isfinite(a)&&a>amax)amax=a;}
         if(amax<1e-12f)amax=1.0f; sout=amax/127.0f; float is=127.0f/amax;
         auto* Bm=(int8_t*)layerB[l]->map();
-        for(int i=0;i<K*N;i++){float v=w[i]; if(!std::isfinite(v))v=0; int x=(int)roundf(v*is); if(x>127)x=127; else if(x<-127)x=-127; Bm[i]=(int8_t)x;}
+        for(int i=0;i<K*N;i++){float v=w[i]; if(!std::isfinite(v))v=0; int x=static_cast<int>(roundf(v*is)); if(x>127)x=127; else if(x<-127)x=-127; Bm[i]=static_cast<int8_t>(x);}
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     void go(int l, const float* A, int am, int ak, float ascale, float Bscale, float* C, int an) {
-        float ais=1.0f/ascale; memset(Am,0,(size_t)MD*KD);
+        float ais=1.0f/ascale; memset(Am,0,static_cast<size_t>(MD)*KD);
         for(int m=0;m<am;m++) for(int kk=0;kk<ak;kk++){
             float v=A[m*ak+kk]; if(!std::isfinite(v))v=0;
-            int q=(int)roundf(v*ais); if(q>127)q=127; else if(q<-127)q=-127;
-            Am[m*KD+kk]=(int8_t)q;
+            int q=static_cast<int>(roundf(v*ais)); if(q>127)q=127; else if(q<-127)q=-127;
+            Am[m*KD+kk]=static_cast<int8_t>(q);
         }
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        auto r = (*k)((unsigned)3, *bI, (unsigned)ins.size(), *bA, *layerB[l], *bC);
+        auto r = (*k)(static_cast<unsigned>(3), *bI, static_cast<unsigned>(ins.size()), *bA, *layerB[l], *bC);
         r.wait();
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         float cs = ascale*Bscale;
         for(int m=0;m<am;m++) for(int n=0;n<an;n++){
-            float val=(float)Cm[m*ND+n]*cs; if(!std::isfinite(val))val=0;
+            float val=static_cast<float>(Cm[m*ND+n])*cs; if(!std::isfinite(val))val=0;
             C[m*an+n]=val;
         }
     }
@@ -195,7 +195,7 @@ public:
         dev_ = std::make_unique<xrt::device>(0);
         char path[512];
         int needed = snprintf(path, sizeof(path), "%s/final_i8_QKV_v.xclbin", xclbin_dir);
-        if (needed < 0 || (size_t)needed >= sizeof(path)) {
+        if (needed < 0 || static_cast<size_t>(needed) >= sizeof(path)) {
             fprintf(stderr, "xclbin path too long\n");
             return;
         }
@@ -222,7 +222,7 @@ public:
             if (!kw) { fprintf(stderr, "dequant failed\n"); return; }
             float* vw=dequant_i8_to_float(i8p(lo[l].vp),128,&vr,&unused);
             if (!vw) { fprintf(stderr, "dequant failed\n"); return; }
-            int t=QOUT+KVOUT+KVOUT; std::vector<float> w((size_t)H*t);
+            int t=QOUT+KVOUT+KVOUT; std::vector<float> w(static_cast<size_t>(H)*t);
             npu_target_detail::transpose_pack(qw, QOUT, H, w.data(), t, 0);
             npu_target_detail::transpose_pack(kw, KVOUT, H, w.data(), t, QOUT);
             npu_target_detail::transpose_pack(vw, KVOUT, H, w.data(), t, QOUT+KVOUT);
@@ -231,7 +231,7 @@ public:
             int or2,oc2;
             float* ow=dequant_i8_to_float_ex(i8p(lo[l].op),256,OIN,&or2,&oc2);
             if (!ow) { fprintf(stderr, "dequant failed\n"); return; }
-            std::vector<float> wo((size_t)OIN*OOUT);
+            std::vector<float> wo(static_cast<size_t>(OIN)*OOUT);
             npu_target_detail::transpose_pack(ow, OOUT, OIN, wo.data(), OOUT, 0);
             co_.packB(l, wo.data(), OIN, OOUT, wsc_[l].o_); free(ow);
 
@@ -240,7 +240,7 @@ public:
             if (!gw) { fprintf(stderr, "dequant failed\n"); return; }
             float* uw=dequant_i8_to_float(i8p(lo[l].up),384,&ur,&unused);
             if (!uw) { fprintf(stderr, "dequant failed\n"); return; }
-            int t2=GUOUT+GUOUT; std::vector<float> w2((size_t)H*t2);
+            int t2=GUOUT+GUOUT; std::vector<float> w2(static_cast<size_t>(H)*t2);
             npu_target_detail::transpose_pack(gw, GUOUT, H, w2.data(), t2, 0);
             npu_target_detail::transpose_pack(uw, GUOUT, H, w2.data(), t2, GUOUT);
             cg_.packB(l, w2.data(), H, t2, wsc_[l].g_); free(gw); free(uw);
@@ -248,7 +248,7 @@ public:
             int dr2,dc2;
             float* dw=dequant_i8_to_float_ex(i8p(lo[l].dp),384,DIN,&dr2,&dc2);
             if (!dw) { fprintf(stderr, "dequant failed\n"); return; }
-            std::vector<float> wd((size_t)DIN*DOUT);
+            std::vector<float> wd(static_cast<size_t>(DIN)*DOUT);
             npu_target_detail::transpose_pack(dw, DOUT, DIN, wd.data(), DOUT, 0);
             cd_.packB(l, wd.data(), DIN, DOUT, wsc_[l].d_); free(dw);
         }
@@ -259,14 +259,14 @@ public:
             int lr, lc;
             float* lm_raw = dequant_i8_to_float(i8p(lo_off), 18992, &lr, &lc);
             if (!lm_raw) { fprintf(stderr, "dequant failed\n"); return; }
-            lm_head_f32_.resize((size_t)lr * lc);
-            memcpy(lm_head_f32_.data(), lm_raw, (size_t)lr * lc * sizeof(float));
+            lm_head_f32_.resize(static_cast<size_t>(lr) * lc);
+            memcpy(lm_head_f32_.data(), lm_raw, static_cast<size_t>(lr) * lc * sizeof(float));
             free(lm_raw);
         }
 
         rope_cos_.resize(4096*HD); rope_sin_.resize(4096*HD);
         for (int p=0;p<4096;p++) for (int i=0;i<HD/2;i++) {
-            float f=1.0f/powf(1000000.0f,(float)(2*i)/HD), a=p*f;
+            float f=1.0f/powf(1000000.0f,static_cast<float>((2*i))/HD), a=p*f;
             rope_cos_[p*HD+2*i]=cosf(a); rope_sin_[p*HD+2*i]=sinf(a);
             rope_cos_[p*HD+2*i+1]=cosf(a); rope_sin_[p*HD+2*i+1]=sinf(a);
         }
@@ -294,8 +294,8 @@ public:
             return;
         }
 
-        std::vector<float> h_b((size_t)n*H), res_b((size_t)n*H), qo_b((size_t)n*4096), at_b((size_t)n*NH*HD);
-        std::vector<float> oo_b((size_t)n*H), gt_b((size_t)n*6144), su_b((size_t)n*IM), dw_b((size_t)n*H);
+        std::vector<float> h_b(static_cast<size_t>(n)*H), res_b(static_cast<size_t>(n)*H), qo_b(static_cast<size_t>(n)*4096), at_b(static_cast<size_t>(n)*NH*HD);
+        std::vector<float> oo_b(static_cast<size_t>(n)*H), gt_b(static_cast<size_t>(n)*6144), su_b(static_cast<size_t>(n)*IM), dw_b(static_cast<size_t>(n)*H);
         for (int pi=0;pi<n;pi++) {
             if (tokens[pi] < 0 || tokens[pi] >= NV) return;
             for (int i=0;i<H;i++) h_b[pi*H+i]=bf16g(emb_[tokens[pi]*H+i]);
@@ -310,32 +310,32 @@ public:
             for (int pi=0;pi<n;pi++) {
                 for (int hh=0;hh<NH;hh++) {
                     // QK RMSNorm FIRST, then RoPE (matching HuggingFace Qwen3 order)
-                    double s=0; for (int d=0;d<HD;d++) s+=(double)qo_b[pi*4096+hh*HD+d]*qo_b[pi*4096+hh*HD+d];
-                    float iq=1.0f/sqrtf((float)(s/HD)+1e-6f);
+                    double s=0; for (int d=0;d<HD;d++) s+=static_cast<double>(qo_b[pi*4096+hh*HD+d])*qo_b[pi*4096+hh*HD+d];
+                    float iq=1.0f/sqrtf(static_cast<float>((s/HD))+1e-6f);
                     for (int d=0;d<HD;d++) qo_b[pi*4096+hh*HD+d]*=iq*qn[d];
                     apply_rope(&qo_b[pi*4096+hh*HD], sp+pi);
                 }
                 for (int kvh=0;kvh<NKV;kvh++) {
                     float* ks=&qo_b[pi*4096+2048+kvh*HD]; float* vs=&qo_b[pi*4096+3072+kvh*HD];
                     // QK RMSNorm FIRST, then RoPE (matching HuggingFace Qwen3 order)
-                    double sk=0; for (int d=0;d<HD;d++) sk+=(double)ks[d]*ks[d];
-                    float ik=1.0f/sqrtf((float)(sk/HD)+1e-6f);
+                    double sk=0; for (int d=0;d<HD;d++) sk+=static_cast<double>(ks[d])*ks[d];
+                    float ik=1.0f/sqrtf(static_cast<float>((sk/HD))+1e-6f);
                     for (int d=0;d<HD;d++) ks[d]*=ik*kn[d];
                     apply_rope(ks, sp+pi);
-                    memcpy(&kv_[l].k[(size_t)(sp+pi)*NKV*HD+kvh*HD], ks, HD*4);
-                    memcpy(&kv_[l].v[(size_t)(sp+pi)*NKV*HD+kvh*HD], vs, HD*4);
+                    memcpy(&kv_[l].k[static_cast<size_t>((sp+pi))*NKV*HD+kvh*HD], ks, HD*4);
+                    memcpy(&kv_[l].v[static_cast<size_t>((sp+pi))*NKV*HD+kvh*HD], vs, HD*4);
                 }
             }
             kv_[l].n = sp+n; int cl = kv_[l].n;
             for (int pi=0;pi<n;pi++) for (int hh=0;hh<NH;hh++) {
                 int kvh=hh/GQA; std::vector<float> ss(cl);
                 for (int p=0;p<=sp+pi;p++) {
-                    double s=0; for (int d=0;d<HD;d++) s+=(double)qo_b[pi*4096+hh*HD+d]*kv_[l].k[(size_t)p*NKV*HD+kvh*HD+d];
-                    ss[p]=(float)(s/sqrtf((float)HD));
+                    double s=0; for (int d=0;d<HD;d++) s+=static_cast<double>(qo_b[pi*4096+hh*HD+d])*kv_[l].k[static_cast<size_t>(p)*NKV*HD+kvh*HD+d];
+                    ss[p]=static_cast<float>((s/sqrtf((float)HD)));
                 }
                 sm(ss.data(), sp+pi+1);
                 for (int d=0;d<HD;d++) {
-                    float s=0; for (int p=0;p<=sp+pi;p++) s+=ss[p]*kv_[l].v[(size_t)p*NKV*HD+kvh*HD+d];
+                    float s=0; for (int p=0;p<=sp+pi;p++) s+=ss[p]*kv_[l].v[static_cast<size_t>(p)*NKV*HD+kvh*HD+d];
                     at_b[pi*NH*HD+hh*HD+d]=s;
                 }
             }
@@ -355,22 +355,22 @@ public:
             for (int pi=0;pi<n;pi++) for (int i=0;i<H;i++) h_b[pi*H+i] = res_b[pi*H+i] + dw_b[pi*H+i];
 
             // Snapshot last position's hidden state at this layer, for MTP draft feature taps.
-            memcpy(layer_hidden_snapshot_[l].data(), &h_b[(size_t)(n-1)*H], H*4);
+            memcpy(layer_hidden_snapshot_[l].data(), &h_b[static_cast<size_t>((n-1))*H], H*4);
         }
 
-        if (out_hidden) memcpy(out_hidden, h_b.data(), (size_t)n*H*4);
+        if (out_hidden) memcpy(out_hidden, h_b.data(), static_cast<size_t>(n)*H*4);
 
         if (out_logits) {
             std::vector<float> sb(H);
             int start_pi = logits_for_all_positions ? 0 : (n - 1);
             for (int pi = start_pi; pi < n; pi++) {
-                memcpy(sb.data(), &h_b[(size_t)pi*H], H*4);
+                memcpy(sb.data(), &h_b[static_cast<size_t>(pi)*H], H*4);
                 rn_c(sb.data(), fin_.data(), H);
-                float* lg = out_logits + (size_t)(logits_for_all_positions ? pi : 0)*NV;
+                float* lg = out_logits + static_cast<size_t>((logits_for_all_positions ? pi : 0))*NV;
                 for (int v=0; v<NV; v++) {
-                    double s=0; const float* wrow = &lm_head_f32_[(size_t)v*H];
-                    for (int kk=0;kk<H;kk++) s+=(double)sb[kk]*wrow[kk];
-                    lg[v]=(float)s;
+                    double s=0; const float* wrow = &lm_head_f32_[static_cast<size_t>(v)*H];
+                    for (int kk=0;kk<H;kk++) s+=static_cast<double>(sb[kk])*wrow[kk];
+                    lg[v]=static_cast<float>(s);
                 }
             }
         }
@@ -399,7 +399,7 @@ public:
         // which the generic float* buffer in TargetModelInterface can't represent cleanly).
         for (int i = 0; i < num_target_layers; i++) {
             int layer = target_layer_ids[i];
-            memcpy(out + (size_t)i*H, layer_hidden_snapshot_[layer].data(), H*4);
+            memcpy(out + static_cast<size_t>(i)*H, layer_hidden_snapshot_[layer].data(), H*4);
         }
     }
 
@@ -418,13 +418,13 @@ private:
         // Populate all NC layers into a flat buffer for callers expecting the full stack
         // (TargetModelInterface::forward's hidden_states arg is [num_layers, hidden_size]).
         if (!hidden_states) return;
-        for (int l = 0; l < NC; l++) memcpy(hidden_states + (size_t)l*H, layer_hidden_snapshot_[l].data(), H*4);
+        for (int l = 0; l < NC; l++) memcpy(hidden_states + static_cast<size_t>(l)*H, layer_hidden_snapshot_[l].data(), H*4);
     }
 
     void apply_rope(float* x, int pos) {
         for (int d=0; d<HD; d+=2) {
             float a=x[d], b=x[d+1];
-            float c=rope_cos_[(size_t)pos*HD+d], s=rope_sin_[(size_t)pos*HD+d];
+            float c=rope_cos_[static_cast<size_t>(pos)*HD+d], s=rope_sin_[static_cast<size_t>(pos)*HD+d];
             x[d]=a*c-b*s; x[d+1]=b*c+a*s;
         }
     }
