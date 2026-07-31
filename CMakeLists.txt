@@ -1252,7 +1252,7 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
         set_source_files_properties(src/kv_cache_attn.hip PROPERTIES LANGUAGE HIP)
         target_include_directories(bench_fused PRIVATE src include engine/fusion/zero_copy engine/npu/src)
         target_compile_options(bench_fused PRIVATE -O2 -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
-        target_link_libraries(bench_fused PRIVATE fusion_zero_copy hip::host hip::device hipblas rocm_cpp)
+        target_link_libraries(bench_fused PRIVATE fusion_zero_copy hip::host hip::device hipblas rocm_cpp pthread)
         set_source_files_properties(tools/bench_fused.cpp PROPERTIES LANGUAGE CXX)
         set_target_properties(bench_fused PROPERTIES
             HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
