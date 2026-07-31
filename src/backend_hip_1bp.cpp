@@ -12,17 +12,8 @@
 #include <chrono>
 #include <memory>
 
-__global__ void rmsnorm_kernel(float*,const float*,int,float);
-__global__ void rope_kernel(float*,int,int,float,int);
-__global__ void silu_kernel(float*,const float*,const float*,int);
-__global__ void add_kernel(float*,const float*,int);
-__global__ void f2h_kernel(__half*,const float*,int);
-__global__ void h2f_kernel(float*,const __half*,int);
-__global__ void kv_store_kernel(__half*,__half*,const float*,const float*,int,int,int,int);
-__global__ void embed_copy_kernel(float*,const float*,int,int);
-__global__ void gemv_kernel(float* y, const float* W, const float* x, int M, int N);
+#include "hip_1bp_kernels.hip"
 
-// gemv_kernel defined in hip_1bp_kernels.hip
 static constexpr float EPS = 1e-6f;
 
 #define HIP_CHECK(call) \
