@@ -70,6 +70,53 @@ static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
 static inline void rn_c(float*x,const float*w,int n){cn(x,n);double ss=0;
     for(int i=0;i<n;i++)if(std::isfinite(x[i]))ss+=(double)x[i]*x[i];
     float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;}
+
+// ── Cross-layer pipeline (roadmap step 3): fused D-output → next-QKV-input ──
+// Consumes the D GEMM output of layer l (Cm, int32 legacy / int16 FLM) and
+// produces layer l+1's QKV input in ONE pass, replacing 6 serial CPU passes:
+//   dequantize → cn → residual add → pre-QKV save → rn_c reduce → rn_c scale → dyn amax
+// Math is bit-identical to the original sequence (same per-element float ops,
+// per-row double-precision rn sums, same dynamic_ascale guard).
+// Writes: h_b = rn(in_n[l+1], residual + D_out)   [QKV input of l+1]
+//         sb_data = residual + D_out              [pre-QKV residual save of l+1]
+// Returns: dynamic activation scale for l+1's cq quantize (== dynamic_ascale).
+template<typename Tcm>
+static inline float fused_cross_layer_boundary(
+        const Tcm* Cm, int ND, float cs,
+        float* sb_data, float* h_b, const float* in_n,
+        int H, int batch, double* rn_ss) {
+    // Pass A (per row): dequant + residual + save + rn-reduce
+    for(int b=0;b<batch;b++){
+        double ss=0;
+        float* sb=sb_data+(size_t)b*H;
+        float* hh=h_b+(size_t)b*H;
+        const Tcm* c=Cm+(size_t)b*ND;
+        for(int i=0;i<H;i++){
+            float dw=(float)c[i]*cs;              // D GEMM output (dequant)
+            float h=sb[i]+dw;                     // residual add
+            if(!std::isfinite(h))h=0.0f;          // cn() semantics
+            sb[i]=h;                              // pre-QKV residual save (l+1)
+            hh[i]=h;
+            ss+=(double)h*h;                      // rn_c reduce
+        }
+        rn_ss[b]=ss;
+    }
+    // Pass B (per row): rn_c scale + dynamic_ascale amax (one pass)
+    float amax=0;
+    for(int b=0;b<batch;b++){
+        float ir=1.0f/sqrtf((float)(rn_ss[b]/H)+EPS);
+        float* hh=h_b+(size_t)b*H;
+        for(int i=0;i<H;i++){
+            float h2=hh[i]*ir*in_n[i];
+            if(!std::isfinite(h2))h2=0.0f;
+            hh[i]=h2;
+            float a=fabsf(h2);
+            if(std::isfinite(a)&&a>amax)amax=a;
+        }
+    }
+    if(amax<1e-12f)amax=1.0f;                     // dynamic_ascale guard
+    return amax/127.0f;
+}
 static std::vector<float>rc,rs;
 static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(mp*hd);
     for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){
@@ -188,25 +235,23 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
     // layer: if >= 0, uses average of per-group scales instead of Bscale.
     inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale,int layer=-1){
         r.wait();
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        if(layer>=0&&(size_t)layer<group_scales.size()&&!group_scales[layer].empty()){
-            float ssum=0;for(float s:group_scales[layer])ssum+=s;
-            Bscale=ssum/group_scales[layer].size();}
-        float cs=ascale*Bscale;
-        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)((int32_t)Cm[m*ND+n])*cs;if(!std::isfinite(val))val=0;
-            C[m*an+n]=val;}
+        readback();
+        dequant_only(C,am,an,ascale,Bscale,layer);
     }
     // Wait for NPU kernel completion without readback.
     // Returns immediately after kernel finishes. Call sync_back_and_dequant() later.
     inline void wait_kernel(xrt::run& r){
         r.wait();
     }
-    // Sync C back from device and dequantize (call after wait_kernel).
-    // This is CPU-only work that CAN overlap with the next kernel's NPU execution.
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void sync_back_and_dequant(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
+    // Phase-split (cross-layer pipeline, roadmap step 3): bC DMA readback only.
+    // Call after wait_kernel(), then dequant_only() or a fused consumer pass.
+    inline void readback(){
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    }
+    // CPU-only dequant loop (call after readback()). CAN overlap with the next
+    // kernel's NPU execution. layer: if >= 0, uses average of per-group scales
+    // instead of Bscale.
+    inline void dequant_only(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
         if(layer>=0&&(size_t)layer<group_scales.size()&&!group_scales[layer].empty()){
             float ssum=0;for(float s:group_scales[layer])ssum+=s;
             Bscale=ssum/group_scales[layer].size();}
@@ -214,6 +259,13 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         for(int m=0;m<am;m++)for(int n=0;n<an;n++){
             float val=(float)((int32_t)Cm[m*ND+n])*cs;if(!std::isfinite(val))val=0;
             C[m*an+n]=val;}
+    }
+    // Sync C back from device and dequantize (call after wait_kernel).
+    // This is CPU-only work that CAN overlap with the next kernel's NPU execution.
+    // layer: if >= 0, uses average of per-group scales instead of Bscale.
+    inline void sync_back_and_dequant(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
+        readback();
+        dequant_only(C,am,an,ascale,Bscale,layer);
     }
     // Synchronous go() — simple, always works
     // Uses per-group scales from group_scales[l] when available.
@@ -812,6 +864,7 @@ int main(int argc,char**argv){
 #define FLM_SYNC_A(ctx, ...)     (flm_xclbin_available ? h##ctx->sync_A(__VA_ARGS__) : ctx.sync_A(__VA_ARGS__))
 #define FLM_WAIT_KERNEL(ctx, ...) (flm_xclbin_available ? h##ctx->wait_kernel(__VA_ARGS__) : ctx.wait_kernel(__VA_ARGS__))
 #define FLM_DEQUANTIZE(ctx, ...) (flm_xclbin_available ? h##ctx->dequantize(__VA_ARGS__) : ctx.dequantize(__VA_ARGS__))
+#define FLM_READBACK(ctx)        (flm_xclbin_available ? h##ctx->readback() : ctx.readback())
 #define FLM_SYNC_BACK(ctx, ...)  (flm_xclbin_available ? h##ctx->sync_back_and_dequant(__VA_ARGS__) : ctx.sync_back_and_dequant(__VA_ARGS__))
 #define FLM_IS_READY(ctx)        (flm_xclbin_available ? h##ctx->isReady() : ctx.isReady())
 // Unique_ptr variants (for cu_ptr which uses -> instead of .)
@@ -1340,19 +1393,42 @@ int main(int argc,char**argv){
         auto ts_batch=std::chrono::steady_clock::now();
         int batch_size=std::min(BS,ng-step);
         for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=emb_f32[(size_t)top_ids[b]*H+i];
-        // ===== PIPELINED LAYER LOOP =====
-        // Overlaps CPU quantize with NPU kernel execution.
-        // Pattern: launch(N) → quantize(N+1) → wait(N) → dequantize(N) → sync+launch(N+1) → ...
-        // co and cg are independent (different inputs) → quantize cg WHILE co runs on NPU.
+        // ===== PIPELINED LAYER LOOP (cross-layer, roadmap step 3) =====
+        // NPU runs QKV → GU → O → D back-to-back; all CPU work hides behind a kernel:
+        //   cg quantize+sync+launch  ∥ QKV kernel   (GU input = h_b, ready at layer start)
+        //   QKV readback + attention ∥ GU kernel
+        //   GU readback + SiLU + D launch ∥ O kernel
+        //   O readback + residual + rn ∥ D kernel (non-split GU)
+        // Layer boundary: the D output is consumed by ONE fused pass
+        // (dequant+residual+save+rn+amax) that directly produces the next layer's
+        // QKV input — replacing 6 serial passes (dequantize, cn, residual, save,
+        // rn_c, dynamic_ascale). Bit-identical numerics.
+        float cq_ascale=1.0f;
+        std::vector<double> rn_ss(batch_size>0?batch_size:1,0.0);
         for(int l=0;l<NC;l++){
-            // Save pre-norm residuals before rn_c
-            for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
-            for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],in_n[l].data(),H);
+            // ── QKV input: for l>0 produced by layer l-1's fused boundary
+            //    (h_b = rn'd QKV input, sb_data = pre-QKV residual, cq_ascale set).
+            //    Layer 0 initializes from embeddings. ──
+            if(l==0){
+                // Save pre-norm residuals before rn_c
+                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
+                for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],in_n[l].data(),H);
+                cq_ascale=dynamic_ascale(h_b.data(),batch_size*H);
+            }
 
             // ── QKV GEMM ──
-            float cq_ascale=dynamic_ascale(h_b.data(),batch_size*H);
             FLM_QUANTIZE_ASYNC(cq,h_b.data(),batch_size,H,cq_ascale);
             auto r_cq=FLM_SYNC_AND_LAUNCH(cq,l);
+
+            // ── GU GEMM: input (h_b) ready since layer start — launch right
+            //    after QKV; its kernel hides the QKV readback + attention. ──
+            int mlp_out=cfg.gu_split?IM:2*IM;
+            float cg_ascale=dynamic_ascale(h_b.data(),batch_size*H);
+            FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
+            FLM_SYNC_A(cg,l);                 // cg.bA sync (MM2S) ∥ QKV kernel
+            auto r_cg=FLM_LAUNCH(cg,l);       // GU queued behind QKV on the NPU
+
+            // ── QKV: wait + readback + dequant (S2MM readback ∥ GU kernel) ──
             FLM_DEQUANTIZE(cq,r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l],l);
             cn(qo_b.data(),batch_size*qkv_n);
 
@@ -1378,63 +1454,68 @@ int main(int argc,char**argv){
                 ca_ptr->finish(r,at_b.data(),batch_size,qs,ks);cn(at_b.data(),batch_size*NH*HD);
             }else{for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}}
 
-            // ── O GEMM ──
-            // Launch O, then quantize GU input WHILE O runs (overlapped)
+            // ── O GEMM: queued behind GU; its readback hides behind D later ──
             float co_ascale=dynamic_ascale(at_b.data(),batch_size*NH*HD);
             FLM_QUANTIZE_ASYNC(co,at_b.data(),batch_size,NH*HD,co_ascale);
             auto r_co=FLM_SYNC_AND_LAUNCH(co,l);
 
-            // ── GU GEMM: independent of O! Quantize GU input while O runs on NPU ──
-            int mlp_out=cfg.gu_split?IM:2*IM;
-            float cg_ascale=dynamic_ascale(h_b.data(),batch_size*H);
-            FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
-
-            // ── CO-GU FULLY PARALLEL ──
-            // Phase 1: Submit GU's DMA sync WHILE O runs on NPU
-            //   bA->sync(to_device) uses MM2S DMA channel (independent of NPU compute)
-            //   This hides the sync latency behind O's NPU time.
-            FLM_SYNC_A(cg,l);  // non-blocking: cg.bA sync starts, DMA runs parallel to NPU
-
-            // Phase 2: Wait for O kernel completion (minimal)
-            FLM_WAIT_KERNEL(co,r_co);
-
-            // Phase 3: Submit GU kernel to NPU + start co readback SIMULTANEOUSLY
-            //   cg.launch() submits the kernel (queued behind O on NPU's compute)
-            //   co.bC->sync uses S2MM DMA channel (independent of MM2S for cg.bA)
-            auto r_cg=FLM_LAUNCH(cg,l);
-            FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
-            cn(oo_b.data(),batch_size*H);
-
-            // Phase 4: Residual add + rn_c (CPU work, overlaps with cg's NPU execution)
-            for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
-            for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
-            for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
-            if(cfg.gu_split){
-                FLM_QUANTIZE_ASYNC_PTR(cu_ptr,h_b.data(),batch_size,H,cg_ascale);
-            }
-
-            // Phase 5: Wait for GU, read back, dequant
+            // ── GU: wait + readback + dequant (readback ∥ O kernel) ──
             FLM_WAIT_KERNEL(cg,r_cg);
             FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
             cn(gt_b.data(),batch_size*mlp_out);
 
             // SiLU gate + U GEMM (gu_split) or combined gate*up
             if(cfg.gu_split){
+                // Up-projection needs the post-attention hidden state, so the O
+                // readback + residual + rn must complete before cu launches.
+                FLM_WAIT_KERNEL(co,r_co);
+                FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
+                cn(oo_b.data(),batch_size*H);
+                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
+                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
+                for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
+                FLM_QUANTIZE_ASYNC_PTR(cu_ptr,h_b.data(),batch_size,H,cg_ascale);
                 auto r_cu=FLM_SYNC_AND_LAUNCH_PTR(cu_ptr,l);
                 FLM_DEQUANTIZE_PTR(cu_ptr,r_cu,su_b.data(),batch_size,IM,cg_ascale,usc[l],l);
                 cn(su_b.data(),batch_size*IM);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*IM+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[b*IM+i];}}}
             else{for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
 
-            // ── D GEMM ──
+            // ── D GEMM: queued behind O ──
             float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
             FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
             auto r_cd=FLM_SYNC_AND_LAUNCH(cd,l);
-            FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
-            cn(dw_b.data(),batch_size*H);
 
-            // Residual add
-            for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+dw_b[b*H+i];
+            // ── O: wait + readback + dequant (non-split: readback ∥ D kernel) + residual + rn ──
+            if(!cfg.gu_split){
+                FLM_WAIT_KERNEL(co,r_co);
+                FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
+                cn(oo_b.data(),batch_size*H);
+                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
+                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
+                for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
+            }
+
+            // ── Cross-layer boundary (roadmap step 3): fused D-output → l+1 QKV input ──
+            if(l+1<NC){
+                FLM_WAIT_KERNEL(cd,r_cd);
+                FLM_READBACK(cd);
+                float cs=cd_ascale*dsc[l];
+                if(flm_xclbin_available){
+                    cq_ascale=fused_cross_layer_boundary<int16_t>(hcd->Cm,hcd->ND,cs,
+                        sb_data.data(),h_b.data(),in_n[l+1].data(),H,batch_size,rn_ss.data());
+                }else{
+                    cq_ascale=fused_cross_layer_boundary<int32_t>(cd.Cm,cd.ND,cs,
+                        sb_data.data(),h_b.data(),in_n[l+1].data(),H,batch_size,rn_ss.data());
+                }
+            }else{
+                // Last layer: keep the final hidden state in h_b for the LM head
+                FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
+                cn(dw_b.data(),batch_size*H);
+
+                // Residual add
+                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+dw_b[b*H+i];
+            }
         }
 
         // LM head on the (single, BS=1) decoded position -> greedy next token.
