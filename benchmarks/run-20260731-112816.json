@@ -1,0 +1,13 @@
+{
+ "timestamp": "20260731-112816",
+ "hardware": "Strix Halo (gfx1151 + XDNA 2)",
+ "runs": [
+  {
+   "bench": "bench_kv_fd",
+   "status": "ok",
+   "tag": "raw",
+   "time_ms": 1116,
+   "note": "[L= 1024] fp16= 592.06 us (  4.4 GB/s)  fd=  87.22 us ( 30.1 GB/s)  speedup=6.79x  max|diff|=0.00006 (ref_max=0.17, mean"
+  }
+ ]
+}
