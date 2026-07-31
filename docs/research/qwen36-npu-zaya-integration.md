@@ -73,3 +73,39 @@ Why files instead of pipes or HTTP — three FLM v0.9.46 bugs discovered:
 - Native `npu_engine_universal` MoE path (no expert routing in the engine yet).
 - The FLM fork-pipe NPU hang and serve-mode degeneration (upstream bugs;
   minimal reproducers in this session's evidence).
+
+## Q4NX byte-format state (for the native engine)
+
+Discovered via ground-truth correlation (GGUF dequant vs Q4NX bytes) + the
+`get_quantization_byte_size(m, dtype)` oracle (dlopen'd from
+libqwen3_6_moe_npu.so):
+
+- **All Q4NX tensors are stored transposed** vs llama.cpp GGUF (verified:
+  router BF16 corr=1.0000 on transpose).
+- **Expert FFN tensors (5120-byte rows, dtype 2/4, INT4)**: the existing
+  `dequant_q4nx.cpp` dequantizes them correctly — gate/up/down_exps verified
+  plausible, 0 NaNs. Layout: [512 B BF16 scales 8g×32r][512 B zeros][4096 B
+  packed INT4].
+- **Attention projections (8704-byte rows) = Q8_0** (dtype 1, 1.0625 B/val =
+  34 B per 32 = INT8 + BF16 scale). Scales confirmed at bytes [0:512] (values
+  ~1.4e-4..6e-4). The INT8 value→position permutation is NOT yet cracked
+  (15+ layout hypotheses tested, all corr≈0; the dequant implementation is
+  binary-only in `dequant.lib`). Next lead: reverse the dequant.lib q80
+  routine, or use the dequant_mm.xclbin on the NPU as the dequant oracle.
+- The dtype oracle method (`/tmp/dtype_probe.c`): probe
+  `get_quantization_byte_size(8192, dtype)` — dtype 1 → 8704 B, dtype 2/4 →
+  5120 B, dtype 0 → 4608 B (0.5625 = INT4+FP16?), dtype 3/5 → 9216 B.
+
+## Native engine MoE roadmap (npu_engine_universal)
+
+1. ModelConfig: add MoE fields (N_EXPERTS, TOP_K, shared expert, ssm dims).
+2. CPU router: moe_router.weight is plain BF16 [2048, 256] — readable now.
+3. NPU expert FFN: the 5120-INT4 expert tensors dequantize with the existing
+   verified dequantizer; dispatch per-expert G/U/D via dequant_mm.xclbin
+   (FLM's gen_dequant_mm sequence, MIT).
+4. Attention: 30/40 layers are GatedDeltaNet (linear attention — CPU state
+   update, port from llama.cpp ggml gated_ln_net); 10/40 gated full attention
+   (attn.xclbin or GPU). This is the "NPU FFN ∥ GPU attention" pattern the
+   repo already pipelines (PR #1231).
+5. Q8_0 attention projections: needed for on-NPU attention; blocked on the
+   value permutation above.
