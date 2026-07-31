@@ -60,6 +60,11 @@ struct Backend {
     /// Returns the predicted token ID, -1 on error.
     virtual int generate(int token_id) = 0;
 
+    /// Logits of the most recent forward/generate step (vocab floats), or
+    /// nullptr if the backend doesn't retain them. Used for sampling and
+    /// logit-level validation.
+    virtual const float* last_logits() { return nullptr; }
+
     /// Clean up resources.
     virtual void destroy() = 0;
 
