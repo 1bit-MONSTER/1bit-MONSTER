@@ -183,9 +183,28 @@ DDR ──► Shim ──► MemTile ──► Main16 (Q4NX GEMM)
 | 1 | Pipelined DMA — async quantize/dequantize overlap | 46→50 | ✅ Done (C++) |
 | 2 | O+GU parallel launch — hide readback behind NPU | 50→55 | ✅ Done |
 | 3 | Cross-layer pipeline — overlap cd dequant + cq quantize | 55→58 | ✅ Done (C++) |
-| 4 | Software pipeline — II=1 inner loop, 4 MACs/cycle | 58→65 | ❌ (kernel change) |
+| 4 | Software pipeline — II=1 inner loop, 4 MACs/cycle | 58→65 | 🔄 Vectorized kernel shipped (v26, M=128, ~110 GFLOPs); II=1 recompile pending (xchesscc) |
 | 5 | Full 32-tile grid | 65→70 | ❌ (xclbin rebuild) |
 | 6 | INT8 via Triton-XDNA (2.5× MAC density) | 70→85+ | ❌ (toolchain fix) |
+
+### INT8 GEMM kernel state (2026-07-31)
+
+- **Shipped**: all qwen3_0_6b xclbins rebuilt with `n1_core_i8_v26.py` (vectorized
+  8×8×8 mmul + K-tile DMA batching) at **M=128** (engine batch size). Previous
+  production mix was broken: QKV/O were v23 **scalar** builds (~154 ms/GEMM) and
+  GU/D were M=32 builds incompatible with the engine's M=128 batches.
+- **Measured** (analytical GEMM bench, `engine/npu/src/bench_i8_gemm.cpp`):
+  QKV 9.3 ms, GU 13.7 ms, D 6.7 ms, O 4.4 ms at ~110-120 GFLOPs — 10-40×
+  faster than the scalar builds; all correct when the NPU DMA path is clean.
+- **Wall**: the core loop runs at ~5-6 MACs/cycle/core (the prebuilt
+  `mm_32x64x128.o`, xchesscc-compiled without `OPT_PERF_ENABLED`). The II=1
+  recompile requires the Vitis toolchain — Peano (`llvm-aie` clang) compiles
+  the kernel but it hangs on hardware.
+- **Known platform issue**: the NPU (virtio-pci VM, amdxdna 0.7.0) logs
+  `AMD-Vi IO_PAGE_FAULT` storms under concurrent device access (two XRT
+  processes), corrupting GEMM results flakily. After a hung experimental
+  kernel, the driver needs `modprobe -r amdxdna && modprobe amdxdna` (all
+  device users must exit) or a VM reboot to restore DMA integrity.
 
 ## Model Details — Qwen3-0.6B
 
@@ -318,9 +337,10 @@ sudo modprobe -r amdxdna && sudo modprobe amdxdna
 
 ## Remaining Work
 
-1. **Fused xclbin edge kernel tuning** — attention bottleneck (17.5ms)
-2. **Prefill instruction format** — fused xclbin hangs at token0
-3. **Per-channel quantization** — eliminate ~2%/layer hidden state growth
-4. **Block-vectorized MAC path** — replace scalar fallback in NPU ternary kernels with full mac_8x8_8x8T pipeline
-5. **Zig NPU engine** — fix XRT C API symbol names
-6. **INT8 via Triton-XDNA** — unblock MLIR parser `i8` type rejection
+1. **II=1 kernel recompile** — rebuild `mm_32x64x128.o` with the Vitis xchesscc toolchain (`-DOPT_PERF_ENABLED`, loop flattening). Current `.o` runs the 2×2 mmul at ~5-6 MACs/cycle/core (~110 GFLOPs); Peano-compiled kernels hang on hardware, so the toolchain machine is required. Target: ~4-8 TFLOPs (FLM-class).
+2. **Fused xclbin edge kernel tuning** — attention bottleneck (17.5ms)
+3. **Prefill instruction format** — fused xclbin hangs at token0
+4. **Per-channel quantization** — eliminate ~2%/layer hidden state growth
+5. **Block-vectorized MAC path** — replace scalar fallback in NPU ternary kernels with full mac_8x8_8x8T pipeline
+6. **Zig NPU engine** — fix XRT C API symbol names
+7. **INT8 via Triton-XDNA** — unblock MLIR parser `i8` type rejection
