@@ -8,11 +8,19 @@
 // Usage:
 //   vl_logit_check <model.1bp> <tokenizer.htok> <prompt> <logits.bin> <ids.txt>
 #include "backend.h"
-#include "onebp_loader.h"
+#include "onebp_format.h"
 #include "rocm_cpp/tokenizer.h"
 #include <cstdio>
 #include <string>
 #include <vector>
+
+static bool read_header(const char* path, OnebpHeader& h) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    bool ok = fread(&h, sizeof(h), 1, f) == 1;
+    fclose(f);
+    return ok && h.valid();
+}
 
 int main(int argc, char** argv) {
     if (argc < 6) {
@@ -24,9 +32,11 @@ int main(int argc, char** argv) {
     const char* prompt = argv[3];
 
     // ── Config from the 1BP header (same as vision_server) ──
-    OnebpModel mdl;
-    if (!mdl.load(model_path)) return 1;
-    const auto& h = mdl.header;
+    OnebpHeader h;
+    if (!read_header(model_path, h)) {
+        fprintf(stderr, "FAIL: header\n");
+        return 1;
+    }
     ModelConfig cfg;
     cfg.hidden = cfg.hidden_size = h.hidden_size;
     cfg.n_layers = cfg.num_layers = h.num_layers;
@@ -64,7 +74,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     be->reset();
-    fprintf(stderr, "prompt: %zu tokens\n", ids.size());
+    fprintf(stderr, "prompt: %zu tokens, initialized=%d\n", ids.size(), (int)be->initialized);
     for (size_t i = 0; i < ids.size(); i++) {
         int r = be->generate(ids[i]);
         if (r < 0) fprintf(stderr, "WARN: token %d rejected\n", ids[i]);

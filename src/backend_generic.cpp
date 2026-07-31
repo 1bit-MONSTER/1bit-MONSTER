@@ -669,6 +669,10 @@ struct GenericBackend : Backend {
         return forward(token_id);
     }
 
+    const float* last_logits() override {
+        return initialized ? logits_buf.data() : nullptr;
+    }
+
     bool forward(int token_id, float* hidden_out) override {
         int tok = forward(token_id);
         if (hidden_out) *hidden_out = 0.0f;
