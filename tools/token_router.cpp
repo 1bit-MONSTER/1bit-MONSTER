@@ -85,6 +85,9 @@ static std::string json_str(const std::string& j, const std::string& k);
 
 // ── NPU Engine Subprocess ──
 struct NpuEngine {
+    // Engine pipes are shared by all request threads — serialize access
+    // (issue #1275: concurrent infer() interleaved NPU request/response).
+    std::mutex mu;
     pid_t pid = 0;
     int stdin_fd = -1;
     int stdout_fd = -1;
@@ -158,6 +161,7 @@ struct NpuEngine {
     // Send tokens to NPU engine, get back generated tokens + logprobs
     // Returns empty on failure
     std::string infer(const std::vector<int>& prompt_tokens, int max_new) {
+        std::lock_guard<std::mutex> lock(mu);
         if (!ready) return "";
 
         // Build request JSON
@@ -214,6 +218,8 @@ struct NpuEngine {
 
 // ── GPU Engine (zaya_server HTTP subprocess) ──
 struct GpuEngine {
+    // libcurl easy handles are not thread-safe — serialize (issue #1275)
+    std::mutex mu;
     pid_t pid = 0;
     int port = 13307;
     bool ready = false;
@@ -289,6 +295,7 @@ struct GpuEngine {
 
     // Send tokens to zaya_server, get back JSON response
     std::string infer(const std::vector<int>& tokens, int n_predict) {
+        std::lock_guard<std::mutex> lock(mu);
         if (!ready || !curl) return "";
 
         // Build request JSON: {"tokens":[...],"n_predict":N}
@@ -339,6 +346,7 @@ struct GpuEngine {
     //   On accept: gpu_token matches first draft token; tokens = gpu-generated continuation
     //   On reject: gpu_token is the GPU's preferred token; replacement_tokens = GPU continuation
     std::string verify(const std::vector<int>& context, const std::vector<int>& draft_tokens) {
+        std::lock_guard<std::mutex> lock(mu);
         if (!ready || draft_tokens.empty()) {
             return "{\"accept\":false,\"gpu_token\":0,\"replacement_tokens\":[]}";
         }

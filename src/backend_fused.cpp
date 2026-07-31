@@ -410,6 +410,12 @@ struct FusedBackend : Backend {
     // forward — PURE GPU LOOP
     // ══════════════════════════════════════
     bool forward(int token_id, float* hidden_out) override {
+        // KV cache holds max_seq positions; the store kernel never compares
+        // (issue #1267) — refuse instead of writing OOB.
+        if (pos >= max_seq) {
+            fprintf(stderr, "[fused] KV overflow: pos=%d >= max_seq=%d\n", pos, max_seq);
+            return false;
+        }
         const int H_ = H, NH_ = NH, NKV_ = NKV, HD_ = this->HD_, IM_ = IM, NC_ = NC;
 
         // Embedding → GPU

@@ -215,6 +215,11 @@ struct Hip1bpBackend : Backend {
 
     bool forward(int token_id,float* hidden_out)override{
         if(!gpu_ok)return false;
+        // KV cache holds max_seq positions (issue #1267)
+        if (pos >= max_seq) {
+            fprintf(stderr, "[hip_1bp] KV overflow: pos=%d >= max_seq=%d\n", pos, max_seq);
+            return false;
+        }
         int H_=H,NH_=NH,NKV_=NKV,HD_=HD,IM_=IM,NC_=NC;
         int block=256;
 
