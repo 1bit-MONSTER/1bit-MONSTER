@@ -204,6 +204,11 @@ struct GenericBackend : Backend {
             fprintf(stderr, "Generic: missing token_embd.weight\n");
             return false;
         }
+        if (getenv("CPU_DEBUG_OPS")) {
+            double s = 0, mx = 0;
+            for (size_t i = 0; i < embed.size(); i++) { s += fabs(embed[i]); if (fabs(embed[i]) > mx) mx = fabs(embed[i]); }
+            fprintf(stderr, "[cpu] embed mean|.|=%g max|.|=%g\n", s / embed.size(), mx);
+        }
 
         // Load final norm + output weight
         if (!model.get_tensor_f32("token_embd_norm.weight", final_norm))
@@ -274,6 +279,10 @@ struct GenericBackend : Backend {
             load("attn_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);   // 1BP writer convention
             load("post_attention_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1);
             load("ffn_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1); // 1BP writer convention
+            // Qwen3 per-head QK-norm (raw fp32 vectors in 1BP); required for
+            // attention stability — without it Qwen3 logits collapse (flat).
+            load("attn_q_norm.weight", "self_attn.q_norm.weight", lw.q_norm, HD, 1);
+            load("attn_k_norm.weight", "self_attn.k_norm.weight", lw.k_norm, HD, 1);
         }
         printf("Generic: 1BP loaded — %d layers, %.1fM params\n",
                cfg.n_layers, (double)embed.size() / 1e6);
@@ -750,6 +759,10 @@ struct GenericBackend : Backend {
             mm(x2.data(), att.data(), w(l.wo), H, NH*HD, l.pk_o);
             // Residual
             for (int i = 0; i < H; i++) x[i] += x2[i];
+            if (getenv("CPU_DEBUG_OPS") && il < 3) {
+                double s = 0; for (int i = 0; i < H; i++) s += fabs(x[i]);
+                fprintf(stderr, "[cpu] L%d after attn: mean|.|=%g\n", il, s / H);
+            }
 
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
@@ -794,10 +807,21 @@ struct GenericBackend : Backend {
                 std::vector<float> silu_buf(FF);
                 ffn_activate(silu_buf.data(), gate_up.data(), &gate_up[FF], FF, cfg.arch);
                 mm(x2.data(), silu_buf.data(), w(l.w3), H, FF, l.pk_w3);
+                if (getenv("CPU_DEBUG_OPS") && il < 3) {
+                    double sg = 0, sd = 0;
+                    for (int i = 0; i < FF; i++) sg += fabs(gate_up[i]);
+                    for (int i = 0; i < H; i++) sd += fabs(x2[i]);
+                    fprintf(stderr, "[cpu] L%d ffn gate mean|.|=%g down mean|.|=%g\n", il, sg / FF, sd / H);
+                }
                 for (int i = 0; i < H; i++) x[i] += x2[i];
             }
         }
 
+        if (getenv("CPU_DEBUG_OPS")) {
+            double s = 0, mx = 0;
+            for (int i = 0; i < H; i++) { s += fabs(x[i]); if (fabs(x[i]) > mx) mx = fabs(x[i]); }
+            fprintf(stderr, "[cpu] final hidden mean|.|=%g max|.|=%g\n", s / H, mx);
+        }
         // Final RMSNorm
         rmsnorm(x2.data(), x.data(), final_norm.data(), H, eps);
 
@@ -814,6 +838,39 @@ struct GenericBackend : Backend {
         }
         if (getenv("CPU_DEBUG")) fprintf(stderr, "[cpu] argmax idx=%d maxlogit=%g\n", best, bestv);
         return best;
+    }
+
+    // Perplexity over per-sample token-id sequences (WS-05/WS-00 harness).
+    // logits_buf holds the previous token's logits after each forward().
+    double compute_ppl(const std::vector<std::vector<int>>& samples) {
+        if (!initialized) return 0.0;
+        double total_nll = 0.0;
+        long long n = 0;
+        int V = cfg.vocab;
+        for (auto& ids : samples) {
+            reset();
+            for (size_t i = 0; i + 1 < ids.size(); i++) {
+                if (forward(ids[i]) < 0) continue;
+                // logits_buf = logits for ids[i]; NLL of ids[i+1]
+                int nxt = ids[i + 1];
+                if (nxt >= 0 && nxt < V) {
+                    float mx = logits_buf[0];
+                    for (int j = 1; j < V; j++) if (logits_buf[j] > mx) mx = logits_buf[j];
+                    double s = 0;
+                    for (int j = 0; j < V; j++) s += expf(logits_buf[j] - mx);
+                    double lse = mx + log(s);
+                    total_nll += lse - logits_buf[nxt];
+                    n++;
+                    if (n <= 5 && getenv("CPU_DEBUG_PPL")) {
+                        int am = 0;
+                        for (int j = 1; j < V; j++) if (logits_buf[j] > logits_buf[am]) am = j;
+                        fprintf(stderr, "[ppl] tok=%d argmax=%d next=%d logit_next=%g lse=%g nll=%g\n",
+                                ids[i], am, nxt, logits_buf[nxt], lse, lse - logits_buf[nxt]);
+                    }
+                }
+            }
+        }
+        return n ? exp(total_nll / (double)n) : 0.0;
     }
 
     void destroy() override { initialized = false; }
