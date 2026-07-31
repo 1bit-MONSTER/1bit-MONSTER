@@ -363,12 +363,15 @@ def detect_architecture(config, tensors):
 def build_header(config, tensors, arch_str, quant_type, tile_rows=32, tile_cols=256, group_size=32):
     """Build a 1BP header from config and architecture info."""
     hdr = bytearray(256)
+    # Layout must match OnebpHeader (include/onebp_format.h) exactly:
+    # magic@0 version@4 arch@8 quant@12 scale_type@16 hidden@20 ...
     struct.pack_into("<I", hdr, 0, ONEBP_MAGIC)
     struct.pack_into("<I", hdr, 4, ONEBP_VERSION)
 
     arch_enum = ARCH_MAP.get(arch_str, ONEBP_DENSE)
     struct.pack_into("<I", hdr, 8, arch_enum)
     struct.pack_into("<I", hdr, 12, QUANT_MAP.get(quant_type, ONEBP_Q4NX))
+    struct.pack_into("<I", hdr, 16, 0)  # scale_type
 
     # Read dimensions from config with fallbacks
     hs = config.get("hidden_size", config.get("d_model", 0))
@@ -405,33 +408,34 @@ def build_header(config, tensors, arch_str, quant_type, tile_rows=32, tile_cols=
                         break
                 break
 
-    struct.pack_into("<i", hdr, 16, hs)
-    struct.pack_into("<i", hdr, 20, nl)
-    struct.pack_into("<i", hdr, 24, nh if nh > 0 else 1)
-    struct.pack_into("<i", hdr, 28, nkv if nkv > 0 else nh)
-    struct.pack_into("<i", hdr, 32, hd if hd > 0 else (hs // nh if nh > 0 else 128))
-    struct.pack_into("<i", hdr, 36, im)
-    struct.pack_into("<i", hdr, 40, vs)
-    struct.pack_into("<i", hdr, 44, msl)
-    struct.pack_into("<I", hdr, 48, tile_rows)
-    struct.pack_into("<I", hdr, 52, tile_cols)
-    struct.pack_into("<I", hdr, 56, group_size)
+    struct.pack_into("<i", hdr, 20, hs)
+    struct.pack_into("<i", hdr, 24, nl)
+    struct.pack_into("<i", hdr, 28, nh if nh > 0 else 1)
+    struct.pack_into("<i", hdr, 32, nkv if nkv > 0 else nh)
+    struct.pack_into("<i", hdr, 36, hd if hd > 0 else (hs // nh if nh > 0 else 128))
+    struct.pack_into("<i", hdr, 40, im)
+    struct.pack_into("<i", hdr, 44, vs)
+    struct.pack_into("<i", hdr, 48, msl)
+    struct.pack_into("<I", hdr, 52, tile_rows)
+    struct.pack_into("<I", hdr, 56, tile_cols)
+    struct.pack_into("<I", hdr, 60, group_size)
 
     # Quantization flags
     has_q = 1 if config.get("q_norm", config.get("has_q_norm", False)) else 0
     has_k = 1 if config.get("k_norm", config.get("has_k_norm", False)) else 0
     has_bias = 1 if config.get("bias", config.get("has_bias", False)) else 0
-    struct.pack_into("<I", hdr, 60, has_q)
-    struct.pack_into("<I", hdr, 64, has_k)
-    struct.pack_into("<I", hdr, 68, has_bias)
+    struct.pack_into("<I", hdr, 64, has_q)
+    struct.pack_into("<I", hdr, 68, has_k)
+    struct.pack_into("<I", hdr, 72, has_bias)
 
     # RoPE theta (stored as fixed-point * 1000)
     rope_theta = config.get("rope_theta", config.get("rope.theta", 10000.0))
-    struct.pack_into("<I", hdr, 72, int(rope_theta * 1000))
+    struct.pack_into("<I", hdr, 76, int(rope_theta * 1000))
 
     # Token IDs
-    struct.pack_into("<i", hdr, 76, config.get("bos_token_id", 1))
-    struct.pack_into("<i", hdr, 80, config.get("eos_token_id", 2))
+    struct.pack_into("<i", hdr, 80, config.get("bos_token_id", 1))
+    struct.pack_into("<i", hdr, 84, config.get("eos_token_id", 2))
+    # tensor_count@88 is patched in convert() after the index is built
 
     # ─── Architecture-specific fields ───────────────────────────
     if arch_str in ("kimi_k3", "moonlight", "kimi_vl"):
@@ -441,25 +445,24 @@ def build_header(config, tensors, arch_str, quant_type, tile_rows=32, tile_cols=
         n_ff_exp = config.get("intermediate_size", im)
         n_ff_shexp = config.get("shared_expert_intermediate_size", n_ff_exp)
 
-        struct.pack_into("<I", hdr, 84, n_exp)
-        struct.pack_into("<I", hdr, 88, n_used)
-        struct.pack_into("<I", hdr, 92, n_ff_exp)
-        struct.pack_into("<I", hdr, 96, n_ff_shexp)
+        struct.pack_into("<I", hdr, 92, n_exp)
+        struct.pack_into("<I", hdr, 96, n_used)
+        struct.pack_into("<I", hdr, 100, n_ff_exp)
+        struct.pack_into("<I", hdr, 104, n_ff_shexp)
 
-        # K3 specific: KDA config
+        # K3 specific: KDA config in reserved[0..2] (offset 148)
         if arch_str == "kimi_k3":
             n_kda = config.get("num_kda_layers", 69)
             n_mla = config.get("num_mla_layers", 24)
             kda_dim = config.get("kda_latent_dim", 3584)
-            struct.pack_into("<i", hdr, 100, n_kda)     # reserved[0]
-            struct.pack_into("<i", hdr, 104, n_mla)     # reserved[1]
-            # KDA/VL specific in reserved fields
-            struct.pack_into("<i", hdr, 108, kda_dim)   # reserved[2]
+            struct.pack_into("<i", hdr, 148, n_kda)     # reserved[0]
+            struct.pack_into("<i", hdr, 152, n_mla)     # reserved[1]
+            struct.pack_into("<i", hdr, 156, kda_dim)   # reserved[2]
 
-    # Vision config
+    # Vision config in reserved[3]
     if arch_str == "kimi_vl":
         v_hs = config.get("vision_hidden_size", 1024)
-        struct.pack_into("<i", hdr, 112, v_hs)
+        struct.pack_into("<i", hdr, 160, v_hs)
 
     # Model tag
     tag = config.get("_name_or_path", config.get("model_type", arch_str))
@@ -609,9 +612,9 @@ def convert(input_path, output_path, arch_str=None, quant_str="Q4NX", verbose=Tr
 
         print(f"  Index written, tensor_count={len(tensor_entries)}")
 
-        # Update tensor count in header
+        # Update tensor count in header (offset 88 = OnebpHeader::tensor_count)
         hdr_updated = bytearray(hdr)
-        struct.pack_into("<I", hdr_updated, 84, len(tensor_entries))
+        struct.pack_into("<I", hdr_updated, 88, len(tensor_entries))
 
         # Write quantized tile data
         quant_start = time.time()
