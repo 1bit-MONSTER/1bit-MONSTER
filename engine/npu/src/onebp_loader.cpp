@@ -194,14 +194,19 @@ public:
     static void dequant_tile_tq2(const uint8_t* tile_data, float* output,
                                  int out_rows, int out_cols,
                                  int tile_rows = 32, int tile_cols = 256, int group_size = 32,
-                                 bool no_zero = false) {
+                                 bool no_zero = false, bool e4m3_scales = false) {
         int groups = tile_cols / group_size;
-        const uint16_t* scales = (const uint16_t*)tile_data;
-        const uint8_t*  qdata  = tile_data + (size_t)tile_rows * groups * 2;
+        const uint8_t* qdata  = tile_data + (size_t)tile_rows * groups * (e4m3_scales ? 1 : 2);
 
         for (int r = 0; r < tile_rows && r < out_rows; r++) {
             for (int g = 0; g < groups; g++) {
-                float scale = bf16_to_f32(scales[r * groups + g]);
+                float scale;
+                if (e4m3_scales) {
+                    scale = onebp_ue4m3_to_f32(tile_data[r * groups + g]);
+                } else {
+                    const uint16_t* scales = (const uint16_t*)tile_data;
+                    scale = bf16_to_f32(scales[r * groups + g]);
+                }
 
                 for (int i = 0; i < group_size && g * group_size + i < out_cols; i += 4) {
                     int col = g * group_size + i;
@@ -229,10 +234,12 @@ public:
         int tr = hdr_.tile_rows, tc = hdr_.tile_cols, gs = hdr_.group_size;
         int ntr = (R + tr - 1) / tr;
         int ntc = (C + tc - 1) / tc;
-        bool is_tq2 = hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ;
-        bool tq2nz = hdr_.quant == ONEBP_TQ2NZ;
+        bool is_tq2 = hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ ||
+                       hdr_.quant == ONEBP_TQ2NZ_E4M3;
+        bool tq2nz = hdr_.quant == ONEBP_TQ2NZ || hdr_.quant == ONEBP_TQ2NZ_E4M3;
+        bool e4m3 = hdr_.quant == ONEBP_TQ2NZ_E4M3;
         size_t tile_bytes = is_tq2
-            ? (size_t)tr * (tc / gs) * 2 + (size_t)tr * tc / 4
+            ? (size_t)tr * (tc / gs) * (e4m3 ? 1 : 2) + (size_t)tr * tc / 4
             : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
 
         out.resize((size_t)R * C);
@@ -245,7 +252,7 @@ public:
                 int cw = (C - c0) < tc ? (C - c0) : tc;
 
                 float tile_buf[32 * 256];  // max tile size
-                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, cw, tr, tc, gs, tq2nz);
+                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, cw, tr, tc, gs, tq2nz, e4m3);
                 else        dequant_tile(base, tile_buf, rh, cw, tr, tc, gs);
 
                 for (int r = 0; r < rh; r++)
@@ -299,8 +306,9 @@ public:
 
         int tr = hdr_.tile_rows, tc = hdr_.tile_cols, gs = hdr_.group_size;
         int ntc = (te->cols + tc - 1) / tc;
-        size_t tile_bytes = (hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ)
-            ? (size_t)tr * (tc / gs) * 2 + (size_t)tr * tc / 4
+        size_t tile_bytes = (hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ ||
+                              hdr_.quant == ONEBP_TQ2NZ_E4M3)
+            ? (size_t)tr * (tc / gs) * (hdr_.quant == ONEBP_TQ2NZ_E4M3 ? 1 : 2) + (size_t)tr * tc / 4
             : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
 
         uint64_t off = te->file_offset + (uint64_t)(tile_row * ntc + tile_col) * tile_bytes;
@@ -317,8 +325,9 @@ public:
 
         int tr = hdr_.tile_rows, tc = hdr_.tile_cols, gs = hdr_.group_size;
         int ntc = (te->cols + tc - 1) / tc;
-        size_t tile_bytes = (hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ)
-            ? (size_t)tr * (tc / gs) * 2 + (size_t)tr * tc / 4
+        size_t tile_bytes = (hdr_.quant == ONEBP_TQ2 || hdr_.quant == ONEBP_TQ2NZ ||
+                              hdr_.quant == ONEBP_TQ2NZ_E4M3)
+            ? (size_t)tr * (tc / gs) * (hdr_.quant == ONEBP_TQ2NZ_E4M3 ? 1 : 2) + (size_t)tr * tc / 4
             : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
         uint64_t per_expert_bytes = te->total_bytes / (uint64_t)te->num_experts;
 

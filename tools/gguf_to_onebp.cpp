@@ -34,7 +34,7 @@ static inline uint16_t f32b(float v) {
 int main(int argc, char** argv) {
     //signal(SIGFPE, sigfpe_handler);
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq1]\n", argv[0]);
+        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq2nz-e4m3 | --tq1]\n", argv[0]);
         return 1;
     }
     // --- Parse quant selection (Q4NX default, --tq2 for symmetric ternary, --tq1 for 1.58-bit) ---
@@ -42,12 +42,14 @@ int main(int argc, char** argv) {
     for (int ai = 3; ai < argc; ai++) {
         if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
         else if (strcmp(argv[ai], "--tq2nz") == 0) quant = ONEBP_TQ2NZ;
+        else if (strcmp(argv[ai], "--tq2nz-e4m3") == 0) quant = ONEBP_TQ2NZ_E4M3;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
         else { fprintf(stderr, "Unknown option: %s\n", argv[ai]); return 1; }
     }
     const char* quant_name = (quant == ONEBP_TQ2) ? "TQ2 (ternary 2-bit)" :
                              (quant == ONEBP_TQ2NZ) ? "TQ2NZ (no-zero 2-bit S40)" :
+                             (quant == ONEBP_TQ2NZ_E4M3) ? "TQ2NZ-E4M3 (no-zero 2-bit, UE4M3 scales)" :
                              (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
                              "Q4NX (4-bit)";
     GgufReader reader;
@@ -425,17 +427,19 @@ int main(int argc, char** argv) {
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }
-                if (quant == ONEBP_TQ2NZ) {
-                    // ── TQ2NZ: no-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2
+                if (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) {
+                    // ── TQ2NZ family: no-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2
                     // style) — uses ALL four 2-bit codes (TQ2 wastes code 3).
-                    // Per tile: [scales: tr*grps*bf16][codes: tr*tc packed 4/byte].
+                    // Per tile: [scales][codes: tr*tc packed 4/byte].
                     // Scale = max|v|/4 per 32-group so +4 covers the max;
                     // nearest-of-{-4,-1,+1,+4} with the FP2 2.5f split.
                     // code: 0=-4s, 1=-1s, 2=+1s, 3=+4s (LSB-first, 4 codes/byte).
                     // All-zero / padding groups use scale=0 (code×0=0).
-                    size_t sb = (size_t)tr * grps * 2, cb = (size_t)tr * tc / 4;
+                    // TQ2NZ uses BF16 scales (2 B); TQ2NZ_E4M3 uses 1-byte UE4M3
+                    // scales picked by MSE search over the 127-value table.
+                    bool e4m3 = (quant == ONEBP_TQ2NZ_E4M3);
+                    size_t sb = (size_t)tr * grps * (e4m3 ? 1 : 2), cb = (size_t)tr * tc / 4;
                     std::vector<uint8_t> tdata(sb + cb, 0);
-                    uint16_t* sc = (uint16_t*)tdata.data();
                     uint8_t*  qd = tdata.data() + sb;
                     for (int rr = 0; rr < tr; rr++) {
                         for (int g = 0; g < grps; g++) {
@@ -449,9 +453,38 @@ int main(int argc, char** argv) {
                                 }
                             }
                             float s = maxabs * 0.25f;  // outer code ±4 covers max
-                            if (s < 1e-20f) s = 0.0f;  // all-zero / padding group
-                            float inv_s = s > 0.0f ? 1.0f / s : 0.0f;
-                            sc[rr * grps + g] = f32b(s);
+                            uint8_t scale_byte = 0;
+                            float inv_s = 0.0f;
+                            if (s < 1e-20f) { s = 0.0f; scale_byte = 0; }
+                            else if (e4m3) {
+                                // FP2-style MSE search: start at nearest UE4M3(max/4),
+                                // walk ±8 entries, pick min reconstruction MSE.
+                                uint8_t start_e = onebp_nearest_ue4m3(s);
+                                float best_err = INFINITY;
+                                for (int d = -8; d <= 8; d++) {
+                                    int e = (int)start_e + d;
+                                    if (e < 0 || e > 126) continue;
+                                    float scv = onebp_ue4m3_to_f32((uint8_t)e);
+                                    if (scv <= 0.0f) continue;
+                                    float inv = 1.0f / scv, err = 0.0f;
+                                    for (int i = 0; i < gs; i++) {
+                                        int ac = acs + i;
+                                        if (ar >= R || ac >= C) continue;
+                                        float v = fw[expert_off + (size_t)ar * C + ac];
+                                        if (!std::isfinite(v)) continue;
+                                        float q = v * inv;
+                                        float code = (q > 2.5f) ? 4.0f : (q < -2.5f) ? -4.0f : (q > 0.0f) ? 1.0f : -1.0f;
+                                        float dv = v - code * scv;
+                                        err += dv * dv;
+                                    }
+                                    if (err < best_err) { best_err = err; scale_byte = (uint8_t)e; }
+                                }
+                                tdata[(size_t)rr * grps + g] = scale_byte;
+                                inv_s = 1.0f / onebp_ue4m3_to_f32(scale_byte);
+                            } else {
+                                ((uint16_t*)tdata.data())[rr * grps + g] = f32b(s);
+                                inv_s = 1.0f / s;
+                            }
                             for (int i = 0; i < gs; i++) {
                                 int ac = acs + i;
                                 uint8_t code = 1;  // default -1s (s=0 → ±0)
@@ -471,7 +504,6 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }

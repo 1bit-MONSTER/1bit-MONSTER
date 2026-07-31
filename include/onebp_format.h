@@ -49,6 +49,12 @@
  *  Scale = max|v|/4 per 32-group so the outer code covers the max.
  *  Same 2.50 bpw as TQ2/FP2; all-zero groups use scale=0 (code×0=0).
  *
+ *  TQ2NZ_E4M3 (header.quant == ONEBP_TQ2NZ_E4M3), 32×256 — same S40
+ *  codebook, but scales are 1-byte unsigned E4M3 (exp==0 → mant·2^-10,
+ *  else (8+mant)·2^(exp-11); 127 finite values) instead of BF16 → tile
+ *  row = [8 UE4M3 scales][64 B codes] = 72 B → 2.25 bpw. Scale picked by
+ *  MSE search over the 127-value table starting at max|v|/4.
+ *
  *  Tensor index entry (variable-length):
  *    [name_len:u32][name:str][ndim:u32][dims:u32 × ndim][offset:u64][bytes:u64]
  *
@@ -67,6 +73,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <cmath>
 
 static constexpr uint32_t ONEBP_MAGIC        = 0x00504231;  // "1BP\0"
 static constexpr uint32_t ONEBP_VERSION      = 1;
@@ -80,6 +87,7 @@ enum OnebpQuant : uint32_t {
     ONEBP_F16  = 4,   // Float16 (no quant)
     ONEBP_F32  = 5,   // Float32 (no quant)
     ONEBP_TQ2NZ= 6,   // No-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2-style)
+    ONEBP_TQ2NZ_E4M3 = 7, // TQ2NZ with 1-byte UE4M3 scales (2.25 bpw)
 };
 
 // ─── Scale types ───────────────────────────────────────────────────
@@ -223,6 +231,30 @@ static_assert(sizeof(OnebpHeader) == 256, "OnebpHeader must be exactly 256 bytes
 // Variable-length: [name_len:u32][name:str][ndim:u32][shape:u32[]][offset:u64][bytes:u64]
 // Not a fixed struct — written element by element in the converter.
 
+// ─── UE4M3 scale codec (ROCmFPX-FP2-style, shared by converter + loader) ──
+// exp==0 → mant·2^-10 ; else (8+mant)·2^(exp-11). 127 finite values (0x00..0x7e).
+static inline float onebp_ue4m3_to_f32(uint8_t e) {
+    if (e > 0x7e) return 0.0f;
+    uint32_t exp = e >> 3, mant = e & 7;
+    float v = exp == 0 ? (float)mant * 0.0009765625f   // 2^-10
+                       : (8.0f + mant) * ldexpf(1.0f, (int)exp - 11);
+    return v;
+}
+
+static inline uint8_t onebp_nearest_ue4m3(float target) {
+    // binary search over the monotonic 127-value table
+    if (target <= 0.0f) return 0;
+    uint8_t lo = 0, hi = 126;
+    while (lo < hi) {
+        uint8_t mid = (lo + hi + 1) >> 1;
+        if (onebp_ue4m3_to_f32(mid) <= target) lo = mid; else hi = mid - 1;
+    }
+    if (lo < 126 &&
+        fabsf(onebp_ue4m3_to_f32(lo + 1) - target) < fabsf(onebp_ue4m3_to_f32(lo) - target))
+        return lo + 1;
+    return lo;
+}
+
 // ─── Compute tiled size for a weight matrix ──────────────────────
 // Returns bytes needed after tiling rows×cols to tile_rows×tile_cols
 static inline uint64_t onebp_tiled_size(
@@ -249,6 +281,11 @@ static inline uint64_t onebp_tiled_size(
         case ONEBP_TQ2NZ:
             // scales (bf16 x groups x rows) + 2-bit packed codes (4/byte)
             tile_bytes = (uint64_t)tile_rows * groups_per_row * 2   // scales
+                       + (uint64_t)tile_rows * tile_cols / 4;       // 2-bit packed
+            break;
+        case ONEBP_TQ2NZ_E4M3:
+            // scales (1-byte UE4M3 x groups x rows) + 2-bit packed codes
+            tile_bytes = (uint64_t)tile_rows * groups_per_row * 1   // scales
                        + (uint64_t)tile_rows * tile_cols / 4;       // 2-bit packed
             break;
         case ONEBP_TQ1: {
