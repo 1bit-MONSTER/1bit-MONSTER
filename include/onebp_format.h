@@ -76,7 +76,7 @@
 #include <cmath>
 
 static constexpr uint32_t ONEBP_MAGIC        = 0x00504231;  // "1BP\0"
-static constexpr uint32_t ONEBP_VERSION      = 1;
+static constexpr uint32_t ONEBP_VERSION      = 2;  // v2: per-entry quant field (mixed-quant files)
 
 // ─── Quantization types ────────────────────────────────────────────
 enum OnebpQuant : uint32_t {
@@ -198,7 +198,7 @@ struct OnebpHeader {
     // validity: core dims always required; attention heads are optional
     // (Mamba/MoE architectures have no attention, set NH=0, HD=0).
     bool valid() const {
-        if (magic != ONEBP_MAGIC || version != ONEBP_VERSION) return false;
+        if (magic != ONEBP_MAGIC || version < 1 || version > ONEBP_VERSION) return false;
         if (hidden_size <= 0 || num_layers <= 0 || vocab_size <= 0) return false;
         if (num_attention_heads > 0 && head_dim <= 0) return false;
         if (head_dim > 0 && num_attention_heads <= 0) return false;

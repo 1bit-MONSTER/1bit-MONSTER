@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
     // (shape.size() != 2 filtered out every 1D tensor), which meant every
     // .1bp file ever produced was missing all its normalization weights —
     // structurally incapable of correct inference. See issue #1023.
-    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; };
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; };
     std::vector<TInfo> tensors;
     uint64_t data_off = 0;
     int tr = 32, tc = 256, gs = 32;
@@ -262,7 +262,7 @@ int main(int argc, char** argv) {
             int len = (int)inf->shape[0];
             if (len <= 0) continue;
             uint64_t raw_bytes = (uint64_t)len * 4;  // f32, unquantized
-            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes});
+            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes, quant});
             data_off += raw_bytes;
             continue;
         }
@@ -271,10 +271,17 @@ int main(int argc, char** argv) {
             int c = (int)inf->shape[0], r = (int)inf->shape[1];
             if (r <= 0 || c <= 0) continue;
             if ((uint64_t)r * (uint64_t)c > 1500000000ull) continue;  // cap: 1.5G elements (~6 GB f32)
-            uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, quant);
-            tensors.push_back({tn, 2, r, c, 1, data_off, tiled});
+            // Tensor routing (ROCmFPX recipe mining): no-zero 2-bit codebooks
+            // destroy sparse/embedding tensors (TQ2NZ model collapse test).
+            // Keep token embeddings + lm_head on asymmetric Q4NX.
+            OnebpQuant tq = quant;
+            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
+                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
+                tq = ONEBP_Q4NX;
+            uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
+            tensors.push_back({tn, 2, r, c, 1, data_off, tiled, tq});
             data_off += tiled;
-            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu\n", tn.c_str(), r, c, tiled);
+            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
             // ndim == 3: MoE expert-stacked tensor [num_experts, rows, cols]
             int ne, r, c;
@@ -290,9 +297,13 @@ int main(int argc, char** argv) {
                 c  = (int)inf->shape[2];
             }
             if (ne <= 0 || r <= 0 || c <= 0) continue;
-            uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, quant);
+            OnebpQuant tq = quant;
+            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
+                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
+                tq = ONEBP_Q4NX;
+            uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, tq);
             uint64_t total_tiled = (uint64_t)ne * per_expert;
-            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled});
+            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled, tq});
             data_off += total_tiled;
             printf("  tensor %s: %d experts x %dx%d per-expert=%lu total=%lu\n",
                    tn.c_str(), ne, r, c, per_expert, total_tiled);
@@ -323,7 +334,7 @@ int main(int argc, char** argv) {
     uint64_t index_size = 0;
     for (auto& t : tensors) {
         uint32_t nl = std::min((uint32_t)t.name.size(), (uint32_t)63);
-        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8;  // name_len + name + \0 + ndim + dims[ndim] + offset + bytes
+        index_size += 4 + nl + 1 + 4 + (uint64_t)t.ndim * 4 + 8 + 8 + 4;  // + v2 per-tensor quant
     }
 
     // Write tensor index — ndim==2 (dense) or ndim==3 (MoE expert stack)
@@ -346,6 +357,8 @@ int main(int argc, char** argv) {
         }
         fwrite(&t.offset, 8, 1, fout);
         fwrite(&t.tiled, 8, 1, fout);
+        uint32_t tq = (uint32_t)t.tq;
+        fwrite(&tq, 4, 1, fout);   // v2: per-tensor quant
     }
 
     printf("Quantizing %zu tensors as %s...\n", tensors.size(), quant_name);
@@ -382,7 +395,7 @@ int main(int argc, char** argv) {
                     int r0 = r * tr, c0 = c * tc;
                 int grps = tc / gs;
                 if (grps <= 0) grps = 1;
-                if (quant == ONEBP_TQ2) {
+                if (ti.tq == ONEBP_TQ2) {
                     // ── TQ2: symmetric ternary (-scale, 0, +scale), no zero-point ──
                     // Per tile: [scales: tr*grps*bf16][codes: tr*tc packed 4/byte].
                     // Scale = max|v| per 32-group => lossless when the source is
@@ -427,7 +440,7 @@ int main(int argc, char** argv) {
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }
-                if (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) {
+                if (ti.tq == ONEBP_TQ2NZ || ti.tq == ONEBP_TQ2NZ_E4M3) {
                     // ── TQ2NZ family: no-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2
                     // style) — uses ALL four 2-bit codes (TQ2 wastes code 3).
                     // Per tile: [scales][codes: tr*tc packed 4/byte].
@@ -437,7 +450,7 @@ int main(int argc, char** argv) {
                     // All-zero / padding groups use scale=0 (code×0=0).
                     // TQ2NZ uses BF16 scales (2 B); TQ2NZ_E4M3 uses 1-byte UE4M3
                     // scales picked by MSE search over the 127-value table.
-                    bool e4m3 = (quant == ONEBP_TQ2NZ_E4M3);
+                    bool e4m3 = (ti.tq == ONEBP_TQ2NZ_E4M3);
                     size_t sb = (size_t)tr * grps * (e4m3 ? 1 : 2), cb = (size_t)tr * tc / 4;
                     std::vector<uint8_t> tdata(sb + cb, 0);
                     uint8_t*  qd = tdata.data() + sb;
@@ -507,7 +520,7 @@ int main(int argc, char** argv) {
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }
-                if (quant == ONEBP_TQ1) {
+                if (ti.tq == ONEBP_TQ1) {
                     // ── TQ1: 1.58-bit base-3 ternary (5 codes/byte) ──
                     // Groups of 5 elements: bf16 scale + 1 byte with 5 base-3 codes.
                     // code: 0=-scale, 1=0, 2=+scale
