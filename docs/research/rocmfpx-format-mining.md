@@ -65,3 +65,28 @@ first n/8..n/16 layers + last n/4..n/2 layers get higher bits).
 - Strix Halo (gfx1151) README claims: Vulkan ROCmFP2 90.30 t/s, ROCmFP4
   STRIX_LEAN 76.71 t/s vs Q4_K_M 70.57 t/s (Qwen3.6-35B-A3B, 256-token
   decode, non-speculative).
+
+## 6. Validation status (2026-07-31, 1BP converter port)
+
+Ported and measured on Qwen3-0.6B (SNR vs Q4_K_M source, flat across
+attn_q/k/v, ffn_down/up, token_embd):
+
+| Format | bpw | size | SNR (attn_q) | status |
+|---|---:|---:|---:|---|
+| TQ2 (baseline) | 2.50 | 235.1 MB | 3.66 dB | — |
+| TQ2NZ (no-zero S40) | 2.50 | 235.1 MB | 7.39 dB | **+3.73 dB** |
+| TQ2NZ_E4M3 (UE4M3 + MSE search) | 2.25 | 211.7 MB | 9.61 dB | **+5.94 dB, −10% size** |
+
+- Idea 1 (no-zero codebook): VALIDATED (+3.73 dB at same bpw).
+- Idea 2 (UE4M3 scales): VALIDATED (+2.2 dB over bf16 AND 10% smaller — the
+  MSE scale search over the 127-value table beats the crude max/4).
+- Idea 3 (imatrix weighting): not yet ported (the MSE search already covers
+  the scale-selection half).
+- Idea 4 (tensor routing): already how the q4nx NPU layout works; converter
+  applies one quant to all tensors — a per-tensor map is the natural next
+  step if mixed-precision files are wanted.
+- Engine decode speed is format-agnostic (45 tok/s f32-matmul path) — the
+  wins are quality/size, not speed; kernel-side 2-bit decode is the
+  unblocked follow-up.
+
+Converter flags: `--tq2` / `--tq2nz` / `--tq2nz-e4m3` / `--tq1`.
