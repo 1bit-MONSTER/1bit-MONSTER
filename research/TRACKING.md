@@ -6,11 +6,11 @@
 
 | ID | Item | Status | Notes |
 |----|------|:------:|-------|
-| P0.1 | Un-break NPU fusion (`DRM_IOCTL_AMDXDNA_CREATE_HWCTX` EINVAL) | 🔲 | Hypothesis: 4-5 concurrent HW contexts collide on column budget |
+| P0.1 | NPU exec fault path (IO_PAGE_FAULT per exec, ~10 s/layer) | 🔄 | Diagnosed: not a hang — 1000x-slow faulting exec; engine works e2e at 0.1 tok/s; see P01-DIG-FINDINGS.md |
 | P0.2 | One router, retire the other two | 🔲 | cascade vs `tools/token_router.cpp` vs `unified-router.py` |
 | P0.3 | 40-column decision in writing | 🔲 | NPU2-40 compiler or formally closed |
 | P0.4 | Re-baseline raw numbers (HIP 113, DSpark 0.8, fusion 291) | 🔲 | After WS-00 harness lands |
-| P0.5 | Kill CPU attention stub (8.4 ms/layer) | 🔲 | Issue #936 — highest-leverage task in the plan |
+| P0.5 | Kill CPU attention stub (8.4 ms/layer) | ✅ | Swap done: 53-248x kernel-level (FINDINGS.md); e2e measurable now (240s run reaches decode) |
 
 ## Workstreams
 
