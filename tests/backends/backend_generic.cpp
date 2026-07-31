@@ -25,7 +25,7 @@
 // USE_COLIBRI_Q4=1: quantize GGUF weights to int4 at load time (8x smaller)
 // Set to 0 for original f32 behavior.
 #ifndef USE_COLIBRI_Q4
-#define USE_COLIBRI_Q4 1
+#define USE_COLIBRI_Q4 0   // 1 = re-quantize weights to int4 at load (colibri path)
 #endif
 
 // Forward declaration of gguf_dequant from the shared gguf_reader module
@@ -74,17 +74,25 @@ static float fp16_to_fp32(uint16_t h) {
 // every GGUF load with SIGFPE (issue #799). The namespace below makes these
 // distinct symbols.
 namespace generic_backend {
-struct GgufTensor { std::string name; std::vector<uint64_t> shape; uint32_t dtype; uint64_t file_offset; };
+struct GgufTensor { std::string name; std::vector<uint64_t> shape; uint32_t dtype; uint64_t file_offset; uint64_t rel_offset = 0; };
 
 // Shared block_info function (was a lambda inside open(), but needs to be
 // callable from both open() and get()). Must match ggml_type block sizes.
+// NOTE: cases 9..15 were shifted (each K-quant carried the NEXT type's size,
+// e.g. Q4_K=176 instead of 144) — every K-quant tensor was read 32 bytes out
+// of phase per block, silently corrupting all weights past block 0.
+// Sizes below are ggml's own static_asserts (QK_K=256).
 static std::pair<int,int> gguf_block_info(uint32_t dtype) {
     switch (dtype) {
         case 0: return {1, 4}; case 1: return {1, 2}; case 2: return {32, 18};
         case 3: return {32, 20}; case 6: return {32, 22}; case 7: return {32, 24};
-        case 8: return {32, 34}; case 9: return {256, 72}; case 10: return {256, 104};
-        case 11: return {256, 144}; case 12: return {256, 176}; case 13: return {256, 210};
-        case 14: return {256, 292}; case 15: return {256, 0};
+        case 8: return {32, 34}; case 9: return {32, 36};   // Q8_1
+        case 10: return {256, 84};   // Q2_K
+        case 11: return {256, 110};  // Q3_K
+        case 12: return {256, 144};  // Q4_K
+        case 13: return {256, 176};  // Q5_K
+        case 14: return {256, 210};  // Q6_K
+        case 15: return {256, 292};  // Q8_K
         default: return {32, 0};
     }
 }
@@ -94,6 +102,8 @@ struct GgufReader {
     std::unordered_map<std::string, GgufTensor> tensors;
     std::vector<float> scratch;
     int vocab_size = 0;
+    float rope_freq_base = 10000.0f;   // from *.rope.freq_base metadata (Qwen3 = 1e6)
+    float rope_freq_scale = 1.0f;      // from *.rope.freq_scale metadata
 
     bool open(const std::string& path) {
         f = fopen(path.c_str(), "rb"); if (!f) return false;
@@ -101,43 +111,55 @@ struct GgufReader {
         if (magic != 0x46554747) { fclose(f); return false; }
         uint32_t version; fread(&version, 4, 1, f);
         uint64_t n_tensors, n_kv; fread(&n_tensors, 8, 1, f); fread(&n_kv, 8, 1, f);
+        uint32_t alignment = 32;
+        static constexpr uint64_t MAX_KVLEN = 1ULL << 20;  // sanity cap (see issue: unbounded key lengths -> bad_alloc)
         for (uint64_t i = 0; i < n_kv; i++) {
-            uint64_t klen; fread(&klen, 8, 1, f);
-            std::string key(klen, '\0'); fread(&key[0], 1, klen, f);
-            uint32_t vtype; fread(&vtype, 4, 1, f);
+            uint64_t klen; if (fread(&klen, 8, 1, f) != 1) { fclose(f); return false; }
+            if (klen > MAX_KVLEN) { fclose(f); return false; }
+            std::string key(klen, '\0'); if (klen && fread(&key[0], 1, klen, f) != klen) { fclose(f); return false; }
+            uint32_t vtype; if (fread(&vtype, 4, 1, f) != 1) { fclose(f); return false; }
             // GGUF value types: 0=u8 1=i8 2=u16 3=i16 4=u32 5=i32 6=f32 7=bool 8=string 9=array 10=u64 11=i64 12=f64
-            if (vtype == 2 || vtype == 8) { uint64_t slen; fread(&slen, 8, 1, f); fseek(f, slen, SEEK_CUR); }
-            else if (vtype >= 3 && vtype <= 6) { fseek(f, 4, SEEK_CUR); }
+            // Arrays are encoded as: int32 element_type THEN uint64 element_count
+            // (llama.cpp layout — reading them the other way desyncs the stream
+            // and turns the next key length into garbage -> std::bad_alloc).
+            if (vtype == 2 || vtype == 8) { uint64_t slen; if (fread(&slen, 8, 1, f) != 1 || slen > MAX_KVLEN) { fclose(f); return false; } fseek(f, slen, SEEK_CUR); }
+            else if (vtype == 4) { uint32_t v; if (fread(&v, 4, 1, f) != 1) { fclose(f); return false; } if (key == "general.alignment" && v > 0) alignment = v; }
+            else if (vtype == 3 || vtype == 5) { fseek(f, 4, SEEK_CUR); }
+            else if (vtype == 6) { float v; if (fread(&v, 4, 1, f) != 1) { fclose(f); return false; }
+                if (key.size() >= 14 && key.compare(key.size() - 14, 14, "rope.freq_base") == 0) rope_freq_base = v;
+                else if (key.size() >= 14 && key.compare(key.size() - 14, 14, "rope.freq_scale") == 0) rope_freq_scale = v; }
             else if (vtype == 7) { fseek(f, 1, SEEK_CUR); }
             else if (vtype == 9) {
-                uint32_t n_arr; fread(&n_arr, 4, 1, f); uint32_t at; fread(&at, 4, 1, f); uint64_t al = n_arr;
-                if (at == 2 || at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; fread(&ss, 8, 1, f); fseek(f, ss, SEEK_CUR); } }
-                else if (at <= 7) { fseek(f, al, SEEK_CUR); }
-                else if (at >= 10 && at <= 12) { fseek(f, al * 8, SEEK_CUR); }
-                else { fseek(f, al * 4, SEEK_CUR); }
+                uint32_t at; if (fread(&at, 4, 1, f) != 1) { fclose(f); return false; }
+                uint64_t al; if (fread(&al, 8, 1, f) != 1) { fclose(f); return false; }
+                if (at == 8) { for (uint64_t j = 0; j < al; j++) { uint64_t ss; if (fread(&ss, 8, 1, f) != 1 || ss > MAX_KVLEN) { fclose(f); return false; } fseek(f, ss, SEEK_CUR); } }
+                else if (at == 2 || at == 3) { fseek(f, (long)(al * 2), SEEK_CUR); }
+                else if (at == 4 || at == 5 || at == 6) { fseek(f, (long)(al * 4), SEEK_CUR); }
+                else if (at >= 10 && at <= 12) { fseek(f, (long)(al * 8), SEEK_CUR); }
+                else { fseek(f, (long)al, SEEK_CUR); }  // u8 / i8 / bool: 1 byte each
             }
             else if (vtype >= 10 && vtype <= 12) { fseek(f, 8, SEEK_CUR); }
             else if (vtype <= 1) { fseek(f, 1, SEEK_CUR); }
             else { fseek(f, 8, SEEK_CUR); }
         }
         for (uint64_t i = 0; i < n_tensors; i++) {
-            uint64_t nlen; fread(&nlen, 8, 1, f);
-            GgufTensor t; t.name.resize(nlen); fread(&t.name[0], 1, nlen, f);
-            uint32_t n_dims; fread(&n_dims, 4, 1, f);
+            uint64_t nlen; if (fread(&nlen, 8, 1, f) != 1 || nlen > MAX_KVLEN) { fclose(f); return false; }
+            GgufTensor t; t.name.resize(nlen); if (fread(&t.name[0], 1, nlen, f) != nlen) { fclose(f); return false; }
+            uint32_t n_dims; if (fread(&n_dims, 4, 1, f) != 1 || n_dims > 16) { fclose(f); return false; }
             t.shape.resize(n_dims);
-            for (uint32_t j = 0; j < n_dims; j++) fread(&t.shape[j], 8, 1, f);
-            fread(&t.dtype, 4, 1, f); fseek(f, 4, SEEK_CUR);
+            for (uint32_t j = 0; j < n_dims; j++) if (fread(&t.shape[j], 8, 1, f) != 1) { fclose(f); return false; }
+            if (fread(&t.dtype, 4, 1, f) != 1) { fclose(f); return false; }
+            // u64 data offset relative to the (aligned) data section start. MUST be
+            // taken from the file, not recomputed from map iteration: tensor order
+            // in an unordered_map is not the file order, so accumulation gives
+            // every tensor the wrong position -> garbage weights ("!!!!" outputs).
+            if (fread(&t.rel_offset, 8, 1, f) != 1) { fclose(f); return false; }
             tensors[t.name] = t;
         }
-        uint64_t data_off = ftell(f); data_off = (data_off + 31) & ~31;
-        for (auto& [name, t] : tensors) {
-            t.file_offset = data_off;
-            uint64_t n_elems = 1; for (auto s : t.shape) n_elems *= s;
-            auto [bs, bpb] = gguf_block_info(t.dtype);
-            if (bpb == 0) { bpb = 4; bs = 1; }
-            data_off += ((n_elems + bs - 1) / bs) * bpb;
-            data_off = (data_off + 31) & ~31;
-        }
+        uint64_t data_start = (uint64_t)ftell(f);
+        uint64_t rem = data_start % alignment;
+        if (rem) data_start += alignment - rem;
+        for (auto& [name, t] : tensors) t.file_offset = data_start + t.rel_offset;
         return true;
     }
 
@@ -158,8 +180,10 @@ struct GgufReader {
                 uint16_t sh; fread(&sh, 2, 1, f); float s = fp16_to_fp32(sh);
                 uint8_t q[16]; fread(q, 1, 16, f);
                 for (int j = 0; j < 32 && b*32+j < (int)n; j++) {
-                    int8_t v = (j & 1) ? (q[j>>1] >> 4) : (q[j>>1] & 0xf);
-                    scratch[b*32+j] = (v - 8) * s;
+                    // Q4_0 nibbles are signed 4-bit; sign-extend properly
+                    // (the old (v-8) mapping turned 0xF into +7 instead of -1).
+                    int8_t v = (j & 1) ? (int8_t)(q[j>>1] >> 4) : (int8_t)((q[j>>1] & 0xf) << 4) >> 4;
+                    scratch[b*32+j] = (float)v * s;
                 }
             }
         } else if (t.dtype == GGUF_TYPE_Q8_0) {
@@ -246,6 +270,7 @@ class UniversalBackend : public InferenceBackend {
     struct LayerW {
         std::vector<float> attn_norm, ffn_norm;  // RMSNorm weights
         std::vector<float> wq, wk, wv, wo;        // Attention Q/K/V/O
+        std::vector<float> q_norm, k_norm;        // QK RMSNorm (Qwen3/Gemma3 style)
         std::vector<float> gate, up, down;         // FFN
 #if USE_COLIBRI_Q4
         // int4 quantized versions — 8x smaller, cosim > 0.997
@@ -260,6 +285,8 @@ class UniversalBackend : public InferenceBackend {
     // KV cache
     std::vector<std::vector<float>> k_cache_, v_cache_;
     int seq_len_ = 0;
+    float rope_base_ = 10000.0f;
+    float rope_scale_ = 1.0f;
 
     // Activation functions
     static float silu(float x) { return x / (1.0f + expf(-x)); }
@@ -301,11 +328,13 @@ public:
 
         if (!gguf_.open(gguf_path)) { fprintf(stderr, "  Universal: failed to open GGUF\n"); return false; }
 
-        // Read dimensions from GGUF if not already set
+        // Read dimensions from GGUF if not already set. Use the canonical
+        // long-name fields only: the deprecated short aliases (n_heads etc.)
+        // are NOT kept in sync by all callers and silently corrupt dims.
         int H = cfg.hidden_size > 0 ? cfg.hidden_size : 2048;
-        int L = cfg.n_layers > 0 ? cfg.n_layers : 32;
-        int NH = cfg.n_heads > 0 ? cfg.n_heads : H / 128;
-        int NKV = cfg.n_kv_heads > 0 ? cfg.n_kv_heads : NH;
+        int L = cfg.num_layers > 0 ? cfg.num_layers : 32;
+        int NH = cfg.num_heads > 0 ? cfg.num_heads : H / 128;
+        int NKV = cfg.num_kv_heads > 0 ? cfg.num_kv_heads : NH;
         int HD = cfg.head_dim > 0 ? cfg.head_dim : H / NH;
         int V = cfg.vocab_size > 0 ? cfg.vocab_size : 32000;
         int FF = cfg.intermediate_size > 0 ? cfg.intermediate_size : H * 8 / 3;
@@ -314,10 +343,17 @@ public:
         cfg_.num_kv_heads = NKV; cfg_.head_dim = HD; cfg_.vocab_size = V;
         cfg_.intermediate_size = FF;
 
-        // Load weights
-        auto load_t = [&](const std::string& name, std::vector<float>& dst, size_t expected) {
+        // Load weights. GGUF files in the wild use llama.cpp naming (blk.N.*)
+        // and HF-style naming (model.layers.N.*); try the llama.cpp names first
+        // (canonical for GGUF), then fall back to HF names.
+        auto load_t = [&](const std::string& name, const std::string& alt_name,
+                          std::vector<float>& dst, size_t expected) {
             size_t n = 0; float* data = gguf_.get(name, &n);
-            if (!data || n != expected) { fprintf(stderr, "  Universal: %s expected %zu got %zu\n", name.c_str(), expected, n); return; }
+            if (!data && !alt_name.empty()) data = gguf_.get(alt_name, &n);
+            if (!data || n != expected) {
+                if (data) fprintf(stderr, "  Universal: %s expected %zu got %zu\n", name.c_str(), expected, n);
+                return;
+            }
             dst.assign(data, data + n);
         };
 
@@ -338,8 +374,7 @@ public:
 #endif
 
         // Final norm
-        load_t("output_norm.weight", final_norm_, H);
-        if (final_norm_.empty()) load_t("model.norm.weight", final_norm_, H);
+        load_t("output_norm.weight", "model.norm.weight", final_norm_, H);
 
         // LM head (optional — may be tied)
         size_t out_n = 0;
@@ -369,19 +404,26 @@ public:
         layers_.resize(L);
         fprintf(stderr, "  Universal: %d layers, %d hidden, %d heads, %d vocab\n", L, H, NH, V);
 
+        rope_base_ = gguf_.rope_freq_base > 0 ? gguf_.rope_freq_base : 10000.0f;
+        rope_scale_ = gguf_.rope_freq_scale > 0 ? gguf_.rope_freq_scale : 1.0f;
+        fprintf(stderr, "  Universal: rope_base=%.0f rope_scale=%.2f\n", rope_base_, rope_scale_);
         for (int i = 0; i < L; i++) {
             auto& lw = layers_[i];
-            char pfx[128]; snprintf(pfx, sizeof(pfx), "model.layers.%d.", i);
-            std::string p(pfx);
-            load_t(p + "input_layernorm.weight", lw.attn_norm, H);
-            load_t(p + "post_attention_layernorm.weight", lw.ffn_norm, H);
-            load_t(p + "self_attn.q_proj.weight", lw.wq, (size_t)NH * HD * H);
-            load_t(p + "self_attn.k_proj.weight", lw.wk, (size_t)NKV * HD * H);
-            load_t(p + "self_attn.v_proj.weight", lw.wv, (size_t)NKV * HD * H);
-            load_t(p + "self_attn.o_proj.weight", lw.wo, (size_t)H * NH * HD);
-            load_t(p + "mlp.gate_proj.weight", lw.gate, (size_t)FF * H);
-            load_t(p + "mlp.up_proj.weight", lw.up, (size_t)FF * H);
-            load_t(p + "mlp.down_proj.weight", lw.down, (size_t)H * FF);
+            char pfx[128]; snprintf(pfx, sizeof(pfx), "blk.%d.", i);
+            char hpfx[128]; snprintf(hpfx, sizeof(hpfx), "model.layers.%d.", i);
+            std::string p(pfx), hp(hpfx);
+            // llama.cpp GGUF names first, HF-style names as fallback
+            load_t(p + "attn_norm.weight", hp + "input_layernorm.weight", lw.attn_norm, H);
+            load_t(p + "ffn_norm.weight", hp + "post_attention_layernorm.weight", lw.ffn_norm, H);
+            load_t(p + "attn_q.weight", hp + "self_attn.q_proj.weight", lw.wq, (size_t)NH * HD * H);
+            load_t(p + "attn_k.weight", hp + "self_attn.k_proj.weight", lw.wk, (size_t)NKV * HD * H);
+            load_t(p + "attn_v.weight", hp + "self_attn.v_proj.weight", lw.wv, (size_t)NKV * HD * H);
+            load_t(p + "attn_output.weight", hp + "self_attn.o_proj.weight", lw.wo, (size_t)H * NH * HD);
+            load_t(p + "attn_q_norm.weight", hp + "self_attn.q_norm.weight", lw.q_norm, HD);
+            load_t(p + "attn_k_norm.weight", hp + "self_attn.k_norm.weight", lw.k_norm, HD);
+            load_t(p + "ffn_gate.weight", hp + "mlp.gate_proj.weight", lw.gate, (size_t)FF * H);
+            load_t(p + "ffn_up.weight", hp + "mlp.up_proj.weight", lw.up, (size_t)FF * H);
+            load_t(p + "ffn_down.weight", hp + "mlp.down_proj.weight", lw.down, (size_t)H * FF);
 
 #if USE_COLIBRI_Q4
             // Quantize this layer's weights to int4
@@ -402,6 +444,19 @@ public:
             q4_row(lw.up, H, lw.q4_up, lw.qs_up);
             q4_row(lw.down, FF, lw.q4_down, lw.qs_down);
 #endif
+        }
+
+        // Refuse to serve garbage: if the layer weights matched nothing, the
+        // tensor names in this GGUF are neither blk.* nor model.layers.* — fail
+        // loudly instead of emitting degenerate tokens from empty weights.
+        if (layers_.empty() || (layers_[0].wq.empty()
+#if USE_COLIBRI_Q4
+            && layers_[0].q4_wq.empty()
+#endif
+            )) {
+            fprintf(stderr, "  Universal: no layer weights matched GGUF tensor names "
+                            "(tried blk.* and model.layers.*) - refusing to serve\n");
+            return false;
         }
 
         gguf_.close();
@@ -458,6 +513,10 @@ public:
             } else
 #endif
             {
+                // GGUF linear weights are stored [in][out] (ne0 = input,
+                // ne0-fastest): element (in, out) at in + out*ne0. ggml mul_mat
+                // contracts along ne0, so result[out] = sum_in W[in + out*ne0]*x[in]
+                // — i.e. out-major access below. Verified against llama.cpp logits.
                 for (int j = 0; j < QD && j < (int)lw.wq.size() / H; j++) {
                     float s = 0; for (int i = 0; i < H; i++) s += norm[i] * lw.wq[j * H + i]; q[j] = s;
                 }
@@ -469,11 +528,28 @@ public:
                 }
             }
 
+            // QK RMSNorm (Qwen3 / Gemma3 style): per-head RMS over HD with
+            // learned per-dimension weights. Required for correct attention on
+            // architectures that ship attn_q_norm / attn_k_norm tensors.
+            auto qk_rmsnorm = [&](std::vector<float>& x, int heads, const std::vector<float>& w) {
+                if (w.size() != (size_t)HD) return;
+                for (int h = 0; h < heads; h++) {
+                    float ss = 0; for (int d = 0; d < HD; d++) { float xv = x[h*HD+d]; ss += xv*xv; }
+                    float inv = 1.0f / sqrtf(ss / HD + 1e-6f);
+                    for (int d = 0; d < HD; d++) x[h*HD+d] *= inv * w[d];
+                }
+            };
+            qk_rmsnorm(q, NH, lw.q_norm);
+            qk_rmsnorm(k, NKV, lw.k_norm);
+
             // RoPE
             int rot_dim = HD / 2;
+            float rope_base = rope_base_ > 0 ? rope_base_ : 10000.0f;
+            float rope_scale = rope_scale_ > 0 ? rope_scale_ : 1.0f;
+            float pos = (float)seq_len_ * rope_scale;
             for (int h = 0; h < NH; h++) {
                 for (int d = 0; d < rot_dim; d++) {
-                    float angle = seq_len_ * powf(10000.0f, -2.0f * d / HD);
+                    float angle = pos * powf(rope_base, -2.0f * d / HD);
                     float c = cosf(angle), s = sinf(angle);
                     int qi = h * HD + d, qj = h * HD + d + rot_dim;
                     float q0 = q[qi] * c - q[qj] * s; float q1 = q[qi] * s + q[qj] * c;
@@ -482,7 +558,7 @@ public:
             }
             for (int h = 0; h < NKV; h++) {
                 for (int d = 0; d < rot_dim; d++) {
-                    float angle = seq_len_ * powf(10000.0f, -2.0f * d / HD);
+                    float angle = pos * powf(rope_base, -2.0f * d / HD);
                     float c = cosf(angle), s = sinf(angle);
                     int ki = h * HD + d, kj = h * HD + d + rot_dim;
                     float k0 = k[ki] * c - k[kj] * s; float k1 = k[ki] * s + k[kj] * c;

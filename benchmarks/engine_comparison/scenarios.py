@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""
+Scenario -> request payload builders.
+
+Each builder returns a dict describing one `/v1/chat/completions` request:
+  { "messages", "tools", "response_format", "checker" }
+`checker(metrics) -> Optional[bool]` is used by correctness-bearing scenarios
+(function_call) to record whether the model did the expected thing.
+
+Image is sent in the portable OpenAI `image_url` form to every engine. Audio
+and video differ per engine (TensorSharp accepts a message-level base64 array /
+a sampled-frame image sequence; llama.cpp uses the OpenAI `input_audio` part),
+so those builders take the engine id.
+"""
+from __future__ import annotations
+
+import base64
+import functools
+from pathlib import Path
+from typing import Optional
+
+import config
+
+ASSETS = config.ASSETS_DIR
+
+
+def _read_asset(name: str, fallback: str) -> str:
+    p = ASSETS / name
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return fallback
+
+
+def _b64_file(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def _data_uri(path: Path, mime: str) -> str:
+    return f"data:{mime};base64,{_b64_file(path)}"
+
+
+# ---------------------------------------------------------------------------
+# Shared prompt-context preamble
+# ---------------------------------------------------------------------------
+# The interactive text scenarios (text_short / text_long / multi_turn /
+# function_call / json_mode) are timed by TTFT. At tiny prompt lengths TTFT is
+# dominated by fixed per-request overhead (HTTP, scheduling, cold-graph launch,
+# first-token sampling) rather than prefill compute, so the numbers are noisy
+# and engine-to-engine differences are unreliable. To measure on a realistic,
+# stable footing every one of these scenarios is prefixed with the same
+# ~2k-token reference document; the scenario's actual task then follows.
+_PREFILL_CHARS_PER_TOKEN = 4.6   # ~English prose under these models' tokenizers
+_CONTEXT_TOKENS = 2048           # ~2k-token context preamble for text scenarios
+
+
+@functools.lru_cache(maxsize=8)
+def _sliced_corpus(target_tokens: int) -> str:
+    """Tile `prefill_corpus.txt` to ~`target_tokens` tokens (char-budget approx).
+
+    Length is controlled by slicing to a target character budget; the *reported*
+    `prompt_tokens` (from each engine's own tokenizer) is what the throughput math
+    actually uses, so this approximation only needs to land in the right ballpark.
+    """
+    corpus = _read_asset("prefill_corpus.txt",
+                         "The quick brown fox jumps over the lazy dog. " * 400)
+    target_chars = int(target_tokens * _PREFILL_CHARS_PER_TOKEN)
+
+    # Tile the corpus (with a numbered separator, so adjacent blocks are not
+    # byte-identical) until it is long enough, then truncate to the budget.
+    body = corpus
+    section = 2
+    while len(body) < target_chars:
+        body += f"\n\n--- continued (part {section}) ---\n\n{corpus}"
+        section += 1
+    return body[:target_chars].rstrip()
+
+
+def _context_preamble(tag: str) -> str:
+    """A ~2k-token reference-document preamble to prepend to a text scenario.
+
+    `tag` is embedded in a unique header at position 0 so that scenarios sharing
+    this identical body cannot hit a server's prompt/prefix cache off one another
+    (which would report a near-zero TTFT and a wildly inflated prefill_tps). The
+    differing tag busts any shared-prefix match within the first few tokens.
+    """
+    doc = _sliced_corpus(_CONTEXT_TOKENS)
+    header = (f"[context:{tag}] Reference document, provided for context; keep it "
+              f"in mind when answering the request that follows.\n\n")
+    return f"{header}{doc}\n\n---\n\n"
+
+
+@functools.lru_cache(maxsize=4)
+def _video_frames_b64(path_str: str, n: int = 4) -> tuple:
+    """Sample `n` evenly-spaced frames from a video, return JPEG base64 strings."""
+    import cv2  # available in this environment
+    cap = cv2.VideoCapture(path_str)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    frames = []
+    if total <= 0:
+        cap.release()
+        return tuple()
+    idxs = [int(total * (i + 1) / (n + 1)) for i in range(n)]
+    for idx in idxs:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        ok, buf = cv2.imencode(".jpg", frame)
+        if ok:
+            frames.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+    cap.release()
+    return tuple(frames)
+
+
+# ---------------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------------
+def _text_short(engine, model):
+    return {"messages": [
+        {"role": "user",
+         "content": _context_preamble("text_short") +
+                    "Explain what a transformer neural network is in three concise sentences."}]}
+
+
+def _text_long(engine, model):
+    doc = _read_asset("long_text.txt", "Lorem ipsum dolor sit amet. " * 200)
+    return {"messages": [
+        {"role": "user",
+         "content": _context_preamble("text_long") +
+                    doc + "\n\nSummarize the passage immediately above in two sentences."}]}
+
+
+# ---------------------------------------------------------------------------
+# Prefill (prompt-processing) dataset
+# ---------------------------------------------------------------------------
+# Dedicated long-prompt scenarios used to measure prefill throughput accurately.
+# The interactive text scenarios carry only a ~2k-token context preamble (see
+# `_context_preamble`), enough to keep TTFT out of the fixed-overhead floor but
+# still short enough that per-token prefill cost does not fully dominate. The
+# prefill scenarios below instead drive the prompt to several thousand /
+# tens-of-thousands of tokens at controlled lengths so the per-token prefill
+# cost separates cleanly from that fixed overhead.
+#
+# Length is controlled by slicing `prefill_corpus.txt` to a target character
+# budget (see `_sliced_corpus`); the *reported* `prompt_tokens` (from each
+# engine's own tokenizer) is what `prefill_tps = prompt_tokens / ttft` actually
+# uses, so this approximation only needs to land each scenario in the right
+# ballpark, not hit an exact count.
+
+
+def _parse_prefill_target(scenario_id: str) -> int:
+    """`prefill_4k` / `prefill_4096` / `prefill_512` -> target token count."""
+    suffix = scenario_id.split("prefill_", 1)[-1].strip().lower()
+    if suffix.endswith("k"):
+        return int(round(float(suffix[:-1]) * 1024))
+    return int(suffix)
+
+
+def _prefill(target_tokens: int, engine, model):
+    body = _sliced_corpus(target_tokens)
+
+    # A unique-per-length header at position 0 so the longer prompts cannot hit
+    # the server's prompt/prefix cache off the shorter ones (which would report a
+    # near-zero TTFT and a wildly inflated prefill_tps). The differing token
+    # count busts any shared-prefix match within the first few tokens.
+    header = (f"[prefill-benchmark target={target_tokens} tokens] The following is a "
+              f"long technical document, provided so the system can be timed while it "
+              f"processes the prompt.\n\n")
+    instruction = ("\n\nIn one sentence, state the single most important theme of the "
+                   "document above.")
+    return {"messages": [
+        {"role": "user", "content": header + body + instruction}]}
+
+
+def _multi_turn(engine, model):
+    # Prepend the ~2k-token context to the first user turn so the final (timed)
+    # turn re-processes a realistic-length conversation prefix.
+    return {"messages": [
+        {"role": "user", "content": _context_preamble("multi_turn") +
+                                    "I'm planning a trip to Japan. My budget is $3000."},
+        {"role": "assistant", "content": "Great! Japan is a wonderful destination. With a $3000 budget, "
+                                         "you can have a comfortable week-long trip. What time of year are you thinking?"},
+        {"role": "user", "content": "Cherry blossom season. Which two cities should I prioritize and why?"},
+        {"role": "assistant", "content": "For cherry blossom season, Kyoto and Tokyo are the top picks. "
+                                         "Kyoto offers classic temple-and-blossom scenery; Tokyo adds variety and nightlife."},
+        {"role": "user", "content": "Given my budget, roughly how should I split spending between those two cities?"}]}
+
+
+def _function_call(engine, model):
+    import json
+    tools = json.loads(_read_asset("tools/weather.json", _DEFAULT_WEATHER_TOOL))
+
+    def checker(metrics):
+        # Accept either a structured tool-call name (llama.cpp/vLLM streaming) or
+        # finish_reason=tool_calls (TensorSharp streams the call as content text
+        # but still flags the turn as a tool call).
+        if "get_weather" in (metrics.get("tool_calls") or []):
+            return True
+        return metrics.get("finish_reason") == "tool_calls"
+
+    return {"messages": [
+        {"role": "user",
+         "content": _context_preamble("function_call") +
+                    "What is the current weather in Paris in celsius? Use the available tool."}],
+        "tools": tools,
+        "checker": checker}
+
+
+def _json_mode(engine, model):
+    return {"messages": [
+        {"role": "user",
+         "content": _context_preamble("json_mode") +
+                    "Return a JSON object describing the planet Mars with keys "
+                    "'name', 'diameter_km' (number), and 'has_moons' (boolean)."}],
+        "response_format": {"type": "json_object"}}
+
+
+def _image(engine, model):
+    uri = _data_uri(config.MEDIA_IMAGE, "image/jpeg")
+    return {"messages": [
+        {"role": "user", "content": [
+            {"type": "text", "text": "Describe what you see in this image."},
+            {"type": "image_url", "image_url": {"url": uri}}]}]}
+
+
+def _audio(engine, model):
+    b64 = _b64_file(config.MEDIA_AUDIO)
+    fmt = config.MEDIA_AUDIO.suffix.lstrip(".").lower() or "mp3"
+    if engine == "llamacpp":
+        # llama.cpp / OpenAI input_audio content part.
+        return {"messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Transcribe and summarize this audio."},
+                {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}]}]}
+    # TensorSharp: message-level base64 `audios` array.
+    return {"messages": [
+        {"role": "user",
+         "content": "Transcribe and summarize this audio.",
+         "audios": [b64]}]}
+
+
+def _video(engine, model):
+    frames = _video_frames_b64(str(config.MEDIA_VIDEO), n=4)
+    if not frames:
+        # No frames decoded; signal an empty build so the caller records a skip.
+        return {"messages": None, "detail": "could not decode video frames"}
+    parts = [{"type": "text",
+              "text": "These are sampled frames from a video. Describe what is happening."}]
+    for fr in frames:
+        parts.append({"type": "image_url",
+                      "image_url": {"url": f"data:image/jpeg;base64,{fr}"}})
+    return {"messages": [{"role": "user", "content": parts}]}
+
+
+_BUILDERS = {
+    "text_short": _text_short,
+    "text_long": _text_long,
+    "multi_turn": _multi_turn,
+    "function_call": _function_call,
+    "json_mode": _json_mode,
+    "image": _image,
+    "audio": _audio,
+    "video": _video,
+}
+
+
+def build_request(scenario_id: str, engine: str, model: config.ModelSpec) -> dict:
+    if scenario_id.startswith("prefill_"):
+        req = _prefill(_parse_prefill_target(scenario_id), engine, model)
+    else:
+        builder = _BUILDERS[scenario_id]
+        req = builder(engine, model)
+    req.setdefault("tools", None)
+    req.setdefault("response_format", None)
+    req.setdefault("checker", None)
+    return req
+
+
+_DEFAULT_WEATHER_TOOL = """[
+  {
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "description": "Get the current weather for a city.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {"type": "string", "description": "City name"},
+          "units": {"type": "string", "enum": ["c", "f"], "description": "Temperature units"}
+        },
+        "required": ["city"]
+      }
+    }
+  }
+]"""
