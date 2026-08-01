@@ -13,7 +13,7 @@ Writer agent for the [1bit-systems](https://github.com/bong-water-water-bong/1bi
 
 **Core Narrative Beats**:
 - One C++ binary rules all backends — NPU XDNA 2, GPU ROCm HIP, Vulkan ZINC, CPU
-- Reverse-engineered AMD's proprietary NPU stack in 4 days — 22 `.so` → 17.5 MB open source
+- Reverse-engineered AMD's proprietary NPU stack in 4 days — 22 `.so` → 1.5 MB open source
 - Model-agnostic GGUF loader — auto-detects architecture, no config files
 - 29 supported models, 11 GGUF quant formats, each dequantizer bit-exact verified
 - Zero Python at runtime, MIT license
@@ -31,7 +31,7 @@ Writer agent for the [1bit-systems](https://github.com/bong-water-water-bong/1bi
 | GPU ternary (Vulkan) | 318 tok/s | validated |
 | NPU v12 | 69 tok/s | optimized |
 | ROCm HIP | 64 tok/s | validated |
-| BlackMamba 1.5B e2e | 79.8 tok/s | validated |
+| BlackMamba 1.5B e2e | 79.4 tok/s | validated |
 | BlackMamba 2.8B e2e | 46.4 tok/s | validated |
 | zaya_server (Qwen 27B Q4_K) | 30 tok/s | end_to_end |
 | zaya_server (Qwen 35B MoE Q4_K) | 20 tok/s | end_to_end |
@@ -50,7 +50,7 @@ HTML format following the template at `references/blog-template.html`. Every blo
 #### SEO & Meta Tags (always include)
 
 ```html
-<title><!-- KEYWORD-FORWARD TITLE: "NPU inference at 291 tok/s — fused layer engine · 1bit.systems" --></title>
+<title><!-- KEYWORD-FORWARD TITLE: "373 tok/s GGML-Vulkan — one C++ binary · 1bit.systems" --></title>
 <meta name="description" content="<!-- 150-160 chars: what this post is about, includes key numbers and keywords -->">
 <meta name="keywords" content="<!-- 5-8 comma-separated: multi-model inference, GGUF, Q4NX, AMD NPU, ROCm, Vulkan, Strix Halo -->">
 <meta name="robots" content="index, follow">
@@ -109,7 +109,7 @@ Structure every post so anyone who finds it on social media can understand, shar
 |---------|-----|
 | **Strong tl;dr (first `<p>`)** | This is what shows in link previews and feed snippets |
 | **Quotable pull quotes** | Wrap shareable one-liners in `<blockquote>` — these get screenshot-to-tweet treatment |
-| **Key number in title** | "291 tok/s", "79.8 tok/s", "42 TFLOPS" — numbers drive clicks |
+| **Key number in title** | "373 tok/s", "43.2 TFLOPS", "662 tok/s" — numbers drive clicks |
 | **Short sections with clear H2s** | Easy to skim on mobile, easier to quote a section |
 | **Code block for install** | Every post should have `curl -sL https://1bit.systems/install.sh | bash` or a git clone snippet |
 | **Reddit-ready structure** | Put the full story in the post, not "click to read more" — Reddit hates link-only posts |
@@ -146,7 +146,7 @@ MIT. Your hardware, your model, your choice of backend.
 
 **Tips for HN pickup**:
 - Title must be under 80 chars (HN truncates at 80)
-- **Always include a number** in the title — "79.8 tok/s", "291 tok/s", "~400 KB"
+- **Always include a number** in the title — "373 tok/s", "43.2 TFLOPS", "~1.5 MB"
 - Lead comment should be a **concise version of the post body** — the post itself is the first comment
 - Reply to every comment within 2 hours (HN ranks by engagement velocity)
 - If someone posts a comparison benchmark, thank them and link it from the README
@@ -155,7 +155,7 @@ MIT. Your hardware, your model, your choice of backend.
 
 **Title formulas that work**:
 - `<Number> + <Architecture> + <What it does> — <Hook>`
-- Example: "79.8 tok/s Mamba1 GPU backend — all in one C++ binary, zero Python"
+- Example: "373 tok/s GGML-Vulkan — all in one C++ binary, zero Python"
 
 ---
 
@@ -217,10 +217,10 @@ Pick the right variant for the context:
 | Context | Pitch |
 |---------|-------|
 | **General** | Single C++23 binary. Any GGUF model. Auto-routes to NPU, GPU, or CPU. Zero Python at runtime. |
-| **Hardware-focused** | Reverse-engineered AMD's NPU in 4 days. 22 proprietary `.so` → 17.5 MB open source. |
+| **Hardware-focused** | Reverse-engineered AMD's NPU in 4 days. 22 proprietary `.so` → 1.5 MB open source. |
 | **Dev-first** | `curl -sL https://1bit.systems/install.sh | bash` — and you're running local LLMs on your NPU. |
 | **Comparison** | 417 tok/s fused kernel. 79.8 tok/s Mamba1 e2e. MIT. One binary. |
-| **Honest** | 17.5 MB. 9 backends. 40 models. We're behind llama.cpp on the same hardware, and we tell you. |
+| **Honest** | 1.5 MB. 9 backends. 40 models. We're behind llama.cpp on the same hardware, and we tell you. |
 
 #### Landing Page Copy (`site/index.html`)
 
@@ -237,8 +237,8 @@ The landing page's primary job is to **showcase 1BP models** organized by model 
 ##### Hero Section
 
 - **Hero text**: One C++ binary. Any model. All backends. MIT.
-- **Subtitle**: Pure C++23 inference for AMD Strix Halo — NPU, GPU, CPU — ~400 KB, zero Python at runtime
-- **Key metrics row**: `417 tok/s` · `40 models` · `9 backends` · `17.5 MB`
+- **Subtitle**: Pure C++23 inference for AMD Strix Halo — NPU, GPU, CPU — ~1.5 MB, zero Python at runtime
+- **Key metrics row**: `373 tok/s` · `40 models` · `9 backends` · `1.5 MB`
 
 ##### Model Showcase Section (`#models`)
 

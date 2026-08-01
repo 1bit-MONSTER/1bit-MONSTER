@@ -1,6 +1,6 @@
 # Contributing to 1bit.systems
 
-**One Binary to rule them all.** A pure C++ LLM inference server that auto-detects every supported model architecture and dispatches tokens to the fastest available backend — NPU fused, GPU HIP, Vulkan, or CPU — from a single 282 KB binary. No Python at runtime. No Rust at runtime. Zero configuration files.
+**One Binary to rule them all.** A pure C++ LLM inference server that auto-detects every supported model architecture and dispatches tokens to the fastest available backend — NPU fused, GPU HIP, Vulkan, or CPU — from a single ~1.5 MB binary (1,578,576 B raw / 1,302,736 B stripped, auto-tracked in site/numbers.json). No Python at runtime. No Rust at runtime. Zero configuration files.
 
 This guide covers how to build, test, and contribute to the project.
 
@@ -32,7 +32,7 @@ This guide covers how to build, test, and contribute to the project.
 
 ```
                      ┌──────────────────────────────────────┐
-                     │       zaya_server  (282 KB)          │
+                     │       zaya_server  (~1.5 MB)         │
                      │     Pure C++ · No Python · No Rust   │
                      └─────────────┬────────────────────────┘
                                    │
@@ -45,7 +45,7 @@ This guide covers how to build, test, and contribute to the project.
                     │ NPU     │ │ GPU    │ │ CPU    │
                     │ XDNA 2  │ │ ROCm   │ │ OpenMP │
                     │ C++23   │ │ HIP    │ │ Q4NX   │
-                    │ 291 t/s │ │ 113 t/s│ │ ~5 t/s │
+                    │ 373 t/s │ │ 157 GB/s│ │ 65 t/s  │
                     └─────────┘ └────────┘ └────────┘
 ```
 
@@ -53,7 +53,7 @@ This guide covers how to build, test, and contribute to the project.
 
 | Metric | Value |
 |--------|-------|
-| Binary | `zaya_server` — **282 KB** |
+| Binary | `zaya_server` — **~1.5 MB** (1,578,576 B raw / 1,302,736 B stripped) |
 | Language | **C++23** (NPU engine), **C++20 with HIP** (GPU kernels), C++20 (server) |
 | Build system | **CMake** 3.21+ with **Ninja** |
 | GPU compiler | **HIP** via AMD ROCm **7.2.4** (TheRock `/ amdclang++`) |
@@ -136,7 +136,7 @@ cmake --build build --target zaya_server -j$(nproc)
 
 # Verify size
 ls -lh build/zaya_server
-# Expected: ~282 KB (see site/numbers.json for the current auto-tracked value)
+# Expected: ~1.5 MB raw / ~1.27 MB stripped (see site/numbers.json for the auto-tracked value)
 ```
 
 ### Build NPU Engine
@@ -195,7 +195,7 @@ cmake --build build -j$(nproc)
 ```
 1bit-systems/
 ├── tests/
-│   └── zaya_server.cpp       ← THE ONE BINARY — 282 KB, 19 KB source
+│   └── zaya_server.cpp       ← THE ONE BINARY — ~1.5 MB
 ├── src/                       HIP C++ kernels (ternary GEMV/GEMM, prefill, KV cache)
 │   ├── bonsai_*.hip           Bonsai 1.58-bit ternary kernels
 │   ├── sherry_*.hip           Sherry 3:4 N:M sparse ternary kernels
@@ -215,7 +215,7 @@ cmake --build build -j$(nproc)
 │   │   ├── kernel/            NPU kernel sources
 │   │   ├── xclbins/           Generated xclbins per projection shape
 │   │   └── build/             Build artifacts & compiled xclbins
-│   └── gpu/                   GPU engine (Zig)
+│   └── gpu/                   GPU engine (C++ HIP + Vulkan)
 ├── packaging/                 Distribution packages
 │   ├── deb/                   Debian packaging
 │   ├── snap/                  Snapcraft packaging
@@ -241,7 +241,7 @@ cmake --build build -j$(nproc)
 | **Token Router** | **C++20** | Backend profiling, dynamic dispatch heuristics, fallback logic, multi-backend coherence |
 | **Server** | **C++20** | HTTP API, OpenAI-compatible endpoints, streaming, systemd integration, model auto-detection |
 | **CPU Backend** | **C++20 + OpenMP** | Q4NX dequantization, OpenMP thread tuning, fallback performance |
-| **Vulkan Backend** | **Zig + GLSL** | Compute shaders, SPIR-V toolchain, Vulkan memory management |
+| **Vulkan Backend** | **C++17 + GLSL** | Compute shaders, SPIR-V toolchain (glslc/glslangValidator), Vulkan memory management |
 | **Packaging** | **Bash, YAML** | Snap Store, AUR, Homebrew, Docker Hub, AppImage, CI/CD release automation |
 | **CI/CD** | **YAML, Python** | GitHub Actions workflows, cross-arch testing, benchmark regression bots |
 | **Testing** | **C++20** | Benchmark regression suite, hardware-in-the-loop validation, fuzz testing |
@@ -269,7 +269,7 @@ cmake --build build -j$(nproc)
 |--------|-------|
 | `[npu]` | NPU engine — XDNA 2 xclbins, C++23 engine, INT8 kernels |
 | `[hip]` | GPU HIP kernels — ternary GEMV/GEMM, WMMA, KV cache |
-| `[gpu]` | GPU engine — Vulkan, Zig runtime, GLSL shaders |
+| `[gpu]` | GPU engine — Vulkan (C++), GLSL shaders |
 | `[router]` | Token router — backend dispatch, profiling, fallback |
 | `[server]` | HTTP server — API, streaming, model loading |
 | `[cpu]` | CPU backend — Q4NX, OpenMP |
@@ -315,7 +315,7 @@ No Rust runtime, Rust build tools, or Rust dynamic libraries may be required to 
 
 ### Binary Size Budget
 
-Every new feature should justify its binary size cost. The server is 19 KB of C++ source; it originally compiled to a 207 KB static binary and is currently 282 KB (auto-tracked in `site/numbers.json` — see `tools/gen_numbers.py`). That 36% growth was never individually justified in a PR — it accumulated silently because nothing re-measured the binary size until an audit caught it. Size regressions require strong justification. When adding code, ask: *"Does this belong in the one binary, or can it live in the NPU engine or a tool?"*
+Every new feature should justify its binary size cost. The server is currently ~1.5 MB raw / ~1.27 MB stripped (auto-tracked in `site/numbers.json`). The growth from the original 207 KB static binary to 282 KB, then to today's size, accumulated across backends (HIP, CUDA, Metal, Vulkan/ZINC, GGML-Vulkan, video-lora) — each backend justified by the hardware it unlocks. Size regressions require strong justification. When adding code, ask: *"Does this belong in the one binary, or can it live in the NPU engine or a tool?"*
 
 ### CMake-Driven Build
 
@@ -449,7 +449,7 @@ Be excellent to each other. This is a solo-developed open-source project built f
 - **Be respectful**: Everyone is learning. Assume good faith.
 - **Be constructive**: Critique code, not people. Offer alternatives.
 - **Be patient**: This is a small project with one primary maintainer. Reviews take time.
-- **Be size-conscious**: a small binary is a feature. Every byte counts (current: 282 KB, tracked in `site/numbers.json`).
+- **Be size-conscious**: a small binary is a feature. Every byte counts (current: ~1.5 MB, tracked in `site/numbers.json`).
 
 This project is MIT-licensed. Sherry-specific kernels in `src/sherry_*.hip` are PolyForm Noncommercial 1.0.0 (see [LICENSE-SHERRY.md](LICENSE-SHERRY.md)).
 

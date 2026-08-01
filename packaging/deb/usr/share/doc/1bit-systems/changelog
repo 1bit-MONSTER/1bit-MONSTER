@@ -36,7 +36,7 @@ superseded by the multi-backend 1.0.0 release above.
 ### Infrastructure
 - Landing page at https://1bit.systems (Cloudflare Pages)
 - Live NPU dashboard at https://1bit.systems/live.html
-- PR-Agent: Qodo + OpenCode GLM-5.2 auto-review
+- PR-Agent: The-PR-Agent v0.41 + DeepSeek + GitNexus auto-review
 - Debian packaging template
 - Full audit trail: docs/journey.md (1,184+ lines, 15 updates)
 

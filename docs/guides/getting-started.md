@@ -1,6 +1,6 @@
 # Getting Started — zaya_server
 
-**Zaya1‑8B** inference server. Pure C++/HIP, one binary (~282 KB). No Python,
+**Zaya1‑8B** inference server. Pure C++/HIP, one binary (~1.5 MB). No Python,
 no Rust, no virtualenvs, no containers. Runs on **AMD Strix Halo** (Ryzen AI
 Max+ 395) with ROCm GPU acceleration.
 
@@ -271,7 +271,7 @@ zaya_server [port]
                        │  POST /completion
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│                  zaya_server (~282 KB)               │
+│                  zaya_server (~1.5 MB)               │
 │                                                      │
 │  ┌──────────┐  ┌─────────────┐  ┌──────────────────┐│
 │  │  HTTP    │  │  Tokenizer  │  │  Inference Engine ││

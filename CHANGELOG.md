@@ -3,6 +3,25 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.01 — Pure-C++ video-lora backend + fresh benchmark sweep + scope guard 🚀
+
+- **video-lora pure-C++ Vulkan backend** — `tools/video-lora/vulkan/`: complete
+  Vulkan compute engine (conv2d, group_norm, silu, elementwise, attention with
+  full softmax, lora_merge) linked into the single `zaya_server` binary. All ops
+  GPU-verified vs CPU reference on Radeon 8060S. GLSL compiled at build time
+  (glslc or glslangValidator).
+
+- **PR agent hardened** — The-PR-Agent/pr-agent v0.41 (upstream) + DeepSeek +
+  GitNexus impact reports; auto-review on every PR open and push; scope guard CI
+  (engine + Jarvis) as a required check on main.
+
+- **Fresh benchmark sweep (2026-08-01, Strix Halo / Radeon 8060S, ROCm 7.2.4)**:
+  - Qwen3-0.6B Q4_K GGML-Vulkan: **373 tok/s** decode (was 337)
+  - SmolLM2-135M Q4_K GGML-Vulkan: **662 tok/s** decode (was 598)
+  - Prefill INT8 WMMA (I8-APRE): **43.2 TFLOPS** (was 39.4)
+  - Prefill 4h variant: 30.4 TFLOPS · TQ1 GEMV: 201 GB/s · Sherry: 157 GB/s
+  - zaya_server: 1,578,576 B raw / 1,302,736 B stripped (video-lora linked)
+
 ## 2026.07.30 — GGML-Vulkan backend + CI smoke test fixed + stale PRs cleared 🏋️
 
 - **GGML-Vulkan backend** — llama.cpp's Vulkan backend integrated as a new
@@ -213,7 +232,7 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
 - feat(bonsai): end-to-end real model decode verified on Bonsai 1.7B TQ2
   - Model load: PASS (hs=2048, is=6144, L=28, nh=16, nkv=8, V=151669)
   - Forward pass: coherent logits (argmax=76213, max=327007, min=-396679)
-- chore(binary sizes): zaya_server=282KB, unified_server=1.2MB, bitnet_decode=688KB
+- chore(binary sizes): zaya_server=282KB, unified_server=1.2MB, bitnet_decode=688KB (historical)
 - doc(benchmarks): published full results to benchmarks/RESULTS-2026-07-15.md
 
 ## [0.2.1] — 2026-06-26
