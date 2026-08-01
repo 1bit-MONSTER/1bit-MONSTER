@@ -57,6 +57,11 @@ jobs:
           # -9 fallback: a wedged instance can survive SIGTERM and squat on 8099
           # with the wrong health schema (issue #1257 incident class).
           pkill -9 -f "[v]ision_server.*8099" || true
+          # Stray unified_server instances from manual runs/dev agents on this
+          # shared box answer health with the right schema but die mid-test
+          # (curl 56), or hold the port so our server can't bind.
+          pkill -f "[u]nified_server.*8099" || true
+          pkill -9 -f "[u]nified_server.*8099" || true
           sleep 2
 
       - name: Start server

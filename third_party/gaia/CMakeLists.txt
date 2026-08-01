@@ -1,0 +1,486 @@
+# Copyright(C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+cmake_minimum_required(VERSION 3.14)
+
+# Select the MSVC runtime library via CMAKE_MSVC_RUNTIME_LIBRARY (the static-CRT
+# logic below). Must be set before project() to govern the runtime abstraction.
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
+# Auto-detect or bootstrap vcpkg for optional OpenSSL support.
+# Must be included before project() so the toolchain is set in time.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/vcpkg-auto-setup.cmake)
+
+project(gaia-cpp VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Enable C++ exception handling on MSVC (required for try/catch/throw)
+if(MSVC)
+    add_compile_options(/EHsc)
+endif()
+
+# ---------------------------------------------------------------------------
+# Static-binary packaging (Agent Hub, issue #1094)
+# ---------------------------------------------------------------------------
+# When building against a vcpkg *-static triplet (e.g. x64-windows-static), the
+# produced binaries must link the C runtime statically too — otherwise the .exe
+# still depends on the MSVC runtime DLLs and is not self-contained. Detect the
+# static triplet and switch the MSVC runtime to the static (/MT) variant.
+if(MSVC AND DEFINED VCPKG_TARGET_TRIPLET AND VCPKG_TARGET_TRIPLET MATCHES "-static$")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    message(STATUS "GAIA packaging: static MSVC runtime (/MT) for ${VCPKG_TARGET_TRIPLET}")
+endif()
+
+# ---------------------------------------------------------------------------
+# Options -- default ON when this is the top-level project, OFF as a sub-
+# project so consumers only get the library.
+# ---------------------------------------------------------------------------
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
+    option(GAIA_BUILD_TESTS    "Build gaia_core tests"   ON)
+    option(GAIA_BUILD_EXAMPLES "Build gaia_core examples" ON)
+else()
+    option(GAIA_BUILD_TESTS    "Build gaia_core tests"   OFF)
+    option(GAIA_BUILD_EXAMPLES "Build gaia_core examples" OFF)
+endif()
+
+# Integration tests require a running Lemonade server -- always OFF by default.
+option(GAIA_BUILD_INTEGRATION_TESTS
+    "Build LLM integration tests (requires lemonade-server with Qwen3-4B-GGUF loaded)" OFF)
+
+# Performance benchmarks -- always OFF by default.
+option(GAIA_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
+
+# ---------------------------------------------------------------------------
+# Dependencies -- prefer system packages, fall back to FetchContent
+# ---------------------------------------------------------------------------
+include(FetchContent)
+
+# nlohmann/json (public dependency -- json types in the API)
+# When embedded in the 1bit engine (add_subdirectory), the parent already
+# provides nlohmann_json via its own FetchContent — treat that as present so
+# we don't FetchContent a second copy (name `json`) and collide on the
+# add_library(nlohmann_json) target name (CMP0002).
+find_package(nlohmann_json 3.11 QUIET)
+if(NOT nlohmann_json_FOUND AND NOT TARGET nlohmann_json)
+    message(STATUS "nlohmann_json not found -- fetching via FetchContent")
+    FetchContent_Declare(
+        json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3
+    )
+    # Only populate the headers; do not create install rules for the fetched target
+    set(JSON_Install OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(json)
+    set(GAIA_JSON_FETCHED TRUE)
+    # Retrieve the include directory from the fetched target for manual use
+    get_target_property(GAIA_JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+else()
+    set(GAIA_JSON_FETCHED FALSE)
+endif()
+
+# cpp-httplib (private dependency -- implementation detail)
+# Vendored patch: the 1bit top-level build already fetches cpp-httplib
+# (target `httplib` from _deps/cpp_httplib-src), so reuse it when present
+# instead of colliding on a second FetchContent with the same target name.
+find_package(httplib QUIET)
+if(NOT httplib_FOUND AND NOT TARGET httplib::httplib)
+    message(STATUS "cpp-httplib not found -- fetching via FetchContent")
+    FetchContent_Declare(
+        httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG        v0.15.3
+    )
+    FetchContent_MakeAvailable(httplib)
+endif()
+
+# FTXUI — reactive TUI framework (optional, gated behind GAIA_BUILD_TUI)
+# FTXUI must always be built static — it doesn't export symbols for DLL builds,
+# so BUILD_SHARED_LIBS=ON causes LNK1181 on Windows.
+option(GAIA_BUILD_TUI "Build FTXUI-based TUI console" ON)
+if(GAIA_BUILD_TUI)
+    find_package(ftxui QUIET)
+    if(NOT ftxui_FOUND)
+        message(STATUS "FTXUI not found -- fetching via FetchContent")
+        # Save and override BUILD_SHARED_LIBS so FTXUI always builds static
+        set(_GAIA_SAVE_BSL ${BUILD_SHARED_LIBS})
+        set(BUILD_SHARED_LIBS OFF)
+        FetchContent_Declare(
+            ftxui
+            GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
+            GIT_TAG        v6.1.9
+        )
+        FetchContent_MakeAvailable(ftxui)
+        set(BUILD_SHARED_LIBS ${_GAIA_SAVE_BSL})
+    endif()
+endif()
+
+# Google Test (unit tests and/or integration tests)
+if(GAIA_BUILD_TESTS OR GAIA_BUILD_INTEGRATION_TESTS)
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        message(STATUS "GTest not found -- fetching via FetchContent")
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG        v1.14.0
+        )
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Library
+# ---------------------------------------------------------------------------
+add_library(gaia_core
+    src/types.cpp
+    src/image.cpp
+    src/tool_registry.cpp
+    src/console.cpp
+    src/clean_console.cpp
+    src/json_utils.cpp
+    src/lemonade_client.cpp
+    src/agent.cpp
+    src/mcp_client.cpp
+    src/security.cpp
+    src/sse_parser.cpp
+    src/process.cpp
+    src/file_tools.cpp
+    src/git_tools.cpp
+    src/session.cpp
+    src/repl.cpp
+    src/json_event_handler.cpp
+)
+
+# TUI sources (conditional on FTXUI availability)
+if(GAIA_BUILD_TUI)
+    target_sources(gaia_core PRIVATE
+        src/tui_console.cpp
+        src/tui_markdown.cpp
+    )
+    target_compile_definitions(gaia_core PUBLIC GAIA_HAS_TUI=1)
+endif()
+
+add_library(gaia::gaia_core ALIAS gaia_core)
+
+include(GenerateExportHeader)
+generate_export_header(gaia_core
+    EXPORT_MACRO_NAME GAIA_API
+    EXPORT_FILE_NAME  ${CMAKE_CURRENT_BINARY_DIR}/include/gaia/export.h
+)
+
+target_include_directories(gaia_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+set_target_properties(gaia_core PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# Compiler warnings (PRIVATE -- consumers pick their own warning level)
+target_compile_options(gaia_core PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic>
+)
+
+# Link libraries.
+# When nlohmann_json is fetched via FetchContent it cannot be part of an
+# install export set.  We add only the include directory (not the CMake
+# target) so that install(EXPORT) does not see a non-installable dependency.
+if(GAIA_JSON_FETCHED)
+    # Add include path only -- no CMake target dependency recorded.
+    target_include_directories(gaia_core
+        PUBLIC  $<BUILD_INTERFACE:${GAIA_JSON_INCLUDE_DIR}>
+    )
+elseif(TARGET nlohmann_json::nlohmann_json)
+    # Vendored patch: found via the top-level 1bit build's own FetchContent
+    # (non-exportable, same situation as GAIA_JSON_FETCHED) — include-dir
+    # only, so install(EXPORT) never sees a foreign target.
+    target_include_directories(gaia_core PUBLIC
+        $<BUILD_INTERFACE:$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>>
+    )
+else()
+    # System install: safe to export the dependency.
+    target_link_libraries(gaia_core PUBLIC nlohmann_json::nlohmann_json)
+endif()
+
+# httplib is PRIVATE (implementation detail, header-only).
+# When fetched via FetchContent, use include directories only so the
+# FetchContent target is not recorded in the install export set (which would
+# force consumers to find httplib even though it's compiled into gaia_core).
+if(httplib_FOUND)
+    target_link_libraries(gaia_core PRIVATE httplib::httplib)
+else()
+    target_include_directories(gaia_core SYSTEM PRIVATE
+        $<TARGET_PROPERTY:httplib::httplib,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+endif()
+
+# Platform-specific libraries
+if(UNIX)
+    target_link_libraries(gaia_core PUBLIC pthread)
+endif()
+if(WIN32)
+    target_link_libraries(gaia_core PRIVATE ws2_32)
+endif()
+
+# FTXUI (TUI console — optional)
+if(GAIA_BUILD_TUI)
+    target_link_libraries(gaia_core PRIVATE
+        ftxui::component ftxui::dom ftxui::screen
+    )
+    message(STATUS "GAIA TUI: enabled (FTXUI)")
+else()
+    message(STATUS "GAIA TUI: disabled")
+endif()
+
+# HTTPS support — auto-detected. No flags required; OpenSSL is used when available.
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
+    target_compile_definitions(gaia_core PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(gaia_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    set(GAIA_REQUIRE_FIND_OPENSSL TRUE)
+    message(STATUS "GAIA SSL: enabled")
+else()
+    set(GAIA_REQUIRE_FIND_OPENSSL FALSE)
+    message(STATUS "GAIA SSL: not available (HTTP only)")
+endif()
+
+# ---------------------------------------------------------------------------
+# gaia-bash agent binary
+# ---------------------------------------------------------------------------
+option(GAIA_BUILD_BASH_AGENT "Build the gaia-bash coding agent" ON)
+if(GAIA_BUILD_BASH_AGENT)
+    add_executable(gaia-bash
+        agents/bash/main.cpp
+        agents/bash/bash_agent.cpp
+        agents/bash/bash_tools.cpp
+        agents/bash/api_server.cpp
+        agents/bash/mcp_server.cpp
+    )
+    target_include_directories(gaia-bash PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/agents/bash
+    )
+    target_link_libraries(gaia-bash PRIVATE gaia::gaia_core)
+
+    # API server needs httplib (already a dependency of gaia_core but PRIVATE)
+    if(httplib_FOUND)
+        target_link_libraries(gaia-bash PRIVATE httplib::httplib)
+    else()
+        target_include_directories(gaia-bash SYSTEM PRIVATE
+            $<TARGET_PROPERTY:httplib::httplib,INTERFACE_INCLUDE_DIRECTORIES>)
+    endif()
+    if(OpenSSL_FOUND)
+        target_compile_definitions(gaia-bash PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+        target_link_libraries(gaia-bash PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Examples
+# ---------------------------------------------------------------------------
+if(GAIA_BUILD_EXAMPLES AND WIN32)
+    add_executable(health_agent examples/health_agent.cpp)
+    target_link_libraries(health_agent PRIVATE gaia::gaia_core)
+
+    add_executable(wifi_agent examples/wifi_agent.cpp)
+    target_link_libraries(wifi_agent PRIVATE gaia::gaia_core)
+
+    add_executable(process_agent examples/process_agent.cpp)
+    target_link_libraries(process_agent PRIVATE gaia::gaia_core psapi advapi32 version shell32 ole32)
+endif()
+
+if(GAIA_BUILD_EXAMPLES)
+    add_executable(security_demo examples/security_demo.cpp)
+    target_link_libraries(security_demo PRIVATE gaia::gaia_core)
+
+    add_executable(vlm_agent examples/vlm_agent.cpp)
+    target_link_libraries(vlm_agent PRIVATE gaia::gaia_core)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+if(GAIA_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(tests_mock
+        tests/test_types.cpp
+        tests/test_image.cpp
+        tests/test_tool_registry.cpp
+        tests/test_json_utils.cpp
+        tests/test_agent.cpp
+        tests/test_agent_vlm.cpp
+        tests/test_mcp_client.cpp
+        tests/test_console.cpp
+        tests/test_lemonade_client.cpp
+        tests/test_clean_console.cpp
+        tests/test_tool_integration.cpp
+        tests/test_decision.cpp
+        tests/test_security.cpp
+        tests/test_sse_parser.cpp
+        tests/test_process.cpp
+        tests/test_file_tools.cpp
+        tests/test_git_tools.cpp
+        tests/test_session.cpp
+        tests/test_repl.cpp
+        tests/test_json_event_handler.cpp
+    )
+
+    target_link_libraries(tests_mock PRIVATE
+        gaia::gaia_core
+        GTest::gtest_main
+        GTest::gmock
+    )
+
+    # VLM tests need httplib (mock LLM server) and the fixtures directory.
+    if(httplib_FOUND)
+        target_link_libraries(tests_mock PRIVATE httplib::httplib)
+    else()
+        target_include_directories(tests_mock SYSTEM PRIVATE
+            $<TARGET_PROPERTY:httplib::httplib,INTERFACE_INCLUDE_DIRECTORIES>)
+    endif()
+    if(OpenSSL_FOUND)
+        target_compile_definitions(tests_mock PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+        target_link_libraries(tests_mock PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+
+    target_compile_definitions(tests_mock PRIVATE
+        GAIA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
+    target_include_directories(tests_mock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+    # TUI tests (conditional -- requires FTXUI)
+    if(GAIA_BUILD_TUI)
+        target_sources(tests_mock PRIVATE tests/test_tui_console.cpp)
+        target_link_libraries(tests_mock PRIVATE
+            ftxui::component ftxui::dom ftxui::screen
+        )
+    endif()
+
+    include(GoogleTest)
+    gtest_discover_tests(tests_mock)
+endif()
+
+# ---------------------------------------------------------------------------
+# Integration tests  (require a running lemonade-server with Qwen3-4B-GGUF)
+# Enable with:  cmake ... -DGAIA_BUILD_INTEGRATION_TESTS=ON
+# ---------------------------------------------------------------------------
+if(GAIA_BUILD_INTEGRATION_TESTS)
+    enable_testing()
+
+    add_executable(tests_integration
+        tests/integration/test_main.cpp
+        tests/integration/test_integration_llm.cpp
+        tests/integration/test_integration_mcp.cpp
+        tests/integration/test_integration_wifi.cpp
+        tests/integration/test_integration_health.cpp
+        tests/integration/test_integration_vlm.cpp
+    )
+
+    target_link_libraries(tests_integration PRIVATE
+        gaia::gaia_core
+        GTest::gtest
+    )
+
+    target_compile_definitions(tests_integration PRIVATE
+        GAIA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
+
+    include(GoogleTest)
+    gtest_discover_tests(tests_integration
+        PROPERTIES TIMEOUT 300
+    )
+endif()
+
+# ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+if(GAIA_BUILD_BENCHMARKS)
+    add_executable(gaia_benchmarks benchmarks/bench_main.cpp)
+    target_link_libraries(gaia_benchmarks PRIVATE gaia::gaia_core)
+
+    target_include_directories(gaia_benchmarks PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
+    )
+
+    # httplib is PRIVATE to gaia_core; benchmarks need it for the mock server
+    if(httplib_FOUND)
+        target_link_libraries(gaia_benchmarks PRIVATE httplib::httplib)
+    else()
+        target_include_directories(gaia_benchmarks SYSTEM PRIVATE
+            $<TARGET_PROPERTY:httplib::httplib,INTERFACE_INCLUDE_DIRECTORIES>)
+    endif()
+
+    # OpenSSL defines must match gaia_core for httplib header consistency
+    if(OpenSSL_FOUND)
+        target_compile_definitions(gaia_benchmarks PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+        target_link_libraries(gaia_benchmarks PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+
+    # Windows: psapi for GetProcessMemoryInfo
+    if(WIN32)
+        target_link_libraries(gaia_benchmarks PRIVATE psapi)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Install + package config
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(TARGETS gaia_core
+    EXPORT  gaia_coreTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY include/gaia DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/gaia/export.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/gaia
+)
+
+install(EXPORT gaia_coreTargets
+    FILE      gaia_coreTargets.cmake
+    NAMESPACE gaia::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gaia_core
+)
+
+# When nlohmann_json was fetched via FetchContent, bundle its headers in
+# the install prefix so consumers don't need a separate json install.
+if(GAIA_JSON_FETCHED)
+    install(DIRECTORY ${json_SOURCE_DIR}/include/nlohmann
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    set(GAIA_REQUIRE_FIND_JSON FALSE)
+else()
+    set(GAIA_REQUIRE_FIND_JSON TRUE)
+endif()
+
+configure_package_config_file(
+    cmake/gaia_coreConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/gaia_coreConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gaia_core
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/gaia_coreVersion.cmake
+    VERSION     ${PROJECT_VERSION}
+    COMPATIBILITY AnyNewerVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/gaia_coreConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/gaia_coreVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gaia_core
+)

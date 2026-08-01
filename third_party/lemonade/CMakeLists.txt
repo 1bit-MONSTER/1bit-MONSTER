@@ -1,0 +1,2513 @@
+cmake_minimum_required(VERSION 3.12...3.28)
+
+# Use static runtime library on Windows to avoid DLL dependencies
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+project(lemon_cpp VERSION 11.5.1)
+
+include(CTest)
+
+# Export compile_commands.json for clangd/IntelliSense
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Enable Objective-C++ for macOS Metal support
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
+# Prevent finding Homebrew libraries on macOS to use system ones
+if(APPLE)
+    set(CMAKE_IGNORE_PATH "/opt/homebrew/lib" "/opt/homebrew/include")
+endif()
+# Set default install prefix to /opt on Linux if not specified
+if(UNIX AND NOT APPLE AND CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "/opt" CACHE PATH "Install prefix" FORCE)
+endif()
+
+# Include GNUInstallDirs for standard installation directories
+include(GNUInstallDirs)
+     # Install man pages
+     install(FILES
+          ${CMAKE_CURRENT_SOURCE_DIR}/docs/man/man1/lemond.1
+          ${CMAKE_CURRENT_SOURCE_DIR}/docs/man/man1/lemonade.1
+          DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+     )
+
+# ============================================================
+# Self-describing backends registry
+# ============================================================
+# The authoritative backend list. Each entry is "<recipe>|<stem>":
+#   recipe - the recipe string used in server_models.json (may contain dashes)
+#   stem   - identifier-safe name and folder. Each backend lives in its own
+#            folder, shipping (in namespace lemon::backends::<stem>):
+#              include/lemon/backends/<stem>/<stem>.h         inline const descriptor (CLI-safe data)
+#              include/lemon/backends/<stem>/<stem>_server.h  WrappedServer subclass + create() decl
+#              server/backends/<stem>/<stem>_server.cpp       implementation + create() def
+#
+# Adding a backend is one line here plus that folder. The codegen later in this
+# file (see "Self-describing backends registry codegen") compiles the server
+# source and regenerates the registry headers, which bind each descriptor to its
+# create(). Because this list is a tracked input, editing it forces regeneration
+# on the next build (a file(GLOB) would silently miss a newly added backend). The
+# descriptor is a header-only inline const, so it links into both the lemonade
+# CLI and lemond; only lemond links the server sources.
+set(LEMON_BACKENDS
+    # "<recipe>|<stem>"
+    "llamacpp|llamacpp"
+    "whispercpp|whispercpp"
+    "moonshine|moonshine"
+    "kokoro|kokoro"
+    "sd-cpp|sdcpp"
+    "flm|fastflowlm"
+    "ryzenai-llm|ryzenai"
+    "vllm|vllm"
+    "cloud|cloud"
+    "thinksound|thinksound"
+    "acestep|acestep"
+    "onnxruntime|onnxruntime"
+    "trellis|trellis"
+    "openmoss|openmoss"
+)
+
+# ============================================================
+# Tauri app source paths (used by both runtime and installers)
+# ============================================================
+get_filename_component(TAURI_APP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/app" ABSOLUTE)
+set(TAURI_APP_CARGO_DIR "${TAURI_APP_SOURCE_DIR}/src-tauri")
+set(TAURI_APP_CARGO_TARGET "${TAURI_APP_CARGO_DIR}/target/release")
+# Staging directory that mirrors the Electron layout the installers expect.
+# A post-build copy step lands the Tauri output here so downstream logic
+# (WiX fragment generation, CPack component install, etc.) doesn't need to
+# know where Cargo puts its artifacts.
+set(TAURI_APP_BUILD_DIR "${CMAKE_BINARY_DIR}/app")
+if(WIN32)
+    set(TAURI_APP_UNPACKED_DIR "${TAURI_APP_BUILD_DIR}")
+    set(TAURI_EXE_NAME "lemonade-app.exe")
+elseif(APPLE)
+    set(TAURI_APP_UNPACKED_DIR "${TAURI_APP_BUILD_DIR}")
+    set(TAURI_EXE_NAME "lemonade-app.app")
+else()
+    set(TAURI_APP_UNPACKED_DIR "${TAURI_APP_BUILD_DIR}")
+    set(TAURI_EXE_NAME "lemonade-app")
+endif()
+
+# ============================================================
+# Web App source paths
+# ============================================================
+get_filename_component(WEB_APP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/web-app" ABSOLUTE)
+get_filename_component(APP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/app" ABSOLUTE)
+set(WEB_APP_BUILD_DIR "${CMAKE_BINARY_DIR}/resources/web-app")
+
+# When ON, use system-provided Node.js modules (for example, webpack and distro-packaged JS deps)
+# instead of installing project-local dependencies with npm for web-app builds.
+option(USE_SYSTEM_NODEJS_MODULES "Use system-installed Node.js modules for building the Web app" OFF)
+
+# C++ Standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Try system packages first, fall back to FetchContent if not available
+# Define minimum version requirements based on FetchContent git tags
+set(MIN_NLOHMANN_JSON_VERSION "3.11.3")
+set(MIN_CLI11_VERSION "2.4.2")
+set(MIN_CURL_VERSION "8.5.0")
+set(MIN_ZSTD_VERSION "1.5.5")
+set(DOWNLOAD_ZSTD_VERSION "1.5.7")
+set(MIN_HTTPLIB_VERSION "0.26.0")
+set(MIN_LWS_VERSION "4.3.3")
+
+find_package(PkgConfig QUIET)
+
+# Try to find system packages with version requirements
+find_package(nlohmann_json ${MIN_NLOHMANN_JSON_VERSION} QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(CURL QUIET libcurl>=${MIN_CURL_VERSION})
+    pkg_check_modules(ZSTD QUIET libzstd>=${MIN_ZSTD_VERSION})
+    # Debian ships the package as `cpp-httplib`, Nixpkgs as `httplib` — search
+    # both. No IMPORTED_TARGET: we build our own interface target below so we
+    # can skip the .pc Cflags (see there for why).
+    pkg_search_module(HTTPLIB QUIET
+        cpp-httplib>=${MIN_HTTPLIB_VERSION}
+        httplib>=${MIN_HTTPLIB_VERSION})
+    pkg_check_modules(LWS QUIET libwebsockets>=${MIN_LWS_VERSION})
+endif()
+find_path(CLI11_INCLUDE_DIRS "CLI/CLI.hpp")
+# Verify CLI11 version if found
+if(CLI11_INCLUDE_DIRS)
+    if(EXISTS "${CLI11_INCLUDE_DIRS}/CLI/Version.hpp")
+        file(STRINGS "${CLI11_INCLUDE_DIRS}/CLI/Version.hpp" CLI11_VERSION_LINE REGEX "^#define CLI11_VERSION ")
+        if(CLI11_VERSION_LINE)
+            string(REGEX REPLACE "^#define CLI11_VERSION \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" "\\1" CLI11_VERSION "${CLI11_VERSION_LINE}")
+            if(CLI11_VERSION VERSION_LESS MIN_CLI11_VERSION)
+                message(STATUS "System CLI11 version ${CLI11_VERSION} is less than required ${MIN_CLI11_VERSION}")
+                unset(CLI11_INCLUDE_DIRS)
+            endif()
+        endif()
+    endif()
+endif()
+
+# Determine which dependencies need to be fetched
+# When embedded in the 1bit engine (add_subdirectory), the parent already
+# provides nlohmann_json and cpp-httplib (both pinned to the same versions
+# lemonade uses: 3.11.3 / v0.47.0) via its own FetchContent. Treat those as
+# "system" so we don't FetchContent a second copy and collide on
+# add_library(nlohmann_json)/add_library(httplib) target names.
+if(TARGET nlohmann_json)
+    set(USE_SYSTEM_JSON ON)
+else()
+    set(USE_SYSTEM_JSON ${nlohmann_json_FOUND})
+endif()
+set(USE_SYSTEM_CURL ${CURL_FOUND})
+set(USE_SYSTEM_ZSTD ${ZSTD_FOUND})
+set(USE_SYSTEM_CLI11 ${CLI11_INCLUDE_DIRS})
+if(TARGET httplib)
+    set(USE_SYSTEM_HTTPLIB ON)
+else()
+    set(USE_SYSTEM_HTTPLIB ${HTTPLIB_FOUND})
+endif()
+set(USE_SYSTEM_LWS ${LWS_FOUND})
+
+# On macOS, always statically link dependencies to avoid Homebrew dylib issues
+if(APPLE)
+    set(USE_SYSTEM_ZSTD OFF)
+    set(USE_SYSTEM_CURL OFF)
+    set(USE_SYSTEM_HTTPLIB OFF)
+    set(USE_SYSTEM_LWS OFF)
+endif()
+
+if(USE_SYSTEM_JSON)
+    message(STATUS "Using system nlohmann_json (>= ${MIN_NLOHMANN_JSON_VERSION})")
+else()
+    message(STATUS "System nlohmann_json not found or version < ${MIN_NLOHMANN_JSON_VERSION}, will use FetchContent")
+endif()
+
+if(USE_SYSTEM_CURL)
+    message(STATUS "Using system libcurl (version ${CURL_VERSION}, >= ${MIN_CURL_VERSION})")
+else()
+    message(STATUS "System libcurl not found or version < ${MIN_CURL_VERSION}, will use FetchContent")
+endif()
+
+if(USE_SYSTEM_ZSTD)
+    message(STATUS "Using system zstd (version ${ZSTD_VERSION}, >= ${MIN_ZSTD_VERSION})")
+else()
+    message(STATUS "System zstd not found or version < ${MIN_ZSTD_VERSION}, will use FetchContent")
+endif()
+
+if(USE_SYSTEM_CLI11)
+    if(CLI11_VERSION)
+        message(STATUS "Using system CLI11 (version ${CLI11_VERSION}, >= ${MIN_CLI11_VERSION})")
+    else()
+        message(STATUS "Using system CLI11 (>= ${MIN_CLI11_VERSION})")
+    endif()
+else()
+    message(STATUS "System CLI11 not found or version < ${MIN_CLI11_VERSION}, will use FetchContent")
+endif()
+
+if(USE_SYSTEM_HTTPLIB)
+    if(HTTPLIB_VERSION)
+        message(STATUS "Using system cpp-httplib (version ${HTTPLIB_VERSION}, >= ${MIN_HTTPLIB_VERSION})")
+    else()
+        message(STATUS "Using system cpp-httplib (>= ${MIN_HTTPLIB_VERSION})")
+    endif()
+else()
+    message(STATUS "System cpp-httplib not found or version < ${MIN_HTTPLIB_VERSION}, will use FetchContent")
+endif()
+
+if(USE_SYSTEM_LWS)
+    if(LWS_VERSION)
+        message(STATUS "Using system libwebsockets (version ${LWS_VERSION}, >= ${MIN_LWS_VERSION})")
+    else()
+        message(STATUS "Using system libwebsockets (>= ${MIN_LWS_VERSION})")
+    endif()
+else()
+    message(STATUS "System libwebsockets not found or version < ${MIN_LWS_VERSION}, will use FetchContent")
+endif()
+
+# ============================================================
+# Common dependency configurations
+# ============================================================
+
+# Common configurations for all dependencies
+set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "")  # Build static libraries
+# Link to MSVC library statically
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# Fetch missing dependencies
+if(NOT USE_SYSTEM_JSON OR NOT USE_SYSTEM_CURL OR NOT USE_SYSTEM_ZSTD OR NOT USE_SYSTEM_CLI11 OR NOT USE_SYSTEM_HTTPLIB OR NOT USE_SYSTEM_LWS)
+    include(FetchContent)
+endif()
+
+if(APPLE)
+    # brotli (MIT License) - required by httplib for compression on macOS
+    FetchContent_Declare(brotli
+        GIT_REPOSITORY https://github.com/google/brotli.git
+        GIT_TAG ed738e842d2fbdf2d6459e39267a633c4a9b2f5d  # v1.1.0
+        GIT_SHALLOW TRUE
+        EXCLUDE_FROM_ALL
+    )
+endif()
+
+# === nlohmann/json ===
+if(NOT USE_SYSTEM_JSON)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03  # v3.11.3
+        GIT_SHALLOW TRUE
+    )
+    set(JSON_BuildTests OFF CACHE INTERNAL "")
+    set(JSON_Install OFF CACHE INTERNAL "")
+    FetchContent_MakeAvailable(json)
+endif()
+
+# === CLI11 ===
+if(NOT USE_SYSTEM_CLI11)
+    FetchContent_Declare(CLI11
+        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+        GIT_TAG 6c7b07a878ad834957b98d0f9ce1dbe0cb204fc9  # v2.4.2
+        GIT_SHALLOW TRUE
+    )
+    set(CLI11_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(CLI11_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+    FetchContent_MakeAvailable(CLI11)
+endif()
+
+# === curl ===
+if(NOT USE_SYSTEM_CURL)
+    FetchContent_Declare(curl
+        GIT_REPOSITORY https://github.com/curl/curl.git
+        GIT_TAG 55b5fafb094ebe07ca8a5d4f79813c8b40670795  # curl-8_5_0
+        GIT_SHALLOW TRUE
+        EXCLUDE_FROM_ALL
+    )
+    set(BUILD_STATIC_LIBS ON CACHE INTERNAL "")
+    set(BUILD_CURL_EXE OFF CACHE INTERNAL "")
+    set(CURL_DISABLE_TESTS ON CACHE INTERNAL "")
+    set(CURL_DISABLE_INSTALL ON CACHE INTERNAL "")
+    set(HTTP_ONLY ON CACHE INTERNAL "")
+    if(WIN32)
+        set(CURL_STATIC_CRT ON CACHE INTERNAL "")
+        set(CURL_USE_SCHANNEL ON CACHE INTERNAL "")
+        set(CMAKE_USE_SCHANNEL ON CACHE INTERNAL "")
+    elseif(APPLE)
+        set(CURL_USE_SECTRANSP ON CACHE INTERNAL "")
+    else()
+        set(CURL_USE_OPENSSL ON CACHE INTERNAL "")
+    endif()
+    FetchContent_MakeAvailable(curl)
+endif()
+
+# === zstd ===
+if(NOT USE_SYSTEM_ZSTD)
+    FetchContent_Declare(zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG ac66b19e6bd6b83238bf008eecc1298105298532  # v1.5.7
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR build/cmake
+        EXCLUDE_FROM_ALL
+    )
+    set(ZSTD_BUILD_STATIC ON CACHE INTERNAL "")
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "")
+    set(ZSTD_BUILD_SHARED OFF CACHE INTERNAL "")
+    set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "")
+    FetchContent_MakeAvailable(zstd)
+    add_library(zstd::libzstd ALIAS libzstd_static)
+else()
+    # Create an imported target for system zstd so httplib can find it
+    if(NOT TARGET zstd::libzstd)
+        add_library(zstd::libzstd UNKNOWN IMPORTED)
+        # Find the actual library file
+        find_library(ZSTD_LIBRARY NAMES zstd HINTS ${ZSTD_LIBRARY_DIRS})
+        if(ZSTD_LIBRARY)
+            set_target_properties(zstd::libzstd PROPERTIES
+                IMPORTED_LOCATION "${ZSTD_LIBRARY}"
+                IMPORTED_LOCATION_RELEASE "${ZSTD_LIBRARY}"
+                IMPORTED_LOCATION_DEBUG "${ZSTD_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIRS}"
+            )
+        endif()
+    endif()
+endif()
+
+if(APPLE)
+    # === brotli ===
+    set(BROTLI_BUILD_STATIC ON CACHE INTERNAL "")
+    set(BROTLI_BUILD_PROGRAMS OFF CACHE INTERNAL "")
+    set(BROTLI_BUILD_SHARED OFF CACHE INTERNAL "")
+    set(BROTLI_BUILD_TESTS OFF CACHE INTERNAL "")
+
+    FetchContent_MakeAvailable(brotli)
+
+    if(TARGET brotlicommon)
+        add_library(Brotli::common ALIAS brotlicommon)
+    endif()
+
+    if(TARGET brotlienc)
+        add_library(Brotli::encoder ALIAS brotlienc)
+    endif()
+
+    if(TARGET brotlidec)
+        add_library(Brotli::decoder ALIAS brotlidec)
+    endif()
+endif()
+
+# === httplib ===
+if(NOT USE_SYSTEM_HTTPLIB)
+    FetchContent_Declare(httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG fe332fa06bac76a1c6d402c08f414052999347da  # v0.47.0
+        GIT_SHALLOW TRUE
+    )
+    set(HTTPLIB_REQUIRE_OPENSSL OFF CACHE INTERNAL "")
+    set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE INTERNAL "")
+    set(HTTPLIB_REQUIRE_ZSTD OFF CACHE INTERNAL "")
+    set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE INTERNAL "")
+    set(HTTPLIB_IS_USING_ZSTD ON CACHE INTERNAL "")
+    set(HTTPLIB_INSTALL OFF CACHE INTERNAL "")
+    FetchContent_MakeAvailable(httplib)
+    if(NOT USE_SYSTEM_ZSTD)
+        target_include_directories(httplib INTERFACE
+            ${zstd_SOURCE_DIR}/lib
+            ${zstd_SOURCE_DIR}/lib/common
+        )
+    endif()
+else()
+    # System cpp-httplib: a local interface target carrying the include dirs
+    # and link lib (empty for a header-only install like Nixpkgs, the compiled
+    # .so on Debian). We deliberately skip HTTPLIB_CFLAGS_OTHER: the .pc Cflags
+    # carry cpp-httplib's feature macros (-DCPPHTTPLIB_OPENSSL_SUPPORT, etc.),
+    # which would flip on header features needing link deps (libcrypto) we
+    # don't provide. Created at top level, so it is visible to the cli/tray
+    # subdirs added later.
+    add_library(lemonade-httplib INTERFACE)
+    if(TARGET httplib)
+        # Embedded in the 1bit engine: the parent's FetchContent provides the
+        # same cpp-httplib version (v0.47.0) — reuse its target.
+        target_link_libraries(lemonade-httplib INTERFACE httplib)
+    else()
+        target_include_directories(lemonade-httplib INTERFACE ${HTTPLIB_INCLUDE_DIRS})
+        if(HTTPLIB_LINK_LIBRARIES)
+            target_link_libraries(lemonade-httplib INTERFACE ${HTTPLIB_LINK_LIBRARIES})
+        else()
+            target_link_libraries(lemonade-httplib INTERFACE ${HTTPLIB_LIBRARIES})
+            target_link_directories(lemonade-httplib INTERFACE ${HTTPLIB_LIBRARY_DIRS})
+        endif()
+    endif()
+endif()
+
+# === libwebsockets (for WebSocket support) ===
+if(NOT USE_SYSTEM_LWS)
+    # Workaround: libwebsockets v4.3.3 uses cmake_minimum_required(VERSION 2.8.12)
+    # which CMake 4.x rejects. Allow older policy versions for subdirectory builds.
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.27")
+        cmake_policy(SET CMP0148 OLD)
+    endif()
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+    # pkg_check_modules(LWS ...) caches LWS_LIBRARIES even when the system lib
+    # is unused; libwebsockets' own CMake unsets the directory variable, which
+    # un-shadows the stale cache entry and duplicates the "websockets" target
+    # in its export set — a hard error on CMake >= 4. Clear it before the fetch.
+    unset(LWS_LIBRARIES CACHE)
+    FetchContent_Declare(libwebsockets
+        GIT_REPOSITORY https://github.com/warmcat/libwebsockets.git
+        GIT_TAG 4415e84c095857629863804e941b9e1c2e9347ef  # v4.3.3
+        GIT_SHALLOW TRUE
+    )
+    # Build as static library, disable features we don't need
+    set(LWS_WITH_SHARED OFF CACHE BOOL "" FORCE)
+    set(LWS_WITHOUT_TESTAPPS ON CACHE BOOL "" FORCE)
+    set(LWS_WITHOUT_TEST_SERVER ON CACHE BOOL "" FORCE)
+    set(LWS_WITHOUT_TEST_PING ON CACHE BOOL "" FORCE)
+    set(LWS_WITHOUT_TEST_CLIENT ON CACHE BOOL "" FORCE)
+    set(LWS_WITH_MINIMAL_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # Disable TLS for now (can be enabled later for WSS/network access)
+    set(LWS_WITH_SSL OFF CACHE BOOL "" FORCE)
+    set(LWS_WITH_ZLIB OFF CACHE BOOL "" FORCE)
+    set(LWS_WITH_ZIP_FOPS OFF CACHE BOOL "" FORCE)
+    # Disable -Werror for libwebsockets — newer GCC/Clang triggers warnings in upstream code
+    # First populate to get the source
+    FetchContent_Populate(libwebsockets)
+    # Patch the CMakeLists.txt files to remove -Werror
+    file(READ "${libwebsockets_SOURCE_DIR}/CMakeLists.txt" LWS_CMAKE_MAIN)
+    string(REPLACE "-Werror" "" LWS_CMAKE_MAIN "${LWS_CMAKE_MAIN}")
+    file(WRITE "${libwebsockets_SOURCE_DIR}/CMakeLists.txt" "${LWS_CMAKE_MAIN}")
+    file(READ "${libwebsockets_SOURCE_DIR}/lib/CMakeLists.txt" LWS_CMAKE_LIB)
+    string(REPLACE "-Werror" "" LWS_CMAKE_LIB "${LWS_CMAKE_LIB}")
+    file(WRITE "${libwebsockets_SOURCE_DIR}/lib/CMakeLists.txt" "${LWS_CMAKE_LIB}")
+    # Now add the subdirectory
+    add_subdirectory(${libwebsockets_SOURCE_DIR} ${libwebsockets_BINARY_DIR})
+    message(STATUS "libwebsockets will be fetched (v${MIN_LWS_VERSION})")
+endif()
+
+# Use brotli for compression on macOS
+if(APPLE)
+    set(HTTPLIB_REQUIRE_BROTLI OFF CACHE INTERNAL "")           # Skip brotli checks
+    set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE INTERNAL "")  # Skip brotli checks
+    set(HTTPLIB_IS_USING_BROTLI ON CACHE INTERNAL "")           # brotli is provided
+endif()
+
+
+# ============================================================
+# Application: lemond
+# ============================================================
+
+set(EXECUTABLE_NAME "lemond")
+
+
+# ============================================================
+# Compilation configurations
+# ============================================================
+
+# Common compiler definitions
+# Enable httplib thread pool with 8 threads
+add_compile_definitions(CPPHTTPLIB_THREAD_POOL_COUNT=8)
+
+# Platform-specific compiler definitions
+if(WIN32)
+    # Set Windows target version to Windows 10 for httplib v0.26.0, and prevent Windows.h min/max macro definitions
+    add_compile_definitions(_WIN32_WINNT=0x0A00 NOMINMAX)
+    if(MSVC)
+        # Add security-hardening compiler flags for MSVC
+        # Control Flow Guard - prevents control flow hijacking
+        add_compile_options(/guard:cf)
+        # Buffer Security Check - stack buffer overflow detection
+        add_compile_options(/GS)
+    endif()
+endif()
+
+
+# ============================================================
+# Compilation
+# ============================================================
+
+# Generate version header from template
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/lemon/version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/lemon/version.h
+    @ONLY
+)
+
+# Generate manifest files from templates (Windows only)
+if(WIN32)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/lemonade.manifest.in
+        ${CMAKE_CURRENT_BINARY_DIR}/server/lemonade.manifest
+        @ONLY
+    )
+
+    # ============================================================
+    # WiX Toolset Configuration (Windows MSI Installer)
+    # ============================================================
+
+    # Configure WiX Product.wxs template with version
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/installer/Product.wxs.in
+        ${CMAKE_CURRENT_BINARY_DIR}/installer/Product.wxs
+        @ONLY
+    )
+
+    set(WIX_PRODUCT_WXS "${CMAKE_CURRENT_BINARY_DIR}/installer/Product.wxs")
+    set(WIX_FRAGMENT_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/installer/generate_tauri_fragment.py")
+
+    # Find WiX Toolset 5.0+ (unified 'wix' command) and Python for fragment generation
+    find_program(WIX_EXECUTABLE wix)
+    find_package(Python3 COMPONENTS Interpreter)
+
+    if(WIX_EXECUTABLE)
+        execute_process(
+            COMMAND ${WIX_EXECUTABLE} --version
+            OUTPUT_VARIABLE WIX_VERSION_OUTPUT
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        message(STATUS "WiX Toolset found: ${WIX_EXECUTABLE}")
+        message(STATUS "WiX version: ${WIX_VERSION_OUTPUT}")
+
+        file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" WIX_SOURCE_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${WIX_PRODUCT_WXS}" WIX_PRODUCT_WXS_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lemonade-server-minimal.msi" WIX_MINIMAL_OUTPUT_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lemonade.msi" WIX_FULL_OUTPUT_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp" WIX_CPP_SOURCE_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}" WIX_BUILD_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${TAURI_APP_UNPACKED_DIR}" WIX_TAURI_SOURCE_NATIVE)
+        set(WIX_TAURI_FRAGMENT "${CMAKE_CURRENT_BINARY_DIR}/installer/TauriAppFragment.wxs")
+        file(TO_NATIVE_PATH "${WIX_TAURI_FRAGMENT}" WIX_TAURI_FRAGMENT_NATIVE)
+
+
+        # Web app fragment paths
+        file(TO_NATIVE_PATH "${WEB_APP_BUILD_DIR}" WIX_WEBAPP_SOURCE_NATIVE)
+        set(WIX_WEBAPP_FRAGMENT "${CMAKE_CURRENT_BINARY_DIR}/installer/WebAppFragment.wxs")
+        file(TO_NATIVE_PATH "${WIX_WEBAPP_FRAGMENT}" WIX_WEBAPP_FRAGMENT_NATIVE)
+
+        # Both installers require Python3 for fragment generation and always include the web app
+        if(NOT Python3_FOUND)
+            message(FATAL_ERROR "Python 3 is required for WiX installer fragment generation. Install Python 3 and ensure it is in PATH.")
+        endif()
+
+        # Minimal installer (server + web-app)
+        add_custom_target(wix_installer_minimal
+            COMMAND ${CMAKE_COMMAND} -E echo "Building WiX MSI installer (server + web-app)..."
+            # Generate web-app fragment
+            COMMAND ${Python3_EXECUTABLE} ${WIX_FRAGMENT_SCRIPT}
+                --source "${WEB_APP_BUILD_DIR}"
+                --output "${WIX_WEBAPP_FRAGMENT}"
+                --component-group "WebAppComponents"
+                --root-id "WebAppDir"
+                --path-variable "WebAppSourceDir"
+            COMMAND ${WIX_EXECUTABLE} build
+                -arch x64
+                -ext WixToolset.UI.wixext
+                -d SourceDir="${WIX_SOURCE_DIR_NATIVE}"
+                -d CppSourceDir="${WIX_CPP_SOURCE_DIR_NATIVE}"
+                -d BuildDir="${WIX_BUILD_DIR_NATIVE}"
+                -d IncludeTauriApp=0
+                -d IncludeWebApp=1
+                -d WebAppSourceDir="${WIX_WEBAPP_SOURCE_NATIVE}"
+                -out "${WIX_MINIMAL_OUTPUT_NATIVE}"
+                "${WIX_PRODUCT_WXS_NATIVE}"
+                "${WIX_WEBAPP_FRAGMENT_NATIVE}"
+            COMMAND ${CMAKE_COMMAND} -E echo "MSI installer created: lemonade-server-minimal.msi"
+            DEPENDS ${EXECUTABLE_NAME}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Building WiX MSI installer (server + web-app)"
+        )
+
+        set(WIX_INSTALLER_TARGETS wix_installer_minimal)
+
+        # Full installer (server + Tauri app + web-app)
+        add_custom_target(wix_installer_full
+            COMMAND ${CMAKE_COMMAND} -E echo "Building WiX MSI installer (with Tauri app)..."
+            # Generate web-app fragment
+            COMMAND ${Python3_EXECUTABLE} ${WIX_FRAGMENT_SCRIPT}
+                --source "${WEB_APP_BUILD_DIR}"
+                --output "${WIX_WEBAPP_FRAGMENT}"
+                --component-group "WebAppComponents"
+                --root-id "WebAppDir"
+                --path-variable "WebAppSourceDir"
+            # Generate Tauri app fragment
+            COMMAND ${Python3_EXECUTABLE} ${WIX_FRAGMENT_SCRIPT}
+                --source "${TAURI_APP_UNPACKED_DIR}"
+                --output "${WIX_TAURI_FRAGMENT}"
+                --component-group "TauriAppComponents"
+                --root-id "TauriAppDir"
+                --path-variable "TauriSourceDir"
+            COMMAND ${WIX_EXECUTABLE} build
+                -arch x64
+                -ext WixToolset.UI.wixext
+                -d SourceDir="${WIX_SOURCE_DIR_NATIVE}"
+                -d CppSourceDir="${WIX_CPP_SOURCE_DIR_NATIVE}"
+                -d BuildDir="${WIX_BUILD_DIR_NATIVE}"
+                -d IncludeTauriApp=1
+                -d IncludeWebApp=1
+                -d TauriSourceDir="${WIX_TAURI_SOURCE_NATIVE}"
+                -d WebAppSourceDir="${WIX_WEBAPP_SOURCE_NATIVE}"
+                -out "${WIX_FULL_OUTPUT_NATIVE}"
+                "${WIX_PRODUCT_WXS_NATIVE}"
+                "${WIX_TAURI_FRAGMENT_NATIVE}"
+                "${WIX_WEBAPP_FRAGMENT_NATIVE}"
+            COMMAND ${CMAKE_COMMAND} -E echo "MSI installer created: lemonade.msi"
+            DEPENDS ${EXECUTABLE_NAME}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Building WiX MSI installer (with Tauri app)"
+        )
+
+        list(APPEND WIX_INSTALLER_TARGETS wix_installer_full)
+
+        add_custom_target(wix_installers
+            DEPENDS ${WIX_INSTALLER_TARGETS}
+        )
+
+        message(STATUS "WiX installer targets configured. Run 'cmake --build . --target wix_installer_minimal' or 'wix_installer_full'.")
+    else()
+        message(STATUS "WiX Toolset not found. MSI installers will not be available.")
+        message(STATUS "  Install WiX Toolset 5.0.2 from: https://github.com/wixtoolset/wix/releases/download/v5.0.2/wix-cli-x64.msi")
+        message(STATUS "  Or visit: https://wixtoolset.org/")
+    endif()
+
+endif()
+
+# Include directories
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# ============================================================
+# Server core sources (everything except entry points)
+# ============================================================
+set(SOURCES_CORE
+    src/cpp/server/server.cpp
+    src/cpp/server/collection_orchestrator.cpp
+    src/cpp/server/jobs/job_ops.cpp
+    src/cpp/server/jobs/job_manager.cpp
+    src/cpp/server/router.cpp
+    src/cpp/server/global_vram_monitor.cpp
+    src/cpp/server/eviction_engine.cpp
+    src/cpp/server/cli_parser.cpp
+    src/cpp/server/cloud_provider_registry.cpp
+    src/cpp/server/config_file.cpp
+    src/cpp/server/directory_watcher.cpp
+    src/cpp/server/model_manager.cpp
+    src/cpp/server/model_registry.cpp
+    src/cpp/server/hf_variants.cpp
+    src/cpp/server/wrapped_server.cpp
+    src/cpp/server/streaming_proxy.cpp
+    src/cpp/server/system_info.cpp
+    src/cpp/server/recipe_options.cpp
+    src/cpp/server/routing_classifier_services.cpp
+    src/cpp/server/routing_classifier_services_router.cpp
+    src/cpp/server/thinking_controls.cpp
+    src/cpp/server/routing_policy.cpp
+    src/cpp/server/routing_policy_parser.cpp
+    src/cpp/server/routing_policy_store.cpp
+    src/cpp/server/route_decision_response.cpp
+    src/cpp/server/runtime_config.cpp
+    src/cpp/server/telemetry.cpp
+    src/cpp/server/logging_config.cpp
+    src/cpp/server/log_stream.cpp
+    src/cpp/server/prometheus_metrics.cpp
+    src/cpp/server/utils/http_client.cpp
+    src/cpp/server/utils/json_utils.cpp
+    src/cpp/server/utils/process_manager.cpp
+    src/cpp/server/utils/path_utils.cpp
+    src/cpp/server/utils/version_utils.cpp
+    src/cpp/server/utils/wmi_helper.cpp
+    src/cpp/server/utils/network_beacon.cpp
+    src/cpp/server/utils/tcp_jsonl_client.cpp
+    src/cpp/server/backends/backend_utils.cpp
+    src/cpp/server/backend_manager.cpp
+    src/cpp/server/ollama_api.cpp
+    src/cpp/server/anthropic_api.cpp
+    src/cpp/server/mcp_client.cpp
+    src/cpp/server/mcp_server.cpp
+    src/cpp/server/streaming_audio_buffer.cpp
+    src/cpp/server/vad.cpp
+    src/cpp/server/realtime_session.cpp
+    src/cpp/server/websocket_server.cpp
+)
+
+# Add platform-specific source files to core
+if(WIN32)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/path_windows.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/platform/metrics_windows.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/platform/suspend_stub.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/archive_windows.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/process_windows.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/network_windows.cpp)
+elseif(APPLE)
+    list(APPEND SOURCES_CORE src/cpp/server/macos_system_info.mm)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/path_macos.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/platform/metrics_macos.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/platform/suspend_stub.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/archive_unix.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/process_macos.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/network_unix.cpp)
+    set_source_files_properties(src/cpp/server/macos_system_info.mm PROPERTIES LANGUAGE OBJCXX)
+elseif(UNIX)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/path_linux.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/platform/metrics_linux.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/platform/suspend_linux.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/archive_unix.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/process_linux.cpp)
+    list(APPEND SOURCES_CORE src/cpp/server/utils/platform/network_unix.cpp)
+endif()
+
+# ============================================================
+# Self-describing backends registry codegen
+# ============================================================
+# Consumes LEMON_BACKENDS (defined near the top of this file): the foreach below
+# compiles each backend's server source and regenerates the registry headers that
+# bind every descriptor to its create().
+set(LEMON_DESCRIPTOR_INCLUDES "")
+set(LEMON_DESCRIPTOR_ENTRIES "")
+set(LEMON_FACTORY_INCLUDES "")
+set(LEMON_FACTORY_ENTRIES "")
+# The data registry (descriptors, header-only) links into both binaries; the
+# factory registry + per-backend server sources are server-only.
+# Absolute paths so the CLI subdirectory can reuse LEMON_BACKEND_DESCRIPTOR_SOURCES.
+set(LEMON_BACKEND_DESCRIPTOR_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/backend_descriptor_registry.cpp)
+set(LEMON_BACKEND_FACTORY_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/backend_registry.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/backend_ops.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/hf_cache_util.cpp)
+foreach(_backend_entry ${LEMON_BACKENDS})
+    string(REPLACE "|" ";" _backend_parts "${_backend_entry}")
+    list(GET _backend_parts 1 _backend_stem)
+    # The descriptor is header-only (no source). Compile every .cpp in the
+    # backend's folder (server class + any backend-private helpers like GGUF
+    # parsing) — CONFIGURE_DEPENDS re-globs when a file is added/removed so a new
+    # helper in a folder needs no CMake edit. (The backend LIST is still explicit
+    # above so a whole new backend is never silently missed.)
+    file(GLOB _backend_srcs CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/${_backend_stem}/*.cpp)
+    list(APPEND LEMON_BACKEND_FACTORY_SOURCES ${_backend_srcs})
+    string(APPEND LEMON_DESCRIPTOR_INCLUDES
+        "#include \"lemon/backends/${_backend_stem}/${_backend_stem}.h\"\n")
+    string(APPEND LEMON_DESCRIPTOR_ENTRIES
+        "        &lemon::backends::${_backend_stem}::descriptor,\n")
+    string(APPEND LEMON_FACTORY_INCLUDES
+        "#include \"lemon/backends/${_backend_stem}/${_backend_stem}_server.h\"\n")
+    string(APPEND LEMON_FACTORY_ENTRIES
+        "        { &lemon::backends::${_backend_stem}::descriptor, &lemon::backends::${_backend_stem}::create, lemon::backends::${_backend_stem}::spec(), lemon::backends::${_backend_stem}::ops() },\n")
+endforeach()
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/backend_descriptors_generated.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/backend_descriptors_generated.h
+    @ONLY)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/backend_factories_generated.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/backend_factories_generated.h
+    @ONLY)
+
+# lemond gets both descriptor data and factories; the CLI gets only the data
+# (see src/cpp/cli/CMakeLists.txt, which reuses LEMON_BACKEND_DESCRIPTOR_SOURCES).
+list(APPEND SOURCES_CORE ${LEMON_BACKEND_DESCRIPTOR_SOURCES} ${LEMON_BACKEND_FACTORY_SOURCES})
+
+# ============================================================
+# Server core OBJECT library (shared by lemond and Lemonade.exe)
+# ============================================================
+add_library(lemonade-server-core OBJECT ${SOURCES_CORE})
+
+# Embedding: propagate the source include dirs to consumers
+# (unified_server, unified_router) that link lemonade-server-core from a
+# parent directory.
+target_include_directories(lemonade-server-core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# ============================================================
+# lemond executable
+# ============================================================
+add_executable(${EXECUTABLE_NAME} src/cpp/server/main.cpp)
+if(WIN32)
+    target_sources(${EXECUTABLE_NAME} PRIVATE src/cpp/server/version.rc)
+endif()
+
+
+# ============================================================
+# Linking configurations
+# ============================================================
+
+# Platform-specific linking options
+if(WIN32)
+    if(MSVC)
+        # Linker security flags
+        add_link_options(
+            /DYNAMICBASE      # Address Space Layout Randomization (ASLR)
+            /NXCOMPAT         # Data Execution Prevention (DEP)
+            /GUARD:CF         # Control Flow Guard
+        )
+        # Embed manifest file. /MANIFESTINPUT's path must be quoted; unquoted,
+        # a path containing a space breaks the linker with LNK1181.
+        set_target_properties(${EXECUTABLE_NAME} PROPERTIES
+            LINK_FLAGS "/MANIFEST:EMBED /MANIFESTINPUT:\"${CMAKE_CURRENT_BINARY_DIR}/server/lemonade.manifest\""
+        )
+    endif()
+endif()
+
+
+# ============================================================
+# Server core dependencies (PUBLIC — inherited by consumers)
+# ============================================================
+
+target_link_libraries(lemonade-server-core PUBLIC nlohmann_json::nlohmann_json)
+
+if(USE_SYSTEM_HTTPLIB)
+    target_link_libraries(lemonade-server-core PUBLIC lemonade-httplib)
+else()
+    target_link_libraries(lemonade-server-core PUBLIC httplib::httplib)
+endif()
+
+if(USE_SYSTEM_CLI11)
+    target_include_directories(lemonade-server-core PUBLIC ${CLI11_INCLUDE_DIRS})
+else()
+    target_link_libraries(lemonade-server-core PUBLIC CLI11::CLI11)
+endif()
+
+if(USE_SYSTEM_CURL)
+    target_link_libraries(lemonade-server-core PUBLIC ${CURL_LIBRARIES})
+    target_include_directories(lemonade-server-core PUBLIC ${CURL_INCLUDE_DIRS})
+    target_compile_options(lemonade-server-core PUBLIC ${CURL_CFLAGS_OTHER})
+else()
+    target_link_libraries(lemonade-server-core PUBLIC libcurl)
+endif()
+
+if(USE_SYSTEM_ZSTD)
+    target_link_libraries(lemonade-server-core PUBLIC ${ZSTD_LIBRARIES})
+    target_include_directories(lemonade-server-core PUBLIC ${ZSTD_INCLUDE_DIRS})
+    target_link_directories(lemonade-server-core PUBLIC ${ZSTD_LIBRARY_DIRS})
+    target_compile_options(lemonade-server-core PUBLIC ${ZSTD_CFLAGS_OTHER})
+endif()
+
+set(VLLM_ARG_RESOLVER_TEST_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_vllm_arg_resolver.cpp")
+if(BUILD_TESTING AND EXISTS "${VLLM_ARG_RESOLVER_TEST_SOURCE}")
+    add_executable(test_vllm_arg_resolver
+        ${VLLM_ARG_RESOLVER_TEST_SOURCE}
+        src/cpp/server/backends/vllm/vllm_arg_resolver.cpp
+    )
+    target_link_libraries(test_vllm_arg_resolver PRIVATE nlohmann_json::nlohmann_json)
+    add_test(NAME vllm_arg_resolver COMMAND test_vllm_arg_resolver)
+endif()
+
+set(LLAMACPP_REQUEST_TEST_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_llamacpp_request.cpp")
+if(BUILD_TESTING AND EXISTS "${LLAMACPP_REQUEST_TEST_SOURCE}")
+    add_executable(test_llamacpp_request
+        ${LLAMACPP_REQUEST_TEST_SOURCE}
+        src/cpp/server/backends/llamacpp/llamacpp_request.cpp
+    )
+    target_link_libraries(test_llamacpp_request PRIVATE nlohmann_json::nlohmann_json)
+    add_test(NAME llamacpp_request COMMAND test_llamacpp_request)
+endif()
+
+set(MCP_CLIENT_CONFIG_TEST_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_mcp_client_config.cpp")
+if(BUILD_TESTING AND EXISTS "${MCP_CLIENT_CONFIG_TEST_SOURCE}")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    find_package(Threads REQUIRED)
+
+    add_executable(test_mcp_client_config
+        ${MCP_CLIENT_CONFIG_TEST_SOURCE}
+        src/cpp/server/mcp_client.cpp
+    )
+    target_link_libraries(test_mcp_client_config PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
+    if(USE_SYSTEM_HTTPLIB)
+        target_link_libraries(test_mcp_client_config PRIVATE lemonade-httplib)
+    else()
+        target_link_libraries(test_mcp_client_config PRIVATE httplib::httplib)
+    endif()
+
+    if(Python3_Interpreter_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/mock_mcp_stdio_server.py")
+        file(TO_CMAKE_PATH "${Python3_EXECUTABLE}" LEMONADE_TEST_PYTHON_PATH)
+        file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/mock_mcp_stdio_server.py" LEMONADE_TEST_MCP_STDIO_SERVER_PATH)
+        target_compile_definitions(test_mcp_client_config PRIVATE
+            "LEMONADE_TEST_PYTHON=\"${LEMONADE_TEST_PYTHON_PATH}\""
+            "LEMONADE_TEST_MCP_STDIO_SERVER=\"${LEMONADE_TEST_MCP_STDIO_SERVER_PATH}\"")
+    endif()
+
+    add_test(NAME mcp_client_config COMMAND test_mcp_client_config)
+endif()
+
+# libwebsockets for the realtime and log-stream WebSocket server
+if(USE_SYSTEM_LWS)
+    target_link_libraries(lemonade-server-core PUBLIC ${LWS_LIBRARIES})
+    target_include_directories(lemonade-server-core PUBLIC ${LWS_INCLUDE_DIRS})
+    target_link_directories(lemonade-server-core PUBLIC ${LWS_LIBRARY_DIRS})
+    target_compile_options(lemonade-server-core PUBLIC ${LWS_CFLAGS_OTHER})
+else()
+    target_link_libraries(lemonade-server-core PUBLIC websockets)
+    target_include_directories(lemonade-server-core PUBLIC ${libwebsockets_BINARY_DIR}/include ${libwebsockets_SOURCE_DIR}/include)
+endif()
+
+# Enable ARC (Automatic Reference Counting) for macOS Objective-C++ files
+if(APPLE)
+    target_compile_options(lemonade-server-core PUBLIC -fobjc-arc)
+endif()
+
+# Platform-specific linking
+if(WIN32)
+    target_link_libraries(lemonade-server-core PUBLIC
+        ws2_32
+        wsock32
+        wbemuuid
+        ole32
+        oleaut32
+        shell32
+    )
+elseif(APPLE)
+    target_link_libraries(lemonade-server-core PUBLIC
+        "-framework Metal"
+        "-framework Foundation"
+        "-framework CoreServices"
+        "-lobjc"
+    )
+    target_link_options(lemonade-server-core PUBLIC -Wl,-no_weak_imports)
+elseif(UNIX)
+    # Link systemd for journal support
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SYSTEMD QUIET libsystemd)
+        if(SYSTEMD_FOUND)
+            set(LEMONADE_SYSTEMD_UNIT_NAME "lemond.service" CACHE STRING
+                "Systemd unit name to match for journald log mode (overridable at runtime via LEMONADE_SYSTEMD_UNIT env var)")
+            target_include_directories(lemonade-server-core PUBLIC ${SYSTEMD_INCLUDE_DIRS})
+            target_link_libraries(lemonade-server-core PUBLIC ${SYSTEMD_LIBRARIES})
+            target_compile_definitions(lemonade-server-core PUBLIC
+                HAVE_SYSTEMD
+                LEMONADE_SYSTEMD_UNIT_NAME="${LEMONADE_SYSTEMD_UNIT_NAME}")
+        endif()
+    endif()
+
+    # Link libcap for capability management on Linux
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(lemonade-server-core PRIVATE
+            ${CMAKE_DL_LIBS}
+            drm_amdgpu
+        )
+
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBCAP QUIET libcap)
+            if(LIBCAP_FOUND)
+                target_include_directories(lemonade-server-core PUBLIC ${LIBCAP_INCLUDE_DIRS})
+                target_link_libraries(lemonade-server-core PUBLIC ${LIBCAP_LIBRARIES})
+                target_compile_definitions(lemonade-server-core PUBLIC HAVE_LIBCAP)
+                message(STATUS "libcap found - capability inheritance will be enabled")
+            else()
+                message(STATUS "libcap not found - capability inheritance will be disabled")
+            endif()
+        endif()
+    endif()
+endif()
+
+# lemond inherits all deps from lemonade-server-core
+target_link_libraries(${EXECUTABLE_NAME} PRIVATE lemonade-server-core)
+
+# ============================================================
+# Resources
+# ============================================================
+
+# Resources are self-contained in src/cpp/resources/:
+#   - static/index.html, static/favicon.ico (web UI)
+#   - server_models.json (model registry)
+#   - backend_versions.json (backend version configuration)
+#   - defaults.json (default config values)
+#   - bench_scenarios.json (benchmark scenarios)
+
+# Collect resource files for dependency tracking
+file(GLOB_RECURSE RESOURCE_FILES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/resources/*"
+)
+
+# The Omni tool definitions are authored in the frontend tree and are the single
+# source of truth (the desktop app imports them directly). Stage a copy into the
+# resources tree so the C++ server reads the same file via get_resource_path.
+set(TOOL_DEFINITIONS_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/src/renderer/utils/toolDefinitions.json")
+
+# Create a custom target that depends on resource files
+# This ensures resources are copied when source files change
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/resources.stamp
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/resources
+        ${CMAKE_BINARY_DIR}/resources
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${TOOL_DEFINITIONS_SRC}
+        ${CMAKE_BINARY_DIR}/resources/toolDefinitions.json
+    COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/resources.stamp
+    DEPENDS ${RESOURCE_FILES} ${TOOL_DEFINITIONS_SRC}
+    COMMENT "Copying resources to build directory"
+)
+
+add_custom_target(copy_resources ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/resources.stamp
+)
+
+# Copy resources to the runtime directory after build
+add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_BINARY_DIR}/resources
+        $<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/resources
+    COMMENT "Copying resources to output directory"
+)
+
+# Ensure resources are copied before building the executable
+add_dependencies(${EXECUTABLE_NAME} copy_resources)
+
+# ============================================================
+# Tauri App Integration (Cross-Platform)
+# ============================================================
+
+# Find Node.js and npm for the renderer bundle, and Cargo for the Rust host.
+find_program(NODE_EXECUTABLE node)
+# On Windows, npm is a batch file (npm.cmd), so we need to find it explicitly
+# or invoke it through cmd.exe to avoid MSBuild custom build step issues
+if(WIN32)
+    find_program(NPM_EXECUTABLE npm.cmd)
+else()
+    find_program(NPM_EXECUTABLE npm)
+endif()
+
+find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin" "$ENV{USERPROFILE}/.cargo/bin")
+find_program(RUSTC_EXECUTABLE rustc HINTS "$ENV{HOME}/.cargo/bin" "$ENV{USERPROFILE}/.cargo/bin")
+
+# Custom target to build the Tauri app (must be called manually)
+if(NODE_EXECUTABLE AND NPM_EXECUTABLE AND CARGO_EXECUTABLE)
+    if(WIN32)
+        # On Windows, wrap npm calls with cmd /c to handle batch file execution properly
+        set(NPM_COMMAND cmd /c "${NPM_EXECUTABLE}")
+    else()
+        set(NPM_COMMAND "${NPM_EXECUTABLE}")
+    endif()
+
+    set(TAURI_APP_OUTPUT "${TAURI_APP_UNPACKED_DIR}/${TAURI_EXE_NAME}")
+
+    file(GLOB_RECURSE TAURI_APP_SOURCES
+        CONFIGURE_DEPENDS
+        "${TAURI_APP_SOURCE_DIR}/src/*"
+        "${TAURI_APP_SOURCE_DIR}/src-tauri/src/*"
+        "${TAURI_APP_SOURCE_DIR}/src-tauri/Cargo.toml"
+        "${TAURI_APP_SOURCE_DIR}/src-tauri/tauri.conf.json"
+        "${TAURI_APP_SOURCE_DIR}/src-tauri/capabilities/*.json"
+        "${TAURI_APP_SOURCE_DIR}/assets/*"
+        "${TAURI_APP_SOURCE_DIR}/*.json"
+        "${TAURI_APP_SOURCE_DIR}/*.js"
+        "${TAURI_APP_SOURCE_DIR}/*.ts"
+        "${TAURI_APP_SOURCE_DIR}/*.tsx"
+        "${TAURI_APP_SOURCE_DIR}/*.css"
+        "${TAURI_APP_SOURCE_DIR}/*.html"
+    )
+    list(FILTER TAURI_APP_SOURCES EXCLUDE REGEX "[/\\\\](node_modules|dist|target)[/\\\\]")
+
+    # On macOS we need the .app bundle for productbuild; on Linux/Windows we
+    # just need the bare executable and can skip Tauri's own bundlers.
+    # Each platform has a dedicated `npm run build:*` script in src/app/package.json
+    # so we can use the same `npm run <script>` invocation pattern as the
+    # previous electron-app target (which MSBuild custom-commands handle cleanly —
+    # `npm exec --` with cmd /c chaining breaks MSBuild's VCEnd label).
+    if(APPLE)
+        set(TAURI_BUILD_SCRIPT "build:mac")
+        set(TAURI_BUILD_OUTPUT_SOURCE "${TAURI_APP_CARGO_TARGET}/bundle/macos/lemonade-app.app")
+        set(TAURI_COPY_COMMAND ${CMAKE_COMMAND} -E copy_directory "${TAURI_BUILD_OUTPUT_SOURCE}" "${TAURI_APP_UNPACKED_DIR}/lemonade-app.app")
+    else()
+        set(TAURI_BUILD_SCRIPT "build:nobundle")
+        if(WIN32)
+            set(TAURI_BUILD_OUTPUT_SOURCE "${TAURI_APP_CARGO_TARGET}/lemonade-app.exe")
+        else()
+            set(TAURI_BUILD_OUTPUT_SOURCE "${TAURI_APP_CARGO_TARGET}/lemonade-app")
+        endif()
+        set(TAURI_COPY_COMMAND ${CMAKE_COMMAND} -E copy "${TAURI_BUILD_OUTPUT_SOURCE}" "${TAURI_APP_OUTPUT}")
+    endif()
+
+    # `tauri build` shells out to `cargo` (e.g. `cargo metadata` at startup),
+    # so cargo MUST be on PATH for the npm subprocess. CI sets this on every
+    # platform via dtolnay/rust-toolchain@stable. For local developers we
+    # also inject CARGO_EXECUTABLE's directory into PATH for the build
+    # subprocess, so a developer who has Rust installed but hasn't sourced
+    # rustup's env in their current shell still gets a working build.
+    #
+    # IMPORTANT: this PATH injection is gated on NOT WIN32. On Windows,
+    # MSBuild's custom-build cmd-file generator can't handle the nested
+    # `cmake -E env ... cmake -E chdir ... cmd /c npm.cmd run ...` shape —
+    # it produces a `The system cannot find the batch label specified -
+    # VCEnd` error (the same MSBuild quirk that commit 2b515ceb already had
+    # to dance around). Windows builds rely on cargo being on the parent
+    # shell's PATH, which CI satisfies and local Windows developers get
+    # automatically because rustup-init.exe updates the user PATH.
+    get_filename_component(TAURI_CARGO_BIN_DIR "${CARGO_EXECUTABLE}" DIRECTORY)
+    if(WIN32)
+        set(TAURI_BUILD_COMMAND
+            ${CMAKE_COMMAND} -E chdir "${TAURI_APP_SOURCE_DIR}" ${NPM_COMMAND} run ${TAURI_BUILD_SCRIPT})
+    else()
+        set(TAURI_BUILD_COMMAND
+            ${CMAKE_COMMAND} -E env "PATH=${TAURI_CARGO_BIN_DIR}:$ENV{PATH}"
+            ${CMAKE_COMMAND} -E chdir "${TAURI_APP_SOURCE_DIR}" ${NPM_COMMAND} run ${TAURI_BUILD_SCRIPT})
+    endif()
+
+    # Note: On Windows, NPM_COMMAND uses 'cmd /c' wrapper to handle npm.cmd batch file
+    # Note: Avoid shell-special characters in echo messages (no parentheses, etc.)
+    add_custom_command(
+        OUTPUT "${TAURI_APP_OUTPUT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${TAURI_APP_UNPACKED_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E echo "============================================================"
+        COMMAND ${CMAKE_COMMAND} -E echo "Building Tauri desktop app (cargo + webpack)"
+        COMMAND ${CMAKE_COMMAND} -E echo "First build downloads ~80 Rust crates and compiles them with"
+        COMMAND ${CMAKE_COMMAND} -E echo "LTO; expect several minutes the first time. Incremental"
+        COMMAND ${CMAKE_COMMAND} -E echo "rebuilds are much faster. For UI iteration, prefer:"
+        COMMAND ${CMAKE_COMMAND} -E echo "    cd src/app && npm run dev"
+        COMMAND ${CMAKE_COMMAND} -E echo "============================================================"
+        COMMAND ${CMAKE_COMMAND} -E echo "Installing npm dependencies for Tauri app..."
+        COMMAND ${CMAKE_COMMAND} -E chdir "${TAURI_APP_SOURCE_DIR}" ${NPM_COMMAND} ci --ignore-scripts
+        COMMAND ${CMAKE_COMMAND} -E echo "Compiling Rust host and bundling renderer..."
+        COMMAND ${TAURI_BUILD_COMMAND}
+        COMMAND ${CMAKE_COMMAND} -E echo "Staging Tauri build output into ${TAURI_APP_UNPACKED_DIR}..."
+        COMMAND ${TAURI_COPY_COMMAND}
+        DEPENDS ${TAURI_APP_SOURCES}
+        COMMENT "Building Tauri app with cargo + webpack"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        VERBATIM
+    )
+
+    add_custom_target(tauri-app
+        DEPENDS "${TAURI_APP_OUTPUT}"
+    )
+
+    message(STATUS "Node.js found: ${NODE_EXECUTABLE}")
+    message(STATUS "npm found: ${NPM_EXECUTABLE}")
+    message(STATUS "Cargo found: ${CARGO_EXECUTABLE}")
+    if(WIN32)
+        message(STATUS "Tauri app can be built with: cmake --build --preset windows --target tauri-app")
+    else()
+        message(STATUS "Tauri app can be built with: cmake --build --preset default --target tauri-app")
+    endif()
+else()
+    if(NOT CARGO_EXECUTABLE)
+        message(STATUS "Cargo not found - Tauri app build target disabled")
+        message(STATUS "Install Rust via https://rustup.rs to enable")
+    endif()
+    if(NOT NODE_EXECUTABLE OR NOT NPM_EXECUTABLE)
+        message(STATUS "Node.js or npm not found - Tauri app build target disabled")
+        message(STATUS "Install Node.js to enable: https://nodejs.org/")
+    endif()
+endif()
+
+# ============================================================
+# Web App Integration (Cross-Platform)
+# ============================================================
+
+# Enable automatic web app build on all platforms (can be disabled with -DBUILD_WEB_APP=OFF)
+option(BUILD_WEB_APP "Build the Web app automatically" ON)
+
+# Check if webpack is available for system-package mode
+if(USE_SYSTEM_NODEJS_MODULES)
+    find_program(WEBPACK_EXECUTABLE webpack)
+    if(WEBPACK_EXECUTABLE)
+        message(STATUS "Using system webpack: ${WEBPACK_EXECUTABLE}")
+        set(CAN_BUILD_WEB_APP TRUE)
+    endif()
+else()
+    # Non-system mode requires npm for dependency install + build
+    if(NODE_EXECUTABLE AND NPM_EXECUTABLE)
+        set(CAN_BUILD_WEB_APP TRUE)
+    endif()
+endif()
+
+# Custom target to build the Web app with proper dependency tracking
+if(CAN_BUILD_WEB_APP AND BUILD_WEB_APP)
+    # Create a stamp file to track build state
+    set(WEB_APP_STAMP "${CMAKE_CURRENT_BINARY_DIR}/web-app.stamp")
+    set(WEB_APP_BUILD_STAGING_DIR "${CMAKE_CURRENT_BINARY_DIR}/web-app-staging")
+
+    # Track sources from BOTH src/app (the shared renderer) and src/web-app
+    # (this build's package.json + webpack config) so the staged copies
+    # rebuild whenever either tree changes.
+    file(GLOB_RECURSE WEB_APP_SOURCES
+        CONFIGURE_DEPENDS
+        "${APP_SOURCE_DIR}/src/*"
+        "${APP_SOURCE_DIR}/assets/*"
+        "${APP_SOURCE_DIR}/styles/*"
+        "${WEB_APP_SOURCE_DIR}/*.json"
+        "${WEB_APP_SOURCE_DIR}/*.js"
+        "${WEB_APP_SOURCE_DIR}/*.ts"
+        "${WEB_APP_SOURCE_DIR}/*.tsx"
+        "${WEB_APP_SOURCE_DIR}/*.css"
+    )
+
+    # Add custom command to build web app (only runs if sources change)
+    add_custom_command(
+        OUTPUT ${WEB_APP_STAMP}
+        COMMAND ${CMAKE_COMMAND}
+            -DAPP_SOURCE_DIR=${APP_SOURCE_DIR}
+            -DWEB_APP_SOURCE_DIR=${WEB_APP_SOURCE_DIR}
+            -DWEB_APP_BUILD_STAGING_DIR=${WEB_APP_BUILD_STAGING_DIR}
+            -DWEB_APP_BUILD_DIR=${WEB_APP_BUILD_DIR}
+            -DNPM_EXECUTABLE=${NPM_EXECUTABLE}
+            -DWEBPACK_EXECUTABLE=${WEBPACK_EXECUTABLE}
+            -DUSE_SYSTEM_NODEJS_MODULES=${USE_SYSTEM_NODEJS_MODULES}
+            -DWEB_APP_STAMP=${WEB_APP_STAMP}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/src/web-app/BuildWebApp.cmake
+        DEPENDS ${WEB_APP_SOURCES}
+        COMMENT "Building Web app"
+    )
+
+    # Add custom target that depends on the stamp file
+    add_custom_target(web-app ALL DEPENDS ${WEB_APP_STAMP})
+
+    message(STATUS "Web app will be built automatically (disable with -DBUILD_WEB_APP=OFF)")
+
+    if (NOT WIN32 AND NOT APPLE AND NOT BUILD_TAURI_APP)
+        # Install .desktop file for web app
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/lemonade-web-app.desktop
+            DESTINATION share/applications
+        )
+        # Create symlink in standard applications path only if not installing to /usr
+        if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+            install(CODE "
+                file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/share/applications\")
+                execute_process(
+                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        ${CMAKE_INSTALL_PREFIX}/share/applications/lemonade-web-app.desktop
+                        \"\$ENV{DESTDIR}/usr/share/applications/lemonade-web-app.desktop\"
+                )
+            ")
+        endif()
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/app/assets/logo.svg
+            DESTINATION share/pixmaps
+            RENAME lemonade-app.svg
+        )
+        # Create symlink in standard pixmaps path only if not installing to /usr
+        if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+            install(CODE "
+                file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/share/pixmaps\")
+                execute_process(
+                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        ${CMAKE_INSTALL_PREFIX}/share/pixmaps/lemonade-app.svg
+                        \"\$ENV{DESTDIR}/usr/share/pixmaps/lemonade-app.svg\"
+                )
+            ")
+        endif()
+        # Install launch script for web app
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/lemonade-web-app
+            DESTINATION bin
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+        )
+        # Create symlink in standard bin path only if not installing to /usr
+        if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+            install(CODE "
+                file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/bin\")
+                execute_process(
+                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        ${CMAKE_INSTALL_PREFIX}/bin/lemonade-web-app
+                        \"\$ENV{DESTDIR}/usr/bin/lemonade-web-app\"
+                )
+            ")
+        endif()
+    endif()
+else()
+    if(NOT CAN_BUILD_WEB_APP)
+        if(USE_SYSTEM_NODEJS_MODULES)
+            message(STATUS "Web app build disabled - webpack not found (install webpack package)")
+        else()
+            message(STATUS "Web app build disabled - Node.js or npm not found")
+        endif()
+    else()
+        message(STATUS "Web app automatic build disabled (enable with -DBUILD_WEB_APP=ON)")
+    endif()
+endif()
+
+# Add manual web-app target for platforms where automatic build is disabled.
+# Reuse the shared build script so WiX/MSBuild gets output under ${WEB_APP_BUILD_DIR}.
+if(CAN_BUILD_WEB_APP AND NOT BUILD_WEB_APP)
+    set(WEB_APP_BUILD_STAGING_DIR_MANUAL "${CMAKE_CURRENT_BINARY_DIR}/web-app-manual-staging")
+    set(WEB_APP_MANUAL_STAMP "${CMAKE_CURRENT_BINARY_DIR}/web-app-manual.stamp")
+
+    add_custom_target(web-app
+        COMMAND ${CMAKE_COMMAND}
+            -DAPP_SOURCE_DIR=${APP_SOURCE_DIR}
+            -DWEB_APP_SOURCE_DIR=${WEB_APP_SOURCE_DIR}
+            -DWEB_APP_BUILD_STAGING_DIR=${WEB_APP_BUILD_STAGING_DIR_MANUAL}
+            -DWEB_APP_BUILD_DIR=${WEB_APP_BUILD_DIR}
+            -DNPM_EXECUTABLE=${NPM_EXECUTABLE}
+            -DWEBPACK_EXECUTABLE=${WEBPACK_EXECUTABLE}
+            -DUSE_SYSTEM_NODEJS_MODULES=${USE_SYSTEM_NODEJS_MODULES}
+            -DWEB_APP_STAMP=${WEB_APP_MANUAL_STAMP}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/src/web-app/BuildWebApp.cmake
+        COMMENT "Building Web app"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        VERBATIM
+    )
+
+    message(STATUS "Web app can be built manually with: cmake --build . --target web-app")
+endif()
+
+# ============================================================
+# macOS Packaging & Notarization
+# ============================================================
+if(APPLE)
+    # SETUP IDENTITIES
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_PACKAGE_VENDOR "Lemonade")
+    set(CPACK_PACKAGE_CONTACT "lemonade@amd.com")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Lemonade Local LLM Server")
+    set(CPACK_PACKAGE_DESCRIPTION "A lightweight, high-performance local LLM server.")
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE")
+    # Skip readme page entirely
+    set(CPACK_INSTALL_README_DIR "")
+
+    if(NOT DEFINED SIGNING_IDENTITY)
+        if(DEFINED ENV{DEVELOPER_ID_APPLICATION_IDENTITY})
+            set(SIGNING_IDENTITY "$ENV{DEVELOPER_ID_APPLICATION_IDENTITY}")
+        else()
+            # Ad-hoc sign so local dev builds work without an Apple Developer cert.
+            # Distribution builds set DEVELOPER_ID_APPLICATION_IDENTITY explicitly.
+            set(SIGNING_IDENTITY "-")
+        endif()
+    endif()
+
+    if(NOT DEFINED INSTALLER_IDENTITY)
+        if(DEFINED ENV{DEVELOPER_ID_INSTALLER_IDENTITY})
+            set(INSTALLER_IDENTITY "$ENV{DEVELOPER_ID_INSTALLER_IDENTITY}")
+        else()
+            set(INSTALLER_IDENTITY "B69167355F20D364EE8FD7126D767B93B5344EBB")
+        endif()
+    endif()
+
+    # Configure Plists & Entitlements
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/com.lemonade.server.plist.in ${CMAKE_CURRENT_BINARY_DIR}/com.lemonade.server.plist @ONLY)
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/com.lemonade.tray.plist.in ${CMAKE_CURRENT_BINARY_DIR}/com.lemonade.tray.plist @ONLY)
+
+    set(ENTITLEMENTS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/entitlements.plist")
+    if(NOT EXISTS "${ENTITLEMENTS_PATH}")
+        file(WRITE "${ENTITLEMENTS_PATH}"
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+            <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+            <plist version=\"1.0\">
+            <dict>
+                <key>com.apple.security.cs.allow-jit</key><true/>
+                <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+                <key>com.apple.security.cs.disable-library-validation</key><true/>
+                <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+            </dict>
+            </plist>")
+    endif()
+endif()
+
+# Add tray application subdirectory
+add_subdirectory(src/cpp/tray)
+
+# Add CLI application subdirectory
+add_subdirectory(src/cpp/cli)
+
+# Wire WiX installer targets to the binaries and frontend artifacts they package.
+# Doing this after the subdirectories are added ensures MSBuild gets real project refs.
+if(WIN32 AND WIX_EXECUTABLE)
+    set(WIX_PACKAGED_TARGETS)
+
+    if(TARGET LemonadeServer)
+        list(APPEND WIX_PACKAGED_TARGETS LemonadeServer)
+    endif()
+    if(TARGET lemonade)
+        list(APPEND WIX_PACKAGED_TARGETS lemonade)
+    endif()
+    if(TARGET ${EXECUTABLE_NAME})
+        list(APPEND WIX_PACKAGED_TARGETS ${EXECUTABLE_NAME})
+    endif()
+
+    if(TARGET wix_installer_minimal)
+        if(TARGET web-app)
+            add_dependencies(wix_installer_minimal web-app)
+        endif()
+        if(WIX_PACKAGED_TARGETS)
+            add_dependencies(wix_installer_minimal ${WIX_PACKAGED_TARGETS})
+        endif()
+    endif()
+
+    if(TARGET wix_installer_full)
+        if(TARGET tauri-app)
+            add_dependencies(wix_installer_full tauri-app)
+        endif()
+        if(TARGET web-app)
+            add_dependencies(wix_installer_full web-app)
+        endif()
+        if(WIX_PACKAGED_TARGETS)
+            add_dependencies(wix_installer_full ${WIX_PACKAGED_TARGETS})
+        endif()
+    endif()
+endif()
+
+if(APPLE)
+    # SIGNING LOGIC (Release Only)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        message(STATUS "Release Build: Configuring Hardened Runtime Signing for Router")
+
+        # Sign 'lemond'
+        add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E echo "--- Signing ${EXECUTABLE_NAME} ---"
+            COMMAND codesign --force --options runtime --timestamp --entitlements "${ENTITLEMENTS_PATH}" --sign "${SIGNING_IDENTITY}" -v $<TARGET_FILE:${EXECUTABLE_NAME}>
+            COMMENT "Signing ${EXECUTABLE_NAME} with Hardened Runtime"
+            VERBATIM
+        )
+    endif()
+
+    # Prepare Tauri App
+    set(TAURI_APP_BUILD_COPY "${CMAKE_BINARY_DIR}/lemonade-app.app")
+    add_custom_target(prepare_tauri_app
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${TAURI_APP_BUILD_COPY}"
+        COMMAND cp -R "${TAURI_APP_UNPACKED_DIR}/lemonade-app.app" "${CMAKE_BINARY_DIR}/" || echo "Warning: Could not find lemonade-app.app in ${TAURI_APP_UNPACKED_DIR}"
+        COMMENT "Copying Tauri App..."
+        DEPENDS tauri-app
+    )
+
+    set(CPACK_PRE_BUILD_SCRIPTS "${CMAKE_BINARY_DIR}/cpack_prebuild.cmake")
+    file(WRITE "${CMAKE_BINARY_DIR}/cpack_prebuild.cmake"
+        "message(STATUS \"Pre-build: Ensuring Tauri app is prepared...\")\n"
+        "execute_process(COMMAND ${CMAKE_COMMAND} --build \"${CMAKE_BINARY_DIR}\" --target prepare_tauri_app)\n"
+    )
+
+    # INSTALLATION (Component Structure)
+
+    # Main Router -> /usr/local/bin
+    install(TARGETS ${EXECUTABLE_NAME} RUNTIME DESTINATION "bin" COMPONENT Runtime)
+
+    # Sign the router binary after installation (Release builds only)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        install(CODE "
+            execute_process(
+                COMMAND codesign --force --options runtime --timestamp --entitlements \"${ENTITLEMENTS_PATH}\" --sign \"${SIGNING_IDENTITY}\" -v \"${CMAKE_BINARY_DIR}/_CPack_Packages/Darwin/productbuild/Lemonade-${PROJECT_VERSION}-Darwin/Runtime/usr/local/bin/${EXECUTABLE_NAME}\"
+                RESULT_VARIABLE SIGN_RESULT
+            )
+            if(NOT SIGN_RESULT EQUAL 0)
+                message(FATAL_ERROR \"Failed to sign ${EXECUTABLE_NAME}\")
+            endif()
+        " COMPONENT Runtime)
+    endif()
+
+    # Tray client -> /usr/local/bin
+    if(TARGET lemonade-tray)
+        install(TARGETS lemonade-tray RUNTIME DESTINATION "bin" COMPONENT Runtime)
+
+        # Sign the tray binary after installation (Release builds only)
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            install(CODE "
+                execute_process(
+                    COMMAND codesign --force --options runtime --timestamp --entitlements \"${ENTITLEMENTS_PATH}\" --sign \"${SIGNING_IDENTITY}\" -v \"${CMAKE_BINARY_DIR}/_CPack_Packages/Darwin/productbuild/Lemonade-${PROJECT_VERSION}-Darwin/Runtime/usr/local/bin/lemonade-tray\"
+                    RESULT_VARIABLE SIGN_RESULT
+                )
+                if(NOT SIGN_RESULT EQUAL 0)
+                    message(FATAL_ERROR \"Failed to sign lemonade-tray\")
+                endif()
+            " COMPONENT Runtime)
+        endif()
+    endif()
+
+    # CLI -> /usr/local/bin
+    if(TARGET lemonade)
+        install(TARGETS lemonade RUNTIME DESTINATION "bin" COMPONENT Runtime)
+
+        # Sign the CLI binary after installation (Release builds only)
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            install(CODE "
+                execute_process(
+                    COMMAND codesign --force --options runtime --timestamp --entitlements \"${ENTITLEMENTS_PATH}\" --sign \"${SIGNING_IDENTITY}\" -v \"${CMAKE_BINARY_DIR}/_CPack_Packages/Darwin/productbuild/Lemonade-${PROJECT_VERSION}-Darwin/Runtime/usr/local/bin/lemonade\"
+                    RESULT_VARIABLE SIGN_RESULT
+                )
+                if(NOT SIGN_RESULT EQUAL 0)
+                    message(FATAL_ERROR \"Failed to sign lemonade\")
+                endif()
+            " COMPONENT Runtime)
+        endif()
+    endif()
+
+    # Resources -> /Library/Application Support/Lemonade/resources
+    install(DIRECTORY ${CMAKE_BINARY_DIR}/resources/ DESTINATION "/Library/Application Support/Lemonade/resources" COMPONENT Resources)
+
+    # App Bundle -> /Applications
+    install(DIRECTORY "${TAURI_APP_BUILD_COPY}"
+        DESTINATION "/Applications"
+        USE_SOURCE_PERMISSIONS
+        COMPONENT Applications
+    )
+
+    # Plists -> /Library/...
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/com.lemonade.server.plist" DESTINATION "/Library/LaunchDaemons" COMPONENT Runtime)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/com.lemonade.tray.plist" DESTINATION "/Library/LaunchAgents" COMPONENT Runtime)
+
+    # Placeholder -> /usr/local/share/lemonade-server
+    file(WRITE "${CMAKE_BINARY_DIR}/.keep" "")
+    install(FILES "${CMAKE_BINARY_DIR}/.keep" DESTINATION "usr/local/share/lemonade-server" COMPONENT Runtime)
+
+    # ackaging & Notarization
+    set(CPACK_GENERATOR "productbuild")
+    set(CPACK_PACKAGE_NAME "Lemonade")
+    set(CPACK_PRODUCTBUILD_IDENTIFIER "com.lemonade.server")
+
+    # Declare the package arm64-only so the macOS Installer does not assume our
+    # postflight script needs x86_64 and prompt to install Rosetta on Apple Silicon.
+    set(CPACK_APPLE_PKG_INSTALLER_CONTENT "<hostArchitectures><hostArchitecture>arm64</hostArchitecture></hostArchitectures>")
+
+    set(CPACK_PRODUCTBUILD_DOMAIN "system")
+
+    if(INSTALLER_IDENTITY)
+        set(CPACK_PRODUCTBUILD_IDENTITY_NAME "${INSTALLER_IDENTITY}")
+    endif()
+    set(CPACK_PRODUCTBUILD_RELOCATE OFF)  # Prevent install_name_tool from invalidating signatures
+    set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+    set(CPACK_PRODUCTBUILD_BUNDLE com.lemonade.server.Applications OFF)
+    set(CPACK_PRODUCTBUILD_BUNDLE_ID com.lemonade.server.Applications)
+
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
+    set(CPACK_SET_DESTDIR ON)
+    set(CPACK_PACKAGE_RELOCATABLE OFF)
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+    set(CPACK_COMPONENT_APPLICATIONS_IS_ABSOLUTE ON)
+
+    # license file extension for CPack
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.txt" COPYONLY)
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_BINARY_DIR}/LICENSE.txt")
+
+    set(CPACK_POSTFLIGHT_RUNTIME_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/postinst-full-mac")
+    include(CPack)
+
+    set(PACKAGE_DEPENDS prepare_tauri_app ${EXECUTABLE_NAME})
+
+    add_custom_target(package-macos
+        DEPENDS ${PACKAGE_DEPENDS}
+        COMMAND ${CMAKE_COMMAND} --build . --config $<CONFIG> --target package
+        COMMENT "Running CPack to create signed installer..."
+        VERBATIM
+    )
+
+    find_program(XCRUN_EXE xcrun)
+    if(XCRUN_EXE)
+        set(PKG_NAME "Lemonade-${PROJECT_VERSION}-Darwin.pkg")
+        add_custom_target(notarize
+            COMMAND ${CMAKE_COMMAND} -E echo "Submitting ${PKG_NAME} for notarization..."
+            COMMAND ${XCRUN_EXE} notarytool submit "${CMAKE_BINARY_DIR}/${PKG_NAME}" --keychain-profile "AC_PASSWORD" --wait --verbose
+            COMMAND ${CMAKE_COMMAND} -E echo "Stapling ticket to ${PKG_NAME}..."
+            COMMAND ${XCRUN_EXE} stapler staple "${CMAKE_BINARY_DIR}/${PKG_NAME}"
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMENT "Notarizing and Stapling macOS package..."
+            VERBATIM
+        )
+        add_dependencies(notarize package-macos)
+    endif()
+endif()
+
+# ============================================================
+# CPack Configuration (Linux only)
+# ============================================================
+if(UNIX AND NOT APPLE)
+    set(CPACK_SET_DESTDIR ON)
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_PACKAGE_VENDOR "Lemonade")
+    set(CPACK_PACKAGE_CONTACT "lemonade@amd.com")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Lemonade Local LLM Server")
+    set(CPACK_PACKAGE_DESCRIPTION "A lightweight, high-performance local LLM server with support for multiple backends including llama.cpp, FastFlowLM, and RyzenAI.")
+
+    # Only install our executables (not curl/development files)
+    install(TARGETS ${EXECUTABLE_NAME}
+        RUNTIME DESTINATION bin
+    )
+
+    # Install resources (all files including KaTeX fonts)
+    install(DIRECTORY ${CMAKE_BINARY_DIR}/resources/
+        DESTINATION share/lemonade-server/resources
+    )
+
+    # Install packaged config defaults for distro-managed overrides.
+    install(FILES ${CMAKE_BINARY_DIR}/resources/defaults.json
+        DESTINATION share/lemonade
+    )
+
+    # Install example scripts
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples/
+        DESTINATION share/lemonade-server/examples
+        USE_SOURCE_PERMISSIONS
+        PATTERN "*.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+    )
+
+    # Helper: create a systemd unit symlink with fatal-error-on-failure semantics
+    function(lemonade_install_systemd_symlink link_path target_path)
+        get_filename_component(_link_dir "${link_path}" DIRECTORY)
+
+        install(CODE "
+            set(_link \"\$ENV{DESTDIR}${link_path}\")
+            set(_target \"${target_path}\")
+
+            file(MAKE_DIRECTORY \"\$ENV{DESTDIR}${_link_dir}\")
+
+            if(IS_SYMLINK \"\${_link}\")
+                file(REMOVE \"\${_link}\")
+            elseif(EXISTS \"\${_link}\")
+                message(FATAL_ERROR \"Refusing to replace existing non-symlink: \${_link}\")
+            endif()
+
+            execute_process(
+                COMMAND \"${CMAKE_COMMAND}\" -E create_symlink \"\${_target}\" \"\${_link}\"
+                RESULT_VARIABLE _result
+                ERROR_VARIABLE _error
+            )
+
+            if(NOT _result EQUAL 0)
+                message(FATAL_ERROR \"Failed to create systemd symlink \${_link} -> \${_target}: \${_error}\")
+            endif()
+        ")
+    endfunction()
+
+    # Configure systemd service file (uses CMAKE_INSTALL_FULL_* variables)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/data/lemond.service.in
+        ${CMAKE_BINARY_DIR}/lemond.service
+        @ONLY
+    )
+
+    # Install systemd service file
+    install(FILES ${CMAKE_BINARY_DIR}/lemond.service
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/system
+    )
+    # Create symlinks in standard systemd search paths only if not installing to /usr
+    # (if prefix is /usr, the service is already in the standard location)
+    if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+        lemonade_install_systemd_symlink(
+            "/usr/lib/systemd/system/lemond.service"
+            "${CMAKE_INSTALL_PREFIX}/lib/systemd/system/lemond.service"
+        )
+        lemonade_install_systemd_symlink(
+            "/usr/lib/systemd/user/lemond.service"
+            "${CMAKE_INSTALL_PREFIX}/lib/systemd/user/lemond.service"
+        )
+    endif()
+
+    # Install sysusers.d snippet so the 'lemonade' system user is created
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/lemonade.sysusers
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/sysusers.d
+        RENAME lemonade.conf
+    )
+
+    # Configure + install the user-mode systemd unit
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/data/lemond-user.service.in
+        ${CMAKE_BINARY_DIR}/lemond-user.service
+        @ONLY
+    )
+    install(FILES ${CMAKE_BINARY_DIR}/lemond-user.service
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user
+        RENAME lemond.service
+    )
+
+    # Install secrets.conf for LEMONADE_API_KEY (still loaded via EnvironmentFile)
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/secrets.conf
+        DESTINATION /etc/lemonade/conf.d
+        RENAME zz-secrets.conf
+        PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ GROUP_WRITE
+    )
+
+    # Create symlinks for KaTeX fonts if they exist on the system
+    # Check if fonts-katex package fonts are available
+    set(KATEX_FONTS_DIR "/usr/share/fonts/truetype/katex")
+    if(EXISTS "${KATEX_FONTS_DIR}")
+        message(STATUS "KaTeX fonts found at ${KATEX_FONTS_DIR}, creating symlinks")
+
+        # Ensure web-app directory exists in build directory
+        file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/resources/web-app")
+
+        set(KATEX_FONTS
+            "KaTeX_AMS-Regular.ttf" "KaTeX_AMS-Regular.woff" "KaTeX_AMS-Regular.woff2"
+            "KaTeX_Caligraphic-Bold.ttf" "KaTeX_Caligraphic-Bold.woff" "KaTeX_Caligraphic-Bold.woff2"
+            "KaTeX_Caligraphic-Regular.ttf" "KaTeX_Caligraphic-Regular.woff" "KaTeX_Caligraphic-Regular.woff2"
+            "KaTeX_Fraktur-Bold.ttf" "KaTeX_Fraktur-Bold.woff" "KaTeX_Fraktur-Bold.woff2"
+            "KaTeX_Fraktur-Regular.ttf" "KaTeX_Fraktur-Regular.woff" "KaTeX_Fraktur-Regular.woff2"
+            "KaTeX_Main-Bold.ttf" "KaTeX_Main-Bold.woff" "KaTeX_Main-Bold.woff2"
+            "KaTeX_Main-BoldItalic.ttf" "KaTeX_Main-BoldItalic.woff" "KaTeX_Main-BoldItalic.woff2"
+            "KaTeX_Main-Italic.ttf" "KaTeX_Main-Italic.woff" "KaTeX_Main-Italic.woff2"
+            "KaTeX_Main-Regular.ttf" "KaTeX_Main-Regular.woff" "KaTeX_Main-Regular.woff2"
+            "KaTeX_Math-BoldItalic.ttf" "KaTeX_Math-BoldItalic.woff" "KaTeX_Math-BoldItalic.woff2"
+            "KaTeX_Math-Italic.ttf" "KaTeX_Math-Italic.woff" "KaTeX_Math-Italic.woff2"
+            "KaTeX_SansSerif-Bold.ttf" "KaTeX_SansSerif-Bold.woff" "KaTeX_SansSerif-Bold.woff2"
+            "KaTeX_SansSerif-Italic.ttf" "KaTeX_SansSerif-Italic.woff" "KaTeX_SansSerif-Italic.woff2"
+            "KaTeX_SansSerif-Regular.ttf" "KaTeX_SansSerif-Regular.woff" "KaTeX_SansSerif-Regular.woff2"
+            "KaTeX_Script-Regular.ttf" "KaTeX_Script-Regular.woff" "KaTeX_Script-Regular.woff2"
+            "KaTeX_Size1-Regular.ttf" "KaTeX_Size1-Regular.woff" "KaTeX_Size1-Regular.woff2"
+            "KaTeX_Size2-Regular.ttf" "KaTeX_Size2-Regular.woff" "KaTeX_Size2-Regular.woff2"
+            "KaTeX_Size3-Regular.ttf" "KaTeX_Size3-Regular.woff" "KaTeX_Size3-Regular.woff2"
+            "KaTeX_Size4-Regular.ttf" "KaTeX_Size4-Regular.woff" "KaTeX_Size4-Regular.woff2"
+            "KaTeX_Typewriter-Regular.ttf" "KaTeX_Typewriter-Regular.woff" "KaTeX_Typewriter-Regular.woff2"
+        )
+
+        foreach(font ${KATEX_FONTS})
+            set(FONT_LINK "${CMAKE_BINARY_DIR}/resources/web-app/${font}")
+            set(FONT_TARGET "${KATEX_FONTS_DIR}/${font}")
+            # Only create symlink if the target font exists
+            if(EXISTS "${FONT_TARGET}")
+                # Remove existing file/symlink if present
+                if(EXISTS "${FONT_LINK}" OR IS_SYMLINK "${FONT_LINK}")
+                    file(REMOVE "${FONT_LINK}")
+                endif()
+                # Create symlink in build directory
+                file(CREATE_LINK "${FONT_TARGET}" "${FONT_LINK}" SYMBOLIC)
+            endif()
+        endforeach()
+    else()
+        message(STATUS "KaTeX fonts not found at ${KATEX_FONTS_DIR}, using bundled fonts")
+    endif()
+
+    # Check if Tauri app is available for full package
+    option(BUILD_TAURI_APP "Build and include Tauri desktop app in deb package" OFF)
+
+    # Build Tauri app if requested and target is available
+    if(BUILD_TAURI_APP AND TARGET tauri-app)
+        message(STATUS "BUILD_TAURI_APP is ON - building Tauri app...")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target tauri-app
+            RESULT_VARIABLE TAURI_BUILD_RESULT
+        )
+        if(NOT TAURI_BUILD_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to build Tauri app")
+        endif()
+    endif()
+
+    if(BUILD_TAURI_APP AND EXISTS "${TAURI_APP_UNPACKED_DIR}/${TAURI_EXE_NAME}")
+        message(STATUS "Tauri app found at ${TAURI_APP_UNPACKED_DIR}")
+        message(STATUS "Building full deb package with Tauri app")
+
+        # Full package name
+        set(CPACK_PACKAGE_NAME "lemonade-server")
+
+        # Install the Tauri app binary (single file, unlike Electron's directory tree)
+        install(PROGRAMS "${TAURI_APP_UNPACKED_DIR}/${TAURI_EXE_NAME}"
+            DESTINATION share/lemonade-server/app
+        )
+
+        if (NOT WIN32 AND NOT APPLE)
+            # Install .desktop file for the Tauri app
+            install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/lemonade-app.desktop
+                DESTINATION share/applications
+            )
+            # Create symlink in standard applications path only if not installing to /usr
+            if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+                install(CODE "
+                    file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/share/applications\")
+                    execute_process(
+                        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                            ${CMAKE_INSTALL_PREFIX}/share/applications/lemonade-app.desktop
+                            \"\$ENV{DESTDIR}/usr/share/applications/lemonade-app.desktop\"
+                    )
+                ")
+            endif()
+            install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/app/assets/logo.svg
+                DESTINATION share/pixmaps
+                RENAME lemonade-app.svg
+            )
+
+            # Create symlink in standard pixmaps path only if not installing to /usr
+            if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+                install(CODE "
+                    file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/share/pixmaps\")
+                    execute_process(
+                        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                            ${CMAKE_INSTALL_PREFIX}/share/pixmaps/lemonade-app.svg
+                            \"\$ENV{DESTDIR}/usr/share/pixmaps/lemonade-app.svg\"
+                    )
+                ")
+            endif()
+            # Create symlink in standard bin path only if not installing to /usr
+            if(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+                install(CODE "
+                    file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/bin\")
+                    execute_process(
+                        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                            \"\${CMAKE_INSTALL_PREFIX}/share/lemonade-server/app/lemonade-app\"
+                            \"\$ENV{DESTDIR}/usr/bin/lemonade-app\"
+                    )
+                ")
+            else()
+                install(CODE "
+                    file(CREATE_LINK
+                        \"\${CMAKE_INSTALL_PREFIX}/share/lemonade-server/app/lemonade-app\"
+                        \"\${CMAKE_INSTALL_PREFIX}/bin/lemonade-app\"
+                        SYMBOLIC)
+                ")
+            endif()
+        endif()
+
+    else()
+        set(CPACK_PACKAGE_NAME "lemonade-server")
+    endif()
+
+    # RPM specific variables defined within
+    include(${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/CPackRPM.cmake)
+    include(CPack)
+endif()
+
+# ============================================================
+# Embeddable Archive Target (Cross-Platform)
+# ============================================================
+# Builds lemond + lemonade, assembles a portable archive with
+# binaries, LICENSE, and resource files. Produces .tar.gz on
+# Linux or .zip on Windows.
+#
+# Usage:
+#   cmake --preset default -DBUILD_WEB_APP=OFF
+#   cmake --build --preset default --target embeddable
+
+if(WIN32)
+    set(EMBEDDABLE_PLATFORM "windows-x64")
+elseif(APPLE)
+    if(DEFINED CMAKE_OSX_ARCHITECTURES AND CMAKE_OSX_ARCHITECTURES)
+        set(_embeddable_arch "${CMAKE_OSX_ARCHITECTURES}")
+    else()
+        set(_embeddable_arch "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+    endif()
+    if(_embeddable_arch STREQUAL "arm64")
+        set(EMBEDDABLE_PLATFORM "macos-arm64")
+    else()
+        set(EMBEDDABLE_PLATFORM "macos-x64")
+    endif()
+else()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        set(EMBEDDABLE_PLATFORM "ubuntu-arm64")
+    else()
+        set(EMBEDDABLE_PLATFORM "ubuntu-x64")
+    endif()
+endif()
+
+set(EMBEDDABLE_DIR_NAME "lemonade-embeddable-${PROJECT_VERSION}-${EMBEDDABLE_PLATFORM}")
+set(EMBEDDABLE_STAGING_DIR "${CMAKE_BINARY_DIR}/${EMBEDDABLE_DIR_NAME}")
+
+if(WIN32)
+    set(EMBEDDABLE_ARCHIVE_NAME "${EMBEDDABLE_DIR_NAME}.zip")
+    set(EMBEDDABLE_TAR_CMD ${CMAKE_COMMAND} -E tar cf
+        "${CMAKE_BINARY_DIR}/${EMBEDDABLE_ARCHIVE_NAME}" --format=zip
+        "${EMBEDDABLE_DIR_NAME}")
+else()
+    set(EMBEDDABLE_ARCHIVE_NAME "${EMBEDDABLE_DIR_NAME}.tar.gz")
+    set(EMBEDDABLE_TAR_CMD ${CMAKE_COMMAND} -E tar czf
+        "${CMAKE_BINARY_DIR}/${EMBEDDABLE_ARCHIVE_NAME}"
+        "${EMBEDDABLE_DIR_NAME}")
+endif()
+
+add_custom_target(embeddable
+    # Clean and create staging directory
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${EMBEDDABLE_STAGING_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${EMBEDDABLE_STAGING_DIR}/resources"
+
+    # Copy binaries
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:lemond>" "${EMBEDDABLE_STAGING_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:lemonade>" "${EMBEDDABLE_STAGING_DIR}/"
+
+    # Copy LICENSE
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${EMBEDDABLE_STAGING_DIR}/"
+
+    # Copy resource files
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE_DIR:lemond>/resources/server_models.json"
+        "${EMBEDDABLE_STAGING_DIR}/resources/"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE_DIR:lemond>/resources/backend_versions.json"
+        "${EMBEDDABLE_STAGING_DIR}/resources/"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE_DIR:lemond>/resources/vllm_model_config.json"
+        "${EMBEDDABLE_STAGING_DIR}/resources/"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE_DIR:lemond>/resources/defaults.json"
+        "${EMBEDDABLE_STAGING_DIR}/resources/"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE_DIR:lemond>/resources/bench_scenarios.json"
+        "${EMBEDDABLE_STAGING_DIR}/resources/"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE_DIR:lemond>/resources/toolDefinitions.json"
+        "${EMBEDDABLE_STAGING_DIR}/resources/"
+
+    # Create archive
+    COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}" ${EMBEDDABLE_TAR_CMD}
+
+    DEPENDS lemond lemonade
+    COMMENT "Assembling embeddable archive: ${EMBEDDABLE_ARCHIVE_NAME}"
+    VERBATIM
+)
+
+message(STATUS "Embeddable archive target available: cmake --build . --target embeddable")
+message(STATUS "  Archive: ${EMBEDDABLE_ARCHIVE_NAME}")
+
+# ============================================================
+# C++ Unit Tests
+# ============================================================
+
+set(_ARCHIVE_PLATFORM_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_archive_platform.cpp"
+)
+if(BUILD_TESTING AND EXISTS "${_ARCHIVE_PLATFORM_TEST_SRC}")
+    add_executable(test_archive_platform
+        test/cpp/test_archive_platform.cpp
+    )
+    target_include_directories(test_archive_platform PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+    )
+    add_test(NAME ArchivePlatformTest COMMAND test_archive_platform)
+endif()
+
+# ProcessManager zombie detection and non-mutating reap contract.
+if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_PROCESS_MANAGER_TEST_SRC
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_process_manager.cpp"
+    )
+    if(EXISTS "${_PROCESS_MANAGER_TEST_SRC}")
+        add_executable(test_process_manager
+            test/cpp/test_process_manager.cpp
+            src/cpp/server/utils/process_manager.cpp
+            src/cpp/server/utils/platform/process_linux.cpp
+        )
+        target_include_directories(test_process_manager PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+        )
+        find_package(Threads REQUIRED)
+        target_link_libraries(test_process_manager PRIVATE Threads::Threads)
+        add_test(NAME ProcessManagerTest COMMAND test_process_manager)
+    endif()
+endif()
+
+# FastFlowLM argument validation. Keep this test independent from the server
+set(_FLM_ARG_RESOLVER_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_flm_arg_resolver.cpp"
+)
+set(_FLM_ARG_RESOLVER_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/backends/fastflowlm/flm_arg_resolver.cpp"
+)
+if(EXISTS "${_FLM_ARG_RESOLVER_TEST_SRC}" AND EXISTS "${_FLM_ARG_RESOLVER_SRC}")
+    add_executable(test_flm_arg_resolver
+        test/cpp/test_flm_arg_resolver.cpp
+        src/cpp/server/backends/fastflowlm/flm_arg_resolver.cpp
+    )
+    target_include_directories(test_flm_arg_resolver PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+
+    add_test(NAME FlmArgResolverTest COMMAND test_flm_arg_resolver)
+endif()
+
+# Custom arg parsing helpers (header-only utility shared by all arg resolvers).
+set(_CUSTOM_ARGS_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_custom_args.cpp"
+)
+if(BUILD_TESTING AND EXISTS "${_CUSTOM_ARGS_TEST_SRC}")
+    add_executable(test_custom_args ${_CUSTOM_ARGS_TEST_SRC})
+    target_include_directories(test_custom_args PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+    )
+    add_test(NAME CustomArgsTest COMMAND test_custom_args)
+endif()
+
+set(_DIR_WATCHER_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_directory_watcher.cpp"
+)
+set(_DIR_WATCHER_LIB_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/server/directory_watcher.cpp"
+)
+if(EXISTS "${_DIR_WATCHER_TEST_SRC}" AND EXISTS "${_DIR_WATCHER_LIB_SRC}")
+    add_executable(test_directory_watcher
+        test/cpp/test_directory_watcher.cpp
+        src/cpp/server/directory_watcher.cpp
+    )
+    target_include_directories(test_directory_watcher PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    if(UNIX)
+        target_link_libraries(test_directory_watcher PRIVATE pthread)
+        target_link_options(test_directory_watcher PRIVATE -pthread)
+    endif()
+
+    # Enable testing and register the test with CTest
+    include(CTest)
+    add_test(NAME DirectoryWatcherTest COMMAND test_directory_watcher)
+endif()
+
+# GGUF capability detection (MTP / vision / tool-calling label logic).
+# Header-only unit under test, so no extra source files are required.
+set(_GGUF_CAPS_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_gguf_capabilities.cpp"
+)
+if(EXISTS "${_GGUF_CAPS_TEST_SRC}")
+    add_executable(test_gguf_capabilities
+        test/cpp/test_gguf_capabilities.cpp
+    )
+    target_include_directories(test_gguf_capabilities PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+
+    # Enable testing and register the test with CTest
+    include(CTest)
+    add_test(NAME GgufCapabilitiesTest COMMAND test_gguf_capabilities)
+endif()
+
+# Model residency role/pool contract for router dependencies
+set(_MODEL_RESIDENCY_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_model_residency.cpp"
+)
+if(EXISTS "${_MODEL_RESIDENCY_TEST_SRC}")
+    add_executable(test_model_residency
+        test/cpp/test_model_residency.cpp
+    )
+    target_include_directories(test_model_residency PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+
+    include(CTest)
+    add_test(NAME ModelResidencyTest COMMAND test_model_residency)
+endif()
+
+# Pure version-resolution policy test (lemon::resolve_latest_pin). Header-only
+# logic, so the test links nothing beyond the standard library — regression
+# coverage for #2265 (fall back to the installed binary when the GitHub
+# "latest" lookup fails).
+set(_LATEST_FALLBACK_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_latest_version_fallback.cpp"
+)
+if(EXISTS "${_LATEST_FALLBACK_TEST_SRC}")
+    add_executable(test_latest_version_fallback
+        test/cpp/test_latest_version_fallback.cpp
+    )
+    target_include_directories(test_latest_version_fallback PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+
+    include(CTest)
+    add_test(NAME LatestVersionFallbackTest COMMAND test_latest_version_fallback)
+endif()
+
+# Job engine pure core: the `when`/`branch` expression evaluator + reference
+# resolution, and step-graph validation (forward-only ⇒ no loops). Header-only,
+# so these link only nlohmann/json.
+set(_JOB_EXPR_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_job_expr.cpp")
+if(EXISTS "${_JOB_EXPR_TEST_SRC}")
+    add_executable(test_job_expr test/cpp/test_job_expr.cpp)
+    target_include_directories(test_job_expr PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_job_expr PRIVATE nlohmann_json::nlohmann_json)
+    include(CTest)
+    add_test(NAME JobExprTest COMMAND test_job_expr)
+endif()
+
+set(_JOB_GRAPH_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_job_graph.cpp")
+if(EXISTS "${_JOB_GRAPH_TEST_SRC}")
+    add_executable(test_job_graph test/cpp/test_job_graph.cpp)
+    target_include_directories(test_job_graph PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_job_graph PRIVATE nlohmann_json::nlohmann_json)
+    include(CTest)
+    add_test(NAME JobGraphTest COMMAND test_job_graph)
+endif()
+
+# Backend install atomicity (staging + verified atomic swap).
+# Header-only unit under test, so no extra source files are required.
+set(_INSTALL_ATOMICITY_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_install_atomicity.cpp"
+)
+if(EXISTS "${_INSTALL_ATOMICITY_TEST_SRC}")
+    add_executable(test_install_atomicity
+        test/cpp/test_install_atomicity.cpp
+    )
+    target_include_directories(test_install_atomicity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+
+    # Enable testing and register the test with CTest
+    include(CTest)
+    add_test(NAME InstallAtomicityTest COMMAND test_install_atomicity)
+endif()
+
+# Routing engine contract surface (issue #2407). Header-only foundation: the
+# shared types/interfaces in routing_policy.h plus the fake ClassifierServices.
+# The test loads the L0a-L3 fixtures from the source tree via ROUTING_FIXTURE_DIR.
+set(_ROUTING_CONTRACT_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_contract.cpp"
+)
+if(EXISTS "${_ROUTING_CONTRACT_TEST_SRC}")
+    add_executable(test_routing_policy_contract
+        test/cpp/test_routing_policy_contract.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_policy_contract PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_contract PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_definitions(test_routing_policy_contract PRIVATE
+        ROUTING_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/fixtures/routing"
+    )
+
+    include(CTest)
+    add_test(NAME RoutingPolicyContractTest COMMAND test_routing_policy_contract)
+endif()
+
+# Routing match evaluator (issue #2378): composite Condition nodes,
+# classifier-band leaf evaluation, MatchExpr compilation, trace and memoization.
+set(_ROUTING_EVALUATOR_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_evaluator.cpp"
+)
+if(EXISTS "${_ROUTING_EVALUATOR_TEST_SRC}")
+    add_executable(test_routing_policy_evaluator
+        test/cpp/test_routing_policy_evaluator.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_policy_evaluator PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_evaluator PRIVATE nlohmann_json::nlohmann_json)
+
+    include(CTest)
+    add_test(NAME RoutingPolicyEvaluatorTest COMMAND test_routing_policy_evaluator)
+endif()
+
+# Routing classifier/condition registry (issue #2379): classifier JSON
+# instantiation, classifier leaf resolution, deterministic leaf dispatch seams.
+set(_ROUTING_REGISTRY_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_registry.cpp"
+)
+if(EXISTS "${_ROUTING_REGISTRY_TEST_SRC}")
+    add_executable(test_routing_policy_registry
+        test/cpp/test_routing_policy_registry.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_policy_registry PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_registry PRIVATE nlohmann_json::nlohmann_json)
+
+    include(CTest)
+    add_test(NAME RoutingPolicyRegistryTest COMMAND test_routing_policy_registry)
+endif()
+
+# Routing semantic_similarity classifier (issue #2381): max-cosine scoring over
+# reference phrases, reference-phrase embedding caching, inclusive band
+# boundaries, and on_error handling, all against a fake embedder.
+set(_ROUTING_SEMANTIC_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_semantic.cpp"
+)
+if(EXISTS "${_ROUTING_SEMANTIC_TEST_SRC}")
+    add_executable(test_routing_policy_semantic
+        test/cpp/test_routing_policy_semantic.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_policy_semantic PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_semantic PRIVATE nlohmann_json::nlohmann_json)
+
+    include(CTest)
+    add_test(NAME RoutingPolicySemanticTest COMMAND test_routing_policy_semantic)
+endif()
+
+# LLM router classifier + routing.router desugaring (issue #2405): the L0a
+# on-ramp. Unit + parser + end-to-end tests against FakeClassifierServices.
+set(_ROUTING_LLM_ROUTER_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_llm_router.cpp"
+)
+if(EXISTS "${_ROUTING_LLM_ROUTER_TEST_SRC}")
+    add_executable(test_routing_policy_llm_router
+        test/cpp/test_routing_policy_llm_router.cpp
+        src/cpp/server/routing_policy.cpp
+        src/cpp/server/routing_policy_parser.cpp
+    )
+    target_include_directories(test_routing_policy_llm_router PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_llm_router PRIVATE nlohmann_json::nlohmann_json)
+
+    include(CTest)
+    add_test(NAME RoutingPolicyLlmRouterTest COMMAND test_routing_policy_llm_router)
+endif()
+
+# Routing deterministic leaf conditions (issue #2380): keywords/regex/min_chars/
+# max_chars/has_*/metadata conditions and their leaf-factory map.
+set(_ROUTING_DETERMINISTIC_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_deterministic.cpp"
+)
+if(EXISTS "${_ROUTING_DETERMINISTIC_TEST_SRC}")
+    add_executable(test_routing_policy_deterministic
+        test/cpp/test_routing_policy_deterministic.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_policy_deterministic PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_deterministic PRIVATE nlohmann_json::nlohmann_json)
+
+    include(CTest)
+    add_test(NAME RoutingPolicyDeterministicTest COMMAND test_routing_policy_deterministic)
+endif()
+
+# Routing engine assembly (issue #2382): RoutingPolicyEngine constructor rule
+# compilation, first-match-wins route(), default fail-open, trace opt-in,
+# on_error error paths, and concurrent route() consistency against a fake.
+set(_ROUTING_ENGINE_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_engine.cpp"
+)
+if(EXISTS "${_ROUTING_ENGINE_TEST_SRC}")
+    add_executable(test_routing_policy_engine
+        test/cpp/test_routing_policy_engine.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_policy_engine PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_engine PRIVATE nlohmann_json::nlohmann_json)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_routing_policy_engine PRIVATE Threads::Threads)
+
+    include(CTest)
+    add_test(NAME RoutingPolicyEngineTest COMMAND test_routing_policy_engine)
+endif()
+
+# Routing policy parser (issue #2383): collection.router JSON -> RoutePolicy,
+# schema/parser key parity, component resolution, and validation errors.
+set(_ROUTING_PARSER_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_parser.cpp"
+)
+if(EXISTS "${_ROUTING_PARSER_TEST_SRC}")
+    add_executable(test_routing_policy_parser
+        test/cpp/test_routing_policy_parser.cpp
+        src/cpp/server/routing_policy.cpp
+        src/cpp/server/routing_policy_parser.cpp
+    )
+    target_include_directories(test_routing_policy_parser PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_parser PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_definitions(test_routing_policy_parser PRIVATE
+        ROUTING_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/fixtures/routing"
+        ROUTING_SCHEMA_FILE="${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/resources/schemas/route_policy.schema.json"
+    )
+
+    include(CTest)
+    add_test(NAME RoutingPolicyParserTest COMMAND test_routing_policy_parser)
+endif()
+
+
+# Routing policy store (issue #2383): directory-backed policy loading and
+# DirectoryWatcher-triggered shared_ptr snapshot swaps.
+set(_ROUTING_STORE_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_policy_store.cpp"
+)
+if(EXISTS "${_ROUTING_STORE_TEST_SRC}")
+    add_executable(test_routing_policy_store
+        test/cpp/test_routing_policy_store.cpp
+        src/cpp/server/routing_policy.cpp
+        src/cpp/server/routing_policy_parser.cpp
+        src/cpp/server/routing_policy_store.cpp
+        src/cpp/server/directory_watcher.cpp
+    )
+    target_include_directories(test_routing_policy_store PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_policy_store PRIVATE nlohmann_json::nlohmann_json)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_routing_policy_store PRIVATE Threads::Threads)
+    target_compile_definitions(test_routing_policy_store PRIVATE
+        ROUTING_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/fixtures/routing"
+    )
+
+    include(CTest)
+    add_test(NAME RoutingPolicyStoreTest COMMAND test_routing_policy_store)
+endif()
+
+set(_ROUTE_DECISION_RESPONSE_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_route_decision_response.cpp"
+)
+if(EXISTS "${_ROUTE_DECISION_RESPONSE_TEST_SRC}")
+    add_executable(test_route_decision_response
+        test/cpp/test_route_decision_response.cpp
+        src/cpp/server/route_decision_response.cpp
+    )
+    target_include_directories(test_route_decision_response PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_route_decision_response PRIVATE nlohmann_json::nlohmann_json)
+    if(USE_SYSTEM_HTTPLIB)
+        target_link_libraries(test_route_decision_response PRIVATE lemonade-httplib)
+    else()
+        target_link_libraries(test_route_decision_response PRIVATE httplib::httplib)
+    endif()
+
+    include(CTest)
+    add_test(NAME RouteDecisionResponseTest COMMAND test_route_decision_response)
+endif()
+
+# Router back-compat conformance corpus (issue #2425): replays the golden
+# policy -> Decision cases under test/conformance/routing/ through the real
+# engine and asserts each emitted Decision equals its recorded expectation.
+set(_ROUTING_CONFORMANCE_CORPUS_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_conformance_corpus.cpp"
+)
+if(EXISTS "${_ROUTING_CONFORMANCE_CORPUS_TEST_SRC}")
+    add_executable(test_routing_conformance_corpus
+        test/cpp/test_routing_conformance_corpus.cpp
+        src/cpp/server/route_decision_response.cpp
+        src/cpp/server/routing_classifier_services.cpp
+        src/cpp/server/thinking_controls.cpp
+        src/cpp/server/routing_policy.cpp
+        src/cpp/server/routing_policy_parser.cpp
+    )
+    target_include_directories(test_routing_conformance_corpus PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_conformance_corpus PRIVATE nlohmann_json::nlohmann_json)
+    if(USE_SYSTEM_HTTPLIB)
+        target_link_libraries(test_routing_conformance_corpus PRIVATE lemonade-httplib)
+    else()
+        target_link_libraries(test_routing_conformance_corpus PRIVATE httplib::httplib)
+    endif()
+    target_compile_definitions(test_routing_conformance_corpus PRIVATE
+        CONFORMANCE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/conformance/routing"
+    )
+
+    include(CTest)
+    add_test(NAME RoutingConformanceCorpusTest COMMAND test_routing_conformance_corpus)
+endif()
+
+# ModelManager collection validation for collection.router registration:
+# /pull-style validation rejects malformed routing and preserves the routing
+# block in ModelInfo::extras after user-model registration.
+set(_MODEL_MANAGER_COLLECTION_VALIDATION_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_model_manager_collection_validation.cpp"
+)
+if(EXISTS "${_MODEL_MANAGER_COLLECTION_VALIDATION_TEST_SRC}")
+    add_executable(test_model_manager_collection_validation
+        test/cpp/test_model_manager_collection_validation.cpp
+    )
+    target_link_libraries(test_model_manager_collection_validation PRIVATE lemonade-server-core)
+    add_dependencies(test_model_manager_collection_validation copy_resources)
+
+    include(CTest)
+    add_test(NAME ModelManagerCollectionValidationTest COMMAND test_model_manager_collection_validation)
+endif()
+
+# Remote model registry source parsing, cache namespaces, snapshot fingerprints,
+# and persistence of ModelScope provenance in ModelInfo.
+set(_MODEL_REGISTRY_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_model_registry.cpp"
+)
+if(BUILD_TESTING AND EXISTS "${_MODEL_REGISTRY_TEST_SRC}")
+    add_executable(test_model_registry test/cpp/test_model_registry.cpp)
+    target_link_libraries(test_model_registry PRIVATE lemonade-server-core)
+    add_dependencies(test_model_registry copy_resources)
+
+    include(CTest)
+    add_test(NAME ModelRegistryTest COMMAND test_model_registry)
+endif()
+
+# Router-backed ClassifierServices wiring (issue #2384): binds the pure engine's
+# embed/run_classifier/chat lambdas to Router-style JSON calls.
+set(_ROUTING_CLASSIFIER_SERVICES_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_routing_classifier_services.cpp"
+)
+if(EXISTS "${_ROUTING_CLASSIFIER_SERVICES_TEST_SRC}")
+    add_executable(test_routing_classifier_services
+        test/cpp/test_routing_classifier_services.cpp
+        src/cpp/server/routing_classifier_services.cpp
+        src/cpp/server/thinking_controls.cpp
+        src/cpp/server/routing_policy.cpp
+    )
+    target_include_directories(test_routing_classifier_services PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(test_routing_classifier_services PRIVATE nlohmann_json::nlohmann_json)
+
+    include(CTest)
+    add_test(NAME RoutingClassifierServicesTest COMMAND test_routing_classifier_services)
+endif()
+
+# Auto-tune: GGUF array storage, scalar derivation, weighted KV cache computation.
+# Covers head_count_kv_per_layer, sliding_window_pattern, SWA precise weighted sum,
+# full_attention_interval exact count, and scalar fallback paths.
+set(_AUTO_TUNE_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_auto_tune.cpp"
+)
+if(EXISTS "${_AUTO_TUNE_TEST_SRC}")
+    add_executable(test_auto_tune
+        test/cpp/test_auto_tune.cpp
+    )
+    target_include_directories(test_auto_tune PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+
+    include(CTest)
+    add_test(NAME AutoTuneTest COMMAND test_auto_tune)
+endif()
+
+set(_TELEMETRY_HELPERS_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_telemetry_helpers.cpp")
+if(EXISTS "${_TELEMETRY_HELPERS_TEST_SRC}")
+    add_executable(test_telemetry_helpers test/cpp/test_telemetry_helpers.cpp)
+    target_link_libraries(test_telemetry_helpers PRIVATE lemonade-server-core)
+    add_test(NAME TelemetryHelpersTest COMMAND test_telemetry_helpers)
+endif()
+
+set(_SUSPEND_INHIBITOR_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_suspend_inhibitor.cpp")
+if(EXISTS "${_SUSPEND_INHIBITOR_TEST_SRC}")
+    add_executable(test_suspend_inhibitor test/cpp/test_suspend_inhibitor.cpp)
+    target_link_libraries(test_suspend_inhibitor PRIVATE lemonade-server-core)
+    add_test(NAME SuspendInhibitorTest COMMAND test_suspend_inhibitor)
+endif()
+
+set(_CONFIG_MIGRATION_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_config_migration.cpp")
+if(EXISTS "${_CONFIG_MIGRATION_TEST_SRC}")
+    add_executable(test_config_migration test/cpp/test_config_migration.cpp)
+    target_link_libraries(test_config_migration PRIVATE lemonade-server-core)
+    add_test(NAME ConfigMigrationTest COMMAND test_config_migration)
+endif()
+
+set(_CONFIG_TELEMETRY_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_config_telemetry.cpp")
+if(EXISTS "${_CONFIG_TELEMETRY_TEST_SRC}")
+    add_executable(test_config_telemetry test/cpp/test_config_telemetry.cpp)
+    target_link_libraries(test_config_telemetry PRIVATE lemonade-server-core)
+    add_test(NAME ConfigTelemetryTest COMMAND test_config_telemetry)
+endif()
+
+# ROCm root resolution (ROCM_PATH / rocm-sdk / /opt/rocm priority): covers the
+# external-ROCm detection that lets Lemonade skip the bundled TheRock download.
+set(_ROCM_ROOT_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_rocm_root_resolution.cpp")
+if(EXISTS "${_ROCM_ROOT_TEST_SRC}")
+    add_executable(test_rocm_root_resolution test/cpp/test_rocm_root_resolution.cpp)
+    target_link_libraries(test_rocm_root_resolution PRIVATE lemonade-server-core)
+    add_test(NAME RocmRootResolutionTest COMMAND test_rocm_root_resolution)
+endif()
+
+set(_NETWORK_UTILS_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_network_utils.cpp")
+if(EXISTS "${_NETWORK_UTILS_TEST_SRC}")
+    add_executable(test_network_utils test/cpp/test_network_utils.cpp)
+    target_link_libraries(test_network_utils PRIVATE lemonade-server-core)
+    add_test(NAME NetworkUtilsTest COMMAND test_network_utils)
+endif()
+
+# vLLM CDNA gating: the vllm descriptor support row + asset-family resolution for
+# AMD Instinct (gfx942), alongside the existing RDNA families.
+set(_VLLM_CDNA_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_vllm_cdna_gating.cpp")
+if(EXISTS "${_VLLM_CDNA_TEST_SRC}")
+    add_executable(test_vllm_cdna_gating test/cpp/test_vllm_cdna_gating.cpp)
+    target_link_libraries(test_vllm_cdna_gating PRIVATE lemonade-server-core)
+    add_test(NAME VllmCdnaGatingTest COMMAND test_vllm_cdna_gating)
+endif()
+
+# llamacpp gfx950 (MI350) install gate: only the Linux + stable-channel asset is
+# published, so the shared Windows/Linux support row must not advertise Windows
+# or nightly installs for gfx950.
+set(_LLAMACPP_GFX950_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_llamacpp_gfx950_gating.cpp")
+if(EXISTS "${_LLAMACPP_GFX950_TEST_SRC}")
+    add_executable(test_llamacpp_gfx950_gating test/cpp/test_llamacpp_gfx950_gating.cpp)
+    target_link_libraries(test_llamacpp_gfx950_gating PRIVATE lemonade-server-core)
+    add_test(NAME LlamacppGfx950GatingTest COMMAND test_llamacpp_gfx950_gating)
+endif()
+
+set(_HTTP_CLIENT_SECURITY_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_http_client_security.cpp")
+if(EXISTS "${_HTTP_CLIENT_SECURITY_TEST_SRC}")
+    add_executable(test_http_client_security test/cpp/test_http_client_security.cpp)
+    target_link_libraries(test_http_client_security PRIVATE lemonade-server-core)
+    add_test(NAME HttpClientSecurityTest COMMAND test_http_client_security)
+endif()
+
+set(_CLOUD_DISCOVERY_POLICY_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_cloud_discovery_policy.cpp")
+if(EXISTS "${_CLOUD_DISCOVERY_POLICY_TEST_SRC}")
+    add_executable(test_cloud_discovery_policy test/cpp/test_cloud_discovery_policy.cpp)
+    target_link_libraries(test_cloud_discovery_policy PRIVATE lemonade-server-core)
+    add_test(NAME CloudDiscoveryPolicyTest COMMAND test_cloud_discovery_policy)
+endif()
+
+set(_ORIGIN_UTILS_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_origin_utils.cpp")
+if(EXISTS "${_ORIGIN_UTILS_TEST_SRC}")
+    add_executable(test_origin_utils test/cpp/test_origin_utils.cpp)
+    target_link_libraries(test_origin_utils PRIVATE lemonade-server-core)
+    add_test(NAME OriginUtilsTest COMMAND test_origin_utils)
+endif()

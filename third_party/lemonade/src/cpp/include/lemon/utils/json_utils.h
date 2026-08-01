@@ -1,0 +1,53 @@
+#pragma once
+
+#include <string>
+#include <nlohmann/json.hpp>
+
+namespace lemon {
+namespace utils {
+
+using json = nlohmann::json;
+
+class JsonUtils {
+public:
+    // Load JSON from file
+    static json load_from_file(const std::string& file_path);
+
+    // Save JSON to file
+    static void save_to_file(const json& j, const std::string& file_path);
+
+    // Parse JSON from string
+    static json parse(const std::string& json_str);
+
+    // Convert JSON to pretty string
+    static std::string to_string(const json& j, int indent = 2);
+
+    // Merge two JSON objects
+    static json merge(const json& base, const json& overlay);
+
+    // OpenAI compatibility: mirror max_completion_tokens to legacy max_tokens
+    // when the request does not already provide max_tokens.
+    static void add_legacy_max_tokens_alias(json& request);
+    static json with_legacy_max_tokens_alias(const json& request);
+
+    // Check if JSON has key
+    static bool has_key(const json& j, const std::string& key);
+
+    // Get value with default
+    template<typename T>
+    static T get_or_default(const json& j, const std::string& key, const T& default_value) {
+        if (j.contains(key) && !j[key].is_null()) {
+            return j[key].get<T>();
+        }
+        return default_value;
+    }
+
+    // Encode binary data to base64 string
+    static std::string base64_encode(const std::string& input);
+
+    // Decode base64 string to binary data
+    static std::string base64_decode(const std::string& input);
+};
+
+} // namespace utils
+} // namespace lemon

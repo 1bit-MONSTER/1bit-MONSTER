@@ -264,6 +264,13 @@ struct Mamba1Backend : Backend {
         r.get_tensor_f32("output_norm.weight", final_norm_w);
 
         // ── Detect layer types ──
+        // Only models with real Mamba SSM blocks belong on this backend.
+        // Dense llama-arch GGUFs also carry ffn_gate.weight (mistaken for
+        // MoE below) and then crash the HIP forward path — reject up front.
+        if (!r.has_tensor("blk.0.ssm_in.weight")) {
+            fprintf(stderr, "[mamba1] Not a mamba-arch model (no blk.0.ssm_in) — skipping\n");
+            return false;
+        }
         layer_is_mamba.resize(n_layers);
         mamba_layer_host.resize(n_layers);
         moe_layer_host.resize(n_layers);

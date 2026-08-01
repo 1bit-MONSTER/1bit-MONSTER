@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Run OpenAI's gpt-oss locally with Lemonade - Lemonade Server</title>
+  <link rel="icon" href="../assets/favicon.ico">
+  <link rel="stylesheet" href="../assets/website-styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="../assets/navbar.js"></script>
+  <style>
+    .blog-article-unified .model-card-enhanced {
+      padding: 1.3rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .blog-article-unified .model-card-enhanced > p {
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .blog-article-unified .model-card-enhanced .model-title {
+      margin: 0 0 0.3rem;
+    }
+
+    .blog-article-unified .model-card-enhanced .model-stat-grid {
+      margin: 0.2rem 0 0.15rem;
+      padding-top: 0.8rem;
+      gap: 0.5rem;
+    }
+  </style>
+  <meta name="description" content="Lemonade now supports OpenAI's gpt-oss models, bringing you the power to run these cutting-edge models locally on your own hardware!">
+  <meta property="og:title" content="Run OpenAI's gpt-oss locally with Lemonade">
+  <meta property="og:description" content="Lemonade now supports OpenAI's gpt-oss models, bringing you the power to run these cutting-edge models locally on your own hardware!">
+  <meta property="og:type" content="article">
+  <meta property="article:published_time" content="2025-08-05">
+  <meta property="article:author" content="Daniel Holanda, Jeremy Fowers, Krishna Sivakumar, Victoria Godsoe">
+</head>
+<body>
+  <div class="navbar-placeholder"></div>
+
+  <!-- Article Content -->
+  <main class="main blog-main">
+    <article class="blog-article blog-article-unified">
+      <div class="hero-section">
+        <div class="hero-content">
+          <div class="hero-badge">New Models</div>
+          <h1 class="hero-title">Run OpenAI's gpt-oss locally with Lemonade</h1>
+          <div class="hero-subtitle" id="article-subtitle">We're excited to announce that Lemonade now supports OpenAI's gpt-oss models, bringing you the power to run these cutting-edge models locally on your own hardware! 🎉</div>
+          <div class="hero-meta">
+            <div class="meta-item"><span class="meta-icon">Date:</span>August 12, 2025</div>
+            <div class="meta-item meta-authors"><span class="meta-icon">Authors:</span>Daniel Holanda, Jeremy Fowers, Krishna Sivakumar, Victoria Godsoe</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="article-content">
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Overview</span>
+            <h2 class="section-title">What is Lemonade?</h2>
+            <p>Lemonade is a local AI runtime that makes it easy to run models like gpt-oss on your own hardware with privacy by default. It is optimized for fast setup, OpenAI API compatibility, and practical performance across common local acceleration stacks.</p>
+          </div>
+
+          <div class="feature-grid">
+            <div class="feature-item">
+              <div class="feature-item-head">
+                <img src="https://raw.githubusercontent.com/lemonade-sdk/assets/main/LemonadeIcons/1_install.png" alt="" class="feature-icon-image" aria-hidden="true">
+                <span>One Minute Install</span>
+              </div>
+              <p>Simple setup flow that gets the local stack running quickly.</p>
+            </div>
+            <div class="feature-item">
+              <div class="feature-item-head">
+                <img src="https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/partner_logos/OpenAI-black-monoblossom.png" alt="" class="feature-icon-image" aria-hidden="true">
+                <span>OpenAI API</span>
+              </div>
+              <p>Works with many apps out-of-box and integrates in minutes.</p>
+            </div>
+            <div class="feature-item">
+              <div class="feature-item-head">
+                <img src="https://raw.githubusercontent.com/lemonade-sdk/assets/main/LemonadeIcons/3_configuresHW.png" alt="" class="feature-icon-image" aria-hidden="true">
+                <span>Hardware Auto-Setup</span>
+              </div>
+              <p>Configures dependencies for your GPU and NPU acceleration stack.</p>
+            </div>
+            <div class="feature-item">
+              <div class="feature-item-head">
+                <img src="https://raw.githubusercontent.com/lemonade-sdk/assets/main/LemonadeIcons/2_multiengine.png" alt="" class="feature-icon-image" aria-hidden="true">
+                <span>Multi-Engine Support</span>
+              </div>
+              <p>Works with llama.cpp, Ryzen AI SW, FastFlowLM, and more.</p>
+            </div>
+            <div class="feature-item">
+              <div class="feature-item-head">
+                <img src="https://raw.githubusercontent.com/lemonade-sdk/assets/main/LemonadeIcons/4_multimodel.png" alt="" class="feature-icon-image" aria-hidden="true">
+                <span>Multi-Model Runtime</span>
+              </div>
+              <p>Run more than one model at the same time on a single machine.</p>
+            </div>
+            <div class="feature-item">
+              <div class="feature-item-head">
+                <img src="https://raw.githubusercontent.com/lemonade-sdk/assets/main/LemonadeIcons/5_crossplatform.png" alt="" class="feature-icon-image" aria-hidden="true">
+                <span>Cross-platform</span>
+              </div>
+              <p>A consistent experience across Windows, Linux, and macOS.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Model lineup</span>
+            <h2 class="section-title">Choose your gpt-oss model</h2>
+            <p>Use 20B for faster local responsiveness, or 120B for deeper reasoning quality.</p>
+          </div>
+
+          <div class="model-showcase">
+            <div class="model-card-enhanced">
+              <div class="model-title">gpt-oss-20b <span class="model-badge">Optimized</span></div>
+              <p>Optimized for lower latency and local use cases.</p>
+              <div class="model-stat-grid">
+                <div class="model-stat-row"><span>Total Parameters</span><strong>21B</strong></div>
+                <div class="model-stat-row"><span>Active Parameters</span><strong>3.6B</strong></div>
+              </div>
+              <p>Perfect for everyday tasks and quick responses.</p>
+            </div>
+
+            <div class="model-card-enhanced">
+              <div class="model-title">gpt-oss-120b <span class="model-badge">Production</span></div>
+              <p>Production-ready model for high reasoning tasks.</p>
+              <div class="model-stat-grid">
+                <div class="model-stat-row"><span>Total Parameters</span><strong>117B</strong></div>
+                <div class="model-stat-row"><span>Active Parameters</span><strong>5.1B</strong></div>
+              </div>
+              <p>Ideal for complex reasoning and advanced applications.</p>
+            </div>
+          </div>
+
+          <div class="blog-callout">
+            <p class="blog-callout-title">Advanced features</p>
+            <p>Both models feature OpenAI's sliding window attention and attention sink mechanisms, allowing them to handle long conversations and contexts efficiently while maintaining response quality.</p>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Quickstart</span>
+            <h2 class="section-title">Install and run gpt-oss</h2>
+            <p>Set up Lemonade, download your model, and start chatting locally in minutes.</p>
+          </div>
+
+          <h3>Install Lemonade</h3>
+          <p>Use these quick download links to get started:</p>
+          <table class="blog-download-table">
+            <thead>
+              <tr>
+                <th>Operating System</th>
+                <th>Downloads</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Windows</strong></td>
+                <td><a href="https://github.com/lemonade-sdk/lemonade/releases/latest/download/lemonade.msi" target="_blank" rel="noopener">lemonade.msi</a></td>
+              </tr>
+              <tr>
+                <td><strong>Ubuntu</strong></td>
+                <td><a id="gptoss-ubuntu-deb" href="https://github.com/lemonade-sdk/lemonade/releases/latest" target="_blank" rel="noopener">lemonade-server_latest_amd64.deb</a></td>
+              </tr>
+              <tr>
+                <td><strong>macOS</strong></td>
+                <td><a id="gptoss-macos-pkg" href="https://github.com/lemonade-sdk/lemonade/releases/latest" target="_blank" rel="noopener">Lemonade-latest-Darwin.pkg</a></td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="blog-download-note"><strong>Other platforms?</strong> See <a href="../install_options.html" target="_blank" rel="noopener">Installation Options</a> for <a href="../install_options.html#docker" target="_blank" rel="noopener">Docker</a>, <a href="../install_options.html#ubuntu" target="_blank" rel="noopener">Snap</a>, <a href="../install_options.html#arch" target="_blank" rel="noopener">Arch</a>, <a href="../install_options.html#fedora" target="_blank" rel="noopener">Fedora</a>, and <a href="../install_options.html#debian" target="_blank" rel="noopener">Debian</a>.</p>
+
+          <h3>Run gpt-oss models</h3>
+          <p>Pull and run the 20B model:</p>
+          <div class="enhanced-code-block">
+            <div class="code-header">
+              <span class="code-title">Run gpt-oss-20b</span>
+              <button class="blog-copy-btn" type="button" data-copy-target="gptoss-run-20b">Copy</button>
+            </div>
+            <pre><code id="gptoss-run-20b">lemonade pull gpt-oss-20b-GGUF
+lemonade run gpt-oss-20b-GGUF</code></pre>
+          </div>
+
+          <p>For higher reasoning quality, pull and run 120B:</p>
+          <div class="enhanced-code-block">
+            <div class="code-header">
+              <span class="code-title">Run gpt-oss-120b</span>
+              <button class="blog-copy-btn" type="button" data-copy-target="gptoss-run-120b">Copy</button>
+            </div>
+            <pre><code id="gptoss-run-120b">lemonade pull gpt-oss-120b-GGUF
+lemonade run gpt-oss-120b-GGUF</code></pre>
+          </div>
+
+          <p>Tip: keep models pre-downloaded to avoid startup delays:</p>
+          <div class="enhanced-code-block">
+            <div class="code-header">
+              <span class="code-title">Pre-download both</span>
+              <button class="blog-copy-btn" type="button" data-copy-target="gptoss-pull-both">Copy</button>
+            </div>
+            <pre><code id="gptoss-pull-both">lemonade pull gpt-oss-20b-GGUF
+lemonade pull gpt-oss-120b-GGUF</code></pre>
+          </div>
+
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">System</span>
+            <h2 class="section-title">System requirements</h2>
+            <p>Recommended memory guidance for each gpt-oss model.</p>
+          </div>
+          <div class="blog-steps-grid">
+            <div class="step-card">
+              <h4>gpt-oss-20b-GGUF</h4>
+              <p>About 13GB RAM is recommended for optimal performance.</p>
+            </div>
+            <div class="step-card">
+              <h4>gpt-oss-120b-GGUF</h4>
+              <p>Requires significantly more memory for optimal performance.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="cta-separator" aria-hidden="true"></div>
+
+        <div class="cta-section cta-section-minimal">
+          <div class="cta-content">
+            <h2 class="cta-title">Ready to get started?</h2>
+            <p class="cta-subtitle">Install Lemonade and run gpt-oss locally with full privacy in just a few commands.</p>
+            <div class="cta-actions">
+              <a href="../install_options.html" class="download-btn" target="_blank" rel="noopener">Install Lemonade</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <!-- Footer will be inserted here by footer.js -->
+  <div class="footer-placeholder"></div>
+
+  <script src="../assets/footer.js"></script>
+  <script>
+    // Initialize footer with star count (uses ../ basePath)
+    document.addEventListener('DOMContentLoaded', () => {
+      initializeNavbar('../');
+      initializeFooter('../');
+
+      // Resolve versioned Linux/macOS installer links from latest GitHub tag.
+      (async () => {
+        try {
+          const response = await fetch('https://api.github.com/repos/lemonade-sdk/lemonade/releases/latest');
+          if (!response.ok) return;
+          const release = await response.json();
+          const tag = release && release.tag_name ? String(release.tag_name) : '';
+          if (!tag) return;
+
+          const version = tag.startsWith('v') ? tag.slice(1) : tag;
+          const base = `https://github.com/lemonade-sdk/lemonade/releases/download/${tag}`;
+
+          const ubuntuDeb = document.getElementById('gptoss-ubuntu-deb');
+          const macPkg = document.getElementById('gptoss-macos-pkg');
+
+          if (ubuntuDeb) {
+            ubuntuDeb.href = `${base}/lemonade-server_${version}_amd64.deb`;
+            ubuntuDeb.textContent = `lemonade-server_${version}_amd64.deb`;
+          }
+          if (macPkg) {
+            macPkg.href = `${base}/Lemonade-${version}-Darwin.pkg`;
+            macPkg.textContent = `Lemonade-${version}-Darwin.pkg`;
+          }
+        } catch (error) {
+          // Keep fallback links as release/latest if GitHub API is unavailable.
+        }
+      })();
+
+      const copyButtons = document.querySelectorAll('.blog-copy-btn[data-copy-target]');
+      copyButtons.forEach((button) => {
+        button.addEventListener('click', async () => {
+          const targetId = button.getAttribute('data-copy-target');
+          const codeEl = targetId ? document.getElementById(targetId) : null;
+          const text = codeEl ? codeEl.textContent : '';
+          if (!text) return;
+
+          try {
+            await navigator.clipboard.writeText(text.trim());
+          } catch (error) {
+            const helper = document.createElement('textarea');
+            helper.value = text.trim();
+            document.body.appendChild(helper);
+            helper.select();
+            document.execCommand('copy');
+            document.body.removeChild(helper);
+          }
+
+          button.classList.add('is-copied');
+          const original = button.textContent;
+          button.textContent = 'Copied';
+          setTimeout(() => {
+            button.classList.remove('is-copied');
+            button.textContent = original;
+          }, 1000);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

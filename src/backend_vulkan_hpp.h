@@ -3,4 +3,4 @@
 // Uses Vulkan-Hpp C++ bindings and ZINC SPIR-V shaders.
 
 struct Backend;
-Backend* create_vulkan_hpp_backend();
+extern "C" Backend* create_vulkan_hpp_backend();

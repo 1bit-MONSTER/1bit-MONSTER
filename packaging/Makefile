@@ -1,56 +1,52 @@
 # 1bit.systems — build & package. Version is read from the root VERSION file
 # (single source of truth — see issue #117); do not hardcode it here.
-# One binary. 5 models. 120KB. Zero deps.
+# One binary. All backends. Zero Python at runtime.
 VERSION := $(shell [ -f ../VERSION ] && tr -d '[:space:]' < ../VERSION || echo "0.0.0")
-.PHONY: all npu gpu package-deb package-aur package-brew clean
+BUILD_DIR := ../build
+STAGE := build/stage/1bit-systems-$(VERSION)
+.PHONY: all stage package-deb package-tarball package-appimage clean
 
-all: npu
+all: stage
 
-npu:
-	mkdir -p engine/npu/build
-	gcc -c -std=c11 -O3 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.c
-	g++ -std=c++23 -O3 -march=native -fopenmp -ffast-math \
-		-o engine/npu/build/npu_engine_all \
-		engine/npu/src/npu_engine_all.cpp \
-		engine/npu/build/dequant_q4nx.o \
-		-Iengine/npu/src \
-		-I$(XRT)/include -L$(XRT)/lib64 \
-		-lxrt_coreutil -luuid -lm -ldl
+# ── Stage the real release binaries into the package tree ──
+stage:
+	mkdir -p $(STAGE)/usr/share/1bit
+	mkdir -p $(STAGE)/usr/bin $(STAGE)/usr/lib/1bit $(STAGE)/usr/lib/x86_64-linux-gnu $(STAGE)/usr/share/1bit
+	cp $(BUILD_DIR)/zaya_server         $(STAGE)/usr/bin/zaya_server
+	cp $(BUILD_DIR)/unified_server      $(STAGE)/usr/bin/unified_server
+	cp $(BUILD_DIR)/jarvis_server       $(STAGE)/usr/bin/jarvis_server
+	cp $(BUILD_DIR)/engine/npu/npu_engine_universal $(STAGE)/usr/bin/1bit-npu
+	cp $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli $(STAGE)/usr/bin/video_lora_vk_cli
+	cp ../packaging/1bit                $(STAGE)/usr/bin/1bit
+	chmod +x $(STAGE)/usr/bin/1bit
+	# launcher compatibility: 1bit-server → zaya_server
+	ln -sf zaya_server $(STAGE)/usr/bin/1bit-server
+	cp $(BUILD_DIR)/librocm_cpp.so      $(STAGE)/usr/lib/x86_64-linux-gnu/
+	cp $(BUILD_DIR)/libbackend_manager.a $(STAGE)/usr/lib/1bit/
+	cp $(BUILD_DIR)/libgguf_reader.a    $(STAGE)/usr/lib/1bit/
+	cp $(BUILD_DIR)/libvl_image.a       $(STAGE)/usr/lib/1bit/
+	cp -r $(BUILD_DIR)/tools/video-lora/vulkan/shaders $(STAGE)/usr/share/1bit/shaders
+	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/
+	@echo "staged $(VERSION) -> $(STAGE)"
 
-# ZINC_DIR defaults to a sibling checkout; override on the command line, e.g.
-#   make gpu ZINC_DIR=/path/to/zinc      (issue #152 — no hardcoded $HOME)
-ZINC_DIR ?= $(HOME)/zinc
-gpu:
-	cd "$(ZINC_DIR)" && zig build -Doptimize=ReleaseFast
+package-deb: stage
+	rm -rf build/stage/deb
+	mkdir -p build/stage/deb
+	cp -r ../packaging/deb/DEBIAN build/stage/deb/
+	cp -r $(STAGE)/usr build/stage/deb/
+	dpkg-deb --build --root-owner-group build/stage/deb build/1bit-systems_$(VERSION)_amd64.deb
+	@echo "deb: build/1bit-systems_$(VERSION)_amd64.deb"
 
-package-deb: npu
-	mkdir -p packaging/deb/usr/bin packaging/deb/usr/lib/1bit
-	cp engine/npu/build/npu_engine_all packaging/deb/usr/bin/1bit-npu
-	cp engine/npu/build/dequant_q4nx.o packaging/deb/usr/lib/1bit/
-	cp packaging/binary/1bit-server packaging/deb/usr/bin/1bit-server
-	dpkg-deb --build packaging/deb 1bit-systems.deb
+package-tarball: stage
+	tar czf build/1bit-systems-$(VERSION)-linux-amd64.tar.gz -C build/stage 1bit-systems-$(VERSION)
+	@echo "tarball: build/1bit-systems-$(VERSION)-linux-amd64.tar.gz"
 
-package-snap: npu
-	cp engine/npu/build/npu_engine_all .
-	cp packaging/binary/1bit-server .
-	cp engine/npu/build/dequant_q4nx.o .
-	snapcraft
-
-package-aur:
-	cp packaging/aur/PKGBUILD .
-	makepkg -si
-
-package-brew:
-	cp packaging/homebrew/1bit-systems.rb /opt/homebrew/Library/Taps/homebrew/homebrew-core/Formula/
-
-package-docker:
-	docker build -t 1bit-systems -f packaging/docker/Dockerfile .
-
-package-tarball: npu
-	mkdir -p 1bit-systems-$(VERSION)/bin 1bit-systems-$(VERSION)/lib
-	cp engine/npu/build/npu_engine_all 1bit-systems-$(VERSION)/bin/1bit-npu
-	cp engine/npu/build/dequant_q4nx.o 1bit-systems-$(VERSION)/lib/
-	tar czf 1bit-systems-$(VERSION)-linux-amd64.tar.gz 1bit-systems-$(VERSION)/
+package-appimage: stage
+	mkdir -p $(STAGE)/usr/share/applications
+	cp ../packaging/appimage/AppDir/1bit.desktop $(STAGE)/usr/share/applications/
+	cp ../packaging/appimage/AppDir/1bit.svg $(STAGE)/usr/share/icons/
+	mkdir -p $(STAGE)/usr/share/icons
+	@echo "AppDir staged at $(STAGE) — run appimagetool to bundle"
 
 clean:
-	rm -f engine/npu/build/npu_engine_all engine/npu/build/dequant_q4nx.o
+	rm -rf build/stage build/1bit-systems_$(VERSION)_amd64.deb build/1bit-systems-$(VERSION)-linux-amd64.tar.gz

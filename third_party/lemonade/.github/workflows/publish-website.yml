@@ -1,0 +1,58 @@
+name: Publish Website
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+  repository_dispatch:
+    types: [marketplace-updated]
+
+jobs:
+    build-n-publish-website:
+      name: Build and publish lemonade-server.ai website
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v5
+          with:
+            fetch-depth: 0
+        - name: Set up Python
+          uses: actions/setup-python@v6
+          with:
+            python-version: "3.10"
+        - name: Create virtual environment and install dependencies
+          run: |
+            python -m venv .venv
+            venvPython=".venv/bin/python"
+            venvPip=".venv/bin/pip"
+            $venvPython -m pip install --upgrade pip
+            $venvPip install -r docs/assets/docs_requirements.txt
+        - name: Configure git
+          run: |
+            git config --global user.name "Lemonade Bot"
+            git config --global user.email "lemonade@amd.com"
+        - name: Capture release commit hash
+          run: |
+            echo "RELEASE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+            echo "RELEASE_COMMIT_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        - name: Merge into website branch
+          run: |
+            git checkout website
+            git merge "$RELEASE_COMMIT" -X theirs
+        - name: Update README with marketplace apps
+          run: |
+            venvPython=".venv/bin/python"
+            $venvPython docs/update_readme_marketplace.py
+        - name: Run docs build script
+          run: |
+            venvPython=".venv/bin/python"
+            $venvPython docs/publish_website_docs.py
+        - name: Push updates
+          run: |
+            git add .
+            if git diff --staged --quiet; then
+              echo "No changes to commit, skipping commit step"
+            else
+              git commit -m "Update website for: ${RELEASE_COMMIT_SHORT}"
+            fi
+            git push

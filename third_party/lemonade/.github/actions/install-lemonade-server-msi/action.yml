@@ -1,0 +1,226 @@
+name: 'Install Lemonade Server (MSI)'
+description: 'Downloads and installs Lemonade Server MSI, then verifies installation'
+inputs:
+  install-path:
+    description: 'Path where Lemonade Server should be installed'
+    required: true
+  artifact-name:
+    description: 'Name of the artifact to download'
+    required: false
+    default: 'Lemonade_Server_MSI'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download Lemonade Server Installer
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .
+
+    - name: Install Lemonade Server
+      shell: PowerShell
+      run: |
+        $installPath = "${{ inputs.install-path }}"
+        $logPath = "$((Get-Location).Path)\lemonade-msi-install.log"
+        Write-Host "Installing Lemonade Server to: $installPath" -ForegroundColor Cyan
+        Write-Host "Log file will be at: $logPath" -ForegroundColor Gray
+
+        if (-not (Test-Path "lemonade-server-minimal.msi")) {
+            Write-Host "ERROR: lemonade-server-minimal.msi not found in current directory!" -ForegroundColor Red
+            Get-ChildItem
+            exit 1
+        }
+
+        # Run installer silently with verbose logging
+        $args = "/i lemonade-server-minimal.msi /qn INSTALLDIR=`"$installPath`" /L*V `"$logPath`""
+        $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait -PassThru
+
+        if ($p.ExitCode -ne 0) {
+             Write-Host "ERROR: Installation failed with exit code $($p.ExitCode)" -ForegroundColor Red
+
+             if (Test-Path $logPath) {
+                 Write-Host "=== MSI Install Log ($logPath) ===" -ForegroundColor Yellow
+                 Get-Content $logPath
+                 Write-Host "=== End MSI Install Log ===" -ForegroundColor Yellow
+             } else {
+                 Write-Host "ERROR: Log file not found at $logPath" -ForegroundColor Red
+             }
+
+             exit $p.ExitCode
+        }
+
+        Write-Host "Installation complete." -ForegroundColor Green
+
+    - name: Verify Installation
+      shell: PowerShell
+      run: |
+        $ErrorActionPreference = "Stop"
+        $installPath = "${{ inputs.install-path }}"
+        $logPath = "$((Get-Location).Path)\lemonade-msi-install.log"
+
+        Write-Host "Verifying installation at: $installPath" -ForegroundColor Cyan
+
+        # Function to print log on failure
+        function Print-InstallLog {
+            if (Test-Path $logPath) {
+                Write-Host "=== MSI Install Log ($logPath) ===" -ForegroundColor Yellow
+                Get-Content $logPath
+                Write-Host "=== End MSI Install Log ===" -ForegroundColor Yellow
+            } else {
+                Write-Host "Log file not found at: $logPath" -ForegroundColor Red
+            }
+        }
+
+        # Check if installation directory exists
+        if (-not (Test-Path $installPath)) {
+            Write-Host "ERROR: Installation directory not found at $installPath" -ForegroundColor Red
+            Print-InstallLog
+            exit 1
+        }
+
+        # Check for key binaries
+        $expectedBinaries = @(
+            "bin\LemonadeServer.exe",
+            "bin\lemonade.exe"
+        )
+
+        $missingItems = @()
+        foreach ($item in $expectedBinaries) {
+            $fullPath = Join-Path $installPath $item
+            if (-not (Test-Path $fullPath)) {
+                $missingItems += $item
+            } else {
+                Write-Host "Found: $item" -ForegroundColor Green
+            }
+        }
+
+        if ($missingItems.Count -gt 0) {
+            Write-Host "ERROR: Missing expected files after installation:" -ForegroundColor Red
+            foreach ($missing in $missingItems) {
+                Write-Host "  Missing: $missing" -ForegroundColor Red
+            }
+            Print-InstallLog
+            exit 1
+        }
+
+        Write-Host "Installation directory verification successful!" -ForegroundColor Green
+
+    - name: Verify Server Version
+      shell: PowerShell
+      run: |
+        $ErrorActionPreference = "Stop"
+        $installPath = "${{ inputs.install-path }}"
+        $cliExe = Join-Path $installPath "bin\lemonade.exe"
+
+        Write-Host "Checking lemonade --version..." -ForegroundColor Cyan
+
+        try {
+            $process = Start-Process -FilePath $cliExe -ArgumentList "--version" -NoNewWindow -Wait -PassThru
+
+            if ($process.ExitCode -ne 0) {
+                Write-Host "ERROR: lemonade --version exited with code $($process.ExitCode)" -ForegroundColor Red
+                exit 1
+            }
+
+            & $cliExe --version
+
+            Write-Host "Version check passed (Exit Code 0)" -ForegroundColor Green
+
+        } catch {
+            Write-Host "ERROR: Failed to run version check: $_" -ForegroundColor Red
+            exit 1
+        }
+
+    - name: Restart server with CI environment
+      shell: powershell
+      run: |
+        # The MSI AutoLaunchLemonade custom action auto-starts LemonadeServer.exe
+        # after install, but that process does NOT inherit CI environment variables
+        # (LEMONADE_CI_MODE, LEMONADE_CACHE_DIR, etc.) because msiexec's custom
+        # action creates the process in its own environment context.
+        #
+        # Kill the auto-started server and restart it from this CI step so it
+        # inherits the correct environment.
+
+        $installPath = "${{ inputs.install-path }}"
+        $serverExe = Join-Path $installPath "bin\LemonadeServer.exe"
+
+        # --- Kill the MSI-auto-started server and its subprocess ---
+        Write-Host "Stopping MSI-auto-started LemonadeServer.exe and lemond.exe..." -ForegroundColor Cyan
+        Stop-Process -Name LemonadeServer -Force -ErrorAction SilentlyContinue
+        Stop-Process -Name lemond -Force -ErrorAction SilentlyContinue
+        # Wait for ports to be released (13305 for LemonadeServer, 8000 for orphan lemond)
+        $portWait = 0
+        while ($portWait -lt 10) {
+          $listening = netstat -an | Select-String ":(13305|8000) .*LISTENING"
+          if (-not $listening) { break }
+          Start-Sleep -Seconds 1
+          $portWait++
+        }
+
+        # --- Restart with CI env vars ---
+        Write-Host "Starting LemonadeServer.exe with CI environment..." -ForegroundColor Cyan
+        # Pass lemonade home dir if LEMONADE_CACHE_DIR is set (config.json lives there)
+        $homeDir = $env:LEMONADE_CACHE_DIR
+        if ($homeDir) {
+          Start-Process -FilePath $serverExe -ArgumentList "`"$homeDir`"" -WorkingDirectory (Split-Path $serverExe)
+        } else {
+          Start-Process -FilePath $serverExe -WorkingDirectory (Split-Path $serverExe)
+        }
+        Write-Host "  LemonadeServer.exe started" -ForegroundColor Green
+
+    - name: Wait for server to be ready
+      shell: powershell
+      run: |
+        # --- Health check loop ---
+        Write-Host "Waiting for server to be ready..."
+        $maxWait = 90
+        $waited = 0
+        while ($waited -lt $maxWait) {
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost:13305/live" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            if ($response.StatusCode -eq 200) {
+              Write-Host "Server is running and healthy" -ForegroundColor Green
+              exit 0
+            }
+          } catch {
+            if ($waited % 10 -eq 0) {
+              Write-Host "  Connection error: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+          }
+          Start-Sleep -Seconds 2
+          $waited += 2
+          Write-Host "Waiting for server... ($waited/$maxWait)"
+        }
+
+        # --- Failure diagnostics ---
+        Write-Host "`n=== Failure Diagnostics ===" -ForegroundColor Red
+
+        Write-Host "`nProcess check:" -ForegroundColor Cyan
+        Get-Process -Name LemonadeServer -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime -AutoSize
+
+        Write-Host "`nPort 13305 state:" -ForegroundColor Cyan
+        netstat -an | Select-String ":13305 "
+
+        Write-Host "`nTrying 127.0.0.1 directly:" -ForegroundColor Cyan
+        try {
+          $r = Invoke-WebRequest -Uri "http://127.0.0.1:13305/live" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+          Write-Host "  127.0.0.1 responded: $($r.StatusCode)" -ForegroundColor Green
+        } catch {
+          Write-Host "  127.0.0.1 failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+
+        Write-Host "`nTrying [::1] directly:" -ForegroundColor Cyan
+        try {
+          $r = Invoke-WebRequest -Uri "http://[::1]:13305/live" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+          Write-Host "  [::1] responded: $($r.StatusCode)" -ForegroundColor Green
+        } catch {
+          Write-Host "  [::1] failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+
+        Write-Host "`n=== Server log ===" -ForegroundColor Yellow
+        $logFile = Join-Path $env:TEMP "lemonade-server.log"
+        if (Test-Path $logFile) { Get-Content $logFile -Tail 50 }
+        Write-Error "Server did not start within $maxWait seconds"
+        exit 1

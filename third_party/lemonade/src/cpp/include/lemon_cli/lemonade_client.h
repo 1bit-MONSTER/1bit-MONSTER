@@ -1,0 +1,148 @@
+#ifndef LEMONADE_CLIENT_H
+#define LEMONADE_CLIENT_H
+
+#include <string>
+#include <vector>
+#include <functional>
+#include <cstdint>
+#include <chrono>
+#include <optional>
+#include <nlohmann/json.hpp>
+
+// Forward declaration for httplib
+namespace httplib {
+    class Client;
+}
+
+namespace lemonade {
+
+class HttpError : public std::runtime_error {
+public:
+    HttpError(int status, std::string body, const std::string& message);
+
+    int status_code() const;
+    const std::string& response_body() const;
+
+private:
+    int status_code_;
+    std::string response_body_;
+};
+
+std::string extract_server_error_message(const HttpError& error);
+
+// Helper struct for streaming request state
+struct StreamingRequestState {
+    std::string last_file;
+    int last_percent = -1;
+    bool success = false;
+    std::string error_message;
+    std::string error_code;
+    bool total_size_printed = false;
+    uint64_t last_file_size = 0;
+    std::chrono::steady_clock::time_point file_start_time;
+    uint64_t file_bytes_resumed = 0;
+};
+
+// Model information structure
+struct ModelInfo {
+    std::string id;
+    std::string checkpoint;
+    std::string recipe;
+    bool downloaded = false;
+    bool suggested = false;
+    std::vector<std::string> labels;
+    std::string download_url;
+    std::string description;
+    std::vector<double> component_sizes;
+};
+
+// Recipe backend status structure
+struct BackendStatus {
+    std::string name;
+    std::string state;  // "installed", "unsupported", etc.
+    std::string version;
+    std::string message;
+    std::string action;
+};
+
+// Recipe status structure
+struct RecipeStatus {
+    std::string name;
+    std::vector<BackendStatus> backends;
+};
+
+// Main CLI client class
+class LemonadeClient {
+public:
+    static void parse_target_url(const std::string& input_host, std::string& out_clean_host, int& out_port, bool& out_is_ssl);
+
+    LemonadeClient(const std::string& host, int port, const std::string& api_key, bool is_ssl = false);
+    ~LemonadeClient();
+
+    // Model management commands
+    int list_models(bool show_all, const std::string& name_filter = "") const;
+    int check_model_updates() const;
+    // Pulls/registers a model. By default the pull is cache-first
+    // (do_not_upgrade=true): an already-downloaded model is reused without
+    // contacting Hugging Face. Only the explicit `lemonade pull` update flow
+    // should pass upgrade=true to force an HF update check.
+    int pull_model(const nlohmann::json& model_data, const std::string& display_name = "", bool upgrade = false);
+    int delete_model(const std::string& model_name) const;
+    int load_model(const std::string& model_name, const nlohmann::json& recipe_options, bool save_options = false, std::optional<bool> pinned = std::nullopt) const;
+    int pin_model(const std::string& model_name, bool pinned) const;
+    int unload_model(const std::string& model_name) const;
+    nlohmann::json get_model_info(const std::string& model_name) const;
+    int launch_model(const std::string& model_name, const nlohmann::json& recipe_options, const std::string& agent);
+
+    // Status commands
+    int status(int display_port = 0) const;
+    std::vector<ModelInfo> get_models(bool show_all) const;
+
+    // Recipe/backend commands
+    int list_recipes(bool show_all = false) const;
+    int install_backend(const std::string& recipe, const std::string& backend, bool force = false);
+    int uninstall_backend(const std::string& recipe, const std::string& backend);
+
+    // Cloud provider commands. Each maps to one /v1/cloud/* or /v1/{install,
+    // uninstall} request. api_key is optional on install — when omitted the
+    // server relies on env var or a later /v1/cloud/auth POST.
+    int install_cloud_provider(const std::string& provider,
+                                const std::string& base_url,
+                                const std::string& api_key = "",
+                                bool allow_insecure_http = false);
+    int uninstall_cloud_provider(const std::string& provider);
+    int cloud_auth(const std::string& provider,
+                   const std::string& api_key,
+                   bool allow_insecure_http = false);
+    int cloud_auth_clear(const std::string& provider);
+    int cloud_list() const;
+
+    // Cache management
+    int cleanup_cache(bool dry_run) const;
+
+    // Utility (timeouts are in milliseconds)
+    std::string make_request(const std::string& path, const std::string& method = "GET",
+                             const std::string& body = "", const std::string& content_type = "",
+                             time_t connection_timeout_ms = 30000, time_t read_timeout_ms = 30000) const;
+
+    // Streaming request overload (timeouts are in milliseconds).
+    // `should_abort`, if set, is polled on every received chunk; returning
+    // true makes the client close the connection and return early.
+    bool make_request(const std::string& path, const std::string& method,
+                      const std::string& body, const std::string& content_type,
+                      std::function<void(const std::string& event_type, const std::string& event_data)> callback,
+                      time_t connection_timeout_ms = 30000, time_t read_timeout_ms = 30000,
+                      std::function<bool()> should_abort = nullptr) const;
+
+private:
+    std::string host_;
+    int port_;
+    std::string api_key_;
+    bool is_ssl_ = false;
+    std::string normalize_host(const std::string& host) const;
+    std::string get_base_url() const;
+};
+
+} // namespace lemonade
+
+#endif // LEMONADE_CLIENT_H

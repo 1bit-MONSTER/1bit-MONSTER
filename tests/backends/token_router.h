@@ -5,6 +5,7 @@
 #include "parallel_moe.h"
 #include <vector>
 #include <string>
+#include <set>
 #include <cstdio>
 #include <algorithm>
 #include <chrono>
@@ -86,6 +87,26 @@ struct TokenRouter {
     }
 
     // ── Load a model onto the best available backend ───────────────
+    // Coherence probe: a backend that loads but emits degenerate output
+    // (e.g. always token 0/1, or an out-of-range id) must not win. Run
+    // forward() on a few tokens; the argmax ids must be in-vocab, varied,
+    // and not stuck in a tiny low-id set — real models spread across the
+    // vocab even on garbage input.
+    bool coherence_probe(const ModelConfig& cfg) {
+        const int probe_tokens[8] = {2, 3, 4, 5, 6, 7, 8, 9};
+        std::vector<int> outs;
+        primary->reset_state();
+        for (int t : probe_tokens) {
+            int out = primary->forward(t, 0);
+            if (out <= 0 || out >= (int)cfg.vocab_size) return false;
+            outs.push_back(out);
+        }
+        int distinct = (int)std::set<int>(outs.begin(), outs.end()).size();
+        int in_low = 0;  // ids < 1% of vocab: degenerate low-id stick
+        for (int o : outs) if (o < (int)cfg.vocab_size / 100) in_low++;
+        return distinct > 2 && in_low < 6;
+    }
+
     bool load_model(const ModelConfig& cfg) {
         if (!primary || !primary->is_available()) {
             // Fall back to first available
@@ -116,6 +137,12 @@ struct TokenRouter {
                     fprintf(stderr, "  Falling back to %s...\n", b->name());
                     if (b->load_model(cfg)) {
                         primary = b;
+                        if (!coherence_probe(cfg)) {
+                            fprintf(stderr, "  %s: coherence probe FAILED (degenerate output) — trying next backend\n",
+                                    primary->name());
+                            primary->unload_model();
+                            continue;
+                        }
                         loaded_models.push_back(cfg);
                         return true;
                     }
@@ -123,6 +150,39 @@ struct TokenRouter {
             }
             fprintf(stderr, "  All backends failed to load model!\n");
             return false;
+        }
+
+        // ── Coherence probe: a backend that loads but emits degenerate
+        // output (e.g. always token 0/1, or an out-of-range id) must not
+        // win. Verified by running forward() on a few tokens and checking
+        // the argmax ids are (a) in-vocab, (b) not all identical, and
+        // (c) not stuck in a tiny low-id set — real models spread across
+        // the vocab even on garbage input.
+        if (!coherence_probe(cfg)) {
+            fprintf(stderr, "  %s: coherence probe FAILED (degenerate output) — trying next backend\n",
+                    primary->name());
+            primary->unload_model();
+            bool fell_back = false;
+            for (auto* b : backends) {
+                if (b != primary && b->is_available()) {
+                    fprintf(stderr, "  Falling back to %s...\n", b->name());
+                    if (b->load_model(cfg)) {
+                        primary = b;
+                        if (coherence_probe(cfg)) {
+                            loaded_models.push_back(cfg);
+                            fell_back = true;
+                            break;
+                        }
+                        fprintf(stderr, "  %s: coherence probe FAILED — trying next backend\n",
+                                primary->name());
+                        primary->unload_model();
+                    }
+                }
+            }
+            if (!fell_back) {
+                fprintf(stderr, "  All backends failed coherence check!\n");
+                return false;
+            }
         }
 
         loaded_models.push_back(cfg);

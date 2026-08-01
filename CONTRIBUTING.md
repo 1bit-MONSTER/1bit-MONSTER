@@ -56,7 +56,7 @@ This guide covers how to build, test, and contribute to the project.
 | Binary | `zaya_server` — **~1.5 MB** (1,578,576 B raw / 1,302,736 B stripped) |
 | Language | **C++23** (NPU engine), **C++20 with HIP** (GPU kernels), C++20 (server) |
 | Build system | **CMake** 3.21+ with **Ninja** |
-| GPU compiler | **HIP** via AMD ROCm **7.2.4** (TheRock `/ amdclang++`) |
+| GPU compiler | **HIP** via AMD ROCm **7.15.0a** (TheRock `/ amdclang++`) |
 | Target GPU | **gfx1151** — AMD Radeon 8060S (Strix Halo) |
 | Target NPU | **XDNA 2** — 32 tiles, INT8, via C++23 engine + XRT 2.21+ |
 | CPU fallback | Any x86-64 with OpenMP |

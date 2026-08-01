@@ -342,6 +342,16 @@ struct NPUBackend : Backend {
         this->cfg = cfg;
         printf("NPU: Initializing worker subprocess...\n");
 
+        // The worker engine only speaks Q4NX (model.q4nx via NPU_MODEL_PATH
+        // or auto-discovery) — it ignores cfg.model_path entirely and would
+        // silently load a different model than the one requested. Reject
+        // other formats up front so the router never selects it for them.
+        if (cfg.format != ModelFormat::Q4NX) {
+            fprintf(stderr, "NPU: worker engine is Q4NX-only — rejecting %s (format %d)\n",
+                    cfg.model_path.c_str(), (int)cfg.format);
+            return false;
+        }
+
         const char* model_path = getenv("NPU_MODEL_PATH");
         std::string discovered_path;
         if (!model_path) {

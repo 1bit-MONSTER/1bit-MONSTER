@@ -101,6 +101,24 @@ __global__ void fused_rmsnorm_kernel(float* __restrict__ x, const float* __restr
     for (int i = tid; i < N; i += blockDim.x) x[i] = x[i] * inv * (w ? w[i] : 1.0f);
 }
 
+// ── Per-head RMSNorm (Qwen3 QK-norm): one block per head, each head's
+//    head_dim slice normalized with the shared [head_dim] weight. ──
+__global__ void fused_head_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
+                                           int head_dim, float eps) {
+    int h = blockIdx.x, tid = threadIdx.x;
+    float* hx = x + (size_t)h * head_dim;
+    float local = 0.0f;
+    for (int i = tid; i < head_dim; i += blockDim.x) local += hx[i] * hx[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = 0.0f;  // threads past head_dim must not leave garbage for the reduction
+    __syncthreads();
+    sdata[tid] = local;
+    for (int s = blockDim.x/2; s > 0; s >>= 1) { __syncthreads(); if (tid < s) sdata[tid] += sdata[tid + s]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / head_dim + eps);
+    for (int i = tid; i < head_dim; i += blockDim.x) hx[i] = hx[i] * inv * w[i];
+}
+
 // ── RoPE ──
 __global__ void fused_rope_kernel(float* __restrict__ x, int head_dim, int pos,
                                    float theta_base, int num_heads) {
@@ -207,7 +225,7 @@ struct FusedBackend : Backend {
 
     // GPU weights
     float *d_embed = nullptr, *d_final_norm = nullptr, *d_output = nullptr;
-    struct GpuL { float *wq, *wk, *wv, *wo, *w1, *w2, *w3, *pn, *pon; };
+    struct GpuL { float *wq, *wk, *wv, *wo, *w1, *w2, *w3, *pn, *pon, *q_norm, *k_norm; };
     std::vector<GpuL> L;
 
     // Scratch buffers (pre-allocated)
@@ -255,8 +273,8 @@ struct FusedBackend : Backend {
         VOCAB = cfg.vocab_size;
         rope_theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
         if (NKV == 0) NKV = NH; if (HD_ == 0) HD_ = 128;
-        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",
-               H, NC, NH, NKV, HD_, IM, VOCAB);
+        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
+               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
         int nd = 0;
         if (hipGetDeviceCount(&nd) != hipSuccess || nd == 0) return false;
         HIP_CHECK(hipSetDevice(0));
@@ -272,14 +290,22 @@ struct FusedBackend : Backend {
             if (hipMalloc(&p, n*2) != hipSuccess) { fprintf(stderr,"[fused] malloc %s fail\n",t); return false; }
             return true;
         };
-        int s1 = (size_t)NH*HD_, s2 = (size_t)std::max(NKV*HD_, IM), s3 = H;
+        // datt doubles as Q/attn scratch (NH*HD) AND the FFN silu output
+        // (IM elements) — size it to the larger or the silu write overflows
+        // into the adjacent devK KV-cache allocation, corrupting K[0] and
+        // making attention wrong from token 1 on.
+        int s1 = std::max((size_t)NH*HD_, (size_t)IM), s2 = (size_t)std::max(NKV*HD_, IM), s3 = H;
         if (!mf(dh, H, "dh") || !mf(datt, s1, "datt") || !mf(dgate, s2, "dgate") ||
             !mf(dup_, s2, "dup") || !mf(doproj, H, "doproj") ||
             !mf(dffn, H, "dffn") || !mf(dlogits, VOCAB, "dlogits") ||
             !mh(dQ, s1, "dQ") || !mh(dAttn, s1, "dAttn"))
             return false;
 
-        kvb = (size_t)max_seq * NKV * HD_ * sizeof(__half);
+        // Per-layer KV cache: each layer needs its own max_seq*NKV*HD slots.
+        // With a single shared cache, layer 27 overwrites layer 0's keys and
+        // every layer's attention reads the wrong layer's K/V (the generic
+        // CPU backend keeps k_cache[il][...] per layer — this mirrors that).
+        kvb = (size_t)NC * max_seq * NKV * HD_ * sizeof(__half);
         if (hipHostMalloc(&dK, kvb, hipHostMallocMapped) != hipSuccess ||
             hipHostMalloc(&dV, kvb, hipHostMallocMapped) != hipSuccess) return false;
         memset(dK, 0, kvb); memset(dV, 0, kvb);
@@ -345,7 +371,7 @@ struct FusedBackend : Backend {
         if (!ld("output_norm.weight", cpu_final_norm)) ld("token_embd_norm.weight", cpu_final_norm);
         if (!ld("output.weight", cpu_output)) ld("lm_head.weight", cpu_output);
 
-        struct Tmp { std::vector<float> wq,wk,wv,wo,w1,w2,w3,pn,pon; };
+        struct Tmp { std::vector<float> wq,wk,wv,wo,w1,w2,w3,pn,pon,q_norm,k_norm; };
         std::vector<Tmp> tmp(NC);
         cpu_L.resize(NC);
         char buf[128];
@@ -367,6 +393,12 @@ struct FusedBackend : Backend {
             gr("ffn_down.weight","mlp.down_proj.weight", t.w3, IM*H);
             gr("attn_norm.weight","input_layernorm.weight", t.pn, H);
             gr("ffn_norm.weight","post_attention_layernorm.weight", t.pon, H);
+            // Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm on each head's
+            // head_dim slice with a shared [head_dim] weight, before RoPE.
+            // Without it Q/K magnitudes inflate and attention collapses to
+            // flat logits (Generic CPU applies this; GPU paths must too).
+            gr("attn_q_norm.weight","self_attn.q_norm.weight", t.q_norm, HD_);
+            gr("attn_k_norm.weight","self_attn.k_norm.weight", t.k_norm, HD_);
             cpu_L[l].w1 = t.w1; cpu_L[l].w2 = t.w2; cpu_L[l].w3 = t.w3;
         }
 
@@ -382,6 +414,7 @@ struct FusedBackend : Backend {
             up(t.wq, gl.wq); up(t.wk, gl.wk); up(t.wv, gl.wv); up(t.wo, gl.wo);
             up(t.w1, gl.w1); up(t.w2, gl.w2); up(t.w3, gl.w3);
             up(t.pn, gl.pn); up(t.pon, gl.pon);
+            up(t.q_norm, gl.q_norm); up(t.k_norm, gl.k_norm);
         }
 
         if (npu_ok && npu) {
@@ -392,7 +425,8 @@ struct FusedBackend : Backend {
             }
             printf("[fused] NPU weights packed via C++ module\n");
         }
-        printf("[fused] 1BP loaded — %d layers\n", NC);
+        printf("[fused] 1BP loaded — %d layers (q_norm=%s, k_norm=%s)\n", NC,
+               L[0].q_norm ? "yes" : "no", L[0].k_norm ? "yes" : "no");
         return true;
     }
 
@@ -454,8 +488,13 @@ struct FusedBackend : Backend {
             }
 
             // ── ATTENTION ──────────────────────────────────
-            // 1. RMSNorm (in-place on dh, destroys input — save first)
-            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dh, H_);
+            // 1. RMSNorm (in-place on dh, destroys input — save residual first).
+            //    Save into dffn, NOT doproj: the output-projection GEMV below
+            //    writes doproj and would clobber the saved input, making the
+            //    residual add norm(x) instead of x (flat-logits bug on every
+            //    model with this path). dffn is free during attention and is
+            //    re-saved by the FFN section before its own residual add.
+            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
             if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pn, H_, EPS);
             else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
 
@@ -464,6 +503,11 @@ struct FusedBackend : Backend {
             if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
             if (gl.wv) gemv(dup_,  gl.wv, dh, s2, H_, stream);
 
+            // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
+            // head_dim slice with the shared [head_dim] weight, before RoPE.
+            if (gl.q_norm) fused_head_rmsnorm_kernel<<<NH_, BLOCK, 0, stream>>>(datt, gl.q_norm, HD_, EPS);
+            if (gl.k_norm) fused_head_rmsnorm_kernel<<<NKV_, BLOCK, 0, stream>>>(dgate, gl.k_norm, HD_, EPS);
+
             // 3. RoPE
             if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(datt, HD_, pos, rope_theta, NH_);
             if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(dgate, HD_, pos, rope_theta, NKV_);
@@ -471,18 +515,21 @@ struct FusedBackend : Backend {
             // 4. Q→half + KV store (all on same stream, no sync needed)
             if (gl.wo) {
                 fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, datt, s1);
-                fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(devK, devV, dgate, dup_, pos, NKV_, HD_, max_seq);
+                // Per-layer KV: layer l owns [l*max_seq*NKV*HD, (l+1)*...)
+                __half* lk = devK + (size_t)l * max_seq * NKV_ * HD_;
+                __half* lv = devV + (size_t)l * max_seq * NKV_ * HD_;
+                fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(lk, lv, dgate, dup_, pos, NKV_, HD_, max_seq);
 
                 // 5. Flash-attention
                 float scl = 1.0f / sqrtf((float)HD_);
-                rcpp_kv_cache_attn_decode(dQ, devK, devV, dAttn, NH_, NKV_, HD_, pos+1, scl, (void*)stream);
+                rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos+1, scl, (void*)stream);
 
                 // 6. attn half→f32 + output projection
                 fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dAttn, s1);
                 gemv(doproj, gl.wo, datt, H_, s1, stream);
 
-                // 7. Residual: doproj += saved dh (original input)
-                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dh, H_);
+                // 7. Residual: doproj += saved input (dffn, pre-RMSNorm)
+                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dffn, H_);
                 // doproj = attn_out now. Copy back to dh for FFN.
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, H_);
             }

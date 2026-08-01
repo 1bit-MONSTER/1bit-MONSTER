@@ -62,6 +62,41 @@ __global__ void h1bp_rmsnorm_kernel(float* __restrict__ x, const float* __restri
     }
 }
 
+// ── Per-head RMSNorm (Qwen3 QK-norm): one block per head, each head's
+//    head_dim slice normalized with the shared [head_dim] weight. ──
+__launch_bounds__(RMS_BLOCK)
+__global__ void h1bp_head_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
+                                      int head_dim, float eps) {
+    __shared__ float ssum[32];
+    int h = blockIdx.x, tid = threadIdx.x;
+    int wid = tid / warpSize, lane = tid & (warpSize - 1);
+    float* hx = x + (size_t)h * head_dim;
+
+    float local = 0.0f;
+    for (int i = tid; i < head_dim; i += RMS_BLOCK)
+        local += hx[i] * hx[i];
+
+    for (int offset = warpSize/2; offset > 0; offset /= 2)
+        local += __shfl_down(local, offset);
+
+    if (lane == 0) { ssum[wid] = local; }
+    __syncthreads();
+
+    if (wid == 0) {
+        local = (tid < (RMS_BLOCK + warpSize - 1) / warpSize) ? ssum[lane] : 0.0f;
+        for (int offset = warpSize/2; offset > 0; offset /= 2)
+            local += __shfl_down(local, offset);
+        if (tid == 0) ssum[0] = rsqrtf(local / head_dim + eps);
+    }
+    __syncthreads();
+
+    float inv_rms = ssum[0];
+    if (w) {
+        for (int i = tid; i < head_dim; i += RMS_BLOCK)
+            hx[i] = hx[i] * inv_rms * w[i];
+    }
+}
+
 // ── RoPE ──
 __global__ void h1bp_rope_kernel(float* __restrict__ x, int head_dim, int pos,
                              float theta_base, int num_heads) {

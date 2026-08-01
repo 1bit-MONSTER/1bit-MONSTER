@@ -35,6 +35,18 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#ifdef EMBED_LEMONADE
+// Embedded Lemonade server core: `zaya_server --lemonade` hands off to
+// Lemonade's full server (all 14 backends + policy router) in this binary.
+#include <lemon/cli_parser.h>
+#include <lemon/config_file.h>
+#include <lemon/logging_config.h>
+#include <lemon/runtime_config.h>
+#include <lemon/server.h>
+#include <lemon/utils/path_utils.h>
+#include <memory>
+#endif
+
 extern "C" void npu_flm_set_prompt_text(const char*);
 
 using json = nlohmann::json;
@@ -677,7 +689,34 @@ static bool build_htok_from_gguf(GgufReader& reader, const std::string& out_path
     return true;
 }
 
+#ifdef ONE_BIN_DISPATCH
+int zaya_server_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
+#ifdef EMBED_LEMONADE
+    // --lemonade hands off to the embedded Lemonade server core before any
+    // of the native arg parsing / hardware init below.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--lemonade") == 0) {
+            lemon::CLIParser parser;
+            parser.parse(argc, argv);
+            if (!parser.should_continue()) return parser.get_exit_code();
+            auto cli_config = parser.get_config();
+            lemon::utils::set_cache_dir(cli_config.cache_dir);
+            auto config_json = lemon::ConfigFile::load(cli_config.cache_dir);
+            if (cli_config.port != -1) config_json["port"] = cli_config.port;
+            if (!cli_config.host.empty()) config_json["host"] = cli_config.host;
+            auto config = std::make_shared<lemon::RuntimeConfig>(config_json);
+            lemon::RuntimeConfig::set_global(config.get());
+            lemon::configure_application_logging(config->log_level(),
+                                                 lemon::LoggingMode::direct_server);
+            lemon::Server server(config, cli_config.cache_dir);
+            server.run();
+            return 0;
+        }
+    }
+#endif
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
     const char* home_default = getenv("HOME");
@@ -898,8 +937,48 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d + BPE(vocab loaded from .htok)\n",
                         tok.bos_id, tok.eos_id);
             } else {
-                fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no .htok/GGUF found)\n",
-                        tok.bos_id, tok.eos_id);
+                // No usable .htok: synthesize one from a sibling GGUF of the
+                // same model (e.g. Qwen3-0.6B.1bp next to Qwen3-0.6B.Q4_K_M.gguf).
+                // The stale models/tokenizer.htok (Llama-family vocab) fails
+                // validation and would otherwise leave the char fallback →
+                // garbage [0][0][0] decode.
+                std::string gguf_sibling;
+                for (const auto& cand : {cfg.model_path + ".gguf",
+                                         cfg.model_path + ".Q4_K_M.gguf",
+                                         cfg.model_path + ".Q8_0.gguf"}) {
+                    if (FILE* f = fopen(cand.c_str(), "rb")) { fclose(f); gguf_sibling = cand; break; }
+                }
+                if (gguf_sibling.empty()) {
+                    auto dot = cfg.model_path.find_last_of('.');
+                    std::string base = (dot != std::string::npos)
+                                           ? cfg.model_path.substr(0, dot) : cfg.model_path;
+                    for (const auto& cand : {base + ".Q4_K_M.gguf", base + ".Q8_0.gguf",
+                                             base + ".BF16.gguf", base + ".gguf"}) {
+                        if (FILE* f = fopen(cand.c_str(), "rb")) { fclose(f); gguf_sibling = cand; break; }
+                    }
+                }
+                if (!gguf_sibling.empty()) {
+                    GgufReader reader;
+                    if (reader.open(gguf_sibling)) {
+                        tok.load_from_gguf(reader);
+                        tok.load_vocab_from_gguf(reader);
+                        std::string tmp_htok = "/tmp/ts_tok_" + std::to_string(getpid()) + ".htok";
+                        if (build_htok_from_gguf(reader, tmp_htok, tok.bos_id, tok.eos_id) &&
+                            tok.load_htok(tmp_htok)) {
+                            fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d + BPE(vocab synthesized from %s)\n",
+                                    tok.bos_id, tok.eos_id, gguf_sibling.c_str());
+                        } else {
+                            fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (GGUF sibling %s unreadable)\n",
+                                    tok.bos_id, tok.eos_id, gguf_sibling.c_str());
+                        }
+                    } else {
+                        fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no .htok/GGUF found)\n",
+                                tok.bos_id, tok.eos_id);
+                    }
+                } else {
+                    fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no .htok/GGUF found)\n",
+                            tok.bos_id, tok.eos_id);
+                }
             }
         }
     }

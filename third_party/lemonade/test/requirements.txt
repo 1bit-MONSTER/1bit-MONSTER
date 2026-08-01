@@ -1,0 +1,30 @@
+# Test dependencies for Lemonade server tests
+# Install with: pip install -r tests_new/requirements.txt
+
+# HTTP clients
+requests
+httpx
+
+# OpenAI client library
+openai
+
+# Hugging Face library (used for model downloads and offline mode)
+huggingface_hub
+
+# Process and system utilities
+psutil
+
+# Prometheus text format parser (required for /metrics endpoint tests)
+prometheus-client
+
+# Numerical computing (required for embedding similarity tests)
+numpy
+
+# WebSocket client (required for realtime transcription tests)
+websockets
+
+# Ollama client library (used for Ollama API compatibility tests)
+ollama
+
+# JSON Schema validator (required for routing policy / decision fixture tests)
+jsonschema

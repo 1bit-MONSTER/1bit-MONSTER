@@ -12,7 +12,7 @@ GPU decoding support. No Rust, no Python at runtime. The host CPU is **AMD Strix
 |--------------------|-----------------------------------------------------|
 | Ubuntu             | 24.04 LTS or later (CachyOS / Arch also works)      |
 | Kernel             | 6.18.22-lts or 7.x — **not** 6.19.x (issue #1 hang) |
-| ROCm               | 7.2.4                                               |
+| ROCm               | TheRock 7.15.0a (nightly C++ SDK, native gfx1151) |
 | CMake              | ≥ 3.28                                              |
 | Ninja              | ≥ 1.12                                              |
 | GCC                | ≥ 13 (C++20) or ≥ 14 (C++23)                        |
@@ -66,11 +66,11 @@ cd ~
 git clone <your-repo-url> zaya
 cd zaya
 
-# Configure
+# Configure — TheRock is auto-detected (see CMakeLists.txt); never point
+# CMAKE_PREFIX_PATH at system ROCm (/opt/rocm).
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-  -DCMAKE_PREFIX_PATH=/opt/rocm
+  -DCMAKE_HIP_ARCHITECTURES=gfx1151
 
 # Build the server binary
 cmake --build build --target zaya_server
@@ -79,6 +79,24 @@ cmake --build build --target zaya_server
 The resulting binary is `build/zaya_server`.
 
 ---
+
+## NPU backend: FastFlowLM (flm)
+
+The NPU backend spawns the **flm** binary (FastFlowLM, now an official
+AMD/ROCm project). CMake finds it in this order — no source build needed
+for the first two:
+
+1. **TheRock dist** (`<therock-root>/bin/flm`) — FLM ships built into TheRock 7.14/7.15a
+2. **FastFlowLM .deb** (`/opt/fastflowlm/bin/flm`) — the prebuilt release
+   package from [FastFlowLM releases](https://github.com/FastFlowLM/FastFlowLM/releases),
+   the same binary Lemonade Server tracks and stays in sync with
+3. `flm` on PATH (`/usr/bin/flm` — the .deb symlink, also how Lemonade finds it)
+4. **Submodule build** (`third_party/FastFlowLM`) — last resort
+
+```bash
+# Preferred: install the prebuilt package instead of building the submodule
+sudo apt install ./fastflowlm_0.9.46_ubuntu26.04_amd64.deb
+```
 
 ## Build: zaya_gpu_decode (optional)
 
@@ -89,7 +107,6 @@ to offload the dequantisation and matmul steps to the GPU:
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-  -DCMAKE_PREFIX_PATH=/opt/rocm \
   -DZAYA_ENABLE_GPU_DECODE=ON
 
 cmake --build build --target zaya_gpu_decode
@@ -115,8 +132,7 @@ cd path/to/llama.cpp
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-  -DGGML_HIP=ON \
-  -DCMAKE_PREFIX_PATH=/opt/rocm
+  -DGGML_HIP=ON
 
 cmake --build build --target llama
 ```
@@ -157,8 +173,10 @@ not include code-objects for gfx1151).
 
 ### `cannot find -lamdhip64`
 
-ROCm is not on the linker path. Pass `-DCMAKE_PREFIX_PATH=/opt/rocm` during
-CMake configuration.
+ROCm is not on the linker path. Make sure TheRock is installed at
+`/opt/rocm-therock` (or set `THEROCK_PIP_ROOT`) — CMakeLists.txt
+auto-detects it; never point `CMAKE_PREFIX_PATH` at system ROCm
+(`/opt/rocm`).
 
 ### No GPU decode even though `zaya_gpu_decode` was built
 

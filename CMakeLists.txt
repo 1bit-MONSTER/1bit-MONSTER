@@ -143,6 +143,43 @@ enable_testing()
 # NDEBUG only for Release — let Debug builds keep assert() guards
 add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
 
+# -- Discover TheRock SDK under Python site-packages (any Python version) --
+# TheRock's ROCm SDK may install under a Python-versioned path like
+#   lib/python3.X/site-packages/_rocm_sdk_devel/
+# Instead of hardcoding a specific Python version (issue #355), search
+# under all Python site-packages for the _rocm_sdk_devel directory.
+# Must run BEFORE find_package(hip) below — it supplies THEROCK_SDK_BASE,
+# the only PATHS entry that matches the pip/venv TheRock layout.
+function(_find_therock_sdk_base out_var)
+    if(DEFINED CACHE{THEROCK_SDK_BASE})
+        set(${out_var} "${THEROCK_SDK_BASE}" PARENT_SCOPE)
+        return()
+    endif()
+    # Search common locations, preferring newest Python version
+    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib" "${_RC_THEROCK_OPT}/lib")
+        file(GLOB _py_dirs LIST_DIRECTORIES true "${_base}/python*")
+        list(SORT _py_dirs)
+        list(REVERSE _py_dirs)
+        foreach(_py_dir IN LISTS _py_dirs)
+            set(_candidate "${_py_dir}/site-packages/_rocm_sdk_devel")
+            if(EXISTS "${_candidate}/include/rocwmma/rocwmma.hpp" OR EXISTS "${_candidate}")
+                set(${out_var} "${_candidate}" PARENT_SCOPE)
+                set(THEROCK_SDK_BASE "${_candidate}" CACHE INTERNAL "Found TheRock SDK base")
+                message(STATUS "rocm-cpp: TheRock SDK found at ${_candidate}")
+                return()
+            endif()
+        endforeach()
+    endforeach()
+    # Fallback: system ROCm
+    if(EXISTS "/opt/rocm/lib/llvm/bin/amdclang++")
+        set(${out_var} "/opt/rocm" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out_var} "" PARENT_SCOPE)
+endfunction()
+
+_find_therock_sdk_base(THEROCK_SDK_BASE)
+
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 
@@ -181,45 +218,10 @@ if(NOT ROCWMMA_FOUND)
 endif()
 
 
-# -- Discover TheRock SDK under Python site-packages (any Python version) --
-# TheRock's ROCm SDK may install under a Python-versioned path like
-#   lib/python3.X/site-packages/_rocm_sdk_devel/
-# Instead of hardcoding a specific Python version (issue #355), search
-# under all Python site-packages for the _rocm_sdk_devel directory.
-function(_find_therock_sdk_base out_var)
-    if(DEFINED CACHE{THEROCK_SDK_BASE})
-        set(${out_var} "${THEROCK_SDK_BASE}" PARENT_SCOPE)
-        return()
-    endif()
-    # Search common locations, preferring newest Python version
-    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib")
-        file(GLOB _py_dirs LIST_DIRECTORIES true "${_base}/python*")
-        list(SORT _py_dirs)
-        list(REVERSE _py_dirs)
-        foreach(_py_dir IN LISTS _py_dirs)
-            set(_candidate "${_py_dir}/site-packages/_rocm_sdk_devel")
-            if(EXISTS "${_candidate}/include/rocwmma/rocwmma.hpp" OR EXISTS "${_candidate}")
-                set(${out_var} "${_candidate}" PARENT_SCOPE)
-                set(THEROCK_SDK_BASE "${_candidate}" CACHE INTERNAL "Found TheRock SDK base")
-                message(STATUS "rocm-cpp: TheRock SDK found at ${_candidate}")
-                return()
-            endif()
-        endforeach()
-    endforeach()
-    # Fallback: system ROCm
-    if(EXISTS "/opt/rocm/lib/llvm/bin/amdclang++")
-        set(${out_var} "/opt/rocm" PARENT_SCOPE)
-        return()
-    endif()
-    set(${out_var} "" PARENT_SCOPE)
-endfunction()
-
-_find_therock_sdk_base(THEROCK_SDK_BASE)
-
 include(FetchContent)
 FetchContent_Declare(cpp_httplib
     GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG        v0.18.1)
+    GIT_TAG        v0.47.0)
 FetchContent_Declare(nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG        v3.11.3)
@@ -921,15 +923,38 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_hip.cpp
     src/backend_hip_1bp.cpp
     src/unified_pool.cpp
-    src/backend_fused.cpp
-    src/backend_fused_npu.cpp
     src/backend_vulkan_hpp.cpp
-    src/backend_ggml_vulkan.cpp
     src/zaya_engine.cpp
     src/backend_npu.cpp
     src/backend_npu_flm.cpp
     src/backend_generic.cpp
 )
+
+# ggml_vulkan backend needs llama.cpp's static libs (GGML_BUILD_DIR); only
+# compile it when they exist — the factory is dlsym-dispatched, so an absent
+# backend just registers unavailable at runtime.
+if(TARGET ggml_vulkan)
+    list(APPEND UNIFIED_SERVER_SOURCES src/backend_ggml_vulkan.cpp)
+endif()
+
+# Fused GPU+NPU backend (attention on GPU ∥ FFN on NPU, zero-copy SharedBO)
+# needs the XRT + AIEBU dev headers at compile time. CI images ship the
+# XRT/AIEBU cmake configs but NOT the headers (apt libxrt-dev is a different,
+# older XRT without xrt_bo.h), so gate on an actual header compile test.
+# The factories are dlsym-dispatched (backend_manager.cpp), so an absent
+# backend just registers as unavailable at runtime — safe to exclude.
+find_package(xrt QUIET)
+find_package(aiebu QUIET)
+include(CheckIncludeFile)
+check_include_file("xrt/xrt_bo.h" _RC_XRT_BO_H)
+set(_RC_HAVE_FUSED_BACKEND FALSE)
+if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND AND _RC_XRT_BO_H)
+    set(_RC_HAVE_FUSED_BACKEND TRUE)
+    list(APPEND UNIFIED_SERVER_SOURCES src/backend_fused.cpp src/backend_fused_npu.cpp)
+    message(STATUS "rocm-cpp: fused GPU+NPU backend enabled (XRT + AIEBU headers present)")
+else()
+    message(STATUS "rocm-cpp: fused GPU+NPU backend disabled (XRT headers or AIEBU missing)")
+endif()
 
 # unified_server — CUDA/Metal come through backend_manager (PR #579 pattern),
 # so they don't appear in sources or link line here.
@@ -964,15 +989,47 @@ if(TARGET ggml_vulkan)
         "${GGML_BUILD_DIR}/common/libllama-common-base.a"
         -lvulkan -ldl -lpthread -lm)
 endif()
-# Build FLM from submodule
+# FastFlowLM (flm) is now an official AMD/ROCm project, shipped prebuilt:
+#   - built into the TheRock dist (7.14 / 7.15a) at <therock-root>/bin/flm
+#   - as the fastflowlm .deb (github.com/FastFlowLM/FastFlowLM releases — the
+#     same binary Lemonade Server tracks and installs on PATH)
+# Prefer a shipped binary; the submodule build below is only a fallback for
+# environments without either.
 set(FLM_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src")
 set(FLM_BUILD_DIR "${FLM_SOURCE_DIR}/build")
 set(FLM_BINARY "${FLM_BUILD_DIR}/flm")
 set(FLM_CONFIG "${FLM_SOURCE_DIR}/model_list.json")
 set(FLM_XCLBINS "${FLM_SOURCE_DIR}/xclbins")
 
+foreach(_flm_root IN ITEMS "${_RC_ROCM_DEFAULT}" "/opt/fastflowlm" "/opt/rocm")
+    if(_flm_root AND EXISTS "${_flm_root}/bin/flm")
+        set(FLM_BINARY "${_flm_root}/bin/flm")
+        if(EXISTS "${_flm_root}/etc/flm/model_list.json")
+            set(FLM_CONFIG "${_flm_root}/etc/flm/model_list.json")
+        endif()
+        if(IS_DIRECTORY "${_flm_root}/share/flm/xclbins")
+            set(FLM_XCLBINS "${_flm_root}/share/flm/xclbins")
+        endif()
+        message(STATUS "flm: using ${FLM_BINARY} (TheRock / FastFlowLM package)")
+        break()
+    endif()
+endforeach()
+
+# PATH lookup — the fastflowlm .deb symlink (/usr/bin/flm) and lemonade-
+# managed installs resolve here, matching Lemonade's own find_flm_in_path().
+if(NOT FLM_BINARY AND EXISTS "/usr/bin/flm")
+    set(FLM_BINARY "/usr/bin/flm")
+    if(EXISTS "/opt/fastflowlm/etc/flm/model_list.json")
+        set(FLM_CONFIG "/opt/fastflowlm/etc/flm/model_list.json")
+    endif()
+    if(IS_DIRECTORY "/opt/fastflowlm/share/flm/xclbins")
+        set(FLM_XCLBINS "/opt/fastflowlm/share/flm/xclbins")
+    endif()
+    message(STATUS "flm: using ${FLM_BINARY} (on PATH)")
+endif()
+
 if(NOT EXISTS "${FLM_BINARY}")
-    message(STATUS "flm: building FastFlowLM from submodule...")
+    message(STATUS "flm: no TheRock FLM found — building FastFlowLM from submodule...")
     execute_process(COMMAND ${CMAKE_COMMAND} -B build -G Ninja
         -DFLM_VERSION=0.9.46 -DNPU_VERSION=1.1.2
         WORKING_DIRECTORY ${FLM_SOURCE_DIR}
@@ -985,8 +1042,6 @@ if(NOT EXISTS "${FLM_BINARY}")
     else()
         message(WARNING "flm: build failed — FLM backend unavailable")
     endif()
-else()
-    message(STATUS "flm: using existing binary at ${FLM_BINARY}")
 endif()
 
 # Add flm as a build dependency so rebuilds happen automatically.
@@ -994,7 +1049,7 @@ endif()
 # FLM_*_PATH macros are always defined (with configure-time paths) so that
 # backend_npu_flm.cpp compiles regardless of FLM availability. The C++ code
 # already has a runtime fallback to /opt/rocm/bin/flm.
-if(EXISTS "${FLM_BINARY}")
+if(EXISTS "${FLM_BUILD_DIR}/flm")
     add_custom_target(build_flm ALL
         COMMAND ${CMAKE_COMMAND} --build ${FLM_BUILD_DIR} -j8
         WORKING_DIRECTORY ${FLM_SOURCE_DIR}
@@ -1018,7 +1073,7 @@ if(EXISTS "${FLM_BINARY}")
     )
     add_dependencies(unified_server update_flm)
 else()
-    message(STATUS "flm: FLM binary not available — skipping build_flm target")
+    message(STATUS "flm: FLM comes from TheRock or is unavailable — skipping submodule build targets")
 endif()
 
 target_compile_definitions(unified_server PRIVATE
@@ -1028,6 +1083,39 @@ target_compile_definitions(unified_server PRIVATE
     FLM_CONFIG_PATH="${FLM_CONFIG}"
     FLM_XCLBIN_PATH="${FLM_XCLBINS}"
 )
+
+# ── Lemonade SDK embed ─────────────────────────────────────────────────────
+# unified_server embeds Lemonade's server core (vendored from
+# github.com/lemonade-sdk/lemonade, see third_party/lemonade/UPSTREAM.md):
+# all 14 Lemonade backends
+# (llamacpp, flm, whispercpp, sd-cpp, kokoro, ryzenai-llm, vllm, ...) and
+# its policy-based Router run in-process — `unified_server --lemonade` hands
+# off to the full Lemonade server. unified_router uses the same routing
+# engine for NPU/GPU decisions. OFF by default so plain builds are unchanged.
+option(EMBED_LEMONADE "Embed the Lemonade SDK server core" ON)
+if(EMBED_LEMONADE)
+    set(BUILD_WEB_APP OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/lemonade EXCLUDE_FROM_ALL)
+    target_link_libraries(unified_server PRIVATE lemonade-server-core)
+    target_compile_definitions(unified_server PRIVATE EMBED_LEMONADE=1)
+    # The flagship single binary gets the full Lemonade core too:
+    # `zaya_server --lemonade` runs Lemonade's server in-process.
+    target_link_libraries(zaya_server PRIVATE lemonade-server-core)
+    target_compile_definitions(zaya_server PRIVATE EMBED_LEMONADE=1)
+endif()
+
+# ── Gaia C++ agent framework (AMD official) ────────────────────────────────
+# Vendored from amd/gaia v0.22.0 cpp/ tree (third_party/gaia/UPSTREAM.md):
+# gaia::gaia_core + gaia-bash coding agent. Replaces the hand-rolled agent
+# layer (onebit/jarvis) — the agent talks to the engine through the
+# Lemonade-compatible endpoint (zaya_server --lemonade serve, :13305).
+# TUI (FTXUI) off: engine has its own console; flip with -DGAIA_BUILD_TUI=ON.
+option(EMBED_GAIA_CPP "Build the vendored Gaia C++ agent framework" ON)
+if(EMBED_GAIA_CPP)
+    set(GAIA_BUILD_TUI OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/gaia)
+endif()
 target_link_libraries(unified_server PRIVATE
     backend_manager vl_image dl
     httplib::httplib
@@ -1156,6 +1244,87 @@ target_link_libraries(unified_router PRIVATE
     httplib::httplib
     nlohmann_json::nlohmann_json)
 
+# Route through Lemonade's policy engine (lemonade-server-core) when embedded.
+if(EMBED_LEMONADE)
+    target_link_libraries(unified_router PRIVATE lemonade-server-core)
+    target_compile_definitions(unified_router PRIVATE EMBED_LEMONADE=1)
+endif()
+
+# -- onebin : the single binary --------------------------------------------
+# Every entry point in one ELF: zaya_server + unified_server + unified_router
+# + onebit + onebitd, dispatched by argv[0] (legacy symlink names) or
+# subcommand (zaya / unified / router / lemonade / onebitd / agent CLI).
+# Produces build/1bit (replaces the old onebit_bin copy target).
+set(ONE_BIN_SOURCES
+    tools/onebin.cpp
+    ${ZAYA_SERVER_SRC}
+    ${UNIFIED_SERVER_SOURCES}
+    tools/unified_router.cpp
+    tools/onebit.cpp
+    tools/onebitd.cpp)
+add_executable(onebin ${ONE_BIN_SOURCES})
+set_target_properties(onebin PROPERTIES OUTPUT_NAME "1bit")
+# Language props: union of zaya_server + unified_server
+set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_adapter.cpp
+    src/backend_hip.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/backend_hip_1bp.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
+set_source_files_properties(src/backend_npu.cpp src/backend_npu_flm.cpp
+    src/unified_pool.cpp src/backend_fused_npu.cpp src/backend_generic.cpp
+    tools/unified_server.cpp tools/unified_router.cpp tools/onebit.cpp
+    tools/onebitd.cpp tools/onebin.cpp PROPERTIES LANGUAGE CXX)
+target_include_directories(onebin PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/kernels
+    ${CMAKE_SOURCE_DIR}/engine/npu/src
+    ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include
+    # tests/ dirs last: only tests/*.cpp need the InferenceBackend interface;
+    # putting them first shadows src/backend.h for backend_manager.h's
+    # quoted "backend.h" include (detect_backends() overload collision).
+    ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/tests/backends)
+target_compile_options(onebin PRIVATE
+    $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
+    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
+target_link_libraries(onebin PRIVATE
+    backend_manager vl_image dl
+    rocm_cpp hip::host hip::device httplib::httplib
+    nlohmann_json::nlohmann_json hipblas)
+target_link_options(onebin PRIVATE -rdynamic -luuid)
+if(TARGET ggml_vulkan)
+    target_link_libraries(onebin PRIVATE ggml_vulkan ggml ggml_cpu ggml_base
+        "${GGML_BUILD_DIR}/src/libllama.a"
+        "${GGML_BUILD_DIR}/common/libllama-common.a"
+        "${GGML_BUILD_DIR}/common/libllama-common-base.a"
+        -lvulkan -ldl -lpthread -lm)
+endif()
+if(EMBED_LEMONADE)
+    target_link_libraries(onebin PRIVATE lemonade-server-core)
+    target_compile_definitions(onebin PRIVATE EMBED_LEMONADE=1)
+endif()
+target_compile_definitions(onebin PRIVATE
+    ONE_BIN_DISPATCH=1
+    ROCM_CPP_STATIC_HIP=1
+    ROCM_CPP_STATIC_NPU=1
+    FLM_BINARY_PATH="${FLM_BINARY}"
+    FLM_CONFIG_PATH="${FLM_CONFIG}"
+    FLM_XCLBIN_PATH="${FLM_XCLBINS}")
+if(ZINC_CPP_AVAILABLE)
+    target_link_libraries(onebin PRIVATE zinc_cpp)
+    target_include_directories(onebin PRIVATE engine/gpu/zinc_cpp/include)
+endif()
+set_target_properties(onebin PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+set_property(TARGET onebin APPEND PROPERTY LINK_OPTIONS "-Wl,-rpath,\$ORIGIN")
+if(THEROCK_HIPBLAS_LIB)
+    set_property(TARGET onebin APPEND PROPERTY
+        LINK_OPTIONS "-Wl,-rpath,${THEROCK_LIB_DIR}")
+endif()
+if(EXISTS "${FLM_BUILD_DIR}/flm")
+    add_dependencies(onebin build_flm)
+endif()
+
 # -- onebitd : 1bit inference daemon (spawns backend, proxies HTTP) --------
 # Pure C++ replacement for rust/onebitd. No Rust axum/reqwest needed.
 add_executable(onebitd tools/onebitd.cpp)
@@ -1258,12 +1427,8 @@ target_link_libraries(onebit PRIVATE
     nlohmann_json::nlohmann_json)
 
 # Alias for the canonical binary name (matches Rust release artifact name)
-add_custom_target(onebit_bin ALL
-    DEPENDS onebit
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "$<TARGET_FILE:onebit>"
-        "${CMAKE_BINARY_DIR}/1bit"
-    COMMENT "Creating 1bit -> onebit copy")
+# NOTE: the single binary (onebin, OUTPUT_NAME "1bit") supersedes this copy
+# target — onebit's main() lives inside build/1bit now.
 
 add_executable(bitnet_tui tools/bitnet_tui.cpp)
 target_link_libraries(bitnet_tui PRIVATE
@@ -1311,7 +1476,7 @@ endif()
 # without pulling in test_pipeline_real.cpp's demo/harness code.
 find_package(aiebu QUIET)
 find_package(xrt QUIET)
-if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
+if(_RC_HAVE_FUSED_BACKEND)
     if(EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/shared_bo.cpp" AND
        EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/pipeline_overlap.cpp")
         add_library(fusion_zero_copy STATIC
@@ -1321,7 +1486,8 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
         target_include_directories(fusion_zero_copy PUBLIC
             engine/fusion/zero_copy
             ${CMAKE_SOURCE_DIR}/include
-            ${THEROCK_SDK_BASE}/include)
+            ${THEROCK_SDK_BASE}/include
+            ${XRT_INCLUDE_DIRS})  # xrt/xrt_bo.h etc. — consumed by fused backend in unified_server/onebin
         target_compile_options(fusion_zero_copy PRIVATE
             -g -O3 -march=native -fno-signed-zeros -fno-trapping-math -fassociative-math
             -freciprocal-math -fno-math-errno -fno-rounding-math
@@ -1335,6 +1501,14 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
             target_link_libraries(unified_server PRIVATE fusion_zero_copy)
             target_include_directories(unified_server PRIVATE engine/fusion/zero_copy)
             target_compile_definitions(unified_server PRIVATE RCPP_HAVE_FUSION_ZERO_COPY=1)
+        endif()
+
+        # onebin is defined earlier in this file, so it cannot see this
+        # target yet — wire it up here, after fusion_zero_copy exists.
+        if(TARGET onebin)
+            target_link_libraries(onebin PRIVATE fusion_zero_copy)
+            target_include_directories(onebin PRIVATE engine/fusion/zero_copy)
+            target_compile_definitions(onebin PRIVATE RCPP_HAVE_FUSION_ZERO_COPY=1)
         endif()
 
         # bench_fused: Fused GPU attn ∥ NPU FFN benchmark
