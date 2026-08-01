@@ -173,6 +173,31 @@ static std::string tokenizer_path() {
     return g_weights_dir + "/tokenizer.json";
 }
 
+// Per-model tokenizer: try the model's own GGUF vocab, else borrow one from
+// a sibling GGUF (e.g. Qwen3-0.6B.1bp next to Qwen3-0.6B.Q4_K_M.gguf). The
+// global tokenizer.htok is a Llama-era v1 file whose merge ids sit outside
+// the vocab the current reader accepts, so without this .1bp models decode
+// as garbage [id][id] through the ASCII fallback.
+static void load_model_tokenizer(const std::string& model_path) {
+    if (g_tokenizer.load_from_gguf(model_path)) return;
+    if (model_path.size() >= 5 &&
+        model_path.substr(model_path.size() - 5) == ".gguf")
+        return;  // real GGUF with no usable vocab — nothing to synthesize from
+    auto exists = [](const std::string& p) {
+        std::ifstream f(p, std::ios::binary);
+        return f.good();
+    };
+    std::vector<std::string> cands;
+    for (const char* suf : {".gguf", ".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf"})
+        cands.push_back(model_path + suf);
+    auto dot = model_path.find_last_of('.');
+    std::string base = (dot != std::string::npos) ? model_path.substr(0, dot) : model_path;
+    for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"})
+        cands.push_back(base + suf);
+    for (const auto& c : cands)
+        if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+}
+
 static ModelConfig default_model_config() {
     ModelConfig cfg;
     cfg.hidden = 2048;
@@ -935,7 +960,7 @@ int main(int argc, char** argv) {
     // tokenizer loaded above — correct per-model tokenization matters as
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
-    g_tokenizer.load_from_gguf(cfg.model_path);
+    load_model_tokenizer(cfg.model_path);
     BackendRoute route = select_backend_route(cfg);
     printf("  Router: %s\n", route.reason.c_str());
     // mgr state is read by /v1/health + /v1/models under g_config_mutex —
@@ -1324,7 +1349,7 @@ int main(int argc, char** argv) {
 
         // ── Phase 1b: Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
-            g_tokenizer.load_from_gguf(switch_cfg.model_path);
+            load_model_tokenizer(switch_cfg.model_path);
             BackendRoute swrt = select_backend_route(switch_cfg);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
@@ -1502,7 +1527,7 @@ int main(int argc, char** argv) {
 
         // ── Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
-            g_tokenizer.load_from_gguf(switch_cfg.model_path);
+            load_model_tokenizer(switch_cfg.model_path);
             BackendRoute swrt = select_backend_route(switch_cfg);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
