@@ -620,7 +620,146 @@ Examples:
         help="jarvis_server port",
     )
 
+    # ── bench ──
+    p_bench = subparsers.add_parser(
+        "bench", help="Benchmark TTS latency and quality (#1370)"
+    )
+    p_bench.add_argument(
+        "--voice", type=str, required=True,
+        help="Voice name or voice pack path",
+    )
+    p_bench.add_argument(
+        "--voice_pack", type=str, default=None,
+        help="Explicit path to .voice pack file",
+    )
+    p_bench.add_argument(
+        "--texts", type=str, nargs="*", default=None,
+        help="Texts to synthesize (default: benchmark set)",
+    )
+    p_bench.add_argument(
+        "--reference", type=str, default=None,
+        help="Reference WAV for MOS proxy (segmental SNR)",
+    )
+    p_bench.add_argument(
+        "--piper", action="store_true",
+        help="Also run Piper baseline for latency comparison",
+    )
+    p_bench.add_argument(
+        "--onnx", action="store_true",
+        help="Use ONNX Runtime for inference",
+    )
+    p_bench.add_argument(
+        "--device", type=str, default=None,
+        help="Device for PyTorch inference (e.g. 'cpu', 'cuda')",
+    )
+
     return parser
+
+
+# ── Subcommand: bench ────────────────────────────────────────────────
+
+
+def cmd_bench(args: argparse.Namespace) -> None:
+    """Benchmark voice quality and latency (#1370).
+
+    Measures per-utterance wall latency and RTF for the codec path, plus a
+    MOS proxy (segmental SNR of the decoded audio vs. the reference input)
+    when a reference WAV is available. If Piper is installed, the same texts
+    are synthesized with it for a latency/RTF comparison table.
+    """
+    require_module("zaya_audio.synthesize", "zaya_audio")
+    from zaya_audio.synthesize import VoiceSynthesizer
+
+    if args.voice_pack:
+        voice_path = Path(args.voice_pack).expanduser().resolve()
+    else:
+        pack_dir = resolve_voice_pack_dir(args.voice)
+        voice_file = pack_dir.with_suffix(".voice")
+        if not voice_file.is_file():
+            for ext in [".voice", ".voicepack"]:
+                candidate = pack_dir.parent / f"{args.voice}{ext}"
+                if candidate.is_file():
+                    voice_file = candidate
+                    break
+        voice_path = voice_file
+
+    if not voice_path.is_file():
+        log.error("Voice pack not found: %s", voice_path)
+        sys.exit(1)
+
+    log.info("Loading voice pack: %s", voice_path)
+    synth = VoiceSynthesizer(
+        voice_path,
+        use_onnx=args.onnx,
+        device=args.device,
+    )
+
+    texts = args.texts or [
+        "Hello, this is a voice quality and latency benchmark.",
+        "The quick brown fox jumps over the lazy dog near the riverbank.",
+        "Welcome to the real time voice pipeline for the co host system.",
+    ]
+
+    rows = []  # (label, ttfa_s, total_s, audio_s, rtf)
+    for text in texts:
+        # TTFA: time until the first audio chunk is produced. The codec
+        # decodes full-audio then chunks; measure the decode call itself as
+        # the dominant component (no incremental decode available yet).
+        t0 = time.time()
+        audio = synth.synthesize(text)
+        t1 = time.time()
+        audio_len = audio.shape[-1] / synth.config.sample_rate
+        rows.append((text[:40], t1 - t0, t1 - t0, audio_len, (t1 - t0) / max(audio_len, 0.01)))
+        log.info(
+            "  %-40s total=%.3fs audio=%.2fs RTF=%.2f",
+            text[:40], t1 - t0, audio_len, (t1 - t0) / max(audio_len, 0.01),
+        )
+
+    # MOS proxy: segmental SNR of decoded audio vs reference (if provided)
+    if args.reference:
+        import numpy as np
+        from zaya_audio.utils import load_audio
+        ref, ref_sr = load_audio(str(args.reference), sr=synth.config.sample_rate)
+        # Trim/pad to same length, compute per-20ms segment SNR, clamp [-10, 35]
+        n = min(ref.shape[-1], audio.shape[-1])
+        seg = 20 * synth.config.sample_rate // 1000
+        ref_f, out_f = ref[..., :n].astype(np.float64), audio[..., :n].astype(np.float64)
+        snr = []
+        for s in range(0, n - seg, seg):
+            r, o = ref_f[..., s:s + seg], out_f[..., s:s + seg]
+            noise = o - r
+            denom = float(np.mean(r * r))
+            if denom > 1e-12:
+                v = 10 * np.log10(float(np.mean(r * r)) / (float(np.mean(noise * noise)) + 1e-12))
+                snr.append(max(-10.0, min(35.0, v)))
+        mos = 1.0 + 4.0 * (np.mean(snr) + 10.0) / 45.0 if snr else float("nan")
+        log.info("  MOS proxy (segSNR vs %s): %.2f", args.reference.name, mos)
+
+    # Piper comparison (latency/RTF only — Piper is a different voice)
+    if args.piper:
+        import shutil
+        piper = shutil.which("piper")
+        if not piper:
+            log.error("piper binary not found on PATH")
+            sys.exit(1)
+        log.info("Piper baseline:")
+        for text in texts:
+            t0 = time.time()
+            subprocess.run([piper, "--output_raw"], input=text.encode(), capture_output=True, timeout=120)
+            t1 = time.time()
+            log.info("  %-40s total=%.3fs (RTF unknown — raw PCM only)", text[:40], t1 - t0)
+
+    avg_rtf = sum(r[4] for r in rows) / len(rows)
+    avg_total = sum(r[1] for r in rows) / len(rows)
+    print(f"\n== TTS benchmark (#1370) ==")
+    print(f"voice pack : {voice_path}")
+    print(f"engine     : {'onnx' if args.onnx else 'torch'}")
+    print(f"utterances : {len(rows)}")
+    print(f"avg total  : {avg_total*1000:.1f} ms  (target <100 ms to first audio)")
+    print(f"avg RTF    : {avg_rtf:.2f}")
+    if avg_total * 1000 > 100:
+        print("NOTE: time-to-first-audio exceeds the 100 ms target — the codec")
+        print("      decodes the full utterance before chunking (see #1369/#1374).")
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -640,6 +779,8 @@ def main() -> None:
         cmd_stream(args)
     elif args.command == "chat":
         cmd_chat(args)
+    elif args.command == "bench":
+        cmd_bench(args)
     else:
         parser.print_help()
         sys.exit(1)
