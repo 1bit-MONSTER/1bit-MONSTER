@@ -46,6 +46,17 @@ jobs:
             "rocm[devel,libraries]" \
             --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
           sudo /opt/rocm-therock/bin/rocm-sdk init
+      - name: Build llama.cpp ggml-vulkan libs
+        run: |
+          # backend_ggml_vulkan.cpp (in unified_server + onebin) compiles the
+          # real wrapper when llama.h is reachable — the submodule is checked
+          # out on CI — and links libllama/libggml-vulkan. Build them first.
+          cd third_party/llama.cpp
+          cmake -B build -G Ninja -DGGML_VULKAN=ON \
+            -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
+          cmake --build build -j$(nproc) --target ggml-vulkan llama llama-common
+          ls -la build/ggml/src/ggml-vulkan/libggml-vulkan.a build/src/libllama.a
       - name: Verify CMakeLists references resolve
         run: |
           set -e
