@@ -219,9 +219,6 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
     }
     // Launch kernel via extended module API (instructions embedded in ELF).
     // Args: mode=3, ctrl=0, reserved=0, then data BOs: A, weights B, output C.
-#ifdef ONEBP_SUPPORT
-#include "onebp_weight_loader.cpp"
-#endif
     inline xrt::run launch(int l){
         return k->operator()(3,0,0,*bA,*layerB[l],*bC);
     }

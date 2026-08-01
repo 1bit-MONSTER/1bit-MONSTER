@@ -417,13 +417,13 @@ void CLIWide::print_prompt_and_line(const InputState& state) {
     
     // For fresh input, start with cursor at end
     if (state.lines[state.current_line_index].empty()) {
-        const_cast<InputState&>(state).cursor_pos = 0;
+        state.cursor_pos = 0;
     } else {
         // Display current line with tab visualization
         std::cout << visualize_tabs(state.lines[state.current_line_index]);
         // Set cursor position to end of line if not already set
         if (state.cursor_pos > state.lines[state.current_line_index].length()) {
-            const_cast<InputState&>(state).cursor_pos = state.lines[state.current_line_index].length();
+            state.cursor_pos = state.lines[state.current_line_index].length();
         }
     }
     
@@ -1001,7 +1001,7 @@ void CLIWide::handle_multiline_navigation(bool up, InputState& state) {
 }
 
 /// \brief Determine if input should continue
-bool CLIWide::should_continue_input(const InputState& state) {
+bool CLIWide::should_continue_input(InputState& state) {  // #1318: was const + const_cast (UB)
     // If this is the first line and it's empty, continue
     if (state.current_line_index == 0 && state.lines[0].empty()) {
         return true;
@@ -1015,17 +1015,17 @@ bool CLIWide::should_continue_input(const InputState& state) {
     // Check for backslash continuation on current line
     if (!state.lines[state.current_line_index].empty() && state.lines[state.current_line_index].back() == '\\') {
             // Remove the backslash and continue
-            const_cast<InputState&>(state).lines[state.current_line_index].pop_back();
-            const_cast<InputState&>(state).lines.push_back("");
-            const_cast<InputState&>(state).is_wrapped_line.push_back(false);  // User-created line, not wrapped
-            const_cast<InputState&>(state).current_line_index++;
-            const_cast<InputState&>(state).cursor_pos = 0;
+            state.lines[state.current_line_index].pop_back();
+            state.lines.push_back("");
+            state.is_wrapped_line.push_back(false);  // User-created line, not wrapped
+            state.current_line_index++;
+            state.cursor_pos = 0;
             
             // Safety check: ensure vectors stay in sync
             if (state.lines.size() != state.is_wrapped_line.size()) {
                 size_t min_size = (state.lines.size() < state.is_wrapped_line.size()) ? state.lines.size() : state.is_wrapped_line.size();
-                const_cast<InputState&>(state).lines.resize(min_size);
-                const_cast<InputState&>(state).is_wrapped_line.resize(min_size);
+                state.lines.resize(min_size);
+                state.is_wrapped_line.resize(min_size);
             }
             
             return true;
@@ -1038,16 +1038,16 @@ bool CLIWide::should_continue_input(const InputState& state) {
             std::this_thread::sleep_for(std::chrono::milliseconds(15));  // Reduced from 20ms to 15ms
             if (is_paste_operation()) {
                 // More input is coming
-                const_cast<InputState&>(state).lines.push_back("");
-                const_cast<InputState&>(state).is_wrapped_line.push_back(false);  // User-created line, not wrapped
-                const_cast<InputState&>(state).current_line_index++;
-                const_cast<InputState&>(state).cursor_pos = 0;
+                state.lines.push_back("");
+                state.is_wrapped_line.push_back(false);  // User-created line, not wrapped
+                state.current_line_index++;
+                state.cursor_pos = 0;
                 
                 // Safety check: ensure vectors stay in sync
                 if (state.lines.size() != state.is_wrapped_line.size()) {
                     size_t min_size = (state.lines.size() < state.is_wrapped_line.size()) ? state.lines.size() : state.is_wrapped_line.size();
-                    const_cast<InputState&>(state).lines.resize(min_size);
-                    const_cast<InputState&>(state).is_wrapped_line.resize(min_size);
+                    state.lines.resize(min_size);
+                    state.is_wrapped_line.resize(min_size);
                 }
                 
                 return true;
@@ -1055,14 +1055,14 @@ bool CLIWide::should_continue_input(const InputState& state) {
         }
         
         // No more input detected after multiple checks - end paste mode
-        const_cast<InputState&>(state).paste_mode = false;
-        const_cast<InputState&>(state).utf8_buffer.clear();
+        state.paste_mode = false;
+        state.utf8_buffer.clear();
         
         // Clean up multiple empty lines at the end
         while (!state.lines.empty() && state.lines.back().empty()) {
             if (state.lines.size() > 1) {
-                const_cast<InputState&>(state).lines.pop_back();
-                const_cast<InputState&>(state).is_wrapped_line.pop_back();
+                state.lines.pop_back();
+                state.is_wrapped_line.pop_back();
             } else {
                 break; // Keep at least one line
             }
@@ -1071,8 +1071,8 @@ bool CLIWide::should_continue_input(const InputState& state) {
         // Safety check: ensure vectors stay in sync before returning
         if (state.lines.size() != state.is_wrapped_line.size()) {
             size_t min_size = (state.lines.size() < state.is_wrapped_line.size()) ? state.lines.size() : state.is_wrapped_line.size();
-            const_cast<InputState&>(state).lines.resize(min_size);
-            const_cast<InputState&>(state).is_wrapped_line.resize(min_size);
+            state.lines.resize(min_size);
+            state.is_wrapped_line.resize(min_size);
         }
         
         return false;
@@ -1082,17 +1082,17 @@ bool CLIWide::should_continue_input(const InputState& state) {
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     if (is_paste_operation()) {
         // More input is coming - this is a paste operation
-        const_cast<InputState&>(state).paste_mode = true;
-        const_cast<InputState&>(state).lines.push_back("");
-        const_cast<InputState&>(state).is_wrapped_line.push_back(false);  // User-created line, not wrapped
-        const_cast<InputState&>(state).current_line_index++;
-        const_cast<InputState&>(state).cursor_pos = 0;
+        state.paste_mode = true;
+        state.lines.push_back("");
+        state.is_wrapped_line.push_back(false);  // User-created line, not wrapped
+        state.current_line_index++;
+        state.cursor_pos = 0;
         
         // Safety check: ensure vectors stay in sync
         if (state.lines.size() != state.is_wrapped_line.size()) {
             size_t min_size = (state.lines.size() < state.is_wrapped_line.size()) ? state.lines.size() : state.is_wrapped_line.size();
-            const_cast<InputState&>(state).lines.resize(min_size);
-            const_cast<InputState&>(state).is_wrapped_line.resize(min_size);
+            state.lines.resize(min_size);
+            state.is_wrapped_line.resize(min_size);
         }
         
         return true;
@@ -1103,17 +1103,17 @@ bool CLIWide::should_continue_input(const InputState& state) {
             // Wait a bit more and check again
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             if (is_paste_operation()) {
-                const_cast<InputState&>(state).paste_mode = true;
-                const_cast<InputState&>(state).lines.push_back("");
-                const_cast<InputState&>(state).is_wrapped_line.push_back(false);  // User-created line, not wrapped
-                const_cast<InputState&>(state).current_line_index++;
-                const_cast<InputState&>(state).cursor_pos = 0;
+                state.paste_mode = true;
+                state.lines.push_back("");
+                state.is_wrapped_line.push_back(false);  // User-created line, not wrapped
+                state.current_line_index++;
+                state.cursor_pos = 0;
                 
                 // Safety check: ensure vectors stay in sync
                 if (state.lines.size() != state.is_wrapped_line.size()) {
                     size_t min_size = (state.lines.size() < state.is_wrapped_line.size()) ? state.lines.size() : state.is_wrapped_line.size();
-                    const_cast<InputState&>(state).lines.resize(min_size);
-                    const_cast<InputState&>(state).is_wrapped_line.resize(min_size);
+                    state.lines.resize(min_size);
+                    state.is_wrapped_line.resize(min_size);
                 }
                 return true;
             }
@@ -1124,8 +1124,8 @@ bool CLIWide::should_continue_input(const InputState& state) {
         // Safety check: ensure vectors stay in sync before returning
         if (state.lines.size() != state.is_wrapped_line.size()) {
             size_t min_size = (state.lines.size() < state.is_wrapped_line.size()) ? state.lines.size() : state.is_wrapped_line.size();
-            const_cast<InputState&>(state).lines.resize(min_size);
-            const_cast<InputState&>(state).is_wrapped_line.resize(min_size);
+            state.lines.resize(min_size);
+            state.is_wrapped_line.resize(min_size);
         }
         
         return false;

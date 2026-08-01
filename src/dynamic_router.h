@@ -107,6 +107,13 @@ private:
     struct BackendEntry {
         std::string id;
         std::shared_ptr<Backend> backend;
+        // #1345: per-entry compute lock, mirroring BackendInfo::compute_mtx in
+        // backend_manager.cpp. Serializes concurrent generate()/forward()/
+        // lm_head() calls that route to the SAME backend instance now that
+        // mtx_ is released during inference (#1315) — the concrete backends
+        // (GenericBackend scratch buffers, per-instance pos/KV cache) are not
+        // safe for parallel use.
+        std::shared_ptr<std::mutex> compute_mtx;
         BackendStats stats;
         std::vector<double> recent_latencies;
     };
