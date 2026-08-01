@@ -23,10 +23,6 @@ static bool create_test_htok(const char* path) {
     // Magic
     f.write("HTOK", 4);
 
-    // Format version (the loader reads a version field after the magic)
-    uint32_t version = 2;
-    f.write((const char*)&version, 4);
-
     // Small test vocabulary (20 tokens) + merges (10 merges)
     uint32_t vocab_size = 20;
     uint32_t num_merges = 10;
@@ -79,10 +75,6 @@ static bool create_test_htok(const char* path) {
         f.write((const char*)&b, 4);
         f.write((const char*)&merged, 4);
     }
-
-    // v2 trailer: special-token count (none in this test vocab)
-    uint32_t num_special = 0;
-    f.write((const char*)&num_special, 4);
 
     return true;
 }

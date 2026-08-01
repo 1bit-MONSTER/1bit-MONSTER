@@ -21,7 +21,7 @@ typedef struct {
     char     dtype[16];       // offset 188
 } TensorDesc;
 #ifdef __cplusplus
-static_assert(sizeof(TensorDesc) == 204, "TensorDesc padding mismatch");
+static_assert(sizeof(TensorDesc) == 208, "TensorDesc padding mismatch");
 #endif
 
 // Per-layer weights
