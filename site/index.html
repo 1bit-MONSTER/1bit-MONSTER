@@ -211,7 +211,6 @@
     <div>
       <span class="eyebrow">AMD Strix Halo · Ryzen AI Max+ 395</span>
       <div style="margin-top:14px;"><span class="pill warn" style="font-size:12px;height:28px;padding:0 14px;"><span class="dot"></span>⚡ One binary to rule them all</span></div>
-      <h1><span class="g">37 NPU models.</span><br>18 architectures. 4 backends.</h1>
       <h1><span class="g">46+ 1BP models.</span><br>9 backends. One binary.</h1>
       <p style="margin-top:2px;font-size:clamp(22px,2.8vw,34px);font-weight:800;letter-spacing:-.025em;line-height:1.04;color:var(--blue);">Model-agnostic inference. Zero Python. MIT.</p>
       <p class="sub">A single C++23 binary that runs LLMs and VLMs on AMD NPU, GPU, and CPU — zero Python, zero config files. AMD's proprietary FastFlowLM NPU stack fully reverse-engineered and replaced with open-source XDNA 2 drivers. Custom 1BP format for ternary and TQ2 2-bit quantization.</p>
@@ -226,7 +225,7 @@
         <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--green);font-size:10px;">NPU models</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--green);"><span id="model-count">37</span></span></div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--pink);font-size:10px;">Architectures</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--pink);">18</span></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--blue);font-size:10px;">Backends</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--blue);">4</span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--blue);font-size:10px;">Backends</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--blue);">9</span></div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--muted);font-size:10px;">Peak performance</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--muted);">433 / 79.4 tok/s</span></div>
         </div>
         <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;">
@@ -295,7 +294,6 @@
 <section id="families" class="block">
   <span class="eyebrow">Model Families</span>
   <h2 style="margin:16px 0 8px;">Built around <span style="color:var(--green);">Zaya.</span> Extended to everything else.</h2>
-  <p class="lead" style="margin-bottom:28px;">Zaya1-8B is the model this project was built around — the first validated end-to-end through Q4NX, GGUF, and 1BP. The same auto-detect pipeline now covers 18 architectures — from dense transformers to MoE to state-space hybrids. <a href="/wiki/models" style="color:var(--blue);font-weight:600;">Full model details →</a></p>
   <p class="lead" style="margin-bottom:28px;">Zaya1-8B is the model this project was built around — the first validated end-to-end through Q4NX, GGUF, and 1BP. The same auto-detect pipeline now covers 17 families and 46+ 1BP models (+12 documented Zyphra non-LLM models), from dense transformers to MoE to state-space hybrids. Full specs for every family live in the <a href="https://github.com/bong-water-water-bong/1bit-systems/blob/main/models/catalog/README.md" style="color:var(--blue);font-weight:600;">catalog on GitHub →</a></p>
 
   <div class="panel" style="padding:32px;">
@@ -348,6 +346,7 @@
       <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;"><span style="font-weight:800;font-size:13px;">Whisper</span><div style="font-size:11px;color:var(--dim);margin-top:2px;">Audio · CPU</div><div class="mono" style="font-size:11px;color:var(--green);margin-top:2px;">validated</div></div>
       <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;"><span style="font-weight:800;font-size:13px;">DeepSeek</span><div style="font-size:11px;color:var(--dim);margin-top:2px;">Dense · ZINC GPU</div><div class="mono" style="font-size:11px;color:var(--green);margin-top:2px;">validated</div></div>
       <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;"><span style="font-weight:800;font-size:13px;">Qwen3-VL</span><div style="font-size:11px;color:var(--dim);margin-top:2px;">Vision · ZINC GPU</div><div class="mono" style="font-size:11px;color:var(--green);margin-top:2px;">36/36 tests ✅</div></div>
+    </div>
     <p class="caps" style="color:var(--muted);font-size:11px;margin-bottom:12px;">+ 15 more families · 40+ more 1BP models + documented Zyphra non-LLM</p>
     <div style="display:flex;flex-wrap:wrap;gap:8px;">
       <a class="btn btn-ghost btn-sm" href="https://github.com/bong-water-water-bong/1bit-systems/blob/main/models/catalog/README.md#laguna-poolside--3" target="_blank" rel="noopener">Laguna · 3 →</a>
@@ -372,7 +371,6 @@
 <!-- ===== MODELS ===== -->
 <section id="models" class="block">
   <span class="eyebrow">Full Catalog</span>
-  <h2 style="margin:16px 0 8px;">37 NPU models. 18 architectures. One format.</h2>
   <h2 style="margin:16px 0 8px;">46+ 1BP models. 17 families. One format.</h2>
   <p class="lead" style="margin-bottom:28px;">Every family above converts to the same single-file, memory-mappable <strong style="color:var(--text);">1BP</strong> format — zero external config.json or tokenizer.json. One of them skips conversion entirely: these run straight from GGUF, validated end-to-end.</p>
 
@@ -443,8 +441,8 @@
       <div style="margin-top:12px;font-size:14px;line-height:1.5;color:var(--muted);"><strong style="color:var(--text);">Zen 5</strong> — 16C/32T · AVX-512. OpenMP attention for short context. Generic GGUF CPU path for any model not covered by GPU/NPU backends.</div>
     </div>
     <div class="card" style="padding:22px;">
-      <div style="display:flex;align-items:center;gap:8px;"><span class="tag npu" style="background:var(--pink);">Router</span><span class="pill ok"><span class="dot"></span>per-layer dispatch</span></div>
-      <div style="margin-top:12px;font-size:14px;line-height:1.5;color:var(--muted);"><strong style="color:var(--text);">Token Router</strong> — 9.7 MB. Reads GGUF header, shards weights per layer, dispatches to optimal backend. NPU for matmul, CPU for attention ≤128 ctx, GPU for ternary decode. <a href="https://github.com/bong-water-water-bong/1bit-systems" style="color:var(--blue);">Source →</a></div>
+      <div style="display:flex;align-items:center;gap:8px;"><span class="tag npu" style="background:var(--pink);">Router</span><span class="pill ok"><span class="dot"></span>per-token dispatch</span></div>
+      <div style="margin-top:12px;font-size:14px;line-height:1.5;color:var(--muted);"><strong style="color:var(--text);">Dynamic Router</strong> — built into the single binary. Tracks live per-backend latency and routes each token to the fastest GPU/NPU backend (or a configurable backfill ratio), with automatic failover if a backend dies mid-stream. <a href="https://github.com/bong-water-water-bong/1bit-systems/blob/main/src/dynamic_router.cpp" style="color:var(--blue);">Source →</a></div>
     </div>
   </div>
   <div style="margin-top:24px;text-align:center;font-size:13px;color:var(--dim);">

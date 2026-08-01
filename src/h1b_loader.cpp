@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -192,7 +193,7 @@ class GgufSidecar {
                 if (!read_u32(a)) return false;
                 alignment_ = a ? a : 32;
             } else {
-                if (!skip_value(vt)) return false;
+                if (!skip_value(vt, 0)) return false;
             }
         }
 
@@ -279,7 +280,10 @@ class GgufSidecar {
         if (n) f_.read(s.data(), (std::streamsize)n);
         return (bool)f_;
     }
-    bool skip_value(uint32_t vt) {
+    bool skip_value(uint32_t vt, int depth = 0) {
+        // GGUF forbids nested arrays; cap depth so a crafted file can't blow
+        // the stack via array-in-array recursion.
+        if (depth > 8) { fprintf(stderr, "[rocm-cpp][gguf] array nesting too deep\n"); return false; }
         switch (vt) {
             case 0: case 1:              f_.seekg(1, std::ios::cur); break;
             case 2: case 3:              f_.seekg(2, std::ios::cur); break;
@@ -290,7 +294,7 @@ class GgufSidecar {
                 uint32_t at;
                 uint64_t n;
                 if (!read_u32(at) || !read_u64(n)) return false;
-                for (uint64_t i = 0; i < n; ++i) if (!skip_value(at)) return false;
+                for (uint64_t i = 0; i < n; ++i) if (!skip_value(at, depth + 1)) return false;
                 break;
             }
             case 10: case 11: case 12:   f_.seekg(8, std::ios::cur); break;
@@ -516,20 +520,64 @@ rcpp_bitnet_load_h1b(const char* path, rcpp_bitnet_model_t* out_model) {
                 uint32_t ver; gf.read((char*)&ver, 4);
                 uint64_t nt, nk; gf.read((char*)&nt, 8); gf.read((char*)&nk, 8);
                 std::string arch_str;
+                // Skip a GGUF KV value of the given type. Fixes #1337: array
+                // values (type 9) are elem-type + count + elements — a flat
+                // 8-byte seek desynchronizes the stream; and #1353: string
+                // values get the same 1 MiB cap as keys (#1333).
+                std::function<bool(uint32_t, int)> skip_value = [&](uint32_t vt, int depth) -> bool {
+                    // GGUF forbids nested arrays; cap depth so a crafted file
+                    // can't blow the stack via array-in-array recursion.
+                    if (depth > 8) {
+                        fprintf(stderr, "[h1b] GGUF sidecar array nesting too deep\n");
+                        return false;
+                    }
+                    if (vt == 8) {  // string
+                        uint64_t vl; gf.read((char*)&vl, 8);
+                        if (!gf || vl > 1048576) {
+                            fprintf(stderr, "[h1b] GGUF sidecar string too long\n");
+                            return false;
+                        }
+                        gf.seekg((std::streamoff)vl, std::ios::cur);
+                        return true;
+                    }
+                    if (vt == 9) {  // array
+                        uint32_t et; gf.read((char*)&et, 4);
+                        uint64_t cnt; gf.read((char*)&cnt, 8);
+                        if (!gf || cnt > (1ull << 20)) {  // cap: >1M elements in a sidecar KV is absurd
+                            fprintf(stderr, "[h1b] GGUF sidecar array too large\n");
+                            return false;
+                        }
+                        for (uint64_t j = 0; j < cnt; j++)
+                            if (!skip_value(et, depth + 1)) return false;
+                        return true;
+                    }
+                    size_t sz = vt == 0 || vt == 1 || vt == 7 ? 1 :
+                                vt == 2 || vt == 3 ? 2 :
+                                vt <= 6 ? 4 : vt <= 12 ? 8 : 0;
+                    if (sz == 0) {
+                        fprintf(stderr, "[h1b] GGUF sidecar unknown value type %u\n", vt);
+                        return false;
+                    }
+                    gf.seekg((std::streamoff)sz, std::ios::cur);
+                    return true;
+                };
                 for (uint64_t i = 0; i < nk; ++i) {
                     uint64_t kl; gf.read((char*)&kl, 8);
+                    if (!gf) break;  // truncated sidecar
                     // fixes #1333: cap string length (matching gguf_reader's MAX_STRING_LEN)
                     if (kl > 1048576) { fprintf(stderr, "[h1b] GGUF sidecar string too long\n"); break; }
                     std::string k(kl, '\0'); gf.read(&k[0], kl);
                     uint32_t vt; gf.read((char*)&vt, 4);
+                    if (!gf) break;
                     if (vt == 8) {
                         uint64_t vl; gf.read((char*)&vl, 8);
+                        // fixes #1353: cap value length too — kl got the cap
+                        // in #1333 but vl was left unguarded before allocation
+                        if (vl > 1048576) { fprintf(stderr, "[h1b] GGUF sidecar string too long\n"); break; }
                         std::string v(vl, '\0'); gf.read(&v[0], vl);
                         if (k == "general.architecture") arch_str = v;
                     } else {
-                        gf.seekg(vt == 0 || vt == 1 || vt == 7 ? 1 :
-                                 vt == 2 || vt == 3 ? 2 : vt <= 6 ? 4 :
-                                 vt == 9 ? 8 : vt <= 12 ? 8 : 0, std::ios::cur);
+                        if (!skip_value(vt, 0)) break;  // fixes #1337: proper array/string skip
                     }
                 }
                 if (arch_str == "qwen3") {

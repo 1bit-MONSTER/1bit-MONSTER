@@ -38,9 +38,15 @@ struct PbReader {
         while (pos < len) {
             uint8_t byte = data[pos++];
             val |= uint64_t(byte & 0x7F) << shift;
-            shift += 7;
-            if (shift > 64) return 0;  // fixes #1331: prevent UB shift >= width
+            // #1354: check the terminator BEFORE the overflow guard. A
+            // 10-byte varint encoding a value >= 2^63 (e.g. 0x80..01 for
+            // 2^63) ends with shift == 63 — the old check fired on the
+            // following `shift += 7` and silently zeroed valid values.
             if (!(byte & 0x80)) return val;
+            shift += 7;
+            // fixes #1331 + #1354: only an 11th byte would shift >= 64 (UB) —
+            // reject instead of computing it.
+            if (shift > 63) return 0;
         }
         return val;
     }

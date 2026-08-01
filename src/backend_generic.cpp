@@ -42,6 +42,20 @@ static bool cpu_has_packed_isa() {
 #endif
 }
 
+// #1346: the AVX-512 kernels (gemv_row_avx512 / silu_avx512 below) are always
+// compiled via target attribute and selected at runtime, so a binary built
+// with -march=native on an AVX-512 machine keeps a portable fallback and
+// never SIGILLs on older hosts. Same rationale as cpu_has_packed_isa() (#1240):
+// this is the cross-platform CPU backend — it must never crash on the dense
+// GEMV/SiLU path either.
+static bool cpu_has_avx512() {
+#if defined(__x86_64__) || defined(__i386__)
+    return __builtin_cpu_supports("avx512f");
+#else
+    return false;
+#endif
+}
+
 struct GenericBackend : Backend {
     ModelConfig cfg;
     std::vector<float> embed, final_norm, output_weight;
@@ -63,7 +77,7 @@ struct GenericBackend : Backend {
     std::vector<float> scratch_x, scratch_x2, scratch_q, scratch_k, scratch_v;
     std::vector<float> scratch_scores, scratch_att, scratch_gate_up, scratch_silu_buf;
     std::vector<float> scratch_moe_router_probs, scratch_moe_ffn_acc;
-    std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_down;
+    std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_silu, scratch_moe_down;
     std::vector<int> scratch_moe_idx;  // expert index for partial_sort
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
@@ -228,7 +242,9 @@ struct GenericBackend : Backend {
         if (cfg.n_experts > 0) {
             scratch_moe_router_probs.resize(cfg.n_experts);
             scratch_moe_ffn_acc.resize(H);
-            scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF); scratch_moe_down.resize(H);
+            scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF);
+            scratch_moe_silu.resize(FF);  // #1342: silu output is FF-sized — must NOT share the H-sized down buffer
+            scratch_moe_down.resize(H);
             scratch_moe_idx.resize(cfg.n_experts);
         }
         scratch_allocated_ = true;
@@ -612,21 +628,31 @@ struct GenericBackend : Backend {
         }
     }
 
+    // AVX-512 GEMV row kernel (always compiled, runtime-dispatched — #1346).
+    __attribute__((target("avx512f")))
+    static float gemv_row_avx512(const float* in, const float* wr, int K) {
+        float s = 0;
+        int j = 0;
+        __m512 acc = _mm512_setzero_ps();
+        for (; j + 15 < K; j += 16)
+            acc = _mm512_fmadd_ps(_mm512_loadu_ps(in + j), _mm512_loadu_ps(wr + j), acc);
+        s = _mm512_reduce_add_ps(acc);
+        for (; j < K; j++) s += in[j] * wr[j];
+        return s;
+    }
+
     static void matmul(float* out, const float* in, const float* w, int M, int K) {
-        // AVX-512 vectorized GEMV with OpenMP. Each thread processes rows,
-        // inner dot product uses 16-wide FMA for the main loop, scalar tail.
+        // Vectorized GEMV with OpenMP. Each thread processes rows, inner dot
+        // product uses 16-wide FMA on AVX-512 hosts (runtime-gated, #1346),
+        // 8-wide FMA on AVX2 builds, scalar tail otherwise.
+        const bool avx512 = cpu_has_avx512();
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < M; i++) {
             const float* wr = w + (size_t)i * K;
+            if (avx512) { out[i] = gemv_row_avx512(in, wr, K); continue; }
             float s = 0;
             int j = 0;
-#if defined(__AVX512F__)
-            __m512 acc = _mm512_setzero_ps();
-            for (; j + 15 < K; j += 16) {
-                acc = _mm512_fmadd_ps(_mm512_loadu_ps(in + j), _mm512_loadu_ps(wr + j), acc);
-            }
-            s = _mm512_reduce_add_ps(acc);
-#elif defined(__AVX2__)
+#if defined(__AVX2__)
             __m256 acc = _mm256_setzero_ps();
             for (; j + 7 < K; j += 8) {
                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(in + j), _mm256_loadu_ps(wr + j), acc);
@@ -697,35 +723,61 @@ struct GenericBackend : Backend {
         else matmul(out, in, W, N, K);
     }
 
-    static void silu(float* out, const float* gate, const float* up, int n) {
-        // Vectorized SiLU: x * sigmoid(x) * up, using fast sigmoid approx.
-        // sigmoid(x) ≈ 0.5 + 0.5 * tanh(0.5*x) — tanhf is faster than expf.
+    // #1350: Padé [7/6] tanh(y) ≈ y·(135135 + y²·(17335 + y²·(378 + y²))) /
+    // (135135 + y²·(62370 + y²·(3150 + 28·y²))), with y = x/2 clamped to ±5.
+    // Max |sigmoid error| < 5e-5 over the whole range — the old clipped cubic
+    // saturated ~3x too early (17% error at x≈1.74), silently biasing every
+    // SwiGLU gate toward "fully open".
+    __attribute__((target("avx512f")))
+    static __m512 sigmoid_pade_avx512(__m512 g) {
+        __m512 y = _mm512_mul_ps(g, _mm512_set1_ps(0.5f));
+        y = _mm512_max_ps(_mm512_set1_ps(-5.0f), _mm512_min_ps(_mm512_set1_ps(5.0f), y));
+        __m512 y2 = _mm512_mul_ps(y, y);
+        __m512 num = _mm512_mul_ps(y, _mm512_fmadd_ps(y2, _mm512_set1_ps(1.0f),
+                      _mm512_fmadd_ps(y2, _mm512_set1_ps(378.0f), _mm512_set1_ps(17325.0f))));
+        num = _mm512_fmadd_ps(y2, num, _mm512_mul_ps(y, _mm512_set1_ps(135135.0f)));
+        __m512 den = _mm512_fmadd_ps(y2, _mm512_set1_ps(28.0f), _mm512_set1_ps(3150.0f));
+        den = _mm512_fmadd_ps(y2, den, _mm512_set1_ps(62370.0f));
+        den = _mm512_fmadd_ps(y2, den, _mm512_set1_ps(135135.0f));
+        return _mm512_fmadd_ps(_mm512_set1_ps(0.5f), _mm512_div_ps(num, den), _mm512_set1_ps(0.5f));
+    }
+
+    // AVX-512 SiLU kernel (always compiled, runtime-dispatched — #1346).
+    // Returns the number of elements consumed (multiple of 16).
+    __attribute__((target("avx512f")))
+    static int silu_avx512(float* out, const float* gate, const float* up, int n) {
         int i = 0;
-#if defined(__AVX512F__)
         for (; i + 15 < n; i += 16) {
             __m512 g = _mm512_loadu_ps(gate + i);
             __m512 u = _mm512_loadu_ps(up + i);
-            // sigmoid ≈ 0.5 + 0.5 * tanh(x/2)
-            __m512 half = _mm512_set1_ps(0.5f);
-            __m512 g2 = _mm512_mul_ps(g, half);
-            // approximate tanh via: x * (1 + 0.1834*x^2) clipped; for SiLU on -10..10 this is fine
-            __m512 g2sq = _mm512_mul_ps(g2, g2);
-            __m512 tanh_approx = _mm512_mul_ps(g2, _mm512_fmadd_ps(_mm512_set1_ps(0.1834f), g2sq, _mm512_set1_ps(1.0f)));
-            // clip tanh to -1..1
-            tanh_approx = _mm512_max_ps(_mm512_set1_ps(-1.0f), _mm512_min_ps(_mm512_set1_ps(1.0f), tanh_approx));
-            __m512 sig = _mm512_fmadd_ps(half, tanh_approx, half);  // 0.5 + 0.5*tanh
+            __m512 sig = sigmoid_pade_avx512(g);
             _mm512_storeu_ps(out + i, _mm512_mul_ps(_mm512_mul_ps(g, sig), u));
         }
-#elif defined(__AVX2__)
+        return i;
+    }
+
+    static void silu(float* out, const float* gate, const float* up, int n) {
+        // Vectorized SiLU: x * sigmoid(x) * up. Fast path uses the Padé [7/6]
+        // sigmoid (#1350); the AVX-512 kernel is runtime-gated (#1346). The
+        // scalar tail keeps the exact expf-based sigmoid as the floor.
+        int i = 0;
+        if (cpu_has_avx512()) {
+            i = silu_avx512(out, gate, up, n);
+        }
+#if defined(__AVX2__)
         for (; i + 7 < n; i += 8) {
             __m256 g = _mm256_loadu_ps(gate + i);
             __m256 u = _mm256_loadu_ps(up + i);
-            __m256 half = _mm256_set1_ps(0.5f);
-            __m256 g2 = _mm256_mul_ps(g, half);
-            __m256 g2sq = _mm256_mul_ps(g2, g2);
-            __m256 tanh_approx = _mm256_mul_ps(g2, _mm256_fmadd_ps(_mm256_set1_ps(0.1834f), g2sq, _mm256_set1_ps(1.0f)));
-            tanh_approx = _mm256_max_ps(_mm256_set1_ps(-1.0f), _mm256_min_ps(_mm256_set1_ps(1.0f), tanh_approx));
-            __m256 sig = _mm256_fmadd_ps(half, tanh_approx, half);
+            __m256 y = _mm256_mul_ps(g, _mm256_set1_ps(0.5f));
+            y = _mm256_max_ps(_mm256_set1_ps(-5.0f), _mm256_min_ps(_mm256_set1_ps(5.0f), y));
+            __m256 y2 = _mm256_mul_ps(y, y);
+            __m256 num = _mm256_mul_ps(y, _mm256_fmadd_ps(y2, _mm256_set1_ps(1.0f),
+                          _mm256_fmadd_ps(y2, _mm256_set1_ps(378.0f), _mm256_set1_ps(17325.0f))));
+            num = _mm256_fmadd_ps(y2, num, _mm256_mul_ps(y, _mm256_set1_ps(135135.0f)));
+            __m256 den = _mm256_fmadd_ps(y2, _mm256_set1_ps(28.0f), _mm256_set1_ps(3150.0f));
+            den = _mm256_fmadd_ps(y2, den, _mm256_set1_ps(62370.0f));
+            den = _mm256_fmadd_ps(y2, den, _mm256_set1_ps(135135.0f));
+            __m256 sig = _mm256_fmadd_ps(_mm256_set1_ps(0.5f), _mm256_div_ps(num, den), _mm256_set1_ps(0.5f));
             _mm256_storeu_ps(out + i, _mm256_mul_ps(_mm256_mul_ps(g, sig), u));
         }
 #endif
@@ -971,8 +1023,8 @@ struct GenericBackend : Backend {
                 memset(ffn_acc, 0, H * sizeof(float));
                 float* gate_buf = scratch_moe_gate.data();
                 float* up_buf = scratch_moe_up.data();
-                float* moe_silu = scratch_moe_down.data();  // reused: scratch_moe_down holds silu output then down output
-                float* down_buf = scratch_moe_down.data();
+                float* moe_silu = scratch_moe_silu.data();  // #1342: FF-sized, distinct from down output
+                float* down_buf = scratch_moe_down.data();  // H-sized
                 for (int t = 0; t < NEU; t++) {
                     int e = idx[t];
                     float we = router_probs[e] / wsum;

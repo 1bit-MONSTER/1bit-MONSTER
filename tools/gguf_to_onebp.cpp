@@ -5,6 +5,7 @@
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq2nz  (no-zero 2-bit S40)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq1    (1.58-bit base-3)
  */
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,16 +40,25 @@ static bool load_imatrix_dat(const char* path,
                              std::unordered_map<std::string, std::vector<float>>& out) {
     FILE* f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "Cannot open imatrix %s\n", path); return false; }
+    // fixes #1355: every length field is attacker-controlled (imatrix files
+    // are shared/downloaded independently of the model) — bound all of them
+    // and check every fread before trusting the buffer contents.
     int32_t n = 0;
     if (fread(&n, 4, 1, f) != 1 || n < 1) { fclose(f); return false; }
+    if (n > (1 << 20)) { fprintf(stderr, "imatrix: entry count %d too large\n", n); fclose(f); return false; }
     for (int i = 0; i < n; i++) {
-        int32_t ln = 0; fread(&ln, 4, 1, f);
+        int32_t ln = 0;
+        if (fread(&ln, 4, 1, f) != 1) { fprintf(stderr, "imatrix: truncated name length\n"); fclose(f); return false; }
+        if (ln < 0 || ln > 4096) { fprintf(stderr, "imatrix: bad name length %d\n", ln); fclose(f); return false; }
         std::string name(ln, '\0');
-        fread(name.data(), 1, ln, f);
+        if (fread(name.data(), 1, ln, f) != (size_t)ln) { fprintf(stderr, "imatrix: truncated name\n"); fclose(f); return false; }
         int32_t ncall = 0, nval = 0;
-        fread(&ncall, 4, 1, f); fread(&nval, 4, 1, f);
+        if (fread(&ncall, 4, 1, f) != 1 || fread(&nval, 4, 1, f) != 1) { fprintf(stderr, "imatrix: truncated header\n"); fclose(f); return false; }
+        if (ncall < 0) { fprintf(stderr, "imatrix: bad ncall %d\n", ncall); fclose(f); return false; }
+        // 1.5G element cap — same as the tensor-size cap below (line ~331)
+        if (nval < 1 || nval > 1500000000) { fprintf(stderr, "imatrix: bad element count %d\n", nval); fclose(f); return false; }
         std::vector<float> sums(nval);
-        fread(sums.data(), 4, nval, f);
+        if (fread(sums.data(), 4, nval, f) != (size_t)nval) { fprintf(stderr, "imatrix: truncated sums\n"); fclose(f); return false; }
         auto& v = out[name];
         v.resize(nval);
         float inv = ncall > 0 ? 1.0f / (float)ncall : 1.0f;
@@ -188,25 +198,6 @@ int main(int argc, char** argv) {
                            hdr.num_experts, hdr.intermediate_size);
                 }
             }
-            // Infer attention heads from Q projection shape
-            if ((!hdr.num_attention_heads || !hdr.head_dim) && hdr.hidden_size > 0) {
-                auto* q = reader.tensor_info("blk.0.attn_q.weight");
-                if (q && q->shape.size() >= 2) {
-                    int q_dim = (int)q->shape[1];
-                    int hd = 128;
-                    if (hdr.hidden_size >= 8192) hd = 256;
-                    else if (hdr.hidden_size >= 4096) hd = 128;
-                    else hd = 64;
-                    if (!hdr.head_dim) hdr.head_dim = hd;
-                    if (!hdr.num_attention_heads && hdr.head_dim > 0)
-                        hdr.num_attention_heads = q_dim / hdr.head_dim;
-                    if (!hdr.num_kv_heads && hdr.head_dim > 0) {
-                        auto* k = reader.tensor_info("blk.0.attn_k.weight");
-                        if (k && k->shape.size() >= 2)
-                            hdr.num_kv_heads = (int)k->shape[1] / hdr.head_dim;
-                    }
-                }
-            }
             if (!hdr.n_expert_used) hdr.n_expert_used = 8;
         }
     }
@@ -219,6 +210,33 @@ int main(int argc, char** argv) {
     // Attention heads are optional — Mamba/MoE architectures have none.
     // Key-value heads default to attention heads; head_dim derived if absent.
     if (!hdr.num_kv_heads && hdr.num_attention_heads) hdr.num_kv_heads = hdr.num_attention_heads;
+
+    // Infer head_dim from the Q/K projection shapes when the metadata lacks it
+    // (fixes #1243 re-conversion: dense llama/qwen2vl/olmo2 GGUFs without
+    // attention.key_length hit HD=0 and refused to convert — the old fallback
+    // only ran on the MoE path). Prefer exact division by the head counts;
+    // heuristic only as a last resort.
+    if (!hdr.head_dim && hdr.hidden_size > 0) {
+        auto* q = reader.tensor_info("blk.0.attn_q.weight");
+        auto* k = reader.tensor_info("blk.0.attn_k.weight");
+        int q_dim = (q && q->shape.size() >= 2) ? (int)q->shape[1] : 0;
+        int k_dim = (k && k->shape.size() >= 2) ? (int)k->shape[1] : 0;
+        if (q_dim > 0 || k_dim > 0) {
+            int hd = 0;
+            if (hdr.num_attention_heads > 0 && q_dim > 0 && q_dim % hdr.num_attention_heads == 0)
+                hd = q_dim / hdr.num_attention_heads;
+            else if (hdr.num_kv_heads > 0 && k_dim > 0 && k_dim % hdr.num_kv_heads == 0)
+                hd = k_dim / hdr.num_kv_heads;
+            else if (q_dim > 0) {
+                // heuristic fallback (same as the old MoE-path code)
+                hd = hdr.hidden_size >= 8192 ? 256 : hdr.hidden_size >= 4096 ? 128 : 64;
+                hd = std::min(hd, q_dim);
+            }
+            if (hd > 0) hdr.head_dim = hd;
+            if (!hdr.num_attention_heads && q_dim > 0 && hd > 0) hdr.num_attention_heads = q_dim / hd;
+            if (!hdr.num_kv_heads && k_dim > 0 && hd > 0) hdr.num_kv_heads = k_dim / hd;
+        }
+    }
 
     // Try explicit vocab_size; fall back to token_embd.weight rows or tokens array.
     gu("vocab_size", hdr.vocab_size);

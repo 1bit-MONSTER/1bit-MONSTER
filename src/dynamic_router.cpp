@@ -14,7 +14,7 @@ void DynamicRouter::add_backend(const std::string& id, std::shared_ptr<Backend> 
     std::lock_guard<std::mutex> lock(mtx_);
     for (auto& e : entries_)
         if (e.id == id) { e.backend = backend; e.stats = BackendStats{}; return; }
-    entries_.push_back({id, backend, BackendStats{id}, {}});
+    entries_.push_back({id, backend, std::make_shared<std::mutex>(), BackendStats{id}, {}});
     strategy_ = strategy;
     printf("[router] added backend '%s' (%s)\n", id.c_str(), strategy_name(strategy));
 }
@@ -31,6 +31,9 @@ bool DynamicRouter::reset_all() {
     try {
         for (auto& e : entries_) {
             if (e.backend && e.stats.alive) {
+                // #1345: hold the entry's compute lock so an in-flight
+                // generate()/forward() on this backend isn't racing reset().
+                std::lock_guard<std::mutex> cl(*e.compute_mtx);
                 try { ok = e.backend->reset() && ok; }
                 catch (...) { e.stats.alive = false; fprintf(stderr, "[router] reset failed: %s\n", e.id.c_str()); }
             }
@@ -122,45 +125,60 @@ DynamicRouter::BackendEntry* DynamicRouter::pick_backend() {
 // ── Inference ──
 int DynamicRouter::generate(int token_id) {
     std::shared_ptr<Backend> backend;
-    BackendEntry* entry = nullptr;
+    std::shared_ptr<std::mutex> compute_mtx;
+    std::string id;
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        entry = pick_backend();
+        BackendEntry* entry = pick_backend();
         if (!entry || !entry->backend) return -1;
-        backend = entry->backend;  // snapshot to keep alive outside lock
+        backend = entry->backend;            // snapshot to keep alive outside lock
+        compute_mtx = entry->compute_mtx;    // #1345: serialize per backend instance
+        id = entry->id;                      // #1348: re-resolve by id after unlock
     }
 
+    std::lock_guard<std::mutex> compute_lock(*compute_mtx);
     auto t0 = std::chrono::steady_clock::now();
-    int result = backend->generate(token_id);  // fixes #1315: no lock held during inference
+    int result = backend->generate(token_id);  // fixes #1315: no router lock held during inference
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        record_latency(entry, ms, result >= 0);
+        // #1348: entry may have been removed or the vector reallocated while
+        // the lock was released — never dereference the stale pointer, look
+        // the entry up by id (tolerating removal).
+        for (auto& e : entries_) {
+            if (e.id == id) { record_latency(&e, ms, result >= 0); break; }
+        }
     }
     return result;
 }
 
 bool DynamicRouter::forward(int token_id, float* hidden_out) {
     std::shared_ptr<Backend> backend;
+    std::shared_ptr<std::mutex> compute_mtx;
     {
         std::lock_guard<std::mutex> lock(mtx_);
         auto* entry = pick_backend();
         if (!entry || !entry->backend) return false;
         backend = entry->backend;
+        compute_mtx = entry->compute_mtx;  // #1345
     }
+    std::lock_guard<std::mutex> compute_lock(*compute_mtx);
     return backend->forward(token_id, hidden_out);
 }
 
 bool DynamicRouter::lm_head(const float* hidden, float* logits, int* argmax) {
     std::shared_ptr<Backend> backend;
+    std::shared_ptr<std::mutex> compute_mtx;
     {
         std::lock_guard<std::mutex> lock(mtx_);
         auto* entry = pick_backend();
         if (!entry || !entry->backend) return false;
         backend = entry->backend;
+        compute_mtx = entry->compute_mtx;  // #1345
     }
+    std::lock_guard<std::mutex> compute_lock(*compute_mtx);
     return backend->lm_head(hidden, logits, argmax);
 }
 

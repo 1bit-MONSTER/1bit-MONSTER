@@ -17,6 +17,23 @@
 #include <cstdio>
 #include <cmath>
 
+// #1247 (audit #22): kernels below size warp reductions from warpSize where
+// cheap, but the shared-memory stages (s_sum[GEMV_BLOCK/32], a[4] per wave) are
+// sized for 32-lane warps — refuse to launch on wave64 devices (CDNA) instead
+// of silently computing garbage.
+static bool ensure_wave32() {
+    static const bool ok = []() {
+        hipDeviceProp_t prop;
+        if (hipGetDeviceProperties(&prop, 0) != hipSuccess) return false;
+        if (prop.warpSize != 32) {
+            fprintf(stderr, "mamba1: kernels assume warpSize==32, device has %d\n", prop.warpSize);
+            return false;
+        }
+        return true;
+    }();
+    return ok;
+}
+
 // ── Mamba1 fused inner: in_proj→conv1d→x_proj→dt_proj→scan→gate ──
 // Shared memory: (2*d_inner) for xz + d_inner for x_proj_out + d_inner for y
 // Max: 4*d_inner ≈ 4*3712 = 14.8 KB for Zamba-7B (well within 64KB)
@@ -27,7 +44,7 @@
 
 __global__ void gemv_q4(const uint8_t* W, const float* x, float* y, int M, int K) {
     __shared__ float xt[2048];
-    int t=threadIdx.x, w=t/32, ln=t%32, rb=blockIdx.x*16;
+    int t=threadIdx.x, w=t/warpSize, ln=t&(warpSize-1), rb=blockIdx.x*16;
     float a[4]={0}; int gp=(K+QK-1)/QK;
     for(int k0=0;k0<K;k0+=2048){int ks=min(2048,K-k0);
         for(int i=t;i<ks;i+=128)xt[i]=x[k0+i];__syncthreads();
@@ -51,7 +68,7 @@ __global__ void gemv_q4(const uint8_t* W, const float* x, float* y, int M, int K
                     if(ki>=k0&&ki<k0+ks)s+=(float)n0*sc*xt[ki-k0];
                     if(ki+1>=k0&&ki+1<k0+ks)s+=(float)n1*sc*xt[ki+1-k0];}
             }
-            for(int o=16;o>0;o>>=1)s+=__shfl_xor(s,o);if(ln==0)a[r]+=s;}
+            for(int o=warpSize/2;o>0;o>>=1)s+=__shfl_xor(s,o);if(ln==0)a[r]+=s;}
         __syncthreads();}
     for(int r=0;r<4;r++){int row=rb+w*4+r;if(ln==0&&row<M)y[row]=a[r];}
 }
@@ -175,13 +192,13 @@ __global__ void fp32_gemv(
     const float* row = W + (size_t)m * K;
     for (int k = tid; k < K; k += GEMV_BLOCK)
         acc += row[k] * x[k];
-    // Warp reduction
-    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffULL, acc, o);
-    if ((tid & 31) == 0) s_sum[tid / 32] = acc;
+    // Warp reduction (offsets sized from warpSize — #1247; wave32 enforced at launch)
+    for (int o = warpSize / 2; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffULL, acc, o);
+    if ((tid & (warpSize - 1)) == 0) s_sum[tid / warpSize] = acc;
     __syncthreads();
-    if (tid < GEMV_BLOCK / 32) {
+    if (tid < GEMV_BLOCK / warpSize) {
         float v = s_sum[tid];
-        for (int o = (GEMV_BLOCK / 32) / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffULL, v, o);
+        for (int o = (GEMV_BLOCK / warpSize) / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffULL, v, o);
         if (tid == 0) y[m] = v;
     }
 }
@@ -243,6 +260,7 @@ extern "C" int mamba1_forward(
     hipStream_t stream
 ) {
     int grid_n = (d_model + 255) / 256;
+    if (!ensure_wave32()) return -1;  // #1247: kernels assume 32-lane warps
     
     // 1. RMS norm
     rms_ker<<<grid_n, 256, 0, stream>>>(hidden, normed, norm_w, d_model, 1e-5f);
@@ -284,6 +302,7 @@ extern "C" void launch_fp32_gemv(
     const float* W, const float* x, float* y, int M, int K, hipStream_t stream)
 {
     if (M <= 0 || K <= 0) return;
+    if (!ensure_wave32()) return;  // #1247: kernels assume 32-lane warps
     fp32_gemv<<<M, GEMV_BLOCK, 0, stream>>>(W, x, y, M, K);
 }
 

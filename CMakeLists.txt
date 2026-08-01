@@ -737,6 +737,17 @@ target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
 add_test(NAME test_gguf_reader_dequant COMMAND test_gguf_reader_dequant)
 set_tests_properties(test_gguf_reader_dequant PROPERTIES LABELS "host")
 
+# -- test_tokenizer_logprobs: tokenizer logprob API (#81) -- restored after --
+# being dropped in the dead-code purge (issue #1341). The API is live
+# (unified_server prompt-logprob path: encode_with_logprobs) so it needs
+# coverage. No GPU, no model download; builds tokenizer.cpp standalone.
+add_executable(test_tokenizer_logprobs tests/test_tokenizer_logprobs.cpp src/tokenizer.cpp)
+target_include_directories(test_tokenizer_logprobs PRIVATE include include/rocm_cpp)
+target_compile_options(test_tokenizer_logprobs PRIVATE -O2 -std=c++17 -Wall)
+target_link_libraries(test_tokenizer_logprobs PRIVATE m)
+add_test(NAME test_tokenizer_logprobs COMMAND test_tokenizer_logprobs)
+set_tests_properties(test_tokenizer_logprobs PROPERTIES LABELS "host")
+
 add_test(NAME test_backend                 COMMAND test_backend)
 set_tests_properties(test_backend           PROPERTIES LABELS "host" SKIP_RETURN_CODE 77)
 
