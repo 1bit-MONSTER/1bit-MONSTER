@@ -48,6 +48,7 @@ jobs:
             packaging snap
             docs site
             tools scripts bin
+            tools/video-lora  # C++ Vulkan inference backend (SD1.5/AnimateDiff) — engine scope, NOT an app
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations personas prompts skills themes workers zaya_audio
           '
