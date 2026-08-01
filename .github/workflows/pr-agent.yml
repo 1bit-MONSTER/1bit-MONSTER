@@ -13,22 +13,28 @@ permissions:
 
 jobs:
   pr_agent:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: strix-halo-runner
+    timeout-minutes: 15
     # Only run for same-repo PRs and trusted commenters (not external forks)
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'issue_comment' && github.event.comment.author_association == 'OWNER')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Local model backend: Ollama runs as a systemd service on this host
+      # (127.0.0.1:11434, 100% GPU via ROCm/gfx1151). Pull is idempotent —
+      # no-op when the model is already present.
+      - name: Ensure local model (ollama)
+        run: |
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen2.5-coder:7b
       - name: PR Agent
         uses: qodo-ai/pr-agent@d82f7d3e696cd00822694aaa3096265d3889f3f1  # v0.34
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          # SECURITY: GITHUB_TOKEN with contents:write scope is passed to the
-          # third-party action qodo-ai/pr-agent. Mitigation: the job-level `if`
-          # guard above restricts execution to same-repo PRs only; external
-          # forks are never processed. Consider a fine-grained PAT or
-          # GitHub App token for tighter scope in the future.
+          # SECURITY: third-party action running on a SELF-HOSTED runner with
+          # contents:write scope = arbitrary code execution on the host. The
+          # job-level `if` guard restricts execution to same-repo PRs and
+          # OWNER comments only; external forks are never processed. Keep the
+          # action pinned to this SHA.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG_FILE: .pr_agent.toml

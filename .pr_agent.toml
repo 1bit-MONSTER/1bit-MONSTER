@@ -1,6 +1,6 @@
 [pr_agent]
-model = "deepseek/deepseek-chat"
-model_turbo = "deepseek/deepseek-chat"
+model = "ollama/qwen2.5-coder:7b"
+model_turbo = "ollama/qwen2.5-coder:7b"
 fallback_models = []
 verbosity_level = 2
 publish_output = true
@@ -34,12 +34,15 @@ push_changelog_changes = true
 enable_help_text = false
 
 [config]
-model = "deepseek/deepseek-chat"
+model = "ollama/qwen2.5-coder:7b"
 fallback_models = []
 ignore_pr_labels = []
-# deepseek/deepseek-chat isn't registered in pr-agent's internal MAX_TOKENS
-# table, so every review/description/suggestion call was throwing
-# "Ensure deepseek/deepseek-chat is defined in MAX_TOKENS ... or set a
-# positive value for it in config.custom_model_max_tokens" and failing
-# silently on every PR. 64000 matches DeepSeek-V3's published context window.
-custom_model_max_tokens = 64000
+# Local model served by Ollama on the strix-halo-runner host (100% GPU,
+# gfx1151). Runs through litellm's "ollama/" provider — api_base defaults to
+# http://localhost:11434 but is set explicitly below.
+# "ollama/qwen2.5-coder:7b" isn't in pr-agent's internal MAX_TOKENS table,
+# so custom_model_max_tokens is required; 32768 = qwen2.5-coder context.
+custom_model_max_tokens = 32768
+
+[ollama]
+api_base = "http://localhost:11434"
