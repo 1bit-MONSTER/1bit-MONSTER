@@ -96,8 +96,8 @@ void kv_cache_attn_decode_kernel(
 
         // Online softmax update
         const float m_new = (s > m) ? s : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(s - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(s - m_new);
         l = l * alpha + beta;
         // Scale existing output accumulator by alpha
         #pragma unroll
@@ -213,8 +213,8 @@ void kv_cache_attn_prefill_kernel(
         const float s = s_scalar[0];
 
         const float m_new = (s > m) ? s : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(s - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(s - m_new);
         l = l * alpha + beta;
         #pragma unroll
         for (int k = 0; k < 8; ++k) o_local[k] *= alpha;

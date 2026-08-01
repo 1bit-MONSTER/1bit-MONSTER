@@ -57,7 +57,7 @@ __global__ void quantize_fp16_to_i8_kernel(
     // Block-wide max(|x|) reduction
     float local = 0.0f;
     for (int k = tid; k < K; k += BLOCK) {
-        float v = std::fabsf((float)x_fp16[k]);
+        float v = fabsf((float)x_fp16[k]);
         if (v > local) local = v;
     }
     #pragma unroll
@@ -130,7 +130,7 @@ __global__ void rmsnorm_fp16_kernel(
         for (int o = (BLOCK / WARP) / 2; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffULL, s, o);
         if (lane == 0) {
             float mean = s / (float)K;
-            rms_inv_s = 1.0f / std::sqrtf(mean + eps);
+            rms_inv_s = 1.0f / sqrtf(mean + eps);
         }
     }
     __syncthreads();
@@ -250,10 +250,10 @@ __global__ void rope_fp16_kernel(
 
     __half* row = x + (size_t)h * head_dim;
     for (int i = tid; i < half_dim; i += blockDim.x) {
-        const float freq = 1.0f / std::powf(theta, 2.0f * (float)i / (float)head_dim);
+        const float freq = 1.0f / powf(theta, 2.0f * (float)i / (float)head_dim);
         const float angle = (float)pos * freq;
-        const float c = std::cosf(angle);
-        const float s = std::sinf(angle);
+        const float c = cosf(angle);
+        const float s = sinf(angle);
         const float x0 = (float)row[i];             // lower half
         const float x1 = (float)row[i + half_dim];  // upper half
         row[i]            = __float2half(c * x0 - s * x1);
@@ -276,7 +276,7 @@ __global__ void silu_glu_fp16_kernel(
     if (tid >= N) return;
     const float u = (float)up[tid];
     const float g = (float)gate[tid];
-    const float silu = u / (1.0f + std::expf(-u));
+    const float silu = u / (1.0f + expf(-u));
     y[tid] = __float2half(silu * g);
 }
 
@@ -333,7 +333,7 @@ void relu2_glu_rmsnorm_fp16_kernel(
         for (int o = (BLOCK / WARP) / 2; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffULL, s, o);
         if (lane == 0) {
             float mean = s / (float)N;
-            rms_inv_s = 1.0f / std::sqrtf(mean + eps);
+            rms_inv_s = 1.0f / sqrtf(mean + eps);
         }
     }
     __syncthreads();
@@ -514,7 +514,7 @@ __global__ void rmsnorm_fp32_in_fp16_out_kernel(
         for (int o = (BLOCK / WARP) / 2; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffULL, s, o);
         if (lane == 0) {
             float mean = s / (float)K;
-            rms_inv_s = 1.0f / std::sqrtf(mean + eps);
+            rms_inv_s = 1.0f / sqrtf(mean + eps);
         }
     }
     __syncthreads();
@@ -702,7 +702,7 @@ __global__ void softmax_fp32_kernel(
     float lsum = 0.0f;
     const float m = s_max;
     for (int v = tid; v < V; v += BLOCK) {
-        float e = std::expf(logits[v] * inv_T - m);
+        float e = expf(logits[v] * inv_T - m);
         logits[v] = e;   // reuse buffer
         lsum += e;
     }

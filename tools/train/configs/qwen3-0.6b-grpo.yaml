@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT
+# Qwen3-0.6B GRPO — RL fine-tuning for reasoning tasks on Strix Halo
+model: "unsloth/Qwen3-0.6B"
+load_in_4bit: true
+
+use_lora: true
+lora_r: 8
+lora_alpha: 8
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+
+max_seq_length: 8192
+per_device_batch_size: 2
+gradient_accumulation_steps: 4
+max_steps: 1000
+learning_rate: 5e-6
+warmup_steps: 20
+
+num_generations: 4
+max_prompt_length: 512
+temperature: 0.7
+
+dataset: "gsm8k"
+dataset_split: "train"
+
+output_dir: "./outputs"
+save_steps: 200

@@ -25,6 +25,8 @@
 #define LDS_TILE_I8 2048
 #include "hip_check.h"
 
+#ifndef WMMA_WAVE32_DISABLED
+
 static __device__ __forceinline__ uint32_t pack4(int8_t a, int8_t b, int8_t c, int8_t d) {
     return ((uint32_t)(uint8_t)a)
          | ((uint32_t)(uint8_t)b << 8)
@@ -262,3 +264,4 @@ extern "C" void ternary_gemv_phase5_halo_f16_launch(
                        M, K);
     HIP_CHECK(hipGetLastError());
 }
+#endif // WMMA_WAVE32_DISABLED
