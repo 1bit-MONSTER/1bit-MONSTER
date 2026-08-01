@@ -21,7 +21,7 @@ void rcpp_decode_pk_i4_to_fp16_launch(const void*, void*, int, int, void*);
 }
 
 struct ShapeKey { int M, N, K; bool operator==(const ShapeKey& o) const { return M==o.M && N==o.N && K==o.K; } };
-struct ShapeHash { size_t operator()(const ShapeKey& k) const { return (size_t)k.M ^ ((size_t)k.N<<16) ^ ((size_t)k.K<<32); } };
+struct ShapeHash { size_t operator()(const ShapeKey& k) const { return (size_t)k.M ^ ((size_t)k.N << 16) ^ (static_cast<size_t>(k.K) << 32); } };
 
 static std::unordered_map<ShapeKey, int, ShapeHash> s_best_variant;
 static std::mutex s_variant_mutex;

@@ -616,7 +616,8 @@ struct VKBackend : Backend {
 
     void destroy() override {
         delete[] embed; delete[] fnorm; delete[] iscale; delete[] ibias;
-        if(lw){for(int i=0;i<N_LAYERS;i++){munmap_file(lw[i].gu_mmap,lw[i].gu_size);munmap_file(lw[i].dn_mmap,lw[i].dn_size);}delete[] lw;}
+        embed = fnorm = iscale = ibias = nullptr;
+        if(lw){for(int i=0;i<N_LAYERS;i++){munmap_file(lw[i].gu_mmap,lw[i].gu_size);munmap_file(lw[i].dn_mmap,lw[i].dn_size);}delete[] lw; lw = nullptr;}
         vk.destroy(); initialized=false;
     }
 };

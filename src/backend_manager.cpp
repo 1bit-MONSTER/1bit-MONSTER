@@ -1327,6 +1327,8 @@ std::string BackendManager::report() const {
 // lifetime — closing it would be a use-after-free.
 static void* cached_dlopen(const char* lib) {
     static std::unordered_map<std::string, void*> cache;
+    static std::mutex cache_mutex;  // fixes #1314
+    std::lock_guard<std::mutex> lock(cache_mutex);
     auto it = cache.find(lib);
     if (it != cache.end()) return it->second;
     void* h = dlopen(lib, RTLD_NOW | RTLD_LOCAL);

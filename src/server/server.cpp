@@ -534,6 +534,9 @@ WebServer::~WebServer() {
 
 ///@brief start
 void WebServer::start() {
+    // Prevent SIGPIPE from killing the server on client disconnect (#1305).
+    // Other backends (npu, npu_flm, token_router) already do this.
+    signal(SIGPIPE, SIG_IGN);
     running = true;
     do_accept();
     
