@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <mutex>
 
+#ifndef WMMA_WAVE32_DISABLED
+
 #define BLOCK_SIZE             128
 #define WARP_SIZE              32
 #define ROWS_PER_WAVE          1       // each wave = 1 expert result
@@ -418,3 +420,4 @@ void zaya_moe_ternary_gemv_batched_launch(
 }
 
 } // extern "C"
+#endif // WMMA_WAVE32_DISABLED

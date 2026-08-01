@@ -16,7 +16,6 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cmath>
-
 #define H          2048
 #define N_LAYERS   40
 #define N_EXP      16

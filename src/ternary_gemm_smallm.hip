@@ -57,6 +57,8 @@
 #include <cstdint>
 #include "hip_check.h"
 
+#ifndef WMMA_WAVE32_DISABLED
+
 namespace {
 
 constexpr int BLOCK_M = 16;
@@ -232,3 +234,4 @@ void onebit_ternary_gemm_smallm_launch(
 }
 
 } // extern "C"
+#endif // WMMA_WAVE32_DISABLED
