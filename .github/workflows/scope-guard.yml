@@ -55,7 +55,7 @@ jobs:
 
           VIOLATIONS=""
           for path in $CHANGED; do
-            if ! echo "$ALLOWED" | grep -qx "$path"; then
+            if ! echo "$ALLOWED" | grep -qw "$path"; then
               VIOLATIONS="$VIOLATIONS $path"
             fi
           done
