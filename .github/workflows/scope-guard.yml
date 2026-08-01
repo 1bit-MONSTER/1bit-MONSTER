@@ -36,6 +36,7 @@ jobs:
             Makefile.zamba2 README.md ROADMAP.md SECURITY.md SHERRY-FILES.txt
             TODO_TRACKING.md VERSION env.sh install.sh package.json
             replace_i8ctx.py
+            .github .pr_agent.toml
             engine kernels include src cmake adapters models rust
             ck-prefill spec-decode integrations zaya_audio
             benchmarks Testing tests
