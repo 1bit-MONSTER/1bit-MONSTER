@@ -374,7 +374,7 @@ matmul. Then we're at ~10 ms/tok.
 ```
 https://1bit.systems          → 50 TOPS landing page (Cloudflare Pages)
 https://github.com/.../1bit-systems → Full source, benchmarks, journey
-PR-Agent: Qodo + OpenCode GLM-5.2 → auto-review on every PR
+PR-Agent: The-PR-Agent v0.41 (DeepSeek) + GitNexus impact reports → auto-review on every PR
 ```
 
 ### Verified Timing (2026-07-01 15:00 ADT)
@@ -392,7 +392,7 @@ Tokens: 106811, 63165, 117266, 109842
 | Decode | **242 ms/tok** | 219 ms/tok |
 | Prefill M=1 | 161ms | — |
 | Prefill M=4 | 162ms (40 ms/tok) | — |
-| PPR Agent | Qodo + OpenCode GLM-5.2 | — |
+| PPR Agent | The-PR-Agent v0.41 + DeepSeek + GitNexus | — |
 | Landing page | 50 TOPS headline deployed | — |
 
 ### What pi-agent Tightened
@@ -407,9 +407,9 @@ Bonsai-1.7B IQ1_S: 281 tok/s on Radeon 8060S Vulkan, 385 MB. pi-agent patched ll
 
 ### PPR Agent Deployed
 
-Qodo-ai/pr-agent@v0.30 → OpenCode API endpoint → GLM-5.2 model
-Fallback chain: DeepSeek → GPT-4o-mini
-Config: 3 AI reviewers, INT8-focused review instructions, automatic review on PR open
+The-PR-Agent/pr-agent@v0.41 (upstream, pinned SHA) → DeepSeek
+GitNexus knowledge-graph report injected via artifact_path (blast radius, affected flows)
+Config: 3 AI reviewers, INT8-focused review instructions, automatic review on PR open + push
 
 ### What's Next
 

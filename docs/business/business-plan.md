@@ -26,7 +26,7 @@ A complete voice AI agent platform:
 
 ### The moat
 
-Your hardware is the moat. Strix Halo does 426 tok/s on ZAYA-8B and costs $0/mo to run inference. Competitors pay $1-3/hr per GPU. You pay power.
+Your hardware is the moat. Strix Halo does 373 tok/s on GGML-Vulkan (662 tok/s SmolLM2-135M) and costs $0/mo to run inference. Competitors pay $1-3/hr per GPU. You pay power.
 
 ---
 
@@ -51,7 +51,7 @@ Your hardware is the moat. Strix Halo does 426 tok/s on ZAYA-8B and costs $0/mo 
 | **MI300X** (rented, $1/hr) | 192 GB | **16** (compute) / **292** (memory) | 8 |
 | **2× MI300X** | 384 GB | **32** / **584** | 16 |
 
-*Bottleneck is compute (426 tok/s GPU ternary), not memory (115GB available for KV cache).*
+*Bottleneck is compute (373 tok/s GGML-Vulkan), not memory (115GB available for KV cache).*
 
 ### 2.3 Cost Structure
 

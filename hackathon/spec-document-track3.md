@@ -58,7 +58,7 @@ This is the project's flagship achievement — full reverse-engineering of AMD's
 - **209 xclbin bitstreams** traced back to their AIE generator sources
 - **Q4NX format** fully decoded: 311 tensors, 4-bit groups of 32 with bf16 scales, 32×256 NPU tile layout
 - **NPU instruction set** documented: 8 DMA channels, 8 BD slots, compute vs. data tiles
-- **Entire stack rebuilt from source**: 87.8 MB closed binary → 17.5 MB open-source
+- **Entire stack rebuilt from source**: 87.8 MB closed binary → 1.5 MB open-source
 
 **Perf**: NPU v12 achieves **97 tok/s** (M=32 batch decode, INT8 GEMM on 32 XDNA 2 tiles) — beats FLM Kraken Point by 46%.
 
@@ -121,7 +121,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 |--------|:------------:|:----------------:|:---------:|
 | Throughput | 97 tok/s | 66 tok/s | **46% faster** |
 | M=32 latency | 244 → 10 ms/tok | — | **24× speedup** |
-| Stack size | 17.5 MB open | 87.8 MB closed | **5× smaller** |
+| Stack size | 1.5 MB open | 87.8 MB closed | **58× smaller** |
 | License | MIT | Proprietary | **Open source** |
 
 ---
@@ -130,7 +130,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 
 | Component | FastFlowLM (AMD) | This work |
 |-----------|-----------------|-----------|
-| Size | 87.8 MB | 17.5 MB |
+| Size | 87.8 MB | 1.5 MB |
 | License | Proprietary | MIT |
 | Source | Closed binary | Open C++23 |
 | Dependencies | 22 `.so` files | XRT only |

@@ -30,7 +30,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 - **Token Router** — dispatches each token to the fastest backend with auto-failover
 - **Jarvis Agent** — local agent with RAG, multi-turn memory, tool invocation, multi-step planning, and permission gating (all 5 Track 2 capabilities)
 - **46+ 1BP models** on HuggingFace across 17 families (+12 documented Zyphra non-LLM): Qwen3, BlackMamba, Zamba2, Llama 3.1, DeepSeek, Phi-4, Gemma, Mistral, Bonsai, Granite, and more — all in native 1BP format
-- **Reverse-engineered** AMD's XDNA 2 NPU in 4 days — 22 proprietary `.so` → 17.5 MB open-source, zero proprietary code
+- **Reverse-engineered** AMD's XDNA 2 NPU in 4 days — 22 proprietary `.so` → 1.5 MB open-source, zero proprietary code
 - **OpenAI-compatible API** + A2A protocol
 
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo), Radeon 8060S GPU (gfx1151), 32 XDNA 2 NPU tiles, 128 GB unified LPDDR5X

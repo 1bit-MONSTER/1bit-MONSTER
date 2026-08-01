@@ -40,8 +40,9 @@ weeks out of date the last time it was hand-maintained (see git history).
 | TQ2 GEMV | **367 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | GPU ternary (Vulkan) | **318 tok/s** | Vulkan ZINC | ✅ validated |
 | BitNet TQ1_0 (base-3 LUT) | **202 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
-| Prefill INT8 WMMA (I8-APRE) | **39.4 TFLOPS** | INT8 WMMA | ✅ re-validated 2026-07-26 (was 40.5, colder-GPU pass) |
-| ROCm HIP (kernels) | **64 tok/s** | ROCm HIP | ✅ validated |
+| Prefill INT8 WMMA (I8-APRE) | **43.2 TFLOPS** | INT8 WMMA | ✅ re-measured 2026-08-01 (was 39.4) |
+| GGML-Vulkan decode (Qwen3-0.6B Q4_K) | **373 tok/s** | GGML-Vulkan | ✅ measured 2026-08-01 |
+| GGML-Vulkan decode (SmolLM2-135M Q4_K) | **662 tok/s** | GGML-Vulkan | ✅ measured 2026-08-01 |
 | IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — correctness pending full IQ1_M port |
 | NPU INT8 GEMM | **0/10000 errors (22/22 shapes)** | XDNA 2 via Peano | ✅ verified 2026-07-28 — npu_engine_universal, 4 native ops (QKV/O/GU/D). Prefill + decode functional. Flat BD DMA bottleneck limits throughput; Chess toolchain deprecated (multi-dim BD repeat hangs NPU2 DMA). |
 

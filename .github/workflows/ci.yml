@@ -105,7 +105,7 @@ jobs:
           severity: warning
 
   lint:
-    name: Lint (clang-format, ruff)
+    name: Lint (clang-format)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
