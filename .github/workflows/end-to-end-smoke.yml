@@ -54,6 +54,9 @@ jobs:
           # Also kill stray manual servers (vision_server etc.) that can
           # squat on 8099 and answer health checks with the wrong schema.
           pkill -f "[v]ision_server.*8099" || true
+          # -9 fallback: a wedged instance can survive SIGTERM and squat on 8099
+          # with the wrong health schema (issue #1257 incident class).
+          pkill -9 -f "[v]ision_server.*8099" || true
           sleep 2
 
       - name: Start server
