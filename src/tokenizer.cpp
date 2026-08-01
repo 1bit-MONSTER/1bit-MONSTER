@@ -167,7 +167,7 @@ static void ensure_rank_map(rcpp_tokenizer* t) {
 
 extern "C" rcpp_status_t
 rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
-{
+try {
     if (!path || !out) return RCPP_INVALID_ARG;
     std::ifstream f(path, std::ios::binary);
     if (!f) return RCPP_INVALID_ARG;
@@ -255,7 +255,7 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
 
     *out = t;
     return RCPP_OK;
-}
+} catch (...) { return RCPP_INTERNAL; }
 
 extern "C" void rcpp_tokenizer_free(rcpp_tokenizer_t* t) { delete t; }
 
@@ -608,7 +608,7 @@ rcpp_tokenizer_encode(const rcpp_tokenizer_t* t,
                       const char* text, size_t text_len,
                       int add_bos,
                       int* ids_out, size_t max_out, size_t* out_count)
-{
+try {
     if (!t || !text || !out_count) return RCPP_INVALID_ARG;
     *out_count = 0;
     if (ids_out == nullptr && max_out > 0) return RCPP_INVALID_ARG;
@@ -704,13 +704,13 @@ rcpp_tokenizer_encode(const rcpp_tokenizer_t* t,
     size_t n = std::min(all_ids.size(), max_out);
     if (ids_out) for (size_t i = 0; i < n; ++i) ids_out[i] = all_ids[i];
     return RCPP_OK;
-}
+} catch (...) { return RCPP_INTERNAL; }
 
 extern "C" rcpp_status_t
 rcpp_tokenizer_decode(const rcpp_tokenizer_t* t,
                       const int* ids, size_t n_ids,
                       char* out, size_t max_bytes, size_t* out_len)
-{
+try {
     if (!t || !ids || !out_len) return RCPP_INVALID_ARG;
 
     // First reconstruct the GPT-2-mapped UTF-8 string, then undo the
@@ -743,4 +743,4 @@ rcpp_tokenizer_decode(const rcpp_tokenizer_t* t,
     if (out) std::memcpy(out, raw.data(), n);
     if (out && max_bytes > n) out[n] = '\0';
     return RCPP_OK;
-}
+} catch (...) { return RCPP_INTERNAL; }

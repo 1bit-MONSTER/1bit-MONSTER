@@ -153,7 +153,7 @@ __global__ void self_attention_kernel(
             scores[s] = expf(scores[s] - max_score);
             sum += scores[s];
         }
-        float inv_sum = 1.0f / sum;
+        float inv_sum = 1.0f / (sum + 1e-10f);
         for (int s = 0; s < N; s++) scores[s] *= inv_sum;
     }
     __syncthreads();
@@ -205,7 +205,7 @@ __global__ void cross_attention_kernel(
             scores[s] = expf(scores[s] - max_score);
             sum += scores[s];
         }
-        float inv_sum = 1.0f / sum;
+        float inv_sum = 1.0f / (sum + 1e-10f);
         for (int s = 0; s < N_enc; s++) scores[s] *= inv_sum;
     }
     __syncthreads();

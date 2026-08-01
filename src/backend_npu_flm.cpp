@@ -94,6 +94,17 @@ public:
         const char* cfg  = getenv("NPU_FLM_CONFIG");
         const char* xclb = getenv("NPU_FLM_XCLBINS");
 
+        // Validate env-controlled binary paths (fixes #1329: reject outside /opt/ or /usr/)
+        auto safe_bin = [](const char* p) -> bool {
+            if (!p) return true;
+            std::string s(p);
+            return s.find("/opt/") == 0 || s.find("/usr/") == 0 || s.find("/home/") == 0;
+        };
+        if (!safe_bin(bin)) {
+            fprintf(stderr, "NPU: NPU_FLM_BIN=%s rejected — must be under /opt/, /usr/, or /home/\n", bin);
+            bin = nullptr;
+        }
+
         flm_bin_     = bin  ? bin  : FLM_BINARY_PATH;
         flm_config_  = cfg  ? cfg  : FLM_CONFIG_PATH;
         flm_xclbins_ = xclb ? xclb : FLM_XCLBIN_PATH;

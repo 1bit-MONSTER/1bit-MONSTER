@@ -273,12 +273,13 @@ bool BillingManager::process_webhook(const std::string& payload, const std::stri
 BillingManager::PricingInfo BillingManager::get_pricing() const {
     PricingInfo info;
 
-    // Allow overrides from environment
+    // Allow overrides from environment (fixes #1325: validate with strtod)
     const char* env;
-    if ((env = getenv("STRIPE_PRICE_BASIC_AMOUNT"))) info.basic_monthly = atof(env);
-    if ((env = getenv("STRIPE_PRICE_PRO_AMOUNT"))) info.pro_monthly = atof(env);
-    if ((env = getenv("STRIPE_PRICE_ENTERPRISE_AMOUNT"))) info.enterprise_monthly = atof(env);
-    if ((env = getenv("STRIPE_VOICE_CLONE_FEE"))) info.voice_clone_fee = atof(env);
+    auto safe_atof = [](const char* s) -> double { char* end; double v = strtod(s, &end); return (end != s) ? v : 0.0; };
+    if ((env = getenv("STRIPE_PRICE_BASIC_AMOUNT"))) info.basic_monthly = (float)safe_atof(env);
+    if ((env = getenv("STRIPE_PRICE_PRO_AMOUNT"))) info.pro_monthly = (float)safe_atof(env);
+    if ((env = getenv("STRIPE_PRICE_ENTERPRISE_AMOUNT"))) info.enterprise_monthly = (float)safe_atof(env);
+    if ((env = getenv("STRIPE_VOICE_CLONE_FEE"))) info.voice_clone_fee = (float)safe_atof(env);
 
     return info;
 }

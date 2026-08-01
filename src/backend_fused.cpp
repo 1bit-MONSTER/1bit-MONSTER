@@ -468,12 +468,10 @@ struct FusedBackend : Backend {
             if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(datt, HD_, pos, rope_theta, NH_);
             if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(dgate, HD_, pos, rope_theta, NKV_);
 
-            // 4. Q→half + KV store
+            // 4. Q→half + KV store (all on same stream, no sync needed)
             if (gl.wo) {
-                HIP_CHECK(hipStreamSynchronize(stream));
                 fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, datt, s1);
                 fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(devK, devV, dgate, dup_, pos, NKV_, HD_, max_seq);
-                HIP_CHECK(hipStreamSynchronize(stream));
 
                 // 5. Flash-attention
                 float scl = 1.0f / sqrtf((float)HD_);
@@ -561,8 +559,7 @@ struct FusedBackend : Backend {
 
         // Final RMSNorm + readback (runs after ALL NC_ layers)
         fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
-        HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));
-        HIP_CHECK(hipStreamSynchronize(stream));
+        HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));  // blocking, no sync needed
         pos++;
         return true;
     }
@@ -575,8 +572,7 @@ struct FusedBackend : Backend {
         } else if (d_embed) {
             gemv(dlogits, d_embed, dh, VOCAB, H, stream);
         }
-        HIP_CHECK(hipMemcpy(logits, dlogits, VOCAB*sizeof(float), hipMemcpyDeviceToHost));
-        HIP_CHECK(hipStreamSynchronize(stream));
+        HIP_CHECK(hipMemcpy(logits, dlogits, VOCAB*sizeof(float), hipMemcpyDeviceToHost));  // blocking
         if (argmax) { *argmax=0; float mv=logits[0]; for(int v=1;v<VOCAB;v++){ if(logits[v]>mv){ mv=logits[v]; *argmax=v; } } }
         return true;
     }
