@@ -30,10 +30,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <thread>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -1492,6 +1494,19 @@ int main(int argc, char** argv) {
     }
 
     if (!no_beacon) start_beacon(g_port);
+
+    // Background voice-pack hot-reload (#1373): rescans VOICE_PACKS_DIR on a
+    // timer so packs can be added/updated/removed without a server restart.
+    {
+        const char* vp_scan_env = getenv("VOICE_PACKS_SCAN_SECS");
+        const int vp_scan_secs = vp_scan_env ? std::max(1, atoi(vp_scan_env)) : 5;
+        std::thread([vp_scan_secs]() {
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::seconds(vp_scan_secs));
+                g_codec_tts.scan_voice_packs();
+            }
+        }).detach();
+    }
 
     if (!svr.listen(bind_addr, g_port)) {
         fprintf(stderr, "Failed to start server on %s:%d\n", bind_addr.c_str(), g_port);
