@@ -3,4 +3,4 @@
 // Uses ggml-vulkan (MIT License) via llama.cpp API for high-performance inference.
 
 struct Backend;
-Backend* create_ggml_vulkan_backend();
+extern "C" Backend* create_ggml_vulkan_backend();

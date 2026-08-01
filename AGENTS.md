@@ -42,3 +42,9 @@ This project is indexed by GitNexus as **1bit-systems** (21911 symbols, 39552 re
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Lifecycle
+
+- **When your job is done, stop.** Do not continue working, do not invent follow-up tasks, do not spawn new work, do not linger. Deliver the result and exit.
+- Never leave background processes, scheduled runs, or partial downloads behind. Clean up anything you started before finishing.
+

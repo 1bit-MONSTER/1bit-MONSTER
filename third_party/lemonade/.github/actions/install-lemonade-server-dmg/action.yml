@@ -1,0 +1,119 @@
+name: 'Install Lemonade Server (.pkg)'
+description: 'Downloads and installs Lemonade Server from a .pkg, then verifies installation'
+inputs:
+  version:
+    description: 'Version string for the package (e.g., 9.3.1)'
+    required: true
+  artifact-name:
+    description: 'Name of the artifact to download'
+    required: false
+    default: 'lemonade-macos-pkg'
+  download-artifact:
+    description: 'Whether to download the artifact (set to false if already downloaded)'
+    required: false
+    default: 'true'
+
+outputs:
+  bin-path:
+    description: 'Path to the installed binaries directory'
+    value: ${{ steps.install.outputs.bin-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download .pkg package
+      if: ${{ inputs.download-artifact == 'true' }}
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .
+
+    - name: Install .pkg
+      id: install
+      shell: bash
+      run: |
+        set -e
+
+        echo "Looking for .pkg file..."
+
+        PKG_FILE=$(find . -maxdepth 1 -name "*.pkg" -type f | head -1)
+
+        if [ -z "$PKG_FILE" ]; then
+            echo "ERROR: No .pkg file found in current directory!"
+            ls -la
+            exit 1
+        fi
+
+        echo "Installing: $PKG_FILE"
+        sudo installer -pkg "$PKG_FILE" -target /
+        echo "Installation complete"
+
+        # Binaries are installed at /usr/local/bin
+        BIN_PATH="/usr/local/bin"
+        echo "$BIN_PATH" >> $GITHUB_PATH
+        echo "bin-path=$BIN_PATH" >> $GITHUB_OUTPUT
+
+        echo "Binaries at: $BIN_PATH"
+
+    - name: Verify installation
+      shell: bash
+      run: |
+        set -e
+
+        BIN_PATH="${{ steps.install.outputs.bin-path }}"
+        echo "Verifying installation at: $BIN_PATH"
+
+        if [ -x "$BIN_PATH/lemond" ]; then
+            echo "Found: lemond"
+            "$BIN_PATH/lemond" --version
+        else
+            echo "ERROR: lemond not found at $BIN_PATH"
+            exit 1
+        fi
+
+        if [ -x "$BIN_PATH/lemonade" ]; then
+            echo "Found: lemonade"
+            "$BIN_PATH/lemonade" --version
+        else
+            echo "WARNING: lemonade not found at $BIN_PATH"
+        fi
+
+        echo "Installation verification complete!"
+
+    - name: Wait for server to be ready
+      shell: bash
+      run: |
+        BIN_PATH="${{ steps.install.outputs.bin-path }}"
+        LOG_FILE="$RUNNER_TEMP/lemond.log"
+
+        # The .pkg postflight script starts the server via launchd.
+        # Give it a few seconds to come up before checking.
+        echo "Waiting for server to be ready..."
+        for i in $(seq 1 15); do
+          if curl -sf http://localhost:13305/live > /dev/null 2>&1; then
+            echo "Server is running and healthy (started by launchd)"
+            exit 0
+          fi
+          sleep 2
+        done
+
+        # Launchd may not work reliably in CI (no GUI session, restricted
+        # sandbox). Fall back to starting the server manually.
+        echo "Server not reachable after 30s — starting manually..."
+        mkdir -p "$RUNNER_TEMP/xdg-runtime"
+        chmod 700 "$RUNNER_TEMP/xdg-runtime"
+        echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
+        export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg-runtime"
+        "$BIN_PATH/lemond" > "$LOG_FILE" 2>&1 &
+
+        for i in $(seq 1 15); do
+          if curl -sf http://localhost:13305/live > /dev/null 2>&1; then
+            echo "Server is running and healthy (started manually)"
+            exit 0
+          fi
+          echo "Waiting for server... ($i/15)"
+          sleep 2
+        done
+        echo "ERROR: Server did not start within 60 seconds"
+        cat "$LOG_FILE" 2>/dev/null || true
+        exit 1

@@ -43,9 +43,9 @@ jobs:
           ALLOWED='
             AGENTS.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
             CMakeLists_windows.txt CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
-            Makefile.zamba2 README.md ROADMAP.md SECURITY.md SHERRY-FILES.txt
-            TODO_TRACKING.md VERSION env.sh install.sh package.json
-            replace_i8ctx.py
+            Makefile.zamba2 PLAN-GAIA.md README.md ROADMAP.md SECURITY.md
+            SHERRY-FILES.txt TODO_TRACKING.md VERSION env.sh install.sh
+            package.json replace_i8ctx.py
             .github
             .pr_agent.toml
             engine kernels include src cmake adapters models rust
@@ -54,9 +54,11 @@ jobs:
             packaging snap
             docs site
             tools scripts bin
+            third_party  # vendored engine deps: Lemonade server core + Gaia C++ (embedded, engine scope)
             tools/video-lora  # C++ Vulkan inference backend (SD1.5/AnimateDiff) — engine scope, NOT an app
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations personas prompts skills themes workers zaya_audio
+            .gitmodules PLAN-GAIA.md third_party  # embedded Lemonade server core + vendored Gaia (zero-Python agent layer) — engine scope
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"

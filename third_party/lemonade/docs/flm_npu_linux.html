@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLMs on Linux with FastFlowLM - Lemonade Server</title>
+  <link rel="icon" href="./assets/favicon.ico">
+  <link rel="stylesheet" href="assets/website-styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="assets/navbar.js"></script>
+  <meta name="description" content="LLMs on Linux are now supported with FastFlowLM. This guide helps you set up the FLM stack on supported AMD XDNA 2 NPUs and troubleshoot common validation issues.">
+  <meta property="og:title" content="LLMs on Linux with FastFlowLM">
+  <meta property="og:description" content="LLMs on Linux are now supported with FastFlowLM. This guide helps you set up the FLM stack on supported AMD XDNA 2 NPUs and troubleshoot common validation issues.">
+  <meta property="og:type" content="article">
+  <meta property="article:published_time" content="2026-03-11">
+</head>
+<body>
+  <div class="navbar-placeholder"></div>
+
+  <main class="main blog-main">
+    <article class="blog-article blog-article-unified">
+      <div class="hero-section">
+        <div class="hero-content">
+          <div class="hero-badge">Linux NPU Support</div>
+          <h1 class="hero-title">LLMs on Linux with FastFlowLM</h1>
+          <div class="hero-subtitle" id="article-subtitle">This article will teach you how to run LLMs on your AMD XDNA 2 NPU on Linux using FastFlowLM. Get set up and then show us what you build!</div>
+          <div class="hero-meta">
+            <div class="meta-item"><span class="meta-icon">Date:</span>March 11, 2026</div>
+            <div class="meta-item meta-authors"><span class="meta-icon">Authors:</span>Lemonade and FastFlowLM contributors</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="article-content">
+        <div class="section-card" id="troubleshoot-intro" style="display:none;">
+          <div class="section-header">
+            <span class="section-kicker">Getting Started</span>
+            <h2 class="section-title">Troubleshooting</h2>
+          </div>
+          <p>Lemonade detected that some additional setup might be needed to get FastFlowLM fully operational on this system. Please review this guide and follow the steps provided.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Announcement</span>
+            <h2 class="section-title">Updates for Linux Support</h2>
+            <p>
+              Today, it is possible to run LLMs and Whisper on the AMD XDNA 2 NPU. This solution is made up of:
+              <ul>
+                <li>Upstream NPU driver in the Linux 7.0+ kernel (with backports for 6.xx kernels).</li>
+                <li>AMD IRON compiler for XDNA NPUs.</li>
+                <li>FastFlowLM, a lightweight LLM runtime for AMD NPUs, which today has added Linux support.</li>
+                <li>Lemonade, ties everything together with a streamlined user experience.</li>
+              </ul>
+            </p>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Getting Started</span>
+            <h2 class="section-title">FastFlowLM</h2>
+            <p>
+              <a href="https://fastflowlm.com/">FastFlowLM</a> is a lightweight LLM runtime optimized for AMD NPUs. Today, FastFlowLM is adding support for Ubuntu, Arch, and other distros to enable fast, low-power LLMs on Ryzen&trade; AI PCs that run Linux.
+            </p>
+          </div>
+
+          <p>This article will help you:</p>
+          <ul>
+            <li>Understand Linux NPU support status and required platform versions</li>
+            <li>Install the FLM + driver stack for your distribution</li>
+            <li>Validate your setup with <code>flm validate</code></li>
+            <li>Fix common firmware, driver, and memlock issues</li>
+          </ul>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">HW Requirements</span>
+            <h2 class="section-title">Supported processors</h2>
+          </div>
+
+          <p class="flm-req-intro">FastFlowLM on Linux requires an <strong>AMD XDNA 2</strong> NPU.</p>
+          <div class="flm-req-table-wrap">
+            <table class="flm-req-table">
+              <thead>
+                <tr>
+                  <th>Ryzen AI family</th>
+                  <th>Codename</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Max 300-series</td>
+                  <td>Strix Halo</td>
+                  <td><span class="flm-status-ok">Supported</span></td>
+                </tr>
+                <tr>
+                  <td>300-series</td>
+                  <td>Kraken Point, Strix Point</td>
+                  <td><span class="flm-status-ok">Supported</span></td>
+                </tr>
+                <tr>
+                  <td>400-series</td>
+                  <td>Gorgon Point</td>
+                  <td><span class="flm-status-ok">Supported</span></td>
+                </tr>
+                <tr>
+                  <td>Z2 Extreme</td>
+                  <td>Handheld devices</td>
+                  <td><span class="flm-status-ok">Supported</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="flm-req-warning">Note: Ryzen AI 7000/8000/200-series chips have XDNA 1, which is not supported.</p>
+        </div>
+
+        <div class="section-card" id="runtime-stack">
+          <div class="section-header">
+            <span class="section-kicker">SW Requirements</span>
+            <h2 class="section-title">Runtime stack</h2>
+          </div>
+
+          <p class="flm-req-intro">This solution requires specific firmware, kernel version, driver, and runtime software to function. The quickstart guide below will help you install these requirements.</p>
+          <div class="flm-req-table-wrap">
+            <table class="flm-req-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Requirement</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>NPU firmware</td>
+                  <td>Version 1.1.0.0 or later</td>
+                </tr>
+                <tr>
+                  <td>Kernel + driver</td>
+                  <td>Kernel 7.0+ with amdxdna, or amdxdna-dkms</td>
+                </tr>
+                <tr>
+                  <td>Runtime</td>
+                  <td>FastFlowLM (optional — auto-installed by Lemonade if not in PATH)</td>
+                </tr>
+                <tr>
+                  <td>Memlock limit</td>
+                  <td>Must be high enough for NPU execution</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Quickstart</span>
+            <h2 class="section-title">Setup by distribution</h2>
+            <p>Select your Linux distribution and follow the exact install path.</p>
+          </div>
+
+          <div class="flm-distro-selector-section">
+            <label for="distro-select" class="flm-distro-label"><strong>Select your Linux distribution:</strong></label>
+            <select id="distro-select" class="flm-distro-selector">
+              <option value="" selected disabled>Select your distro...</option>
+              <option value="arch">Arch Linux</option>
+              <option value="debian-13">Debian 13</option>
+              <option value="other">Other</option>
+              <option value="ubuntu-24">Ubuntu 24.04</option>
+              <option value="ubuntu-25">Ubuntu 25.10</option>
+              <option value="ubuntu-26">Ubuntu 26.04</option>
+            </select>
+          </div>
+
+          <div class="flm-distro-instructions" id="distro-ubuntu-24" style="display:none;">
+            <div class="flm-instruction-box">
+              <div class="flm-instruction-header">
+                <span class="flm-instruction-label">For Ubuntu 24.04</span>
+              </div>
+              <ol>
+                <li>Add the PPA:
+                  <div class="flm-code-block"><code>sudo add-apt-repository ppa:lemonade-team/stable<br>sudo apt update</code></div>
+                  <span class="flm-inline-note">See <a href="https://launchpad.net/~lemonade-team/+archive/ubuntu/stable" target="_blank" rel="noopener">lemonade-team/stable</a> for details.</span>
+                </li>
+                <li>Install packages:
+                  <div class="flm-code-block"><code>sudo apt install libxrt-npu2 amdxdna-dkms</code></div>
+                </li>
+                <li>Reboot:
+                  <div class="flm-code-block"><code>sudo reboot</code></div>
+                </li>
+                <li>Install FLM from upstream releases, or let Lemonade auto-install it:
+                  <div class="flm-code-block"><code>sudo apt install ./&lt;flm_package.deb&gt;</code></div>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="flm-distro-instructions" id="distro-ubuntu-25" style="display:none;">
+            <div class="flm-instruction-box">
+              <div class="flm-instruction-header">
+                <span class="flm-instruction-label">For Ubuntu 25.10</span>
+              </div>
+              <ol>
+                <li>Add the PPA:
+                  <div class="flm-code-block"><code>sudo add-apt-repository ppa:lemonade-team/stable<br>sudo apt update</code></div>
+                  <span class="flm-inline-note">See <a href="https://launchpad.net/~lemonade-team/+archive/ubuntu/stable" target="_blank" rel="noopener">lemonade-team/stable</a> for details.</span>
+                </li>
+                <li>Install packages:
+                  <div class="flm-code-block"><code>sudo apt install libxrt-npu2 amdxdna-dkms</code></div>
+                </li>
+                <li>Reboot:
+                  <div class="flm-code-block"><code>sudo reboot</code></div>
+                </li>
+                <li>Install FLM from upstream releases, or let Lemonade auto-install it:
+                  <div class="flm-code-block"><code>sudo apt install ./&lt;flm_package.deb&gt;</code></div>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="flm-distro-instructions" id="distro-ubuntu-26" style="display:none;">
+            <div class="flm-instruction-box">
+              <div class="flm-instruction-header">
+                <span class="flm-instruction-label">For Ubuntu 26.04</span>
+              </div>
+              <ol>
+                <li>Optionally install FLM from upstream releases:
+                  <div class="flm-code-block"><code>sudo apt install ./&lt;flm_package.deb&gt;</code></div>
+                  <span class="flm-inline-note">Lemonade will auto-install the portable FLM binary if not already available.</span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+           <div class="flm-distro-instructions" id="distro-debian-13" style="display:none;">
+            <div class="flm-instruction-box">
+              <div class="flm-instruction-header">
+                <span class="flm-instruction-label">For Debian 13</span>
+              </div>
+              <ol>
+                <li>Enable backports by creating <code>/etc/apt/sources.list.d/debian-backports.sources</code>:
+                  <div class="flm-code-block"><code>sudo tee /etc/apt/sources.list.d/debian-backports.sources &lt;&lt;EOF<br>Types: deb<br>URIs: http://deb.debian.org/debian<br>Suites: trixie-backports<br>Components: main<br>Enabled: yes<br>Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg<br>EOF<br>sudo apt update</code></div>
+                  <span class="flm-inline-note">Backports is needed so apt can automatically satisfy FLM's runtime/driver dependencies. See <a href="https://backports.debian.org/Instructions/" target="_blank" rel="noopener">backports.debian.org</a> for details.</span>
+                </li>
+                <li>Optionally install FLM from upstream releases:
+                  <div class="flm-code-block"><code>sudo apt install ./&lt;flm_package.deb&gt;</code></div>
+                  <span class="flm-inline-note">Lemonade will auto-install the portable FLM binary if not in PATH.</span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="flm-distro-instructions" id="distro-arch" style="display:none;">
+            <div class="flm-instruction-box">
+              <div class="flm-instruction-header">
+                <span class="flm-instruction-label">For Arch Linux</span>
+              </div>
+              <ol>
+                <li>Install XRT:
+                  <div class="flm-code-block"><code>sudo pacman -S xrt</code></div>
+                </li>
+                <li>Install <code>xrt-plugin-amdxdna</code>:
+                  <div class="flm-code-block"><code>sudo pacman -S xrt-plugin-amdxdna</code></div>
+                </li>
+                <li>Update to kernel 7.0-rc2 or later:
+                  <div class="flm-code-block"><code>sudo pacman -S linux</code></div>
+                </li>
+                <li>For older kernels (6.18, 6.19), use AUR:
+                  <div class="flm-code-block"><code>paru -S amdxdna-dkms</code></div>
+                </li>
+                <li>Update firmware package:
+                  <div class="flm-code-block"><code>sudo pacman -S linux-firmware</code></div>
+                </li>
+                <li>Install FastFlowLM:
+                  <div class="flm-code-block"><code>sudo pacman -S fastflowlm</code></div>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="flm-distro-instructions" id="distro-other" style="display:none;">
+            <div class="flm-instruction-box">
+              <div class="flm-instruction-header">
+                <span class="flm-instruction-label">For Other Distributions</span>
+              </div>
+              <ol>
+                <li>Build and install XRT and the AMD XDNA plugin from source: <a href="https://github.com/amd/xdna-driver/" target="_blank" rel="noopener">amd/xdna-driver</a>.</li>
+                <li>Update to kernel 7.0-rc2 or later and update <code>linux-firmware</code> to 20260221 or later.</li>
+                <li>Clone FastFlowLM:
+                  <div class="flm-code-block"><code>git clone https://github.com/FastFlowLM/FastFlowLM.git</code></div>
+                </li>
+                <li>Build and install FLM:
+                  <div class="flm-code-block"><code>cmake -S src --preset linux-default<br>ninja -C src/build<br>sudo ninja -C src/build install</code></div>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-card" id="flm-faq-section" style="display:none;">
+          <div class="section-header">
+            <span class="section-kicker">Troubleshooting</span>
+            <h2 class="section-title">Common issues</h2>
+            <p>If setup does not work, use these checks to isolate the failing layer quickly.</p>
+          </div>
+          The first thing you should do is run <code>flm validate</code> to check your system's compatibility and identify any issues. A successful validation will look like this:
+            <div class="flm-code-block flm-sample-output">
+❮ flm validate<br>[Linux]  Kernel: 7.0.0-rc1-00052-g27936bfca73d<br>[Linux]  NPU: /dev/accel/accel0<br>[Linux]  NPU FW Version: 1.1.2.64<br>[Linux]  Memlock Limit: infinity
+            </div>
+
+          <h3>1. Outdated NPU firmware</h3>
+          <p>If <code>flm validate</code> reports firmware issues, ensure version <strong>1.1.0.0 or later</strong>.</p>
+          <div class="flm-code-block"><code>cat /sys/bus/pci/drivers/amdxdna/*/fw_version</code></div>
+          <p>If older, update through your distribution (typically by updating the <code>linux-firmware</code> package).</p>
+
+          <h3>2. Missing or outdated amdxdna driver</h3>
+          <p>This solution requires <code>amdxdna</code>, provided in Linux kernel 7.0+ or via <code>amdxdna-dkms</code>.</p>
+          <div class="flm-code-block"><code>lsmod | grep amdxdna</code></div>
+          <p>If not listed, upgrade to a kernel with in-tree support or install the DKMS package.</p>
+          <div class="flm-code-block"><code>uname -r</code></div>
+          <p>Kernel version matters mainly for in-tree driver support. With DKMS, package version determines the driver.</p>
+
+          <h3>3. Memlock limit too low</h3>
+          <p>NPU workloads need memory locking. If you see <strong>Memlock limit is too low (8MB)</strong>, increase limits.</p>
+          <p>
+            <strong>Most users do not need manual changes when running Lemonade as a service:</strong>
+            Lemonade's systemd unit sets <code>LimitMEMLOCK=infinity</code>.
+          </p>
+          <p>If you run FLM outside the service, edit limits manually:</p>
+          <div class="flm-code-block"><code>sudo nano /etc/security/limits.conf</code></div>
+          <div class="flm-code-block"><pre><code>*    soft    memlock    unlimited
+*    hard    memlock    unlimited</code></pre></div>
+          <p>Log out and log back in for the change to apply.</p>
+
+          <h3>4. AMD IOMMU disabled</h3>
+          <p>If AMD IOMMU is disabled on your system, your NPU will not be detected:</p>
+          <div class="flm-code-block"><code>
+            $ flm validate
+            [Linux]  Kernel: 7.0.0-rc2
+            [ERROR]  No NPU device found.
+            [Linux]  Memlock Limit: set to infinity
+          </code></div>
+          <p>Make sure <code>amd_iommu=off</code> is not part of your kernel command line.
+            This is a common setting to change on Strix Halo machines as it slighlty increases
+            GPU performance in llama.cpp, but unfortunately disables the NPU.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="section-header">
+            <span class="section-kicker">Resources</span>
+            <h2 class="section-title">Additional resources</h2>
+          </div>
+          <ul>
+            <li><a href="https://github.com/FastFlowLM/FastFlowLM" target="_blank" rel="noopener">FastFlowLM GitHub repository</a></li>
+            <li><a href="https://github.com/lemonade-sdk/lemonade/issues" target="_blank" rel="noopener">Lemonade GitHub issues</a></li>
+            <li><a href="https://discord.gg/lemonade-server" target="_blank" rel="noopener">Lemonade Discord</a></li>
+          </ul>
+        </div>
+
+        <div class="cta-separator" aria-hidden="true"></div>
+        <div class="cta-section cta-section-minimal">
+          <div class="cta-content">
+            <h2 class="cta-title">Ready to enable Linux NPU LLMs?</h2>
+            <p class="cta-subtitle">Install Lemonade, set up the dependencies described above, then start chatting and building!</p>
+            <div class="cta-actions">
+              <a href="./install_options.html" class="download-btn" target="_blank" rel="noopener">Install Lemonade</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <div class="footer-placeholder"></div>
+  <script src="assets/footer.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      initializeNavbar('./');
+      initializeFooter('./');
+
+      // In troubleshoot mode, hide Announcement, Getting Started, and CTA sections
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('mode') === 'troubleshoot') {
+        document.querySelectorAll('.section-card').forEach(function(card) {
+          var kicker = card.querySelector('.section-kicker');
+          if (kicker) {
+            var text = kicker.textContent.trim();
+            if (text === 'Announcement' || text === 'Getting Started') {
+              card.style.display = 'none';
+            }
+          }
+        });
+        var ctaSep = document.querySelector('.cta-separator');
+        var ctaSection = document.querySelector('.cta-section');
+        if (ctaSep) ctaSep.style.display = 'none';
+        if (ctaSection) ctaSection.style.display = 'none';
+        var troubleshootIntro = document.getElementById('troubleshoot-intro');
+        if (troubleshootIntro) troubleshootIntro.style.display = '';
+      }
+
+      const select = document.getElementById('distro-select');
+      const ids = ['ubuntu-24', 'ubuntu-25', 'ubuntu-26', 'debian-13', 'arch', 'other'];
+      const faq = document.getElementById('flm-faq-section');
+
+      ids.forEach(function(id) {
+        const el = document.getElementById('distro-' + id);
+        if (el) el.style.display = 'none';
+      });
+      if (faq) faq.style.display = 'none';
+
+      select.addEventListener('change', function() {
+        ids.forEach(function(id) {
+          const el = document.getElementById('distro-' + id);
+          if (el) el.style.display = 'none';
+        });
+        if (faq) faq.style.display = 'block';
+        const target = document.getElementById('distro-' + select.value);
+        if (target) target.style.display = 'block';
+      });
+    });
+  </script>
+
+  <style>
+    .blog-article-unified .blog-callout ul {
+      margin: 0.5rem 0 0.25rem 1.2rem;
+      line-height: 1.7;
+    }
+
+    .flm-distro-selector-section {
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+      flex-wrap: wrap;
+    }
+
+    .flm-distro-label {
+      color: #2c3e50;
+      font-size: 1rem;
+    }
+
+    .flm-distro-selector {
+      padding: 0.6rem 1rem;
+      font-size: 1rem;
+      border-radius: 8px;
+      border: 1px solid #e3ddbf;
+      background: #fff;
+      color: #1f2937;
+      min-width: 220px;
+    }
+
+    .flm-distro-selector:focus {
+      outline: 2px solid rgba(227, 189, 46, 0.35);
+      border-color: #d6b53c;
+    }
+
+    .flm-distro-instructions {
+      margin-top: 1rem;
+    }
+
+    .flm-instruction-box {
+      border: 1px solid #ece7cb;
+      background: #fffef9;
+      border-radius: 12px;
+      padding: 1.1rem 1.2rem;
+    }
+
+    .flm-instruction-header {
+      margin-bottom: 0.8rem;
+    }
+
+    .flm-instruction-label {
+      font-weight: 700;
+      color: #2c3e50;
+    }
+
+    .flm-instruction-box ol {
+      margin: 0;
+      padding-left: 1.25rem;
+      line-height: 1.7;
+    }
+
+    .flm-code-block {
+      background: #1f2937;
+      color: #f8fafc;
+      border-radius: 8px;
+      margin: 0.55rem 0 0.75rem;
+      padding: 0.8rem 0.9rem;
+      overflow-x: auto;
+      font-family: "Courier New", Courier, monospace;
+    }
+
+    .flm-code-block code {
+      color: inherit;
+      background: none;
+      padding: 0;
+      white-space: pre;
+    }
+
+    .flm-sample-output {
+      background: #111827;
+      margin-top: 0.2rem;
+    }
+
+    .flm-inline-note {
+      color: #6b7280;
+      font-size: 0.92rem;
+    }
+
+    .flm-req-title {
+      margin: 1.25rem 0 0.75rem;
+      font-size: 1.06rem;
+      font-weight: 700;
+      color: #111827;
+    }
+
+    .flm-req-intro {
+      margin: 0 0 0.8rem;
+      color: #1f2937;
+      font-size: 0.95rem;
+      line-height: 1.45;
+    }
+
+    .flm-req-table-wrap {
+      margin-bottom: 1rem;
+      overflow-x: auto;
+    }
+
+    .flm-req-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      color: #111827;
+      font-size: 0.95rem;
+    }
+
+    .flm-req-table th,
+    .flm-req-table td {
+      border: 1px solid #d8d5c7;
+      padding: 0.62rem 0.72rem;
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.45;
+    }
+
+    .flm-req-table th {
+      background: #f7f7f4;
+      font-weight: 700;
+    }
+
+    .flm-req-table tbody tr:nth-child(even) {
+      background: #fcfcfa;
+    }
+
+    .flm-status-ok {
+      color: #1f2937;
+      font-weight: 600;
+    }
+
+    .flm-status-bad {
+      color: #1f2937;
+      font-weight: 400;
+    }
+
+    .flm-req-warning {
+      margin: 0.1rem 0 0.2rem;
+      color: #4b5563;
+      font-size: 0.95rem;
+      font-weight: 400;
+      font-style: italic;
+      line-height: 1.4;
+    }
+
+    @media (max-width: 768px) {
+      .flm-req-table {
+        font-size: 0.9rem;
+      }
+
+      .flm-req-table th,
+      .flm-req-table td {
+        padding: 0.55rem 0.62rem;
+      }
+
+      .flm-distro-selector {
+        width: 100%;
+      }
+    }
+  </style>
+</body>
+</html>

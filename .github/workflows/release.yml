@@ -11,7 +11,10 @@ jobs:
   server:
     name: Build release (C++ HIP kernels + server + CLI) — TheRock 7.15.0a
     runs-on: ubuntu-24.04
-    container: rocm/dev-ubuntu-24.04:7.2.4-complete
+    # Plain Ubuntu base — the build uses ONLY TheRock 7.15.0a (installed below).
+    # Never a rocm/dev-ubuntu-*:7.2.4* container: the repo never builds against
+    # system ROCm 7.2.4.
+    container: ubuntu:24.04
     timeout-minutes: 90
     permissions:
       contents: write
@@ -20,22 +23,26 @@ jobs:
         shell: bash -leo pipefail {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
 
       - name: Install build tools + TheRock nightly ROCm
         run: |
           apt-get update -qq
           apt-get install -y -qq git cmake ninja-build build-essential \
-            libvulkan-dev uuid-dev python3-pip python3-venv
+            libvulkan-dev uuid-dev python3-pip python3-venv \
+            libcurl4-openssl-dev libzstd-dev libwebsockets-dev
 
           # XRT (Xilinx Runtime) for NPU fused engine compilation.
           # backend_fused.cpp/backend_fused_npu.cpp need xrt headers at compile time.
           apt-get install -y -qq libxrt-dev 2>/dev/null || \
             echo "::warning::libxrt-dev not available — fused NPU backends stubbed"
 
-          # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo)
-          # This replaces the system ROCm at /opt/rocm with TheRock 7.15.0a
-          # at /opt/rocm-therock. CMakeLists.txt auto-detects /opt/rocm-therock
-          # before falling back to system ROCm.
+          # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
+          # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
+          # ROCm in this build — the base image has no system ROCm, so CMake's
+          # /opt/rocm fallback can never be reached. CMakeLists.txt auto-detects
+          # /opt/rocm-therock.
           python3 -m venv /opt/rocm-therock
           /opt/rocm-therock/bin/pip install \
             "rocm[libraries,devel,device-gfx1151]" \
@@ -70,6 +77,7 @@ jobs:
           echo "HIP version: $($ROCM_PATH/bin/hipconfig --version 2>/dev/null || echo 'N/A')"
 
           cmake -B build -G Ninja \
+            -DEMBED_LEMONADE=ON \
             -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
             -DCMAKE_PREFIX_PATH="$ROCM_PATH" \
             -DCMAKE_CXX_FLAGS="-I$ROCM_PATH/include" \
@@ -100,6 +108,8 @@ jobs:
           cp build/zaya_server dist/bin/
           cp build/zaya_agent dist/bin/ 2>/dev/null || true
           cp build/unified_server dist/bin/ 2>/dev/null || true
+          # Content-aware routing proxy (Lemonade policy engine when embedded)
+          cp build/unified_router dist/bin/ 2>/dev/null || true
           # TUI frontend
           cp build/bitnet_tui dist/bin/ 2>/dev/null || true
           # Shared HIP kernel library
@@ -184,8 +194,14 @@ jobs:
             ### Includes
             - `1bit` — C++ NPU-native coding agent CLI (chat, up, down, status, build, config, serve)
             - `onebitd` — C++ inference daemon (spawns zaya_server, proxies HTTP)
-            - `zaya_server` — C++ HIP inference engine + OpenAI-compatible server
-            - `unified_router` — C++ NPU+GPU content-aware routing proxy
+            - `zaya_server` — C++ HIP inference engine + OpenAI-compatible server;
+              `--lemonade` runs the embedded Lemonade server core in-process
+            - `unified_server` — multi-backend server with the **embedded Lemonade
+              server core** (llama.cpp, FastFlowLM, whisper.cpp, stable-diffusion.cpp,
+              kokoro, ryzenai-llm, vllm backends + policy router); `--lemonade` runs
+              Lemonade's full server in-process
+            - `unified_router` — NPU+GPU routing proxy; decisions run through
+              Lemonade's policy engine (keyword classifier → GPU, default → NPU)
             - `bitnet_tui` — C++ FTXUI terminal chat UI
             - `librocm_cpp.so` — ternary GEMV/GEMM HIP kernels
             - install script, docs, license

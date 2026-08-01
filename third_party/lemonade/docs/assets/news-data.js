@@ -1,0 +1,390 @@
+// News content data - easy to add new entries
+const newsData = [
+    {
+        title: "Search ModelScope from Lemonade",
+        url: "https://lemonade-server.ai/news/modelscope-search.html",
+        date: "July 27, 2026",
+        description: "Lemonade v11.5 adds ModelScope as a second model registry alongside Hugging Face. Search both from one box in the Model Manager, the CLI, and the registry search API.",
+        image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/modelscope/modelscope-search-results.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+        title: "This local AI model is a complete multimedia role playing experience!",
+        url: "https://www.youtube.com/watch?v=mxiK8Fjm9OQ",
+        date: "July 2, 2026",
+        description: "A walkthrough of the RPG-HaloTales-V1 model, a fully illustrated and narrated storytelling experience you can run through Lemonade with any multimedia client like Open WebUI—plus how to customize your own adventure.",
+        image: "https://img.youtube.com/vi/mxiK8Fjm9OQ/maxresdefault.jpg",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "video"
+        },
+    {
+        title: "Give your app local AI superpowers in minutes with Lemonade embedded SDK",
+        url: "https://www.youtube.com/watch?v=quMbaHVAlAg",
+        date: "June 30, 2026",
+        description: "See how the Lemonade embedded SDK lets you bundle local AI—text, image, and speech directly into your own app in just a few minutes, with no cloud dependencies.",
+        image: "https://img.youtube.com/vi/quMbaHVAlAg/maxresdefault.jpg",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "video"
+        },
+    {
+        title: "vLLM ROCm now in Lemonade",
+        url: "https://lemonade-server.ai/news/vllm-rocm.html",
+        date: "May 8, 2026",
+        description: "Lemonade now includes experimental vLLM ROCm support on Linux for AMD GPUs, with day-0 model support, multi-GPU concurrency, and a self-contained backend bundle.",
+        image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+        title: "Lemonade Getting Started Playbook",
+        url: "https://developer.amd.com/playbooks/lemonade-getting-started/",
+        date: "April 30, 2026",
+        description: "Use AMD's getting started playbook to install Lemonade, run local models, and connect apps through the OpenAI-compatible API.",
+        image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/lemonade_playbook.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "tutorial"
+        },
+    {
+        title: "AMD Making It Easier To Embed Lemonade AI Capabilities Into Other Apps",
+        url: "https://www.phoronix.com/news/Lemonade-SDK-10.2-Released",
+        date: "April 9, 2026",
+        description: "Phoronix covers the Lemonade SDK 10.2 release, which publishes embeddable artifacts so developers can bundle Lemonade's local AI stack into their own apps.",
+        image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+        title: "Lemonade 10.1 Released For Latest Improvements For Local LLMs On AMD GPUs & NPUs",
+        url: "https://www.phoronix.com/news/Lemonade-10.1-Released",
+        date: "April 7, 2026",
+        description: "Phoronix highlights Lemonade 10.1, featuring a revamped CLI, async model loading, super resolution upscaling, and Gemma 4 GPU support.",
+        image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+        title: "LLMs on Linux with FastFlowLM",
+        url: "https://lemonade-server.ai/flm_npu_linux.html",
+        date: "March 11, 2026",
+        description: "Run LLMs and Whisper on AMD XDNA 2 NPUs under Linux using the upstream NPU driver, AMD IRON compiler, FastFlowLM runtime, and Lemonade.",
+        image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "tutorial"
+        },
+    {
+        title: "Lemonade by AMD: A Unified API for Local AI Developers",
+        url: "https://www.amd.com/en/developer/resources/technical-articles/2026/lemonade-for-local-ai.html",
+        date: "February 10, 2026",
+        description: "Learn how Lemonade delivers a unified, local-first API for text, image, and speech AI across Ryzen AI, Radeon, and broader AI PC hardware.",
+        image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/technical-blogs/lemonade-sdk/lemonadeheadergraphicsized.png",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+        title: "AMD puts Strix Halo loaded with 8 AI models in a bun-fight: Is a hot dog a sandwich?",
+        url: "https://videocardz.com/newz/amd-puts-strix-halo-loaded-with-8-ai-models-in-a-bun-fight-is-a-hot-dog-a-sandwich",
+        date: "December 24, 2025",
+        description: "VideoCardz covers AMD Strix Halo running multiple AI models locally and explores performance and positioning for AI PCs.",
+        image: "https://cdn.videocardz.com/1/2025/12/RYZEN-AI-MAX-SANDWICH-HOTDOG-1-1200x624.jpg",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+        title: "Ryzen AI and Radeon are ready to run LLMs Locally",
+        url: "https://www.amd.com/en/developer/resources/technical-articles/2025/ryzen-ai-radeon-llms-with-lemonade.html",
+        date: "November 13, 2025",
+        description: "Learn about LLM use cases that run on a variety of AMD PCs.",
+        image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/generic-thumbnails/9851-industry-applications-use-cases-02.jpg",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+        type: "blog"
+        },
+    {
+    title: "Lemonade for GitHub Copilot",
+    url: "https://youtu.be/HUwGxlH3yAg?si=0P-S48_PgrWy9WwI",
+    date: "October 14, 2025",
+    description: "Watch how Lemonade brings local AI coding power to VS Code GitHub Copilot Chat—optimized for AMD Ryzen™ AI PCs.",
+    image: "https://img.youtube.com/vi/HUwGxlH3yAg/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Dify + Lemonade for Agentic Workflows",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/2025/harnessing-dify-and-local-llms-on-ryzen-ai-pcs-for-private-workf.html",
+    date: "October 6, 2025",
+    description: "Lemonade now available with Dify, enabling private AI workflows to run locally. Build powerful LLM + RAG apps without cloud dependencies or ML expertise.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/technical-blogs/harnessing-dify---local-llms-on-amd-ryzen-ai-pcs-for-private-workflows/DifyChatExample.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Introducing Lemonade Arcade",
+    url: "https://lemonade-server.ai/news/lemonade-arcade.html",
+    date: "August 22, 2025",
+    description: "We're excited to announce Lemonade Arcade, a new application that transforms your GPU into a creative engine for generating retro-style games using AI.",
+    image: "https://github.com/lemonade-sdk/lemonade-arcade/blob/main/img/banner.png?raw=true",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Run OpenAI's gpt-oss locally with Lemonade",
+    url: "https://lemonade-server.ai/news/gpt-oss.html",
+    date: "August 12, 2025",
+    description: "Lemonade now supports OpenAI's gpt-oss models, bringing you the power to run these cutting-edge models locally on your own hardware! 🎉",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "llamacpp+ROCm7 beta is now supported on Lemonade",
+    url: "https://www.reddit.com/r/LocalLLaMA/comments/1mjgj2x/llamacpprocm7_beta_is_now_supported_on_lemonade/",
+    date: "August 6, 2025",
+    description: "Unlock the power of ROCm7 on your STX Halo or Radeon GPU with Lemonade 8.1.1.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/rocm_hero.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "AMD, ISV Security Partners Collaborate to Protect the AI PC",
+    url: "https://www.amd.com/en/blogs/2025/isv-security-experiences-with-Ryzen-PRO.html",
+    date: "August 05, 2025",
+    description: "Lemonade Server and Ryzen™ AI NPUs bring real-time, on-device protection against phishing, deepfakes, and prompt attacks. No cloud lag, just smarter security where it counts.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/projects/isv-commercial-security-experiences-blog/security-shield-key-art.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Lemonade Server & Open WebUI",
+    url: "https://www.youtube.com/watch?v=yZs-Yzl736E",
+    date: "July 31, 2025",
+    description: "Easily integrate Lemonade Server with Open WebUI to unlock powerful local LLM capabilities on your PC. This video guides you through the installation and setup process.",
+    image: "https://img.youtube.com/vi/yZs-Yzl736E/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Styrk AI & AMD: Guardrails for Your On-Device AI Revolution",
+    url: "https://styrk.ai/styrk-ai-and-amd-guardrails-for-your-on-device-ai-revolution/",
+    date: "July 14, 2025",
+    description: "AMD and Styrk AI bring real-time, on-device LLM security. Powered by AMD NPUs, GPUs, and Lemonade Server, with built-in guardrails for filtering, adversarial detection, and prompt injection defense.",
+    image: "https://styrk.ai/wp-content/uploads/2025/07/styrk-ai_amd-768x432.webp",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "AMD and XMPro Deliver Autonomous Intelligence at the Edge",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/2025/empowering-local-industrial-compute.html",
+    date: "July 15, 2025",
+    description: "AMD and XMPro have partnered to bring advanced AI capabilities to the industrial edge using AMD hardware and the Lemonade Server for efficient, private, local AI workloads.",
+    image: "https://www.amd.com/en/developer/resources/technical-articles/2025/empowering-local-industrial-compute/_jcr_content/_cq_featuredimage.coreimg.jpeg/1752678519383/3598267-amd-x-xmpro-image-edit-1200x627-no-copy.jpeg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Rethinking Local AI: Lemonade Server’s Python Advantage",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/2025/rethinking-local-ai-lemonade-servers-python-advantage.html",
+    date: "July 21, 2025",
+    description: "Learn about why we chose Python for deploying local LLMs with Lemonade and how integrating with your app is incredibly easy.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/technical-blogs/rethinking-local-ai/figure%203%20our%20approach%20to%20python%20gives%20us%20both%20development%20agility%20and%20the%20expected%20level%20of%20production%20readines.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Minions: On-Device and Cloud Language Model Collaboration on AMD Ryzen™ AI",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/2025/minions--on-device-and-cloud-language-model-collaboration-on-ryz.html",
+    date: "July 08, 2025",
+    description: "Minions, a new framework from Stanford’s Hazy Research Group, lets cloud models collaborate with lighter ones on-device—and now runs on Ryzen AI via AMD’s Lemonade Server.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/technical-blogs/minions-on-device-and-cloud-language-model-collaboration-on-ryzen-ai/3546073_Minions_Blog_Banner_1200x600.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Local Tiny Agents: MCP Agents on Ryzen™ AI with Lemonade Server",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/2025/local-tiny-agents--mcp-agents-on-ryzen-ai-with-lemonade-server.html",
+    date: "June 10, 2025",
+    description: "Model Context Protocol (MCP) is now available on AMD Ryzen™ AI PCs and can be used by installing AMD Lemonade Server and connecting it to projects like Hugging Face's Tiny Agents via streaming tool calls.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/technical-blogs/local-tiny-agents--mcp-agents-on-ryzen-ai-with-lemonade-server/lemonade.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Unlocking a Wave of LLM Apps on Ryzen™ AI through Lemonade Server",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/unlocking-a-wave-of-llm-apps-on-ryzen-ai-through-lemonade-server.html",
+    date: "April 17, 2025",
+    description: "Lemonade Server enables LLM acceleration on Windows and Linux without code changes—using hybrid NPU+iGPU execution on Ryzen™ AI 300-series PCs and GPU acceleration on Linux.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/projects/technical-blogs/3328050-lemonade-server/3328050-lemonade-server-blog.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "LLMs on AMD Ryzen™ AI PCs",
+    url: "https://www.youtube.com/watch/qMdMJF89c8g",
+    date: "March 31, 2025",
+    description: "The video explains how Ryzen™ AI 300-series PCs use NPUs and integrated GPUs to accelerate LLMs through hybrid task partitioning, and introduces the Ryzen AI Software Stack.",
+    image: "https://img.youtube.com/vi/qMdMJF89c8g/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Running LLMs on AMD Ryzen™ AI PCs using Lemonade SDK",
+    url: "https://www.youtube.com/watch/Ys7n5OouwtI",
+    date: "March 31, 2025",
+    description: "Watch how the Lemonade SDK lets you experiment with LLMs on Ryzen™ AI 300-series PCs using high-level APIs, including setup and prompting via its CLI.",
+    image: "https://img.youtube.com/vi/Ys7n5OouwtI/maxresdefault.jpg",
+        imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Using the Lemonade SDK",
+    url: "https://www.youtube.com/watch/1_QU_w1zF7Y",
+    date: "March 31, 2025",
+    description: "Watch to see how the Lemonade SDK can be used to run performance benchmarks and evaluate model accuracy using the MMLU test suite.",
+    image: "https://img.youtube.com/vi/1_QU_w1zF7Y/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Integrating Lemonade into your Python App",
+    url: "https://www.youtube.com/watch/aeHRGzxxYRQ",
+    date: "March 31, 2025",
+    description: "This video shows how to use the Lemonade SDK to integrate LLMs into an app, enhancing a basic search tool and running it locally on Ryzen™ AI 300-series PCs.",
+    image: "https://img.youtube.com/vi/aeHRGzxxYRQ/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Lemonade Server + Open WebUI",
+    url: "https://www.youtube.com/watch/PXNTDZREJ_A",
+    date: "March 31, 2025",
+    description: "Introducing Lemonade Server with Open WebUI integration. See how easy it is to install Lemonade Server, download models and get Open WebUI running LLMs on your local PC.",
+    image: "https://img.youtube.com/vi/PXNTDZREJ_A/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Lemonade Server + Microsoft AI Toolkit",
+    url: "https://www.youtube.com/watch/JecpotOZ6qo",
+    date: "April 24, 2025",
+    description: "Introducing Lemonade Server with Microsoft AI Toolkit integration. See how easy it is to install Lemonade Server, download models and get Microsoft AI Toolkit running LLMs on your local PC.",
+    image: "https://img.youtube.com/vi/PXNTDZREJ_A/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Lemonade Server + Continue AI Coding Assistant",
+    url: "https://www.youtube.com/watch/bP_MZnDpbUc",
+    date: "April 30, 2025",
+    description: "Introducing Lemonade Server with Continue AI Coding Assistant integration. See how easy it is to install Lemonade Server, download models and get Continue AI Coding Assistant running LLMs on your local PC.",
+    image: "https://img.youtube.com/vi/bP_MZnDpbUc/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Lemonade Server + PEEL for Local LLM Support in PowerShell",
+    url: "https://www.youtube.com/watch/A-8QYktB0Io",
+    date: "June 6, 2025",
+    description: "Introducing Lemonade Server with PEEL for Local LLM Support in PowerShell integration. See how easy it is to install Lemonade Server, download models and get PEEL running LLMs on your local PC.",
+    image: "https://img.youtube.com/vi/A-8QYktB0Io/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Introducing Lemonade Server for Local LLM Server with GPU and NPU Acceleration",
+    url: "https://www.youtube.com/watch/mcf7dDybUco",
+    date: "July 14, 2025",
+    description: "See how to install Lemonade Server and run LLMs locally with GPU and NPU acceleration on your PC—no code changes needed.",
+    image: "https://img.youtube.com/vi/mcf7dDybUco/maxresdefault.jpg",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "video"
+    },
+    {
+    title: "Hugging Face MCP Course: https://huggingface.co/learn/mcp-course/unit2/lemonade-server",
+    url: "https://huggingface.co/learn/mcp-course/unit2/lemonade-server",
+    date: "July 8, 2025",
+    description: "AMD Partnered with Hugging Face to provide a guide on how to accelerate our end-to-end Tiny Agents application using AMD Neural Processing Unit (NPU) and integrated GPU (iGPU).",
+    image: "https://huggingface.co/datasets/mcp-course/images/resolve/main/unit0/1.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "tutorial"
+    },
+    {
+    title: "GAIA: An Open-Source Project from AMD for Running Local LLMs on Ryzen™ AI",
+    url: "https://www.amd.com/en/developer/resources/technical-articles/gaia-an-open-source-project-from-amd-for-running-local-llms-on-ryzen-ai.html",
+    date: "March 20, 2025",
+    description: "GAIA is an application with multiple agents that runs local LLMs on Ryzen™ AI using Lemonade Server.",
+    image: "https://www.amd.com/content/dam/amd/en/images/blogs/designs/projects/technical-blogs/3328050-lemonade-server/3328050-lemonade-server-blog.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "blog"
+    },
+    {
+    title: "Lemonade Server v8.1.0 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v8.1.0",
+    date: "July 30, 2025",
+    description: "Support for Ryzen™ AI Software v1.5.0 and NPU-only execution.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v8.0.6 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v8.0.6",
+    date: "July 17, 2025",
+    description: "Overhauled llamacpp support in the Lemonade Developer CLI.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v8.0.5 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v8.0.5",
+    date: "July 14, 2025",
+    description: "Added device enumeration capability on Windows and Linux to `lemonade system-info` command.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v8.0.4 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v8.0.4",
+    date: "July 09, 2025",
+    description: "Added `reranking` and `embeddings` support to Lemonade Server.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v8.0.3 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v8.0.3",
+    date: "June 27, 2025",
+    description: "Support for large (sharded) GGUF models. Added `Llama-4-Scout-17B-16E-Instruct-GGUF` to server models list.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v8.0.0 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v8.0.0",
+    date: "June 19, 2025",
+    description: "Major release with Ubuntu support, model manager, and Windows tray app.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v7.0.2 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v7.0.2",
+    date: "June 02, 2025",
+    description: "lm-evaluation-harness is now fully integrated as an automated Lemonade CLI tool.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+    {
+    title: "Lemonade Server v7.0.1 Release",
+    url: "https://github.com/lemonade-sdk/lemonade/releases/tag/v7.0.1",
+    date: "May 30, 2025",
+    description: "Added support for GGUF models and llama.cpp backend to Lemonade Server.",
+    image: "https://raw.githubusercontent.com/lemonade-sdk/assets/refs/heads/main/docs/banner.png",
+    imageStyle: "width: 100%; height: 100%; object-position: center top; ",
+    type: "release"
+    },
+];

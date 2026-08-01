@@ -5,6 +5,23 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
 
 ## 2026.08.01 — Pure-C++ video-lora backend + fresh benchmark sweep + scope guard 🚀
 
+- **Lemonade SDK embedded** — `unified_server` links Lemonade's server core
+  (github.com/lemonade-sdk/lemonade, pinned at v11.5.1 in `third_party/lemonade`):
+  all 14 Lemonade backends (llamacpp, flm, whispercpp, sd-cpp, kokoro,
+  ryzenai-llm, vllm, ...) + the policy-based Router run in-process.
+  `unified_server --lemonade` hands off to Lemonade's full server. The NPU
+  backend's flm binary comes from the fastflowlm .deb / TheRock dist instead of
+  the submodule build (submodule kept as last-resort fallback). `unified_router`
+  routes NPU/GPU through Lemonade's RoutingPolicyEngine (deterministic keyword
+  classifier; semantic/LLM classifiers are the upgrade path). Vendored-tree
+  patches: `CMAKE_SOURCE_DIR` → `CMAKE_CURRENT_SOURCE_DIR` and a PUBLIC
+  include-dir propagation on `lemonade-server-core` (both no-ops upstream).
+
+- **TheRock-only builds** — release container no longer ships system ROCm
+  (ubuntu:24.04 base; `rocm/dev-ubuntu-24.04:7.2.4-complete` removed) and CI
+  never falls back to apt ROCm 7.2.4; all published benchmark claims say
+  TheRock 7.15.0a. FastFlowLM .deb (v0.9.46) preferred over submodule build.
+
 - **video-lora pure-C++ Vulkan backend** — `tools/video-lora/vulkan/`: complete
   Vulkan compute engine (conv2d, group_norm, silu, elementwise, attention with
   full softmax, lora_merge) linked into the single `zaya_server` binary. All ops
@@ -15,7 +32,7 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
   GitNexus impact reports; auto-review on every PR open and push; scope guard CI
   (engine + Jarvis) as a required check on main.
 
-- **Fresh benchmark sweep (2026-08-01, Strix Halo / Radeon 8060S, ROCm 7.2.4)**:
+- **Fresh benchmark sweep (2026-08-01, Strix Halo / Radeon 8060S, TheRock ROCm 7.15.0a)**:
   - Qwen3-0.6B Q4_K GGML-Vulkan: **373 tok/s** decode (was 337)
   - SmolLM2-135M Q4_K GGML-Vulkan: **662 tok/s** decode (was 598)
   - Prefill INT8 WMMA (I8-APRE): **43.2 TFLOPS** (was 39.4)

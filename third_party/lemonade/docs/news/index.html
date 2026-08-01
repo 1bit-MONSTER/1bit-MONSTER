@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lemonade News</title>
+  <link rel="icon" href="../assets/favicon.ico">
+  <link rel="stylesheet" href="../assets/website-styles.css">
+  <link rel="stylesheet" href="../assets/common.css">
+  <link rel="stylesheet" href="../assets/news.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;450;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="../assets/navbar.js"></script>
+  <script src="../assets/news-data.js"></script>
+  <script>
+    // Function to generate news tiles
+    function generateNewsTiles(filterType = 'all', sortOrder = 'newest') {
+      const newsPostsContainer = document.querySelector('.news-posts');
+      newsPostsContainer.innerHTML = ''; // Clear existing tiles
+
+      let filteredData = filterType === 'all'
+        ? [...newsData]
+        : newsData.filter(item => item.type === filterType);
+
+      // Sort data by date
+      filteredData.sort((a, b) => {
+        const dateA = new Date(a.date);
+        const dateB = new Date(b.date);
+
+        if (sortOrder === 'newest') {
+          return dateB - dateA; // Newest first
+        } else {
+          return dateA - dateB; // Oldest first
+        }
+      });
+
+      filteredData.forEach(item => {
+        const article = document.createElement('article');
+        article.className = 'news-tile';
+
+        const isVideo = item.type === 'video';
+        const isTutorial = item.type === 'tutorial';
+        const isRelease = item.type === 'release';
+        let badgeText, badgeClass;
+
+        if (isVideo) {
+          badgeText = 'Video';
+          badgeClass = 'video-badge';
+        } else if (isTutorial) {
+          badgeText = 'Tutorial';
+          badgeClass = 'tutorial-badge';
+        } else if (isRelease) {
+          badgeText = 'Release';
+          badgeClass = 'release-badge';
+        } else {
+          badgeText = 'Blog';
+          badgeClass = 'blog-badge';
+        }
+
+        const playButton = isVideo ? '<div class="youtube-play-button">▶</div>' : '';
+
+        article.innerHTML = `
+          <a href="${item.url}" target="_blank" class="news-tile-link">
+            <div class="news-image">
+              <img src="${item.image}" alt="${item.title}" style="${item.imageStyle}">
+              ${playButton}
+            </div>
+            <div class="news-content">
+              <h3>${item.title}</h3>
+              <div class="news-date">${item.date}</div>
+              <p>${item.description}</p>
+              <div class="content-type-badge ${badgeClass}">${badgeText}</div>
+            </div>
+          </a>
+        `;
+
+        newsPostsContainer.appendChild(article);
+      });
+    }
+
+    // Function to handle filter changes
+    function handleFilterChange(filterType) {
+      // Update active button
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      document.querySelector(`[data-filter="${filterType}"]`).classList.add('active');
+
+      // Get current sort order
+      const sortOrder = document.getElementById('sortSelect').value;
+
+      // Re-generate tiles with filter and sort
+      generateNewsTiles(filterType, sortOrder);
+    }
+
+    // Function to handle sort changes
+    function handleSortChange(sortOrder) {
+      // Get current filter
+      const activeFilter = document.querySelector('.filter-btn.active').getAttribute('data-filter');
+
+      // Re-generate tiles with current filter and new sort
+      generateNewsTiles(activeFilter, sortOrder);
+    }
+
+    // Generate tiles when page loads
+    document.addEventListener('DOMContentLoaded', () => {
+      generateNewsTiles();
+
+      // Initialize shared navbar for docs subpages
+      initializeNavbar('../');
+
+      // Initialize footer with star count for news page (uses ../ basePath)
+      initializeFooter('../');
+
+      // Add event listeners to filter buttons
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const filterType = btn.getAttribute('data-filter');
+          handleFilterChange(filterType);
+        });
+      });
+
+      // Add event listener to sort dropdown
+      document.getElementById('sortSelect').addEventListener('change', (e) => {
+        handleSortChange(e.target.value);
+      });
+
+      // Back to top button functionality
+      const backToTopBtn = document.getElementById('backToTop');
+
+      // Show/hide button based on scroll position
+      window.addEventListener('scroll', () => {
+        if (window.scrollY > 300) {
+          backToTopBtn.classList.add('show');
+        } else {
+          backToTopBtn.classList.remove('show');
+        }
+      });
+
+      // Smooth scroll to top when clicked
+      backToTopBtn.addEventListener('click', () => {
+        window.scrollTo({
+          top: 0,
+          behavior: 'smooth'
+        });
+      });
+
+      // Sidebar toggle functionality for mobile
+      const sidebarToggle = document.getElementById('sidebarToggle');
+      const newsSidebar = document.getElementById('newsSidebar');
+      const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+      // Legacy desktop collapse is no longer used in the news layout.
+      newsSidebar.classList.remove('collapsed');
+      localStorage.setItem('sidebarCollapsed', 'false');
+
+      // Mobile sidebar toggle
+      sidebarToggle.addEventListener('click', () => {
+        newsSidebar.classList.toggle('mobile-open');
+        sidebarOverlay.classList.toggle('active');
+      });
+
+      // Close sidebar when clicking overlay
+      sidebarOverlay.addEventListener('click', () => {
+        newsSidebar.classList.remove('mobile-open');
+        sidebarOverlay.classList.remove('active');
+      });
+
+      // Close sidebar when window is resized to desktop
+      window.addEventListener('resize', () => {
+        if (window.innerWidth > 768) {
+          newsSidebar.classList.remove('mobile-open');
+          sidebarOverlay.classList.remove('active');
+        } else {
+          newsSidebar.classList.remove('collapsed');
+        }
+      });
+    });
+  </script>
+</head>
+<body id="news-page-body">
+  <div class="navbar-placeholder"></div>
+
+  <!-- Sidebar Overlay (Mobile) -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <!-- News Sidebar -->
+  <div class="news-sidebar docs-side-nav" id="newsSidebar">
+    <div class="sidebar-card">
+      <div class="sidebar-header">
+        <h3>Filters</h3>
+        <p>Browse by type and date</p>
+      </div>
+    </div>
+
+    <div class="sidebar-card">
+      <label class="control-label">Type</label>
+      <div class="filter-container">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="blog">Blogs</button>
+        <button class="filter-btn" data-filter="video">Videos</button>
+        <button class="filter-btn" data-filter="tutorial">Tutorials</button>
+        <button class="filter-btn" data-filter="release">Releases</button>
+      </div>
+    </div>
+
+    <div class="sidebar-card">
+      <label for="sortSelect" class="control-label">Sort</label>
+      <div class="sort-container">
+        <select id="sortSelect" class="sort-select">
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- News View -->
+  <div class="news-view">
+    <section class="docs-page-hero">
+      <h1 class="docs-page-title">Latest News &amp; Updates</h1>
+      <p class="docs-page-subtitle">Discover insights, tutorials, and the latest developments from Lemonade</p>
+    </section>
+    <button class="sidebar-toggle docs-side-toggle" id="sidebarToggle" type="button" aria-label="Open filters">
+      <span class="hamburger-icon" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+      <span>Filters</span>
+    </button>
+
+    <div class="news-posts">
+      <!-- News tiles will be generated by JavaScript -->
+    </div>
+  </div>
+</body>
+
+  <!-- Back to Top Button -->
+  <button id="backToTop" class="back-to-top-btn" title="Back to top">
+    <span class="back-to-top-icon">↑</span>
+  </button>
+
+  <!-- Footer will be inserted here by footer.js -->
+  <div class="footer-placeholder"></div>
+
+  <script src="../assets/footer.js"></script>
+</html>

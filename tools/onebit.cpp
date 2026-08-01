@@ -649,7 +649,11 @@ Examples:
 )";
 }
 
+#ifdef ONE_BIN_DISPATCH
+int onebit_main(int argc, char *argv[]) {
+#else
 int main(int argc, char *argv[]) {
+#endif
     std::string command;
     std::vector<std::string> args;
 

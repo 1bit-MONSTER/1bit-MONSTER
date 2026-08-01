@@ -13,7 +13,7 @@ Max+ 395) with ROCm GPU acceleration.
 | **Hardware**  | AMD Ryzen AI Max+ 395 (Strix Halo, gfx1151)                       |
 | **OS**        | Ubuntu 24.04 LTS or later                                         |
 | **Kernel**    | **6.18.22-lts or 7.x** — avoid 6.19.x (see warning below)         |
-| **ROCm**      | 7.2.4 (HIP runtime + device library)                              |
+| **ROCm**      | TheRock 7.15.0a (HIP runtime + device library)                |
 
 > ⚠️ **Kernel warning (issue #1).** On Strix Halo (gfx1151), Linux **6.19.x**
 > kernels have a reproducible `amdgpu` OPTC CRTC hang under sustained NPU/GPU

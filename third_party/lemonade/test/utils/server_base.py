@@ -1,0 +1,590 @@
+"""
+Shared base functionality for server testing.
+
+This module contains the common setup, cleanup, and utility functions
+used by all lemonade server test files.
+
+Tests expect a running server (started by the installer or manually).
+ServerTestBase.setUpClass() verifies the server is reachable and applies
+runtime configuration via POST /internal/set.
+"""
+
+import unittest
+import socket
+import time
+import sys
+import io
+import os
+import argparse
+
+try:
+    from openai import OpenAI, AsyncOpenAI
+except ImportError as e:
+    raise ImportError("You must `pip install openai` to run this test", e)
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+from .capabilities import (
+    set_current_config,
+    get_capabilities,
+    get_test_model,
+    WRAPPED_SERVER_CAPABILITIES,
+    get_all_wrapped_server_names,
+    get_wrapped_servers_for_modality,
+)
+from .test_models import (
+    PORT,
+    STANDARD_MESSAGES,
+    TIMEOUT_MODEL_OPERATION,
+    TIMEOUT_DEFAULT,
+    TIMEOUT_ROCM_INSTALL,
+    get_default_cli_binary,
+)
+
+# Global configuration set by parse_args()
+_config = {
+    "cli_binary": None,
+    "wrapped_server": None,
+    "backend": None,
+    "modality": None,
+    "offline": False,
+    "additional_server_args": [],
+}
+
+
+def parse_args(additional_args=None, modality=None):
+    """
+    Parse command line arguments for test configuration.
+
+    Args:
+        additional_args: List of additional arguments to add to the server command
+        modality: Modality key (e.g., "llm", "whisper", "stable_diffusion").
+                  When set, validates --wrapped-server against that modality's backends.
+
+    Returns:
+        Parsed args namespace
+    """
+    # Determine valid --wrapped-server choices based on modality
+    if modality:
+        valid_servers = sorted(get_wrapped_servers_for_modality(modality))
+    else:
+        valid_servers = sorted(get_all_wrapped_server_names())
+
+    parser = argparse.ArgumentParser(description="Test lemonade server", add_help=False)
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Run tests in offline mode",
+    )
+    parser.add_argument(
+        "--cli-binary",
+        type=str,
+        default=get_default_cli_binary(),
+        help="Path to lemonade CLI binary (default: build/lemonade)",
+    )
+    parser.add_argument(
+        "--wrapped-server",
+        type=str,
+        choices=valid_servers,
+        help="Which wrapped server to test (llamacpp, ryzenai, flm, etc.)",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        help="Backend for the wrapped server (vulkan, rocm, cpu, hybrid, npu, etc.)",
+    )
+
+    # Use parse_known_args to ignore unittest arguments
+    args, unknown = parser.parse_known_args()
+
+    # Update global config
+    _config["cli_binary"] = args.cli_binary
+    _config["wrapped_server"] = args.wrapped_server
+    _config["backend"] = args.backend
+    _config["modality"] = modality
+    _config["offline"] = args.offline
+    _config["additional_server_args"] = additional_args or []
+
+    # Set current config for capability checks
+    if args.wrapped_server:
+        set_current_config(args.wrapped_server, args.backend, modality)
+
+    return args
+
+
+def get_config():
+    """Get the current test configuration."""
+    return _config.copy()
+
+
+def get_cli_binary():
+    """Get the lemonade CLI binary path."""
+    return _config["cli_binary"]
+
+
+def wait_for_server(port=PORT, timeout=60):
+    """
+    Wait for the server to start by checking if the port is available.
+
+    Args:
+        port: Port number to check
+        timeout: Maximum time to wait in seconds
+
+    Returns:
+        True if server started, raises TimeoutError otherwise
+    """
+    start_time = time.time()
+    while True:
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Server failed to start within {timeout} seconds")
+        try:
+            conn = socket.create_connection(("localhost", port))
+            conn.close()
+            return True
+        except socket.error:
+            time.sleep(1)
+
+
+def _auth_headers():
+    """Return Authorization header if LEMONADE_API_KEY is set."""
+    api_key = os.environ.get("LEMONADE_API_KEY")
+    if api_key:
+        return {"Authorization": f"Bearer {api_key}"}
+    return {}
+
+
+def set_server_config(config: dict, port=PORT):
+    """POST /internal/set to update server config at runtime."""
+    response = requests.post(
+        f"http://localhost:{port}/internal/set",
+        json=config,
+        headers=_auth_headers(),
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def unload_all_models(port=PORT):
+    """POST /api/v1/unload to unload all models for clean state."""
+    response = requests.post(
+        f"http://localhost:{port}/api/v1/unload",
+        json={},
+        headers=_auth_headers(),
+        timeout=30,
+    )
+    # 200 = unloaded, 404 = nothing loaded — both OK
+    return response
+
+
+def _is_transient_pull_status(status_code):
+    return status_code in {408, 409, 429, 500, 502, 503, 504}
+
+
+def _pull_model_streaming(model_name, port):
+    """Pull via the SSE streaming mode and block until the download completes.
+
+    Large models (10+ GB) exceed any fixed read timeout on the synchronous
+    /pull; the progress events keep the connection alive so the timeout only
+    applies between events, not to the whole download.
+    """
+    with requests.post(
+        f"http://localhost:{port}/api/v1/pull",
+        json={"model_name": model_name, "stream": True},
+        stream=True,
+        timeout=TIMEOUT_MODEL_OPERATION,
+    ) as response:
+        if response.status_code != 200:
+            return response.status_code, response.text[:1000]
+
+        event = ""
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if raw_line is None:
+                continue
+            line = raw_line.strip()
+            if line.startswith("event:"):
+                event = line[len("event:") :].strip()
+            elif line.startswith("data:") and event == "error":
+                body = line[len("data:") :].strip()[:1000]
+                status = 400 if "unknown_model" in body else 500
+                return status, body
+            elif line.startswith("data:") and event == "complete":
+                return 200, ""
+        return 500, "SSE stream ended without a 'complete' event"
+
+
+def pull_model_with_retry(model_name, attempts=3, port=PORT):
+    """Pull a model with bounded retry for transient setup failures.
+
+    Test setup should tolerate one-off transient pull failures, but persistent
+    failures and permanent client errors should still fail with useful details.
+    """
+    last_status = None
+    last_body = ""
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            time.sleep(min(30, 2 ** (attempt - 1)))
+
+        try:
+            status, body = _pull_model_streaming(model_name, port)
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < attempts:
+                print(
+                    f"Transient /pull setup request failure for {model_name}: "
+                    f"{exc} (attempt {attempt}/{attempts}). Retrying..."
+                )
+                continue
+            break
+
+        if status == 200:
+            return
+
+        last_status = status
+        last_body = body
+
+        if _is_transient_pull_status(status) and attempt < attempts:
+            print(
+                f"Transient /pull setup failure for {model_name}: "
+                f"status={status}, attempt={attempt}/{attempts}. "
+                "Retrying..."
+            )
+            continue
+
+        break
+
+    if last_error is not None and last_status is None:
+        raise AssertionError(
+            f"Expected 200 from /api/v1/pull for {model_name} after "
+            f"{attempts} attempt(s), last request failed with: {last_error}"
+        )
+
+    raise AssertionError(
+        f"Expected 200 from /api/v1/pull for {model_name} after "
+        f"{attempts} attempt(s), got {last_status}. Body: {last_body}"
+    )
+
+
+def _build_runtime_config(additional_server_args=None):
+    """
+    Translate CLI args (--wrapped-server, --backend, additional_server_args)
+    into a dict suitable for POST /internal/set.
+
+    Args:
+        additional_server_args: Extra args to parse (merged with global config's args).
+                                If None, uses only the global config's args.
+    """
+    config = {}
+
+    wrapped_server = _config.get("wrapped_server")
+    backend = _config.get("backend")
+
+    # Map --wrapped-server + --backend to the correct recipe option key
+    if wrapped_server == "llamacpp" and backend:
+        config["llamacpp"] = {"backend": backend}
+    elif wrapped_server == "sd-cpp" and backend:
+        config["sdcpp"] = {"backend": backend}
+    elif wrapped_server == "whispercpp" and backend:
+        config["whispercpp"] = {"backend": backend}
+    elif wrapped_server == "thinksound" and backend:
+        config["thinksound"] = {"backend": backend}
+    elif wrapped_server == "acestep" and backend:
+        config["acestep"] = {"backend": backend}
+    elif wrapped_server == "trellis" and backend:
+        config["trellis"] = {"backend": backend}
+    elif wrapped_server == "openmoss" and backend:
+        config["openmoss"] = {"backend": backend}
+
+    # Parse additional_server_args for known flags
+    additional = list(_config.get("additional_server_args", []))
+    if additional_server_args:
+        additional.extend(additional_server_args)
+
+    i = 0
+    while i < len(additional):
+        arg = additional[i]
+        if arg == "--max-loaded-models" and i + 1 < len(additional):
+            config["max_loaded_models"] = int(additional[i + 1])
+            i += 2
+        elif arg == "--llamacpp" and i + 1 < len(additional):
+            config["llamacpp"] = {"backend": additional[i + 1]}
+            i += 2
+        elif arg == "--sdcpp" and i + 1 < len(additional):
+            config["sdcpp"] = {"backend": additional[i + 1]}
+            i += 2
+        elif arg == "--whispercpp" and i + 1 < len(additional):
+            config["whispercpp"] = {"backend": additional[i + 1]}
+            i += 2
+        elif arg == "--ctx-size" and i + 1 < len(additional):
+            config["ctx_size"] = int(additional[i + 1])
+            i += 2
+        elif arg == "--log-level" and i + 1 < len(additional):
+            config["log_level"] = additional[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    return config
+
+
+# Recipes whose "rocm" backend resolves to the rocm-stable channel and therefore
+# trigger a TheRock runtime download on a cold cache (see will_install_therock in
+# backend_manager.cpp). Other rocm consumers (vllm, llamacpp rocm-nightly) bundle
+# their own runtime and do not need this.
+_THEROCK_RECIPES = (
+    "llamacpp",
+    "sd-cpp",
+    "thinksound",
+    "acestep",
+    "trellis",
+    "openmoss",
+)
+
+
+def ensure_rocm_runtime():
+    """
+    Pre-warm the ROCm (TheRock) runtime before running rocm-backend tests.
+
+    On a cold cache, loading a rocm-stable model triggers a ~4.5 GB TheRock
+    download inside the first inference request, which can exceed the tighter
+    per-request inference timeout. Doing it here, as an explicit setup step with
+    a generous timeout, keeps that cost out of the test body and surfaces a
+    download/runtime failure as a clear, distinct setup error rather than a
+    confusing inference timeout.
+
+    No-op unless the active backend is "rocm" and the recipe is one that uses
+    the TheRock runtime. Idempotent: the server skips the download when TheRock
+    is already installed, so this is a fast check on a warm cache.
+    """
+    if _config.get("backend") != "rocm":
+        return
+    recipe = _config.get("wrapped_server")
+    if recipe not in _THEROCK_RECIPES:
+        return
+    if requests is None:
+        raise RuntimeError(
+            "ROCM_INSTALL_FAILED: the `requests` package is required to pre-warm "
+            "the ROCm (TheRock) runtime; install it with `pip install requests`."
+        )
+
+    print(f"\n=== Ensuring ROCm (TheRock) runtime for {recipe}:rocm ===")
+    try:
+        response = requests.post(
+            f"http://localhost:{PORT}/api/v1/install",
+            json={"recipe": recipe, "backend": "rocm", "stream": False},
+            headers=_auth_headers(),
+            timeout=TIMEOUT_ROCM_INSTALL,
+        )
+        response.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(
+            f"ROCM_INSTALL_FAILED: ROCm runtime (TheRock) install failed for "
+            f"{recipe}:rocm. This is an environment/setup failure, not a test "
+            f"failure. Detail: {e}"
+        ) from e
+    print(f"ROCm (TheRock) runtime ready for {recipe}:rocm")
+
+
+class ServerTestBase(unittest.TestCase):
+    """
+    Base class for server tests.
+
+    Expects a running server (started by the installer or manually).
+    setUpClass() verifies the server is reachable and applies runtime config.
+    No server start/stop is performed.
+
+    Subclasses can set class variables to configure behavior:
+    - additional_server_args: List of extra args translated to /internal/set calls
+    """
+
+    # Configuration
+    additional_server_args = []
+
+    @classmethod
+    def setUpClass(cls):
+        """Verify server is reachable and apply runtime configuration."""
+        super().setUpClass()
+
+        # Ensure stdout can handle Unicode
+        if sys.stdout.encoding != "utf-8":
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8", errors="replace"
+            )
+            sys.stderr = io.TextIOWrapper(
+                sys.stderr.buffer, encoding="utf-8", errors="replace"
+            )
+
+        # Verify server is running
+        print("\n=== Verifying server is reachable ===")
+        try:
+            wait_for_server(timeout=30)
+        except TimeoutError:
+            raise RuntimeError(
+                "Server is not running on port %d. "
+                "Start the server before running tests "
+                "(e.g., install the package or run lemond manually)." % PORT
+            )
+        print("Server is reachable on port %d" % PORT)
+
+        # Pre-warm the ROCm (TheRock) runtime so its cold-cache download does not
+        # blow the per-request inference timeout inside the first test.
+        ensure_rocm_runtime()
+
+        # Build and apply runtime config from CLI args + class-level args
+        runtime_config = _build_runtime_config(cls.additional_server_args)
+
+        if runtime_config:
+            print(f"Applying runtime config: {runtime_config}")
+            try:
+                set_server_config(runtime_config)
+            except Exception as e:
+                print(f"Warning: Failed to apply runtime config: {e}")
+
+        # Unload all models for clean state
+        print("Unloading all models for clean state...")
+        try:
+            unload_all_models()
+        except Exception as e:
+            print(f"Warning: Failed to unload models: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        """No server lifecycle management needed."""
+        super().tearDownClass()
+
+    def setUp(self):
+        """Set up for each test."""
+        print(f"\n=== Starting test: {self._testMethodName} ===")
+
+        self.base_url = f"http://localhost:{PORT}/api/v1"
+        self.internal_url = f"http://localhost:{PORT}/internal"
+        self.messages = STANDARD_MESSAGES.copy()
+
+    def tearDown(self):
+        """Clean up after each test."""
+        pass
+
+    def get_openai_client(self) -> OpenAI:
+        """Get a synchronous OpenAI client configured for the test server."""
+        return OpenAI(
+            base_url=self.base_url,
+            api_key=os.environ.get("LEMONADE_API_KEY", "lemonade"),
+            timeout=TIMEOUT_MODEL_OPERATION,  # inference may trigger model download
+        )
+
+    def get_async_openai_client(self) -> AsyncOpenAI:
+        """Get an async OpenAI client configured for the test server."""
+        return AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=os.environ.get("LEMONADE_API_KEY", "lemonade"),
+            timeout=TIMEOUT_MODEL_OPERATION,  # inference may trigger model download
+        )
+
+    def get_test_model(self, model_type: str = "llm") -> str:
+        """
+        Get the appropriate test model for the current configuration.
+
+        Args:
+            model_type: Type of model (llm, embedding, reranking, etc.)
+
+        Returns:
+            Model name string
+        """
+        return get_test_model(model_type)
+
+
+def run_server_tests(
+    test_class,
+    description="SERVER TESTS",
+    wrapped_server=None,
+    backend=None,
+    additional_args=None,
+    modality=None,
+    default_wrapped_server=None,
+):
+    """
+    Run server tests with the given test class.
+
+    Args:
+        test_class: The unittest.TestCase class to run
+        description: Description for the test run
+        wrapped_server: Override wrapped server from command line
+        backend: Override backend from command line
+        additional_args: Additional args to pass to server
+        modality: Modality key (e.g., "llm", "whisper", "stable_diffusion")
+        default_wrapped_server: Default wrapped server when none specified on CLI
+    """
+    # Parse args and configure
+    args = parse_args(additional_args, modality=modality)
+
+    # Allow overrides
+    if wrapped_server:
+        _config["wrapped_server"] = wrapped_server
+        set_current_config(
+            wrapped_server,
+            backend or _config["backend"],
+            modality or _config["modality"],
+        )
+    if backend:
+        _config["backend"] = backend
+
+    # Apply default wrapped server if none was specified via CLI or override
+    if not _config["wrapped_server"] and default_wrapped_server:
+        _config["wrapped_server"] = default_wrapped_server
+        set_current_config(
+            default_wrapped_server,
+            _config["backend"],
+            _config["modality"],
+        )
+
+    ws = _config.get("wrapped_server", "unknown")
+    be = _config.get("backend", "default")
+
+    print(f"\n{'=' * 70}")
+    print(f"{description}")
+    print(f"Wrapped Server: {ws}, Backend: {be}")
+    print(f"{'=' * 70}\n")
+
+    # Create and run test suite
+    loader = unittest.TestLoader()
+    if isinstance(test_class, (list, tuple)):
+        suite = unittest.TestSuite()
+        for tc in test_class:
+            suite.addTests(loader.loadTestsFromTestCase(tc))
+    else:
+        suite = loader.loadTestsFromTestCase(test_class)
+
+    runner = unittest.TextTestRunner(verbosity=2, buffer=False, failfast=True)
+    result = runner.run(suite)
+
+    # Exit with appropriate code
+    sys.exit(0 if (result and result.wasSuccessful()) else 1)
+
+
+# Re-export commonly used items
+__all__ = [
+    "ServerTestBase",
+    "parse_args",
+    "get_config",
+    "get_cli_binary",
+    "wait_for_server",
+    "set_server_config",
+    "unload_all_models",
+    "pull_model_with_retry",
+    "run_server_tests",
+    "OpenAI",
+    "AsyncOpenAI",
+    "httpx",
+    "requests",
+    "PORT",
+]

@@ -107,11 +107,21 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"vision_encoder", "hip_gpu", "cpu_generic"}, "Qwen3-VL — vision encoder + Qwen3 text decoder"};
     }
     if (cfg.architecture == "qwen3" || cfg.arch == RCPP_ARCH_QWEN3) {
-        // For 1BP models: GPU engine first, then NPU, then CPU
+        // For 1BP models: GPU engine first, then NPU, then CPU. npu_flm is
+        // Q4NX-only (init rejects other formats), so it's not in this route.
         if (cfg.format == ModelFormat::ONEBP)
-            return {{"fused_gpu_npu", "vulkan_hpp_gpu", "hip_1bp_gpu", "npu_flm", "cpu_generic"},
-                    "qwen3 1BP — Fused GPU+NPU → Vulkan-Hpp → HIP → FLM NPU → CPU"};
-        return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
+            return {{"fused_gpu_npu", "vulkan_hpp_gpu", "hip_1bp_gpu", "cpu_generic"},
+                    "qwen3 1BP — Fused GPU+NPU → Vulkan-Hpp → HIP → CPU"};
+        // Q4NX: FLM NPU engine is the native format owner (67.5 tok/s)
+        if (cfg.format == ModelFormat::Q4NX)
+            return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
+        // GGUF/H1B qwen3: npu_flm only speaks Q4NX and its token-level
+        // forward()/generate() are text-level-only stubs (backend_npu_flm.cpp
+        // returns false) — route to the llama.cpp Vulkan path like every
+        // other GGUF, not the NPU. (FLM init "succeeds" on any model tag but
+        // then loads FLM's own q4nx model, never the requested file.)
+        return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"},
+                "qwen3 GGUF — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};
     }
     if (cfg.format == ModelFormat::GGUF || cfg.format == ModelFormat::H1B) {
         return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"}, "GGUF/H1B model — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};

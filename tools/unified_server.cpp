@@ -173,6 +173,70 @@ static std::string tokenizer_path() {
     return g_weights_dir + "/tokenizer.json";
 }
 
+// Per-model tokenizer: try the model's own GGUF vocab, else borrow one from
+// a sibling GGUF (e.g. Qwen3-0.6B.1bp next to Qwen3-0.6B.Q4_K_M.gguf). The
+// global tokenizer.htok is a Llama-era v1 file whose merge ids sit outside
+// the vocab the current reader accepts, so without this .1bp models decode
+// as garbage [id][id] through the ASCII fallback.
+static void load_model_tokenizer(const std::string& model_path) {
+    if (g_tokenizer.load_from_gguf(model_path)) return;
+    if (model_path.size() >= 5 &&
+        model_path.substr(model_path.size() - 5) == ".gguf")
+        return;  // real GGUF with no usable vocab — nothing to synthesize from
+    auto exists = [](const std::string& p) {
+        std::ifstream f(p, std::ios::binary);
+        return f.good();
+    };
+    std::vector<std::string> cands;
+    for (const char* suf : {".gguf", ".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf"})
+        cands.push_back(model_path + suf);
+    auto dot = model_path.find_last_of('.');
+    std::string base = (dot != std::string::npos) ? model_path.substr(0, dot) : model_path;
+    for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"})
+        cands.push_back(base + suf);
+    for (const auto& c : cands)
+        if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+
+    // Quantized 1BP files carry the quant in their name (Qwen3-0.6B-q8-q4nx
+    // or Qwen3-0.6B.E4M3-IM) while the sibling GGUF keeps the plain base
+    // (Qwen3-0.6B.Q4_K_M.gguf) — strip known quant markers and retry, then
+    // fall back to scanning the directory for a GGUF sharing the base name.
+    for (const char* marker : {"-q8-q4nx", "-q4nx", ".E4M3", "-E4M3", "-IM", ".TQ2", "-TQ2"}) {
+        auto pos = base.rfind(marker);
+        if (pos == std::string::npos) continue;
+        std::string stripped = base.substr(0, pos);
+        for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"}) {
+            std::string c = stripped + suf;
+            if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+        }
+    }
+    // Directory scan: a GGUF whose stem equals our (quant-stripped) base.
+    std::string gguf_base = base;
+    for (const char* marker : {"-q8-q4nx", "-q4nx", ".E4M3", "-E4M3", "-IM", ".TQ2", "-TQ2"}) {
+        auto pos = gguf_base.rfind(marker);
+        if (pos != std::string::npos) gguf_base = gguf_base.substr(0, pos);
+    }
+    auto slash = model_path.find_last_of('/');
+    std::string dir = (slash != std::string::npos) ? model_path.substr(0, slash + 1) : "";
+    if (auto* d = opendir(dir.empty() ? "." : dir.c_str())) {
+        while (struct dirent* e = readdir(d)) {
+            std::string n(e->d_name);
+            if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
+            std::string stem = n.substr(0, n.size() - 5);
+            // Qwen3-0.6B.Q4_K_M → Qwen3-0.6B
+            auto q = stem.find(".Q4_K");
+            if (q != std::string::npos) stem = stem.substr(0, q);
+            auto q8 = stem.find(".Q8_0");
+            if (q8 != std::string::npos) stem = stem.substr(0, q8);
+            if (stem == gguf_base) {
+                std::string c = dir + n;
+                if (g_tokenizer.load_from_gguf(c)) { closedir(d); return; }
+            }
+        }
+        closedir(d);
+    }
+}
+
 static ModelConfig default_model_config() {
     ModelConfig cfg;
     cfg.hidden = 2048;
@@ -664,7 +728,57 @@ static void acquire_singleton_lock() {}
 //  Main
 // ════════════════════════════════════════════════════════════════════════
 
+#ifdef EMBED_LEMONADE
+// ── Embedded Lemonade server core ─────────────────────────────────────────
+// Hand off to Lemonade's full server (github.com/lemonade-sdk/lemonade,
+// pinned in third_party/lemonade): all 14 backends (llamacpp, flm,
+// whispercpp, sd-cpp, kokoro, ryzenai-llm, vllm, ...) + the policy-based
+// Router run in this binary. Remaining argv is passed to Lemonade's CLI.
+#include <lemon/cli_parser.h>
+#include <lemon/config_file.h>
+#include <lemon/logging_config.h>
+#include <lemon/runtime_config.h>
+#include <lemon/server.h>
+#include <lemon/utils/path_utils.h>
+#include <memory>
+
+static int run_embedded_lemonade(int argc, char** argv) {
+    lemon::CLIParser parser;
+    parser.parse(argc, argv);
+    if (!parser.should_continue()) {
+        return parser.get_exit_code();
+    }
+    auto cli_config = parser.get_config();
+
+    lemon::utils::set_cache_dir(cli_config.cache_dir);
+    auto config_json = lemon::ConfigFile::load(cli_config.cache_dir);
+    if (cli_config.port != -1) config_json["port"] = cli_config.port;
+    if (!cli_config.host.empty()) config_json["host"] = cli_config.host;
+    auto config = std::make_shared<lemon::RuntimeConfig>(config_json);
+    lemon::RuntimeConfig::set_global(config.get());
+    lemon::configure_application_logging(config->log_level(),
+                                         lemon::LoggingMode::direct_server);
+
+    lemon::Server server(config, cli_config.cache_dir);
+    server.run();
+    return 0;
+}
+#endif
+
+#ifdef ONE_BIN_DISPATCH
+int unified_server_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
+#ifdef EMBED_LEMONADE
+    // --lemonade hands off to the embedded Lemonade server core before any
+    // of the native arg parsing / hardware init below.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--lemonade") == 0) {
+            return run_embedded_lemonade(argc, argv);
+        }
+    }
+#endif
     signal(SIGINT, handle_sigint);
     signal(SIGTERM, handle_sigint);
 
@@ -680,6 +794,9 @@ int main(int argc, char** argv) {
             printf("  -q, --quick             Quick mode (skip full init)\n");
             printf("  -c, --cors-origin ORG   CORS origin header value\n");
             printf("  -t, --gen-timeout-ms MS Generation timeout (default: 600000)\n");
+#ifdef EMBED_LEMONADE
+            printf("      --lemonade          Run the embedded Lemonade server core\n");
+#endif
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -882,7 +999,7 @@ int main(int argc, char** argv) {
     // tokenizer loaded above — correct per-model tokenization matters as
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
-    g_tokenizer.load_from_gguf(cfg.model_path);
+    load_model_tokenizer(cfg.model_path);
     BackendRoute route = select_backend_route(cfg);
     printf("  Router: %s\n", route.reason.c_str());
     // mgr state is read by /v1/health + /v1/models under g_config_mutex —
@@ -1271,7 +1388,7 @@ int main(int argc, char** argv) {
 
         // ── Phase 1b: Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
-            g_tokenizer.load_from_gguf(switch_cfg.model_path);
+            load_model_tokenizer(switch_cfg.model_path);
             BackendRoute swrt = select_backend_route(switch_cfg);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
@@ -1449,7 +1566,7 @@ int main(int argc, char** argv) {
 
         // ── Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
-            g_tokenizer.load_from_gguf(switch_cfg.model_path);
+            load_model_tokenizer(switch_cfg.model_path);
             BackendRoute swrt = select_backend_route(switch_cfg);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }

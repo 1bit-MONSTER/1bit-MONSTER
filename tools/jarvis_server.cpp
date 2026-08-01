@@ -606,14 +606,14 @@ static json handle_chat(const json& body) {
 }
 
 // ── main ───────────────────────────────────────────────────────────────
-// httplib 0.18 API: req.has_file()/req.get_file_value() (the old req.form /
-// httplib::FormData names were removed upstream).
+// httplib >= 0.30 API: req.form.has_file()/req.form.get_file() (the old
+// req.has_file()/req.get_file_value() were removed upstream).
 static bool has_file(const httplib::Request& req, const std::string& name) {
-    return req.has_file(name);
+    return req.form.has_file(name);
 }
-static httplib::MultipartFormData get_file_value(const httplib::Request& req,
-                                                 const std::string& name) {
-    return req.get_file_value(name);
+static httplib::FormData get_file_value(const httplib::Request& req,
+                                        const std::string& name) {
+    return req.form.get_file(name);
 }
 
 int main(int argc, char** argv) {

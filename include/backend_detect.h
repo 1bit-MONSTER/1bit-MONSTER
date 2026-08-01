@@ -23,4 +23,4 @@ bool has_metal();
 bool has_avx512();
 
 /// Probe all backends, return the best available type
-BackendType detect_backends();
+BackendType probe_backend_type();
