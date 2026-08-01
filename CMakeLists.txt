@@ -143,6 +143,43 @@ enable_testing()
 # NDEBUG only for Release — let Debug builds keep assert() guards
 add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
 
+# -- Discover TheRock SDK under Python site-packages (any Python version) --
+# TheRock's ROCm SDK may install under a Python-versioned path like
+#   lib/python3.X/site-packages/_rocm_sdk_devel/
+# Instead of hardcoding a specific Python version (issue #355), search
+# under all Python site-packages for the _rocm_sdk_devel directory.
+# Must run BEFORE find_package(hip) below — it supplies THEROCK_SDK_BASE,
+# the only PATHS entry that matches the pip/venv TheRock layout.
+function(_find_therock_sdk_base out_var)
+    if(DEFINED CACHE{THEROCK_SDK_BASE})
+        set(${out_var} "${THEROCK_SDK_BASE}" PARENT_SCOPE)
+        return()
+    endif()
+    # Search common locations, preferring newest Python version
+    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib" "${_RC_THEROCK_OPT}/lib")
+        file(GLOB _py_dirs LIST_DIRECTORIES true "${_base}/python*")
+        list(SORT _py_dirs)
+        list(REVERSE _py_dirs)
+        foreach(_py_dir IN LISTS _py_dirs)
+            set(_candidate "${_py_dir}/site-packages/_rocm_sdk_devel")
+            if(EXISTS "${_candidate}/include/rocwmma/rocwmma.hpp" OR EXISTS "${_candidate}")
+                set(${out_var} "${_candidate}" PARENT_SCOPE)
+                set(THEROCK_SDK_BASE "${_candidate}" CACHE INTERNAL "Found TheRock SDK base")
+                message(STATUS "rocm-cpp: TheRock SDK found at ${_candidate}")
+                return()
+            endif()
+        endforeach()
+    endforeach()
+    # Fallback: system ROCm
+    if(EXISTS "/opt/rocm/lib/llvm/bin/amdclang++")
+        set(${out_var} "/opt/rocm" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out_var} "" PARENT_SCOPE)
+endfunction()
+
+_find_therock_sdk_base(THEROCK_SDK_BASE)
+
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 
@@ -180,41 +217,6 @@ if(NOT ROCWMMA_FOUND)
     message(STATUS "rocm-cpp: rocWMMA NOT found — WMMA intrinsics disabled")
 endif()
 
-
-# -- Discover TheRock SDK under Python site-packages (any Python version) --
-# TheRock's ROCm SDK may install under a Python-versioned path like
-#   lib/python3.X/site-packages/_rocm_sdk_devel/
-# Instead of hardcoding a specific Python version (issue #355), search
-# under all Python site-packages for the _rocm_sdk_devel directory.
-function(_find_therock_sdk_base out_var)
-    if(DEFINED CACHE{THEROCK_SDK_BASE})
-        set(${out_var} "${THEROCK_SDK_BASE}" PARENT_SCOPE)
-        return()
-    endif()
-    # Search common locations, preferring newest Python version
-    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib" "${_RC_THEROCK_OPT}/lib")
-        file(GLOB _py_dirs LIST_DIRECTORIES true "${_base}/python*")
-        list(SORT _py_dirs)
-        list(REVERSE _py_dirs)
-        foreach(_py_dir IN LISTS _py_dirs)
-            set(_candidate "${_py_dir}/site-packages/_rocm_sdk_devel")
-            if(EXISTS "${_candidate}/include/rocwmma/rocwmma.hpp" OR EXISTS "${_candidate}")
-                set(${out_var} "${_candidate}" PARENT_SCOPE)
-                set(THEROCK_SDK_BASE "${_candidate}" CACHE INTERNAL "Found TheRock SDK base")
-                message(STATUS "rocm-cpp: TheRock SDK found at ${_candidate}")
-                return()
-            endif()
-        endforeach()
-    endforeach()
-    # Fallback: system ROCm
-    if(EXISTS "/opt/rocm/lib/llvm/bin/amdclang++")
-        set(${out_var} "/opt/rocm" PARENT_SCOPE)
-        return()
-    endif()
-    set(${out_var} "" PARENT_SCOPE)
-endfunction()
-
-_find_therock_sdk_base(THEROCK_SDK_BASE)
 
 include(FetchContent)
 FetchContent_Declare(cpp_httplib
