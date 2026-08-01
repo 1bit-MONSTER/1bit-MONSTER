@@ -63,7 +63,7 @@ struct GenericBackend : Backend {
     std::vector<float> scratch_x, scratch_x2, scratch_q, scratch_k, scratch_v;
     std::vector<float> scratch_scores, scratch_att, scratch_gate_up, scratch_silu_buf;
     std::vector<float> scratch_moe_router_probs, scratch_moe_ffn_acc;
-    std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_down;
+    std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_silu, scratch_moe_down;
     std::vector<int> scratch_moe_idx;  // expert index for partial_sort
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
@@ -228,7 +228,7 @@ struct GenericBackend : Backend {
         if (cfg.n_experts > 0) {
             scratch_moe_router_probs.resize(cfg.n_experts);
             scratch_moe_ffn_acc.resize(H);
-            scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF); scratch_moe_down.resize(H);
+            scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF); scratch_moe_silu.resize(FF); scratch_moe_down.resize(H);
             scratch_moe_idx.resize(cfg.n_experts);
         }
         scratch_allocated_ = true;
@@ -971,7 +971,7 @@ struct GenericBackend : Backend {
                 memset(ffn_acc, 0, H * sizeof(float));
                 float* gate_buf = scratch_moe_gate.data();
                 float* up_buf = scratch_moe_up.data();
-                float* moe_silu = scratch_moe_down.data();  // reused: scratch_moe_down holds silu output then down output
+                float* moe_silu = scratch_moe_silu.data();  // FF-sized; must NOT alias down_buf (H-sized)
                 float* down_buf = scratch_moe_down.data();
                 for (int t = 0; t < NEU; t++) {
                     int e = idx[t];
