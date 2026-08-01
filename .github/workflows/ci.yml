@@ -35,6 +35,10 @@ jobs:
           sudo apt-get install -y -qq cmake ninja-build build-essential python3 python3-venv \
             libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
             libvulkan-dev glslc uuid-dev  # zinc_cpp (Vulkan compute) + unified_server lockfile (-luuid)
+          # XRT (Xilinx Runtime) — backend_fused.cpp/backend_fused_npu.cpp need
+          # xrt headers at compile time (same dep release.yml installs).
+          sudo apt-get install -y -qq libxrt-dev || \
+            echo "::warning::libxrt-dev not available — fused NPU backends stubbed"
           # TheRock nightly ROCm only (native gfx1151). This repo never falls
           # back to apt ROCm 7.2.4 — if TheRock can't install, CI fails.
           sudo python3 -m venv /opt/rocm-therock
