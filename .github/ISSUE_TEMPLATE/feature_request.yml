@@ -29,7 +29,7 @@ body:
       label: Area
       options:
         - NPU Engine (C++)
-        - GPU Engine (Zig)
+        - GPU Engine (C++ HIP + Vulkan)
         - HTTP API / Server
         - Packaging / Install
         - Documentation
