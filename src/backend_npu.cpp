@@ -22,6 +22,7 @@
 #include <vector>
 #include <string>
 #include <mutex>
+#include <shared_mutex>
 #include <fstream>
 #include <chrono>
 #include <algorithm>
@@ -47,13 +48,14 @@ static inline void rmsnorm(float* x, const float* w, int n) {
 }
 static inline float silu(float x) { return x / (1.0f + expf(-x)); }
 
-// RoPE cache (built once at init, thread-safe via mutex)
+// RoPE cache (built once at init, read-only during inference).
+// shared_mutex: exclusive for build, shared for reads (fixes #1313).
 static std::vector<float> cos_cache, sin_cache;
 static int rope_hd = 0;
-static std::mutex rope_cache_mutex;
+static std::shared_mutex rope_cache_mutex;
 static void build_rope_cache(int max_pos, int head_dim, float theta) {
-    std::lock_guard<std::mutex> lock(rope_cache_mutex);
-    if (head_dim == rope_hd && !cos_cache.empty()) return; // already built — double-checked under lock
+    std::unique_lock lock(rope_cache_mutex);
+    if (head_dim == rope_hd && !cos_cache.empty()) return;
     rope_hd = head_dim;
     int hd2 = head_dim / 2;
     cos_cache.resize(max_pos * head_dim);
@@ -68,6 +70,7 @@ static void build_rope_cache(int max_pos, int head_dim, float theta) {
     }
 }
 static inline void rope(float* x, int head_dim, int pos) {
+    std::shared_lock lock(rope_cache_mutex);  // fixes #1313
     int hd2 = head_dim / 2;
     for (int d = 0; d < hd2; d++) {
         float a = x[d], b = x[d + hd2];

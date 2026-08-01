@@ -76,6 +76,7 @@ extern "C" int oscar_load_rotations(const char* path, OscarRots* rots) {
 }
 
 extern "C" void oscar_free_rotations(OscarRots* rots) {
+    // rots->data is always initialized (load sets it, or it's nullptr from calloc) — fixes #1319
     if (rots && rots->data) {
         free(rots->data);
         rots->data = nullptr;
