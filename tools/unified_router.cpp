@@ -1,7 +1,11 @@
 // unified_router.cpp — Content-aware routing proxy for 1bit systems
 //
-// Routes requests between NPU (small model) and GPU (large model) backends
-// based on content complexity analysis. Pure C++ replacement for unified-router.py.
+// Routes requests between NPU (small model) and GPU (large model) backends.
+// Pure C++ replacement for unified-router.py. When built with EMBED_LEMONADE
+// the routing decision runs through Lemonade's policy engine
+// (lemonade-server-core, pinned in third_party/lemonade) — the keyword rules
+// below are a deterministic classifier; swapping in Lemonade's semantic or
+// LLM classifiers (or a route_policy.json) is the upgrade path.
 //
 // Usage:
 //   unified_router --port 18181 --npu-backend http://127.0.0.1:18101 --gpu-backend http://127.0.0.1:18102
@@ -11,14 +15,20 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+
+#ifdef EMBED_LEMONADE
+#include <lemon/routing_policy.h>
+#endif
 
 using json = nlohmann::json;
 
@@ -62,6 +72,64 @@ static std::vector<std::string> split_words(std::string_view text) {
     return words;
 }
 
+static bool keyword_matches(const std::string &text) {
+    auto words = split_words(text);
+    for (const auto &word : words) {
+        if (kGpuKeywords.count(word)) return true;
+        // Check for keyword as prefix
+        for (const auto &kw : kGpuKeywords) {
+            if (word.size() >= kw.size() &&
+                word.compare(0, kw.size(), kw) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// ── Lemonade policy-engine classifier ────────────────────────────────────
+// Deterministic classifier: label "gpu" scores 1.0 when the input contains a
+// GPU keyword, else 0.0; "npu" is the complement. Same semantics as the old
+// hardcoded keyword check, now expressed as a classifier Lemonade's engine
+// can compose (All/Any/Not, scoring bands, trace) and later replace with a
+// semantic or LLM classifier without touching the proxy code.
+static std::map<std::string, double> keyword_classifier(
+    const std::string & /*model*/, const std::string &text) {
+    bool gpu = keyword_matches(text);
+    return {{std::string("gpu"), gpu ? 1.0 : 0.0},
+            {std::string("npu"), gpu ? 0.0 : 1.0}};
+}
+
+#ifdef EMBED_LEMONADE
+static lemon::RoutingPolicyEngine &routing_engine() {
+    static lemon::RoutingPolicyEngine engine = [] {
+        lemon::RoutePolicy policy;
+        policy.candidates = {"gpu", "npu"};
+        policy.default_model = "npu";
+        policy.classifiers = lemon::make_classifiers(lemon::json::array({
+            lemon::json{{"id", "router"},
+                         {"type", "classifier"},
+                         {"model", "router"},
+                         {"labels", {"gpu", "npu"}},
+                         {"default_label", "npu"}},
+        }));
+        lemon::Rule rule;
+        rule.id = "gpu-keywords";
+        rule.match.op = lemon::MatchExpr::Op::Leaf;
+        rule.match.leaf = lemon::json{{"classifier", "router"},
+                                      {"label", "gpu"},
+                                      {"min_score", 0.5}};
+        rule.route_to = "gpu";
+        policy.rules = {std::move(rule)};
+
+        lemon::ClassifierServices services;
+        services.run_classifier = keyword_classifier;
+        return lemon::RoutingPolicyEngine(std::move(policy), std::move(services));
+    }();
+    return engine;
+}
+#endif
+
 static bool should_route_to_gpu(const json &body) {
     // Check for explicit model routing
     auto model_it = body.find("model");
@@ -71,7 +139,8 @@ static bool should_route_to_gpu(const json &body) {
         if (model == g_small_model || model == "npu") return false;
     }
 
-    // Check for content-based routing via messages
+    // Collect the text the classifier sees (all message/prompt content)
+    std::string input;
     const json *messages = nullptr;
     auto msg_it = body.find("messages");
     if (msg_it != body.end() && msg_it->is_array()) {
@@ -89,21 +158,21 @@ static bool should_route_to_gpu(const json &body) {
         for (const auto &msg : *messages) {
             auto content_it = msg.find("content");
             if (content_it == msg.end() || !content_it->is_string()) continue;
-            std::string content = content_it->get<std::string>();
-            auto words = split_words(content);
-            for (const auto &word : words) {
-                if (kGpuKeywords.count(word)) return true;
-                // Check for keyword as prefix
-                for (const auto &kw : kGpuKeywords) {
-                    if (word.size() >= kw.size() &&
-                        word.compare(0, kw.size(), kw) == 0) {
-                        return true;
-                    }
-                }
-            }
+            input += content_it->get<std::string>();
+            input += ' ';
         }
     }
-    return false;
+
+#ifdef EMBED_LEMONADE
+    // Route through Lemonade's policy engine — same rules, composable engine.
+    lemon::RouteContext ctx;
+    ctx.input = input;
+    ctx.params.chars = input.size();
+    return routing_engine().route(ctx, /*want_trace=*/false).route_to == "gpu";
+#else
+    // Non-embed build: same deterministic rule, no engine.
+    return keyword_classifier("router", input).at("gpu") >= 0.5;
+#endif
 }
 
 // ── Proxy helpers ───────────────────────────────────────────────────────
@@ -182,7 +251,11 @@ static void proxy_sse_stream(httplib::Response &resp,
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
+#ifdef ONE_BIN_DISPATCH
+int unified_router_main(int argc, char *argv[]) {
+#else
 int main(int argc, char *argv[]) {
+#endif
     // Parse CLI arguments
     int port = 18180;
     std::string bind_addr = "127.0.0.1";
@@ -247,7 +320,11 @@ Options:
     std::cout << "  Listen:  http://" << bind_addr << ":" << port << "\n";
     std::cout << "  NPU:     " << g_npu_url << " (" << g_small_model << ")\n";
     std::cout << "  GPU:     " << g_gpu_url << " (" << g_big_model << ")\n";
+#ifdef EMBED_LEMONADE
+    std::cout << "  Routing: Lemonade policy engine (keyword classifier) → GPU; default → NPU\n";
+#else
     std::cout << "  Routing: keyword-based → GPU; default → NPU\n";
+#endif
     std::cout << "    npu                  → " << g_small_model << " (NPU)\n";
     std::cout << "    gpu                  → " << g_big_model << " (GPU)\n";
     std::cout << "    <any other>          → pass-through to inference backend\n";

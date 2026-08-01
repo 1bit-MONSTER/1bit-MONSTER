@@ -114,8 +114,12 @@ extern "C" Backend* create_cuda_backend();
 // ── Metal backend ──
 extern "C" Backend* create_metal_backend();
 
+
 // ── Auto-detect ──
-BackendType detect_backends();
+// probe_backend_type: hardware probe for the src::Backend world (defined in
+// backend_factory.cpp). The public detect_backends() aggregator for the
+// zaya_server InferenceBackend world lives in tests/backends/backend.h.
+BackendType probe_backend_type();
 
 // ── Mamba1 detection helper ──
 bool is_mamba1_architecture(const ModelConfig& cfg);

@@ -1,0 +1,79 @@
+// onebin.cpp — the single binary. Everything in one ELF, busybox-style.
+//
+// ONE BINARY. Every entry point dispatches on argv[0] (symlink names) or a
+// subcommand, so `1bit zaya`, `1bit unified`, `1bit router`, `1bit lemonade`,
+// `1bit chat`, and the legacy names `zaya_server` / `unified_server` /
+// `unified_router` / `onebitd` / `onebit` (symlinks to this binary) all work
+// without changing a single exec/pkill site in the tools.
+//
+// Subcommands:
+//   zaya              → zaya_server (HIP/NPU/CPU multi-backend server)
+//   unified           → unified_server (multi-backend + embedded Lemonade core)
+//   router            → unified_router (NPU/GPU policy routing proxy)
+//   lemonade          → unified_server --lemonade (Lemonade's full server)
+//   onebitd, daemon   → onebitd (inference daemon)
+//   everything else   → onebit (agent CLI: chat, up, down, status, build,
+//                        config, auth, serve, update)
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+int zaya_server_main(int argc, char** argv);
+int unified_server_main(int argc, char** argv);
+int unified_router_main(int argc, char *argv[]);
+int onebitd_main(int argc, char *argv[]);
+int onebit_main(int argc, char *argv[]);
+
+static std::string prog_name(const char* argv0) {
+    std::string p = argv0 ? argv0 : "1bit";
+    auto slash = p.find_last_of('/');
+    if (slash != std::string::npos) p = p.substr(slash + 1);
+    return p;
+}
+
+int main(int argc, char** argv) {
+    // ── argv[0] dispatch (symlink names) ──
+    std::string prog = prog_name(argv[0]);
+    if (prog == "zaya_server")    return zaya_server_main(argc, argv);
+    if (prog == "unified_server") return unified_server_main(argc, argv);
+    if (prog == "unified_router") return unified_router_main(argc, argv);
+    if (prog == "onebitd")        return onebitd_main(argc, argv);
+    if (prog == "onebit" || prog == "1bit") {
+        // fall through to subcommand dispatch below
+    } else {
+        // Unknown name: treat as agent CLI anyway (best effort).
+        return onebit_main(argc, argv);
+    }
+
+    // ── Subcommand dispatch ──
+    if (argc > 1) {
+        std::string cmd = argv[1];
+        if (cmd == "zaya" || cmd == "zaya-server" || cmd == "server") {
+            return zaya_server_main(argc - 1, argv + 1);
+        }
+        if (cmd == "unified" || cmd == "unified-server") {
+            return unified_server_main(argc - 1, argv + 1);
+        }
+        if (cmd == "router" || cmd == "unified-router") {
+            return unified_router_main(argc - 1, argv + 1);
+        }
+        if (cmd == "lemonade" || cmd == "lemond") {
+            // Inject --lemonade; unified_server_main hands off to Lemonade's
+            // server core with the rest of the args.
+            static std::vector<char*> args;  // kept alive for the call
+            args.clear();
+            args.push_back(argv[0]);
+            args.push_back(const_cast<char*>("--lemonade"));
+            for (int i = 2; i < argc; ++i) args.push_back(argv[i]);
+            return unified_server_main(static_cast<int>(args.size()), args.data());
+        }
+        if (cmd == "onebitd" || cmd == "daemon") {
+            return onebitd_main(argc - 1, argv + 1);
+        }
+        // Everything else falls through to the agent CLI (chat, up, down,
+        // status, build, config, auth, serve, update, --help).
+    }
+    return onebit_main(argc, argv);
+}

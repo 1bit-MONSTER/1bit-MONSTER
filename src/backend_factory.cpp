@@ -291,7 +291,7 @@ bool has_metal() {
 }
 
 /// Detect all available backends, sorted by preference.
-BackendType detect_backends() {
+BackendType probe_backend_type() {
     printf("\n🔍 Detecting available compute backends...\n");
 
     struct Probe { BackendType type; const char* name; bool (*check)(); };
@@ -320,7 +320,7 @@ BackendType detect_backends() {
 
 /// Create the best available backend.
 Backend* create_best_backend() {
-    BackendType best = detect_backends();
+    BackendType best = probe_backend_type();
     return create_backend(best);
 }
 

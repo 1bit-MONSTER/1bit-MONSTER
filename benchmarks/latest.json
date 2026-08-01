@@ -14,7 +14,7 @@
     "gpu": "gfx1151 (RDNA 3.5, Wave32)",
     "host": "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S",
     "note": "Full benchmark sweep focused on 1-bit ternary performance. All kernel microbenchmarks re-baselined on Strix Halo (gfx1151). Bonsai TQ2_1024 decode at 366 tok/s, fused QKV+GU at 421 tok/s (1.15x over individual). Q1_0 1024-block format reaches 429 tok/s \u2014 fastest 1-bit format on this hardware.",
-    "rocm": "7.2.4"
+    "rocm": "7.15.0a (TheRock nightly C++ SDK)"
   },
   "_sources": {
     "halo_gemv_gbps": "bench_sherry -- halo baseline kernel",

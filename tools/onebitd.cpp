@@ -219,7 +219,11 @@ static bool is_allowed_path(const std::string &path) {
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
+#ifdef ONE_BIN_DISPATCH
+int onebitd_main(int argc, char *argv[]) {
+#else
 int main(int argc, char *argv[]) {
+#endif
     std::string model_path = "./model.h1b";
     int port = kDefaultPort;
     std::string host = "127.0.0.1";

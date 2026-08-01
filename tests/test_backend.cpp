@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
 
     // ── 1. Auto-detect ──
     printf("─━─━─ 1. Backend Detection ─━─━─\n");
-    BackendType best [[maybe_unused]] = detect_backends();
+    BackendType best [[maybe_unused]] = probe_backend_type();
     printf("\n");
 
     // ── 2. CPU Backend (always available, reference) ──

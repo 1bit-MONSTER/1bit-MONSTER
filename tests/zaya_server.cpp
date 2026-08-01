@@ -35,6 +35,18 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#ifdef EMBED_LEMONADE
+// Embedded Lemonade server core: `zaya_server --lemonade` hands off to
+// Lemonade's full server (all 14 backends + policy router) in this binary.
+#include <lemon/cli_parser.h>
+#include <lemon/config_file.h>
+#include <lemon/logging_config.h>
+#include <lemon/runtime_config.h>
+#include <lemon/server.h>
+#include <lemon/utils/path_utils.h>
+#include <memory>
+#endif
+
 extern "C" void npu_flm_set_prompt_text(const char*);
 
 using json = nlohmann::json;
@@ -677,7 +689,34 @@ static bool build_htok_from_gguf(GgufReader& reader, const std::string& out_path
     return true;
 }
 
+#ifdef ONE_BIN_DISPATCH
+int zaya_server_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
+#ifdef EMBED_LEMONADE
+    // --lemonade hands off to the embedded Lemonade server core before any
+    // of the native arg parsing / hardware init below.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--lemonade") == 0) {
+            lemon::CLIParser parser;
+            parser.parse(argc, argv);
+            if (!parser.should_continue()) return parser.get_exit_code();
+            auto cli_config = parser.get_config();
+            lemon::utils::set_cache_dir(cli_config.cache_dir);
+            auto config_json = lemon::ConfigFile::load(cli_config.cache_dir);
+            if (cli_config.port != -1) config_json["port"] = cli_config.port;
+            if (!cli_config.host.empty()) config_json["host"] = cli_config.host;
+            auto config = std::make_shared<lemon::RuntimeConfig>(config_json);
+            lemon::RuntimeConfig::set_global(config.get());
+            lemon::configure_application_logging(config->log_level(),
+                                                 lemon::LoggingMode::direct_server);
+            lemon::Server server(config, cli_config.cache_dir);
+            server.run();
+            return 0;
+        }
+    }
+#endif
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
     const char* home_default = getenv("HOME");
