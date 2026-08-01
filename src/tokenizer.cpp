@@ -206,6 +206,11 @@ rcpp_tokenizer_load(const char* path, rcpp_tokenizer_t** out)
         f.read(reinterpret_cast<char*>(&len), 2);
         std::string s(len, '\0');
         if (len) f.read(s.data(), len);
+        if (!f) {  // short read — fail fast instead of allocating 64KB x 1M
+            fprintf(stderr, "[tokenizer] short read at vocab entry %u\n", i);
+            delete t;
+            return RCPP_INVALID_ARG;
+        }
         t->id_to_bytes[i] = s;
         if (!s.empty()) t->bytes_to_id[s] = (int32_t)i;
     }

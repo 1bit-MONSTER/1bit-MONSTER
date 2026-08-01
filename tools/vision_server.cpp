@@ -42,6 +42,7 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <chrono>
 #include <atomic>
 #include <mutex>
 #include <signal.h>
@@ -82,39 +83,81 @@ static void handle_sigint(int) { keep_running = false; }
 
 // ── Mini GGUF scalar reader (duplicated from vision_qwen2vl_poc for
 //     self-containedness — no cross-file dependency) ──
-static bool read_gguf_uint32_kv(const std::string& path, const std::string& key, uint32_t& out) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return false;
-    char magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "GGUF", 4) != 0) { fclose(f); return false; }
-    uint32_t ver; fread(&ver, 4, 1, f);
-    uint64_t tc, kc; fread(&tc, 8, 1, f); fread(&kc, 8, 1, f);
-    auto read_str = [&](std::string& s) {
-        uint64_t l; fread(&l, 8, 1, f); s.resize(l); if (l) fread(&s[0], 1, l, f);
-    };
-    bool found = false;
-    for (uint64_t i = 0; i < kc && !found; i++) {
-        std::string k; read_str(k);
-        uint32_t vt; fread(&vt, 4, 1, f);
-        if ((vt == 4 || vt == 5) && k == key) { fread(&out, 4, 1, f); found = true; break; }
+// Bounded reads (issue #1295): every fread is checked and file-controlled
+// lengths/counts are capped, so a truncated/corrupt .gguf fails cleanly
+// instead of bad_alloc'ing on a garbage length.
+struct GgufReadError {};
+struct GgufScanner {
+    FILE* f = nullptr;
+    uint64_t kc = 0;
+    ~GgufScanner() { if (f) fclose(f); }
+    bool open(const std::string& path) {
+        f = fopen(path.c_str(), "rb");
+        if (!f) return false;
+        char magic[4];
+        if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "GGUF", 4) != 0) return false;
+        uint32_t ver;
+        if (fread(&ver, 4, 1, f) != 1) fail();
+        if (fread(&kc, 8, 1, f) != 1) fail();
+        uint64_t tc;
+        if (fread(&tc, 8, 1, f) != 1) fail();
+        if (kc > (1ull << 24)) fail();  // cap key count
+        return true;
+    }
+    void fail() { throw GgufReadError{}; }
+    void read_str(std::string& s) {
+        uint64_t l;
+        if (fread(&l, 8, 1, f) != 1) fail();
+        if (l > (1ull << 28)) fail();  // 256 MB string cap
+        s.resize(l);
+        if (l && fread(&s[0], 1, l, f) != l) fail();
+    }
+    void skip_value(uint32_t vt) {
         switch (vt) {
-            case 0: case 1: case 7: fseek(f, 1, SEEK_CUR); break;
-            case 2: case 3: fseek(f, 2, SEEK_CUR); break;
-            case 4: case 5: case 6: fseek(f, 4, SEEK_CUR); break;
+            case 0: case 1: case 7: if (fseek(f, 1, SEEK_CUR)) fail(); break;
+            case 2: case 3: if (fseek(f, 2, SEEK_CUR)) fail(); break;
+            case 4: case 5: case 6: if (fseek(f, 4, SEEK_CUR)) fail(); break;
             case 8: { std::string tmp; read_str(tmp); break; }
             case 9: {
-                uint32_t at; fread(&at, 4, 1, f);
-                uint64_t an; fread(&an, 8, 1, f);
+                uint32_t at; uint64_t an;
+                if (fread(&at, 4, 1, f) != 1 || fread(&an, 8, 1, f) != 1) fail();
                 if (at == 8) { for (uint64_t j = 0; j < an; j++) { std::string tmp; read_str(tmp); } }
-                else { fseek(f, (long)(an * 4), SEEK_CUR); }
+                else if (an > (1ull << 30)) fail();
+                else {
+                    // element size by GGUF type (1/2/4/8 bytes); was hardcoded 4
+                    size_t es = 4;
+                    if (at == 0 || at == 1 || at == 7) es = 1;
+                    else if (at == 2 || at == 3) es = 2;
+                    else if (at == 10 || at == 11 || at == 12) es = 8;
+                    if (fseek(f, (long)(an * es), SEEK_CUR)) fail();
+                }
                 break;
             }
-            case 10: case 11: case 12: fseek(f, 8, SEEK_CUR); break;
-            default: break;
+            case 10: case 11: case 12: if (fseek(f, 8, SEEK_CUR)) fail(); break;
+            default: fail();  // unknown type — refuse to guess
         }
     }
-    fclose(f);
-    return found;
+};
+
+static bool read_gguf_uint32_kv(const std::string& path, const std::string& key, uint32_t& out) {
+    try {
+        GgufScanner gs;
+        if (!gs.open(path)) return false;
+        for (uint64_t i = 0; i < gs.kc; i++) {
+            std::string k; gs.read_str(k);
+            uint32_t vt;
+            if (fread(&vt, 4, 1, gs.f) != 1) throw GgufReadError{};
+            if ((vt == 4 || vt == 5) && k == key) {
+                if (fread(&out, 4, 1, gs.f) != 1) throw GgufReadError{};
+                return true;
+            }
+            gs.skip_value(vt);
+        }
+    } catch (const GgufReadError&) {
+        fprintf(stderr, "[vision] WARNING: truncated/corrupt GGUF '%s' reading '%s'\n",
+                path.c_str(), key.c_str());
+    }
+    return false;
 }
 
 // ── Load image from URL or data URL ──
@@ -133,7 +176,7 @@ static VlResult load_image_from_content(const json& part) {
     if (part.contains("image_url")) {
         const auto& iu = part["image_url"];
         if (iu.is_string()) url = iu.get<std::string>();
-        else if (iu.is_object() && iu.contains("url")) url = iu["url"].get<std::string>();
+        else if (iu.is_object() && iu.contains("url") && iu["url"].is_string()) url = iu["url"].get<std::string>();
     }
 
     if (url.empty()) {
@@ -181,46 +224,29 @@ struct SimpleTokenizer {
     int bos_id = 151643; // <|im_start|>
 
     bool load(const std::string& path) {
-        // Read GGUF string array metadata
-        FILE* f = fopen(path.c_str(), "rb");
-        if (!f) return false;
-        char magic[4];
-        if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "GGUF", 4) != 0) { fclose(f); return false; }
-        uint32_t ver; fread(&ver, 4, 1, f);
-        uint64_t tc, kc; fread(&tc, 8, 1, f); fread(&kc, 8, 1, f);
-        auto read_str = [&](std::string& s) {
-            uint64_t l; fread(&l, 8, 1, f); s.resize(l); if (l) fread(&s[0], 1, l, f);
-        };
-        for (uint64_t i = 0; i < kc; i++) {
-            std::string k; read_str(k);
-            uint32_t vt; fread(&vt, 4, 1, f);
-            if (vt == 9 && k == "tokenizer.ggml.tokens") {
-                uint32_t at; fread(&at, 4, 1, f);
-                uint64_t an; fread(&an, 8, 1, f);
-                vocab.resize(an);
-                for (uint64_t j = 0; j < an; j++) {
-                    if (at == 8) read_str(vocab[j]);
+        // Read GGUF string array metadata (bounded reads, issue #1295)
+        try {
+            GgufScanner gs;
+            if (!gs.open(path)) return false;
+            for (uint64_t i = 0; i < gs.kc; i++) {
+                std::string k; gs.read_str(k);
+                uint32_t vt;
+                if (fread(&vt, 4, 1, gs.f) != 1) throw GgufReadError{};
+                if (vt == 9 && k == "tokenizer.ggml.tokens") {
+                    uint32_t at; uint64_t an;
+                    if (fread(&at, 4, 1, gs.f) != 1 || fread(&an, 8, 1, gs.f) != 1) throw GgufReadError{};
+                    if (at != 8 || an > (1ull << 24)) return false;  // not strings / absurd count
+                    vocab.resize(an);
+                    for (uint64_t j = 0; j < an; j++) gs.read_str(vocab[j]);
+                    break;
                 }
-                break;
-            } else {
-                switch (vt) {
-                    case 0: case 1: case 7: fseek(f, 1, SEEK_CUR); break;
-                    case 2: case 3: fseek(f, 2, SEEK_CUR); break;
-                    case 4: case 5: case 6: fseek(f, 4, SEEK_CUR); break;
-                    case 8: { std::string tmp; read_str(tmp); break; }
-                    case 9: {
-                        uint32_t at; fread(&at, 4, 1, f);
-                        uint64_t an; fread(&an, 8, 1, f);
-                        if (at == 8) { for (uint64_t j = 0; j < an; j++) { std::string tmp; read_str(tmp); } }
-                        else { fseek(f, (long)(an * 4), SEEK_CUR); }
-                        break;
-                    }
-                    case 10: case 11: case 12: fseek(f, 8, SEEK_CUR); break;
-                    default: break;
-                }
+                gs.skip_value(vt);
             }
+        } catch (const GgufReadError&) {
+            fprintf(stderr, "[vision] WARNING: truncated/corrupt GGUF '%s' — tokenizer load failed\n",
+                    path.c_str());
+            return false;
         }
-        fclose(f);
 
         for (size_t i = 0; i < vocab.size(); i++)
             vocab_ix[vocab[i]] = (int)i;
@@ -254,6 +280,7 @@ struct SimpleTokenizer {
 
     std::string decode(const std::vector<int>& ids) {
         std::string out;
+        out.reserve(ids.size() * 4);
         for (int id : ids) {
             if (id < 0 || (size_t)id >= vocab.size()) continue;
             std::string tok = vocab[id];
@@ -423,6 +450,13 @@ int main(int argc, char** argv) {
     // ── HTTP server ──
     httplib::Server svr;
 
+    // Any unexpected exception returns a clean 500 — never the raw exception
+    // text in an EXCEPTION_WHAT header (issue #1293).
+    svr.set_exception_handler([](const httplib::Request&, httplib::Response& res, std::exception_ptr) {
+        res.status = 500;
+        res.set_content(json({{"error", "Internal server error"}}).dump(), "application/json");
+    });
+
     // ── GET /v1/health ──
     svr.Get("/v1/health", [&](const httplib::Request&, httplib::Response& res) {
         json j;
@@ -466,38 +500,64 @@ int main(int argc, char** argv) {
         std::string text_prompt;
         std::vector<VlResult> images;
 
-        if (body.contains("messages") && body["messages"].is_array()) {
-            for (auto& msg : body["messages"]) {
-                std::string role = msg.value("role", "user");
-                const auto& content = msg["content"];
+        // nlohmann value()/operator[] throw on non-object parts (type_error
+        // 305/306/302) — catch and return 400 instead of escaping the handler
+        // as a bare 500 (issue #1293).
+        try {
+            if (body.contains("messages") && body["messages"].is_array()) {
+                for (auto& msg : body["messages"]) {
+                    if (!msg.is_object()) {
+                        res.status = 400;
+                        res.set_content(json({{"error", "each message must be an object"}}).dump(), "application/json");
+                        return;
+                    }
+                    std::string role = msg.value("role", "user");
+                    const auto& content = msg["content"];
 
-                if (content.is_string()) {
-                    text_prompt += role + ": " + content.get<std::string>() + "\n";
-                } else if (content.is_array()) {
-                    for (const auto& part : content) {
-                        std::string type = part.value("type", "");
-                        if (type == "text") {
-                            text_prompt += part.value("text", "");
-                        } else if (type == "image_url") {
-                            auto result = load_image_from_content(part);
-                            if (result.ok()) {
-                                images.push_back(std::move(result));
-                                fprintf(stderr, "[vision] loaded image: %dx%d\n",
-                                        result.proc.width(), result.proc.height());
-                            } else {
-                                fprintf(stderr, "[vision] WARNING: %s\n", result.error.c_str());
+                    if (content.is_string()) {
+                        text_prompt += role + ": " + content.get<std::string>() + "\n";
+                    } else if (content.is_array()) {
+                        for (const auto& part : content) {
+                            if (part.is_string()) {  // OpenAI allows bare strings in content arrays
+                                text_prompt += part.get<std::string>();
+                                continue;
+                            }
+                            if (!part.is_object()) continue;
+                            std::string type = part.value("type", "");
+                            if (type == "text") {
+                                const auto& t = part["text"];
+                                if (t.is_string()) text_prompt += t.get<std::string>();
+                            } else if (type == "image_url") {
+                                auto result = load_image_from_content(part);
+                                if (result.ok()) {
+                                    images.push_back(std::move(result));
+                                    fprintf(stderr, "[vision] loaded image: %dx%d\n",
+                                            result.proc.width(), result.proc.height());
+                                } else {
+                                    fprintf(stderr, "[vision] WARNING: %s\n", result.error.c_str());
+                                }
                             }
                         }
                     }
                 }
             }
+        } catch (const json::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", std::string(e.what())}}).dump(), "application/json");
+            return;
         }
 
         int max_tokens = body.value("max_tokens", 256);
+        if (max_tokens < 1) max_tokens = 1;
+        if (max_tokens > 32768) max_tokens = 32768;
 
         // ── Generate ──
         // Reset backend
         be->reset();
+
+        // Track actual KV positions consumed for usage accounting (was a
+        // hardcoded 66 tokens/image, issue #1294).
+        size_t kv_used = 0;
 
         // 1. Feed vision embeddings through the text decoder (issue #1244).
         //    Real ViT forward: pixels -> mage_vit_forward (patch embed + 28
@@ -512,9 +572,11 @@ int main(int argc, char** argv) {
             // when there are no images)
             auto open = encode_text(tokenizer, std::string(VL_TMPL_SYS) + VL_TMPL_USER_OPEN);
             for (int t : open) be->generate(t);
+            kv_used += open.size();
         }
         for (auto& vr : images) {
             be->generate(VL_VISION_START);
+            kv_used++;
             std::vector<float> embs = mage_vit_forward(
                 vit, vr.proc.pixels(), 3, 1,
                 vr.proc.height(), vr.proc.width(), 1);
@@ -528,6 +590,10 @@ int main(int argc, char** argv) {
             if (!vit.mm0_w.empty() && !vit.mm2_w.empty()) {
                 int pm = (int)(vit.mm0_w.size() / (4 * vit.config.hidden_size));
                 if (pm > 0) th = (int)(vit.mm2_w.size() / pm);
+            }
+            if (th <= 0) {  // malformed merger weights (issue #1297)
+                fprintf(stderr, "[vision] FAIL: invalid projector output dim\n");
+                continue;
             }
             if (th != cfg.hidden) {
                 fprintf(stderr, "[vision] WARNING: projector dim %d != text hidden %d — "
@@ -550,12 +616,14 @@ int main(int argc, char** argv) {
                 }
             }
             be->generate(VL_VISION_END);
+            kv_used += (size_t)n_tiles + 1;
         }
 
         // 2. Tokenize and feed text prompt (template close for htok models)
         if (g_htok) text_prompt += VL_TMPL_ASSIST;
         prompt_ids = encode_text(tokenizer, text_prompt);
         if (prompt_ids.empty()) prompt_ids = {tokenizer.bos_id};
+        kv_used += prompt_ids.size();
 
         fprintf(stderr, "Prompt: '%s' -> %zu tokens\n", text_prompt.c_str(), prompt_ids.size());
         for (size_t i = 0; i < prompt_ids.size(); i++) {
@@ -600,8 +668,18 @@ int main(int argc, char** argv) {
         choice["message"] = message;
         choice["finish_reason"] = "stop";
 
+        // Surface KV-cache overflow as an explicit error instead of a silent
+        // empty 200 (issue #1294).
+        if (kv_used >= (size_t)cfg.max_seq_len) {
+            res.status = 400;
+            json err = {{"error", "Prompt exceeds the model context window (max_seq_len=" +
+                          std::to_string(cfg.max_seq_len) + ")"}};
+            res.set_content(err.dump(), "application/json");
+            return;
+        }
+
         json usage;
-        usage["prompt_tokens"] = (int)(1 + images.size() * 66 + prompt_ids.size());
+        usage["prompt_tokens"] = (int)kv_used;
         usage["completion_tokens"] = (int)output_tokens.size();
         usage["total_tokens"] = usage["prompt_tokens"].get<int>() + usage["completion_tokens"].get<int>();
 
@@ -628,10 +706,17 @@ int main(int argc, char** argv) {
     fprintf(stderr, "      -H \"Content-Type: application/json\" \\\n");
     fprintf(stderr, "      -d '{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is this?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.com/photo.jpg\"}}]}],\"max_tokens\":100}'\n");
 
-    if (!svr.listen("127.0.0.1", g_port)) {
-        fprintf(stderr, "Failed to start server on port %d\n", g_port);
-        return 1;
-    }
-
+    // SIGINT/SIGTERM set keep_running=false; a watchdog thread stops the
+    // server so Ctrl-C / kill actually terminate it (issue #1292).
+    std::thread listener([&]() {
+        if (!svr.listen("127.0.0.1", g_port)) {
+            fprintf(stderr, "Failed to start server on port %d\n", g_port);
+            _exit(1);
+        }
+    });
+    while (keep_running)
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    svr.stop();
+    listener.join();
     return 0;
 }

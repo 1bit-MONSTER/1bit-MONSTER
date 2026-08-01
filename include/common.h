@@ -96,6 +96,26 @@ struct ModelConfig {
     rcpp_arch_t arch = RCPP_ARCH_BITNET;  // enum from architecture string; used for dispatch
     std::string quantization;   // best-effort, e.g. "Q4_K_M", "Q8_0", "F16", "ternary"
 
+    // Reject absurd file-controlled dims before they reach allocation sites
+    // (crafted/corrupt model headers -> multi-GB k_cache/embed allocations,
+    // div-by-zero in attention math). Called by every loader boundary.
+    bool sane() const {
+        if (hidden_size <= 0 || hidden_size > 65536) return false;
+        if (num_layers <= 0 || num_layers > 1024) return false;
+        if (num_heads <= 0 || num_heads > 1024) return false;
+        if (num_kv_heads <= 0 || num_kv_heads > num_heads) return false;
+        // GQA: kv_h = h / (NH/NKV) reads up to kv_h == NKV when NH % NKV != 0
+        // -> heap OOB past the KV cache slice in attention (issue #1284 class).
+        if (num_heads % num_kv_heads != 0) return false;
+        if (num_experts > 0 && (num_experts_top <= 0 || num_experts_top > num_experts))
+            return false;  // partial_sort(idx, idx+top) is UB when top > experts
+        if (head_dim <= 0 || head_dim > 4096) return false;
+        if (intermediate_size <= 0 || intermediate_size > (1 << 24)) return false;
+        if (vocab_size <= 0 || vocab_size > (1 << 26)) return false;
+        if (max_seq_len <= 0 || max_seq_len > (1 << 22)) return false;
+        return true;
+    }
+
     // ── Helper: set all aliased dimension fields at once ────────
     // Use this instead of chained assignments to guarantee sync.
     void set_hidden(int v) { hidden = hidden_size = v; }

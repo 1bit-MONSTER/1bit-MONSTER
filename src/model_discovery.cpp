@@ -76,6 +76,11 @@ static bool read_h1b_metadata(const std::string& path, ModelConfig& cfg) {
     auto dot = path.find_last_of('.');
     cfg.model_name = path.substr(slash + 1, dot - slash - 1);
     fclose(f);
+    if (!cfg.sane()) {
+        fprintf(stderr, "[discovery] implausible H1B dims (hidden=%u layers=%u heads=%u kv=%u seq=%u)\n",
+                hs, n_layers, n_heads, n_kv, max_seq);
+        return false;
+    }
     return true;
 }
 
@@ -341,6 +346,10 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
         default: cfg.quantization = "unknown(" + std::to_string(quant_raw) + ")"; break;
     }
 
+    if (!cfg.sane()) {
+        fprintf(stderr, "[discovery] implausible GGUF dims for %s\n", path.c_str());
+        return false;
+    }
     return true;
 }
 
