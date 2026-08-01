@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=1bit Systems
+Comment=One binary, all backends — NPU + GPU + CPU inference engine
+Exec=1bit
+Icon=1bit
+Type=Application
+Terminal=true
+Categories=Development;
