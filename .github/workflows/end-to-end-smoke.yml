@@ -26,7 +26,7 @@ jobs:
         run: |
           source env.sh
           cmake -B build -G Ninja
-          cmake --build build --target unified_server -j$(nproc)
+          cmake --build build --target unified_server vision_server -j$(nproc)
 
       - name: Download test model
         # Model files are git-ignored (symlinked to HF cache locally).
@@ -54,6 +54,9 @@ jobs:
           # Also kill stray manual servers (vision_server etc.) that can
           # squat on 8099 and answer health checks with the wrong schema.
           pkill -f "[v]ision_server.*8099" || true
+          # -9 fallback: a wedged instance can survive SIGTERM and squat on 8099
+          # with the wrong health schema (issue #1257 incident class).
+          pkill -9 -f "[v]ision_server.*8099" || true
           sleep 2
 
       - name: Start server
@@ -162,9 +165,49 @@ jobs:
           print('Tokens:', d['usage'].get('completion_tokens'))
           "
 
+      - name: Test vision_server health (issue #1257)
+        # vision_server had zero CI coverage; a stray instance once squatted on
+        # 8099 answering health checks with the wrong schema (PR #1248 run).
+        # Models are gitignored (present on the self-hosted runner); skip
+        # gracefully elsewhere.
+        run: |
+          MM="models/Mage-VL-4B.1bp"
+          VIT="models/Mage-ViT.1bp"
+          if [ ! -f "$MM" ] || [ ! -f "$VIT" ]; then
+            echo "SKIP: vision models not present ($MM / $VIT)"
+            exit 0
+          fi
+          # Free the GPU for the VL stack.
+          pkill -f "unified_server.*8099" 2>/dev/null || true
+          sleep 2
+          ./build/vision_server --port 8099 --mmproj "$VIT" --model "$MM" \
+            &>/tmp/smoke_vision_server.log &
+          echo "pid=$!"
+          for i in $(seq 1 60); do
+            sleep 2
+            if curl -sf http://127.0.0.1:8099/v1/health >/dev/null 2>&1; then
+              echo "vision_server ready after $((i*2))s"
+              break
+            fi
+          done
+          curl -sf http://127.0.0.1:8099/v1/health | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert d['status'] == 'ok', 'health check failed'
+          assert 'VL' in d.get('service',''), 'wrong service schema'
+          assert d.get('model') and d.get('mmproj'), 'missing model/mmproj'
+          assert d.get('port') == 8099, 'wrong port'
+          print('OK: vision_server health endpoint')
+          "
+          curl -sf http://127.0.0.1:8099/v1/models | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert 'data' in d and len(d['data']) > 0, 'no models listed'
+          print('OK: vision_server models endpoint:', d['data'][0].get('id'))
+          "
+          pkill -f "vision_server.*8099" 2>/dev/null || true
       - name: Cleanup
         if: always()
         run: |
           pkill -f "unified_server.*8099" 2>/dev/null || true
+          pkill -f "[v]ision_server.*8099" 2>/dev/null || true
           rm -f /tmp/unified_server.lock
           sudo systemctl start 1bit-systems.service || true
