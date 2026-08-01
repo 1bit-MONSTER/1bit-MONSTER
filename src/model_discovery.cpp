@@ -53,7 +53,7 @@ static bool read_h1b_metadata(const std::string& path, ModelConfig& cfg) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     uint32_t h1b_magic;
-    if (fread(&h1b_magic, 4, 1, f) != 1 || h1b_magic != 0x48314248) { fclose(f); return false; }
+    if (fread(&h1b_magic, 4, 1, f) != 1 || strncmp((char*)&h1b_magic, "H1B", 3) != 0) { fclose(f); return false; }
     uint32_t version, hs, is, n_layers, n_heads, n_kv, max_seq;
     fseek(f, 8, SEEK_SET);
     if (fread(&version, 4, 1, f) != 1 || fread(&hs, 4, 1, f) != 1 ||

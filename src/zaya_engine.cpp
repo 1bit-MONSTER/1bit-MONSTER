@@ -177,6 +177,13 @@ extern "C" {
 static thread_local std::string g_weights_dir;
 static void resolve_weights_dir(const char* weights_dir) {
     if (weights_dir && weights_dir[0]) {
+        // Reject path traversal attempts (fixes #1328)
+        std::string wd(weights_dir);
+        if (wd.find("..") != std::string::npos) {
+            fprintf(stderr, "ERROR: weights directory contains '..' — rejected for security\n");
+            g_weights_dir.clear();
+            return;
+        }
         g_weights_dir = ensure_trailing_slash(weights_dir);
         return;
     }
@@ -186,7 +193,8 @@ static void resolve_weights_dir(const char* weights_dir) {
     if (xdg && xdg[0]) { g_weights_dir = std::string(xdg) + "/1bit-systems/weights/"; return; }
     const char* home = getenv("HOME");
     if (home && home[0]) { g_weights_dir = std::string(home) + "/.local/share/1bit-systems/weights/"; return; }
-    g_weights_dir = "/tmp/zaya_weights/";
+    fprintf(stderr, "ERROR: No weights directory found — set ZAYA_WEIGHTS_DIR or ensure HOME is set\n");
+    g_weights_dir.clear();  // fixes #1332: never default to /tmp
 }
 
 ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {

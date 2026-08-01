@@ -28,6 +28,7 @@ static void sigfpe_handler(int sig) {
 }
 
 static inline uint16_t f32b(float v) {
+    static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "gguf_to_onebp requires little-endian host");
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 

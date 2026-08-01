@@ -39,6 +39,7 @@ struct PbReader {
             uint8_t byte = data[pos++];
             val |= uint64_t(byte & 0x7F) << shift;
             shift += 7;
+            if (shift > 64) return 0;  // fixes #1331: prevent UB shift >= width
             if (!(byte & 0x80)) return val;
         }
         return val;
@@ -47,7 +48,7 @@ struct PbReader {
     // Read a length-delimited field value (wire type 2)
     std::vector<uint8_t> bytes() {
         uint64_t sz = varint();
-        if (pos + sz > len) sz = len - pos;
+        if (sz > len || pos > len - sz) sz = len - pos;  // fixes #1326 overflow bypass
         std::vector<uint8_t> result(data + pos, data + pos + sz);
         pos += sz;
         return result;
@@ -76,7 +77,7 @@ struct PbReader {
     void skip_field(uint32_t wire_type) {
         if (wire_type == 0) { varint(); }
         else if (wire_type == 1) { if (pos + 8 > len) { pos = len; return; } pos += 8; }
-        else if (wire_type == 2) { uint64_t sz = varint(); if (pos + sz > len) sz = len - pos; pos += sz; }
+        else if (wire_type == 2) { uint64_t sz = varint(); if (sz > len || pos > len - sz) sz = len - pos; pos += sz; }
         else if (wire_type == 5) { if (pos + 4 > len) { pos = len; return; } pos += 4; }
     }
 };

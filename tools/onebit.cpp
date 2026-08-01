@@ -147,8 +147,8 @@ struct Settings {
         else if (key == "bitnet_decode_path") bitnet_decode_path = value;
         else if (key == "tune_prefill") tune_prefill = (value == "true" || value == "1");
         else if (key == "fp16_weights") fp16_weights = (value == "true" || value == "1");
-        else if (key == "api_port") api_port = std::stoi(value);
-        else if (key == "lemond_port") lemond_port = std::stoi(value);
+        else if (key == "api_port") { try { api_port = std::stoi(value); } catch(...) {} }
+        else if (key == "lemond_port") { try { lemond_port = std::stoi(value); } catch(...) {} }
         save();
     }
 };

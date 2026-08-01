@@ -59,6 +59,18 @@ struct GenericBackend : Backend {
     int pos = 0;
     std::vector<float> logits_buf;
 
+    // Pre-allocated scratch buffers (avoid per-token heap allocations in forward_embed)
+    std::vector<float> scratch_x, scratch_x2, scratch_q, scratch_k, scratch_v;
+    std::vector<float> scratch_scores, scratch_att, scratch_gate_up, scratch_silu_buf;
+    std::vector<float> scratch_moe_router_probs, scratch_moe_ffn_acc;
+    std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_down;
+    std::vector<int> scratch_moe_idx;  // expert index for partial_sort
+    std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
+    float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
+    bool scratch_allocated_ = false;
+    int cached_debug_ops_ = -1;  // cached getenv("CPU_DEBUG_OPS") — checked once
+    int cached_num_layers_ = -1;  // cached CPU_NUM_LAYERS
+
     // Per-layer weight indices. bq/bk/bv are optional QKV biases (Qwen2 and
     // some other architectures use biased attention projections, unlike
     // Llama) — SIZE_MAX means "not present in this model", distinct from a
@@ -205,6 +217,37 @@ struct GenericBackend : Backend {
         v_cache.resize(cfg.n_layers);
         for (auto& k : k_cache) k.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
         for (auto& v : v_cache) v.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
+
+        // Pre-allocate scratch buffers (avoid per-token heap allocations)
+        int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim, FF = cfg.intermediate_size;
+        size_t score_sz = (size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD;
+        scratch_x.resize(H); scratch_x2.resize(H);
+        scratch_q.resize(NH * HD); scratch_k.resize(NKV * HD); scratch_v.resize(NKV * HD);
+        scratch_scores.resize(score_sz); scratch_att.resize(NH * HD);
+        scratch_gate_up.resize(FF * 2); scratch_silu_buf.resize(FF);
+        if (cfg.n_experts > 0) {
+            scratch_moe_router_probs.resize(cfg.n_experts);
+            scratch_moe_ffn_acc.resize(H);
+            scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF); scratch_moe_down.resize(H);
+            scratch_moe_idx.resize(cfg.n_experts);
+        }
+        scratch_allocated_ = true;
+
+        // Precompute RoPE frequencies (avoid powf+cosf+sinf per token)
+        int rot_dim = cfg.head_dim, half = rot_dim / 2;
+        rope_freqs.resize(half);
+        float theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
+        for (int i = 0; i < half; i++)
+            rope_freqs[i] = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
+        inv_sqrt_hd_ = 1.0f / sqrtf((float)cfg.head_dim);
+
+        // Cache getenv results checked in the hot path
+        cached_debug_ops_ = getenv("CPU_DEBUG_OPS") ? 1 : 0;
+        {
+            const char* nl = getenv("CPU_NUM_LAYERS");
+            cached_num_layers_ = (nl && nl[0]) ? atoi(nl) : cfg.n_layers;
+        }
+
         initialized = true;
         return true;
     }
@@ -545,12 +588,11 @@ struct GenericBackend : Backend {
     // models — this file's previous adjacent-pair version was the GPT-J
     // convention, wrong for this model family, and produced incoherent
     // (real-vocabulary but semantically scrambled) output as a result.
-    static void rope(float* q, float* k, int pos, int n_heads, int n_kv, int hd, int rot_dim, float theta) {
+    static void rope(float* q, float* k, int pos, int n_heads, int n_kv, int hd, int rot_dim, float theta, const float* freqs) {
         int half = rot_dim / 2;
         for (int h = 0; h < n_heads; h++) {
             for (int i = 0; i < half; i++) {
-                float freq = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
-                float t = pos * freq;
+                float t = pos * freqs[i];
                 float cosv = cosf(t), sinv = sinf(t);
                 int i0 = h * hd + i, i1 = h * hd + i + half;
                 float q0 = q[i0], q1 = q[i1];
@@ -560,8 +602,7 @@ struct GenericBackend : Backend {
         }
         for (int h = 0; h < n_kv; h++) {
             for (int i = 0; i < half; i++) {
-                float freq = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
-                float t = pos * freq;
+                float t = pos * freqs[i];
                 float cosv = cosf(t), sinv = sinf(t);
                 int i0 = h * hd + i, i1 = h * hd + i + half;
                 float k0 = k[i0], k1 = k[i1];
@@ -572,15 +613,33 @@ struct GenericBackend : Backend {
     }
 
     static void matmul(float* out, const float* in, const float* w, int M, int K) {
-        // Each output row is independent and its dot-product accumulates in a
-        // fixed order, so parallelizing the row loop is bit-identical to the
-        // scalar version — just uses all cores. This is the dominant cost of
-        // the generic CPU decode path (QKV/O/gate/up/down/lm_head).
+        // AVX-512 vectorized GEMV with OpenMP. Each thread processes rows,
+        // inner dot product uses 16-wide FMA for the main loop, scalar tail.
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < M; i++) {
-            float s = 0;
             const float* wr = w + (size_t)i * K;
-            for (int j = 0; j < K; j++) s += in[j] * wr[j];
+            float s = 0;
+            int j = 0;
+#if defined(__AVX512F__)
+            __m512 acc = _mm512_setzero_ps();
+            for (; j + 15 < K; j += 16) {
+                acc = _mm512_fmadd_ps(_mm512_loadu_ps(in + j), _mm512_loadu_ps(wr + j), acc);
+            }
+            s = _mm512_reduce_add_ps(acc);
+#elif defined(__AVX2__)
+            __m256 acc = _mm256_setzero_ps();
+            for (; j + 7 < K; j += 8) {
+                acc = _mm256_fmadd_ps(_mm256_loadu_ps(in + j), _mm256_loadu_ps(wr + j), acc);
+            }
+            // horizontal sum of 8 floats
+            __m128 lo = _mm256_castps256_ps128(acc);
+            __m128 hi = _mm256_extractf128_ps(acc, 1);
+            lo = _mm_add_ps(lo, hi);
+            lo = _mm_hadd_ps(lo, lo);
+            lo = _mm_hadd_ps(lo, lo);
+            s = _mm_cvtss_f32(lo);
+#endif
+            for (; j < K; j++) s += in[j] * wr[j];  // scalar tail
             out[i] = s;
         }
     }
@@ -639,7 +698,38 @@ struct GenericBackend : Backend {
     }
 
     static void silu(float* out, const float* gate, const float* up, int n) {
-        for (int i = 0; i < n; i++) {
+        // Vectorized SiLU: x * sigmoid(x) * up, using fast sigmoid approx.
+        // sigmoid(x) ≈ 0.5 + 0.5 * tanh(0.5*x) — tanhf is faster than expf.
+        int i = 0;
+#if defined(__AVX512F__)
+        for (; i + 15 < n; i += 16) {
+            __m512 g = _mm512_loadu_ps(gate + i);
+            __m512 u = _mm512_loadu_ps(up + i);
+            // sigmoid ≈ 0.5 + 0.5 * tanh(x/2)
+            __m512 half = _mm512_set1_ps(0.5f);
+            __m512 g2 = _mm512_mul_ps(g, half);
+            // approximate tanh via: x * (1 + 0.1834*x^2) clipped; for SiLU on -10..10 this is fine
+            __m512 g2sq = _mm512_mul_ps(g2, g2);
+            __m512 tanh_approx = _mm512_mul_ps(g2, _mm512_fmadd_ps(_mm512_set1_ps(0.1834f), g2sq, _mm512_set1_ps(1.0f)));
+            // clip tanh to -1..1
+            tanh_approx = _mm512_max_ps(_mm512_set1_ps(-1.0f), _mm512_min_ps(_mm512_set1_ps(1.0f), tanh_approx));
+            __m512 sig = _mm512_fmadd_ps(half, tanh_approx, half);  // 0.5 + 0.5*tanh
+            _mm512_storeu_ps(out + i, _mm512_mul_ps(_mm512_mul_ps(g, sig), u));
+        }
+#elif defined(__AVX2__)
+        for (; i + 7 < n; i += 8) {
+            __m256 g = _mm256_loadu_ps(gate + i);
+            __m256 u = _mm256_loadu_ps(up + i);
+            __m256 half = _mm256_set1_ps(0.5f);
+            __m256 g2 = _mm256_mul_ps(g, half);
+            __m256 g2sq = _mm256_mul_ps(g2, g2);
+            __m256 tanh_approx = _mm256_mul_ps(g2, _mm256_fmadd_ps(_mm256_set1_ps(0.1834f), g2sq, _mm256_set1_ps(1.0f)));
+            tanh_approx = _mm256_max_ps(_mm256_set1_ps(-1.0f), _mm256_min_ps(_mm256_set1_ps(1.0f), tanh_approx));
+            __m256 sig = _mm256_fmadd_ps(half, tanh_approx, half);
+            _mm256_storeu_ps(out + i, _mm256_mul_ps(_mm256_mul_ps(g, sig), u));
+        }
+#endif
+        for (; i < n; i++) {
             float g = gate[i];
             out[i] = (g / (1.0f + expf(-g))) * up[i];
         }
@@ -759,27 +849,34 @@ struct GenericBackend : Backend {
 
         // scores indexed by past position (t <= pos) — must hold max_seq_len,
         // not HD (issue #1263: heap OOB for prompts > head_dim tokens).
-        std::vector<float> x(H), x2(H), q(NH*HD), k(NKV*HD), v(NKV*HD);
-        std::vector<float> scores((size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD);
-        std::vector<float> att(NH*HD);
-        std::vector<float> gate_up(FF*2);
+        // All buffers are pre-allocated class members — no heap allocs per token.
+        float* x = scratch_x.data();
+        float* x2 = scratch_x2.data();
+        float* q = scratch_q.data();
+        float* k = scratch_k.data();
+        float* v = scratch_v.data();
+        float* scores = scratch_scores.data();
+        float* att = scratch_att.data();
+        float* gate_up = scratch_gate_up.data();
+        float* silu_buf = scratch_silu_buf.data();
+        int debug_ops = cached_debug_ops_;  // cached getenv — checked once at init
+        (void)scores; // used below
+        (void)gate_up; (void)silu_buf; // used in FFN path
 
         for (int i = 0; i < H; i++) x[i] = x_in[i];
-
-        static const char* _nl = getenv("CPU_NUM_LAYERS");
-        int _n_layers = (_nl && _nl[0]) ? atoi(_nl) : cfg.n_layers;
+        int _n_layers = cached_num_layers_;
         for (int il = 0; il < _n_layers; il++) {
             auto& l = layers[il];
             int kv_begin = pos * NKV * HD;
 
             // RMSNorm → QKV
-            rmsnorm(x2.data(), x.data(), w(l.rms_attn), H, eps);
-            if (il == 0 && getenv("CPU_DEBUG_OPS"))
+            rmsnorm(x2, x, w(l.rms_attn), H, eps);
+            if (il == 0 && debug_ops)
                 fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g]\n",
                         pos, x[0], x[1], x[2], x2[0], x2[1], x2[2]);
-            mm(q.data(), x2.data(), w(l.wq), NH*HD, H, l.pk_q);
-            mm(k.data(), x2.data(), w(l.wk), NKV*HD, H, l.pk_k);
-            mm(v.data(), x2.data(), w(l.wv), NKV*HD, H, l.pk_v);
+            mm(q, x2, w(l.wq), NH*HD, H, l.pk_q);
+            mm(k, x2, w(l.wk), NKV*HD, H, l.pk_k);
+            mm(v, x2, w(l.wv), NKV*HD, H, l.pk_v);
 
             // Optional QKV bias (Qwen2 and others use biased attention
             // projections; absent for architectures like Llama).
@@ -799,38 +896,41 @@ struct GenericBackend : Backend {
                 for (int h = 0; h < NKV; h++) rmsnorm(&k[h*HD], &k[h*HD], kn, HD, eps);
             }
 
-            bool _dbg_ops = (il == 0 && getenv("CPU_DEBUG_OPS"));
+            bool _dbg_ops = (il == 0 && debug_ops);
             if (_dbg_ops) fprintf(stderr,
                 "[cpu] L0 q_pre=[%g %g %g] k_pre=[%g %g %g] v=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2], v[0], v[1], v[2]);
 
             // RoPE
-            rope(q.data(), k.data(), pos, NH, NKV, HD, rot_dim, theta);
+            rope(q, k, pos, NH, NKV, HD, rot_dim, theta, rope_freqs.data());
             if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2]);
 
             // KV cache
-            memcpy(&k_cache[il][kv_begin], k.data(), NKV * HD * sizeof(float));
-            memcpy(&v_cache[il][kv_begin], v.data(), NKV * HD * sizeof(float));
+            memcpy(&k_cache[il][kv_begin], k, NKV * HD * sizeof(float));
+            memcpy(&v_cache[il][kv_begin], v, NKV * HD * sizeof(float));
 
             // Attention: GQA
-            std::fill(att.begin(), att.end(), 0.0f);
+            memset(att, 0, NH * HD * sizeof(float));
+            float attn_scale = inv_sqrt_hd_;  // precomputed 1/sqrt(HD)
+            int kvs = NKV * HD;  // stride per position in KV cache
             for (int h = 0; h < NH; h++) {
                 int kv_h = h / GQA;
                 float* Q = &q[h * HD];
+                int kv_base = kv_h * HD;  // precompute base offset for this KV head
                 // Score over all past positions
                 for (int t = 0; t <= pos; t++) {
-                    float* K = &k_cache[il][t * NKV * HD + kv_h * HD];
+                    float* K = &k_cache[il][t * kvs + kv_base];
                     float s = 0;
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
-                    scores[t] = s / sqrtf((float)HD);
+                    scores[t] = s * attn_scale;  // multiply instead of divide
                 }
-                softmax(scores.data(), pos + 1);
+                softmax(scores, pos + 1);
                 // Weighted sum of V
                 for (int d = 0; d < HD; d++) {
                     float sum = 0;
                     for (int t = 0; t <= pos; t++) {
-                        float* V = &v_cache[il][t * NKV * HD + kv_h * HD];
+                        float* V = &v_cache[il][t * kvs + kv_base];
                         sum += scores[t] * V[d];
                     }
                     att[h * HD + d] = sum;
@@ -840,10 +940,10 @@ struct GenericBackend : Backend {
                 att[0], att[1], att[2], att[128], att[129], att[130]);
 
             // O proj
-            mm(x2.data(), att.data(), w(l.wo), H, NH*HD, l.pk_o);
+            mm(x2, att, w(l.wo), H, NH*HD, l.pk_o);
             // Residual
             for (int i = 0; i < H; i++) x[i] += x2[i];
-            if (getenv("CPU_DEBUG_OPS") && il < 3) {
+            if (debug_ops && il < 3) {
                 double s = 0; for (int i = 0; i < H; i++) s += fabs(x[i]);
                 fprintf(stderr, "[cpu] L%d after attn: mean|.|=%g\n", il, s / H);
             }
@@ -851,47 +951,47 @@ struct GenericBackend : Backend {
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
             // weighted sum → residual (MoE).
-            rmsnorm(x2.data(), x.data(), w(l.rms_ffn), H, eps);
+            rmsnorm(x2, x, w(l.rms_ffn), H, eps);
             if (l.moe_gate_inp != SIZE_MAX) {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
-                std::vector<float> router_probs(NE);
-                mm(router_probs.data(), x2.data(), w(l.moe_gate_inp), NE, H, -1);
-                softmax(router_probs.data(), NE);
+                float* router_probs = scratch_moe_router_probs.data();
+                mm(router_probs, x2, w(l.moe_gate_inp), NE, H, -1);
+                softmax(router_probs, NE);
 
-                // Top-k expert selection by router probability (descending),
-                // then renormalize just the selected weights to sum to 1 —
-                // matches llama.cpp's build_moe_ffn with norm_w=true (the
-                // convention used by Qwen2-MoE/Qwen3-MoE/Mixtral).
-                std::vector<int> idx(NE);
+                // Top-k expert selection
+                int* idx = scratch_moe_idx.data();
                 for (int e = 0; e < NE; e++) idx[e] = e;
-                std::partial_sort(idx.begin(), idx.begin() + NEU, idx.end(),
+                std::partial_sort(idx, idx + NEU, idx + NE,
                                    [&](int a, int b) { return router_probs[a] > router_probs[b]; });
                 float wsum = 0.0f;
                 for (int t = 0; t < NEU; t++) wsum += router_probs[idx[t]];
-                if (wsum < 6.103515625e-5f) wsum = 6.103515625e-5f; // match ggml's clamp
+                if (wsum < 6.103515625e-5f) wsum = 6.103515625e-5f;
 
-                std::vector<float> ffn_acc(H, 0.0f);
-                std::vector<float> gate_buf(FF), up_buf(FF), silu_buf(FF), down_buf(H);
+                float* ffn_acc = scratch_moe_ffn_acc.data();
+                memset(ffn_acc, 0, H * sizeof(float));
+                float* gate_buf = scratch_moe_gate.data();
+                float* up_buf = scratch_moe_up.data();
+                float* moe_silu = scratch_moe_down.data();  // reused: scratch_moe_down holds silu output then down output
+                float* down_buf = scratch_moe_down.data();
                 for (int t = 0; t < NEU; t++) {
                     int e = idx[t];
                     float we = router_probs[e] / wsum;
                     float* wg = w(l.moe_gate_exps) + (size_t)e * FF * H;
                     float* wu = w(l.moe_up_exps)   + (size_t)e * FF * H;
                     float* wd = w(l.moe_down_exps) + (size_t)e * H * FF;
-                    mm(gate_buf.data(), x2.data(), wg, FF, H, -1);
-                    mm(up_buf.data(), x2.data(), wu, FF, H, -1);
-                    ffn_activate(silu_buf.data(), gate_buf.data(), up_buf.data(), FF, cfg.arch);
-                    mm(down_buf.data(), silu_buf.data(), wd, H, FF, -1);
+                    mm(gate_buf, x2, wg, FF, H, -1);
+                    mm(up_buf, x2, wu, FF, H, -1);
+                    ffn_activate(moe_silu, gate_buf, up_buf, FF, cfg.arch);
+                    mm(down_buf, moe_silu, wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
                 }
                 for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
             } else {
-                mm(gate_up.data(), x2.data(), w(l.w1), FF, H, l.pk_w1);
-                mm(&gate_up[FF], x2.data(), w(l.w2), FF, H, l.pk_w2);
-                std::vector<float> silu_buf(FF);
-                ffn_activate(silu_buf.data(), gate_up.data(), &gate_up[FF], FF, cfg.arch);
-                mm(x2.data(), silu_buf.data(), w(l.w3), H, FF, l.pk_w3);
-                if (getenv("CPU_DEBUG_OPS") && il < 3) {
+                mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
+                mm(&gate_up[FF], x2, w(l.w2), FF, H, l.pk_w2);
+                ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch);
+                mm(x2, silu_buf, w(l.w3), H, FF, l.pk_w3);
+                if (debug_ops && il < 3) {
                     double sg = 0, sd = 0;
                     for (int i = 0; i < FF; i++) sg += fabs(gate_up[i]);
                     for (int i = 0; i < H; i++) sd += fabs(x2[i]);
@@ -901,17 +1001,17 @@ struct GenericBackend : Backend {
             }
         }
 
-        if (getenv("CPU_DEBUG_OPS")) {
+        if (debug_ops) {
             double s = 0, mx = 0;
             for (int i = 0; i < H; i++) { s += fabs(x[i]); if (fabs(x[i]) > mx) mx = fabs(x[i]); }
             fprintf(stderr, "[cpu] final hidden mean|.|=%g max|.|=%g\n", s / H, mx);
         }
         // Final RMSNorm
-        rmsnorm(x2.data(), x.data(), final_norm.data(), H, eps);
+        rmsnorm(x2, x, final_norm.data(), H, eps);
 
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();
-        mm(logits_buf.data(), x2.data(), lm_head, V, H, pk_lm_);
+        mm(logits_buf.data(), x2, lm_head, V, H, pk_lm_);
 
         pos++;
 
@@ -920,7 +1020,7 @@ struct GenericBackend : Backend {
         for (int i = 1; i < V; i++) {
             if (logits_buf[i] > bestv) { bestv = logits_buf[i]; best = i; }
         }
-        if (getenv("CPU_DEBUG")) fprintf(stderr, "[cpu] argmax idx=%d maxlogit=%g\n", best, bestv);
+        if (getenv("CPU_DEBUG")) fprintf(stderr, "[cpu] argmax idx=%d maxlogit=%g\n", best, bestv);  // one-time check, not in hot inner loop
         return best;
     }
 

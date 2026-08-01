@@ -309,6 +309,7 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         case GGUF_DTYPE_F32:    return {1, 4};
         case GGUF_DTYPE_F16:    return {1, 2};
         case GGUF_DTYPE_BF16:   return {1, 2};
+        case GGUF_DTYPE_F32_V3: return {1, 4};  // dtype 30: GGUF v3 F32
         case GGUF_DTYPE_Q4_0:   return {32, 18};
         case GGUF_DTYPE_Q4_1:   return {32, 20};
         case GGUF_DTYPE_Q5_0:   return {32, 22};
@@ -348,7 +349,8 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
 
 bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
     switch (dtype) {
-        case GGUF_DTYPE_F32: memcpy(out, data, (size_t)count * 4); return true;
+        case GGUF_DTYPE_F32:
+        case GGUF_DTYPE_F32_V3: memcpy(out, data, (size_t)count * 4); return true;
         case GGUF_DTYPE_F16:
             for (int i = 0; i < count; i++) out[i] = read_f16(data + (size_t)i * 2);
             return true;
@@ -629,6 +631,8 @@ bool GgufReader::get_tensor_raw(const std::string& name, int block_size, int blo
     if (it == tensors_.end() || !f_ || block_size <= 0 || block_bytes <= 0) return false;
     const GgufTensorInfo& ti = it->second;
     if (out_numel) *out_numel = ti.numel;
+    constexpr uint64_t MAX_TENSOR_ELEMENTS = 1ULL << 30;  // fixes #1320: guard sentinel-numel
+    if (ti.numel > MAX_TENSOR_ELEMENTS) return false;
     uint64_t n_blocks = (ti.numel + block_size - 1) / block_size;
     out.resize(n_blocks * (uint64_t)block_bytes);
     fseeko(f_, (off_t)ti.abs_offset, SEEK_SET);

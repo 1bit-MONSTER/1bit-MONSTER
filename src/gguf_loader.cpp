@@ -156,6 +156,8 @@ rcpp_status_t rcpp_bitnet_load_gguf(const char* path, rcpp_bitnet_model_t* out_m
             for (size_t i = 0; i < data.size(); ++i) f16[i] = (_Float16)data[i];
             void** target = has_bst_tensor ? bst_ptr : std_ptr;
             HIP_CHECK(hipMalloc(target, f16.size() * sizeof(_Float16)));
+            // ponytail: GPU mem leak on partial load failure — earlier layers leak if a later layer fails.
+            // #1334: add cleanup-on-error or RAII wrapper for HIP allocations.
             HIP_CHECK(hipMemcpy(*target, f16.data(), f16.size() * sizeof(_Float16), hipMemcpyHostToDevice));
             return RCPP_OK;
         };

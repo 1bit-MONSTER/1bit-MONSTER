@@ -378,7 +378,7 @@ add_library(vision_encoder STATIC src/vision_encoder.cpp)
 target_include_directories(vision_encoder PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(vision_encoder PRIVATE -O3 -std=c++23 -Wno-unused-result)
+target_compile_options(vision_encoder PRIVATE -O3 -march=native -ffast-math -std=c++23 -Wno-unused-result)
 target_link_libraries(vision_encoder PUBLIC vl_image backend_manager onebp_model)
 
 # -- libwhisper : Speech-to-text (Whisper) ----------------------------------------------
@@ -386,7 +386,7 @@ add_library(whisper STATIC src/whisper.cpp)
 target_include_directories(whisper PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(whisper PRIVATE -O3 -std=c++23 -Wno-unused-result)
+target_compile_options(whisper PRIVATE -O3 -march=native -ffast-math -std=c++23 -Wno-unused-result)
 target_link_libraries(whisper PUBLIC backend_manager)
 
 # -- libpixtral : Pixtral (Mistral) vision-language connector --------------------------
@@ -394,7 +394,7 @@ add_library(pixtral STATIC src/pixtral.cpp)
 target_include_directories(pixtral PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(pixtral PRIVATE -O3 -std=c++23 -Wno-unused-result)
+target_compile_options(pixtral PRIVATE -O3 -march=native -ffast-math -std=c++23 -Wno-unused-result)
 target_link_libraries(pixtral PUBLIC vision_encoder backend_manager vl_image)
 
 
@@ -514,7 +514,7 @@ add_executable(ppl_generic
     src/q4nx_reader.cpp
     src/safetensors_reader.cpp)
 target_include_directories(ppl_generic PRIVATE src include engine/npu/src)
-target_compile_options(ppl_generic PRIVATE -O3 -std=c++23)
+target_compile_options(ppl_generic PRIVATE -O3 -march=native -ffast-math -std=c++23)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(ppl_generic PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -534,7 +534,7 @@ if(RCPP_HAVE_METAL)
     target_link_libraries(backend_manager PRIVATE ${METAL_LIBRARY} ${METAL_PERFORMANCE_SHADERS_LIBRARY})
     target_compile_options(backend_manager PRIVATE -fobjc-arc)
 endif()
-target_compile_options(backend_manager PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_compile_options(backend_manager PRIVATE -O3 -march=native -ffast-math -Wall -Wno-unused-result -std=c++23)
 
 # Try to find libzinc.so for the real GGUF tokenizer C ABI.
 # If not found, ZINC_DISABLED remains set and the C++ stubs in
@@ -1002,7 +1002,7 @@ endif()
 
 add_executable(backend_demo tools/backend_demo.cpp)
 target_include_directories(backend_demo PRIVATE src/)
-target_compile_options(backend_demo PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
+target_compile_options(backend_demo PRIVATE -O3 -march=native -ffast-math -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(backend_demo PRIVATE backend_manager dl)
 
 add_executable(test_mamba1_backend tools/test_mamba1_backend.cpp)

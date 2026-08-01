@@ -49,7 +49,10 @@ inline const char* npu_tokenizer_path() {
 inline std::string npu_xclbin_dir() {
     const char* e = getenv("NPU_XCLBIN_DIR");
     if (e) return e;
-    return "engine/npu/xclbins";  // relative to repo root
+    // fixes #1338: use install path instead of relative ./ path
+    const char* home = getenv("HOME");
+    if (home) return std::string(home) + "/.local/share/1bit-systems/xclbins/";
+    return "/usr/local/share/1bit-systems/xclbins/";
 }
 
 // ── Instruction file paths ─────────────────────────────────────
@@ -67,7 +70,10 @@ inline std::string npu_insts_dir() {
 inline std::string npu_engine_bin() {
     const char* e = getenv("NPU_ENGINE_BIN");
     if (e) return e;
-    return "./npu_engine_universal";  // relative to cwd
+    // fixes #1338: resolve against install path, not cwd
+    const char* home = getenv("HOME");
+    if (home) return std::string(home) + "/.local/bin/npu_engine_universal";
+    return "/usr/local/bin/npu_engine_universal";
 }
 
 // ── AIE toolchain paths (torch2aie) ────────────────────────────

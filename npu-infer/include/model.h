@@ -11,14 +11,18 @@ extern "C" {
 
 // Tensor descriptor from Q4NX metadata
 typedef struct {
-    char     name[128];
-    char     dtype[16];
-    int64_t  shape[4];
-    int      ndim;
-    uint64_t data_offset;
-    uint64_t data_size;
-    uint64_t num_elements;
+    // Order by descending alignment to eliminate implicit padding (fixes #1336)
+    int64_t  shape[4];        // offset 0,  8-byte aligned
+    uint64_t data_offset;     // offset 32, 8-byte aligned
+    uint64_t data_size;       // offset 40, 8-byte aligned
+    uint64_t num_elements;    // offset 48, 8-byte aligned
+    int      ndim;            // offset 56, 4-byte aligned
+    char     name[128];       // offset 60
+    char     dtype[16];       // offset 188
 } TensorDesc;
+#ifdef __cplusplus
+static_assert(sizeof(TensorDesc) == 204, "TensorDesc padding mismatch");
+#endif
 
 // Per-layer weights
 typedef struct {

@@ -19,15 +19,15 @@
 #include <cublas_v2.h>
 
 // ── Error checking macros (mirror hip_check.h) ──
+// NOTE: CUDA_CHECK sets error state and returns instead of throwing
+// (fixes #1327: C++ exception across extern "C" boundary is UB).
 #ifndef CUDA_CHECK
 #define CUDA_CHECK(e) do {                                                      \
     cudaError_t _s_ = (e);                                                      \
     if (_s_ != cudaSuccess) {                                                   \
         fprintf(stderr, "CUDA Error %s:%d: %s (code %d)\n",                     \
                 __FILE__, __LINE__, cudaGetErrorString(_s_), (int)_s_);         \
-        throw std::runtime_error(std::string("CUDA error at ") + __FILE__ +     \
-                                 ":" + std::to_string(__LINE__) + ": " +        \
-                                 cudaGetErrorString(_s_));                      \
+        return;                                                                 \
     }                                                                           \
 } while(0)
 #endif

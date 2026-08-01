@@ -66,7 +66,7 @@ extern "C" {
 #endif
 
 // ── Internal: horizontal sum helpers ─────────────────────────────────
-#ifdef COLI_AVX2
+#if defined(COLI_AVX2) || defined(COLI_AVX512)
 #include <immintrin.h>
 static inline float _coli_hsum256_ps(__m256 v) {
     __m128 lo = _mm256_castps256_ps128(v);

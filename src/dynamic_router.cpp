@@ -121,31 +121,47 @@ DynamicRouter::BackendEntry* DynamicRouter::pick_backend() {
 
 // ── Inference ──
 int DynamicRouter::generate(int token_id) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto* entry = pick_backend();
-    if (!entry || !entry->backend) return -1;
+    std::shared_ptr<Backend> backend;
+    BackendEntry* entry = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        entry = pick_backend();
+        if (!entry || !entry->backend) return -1;
+        backend = entry->backend;  // snapshot to keep alive outside lock
+    }
 
     auto t0 = std::chrono::steady_clock::now();
-    int result = entry->backend->generate(token_id);
+    int result = backend->generate(token_id);  // fixes #1315: no lock held during inference
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    record_latency(entry, ms, result >= 0);
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        record_latency(entry, ms, result >= 0);
+    }
     return result;
 }
 
 bool DynamicRouter::forward(int token_id, float* hidden_out) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto* entry = pick_backend();
-    if (!entry || !entry->backend) return false;
-    return entry->backend->forward(token_id, hidden_out);
+    std::shared_ptr<Backend> backend;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        auto* entry = pick_backend();
+        if (!entry || !entry->backend) return false;
+        backend = entry->backend;
+    }
+    return backend->forward(token_id, hidden_out);
 }
 
 bool DynamicRouter::lm_head(const float* hidden, float* logits, int* argmax) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto* entry = pick_backend();
-    if (!entry || !entry->backend) return false;
-    return entry->backend->lm_head(hidden, logits, argmax);
+    std::shared_ptr<Backend> backend;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        auto* entry = pick_backend();
+        if (!entry || !entry->backend) return false;
+        backend = entry->backend;
+    }
+    return backend->lm_head(hidden, logits, argmax);
 }
 
 // ── Stats ──
