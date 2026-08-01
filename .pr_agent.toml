@@ -1,7 +1,7 @@
 [pr_agent]
-model = "ollama/qwen2.5-coder:7b"
-model_turbo = "ollama/qwen2.5-coder:7b"
-fallback_models = []
+model = "ollama_chat/gpt-oss:20b"
+model_turbo = "ollama_chat/qwen3.5:9b"
+fallback_models = ["ollama_chat/qwen3.5:9b"]
 verbosity_level = 2
 publish_output = true
 publish_output_progress = false
@@ -34,14 +34,14 @@ push_changelog_changes = true
 enable_help_text = false
 
 [config]
-model = "ollama/qwen2.5-coder:7b"
-fallback_models = []
+model = "ollama_chat/gpt-oss:20b"
+fallback_models = ["ollama_chat/qwen3.5:9b"]
 ignore_pr_labels = []
 # Local model served by Ollama on the strix-halo-runner host (100% GPU,
-# gfx1151). Runs through litellm's "ollama/" provider — api_base defaults to
-# http://localhost:11434 but is set explicitly below.
-# "ollama/qwen2.5-coder:7b" isn't in pr-agent's internal MAX_TOKENS table,
-# so custom_model_max_tokens is required; 32768 = qwen2.5-coder context.
+# gfx1151). Runs through litellm's "ollama_chat/" provider — api_base defaults
+# to http://localhost:11434 but is set explicitly below.
+# gpt-oss:20b isn't in pr-agent's internal MAX_TOKENS table, so
+# custom_model_max_tokens is required; 32768 is a safe cap below its 128k ctx.
 custom_model_max_tokens = 32768
 
 [ollama]

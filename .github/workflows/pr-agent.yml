@@ -27,7 +27,7 @@ jobs:
       - name: Ensure local model (ollama)
         run: |
           curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-          ollama pull qwen2.5-coder:7b
+          ollama pull gpt-oss:20b
       - name: PR Agent
         uses: qodo-ai/pr-agent@d82f7d3e696cd00822694aaa3096265d3889f3f1  # v0.34
         env:
