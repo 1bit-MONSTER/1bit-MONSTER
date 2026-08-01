@@ -11,3 +11,6 @@
 [submodule "third_party/llama.cpp"]
 	path = third_party/llama.cpp
 	url = https://github.com/ggml-org/llama.cpp.git
+[submodule "third_party/lemonade"]
+	path = third_party/lemonade
+	url = https://github.com/lemonade-sdk/lemonade.git
