@@ -1,0 +1,67 @@
+name: video-lora CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/video-lora/**'
+      - '.github/workflows/video-lora-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/video-lora/**'
+      - '.github/workflows/video-lora-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build + selftest (pure C++)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install Vulkan SDK (glslc + headers)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools libvulkan-dev
+
+      - name: Configure
+        working-directory: tools/video-lora/vulkan
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: tools/video-lora/vulkan
+        run: cmake --build build -j$(nproc)
+
+      # Shader compile check: every .comp must build to valid SPIR-V.
+      # (Selftest needs a GPU, so CI verifies compilation + links only;
+      # the selftest runs on the self-hosted strix-halo runner in the
+      # end-to-end workflow.)
+      - name: Shader artifacts produced
+        working-directory: tools/video-lora/vulkan
+        run: |
+          ls build/shaders/*.spv
+          test "$(ls build/shaders/*.spv | wc -l)" -eq 6
+
+  selftest:
+    name: GPU selftest (strix-halo)
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 15
+    needs: build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Configure
+        working-directory: tools/video-lora/vulkan
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: tools/video-lora/vulkan
+        run: cmake --build build -j$(nproc)
+
+      - name: Selftest (GPU vs CPU reference)
+        working-directory: tools/video-lora/vulkan
+        run: ./build/video_lora_vk_cli --selftest --shaders build/shaders
