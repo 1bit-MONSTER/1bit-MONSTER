@@ -29,7 +29,9 @@ jobs:
           set -euo pipefail
 
           # Top-level paths that belong to the engine's mission.
-          # Anything else (new dirs, stray apps) fails the PR.
+          # NO APPS: this is an inference engine, not n8n / openclaw / an app
+          # store. Clients bring their own frontend. Anything else (new dirs,
+          # integrations, workers, themes, personas, stray apps) fails the PR.
           ALLOWED='
             AGENTS.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
             CMakeLists_windows.txt CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
@@ -38,13 +40,12 @@ jobs:
             replace_i8ctx.py
             .github .pr_agent.toml
             engine kernels include src cmake adapters models rust
-            ck-prefill spec-decode integrations zaya_audio
+            ck-prefill spec-decode
             benchmarks Testing tests
             packaging snap
             docs site
             tools scripts bin
             experimental research hackathon fastflowlm_analysis npu-infer
-            personas prompts skills themes workers
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"
