@@ -10,7 +10,6 @@
 #include <hip/hip_runtime.h>
 #endif
 
-<<<<<<< HEAD
 // __builtin_memcpy is GCC/Clang builtin; MSVC needs std::memcpy
 #ifndef __has_builtin
 #define __has_builtin(x) 0
@@ -21,12 +20,6 @@
 
 // __host__ __device__ annotation for HIP/CUDA dual-use functions.
 // On non-GPU compilers, this expands to nothing.
-=======
-// Host/device annotation for HIP/CUDA dual-use functions.
-// When <hip/hip_runtime.h> is available (HIP compilation), the full
-// __host__ __device__ annotation is used so functions are callable from
-// both host and device code.  In non-HIP contexts this expands to nothing.
->>>>>>> 492951d8 (fix: HIP build with system ROCm, WMMA wave32 guards, MoE alloc leak + destroy OOB (#497))
 #if defined(__HIP__) || defined(__HIPCC__) || defined(__CUDACC__)
 #define BST_HOST_DEVICE __host__ __device__
 #else

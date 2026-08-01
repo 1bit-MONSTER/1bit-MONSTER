@@ -1088,7 +1088,6 @@ void zaya_destroy(ZayaState* s) {
     safe(s->d_kcache); safe(s->d_vcache); safe(s->d_vrec);
     safe(s->d_partials);
     safe(s->d_qout); safe(s->d_kout); safe(s->d_vout); safe(s->d_skip_flag);
-<<<<<<< HEAD
     safe(s->d_k_gather); safe(s->d_v_gather); safe(s->d_page_map);
     // Bound by s->lw's actual size, not eng.n_layers: zaya_destroy() can be
     // called from an early-exit path in zaya_init() (missing weight files,
@@ -1098,12 +1097,6 @@ void zaya_destroy(ZayaState* s) {
     // an empty/undersized vector, pulled garbage pointers out of it, and
     // handed them to hipFree() — a real segfault, not just UB in theory.
     for (size_t i = 0; i < s->lw.size(); i++) {
-=======
-    // s->lw may be empty if zaya_init aborted early (e.g. missing weights).
-    // Bounding by s->lw.size() prevents an OOB vector access (#497).
-    int n_lw = std::min((int)s->lw.size(), eng.n_layers);
-    for (int i = 0; i < n_lw; i++) {
->>>>>>> 492951d8 (fix: HIP build with system ROCm, WMMA wave32 guards, MoE alloc leak + destroy OOB (#497))
         auto& l = s->lw[i];
         safe(l.nw); safe(l.wq); safe(l.wk); safe(l.wv1); safe(l.wv2); safe(l.wo); safe(l.pan);
         safe(l.cdw); safe(l.cdb); safe(l.cgw); safe(l.cgb); safe(l.ks);

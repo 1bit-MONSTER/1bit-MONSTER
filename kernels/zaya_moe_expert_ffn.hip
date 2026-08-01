@@ -12,13 +12,9 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
-<<<<<<< HEAD
-
-=======
 #define H        2048
 #define N_EXP    16
 #define N_FF     2048
->>>>>>> 492951d8 (fix: HIP build with system ROCm, WMMA wave32 guards, MoE alloc leak + destroy OOB (#497))
 #define WMMA_M   16
 #define WMMA_THREADS 128
 
