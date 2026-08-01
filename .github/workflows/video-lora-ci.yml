@@ -15,46 +15,53 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: tools/video-lora
-
 jobs:
-  lint:
+  build:
+    name: Build + selftest (pure C++)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -e ".[dev]"
-      - run: ruff check src/
 
-  type:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -e ".[dev]"
-      - run: mypy src/
+      - name: Install Vulkan SDK (glslc + headers)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools libvulkan-dev
 
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+      - name: Configure
+        working-directory: tools/video-lora/vulkan
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: tools/video-lora/vulkan
+        run: cmake --build build -j$(nproc)
+
+      # Shader compile check: every .comp must build to valid SPIR-V.
+      # (Selftest needs a GPU, so CI verifies compilation + links only;
+      # the selftest runs on the self-hosted strix-halo runner in the
+      # end-to-end workflow.)
+      - name: Shader artifacts produced
+        working-directory: tools/video-lora/vulkan
+        run: |
+          ls build/shaders/*.spv
+          test "$(ls build/shaders/*.spv | wc -l)" -eq 6
+
+  selftest:
+    name: GPU selftest (strix-halo)
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 15
+    needs: build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -e ".[dev]"
-      - run: pytest -v
+
+      - name: Configure
+        working-directory: tools/video-lora/vulkan
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: tools/video-lora/vulkan
+        run: cmake --build build -j$(nproc)
+
+      - name: Selftest (GPU vs CPU reference)
+        working-directory: tools/video-lora/vulkan
+        run: ./build/video_lora_vk_cli --selftest --shaders build/shaders
