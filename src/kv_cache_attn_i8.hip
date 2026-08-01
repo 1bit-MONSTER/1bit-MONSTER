@@ -184,8 +184,8 @@ void kv_cache_attn_decode_i8_split_kernel(
         const float s = partial * ks_shared * scale;
 
         const float m_new = (s > m) ? s : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(s - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(s - m_new);
         l = l * alpha + beta;
         #pragma unroll
         for (int k = 0; k < 8; ++k) o_local[k] *= alpha;
@@ -255,8 +255,8 @@ void kv_cache_attn_reduce_i8_kernel(
         if (tile_l == 0.0f) continue;
 
         const float m_new = (tile_m > m) ? tile_m : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(tile_m - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(tile_m - m_new);
         l = l * alpha + beta * tile_l;
 
         #pragma unroll
@@ -368,8 +368,8 @@ void kv_cache_attn_prefill_i8_kernel(
         buf ^= 1;
 
         const float m_new = (s > m) ? s : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(s - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(s - m_new);
         l = l * alpha + beta;
         #pragma unroll
         for (int k = 0; k < 8; ++k) o_local[k] *= alpha;
@@ -420,7 +420,7 @@ void quantize_fp16_to_i8_rowscale_kernel(
 
     float local = 0.0f;
     for (int k = tid; k < row_len; k += BLOCK) {
-        float v = std::fabsf((float)x[k]);
+        float v = fabsf((float)x[k]);
         if (v > local) local = v;
     }
     #pragma unroll

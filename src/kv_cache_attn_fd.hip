@@ -129,8 +129,8 @@ void kv_cache_attn_decode_split_kernel(
         const float s = s_scalar[0];
 
         const float m_new = (s > m) ? s : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(s - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(s - m_new);
         l = l * alpha + beta;
         #pragma unroll
         for (int k = 0; k < 8; ++k) o_local[k] *= alpha;
@@ -200,8 +200,8 @@ void kv_cache_attn_reduce_kernel(
         if (tile_l == 0.0f) continue;
 
         const float m_new = (tile_m > m) ? tile_m : m;
-        const float alpha = std::expf(m - m_new);
-        const float beta  = std::expf(tile_m - m_new);
+        const float alpha = expf(m - m_new);
+        const float beta  = expf(tile_m - m_new);
         l = l * alpha + beta * tile_l;
 
         #pragma unroll

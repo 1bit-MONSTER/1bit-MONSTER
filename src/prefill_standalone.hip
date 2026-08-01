@@ -20,6 +20,8 @@
 #include <cstdint>
 
 #include "rocm_cpp/ck_gemm.h"   // C API — shared between CK and standalone backends
+
+#ifndef WMMA_WAVE32_DISABLED
 #ifndef HIP_CHECK
 #define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
 #endif
@@ -2154,3 +2156,4 @@ void rcpp_standalone_launch_wmma_2x4_ldsB(
 }
 
 }  // extern "C"
+#endif // WMMA_WAVE32_DISABLED

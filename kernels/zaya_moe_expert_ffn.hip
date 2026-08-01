@@ -12,7 +12,9 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
-
+#define H        2048
+#define N_EXP    16
+#define N_FF     2048
 #define WMMA_M   16
 #define WMMA_THREADS 128
 

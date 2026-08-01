@@ -23,6 +23,7 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
+#ifndef WMMA_WAVE32_DISABLED
 #include <rocwmma/rocwmma.hpp>
 
 using namespace rocwmma;
@@ -177,3 +178,4 @@ __global__ void wmma_gemv_single(
 #undef WMMA_M
 #undef WMMA_N
 #undef WMMA_K
+#endif // WMMA_WAVE32_DISABLED

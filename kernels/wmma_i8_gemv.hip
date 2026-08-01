@@ -18,6 +18,8 @@
 #define LDS_TILE_I8    2560    // 128 threads × 20 bytes = 2560
 #include "hip_check.h"
 
+#ifndef WMMA_WAVE32_DISABLED
+
 __attribute__((amdgpu_flat_work_group_size(BLOCK_SIZE, BLOCK_SIZE)))
 __global__ void wmma_i8_gemv_kernel(
     const int8_t*  __restrict__ W_i8,         // [M, K] row-major
@@ -100,3 +102,4 @@ extern "C" rcpp_status_t rcpp_wmma_i8_gemv(
     HIP_CHECK(hipGetLastError());
     return RCPP_OK;
 }
+#endif // WMMA_WAVE32_DISABLED

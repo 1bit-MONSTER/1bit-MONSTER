@@ -6,6 +6,9 @@
 #include <cmath>
 #include <cstring>
 #include <cassert>
+#if defined(__HIP__) || defined(__HIPCC__)
+#include <hip/hip_runtime.h>
+#endif
 
 // __builtin_memcpy is GCC/Clang builtin; MSVC needs std::memcpy
 #ifndef __has_builtin
