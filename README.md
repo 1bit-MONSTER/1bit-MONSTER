@@ -21,7 +21,7 @@
 
 **1bit** is an open-source, model-agnostic C++23 inference engine for running large language models on **AMD Strix Halo** (XDNA 2 NPU, RDNA 3.5 GPU), NVIDIA GPUs (CUDA), Apple Silicon (Metal), and any Vulkan 1.2+ device — all from a **single binary with zero Python at runtime**. It reads **GGUF**, **ONNX**, and the native **1BP** format (Q4NX 4-bit for dense models, TQ2 2-bit ternary for ternary-native checkpoints like Bonsai) with automatic architecture detection — no config files, no model registry, no per-model glue code. (Per the [1BP format policy](docs/wiki/models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured), TQ2 of dense models is quality-destructive — Q4NX is the dense-model format.)
 
-We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 207 KB open-source binary. We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 35+ 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
+We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary (1,578,576 B raw / 1,302,736 B stripped, auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 35+ 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
 
 **Platform support:**
 - **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + **GGML-Vulkan (llama.cpp)**
@@ -30,13 +30,14 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 - **Any Vulkan 1.2+ GPU** — ZINC engine + **GGML-Vulkan (llama.cpp)**
 - **x86 CPU** — OpenMP fallback
 
-**Key numbers:**
-- 19 model architectures · 35+ 1BP models · **6 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, CPU)
-- **671 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**) 🏆
-- **344 tok/s** (Qwen3-0.6B, **GGML-Vulkan**)
-- **110 tok/s** (Qwen2.5-VL-3B, **GGML-Vulkan**)
+**Key numbers** (re-measured 2026-08-01, Radeon 8060S / Strix Halo, GGML-Vulkan):
+- 19 model architectures · 35+ 1BP models · **9 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, NPU, Mamba1, Zamba2, CPU)
+- **662 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**)
+- **373 tok/s** (Qwen3-0.6B Q4_K, **GGML-Vulkan**) — up from 344
+- **100 tok/s** (Qwen2.5-VL-3B, **GGML-Vulkan**)
 - **65 tok/s** (Qwen3.5-4B, **GGML-Vulkan**)
-- **78.9 tok/s** (BlackMamba 1.5B, Mamba1 HIP)
+- **43.2 TFLOPS** INT8 prefill (WMMA) · **201 GB/s** TQ1 GEMV
+- **video-lora** pure-C++ Vulkan backend built in (conv2d/group_norm/silu/elementwise/attention/lora_merge — GPU-verified)
 - 37 FLM models extracted (209 NPU xclbins)
 - Moonshot Kimi family (Gated MLA MoE) — architecture reverse-engineered, converter built
 
@@ -72,7 +73,7 @@ Zyphra's model portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, M
 | **ZAYA1-74B-preview** | 74B | 739 MB² | ZINC / HIP | 🧠🗣️ | — |
 | **ZAYA1-VL-8B** | 8.8B | — | ZINC (vision) | 👁️🧠🗣️ | — |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 🧠🗣️ | 26 tok/s ZINC |
-| **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **78.9 tok/s** 🏁 |
+| **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **79.4 tok/s** 🏁 |
 | **BlackMamba-2.8B** | 2.8B | 1.8 GB | Mamba1 HIP | 🧠🗣️ | 46.0 tok/s 🏁 |
 | **Zamba2-1.2B-v2** | 1.2B | 1.1 GB | ZINC ✅ / NPU | 🧠 | 30 tok/s ZINC |
 | **Zamba2-2.7B-v2** | 2.7B | 2.4 GB | ZINC ✅ / NPU | 🧠 | — |
@@ -97,7 +98,7 @@ The most versatile ecosystem: dense models from 0.5B to 72B, vision-language var
 | Model | Params | 1BP Size | Backend(s) | Perf |
 |-------|:------:|:--------:|------------|:----:|
 | **Qwen2.5-0.5B** | 0.5B | 328 MB | ZINC / NPU | — |
-| **Qwen3-0.6B** | 0.6B | 356 MB | **GGML-Vulkan** / ZINC / NPU / HIP | **320 tok/s** |
+| **Qwen3-0.6B** | 0.6B | 356 MB | **GGML-Vulkan** / ZINC / NPU / HIP | **373 tok/s** |
 | **Qwen3-4B** | 4B | 2.2 GB | ZINC / NPU / HIP | — |
 | **Qwen3-8B** | 8B | 4.1 GB | ZINC / NPU / HIP | 423 tok/s ZINC |
 | **Qwen2-VL-2B** | 2B | 781 MB | ZINC (vision) | — |
@@ -116,7 +117,7 @@ General-purpose dense transformer models — Llama-derived, Mistral, Gemma, Phi,
 
 | Model | Params | 1BP Size | Backend(s) | Peak tok/s |
 |-------|:------:|:--------:|------------|:----------:|
-| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **584** 🏆 |
+| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **598** 🏆 |
 | **SmolLM2-360M** | 360M | 259 MiB | **GGML-Vulkan** / ZINC / CPU | **389** |
 | **SmolLM2-1.7B** | 1.7B | 1007 MiB | **GGML-Vulkan** / ZINC / CPU | **167** |
 | **Llama-3.2-1B** | 1B | 581 MB | **GGML-Vulkan** / ZINC / NPU | — |
@@ -173,10 +174,10 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 **GGML-Vulkan (end-to-end) benchmarks — Radeon 8060S:**
 | Model | tok/s | ms/tok |
 |-------|:-----:|-------:|
-| SmolLM2-135M Q4_K_M | **584** 🏆 | 1.7 |
+| SmolLM2-135M Q4_K_M | **598** 🏆 | 1.7 |
 | SmolLM2-360M Q4_K_M | **389** | 2.6 |
 | SmolLM2-1.7B Q4_K_M | **167** | 6.0 |
-| Qwen3-0.6B Q4_K_M | **320** | 3.1 |
+| Qwen3-0.6B Q4_K_M | **373** | 2.7 |
 | Qwen2.5-VL-3B Q4_K_M | **95** | 10.5 |
 | DeepSeek-R1-Distill-Llama-8B Q4_K_M | **44** | 22.8 |
 
@@ -262,7 +263,7 @@ This project started with a laptop, a disassembler, and no docs. AMD shipped the
 
 | Component | Before (closed) | After (open) |
 |-----------|:----------------:|:------------:|
-| CLI + server | `flm`, 87.8 MB | Rebuilt, 282 KB (zaya_server) |
+| CLI + server | `flm`, 87.8 MB | Rebuilt, 1.5 MB (zaya_server) |
 | NPU sequence gen | 22 proprietary `.so` files | `libnpu_engine_universal.so` (open-source C++23) |
 | NPU bitstreams | 209 `.xclbin` files | 287 xclbins (63 rebuilt from AIE generators + 209 FLM-extracted + 15 BF16 perf) |
 | Toolchain | AMD Xilinx IP | `aiecc` + Peano/AMD Xilinx IP |

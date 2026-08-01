@@ -1,9 +1,10 @@
 name: Scope Guard
 
-# Intent: this is an inference engine, not an app store. Fail PRs that add
-# code outside the engine's mission (engine backends, model loading,
-# quantization, packaging, docs, CI) so "bullshit features" can't land via
-# new top-level directories or unrelated additions.
+# Intent: engine + Jarvis offline assistant layer (engine + Jarvis = offline
+# supreme for local AI + inference). Fail PRs that add code outside the
+# product scope (inference backends, model loading, quantization, packaging,
+# docs, CI, Jarvis layer) so bullshit features can't land via new top-level
+# directories or unrelated additions.
 
 # Scope Guard — this is the inference engine + Jarvis offline assistant layer.
 # engine + Jarvis = offline supreme for local AI + inference. Fail PRs that add

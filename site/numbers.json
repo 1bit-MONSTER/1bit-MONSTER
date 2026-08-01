@@ -1,36 +1,32 @@
 {
-  "_warning": "Site data file. Headline perf numbers synced from benchmarks.json (source of truth for benchmark data). binary/ repo/ site/ keys are unique to this file.",
+  "_warning": "Site data file. Headline perf numbers synced from benchmarks (source of truth). binary/ repo/ site/ keys are unique to this file.",
   "_missing": [],
-  "_benchmarks_remeasured": "2026-07-26, median of 3 runs on this box's real gfx1151 hardware (bench_sherry, bench_prefill_variants) \u2014 see _sources for the exact commands.",
+  "_benchmarks_remeasured": "2026-08-01, median of runs on real gfx1151 hardware (bench_sherry, bench_prefill_variants, llama-bench GGML-Vulkan) \u2014 see _sources.",
   "binary": {
-    "zaya_bytes": 1165080,
-    "zaya_kb": 1138,
-    "zaya_stripped_kb": 902,
+    "zaya_bytes": 1578576,
+    "zaya_kb": 1541,
+    "zaya_stripped_kb": 1272,
+    "unified_bytes": 58685080,
+    "unified_kb": 57309,
     "fused_bytes": null,
     "fused_kb": null,
-    "decode_bytes": 715240,
-    "decode_kb": 698,
-    "decode_stripped_kb": 507,
-    "tui_bytes": 1153392,
-    "tui_kb": 1126,
-    "tui_stripped_kb": 829
+    "note": "decode/tui/fused binaries retired in the pure-C++ purge (ponytail). zaya_server now links the video-lora Vulkan backend."
   },
   "benchmarks": {
-    "halo_gemv_gbps": 171.9,
-    "prefill_tflops_4h": 31.22,
-    "prefill_tflops_i8apre": 39.4,
-    "sherry_gemv_gbps": 157.2,
-    "tq1_gemv_gbps": 201.4,
-    "tflops": 39.4,
-    "note": "prefill_tflops_i8apre/tflops corrected 40.5\u219239.4 on 2026-07-26 re-validation \u2014 see benchmarks.json engines.prefill_i8"
+    "halo_gemv_gbps": 156.0,
+    "prefill_tflops_4h": 30.43,
+    "prefill_tflops_i8apre": 43.2,
+    "sherry_gemv_gbps": 157.0,
+    "tq1_gemv_gbps": 201.3,
+    "tflops": 43.2,
+    "note": "prefill_tflops_i8apre now 43.2 (2026-08-01 re-measure); 4h variant 30.43; tq1/sherry essentially unchanged. See benchmarks.json engines.prefill_i8."
   },
   "_sources": {
-    "halo_gemv_gbps": "bench_sherry -- halo baseline kernel",
+    "halo_gemv_gbps": "bench_sherry 6912 2560 256 -- halo baseline kernel",
     "prefill_tflops_4h": "bench_prefill_variants 2560 6912 2560 -- variant 4h (64x64 cached A+B)",
-    "prefill_tflops_i8apre": "bench_prefill_variants 2560 6912 2560 -- variant 4i-I8-APRE (I8 A + tiled B), median of 3",
-    "sherry_gemv_gbps": "bench_sherry -- M=6912 K=2560, sherry kernel, 256 iters",
-    "tq1_gemv_gbps": "bench_sherry -- tq1 kernel, fastest GEMV variant",
-    "note": "Authoritative benchmark tables in benchmarks.json. These headline numbers are synced."
+    "prefill_tflops_i8apre": "bench_prefill_variants 2560 6912 2560 -- variant 4i-I8-APRE (I8 A + tiled B)",
+    "sherry_gemv_gbps": "bench_sherry 6912 2560 256 -- M=6912 K=2560, sherry kernel",
+    "tq1_gemv_gbps": "bench_sherry 6912 2560 256 -- tq1 kernel"
   },
   "repo": {
     "forks": 4,
