@@ -1,10 +1,10 @@
 # Video LoRA
 
-Video generation with LoRA support on Strix Halo. Supports **Wan2.2**, **LTX-Video**, **AnimateDiff**, and **CogVideoX**.
+Video generation with LoRA support on Strix Halo. Supports **Wan2.2**, **LTX-Video**, **AnimateDiff**, and **CogVideoX** — pure C++ inference, no Python, no Zig.
 
 > Vendored into [1bit.systems](../../README.md) at `tools/video-lora/` from
 > [bong-water-water-bong/video-lora](https://github.com/bong-water-water-bong/video-lora).
-> CI runs from the repo root via `.github/workflows/video-lora-ci.yml`.
+> CI runs from the repo root via `.github/workflows/video-lora-ci.yml` (C++ build + GPU selftest).
 
 ## Models & LoRAs
 
@@ -16,56 +16,28 @@ Video generation with LoRA support on Strix Halo. Supports **Wan2.2**, **LTX-Vid
 | **CogVideoX** | Transformer LoRA | 2B / 5B | Good for coherent motion |
 | **Stable Video Diff.** | UNet LoRA | 2.5B | Image-to-video |
 
-## Quick Start
+## Backend
 
-### Python (CPU — works everywhere)
+The inference backend is **pure C++** (`vulkan/`): a Vulkan compute engine
+dispatching GLSL shaders (conv2d, group_norm, silu, elementwise, attention,
+lora_merge) compiled to SPIR-V at build time. It is linked into the single
+`zaya_server` binary. LoRA adapters are fused into weights with the
+`lora_merge` kernel (`W' = W + α·(B@A)`).
 
-```bash
-pip install -e ".[dev]"
-
-# AnimateDiff (SD1.5 + motion module) on CPU
-python -m video_lora generate --model animatediff --prompt "cat walking, cinematic" --frames 8
-
-# List available models and LoRAs
-python -m video_lora list-models
-```
-
-### Zig + Vulkan (GPU — Strix Halo Radeon 8060S)
-
-```bash
-cd vulkan
-zig build run -- --prompt "cinematic dolly zoom through cherry blossoms" --frames 16
-zig build run -- --prompt "cat walking" --lora ./motion-lora.safetensors
-```
-
-Requires Zig 0.15.2+ and `glslc` (for shader compilation).
+See [`vulkan/README.md`](vulkan/README.md) for the backend, build, and
+selftest instructions.
 
 ## Project Structure
 
 ```
 tools/video-lora/
-├── src/video_lora/
-│   ├── __init__.py
-│   ├── cli.py              # CLI entry point
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── wan.py          # Wan2.2 pipeline + LoRA
-│   │   ├── ltx.py          # LTX-Video pipeline + LoRA
-│   │   ├── animatediff.py  # AnimateDiff pipeline + LoRA
-│   │   └── cogvideo.py     # CogVideoX pipeline + LoRA
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── lora_loader.py  # Unified LoRA loading
-│   │   ├── pipeline.py     # Base pipeline abstraction
-│   │   └── scheduler.py    # Scheduler configs
-│   └── utils/
-│       ├── __init__.py
-│       └── export.py       # Export to GIF/MP4
-├── tests/
-│   ├── __init__.py
-│   └── test_models.py
-├── pyproject.toml
+├── vulkan/
+│   ├── CMakeLists.txt     # builds video_lora_vk (static lib) + CLI; glslc/glslangValidator shader compile
+│   ├── include/
+│   │   └── vl_engine.hpp  # Tensor, VlEngine public API
+│   ├── src/
+│   │   ├── vl_engine.cpp  # Vulkan context, pipelines, dispatch, ops
+│   │   └── main.cpp       # CLI + CPU-reference selftest
+│   └── shaders/           # GLSL compute kernels (.comp → .spv at build time)
 └── README.md
 ```
-
-(CI workflow lives at repo root: `.github/workflows/video-lora-ci.yml`.)
