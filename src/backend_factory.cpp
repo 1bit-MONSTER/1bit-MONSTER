@@ -113,7 +113,12 @@ static Backend* try_create_cuda() {
     Backend* b = try_load_backend("libcuda_backend.so", "create_cuda_backend");
     if (!b) b = try_load_backend("librocm_cpp.so", "create_cuda_backend");
     if (!b && has_static_symbol("create_cuda_backend")) {
-        return ((Backend*(*)())dlsym(dlopen(NULL, RTLD_NOW | RTLD_LOCAL), "create_cuda_backend"))();
+        void* h = dlopen(NULL, RTLD_NOW | RTLD_LOCAL);  // fixes #1327: check dlopen result
+        if (!h) return nullptr;
+        auto* fn = (Backend*(*)())dlsym(h, "create_cuda_backend");
+        dlclose(h);
+        if (!fn) return nullptr;
+        return fn();
     }
     return b;
 }
@@ -122,7 +127,12 @@ static Backend* try_create_metal() {
     Backend* b = try_load_backend("libmetal_backend.so", "create_metal_backend");
     if (!b) b = try_load_backend("librocm_cpp.so", "create_metal_backend");
     if (!b && has_static_symbol("create_metal_backend")) {
-        return ((Backend*(*)())dlsym(dlopen(NULL, RTLD_NOW | RTLD_LOCAL), "create_metal_backend"))();
+        void* h = dlopen(NULL, RTLD_NOW | RTLD_LOCAL);
+        if (!h) return nullptr;
+        auto* fn = (Backend*(*)())dlsym(h, "create_metal_backend");
+        dlclose(h);
+        if (!fn) return nullptr;
+        return fn();
     }
     return b;
 }

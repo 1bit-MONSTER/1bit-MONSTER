@@ -518,6 +518,8 @@ rcpp_bitnet_load_h1b(const char* path, rcpp_bitnet_model_t* out_model) {
                 std::string arch_str;
                 for (uint64_t i = 0; i < nk; ++i) {
                     uint64_t kl; gf.read((char*)&kl, 8);
+                    // fixes #1333: cap string length (matching gguf_reader's MAX_STRING_LEN)
+                    if (kl > 1048576) { fprintf(stderr, "[h1b] GGUF sidecar string too long\n"); break; }
                     std::string k(kl, '\0'); gf.read(&k[0], kl);
                     uint32_t vt; gf.read((char*)&vt, 4);
                     if (vt == 8) {

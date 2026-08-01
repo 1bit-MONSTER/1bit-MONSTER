@@ -25,7 +25,7 @@ bool Q4nxReader::open(const std::string& path) {
     if (size >= 8) {
         uint64_t hdr_len = 0;
         memcpy(&hdr_len, data, 8);
-        if (8 + hdr_len <= size) data_start = (size_t)(8 + hdr_len);
+        if (hdr_len <= size && 8 <= size - hdr_len) data_start = (size_t)(8 + hdr_len);
     }
     return true;
 }
@@ -47,7 +47,7 @@ bool Q4nxReader::open(const std::string& path) {
     if (size >= 8) {
         uint64_t hdr_len = 0;
         memcpy(&hdr_len, data, 8);
-        if (8 + hdr_len <= size) data_start = (size_t)(8 + hdr_len);
+        if (hdr_len <= size && 8 <= size - hdr_len) data_start = (size_t)(8 + hdr_len);
     }
     return true;
 }
@@ -170,7 +170,7 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
 
     uint64_t hdr_len = 0;
     memcpy(&hdr_len, r.data, 8);
-    if (hdr_len == 0 || 8 + hdr_len > r.size || hdr_len > (r.size > 65536 ? 65536 : r.size)) {
+    if (hdr_len == 0 || hdr_len > r.size || 8 > r.size - hdr_len || hdr_len > (r.size > 65536 ? 65536 : r.size)) {
         r.close();
         return false; // not a Q4NX/safetensors-style header
     }

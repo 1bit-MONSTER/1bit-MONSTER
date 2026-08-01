@@ -481,15 +481,15 @@ void RestHandler::ensure_embed_model_loaded(const std::string& model_tag) {
 ///@param request the request JSON object
 void RestHandler::configure_chat_engine_parameters(const json& options, const json& request) {
     if (request.contains("temperature")) {
-        float temperature = request["temperature"];
+        float temperature = request["temperature"].is_number() ? (float)request["temperature"] : 1.0f;
         auto_chat_engine->set_temperature(temperature);
     }
     if (request.contains("top_p")) {
-        float top_p = request["top_p"];
+        float top_p = request["top_p"].is_number() ? (float)request["top_p"] : 1.0f;
         auto_chat_engine->set_topp(top_p);
     }
     if (request.contains("top_k")) {
-        int top_k = request["top_k"];
+        int top_k = request["top_k"].is_number_integer() ? (int)request["top_k"] : 40;
         auto_chat_engine->set_topk(top_k);
     }
     if (request.contains("min_p")) {
@@ -509,7 +509,8 @@ void RestHandler::configure_chat_engine_parameters(const json& options, const js
         auto_chat_engine->set_repetition_penalty(repetition_penalty);
     }
     if (request.contains("think")) {
-        bool enable_thinking = request["think"];
+        // Validate boolean type to prevent nlohmann truthy-string gotcha (fixes #1325)
+        bool enable_thinking = request["think"].is_boolean() ? (bool)request["think"] : false;
         auto_chat_engine->configure_parameter("enable_think", enable_thinking);
     }
     if (request.contains("reasoning_effort")) {
