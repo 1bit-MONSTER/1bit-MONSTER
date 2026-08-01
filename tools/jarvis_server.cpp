@@ -32,10 +32,12 @@
 #include <cstring>
 #include <chrono>
 #include <filesystem>
+namespace fs = std::filesystem;
 #include <fstream>
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -177,6 +179,90 @@ static jarvis::ContextMemory g_context_mem(50);
 static jarvis::AuthManager g_auth_mgr;
 static jarvis::UsageTracker g_usage_tracker;
 static jarvis::BillingManager g_billing_mgr;
+
+// ── Voice clone jobs (#1371) ─────────────────────────────────────────
+// Upload samples → background train (codec + adapter) → export .voice pack.
+struct CloneJob {
+    enum class State { Queued, Running, Done, Error } state = State::Queued;
+    std::string id;
+    std::string name;
+    std::string work_dir;   // samples + checkpoints + pack
+    std::string log;        // tail of pipeline output
+    std::string pack_path;  // final .voice file when Done
+    std::string error;
+};
+static std::mutex g_clone_mtx;
+static std::unordered_map<std::string, CloneJob> g_clone_jobs;
+
+// Runs the three-stage clone pipeline for one job (in a detached thread).
+static void run_clone_job(const std::string& id) {
+    CloneJob* job;
+    {
+        std::lock_guard<std::mutex> lock(g_clone_mtx);
+        job = &g_clone_jobs[id];
+        job->state = CloneJob::State::Running;
+    }
+    auto append_log = [&](const std::string& line) {
+        std::lock_guard<std::mutex> lock(g_clone_mtx);
+        job->log += line + "\n";
+        if (job->log.size() > 16384) job->log.erase(0, job->log.size() - 16384);
+    };
+
+    // Locate the zaya_audio package (repo root = parent of tools/jarvis).
+    fs::path repo_root = fs::path(__FILE__).parent_path().parent_path();
+    std::string py = getenv("CLONE_PYTHON") ? getenv("CLONE_PYTHON") : "python3";
+    std::string pypath = getenv("PYTHONPATH") ? (std::string(getenv("PYTHONPATH")) + ":" + repo_root.string())
+                                               : repo_root.string();
+
+    auto run = [&](const std::vector<std::string>& argv) -> bool {
+        std::string cmd = "PYTHONPATH=" + pypath + " " + py;
+        for (auto& a : argv) cmd += " \"" + a + "\"";
+        append_log("$ " + cmd);
+        FILE* pipe = popen((cmd + " 2>&1").c_str(), "r");
+        if (!pipe) { append_log("popen failed"); return false; }
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), pipe)) append_log(std::string(buf));
+        int rc = pclose(pipe);
+        if (rc != 0) { append_log("exit code " + std::to_string(rc)); return false; }
+        return true;
+    };
+
+    fs::path wd(job->work_dir);
+    bool ok = run({ "-m", "zaya_audio.train_codec",
+                    "--data_dir", (wd / "samples").string(),
+                    "--output_dir", (wd / "out").string(),
+                    "--epochs", "50", "--device", "cpu" });
+    if (ok) {
+        ok = run({ "-m", "zaya_audio.train_adapter",
+                   "--codec_checkpoint", (wd / "out" / "codec_final.pt").string(),
+                   "--audio_dir", (wd / "samples").string(),
+                   "--text_file", (wd / "transcripts.jsonl").string(),
+                   "--output_dir", (wd / "out").string(),
+                   "--epochs", "30", "--device", "cpu" });
+    }
+    if (ok) {
+        ok = run({ "-m", "zaya_audio.export_onnx",
+                   "--codec_checkpoint", (wd / "out" / "codec_final.pt").string(),
+                   "--adapter_checkpoint", (wd / "out" / "adapter_final.pt").string(),
+                   "--output_dir", (wd / "out" / "onnx").string(),
+                   "--voice_name", job->name });
+    }
+
+    std::lock_guard<std::mutex> lock(g_clone_mtx);
+    if (ok) {
+        fs::path pack = wd / "out" / "onnx" / (job->name + ".voice");
+        if (fs::exists(pack)) {
+            job->pack_path = pack.string();
+            job->state = CloneJob::State::Done;
+        } else {
+            job->state = CloneJob::State::Error;
+            job->error = "pipeline finished but .voice pack not found at " + pack.string();
+        }
+    } else {
+        job->state = CloneJob::State::Error;
+        job->error = "pipeline failed — see log";
+    }
+}
 
 // Thread-local current owner, set by auth pre-routing handler
 static thread_local std::string tls_current_owner;
@@ -545,6 +631,17 @@ int main(int argc, char** argv) {
 
     httplib::Server svr;
     svr.set_payload_max_length(16 * 1024 * 1024); // 16 MiB, matches original MAX_BODY_SIZE
+
+    // Persist API keys across restarts (keys.json next to the binary).
+    // Pre-existing gap: keys were only saved on create/revoke, never loaded,
+    // so every restart wiped all issued keys.
+    {
+        const char* key_file = getenv("JARVIS_KEYS_FILE");
+        std::string kf = key_file ? key_file : "keys.json";
+        if (g_auth_mgr.load_keys(kf)) {
+            fprintf(stderr, "API keys loaded from %s\n", kf.c_str());
+        }
+    }
 
     // ── Auth middleware + CORS as pre-routing handler ────────────────
     // All /v1/chat/*, /v1/audio/*, /v1/voice/*, /v1/api-key/*,
@@ -1075,6 +1172,116 @@ int main(int argc, char** argv) {
             });
         }
         res.set_content(json{{"voice_packs", arr}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // ── /v1/voice/clone : upload samples → train → download .voice (#1371) ──
+    // POST multipart: one or more `samples` WAV files + optional
+    // `transcripts.jsonl` (audio/text pairs) + `name`. Returns {job_id}.
+    // Training runs in the background; poll GET /v1/voice/clone/<id> for
+    // status, then GET /v1/voice/clone/<id>/download for the .voice pack.
+    svr.Post("/v1/voice/clone", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string name = "voice_" + std::to_string(time(nullptr));
+        std::string transcripts;
+        std::vector<std::pair<std::string, std::string>> samples;  // filename, content
+
+        if (has_file(req, "name")) {
+            name = get_file_value(req, "name").content;
+            if (!name.empty()) {
+                for (char& c : name) if (!isalnum((unsigned char)c) && c != '_' && c != '-') c = '_';
+            }
+        }
+        if (has_file(req, "transcripts")) {
+            transcripts = get_file_value(req, "transcripts").content;
+        }
+        // httplib exposes repeated fields by suffixing the index
+        for (int i = 0; i < 64; i++) {
+            std::string fname = i == 0 ? "samples" : "samples" + std::to_string(i);
+            if (has_file(req, fname)) {
+                auto f = get_file_value(req, fname);
+                samples.emplace_back(f.filename, f.content);
+            }
+        }
+        if (samples.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "no sample WAV files provided (field `samples`)"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        std::string id = name + "_" + std::to_string(time(nullptr));
+        fs::path wd = fs::temp_directory_path() / "jarvis-clone" / id;
+        std::error_code ec;
+        fs::create_directories(wd / "samples", ec);
+        for (size_t i = 0; i < samples.size(); i++) {
+            std::string fn = samples[i].first;
+            if (fn.empty()) fn = "sample_" + std::to_string(i) + ".wav";
+            std::ofstream f(wd / "samples" / fn, std::ios::binary);
+            f.write(samples[i].second.data(), (std::streamsize)samples[i].second.size());
+        }
+        if (!transcripts.empty()) {
+            std::ofstream f(wd / "transcripts.jsonl", std::ios::binary);
+            f.write(transcripts.data(), (std::streamsize)transcripts.size());
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_clone_mtx);
+            CloneJob job;
+            job.id = id;
+            job.name = name;
+            job.work_dir = wd.string();
+            g_clone_jobs[id] = std::move(job);
+        }
+        std::thread(run_clone_job, id).detach();
+
+        res.set_content(json{{"job_id", id}, {"status", "queued"}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // GET /v1/voice/clone/<id> : job status + log tail
+    svr.Get(R"(/v1/voice/clone/.*)", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string path = req.path;
+        std::string id, rest;
+        size_t p = path.find("/v1/voice/clone/");
+        std::string tail = p != std::string::npos ? path.substr(p + 16) : "";
+        size_t slash = tail.find('/');
+        id = slash == std::string::npos ? tail : tail.substr(0, slash);
+        rest = slash == std::string::npos ? "" : tail.substr(slash);
+
+        std::lock_guard<std::mutex> lock(g_clone_mtx);
+        auto it = g_clone_jobs.find(id);
+        if (it == g_clone_jobs.end()) {
+            res.status = 404;
+            res.set_content(json{{"error", "unknown job"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        const auto& job = it->second;
+        if (rest == "/download" && job.state == CloneJob::State::Done) {
+            std::ifstream f(job.pack_path, std::ios::binary | std::ios::ate);
+            if (f) {
+                auto size = f.tellg();
+                std::string data((size_t)size, '\0');
+                f.seekg(0);
+                f.read(data.data(), size);
+                res.set_content(data, "application/octet-stream");
+                res.set_header("Content-Disposition", "attachment; filename=\"" + job.name + ".voice\"");
+                add_cors(res);
+                return;
+            }
+            res.status = 500;
+            res.set_content(json{{"error", "pack file unreadable"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+
+        std::string state = job.state == CloneJob::State::Queued ? "queued" :
+                            job.state == CloneJob::State::Running ? "running" :
+                            job.state == CloneJob::State::Done ? "done" : "error";
+        json j = {{"job_id", id}, {"status", state}, {"log", job.log}};
+        if (!job.error.empty()) j["error"] = job.error;
+        if (!job.pack_path.empty()) j["pack_path"] = job.pack_path;
+        res.set_content(j.dump(), "application/json");
         add_cors(res);
     });
 
