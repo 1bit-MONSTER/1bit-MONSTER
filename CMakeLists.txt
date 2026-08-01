@@ -1226,8 +1226,8 @@ if(TARGET npu_engine_hybrid)
         ${CMAKE_SOURCE_DIR}/engine/npu
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR})
-    // -ffast-math implies -ffinite-math-only and compiles the std::isfinite
-    // NaN/Inf masks out (issue #1277) — keep them alive.
+    # -ffast-math implies -ffinite-math-only and compiles the std::isfinite
+    # NaN/Inf masks out (issue #1277) — keep them alive.
     target_compile_options(npu_engine_hybrid PRIVATE
         -O3 -march=native -std=c++23 -fopenmp)
     target_link_libraries(npu_engine_hybrid PRIVATE xrt_coreutil uuid rt pthread)
