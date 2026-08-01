@@ -149,11 +149,24 @@ if(CLI11_INCLUDE_DIRS)
 endif()
 
 # Determine which dependencies need to be fetched
-set(USE_SYSTEM_JSON ${nlohmann_json_FOUND})
+# When embedded in the 1bit engine (add_subdirectory), the parent already
+# provides nlohmann_json and cpp-httplib (both pinned to the same versions
+# lemonade uses: 3.11.3 / v0.47.0) via its own FetchContent. Treat those as
+# "system" so we don't FetchContent a second copy and collide on
+# add_library(nlohmann_json)/add_library(httplib) target names.
+if(TARGET nlohmann_json)
+    set(USE_SYSTEM_JSON ON)
+else()
+    set(USE_SYSTEM_JSON ${nlohmann_json_FOUND})
+endif()
 set(USE_SYSTEM_CURL ${CURL_FOUND})
 set(USE_SYSTEM_ZSTD ${ZSTD_FOUND})
 set(USE_SYSTEM_CLI11 ${CLI11_INCLUDE_DIRS})
-set(USE_SYSTEM_HTTPLIB ${HTTPLIB_FOUND})
+if(TARGET httplib)
+    set(USE_SYSTEM_HTTPLIB ON)
+else()
+    set(USE_SYSTEM_HTTPLIB ${HTTPLIB_FOUND})
+endif()
 set(USE_SYSTEM_LWS ${LWS_FOUND})
 
 # On macOS, always statically link dependencies to avoid Homebrew dylib issues
@@ -368,12 +381,18 @@ else()
     # don't provide. Created at top level, so it is visible to the cli/tray
     # subdirs added later.
     add_library(lemonade-httplib INTERFACE)
-    target_include_directories(lemonade-httplib INTERFACE ${HTTPLIB_INCLUDE_DIRS})
-    if(HTTPLIB_LINK_LIBRARIES)
-        target_link_libraries(lemonade-httplib INTERFACE ${HTTPLIB_LINK_LIBRARIES})
+    if(TARGET httplib)
+        # Embedded in the 1bit engine: the parent's FetchContent provides the
+        # same cpp-httplib version (v0.47.0) — reuse its target.
+        target_link_libraries(lemonade-httplib INTERFACE httplib)
     else()
-        target_link_libraries(lemonade-httplib INTERFACE ${HTTPLIB_LIBRARIES})
-        target_link_directories(lemonade-httplib INTERFACE ${HTTPLIB_LIBRARY_DIRS})
+        target_include_directories(lemonade-httplib INTERFACE ${HTTPLIB_INCLUDE_DIRS})
+        if(HTTPLIB_LINK_LIBRARIES)
+            target_link_libraries(lemonade-httplib INTERFACE ${HTTPLIB_LINK_LIBRARIES})
+        else()
+            target_link_libraries(lemonade-httplib INTERFACE ${HTTPLIB_LIBRARIES})
+            target_link_directories(lemonade-httplib INTERFACE ${HTTPLIB_LIBRARY_DIRS})
+        endif()
     endif()
 endif()
 
