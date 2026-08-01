@@ -924,12 +924,18 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_hip_1bp.cpp
     src/unified_pool.cpp
     src/backend_vulkan_hpp.cpp
-    src/backend_ggml_vulkan.cpp
     src/zaya_engine.cpp
     src/backend_npu.cpp
     src/backend_npu_flm.cpp
     src/backend_generic.cpp
 )
+
+# ggml_vulkan backend needs llama.cpp's static libs (GGML_BUILD_DIR); only
+# compile it when they exist — the factory is dlsym-dispatched, so an absent
+# backend just registers unavailable at runtime.
+if(TARGET ggml_vulkan)
+    list(APPEND UNIFIED_SERVER_SOURCES src/backend_ggml_vulkan.cpp)
+endif()
 
 # Fused GPU+NPU backend (attention on GPU ∥ FFN on NPU, zero-copy SharedBO)
 # needs the XRT + AIEBU dev headers at compile time. CI images ship the
