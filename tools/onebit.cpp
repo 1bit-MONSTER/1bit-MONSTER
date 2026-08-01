@@ -322,6 +322,13 @@ static void cmd_down() {
 
 static void cmd_build(const std::string &dir) {
     std::string build_dir = dir.empty() ? "engine/npu" : dir;
+    // Validate build_dir: only alphanumeric, /, ., _, - allowed (fixes #1312).
+    for (char c : build_dir) {
+        if (!isalnum((unsigned char)c) && c != '/' && c != '.' && c != '_' && c != '-') {
+            std::cerr << "  ❌ Invalid build directory: " << build_dir << "\n";
+            return;
+        }
+    }
     std::cout << "  🔨 Building NPU engine in " << build_dir << "...\n";
 
     std::string cmd = "cd " + build_dir + " && cmake -B build -G Ninja && ninja -C build";

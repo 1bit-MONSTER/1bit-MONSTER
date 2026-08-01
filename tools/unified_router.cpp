@@ -379,9 +379,10 @@ Options:
         res.status = 200;
     });
 
-    // Signal handling
-    std::signal(SIGINT, [](int) { std::exit(0); });
-    std::signal(SIGTERM, [](int) { std::exit(0); });
+    // Signal handling (fixes #1324: std::exit not async-signal-safe)
+    static volatile sig_atomic_t g_shutdown = 0;
+    std::signal(SIGINT, [](int) { g_shutdown = 1; });
+    std::signal(SIGTERM, [](int) { g_shutdown = 1; });
 
     std::cout << "Router listening on " << bind_addr << ":" << port << std::endl;
     if (!svr.listen(bind_addr.c_str(), port)) {

@@ -228,8 +228,12 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     uint32_t arch_raw;          memcpy(&arch_raw, hdr_buf + 8, 4);
     uint32_t quant_raw;         memcpy(&quant_raw, hdr_buf + 12, 4);
 
-    // Also fix tile_rows/tile_cols/group_size
-    (void)(sizeof(hdr_buf)); // unused
+    // Extract tile_rows, tile_cols, group_size from header (fixes #1311).
+    // These are stored in OnebpHeader at offsets 52, 56, 60.
+    uint32_t tile_rows;   memcpy(&tile_rows, hdr_buf + 52, 4);
+    uint32_t tile_cols;   memcpy(&tile_cols, hdr_buf + 56, 4);
+    uint32_t group_size;  memcpy(&group_size, hdr_buf + 60, 4);
+    (void)tile_rows; (void)tile_cols; (void)group_size; // ponytail: integrate into packing math
 
     if (hidden_size <= 0 || num_layers <= 0 || vocab_size <= 0) return false;
 

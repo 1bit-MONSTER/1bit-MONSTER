@@ -15,8 +15,9 @@
 #include <chrono>
 #include <signal.h>
 #include <unistd.h>
+#include <atomic>
 
-static volatile bool keep_running = true;
+static std::atomic<bool> keep_running{true};  // fixes #1316
 void handle_sigint(int) { keep_running = false; }
 
 // ── Live dashboard (redraws every second) ──

@@ -120,7 +120,7 @@ struct CudaBackend : Backend {
 
     void destroy() override {
         if (cs) cuda_destroy(cs);
-        delete[] logits_buf;
+        delete[] logits_buf; logits_buf = nullptr;
         cs = nullptr;
         initialized = false;
     }

@@ -148,7 +148,7 @@ struct HIPBackend : Backend {
 
     void destroy() override {
         if (zs) zaya_destroy(zs);
-        delete[] logits_buf;
+        delete[] logits_buf; logits_buf = nullptr;
         zs = nullptr;
         initialized = false;
     }
