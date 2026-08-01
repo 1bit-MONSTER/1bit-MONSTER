@@ -1,0 +1,38 @@
+[Unit]
+Description=1bit-systems Vision-Language Inference Server
+Documentation=https://1bit.systems
+After=network.target
+
+[Service]
+Type=simple
+User=1bit
+Group=render
+ExecStart=/opt/1bit-systems/build/vision_server \
+    --port 8099 \
+    --model /opt/1bit-systems/models/Mage-VL-4B.1bp \
+    --mmproj /opt/1bit-systems/models/Mage-ViT.1bp \
+    --tokenizer /opt/1bit-systems/models/qwen3-vl.htok
+Restart=on-failure
+RestartSec=10
+Environment=OMP_NUM_THREADS=16
+DeviceAllow=/dev/accel/accel0 rw
+DeviceAllow=/dev/dri/renderD128 rw
+SupplementaryGroups=render
+
+# Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+# ReadWritePaths needed for ProtectSystem=strict
+ReadWritePaths=/opt/1bit-systems/build
+ReadWritePaths=/opt/1bit-systems/models
+
+[Install]
+WantedBy=multi-user.target
