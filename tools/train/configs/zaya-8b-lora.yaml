@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# ZAYA-8B LoRA — main production model for 1bit.systems
+model: "unsloth/Qwen3-8B"     # ZAYA is Qwen3-based; adjust if custom ZAYA HF path
+load_in_4bit: true
+
+lora_r: 16
+lora_alpha: 16
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+
+max_seq_length: 8192
+per_device_batch_size: 1       # 8B 4-bit fits Strix Halo at batch 1
+gradient_accumulation_steps: 8
+max_steps: 1000
+learning_rate: 2e-4
+warmup_steps: 10
+
+dataset: "yahma/alpaca-cleaned"
+dataset_split: "train[:5000]"
+
+output_dir: "./outputs"
+save_steps: 200

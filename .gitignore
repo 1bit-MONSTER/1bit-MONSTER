@@ -81,7 +81,6 @@ engine/fusion/simple_test
 engine/fusion/verify_weights
 engine/fusion/wmma_peak
 engine/fusion/tokenize
-<<<<<<< HEAD
 engine/fusion/zero_copy/probe_contexts
 engine/fusion/zero_copy/probe_multi_xclbin
 engine/fusion/zero_copy/test_pipeline
@@ -116,8 +115,3 @@ build/*.ninja*
 .zig-cache/
 **/.zig-cache/
 *.AppImage
-=======
-changes/
-_deps/
-.rocm-stub
->>>>>>> 492951d8 (fix: HIP build with system ROCm, WMMA wave32 guards, MoE alloc leak + destroy OOB (#497))
