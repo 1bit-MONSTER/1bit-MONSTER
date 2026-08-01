@@ -1,0 +1,73 @@
+name: Scope Guard
+
+# Intent: this is an inference engine, not an app store. Fail PRs that add
+# code outside the engine's mission (engine backends, model loading,
+# quantization, packaging, docs, CI) so "bullshit features" can't land via
+# new top-level directories or unrelated additions.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scope_guard:
+    name: Scope Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check changed paths against engine scope
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Top-level paths that belong to the product: the inference engine
+          # PLUS the Jarvis offline assistant layer (personas, skills, themes,
+          # workers, integrations, zaya_audio are part of the offline package —
+          # engine + Jarvis = offline supreme for local AI + inference).
+          # Anything else (new dirs, unrelated apps/services) fails the PR.
+          ALLOWED='
+            AGENTS.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
+            CMakeLists_windows.txt CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
+            Makefile.zamba2 README.md ROADMAP.md SECURITY.md SHERRY-FILES.txt
+            TODO_TRACKING.md VERSION env.sh install.sh package.json
+            replace_i8ctx.py
+            .github
+            .pr_agent.toml
+            engine kernels include src cmake adapters models rust
+            ck-prefill spec-decode
+            benchmarks Testing tests
+            packaging snap
+            docs site
+            tools scripts bin
+            experimental research hackathon fastflowlm_analysis npu-infer
+            integrations personas prompts skills themes workers zaya_audio
+          '
+
+          CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"
+          echo "Changed top-level paths:"
+          echo "$CHANGED"
+
+          VIOLATIONS=""
+          for path in $CHANGED; do
+            if ! echo "$ALLOWED" | grep -qw "$path"; then
+              VIOLATIONS="$VIOLATIONS $path"
+            fi
+          done
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Out-of-scope path(s):$VIOLATIONS"
+            echo "::error::This repo is an inference engine. New top-level areas need an explicit scope discussion in the PR body before they can land."
+            echo "::error::If this path IS engine-scope, add it to the ALLOWED list in .github/workflows/scope-guard.yml with justification in the PR."
+            exit 1
+          fi
+
+          echo "✅ All changed paths are within engine scope."
