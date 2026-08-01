@@ -1,0 +1,32 @@
+#!/bin/bash
+
+set -e
+
+LEMONADE_PORT="${LEMONADE_PORT:-13305}"
+
+# Discover the actual port from a running server
+if command -v lemonade &> /dev/null; then
+    DISCOVERED_PORT=$(lemonade status --json 2>/dev/null | jq -r '.port // empty')
+    if [ -n "$DISCOVERED_PORT" ]; then
+        LEMONADE_PORT="$DISCOVERED_PORT"
+    fi
+fi
+
+URL="http://localhost:${LEMONADE_PORT}/lemonade"
+
+# Prefer chromium based browsers otherwise xdg-open
+if [ "$(echo "${LEMONADE_PREFER_CHROMIUM:-true}" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+    if command -v google-chrome &> /dev/null; then
+        google-chrome --app="$URL"
+    elif command -v microsoft-edge-stable &> /dev/null; then
+        microsoft-edge-stable --app="$URL"
+    elif command -v chromium &> /dev/null; then
+        chromium --app="$URL"
+    elif command -v chromium-browser &> /dev/null; then
+        chromium-browser --app="$URL"
+    else
+        xdg-open "$URL"
+    fi
+else
+    xdg-open "$URL"
+fi

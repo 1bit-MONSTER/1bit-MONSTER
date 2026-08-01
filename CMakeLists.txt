@@ -1060,8 +1060,9 @@ target_compile_definitions(unified_server PRIVATE
 )
 
 # ── Lemonade SDK embed ─────────────────────────────────────────────────────
-# unified_server embeds Lemonade's server core (github.com/lemonade-sdk/
-# lemonade, pinned in third_party/lemonade): all 14 Lemonade backends
+# unified_server embeds Lemonade's server core (vendored from
+# github.com/lemonade-sdk/lemonade, see third_party/lemonade/UPSTREAM.md):
+# all 14 Lemonade backends
 # (llamacpp, flm, whispercpp, sd-cpp, kokoro, ryzenai-llm, vllm, ...) and
 # its policy-based Router run in-process — `unified_server --lemonade` hands
 # off to the full Lemonade server. unified_router uses the same routing

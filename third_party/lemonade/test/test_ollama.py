@@ -1,0 +1,940 @@
+"""
+Ollama API compatibility tests for Lemonade Server.
+
+Tests the Ollama translation layer that allows Ollama clients to interact
+with Lemonade's inference backends.
+
+Usage:
+    python test_ollama.py
+    python test_ollama.py --cli-binary /path/to/lemonade
+"""
+
+import base64
+import json
+import platform
+import sys
+import uuid
+import requests
+
+try:
+    import ollama as ollama_lib
+except ImportError:
+    ollama_lib = None
+
+from utils.server_base import (
+    ServerTestBase,
+    run_server_tests,
+    unload_all_models,
+)
+from utils.test_models import (
+    PORT,
+    ENDPOINT_TEST_MODEL,
+    TOOL_CALLING_MODEL,
+    VISION_MODEL,
+    SD_MODEL,
+    SAMPLE_TOOL,
+    TIMEOUT_MODEL_OPERATION,
+    TIMEOUT_DEFAULT,
+    USER_MODEL_MAIN_CHECKPOINT,
+)
+
+OLLAMA_BASE_URL = f"http://localhost:{PORT}"
+TOOL_CALLING_LLAMA_ARGS = "--reasoning-format none"
+
+
+class OllamaTests(ServerTestBase):
+    """Tests for Ollama-compatible API endpoints."""
+
+    # Pin sd-cpp to CPU for this no-GPU API compatibility suite.
+    additional_server_args = ["--sdcpp", "cpu"]
+
+    _model_pulled = False
+    _tool_calling_model_pulled = False
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up class - verify server is running."""
+        super().setUpClass()
+
+    def _dump_server_diagnostics(self, context):
+        """Print server state to make rare CI timeouts actionable."""
+        print(f"[DIAG] Server diagnostics after {context}")
+        for url in (
+            f"{self.base_url}/health",
+            f"{OLLAMA_BASE_URL}/api/ps",
+            f"{OLLAMA_BASE_URL}/live",
+        ):
+            try:
+                response = requests.get(url, timeout=TIMEOUT_DEFAULT)
+                print(
+                    f"[DIAG] GET {url} -> {response.status_code}: "
+                    f"{response.text[:1200]}"
+                )
+            except requests.RequestException as exc:
+                print(f"[DIAG] GET {url} failed: {exc}")
+
+    def get_ollama_client(self):
+        """Get an Ollama client pointed at the test server."""
+        if ollama_lib is None:
+            self.skipTest("ollama package not installed")
+        return ollama_lib.Client(host=OLLAMA_BASE_URL)
+
+    def ensure_model_pulled(self):
+        """Ensure the test model is downloaded."""
+        if not OllamaTests._model_pulled:
+            response = requests.post(
+                f"{self.base_url}/pull",
+                json={"model_name": ENDPOINT_TEST_MODEL, "stream": False},
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+            self.assertEqual(response.status_code, 200)
+            OllamaTests._model_pulled = True
+
+    def ensure_tool_calling_model_pulled(self):
+        """Ensure the tool-calling model is downloaded."""
+        if not OllamaTests._tool_calling_model_pulled:
+            response = requests.post(
+                f"{self.base_url}/pull",
+                json={"model_name": TOOL_CALLING_MODEL, "stream": False},
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+            self.assertEqual(response.status_code, 200)
+            OllamaTests._tool_calling_model_pulled = True
+
+    # ========================================================================
+    # Basic endpoint tests (no model required)
+    # ========================================================================
+
+    def test_001_version(self):
+        """Test /api/version returns a version string."""
+        response = requests.get(
+            f"{OLLAMA_BASE_URL}/api/version",
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("version", data)
+        self.assertEqual(data["version"], "0.16.1")
+
+    def test_002_root_endpoint(self):
+        """Test / is reachable (serves the web app UI)."""
+        response = requests.get(
+            f"{OLLAMA_BASE_URL}/",
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_003_tags(self):
+        """Test /api/tags returns model list."""
+        self.ensure_model_pulled()
+        response = requests.get(
+            f"{OLLAMA_BASE_URL}/api/tags",
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("models", data)
+        self.assertIsInstance(data["models"], list)
+
+        # Each model should have expected Ollama fields
+        if len(data["models"]) > 0:
+            model = data["models"][0]
+            self.assertIn("name", model)
+            self.assertIn("model", model)
+            self.assertIn("size", model)
+            self.assertIn("details", model)
+            self.assertIn("digest", model)
+
+    def test_004_show(self):
+        """Test /api/show returns model info."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/show",
+            json={"name": ENDPOINT_TEST_MODEL},
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("details", data)
+        self.assertIn("modelfile", data)
+        self.assertIn("model_info", data)
+        self.assertIn("capabilities", data)
+        self.assertIn("completion", data["capabilities"])
+        self.assertIn("num_ctx", data["parameters"])
+        self.assertIn("llamacpp.context_length", data["model_info"])
+
+    def test_005_show_not_found(self):
+        """Test /api/show returns 404 for non-existent model."""
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/show",
+            json={"name": "nonexistent-model-xyz"},
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_006_ps(self):
+        """Test /api/ps returns running models with correct Ollama format."""
+        self.ensure_model_pulled()
+
+        # Load a model first so /api/ps has something to return
+        requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": ENDPOINT_TEST_MODEL,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": False,
+                "options": {"num_predict": 1},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+
+        response = requests.get(
+            f"{OLLAMA_BASE_URL}/api/ps",
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("models", data)
+        self.assertIsInstance(data["models"], list)
+
+        # Should have at least one loaded model
+        self.assertGreater(
+            len(data["models"]), 0, "Expected at least one running model"
+        )
+
+        model = data["models"][0]
+        # Verify required Ollama fields
+        self.assertIn("name", model)
+        self.assertIn("model", model)
+        self.assertIn("expires_at", model)
+        self.assertIn("size_vram", model)
+        self.assertIn("details", model)
+
+        # Model name must not be empty (regression: was ":latest" due to field mismatch)
+        self.assertTrue(
+            model["name"].replace(":latest", "") != "",
+            f"Model name should not be empty, got: {model['name']}",
+        )
+        self.assertTrue(
+            model["name"].endswith(":latest"),
+            f"Model name should end with ':latest', got: {model['name']}",
+        )
+
+    def test_008_pull_streaming_progress(self):
+        """Test /api/pull streams NDJSON progress with digest field."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/pull",
+            json={"name": ENDPOINT_TEST_MODEL, "stream": True},
+            timeout=TIMEOUT_MODEL_OPERATION,
+            stream=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        chunks = []
+        for line in response.iter_lines():
+            if line:
+                chunk = json.loads(line.decode("utf-8"))
+                chunks.append(chunk)
+
+        self.assertGreater(len(chunks), 0, "Expected at least one progress chunk")
+
+        # First chunk should be "pulling manifest"
+        self.assertEqual(chunks[0]["status"], "pulling manifest")
+
+        # Last chunk should be "success"
+        self.assertEqual(chunks[-1]["status"], "success")
+
+        # Any downloading chunk must have digest, completed, and total fields
+        download_chunks = [c for c in chunks if "completed" in c]
+        for chunk in download_chunks:
+            self.assertIn(
+                "digest", chunk, "Download progress must include 'digest' field"
+            )
+            self.assertIn("total", chunk)
+            self.assertIn("completed", chunk)
+
+    def test_008_unload_via_generate(self):
+        """Test model unload via /api/generate with keep_alive=0 (Ollama convention)."""
+        self.ensure_model_pulled()
+
+        # Load the model first
+        requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": ENDPOINT_TEST_MODEL,
+                "prompt": "Hi",
+                "stream": False,
+                "options": {"num_predict": 1},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+
+        # Verify model is loaded
+        ps_response = requests.get(f"{OLLAMA_BASE_URL}/api/ps", timeout=TIMEOUT_DEFAULT)
+        loaded_names = [m["name"] for m in ps_response.json()["models"]]
+        self.assertTrue(
+            any(ENDPOINT_TEST_MODEL in n for n in loaded_names),
+            "Model should be loaded before unload test",
+        )
+
+        # Unload via empty prompt + keep_alive=0
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={"model": ENDPOINT_TEST_MODEL, "prompt": "", "keep_alive": 0},
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["done"])
+        self.assertEqual(data["done_reason"], "unload")
+
+        # Verify model is no longer loaded
+        ps_response = requests.get(f"{OLLAMA_BASE_URL}/api/ps", timeout=TIMEOUT_DEFAULT)
+        loaded_names = [m["name"] for m in ps_response.json()["models"]]
+        self.assertFalse(
+            any(ENDPOINT_TEST_MODEL in n for n in loaded_names),
+            "Model should be unloaded after keep_alive=0",
+        )
+
+    # ========================================================================
+    # Chat completion tests
+    # ========================================================================
+
+    def test_009_chat_non_streaming(self):
+        """Test /api/chat non-streaming."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": ENDPOINT_TEST_MODEL,
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "stream": False,
+                "options": {"num_predict": 10},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("message", data)
+        self.assertIn("content", data["message"])
+        self.assertEqual(data["message"]["role"], "assistant")
+        self.assertTrue(data["done"])
+        self.assertEqual(data["model"], ENDPOINT_TEST_MODEL)
+
+    def test_010_chat_streaming(self):
+        """Test /api/chat streaming returns NDJSON."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": ENDPOINT_TEST_MODEL,
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "stream": True,
+                "options": {"num_predict": 10},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+            stream=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        chunks = []
+        for line in response.iter_lines():
+            if line:
+                chunk = json.loads(line.decode("utf-8"))
+                chunks.append(chunk)
+                self.assertIn("model", chunk)
+
+        # Should have at least one chunk and a final done=true chunk
+        self.assertGreater(len(chunks), 0)
+        last_chunk = chunks[-1]
+        self.assertTrue(last_chunk.get("done", False))
+
+    def test_010_chat_streaming_with_tools_returns_complete_tool_call(self):
+        """Test /api/chat streaming with tools returns complete Ollama tool calls."""
+        # This test uses the larger native tool-calling model. On macOS CI the
+        # preceding tests can leave the tiny endpoint model resident, and relying
+        # on implicit unload/load inside the streaming request has caused the
+        # request to hang until the 500s HTTP timeout. Make the heavy model
+        # transition explicit so failures are attributed to pull/load/chat.
+        response = unload_all_models()
+        self.assertIn(response.status_code, (200, 404), response.text)
+
+        try:
+            self.ensure_tool_calling_model_pulled()
+
+            response = requests.post(
+                f"{self.base_url}/load",
+                json={
+                    "model_name": TOOL_CALLING_MODEL,
+                    "ctx_size": 4096,
+                    # Keep this CI test deterministic without adding Ollama API
+                    # behavior: disable reasoning at llama-server load time.
+                    "llamacpp_args": TOOL_CALLING_LLAMA_ARGS,
+                },
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+            self.assertEqual(response.status_code, 200)
+
+            try:
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/chat",
+                    json={
+                        "model": TOOL_CALLING_MODEL,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Call the calculator_calculate tool exactly once "
+                                    "with expression set to 1+1. Do not answer in text."
+                                ),
+                            }
+                        ],
+                        "tools": [SAMPLE_TOOL],
+                        "stream": True,
+                        "options": {
+                            "num_predict": 64,
+                            "temperature": 0,
+                            "top_p": 1,
+                            "seed": 42,
+                        },
+                    },
+                    timeout=TIMEOUT_MODEL_OPERATION,
+                    stream=True,
+                )
+                self.assertEqual(response.status_code, 200)
+
+                chunks = [
+                    json.loads(line.decode("utf-8"))
+                    for line in response.iter_lines()
+                    if line
+                ]
+            except requests.exceptions.RequestException as exc:
+                self._dump_server_diagnostics("Ollama streaming tool-calling timeout")
+                self.fail(
+                    "Ollama streaming tool-calling request failed after "
+                    f"{TIMEOUT_MODEL_OPERATION}s timeout budget: {exc}"
+                )
+            self.assertGreater(len(chunks), 0)
+
+            tool_chunks = [
+                chunk for chunk in chunks if chunk.get("message", {}).get("tool_calls")
+            ]
+            self.assertGreater(len(tool_chunks), 0, "Expected a tool call chunk")
+
+            tool_call = tool_chunks[0]["message"]["tool_calls"][0]
+            self.assertIn("id", tool_call)
+            self.assertEqual(
+                tool_call["function"]["name"], SAMPLE_TOOL["function"]["name"]
+            )
+            self.assertIsInstance(tool_call["function"]["arguments"], dict)
+            self.assertIn("expression", tool_call["function"]["arguments"])
+            self.assertTrue(chunks[-1].get("done", False))
+            self.assertEqual(chunks[-1].get("done_reason"), "tool_calls")
+        finally:
+            try:
+                response = unload_all_models()
+                if response.status_code not in (200, 404):
+                    print(
+                        "Warning: cleanup unload_all_models returned "
+                        f"{response.status_code}: {response.text}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+                print(f"Warning: cleanup unload_all_models failed: {exc}")
+
+    def test_011_chat_missing_model(self):
+        """Test /api/chat returns 400 when model is missing."""
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_012_chat_not_found_model(self):
+        """Test /api/chat returns 404 for non-existent model."""
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": "nonexistent-model-xyz",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_013_chat_with_latest_suffix(self):
+        """Test /api/chat strips :latest suffix from model name."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": f"{ENDPOINT_TEST_MODEL}:latest",
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "stream": False,
+                "options": {"num_predict": 10},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["done"])
+
+    # ========================================================================
+    # Generate (completion) tests
+    # ========================================================================
+
+    def test_014_generate_non_streaming(self):
+        """Test /api/generate non-streaming."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": ENDPOINT_TEST_MODEL,
+                "prompt": "Hello, how are you?",
+                "stream": False,
+                "options": {"num_predict": 10},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("response", data)
+        self.assertTrue(data["done"])
+        self.assertEqual(data["model"], ENDPOINT_TEST_MODEL)
+
+    def test_015_generate_streaming(self):
+        """Test /api/generate streaming returns NDJSON."""
+        self.ensure_model_pulled()
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": ENDPOINT_TEST_MODEL,
+                "prompt": "Hello",
+                "stream": True,
+                "options": {"num_predict": 10},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+            stream=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        chunks = []
+        for line in response.iter_lines():
+            if line:
+                chunk = json.loads(line.decode("utf-8"))
+                chunks.append(chunk)
+                self.assertIn("model", chunk)
+
+        self.assertGreater(len(chunks), 0)
+        last_chunk = chunks[-1]
+        self.assertTrue(last_chunk.get("done", False))
+
+    def test_015a_auto_load_forwards_only_ctx_size(self):
+        """Regression: Ollama auto-load must forward only ctx_size to recipe_options.
+
+        Request-scoped fields (temperature, top_p, num_predict, etc.) must not leak
+        into persistent model-load settings."""
+        self.ensure_model_pulled()
+
+        response = unload_all_models()
+        self.assertIn(response.status_code, (200, 404), response.text)
+
+        try:
+            custom_ctx_size = 8192
+            response = requests.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json={
+                    "model": ENDPOINT_TEST_MODEL,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": False,
+                    "options": {
+                        "num_ctx": custom_ctx_size,
+                        "num_predict": 10,
+                        "temperature": 0.7,
+                        "top_p": 0.9,
+                        "pinned": True,
+                        "llamacpp_args": "--foo-bar",
+                        "auto_evict": True,
+                        "evict_idle_timeout": 1,
+                    },
+                },
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+
+            # Verify ctx_size was applied and request-scoped options did not leak
+            # by inspecting the runtime recipe_options from /health.
+            health_response = requests.get(
+                f"{self.base_url}/health", timeout=TIMEOUT_DEFAULT
+            )
+            self.assertEqual(health_response.status_code, 200)
+            loaded_model = None
+            for m in health_response.json().get("all_models_loaded", []):
+                if m["model_name"] == ENDPOINT_TEST_MODEL:
+                    loaded_model = m
+                    break
+            self.assertIsNotNone(
+                loaded_model,
+                f"{ENDPOINT_TEST_MODEL} should be loaded after auto-load",
+            )
+            recipe_options = loaded_model.get("recipe_options", {})
+            self.assertEqual(
+                recipe_options.get("ctx_size"),
+                custom_ctx_size,
+                "ctx_size should be present in recipe_options",
+            )
+            for field in (
+                "temperature",
+                "top_p",
+                "num_predict",
+                "pinned",
+                "llamacpp_args",
+                "auto_evict",
+                "evict_idle_timeout",
+            ):
+                self.assertNotIn(
+                    field,
+                    recipe_options,
+                    f"Request-scoped field '{field}' must not leak into recipe_options",
+                )
+        finally:
+            unload_all_models()
+
+    # ========================================================================
+    # 501 stubs
+    # ========================================================================
+
+    def test_016_create_returns_501(self):
+        """Test /api/create returns 501."""
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/create",
+            json={"name": "test"},
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 501)
+
+    def test_017_copy_returns_501(self):
+        """Test /api/copy returns 501."""
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/copy",
+            json={"source": "a", "destination": "b"},
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 501)
+
+    def test_018_push_returns_501(self):
+        """Test /api/push returns 501."""
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/push",
+            json={"name": "test"},
+            timeout=TIMEOUT_DEFAULT,
+        )
+        self.assertEqual(response.status_code, 501)
+
+    # ========================================================================
+    # Ollama Python library tests (if available)
+    # ========================================================================
+
+    def test_019_ollama_lib_list(self):
+        """Test ollama.list() via Python library."""
+        client = self.get_ollama_client()
+        self.ensure_model_pulled()
+        result = client.list()
+        self.assertIsNotNone(result)
+
+    def test_020_ollama_lib_chat(self):
+        """Test ollama.chat() via Python library."""
+        client = self.get_ollama_client()
+        self.ensure_model_pulled()
+        result = client.chat(
+            model=ENDPOINT_TEST_MODEL,
+            messages=[{"role": "user", "content": "Say hello in 5 words"}],
+            options={"num_predict": 10},
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("message", result)
+        self.assertIn("content", result["message"])
+
+    # ========================================================================
+    # Image input/output tests
+    # ========================================================================
+
+    def test_021_chat_with_image_input(self):
+        """Test /api/chat with image input (vision) using a vision model."""
+        if sys.platform == "darwin":
+            self.skipTest("Vision model not supported on macOS")
+        # Pull the vision model
+        response = requests.post(
+            f"{self.base_url}/pull",
+            json={"model_name": VISION_MODEL, "stream": False},
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # 10x10 red PNG to avoid backend assertions on tiny images.
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFElEQVR42mP4"
+            "z8DwnxjMMKqQvgoBksPHOXvuG4oAAAAASUVORK5CYII="
+        )
+
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": VISION_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "What is in this image?",
+                        "images": [png_b64],
+                    }
+                ],
+                "stream": False,
+                "options": {"num_predict": 10},
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("message", data)
+        self.assertIn("content", data["message"])
+
+    def test_022_generate_image_output(self):
+        """Test /api/generate with an image generation model."""
+        if sys.platform == "darwin":
+            self.skipTest("sd-cpp not supported on macOS")
+        if sys.platform == "linux" and platform.machine() == "aarch64":
+            self.skipTest("sd-cpp not supported on Linux ARM64")
+        # Pull the SD model first
+        response = requests.post(
+            f"{self.base_url}/pull",
+            json={"model_name": SD_MODEL, "stream": False},
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": SD_MODEL,
+                "prompt": "A red circle",
+                "stream": False,
+                "width": 256,
+                "height": 256,
+                "steps": 2,
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("image", data)
+        self.assertTrue(len(data["image"]) > 0, "image field should not be empty")
+        self.assertTrue(data["done"])
+        self.assertEqual(data["model"], SD_MODEL)
+
+        # Decode base64 and verify PNG magic bytes
+        image_bytes = base64.b64decode(data["image"])
+        self.assertTrue(
+            image_bytes[:4] == b"\x89PNG",
+            "Decoded image should start with PNG magic bytes",
+        )
+
+    def test_023_ollama_lib_chat_streaming(self):
+        """Test ollama.chat() streaming via Python library."""
+        client = self.get_ollama_client()
+        self.ensure_model_pulled()
+        stream = client.chat(
+            model=ENDPOINT_TEST_MODEL,
+            messages=[{"role": "user", "content": "Say hello"}],
+            stream=True,
+            options={"num_predict": 10},
+        )
+        chunks = list(stream)
+        self.assertGreater(len(chunks), 0)
+
+    # ========================================================================
+    # Anthropic-compatible /v1/messages tests
+    # ========================================================================
+
+    def test_024_anthropic_messages_non_streaming(self):
+        """Test Anthropic-compatible non-streaming messages endpoint."""
+        self.ensure_model_pulled()
+
+        payload = {
+            "model": ENDPOINT_TEST_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Say hello"}],
+                }
+            ],
+            "system": [
+                {
+                    "type": "text",
+                    "text": "You are a concise assistant.",
+                }
+            ],
+            "max_tokens": 16,
+            "stream": False,
+        }
+
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/v1/messages?beta=true",
+            json=payload,
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertEqual(data.get("type"), "message")
+        self.assertEqual(data.get("role"), "assistant")
+        self.assertEqual(data.get("model"), ENDPOINT_TEST_MODEL)
+        self.assertIn("content", data)
+        self.assertIsInstance(data["content"], list)
+        self.assertGreater(len(data["content"]), 0)
+        self.assertEqual(data["content"][0].get("type"), "text")
+        self.assertIn("usage", data)
+        self.assertIn("input_tokens", data["usage"])
+        self.assertIn("output_tokens", data["usage"])
+
+    def test_025_anthropic_messages_streaming(self):
+        """Test Anthropic-compatible streaming messages endpoint."""
+        self.ensure_model_pulled()
+
+        payload = {
+            "model": ENDPOINT_TEST_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Say hello"}],
+                }
+            ],
+            "max_tokens": 16,
+            "stream": True,
+        }
+
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/v1/messages?beta=true",
+            json=payload,
+            timeout=TIMEOUT_MODEL_OPERATION,
+            stream=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        event_types = []
+        data_lines = 0
+        for raw_line in response.iter_lines():
+            if not raw_line:
+                continue
+
+            line = raw_line.decode("utf-8")
+            if line.startswith("event: "):
+                event_types.append(line[len("event: ") :])
+            elif line.startswith("data: "):
+                data_lines += 1
+                payload_json = json.loads(line[len("data: ") :])
+                self.assertIn("type", payload_json)
+
+        self.assertGreater(data_lines, 0, "Expected at least one data event")
+        self.assertIn("message_start", event_types)
+        self.assertIn("content_block_start", event_types)
+        self.assertIn("message_stop", event_types)
+
+    def test_026_anthropic_messages_tool_calling(self):
+        """Test Anthropic-compatible tool calling maps to tool_use blocks."""
+        # This is the heaviest Ollama compatibility test in the suite. Start it
+        # from an empty loaded-model state so previous endpoint/CLI tests cannot
+        # leave another backend resident and turn the final inference into a CI
+        # timeout instead of a deterministic assertion.
+        response = unload_all_models()
+        self.assertIn(response.status_code, (200, 404), response.text)
+
+        try:
+            # Use a model with native tool-calling support in its chat template;
+            # the tiny test model (gemma-3) lacks tool markers so the llama.cpp
+            # autoparser ignores tools even with tool_choice required.
+            self.ensure_tool_calling_model_pulled()
+
+            response = requests.post(
+                f"{self.base_url}/load",
+                json={
+                    "model_name": TOOL_CALLING_MODEL,
+                    "ctx_size": 4096,
+                    # Use the same load-time llama-server configuration as the
+                    # Ollama tool-call test so both heavy CI paths avoid
+                    # reasoning before tool selection.
+                    "llamacpp_args": TOOL_CALLING_LLAMA_ARGS,
+                },
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+            self.assertEqual(response.status_code, 200)
+
+            anthropic_tool = {
+                "name": SAMPLE_TOOL["function"]["name"],
+                "description": SAMPLE_TOOL["function"].get("description", ""),
+                "input_schema": SAMPLE_TOOL["function"].get("parameters", {}),
+            }
+
+            payload = {
+                "model": TOOL_CALLING_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Run the calculator_calculate tool with expression set to 1+1",
+                            }
+                        ],
+                    }
+                ],
+                "tools": [anthropic_tool],
+                "tool_choice": {"type": "any"},
+                "max_tokens": 64,
+                "stream": False,
+                "temperature": 0,
+                "top_p": 1,
+            }
+
+            try:
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/v1/messages?beta=true",
+                    json=payload,
+                    timeout=TIMEOUT_MODEL_OPERATION,
+                )
+            except requests.exceptions.Timeout as exc:
+                self._dump_server_diagnostics("Anthropic tool-calling timeout")
+                self.fail(
+                    "Anthropic tool-calling request timed out after "
+                    f"{TIMEOUT_MODEL_OPERATION}s: {exc}"
+                )
+
+            self.assertEqual(response.status_code, 200)
+
+            data = response.json()
+            self.assertIn("content", data)
+            tool_use_blocks = [
+                b for b in data["content"] if b.get("type") == "tool_use"
+            ]
+            self.assertGreater(
+                len(tool_use_blocks), 0, "Expected at least one tool_use block"
+            )
+            self.assertEqual(data.get("stop_reason"), "tool_use")
+        finally:
+            try:
+                response = unload_all_models()
+                if response.status_code not in (200, 404):
+                    print(
+                        "Warning: cleanup unload_all_models returned "
+                        f"{response.status_code}: {response.text}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+                print(f"Warning: cleanup unload_all_models failed: {exc}")
+
+
+if __name__ == "__main__":
+    run_server_tests(OllamaTests, "OLLAMA API TESTS")

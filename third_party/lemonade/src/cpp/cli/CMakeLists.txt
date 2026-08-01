@@ -1,0 +1,280 @@
+# CLI client subproject
+# Note: This is included from parent CMakeLists.txt via add_subdirectory(cli)
+# Parent project already sets C++ standard and fetches dependencies
+
+
+# ============================================================
+# Download digest verification dependency
+# ============================================================
+# http_client.cpp is compiled into both lemonade-server-core and the lemonade
+# CLI.  Digest verification must therefore be wired to both targets from here.
+# Prefer a distro-provided mbedcrypto package, but fall back to FetchContent so
+# local Lemonade builds do not require developers to install a new package.
+if(NOT TARGET lemonade-digest-crypto)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(MBEDTLS QUIET mbedtls mbedx509 mbedcrypto)
+    endif()
+
+    add_library(lemonade-digest-crypto INTERFACE)
+
+    if(MBEDTLS_FOUND)
+        message(STATUS "Using system mbedtls for CLI HTTPS and digest verification")
+        if(MBEDTLS_INCLUDE_DIRS)
+            target_include_directories(lemonade-digest-crypto INTERFACE ${MBEDTLS_INCLUDE_DIRS})
+        endif()
+        if(MBEDTLS_LIBRARY_DIRS)
+            target_link_directories(lemonade-digest-crypto INTERFACE ${MBEDTLS_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(lemonade-digest-crypto INTERFACE ${MBEDTLS_LIBRARIES})
+        if(MBEDTLS_CFLAGS_OTHER)
+            target_compile_options(lemonade-digest-crypto INTERFACE ${MBEDTLS_CFLAGS_OTHER})
+        endif()
+    else()
+        # Some distro packages do not ship a pkg-config file for mbedtls.
+        # Keep the system-library path working for Debian/PPA builds, where
+        # FetchContent is intentionally fully disconnected.
+        find_path(MBEDTLS_INCLUDE_DIR NAMES mbedtls/ssl.h)
+        find_library(MBEDTLS_LIBRARY NAMES mbedtls)
+        find_library(MBEDX509_LIBRARY NAMES mbedx509)
+        find_library(MBEDCRYPTO_LIBRARY NAMES mbedcrypto)
+
+        if(MBEDTLS_INCLUDE_DIR AND MBEDTLS_LIBRARY AND MBEDX509_LIBRARY AND MBEDCRYPTO_LIBRARY)
+            message(STATUS "Using system mbedtls libraries for CLI HTTPS and digest verification")
+            target_include_directories(lemonade-digest-crypto INTERFACE ${MBEDTLS_INCLUDE_DIR})
+            target_link_libraries(lemonade-digest-crypto INTERFACE ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
+        else()
+            if(FETCHCONTENT_FULLY_DISCONNECTED AND NOT FETCHCONTENT_SOURCE_DIR_MBEDTLS)
+                message(FATAL_ERROR
+                    "System mbedtls was not found and FetchContent is fully disconnected. "
+                    "Install the distro development package (for Debian/Ubuntu: libmbedtls-dev) "
+                    "or provide FETCHCONTENT_SOURCE_DIR_MBEDTLS.")
+            endif()
+
+            message(STATUS "System mbedtls not found; fetching mbedTLS for CLI HTTPS and digest verification")
+            include(FetchContent)
+            FetchContent_Declare(mbedtls
+                GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+                GIT_TAG 107ea89daaefb9867ea9121002fbbdf926780e98
+                EXCLUDE_FROM_ALL
+            )
+            set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+            set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+            set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+            set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+            set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+            FetchContent_MakeAvailable(mbedtls)
+
+            target_include_directories(lemonade-digest-crypto INTERFACE ${mbedtls_SOURCE_DIR}/include)
+            if(TARGET MbedTLS::mbedtls AND TARGET MbedTLS::mbedx509 AND TARGET MbedTLS::mbedcrypto)
+                target_link_libraries(lemonade-digest-crypto INTERFACE MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+            elseif(TARGET mbedtls AND TARGET mbedx509 AND TARGET mbedcrypto)
+                target_link_libraries(lemonade-digest-crypto INTERFACE mbedtls mbedx509 mbedcrypto)
+            else()
+                message(FATAL_ERROR "mbedTLS FetchContent did not create expected targets")
+            endif()
+        endif()
+    endif()
+endif()
+
+if(TARGET lemonade-server-core)
+    target_link_libraries(lemonade-server-core PUBLIC lemonade-digest-crypto)
+endif()
+
+# Common sources
+set(COMMON_SOURCES
+    main.cpp
+    lemonade_client.cpp
+    model_selection.cpp
+    recipe_import.cpp
+    hf_pull.cpp
+    bench.cpp
+    chat_repl.cpp
+    ../server/recipe_options.cpp
+    ../server/utils/process_manager.cpp
+    ../server/utils/path_utils.cpp
+    ../server/utils/json_utils.cpp
+    ../server/utils/http_client.cpp
+    # recipe_import.cpp persists and validates remote registry provenance.
+    # Compile the provider implementation into the standalone CLI as well; the
+    # CLI does not link lemonade-server-core, where this source is otherwise built.
+    ../server/model_registry.cpp
+    agent_launcher.cpp
+    agent_config_file.cpp
+    opencode_profile.cpp
+    pi_profile.cpp
+    # Self-describing backend descriptors (plain data; CLI-safe). Lets the CLI
+    # read recipe options/flags from descriptors without linking server classes.
+    # The matching factories (create()) are server-only and NOT listed here.
+    ${LEMON_BACKEND_DESCRIPTOR_SOURCES}
+)
+
+# Add platform-specific sources
+if(WIN32)
+    list(APPEND COMMON_SOURCES
+        ../server/utils/platform/path_windows.cpp
+        ../server/utils/platform/process_windows.cpp
+    )
+elseif(APPLE)
+    list(APPEND COMMON_SOURCES
+        ../server/utils/platform/path_macos.cpp
+        ../server/utils/platform/process_macos.cpp
+    )
+elseif(UNIX)
+    list(APPEND COMMON_SOURCES
+        ../server/utils/platform/path_linux.cpp
+        ../server/utils/platform/process_linux.cpp
+    )
+endif()
+
+# ============================================================
+# lemonade - HTTP client CLI
+# ============================================================
+add_executable(lemonade
+    ${COMMON_SOURCES}
+)
+
+target_link_libraries(lemonade PRIVATE
+    nlohmann_json::nlohmann_json
+    lemonade-digest-crypto
+)
+
+# Link httplib based on what's available (set by parent CMakeLists.txt)
+if(USE_SYSTEM_HTTPLIB)
+    target_link_libraries(lemonade PRIVATE lemonade-httplib)
+else()
+    target_link_libraries(lemonade PRIVATE httplib::httplib)
+endif()
+
+# Link CLI11 based on what's available
+if(USE_SYSTEM_CLI11)
+    target_include_directories(lemonade PRIVATE ${CLI11_INCLUDE_DIRS})
+else()
+    target_link_libraries(lemonade PRIVATE CLI11::CLI11)
+endif()
+
+# Link curl based on what's available
+if(USE_SYSTEM_CURL)
+    target_link_libraries(lemonade PRIVATE ${CURL_LIBRARIES})
+    target_include_directories(lemonade PRIVATE ${CURL_INCLUDE_DIRS})
+    target_compile_options(lemonade PRIVATE ${CURL_CFLAGS_OTHER})
+else()
+    target_link_libraries(lemonade PRIVATE libcurl)
+endif()
+
+# Link zstd based on what's available
+if(USE_SYSTEM_ZSTD)
+    target_link_libraries(lemonade PRIVATE ${ZSTD_LIBRARIES})
+    target_include_directories(lemonade PRIVATE ${ZSTD_INCLUDE_DIRS})
+    target_link_directories(lemonade PRIVATE ${ZSTD_LIBRARY_DIRS})
+    target_compile_options(lemonade PRIVATE ${ZSTD_CFLAGS_OTHER})
+endif()
+
+# Add include directories for header-only system packages
+target_include_directories(lemonade PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+# Set output directory to build root
+set_target_properties(lemonade PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+if(WIN32)
+    set_target_properties(lemonade PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+    )
+endif()
+
+set(HTTPLIB_SUPPORTS_MBEDTLS FALSE)
+if(NOT USE_SYSTEM_HTTPLIB)
+    set(HTTPLIB_SUPPORTS_MBEDTLS TRUE)
+elseif(HTTPLIB_VERSION AND NOT HTTPLIB_VERSION VERSION_LESS "0.31.0")
+    set(HTTPLIB_SUPPORTS_MBEDTLS TRUE)
+endif()
+
+if(HTTPLIB_SUPPORTS_MBEDTLS)
+    target_compile_definitions(lemonade PRIVATE LEMONADE_CLI CPPHTTPLIB_MBEDTLS_SUPPORT)
+else()
+    target_compile_definitions(lemonade PRIVATE LEMONADE_CLI)
+endif()
+
+# Platform-specific settings
+if(WIN32)
+    # On Windows, make sure we have Unicode support
+    target_compile_definitions(lemonade PRIVATE
+        UNICODE
+        _UNICODE
+    )
+
+    # Link with networking and system libraries
+    target_link_libraries(lemonade PRIVATE
+        ws2_32
+        wsock32
+    )
+
+    # Embed manifest file if MSVC
+    if(MSVC)
+        # Note: lemonade does not use a manifest file
+        set_target_properties(lemonade PROPERTIES
+            LINK_FLAGS "/MANIFEST:EMBED"
+        )
+    endif()
+endif()
+
+if(APPLE)
+    # Enable ARC (Automatic Reference Counting) for macOS Objective-C++ files
+    target_compile_options(lemonade PRIVATE -fobjc-arc)
+
+    target_link_libraries(lemonade PRIVATE
+        "-framework Foundation"
+        "-framework CoreServices"
+    )
+endif()
+
+if(UNIX AND NOT APPLE)
+    # On Linux, link with pthread
+    find_package(Threads REQUIRED)
+    target_link_libraries(lemonade PRIVATE
+        Threads::Threads
+    )
+endif()
+
+# Install target (only on non-macOS platforms where main CMakeLists doesn't handle it)
+if(NOT APPLE)
+    install(TARGETS lemonade
+        RUNTIME DESTINATION bin
+    )
+endif()
+
+# ============================================================
+# macOS Signing (Release builds only)
+# ============================================================
+if(APPLE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(STATUS "Configuring signing for CLI Application (lemonade)")
+
+    # Inherit variables from Parent CMake
+    if(NOT DEFINED SIGNING_IDENTITY OR NOT DEFINED ENTITLEMENTS_PATH)
+        message(FATAL_ERROR "Signing variables missing! Ensure add_subdirectory(cli) is called AFTER identities are set in root CMakeLists.txt")
+    endif()
+
+    add_custom_command(TARGET lemonade POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E echo "--- Signing lemonade (CLI) ---"
+        COMMAND codesign --force --options runtime --timestamp --entitlements "${ENTITLEMENTS_PATH}" --sign "${SIGNING_IDENTITY}" -v $<TARGET_FILE:lemonade>
+        COMMENT "Signing lemonade with Hardened Runtime"
+        VERBATIM
+    )
+endif()
+
+# Create symlink in standard bin path only if not installing to /usr
+if(UNIX AND NOT APPLE AND NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+    install(CODE "
+        file(MAKE_DIRECTORY \"\$ENV{DESTDIR}/usr/bin\")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E create_symlink
+                ${CMAKE_INSTALL_PREFIX}/bin/lemonade
+                \"\$ENV{DESTDIR}/usr/bin/lemonade\"
+        )
+    ")
+endif()

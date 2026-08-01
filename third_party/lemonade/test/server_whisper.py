@@ -1,0 +1,688 @@
+"""
+Whisper audio transcription tests for Lemonade Server.
+
+Tests the /audio/transcriptions endpoint (HTTP) and the
+/api/v1/realtime WebSocket endpoint with Whisper models.
+
+Usage:
+    python server_whisper.py --wrapped-server whispercpp --backend cpu
+    python server_whisper.py --wrapped-server whispercpp --backend npu
+    python server_whisper.py --wrapped-server whispercpp --backend vulkan
+    python server_whisper.py --wrapped-server flm
+    python server_whisper.py --cli-binary /path/to/lemonade
+
+    # Backward compatible (defaults to whispercpp):
+    python server_whisper.py --backend cpu
+"""
+
+import asyncio
+import base64
+import os
+import struct
+import time
+import tempfile
+import wave
+
+import requests
+import urllib.request
+from openai import AsyncOpenAI
+
+from utils.server_base import (
+    ServerTestBase,
+    run_server_tests,
+    get_config,
+)
+from utils.capabilities import (
+    skip_if_unsupported,
+    get_test_model,
+)
+from utils.test_models import (
+    TEST_AUDIO_URL,
+    PORT,
+    TIMEOUT_MODEL_OPERATION,
+    TIMEOUT_DEFAULT,
+)
+
+
+def _get_whisper_model():
+    """Get the audio test model from capabilities."""
+    return get_test_model("audio")
+
+
+def _get_whispercpp_backend():
+    """Get the whispercpp_backend parameter for load requests, or None for non-whispercpp servers."""
+    config = get_config()
+    wrapped_server = config.get("wrapped_server")
+    backend = config.get("backend")
+
+    # Only pass whispercpp_backend when using the whispercpp wrapped server
+    if wrapped_server == "whispercpp" and backend:
+        return backend
+    # Backward compat: no --wrapped-server but --backend specified -> assume whispercpp
+    if wrapped_server is None and backend:
+        return backend
+    return None
+
+
+class WhisperTests(ServerTestBase):
+    """Tests for Whisper audio transcription."""
+
+    # Class-level cache for the test audio file
+    _test_audio_path = None
+
+    @classmethod
+    def setUpClass(cls):
+        """Verify server and download test audio file once for all tests."""
+        super().setUpClass()
+
+        # Download test audio file to temp directory
+        cls._test_audio_path = os.path.join(tempfile.gettempdir(), "test_speech.wav")
+
+        if not os.path.exists(cls._test_audio_path):
+            print(f"\n[INFO] Downloading test audio file from {TEST_AUDIO_URL}")
+            try:
+                urllib.request.urlretrieve(TEST_AUDIO_URL, cls._test_audio_path)
+                print(f"[OK] Downloaded to {cls._test_audio_path}")
+            except Exception as e:
+                print(f"[ERROR] Failed to download test audio: {e}")
+                raise
+
+    @classmethod
+    def tearDownClass(cls):
+        """Cleanup test audio file."""
+        if cls._test_audio_path and os.path.exists(cls._test_audio_path):
+            try:
+                os.remove(cls._test_audio_path)
+                print(f"[INFO] Cleaned up test audio file")
+            except Exception:
+                pass  # Ignore cleanup errors
+        super().tearDownClass()
+
+    def _load_whisper_model_or_fail(self):
+        """Load the configured Whisper model before positive transcription tests."""
+        model = _get_whisper_model()
+        whispercpp_backend = _get_whispercpp_backend()
+    
+        load_payload = {"model_name": model}
+    
+        if whispercpp_backend:
+            print(f"[INFO] Loading model with {whispercpp_backend} backend")
+            load_payload["whispercpp_backend"] = whispercpp_backend
+        else:
+            print(f"[INFO] Loading model {model}")
+    
+        load_response = requests.post(
+            f"{self.base_url}/load",
+            json=load_payload,
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+    
+        backend_description = (
+            f" with {whispercpp_backend} backend" if whispercpp_backend else ""
+        )
+        self.assertEqual(
+            load_response.status_code,
+            200,
+            (
+                f"Failed to load model {model}{backend_description}: "
+                f"{load_response.text}"
+            ),
+        )
+    
+        return model
+
+    def test_001_transcription_basic(self):
+        """Test basic audio transcription with Whisper."""
+        self.assertIsNotNone(self._test_audio_path, "Test audio file not downloaded")
+        self.assertTrue(
+            os.path.exists(self._test_audio_path),
+            f"Test audio file not found at {self._test_audio_path}",
+        )
+
+        model = self._load_whisper_model_or_fail()
+        whispercpp_backend = _get_whispercpp_backend()
+
+        with open(self._test_audio_path, "rb") as audio_file:
+            files = {"file": ("test_speech.wav", audio_file, "audio/wav")}
+            data = {"model": model, "response_format": "json"}
+
+            backend_msg = (
+                f" ({whispercpp_backend} backend)" if whispercpp_backend else ""
+            )
+            print(f"[INFO] Sending transcription request{backend_msg}")
+            response = requests.post(
+                f"{self.base_url}/audio/transcriptions",
+                files=files,
+                data=data,
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+            f"Transcription failed with status {response.status_code}: {response.text}",
+        )
+
+        result = response.json()
+        self.assertIn("text", result, "Response should contain 'text' field")
+        self.assertIsInstance(
+            result["text"], str, "Transcription text should be a string"
+        )
+        self.assertGreater(len(result["text"]), 0, "Transcription should not be empty")
+
+        print(f"[OK] Transcription result: {result['text']}")
+
+    def test_002_transcription_with_language(self):
+        """Test audio transcription with explicit language parameter."""
+        self.assertIsNotNone(self._test_audio_path, "Test audio file not downloaded")
+
+        model = self._load_whisper_model_or_fail()
+
+        with open(self._test_audio_path, "rb") as audio_file:
+            files = {"file": ("test_speech.wav", audio_file, "audio/wav")}
+            data = {
+                "model": model,
+                "language": "en",  # Explicitly set English
+                "response_format": "json",
+            }
+
+            print(f"[INFO] Sending transcription request with language=en")
+            response = requests.post(
+                f"{self.base_url}/audio/transcriptions",
+                files=files,
+                data=data,
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+            f"Transcription failed with status {response.status_code}: {response.text}",
+        )
+
+        result = response.json()
+        self.assertIn("text", result, "Response should contain 'text' field")
+        self.assertGreater(len(result["text"]), 0, "Transcription should not be empty")
+
+        print(f"[OK] Transcription with language=en: {result['text']}")
+
+    def test_003_transcription_missing_file_error(self):
+        """Test error handling when file is missing."""
+        model = _get_whisper_model()
+        data = {"model": model}
+
+        response = requests.post(
+            f"{self.base_url}/audio/transcriptions",
+            data=data,
+            timeout=TIMEOUT_DEFAULT,
+        )
+
+        # Should return an error (400 or 422)
+        self.assertIn(
+            response.status_code,
+            [400, 422],
+            f"Expected 400 or 422 for missing file, got {response.status_code}",
+        )
+        print(f"[OK] Correctly rejected request without file: {response.status_code}")
+
+    def test_004_transcription_missing_model_error(self):
+        """Test error handling when model is missing."""
+        with open(self._test_audio_path, "rb") as audio_file:
+            files = {"file": ("test_speech.wav", audio_file, "audio/wav")}
+
+            response = requests.post(
+                f"{self.base_url}/audio/transcriptions",
+                files=files,
+                timeout=TIMEOUT_DEFAULT,
+            )
+
+        # Should return an error (400 or 422)
+        self.assertIn(
+            response.status_code,
+            [400, 422],
+            f"Expected 400 or 422 for missing model, got {response.status_code}",
+        )
+        print(f"[OK] Correctly rejected request without model: {response.status_code}")
+
+    @skip_if_unsupported("rai_cache")
+    def test_005_transcription_npu_backend(self):
+        """Test NPU backend with automatic .rai cache download."""
+        whispercpp_backend = _get_whispercpp_backend()
+
+        # Skip if a different backend was specified via CLI
+        if whispercpp_backend and whispercpp_backend != "npu":
+            self.skipTest(f"Skipping NPU test (testing {whispercpp_backend} backend)")
+            return
+
+        model = _get_whisper_model()
+        print("\n[INFO] Testing NPU backend (requires NPU hardware)")
+
+        # Load model with NPU backend
+        load_response = requests.post(
+            f"{self.base_url}/load",
+            json={
+                "model_name": model,
+                "whispercpp_backend": "npu",
+            },
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+
+        if load_response.status_code != 200:
+            print(f"[SKIP] NPU backend not available: {load_response.text}")
+            self.skipTest("NPU backend not available (NPU hardware required)")
+            return
+
+        print(f"[OK] Model loaded with NPU backend")
+
+        # Verify transcription works with NPU backend
+        with open(self._test_audio_path, "rb") as audio_file:
+            files = {"file": ("test_speech.wav", audio_file, "audio/wav")}
+            data = {"model": model, "response_format": "json"}
+
+            print(f"[INFO] Testing NPU transcription")
+            response = requests.post(
+                f"{self.base_url}/audio/transcriptions",
+                files=files,
+                data=data,
+                timeout=TIMEOUT_MODEL_OPERATION,
+            )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+            f"NPU transcription failed with status {response.status_code}: {response.text}",
+        )
+
+        result = response.json()
+        self.assertIn("text", result, "Response should contain 'text' field")
+        self.assertGreater(
+            len(result["text"]), 0, "NPU transcription should not be empty"
+        )
+
+        print(f"[OK] NPU transcription result: {result['text']}")
+
+    # =========================================================================
+    # WebSocket Realtime Transcription Tests
+    # =========================================================================
+
+    def _load_pcm16_from_wav(self):
+        """
+        Read the test WAV file and return raw PCM16 mono 16kHz bytes.
+
+        Handles resampling and channel conversion so the data matches
+        what the StreamingAudioBuffer expects (16kHz, mono, int16).
+        """
+        with wave.open(self._test_audio_path, "rb") as wav:
+            n_channels = wav.getnchannels()
+            sampwidth = wav.getsampwidth()
+            framerate = wav.getframerate()
+            n_frames = wav.getnframes()
+            raw_data = wav.readframes(n_frames)
+
+        # Decode raw bytes into int16 samples
+        if sampwidth == 2:
+            samples = list(struct.unpack(f"<{len(raw_data) // 2}h", raw_data))
+        elif sampwidth == 1:
+            # 8-bit unsigned -> 16-bit signed
+            samples = [((b - 128) * 256) for b in raw_data]
+        else:
+            self.fail(f"Unsupported sample width: {sampwidth}")
+
+        # Convert stereo to mono
+        if n_channels == 2:
+            samples = [
+                (samples[i] + samples[i + 1]) // 2 for i in range(0, len(samples), 2)
+            ]
+
+        # Resample to 16kHz if needed
+        target_rate = 16000
+        if framerate != target_rate:
+            ratio = framerate / target_rate
+            new_len = int(len(samples) / ratio)
+            samples = [
+                samples[min(int(i * ratio), len(samples) - 1)] for i in range(new_len)
+            ]
+
+        return struct.pack(f"<{len(samples)}h", *samples)
+
+    def _get_websocket_port(self):
+        """Fetch WebSocket port from /health endpoint."""
+        response = requests.get(f"{self.base_url}/health", timeout=10)
+        self.assertEqual(response.status_code, 200, "Failed to fetch /health")
+        health = response.json()
+        ws_port = health.get("websocket_port")
+        self.assertIsNotNone(
+            ws_port, "Server did not provide websocket_port in /health"
+        )
+        return ws_port
+
+    def _make_openai_client(self):
+        """Create an AsyncOpenAI client configured for the local server."""
+        ws_port = self._get_websocket_port()
+        return AsyncOpenAI(
+            api_key="unused",
+            base_url=f"http://localhost:{PORT}/api/v1",
+            websocket_base_url=f"ws://localhost:{ws_port}",
+        )
+
+    def _get_pcm16_chunks(self):
+        """Load test audio and split it into ~64ms PCM16 chunks."""
+        self.assertIsNotNone(self._test_audio_path, "Test audio file not downloaded")
+
+        pcm_data = self._load_pcm16_from_wav()
+        self.assertGreater(len(pcm_data), 0, "PCM data should not be empty")
+        print(
+            f"[INFO] Loaded {len(pcm_data)} bytes of PCM16 audio "
+            f"({len(pcm_data) // 2} samples, "
+            f"{len(pcm_data) // 2 / 16000:.1f}s)"
+        )
+
+        # 2048 bytes @ 16kHz/16-bit = 64ms, which is less than VAD's
+        # 100ms analysis window — prevents flaky CI runs.
+        chunk_size = 2048
+        chunks = [
+            pcm_data[i : i + chunk_size] for i in range(0, len(pcm_data), chunk_size)
+        ]
+        print(f"[INFO] Split into {len(chunks)} chunks")
+        return chunks
+
+    def _event_payload(self, event):
+        """Return a best-effort dict representation of an SDK realtime event."""
+        if isinstance(event, dict):
+            return event
+
+        for dump_method in ("model_dump", "dict"):
+            method = getattr(event, dump_method, None)
+            if method is None:
+                continue
+            try:
+                payload = method()
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                return payload
+
+        return {}
+
+    def _event_value(self, event, *field_names):
+        """Read a field from either an SDK event object or a plain dict."""
+        for field_name in field_names:
+            if isinstance(event, dict):
+                value = event.get(field_name)
+            else:
+                value = getattr(event, field_name, None)
+            if value is not None:
+                return value
+
+        payload = self._event_payload(event)
+        for field_name in field_names:
+            value = payload.get(field_name)
+            if value is not None:
+                return value
+
+        return None
+
+    def _event_type(self, event):
+        """Return the realtime event type for SDK event objects or dicts."""
+        return self._event_value(event, "type") or "<missing type>"
+
+    def _event_text(self, event, *field_names):
+        """Extract the first non-empty text field from a realtime event."""
+        payload = self._event_payload(event)
+
+        for field_name in field_names:
+            values = []
+            value = self._event_value(event, field_name)
+            if value is not None:
+                values.append(value)
+            if field_name in payload:
+                values.append(payload[field_name])
+
+            for value in values:
+                if isinstance(value, str):
+                    if value.strip():
+                        return value
+                elif value is not None:
+                    value = str(value)
+                    if value.strip():
+                        return value
+
+        return ""
+
+    async def _drain_realtime_events(self, conn, timeout_s=0.25):
+        """Collect any pending realtime events until a short timeout expires."""
+        events = []
+        while True:
+            try:
+                event = await asyncio.wait_for(conn.recv(), timeout=timeout_s)
+                print(f"[INFO] Drained message: {self._event_type(event)}")
+                events.append(event)
+            except asyncio.TimeoutError:
+                break
+        return events
+
+    @skip_if_unsupported("realtime_websocket")
+    def test_006_realtime_websocket_connect(self):
+        """Test WebSocket connection and session creation via OpenAI SDK."""
+        asyncio.run(self._test_006_realtime_websocket_connect())
+
+    async def _test_006_realtime_websocket_connect(self):
+        model = self._load_whisper_model_or_fail()
+        ws_port = self._get_websocket_port()
+        print(f"[INFO] WebSocket port from /health: {ws_port}")
+
+        client = self._make_openai_client()
+        print(f"[INFO] Connecting via OpenAI SDK (ws://localhost:{ws_port})")
+        async with client.beta.realtime.connect(model=model) as conn:
+            # Should receive session.created on connect
+            event = await asyncio.wait_for(conn.recv(), timeout=10)
+            self.assertEqual(
+                event.type,
+                "session.created",
+                f"Expected session.created, got {event.type}",
+            )
+            self.assertTrue(
+                hasattr(event, "session"),
+                "session.created should contain session info",
+            )
+            print(f"[OK] Session created: {event.session}")
+
+            # Send session update with model
+            await conn.session.update(session={"model": model})
+
+            # Should receive session.updated
+            event = await asyncio.wait_for(conn.recv(), timeout=10)
+            self.assertEqual(
+                event.type,
+                "session.updated",
+                f"Expected session.updated, got {event.type}",
+            )
+            print(f"[OK] Session updated with model {model}")
+
+        print("[OK] WebSocket connection lifecycle passed")
+
+    @skip_if_unsupported("realtime_websocket")
+    def test_007_realtime_websocket_transcription(self):
+        """Test full realtime transcription via OpenAI SDK: send audio chunks, receive transcript."""
+        asyncio.run(self._test_007_realtime_websocket_transcription())
+
+    async def _test_007_realtime_websocket_transcription(self):
+        model = self._load_whisper_model_or_fail()
+        chunks = self._get_pcm16_chunks()
+
+        client = self._make_openai_client()
+
+        async with client.beta.realtime.connect(model=model) as conn:
+            # Wait for session created
+            event = await asyncio.wait_for(conn.recv(), timeout=10)
+            self.assertEqual(event.type, "session.created")
+
+            # The shared fixture contains several phrases separated by enough silence
+            # for the default VAD to create multiple final jobs. This test exits after
+            # the first completion, so those jobs used to leak into test_008. Keep the
+            # fixture in one VAD speech window and force exactly one final via commit.
+            await conn.session.update(
+                session={
+                    "model": model,
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "silence_duration_ms": 6000,
+                    },
+                }
+            )
+            event = await asyncio.wait_for(conn.recv(), timeout=10)
+            self.assertEqual(event.type, "session.updated")
+
+            # Send all audio chunks
+            print(f"[INFO] Sending {len(chunks)} audio chunks...")
+            for chunk in chunks:
+                b64 = base64.b64encode(chunk).decode("ascii")
+                await conn.input_audio_buffer.append(audio=b64)
+                # Small delay to simulate real-time streaming
+                await asyncio.sleep(0.01)
+
+            # Commit the audio buffer to force transcription
+            print("[INFO] Committing audio buffer...")
+            await conn.input_audio_buffer.commit()
+
+            # Collect messages until the server reports that transcription completed.
+            # Some SDK/server combinations expose interim text on delta events, while
+            # completed events may only signal completion and carry an empty transcript.
+            transcript_parts = []
+            completed_transcript = ""
+            saw_completed = False
+            received_event_types = []
+            deadline = time.monotonic() + TIMEOUT_MODEL_OPERATION
+
+            while time.monotonic() < deadline:
+                timeout_s = max(0.1, min(30, deadline - time.monotonic()))
+                try:
+                    event = await asyncio.wait_for(conn.recv(), timeout=timeout_s)
+                except asyncio.TimeoutError:
+                    break
+
+                event_type = self._event_type(event)
+                received_event_types.append(event_type)
+                print(f"[INFO] Received message: {event_type}")
+
+                if event_type == "error":
+                    self.fail(f"Realtime transcription returned error: {event}")
+
+                if event_type == "conversation.item.input_audio_transcription.delta":
+                    delta = self._event_text(event, "delta", "transcript", "text")
+                    if delta:
+                        transcript_parts.append(delta)
+                    continue
+
+                if (
+                    event_type
+                    == "conversation.item.input_audio_transcription.completed"
+                ):
+                    saw_completed = True
+                    completed_transcript = self._event_text(
+                        event, "transcript", "text", "delta"
+                    )
+                    break
+
+        transcript = (completed_transcript or "".join(transcript_parts)).strip()
+
+        self.assertTrue(
+            saw_completed,
+            (
+                "Should receive a transcription completion event; "
+                f"received events: {received_event_types}"
+            ),
+        )
+        self.assertGreater(
+            len(transcript),
+            0,
+            (
+                "Transcription should not be empty; "
+                f"received events: {received_event_types}"
+            ),
+        )
+        print(f"[OK] WebSocket transcription result: {transcript}")
+
+    @skip_if_unsupported("realtime_websocket")
+    def test_008_realtime_manual_commit(self):
+        """Test manual-commit realtime transcription with turn_detection disabled."""
+        asyncio.run(self._test_008_realtime_manual_commit())
+
+    async def _test_008_realtime_manual_commit(self):
+        model = _get_whisper_model()
+        chunks = self._get_pcm16_chunks()
+
+        client = self._make_openai_client()
+
+        async with client.beta.realtime.connect(model=model) as conn:
+            event = await asyncio.wait_for(conn.recv(), timeout=10)
+            self.assertEqual(event.type, "session.created")
+
+            await conn.session.update(session={"model": model, "turn_detection": None})
+            event = await asyncio.wait_for(conn.recv(), timeout=10)
+            self.assertEqual(event.type, "session.updated")
+
+            print(f"[INFO] Sending {len(chunks)} audio chunks...")
+            for chunk in chunks:
+                b64 = base64.b64encode(chunk).decode("ascii")
+                await conn.input_audio_buffer.append(audio=b64)
+                await asyncio.sleep(0.01)
+
+            buffered_events = await self._drain_realtime_events(conn)
+            self.assertEqual(
+                [event.type for event in buffered_events],
+                [],
+                "Manual commit mode should not emit events while buffering audio",
+            )
+
+            print("[INFO] Committing audio buffer...")
+            await conn.input_audio_buffer.commit()
+
+            transcript = None
+            deadline = time.monotonic() + TIMEOUT_MODEL_OPERATION
+            while time.monotonic() < deadline:
+                timeout_s = max(0.1, min(30, deadline - time.monotonic()))
+                try:
+                    event = await asyncio.wait_for(conn.recv(), timeout=timeout_s)
+                except asyncio.TimeoutError:
+                    break
+
+                event_type = self._event_type(event)
+                print(f"[INFO] Received message: {event_type}")
+
+                if event_type == "error":
+                    self.fail(f"Realtime transcription returned error: {event}")
+
+                self.assertNotIn(
+                    event_type,
+                    {
+                        "input_audio_buffer.speech_started",
+                        "input_audio_buffer.speech_stopped",
+                        "conversation.item.input_audio_transcription.delta",
+                    },
+                    "Manual commit mode should not emit VAD or interim events",
+                )
+
+                if (
+                    event_type
+                    == "conversation.item.input_audio_transcription.completed"
+                ):
+                    transcript = self._event_text(event, "transcript", "text", "delta")
+                    break
+
+        self.assertIsNotNone(transcript, "Should receive a transcription result")
+        self.assertGreater(
+            len(transcript.strip()),
+            0,
+            "Transcription should not be empty",
+        )
+        print(f"[OK] Manual commit transcription result: {transcript}")
+
+
+if __name__ == "__main__":
+    run_server_tests(
+        WhisperTests,
+        "WHISPER / AUDIO TRANSCRIPTION TESTS",
+        modality="whisper",
+        default_wrapped_server="whispercpp",
+    )

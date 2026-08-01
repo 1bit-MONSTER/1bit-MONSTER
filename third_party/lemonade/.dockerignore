@@ -1,0 +1,41 @@
+# Local build output
+build
+
+# Node / Rust build artifacts (rebuilt inside the image)
+**/node_modules
+**/target
+
+# Git / repo metadata
+.git
+.github
+.gitattributes
+.gitignore
+.vscode
+
+# Dev & CI tooling
+.devcontainer
+!.devcontainer/reinstall-cmake.sh
+.pylintrc
+
+# Docs
+mkdocs.yml
+README.md
+LICENSE
+
+# Tests and Examples
+test
+examples
+
+# Python packaging (not used in image)
+pyproject.toml
+setup.py
+**/__pycache__
+
+# Misc
+*.md
+
+# Local build artifacts (must not be copied into build context)
+build/
+**/node_modules/
+**/target/
+**/dist/
