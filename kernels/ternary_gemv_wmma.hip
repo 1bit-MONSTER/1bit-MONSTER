@@ -30,6 +30,8 @@ using int32x8_t = __attribute__((ext_vector_type(8))) int32_t;
 #define WEIGHT_TILES_PER_BATCH 32
 #include "hip_check.h"
 
+#ifndef WMMA_WAVE32_DISABLED
+
 // ─── Packed ternary unpack ──────────────────────────────────────────────────
 static __device__ __forceinline__ int8x16_t unpack_ternary_4(uint32_t word) {
     int8x16_t result;
@@ -323,3 +325,4 @@ extern "C" void ternary_gemv_wmma_launch(
         HIP_CHECK(hipGetLastError());
     }
 }
+#endif // WMMA_WAVE32_DISABLED

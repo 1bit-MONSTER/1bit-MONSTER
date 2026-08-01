@@ -5,6 +5,8 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
+
+#ifndef WMMA_WAVE32_DISABLED
 #ifndef HIP_CHECK
 #define HIP_CHECK(e) do { hipError_t _s = (e); if (_s != hipSuccess) { fprintf(stderr, "HIP Error %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(_s)); abort(); } } while(0)
 #endif
@@ -132,3 +134,4 @@ extern "C" void rcpp_peak_probe_launch_i8(
                        n_inner);
     HIP_CHECK(hipGetLastError());
 }
+#endif // WMMA_WAVE32_DISABLED

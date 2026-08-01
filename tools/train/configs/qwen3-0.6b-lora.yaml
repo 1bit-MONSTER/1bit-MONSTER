@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Qwen3-0.6B LoRA SFT — smallest model for rapid iteration on Strix Halo
+model: "unsloth/Qwen3-0.6B"
+load_in_4bit: true
+
+lora_r: 16
+lora_alpha: 16
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+
+max_seq_length: 8192
+per_device_batch_size: 4
+gradient_accumulation_steps: 2
+max_steps: 400
+learning_rate: 2e-4
+warmup_steps: 5
+
+dataset: "yahma/alpaca-cleaned"
+dataset_split: "train[:1000]"
+
+output_dir: "./outputs"
+save_steps: 100
