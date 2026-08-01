@@ -61,8 +61,12 @@ option(GAIA_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 include(FetchContent)
 
 # nlohmann/json (public dependency -- json types in the API)
+# When embedded in the 1bit engine (add_subdirectory), the parent already
+# provides nlohmann_json via its own FetchContent — treat that as present so
+# we don't FetchContent a second copy (name `json`) and collide on the
+# add_library(nlohmann_json) target name (CMP0002).
 find_package(nlohmann_json 3.11 QUIET)
-if(NOT nlohmann_json_FOUND)
+if(NOT nlohmann_json_FOUND AND NOT TARGET nlohmann_json)
     message(STATUS "nlohmann_json not found -- fetching via FetchContent")
     FetchContent_Declare(
         json
