@@ -5,6 +5,11 @@ name: Scope Guard
 # quantization, packaging, docs, CI) so "bullshit features" can't land via
 # new top-level directories or unrelated additions.
 
+# Scope Guard — this is the inference engine + Jarvis offline assistant layer.
+# engine + Jarvis = offline supreme for local AI + inference. Fail PRs that add
+# code outside the product scope so bullshit features can't land via new
+# top-level directories or unrelated additions.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -48,6 +53,7 @@ jobs:
             packaging snap
             docs site
             tools scripts bin
+            tools/video-lora  # C++ Vulkan inference backend (SD1.5/AnimateDiff) — engine scope, NOT an app
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations personas prompts skills themes workers zaya_audio
           '

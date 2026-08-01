@@ -31,8 +31,8 @@ cmake -B build -G Ninja && cmake --build build --target unified_server -j$(nproc
 # cmake -B build -DUSE_DIFFUSION=ON
 # ./build/image_server -p 8089
 
-# Start the audio server
-# cmake -B build -DUSE_AUDIO_CPP=ON
+# Start the audio + Jarvis server (ONNX Runtime optional for codec TTS)
+# cmake -B build -DONNXRUNTIME_ROOT_DIR=/path/to/onnxruntime  # optional, for voice cloning
 # ./build/jarvis_server --port 8090
 ```
 
