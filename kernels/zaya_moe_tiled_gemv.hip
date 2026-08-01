@@ -7,7 +7,6 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
-
 // ── WMMA tile dims ──
 #define WMMA_M 16
 #define WMMA_N 16  

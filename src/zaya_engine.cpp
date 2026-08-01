@@ -103,7 +103,7 @@ extern "C" int rcpp_kv_cache_attn_decode_fd_prealloc(const void* Q,const void* K
 // Guarded: the CMakeLists.txt sets ROCWMMA_FOUND and the include path.
 // If rocWMMA is not available, this kernel is skipped and the engine
 // falls back to the scalar-tiled batched GEMV.
-#if __has_include(<rocwmma/rocwmma.hpp>)
+#if __has_include(<rocwmma/rocwmma.hpp>) && !defined(WMMA_WAVE32_DISABLED)
 #include "zaya_moe_wmma_batched.hip"
 #endif
 
@@ -401,8 +401,19 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
         if(!B(l.rout,eng.n_exp_t*eng.rtr_h)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_mlp_gate_router_mlp_out_proj_weight.bin"),l.rout,eng.n_exp_t*eng.rtr_h,s->st);
         if(!B(l.bb,eng.n_exp_t)){zaya_destroy(s);return nullptr;}upf32(W("model_layers_"+L(il)+"_mlp_gate_balancing_biases.bin"),l.bb,eng.n_exp_t,s->st);
         auto sz_gu=eng.n_exp*2*eng.n_ff*eng.h;auto sz_dn=eng.n_exp*eng.h*eng.n_ff;
-        auto e1=hipMalloc(&l.gu,sz_gu*2);auto e2=hipMalloc(&l.dn,sz_dn*2);
-        if(e1!=hipSuccess||e2!=hipSuccess){l.gu=nullptr;l.dn=nullptr;}else{
+        hipError_t e1=hipMalloc(&l.gu,sz_gu*2), e2=hipMalloc(&l.dn,sz_dn*2);
+        if(e1!=hipSuccess||e2!=hipSuccess){
+            // Free whichever allocations succeeded before bailing,
+            // then null them out so zaya_destroy doesn't double-free
+            // (fixes GPU memory leak when only one MoE expert tensor
+            //  alloc succeeds and the other fails).
+            if(e1==hipSuccess && l.gu){ (void)hipFree(l.gu); l.gu=nullptr; }
+            if(e2==hipSuccess && l.dn){ (void)hipFree(l.dn); l.dn=nullptr; }
+            // Non-fatal: MoE expert tensors are optional (some models use
+            // dense FFN only). Let the engine continue without them.
+            // The null check in zaya_forward guards against null d_gu/d_dn.
+            l.gu=nullptr; l.dn=nullptr;
+        } else {
             upf16(W("model_layers_"+L(il)+"_mlp_experts_gate_up_proj.bin"),l.gu,sz_gu,s->st);
             upf16(W("model_layers_"+L(il)+"_mlp_experts_down_proj.bin"),l.dn,sz_dn,s->st);
         }
@@ -814,7 +825,7 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
     // before the lm_head GEMV launches.
     {
         const size_t max_need = (size_t)8 * eng.vocab * 2;  // B <= 8, allocated in zaya_init
-        #if __has_include(<rocwmma/rocwmma.hpp>)
+        #if __has_include(<rocwmma/rocwmma.hpp>) && !defined(WMMA_WAVE32_DISABLED)
         if (B >= 2) {
             const int grid_x = (eng.vocab + WMMA_M - 1) / WMMA_M;
             const int grid_y = (B + WMMA_N - 1) / WMMA_N;
@@ -1077,6 +1088,7 @@ void zaya_destroy(ZayaState* s) {
     safe(s->d_kcache); safe(s->d_vcache); safe(s->d_vrec);
     safe(s->d_partials);
     safe(s->d_qout); safe(s->d_kout); safe(s->d_vout); safe(s->d_skip_flag);
+<<<<<<< HEAD
     safe(s->d_k_gather); safe(s->d_v_gather); safe(s->d_page_map);
     // Bound by s->lw's actual size, not eng.n_layers: zaya_destroy() can be
     // called from an early-exit path in zaya_init() (missing weight files,
@@ -1086,6 +1098,12 @@ void zaya_destroy(ZayaState* s) {
     // an empty/undersized vector, pulled garbage pointers out of it, and
     // handed them to hipFree() — a real segfault, not just UB in theory.
     for (size_t i = 0; i < s->lw.size(); i++) {
+=======
+    // s->lw may be empty if zaya_init aborted early (e.g. missing weights).
+    // Bounding by s->lw.size() prevents an OOB vector access (#497).
+    int n_lw = std::min((int)s->lw.size(), eng.n_layers);
+    for (int i = 0; i < n_lw; i++) {
+>>>>>>> 492951d8 (fix: HIP build with system ROCm, WMMA wave32 guards, MoE alloc leak + destroy OOB (#497))
         auto& l = s->lw[i];
         safe(l.nw); safe(l.wq); safe(l.wk); safe(l.wv1); safe(l.wv2); safe(l.wo); safe(l.pan);
         safe(l.cdw); safe(l.cdb); safe(l.cgw); safe(l.cgb); safe(l.ks);

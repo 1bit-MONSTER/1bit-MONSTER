@@ -28,6 +28,8 @@
 #include <cstdint>
 #include <mutex>
 
+#ifndef WMMA_WAVE32_DISABLED
+
 #define BLOCK_SIZE     128
 #define WARP_SIZE      32
 #define ROWS_PER_BLOCK 8
@@ -267,3 +269,4 @@ extern "C" void ternary_gemv_sherry_f16_launch(
                        M, K);
     HIP_CHECK(hipGetLastError());
 }
+#endif // WMMA_WAVE32_DISABLED

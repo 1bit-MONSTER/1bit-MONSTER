@@ -76,6 +76,15 @@ set(CMAKE_HIP_COMPILER "${_RC_LLVM_BIN}/amdclang++" CACHE FILEPATH "HIP compiler
 set(CMAKE_C_COMPILER   "${_RC_LLVM_BIN}/amdclang"   CACHE FILEPATH "C compiler")
 set(CMAKE_CXX_COMPILER "${_RC_LLVM_BIN}/amdclang++" CACHE FILEPATH "C++ compiler")
 
+# The ROCm compiler is under /opt/rocm* but the HIP runtime (hip-runtime-amd deb)
+# installs cmake configs at the Debian multiarch path.  CMake's compiler-driven
+# arch detection produces "x86_64-unknown-linux-gnu" which doesn't match the
+# Debian "x86_64-linux-gnu".  We create a local stub with the expected structure
+# pointing into /usr so the project(LANGUAGES HIP) detection succeeds.
+set(_1BIT_ROCM_STUB "${CMAKE_CURRENT_SOURCE_DIR}/.rocm-stub")
+set(CMAKE_HIP_COMPILER_ROCM_ROOT "${_1BIT_ROCM_STUB}"
+    CACHE PATH "HIP ROCm root (local stub)" FORCE)
+
 project(1bit-systems LANGUAGES C CXX HIP)
 
 # ── Optional: CUDA (NVIDIA GPU) backend ──
@@ -116,6 +125,14 @@ set(CMAKE_HIP_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Force-include the HIP runtime wrapper header which sets up device math
+# built-ins (__ocml_*) before <cmath> can shadow them with __host__
+# declarations.  This is what hipcc does internally; replicating it here
+# lets us use amdclang++ directly while keeping math functions working
+# in __global__ functions.
+set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -include __clang_hip_runtime_wrapper.h")
+set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Wno-unused-command-line-argument")
+
 enable_testing()
 
 # NDEBUG only for Release — let Debug builds keep assert() guards
@@ -124,7 +141,14 @@ add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 
-find_package(hip REQUIRED CONFIG PATHS "${ROCM_ROOT}")
+find_package(hip REQUIRED CONFIG
+    PATHS "${ROCM_ROOT}"
+    # System-wide HIP runtime (hip-runtime-amd package)
+    /usr
+    /usr/lib/x86_64-linux-gnu
+    # TheRock pip-installed SDK
+    "${THEROCK_SDK_BASE}"
+)
 
 set(ROCWMMA_FOUND FALSE)
 foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" "/opt/rocm-therock" "/opt/rocm")
@@ -132,12 +156,6 @@ foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" 
         set(ROCWMMA_INCLUDE_DIR "${_rc_base}/include")
         set(ROCWMMA_FOUND TRUE)
         message(STATUS "rocm-cpp: rocWMMA found at ${ROCWMMA_INCLUDE_DIR}")
-        break()
-    endif()
-    if(_rc_base AND EXISTS "${_rc_base}/include/rocwmma/rocwmma.hpp")
-        set(ROCWMMA_INCLUDE_DIR "${_rc_base}/include")
-        set(ROCWMMA_FOUND TRUE)
-        message(STATUS "rocm-cpp: rocWMMA found at ${ROCWMMA_INCLUDE_DIR} (TheRock SDK)")
         break()
     endif()
 endforeach()
@@ -253,8 +271,13 @@ if(USE_VULKAN)
     endif()
 endif()
 
-# Auto-detect GPU architecture via rocminfo, fall back to gfx1151
+# Auto-detect GPU architecture.  WMMA wave32 intrinsics
+# (__builtin_amdgcn_wmma_*) are only available on gfx11 targets.
+# gfx1201 (RDNA4) and gfx1036 (RDNA2) don't support them — the WMMA
+# kernels in prefill_standalone, wmma_peak_probe, and ternary_gemv_wmma
+# are excluded via WMMA_WAVE32_DISABLED when building for those targets.
 if(NOT CMAKE_HIP_ARCHITECTURES)
+    set(_DETECTED_ARCH "")
     execute_process(
         COMMAND bash -c "rocminfo 2>/dev/null | grep -oP 'gfx[0-9a-z]+' | head -1"
         OUTPUT_VARIABLE _DETECTED_ARCH
@@ -267,6 +290,16 @@ if(NOT CMAKE_HIP_ARCHITECTURES)
     endif()
 endif()
 set(CMAKE_HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "GPU arch(es) to build")
+
+# WMMA wave32 intrinsics (__builtin_amdgcn_wmma_*) need gfx11-insts which
+# are only available on gfx11 targets (gfx1150, gfx1151, etc.).  For gfx10
+# (RDNA2) and gfx12 (RDNA4) we exclude the WMMA kernel sources and define
+# WMMA_WAVE32_DISABLED so any included headers can provide scalar fallbacks.
+string(REGEX MATCH "gfx11[0-9a-z]+" _HAS_WMMA_ARCH "${CMAKE_HIP_ARCHITECTURES}")
+if(NOT _HAS_WMMA_ARCH)
+    add_compile_definitions(WMMA_WAVE32_DISABLED)
+    message(STATUS "rocm-cpp: GPU ${CMAKE_HIP_ARCHITECTURES} — WMMA wave32 disabled, scalar fallbacks active")
+endif()
 
 # -- librocm_cpp : shared library exposing the C API ----------------------------
 set(RCPP_SOURCES
@@ -331,6 +364,11 @@ set(RCPP_SOURCES
     src/zamba2_engine_hip.hip)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
+endif()
+# When WMMA/dot8 is disabled, provide stub implementations so the
+# library still links.  The stubs return errors; callers use scalar fallbacks.
+if(NOT _HAS_WMMA_ARCH)
+    list(APPEND RCPP_SOURCES src/wmma_stubs.hip)
 endif()
 
 # NPU backend (worker subprocess) + Q4NX reader — compiled into shared lib

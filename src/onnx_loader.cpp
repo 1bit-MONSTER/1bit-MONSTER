@@ -332,22 +332,30 @@ rcpp_status_t rcpp_bitnet_load_onnx(const char* path, rcpp_bitnet_model_t* out_m
                 else { f16_buf[i] = (uint16_t)(sign | (exp << 10) | mant); }
             }
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, f16_buf.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, f16_buf.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
         } else if (t->data_type == ONNX_BFLOAT16) {
             // BF16 was already converted to F32 by the raw_data parser
             bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
+<<<<<<< HEAD
             if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         } else if (t->data_type == ONNX_INT8 || t->data_type == ONNX_UINT8) {
             // INT8/UINT8 was already dequantized to F32 by the raw_data parser
             bytes = (size_t)n_elems * sizeof(float);
+=======
+            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
+        } else if (t->data_type == ONNX_INT8) {
+            // TODO: INT8 support — need proper quantized storage
+            fprintf(stderr, "[onnx] WARNING: %s is INT8 — storing as F32 (TODO: proper INT8 support)\n", t->name.c_str());
+            bytes = n_elems * sizeof(float);
+>>>>>>> 492951d8 (fix: HIP build with system ROCm, WMMA wave32 guards, MoE alloc leak + destroy OOB (#497))
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
         } else {
             // F32 (ONNX_FLOAT) or fallback
             bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
         }
 
         if (out_bytes) *out_bytes = bytes;
