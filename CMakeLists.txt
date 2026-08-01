@@ -81,9 +81,14 @@ set(CMAKE_CXX_COMPILER "${_RC_LLVM_BIN}/amdclang++" CACHE FILEPATH "C++ compiler
 # arch detection produces "x86_64-unknown-linux-gnu" which doesn't match the
 # Debian "x86_64-linux-gnu".  We create a local stub with the expected structure
 # pointing into /usr so the project(LANGUAGES HIP) detection succeeds.
+# Local stub for Debian-multiarch HIP runtime (created by the local
+# setup; never committed). Only force the stub when it actually exists —
+# CI runners with a real ROCm install must keep default detection.
 set(_1BIT_ROCM_STUB "${CMAKE_CURRENT_SOURCE_DIR}/.rocm-stub")
-set(CMAKE_HIP_COMPILER_ROCM_ROOT "${_1BIT_ROCM_STUB}"
-    CACHE PATH "HIP ROCm root (local stub)" FORCE)
+if(EXISTS "${_1BIT_ROCM_STUB}")
+    set(CMAKE_HIP_COMPILER_ROCM_ROOT "${_1BIT_ROCM_STUB}"
+        CACHE PATH "HIP ROCm root (local stub)" FORCE)
+endif()
 
 project(1bit-systems LANGUAGES C CXX HIP)
 
