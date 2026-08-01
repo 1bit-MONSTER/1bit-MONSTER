@@ -7,13 +7,16 @@
 //   unified_router --port 18181 --npu-backend http://127.0.0.1:18101 --gpu-backend http://127.0.0.1:18102
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -379,16 +382,24 @@ Options:
         res.status = 200;
     });
 
-    // Signal handling (fixes #1324: std::exit not async-signal-safe)
+    // Signal handling (fixes #1324: std::exit not async-signal-safe).
+    // #1325 regression: the flag was never polled, so SIGINT/SIGTERM stopped
+    // working entirely. Watchdog pattern from vision_server (#1292): poll the
+    // flag, then svr.stop() to unblock listen().
     static volatile sig_atomic_t g_shutdown = 0;
     std::signal(SIGINT, [](int) { g_shutdown = 1; });
     std::signal(SIGTERM, [](int) { g_shutdown = 1; });
 
     std::cout << "Router listening on " << bind_addr << ":" << port << std::endl;
-    if (!svr.listen(bind_addr.c_str(), port)) {
-        std::cerr << "Failed to bind to " << bind_addr << ":" << port << std::endl;
-        return 1;
-    }
-
+    std::thread listener([&]() {
+        if (!svr.listen(bind_addr.c_str(), port)) {
+            std::cerr << "Failed to bind to " << bind_addr << ":" << port << std::endl;
+            _exit(1);
+        }
+    });
+    while (!g_shutdown)
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    svr.stop();
+    listener.join();
     return 0;
 }
