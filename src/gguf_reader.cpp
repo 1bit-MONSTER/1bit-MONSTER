@@ -435,8 +435,10 @@ bool GgufReader::read_kv_value(uint32_t vtype, KV& out) {
             uint64_t an; if (fread(&an, 8, 1, f_) != 1) return false;
             static constexpr uint64_t MAX_ARRAY_COUNT = 1000000;
             if (an > MAX_ARRAY_COUNT) {
-                for (uint64_t j = 0; j < an; j++) skip_kv_value(at);
-                an = 0;
+                // Skip at most MAX_ARRAY_COUNT elements then refuse: iterating
+                // an=2^64-1 seeks on a crafted file would hang the loader.
+                for (uint64_t j = 0; j < MAX_ARRAY_COUNT; j++) skip_kv_value(at);
+                return false;
             }
             if (at == 8) {
                 out.arr_str.resize(an);
@@ -445,11 +447,11 @@ bool GgufReader::read_kv_value(uint32_t vtype, KV& out) {
                 // Single-element numeric array: store as scalar u
                 out.vtype = at;  // override to inner type
                 switch (at) {
-                    case 4: { uint32_t v; fread(&v, 4, 1, f_); out.u = v; break; }
-                    case 5: { int32_t v; fread(&v, 4, 1, f_); out.u = (uint64_t)(int64_t)v; break; }
-                    case 10: { uint64_t v; fread(&v, 8, 1, f_); out.u = v; break; }
-                    case 11: { int64_t v; fread(&v, 8, 1, f_); out.u = (uint64_t)v; break; }
-                    case 6: { float v; fread(&v, 4, 1, f_); out.f = v; break; }
+                    case 4: { uint32_t v; if (fread(&v, 4, 1, f_) != 1) return false; out.u = v; break; }
+                    case 5: { int32_t v; if (fread(&v, 4, 1, f_) != 1) return false; out.u = (uint64_t)(int64_t)v; break; }
+                    case 10: { uint64_t v; if (fread(&v, 8, 1, f_) != 1) return false; out.u = v; break; }
+                    case 11: { int64_t v; if (fread(&v, 8, 1, f_) != 1) return false; out.u = (uint64_t)v; break; }
+                    case 6: { float v; if (fread(&v, 4, 1, f_) != 1) return false; out.f = v; break; }
                     default: skip_kv_value(at); break;
                 }
             } else {

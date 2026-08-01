@@ -74,7 +74,8 @@ struct GenericBackend : Backend {
     // hidden] — i.e. the exact same layout matmul() already expects for the
     // dense case, just offset per-expert.
     struct LayerW {
-        size_t wq, wk, wv, wo, rms_attn, rms_ffn;
+        size_t wq = SIZE_MAX, wk = SIZE_MAX, wv = SIZE_MAX, wo = SIZE_MAX;
+        size_t rms_attn = SIZE_MAX, rms_ffn = SIZE_MAX;
         size_t w1 = SIZE_MAX, w2 = SIZE_MAX, w3 = SIZE_MAX;
         size_t bq = SIZE_MAX, bk = SIZE_MAX, bv = SIZE_MAX;
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
@@ -101,20 +102,37 @@ struct GenericBackend : Backend {
 
         int L = cfg.n_layers;
         layers.resize(L);
+        // Missing .bin files must fail the load, not silently leave zero
+        // weights: push(empty) returned a valid-looking idx pointing at the
+        // end of flat_weights, so forward() read past the buffer.
+        auto Ld = [&](std::vector<float> v) -> size_t {
+            if (v.empty()) return SIZE_MAX;
+            return push(std::move(v));
+        };
         for (int i = 0; i < L; i++) {
             std::string p = "model_layers_" + std::to_string(i) + "_";
             // LayerW order: wq, wk, wv, wo, rms_attn, rms_ffn, w1, w2, w3
             layers[i] = {
-                push(W(p + "self_attn_q_proj.weight")),          // wq
-                push(W(p + "self_attn_k_proj.weight")),          // wk
-                push(W(p + "self_attn_v_proj.weight")),          // wv
-                push(W(p + "self_attn_o_proj.weight")),          // wo
-                push(W(p + "input_layernorm.weight")),            // rms_attn
-                push(W(p + "post_attention_layernorm.weight")),   // rms_ffn
-                push(W(p + "mlp_gate_proj.weight")),              // w1
-                push(W(p + "mlp_up_proj.weight")),                // w2
-                push(W(p + "mlp_down_proj.weight")),              // w3
+                Ld(W(p + "self_attn_q_proj.weight")),          // wq
+                Ld(W(p + "self_attn_k_proj.weight")),          // wk
+                Ld(W(p + "self_attn_v_proj.weight")),          // wv
+                Ld(W(p + "self_attn_o_proj.weight")),          // wo
+                Ld(W(p + "input_layernorm.weight")),            // rms_attn
+                Ld(W(p + "post_attention_layernorm.weight")),   // rms_ffn
+                Ld(W(p + "mlp_gate_proj.weight")),              // w1
+                Ld(W(p + "mlp_up_proj.weight")),                // w2
+                Ld(W(p + "mlp_down_proj.weight")),              // w3
             };
+            if (layers[i].wq == SIZE_MAX || layers[i].wk == SIZE_MAX ||
+                layers[i].wv == SIZE_MAX || layers[i].wo == SIZE_MAX ||
+                layers[i].rms_attn == SIZE_MAX || layers[i].rms_ffn == SIZE_MAX ||
+                layers[i].w1 == SIZE_MAX || layers[i].w2 == SIZE_MAX ||
+                layers[i].w3 == SIZE_MAX) {
+                fprintf(stderr, "Generic: .bin weights incomplete at layer %d — ABORTING\n", i);
+                layers.resize(0);
+                flat_weights.clear();
+                return;
+            }
         }
     }
 
@@ -137,6 +155,11 @@ struct GenericBackend : Backend {
 
     bool init(const ModelConfig& model_cfg, const std::string& weights_dir) override {
         cfg = model_cfg;
+        if (!cfg.sane()) {
+            fprintf(stderr, "Generic: REFUSING implausible config (hidden=%d layers=%d heads=%d kv=%d seq=%d)\n",
+                    cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads, cfg.max_seq_len);
+            return false;
+        }
         printf("Generic: initializing %s (%d layers, %d hidden, %d heads)\n",
                cfg.model_name.c_str(), cfg.n_layers, cfg.hidden, cfg.n_heads);
 
@@ -300,6 +323,15 @@ struct GenericBackend : Backend {
             // attention stability — without it Qwen3 logits collapse (flat).
             load("attn_q_norm.weight", "self_attn.q_norm.weight", lw.q_norm, HD, 1);
             load("attn_k_norm.weight", "self_attn.k_norm.weight", lw.k_norm, HD, 1);
+            // Required tensors must all be present with the exact expected
+            // size; anything else is a corrupt/mismatched 1BP file that would
+            // silently produce garbage (or read past g_zero via w(SIZE_MAX)).
+            if (lw.wq == SIZE_MAX || lw.wk == SIZE_MAX || lw.wv == SIZE_MAX ||
+                lw.wo == SIZE_MAX || lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX ||
+                lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX) {
+                fprintf(stderr, "Generic: 1BP layer %d: missing required tensor — ABORTING LOAD\n", l);
+                return false;
+            }
         }
         printf("Generic: 1BP loaded — %d layers, %.1fM params\n",
                cfg.n_layers, (double)embed.size() / 1e6);

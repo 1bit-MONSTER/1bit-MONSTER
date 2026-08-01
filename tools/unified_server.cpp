@@ -1048,6 +1048,13 @@ int main(int argc, char** argv) {
     // ── HTTP Server ──
     httplib::Server svr;
 
+    // Any unexpected exception returns a clean 500 — never the raw exception
+    // text in an EXCEPTION_WHAT header (issue #1293).
+    svr.set_exception_handler([](const httplib::Request&, httplib::Response& res, std::exception_ptr) {
+        res.status = 500;
+        res.set_content("{\"error\":\"Internal server error\"}", "application/json");
+    });
+
     // Limit request body size to prevent memory exhaustion from oversized payloads
     svr.set_payload_max_length(16 * 1024 * 1024); // 16 MiB
 
@@ -1151,16 +1158,30 @@ int main(int argc, char** argv) {
         std::string prompt;
         std::string last_user_msg;
         std::vector<VlProcessor> vision_images;  // holds processed images from content parts
+        // nlohmann throws (type_error 305/306/302) on non-object messages and
+        // content parts — catch and 400 instead of a bare 500 (issue #1293).
+        try {
         if (body.contains("messages") && body["messages"].is_array()) {
             for (auto& msg : body["messages"]) {
+                if (!msg.is_object()) {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"each message must be an object\"}", "application/json");
+                    return;
+                }
                 std::string role = msg.value("role", "user");
                 std::string content;
                 if (msg["content"].is_string()) {
                     content = msg["content"].get<std::string>();
                 } else if (msg["content"].is_array()) {
                     for (auto& part : msg["content"]) {
+                        if (part.is_string()) {  // OpenAI allows bare strings in content arrays
+                            content += part.get<std::string>();
+                            continue;
+                        }
+                        if (!part.is_object()) continue;
                         if (part.value("type", "") == "text") {
-                            content += part.value("text", "");
+                            const auto& t = part["text"];
+                            if (t.is_string()) content += t.get<std::string>();
                         } else if (part.value("type", "") == "image_url") {
                             // Load + process image for VL models.
                             // This stores processed pixels; the actual ViT
@@ -1198,6 +1219,11 @@ int main(int argc, char** argv) {
         } else if (body.contains("prompt") && body["prompt"].is_string()) {
             prompt = body["prompt"].get<std::string>();
             last_user_msg = prompt;
+        }
+        } catch (const json::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", std::string(e.what())}}).dump(), "application/json");
+            return;
         }
 
         int max_tokens = body.value("max_tokens", 256);
@@ -1690,10 +1716,18 @@ int main(int argc, char** argv) {
     printf("  Press Ctrl+C to stop.\n");
     printf("──────────────────────────────────────────────\n\n");
 
-    if (!svr.listen("127.0.0.1", g_port)) {
-        fprintf(stderr, "Failed to start server on port %d\n", g_port);
-        return 1;
-    }
+    // SIGINT/SIGTERM set keep_running=false; a watchdog thread stops the
+    // server so Ctrl-C / kill actually terminate it (issue #1292).
+    std::thread listener([&]() {
+        if (!svr.listen("127.0.0.1", g_port)) {
+            fprintf(stderr, "Failed to start server on port %d\n", g_port);
+            _exit(1);
+        }
+    });
+    while (keep_running)
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    svr.stop();
+    listener.join();
 
     // ── Cleanup ──
     printf("\nShutting down...\n");

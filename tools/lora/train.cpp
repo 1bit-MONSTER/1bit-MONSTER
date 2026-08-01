@@ -14,8 +14,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <cmath>
 #include <chrono>
+#include <cctype>
 #include <vector>
 #include <random>
 #include <string>
@@ -102,6 +104,18 @@ int main(int argc, char** argv) {
     
     if (adapter_name.empty()) {
         adapter_name = "adapter-r" + std::to_string(rank) + "-lr" + std::to_string(lr).substr(0,5);
+    }
+    // Sanitize before use in shell/paths (issue #1300): no separators, no
+    // traversal, no shell metacharacters, bounded length.
+    for (char c : adapter_name) {
+        if (!(std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.')) {
+            std::fprintf(stderr, "Invalid adapter name '%s' (only [A-Za-z0-9._-] allowed)\n", adapter_name.c_str());
+            return 1;
+        }
+    }
+    if (adapter_name.size() > 100) {
+        std::fprintf(stderr, "Adapter name too long (%zu > 100)\n", adapter_name.size());
+        return 1;
     }
     
     printf("╔══════════════════════════════════════════════╗\n");
@@ -234,8 +248,12 @@ int main(int argc, char** argv) {
     
     // ── Save adapter ──
     std::string out_dir = "adapters/" + adapter_name;
-    auto mkdir_cmd = "mkdir -p " + out_dir;
-    system(mkdir_cmd.c_str());
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    if (ec) {
+        std::fprintf(stderr, "Failed to create %s: %s\n", out_dir.c_str(), ec.message().c_str());
+        return 1;
+    }
     
     // Save each layer's LoRA weights
     int layer_idx = 0;
