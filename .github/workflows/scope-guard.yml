@@ -28,10 +28,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Top-level paths that belong to the engine's mission.
-          # NO APPS: this is an inference engine, not n8n / openclaw / an app
-          # store. Clients bring their own frontend. Anything else (new dirs,
-          # integrations, workers, themes, personas, stray apps) fails the PR.
+          # Top-level paths that belong to the product: the inference engine
+          # PLUS the Jarvis offline assistant layer (personas, skills, themes,
+          # workers, integrations, zaya_audio are part of the offline package —
+          # engine + Jarvis = offline supreme for local AI + inference).
+          # Anything else (new dirs, unrelated apps/services) fails the PR.
           ALLOWED='
             AGENTS.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
             CMakeLists_windows.txt CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
@@ -47,6 +48,7 @@ jobs:
             docs site
             tools scripts bin
             experimental research hackathon fastflowlm_analysis npu-infer
+            integrations personas prompts skills themes workers zaya_audio
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"

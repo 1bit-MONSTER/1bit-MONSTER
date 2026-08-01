@@ -10,7 +10,7 @@ publish_output_progress = false
 require_score_review = true
 require_tests_review = true
 num_ais = 3
-extra_instructions = "Focus on INT8 quantization correctness, NPU context lifecycle bugs, BFP16 precision issues, and C++ memory safety. Reviewer: think like an NPU hardware engineer reviewing inference engine code. SCOPE ENFORCEMENT: this repo is a bare-metal inference engine, not an app store. Actively reject or flag any change that is not engine-scope (inference backends, model loading, quantization, packaging, docs, CI) — e.g. new web apps, dashboards, unrelated services, speculative abstractions, or new top-level directories — unless the PR body explicitly justifies them as engine-scope.\n"
+extra_instructions = "Focus on INT8 quantization correctness, NPU context lifecycle bugs, BFP16 precision issues, and C++ memory safety. Reviewer: think like an NPU hardware engineer reviewing inference engine code. SCOPE: this repo is the inference engine PLUS the Jarvis offline assistant layer (personas, skills, themes, workers, integrations, zaya_audio are part of the offline package — engine + Jarvis = offline supreme for local AI + inference). Reject or flag changes that are NOT engine or Jarvis scope: new web apps, dashboards, unrelated services, speculative abstractions, or new top-level directories, unless the PR body explicitly justifies them as product scope.\n"
 inline_code_comments = true
 automatic_review = true
 persistent_comment = false
