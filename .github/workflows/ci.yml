@@ -126,6 +126,9 @@ jobs:
         with:
           scandir: '.'
           severity: warning
+          # vendored deps pulled in by the cmake build (mbedtls, cpp_httplib)
+          # ship shell scripts that fail SC warnings — never our code.
+          ignore_paths: 'build _deps third_party packaging'
 
   lint:
     name: Lint (clang-format)
