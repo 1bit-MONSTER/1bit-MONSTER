@@ -192,7 +192,7 @@ function(_find_therock_sdk_base out_var)
         return()
     endif()
     # Search common locations, preferring newest Python version
-    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib")
+    foreach(_base IN ITEMS "$ENV{HOME}/.local/lib" "/usr/local/lib" "/usr/lib" "${_RC_THEROCK_OPT}/lib")
         file(GLOB _py_dirs LIST_DIRECTORIES true "${_base}/python*")
         list(SORT _py_dirs)
         list(REVERSE _py_dirs)
