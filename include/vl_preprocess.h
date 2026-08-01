@@ -35,12 +35,36 @@
 extern "C" {
     unsigned char* stbi_load(const char* filename, int* x, int* y, int* comp, int req_comp);
     unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len, int* x, int* y, int* comp, int req_comp);
+    int stbi_info(const char* filename, int* x, int* y, int* comp);
+    int stbi_info_from_memory(const unsigned char* buffer, int len, int* x, int* y, int* comp);
     void stbi_image_free(void* data);
+}
+
+// ── Decode safety cap (issue #1296) ──
+// Image dimensions are checked via the header (stbi_info) BEFORE the full
+// decode, so a tiny "decompression bomb" PNG declaring huge dimensions is
+// rejected without ever allocating w*h*3. 4096x4096 is far beyond any ViT
+// input (224/336/448) — the encoder resizes down anyway.
+static const int VL_MAX_IMAGE_DIM = 4096;
+
+// Returns true iff w*h is within the decode cap.
+static inline bool vl_dims_ok(int w, int h) {
+    return w > 0 && h > 0 && w <= VL_MAX_IMAGE_DIM && h <= VL_MAX_IMAGE_DIM &&
+           (size_t)w * (size_t)h <= (size_t)VL_MAX_IMAGE_DIM * VL_MAX_IMAGE_DIM;
 }
 
 // ── Load image file → float RGB pixels, interleaved, [0..1] ──
 // Returns empty vector on failure. Output dimensions in *w, *h.
 inline std::vector<float> vl_load_image(const std::string& path, int* w, int* h) {
+    int iw, ih, icomp;
+    if (!stbi_info(path.c_str(), &iw, &ih, &icomp)) {
+        fprintf(stderr, "[vl] ERROR: could not read image header '%s'\n", path.c_str());
+        return {};
+    }
+    if (!vl_dims_ok(iw, ih)) {
+        fprintf(stderr, "[vl] ERROR: image too large (%dx%d, cap %d) '%s'\n", iw, ih, VL_MAX_IMAGE_DIM, path.c_str());
+        return {};
+    }
     int comp;
     unsigned char* u8 = stbi_load(path.c_str(), w, h, &comp, 3);
     if (!u8) {
@@ -58,6 +82,19 @@ inline std::vector<float> vl_load_image(const std::string& path, int* w, int* h)
 // ── Load image from raw uint8 buffer → float RGB pixels, interleaved ──
 inline std::vector<float> vl_load_image_from_memory(const unsigned char* data, size_t len,
                                                       int* w, int* h) {
+    if (len > (size_t)INT32_MAX) {
+        fprintf(stderr, "[vl] ERROR: image buffer too large (%zu bytes)\n", len);
+        return {};
+    }
+    int iw, ih, icomp;
+    if (!stbi_info_from_memory(data, (int)len, &iw, &ih, &icomp)) {
+        fprintf(stderr, "[vl] ERROR: could not read image header from memory\n");
+        return {};
+    }
+    if (!vl_dims_ok(iw, ih)) {
+        fprintf(stderr, "[vl] ERROR: image too large (%dx%d, cap %d)\n", iw, ih, VL_MAX_IMAGE_DIM);
+        return {};
+    }
     int comp;
     unsigned char* u8 = stbi_load_from_memory(data, (int)len, w, h, &comp, 3);
     if (!u8) {

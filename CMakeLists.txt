@@ -361,6 +361,9 @@ target_include_directories(vl_image PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_options(vl_image PRIVATE -O3 -std=c++23 -Wno-unused-result)
+# vl_processor.cpp uses cpp-httplib as its HTTP client (SSRF-safe downloads,
+# issues #1278/#1291) — header-only, propagated to all consumers.
+target_link_libraries(vl_image PUBLIC httplib::httplib)
 
 
 # -- libonebp_model : 1BP model loader (used by vision_encoder and other targets) --

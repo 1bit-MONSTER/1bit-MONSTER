@@ -830,6 +830,12 @@ bool mage_vit_load_weights_1bp(const char* path, VisionWeights& vw) {
     int FF = rv[3] > 0 ? (int)rv[3] : 4096;
     int PS = rv[5] > 0 ? (int)rv[5] : 16;
     vw.config = VitConfig::mage_vit();
+    if (H <= 0 || NH <= 0 || NH > H || PS <= 0 || H % NH != 0 ||
+        NL <= 0 || NL > 256 || FF <= 0 || FF > (1 << 22)) {
+        fprintf(stderr, "[mage_vit] FAIL: invalid 1BP ViT dims (H=%d L=%d NH=%d FF=%d P=%d)\n",
+                H, NL, NH, FF, PS);
+        return false;
+    }
     vw.config.hidden_size = H;
     vw.config.num_layers = NL;
     vw.config.num_heads = NH;
@@ -947,6 +953,17 @@ std::vector<float> mage_vit_forward(
     const auto& cfg = weights.config;
     int H = cfg.hidden_size, NH = cfg.num_heads, HD = H / NH;
     int P = cfg.patch_size, FF = cfg.intermediate_size;
+    // Validate file-controlled dims before any division/allocation (issue #1297):
+    // crafted/truncated mmproj files must fail cleanly, not SIGFPE or OOB.
+    if (H <= 0 || NH <= 0 || NH > H || HD <= 0 || P <= 0 || FF <= 0 ||
+        height <= 0 || width <= 0 || channels <= 0 || channels > 4 ||
+        (int)weights.layers.size() < cfg.num_layers ||
+        weights.patch_embd0.empty() ||
+        (int)weights.patch_embd0.size() < (size_t)H * P * P * channels) {
+        fprintf(stderr, "[mage_vit] FAIL: invalid config (H=%d NH=%d P=%d FF=%d layers=%zu/%d)\n",
+                H, NH, P, FF, weights.layers.size(), cfg.num_layers);
+        return {};
+    }
     int ph = height / P, pw = width / P;
     int ppf = ph * pw, tp = ppf * time;
     std::vector<float> seq((size_t)tp * H);
@@ -985,7 +1002,11 @@ std::vector<float> mage_vit_forward(
         }
     float ascale = 1.0f / sqrtf((float)HD);
     int nw = (time + frame_window_size - 1) / frame_window_size;
-    float attn_scr[4096];
+    // Dynamic per-window/token buffers (issue #1297): fixed 4096-float stack
+    // buffers overflowed for images > 448px or H > 4096. Sizes are bounded by
+    // the validated dims above; vector growth is O(nt) heap, not stack.
+    std::vector<float> attn_scr;
+    std::vector<float> att_out(H);
     for (int il = 0; il < cfg.num_layers; il++) {
         const auto& l = weights.layers[il];
         for (int i = 0; i < tp; i++) {
@@ -1008,6 +1029,7 @@ std::vector<float> mage_vit_forward(
         for (int w = 0; w < nw; w++) {
             int ts = w * frame_window_size, te = std::min(ts + frame_window_size, time);
             int nt = (te - ts) * ppf, base = ts * ppf;
+            if (nt > 0) attn_scr.assign((size_t)nt, 0.0f);
             for (int i = 0; i < nt; i++) {
                 int ai = base + i;
                 std::fill(att.begin(), att.end(), 0.0f);
@@ -1020,7 +1042,7 @@ std::vector<float> mage_vit_forward(
                         for (int d = 0; d < HD; d++) acc += Qh[d] * Kh[d];
                         attn_scr[sj] = acc * ascale;
                     }
-                    softmax_inplace(attn_scr, nt);
+                    softmax_inplace(attn_scr.data(), nt);
                     for (int d = 0; d < HD; d++) {
                         float acc = 0;
                         for (int sj = 0; sj < nt; sj++) {
@@ -1031,8 +1053,7 @@ std::vector<float> mage_vit_forward(
                     }
                 }
                 float* xt = &seq[(size_t)ai * H];
-                float att_out[4096];
-                matmul(att_out, att.data(), l.attn_o_w.data(), H, H);
+                matmul(att_out.data(), att.data(), l.attn_o_w.data(), H, H);
                 for (int j = 0; j < H; j++) {
                     if (cfg.use_bias) att_out[j] += l.attn_o_b[j];
                     xt[j] += att_out[j];
@@ -1054,9 +1075,19 @@ std::vector<float> mage_vit_forward(
     // 2x2 spatial merger (Mage-VL / Qwen2-VL style)
     if (!weights.mm0_w.empty()) {
         int pm = (int)(weights.mm0_w.size() / (4 * H));
+        if (pm <= 0) {  // malformed merger weights (issue #1297)
+            fprintf(stderr, "[mage_vit] FAIL: invalid merger dims (mm0 %zu, H=%d)\n",
+                    weights.mm0_w.size(), H);
+            return {};
+        }
         int mph = ph / 2, mpw = pw / 2;
         int mpf = mph * mpw, tm = mpf * time;
         int th = weights.mm2_w.empty() ? pm : (int)(weights.mm2_w.size() / pm);
+        if (th <= 0) {
+            fprintf(stderr, "[mage_vit] FAIL: invalid merger output dim (mm2 %zu, pm=%d)\n",
+                    weights.mm2_w.size(), pm);
+            return {};
+        }
         // Mage-VL reference: merger.ln_q is a LayerNorm over H applied to each
         // patch BEFORE the 2x2 concat (ln_q.weight has H elems). Qwen2-VL
         // style mmproj instead has a 4H layernorm after concat — detect by size.
