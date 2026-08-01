@@ -6,9 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── Vulkan + shader compiler ──
 find_package(Vulkan REQUIRED)
+# glslc (Vulkan SDK) or glslangValidator (Ubuntu glslang-tools) both work
 find_program(GLSLC_EXECUTABLE glslc)
-if(NOT GLSLC_EXECUTABLE)
-    message(FATAL_ERROR "video-lora: glslc not found — install the Vulkan SDK (shaderc)")
+find_program(GLSLANG_VALIDATOR_EXECUTABLE glslangValidator)
+if(GLSLC_EXECUTABLE)
+    set(SHADER_COMPILER ${GLSLC_EXECUTABLE})
+    set(SHADER_COMPILER_ARGS --target-env=vulkan1.2 -O)
+elseif(GLSLANG_VALIDATOR_EXECUTABLE)
+    set(SHADER_COMPILER ${GLSLANG_VALIDATOR_EXECUTABLE})
+    set(SHADER_COMPILER_ARGS -V --target-env vulkan1.2)
+else()
+    message(FATAL_ERROR "video-lora: neither glslc nor glslangValidator found — install the Vulkan SDK (shaderc) or glslang-tools")
 endif()
 
 # ── Compile GLSL .comp → SPIR-V .spv at build time ──
@@ -26,7 +34,7 @@ foreach(SHADER ${SHADER_SOURCES})
     add_custom_command(
         OUTPUT ${SPV_OUTPUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUT_DIR}
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -O -o ${SPV_OUTPUT} ${SHADER}
+        COMMAND ${SHADER_COMPILER} ${SHADER_COMPILER_ARGS} -o ${SPV_OUTPUT} ${SHADER}
         DEPENDS ${SHADER}
         COMMENT "Compiling ${SHADER_NAME}.comp → .spv")
     list(APPEND SPV_FILES ${SPV_OUTPUT})
