@@ -2,7 +2,7 @@ name: PR Agent
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
     types: [created, edited]
 
@@ -14,21 +14,51 @@ permissions:
 jobs:
   pr_agent:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     # Only run for same-repo PRs and trusted commenters (not external forks)
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'issue_comment' && github.event.comment.author_association == 'OWNER')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # needed for gitnexus compare against origin/main
+
+      # GitNexus: build/refresh the local knowledge-graph index (incremental),
+      # then map the PR diff to indexed symbols + affected execution flows.
+      # The report is injected into the review via artifact_path below.
+      - name: Cache GitNexus index
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: .gitnexus
+          key: gitnexus-${{ github.event.pull_request.base.sha }}
+          restore-keys: |
+            gitnexus-
+
+      - name: GitNexus impact analysis
+        run: |
+          npm install -g gitnexus
+          gitnexus analyze
+          gitnexus detect-changes --scope compare --base-ref origin/main --repo 1bit-systems \
+            > gitnexus-context.md 2>&1 || true
+          echo "--- gitnexus report (first 30 lines) ---"
+          head -30 gitnexus-context.md
+
       - name: PR Agent
-        uses: qodo-ai/pr-agent@d82f7d3e696cd00822694aaa3096265d3889f3f1  # v0.34
+        uses: The-PR-Agent/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d  # v0.41.0
+        with:
+          artifact_path: gitnexus-context.md
+          artifact_instructions: >
+            This is a GitNexus knowledge-graph analysis of the PR's changed
+            symbols: blast radius (upstream dependants), affected execution
+            flows, and risk level. Use it to prioritize review effort on
+            high-risk changes and to verify the PR's impact claims against
+            the repo's actual call graph.
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           # SECURITY: GITHUB_TOKEN with contents:write scope is passed to the
-          # third-party action qodo-ai/pr-agent. Mitigation: the job-level `if`
-          # guard above restricts execution to same-repo PRs only; external
-          # forks are never processed. Consider a fine-grained PAT or
-          # GitHub App token for tighter scope in the future.
+          # third-party action The-PR-Agent/pr-agent. Mitigation: the job-level
+          # `if` guard above restricts execution to same-repo PRs only;
+          # external forks are never processed. Action pinned to v0.41.0 SHA.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG_FILE: .pr_agent.toml
