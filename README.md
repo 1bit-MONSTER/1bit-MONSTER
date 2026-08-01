@@ -32,8 +32,10 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 
 **Key numbers:**
 - 19 model architectures · 35+ 1BP models · **6 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, CPU)
-- **584 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**) 🏆
-- **320 tok/s** (Qwen3-0.6B, **GGML-Vulkan**)
+- **671 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**) 🏆
+- **344 tok/s** (Qwen3-0.6B, **GGML-Vulkan**)
+- **110 tok/s** (Qwen2.5-VL-3B, **GGML-Vulkan**)
+- **65 tok/s** (Qwen3.5-4B, **GGML-Vulkan**)
 - **78.9 tok/s** (BlackMamba 1.5B, Mamba1 HIP)
 - 37 FLM models extracted (209 NPU xclbins)
 - Moonshot Kimi family (Gated MLA MoE) — architecture reverse-engineered, converter built
@@ -192,19 +194,24 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 
 ## Benchmarks
 
-| Benchmark | tok/s | Backend | Status |
-|-----------|:-----:|---------|--------|
-| SmolLM2-135M Q4_K_M | **584** | **GGML-Vulkan** | ✅ new peak |
-| SmolLM2-360M Q4_K_M | **389** | **GGML-Vulkan** | ✅ new |
-| SmolLM2-1.7B Q4_K_M | **167** | **GGML-Vulkan** | ✅ new |
-| Qwen3-0.6B Q4_K_M | **320** | **GGML-Vulkan** | ✅ new |
-| Qwen2.5-VL-3B Q4_K_M | **95** | **GGML-Vulkan** | ✅ new |
-| DeepSeek-R1-Distill-Llama-8B Q4_K_M | **44** | **GGML-Vulkan** | ✅ new |
-| BlackMamba 1.5B e2e | **78.9** | Mamba1 HIP | ✅ verified |
-| Q1 GEMV kernel | 433 | ROCm HIP | ✅ |
-| Fused TQ2 kernel | 420 | ROCm HIP | ✅ |
-| GPU ternary (Vulkan) | 318 | Vulkan ZINC | ✅ |
-| BlackMamba 2.8B e2e | 46.0 | ROCm HIP | ✅ |
+Measured 2026-07-31 on **AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA)** — llama.cpp `5f55650a7`, all layers on Vulkan (`-ngl 999`), end-to-end via `llama-cli -st`:
+
+| Model | Prompt t/s | Gen t/s (e2e) | Backend | Status |
+|-------|:-----:|:-----:|---------|--------|
+| SmolLM2-135M Q4_K_M | 3,646 | **671** | **GGML-Vulkan** | 🏆 new peak |
+| SmolLM2-360M Q4_K_M | 3,299 | **393** | **GGML-Vulkan** | ✅ re-verified |
+| SmolLM2-1.7B Q4_K_M | 1,469 | **167** | **GGML-Vulkan** | ✅ re-verified |
+| Qwen3-0.6B Q4_K_M | 1,138 | **344** | **GGML-Vulkan** | ✅ re-verified |
+| Qwen2.5-VL-3B Q4_K_M | 775 | **110** | **GGML-Vulkan** | ✅ re-verified |
+| **Qwen3.5-4B Q4_K_M** | 56 | **65** | **GGML-Vulkan** | ✅ new |
+| DeepSeek-R1-0528-Qwen3-8B Q4_K_M | 161 | **45** | **GGML-Vulkan** | ✅ re-verified |
+| BlackMamba 1.5B e2e | — | **78.9** | Mamba1 HIP | ✅ verified |
+| Q1 GEMV kernel | — | 433 | ROCm HIP | ✅ |
+| Fused TQ2 kernel | — | 420 | ROCm HIP | ✅ |
+| GPU ternary (Vulkan) | — | 318 | Vulkan ZINC | ✅ |
+| BlackMamba 2.8B e2e | — | 46.0 | ROCm HIP | ✅ |
+
+Vision pipeline (1BP, CPU): Mage-ViT → Mage-VL-4B through `vision_server` — image in, description out, end-to-end on the 1BP path.
 
 **[→ Full benchmarks](docs/wiki/performance.md)**
 
