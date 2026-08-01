@@ -78,6 +78,7 @@ static std::string g_mmproj_path;
 static std::string g_model_path;
 static std::string g_tokenizer_path;
 static rcpp_tokenizer_t* g_htok = nullptr;
+static time_t g_start_time = 0;
 
 static void handle_sigint(int) { keep_running = false; }
 
@@ -367,6 +368,8 @@ int main(int argc, char** argv) {
         }
     }
 
+    g_start_time = time(nullptr);
+
     if (g_mmproj_path.empty() || g_model_path.empty()) {
         fprintf(stderr, "Usage: %s --mmproj <mmproj.gguf> --model <text.gguf> [--port 8089]\n", argv[0]);
         return 1;
@@ -462,9 +465,11 @@ int main(int argc, char** argv) {
         json j;
         j["status"] = "ok";
         j["service"] = "1bit-systems VL inference server";
+        j["version"] = "vision-server-1.0";
         j["model"] = g_model_path;
         j["mmproj"] = g_mmproj_path;
         j["port"] = g_port;
+        j["uptime"] = std::to_string(g_start_time) + "s";
         res.set_content(j.dump(2), "application/json");
     });
 

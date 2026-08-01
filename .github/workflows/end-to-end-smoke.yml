@@ -196,6 +196,8 @@ jobs:
           assert 'VL' in d.get('service',''), 'wrong service schema'
           assert d.get('model') and d.get('mmproj'), 'missing model/mmproj'
           assert d.get('port') == 8099, 'wrong port'
+          assert d.get('version','').startswith('vision-server-'), 'missing/odd version'
+          assert d.get('uptime',''), 'missing uptime'
           print('OK: vision_server health endpoint')
           "
           curl -sf http://127.0.0.1:8099/v1/models | python3 -c "
