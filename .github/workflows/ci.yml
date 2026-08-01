@@ -95,6 +95,8 @@ jobs:
               test_ternary_gemm_smallm test_sherry_gemv test_bonsai_gemv \
               test_zaya_moe_gemv test_cca_attn test_wmma_i8_gemv \
               test_bonsai_e2e test_sherry_e2e test_block_scaled_ternary \
+              test_gguf_reader_dequant test_tokenizer_logprobs test_backend \
+              test_lora_runtime test_auth test_billing \
               onebitd onebit onebin unified_router ppl_generic gguf_to_onebp \
               vision_server vl_logit_check
           else
