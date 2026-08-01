@@ -36,7 +36,9 @@ inline std::string npu_model_dir() {
     const char* e = getenv("NPU_MODEL_DIR");
     if (e) return e;
     const char* home = getenv("HOME");
-    return std::string(home ? home : ".") + "/.config/flm/models";
+    // fixes #1347: guard against HOME set-but-empty ("" + path would resolve
+    // off the filesystem root instead of the intended per-user dir)
+    return std::string(home && home[0] ? home : ".") + "/.config/flm/models";
 }
 
 inline const char* npu_tokenizer_path() {
@@ -50,8 +52,9 @@ inline std::string npu_xclbin_dir() {
     const char* e = getenv("NPU_XCLBIN_DIR");
     if (e) return e;
     // fixes #1338: use install path instead of relative ./ path
+    // fixes #1347: guard against HOME set-but-empty ("" + path → /…, wrong)
     const char* home = getenv("HOME");
-    if (home) return std::string(home) + "/.local/share/1bit-systems/xclbins/";
+    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/xclbins/";
     return "/usr/local/share/1bit-systems/xclbins/";
 }
 
@@ -71,8 +74,9 @@ inline std::string npu_engine_bin() {
     const char* e = getenv("NPU_ENGINE_BIN");
     if (e) return e;
     // fixes #1338: resolve against install path, not cwd
+    // fixes #1347: guard against HOME set-but-empty
     const char* home = getenv("HOME");
-    if (home) return std::string(home) + "/.local/bin/npu_engine_universal";
+    if (home && home[0]) return std::string(home) + "/.local/bin/npu_engine_universal";
     return "/usr/local/bin/npu_engine_universal";
 }
 
