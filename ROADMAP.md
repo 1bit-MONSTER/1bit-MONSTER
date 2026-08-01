@@ -198,7 +198,7 @@
 
 | Component | Requirement | Current Hardware |
 |-----------|-------------|-----------------|
-| LLM Inference | NPU or GPU | ✅ Strix Halo (69 tok/s NPU, 426 tok/s GPU) |
+| LLM Inference | NPU or GPU | ✅ Strix Halo (373 tok/s GGML-Vulkan, 43.2 TFLOPS prefill) |
 | STT (Whisper) | NPU recommended | ⚠️ Runs on CPU (faster-whisper) |
 | TTS (Voice Clone) | CPU, GPU, or NPU | 🟡 Codec decoder (5.87M params) — pure PyTorch, ONNX pending |
 | Streaming | Network | ✅ Local server running |
@@ -220,7 +220,7 @@
 **Price:** $19.85/mo per user.
 **Hardware:** Strix Halo (owned) → MI300X (scale).
 **Inference cost:** $0 on owned hardware.
-**Strix Halo capacity:** 28 voice users @ 426 tok/s.
+**Strix Halo capacity:** 373 tok/s decode (GGML-Vulkan).
 **MI300X break-even:** 37 users ($720/mo rent).
 
 See [docs/business/business-plan.md](docs/business/business-plan.md) for full economics.

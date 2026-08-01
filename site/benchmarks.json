@@ -90,8 +90,8 @@
       "label": "Zaya pure C++ server"
     },
     "prefill_i8": {
-      "tok_s": 39.4,
-      "TFLOPS": 39.4,
+      "tok_s": 43.2,
+      "TFLOPS": 43.2,
       "status": "validated",
       "label": "Prefill INT8 WMMA (39.4 TFLOPS, I8-APRE winner)",
       "table": "kernel",
@@ -310,7 +310,7 @@
     "npu_xrt_hw_validate"
   ],
   "system": {
-    "tflops_int8": 39.4
+    "tflops_int8": 43.2
   },
   "mamba1_gpu": {
     "blackmamba_1_5b_tok_s": 79.8,

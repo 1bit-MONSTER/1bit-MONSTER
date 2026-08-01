@@ -677,6 +677,12 @@ if(RCPP_HAVE_VULKAN)
     target_link_libraries(test_vulkan_gemv PRIVATE Vulkan::Vulkan)
     target_compile_definitions(test_vulkan_gemv PRIVATE VK_SHADER_DIR="${VK_SHADER_DIR}")
     add_dependencies(test_vulkan_gemv vulkan_shaders)
+
+    # video-lora: pure-C++ Vulkan inference backend (SD1.5/AnimateDiff ops),
+    # built into the single binary. Compiles its own shaders via glslc.
+    # Linked into zaya_server after its definition below.
+    add_subdirectory(tools/video-lora/vulkan)
+    set(VIDEO_LORA_VK_AVAILABLE TRUE)
 endif()
 
 rocm_hip_target(test_sherry_e2e tests/test_sherry_e2e.cpp)
@@ -731,6 +737,9 @@ set_target_properties(zaya_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCH
 install(TARGETS zaya_server RUNTIME DESTINATION bin)
 if(RCPP_HAVE_VULKAN)
     target_link_libraries(zaya_server PRIVATE Vulkan::Vulkan)
+    if(VIDEO_LORA_VK_AVAILABLE)
+        target_link_libraries(zaya_server PRIVATE video_lora_vk)
+    endif()
 endif()
 
 rocm_hip_target(test_wmma_i8_gemv tests/test_wmma_i8_gemv.cpp)

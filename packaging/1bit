@@ -20,9 +20,9 @@
 #   1bit status                  # check hardware
 #
 # Hardware detection order:
-#   1. NPU (XDNA 2) — fastest, INT8, 28-97 tok/s
-#   2. GPU (Vulkan) — Zinc engine, 22 tok/s on Radeon 8060S
-#   3. CPU (OpenMP) — fallback, ~4 tok/s
+#   1. GPU (GGML-Vulkan) — fastest, 373 tok/s (Qwen3-0.6B Q4_K)
+#   2. GPU (HIP/ZINC) — ternary kernels, 157-201 GB/s GEMV
+#   3. CPU (OpenMP) — fallback, ~5 tok/s
 
 set -euo pipefail
 

@@ -78,17 +78,17 @@ Current performance:
 
   | Engine           | Speed          | Models           |
   |------------------|----------------|------------------|
-  | NPU (FLM proxy)  | 94 tok/s       | Qwen3-0.6B       |
-  | NPU (C++ v12)    | 97 tok/s       | Qwen3-0.6B       |
-  | NPU (auto-detect) | 28 tok/s each  | All models at once |
-  | GPU (Vulkan)     | 22 tok/s       | Bonsai-1.7B      |
+  | GGML-Vulkan      | 373 tok/s      | Qwen3-0.6B Q4_K  |
+  | GGML-Vulkan      | 662 tok/s      | SmolLM2-135M Q4_K|
+  | GPU (HIP kernels)| 157 GB/s GEMV  | 1-bit ternary     |
+  | NPU (FLM proxy)  | 94 tok/s (hist.)| Qwen3-0.6B       |
 
 The binary auto-detects which model you have and dispatches the
 right xclbin. No recompilation per model.
 
 Tech stack:
 - C++23 NPU engine → XRT → XDNA 2 NPU
-- Zig GPU engine → Vulkan → Radeon 8060S
+- C++ GPU engine → HIP + Vulkan → Radeon 8060S
 - Single binary, MIT license
 
 If you have a Ryzen AI Max+ 395 (Strix Halo), you can run this

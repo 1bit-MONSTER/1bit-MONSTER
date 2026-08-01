@@ -7,7 +7,7 @@
 - **Site**: https://1bit.systems
 - **License**: MIT
 - **Language**: Pure C++23
-- **Binary size**: 17.5 MB (server + CLI + daemon)
+- **Binary size**: 1.5 MB (zaya_server raw)
 - **Runtime deps**: Zero Python. Zero Node.js. Zero Rust.
 - **Author**: bong-water-water-bong
 
@@ -52,11 +52,11 @@ Full catalog: `models/catalog/README.md`
 
 ## Key Engineering Milestones
 
-- NPU stack reverse-engineered in 4 days (22 proprietary `.so` → 17.5 MB open source)
+- NPU stack reverse-engineered in 4 days (22 proprietary `.so` → 1.5 MB open source)
 - 209 xclbin bitstreams traced back to AIE generators
 - 1800+ hour engineering effort across 28 layers of GEMM kernels
 - 3 correctness bugs found and fixed in Mamba1 kernel (conv state overflow, A_log exponentiation, HIP device stubs)
-- FastFlowLM fully replaced: 87.8 MB closed binary → 17.5 MB open one
+- FastFlowLM fully replaced: 87.8 MB closed binary → 1.5 MB open one
 
 ## Packaging
 

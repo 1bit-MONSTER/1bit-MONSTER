@@ -191,7 +191,7 @@
 | **Mamba1 SSM HIP kernel** | 79.8 tok/s (BlackMamba) | Custom HIP kernel for selective state-space model. Fused A_log exponentiation, conv state management, and selective scan in one launch. |
 | **Mamba2 HIP kernels** | MI300X + Radeon | Selective scan + conv1d HIP kernels with PyTorch ctypes extension. Enables fast Mamba2 training on AMD GPUs. |
 | **Speculative decoding (MTP)** | ~50% speedup | Multi-token prediction with draft model + target model verification. Run draft on NPU (cheap), verify on GPU (accurate). |
-| **INT8 WMMA prefill** | 39.4 TFLOPS | Uses AMD WMMA intrinsics for matrix multiply-accumulate in INT8. Full prompt prefill in a single kernel launch. |
+| **INT8 WMMA prefill** | 43.2 TFLOPS | Uses AMD WMMA intrinsics for matrix multiply-accumulate in INT8. Full prompt prefill in a single kernel launch. |
 
 ### 5.2 NPU Optimization (XDNA 2)
 

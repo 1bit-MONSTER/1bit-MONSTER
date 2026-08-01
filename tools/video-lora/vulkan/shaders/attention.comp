@@ -1,7 +1,8 @@
 #version 460
-// Scaled dot-product attention for SD1.5 UNet
+// Scaled dot-product attention for SD1.5 UNet — full N×N softmax implementation.
 // Head dimension = 64 (C / num_heads)
-// One workgroup = one output position
+// One workgroup = one output position; workgroup Y = head index.
+// Supports N up to 256 (16×16 spatial or 256 temporal frames).
 
 layout(local_size_x = 64) in;
 
@@ -18,9 +19,10 @@ layout(push_constant) uniform PushConstants {
     float scale;    // 1/sqrt(head_dim)
 };
 
-shared float K_shared[64];   // K vector for one head (cached in shmem)
-shared float V_shared[64];   // V vector for one head
-shared float attn_scores[256]; // attention scores (max N=256 for 16x16 spatial)
+shared float K_shared[64];     // K vector for one head (cached in shmem)
+shared float V_shared[64];     // V vector for one head
+shared float red[64];          // dot-product reduction scratch
+shared float attn_scores[256]; // softmax scores (max N=256)
 
 void main() {
     uint hidx = gl_LocalInvocationID.x;  // index within head (0..head_dim-1)
@@ -32,18 +34,48 @@ void main() {
     // Q vector for this position and head
     float q_val = q[(pos * num_heads + h) * head_dim + hidx];
 
-    // Compute attention scores: Q · K^T for all positions
-    float score = 0.0;
+    // ── Pass 1: scores[pos][t] = scale * (Q_pos · K_t) ──
     for (uint t = 0; t < N; t++) {
-        // Load K[t, h] into shared — only one thread loads, then broadcast
-        if (hidx < head_dim) {
-            // Each thread already has part of K for the current t
-            // Full implementation uses shmem + reduction
+        // Load K[t, h] into shared memory (all threads cooperate)
+        K_shared[hidx] = k[(t * num_heads + h) * head_dim + hidx];
+        barrier();
+
+        // Dot product via shared-memory reduction (scratch in red[], so
+        // attn_scores[] is never clobbered by the reduction)
+        red[hidx] = q_val * K_shared[hidx];
+        barrier();
+        for (uint s = 32; s > 0; s >>= 1) {
+            if (hidx < s) red[hidx] += red[hidx + s];
+            barrier();
         }
+        if (hidx == 0) attn_scores[t] = red[0] * scale;
+        barrier();
     }
 
-    // Simplified: single-head, single-position attention
-    // Full implementation does the full N×N attention matrix with softmax
-    // For now, output 0 for scaffolding
-    o[(pos * num_heads + h) * head_dim + hidx] = q_val * scale;
+    // ── Pass 2: softmax over t (max-subtract for numerical stability) ──
+    if (hidx == 0) {
+        float max_score = attn_scores[0];
+        for (uint t = 1; t < N; t++) {
+            if (attn_scores[t] > max_score) max_score = attn_scores[t];
+        }
+        float sum = 0.0;
+        for (uint t = 0; t < N; t++) {
+            attn_scores[t] = exp(attn_scores[t] - max_score);
+            sum += attn_scores[t];
+        }
+        for (uint t = 0; t < N; t++) {
+            attn_scores[t] /= sum;
+        }
+    }
+    barrier();
+
+    // ── Pass 3: output = Σ_t softmax[t] * V_t ──
+    float acc = 0.0;
+    for (uint t = 0; t < N; t++) {
+        V_shared[hidx] = v[(t * num_heads + h) * head_dim + hidx];
+        barrier();
+        acc += attn_scores[t] * V_shared[hidx];
+        barrier();  // prevent overwrite of V_shared before next read
+    }
+    o[(pos * num_heads + h) * head_dim + hidx] = acc;
 }
