@@ -5,13 +5,14 @@ name: Scope Guard
 # quantization, packaging, docs, CI) so "bullshit features" can't land via
 # new top-level directories or unrelated additions.
 
-# TEMPORARILY DISABLED: re-enable after the pure-C++ video-lora work lands.
-# The allowlist below will be revised then (video-lora is engine scope).
-on: {}
+# Scope Guard — this is the inference engine + Jarvis offline assistant layer.
+# engine + Jarvis = offline supreme for local AI + inference. Fail PRs that add
+# code outside the product scope so bullshit features can't land via new
+# top-level directories or unrelated additions.
 
-# on:
-#   pull_request:
-#     types: [opened, synchronize, reopened]
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
