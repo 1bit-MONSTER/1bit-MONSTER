@@ -56,7 +56,7 @@ jobs:
           # this pin; no onnxruntime package exists for ubuntu-24.04 runners.
           # The engine doesn't use llama's ONNX path — drop the TU.
           sed -i '/llama-onnx\.cpp/d' src/CMakeLists.txt
-          cmake -B build -G Ninja -DGGML_VULKAN=ON \
+          cmake -B build -G Ninja -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON \
             -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
             -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
           cmake --build build -j$(nproc) --target ggml-vulkan llama llama-common
