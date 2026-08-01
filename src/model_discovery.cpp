@@ -227,6 +227,11 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     uint32_t n_expert_used;     memcpy(&n_expert_used, hdr_buf + 96, 4);
     uint32_t arch_raw;          memcpy(&arch_raw, hdr_buf + 8, 4);
     uint32_t quant_raw;         memcpy(&quant_raw, hdr_buf + 12, 4);
+    // rope_theta_f (offset 76) = rope_theta * 1000 fixed-point. The 1BP
+    // converters often leave it 0 (= unspecified); loaders then fall back to
+    // 10000. Match that here so GPU backends (which take cfg.rope_theta from
+    // discovery) don't inherit the ModelConfig default 500000 and break RoPE.
+    uint32_t rope_theta_f;      memcpy(&rope_theta_f, hdr_buf + 76, 4);
 
     // Extract tile_rows, tile_cols, group_size from header (fixes #1311).
     // These are stored in OnebpHeader at offsets 52, 56, 60.
@@ -245,6 +250,7 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     cfg.n_ff = cfg.intermediate_size = intermediate_size;
     cfg.vocab = cfg.vocab_size = vocab_size;
     cfg.max_seq_len = max_seq_len ? max_seq_len : 2048;
+    cfg.rope_theta = rope_theta_f ? ((float)rope_theta_f / 1000.0f) : 10000.0f;
     cfg.n_experts = cfg.num_experts = num_experts;
     cfg.num_experts_top = n_expert_used;
     cfg.model_path = path;

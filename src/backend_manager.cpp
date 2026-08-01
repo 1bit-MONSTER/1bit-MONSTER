@@ -97,10 +97,13 @@ void BackendManager::discover() {
     }
 
     // 1a7. Fused GPU+NPU — attention on GPU, FFN on NPU (321 tok/s GPU-only)
+    // NOTE: type must be HIP_GPU — create_instance_rt() dispatches the
+    // real create_fused_backend() factory from the HIP_GPU switch case;
+    // GENERIC silently instantiates GenericBackend (CPU) instead.
     {
         BackendInfo info;
         info.id = "fused_gpu_npu";
-        info.type = BackendType::GENERIC;
+        info.type = BackendType::HIP_GPU;
         info.tier = BackendTier::T2_GPU;
         info.description = "Fused GPU+NPU (custom GEMV, 321 tok/s)";
         info.priority = tier_priority(info.tier) + 65;
@@ -118,7 +121,7 @@ void BackendManager::discover() {
     {
         BackendInfo info;
         info.id = "vulkan_hpp_gpu";
-        info.type = BackendType::GENERIC;
+        info.type = BackendType::HIP_GPU;  // factory dispatches from HIP_GPU case
         info.tier = BackendTier::T2_GPU;
         info.description = "Vulkan-Hpp GPU (ZINC shaders, Vulkan compute)";
         info.priority = tier_priority(info.tier) + 55;
@@ -136,7 +139,7 @@ void BackendManager::discover() {
     {
         BackendInfo info;
         info.id = "ggml_vulkan";
-        info.type = BackendType::GENERIC;
+        info.type = BackendType::HIP_GPU;  // factory dispatches from HIP_GPU case
         info.tier = BackendTier::T2_GPU;
         info.description = "GGML-Vulkan (llama.cpp, MIT, 357 tok/s)";
         info.priority = tier_priority(info.tier) + 58;

@@ -59,7 +59,7 @@ static void silu_mul_cpu(std::vector<float>& out, const std::vector<float>& g,
 }
 
 // ─── Vulkan Backend ─────────────────────────────────────────────────
-class VulkanBackend : public InferenceBackend {
+class VulkanTestBackend : public InferenceBackend {
     ModelConfig cfg_;
     bool loaded_ = false;
     vkrt::VkCtx ctx_;
@@ -92,7 +92,7 @@ public:
     float estimated_tok_s() const override { return 22.0f; }
     bool is_coherent() const override { return true; }
 
-    VulkanBackend() {
+    VulkanTestBackend() {
         // Try to find shaders relative to the binary location
         shader_dir_ = "kernels/vulkan/";
     }
@@ -573,7 +573,7 @@ static bool load_1bp_vulkan(
 // ─── Factory ────────────────────────────────────────────────────────
 std::vector<InferenceBackend*> detect_backends_vulkan() {
     std::vector<InferenceBackend*> backends;
-    static VulkanBackend vk;
+    static VulkanTestBackend vk;
     backends.push_back(&vk);
     return backends;
 }

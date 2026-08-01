@@ -142,6 +142,18 @@ public:
         this->cfg = cfg;
         (void)weights_dir;
 
+        // FLM only speaks its own Q4NX format and is text-level: forward()/
+        // generate() are stubs, and init "succeeds" for any model tag but
+        // then loads FLM's own q4nx model, never the requested file. Reject
+        // everything else up front (same guard style as the mamba1 arch
+        // check in cc77f391c) so the router/strategy engine never selects
+        // it for a model it cannot run.
+        if (cfg.format != ModelFormat::Q4NX) {
+            fprintf(stderr, "NPU: FLM is Q4NX-only — rejecting %s (format %d)\n",
+                    cfg.model_path.c_str(), (int)cfg.format);
+            return false;
+        }
+
         // Detect NPU hardware
         if (access("/dev/accel/accel0", F_OK) != 0) {
             fprintf(stderr, "NPU: no /dev/accel/accel0 — XDNA 2 not available\n");

@@ -53,7 +53,7 @@ static bool wait_for_child(pid_t pid, int timeout_ms) {
     return false;
 }
 
-class NpuFlmBackend : public InferenceBackend {
+class NpuFlmTestBackend : public InferenceBackend {
     ModelConfig cfg_;
     bool loaded_ = false;
     bool available_ = false;
@@ -476,7 +476,7 @@ public:
 
 std::vector<InferenceBackend*> detect_backends_npu() {
     std::vector<InferenceBackend*> backends;
-    static NpuFlmBackend npu;
+    static NpuFlmTestBackend npu;
     backends.push_back(&npu);
     return backends;
 }

@@ -196,6 +196,45 @@ static void load_model_tokenizer(const std::string& model_path) {
         cands.push_back(base + suf);
     for (const auto& c : cands)
         if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+
+    // Quantized 1BP files carry the quant in their name (Qwen3-0.6B-q8-q4nx
+    // or Qwen3-0.6B.E4M3-IM) while the sibling GGUF keeps the plain base
+    // (Qwen3-0.6B.Q4_K_M.gguf) — strip known quant markers and retry, then
+    // fall back to scanning the directory for a GGUF sharing the base name.
+    for (const char* marker : {"-q8-q4nx", "-q4nx", ".E4M3", "-E4M3", "-IM", ".TQ2", "-TQ2"}) {
+        auto pos = base.rfind(marker);
+        if (pos == std::string::npos) continue;
+        std::string stripped = base.substr(0, pos);
+        for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"}) {
+            std::string c = stripped + suf;
+            if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+        }
+    }
+    // Directory scan: a GGUF whose stem equals our (quant-stripped) base.
+    std::string gguf_base = base;
+    for (const char* marker : {"-q8-q4nx", "-q4nx", ".E4M3", "-E4M3", "-IM", ".TQ2", "-TQ2"}) {
+        auto pos = gguf_base.rfind(marker);
+        if (pos != std::string::npos) gguf_base = gguf_base.substr(0, pos);
+    }
+    auto slash = model_path.find_last_of('/');
+    std::string dir = (slash != std::string::npos) ? model_path.substr(0, slash + 1) : "";
+    if (auto* d = opendir(dir.empty() ? "." : dir.c_str())) {
+        while (struct dirent* e = readdir(d)) {
+            std::string n(e->d_name);
+            if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
+            std::string stem = n.substr(0, n.size() - 5);
+            // Qwen3-0.6B.Q4_K_M → Qwen3-0.6B
+            auto q = stem.find(".Q4_K");
+            if (q != std::string::npos) stem = stem.substr(0, q);
+            auto q8 = stem.find(".Q8_0");
+            if (q8 != std::string::npos) stem = stem.substr(0, q8);
+            if (stem == gguf_base) {
+                std::string c = dir + n;
+                if (g_tokenizer.load_from_gguf(c)) { closedir(d); return; }
+            }
+        }
+        closedir(d);
+    }
 }
 
 static ModelConfig default_model_config() {

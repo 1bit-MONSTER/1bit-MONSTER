@@ -35,7 +35,7 @@ struct Hip1bpBackend : Backend {
 
     // GPU weights
     float *d_embed=nullptr,*d_final_norm=nullptr,*d_output=nullptr;
-    struct GL{float*wq,*wk,*wv,*wo,*w1,*w2,*w3,*pn,*pon;};
+    struct GL{float*wq,*wk,*wv,*wo,*w1,*w2,*w3,*pn,*pon,*q_norm,*k_norm;};
     std::vector<GL> L;
 
     // Packed 2-bit fast path (TQ2NZ / TQ2NZ_E4M3): tile pointers into the
@@ -77,7 +77,11 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipStreamCreate(&stream));
 
         // Device-only allocations
-        kvb=(size_t)max_seq*NKV*HD*sizeof(__half);
+        // Per-layer KV cache: each layer needs its own max_seq*NKV*HD slots.
+        // A shared cache lets layer NC-1 clobber layer 0's keys, and every
+        // layer's attention then reads the wrong layer's K/V (fused backend
+        // had the same bug; generic CPU keeps k_cache[il][...] per layer).
+        kvb=(size_t)NC*max_seq*NKV*HD*sizeof(__half);
         HIP_CHECK(hipMalloc(&dK,kvb));  HIP_CHECK(hipMemset(dK,0,kvb));
         HIP_CHECK(hipMalloc(&dV,kvb));  HIP_CHECK(hipMemset(dV,0,kvb));
         size_t qb=(size_t)NH*HD*sizeof(__half);
@@ -140,6 +144,10 @@ struct Hip1bpBackend : Backend {
             gr("ffn_down.weight","mlp.down_proj.weight",ll.w3,IM*H);
             gr("attn_norm.weight","input_layernorm.weight",ll.pn,H);
             gr("ffn_norm.weight","post_attention_layernorm.weight",ll.pon,H);
+            // Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm on each head's
+            // head_dim slice with a shared [head_dim] weight, before RoPE.
+            gr("attn_q_norm.weight","self_attn.q_norm.weight",ll.q_norm,HD);
+            gr("attn_k_norm.weight","self_attn.k_norm.weight",ll.k_norm,HD);
         }
         // Packed fast-path pointers (TQ2NZ family only)
         P.resize(NC);
@@ -232,7 +240,11 @@ struct Hip1bpBackend : Backend {
         for(int l=0;l<NC_;l++){
             auto& ll=L[l];
 
-            // 1. Pre-attention RMSNorm
+            // 1. Pre-attention RMSNorm — save pre-norm input for the residual
+            //    (rmsnorm is in-place; adding the normed value instead of the
+            //    original input breaks the residual stream — same bug the
+            //    fused backend had). dsilu is free during attention.
+            h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dsilu,dh,0,H_);
             if(ll.pn)h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pn,H_,EPS);
             else h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
 
@@ -247,6 +259,11 @@ struct Hip1bpBackend : Backend {
                 if(ll.wv) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dup,ll.wv,dh,NKV_*HD_,H_);
             }
 
+            // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
+            // head_dim slice with the shared [head_dim] weight, before RoPE.
+            if(ll.q_norm) h1bp_head_rmsnorm_kernel<<<NH_,256,0,stream>>>(datt,ll.q_norm,HD_,EPS);
+            if(ll.k_norm) h1bp_head_rmsnorm_kernel<<<NKV_,256,0,stream>>>(dgate,ll.k_norm,HD_,EPS);
+
             // 3. RoPE
             if(ll.wq) h1bp_rope_kernel<<<NH_,HD_/2,0,stream>>>(datt,HD_,pos,rope_theta,NH_);
             if(ll.wk) h1bp_rope_kernel<<<NKV_,HD_/2,0,stream>>>(dgate,HD_,pos,rope_theta,NKV_);
@@ -254,10 +271,13 @@ struct Hip1bpBackend : Backend {
             // 4. Attention — all on stream, no syncs needed
             if(ll.wo){
                 h1bp_f2h_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(dQ,datt,NH_*HD_);
-                h1bp_kv_store_kernel<<<NKV_,HD_,0,stream>>>(dK,dV,dgate,dup,pos,NKV_,HD_,max_seq);
+                // Per-layer KV: layer l owns [l*max_seq*NKV*HD, (l+1)*...)
+                __half* lk=dK+(size_t)l*max_seq*NKV_*HD_;
+                __half* lv=dV+(size_t)l*max_seq*NKV_*HD_;
+                h1bp_kv_store_kernel<<<NKV_,HD_,0,stream>>>(lk,lv,dgate,dup,pos,NKV_,HD_,max_seq);
 
                 float scl=1.0f/sqrtf((float)HD_);
-                rcpp_kv_cache_attn_decode(dQ,dK,dV,dAttn,NH_,NKV_,HD_,pos+1,scl,stream);
+                rcpp_kv_cache_attn_decode(dQ,lk,lv,dAttn,NH_,NKV_,HD_,pos+1,scl,stream);
 
                 // Use separate datt2 for attn output — avoids RAW hazard with datt (used by Q GEMV next layer)
                 h1bp_h2f_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt2,dAttn,NH_*HD_);
@@ -266,10 +286,14 @@ struct Hip1bpBackend : Backend {
                 } else {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
                 }
+                // Residual: dh = saved pre-norm input + attn_out
+                h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dsilu,0,H_);
                 h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,H_);
             }
 
-            // 5. Post-attention RMSNorm
+            // 5. Post-attention RMSNorm — save pre-norm input for the residual
+            //    (doproj is free during FFN).
+            h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(doproj,dh,0,H_);
             if(ll.pon)h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pon,H_,EPS);
             else h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
 
@@ -291,6 +315,9 @@ struct Hip1bpBackend : Backend {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(dffn,ll.w3,dsilu,H_,IM_);
 
                 }
+                // Residual: dh = saved pre-FFN input + ffn_out (doproj held
+                // the pre-norm input from step 5).
+                h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,0,H_);
                 h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dffn,H_);
             }
         }
@@ -303,12 +330,14 @@ struct Hip1bpBackend : Backend {
     }
 
     bool lm_head(const float* hidden,float* logits,int* argmax)override{
-        if(!d_output){memset(logits,0,VOCAB*4);logits[0]=1;if(argmax)*argmax=0;return true;}
+        // Tied-embedding models (e.g. Qwen3) have no output.weight — the LM
+        // head is the embedding matrix itself.
+        if(!d_output&&!d_embed){memset(logits,0,VOCAB*4);logits[0]=1;if(argmax)*argmax=0;return true;}
         HIP_CHECK(hipMemcpy(dh,hidden,H*4,hipMemcpyHostToDevice));
         if(quant2&&d_output_packed){
             launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
         } else {
-            h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output,dh,VOCAB,H);
+            h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);
         }
         HIP_CHECK(hipMemcpy(logits,dlogits,VOCAB*4,hipMemcpyDeviceToHost));
         if(argmax){*argmax=0;for(int v=1;v<VOCAB;v++)if(logits[v]>logits[*argmax])*argmax=v;}
@@ -333,7 +362,7 @@ struct Hip1bpBackend : Backend {
     void destroy()override{
         auto hf=[](void*p){if(p)HIP_CHECK_D(hipFree(p));};
         hf(d_embed);hf(d_final_norm);hf(d_output);
-        for(auto&ll:L){hf(ll.wq);hf(ll.wk);hf(ll.wv);hf(ll.wo);hf(ll.w1);hf(ll.w2);hf(ll.w3);hf(ll.pn);hf(ll.pon);}
+        for(auto&ll:L){hf(ll.wq);hf(ll.wk);hf(ll.wv);hf(ll.wo);hf(ll.w1);hf(ll.w2);hf(ll.w3);hf(ll.pn);hf(ll.pon);hf(ll.q_norm);hf(ll.k_norm);}
         for (auto& pd : PD) { hf(pd.pq); hf(pd.pk); hf(pd.pv); hf(pd.po); hf(pd.p1); hf(pd.p2); hf(pd.p3); }
         PD.clear(); hf(d_output_packed);
         L.clear();P.clear();model_.reset();
