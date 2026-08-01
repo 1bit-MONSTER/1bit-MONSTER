@@ -52,6 +52,10 @@ jobs:
           # real wrapper when llama.h is reachable — the submodule is checked
           # out on CI — and links libllama/libggml-vulkan. Build them first.
           cd third_party/llama.cpp
+          # llama-onnx.cpp includes onnxruntime_cxx_api.h unconditionally at
+          # this pin; no onnxruntime package exists for ubuntu-24.04 runners.
+          # The engine doesn't use llama's ONNX path — drop the TU.
+          sed -i '/llama-onnx\.cpp/d' src/CMakeLists.txt
           cmake -B build -G Ninja -DGGML_VULKAN=ON \
             -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
             -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
