@@ -111,6 +111,12 @@ jobs:
       - name: Run headless tests (ctest -L host)
         run: |
           if [ -d build ]; then
+            # test_medusa_skeleton links rocm_cpp (shared) → needs HIP libs at
+            # runtime; the loader can't find them without TheRock on the path.
+            PYTHON_SITE="$(dirname "$(find /opt/rocm-therock/lib -name '_rocm_sdk_devel' -type d 2>/dev/null | head -1)")"
+            if [ -n "$PYTHON_SITE" ]; then
+              export LD_LIBRARY_PATH="$PYTHON_SITE/_rocm_sdk_devel/lib:$PYTHON_SITE/_rocm_sdk_core/lib:$PYTHON_SITE/_rocm_sdk_libraries/lib:${LD_LIBRARY_PATH:-}"
+            fi
             ctest --test-dir build -L host --output-on-failure
           else
             echo "No build/ directory (ROCm unavailable on this runner) - skipping host ctest."
