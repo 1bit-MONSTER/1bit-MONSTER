@@ -38,7 +38,11 @@ jobs:
       - name: GitNexus impact analysis
         run: |
           npm install -g gitnexus
-          gitnexus analyze
+          # Register a restored cache index (no-op if absent), then refresh
+          # incrementally. analyze can transiently fail to finalize on fresh
+          # runners — retry once per its own diagnostic.
+          gitnexus index . || true
+          gitnexus analyze || gitnexus analyze
           gitnexus detect-changes --scope compare --base-ref origin/main --repo 1bit-systems \
             > gitnexus-context.md 2>&1 || true
           echo "--- gitnexus report (first 30 lines) ---"
