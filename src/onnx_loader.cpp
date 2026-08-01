@@ -38,9 +38,15 @@ struct PbReader {
         while (pos < len) {
             uint8_t byte = data[pos++];
             val |= uint64_t(byte & 0x7F) << shift;
-            shift += 7;
-            if (shift > 64) return 0;  // fixes #1331: prevent UB shift >= width
+            // #1354: check the terminator BEFORE the overflow guard. A
+            // 10-byte varint encoding a value >= 2^63 (e.g. 0x80..01 for
+            // 2^63) ends with shift == 63 — the old check fired on the
+            // following `shift += 7` and silently zeroed valid values.
             if (!(byte & 0x80)) return val;
+            shift += 7;
+            // fixes #1331 + #1354: only an 11th byte would shift >= 64 (UB) —
+            // reject instead of computing it.
+            if (shift > 63) return 0;
         }
         return val;
     }
@@ -332,22 +338,22 @@ rcpp_status_t rcpp_bitnet_load_onnx(const char* path, rcpp_bitnet_model_t* out_m
                 else { f16_buf[i] = (uint16_t)(sign | (exp << 10) | mant); }
             }
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, f16_buf.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, f16_buf.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         } else if (t->data_type == ONNX_BFLOAT16) {
             // BF16 was already converted to F32 by the raw_data parser
             bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         } else if (t->data_type == ONNX_INT8 || t->data_type == ONNX_UINT8) {
             // INT8/UINT8 was already dequantized to F32 by the raw_data parser
             bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         } else {
             // F32 (ONNX_FLOAT) or fallback
             bytes = (size_t)n_elems * sizeof(float);
             if (hipMalloc(&dev_ptr, bytes) != hipSuccess) return nullptr;
-            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) {(void)hipFree(dev_ptr); return nullptr; }
+            if (hipMemcpy(dev_ptr, t->float_data.data(), bytes, hipMemcpyHostToDevice) != hipSuccess) { hipFree(dev_ptr); return nullptr; }
         }
 
         if (out_bytes) *out_bytes = bytes;

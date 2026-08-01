@@ -493,19 +493,21 @@ void RestHandler::configure_chat_engine_parameters(const json& options, const js
         auto_chat_engine->set_topk(top_k);
     }
     if (request.contains("min_p")) {
-        float min_p = request["min_p"];            // float in [0,1]; int would truncate to 0 (fixes #86)
+        // float in [0,1]; int would truncate to 0 (fixes #86). #1344: type-check
+        // like temperature/top_p (#1325) so a wrong-typed field can't throw.
+        float min_p = request["min_p"].is_number() ? (float)request["min_p"] : 0.0f;
         auto_chat_engine->set_minp(min_p);
     }
     if (request.contains("presence_penalty")) {
-        float presence_penalty = request["presence_penalty"];
+        float presence_penalty = request["presence_penalty"].is_number() ? (float)request["presence_penalty"] : 0.0f;
         auto_chat_engine->set_presence_penalty(presence_penalty);
     }
     if (request.contains("frequency_penalty")) {
-        float frequency_penalty = request["frequency_penalty"];
+        float frequency_penalty = request["frequency_penalty"].is_number() ? (float)request["frequency_penalty"] : 0.0f;
         auto_chat_engine->set_frequency_penalty(frequency_penalty);
     }
     if (request.contains("repetition_penalty")) {
-        float repetition_penalty = request["repetition_penalty"];
+        float repetition_penalty = request["repetition_penalty"].is_number() ? (float)request["repetition_penalty"] : 1.0f;
         auto_chat_engine->set_repetition_penalty(repetition_penalty);
     }
     if (request.contains("think")) {
@@ -514,12 +516,15 @@ void RestHandler::configure_chat_engine_parameters(const json& options, const js
         auto_chat_engine->configure_parameter("enable_think", enable_thinking);
     }
     if (request.contains("reasoning_effort")) {
-        std::string reasoning_effort = request["reasoning_effort"];
-        auto_chat_engine->configure_parameter("reasoning_effort", reasoning_effort);
+        // #1344: string-typed — a number sent by mistake must not throw
+        std::string reasoning_effort = request["reasoning_effort"].is_string() ? (std::string)request["reasoning_effort"] : "";
+        if (!reasoning_effort.empty())
+            auto_chat_engine->configure_parameter("reasoning_effort", reasoning_effort);
     }
 
     if (request.contains("image-max-tokens")) {
-        int image_max_tokens = request["image-max-tokens"];
+        // #1344: integer-typed
+        int image_max_tokens = request["image-max-tokens"].is_number_integer() ? (int)request["image-max-tokens"] : 0;
         auto_chat_engine->configure_parameter("image_max_tokens", image_max_tokens);
     }
 }

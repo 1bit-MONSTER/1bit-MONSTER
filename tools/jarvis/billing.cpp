@@ -2,7 +2,9 @@
 #include "billing.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -273,13 +275,23 @@ bool BillingManager::process_webhook(const std::string& payload, const std::stri
 BillingManager::PricingInfo BillingManager::get_pricing() const {
     PricingInfo info;
 
-    // Allow overrides from environment (fixes #1325: validate with strtod)
+    // Allow overrides from environment (fixes #1325, #1352: validate with
+    // strtod AND reject non-finite/overflow — strtod happily accepts "inf",
+    // "nan", and "1e400" (→ HUGE_VAL), which would serialize as JSON null
+    // on the public /v1/pricing endpoint). On any invalid input keep the
+    // compiled-in default instead of overwriting it with 0.0.
     const char* env;
-    auto safe_atof = [](const char* s) -> double { char* end; double v = strtod(s, &end); return (end != s) ? v : 0.0; };
-    if ((env = getenv("STRIPE_PRICE_BASIC_AMOUNT"))) info.basic_monthly = (float)safe_atof(env);
-    if ((env = getenv("STRIPE_PRICE_PRO_AMOUNT"))) info.pro_monthly = (float)safe_atof(env);
-    if ((env = getenv("STRIPE_PRICE_ENTERPRISE_AMOUNT"))) info.enterprise_monthly = (float)safe_atof(env);
-    if ((env = getenv("STRIPE_VOICE_CLONE_FEE"))) info.voice_clone_fee = (float)safe_atof(env);
+    auto safe_atof = [](const char* s, double fallback) -> double {
+        char* end;
+        errno = 0;
+        double v = strtod(s, &end);
+        if (end == s || errno == ERANGE || !std::isfinite(v)) return fallback;
+        return v;
+    };
+    if ((env = getenv("STRIPE_PRICE_BASIC_AMOUNT"))) info.basic_monthly = safe_atof(env, info.basic_monthly);
+    if ((env = getenv("STRIPE_PRICE_PRO_AMOUNT"))) info.pro_monthly = safe_atof(env, info.pro_monthly);
+    if ((env = getenv("STRIPE_PRICE_ENTERPRISE_AMOUNT"))) info.enterprise_monthly = safe_atof(env, info.enterprise_monthly);
+    if ((env = getenv("STRIPE_VOICE_CLONE_FEE"))) info.voice_clone_fee = safe_atof(env, info.voice_clone_fee);
 
     return info;
 }

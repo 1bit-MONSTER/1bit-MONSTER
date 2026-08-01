@@ -69,7 +69,7 @@ class CLIWide {
         KeyAction handle_navigation_keys(const KEY_EVENT_RECORD& keyEvent, InputState& state);
         void handle_history_navigation(bool up, InputState& state);
         void handle_multiline_navigation(bool up, InputState& state);
-        bool should_continue_input(const InputState& state);
+        bool should_continue_input(InputState& state);   // mutates (paste/continuation) — #1318
         void print_prompt_and_line(const InputState& state);
         void redraw_line_from_cursor(const InputState& state);
         

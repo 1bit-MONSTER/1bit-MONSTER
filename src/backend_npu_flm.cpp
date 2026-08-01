@@ -94,15 +94,30 @@ public:
         const char* cfg  = getenv("NPU_FLM_CONFIG");
         const char* xclb = getenv("NPU_FLM_XCLBINS");
 
-        // Validate env-controlled binary paths (fixes #1329: reject outside /opt/ or /usr/)
+        // Validate env-controlled paths (fixes #1329, #1349, #1351): all three
+        // env vars (NPU_FLM_BIN / NPU_FLM_CONFIG / NPU_FLM_XCLBINS) feed
+        // exec/access/setenv for the FLM subprocess, so all three get the same
+        // whitelist. Reject any ".." segment too — a prefix like
+        // /opt/../../../tmp/evil passes the prefix check but resolves outside
+        // the whitelist (same rejection zaya_engine.cpp's resolve_weights_dir
+        // uses for #1328).
         auto safe_bin = [](const char* p) -> bool {
             if (!p) return true;
             std::string s(p);
+            if (s.find("..") != std::string::npos) return false;
             return s.find("/opt/") == 0 || s.find("/usr/") == 0 || s.find("/home/") == 0;
         };
         if (!safe_bin(bin)) {
-            fprintf(stderr, "NPU: NPU_FLM_BIN=%s rejected — must be under /opt/, /usr/, or /home/\n", bin);
+            fprintf(stderr, "NPU: NPU_FLM_BIN=%s rejected — must be under /opt/, /usr/, or /home/ without '..'\n", bin);
             bin = nullptr;
+        }
+        if (!safe_bin(cfg)) {
+            fprintf(stderr, "NPU: NPU_FLM_CONFIG=%s rejected — must be under /opt/, /usr/, or /home/ without '..'\n", cfg);
+            cfg = nullptr;
+        }
+        if (!safe_bin(xclb)) {
+            fprintf(stderr, "NPU: NPU_FLM_XCLBINS=%s rejected — must be under /opt/, /usr/, or /home/ without '..'\n", xclb);
+            xclb = nullptr;
         }
 
         flm_bin_     = bin  ? bin  : FLM_BINARY_PATH;
