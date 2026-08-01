@@ -427,7 +427,17 @@ bool AuthManager::load_keys(const std::string& path) {
                 ApiKey ak;
                 ak.key = entry.value("key", "");
                 ak.owner_id = entry.value("owner_id", "");
-                ak.tier = static_cast<PlanTier>(entry.value("tier", 0));
+                // Tier may be an int (as saved) or a string (hand-edited)
+                if (entry.contains("tier") && entry["tier"].is_string()) {
+                    const std::string& t = entry["tier"].get<std::string>();
+                    ak.tier = t == "free" ? PlanTier::FREE :
+                              t == "basic" ? PlanTier::BASIC :
+                              t == "pro" ? PlanTier::PRO :
+                              t == "enterprise" ? PlanTier::ENTERPRISE :
+                              t == "custom" ? PlanTier::CUSTOM : PlanTier::FREE;
+                } else {
+                    ak.tier = static_cast<PlanTier>(entry.value("tier", 0));
+                }
                 ak.active = entry.value("active", true);
                 ak.created_at = entry.value("created_at", 0.0);
                 ak.expires_at = entry.value("expires_at", 0.0);

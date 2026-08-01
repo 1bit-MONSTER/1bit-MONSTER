@@ -473,6 +473,16 @@ bool CodecTts::scan_voice_packs() {
         }
     }
 
+    // Unload packs whose directory/.voice file disappeared (#1373)
+    for (auto it = impl_->packs.begin(); it != impl_->packs.end();) {
+        if (!fs::exists(it->second.path)) {
+            CODEC_LOG("Hot-reload: '%s' removed from disk, unloading", it->first.c_str());
+            it = impl_->packs.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     return found_any;
 }
 
