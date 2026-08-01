@@ -137,6 +137,11 @@ struct GenericBackend : Backend {
 
     bool init(const ModelConfig& model_cfg, const std::string& weights_dir) override {
         cfg = model_cfg;
+        if (!cfg.sane()) {
+            fprintf(stderr, "Generic: REFUSING implausible config (hidden=%d layers=%d heads=%d kv=%d seq=%d)\n",
+                    cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads, cfg.max_seq_len);
+            return false;
+        }
         printf("Generic: initializing %s (%d layers, %d hidden, %d heads)\n",
                cfg.model_name.c_str(), cfg.n_layers, cfg.hidden, cfg.n_heads);
 

@@ -72,8 +72,9 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
             return false;
         }
         if (expect > 0 && n != expect) {
-            fprintf(stderr, "  [vit] %s: expected %zu floats, got %zu — ACCEPTING (auto-detected size)\n", name.c_str(), expect, n);
-            // Accept the tensor at its actual size (auto-detected config may differ)
+            fprintf(stderr, "  [vit] %s: expected %zu floats, got %zu — FAILING LOAD (corrupt or mismatched mmproj)\n",
+                    name.c_str(), expect, n);
+            return false;
         }
         return true;
     };
@@ -134,7 +135,16 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
     get_opt("v.patch_embd.bias", patch_bias, (size_t)H);
 
     // Position and CLS embeddings (optional)
-    has_pos_embd = get_opt("v.position_embd.weight", pos_embd, (size_t)config.max_positions * H);
+    // Accept any size that is a whole number of H-rows: models differ in
+    // max positions (128..2048); the old fixed-expectation silently dropped
+    // positional embeddings for any model != the 1024 default.
+    has_pos_embd = get_opt("v.position_embd.weight", pos_embd, 0);
+    if (has_pos_embd && pos_embd.size() % (size_t)H != 0) {
+        fprintf(stderr, "  [vit] position_embd size %zu not a multiple of H=%d — ignoring\n",
+                pos_embd.size(), H);
+        has_pos_embd = false;
+        pos_embd.clear();
+    }
     has_cls_embd = get_opt("v.class_embd.weight", cls_embd, (size_t)H);
 
     // Pre-LN (optional)
@@ -287,6 +297,10 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
             // mm.0 exists — this is a projector model
             int d0 = (int)sqrtf((float)n); // square matrix: [d0, d0]
             if (d0 * d0 != (int)n) d0 = n / config.hidden_size; // fallback
+            if (d0 <= 0) {  // crafted mmproj: n < H -> d0 == 0 -> SIGFPE below
+                fprintf(stderr, "  [vit] FAIL: mm.0.weight has %zu elements (need >= H=%d)\n", n, config.hidden_size);
+                return false;
+            }
 
             // Check for mm.1 (3-layer MLP)
             if (read_tensor_f32(gguf_path, "mm.1.weight", mm1_w, &n)) {
@@ -421,6 +435,15 @@ std::vector<float> vit_forward(const VisionWeights& weights, const float* img,
     const auto& cfg = weights.config;
     int H = cfg.hidden_size, NH = cfg.num_heads, HD = H / NH;
     int P = cfg.patch_size, FF = cfg.intermediate_size;
+    // Same file-controlled-dim validation as mage_vit_forward (issue #1297):
+    // NH=0/P=0 from a crafted mmproj would SIGFPE here.
+    if (H <= 0 || NH <= 0 || NH > H || HD <= 0 || P <= 0 || FF <= 0 ||
+        img_w <= 0 || img_h <= 0 ||
+        (int)weights.layers.size() < cfg.num_layers) {
+        fprintf(stderr, "[vit] FAIL: invalid config (H=%d NH=%d P=%d FF=%d layers=%zu/%d)\n",
+                H, NH, P, FF, weights.layers.size(), cfg.num_layers);
+        return {};
+    }
     int pw = img_w / P, ph = img_h / P;
     int n_patches = pw * ph;
     int n_positions = pw * ph;
