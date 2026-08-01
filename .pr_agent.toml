@@ -1,6 +1,6 @@
 [pr_agent]
-model = "deepseek/deepseek-chat"
-model_turbo = "deepseek/deepseek-chat"
+model = "deepseek/deepseek-v4-flash"
+model_turbo = "deepseek/deepseek-v4-flash"
 fallback_models = []
 verbosity_level = 2
 publish_output = true
@@ -34,12 +34,12 @@ push_changelog_changes = true
 enable_help_text = false
 
 [config]
-model = "deepseek/deepseek-chat"
+model = "deepseek/deepseek-v4-flash"
 fallback_models = []
 ignore_pr_labels = []
-# deepseek/deepseek-chat isn't registered in pr-agent's internal MAX_TOKENS
+# deepseek/deepseek-v4-flash isn't registered in pr-agent's internal MAX_TOKENS
 # table, so every review/description/suggestion call was throwing
-# "Ensure deepseek/deepseek-chat is defined in MAX_TOKENS ... or set a
+# "Ensure deepseek/deepseek-v4-flash is defined in MAX_TOKENS ... or set a
 # positive value for it in config.custom_model_max_tokens" and failing
-# silently on every PR. 64000 matches DeepSeek-V3's published context window.
-custom_model_max_tokens = 64000
+# silently on every PR. 128000 matches V4-Flash's context window.
+custom_model_max_tokens = 128000
