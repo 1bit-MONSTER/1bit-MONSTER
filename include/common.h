@@ -104,6 +104,11 @@ struct ModelConfig {
         if (num_layers <= 0 || num_layers > 1024) return false;
         if (num_heads <= 0 || num_heads > 1024) return false;
         if (num_kv_heads <= 0 || num_kv_heads > num_heads) return false;
+        // GQA: kv_h = h / (NH/NKV) reads up to kv_h == NKV when NH % NKV != 0
+        // -> heap OOB past the KV cache slice in attention (issue #1284 class).
+        if (num_heads % num_kv_heads != 0) return false;
+        if (num_experts > 0 && (num_experts_top <= 0 || num_experts_top > num_experts))
+            return false;  // partial_sort(idx, idx+top) is UB when top > experts
         if (head_dim <= 0 || head_dim > 4096) return false;
         if (intermediate_size <= 0 || intermediate_size > (1 << 24)) return false;
         if (vocab_size <= 0 || vocab_size > (1 << 26)) return false;

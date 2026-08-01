@@ -512,16 +512,14 @@ static json handle_chat(const json& body) {
 }
 
 // ── main ───────────────────────────────────────────────────────────────
-// The vendored httplib has no has_file()/get_file_value() — multipart
-// files live in req.form.files (multimap name -> FormData).
+// httplib 0.18 API: req.has_file()/req.get_file_value() (the old req.form /
+// httplib::FormData names were removed upstream).
 static bool has_file(const httplib::Request& req, const std::string& name) {
-    return req.is_multipart_form_data() &&
-           req.form.files.find(name) != req.form.files.end();
+    return req.has_file(name);
 }
-static httplib::FormData get_file_value(const httplib::Request& req,
-                                        const std::string& name) {
-    auto it = req.form.files.find(name);
-    return it == req.form.files.end() ? httplib::FormData{} : it->second;
+static httplib::MultipartFormData get_file_value(const httplib::Request& req,
+                                                 const std::string& name) {
+    return req.get_file_value(name);
 }
 
 int main(int argc, char** argv) {
