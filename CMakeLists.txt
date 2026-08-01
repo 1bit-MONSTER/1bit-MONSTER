@@ -923,8 +923,6 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_hip.cpp
     src/backend_hip_1bp.cpp
     src/unified_pool.cpp
-    src/backend_fused.cpp
-    src/backend_fused_npu.cpp
     src/backend_vulkan_hpp.cpp
     src/backend_ggml_vulkan.cpp
     src/zaya_engine.cpp
@@ -932,6 +930,25 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_npu_flm.cpp
     src/backend_generic.cpp
 )
+
+# Fused GPU+NPU backend (attention on GPU ∥ FFN on NPU, zero-copy SharedBO)
+# needs the XRT + AIEBU dev headers at compile time. CI images ship the
+# XRT/AIEBU cmake configs but NOT the headers (apt libxrt-dev is a different,
+# older XRT without xrt_bo.h), so gate on an actual header compile test.
+# The factories are dlsym-dispatched (backend_manager.cpp), so an absent
+# backend just registers as unavailable at runtime — safe to exclude.
+find_package(xrt QUIET)
+find_package(aiebu QUIET)
+include(CheckIncludeFile)
+check_include_file("xrt/xrt_bo.h" _RC_XRT_BO_H)
+set(_RC_HAVE_FUSED_BACKEND FALSE)
+if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND AND _RC_XRT_BO_H)
+    set(_RC_HAVE_FUSED_BACKEND TRUE)
+    list(APPEND UNIFIED_SERVER_SOURCES src/backend_fused.cpp src/backend_fused_npu.cpp)
+    message(STATUS "rocm-cpp: fused GPU+NPU backend enabled (XRT + AIEBU headers present)")
+else()
+    message(STATUS "rocm-cpp: fused GPU+NPU backend disabled (XRT headers or AIEBU missing)")
+endif()
 
 # unified_server — CUDA/Metal come through backend_manager (PR #579 pattern),
 # so they don't appear in sources or link line here.
@@ -1453,7 +1470,7 @@ endif()
 # without pulling in test_pipeline_real.cpp's demo/harness code.
 find_package(aiebu QUIET)
 find_package(xrt QUIET)
-if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
+if(_RC_HAVE_FUSED_BACKEND)
     if(EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/shared_bo.cpp" AND
        EXISTS "${CMAKE_SOURCE_DIR}/engine/fusion/zero_copy/pipeline_overlap.cpp")
         add_library(fusion_zero_copy STATIC
@@ -1463,7 +1480,8 @@ if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND)
         target_include_directories(fusion_zero_copy PUBLIC
             engine/fusion/zero_copy
             ${CMAKE_SOURCE_DIR}/include
-            ${THEROCK_SDK_BASE}/include)
+            ${THEROCK_SDK_BASE}/include
+            ${XRT_INCLUDE_DIRS})  # xrt/xrt_bo.h etc. — consumed by fused backend in unified_server/onebin
         target_compile_options(fusion_zero_copy PRIVATE
             -g -O3 -march=native -fno-signed-zeros -fno-trapping-math -fassociative-math
             -freciprocal-math -fno-math-errno -fno-rounding-math
