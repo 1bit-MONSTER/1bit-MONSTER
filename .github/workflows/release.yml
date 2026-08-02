@@ -83,7 +83,7 @@ jobs:
             zaya_server \
             onebitd \
             onebit \
-            onebit_bin \
+            onebin \
             unified_router \
             unified_server \
             zaya_agent \
