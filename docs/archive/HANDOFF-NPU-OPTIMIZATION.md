@@ -3,7 +3,7 @@
 ### Production Release
 
 **Tag:** `v2026.07.02-all5models`  
-**Release:** https://github.com/bong-water-water-bong/1bit-systems/releases/tag/v2026.07.02-all5models  
+**Release:** https://github.com/1bit-systems/1bit-systems/releases/tag/v2026.07.02-all5models  
 **Site:** https://1bit.systems — "One binary to rule them all. 35 models. ~400 KB. Auto-detect."
 
 ### The Pitch

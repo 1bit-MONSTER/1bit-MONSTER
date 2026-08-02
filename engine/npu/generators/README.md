@@ -157,6 +157,6 @@ The fix script:
   `opt`/`llc`.
 - **Chess vs Peano PDI divergence**: xclbins built with different compilers
   produce different PDI binaries. Always use Peano for GEMM xclbins.
-  See [#1076](https://github.com/bong-water-water-bong/1bit-systems/issues/1076).
+  See [#1076](https://github.com/1bit-systems/1bit-systems/issues/1076).
 - **BD count limit**: If you increase batch_size beyond 6, verify total BDs
   stay under 16 per tile. See the table above for the formula.

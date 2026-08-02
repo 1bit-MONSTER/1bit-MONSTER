@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-28",
+  "updated": "2026-08-01",
   "_updated_note": "2026-07-28: NPU engine replaced FLM-based v12 path with native npu_engine_universal (INT8 GEMM, Peano-compiled xclbins). All 22 GEMM shapes across 5 models verified 0/10000 errors on real hardware. NPU attention fixed (xrt::ext::bo overload resolution). NPU end-to-end prefill/decode now functional. Chess toolchain permanently deprecated (multi-dim BD repeat descriptors hang NPU2 DMA). Mamba1 GPU numbers: 79.4/46.0 tok/s re-validated 2026-07-26.",
   "source": "validated on real Strix Halo NPU hardware (single-agent, no contention), GPU numbers from cold GPU",
   "engines": {
@@ -93,11 +93,12 @@
       "tok_s": 43.2,
       "TFLOPS": 43.2,
       "status": "validated",
-      "label": "Prefill INT8 WMMA (39.4 TFLOPS, I8-APRE winner)",
+      "remeasured": "2026-08-01",
+      "label": "Prefill INT8 WMMA (43.2 TFLOPS, I8-APRE winner)",
       "table": "kernel",
       "display_name": "Prefill",
       "backend": "INT8 WMMA",
-      "notes": "Benchmark shows 39.42 TFLOPS (winner variant: I8-APRE). Prior 40.5 was from a colder GPU pass."
+      "notes": "43.2 TFLOPS re-measured 2026-08-01 (winner variant: I8-APRE). Prior 39.4/40.5 were colder-GPU passes."
     },
     "gpu_1bit": {
       "tok_s": 229,
@@ -106,7 +107,7 @@
       "table": "end_to_end",
       "display_name": "llama.cpp ROCm (PrismML)",
       "backend": "PrismML on same hardware",
-      "notes": "See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235)"
+      "notes": "See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235)"
     },
     "dspark": {
       "tok_s": 0.8,
@@ -313,8 +314,8 @@
     "tflops_int8": 43.2
   },
   "mamba1_gpu": {
-    "blackmamba_1_5b_tok_s": 79.8,
-    "blackmamba_2_8b_tok_s": 45.7,
+    "blackmamba_1_5b_tok_s": 79.4,
+    "blackmamba_2_8b_tok_s": 46.0,
     "layers_1_5b": "15 SSM + 15 MoE",
     "layers_2_8b": "18 SSM + 18 MoE",
     "prefill_tflops": 41.45,
@@ -322,9 +323,20 @@
     "blackmamba_2_8b_verified": "2026-07-25",
     "blackmamba_2_8b_note": "Re-measured live 2026-07-25 via GET /v1/health on the running unified_server (last_ms=21.87, from BackendManager::benchmark_all()'s real generate() calls) -- 45.7 tok/s, consistent with prior 46.4. NOTE: this path currently only runs on the server's internal benchmark thread -- real client requests to POST /v1/completions hang indefinitely as of this date, see issue #922. Don't cite this number as 'reachable via the public API' until #922 is fixed."
   },
+  "ggml_vulkan_e2e": {
+    "_measured": "2026-08-01",
+    "_host": "Radeon 8060S / Strix Halo (Ryzen AI MAX+ 395), GGML-Vulkan (llama.cpp), llama-cli -st -ngl 999",
+    "smollm2_135m_q4km_tok_s": 662,
+    "smollm2_360m_q4km_tok_s": 389,
+    "smollm2_1_7b_q4km_tok_s": 167,
+    "qwen3_0_6b_q4km_tok_s": 373,
+    "qwen2_5_vl_3b_q4km_tok_s": 100,
+    "qwen35_4b_q4km_tok_s": 65,
+    "deepseek_r1_distill_llama_8b_q4km_tok_s": 44
+  },
   "commit": "3706adfbbea019e754513eb841a751cafa6da276",
   "_notes": {
-    "prior_numbers": "Prior published numbers (79.8/46.4 tok/s, 40.5 TFLOPS) were from single cold-GPU passes. Re-validated 2026-07-26 across 3 runs each: sustained throughput is 79.4/46.0 tok/s, 40.5 TFLOPS."
+    "prior_numbers": "Prior published numbers (79.8/46.4 tok/s, 39.4/40.5 TFLOPS) were from single cold-GPU passes. Re-validated across 3 runs each: sustained throughput is 79.4/46.0 tok/s; prefill re-measured 2026-08-01 at 43.2 TFLOPS."
   },
   "_authoritative": true,
   "_data_file_note": "This is the authoritative benchmark data file. numbers.json references headline values from here."

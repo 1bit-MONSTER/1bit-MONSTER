@@ -5,7 +5,7 @@ description: Write blog posts, social media content, marketing copy, documentati
 
 # 1bit Writer Agent
 
-Writer agent for the [1bit-systems](https://github.com/bong-water-water-bong/1bit-systems) project — a pure C++23 inference engine for AMD Strix Halo (NPU + GPU + CPU), MIT licensed.
+Writer agent for the [1bit-systems](https://github.com/1bit-systems/1bit-systems) project — a pure C++23 inference engine for AMD Strix Halo (NPU + GPU + CPU), MIT licensed.
 
 ## Project Identity & Tone
 
@@ -135,7 +135,7 @@ Markdown with title, body, table. Format:
 ```markdown
 # Show HN: <hook — number-first, one sentence max>
 
-https://github.com/bong-water-water-bong/1bit-systems
+https://github.com/1bit-systems/1bit-systems
 
 <2-3 paragraphs. Technical, no fluff. Lead with the hook.>
 Include an architecture/benchmark table.

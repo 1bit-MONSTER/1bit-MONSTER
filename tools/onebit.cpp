@@ -587,7 +587,7 @@ static void cmd_update(bool check_only) {
     headers.emplace("User-Agent", "1bit-cli/" + std::string(kVersion));
     headers.emplace("Accept", "application/vnd.github.v3+json");
 
-    auto res = cli.Get("/repos/bong-water-water-bong/1bit-systems/releases/latest", headers);
+    auto res = cli.Get("/repos/1bit-systems/1bit-systems/releases/latest", headers);
     if (!res || res->status != 200) {
         std::cout << "  ⚠️  Could not check for updates.\n";
         return;

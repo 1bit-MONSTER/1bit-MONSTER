@@ -14,7 +14,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 | # | Deliverable | Status | File/Link |
 |---|------------|--------|-----------|
 | 1 | Project Specification Document | ✅ Complete | `hackathon/spec-document.md` |
-| 2 | Project Source Code | ✅ Complete | https://github.com/bong-water-water-bong/1bit-systems |
+| 2 | Project Source Code | ✅ Complete | https://github.com/1bit-systems/1bit-systems |
 | 3 | Demo Video | ✅ Complete | `hackathon/demo-video.mp4` (2 min, real commands against the live server — see `hackathon/demo-script.md` for the shot list) |
 | 4 | PPT / Poster | ✅ Below | Key slides in this document |
 
@@ -144,7 +144,7 @@ One command:
 
 That's it.
 
-  github.com/bong-water-water-bong/1bit-systems
+  github.com/1bit-systems/1bit-systems
   1bit.systems
   MIT License
 ```

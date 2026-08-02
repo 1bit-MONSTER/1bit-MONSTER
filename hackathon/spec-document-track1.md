@@ -128,7 +128,7 @@
 
 ## 6. Project Links
 
-- **Source**: https://github.com/bong-water-water-bong/1bit-systems
+- **Source**: https://github.com/1bit-systems/1bit-systems
 - **LoRA training code**: `tools/lora/train.cpp`, `tools/lora/lora_layer.h`
 - **Q4NX format spec**: `docs/research/fastflowlm-analysis/Q4NX_FORMAT.md`
 - **1BP format**: `include/onebp_format.h`
@@ -140,7 +140,7 @@
 ## 7. Setup
 
 ```bash
-git clone https://github.com/bong-water-water-bong/1bit-systems
+git clone https://github.com/1bit-systems/1bit-systems
 cd 1bit-systems
 # Install TheRock 7.15.0a
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"

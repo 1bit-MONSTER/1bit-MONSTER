@@ -14,7 +14,7 @@ Track: **Track 3 — AI Acceleration & Performance**
 | # | Deliverable | Status | File/Link |
 |---|------------|--------|-----------|
 | 1 | Project Specification Document | ✅ Complete | `hackathon/spec-document-track3.md` |
-| 2 | Project Source Code | ✅ Complete | https://github.com/bong-water-water-bong/1bit-systems |
+| 2 | Project Source Code | ✅ Complete | https://github.com/1bit-systems/1bit-systems |
 | 3 | Demo Video | ⬜ To record | See `hackathon/demo-script-track3.md` |
 | 4 | PPT / Poster | ✅ Below | Key slides in this document |
 

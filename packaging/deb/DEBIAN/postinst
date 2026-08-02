@@ -13,4 +13,4 @@ fi
 echo ""
 echo "Usage: 1bit chat   (or: onebit serve / zaya_server --model <path>)"
 echo "Docs:   https://1bit.systems"
-echo "Source: https://github.com/bong-water-water-bong/1bit-systems"
+echo "Source: https://github.com/1bit-systems/1bit-systems"

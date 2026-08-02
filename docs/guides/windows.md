@@ -50,7 +50,7 @@ $installDir = "$env:LOCALAPPDATA\1bit-npu"
 $binDir = "$env:USERPROFILE\.local\bin"
 
 # Download latest release from GitHub
-$release = Invoke-RestMethod "https://api.github.com/repos/bong-water-water-bong/1bit-systems/releases/latest"
+$release = Invoke-RestMethod "https://api.github.com/repos/1bit-systems/1bit-systems/releases/latest"
 # ... extract and install
 ```
 
@@ -76,7 +76,7 @@ If you have a Strix Halo machine running Windows and want to help:
 ```powershell
 # 1. Open "Developer PowerShell" (as admin)
 # 2. Clone the repo
-git clone https://github.com/bong-water-water-bong/1bit-systems
+git clone https://github.com/1bit-systems/1bit-systems
 cd 1bit-systems
 
 # 3. Try building the HTTP server (most portable component)

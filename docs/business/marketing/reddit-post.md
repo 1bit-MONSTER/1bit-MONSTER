@@ -13,7 +13,7 @@ Both running entirely on the Strix Halo iGPU via ROCm HIP, no Python, no PyTorch
 Alternating SSM + MoE layers, full autoregressive decode, single binary.
 
 ```bash
-git clone https://github.com/bong-water-water-bong/1bit-systems
+git clone https://github.com/1bit-systems/1bit-systems
 cd 1bit-systems && source env.sh
 cmake -B build -G Ninja
 cmake --build build --target unified_server -j$(nproc)
@@ -69,8 +69,8 @@ All fixed, all verified running on hardware.
 
 ### Links
 
-GitHub: https://github.com/bong-water-water-bong/1bit-systems
+GitHub: https://github.com/1bit-systems/1bit-systems
 Audit trail: `docs/journey.md` — 1800+ lines, every bug and fix documented
-PR #579: https://github.com/bong-water-water-bong/1bit-systems/pull/579
+PR #579: https://github.com/1bit-systems/1bit-systems/pull/579
 
 MIT. Your hardware, your model, your choice of backend.

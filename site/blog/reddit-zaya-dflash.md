@@ -14,7 +14,7 @@ We've been building **1bit.systems** — an open-source (MIT) inference engine f
 
 What it does: a single C++ binary auto-detects any GGUF model's architecture and quantization, then routes it to whichever backend can actually run it — GPU (ROCm HIP / Vulkan), NPU (XDNA 2), or CPU. No config files, no model registry. Zero Python at runtime.
 
-**[GitHub](https://github.com/bong-water-water-bong/1bit-systems) · [Install](https://1bit.systems/) · [Benchmarks](https://1bit.systems/bench)**
+**[GitHub](https://github.com/1bit-systems/1bit-systems) · [Install](https://1bit.systems/) · [Benchmarks](https://1bit.systems/bench)**
 
 The numbers so far (validated, `site/benchmarks.json`):
 
@@ -42,5 +42,5 @@ Both target Qwen3-0.6B as the draft, `block_size=7`. Still research-stage — no
 
 ---
 
-**Links**: [GitHub](https://github.com/bong-water-water-bong/1bit-systems) · [Install](https://1bit.systems/) (`curl -sL https://1bit.systems/install.sh | bash`)
+**Links**: [GitHub](https://github.com/1bit-systems/1bit-systems) · [Install](https://1bit.systems/) (`curl -sL https://1bit.systems/install.sh | bash`)
 **DFlash (external, inspiration for our draft config)**: [github.com/z-lab/dflash](https://github.com/z-lab/dflash) · [github.com/z-lab](https://github.com/z-lab)
