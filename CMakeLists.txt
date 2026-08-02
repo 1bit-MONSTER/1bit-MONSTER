@@ -423,7 +423,7 @@ add_library(vision_encoder STATIC src/vision_encoder.cpp)
 target_include_directories(vision_encoder PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(vision_encoder PRIVATE -O3 -march=native -ffast-math -std=c++23 -Wno-unused-result)
+target_compile_options(vision_encoder PRIVATE -O3 -march=native -std=c++23 -Wno-unused-result)
 target_link_libraries(vision_encoder PUBLIC vl_image backend_manager onebp_model)
 
 # -- libwhisper : Speech-to-text (Whisper) ----------------------------------------------
@@ -431,7 +431,7 @@ add_library(whisper STATIC src/whisper.cpp)
 target_include_directories(whisper PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(whisper PRIVATE -O3 -march=native -ffast-math -std=c++23 -Wno-unused-result)
+target_compile_options(whisper PRIVATE -O3 -march=native -std=c++23 -Wno-unused-result)
 target_link_libraries(whisper PUBLIC backend_manager)
 
 # -- libpixtral : Pixtral (Mistral) vision-language connector --------------------------
@@ -439,7 +439,7 @@ add_library(pixtral STATIC src/pixtral.cpp)
 target_include_directories(pixtral PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(pixtral PRIVATE -O3 -march=native -ffast-math -std=c++23 -Wno-unused-result)
+target_compile_options(pixtral PRIVATE -O3 -march=native -std=c++23 -Wno-unused-result)
 target_link_libraries(pixtral PUBLIC vision_encoder backend_manager vl_image)
 
 
@@ -559,7 +559,7 @@ add_executable(ppl_generic
     src/q4nx_reader.cpp
     src/safetensors_reader.cpp)
 target_include_directories(ppl_generic PRIVATE src include engine/npu/src)
-target_compile_options(ppl_generic PRIVATE -O3 -march=native -ffast-math -std=c++23)
+target_compile_options(ppl_generic PRIVATE -O3 -march=native -std=c++23)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(ppl_generic PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -579,7 +579,11 @@ if(RCPP_HAVE_METAL)
     target_link_libraries(backend_manager PRIVATE ${METAL_LIBRARY} ${METAL_PERFORMANCE_SHADERS_LIBRARY})
     target_compile_options(backend_manager PRIVATE -fobjc-arc)
 endif()
-target_compile_options(backend_manager PRIVATE -O3 -march=native -ffast-math -Wall -Wno-unused-result -std=c++23)
+target_compile_options(backend_manager PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
+# NOTE: no -ffast-math here (deliberately) — it implies -ffinite-math-only and
+# reassociation; it made the generic backend's expf-based SiLU produce NaN for
+# large SwiGLU gates (issue #1243 re-conversion gate: Qwen3-8B ppl 58k vs 7.35
+# without it). Same class of bug as #825/#1277.
 
 # Try to find libzinc.so for the real GGUF tokenizer C ABI.
 # If not found, ZINC_DISABLED remains set and the C++ stubs in
@@ -1153,7 +1157,7 @@ endif()
 
 add_executable(backend_demo tools/backend_demo.cpp)
 target_include_directories(backend_demo PRIVATE src/)
-target_compile_options(backend_demo PRIVATE -O3 -march=native -ffast-math -Wall -Wno-unused-result -std=c++23)
+target_compile_options(backend_demo PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(backend_demo PRIVATE backend_manager dl)
 
 add_executable(test_mamba1_backend tools/test_mamba1_backend.cpp)
@@ -1649,7 +1653,7 @@ target_include_directories(dspark_full PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR})
 target_compile_options(dspark_full PRIVATE
-    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+    -O3 -march=native -std=c++23 -fopenmp)
 target_link_libraries(dspark_full PRIVATE
     rocm_cpp
     ${CMAKE_DL_LIBS} m pthread)
@@ -1672,7 +1676,7 @@ target_include_directories(dspark_gpu_bench PRIVATE
     ${CMAKE_SOURCE_DIR}/spec-decode
     ${THEROCK_SDK_BASE}/include)
 target_compile_options(dspark_gpu_bench PRIVATE
-    -O3 -march=native -ffast-math -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
+    -O3 -march=native -std=c++23 -fopenmp -D__HIP_PLATFORM_AMD__)
 target_link_libraries(dspark_gpu_bench PRIVATE
     rocm_cpp
     ${CMAKE_DL_LIBS} m pthread hipblas)
@@ -1692,7 +1696,7 @@ target_include_directories(trg_save PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/fusion
     ${CMAKE_SOURCE_DIR})
 target_compile_options(trg_save PRIVATE
-    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+    -O3 -march=native -std=c++23 -fopenmp)
 target_link_libraries(trg_save PRIVATE
     ${CMAKE_DL_LIBS} m pthread)
 set_target_properties(trg_save PROPERTIES
@@ -1706,7 +1710,7 @@ target_include_directories(oscar_calib PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/fusion
     ${CMAKE_SOURCE_DIR})
 target_compile_options(oscar_calib PRIVATE
-    -O3 -march=native -ffast-math -std=c++23 -fopenmp)
+    -O3 -march=native -std=c++23 -fopenmp)
 target_link_libraries(oscar_calib PRIVATE
     ${CMAKE_DL_LIBS} m pthread)
 set_target_properties(oscar_calib PROPERTIES

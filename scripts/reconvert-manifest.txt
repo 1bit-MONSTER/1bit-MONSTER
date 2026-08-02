@@ -1,0 +1,53 @@
+# 1BP re-conversion manifest (issue #1243) — output_name|hf_repo|gguf_file|vocab_family
+# Sources are Q8_0 GGUFs (audit requirement). Qwen-vocab → ppl gate; other → structural.
+# NOTE: output_name is WITHOUT the .1bp extension (the script appends it).
+# Verified source URLs; extend with the remaining affected models as sources are located.
+
+# — pilot batch (sources verified 2026-08-02) —
+Falcon3-1B-Instruct|bartowski/Falcon3-1B-Instruct-GGUF|Falcon3-1B-Instruct-Q8_0.gguf|other
+Qwen3-8B|unsloth/Qwen3-8B-GGUF|Qwen3-8B-Q8_0.gguf|qwen
+Qwen3-4B|unsloth/Qwen3-4B-GGUF|Qwen3-4B-Q8_0.gguf|qwen
+Llama-3.1-8B-Instruct|bartowski/Meta-Llama-3.1-8B-Instruct-GGUF|Meta-Llama-3.1-8B-Instruct-Q8_0.gguf|other
+
+# — remaining affected catalog (sources TBD — unsloth/bartowski naming pattern) —
+# DeepSeek-R1-0528-Qwen3-8B|TBD|TBD|qwen
+# DeepSeek-R1-Distill-Qwen-7B|TBD|TBD|qwen
+# DeepSeek-R1-Distill-Qwen-14B|TBD|TBD|qwen
+# DeepSeek-R1-Distill-Qwen-32B|TBD|TBD|qwen
+# DeepSeek-R1-Distill-Llama-8B|TBD|TBD|other
+# DeepSeek-Coder-V2-Lite-Instruct|TBD|TBD|other
+# Dolphin3.0-Llama3.1-8B|TBD|TBD|other
+# Falcon3-3B-Instruct|bartowski/Falcon3-3B-Instruct-GGUF|Falcon3-3B-Instruct-Q8_0.gguf|other
+# Falcon3-7B-Instruct|bartowski/Falcon3-7B-Instruct-GGUF|Falcon3-7B-Instruct-Q8_0.gguf|other
+# Falcon3-10B-Instruct|bartowski/Falcon3-10B-Instruct-GGUF|Falcon3-10B-Instruct-Q8_0.gguf|other
+# Gemma-2-2B-it|bartowski/google_gemma-2-2b-it-GGUF|google_gemma-2-2b-it-Q8_0.gguf|other
+# Gemma-3-1B-it|bartowski/google_gemma-3-1b-it-GGUF|google_gemma-3-1b-it-Q8_0.gguf|other
+# Gemma-3-4B-it|bartowski/google_gemma-3-4b-it-GGUF|google_gemma-3-4b-it-Q8_0.gguf|other
+# Gemma-3-12B-it|bartowski/google_gemma-3-12b-it-GGUF|google_gemma-3-12b-it-Q8_0.gguf|other
+# Gemma-4-26B-A4B-it|TBD|TBD|other
+# Gemma-4-31B-it|TBD|TBD|other
+# Granite-3.2-8B-Instruct|bartowski/Granite-3.2-8B-Instruct-GGUF|Granite-3.2-8B-Instruct-Q8_0.gguf|other
+# KAT-Coder-V2.5|TBD|TBD|qwen
+# Laguna-S-2.1|TBD|TBD|other
+# Ling-2.6-Flash|TBD|TBD|qwen
+# Llama-3.2-3B-Instruct|bartowski/Llama-3.2-3B-Instruct-GGUF|Llama-3.2-3B-Instruct-Q8_0.gguf|other
+# Ministral-8B-Instruct|bartowski/Ministral-8B-Instruct-2410-GGUF|Ministral-8B-Instruct-2410-Q8_0.gguf|other
+# Mistral-Small-3.1-24B-Instruct|bartowski/Mistral-Small-3.1-24B-Instruct-2503-GGUF|Mistral-Small-3.1-24B-Instruct-2503-Q8_0.gguf|other
+# Nemotron-3-Super-120B-A12B|TBD|TBD|other
+# North-Mini-Code-1.0|TBD|TBD|qwen
+# OLMo-2-1124-7B-Instruct|allenai/OLMo-2-1124-7B-Instruct-GGUF|OLMo-2-1124-7B-Instruct-Q8_0.gguf|other
+# OLMo-2-0325-32B|allenai/OLMo-2-0325-32B-Instruct-GGUF|OLMo-2-0325-32B-Instruct-Q8_0.gguf|other
+# Ornith-35B|TBD|TBD|other
+# Phi-4-mini-instruct|bartowski/Phi-4-mini-instruct-GGUF|Phi-4-mini-instruct-Q8_0.gguf|other
+# Qwen2-VL-7B|TBD|TBD|qwen
+# Qwen2.5-3B-Instruct|TBD|TBD|qwen
+# Qwen2.5-7B-Instruct|TBD|TBD|qwen
+# Qwen2.5-VL-3B|TBD|TBD|qwen
+# Qwen2.5-VL-7B|TBD|TBD|qwen
+# Qwen3-Coder-30B-A3B|unsloth/Qwen3-Coder-30B-A3B-GGUF|Qwen3-Coder-30B-A3B-Q8_0.gguf|qwen
+# Qwen3-VL-2B|TBD|TBD|qwen
+# Qwen3-VL-4B|TBD|TBD|qwen
+# Qwen3.5-4B|unsloth/Qwen3.5-4B-GGUF|Qwen3.5-4B-Q8_0.gguf|qwen
+# Qwen3.5-9B|unsloth/Qwen3.5-9B-GGUF|Qwen3.5-9B-Q8_0.gguf|qwen
+# Qwen3.6-27B|unsloth/Qwen3.6-27B-GGUF|Qwen3.6-27B-Q8_0.gguf|qwen
+# Qwen3.6-35B-A3B|unsloth/Qwen3.6-35B-A3B-GGUF|Qwen3.6-35B-A3B-Q8_0.gguf|qwen
