@@ -43,3 +43,7 @@
 /docs/contributing          /                           301
 /docs/changelog.html        /                           301
 /docs/changelog             /                           301
+
+# Repo docs (paths removed from /docs/ collapse)
+/wiki/models        https://github.com/1bit-systems/1bit-systems/blob/main/docs/wiki/models.md        302
+/wiki/performance   https://github.com/1bit-systems/1bit-systems/blob/main/docs/wiki/performance.md   302
