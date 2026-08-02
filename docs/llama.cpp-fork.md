@@ -10,6 +10,10 @@ sync record. Bump it whenever the fork moves.
 - **Merge commit**: `0807d70be21914a2ed616b500f7b10258d029f7a`
 - **Date**: 2026-08-01
 - **Source PR**: bong-water-water-bong/llama.cpp#2 — *feat: paged KV cache — fixed-pool GPU tensors with CPU backing store*
+- **Local checkout**: synced to this commit 2026-08-02 (was at PR head `329cb3241`), rebuilt `-DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF`
+  (static libs required by `zaya_server` import — without `BUILD_SHARED_LIBS=OFF` ggml builds shared and the
+  import check in `CMakeLists.txt` silently fails). Vulkan backend verified on Strix Halo: `llama-bench` sees
+  Radeon 8060S (RADV, KHR_coopmat); `unified_server` relinked against the synced statics.
 
 ## What shipped in this sync
 
