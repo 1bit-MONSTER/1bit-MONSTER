@@ -74,8 +74,8 @@ install_deps() {
     # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151
     if ! command -v amdclang++ &>/dev/null; then
         log "Installing TheRock 7.15.0a SDK..."
-        python3 -m pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-            rocm[devel,libraries] 2>/dev/null || {
+        python3 -m pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+            "rocm[libraries,devel,device-gfx1151]" 2>/dev/null || {
             warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
             warn "See: https://github.com/bong-water-water-bong/TheRock"
         }

@@ -143,7 +143,7 @@
 git clone https://github.com/bong-water-water-bong/1bit-systems
 cd 1bit-systems
 # Install TheRock 7.15.0a
-pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ rocm[devel,libraries]
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 # Build
 cmake -B build -DCMAKE_HIP_ARCHITECTURES=gfx1151
