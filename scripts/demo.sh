@@ -63,22 +63,14 @@ done
 echo "" | tee -a "$LOGFILE"
 
 # ── Step 5: Fused Engine Inference ──
-echo "=== 5. Fused Engine ===" | tee -a "$LOGFILE"
-if [ -f "$MODEL" ] && [ -x "$NPU_ENGINE" ] && [ -f "$TOKENIZER" ]; then
-  echo "  Model: $(basename $MODEL)" | tee -a "$LOGFILE"
-  echo "  Generating 10 tokens..." | tee -a "$LOGFILE"
-  command time -f "  Time: %e seconds" \
-    ./engine/fusion/zig-out/bin/fused-engine \
-    -m "$MODEL" \
-    --npu-engine "$NPU_ENGINE" \
-    --tokenizer "$TOKENIZER" \
-    -n 10 -p "The capital of France is" 2>&1 | \
-    grep -E "GPU.*ready|Generating|tokens in|tok/s|error" | head -10 | tee -a "$LOGFILE"
+# The standalone Zig fused-engine binary was removed in the one-ELF era
+# (commit "one ELF to rule them all"); NPU+GPU fusion now runs inside
+# build/1bit (zaya_server) — see Step 7.
+if [ -f "$MODEL" ]; then
+  echo "  (fused-engine superseded — run build/1bit zaya instead; see Step 7)" | tee -a "$LOGFILE"
 else
-  echo "  ⚠️ Model/NPU engine not found — running help instead" | tee -a "$LOGFILE"
-  ./engine/fusion/zig-out/bin/fused-engine --help 2>&1 | head -5 | tee -a "$LOGFILE"
+  echo "  ⚠️ Model not found — skipping" | tee -a "$LOGFILE"
 fi
-echo "" | tee -a "$LOGFILE"
 
 # ── Step 6: GGUF Loader ──
 echo "=== 6. GGUF Model Loader ===" | tee -a "$LOGFILE"
