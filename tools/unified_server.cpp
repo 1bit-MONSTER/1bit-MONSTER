@@ -354,12 +354,16 @@ static json health_json(BackendManager& mgr) {
 }
 
 // ── Sampling: temperature + top-k from raw logits ──
-// Returns a sampled token id. temperature<=0 && top_k<=0 → argmax (greedy).
-// Callers serialize decode under g_inference_mutex, so a plain static RNG is safe.
-static uint64_t g_sample_state = 0;
+// Returns a sampled token id. temperature<=0 → argmax (greedy), matching
+// OpenAI convention that temp 0 is deterministic even when top_k is set.
+// Thread-local RNG + scratch: decode may run on multiple threads, so the
+// sampler must not depend on an external locking invariant (PR #1398 review).
+static thread_local uint64_t g_sample_state = 0;
+static thread_local std::vector<float> g_sample_scaled;
+static thread_local std::vector<float> g_sample_sorted;
 static int sample_from_logits(const float* logits, int vs, float temperature, int top_k) {
     if (vs <= 0 || !logits) return 0;
-    if (temperature <= 0.0f && top_k <= 0) {  // greedy
+    if (temperature <= 0.0f) {  // greedy
         int best = 0; float bv = logits[0];
         for (int v = 1; v < vs; v++) if (logits[v] > bv) { bv = logits[v]; best = v; }
         return best;
@@ -375,9 +379,11 @@ static int sample_from_logits(const float* logits, int vs, float temperature, in
     float max_l = -1e30f;
     for (int v = 0; v < vs; v++) if (logits[v] > max_l) max_l = logits[v];
     float t = temperature > 0.0f ? temperature : 1.0f;
-    std::vector<float> scaled(vs);
+    auto& scaled = g_sample_scaled;
+    scaled.resize(vs);
     if (top_k > 0 && top_k < vs) {
-        std::vector<float> sorted(logits, logits + vs);
+        auto& sorted = g_sample_sorted;
+        sorted.assign(logits, logits + vs);
         std::nth_element(sorted.begin(), sorted.begin() + top_k - 1, sorted.end(),
                          std::greater<float>());
         float cutoff = sorted[top_k - 1];
@@ -1395,11 +1401,13 @@ int main(int argc, char** argv) {
         int max_tokens = body.value("max_tokens", 256);
         if (max_tokens < 1) max_tokens = 1;
         if (max_tokens > 32768) max_tokens = 32768;
-        float temperature = body.value("temperature", 0.0f);
-        if (temperature < 0.0f) temperature = 0.0f;
-        if (temperature > 5.0f) temperature = 5.0f;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
+        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
+        // only top_k is supplied so top-k-only sampling still samples.
+        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        if (temperature < 0.0f) temperature = 0.0f;
+        if (temperature > 5.0f) temperature = 5.0f;
         std::string req_model = body.value("model", "");
 
         // ── Serialize all compute against the single shared backend context ──
@@ -1649,11 +1657,13 @@ int main(int argc, char** argv) {
         int max_tokens = body.value("max_tokens", 256);
         if (max_tokens < 1) max_tokens = 1;
         if (max_tokens > 32768) max_tokens = 32768;
-        float temperature = body.value("temperature", 0.0f);
-        if (temperature < 0.0f) temperature = 0.0f;
-        if (temperature > 5.0f) temperature = 5.0f;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
+        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
+        // only top_k is supplied so top-k-only sampling still samples.
+        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        if (temperature < 0.0f) temperature = 0.0f;
+        if (temperature > 5.0f) temperature = 5.0f;
 
         std::vector<double> empty_logprobs;
         json gen_result;
