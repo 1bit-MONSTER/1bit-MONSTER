@@ -30,6 +30,11 @@ REPORT="$ROOT/research/ws05-1bp-v2/RECONVERT-REPORT.md"
 MANIFEST="${1:-$ROOT/scripts/reconvert-manifest.txt}"
 THREADS="${PPL_THREADS:-16}"
 
+# single-instance lock — two concurrent runs race downloads/outputs and
+# corrupt the batch (bit the whole 2026-08-02 14:07 run)
+exec 9>"$ROOT/scripts/.reconvert.lock"
+flock -n 9 || { echo "reconvert_1bp_catalog: already running"; exit 1; }
+
 mkdir -p "$SRC_DIR"
 [ -x "$SCAN" ] || g++ -O2 -std=c++23 "$ROOT/tools/scan_1bp.cpp" -o "$SCAN" \
     -I"$ROOT/include" -I"$ROOT/src" -I"$ROOT/engine/npu/src"
@@ -104,10 +109,13 @@ while IFS='|' read -r name repo file vocab; do
     if awk "BEGIN{exit !($ppl>100)}"; then status="PPL SANITY FAIL"; fi
   fi
   echo "| $name | $file | ${ppl:-'-'} | $verify | $embd | $status |" >> "$REPORT.tmp"
-  if [ "${KEEP_SRC:-0}" != "1" ] && [ "$status" = "OK" ]; then
+  # Free the multi-GB Q8_0 cache once the row is done (also on FAIL — a
+  # bad/racy source must not pollute the next run; re-download is cheap,
+  # curl -C - resumes). KEEP_SRC=1 to retain.
+  if [ "${KEEP_SRC:-0}" != "1" ]; then
     sz=$(du -h "$src" 2>/dev/null | cut -f1)
     rm -f "$src"
-    echo "  freed source $sz"
+    [ -n "$sz" ] && echo "  freed source $sz"
   fi
 done < <(grep -v '^#' "$MANIFEST")
 

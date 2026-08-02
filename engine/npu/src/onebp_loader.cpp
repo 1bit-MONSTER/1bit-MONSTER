@@ -290,6 +290,16 @@ public:
                     name, te->num_experts);
             return false;
         }
+        // Truncated-file guard (issue #1243): a converter that bailed mid-
+        // write leaves planned offsets past EOF — mmap'ed reads there SIGSEGV
+        // instead of failing the gate cleanly. total_bytes is the conservative
+        // bound (>= what dequant_matrix actually reads).
+        if (te->file_offset + te->total_bytes > map_size_) {
+            fprintf(stderr, "'%s' extends past EOF (off=%llu+%llu > map=%zu) — truncated file\n",
+                    name, (unsigned long long)te->file_offset,
+                    (unsigned long long)te->total_bytes, map_size_);
+            return false;
+        }
         dequant_matrix(map_ + te->file_offset, te->rows, te->cols, out, te->quant);
         return true;
     }
@@ -301,6 +311,10 @@ public:
         if (expert_idx < 0 || expert_idx >= te->num_experts) return false;
 
         uint64_t per_expert_bytes = te->total_bytes / (uint64_t)te->num_experts;
+        if (te->file_offset + (uint64_t)expert_idx * per_expert_bytes + per_expert_bytes > map_size_) {
+            fprintf(stderr, "'%s' expert %d extends past EOF — truncated file\n", name, expert_idx);
+            return false;
+        }
         dequant_matrix(map_ + te->file_offset + expert_idx * per_expert_bytes,
                         te->rows, te->cols, out, te->quant);
         return true;
