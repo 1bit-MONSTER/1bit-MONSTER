@@ -1359,7 +1359,7 @@ if(EXISTS "${FLM_BUILD_DIR}/flm")
 endif()
 
 # -- onebitd : 1bit inference daemon (spawns backend, proxies HTTP) --------
-# Pure C++ replacement for rust/onebitd. No Rust axum/reqwest needed.
+# Pure C++ daemon — spawns backend, proxies HTTP.
 add_executable(onebitd tools/onebitd.cpp)
 target_include_directories(onebitd PRIVATE src/ include/)
 target_compile_options(onebitd PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
@@ -1451,7 +1451,7 @@ target_link_libraries(vl_pipeline_test PRIVATE
 
 
 # -- onebit : NPU-native terminal coding agent CLI -------------------------
-# Pure C++ replacement for rust/onebit-cli. Single binary — chat, up, down,
+# Pure C++ agent CLI. Single binary — chat, up, down,
 # status, build, config, auth, serve, update.
 add_executable(onebit tools/onebit.cpp)
 target_include_directories(onebit PRIVATE src/ include/)
@@ -1460,7 +1460,7 @@ target_link_libraries(onebit PRIVATE
     httplib::httplib
     nlohmann_json::nlohmann_json)
 
-# Alias for the canonical binary name (matches Rust release artifact name)
+# Alias for the canonical binary name
 # NOTE: the single binary (onebin, OUTPUT_NAME "1bit") supersedes this copy
 # target — onebit's main() lives inside build/1bit now.
 
