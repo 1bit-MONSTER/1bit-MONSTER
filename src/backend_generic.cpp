@@ -723,65 +723,17 @@ struct GenericBackend : Backend {
         else matmul(out, in, W, N, K);
     }
 
-    // #1350: Padé [7/6] tanh(y) ≈ y·(135135 + y²·(17335 + y²·(378 + y²))) /
-    // (135135 + y²·(62370 + y²·(3150 + 28·y²))), with y = x/2 clamped to ±5.
-    // Max |sigmoid error| < 5e-5 over the whole range — the old clipped cubic
-    // saturated ~3x too early (17% error at x≈1.74), silently biasing every
-    // SwiGLU gate toward "fully open".
-    __attribute__((target("avx512f")))
-    static __m512 sigmoid_pade_avx512(__m512 g) {
-        __m512 y = _mm512_mul_ps(g, _mm512_set1_ps(0.5f));
-        y = _mm512_max_ps(_mm512_set1_ps(-5.0f), _mm512_min_ps(_mm512_set1_ps(5.0f), y));
-        __m512 y2 = _mm512_mul_ps(y, y);
-        __m512 num = _mm512_mul_ps(y, _mm512_fmadd_ps(y2, _mm512_set1_ps(1.0f),
-                      _mm512_fmadd_ps(y2, _mm512_set1_ps(378.0f), _mm512_set1_ps(17325.0f))));
-        num = _mm512_fmadd_ps(y2, num, _mm512_mul_ps(y, _mm512_set1_ps(135135.0f)));
-        __m512 den = _mm512_fmadd_ps(y2, _mm512_set1_ps(28.0f), _mm512_set1_ps(3150.0f));
-        den = _mm512_fmadd_ps(y2, den, _mm512_set1_ps(62370.0f));
-        den = _mm512_fmadd_ps(y2, den, _mm512_set1_ps(135135.0f));
-        return _mm512_fmadd_ps(_mm512_set1_ps(0.5f), _mm512_div_ps(num, den), _mm512_set1_ps(0.5f));
-    }
-
-    // AVX-512 SiLU kernel (always compiled, runtime-dispatched — #1346).
-    // Returns the number of elements consumed (multiple of 16).
-    __attribute__((target("avx512f")))
-    static int silu_avx512(float* out, const float* gate, const float* up, int n) {
-        int i = 0;
-        for (; i + 15 < n; i += 16) {
-            __m512 g = _mm512_loadu_ps(gate + i);
-            __m512 u = _mm512_loadu_ps(up + i);
-            __m512 sig = sigmoid_pade_avx512(g);
-            _mm512_storeu_ps(out + i, _mm512_mul_ps(_mm512_mul_ps(g, sig), u));
-        }
-        return i;
-    }
-
+    // Exact SiLU: x * sigmoid(x) * up. The vectorized Padé [7/6] sigmoid
+    // kernels (#1350) were removed: they are numerically wrong for |x| > ~4
+    // (measured 9x error at x=-7.8; saturates at 0.99086 for x>=10 instead of
+    // 1.0). That corrupts SwiGLU gates on models whose gates run large
+    // (Qwen3-8B: real gates reach 7-12 — llama.cpp PPL 17.5 on identical
+    // weights) and collapses the hidden state. Caught by the issue #1243
+    // re-conversion gate: our ppl 58k vs llama.cpp's 17.5 on the same model.
+    // Note: callers must NOT compile this with -ffast-math — it makes the
+    // expf loop produce NaN for large |g| (reassociation/vectorization).
     static void silu(float* out, const float* gate, const float* up, int n) {
-        // Vectorized SiLU: x * sigmoid(x) * up. Fast path uses the Padé [7/6]
-        // sigmoid (#1350); the AVX-512 kernel is runtime-gated (#1346). The
-        // scalar tail keeps the exact expf-based sigmoid as the floor.
-        int i = 0;
-        if (cpu_has_avx512()) {
-            i = silu_avx512(out, gate, up, n);
-        }
-#if defined(__AVX2__)
-        for (; i + 7 < n; i += 8) {
-            __m256 g = _mm256_loadu_ps(gate + i);
-            __m256 u = _mm256_loadu_ps(up + i);
-            __m256 y = _mm256_mul_ps(g, _mm256_set1_ps(0.5f));
-            y = _mm256_max_ps(_mm256_set1_ps(-5.0f), _mm256_min_ps(_mm256_set1_ps(5.0f), y));
-            __m256 y2 = _mm256_mul_ps(y, y);
-            __m256 num = _mm256_mul_ps(y, _mm256_fmadd_ps(y2, _mm256_set1_ps(1.0f),
-                          _mm256_fmadd_ps(y2, _mm256_set1_ps(378.0f), _mm256_set1_ps(17325.0f))));
-            num = _mm256_fmadd_ps(y2, num, _mm256_mul_ps(y, _mm256_set1_ps(135135.0f)));
-            __m256 den = _mm256_fmadd_ps(y2, _mm256_set1_ps(28.0f), _mm256_set1_ps(3150.0f));
-            den = _mm256_fmadd_ps(y2, den, _mm256_set1_ps(62370.0f));
-            den = _mm256_fmadd_ps(y2, den, _mm256_set1_ps(135135.0f));
-            __m256 sig = _mm256_fmadd_ps(_mm256_set1_ps(0.5f), _mm256_div_ps(num, den), _mm256_set1_ps(0.5f));
-            _mm256_storeu_ps(out + i, _mm256_mul_ps(_mm256_mul_ps(g, sig), u));
-        }
-#endif
-        for (; i < n; i++) {
+        for (int i = 0; i < n; i++) {
             float g = gate[i];
             out[i] = (g / (1.0f + expf(-g))) * up[i];
         }
