@@ -115,3 +115,5 @@ build/*.ninja*
 .zig-cache/
 **/.zig-cache/
 *.AppImage
+scripts/.reconvert.lock
+research/ws05-1bp-v2/RECONVERT-REPORT.md.tmp
