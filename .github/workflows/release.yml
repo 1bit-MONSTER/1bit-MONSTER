@@ -28,21 +28,21 @@ jobs:
 
       - name: Install build tools + TheRock nightly ROCm
         run: |
-          apt-get update -qq
-          apt-get install -y -qq git cmake ninja-build build-essential \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git cmake ninja-build build-essential \
             libvulkan-dev uuid-dev python3-pip python3-venv \
             libcurl4-openssl-dev libzstd-dev libwebsockets-dev
 
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
           # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
-          # ROCm in this build — the base image has no system ROCm, so CMake's
+          # ROCm in this build — the runner has no system ROCm, so CMake's
           # /opt/rocm fallback can never be reached. CMakeLists.txt auto-detects
           # /opt/rocm-therock.
-          python3 -m venv /opt/rocm-therock
-          /opt/rocm-therock/bin/pip install \
+          sudo python3 -m venv /opt/rocm-therock
+          sudo /opt/rocm-therock/bin/pip install \
             "rocm[libraries,devel,device-gfx1151]" \
             --index-url https://rocm.nightlies.amd.com/whl-multi-arch/
-          /opt/rocm-therock/bin/rocm-sdk init
+          sudo /opt/rocm-therock/bin/rocm-sdk init
 
       - name: Build all C++ targets (TheRock 7.15.0a HIP kernels + servers + CLI)
         run: |
