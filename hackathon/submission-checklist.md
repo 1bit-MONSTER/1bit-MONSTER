@@ -79,7 +79,7 @@ Private AI agents should:
        └────┬─────┘
             │ OpenAI-compatible API
        ┌────▼─────────────────────────────────┐
-       │        unified_server (400 KB C++)    │
+       │        unified_server (C++, ~65 MB single ELF)  │
        │                                       │
        │  Model Router → Token Router →        │
        │  Backend Manager → Jarvis Agent        │
