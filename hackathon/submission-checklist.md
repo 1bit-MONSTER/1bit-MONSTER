@@ -108,7 +108,7 @@ Private AI agents should:
 │ Fused TQ2 (QKV+GU fused)     │ 420 tok/s │
 │ GPU Ternary (Vulkan ZINC)    │ 318 tok/s │
 │ NPU v12 (XDNA 2, 32 tiles)   │  69 tok/s │
-│ Prefill INT8 WMMA            │ 39.4 TFLOPS │
+│ Prefill INT8 WMMA            │ 43.2 TFLOPS │
 └────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────┐

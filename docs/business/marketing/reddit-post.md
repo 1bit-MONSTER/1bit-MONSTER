@@ -65,7 +65,7 @@ All fixed, all verified running on hardware.
 - **Model-agnostic loader**: Qwen2/Qwen3/Llama/Mistral/Gemma/Phi/Zamba2/Mamba
   — same binary, no per-model code paths
 - **FastFlowLM fully replaced**: 22 proprietary `.so` libraries reverse-engineered,
-  whole NPU stack rebuilt from source (87.8 MB closed → 17.5 MB open)
+  whole NPU stack rebuilt from source (87.8 MB closed → 1.5 MB open)
 
 ### Links
 

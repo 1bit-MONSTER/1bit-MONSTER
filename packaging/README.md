@@ -1,4 +1,4 @@
-# Packaging — 1bit.systems v2026.07.26
+# Packaging — 1bit.systems v2026.08.02
 
 **One binary. 47 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
@@ -46,9 +46,9 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 
 | Binary | Purpose | Size |
 |--------|---------|------|
-| `1bit-npu` | CLI inference engine (47 1BP models, auto-detect) | 17.5 MB (stripped) |
-| `1bit-server` | HTTP API server (OpenAI-compatible) | 43 KB |
-| `dequant_q4nx.o` | Q4NX weight dequantizer | 2.8 KB |
+| `1bit` | Single ELF — every server + CLI (zaya_server, unified_server, unified_router, jarvis_server, vision_server, onebit, onebitd, 1bit-server; legacy names are symlinks, argv[0] dispatch) | ~67 MB raw / ~64 MB stripped |
+| `1bit-npu` | CLI inference engine (47 1BP models, auto-detect; NPU engine sidecar, needs XRT) | ~2.1 MB |
+| `video_lora_vk_cli` | Video-LoRA Vulkan CLI (dev tool, optional sidecar) | — |
 
 ## Build them yourself
 
@@ -60,8 +60,8 @@ make package-tarball
 make package-deb
 
 # Docker image
-docker build -t 1bit-systems/npu:2026.07.02 -f packaging/docker/Dockerfile .
-docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.07.02
+docker build -t 1bit-systems/npu:2026.08.02 -f packaging/docker/Dockerfile .
+docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.08.02
 
 # Snap
 make package-snap
