@@ -2,9 +2,9 @@
 # Format: <from> <to> <status>
 
 # Short permalinks
-/gh           https://github.com/bong-water-water-bong/1bit-systems        302
-/github       https://github.com/bong-water-water-bong/1bit-systems        302
-/wiki         https://github.com/bong-water-water-bong/1bit-systems/wiki   302
+/gh           https://github.com/1bit-systems/1bit-systems        302
+/github       https://github.com/1bit-systems/1bit-systems        302
+/wiki         https://github.com/1bit-systems/1bit-systems/wiki   302
 /install      /#quickstart                                                 302
 
 # 1bit coding agent

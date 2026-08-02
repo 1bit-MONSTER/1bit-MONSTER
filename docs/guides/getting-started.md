@@ -30,7 +30,7 @@ Max+ 395) with ROCm GPU acceleration.
 ## 1. Clone
 
 ```bash
-git clone https://github.com/bong-water-water-bong/1bit-systems
+git clone https://github.com/1bit-systems/1bit-systems
 cd 1bit-systems
 ```
 
@@ -130,13 +130,13 @@ after its HuggingFace‑style key, for example:
 ```
 
 Weights are available from the [1bit.systems releases page](
-https://github.com/bong-water-water-bong/1bit-systems/releases) or can be exported
+https://github.com/1bit-systems/1bit-systems/releases) or can be exported
 from a HuggingFace Zaya1‑8B checkpoint using the included extraction script.
 
 ```bash
 # Example: download and extract the weight bundle
 # (URL placeholder — check releases for the current bundle)
-curl -L https://github.com/bong-water-water-bong/1bit-systems/releases/download/v0.2.1/zaya-weights.tar.gz \
+curl -L https://github.com/1bit-systems/1bit-systems/releases/download/v0.2.1/zaya-weights.tar.gz \
   | sudo tar xz -C /tmp/
 ```
 

@@ -10,7 +10,7 @@
     "unified_kb": 57309,
     "fused_bytes": null,
     "fused_kb": null,
-    "note": "decode/tui/fused binaries retired in the pure-C++ purge (ponytail). zaya_server now links the video-lora Vulkan backend."
+    "note": "ONE ELF (build/1bit): zaya_server + unified_server + unified_router + jarvis_server + vision_server + the agent CLI, dispatched by argv[0]/subcommand; legacy names ship as symlinks. zaya/unified entries kept as historical pre-merge sizes."
   },
   "benchmarks": {
     "halo_gemv_gbps": 156.0,
@@ -31,18 +31,18 @@
   "repo": {
     "forks": 4,
     "name": "1bit-systems",
-    "open_issues": 0,
-    "owner": "bong-water-water-bong",
+    "open_issues": 14,
+    "owner": "1bit-systems",
     "stars": 13,
     "total_clones": 6113,
     "unique_cloners": 783
   },
   "site": {
-    "backends": 4,
-    "models": 37
+    "backends": 9,
+    "models": 47
   },
-  "prefill_tflops_i8apre": 39.4,
-  "tflops": 39.4,
+  "prefill_tflops_i8apre": 43.2,
+  "tflops": 43.2,
   "blackmamba_1_5b_tok_s": 79.4,
   "blackmamba_2_8b_tok_s": 46.0,
   "engines": {
@@ -78,8 +78,8 @@
       "tok_s": 69,
       "TFLOPS": null,
       "backend": "XDNA 2 (32 tiles)",
-      "notes": "",
-      "status": "optimized"
+      "notes": "Superseded 2026-07-28 by npu_engine_universal (INT8 GEMM). Historical FLM-path figure; measurement date untraced.",
+      "status": "superseded"
     },
     "rocm_hip": {
       "tok_s": 64,
@@ -92,8 +92,8 @@
       "tok_s": 57,
       "TFLOPS": null,
       "backend": "",
-      "notes": "",
-      "status": "validated"
+      "notes": "Superseded 2026-07-28 by npu_engine_universal. Historical figure; measurement date untraced.",
+      "status": "superseded"
     },
     "all_5": {
       "tok_s": 42,
@@ -117,17 +117,17 @@
       "status": "validated"
     },
     "prefill_i8": {
-      "tok_s": 39.4,
-      "TFLOPS": 39.4,
+      "tok_s": 43.2,
+      "TFLOPS": 43.2,
       "backend": "INT8 WMMA",
-      "notes": "Benchmark shows 39.42 TFLOPS (winner variant: I8-APRE). Prior 40.5 was from a colder GPU pass.",
-      "status": "re-validated 2026-07-26"
+      "notes": "43.2 TFLOPS re-measured 2026-08-01 (winner variant: I8-APRE). Prior 39.4/40.5 were colder-GPU passes.",
+      "status": "re-validated 2026-08-01"
     },
     "gpu_1bit": {
       "tok_s": 229,
       "TFLOPS": null,
       "backend": "PrismML on same hardware",
-      "notes": "See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235)",
+      "notes": "See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235)",
       "status": "corrected"
     },
     "dspark": {

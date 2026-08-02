@@ -6,22 +6,22 @@
 
 ### Pure C++23 inference engine · NPU + GPU + CPU in a single binary · Zero Python · Zero Rust · Zero config files
 
-[![CI](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml)
+[![CI](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-00ff00.svg)](LICENSE)
 [![Site](https://img.shields.io/badge/site-1bit.systems-12a0ed.svg)](https://1bit.systems)
-[![ROCm](https://img.shields.io/badge/rocm-7.15.0a-f00fd2.svg)](https://github.com/bong-water-water-bong/TheRock)
+[![ROCm](https://img.shields.io/badge/rocm-7.15.0a-f00fd2.svg)](https://github.com/ROCm/TheRock)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76b900.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Metal](https://img.shields.io/badge/Metal-Apple%20Silicon-ff9500.svg)](https://developer.apple.com/metal/)
 [![Strix Halo](https://img.shields.io/badge/strix%20halo-gfx1151%20%2B%20XDNA%202-12a0ed.svg)](https://www.amd.com/en/products/processors/laptop/ryzen/ai-max-series.html)
 [![GGUF](https://img.shields.io/badge/GGUF-Qwen2%20%7C%20Qwen3%20%7C%20Mamba-00ff00)](src/gguf_loader.cpp)
 [![1BP](https://img.shields.io/badge/1BP-single%20file%2C%20zero%20config-00ffaa)](include/onebp_format.h)
-[![Tests](https://img.shields.io/github/actions/workflow/status/bong-water-water-bong/1bit-systems/ci.yml?branch=main&label=tests)](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/1bit-systems/1bit-systems/ci.yml?branch=main&label=tests)](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml)
 
 **[🌐 Website](https://1bit.systems)** · **[🤗 1BP Models](https://huggingface.co/bong-water-water-bong)** · **[📚 Docs](docs/README.md)** · **[🛠️ Journey](docs/journey.md)** · **[📊 Benchmarks](docs/wiki/performance.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
 **1bit** is an open-source, model-agnostic C++23 inference engine for running large language models on **AMD Strix Halo** (XDNA 2 NPU, RDNA 3.5 GPU), NVIDIA GPUs (CUDA), Apple Silicon (Metal), and any Vulkan 1.2+ device — all from a **single binary with zero Python at runtime**. It reads **GGUF**, **ONNX**, and the native **1BP** format (Q4NX 4-bit for dense models, TQ2 2-bit ternary for ternary-native checkpoints like Bonsai) with automatic architecture detection — no config files, no model registry, no per-model glue code. (Per the [1BP format policy](docs/wiki/models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured), TQ2 of dense models is quality-destructive — Q4NX is the dense-model format.)
 
-We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary (1,578,576 B raw / 1,302,736 B stripped, auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 35+ 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
+We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary (1,578,576 B raw / 1,302,736 B stripped, auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 47 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
 
 **Platform support:**
 - **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + **GGML-Vulkan (llama.cpp)**
@@ -31,7 +31,7 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 - **x86 CPU** — OpenMP fallback
 
 **Key numbers** (re-measured 2026-08-01, Radeon 8060S / Strix Halo, GGML-Vulkan):
-- 19 model architectures · 35+ 1BP models · **9 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, NPU, Mamba1, Zamba2, CPU)
+- 19 model architectures · 47 1BP models · **9 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, NPU, Mamba1, Zamba2, CPU)
 - **662 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**)
 - **373 tok/s** (Qwen3-0.6B Q4_K, **GGML-Vulkan**) — up from 344
 - **100 tok/s** (Qwen2.5-VL-3B, **GGML-Vulkan**)
@@ -117,7 +117,7 @@ General-purpose dense transformer models — Llama-derived, Mistral, Gemma, Phi,
 
 | Model | Params | 1BP Size | Backend(s) | Peak tok/s |
 |-------|:------:|:--------:|------------|:----------:|
-| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **598** 🏆 |
+| **SmolLM2-135M** | 135M | 101 MiB | **GGML-Vulkan** / ZINC / CPU | **662** 🏆 |
 | **SmolLM2-360M** | 360M | 259 MiB | **GGML-Vulkan** / ZINC / CPU | **389** |
 | **SmolLM2-1.7B** | 1.7B | 1007 MiB | **GGML-Vulkan** / ZINC / CPU | **167** |
 | **Llama-3.2-1B** | 1B | 581 MB | **GGML-Vulkan** / ZINC / NPU | — |
@@ -171,23 +171,7 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 | **Bonsai-8B** | 8B | 4.1 GB | HIP GPU | — |
 | **Bonsai-27B** | 27B | 15 GB | HIP GPU | — |
 
-**GGML-Vulkan (end-to-end) benchmarks — Radeon 8060S:**
-| Model | tok/s | ms/tok |
-|-------|:-----:|-------:|
-| SmolLM2-135M Q4_K_M | **598** 🏆 | 1.7 |
-| SmolLM2-360M Q4_K_M | **389** | 2.6 |
-| SmolLM2-1.7B Q4_K_M | **167** | 6.0 |
-| Qwen3-0.6B Q4_K_M | **373** | 2.7 |
-| Qwen2.5-VL-3B Q4_K_M | **95** | 10.5 |
-| DeepSeek-R1-Distill-Llama-8B Q4_K_M | **44** | 22.8 |
-
-**Ternary kernel benchmarks:**
-| Kernel | tok/s | Backend |
-|--------|:-----:|---------|
-| Q1 GEMV | 433 | ROCm HIP |
-| Fused TQ2 (QKV+GU) | 420 | ROCm HIP |
-| TQ2 GEMV | 367 | ROCm HIP |
-| GPU ternary (Vulkan) | 318 | Vulkan ZINC |
+See the **[Benchmarks](#benchmarks)** section below and the **[performance SSOT](docs/wiki/performance.md)** for full per-model and kernel numbers.
 
 ---
 
@@ -195,26 +179,26 @@ Mixture-of-Experts, ternary, and other non-standard architectures — MoE for sp
 
 ## Benchmarks
 
-Measured 2026-07-31 on **AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA)** — llama.cpp `5f55650a7`, all layers on Vulkan (`-ngl 999`), end-to-end via `llama-cli -st`:
+End-to-end decode re-measured **2026-08-01** on **AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA)** — all layers on Vulkan (`-ngl 999`), via `llama-cli -st`. Canonical data (with kernel microbenchmarks) lives in the **[performance SSOT](docs/wiki/performance.md)** / [`site/benchmarks.json`](site/benchmarks.json).
 
 | Model | Prompt t/s | Gen t/s (e2e) | Backend | Status |
 |-------|:-----:|:-----:|---------|--------|
-| SmolLM2-135M Q4_K_M | 3,646 | **671** | **GGML-Vulkan** | 🏆 new peak |
-| SmolLM2-360M Q4_K_M | 3,299 | **393** | **GGML-Vulkan** | ✅ re-verified |
-| SmolLM2-1.7B Q4_K_M | 1,469 | **167** | **GGML-Vulkan** | ✅ re-verified |
-| Qwen3-0.6B Q4_K_M | 1,138 | **344** | **GGML-Vulkan** | ✅ re-verified |
-| Qwen2.5-VL-3B Q4_K_M | 775 | **110** | **GGML-Vulkan** | ✅ re-verified |
-| **Qwen3.5-4B Q4_K_M** | 56 | **65** | **GGML-Vulkan** | ✅ new |
-| DeepSeek-R1-0528-Qwen3-8B Q4_K_M | 161 | **45** | **GGML-Vulkan** | ✅ re-verified |
-| BlackMamba 1.5B e2e | — | **78.9** | Mamba1 HIP | ✅ verified |
-| Q1 GEMV kernel | — | 433 | ROCm HIP | ✅ |
-| Fused TQ2 kernel | — | 420 | ROCm HIP | ✅ |
-| GPU ternary (Vulkan) | — | 318 | Vulkan ZINC | ✅ |
-| BlackMamba 2.8B e2e | — | 46.0 | ROCm HIP | ✅ |
+| SmolLM2-135M Q4_K_M | 3,646 | **662** | **GGML-Vulkan** | 🏆 peak |
+| SmolLM2-360M Q4_K_M | 3,299 | **389** | **GGML-Vulkan** | ✅ |
+| SmolLM2-1.7B Q4_K_M | 1,469 | **167** | **GGML-Vulkan** | ✅ |
+| Qwen3-0.6B Q4_K_M | 1,138 | **373** | **GGML-Vulkan** | ✅ |
+| Qwen2.5-VL-3B Q4_K_M | 775 | **100** | **GGML-Vulkan** | ✅ |
+| Qwen3.5-4B Q4_K_M | 56 | **65** | **GGML-Vulkan** | ✅ |
+| DeepSeek-R1-Distill-Llama-8B Q4_K_M | — | **44** | **GGML-Vulkan** | ✅ |
+| BlackMamba-1.5B | — | **79.4** | Mamba1 HIP | ✅ |
+| BlackMamba-2.8B | — | **46.0** | Mamba1 HIP | ✅ |
+| Q1 GEMV / Fused TQ2 / TQ2 GEMV (kernel) | — | 433 / 420 / 367 | ROCm HIP | ✅ |
+| GPU ternary (kernel) | — | 318 | Vulkan ZINC | ✅ |
+| Prefill INT8 WMMA | — | **43.2 TFLOPS** | INT8 WMMA | ✅ |
 
 Vision pipeline (1BP, CPU): Mage-ViT → Mage-VL-4B through `vision_server` — image in, description out, end-to-end on the 1BP path.
 
-**[→ Full benchmarks](docs/wiki/performance.md)**
+**[→ Full benchmarks (SSOT)](docs/wiki/performance.md)**
 
 ## Architecture
 
@@ -255,6 +239,9 @@ gguf · onnx · q4nx · 1bp · h1b ──▶ [model loader: auto-detect 19 archi
 | GPU Vulkan (ZINC) | Radeon 8060S | Dense models, 1BP |
 | GPU CUDA | NVIDIA sm70+ | Ternary kernels |
 | GPU Metal | Apple Silicon | Ternary kernels |
+| GGML-Vulkan (llama.cpp) | Any Vulkan 1.2+ | GGUF dense/MoE, flash-attn |
+| Mamba1 (HIP) | Radeon 8060S | State-space (BlackMamba, Zamba) |
+| Zamba2 (hybrid) | Radeon 8060S | Mamba2 + attention hybrids |
 | CPU (OpenMP) | x86 | Q4NX fallback |
 
 ## 📜 How We Got Here — Reverse Engineering the XDNA 2 NPU
@@ -267,7 +254,7 @@ This project started with a laptop, a disassembler, and no docs. AMD shipped the
 | NPU sequence gen | 22 proprietary `.so` files | `libnpu_engine_universal.so` (open-source C++23) |
 | NPU bitstreams | 209 `.xclbin` files | 287 xclbins (63 rebuilt from AIE generators + 209 FLM-extracted + 15 BF16 perf) |
 | Toolchain | AMD Xilinx IP | `aiecc` + Peano/AMD Xilinx IP |
-| Model extraction | N/A | 37 pre-built FLM models extracted, 46+ 1BP models published |
+| Model extraction | N/A | 37 pre-built FLM models extracted, 47 1BP models published |
 
 The key finding: the `.so` files were NPU instruction **sequence generators**, not compute kernels — the actual computation lives entirely in the `.xclbin` FPGA bitstreams. Both layers are now fully rebuildable from source.
 

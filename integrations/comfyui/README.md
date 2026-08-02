@@ -8,7 +8,7 @@ understanding, and audio synthesis — all from ComfyUI's visual graph editor.
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes/
-git clone https://github.com/bong-water-water-bong/1bit-systems comfyui_1bit_systems
+git clone https://github.com/1bit-systems/1bit-systems comfyui_1bit_systems
 pip install httpx Pillow numpy
 
 # Also install submodule dependencies

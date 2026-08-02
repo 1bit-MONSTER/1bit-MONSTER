@@ -1,11 +1,11 @@
 # Packaging — 1bit.systems v2026.07.26
 
-**One binary. 46+ 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
+**One binary. 47 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
 
 | Format | Status | Command |
 |--------|--------|---------|
-| **GitHub Release** | ✅ [Latest](https://github.com/bong-water-water-bong/1bit-systems/releases/latest) | `gh release download` |
+| **GitHub Release** | ✅ [Latest](https://github.com/1bit-systems/1bit-systems/releases/latest) | `gh release download` |
 | **One-liner install** | ✅ | `curl -sL https://1bit.systems/install.sh \| bash` |
 | **Debian (.deb)** | ✅ Built by CI on every tagged release | `sudo dpkg -i 1bit-systems_*_amd64.deb` |
 | **AppImage** | ✅ Built by CI on every tagged release | `chmod +x 1bit-systems-*.AppImage && ./1bit-systems-*.AppImage` |
@@ -46,7 +46,7 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 
 | Binary | Purpose | Size |
 |--------|---------|------|
-| `1bit-npu` | CLI inference engine (46+ 1BP models, auto-detect) | 17.5 MB (stripped) |
+| `1bit-npu` | CLI inference engine (47 1BP models, auto-detect) | 17.5 MB (stripped) |
 | `1bit-server` | HTTP API server (OpenAI-compatible) | 43 KB |
 | `dequant_q4nx.o` | Q4NX weight dequantizer | 2.8 KB |
 

@@ -80,7 +80,7 @@ print(tokenizer.decode(outputs[0]))
 
 ## About 1bit.systems
 
-This model is part of the [1bit.systems](https://github.com/bong-water-water-bong/1bit-systems)
+This model is part of the [1bit.systems](https://github.com/1bit-systems/1bit-systems)
 model catalog for AMD Strix Halo — an open-source inference engine optimized
 for AMD Ryzen AI Max+ processors.
 EOF

@@ -5,7 +5,7 @@
 40 models across 16 families in the native 1BP format, direct GGUF execution,
 NPU (XDNA 2) + GPU (ROCm HIP / Vulkan / CUDA / Metal) + CPU backends in one
 C++23 binary. Jarvis local agent (RAG, tool-calling, planner, permission
-gate, voice). Full details: https://github.com/bong-water-water-bong/1bit-systems/blob/main/CHANGELOG.md
+gate, voice). Full details: https://github.com/1bit-systems/1bit-systems/blob/main/CHANGELOG.md
 
 ---
 

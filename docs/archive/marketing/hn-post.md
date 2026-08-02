@@ -2,7 +2,7 @@
 >
 # Show HN: 291 tok/s NPU fused inference — one C++ binary, 35 models, 7 backends, zero Python
 
-https://github.com/bong-water-water-bong/1bit-systems
+https://github.com/1bit-systems/1bit-systems
 
 **One ~400 KB binary auto-detects your model and dispatches to the fastest backend available.** NPU XDNA 2, GPU ternary (Vulkan), ROCm HIP, CPU — all in the same binary. No Python. No config. No Docker.
 
