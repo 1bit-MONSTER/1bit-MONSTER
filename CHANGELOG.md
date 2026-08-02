@@ -3,6 +3,19 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.02 — llama.cpp fork synced to b10015-76-g0807d70be + build-hint fix 🔧
+
+- **llama.cpp fork synced** — `third_party/llama.cpp` moved from the paged-KV PR
+  head (`329cb3241`) to the documented sync point `0807d70be` (merge of PR #2 +
+  873-commit upstream catch-up; +93 commits incl. Vulkan fixes #24362
+  (FA mask_opt off on GCN), #25240 (submission threshold for small AMD GPUs),
+  #25351/#25432 (SET_ROWS f16)). Rebuilt `-DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF`,
+  Vulkan verified on Strix Halo (Radeon 8060S RADV, KHR_coopmat); `unified_server`
+  relinked against the synced statics. Sync record: `docs/llama.cpp-fork.md`.
+- **Build-hint fix** — the ggml-vulkan import warning in `CMakeLists.txt` now
+  includes `-DBUILD_SHARED_LIBS=OFF`; without it ggml builds shared libs and the
+  static import check silently fails even after a successful build.
+
 ## 2026.08.01 — Pure-C++ video-lora backend + fresh benchmark sweep + scope guard 🚀
 
 - **Lemonade SDK embedded** — `unified_server` links Lemonade's server core

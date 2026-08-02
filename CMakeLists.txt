@@ -472,7 +472,7 @@ if(EXISTS "${GGML_BUILD_DIR}/ggml/src/ggml-vulkan/libggml-vulkan.a")
     target_include_directories(ggml INTERFACE "${GGML_VULKAN_DIR}/ggml/include")
     message(STATUS "llama.cpp ggml-vulkan: FOUND")
 else()
-    message(WARNING "llama.cpp ggml-vulkan not built — cd third_party/llama.cpp && cmake -B build -G Ninja -DGGML_VULKAN=ON && cmake --build build -j8")
+    message(WARNING "llama.cpp ggml-vulkan not built — cd third_party/llama.cpp && cmake -B build -G Ninja -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF && cmake --build build -j8")
 endif()
 
 # -- libbackend_manager : Backend abstraction layer (requires rocm_cpp for HIP) ---------
