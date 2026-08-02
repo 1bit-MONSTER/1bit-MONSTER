@@ -353,6 +353,52 @@ static json health_json(BackendManager& mgr) {
     return j;
 }
 
+// ── Sampling: temperature + top-k from raw logits ──
+// Returns a sampled token id. temperature<=0 → argmax (greedy), matching
+// OpenAI convention that temp 0 is deterministic even when top_k is set.
+// Thread-local RNG + scratch: decode may run on multiple threads, so the
+// sampler must not depend on an external locking invariant (PR #1398 review).
+static thread_local uint64_t g_sample_state = 0;
+static thread_local std::vector<float> g_sample_scaled;
+static thread_local std::vector<float> g_sample_sorted;
+static int sample_from_logits(const float* logits, int vs, float temperature, int top_k) {
+    if (vs <= 0 || !logits) return 0;
+    if (temperature <= 0.0f) {  // greedy
+        int best = 0; float bv = logits[0];
+        for (int v = 1; v < vs; v++) if (logits[v] > bv) { bv = logits[v]; best = v; }
+        return best;
+    }
+    // xorshift64* — cheap, deterministic-enough for sampling
+    if (g_sample_state == 0)
+        g_sample_state = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
+    uint64_t x = g_sample_state;
+    x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+    g_sample_state = x;
+    uint64_t r = x * 0x2545F4914F6CDD1Dull;
+
+    float max_l = -1e30f;
+    for (int v = 0; v < vs; v++) if (logits[v] > max_l) max_l = logits[v];
+    float t = temperature > 0.0f ? temperature : 1.0f;
+    auto& scaled = g_sample_scaled;
+    scaled.resize(vs);
+    if (top_k > 0 && top_k < vs) {
+        auto& sorted = g_sample_sorted;
+        sorted.assign(logits, logits + vs);
+        std::nth_element(sorted.begin(), sorted.begin() + top_k - 1, sorted.end(),
+                         std::greater<float>());
+        float cutoff = sorted[top_k - 1];
+        for (int v = 0; v < vs; v++)
+            scaled[v] = logits[v] < cutoff ? 0.0f : expf((logits[v] - max_l) / t);
+    } else {
+        for (int v = 0; v < vs; v++) scaled[v] = expf((logits[v] - max_l) / t);
+    }
+    float sum = 0; for (int v = 0; v < vs; v++) sum += scaled[v];
+    if (!(sum > 0)) return 0;  // degenerate logits — fall back to token 0
+    double rnd = (double)(r >> 11) / 9007199254740992.0 * (double)sum;
+    for (int v = 0; v < vs; v++) { rnd -= scaled[v]; if (rnd <= 0) return v; }
+    return vs - 1;
+}
+
 // ── Generate completion with per-token strategy routing ──
 // Returns { text, tokens, backend_used, ms_per_tok, tok_s }
 // When strategy_engine is provided, routes each token through the strategy
@@ -363,7 +409,9 @@ static json generate_completion(BackendManager& mgr,
                                  int max_tokens,
                                  const std::string& backend_id,
                                  StrategyEngine* strategy_engine = nullptr,
-                                 const std::string& user_message = "") {
+                                 const std::string& user_message = "",
+                                 float temperature = 0.0f,
+                                 int top_k = 0) {
     json result;
 
     // Select fixed backend if specified (overrides strategy routing).
@@ -486,13 +534,16 @@ static json generate_completion(BackendManager& mgr,
         }
 
         // ── Generate token ──
-        // When strategy engine needs logprobs (cascade/adaptive), use
-        // forward()+lm_head() separately for real model confidence.
-        // Otherwise, use fast generate() which does both in one call.
+        // When strategy engine needs logprobs (cascade/adaptive) or the caller
+        // requested temperature/top-k sampling, use forward()+lm_head()
+        // separately for real logits. Otherwise, use fast generate() which
+        // does both in one call.
         bool need_logprobs = strategy_engine && (
             strategy_engine->name() == std::string("cascade") ||
             strategy_engine->name() == std::string("adaptive")
         );
+        bool want_sampling = temperature > 0.0f || top_k > 0;
+        bool use_logits_path = need_logprobs || want_sampling;
 
         int next = -1;
         double token_logprob = 0.0;
@@ -508,12 +559,14 @@ static json generate_completion(BackendManager& mgr,
             if (mcfg.hidden_size > 0) hs = mcfg.hidden_size;
             else if (mcfg.hidden > 0) hs = mcfg.hidden;
         }
-        if (i == 0 && need_logprobs && output_logprobs.empty()) {
+        if (i == 0 && use_logits_path && output_logprobs.empty()) {
             std::vector<float> hidden_buf(hs);
             std::vector<float> logits_buf(vs);
             if (mgr.forward(last_token, hidden_buf.data())) {
                 int tmp_id = -1;
                 if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &tmp_id)) {
+                    if (want_sampling)
+                        tmp_id = sample_from_logits(logits_buf.data(), vs, temperature, top_k);
                     float max_l = -1e30f;
                     for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
@@ -527,12 +580,14 @@ static json generate_completion(BackendManager& mgr,
                 }
                 next = tmp_id;
             }
-        } else if (need_logprobs) {
+        } else if (use_logits_path) {
             // Slow path: forward + lm_head + softmax for real logprobs
             std::vector<float> hidden_buf(hs);
             std::vector<float> logits_buf(vs);
             if (mgr.forward(last_token, hidden_buf.data())) {
                 if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &next)) {
+                    if (want_sampling)
+                        next = sample_from_logits(logits_buf.data(), vs, temperature, top_k);
                     float max_l = -1e30f;
                     for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
@@ -1346,6 +1401,13 @@ int main(int argc, char** argv) {
         int max_tokens = body.value("max_tokens", 256);
         if (max_tokens < 1) max_tokens = 1;
         if (max_tokens > 32768) max_tokens = 32768;
+        int top_k = body.value("top_k", 0);
+        if (top_k < 0) top_k = 0;
+        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
+        // only top_k is supplied so top-k-only sampling still samples.
+        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        if (temperature < 0.0f) temperature = 0.0f;
+        if (temperature > 5.0f) temperature = 5.0f;
         std::string req_model = body.value("model", "");
 
         // ── Serialize all compute against the single shared backend context ──
@@ -1455,7 +1517,8 @@ int main(int argc, char** argv) {
         // Generate with strategy-aware routing (#696 fix: no global lock held)
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
-                                               se, last_user_msg);
+                                               se, last_user_msg,
+                                               temperature, top_k);
 
         // Build OpenAI-compatible response
         json response;
@@ -1594,11 +1657,19 @@ int main(int argc, char** argv) {
         int max_tokens = body.value("max_tokens", 256);
         if (max_tokens < 1) max_tokens = 1;
         if (max_tokens > 32768) max_tokens = 32768;
+        int top_k = body.value("top_k", 0);
+        if (top_k < 0) top_k = 0;
+        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
+        // only top_k is supplied so top-k-only sampling still samples.
+        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        if (temperature < 0.0f) temperature = 0.0f;
+        if (temperature > 5.0f) temperature = 5.0f;
 
         std::vector<double> empty_logprobs;
         json gen_result;
         try {
-            gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id);
+            gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
+                                             nullptr, "", temperature, top_k);
         } catch (const std::exception& e) {
             fprintf(stderr, "[completions] generate error: %s\n", e.what());
             gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
