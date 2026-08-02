@@ -1252,14 +1252,32 @@ endif()
 
 # -- onebin : the single binary --------------------------------------------
 # Every entry point in one ELF: zaya_server + unified_server + unified_router
-# + onebit + onebitd, dispatched by argv[0] (legacy symlink names) or
-# subcommand (zaya / unified / router / lemonade / onebitd / agent CLI).
-# Produces build/1bit (replaces the old onebit_bin copy target).
+# + jarvis_server + vision_server + onebit + onebitd, dispatched by argv[0]
+# (legacy symlink names) or subcommand (zaya / unified / router / lemonade /
+# jarvis / vision / onebitd / agent CLI). Produces build/1bit.
 set(ONE_BIN_SOURCES
     tools/onebin.cpp
     ${ZAYA_SERVER_SRC}
     ${UNIFIED_SERVER_SOURCES}
     tools/unified_router.cpp
+    tools/jarvis_server.cpp
+    tools/jarvis/rag.cpp
+    tools/jarvis/tools.cpp
+    tools/jarvis/routing.cpp
+    tools/jarvis/planner.cpp
+    tools/jarvis/beacon.cpp
+    tools/jarvis/tts.cpp
+    tools/jarvis/audio_out.cpp
+    tools/jarvis/audio_stream.cpp
+    tools/jarvis/codec_tts.cpp
+    tools/jarvis/persona.cpp
+    tools/jarvis/vad.cpp
+    tools/jarvis/context.cpp
+    tools/jarvis/auth.cpp
+    tools/jarvis/usage.cpp
+    tools/jarvis/billing.cpp
+    src/codec_decoder.cpp
+    tools/vision_server.cpp
     tools/onebit.cpp
     tools/onebitd.cpp)
 add_executable(onebin ${ONE_BIN_SOURCES})
@@ -1277,6 +1295,7 @@ target_include_directories(onebin PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/kernels
+    ${CMAKE_SOURCE_DIR}/tools
     ${CMAKE_SOURCE_DIR}/engine/npu/src
     ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include
     ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include
@@ -1287,9 +1306,9 @@ target_include_directories(onebin PRIVATE
     ${CMAKE_SOURCE_DIR}/tests/backends)
 target_compile_options(onebin PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
-    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
+    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23 -fopenmp>)
 target_link_libraries(onebin PRIVATE
-    backend_manager vl_image dl
+    backend_manager vl_image vision_encoder whisper dl
     rocm_cpp hip::host hip::device httplib::httplib
     nlohmann_json::nlohmann_json hipblas)
 target_link_options(onebin PRIVATE -rdynamic -luuid)
@@ -1345,6 +1364,7 @@ find_package(onnxruntime QUIET HINTS "${ONNXRUNTIME_ROOT_DIR}")
 if(onnxruntime_FOUND)
     message(STATUS "codec: ONNX Runtime FOUND — building codec decoder with real inference")
     add_definitions(-DUSE_ONNXRUNTIME)
+    target_link_libraries(onebin PRIVATE onnxruntime::onnxruntime)
 else()
     message(STATUS "codec: ONNX Runtime NOT found — codec decoder will return empty PCM")
 endif()

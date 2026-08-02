@@ -3,6 +3,25 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.02 — one ELF to rule them all: every server + CLI in `1bit` 🚀
+
+- **Single binary is now literal** — `build/1bit` embeds zaya_server,
+  unified_server, unified_router, **jarvis_server** (TTS/voice, whisper +
+  optional onnxruntime codec decoder) and **vision_server** (VL), plus the
+  agent CLI: `1bit zaya|unified|router|jarvis|vision|chat|pull|list`.
+  Dispatch by subcommand or legacy symlink name (argv[0]); the standalone
+  targets still build for dev/CI.
+- **`1bit pull` / `1bit list` in pure C++** — model registry + HTTPS download
+  via httplib (no curl/bash); replaces the packaged bash launcher.
+- **Packaging ships one binary** — deb/tarball stage now contains `usr/bin/1bit`
+  + legacy-name symlinks (+ optional `1bit-npu` / `video_lora_vk_cli` sidecars).
+  The 296-line bash launcher (`packaging/1bit`) was deleted; `install.sh` no
+  longer requires Node.js — it installs the release tarball's single binary.
+- Sizes: 67.2 MB raw / 64.4 MB stripped; `site/numbers.json` and the landing
+  page bind the real size.
+- Voice-clone endpoint now logs honestly: training is an optional Python
+  (PyTorch) pipeline; serving/TTS stays pure C++.
+
 ## 2026.08.02 — llama.cpp fork synced to b10015-76-g0807d70be + build-hint fix 🔧
 
 - **llama.cpp fork synced** — `third_party/llama.cpp` moved from the paged-KV PR

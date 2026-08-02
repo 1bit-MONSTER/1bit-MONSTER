@@ -1,77 +1,61 @@
 #!/usr/bin/env bash
-# 1bit.systems — instant install from tarball or curl
+# 1bit.systems — one-binary install
 # curl -sL https://1bit.systems/install.sh | bash
-# Or: tar xzf 1bit-systems-*.tar.gz && cd 1bit-systems-* && bash install.sh
+# Or: tar xzf 1bit-systems-*.tar.gz && bash install.sh
 set -euo pipefail
 
-RED='\033[0;31m' GREEN='\033[0;32m' CYAN='\033[0;36m' NC='\033[0m'
-say() { printf "${GREEN}✓${NC} %s\n" "$*"; }
-warn() { printf "${CYAN}!${NC} %s\n" "$*"; }
-die() { printf "${RED}✗${NC} %s\n" "$*"; exit 1; }
+say() { printf "✓ %s\n" "$*"; }
+die() { printf "✗ %s\n" "$*" >&2; exit 1; }
 
-echo ""
-printf "${GREEN}╔══════════════════════════════════════════╗${NC}\n"
-printf "${GREEN}║   1bit.systems — 94 tok/s NPU · 100% local ║${NC}\n"
-printf "${GREEN}╚══════════════════════════════════════════╝${NC}\n"
-echo ""
-
-# ── Where we're installing ──
 INSTALL_DIR="${HOME}/.local/1bit-systems"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BIN_DIR="${HOME}/.local/bin"
 
-# ── Node.js check ──
-if ! command -v node &>/dev/null; then
-  die "Node.js 22+ required. Install: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs"
-fi
-
-NODE_VER=$(node -v | cut -d. -f1 | tr -d v)
-[ "$NODE_VER" -lt 22 ] && warn "Node $(node -v) detected. Recommend Node 22+."
-
-# ── Install files ──
-say "Installing to ${INSTALL_DIR}"
-mkdir -p "${INSTALL_DIR}"
-
-# Copy from tarball source
-cp -r "${SCRIPT_DIR}"/* "${INSTALL_DIR}/" 2>/dev/null || true
-
-# ── npm install (optional but recommended) ──
-cd "${INSTALL_DIR}"
-if [ -f package.json ]; then
-  say "Installing npm dependencies..."
-  npm install --ignore-scripts --no-audit --no-fund 2>/dev/null && say "npm deps installed" || warn "npm install skipped — CLI works from dist/ regardless"
-fi
-
-# ── Symlink CLI ──
-mkdir -p "${HOME}/.local/bin"
-ln -sf "${INSTALL_DIR}/bin/1bit" "${HOME}/.local/bin/1bit"
-say "1bit CLI linked to ~/.local/bin/1bit"
-
-if [[ ":$PATH:" != *":${HOME}/.local/bin:"* ]]; then
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "${HOME}/.bashrc"
-  say "Added ~/.local/bin to PATH in .bashrc"
-fi
-
-# ── NPU check ──
-echo ""
-if lspci 2>/dev/null | grep -qi "XDNA\|NPU\|AIE"; then
-  say "NPU hardware detected"
-  echo ""
-  echo "  To run inference:"
-  echo "    1. Start the NPU stack (daemon + server): 1bit up"
-  echo "    2. Chat: 1bit chat"
+# 1. Binary already staged next to us (tarball layout: usr/bin/1bit)?
+if [ -x "$(dirname "$0")/usr/bin/1bit" ]; then
+  SRC="$(cd "$(dirname "$0")" && pwd)/usr/bin/1bit"
+  NPU_SRC="$(dirname "$SRC")/1bit-npu"
+  say "Using staged binary at ${SRC}"
 else
-  warn "No NPU detected. You can still use the CLI, but need a Strix Halo for inference."
-  echo "  'unified_server' and '1bit up' fall back to GPU/CPU backends without an NPU."
+  # 2. Fetch the latest release tarball from GitHub.
+  say "Fetching latest release metadata…"
+  URL=$(curl -fsSL https://api.github.com/repos/1bit-systems/1bit-systems/releases/latest \
+        | grep -o 'https://[^"]*linux-amd64.tar.gz' | head -1)
+  [ -n "$URL" ] || die "No release tarball found on GitHub."
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  say "Downloading ${URL}"
+  curl -fL "$URL" -o "$TMP/1bit.tar.gz"
+  tar xzf "$TMP/1bit.tar.gz" -C "$TMP"
+  SRC=$(find "$TMP" -name 1bit -path '*/usr/bin/1bit' | head -1)
+  [ -n "$SRC" ] || die "Release tarball has no usr/bin/1bit."
+  NPU_SRC="$(dirname "$SRC")/1bit-npu"
 fi
 
+mkdir -p "${INSTALL_DIR}" "${BIN_DIR}"
+cp "$SRC" "${INSTALL_DIR}/1bit"
+chmod +x "${INSTALL_DIR}/1bit"
+ln -sf "${INSTALL_DIR}/1bit" "${BIN_DIR}/1bit"
+# legacy server names → the same binary (argv[0] dispatch)
+for name in zaya_server unified_server unified_router jarvis_server vision_server onebitd; do
+  ln -sf "${INSTALL_DIR}/1bit" "${BIN_DIR}/$name"
+done
+if [ -f "$NPU_SRC" ]; then
+  cp "$NPU_SRC" "${INSTALL_DIR}/1bit-npu" && chmod +x "${INSTALL_DIR}/1bit-npu"
+fi
+
+if [[ ":$PATH:" != *":${BIN_DIR}:"* ]]; then
+  echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "${HOME}/.bashrc"
+  say "Added ${BIN_DIR} to PATH in .bashrc"
+fi
+
+echo ""
+say "Installed one binary: ${INSTALL_DIR}/1bit ($(stat -c%s "${INSTALL_DIR}/1bit" 2>/dev/null || echo "?") bytes)"
 echo ""
 echo "  Quick start:"
-echo "    1bit chat          # interactive session"
-echo "    1bit help          # show commands"
-echo "    1bit up            # start NPU stack"
-echo "    1bit status        # check daemon health"
+echo "    1bit status              # check hardware/stack"
+echo "    1bit pull qwen3-0.6b     # download a model"
+echo "    1bit zaya -m model.1bp -p 'Hello world'   # serve/infer"
+echo "    1bit jarvis              # TTS/voice server"
+echo "    1bit vision --mmproj …   # vision-language server"
 echo ""
-echo "  Docs:  https://1bit.systems"
-echo "  Repo:  https://github.com/bong-water-water-bong/1bit-systems"
-echo ""
-echo "  —bong-water-water-bong · Sorry but not Sorry"
+echo "  Docs: https://1bit.systems · Repo: https://github.com/1bit-systems/1bit-systems"

@@ -11,9 +11,11 @@
 //   unified           → unified_server (multi-backend + embedded Lemonade core)
 //   router            → unified_router (NPU/GPU policy routing proxy)
 //   lemonade          → unified_server --lemonade (Lemonade's full server)
+//   jarvis, voice     → jarvis_server (TTS/voice clone + chat server)
+//   vision, vl        → vision_server (vision-language server)
 //   onebitd, daemon   → onebitd (inference daemon)
 //   everything else   → onebit (agent CLI: chat, up, down, status, build,
-//                        config, auth, serve, update)
+//                        config, auth, serve, pull, list, update)
 
 #include <cstdio>
 #include <cstring>
@@ -25,6 +27,8 @@ int unified_server_main(int argc, char** argv);
 int unified_router_main(int argc, char *argv[]);
 int onebitd_main(int argc, char *argv[]);
 int onebit_main(int argc, char *argv[]);
+int jarvis_server_main(int argc, char** argv);
+int vision_server_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
     std::string p = argv0 ? argv0 : "1bit";
@@ -40,6 +44,8 @@ int main(int argc, char** argv) {
     if (prog == "unified_server") return unified_server_main(argc, argv);
     if (prog == "unified_router") return unified_router_main(argc, argv);
     if (prog == "onebitd")        return onebitd_main(argc, argv);
+    if (prog == "jarvis_server")  return jarvis_server_main(argc, argv);
+    if (prog == "vision_server")  return vision_server_main(argc, argv);
     if (prog == "onebit" || prog == "1bit") {
         // fall through to subcommand dispatch below
     } else {
@@ -71,6 +77,12 @@ int main(int argc, char** argv) {
         }
         if (cmd == "onebitd" || cmd == "daemon") {
             return onebitd_main(argc - 1, argv + 1);
+        }
+        if (cmd == "jarvis" || cmd == "voice" || cmd == "tts") {
+            return jarvis_server_main(argc - 1, argv + 1);
+        }
+        if (cmd == "vision" || cmd == "vl") {
+            return vision_server_main(argc - 1, argv + 1);
         }
         // Everything else falls through to the agent CLI (chat, up, down,
         // status, build, config, auth, serve, update, --help).
