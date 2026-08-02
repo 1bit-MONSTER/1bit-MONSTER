@@ -29,9 +29,12 @@ jobs:
       - name: Install build tools + TheRock nightly ROCm
         run: |
           sudo apt-get update -qq
+          # Same dep set as CI's cpp job (proven on this runner): libdrm-dev
+          # for lemonade's amdxdna (drm.h), glslc + spirv-headers for zinc_cpp
+          # and ggml-vulkan, python3-venv for the TheRock SDK venv.
           sudo apt-get install -y -qq git cmake ninja-build build-essential \
-            libvulkan-dev uuid-dev python3-pip python3-venv \
-            libcurl4-openssl-dev libzstd-dev libwebsockets-dev
+            python3 python3-venv libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
+            libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers
 
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
           # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
@@ -83,7 +86,7 @@ jobs:
             zaya_server \
             onebitd \
             onebit \
-            onebin \
+            onebit_bin \
             unified_router \
             unified_server \
             zaya_agent \
