@@ -1,6 +1,6 @@
 # Contributing to 1bit.systems
 
-**One Binary to rule them all.** A pure C++ LLM inference server that auto-detects every supported model architecture and dispatches tokens to the fastest available backend — NPU fused, GPU HIP, Vulkan, or CPU — from a single ~1.5 MB binary (1,578,576 B raw / 1,302,736 B stripped, auto-tracked in site/numbers.json). No Python at runtime. No Rust at runtime. Zero configuration files.
+**One Binary to rule them all.** A pure C++ LLM inference server that auto-detects every supported model architecture and dispatches tokens to the fastest available backend — NPU fused, GPU HIP, Vulkan, or CPU — from a single ~67 MB ELF (`build/1bit`; zaya_server core ~1.5 MB, 1,578,576 B raw / 1,302,736 B stripped, auto-tracked in site/numbers.json). No Python at runtime. No Rust at runtime. Zero configuration files.
 
 This guide covers how to build, test, and contribute to the project.
 
