@@ -615,6 +615,71 @@ static void cmd_update(bool check_only) {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
+// ── Model download / list (pure C++, replaces packaging/model-download.sh) ──
+static fs::path models_dir() {
+    const char* home = getenv("HOME");
+    return fs::path(home ? home : ".") / ".local/share/1bit/models";
+}
+
+struct ModelEntry { const char* name; const char* desc; const char* path; };
+static const ModelEntry kModelRegistry[] = {
+    {"qwen3-0.6b",   "Qwen3-0.6B — 610 MB",   "/bong-water-water-bong/qwen3-0.6b-q4nx/resolve/main/qwen3-0.6b.q4nx"},
+    {"qwen3-8b",     "Qwen3-8B — 6.0 GB",    "/bong-water-water-bong/qwen3-8b-q4nx/resolve/main/qwen3-8b.q4nx"},
+    {"qwen3-vl-4b",  "Qwen3-VL-4B — 3.2 GB", "/bong-water-water-bong/qwen3-vl-4b-q4nx/resolve/main/qwen3-vl-4b.q4nx"},
+    {"gemma4-e2b",   "Gemma4-E2B — 4.7 GB",  "/bong-water-water-bong/gemma4-e2b-q4nx/resolve/main/gemma4-e2b.q4nx"},
+    {"llama-3.1-8b", "Llama-3.1-8B — 5.7 GB","/bong-water-water-bong/llama-3.1-8b-q4nx/resolve/main/llama-3.1-8b.q4nx"},
+};
+
+static void cmd_pull(const std::string& name) {
+    if (name.empty()) {
+        std::cout << "Available models:\n";
+        for (auto& m : kModelRegistry)
+            std::cout << "  " << m.name << " — " << m.desc << "\n";
+        std::cout << "  Use: 1bit pull <name>\n";
+        return;
+    }
+    const ModelEntry* found = nullptr;
+    for (auto& m : kModelRegistry)
+        if (name == m.name) { found = &m; break; }
+    if (!found) {
+        std::cerr << "Unknown model: " << name << "\n";
+        cmd_pull("");
+        return;
+    }
+    fs::create_directories(models_dir());
+    std::string out = (models_dir() / (name + ".q4nx")).string();
+    std::cout << "  Downloading " << name << " -> " << out << "\n";
+    std::ofstream f(out, std::ios::binary);
+    if (!f) { std::cerr << "  cannot write " << out << "\n"; return; }
+    httplib::Client cli("https://huggingface.co");
+    cli.set_follow_location(true);
+    cli.set_connection_timeout(30);
+    auto res = cli.Get(found->path,
+                       httplib::Headers{{"User-Agent", "1bit-cli/" + std::string(kVersion)}},
+                       [&](const char* buf, size_t n) { f.write(buf, (std::streamsize)n); return true; });
+    f.close();
+    if (!res || res->status != 200) {
+        std::cerr << "  download failed (HTTP " << (res ? std::to_string(res->status) : "error") << ")\n";
+        fs::remove(out);
+        return;
+    }
+    std::cout << "  saved (" << fs::file_size(out) << " bytes)\n";
+}
+
+static void cmd_list() {
+    if (!fs::exists(models_dir())) { std::cout << "  No models installed. Run: 1bit pull <name>\n"; return; }
+    size_t count = 0;
+    for (auto& e : fs::directory_iterator(models_dir())) {
+        if (!e.is_regular_file()) continue;
+        auto ext = e.path().extension().string();
+        if (ext == ".q4nx" || ext == ".gguf" || ext == ".1bp" || ext == ".h1b") {
+            std::cout << "  " << e.path().filename().string() << "  (" << e.file_size() << " bytes)\n";
+            ++count;
+        }
+    }
+    if (!count) std::cout << "  No models installed. Run: 1bit pull <name>\n";
+}
+
 static void print_usage() {
     std::cout << R"(1bit — NPU-native coding agent for 1bit.systems
 
@@ -630,6 +695,8 @@ Commands:
   auth PROVIDER       Manage API keys
   serve               Serve agent runtime over HTTP/SSE
   update              Check for updates
+  pull [NAME]         List or download a model
+  list                List installed models
   --help, -h          Show this help
   --version, -v       Show version
 
@@ -672,7 +739,9 @@ int main(int argc, char *argv[]) {
             // First non-flag arg could be a command
             if (arg == "chat" || arg == "up" || arg == "down" ||
                 arg == "status" || arg == "build" || arg == "config" ||
-                arg == "auth" || arg == "serve" || arg == "update") {
+                arg == "auth" || arg == "serve" || arg == "update" ||
+                arg == "pull" || arg == "download" || arg == "get" ||
+                arg == "list" || arg == "models" || arg == "ls") {
                 command = arg;
                 continue;
             }
@@ -747,6 +816,10 @@ int main(int argc, char *argv[]) {
         cmd_serve(port, host, model);
     } else if (command == "update") {
         cmd_update(args.size() > 0 && (args[0] == "--check" || args[0] == "-c"));
+    } else if (command == "pull" || command == "download" || command == "get") {
+        cmd_pull(args.empty() ? "" : args[0]);
+    } else if (command == "list" || command == "models" || command == "ls") {
+        cmd_list();
     } else {
         std::cerr << "Unknown command: " << command << "\n";
         print_usage();

@@ -208,6 +208,10 @@ static void run_clone_job(const std::string& id) {
         if (job->log.size() > 16384) job->log.erase(0, job->log.size() - 16384);
     };
 
+    append_log("voice-clone training uses the optional Python pipeline "
+               "(zaya_audio: RVQ-VAE codec + QLoRA adapter, PyTorch). "
+               "Serving and TTS need no Python; python3 is required only for this endpoint.");
+
     // Locate the zaya_audio package (repo root = parent of tools/jarvis).
     fs::path repo_root = fs::path(__FILE__).parent_path().parent_path();
     std::string py = getenv("CLONE_PYTHON") ? getenv("CLONE_PYTHON") : "python3";
@@ -616,7 +620,11 @@ static httplib::FormData get_file_value(const httplib::Request& req,
     return req.form.get_file(name);
 }
 
+#ifdef ONE_BIN_DISPATCH
+int jarvis_server_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     bool no_beacon = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];

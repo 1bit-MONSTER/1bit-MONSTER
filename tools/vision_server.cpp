@@ -325,7 +325,11 @@ static int eos_id_of(SimpleTokenizer& st) {
 }
 
 // ── Main ──
+#ifdef ONE_BIN_DISPATCH
+int vision_server_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     signal(SIGINT, handle_sigint);
     signal(SIGTERM, handle_sigint);
 
