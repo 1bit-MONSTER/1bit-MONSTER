@@ -11,10 +11,10 @@ jobs:
   server:
     name: Build release (C++ HIP kernels + server + CLI) — TheRock 7.15.0a
     runs-on: ubuntu-24.04
-    # Plain Ubuntu base — the build uses ONLY TheRock 7.15.0a (installed below).
-    # Never a rocm/dev-ubuntu-*:7.2.4* container: the repo never builds against
-    # system ROCm 7.2.4.
-    container: ubuntu:24.04
+    # Bare runner, not a container: the `ubuntu:24.04` container image stopped
+    # shipping git, which broke actions/checkout's submodule clone. The runner
+    # has git and no system ROCm, so TheRock 7.15.0a (installed below) stays the
+    # ONLY ROCm in the build — same environment CI's C++ job uses.
     timeout-minutes: 90
     permissions:
       contents: write
@@ -32,11 +32,6 @@ jobs:
           apt-get install -y -qq git cmake ninja-build build-essential \
             libvulkan-dev uuid-dev python3-pip python3-venv \
             libcurl4-openssl-dev libzstd-dev libwebsockets-dev
-
-          # XRT (Xilinx Runtime) for NPU fused engine compilation.
-          # backend_fused.cpp/backend_fused_npu.cpp need xrt headers at compile time.
-          apt-get install -y -qq libxrt-dev 2>/dev/null || \
-            echo "::warning::libxrt-dev not available — fused NPU backends stubbed"
 
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
           # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
