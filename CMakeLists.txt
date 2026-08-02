@@ -67,7 +67,7 @@ if(NOT _RC_LLVM_BIN)
     else()
         message(FATAL_ERROR
             "rocm-cpp needs an AMD clang: set THEROCK_PIP_ROOT env var, install "
-            "via 'pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ rocm[devel,libraries]', "
+            "via 'pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \"rocm[libraries,devel,device-gfx1151]\"', "
             "or install system ROCm at /opt/rocm.")
     endif()
 endif()

@@ -160,7 +160,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 git clone https://github.com/bong-water-water-bong/1bit-systems
 cd 1bit-systems
 # Install TheRock 7.15.0a — native gfx1151 HIP SDK
-pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ rocm[devel,libraries]
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"
 # Build
 cmake -B build -DCMAKE_HIP_ARCHITECTURES=gfx1151
 cmake --build build -j$(nproc)

@@ -110,8 +110,8 @@ See [docs/guides/building.md](docs/guides/building.md) for full prerequisites an
 
 **TheRock 7.15.0a installation (pip):**
 ```bash
-pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-  rocm[devel,libraries]
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+  "rocm[libraries,devel,device-gfx1151]"
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 ```
 
