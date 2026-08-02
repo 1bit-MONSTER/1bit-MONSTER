@@ -11,8 +11,6 @@ cd "$REPO_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOGFILE="/tmp/1bit-demo-${TIMESTAMP}.log"
 MODEL="${DEMO_MODEL:-$HOME/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx}"
-NPU_ENGINE="${DEMO_NPU:-$HOME/npu-infer/build/npu_engine_universal}"
-TOKENIZER="${DEMO_TOK:-$HOME/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json}"
 
 echo "═══════════════════════════════════════════════" | tee -a "$LOGFILE"
 echo "  1bit.systems — One Binary Demo" | tee -a "$LOGFILE"
