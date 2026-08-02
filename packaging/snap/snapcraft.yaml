@@ -22,7 +22,7 @@ apps:
 parts:
   1bit-systems:
     plugin: make
-    source: https://github.com/bong-water-water-bong/1bit-systems.git
+    source: https://github.com/1bit-systems/1bit-systems.git
     source-tag: v2026.07.20
     build-packages: [g++, libxrt-dev]
     stage-packages: [libxrt2, libxrt-npu2]

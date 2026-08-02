@@ -58,7 +58,7 @@ if [ -f "${SCRIPT_DIR}/bin/1bit-npu" ]; then
   cp "${SCRIPT_DIR}/lib/"*.o          "${INSTALL_DIR}/lib/" 2>/dev/null || true
 else
   # Download latest release from GitHub
-  REPO="bong-water-water-bong/1bit-systems"
+  REPO="1bit-systems/1bit-systems"
   say "Downloading latest release from ${REPO}..."
   DOWNLOAD_URL=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep "browser_download_url.*runtime.tar.gz" | head -1 | cut -d'"' -f4)
@@ -112,6 +112,6 @@ echo "  │                                                               │"
 echo "  └───────────────────────────────────────────────────────────────┘"
 echo ""
 echo "  Docs:  https://1bit.systems"
-echo "  Repo:  https://github.com/bong-water-water-bong/1bit-systems"
+echo "  Repo:  https://github.com/1bit-systems/1bit-systems"
 echo "  Help:  1bit-npu --help"
 echo ""

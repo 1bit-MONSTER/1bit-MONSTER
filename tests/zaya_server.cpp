@@ -474,7 +474,7 @@ static std::string a2a_agent_card(const ModelConfig& cfg, int port) {
         {"description", "Multi-backend AI inference server with auto-detection (ROCm HIP > Vulkan > NPU > CPU). Supports text generation, speculative decoding, cascade routing, and MoE parallel pipeline across heterogeneous hardware."},
         {"version", "1.0.0"},
         {"protocolVersion", "1.0"},
-        {"documentationUrl", "https://github.com/bong-water-water-bong/1bit-systems"},
+        {"documentationUrl", "https://github.com/1bit-systems/1bit-systems"},
         {"provider", {{"organization", "1bit.systems"}, {"url", "https://1bit.systems"}}},
         {"capabilities", {{"streaming", true}, {"pushNotifications", false}}},
         {"securitySchemes", json::object()},

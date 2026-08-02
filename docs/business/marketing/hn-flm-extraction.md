@@ -22,5 +22,5 @@ We reverse-engineered that stack in 4 days, then pulled every pre-built model fr
 
 **Why this matters:** every Strix Halo laptop has a 50 TOPS NPU. Our binary works with the mainline `amdxdna` driver. Extract the xclbins once, they run forever.
 
-GitHub: https://github.com/bong-water-water-bong/1bit-systems
+GitHub: https://github.com/1bit-systems/1bit-systems
 Full models page: https://1bit.systems/wiki/models

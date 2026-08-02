@@ -1712,7 +1712,7 @@ The Jun 21-22 clone spike (492 in one day) looks like a scraper or bot. Organic 
 
 ### Repos
 
-- `https://github.com/bong-water-water-bong/1bit-systems` — This repo (source of truth)
+- `https://github.com/1bit-systems/1bit-systems` — This repo (source of truth)
 - `https://github.com/bong-water-water-bong/npu-infer` — INT8 engine + xclbin generators
 - `https://github.com/bong-water-water-bong/npu-gpu-cpu` — Handoff docs + unified control plane
 

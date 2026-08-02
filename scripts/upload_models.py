@@ -75,7 +75,7 @@ tags:
 
 # {display_name} — 1BP format
 
-{base_model} ({license_}) converted to **1BP** — the single-file model format used by [1bit.systems](https://github.com/bong-water-water-bong/1bit-systems)'s inference engine.
+{base_model} ({license_}) converted to **1BP** — the single-file model format used by [1bit.systems](https://github.com/1bit-systems/1bit-systems)'s inference engine.
 
 1BP packs everything a loader needs into one memory-mappable file: a 256-byte header with model config, a variable-length tensor index, and Q4NX-tiled (32×256) 4-bit quantized weight data. No Python dependencies, no config files, no tokenizer files — just one file and it works.
 

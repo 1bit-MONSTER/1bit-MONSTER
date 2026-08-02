@@ -85,12 +85,12 @@ Show a comparison chart or table.
 
 **Visual**: GitHub repo URL on screen.
 ```
-github.com/bong-water-water-bong/1bit-systems
+github.com/1bit-systems/1bit-systems
 1bit.systems
 ```
 
 **Narration**:
-> "One binary to rule them all. Check out the repo at github.com/bong-water-water-bong/1bit-systems. Try it on your Strix Halo. Thank you."
+> "One binary to rule them all. Check out the repo at github.com/1bit-systems/1bit-systems. Try it on your Strix Halo. Thank you."
 
 ---
 

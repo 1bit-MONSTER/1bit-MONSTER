@@ -347,7 +347,7 @@ Build ZINC: `cd ~/zinc && /path/to/zig-0.15.2/zig build -Dbackend=vulkan -Doptim
 ---
 
 *Most benchmarks below run July 3, 2026 — historical, see status notice at top for what's current. All numbers verified on-device on Strix Halo at the time.*  
-*git: https://github.com/bong-water-water-bong/1bit-systems*  
+*git: https://github.com/1bit-systems/1bit-systems*  
 *ZINC: https://github.com/deepseek-ai/zinc*  
 *FLM benchmarks: https://fastflowlm.com/docs/benchmarks/*
 

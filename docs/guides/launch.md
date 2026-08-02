@@ -99,7 +99,7 @@ curl -sL https://1bit.systems/npu-install.sh | bash
 1bit-npu model.q4nx 16
 ```
 
-The repo: https://github.com/bong-water-water-bong/1bit-systems
+The repo: https://github.com/1bit-systems/1bit-systems
 
 I've been working on this for 2.5 months. Happy to answer questions
 about the NPU, XRT, INT8 quantization, or why I chose C++ over

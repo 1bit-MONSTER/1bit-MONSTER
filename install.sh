@@ -4,7 +4,7 @@ GREEN='\033[0;32m'; NC='\033[0m'; YELLOW='\033[1;33m'
 log() { echo -e "${GREEN}[1bit]${NC} $*"; }
 warn() { echo -e "${YELLOW}[1bit]${NC} $*"; }
 
-REPO_URL="https://github.com/bong-water-water-bong/1bit-systems.git"
+REPO_URL="https://github.com/1bit-systems/1bit-systems.git"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/1bit}"
 SKIP_ROCM=false; [ "${1:-}" = "--skip-rocm" ] && SKIP_ROCM=true
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
@@ -18,12 +18,12 @@ if echo "$KERNEL_RELEASE" | grep -q '^6\.19\.'; then
     warn "Strix Halo (gfx1151) systems running 6.19.x kernels may experience"
     warn "an amdgpu OPTC CRTC hang during GPU inference (issue #1)."
     warn "Recommended: use kernel 6.18.22-lts or 7.x instead."
-    warn "See: https://github.com/bong-water-water-bong/1bit-systems/issues/1"
+    warn "See: https://github.com/1bit-systems/1bit-systems/issues/1"
     echo ""
 fi
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    echo "Usage: curl -fsSL https://raw.githubusercontent.com/bong-water-water-bong/1bit-systems/main/install.sh -o install.sh"
+    echo "Usage: curl -fsSL https://raw.githubusercontent.com/1bit-systems/1bit-systems/main/install.sh -o install.sh"
     echo "       # Review the script, then:"
     echo "       bash install.sh [--skip-rocm]"
     echo ""
@@ -77,7 +77,7 @@ install_deps() {
         python3 -m pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
             "rocm[libraries,devel,device-gfx1151]" 2>/dev/null || {
             warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
-            warn "See: https://github.com/bong-water-water-bong/TheRock"
+            warn "See: https://github.com/ROCm/TheRock"
         }
         export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
     else

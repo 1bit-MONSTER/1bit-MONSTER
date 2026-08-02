@@ -29,7 +29,7 @@ weeks out of date the last time it was hand-maintained (see git history).
 > bit-exact against a CPU reference. They exclude KV-cache attention, softmax, RoPE,
 > non-GEMM FFN ops, sampler, tokenizer, and host↔device transfers — **not** an
 > end-to-end decode number. See the End-to-End table below and
-> [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235).
+> [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235).
 
 | Kernel | Value | Backend | Status |
 |--------|:-----:|---------|--------|
@@ -41,8 +41,6 @@ weeks out of date the last time it was hand-maintained (see git history).
 | GPU ternary (Vulkan) | **318 tok/s** | Vulkan ZINC | ✅ validated |
 | BitNet TQ1_0 (base-3 LUT) | **202 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | Prefill INT8 WMMA (I8-APRE) | **43.2 TFLOPS** | INT8 WMMA | ✅ re-measured 2026-08-01 (was 39.4) |
-| GGML-Vulkan decode (Qwen3-0.6B Q4_K) | **373 tok/s** | GGML-Vulkan | ✅ measured 2026-08-01 |
-| GGML-Vulkan decode (SmolLM2-135M Q4_K) | **662 tok/s** | GGML-Vulkan | ✅ measured 2026-08-01 |
 | IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — correctness pending full IQ1_M port |
 | NPU INT8 GEMM | **0/10000 errors (22/22 shapes)** | XDNA 2 via Peano | ✅ verified 2026-07-28 — npu_engine_universal, 4 native ops (QKV/O/GU/D). Prefill + decode functional. Flat BD DMA bottleneck limits throughput; Chess toolchain deprecated (multi-dim BD repeat hangs NPU2 DMA). |
 
@@ -54,11 +52,25 @@ This is a device-level number, not a model-inference tok/s figure.
 
 ## End-to-End Inference (real model, real prompts)
 
+**GGML-Vulkan (llama.cpp, Radeon 8060S, measured 2026-08-01):**
+
+| Model | Value | Backend | Notes |
+|-------|:-----:|---------|-------|
+| SmolLM2-135M Q4_K_M | **662 tok/s** | GGML-Vulkan | Peak end-to-end decode |
+| SmolLM2-360M Q4_K_M | **389 tok/s** | GGML-Vulkan | |
+| SmolLM2-1.7B Q4_K_M | **167 tok/s** | GGML-Vulkan | |
+| Qwen3-0.6B Q4_K_M | **373 tok/s** | GGML-Vulkan | |
+| Qwen2.5-VL-3B Q4_K_M | **100 tok/s** | GGML-Vulkan | |
+| Qwen3.5-4B Q4_K_M | **65 tok/s** | GGML-Vulkan | |
+| DeepSeek-R1-Distill-Llama-8B Q4_K_M | **44 tok/s** | GGML-Vulkan | |
+
+**Native engine (HIP / ZINC / NPU / CPU):**
+
 | Model | Value | Backend | Notes |
 |-------|:-----:|---------|-------|
 | BlackMamba 1.5B | **79.4 tok/s** | Mamba1 HIP (Strix Halo) | Full decode, alternating SSM/MoE dispatch. Re-validated 2026-07-26 after `__shfl_xor_sync` kernel fixes. |
-| llama.cpp ROCm (PrismML, third-party) | **229 tok/s** | Same hardware | Comparison point, not our engine. See [issue #235](https://github.com/bong-water-water-bong/1bit-systems/issues/235). |
-| BlackMamba 2.8B | **46.0 tok/s** | Mamba1 HIP (Strix Halo) | Full decode. Re-validated 2026-07-26. Reachable today only via the server's internal benchmark thread — `POST /v1/completions` hangs, see [issue #922](https://github.com/bong-water-water-bong/1bit-systems/issues/922). |
+| llama.cpp ROCm (PrismML, third-party) | **229 tok/s** | Same hardware | Comparison point, not our engine. See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235). |
+| BlackMamba 2.8B | **46.0 tok/s** | Mamba1 HIP (Strix Halo) | Full decode. Re-validated 2026-07-26. Reachable today only via the server's internal benchmark thread — `POST /v1/completions` hangs, see [issue #922](https://github.com/1bit-systems/1bit-systems/issues/922). |
 | zaya_server (Qwen 27B Q4_K) | **30 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |
 | ZR1-1.5B (Zyphra) | **26 tok/s** | Vulkan ZINC | Reasoning-tuned dense transformer, Qwen2 arch |
 | zaya_server (Qwen 35B MoE Q4_K) | **20 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |

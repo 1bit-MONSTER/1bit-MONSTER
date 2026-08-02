@@ -225,7 +225,7 @@
 
 ## 6. Project Source Code
 
-- **Repository**: https://github.com/bong-water-water-bong/1bit-systems
+- **Repository**: https://github.com/1bit-systems/1bit-systems
 - **License**: MIT
 - **Language**: C++23 (server), HIP C++ (GPU kernels), Python (converters/benchmarks), Rust (proxy)
 - **Build**: CMake + Ninja, `cmake -B build -G Ninja && ninja -C build zaya_server`

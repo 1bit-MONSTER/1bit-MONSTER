@@ -22,7 +22,7 @@
 runtime is a Rust HTTP server that wraps [rocm-cpp](https://github.com/bong-water-water-bong/rocm-cpp)
 HIP kernels, delivering 4.9–7.2× faster decode than rocBLAS FP16 at 1/4 the memory.
 
-[![CI](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/bong-water-water-bong/1bit-systems/actions/workflows/ci.yml)
+[![CI](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-00ff00.svg)](LICENSE)
 [![Site](https://img.shields.io/badge/site-1bit.systems-12a0ed.svg)](https://1bit.systems)
 [![Endpoint](https://img.shields.io/badge/endpoint-:13305%2Fv1-00ff00.svg)](#connect-apps)
@@ -122,7 +122,7 @@ Full data: [rocm-cpp results/BENCHMARK-20260623.md](https://github.com/bong-wate
 |---|---|
 | [1bit-engine](https://github.com/bong-water-water-bong/1bit-engine) | Rust HTTP server (the runtime) |
 | [rocm-cpp](https://github.com/bong-water-water-bong/rocm-cpp) | C++/HIP kernels (the engine) |
-| [1bit-systems](https://github.com/bong-water-water-bong/1bit-systems) | Website, docs, benchmarks (this repo) |
+| [1bit-systems](https://github.com/1bit-systems/1bit-systems) | Website, docs, benchmarks (this repo) |
 
 ## License
 

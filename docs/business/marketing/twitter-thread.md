@@ -33,4 +33,4 @@ curl -sL https://1bit.systems/install.sh | bash
 
 MIT. Open source. No Python. No Docker. No BS.
 
-https://github.com/bong-water-water-bong/1bit-systems
+https://github.com/1bit-systems/1bit-systems

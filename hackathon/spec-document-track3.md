@@ -143,7 +143,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 
 ## 6. Project Links
 
-- **Source**: https://github.com/bong-water-water-bong/1bit-systems
+- **Source**: https://github.com/1bit-systems/1bit-systems
 - **NPU engine**: `engine/npu/src/npu_engine_v12.cpp`
 - **Mamba1 GPU backend**: `src/mamba1_engine.hip`
 - **NPU ISA docs**: `docs/research/fastflowlm-analysis/NPU_ISA.md` (274 lines)
@@ -157,7 +157,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 ## 7. Setup
 
 ```bash
-git clone https://github.com/bong-water-water-bong/1bit-systems
+git clone https://github.com/1bit-systems/1bit-systems
 cd 1bit-systems
 # Install TheRock 7.15.0a — native gfx1151 HIP SDK
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"

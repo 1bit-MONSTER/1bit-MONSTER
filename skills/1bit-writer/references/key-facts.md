@@ -3,7 +3,7 @@
 ## Project
 
 - **Name**: 1bit.systems
-- **Repo**: https://github.com/bong-water-water-bong/1bit-systems
+- **Repo**: https://github.com/1bit-systems/1bit-systems
 - **Site**: https://1bit.systems
 - **License**: MIT
 - **Language**: Pure C++23
