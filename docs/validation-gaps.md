@@ -1,9 +1,9 @@
 # Validation Gaps & Engineering Blockers
 
 > **Canonical gap tracker.** Updated 2026-07-29 after live validation on Strix Halo
-> (Ryzen AI Max+ 395, Radeon 8060S, 256 GB/s, NPU firmware 1.1.2.65, ROCm 7.1).
+> (Ryzen AI Max+ 395, Radeon 8060S, 256 GB/s, NPU firmware 1.1.2.65, TheRock ROCm 7.15.0a).
 >
-#â Every claim in `docs/wiki/models.md` was either validated on real hardware,
+#ï¿½ Every claim in `docs/wiki/models.md` was either validated on real hardware,
 > identified as a documentation error, or catalogued here as a genuine engineering gap.
 
 ---

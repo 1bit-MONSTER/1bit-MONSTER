@@ -42,7 +42,7 @@
                        │ HTTP (OpenAI-compatible API)
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   unified_server (C++, ~2 MB)                │
+│                   unified_server (C++, ~65 MB single ELF)        │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
 │  │ Model Router │  │ Token Router │  │ Strategy Engine   │  │
