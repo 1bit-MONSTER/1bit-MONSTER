@@ -79,7 +79,7 @@ The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExter
 | `xclbin_health.cpp` | Validate any xclbin against the running driver. Detects `Invalid num_col` rejection. |
 | `probe_contexts.cpp` | Probe max concurrent `hw_context`s (empirically disproves the "5 contexts collide" myth). |
 | `probe_multi_xclbin.cpp` | Probe mixing distinct xclbins (tests what the real engine does). |
-| `Makefile` | Build everything. Needs XRT + ROCm 7.2.4. |
+| `Makefile` | Build everything. Needs XRT + TheRock HIP SDK. |
 
 ---
 

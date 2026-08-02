@@ -6,7 +6,7 @@ One C++ binary. 35 models. 7 backends. Zero Python. Zero config.
 
 ---
 
-We reverse-engineered AMD's proprietary NPU stack (22 .so files → 17.5 MB open source) in 4 days. The AIE array on XDNA 2 has 32 compute tiles, and now ALL of them do real work: QKV projection, attention, O/FFN projection — one fused pass through the array.
+We reverse-engineered AMD's proprietary NPU stack (22 .so files → 1.5 MB open source) in 4 days. The AIE array on XDNA 2 has 32 compute tiles, and now ALL of them do real work: QKV projection, attention, O/FFN projection — one fused pass through the array.
 
 The attention kernel runs on-NPU: Q@K^T scores, online softmax rescaling, weighted sum. We clocked it. It works. `NPU_ATTN=1` to enable.
 
