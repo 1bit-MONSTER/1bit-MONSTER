@@ -564,6 +564,16 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(ppl_generic PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# -- gguf_htok / make_gate : per-vocab ppl gate sets (issue #1243) --
+# gguf_htok exports a GGUF tokenizer to .htok v2; make_gate tokenizes the
+# gate corpus with it into ppl_generic's jsonl format.
+add_executable(gguf_htok tools/gguf_htok.cpp src/gguf_reader.cpp)
+target_include_directories(gguf_htok PRIVATE src include)
+target_compile_options(gguf_htok PRIVATE -O2 -std=c++23)
+add_executable(make_gate tools/make_gate.cpp src/tokenizer.cpp)
+target_include_directories(make_gate PRIVATE src include)
+target_compile_options(make_gate PRIVATE -O2 -std=c++23)
+
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
