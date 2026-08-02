@@ -31,8 +31,8 @@ sudo apt install -y cmake ninja-build build-essential git
 
 ```bash
 # Install TheRock HIP SDK for gfx1151 (Strix Halo)
-pip install --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-  rocm[devel,libraries]
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+  "rocm[libraries,devel,device-gfx1151]"
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
 
 # Verify
