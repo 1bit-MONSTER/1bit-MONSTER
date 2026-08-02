@@ -20,11 +20,11 @@ die()  { printf "${RED}✗${NC} %s\n" "$*"; exit 1; }
 # ── Model registry ──
 # Format: name|description|size|url|sha256
 MODELS=(
-  "qwen3-0.6b|Qwen3-0.6B — 610 MB, 28 tok/s|610M|https://huggingface.co/bong-water-water-bong/qwen3-0.6b-q4nx/resolve/main/qwen3-0.6b.q4nx|"
-  "qwen3-8b|Qwen3-8B — 6.0 GB, 8 tok/s|6.0G|https://huggingface.co/bong-water-water-bong/qwen3-8b-q4nx/resolve/main/qwen3-8b.q4nx|"
-  "qwen3-vl-4b|Qwen3-VL-4B — 3.2 GB, 11 tok/s|3.2G|https://huggingface.co/bong-water-water-bong/qwen3-vl-4b-q4nx/resolve/main/qwen3-vl-4b.q4nx|"
-  "gemma4-e2b|Gemma4-E2B — 4.7 GB, 16 tok/s|4.7G|https://huggingface.co/bong-water-water-bong/gemma4-e2b-q4nx/resolve/main/gemma4-e2b.q4nx|"
-  "llama-3.1-8b|Llama-3.1-8B — 5.7 GB, 10 tok/s|5.7G|https://huggingface.co/bong-water-water-bong/llama-3.1-8b-q4nx/resolve/main/llama-3.1-8b.q4nx|"
+  "qwen3-0.6b|Qwen3-0.6B — 610 MB|610M|https://huggingface.co/bong-water-water-bong/qwen3-0.6b-q4nx/resolve/main/qwen3-0.6b.q4nx|"
+  "qwen3-8b|Qwen3-8B — 6.0 GB|6.0G|https://huggingface.co/bong-water-water-bong/qwen3-8b-q4nx/resolve/main/qwen3-8b.q4nx|"
+  "qwen3-vl-4b|Qwen3-VL-4B — 3.2 GB|3.2G|https://huggingface.co/bong-water-water-bong/qwen3-vl-4b-q4nx/resolve/main/qwen3-vl-4b.q4nx|"
+  "gemma4-e2b|Gemma4-E2B — 4.7 GB|4.7G|https://huggingface.co/bong-water-water-bong/gemma4-e2b-q4nx/resolve/main/gemma4-e2b.q4nx|"
+  "llama-3.1-8b|Llama-3.1-8B — 5.7 GB|5.7G|https://huggingface.co/bong-water-water-bong/llama-3.1-8b-q4nx/resolve/main/llama-3.1-8b.q4nx|"
 )
 
 MODEL_DIR="${HOME}/.local/share/1bit/models"

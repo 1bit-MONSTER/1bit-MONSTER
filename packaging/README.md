@@ -19,15 +19,9 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 | **Homebrew** | 📋 Formula ready | `brew install 1bit-systems` |
 | **Snap** | 📋 snapcraft.yaml ready | `snap install 1bit-systems` |
 
-### All 5 Models Verified (auto-detect, no rebuild)
+### Model coverage
 
-| Model | H | IM | NH | HD | Size | Decode | Status |
-|-------|---|----|----|----|------|--------|--------|
-| Qwen3-0.6B | 1024 | 3072 | 16 | 128 | 610 MB | 28 tok/s | ✅ |
-| Gemma4-E2B | 1536 | 6144 | 8 | 256 | 4.7 GB | 16 tok/s | ✅ |
-| Qwen3-VL-4B | 2560 | 9728 | 32 | 128 | 3.2 GB | 11 tok/s | ✅ |
-| Llama-3.1-8B | 4096 | 14336 | 32 | 128 | 5.7 GB | 10 tok/s | ✅ |
-| Qwen3-8B | 4096 | 12288 | 32 | 128 | 6.0 GB | 8 tok/s | ✅ |
+Auto-detects **19 model architectures** from GGUF/1BP headers, **47 1BP models** — Qwen2/3/3.5, Llama 3.1/3.2, Mistral/Pixtral, Gemma 3/4, Falcon, DeepSeek V2/V3/R1, Zaya1 MoE, BlackMamba, Zamba/Zamba2, Kimi (Gated MLA MoE), and more. Per-model support matrix and performance data: [`docs/wiki/models.md`](../docs/wiki/models.md).
 
 ### Client Compatibility (same HTTP API, no SDK needed)
 
