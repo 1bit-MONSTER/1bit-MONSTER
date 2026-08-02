@@ -3,6 +3,9 @@
   "_missing": [],
   "_benchmarks_remeasured": "2026-08-01, median of runs on real gfx1151 hardware (bench_sherry, bench_prefill_variants, llama-bench GGML-Vulkan) \u2014 see _sources.",
   "binary": {
+    "onebin_bytes": 70458416,
+    "onebin_kb": 68807,
+    "onebin_stripped_kb": 65942,
     "zaya_bytes": 1578576,
     "zaya_kb": 1541,
     "zaya_stripped_kb": 1272,

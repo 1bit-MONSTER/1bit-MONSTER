@@ -48,10 +48,16 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 ## Quick Start
 
 ```bash
-git clone https://github.com/bong-water-water-bong/1bit-systems
+git clone https://github.com/1bit-systems/1bit-systems
 cd 1bit-systems && cmake -B build && cmake --build build
-./build/zaya_server -m model.1bp -p "Hello world"
+./build/1bit zaya -m model.1bp -p "Hello world"
 ```
+
+**One binary, every entry point.** `build/1bit` is a single ELF holding every
+server and the CLI — dispatched by subcommand (`zaya`, `unified`, `router`,
+`jarvis`, `vision`, `chat`, `pull`, `list`, …) or by legacy symlink name
+(`zaya_server`, `unified_server`, `jarvis_server`, `vision_server`, …).
+Packages ship `1bit` plus symlinks; nothing else is needed at runtime.
 
 See the [Installation Guide](docs/wiki/Installation.md) for full instructions.
 

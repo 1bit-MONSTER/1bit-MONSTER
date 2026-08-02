@@ -1,6 +1,9 @@
 # Getting Started — zaya_server
 
-**Zaya1‑8B** inference server. Pure C++/HIP, one binary (~1.5 MB). No Python,
+> `zaya_server` is one entry point of the **single binary** `build/1bit`
+> (`1bit zaya`, or the `zaya_server` symlink shipped in packages).
+
+**Zaya1‑8B** inference server. Pure C++/HIP, one binary, no Python,
 no Rust, no virtualenvs, no containers. Runs on **AMD Strix Halo** (Ryzen AI
 Max+ 395) with ROCm GPU acceleration.
 
@@ -271,7 +274,7 @@ zaya_server [port]
                        │  POST /completion
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│                  zaya_server (~1.5 MB)               │
+│                  zaya_server (in the 1bit ELF)      │
 │                                                      │
 │  ┌──────────┐  ┌─────────────┐  ┌──────────────────┐│
 │  │  HTTP    │  │  Tokenizer  │  │  Inference Engine ││

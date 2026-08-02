@@ -12,21 +12,26 @@ all: stage
 stage:
 	mkdir -p $(STAGE)/usr/share/1bit
 	mkdir -p $(STAGE)/usr/bin $(STAGE)/usr/lib/1bit $(STAGE)/usr/lib/x86_64-linux-gnu $(STAGE)/usr/share/1bit
-	cp $(BUILD_DIR)/zaya_server         $(STAGE)/usr/bin/zaya_server
-	cp $(BUILD_DIR)/unified_server      $(STAGE)/usr/bin/unified_server
-	cp $(BUILD_DIR)/jarvis_server       $(STAGE)/usr/bin/jarvis_server
-	cp $(BUILD_DIR)/engine/npu/npu_engine_universal $(STAGE)/usr/bin/1bit-npu
-	cp $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli $(STAGE)/usr/bin/video_lora_vk_cli
-	cp ../packaging/1bit                $(STAGE)/usr/bin/1bit
+	# ONE BINARY: every server + the CLI live in a single ELF (build/1bit);
+	# legacy names are symlinks — argv[0] dispatch inside the ELF.
+	cp $(BUILD_DIR)/1bit $(STAGE)/usr/bin/1bit
 	chmod +x $(STAGE)/usr/bin/1bit
-	# launcher compatibility: 1bit-server → zaya_server
-	ln -sf zaya_server $(STAGE)/usr/bin/1bit-server
+	for name in zaya_server unified_server unified_router jarvis_server vision_server onebitd onebit 1bit-server; do \
+		ln -sf 1bit $(STAGE)/usr/bin/$$name; \
+	done
+	# optional sidecars (NPU engine needs XRT; video-lora CLI is a dev tool)
+	if [ -f engine/npu/build/npu_engine_universal ]; then \
+		cp engine/npu/build/npu_engine_universal $(STAGE)/usr/bin/1bit-npu; \
+	fi
+	if [ -f $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli ]; then \
+		cp $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli $(STAGE)/usr/bin/video_lora_vk_cli; \
+	fi
 	cp $(BUILD_DIR)/librocm_cpp.so      $(STAGE)/usr/lib/x86_64-linux-gnu/
 	cp $(BUILD_DIR)/libbackend_manager.a $(STAGE)/usr/lib/1bit/
 	cp $(BUILD_DIR)/libgguf_reader.a    $(STAGE)/usr/lib/1bit/
 	cp $(BUILD_DIR)/libvl_image.a       $(STAGE)/usr/lib/1bit/
-	cp -r $(BUILD_DIR)/tools/video-lora/vulkan/shaders $(STAGE)/usr/share/1bit/shaders
-	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/
+	cp -r $(BUILD_DIR)/tools/video-lora/vulkan/shaders $(STAGE)/usr/share/1bit/shaders 2>/dev/null || true
+	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/ 2>/dev/null || true
 	@echo "staged $(VERSION) -> $(STAGE)"
 
 package-deb: stage
