@@ -115,3 +115,14 @@ build/*.ninja*
 .zig-cache/
 **/.zig-cache/
 *.AppImage
+scripts/.reconvert.lock
+research/ws05-1bp-v2/RECONVERT-REPORT.md.tmp
+
+# ── Local work artifacts (not for VCS) ──
+.codewhale/
+appimage-build/
+appimagetool
+heaptrack*
+models/_src_q8/
+npu-infer/mlir-aie
+reasonix.toml

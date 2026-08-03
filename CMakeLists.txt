@@ -564,6 +564,16 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(ppl_generic PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# -- gguf_htok / make_gate : per-vocab ppl gate sets (issue #1243) --
+# gguf_htok exports a GGUF tokenizer to .htok v2; make_gate tokenizes the
+# gate corpus with it into ppl_generic's jsonl format.
+add_executable(gguf_htok tools/gguf_htok.cpp src/gguf_reader.cpp)
+target_include_directories(gguf_htok PRIVATE src include)
+target_compile_options(gguf_htok PRIVATE -O2 -std=c++23)
+add_executable(make_gate tools/make_gate.cpp src/tokenizer.cpp)
+target_include_directories(make_gate PRIVATE src include)
+target_compile_options(make_gate PRIVATE -O2 -std=c++23)
+
 target_include_directories(backend_manager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
@@ -1349,7 +1359,7 @@ if(EXISTS "${FLM_BUILD_DIR}/flm")
 endif()
 
 # -- onebitd : 1bit inference daemon (spawns backend, proxies HTTP) --------
-# Pure C++ replacement for rust/onebitd. No Rust axum/reqwest needed.
+# Pure C++ daemon — spawns backend, proxies HTTP.
 add_executable(onebitd tools/onebitd.cpp)
 target_include_directories(onebitd PRIVATE src/ include/)
 target_compile_options(onebitd PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
@@ -1441,7 +1451,7 @@ target_link_libraries(vl_pipeline_test PRIVATE
 
 
 # -- onebit : NPU-native terminal coding agent CLI -------------------------
-# Pure C++ replacement for rust/onebit-cli. Single binary — chat, up, down,
+# Pure C++ agent CLI. Single binary — chat, up, down,
 # status, build, config, auth, serve, update.
 add_executable(onebit tools/onebit.cpp)
 target_include_directories(onebit PRIVATE src/ include/)
@@ -1450,7 +1460,7 @@ target_link_libraries(onebit PRIVATE
     httplib::httplib
     nlohmann_json::nlohmann_json)
 
-# Alias for the canonical binary name (matches Rust release artifact name)
+# Alias for the canonical binary name
 # NOTE: the single binary (onebin, OUTPUT_NAME "1bit") supersedes this copy
 # target — onebit's main() lives inside build/1bit now.
 
@@ -1942,3 +1952,20 @@ else()
 endif()
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Zaya codec decoder (issue #1368): RVQ-VAE GGUF decoder + self-check
+# Dependency-light CPU decoder (stdlib + gguf_reader). GGUF file is produced
+# by tools/export_codec_gguf.py.
+# ═══════════════════════════════════════════════════════════════════════════
+add_library(zaya_codec STATIC src/zaya_codec.cpp)
+target_include_directories(zaya_codec PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_compile_options(zaya_codec PRIVATE -O3 -std=c++17)
+target_link_libraries(zaya_codec PUBLIC gguf_reader)
+
+add_executable(test_zaya_codec tests/test_zaya_codec.cpp)
+target_include_directories(test_zaya_codec PRIVATE include/)
+target_compile_options(test_zaya_codec PRIVATE -O3 -std=c++17)
+target_link_libraries(test_zaya_codec PRIVATE zaya_codec)

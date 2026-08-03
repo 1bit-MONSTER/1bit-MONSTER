@@ -64,6 +64,9 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "mistral") == 0) return RCPP_ARCH_MISTRAL;
     if (strcmp(s, "qwen2")   == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "gemma")   == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "gemma2")  == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "gemma3")  == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "gemma4")  == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "phi")     == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "zamba2")  == 0) return RCPP_ARCH_ZAMBA2;
     if (strcmp(s, "zamba")   == 0) return RCPP_ARCH_ZAMBA;

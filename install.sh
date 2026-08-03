@@ -94,7 +94,7 @@ if [ "$SKIP_ROCM" = false ]; then
     log "Building C++ inference stack (server + CLI + daemon)..."
     cd "$DIR"
     cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
-    cmake --build build --target zaya_server onebitd onebit onebit_bin unified_router -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    cmake --build build --target zaya_server onebitd onebit onebin unified_router -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
     log "Build complete:"
     log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"
     log "  $DIR/build/onebitd      ($(stat -c%s "$DIR/build/onebitd" 2>/dev/null || echo '?') bytes)"

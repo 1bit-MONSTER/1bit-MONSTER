@@ -58,7 +58,7 @@ jobs:
             tools/video-lora  # C++ Vulkan inference backend (SD1.5/AnimateDiff) — engine scope, NOT an app
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations personas prompts skills themes workers zaya_audio
-            .gitmodules PLAN-GAIA.md third_party  # embedded Lemonade server core + vendored Gaia (zero-Python agent layer) — engine scope
+            .gitmodules .gitignore PLAN-GAIA.md third_party  # embedded Lemonade server core + vendored Gaia (zero-Python agent layer) — engine scope
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"

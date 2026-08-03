@@ -8,7 +8,7 @@ The haul: **37 models, 209 pre-compiled NPU xclbins**, plus Qwen3.5 Omni multi-m
 
 **How it works:**
 
-Drop a Q4NX file onto our single C++ binary (~207 KB). It reads the Q4NX header, auto-detects architecture and dimensions, picks the right xclbin from `flm_model_map.json` (which maps all 37 model tags), and runs. Zero config files. Zero Python at runtime. Works with the mainline `amdxdna` driver — no proprietary FastFlowLM `.so` files needed.
+Drop a Q4NX file onto our single C++ binary (~1.5 MB). It reads the Q4NX header, auto-detects architecture and dimensions, picks the right xclbin from `flm_model_map.json` (which maps all 37 model tags), and runs. Zero config files. Zero Python at runtime. Works with the mainline `amdxdna` driver — no proprietary FastFlowLM `.so` files needed.
 
 **What's in the box:**
 

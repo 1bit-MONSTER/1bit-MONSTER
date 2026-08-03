@@ -1,4 +1,4 @@
-# Packaging — 1bit.systems v2026.07.26
+# Packaging — 1bit.systems v2026.08.03
 
 **One binary. 47 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
@@ -19,15 +19,9 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 | **Homebrew** | 📋 Formula ready | `brew install 1bit-systems` |
 | **Snap** | 📋 snapcraft.yaml ready | `snap install 1bit-systems` |
 
-### All 5 Models Verified (auto-detect, no rebuild)
+### Model coverage
 
-| Model | H | IM | NH | HD | Size | Decode | Status |
-|-------|---|----|----|----|------|--------|--------|
-| Qwen3-0.6B | 1024 | 3072 | 16 | 128 | 610 MB | 28 tok/s | ✅ |
-| Gemma4-E2B | 1536 | 6144 | 8 | 256 | 4.7 GB | 16 tok/s | ✅ |
-| Qwen3-VL-4B | 2560 | 9728 | 32 | 128 | 3.2 GB | 11 tok/s | ✅ |
-| Llama-3.1-8B | 4096 | 14336 | 32 | 128 | 5.7 GB | 10 tok/s | ✅ |
-| Qwen3-8B | 4096 | 12288 | 32 | 128 | 6.0 GB | 8 tok/s | ✅ |
+Auto-detects **19 model architectures** from GGUF/1BP headers, **47 1BP models** — Qwen2/3/3.5, Llama 3.1/3.2, Mistral/Pixtral, Gemma 3/4, Falcon, DeepSeek V2/V3/R1, Zaya1 MoE, BlackMamba, Zamba/Zamba2, Kimi (Gated MLA MoE), and more. Per-model support matrix and performance data: [`docs/wiki/models.md`](../docs/wiki/models.md).
 
 ### Client Compatibility (same HTTP API, no SDK needed)
 
@@ -46,9 +40,9 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 
 | Binary | Purpose | Size |
 |--------|---------|------|
-| `1bit-npu` | CLI inference engine (47 1BP models, auto-detect) | 17.5 MB (stripped) |
-| `1bit-server` | HTTP API server (OpenAI-compatible) | 43 KB |
-| `dequant_q4nx.o` | Q4NX weight dequantizer | 2.8 KB |
+| `1bit` | Single ELF — every server + CLI (zaya_server, unified_server, unified_router, jarvis_server, vision_server, onebit, onebitd, 1bit-server; legacy names are symlinks, argv[0] dispatch) | ~67 MB raw / ~64 MB stripped |
+| `1bit-npu` | CLI inference engine (47 1BP models, auto-detect; NPU engine sidecar, needs XRT) | ~2.1 MB |
+| `video_lora_vk_cli` | Video-LoRA Vulkan CLI (dev tool, optional sidecar) | — |
 
 ## Build them yourself
 
@@ -60,8 +54,8 @@ make package-tarball
 make package-deb
 
 # Docker image
-docker build -t 1bit-systems/npu:2026.07.02 -f packaging/docker/Dockerfile .
-docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.07.02
+docker build -t 1bit-systems/npu:2026.08.03 -f packaging/docker/Dockerfile .
+docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.08.03
 
 # Snap
 make package-snap

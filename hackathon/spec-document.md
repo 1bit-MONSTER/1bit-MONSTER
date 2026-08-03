@@ -42,7 +42,7 @@
                        │ HTTP (OpenAI-compatible API)
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   unified_server (C++, ~2 MB)                │
+│                   unified_server (C++, ~65 MB single ELF)        │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
 │  │ Model Router │  │ Token Router │  │ Strategy Engine   │  │
@@ -227,7 +227,7 @@
 
 - **Repository**: https://github.com/1bit-systems/1bit-systems
 - **License**: MIT
-- **Language**: C++23 (server), HIP C++ (GPU kernels), Python (converters/benchmarks), Rust (proxy)
+- **Language**: C++23 (server, agent CLI, proxy), HIP C++ (GPU kernels), Python (converters/benchmarks)
 - **Build**: CMake + Ninja, `cmake -B build -G Ninja && ninja -C build zaya_server`
 - **Binary size**: ~1.4 MB server (`zaya_server`) + ~1.7 MB HIP kernel library (`librocm_cpp.so`)
 
@@ -241,7 +241,7 @@
 ├── backends/                   ← Backend abstraction layer
 ├── tools/jarvis_server.cpp     ← Agent layer, native C++ (RAG, tools, planning, memory)
 ├── packaging/services/          ← Systemd service unit
-├── rust/                       ← Rust reverse proxy (onebit)
+├── tools/onebitd.cpp         ← C++ reverse proxy (onebitd)
 ├── scripts/                    ← Converters, benchmarks, CI
 ├── hackathon/                  ← Submission materials
 ├── models/                     ← 46+ 1BP models across 17 families on HuggingFace (+12 documented Zyphra non-LLM)
