@@ -111,6 +111,12 @@ struct VitConfig {
     bool use_bias    = true;     // whether attention/FFN use bias
     bool use_pre_ln  = false;    // whether there's a pre-LN layer before the transformer
 
+    // Qwen2-VL style: apply per-head 2D (M-RoPE vision-mode) rotation to Q/K at
+    // the patch grid position, instead of learned position embeddings. Set by
+    // load_from_gguf when the mmproj is Qwen2-VL-shaped (dual patch embed,
+    // no v.position_embd.weight). CLIP/SigLIP/Pixtral/MAGE keep false.
+    bool use_2d_rope = false;
+
     // Image normalization constants (for preprocessing)
     float mean[3] = {0.48145466f, 0.45782750f, 0.40821073f}; // CLIP default
     float std[3]  = {0.26862954f, 0.26130258f, 0.27577711f};

@@ -412,18 +412,7 @@ void ZincEngine::init(const std::string& shader_dir, int device_idx) {
     printf("ZINC: Vulkan initialized\n");
 }
 
-bool ZincEngine::load_model(const std::string& gguf_path) {
-    printf("ZINC: Loading model from %s\n", gguf_path.c_str());
-    // TODO: full GGUF parsing and weight upload
-    return true;
-}
-
 void ZincEngine::reset() { model_.current_pos = 0; }
-
-int ZincEngine::generate(int token_id) {
-    (void)token_id;
-    return -1; // placeholder — use InferenceEngine via backend_zinc.cpp
-}
 
 void ZincEngine::destroy() {
     if (device_) vkDeviceWaitIdle(device_);  // fix #776: drain before destroy
