@@ -126,7 +126,12 @@ int load_tokenizer(const char *path) {
     }
     auto *json = static_cast<char *>(std::malloc(sz + 1));
     if (!json) { std::fclose(f); return -1; }
-    std::fread(json, 1, sz, f);
+    if (std::fread(json, 1, sz, f) != (size_t)sz) {
+        std::fprintf(stderr, "Failed to read %s (short read)\n", path);
+        std::free(json);
+        std::fclose(f);
+        return -1;
+    }
     json[sz] = '\0';
     std::fclose(f);
 

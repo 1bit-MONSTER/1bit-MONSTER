@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <ctime>
+#include <filesystem>
 #include <vector>
 #include <chrono>
 #include <exception>
@@ -129,9 +131,13 @@ static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
 // so the heap corruption root cause can be debugged. The measured results
 // are flushed to stderr before the re-raise.
 static void sigabrt_handler(int sig) {
-    fprintf(stderr, "\n[NPU engine] caught SIGABRT (likely heap corruption from free(): invalid size)\n");
-    fprintf(stderr, "[NPU engine] re-raising for core dump — see core.{pid} for backtrace\n");
-    fflush(stderr);
+    // Async-signal-safe only (issue #1433): fprintf/fflush can deadlock when
+    // SIGABRT fires from heap corruption while stdio/arena locks are held.
+    static const char m1[] = "\n[NPU engine] caught SIGABRT (likely heap corruption from free(): invalid size)\n";
+    static const char m2[] = "[NPU engine] re-raising for core dump — see core.{pid} for backtrace\n";
+    ssize_t r1 = write(2, m1, sizeof(m1) - 1);
+    ssize_t r2 = write(2, m2, sizeof(m2) - 1);
+    (void)r1; (void)r2;
     // Reset handler to default and re-raise to get a core dump
     signal(SIGABRT, SIG_DFL);
     raise(SIGABRT);
@@ -510,6 +516,7 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
 
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
+    srand((unsigned)time(nullptr) ^ (unsigned)getpid()); // issue #1431: sampling was deterministic
     // Install SIGABRT handler for issue #202: heap corruption during decode
     // causes free(): invalid size → SIGABRT. The handler prints diagnostic
     // info, then re-raises with SIG_DFL restored to produce a core dump.
@@ -718,23 +725,21 @@ int main(int argc,char**argv){
                 f = fopen(flm_mm_path.c_str(), "rb");
                 if (f) { fclose(f); flm_xclbin_available = true; }
                 else {
-                    // Third try: search with ls (broad match)
+                    // Third try: recursive search (no shell — issue #1435;
+                    // popen("find " + env_dir) broke on spaces and was injectable)
                     fprintf(stderr, "  Searching for mm.xclbin under %s ...\n", flm_xd.c_str());
-                    // Simple fallback: use tagged name directly
-                    std::string alt = std::string("find ") + flm_xd +
-                        " -name mm.xclbin 2>/dev/null | head -5";
-                    FILE* pf = popen(("find " + flm_xd +
-                        " -name mm.xclbin 2>/dev/null | head -1").c_str(), "r");
-                    if (pf) {
-                        char buf[512] = {};
-                        if (fgets(buf, sizeof(buf), pf)) {
-                            size_t len = strlen(buf);
-                            if (len > 0 && buf[len-1] == '\n') buf[len-1] = '\0';
-                            flm_mm_path = buf;
-                            FILE* cf = fopen(flm_mm_path.c_str(), "rb");
-                            if (cf) { fclose(cf); flm_xclbin_available = true; }
+                    std::error_code ec;
+                    for (auto it = std::filesystem::recursive_directory_iterator(flm_xd, ec), end = std::filesystem::recursive_directory_iterator();
+                         it != end; it.increment(ec)) {
+                        if (ec) break;
+                        if (it->is_regular_file(ec) && it->path().filename() == "mm.xclbin") {
+                            flm_mm_path = it->path().string();
+                            break;
                         }
-                        pclose(pf);
+                    }
+                    if (!flm_mm_path.empty()) {
+                        FILE* cf = fopen(flm_mm_path.c_str(), "rb");
+                        if (cf) { fclose(cf); flm_xclbin_available = true; }
                     }
                 }
             } else {

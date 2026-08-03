@@ -307,7 +307,7 @@ The server binary must run without Python, pip, or any interpreter. Python may b
 
 ### Zero Rust at Runtime
 
-No Rust runtime, Rust build tools, or Rust dynamic libraries may be required to build or run `zaya_server`. (Rust code exists in the `rust/` directory for auxiliary tooling; it must never be a dependency of the server.)
+No Rust runtime, Rust build tools, or Rust dynamic libraries may be required to build or run `zaya_server`.
 
 ### One Binary, All Models
 
@@ -398,10 +398,8 @@ The project uses GitHub Actions (`.github/workflows/ci.yml`):
 | Job | What it checks |
 |-----|----------------|
 | `cpp` | CMake configure + build, ROCm availability, ShellCheck, host tests |
+| `lint` | clang-format + repo health checks |
 | `version` | Version consistency across manifest files + Q4NX round-trip test |
-| `rust` | Rust proxy build + test |
-| `ts` | TypeScript CLI type-check |
-| `fusion` | Fused engine build + smoke test |
 
 PRs must pass the `cpp` job before merge.
 

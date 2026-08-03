@@ -15,7 +15,7 @@ DOPS (2607.25498) argues prefill/decode disaggregation alone is insufficient: en
 ## Tasks
 
 ### P0 (do now)
-- [ ] Land P0.2: one router (StrategyConfig enum already exists in `token-router`'s Rust: Passthrough, Cascade, SpecDecode, ContentRouter, Performance); retire the other two
+- [ ] Land P0.2: one router (StrategyConfig enum already exists in `unified_router` (C++): Passthrough, Cascade, SpecDecode, ContentRouter, Performance); retire the other two
 
 ### P1 (next)
 - [ ] Live throughput probe + health-check fallback (rank-by-throughput, the missing behavior)
