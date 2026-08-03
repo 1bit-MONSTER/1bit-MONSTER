@@ -3,6 +3,20 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.03 — ws05 ppl gates + fused prefill chain, RVQ-VAE codec, narrative purge 🧹
+
+- **ws05: per-vocab perplexity gates for every family** (#1243) — ppl gates now
+  run for non-Qwen families too, with a truncation guard, single-instance lock,
+  and gated-source swaps; partial-tile dequant stride fix + gemma arch aliases.
+- **Kernel: fused O→residual→RMSNorm→Gate/Up chain (TQ2_1024)** — decode and
+  prefill (M=128) variants cut the post-GEMM tail into one fused pass.
+- **Codec: C++ RVQ-VAE decoder + GGUF export** (#1368) — codec now ships in the
+  C++ stack with GGUF export support.
+- **Narrative purge** (#1412 + follow-up) — stale TheRock-era and Rust-era
+  claims removed from docs, CI, hackathon scripts, and packaging docs; proxy,
+  agent CLI, and inference engine are all described as C++ now.
+- Packaging manifests re-synced to `2026.08.03` (issue #117 check green).
+
 ## 2026.08.02 — one ELF to rule them all: every server + CLI in `1bit` 🚀
 
 - **Single binary is now literal** — `build/1bit` embeds zaya_server,

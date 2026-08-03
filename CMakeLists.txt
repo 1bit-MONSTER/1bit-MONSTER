@@ -1952,3 +1952,20 @@ else()
 endif()
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Zaya codec decoder (issue #1368): RVQ-VAE GGUF decoder + self-check
+# Dependency-light CPU decoder (stdlib + gguf_reader). GGUF file is produced
+# by tools/export_codec_gguf.py.
+# ═══════════════════════════════════════════════════════════════════════════
+add_library(zaya_codec STATIC src/zaya_codec.cpp)
+target_include_directories(zaya_codec PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_compile_options(zaya_codec PRIVATE -O3 -std=c++17)
+target_link_libraries(zaya_codec PUBLIC gguf_reader)
+
+add_executable(test_zaya_codec tests/test_zaya_codec.cpp)
+target_include_directories(test_zaya_codec PRIVATE include/)
+target_compile_options(test_zaya_codec PRIVATE -O3 -std=c++17)
+target_link_libraries(test_zaya_codec PRIVATE zaya_codec)

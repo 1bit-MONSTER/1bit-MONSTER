@@ -9,6 +9,7 @@
 #include "backend.h"
 #include <sys/stat.h>
 #include <dirent.h>
+#include <unistd.h>
 #include "model_discovery.h"
 #include "rocm_cpp/tokenizer.h"
 
@@ -105,10 +106,22 @@ struct GenericBackend : Backend {
         size_t w1 = SIZE_MAX, w2 = SIZE_MAX, w3 = SIZE_MAX;
         size_t bq = SIZE_MAX, bk = SIZE_MAX, bv = SIZE_MAX;
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
+        size_t post_attn_norm = SIZE_MAX, post_ffn_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
         int pk_q = -1, pk_k = -1, pk_v = -1, pk_o = -1, pk_w1 = -1, pk_w2 = -1, pk_w3 = -1;  // packed TQ2 slots
     };
     std::vector<LayerW> layers;
+    // Gemma-2/3/4 logit soft-capping (attn cap 50, final cap 30). Keyed on
+    // the arch STRING, not the enum — RCPP_ARCH_GEMMA also covers Granite
+    // (Llama-style: no caps, rms eps 1e-5) and Gemma-1 (no caps).
+    bool gemma_softcap_ = false;
+    // Gemma-family embeddings are stored unscaled; the model expects them
+    // scaled by sqrt(hidden) at the input (gemma_pytorch / llama.cpp
+    // gemma/gemma2/gemma3 graphs: inpL = scale(inpL, sqrtf(n_embd))).
+    // Without this the residual stream's composition after layer 0 is wrong
+    // and the model runs out of distribution (caught by the #1243 ppl gate:
+    // Gemma-3-1B ppl 6e8 with correct tokenization).
+    bool gemma_emb_scale_ = false;
 
     GenericBackend() { type = BackendType::GENERIC; name = "Generic CPU (GGUF)"; }
 
@@ -264,6 +277,15 @@ struct GenericBackend : Backend {
             cached_num_layers_ = (nl && nl[0]) ? atoi(nl) : cfg.n_layers;
         }
 
+        // Gemma-2/3/4: logit soft-capping + rms eps 1e-6. Keyed on the arch
+        // string (gemma2/gemma3/gemma4) — the RCPP_ARCH_GEMMA enum also
+        // covers Granite and Gemma-1, which need neither.
+        gemma_softcap_ = cfg.architecture.rfind("gemma", 0) == 0 && cfg.architecture != "gemma";
+        if (cfg.architecture.rfind("gemma", 0) == 0) cfg.rms_norm_eps = 1e-6f;
+        // Gemma-family input embedding scaling (sqrt(hidden)); Granite shares
+        // the enum but is Llama-style and must NOT be scaled.
+        gemma_emb_scale_ = cfg.architecture.rfind("gemma", 0) == 0;
+
         initialized = true;
         return true;
     }
@@ -378,6 +400,11 @@ struct GenericBackend : Backend {
             load("attn_norm.weight", "input_layernorm.weight", lw.rms_attn, H, 1);   // 1BP writer convention
             load("post_attention_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1);
             load("ffn_norm.weight", "post_attention_layernorm.weight", lw.rms_ffn, H, 1); // 1BP writer convention
+            // Gemma-2/3 post-norms: RMSNorm on the attn/FFN outputs before
+            // the residual adds (see issue #1243 ppl gate). Distinct from the
+            // pre-FFN rms_ffn above; absent on Llama-class models -> SIZE_MAX.
+            load("post_attention_norm.weight", "post_attention_layernorm.weight", lw.post_attn_norm, H, 1);
+            load("post_ffw_norm.weight", "post_ffw_norm.weight", lw.post_ffn_norm, H, 1);
             // Qwen3 per-head QK-norm (raw fp32 vectors in 1BP); required for
             // attention stability — without it Qwen3 logits collapse (flat).
             load("attn_q_norm.weight", "self_attn.q_norm.weight", lw.q_norm, HD, 1);
@@ -540,6 +567,12 @@ struct GenericBackend : Backend {
             lw.bv = load_tensor_optional(p + "attn_v.bias", NKV*HD);
             lw.q_norm = load_tensor_optional(p + "attn_q_norm.weight", HD);
             lw.k_norm = load_tensor_optional(p + "attn_k_norm.weight", HD);
+            // Gemma-2/3 post-norms: RMSNorm applied to the attention and FFN
+            // outputs before the residual adds. Without them the FFN output
+            // (RMS ~40 on Gemma-3) blasts the residual stream -> garbage
+            // logits (caught by the issue #1243 per-vocab ppl gate).
+            lw.post_attn_norm = load_tensor_optional(p + "post_attention_norm.weight", H);
+            lw.post_ffn_norm = load_tensor_optional(p + "post_ffw_norm.weight", H);
             layers[i] = lw;
         }
         {
@@ -833,6 +866,14 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
+        // Gemma-family: scale the token embedding by sqrt(hidden) — the model
+        // was trained with this scaling (gemma_pytorch; llama.cpp gemma2/3
+        // graphs). Only for real token rows; forward_embed (vision splice)
+        // callers pass already-scaled embeddings and are untouched.
+        if (gemma_emb_scale_) {
+            float s = sqrtf((float)cfg.hidden);
+            for (int i = 0; i < cfg.hidden; i++) x0[i] *= s;
+        }
         return forward_embed(x0.data());
     }
 
@@ -875,9 +916,12 @@ struct GenericBackend : Backend {
 
             // RMSNorm → QKV
             rmsnorm(x2, x, w(l.rms_attn), H, eps);
-            if (il == 0 && debug_ops)
-                fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g]\n",
-                        pos, x[0], x[1], x[2], x2[0], x2[1], x2[2]);
+            if (il == 0 && debug_ops) {
+                double ss = 0; for (int i = 0; i < H; i++) ss += (double)x[i] * x[i];
+                fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g] mean2=%g eps=%g r=%g\n",
+                        pos, x[0], x[1], x[2], x2[0], x2[1], x2[2],
+                        ss / H, eps, 1.0f / sqrtf((float)(ss / H) + eps));
+            }
             mm(q, x2, w(l.wq), NH*HD, H, l.pk_q);
             mm(k, x2, w(l.wk), NKV*HD, H, l.pk_k);
             mm(v, x2, w(l.wv), NKV*HD, H, l.pk_v);
@@ -929,6 +973,11 @@ struct GenericBackend : Backend {
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
                     scores[t] = s * attn_scale;  // multiply instead of divide
                 }
+                // Gemma-2/3/4 attention-logit soft-cap (50.0): the qk-norm +
+                // query_pre_attn_scalar combination produces large scores that
+                // must be tanh-capped before softmax, or attention over-peaks.
+                if (gemma_softcap_)
+                    for (int t = 0; t <= pos; t++) scores[t] = 50.0f * tanhf(scores[t] / 50.0f);
                 softmax(scores, pos + 1);
                 // Weighted sum of V
                 for (int d = 0; d < HD; d++) {
@@ -945,6 +994,7 @@ struct GenericBackend : Backend {
 
             // O proj
             mm(x2, att, w(l.wo), H, NH*HD, l.pk_o);
+            if (l.post_attn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_attn_norm), H, eps);
             // Residual
             for (int i = 0; i < H; i++) x[i] += x2[i];
             if (debug_ops && il < 3) {
@@ -995,6 +1045,7 @@ struct GenericBackend : Backend {
                 mm(&gate_up[FF], x2, w(l.w2), FF, H, l.pk_w2);
                 ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch);
                 mm(x2, silu_buf, w(l.w3), H, FF, l.pk_w3);
+                if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
                 if (debug_ops && il < 3) {
                     double sg = 0, sd = 0;
                     for (int i = 0; i < FF; i++) sg += fabs(gate_up[i]);
@@ -1016,6 +1067,12 @@ struct GenericBackend : Backend {
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();
         mm(logits_buf.data(), x2, lm_head, V, H, pk_lm_);
+        // Gemma-2/3/4 final-logit soft-cap (30.0): tanh(logits/30)*30. The
+        // uncapped LM-head logits run ±100+, over-peaking softmax so the
+        // target token lands 10-29 nats below the max — caught by the #1243
+        // ppl gate (Gemma-2-2B 2e8, Gemma-3-1B 5e9).
+        if (gemma_softcap_)
+            for (int i = 0; i < V; i++) logits_buf[i] = 30.0f * tanhf(logits_buf[i] / 30.0f);
 
         pos++;
 

@@ -21,4 +21,4 @@ toolchain. They use the same dependencies already fetched by CMake:
 This directory is kept for reference only. All CI/CD (`.github/workflows/ci.yml`,
 `.github/workflows/release.yml`) has been updated to build C++ targets exclusively.
 
-To build: `cmake -B build && ninja -C build onebitd onebit onebit_bin bitnet_tui`
+To build: `cmake -B build && ninja -C build onebitd onebit onebin bitnet_tui`
