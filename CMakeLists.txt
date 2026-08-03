@@ -1785,37 +1785,86 @@ endif()
 option(USE_DIFFUSION "Build stable-diffusion.cpp integration" OFF)
 if(USE_DIFFUSION)
     # Find sd.cpp library (built separately or via submodule)
-    # The sd.cpp library is named libstable-diffusion.a
-    set(SD_CPP_DIR "${CMAKE_SOURCE_DIR}/third_party/stable-diffusion.cpp/build")
-    find_library(SD_CPP_LIB stable-diffusion PATHS
-        ${SD_CPP_DIR}
+    # The sd.cpp library is named libstable-diffusion.a. build-rocm is the
+    # ROCm/HIP build, build-webm the webm-enabled CPU build, plain build/ the
+    # fallback. All three are produced by the sd.cpp submodule's own CMake.
+    set(SD_CPP_DIRS
+        "${CMAKE_SOURCE_DIR}/third_party/stable-diffusion.cpp/build-rocm"
+        "${CMAKE_SOURCE_DIR}/third_party/stable-diffusion.cpp/build-webm"
+        "${CMAKE_SOURCE_DIR}/third_party/stable-diffusion.cpp/build")
+    find_library(SD_CPP_LIB stable-diffusion PATHS ${SD_CPP_DIRS}
         /usr/local/lib /usr/lib NO_DEFAULT_PATH)
     if(NOT SD_CPP_LIB)
-        find_library(SD_CPP_LIB stable-diffusion PATHS
-            ${SD_CPP_DIR}
+        find_library(SD_CPP_LIB stable-diffusion PATHS ${SD_CPP_DIRS}
             /usr/local/lib /usr/lib)
     endif()
     
     if(SD_CPP_LIB)
         # Diffusion bridge library
-        add_library(diffusion_bridge STATIC src/diffusion_bridge.cpp)
+        add_library(diffusion_bridge STATIC src/diffusion_bridge.cpp
+            third_party/stable-diffusion.cpp/examples/common/media_io.cpp
+            third_party/stable-diffusion.cpp/examples/common/log.cpp)
         target_include_directories(diffusion_bridge PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/include>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/ggml/include>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/examples/common>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/thirdparty>
             $<INSTALL_INTERFACE:include>)
         target_compile_options(diffusion_bridge PRIVATE -O3 -std=c++23)
         # Also find ggml libs that sd.cpp depends on
-        set(SD_GGML_DIR "${SD_CPP_DIR}/ggml/src")
-        find_library(SD_GGML_LIB ggml PATHS ${SD_GGML_DIR} NO_DEFAULT_PATH)
-        find_library(SD_GGML_CPU_LIB ggml-cpu PATHS ${SD_GGML_DIR} NO_DEFAULT_PATH)
-        find_library(SD_GGML_BASE_LIB ggml-base PATHS ${SD_GGML_DIR} NO_DEFAULT_PATH)
+        set(SD_GGML_DIRS)
+        foreach(d IN LISTS SD_CPP_DIRS)
+            list(APPEND SD_GGML_DIRS "${d}/ggml/src")
+        endforeach()
+        find_library(SD_GGML_LIB ggml PATHS ${SD_GGML_DIRS} NO_DEFAULT_PATH)
+        find_library(SD_GGML_CPU_LIB ggml-cpu PATHS ${SD_GGML_DIRS} NO_DEFAULT_PATH)
+        find_library(SD_GGML_BASE_LIB ggml-base PATHS ${SD_GGML_DIRS} NO_DEFAULT_PATH)
+        find_library(SD_GGML_HIP_LIB ggml-hip PATHS
+            "${CMAKE_SOURCE_DIR}/third_party/stable-diffusion.cpp/build-rocm/ggml/src/ggml-hip"
+            NO_DEFAULT_PATH)
+        
+        # Optional WebM/WebP video containers: light up automatically when the
+        # sd.cpp submodule build has SD_WEBM=ON (build-webm/build-rocm, produces
+        # libwebm.a/libwebp.a/libwebpmux.a in its build dir). Without them the
+        # encoder falls back to MJPG AVI, same as sd.cpp's own server default.
+        set(SD_WEBM_BUILD_DIR "${CMAKE_SOURCE_DIR}/third_party/stable-diffusion.cpp/build-webm")
+        find_library(SD_WEBM_LIB webm PATHS ${SD_WEBM_BUILD_DIR}/thirdparty/libwebm NO_DEFAULT_PATH)
+        find_library(SD_WEBP_LIB webp PATHS ${SD_WEBM_BUILD_DIR}/thirdparty/libwebp NO_DEFAULT_PATH)
+        find_library(SD_WEBPMUX_LIB webpmux PATHS ${SD_WEBM_BUILD_DIR}/thirdparty/libwebp NO_DEFAULT_PATH)
+        find_library(SD_SHARPYUV_LIB sharpyuv PATHS ${SD_WEBM_BUILD_DIR}/thirdparty/libwebp NO_DEFAULT_PATH)
+        if(SD_WEBM_LIB AND SD_WEBP_LIB AND SD_WEBPMUX_LIB)
+            target_compile_definitions(diffusion_bridge PRIVATE SD_USE_WEBM SD_USE_WEBP)
+            target_include_directories(diffusion_bridge PUBLIC
+                $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/thirdparty/libwebm>
+                $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/thirdparty/libwebp/src>)
+            target_link_libraries(diffusion_bridge PUBLIC ${SD_WEBM_LIB} ${SD_WEBP_LIB} ${SD_WEBPMUX_LIB} ${SD_SHARPYUV_LIB})
+            message(STATUS "diffusion: webm/webp video containers enabled")
+        else()
+            message(STATUS "diffusion: webm/webp not found, video outputs use MJPG AVI")
+        endif()
+        
+        # ROCm build (build-rocm): static libs don't carry runtime deps, so
+        # link the HIP runtime explicitly and rpath it into the server.
+        # Same TheRock SDK location the top of this file pins for HIP builds.
+        set(_RC_SDK_LIB "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_libraries/lib")
+        set(_RC_SDK_CORE "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_core/lib")
+        # Versioned .so names only (no unversioned symlinks) — link exact paths.
+        set(SD_AMD_HIP64_LIB "${_RC_SDK_CORE}/libamdhip64.so.7")
+        set(SD_ROCBLAS_LIB "${_RC_SDK_LIB}/librocblas.so.5")
+        set(SD_HIPBLAS_LIB "${_RC_SDK_LIB}/libhipblas.so.3")
+        if(SD_CPP_LIB MATCHES "build-rocm")
+            target_link_libraries(diffusion_bridge PUBLIC ${SD_AMD_HIP64_LIB} ${SD_ROCBLAS_LIB} ${SD_HIPBLAS_LIB})
+            set(_SD_HIP_RPATH "${_RC_SDK_LIB}:${_RC_SDK_CORE}")  # applied to image_server below
+            message(STATUS "diffusion: ROCm/HIP runtime linked (${_RC_SDK_LIB})")
+        endif()
         
         target_link_libraries(diffusion_bridge PUBLIC
             ${SD_CPP_LIB}
             ${SD_GGML_LIB}
             ${SD_GGML_CPU_LIB}
             ${SD_GGML_BASE_LIB}
+            ${SD_GGML_HIP_LIB}
             vl_image m pthread)
         if(OpenMP_CXX_FOUND)
             target_link_libraries(diffusion_bridge PUBLIC OpenMP::OpenMP_CXX)
@@ -1828,6 +1877,9 @@ if(USE_DIFFUSION)
         target_link_libraries(image_server PRIVATE
             diffusion_bridge vl_image backend_manager
             httplib::httplib nlohmann_json::nlohmann_json)
+        if(_SD_HIP_RPATH)
+            set_target_properties(image_server PROPERTIES BUILD_RPATH "${_SD_HIP_RPATH}")
+        endif()
         
         message(STATUS "diffusion: stable-diffusion.cpp integration enabled (${SD_CPP_LIB})")
     else()
