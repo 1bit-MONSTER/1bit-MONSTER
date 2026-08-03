@@ -219,14 +219,38 @@ static void run_clone_job(const std::string& id) {
                                                : repo_root.string();
 
     auto run = [&](const std::vector<std::string>& argv) -> bool {
+        // No shell (issue #1438): popen("PYTHONPATH=" + env + " " + py)
+        // let CLONE_PYTHON/PYTHONPATH inject shell commands and broke on
+        // spaces. Build an argv array and execvp directly.
         std::string cmd = "PYTHONPATH=" + pypath + " " + py;
         for (auto& a : argv) cmd += " \"" + a + "\"";
         append_log("$ " + cmd);
-        FILE* pipe = popen((cmd + " 2>&1").c_str(), "r");
-        if (!pipe) { append_log("popen failed"); return false; }
+        int pfd[2];
+        if (pipe(pfd) != 0) { append_log("pipe failed"); return false; }
+        pid_t pid = fork();
+        if (pid < 0) { close(pfd[0]); close(pfd[1]); append_log("fork failed"); return false; }
+        if (pid == 0) {
+            close(pfd[0]);
+            dup2(pfd[1], STDOUT_FILENO);
+            dup2(pfd[1], STDERR_FILENO);
+            close(pfd[1]);
+            setenv("PYTHONPATH", pypath.c_str(), 1);
+            std::vector<char*> cargv;
+            cargv.reserve(argv.size() + 2);
+            cargv.push_back(const_cast<char*>(py.c_str()));
+            for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+            cargv.push_back(nullptr);
+            execvp(py.c_str(), cargv.data());
+            _exit(127);
+        }
+        close(pfd[1]);
         char buf[1024];
-        while (fgets(buf, sizeof(buf), pipe)) append_log(std::string(buf));
-        int rc = pclose(pipe);
+        ssize_t n;
+        while ((n = read(pfd[0], buf, sizeof(buf) - 1)) > 0) { buf[n] = '\0'; append_log(std::string(buf)); }
+        close(pfd[0]);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        int rc = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
         if (rc != 0) { append_log("exit code " + std::to_string(rc)); return false; }
         return true;
     };

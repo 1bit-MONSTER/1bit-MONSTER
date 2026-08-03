@@ -232,17 +232,21 @@ int main(int argc,char**argv){
     std::vector<WS> wsc(NC);
     fprintf(stderr,"O packOK ");
     for(int l=0;l<NC;l++){
-        int qr,kr,vr,or_,gr,ur,dr,unused;
+        int qr=0,kr=0,vr=0,or_=0,gr=0,ur=0,dr=0,unused=0;
         float*qw=dequant_i8_to_float(i8p(lo[l].qp),256,&qr,&unused),*kw=dequant_i8_to_float(i8p(lo[l].kp),128,&kr,&unused),*vw=dequant_i8_to_float(i8p(lo[l].vp),128,&vr,&unused);
+        if(!qw||!kw||!vw){fprintf(stderr,"dequant failed (qkv) layer %d\n",l);free(qw);free(kw);free(vw);return 1;}
         int t=qr+kr+vr;std::vector<float>w((size_t)H*t);
         for(int k=0;k<H;k++){memcpy(&w[k*t],&qw[k*qr],qr*4);memcpy(&w[k*t+qr],&kw[k*kr],kr*4);memcpy(&w[k*t+qr+kr],&vw[k*vr],vr*4);}
         cq.packB(l,w.data(),H,t,wsc[l].qk);free(qw);free(kw);free(vw);
         float*ow=dequant_i8_to_float(i8p(lo[l].op),256,&or_,&unused);if(ow){co.packB(l,ow,or_,H,wsc[l].o_);free(ow);}
         float*gw=dequant_i8_to_float(i8p(lo[l].gp),384,&gr,&unused),*uw=dequant_i8_to_float(i8p(lo[l].up),384,&ur,&unused);
+        if(!gw||!uw){fprintf(stderr,"dequant failed (gu) layer %d\n",l);free(gw);free(uw);return 1;}
         int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
         for(int k=0;k<H;k++){memcpy(&w2[k*t2],&gw[k*gr],gr*4);memcpy(&w2[k*t2+gr],&uw[k*ur],ur*4);}
         cg.packB(l,w2.data(),H,t2,wsc[l].g_);free(gw);free(uw);
-        float*dw=dequant_i8_to_float(i8p(lo[l].dp),384,&dr,&unused);cd.packB(l,dw,dr,H,wsc[l].d_);free(dw);
+        float*dw=dequant_i8_to_float(i8p(lo[l].dp),384,&dr,&unused);
+        if(!dw){fprintf(stderr,"dequant failed (d) layer %d\n",l);return 1;}
+        cd.packB(l,dw,dr,H,wsc[l].d_);free(dw);
     }
     fprintf(stderr,"  %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
 
