@@ -15,7 +15,7 @@
 #
 # Output:
 #   ./outputs/<run-name>/ — checkpoint dir with adapter weights
-#   Run export.py to produce GGUF for 1bit's Rust binary.
+#   Run export.py to produce GGUF for 1bit's C++ binary.
 
 import argparse
 import json

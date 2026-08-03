@@ -1,11 +1,11 @@
 # 1bit.systems Training Pipeline
 
-Train and export models for 1bit's Rust inference engine — completely Python-free at runtime.
+Train and export models for 1bit's C++ inference engine — completely Python-free at runtime.
 
 ## License
 
 All code in `tools/train/` is **MIT**. It imports Unsloth (Apache 2.0) but **never** imports
-`unsloth_cli` or `studio` (both AGPL-3.0). The Rust binary stays pure MIT.
+`unsloth_cli` or `studio` (both AGPL-3.0). The C++ binary stays pure MIT.
 
 ## Quick Start
 
@@ -32,7 +32,7 @@ make export
 └──────────────┘    └──────────────┘    └────────┬─────────┘
                                                  ▼
                                         ┌──────────────────┐
-                                        │  1bit Rust       │
+                                        │  1bit C++        │
                                         │  zaya_server     │
                                         │  (zero Python)   │
                                         └──────────────────┘
@@ -100,7 +100,7 @@ Uses 80% less VRAM than standard GRPO implementations (Unsloth's optimization).
 
 ## Notes
 
-- **No Python in runtime.** Training runs in Docker/CI only. The Rust binary
+- **No Python in runtime.** Training runs in Docker/CI only. The C++ binary
   never invokes Python.
 - **Apache 2.0, not AGPL.** We import `unsloth` (Apache 2.0). We do not import
   `unsloth_cli` or `studio` (AGPL-3.0).

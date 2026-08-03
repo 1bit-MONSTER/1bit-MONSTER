@@ -64,7 +64,7 @@ Show a comparison chart or table.
 
 **Visual**: Demonstrate Jarvis with tools:
 1. "Summarize this PDF" → agent calls file tool, reads PDF, returns summary
-2. "Run my test suite and tell me what failed" → agent calls shell tool, runs `cargo test`, reports failures
+2. "Run my test suite and tell me what failed" → agent calls shell tool, runs `ctest`, reports failures
 3. Show the permission gate pop-up for risky operations
 
 **Narration**:
