@@ -46,7 +46,7 @@ int main() {
         for (int i = 0; i < 2048; i++) out[i] = (float)(layer * 1000 + i);
     };
 
-    fprintf(stderr, "Pipeline: %d layers, GPU ~2ms/layer, NPU ~1ms/layer\n", cfg.layer_count);
+    fprintf(stderr, "Pipeline: %zu layers, GPU ~2ms/layer, NPU ~1ms/layer\n", cfg.layer_count);
     fprintf(stderr, "Sequential would take ~%.0fms\n",
             40.0 * (2000 + 1000) / 1000.0);
     fprintf(stderr, "With ideal overlap (NPU hides behind GPU): ~%.0fms\n",

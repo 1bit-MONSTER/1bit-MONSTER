@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ZINC Chat</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="highlight.min.js"></script>
 <style>
 :root{--bg:#0d0d0f;--bg2:#18181b;--bg3:#1e1e22;--border:#27272a;--text:#c9c9d1;--muted:#7a7a88;--accent:#e8722a;--accent2:#d35400;--user:#3d2410}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -292,8 +292,11 @@ function flushPendingRender(){
 function newChatSessionId(){
   try{
     if(window.crypto&&typeof window.crypto.randomUUID==='function')return window.crypto.randomUUID();
-  }catch(e){}
-  return 'chat-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10);
+    const b=new Uint8Array(16);window.crypto.getRandomValues(b);
+    return 'chat-'+Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    return 'chat-'+Date.now().toString(36);
+  }
 }
 
 function readStorage(key){
@@ -822,7 +825,7 @@ async function init(){
 }
 
 function esc(s){
-  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function setGenerating(v){
