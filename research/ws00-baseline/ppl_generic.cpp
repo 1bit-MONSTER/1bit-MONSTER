@@ -3,11 +3,11 @@
 // calls GenericBackend::compute_ppl (KV reset between samples).
 //
 // Build:
-//   g++ -O3 -mavx512f -mavx512bw -mavx512vl -mavx512dq -mavx512vnni -mbmi2 \
+//   g++ -O3 -mavx512f -mavx512bw -mavx512vl -mavx512dq -mavx512vnni -mfma -mbmi2 \
 //       -fopenmp -I ../../src -I ../../include -I ../../engine/npu/src \
-//       ppl_generic.cpp ../../src/backend_generic.cpp \
-//       ../../src/model_discovery.cpp ../../src/gguf_reader.cpp \
+//       ppl_generic.cpp ../../src/model_discovery.cpp ../../src/gguf_reader.cpp \
 //       ../../src/q4nx_reader.cpp ../../src/safetensors_reader.cpp -o ppl_generic
+//   (backend_generic.cpp is #included below — do NOT pass it on the command line)
 // Run: ./ppl_generic <model.1bp> <samples.jsonl> [threads]
 #include <cstdio>
 #include <cstdlib>
@@ -38,6 +38,22 @@ int main(int argc, char** argv) {
     cfg.model_name = argv[1];
     std::string p1 = argv[1];
     cfg.format = (p1.size() > 4 && p1.substr(p1.size() - 4) == ".gguf") ? ModelFormat::GGUF : ModelFormat::ONEBP;
+
+    // Mirror the server's discovery flow: read full metadata (arch dispatch
+    // enum, rope_theta, rms_norm_eps) from the model file instead of starting
+    // from defaults. Without this every 1BP model runs arch=BITNET -> SiLU,
+    // silently breaking GeGLU families (Gemma/Falcon) — the #1243 ppl gate
+    // caught Gemma-3-1B at 2.1e10.
+    {
+        auto slash = p1.find_last_of('/');
+        std::string dir = slash == std::string::npos ? "." : p1.substr(0, slash);
+        auto base = [](const std::string& s) {
+            auto p = s.find_last_of('/');
+            return p == std::string::npos ? s : s.substr(p + 1);
+        };
+        for (auto& m : discover_models(dir))
+            if (base(m.model_path) == base(p1)) { cfg = m; break; }
+    }
 
     GenericBackend b;
     if (!b.init(cfg, argv[1])) { fprintf(stderr, "init failed\n"); return 1; }
