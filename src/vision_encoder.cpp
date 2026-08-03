@@ -154,6 +154,14 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
         pre_ln_b.resize(H, 0.0f);
     }
 
+    // Qwen2-VL-style ViT: dual patch-embed conv (v.patch_embd.weight.1) AND no
+    // learned position embeddings — M-RoPE replaces them (issue #1417). CLIP/
+    // SigLIP/Pixtral have single patch embed + pos_embd, so they stay off.
+    config.use_2d_rope = has_patch_embd1 && !has_pos_embd;
+    if (config.use_2d_rope) {
+        fprintf(stderr, "  [vit] Qwen2-VL-style: per-head 2D RoPE on Q/K (no learned pos_embd)\n");
+    }
+
     // Detect if FFN names are swapped (llama.cpp clip bug: ffn_down is really up, ffn_up is really down)
     // We detect by checking shapes: if v.blk.0.ffn_down.weight has shape [ff, H] instead of [H, ff],
     // it's the real up-projection and names are swapped.
@@ -517,7 +525,21 @@ std::vector<float> vit_forward(const VisionWeights& weights, const float* img,
             std::copy(k.begin(), k.end(), &qkv_buf[(size_t)t * 3 * H + H]);
             std::copy(v.begin(), v.end(), &qkv_buf[(size_t)t * 3 * H + 2*H]);
 
-            // TODO: 2D RoPE could be applied here per-head for Qwen2-VL style
+            // Per-head 2D RoPE (Qwen2-VL-style M-RoPE vision mode): rotate Q/K
+            // with the patch's grid (row, col) — first head_dim/4 frequency
+            // bands keyed to row, next head_dim/4 to col (issue #1417). CLS
+            // (t=0) stays at (0,0) → identity rotation.
+            if (cfg.use_2d_rope) {
+                int row = 0, col = 0;
+                int off = weights.has_cls_embd ? 1 : 0;
+                if (t >= off) { int p = t - off; row = p / pw; col = p % pw; }
+                for (int h = 0; h < NH; h++) {
+                    float* Qh = &qkv_buf[(size_t)t * 3 * H] + (size_t)h * HD;
+                    float* Kh = &qkv_buf[(size_t)t * 3 * H + H] + (size_t)h * HD;
+                    vit_rope2d_apply(Qh, HD, row, col, 10000.0f);
+                    vit_rope2d_apply(Kh, HD, row, col, 10000.0f);
+                }
+            }
         }
 
         // Bidirectional full attention
