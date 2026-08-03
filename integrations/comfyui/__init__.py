@@ -22,8 +22,10 @@ import json
 import os
 import base64
 import io
+from datetime import datetime
 from urllib.parse import urlparse
 import httpx
+import folder_paths
 from PIL import Image
 import numpy as np
 import torch
@@ -32,6 +34,13 @@ import torch
 DEFAULT_UNIFIED_URL = "http://127.0.0.1:8088/v1"
 DEFAULT_IMAGE_URL   = "http://127.0.0.1:8089/v1"
 DEFAULT_AUDIO_URL   = "http://127.0.0.1:8090/v1"
+
+# ComfyUI IMAGE tensor (B,H,W,C float 0..1) -> base64 PNG for the server.
+def tensor_to_png_b64(img_tensor):
+    img_np = (img_tensor.squeeze(0).detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(img_np).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
 
 # ComfyUI's threat model is untrusted shared workflow JSON — a workflow can set
 # server_url to an arbitrary value. Without an allowlist that's an SSRF
@@ -210,6 +219,8 @@ class OneBP_Image_Generate:
             },
             "optional": {
                 "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "init_image": ("IMAGE",),  # img2img: supply an input image
+                "strength": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0}),
                 "lora_path": ("STRING", {"default": ""}),
                 "lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
                 "seed": ("INT", {"default": -1}),
@@ -218,7 +229,8 @@ class OneBP_Image_Generate:
         }
     
     def generate(self, prompt, width, height, steps, cfg_scale, model,
-                 negative_prompt="", lora_path="", lora_strength=1.0,
+                 negative_prompt="", init_image=None, strength=0.75,
+                 lora_path="", lora_strength=1.0,
                  seed=-1, server_url=DEFAULT_IMAGE_URL):
         params = {
             "model": model,
@@ -230,6 +242,9 @@ class OneBP_Image_Generate:
             "cfg_scale": cfg_scale,
             "seed": seed,
         }
+        if init_image is not None:
+            params["init_image_b64"] = tensor_to_png_b64(init_image)
+            params["strength"] = strength
         if lora_path:
             params["lora_paths"] = [lora_path]
             params["lora_strengths"] = [lora_strength]
@@ -237,8 +252,9 @@ class OneBP_Image_Generate:
         try:
             validate_server_url(server_url)
             with httpx.Client(timeout=300.0) as client:
+                endpoint = "/images/edits" if init_image is not None else "/images/generations"
                 resp = client.post(
-                    f"{server_url}/images/generations",
+                    f"{server_url}{endpoint}",
                     json=params
                 )
                 resp.raise_for_status()
@@ -310,6 +326,101 @@ class OneBP_TTS:
             return ({"waveform": b"", "sample_rate": 24000},)
 
 # ═══════════════════════════════════════════════════════════════════
+# Node: 1BP Video Generate (text-to-video / image-to-video)
+# ═══════════════════════════════════════════════════════════════════
+class OneBP_Video_Generate:
+    """Generate video (Wan, LTX, Hunyuan) via the 1bit image_server.
+
+    Requires the image_server built with -DUSE_DIFFUSION=ON and a video
+    model (wan/ltx/hunyuan) loaded. Saves the clip to ComfyUI's output
+    directory.
+
+    Container: WebM by default (in-browser preview in ComfyUI); 'avi'
+    selects MJPG AVI (video/x-msvideo).
+    """
+
+    CATEGORY = "1bit-systems/Video"
+    FUNCTION = "generate"
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "Cinematic establishing shot, slow dolly in, volumetric light, 35mm film"}),
+                "width": ("INT", {"default": 832, "min": 128, "max": 2048, "step": 16}),
+                "height": ("INT", {"default": 480, "min": 128, "max": 2048, "step": 16}),
+                "frames": ("INT", {"default": 81, "min": 8, "max": 1024}),
+                "fps": ("INT", {"default": 16, "min": 1, "max": 60}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 150}),
+                "cfg_scale": ("FLOAT", {"default": 7.0, "min": 1.0, "max": 20.0}),
+                "model": ("STRING", {"default": "wan-2.1"}),
+            },
+            "optional": {
+                "negative_prompt": ("STRING", {"multiline": True, "default": "blurry, low quality, watermark, text"}),
+                "output_format": (["avi", "webm"], {"default": "webm"}),
+                "init_image": ("IMAGE",),  # image-to-video: first frame
+                "strength": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0}),
+                "lora_path": ("STRING", {"default": ""}),
+                "lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
+                "seed": ("INT", {"default": -1}),
+                "server_url": ("STRING", {"default": DEFAULT_IMAGE_URL}),
+            }
+        }
+
+    def generate(self, prompt, width, height, frames, fps, steps, cfg_scale, model,
+                 negative_prompt="", output_format="webm", init_image=None, strength=0.75,
+                 lora_path="", lora_strength=1.0,
+                 seed=-1, server_url=DEFAULT_IMAGE_URL):
+        params = {
+            "model": model,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "width": width,
+            "height": height,
+            "frames": frames,
+            "fps": fps,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "seed": seed,
+            "output_format": output_format,
+        }
+        if init_image is not None:
+            params["init_image_b64"] = tensor_to_png_b64(init_image)
+            params["strength"] = strength
+        if lora_path:
+            params["lora_paths"] = [lora_path]
+            params["lora_strengths"] = [lora_strength]
+
+        try:
+            validate_server_url(server_url)
+            # Video gen is slow (minutes); match the server's patience.
+            with httpx.Client(timeout=3600.0) as client:
+                resp = client.post(
+                    f"{server_url}/video/generations",
+                    json=params
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                b64 = data["data"][0]["b64_json"]
+                video_bytes = base64.b64decode(b64)
+                if len(video_bytes) > MAX_DECODED_IMAGE_BYTES * 8:
+                    raise ValueError(f"decoded video too large: {len(video_bytes)} bytes")
+
+                ext = "webm" if output_format == "webm" else "avi"
+                filename = f"onebit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+                path = os.path.join(folder_paths.get_output_directory(), filename)
+                with open(path, "wb") as f:
+                    f.write(video_bytes)
+
+                return {"ui": {"gifs": [{"filename": filename, "subfolder": "", "type": "output"}]}}
+        except Exception as e:
+            print(f"[ERROR] OneBP Video Generate: {e}")
+            return {"ui": {"gifs": []}}
+
+# ═══════════════════════════════════════════════════════════════════
 # Node: 1BP LoRA Loader (for LLM text gen)
 # ═══════════════════════════════════════════════════════════════════
 class OneBP_LoRA_Loader:
@@ -357,6 +468,7 @@ NODE_CLASS_MAPPINGS = {
     "OneBP_LLM_Generate": OneBP_LLM_Generate,
     "OneBP_VLM_Understand": OneBP_VLM_Understand,
     "OneBP_Image_Generate": OneBP_Image_Generate,
+    "OneBP_Video_Generate": OneBP_Video_Generate,
     "OneBP_TTS": OneBP_TTS,
     "OneBP_LoRA_Loader": OneBP_LoRA_Loader,
 }
@@ -365,6 +477,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OneBP_LLM_Generate": "1BP LLM Generate",
     "OneBP_VLM_Understand": "1BP VLM Analyze Image",
     "OneBP_Image_Generate": "1BP Image Generate",
+    "OneBP_Video_Generate": "1BP Video Generate",
     "OneBP_TTS": "1BP Text-to-Speech",
     "OneBP_LoRA_Loader": "1BP LoRA Loader",
 }
