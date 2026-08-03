@@ -47,7 +47,7 @@ static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i])
 static inline float dyn_scale(const float*x,int n){float a=0;for(int i=0;i<n;i++){float f=fabsf(x[i]);if(std::isfinite(f)&&f>a)a=f;}return a<1e-12f?1.0f:a/127.0f;}
 static inline void rn_c(float*x,const float*w,int n){cn(x,n);double s=0;for(int i=0;i<n;i++)if(std::isfinite(x[i]))s+=(double)x[i]*x[i];float ir=1.0f/sqrtf((float)(s/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;}
 static std::vector<float>rc,rs;
-static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(mp*hd);for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){float f=1.0f/powf(th,(float)d/hd2),a=p*f;rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);}}
+static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize((size_t)mp*hd);rs.resize((size_t)mp*hd);for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){float f=1.0f/powf(th,(float)d/hd2),a=p*f;rc[(size_t)p*hd+d]=cosf(a);rs[(size_t)p*hd+d]=sinf(a);}}
 static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
 
 // NPU GEMM context — shares hw_context across all xclbins
@@ -146,12 +146,12 @@ int main(int argc,char**argv){
         snprintf(b,128,"model.layers.%d.self_attn.k_norm.weight",l);lo[l].kn_off=jo(js,jl,b);
     }
     uint64_t no=jo(js,jl,"model.norm.weight"),lo_off=jo(js,jl,"lm_head.weight");
-    std::vector<float> in_n_buf(NC * H), pa_n_buf(NC * H), fin_buf(H), qn_w_buf(NC * HD), kn_w_buf(NC * HD);
-    auto in_n  = [&](int l) -> float* { return &in_n_buf[l * H]; };
-    auto pa_n  = [&](int l) -> float* { return &pa_n_buf[l * H]; };
+    std::vector<float> in_n_buf((size_t)NC * H), pa_n_buf((size_t)NC * H), fin_buf(H), qn_w_buf((size_t)NC * HD), kn_w_buf((size_t)NC * HD);
+    auto in_n  = [&](int l) -> float* { return &in_n_buf[(size_t)l * H]; };
+    auto pa_n  = [&](int l) -> float* { return &pa_n_buf[(size_t)l * H]; };
     auto fin   = [&]() -> float* { return fin_buf.data(); };
-    auto qn_w  = [&](int l) -> float* { return &qn_w_buf[l * HD]; };
-    auto kn_w  = [&](int l) -> float* { return &kn_w_buf[l * HD]; };
+    auto qn_w  = [&](int l) -> float* { return &qn_w_buf[(size_t)l * HD]; };
+    auto kn_w  = [&](int l) -> float* { return &kn_w_buf[(size_t)l * HD]; };
     for(int l=0;l<NC;l++){
         auto iw=(const uint16_t*)(md+df+lo[l].in_off),pw=(const uint16_t*)(md+df+lo[l].pa_off),qw=(const uint16_t*)(md+df+lo[l].qn_off),kw=(const uint16_t*)(md+df+lo[l].kn_off);
         for(int i=0;i<H;i++){in_n(l)[i]=bf16g(iw[i]);pa_n(l)[i]=bf16g(pw[i]);}
@@ -236,13 +236,13 @@ int main(int argc,char**argv){
         float*qw=dequant_i8_to_float(i8p(lo[l].qp),256,&qr,&unused),*kw=dequant_i8_to_float(i8p(lo[l].kp),128,&kr,&unused),*vw=dequant_i8_to_float(i8p(lo[l].vp),128,&vr,&unused);
         if(!qw||!kw||!vw){fprintf(stderr,"dequant failed (qkv) layer %d\n",l);free(qw);free(kw);free(vw);return 1;}
         int t=qr+kr+vr;std::vector<float>w((size_t)H*t);
-        for(int k=0;k<H;k++){memcpy(&w[k*t],&qw[k*qr],qr*4);memcpy(&w[k*t+qr],&kw[k*kr],kr*4);memcpy(&w[k*t+qr+kr],&vw[k*vr],vr*4);}
+        for(int k=0;k<H;k++){memcpy(&w[(size_t)k*t],&qw[(size_t)k*qr],qr*4);memcpy(&w[(size_t)k*t+qr],&kw[(size_t)k*kr],kr*4);memcpy(&w[(size_t)k*t+qr+kr],&vw[(size_t)k*vr],vr*4);}
         cq.packB(l,w.data(),H,t,wsc[l].qk);free(qw);free(kw);free(vw);
         float*ow=dequant_i8_to_float(i8p(lo[l].op),256,&or_,&unused);if(ow){co.packB(l,ow,or_,H,wsc[l].o_);free(ow);}
         float*gw=dequant_i8_to_float(i8p(lo[l].gp),384,&gr,&unused),*uw=dequant_i8_to_float(i8p(lo[l].up),384,&ur,&unused);
         if(!gw||!uw){fprintf(stderr,"dequant failed (gu) layer %d\n",l);free(gw);free(uw);return 1;}
         int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
-        for(int k=0;k<H;k++){memcpy(&w2[k*t2],&gw[k*gr],gr*4);memcpy(&w2[k*t2+gr],&uw[k*ur],ur*4);}
+        for(int k=0;k<H;k++){memcpy(&w2[(size_t)k*t2],&gw[(size_t)k*gr],gr*4);memcpy(&w2[(size_t)k*t2+gr],&uw[(size_t)k*ur],ur*4);}
         cg.packB(l,w2.data(),H,t2,wsc[l].g_);free(gw);free(uw);
         float*dw=dequant_i8_to_float(i8p(lo[l].dp),384,&dr,&unused);
         if(!dw){fprintf(stderr,"dequant failed (d) layer %d\n",l);return 1;}
@@ -251,7 +251,7 @@ int main(int argc,char**argv){
     fprintf(stderr,"  %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
 
     // KV cache
-    struct KVC{std::vector<float>k,v;int n;KVC():k(4096*NKV*HD),v(4096*NKV*HD),n(0){}};
+    struct KVC{std::vector<float>k,v;int n;KVC():k((size_t)4096*NKV*HD),v((size_t)4096*NKV*HD),n(0){}};
     std::unique_ptr<KVC[]>kv(new KVC[NC]);
 
     // Working buffers (heap)
@@ -259,7 +259,7 @@ int main(int argc,char**argv){
     auto buf=std::make_unique<Buf>();
     auto&hb=buf->h_b;auto&qb=buf->qo_b;auto&ab=buf->at_b;auto&ob=buf->oo_b;auto&gb=buf->gt_b;auto&db=buf->db;
     auto&h=buf->h;auto&qo=buf->qo;auto&ko=buf->ko;auto&vo=buf->vo;auto&at=buf->at;auto&oo=buf->oo;auto&dwo=buf->dwo;auto&sb=buf->sb_;auto&lg=buf->lg;
-    hb.resize(XM*H);qb.resize(XM*NH*HD);ab.resize(XM*NH*HD);ob.resize(XM*H);gb.resize(XM*6144);db.resize(XM*H);
+    hb.resize((size_t)XM*H);qb.resize((size_t)XM*NH*HD);ab.resize((size_t)XM*NH*HD);ob.resize((size_t)XM*H);gb.resize((size_t)XM*6144);db.resize((size_t)XM*H);
     h.resize(H);qo.resize(4096*32);ko.resize(1024*32);vo.resize(1024*32);at.resize(2048*32);
     oo.resize(H*32);dwo.resize(H*32);sb.resize(H*32);lg.resize(NV);
 
@@ -270,19 +270,19 @@ int main(int argc,char**argv){
     fprintf(stderr,"=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)hb[pi*H+i]=emb_f32[pt[pi]*H+i];
     for(int l=0;l<NC;l++){
-        for(int pi=0;pi<npt;pi++)rn_c(&hb[pi*H],in_n(l),H);
+        for(int pi=0;pi<npt;pi++)rn_c(&hb[(size_t)pi*H],in_n(l),H);
         cq.go(l,hb.data(),npt,H,dyn_scale(hb.data(),npt*H),wsc[l].qk,qb.data(),4096);cn(qb.data(),npt*4096);
         float*qn=qn_w(l),*kn=kn_w(l);
         for(int pi=0;pi<npt;pi++){
-            for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qb[pi*NH*HD+hh*HD+d]*qb[pi*NH*HD+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qb[pi*NH*HD+hh*HD+d]*=iq*qn[d];ra(&qb[pi*NH*HD+hh*HD],HD,sp+pi);}
-            for(int kvh=0;kvh<NKV;kvh++){float*ks=&qb[pi*4096+2048+kvh*HD],*vs=&qb[pi*4096+3072+kvh*HD];double sk=0;for(int d=0;d<HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++){ks[d]*=ik*kn[d];ra(ks,HD,sp+pi);}memcpy(&kv[l].k[(sp+pi)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv[l].v[(sp+pi)*NKV*HD+kvh*HD],vs,HD*4);}
+            for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=(double)qb[(size_t)pi*NH*HD+(size_t)hh*HD+d]*qb[(size_t)pi*NH*HD+(size_t)hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qb[(size_t)pi*NH*HD+(size_t)hh*HD+d]*=iq*qn[d];ra(&qb[(size_t)pi*NH*HD+(size_t)hh*HD],HD,sp+pi);}
+            for(int kvh=0;kvh<NKV;kvh++){float*ks=&qb[(size_t)pi*4096+2048+(size_t)kvh*HD],*vs=&qb[(size_t)pi*4096+3072+(size_t)kvh*HD];double sk=0;for(int d=0;d<HD;d++)sk+=(double)ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++){ks[d]*=ik*kn[d];ra(ks,HD,sp+pi);}memcpy(&kv[l].k[(size_t)(sp+pi)*NKV*HD+(size_t)kvh*HD],ks,HD*4);memcpy(&kv[l].v[(size_t)(sp+pi)*NKV*HD+(size_t)kvh*HD],vs,HD*4);}
         }
         kv[l].n=sp+npt;int cl=kv[l].n;
-        for(int pi=0;pi<npt;pi++)attn.run(&qb[pi*NH*HD],&ab[pi*NH*HD],kv[l].n,kv[l].k.data(),kv[l].v.data(),sp+pi+1);
+        for(int pi=0;pi<npt;pi++)attn.run(&qb[(size_t)pi*NH*HD],&ab[(size_t)pi*NH*HD],kv[l].n,kv[l].k.data(),kv[l].v.data(),sp+pi+1);
         // CPU O projection
         co.go(l,ab.data(),npt,NH*HD,dyn_scale(ab.data(),npt*NH*HD),wsc[l].o_,ob.data(),H);
         cn(ob.data(),npt*H);for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)hb[pi*H+i]+=ob[pi*H+i];
-        for(int pi=0;pi<npt;pi++)rn_c(&hb[pi*H],pa_n(l),H);
+        for(int pi=0;pi<npt;pi++)rn_c(&hb[(size_t)pi*H],pa_n(l),H);
         cg.go(l,hb.data(),npt,H,dyn_scale(hb.data(),npt*H),wsc[l].g_,gb.data(),6144);cn(gb.data(),npt*6144);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<IM;i++){float gv=gb[pi*6144+i];float sv=gv/(1.0f+expf(-gv));gb[pi*6144+i]=sv*gb[pi*6144+IM+i];}
         cd.go(l,gb.data(),npt,IM,dyn_scale(gb.data(),npt*IM),wsc[l].d_,db.data(),H);cn(db.data(),npt*H);
@@ -297,14 +297,14 @@ int main(int argc,char**argv){
     int top_ids[32]={0},total=0,nb=0;double tboot=0,tattn=0;
     // Boot
     std::vector<float> h0_buf(H);
-    {auto ts=std::chrono::steady_clock::now();float* h0 = h0_buf.data();memcpy(h0,&hb[(npt-1)*H],H*4);
+    {auto ts=std::chrono::steady_clock::now();float* h0 = h0_buf.data();memcpy(h0,&hb[(size_t)(npt-1)*H],H*4);
     for(int l=0;l<NC;l++){
         memcpy(sb.data(),h0,H*4);rn_c(h0,in_n(l),H);
         cq.go(l,h0,1,H,dyn_scale(h0,H),wsc[l].qk,qo.data(),4096);cn(qo.data(),4096);
         memcpy(ko.data(),&qo[2048],4096);memcpy(vo.data(),&qo[3072],4096);
         float*qn=qn_w(l),*kn=kn_w(l);
-        for(int hh=0;hh<NH;hh++){double sq=0;for(int d=0;d<HD;d++)sq+=qo[hh*HD+d]*qo[hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);for(int d=0;d<HD;d++)qo[hh*HD+d]*=iq*qn[d];ra(&qo[hh*HD],HD,sp);
-            if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=ko[kvh*HD+d]*ko[kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++){ko[kvh*HD+d]*=ik*kn[d];ra(&ko[kvh*HD],HD,sp);}memcpy(&kv[l].k[sp*NKV*HD+kvh*HD],&ko[kvh*HD],HD*4);memcpy(&kv[l].v[sp*NKV*HD+kvh*HD],&vo[kvh*HD],HD*4);}}
+        for(int hh=0;hh<NH;hh++){double sq=0;for(int d=0;d<HD;d++)sq+=(double)qo[(size_t)hh*HD+d]*qo[(size_t)hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);for(int d=0;d<HD;d++)qo[(size_t)hh*HD+d]*=iq*qn[d];ra(&qo[(size_t)hh*HD],HD,sp);
+            if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=(double)ko[(size_t)kvh*HD+d]*ko[(size_t)kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++){ko[(size_t)kvh*HD+d]*=ik*kn[d];ra(&ko[(size_t)kvh*HD],HD,sp);}memcpy(&kv[l].k[(size_t)sp*NKV*HD+(size_t)kvh*HD],&ko[(size_t)kvh*HD],HD*4);memcpy(&kv[l].v[(size_t)sp*NKV*HD+(size_t)kvh*HD],&vo[(size_t)kvh*HD],HD*4);}}
         kv[l].n=sp+1;int cl=kv[l].n;
         attn.run(qo.data(),at.data(),kv[l].n,kv[l].k.data(),kv[l].v.data());
         co.go(l,at.data(),1,NH*HD,dyn_scale(at.data(),NH*HD),wsc[l].o_,oo.data(),H);
@@ -324,19 +324,19 @@ int main(int argc,char**argv){
         auto ts=std::chrono::steady_clock::now();int bs=std::min(32,ng-step);
         for(int b=0;b<bs;b++)for(int i=0;i<H;i++)hb[b*H+i]=emb_f32[(size_t)top_ids[b]*H+i];
         for(int l=0;l<NC;l++){
-            for(int b=0;b<bs;b++)rn_c(&hb[b*H],in_n(l),H);
+            for(int b=0;b<bs;b++)rn_c(&hb[(size_t)b*H],in_n(l),H);
             cq.go(l,hb.data(),bs,H,dyn_scale(hb.data(),bs*H),wsc[l].qk,qb.data(),4096);cn(qb.data(),bs*4096);
             float*qn=qn_w(l),*kn=kn_w(l);
             for(int b=0;b<bs;b++){
-                for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qb[b*NH*HD+hh*HD+d]*qb[b*NH*HD+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qb[b*NH*HD+hh*HD+d]*=iq*qn[d];ra(&qb[b*NH*HD+hh*HD],HD,sp+b);}
-                for(int kvh=0;kvh<NKV;kvh++){float*ks=&qb[b*4096+2048+kvh*HD],*vs=&qb[b*4096+3072+kvh*HD];double sk=0;for(int d=0;d<HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++){ks[d]*=ik*kn[d];ra(ks,HD,sp+b);}}
+                for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=(double)qb[(size_t)b*NH*HD+(size_t)hh*HD+d]*qb[(size_t)b*NH*HD+(size_t)hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);for(int d=0;d<HD;d++)qb[(size_t)b*NH*HD+(size_t)hh*HD+d]*=iq*qn[d];ra(&qb[(size_t)b*NH*HD+(size_t)hh*HD],HD,sp+b);}
+                for(int kvh=0;kvh<NKV;kvh++){float*ks=&qb[(size_t)b*4096+2048+(size_t)kvh*HD],*vs=&qb[(size_t)b*4096+3072+(size_t)kvh*HD];double sk=0;for(int d=0;d<HD;d++)sk+=(double)ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);for(int d=0;d<HD;d++){ks[d]*=ik*kn[d];ra(ks,HD,sp+b);}}
             }
-            for(int b=0;b<bs;b++)for(int kvh=0;kvh<NKV;kvh++){float*ks=&qb[b*4096+2048+kvh*HD],*vs=&qb[b*4096+3072+kvh*HD];memcpy(&kv[l].k[(sp+b)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv[l].v[(sp+b)*NKV*HD+kvh*HD],vs,HD*4);}
+            for(int b=0;b<bs;b++)for(int kvh=0;kvh<NKV;kvh++){float*ks=&qb[(size_t)b*4096+2048+(size_t)kvh*HD],*vs=&qb[(size_t)b*4096+3072+(size_t)kvh*HD];memcpy(&kv[l].k[(size_t)(sp+b)*NKV*HD+(size_t)kvh*HD],ks,HD*4);memcpy(&kv[l].v[(size_t)(sp+b)*NKV*HD+(size_t)kvh*HD],vs,HD*4);}
             kv[l].n=sp+bs;int cl=kv[l].n;
-            auto ta=std::chrono::steady_clock::now();for(int b=0;b<bs;b++)attn.run(&qb[b*NH*HD],&ab[b*NH*HD],kv[l].n,kv[l].k.data(),kv[l].v.data());tattn+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ta).count();
+            auto ta=std::chrono::steady_clock::now();for(int b=0;b<bs;b++)attn.run(&qb[(size_t)b*NH*HD],&ab[(size_t)b*NH*HD],kv[l].n,kv[l].k.data(),kv[l].v.data());tattn+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ta).count();
             co.go(l,ab.data(),bs,NH*HD,dyn_scale(ab.data(),bs*NH*HD),wsc[l].o_,ob.data(),H);
             cn(ob.data(),bs*H);for(int b=0;b<bs;b++)for(int i=0;i<H;i++)hb[b*H+i]+=ob[b*H+i];
-            for(int b=0;b<bs;b++)rn_c(&hb[b*H],pa_n(l),H);
+            for(int b=0;b<bs;b++)rn_c(&hb[(size_t)b*H],pa_n(l),H);
             cg.go(l,hb.data(),bs,H,dyn_scale(hb.data(),bs*H),wsc[l].g_,gb.data(),6144);cn(gb.data(),bs*6144);
             for(int b=0;b<bs;b++)for(int i=0;i<IM;i++){float gv=gb[b*6144+i];float sv=gv/(1.0f+expf(-gv));gb[b*6144+i]=sv*gb[b*6144+IM+i];}
             cd.go(l,gb.data(),bs,IM,dyn_scale(gb.data(),bs*IM),wsc[l].d_,db.data(),H);cn(db.data(),bs*H);
