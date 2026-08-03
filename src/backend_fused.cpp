@@ -258,6 +258,10 @@ struct FusedBackend : Backend {
     std::future<bool> npu_future_;
 
     std::vector<float> cpu_embed, cpu_final_norm, cpu_output;
+    // Reusable per-token host staging — allocated once in init(), reused every
+    // token. Stack-local vectors here churned 4 KB + VOCAB*4 (~608 KB) per
+    // token, fragmenting the glibc arena into unbounded RSS creep (issue #1428).
+    std::vector<float> h_stage, logit_stage;
     struct CpuL { std::vector<float> w1, w2, w3; };
     std::vector<CpuL> cpu_L;
     int pos = 0;
@@ -357,6 +361,7 @@ struct FusedBackend : Backend {
             }
         }
 
+        h_stage.resize(H); logit_stage.resize(VOCAB);
         gpu_ok = true; initialized = true;
         printf(npu_ok ? "[fused] ✅ Fused GPU+NPU\n" : "[fused] ✅ GPU-only\n");
         return true;
@@ -424,6 +429,18 @@ struct FusedBackend : Backend {
                 npu_state_pack_layer(npu, l, cl.w1.data(), cl.w2.data(), cl.w3.data());
             }
             printf("[fused] NPU weights packed via C++ module\n");
+        }
+        // Host-side f32 weight copies are dead past this point: compute copies
+        // live on GPU (L[*].w*, d_embed, d_final_norm, d_output) and in the
+        // packed NPU state. Free them to reclaim ~2.4 GB host RAM per model
+        // (issue #1427). Reload (#1021) re-reads from disk into empty vectors.
+        cpu_embed.clear(); cpu_embed.shrink_to_fit();
+        cpu_final_norm.clear(); cpu_final_norm.shrink_to_fit();
+        cpu_output.clear(); cpu_output.shrink_to_fit();
+        for (auto& cl : cpu_L) {
+            cl.w1.clear(); cl.w1.shrink_to_fit();
+            cl.w2.clear(); cl.w2.shrink_to_fit();
+            cl.w3.clear(); cl.w3.shrink_to_fit();
         }
         printf("[fused] 1BP loaded — %d layers (q_norm=%s, k_norm=%s)\n", NC,
                L[0].q_norm ? "yes" : "no", L[0].k_norm ? "yes" : "no");
@@ -625,10 +642,9 @@ struct FusedBackend : Backend {
     }
 
     int generate(int token_id) override {
-        std::vector<float> h(H);
-        if (!forward(token_id, h.data())) return -1;
-        std::vector<float> l(VOCAB); int n=-1;
-        if (!lm_head(h.data(), l.data(), &n)) return -1;
+        if (!forward(token_id, h_stage.data())) return -1;
+        int n = -1;
+        if (!lm_head(h_stage.data(), logit_stage.data(), &n)) return -1;
         return n;
     }
 
@@ -666,6 +682,8 @@ struct FusedBackend : Backend {
         if (stream) { HIP_CHECK_D(hipStreamDestroy(stream)); stream = nullptr; }
         npu_state_destroy(npu); npu = nullptr;
         cpu_L.clear(); cpu_embed.clear(); cpu_final_norm.clear(); cpu_output.clear();
+        h_stage.clear(); h_stage.shrink_to_fit();
+        logit_stage.clear(); logit_stage.shrink_to_fit();
         gpu_ok = false; npu_ok = false; initialized = false;
     }
 };

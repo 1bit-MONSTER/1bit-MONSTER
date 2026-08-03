@@ -4,6 +4,7 @@
 #include "backend.h"
 #include "gguf_reader.h"
 // Route is handled inline — we call create_mamba1_backend directly
+#include <cmath>
 #include <cstdio>
 #include <chrono>
 #include <vector>
@@ -120,7 +121,7 @@ int main(int argc, char** argv) {
     float sum_ms = 0, sum_sq = 0;
     for (int r = 0; r < kRuns; r++) { sum_ms += runs_ms[r]; sum_sq += runs_ms[r] * runs_ms[r]; }
     float mean_ms = sum_ms / kRuns;
-    float std_ms = sqrtf((sum_sq - sum_ms * sum_ms / kRuns) / (kRuns - 1));
+    float std_ms = std::sqrt((sum_sq - sum_ms * sum_ms / kRuns) / (kRuns - 1));
     float mean_tok_s = n_tokens / (mean_ms / 1000.0f);
     fprintf(stderr, "\n  %d tokens: %.1f ± %.1f ms = %.1f ± %.1f tok/s\n",
             n_tokens, mean_ms, std_ms, mean_tok_s, mean_tok_s * std_ms / mean_ms);

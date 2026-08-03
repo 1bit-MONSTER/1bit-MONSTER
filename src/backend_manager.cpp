@@ -443,7 +443,13 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         pilot_active_ = false;
     }
 
-    // Try ALL backends. Multiple can init — DynamicRouter routes per-token.
+    // #1427: init only the top accelerator + one CPU fallback. Extra backends
+    // each hold a full model copy (~4x model RAM) while per-token cross-backend
+    // routing is KV-incoherent anyway (each backend keeps a private KV
+    // cache/pos — a token routed to a backend that never saw the prefix
+    // attends to empty KV). Skipped backends stay discoverable and initialize
+    // lazily via failover() on first failure.
+    bool kept_accel = false, kept_cpu = false;
     bool any_ok = false;
     for (size_t idx : order) {
         auto& info = backends_[idx];
@@ -478,6 +484,18 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             continue;
         }
         if (init_ok) {
+            bool is_cpu = (info.tier == BackendTier::T3_CPU);
+            if ((kept_accel && !is_cpu) || (kept_cpu && is_cpu)) {
+                printf("  → skipped (issue #1427: keeping top backend + CPU fallback only)\n");
+                // Reload (#1021): if a previous model had this backend
+                // registered, drop it so its old instance isn't kept alive by
+                // the router's shared_ptr instead of freed.
+                router_.remove_backend(info.id);
+                destroy_instance(info);
+                continue;
+            }
+            if (is_cpu) kept_cpu = true; else kept_accel = true;
+
             if (!info.instance->can_infer()) {
                 // Detected and initialized, but cannot actually run inference
                 // (e.g. the NPU stub). Report as available but not selectable (fixes #82).
