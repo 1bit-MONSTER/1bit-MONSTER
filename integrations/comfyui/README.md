@@ -52,11 +52,19 @@ Vision-language understanding. Send an image + question, get a description.
 
 ### 1BP Image Generate
 Text-to-image generation via stable-diffusion.cpp backend.
-- Input: text prompt, negative prompt
-- Parameters: width, height, steps, CFG scale, seed
+- Input: text prompt, negative prompt; optional IMAGE for image-to-image
+- Parameters: width, height, steps, CFG scale, seed, strength
 - Supports: SD, SDXL, FLUX, Qwen-Image, Z-Image, and more
 - Optional: LoRA path + strength
 - Output: image tensor (compatible with ComfyUI image pipeline)
+
+### 1BP Video Generate
+Text-to-video / image-to-video generation (Wan, LTX, Hunyuan) via the stable-diffusion.cpp backend.
+- Input: text prompt, negative prompt; optional first-frame IMAGE (image-to-video)
+- Parameters: width, height, frames, fps, steps, CFG scale, seed, strength
+- Optional: LoRA path + strength, output format (webm/avi)
+- Output: video file saved to ComfyUI's output directory
+- Container: WebM by default (in-browser preview); `avi` selects MJPG AVI
 
 ### 1BP Text-to-Speech
 Synthesize speech from text.
