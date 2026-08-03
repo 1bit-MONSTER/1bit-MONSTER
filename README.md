@@ -19,9 +19,16 @@
 
 **[🌐 Website](https://1bit.systems)** · **[🤗 1BP Models](https://huggingface.co/bong-water-water-bong)** · **[📚 Docs](docs/README.md)** · **[🛠️ Journey](docs/journey.md)** · **[📊 Benchmarks](docs/wiki/performance.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
-**1bit** is an open-source, model-agnostic C++23 inference engine for running large language models on **AMD Strix Halo** (XDNA 2 NPU, RDNA 3.5 GPU), NVIDIA GPUs (CUDA), Apple Silicon (Metal), and any Vulkan 1.2+ device — all from a **single binary with zero Python at runtime**. It reads **GGUF**, **ONNX**, and the native **1BP** format (Q4NX 4-bit for dense models, TQ2 2-bit ternary for ternary-native checkpoints like Bonsai) with automatic architecture detection — no config files, no model registry, no per-model glue code. (Per the [1BP format policy](docs/wiki/models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured), TQ2 of dense models is quality-destructive — Q4NX is the dense-model format.)
+**1bit runs AI models on your own hardware, fast — including on a chip nothing else can touch.** One C++ binary, MIT-licensed, no Python or Rust anywhere, no config files: build it, point it at a model, run. It does LLM inference on AMD's Strix Halo NPU (AMD's own runtime for that chip is closed-source — we reverse-engineered it from scratch), on AMD/NVIDIA/Apple GPUs, or on plain CPU. It's an inference engine, not a chat app — bring your own frontend. 47 models run out of the box, 135M to 74B parameters. **No installer yet** — today it's build-from-source (below).
 
-We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary, the zaya_server NPU core (1,578,576 B raw / 1,302,736 B stripped); every server + CLI now ships as one ~67 MB ELF at `build/1bit` (both auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 47 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
+<details>
+<summary>Formats, backends, and reverse-engineering scope</summary>
+
+Reads **GGUF**, **ONNX**, and the native **1BP** format (Q4NX 4-bit for dense models, TQ2 2-bit ternary for ternary-native checkpoints like Bonsai) with automatic architecture detection — no model registry, no per-model glue code. (Per the [1BP format policy](docs/wiki/models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured), TQ2 of dense models is quality-destructive — Q4NX is the dense-model format.)
+
+We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary, the zaya_server NPU core (1,578,576 B raw / 1,302,736 B stripped); every server + CLI now ships as one ~67 MB ELF at `build/1bit` (both auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. 19 model architectures supported, 47 1BP models, including early support for Moonshot AI's Kimi family — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
+
+</details>
 
 **Platform support:**
 - **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + **GGML-Vulkan (llama.cpp)**
