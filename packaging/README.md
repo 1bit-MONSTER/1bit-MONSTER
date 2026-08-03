@@ -1,4 +1,4 @@
-# Packaging — 1bit.systems v2026.08.03
+# Packaging — 1bit.systems v2026.08.04
 
 **One binary. 47 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
@@ -54,8 +54,8 @@ make package-tarball
 make package-deb
 
 # Docker image
-docker build -t 1bit-systems/npu:2026.08.03 -f packaging/docker/Dockerfile .
-docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.08.03
+docker build -t 1bit-systems/npu:2026.08.04 -f packaging/docker/Dockerfile .
+docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.08.04
 
 # Snap
 make package-snap
