@@ -21,7 +21,7 @@
 
 **1bit runs AI models on your own hardware, fast — including on a chip nothing else can touch.** One C++ binary, MIT-licensed, no Python or Rust in the engine, no config files: build it, point it at a model, run. It does LLM inference on AMD's Strix Halo NPU (AMD's own runtime for that chip is closed-source — we reverse-engineered it from scratch), on AMD/NVIDIA/Apple GPUs, or on plain CPU. It's an inference engine, not a chat app — bring your own frontend. 47 models run out of the box, 135M to 74B parameters. **No installer yet** — today it's build-from-source (below).
 
-Two examples of what that buys you: **Zyphra is the flagship pipeline** — LLM, TTS, and voice cloning running end-to-end from the same binary, not three stacks glued together. And when a major model drops, we don't wait for vendor support — **Kimi K3** (Moonshot's 2.8T-param model, released July 27, 2026) is already being reverse-engineered from the open weights, architecture worked out within days of release.
+Two examples of what that buys you: **Zyphra is the flagship pipeline** — LLM, TTS, and voice cloning running end-to-end from the same binary, not three stacks glued together. And when a major model drops, we don't wait for vendor support — **Kimi K3** (Moonshot's 2.8T-param model, released July 27, 2026) is already being reverse-engineered from the open weights, architecture worked out within days of release. **DeepSeek V4 Flash 0731** (released August 2, 2026) is next on the list — same pure-C++ reverse-engineering process, no Python involved.
 
 <details>
 <summary>Formats, backends, and reverse-engineering scope</summary>
