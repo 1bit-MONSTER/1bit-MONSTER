@@ -15,6 +15,13 @@ struct ModelConfig {
     int H = 0, NC = 0, NH = 0, NKV = 0, HD = 0, IM = 0, NV = 0;
     int GQA = 0, AW = 4, WQH = 0, WKVH = 0, XM = 128;
     int qkv_k_offset = 0, qkv_v_offset = 0, qkv_total = 0;
+    // MoE (Qwen3.5/3.6-class, gate_exps/up_exps/down_exps + shared expert)
+    int N_EXPERTS = 0;   // routed experts (256 for Qwen3.6-35B-A3B)
+    int TOP_K = 8;       // active experts per token
+    int IM_EXP = 0;      // per-expert FFN intermediate (512 for Qwen3.6)
+    int N_SHARED = 0;    // shared experts (1 for Qwen3.6)
+    bool has_moe = false;
+    bool has_gated_delta_net = false;  // linear_attn tensors present (30/40 layers)
     int xclbin_qkv_k = 0, xclbin_qkv_n = 0;
     int xclbin_o_k = 0, xclbin_o_n = 0;
     int xclbin_g_k = 0, xclbin_g_n = 0;
@@ -60,19 +67,23 @@ static int find_tensor_info(const char* js, size_t jl, const char* key, int* out
     return 0;
 }
 
-// Count layers by scanning for model.layers.N.self_attn.q_proj.weight
+// Count layers by scanning for model.layers.N.self_attn.q_proj.weight (dense)
+// or model.layer.N.linear_attn.qkv_proj.weight (Qwen3.6 MoE, no 's').
 static int count_layers(const char* js, size_t jl) {
     int max_layer = -1;
     const char* p = js;
     const char* e = js + jl;
-    const char target[] = "model.layers.";
-    size_t tlen = strlen(target);
-    while (p < e) {
-        auto q = (const char*)memmem(p, e - p, target, tlen);
-        if (!q) break;
-        int layer_num = (int)strtoul(q + tlen, nullptr, 10);
-        if (layer_num > max_layer) max_layer = layer_num;
-        p = q + tlen;
+    const char* targets[] = { "model.layers.", "model.layer." };
+    for (auto target : targets) {
+        size_t tlen = strlen(target);
+        p = js;
+        while (p < e) {
+            auto q = (const char*)memmem(p, e - p, target, tlen);
+            if (!q) break;
+            int layer_num = (int)strtoul(q + tlen, nullptr, 10);
+            if (layer_num > max_layer) max_layer = layer_num;
+            p = q + tlen;
+        }
     }
     return max_layer + 1;
 }
@@ -278,6 +289,54 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     cfg.xclbin_d_k = cfg.IM;
     cfg.xclbin_d_n = cfg.H;
     
+    // Step 7: MoE detection (Qwen3.5/3.6 naming: "model.layer.N." without 's')
+    // gate_exps_proj [experts*tile_rows, col_blocks, tile_bytes] — e.g. Qwen3.6:
+    //   [4096, 8, 5120] = 256 experts × 16 tile-rows × 8 col-blocks, INT4 tiles
+    //   IM_EXP = tile_rows_per_expert * 32 (32 rows per tile)
+    int exp_tr = 0;
+    if (find_tensor_info(js, jl, "model.layer.0.mlp.gate_exps_proj.weight", &exp_tr) > 0) {
+        int rt = 0, dr = 0;
+        find_tensor_info(js, jl, "model.layer.0.moe_router.weight", &rt);
+        // router shape [H, N_EXPERTS]; N_EXPERTS from shape dim 1
+        int exp_n = get_shape_dim1(js, jl, "model.layer.0.moe_router.weight");
+        if (exp_n <= 0) exp_n = 0;
+        // N_EXPERTS from router dim1 (256); fall back to gate_exps shape dim0 / 16
+        if (exp_n == 0 && exp_tr > 0) exp_n = exp_tr / 16;
+        if (exp_n > 0) {
+            cfg.N_EXPERTS = exp_n;
+            cfg.has_moe = true;
+            cfg.has_gated_delta_net = key_exists(js, jl, "model.layer.0.linear_attn.qkv_proj.weight");
+            int col_blocks = get_shape_dim1(js, jl, "model.layer.0.mlp.gate_exps_proj.weight");
+            if (col_blocks <= 0) col_blocks = cfg.H > 0 ? (cfg.H + 255) / 256 : 8;
+            if (exp_tr > 0 && col_blocks > 0) {
+                int tile_rows_per_exp = exp_tr * col_blocks / col_blocks / exp_n;  // = shape[0]/experts
+                if (tile_rows_per_exp <= 0) tile_rows_per_exp = exp_tr / exp_n;
+                cfg.IM_EXP = tile_rows_per_exp * 32;
+            }
+            cfg.N_SHARED = key_exists(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight") ? 1 : 0;
+            // Dense dims for GDN MoE: qkv_proj [rows, blocks, 8704] I8 — each
+            // 8704-B row is Q8_0: 512 B bf16 scales + 8192 int8 values, so
+            // values_per_row = 8192 = qkv_total (NH*HD + 2*NKV*HD), and the
+            // row count = in_features = H (already parsed). Qwen3.5/3.6 use
+            // HD=128, GQA=2 (NH=2*NKV): NKV = T/4, NH = T/2, T = qkv_total/128.
+            if (cfg.has_gated_delta_net && cfg.NH == 0 && cfg.HD == 0) {
+                int qkv_total = 8192;  // 8704 - 512 scales
+                cfg.HD = 128;
+                cfg.NKV = qkv_total / 128 / 4;  // 8192/128/4 = 16
+                cfg.NH = qkv_total / 128 / 2;   // 8192/128/2 = 32
+                cfg.GQA = cfg.NH / cfg.NKV;
+                cfg.WQH = cfg.NH / cfg.AW;
+                cfg.WKVH = cfg.NKV / cfg.AW;
+                cfg.qkv_k_offset = cfg.NH * cfg.HD;
+                cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
+                cfg.qkv_total = qkv_total;
+            }
+            if (cfg.IM == 0) cfg.IM = cfg.IM_EXP;  // MoE FFN uses per-expert IM
+            fprintf(stderr, "[ModelConfig] MoE: experts=%d top_k=%d im_exp=%d shared=%d gdn=%d\n",
+                    cfg.N_EXPERTS, cfg.TOP_K, cfg.IM_EXP, cfg.N_SHARED, (int)cfg.has_gated_delta_net);
+        }
+    }
+
     munmap(md, st.st_size);
     return cfg;
 }
