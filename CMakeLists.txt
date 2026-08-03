@@ -1131,7 +1131,7 @@ if(EMBED_GAIA_CPP)
     add_subdirectory(third_party/gaia)
 endif()
 target_link_libraries(unified_server PRIVATE
-    backend_manager vl_image dl
+    backend_manager vl_image vision_encoder dl
     httplib::httplib
     nlohmann_json::nlohmann_json
     rocm_cpp hip::host hip::device hipblas)
