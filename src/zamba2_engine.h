@@ -48,8 +48,10 @@ struct Zamba2Config {
     // Attention
     int n_attn_heads = 32;       // num_attention_heads
     int n_kv_heads = 32;         // num_key_value_heads
-    int attn_head_dim = 80;      // kv_channels
-    int attn_hidden_size = 5120; // attention_hidden_size
+    int attn_head_dim = 128;     // kv_channels — MUST be read from GGUF KV
+                                 // (attention.key_length); 80 here was the
+                                 // silent-wrong default (#1460 follow-up)
+    int attn_hidden_size = 0;    // n_attn_heads * attn_head_dim (= 2*d_model for zamba2)
 
     // Architecture layout
     int n_layers = 54;           // num_hidden_layers
@@ -279,7 +281,10 @@ inline void attention_forward(
             for (int d = 0; d < head_dim; ++d) {
                 score += q[h * head_dim + d] * k_cache[t * n_kv_heads * head_dim + kv_h * head_dim + d];
             }
-            scores[t] = score / std::sqrt((float)head_dim);
+            // Zamba2 scale: sqrt(2/head_dim), NOT 1/sqrt(head_dim) — the extra
+            // factor compensates the concat input (transformers modeling_zamba2.py:
+            // "replaced ... / math.sqrt(self.head_dim) with / math.sqrt(self.head_dim/2)")
+            scores[t] = score * std::sqrt(2.0f / head_dim);
         }
 
         // Softmax
