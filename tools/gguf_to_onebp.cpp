@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
         float rope = 0.0f;
         if (!reader.get_f32(arch + ".rope.freq_base", rope))
             reader.get_f32("rope.freq_base", rope);
-        hdr.rope_theta_f = (uint32_t)((rope > 0.0f ? rope : 10000.0f) * 1000.0f);
+        hdr.set_rope_theta(rope > 0.0f ? rope : 10000.0f);
         uint32_t bos = 0, eos = 0;
         if (!reader.get_u32(arch + ".bos_token_id", bos))
             if (!reader.get_u32("bos_token_id", bos))

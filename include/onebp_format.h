@@ -76,7 +76,11 @@
 #include <cmath>
 
 static constexpr uint32_t ONEBP_MAGIC        = 0x00504231;  // "1BP\0"
-static constexpr uint32_t ONEBP_VERSION      = 2;  // v2: per-entry quant field (mixed-quant files)
+static constexpr uint32_t ONEBP_VERSION      = 3;  // v2: per-entry quant field (mixed-quant files);
+                                                  // v3: rope_theta_f / rope_freq_base_swa_f hold
+                                                  // RAW f32 bits (v1/v2: theta*1000 fixed-point,
+                                                  // which overflows for theta > 4.29e6 — Granite's
+                                                  // rope.freq_base 1e7 wrapped to garbage 1410065408)
 
 // ─── Quantization types ────────────────────────────────────────────
 enum OnebpQuant : uint32_t {
@@ -215,12 +219,18 @@ struct OnebpHeader {
         group_size = 32;
     }
     
-    float rope_theta() const { return (float)rope_theta_f / 1000.0f; }
-    void set_rope_theta(float v) { rope_theta_f = (uint32_t)(v * 1000.0f); }
+    float rope_theta() const {
+        if (version >= 3) { float t; memcpy(&t, &rope_theta_f, 4); return t; }
+        return (float)rope_theta_f / 1000.0f;
+    }
+    void set_rope_theta(float v) { memcpy(&rope_theta_f, &v, 4); }  // v3: raw f32 bits
     float expert_weights_scale() const { return (float)expert_weights_scale_f / 1000.0f; }
     void set_expert_weights_scale(float v) { expert_weights_scale_f = (uint32_t)(v * 1000.0f); }
-    float rope_freq_base_swa() const { return (float)rope_freq_base_swa_f / 1000.0f; }
-    void set_rope_freq_base_swa(float v) { rope_freq_base_swa_f = (uint32_t)(v * 1000.0f); }
+    float rope_freq_base_swa() const {
+        if (version >= 3) { float t; memcpy(&t, &rope_freq_base_swa_f, 4); return t; }
+        return (float)rope_freq_base_swa_f / 1000.0f;
+    }
+    void set_rope_freq_base_swa(float v) { memcpy(&rope_freq_base_swa_f, &v, 4); }  // v3: raw f32 bits
 };
 #pragma pack(pop)
 
