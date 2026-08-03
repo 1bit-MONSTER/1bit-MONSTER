@@ -9,6 +9,8 @@
 #include <cstring>
 #include <cmath>
 #include <csignal>
+#include <ctime>
+#include <utility>
 #include <vector>
 #include <chrono>
 #include <fcntl.h>
@@ -61,8 +63,64 @@ void packB(int l,const float*w,int K,int N,float&sout){float amax=0;for(int i=0;
 inline void go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){float ais=1.0f/ascale;for(int m=0;m<am;m++){for(int k=0;k<ak;k++){float v=A[m*ak+k];if(!std::isfinite(v))v=0;int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;Am[m*KD+k]=(int8_t)q;}if(ak<KD)memset(Am+m*KD+ak,0,(size_t)(KD-ak));}if(am<MD)memset(Am+(size_t)am*KD,0,(size_t)(MD-am)*KD);bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);auto r=(*k)((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);r.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=ascale*Bscale;for(int m=0;m<am;m++)for(int n=0;n<an;n++){float val=(float)Cm[m*ND+n]*cs;if(!std::isfinite(val))val=0;C[m*an+n]=val;}}
 };
 
+// ─── LoRA module ──────────────────────────────────────────────────────
+// Compact binary format: header + per-layer module A/B matrices.
+struct LoraModule { int mod_id, rank, in_dim, out_dim; float* A; float* B; };
+
+// Load a .lora file into modules[NC]. Validates the magic, bounds every header
+// field, and checks malloc/fread before use — a corrupt or truncated file used
+// to cause unbounded loops, NULL derefs, and leaks (issue #1432). On failure,
+// frees everything it pushed so callers can pass an empty array safely.
+static bool load_lora_file(const char* path, std::vector<LoraModule>* modules, float* scale) {
+    FILE* lf = fopen(path, "rb");
+    if (!lf) { fprintf(stderr, "ERROR: cannot open %s\n", path); return false; }
+    auto fail = [&](const char* msg) {
+        fprintf(stderr, "ERROR: %s\n", msg);
+        for (int l = 0; l < NC; l++)
+            for (auto& lm : modules[l]) { free(lm.A); free(lm.B); }
+        for (int l = 0; l < NC; l++) modules[l].clear();
+        fclose(lf);
+        return false;
+    };
+    char magic[4];
+    if (fread(magic, 1, 4, lf) != 4 || memcmp(magic, "LORA", 4) != 0)
+        return fail("bad .lora magic");
+    uint32_t num_layers = 0;
+    if (fread(&num_layers, 4, 1, lf) != 1 || fread(scale, 4, 1, lf) != 1)
+        return fail("truncated .lora header");
+    if (num_layers > (uint32_t)NC)
+        return fail(".lora layer count exceeds engine layers");
+    for (uint32_t l = 0; l < num_layers; l++) {
+        uint32_t num_mods = 0;
+        if (fread(&num_mods, 4, 1, lf) != 1 || num_mods > 64)
+            return fail("invalid module count in .lora");
+        for (uint32_t m = 0; m < num_mods; m++) {
+            LoraModule lm;
+            if (fread(&lm.mod_id, 4, 1, lf) != 1 || fread(&lm.rank, 4, 1, lf) != 1 ||
+                fread(&lm.in_dim, 4, 1, lf) != 1 || fread(&lm.out_dim, 4, 1, lf) != 1)
+                return fail("truncated .lora module header");
+            if (lm.rank <= 0 || lm.rank > 4096 || lm.in_dim <= 0 || lm.in_dim > H * 8 ||
+                lm.out_dim <= 0 || lm.out_dim > H * 8)
+                return fail("implausible .lora module dims");
+            size_t a_sz = (size_t)lm.rank * (size_t)lm.in_dim;
+            size_t b_sz = (size_t)lm.out_dim * (size_t)lm.rank;
+            lm.A = (float*)malloc(a_sz * 4);
+            lm.B = (float*)malloc(b_sz * 4);
+            if (!lm.A || !lm.B) { free(lm.A); free(lm.B); return fail("OOM loading .lora"); }
+            if (fread(lm.A, 4, a_sz, lf) != a_sz || fread(lm.B, 4, b_sz, lf) != b_sz) {
+                free(lm.A); free(lm.B);
+                return fail("truncated .lora body");
+            }
+            modules[l].push_back(lm);
+        }
+    }
+    fclose(lf);
+    return true;
+}
+
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
+    srand((unsigned)time(nullptr) ^ (unsigned)getpid()); // issue #1431: sampling was deterministic
     const char* lora_path = nullptr;
     int npt = 9, ng = 16;
     for (int i = 1; i < argc; i++) {
@@ -102,40 +160,11 @@ int main(int argc,char**argv){
     cd.init(dev,D"/final_i8_D_v.xclbin",  D"/insts_i8_D_v.txt",  4);
 
     // ─── LoRA: load .lora file ──────────────────────────────────────
-    // Compact binary format: header + per-layer module A/B matrices
-    struct LoraModule { int mod_id, rank, in_dim, out_dim; float* A; float* B; };
     std::vector<LoraModule> lora_modules[NC];
     float lora_scale = 1.0f;
     
     if (lora_path) {
-        FILE* lf = fopen(lora_path, "rb");
-        if (!lf) { fprintf(stderr, "ERROR: cannot open %s\n", lora_path); return 1; }
-        char magic[4];
-        if (fread(magic, 1, 4, lf) != 4 || memcmp(magic, "LORA", 4) != 0) {
-            fprintf(stderr, "ERROR: bad .lora magic\n"); fclose(lf); return 1;
-        }
-        uint32_t num_layers;
-        fread(&num_layers, 4, 1, lf);
-        fread(&lora_scale, 4, 1, lf);
-        for (uint32_t l = 0; l < num_layers && l < (uint32_t)NC; l++) {
-            uint32_t num_mods;
-            fread(&num_mods, 4, 1, lf);
-            for (uint32_t m = 0; m < num_mods; m++) {
-                LoraModule lm;
-                fread(&lm.mod_id, 4, 1, lf);
-                fread(&lm.rank, 4, 1, lf);
-                fread(&lm.in_dim, 4, 1, lf);
-                fread(&lm.out_dim, 4, 1, lf);
-                size_t a_sz = (size_t)lm.rank * lm.in_dim;
-                size_t b_sz = (size_t)lm.out_dim * lm.rank;
-                lm.A = (float*)malloc(a_sz * 4);
-                lm.B = (float*)malloc(b_sz * 4);
-                fread(lm.A, 4, a_sz, lf);
-                fread(lm.B, 4, b_sz, lf);
-                lora_modules[l].push_back(lm);
-            }
-        }
-        fclose(lf);
+        if (!load_lora_file(lora_path, lora_modules, &lora_scale)) return 1;
         printf("LoRA: loaded %s (scale=%.2f)\n", lora_path, lora_scale);
     }
     signal(SIGHUP, lora_sighup);
@@ -246,34 +275,24 @@ int main(int argc,char**argv){
         if (g_lora_reload && lora_path) {
             g_lora_reload = 0;
             printf("\n--- LoRA hot-swap: reloading %s ---\n", lora_path);
-            // Free old modules
-            for (int l = 0; l < NC; l++)
-                for (auto& lm : lora_modules[l]) { free(lm.A); free(lm.B); }
-            for (int l = 0; l < NC; l++) lora_modules[l].clear();
-            // Reload .lora file
-            FILE* lf = fopen(lora_path, "rb");
-            if (lf) {
-                char magic[4]; fread(magic, 1, 4, lf);
-                uint32_t nl; fread(&nl, 4, 1, lf); fread(&lora_scale, 4, 1, lf);
-                for (uint32_t l = 0; l < nl && l < (uint32_t)NC; l++) {
-                    uint32_t nm; fread(&nm, 4, 1, lf);
-                    for (uint32_t m = 0; m < nm; m++) {
-                        LoraModule lm;
-                        fread(&lm.mod_id, 4, 1, lf); fread(&lm.rank, 4, 1, lf);
-                        fread(&lm.in_dim, 4, 1, lf); fread(&lm.out_dim, 4, 1, lf);
-                        lm.A = (float*)malloc((size_t)lm.rank * lm.in_dim * 4);
-                        lm.B = (float*)malloc((size_t)lm.out_dim * lm.rank * 4);
-                        fread(lm.A, 4, (size_t)lm.rank * lm.in_dim, lf);
-                        fread(lm.B, 4, (size_t)lm.out_dim * lm.rank, lf);
-                        lora_modules[l].push_back(lm);
-                    }
+            // Load into a fresh array; only swap on success so a bad file keeps
+            // the previous weights (issue #1432).
+            std::vector<LoraModule> fresh[NC];
+            float new_scale = 1.0f;
+            if (load_lora_file(lora_path, fresh, &new_scale)) {
+                for (int l = 0; l < NC; l++) {
+                    for (auto& lm : lora_modules[l]) { free(lm.A); free(lm.B); }
+                    lora_modules[l].clear();
+                    lora_modules[l] = std::move(fresh[l]);
                 }
-                fclose(lf);
+                lora_scale = new_scale;
                 repack();  // re-apply LoRA to all weights
                 // Reset KV cache (old cached states are now invalid with new weights)
                 for (int l = 0; l < NC; l++) kv[l].n = 0;
                 sp = 0;
                 printf("--- LoRA hot-swap done ---\n\n");
+            } else {
+                fprintf(stderr, "--- LoRA hot-swap FAILED; keeping previous weights ---\n");
             }
         }
         for(int l=0;l<NC;l++){
@@ -308,5 +327,7 @@ int main(int argc,char**argv){
     }
     double tts=std::chrono::duration<double>(std::chrono::steady_clock::now()-tgs).count();
     printf("\n=== %.0f ms/tok ===\n",tts*1000/ng);
+    for (int l = 0; l < NC; l++)
+        for (auto& lm : lora_modules[l]) { free(lm.A); free(lm.B); }
     munmap(md,st.st_size);return 0;
 }
