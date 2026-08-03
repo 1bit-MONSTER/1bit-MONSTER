@@ -261,11 +261,11 @@ gguf · onnx · q4nx · 1bp · h1b ──▶ [model loader: auto-detect 19 archi
 
 ## Image & Video Generation (ComfyUI)
 
-`image_server` adds Stable Diffusion-family image generation on top of the same backends, via the [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) submodule, exposed as an OpenAI-style API and as ComfyUI custom nodes.
+`image_server` adds Stable Diffusion-family image and video generation on top of the same backends, via the [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) submodule, exposed as an OpenAI-style API and as ComfyUI custom nodes.
 
 - **Image — ✅ shipped.** Text-to-image and image-to-image (SD, SDXL, FLUX, Qwen-Image, Z-Image, + LoRA) — `POST /v1/images/generations`, `POST /v1/images/edits`.
-- **Video — 🔄 in progress.** Text-to-video and image-to-video (Wan, LTX, Hunyuan) — `POST /v1/video/generations`. Not yet wired end-to-end.
-- **ComfyUI nodes**: `1BP Image Generate`, `1BP Video Generate` (tracks the video work above), plus existing LLM/VLM/TTS nodes — see [`integrations/comfyui/`](integrations/comfyui/README.md).
+- **Video — ✅ shipped.** Text-to-video and image-to-video (Wan, LTX, Hunyuan), WebM/AVI encode — `POST /v1/video/generations`. Verified end-to-end with Wan2.1 T2V 1.3B on ROCm (2m38s vs. 8m48s CPU).
+- **ComfyUI nodes**: `1BP Image Generate`, `1BP Video Generate`, plus existing LLM/VLM/TTS nodes — see [`integrations/comfyui/`](integrations/comfyui/README.md).
 
 Build with `-DUSE_DIFFUSION=ON` (requires the `stable-diffusion.cpp` submodule); run `./build/image_server -p 8089` alongside `unified_server`.
 
