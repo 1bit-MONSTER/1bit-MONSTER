@@ -82,8 +82,13 @@ public:
     DiffusionEngine& operator=(const DiffusionEngine&) = delete;
     
     // ── Model lifecycle ──
+    // ── Model lifecycle ──
+    // t5xxl_path/clip_vision_path: companion text/vision encoders (required
+    // for Wan video: t5 = umt5-xxl; i2v also needs clip_vision).
     bool load_model(const std::string& model_path,
-                    const std::string& vae_path = "");
+                    const std::string& vae_path = "",
+                    const std::string& t5xxl_path = "",
+                    const std::string& clip_vision_path = "");
     void unload_model();
     bool is_loaded() const;
     bool supports_video() const;
@@ -108,8 +113,15 @@ public:
     void clear_loras();
 
 private:
+    // Shared video pipeline (generate_video -> container encode). Pass
+    // init_image for image-to-video (strength taken from params).
+    DiffusionResult generate_video_impl(const DiffusionParams& params,
+                                        const sd_image_t* init_image);
+
     std::string model_path_;
     std::string vae_path_;
+    std::string t5xxl_path_;
+    std::string clip_vision_path_;
     sd_ctx_t* sd_ctx_     = nullptr;
     upscaler_ctx_t* up_ctx_ = nullptr;
 };
