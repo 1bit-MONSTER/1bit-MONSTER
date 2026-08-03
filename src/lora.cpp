@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 
 LoraManager::LoraManager() = default;
 LoraManager::~LoraManager() = default;
@@ -281,6 +282,27 @@ bool LoraManager::adapter_enabled(int idx) const {
 }
 
 // ─── Merge LoRA into GGUF ─────────────────────────────────────────
+// Minimal GGUF v3 writer (F32 tensors only) for the merge output.
+// Same conventions as tools/whisper_ggml_to_gguf.cpp / hadamard_export.cpp:
+// string KV type 8, u32 KV type 4, 32-byte alignment before the data
+// section. Merged output is F32 — lossless, loads everywhere.
+// ponytail: F32-only output; port quantize_row_* to requantize to the
+// base dtype when output size matters (4 bytes/elem vs quantized).
+namespace {
+void gguf_w32(std::ofstream& f, uint32_t v) { f.write((const char*)&v, 4); }
+void gguf_w64(std::ofstream& f, uint64_t v) { f.write((const char*)&v, 8); }
+void gguf_wstr(std::ofstream& f, const std::string& s) {
+    gguf_w64(f, s.size());
+    f.write(s.data(), (std::streamsize)s.size());
+}
+void gguf_wkv_str(std::ofstream& f, const std::string& k, const std::string& v) {
+    gguf_wstr(f, k); gguf_w32(f, 8); gguf_wstr(f, v);
+}
+void gguf_wkv_u32(std::ofstream& f, const std::string& k, uint32_t v) {
+    gguf_wstr(f, k); gguf_w32(f, 4); gguf_w32(f, v);
+}
+} // namespace
+
 bool lora_merge_gguf(const std::string& base_gguf_path,
                      const std::vector<std::string>& lora_paths,
                      const std::string& output_gguf_path) {
@@ -307,24 +329,64 @@ bool lora_merge_gguf(const std::string& base_gguf_path,
         return false;
     }
     
-    printf("lora_merge: merging %d LoRA(s) into %s -> %s\n",
-           mgr.adapter_count(), base_gguf_path.c_str(), output_gguf_path.c_str());
-    
-    // For each tensor in the base model, apply all LoRAs and write merged
-    // This is a simplified merge that works on F32 tensors.
-    // For quantized tensors, dequantize -> apply -> requantize.
-    
-    // TODO: full GGUF re-packing. For now, print what would happen.
-    for (auto& tn : base_reader.tensor_names()) {
-        if (mgr.has_adapter_for(tn)) {
-            printf("  tensor %s: %d adapter(s) target it\n", tn.c_str(),
-                   (int)lora_paths.size());
-        }
+    const auto& names = base_reader.tensor_names();
+    std::ofstream out(output_gguf_path, std::ios::binary);
+    if (!out) {
+        fprintf(stderr, "lora_merge: cannot write %s\n", output_gguf_path.c_str());
+        return false;
     }
-    
-    printf("lora_merge: merge descriptor written. Full GGUF repacking requires\n");
-    printf("  dequantize -> apply -> requantize pipeline (use gguf_to_onebp first\n");
-    printf("  to convert to F32 1BP, then apply LoRA at runtime via LoraManager).\n");
-    
-    return true;
+
+    // Header: v3, all tensors, minimal metadata (general.architecture + name).
+    uint64_t nk = 1;
+    std::string arch = base_reader.architecture();
+    std::string name;
+    if (base_reader.get_string("general.name", name)) nk++;
+    out.write("GGUF", 4);
+    gguf_w32(out, 3);
+    gguf_w64(out, names.size());
+    gguf_w64(out, nk);
+    gguf_wkv_str(out, "general.architecture", arch);
+    if (!name.empty()) gguf_wkv_str(out, "general.name", name);
+
+    // Tensor info table (F32, offsets relative to the data section).
+    uint64_t offset = 0;
+    for (auto& tn : names) {
+        const GgufTensorInfo* ti = base_reader.tensor_info(tn);
+        if (!ti) { fprintf(stderr, "lora_merge: no info for %s\n", tn.c_str()); return false; }
+        gguf_wstr(out, tn);
+        gguf_w32(out, (uint32_t)ti->shape.size());
+        for (auto d : ti->shape) gguf_w64(out, d);
+        gguf_w32(out, GGUF_DTYPE_F32);
+        gguf_w64(out, offset);
+        offset += ti->numel * 4;
+    }
+
+    // 32-byte align before data (repo writer convention).
+    uint64_t pos = (uint64_t)out.tellp();
+    uint64_t rem = pos % 32;
+    if (rem) for (uint64_t i = 0; i < 32 - rem; i++) out.put(0);
+
+    // Dequantize -> apply LoRAs -> write F32.
+    size_t merged = 0;
+    for (auto& tn : names) {
+        const GgufTensorInfo* ti = base_reader.tensor_info(tn);
+        std::vector<float> buf;
+        if (!base_reader.get_tensor_f32(tn, buf)) {
+            fprintf(stderr, "lora_merge: failed to read %s\n", tn.c_str());
+            return false;
+        }
+        if (mgr.has_adapter_for(tn)) {
+            // Row-major f32 buffer: fastest-varying dim is the column count.
+            uint64_t cols = ti->shape.empty() ? 1 : ti->shape[0];
+            int rows = (int)(ti->numel / cols), c = (int)cols;
+            if (ti->numel % cols != 0) { rows = (int)ti->numel; c = 1; }
+            mgr.apply(buf.data(), tn, rows, c);
+            merged++;
+        }
+        out.write((const char*)buf.data(), (std::streamsize)buf.size() * 4);
+    }
+
+    fprintf(stderr, "lora_merge: wrote %s — %zu tensors (%zu LoRA-merged), F32 output\n",
+            output_gguf_path.c_str(), names.size(), merged);
+    return out.good();
 }
