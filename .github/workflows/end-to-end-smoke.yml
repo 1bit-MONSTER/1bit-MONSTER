@@ -13,6 +13,9 @@ on:
       - ".github/workflows/*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   smoke-test:
     runs-on: [self-hosted, strix-halo]
