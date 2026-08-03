@@ -3,6 +3,29 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.04 — memory campaign: leak root-caused + top-1 backend init 🧠
+
+- **#1428 root-caused: not a leak — glibc arena fragmentation.** `FusedBackend::generate()`
+  allocated a VOCAB-sized (608 KB) host vector *every token*; freed-but-never-trimmed,
+  the blocks trip glibc's dynamic mmap-threshold into the brk arena, interleaving with
+  the per-token HIP allocations so top-of-heap never returns to the OS. heaptrack proved
+  zero unfreed bytes on the generate path. Buffers are now reusable members: mt=128 creep
+  decays 17 MB → 20 kB per 10 reqs and plateaus (~160× less); the `MALLOC_*` env band-aid
+  on `1bit-systems.service` was removed.
+- **#1427 memory baseline cut ~10 GB.** Dead host f32 weight copies in FusedBackend freed
+  after GPU upload/NPU pack (RSS 6768 → 5163 MB); `init_in_order()` now loads the top
+  accelerator + one CPU fallback only, everything else inits lazily via the existing
+  failover path (instance GTT 8.2 → 2.6 GB). Per-token cross-backend routing was
+  KV-incoherent anyway (private KV per backend), so no routing value was lost.
+- **Deployed** to `1bit-systems.service` (v2026.08.04 binary), verified: RSS ~5.3 GB flat,
+  fused active + cpu fallback, hip_1bp/vulkan lazy.
+- **10-bug audit resolved** (#1429–#1438) — SSRF, unkillable-server, OOB/SIGFPE/bad_alloc
+  families, loader/backend hardening.
+- **Local work artifacts gitignored** (model conv sources, appimage build, heaptrack dumps,
+  tool state) — 31 untracked files cleared from status.
+- Docs: engineering journey updated through 08-03 (UPDATE 29); packaging manifests synced
+  to `2026.08.04` (issue #117 check green).
+
 ## 2026.08.03 — ws05 ppl gates + fused prefill chain, RVQ-VAE codec, narrative purge 🧹
 
 - **ws05: per-vocab perplexity gates for every family** (#1243) — ppl gates now
