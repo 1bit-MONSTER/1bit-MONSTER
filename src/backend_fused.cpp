@@ -258,6 +258,10 @@ struct FusedBackend : Backend {
     std::future<bool> npu_future_;
 
     std::vector<float> cpu_embed, cpu_final_norm, cpu_output;
+    // Reusable per-token host staging — allocated once in init(), reused every
+    // token. Stack-local vectors here churned 4 KB + VOCAB*4 (~608 KB) per
+    // token, fragmenting the glibc arena into unbounded RSS creep (issue #1428).
+    std::vector<float> h_stage, logit_stage;
     struct CpuL { std::vector<float> w1, w2, w3; };
     std::vector<CpuL> cpu_L;
     int pos = 0;
@@ -357,6 +361,7 @@ struct FusedBackend : Backend {
             }
         }
 
+        h_stage.resize(H); logit_stage.resize(VOCAB);
         gpu_ok = true; initialized = true;
         printf(npu_ok ? "[fused] ✅ Fused GPU+NPU\n" : "[fused] ✅ GPU-only\n");
         return true;
@@ -637,10 +642,9 @@ struct FusedBackend : Backend {
     }
 
     int generate(int token_id) override {
-        std::vector<float> h(H);
-        if (!forward(token_id, h.data())) return -1;
-        std::vector<float> l(VOCAB); int n=-1;
-        if (!lm_head(h.data(), l.data(), &n)) return -1;
+        if (!forward(token_id, h_stage.data())) return -1;
+        int n = -1;
+        if (!lm_head(h_stage.data(), logit_stage.data(), &n)) return -1;
         return n;
     }
 
@@ -678,6 +682,8 @@ struct FusedBackend : Backend {
         if (stream) { HIP_CHECK_D(hipStreamDestroy(stream)); stream = nullptr; }
         npu_state_destroy(npu); npu = nullptr;
         cpu_L.clear(); cpu_embed.clear(); cpu_final_norm.clear(); cpu_output.clear();
+        h_stage.clear(); h_stage.shrink_to_fit();
+        logit_stage.clear(); logit_stage.shrink_to_fit();
         gpu_ok = false; npu_ok = false; initialized = false;
     }
 };
