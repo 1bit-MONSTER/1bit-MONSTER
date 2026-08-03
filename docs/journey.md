@@ -4,6 +4,7 @@
 
 ## Table of Contents
 
+- [UPDATE 29: Memory Campaign — arena-frag leak fixed, top-1 backend init](#update-29-2026-08-03-memory-campaign--arena-frag-leak-fixed-top-1-backend-init-10-bug-audit)
 - [UPDATE 28: Mamba1 GPU Backend — 79.4 tok/s](#update-28-2026-07-20-mamba1-gpu-backend--794-toks-9-bugs-killed)
 - [UPDATE 27: Fused Layer Engine — 291 tok/s](#update-27-2026-07-06-fused-layer-engine-goes-production--291-toks-3×-v12)
 - [UPDATE 26: All 3 Bugs Confirmed Fixed](#update-26-2026-07-05-all-3-bugs-confirmed-fixed--aie-micro-tiling-root-cause-resolved)
@@ -19,6 +20,43 @@
 - [UPDATE 16: Full Profile + 50 ms/tok Batch-4](#update-16-2026-07-02-0200-adt-full-profile--50-mstok-batch-4-decode)
 - [UPDATE 15: PR-Agent Live, Landing Page](#update-15-2026-07-01-1500-adt-pr-agent-live-landing-page-deployed-242-mstok-verified)
 - [Earlier Updates (14–1)](#earlier-updates)
+
+---
+
+## UPDATE 29 (2026-08-03): MEMORY CAMPAIGN — ARENA-FRAG LEAK FIXED, TOP-1 BACKEND INIT, 10-BUG AUDIT
+
+**The long-unexplained host-RSS creep in `unified_server` is root-caused and fixed, the multi-backend memory bloat is cut by ~10 GB, and the 10-bug audit (#1429–#1438) landed. Release v2026.08.03 shipped and the memory fixes are deployed on the live service.**
+
+### The leak that wasn't a leak: glibc arena fragmentation (#1428)
+
+For weeks the server's host RSS crept ~0.1–1.7 MB per generation request — monotonic, never returned, ~90 MB/hr at 1 req/s, and 6.8 GB baseline after 50 min uptime. Every container was ruled out by triage. A heaptrack capture settled it:
+
+- **Zero unfreed bytes on the generate/forward/lm_head path.** Nothing leaked.
+- The culprit: `FusedBackend::generate()` allocated `std::vector<float> l(VOCAB)` (**608 KB** for Qwen3) on the stack **every token** and freed it every token.
+- That's the **glibc dynamic mmap-threshold trap**: the first 608 KB block is mmap'd, but after the first free glibc raises its threshold and services later same-size requests from the **brk arena**, interleaving them with the small per-token HIP/kernel allocations. Top-of-heap never becomes trimmable → RSS creeps up and never comes back. This is exactly why `/proc/maps` stayed flat while `VmData` grew, and why the rate tracked tokens.
+- Fix: hoist `h`/`l` to reusable member buffers sized once in `init()`. Zero per-token host allocation → nothing to fragment. Measured: mt=128 creep decays 208 → **20 kB per 10 reqs** (old: 17 MB per 10 reqs, ~160×) and plateaus; the `MALLOC_MMAP_THRESHOLD_`/`TRIM_THRESHOLD_` env band-aid on the service became unnecessary and was removed.
+
+### The 15 GB serving baseline (#1427)
+
+`BackendManager::init_in_order()` loaded **every** backend × full model copy — fused (f32 GPU + host), hip_1bp (bf16 GPU), vulkan_hpp (pools), cpu_generic (f32 RAM) — ~15 GB (7 GB RSS + 8.2 GB GTT) for a 0.6B model, so systemd-oomd killed desktop apps when CI built concurrently. Two fixes:
+
+1. **Dead host weights freed**: `cpu_L`/`cpu_embed`/`cpu_final_norm`/`cpu_output` are pure load→GPU/NPU-pack buffers — provably unread at inference. Freed after load: RSS 6768 → 5163 MB.
+2. **Top-1 + CPU fallback init**: keep the first accelerator + one CPU fallback; the rest stay discoverable and init **lazily via the existing failover path**. This was safe because the per-token cross-backend routing those extra copies paid for was **KV-incoherent anyway** — each backend keeps a private KV cache + `pos`, so a token routed to a backend that never saw the prefix attends to empty KV. Instance GTT: 8.2 → **2.6 GB**.
+
+### Everything else since UPDATE 28
+
+- **Coherent GPU inference** (#1397): QK-norm, per-layer KV, residual fixes — GPU paths became output-valid; `fused_gpu_npu` is the production path at **321 tok/s (3.1 ms/tok)**.
+- **One ELF to rule them all** (08-02): `build/1bit` = zaya + unified + router + jarvis + vision + agent CLI in a single binary; `1bit pull`/`list` in pure C++; packaging ships one binary; the 296-line bash launcher is dead.
+- **Lemonade embedded** (08-01): 14 Lemonade backends run in-process; `unified_server --lemonade` hands off to the full server.
+- **Exact SiLU + `-ffast-math` dropped** (41d0977e7): Q4NX ppl was *backend*-broken, not converter-broken — the #1243 audit's 6.5% density red flag resolved with per-vocab ppl gates + prefill M=128 fused chain (#1413).
+- **RVQ-VAE codec in C++** (#1368) with GGUF export.
+- **10-bug audit resolved** (#1429–#1438): SSRF, unkillable-server, OOB/SIGFPE/bad_alloc families, loader/backend hardening.
+- **Clean shutdown** (#1426): `_exit()` instead of the static-dtor ABRT that segfaulted on every stop.
+- **Release pipeline fixed** (#1404–#1425): tag builds run on the runner (not container), `onebin` target restored after sync merges clobbered it, libdrm/glslc/spirv-headers dep parity with CI.
+- **Narrative purges** (#1412 + follow-ups): TheRock-era and Rust-era claims swept — the stack is pure C++23, zero Python at runtime.
+- **Ponytail purge** (#1325): ~48K lines of dead code deleted (with the few survivors restored in #1390).
+
+**The environment bit back once**: a driver wedge during sustained load forced a cold reboot on 08-03; post-reboot the NPU (RyzenAI-npu5, firmware 1.1.2.65) and iGPU came back clean, and the memory campaign above was verified on the recovered hardware.
 
 ---
 
