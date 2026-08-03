@@ -227,11 +227,19 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     uint32_t n_expert_used;     memcpy(&n_expert_used, hdr_buf + 96, 4);
     uint32_t arch_raw;          memcpy(&arch_raw, hdr_buf + 8, 4);
     uint32_t quant_raw;         memcpy(&quant_raw, hdr_buf + 12, 4);
-    // rope_theta_f (offset 76) = rope_theta * 1000 fixed-point. The 1BP
+    // rope_theta_f (offset 76) = rope_theta * 1000 fixed-point (v1/v2), or raw
+    // f32 bits (v3 — the *1000 encoding overflows for theta > 4.29e6, e.g.
+    // Granite's rope.freq_base 1e7 wrapped to garbage 1410065408). The 1BP
     // converters often leave it 0 (= unspecified); loaders then fall back to
     // 10000. Match that here so GPU backends (which take cfg.rope_theta from
     // discovery) don't inherit the ModelConfig default 500000 and break RoPE.
     uint32_t rope_theta_f;      memcpy(&rope_theta_f, hdr_buf + 76, 4);
+    if (version >= 3) {
+        float rt; memcpy(&rt, &rope_theta_f, 4);
+        cfg.rope_theta = rt > 0.0f ? rt : 10000.0f;
+    } else {
+        cfg.rope_theta = rope_theta_f ? ((float)rope_theta_f / 1000.0f) : 10000.0f;
+    }
 
     // Extract tile_rows, tile_cols, group_size from header (fixes #1311).
     // These are stored in OnebpHeader at offsets 52, 56, 60.
@@ -250,7 +258,6 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     cfg.n_ff = cfg.intermediate_size = intermediate_size;
     cfg.vocab = cfg.vocab_size = vocab_size;
     cfg.max_seq_len = max_seq_len ? max_seq_len : 2048;
-    cfg.rope_theta = rope_theta_f ? ((float)rope_theta_f / 1000.0f) : 10000.0f;
     cfg.n_experts = cfg.num_experts = num_experts;
     cfg.num_experts_top = n_expert_used;
     cfg.model_path = path;
@@ -297,6 +304,8 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
                 cfg.architecture = "phi3";
             else if (nm.find("Gemma") != std::string::npos || nm.find("gemma") != std::string::npos)
                 cfg.architecture = "gemma3";
+            else if (nm.find("Granite") != std::string::npos || nm.find("granite") != std::string::npos)
+                cfg.architecture = "granite";
             else if (nm.find("DeepSeek") != std::string::npos || nm.find("Deepseek") != std::string::npos)
                 cfg.architecture = "deepseek2";
             else if (nm.find("Falcon") != std::string::npos || nm.find("falcon") != std::string::npos)
@@ -341,6 +350,12 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
         case 19: cfg.architecture = "zaya1"; break;
         default: cfg.architecture = "unknown(" + std::to_string(arch_raw) + ")"; break;
     }
+    // 1BP has no self-describing arch field (ONEBP_DENSE is shared by all
+    // dense transformers) — the string above is inferred from name/dims.
+    // Propagate it to the dispatch enum or every 1BP model runs the default
+    // (BITNET -> SiLU) activation, silently breaking GeGLU families (Gemma,
+    // Falcon) — caught by the #1243 per-vocab ppl gate (Gemma-3-1B: 2.1e10).
+    cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
 
     // Quantization tag from enum
     switch (quant_raw) {

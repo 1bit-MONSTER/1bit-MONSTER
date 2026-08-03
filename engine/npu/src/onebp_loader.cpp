@@ -260,8 +260,16 @@ public:
                 int cw = (C - c0) < tc ? (C - c0) : tc;
 
                 float tile_buf[32 * 256];  // max tile size
-                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, cw, tr, tc, gs, tq2nz, e4m3);
-                else        dequant_tile(base, tile_buf, rh, cw, tr, tc, gs, q);
+                // Pass the FULL tile width (tc) as out_cols, not the actual
+                // tile width (cw): the dequant helpers write tile_buf with
+                // out_cols stride while the copy below reads it back with the
+                // full tile stride (r*tc + c). For a partial last tile column
+                // (C % 256 != 0, e.g. Gemma-3-1B hidden=1152) the compact
+                // stride misaligned every row — reading row 2r's data for
+                // row r and corrupting the last 128 cols of every matrix
+                // (caught by the #1243 ppl gate: Gemma-3-1B ppl 5e9).
+                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, tc, tr, tc, gs, tq2nz, e4m3);
+                else        dequant_tile(base, tile_buf, rh, tc, tr, tc, gs, q);
 
                 for (int r = 0; r < rh; r++)
                     for (int c = 0; c < cw; c++)

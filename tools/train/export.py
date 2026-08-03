@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 #
-# export.py — Export trained model to GGUF for 1bit's Rust binary
+# export.py — Export trained model to GGUF for 1bit's C++ binary
 #
 # Usage:
 #   python3 export.py ./outputs/qwen3-0.6b-lora-r16/checkpoint-400
@@ -49,7 +49,7 @@ def find_latest_checkpoint(output_dir: str) -> Optional[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export trained model to GGUF for 1bit.systems Rust binary"
+        description="Export trained model to GGUF for 1bit.systems C++ binary"
     )
     parser.add_argument(
         "checkpoint",
