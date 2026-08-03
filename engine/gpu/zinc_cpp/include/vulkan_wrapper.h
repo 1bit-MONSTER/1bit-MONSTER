@@ -162,20 +162,12 @@ public:
     /// @param device_idx   GPU device index (-1 = auto-select)
     void init(const std::string& shader_dir, int device_idx = -1);
 
-    /// Load a GGUF model and upload weights to GPU.
-    bool load_model(const std::string& gguf_path);
-
     /// Destroy all resources.
     void destroy();
 
     // ── Inference ──
     /// Reset KV cache and position for a new sequence.
     void reset();
-
-    /// Generate one token from the model.
-    /// @param token_id  Input token ID
-    /// @return Next token ID, or -1 on failure
-    int generate(int token_id);
 
     // ── Accessors ──
     VkDevice device() const { return device_; }
