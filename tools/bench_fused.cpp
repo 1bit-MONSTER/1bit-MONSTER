@@ -17,7 +17,10 @@ int main(int argc, char** argv) {
     if (!b) { fprintf(stderr, "FAIL: create_fused_backend\n"); return 1; }
     ModelConfig cfg; cfg.model_path = path; cfg.format = ModelFormat::ONEBP;
     uint8_t hdr[256];
-    FILE* f = fopen(path, "rb"); fread(hdr, 1, 256, f); fclose(f);
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); return 1; }
+    if (fread(hdr, 1, 256, f) != 256) { fprintf(stderr, "%s: file too short for 1BP header\n", path); fclose(f); return 1; }
+    fclose(f);
     memcpy(&cfg.hidden_size, hdr+20, 4); memcpy(&cfg.num_layers, hdr+24, 4);
     cfg.num_heads = 16; cfg.num_kv_heads = 8; cfg.head_dim = 128;
     cfg.intermediate_size = 3072; cfg.vocab_size = 151936;
