@@ -31,7 +31,7 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 - **x86 CPU** — OpenMP fallback
 
 **Key numbers** (re-measured 2026-08-01, Radeon 8060S / Strix Halo, GGML-Vulkan):
-- 19 model architectures · 47 1BP models · **9 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, NPU, Mamba1, Zamba2, CPU)
+- 19 model architectures · 47 1BP models · **5 backends** (NPU, HIP, ZINC, **GGML-Vulkan**, CPU)
 - **662 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**)
 - **373 tok/s** (Qwen3-0.6B Q4_K, **GGML-Vulkan**) — up from 344
 - **100 tok/s** (Qwen2.5-VL-3B, **GGML-Vulkan**)
