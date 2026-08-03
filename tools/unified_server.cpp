@@ -1926,5 +1926,13 @@ int main(int argc, char** argv) {
     }
     mgr.destroy();
     printf("Done.\n");
-    return 0;
+    fflush(stdout);
+    fflush(stderr);
+    // Exit WITHOUT static-dtor teardown: the DynamicRouter holds its own
+    // BackendEntry refs, so the 4 backends (HIP, Vulkan, XRT NPU) are actually
+    // destroyed at exit() in the wrong order — reproduced SIGSEGV in the
+    // Vulkan validation layer, and ABRT from XRT "Failed to destroy DRM BO"
+    // (EBADF) bursts in production. _exit() lets the kernel reclaim the GPU
+    // contexts deterministically.
+    _exit(0);
 }
