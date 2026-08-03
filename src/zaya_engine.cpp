@@ -343,7 +343,7 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     ALLOC_OR_FAIL(s, alloc_f16, s->d_kout, eng.kd);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_vout, eng.kd);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_skip_flag, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, eng.n_layers * eng.rtr_h);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, (size_t)eng.n_layers * eng.rtr_h);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
     #undef ALLOC_OR_FAIL
