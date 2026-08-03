@@ -126,3 +126,6 @@ heaptrack*
 models/_src_q8/
 npu-infer/mlir-aie
 reasonix.toml
+
+# machine-specific HIP search-path shim (absolute symlinks violate #1043 policy)
+.rocm-stub/

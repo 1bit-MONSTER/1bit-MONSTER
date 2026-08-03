@@ -90,4 +90,8 @@ target_compile_options(npu_engine_cb PRIVATE
     -Wno-unused-parameter -Wno-unused-variable
 )
 
+target_compile_definitions(npu_engine_cb PRIVATE
+    XCLBIN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/xclbins"
+)
+
 install(TARGETS npu_engine_cb DESTINATION bin)
