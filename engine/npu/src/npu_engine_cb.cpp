@@ -152,7 +152,13 @@ int main(int argc,char**argv){
     printf("  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t_emb).count());
 
     printf("Init 4 GEMM...\n");xrt::device dev(0);
-    #define D "/home/bcloud/npu-sandbox/npu-infer/build/int8"
+    // Xclbin/insts live in the source tree (engine/npu/xclbins). CMake bakes
+    // the absolute path in via XCLBIN_DIR; the fallback keeps standalone
+    // compiles working when run from the engine/npu directory.
+    #ifndef XCLBIN_DIR
+    #define XCLBIN_DIR "xclbins"
+    #endif
+    #define D XCLBIN_DIR
     I8Ctx cq{"QKV",XM,H,4096},co{"O",XM,NH*HD,H},cg{"GU",XM,H,6144},cd{"D",XM,IM,H};
     cq.init(dev,D"/final_i8_QKV_v.xclbin",D"/insts_i8_QKV_v.txt",4);
     co.init(dev,D"/final_i8_O_v.xclbin",  D"/insts_i8_O_v.txt",  4);
