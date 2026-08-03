@@ -3,6 +3,7 @@
 
 #include "diffusion_bridge.h"
 #include "stable-diffusion.h"
+#include "media_io.h"   // create_video_from_sd_images_to_vector (sd.cpp examples/common)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,18 +21,25 @@ DiffusionEngine::~DiffusionEngine() {
 }
 
 bool DiffusionEngine::load_model(const std::string& model_path,
-                                  const std::string& vae_path) {
+                                  const std::string& vae_path,
+                                  const std::string& t5xxl_path,
+                                  const std::string& clip_vision_path) {
     unload_model();
     if (model_path.empty()) return false;
     
     model_path_ = model_path;
     vae_path_ = vae_path;
+    t5xxl_path_ = t5xxl_path;
+    clip_vision_path_ = clip_vision_path;
     
     sd_ctx_params_t params;
     sd_ctx_params_init(&params);
     
     params.model_path = model_path.c_str();
     params.vae_path = vae_path.empty() ? nullptr : vae_path.c_str();
+    params.t5xxl_path = t5xxl_path.empty() ? nullptr : t5xxl_path.c_str();
+    params.clip_vision_path = clip_vision_path.empty() ? nullptr
+                                : clip_vision_path.c_str();
     params.n_threads = 8;
     params.wtype = SD_TYPE_F32;
     params.rng_type = CUDA_RNG;
@@ -53,6 +61,8 @@ void DiffusionEngine::unload_model() {
     if (up_ctx_) { ::free_upscaler_ctx(up_ctx_); up_ctx_ = nullptr; }
     model_path_.clear();
     vae_path_.clear();
+    t5xxl_path_.clear();
+    clip_vision_path_.clear();
 }
 
 bool DiffusionEngine::is_loaded() const { return sd_ctx_ != nullptr; }
@@ -77,13 +87,13 @@ DiffusionResult DiffusionEngine::txt2img(const DiffusionParams& params,
     gp.height = params.height;
     gp.seed = params.seed;
     gp.batch_count = 1;
-    gp.strength = params.cfg_scale;
     
     sd_sample_params_t sp;
     sd_sample_params_init(&sp);
     sp.sample_steps = params.steps;
     sp.sample_method = EULER_A_SAMPLE_METHOD;
     sp.scheduler = KARRAS_SCHEDULER;
+    sp.guidance.txt_cfg = params.cfg_scale;
     gp.sample_params = sp;
     
     // LoRAs
@@ -146,7 +156,7 @@ DiffusionResult DiffusionEngine::img2img(const DiffusionParams& params,
     gp.width = params.width;
     gp.height = params.height;
     gp.seed = params.seed;
-    gp.strength = params.cfg_scale;
+    gp.strength = params.strength;
     gp.batch_count = 1;
     
     sd_sample_params_t sp;
@@ -154,17 +164,38 @@ DiffusionResult DiffusionEngine::img2img(const DiffusionParams& params,
     sp.sample_steps = params.steps;
     sp.sample_method = EULER_A_SAMPLE_METHOD;
     sp.scheduler = KARRAS_SCHEDULER;
+    sp.guidance.txt_cfg = params.cfg_scale;
     gp.sample_params = sp;
     
-    // TODO: load init_image from params.init_image_path
-    // sd_image_t init = load_image(params.init_image_path);
-    // gp.init_image = init;
-    // gp.strength (img2img) = params.strength;
+    // Init image + optional mask (stbi-allocated; freed below).
+    sd_image_t init{}, mask{};
+    bool have_init = false, have_mask = false;
+    if (!params.init_image_path.empty()) {
+        have_init = load_sd_image_from_file(&init, params.init_image_path.c_str());
+        if (have_init) {
+            gp.init_image = init;
+        } else {
+            fprintf(stderr, "diffusion: failed to load init image %s\n",
+                    params.init_image_path.c_str());
+        }
+    }
+    if (!params.mask_image_path.empty()) {
+        have_mask = load_sd_image_from_file(&mask, params.mask_image_path.c_str());
+        if (have_mask) {
+            gp.mask_image = mask;
+        } else {
+            fprintf(stderr, "diffusion: failed to load mask %s\n",
+                    params.mask_image_path.c_str());
+        }
+    }
     
     sd_image_t* images_out = nullptr;
     int num_images = 0;
     bool ok = generate_image(sd_ctx_, &gp, &images_out, &num_images);
     auto t1 = std::chrono::steady_clock::now();
+    
+    if (have_init) std::free(init.data);
+    if (have_mask) std::free(mask.data);
     
     if (!ok || !images_out || num_images < 1) return {};
     
@@ -185,15 +216,115 @@ DiffusionResult DiffusionEngine::img2img(const DiffusionParams& params,
 
 DiffusionResult DiffusionEngine::txt2vid(const DiffusionParams& params,
                                           DiffusionProgressFn progress) {
-    if (!sd_ctx_ || !supports_video()) return {};
-    // TODO: video generation via generate_video()
-    fprintf(stderr, "diffusion: video generation not yet wired\n");
-    return {};
+    return generate_video_impl(params, nullptr);
 }
 
 DiffusionResult DiffusionEngine::img2vid(const DiffusionParams& params,
                                           DiffusionProgressFn progress) {
-    return {};
+    if (!sd_ctx_ || !supports_video()) return {};
+    sd_image_t init{};
+    bool have_init = false;
+    if (!params.init_image_path.empty()) {
+        have_init = load_sd_image_from_file(&init, params.init_image_path.c_str());
+        if (!have_init) {
+            fprintf(stderr, "diffusion: failed to load init image %s\n",
+                    params.init_image_path.c_str());
+        }
+    }
+    DiffusionResult r = generate_video_impl(params, have_init ? &init : nullptr);
+    if (have_init) std::free(init.data);  // stbi-allocated
+    return r;
+}
+
+DiffusionResult DiffusionEngine::generate_video_impl(const DiffusionParams& params,
+                                                      const sd_image_t* init_image) {
+    if (!sd_ctx_ || !supports_video()) return {};
+    auto t0 = std::chrono::steady_clock::now();
+    
+    sd_vid_gen_params_t vp;
+    sd_vid_gen_params_init(&vp);
+    
+    vp.prompt = params.prompt.c_str();
+    vp.negative_prompt = params.negative_prompt.empty() ? nullptr
+                         : params.negative_prompt.c_str();
+    vp.width = params.width;
+    vp.height = params.height;
+    vp.seed = params.seed;
+    vp.strength = params.strength;
+    vp.video_frames = params.video_frames;
+    vp.fps = params.video_fps;
+    if (init_image) {
+        vp.init_image = *init_image;
+        vp.strength = params.strength;
+    }
+    
+    sd_sample_params_t sp;
+    sd_sample_params_init(&sp);
+    sp.sample_steps = params.steps;
+    sp.sample_method = EULER_A_SAMPLE_METHOD;
+    sp.scheduler = KARRAS_SCHEDULER;
+    sp.guidance.txt_cfg = params.cfg_scale;
+    vp.sample_params = sp;
+    
+    // LoRAs (same pattern as txt2img)
+    std::vector<sd_lora_t> loras;
+    for (size_t i = 0; i < params.lora_paths.size(); i++) {
+        sd_lora_t l;
+        l.path = params.lora_paths[i].c_str();
+        l.multiplier = i < params.lora_weights.size() ?
+                       params.lora_weights[i] : 1.0f;
+        l.is_high_noise = false;
+        loras.push_back(l);
+    }
+    vp.loras = loras.data();
+    vp.lora_count = (uint32_t)loras.size();
+    
+    sd_image_t* frames_out = nullptr;
+    int num_frames = 0;
+    sd_audio_t* audio_out = nullptr;
+    bool ok = generate_video(sd_ctx_, &vp, &frames_out, &num_frames, &audio_out);
+    auto t1 = std::chrono::steady_clock::now();
+    
+    if (!ok || !frames_out || num_frames < 1) {
+        free_sd_audio(audio_out);
+        fprintf(stderr, "diffusion: generate_video failed\n");
+        return {};
+    }
+    
+    DiffusionResult result;
+    result.width = (int)frames_out[0].width;
+    result.height = (int)frames_out[0].height;
+    result.frames = num_frames;
+    
+    // Encode container exactly like sd.cpp's own server: webm/webp when the
+    // submodule build has SD_USE_WEBM/WEBP, else MJPG AVI (video/x-msvideo).
+    result.data = create_video_from_sd_images_to_vector(
+        params.video_output_format, frames_out, num_frames,
+        params.video_fps, params.output_quality, audio_out);
+    free_sd_audio(audio_out);
+    free_sd_images(frames_out, num_frames);
+    
+    if (result.data.empty()) {
+        fprintf(stderr, "diffusion: video encode failed\n");
+        return {};
+    }
+    
+    // Sniff the actual container rather than trusting the requested format:
+    // without SD_USE_WEBM/WEBP every request encodes as MJPG AVI, so a
+    // "webm" request would otherwise come back mislabeled.
+    result.mime_type = "video/x-msvideo";
+    if (result.data.size() >= 4 &&
+        memcmp(result.data.data(), "\x1A\x45\xDF\xA3", 4) == 0) {   // EBML magic
+        result.mime_type = "video/webm";
+    } else if (result.data.size() >= 12 &&
+               memcmp(result.data.data(), "RIFF", 4) == 0 &&
+               memcmp(result.data.data() + 8, "WEBP", 4) == 0) {
+        result.mime_type = "image/webp";
+    }
+    result.generation_time_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(t1 - t0).count();
+    result.seed_used = (int)vp.seed;
+    return result;
 }
 
 // ─── Upscaling ────────────────────────────────────────────────────
