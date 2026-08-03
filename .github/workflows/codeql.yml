@@ -27,7 +27,7 @@ jobs:
       matrix:
         include:
           - language: c-cpp
-            build-mode: autobuild
+            build-mode: none  # ROCm/HIP toolchain not installable on runners — buildless extraction
           - language: actions
             build-mode: none
           - language: python
