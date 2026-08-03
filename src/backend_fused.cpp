@@ -425,6 +425,18 @@ struct FusedBackend : Backend {
             }
             printf("[fused] NPU weights packed via C++ module\n");
         }
+        // Host-side f32 weight copies are dead past this point: compute copies
+        // live on GPU (L[*].w*, d_embed, d_final_norm, d_output) and in the
+        // packed NPU state. Free them to reclaim ~2.4 GB host RAM per model
+        // (issue #1427). Reload (#1021) re-reads from disk into empty vectors.
+        cpu_embed.clear(); cpu_embed.shrink_to_fit();
+        cpu_final_norm.clear(); cpu_final_norm.shrink_to_fit();
+        cpu_output.clear(); cpu_output.shrink_to_fit();
+        for (auto& cl : cpu_L) {
+            cl.w1.clear(); cl.w1.shrink_to_fit();
+            cl.w2.clear(); cl.w2.shrink_to_fit();
+            cl.w3.clear(); cl.w3.shrink_to_fit();
+        }
         printf("[fused] 1BP loaded — %d layers (q_norm=%s, k_norm=%s)\n", NC,
                L[0].q_norm ? "yes" : "no", L[0].k_norm ? "yes" : "no");
         return true;
