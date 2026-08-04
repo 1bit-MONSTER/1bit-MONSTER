@@ -670,3 +670,39 @@ Neither path is a natural continuation of the v5/v5a/v5b/v5c work — patching d
 Secure Boot has been re-enabled on the test box (it was only disabled to permit loading the unsigned out-of-tree `amdxdna` driver module during testing — unrelated to the PSP signature question, but no longer needed with this line of attack closed). System verified back to a clean stock baseline: in-tree signed driver, stock firmware, no errors.
 
 If this is picked up again, scope it explicitly as one of the two options above rather than another firmware-byte-patch variant — variant 6, 7, 8 of the same offset-guessing approach will hit the same wall as v5 through v5c.
+
+## Appendix: Deep-dive findings (2026-08-04) — research formally closed
+
+All prior work assumed the Strix Halo NPU had 40 physical AIE columns that were software-locked to 8. This is **incorrect**. The following findings close the 40-column unlock effort entirely.
+
+### Finding 1: The Strix Halo NPU has exactly 8 physical columns (6×8 topology)
+
+`xrt-smi examine` reports **Topology: 6x8** — 6 rows (4 compute + 1 mem + 1 shim) × 8 columns = 48 tiles total, producing ~50 TOPS. This matches AMD's published documentation (4×8 compute tiles). **There are no hidden columns to unlock.** The "40 columns" assumption likely arose from confusing the iGPU's 40 Compute Units with the NPU's column count.
+
+### Finding 2: The serialization-gate patch was never tested on hardware
+
+`npu_patched.sbin` (created 2026-06-29) has installation instructions but no test results in `PATCH_README.md`. The knowledge dump's description as "already-successful serialization-gate patch" referred to the *disassembly method* being proven, not the patch itself being loaded and tested. Binary analysis confirms `npu_patched.sbin` changed the first 16 header bytes (container GUID from `eb67de11...` to `f609a687...`) and NOP'd 7 branches — but no log anywhere shows it was loaded on the NPU without PSP rejection.
+
+### Finding 3: All firmware patches fail PSP RSA-2048 validation equally
+
+The PS1p container's last 256 bytes are a raw RSA-2048 signature (mean=128.6, stdev=73.4 — indistinguishable from random data). All firmware variants (stock, v5b, v5c, npu_patched) have **identical** RSA signatures and header hashes — the patches never update them. The PSP validates this signature using AMD's fused on-die key. **Any byte change to the payload invalidates the signature.** The v5 patches failed because of signature mismatch, not any column-specific logic.
+
+### Finding 4: The v5 patches changed 37 bytes total
+
+- Offset `0x31E0` (code): comparison constant 8→0x28 (1 byte)
+- Offset `0x31E4-0x31E7` (code): branch NOP (4 bytes)
+- 32 sub_payload entries: data table values 8→0x28
+
+### Finding 5: The first 16 bytes are NOT a SHA256 hash
+
+The PATCH_README claimed `npu_patched.sbin` had an "updated SHA256 header hash" but no SHA256 computation of any obvious region matches either the stock or patched first-16-byte values. These bytes are likely a firmware container GUID or version identifier, not a computable hash.
+
+### Finding 6: The `aie2_error_worker` has a 32-column bitmap limit
+
+`aie2_error_backtrack()` uses `u32 err_col = 0; /* assume AIE has less than 32 columns */` which can only represent 32 columns. For any future hardware with >31 columns, this needs widening to `u64` or `DECLARE_BITMAP`. (Moot for current Strix Halo with 8 columns.)
+
+### Conclusion
+
+The 40-column unlock effort is **formally closed**. The NPU has 8 physical columns and there is no software mechanism to increase this count. The PSP's RSA-2048 signature validation prevents any firmware modification without AMD's private signing key, and even if that were available, there would be no additional columns to unlock.
+
+The focus should shift to maximizing 8-column throughput via multi-context parallelism, temporal sharing, and driver-side optimization.
