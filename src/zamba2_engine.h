@@ -90,7 +90,9 @@ struct Mamba2LayerWeights {
     std::vector<float> conv1d_b;   // [conv_dim]
     // dt_bias: [n_head]
     std::vector<float> dt_bias;
-    // A_log: [n_head]
+    // A_log: [n_head] — stores A already negated (A = -exp(A_log), llama.cpp
+    // GGUF convention; loader normalizes raw-A_log converters, #1460). Kernels
+    // use the value directly: A_bar = exp(softplus(dt + dt_bias) * A).
     std::vector<float> A_log;
     // D: [n_head]
     std::vector<float> D;

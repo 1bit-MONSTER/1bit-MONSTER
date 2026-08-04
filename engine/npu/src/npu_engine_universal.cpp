@@ -60,9 +60,76 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
-extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
+extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
+
+// ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
+// Tile = [32 rows × 256 cols], 5120 B/row: tr*grps*2 B bf16 scales + same
+// for zero-points + tr*tc/2 B packed INT4. Layout is row-major (scales[row*
+// grps+g], packed[(row*tc+col)/2] low-nibble=even col) — the group-major /
+// col-major layout in dequant_q4nx.cpp is for torch2aie chunks and reads
+// 1BP-written expert tensors wrong (probe validation, issue #1467).
+static float* dequant_1bp(const uint8_t* data, int i8_rows, int in_features,
+                          int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, GS = 32;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    int grps = TC / GS;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * (TR*grps*2 + TR*grps*2 + TR*TC/2);
+        const uint16_t* sc = (const uint16_t*)t;
+        const uint16_t* zp = (const uint16_t*)(t + (size_t)TR*grps*2);
+        const uint8_t* qd = t + (size_t)TR*grps*4;
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < grps; g++) {
+                float s = bf16f(sc[r*grps + g]);
+                float z = bf16f(zp[r*grps + g]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                if (!std::isfinite(z) || std::fabs(z) > 100.0f) z = 0.0f;
+                for (int i = 0; i < GS; i++) {
+                    int col = g*GS + i;
+                    uint8_t b = qd[((size_t)r*TC + col) / 2];
+                    uint8_t v = (col & 1) ? (b >> 4) : (b & 0x0F);
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] = (float)v*s + z;
+                }
+            }
+    }
+    return out;
+}
+
+// ── Q8_0 tile dequant (8704 B/row: 512 B bf16 scales + 8192 signed INT8) ──
+// Shared-expert / attention-projection tensors; mirrors dequant_q8_0_to_float_ex.
+static float* dequant_q8_0(const uint8_t* data, int i8_rows, int in_features,
+                           int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, Q8_0_ROW_BYTES = 8704;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * Q8_0_ROW_BYTES;
+        const uint16_t* sc = (const uint16_t*)t;
+        const int8_t* vals = (const int8_t*)(t + 512);
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < TC / 32; g++) {
+                float s = bf16f(sc[g*TR + r]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                for (int i = 0; i < 32; i++) {
+                    int col = g*32 + i;
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] =
+                        (float)vals[r*TC + col] * s;
+                }
+            }
+    }
+    return out;
+}
+
+
 static constexpr float EPS=1e-6f;
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
@@ -127,6 +194,18 @@ static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(m
         rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);}}
 static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
     float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
+// Partial rotary for this model's full-attention layers (HD=256): only the
+// first 64 dims rotate (rope_parameters.partial_rotary_factor=0.25), theta=1e7.
+// transformers: inv_freq = 1/base^(arange(0,64,2)/64), cos = cat(freqs, freqs).
+static std::vector<float> rc2,rs2;
+static void ri2(float th,int mp){int hd2=32;rc2.resize(mp*64);rs2.resize(mp*64);
+    for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){
+        float f=1.0f/powf(th,(float)d/hd2),a=p*f;
+        rc2[p*64+d]=cosf(a);rc2[p*64+d+32]=cosf(a);rs2[p*64+d]=sinf(a);rs2[p*64+d+32]=sinf(a);}}
+static inline void ra2(float*x,int p){for(int d=0;d<32;d++){
+    float a=x[d],b=x[d+32],c=rc2[p*64+d],s=rs2[p*64+d];x[d]=a*c-b*s;x[d+32]=b*c+a*s;}}
+static inline float silu_f(float x){return x/(1.0f+expf(-x));}
+static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // Safety net: if glibc's malloc detects heap corruption (free(): invalid size)
 // SIGABRT handler: prints diagnostic, then re-raises for default core dump
 // so the heap corruption root cause can be debugged. The measured results
@@ -487,7 +566,7 @@ int main(int argc,char**argv){
             // Try 'model.layer.N.' (MoE naming without 's')
             std::string alt = kb;
             size_t p = alt.find("model.layers.");
-            if (p != std::string::npos) { alt.replace(p, 14, "model.layer."); off = jo(js, jl, alt.c_str()); }
+            if (p != std::string::npos) { alt.replace(p, 13, "model.layer."); off = jo(js, jl, alt.c_str()); }
         }
         if (!off) {
             // Try 'model.layer.N.linear_attn.' (GDN naming)
@@ -613,6 +692,9 @@ int main(int argc,char**argv){
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
     if(lm_head_f32.empty()){fprintf(stderr,"  lm_head: using emb_f32 (tied embeddings)\n");}
     const float* lm_emb = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
+    // Qwen3.6 embed_tokens rows (NV) are 8× the text vocab (multimodal expansion);
+    // the LM head only scores the text vocab — OOB read fixed by using its rows.
+    int lm_nv = lm_head_f32.empty() ? NV : (int)(lm_head_f32.size() / H);
 
     // Init NPU
     fprintf(stderr,"Init NPU...\n");xrt::device dev(0);
@@ -862,6 +944,12 @@ int main(int argc,char**argv){
     std::vector<std::vector<float>> cpu_qkv_w, cpu_o_w;  // CPU fallback: saved dequant weights
     if (cpu_gemm_fallback) { cpu_qkv_w.resize(NC); cpu_o_w.resize(NC); }
     const int QOUT=NH*HD,KVOUT=NKV*HD;   // QKV out_features, in_features=H (default dequant correct)
+    // Per-layer attention dims (tensor-derived for this model family):
+    // GDN (linear_attn): q 16×128, k 16×128, v 32×128; full-attn: q 16×256 +
+    // fused output gate, k/v 2×256 (see qwen36_gdn_probe / gdn_reference.py).
+    const int GDN_VH = 32, GDN_HD = 128;
+    const int STD_NH = 16, STD_NKV = 2, STD_HD = 256;
+    const int GDN_CONV_DIM = 8192, GDN_CONV_K = 4;
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
@@ -882,12 +970,13 @@ int main(int argc,char**argv){
             fprintf(stderr, "    dequant qkv done [%d,%d]\n", qr, qc);
             float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
             if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
-            // Fused QKV: pack as if it were [Q, K, V] concatenated
-            int t = QOUT + KVOUT + KVOUT;
+            // Fused QKV: pack per probe-validated split.
+            // GDN: q 16×128 (2048), k 16×128 (2048), v 32×128 (4096).
+            int t = 2048 + 2048 + 4096;
             std::vector<float> w((size_t)H * t);
-            transpose_pack(qkv_w, QOUT, H, w.data(), t, 0);           // Q
-            transpose_pack(qkv_w + QOUT, KVOUT, H, w.data(), t, QOUT); // K
-            transpose_pack(qkv_w + QOUT + KVOUT, KVOUT, H, w.data(), t, QOUT + KVOUT); // V
+            transpose_pack(qkv_w, 2048, H, w.data(), t, 0);            // Q
+            transpose_pack(qkv_w + 2048, 2048, H, w.data(), t, 2048);  // K
+            transpose_pack(qkv_w + 4096, 4096, H, w.data(), t, 4096);  // V
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection
@@ -903,11 +992,15 @@ int main(int argc,char**argv){
         float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
         float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
         if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
-        int t = QOUT + KVOUT + KVOUT;
-        std::vector<float> w((size_t)H * t);
-        transpose_pack(qkv_w, QOUT, H, w.data(), t, 0);
-        transpose_pack(qkv_w + QOUT, KVOUT, H, w.data(), t, QOUT);
-        transpose_pack(qkv_w + QOUT + KVOUT, KVOUT, H, w.data(), t, QOUT + KVOUT);
+        // Standard layer: q 16×256 + output gate 16×256 fused in q_proj
+        // (per-head halves: rows [h*512, h*512+256) = q, [+256, +512) = gate);
+        // k/v projections run on CPU per token (separate tensors).
+        int t = 8192;
+        std::vector<float> w((size_t)H * t, 0.0f);
+        for (int h = 0; h < STD_NH; h++) {
+            transpose_pack(qkv_w + h * 512, 256, H, w.data(), t, h * 256);              // q
+            transpose_pack(qkv_w + h * 512 + 256, 256, H, w.data(), t, 4096 + h * 256);  // gate
+        }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
         free(qkv_w);
         std::vector<float> wo((size_t)OIN * OOUT);
@@ -950,8 +1043,8 @@ int main(int argc,char**argv){
     // Per-layer: router [H, N_EXPERTS] float, expert Q4NX offsets + tile rows,
     // shared expert offsets + tile rows, shared gate [H] float.
     std::vector<std::vector<float>> router_w, sh_gate_vec;
-    struct MoeOffsets { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
-    struct ShOffsets  { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
+    struct MoeOffsets { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; int gate_bpt, up_bpt, down_bpt; };
+    struct ShOffsets  { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; int gate_bpt, up_bpt, down_bpt; };
     std::vector<MoeOffsets> exp_off;    // per-layer expert offsets
     std::vector<ShOffsets>  sh_off;     // per-layer shared expert offsets
     if (has_moe) {
@@ -960,11 +1053,31 @@ int main(int argc,char**argv){
         router_w.resize(NC); sh_gate_vec.resize(NC);
         exp_off.resize(NC); sh_off.resize(NC);
         auto te_moe = std::chrono::steady_clock::now();
-        // Tile rows from layer 0 (same for all layers)
+        // Tile rows from layer 0 (same for all layers). find_tensor_info
+        // returns only shape[0]; the real I8-row count is shape[0]*shape[1]
+        // (tile_rows × tile_cols, tile_cols = in_features/256). Using shape[0]
+        // alone dequantized 1/8 of each expert (probe validation, #1467).
         int exp_gate_tr = 0, exp_up_tr = 0, exp_down_tr = 0;
+        int sh_gate_tr = 0, sh_up_tr = 0, sh_down_tr = 0;
         find_tensor_info(js, jl, "model.layer.0.mlp.gate_exps_proj.weight", &exp_gate_tr);
         find_tensor_info(js, jl, "model.layer.0.mlp.up_exps_proj.weight", &exp_up_tr);
         find_tensor_info(js, jl, "model.layer.0.mlp.down_exps_proj.weight", &exp_down_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight", &sh_gate_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.share_up_exps_proj.weight", &sh_up_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.share_down_exps_proj.weight", &sh_down_tr);
+        int gate_rows   = exp_gate_tr * (cfg.H / 256);
+        int up_rows     = exp_up_tr   * (cfg.H / 256);
+        int down_rows   = exp_down_tr * (cfg.IM_EXP / 256);
+        int sh_gate_rows = sh_gate_tr * (cfg.H / 256);
+        int sh_up_rows   = sh_up_tr   * (cfg.H / 256);
+        int sh_down_rows = sh_down_tr * (cfg.IM_EXP / 256);
+        // Bytes per I8 row: 5120 Q4NX vs 8704 Q8_0 — determines the decoder.
+        int exp_gate_bpt = get_bytes_per_tile("model.layer.0.mlp.gate_exps_proj.weight");
+        int exp_up_bpt   = get_bytes_per_tile("model.layer.0.mlp.up_exps_proj.weight");
+        int exp_down_bpt = get_bytes_per_tile("model.layer.0.mlp.down_exps_proj.weight");
+        int sh_gate_bpt  = get_bytes_per_tile("model.layer.0.mlp.share_gate_exps_proj.weight");
+        int sh_up_bpt    = get_bytes_per_tile("model.layer.0.mlp.share_up_exps_proj.weight");
+        int sh_down_bpt  = get_bytes_per_tile("model.layer.0.mlp.share_down_exps_proj.weight");
         for (int l = 0; l < NC; l++) {
             // Router: BF16 [H, N_EXPERTS] stride-8 interleave
             snprintf(bn, 128, "model.layer.%d.moe_router.weight", l);
@@ -979,21 +1092,18 @@ int main(int argc,char**argv){
             }
             // Expert weights: store offsets + tile rows (dequant on demand)
             snprintf(bn, 128, "model.layer.%d.mlp.gate_exps_proj.weight", l);
-            exp_off[l].gate = jo(js, jl, bn); exp_off[l].gate_tr = exp_gate_tr;
+            exp_off[l].gate = jo(js, jl, bn); exp_off[l].gate_tr = gate_rows; exp_off[l].gate_bpt = exp_gate_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.up_exps_proj.weight", l);
-            exp_off[l].up   = jo(js, jl, bn); exp_off[l].up_tr   = exp_up_tr;
+            exp_off[l].up   = jo(js, jl, bn); exp_off[l].up_tr   = up_rows;   exp_off[l].up_bpt   = exp_up_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.down_exps_proj.weight", l);
-            exp_off[l].down = jo(js, jl, bn); exp_off[l].down_tr = exp_down_tr;
+            exp_off[l].down = jo(js, jl, bn); exp_off[l].down_tr = down_rows; exp_off[l].down_bpt = exp_down_bpt;
             // Shared expert weights: offsets + tile rows
             snprintf(bn, 128, "model.layer.%d.mlp.share_gate_exps_proj.weight", l);
-            sh_off[l].gate = jo(js, jl, bn);
+            sh_off[l].gate = jo(js, jl, bn); sh_off[l].gate_tr = sh_gate_rows; sh_off[l].gate_bpt = sh_gate_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.share_up_exps_proj.weight", l);
-            sh_off[l].up   = jo(js, jl, bn);
+            sh_off[l].up   = jo(js, jl, bn); sh_off[l].up_tr   = sh_up_rows;   sh_off[l].up_bpt   = sh_up_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.share_down_exps_proj.weight", l);
-            sh_off[l].down = jo(js, jl, bn);
-            find_tensor_info(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight", &sh_off[l].gate_tr);
-            find_tensor_info(js, jl, "model.layer.0.mlp.share_up_exps_proj.weight", &sh_off[l].up_tr);
-            find_tensor_info(js, jl, "model.layer.0.mlp.share_down_exps_proj.weight", &sh_off[l].down_tr);
+            sh_off[l].down = jo(js, jl, bn); sh_off[l].down_tr = sh_down_rows; sh_off[l].down_bpt = sh_down_bpt;
             // Shared expert gate vector [H] BF16
             snprintf(bn, 128, "model.layer.%d.shared_expert_gate.weight", l);
             uint64_t sgoff = jo(js, jl, bn);
@@ -1008,8 +1118,167 @@ int main(int argc,char**argv){
         fprintf(stderr, "  MoE offsets stored in %.0fms\n", ms_moe);
     }
 
+    // Dequant an I8 tensor (Q4NX 5120 B/row or Q8_0 8704 B/row) to f32.
+    // Shared by the CPU and NPU MoE paths.
+    auto deq_exp = [&](uint64_t off, int rows, int in_f, int bpt,
+                       int* or_, int* oc) -> float* {
+        if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
+        return dequant_1bp(i8p(off), rows, in_f, or_, oc);
+    };
+
+    // ── Per-layer GDN / full-attention extras (probe-validated layouts) ──
+    // GDN (linear_attn): alpha/beta proj [H,32] plain BF16; conv1d [4,8192];
+    // ssm_a/dt_bias [32] (ssm_a already -A, #1460); ssm_norm [128];
+    // z-gate = self_attn.gate_proj [4096, 2048] Q8_0.
+    // Full-attn layers: k/v 2×256 separate; q/k RMSNorm weights [256].
+    std::vector<std::vector<float>> gdn_alpha_w, gdn_beta_w, gdn_conv_w, gdn_norm_w, gdn_z_w;
+    std::vector<std::vector<float>> gdn_ssm_a, gdn_dt_bias, std_k_w, std_v_w, std_qn_w, std_kn_w;
+    if (has_moe) {  // this model family: GDN + full-attn mix, all MoE
+        gdn_alpha_w.resize(NC); gdn_beta_w.resize(NC); gdn_conv_w.resize(NC);
+        gdn_norm_w.resize(NC); gdn_z_w.resize(NC); gdn_ssm_a.resize(NC); gdn_dt_bias.resize(NC);
+        std_k_w.resize(NC); std_v_w.resize(NC); std_qn_w.resize(NC); std_kn_w.resize(NC);
+        for (int l = 0; l < NC; l++) {
+            if (is_gdn_layer[l]) {
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_alpha_proj.weight", l);
+                uint64_t o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                    gdn_alpha_w[l].resize((size_t)H * GDN_VH);
+                    for (int i = 0; i < H; i++)
+                        for (int h = 0; h < GDN_VH; h++)
+                            gdn_alpha_w[l][(size_t)i * GDN_VH + h] = bf16g(rb[(size_t)i * GDN_VH + h]); }
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_beta_proj.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                    gdn_beta_w[l].resize((size_t)H * GDN_VH);
+                    for (int i = 0; i < H; i++)
+                        for (int h = 0; h < GDN_VH; h++)
+                            gdn_beta_w[l][(size_t)i * GDN_VH + h] = bf16g(rb[(size_t)i * GDN_VH + h]); }
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                    gdn_conv_w[l].resize((size_t)GDN_CONV_K * GDN_CONV_DIM);
+                    for (int i = 0; i < GDN_CONV_K * GDN_CONV_DIM; i++)
+                        gdn_conv_w[l][i] = bf16g(rb[i]); }
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const float* ab = (const float*)i8p(o);
+                    gdn_ssm_a[l].assign(ab, ab + GDN_VH); }
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_dt.bias", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const float* db = (const float*)i8p(o);
+                    gdn_dt_bias[l].assign(db, db + GDN_VH); }
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                    gdn_norm_w[l].resize(GDN_HD);
+                    for (int d = 0; d < GDN_HD; d++) gdn_norm_w[l][d] = bf16g(nb[d]); }
+                // z-gate [4096, 2048] Q8_0 f32 (CPU GEMM per token)
+                snprintf(bn, 128, "model.layer.%d.self_attn.gate_proj.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { int zr, zc; float* z = dequant_q8_0(i8p(o), 128 * 8, H, &zr, &zc);
+                    if (z && zr == 4096) { gdn_z_w[l].assign(z, z + (size_t)zr * zc); }
+                    free(z); }
+            } else {
+                // Full attention: k/v [512, 2048] Q8_0 f32 (CPU per token), q/k norms
+                snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
+                uint64_t o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { int kr, kc; float* kw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
+                    if (kw && kr == STD_NKV * STD_HD) std_k_w[l].assign(kw, kw + (size_t)kr * kc);
+                    free(kw); }
+                snprintf(bn, 128, "model.layer.%d.self_attn.v_proj.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { int kr, kc; float* vw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
+                    if (vw && kr == STD_NKV * STD_HD) std_v_w[l].assign(vw, vw + (size_t)kr * kc);
+                    free(vw); }
+                snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                    std_qn_w[l].resize(STD_HD);
+                    for (int d = 0; d < STD_HD; d++) std_qn_w[l][d] = bf16g(nb[d]); }
+                snprintf(bn, 128, "model.layer.%d.self_attn.k_norm.weight", l);
+                o = jo(js, jl, bn);
+                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                    std_kn_w[l].resize(STD_HD);
+                    for (int d = 0; d < STD_HD; d++) std_kn_w[l][d] = bf16g(nb[d]); }
+            }
+        }
+
+    }
+
+    // ── NPU MoE FFN: 4 per-op xclbins (GU/D concat + shared GU/D) ──
+    // Probe-validated path (#1466): each xclbin uses its OWN aiecc instruction
+    // stream; activations get dynamic scales per GEMM. Router stays on CPU.
+    //
+    // OPT-IN (NPU_MOE=1) because it is currently SLOWER than the CPU path at
+    // M=1: measured 193 s/token vs 165 s/token on Qwen3.6-35B-A3B. Both paths
+    // dequant the 8 active experts per layer per token (the real bottleneck);
+    // this path then adds concat-pack + int8 requantize and only replaces the
+    // CPU matmul, so the GEMM win does not pay for the repack. It becomes a
+    // win once active-expert weights are cached in packed form across tokens.
+    // Falls back to moe_ffn_cpu on any init failure.
+    std::unique_ptr<I8Ctx> mgu, mde, msg, msd;
+    std::vector<float> msg_scale, msd_scale;
+    bool use_npu_moe = false;
+    if (has_moe && !cpu_gemm_fallback) {
+        const char* npu_moe_env = getenv("NPU_MOE");
+        if (!npu_moe_env || atoi(npu_moe_env) == 0) {
+            fprintf(stderr, "NPU MoE off (set NPU_MOE=1 to enable; CPU MoE is faster at M=1)\n");
+        } else {
+            int moe_n = TOP_K * 2 * IM_EXP;
+            auto moe_ctx = [&](std::unique_ptr<I8Ctx>& c, const char* t,
+                               int K, int N, int nlayers) -> bool {
+                c = std::make_unique<I8Ctx>();
+                c->MD = XM; c->KD = K; c->ND = N;
+                if (!c->init(dev, xp(t).c_str(), ip(t).c_str(), 4, nlayers)) {
+                    c.reset(); return false;
+                }
+                return true;
+            };
+            bool ok = moe_ctx(mgu, "MOE_GU", H, moe_n, 1) &&
+                      moe_ctx(mde, "MOE_D",  moe_n, H, 1) &&
+                      moe_ctx(msg, "MOE_SGU", H, 2 * IM_EXP, NC) &&
+                      moe_ctx(msd, "MOE_SD", IM_EXP, H, NC);
+            if (ok) {
+                // Shared expert weights are static per layer — dequant + pack once.
+                msg_scale.resize(NC); msd_scale.resize(NC);
+                for (int l = 0; l < NC && ok; l++) {
+                    if (!sh_off[l].gate) { ok = false; break; }
+                    int sr, sc;
+                    float* SG = deq_exp(sh_off[l].gate, sh_off[l].gate_tr,
+                                        H, sh_off[l].gate_bpt, &sr, &sc);
+                    float* SU = deq_exp(sh_off[l].up, sh_off[l].up_tr,
+                                        H, sh_off[l].up_bpt, &sr, &sc);
+                    float* SD = deq_exp(sh_off[l].down, sh_off[l].down_tr,
+                                        IM_EXP, sh_off[l].down_bpt, &sr, &sc);
+                    if (!SG || !SU || !SD) { free(SG); free(SU); free(SD); ok = false; break; }
+                    std::vector<float> sg_w((size_t)H * 2 * IM_EXP);
+                    for (int i = 0; i < IM_EXP; i++)
+                        for (int k = 0; k < H; k++) {
+                            sg_w[(size_t)k * (2 * IM_EXP) + i] = SG[i * H + k];
+                            sg_w[(size_t)k * (2 * IM_EXP) + IM_EXP + i] = SU[i * H + k];
+                        }
+                    msg->packB(l, sg_w.data(), H, 2 * IM_EXP, msg_scale[l]);
+                    std::vector<float> sd_w((size_t)IM_EXP * H);
+                    for (int i = 0; i < H; i++)
+                        for (int k = 0; k < IM_EXP; k++)
+                            sd_w[(size_t)k * H + i] = SD[i * IM_EXP + k];
+                    msd->packB(l, sd_w.data(), IM_EXP, H, msd_scale[l]);
+                    free(SG); free(SU); free(SD);
+                }
+            }
+            if (ok) {
+                use_npu_moe = true;
+                fprintf(stderr, "NPU MoE enabled (MOE_GU/D/SGU/SD xclbins)\n");
+            } else {
+                mgu.reset(); mde.reset(); msg.reset(); msd.reset();
+                fprintf(stderr, "WARN: NPU MoE init failed, CPU MoE fallback\n");
+            }
+        }
+    }
+
     // RoPE
     ri(HD,cfg.rope_theta,4096);
+    ri2(1e7f,4096);  // partial rotary for full-attention layers (64 of 256 dims)
     int kv_dwords=NKV*HD/2;
 
     // Decode batch width.
@@ -1066,26 +1335,25 @@ int main(int argc,char**argv){
 
         memset(out, 0, H * sizeof(float));
         // Per-expert tile-rows: gate/up each have IM_EXP/32 tile rows per expert
-        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;  // tile rows per expert for gate
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;  // I8 rows per expert
         int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
         int exp_down_tr_per = eo.down_tr / N_EXPERTS;
-        int exp_gate_off_stride = exp_gate_tr_per * 8 * H;  // bytes per expert in Q4NX
-        int exp_up_off_stride   = exp_up_tr_per   * 8 * H;
-        int exp_down_off_stride = exp_down_tr_per * 8 * IM_EXP;
+        // Bytes per expert in Q4NX/Q8_0 (was tr_per*8*H — 2.5× too large, read
+        // past expert boundaries; #1467).
+        int exp_gate_off_stride = exp_gate_tr_per * 5120;
+        int exp_up_off_stride   = exp_up_tr_per   * 5120;
+        int exp_down_off_stride = exp_down_tr_per * 5120;
 
         for (int e = 0; e < TOP_K; e++) {
             int ex = topk[e];
-            // Dequant this expert's G/U/D from Q4NX on-the-fly
+            // Dequant this expert's G/U/D from Q4NX/Q8_0 on-the-fly
             int gr, gc, ur, uc, dr, dc;
-            float* G = dequant_i8_to_float_ex(
-                i8p(eo.gate + (uint64_t)ex * exp_gate_off_stride),
-                exp_gate_tr_per, H, &gr, &gc);
-            float* U = dequant_i8_to_float_ex(
-                i8p(eo.up + (uint64_t)ex * exp_up_off_stride),
-                exp_up_tr_per, H, &ur, &uc);
-            float* D = dequant_i8_to_float_ex(
-                i8p(eo.down + (uint64_t)ex * exp_down_off_stride),
-                exp_down_tr_per, IM_EXP, &dr, &dc);
+            float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                               exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
+            float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
+                               exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
+            float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
+                               exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
             if (!G || !U || !D) { free(G); free(U); free(D); continue; }
             // G/U: [IM_EXP, H] @ x → [IM_EXP]
             std::vector<float> gu(IM_EXP * 2);
@@ -1123,9 +1391,9 @@ int main(int argc,char**argv){
             float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
 
             int sgr, sgc, sur, suc, sdr, sdc;
-            float* SG = dequant_i8_to_float_ex(i8p(so.gate), so.gate_tr, H, &sgr, &sgc);
-            float* SU = dequant_i8_to_float_ex(i8p(so.up),   so.up_tr,   H, &sur, &suc);
-            float* SD = dequant_i8_to_float_ex(i8p(so.down), so.down_tr, IM_EXP, &sdr, &sdc);
+            float* SG = deq_exp(so.gate, so.gate_tr, H, so.gate_bpt, &sgr, &sgc);
+            float* SU = deq_exp(so.up,   so.up_tr,   H, so.up_bpt,   &sur, &suc);
+            float* SD = deq_exp(so.down, so.down_tr, IM_EXP, so.down_bpt, &sdr, &sdc);
             if (SG && SU && SD) {
                 std::vector<float> sgu(IM_EXP * 2);
                 for (int i = 0; i < IM_EXP; i++) {
@@ -1155,6 +1423,109 @@ int main(int argc,char**argv){
         for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
     };
 
+    // ── NPU MoE FFN (probe-validated path, #1466) ──
+    // Router softmax → top-K on CPU; concat top-K experts' G/U/D into the
+    // MOE_GU/D xclbins' [K,N] layout (packB per call — the expert set changes
+    // every token) + static shared expert on MOE_SGU/SD (packed once at init).
+    // Dynamic activation scales per GEMM (a fixed 1.0 zeroes the D input, #1466).
+    // ponytail: per-call packB ~24MB; pre-packing all 256 experts is ~30 GB per
+    // layer set — revisit if per-token packing shows up in profiles.
+    auto moe_ffn_npu = [&](const float* x, float* out, int l) {
+        const auto& eo = exp_off[l];
+        // Router: softmax → top-K (identical to moe_ffn_cpu)
+        const float* rt = router_w[l].data();
+        std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
+        double lmax = -1e30;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            double s = 0;
+            for (int i = 0; i < H; i++) s += (double)x[i] * rt[i * N_EXPERTS + j];
+            logits[j] = (float)s;
+            if (logits[j] > lmax) lmax = logits[j];
+        }
+        double lsum = 0;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            probs[j] = expf(logits[j] - (float)lmax);
+            lsum += probs[j];
+        }
+        for (int j = 0; j < N_EXPERTS; j++) probs[j] /= (float)lsum;
+        std::vector<int> topk(N_EXPERTS);
+        for (int j = 0; j < N_EXPERTS; j++) topk[j] = j;
+        std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
+            [&](int a, int b) { return probs[a] > probs[b]; });
+
+        // Per-expert I8 rows + byte stride (same math as moe_ffn_cpu, #1467)
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;
+        int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
+        int exp_down_tr_per = eo.down_tr / N_EXPERTS;
+        int exp_gate_off_stride = exp_gate_tr_per * 5120;
+        int exp_up_off_stride   = exp_up_tr_per   * 5120;
+        int exp_down_off_stride = exp_down_tr_per * 5120;
+
+        // Concat the top-K experts' G/U into [H, K*2*IM] and D into [K*IM, H]
+        const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
+        std::vector<float> gu_w((size_t)H * gu_n);
+        std::vector<float> d_w((size_t)TOP_K * IM_EXP * H);
+        for (int e = 0; e < TOP_K; e++) {
+            int ex = topk[e];
+            int gr, gc, ur, uc, dr, dc;
+            float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                               exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
+            float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
+                               exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
+            float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
+                               exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
+            if (!G || !U || !D) { free(G); free(U); free(D); continue; }
+            for (int i = 0; i < IM_EXP; i++)
+                for (int k = 0; k < H; k++) {
+                    gu_w[(size_t)k * gu_n + e * 2 * IM_EXP + i] = G[i * H + k];
+                    gu_w[(size_t)k * gu_n + e * 2 * IM_EXP + IM_EXP + i] = U[i * H + k];
+                }
+            for (int i = 0; i < H; i++)
+                for (int k = 0; k < IM_EXP; k++)
+                    d_w[(size_t)(e * IM_EXP + k) * H + i] = D[i * IM_EXP + k];
+            free(G); free(U); free(D);
+        }
+
+        // Pack + run: GU concat GEMM → SiLU × router prob → D concat GEMM
+        float gu_sc = 0, d_sc = 0;
+        mgu->packB(0, gu_w.data(), H, (int)gu_n, gu_sc);
+        mde->packB(0, d_w.data(), TOP_K * IM_EXP, H, d_sc);
+        std::vector<float> gu_out(gu_n), su((size_t)TOP_K * IM_EXP), d_out(H);
+        float ag = dynamic_ascale(x, H);
+        mgu->go(0, x, 1, H, ag, gu_sc, gu_out.data(), (int)gu_n);
+        for (int e = 0; e < TOP_K; e++)
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = gu_out[e * 2 * IM_EXP + i];
+                if (!std::isfinite(gv)) gv = 0;
+                su[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) *
+                                     gu_out[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
+            }
+        float asu = dynamic_ascale(su.data(), TOP_K * IM_EXP);
+        mde->go(0, su.data(), 1, TOP_K * IM_EXP, asu, d_sc, d_out.data(), H);
+
+        // Shared expert (static weights, packed at init): fused GU + D, ×sigmoid gate
+        if (N_SHARED > 0 && sh_off[l].gate && msg->isReady()) {
+            std::vector<float> sg_out(2 * IM_EXP), ssu(IM_EXP), sh_out(H);
+            float asg = dynamic_ascale(x, H);
+            msg->go(l, x, 1, H, asg, msg_scale[l], sg_out.data(), 2 * IM_EXP);
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = sg_out[i];
+                if (!std::isfinite(gv)) gv = 0;
+                ssu[i] = (gv / (1.0f + expf(-gv))) * sg_out[IM_EXP + i];
+            }
+            float assu = dynamic_ascale(ssu.data(), IM_EXP);
+            msd->go(l, ssu.data(), 1, IM_EXP, assu, msd_scale[l], sh_out.data(), H);
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+            for (int i = 0; i < H; i++) out[i] = d_out[i] + sg_sig * sh_out[i];
+        } else {
+            for (int i = 0; i < H; i++) out[i] = d_out[i];
+        }
+        for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+    };
+
     // ===== WORKER MODE (subprocess protocol) =====
     // The Zig fused executor (fused_execute.zig) sends individual GEMM
     // operations (QKV, OPROJ, GATEUP, DOWN) via this protocol. Each request
@@ -1169,12 +1540,14 @@ int main(int argc,char**argv){
         clearerr(stdout);
         fflush(stdout);
         uint32_t hdr[4];
+        static bool fuse_reset = false;   // op=31 sets it; op=32 consumes it
         while(fread(hdr,sizeof(uint32_t),4,stdin)==4){
             uint32_t op=hdr[0],layer=hdr[1],batch=hdr[2],in_dim=hdr[3];
             if(op==0) break; // QUIT
 
             // Input validation: batch and in_dim must be reasonable
-            if(batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC){
+            // (op=31 is the reset — it legitimately carries batch=0/in_dim=0)
+            if (op != 31 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
                 uint32_t resp[2]={1,0};
                 fwrite(resp,sizeof(uint32_t),2,stdout);
                 fflush(stdout);
@@ -1271,13 +1644,8 @@ int main(int argc,char**argv){
                         FLM_GO(cd, l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
-                }else if(op==31){ // Reset KV cache (new conversation)
-                    static int* fuse_pos_ptr = nullptr;
-                    static bool* fuse_kv_init_ptr = nullptr;
-                    // Find the fused decode's static state to reset it.
-                    // These are set by op=32 on first call; until then, no-op.
-                    if (fuse_pos_ptr) { *fuse_pos_ptr = 0; }
-                    if (fuse_kv_init_ptr) { *fuse_kv_init_ptr = false; }
+                }else if(op==31){ // Reset KV cache + GDN state (new conversation)
+                    fuse_reset = true;   // consumed by op=32 before its next step
                     out_dim = 0;
                     out_data.clear();
                     ok = true;
@@ -1290,15 +1658,20 @@ int main(int argc,char**argv){
                     static std::vector<float> fuse_h_b, fuse_qo_b, fuse_at_b, fuse_oo_b;
                     static std::vector<float> fuse_gt_b, fuse_su_b, fuse_dw_b, fuse_sb_b;
                     static std::vector<float> fuse_lg_buf;
-                    static std::vector<float> fuse_gdn_state;     // [NC, NKV, HD, HD]
-                    static std::vector<float> fuse_gdn_attn_out;  // [NKV, HD]
+                    static std::vector<float> fuse_gdn_state;     // [NC, 32, 128, 128]
+                    static std::vector<float> fuse_gdn_attn_out;  // [32, 128]
+                    static std::vector<float> fuse_gdn_conv_state;  // [NC, 8192, 4]
+                    static std::vector<float> fuse_gdn_q2, fuse_gdn_k2;      // [32*128]
+                    static std::vector<float> fuse_gdn_g, fuse_gdn_beta;     // [32]
+                    static std::vector<float> fuse_gdn_gate_bcast;           // [32*128]
+                    static std::vector<float> fuse_gdn_z;                    // [4096]
+                    static std::vector<float> fuse_std_kv;                   // [512 k | 512 v]
                     static std::vector<int> fuse_top_ids_v;
-                    // Expose state to op=31 for reset
-                    { static bool once = false; if (!once) {
-                        // Can't directly share static ptrs across handlers,
-                        // so op=31 just sets a flag that we check here.
-                        once = true;
-                    }}
+                    if (fuse_reset) {
+                        fuse_reset = false;
+                        fuse_kv_init = false;
+                        fuse_pos = 0;
+                    }
                     if (!fuse_kv_init) {
                         int fkv_size = 4096 * NKV * HD;
                         fuse_kv.clear();
@@ -1315,12 +1688,18 @@ int main(int argc,char**argv){
                         fuse_top_ids_v.resize(BS, 0);
                         fuse_kv_init = true;
                         fuse_pos = 0;
-                        // ponytail: GDN state allocated for all layers if MoE;
-                        // non-GDN layers waste 40MB but avoids per-layer detection logic.
+                        // GDN state (32 v-heads) + conv state + scratch, all layers.
                         if (has_moe) {
-                            int gd = HD;  // GDN state dim = KV head dim
-                            fuse_gdn_state.resize(NC * (size_t)NKV * gd * gd, 0);
-                            fuse_gdn_attn_out.resize(NKV * gd, 0);
+                            fuse_gdn_state.resize(NC * (size_t)GDN_VH * GDN_HD * GDN_HD, 0);
+                            fuse_gdn_attn_out.resize(GDN_VH * GDN_HD, 0);
+                            fuse_gdn_conv_state.resize(NC * (size_t)GDN_CONV_DIM * GDN_CONV_K, 0);
+                            fuse_gdn_q2.resize(GDN_VH * GDN_HD, 0);
+                            fuse_gdn_k2.resize(GDN_VH * GDN_HD, 0);
+                            fuse_gdn_g.resize(GDN_VH, 0);
+                            fuse_gdn_beta.resize(GDN_VH, 0);
+                            fuse_gdn_gate_bcast.resize(GDN_VH * GDN_HD, 0);
+                            fuse_gdn_z.resize(4096, 0);
+                            fuse_std_kv.resize(1024, 0);
                         }
                     }
                     int token_id = (int)in_data[0];
@@ -1337,69 +1716,86 @@ int main(int argc,char**argv){
                         float aq = dynamic_ascale(fh, H);
                         FLM_GO(cq, l, fh, 1, H, aq, qsc[l], fuse_qo_b.data(), qkv_n);
                         cn(fuse_qo_b.data(), qkv_n);
-                        float* fqo = fuse_qo_b.data();
-                        int qkv_k_off = cfg.qkv_k_offset;
-                        int qkv_v_off = cfg.qkv_v_offset;
-                        float* qn = qn_w[l].data();
-                        float* kn = kn_w[l].data();
-                        bool is_gdn = has_moe && exp_off[l].gate;
-                        if (!is_gdn) {
-                        for (int hh = 0; hh < NH; hh++) {
-                            double sq = 0;
-                            for (int d = 0; d < HD; d++) sq += fqo[hh * HD + d] * fqo[hh * HD + d];
-                            float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
-                            for (int d = 0; d < HD; d++)
-                                fqo[hh * HD + d] *= iq * (cfg.has_q_norm ? qn[d] : 1.0f);
-                            ra(&fqo[hh * HD], HD, fuse_pos);
-                            if (hh % GQA == 0) {
-                                int kvh = hh / GQA;
-                                float* ks = &fqo[qkv_k_off + kvh * HD];
-                                double sk = 0;
-                                for (int d = 0; d < HD; d++) sk += ks[d] * ks[d];
-                                float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
-                                for (int d = 0; d < HD; d++)
-                                    ks[d] *= ik * (cfg.has_k_norm ? kn[d] : 1.0f);
-                                ra(ks, HD, fuse_pos);
-                                float* vs = &fqo[qkv_v_off + kvh * HD];
-                                if (fuse_pos >= 4096) {
-                                    fprintf(stderr, "[npu] fuse KV overflow (pos=%d) — restarting context\n", fuse_pos);
-                                    fuse_pos = 0;
-                                }
-                                memcpy(&fuse_kv[l].k[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
-                                memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
-                            }
-                        }
-                        }
                         fuse_kv[l].n = fuse_pos + 1;
                         int fcl = fuse_kv[l].n;
+                        float* fqo = fuse_qo_b.data();
+                        bool is_gdn = is_gdn_layer[l];
                         float* fat = fuse_at_b.data();
-                        if (has_moe && exp_off[l].gate) {
-                            // GatedDeltaNet attention (MoE layers)
-                            // Q/K/V layout from QKV GEMM: [Q:NH*HD, K:NKV*HD, V:NKV*HD]
-                            float* gq = fqo;                    // [NH*HD]
-                            float* gk = fqo + qkv_k_off;       // [NKV*HD]
-                            float* gv = fqo + qkv_v_off;       // [NKV*HD]
-                            int gd = HD;  // GDN state dim = KV head dim
-                            float* gs = fuse_gdn_state.data() + (size_t)l * NKV * gd * gd;
-                            // ponytail: fake gate/beta (default identity) — real
-                            // gate/beta projections from GDN weights TODO.
-                            // gate=log(0.98) ≈ -0.02 → mild state decay (stable)
-                            // beta=1.0 → identity mixing
-                            alignas(64) float fake_gate[256];
-                            alignas(64) float fake_beta[256];
-                            for (int h = 0; h < NKV; h++) {
-                                fake_gate[h * gd] = -0.02f;  // per-head scalar gate
-                                fake_beta[h] = 1.0f;
+                        if (is_gdn) {
+                            // ── GatedDeltaNet (probe-validated math, #1466) ──
+                            // causal depthwise conv1d on the fused QKV (kernel 4)
+                            float* cst = fuse_gdn_conv_state.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K;
+                            memmove(cst, cst + GDN_CONV_DIM, (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1) * 4);
+                            memcpy(cst + (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1), fqo, (size_t)GDN_CONV_DIM * 4);
+                            const float* cw = gdn_conv_w[l].data();
+                            for (int cc = 0; cc < GDN_CONV_DIM; cc++) {
+                                double s = 0;
+                                for (int kk = 0; kk < GDN_CONV_K; kk++)
+                                    s += (double)cst[(size_t)kk * GDN_CONV_DIM + cc] * cw[(size_t)kk * GDN_CONV_DIM + cc];
+                                fqo[cc] = silu_f((float)s);
                             }
-                            gdn_attn_cpu(gq, gk, gv, fake_gate, fake_beta, gs,
-                                        fuse_gdn_attn_out.data(), gd, NKV,
-                                        1.0f / sqrtf((float)gd));
-                            // Expand GDN output [NKV, GD] to full attention output [NH, HD]
-                            // GDN operates on KV heads; replicate for Q heads via GQA
-                            for (int hh = 0; hh < NH; hh++) {
-                                int kvh = hh / GQA;
-                                memcpy(fat + hh * HD, fuse_gdn_attn_out.data() + kvh * HD, HD * 4);
+                            // split q [0,2048) k [2048,4096) v [4096,8192); repeat q/k 16→32 + l2norm
+                            float* qq = fuse_gdn_q2.data();   // [32*128]
+                            float* kk = fuse_gdn_k2.data();
+                            for (int h = 0; h < GDN_VH; h++) {
+                                const float* qs_ = fqo + (size_t)(h / 2) * GDN_HD;
+                                const float* ks_ = fqo + 2048 + (size_t)(h / 2) * GDN_HD;
+                                double sq = 0, sk = 0;
+                                for (int d = 0; d < GDN_HD; d++) {
+                                    qq[(size_t)h * GDN_HD + d] = qs_[d];
+                                    kk[(size_t)h * GDN_HD + d] = ks_[d];
+                                    sq += qs_[d] * qs_[d]; sk += ks_[d] * ks_[d];
+                                }
+                                float iq = 1.0f / sqrtf((float)sq + EPS), ik = 1.0f / sqrtf((float)sk + EPS);
+                                for (int d = 0; d < GDN_HD; d++) {
+                                    qq[(size_t)h * GDN_HD + d] *= iq;
+                                    kk[(size_t)h * GDN_HD + d] *= ik;
+                                }
                             }
+                            // alpha/beta projections → g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b)
+                            // (ssm_a stored already negated, #1460 convention — used directly)
+                            float* ga = fuse_gdn_g.data();      // [32]
+                            float* gb = fuse_gdn_beta.data();
+                            const float* aw = gdn_alpha_w[l].data();
+                            const float* bw = gdn_beta_w[l].data();
+                            for (int h = 0; h < GDN_VH; h++) {
+                                double sa = 0, sb = 0;
+                                for (int i = 0; i < H; i++) {
+                                    sa += (double)aw[(size_t)i * GDN_VH + h] * fh[i];
+                                    sb += (double)bw[(size_t)i * GDN_VH + h] * fh[i];
+                                }
+                                ga[h] = gdn_ssm_a[l][h] * softplus_f((float)sa + gdn_dt_bias[l][h]);
+                                gb[h] = 1.0f / (1.0f + expf(-(float)sb));
+                            }
+                            // broadcast per-head scalar gate to [32*128] for the kernel
+                            float* ggate = fuse_gdn_gate_bcast.data();
+                            for (int h = 0; h < GDN_VH; h++)
+                                for (int d = 0; d < GDN_HD; d++) ggate[(size_t)h * GDN_HD + d] = ga[h];
+                            float* gs = fuse_gdn_state.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD;
+                            gdn_attn_cpu(qq, kk, fqo + 4096, ggate, gb, gs,
+                                        fuse_gdn_attn_out.data(), GDN_HD, GDN_VH,
+                                        1.0f / sqrtf((float)GDN_HD));
+                            // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
+                            float* zout = fuse_gdn_z.data();
+                            const float* zw = gdn_z_w[l].data();
+                            for (int i = 0; i < 4096; i++) {
+                                double s = 0;
+                                for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * fh[j];
+                                zout[i] = (float)s;
+                            }
+                            float* core = fuse_gdn_attn_out.data();
+                            const float* nw = gdn_norm_w[l].data();
+                            for (int h = 0; h < GDN_VH; h++) {
+                                float* ch = core + (size_t)h * GDN_HD;
+                                double var = 0;
+                                for (int d = 0; d < GDN_HD; d++) var += ch[d] * ch[d];
+                                float ir = 1.0f / sqrtf((float)(var / GDN_HD) + EPS);
+                                for (int d = 0; d < GDN_HD; d++) {
+                                    float zv = zout[(size_t)h * GDN_HD + d];
+                                    ch[d] = ch[d] * ir * nw[d] * silu_f(zv);
+                                }
+                            }
+                            fat = core;   // [32*128] → co directly (no NKV→NH expand)
                         } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
                             float qs = dynamic_ascale(fqo, NH * HD);
                             float ks = 0;
@@ -1412,7 +1808,50 @@ int main(int argc,char**argv){
                             ca_ptr->finish(r, fat, 1, qs, ks);
                             cn(fat, NH * HD);
                         } else {
-                            attn_omp(fqo, fat, fcl, fuse_kv[l].k.data(), fuse_kv[l].v.data(), NH, NKV, HD, GQA);
+                            // ── Full attention (16 heads × 256, 2 KV heads, partial rotary) ──
+                            // q 16×256 at [0,4096), output gate at [4096,8192) (fused in
+                            // q_proj, per-head halves); k/v computed on CPU per token.
+                            float* kv = fuse_std_kv.data();   // [512 k | 512 v]
+                            const float* kw_ = std_k_w[l].data();
+                            const float* vw_ = std_v_w[l].data();
+                            for (int i = 0; i < 512; i++) {
+                                double sk = 0, sv = 0;
+                                for (int j = 0; j < H; j++) {
+                                    sk += (double)kw_[(size_t)i * H + j] * fh[j];
+                                    sv += (double)vw_[(size_t)i * H + j] * fh[j];
+                                }
+                                kv[i] = (float)sk; kv[512 + i] = (float)sv;
+                            }
+                            const float* qnw = std_qn_w[l].data();
+                            const float* knw = std_kn_w[l].data();
+                            for (int h = 0; h < STD_NH; h++) {
+                                float* qh = fqo + (size_t)h * STD_HD;
+                                double sq = 0;
+                                for (int d = 0; d < STD_HD; d++) sq += qh[d] * qh[d];
+                                float iq = 1.0f / sqrtf((float)(sq / STD_HD) + EPS);
+                                for (int d = 0; d < STD_HD; d++) qh[d] *= iq * qnw[d];
+                                ra2(qh, fuse_pos);
+                                int kvh = h / (STD_NH / STD_NKV);
+                                float* kh = kv + (size_t)kvh * STD_HD;
+                                double sk = 0;
+                                for (int d = 0; d < STD_HD; d++) sk += kh[d] * kh[d];
+                                float ik = 1.0f / sqrtf((float)(sk / STD_HD) + EPS);
+                                for (int d = 0; d < STD_HD; d++) kh[d] *= ik * knw[d];
+                                ra2(kh, fuse_pos);
+                                if (fuse_pos >= 4096) {
+                                    fprintf(stderr, "[npu] fuse KV overflow (pos=%d) — restarting context\n", fuse_pos);
+                                    fuse_pos = 0;
+                                }
+                                memcpy(&fuse_kv[l].k[((size_t)fuse_pos * STD_NKV + kvh) * STD_HD], kh, STD_HD * 4);
+                                memcpy(&fuse_kv[l].v[((size_t)fuse_pos * STD_NKV + kvh) * STD_HD], kv + 512 + (size_t)kvh * STD_HD, STD_HD * 4);
+                            }
+                            fuse_kv[l].n = fuse_pos + 1;
+                            int fcl = fuse_kv[l].n;
+                            attn_omp(fqo, fat, fcl, fuse_kv[l].k.data(), fuse_kv[l].v.data(),
+                                     STD_NH, STD_NKV, STD_HD, STD_NH / STD_NKV);
+                            // output gate: attn_out *= sigmoid(gate), gate per-dim from q_proj's second half
+                            const float* gt = fqo + 4096;
+                            for (int i = 0; i < STD_NH * STD_HD; i++) fat[i] *= 1.0f / (1.0f + expf(-gt[i]));
                         }
                         float ao = dynamic_ascale(fat, NH * HD);
                         FLM_GO(co, l, fat, 1, NH * HD, ao, osc[l], fuse_oo_b.data(), H);
@@ -1421,8 +1860,11 @@ int main(int argc,char**argv){
                         for (int i = 0; i < H; i++) fsb[i] = fh[i];
                         rn_c(fh, pa_n[l].data(), H);
                         if (has_moe && exp_off[l].gate) {
-                            // MoE FFN (CPU path — ponytail: NPU I8Ctx optimization later)
-                            moe_ffn_cpu(fh, fuse_dw_b.data(), l);
+                            // MoE FFN — NPU path (probe-validated #1466) with CPU fallback
+                            if (use_npu_moe && mgu && mgu->isReady())
+                                moe_ffn_npu(fh, fuse_dw_b.data(), l);
+                            else
+                                moe_ffn_cpu(fh, fuse_dw_b.data(), l);
                             cn(fuse_dw_b.data(), H);
                             for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
                         } else {
@@ -1455,7 +1897,7 @@ int main(int argc,char**argv){
                     // Final norm + lm_head
                     rn_c(fuse_h_b.data(), fin_v.data(), H);
                     int* ftop = fuse_top_ids_v.data();
-                    lm_topk_omp(fuse_h_b.data(), fuse_lg_buf.data(), ftop, BS, NV, H, lm_emb);
+                    lm_topk_omp(fuse_h_b.data(), fuse_lg_buf.data(), ftop, BS, lm_nv, H, lm_emb);
                     fuse_pos++;
                     out_dim = 1;
                     out_data.resize(1);
@@ -1651,7 +2093,7 @@ int main(int argc,char**argv){
             FLM_GO(cd,l,su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
         }
         memcpy(sb_data.data(),h0,H*4);rn_c(sb_data.data(),fin_v.data(),H);
-        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
+        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
         memcpy(h_data.data(),h0,H*4);sp++;total_generated++;
         t_boot=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_boot).count();
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
@@ -1797,7 +2239,7 @@ int main(int argc,char**argv){
         // total_verified == total_generated because every emitted token is a
         // real causal decode, not a speculative candidate (issue #111).
         memcpy(sb_data.data(),&h_b[0],H*4);rn_c(sb_data.data(),fin_v.data(),H);
-        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
+        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
 
         total_generated+=batch_size;total_verified+=batch_size;sp+=batch_size;n_batches++;
         double batch_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_batch).count();

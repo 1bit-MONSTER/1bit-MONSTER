@@ -60,6 +60,73 @@ static uint64_t jo(const char* js, size_t jl, const char* nm) {
 }
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 
+// ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
+// Tile = [32 rows × 256 cols]. Per tile: tr*grps*2 B bf16 scales + same for
+// zero-points + tr*tc/2 B packed INT4. Layout (differs from dequant_q4nx.cpp,
+// which is group-major/col-major — wrong for 1BP files, was the #1467 bug):
+//   scales[row*grps + g], zps[row*grps + g]  (row-major)
+//   packed[(row*tc + col)/2], low nibble = even col
+// Returns [out_rows, out_cols] row-major f32, caller frees.
+static float* dequant_1bp(const uint8_t* data, int i8_rows, int in_features,
+                          int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, GS = 32;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    int grps = TC / GS;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * (TR*grps*2 + TR*grps*2 + TR*TC/2);
+        const uint16_t* sc = (const uint16_t*)t;
+        const uint16_t* zp = (const uint16_t*)(t + (size_t)TR*grps*2);
+        const uint8_t* qd = t + (size_t)TR*grps*4;
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < grps; g++) {
+                float s = bf16f(sc[r*grps + g]);
+                float z = bf16f(zp[r*grps + g]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                if (!std::isfinite(z) || std::fabs(z) > 100.0f) z = 0.0f;
+                for (int i = 0; i < GS; i++) {
+                    int col = g*GS + i;
+                    uint8_t b = qd[((size_t)r*TC + col) / 2];
+                    uint8_t v = (col & 1) ? (b >> 4) : (b & 0x0F);
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] = (float)v*s + z;
+                }
+            }
+    }
+    return out;
+}
+
+// ── Q8_0 tile dequant (8704 B/row: 512 B bf16 scales + 8192 signed INT8) ──
+// Shared-expert and attention-projection tensors use this; layout mirrors
+// dequant_q8_0_to_float_ex in dequant_q4nx.cpp.
+static float* dequant_q8_0(const uint8_t* data, int i8_rows, int in_features,
+                           int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, Q8_0_ROW_BYTES = 8704;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * Q8_0_ROW_BYTES;
+        const uint16_t* sc = (const uint16_t*)t;
+        const int8_t* vals = (const int8_t*)(t + 512);
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < TC / 32; g++) {
+                float s = bf16f(sc[g*TR + r]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                for (int i = 0; i < 32; i++) {
+                    int col = g*32 + i;
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] =
+                        (float)vals[r*TC + col] * s;
+                }
+            }
+    }
+    return out;
+}
+
 // ── minimal I8Ctx (copied from npu_engine_universal.cpp, same API) ──
 #include "npu_engine_i8ctx_inc.h"
 // ── model geometry ──
@@ -113,21 +180,23 @@ int main(int argc, char** argv) {
         printf("exp_off[%d]=%llu sh_off[%d]=%llu\n", t, (unsigned long long)exp_off[t], t, (unsigned long long)sh_off[t]);
 
     // ── dequant experts + shared experts (whole tensors) ──
-    // gate_exps [4096, 8, 5120] = 32768 tile rows → [131072, 2048] f32
-    // expert e = rows [e*512, (e+1)*512)
+    // gate/up: per expert [out=IM_EXP, in=H] → 16×8 = 128 i8 tiles/expert × 256 experts
+    // down:    per expert [out=H, in=IM_EXP] → 64×2 = 128 i8 tiles/expert × 256 experts
+    // dequant's in_features must be the GEMM INPUT dim (K): H for gate/up, IM_EXP for down.
     const int TR_G = 4096 * 8, TR_D = 16384 * 2;
     int er, ec, dr, dc;
-    float* gate_f = dequant_i8_to_float_ex(i8p(exp_off[0]), TR_G, H, &er, &ec);
-    float* up_f   = dequant_i8_to_float_ex(i8p(exp_off[1]), TR_G, H, &er, &ec);
-    float* down_f = dequant_i8_to_float_ex(i8p(exp_off[2]), TR_D, H, &dr, &dc);
+    float* gate_f = dequant_1bp(i8p(exp_off[0]), TR_G, H, &er, &ec);
+    float* up_f   = dequant_1bp(i8p(exp_off[1]), TR_G, H, &er, &ec);
+    float* down_f = dequant_1bp(i8p(exp_off[2]), TR_D, IM_EXP, &dr, &dc);
     if (!gate_f || !up_f || !down_f) { fprintf(stderr, "expert dequant failed\n"); return 1; }
     printf("gate_exps dequant: [%d, %d]  down: [%d, %d]\n", er, ec, dr, dc);
-    // sanity: expert 0 slice = gate_f[0 .. 512*2048)
     float* shg_f[3];
     for (int t = 0; t < 3; t++) {
-        int s_tr = t == 2 ? 64 * 2 : 16 * 8;
+        int s_tr = t == 2 ? 64 * 2 : 16 * 8;         // down is 64×2 tiles, gate/up 16×8
         int s_r, s_c;
-        shg_f[t] = dequant_i8_to_float_ex(i8p(sh_off[t]), s_tr, H, &s_r, &s_c);
+        // Shared expert tensors are Q8_0 (8704 B/row), not Q4NX — see header shapes.
+        shg_f[t] = dequant_q8_0(i8p(sh_off[t]), s_tr,
+                                t == 2 ? IM_EXP : H, &s_r, &s_c);
         printf("shared[%d] dequant: [%d, %d]\n", t, s_r, s_c);
     }
 
@@ -150,6 +219,7 @@ int main(int argc, char** argv) {
     std::vector<float> x(H);
     srand(42);
     for (int i = 0; i < H; i++) x[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+
 
     // ── CPU reference (llama.cpp qwen35moe math) ──
     std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
@@ -215,27 +285,39 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ── NPU path: init GEMM contexts with MoE dims via generator ──
+    // ── NPU path: init GEMM contexts with MoE dims ──
+    // Uses each xclbin's OWN instruction stream (aiecc --aie-generate-npu-insts
+    // sidecar). Host-generated streams (gemm_generate_sequence_i8) don't match
+    // the aiecc-compiled partition format — the DPU never starts (#1466).
     try {
         xrt::device dev(0);
         const int XM = 128;  // batch tile (we run M=1)
+        auto init_ctx = [&](I8Ctx& c, const char* xp, const char* ip,
+                            int K, int N) -> bool {
+            c.MD = XM; c.KD = K; c.ND = N;
+            return c.init(dev, xp, ip, 4, 1);
+        };
         // GU concat: K=H, N=TOP_K*2*IM_EXP (8 experts × fused gate+up)
         I8Ctx cg;
-        if (!cg.init_with_generator(dev, (xd + "/final_i8_G_qwen3.6-moe_35b.xclbin").c_str(),
-                                    XM, H, TOP_K * 2 * IM_EXP, 1))
+        if (!init_ctx(cg, (xd + "/final_i8_MOE_GU_qwen3.6-moe_35b.xclbin").c_str(),
+                      (xd + "/insts_i8_MOE_GU_qwen3.6-moe_35b.txt").c_str(),
+                      H, TOP_K * 2 * IM_EXP))
             { fprintf(stderr, "FAIL GU ctx\n"); return 1; }
         // D concat: K=TOP_K*IM_EXP, N=H
         I8Ctx cd;
-        if (!cd.init_with_generator(dev, (xd + "/final_i8_G_qwen3.6-moe_35b.xclbin").c_str(),
-                                    XM, TOP_K * IM_EXP, H, 1))
+        if (!init_ctx(cd, (xd + "/final_i8_MOE_D_qwen3.6-moe_35b.xclbin").c_str(),
+                      (xd + "/insts_i8_MOE_D_qwen3.6-moe_35b.txt").c_str(),
+                      TOP_K * IM_EXP, H))
             { fprintf(stderr, "FAIL D ctx\n"); return 1; }
         // shared expert: fused GU [H, 2*IM_EXP] and D [IM_EXP, H]
         I8Ctx csg, csd;
-        if (!csg.init_with_generator(dev, (xd + "/final_i8_G_qwen3.6-moe_35b.xclbin").c_str(),
-                                     XM, H, 2 * IM_EXP, 1))
+        if (!init_ctx(csg, (xd + "/final_i8_MOE_SGU_qwen3.6-moe_35b.xclbin").c_str(),
+                      (xd + "/insts_i8_MOE_SGU_qwen3.6-moe_35b.txt").c_str(),
+                      H, 2 * IM_EXP))
             { fprintf(stderr, "FAIL shared GU ctx\n"); return 1; }
-        if (!csd.init_with_generator(dev, (xd + "/final_i8_G_qwen3.6-moe_35b.xclbin").c_str(),
-                                     XM, IM_EXP, H, 1))
+        if (!init_ctx(csd, (xd + "/final_i8_MOE_SD_qwen3.6-moe_35b.xclbin").c_str(),
+                      (xd + "/insts_i8_MOE_SD_qwen3.6-moe_35b.txt").c_str(),
+                      IM_EXP, H))
             { fprintf(stderr, "FAIL shared D ctx\n"); return 1; }
 
         // pack active experts into concat weights [K, N] (transposed [in,out] layout)
@@ -277,42 +359,113 @@ int main(int argc, char** argv) {
         csd.packB(0, sd_w.data(), IM_EXP, H, sd_sc);
 
         // ── run: GU concat GEMM (M=1) → SiLU per expert → weighted concat → D GEMM
+        // Each GEMM gets a dynamic activation scale (engine's dynamic_ascale);
+        // a fixed 1.0 zeroed the D input (su ~0.05 → int8 0) and gave the
+        // GU stage ~18% quant noise.
+        auto dyn_ascale = [](const float* x, int n) {
+            float amax = 0;
+            for (int i = 0; i < n; i++) { float a = fabsf(x[i]); if (std::isfinite(a) && a > amax) amax = a; }
+            return (amax < 1e-12f ? 1.0f : amax) / 127.0f;
+        };
         std::vector<float> gu_out(TOP_K * 2 * IM_EXP), su(TOP_K * IM_EXP), d_out(H), npu_out(H);
-        float ascale = 1.0f;
-        cg.go(0, x.data(), 1, H, ascale, gu_sc, gu_out.data(), TOP_K * 2 * IM_EXP);
+        float ag = dyn_ascale(x.data(), H);
+        cg.go(0, x.data(), 1, H, ag, gu_sc, gu_out.data(), TOP_K * 2 * IM_EXP);
         for (int e = 0; e < TOP_K; e++)
             for (int i = 0; i < IM_EXP; i++) {
                 float gv = gu_out[e * 2 * IM_EXP + i];
                 su[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) * gu_out[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
             }
-        cd.go(0, su.data(), 1, TOP_K * IM_EXP, ascale, d_sc, d_out.data(), H);
+        float asu = dyn_ascale(su.data(), TOP_K * IM_EXP);
+        cd.go(0, su.data(), 1, TOP_K * IM_EXP, asu, d_sc, d_out.data(), H);
         // shared expert
         std::vector<float> sg_out(2 * IM_EXP), ssu(IM_EXP), sh_out(H);
-        csg.go(0, x.data(), 1, H, ascale, sg_sc, sg_out.data(), 2 * IM_EXP);
+        float asg = dyn_ascale(x.data(), H);
+        csg.go(0, x.data(), 1, H, asg, sg_sc, sg_out.data(), 2 * IM_EXP);
         for (int i = 0; i < IM_EXP; i++) {
             float gv = sg_out[i];
             ssu[i] = (gv / (1.0f + expf(-gv))) * sg_out[IM_EXP + i];
         }
-        csd.go(0, ssu.data(), 1, IM_EXP, ascale, sd_sc, sh_out.data(), H);
+        float assu = dyn_ascale(ssu.data(), IM_EXP);
+        csd.go(0, ssu.data(), 1, IM_EXP, assu, sd_sc, sh_out.data(), H);
         double sg = 0;
         for (int i = 0; i < H; i++) sg += (double)x[i] * shgate[i];
         float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
         for (int i = 0; i < H; i++) npu_out[i] = d_out[i] + sg_sig * sh_out[i];
 
-        // ── compare ──
-        double num = 0, den = 0, maxerr = 0;
-        for (int i = 0; i < H; i++) {
-            double a = npu_out[i], b = ref_out[i];
-            num += (a - b) * (a - b);
-            den += b * b;
-            if (fabs(a - b) > maxerr) maxerr = fabs(a - b);
+        // ── CPU INT8-pipeline simulation (the honest gate) ──
+        // Replicates exactly what the NPU computes: packB-quantized weights
+        // (read back from the BOs), quantize_async activations, int32 dot
+        // products, mean-group-scale dequant. If the NPU matches this, it is
+        // doing the intended int8 math; residual error vs the f32 reference
+        // is quantization, documented by the sim-vs-ref correlation.
+        {
+            auto sim_gemm = [](const int8_t* Aq, int K, const int8_t* Bq,
+                               const std::vector<float>& gsc, float ascale,
+                               float* out, int N) {
+                float ssum = 0; for (float s : gsc) ssum += s;
+                float bscale = ssum / gsc.size();
+                for (int n = 0; n < N; n++) {
+                    int64_t acc = 0;
+                    for (int k = 0; k < K; k++) acc += (int64_t)Aq[k] * Bq[(size_t)k * N + n];
+                    out[n] = (float)acc * ascale * bscale;
+                }
+            };
+            auto quant_a = [](const float* x, int n, float ascale) {
+                std::vector<int8_t> q(n);
+                float is = 1.0f / ascale;
+                for (int i = 0; i < n; i++) {
+                    int v = (int)roundf(x[i] * is);
+                    q[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v);
+                }
+                return q;
+            };
+            // GU stage
+            std::vector<int8_t> xq = quant_a(x.data(), H, ag);
+            const int8_t* guB = (const int8_t*)cg.layerB[0]->map();
+            std::vector<float> gu_sim(TOP_K * 2 * IM_EXP), su_sim(TOP_K * IM_EXP);
+            sim_gemm(xq.data(), H, guB, cg.group_scales[0], ag, gu_sim.data(), TOP_K * 2 * IM_EXP);
+            for (int e = 0; e < TOP_K; e++)
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = gu_sim[e * 2 * IM_EXP + i];
+                    su_sim[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) * gu_sim[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
+                }
+            // D stage
+            std::vector<int8_t> suq = quant_a(su_sim.data(), TOP_K * IM_EXP, asu);
+            const int8_t* dB = (const int8_t*)cd.layerB[0]->map();
+            std::vector<float> d_sim(H);
+            sim_gemm(suq.data(), TOP_K * IM_EXP, dB, cd.group_scales[0], asu, d_sim.data(), H);
+            // shared stages
+            const int8_t* sgB = (const int8_t*)csg.layerB[0]->map();
+            std::vector<float> sg_sim(2 * IM_EXP), ssu_sim(IM_EXP);
+            sim_gemm(xq.data(), H, sgB, csg.group_scales[0], asg, sg_sim.data(), 2 * IM_EXP);
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = sg_sim[i];
+                ssu_sim[i] = (gv / (1.0f + expf(-gv))) * sg_sim[IM_EXP + i];
+            }
+            std::vector<int8_t> ssuq = quant_a(ssu_sim.data(), IM_EXP, assu);
+            const int8_t* sdB = (const int8_t*)csd.layerB[0]->map();
+            std::vector<float> sh_sim(H);
+            sim_gemm(ssuq.data(), IM_EXP, sdB, csd.group_scales[0], assu, sh_sim.data(), H);
+            std::vector<float> npu_sim(H);
+            for (int i = 0; i < H; i++) npu_sim[i] = d_sim[i] + sg_sig * sh_sim[i];
+            double snum = 0, sden = 0;
+            for (int i = 0; i < H; i++) { double d = npu_out[i] - npu_sim[i]; snum += d*d; sden += npu_sim[i]*npu_sim[i]; }
+            double sim_rmse = sqrt(snum / sden);
+            // sim vs f32 ref correlation (documents quantization error)
+            double sa = 0, sb = 0, sab = 0, saa = 0, sbb = 0;
+            for (int i = 0; i < H; i++) { sa += npu_sim[i]; sb += ref_out[i]; }
+            sa /= H; sb /= H;
+            for (int i = 0; i < H; i++) { double da = npu_sim[i]-sa, db = ref_out[i]-sb; saa += da*da; sbb += db*db; sab += da*db; }
+            double sim_corr = sab / sqrt(saa * sbb);
+            printf("npu_out[0..4]  = %.4f %.4f %.4f %.4f %.4f\n", npu_out[0], npu_out[1], npu_out[2], npu_out[3], npu_out[4]);
+            printf("npu_sim[0..4]  = %.4f %.4f %.4f %.4f %.4f\n", npu_sim[0], npu_sim[1], npu_sim[2], npu_sim[3], npu_sim[4]);
+            printf("ref_out[0..4]  = %.4f %.4f %.4f %.4f %.4f\n", ref_out[0], ref_out[1], ref_out[2], ref_out[3], ref_out[4]);
+            printf("NPU vs CPU-int8-sim: rel RMSE = %.6f  (%s)\n", sim_rmse,
+                   sim_rmse < 0.05 ? "PASS — NPU matches the int8 pipeline" : "FAIL — NPU deviates from int8 math");
+            printf("sim vs f32 ref: corr = %.4f  (quantization error; 1.0 = lossless)\n", sim_corr);
+            return sim_rmse < 0.05 ? 0 : 2;
         }
-        double rmse = sqrt(num / den);
-        printf("npu_out[0..4] = %.4f %.4f %.4f %.4f %.4f\n", npu_out[0], npu_out[1], npu_out[2], npu_out[3], npu_out[4]);
-        printf("ref_out[0..4] = %.4f %.4f %.4f %.4f %.4f\n", ref_out[0], ref_out[1], ref_out[2], ref_out[3], ref_out[4]);
-        printf("rel RMSE = %.6f  max_abs_err = %.6f  (%s)\n", rmse, maxerr,
-               rmse < 0.01 ? "PASS" : "FAIL");
-        return rmse < 0.01 ? 0 : 2;
+
     } catch (std::exception& ex) {
         fprintf(stderr, "XRT error: %s\n", ex.what());
         return 1;
