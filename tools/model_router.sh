@@ -16,7 +16,7 @@ case "$MODEL" in
     # Start server if not running
     if ! curl -sf http://127.0.0.1:$PORT/ >/dev/null 2>&1; then
         echo "  Starting server..."
-        build/zaya_server $PORT &>/tmp/zaya_server.log &
+        build/1bit zaya $PORT &>/tmp/zaya_server.log &
         for i in $(seq 1 30); do
             sleep 2
             if curl -sf http://127.0.0.1:$PORT/ >/dev/null 2>&1; then
