@@ -947,9 +947,49 @@ int main(int argc,char**argv){
     // Per-layer attention dims (tensor-derived for this model family):
     // GDN (linear_attn): q 16×128, k 16×128, v 32×128; full-attn: q 16×256 +
     // fused output gate, k/v 2×256 (see qwen36_gdn_probe / gdn_reference.py).
-    const int GDN_VH = 32, GDN_HD = 128;
-    const int STD_NH = 16, STD_NKV = 2, STD_HD = 256;
-    const int GDN_CONV_DIM = 8192, GDN_CONV_K = 4;
+    // Per-layer attention dims (#1474): derived from the actual tensors so
+    // sibling checkpoints (different head counts, no fused gate, other conv
+    // kernels / rotary) adapt instead of silently misparsing. Fallbacks are
+    // the Qwen3.6-35B-A3B values. find_tensor_info returns shape[0]; for the
+    // 3D I8 tensors the dequantized row count is shape[0] * (in_features/256).
+    int GDN_VH = 32, GDN_HD = 128;
+    int STD_NH = 16, STD_NKV = 2, STD_HD = 256;
+    int GDN_CONV_DIM = 8192, GDN_CONV_K = 4;
+    if (cfg.has_moe) {
+        int s0 = 0, l0 = 0;
+        for (; l0 < NC; l0++) if (is_gdn_layer[l0]) break;
+        if (l0 < NC) {
+            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l0);
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) GDN_VH = s0;
+            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l0);
+            s0 = 0;
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) GDN_HD = s0;
+            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l0);
+            s0 = 0;
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) GDN_CONV_K = s0;
+            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l0);
+            s0 = 0;
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
+                GDN_CONV_DIM = s0 * 32;   // dequantized rows = shape[0]*32 (TR=32) = q+k+v
+        }
+        for (int l = 0; l < NC; l++) {
+            if (is_gdn_layer[l]) continue;
+            snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
+            s0 = 0;
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) STD_HD = s0;
+            snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
+            s0 = 0;
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0 && STD_HD > 0)
+                STD_NKV = s0 * 32 / STD_HD;   // k rows / head dim
+            snprintf(bn, 128, "model.layer.%d.self_attn.q_proj.weight", l);
+            s0 = 0;
+            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0 && STD_HD > 0)
+                STD_NH = s0 * 32 / STD_HD / 2; // q rows = NH*HD*2 (q+gate halves)
+            break;
+        }
+        fprintf(stderr, "  derived dims: GDN vh=%d hd=%d conv=%dx%d | STD nh=%d nkv=%d hd=%d\n",
+                GDN_VH, GDN_HD, GDN_CONV_K, GDN_CONV_DIM, STD_NH, STD_NKV, STD_HD);
+    }
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
