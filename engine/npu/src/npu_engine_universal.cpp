@@ -613,21 +613,34 @@ int main(int argc,char**argv){
     }
     #endif
 
-    // Norm weights
+    // Norm weights (try both MoE "layer" and dense "layers" key formats)
+    auto jo2 = [&](const char* fmt, int l) -> uint64_t {
+        char kb[256];
+        snprintf(kb, sizeof(kb), fmt, l);
+        uint64_t off = jo(js, jl, kb);
+        if (!off && cfg.has_moe) {
+            // Try MoE naming: "model.layer.N." instead of "model.layers.N."
+            std::string alt = kb;
+            size_t p = alt.find("model.layers.");
+            if (p != std::string::npos) alt.replace(p, 14, "model.layer.");
+            off = jo(js, jl, alt.c_str());
+        }
+        return off;
+    };
     std::vector<uint64_t> in_off(NC),pa_off(NC),qn_off(NC),kn_off(NC),qp(NC),kp(NC),vp(NC),op(NC),gp(NC),up(NC),dp(NC);
     char bn[128];
     for(int l=0;l<NC;l++){
-        snprintf(bn,128,"model.layers.%d.self_attn.q_proj.weight",l);qp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.k_proj.weight",l);kp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.v_proj.weight",l);vp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.o_proj.weight",l);op[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.mlp.gate_proj.weight",l);gp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.mlp.up_proj.weight",l);up[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.mlp.down_proj.weight",l);dp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.input_layernorm.weight",l);in_off[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.post_attention_layernorm.weight",l);pa_off[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.q_norm.weight",l);qn_off[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.k_norm.weight",l);kn_off[l]=jo(js,jl,bn);}
+        qp[l]=jo2("model.layers.%d.self_attn.q_proj.weight",l);
+        kp[l]=jo2("model.layers.%d.self_attn.k_proj.weight",l);
+        vp[l]=jo2("model.layers.%d.self_attn.v_proj.weight",l);
+        op[l]=jo2("model.layers.%d.self_attn.o_proj.weight",l);
+        gp[l]=jo2("model.layers.%d.mlp.gate_proj.weight",l);
+        up[l]=jo2("model.layers.%d.mlp.up_proj.weight",l);
+        dp[l]=jo2("model.layers.%d.mlp.down_proj.weight",l);
+        in_off[l]=jo2("model.layers.%d.input_layernorm.weight",l);
+        pa_off[l]=jo2("model.layers.%d.post_attention_layernorm.weight",l);
+        qn_off[l]=jo2("model.layers.%d.self_attn.q_norm.weight",l);
+        kn_off[l]=jo2("model.layers.%d.self_attn.k_norm.weight",l);}
     uint64_t no=jo(js,jl,"model.norm.weight");
     uint64_t lo=jo(js,jl,"lm_head.weight");
     std::vector<std::vector<float>> in_n(NC,std::vector<float>(H)),pa_n(NC,std::vector<float>(H)),qn_w(NC,std::vector<float>(HD)),kn_w(NC,std::vector<float>(HD));
@@ -639,7 +652,8 @@ int main(int argc,char**argv){
     {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
 
     // I8 tile rows
-    auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);return r;};
+    auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
+        if(r<=0&&cfg.has_moe){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}return r;};
     int q_i8=gi8("model.layers.0.self_attn.q_proj.weight"),k_i8=gi8("model.layers.0.self_attn.k_proj.weight"),v_i8=gi8("model.layers.0.self_attn.v_proj.weight");
     int o_i8=gi8("model.layers.0.self_attn.o_proj.weight"),g_i8=gi8("model.layers.0.mlp.gate_proj.weight"),u_i8=gi8("model.layers.0.mlp.up_proj.weight"),d_i8=gi8("model.layers.0.mlp.down_proj.weight");
     int lm_i8=gi8("lm_head.weight");
@@ -913,6 +927,70 @@ int main(int argc,char**argv){
     }
     fprintf(stderr,"  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
 
+    // ── MoE weight loading (router dequant; expert offsets kept raw) ──
+    int N_EXPERTS = cfg.N_EXPERTS, TOP_K = cfg.TOP_K, IM_EXP = cfg.IM_EXP, N_SHARED = cfg.N_SHARED;
+    bool has_moe = cfg.has_moe;
+    // Per-layer: router [H, N_EXPERTS] float, expert Q4NX offsets + tile rows,
+    // shared expert offsets + tile rows, shared gate [H] float.
+    std::vector<std::vector<float>> router_w, sh_gate_vec;
+    struct MoeOffsets { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
+    struct ShOffsets  { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
+    std::vector<MoeOffsets> exp_off;    // per-layer expert offsets
+    std::vector<ShOffsets>  sh_off;     // per-layer shared expert offsets
+    if (has_moe) {
+        fprintf(stderr, "Loading MoE weights: experts=%d top_k=%d im_exp=%d shared=%d\n",
+                N_EXPERTS, TOP_K, IM_EXP, N_SHARED);
+        router_w.resize(NC); sh_gate_vec.resize(NC);
+        exp_off.resize(NC); sh_off.resize(NC);
+        auto te_moe = std::chrono::steady_clock::now();
+        // Tile rows from layer 0 (same for all layers)
+        int exp_gate_tr = 0, exp_up_tr = 0, exp_down_tr = 0;
+        find_tensor_info(js, jl, "model.layer.0.mlp.gate_exps_proj.weight", &exp_gate_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.up_exps_proj.weight", &exp_up_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.down_exps_proj.weight", &exp_down_tr);
+        for (int l = 0; l < NC; l++) {
+            // Router: BF16 [H, N_EXPERTS] stride-8 interleave
+            snprintf(bn, 128, "model.layer.%d.moe_router.weight", l);
+            uint64_t roff = jo(js, jl, bn);
+            if (roff) {
+                router_w[l].resize((size_t)H * N_EXPERTS);
+                const uint16_t* rb = (const uint16_t*)i8p(roff);
+                for (int i = 0; i < H; i++)
+                    for (int j = 0; j < N_EXPERTS; j++)
+                        router_w[l][i * N_EXPERTS + j] =
+                            bf16g(rb[(size_t)(i % 8) * 65536 + j * 256 + i / 8]);
+            }
+            // Expert weights: store offsets + tile rows (dequant on demand)
+            snprintf(bn, 128, "model.layer.%d.mlp.gate_exps_proj.weight", l);
+            exp_off[l].gate = jo(js, jl, bn); exp_off[l].gate_tr = exp_gate_tr;
+            snprintf(bn, 128, "model.layer.%d.mlp.up_exps_proj.weight", l);
+            exp_off[l].up   = jo(js, jl, bn); exp_off[l].up_tr   = exp_up_tr;
+            snprintf(bn, 128, "model.layer.%d.mlp.down_exps_proj.weight", l);
+            exp_off[l].down = jo(js, jl, bn); exp_off[l].down_tr = exp_down_tr;
+            // Shared expert weights: offsets + tile rows
+            snprintf(bn, 128, "model.layer.%d.mlp.share_gate_exps_proj.weight", l);
+            sh_off[l].gate = jo(js, jl, bn);
+            snprintf(bn, 128, "model.layer.%d.mlp.share_up_exps_proj.weight", l);
+            sh_off[l].up   = jo(js, jl, bn);
+            snprintf(bn, 128, "model.layer.%d.mlp.share_down_exps_proj.weight", l);
+            sh_off[l].down = jo(js, jl, bn);
+            find_tensor_info(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight", &sh_off[l].gate_tr);
+            find_tensor_info(js, jl, "model.layer.0.mlp.share_up_exps_proj.weight", &sh_off[l].up_tr);
+            find_tensor_info(js, jl, "model.layer.0.mlp.share_down_exps_proj.weight", &sh_off[l].down_tr);
+            // Shared expert gate vector [H] BF16
+            snprintf(bn, 128, "model.layer.%d.shared_expert_gate.weight", l);
+            uint64_t sgoff = jo(js, jl, bn);
+            if (sgoff) {
+                const uint16_t* gb = (const uint16_t*)i8p(sgoff);
+                sh_gate_vec[l].resize(H);
+                for (int i = 0; i < H; i++) sh_gate_vec[l][i] = bf16g(gb[i]);
+            }
+        }
+        auto ms_moe = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - te_moe).count();
+        fprintf(stderr, "  MoE offsets stored in %.0fms\n", ms_moe);
+    }
+
     // RoPE
     ri(HD,cfg.rope_theta,4096);
     int kv_dwords=NKV*HD/2;
@@ -941,6 +1019,125 @@ int main(int argc,char**argv){
     std::vector<float> h_data(H), qo_data(qkv_n*BS), ko_data(NKV*HD*BS), vo_data(NKV*HD*BS), at_data(NH*HD*BS), oo_data(H*BS);
     std::vector<float> gt_data((cfg.gu_split?IM:2*IM)*BS), su_data(IM*BS), dwo_data(H*BS), sb_data(XM*H), lg_buf(NV);
     int sp=0;
+
+    // ── CPU MoE FFN helper (dequant active experts on-the-fly) ──
+    // x: input [H], out: output [H], l: layer index
+    // ponytail: CPU matmul, NPU I8Ctx later when per-layer latency matters
+    auto moe_ffn_cpu = [&](const float* x, float* out, int l) {
+        const auto& eo = exp_off[l];
+        const auto& so = sh_off[l];
+        // Router: softmax → top-K
+        const float* rt = router_w[l].data();
+        std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
+        double lmax = -1e30;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            double s = 0;
+            for (int i = 0; i < H; i++) s += (double)x[i] * rt[i * N_EXPERTS + j];
+            logits[j] = (float)s;
+            if (logits[j] > lmax) lmax = logits[j];
+        }
+        double lsum = 0;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            probs[j] = expf(logits[j] - (float)lmax);
+            lsum += probs[j];
+        }
+        for (int j = 0; j < N_EXPERTS; j++) probs[j] /= (float)lsum;
+        std::vector<int> topk(N_EXPERTS);
+        for (int j = 0; j < N_EXPERTS; j++) topk[j] = j;
+        std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
+            [&](int a, int b) { return probs[a] > probs[b]; });
+
+        memset(out, 0, H * sizeof(float));
+        // Per-expert tile-rows: gate/up each have IM_EXP/32 tile rows per expert
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;  // tile rows per expert for gate
+        int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
+        int exp_down_tr_per = eo.down_tr / N_EXPERTS;
+        int exp_gate_off_stride = exp_gate_tr_per * 8 * H;  // bytes per expert in Q4NX
+        int exp_up_off_stride   = exp_up_tr_per   * 8 * H;
+        int exp_down_off_stride = exp_down_tr_per * 8 * IM_EXP;
+
+        for (int e = 0; e < TOP_K; e++) {
+            int ex = topk[e];
+            // Dequant this expert's G/U/D from Q4NX on-the-fly
+            int gr, gc, ur, uc, dr, dc;
+            float* G = dequant_i8_to_float_ex(
+                i8p(eo.gate + (uint64_t)ex * exp_gate_off_stride),
+                exp_gate_tr_per, H, &gr, &gc);
+            float* U = dequant_i8_to_float_ex(
+                i8p(eo.up + (uint64_t)ex * exp_up_off_stride),
+                exp_up_tr_per, H, &ur, &uc);
+            float* D = dequant_i8_to_float_ex(
+                i8p(eo.down + (uint64_t)ex * exp_down_off_stride),
+                exp_down_tr_per, IM_EXP, &dr, &dc);
+            if (!G || !U || !D) { free(G); free(U); free(D); continue; }
+            // G/U: [IM_EXP, H] @ x → [IM_EXP]
+            std::vector<float> gu(IM_EXP * 2);
+            for (int i = 0; i < IM_EXP; i++) {
+                double g = 0, u = 0;
+                for (int k = 0; k < H; k++) {
+                    g += (double)G[i * H + k] * x[k];
+                    u += (double)U[i * H + k] * x[k];
+                }
+                float gv = (float)g, uv = (float)u;
+                if (!std::isfinite(gv)) gv = 0;
+                if (!std::isfinite(uv)) uv = 0;
+                gu[i] = gv; gu[IM_EXP + i] = uv;
+            }
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = gu[i];
+                if (!std::isfinite(gv)) gv = 0;
+                gu[i] = (gv / (1.0f + expf(-gv))) * gu[IM_EXP + i];
+            }
+            // D: [H, IM_EXP] @ gu → [H], weighted by router prob
+            float pw = probs[ex];
+            for (int i = 0; i < H; i++) {
+                double d = 0;
+                for (int k = 0; k < IM_EXP; k++) d += (double)D[i * IM_EXP + k] * gu[k];
+                out[i] += pw * (float)d;
+            }
+            free(G); free(U); free(D);
+        }
+
+        // Shared expert: sigmoid gate → SiLU(G@x) * U@x → D @ activation
+        if (N_SHARED > 0 && so.gate) {
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+
+            int sgr, sgc, sur, suc, sdr, sdc;
+            float* SG = dequant_i8_to_float_ex(i8p(so.gate), so.gate_tr, H, &sgr, &sgc);
+            float* SU = dequant_i8_to_float_ex(i8p(so.up),   so.up_tr,   H, &sur, &suc);
+            float* SD = dequant_i8_to_float_ex(i8p(so.down), so.down_tr, IM_EXP, &sdr, &sdc);
+            if (SG && SU && SD) {
+                std::vector<float> sgu(IM_EXP * 2);
+                for (int i = 0; i < IM_EXP; i++) {
+                    double g = 0, u = 0;
+                    for (int k = 0; k < H; k++) {
+                        g += (double)SG[i * H + k] * x[k];
+                        u += (double)SU[i * H + k] * x[k];
+                    }
+                    float gv = (float)g, uv = (float)u;
+                    if (!std::isfinite(gv)) gv = 0;
+                    if (!std::isfinite(uv)) uv = 0;
+                    sgu[i] = gv; sgu[IM_EXP + i] = uv;
+                }
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = sgu[i];
+                    if (!std::isfinite(gv)) gv = 0;
+                    sgu[i] = (gv / (1.0f + expf(-gv))) * sgu[IM_EXP + i];
+                }
+                for (int i = 0; i < H; i++) {
+                    double d = 0;
+                    for (int k = 0; k < IM_EXP; k++) d += (double)SD[i * IM_EXP + k] * sgu[k];
+                    out[i] += sg_sig * (float)d;
+                }
+            }
+            free(SG); free(SU); free(SD);
+        }
+        for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+    };
+
     // ===== WORKER MODE (subprocess protocol) =====
     // The Zig fused executor (fused_execute.zig) sends individual GEMM
     // operations (QKV, OPROJ, GATEUP, DOWN) via this protocol. Each request
@@ -1168,6 +1365,12 @@ int main(int argc,char**argv){
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_oo_b[i];
                         for (int i = 0; i < H; i++) fsb[i] = fh[i];
                         rn_c(fh, pa_n[l].data(), H);
+                        if (has_moe && exp_off[l].gate) {
+                            // MoE FFN (CPU path — ponytail: NPU I8Ctx optimization later)
+                            moe_ffn_cpu(fh, fuse_dw_b.data(), l);
+                            cn(fuse_dw_b.data(), H);
+                            for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
+                        } else {
                         int fmlp_out = cfg.gu_split ? IM : 2 * IM;
                         float ag = dynamic_ascale(fh, H);
                         FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
@@ -1192,6 +1395,7 @@ int main(int argc,char**argv){
                         FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
                         cn(fuse_dw_b.data(), H);
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
+                        }
                     }
                     // Final norm + lm_head
                     rn_c(fuse_h_b.data(), fin_v.data(), H);
