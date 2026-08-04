@@ -401,6 +401,20 @@ Backend* create_backend(BackendType type) {
             printf("  VART backend unavailable (need Vitis AI Runtime)\n");
             return nullptr;
         }
+        case BackendType::ONNX_NPU: {
+            // ponytail: try the static factory directly for ONNX
+            auto* b = try_load_backend("librocm_cpp.so", "create_onnx_npu_backend");
+            if (!b && has_static_symbol("create_onnx_npu_backend")) {
+                void* h = dlopen(nullptr, RTLD_LAZY);
+                if (h) {
+                    auto* fn = (Backend*(*)())dlsym(h, "create_onnx_npu_backend");
+                    if (fn) b = fn();
+                }
+            }
+            if (b) { printf("  Created ONNX NPU backend\n"); return b; }
+            printf("  ONNX NPU backend unavailable (need ONNX Runtime)\n");
+            return nullptr;
+        }
         case BackendType::CPU_AVX512:
         case BackendType::CPU_SCALAR:
             return create_cpu_backend();
