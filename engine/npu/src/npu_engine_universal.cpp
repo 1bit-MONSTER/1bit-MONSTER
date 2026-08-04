@@ -506,8 +506,9 @@ int main(int argc,char**argv){
     char bn[128];
     for(int l=0;l<NC;l++){
         qp[l]=jo2("model.layers.%d.self_attn.q_proj.weight",l);
-        kp[l]=jo2("model.layers.%d.self_attn.k_proj.weight",l);
-        vp[l]=jo2("model.layers.%d.self_attn.v_proj.weight",l);
+        // Standard layers use fused QKV in q_proj (same as GDN qkv_proj).
+        // Don't try k_proj/v_proj separately — they don't exist.
+        kp[l]=0; vp[l]=0;  // handled via fused QKV split
         op[l]=jo2("model.layers.%d.self_attn.o_proj.weight",l);
         // GDN fused QKV (if separate q_proj not found):
         if (!qp[l]) {
@@ -894,17 +895,28 @@ int main(int argc,char**argv){
             transpose_pack(ow, OOUT, OIN, wo.data(), OOUT, 0);
             FLM_PACKB(co, l, wo.data(), OIN, OOUT, osc[l]);
             free(ow);
-        } else if (qp[l] && kp[l] && vp[l] && op[l]) {
-        int qr,kr,vr,unused;
-        float*qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused),*kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused),*vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
-        int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
-        transpose_pack(qw,QOUT,H,w.data(),t,0); transpose_pack(kw,KVOUT,H,w.data(),t,QOUT); transpose_pack(vw,KVOUT,H,w.data(),t,QOUT+KVOUT);
-        FLM_PACKB(cq,l,w.data(),H,t,qsc[l]);free(qw);free(kw);free(vw);
-        int or2,oc2;float*ow=dequant_i8_to_float_ex(i8p(op[l]),o_i8,OIN,&or2,&oc2);
-        std::vector<float>wo((size_t)OIN*OOUT);transpose_pack(ow,OOUT,OIN,wo.data(),OOUT,0);
-        FLM_PACKB(co,l,wo.data(),OIN,OOUT,osc[l]);free(ow);
+        } else if (qp[l] && op[l]) {
+        fprintf(stderr, "  layer %d STD fused: qp=%llu\n", l, (unsigned long long)qp[l]);
+        fflush(stderr);
+        // Standard layer: fused QKV in q_proj, split same as GDN
+        int qr, qc, or2, oc2;
+        float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
+        float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
+        if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
+        int t = QOUT + KVOUT + KVOUT;
+        std::vector<float> w((size_t)H * t);
+        transpose_pack(qkv_w, QOUT, H, w.data(), t, 0);
+        transpose_pack(qkv_w + QOUT, KVOUT, H, w.data(), t, QOUT);
+        transpose_pack(qkv_w + QOUT + KVOUT, KVOUT, H, w.data(), t, QOUT + KVOUT);
+        FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+        free(qkv_w);
+        std::vector<float> wo((size_t)OIN * OOUT);
+        transpose_pack(ow, OOUT, OIN, wo.data(), OOUT, 0);
+        FLM_PACKB(co, l, wo.data(), OIN, OOUT, osc[l]);
+        free(ow);
         if (gp[l] && up[l]) {
-        int gr,ur;float*gw=dequant_i8_to_float_ex(i8p(gp[l]),g_i8,H,&gr,&unused),*uw=dequant_i8_to_float_ex(i8p(up[l]),u_i8,H,&ur,&unused);
+        int unused;
+        int gr,ur;float*gw=dq(gp[l],g_i8,H,&gr,&unused,use_q8),*uw=dq(up[l],u_i8,H,&ur,&unused,use_q8);
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
             FLM_PACKB(cg,l,wg.data(),H,gr,gsc[l]);
