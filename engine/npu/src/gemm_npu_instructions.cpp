@@ -24,7 +24,6 @@
 
 // FastFlowLM open-source headers (included in the 1bit-systems repo)
 #include "npu_utils/npu_instr_utils.hpp"
-#include "lm_config.hpp"
 
 // ─── Constants (from reverse-engineered libgemm.so) ────────────────────
 static constexpr uint32_t NPU_COLS       = 8;

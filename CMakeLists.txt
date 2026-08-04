@@ -1406,6 +1406,34 @@ if(TARGET npu_engine_hybrid)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 endif()
 
+# -- qwen36_moe_probe : native NPU MoE expert routing validation ---------
+# Standalone probe that runs ONE real Qwen3.6-35B-A3B MoE layer FFN on the
+# NPU end-to-end. Guarded: requires XRT + NPU runtime.
+if(EXISTS "/opt/xilinx/xrt/lib/libxrt_coreutil.so")
+    add_executable(qwen36_moe_probe
+        tools/qwen36_moe_probe.cpp
+        engine/npu/src/dequant_q4nx.cpp
+        engine/npu/src/gemm_npu_instructions.cpp
+    )
+else()
+    message(STATUS "qwen36_moe_probe: XRT not found — skipping MoE probe target")
+endif()
+if(TARGET qwen36_moe_probe)
+    target_include_directories(qwen36_moe_probe PRIVATE
+        ${CMAKE_SOURCE_DIR}/engine/npu/src
+        ${CMAKE_SOURCE_DIR}/npu-infer/include
+        ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
+        ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
+    target_compile_options(qwen36_moe_probe PRIVATE
+        -O2 -std=c++20 -fopenmp)
+    target_link_libraries(qwen36_moe_probe PRIVATE
+        xrt_coreutil xrt_core aiebu uuid m dl pthread)
+    target_link_options(qwen36_moe_probe PRIVATE
+        -L/opt/xilinx/xrt/lib -Wl,-rpath,/opt/xilinx/xrt/lib -fopenmp)
+    set_target_properties(qwen36_moe_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+endif()
+
 # -- libfusion_zero_copy: zero-copy NPU<->GPU shared-buffer substrate --------
 # Promotes the proven SharedBO/PipelineOverlap primitives (engine/fusion/zero_copy/,
 # see its README — hardware-verified zero-copy, 3/3 runs, zero IO_PAGE_FAULTs)
