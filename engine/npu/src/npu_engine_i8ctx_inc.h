@@ -18,6 +18,12 @@
 #include <xrt/experimental/xrt_ext.h>
 #include <xrt/experimental/xrt_module.h>
 #include <xrt/experimental/xrt_elf.h>
+
+// Forward declaration: INT8 GEMM instruction generator
+void gemm_generate_sequence_i8(class npu_sequence* seq, uint32_t M, uint32_t K, uint32_t N,
+    uint32_t a_ddr_offset, uint32_t b_base_offset,
+    bool add_bias, int activation, uint32_t bias_offset, uint32_t output_offset);
+
 struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
     std::unique_ptr<xrt::module>mdl;std::unique_ptr<xrt::elf>elf;
     std::unique_ptr<xrt::ext::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bA,bC;
@@ -150,7 +156,7 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         MD = _MD; KD = _KD; ND = _ND; NL = nlayers;
         // Generate INT8 instruction sequence
         npu_sequence seq(device_npu2);
-        gemm_generate_sequence(&seq, MD, KD, ND, 0, false, 0, 0, 0);
+        gemm_generate_sequence_i8(&seq, MD, KD, ND, 0, 0, false, 0, 0, 0);
         seq.cmds2seq();
         auto [dp, sz] = seq.dump();
         ins.assign(dp, dp + sz / sizeof(uint32_t));

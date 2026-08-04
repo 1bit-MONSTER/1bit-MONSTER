@@ -29,6 +29,11 @@
 static constexpr uint32_t NPU_COLS       = 8;
 static constexpr uint32_t FIRST_CT_ROW   = 2;  // compute tile rows start here
 
+// Forward declaration: INT8 GEMM generator (defined below)
+void gemm_generate_sequence_i8(npu_sequence* seq, uint32_t M, uint32_t K, uint32_t N,
+    uint32_t a_ddr_offset, uint32_t b_base_offset,
+    bool add_bias, int activation, uint32_t bias_offset, uint32_t output_offset);
+
 // Shim tile array (matches proprietary Gemm::Impl::shim_tiles)
 static constexpr npu_tiles SHIM_TILES[8] = {
     IT0, IT1, IT2, IT3, IT4, IT5, IT6, IT7
@@ -328,11 +333,108 @@ void gemm_generate_sequence_i8_split(
     uint32_t                bias_offset,
     uint32_t                output_offset
 ) {
-    // Unified function computes B = weight_offset + K*M + ...
-    // Caller wants A at a_ddr_offset, B at b_base_offset.
-    // Adjust weight_offset so B lands where caller expects.
-    uint32_t layer_b_offset = b_base_offset - (a_ddr_offset + K * M);
-    gemm_generate_sequence(seq, M, K, N,
-        a_ddr_offset + layer_b_offset,
+    gemm_generate_sequence_i8(seq, M, K, N, a_ddr_offset, b_base_offset,
         add_bias, activation, bias_offset, output_offset);
+}
+
+// INT8 GEMM instruction generator — same structure as gemm_generate_sequence
+// but uses elem_size=1 for INT8 A/B (4 values per 32-bit word), elem_size=4
+// for INT32 output, and 1-byte-stride weight offset calculations.
+void gemm_generate_sequence_i8(
+    npu_sequence*           seq,
+    uint32_t                M,
+    uint32_t                K,
+    uint32_t                N,
+    uint32_t                a_ddr_offset,   // DDR byte offset for A (INT8: 1 byte/el)
+    uint32_t                b_base_offset,  // DDR byte offset for B weights
+    bool                    add_bias,
+    int                     activation,
+    uint32_t                bias_offset,
+    uint32_t                output_offset
+) {
+    uint32_t num_col_tiles = div_ceil(N, BLOCK_N);
+    uint32_t num_k_blocks  = div_ceil(K, BLOCK_K);
+
+    seq->npu_preemption(0);
+
+    for (uint32_t kb = 0; kb < num_k_blocks; kb++) {
+        uint32_t k_start = kb * BLOCK_K;
+        uint32_t k_size  = std::min(BLOCK_K, K - k_start);
+
+        for (uint32_t tc = 0; tc < num_col_tiles; tc++) {
+            uint32_t col     = tc % NPU_COLS;
+            uint32_t n_start = tc * BLOCK_N;
+            uint32_t n_size  = std::min(BLOCK_N, N - n_start);
+
+            // DMA: Load A tile (INT8: M × k_size bytes, packed 4/word)
+            uint32_t a_off = a_ddr_offset + k_start * M;  // 1 byte per INT8
+            seq->npu_dma_memcpy_nd(
+                1,                      // elem_size=1 (INT8 − 4 vals per 32-bit word)
+                0, S2MM,
+                tile_at(0, col), bd_0, it_channel_0,
+                {0, 0, 0, a_off}, {1, 1, k_size, M}, {0, 0, 0, 1},
+                -1, 0, false, normal_cache);
+
+            // DMA: Load B tile (INT8: k_size × n_size bytes)
+            uint32_t b_off = b_base_offset + (k_start * N + n_start);  // 1 byte/el
+            seq->npu_dma_memcpy_nd(
+                1,                      // elem_size=1 (INT8)
+                1, S2MM,
+                tile_at(0, col), bd_1, it_channel_0,
+                {0, 0, 0, b_off}, {1, 1, n_size, k_size}, {0, 0, 0, 1},
+                -1, 0, false, normal_cache);
+
+            // DMA: Load bias (if enabled, float32)
+            if (add_bias && kb == 0) {
+                seq->npu_dma_memcpy_nd(
+                    4, 2, S2MM,
+                    tile_at(0, col), bd_2, it_channel_0,
+                    {0, 0, 0, bias_offset + n_start * 4},
+                    {1, 1, 1, n_size}, {0, 0, 0, 4},
+                    -1, 0, false, normal_cache);
+            }
+
+            // RTP writes: configure AIE kernel
+            seq->rtp_write(tile_at(FIRST_CT_ROW, col), REG_M,    M);
+            seq->rtp_write(tile_at(FIRST_CT_ROW, col), REG_K,    k_size);
+            seq->rtp_write(tile_at(FIRST_CT_ROW, col), REG_N,    n_size);
+            seq->rtp_write(tile_at(FIRST_CT_ROW, col), REG_ACT,  activation);
+            seq->rtp_write(tile_at(FIRST_CT_ROW, col), REG_BIAS, add_bias ? 1 : 0);
+        }
+
+        // Push DMA queues on all SHIM tiles
+        for (uint32_t tc = 0; tc < num_col_tiles; tc++) {
+            uint32_t col = tc % NPU_COLS;
+            seq->rtp_write(tile_at(0, col), REG_QUEUE_PUSH,
+                (0 << 0) | (0 << 3) | 0x10);
+            seq->rtp_write(tile_at(0, col), REG_QUEUE_PUSH,
+                (1 << 0) | (0 << 3) | 0x10);
+            if (add_bias && kb == 0)
+                seq->rtp_write(tile_at(0, col), REG_QUEUE_PUSH,
+                    (2 << 0) | (0 << 3) | 0x10);
+        }
+
+        // Wait for DMA completion
+        for (uint32_t tc = 0; tc < num_col_tiles; tc++)
+            seq->npu_dma_wait(tile_at(0, tc % NPU_COLS), S2MM, it_channel_0);
+
+        // Kick off compute
+        for (uint32_t tc = 0; tc < num_col_tiles; tc++)
+            seq->rtp_write(tile_at(FIRST_CT_ROW, tc % NPU_COLS), REG_KICK, 1);
+    }
+
+    // Write INT32 output back to DDR
+    if (output_offset != 0) {
+        for (uint32_t tc = 0; tc < num_col_tiles; tc++) {
+            uint32_t col     = tc % NPU_COLS;
+            uint32_t n_size  = std::min(BLOCK_N, N - tc * BLOCK_N);
+            uint32_t out_off = output_offset + tc * BLOCK_N * 4;  // 4 bytes per INT32
+            seq->npu_dma_memcpy_nd(
+                4,                      // elem_size=4 (INT32)
+                3, S2MM,
+                tile_at(0, col), bd_3, it_channel_0,
+                {0, 0, 0, out_off}, {1, 1, n_size, M}, {0, 0, 0, 4},
+                -1, 0, false, normal_cache);
+        }
+    }
 }
