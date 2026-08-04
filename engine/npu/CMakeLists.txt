@@ -27,7 +27,18 @@ target_include_directories(npu_engine_universal PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include   # npu_instr.hpp, npu_app.hpp
 )
 
-if(XRT_FOUND)
+if(EXISTS "/opt/xilinx/xrt/lib/libxrt_coreutil.so")
+    # NPU runtime from /opt/xilinx/xrt (XRT 2.26). The apt system XRT's
+    # libxrt_coreutil dlopens a nonexistent /usr/lib/lib/libxrt_core.so.2 at
+    # runtime — always prefer the /opt tree when present (matches the probe).
+    target_include_directories(npu_engine_universal PRIVATE /opt/xilinx/xrt/include)
+    target_link_libraries(npu_engine_universal
+        /opt/xilinx/xrt/lib/libxrt_coreutil.so
+        /opt/xilinx/xrt/lib/libxrt_core.so)
+    target_compile_definitions(npu_engine_universal PRIVATE -DXRT_ENABLE)
+    set_target_properties(npu_engine_universal PROPERTIES
+        BUILD_RPATH /opt/xilinx/xrt/lib INSTALL_RPATH /opt/xilinx/xrt/lib)
+elseif(XRT_FOUND)
     target_include_directories(npu_engine_universal PRIVATE ${XRT_INCLUDE_DIRS})
     target_link_libraries(npu_engine_universal ${XRT_CORE_LIBRARIES})
     target_compile_definitions(npu_engine_universal PRIVATE -DXRT_ENABLE)
