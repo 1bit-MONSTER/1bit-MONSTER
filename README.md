@@ -84,15 +84,15 @@ Zyphra's model portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, M
 
 | Model | Params | 1BP Size | Backend(s) | Pipeline | Perf |
 |-------|:------:|:--------:|------------|:--------:|:----:|
-| **ZAYA1-8B** | 8.8B | 6.6 GB¹ | ZINC / HIP / NPU | 🧠🗣️ | 64 tok/s HIP |
-| **ZAYA1-74B-preview** | 74B | 739 MB² | ZINC / HIP | 🧠🗣️ | — |
-| **ZAYA1-VL-8B** | 8.8B | — | ZINC (vision) | 👁️🧠🗣️ | — |
+| **ZAYA1-8B** | 8.8B | 6.6 GB¹ | HIP / NPU | 🧠🗣️ | 64 tok/s HIP |
+| **ZAYA1-74B-preview** | 74B | 739 MB² | HIP | 🧠🗣️ | — |
+| **ZAYA1-VL-8B** | 8.8B | — | HIP (vision) | 👁️🧠🗣️ | — |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 🧠🗣️ | 26 tok/s ZINC |
 | **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **79.4 tok/s** 🏁 |
 | **BlackMamba-2.8B** | 2.8B | 1.8 GB | Mamba1 HIP | 🧠🗣️ | 46.0 tok/s 🏁 |
-| **Zamba2-1.2B-v2** | 1.2B | 1.1 GB | ZINC ✅ / NPU | 🧠 | 30 tok/s ZINC |
-| **Zamba2-2.7B-v2** | 2.7B | 2.4 GB | ZINC ✅ / NPU | 🧠 | — |
-| **Zamba2-7B-v2** | 7B | 6.6 GB | ZINC ✅ / NPU | 🧠 | — |
+| **Zamba2-1.2B-v2** | 1.2B | 1.1 GB | HIP / CPU | 🧠 | 30 tok/s HIP |
+| **Zamba2-2.7B-v2** | 2.7B | 2.4 GB | HIP / CPU | 🧠 | — |
+| **Zamba2-7B-v2** | 7B | 6.6 GB | HIP / CPU | 🧠 | — |
 | **Zamba-7B-v1** | 7B | 4.3 GB | Mamba1 HIP | 🧠 | — |
 
 **Pipeline depth:**
