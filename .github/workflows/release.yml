@@ -80,35 +80,20 @@ jobs:
             -DCMAKE_PREFIX_PATH="$ROCM_PATH" \
             -DCMAKE_CXX_FLAGS="-I$ROCM_PATH/include" \
             -DCMAKE_HIP_FLAGS="--rocm-path=$ROCM_PATH"
-          # Build the core library, inference servers, and all new C++ tools
+          # Build the core library and the single onebin/1bit ELF (every
+          # server + CLI dispatched by subcommand — no separate binaries).
           ninja -C build \
             rocm_cpp \
-            zaya_server \
-            onebitd \
-            onebit \
             onebin \
-            unified_router \
-            unified_server \
-            zaya_agent \
             bitnet_tui
 
       - name: Package
         run: |
           mkdir -p dist/bin dist/lib
-          # C++ CLI agent (replaces Rust onebit)
+          # One binary: every server + CLI (zaya, unified, router, jarvis,
+          # vision, gaia, onebitd, onebit) dispatched by subcommand.
           cp build/1bit dist/bin/
-          cp build/onebit dist/bin/
-          # C++ daemon (spawns inference backend as subprocess)
-          cp build/onebitd dist/bin/
-          # C++ content-aware routing proxy (replaces unified-router.py)
-          cp build/unified_router dist/bin/
-          # HIP/C++ inference engine + OpenAI-compatible server
-          cp build/zaya_server dist/bin/
-          cp build/zaya_agent dist/bin/ 2>/dev/null || true
-          cp build/unified_server dist/bin/ 2>/dev/null || true
-          # Content-aware routing proxy (Lemonade policy engine when embedded)
-          cp build/unified_router dist/bin/ 2>/dev/null || true
-          # TUI frontend
+          # TUI frontend (separate binary, not folded into onebin)
           cp build/bitnet_tui dist/bin/ 2>/dev/null || true
           # Shared HIP kernel library
           cp build/librocm_cpp.so dist/lib/
@@ -190,17 +175,13 @@ jobs:
             - **AppImage** (`.AppImage`) — `chmod +x`, run directly, no install needed
 
             ### Includes
-            - `1bit` — C++ NPU-native coding agent CLI (chat, up, down, status, build, config, serve)
-            - `onebitd` — C++ inference daemon (spawns zaya_server, proxies HTTP)
-            - `zaya_server` — C++ HIP inference engine + OpenAI-compatible server;
-              `--lemonade` runs the embedded Lemonade server core in-process
-            - `unified_server` — multi-backend server with the **embedded Lemonade
-              server core** (llama.cpp, FastFlowLM, whisper.cpp, stable-diffusion.cpp,
-              kokoro, ryzenai-llm, vllm backends + policy router); `--lemonade` runs
-              Lemonade's full server in-process
-            - `unified_router` — NPU+GPU routing proxy; decisions run through
-              Lemonade's policy engine (keyword classifier → GPU, default → NPU)
-            - `bitnet_tui` — C++ FTXUI terminal chat UI
+            - `1bit` — one ELF, every server + CLI, dispatched by subcommand:
+              - `1bit` (no args) — NPU-native coding agent CLI (chat, up, down, status, build, config, serve)
+              - `1bit zaya` — C++ HIP inference engine + OpenAI-compatible server; `--lemonade` runs the embedded Lemonade server core in-process
+              - `1bit unified` — multi-backend server with the **embedded Lemonade server core** (llama.cpp, FastFlowLM, whisper.cpp, stable-diffusion.cpp, kokoro, ryzenai-llm, vllm backends + policy router); `--lemonade` runs Lemonade's full server in-process
+              - `1bit router` — NPU+GPU routing proxy; decisions run through Lemonade's policy engine (keyword classifier → GPU, default → NPU)
+              - `1bit jarvis` / `1bit vision` / `1bit gaia` / `1bit onebitd` — agent server, vision-language server, Gaia C++ agent loop, inference daemon
+            - `bitnet_tui` — C++ FTXUI terminal chat UI (separate binary)
             - `librocm_cpp.so` — ternary GEMV/GEMM HIP kernels
             - install script, docs, license
 

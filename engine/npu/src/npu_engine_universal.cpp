@@ -18,12 +18,13 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
-#include <xrt/experimental/xrt_ext.h>
 #include <xrt/experimental/xrt_module.h>
 #include <xrt/experimental/xrt_elf.h>
+#include <xrt/experimental/xrt_ext.h>
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
+#include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
 
 // Forward declarations: INT8 NPU instruction generators from gemm_npu_instructions.cpp
@@ -32,14 +33,13 @@ void gemm_generate_sequence_i8(
     uint32_t                M,
     uint32_t                K,
     uint32_t                N,
-    uint32_t                weight_offset,
+    uint32_t                a_ddr_offset,
+    uint32_t                b_base_offset,
     bool                    add_bias,
     int                     activation,
     uint32_t                bias_offset,
     uint32_t                output_offset
 );
-
-// Split A/B offset variant for hybrid FLM engine (separate BOs for A and B)
 void gemm_generate_sequence_i8_split(
     npu_sequence*           seq,
     uint32_t                M,
@@ -60,6 +60,7 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
+extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 static constexpr float EPS=1e-6f;
@@ -143,6 +144,63 @@ static void sigabrt_handler(int sig) {
     raise(SIGABRT);
 }
 
+// ── GatedDeltaNet attention (single-token, CPU, ported from llama.cpp ggml-cpu/ops.cpp) ──
+// Operates on transposed state: s[j*GD+i] = S[i][j] (column j of S = row j of s).
+// q/k/v/g: [GD] per head, beta: scalar, state: [GD*GD] per head.
+// Produces attn_out[GD] per head and updates state in-place.
+// GD = state dim (KV head dim), NH = number of heads.
+static void gdn_attn_cpu(
+        const float* q, const float* k, const float* v,
+        const float* g, const float* beta,
+        float* state,      // [NH, GD, GD] transposed, updated in-place
+        float* attn_out,   // [NH, GD]
+        int GD, int NH, float scale)
+{
+    for (int h = 0; h < NH; h++) {
+        const float* qh = q + h * GD;
+        const float* kh = k + h * GD;
+        const float* vh = v + h * GD;
+        const float* gh = g + h * GD;
+        float bh = beta[h];
+        float* sh = state + (size_t)h * GD * GD;
+        float* at = attn_out + h * GD;
+
+        // Precompute exp(g)
+        alignas(64) float eg[256];
+        for (int i = 0; i < GD; i++) eg[i] = expf(gh[i]);
+
+        // Step 1: S[i][:] *= exp(g[i]) → for each row j of s: s[j][i] *= eg[i]
+        for (int j = 0; j < GD; j++) {
+            float* sj = sh + j * GD;
+            for (int i = 0; i < GD; i++) sj[i] *= eg[i];
+        }
+
+        // Step 2: delta[j] = (v[j] - sum_i S[i][j]*k[i]) * beta
+        alignas(64) float delta[256];
+        for (int j = 0; j < GD; j++) {
+            float sum = 0;
+            const float* sj = sh + j * GD;  // column j of S (row j of s)
+            for (int i = 0; i < GD; i++) sum += sj[i] * kh[i];
+            delta[j] = (vh[j] - sum) * bh;
+        }
+
+        // Step 3: S[i][j] += k[i] * delta[j] → s[j][i] += delta[j] * k[i]
+        for (int j = 0; j < GD; j++) {
+            float* sj = sh + j * GD;
+            float dj = delta[j];
+            for (int i = 0; i < GD; i++) sj[i] += dj * kh[i];
+        }
+
+        // Step 4: attn_out[j] = sum_i S[i][j] * q[i] * scale
+        for (int j = 0; j < GD; j++) {
+            float sum = 0;
+            const float* sj = sh + j * GD;
+            for (int i = 0; i < GD; i++) sum += sj[i] * qh[i];
+            at[j] = sum * scale;
+        }
+    }
+}
+
 static std::vector<float> emb_f32; // f32 embeddings for fast LM head
 static std::vector<float> lm_head_f32; // f32 lm_head weights (separate from emb)
 // dequant_i8_to_float(_ex) returns row-major [out_features, in_features] (PyTorch nn.Linear);
@@ -168,201 +226,6 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
         if(!q)return 0;if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){
             auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 
-struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
-    std::unique_ptr<xrt::module>mdl;std::unique_ptr<xrt::elf>elf;
-    std::unique_ptr<xrt::ext::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bA,bC;
-    std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am;int32_t*Cm;
-    std::vector<std::vector<float>> group_scales;
-    bool initialized=false;
-    ~I8Ctx(){/* Am/Cm are mapped from bA/bC — destroyed by unique_ptr dtors */}
-    bool isReady(){return initialized&&k&&bA&&bC;}
-    bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers){
-        NL=nlayers;FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
-        ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
-        // Convert instructions to ELF module for extended kernel API
-        try{
-            std::vector<char> iraw((char*)ins.data(),(char*)ins.data()+ins.size()*sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(aiebu::aiebu_assembler::buffer_type::blob_instr_transaction,iraw);
-            auto e=asmblr.get_elf();
-            xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);
-            hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());
-            elf=std::make_unique<xrt::elf>(e.data(),e.size());
-        }catch(std::exception&ex){
-            fprintf(stderr,"  aiebu ELF gen failed: %s\n",ex.what());return false;}
-        mdl=std::make_unique<xrt::module>(*elf);
-        k=std::make_unique<xrt::ext::kernel>(*hc,*mdl,"MLIR_AIE");
-        // Create data BOs (instruction BO not needed — embedded in ELF)
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,0);
-        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XRT_BO_FLAGS_HOST_ONLY,0);
-        Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();
-        for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,0));
-        group_scales.resize(NL);initialized=true;return true;}
-    // Per-group INT8 quantization: K is divided into groups of 32, each with its own scale.
-    // go()/dequantize() compute the effective scale as the average of per-group scales.
-    void packB(int l,const float*w,int K,int N,float&sout){int num_groups=(K+31)/32;
-        group_scales[l].resize(num_groups);auto*Bm=(int8_t*)layerB[l]->map();
-        for(int g=0;g<num_groups;g++){int g_start=g*32;int g_size=std::min(32,K-g_start);float g_amax=0;
-            for(int j=0;j<N;j++){for(int i=0;i<g_size;i++){float a=fabsf(w[(g_start+i)*N+j]);if(std::isfinite(a)&&a>g_amax)g_amax=a;}}
-            if(g_amax<1e-12f)g_amax=1.0f;group_scales[l][g]=g_amax/127.0f;float g_is=127.0f/g_amax;
-            for(int j=0;j<N;j++){for(int i=0;i<g_size;i++){float v=w[(g_start+i)*N+j];if(!std::isfinite(v))v=0;
-                int x=(int)roundf(v*g_is);if(x>127)x=127;else if(x<-127)x=-127;Bm[(g_start+i)*N+j]=(int8_t)x;}}}
-        layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);float ssum=0;for(int g=0;g<num_groups;g++)ssum+=group_scales[l][g];sout=ssum/num_groups;}
-    // Async quantize: packs float activations into the A buffer without syncing
-    // Returns the quantized buffer pointer for later sync_and_launch.
-    inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
-        float ais=1.0f/ascale;
-        memset(Am,0,(size_t)am*KD);
-        for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
-            float v=A[m*ak+k];if(!std::isfinite(v))v=0;
-            int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;
-            Am[m*KD+k]=(int8_t)q;}
-        return Am;
-    }
-    // Sync A to device (non-blocking DMA, can overlap with NPU compute).
-    inline void sync_A(int l){
-        (void)l;
-        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    }
-    // Launch kernel via extended module API (instructions embedded in ELF).
-    // Args: mode=3, ctrl=0, reserved=0, then data BOs: A, weights B, output C.
-    inline xrt::run launch(int l){
-        return k->operator()(3,0,0,*bA,*layerB[l],*bC);
-    }
-    // Sync A to device and launch kernel. Returns run handle.
-    inline xrt::run sync_and_launch(int l){
-        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        return k->operator()(3,0,0,*bA,*layerB[l],*bC);
-    }
-
-    // Wait for run, sync C back, and dequantize.
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        r.wait();
-        readback();
-        dequant_only(C,am,an,ascale,Bscale,layer);
-    }
-    // Wait for NPU kernel completion without readback.
-    // Returns immediately after kernel finishes. Call sync_back_and_dequant() later.
-    inline void wait_kernel(xrt::run& r){
-        r.wait();
-    }
-    // Phase-split (cross-layer pipeline, roadmap step 3): bC DMA readback only.
-    // Call after wait_kernel(), then dequant_only() or a fused consumer pass.
-    inline void readback(){
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    }
-    // CPU-only dequant loop (call after readback()). CAN overlap with the next
-    // kernel's NPU execution. layer: if >= 0, uses average of per-group scales
-    // instead of Bscale.
-    inline void dequant_only(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        if(layer>=0&&(size_t)layer<group_scales.size()&&!group_scales[layer].empty()){
-            float ssum=0;for(float s:group_scales[layer])ssum+=s;
-            Bscale=ssum/group_scales[layer].size();}
-        float cs=ascale*Bscale;
-        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)((int32_t)Cm[m*ND+n])*cs;if(!std::isfinite(val))val=0;
-            C[m*an+n]=val;}
-    }
-    // Sync C back from device and dequantize (call after wait_kernel).
-    // This is CPU-only work that CAN overlap with the next kernel's NPU execution.
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void sync_back_and_dequant(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        readback();
-        dequant_only(C,am,an,ascale,Bscale,layer);
-    }
-    // Synchronous go() — simple, always works
-    // Uses per-group scales from group_scales[l] when available.
-    inline bool go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
-        quantize_async(A,am,ak,ascale);
-        auto r=sync_and_launch(l);
-        r.wait();
-        dequantize(r,C,am,an,ascale,Bscale,l);
-        return true;
-    }
-    // Fast path: launch, return run handle for later wait+dequant
-    inline xrt::run launch_async(int l,const float*A,int am,int ak,float ascale){
-        quantize_async(A,am,ak,ascale);
-        return sync_and_launch(l);
-    }
-    // Complete an async launch: wait + dequant
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void finish_async(xrt::run& r,float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        r.wait();
-        dequantize(r,C,am,an,ascale,Bscale,layer);
-    }
-
-    // Alternative init that generates instructions via gemm_generate_sequence_i8().
-    // Uses the instruction generator instead of pre-compiled instruction files.
-    // Creates all BOs for the GEMM context at the specified dimensions.
-    bool init_with_generator(xrt::device& d, const char* xp,
-                             int _MD, int _KD, int _ND,
-                             int nlayers) {
-        MD = _MD; KD = _KD; ND = _ND; NL = nlayers;
-        // Generate INT8 instruction sequence
-        npu_sequence seq(device_npu2);
-        gemm_generate_sequence_i8(&seq, MD, MD, ND, 0, false, 0, 0, 0);
-        seq.cmds2seq();
-        auto [dp, sz] = seq.dump();
-        ins.assign(dp, dp + sz / sizeof(uint32_t));
-        // Convert to ELF and create kernel
-        try {
-            std::vector<char> iraw((char*)ins.data(),
-                                   (char*)ins.data() + ins.size() * sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(
-                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
-            xc = std::make_unique<xrt::xclbin>(std::string(xp));
-            d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (std::exception& ex) {
-            fprintf(stderr, "  init_with_generator: aiebu ELF gen failed: %s\n", ex.what());
-            return false;
-        }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, 0);
-        Am = (int8_t*)bA->map();
-        Cm = (int32_t*)bC->map();
-        for (int l = 0; l < NL; l++)
-            layerB.emplace_back(
-                std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, 0));
-        group_scales.resize(NL);
-        initialized = true;
-        return true;
-    }
-
-    // Alternative init that takes pre-generated instructions instead of a file.
-    // Attention instructions loaded from pre-compiled file at init.
-    bool init_with_instrs(xrt::device& d, const char* xp,
-                          const std::vector<uint32_t>& pregen_instrs,
-                          int nlayers, int mdim, int kdim, int ndim) {
-        NL = nlayers;
-        MD = mdim; KD = kdim; ND = ndim;
-        ins = pregen_instrs;
-        try {
-            std::vector<char> iraw((char*)ins.data(),
-                                   (char*)ins.data() + ins.size() * sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(
-                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
-            xc = std::make_unique<xrt::xclbin>(std::string(xp));
-            d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (std::exception& ex) {
-            fprintf(stderr, "  aiebu ELF gen failed (instrs): %s\n", ex.what());
-            return false;
-        }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        // Data BOs created by caller for attention (different layout)
-        group_scales.resize(nlayers);
-        initialized = true;
-        return true;
-    }
-};
 
 // AttnCtx — NPU attention context with 4 BOs (Q, K, V, output).
 // The attn.xclbin kernel signature (from EMBEDDED_METADATA):
@@ -613,21 +476,58 @@ int main(int argc,char**argv){
     }
     #endif
 
-    // Norm weights
+    // Norm weights (try dense 'layers', MoE 'layer', GDN 'linear_attn' patterns)
+    std::vector<bool> is_gdn_layer(NC, false);  // true = GDN, false = standard attn
+    std::vector<uint64_t> qp_fused(NC, 0);  // fused QKV offset (GDN layers)
+    auto jo2 = [&](const char* fmt, int l) -> uint64_t {
+        char kb[256];
+        snprintf(kb, sizeof(kb), fmt, l);
+        uint64_t off = jo(js, jl, kb);
+        if (!off) {
+            // Try 'model.layer.N.' (MoE naming without 's')
+            std::string alt = kb;
+            size_t p = alt.find("model.layers.");
+            if (p != std::string::npos) { alt.replace(p, 14, "model.layer."); off = jo(js, jl, alt.c_str()); }
+        }
+        if (!off) {
+            // Try 'model.layer.N.linear_attn.' (GDN naming)
+            std::string alt = kb;
+            size_t p = alt.find("model.layers.");
+            if (p == std::string::npos) p = alt.find("model.layer.");
+            if (p != std::string::npos) {
+                // Replace 'self_attn' with 'linear_attn'
+                size_t sa = alt.find("self_attn");
+                if (sa != std::string::npos) { alt.replace(sa, 10, "linear_attn"); off = jo(js, jl, alt.c_str()); }
+            }
+        }
+        return off;
+    };
     std::vector<uint64_t> in_off(NC),pa_off(NC),qn_off(NC),kn_off(NC),qp(NC),kp(NC),vp(NC),op(NC),gp(NC),up(NC),dp(NC);
     char bn[128];
     for(int l=0;l<NC;l++){
-        snprintf(bn,128,"model.layers.%d.self_attn.q_proj.weight",l);qp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.k_proj.weight",l);kp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.v_proj.weight",l);vp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.o_proj.weight",l);op[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.mlp.gate_proj.weight",l);gp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.mlp.up_proj.weight",l);up[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.mlp.down_proj.weight",l);dp[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.input_layernorm.weight",l);in_off[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.post_attention_layernorm.weight",l);pa_off[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.q_norm.weight",l);qn_off[l]=jo(js,jl,bn);
-        snprintf(bn,128,"model.layers.%d.self_attn.k_norm.weight",l);kn_off[l]=jo(js,jl,bn);}
+        qp[l]=jo2("model.layers.%d.self_attn.q_proj.weight",l);
+        // Standard layers use fused QKV in q_proj (same as GDN qkv_proj).
+        // Don't try k_proj/v_proj separately — they don't exist.
+        kp[l]=0; vp[l]=0;  // handled via fused QKV split
+        op[l]=jo2("model.layers.%d.self_attn.o_proj.weight",l);
+        // GDN fused QKV (if separate q_proj not found):
+        if (!qp[l]) {
+            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l);
+            qp_fused[l] = jo(js, jl, bn);
+            if (qp_fused[l]) {
+                is_gdn_layer[l] = true;
+                // O projection for GDN layers: linear_attn.ssm_out_proj
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_out_proj.weight", l);
+                op[l] = jo(js, jl, bn);
+            }
+        }
+        gp[l]=jo2("model.layers.%d.mlp.gate_proj.weight",l);
+        up[l]=jo2("model.layers.%d.mlp.up_proj.weight",l);
+        dp[l]=jo2("model.layers.%d.mlp.down_proj.weight",l);
+        in_off[l]=jo2("model.layers.%d.input_layernorm.weight",l);
+        pa_off[l]=jo2("model.layers.%d.post_attention_layernorm.weight",l);
+        qn_off[l]=jo2("model.layers.%d.self_attn.q_norm.weight",l);
+        kn_off[l]=jo2("model.layers.%d.self_attn.k_norm.weight",l);}
     uint64_t no=jo(js,jl,"model.norm.weight");
     uint64_t lo=jo(js,jl,"lm_head.weight");
     std::vector<std::vector<float>> in_n(NC,std::vector<float>(H)),pa_n(NC,std::vector<float>(H)),qn_w(NC,std::vector<float>(HD)),kn_w(NC,std::vector<float>(HD));
@@ -638,10 +538,72 @@ int main(int argc,char**argv){
         if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}}
     {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
 
-    // I8 tile rows
-    auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);return r;};
+    // I8 tile rows — for Qwen3.6 Q8_0 tensors (8704 bytes/row) vs INT4 (5120 bytes/row)
+    auto get_bytes_per_tile = [&](const char* key) -> int {
+        size_t kl = strlen(key);
+        const char* p = js, *e = js + jl;
+        while (p < e) {
+            auto q = (const char*)memmem(p, e - p, key, kl);
+            if (!q) return 0;
+            if ((q == js || *(q-1) == '"') && *(q + kl) == '"') {
+                auto shape_loc = strstr(q, "\"shape\"");
+                if (shape_loc) {
+                    auto bracket = strchr(shape_loc, '[');
+                    if (bracket) {
+                        // Parse array: [dim0, dim1, dim2] — last is bytes_per_tile
+                        const char* sp = bracket + 1;
+                        int last = 0;
+                        while (*sp && *sp != ']') {
+                            last = (int)strtoul(sp, (char**)&sp, 10);
+                            while (*sp == ',' || *sp == ' ') sp++;
+                        }
+                        return last;  // returns bytes_per_tile (5120 or 8704)
+                    }
+                }
+                return 0;
+            }
+            p = q + kl;
+        }
+        return 0;
+    };
+    // Auto-detect Q8_0 vs INT4 and dequant
+    auto dequant_auto = [&](uint64_t off, int i8_rows, int in_features,
+                             int* out_rows, int* out_cols, const char* key) -> float* {
+        int bpt = get_bytes_per_tile(key);
+        if (bpt == 8704)
+            return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
+        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
+    };
+    auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
+        if(r<=0){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}
+        if(r<=0){std::string ak=k;size_t p=ak.find("model.layer.");if(p!=std::string::npos){size_t sa=ak.find("self_attn");if(sa!=std::string::npos){ak.replace(sa,10,"linear_attn");find_tensor_info(js,jl,ak.c_str(),&r);}}}
+        if (r > 0) {
+            // Handle 3D Q4NX shapes [tile_rows, tile_cols, bytes]:
+            // Multiply by tile_cols if present (Qwen3.6 uses 3D, Qwen3 uses 2D).
+            // Default tile_cols = in_features / 256. Compute from known dims.
+        }
+        return r;};
     int q_i8=gi8("model.layers.0.self_attn.q_proj.weight"),k_i8=gi8("model.layers.0.self_attn.k_proj.weight"),v_i8=gi8("model.layers.0.self_attn.v_proj.weight");
+    // Fallback: GDN fused QKV
+    int qkv_fused_i8 = 0;
+    if (q_i8 <= 0) { q_i8 = gi8("model.layer.0.linear_attn.qkv_proj.weight"); qkv_fused_i8 = q_i8; }
     int o_i8=gi8("model.layers.0.self_attn.o_proj.weight"),g_i8=gi8("model.layers.0.mlp.gate_proj.weight"),u_i8=gi8("model.layers.0.mlp.up_proj.weight"),d_i8=gi8("model.layers.0.mlp.down_proj.weight");
+    // GDN fallbacks
+    if (o_i8 <= 0) o_i8 = gi8("model.layer.0.linear_attn.ssm_out_proj.weight");
+    if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight");
+    // Qwen3.6 uses 3D Q4NX shapes [tile_rows, tile_cols, bytes].
+    // gi8 returns shape[0] (tile_rows); multiply by tile_cols = in_features/256.
+    // Only for 3D-shape models (MoE); 2D-shape models (Qwen3) have cols already included.
+    if (cfg.has_moe) {
+    int q_cols = H / 256;      // 8 for H=2048
+    int o_cols = (NH * HD) / 256; // 16 for NH*HD=4096
+    int d_cols = IM / 256;     // 2 for IM=512
+    q_i8 *= q_cols; k_i8 *= q_cols; v_i8 *= q_cols;
+    qkv_fused_i8 *= q_cols;
+    o_i8 *= o_cols;
+    g_i8 *= q_cols; u_i8 *= q_cols;
+    d_i8 *= d_cols;
+    }
     int lm_i8=gi8("lm_head.weight");
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
@@ -675,6 +637,7 @@ int main(int argc,char**argv){
 
     // GEMM contexts: I8Ctx (legacy) or HybridFlmCtx (FLM path)
     bool flm_xclbin_available = false;
+    bool cpu_gemm_fallback = false;  // set when NPU GEMM can't init (MoE models)
     std::string flm_mm_path;
     if (use_flm_xclbin) {
         // Try to find mm.xclbin. Priority:
@@ -807,11 +770,28 @@ int main(int argc,char**argv){
         // Sync weights after all packB calls (done at pack time in the pipeline below)
     } else {
         // ── Legacy path: per-op xclbins + per-layer weight BOs ──
+        // MoE models may lack instruction files — check before init.
+        bool has_insts = true;
+        if (cfg.has_moe) {
+            auto check_inst = [&](const char* t) {
+                std::string ip_s = ip(t);
+                FILE* f = fopen(ip_s.c_str(), "rb");
+                if (f) { fclose(f); return true; }
+                fprintf(stderr, "  WARN: %s not found\n", ip_s.c_str());
+                return false;
+            };
+            has_insts = check_inst("QKV") && check_inst("O");
+            if (!has_insts) cpu_gemm_fallback = true;
+        }
+        if (!cpu_gemm_fallback) {
+        fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
         if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC)){fprintf(stderr,"FAIL QKV\n");return 1;}
         if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC)){fprintf(stderr,"FAIL O\n");return 1;}
         if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}}
         if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
-        if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}}
+        if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}
+        }
+    }
     // NPU attention via pre-compiled KV xclbin instructions.
     // Auto-detected when both final_i8_ATTN_<tag>.xclbin and insts_i8_KV_<tag>.txt exist.
     // Explicitly disable with NPU_ATTN=0; override inst path with NPU_ATTN_FILE=<path>.
@@ -879,19 +859,64 @@ int main(int argc,char**argv){
 
     fprintf(stderr,"Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
     std::vector<float> qsc(NC),osc(NC),gsc(NC),dsc(NC),usc(NC);
+    std::vector<std::vector<float>> cpu_qkv_w, cpu_o_w;  // CPU fallback: saved dequant weights
+    if (cpu_gemm_fallback) { cpu_qkv_w.resize(NC); cpu_o_w.resize(NC); }
     const int QOUT=NH*HD,KVOUT=NKV*HD;   // QKV out_features, in_features=H (default dequant correct)
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
-    for(int l=0;l<NC;l++){int qr,kr,vr,unused;
-        float*qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused),*kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused),*vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
-        int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
-        transpose_pack(qw,QOUT,H,w.data(),t,0); transpose_pack(kw,KVOUT,H,w.data(),t,QOUT); transpose_pack(vw,KVOUT,H,w.data(),t,QOUT+KVOUT);
-        FLM_PACKB(cq,l,w.data(),H,t,qsc[l]);free(qw);free(kw);free(vw);
-        int or2,oc2;float*ow=dequant_i8_to_float_ex(i8p(op[l]),o_i8,OIN,&or2,&oc2);
-        std::vector<float>wo((size_t)OIN*OOUT);transpose_pack(ow,OOUT,OIN,wo.data(),OOUT,0);
-        FLM_PACKB(co,l,wo.data(),OIN,OOUT,osc[l]);free(ow);
-        int gr,ur;float*gw=dequant_i8_to_float_ex(i8p(gp[l]),g_i8,H,&gr,&unused),*uw=dequant_i8_to_float_ex(i8p(up[l]),u_i8,H,&ur,&unused);
+    if (!cpu_gemm_fallback) {
+    auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
+        if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+    };
+    bool use_q8 = cfg.has_moe;  // MoE models use Q8_0 for attention projections
+    for(int l=0;l<NC;l++){
+        if (is_gdn_layer[l]) {
+            // GDN layer: load fused QKV + SSM out projection
+            if (!qp_fused[l] || !op[l] || qkv_fused_i8 <= 0) continue;
+            fprintf(stderr, "  layer %d GDN: qp_fused=%llu qkv_i8=%d\n", l, (unsigned long long)qp_fused[l], qkv_fused_i8);
+            int qr, qc, or2, oc2;
+            fprintf(stderr, "    dequant qkv...\n");
+            float* qkv_w = dq(qp_fused[l], qkv_fused_i8, H, &qr, &qc, use_q8);
+            fprintf(stderr, "    dequant qkv done [%d,%d]\n", qr, qc);
+            float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
+            if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
+            // Fused QKV: pack as if it were [Q, K, V] concatenated
+            int t = QOUT + KVOUT + KVOUT;
+            std::vector<float> w((size_t)H * t);
+            transpose_pack(qkv_w, QOUT, H, w.data(), t, 0);           // Q
+            transpose_pack(qkv_w + QOUT, KVOUT, H, w.data(), t, QOUT); // K
+            transpose_pack(qkv_w + QOUT + KVOUT, KVOUT, H, w.data(), t, QOUT + KVOUT); // V
+            FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+            free(qkv_w);
+            // O projection
+            std::vector<float> wo((size_t)OIN * OOUT);
+            transpose_pack(ow, OOUT, OIN, wo.data(), OOUT, 0);
+            FLM_PACKB(co, l, wo.data(), OIN, OOUT, osc[l]);
+            free(ow);
+        } else if (qp[l] && op[l]) {
+        fprintf(stderr, "  layer %d STD fused: qp=%llu\n", l, (unsigned long long)qp[l]);
+        fflush(stderr);
+        // Standard layer: fused QKV in q_proj, split same as GDN
+        int qr, qc, or2, oc2;
+        float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
+        float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
+        if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
+        int t = QOUT + KVOUT + KVOUT;
+        std::vector<float> w((size_t)H * t);
+        transpose_pack(qkv_w, QOUT, H, w.data(), t, 0);
+        transpose_pack(qkv_w + QOUT, KVOUT, H, w.data(), t, QOUT);
+        transpose_pack(qkv_w + QOUT + KVOUT, KVOUT, H, w.data(), t, QOUT + KVOUT);
+        FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+        free(qkv_w);
+        std::vector<float> wo((size_t)OIN * OOUT);
+        transpose_pack(ow, OOUT, OIN, wo.data(), OOUT, 0);
+        FLM_PACKB(co, l, wo.data(), OIN, OOUT, osc[l]);
+        free(ow);
+        if (gp[l] && up[l]) {
+        int unused;
+        int gr,ur;float*gw=dq(gp[l],g_i8,H,&gr,&unused,use_q8),*uw=dq(up[l],u_i8,H,&ur,&unused,use_q8);
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
             FLM_PACKB(cg,l,wg.data(),H,gr,gsc[l]);
@@ -902,16 +927,86 @@ int main(int argc,char**argv){
             transpose_pack(gw,GUOUT,H,w2.data(),t2,0);transpose_pack(uw,GUOUT,H,w2.data(),t2,GUOUT);
             FLM_PACKB(cg,l,w2.data(),H,t2,gsc[l]);
         }free(gw);free(uw);
+        }
+        if (dp[l]) {
         int dr2,dc2;float*dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
-        FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);}
+        FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
+        }
+        } // end else if (standard layer)
+        } // end for l
     // Hybrid FLM: sync all weight BOs to device after packing (single DMA per type)
     if(flm_xclbin_available){
         hcq->sync_weights(); hco->sync_weights();
         hcg->sync_weights(); hcd->sync_weights();
         if(cfg.gu_split && hcu_ptr) hcu_ptr->sync_weights();
     }
+    } // end if (!cpu_gemm_fallback)
     fprintf(stderr,"  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
+
+    // ── MoE weight loading (router dequant; expert offsets kept raw) ──
+    int N_EXPERTS = cfg.N_EXPERTS, TOP_K = cfg.TOP_K, IM_EXP = cfg.IM_EXP, N_SHARED = cfg.N_SHARED;
+    bool has_moe = cfg.has_moe;
+    // Per-layer: router [H, N_EXPERTS] float, expert Q4NX offsets + tile rows,
+    // shared expert offsets + tile rows, shared gate [H] float.
+    std::vector<std::vector<float>> router_w, sh_gate_vec;
+    struct MoeOffsets { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
+    struct ShOffsets  { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
+    std::vector<MoeOffsets> exp_off;    // per-layer expert offsets
+    std::vector<ShOffsets>  sh_off;     // per-layer shared expert offsets
+    if (has_moe) {
+        fprintf(stderr, "Loading MoE weights: experts=%d top_k=%d im_exp=%d shared=%d\n",
+                N_EXPERTS, TOP_K, IM_EXP, N_SHARED);
+        router_w.resize(NC); sh_gate_vec.resize(NC);
+        exp_off.resize(NC); sh_off.resize(NC);
+        auto te_moe = std::chrono::steady_clock::now();
+        // Tile rows from layer 0 (same for all layers)
+        int exp_gate_tr = 0, exp_up_tr = 0, exp_down_tr = 0;
+        find_tensor_info(js, jl, "model.layer.0.mlp.gate_exps_proj.weight", &exp_gate_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.up_exps_proj.weight", &exp_up_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.down_exps_proj.weight", &exp_down_tr);
+        for (int l = 0; l < NC; l++) {
+            // Router: BF16 [H, N_EXPERTS] stride-8 interleave
+            snprintf(bn, 128, "model.layer.%d.moe_router.weight", l);
+            uint64_t roff = jo(js, jl, bn);
+            if (roff) {
+                router_w[l].resize((size_t)H * N_EXPERTS);
+                const uint16_t* rb = (const uint16_t*)i8p(roff);
+                for (int i = 0; i < H; i++)
+                    for (int j = 0; j < N_EXPERTS; j++)
+                        router_w[l][i * N_EXPERTS + j] =
+                            bf16g(rb[(size_t)(i % 8) * 65536 + j * 256 + i / 8]);
+            }
+            // Expert weights: store offsets + tile rows (dequant on demand)
+            snprintf(bn, 128, "model.layer.%d.mlp.gate_exps_proj.weight", l);
+            exp_off[l].gate = jo(js, jl, bn); exp_off[l].gate_tr = exp_gate_tr;
+            snprintf(bn, 128, "model.layer.%d.mlp.up_exps_proj.weight", l);
+            exp_off[l].up   = jo(js, jl, bn); exp_off[l].up_tr   = exp_up_tr;
+            snprintf(bn, 128, "model.layer.%d.mlp.down_exps_proj.weight", l);
+            exp_off[l].down = jo(js, jl, bn); exp_off[l].down_tr = exp_down_tr;
+            // Shared expert weights: offsets + tile rows
+            snprintf(bn, 128, "model.layer.%d.mlp.share_gate_exps_proj.weight", l);
+            sh_off[l].gate = jo(js, jl, bn);
+            snprintf(bn, 128, "model.layer.%d.mlp.share_up_exps_proj.weight", l);
+            sh_off[l].up   = jo(js, jl, bn);
+            snprintf(bn, 128, "model.layer.%d.mlp.share_down_exps_proj.weight", l);
+            sh_off[l].down = jo(js, jl, bn);
+            find_tensor_info(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight", &sh_off[l].gate_tr);
+            find_tensor_info(js, jl, "model.layer.0.mlp.share_up_exps_proj.weight", &sh_off[l].up_tr);
+            find_tensor_info(js, jl, "model.layer.0.mlp.share_down_exps_proj.weight", &sh_off[l].down_tr);
+            // Shared expert gate vector [H] BF16
+            snprintf(bn, 128, "model.layer.%d.shared_expert_gate.weight", l);
+            uint64_t sgoff = jo(js, jl, bn);
+            if (sgoff) {
+                const uint16_t* gb = (const uint16_t*)i8p(sgoff);
+                sh_gate_vec[l].resize(H);
+                for (int i = 0; i < H; i++) sh_gate_vec[l][i] = bf16g(gb[i]);
+            }
+        }
+        auto ms_moe = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - te_moe).count();
+        fprintf(stderr, "  MoE offsets stored in %.0fms\n", ms_moe);
+    }
 
     // RoPE
     ri(HD,cfg.rope_theta,4096);
@@ -941,6 +1036,125 @@ int main(int argc,char**argv){
     std::vector<float> h_data(H), qo_data(qkv_n*BS), ko_data(NKV*HD*BS), vo_data(NKV*HD*BS), at_data(NH*HD*BS), oo_data(H*BS);
     std::vector<float> gt_data((cfg.gu_split?IM:2*IM)*BS), su_data(IM*BS), dwo_data(H*BS), sb_data(XM*H), lg_buf(NV);
     int sp=0;
+
+    // ── CPU MoE FFN helper (dequant active experts on-the-fly) ──
+    // x: input [H], out: output [H], l: layer index
+    // ponytail: CPU matmul, NPU I8Ctx later when per-layer latency matters
+    auto moe_ffn_cpu = [&](const float* x, float* out, int l) {
+        const auto& eo = exp_off[l];
+        const auto& so = sh_off[l];
+        // Router: softmax → top-K
+        const float* rt = router_w[l].data();
+        std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
+        double lmax = -1e30;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            double s = 0;
+            for (int i = 0; i < H; i++) s += (double)x[i] * rt[i * N_EXPERTS + j];
+            logits[j] = (float)s;
+            if (logits[j] > lmax) lmax = logits[j];
+        }
+        double lsum = 0;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            probs[j] = expf(logits[j] - (float)lmax);
+            lsum += probs[j];
+        }
+        for (int j = 0; j < N_EXPERTS; j++) probs[j] /= (float)lsum;
+        std::vector<int> topk(N_EXPERTS);
+        for (int j = 0; j < N_EXPERTS; j++) topk[j] = j;
+        std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
+            [&](int a, int b) { return probs[a] > probs[b]; });
+
+        memset(out, 0, H * sizeof(float));
+        // Per-expert tile-rows: gate/up each have IM_EXP/32 tile rows per expert
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;  // tile rows per expert for gate
+        int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
+        int exp_down_tr_per = eo.down_tr / N_EXPERTS;
+        int exp_gate_off_stride = exp_gate_tr_per * 8 * H;  // bytes per expert in Q4NX
+        int exp_up_off_stride   = exp_up_tr_per   * 8 * H;
+        int exp_down_off_stride = exp_down_tr_per * 8 * IM_EXP;
+
+        for (int e = 0; e < TOP_K; e++) {
+            int ex = topk[e];
+            // Dequant this expert's G/U/D from Q4NX on-the-fly
+            int gr, gc, ur, uc, dr, dc;
+            float* G = dequant_i8_to_float_ex(
+                i8p(eo.gate + (uint64_t)ex * exp_gate_off_stride),
+                exp_gate_tr_per, H, &gr, &gc);
+            float* U = dequant_i8_to_float_ex(
+                i8p(eo.up + (uint64_t)ex * exp_up_off_stride),
+                exp_up_tr_per, H, &ur, &uc);
+            float* D = dequant_i8_to_float_ex(
+                i8p(eo.down + (uint64_t)ex * exp_down_off_stride),
+                exp_down_tr_per, IM_EXP, &dr, &dc);
+            if (!G || !U || !D) { free(G); free(U); free(D); continue; }
+            // G/U: [IM_EXP, H] @ x → [IM_EXP]
+            std::vector<float> gu(IM_EXP * 2);
+            for (int i = 0; i < IM_EXP; i++) {
+                double g = 0, u = 0;
+                for (int k = 0; k < H; k++) {
+                    g += (double)G[i * H + k] * x[k];
+                    u += (double)U[i * H + k] * x[k];
+                }
+                float gv = (float)g, uv = (float)u;
+                if (!std::isfinite(gv)) gv = 0;
+                if (!std::isfinite(uv)) uv = 0;
+                gu[i] = gv; gu[IM_EXP + i] = uv;
+            }
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = gu[i];
+                if (!std::isfinite(gv)) gv = 0;
+                gu[i] = (gv / (1.0f + expf(-gv))) * gu[IM_EXP + i];
+            }
+            // D: [H, IM_EXP] @ gu → [H], weighted by router prob
+            float pw = probs[ex];
+            for (int i = 0; i < H; i++) {
+                double d = 0;
+                for (int k = 0; k < IM_EXP; k++) d += (double)D[i * IM_EXP + k] * gu[k];
+                out[i] += pw * (float)d;
+            }
+            free(G); free(U); free(D);
+        }
+
+        // Shared expert: sigmoid gate → SiLU(G@x) * U@x → D @ activation
+        if (N_SHARED > 0 && so.gate) {
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+
+            int sgr, sgc, sur, suc, sdr, sdc;
+            float* SG = dequant_i8_to_float_ex(i8p(so.gate), so.gate_tr, H, &sgr, &sgc);
+            float* SU = dequant_i8_to_float_ex(i8p(so.up),   so.up_tr,   H, &sur, &suc);
+            float* SD = dequant_i8_to_float_ex(i8p(so.down), so.down_tr, IM_EXP, &sdr, &sdc);
+            if (SG && SU && SD) {
+                std::vector<float> sgu(IM_EXP * 2);
+                for (int i = 0; i < IM_EXP; i++) {
+                    double g = 0, u = 0;
+                    for (int k = 0; k < H; k++) {
+                        g += (double)SG[i * H + k] * x[k];
+                        u += (double)SU[i * H + k] * x[k];
+                    }
+                    float gv = (float)g, uv = (float)u;
+                    if (!std::isfinite(gv)) gv = 0;
+                    if (!std::isfinite(uv)) uv = 0;
+                    sgu[i] = gv; sgu[IM_EXP + i] = uv;
+                }
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = sgu[i];
+                    if (!std::isfinite(gv)) gv = 0;
+                    sgu[i] = (gv / (1.0f + expf(-gv))) * sgu[IM_EXP + i];
+                }
+                for (int i = 0; i < H; i++) {
+                    double d = 0;
+                    for (int k = 0; k < IM_EXP; k++) d += (double)SD[i * IM_EXP + k] * sgu[k];
+                    out[i] += sg_sig * (float)d;
+                }
+            }
+            free(SG); free(SU); free(SD);
+        }
+        for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+    };
+
     // ===== WORKER MODE (subprocess protocol) =====
     // The Zig fused executor (fused_execute.zig) sends individual GEMM
     // operations (QKV, OPROJ, GATEUP, DOWN) via this protocol. Each request
@@ -1076,6 +1290,8 @@ int main(int argc,char**argv){
                     static std::vector<float> fuse_h_b, fuse_qo_b, fuse_at_b, fuse_oo_b;
                     static std::vector<float> fuse_gt_b, fuse_su_b, fuse_dw_b, fuse_sb_b;
                     static std::vector<float> fuse_lg_buf;
+                    static std::vector<float> fuse_gdn_state;     // [NC, NKV, HD, HD]
+                    static std::vector<float> fuse_gdn_attn_out;  // [NKV, HD]
                     static std::vector<int> fuse_top_ids_v;
                     // Expose state to op=31 for reset
                     { static bool once = false; if (!once) {
@@ -1099,6 +1315,13 @@ int main(int argc,char**argv){
                         fuse_top_ids_v.resize(BS, 0);
                         fuse_kv_init = true;
                         fuse_pos = 0;
+                        // ponytail: GDN state allocated for all layers if MoE;
+                        // non-GDN layers waste 40MB but avoids per-layer detection logic.
+                        if (has_moe) {
+                            int gd = HD;  // GDN state dim = KV head dim
+                            fuse_gdn_state.resize(NC * (size_t)NKV * gd * gd, 0);
+                            fuse_gdn_attn_out.resize(NKV * gd, 0);
+                        }
                     }
                     int token_id = (int)in_data[0];
                     if (token_id < 0 || token_id >= NV) token_id = 0;
@@ -1119,6 +1342,8 @@ int main(int argc,char**argv){
                         int qkv_v_off = cfg.qkv_v_offset;
                         float* qn = qn_w[l].data();
                         float* kn = kn_w[l].data();
+                        bool is_gdn = has_moe && exp_off[l].gate;
+                        if (!is_gdn) {
                         for (int hh = 0; hh < NH; hh++) {
                             double sq = 0;
                             for (int d = 0; d < HD; d++) sq += fqo[hh * HD + d] * fqo[hh * HD + d];
@@ -1136,7 +1361,6 @@ int main(int argc,char**argv){
                                     ks[d] *= ik * (cfg.has_k_norm ? kn[d] : 1.0f);
                                 ra(ks, HD, fuse_pos);
                                 float* vs = &fqo[qkv_v_off + kvh * HD];
-                                // fuse KV capacity is 4096 positions (issue #1267)
                                 if (fuse_pos >= 4096) {
                                     fprintf(stderr, "[npu] fuse KV overflow (pos=%d) — restarting context\n", fuse_pos);
                                     fuse_pos = 0;
@@ -1145,10 +1369,38 @@ int main(int argc,char**argv){
                                 memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
                             }
                         }
+                        }
                         fuse_kv[l].n = fuse_pos + 1;
                         int fcl = fuse_kv[l].n;
                         float* fat = fuse_at_b.data();
-                        if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
+                        if (has_moe && exp_off[l].gate) {
+                            // GatedDeltaNet attention (MoE layers)
+                            // Q/K/V layout from QKV GEMM: [Q:NH*HD, K:NKV*HD, V:NKV*HD]
+                            float* gq = fqo;                    // [NH*HD]
+                            float* gk = fqo + qkv_k_off;       // [NKV*HD]
+                            float* gv = fqo + qkv_v_off;       // [NKV*HD]
+                            int gd = HD;  // GDN state dim = KV head dim
+                            float* gs = fuse_gdn_state.data() + (size_t)l * NKV * gd * gd;
+                            // ponytail: fake gate/beta (default identity) — real
+                            // gate/beta projections from GDN weights TODO.
+                            // gate=log(0.98) ≈ -0.02 → mild state decay (stable)
+                            // beta=1.0 → identity mixing
+                            alignas(64) float fake_gate[256];
+                            alignas(64) float fake_beta[256];
+                            for (int h = 0; h < NKV; h++) {
+                                fake_gate[h * gd] = -0.02f;  // per-head scalar gate
+                                fake_beta[h] = 1.0f;
+                            }
+                            gdn_attn_cpu(gq, gk, gv, fake_gate, fake_beta, gs,
+                                        fuse_gdn_attn_out.data(), gd, NKV,
+                                        1.0f / sqrtf((float)gd));
+                            // Expand GDN output [NKV, GD] to full attention output [NH, HD]
+                            // GDN operates on KV heads; replicate for Q heads via GQA
+                            for (int hh = 0; hh < NH; hh++) {
+                                int kvh = hh / GQA;
+                                memcpy(fat + hh * HD, fuse_gdn_attn_out.data() + kvh * HD, HD * 4);
+                            }
+                        } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
                             float qs = dynamic_ascale(fqo, NH * HD);
                             float ks = 0;
                             for (int i = 0; i < fcl * NKV * HD; i++) {
@@ -1168,6 +1420,12 @@ int main(int argc,char**argv){
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_oo_b[i];
                         for (int i = 0; i < H; i++) fsb[i] = fh[i];
                         rn_c(fh, pa_n[l].data(), H);
+                        if (has_moe && exp_off[l].gate) {
+                            // MoE FFN (CPU path — ponytail: NPU I8Ctx optimization later)
+                            moe_ffn_cpu(fh, fuse_dw_b.data(), l);
+                            cn(fuse_dw_b.data(), H);
+                            for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
+                        } else {
                         int fmlp_out = cfg.gu_split ? IM : 2 * IM;
                         float ag = dynamic_ascale(fh, H);
                         FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
@@ -1192,6 +1450,7 @@ int main(int argc,char**argv){
                         FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
                         cn(fuse_dw_b.data(), H);
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
+                        }
                     }
                     // Final norm + lm_head
                     rn_c(fuse_h_b.data(), fin_v.data(), H);

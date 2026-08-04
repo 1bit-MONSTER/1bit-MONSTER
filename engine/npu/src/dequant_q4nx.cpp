@@ -104,3 +104,42 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
     }
     return out;
 }
+
+// ── Q8_0 dequant (8704 bytes/row, used by Qwen3.6 attention projections) ──
+// Row layout: [0..511]: 256 BF16 scales, [512..8703]: 8192 signed INT8 values.
+// No zero-points. Values are signed: byte 0x00→0, 0x01→1, ..., 0x80→-128.
+extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int in_features,
+                              int* out_rows, int* out_cols) {
+    constexpr int Q8_0_ROW_BYTES = 8704;
+    int n_tile_cols = in_features / TILE_COLS;
+    int n_tile_rows = i8_rows / n_tile_cols;
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * TILE_COLS;
+
+    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + ir * Q8_0_ROW_BYTES;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+
+        const uint16_t* scales = (const uint16_t*)(rd);
+        const int8_t*   values = (const int8_t*)(rd + 512);  // signed INT8
+
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            for (int col = 0; col < TILE_COLS; col++) {
+                int group = col / 32;
+                float scale = bf16_to_float(scales[group * 32 + lr]);
+                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
+
+                // Signed INT8: row-major layout
+                int8_t val = values[lr * TILE_COLS + col];
+
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * TILE_COLS + col)] = (float)val * scale;
+            }
+        }
+    }
+    return out;
+}

@@ -16,7 +16,7 @@ import torchaudio
 import torchaudio.functional as Faudio
 from torch.utils.data import Dataset
 
-from .config import DEFAULT_CONFIG, AudioCodecConfig
+from zaya_audio.config import DEFAULT_CONFIG, AudioCodecConfig
 
 
 class AudioDataset(Dataset):
@@ -86,7 +86,15 @@ class AudioDataset(Dataset):
         filename = str(path)
 
         # Load audio (always mono, resample to target SR)
-        waveform, sr = torchaudio.load(filename)
+        # torchaudio >=2.7 defaults to the TorchCodec backend which may not be
+        # installed; fall back to soundfile (a documented dependency) so
+        # training works on any provisioned env.
+        try:
+            waveform, sr = torchaudio.load(filename)
+        except (ImportError, RuntimeError):
+            import soundfile as sf
+            data, sr = sf.read(filename, dtype="float32", always_2d=True)
+            waveform = torch.from_numpy(data.T)  # [channels, samples]
         if waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)  # mix to mono
         if sr != self.config.sample_rate:

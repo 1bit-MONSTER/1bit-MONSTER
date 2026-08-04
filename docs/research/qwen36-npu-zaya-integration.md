@@ -233,3 +233,74 @@ scales=1.0, q8 ramp 0..255):
 (present in Qwen3.6-35B-A3B-NPU2/). Next step: drive gen_dequant_mm with
 real dims (M/K/N for the qkv tensor) and read back the dequant_mm kernel
 output — that is the true oracle for the value↔position mapping.
+
+### Session 2026-08-03 — dequant_mm oracle: harness RUNNING + I/O contract + strategic pivot
+
+**Harness built** (`tools/dequant_mm_oracle.cpp`, `tools/gguf_qkv_dump.cpp`). The
+decisive experiment from the doc above is now executable. Findings:
+
+- `gen_dequant_mm` (libqwen3_6_moe_npu.so) is `this`-free (verified by
+  disassembly — zero derefs of the incoming this in 2K instructions); it reads
+  only its args + .so globals (initialized at dlopen). Call it via dlopen with
+  a dummy this. `libq4_npu_eXpress.so` MUST be dlopen'd first (it defines
+  `SafeTensors`, which libqwen3_6_moe_npu.so imports).
+- ABI: `gen_dequant_mm(seq, M, K, N, off, m, dtype)` — rdi=this(unused),
+  rsi=seq, rdx=M, rcx=K, r8=N, r9=off, stack m, stack dtype (x86-64 SysV).
+  RTP config written: 0xf900 = K>>9, 0xf940 = m, 0xf980 = ~dtype&1,
+  0xf9c0 = (dtype>>1)&1. The 48-rtp_write prologue configures a 6×8 tile array.
+- `dequant_mm.xclbin` kernel `MLIR_AIE` (DPU): args opcode/instr/ninstr +
+  bo0..bo4 (HOST DRAM, 64 MB region); instr → SRAM (48 MB). opcode=3 run.
+- I/O contract (2048×8192 Q8_0 qkv): 2048 DDR_PATCH commands; output = arg0
+  (bo0), 33.5 MB write span; inputs = arg1 (bo1, ~7.3-8.1 MB) + arg2 (bo2,
+  ~15.6-17.5 MB). `off` shifts the input read window.
+- **Kernel output is INT8-saturated, data-independent-ish**: with a synthetic
+  ramp (scales=1.0), output = only {129, 127, 255} (int8 -127/+127/-1) in a
+  period-128 pattern; with real qkv, 99% of output bytes are the same three
+  values. It is NOT a value-preserving dequant in this config — it repacks to
+  an INT8 tile form with clamping (scales handled separately, as the engine's
+  own host-side path does). Cracking the exact repack further is a dead end
+  for the native engine (below).
+
+**STRATEGIC PIVOT — the oracle was the wrong gate.** The native engine does
+NOT need FLM's binary layout: its weight path is already
+`Q4NX tiles → dequant_i8_to_float_ex (in-tree, verified) → transpose_pack →
+packB INT8 requant → mm.xclbin` (engine lines ~886-906). That pipeline is
+self-consistent with the in-tree converter (`gguf_to_onebp.cpp`, which already
+detects MoE ndim==3 tensors). The layout oracle only mattered for reusing
+FLM's precompiled INT4 xclbins — an optimization, not a blocker.
+
+**Qwen3.6-35B-A3B geometry (resolved, from official model.q4nx header +
+GGUF):**
+
+| Tensor (per layer) | Q4NX shape | Logical |
+|---|---|---|
+| linear_attn.qkv_proj | [256, 8, 8704] I8 | Q8_0, 2048 rows × 8192 (qkv [8192, 2048], NH=32, NKV=16, HD=128) |
+| linear_attn.ssm_out_proj | [64, 16, 8704] I8 | Q8_0, 1024 rows × 8192 ([4096, 2048]) |
+| self_attn.gate_proj | [128, 8, 8704] I8 | Q8_0, 1024 rows ([4096, 2048]) — 10 full-attn layers |
+| mlp.gate_exps_proj / up_exps | [4096, 8, 5120] I8 | INT4, 32768 tile rows → 256 experts × [512, 2048] |
+| mlp.down_exps_proj | [16384, 2, 5120] I8 | INT4 → 256 experts × [2048, 512] |
+| mlp.share_*_exps_proj | [16/64, 8, 8704] I8 | Q8_0 — 1 shared expert [512, 2048]/[2048, 512] |
+| moe_router | [2048, 256] BF16 | stride-8 interleave (cracked, corr=1.0 — see §Q4NX byte-format) |
+| shared_expert_gate | [2048] BF16 | |
+| ssm_a / ssm_dt.bias / ssm_alpha_proj / ssm_beta_proj / ssm_conv1d / ssm_norm | BF16/F32 | GatedDeltaNet params |
+
+3-D shape semantics: [experts × tile_rows, col_blocks, tile_bytes], where
+col_blocks = ceil(in_features/256) — the "8" is 2048/256. Per-expert FFN
+intermediate = 512 (8 active × 512 = 4096 effective). GGUF names:
+`blk.N.attn_qkv`, `blk.N.ffn_gate_exps/up_exps/down_exps`, `blk.N.ffn_gate_inp`,
+`blk.N.ffn_gate_shexp`, `blk.N.ffn_gate_inp_shexp`.
+
+**Native engine MoE roadmap (updated):**
+1. ModelConfig: N_EXPERTS, TOP_K=8, IM_EXP=512, shared-expert flag + Q4NX
+   header parse (expert tensor offsets per layer; router offset).
+2. CPU router: de-interleave BF16 router (documented mapping), softmax top-8.
+3. Expert FFN on existing I8Ctx/HybridFlmCtx: packB each expert's G/U/D
+   (dims = dense GU/D shapes with IM=512) into per-expert BO slices; decode
+   loop: for each active expert → GU GEMM → SiLU → D GEMM → accumulate × weight.
+   Shared expert (Q8_0) always active.
+4. GatedDeltaNet attention (30/40 layers): port ggml_gated_delta_net from
+   in-tree llama.cpp ggml-cpu (ops.cpp, `ggml_compute_forward_gated_delta_net_
+   one_chunk`, MIT) + conv1d/gate from the Qwen3.6 HF reference; 10/40 full-attn
+   layers keep the existing attn_omp path.
+5. Converter: emit expert tensors via the existing Q4NX branch (already MoE
+   aware); router BF16 pass-through.

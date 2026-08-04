@@ -40,15 +40,19 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
-from .codec import RVQVAE
-from .config import AudioCodecConfig, DEFAULT_CONFIG
-from .text_to_codec_model import (
+if __package__ in (None, ""):
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from zaya_audio.codec import RVQVAE
+from zaya_audio.config import AudioCodecConfig, DEFAULT_CONFIG
+from zaya_audio.text_to_codec_model import (
     TextToCodecConfig,
     TextToCodecModel,
     tokenize_text,
     tokenize_text_batch,
 )
-from .utils import load_audio, save_audio
+from zaya_audio.utils import load_audio, save_audio
 
 # ---------------------------------------------------------------------------
 # Logging
