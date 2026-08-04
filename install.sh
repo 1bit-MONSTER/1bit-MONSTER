@@ -33,8 +33,8 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     echo "       sha256sum -c install.sh.sha256"
     echo ""
     echo "Installs 1bit inference engine for AMD Strix Halo (gfx1151)."
-    echo "Builds pure C++ end-to-end: zaya_server, onebit (CLI), onebitd (daemon),"
-    echo "unified_router (proxy), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
+    echo "Builds pure C++ end-to-end: 1bit (single binary — zaya/unified/router/"
+    echo "jarvis/vision/gaia subcommands), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
     exit 0
 fi
 
@@ -94,21 +94,17 @@ if [ "$SKIP_ROCM" = false ]; then
     log "Building C++ inference stack (server + CLI + daemon)..."
     cd "$DIR"
     cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
-    cmake --build build --target zaya_server onebitd onebit onebin unified_router -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    cmake --build build --target onebin -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
     log "Build complete:"
-    log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"
-    log "  $DIR/build/onebitd      ($(stat -c%s "$DIR/build/onebitd" 2>/dev/null || echo '?') bytes)"
-    log "  $DIR/build/onebit       ($(stat -c%s "$DIR/build/onebit" 2>/dev/null || echo '?') bytes)"
-    log "  $DIR/build/1bit         → onebit"
-    log "  $DIR/build/unified_router"
+    log "  $DIR/build/1bit ($(stat -c%s "$DIR/build/1bit" 2>/dev/null || echo '?') bytes) — zaya/unified/router/jarvis/vision/gaia subcommands"
 else
     warn "--skip-rocm: kernel build skipped."
-    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running zaya_server."
-    log "Checking for pre-built server binary..."
-    if [ -f "$DIR/build/zaya_server" ]; then
-        log "Found existing build: $DIR/build/zaya_server"
+    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running 1bit."
+    log "Checking for pre-built binary..."
+    if [ -f "$DIR/build/1bit" ]; then
+        log "Found existing build: $DIR/build/1bit"
     else
-        warn "No pre-built server found at $DIR/build/zaya_server."
+        warn "No pre-built binary found at $DIR/build/1bit."
         warn "Run without --skip-rocm on a ROCm-equipped machine, or"
         warn "download a pre-built release from GitHub."
     fi
@@ -120,7 +116,7 @@ log "Done. Run:"
 log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
 log "  export HSA_ENABLE_SDMA=0"
 log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
-log "  $DIR/build/zaya_server"
+log "  $DIR/build/1bit zaya"
 log ""
 log "Then send requests:"
 log '  curl -X POST http://localhost:8088/completion \'

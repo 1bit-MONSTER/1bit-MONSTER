@@ -17,7 +17,8 @@ set -euo pipefail
 
 MODEL_URL="${MODEL_URL:-https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/qwen3-0.6b-q4_k_m.gguf}"
 MODEL_FILE="${MODEL_FILE:-/tmp/qwen3-0.6b-q4_k_m.gguf}"
-SERVER_BIN="${SERVER_BIN:-./build/zaya_server}"
+SERVER_BIN="${SERVER_BIN:-./build/1bit}"
+SERVER_SUBCMD="${SERVER_SUBCMD:-zaya}"
 TIMEOUT_SECS=120
 CI_MODE=false
 QUICK=false
@@ -63,12 +64,12 @@ fi
 
 # 2. Build server if not present
 if [ ! -f "$SERVER_BIN" ]; then
-  echo "Building zaya_server..."
+  echo "Building onebin (1bit)..."
   if [ -d build ]; then
-    cmake --build build --target zaya_server -j8 2>&1 | tail -3
+    cmake --build build --target onebin -j8 2>&1 | tail -3
   else
     cmake -B build -G Ninja 2>&1 | tail -1
-    cmake --build build --target zaya_server -j8 2>&1 | tail -3
+    cmake --build build --target onebin -j8 2>&1 | tail -3
   fi
   if [ ! -f "$SERVER_BIN" ]; then
     echo "ERROR: build failed — $SERVER_BIN not found"
@@ -78,8 +79,8 @@ fi
 
 # 3. Check what interface the server supports
 echo "Checking server interface..."
-SERVER_HELP=$("$SERVER_BIN" --help 2>&1 || true)
-echo "  $SERVER_BIN $(echo "$SERVER_HELP" | head -1)"
+SERVER_HELP=$("$SERVER_BIN" "$SERVER_SUBCMD" --help 2>&1 || true)
+echo "  $SERVER_BIN $SERVER_SUBCMD $(echo "$SERVER_HELP" | head -1)"
 
 # Detect CLI interface: different builds use different arg names
 if echo "$SERVER_HELP" | grep -q -- "--model"; then
@@ -107,13 +108,13 @@ echo "  Port arg: ${PORT_ARG:-(default port)}"
 PORT=$((RANDOM + 10000))
 echo "Starting server on port $PORT..."
 if [ -n "$MODEL_ARG" ] && [ -n "$PORT_ARG" ]; then
-  "$SERVER_BIN" "$MODEL_ARG" "$MODEL_FILE" "$PORT_ARG" "$PORT" &
+  "$SERVER_BIN" "$SERVER_SUBCMD" "$MODEL_ARG" "$MODEL_FILE" "$PORT_ARG" "$PORT" &
 elif [ -n "$MODEL_ARG" ]; then
-  "$SERVER_BIN" "$MODEL_ARG" "$MODEL_FILE" &
+  "$SERVER_BIN" "$SERVER_SUBCMD" "$MODEL_ARG" "$MODEL_FILE" &
 elif [ -n "$PORT_ARG" ]; then
-  "$SERVER_BIN" "$MODEL_FILE" "$PORT_ARG" "$PORT" &
+  "$SERVER_BIN" "$SERVER_SUBCMD" "$MODEL_FILE" "$PORT_ARG" "$PORT" &
 else
-  "$SERVER_BIN" "$MODEL_FILE" &
+  "$SERVER_BIN" "$SERVER_SUBCMD" "$MODEL_FILE" &
 fi
 SERVER_PID=$!
 cleanup() { kill "$SERVER_PID" 2>/dev/null || true; }

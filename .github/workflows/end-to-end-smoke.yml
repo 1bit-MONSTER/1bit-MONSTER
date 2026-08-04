@@ -29,7 +29,7 @@ jobs:
         run: |
           source env.sh
           cmake -B build -G Ninja
-          cmake --build build --target unified_server vision_server -j$(nproc)
+          cmake --build build --target onebin -j$(nproc)
 
       - name: Download test model
         # Model files are git-ignored (symlinked to HF cache locally).
@@ -54,23 +54,23 @@ jobs:
         # unconditionally in Cleanup below.
         run: |
           sudo systemctl stop 1bit-systems.service || true
-          # Also kill stray manual servers (vision_server etc.) that can
+          # Also kill stray manual servers (`1bit vision` etc.) that can
           # squat on 8099 and answer health checks with the wrong schema.
-          pkill -f "[v]ision_server.*8099" || true
+          pkill -f "1bit [v]ision.*8099" || true
           # -9 fallback: a wedged instance can survive SIGTERM and squat on 8099
           # with the wrong health schema (issue #1257 incident class).
-          pkill -9 -f "[v]ision_server.*8099" || true
-          # Stray unified_server instances from manual runs/dev agents on this
+          pkill -9 -f "1bit [v]ision.*8099" || true
+          # Stray `1bit unified` instances from manual runs/dev agents on this
           # shared box answer health with the right schema but die mid-test
           # (curl 56), or hold the port so our server can't bind.
-          pkill -f "[u]nified_server.*8099" || true
-          pkill -9 -f "[u]nified_server.*8099" || true
+          pkill -f "1bit [u]nified.*8099" || true
+          pkill -9 -f "1bit [u]nified.*8099" || true
           sleep 2
 
       - name: Start server
         run: |
           rm -f /tmp/unified_server.lock
-          ./build/unified_server --port 8099 --weights models/ \
+          ./build/1bit unified --port 8099 --weights models/ \
             --gen-timeout-ms 10000 --quick &>/tmp/smoke_server.log &
           echo "pid=$!"
           # Wait for startup (GPU init can take ~90s on Strix Halo)
@@ -186,9 +186,9 @@ jobs:
             exit 0
           fi
           # Free the GPU for the VL stack.
-          pkill -f "unified_server.*8099" 2>/dev/null || true
+          pkill -f "1bit unified.*8099" 2>/dev/null || true
           sleep 2
-          ./build/vision_server --port 8099 --mmproj "$VIT" --model "$MM" \
+          ./build/1bit vision --port 8099 --mmproj "$VIT" --model "$MM" \
             &>/tmp/smoke_vision_server.log &
           echo "pid=$!"
           for i in $(seq 1 60); do
@@ -213,11 +213,11 @@ jobs:
           assert 'data' in d and len(d['data']) > 0, 'no models listed'
           print('OK: vision_server models endpoint:', d['data'][0].get('id'))
           "
-          pkill -f "vision_server.*8099" 2>/dev/null || true
+          pkill -f "1bit vision.*8099" 2>/dev/null || true
       - name: Cleanup
         if: always()
         run: |
-          pkill -f "unified_server.*8099" 2>/dev/null || true
-          pkill -f "[v]ision_server.*8099" 2>/dev/null || true
+          pkill -f "1bit unified.*8099" 2>/dev/null || true
+          pkill -f "1bit [v]ision.*8099" 2>/dev/null || true
           rm -f /tmp/unified_server.lock
           sudo systemctl start 1bit-systems.service || true
