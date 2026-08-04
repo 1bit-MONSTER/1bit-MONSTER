@@ -32,14 +32,13 @@ void gemm_generate_sequence_i8(
     uint32_t                M,
     uint32_t                K,
     uint32_t                N,
-    uint32_t                weight_offset,
+    uint32_t                a_ddr_offset,
+    uint32_t                b_base_offset,
     bool                    add_bias,
     int                     activation,
     uint32_t                bias_offset,
     uint32_t                output_offset
 );
-
-// Split A/B offset variant for hybrid FLM engine (separate BOs for A and B)
 void gemm_generate_sequence_i8_split(
     npu_sequence*           seq,
     uint32_t                M,
@@ -141,6 +140,63 @@ static void sigabrt_handler(int sig) {
     // Reset handler to default and re-raise to get a core dump
     signal(SIGABRT, SIG_DFL);
     raise(SIGABRT);
+}
+
+// ── GatedDeltaNet attention (single-token, CPU, ported from llama.cpp ggml-cpu/ops.cpp) ──
+// Operates on transposed state: s[j*GD+i] = S[i][j] (column j of S = row j of s).
+// q/k/v/g: [GD] per head, beta: scalar, state: [GD*GD] per head.
+// Produces attn_out[GD] per head and updates state in-place.
+// GD = state dim (KV head dim), NH = number of heads.
+static void gdn_attn_cpu(
+        const float* q, const float* k, const float* v,
+        const float* g, const float* beta,
+        float* state,      // [NH, GD, GD] transposed, updated in-place
+        float* attn_out,   // [NH, GD]
+        int GD, int NH, float scale)
+{
+    for (int h = 0; h < NH; h++) {
+        const float* qh = q + h * GD;
+        const float* kh = k + h * GD;
+        const float* vh = v + h * GD;
+        const float* gh = g + h * GD;
+        float bh = beta[h];
+        float* sh = state + (size_t)h * GD * GD;
+        float* at = attn_out + h * GD;
+
+        // Precompute exp(g)
+        alignas(64) float eg[256];
+        for (int i = 0; i < GD; i++) eg[i] = expf(gh[i]);
+
+        // Step 1: S[i][:] *= exp(g[i]) → for each row j of s: s[j][i] *= eg[i]
+        for (int j = 0; j < GD; j++) {
+            float* sj = sh + j * GD;
+            for (int i = 0; i < GD; i++) sj[i] *= eg[i];
+        }
+
+        // Step 2: delta[j] = (v[j] - sum_i S[i][j]*k[i]) * beta
+        alignas(64) float delta[256];
+        for (int j = 0; j < GD; j++) {
+            float sum = 0;
+            const float* sj = sh + j * GD;  // column j of S (row j of s)
+            for (int i = 0; i < GD; i++) sum += sj[i] * kh[i];
+            delta[j] = (vh[j] - sum) * bh;
+        }
+
+        // Step 3: S[i][j] += k[i] * delta[j] → s[j][i] += delta[j] * k[i]
+        for (int j = 0; j < GD; j++) {
+            float* sj = sh + j * GD;
+            float dj = delta[j];
+            for (int i = 0; i < GD; i++) sj[i] += dj * kh[i];
+        }
+
+        // Step 4: attn_out[j] = sum_i S[i][j] * q[i] * scale
+        for (int j = 0; j < GD; j++) {
+            float sum = 0;
+            const float* sj = sh + j * GD;
+            for (int i = 0; i < GD; i++) sum += sj[i] * qh[i];
+            at[j] = sum * scale;
+        }
+    }
 }
 
 static std::vector<float> emb_f32; // f32 embeddings for fast LM head
@@ -300,7 +356,7 @@ struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt:
         MD = _MD; KD = _KD; ND = _ND; NL = nlayers;
         // Generate INT8 instruction sequence
         npu_sequence seq(device_npu2);
-        gemm_generate_sequence_i8(&seq, MD, MD, ND, 0, false, 0, 0, 0);
+        gemm_generate_sequence_i8(&seq, MD, KD, ND, 0, 0, false, 0, 0, 0);
         seq.cmds2seq();
         auto [dp, sz] = seq.dump();
         ins.assign(dp, dp + sz / sizeof(uint32_t));
@@ -689,6 +745,7 @@ int main(int argc,char**argv){
 
     // GEMM contexts: I8Ctx (legacy) or HybridFlmCtx (FLM path)
     bool flm_xclbin_available = false;
+    bool cpu_gemm_fallback = false;  // set when NPU GEMM can't init (MoE models)
     std::string flm_mm_path;
     if (use_flm_xclbin) {
         // Try to find mm.xclbin. Priority:
@@ -821,11 +878,19 @@ int main(int argc,char**argv){
         // Sync weights after all packB calls (done at pack time in the pipeline below)
     } else {
         // ── Legacy path: per-op xclbins + per-layer weight BOs ──
+        // If MoE model has no instruction files, go CPU-only for GEMM.
+        bool moe_cpu_only = cfg.has_moe;
+        if (moe_cpu_only) {
+            cpu_gemm_fallback = true;
+            fprintf(stderr, "  MoE model — CPU-only GEMM (no inst files for %s)\n", cfg.model_tag.c_str());
+        } else {
         if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC)){fprintf(stderr,"FAIL QKV\n");return 1;}
         if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC)){fprintf(stderr,"FAIL O\n");return 1;}
         if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}}
         if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
-        if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}}
+        if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}
+        }
+    }
     // NPU attention via pre-compiled KV xclbin instructions.
     // Auto-detected when both final_i8_ATTN_<tag>.xclbin and insts_i8_KV_<tag>.txt exist.
     // Explicitly disable with NPU_ATTN=0; override inst path with NPU_ATTN_FILE=<path>.
@@ -893,10 +958,13 @@ int main(int argc,char**argv){
 
     fprintf(stderr,"Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
     std::vector<float> qsc(NC),osc(NC),gsc(NC),dsc(NC),usc(NC);
+    std::vector<std::vector<float>> cpu_qkv_w, cpu_o_w;  // CPU fallback: saved dequant weights
+    if (cpu_gemm_fallback) { cpu_qkv_w.resize(NC); cpu_o_w.resize(NC); }
     const int QOUT=NH*HD,KVOUT=NKV*HD;   // QKV out_features, in_features=H (default dequant correct)
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
+    if (!cpu_gemm_fallback) {
     for(int l=0;l<NC;l++){int qr,kr,vr,unused;
         float*qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused),*kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused),*vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
         int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
@@ -925,6 +993,7 @@ int main(int argc,char**argv){
         hcg->sync_weights(); hcd->sync_weights();
         if(cfg.gu_split && hcu_ptr) hcu_ptr->sync_weights();
     }
+    } // end if (!cpu_gemm_fallback)
     fprintf(stderr,"  %.0fms\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tp).count());
 
     // ── MoE weight loading (router dequant; expert offsets kept raw) ──
@@ -1273,6 +1342,8 @@ int main(int argc,char**argv){
                     static std::vector<float> fuse_h_b, fuse_qo_b, fuse_at_b, fuse_oo_b;
                     static std::vector<float> fuse_gt_b, fuse_su_b, fuse_dw_b, fuse_sb_b;
                     static std::vector<float> fuse_lg_buf;
+                    static std::vector<float> fuse_gdn_state;     // [NC, NKV, HD, HD]
+                    static std::vector<float> fuse_gdn_attn_out;  // [NKV, HD]
                     static std::vector<int> fuse_top_ids_v;
                     // Expose state to op=31 for reset
                     { static bool once = false; if (!once) {
@@ -1296,6 +1367,13 @@ int main(int argc,char**argv){
                         fuse_top_ids_v.resize(BS, 0);
                         fuse_kv_init = true;
                         fuse_pos = 0;
+                        // ponytail: GDN state allocated for all layers if MoE;
+                        // non-GDN layers waste 40MB but avoids per-layer detection logic.
+                        if (has_moe) {
+                            int gd = HD;  // GDN state dim = KV head dim
+                            fuse_gdn_state.resize(NC * (size_t)NKV * gd * gd, 0);
+                            fuse_gdn_attn_out.resize(NKV * gd, 0);
+                        }
                     }
                     int token_id = (int)in_data[0];
                     if (token_id < 0 || token_id >= NV) token_id = 0;
@@ -1316,6 +1394,8 @@ int main(int argc,char**argv){
                         int qkv_v_off = cfg.qkv_v_offset;
                         float* qn = qn_w[l].data();
                         float* kn = kn_w[l].data();
+                        bool is_gdn = has_moe && exp_off[l].gate;
+                        if (!is_gdn) {
                         for (int hh = 0; hh < NH; hh++) {
                             double sq = 0;
                             for (int d = 0; d < HD; d++) sq += fqo[hh * HD + d] * fqo[hh * HD + d];
@@ -1333,7 +1413,6 @@ int main(int argc,char**argv){
                                     ks[d] *= ik * (cfg.has_k_norm ? kn[d] : 1.0f);
                                 ra(ks, HD, fuse_pos);
                                 float* vs = &fqo[qkv_v_off + kvh * HD];
-                                // fuse KV capacity is 4096 positions (issue #1267)
                                 if (fuse_pos >= 4096) {
                                     fprintf(stderr, "[npu] fuse KV overflow (pos=%d) — restarting context\n", fuse_pos);
                                     fuse_pos = 0;
@@ -1342,10 +1421,38 @@ int main(int argc,char**argv){
                                 memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
                             }
                         }
+                        }
                         fuse_kv[l].n = fuse_pos + 1;
                         int fcl = fuse_kv[l].n;
                         float* fat = fuse_at_b.data();
-                        if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
+                        if (has_moe && exp_off[l].gate) {
+                            // GatedDeltaNet attention (MoE layers)
+                            // Q/K/V layout from QKV GEMM: [Q:NH*HD, K:NKV*HD, V:NKV*HD]
+                            float* gq = fqo;                    // [NH*HD]
+                            float* gk = fqo + qkv_k_off;       // [NKV*HD]
+                            float* gv = fqo + qkv_v_off;       // [NKV*HD]
+                            int gd = HD;  // GDN state dim = KV head dim
+                            float* gs = fuse_gdn_state.data() + (size_t)l * NKV * gd * gd;
+                            // ponytail: fake gate/beta (default identity) — real
+                            // gate/beta projections from GDN weights TODO.
+                            // gate=log(0.98) ≈ -0.02 → mild state decay (stable)
+                            // beta=1.0 → identity mixing
+                            alignas(64) float fake_gate[256];
+                            alignas(64) float fake_beta[256];
+                            for (int h = 0; h < NKV; h++) {
+                                fake_gate[h * gd] = -0.02f;  // per-head scalar gate
+                                fake_beta[h] = 1.0f;
+                            }
+                            gdn_attn_cpu(gq, gk, gv, fake_gate, fake_beta, gs,
+                                        fuse_gdn_attn_out.data(), gd, NKV,
+                                        1.0f / sqrtf((float)gd));
+                            // Expand GDN output [NKV, GD] to full attention output [NH, HD]
+                            // GDN operates on KV heads; replicate for Q heads via GQA
+                            for (int hh = 0; hh < NH; hh++) {
+                                int kvh = hh / GQA;
+                                memcpy(fat + hh * HD, fuse_gdn_attn_out.data() + kvh * HD, HD * 4);
+                            }
+                        } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
                             float qs = dynamic_ascale(fqo, NH * HD);
                             float ks = 0;
                             for (int i = 0; i < fcl * NKV * HD; i++) {
