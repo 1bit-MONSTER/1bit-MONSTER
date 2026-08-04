@@ -36,9 +36,13 @@ import torch
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, random_split
 
-from .codec import RVQVAE, MultiScaleSTFTLoss
-from .config import AudioCodecConfig, DEFAULT_CONFIG
-from .dataset import AudioDataset, collate_audio
+if __package__ in (None, ""):
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from zaya_audio.codec import RVQVAE, MultiScaleSTFTLoss
+from zaya_audio.config import AudioCodecConfig, DEFAULT_CONFIG
+from zaya_audio.dataset import AudioDataset, collate_audio
 
 # ---------------------------------------------------------------------------
 # Logging
