@@ -60,9 +60,76 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
-extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
+extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
+
+// ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
+// Tile = [32 rows × 256 cols], 5120 B/row: tr*grps*2 B bf16 scales + same
+// for zero-points + tr*tc/2 B packed INT4. Layout is row-major (scales[row*
+// grps+g], packed[(row*tc+col)/2] low-nibble=even col) — the group-major /
+// col-major layout in dequant_q4nx.cpp is for torch2aie chunks and reads
+// 1BP-written expert tensors wrong (probe validation, issue #1467).
+static float* dequant_1bp(const uint8_t* data, int i8_rows, int in_features,
+                          int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, GS = 32;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    int grps = TC / GS;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * (TR*grps*2 + TR*grps*2 + TR*TC/2);
+        const uint16_t* sc = (const uint16_t*)t;
+        const uint16_t* zp = (const uint16_t*)(t + (size_t)TR*grps*2);
+        const uint8_t* qd = t + (size_t)TR*grps*4;
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < grps; g++) {
+                float s = bf16f(sc[r*grps + g]);
+                float z = bf16f(zp[r*grps + g]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                if (!std::isfinite(z) || std::fabs(z) > 100.0f) z = 0.0f;
+                for (int i = 0; i < GS; i++) {
+                    int col = g*GS + i;
+                    uint8_t b = qd[((size_t)r*TC + col) / 2];
+                    uint8_t v = (col & 1) ? (b >> 4) : (b & 0x0F);
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] = (float)v*s + z;
+                }
+            }
+    }
+    return out;
+}
+
+// ── Q8_0 tile dequant (8704 B/row: 512 B bf16 scales + 8192 signed INT8) ──
+// Shared-expert / attention-projection tensors; mirrors dequant_q8_0_to_float_ex.
+static float* dequant_q8_0(const uint8_t* data, int i8_rows, int in_features,
+                           int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, Q8_0_ROW_BYTES = 8704;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * Q8_0_ROW_BYTES;
+        const uint16_t* sc = (const uint16_t*)t;
+        const int8_t* vals = (const int8_t*)(t + 512);
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < TC / 32; g++) {
+                float s = bf16f(sc[g*TR + r]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                for (int i = 0; i < 32; i++) {
+                    int col = g*32 + i;
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] =
+                        (float)vals[r*TC + col] * s;
+                }
+            }
+    }
+    return out;
+}
+
+
 static constexpr float EPS=1e-6f;
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
@@ -950,8 +1017,8 @@ int main(int argc,char**argv){
     // Per-layer: router [H, N_EXPERTS] float, expert Q4NX offsets + tile rows,
     // shared expert offsets + tile rows, shared gate [H] float.
     std::vector<std::vector<float>> router_w, sh_gate_vec;
-    struct MoeOffsets { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
-    struct ShOffsets  { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; };
+    struct MoeOffsets { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; int gate_bpt, up_bpt, down_bpt; };
+    struct ShOffsets  { uint64_t gate, up, down; int gate_tr, up_tr, down_tr; int gate_bpt, up_bpt, down_bpt; };
     std::vector<MoeOffsets> exp_off;    // per-layer expert offsets
     std::vector<ShOffsets>  sh_off;     // per-layer shared expert offsets
     if (has_moe) {
@@ -960,11 +1027,31 @@ int main(int argc,char**argv){
         router_w.resize(NC); sh_gate_vec.resize(NC);
         exp_off.resize(NC); sh_off.resize(NC);
         auto te_moe = std::chrono::steady_clock::now();
-        // Tile rows from layer 0 (same for all layers)
+        // Tile rows from layer 0 (same for all layers). find_tensor_info
+        // returns only shape[0]; the real I8-row count is shape[0]*shape[1]
+        // (tile_rows × tile_cols, tile_cols = in_features/256). Using shape[0]
+        // alone dequantized 1/8 of each expert (probe validation, #1467).
         int exp_gate_tr = 0, exp_up_tr = 0, exp_down_tr = 0;
+        int sh_gate_tr = 0, sh_up_tr = 0, sh_down_tr = 0;
         find_tensor_info(js, jl, "model.layer.0.mlp.gate_exps_proj.weight", &exp_gate_tr);
         find_tensor_info(js, jl, "model.layer.0.mlp.up_exps_proj.weight", &exp_up_tr);
         find_tensor_info(js, jl, "model.layer.0.mlp.down_exps_proj.weight", &exp_down_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight", &sh_gate_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.share_up_exps_proj.weight", &sh_up_tr);
+        find_tensor_info(js, jl, "model.layer.0.mlp.share_down_exps_proj.weight", &sh_down_tr);
+        int gate_rows   = exp_gate_tr * (cfg.H / 256);
+        int up_rows     = exp_up_tr   * (cfg.H / 256);
+        int down_rows   = exp_down_tr * (cfg.IM_EXP / 256);
+        int sh_gate_rows = sh_gate_tr * (cfg.H / 256);
+        int sh_up_rows   = sh_up_tr   * (cfg.H / 256);
+        int sh_down_rows = sh_down_tr * (cfg.IM_EXP / 256);
+        // Bytes per I8 row: 5120 Q4NX vs 8704 Q8_0 — determines the decoder.
+        int exp_gate_bpt = get_bytes_per_tile("model.layer.0.mlp.gate_exps_proj.weight");
+        int exp_up_bpt   = get_bytes_per_tile("model.layer.0.mlp.up_exps_proj.weight");
+        int exp_down_bpt = get_bytes_per_tile("model.layer.0.mlp.down_exps_proj.weight");
+        int sh_gate_bpt  = get_bytes_per_tile("model.layer.0.mlp.share_gate_exps_proj.weight");
+        int sh_up_bpt    = get_bytes_per_tile("model.layer.0.mlp.share_up_exps_proj.weight");
+        int sh_down_bpt  = get_bytes_per_tile("model.layer.0.mlp.share_down_exps_proj.weight");
         for (int l = 0; l < NC; l++) {
             // Router: BF16 [H, N_EXPERTS] stride-8 interleave
             snprintf(bn, 128, "model.layer.%d.moe_router.weight", l);
@@ -979,21 +1066,18 @@ int main(int argc,char**argv){
             }
             // Expert weights: store offsets + tile rows (dequant on demand)
             snprintf(bn, 128, "model.layer.%d.mlp.gate_exps_proj.weight", l);
-            exp_off[l].gate = jo(js, jl, bn); exp_off[l].gate_tr = exp_gate_tr;
+            exp_off[l].gate = jo(js, jl, bn); exp_off[l].gate_tr = gate_rows; exp_off[l].gate_bpt = exp_gate_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.up_exps_proj.weight", l);
-            exp_off[l].up   = jo(js, jl, bn); exp_off[l].up_tr   = exp_up_tr;
+            exp_off[l].up   = jo(js, jl, bn); exp_off[l].up_tr   = up_rows;   exp_off[l].up_bpt   = exp_up_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.down_exps_proj.weight", l);
-            exp_off[l].down = jo(js, jl, bn); exp_off[l].down_tr = exp_down_tr;
+            exp_off[l].down = jo(js, jl, bn); exp_off[l].down_tr = down_rows; exp_off[l].down_bpt = exp_down_bpt;
             // Shared expert weights: offsets + tile rows
             snprintf(bn, 128, "model.layer.%d.mlp.share_gate_exps_proj.weight", l);
-            sh_off[l].gate = jo(js, jl, bn);
+            sh_off[l].gate = jo(js, jl, bn); sh_off[l].gate_tr = sh_gate_rows; sh_off[l].gate_bpt = sh_gate_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.share_up_exps_proj.weight", l);
-            sh_off[l].up   = jo(js, jl, bn);
+            sh_off[l].up   = jo(js, jl, bn); sh_off[l].up_tr   = sh_up_rows;   sh_off[l].up_bpt   = sh_up_bpt;
             snprintf(bn, 128, "model.layer.%d.mlp.share_down_exps_proj.weight", l);
-            sh_off[l].down = jo(js, jl, bn);
-            find_tensor_info(js, jl, "model.layer.0.mlp.share_gate_exps_proj.weight", &sh_off[l].gate_tr);
-            find_tensor_info(js, jl, "model.layer.0.mlp.share_up_exps_proj.weight", &sh_off[l].up_tr);
-            find_tensor_info(js, jl, "model.layer.0.mlp.share_down_exps_proj.weight", &sh_off[l].down_tr);
+            sh_off[l].down = jo(js, jl, bn); sh_off[l].down_tr = sh_down_rows; sh_off[l].down_bpt = sh_down_bpt;
             // Shared expert gate vector [H] BF16
             snprintf(bn, 128, "model.layer.%d.shared_expert_gate.weight", l);
             uint64_t sgoff = jo(js, jl, bn);
@@ -1066,26 +1150,30 @@ int main(int argc,char**argv){
 
         memset(out, 0, H * sizeof(float));
         // Per-expert tile-rows: gate/up each have IM_EXP/32 tile rows per expert
-        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;  // tile rows per expert for gate
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;  // I8 rows per expert
         int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
         int exp_down_tr_per = eo.down_tr / N_EXPERTS;
-        int exp_gate_off_stride = exp_gate_tr_per * 8 * H;  // bytes per expert in Q4NX
-        int exp_up_off_stride   = exp_up_tr_per   * 8 * H;
-        int exp_down_off_stride = exp_down_tr_per * 8 * IM_EXP;
+        // Bytes per expert in Q4NX/Q8_0 (was tr_per*8*H — 2.5× too large, read
+        // past expert boundaries; #1467).
+        int exp_gate_off_stride = exp_gate_tr_per * 5120;
+        int exp_up_off_stride   = exp_up_tr_per   * 5120;
+        int exp_down_off_stride = exp_down_tr_per * 5120;
+        auto deq_exp = [&](uint64_t off, int rows, int in_f, int bpt,
+                           int* or_, int* oc) -> float* {
+            if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
+            return dequant_1bp(i8p(off), rows, in_f, or_, oc);
+        };
 
         for (int e = 0; e < TOP_K; e++) {
             int ex = topk[e];
-            // Dequant this expert's G/U/D from Q4NX on-the-fly
+            // Dequant this expert's G/U/D from Q4NX/Q8_0 on-the-fly
             int gr, gc, ur, uc, dr, dc;
-            float* G = dequant_i8_to_float_ex(
-                i8p(eo.gate + (uint64_t)ex * exp_gate_off_stride),
-                exp_gate_tr_per, H, &gr, &gc);
-            float* U = dequant_i8_to_float_ex(
-                i8p(eo.up + (uint64_t)ex * exp_up_off_stride),
-                exp_up_tr_per, H, &ur, &uc);
-            float* D = dequant_i8_to_float_ex(
-                i8p(eo.down + (uint64_t)ex * exp_down_off_stride),
-                exp_down_tr_per, IM_EXP, &dr, &dc);
+            float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                               exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
+            float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
+                               exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
+            float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
+                               exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
             if (!G || !U || !D) { free(G); free(U); free(D); continue; }
             // G/U: [IM_EXP, H] @ x → [IM_EXP]
             std::vector<float> gu(IM_EXP * 2);
@@ -1123,9 +1211,14 @@ int main(int argc,char**argv){
             float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
 
             int sgr, sgc, sur, suc, sdr, sdc;
-            float* SG = dequant_i8_to_float_ex(i8p(so.gate), so.gate_tr, H, &sgr, &sgc);
-            float* SU = dequant_i8_to_float_ex(i8p(so.up),   so.up_tr,   H, &sur, &suc);
-            float* SD = dequant_i8_to_float_ex(i8p(so.down), so.down_tr, IM_EXP, &sdr, &sdc);
+            auto deq_sh = [&](uint64_t off, int rows, int in_f, int bpt,
+                              int* or_, int* oc) -> float* {
+                if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
+                return dequant_1bp(i8p(off), rows, in_f, or_, oc);
+            };
+            float* SG = deq_sh(so.gate, so.gate_tr, H, so.gate_bpt, &sgr, &sgc);
+            float* SU = deq_sh(so.up,   so.up_tr,   H, so.up_bpt,   &sur, &suc);
+            float* SD = deq_sh(so.down, so.down_tr, IM_EXP, so.down_bpt, &sdr, &sdc);
             if (SG && SU && SD) {
                 std::vector<float> sgu(IM_EXP * 2);
                 for (int i = 0; i < IM_EXP; i++) {
