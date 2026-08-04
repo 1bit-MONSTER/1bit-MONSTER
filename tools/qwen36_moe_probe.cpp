@@ -60,6 +60,73 @@ static uint64_t jo(const char* js, size_t jl, const char* nm) {
 }
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 
+// ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
+// Tile = [32 rows × 256 cols]. Per tile: tr*grps*2 B bf16 scales + same for
+// zero-points + tr*tc/2 B packed INT4. Layout (differs from dequant_q4nx.cpp,
+// which is group-major/col-major — wrong for 1BP files, was the #1467 bug):
+//   scales[row*grps + g], zps[row*grps + g]  (row-major)
+//   packed[(row*tc + col)/2], low nibble = even col
+// Returns [out_rows, out_cols] row-major f32, caller frees.
+static float* dequant_1bp(const uint8_t* data, int i8_rows, int in_features,
+                          int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, GS = 32;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    int grps = TC / GS;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * (TR*grps*2 + TR*grps*2 + TR*TC/2);
+        const uint16_t* sc = (const uint16_t*)t;
+        const uint16_t* zp = (const uint16_t*)(t + (size_t)TR*grps*2);
+        const uint8_t* qd = t + (size_t)TR*grps*4;
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < grps; g++) {
+                float s = bf16f(sc[r*grps + g]);
+                float z = bf16f(zp[r*grps + g]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                if (!std::isfinite(z) || std::fabs(z) > 100.0f) z = 0.0f;
+                for (int i = 0; i < GS; i++) {
+                    int col = g*GS + i;
+                    uint8_t b = qd[((size_t)r*TC + col) / 2];
+                    uint8_t v = (col & 1) ? (b >> 4) : (b & 0x0F);
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] = (float)v*s + z;
+                }
+            }
+    }
+    return out;
+}
+
+// ── Q8_0 tile dequant (8704 B/row: 512 B bf16 scales + 8192 signed INT8) ──
+// Shared-expert and attention-projection tensors use this; layout mirrors
+// dequant_q8_0_to_float_ex in dequant_q4nx.cpp.
+static float* dequant_q8_0(const uint8_t* data, int i8_rows, int in_features,
+                           int* out_rows, int* out_cols) {
+    constexpr int TR = 32, TC = 256, Q8_0_ROW_BYTES = 8704;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    *out_rows = ntr * TR; *out_cols = ntc * TC;
+    float* out = (float*)calloc((size_t)(*out_rows) * (*out_cols), sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * Q8_0_ROW_BYTES;
+        const uint16_t* sc = (const uint16_t*)t;
+        const int8_t* vals = (const int8_t*)(t + 512);
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < TC / 32; g++) {
+                float s = bf16f(sc[g*TR + r]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                for (int i = 0; i < 32; i++) {
+                    int col = g*32 + i;
+                    out[((size_t)tr_*TR + r) * (*out_cols) + (size_t)tc_*TC + col] =
+                        (float)vals[r*TC + col] * s;
+                }
+            }
+    }
+    return out;
+}
+
 // ── minimal I8Ctx (copied from npu_engine_universal.cpp, same API) ──
 #include "npu_engine_i8ctx_inc.h"
 // ── model geometry ──
@@ -113,21 +180,23 @@ int main(int argc, char** argv) {
         printf("exp_off[%d]=%llu sh_off[%d]=%llu\n", t, (unsigned long long)exp_off[t], t, (unsigned long long)sh_off[t]);
 
     // ── dequant experts + shared experts (whole tensors) ──
-    // gate_exps [4096, 8, 5120] = 32768 tile rows → [131072, 2048] f32
-    // expert e = rows [e*512, (e+1)*512)
+    // gate/up: per expert [out=IM_EXP, in=H] → 16×8 = 128 i8 tiles/expert × 256 experts
+    // down:    per expert [out=H, in=IM_EXP] → 64×2 = 128 i8 tiles/expert × 256 experts
+    // dequant's in_features must be the GEMM INPUT dim (K): H for gate/up, IM_EXP for down.
     const int TR_G = 4096 * 8, TR_D = 16384 * 2;
     int er, ec, dr, dc;
-    float* gate_f = dequant_i8_to_float_ex(i8p(exp_off[0]), TR_G, H, &er, &ec);
-    float* up_f   = dequant_i8_to_float_ex(i8p(exp_off[1]), TR_G, H, &er, &ec);
-    float* down_f = dequant_i8_to_float_ex(i8p(exp_off[2]), TR_D, H, &dr, &dc);
+    float* gate_f = dequant_1bp(i8p(exp_off[0]), TR_G, H, &er, &ec);
+    float* up_f   = dequant_1bp(i8p(exp_off[1]), TR_G, H, &er, &ec);
+    float* down_f = dequant_1bp(i8p(exp_off[2]), TR_D, IM_EXP, &dr, &dc);
     if (!gate_f || !up_f || !down_f) { fprintf(stderr, "expert dequant failed\n"); return 1; }
     printf("gate_exps dequant: [%d, %d]  down: [%d, %d]\n", er, ec, dr, dc);
-    // sanity: expert 0 slice = gate_f[0 .. 512*2048)
     float* shg_f[3];
     for (int t = 0; t < 3; t++) {
-        int s_tr = t == 2 ? 64 * 2 : 16 * 8;
+        int s_tr = t == 2 ? 64 * 2 : 16 * 8;         // down is 64×2 tiles, gate/up 16×8
         int s_r, s_c;
-        shg_f[t] = dequant_i8_to_float_ex(i8p(sh_off[t]), s_tr, H, &s_r, &s_c);
+        // Shared expert tensors are Q8_0 (8704 B/row), not Q4NX — see header shapes.
+        shg_f[t] = dequant_q8_0(i8p(sh_off[t]), s_tr,
+                                t == 2 ? IM_EXP : H, &s_r, &s_c);
         printf("shared[%d] dequant: [%d, %d]\n", t, s_r, s_c);
     }
 
@@ -150,6 +219,7 @@ int main(int argc, char** argv) {
     std::vector<float> x(H);
     srand(42);
     for (int i = 0; i < H; i++) x[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+
 
     // ── CPU reference (llama.cpp qwen35moe math) ──
     std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
