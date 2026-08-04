@@ -36,12 +36,6 @@
 #include "model_config.h"
 #include "dequant_q4nx.h"
 #include "npu_utils/npu_instr_utils.hpp"
-// gemm_generate_sequence is defined in gemm_npu_instructions.cpp (the
-// engine's gemm_generate_sequence_i8 wrapper is declared but never defined —
-// dormant-bug path; the probe calls the real function directly).
-void gemm_generate_sequence(npu_sequence* seq, uint32_t M, uint32_t K, uint32_t N,
-                            uint32_t weight_offset, bool add_bias, int activation,
-                            uint32_t bias_offset, uint32_t output_offset);
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>

@@ -23,6 +23,17 @@
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
 
+// Include npu_sequence for init_with_generator (may already be included by caller)
+#if __has_include("npu_utils/npu_instr_utils.hpp")
+#include "npu_utils/npu_instr_utils.hpp"
+#endif
+
+// Forward decl (defined in gemm_npu_instructions.cpp)
+void gemm_generate_sequence_i8(
+    npu_sequence* seq, uint32_t M, uint32_t K, uint32_t N,
+    uint32_t a_ddr_offset, uint32_t b_base_offset,
+    bool add_bias, int activation, uint32_t bias_offset, uint32_t output_offset);
+
 struct I8Ctx {
     int MD, KD, ND, NL;
     std::unique_ptr<xrt::xclbin> xc;
@@ -40,6 +51,73 @@ struct I8Ctx {
     ~I8Ctx() {}
 
     bool isReady() { return initialized && k && bA && bC; }
+
+    // ── Init with generated instructions (no pre-gen'd .txt files needed) ──
+#if __has_include("npu_utils/npu_instr_utils.hpp")
+    bool init_with_generator(xrt::device& d, const char* xp,
+                             int M, int K, int N, int nlayers) {
+        MD = M; KD = K; ND = N; NL = nlayers;
+        fprintf(stderr, "  I8Ctx::init_with_generator xp=%s M=%d K=%d N=%d\n", xp, M, K, N);
+
+        // Generate instruction sequence
+        npu_sequence seq(device_npu2);
+        gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)K, (uint32_t)N,
+                                  0, 0, false, 0, 0, 0);
+        seq.cmds2seq();
+        auto [dp, sz] = seq.dump();
+        std::vector<uint32_t> ins(dp, dp + sz / 4);
+        fprintf(stderr, "  generated %zu instr bytes (%zu words)\n", sz, ins.size());
+
+        // Register xclbin
+        try {
+            xc = std::make_unique<xrt::xclbin>(std::string(xp));
+            d.register_xclbin(*xc);
+            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
+            k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
+        } catch (std::exception& ex) {
+            fprintf(stderr, "  I8Ctx: xclbin/kernel init failed: %s\n", ex.what());
+            return false;
+        }
+
+        int grp_a   = k->group_id(3);
+        int grp_w   = k->group_id(4);
+        int grp_c   = k->group_id(5);
+        int grp_ins = k->group_id(1);
+
+        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD,
+                                       XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4,
+                                       XRT_BO_FLAGS_HOST_ONLY, grp_c);
+        Am = (int8_t*)bA->map();
+        Cm = (int32_t*)bC->map();
+
+        layerB.resize(NL);
+        layerInstr.resize(NL);
+        layerInstrData.resize(NL);
+        group_scales.resize(NL);
+
+        for (int l = 0; l < NL; l++) {
+            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND,
+                                                   XRT_BO_FLAGS_HOST_ONLY, grp_w);
+            layerInstrData[l] = ins;
+            layerInstr[l] = std::make_unique<xrt::bo>(
+                d, ins.size() * sizeof(uint32_t),
+                XCL_BO_FLAGS_CACHEABLE, grp_ins);
+            memcpy(layerInstr[l]->map(), ins.data(),
+                   ins.size() * sizeof(uint32_t));
+            layerInstr[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        }
+
+        initialized = true;
+        return true;
+    }
+#else
+    // Stub: npu_instr_utils.hpp not available — use init() with pre-gen'd files
+    bool init_with_generator(xrt::device&, const char*, int, int, int, int) {
+        fprintf(stderr, "  I8Ctx: init_with_generator unavailable (no npu_instr_utils)\n");
+        return false;
+    }
+#endif
 
     // ── Init: load xclbin + per-layer instruction files ──
     bool init(xrt::device& d, const char* xp, const char* ip,
