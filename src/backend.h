@@ -117,6 +117,9 @@ extern "C" Backend* create_metal_backend();
 // ── VART backend ──
 extern "C" Backend* create_vart_backend();
 
+// ── ONNX NPU backend ──
+extern "C" Backend* create_onnx_npu_backend();
+
 
 // ── Auto-detect ──
 // probe_backend_type: hardware probe for the src::Backend world (defined in

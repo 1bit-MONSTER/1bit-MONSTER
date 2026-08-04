@@ -522,6 +522,9 @@ endif()
 # VART backend is always compiled — uses __has_include guards for the stub fallback
 list(APPEND BACKEND_MANAGER_SOURCES src/backend_vart.cpp)
 
+# ONNX NPU backend — always compiled, uses __has_include guard
+list(APPEND BACKEND_MANAGER_SOURCES src/backend_onnx.cpp)
+
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
 target_link_libraries(backend_manager PUBLIC gguf_reader)
 
@@ -612,6 +615,13 @@ endif()
 if(RCPP_HAVE_VART)
     target_include_directories(backend_manager PRIVATE ${VART_INCLUDE_DIR})
     target_link_libraries(backend_manager PRIVATE ${VART_RUNNER_LIB} ${VART_DPU_RUNNER_LIB} ${XIR_LIB})
+endif()
+# ONNX Runtime + VitisAI EP for NPU backend
+# ponytail: link only the base ORT lib; VitisAI EP provider .so is loaded at
+# runtime by ORT's AppendExecutionProvider (must match ORT version exactly)
+if(onnxruntime_FOUND)
+    target_include_directories(backend_manager PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
+    target_link_libraries(backend_manager PRIVATE onnxruntime::onnxruntime)
 endif()
 target_compile_options(backend_manager PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
 # NOTE: no -ffast-math here (deliberately) — it implies -ffinite-math-only and
