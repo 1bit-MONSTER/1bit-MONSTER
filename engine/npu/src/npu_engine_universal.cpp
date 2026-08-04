@@ -475,17 +475,29 @@ int main(int argc,char**argv){
     }
     #endif
 
-    // Norm weights (try both MoE "layer" and dense "layers" key formats)
+    // Norm weights (try dense 'layers', MoE 'layer', GDN 'linear_attn' patterns)
+    std::vector<bool> is_gdn_layer(NC, false);  // true = GDN, false = standard attn
+    std::vector<uint64_t> qp_fused(NC, 0);  // fused QKV offset (GDN layers)
     auto jo2 = [&](const char* fmt, int l) -> uint64_t {
         char kb[256];
         snprintf(kb, sizeof(kb), fmt, l);
         uint64_t off = jo(js, jl, kb);
-        if (!off && cfg.has_moe) {
-            // Try MoE naming: "model.layer.N." instead of "model.layers.N."
+        if (!off) {
+            // Try 'model.layer.N.' (MoE naming without 's')
             std::string alt = kb;
             size_t p = alt.find("model.layers.");
-            if (p != std::string::npos) alt.replace(p, 14, "model.layer.");
-            off = jo(js, jl, alt.c_str());
+            if (p != std::string::npos) { alt.replace(p, 14, "model.layer."); off = jo(js, jl, alt.c_str()); }
+        }
+        if (!off) {
+            // Try 'model.layer.N.linear_attn.' (GDN naming)
+            std::string alt = kb;
+            size_t p = alt.find("model.layers.");
+            if (p == std::string::npos) p = alt.find("model.layer.");
+            if (p != std::string::npos) {
+                // Replace 'self_attn' with 'linear_attn'
+                size_t sa = alt.find("self_attn");
+                if (sa != std::string::npos) { alt.replace(sa, 10, "linear_attn"); off = jo(js, jl, alt.c_str()); }
+            }
         }
         return off;
     };
@@ -496,6 +508,17 @@ int main(int argc,char**argv){
         kp[l]=jo2("model.layers.%d.self_attn.k_proj.weight",l);
         vp[l]=jo2("model.layers.%d.self_attn.v_proj.weight",l);
         op[l]=jo2("model.layers.%d.self_attn.o_proj.weight",l);
+        // GDN fused QKV (if separate q_proj not found):
+        if (!qp[l]) {
+            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l);
+            qp_fused[l] = jo(js, jl, bn);
+            if (qp_fused[l]) {
+                is_gdn_layer[l] = true;
+                // O projection for GDN layers: linear_attn.ssm_out_proj
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_out_proj.weight", l);
+                op[l] = jo(js, jl, bn);
+            }
+        }
         gp[l]=jo2("model.layers.%d.mlp.gate_proj.weight",l);
         up[l]=jo2("model.layers.%d.mlp.up_proj.weight",l);
         dp[l]=jo2("model.layers.%d.mlp.down_proj.weight",l);
@@ -515,9 +538,35 @@ int main(int argc,char**argv){
 
     // I8 tile rows
     auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
-        if(r<=0&&cfg.has_moe){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}return r;};
+        if(r<=0){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}
+        if(r<=0){std::string ak=k;size_t p=ak.find("model.layer.");if(p!=std::string::npos){size_t sa=ak.find("self_attn");if(sa!=std::string::npos){ak.replace(sa,10,"linear_attn");find_tensor_info(js,jl,ak.c_str(),&r);}}}
+        if (r > 0) {
+            // Handle 3D Q4NX shapes [tile_rows, tile_cols, bytes]:
+            // Multiply by tile_cols if present (Qwen3.6 uses 3D, Qwen3 uses 2D).
+            // Default tile_cols = in_features / 256. Compute from known dims.
+        }
+        return r;};
     int q_i8=gi8("model.layers.0.self_attn.q_proj.weight"),k_i8=gi8("model.layers.0.self_attn.k_proj.weight"),v_i8=gi8("model.layers.0.self_attn.v_proj.weight");
+    // Fallback: GDN fused QKV
+    int qkv_fused_i8 = 0;
+    if (q_i8 <= 0) { q_i8 = gi8("model.layer.0.linear_attn.qkv_proj.weight"); qkv_fused_i8 = q_i8; }
     int o_i8=gi8("model.layers.0.self_attn.o_proj.weight"),g_i8=gi8("model.layers.0.mlp.gate_proj.weight"),u_i8=gi8("model.layers.0.mlp.up_proj.weight"),d_i8=gi8("model.layers.0.mlp.down_proj.weight");
+    // GDN fallbacks
+    if (o_i8 <= 0) o_i8 = gi8("model.layer.0.linear_attn.ssm_out_proj.weight");
+    if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight");
+    // Qwen3.6 uses 3D Q4NX shapes [tile_rows, tile_cols, bytes].
+    // gi8 returns shape[0] (tile_rows); multiply by tile_cols = in_features/256.
+    // Only for 3D-shape models (MoE); 2D-shape models (Qwen3) have cols already included.
+    if (cfg.has_moe) {
+    int q_cols = H / 256;      // 8 for H=2048
+    int o_cols = (NH * HD) / 256; // 16 for NH*HD=4096
+    int d_cols = IM / 256;     // 2 for IM=512
+    q_i8 *= q_cols; k_i8 *= q_cols; v_i8 *= q_cols;
+    qkv_fused_i8 *= q_cols;
+    o_i8 *= o_cols;
+    g_i8 *= q_cols; u_i8 *= q_cols;
+    d_i8 *= d_cols;
+    }
     int lm_i8=gi8("lm_head.weight");
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
@@ -781,7 +830,30 @@ int main(int argc,char**argv){
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
     if (!cpu_gemm_fallback) {
     for(int l=0;l<NC;l++){
-        if (!qp[l] || !kp[l] || !vp[l] || !op[l]) continue;  // skip layers without QKV/O
+        if (is_gdn_layer[l]) {
+            // GDN layer: load fused QKV + SSM out projection
+            if (!qp_fused[l] || !op[l] || qkv_fused_i8 <= 0) continue;
+            fprintf(stderr, "  layer %d GDN: qp_fused=%llu qkv_i8=%d\n", l, (unsigned long long)qp_fused[l], qkv_fused_i8);
+            int qr, qc, or2, oc2;
+            fprintf(stderr, "    dequant qkv...\n");
+            float* qkv_w = dequant_i8_to_float_ex(i8p(qp_fused[l]), qkv_fused_i8, H, &qr, &qc);
+            fprintf(stderr, "    dequant qkv done [%d,%d]\n", qr, qc);
+            float* ow = dequant_i8_to_float_ex(i8p(op[l]), o_i8, OIN, &or2, &oc2);
+            if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
+            // Fused QKV: pack as if it were [Q, K, V] concatenated
+            int t = QOUT + KVOUT + KVOUT;
+            std::vector<float> w((size_t)H * t);
+            transpose_pack(qkv_w, QOUT, H, w.data(), t, 0);           // Q
+            transpose_pack(qkv_w + QOUT, KVOUT, H, w.data(), t, QOUT); // K
+            transpose_pack(qkv_w + QOUT + KVOUT, KVOUT, H, w.data(), t, QOUT + KVOUT); // V
+            FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+            free(qkv_w);
+            // O projection
+            std::vector<float> wo((size_t)OIN * OOUT);
+            transpose_pack(ow, OOUT, OIN, wo.data(), OOUT, 0);
+            FLM_PACKB(co, l, wo.data(), OIN, OOUT, osc[l]);
+            free(ow);
+        } else if (qp[l] && kp[l] && vp[l] && op[l]) {
         int qr,kr,vr,unused;
         float*qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused),*kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused),*vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
         int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
@@ -808,6 +880,7 @@ int main(int argc,char**argv){
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
         FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
         }
+        } // end else if (standard layer)
         } // end for l
     // Hybrid FLM: sync all weight BOs to device after packing (single DMA per type)
     if(flm_xclbin_available){
