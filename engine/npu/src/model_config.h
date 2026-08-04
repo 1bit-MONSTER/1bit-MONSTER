@@ -37,6 +37,7 @@ struct ModelConfig {
     std::string model_dir;
 
     bool valid() const { return H > 0 && NC > 0 && NH > 0 && NKV > 0 && HD > 0 && IM > 0 && NV > 0; }
+    static int pad128(int v) { return (v + 127) & ~127; }
 };
 
 // Find a JSON key and extract shape[0] + data_offsets[0]
@@ -347,31 +348,36 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
 
     // Step 6: Compute derived values
     if (cfg.NH > 0 && cfg.NKV > 0) cfg.GQA = cfg.NH / cfg.NKV;
-    cfg.WQH = cfg.NH / cfg.AW;
-    cfg.WKVH = cfg.NKV / cfg.AW;
+    // Adapt AW so NH and NKV divide evenly (models like SmolLM2-135M have NH=9, NKV=3)
+    if (cfg.NH > 0 && cfg.NKV > 0) {
+        while (cfg.AW > 1 && (cfg.NH % cfg.AW != 0 || cfg.NKV % cfg.AW != 0))
+            cfg.AW--;
+    }
+    cfg.WQH = cfg.AW > 0 ? cfg.NH / cfg.AW : cfg.NH;
+    cfg.WKVH = cfg.AW > 0 ? cfg.NKV / cfg.AW : cfg.NKV;
     
     cfg.qkv_k_offset = cfg.NH * cfg.HD;
     cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
     cfg.qkv_total = cfg.NH * cfg.HD + 2 * cfg.NKV * cfg.HD;
     
-    cfg.xclbin_qkv_k = cfg.H;
-    cfg.xclbin_qkv_n = cfg.qkv_total;
-    cfg.xclbin_o_k = cfg.NH * cfg.HD;
-    cfg.xclbin_o_n = cfg.H;
+    cfg.xclbin_qkv_k = ModelConfig::pad128(cfg.H);
+    cfg.xclbin_qkv_n = ModelConfig::pad128(cfg.qkv_total);
+    cfg.xclbin_o_k = ModelConfig::pad128(cfg.NH * cfg.HD);
+    cfg.xclbin_o_n = ModelConfig::pad128(cfg.H);
     
     // GU split decision
     cfg.gu_split = (cfg.IM * 2 > 14336);
     if (cfg.gu_split) {
-        cfg.xclbin_g_k = cfg.H;
-        cfg.xclbin_g_n = cfg.IM;
-        cfg.xclbin_u_k = cfg.H;
-        cfg.xclbin_u_n = cfg.IM;
+        cfg.xclbin_g_k = ModelConfig::pad128(cfg.H);
+        cfg.xclbin_g_n = ModelConfig::pad128(cfg.IM);
+        cfg.xclbin_u_k = ModelConfig::pad128(cfg.H);
+        cfg.xclbin_u_n = ModelConfig::pad128(cfg.IM);
     } else {
-        cfg.xclbin_gu_k = cfg.H;
-        cfg.xclbin_gu_n = cfg.IM * 2;
+        cfg.xclbin_gu_k = ModelConfig::pad128(cfg.H);
+        cfg.xclbin_gu_n = ModelConfig::pad128(cfg.IM * 2);
     }
-    cfg.xclbin_d_k = cfg.IM;
-    cfg.xclbin_d_n = cfg.H;
+    cfg.xclbin_d_k = ModelConfig::pad128(cfg.IM);
+    cfg.xclbin_d_n = ModelConfig::pad128(cfg.H);
     
     // Step 7: MoE detection (Qwen3.5/3.6 naming: "model.layer.N." without 's')
     // gate_exps_proj [experts*tile_rows, col_blocks, tile_bytes] — e.g. Qwen3.6:
@@ -412,20 +418,22 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     }
 
     // Recompute xclbin dimensions (may have been updated by MoE detection)
+    // All xclbin dims padded to multiples of 128 (AIE tile size) so models with
+    // non-aligned hidden sizes (e.g. SmolLM2-135M H=576) work via zero-padding.
     cfg.qkv_total = cfg.NH * cfg.HD + 2 * cfg.NKV * cfg.HD;
     cfg.qkv_k_offset = cfg.NH * cfg.HD;
     cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
-    cfg.xclbin_qkv_k = cfg.H;
-    cfg.xclbin_qkv_n = cfg.qkv_total;
-    cfg.xclbin_o_k = cfg.NH * cfg.HD;
-    cfg.xclbin_o_n = cfg.H;
-    cfg.xclbin_d_k = cfg.IM;
-    cfg.xclbin_d_n = cfg.H;
+    cfg.xclbin_qkv_k = ModelConfig::pad128(cfg.H);
+    cfg.xclbin_qkv_n = ModelConfig::pad128(cfg.qkv_total);
+    cfg.xclbin_o_k = ModelConfig::pad128(cfg.NH * cfg.HD);
+    cfg.xclbin_o_n = ModelConfig::pad128(cfg.H);
+    cfg.xclbin_d_k = ModelConfig::pad128(cfg.IM);
+    cfg.xclbin_d_n = ModelConfig::pad128(cfg.H);
     if (cfg.gu_split) {
-        cfg.xclbin_g_k = cfg.H; cfg.xclbin_g_n = cfg.IM;
-        cfg.xclbin_u_k = cfg.H; cfg.xclbin_u_n = cfg.IM;
+        cfg.xclbin_g_k = ModelConfig::pad128(cfg.H); cfg.xclbin_g_n = ModelConfig::pad128(cfg.IM);
+        cfg.xclbin_u_k = ModelConfig::pad128(cfg.H); cfg.xclbin_u_n = ModelConfig::pad128(cfg.IM);
     } else {
-        cfg.xclbin_gu_k = cfg.H; cfg.xclbin_gu_n = cfg.IM * 2;
+        cfg.xclbin_gu_k = ModelConfig::pad128(cfg.H); cfg.xclbin_gu_n = ModelConfig::pad128(cfg.IM * 2);
     }
 
     munmap(md, st.st_size);

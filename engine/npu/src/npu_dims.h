@@ -458,6 +458,31 @@
   #define LM_I8R 81920    // 262144*2560/8192
 #endif
 
+// SmolLM2-135M: tag=smollm2_135m (30 layers, H=576 — non-128-aligned, padded by engine)
+#ifdef MODEL_smollm2_135m
+  #define MODEL_TAG "smollm2_135m"
+  #define H 576
+  #define NC 30
+  #define NH 9
+  #define NKV 3
+  #define HD 64
+  #define IM 1536
+  #define NV 49152
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 10000.0f
+  #define XCLBIN_SUFFIX "smollm2_135m"
+  #define GU_FUSED 1  // 2*IM=3072 <= 14336
+  #define BOS 0
+  #define EOS 0
+  #define DEF_MP NULL
+  #define Q_I8R 54        // ceil(576/32)*ceil(576/256) = 18*3
+  #define KV_I8R 18       // ceil(192/32)*ceil(576/256) = 6*3
+  #define O_I8R 54        // ceil(576/32)*ceil(576/256) = 18*3
+  #define GU_I8R 288      // ceil(3072/32)*ceil(576/256) = 96*3
+  #define D_I8R 108       // ceil(576/32)*ceil(1536/256) = 18*6
+  #define LM_I8R 4608     // ceil(49152/32)*ceil(576/256) = 1536*3
+#endif
+
 // Default (Qwen3-0.6B) when no model defined
 #ifndef MODEL_TAG
   #define MODEL_TAG "qwen3_0_6b"
