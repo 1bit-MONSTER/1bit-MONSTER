@@ -82,6 +82,16 @@ jobs:
             fi
           done
 
+      - name: Show server log + kernel messages (diagnostic)
+        if: always()
+        run: |
+          echo "=== /tmp/smoke_server.log (last 150 lines) ==="
+          tail -150 /tmp/smoke_server.log 2>/dev/null || echo "(no log file)"
+          echo "=== dmesg (last 60 lines, may need sudo) ==="
+          sudo dmesg 2>/dev/null | tail -60 || dmesg 2>/dev/null | tail -60 || echo "(dmesg unavailable)"
+          echo "=== coredumpctl list (recent) ==="
+          coredumpctl list --no-pager 2>/dev/null | tail -10 || echo "(coredumpctl unavailable)"
+
       - name: Dump server model info
         run: |
           echo "=== Active backend ==="
