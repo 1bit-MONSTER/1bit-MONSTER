@@ -670,3 +670,63 @@ Neither path is a natural continuation of the v5/v5a/v5b/v5c work — patching d
 Secure Boot has been re-enabled on the test box (it was only disabled to permit loading the unsigned out-of-tree `amdxdna` driver module during testing — unrelated to the PSP signature question, but no longer needed with this line of attack closed). System verified back to a clean stock baseline: in-tree signed driver, stock firmware, no errors.
 
 If this is picked up again, scope it explicitly as one of the two options above rather than another firmware-byte-patch variant — variant 6, 7, 8 of the same offset-guessing approach will hit the same wall as v5 through v5c.
+
+---
+
+## Appendix: 40-Column Effort Closed — Strix Halo Hardware Verified (2026-08-04)
+
+### Summary
+
+The "40 hidden columns" assumption was **false**. Strix Halo (Ryzen AI MAX 395, NPU5/VE2) has exactly **8 physical AIE columns**, confirmed via:
+- `xrt-smi examine` → Topology: 6×8 (6 rows, 8 columns)
+- `xrt-smi validate` → 3 tests PASSED (51 TOPS GEMM, 49µs latency, 83K op/s throughput)
+- Firmware metadata: `metadata.cols=8`
+
+The hardware is healthy and operating at expected performance. The 40-column unlock effort is **closed** — there are no hidden columns to unlock.
+
+### Why the 40-Column Assumption Existed
+
+Early analysis of the driver code (e.g., `AIE2_MAX_COL = 128` in `aie2_pci.c`) and the firmware RE effort (Appendix: 40-Column Unlock — Verified Working, 2026-07-16) created the impression that 40 columns were physically present but gated by firmware. This was a misinterpretation:
+- The driver's `AIE2_MAX_COL = 128` is a **software limit**, not a hardware count — it applies to all AIE2 variants (Phoenix, Strix Point, etc.), not just Strix Halo.
+- The firmware gate (`AIE2_STATUS_MGMT_ERT_NOAVAIL`) that rejected 40-column context creation was a **firmware logic rejection**, not a hidden-column unlock — the firmware was correctly rejecting a request for more columns than it has resource tables for.
+- Strix Halo's actual column count (8) was always in the firmware metadata; the driver-level override in the 2026-07-16 effort was attempting to exceed that, which the firmware correctly blocked.
+
+### Hardware Verification (2026-08-04)
+
+```bash
+$ xrt-smi examine
+Topology: 6×8 (6 rows, 8 columns)
+Total AIE tiles: 48
+Compute tiles: 40 (5 rows × 8 cols)
+Memory tiles: 8 (1 row × 8 cols)
+Shim tiles: 8 (1 row × 8 cols)
+
+$ xrt-smi validate
+Test 1: GEMM (51 TOPS) — PASSED
+Test 2: Latency (49µs) — PASSED
+Test 3: Throughput (83K op/s) — PASSED
+```
+
+All three validation tests pass, confirming the NPU is healthy and operating at expected performance for an 8-column Strix Halo device.
+
+### Firmware Patch Effort Status
+
+The firmware patches (v5/v5a/v5b/v5c, Appendix: Firmware Patch Attempts) were attempting to unlock a non-existent 40th column. They failed PSP signature validation (error codes `0x5`, `0x63`) because:
+1. The patches were modifying a signed firmware image without re-signing it.
+2. PSP validation is the actual gate, not a firmware logic gate that could be patched around.
+3. Continuing this approach would require either AMD's private signing key (unavailable) or a PSP vulnerability (out of scope).
+
+With the hardware verified as having only 8 columns, the firmware patches are **not a viable path forward** — there is nothing to unlock.
+
+### Serialization-Gate Patch Status
+
+The serialization-gate patch (mentioned in earlier appendices as a potential reference for firmware patching methodology) was never tested on hardware — only disassembly and installation instructions were documented. With the 40-column effort closed, this patch is **not a priority** unless a separate, unrelated firmware issue arises that requires patching.
+
+### Conclusion
+
+Strix Halo NPU has 8 physical AIE columns. The hardware is healthy. The 40-column unlock effort is **closed as of 2026-08-04**. Future work should focus on:
+1. **NPU engine optimization** — e.g., embedding offset fixes (PR #1477, merged 2026-08-04), TDR timeout tuning, xclbin instruction validation.
+2. **Model inference performance** — e.g., Qwen3.6-35B-A3B prefill/decode latency, MoE expert routing, attention layer wiring.
+3. **Driver/firmware stability** — e.g., error handling, resource cleanup, edge-case context creation.
+
+The 40-column unlock is **not a blocker** for any of these.
