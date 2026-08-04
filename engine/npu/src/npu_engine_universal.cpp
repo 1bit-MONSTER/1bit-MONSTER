@@ -534,8 +534,15 @@ int main(int argc,char**argv){
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
     uint8_t*md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
     uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
-    auto i8p=[&](uint64_t o){return md+df+o;};auto emb=(const uint16_t*)(md+df);
+    auto i8p=[&](uint64_t o){return md+df+o;};
     const char*js=(const char*)(md+8);size_t jl=hsz;
+    // Embeddings by JSON offset, NOT data-start-by-assumption — the first
+    // data tensor is layer 0's ssm_a (offset 0); embed_tokens sits at 7680
+    // for this model. Reading from md+df gave misaligned garbage embeddings
+    // and collapsed hidden states (found via the #1471 full-model reference).
+    uint64_t emb_off = jo(js, jl, "model.embed_tokens.weight");
+    if (!emb_off && key_exists(js, jl, "model.embed_tokens.weight")) emb_off = 0;  // legitimately first
+    auto emb=(const uint16_t*)(i8p(emb_off));
 
     // Pre-convert embeddings f32 (v12 optimization)
     fprintf(stderr,"Pre-convert emb f32...\n");auto te=std::chrono::steady_clock::now();
@@ -2225,6 +2232,12 @@ int main(int argc,char**argv){
         }
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
+        // #1471 bisect: NPU_DUMP_HIDDEN=<path> dumps h_b[0] (first prompt
+        // position) after every layer, appended (40 x H floats).
+        if (const char* dh = getenv("NPU_DUMP_HIDDEN")) {
+            FILE* df = fopen(dh, "ab");
+            if (df) { fwrite(h_b.data(), 4, H, df); fclose(df); }
+        }
         fprintf(stderr,"\n");fflush(stderr);
     }sp+=npt;memcpy(h_data.data(),&h_b[(npt-1)*H],H*4);
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count()/npt);
