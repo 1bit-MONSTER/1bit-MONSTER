@@ -273,6 +273,13 @@ def main():
               f"  -> ssm_a is already -A (use directly)")
         return
 
+    if args.layer_type == "full":
+        out, qq, gate, xs = full_attn_forward(m, args.layer)
+        print(f"layer {args.layer} (full-attn): out[0,:6] = {np.round(out[-1][:6], 5)}")
+        if args.dump:
+            np.savez(args.dump, xs=xs, out=out, **{f"w_{k}": v for k, v in w.items()})
+        return
+
     w = load_layer(m, args.layer)
     out, g, beta, state = gdn_forward(w, xs, negate_a=False)
     print(f"layer {args.layer}: out[0,:6] = {np.round(out[-1][:6], 5)}")
@@ -281,12 +288,6 @@ def main():
         np.savez(args.dump, xs=xs, out=out, g=g, beta=beta,
                  state=state, **{f"w_{k}": v for k, v in w.items()})
         print(f"wrote {args.dump}")
-    if args.layer_type == "full":
-        out, qq, gate, xs = full_attn_forward(m, args.layer)
-        print(f"layer {args.layer} (full-attn): out[0,:6] = {np.round(out[-1][:6], 5)}")
-        if args.dump:
-            np.savez(args.dump, xs=xs, out=out, **{f"w_{k}": v for k, v in w.items()})
-        return
     if args.dump_bin:
         # header: int32 layer, T, H, NUM_V_HEADS  then xs[T,H], out[T,H], g[32], beta[32]
         with open(args.dump_bin, "wb") as f:
