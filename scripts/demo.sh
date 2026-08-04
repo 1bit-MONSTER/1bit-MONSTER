@@ -31,9 +31,9 @@ echo "" | tee -a "$LOGFILE"
 
 # ── Step 2: Build ──
 echo "=== 2. Build ===" | tee -a "$LOGFILE"
-echo "  cmake --build build --target zaya_server -j\$(nproc)" | tee -a "$LOGFILE"
-cmake --build build --target zaya_server -j"$(nproc)" 2>&1 | tail -3 | tee -a "$LOGFILE"
-echo "  Binary: $(ls -lh build/zaya_server | awk '{print $5}')" | tee -a "$LOGFILE"
+echo "  cmake --build build --target onebin -j\$(nproc)" | tee -a "$LOGFILE"
+cmake --build build --target onebin -j"$(nproc)" 2>&1 | tail -3 | tee -a "$LOGFILE"
+echo "  Binary: $(ls -lh build/1bit | awk '{print $5}')" | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"
 
 # ── Step 3: Tests ──
@@ -93,8 +93,8 @@ echo "" | tee -a "$LOGFILE"
 
 # ── Step 7: Server health check ──
 echo "=== 7. HTTP API Server ===" | tee -a "$LOGFILE"
-echo "  Binary: build/zaya_server ($(ls -lh build/zaya_server | awk '{print $5}'))" | tee -a "$LOGFILE"
-echo "  Start: ./build/zaya_server --port 8088" | tee -a "$LOGFILE"
+echo "  Binary: build/1bit ($(ls -lh build/1bit | awk '{print $5}'))" | tee -a "$LOGFILE"
+echo "  Start: ./build/1bit zaya --port 8088" | tee -a "$LOGFILE"
 echo "  Send: curl http://localhost:8088/v1/models" | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"
 
