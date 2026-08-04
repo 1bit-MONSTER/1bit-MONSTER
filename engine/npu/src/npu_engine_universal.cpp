@@ -1209,12 +1209,13 @@ int main(int argc,char**argv){
     // Probe-validated path (#1466): each xclbin uses its OWN aiecc instruction
     // stream; activations get dynamic scales per GEMM. Router stays on CPU.
     //
-    // OPT-IN (NPU_MOE=1) because it is currently SLOWER than the CPU path at
-    // M=1: measured 193 s/token vs 165 s/token on Qwen3.6-35B-A3B. Both paths
-    // dequant the 8 active experts per layer per token (the real bottleneck);
-    // this path then adds concat-pack + int8 requantize and only replaces the
-    // CPU matmul, so the GEMM win does not pay for the repack. It becomes a
-    // win once active-expert weights are cached in packed form across tokens.
+    // OPT-IN (NPU_MOE=1). #1473 shipped a per-expert packed-int8 LRU cache
+    // (per-token work = memcpy + 4 launches, no dequant/requantize) which cut
+    // the NPU path from 193 s to ~10 s/token — but the CPU path, once the
+    // broken QKV/O xclbins were rebuilt (see xclbin fix commit), is ~3.5 s:
+    // the NPU's M=1 GEMMs run on an 8-column partition (aiecc device model)
+    // at ~37 ms each, so 4 MoE GEMMs + assembly still lose to OpenMP CPU
+    // matmuls. Revisit when batching >1 or the 40-col driver lands.
     // Falls back to moe_ffn_cpu on any init failure.
     std::unique_ptr<I8Ctx> mgu, mde, msg, msd;
     std::vector<float> msg_scale, msd_scale;
@@ -1222,7 +1223,7 @@ int main(int argc,char**argv){
     if (has_moe && !cpu_gemm_fallback) {
         const char* npu_moe_env = getenv("NPU_MOE");
         if (!npu_moe_env || atoi(npu_moe_env) == 0) {
-            fprintf(stderr, "NPU MoE off (set NPU_MOE=1 to enable; CPU MoE is faster at M=1)\n");
+            fprintf(stderr, "NPU MoE off (set NPU_MOE=1; CPU path is faster at M=1)\n");
         } else {
             int moe_n = TOP_K * 2 * IM_EXP;
             auto moe_ctx = [&](std::unique_ptr<I8Ctx>& c, const char* t,
@@ -1425,11 +1426,58 @@ int main(int argc,char**argv){
 
     // ── NPU MoE FFN (probe-validated path, #1466) ──
     // Router softmax → top-K on CPU; concat top-K experts' G/U/D into the
-    // MOE_GU/D xclbins' [K,N] layout (packB per call — the expert set changes
-    // every token) + static shared expert on MOE_SGU/SD (packed once at init).
+    // MOE_GU/D xclbins' [K,N] layout + static shared expert on MOE_SGU/SD.
     // Dynamic activation scales per GEMM (a fixed 1.0 zeroes the D input, #1466).
-    // ponytail: per-call packB ~24MB; pre-packing all 256 experts is ~30 GB per
-    // layer set — revisit if per-token packing shows up in profiles.
+    //
+    // #1473: per-expert int8 slices are cached (LRU) so per-token work is a
+    // memcpy into the concat BOs + 4 launches — NOT dequant+requantize. Each
+    // expert is packed with its own per-32-row-group scales (strictly better
+    // quantization than concat packing: full int8 range per expert). GU output
+    // is corrected per-expert by (expert mean scale / passed mean scale); the D
+    // concat sums experts in K so it uses the plain mean approximation (same
+    // structure as the concat path). Measured pre-cache: 193 s/token vs CPU 165
+    // (dequant-bound); post-cache: see NPU MoE default flip.
+    struct PackedExpert {
+        int expert = -1;                 // -1 = empty slot
+        int stamp = 0;
+        std::vector<int8_t> gu;          // [H * 2*IM_EXP] int8 (gate|up)
+        std::vector<int8_t> d;           // [IM_EXP * H] int8
+        std::vector<float> gu_scales;    // [H/32]
+        std::vector<float> d_scales;     // [IM_EXP/32]
+        float gu_mean = 0, d_mean = 0;
+    };
+    const int EXP_CACHE_SZ = 32;         // slots per layer (32*4 MB*40 = 5.1 GB — top-K working set is sticky)
+    std::vector<std::vector<PackedExpert>> exp_cache(NC);
+    int cache_stamp = 0;
+    auto quant_slice = [](const float* w, int K, int N, std::vector<int8_t>& out,
+                          std::vector<float>& scales, float& mean) {
+        int ng = (K + 31) / 32;
+        scales.resize(ng);
+        out.resize((size_t)K * N);
+        double ssum = 0;
+        for (int g = 0; g < ng; g++) {
+            int gs = g * 32, gn = std::min(32, K - gs);
+            float amax = 0;
+            for (int j = 0; j < N; j++)
+                for (int i = 0; i < gn; i++) {
+                    float a = fabsf(w[(gs + i) * N + j]);
+                    if (std::isfinite(a) && a > amax) amax = a;
+                }
+            if (amax < 1e-12f) amax = 1.0f;
+            scales[g] = amax / 127.0f;
+            ssum += scales[g];
+            float is = 127.0f / amax;
+            for (int j = 0; j < N; j++)
+                for (int i = 0; i < gn; i++) {
+                    float v = w[(gs + i) * N + j];
+                    if (!std::isfinite(v)) v = 0;
+                    int q = (int)roundf(v * is);
+                    out[(size_t)(gs + i) * N + j] = (int8_t)(q > 127 ? 127 : q < -127 ? -127 : q);
+                }
+        }
+        mean = (float)(ssum / ng);
+    };
+
     auto moe_ffn_npu = [&](const float* x, float* out, int l) {
         const auto& eo = exp_off[l];
         // Router: softmax → top-K (identical to moe_ffn_cpu)
@@ -1461,38 +1509,74 @@ int main(int argc,char**argv){
         int exp_up_off_stride   = exp_up_tr_per   * 5120;
         int exp_down_off_stride = exp_down_tr_per * 5120;
 
-        // Concat the top-K experts' G/U into [H, K*2*IM] and D into [K*IM, H]
+        // ── Expert cache (LRU): pack on miss, memcpy on hit (#1473) ──
+        auto& cache = exp_cache[l];
+        if (cache.empty()) cache.resize(EXP_CACHE_SZ);
         const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
-        std::vector<float> gu_w((size_t)H * gu_n);
-        std::vector<float> d_w((size_t)TOP_K * IM_EXP * H);
+        int8_t* guB = (int8_t*)mgu->layerB[0]->map();   // [H, 8*2*IM] int8
+        int8_t* dB = (int8_t*)mde->layerB[0]->map();    // [8*IM, H] int8
+        double gu_sum = 0, d_sum = 0;
         for (int e = 0; e < TOP_K; e++) {
             int ex = topk[e];
-            int gr, gc, ur, uc, dr, dc;
-            float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
-                               exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
-            float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
-                               exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
-            float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
-                               exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
-            if (!G || !U || !D) { free(G); free(U); free(D); continue; }
-            for (int i = 0; i < IM_EXP; i++)
-                for (int k = 0; k < H; k++) {
-                    gu_w[(size_t)k * gu_n + e * 2 * IM_EXP + i] = G[i * H + k];
-                    gu_w[(size_t)k * gu_n + e * 2 * IM_EXP + IM_EXP + i] = U[i * H + k];
-                }
-            for (int i = 0; i < H; i++)
-                for (int k = 0; k < IM_EXP; k++)
-                    d_w[(size_t)(e * IM_EXP + k) * H + i] = D[i * IM_EXP + k];
-            free(G); free(U); free(D);
+            PackedExpert* slot = nullptr;
+            for (auto& s : cache) if (s.expert == ex) { slot = &s; break; }
+            if (!slot) {
+                // miss: evict LRU, dequant + pack this expert
+                PackedExpert* victim = &cache[0];
+                for (auto& s : cache) if (s.stamp < victim->stamp) victim = &s;
+                slot = victim;
+                int gr, gc, ur, uc, dr, dc;
+                float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                                   exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
+                float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
+                                   exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
+                float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
+                                   exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
+                if (!G || !U || !D) { free(G); free(U); free(D); continue; }
+                // fused gate|up slice [K=H, N=2*IM] (same column order as the concat)
+                std::vector<float> gu_f((size_t)H * 2 * IM_EXP);
+                for (int i = 0; i < IM_EXP; i++)
+                    for (int k = 0; k < H; k++) {
+                        gu_f[(size_t)k * (2 * IM_EXP) + i] = G[i * H + k];
+                        gu_f[(size_t)k * (2 * IM_EXP) + IM_EXP + i] = U[i * H + k];
+                    }
+                std::vector<float> d_f((size_t)IM_EXP * H);
+                for (int i = 0; i < H; i++)
+                    for (int k = 0; k < IM_EXP; k++)
+                        d_f[(size_t)k * H + i] = D[i * IM_EXP + k];
+                quant_slice(gu_f.data(), H, 2 * IM_EXP, slot->gu, slot->gu_scales, slot->gu_mean);
+                quant_slice(d_f.data(), IM_EXP, H, slot->d, slot->d_scales, slot->d_mean);
+                free(G); free(U); free(D);
+                slot->expert = ex;
+            }
+            slot->stamp = ++cache_stamp;
+            gu_sum += slot->gu_mean;
+            d_sum += slot->d_mean;
+            // assemble: GU expert e at columns [e*2*IM, (e+1)*2*IM); D at rows [e*IM, (e+1)*IM)
+            for (int r = 0; r < H; r++)
+                memcpy(guB + (size_t)r * gu_n + (size_t)e * 2 * IM_EXP,
+                       slot->gu.data() + (size_t)r * 2 * IM_EXP, (size_t)2 * IM_EXP);
+            memcpy(dB + (size_t)e * IM_EXP * H, slot->d.data(), (size_t)IM_EXP * H);
         }
+        float gu_sc = (float)(gu_sum / TOP_K);   // mean of selected experts' means
+        float d_sc = (float)(d_sum / TOP_K);
+        mgu->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        mde->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-        // Pack + run: GU concat GEMM → SiLU × router prob → D concat GEMM
-        float gu_sc = 0, d_sc = 0;
-        mgu->packB(0, gu_w.data(), H, (int)gu_n, gu_sc);
-        mde->packB(0, d_w.data(), TOP_K * IM_EXP, H, d_sc);
+        // Run: GU concat GEMM → SiLU × router prob → D concat GEMM
         std::vector<float> gu_out(gu_n), su((size_t)TOP_K * IM_EXP), d_out(H);
         float ag = dynamic_ascale(x, H);
         mgu->go(0, x, 1, H, ag, gu_sc, gu_out.data(), (int)gu_n);
+        // per-expert dequant correction: columns were scaled by the global mean;
+        // each expert's own mean scale is the exact per-expert dequant.
+        for (int e = 0; e < TOP_K; e++) {
+            PackedExpert* slot = nullptr;
+            for (auto& s : cache) if (s.expert == topk[e]) { slot = &s; break; }
+            if (!slot || gu_sc == 0) continue;
+            float corr = slot->gu_mean / gu_sc;
+            float* col = gu_out.data() + (size_t)e * 2 * IM_EXP;
+            for (int i = 0; i < 2 * IM_EXP; i++) col[i] *= corr;
+        }
         for (int e = 0; e < TOP_K; e++)
             for (int i = 0; i < IM_EXP; i++) {
                 float gv = gu_out[e * 2 * IM_EXP + i];
@@ -1524,6 +1608,126 @@ int main(int argc,char**argv){
             for (int i = 0; i < H; i++) out[i] = d_out[i];
         }
         for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+    };
+
+    // ── Shared per-layer attention (#1472): one implementation for the worker
+    // op=32 path AND the direct-mode prefill/boot/batch decode (they drifted
+    // before — the worker got the real GDN, the direct mode stayed broken).
+    // GDN: x [H] layer input (post input-norm); fqo [8192] QKV GEMM output
+    // (conv applied in-place); conv_state [8192*4] per-layer rolling buffer;
+    // delta_state [32*128*128] per-layer recurrence; out [32*128] = gated-
+    // RMSNorm'd core (feeds the O GEMM). Probe-validated math (#1466).
+    auto gdn_attn_step = [&](int l, const float* x, float* fqo,
+                             float* conv_state, float* delta_state, float* out) {
+        // causal depthwise conv1d on the fused QKV (kernel 4)
+        memmove(conv_state, conv_state + GDN_CONV_DIM, (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1) * 4);
+        memcpy(conv_state + (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1), fqo, (size_t)GDN_CONV_DIM * 4);
+        const float* cw = gdn_conv_w[l].data();
+        for (int cc = 0; cc < GDN_CONV_DIM; cc++) {
+            double s = 0;
+            for (int kk = 0; kk < GDN_CONV_K; kk++)
+                s += (double)conv_state[(size_t)kk * GDN_CONV_DIM + cc] * cw[(size_t)kk * GDN_CONV_DIM + cc];
+            fqo[cc] = silu_f((float)s);
+        }
+        // split q [0,2048) k [2048,4096) v [4096,8192); repeat q/k 16→32 + l2norm
+        std::vector<float> qq((size_t)GDN_VH * GDN_HD), kk((size_t)GDN_VH * GDN_HD);
+        for (int h = 0; h < GDN_VH; h++) {
+            const float* qs_ = fqo + (size_t)(h / 2) * GDN_HD;
+            const float* ks_ = fqo + 2048 + (size_t)(h / 2) * GDN_HD;
+            double sq = 0, sk = 0;
+            for (int d = 0; d < GDN_HD; d++) {
+                qq[(size_t)h * GDN_HD + d] = qs_[d];
+                kk[(size_t)h * GDN_HD + d] = ks_[d];
+                sq += qs_[d] * qs_[d]; sk += ks_[d] * ks_[d];
+            }
+            float iq = 1.0f / sqrtf((float)sq + EPS), ik = 1.0f / sqrtf((float)sk + EPS);
+            for (int d = 0; d < GDN_HD; d++) {
+                qq[(size_t)h * GDN_HD + d] *= iq;
+                kk[(size_t)h * GDN_HD + d] *= ik;
+            }
+        }
+        // alpha/beta projections → g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b)
+        // (ssm_a stored already negated, #1460 convention — used directly)
+        std::vector<float> ga(GDN_VH), gb(GDN_VH), ggate((size_t)GDN_VH * GDN_HD);
+        const float* aw = gdn_alpha_w[l].data();
+        const float* bw = gdn_beta_w[l].data();
+        for (int h = 0; h < GDN_VH; h++) {
+            double sa = 0, sb = 0;
+            for (int i = 0; i < H; i++) {
+                sa += (double)aw[(size_t)i * GDN_VH + h] * x[i];
+                sb += (double)bw[(size_t)i * GDN_VH + h] * x[i];
+            }
+            ga[h] = gdn_ssm_a[l][h] * softplus_f((float)sa + gdn_dt_bias[l][h]);
+            gb[h] = 1.0f / (1.0f + expf(-(float)sb));
+            for (int d = 0; d < GDN_HD; d++) ggate[(size_t)h * GDN_HD + d] = ga[h];
+        }
+        // recurrent delta rule over 32 v-heads
+        gdn_attn_cpu(qq.data(), kk.data(), fqo + 4096, ggate.data(), gb.data(),
+                     delta_state, out, GDN_HD, GDN_VH, 1.0f / sqrtf((float)GDN_HD));
+        // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
+        std::vector<float> zout(4096);
+        const float* zw = gdn_z_w[l].data();
+        for (int i = 0; i < 4096; i++) {
+            double s = 0;
+            for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
+            zout[i] = (float)s;
+        }
+        const float* nw = gdn_norm_w[l].data();
+        for (int h = 0; h < GDN_VH; h++) {
+            float* ch = out + (size_t)h * GDN_HD;
+            double var = 0;
+            for (int d = 0; d < GDN_HD; d++) var += ch[d] * ch[d];
+            float ir = 1.0f / sqrtf((float)(var / GDN_HD) + EPS);
+            for (int d = 0; d < GDN_HD; d++) {
+                float zv = zout[(size_t)h * GDN_HD + d];
+                ch[d] = ch[d] * ir * nw[d] * silu_f(zv);
+            }
+        }
+    };
+    // STD (full attention): x [H]; fqo [8192] (q 16×256 at [0,4096), output
+    // gate at [4096,8192) — fused in q_proj per-head halves); kvc KV cache
+    // (STD 512-float stride); pos; out [16*256] post sigmoid-gate, feeds O.
+    auto std_attn_step = [&](int l, const float* x, float* fqo, KVCache& kvc,
+                             int& pos, float* out) {
+        std::vector<float> kv(1024);   // [512 k | 512 v], CPU projections
+        const float* kw_ = std_k_w[l].data();
+        const float* vw_ = std_v_w[l].data();
+        for (int i = 0; i < 512; i++) {
+            double sk = 0, sv = 0;
+            for (int j = 0; j < H; j++) {
+                sk += (double)kw_[(size_t)i * H + j] * x[j];
+                sv += (double)vw_[(size_t)i * H + j] * x[j];
+            }
+            kv[i] = (float)sk; kv[512 + i] = (float)sv;
+        }
+        const float* qnw = std_qn_w[l].data();
+        const float* knw = std_kn_w[l].data();
+        for (int h = 0; h < STD_NH; h++) {
+            float* qh = fqo + (size_t)h * STD_HD;
+            double sq = 0;
+            for (int d = 0; d < STD_HD; d++) sq += qh[d] * qh[d];
+            float iq = 1.0f / sqrtf((float)(sq / STD_HD) + EPS);
+            for (int d = 0; d < STD_HD; d++) qh[d] *= iq * qnw[d];
+            ra2(qh, pos);
+            int kvh = h / (STD_NH / STD_NKV);
+            float* kh = kv.data() + (size_t)kvh * STD_HD;
+            double sk = 0;
+            for (int d = 0; d < STD_HD; d++) sk += kh[d] * kh[d];
+            float ik = 1.0f / sqrtf((float)(sk / STD_HD) + EPS);
+            for (int d = 0; d < STD_HD; d++) kh[d] *= ik * knw[d];
+            ra2(kh, pos);
+            if (pos >= 4096) {
+                fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
+                pos = 0;
+            }
+            memcpy(&kvc.k[((size_t)pos * STD_NKV + kvh) * STD_HD], kh, STD_HD * 4);
+            memcpy(&kvc.v[((size_t)pos * STD_NKV + kvh) * STD_HD], kv.data() + 512 + (size_t)kvh * STD_HD, STD_HD * 4);
+        }
+        kvc.n = pos + 1;
+        attn_omp(fqo, out, kvc.n, kvc.k.data(), kvc.v.data(),
+                 STD_NH, STD_NKV, STD_HD, STD_NH / STD_NKV);
+        const float* gt = fqo + 4096;
+        for (int i = 0; i < STD_NH * STD_HD; i++) out[i] *= 1.0f / (1.0f + expf(-gt[i]));
     };
 
     // ===== WORKER MODE (subprocess protocol) =====
@@ -1661,11 +1865,6 @@ int main(int argc,char**argv){
                     static std::vector<float> fuse_gdn_state;     // [NC, 32, 128, 128]
                     static std::vector<float> fuse_gdn_attn_out;  // [32, 128]
                     static std::vector<float> fuse_gdn_conv_state;  // [NC, 8192, 4]
-                    static std::vector<float> fuse_gdn_q2, fuse_gdn_k2;      // [32*128]
-                    static std::vector<float> fuse_gdn_g, fuse_gdn_beta;     // [32]
-                    static std::vector<float> fuse_gdn_gate_bcast;           // [32*128]
-                    static std::vector<float> fuse_gdn_z;                    // [4096]
-                    static std::vector<float> fuse_std_kv;                   // [512 k | 512 v]
                     static std::vector<int> fuse_top_ids_v;
                     if (fuse_reset) {
                         fuse_reset = false;
@@ -1693,13 +1892,6 @@ int main(int argc,char**argv){
                             fuse_gdn_state.resize(NC * (size_t)GDN_VH * GDN_HD * GDN_HD, 0);
                             fuse_gdn_attn_out.resize(GDN_VH * GDN_HD, 0);
                             fuse_gdn_conv_state.resize(NC * (size_t)GDN_CONV_DIM * GDN_CONV_K, 0);
-                            fuse_gdn_q2.resize(GDN_VH * GDN_HD, 0);
-                            fuse_gdn_k2.resize(GDN_VH * GDN_HD, 0);
-                            fuse_gdn_g.resize(GDN_VH, 0);
-                            fuse_gdn_beta.resize(GDN_VH, 0);
-                            fuse_gdn_gate_bcast.resize(GDN_VH * GDN_HD, 0);
-                            fuse_gdn_z.resize(4096, 0);
-                            fuse_std_kv.resize(1024, 0);
                         }
                     }
                     int token_id = (int)in_data[0];
@@ -1722,80 +1914,12 @@ int main(int argc,char**argv){
                         bool is_gdn = is_gdn_layer[l];
                         float* fat = fuse_at_b.data();
                         if (is_gdn) {
-                            // ── GatedDeltaNet (probe-validated math, #1466) ──
-                            // causal depthwise conv1d on the fused QKV (kernel 4)
-                            float* cst = fuse_gdn_conv_state.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K;
-                            memmove(cst, cst + GDN_CONV_DIM, (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1) * 4);
-                            memcpy(cst + (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1), fqo, (size_t)GDN_CONV_DIM * 4);
-                            const float* cw = gdn_conv_w[l].data();
-                            for (int cc = 0; cc < GDN_CONV_DIM; cc++) {
-                                double s = 0;
-                                for (int kk = 0; kk < GDN_CONV_K; kk++)
-                                    s += (double)cst[(size_t)kk * GDN_CONV_DIM + cc] * cw[(size_t)kk * GDN_CONV_DIM + cc];
-                                fqo[cc] = silu_f((float)s);
-                            }
-                            // split q [0,2048) k [2048,4096) v [4096,8192); repeat q/k 16→32 + l2norm
-                            float* qq = fuse_gdn_q2.data();   // [32*128]
-                            float* kk = fuse_gdn_k2.data();
-                            for (int h = 0; h < GDN_VH; h++) {
-                                const float* qs_ = fqo + (size_t)(h / 2) * GDN_HD;
-                                const float* ks_ = fqo + 2048 + (size_t)(h / 2) * GDN_HD;
-                                double sq = 0, sk = 0;
-                                for (int d = 0; d < GDN_HD; d++) {
-                                    qq[(size_t)h * GDN_HD + d] = qs_[d];
-                                    kk[(size_t)h * GDN_HD + d] = ks_[d];
-                                    sq += qs_[d] * qs_[d]; sk += ks_[d] * ks_[d];
-                                }
-                                float iq = 1.0f / sqrtf((float)sq + EPS), ik = 1.0f / sqrtf((float)sk + EPS);
-                                for (int d = 0; d < GDN_HD; d++) {
-                                    qq[(size_t)h * GDN_HD + d] *= iq;
-                                    kk[(size_t)h * GDN_HD + d] *= ik;
-                                }
-                            }
-                            // alpha/beta projections → g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b)
-                            // (ssm_a stored already negated, #1460 convention — used directly)
-                            float* ga = fuse_gdn_g.data();      // [32]
-                            float* gb = fuse_gdn_beta.data();
-                            const float* aw = gdn_alpha_w[l].data();
-                            const float* bw = gdn_beta_w[l].data();
-                            for (int h = 0; h < GDN_VH; h++) {
-                                double sa = 0, sb = 0;
-                                for (int i = 0; i < H; i++) {
-                                    sa += (double)aw[(size_t)i * GDN_VH + h] * fh[i];
-                                    sb += (double)bw[(size_t)i * GDN_VH + h] * fh[i];
-                                }
-                                ga[h] = gdn_ssm_a[l][h] * softplus_f((float)sa + gdn_dt_bias[l][h]);
-                                gb[h] = 1.0f / (1.0f + expf(-(float)sb));
-                            }
-                            // broadcast per-head scalar gate to [32*128] for the kernel
-                            float* ggate = fuse_gdn_gate_bcast.data();
-                            for (int h = 0; h < GDN_VH; h++)
-                                for (int d = 0; d < GDN_HD; d++) ggate[(size_t)h * GDN_HD + d] = ga[h];
-                            float* gs = fuse_gdn_state.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD;
-                            gdn_attn_cpu(qq, kk, fqo + 4096, ggate, gb, gs,
-                                        fuse_gdn_attn_out.data(), GDN_HD, GDN_VH,
-                                        1.0f / sqrtf((float)GDN_HD));
-                            // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
-                            float* zout = fuse_gdn_z.data();
-                            const float* zw = gdn_z_w[l].data();
-                            for (int i = 0; i < 4096; i++) {
-                                double s = 0;
-                                for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * fh[j];
-                                zout[i] = (float)s;
-                            }
-                            float* core = fuse_gdn_attn_out.data();
-                            const float* nw = gdn_norm_w[l].data();
-                            for (int h = 0; h < GDN_VH; h++) {
-                                float* ch = core + (size_t)h * GDN_HD;
-                                double var = 0;
-                                for (int d = 0; d < GDN_HD; d++) var += ch[d] * ch[d];
-                                float ir = 1.0f / sqrtf((float)(var / GDN_HD) + EPS);
-                                for (int d = 0; d < GDN_HD; d++) {
-                                    float zv = zout[(size_t)h * GDN_HD + d];
-                                    ch[d] = ch[d] * ir * nw[d] * silu_f(zv);
-                                }
-                            }
-                            fat = core;   // [32*128] → co directly (no NKV→NH expand)
+                            // GatedDeltaNet: shared implementation (probe-validated, #1466)
+                            gdn_attn_step(l, fh, fqo,
+                                          fuse_gdn_conv_state.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
+                                          fuse_gdn_state.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                                          fuse_gdn_attn_out.data());
+                            fat = fuse_gdn_attn_out.data();   // [32*128] → co directly
                         } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
                             float qs = dynamic_ascale(fqo, NH * HD);
                             float ks = 0;
@@ -1807,51 +1931,35 @@ int main(int argc,char**argv){
                             auto r = ca_ptr->launch(fqo, fuse_kv[l].k.data(), fuse_kv[l].v.data(), fcl, 1, qs, ks);
                             ca_ptr->finish(r, fat, 1, qs, ks);
                             cn(fat, NH * HD);
+                        } else if (has_moe) {
+                            // Full attention (16 heads × 256, 2 KV heads, partial rotary)
+                            std_attn_step(l, fh, fqo, fuse_kv[l], fuse_pos, fat);
                         } else {
-                            // ── Full attention (16 heads × 256, 2 KV heads, partial rotary) ──
-                            // q 16×256 at [0,4096), output gate at [4096,8192) (fused in
-                            // q_proj, per-head halves); k/v computed on CPU per token.
-                            float* kv = fuse_std_kv.data();   // [512 k | 512 v]
-                            const float* kw_ = std_k_w[l].data();
-                            const float* vw_ = std_v_w[l].data();
-                            for (int i = 0; i < 512; i++) {
-                                double sk = 0, sv = 0;
-                                for (int j = 0; j < H; j++) {
-                                    sk += (double)kw_[(size_t)i * H + j] * fh[j];
-                                    sv += (double)vw_[(size_t)i * H + j] * fh[j];
-                                }
-                                kv[i] = (float)sk; kv[512 + i] = (float)sv;
-                            }
-                            const float* qnw = std_qn_w[l].data();
-                            const float* knw = std_kn_w[l].data();
-                            for (int h = 0; h < STD_NH; h++) {
-                                float* qh = fqo + (size_t)h * STD_HD;
+                            // Non-MoE models: original global-dims path (#1472 guard)
+                            for (int hh = 0; hh < NH; hh++) {
                                 double sq = 0;
-                                for (int d = 0; d < STD_HD; d++) sq += qh[d] * qh[d];
-                                float iq = 1.0f / sqrtf((float)(sq / STD_HD) + EPS);
-                                for (int d = 0; d < STD_HD; d++) qh[d] *= iq * qnw[d];
-                                ra2(qh, fuse_pos);
-                                int kvh = h / (STD_NH / STD_NKV);
-                                float* kh = kv + (size_t)kvh * STD_HD;
-                                double sk = 0;
-                                for (int d = 0; d < STD_HD; d++) sk += kh[d] * kh[d];
-                                float ik = 1.0f / sqrtf((float)(sk / STD_HD) + EPS);
-                                for (int d = 0; d < STD_HD; d++) kh[d] *= ik * knw[d];
-                                ra2(kh, fuse_pos);
-                                if (fuse_pos >= 4096) {
-                                    fprintf(stderr, "[npu] fuse KV overflow (pos=%d) — restarting context\n", fuse_pos);
-                                    fuse_pos = 0;
+                                for (int d = 0; d < HD; d++) sq += fqo[hh * HD + d] * fqo[hh * HD + d];
+                                float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
+                                for (int d = 0; d < HD; d++)
+                                    fqo[hh * HD + d] *= iq * (cfg.has_q_norm ? qn_w[l][d] : 1.0f);
+                                ra(&fqo[hh * HD], HD, fuse_pos);
+                                if (hh % GQA == 0) {
+                                    int kvh = hh / GQA;
+                                    float* ks = &fqo[cfg.qkv_k_offset + kvh * HD];
+                                    double sk = 0;
+                                    for (int d = 0; d < HD; d++) sk += ks[d] * ks[d];
+                                    float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
+                                    for (int d = 0; d < HD; d++)
+                                        ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
+                                    ra(ks, HD, fuse_pos);
+                                    float* vs = &fqo[cfg.qkv_v_offset + kvh * HD];
+                                    memcpy(&fuse_kv[l].k[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
+                                    memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
                                 }
-                                memcpy(&fuse_kv[l].k[((size_t)fuse_pos * STD_NKV + kvh) * STD_HD], kh, STD_HD * 4);
-                                memcpy(&fuse_kv[l].v[((size_t)fuse_pos * STD_NKV + kvh) * STD_HD], kv + 512 + (size_t)kvh * STD_HD, STD_HD * 4);
                             }
                             fuse_kv[l].n = fuse_pos + 1;
-                            int fcl = fuse_kv[l].n;
-                            attn_omp(fqo, fat, fcl, fuse_kv[l].k.data(), fuse_kv[l].v.data(),
-                                     STD_NH, STD_NKV, STD_HD, STD_NH / STD_NKV);
-                            // output gate: attn_out *= sigmoid(gate), gate per-dim from q_proj's second half
-                            const float* gt = fqo + 4096;
-                            for (int i = 0; i < STD_NH * STD_HD; i++) fat[i] *= 1.0f / (1.0f + expf(-gt[i]));
+                            attn_omp(fqo, fat, fuse_kv[l].n, fuse_kv[l].k.data(), fuse_kv[l].v.data(),
+                                     NH, NKV, HD, GQA);
                         }
                         float ao = dynamic_ascale(fat, NH * HD);
                         FLM_GO(co, l, fat, 1, NH * HD, ao, osc[l], fuse_oo_b.data(), H);
@@ -1956,6 +2064,11 @@ int main(int argc,char**argv){
     int npt=(int)pt_vec.size(); if(npt<1)npt=1;
     if(input_tok_file && npt > XM) npt = XM;
 
+    // Direct-mode GDN state (per-layer conv + delta rule buffers) — the
+    // worker op=32 path has its own fuse_* copies (#1472).
+    std::vector<float> dm_gdn_conv(has_moe ? (size_t)NC * GDN_CONV_DIM * GDN_CONV_K : 0, 0.0f);
+    std::vector<float> dm_gdn_delta(has_moe ? (size_t)NC * GDN_VH * GDN_HD * GDN_HD : 0, 0.0f);
+
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
     printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
@@ -1971,82 +2084,105 @@ int main(int argc,char**argv){
         // Phase 2: Wait QKV + dequant (CPU attention runs after)
         FLM_FINISH_ASYNC(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascale,qsc[l],l);cn(qo_b.data(),npt*qkv_n);
         fprintf(stderr,"q");fflush(stderr);
-        float*qn=qn_w[l].data(),*kn=kn_w[l].data();
-        for(int pi=0;pi<npt;pi++){
-            for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=qo_b[pi*qkv_n+hh*HD+d]*qo_b[pi*qkv_n+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);
-                for(int d=0;d<HD;d++)qo_b[pi*qkv_n+hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_b[pi*qkv_n+hh*HD],HD,sp+pi);}
-            for(int kvh=0;kvh<NKV;kvh++){float*ks=&qo_b[pi*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[pi*qkv_n+cfg.qkv_v_offset+kvh*HD];
-                double sk=0;for(int d=0;d<HD;d++)sk+=ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                for(int d=0;d<HD;d++)ks[d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(ks,HD,sp+pi);
-                memcpy(&kv_caches[l].k[(sp+pi)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+pi)*NKV*HD+kvh*HD],vs,HD*4);}}
-        kv_caches[l].n=sp+npt;int cl=kv_caches[l].n;
-        // Attention: NPU or CPU fallback
-        //
-        // NPU attention uses pre-compiled KV xclbin instructions
-        // at runtime via FLM's libmha.so (MHA::generate_mha_sequence). The
-        // attn.xclbin kernel takes Q, K, V as i8 inputs and produces i16 output.
-        // K and V caches are quantized from f32 on each step.
-        //
-        // CPU attn_omp() fallback is always available.
-        if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-            // Regenerate instructions for current seq_len
-
+        // ── per-layer attention (#1472): GDN is sequential (conv + delta rule);
+        // full-attn layers use CPU k/v + per-layer dims; other models keep the
+        // global-dims path. All feed the same batched O GEMM. ──
+        kv_caches[l].n = sp + npt;
+        if (is_gdn_layer[l]) {
+            for (int pi = 0; pi < npt; pi++)
+                gdn_attn_step(l, &h_b[pi * H], &qo_b[pi * qkv_n],
+                              dm_gdn_conv.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
+                              dm_gdn_delta.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                              &at_b[pi * NH * HD]);
+        } else if (has_moe) {
+            for (int pi = 0; pi < npt; pi++) {
+                int pos = sp + pi;
+                std_attn_step(l, &h_b[pi * H], &qo_b[pi * qkv_n], kv_caches[l], pos,
+                              &at_b[pi * NH * HD]);
+            }
+        } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
             if (!attn_instrs.empty()) {
-                // Compute dynamic scales for Q and K/V quantization
                 float q_ascale = dynamic_ascale(qo_b.data(), npt * NH * HD);
                 float kv_ascale = 0;
-                for (int i = 0; i < (size_t)cl * NKV * HD; i++) {
+                for (int i = 0; i < (size_t)kv_caches[l].n * NKV * HD; i++) {
                     float a = fabsf(kv_caches[l].k[i]);
                     if (std::isfinite(a) && a > kv_ascale) kv_ascale = a;
                 }
                 if (kv_ascale < 1e-12f) kv_ascale = 1.0f;
                 kv_ascale = kv_ascale / 127.0f;
-
-                // Launch NPU attention kernel
-                auto r_attn = ca_ptr->launch(
-                    qo_b.data(), kv_caches[l].k.data(), kv_caches[l].v.data(),
-                    cl, npt, q_ascale, kv_ascale);
-
-                // Wait + dequantize into attention output buffer
+                auto r_attn = ca_ptr->launch(qo_b.data(), kv_caches[l].k.data(), kv_caches[l].v.data(),
+                                             kv_caches[l].n, npt, q_ascale, kv_ascale);
                 ca_ptr->finish(r_attn, at_b.data(), npt, q_ascale, kv_ascale);
                 cn(at_b.data(), npt * NH * HD);
-                fprintf(stderr,"A"); fflush(stderr);
+                fprintf(stderr, "A"); fflush(stderr);
             } else {
-                // Instr generation failed — fall back to CPU
                 #pragma omp parallel for
-                for(int pi=0;pi<npt;pi++){
-                    if (omp_get_thread_num() == 0) { fprintf(stderr,"a"); fflush(stderr); }
-                    attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);
+                for (int pi = 0; pi < npt; pi++) {
+                    if (omp_get_thread_num() == 0) { fprintf(stderr, "a"); fflush(stderr); }
+                    attn_omp(&qo_b[pi * qkv_n], &at_b[pi * NH * HD], kv_caches[l].n,
+                             kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
                 }
             }
         } else {
-            // CPU attention (default fallback)
+            // non-MoE models: q/k norms + KV write + batched CPU attention
+            for (int pi = 0; pi < npt; pi++) {
+                for (int hh = 0; hh < NH; hh++) {
+                    double s = 0;
+                    for (int d = 0; d < HD; d++) s += qo_b[pi * qkv_n + hh * HD + d] * qo_b[pi * qkv_n + hh * HD + d];
+                    float iq = 1.0f / sqrtf((float)(s / HD) + EPS);
+                    for (int d = 0; d < HD; d++)
+                        qo_b[pi * qkv_n + hh * HD + d] *= iq * (cfg.has_q_norm ? qn_w[l][d] : 1.0f);
+                    ra(&qo_b[pi * qkv_n + hh * HD], HD, sp + pi);
+                }
+                for (int kvh = 0; kvh < NKV; kvh++) {
+                    float* ks = &qo_b[pi * qkv_n + cfg.qkv_k_offset + kvh * HD];
+                    float* vs = &qo_b[pi * qkv_n + cfg.qkv_v_offset + kvh * HD];
+                    double sk = 0;
+                    for (int d = 0; d < HD; d++) sk += ks[d] * ks[d];
+                    float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
+                    for (int d = 0; d < HD; d++) ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
+                    ra(ks, HD, sp + pi);
+                    memcpy(&kv_caches[l].k[(sp + pi) * NKV * HD + kvh * HD], ks, HD * 4);
+                    memcpy(&kv_caches[l].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
+                }
+            }
             #pragma omp parallel for
-            for(int pi=0;pi<npt;pi++){
-                if (omp_get_thread_num() == 0) { fprintf(stderr,"a"); fflush(stderr); }
-                attn_omp(&qo_b[pi*qkv_n],&at_b[pi*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA,sp+pi+1);
+            for (int pi = 0; pi < npt; pi++) {
+                if (omp_get_thread_num() == 0) { fprintf(stderr, "a"); fflush(stderr); }
+                attn_omp(&qo_b[pi * qkv_n], &at_b[pi * NH * HD], kv_caches[l].n,
+                         kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
             }
         }
-        // Phase 3: Launch O + GU in parallel on NPU
-        int mlp_out=cfg.gu_split?IM:2*IM;
+        // O GEMM (batched) + residual
         float o_ascale=dynamic_ascale(at_b.data(),npt*NH*HD);
-        float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
-        auto r_o=FLM_LAUNCH_ASYNC(co,l,at_b.data(),npt,NH*HD,o_ascale);
-        auto r_gu=FLM_LAUNCH_ASYNC(cg,l,h_b.data(),npt,H,gu_ascale);
-        // Phase 4: Wait O, apply residual
-        FLM_FINISH_ASYNC(co,r_o,oo_b.data(),npt,H,o_ascale,osc[l],l);cn(oo_b.data(),npt*H);
+        FLM_GO(co,l,at_b.data(),npt,NH*HD,o_ascale,osc[l],oo_b.data(),H);
+        cn(oo_b.data(),npt*H);
         fprintf(stderr,"o");fflush(stderr);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
         // Save pre-FFN residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l].data(),H);
-        // Phase 5: Wait GU (was launched in parallel with O), SiLU, launch D
+        // FFN: MoE layers use the shared router→expert path (NPU cached or CPU);
+        // non-MoE keeps the GU/D xclbin path.
+        if (has_moe && exp_off[l].gate) {
+            for (int pi = 0; pi < npt; pi++) {
+                if (use_npu_moe && mgu && mgu->isReady())
+                    moe_ffn_npu(&h_b[pi * H], &dw_b[pi * H], l);
+                else
+                    moe_ffn_cpu(&h_b[pi * H], &dw_b[pi * H], l);
+                cn(&dw_b[pi * H], H);
+            }
+        } else {
+        int mlp_out=cfg.gu_split?IM:2*IM;
+        float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
+        auto r_gu=FLM_LAUNCH_ASYNC(cg,l,h_b.data(),npt,H,gu_ascale);
         FLM_FINISH_ASYNC(cg,r_gu,gt_b.data(),npt,mlp_out,gu_ascale,gsc[l],l);cn(gt_b.data(),npt*mlp_out);
         fprintf(stderr,"g");fflush(stderr);
         if(cfg.gu_split){FLM_GO_PTR(cu_ptr,l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
         else{for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*mlp_out+IM+i];}}}
         fprintf(stderr,"d");fflush(stderr);FLM_GO(cd,l,su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
+        }
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
         fprintf(stderr,"\n");fflush(stderr);
@@ -2067,30 +2203,47 @@ int main(int argc,char**argv){
         for(int l=0;l<NC;l++){
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,in_n[l].data(),H);
             FLM_GO(cq,l,h0,1,H,dynamic_ascale(h0,H),qsc[l],qo_data.data(),qkv_n);cn(qo_data.data(),qkv_n);
-            memcpy(ko_data.data(),&qo_data[cfg.qkv_k_offset],NKV*HD*4);memcpy(vo_data.data(),&qo_data[cfg.qkv_v_offset],NKV*HD*4);
-            float*qn=qn_w[l].data(),*kn=kn_w[l].data();
-            for(int hh=0;hh<NH;hh++){double sq=0;for(int d=0;d<HD;d++)sq+=qo_data[hh*HD+d]*qo_data[hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
-                for(int d=0;d<HD;d++)qo_data[hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_data[hh*HD],HD,sp);
-                if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=ko_data[kvh*HD+d]*ko_data[kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                for(int d=0;d<HD;d++)ko_data[kvh*HD+d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(&ko_data[kvh*HD],HD,sp);
-                memcpy(&kv_caches[l].k[sp*NKV*HD+kvh*HD],&ko_data[kvh*HD],HD*4);memcpy(&kv_caches[l].v[sp*NKV*HD+kvh*HD],&vo_data[kvh*HD],HD*4);}}
-            kv_caches[l].n=sp+1;int cl=kv_caches[l].n;
-            if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-                // NPU attention via pre-compiled KV xclbin (fixed max_seq=4096)
+            // per-layer attention (#1472): GDN / full-attn (MoE) / global-dims
+            if (is_gdn_layer[l]) {
+                gdn_attn_step(l, h0, qo_data.data(),
+                              dm_gdn_conv.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
+                              dm_gdn_delta.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                              at_data.data());
+            } else if (has_moe) {
+                int pos = sp;
+                std_attn_step(l, h0, qo_data.data(), kv_caches[l], pos, at_data.data());
+            } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
                 float qs=dynamic_ascale(qo_data.data(),NH*HD);
-                float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
+                float ks=0;for(int i=0;i<kv_caches[l].n*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
                 ks=ks<1e-12f?1.0f:ks/127.0f;
-                auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,1,qs,ks);
+                auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),kv_caches[l].n,1,qs,ks);
                 ca_ptr->finish(r,at_data.data(),1,qs,ks);cn(at_data.data(),NH*HD);
-            }else{attn_omp(qo_data.data(),at_data.data(),cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
+            } else {
+                memcpy(ko_data.data(),&qo_data[cfg.qkv_k_offset],NKV*HD*4);memcpy(vo_data.data(),&qo_data[cfg.qkv_v_offset],NKV*HD*4);
+                float*qn=qn_w[l].data(),*kn=kn_w[l].data();
+                for(int hh=0;hh<NH;hh++){double sq=0;for(int d=0;d<HD;d++)sq+=qo_data[hh*HD+d]*qo_data[hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
+                    for(int d=0;d<HD;d++)qo_data[hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_data[hh*HD],HD,sp);
+                    if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=ko_data[kvh*HD+d]*ko_data[kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
+                    for(int d=0;d<HD;d++)ko_data[kvh*HD+d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(&ko_data[kvh*HD],HD,sp);
+                    memcpy(&kv_caches[l].k[sp*NKV*HD+kvh*HD],&ko_data[kvh*HD],HD*4);memcpy(&kv_caches[l].v[sp*NKV*HD+kvh*HD],&vo_data[kvh*HD],HD*4);}}
+                kv_caches[l].n=sp+1;
+                attn_omp(qo_data.data(),at_data.data(),kv_caches[l].n,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);
+            }
             FLM_GO(co,l,at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
+            if (has_moe && exp_off[l].gate) {
+                if (use_npu_moe && mgu && mgu->isReady()) moe_ffn_npu(h0, dwo_data.data(), l);
+                else moe_ffn_cpu(h0, dwo_data.data(), l);
+                cn(dwo_data.data(), H);
+            } else {
             int mlp_out=cfg.gu_split?IM:2*IM;
             FLM_GO(cg,l,h0,1,H,dynamic_ascale(h0,H),gsc[l],gt_data.data(),mlp_out);cn(gt_data.data(),mlp_out);
             if(cfg.gu_split){FLM_GO_PTR(cu_ptr,l,h0,1,H,dynamic_ascale(h0,H),usc[l],su_data.data(),IM);cn(su_data.data(),IM);
                 for(int i=0;i<IM;i++){float gv=gt_data[i];if(!std::isfinite(gv))gv=0;su_data[i]=(gv/(1.0f+expf(-gv)))*su_data[i];}}
             else{for(int i=0;i<IM;i++){float gv=gt_data[i];if(!std::isfinite(gv))gv=0;su_data[i]=(gv/(1.0f+expf(-gv)))*gt_data[IM+i];}}
-            FLM_GO(cd,l,su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
+            FLM_GO(cd,l,su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);
+            }
+            for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
         }
         memcpy(sb_data.data(),h0,H*4);rn_c(sb_data.data(),fin_v.data(),H);
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
@@ -2104,6 +2257,39 @@ int main(int argc,char**argv){
         auto ts_batch=std::chrono::steady_clock::now();
         int batch_size=std::min(BS,ng-step);
         for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=emb_f32[(size_t)top_ids[b]*H+i];
+        if (has_moe) {
+            // Serial per-layer path for MoE models (#1472): the pipelined
+            // QKV∥GU∥D structure assumes the standard MLP; the MoE FFN is
+            // data-dependent (router → top-K) and GDN attention is sequential.
+            for (int l = 0; l < NC; l++) {
+                for (int i = 0; i < H; i++) sb_data[i] = h_b[i];
+                rn_c(h_b.data(), in_n[l].data(), H);
+                FLM_GO(cq, l, h_b.data(), 1, H, dynamic_ascale(h_b.data(), H),
+                       qsc[l], qo_b.data(), qkv_n);
+                cn(qo_b.data(), qkv_n);
+                if (is_gdn_layer[l]) {
+                    gdn_attn_step(l, h_b.data(), qo_b.data(),
+                                  dm_gdn_conv.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
+                                  dm_gdn_delta.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                                  at_b.data());
+                } else {
+                    int pos = sp;
+                    std_attn_step(l, h_b.data(), qo_b.data(), kv_caches[l], pos, at_b.data());
+                }
+                FLM_GO(co, l, at_b.data(), 1, NH * HD, dynamic_ascale(at_b.data(), NH * HD),
+                       osc[l], oo_b.data(), H);
+                cn(oo_b.data(), H);
+                for (int i = 0; i < H; i++) h_b[i] = sb_data[i] + oo_b[i];
+                for (int i = 0; i < H; i++) sb_data[i] = h_b[i];
+                rn_c(h_b.data(), pa_n[l].data(), H);
+                if (use_npu_moe && mgu && mgu->isReady())
+                    moe_ffn_npu(h_b.data(), dw_b.data(), l);
+                else
+                    moe_ffn_cpu(h_b.data(), dw_b.data(), l);
+                cn(dw_b.data(), H);
+                for (int i = 0; i < H; i++) h_b[i] = sb_data[i] + dw_b[i];
+            }
+        } else {
         // ===== PIPELINED LAYER LOOP (cross-layer, roadmap step 3) =====
         // NPU runs QKV → GU → O → D back-to-back; all CPU work hides behind a kernel:
         //   cg quantize+sync+launch  ∥ QKV kernel   (GU input = h_b, ready at layer start)
@@ -2235,6 +2421,7 @@ int main(int argc,char**argv){
             }
         }
 
+        }
         // LM head on the (single, BS=1) decoded position -> greedy next token.
         // total_verified == total_generated because every emitted token is a
         // real causal decode, not a speculative candidate (issue #111).
