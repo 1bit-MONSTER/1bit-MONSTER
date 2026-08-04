@@ -88,10 +88,20 @@ static int count_layers(const char* js, size_t jl) {
     return max_layer + 1;
 }
 
-// Check if a JSON key pattern exists (for detecting q_norm, lm_head, etc.)
+// Check if a JSON key exists (for detecting q_norm, lm_head, etc.).
+// NOTE: must not go through find_tensor_info — that returns data_offsets[0],
+// which is 0 for the first data tensor and indistinguishable from "absent".
 static bool key_exists(const char* js, size_t jl, const char* key) {
-    int dummy = 0;
-    return find_tensor_info(js, jl, key, &dummy) > 0;
+    size_t kl = strlen(key);
+    const char* p = js;
+    const char* e = js + jl;
+    while (p < e) {
+        auto q = (const char*)memmem(p, e - p, key, kl);
+        if (!q) return false;
+        if ((q == js || *(q-1) == '"') && *(q + kl) == '"') return true;
+        p = q + kl;
+    }
+    return false;
 }
 
 static int get_shape_dim1(const char* js, size_t jl, const char* key) {

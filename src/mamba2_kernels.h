@@ -38,7 +38,7 @@ struct Mamba2Config {
 //   conv1d:    [d_conv, d_inner + 2*n_group*d_state]
 //   conv1d_b:  [d_inner + 2*n_group*d_state]
 //   dt_bias:   [n_head]
-//   A_log:     [n_head]    (stored as log for stability)
+//   A_log:     [n_head]    (stores A already negated: A = -exp(A_log), #1460)
 //   D:         [n_head]    (skip connection)
 //   norm_w:    [d_inner / n_group, n_group]  (group norm weight)
 //   out_proj:  [d_model, d_inner]
