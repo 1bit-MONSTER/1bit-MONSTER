@@ -79,8 +79,8 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
     // Zamba2 (Mamba2 hybrid SSD): uses specialized Zamba2 backend with
     // Mamba2 SSD kernels from mamba2_kernels.hip.
     if (cfg.arch == RCPP_ARCH_ZAMBA2) {
-        return {{"zamba2_gpu", "hip_gpu", "cpu_generic"},
-                "Zamba2 model — specialized Zamba2 backend, HIP GPU, generic CPU fallback"};
+        return {{"zamba2_vulkan", "zamba2_gpu", "hip_gpu", "cpu_generic"},
+                "Zamba2 model — Zamba2-on-Vulkan (ZAMBA2_VK=1), Zamba2 HIP backend, HIP GPU, generic CPU fallback"};
     }
     // Mamba1 models (Zamba-7B-v1, BlackMamba): Mamba1 SSM HIP kernels,
     // with per-layer MoE expert dispatch for BlackMamba.

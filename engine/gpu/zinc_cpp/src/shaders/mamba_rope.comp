@@ -1,0 +1,35 @@
+#version 460
+// Zamba2 RoPE — consecutive-pair rotation, mirrors apply_rope() in
+// src/zamba2_engine.h (the CPU reference this backend is validated against):
+//   for h: for d in 0..head_dim-1 step 2:
+//     freq = pos / theta^(d/head_dim)
+//     rotate (x[d], x[d+1]) by pos*freq
+// Applied in-place to the fused qkv buffer [ Q:M*hd | K:N*hd | V:N*hd ].
+// K heads share the same index range as Q (MHA: n_kv = n_heads).
+//
+// Buffer 0 (R/W): qkv, layout [ Q: M*hd | K: M*hd | V: M*hd ].
+// Push: M=n_heads, N=n_kv, K=hd, th=rope_theta, pos=position.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer QKV { float q[]; };
+layout(push_constant) uniform Push { uint M, N, K, s; float sc, eps, th, p; int tok, l, h, pos; } pc;
+
+void main() {
+    uint wg = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint hd = pc.K;
+    uint base;
+    if (wg < pc.M) {
+        base = wg * hd;                       // Q head
+    } else {
+        base = pc.M * hd + (wg - pc.M) * hd;  // K head
+    }
+    for (uint p = tid; p < hd / 2u; p += 256u) {
+        uint i = 2u * p;                   // even index of the pair
+        float freq = float(pc.pos) / pow(pc.th, float(i) / float(hd));
+        float cv = cos(freq), sv = sin(freq);
+        float x0 = q[base + i];
+        float x1 = q[base + i + 1u];
+        q[base + i]      = x0 * cv - x1 * sv;
+        q[base + i + 1u] = x0 * sv + x1 * cv;
+    }
+}

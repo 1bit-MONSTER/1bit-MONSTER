@@ -1,0 +1,61 @@
+#version 460
+// Mamba2 conv1d + bias + SiLU, one thread per channel, in-place on the xBC
+// region of the in_proj scratch. Matches mamba2_cpu_forward() exactly:
+//
+//   acc = conv1d_b[c] + sum_k conv1d_w[k*conv_dim + c] * v_k
+//   v_0 = xBC[c] (current), v_k = conv_state[k-1][c] (k >= 1)
+//   xBC[c] = silu(acc);  shift state, push xBC[c]
+//
+// Circular state: slot (offset + dc1 - k) mod dc1 holds the input from k
+// tokens ago (dc1 = d_conv - 1). offset advances by 1 per token (host-side
+// per-layer counter, reset to 0 on reset()). The tap loop reads via a single
+// conditional subtract instead of '%' (offset + dc1 - k is in [1, 2*dc1-1]).
+//
+// Buffer 0 (R/W, in-place): in_proj scratch [ z | xBC | dt ]; xBC region
+//   starts at byte offset given by push K (= d_inner), length M (= conv_dim).
+//   NOTE: binding is a descriptor offset — the host binds the full buffer at
+//   in_proj + d_inner*4 bytes, so indices here are relative to xBC[0].
+// Buffer 1 (readonly): conv1d_w [d_conv, conv_dim].
+// Buffer 2 (R/W), one contiguous model buffer:
+//   [ conv1d_w (n_layers*d_conv*conv_dim) | conv1d_b (n_layers*conv_dim)
+//     | conv_state (n_layers*(d_conv-1)*conv_dim) ]
+// Push: M=conv_dim, N=d_conv, s=state_offset (0..d_conv-2), l=layer, h=n_layers.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer XBC { float xbc[]; };
+layout(std430, binding = 2) buffer Packed { float pk[]; };
+layout(push_constant) uniform Push { uint M, N, K, s; float sc, eps, th, p; int tok, l, h, pos; } pc;
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    if (c >= pc.M) return;
+    uint conv_dim = pc.M;
+    uint d_conv = pc.N;
+    uint dc1 = d_conv - 1u;
+    uint offset = pc.s;          // per-layer circular offset, in [0, dc1)
+    uint layer = uint(pc.l);
+    uint n_layers = uint(pc.h);
+
+    uint w_cnt = d_conv * conv_dim;          // per-layer kernel block
+    uint b_base = n_layers * w_cnt + layer * conv_dim;  // this layer's bias
+    uint w_base = layer * w_cnt;
+
+    float xv = xbc[c];           // read before in-place overwrite
+    float sum = pk[b_base + c];
+    uint state_base = n_layers * w_cnt + n_layers * conv_dim + layer * dc1 * conv_dim;
+
+    for (uint k = 0u; k < d_conv; k++) {
+        float kw = pk[w_base + k * conv_dim + c];
+        float val;
+        if (k == 0u) {
+            val = xv;
+        } else {
+            uint slot = offset + dc1 - k;
+            if (slot >= dc1) slot -= dc1;
+            val = pk[state_base + slot * conv_dim + c];
+        }
+        sum += kw * val;
+    }
+
+    xbc[c] = sum / (1.0 + exp(-sum));          // SiLU
+    pk[state_base + offset * conv_dim + c] = xv;  // push current input
+}

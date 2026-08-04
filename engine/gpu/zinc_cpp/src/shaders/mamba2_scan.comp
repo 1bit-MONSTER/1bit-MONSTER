@@ -1,0 +1,106 @@
+#version 460
+// Mamba2 selective scan, one decode step, one workgroup per SSM head.
+// Mirrors selective_scan_step() in src/mamba2_kernels.cpp (the CPU reference):
+//
+//   dt_sp = softplus(dt[h] + dt_bias[h])          (stable: x > 20 -> x)
+//   A_bar = exp(dt_sp * A[h])                     (GGUF ssm.a is already
+//     A = -exp(A_log), llama.cpp convention — do NOT re-apply -exp, #1460)
+//   db    = dt_sp
+//   for hd in 0..head_dim-1:
+//     for s in 0..d_state-1:
+//       state[s] = A_bar * state[s] + db * B[g,s] * x[hd]
+//     y[hd] = sum_s C[g,s]*state[s] + D[h]*x[hd]
+//
+// Buffer 0 (input, readonly) is the per-token in_proj scratch
+// [ z: d_inner | xBC: conv_dim | dt: n_head ] AFTER the conv1d pass, so
+//   x[hd]       at M + hd
+//   B[g,s]      at 2M + g*d_state + s
+//   C[g,s]      at 2M + n_group*d_state + g*d_state + s
+//   dt[h]       at M + N + h
+// Buffer 1 (output): y_inner [d_inner], y[hd] at h*head_dim + hd.
+// Buffer 2 (params + state), one contiguous model buffer:
+//   per layer: [ A_log(n_head) | D(n_head) | dt_bias(n_head) ]
+//   then: ssm_state(n_layers*n_head*d_state)
+// Push: M=d_inner, N=conv_dim, K=n_group, s=d_state, tok=head_dim,
+//       l=layer, h=n_head, pos=heads_per_group, p=bitcast(n_layers).
+//
+// d_state=64: 64 lanes map 1:1 to state elements, subgroupAdd = full dot.
+// d_state=128 (1.2B): each lane owns two states; the per-lane partials still
+// cover all 128 elements, so one subgroupAdd over the lanes is the full dot.
+// On wave32 hardware (2 subgroups per workgroup) the subgroup partials are
+// merged via LDS, same pattern as flash_attn.comp.
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer InProj { float ip[]; };
+layout(std430, binding = 1) writeonly buffer YInner { float y[]; };
+layout(std430, binding = 2) buffer Params { float pr[]; };
+layout(push_constant) uniform Push { uint M, N, K, s; float sc, eps, th, p; int tok, l, h, pos; } pc;
+
+// One slot per possible subgroup (local_size 64; subgroup size can be as
+// small as 1, e.g. lavapipe) — an 8-slot array overflowed with 64 subgroups.
+shared float s_red[64];
+shared float s_red_scalar;
+
+void main() {
+    uint head = gl_WorkGroupID.x;
+    if (head >= uint(pc.h)) return;
+    uint lane = gl_LocalInvocationID.x;
+    uint d_inner = pc.M;
+    uint conv_dim = pc.N;
+    uint n_group = max(pc.K, 1u);
+    uint d_state = pc.s;
+    uint head_dim = uint(pc.tok);
+    uint heads_per_group = uint(pc.pos);
+    uint n_head = uint(pc.h);
+    uint n_layers = floatBitsToUint(pc.p);
+    uint layer = uint(pc.l);
+
+    uint g = head / heads_per_group;
+
+    // Per-head scalars (uniform across the workgroup — every lane computes them).
+    uint pr_l = layer * 3u * n_head;   // this layer's [A | D | dt_bias] slice
+    float dt_raw = ip[d_inner + conv_dim + head];
+    float dt_bias = pr[pr_l + 2u * n_head + head];
+    float dt_sp = dt_raw + dt_bias > 20.0f ? dt_raw + dt_bias
+                                           : log(1.0 + exp(dt_raw + dt_bias));
+    float A_bar = exp(dt_sp * pr[pr_l + head]);  // A already negated in GGUF (#1460)
+    float db = dt_sp;
+    float D_h = pr[pr_l + n_head + head];
+
+    // SSM state slice for this layer+head (after all layers' params).
+    uint state_base = 3u * n_head * n_layers + (layer * n_head + head) * d_state;
+
+    // B/C group base inside buffer 0.
+    uint b_base = 2u * d_inner + g * d_state;
+    uint c_base = 2u * d_inner + n_group * d_state + g * d_state;
+
+    uint y_base = head * head_dim;
+
+    for (uint hd = 0u; hd < head_dim; hd++) {
+        // x is per-head: head h consumes xBC[h*head_dim + hd] (CPU: x_h =
+        // x_inner_raw + head_id*head_dim). The old code read head 0's segment
+        // for every head, which silently corrupted every head >= 1.
+        float xv = ip[d_inner + head * head_dim + hd];
+        float partial = 0.0;
+        for (uint s = lane; s < d_state; s += 64u) {
+            uint idx = state_base + s;
+            float ns = A_bar * pr[idx] + db * ip[b_base + s] * xv;
+            pr[idx] = ns;
+            partial += ip[c_base + s] * ns;
+        }
+        float dot = subgroupAdd(partial);
+        if (gl_NumSubgroups > 1u) {
+            if (gl_SubgroupInvocationID == 0u) s_red[gl_SubgroupID] = dot;
+            barrier();
+            if (lane == 0u) {
+                float t = 0.0;
+                for (uint i = 0u; i < uint(gl_NumSubgroups); i++) t += s_red[i];
+                s_red_scalar = t;
+            }
+            barrier();
+            dot = s_red_scalar;
+        }
+        if (lane == 0u) y[y_base + hd] = dot + D_h * xv;
+    }
+}
