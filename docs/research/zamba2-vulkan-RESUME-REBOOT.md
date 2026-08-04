@@ -1,6 +1,14 @@
-# RESUME NOTE — 2026-08-03 reboot (GPU wedge during zamba2 Vulkan validation)
+# RESUME NOTE — 2026-08-03 (RESOLVED)
 
-## Why reboot
+> RESOLVED: validate_zamba2_vulkan now passes token-for-token on both
+> 1.2B and 2.7B (0 mismatches, ~51/97 ms per token). The device-lost
+> hang was an FFN buffer sizing bug (GpuBuffer::size() returns bytes);
+> the token mismatches were scan state/x indexing, descriptor binding
+> shifts for null-output dispatches, and the silu_mul→swiglu shader_map
+> alias. See commit c5436c1. Remaining from the old plan: bench vs HIP,
+> README ZINC column (#1461).
+
+# Why reboot (original)
 validate_zamba2_vulkan reproducibly failed with RADV context loss
 ("CS has been cancelled because the context is lost") on the first vkQueueSubmit
 during Zamba2VK init — likely a GPU hang left by the in-flight Vulkan port
@@ -19,7 +27,7 @@ during Zamba2VK init — likely a GPU hang left by the in-flight Vulkan port
   - tools/validate_zamba2_vulkan.cpp
   - NOTE: agent-cf's session dies with the box; its files may be mid-edit.
 
-## Post-reboot plan
+## Post-reboot plan (all items 1-3 done in c5436c1)
 1. Fix mamba2_scan.comp line 64: `A_bar = exp(dt_sp * (-exp(pr[pr_l + head])))`
    → `exp(dt_sp * pr[pr_l + head])` — mirrors the FIXED CPU convention
    (GGUF ssm.a is already -exp(A_log), #1460/PR1462).
