@@ -136,3 +136,5 @@ vpk180-dpu/
 vivado.jou
 vivado*.jou
 vivado*.log
+engine/npu/build-dbg/
+engine/npu/build-dbg2/
