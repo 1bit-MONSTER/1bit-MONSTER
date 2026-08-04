@@ -184,6 +184,7 @@ def main():
     ap.add_argument("--layer", type=int, default=0)
     ap.add_argument("--probe-layouts", action="store_true")
     ap.add_argument("--dump")
+    ap.add_argument("--dump-bin", help="raw f32 golden for the C++ probe")
     args = ap.parse_args()
 
     m = Q4nx(MODEL)
@@ -223,6 +224,13 @@ def main():
         np.savez(args.dump, xs=xs, out=out, g=g, beta=beta,
                  state=state, **{f"w_{k}": v for k, v in w.items()})
         print(f"wrote {args.dump}")
+    if args.dump_bin:
+        # header: int32 layer, T, H, NUM_V_HEADS  then xs[T,H], out[T,H], g[32], beta[32]
+        with open(args.dump_bin, "wb") as f:
+            f.write(struct.pack("<4i", args.layer, xs.shape[0], H, NUM_V_HEADS))
+            for arr in (xs, out, g, beta):
+                f.write(np.ascontiguousarray(arr, dtype=np.float32).tobytes())
+        print(f"wrote {args.dump_bin}")
 
 
 if __name__ == "__main__":
