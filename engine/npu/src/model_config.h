@@ -232,9 +232,13 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     };
     int q_tr = 0, k_tr = 0, o_tr = 0, g_tr = 0, d_tr = 0;
     int q_off = ti("self_attn.q_proj.weight", &q_tr);
+    // Fallback: fused QKV projection (Phi-style models use qkv_proj)
+    if (q_tr == 0) q_off = ti("self_attn.qkv_proj.weight", &q_tr);
     ti("self_attn.k_proj.weight", &k_tr);
     ti("self_attn.o_proj.weight", &o_tr);
     ti("mlp.gate_proj.weight", &g_tr);
+    // Fallback: models without gate (GPT-style use up_proj only)
+    if (g_tr == 0) ti("mlp.up_proj.weight", &g_tr);
     ti("mlp.down_proj.weight", &d_tr);
     
     // Step 3: Detect architecture features
