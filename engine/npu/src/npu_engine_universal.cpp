@@ -680,6 +680,9 @@ int main(int argc,char**argv){
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
     if(lm_head_f32.empty()){fprintf(stderr,"  lm_head: using emb_f32 (tied embeddings)\n");}
     const float* lm_emb = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
+    // Qwen3.6 embed_tokens rows (NV) are 8× the text vocab (multimodal expansion);
+    // the LM head only scores the text vocab — OOB read fixed by using its rows.
+    int lm_nv = lm_head_f32.empty() ? NV : (int)(lm_head_f32.size() / H);
 
     // Init NPU
     fprintf(stderr,"Init NPU...\n");xrt::device dev(0);
@@ -1092,6 +1095,85 @@ int main(int argc,char**argv){
         fprintf(stderr, "  MoE offsets stored in %.0fms\n", ms_moe);
     }
 
+    // Dequant an I8 tensor (Q4NX 5120 B/row or Q8_0 8704 B/row) to f32.
+    // Shared by the CPU and NPU MoE paths.
+    auto deq_exp = [&](uint64_t off, int rows, int in_f, int bpt,
+                       int* or_, int* oc) -> float* {
+        if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
+        return dequant_1bp(i8p(off), rows, in_f, or_, oc);
+    };
+
+    // ── NPU MoE FFN: 4 per-op xclbins (GU/D concat + shared GU/D) ──
+    // Probe-validated path (#1466): each xclbin uses its OWN aiecc instruction
+    // stream; activations get dynamic scales per GEMM. Router stays on CPU.
+    //
+    // OPT-IN (NPU_MOE=1) because it is currently SLOWER than the CPU path at
+    // M=1: measured 193 s/token vs 165 s/token on Qwen3.6-35B-A3B. Both paths
+    // dequant the 8 active experts per layer per token (the real bottleneck);
+    // this path then adds concat-pack + int8 requantize and only replaces the
+    // CPU matmul, so the GEMM win does not pay for the repack. It becomes a
+    // win once active-expert weights are cached in packed form across tokens.
+    // Falls back to moe_ffn_cpu on any init failure.
+    std::unique_ptr<I8Ctx> mgu, mde, msg, msd;
+    std::vector<float> msg_scale, msd_scale;
+    bool use_npu_moe = false;
+    if (has_moe && !cpu_gemm_fallback) {
+        const char* npu_moe_env = getenv("NPU_MOE");
+        if (!npu_moe_env || atoi(npu_moe_env) == 0) {
+            fprintf(stderr, "NPU MoE off (set NPU_MOE=1 to enable; CPU MoE is faster at M=1)\n");
+        } else {
+            int moe_n = TOP_K * 2 * IM_EXP;
+            auto moe_ctx = [&](std::unique_ptr<I8Ctx>& c, const char* t,
+                               int K, int N, int nlayers) -> bool {
+                c = std::make_unique<I8Ctx>();
+                c->MD = XM; c->KD = K; c->ND = N;
+                if (!c->init(dev, xp(t).c_str(), ip(t).c_str(), 4, nlayers)) {
+                    c.reset(); return false;
+                }
+                return true;
+            };
+            bool ok = moe_ctx(mgu, "MOE_GU", H, moe_n, 1) &&
+                      moe_ctx(mde, "MOE_D",  moe_n, H, 1) &&
+                      moe_ctx(msg, "MOE_SGU", H, 2 * IM_EXP, NC) &&
+                      moe_ctx(msd, "MOE_SD", IM_EXP, H, NC);
+            if (ok) {
+                // Shared expert weights are static per layer — dequant + pack once.
+                msg_scale.resize(NC); msd_scale.resize(NC);
+                for (int l = 0; l < NC && ok; l++) {
+                    if (!sh_off[l].gate) { ok = false; break; }
+                    int sr, sc;
+                    float* SG = deq_exp(sh_off[l].gate, sh_off[l].gate_tr,
+                                        H, sh_off[l].gate_bpt, &sr, &sc);
+                    float* SU = deq_exp(sh_off[l].up, sh_off[l].up_tr,
+                                        H, sh_off[l].up_bpt, &sr, &sc);
+                    float* SD = deq_exp(sh_off[l].down, sh_off[l].down_tr,
+                                        IM_EXP, sh_off[l].down_bpt, &sr, &sc);
+                    if (!SG || !SU || !SD) { free(SG); free(SU); free(SD); ok = false; break; }
+                    std::vector<float> sg_w((size_t)H * 2 * IM_EXP);
+                    for (int i = 0; i < IM_EXP; i++)
+                        for (int k = 0; k < H; k++) {
+                            sg_w[(size_t)k * (2 * IM_EXP) + i] = SG[i * H + k];
+                            sg_w[(size_t)k * (2 * IM_EXP) + IM_EXP + i] = SU[i * H + k];
+                        }
+                    msg->packB(l, sg_w.data(), H, 2 * IM_EXP, msg_scale[l]);
+                    std::vector<float> sd_w((size_t)IM_EXP * H);
+                    for (int i = 0; i < H; i++)
+                        for (int k = 0; k < IM_EXP; k++)
+                            sd_w[(size_t)k * H + i] = SD[i * IM_EXP + k];
+                    msd->packB(l, sd_w.data(), IM_EXP, H, msd_scale[l]);
+                    free(SG); free(SU); free(SD);
+                }
+            }
+            if (ok) {
+                use_npu_moe = true;
+                fprintf(stderr, "NPU MoE enabled (MOE_GU/D/SGU/SD xclbins)\n");
+            } else {
+                mgu.reset(); mde.reset(); msg.reset(); msd.reset();
+                fprintf(stderr, "WARN: NPU MoE init failed, CPU MoE fallback\n");
+            }
+        }
+    }
+
     // RoPE
     ri(HD,cfg.rope_theta,4096);
     int kv_dwords=NKV*HD/2;
@@ -1158,11 +1240,6 @@ int main(int argc,char**argv){
         int exp_gate_off_stride = exp_gate_tr_per * 5120;
         int exp_up_off_stride   = exp_up_tr_per   * 5120;
         int exp_down_off_stride = exp_down_tr_per * 5120;
-        auto deq_exp = [&](uint64_t off, int rows, int in_f, int bpt,
-                           int* or_, int* oc) -> float* {
-            if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
-            return dequant_1bp(i8p(off), rows, in_f, or_, oc);
-        };
 
         for (int e = 0; e < TOP_K; e++) {
             int ex = topk[e];
@@ -1211,14 +1288,9 @@ int main(int argc,char**argv){
             float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
 
             int sgr, sgc, sur, suc, sdr, sdc;
-            auto deq_sh = [&](uint64_t off, int rows, int in_f, int bpt,
-                              int* or_, int* oc) -> float* {
-                if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
-                return dequant_1bp(i8p(off), rows, in_f, or_, oc);
-            };
-            float* SG = deq_sh(so.gate, so.gate_tr, H, so.gate_bpt, &sgr, &sgc);
-            float* SU = deq_sh(so.up,   so.up_tr,   H, so.up_bpt,   &sur, &suc);
-            float* SD = deq_sh(so.down, so.down_tr, IM_EXP, so.down_bpt, &sdr, &sdc);
+            float* SG = deq_exp(so.gate, so.gate_tr, H, so.gate_bpt, &sgr, &sgc);
+            float* SU = deq_exp(so.up,   so.up_tr,   H, so.up_bpt,   &sur, &suc);
+            float* SD = deq_exp(so.down, so.down_tr, IM_EXP, so.down_bpt, &sdr, &sdc);
             if (SG && SU && SD) {
                 std::vector<float> sgu(IM_EXP * 2);
                 for (int i = 0; i < IM_EXP; i++) {
@@ -1244,6 +1316,109 @@ int main(int argc,char**argv){
                 }
             }
             free(SG); free(SU); free(SD);
+        }
+        for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+    };
+
+    // ── NPU MoE FFN (probe-validated path, #1466) ──
+    // Router softmax → top-K on CPU; concat top-K experts' G/U/D into the
+    // MOE_GU/D xclbins' [K,N] layout (packB per call — the expert set changes
+    // every token) + static shared expert on MOE_SGU/SD (packed once at init).
+    // Dynamic activation scales per GEMM (a fixed 1.0 zeroes the D input, #1466).
+    // ponytail: per-call packB ~24MB; pre-packing all 256 experts is ~30 GB per
+    // layer set — revisit if per-token packing shows up in profiles.
+    auto moe_ffn_npu = [&](const float* x, float* out, int l) {
+        const auto& eo = exp_off[l];
+        // Router: softmax → top-K (identical to moe_ffn_cpu)
+        const float* rt = router_w[l].data();
+        std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
+        double lmax = -1e30;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            double s = 0;
+            for (int i = 0; i < H; i++) s += (double)x[i] * rt[i * N_EXPERTS + j];
+            logits[j] = (float)s;
+            if (logits[j] > lmax) lmax = logits[j];
+        }
+        double lsum = 0;
+        for (int j = 0; j < N_EXPERTS; j++) {
+            probs[j] = expf(logits[j] - (float)lmax);
+            lsum += probs[j];
+        }
+        for (int j = 0; j < N_EXPERTS; j++) probs[j] /= (float)lsum;
+        std::vector<int> topk(N_EXPERTS);
+        for (int j = 0; j < N_EXPERTS; j++) topk[j] = j;
+        std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
+            [&](int a, int b) { return probs[a] > probs[b]; });
+
+        // Per-expert I8 rows + byte stride (same math as moe_ffn_cpu, #1467)
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;
+        int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
+        int exp_down_tr_per = eo.down_tr / N_EXPERTS;
+        int exp_gate_off_stride = exp_gate_tr_per * 5120;
+        int exp_up_off_stride   = exp_up_tr_per   * 5120;
+        int exp_down_off_stride = exp_down_tr_per * 5120;
+
+        // Concat the top-K experts' G/U into [H, K*2*IM] and D into [K*IM, H]
+        const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
+        std::vector<float> gu_w((size_t)H * gu_n);
+        std::vector<float> d_w((size_t)TOP_K * IM_EXP * H);
+        for (int e = 0; e < TOP_K; e++) {
+            int ex = topk[e];
+            int gr, gc, ur, uc, dr, dc;
+            float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                               exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
+            float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
+                               exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
+            float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
+                               exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
+            if (!G || !U || !D) { free(G); free(U); free(D); continue; }
+            for (int i = 0; i < IM_EXP; i++)
+                for (int k = 0; k < H; k++) {
+                    gu_w[(size_t)k * gu_n + e * 2 * IM_EXP + i] = G[i * H + k];
+                    gu_w[(size_t)k * gu_n + e * 2 * IM_EXP + IM_EXP + i] = U[i * H + k];
+                }
+            for (int i = 0; i < H; i++)
+                for (int k = 0; k < IM_EXP; k++)
+                    d_w[(size_t)(e * IM_EXP + k) * H + i] = D[i * IM_EXP + k];
+            free(G); free(U); free(D);
+        }
+
+        // Pack + run: GU concat GEMM → SiLU × router prob → D concat GEMM
+        float gu_sc = 0, d_sc = 0;
+        mgu->packB(0, gu_w.data(), H, (int)gu_n, gu_sc);
+        mde->packB(0, d_w.data(), TOP_K * IM_EXP, H, d_sc);
+        std::vector<float> gu_out(gu_n), su((size_t)TOP_K * IM_EXP), d_out(H);
+        float ag = dynamic_ascale(x, H);
+        mgu->go(0, x, 1, H, ag, gu_sc, gu_out.data(), (int)gu_n);
+        for (int e = 0; e < TOP_K; e++)
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = gu_out[e * 2 * IM_EXP + i];
+                if (!std::isfinite(gv)) gv = 0;
+                su[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) *
+                                     gu_out[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
+            }
+        float asu = dynamic_ascale(su.data(), TOP_K * IM_EXP);
+        mde->go(0, su.data(), 1, TOP_K * IM_EXP, asu, d_sc, d_out.data(), H);
+
+        // Shared expert (static weights, packed at init): fused GU + D, ×sigmoid gate
+        if (N_SHARED > 0 && sh_off[l].gate && msg->isReady()) {
+            std::vector<float> sg_out(2 * IM_EXP), ssu(IM_EXP), sh_out(H);
+            float asg = dynamic_ascale(x, H);
+            msg->go(l, x, 1, H, asg, msg_scale[l], sg_out.data(), 2 * IM_EXP);
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = sg_out[i];
+                if (!std::isfinite(gv)) gv = 0;
+                ssu[i] = (gv / (1.0f + expf(-gv))) * sg_out[IM_EXP + i];
+            }
+            float assu = dynamic_ascale(ssu.data(), IM_EXP);
+            msd->go(l, ssu.data(), 1, IM_EXP, assu, msd_scale[l], sh_out.data(), H);
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+            for (int i = 0; i < H; i++) out[i] = d_out[i] + sg_sig * sh_out[i];
+        } else {
+            for (int i = 0; i < H; i++) out[i] = d_out[i];
         }
         for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
     };
@@ -1514,8 +1689,11 @@ int main(int argc,char**argv){
                         for (int i = 0; i < H; i++) fsb[i] = fh[i];
                         rn_c(fh, pa_n[l].data(), H);
                         if (has_moe && exp_off[l].gate) {
-                            // MoE FFN (CPU path — ponytail: NPU I8Ctx optimization later)
-                            moe_ffn_cpu(fh, fuse_dw_b.data(), l);
+                            // MoE FFN — NPU path (probe-validated #1466) with CPU fallback
+                            if (use_npu_moe && mgu && mgu->isReady())
+                                moe_ffn_npu(fh, fuse_dw_b.data(), l);
+                            else
+                                moe_ffn_cpu(fh, fuse_dw_b.data(), l);
                             cn(fuse_dw_b.data(), H);
                             for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
                         } else {
@@ -1548,7 +1726,7 @@ int main(int argc,char**argv){
                     // Final norm + lm_head
                     rn_c(fuse_h_b.data(), fin_v.data(), H);
                     int* ftop = fuse_top_ids_v.data();
-                    lm_topk_omp(fuse_h_b.data(), fuse_lg_buf.data(), ftop, BS, NV, H, lm_emb);
+                    lm_topk_omp(fuse_h_b.data(), fuse_lg_buf.data(), ftop, BS, lm_nv, H, lm_emb);
                     fuse_pos++;
                     out_dim = 1;
                     out_data.resize(1);
@@ -1744,7 +1922,7 @@ int main(int argc,char**argv){
             FLM_GO(cd,l,su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
         }
         memcpy(sb_data.data(),h0,H*4);rn_c(sb_data.data(),fin_v.data(),H);
-        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
+        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
         memcpy(h_data.data(),h0,H*4);sp++;total_generated++;
         t_boot=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_boot).count();
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
@@ -1890,7 +2068,7 @@ int main(int argc,char**argv){
         // total_verified == total_generated because every emitted token is a
         // real causal decode, not a speculative candidate (issue #111).
         memcpy(sb_data.data(),&h_b[0],H*4);rn_c(sb_data.data(),fin_v.data(),H);
-        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,NV,H,lm_emb);
+        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
 
         total_generated+=batch_size;total_verified+=batch_size;sp+=batch_size;n_batches++;
         double batch_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_batch).count();
