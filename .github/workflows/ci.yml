@@ -93,15 +93,17 @@ jobs:
             # Build the server AND every test_* target so a dropped source or a
             # compile break fails CI (issue #236).
             # Also build all new C++ tools to catch compile errors.
-            ninja -C build zaya_server \
+            # zaya_server/onebitd/onebit/unified_router/vision_server are no
+            # longer separate targets — their sources compile into onebin/1bit
+            # only (see CMakeLists.txt). Build onebin instead of listing them.
+            ninja -C build onebin \
               test_medusa_skeleton test_standalone_nock test_prim_and_attn \
               test_ternary_gemm_smallm test_sherry_gemv test_bonsai_gemv \
               test_zaya_moe_gemv test_cca_attn test_wmma_i8_gemv \
               test_bonsai_e2e test_sherry_e2e test_block_scaled_ternary \
               test_gguf_reader_dequant test_tokenizer_logprobs test_backend \
               test_lora_runtime test_auth test_billing \
-              onebitd onebit onebin unified_router ppl_generic gguf_to_onebp \
-              vision_server vl_logit_check
+              ppl_generic gguf_to_onebp vl_logit_check
           else
             echo "ROCm not available on this runner — reference checks only."
             if [ -f tests/test_medusa_skeleton.cpp ]; then
