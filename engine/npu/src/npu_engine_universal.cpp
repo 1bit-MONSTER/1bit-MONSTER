@@ -60,6 +60,7 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
+extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 static constexpr float EPS=1e-6f;
@@ -536,7 +537,42 @@ int main(int argc,char**argv){
         if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}}
     {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
 
-    // I8 tile rows
+    // I8 tile rows — for Qwen3.6 Q8_0 tensors (8704 bytes/row) vs INT4 (5120 bytes/row)
+    auto get_bytes_per_tile = [&](const char* key) -> int {
+        size_t kl = strlen(key);
+        const char* p = js, *e = js + jl;
+        while (p < e) {
+            auto q = (const char*)memmem(p, e - p, key, kl);
+            if (!q) return 0;
+            if ((q == js || *(q-1) == '"') && *(q + kl) == '"') {
+                auto shape_loc = strstr(q, "\"shape\"");
+                if (shape_loc) {
+                    auto bracket = strchr(shape_loc, '[');
+                    if (bracket) {
+                        // Parse array: [dim0, dim1, dim2] — last is bytes_per_tile
+                        const char* sp = bracket + 1;
+                        int last = 0;
+                        while (*sp && *sp != ']') {
+                            last = (int)strtoul(sp, (char**)&sp, 10);
+                            while (*sp == ',' || *sp == ' ') sp++;
+                        }
+                        return last;  // returns bytes_per_tile (5120 or 8704)
+                    }
+                }
+                return 0;
+            }
+            p = q + kl;
+        }
+        return 0;
+    };
+    // Auto-detect Q8_0 vs INT4 and dequant
+    auto dequant_auto = [&](uint64_t off, int i8_rows, int in_features,
+                             int* out_rows, int* out_cols, const char* key) -> float* {
+        int bpt = get_bytes_per_tile(key);
+        if (bpt == 8704)
+            return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
+        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
+    };
     auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
         if(r<=0){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}
         if(r<=0){std::string ak=k;size_t p=ak.find("model.layer.");if(p!=std::string::npos){size_t sa=ak.find("self_attn");if(sa!=std::string::npos){ak.replace(sa,10,"linear_attn");find_tensor_info(js,jl,ak.c_str(),&r);}}}
@@ -829,6 +865,11 @@ int main(int argc,char**argv){
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
     if (!cpu_gemm_fallback) {
+    auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
+        if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+    };
+    bool use_q8 = cfg.has_moe;  // MoE models use Q8_0 for attention projections
     for(int l=0;l<NC;l++){
         if (is_gdn_layer[l]) {
             // GDN layer: load fused QKV + SSM out projection
@@ -836,9 +877,9 @@ int main(int argc,char**argv){
             fprintf(stderr, "  layer %d GDN: qp_fused=%llu qkv_i8=%d\n", l, (unsigned long long)qp_fused[l], qkv_fused_i8);
             int qr, qc, or2, oc2;
             fprintf(stderr, "    dequant qkv...\n");
-            float* qkv_w = dequant_i8_to_float_ex(i8p(qp_fused[l]), qkv_fused_i8, H, &qr, &qc);
+            float* qkv_w = dq(qp_fused[l], qkv_fused_i8, H, &qr, &qc, use_q8);
             fprintf(stderr, "    dequant qkv done [%d,%d]\n", qr, qc);
-            float* ow = dequant_i8_to_float_ex(i8p(op[l]), o_i8, OIN, &or2, &oc2);
+            float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
             if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
             // Fused QKV: pack as if it were [Q, K, V] concatenated
             int t = QOUT + KVOUT + KVOUT;

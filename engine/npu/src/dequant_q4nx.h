@@ -5,3 +5,5 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
                               int* out_rows, int* out_cols);
 extern "C" float* dequant_i8_to_float(const uint8_t* data, int i8_rows,
                            int* out_rows, int* out_cols);
+extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int in_features,
+                              int* out_rows, int* out_cols);

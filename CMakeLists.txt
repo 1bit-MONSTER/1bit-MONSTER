@@ -119,6 +119,23 @@ elif(USE_METAL AND NOT APPLE)
     message(WARNING "USE_METAL=ON but this is not an Apple platform — skipping Metal backend")
 endif()
 
+# ── Optional: VART (Vitis AI Runtime) backend ──
+option(USE_VART "Build the VART backend for Versal/Zynq DPU/NPU" OFF)
+set(RCPP_HAVE_VART FALSE)
+if(USE_VART)
+    find_library(VART_RUNNER_LIB vart-runner PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_library(VART_DPU_RUNNER_LIB vart-dpu-runner PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_library(XIR_LIB xir PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_path(VART_INCLUDE_DIR vitis/ai/dpu_runner.hpp PATHS /opt/vitis_ai/5.1/include /usr/include /usr/local/include)
+    if(VART_RUNNER_LIB AND VART_DPU_RUNNER_LIB AND XIR_LIB AND VART_INCLUDE_DIR)
+        set(RCPP_HAVE_VART TRUE)
+        message(STATUS "VART: libraries found — building VART backend")
+    else()
+        message(WARNING "USE_VART=ON but VART libraries not found — skipping VART backend. "
+            "Install Vitis AI or set VART_RUNNER_LIB/XIR_LIB manually.")
+    endif()
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -502,6 +519,9 @@ if(RCPP_HAVE_METAL)
     list(APPEND BACKEND_MANAGER_SOURCES src/backend_metal.mm)
 endif()
 
+# VART backend is always compiled — uses __has_include guards for the stub fallback
+list(APPEND BACKEND_MANAGER_SOURCES src/backend_vart.cpp)
+
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
 target_link_libraries(backend_manager PUBLIC gguf_reader)
 
@@ -588,6 +608,10 @@ endif()
 if(RCPP_HAVE_METAL)
     target_link_libraries(backend_manager PRIVATE ${METAL_LIBRARY} ${METAL_PERFORMANCE_SHADERS_LIBRARY})
     target_compile_options(backend_manager PRIVATE -fobjc-arc)
+endif()
+if(RCPP_HAVE_VART)
+    target_include_directories(backend_manager PRIVATE ${VART_INCLUDE_DIR})
+    target_link_libraries(backend_manager PRIVATE ${VART_RUNNER_LIB} ${VART_DPU_RUNNER_LIB} ${XIR_LIB})
 endif()
 target_compile_options(backend_manager PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
 # NOTE: no -ffast-math here (deliberately) — it implies -ffinite-math-only and
