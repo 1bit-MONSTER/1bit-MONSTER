@@ -75,7 +75,14 @@ def load_audio(path: Union[str, Path], sr: int = 24_000) -> torch.Tensor:
     if not path.exists():
         raise FileNotFoundError(f"Audio file not found: {path}")
 
-    waveform, orig_sr = torchaudio.load(str(path))
+    try:
+        waveform, orig_sr = torchaudio.load(str(path))
+    except (ImportError, RuntimeError):
+        # torchaudio >=2.7 defaults to the TorchCodec backend which may not
+        # be installed; fall back to soundfile (a documented dependency).
+        import soundfile as sf
+        data, orig_sr = sf.read(str(path), dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(data.T)  # [channels, samples]
 
     # Mix to mono
     if waveform.shape[0] > 1:

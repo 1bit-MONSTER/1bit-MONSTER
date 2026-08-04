@@ -119,6 +119,23 @@ elif(USE_METAL AND NOT APPLE)
     message(WARNING "USE_METAL=ON but this is not an Apple platform — skipping Metal backend")
 endif()
 
+# ── Optional: VART (Vitis AI Runtime) backend ──
+option(USE_VART "Build the VART backend for Versal/Zynq DPU/NPU" OFF)
+set(RCPP_HAVE_VART FALSE)
+if(USE_VART)
+    find_library(VART_RUNNER_LIB vart-runner PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_library(VART_DPU_RUNNER_LIB vart-dpu-runner PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_library(XIR_LIB xir PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_path(VART_INCLUDE_DIR vitis/ai/dpu_runner.hpp PATHS /opt/vitis_ai/5.1/include /usr/include /usr/local/include)
+    if(VART_RUNNER_LIB AND VART_DPU_RUNNER_LIB AND XIR_LIB AND VART_INCLUDE_DIR)
+        set(RCPP_HAVE_VART TRUE)
+        message(STATUS "VART: libraries found — building VART backend")
+    else()
+        message(WARNING "USE_VART=ON but VART libraries not found — skipping VART backend. "
+            "Install Vitis AI or set VART_RUNNER_LIB/XIR_LIB manually.")
+    endif()
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -502,6 +519,12 @@ if(RCPP_HAVE_METAL)
     list(APPEND BACKEND_MANAGER_SOURCES src/backend_metal.mm)
 endif()
 
+# VART backend is always compiled — uses __has_include guards for the stub fallback
+list(APPEND BACKEND_MANAGER_SOURCES src/backend_vart.cpp)
+
+# ONNX NPU backend — always compiled, uses __has_include guard
+list(APPEND BACKEND_MANAGER_SOURCES src/backend_onnx.cpp)
+
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
 target_link_libraries(backend_manager PUBLIC gguf_reader)
 
@@ -588,6 +611,17 @@ endif()
 if(RCPP_HAVE_METAL)
     target_link_libraries(backend_manager PRIVATE ${METAL_LIBRARY} ${METAL_PERFORMANCE_SHADERS_LIBRARY})
     target_compile_options(backend_manager PRIVATE -fobjc-arc)
+endif()
+if(RCPP_HAVE_VART)
+    target_include_directories(backend_manager PRIVATE ${VART_INCLUDE_DIR})
+    target_link_libraries(backend_manager PRIVATE ${VART_RUNNER_LIB} ${VART_DPU_RUNNER_LIB} ${XIR_LIB})
+endif()
+# ONNX Runtime + VitisAI EP for NPU backend
+# ponytail: link only the base ORT lib; VitisAI EP provider .so is loaded at
+# runtime by ORT's AppendExecutionProvider (must match ORT version exactly)
+if(onnxruntime_FOUND)
+    target_include_directories(backend_manager PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
+    target_link_libraries(backend_manager PRIVATE onnxruntime::onnxruntime)
 endif()
 target_compile_options(backend_manager PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
 # NOTE: no -ffast-math here (deliberately) — it implies -ffinite-math-only and
@@ -1405,6 +1439,49 @@ if(TARGET npu_engine_hybrid)
     set_target_properties(npu_engine_hybrid PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 endif()
+
+# -- qwen36_moe_probe : native NPU MoE expert routing validation ---------
+# Standalone probe that runs ONE real Qwen3.6-35B-A3B MoE layer FFN on the
+# NPU end-to-end. Guarded: requires XRT + NPU runtime.
+if(EXISTS "/opt/xilinx/xrt/lib/libxrt_coreutil.so")
+    add_executable(qwen36_moe_probe
+        tools/qwen36_moe_probe.cpp
+        engine/npu/src/dequant_q4nx.cpp
+        engine/npu/src/gemm_npu_instructions.cpp
+    )
+else()
+    message(STATUS "qwen36_moe_probe: XRT not found — skipping MoE probe target")
+endif()
+if(TARGET qwen36_moe_probe)
+    target_include_directories(qwen36_moe_probe PRIVATE
+        ${CMAKE_SOURCE_DIR}/engine/npu/src
+        ${CMAKE_SOURCE_DIR}/npu-infer/include
+        ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
+        ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
+    target_compile_options(qwen36_moe_probe PRIVATE
+        -O2 -std=c++20 -fopenmp)
+    target_link_libraries(qwen36_moe_probe PRIVATE
+        xrt_coreutil xrt_core aiebu uuid m dl pthread)
+    target_link_options(qwen36_moe_probe PRIVATE
+        -L/opt/xilinx/xrt/lib -Wl,-rpath,/opt/xilinx/xrt/lib -fopenmp)
+    set_target_properties(qwen36_moe_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+endif()
+
+# -- gen_npu_insts : generate instruction files for NPU xclbins ---------
+add_executable(gen_npu_insts
+    tools/gen_npu_insts.cpp
+    engine/npu/src/gemm_npu_instructions.cpp
+)
+target_include_directories(gen_npu_insts PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/npu/src
+    ${CMAKE_SOURCE_DIR}/npu-infer/include
+    ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
+    ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
+target_compile_options(gen_npu_insts PRIVATE -O2 -std=c++20)
+target_link_libraries(gen_npu_insts PRIVATE uuid)
+set_target_properties(gen_npu_insts PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
 
 # -- libfusion_zero_copy: zero-copy NPU<->GPU shared-buffer substrate --------
 # Promotes the proven SharedBO/PipelineOverlap primitives (engine/fusion/zero_copy/,
