@@ -129,3 +129,9 @@ reasonix.toml
 
 # machine-specific HIP search-path shim (absolute symlinks violate #1043 policy)
 .rocm-stub/
+
+# ── Vivado / Versal DPU synthesis scratch (vendored IP + tool journals) ──
+vpk180-dpu/
+vivado.jou
+vivado*.jou
+vivado*.log
