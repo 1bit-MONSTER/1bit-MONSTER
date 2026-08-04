@@ -114,6 +114,9 @@ extern "C" Backend* create_cuda_backend();
 // ── Metal backend ──
 extern "C" Backend* create_metal_backend();
 
+// ── VART backend ──
+extern "C" Backend* create_vart_backend();
+
 
 // ── Auto-detect ──
 // probe_backend_type: hardware probe for the src::Backend world (defined in
