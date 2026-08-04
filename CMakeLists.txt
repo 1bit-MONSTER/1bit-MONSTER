@@ -1337,6 +1337,23 @@ if(EMBED_LEMONADE)
     target_link_libraries(onebin PRIVATE lemonade-server-core)
     target_compile_definitions(onebin PRIVATE EMBED_LEMONADE=1)
 endif()
+# Gaia C++ agent loop (third_party/gaia) folded into the single ELF instead
+# of shipping gaia-bash as a second binary — see third_party/gaia/UPSTREAM.md
+# local patch #3 for the ONE_BIN_DISPATCH guard on agents/bash/main.cpp.
+if(EMBED_GAIA_CPP)
+    target_sources(onebin PRIVATE
+        third_party/gaia/agents/bash/main.cpp
+        third_party/gaia/agents/bash/bash_agent.cpp
+        third_party/gaia/agents/bash/bash_tools.cpp
+        third_party/gaia/agents/bash/api_server.cpp
+        third_party/gaia/agents/bash/mcp_server.cpp)
+    target_include_directories(onebin PRIVATE third_party/gaia/agents/bash)
+    target_link_libraries(onebin PRIVATE gaia::gaia_core)
+    if(OpenSSL_FOUND)
+        target_compile_definitions(onebin PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+        target_link_libraries(onebin PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+endif()
 target_compile_definitions(onebin PRIVATE
     ONE_BIN_DISPATCH=1
     ROCM_CPP_STATIC_HIP=1
