@@ -18,12 +18,13 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
-#include <xrt/experimental/xrt_ext.h>
 #include <xrt/experimental/xrt_module.h>
 #include <xrt/experimental/xrt_elf.h>
+#include <xrt/experimental/xrt_ext.h>
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
+#include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
 
 // Forward declarations: INT8 NPU instruction generators from gemm_npu_instructions.cpp
@@ -224,201 +225,6 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
         if(!q)return 0;if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){
             auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 
-struct I8Ctx{int MD,KD,ND,NL;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;
-    std::unique_ptr<xrt::module>mdl;std::unique_ptr<xrt::elf>elf;
-    std::unique_ptr<xrt::ext::kernel>k;std::vector<uint32_t>ins;std::unique_ptr<xrt::bo>bA,bC;
-    std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am;int32_t*Cm;
-    std::vector<std::vector<float>> group_scales;
-    bool initialized=false;
-    ~I8Ctx(){/* Am/Cm are mapped from bA/bC — destroyed by unique_ptr dtors */}
-    bool isReady(){return initialized&&k&&bA&&bC;}
-    bool init(xrt::device&d,const char*xp,const char*ip,int gid_B,int nlayers){
-        NL=nlayers;FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,2);long sz=ftell(f);fseek(f,0,0);
-        ins.resize(sz/4);fread(ins.data(),4,ins.size(),f);fclose(f);
-        // Convert instructions to ELF module for extended kernel API
-        try{
-            std::vector<char> iraw((char*)ins.data(),(char*)ins.data()+ins.size()*sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(aiebu::aiebu_assembler::buffer_type::blob_instr_transaction,iraw);
-            auto e=asmblr.get_elf();
-            xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);
-            hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());
-            elf=std::make_unique<xrt::elf>(e.data(),e.size());
-        }catch(std::exception&ex){
-            fprintf(stderr,"  aiebu ELF gen failed: %s\n",ex.what());return false;}
-        mdl=std::make_unique<xrt::module>(*elf);
-        k=std::make_unique<xrt::ext::kernel>(*hc,*mdl,"MLIR_AIE");
-        // Create data BOs (instruction BO not needed — embedded in ELF)
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,0);
-        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XRT_BO_FLAGS_HOST_ONLY,0);
-        Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();
-        for(int l=0;l<NL;l++)layerB.emplace_back(std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,0));
-        group_scales.resize(NL);initialized=true;return true;}
-    // Per-group INT8 quantization: K is divided into groups of 32, each with its own scale.
-    // go()/dequantize() compute the effective scale as the average of per-group scales.
-    void packB(int l,const float*w,int K,int N,float&sout){int num_groups=(K+31)/32;
-        group_scales[l].resize(num_groups);auto*Bm=(int8_t*)layerB[l]->map();
-        for(int g=0;g<num_groups;g++){int g_start=g*32;int g_size=std::min(32,K-g_start);float g_amax=0;
-            for(int j=0;j<N;j++){for(int i=0;i<g_size;i++){float a=fabsf(w[(g_start+i)*N+j]);if(std::isfinite(a)&&a>g_amax)g_amax=a;}}
-            if(g_amax<1e-12f)g_amax=1.0f;group_scales[l][g]=g_amax/127.0f;float g_is=127.0f/g_amax;
-            for(int j=0;j<N;j++){for(int i=0;i<g_size;i++){float v=w[(g_start+i)*N+j];if(!std::isfinite(v))v=0;
-                int x=(int)roundf(v*g_is);if(x>127)x=127;else if(x<-127)x=-127;Bm[(g_start+i)*N+j]=(int8_t)x;}}}
-        layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);float ssum=0;for(int g=0;g<num_groups;g++)ssum+=group_scales[l][g];sout=ssum/num_groups;}
-    // Async quantize: packs float activations into the A buffer without syncing
-    // Returns the quantized buffer pointer for later sync_and_launch.
-    inline int8_t* quantize_async(const float*A,int am,int ak,float ascale){
-        float ais=1.0f/ascale;
-        memset(Am,0,(size_t)am*KD);
-        for(int m=0;m<am;m++)for(int k=0;k<ak;k++){
-            float v=A[m*ak+k];if(!std::isfinite(v))v=0;
-            int q=(int)roundf(v*ais);if(q>127)q=127;else if(q<-127)q=-127;
-            Am[m*KD+k]=(int8_t)q;}
-        return Am;
-    }
-    // Sync A to device (non-blocking DMA, can overlap with NPU compute).
-    inline void sync_A(int l){
-        (void)l;
-        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    }
-    // Launch kernel via extended module API (instructions embedded in ELF).
-    // Args: mode=3, ctrl=0, reserved=0, then data BOs: A, weights B, output C.
-    inline xrt::run launch(int l){
-        return k->operator()(3,0,0,*bA,*layerB[l],*bC);
-    }
-    // Sync A to device and launch kernel. Returns run handle.
-    inline xrt::run sync_and_launch(int l){
-        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        return k->operator()(3,0,0,*bA,*layerB[l],*bC);
-    }
-
-    // Wait for run, sync C back, and dequantize.
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void dequantize(xrt::run& r,float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        r.wait();
-        readback();
-        dequant_only(C,am,an,ascale,Bscale,layer);
-    }
-    // Wait for NPU kernel completion without readback.
-    // Returns immediately after kernel finishes. Call sync_back_and_dequant() later.
-    inline void wait_kernel(xrt::run& r){
-        r.wait();
-    }
-    // Phase-split (cross-layer pipeline, roadmap step 3): bC DMA readback only.
-    // Call after wait_kernel(), then dequant_only() or a fused consumer pass.
-    inline void readback(){
-        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    }
-    // CPU-only dequant loop (call after readback()). CAN overlap with the next
-    // kernel's NPU execution. layer: if >= 0, uses average of per-group scales
-    // instead of Bscale.
-    inline void dequant_only(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        if(layer>=0&&(size_t)layer<group_scales.size()&&!group_scales[layer].empty()){
-            float ssum=0;for(float s:group_scales[layer])ssum+=s;
-            Bscale=ssum/group_scales[layer].size();}
-        float cs=ascale*Bscale;
-        for(int m=0;m<am;m++)for(int n=0;n<an;n++){
-            float val=(float)((int32_t)Cm[m*ND+n])*cs;if(!std::isfinite(val))val=0;
-            C[m*an+n]=val;}
-    }
-    // Sync C back from device and dequantize (call after wait_kernel).
-    // This is CPU-only work that CAN overlap with the next kernel's NPU execution.
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void sync_back_and_dequant(float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        readback();
-        dequant_only(C,am,an,ascale,Bscale,layer);
-    }
-    // Synchronous go() — simple, always works
-    // Uses per-group scales from group_scales[l] when available.
-    inline bool go(int l,const float*A,int am,int ak,float ascale,float Bscale,float*C,int an){
-        quantize_async(A,am,ak,ascale);
-        auto r=sync_and_launch(l);
-        r.wait();
-        dequantize(r,C,am,an,ascale,Bscale,l);
-        return true;
-    }
-    // Fast path: launch, return run handle for later wait+dequant
-    inline xrt::run launch_async(int l,const float*A,int am,int ak,float ascale){
-        quantize_async(A,am,ak,ascale);
-        return sync_and_launch(l);
-    }
-    // Complete an async launch: wait + dequant
-    // layer: if >= 0, uses average of per-group scales instead of Bscale.
-    inline void finish_async(xrt::run& r,float*C,int am,int an,float ascale,float Bscale,int layer=-1){
-        r.wait();
-        dequantize(r,C,am,an,ascale,Bscale,layer);
-    }
-
-    // Alternative init that generates instructions via gemm_generate_sequence_i8().
-    // Uses the instruction generator instead of pre-compiled instruction files.
-    // Creates all BOs for the GEMM context at the specified dimensions.
-    bool init_with_generator(xrt::device& d, const char* xp,
-                             int _MD, int _KD, int _ND,
-                             int nlayers) {
-        MD = _MD; KD = _KD; ND = _ND; NL = nlayers;
-        // Generate INT8 instruction sequence
-        npu_sequence seq(device_npu2);
-        gemm_generate_sequence_i8(&seq, MD, KD, ND, 0, 0, false, 0, 0, 0);
-        seq.cmds2seq();
-        auto [dp, sz] = seq.dump();
-        ins.assign(dp, dp + sz / sizeof(uint32_t));
-        // Convert to ELF and create kernel
-        try {
-            std::vector<char> iraw((char*)ins.data(),
-                                   (char*)ins.data() + ins.size() * sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(
-                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
-            xc = std::make_unique<xrt::xclbin>(std::string(xp));
-            d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (std::exception& ex) {
-            fprintf(stderr, "  init_with_generator: aiebu ELF gen failed: %s\n", ex.what());
-            return false;
-        }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, 0);
-        Am = (int8_t*)bA->map();
-        Cm = (int32_t*)bC->map();
-        for (int l = 0; l < NL; l++)
-            layerB.emplace_back(
-                std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, 0));
-        group_scales.resize(NL);
-        initialized = true;
-        return true;
-    }
-
-    // Alternative init that takes pre-generated instructions instead of a file.
-    // Attention instructions loaded from pre-compiled file at init.
-    bool init_with_instrs(xrt::device& d, const char* xp,
-                          const std::vector<uint32_t>& pregen_instrs,
-                          int nlayers, int mdim, int kdim, int ndim) {
-        NL = nlayers;
-        MD = mdim; KD = kdim; ND = ndim;
-        ins = pregen_instrs;
-        try {
-            std::vector<char> iraw((char*)ins.data(),
-                                   (char*)ins.data() + ins.size() * sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(
-                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
-            xc = std::make_unique<xrt::xclbin>(std::string(xp));
-            d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (std::exception& ex) {
-            fprintf(stderr, "  aiebu ELF gen failed (instrs): %s\n", ex.what());
-            return false;
-        }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        // Data BOs created by caller for attention (different layout)
-        group_scales.resize(nlayers);
-        initialized = true;
-        return true;
-    }
-};
 
 // AttnCtx — NPU attention context with 4 BOs (Q, K, V, output).
 // The attn.xclbin kernel signature (from EMBEDDED_METADATA):
@@ -878,12 +684,21 @@ int main(int argc,char**argv){
         // Sync weights after all packB calls (done at pack time in the pipeline below)
     } else {
         // ── Legacy path: per-op xclbins + per-layer weight BOs ──
-        // If MoE model has no instruction files, go CPU-only for GEMM.
-        bool moe_cpu_only = cfg.has_moe;
-        if (moe_cpu_only) {
-            cpu_gemm_fallback = true;
-            fprintf(stderr, "  MoE model — CPU-only GEMM (no inst files for %s)\n", cfg.model_tag.c_str());
-        } else {
+        // MoE models may lack instruction files — check before init.
+        bool has_insts = true;
+        if (cfg.has_moe) {
+            auto check_inst = [&](const char* t) {
+                std::string ip_s = ip(t);
+                FILE* f = fopen(ip_s.c_str(), "rb");
+                if (f) { fclose(f); return true; }
+                fprintf(stderr, "  WARN: %s not found\n", ip_s.c_str());
+                return false;
+            };
+            has_insts = check_inst("QKV") && check_inst("O");
+            if (!has_insts) cpu_gemm_fallback = true;
+        }
+        if (!cpu_gemm_fallback) {
+        fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
         if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC)){fprintf(stderr,"FAIL QKV\n");return 1;}
         if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC)){fprintf(stderr,"FAIL O\n");return 1;}
         if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}}
@@ -965,7 +780,9 @@ int main(int argc,char**argv){
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
     if (!cpu_gemm_fallback) {
-    for(int l=0;l<NC;l++){int qr,kr,vr,unused;
+    for(int l=0;l<NC;l++){
+        if (!qp[l] || !kp[l] || !vp[l] || !op[l]) continue;  // skip layers without QKV/O
+        int qr,kr,vr,unused;
         float*qw=dequant_i8_to_float_ex(i8p(qp[l]),q_i8,H,&qr,&unused),*kw=dequant_i8_to_float_ex(i8p(kp[l]),k_i8,H,&kr,&unused),*vw=dequant_i8_to_float_ex(i8p(vp[l]),v_i8,H,&vr,&unused);
         int t=QOUT+KVOUT+KVOUT;std::vector<float>w((size_t)H*t);
         transpose_pack(qw,QOUT,H,w.data(),t,0); transpose_pack(kw,KVOUT,H,w.data(),t,QOUT); transpose_pack(vw,KVOUT,H,w.data(),t,QOUT+KVOUT);
@@ -973,6 +790,7 @@ int main(int argc,char**argv){
         int or2,oc2;float*ow=dequant_i8_to_float_ex(i8p(op[l]),o_i8,OIN,&or2,&oc2);
         std::vector<float>wo((size_t)OIN*OOUT);transpose_pack(ow,OOUT,OIN,wo.data(),OOUT,0);
         FLM_PACKB(co,l,wo.data(),OIN,OOUT,osc[l]);free(ow);
+        if (gp[l] && up[l]) {
         int gr,ur;float*gw=dequant_i8_to_float_ex(i8p(gp[l]),g_i8,H,&gr,&unused),*uw=dequant_i8_to_float_ex(i8p(up[l]),u_i8,H,&ur,&unused);
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
@@ -984,9 +802,13 @@ int main(int argc,char**argv){
             transpose_pack(gw,GUOUT,H,w2.data(),t2,0);transpose_pack(uw,GUOUT,H,w2.data(),t2,GUOUT);
             FLM_PACKB(cg,l,w2.data(),H,t2,gsc[l]);
         }free(gw);free(uw);
+        }
+        if (dp[l]) {
         int dr2,dc2;float*dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
-        FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);}
+        FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
+        }
+        } // end for l
     // Hybrid FLM: sync all weight BOs to device after packing (single DMA per type)
     if(flm_xclbin_available){
         hcq->sync_weights(); hco->sync_weights();

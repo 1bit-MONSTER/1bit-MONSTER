@@ -337,6 +337,23 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         }
     }
 
+    // Recompute xclbin dimensions (may have been updated by MoE detection)
+    cfg.qkv_total = cfg.NH * cfg.HD + 2 * cfg.NKV * cfg.HD;
+    cfg.qkv_k_offset = cfg.NH * cfg.HD;
+    cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
+    cfg.xclbin_qkv_k = cfg.H;
+    cfg.xclbin_qkv_n = cfg.qkv_total;
+    cfg.xclbin_o_k = cfg.NH * cfg.HD;
+    cfg.xclbin_o_n = cfg.H;
+    cfg.xclbin_d_k = cfg.IM;
+    cfg.xclbin_d_n = cfg.H;
+    if (cfg.gu_split) {
+        cfg.xclbin_g_k = cfg.H; cfg.xclbin_g_n = cfg.IM;
+        cfg.xclbin_u_k = cfg.H; cfg.xclbin_u_n = cfg.IM;
+    } else {
+        cfg.xclbin_gu_k = cfg.H; cfg.xclbin_gu_n = cfg.IM * 2;
+    }
+
     munmap(md, st.st_size);
     return cfg;
 }

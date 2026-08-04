@@ -1434,6 +1434,21 @@ if(TARGET qwen36_moe_probe)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
 endif()
 
+# -- gen_npu_insts : generate instruction files for NPU xclbins ---------
+add_executable(gen_npu_insts
+    tools/gen_npu_insts.cpp
+    engine/npu/src/gemm_npu_instructions.cpp
+)
+target_include_directories(gen_npu_insts PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/npu/src
+    ${CMAKE_SOURCE_DIR}/npu-infer/include
+    ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
+    ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
+target_compile_options(gen_npu_insts PRIVATE -O2 -std=c++20)
+target_link_libraries(gen_npu_insts PRIVATE uuid)
+set_target_properties(gen_npu_insts PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+
 # -- libfusion_zero_copy: zero-copy NPU<->GPU shared-buffer substrate --------
 # Promotes the proven SharedBO/PipelineOverlap primitives (engine/fusion/zero_copy/,
 # see its README — hardware-verified zero-copy, 3/3 runs, zero IO_PAGE_FAULTs)
