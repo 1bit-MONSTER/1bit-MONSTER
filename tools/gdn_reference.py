@@ -107,6 +107,62 @@ class Q4nx:
         return out
 
 
+def full_attn_forward(m, layer, n_tokens=3, seed=7):
+    """Golden for one full-attention layer (Qwen3.6: 16 heads x 256, 2 KV
+    heads, q + output gate fused in q_proj per-head halves, partial rotary
+    64-of-256 @ theta 1e7, attn_out *= sigmoid(gate)). Mirrors
+    transformers Qwen3NextAttention exactly."""
+    p = f"model.layer.{layer}.self_attn."
+    q = m.q8_0(p + "q_proj.weight")        # [8192, 2048] = per-head [q 256 | gate 256]
+    k = m.q8_0(p + "k_proj.weight")        # [512, 2048]
+    v = m.q8_0(p + "v_proj.weight")        # [512, 2048]
+    o = m.q8_0(p + "o_proj.weight")        # [2048, 4096]
+    qn = m.bf16_1d(p + "q_norm.weight")[0]  # [256] (1+w RMSNorm weight)
+    kn = m.bf16_1d(p + "k_norm.weight")[0]
+    rng = np.random.default_rng(seed)
+    xs = rng.standard_normal((n_tokens, H)) * 0.5
+    outs = []
+    THETA, ROT_DIM = 1e7, 64          # rope_parameters: theta, partial_rotary_factor 0.25
+    for t in range(n_tokens):
+        x = xs[t]
+        qkv = q @ x                   # [8192]
+        qq = np.empty((16, 256)); gate = np.empty((16, 256))
+        for h in range(16):
+            qq[h] = qkv[h * 512:h * 512 + 256]
+            gate[h] = qkv[h * 512 + 256:h * 512 + 512]
+        kk = k @ x                    # [512]
+        vv = v @ x                    # [512]
+        # q/k RMSNorm (1+w) per head
+        for h in range(16):
+            qq[h] = qq[h] / np.sqrt((qq[h] * qq[h]).mean() + 1e-6) * qn
+        for h in range(2):
+            kk[h * 256:(h + 1) * 256] = kk[h * 256:(h + 1) * 256] / np.sqrt(
+                (kk[h * 256:(h + 1) * 256] ** 2).mean() + 1e-6) * kn
+        # partial rotary: rotate first 64 dims (half-split within 64)
+        def rot(xx):
+            out = xx.copy()
+            for d in range(32):
+                f = 1.0 / THETA ** (d / 32.0)
+                a = t * f
+                c, s = np.cos(a), np.sin(a)
+                x1, x2 = xx[d], xx[d + 32]
+                out[d] = x1 * c - x2 * s
+                out[d + 32] = x2 * c + x1 * s
+            return out
+        for h in range(16): qq[h] = rot(qq[h])
+        for h in range(2): kk[h * 256:(h + 1) * 256] = rot(kk[h * 256:(h + 1) * 256])
+        # GQA attention: 16 q heads, 2 kv heads, scale 1/sqrt(256)
+        attn = np.zeros((16, 256))
+        for h in range(16):
+            kh = kk[(h // 8) * 256:(h // 8 + 1) * 256]
+            vh = vv[(h // 8) * 256:(h // 8 + 1) * 256]
+            # single position (decode step t): scores = q@k/scale, softmax over 1 -> 1.0
+            attn[h] = vh * (np.dot(qq[h], kh) / np.sqrt(256.0))
+        attn = attn * (1.0 / (1.0 + np.exp(-gate)))   # sigmoid gate, per-dim
+        outs.append(o @ attn.reshape(-1))
+    return np.array(outs), qq, gate, xs
+
+
 def gdn_layers(m, n_layers=40):
     """Layer indices that are linear_attention (GDN); the rest are full attention."""
     return [l for l in range(n_layers)
@@ -182,6 +238,7 @@ def gdn_forward(w, xs, negate_a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--layer", type=int, default=0)
+    ap.add_argument("--layer-type", default="gdn", choices=["gdn", "full"])
     ap.add_argument("--probe-layouts", action="store_true")
     ap.add_argument("--dump")
     ap.add_argument("--dump-bin", help="raw f32 golden for the C++ probe")
@@ -214,6 +271,13 @@ def main():
         print(f"  n={len(a)}  all_negative={bool((a < 0).all())}  "
               f"in[-16,0)={int(((a >= -16) & (a < 0)).sum())}/{len(a)}"
               f"  -> ssm_a is already -A (use directly)")
+        return
+
+    if args.layer_type == "full":
+        out, qq, gate, xs = full_attn_forward(m, args.layer)
+        print(f"layer {args.layer} (full-attn): out[0,:6] = {np.round(out[-1][:6], 5)}")
+        if args.dump:
+            np.savez(args.dump, xs=xs, out=out, **{f"w_{k}": v for k, v in w.items()})
         return
 
     w = load_layer(m, args.layer)
