@@ -64,10 +64,10 @@ void rope_fp32_kernel(
     if (kv_h >= n_kv_heads || d2 * 2 >= head_dim) return;
     int n_groups = n_heads / n_kv_heads;
 
-    // Standard RoPE: freq = pos / theta^(2*d2/head_dim), matching the CPU
-    // engine's apply_rope (fr = pos / theta^(d/hd), d = 2*d2). The old code
-    // omitted the /head_dim exponent — wrong for every use_mem_rope model.
-    float freq = (float)pos * powf(1.0f / theta, (float)(d2 * 2) / (float)head_dim);
+    float freq = (float)pos;
+    float pow_theta = 1.0f;
+    for (int i = 0; i < d2 * 2; ++i) pow_theta *= (1.0f / theta);
+    freq *= pow_theta;
     float cos_v = cosf(freq);
     float sin_v = sinf(freq);
 
