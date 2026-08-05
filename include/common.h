@@ -18,6 +18,8 @@ enum class BackendType : uint8_t {
     Q4NX_FUSION = 11, // Q4NX format via engine/fusion, forced cpu_only policy
     CUDA_GPU = 12,    // NVIDIA CUDA GPU backend
     METAL_GPU = 13,   // Apple Metal GPU backend
+    VART = 14,        // Vitis AI Runtime (VART) — Versal/Zynq DPU/NPU
+    ONNX_NPU = 15,    // ONNX Runtime + VitisAI EP — unified NPU backend
 };
 
 inline const char* backend_name(BackendType t) {
@@ -34,6 +36,8 @@ inline const char* backend_name(BackendType t) {
         case BackendType::Q4NX_FUSION: return "Q4NX Fusion (CPU)";
         case BackendType::CUDA_GPU: return "CUDA GPU (NVIDIA)";
         case BackendType::METAL_GPU: return "Metal GPU (Apple)";
+        case BackendType::VART: return "VART (Versal/Zynq DPU)";
+        case BackendType::ONNX_NPU: return "ONNX NPU (VitisAI EP)";
         default: return "none";
     }
 }

@@ -11,12 +11,13 @@ echo "║  ZR1→Zaya Speculative Decode Demo           ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
-# 1. Build zaya_server if needed
-SERVER_BIN="./build/zaya_server"
+# 1. Build onebin (1bit) if needed
+SERVER_BIN="./build/1bit"
+SERVER_SUBCMD="zaya"
 if [ ! -f "$SERVER_BIN" ]; then
-    echo "Building zaya_server..."
+    echo "Building onebin (1bit)..."
     cmake -B build -G Ninja 2>/dev/null || cmake -B build
-    cmake --build build --target zaya_server -j8
+    cmake --build build --target onebin -j8
     echo ""
 fi
 
@@ -53,13 +54,13 @@ sleep 1
 
 # 4. Start ZR1 draft server
 echo "Starting ZR1-1.5B draft server (port 8081)..."
-"$SERVER_BIN" --model "$ZR1_MODEL" --port 8081 &
+"$SERVER_BIN" "$SERVER_SUBCMD" --model "$ZR1_MODEL" --port 8081 &
 PID_ZR1=$!
 echo "  PID: $PID_ZR1"
 
 # 5. Start Zaya target server
 echo "Starting Zaya1-8B target server (port 8082)..."
-"$SERVER_BIN" --model "$ZAYA_MODEL" --port 8082 &
+"$SERVER_BIN" "$SERVER_SUBCMD" --model "$ZAYA_MODEL" --port 8082 &
 PID_ZAYA=$!
 echo "  PID: $PID_ZAYA"
 

@@ -39,6 +39,7 @@ MODELS=(
     "phi4_mini_4b"
     "nanbeige4_1_3b"
     "zr1"
+    "deepseek_v4_flash"
 )
 
 CXX="${CXX:-g++}"
