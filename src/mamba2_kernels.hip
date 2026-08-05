@@ -232,6 +232,7 @@ void mamba2_selective_scan_tuned_kernel(
 
         // Softplus: stable for dt >> 20
         float s = dt_val > 20.0f ? dt_val : log1pf(expf(dt_val));
+        s = fmaxf(s, 0.001f);  // HF clamps to (time_step_min, inf); max is ignored
         float A_val = A_log[head_id];  // GGUF ssm.a already A = -exp(A_log) (#1460)
         s_A_bar = expf(s * A_val);             // A_bar = exp(dt * A)
         s_dt_softplus = s;
@@ -352,6 +353,7 @@ void mamba2_scan_fused_kernel(
         float dt_val = dt[dt_offset];
         if (dt_bias != nullptr) dt_val += dt_bias[head_id];
         float s = dt_val > 20.0f ? dt_val : log1pf(expf(dt_val));
+        s = fmaxf(s, 0.001f);  // HF clamps to (time_step_min, inf); max is ignored
         float A_val = A_log[head_id];  // already A = -exp(A_log) in GGUF (#1460)
         s_A_bar = expf(s * A_val);
         s_dt_softplus = s;

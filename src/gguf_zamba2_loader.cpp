@@ -356,6 +356,19 @@ static void normalize_ssm_a(std::vector<float>& a) {
         }
 }
 
+// The checkpoint stores conv1d kernels in nn.Conv1d cross-correlation order
+// (y[t] = sum_k w[k]*x[t+k], so the FIRST token uses the LAST tap w[d_conv-1]).
+// The engine's recurrence uses y[t] = sum_k w[k]*x[t-k] — reverse the kernel
+// along the conv axis so both agree. Without this, every SSM layer diverges
+// from HF from the first token. (flat layout: [d_conv, conv_dim])
+static void normalize_conv1d_reverse(std::vector<float>& w, int d_conv, int conv_dim) {
+    std::vector<float> tmp(w.size());
+    for (int k = 0; k < d_conv; ++k)
+        for (int c = 0; c < conv_dim; ++c)
+            tmp[k * conv_dim + c] = w[(d_conv - 1 - k) * conv_dim + c];
+    w.swap(tmp);
+}
+
 bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
     Zamba2GgufReader reader;
     if (!reader.open(path)) {
@@ -480,6 +493,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
             // Mamba2 weights — transpose from GGUF [input, output] to engine [output, input]
             reader.read_tensor_transposed(p("ssm_in.weight"), hl.mamba.in_proj_w);
             reader.read_tensor(p("ssm_conv1d.weight"), hl.mamba.conv1d_w);  // [d_conv, conv_dim] — access matches
+            normalize_conv1d_reverse(hl.mamba.conv1d_w, cfg.d_conv, cfg.d_inner + 2 * cfg.n_group * cfg.d_state);
             reader.read_tensor(p("ssm_conv1d.bias"), hl.mamba.conv1d_b);
             reader.read_tensor(p("ssm_dt.bias"), hl.mamba.dt_bias);
             reader.read_tensor(p("ssm_a"), hl.mamba.A_log);
@@ -530,6 +544,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
             reader.read_tensor(p("attn_norm.weight"), ml.input_norm_w);
             reader.read_tensor_transposed(p("ssm_in.weight"), ml.in_proj_w);
             reader.read_tensor(p("ssm_conv1d.weight"), ml.conv1d_w);  // [d_conv, conv_dim] — already correct
+            normalize_conv1d_reverse(ml.conv1d_w, cfg.d_conv, cfg.d_inner + 2 * cfg.n_group * cfg.d_state);
             reader.read_tensor(p("ssm_conv1d.bias"), ml.conv1d_b);
             reader.read_tensor(p("ssm_dt.bias"), ml.dt_bias);
             reader.read_tensor(p("ssm_a"), ml.A_log);
