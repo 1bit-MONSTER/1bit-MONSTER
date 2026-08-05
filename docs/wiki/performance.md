@@ -59,7 +59,7 @@ This is a device-level number, not a model-inference tok/s figure.
 | SmolLM2-135M Q4_K_M | **662 tok/s** | GGML-Vulkan | Peak end-to-end decode |
 | SmolLM2-360M Q4_K_M | **389 tok/s** | GGML-Vulkan | |
 | SmolLM2-1.7B Q4_K_M | **167 tok/s** | GGML-Vulkan | |
-| Qwen3-0.6B (native NPU engine) | **2.3 tok/s (435 ms/tok)** | XDNA 2 (32 cores, v27) | Measured 2026-08-05 — bit-identical token stream vs v26; prefill 475 ms/9 tok. See `site/benchmarks.json` |
+| Qwen3-0.6B (native NPU engine) | **2.3 tok/s (435 ms/tok); 7.4 tok/s @ -B 8** | XDNA 2 (32 cores, v27) | Measured 2026-08-05 — bit-identical token stream vs v26; prefill 475 ms/9 tok. Multi-sequence batch decode (-B N) is strictly causal per-sequence. See `site/benchmarks.json` |
 | Qwen3-0.6B Q4_K_M | **373 tok/s** | GGML-Vulkan | |
 | Qwen2.5-VL-3B Q4_K_M | **100 tok/s** | GGML-Vulkan | |
 | Qwen3.5-4B Q4_K_M | **65 tok/s** | GGML-Vulkan | |
