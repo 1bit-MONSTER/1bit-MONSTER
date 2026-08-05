@@ -194,16 +194,33 @@ static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(m
         rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);}}
 static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
     float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
-// Partial rotary for this model's full-attention layers (HD=256): only the
-// first 64 dims rotate (rope_parameters.partial_rotary_factor=0.25), theta=1e7.
-// transformers: inv_freq = 1/base^(arange(0,64,2)/64), cos = cat(freqs, freqs).
+// Partial rotary for full-attention layers: only the first `rope_dim` dims
+// rotate (rope_dim = round(HD * partial_rotary_factor)).  Table sized for the
+// largest rope_dim seen across all STD layers so one build covers every layer.
+// ri2(theta, max_pos, rope_dim): build cos/sin tables [max_pos × rope_dim].
+// ra2(x, p, rope_dim): apply in-place to one head at position p.
 static std::vector<float> rc2,rs2;
-static void ri2(float th,int mp){int hd2=32;rc2.resize(mp*64);rs2.resize(mp*64);
-    for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){
-        float f=1.0f/powf(th,(float)d/hd2),a=p*f;
-        rc2[p*64+d]=cosf(a);rc2[p*64+d+32]=cosf(a);rs2[p*64+d]=sinf(a);rs2[p*64+d+32]=sinf(a);}}
-static inline void ra2(float*x,int p){for(int d=0;d<32;d++){
-    float a=x[d],b=x[d+32],c=rc2[p*64+d],s=rs2[p*64+d];x[d]=a*c-b*s;x[d+32]=b*c+a*s;}}
+static int g_rope_dim2 = 64;   // updated at init; default = Qwen3.6 (HD=256, prf=0.25)
+static void ri2(float th, int mp, int rope_dim) {
+    g_rope_dim2 = rope_dim;
+    int hd2 = rope_dim / 2;
+    rc2.resize((size_t)mp * rope_dim);
+    rs2.resize((size_t)mp * rope_dim);
+    for (int p = 0; p < mp; p++) for (int d = 0; d < hd2; d++) {
+        float f = 1.0f / powf(th, (float)d / hd2), a = p * f;
+        rc2[(size_t)p*rope_dim+d]       = cosf(a);
+        rc2[(size_t)p*rope_dim+d+hd2]   = cosf(a);
+        rs2[(size_t)p*rope_dim+d]       = sinf(a);
+        rs2[(size_t)p*rope_dim+d+hd2]   = sinf(a);
+    }
+}
+static inline void ra2(float*x, int p, int rope_dim) {
+    int hd2 = rope_dim / 2;
+    for (int d = 0; d < hd2; d++) {
+        float a=x[d], b=x[d+hd2], c=rc2[(size_t)p*rope_dim+d], s=rs2[(size_t)p*rope_dim+d];
+        x[d]=a*c-b*s; x[d+hd2]=b*c+a*s;
+    }
+}
 static inline float silu_f(float x){return x/(1.0f+expf(-x));}
 static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // Safety net: if glibc's malloc detects heap corruption (free(): invalid size)
@@ -964,53 +981,41 @@ int main(int argc,char**argv){
     std::vector<float> rope_theta_per_layer(NC, cfg.rope_theta);
     std::vector<float> partial_rotary_factor(NC, 0.25f);
     if (cfg.has_moe) {
-        int l0 = -1;
-        for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) { l0 = l; break; }
-        if (l0 >= 0) {
+        // Per-layer detection: probe every layer individually so heterogeneous
+        // models (e.g. DS V4 Flash layers 0-1 sliding-window vs. CSA/HCA rest)
+        // get accurate dims rather than inheriting from the first matching layer.
+        for (int l = 0; l < NC; l++) {
             int s0 = 0;
-            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l0);
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) {
-                for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) gdn_vh[l] = s0;
-            }
-            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l0);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) {
-                for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) gdn_hd[l] = s0;
-            }
-            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l0);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) {
-                for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) gdn_conv_k[l] = s0;
-            }
-            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l0);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) {
-                int conv_dim = s0 * 32;
-                for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) gdn_conv_dim[l] = conv_dim;
+            if (is_gdn_layer[l]) {
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_vh[l] = s0;
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_hd[l] = s0;
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_conv_k[l] = s0;
+                snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_conv_dim[l] = s0 * 32;
+            } else {
+                snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) std_hd[l] = s0;
+                if (std_hd[l] > 0) {
+                    snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
+                    s0 = 0;
+                    if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
+                        std_nkv[l] = s0 * 32 / std_hd[l];
+                    snprintf(bn, 128, "model.layer.%d.self_attn.q_proj.weight", l);
+                    s0 = 0;
+                    if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
+                        std_nh[l] = s0 * 32 / std_hd[l] / 2;
+                }
             }
         }
-        int l1 = -1;
-        for (int l = 0; l < NC; l++) if (!is_gdn_layer[l]) { l1 = l; break; }
-        if (l1 >= 0) {
-            int s0 = 0;
-            snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l1);
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) {
-                for (int l = 0; l < NC; l++) if (!is_gdn_layer[l]) std_hd[l] = s0;
-            }
-            snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l1);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0 && std_hd[l1] > 0) {
-                int nkv = s0 * 32 / std_hd[l1];
-                for (int l = 0; l < NC; l++) if (!is_gdn_layer[l]) std_nkv[l] = nkv;
-            }
-            snprintf(bn, 128, "model.layer.%d.self_attn.q_proj.weight", l1);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0 && std_hd[l1] > 0) {
-                int nh = s0 * 32 / std_hd[l1] / 2;
-                for (int l = 0; l < NC; l++) if (!is_gdn_layer[l]) std_nh[l] = nh;
-            }
-        }
-        fprintf(stderr, "  per-layer dims detected (GDN/STD)\n");
+        fprintf(stderr, "  per-layer dims detected (all %d layers)\n", NC);
     }
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
@@ -1339,9 +1344,24 @@ int main(int argc,char**argv){
         }
     }
 
-    // RoPE
+    // RoPE — primary table for GDN/dense layers
     ri(HD,cfg.rope_theta,4096);
-    ri2(1e7f,4096);  // partial rotary for full-attention layers (64 of 256 dims)
+    // Partial rotary table for full-attention (STD) layers: theta and
+    // partial_rotary_factor may vary per layer (DS V4 Flash YaRN etc.).
+    // Build for the largest rope_dim seen so ra2() covers every STD layer.
+    {
+        float max_theta2 = 1e7f;
+        int max_rdim = 0;
+        for (int l = 0; l < NC; l++) {
+            if (!is_gdn_layer[l]) {
+                int rdim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
+                rdim = (rdim / 2) * 2;  // must be even
+                if (rdim > max_rdim) { max_rdim = rdim; max_theta2 = rope_theta_per_layer[l]; }
+            }
+        }
+        if (max_rdim <= 0) max_rdim = 64;  // fallback: Qwen3.6 default
+        ri2(max_theta2, 4096, max_rdim);
+    }
     int kv_dwords=NKV*HD/2;
 
     // Decode batch width.
@@ -1764,20 +1784,23 @@ int main(int argc,char**argv){
         }
         const float* qnw = std_qn_w[l].data();
         const float* knw = std_kn_w[l].data();
+        int l_rope_dim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
+        l_rope_dim = (l_rope_dim / 2) * 2;
+        if (l_rope_dim <= 0) l_rope_dim = g_rope_dim2;
         for (int h = 0; h < std_nh[l]; h++) {
             float* qh = fqo + (size_t)h * std_hd[l];
             double sq = 0;
             for (int d = 0; d < std_hd[l]; d++) sq += qh[d] * qh[d];
             float iq = 1.0f / sqrtf((float)(sq / std_hd[l]) + EPS);
             for (int d = 0; d < std_hd[l]; d++) qh[d] *= iq * qnw[d];
-            ra2(qh, pos);
+            ra2(qh, pos, l_rope_dim);
             int kvh = h / (std_nh[l] / std_nkv[l]);
             float* kh = kv.data() + (size_t)kvh * std_hd[l];
             double sk = 0;
             for (int d = 0; d < std_hd[l]; d++) sk += kh[d] * kh[d];
             float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
             for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
-            ra2(kh, pos);
+            ra2(kh, pos, l_rope_dim);
             if (pos >= 4096) {
                 fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
                 pos = 0;
