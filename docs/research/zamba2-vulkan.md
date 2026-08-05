@@ -1,8 +1,31 @@
 # Zamba2 on Vulkan — Research & Port Plan
 
-Status: research complete (local ground truth + external prior art). Not yet implemented.
+Status: research complete + CPU path fixed & verified (2026-08-03).
 Goal: run the Zyphra Zamba2 family (1.2B/2.7B/7B) on the AMD Radeon 8060S (gfx1151)
 via the ZINC Vulkan compute path, with ROCm-class throughput.
+
+**2026-08-03 verification result:** the CPU reference (`backend_zamba2`)
+now runs the EchoLabs33 1.2B q4_0 GGUF end-to-end and matches an
+independent numpy implementation of modeling_zamba2.py logit-for-logit
+(top-3 identical: 1302/12.072, 8888/11.581, 110/11.425; all 38 layers' hidden
+states agree to ~1e-5). Verified with `tests/smoke_zamba2.cpp` +
+`tools/zamba2_ref.py`. The Vulkan port can validate against the CPU reference
+token-for-token (the pre-fix CPU path could not run at all — it crashed).
+
+Fixes landed in the CPU path (all validated):
+1. A-convention double-exp (#1460) — CPU + HIP + mamba1 engines
+2. double-softplus in `selective_scan_step` (caller pre-softplussed)
+3. `attn_head_dim` never read from GGUF KV (defaulted 80, real 128)
+4. hybrid layer rewritten to the reference structure: concat(hidden, embedding)
+   → post_attention_norm(2*d_model) → MHA (scale sqrt(2/head_dim)) → o_proj
+   → ffn_norm → SiLU FFN → ssm_mix → mamba decoder (was: mamba-first with
+   wrong norms, no concat, wrong scale, OOB attn_out write)
+5. README ZINC column for zamba2/zaya: no code path (#1461)
+
+Note: the in-flight Vulkan port (`backend_zamba2_vulkan.cpp`, agent-cf)
+mirrors the OLD buggy A convention in `mamba2_scan.comp`
+(`A_bar = exp(dt_sp * -exp(A_log))`) — must switch to the direct-A form
+(`exp(dt_sp * A)`) before it can validate against this fixed reference.
 
 ## 1. Why this is not a "retry" — what exists today
 
@@ -180,14 +203,13 @@ chunked parallel scan (mamba2 reference, chunk_size=256) is a later
 optimization, not a correctness requirement. (llama.cpp's HIP path also falls
 back to sequential scan for prefill — sequential is not a cop-out.)
 
-⚠️ **A-convention checkpoint**: llama.cpp's conversion applies `-exp(A_log)`
-when writing `ssm.a` (A stored already-negative); the in-repo HIP/CPU engines
-instead read `ssm_a` as raw A_log and compute `A = -exp(A_log)`
-(`mamba2_kernels.cpp`). If the target GGUFs follow llama.cpp's convention,
-**the existing HIP path double-applies exp** — a possible latent correctness
-bug. Before writing any Vulkan code: dump `blk.0.ssm_a` from a real GGUF and
-check the value range (raw A_log: log(1..n_head) ∈ [0, 4.7]; already-negated:
-[-n_head, -1]). The Vulkan path must match whatever the file actually stores.
+⚠️ **A-convention — RESOLVED (2026-08-03, issue #1460)**: llama.cpp's
+conversion stores `ssm.a` already-negated (A = -exp(A_log)). Verified with
+`tools/dump_ssm_a.py` on the EchoLabs33 1.2B q4_0 GGUF: `blk.0.ssm_a` ∈
+[-15.19, -0.42], all 64 values negative → **the in-repo HIP/CPU engines
+re-applying `-exp(A_log)` are WRONG (double exp)** — A_bar ≈ 1.0, SSM state
+never decays, output garbage. Use stored A directly: `dA = exp(dt_sp * A)`.
+Same convention applies here.
 
 ## 8. Validation plan (house style, per #844 precedent)
 
@@ -214,12 +236,19 @@ check the value range (raw A_log: log(1..n_head) ∈ [0, 4.7]; already-negated:
   class — the A3 fold avoids it; do not "optimize" prefill into a different
   recurrence order without a state-equivalence check (llama.cpp shipped this
   bug class: #18631, #18606, #20570).
-- **A-convention / double-exp risk** (§7) — affects the existing HIP path too.
+- **A-convention / double-exp risk** — **CONFIRMED BUG, issue #1460** (§7);
+  affects the existing HIP + CPU paths, not just the Vulkan port.
 - **conv1d circular buffer vs GGUF weight layout**: [d_conv, conv_dim] in GGUF
   vs [conv_dim, d_conv] expected by `ssm_conv1d.comp` — transpose at load.
 - **`ssm_conv1d.comp` bias**: needs a binding addition; verify whether the
   batched variant has it.
-- **LoRA adapters**: loader ignores them; unknown if target GGUFs carry them.
+- **LoRA adapters**: RESOLVED for 1.2B — the EchoLabs33 q4_0 GGUF contains
+  zero adapter/lora tensors (405 tensors checked), so the loader's silence is
+  consistent with the file. 2.7B/7B files unverified.
+- **F32 tensors hold f16-rounded values** in the EchoLabs33 files (100% of
+  `attn_norm` weights are f16-exact) — the converter wrote f16 precision into
+  F32 tensors. No action needed for the Vulkan port; just don't expect more
+  than f16 precision from weights.
 - llama.cpp has no Zamba2 (hybrid) support on master — open PR #21412; the
   EchoLabs33 GGUFs depend on it. Their tensor layout is the one our loader
   already targets.

@@ -45,7 +45,9 @@ void main() {
     memoryBarrierBuffer();
     barrier();
 
-    float scale = inversesqrt(float(hd));
+    // Zamba2 uses sqrt(2/head_dim) (concat input compensation); pc.sc != 1.0
+    // overrides the dense default 1/sqrt(hd) (default sc in PushConstants is 1.0).
+    float scale = (pc.sc != 1.0) ? pc.sc : inversesqrt(float(hd));
     // 3. scores[t] = (Q·K_t) * scale  for t in [0,pos]  (clamp to shared cap).
     uint P = min(pos, 4095u);
     for (uint t = tid; t <= P; t += 256u) {
