@@ -68,6 +68,8 @@ This is a device-level number, not a model-inference tok/s figure.
 
 | Model | Value | Backend | Notes |
 |-------|:-----:|---------|-------|
+| Qwen3.6-35B-A3B Q4_K_M | **75.65 tok/s** | llama.cpp Vulkan (RADV) | Measured 2026-08-01: tg64=75.65, tg128@8k ctx=75.95, pp512=1105.71 tok/s. 21.2 GB Q4_K_M — see `site/benchmarks.json` |
+| Qwen3.6-35B-A3B (FLM) | **11.66 tok/s** | NPU XDNA 2 (FastFlowLM v0.9.46) | Measured: decode 11.66@1k → 8.82@32k; prefill 98.05@1k → 239.79@32k tok/s. 8 iters/ctx — see `site/benchmarks.json` |
 | BlackMamba 1.5B | **79.4 tok/s** | Mamba1 HIP (Strix Halo) | Full decode, alternating SSM/MoE dispatch. Re-validated 2026-07-26 after `__shfl_xor_sync` kernel fixes. |
 | llama.cpp ROCm (PrismML, third-party) | **229 tok/s** | Same hardware | Comparison point, not our engine. See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235). |
 | BlackMamba 2.8B | **46.0 tok/s** | Mamba1 HIP (Strix Halo) | Full decode. Re-validated 2026-07-26. Reachable today only via the server's internal benchmark thread — `POST /v1/completions` hangs, see [issue #922](https://github.com/1bit-systems/1bit-systems/issues/922). |
