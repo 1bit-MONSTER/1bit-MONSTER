@@ -1038,6 +1038,17 @@ int main(int argc,char**argv){
         }
         fprintf(stderr, "  per-layer dims detected (all %d layers)\n", NC);
     }
+    // Max GDN geometry across layers — uniform slot stride for the GDN state
+    // buffers (worker fuse_* + direct-mode dm_*). Per-layer slot strides would
+    // overlap when dims vary across layers (heterogeneous models, #1482).
+    int max_gdn_vh = 0, max_gdn_hd = 0, max_gdn_conv_dim = 0, max_gdn_conv_k = 0;
+    for (int l = 0; l < NC; l++) {
+        if (!is_gdn_layer[l]) continue;
+        if (gdn_vh[l] > max_gdn_vh) max_gdn_vh = gdn_vh[l];
+        if (gdn_hd[l] > max_gdn_hd) max_gdn_hd = gdn_hd[l];
+        if (gdn_conv_dim[l] > max_gdn_conv_dim) max_gdn_conv_dim = gdn_conv_dim[l];
+        if (gdn_conv_k[l] > max_gdn_conv_k) max_gdn_conv_k = gdn_conv_k[l];
+    }
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
@@ -2019,15 +2030,6 @@ int main(int argc,char**argv){
                         fuse_pos = 0;
                         // GDN state (per-layer v-heads) + conv state + scratch, all layers.
                         if (has_moe) {
-                            int max_gdn_vh = 32, max_gdn_hd = 128, max_gdn_conv_dim = 8192, max_gdn_conv_k = 4;
-                            for (int l = 0; l < NC; l++) {
-                                if (is_gdn_layer[l]) {
-                                    if (gdn_vh[l] > max_gdn_vh) max_gdn_vh = gdn_vh[l];
-                                    if (gdn_hd[l] > max_gdn_hd) max_gdn_hd = gdn_hd[l];
-                                    if (gdn_conv_dim[l] > max_gdn_conv_dim) max_gdn_conv_dim = gdn_conv_dim[l];
-                                    if (gdn_conv_k[l] > max_gdn_conv_k) max_gdn_conv_k = gdn_conv_k[l];
-                                }
-                            }
                             fuse_gdn_state.resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
                             fuse_gdn_attn_out.resize(max_gdn_vh * max_gdn_hd, 0);
                             fuse_gdn_conv_state.resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
@@ -2055,8 +2057,8 @@ int main(int argc,char**argv){
                         if (is_gdn) {
                             // GatedDeltaNet: shared implementation (probe-validated, #1466)
                             gdn_attn_step(l, fh, fqo,
-                                          fuse_gdn_conv_state.data() + (size_t)l * gdn_conv_dim[l] * gdn_conv_k[l],
-                                          fuse_gdn_state.data() + (size_t)l * gdn_vh[l] * gdn_hd[l] * gdn_hd[l],
+                                          fuse_gdn_conv_state.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                          fuse_gdn_state.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                                           fuse_gdn_attn_out.data());
                             fat = fuse_gdn_attn_out.data();   // [32*128] → co directly
                         } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
@@ -2209,14 +2211,6 @@ int main(int argc,char**argv){
     // on sibling geometry (#1482 review).
     std::vector<float> dm_gdn_conv, dm_gdn_delta;
     if (has_moe) {
-        int max_gdn_vh = 0, max_gdn_hd = 0, max_gdn_conv_dim = 0, max_gdn_conv_k = 0;
-        for (int l = 0; l < NC; l++) {
-            if (!is_gdn_layer[l]) continue;
-            if (gdn_vh[l] > max_gdn_vh) max_gdn_vh = gdn_vh[l];
-            if (gdn_hd[l] > max_gdn_hd) max_gdn_hd = gdn_hd[l];
-            if (gdn_conv_dim[l] > max_gdn_conv_dim) max_gdn_conv_dim = gdn_conv_dim[l];
-            if (gdn_conv_k[l] > max_gdn_conv_k) max_gdn_conv_k = gdn_conv_k[l];
-        }
         dm_gdn_conv.resize((size_t)NC * max_gdn_conv_dim * max_gdn_conv_k, 0.0f);
         dm_gdn_delta.resize((size_t)NC * max_gdn_vh * max_gdn_hd * max_gdn_hd, 0.0f);
     }
@@ -2243,8 +2237,8 @@ int main(int argc,char**argv){
         if (is_gdn_layer[l]) {
             for (int pi = 0; pi < npt; pi++)
                 gdn_attn_step(l, &h_b[pi * H], &qo_b[pi * qkv_n],
-                              dm_gdn_conv.data() + (size_t)l * gdn_conv_dim[l] * gdn_conv_k[l],
-                              dm_gdn_delta.data() + (size_t)l * gdn_vh[l] * gdn_hd[l] * gdn_hd[l],
+                              dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                              dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                               &at_b[pi * NH * HD]);
         } else if (has_moe) {
             for (int pi = 0; pi < npt; pi++) {
@@ -2364,8 +2358,8 @@ int main(int argc,char**argv){
             // per-layer attention (#1472): GDN / full-attn (MoE) / global-dims
             if (is_gdn_layer[l]) {
                 gdn_attn_step(l, h0, qo_data.data(),
-                              dm_gdn_conv.data() + (size_t)l * gdn_conv_dim[l] * gdn_conv_k[l],
-                              dm_gdn_delta.data() + (size_t)l * gdn_vh[l] * gdn_hd[l] * gdn_hd[l],
+                              dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                              dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                               at_data.data());
             } else if (has_moe) {
                 int pos = sp;
@@ -2427,8 +2421,8 @@ int main(int argc,char**argv){
                 cn(qo_b.data(), qkv_n);
                 if (is_gdn_layer[l]) {
                     gdn_attn_step(l, h_b.data(), qo_b.data(),
-                                  dm_gdn_conv.data() + (size_t)l * gdn_conv_dim[l] * gdn_conv_k[l],
-                                  dm_gdn_delta.data() + (size_t)l * gdn_vh[l] * gdn_hd[l] * gdn_hd[l],
+                                  dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                  dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                                   at_b.data());
                 } else {
                     int pos = sp;
