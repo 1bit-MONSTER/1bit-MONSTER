@@ -910,14 +910,21 @@ int main(int argc,char**argv){
         if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!init_i8(*cu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL U\n");return 1;}}
         }
     }
-    // NPU attention via pre-compiled KV xclbin instructions.
-    // Auto-detected when both final_i8_ATTN_<tag>.xclbin and insts_i8_KV_<tag>.txt exist.
-    // Explicitly disable with NPU_ATTN=0; override inst path with NPU_ATTN_FILE=<path>.
+    // NPU attention via pre-compiled KV xclbin instructions.  OPT-IN: set
+    // NPU_ATTN=1 to enable, and override the inst path with NPU_ATTN_FILE=<path>.
+    //
+    // It used to auto-enable whenever final_i8_ATTN_<tag>.xclbin and
+    // insts_i8_KV_<tag>.txt were present, which made it the default for every
+    // model that had them.  On qwen3_0_6b the ATTN kernel costs ~2070 ms per
+    // layer against ~4 ms for the OpenMP path, so a 9-token prefill took
+    // 59.1 s enabled vs 1.07 s disabled — 55x slower, and it scaled with layer
+    // count rather than sequence length.  Until that kernel is understood the
+    // CPU path is strictly better, so it must be asked for explicitly.
     bool use_npu_attn = false;
     {
         const char* npu_attn_env = getenv("NPU_ATTN");
-        if (npu_attn_env && atoi(npu_attn_env) == 0) {
-            fprintf(stderr, "NPU attention disabled via NPU_ATTN=0\n");
+        if (!npu_attn_env || atoi(npu_attn_env) == 0) {
+            if (npu_attn_env) fprintf(stderr, "NPU attention disabled via NPU_ATTN=0\n");
         } else {
             // Check if the ATTN xclbin exists before trying
             std::string xclbin_path = xd+"/final_i8_ATTN_"+cfg.model_tag+".xclbin";
