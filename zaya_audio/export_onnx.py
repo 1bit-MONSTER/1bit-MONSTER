@@ -30,10 +30,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .codec import RVQVAE
-from .config import AudioCodecConfig, DEFAULT_CONFIG
-from .text_to_codec_model import TextToCodecConfig, TextToCodecModel
-from .voice_pack import (
+if __package__ in (None, ""):
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from zaya_audio.codec import RVQVAE
+from zaya_audio.config import AudioCodecConfig, DEFAULT_CONFIG
+from zaya_audio.text_to_codec_model import TextToCodecConfig, TextToCodecModel
+from zaya_audio.voice_pack import (
     VoicePackMetadata,
     save_voice_pack,
     load_voice_pack,

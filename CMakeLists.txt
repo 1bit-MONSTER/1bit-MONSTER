@@ -119,6 +119,23 @@ elif(USE_METAL AND NOT APPLE)
     message(WARNING "USE_METAL=ON but this is not an Apple platform — skipping Metal backend")
 endif()
 
+# ── Optional: VART (Vitis AI Runtime) backend ──
+option(USE_VART "Build the VART backend for Versal/Zynq DPU/NPU" OFF)
+set(RCPP_HAVE_VART FALSE)
+if(USE_VART)
+    find_library(VART_RUNNER_LIB vart-runner PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_library(VART_DPU_RUNNER_LIB vart-dpu-runner PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_library(XIR_LIB xir PATHS /opt/vitis_ai/5.1/lib /usr/lib /usr/local/lib)
+    find_path(VART_INCLUDE_DIR vitis/ai/dpu_runner.hpp PATHS /opt/vitis_ai/5.1/include /usr/include /usr/local/include)
+    if(VART_RUNNER_LIB AND VART_DPU_RUNNER_LIB AND XIR_LIB AND VART_INCLUDE_DIR)
+        set(RCPP_HAVE_VART TRUE)
+        message(STATUS "VART: libraries found — building VART backend")
+    else()
+        message(WARNING "USE_VART=ON but VART libraries not found — skipping VART backend. "
+            "Install Vitis AI or set VART_RUNNER_LIB/XIR_LIB manually.")
+    endif()
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -502,6 +519,12 @@ if(RCPP_HAVE_METAL)
     list(APPEND BACKEND_MANAGER_SOURCES src/backend_metal.mm)
 endif()
 
+# VART backend is always compiled — uses __has_include guards for the stub fallback
+list(APPEND BACKEND_MANAGER_SOURCES src/backend_vart.cpp)
+
+# ONNX NPU backend — always compiled, uses __has_include guard
+list(APPEND BACKEND_MANAGER_SOURCES src/backend_onnx.cpp)
+
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
 target_link_libraries(backend_manager PUBLIC gguf_reader)
 
@@ -588,6 +611,17 @@ endif()
 if(RCPP_HAVE_METAL)
     target_link_libraries(backend_manager PRIVATE ${METAL_LIBRARY} ${METAL_PERFORMANCE_SHADERS_LIBRARY})
     target_compile_options(backend_manager PRIVATE -fobjc-arc)
+endif()
+if(RCPP_HAVE_VART)
+    target_include_directories(backend_manager PRIVATE ${VART_INCLUDE_DIR})
+    target_link_libraries(backend_manager PRIVATE ${VART_RUNNER_LIB} ${VART_DPU_RUNNER_LIB} ${XIR_LIB})
+endif()
+# ONNX Runtime + VitisAI EP for NPU backend
+# ponytail: link only the base ORT lib; VitisAI EP provider .so is loaded at
+# runtime by ORT's AppendExecutionProvider (must match ORT version exactly)
+if(onnxruntime_FOUND)
+    target_include_directories(backend_manager PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
+    target_link_libraries(backend_manager PRIVATE onnxruntime::onnxruntime)
 endif()
 target_compile_options(backend_manager PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
 # NOTE: no -ffast-math here (deliberately) — it implies -ffinite-math-only and
@@ -752,24 +786,11 @@ if(ZINC_CPP_AVAILABLE)
 endif()
 # HIP backend: adapter (InferenceBackend) + canonical src (Backend + zaya_engine)
 list(APPEND ZAYA_SERVER_SRC tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp)
-add_executable(zaya_server ${ZAYA_SERVER_SRC})
 set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
-target_include_directories(zaya_server PRIVATE
-    ${CMAKE_SOURCE_DIR}/tests
-    ${CMAKE_SOURCE_DIR}/tests/backends
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/kernels)
-target_compile_options(zaya_server PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
-target_link_libraries(zaya_server PRIVATE rocm_cpp hip::host hip::device httplib::httplib nlohmann_json::nlohmann_json)
-set_target_properties(zaya_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
-install(TARGETS zaya_server RUNTIME DESTINATION bin)
-if(RCPP_HAVE_VULKAN)
-    target_link_libraries(zaya_server PRIVATE Vulkan::Vulkan)
-    if(VIDEO_LORA_VK_AVAILABLE)
-        target_link_libraries(zaya_server PRIVATE video_lora_vk)
-    endif()
-endif()
+# zaya_server is no longer a standalone add_executable target — its full
+# source list (ZAYA_SERVER_SRC, kept above) is compiled into onebin/1bit
+# only; run it via `1bit zaya` (see tools/onebin.cpp). No second binary,
+# no symlink — the standalone target was pure duplication of onebin.
 
 rocm_hip_target(test_wmma_i8_gemv tests/test_wmma_i8_gemv.cpp)
 rocm_hip_target(test_bonsai_e2e tests/test_bonsai_e2e.cpp)
@@ -983,9 +1004,12 @@ else()
     message(STATUS "rocm-cpp: fused GPU+NPU backend disabled (XRT headers or AIEBU missing)")
 endif()
 
-# unified_server — CUDA/Metal come through backend_manager (PR #579 pattern),
-# so they don't appear in sources or link line here.
-add_executable(unified_server ${UNIFIED_SERVER_SOURCES})
+# unified_server sources (UNIFIED_SERVER_SOURCES, kept above) compile into
+# onebin/1bit only — run via `1bit unified` (see tools/onebin.cpp). No
+# standalone add_executable here: it was pure duplication of onebin, the
+# same problem the zaya_server split had.
+# CUDA/Metal come through backend_manager (PR #579 pattern), so they don't
+# appear in sources or link line here.
 set_source_files_properties(src/backend_hip.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_hip_1bp.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
@@ -996,26 +1020,6 @@ set_source_files_properties(src/backend_npu_flm.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/unified_pool.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
-target_include_directories(unified_server PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/kernels>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/engine/npu/src>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include>
-    $<INSTALL_INTERFACE:include>)
-target_compile_options(unified_server PRIVATE
-    $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>
-    $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23>)
-if(TARGET ggml_vulkan)
-    target_link_libraries(unified_server PRIVATE ggml_vulkan ggml ggml_cpu ggml_base)
-    # Also link llama.cpp lib for model loading
-    target_link_libraries(unified_server PRIVATE
-        "${GGML_BUILD_DIR}/src/libllama.a"
-        "${GGML_BUILD_DIR}/common/libllama-common.a"
-        "${GGML_BUILD_DIR}/common/libllama-common-base.a"
-        -lvulkan -ldl -lpthread -lm)
-endif()
 # FastFlowLM (flm) is now an official AMD/ROCm project, shipped prebuilt:
 #   - built into the TheRock dist (7.14 / 7.15a) at <therock-root>/bin/flm
 #   - as the fastflowlm .deb (github.com/FastFlowLM/FastFlowLM releases — the
@@ -1083,8 +1087,6 @@ if(EXISTS "${FLM_BUILD_DIR}/flm")
         COMMENT "Building FastFlowLM NPU engine"
         BYPRODUCTS ${FLM_BINARY}
     )
-    add_dependencies(unified_server build_flm)
-    
     # ── hotpatch target: update FLM submodule to latest main + rebuild ──
     # Keeps npu_flm backend on the latest ROCm/FLM source.
     # Run: cmake --build build --target update_flm
@@ -1098,73 +1100,46 @@ if(EXISTS "${FLM_BUILD_DIR}/flm")
         # no BYPRODUCTS: build_flm already declares ${FLM_BINARY}, and a
         # second rule for the same output breaks the Ninja generator (issue #1284)
     )
-    add_dependencies(unified_server update_flm)
 else()
     message(STATUS "flm: FLM comes from TheRock or is unavailable — skipping submodule build targets")
 endif()
 
-target_compile_definitions(unified_server PRIVATE
-    ROCM_CPP_STATIC_HIP=1
-    ROCM_CPP_STATIC_NPU=1
-    FLM_BINARY_PATH="${FLM_BINARY}"
-    FLM_CONFIG_PATH="${FLM_CONFIG}"
-    FLM_XCLBIN_PATH="${FLM_XCLBINS}"
-)
-
 # ── Lemonade SDK embed ─────────────────────────────────────────────────────
-# unified_server embeds Lemonade's server core (vendored from
-# github.com/lemonade-sdk/lemonade, see third_party/lemonade/UPSTREAM.md):
-# all 14 Lemonade backends
-# (llamacpp, flm, whispercpp, sd-cpp, kokoro, ryzenai-llm, vllm, ...) and
-# its policy-based Router run in-process — `unified_server --lemonade` hands
-# off to the full Lemonade server. unified_router uses the same routing
-# engine for NPU/GPU decisions. OFF by default so plain builds are unchanged.
+# Lemonade's server core (vendored from github.com/lemonade-sdk/lemonade, see
+# third_party/lemonade/UPSTREAM.md): all 14 Lemonade backends (llamacpp, flm,
+# whispercpp, sd-cpp, kokoro, ryzenai-llm, vllm, ...) and its policy-based
+# Router, embedded in-process — `1bit unified --lemonade` hands off to the
+# full Lemonade server; unified_router uses the same routing engine for
+# NPU/GPU decisions. onebin links lemonade-server-core itself, further down.
 option(EMBED_LEMONADE "Embed the Lemonade SDK server core" ON)
 if(EMBED_LEMONADE)
     set(BUILD_WEB_APP OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/lemonade EXCLUDE_FROM_ALL)
-    target_link_libraries(unified_server PRIVATE lemonade-server-core)
-    target_compile_definitions(unified_server PRIVATE EMBED_LEMONADE=1)
-    # The flagship single binary gets the full Lemonade core too:
-    # `zaya_server --lemonade` runs Lemonade's server in-process.
-    target_link_libraries(zaya_server PRIVATE lemonade-server-core)
-    target_compile_definitions(zaya_server PRIVATE EMBED_LEMONADE=1)
 endif()
 
 # ── Gaia C++ agent framework (AMD official) ────────────────────────────────
 # Vendored from amd/gaia v0.22.0 cpp/ tree (third_party/gaia/UPSTREAM.md):
 # gaia::gaia_core + gaia-bash coding agent. Replaces the hand-rolled agent
 # layer (onebit/jarvis) — the agent talks to the engine through the
-# Lemonade-compatible endpoint (zaya_server --lemonade serve, :13305).
+# Lemonade-compatible endpoint (`1bit unified --lemonade serve`, :13305).
 # TUI (FTXUI) off: engine has its own console; flip with -DGAIA_BUILD_TUI=ON.
+# gaia-bash's own standalone binary is off too — its sources are linked
+# into onebin instead (see EMBED_GAIA_CPP block further down); no second
+# binary, matching the zaya_server/unified_server fix above.
 option(EMBED_GAIA_CPP "Build the vendored Gaia C++ agent framework" ON)
 if(EMBED_GAIA_CPP)
     set(GAIA_BUILD_TUI OFF CACHE BOOL "" FORCE)
+    set(GAIA_BUILD_BASH_AGENT OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/gaia)
 endif()
-target_link_libraries(unified_server PRIVATE
-    backend_manager vl_image vision_encoder dl
-    httplib::httplib
-    nlohmann_json::nlohmann_json
-    rocm_cpp hip::host hip::device hipblas)
-
-target_link_options(unified_server PRIVATE -rdynamic -luuid)
-set_target_properties(unified_server PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
-if(ZINC_CPP_AVAILABLE)
-    target_link_libraries(unified_server PRIVATE zinc_cpp)
-    target_include_directories(unified_server PRIVATE engine/gpu/zinc_cpp/include)
-endif()
-
-add_custom_target(zaya_agent ALL
-    DEPENDS unified_server
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "$<TARGET_FILE:unified_server>"
-        "${CMAKE_BINARY_DIR}/zaya_agent"
-    COMMENT "Creating zaya_agent -> unified_server copy")
-set_property(TARGET unified_server APPEND PROPERTY
-    LINK_OPTIONS "-Wl,-rpath,\$ORIGIN")
+# unified_server's remaining link/rpath config (backend_manager, hipblas,
+# ZINC, TheRock rpath) lives on the onebin target only now — see the onebin
+# block further down. No standalone unified_server executable, no
+# zaya_agent copy target, no symlinks: the source lists (kept above) are
+# compiled into onebin/1bit and nothing else.
 # TheRock SDK runtime lib path — find libhipblas.so.3 and add its dir to rpath
+# (consumed by onebin's own rpath block further down).
 find_library(THEROCK_HIPBLAS_LIB hipblas PATHS
     "${THEROCK_SDK_BASE}/lib"
     "/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib"
@@ -1172,9 +1147,6 @@ find_library(THEROCK_HIPBLAS_LIB hipblas PATHS
     NO_DEFAULT_PATH)
 if(THEROCK_HIPBLAS_LIB)
     get_filename_component(THEROCK_LIB_DIR "${THEROCK_HIPBLAS_LIB}" DIRECTORY)
-    set_property(TARGET unified_server APPEND PROPERTY
-        LINK_OPTIONS "-Wl,-rpath,${THEROCK_LIB_DIR}")
-    message(STATUS "unified_server rpath: ${THEROCK_LIB_DIR}")
 endif()
 
 
@@ -1247,35 +1219,19 @@ target_link_libraries(vision_qwen2vl_poc PRIVATE backend_manager vl_image dl)
 # OpenAI-compatible /v1/chat/completions with image_url support.
 # Auto-detects GPU (HIP) and falls back to CPU for image preprocessing.
 # Requires a VL-capable text model + mmproj GGUF file.
-add_executable(vision_server tools/vision_server.cpp src/tokenizer.cpp)
+# No standalone add_executable — tools/vision_server.cpp compiles into
+# onebin/1bit only; run via `1bit vision`.
 
 # -- vl_logit_check : logit-level 1BP-vs-BF16 decoder validation -----------
 add_executable(vl_logit_check tools/vl_logit_check.cpp src/tokenizer.cpp)
 target_include_directories(vl_logit_check PRIVATE src/ include/ engine/npu/src)
 target_compile_options(vl_logit_check PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 target_link_libraries(vl_logit_check PRIVATE backend_manager onebp_model dl)
-target_include_directories(vision_server PRIVATE src/ include/ engine/npu/src)
-target_compile_options(vision_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
-target_link_libraries(vision_server PRIVATE
-    backend_manager vl_image vision_encoder dl
-    httplib::httplib
-    nlohmann_json::nlohmann_json)
 
 # -- unified_router : NPU+GPU content-aware routing proxy -------------------
-# Pure C++ replacement for unified-router.py. Uses cpp-httplib as HTTP
-# server and client, nlohmann-json for JSON parsing. No Python needed.
-add_executable(unified_router tools/unified_router.cpp)
-target_include_directories(unified_router PRIVATE src/ include/)
-target_compile_options(unified_router PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
-target_link_libraries(unified_router PRIVATE
-    httplib::httplib
-    nlohmann_json::nlohmann_json)
-
-# Route through Lemonade's policy engine (lemonade-server-core) when embedded.
-if(EMBED_LEMONADE)
-    target_link_libraries(unified_router PRIVATE lemonade-server-core)
-    target_compile_definitions(unified_router PRIVATE EMBED_LEMONADE=1)
-endif()
+# Pure C++ replacement for unified-router.py. No standalone add_executable
+# — tools/unified_router.cpp compiles into onebin/1bit only; run via
+# `1bit router`. Its EMBED_LEMONADE linkage lives on the onebin target.
 
 # -- onebin : the single binary --------------------------------------------
 # Every entry point in one ELF: zaya_server + unified_server + unified_router
@@ -1309,6 +1265,7 @@ set(ONE_BIN_SOURCES
     tools/onebitd.cpp)
 add_executable(onebin ${ONE_BIN_SOURCES})
 set_target_properties(onebin PROPERTIES OUTPUT_NAME "1bit")
+install(TARGETS onebin RUNTIME DESTINATION bin)
 # Language props: union of zaya_server + unified_server
 set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_adapter.cpp
     src/backend_hip.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
@@ -1350,6 +1307,23 @@ if(EMBED_LEMONADE)
     target_link_libraries(onebin PRIVATE lemonade-server-core)
     target_compile_definitions(onebin PRIVATE EMBED_LEMONADE=1)
 endif()
+# Gaia C++ agent loop (third_party/gaia) folded into the single ELF instead
+# of shipping gaia-bash as a second binary — see third_party/gaia/UPSTREAM.md
+# local patch #3 for the ONE_BIN_DISPATCH guard on agents/bash/main.cpp.
+if(EMBED_GAIA_CPP)
+    target_sources(onebin PRIVATE
+        third_party/gaia/agents/bash/main.cpp
+        third_party/gaia/agents/bash/bash_agent.cpp
+        third_party/gaia/agents/bash/bash_tools.cpp
+        third_party/gaia/agents/bash/api_server.cpp
+        third_party/gaia/agents/bash/mcp_server.cpp)
+    target_include_directories(onebin PRIVATE third_party/gaia/agents/bash)
+    target_link_libraries(onebin PRIVATE gaia::gaia_core)
+    if(OpenSSL_FOUND)
+        target_compile_definitions(onebin PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+        target_link_libraries(onebin PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+endif()
 target_compile_definitions(onebin PRIVATE
     ONE_BIN_DISPATCH=1
     ROCM_CPP_STATIC_HIP=1
@@ -1372,11 +1346,8 @@ if(EXISTS "${FLM_BUILD_DIR}/flm")
 endif()
 
 # -- onebitd : 1bit inference daemon (spawns backend, proxies HTTP) --------
-# Pure C++ daemon — spawns backend, proxies HTTP.
-add_executable(onebitd tools/onebitd.cpp)
-target_include_directories(onebitd PRIVATE src/ include/)
-target_compile_options(onebitd PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
-target_link_libraries(onebitd PRIVATE httplib::httplib)
+# No standalone add_executable — tools/onebitd.cpp compiles into onebin/1bit
+# only; run via `1bit onebitd` / `1bit daemon`.
 
 # -- jarvis_server : local private AI agent server (RAG, tools, planner) ---
 # C++ port of the deleted jarvis/ Python package (recovered from git
@@ -1396,33 +1367,9 @@ else()
     message(STATUS "codec: ONNX Runtime NOT found — codec decoder will return empty PCM")
 endif()
 
-add_executable(jarvis_server
-    tools/jarvis_server.cpp
-    tools/jarvis/rag.cpp
-    tools/jarvis/tools.cpp
-    tools/jarvis/routing.cpp
-    tools/jarvis/planner.cpp
-    tools/jarvis/beacon.cpp
-    tools/jarvis/tts.cpp
-    tools/jarvis/audio_out.cpp
-    tools/jarvis/audio_stream.cpp
-    tools/jarvis/codec_tts.cpp
-    tools/jarvis/persona.cpp
-    tools/jarvis/vad.cpp
-    tools/jarvis/context.cpp
-    tools/jarvis/auth.cpp
-    tools/jarvis/usage.cpp
-    tools/jarvis/billing.cpp
-    src/codec_decoder.cpp)
-target_include_directories(jarvis_server PRIVATE tools/ src/)
-target_compile_options(jarvis_server PRIVATE -O3 -Wall -Wno-unused-result -std=c++23 -fopenmp)
-target_link_libraries(jarvis_server PRIVATE
-    httplib::httplib
-    nlohmann_json::nlohmann_json
-    whisper)
-if(onnxruntime_FOUND)
-    target_link_libraries(jarvis_server PRIVATE onnxruntime::onnxruntime)
-endif()
+# No standalone add_executable — jarvis_server.cpp + tools/jarvis/*.cpp +
+# src/codec_decoder.cpp (all listed in ONE_BIN_SOURCES above) compile into
+# onebin/1bit only; run via `1bit jarvis` / `1bit voice`.
 
 # -- zaya1_vl_demo : ZAYA1-VL-8B vision-language inference demo -------------
 add_executable(zaya1_vl_demo tools/zaya1_vl_demo.cpp)
@@ -1464,18 +1411,9 @@ target_link_libraries(vl_pipeline_test PRIVATE
 
 
 # -- onebit : NPU-native terminal coding agent CLI -------------------------
-# Pure C++ agent CLI. Single binary — chat, up, down,
-# status, build, config, auth, serve, update.
-add_executable(onebit tools/onebit.cpp)
-target_include_directories(onebit PRIVATE src/ include/)
-target_compile_options(onebit PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
-target_link_libraries(onebit PRIVATE
-    httplib::httplib
-    nlohmann_json::nlohmann_json)
-
-# Alias for the canonical binary name
-# NOTE: the single binary (onebin, OUTPUT_NAME "1bit") supersedes this copy
-# target — onebit's main() lives inside build/1bit now.
+# No standalone add_executable — tools/onebit.cpp compiles into onebin/1bit
+# only; onebit's main() lives inside build/1bit (OUTPUT_NAME "1bit"). Run
+# via `1bit` with no recognized subcommand, or `1bit chat`/`up`/`down`/etc.
 
 add_executable(bitnet_tui tools/bitnet_tui.cpp)
 target_link_libraries(bitnet_tui PRIVATE
@@ -1514,6 +1452,49 @@ if(TARGET npu_engine_hybrid)
     set_target_properties(npu_engine_hybrid PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/engine/npu/build)
 endif()
+
+# -- qwen36_moe_probe : native NPU MoE expert routing validation ---------
+# Standalone probe that runs ONE real Qwen3.6-35B-A3B MoE layer FFN on the
+# NPU end-to-end. Guarded: requires XRT + NPU runtime.
+if(EXISTS "/opt/xilinx/xrt/lib/libxrt_coreutil.so")
+    add_executable(qwen36_moe_probe
+        tools/qwen36_moe_probe.cpp
+        engine/npu/src/dequant_q4nx.cpp
+        engine/npu/src/gemm_npu_instructions.cpp
+    )
+else()
+    message(STATUS "qwen36_moe_probe: XRT not found — skipping MoE probe target")
+endif()
+if(TARGET qwen36_moe_probe)
+    target_include_directories(qwen36_moe_probe PRIVATE
+        ${CMAKE_SOURCE_DIR}/engine/npu/src
+        ${CMAKE_SOURCE_DIR}/npu-infer/include
+        ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
+        ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
+    target_compile_options(qwen36_moe_probe PRIVATE
+        -O2 -std=c++20 -fopenmp)
+    target_link_libraries(qwen36_moe_probe PRIVATE
+        xrt_coreutil xrt_core aiebu uuid m dl pthread)
+    target_link_options(qwen36_moe_probe PRIVATE
+        -L/opt/xilinx/xrt/lib -Wl,-rpath,/opt/xilinx/xrt/lib -fopenmp)
+    set_target_properties(qwen36_moe_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+endif()
+
+# -- gen_npu_insts : generate instruction files for NPU xclbins ---------
+add_executable(gen_npu_insts
+    tools/gen_npu_insts.cpp
+    engine/npu/src/gemm_npu_instructions.cpp
+)
+target_include_directories(gen_npu_insts PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/npu/src
+    ${CMAKE_SOURCE_DIR}/npu-infer/include
+    ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
+    ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
+target_compile_options(gen_npu_insts PRIVATE -O2 -std=c++20)
+target_link_libraries(gen_npu_insts PRIVATE uuid)
+set_target_properties(gen_npu_insts PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
 
 # -- libfusion_zero_copy: zero-copy NPU<->GPU shared-buffer substrate --------
 # Promotes the proven SharedBO/PipelineOverlap primitives (engine/fusion/zero_copy/,
@@ -1934,8 +1915,11 @@ if(USE_AUDIO_CPP)
             ${AUDIO_GGML_BASE_LIB}
             m pthread)
         
-        # Patch jarvis_server to use native audio.cpp TTS instead of Piper
-        target_link_libraries(jarvis_server PRIVATE audio_bridge)
+        # jarvis_server is no longer a standalone target (see onebin) —
+        # give onebin native audio.cpp TTS instead of Piper.
+        if(TARGET onebin)
+            target_link_libraries(onebin PRIVATE audio_bridge)
+        endif()
         
         message(STATUS "audio: audio.cpp integration enabled (${AUDIO_CPP_LIB})")
     else()

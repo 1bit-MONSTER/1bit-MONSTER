@@ -344,6 +344,18 @@ struct Zamba2GgufReader {
 };
 
 // ── Load Zamba2 model from GGUF ──
+// GGUF `ssm_a` convention differs by converter: llama.cpp stores A already
+// negated (A = -exp(A_log), values in [-n_head, -1]); other converters may
+// store raw A_log (positive [0, log(n_head)]). Normalize to the stored-A
+// convention at load so kernels can use the value directly (#1460).
+static void normalize_ssm_a(std::vector<float>& a) {
+    for (float v : a)
+        if (v >= 0.0f) {          // raw A_log → apply -exp() once, in place
+            for (float& x : a) x = -std::expf(x);
+            return;
+        }
+}
+
 bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
     Zamba2GgufReader reader;
     if (!reader.open(path)) {
@@ -471,6 +483,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
             reader.read_tensor(p("ssm_conv1d.bias"), hl.mamba.conv1d_b);
             reader.read_tensor(p("ssm_dt.bias"), hl.mamba.dt_bias);
             reader.read_tensor(p("ssm_a"), hl.mamba.A_log);
+            normalize_ssm_a(hl.mamba.A_log);
             reader.read_tensor(p("ssm_d"), hl.mamba.D);
             reader.read_tensor(p("ssm_norm.weight"), hl.mamba.norm_w);
             reader.read_tensor_transposed(p("ssm_out.weight"), hl.mamba.out_proj_w);
@@ -520,6 +533,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
             reader.read_tensor(p("ssm_conv1d.bias"), ml.conv1d_b);
             reader.read_tensor(p("ssm_dt.bias"), ml.dt_bias);
             reader.read_tensor(p("ssm_a"), ml.A_log);
+            normalize_ssm_a(ml.A_log);
             reader.read_tensor(p("ssm_d"), ml.D);
             reader.read_tensor(p("ssm_norm.weight"), ml.norm_w);
             reader.read_tensor_transposed(p("ssm_out.weight"), ml.out_proj_w);

@@ -83,7 +83,11 @@ static int listSessions() {
 // main
 // ---------------------------------------------------------------------------
 
+#ifdef ONE_BIN_DISPATCH
+int gaia_bash_main(int argc, char* argv[]) {
+#else
 int main(int argc, char* argv[]) {
+#endif
     try {
         // Parse arguments
         std::string query;

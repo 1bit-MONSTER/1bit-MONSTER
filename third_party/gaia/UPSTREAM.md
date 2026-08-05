@@ -29,6 +29,11 @@ Vendored patches (re-apply after each sync, listed in `CMakeLists.txt`):
 2. **nlohmann_json**: when `find_package(nlohmann_json)` resolves to the
    top-level build's FetchContent copy (non-exportable), use include-dir-only
    instead of a PUBLIC link so `install(EXPORT)` stays valid.
+3. **onebin dispatch**: `agents/bash/main.cpp`'s `int main()` is guarded by
+   `#ifdef ONE_BIN_DISPATCH` to compile as `gaia_bash_main()` when its
+   sources are linked into the 1bit `onebin` ELF instead of the standalone
+   `gaia-bash` binary (see `tools/onebin.cpp` and the `EMBED_GAIA_CPP` block
+   in the top-level `CMakeLists.txt`).
 
 Included from the top-level `CMakeLists.txt`; options default OFF when built
 as a subproject (tests/examples). TUI (FTXUI) is disabled — engine has its own
