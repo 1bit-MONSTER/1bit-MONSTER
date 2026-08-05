@@ -213,6 +213,7 @@ void zamba2_hybrid_forward_gpu(
     float* d_mamba_out = d_mixed + d_model;                // [d_model]
     float* mamba_tmp   = d_mamba_out + d_model;            // [d_in_proj + conv_dim + d_inner]
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c1-concat\n"); }
     // ── 1. concat(hidden, embed) + RMS norm (pre_ff_norm_w = concat norm) ──
     blocks = (d_model + threads * 4 - 1) / (threads * 4);
     hipLaunchKernelGGL(vec_copy_kernel, dim3(blocks), dim3(threads), 0, stream,
@@ -224,6 +225,7 @@ void zamba2_hybrid_forward_gpu(
         dim3(1, 1, 1), dim3(threads), 0, stream,
         d_concat, pre_ff_norm_w, attn_in, 1, 1, rms_eps);
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c2-qkv\n"); }
     // ── 2. QKV projections from the concat ──
     float* d_q = d_qkv;                       // [q_elems]
     float* d_k = d_qkv + q_elems;             // [k_elems]
@@ -258,6 +260,7 @@ void zamba2_hybrid_forward_gpu(
     hipMemcpyDtoDAsync(v_cache + pos * (size_t)n_kv_heads * attn_head_dim,
                        d_v, k_elems * sizeof(float), stream);
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c5-attn\n"); }
     // ── 5. Attention — Zamba2 scale sqrt(2/head_dim) (concat compensation) ──
     float attn_scale = sqrtf(2.0f / (float)attn_head_dim);
     dim3 attn_grid(n_attn_heads, 1, 1);
@@ -268,6 +271,7 @@ void zamba2_hybrid_forward_gpu(
         n_attn_heads, n_kv_heads, attn_head_dim,
         pos + 1, attn_scale);
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c6-oproj\n"); }
     // ── 6. o_proj ──
     gemv_blocks = (d_model + 1) / 2;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
@@ -299,11 +303,13 @@ void zamba2_hybrid_forward_gpu(
         dim3(gemv_blocks), dim3(256), 0, stream,
         down_proj_w, d_up, d_proj, d_model, d_ff);
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c8-mix\n"); }
     // ── 8. ssm_mix: th = linear(ffn_out) — separate buffer (in-place unsafe) ──
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
         linear_w, d_proj, d_th, d_model, d_model);
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c9-mixed\n"); }
     // ── 9. mixed = hidden + th ──
     blocks = (d_model + threads * 4 - 1) / (threads * 4);
     hipLaunchKernelGGL(vec_copy_kernel, dim3(blocks), dim3(threads), 0, stream,
@@ -311,6 +317,7 @@ void zamba2_hybrid_forward_gpu(
     hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, stream,
         d_mixed, d_th, d_model);
 
+    if (getenv("Z2_DEBUG_HYBRID_GPU")) { hipStreamSynchronize(stream); fprintf(stderr, "[hyb] c10-mamba\n"); }
     // ── 10. mamba decoder: norm(mixed) -> mamba -> hidden += out ──
     // (residual is the layer INPUT only, matching HF Zamba2MambaDecoderLayer)
     hipLaunchKernelGGL(mamba2_group_norm_kernel,
@@ -326,8 +333,25 @@ void zamba2_hybrid_forward_gpu(
         n_head, n_group, head_dim, conv_dim, stream);
 
     // residual: hidden = hidden + mamba_out
+    static int z2_end_dbg = 0;
+    if (getenv("Z2_DEBUG_HYBRID_GPU") && z2_end_dbg++ == 0) {
+        hipStreamSynchronize(stream);
+        std::vector<float> mo(d_model), hi(d_model);
+        hipMemcpy(mo.data(), d_mamba_out, d_model * sizeof(float), hipMemcpyDeviceToHost);
+        hipMemcpy(hi.data(), hidden, d_model * sizeof(float), hipMemcpyDeviceToHost);
+        fprintf(stderr, "[hyb-end] mamba_out[:4]: %.6f %.6f %.6f %.6f  hidden[:4]: %.6f %.6f %.6f %.6f\n",
+            mo[0], mo[1], mo[2], mo[3], hi[0], hi[1], hi[2], hi[3]);
+    }
     blocks = (d_model + threads * 4 - 1) / (threads * 4);
     hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, stream,
         hidden, d_mamba_out, d_model);
+
+    static int z2_after_dbg = 0;
+    if (getenv("Z2_DEBUG_HYBRID_GPU") && z2_after_dbg++ == 0) {
+        hipStreamSynchronize(stream);
+        std::vector<float> hi2(d_model);
+        hipMemcpy(hi2.data(), hidden, d_model * sizeof(float), hipMemcpyDeviceToHost);
+        fprintf(stderr, "[hyb-after] hidden[:4]: %.6f %.6f %.6f %.6f\n", hi2[0], hi2[1], hi2[2], hi2[3]);
+    }
 }
 

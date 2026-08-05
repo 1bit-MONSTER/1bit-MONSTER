@@ -183,10 +183,10 @@ void mamba2_tiled_gemv_kernel(
 // must process each of the head_dim input elements individually, updating
 // the shared d_state vector for each one.
 // ────────────────────────────────────────────────────────────────────────────
-#define SCAN_DSTATE_THREADS 64  // maximum d_state parallelism
+#define SCAN_DSTATE_THREADS 128  // maximum d_state parallelism (1.2B uses 128)
 #define SCAN_STATE_LDS      128 // LDS for cross-warp reduce
 
-__attribute__((amdgpu_flat_work_group_size(SCAN_DSTATE_THREADS, SCAN_DSTATE_THREADS)))
+__attribute__((amdgpu_flat_work_group_size(64, SCAN_DSTATE_THREADS)))
 __global__ __launch_bounds__(SCAN_DSTATE_THREADS, 4)
 void mamba2_selective_scan_tuned_kernel(
     const float* __restrict__ x,        // [B, L, d_inner]   or [d_inner] for decode
@@ -315,7 +315,7 @@ void mamba2_selective_scan_tuned_kernel(
 // separately and fuses the bias-add + softplus into the kernel.
 // If dt_bias is nullptr, assumes dt already has softplus applied.
 
-__attribute__((amdgpu_flat_work_group_size(SCAN_DSTATE_THREADS, SCAN_DSTATE_THREADS)))
+__attribute__((amdgpu_flat_work_group_size(64, SCAN_DSTATE_THREADS)))
 __global__ __launch_bounds__(SCAN_DSTATE_THREADS, 4)
 void mamba2_scan_fused_kernel(
     const float* __restrict__ x,        // [B, L, d_inner]
@@ -366,19 +366,20 @@ void mamba2_scan_fused_kernel(
     }
     __syncthreads();
 
-    float B_val = (tid < d_state) ? B[b_offset + tid] : 0.0f;
-    float C_val = (tid < d_state) ? C[c_offset + tid] : 0.0f;
-    float state_reg = 0.0f;  // loaded per-hd inside the loop
-
-    // ── Scan ──
+    // ── Scan (block = 64 threads; d_state up to 128 handled via a chunk loop) ──
+    const int n_chunks = (d_state + SCAN_DSTATE_THREADS - 1) / SCAN_DSTATE_THREADS;
     for (int hd = 0; hd < head_dim; ++hd) {
         float x_val = x[x_offset + hd];
-        state_reg = (tid < d_state) ? final_state[state_offset + tid * head_dim + hd] : 0.0f;
-        if (tid < d_state) {
-            state_reg = s_A_bar * state_reg + s_dt_softplus * B_val * x_val;
+        float c_dot = 0.0f;
+        for (int c = 0; c < n_chunks; ++c) {
+            int s = c * SCAN_DSTATE_THREADS + tid;
+            if (s < d_state) {
+                float sv = final_state[state_offset + s * head_dim + hd];
+                sv = s_A_bar * sv + s_dt_softplus * B[b_offset + s] * x_val;
+                final_state[state_offset + s * head_dim + hd] = sv;
+                c_dot += C[c_offset + s] * sv;
+            }
         }
-
-        float c_dot = (tid < d_state) ? C_val * state_reg : 0.0f;
         #pragma unroll
         for (int off = M2_WARP_SIZE / 2; off > 0; off >>= 1)
             c_dot += __shfl_down(c_dot, off);
@@ -389,7 +390,7 @@ void mamba2_scan_fused_kernel(
             __syncthreads();
             if (tid == 0) {
                 float sum = 0.0f;
-                int n_warps = (d_state + M2_WARP_SIZE - 1) / M2_WARP_SIZE;
+                int n_warps = blockDim.x / M2_WARP_SIZE;
                 #pragma unroll
                 for (int w = 0; w < n_warps; ++w) sum += s_r[w];
                 s_r[0] = sum + s_D * x_val;
@@ -401,7 +402,6 @@ void mamba2_scan_fused_kernel(
         }
 
         if (tid == 0) y[y_offset + hd] = c_dot;
-        if (tid < d_state) final_state[state_offset + tid * head_dim + hd] = state_reg;
         __syncthreads();
     }
 }
@@ -856,6 +856,9 @@ void mamba2_gpu_decode_block_tuned(
     int d_in_proj = d_inner + conv_dim + n_head;
     int blocks;
     const int threads = M2_BLOCK_SIZE;
+    static int z2_tb_calls = 0;
+    if (getenv("Z2_DEBUG_MAMBA") && z2_tb_calls++ < 20)
+        fprintf(stderr, "[tb] call %d t=%.3f\n", z2_tb_calls, (double)clock() / CLOCKS_PER_SEC);
 
     // Split pointer aliases into tmp buffer:
     //   [0..d_in_proj-1] = in_proj output
@@ -897,7 +900,8 @@ void mamba2_gpu_decode_block_tuned(
     // ── 4. Fused selective scan (includes dt_bias + softplus) ──
     float* y_inner = xBC_conv;  // reuse — conv output consumed, scan output here
     dim3 scan_grid(n_head, 1, 1);
-    dim3 scan_block(SCAN_DSTATE_THREADS, 1, 1);
+    int scan_threads = SCAN_DSTATE_THREADS;
+    dim3 scan_block(scan_threads, 1, 1);
     hipLaunchKernelGGL(mamba2_scan_fused_kernel,
         scan_grid, scan_block, 0, stream,
         x_seg, dt, dt_bias, A_log,
@@ -924,6 +928,18 @@ void mamba2_gpu_decode_block_tuned(
     }
 
     // ── 7. out_proj: tiled GEMV ──
+    static int z2_hyb_mb = 0;
+    if (getenv("Z2_DEBUG_HYBRID_GPU") && z2_hyb_mb++ == 5) {
+        hipStreamSynchronize(stream);
+        std::vector<float> pre(d_inner);
+        hipMemcpy(pre.data(), y_inner, d_inner * sizeof(float), hipMemcpyDeviceToHost);
+        fprintf(stderr, "[hyb-mb] y_inner[:4]: %.6f %.6f %.6f %.6f  norm0: %.6f\n",
+            pre[0], pre[1], pre[2], pre[3], pre[d_inner-1]);
+        std::vector<float> ip(d_in_proj);
+        hipMemcpy(ip.data(), tmp, d_in_proj * sizeof(float), hipMemcpyDeviceToHost);
+        fprintf(stderr, "[hyb-mb] inproj[:4]: %.6f %.6f %.6f %.6f  dt0: %.6f\n",
+            ip[0], ip[1], ip[2], ip[3], ip[d_inner + conv_dim]);
+    }
     gemv_blocks = (d_model + GEMV_ROWS - 1) / GEMV_ROWS;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(M2_BLOCK_SIZE), 0, stream,

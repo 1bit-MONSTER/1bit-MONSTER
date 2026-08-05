@@ -1,343 +1,354 @@
 {
-  "updated": "2026-08-01",
-  "_updated_note": "2026-07-28: NPU engine replaced FLM-based v12 path with native npu_engine_universal (INT8 GEMM, Peano-compiled xclbins). All 22 GEMM shapes across 5 models verified 0/10000 errors on real hardware. NPU attention fixed (xrt::ext::bo overload resolution). NPU end-to-end prefill/decode now functional. Chess toolchain permanently deprecated (multi-dim BD repeat descriptors hang NPU2 DMA). Mamba1 GPU numbers: 79.4/46.0 tok/s re-validated 2026-07-26.",
-  "source": "validated on real Strix Halo NPU hardware (single-agent, no contention), GPU numbers from cold GPU",
-  "engines": {
-    "q1_gemv": {
-      "tok_s": 433,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "Q1_0 GEMV kernel (28-layer model, 128B blocks)",
-      "table": "kernel",
-      "display_name": "Q1 GEMV",
-      "backend": "ROCm HIP (fused kernel)",
-      "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note."
-    },
-    "fused_tq2": {
-      "tok_s": 420,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "Fused TQ2 kernel (QKV+GU, 1.15x speedup)",
-      "table": "kernel",
-      "display_name": "Fused TQ2",
-      "backend": "ROCm HIP (QKV+GU fused)",
-      "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note."
-    },
-    "ternary": {
-      "tok_s": 318,
-      "status": "validated",
-      "label": "GPU ternary ZINC Vulkan (bench_zinc_vulkan.sh)",
-      "table": "kernel",
-      "display_name": "GPU ternary",
-      "backend": "Vulkan ZINC"
-    },
-    "tq2_gemv": {
-      "tok_s": 367,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "TQ2_0 GEMV kernel (28-layer model, g128)",
-      "table": "kernel",
-      "display_name": "TQ2 GEMV",
-      "backend": "ROCm HIP",
-      "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note."
-    },
-    "npu_v12": {
-      "tok_s": 0,
-      "status": "broken",
-      "label": "NPU v12 (FLM-based) -- superseded by npu_engine_universal INT8 GEMM path",
-      "table": "kernel",
-      "display_name": "NPU v12",
-      "backend": "XDNA 2 (32 tiles)",
-      "notes": "Replaced 2026-07-28 by native npu_engine_universal with INT8 GEMM ops. All 22 shapes across 5 models verified 0/10000 errors."
-    },
-    "npu_int8_gemm": {
-      "tok_s": 0,
-      "status": "validated",
-      "remeasured": "2026-07-28",
-      "label": "NPU INT8 GEMM \u2014 npu_engine_universal, Peano-compiled xclbins, 4 native ops",
-      "table": "kernel",
-      "display_name": "NPU INT8 GEMM",
-      "backend": "XDNA 2 via Peano",
-      "notes": "22/22 shapes across 5 models verified 0/10000 errors on real hardware. Previous npu_v12 (69 tok/s) superseded."
-    },
-    "rocm_hip": {
-      "tok_s": 64,
-      "status": "validated",
-      "label": "GPU ROCm HIP kernels (bench_rocm_hip.sh)",
-      "table": "kernel",
-      "display_name": "ROCm HIP",
-      "backend": "ROCm HIP (kernels)"
-    },
-    "npu_flm": {
-      "tok_s": 0,
-      "status": "broken",
-      "label": "NPU FLM engine \u2014 superseded by npu_engine_universal",
-      "notes": "Replaced by native npu_engine_universal (2026-07-28). FLM's 22 proprietary .so files are no longer used."
-    },
-    "all_5": {
-      "tok_s": 42,
-      "status": "raw",
-      "label": "C++ all-5 auto-detect"
-    },
-    "gpu_zinc": {
-      "tok_s": 22,
-      "status": "validated",
-      "label": "GPU Vulkan ZINC F16"
-    },
-    "zaya": {
-      "tok_s": 10.6,
-      "status": "validated",
-      "label": "Zaya pure C++ server"
-    },
-    "prefill_i8": {
-      "tok_s": 43.2,
-      "TFLOPS": 43.2,
-      "status": "validated",
-      "remeasured": "2026-08-01",
-      "label": "Prefill INT8 WMMA (43.2 TFLOPS, I8-APRE winner)",
-      "table": "kernel",
-      "display_name": "Prefill",
-      "backend": "INT8 WMMA",
-      "notes": "43.2 TFLOPS re-measured 2026-08-01 (winner variant: I8-APRE). Prior 39.4/40.5 were colder-GPU passes."
-    },
-    "gpu_1bit": {
-      "tok_s": 229,
-      "status": "validated",
-      "label": "llama.cpp ROCm decode (corrected 2026-07-15)",
-      "table": "end_to_end",
-      "display_name": "llama.cpp ROCm (PrismML)",
-      "backend": "PrismML on same hardware",
-      "notes": "See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235)"
-    },
-    "dspark": {
-      "tok_s": 0.8,
-      "status": "broken",
-      "label": "Spec-decode draft (blocked: undertrained)"
-    },
-    "npu_fused": {
-      "tok_s": 0,
-      "status": "broken",
-      "label": "NPU fused (INT8 GEMM, all 4 ops verified correct)",
-      "notes": "All 4 fused ops (QKV/O/GU/D) verified correct via npu_engine_universal. 22/22 shapes across 5 models pass, 0/10000 errors. Status kept as broken for CI transition tracking; functionally working."
-    },
-    "zaya_27b": {
-      "tok_s": 30,
-      "status": "validated",
-      "label": "zaya_server end-to-end decode, Qwen 27B Q4_K",
-      "table": "end_to_end",
-      "display_name": "zaya_server (Qwen 27B Q4_K)",
-      "backend": "ROCm HIP",
-      "notes": "Full decode, speculative MTP, Strix Halo"
-    },
-    "zaya_35b_moe": {
-      "tok_s": 20,
-      "status": "validated",
-      "label": "zaya_server end-to-end decode, Qwen 35B MoE Q4_K",
-      "table": "end_to_end",
-      "display_name": "zaya_server (Qwen 35B MoE Q4_K)",
-      "backend": "ROCm HIP",
-      "notes": "Full decode, speculative MTP, Strix Halo"
-    },
-    "zr1_1_5b": {
-      "tok_s": 26,
-      "status": "validated",
-      "label": "ZR1-1.5B end-to-end decode, ZINC GPU, Strix Halo",
-      "table": "end_to_end",
-      "display_name": "ZR1-1.5B (Zyphra)",
-      "backend": "Vulkan ZINC",
-      "notes": "Reasoning-tuned dense transformer, Qwen2 arch"
-    },
-    "bitnet_tq2_0": {
-      "tok_s": 420,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "BitNet TQ2_0 GEMV (GGML_TYPE_TQ2_0, llama.cpp native blocks)",
-      "table": "kernel",
-      "display_name": "BitNet TQ2_0",
-      "backend": "ROCm HIP",
-      "notes": "Isolated GEMV throughput on synthetic data, correctness-verified bit-exact vs CPU reference. See _updated_note."
-    },
-    "bitnet_tq1_0": {
-      "tok_s": 202,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "BitNet TQ1_0 GEMV (GGML_TYPE_TQ1_0, base-3 decode)",
-      "table": "kernel",
-      "display_name": "BitNet TQ1_0",
-      "backend": "ROCm HIP",
-      "notes": "Base-3 ternary decode via LUT. Isolated GEMV throughput, bit-exact. See _updated_note."
-    },
-    "q1_0_binary": {
-      "tok_s": 380,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "Q1_0 binary GEMV (1-bit, 128-block format)",
-      "table": "kernel",
-      "display_name": "Q1_0 binary",
-      "backend": "ROCm HIP",
-      "notes": "1-bit binary GEMV. Isolated throughput, bit-exact. See _updated_note."
-    },
-    "iq1_s_gpu": {
-      "tok_s": 45,
-      "status": "validated",
-      "remeasured": "2026-07-24",
-      "label": "IQ1_S dequant+GEMV (importance quant, GPU LUT)",
-      "table": "kernel",
-      "display_name": "IQ1_S GPU",
-      "backend": "ROCm HIP",
-      "notes": "GPU-side dequant via iq1s_grid LUT from llama.cpp. Correctness pending full IQ1_M port."
-    },
-    "cpu_zaya1_8b": {
-      "tok_s": 2.5,
-      "status": "validated",
-      "remeasured": "2026-07-25",
-      "label": "CPU generic backend, ZAYA1-8B-shaped weights (40L, 2048H, MoE), 5-token decode avg",
-      "table": "end_to_end",
-      "display_name": "CPU (generic)",
-      "backend": "Generic CPU (AVX-512 capable box, portable path)",
-      "notes": "Real forward()+generate() loop via create_cpu_backend() (tests/test_backend.cpp), not a synthetic kernel microbenchmark -- genuine tokenizer round-trip and real weights on disk. Single-pass first-token latency was 4.37 tok/s; 2.5 tok/s is the steady-state 5-token benchmark average, used here as the representative figure."
-    },
-    "npu_xrt_hw_validate": {
-      "tok_s": 0,
-      "tflops": 51.0,
-      "status": "validated",
-      "remeasured": "2026-07-25",
-      "label": "NPU raw hardware validation (xrt-smi validate, XDNA 2)",
-      "table": "kernel",
-      "display_name": "NPU HW validate",
-      "backend": "XRT / XDNA 2",
-      "notes": "Raw device-level validation, NOT a model-inference tok/s number: 51 TOPS INT8 GEMM, 50us avg latency, 74735-75404 op/s throughput via `xrt-smi validate`. Confirms the NPU hardware/driver/firmware stack is healthy on this box today. Also today: fixed a real buffer-overflow segfault in engine/fusion/zero_copy/test_pipeline_real (the GPU+NPU zero-copy fusion kernel test) -- it now runs its 28-layer synthetic pipeline to completion without crashing, exercising real NPU GEMM (XRT) + real GPU attention (HIP) kernels on hardware. That test's own wall-clock is NOT included here: its per-layer NPU/GPU overlap loop has a separate, pre-existing, unrelated bug (NPU FFN is only invoked once instead of per-layer) that would make a tok/s figure from it misleading. No end-to-end NPU model-decode tok/s was measured this pass -- the existing npu_v12 (69 tok/s) and npu_flm (57 tok/s) entries are carried forward unchanged and their measurement dates are untraced; don't assume they're current."
-    },
-    "blackmamba_1_5b": {
-      "tok_s": 79.4,
-      "status": "validated",
-      "label": "BlackMamba 1.5B end-to-end (Mamba1 HIP GPU)",
-      "table": "e2e",
-      "display_name": "BlackMamba 1.5B",
-      "backend": "Mamba1 HIP (Strix Halo)",
-      "notes": "Full decode, ROCm HIP, alternating SSM/MoE dispatch. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes."
-    },
-    "blackmamba_2_8b": {
-      "tok_s": 46.0,
-      "status": "validated",
-      "label": "BlackMamba 2.8B end-to-end (Mamba1 HIP GPU)",
-      "table": "e2e",
-      "display_name": "BlackMamba 2.8B",
-      "backend": "Mamba1 HIP (Strix Halo)",
-      "notes": "Full decode, ROCm HIP. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes."
-    },
-    "qwen36_vulkan": {
-      "tok_s": 75.65,
-      "status": "validated",
-      "remeasured": "2026-07-30",
-      "label": "Qwen3.6-35B-A3B Q4_K_M decode, llama.cpp Vulkan (our measurement)",
-      "table": "end_to_end",
-      "display_name": "Qwen3.6-35B-A3B Q4_K_M (Vulkan, measured)",
-      "backend": "llama.cpp Vulkan (RADV STRIX_HALO)",
-      "notes": "tg64=75.65, tg128@8k ctx=75.95, pp512=1105.71, pp8192=1038.50 tok/s. 21.2 GB Q4_K_M, 99 layers offloaded, 8 threads, Strix Halo (Ryzen AI MAX+ 395, Radeon 8060S). Same qwen35moe arch as zaya_server path. See benchmarks/RESULTS-qwen3.6-35b-a3b-vulkan-2026-07-30.md"
-    },
-    "qwen36_npu_flm": {
-      "tok_s": 11.66,
-      "status": "validated",
-      "remeasured": "2026-07-31",
-      "label": "Qwen3.6-35B-A3B NPU decode @1k ctx, FLM v0.9.46 (official stack, our run)",
-      "table": "end_to_end",
-      "display_name": "Qwen3.6-35B-A3B NPU (FLM v0.9.46, measured)",
-      "backend": "NPU XDNA 2 (FastFlowLM v0.9.46)",
-      "notes": "Decode 11.66@1k \u2192 8.82@32k; prefill 98.05@1k \u2192 239.79@32k tok/s. 8 iters/ctx, performance mode, Strix Halo MAX+ 395. Prefill beats AMD official (Kraken Point) +8..24%; decode trails 7-15%. Official Q4_K_S weights (FastFlowLM/Qwen3.6-35B-A3B-NPU2). See benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md"
-    }
+ "updated": "2026-08-01",
+ "_updated_note": "2026-08-05: NPU engine multi-core (v27, 4 core rows / 32 cores) — kernel 5.6x, qwen3_0_6b e2e decode 435 ms/tok (2.4x). NPU attention made opt-in (55x prefill regression). 2026-07-28: NPU engine replaced FLM-based v12 path with native npu_engine_universal (INT8 GEMM, Peano-compiled xclbins). All 22 GEMM shapes across 5 models verified 0/10000 errors on real hardware. NPU attention fixed (xrt::ext::bo overload resolution). NPU end-to-end prefill/decode now functional. Chess toolchain permanently deprecated (multi-dim BD repeat descriptors hang NPU2 DMA). Mamba1 GPU numbers: 79.4/46.0 tok/s re-validated 2026-07-26.",
+ "source": "validated on real Strix Halo NPU hardware (single-agent, no contention), GPU numbers from cold GPU",
+ "engines": {
+  "q1_gemv": {
+   "tok_s": 433,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "Q1_0 GEMV kernel (28-layer model, 128B blocks)",
+   "table": "kernel",
+   "display_name": "Q1 GEMV",
+   "backend": "ROCm HIP (fused kernel)",
+   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference — not an end-to-end decode measurement on a loaded model. See _updated_note."
   },
-  "table_kernel": [
-    "q1_gemv",
-    "fused_tq2",
-    "ternary",
-    "tq2_gemv",
-    "npu_int8_gemm",
-    "prefill_i8",
-    "rocm_hip",
-    "bitnet_tq2_0",
-    "bitnet_tq1_0",
-    "q1_0_binary",
-    "iq1_s_gpu",
-    "npu_xrt_hw_validate"
-  ],
-  "table_end_to_end": [
-    "qwen36_npu_flm",
-    "zaya_27b",
-    "qwen36_vulkan",
-    "zaya_35b_moe",
-    "gpu_1bit",
-    "zr1_1_5b",
-    "cpu_zaya1_8b"
-  ],
-  "_comparisons": {
-    "sources": [
-      {
-        "name": "llama.cpp ROCm",
-        "model": "Ternary-Bonsai-1.7B Q2_0",
-        "tok_s": 229,
-        "source": "bench_gpu_1bit.sh (corrected)"
-      },
-      {
-        "name": "llama.cpp ROCm",
-        "model": "Qwen3.5-35B-A3B MXFP4",
-        "tok_s": 47.3,
-        "source": "strix-halo-guide"
-      },
-      {
-        "name": "llama.cpp Vulkan",
-        "model": "Qwen3.6-35B-A3B Q4_K_M",
-        "tok_s": 75.65,
-        "source": "measured 2026-07-30 on Strix Halo (llama.cpp Vulkan, this repo) \u2014 replaces external reference (60.4)"
-      }
-    ]
+  "fused_tq2": {
+   "tok_s": 420,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "Fused TQ2 kernel (QKV+GU, 1.15x speedup)",
+   "table": "kernel",
+   "display_name": "Fused TQ2",
+   "backend": "ROCm HIP (QKV+GU fused)",
+   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference — not an end-to-end decode measurement on a loaded model. See _updated_note."
   },
-  "order": [
-    "q1_gemv",
-    "fused_tq2",
-    "ternary",
-    "tq2_gemv",
-    "npu_int8_gemm",
-    "rocm_hip",
-    "npu_flm",
-    "all_5",
-    "prefill_i8",
-    "gpu_zinc",
-    "gpu_1bit",
-    "zaya",
-    "dspark",
-    "npu_fused",
-    "cpu_zaya1_8b",
-    "npu_xrt_hw_validate"
-  ],
-  "system": {
-    "tflops_int8": 43.2
+  "ternary": {
+   "tok_s": 318,
+   "status": "validated",
+   "label": "GPU ternary ZINC Vulkan (bench_zinc_vulkan.sh)",
+   "table": "kernel",
+   "display_name": "GPU ternary",
+   "backend": "Vulkan ZINC"
   },
-  "mamba1_gpu": {
-    "blackmamba_1_5b_tok_s": 79.4,
-    "blackmamba_2_8b_tok_s": 46.0,
-    "layers_1_5b": "15 SSM + 15 MoE",
-    "layers_2_8b": "18 SSM + 18 MoE",
-    "prefill_tflops": 41.45,
-    "kv_fd_speedup_L2048": "12.73x",
-    "blackmamba_2_8b_verified": "2026-07-25",
-    "blackmamba_2_8b_note": "Re-measured live 2026-07-25 via GET /v1/health on the running unified_server (last_ms=21.87, from BackendManager::benchmark_all()'s real generate() calls) -- 45.7 tok/s, consistent with prior 46.4. NOTE: this path currently only runs on the server's internal benchmark thread -- real client requests to POST /v1/completions hang indefinitely as of this date, see issue #922. Don't cite this number as 'reachable via the public API' until #922 is fixed."
+  "tq2_gemv": {
+   "tok_s": 367,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "TQ2_0 GEMV kernel (28-layer model, g128)",
+   "table": "kernel",
+   "display_name": "TQ2 GEMV",
+   "backend": "ROCm HIP",
+   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference — not an end-to-end decode measurement on a loaded model. See _updated_note."
   },
-  "ggml_vulkan_e2e": {
-    "_measured": "2026-08-01",
-    "_host": "Radeon 8060S / Strix Halo (Ryzen AI MAX+ 395), GGML-Vulkan (llama.cpp), llama-cli -st -ngl 999",
-    "smollm2_135m_q4km_tok_s": 662,
-    "smollm2_360m_q4km_tok_s": 389,
-    "smollm2_1_7b_q4km_tok_s": 167,
-    "qwen3_0_6b_q4km_tok_s": 373,
-    "qwen2_5_vl_3b_q4km_tok_s": 100,
-    "qwen35_4b_q4km_tok_s": 65,
-    "deepseek_r1_distill_llama_8b_q4km_tok_s": 44
+  "npu_v12": {
+   "tok_s": 0,
+   "status": "broken",
+   "label": "NPU v12 (FLM-based) -- superseded by npu_engine_universal INT8 GEMM path",
+   "table": "kernel",
+   "display_name": "NPU v12",
+   "backend": "XDNA 2 (32 tiles)",
+   "notes": "Replaced 2026-07-28 by native npu_engine_universal with INT8 GEMM ops. All 22 shapes across 5 models verified 0/10000 errors."
   },
-  "commit": "3706adfbbea019e754513eb841a751cafa6da276",
-  "_notes": {
-    "prior_numbers": "Prior published numbers (79.8/46.4 tok/s, 39.4/40.5 TFLOPS) were from single cold-GPU passes. Re-validated across 3 runs each: sustained throughput is 79.4/46.0 tok/s; prefill re-measured 2026-08-01 at 43.2 TFLOPS."
+  "npu_int8_gemm": {
+   "tok_s": 0,
+   "status": "validated",
+   "remeasured": "2026-08-05",
+   "label": "NPU INT8 GEMM — npu_engine_universal, Peano-compiled xclbins, 4 native ops",
+   "table": "kernel",
+   "display_name": "NPU INT8 GEMM",
+   "backend": "XDNA 2 via Peano",
+   "notes": "22/22 shapes across 5 models verified 0/10000 errors on real hardware. 2026-08-05: multi-row generator (n1_core_i8_v27, 4 core rows) — 5.6x kernel-level (QKV 675 GOP/s, O 757, GU 646, D 751), 2.4x e2e decode on qwen3_0_6b. Previous npu_v12 (69 tok/s) superseded."
   },
-  "_authoritative": true,
-  "_data_file_note": "This is the authoritative benchmark data file. numbers.json references headline values from here."
+  "rocm_hip": {
+   "tok_s": 64,
+   "status": "validated",
+   "label": "GPU ROCm HIP kernels (bench_rocm_hip.sh)",
+   "table": "kernel",
+   "display_name": "ROCm HIP",
+   "backend": "ROCm HIP (kernels)"
+  },
+  "npu_flm": {
+   "tok_s": 0,
+   "status": "broken",
+   "label": "NPU FLM engine — superseded by npu_engine_universal",
+   "notes": "Replaced by native npu_engine_universal (2026-07-28). FLM's 22 proprietary .so files are no longer used."
+  },
+  "all_5": {
+   "tok_s": 42,
+   "status": "raw",
+   "label": "C++ all-5 auto-detect"
+  },
+  "gpu_zinc": {
+   "tok_s": 22,
+   "status": "validated",
+   "label": "GPU Vulkan ZINC F16"
+  },
+  "zaya": {
+   "tok_s": 10.6,
+   "status": "validated",
+   "label": "Zaya pure C++ server"
+  },
+  "prefill_i8": {
+   "tok_s": 43.2,
+   "TFLOPS": 43.2,
+   "status": "validated",
+   "remeasured": "2026-08-01",
+   "label": "Prefill INT8 WMMA (43.2 TFLOPS, I8-APRE winner)",
+   "table": "kernel",
+   "display_name": "Prefill",
+   "backend": "INT8 WMMA",
+   "notes": "43.2 TFLOPS re-measured 2026-08-01 (winner variant: I8-APRE). Prior 39.4/40.5 were colder-GPU passes."
+  },
+  "gpu_1bit": {
+   "tok_s": 229,
+   "status": "validated",
+   "label": "llama.cpp ROCm decode (corrected 2026-07-15)",
+   "table": "end_to_end",
+   "display_name": "llama.cpp ROCm (PrismML)",
+   "backend": "PrismML on same hardware",
+   "notes": "See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235)"
+  },
+  "dspark": {
+   "tok_s": 0.8,
+   "status": "broken",
+   "label": "Spec-decode draft (blocked: undertrained)"
+  },
+  "npu_fused": {
+   "tok_s": 0,
+   "status": "broken",
+   "label": "NPU fused (INT8 GEMM, all 4 ops verified correct)",
+   "notes": "All 4 fused ops (QKV/O/GU/D) verified correct via npu_engine_universal. 22/22 shapes across 5 models pass, 0/10000 errors. Status kept as broken for CI transition tracking; functionally working."
+  },
+  "zaya_27b": {
+   "tok_s": 30,
+   "status": "validated",
+   "label": "zaya_server end-to-end decode, Qwen 27B Q4_K",
+   "table": "end_to_end",
+   "display_name": "zaya_server (Qwen 27B Q4_K)",
+   "backend": "ROCm HIP",
+   "notes": "Full decode, speculative MTP, Strix Halo"
+  },
+  "zaya_35b_moe": {
+   "tok_s": 20,
+   "status": "validated",
+   "label": "zaya_server end-to-end decode, Qwen 35B MoE Q4_K",
+   "table": "end_to_end",
+   "display_name": "zaya_server (Qwen 35B MoE Q4_K)",
+   "backend": "ROCm HIP",
+   "notes": "Full decode, speculative MTP, Strix Halo"
+  },
+  "zr1_1_5b": {
+   "tok_s": 26,
+   "status": "validated",
+   "label": "ZR1-1.5B end-to-end decode, ZINC GPU, Strix Halo",
+   "table": "end_to_end",
+   "display_name": "ZR1-1.5B (Zyphra)",
+   "backend": "Vulkan ZINC",
+   "notes": "Reasoning-tuned dense transformer, Qwen2 arch"
+  },
+  "bitnet_tq2_0": {
+   "tok_s": 420,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "BitNet TQ2_0 GEMV (GGML_TYPE_TQ2_0, llama.cpp native blocks)",
+   "table": "kernel",
+   "display_name": "BitNet TQ2_0",
+   "backend": "ROCm HIP",
+   "notes": "Isolated GEMV throughput on synthetic data, correctness-verified bit-exact vs CPU reference. See _updated_note."
+  },
+  "bitnet_tq1_0": {
+   "tok_s": 202,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "BitNet TQ1_0 GEMV (GGML_TYPE_TQ1_0, base-3 decode)",
+   "table": "kernel",
+   "display_name": "BitNet TQ1_0",
+   "backend": "ROCm HIP",
+   "notes": "Base-3 ternary decode via LUT. Isolated GEMV throughput, bit-exact. See _updated_note."
+  },
+  "q1_0_binary": {
+   "tok_s": 380,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "Q1_0 binary GEMV (1-bit, 128-block format)",
+   "table": "kernel",
+   "display_name": "Q1_0 binary",
+   "backend": "ROCm HIP",
+   "notes": "1-bit binary GEMV. Isolated throughput, bit-exact. See _updated_note."
+  },
+  "iq1_s_gpu": {
+   "tok_s": 45,
+   "status": "validated",
+   "remeasured": "2026-07-24",
+   "label": "IQ1_S dequant+GEMV (importance quant, GPU LUT)",
+   "table": "kernel",
+   "display_name": "IQ1_S GPU",
+   "backend": "ROCm HIP",
+   "notes": "GPU-side dequant via iq1s_grid LUT from llama.cpp. Correctness pending full IQ1_M port."
+  },
+  "cpu_zaya1_8b": {
+   "tok_s": 2.5,
+   "status": "validated",
+   "remeasured": "2026-07-25",
+   "label": "CPU generic backend, ZAYA1-8B-shaped weights (40L, 2048H, MoE), 5-token decode avg",
+   "table": "end_to_end",
+   "display_name": "CPU (generic)",
+   "backend": "Generic CPU (AVX-512 capable box, portable path)",
+   "notes": "Real forward()+generate() loop via create_cpu_backend() (tests/test_backend.cpp), not a synthetic kernel microbenchmark -- genuine tokenizer round-trip and real weights on disk. Single-pass first-token latency was 4.37 tok/s; 2.5 tok/s is the steady-state 5-token benchmark average, used here as the representative figure."
+  },
+  "npu_xrt_hw_validate": {
+   "tok_s": 0,
+   "tflops": 51.0,
+   "status": "validated",
+   "remeasured": "2026-07-25",
+   "label": "NPU raw hardware validation (xrt-smi validate, XDNA 2)",
+   "table": "kernel",
+   "display_name": "NPU HW validate",
+   "backend": "XRT / XDNA 2",
+   "notes": "Raw device-level validation, NOT a model-inference tok/s number: 51 TOPS INT8 GEMM, 50us avg latency, 74735-75404 op/s throughput via `xrt-smi validate`. Confirms the NPU hardware/driver/firmware stack is healthy on this box today. Also today: fixed a real buffer-overflow segfault in engine/fusion/zero_copy/test_pipeline_real (the GPU+NPU zero-copy fusion kernel test) -- it now runs its 28-layer synthetic pipeline to completion without crashing, exercising real NPU GEMM (XRT) + real GPU attention (HIP) kernels on hardware. That test's own wall-clock is NOT included here: its per-layer NPU/GPU overlap loop has a separate, pre-existing, unrelated bug (NPU FFN is only invoked once instead of per-layer) that would make a tok/s figure from it misleading. No end-to-end NPU model-decode tok/s was measured this pass -- the existing npu_v12 (69 tok/s) and npu_flm (57 tok/s) entries are carried forward unchanged and their measurement dates are untraced; don't assume they're current."
+  },
+  "blackmamba_1_5b": {
+   "tok_s": 79.4,
+   "status": "validated",
+   "label": "BlackMamba 1.5B end-to-end (Mamba1 HIP GPU)",
+   "table": "e2e",
+   "display_name": "BlackMamba 1.5B",
+   "backend": "Mamba1 HIP (Strix Halo)",
+   "notes": "Full decode, ROCm HIP, alternating SSM/MoE dispatch. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes."
+  },
+  "blackmamba_2_8b": {
+   "tok_s": 46.0,
+   "status": "validated",
+   "label": "BlackMamba 2.8B end-to-end (Mamba1 HIP GPU)",
+   "table": "e2e",
+   "display_name": "BlackMamba 2.8B",
+   "backend": "Mamba1 HIP (Strix Halo)",
+   "notes": "Full decode, ROCm HIP. Re-measured 2026-07-26 after __shfl_xor_sync kernel fixes."
+  },
+  "qwen36_vulkan": {
+   "tok_s": 75.65,
+   "status": "validated",
+   "remeasured": "2026-07-30",
+   "label": "Qwen3.6-35B-A3B Q4_K_M decode, llama.cpp Vulkan (our measurement)",
+   "table": "end_to_end",
+   "display_name": "Qwen3.6-35B-A3B Q4_K_M (Vulkan, measured)",
+   "backend": "llama.cpp Vulkan (RADV STRIX_HALO)",
+   "notes": "tg64=75.65, tg128@8k ctx=75.95, pp512=1105.71, pp8192=1038.50 tok/s. 21.2 GB Q4_K_M, 99 layers offloaded, 8 threads, Strix Halo (Ryzen AI MAX+ 395, Radeon 8060S). Same qwen35moe arch as zaya_server path. See benchmarks/RESULTS-qwen3.6-35b-a3b-vulkan-2026-07-30.md"
+  },
+  "qwen36_npu_flm": {
+   "tok_s": 11.66,
+   "status": "validated",
+   "remeasured": "2026-07-31",
+   "label": "Qwen3.6-35B-A3B NPU decode @1k ctx, FLM v0.9.46 (official stack, our run)",
+   "table": "end_to_end",
+   "display_name": "Qwen3.6-35B-A3B NPU (FLM v0.9.46, measured)",
+   "backend": "NPU XDNA 2 (FastFlowLM v0.9.46)",
+   "notes": "Decode 11.66@1k → 8.82@32k; prefill 98.05@1k → 239.79@32k tok/s. 8 iters/ctx, performance mode, Strix Halo MAX+ 395. Prefill beats AMD official (Kraken Point) +8..24%; decode trails 7-15%. Official Q4_K_S weights (FastFlowLM/Qwen3.6-35B-A3B-NPU2). See benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md"
+  },
+  "qwen3_0_6b_npu": {
+   "tok_s": 2.3,
+   "status": "validated",
+   "remeasured": "2026-08-05",
+   "label": "Qwen3-0.6B Q4NX on native NPU engine (npu_engine_universal, v27 multi-core xclbins)",
+   "table": "end_to_end",
+   "display_name": "Qwen3-0.6B NPU (native)",
+   "backend": "XDNA 2 (32 cores, v27)",
+   "notes": "Decode 435 ms/tok (2.3 tok/s), prefill 475 ms for 9 tok — measured 2026-08-05, bit-identical token stream vs v26. NPU attention default flipped to opt-in (was 55x slower than CPU)."
+  }
+ },
+ "table_kernel": [
+  "q1_gemv",
+  "fused_tq2",
+  "ternary",
+  "tq2_gemv",
+  "npu_int8_gemm",
+  "prefill_i8",
+  "rocm_hip",
+  "bitnet_tq2_0",
+  "bitnet_tq1_0",
+  "q1_0_binary",
+  "iq1_s_gpu",
+  "npu_xrt_hw_validate"
+ ],
+ "table_end_to_end": [
+  "qwen3_0_6b_npu",
+  "qwen36_npu_flm",
+  "zaya_27b",
+  "qwen36_vulkan",
+  "zaya_35b_moe",
+  "gpu_1bit",
+  "zr1_1_5b",
+  "cpu_zaya1_8b"
+ ],
+ "_comparisons": {
+  "sources": [
+   {
+    "name": "llama.cpp ROCm",
+    "model": "Ternary-Bonsai-1.7B Q2_0",
+    "tok_s": 229,
+    "source": "bench_gpu_1bit.sh (corrected)"
+   },
+   {
+    "name": "llama.cpp ROCm",
+    "model": "Qwen3.5-35B-A3B MXFP4",
+    "tok_s": 47.3,
+    "source": "strix-halo-guide"
+   },
+   {
+    "name": "llama.cpp Vulkan",
+    "model": "Qwen3.6-35B-A3B Q4_K_M",
+    "tok_s": 75.65,
+    "source": "measured 2026-07-30 on Strix Halo (llama.cpp Vulkan, this repo) — replaces external reference (60.4)"
+   }
+  ]
+ },
+ "order": [
+  "q1_gemv",
+  "fused_tq2",
+  "ternary",
+  "tq2_gemv",
+  "npu_int8_gemm",
+  "rocm_hip",
+  "npu_flm",
+  "all_5",
+  "prefill_i8",
+  "gpu_zinc",
+  "gpu_1bit",
+  "zaya",
+  "dspark",
+  "npu_fused",
+  "cpu_zaya1_8b",
+  "npu_xrt_hw_validate"
+ ],
+ "system": {
+  "tflops_int8": 43.2
+ },
+ "mamba1_gpu": {
+  "blackmamba_1_5b_tok_s": 79.4,
+  "blackmamba_2_8b_tok_s": 46.0,
+  "layers_1_5b": "15 SSM + 15 MoE",
+  "layers_2_8b": "18 SSM + 18 MoE",
+  "prefill_tflops": 41.45,
+  "kv_fd_speedup_L2048": "12.73x",
+  "blackmamba_2_8b_verified": "2026-07-25",
+  "blackmamba_2_8b_note": "Re-measured live 2026-07-25 via GET /v1/health on the running unified_server (last_ms=21.87, from BackendManager::benchmark_all()'s real generate() calls) -- 45.7 tok/s, consistent with prior 46.4. NOTE: this path currently only runs on the server's internal benchmark thread -- real client requests to POST /v1/completions hang indefinitely as of this date, see issue #922. Don't cite this number as 'reachable via the public API' until #922 is fixed."
+ },
+ "ggml_vulkan_e2e": {
+  "_measured": "2026-08-01",
+  "_host": "Radeon 8060S / Strix Halo (Ryzen AI MAX+ 395), GGML-Vulkan (llama.cpp), llama-cli -st -ngl 999",
+  "smollm2_135m_q4km_tok_s": 662,
+  "smollm2_360m_q4km_tok_s": 389,
+  "smollm2_1_7b_q4km_tok_s": 167,
+  "qwen3_0_6b_q4km_tok_s": 373,
+  "qwen2_5_vl_3b_q4km_tok_s": 100,
+  "qwen35_4b_q4km_tok_s": 65,
+  "deepseek_r1_distill_llama_8b_q4km_tok_s": 44
+ },
+ "commit": "3706adfbbea019e754513eb841a751cafa6da276",
+ "_notes": {
+  "prior_numbers": "Prior published numbers (79.8/46.4 tok/s, 39.4/40.5 TFLOPS) were from single cold-GPU passes. Re-validated across 3 runs each: sustained throughput is 79.4/46.0 tok/s; prefill re-measured 2026-08-01 at 43.2 TFLOPS."
+ },
+ "_authoritative": true,
+ "_data_file_note": "This is the authoritative benchmark data file. numbers.json references headline values from here."
 }
