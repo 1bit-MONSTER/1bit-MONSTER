@@ -1,11 +1,11 @@
-> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (July 2026). Numbers like "97 tok/s" NPU and FastFlowLM references are historical — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
+> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
 # AMD AI DevMaster Hackathon — Track 2 Submission
 ## Development & Local Deployment of Private AI Agents
 
 **Team**: 1bit.systems  
 **Project**: 1bit.systems — One Binary, All Backends, Zero Cloud  
-**Date**: July 2026  
+**Date**: August 2026  
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo) — Radeon 8060S GPU + 32 XDNA 2 NPU tiles + 128 GB unified LPDDR5X
 
 > **On hardware**: this submission runs entirely on the team's own local AMD Strix Halo
@@ -58,11 +58,11 @@
 │  │  Tier 1: ROCm HIP     Tier 3: Vulkan    Tier 5: CPU   │   │
 │  │  │ Q1 GEMV 433 t/s   │ GPU ternary    │ OpenMP      │   │
 │  │  │ Fused TQ2 420 t/s │ ZINC 22 t/s    │ fallback    │   │
-│  │  │ Mamba1 79.8 t/s   │                │             │   │
+│  │  │ Mamba1 79.4 t/s   │                │             │   │
 │  │  └────────────────────┴────────────────┴─────────────┘   │
 │  │  Tier 2: XDNA 2 NPU   Tier 4: Vulkan ZINC               │
-│  │  │ NPU v12 69 t/s    │                               │   │
-│  │  │ FLM bridge        │                               │   │
+│  │  │ NPU INT8 GEMM     │                               │   │
+│  │  │ Qwen3.6 11.66 t/s │                               │   │
 │  └──────────────────────┴───────────────────────────────┘   │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
@@ -141,12 +141,13 @@
 
 | Model | Size | Architecture | Best Backend | Performance |
 |-------|------|-------------|-------------|-------------|
-| Qwen3-0.6B | 0.6B | Dense Transformer | NPU v12 | 69 tok/s |
+| Qwen3-0.6B | 0.6B | Dense Transformer | GGML-Vulkan | 373 tok/s |
+| Qwen3.6-35B-A3B | 35B | GDN + MoE hybrid | NPU (FLM) | 11.66 tok/s |
 | Qwen3-4B | 4B | Dense Transformer | GPU ternary | 318 tok/s |
 | Qwen3-27B Q4_K | 27B | Dense Transformer | ROCm HIP | 30 tok/s |
 | Qwen3-35B MoE Q4_K | 35B | MoE Transformer | ROCm HIP | 20 tok/s |
-| BlackMamba-1.5B | 1.5B | Mamba1 SSM + MoE | Mamba1 HIP | 79.8 tok/s |
-| BlackMamba-2.8B | 2.8B | Mamba1 SSM + MoE | Mamba1 HIP | 46.4 tok/s |
+| BlackMamba-1.5B | 1.5B | Mamba1 SSM + MoE | Mamba1 HIP | 79.4 tok/s |
+| BlackMamba-2.8B | 2.8B | Mamba1 SSM + MoE | Mamba1 HIP | 46.0 tok/s |
 | Zamba2-7B | 7B | Mamba2 Hybrid | GPU ternary | ~30 tok/s |
 | Llama-3.1-8B | 8B | Dense Transformer | GPU ternary | ~25 tok/s |
 | DeepSeek R1 Distill 7B | 7B | MoE Transformer | ROCm HIP | ~25 tok/s |
@@ -188,7 +189,7 @@
 | **Q1 GEMV fused kernel** | 433 tok/s (synthetic) | Single HIP kernel that reads packed Q1_0 weights, dequantizes in registers, and accumulates dot products. Avoids separate dequant+matmul passes. |
 | **Fused QKV+Gate+Up** | 420 tok/s (synthetic) | Gate and Up projections computed in the same kernel launch as QKV attention. Reduces kernel launch overhead by 4× for transformer layers. |
 | **Structure-of-Arrays layout** | 2.3× throughput | Weights stored as SoA (not AoS) for coalesced memory access. 4-row batching for small-M GEMV. |
-| **Mamba1 SSM HIP kernel** | 79.8 tok/s (BlackMamba) | Custom HIP kernel for selective state-space model. Fused A_log exponentiation, conv state management, and selective scan in one launch. |
+| **Mamba1 SSM HIP kernel** | 79.4 tok/s (BlackMamba) | Custom HIP kernel for selective state-space model. Fused A_log exponentiation, conv state management, and selective scan in one launch. |
 | **Mamba2 HIP kernels** | MI300X + Radeon | Selective scan + conv1d HIP kernels with PyTorch ctypes extension. Enables fast Mamba2 training on AMD GPUs. |
 | **Speculative decoding (MTP)** | ~50% speedup | Multi-token prediction with draft model + target model verification. Run draft on NPU (cheap), verify on GPU (accurate). |
 | **INT8 WMMA prefill** | 43.2 TFLOPS | Uses AMD WMMA intrinsics for matrix multiply-accumulate in INT8. Full prompt prefill in a single kernel launch. |
@@ -197,8 +198,8 @@
 
 | Technique | Impact | Details |
 |-----------|--------|---------|
-| **Q4NX native dispatch** | 69 tok/s | Direct XRT BO allocation and DMA to NPU tiles. No FastFlowLM subprocess. Zero-copy between CPU and NPU via shared BOs. |
-| **Column unlock** | 40 AIE columns | Reverse-engineered AMD's column-count lock. Patched `amdxdna.ko` kernel module to access all 40 AIE columns (vendor-locked to 20). |
+| **NPU INT8 GEMM (native)** | 22/22 shapes, 0/10000 errors | npu_engine_universal: QKV/O/GU/D ops via Peano-compiled xclbins, verified on real hardware 2026-07-28. Qwen3.6-35B-A3B e2e: 11.66 tok/s decode @1k ctx (FastFlowLM v0.9.46, measured). |
+| **Column unlock (closed)** | 8 physical AIE columns | Hardware verification (`xrt-smi examine`/`validate`) shows 8 physical columns, 48 tiles; firmware patch failed PSP validation. Effort closed 2026-08-04 — see docs/research/npu/AMD-XDNA-COLUMN-UNLOCK-KNOWLEDGE-DUMP.md. |
 | **Pipeline overlap** | 1.4× throughput | DMA upload + NPU compute + DMA download pipelined across tiles. Next tile loads while current tile computes. |
 | **FastFlowLM removed** | Zero proprietary code | All 22 proprietary `.so` fully reverse-engineered and replaced. FastFlowLM removed entirely (PR #589, #632). Zero closed-source dependencies. |
 
@@ -217,7 +218,7 @@
 |--------|----------|-------------------:|--------|
 | **1bit-systems GPU 1-bit** | Radeon 8060S (ROCm HIP) | **417** | Fused Q1 GEMV kernel |
 | **1bit-systems GPU ternary** | Radeon 8060S (Vulkan) | **318** | TQ2 1.58-bit packing |
-| **1bit-systems NPU v12** | XDNA 2 (32 tiles) | **97** | Native Q4NX + pipeline overlap |
+| **1bit-systems NPU (FLM)** | XDNA 2 (32 tiles) | **11.66** (Qwen3.6-35B-A3B) | FastFlowLM v0.9.46, measured 2026-08-01 |
 | llama.cpp ROCm (PrismML) | Same hardware | 229 | Reference baseline |
 | FastFlowLM | — | — | Removed — zero proprietary code |
 

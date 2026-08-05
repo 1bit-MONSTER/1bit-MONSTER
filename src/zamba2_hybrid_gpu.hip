@@ -171,6 +171,8 @@ void zamba2_hybrid_forward_gpu(
 
     // Hidden (input/output, in-place)
     float* hidden,
+    // Current token embedding (concat input for the shared transformer)
+    const float* embed,
 
     // Scratch (large enough for all intermediates)
     float* scratch,
@@ -179,162 +181,153 @@ void zamba2_hybrid_forward_gpu(
     int d_model, int d_inner, int d_state, int d_conv,
     int n_head, int n_group, int head_dim, int conv_dim,
     int n_attn_heads, int n_kv_heads, int attn_head_dim,
-    int d_ff, int pos, int max_seq,
+    int d_ff, int pos, int max_seq, bool use_mem_rope,
+    float rms_eps,
 
     hipStream_t stream)
 {
     const int threads = 256;
     int blocks;
 
-    // ──────────────────────────────────────────────────────────────────
-    // Step 1: Mamba2 decode block (tuned)
-    // ──────────────────────────────────────────────────────────────────
-    mamba2_gpu_decode_block_tuned(
-        hidden, mamba_in_proj_w, mamba_conv1d_w, mamba_conv1d_b,
-        mamba_dt_bias, mamba_A_log, mamba_D, mamba_norm_w, mamba_out_proj_w,
-        mamba_conv_state, mamba_ssm_state,
-        hidden, scratch,
-        d_model, d_inner, d_state, d_conv,
-        n_head, n_group, head_dim, conv_dim, stream);
+    // Zamba2 hybrid layer, matching the validated CPU path / HF transformers:
+    //   th = shared_transformer(concat(hidden, embed))   # 2*d_model input
+    //   th = ssm_mix(th)
+    //   hidden = hidden + th
+    //   hidden = hidden + mamba_decoder(hidden)          # attn_norm -> mamba
+    // Shared transformer: concat norm -> MHA (scale sqrt(2/hd), no RoPE when
+    // use_mem_rope=false) -> o_proj -> ffn_norm -> GELU FFN.
 
-    // ──────────────────────────────────────────────────────────────────
-    // Step 2: RMS norm → linear projection → QKV → RoPE → Attn → FFN
-    // ──────────────────────────────────────────────────────────────────
+    int q_elems = n_attn_heads * attn_head_dim;
+    int k_elems = n_kv_heads * attn_head_dim;
+    int qkv_size = q_elems + 2 * k_elems;
+    int attn_in = 2 * d_model;
 
-    // Buffer layout in scratch (pre-sized as max(d_model*3, QKV+attn, FFN)):
-    float* d_normed    = scratch;                                     // [d_model]
-    float* d_proj      = scratch + d_model;                            // [d_model]
-    int qkv_size       = (n_attn_heads + 2 * n_kv_heads) * attn_head_dim;  // Q + K + V
-    float* d_qkv       = scratch + 2 * d_model;                        // [qkv_size]
-    float* d_attn_out  = d_qkv + qkv_size;                              // [n_attn_heads * attn_head_dim]
+    float* d_concat    = scratch;                          // [2*d_model]
+    float* d_qkv       = d_concat + attn_in;               // [qkv_size]
+    float* d_attn_out  = d_qkv + qkv_size;                 // [q_elems]
+    float* d_gate      = d_attn_out + q_elems;             // [d_ff]  (front buffers dead here)
+    float* d_up        = d_gate + d_ff;                    // [d_ff]
+    float* d_proj      = d_up + d_ff;                      // [d_model]
+    float* d_th        = d_proj + d_model;                 // [d_model]
+    float* d_mixed     = d_th + d_model;                   // [d_model]
+    float* d_mamba_out = d_mixed + d_model;                // [d_model]
+    float* mamba_tmp   = d_mamba_out + d_model;            // [d_in_proj + conv_dim + d_inner]
 
-    // Verify scratch is large enough
-    // Need: normed(d_model) + proj(d_model) + QKV(qkv_size) + attn_out + gate(d_ff) + up(d_ff)
-    // ≈ 2*2560 + 3120 + 5120*2 = ~20K floats ≈ 80KB. Fine.
-
-    // 2a. Copy hidden → normed, then RMS norm in-place
+    // ── 1. concat(hidden, embed) + RMS norm (pre_ff_norm_w = concat norm) ──
     blocks = (d_model + threads * 4 - 1) / (threads * 4);
     hipLaunchKernelGGL(vec_copy_kernel, dim3(blocks), dim3(threads), 0, stream,
-        d_normed, hidden, d_model);
+        d_concat, hidden, d_model);
+    hipLaunchKernelGGL(vec_copy_kernel, dim3(blocks), dim3(threads), 0, stream,
+        d_concat + d_model, embed, d_model);
 
     hipLaunchKernelGGL(mamba2_group_norm_kernel,
         dim3(1, 1, 1), dim3(threads), 0, stream,
-        d_normed, input_norm_w, d_model, 1, 1, 1e-6f);
+        d_concat, pre_ff_norm_w, attn_in, 1, 1, rms_eps);
 
-    // 2b. Linear projection: d_proj = W_linear @ d_normed
-    int gemv_blocks = (d_model + 2 - 1) / 2;
+    // ── 2. QKV projections from the concat ──
+    float* d_q = d_qkv;                       // [q_elems]
+    float* d_k = d_qkv + q_elems;             // [k_elems]
+    float* d_v = d_qkv + q_elems + k_elems;   // [k_elems]
+
+    int gemv_blocks = (q_elems + 1) / 2;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        linear_w, d_normed, d_proj, d_model, d_model);
-
-    // 2c. Residual: d_proj += hidden
-    hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, stream,
-        d_proj, hidden, d_model);
-
-    // 2d. QKV projections from d_proj into d_qkv
-    int q_elems = n_attn_heads * attn_head_dim;
-    int k_elems = n_kv_heads * attn_head_dim;
-    float* d_q = d_qkv;                        // [q_elems]
-    float* d_k = d_qkv + q_elems;               // [k_elems]
-    float* d_v = d_qkv + q_elems + k_elems;     // [k_elems]
-
-    gemv_blocks = (q_elems + 2 - 1) / 2;
+        q_proj_w, d_concat, d_q, q_elems, attn_in);
+    gemv_blocks = (k_elems + 1) / 2;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        q_proj_w, d_proj, d_q, q_elems, d_model);
-
-    gemv_blocks = (k_elems + 2 - 1) / 2;
+        k_proj_w, d_concat, d_k, k_elems, attn_in);
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        k_proj_w, d_proj, d_k, k_elems, d_model);
-    hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
-        dim3(gemv_blocks), dim3(256), 0, stream,
-        v_proj_w, d_proj, d_v, k_elems, d_model);
+        v_proj_w, d_concat, d_v, k_elems, attn_in);
 
-    // 2e. RoPE on Q and K
-    dim3 rope_grid(n_kv_heads, 1, 1);
-    dim3 rope_block(min(attn_head_dim / 2, 128), 1, 1);
-    float rope_theta = 10000.0f;
-    hipLaunchKernelGGL(rope_fp32_kernel,
-        rope_grid, rope_block, 0, stream,
-        d_qkv, pos, rope_theta,
-        n_attn_heads, n_kv_heads, attn_head_dim);
+    // ── 3. RoPE (only when use_mem_rope; 2.7B disables it) ──
+    if (use_mem_rope) {
+        dim3 rope_grid(n_kv_heads, 1, 1);
+        dim3 rope_block(min(attn_head_dim / 2, 128), 1, 1);
+        float rope_theta = 10000.0f;
+        hipLaunchKernelGGL(rope_fp32_kernel,
+            rope_grid, rope_block, 0, stream,
+            d_qkv, pos, rope_theta,
+            n_attn_heads, n_kv_heads, attn_head_dim);
+    }
 
-    // 2f. Append K and V to KV cache
-    // k_cache[pos, kv_h, d] = d_k[kv_h * head_dim + d]
-    // v_cache[pos, kv_h, d] = d_v[kv_h * head_dim + d]
-    // Each thread copies one element
-    blocks = (k_elems + threads * 4 - 1) / (threads * 4);
-    // We need a kernel for this. For now do D2D memcpy:
+    // ── 4. Append K/V to cache ──
     hipMemcpyDtoDAsync(k_cache + pos * (size_t)n_kv_heads * attn_head_dim,
                        d_k, k_elems * sizeof(float), stream);
     hipMemcpyDtoDAsync(v_cache + pos * (size_t)n_kv_heads * attn_head_dim,
                        d_v, k_elems * sizeof(float), stream);
 
-    // 2g. Attention
-    float attn_scale = 1.0f / sqrtf((float)attn_head_dim);
+    // ── 5. Attention — Zamba2 scale sqrt(2/head_dim) (concat compensation) ──
+    float attn_scale = sqrtf(2.0f / (float)attn_head_dim);
     dim3 attn_grid(n_attn_heads, 1, 1);
     dim3 attn_block(attn_head_dim > 256 ? 256 : attn_head_dim, 1, 1);
-    d_attn_out = d_qkv + q_elems + k_elems + k_elems;  // after Q+K+V
     hipLaunchKernelGGL(attn_decode_fp32_kernel,
         attn_grid, attn_block, 0, stream,
         d_q, k_cache, v_cache, d_attn_out,
         n_attn_heads, n_kv_heads, attn_head_dim,
         pos + 1, attn_scale);
 
-    // 2h. Attention output projection + residual
-    gemv_blocks = (d_model + 2 - 1) / 2;
+    // ── 6. o_proj ──
+    gemv_blocks = (d_model + 1) / 2;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        o_proj_w, d_attn_out, d_normed, d_model, n_attn_heads * attn_head_dim);
+        o_proj_w, d_attn_out, d_proj, d_model, q_elems);
 
-    // d_proj += d_normed (attn_out)
-    hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, stream,
-        d_proj, d_normed, d_model);
-
-    // ──────────────────────────────────────────────────────────────────
-    // Step 3: FFN
-    // 3a. Pre-FFN RMS norm on d_proj → d_normed
-    // 3b. Gate + Up projections
-    // 3c. SiLU activation + multiply
-    // 3d. Down projection
-    // 3e. Residual: hidden += down_out
-    // ──────────────────────────────────────────────────────────────────
-
-    // 3a. Copy d_proj → d_normed, then RMS norm
-    hipLaunchKernelGGL(vec_copy_kernel, dim3(blocks), dim3(threads), 0, stream,
-        d_normed, d_proj, d_model);
-
+    // ── 7. pre-FFN RMS norm (ffn_norm_w) + GELU FFN ──
     hipLaunchKernelGGL(mamba2_group_norm_kernel,
         dim3(1, 1, 1), dim3(threads), 0, stream,
-        d_normed, ffn_norm_w, d_model, 1, 1, 1e-6f);
+        d_proj, ffn_norm_w, d_model, 1, 1, rms_eps);
 
-    // 3b. Gate + Up projections (d_ff = 2 * d_model for Zamba2)
-    // d_attn_out area is free now — reuse for gate and up
-    float* d_gate = d_attn_out;         // [d_ff]
-    float* d_up   = d_attn_out + d_ff;  // [d_ff]
-
-    gemv_blocks = (d_ff + 2 - 1) / 2;
+    gemv_blocks = (d_ff + 1) / 2;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        gate_proj_w, d_normed, d_gate, d_ff, d_model);
+        gate_proj_w, d_proj, d_gate, d_ff, d_model);
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        up_proj_w, d_normed, d_up, d_ff, d_model);
+        up_proj_w, d_proj, d_up, d_ff, d_model);
 
-    // 3c. Fused: d_gate = silu(d_gate) * d_up (in-place)
+    // fused: d_up = gelu(d_gate) * d_up (Zamba2 FFN is GELU, not SiLU)
     blocks = (d_ff + threads * 4 - 1) / (threads * 4);
-    hipLaunchKernelGGL(silu_mul_kernel,
+    hipLaunchKernelGGL(gelu_mul_kernel,
         dim3(blocks), dim3(threads), 0, stream,
         d_up, d_gate, d_ff);
-    // Now d_up = silu(gate) * up
 
-    // 3d. Down projection: d_normed = down_w @ d_up
+    // down projection into d_proj
+    gemv_blocks = (d_model + 1) / 2;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(256), 0, stream,
-        down_proj_w, d_up, d_normed, d_model, d_ff);
+        down_proj_w, d_up, d_proj, d_model, d_ff);
 
-    // 3e. Residual: hidden += d_normed
+    // ── 8. ssm_mix: th = linear(ffn_out) — separate buffer (in-place unsafe) ──
+    hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
+        dim3(gemv_blocks), dim3(256), 0, stream,
+        linear_w, d_proj, d_th, d_model, d_model);
+
+    // ── 9. mixed = hidden + th ──
+    blocks = (d_model + threads * 4 - 1) / (threads * 4);
+    hipLaunchKernelGGL(vec_copy_kernel, dim3(blocks), dim3(threads), 0, stream,
+        d_mixed, hidden, d_model);
     hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, stream,
-        hidden, d_normed, d_model);
+        d_mixed, d_th, d_model);
+
+    // ── 10. mamba decoder: norm(mixed) -> mamba -> hidden += out ──
+    // (residual is the layer INPUT only, matching HF Zamba2MambaDecoderLayer)
+    hipLaunchKernelGGL(mamba2_group_norm_kernel,
+        dim3(1, 1, 1), dim3(threads), 0, stream,
+        d_mixed, input_norm_w, d_model, 1, 1, rms_eps);
+
+    mamba2_gpu_decode_block_tuned(
+        d_mixed, mamba_in_proj_w, mamba_conv1d_w, mamba_conv1d_b,
+        mamba_dt_bias, mamba_A_log, mamba_D, mamba_norm_w, mamba_out_proj_w,
+        mamba_conv_state, mamba_ssm_state,
+        d_mamba_out, mamba_tmp,
+        d_model, d_inner, d_state, d_conv,
+        n_head, n_group, head_dim, conv_dim, stream);
+
+    // residual: hidden = hidden + mamba_out
+    blocks = (d_model + threads * 4 - 1) / (threads * 4);
+    hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, stream,
+        hidden, d_mamba_out, d_model);
 }
+

@@ -1,11 +1,11 @@
-> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (July 2026). Numbers like "97 tok/s" NPU and FastFlowLM references are historical — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
+> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
 # AMD AI DevMaster Hackathon — Track 3 Submission
 ## AI Acceleration & Performance
 
 **Team**: 1bit.systems  
 **Project**: 1bit.systems — Open-Source AMD XDNA 2 NPU Stack + ROCm GPU Kernels  
-**Date**: July 2026  
+**Date**: August 2026  
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo) — Radeon 8060S GPU (gfx1151) + 32 XDNA 2 NPU tiles + 128 GB unified LPDDR5X
 
 ---
@@ -17,8 +17,8 @@
 | Scenario | Description |
 |----------|-------------|
 | **NPU-Native Inference** | Full LLM inference on XDNA 2 NPU (32 tiles, 50 TOPS INT8) — no FastFlowLM dependency. Reverse-engineered 22 proprietary `.so` libraries and 209 xclbin bitstreams. Entire stack rebuilt from source. |
-| **GPU-Accelerated Mamba1** | First open-source Mamba1 GPU backend for AMD. Alternating SSM + MoE layers on Radeon 8060S. BlackMamba 1.5B at 79.8 tok/s. |
-| **Fused Ternary Decode** | TQ2 (2-bit ternary) fused QKV+GU kernel at 415 tok/s on ROCm HIP. Vulkan ZINC ternary backend at 318 tok/s. |
+| **GPU-Accelerated Mamba1** | First open-source Mamba1 GPU backend for AMD. Alternating SSM + MoE layers on Radeon 8060S. BlackMamba 1.5B at 79.4 tok/s. |
+| **Fused Ternary Decode** | TQ2 (2-bit ternary) fused QKV+GU kernel at 420 tok/s on ROCm HIP. Vulkan ZINC ternary backend at 318 tok/s. |
 | **Mixed Backend Routing** | Token Router dispatches each layer to the optimal backend — NPU for dense matmul, GPU for ternary decode, CPU for attention at low token counts. |
 
 ---
@@ -60,17 +60,17 @@ This is the project's flagship achievement — full reverse-engineering of AMD's
 - **NPU instruction set** documented: 8 DMA channels, 8 BD slots, compute vs. data tiles
 - **Entire stack rebuilt from source**: 87.8 MB closed binary → 1.5 MB open-source
 
-**Perf**: NPU v12 achieves **97 tok/s** (M=32 batch decode, INT8 GEMM on 32 XDNA 2 tiles) — beats FLM Kraken Point by 46%.
+**Perf**: native NPU INT8 GEMM verified **22/22 shapes, 0/10000 errors** on real hardware (npu_engine_universal, Peano-compiled xclbins). Measured e2e: **Qwen3.6-35B-A3B at 11.66 tok/s** decode @1k ctx on XDNA 2 (FastFlowLM v0.9.46).
 
 ### 3.2 ROCm HIP GPU Kernels
 
 | Kernel | Speed | Notes |
 |--------|-------|-------|
-| Q1 GEMV (fused) | **417 tok/s** | Binary 1-bit fused kernel |
-| TQ2 Fused (QKV+GU) | **415 tok/s** | 2-bit ternary, all projections in one dispatch |
-| BlackMamba 1.5B e2e | **79.8 tok/s** | Alternating SSM + MoE on Radeon 8060S |
-| BlackMamba 2.8B e2e | **46.4 tok/s** | 36 layers (18 SSM + 18 MoE) |
-| Prefill INT8 WMMA | **42.2 TFLOPS** | Wave32 Matrix Multiply-Accumulate |
+| Q1 GEMV (fused) | **433 tok/s** | Binary 1-bit fused kernel |
+| TQ2 Fused (QKV+GU) | **420 tok/s** | 2-bit ternary, all projections in one dispatch |
+| BlackMamba 1.5B e2e | **79.4 tok/s** | Alternating SSM + MoE on Radeon 8060S |
+| BlackMamba 2.8B e2e | **46.0 tok/s** | 36 layers (18 SSM + 18 MoE) |
+| Prefill INT8 WMMA | **43.2 TFLOPS** | Wave32 Matrix Multiply-Accumulate |
 
 ### 3.3 Mamba1 GPU Backend (Novel)
 
@@ -88,7 +88,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 - Drop-in replacement for system ROCm 7.2.4
 - Native gfx1151 code generation (no HSA override needed)
 - pip install — no apt repo required
-- Full build validation at 79.8 tok/s BlackMamba inference
+- Full build validation at 79.4 tok/s BlackMamba inference
 
 ---
 
@@ -98,31 +98,32 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 
 | Benchmark | Value | Backend | Engine |
 |-----------|:-----:|---------|--------|
-| Q1 GEMV | **417 tok/s** | ROCm HIP | Fused kernel |
-| Fused TQ2 | **415 tok/s** | ROCm HIP | QKV+GU fused |
+| Q1 GEMV | **433 tok/s** | ROCm HIP | Fused kernel |
+| Fused TQ2 | **420 tok/s** | ROCm HIP | QKV+GU fused |
 | GPU ternary | **318 tok/s** | Vulkan | ZINC SPIR-V |
-| NPU v12 | **97 tok/s** | XDNA 2 | 32 tiles |
-| Prefill | **42.21 TFLOPS** | INT8 WMMA | 32 tiles |
+| NPU INT8 GEMM | **0/10000 err** | XDNA 2 | 22/22 shapes, 4 native ops |
+| Prefill | **43.2 TFLOPS** | INT8 WMMA | 32 tiles |
 
 ### 4.2 End-to-End Model Inference
 
 | Model | Tool/s | Backend | Architecture |
 |-------|:------:|---------|-------------|
-| BlackMamba 1.5B | **79.8 tok/s** | ROCm HIP | Mamba1 SSM + MoE |
-| BlackMamba 2.8B | **46.4 tok/s** | ROCm HIP | Mamba1 SSM + MoE |
+| BlackMamba 1.5B | **79.4 tok/s** | ROCm HIP | Mamba1 SSM + MoE |
+| BlackMamba 2.8B | **46.0 tok/s** | ROCm HIP | Mamba1 SSM + MoE |
 | Zaya1-8B | **64 tok/s** | ROCm HIP | Dense Transformer |
 | Qwen3 0.6B | **64 tok/s** | ROCm HIP | Dense Transformer |
 | Qwen3 27B Q4_K | **30 tok/s** | ROCm HIP | Speculative decode |
 | Qwen3 35B MoE Q4_K | **20 tok/s** | ROCm HIP | Speculative decode |
 
-### 4.3 NPU v12 vs. FLM Kraken Point
+### 4.3 NPU Measured Results (real hardware)
 
-| Metric | 1bit NPU v12 | FLM Kraken Point | Advantage |
-|--------|:------------:|:----------------:|:---------:|
-| Throughput | 97 tok/s | 66 tok/s | **46% faster** |
-| M=32 latency | 244 → 10 ms/tok | — | **24× speedup** |
-| Stack size | 1.5 MB open | 87.8 MB closed | **58× smaller** |
-| License | MIT | Proprietary | **Open source** |
+| Metric | Value | Notes |
+|--------|:-----:|-------|
+| INT8 GEMM correctness | **22/22 shapes, 0/10000 errors** | npu_engine_universal, 4 native ops (QKV/O/GU/D), Peano-compiled xclbins, verified 2026-07-28 |
+| Qwen3.6-35B-A3B decode | **11.66 tok/s @1k ctx** (8.82 @32k) | FastFlowLM v0.9.46, measured 2026-08-01 — see site/benchmarks.json |
+| Qwen3.6-35B-A3B prefill | **98.05 → 239.79 tok/s** (1k → 32k) | Same run |
+| Stack size | 1.5 MB open vs 87.8 MB closed | Reverse-engineered, zero proprietary code |
+| License | MIT | — |
 
 ---
 
