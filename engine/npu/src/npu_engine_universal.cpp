@@ -194,16 +194,41 @@ static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(m
         rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);}}
 static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
     float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
-// Partial rotary for this model's full-attention layers (HD=256): only the
-// first 64 dims rotate (rope_parameters.partial_rotary_factor=0.25), theta=1e7.
-// transformers: inv_freq = 1/base^(arange(0,64,2)/64), cos = cat(freqs, freqs).
-static std::vector<float> rc2,rs2;
-static void ri2(float th,int mp){int hd2=32;rc2.resize(mp*64);rs2.resize(mp*64);
-    for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){
-        float f=1.0f/powf(th,(float)d/hd2),a=p*f;
-        rc2[p*64+d]=cosf(a);rc2[p*64+d+32]=cosf(a);rs2[p*64+d]=sinf(a);rs2[p*64+d+32]=sinf(a);}}
-static inline void ra2(float*x,int p){for(int d=0;d<32;d++){
-    float a=x[d],b=x[d+32],c=rc2[p*64+d],s=rs2[p*64+d];x[d]=a*c-b*s;x[d+32]=b*c+a*s;}}
+// Partial rotary for full-attention layers: only the first `rope_dim` dims
+// rotate (rope_dim = round(HD * partial_rotary_factor)).
+//
+// Two tables cover dual-theta models (e.g. DS V4 Flash YaRN: layers 0-1 use
+// theta=10000 for sliding-window, remaining layers use theta=160000).
+// Table 0 (rc2/rs2): primary theta (most STD layers).
+// Table 1 (rc2b/rs2b): alternate theta (sliding-window or other minority group).
+// ri2_build(slot, theta, max_pos, rope_dim): build one table slot (0 or 1).
+// ra2(x, p, rope_dim, slot): apply table slot in-place to one head at position p.
+struct RotTable2 { std::vector<float> c, s; int rope_dim = 0; };
+static RotTable2 g_rt2[2];
+static void ri2_build(int slot, float th, int mp, int rope_dim) {
+    auto& t = g_rt2[slot];
+    t.rope_dim = rope_dim;
+    int hd2 = rope_dim / 2;
+    t.c.resize((size_t)mp * rope_dim);
+    t.s.resize((size_t)mp * rope_dim);
+    for (int p = 0; p < mp; p++) for (int d = 0; d < hd2; d++) {
+        float f = 1.0f / powf(th, (float)d / hd2), a = p * f;
+        t.c[(size_t)p*rope_dim+d]      = cosf(a);
+        t.c[(size_t)p*rope_dim+d+hd2]  = cosf(a);
+        t.s[(size_t)p*rope_dim+d]      = sinf(a);
+        t.s[(size_t)p*rope_dim+d+hd2]  = sinf(a);
+    }
+}
+// Legacy single-table init: fills slot 0, leaves slot 1 empty (same theta path).
+static void ri2(float th, int mp, int rope_dim) { ri2_build(0, th, mp, rope_dim); }
+static inline void ra2(float*x, int p, int rope_dim, int slot = 0) {
+    const auto& t = g_rt2[slot];
+    int hd2 = rope_dim / 2;
+    for (int d = 0; d < hd2; d++) {
+        float a=x[d], b=x[d+hd2], c=t.c[(size_t)p*rope_dim+d], s=t.s[(size_t)p*rope_dim+d];
+        x[d]=a*c-b*s; x[d+hd2]=b*c+a*s;
+    }
+}
 static inline float silu_f(float x){return x/(1.0f+expf(-x));}
 static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // Safety net: if glibc's malloc detects heap corruption (free(): invalid size)
@@ -959,43 +984,70 @@ int main(int argc,char**argv){
     // kernels / rotary) adapt instead of silently misparsing. Fallbacks are
     // the Qwen3.6-35B-A3B values. find_tensor_info returns shape[0]; for the
     // 3D I8 tensors the dequantized row count is shape[0] * (in_features/256).
-    int GDN_VH = 32, GDN_HD = 128;
-    int STD_NH = 16, STD_NKV = 2, STD_HD = 256;
-    int GDN_CONV_DIM = 8192, GDN_CONV_K = 4;
+    std::vector<int> gdn_vh(NC, 32), gdn_hd(NC, 128), gdn_conv_k(NC, 4), gdn_conv_dim(NC, 8192);
+    std::vector<int> std_nh(NC, 16), std_nkv(NC, 2), std_hd(NC, 256);
+    std::vector<float> rope_theta_per_layer(NC, cfg.rope_theta);
+    std::vector<float> partial_rotary_factor(NC, 0.25f);
     if (cfg.has_moe) {
-        int s0 = 0, l0 = 0;
-        for (; l0 < NC; l0++) if (is_gdn_layer[l0]) break;
-        if (l0 < NC) {
-            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l0);
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) GDN_VH = s0;
-            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l0);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) GDN_HD = s0;
-            snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l0);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) GDN_CONV_K = s0;
-            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l0);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
-                GDN_CONV_DIM = s0 * 32;   // dequantized rows = shape[0]*32 (TR=32) = q+k+v
-        }
+        // Per-layer detection: probe every layer individually so heterogeneous
+        // models (e.g. DS V4 Flash layers 0-1 sliding-window vs. CSA/HCA rest)
+        // get accurate dims rather than inheriting from the first matching layer.
+        //
+        // Rotary theta detection: sliding-window STD layers use a different
+        // (usually shorter-context) theta than full-context STD layers.
+        // Probe self_attn.window_size per layer — if present the layer is
+        // sliding-window and we assign the base (10000) theta to it; full-
+        // context layers keep cfg.rope_theta.  If the key is absent we leave
+        // the initialized cfg.rope_theta for all layers (single-theta models).
         for (int l = 0; l < NC; l++) {
-            if (is_gdn_layer[l]) continue;
-            snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) STD_HD = s0;
-            snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0 && STD_HD > 0)
-                STD_NKV = s0 * 32 / STD_HD;   // k rows / head dim
-            snprintf(bn, 128, "model.layer.%d.self_attn.q_proj.weight", l);
-            s0 = 0;
-            if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0 && STD_HD > 0)
-                STD_NH = s0 * 32 / STD_HD / 2; // q rows = NH*HD*2 (q+gate halves)
-            break;
+            int s0 = 0;
+            if (is_gdn_layer[l]) {
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_vh[l] = s0;
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_hd[l] = s0;
+                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_conv_k[l] = s0;
+                snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) gdn_conv_dim[l] = s0 * 32;
+            } else {
+                snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
+                s0 = 0;
+                if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0) std_hd[l] = s0;
+                if (std_hd[l] > 0) {
+                    snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
+                    s0 = 0;
+                    if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
+                        std_nkv[l] = s0 * 32 / std_hd[l];
+                    snprintf(bn, 128, "model.layer.%d.self_attn.q_proj.weight", l);
+                    s0 = 0;
+                    if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
+                        std_nh[l] = s0 * 32 / std_hd[l] / 2;
+                }
+                // Sliding-window detection: GGUF stores window size as a
+                // per-layer metadata tensor "self_attn.window_size" with a
+                // scalar value; key presence → sliding-window layer.
+                snprintf(bn, 128, "model.layer.%d.self_attn.window_size", l);
+                if (key_exists(js, jl, bn))
+                    rope_theta_per_layer[l] = 10000.0f;  // short-context base theta
+            }
         }
-        fprintf(stderr, "  derived dims: GDN vh=%d hd=%d conv=%dx%d | STD nh=%d nkv=%d hd=%d\n",
-                GDN_VH, GDN_HD, GDN_CONV_K, GDN_CONV_DIM, STD_NH, STD_NKV, STD_HD);
+        fprintf(stderr, "  per-layer dims detected (all %d layers)\n", NC);
+    }
+    // Max GDN geometry across layers — uniform slot stride for the GDN state
+    // buffers (worker fuse_* + direct-mode dm_*). Per-layer slot strides would
+    // overlap when dims vary across layers (heterogeneous models, #1482).
+    int max_gdn_vh = 0, max_gdn_hd = 0, max_gdn_conv_dim = 0, max_gdn_conv_k = 0;
+    for (int l = 0; l < NC; l++) {
+        if (!is_gdn_layer[l]) continue;
+        if (gdn_vh[l] > max_gdn_vh) max_gdn_vh = gdn_vh[l];
+        if (gdn_hd[l] > max_gdn_hd) max_gdn_hd = gdn_hd[l];
+        if (gdn_conv_dim[l] > max_gdn_conv_dim) max_gdn_conv_dim = gdn_conv_dim[l];
+        if (gdn_conv_k[l] > max_gdn_conv_k) max_gdn_conv_k = gdn_conv_k[l];
     }
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
@@ -1017,13 +1069,15 @@ int main(int argc,char**argv){
             fprintf(stderr, "    dequant qkv done [%d,%d]\n", qr, qc);
             float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
             if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
-            // Fused QKV: pack per probe-validated split.
-            // GDN: q 16×128 (2048), k 16×128 (2048), v 32×128 (4096).
-            int t = 2048 + 2048 + 4096;
+            // Fused QKV: pack per probe-validated split, per-layer geometry.
+            // GDN: q (vh/2)×hd, k (vh/2)×hd, v vh×hd (Qwen3.6: 2048/2048/4096).
+            int gdn_k_off = (gdn_vh[l] / 2) * gdn_hd[l];
+            int gdn_v_off = gdn_vh[l] * gdn_hd[l];
+            int t = gdn_k_off + gdn_k_off + gdn_v_off;
             std::vector<float> w((size_t)H * t);
-            transpose_pack(qkv_w, 2048, H, w.data(), t, 0);            // Q
-            transpose_pack(qkv_w + 2048, 2048, H, w.data(), t, 2048);  // K
-            transpose_pack(qkv_w + 4096, 4096, H, w.data(), t, 4096);  // V
+            transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
+            transpose_pack(qkv_w + gdn_k_off, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
+            transpose_pack(qkv_w + gdn_v_off, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection
@@ -1039,14 +1093,14 @@ int main(int argc,char**argv){
         float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
         float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
         if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
-        // Standard layer: q 16×256 + output gate 16×256 fused in q_proj
-        // (per-head halves: rows [h*512, h*512+256) = q, [+256, +512) = gate);
+        // Standard layer: q nh×hd + output gate nh×hd fused in q_proj
+        // (per-head halves: rows [h*2*hd, h*2*hd+hd) = q, [+hd, +2*hd) = gate);
         // k/v projections run on CPU per token (separate tensors).
-        int t = 8192;
+        int t = std_nh[l] * std_hd[l] * 2;
         std::vector<float> w((size_t)H * t, 0.0f);
-        for (int h = 0; h < STD_NH; h++) {
-            transpose_pack(qkv_w + h * 512, 256, H, w.data(), t, h * 256);              // q
-            transpose_pack(qkv_w + h * 512 + 256, 256, H, w.data(), t, 4096 + h * 256);  // gate
+        for (int h = 0; h < std_nh[l]; h++) {
+            transpose_pack(qkv_w + h * 2 * std_hd[l], std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
+            transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
         free(qkv_w);
@@ -1189,36 +1243,36 @@ int main(int argc,char**argv){
                 snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_alpha_proj.weight", l);
                 uint64_t o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
-                    gdn_alpha_w[l].resize((size_t)H * GDN_VH);
+                    gdn_alpha_w[l].resize((size_t)H * gdn_vh[l]);
                     for (int i = 0; i < H; i++)
-                        for (int h = 0; h < GDN_VH; h++)
-                            gdn_alpha_w[l][(size_t)i * GDN_VH + h] = bf16g(rb[(size_t)i * GDN_VH + h]); }
+                        for (int h = 0; h < gdn_vh[l]; h++)
+                            gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
                 snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_beta_proj.weight", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
-                    gdn_beta_w[l].resize((size_t)H * GDN_VH);
+                    gdn_beta_w[l].resize((size_t)H * gdn_vh[l]);
                     for (int i = 0; i < H; i++)
-                        for (int h = 0; h < GDN_VH; h++)
-                            gdn_beta_w[l][(size_t)i * GDN_VH + h] = bf16g(rb[(size_t)i * GDN_VH + h]); }
+                        for (int h = 0; h < gdn_vh[l]; h++)
+                            gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
                 snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
-                    gdn_conv_w[l].resize((size_t)GDN_CONV_K * GDN_CONV_DIM);
-                    for (int i = 0; i < GDN_CONV_K * GDN_CONV_DIM; i++)
+                    gdn_conv_w[l].resize((size_t)gdn_conv_k[l] * gdn_conv_dim[l]);
+                    for (int i = 0; i < gdn_conv_k[l] * gdn_conv_dim[l]; i++)
                         gdn_conv_w[l][i] = bf16g(rb[i]); }
                 snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const float* ab = (const float*)i8p(o);
-                    gdn_ssm_a[l].assign(ab, ab + GDN_VH); }
+                    gdn_ssm_a[l].assign(ab, ab + gdn_vh[l]); }
                 snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_dt.bias", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const float* db = (const float*)i8p(o);
-                    gdn_dt_bias[l].assign(db, db + GDN_VH); }
+                    gdn_dt_bias[l].assign(db, db + gdn_vh[l]); }
                 snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
-                    gdn_norm_w[l].resize(GDN_HD);
-                    for (int d = 0; d < GDN_HD; d++) gdn_norm_w[l][d] = bf16g(nb[d]); }
+                    gdn_norm_w[l].resize(gdn_hd[l]);
+                    for (int d = 0; d < gdn_hd[l]; d++) gdn_norm_w[l][d] = bf16g(nb[d]); }
                 // z-gate [4096, 2048] Q8_0 f32 (CPU GEMM per token)
                 snprintf(bn, 128, "model.layer.%d.self_attn.gate_proj.weight", l);
                 o = jo(js, jl, bn);
@@ -1230,23 +1284,23 @@ int main(int argc,char**argv){
                 snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
                 uint64_t o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { int kr, kc; float* kw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
-                    if (kw && kr == STD_NKV * STD_HD) std_k_w[l].assign(kw, kw + (size_t)kr * kc);
+                    if (kw && kr == std_nkv[l] * std_hd[l]) std_k_w[l].assign(kw, kw + (size_t)kr * kc);
                     free(kw); }
                 snprintf(bn, 128, "model.layer.%d.self_attn.v_proj.weight", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { int kr, kc; float* vw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
-                    if (vw && kr == STD_NKV * STD_HD) std_v_w[l].assign(vw, vw + (size_t)kr * kc);
+                    if (vw && kr == std_nkv[l] * std_hd[l]) std_v_w[l].assign(vw, vw + (size_t)kr * kc);
                     free(vw); }
                 snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
-                    std_qn_w[l].resize(STD_HD);
-                    for (int d = 0; d < STD_HD; d++) std_qn_w[l][d] = bf16g(nb[d]); }
+                    std_qn_w[l].resize(std_hd[l]);
+                    for (int d = 0; d < std_hd[l]; d++) std_qn_w[l][d] = bf16g(nb[d]); }
                 snprintf(bn, 128, "model.layer.%d.self_attn.k_norm.weight", l);
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
-                    std_kn_w[l].resize(STD_HD);
-                    for (int d = 0; d < STD_HD; d++) std_kn_w[l][d] = bf16g(nb[d]); }
+                    std_kn_w[l].resize(std_hd[l]);
+                    for (int d = 0; d < std_hd[l]; d++) std_kn_w[l][d] = bf16g(nb[d]); }
             }
         }
 
@@ -1324,9 +1378,40 @@ int main(int argc,char**argv){
         }
     }
 
-    // RoPE
+    // RoPE — primary table for GDN/dense layers
     ri(HD,cfg.rope_theta,4096);
-    ri2(1e7f,4096);  // partial rotary for full-attention layers (64 of 256 dims)
+    // Partial rotary tables for full-attention (STD) layers.
+    // Slot 0: primary theta (most STD layers, or the single theta for
+    //         homogeneous models).
+    // Slot 1: alternate theta (sliding-window or other minority group).
+    //         Built only when at least one STD layer has a different theta.
+    // rope_dim is taken from partial_rotary_factor × hd; we use the largest
+    // rope_dim seen for each theta group so one slot covers all its layers.
+    {
+        float th0 = cfg.rope_theta, th1 = 0.0f;
+        int rdim0 = 0, rdim1 = 0;
+        for (int l = 0; l < NC; l++) {
+            if (is_gdn_layer[l]) continue;
+            int rdim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
+            rdim = (rdim / 2) * 2;
+            if (rdim <= 0) rdim = 64;
+            float th = rope_theta_per_layer[l];
+            // Primary group: theta matches cfg.rope_theta (the majority)
+            if (fabsf(th - th0) < 1.0f) {
+                if (rdim > rdim0) rdim0 = rdim;
+            } else {
+                // Alternate group: track the one non-primary theta value
+                if (th1 == 0.0f) th1 = th;
+                if (rdim > rdim1) rdim1 = rdim;
+            }
+        }
+        if (rdim0 <= 0) rdim0 = 64;  // fallback: Qwen3.6 default
+        ri2_build(0, th0, 4096, rdim0);
+        if (th1 != 0.0f && rdim1 > 0)
+            ri2_build(1, th1, 4096, rdim1);
+        else
+            g_rt2[1] = g_rt2[0];  // alias slot 1 → slot 0 for single-theta models
+    }
     int kv_dwords=NKV*HD/2;
 
     // Decode batch width.
@@ -1667,66 +1752,68 @@ int main(int argc,char**argv){
     auto gdn_attn_step = [&](int l, const float* x, float* fqo,
                              float* conv_state, float* delta_state, float* out) {
         // causal depthwise conv1d on the fused QKV (kernel 4)
-        memmove(conv_state, conv_state + GDN_CONV_DIM, (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1) * 4);
-        memcpy(conv_state + (size_t)GDN_CONV_DIM * (GDN_CONV_K - 1), fqo, (size_t)GDN_CONV_DIM * 4);
+        memmove(conv_state, conv_state + gdn_conv_dim[l], (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1) * 4);
+        memcpy(conv_state + (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1), fqo, (size_t)gdn_conv_dim[l] * 4);
         const float* cw = gdn_conv_w[l].data();
-        for (int cc = 0; cc < GDN_CONV_DIM; cc++) {
+        for (int cc = 0; cc < gdn_conv_dim[l]; cc++) {
             double s = 0;
-            for (int kk = 0; kk < GDN_CONV_K; kk++)
-                s += (double)conv_state[(size_t)kk * GDN_CONV_DIM + cc] * cw[(size_t)kk * GDN_CONV_DIM + cc];
+            for (int kk = 0; kk < gdn_conv_k[l]; kk++)
+                s += (double)conv_state[(size_t)kk * gdn_conv_dim[l] + cc] * cw[(size_t)kk * gdn_conv_dim[l] + cc];
             fqo[cc] = silu_f((float)s);
         }
-        // split q [0,2048) k [2048,4096) v [4096,8192); repeat q/k 16→32 + l2norm
-        std::vector<float> qq((size_t)GDN_VH * GDN_HD), kk((size_t)GDN_VH * GDN_HD);
-        for (int h = 0; h < GDN_VH; h++) {
-            const float* qs_ = fqo + (size_t)(h / 2) * GDN_HD;
-            const float* ks_ = fqo + 2048 + (size_t)(h / 2) * GDN_HD;
+        // split q [0,k_off) k [k_off,v_off) v [v_off,2*v_off); repeat q/k vh/2→vh + l2norm
+        const int gdn_k_off = (gdn_vh[l] / 2) * gdn_hd[l];
+        const int gdn_v_off = gdn_vh[l] * gdn_hd[l];
+        std::vector<float> qq((size_t)gdn_vh[l] * gdn_hd[l]), kk((size_t)gdn_vh[l] * gdn_hd[l]);
+        for (int h = 0; h < gdn_vh[l]; h++) {
+            const float* qs_ = fqo + (size_t)(h / 2) * gdn_hd[l];
+            const float* ks_ = fqo + gdn_k_off + (size_t)(h / 2) * gdn_hd[l];
             double sq = 0, sk = 0;
-            for (int d = 0; d < GDN_HD; d++) {
-                qq[(size_t)h * GDN_HD + d] = qs_[d];
-                kk[(size_t)h * GDN_HD + d] = ks_[d];
+            for (int d = 0; d < gdn_hd[l]; d++) {
+                qq[(size_t)h * gdn_hd[l] + d] = qs_[d];
+                kk[(size_t)h * gdn_hd[l] + d] = ks_[d];
                 sq += qs_[d] * qs_[d]; sk += ks_[d] * ks_[d];
             }
             float iq = 1.0f / sqrtf((float)sq + EPS), ik = 1.0f / sqrtf((float)sk + EPS);
-            for (int d = 0; d < GDN_HD; d++) {
-                qq[(size_t)h * GDN_HD + d] *= iq;
-                kk[(size_t)h * GDN_HD + d] *= ik;
+            for (int d = 0; d < gdn_hd[l]; d++) {
+                qq[(size_t)h * gdn_hd[l] + d] *= iq;
+                kk[(size_t)h * gdn_hd[l] + d] *= ik;
             }
         }
         // alpha/beta projections → g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b)
         // (ssm_a stored already negated, #1460 convention — used directly)
-        std::vector<float> ga(GDN_VH), gb(GDN_VH), ggate((size_t)GDN_VH * GDN_HD);
+        std::vector<float> ga(gdn_vh[l]), gb(gdn_vh[l]), ggate((size_t)gdn_vh[l] * gdn_hd[l]);
         const float* aw = gdn_alpha_w[l].data();
         const float* bw = gdn_beta_w[l].data();
-        for (int h = 0; h < GDN_VH; h++) {
+        for (int h = 0; h < gdn_vh[l]; h++) {
             double sa = 0, sb = 0;
             for (int i = 0; i < H; i++) {
-                sa += (double)aw[(size_t)i * GDN_VH + h] * x[i];
-                sb += (double)bw[(size_t)i * GDN_VH + h] * x[i];
+                sa += (double)aw[(size_t)i * gdn_vh[l] + h] * x[i];
+                sb += (double)bw[(size_t)i * gdn_vh[l] + h] * x[i];
             }
             ga[h] = gdn_ssm_a[l][h] * softplus_f((float)sa + gdn_dt_bias[l][h]);
             gb[h] = 1.0f / (1.0f + expf(-(float)sb));
-            for (int d = 0; d < GDN_HD; d++) ggate[(size_t)h * GDN_HD + d] = ga[h];
+            for (int d = 0; d < gdn_hd[l]; d++) ggate[(size_t)h * gdn_hd[l] + d] = ga[h];
         }
-        // recurrent delta rule over 32 v-heads
-        gdn_attn_cpu(qq.data(), kk.data(), fqo + 4096, ggate.data(), gb.data(),
-                     delta_state, out, GDN_HD, GDN_VH, 1.0f / sqrtf((float)GDN_HD));
+        // recurrent delta rule over v-heads
+        gdn_attn_cpu(qq.data(), kk.data(), fqo + gdn_v_off, ggate.data(), gb.data(),
+                     delta_state, out, gdn_hd[l], gdn_vh[l], 1.0f / sqrtf((float)gdn_hd[l]));
         // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
-        std::vector<float> zout(4096);
+        std::vector<float> zout((size_t)gdn_vh[l] * gdn_hd[l]);
         const float* zw = gdn_z_w[l].data();
-        for (int i = 0; i < 4096; i++) {
+        for (int i = 0; i < gdn_vh[l] * gdn_hd[l]; i++) {
             double s = 0;
             for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
             zout[i] = (float)s;
         }
         const float* nw = gdn_norm_w[l].data();
-        for (int h = 0; h < GDN_VH; h++) {
-            float* ch = out + (size_t)h * GDN_HD;
+        for (int h = 0; h < gdn_vh[l]; h++) {
+            float* ch = out + (size_t)h * gdn_hd[l];
             double var = 0;
-            for (int d = 0; d < GDN_HD; d++) var += ch[d] * ch[d];
-            float ir = 1.0f / sqrtf((float)(var / GDN_HD) + EPS);
-            for (int d = 0; d < GDN_HD; d++) {
-                float zv = zout[(size_t)h * GDN_HD + d];
+            for (int d = 0; d < gdn_hd[l]; d++) var += ch[d] * ch[d];
+            float ir = 1.0f / sqrtf((float)(var / gdn_hd[l]) + EPS);
+            for (int d = 0; d < gdn_hd[l]; d++) {
+                float zv = zout[(size_t)h * gdn_hd[l] + d];
                 ch[d] = ch[d] * ir * nw[d] * silu_f(zv);
             }
         }
@@ -1736,45 +1823,52 @@ int main(int argc,char**argv){
     // (STD 512-float stride); pos; out [16*256] post sigmoid-gate, feeds O.
     auto std_attn_step = [&](int l, const float* x, float* fqo, KVCache& kvc,
                              int& pos, float* out) {
-        std::vector<float> kv(1024);   // [512 k | 512 v], CPU projections
+        const int std_kv_dim = std_nkv[l] * std_hd[l];
+        std::vector<float> kv(2 * (size_t)std_kv_dim);   // [k | v], CPU projections
         const float* kw_ = std_k_w[l].data();
         const float* vw_ = std_v_w[l].data();
-        for (int i = 0; i < 512; i++) {
+        for (int i = 0; i < std_kv_dim; i++) {
             double sk = 0, sv = 0;
             for (int j = 0; j < H; j++) {
                 sk += (double)kw_[(size_t)i * H + j] * x[j];
                 sv += (double)vw_[(size_t)i * H + j] * x[j];
             }
-            kv[i] = (float)sk; kv[512 + i] = (float)sv;
+            kv[i] = (float)sk; kv[std_kv_dim + i] = (float)sv;
         }
         const float* qnw = std_qn_w[l].data();
         const float* knw = std_kn_w[l].data();
-        for (int h = 0; h < STD_NH; h++) {
-            float* qh = fqo + (size_t)h * STD_HD;
+        int l_rope_dim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
+        l_rope_dim = (l_rope_dim / 2) * 2;
+        if (l_rope_dim <= 0) l_rope_dim = g_rt2[0].rope_dim > 0 ? g_rt2[0].rope_dim : 64;
+        // Select rotary table slot by per-layer theta:
+        // slot 0 = primary (cfg.rope_theta), slot 1 = alternate (sliding-window etc.)
+        int l_slot = (fabsf(rope_theta_per_layer[l] - cfg.rope_theta) < 1.0f) ? 0 : 1;
+        for (int h = 0; h < std_nh[l]; h++) {
+            float* qh = fqo + (size_t)h * std_hd[l];
             double sq = 0;
-            for (int d = 0; d < STD_HD; d++) sq += qh[d] * qh[d];
-            float iq = 1.0f / sqrtf((float)(sq / STD_HD) + EPS);
-            for (int d = 0; d < STD_HD; d++) qh[d] *= iq * qnw[d];
-            ra2(qh, pos);
-            int kvh = h / (STD_NH / STD_NKV);
-            float* kh = kv.data() + (size_t)kvh * STD_HD;
+            for (int d = 0; d < std_hd[l]; d++) sq += qh[d] * qh[d];
+            float iq = 1.0f / sqrtf((float)(sq / std_hd[l]) + EPS);
+            for (int d = 0; d < std_hd[l]; d++) qh[d] *= iq * qnw[d];
+            ra2(qh, pos, l_rope_dim, l_slot);
+            int kvh = h / (std_nh[l] / std_nkv[l]);
+            float* kh = kv.data() + (size_t)kvh * std_hd[l];
             double sk = 0;
-            for (int d = 0; d < STD_HD; d++) sk += kh[d] * kh[d];
-            float ik = 1.0f / sqrtf((float)(sk / STD_HD) + EPS);
-            for (int d = 0; d < STD_HD; d++) kh[d] *= ik * knw[d];
-            ra2(kh, pos);
+            for (int d = 0; d < std_hd[l]; d++) sk += kh[d] * kh[d];
+            float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
+            for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
+            ra2(kh, pos, l_rope_dim, l_slot);
             if (pos >= 4096) {
                 fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
                 pos = 0;
             }
-            memcpy(&kvc.k[((size_t)pos * STD_NKV + kvh) * STD_HD], kh, STD_HD * 4);
-            memcpy(&kvc.v[((size_t)pos * STD_NKV + kvh) * STD_HD], kv.data() + 512 + (size_t)kvh * STD_HD, STD_HD * 4);
+            memcpy(&kvc.k[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kh, std_hd[l] * 4);
+            memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + std_kv_dim + (size_t)kvh * std_hd[l], std_hd[l] * 4);
         }
         kvc.n = pos + 1;
         attn_omp(fqo, out, kvc.n, kvc.k.data(), kvc.v.data(),
-                 STD_NH, STD_NKV, STD_HD, STD_NH / STD_NKV);
-        const float* gt = fqo + 4096;
-        for (int i = 0; i < STD_NH * STD_HD; i++) out[i] *= 1.0f / (1.0f + expf(-gt[i]));
+                 std_nh[l], std_nkv[l], std_hd[l], std_nh[l] / std_nkv[l]);
+        const float* gt = fqo + std_nh[l] * std_hd[l];
+        for (int i = 0; i < std_nh[l] * std_hd[l]; i++) out[i] *= 1.0f / (1.0f + expf(-gt[i]));
     };
 
     // ===== WORKER MODE (subprocess protocol) =====
@@ -1934,11 +2028,11 @@ int main(int argc,char**argv){
                         fuse_top_ids_v.resize(BS, 0);
                         fuse_kv_init = true;
                         fuse_pos = 0;
-                        // GDN state (32 v-heads) + conv state + scratch, all layers.
+                        // GDN state (per-layer v-heads) + conv state + scratch, all layers.
                         if (has_moe) {
-                            fuse_gdn_state.resize(NC * (size_t)GDN_VH * GDN_HD * GDN_HD, 0);
-                            fuse_gdn_attn_out.resize(GDN_VH * GDN_HD, 0);
-                            fuse_gdn_conv_state.resize(NC * (size_t)GDN_CONV_DIM * GDN_CONV_K, 0);
+                            fuse_gdn_state.resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
+                            fuse_gdn_attn_out.resize(max_gdn_vh * max_gdn_hd, 0);
+                            fuse_gdn_conv_state.resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
                         }
                     }
                     int token_id = (int)in_data[0];
@@ -1963,8 +2057,8 @@ int main(int argc,char**argv){
                         if (is_gdn) {
                             // GatedDeltaNet: shared implementation (probe-validated, #1466)
                             gdn_attn_step(l, fh, fqo,
-                                          fuse_gdn_conv_state.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
-                                          fuse_gdn_state.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                                          fuse_gdn_conv_state.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                          fuse_gdn_state.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                                           fuse_gdn_attn_out.data());
                             fat = fuse_gdn_attn_out.data();   // [32*128] → co directly
                         } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
@@ -2112,9 +2206,14 @@ int main(int argc,char**argv){
     if(input_tok_file && npt > XM) npt = XM;
 
     // Direct-mode GDN state (per-layer conv + delta rule buffers) — the
-    // worker op=32 path has its own fuse_* copies (#1472).
-    std::vector<float> dm_gdn_conv(has_moe ? (size_t)NC * GDN_CONV_DIM * GDN_CONV_K : 0, 0.0f);
-    std::vector<float> dm_gdn_delta(has_moe ? (size_t)NC * GDN_VH * GDN_HD * GDN_HD : 0, 0.0f);
+    // worker op=32 path has its own fuse_* copies (#1472). Sized by per-layer
+    // maxima: access strides are per-layer, so fixed Qwen3.6 sizes overflow
+    // on sibling geometry (#1482 review).
+    std::vector<float> dm_gdn_conv, dm_gdn_delta;
+    if (has_moe) {
+        dm_gdn_conv.resize((size_t)NC * max_gdn_conv_dim * max_gdn_conv_k, 0.0f);
+        dm_gdn_delta.resize((size_t)NC * max_gdn_vh * max_gdn_hd * max_gdn_hd, 0.0f);
+    }
 
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
     printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
@@ -2138,8 +2237,8 @@ int main(int argc,char**argv){
         if (is_gdn_layer[l]) {
             for (int pi = 0; pi < npt; pi++)
                 gdn_attn_step(l, &h_b[pi * H], &qo_b[pi * qkv_n],
-                              dm_gdn_conv.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
-                              dm_gdn_delta.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                              dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                              dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                               &at_b[pi * NH * HD]);
         } else if (has_moe) {
             for (int pi = 0; pi < npt; pi++) {
@@ -2259,8 +2358,8 @@ int main(int argc,char**argv){
             // per-layer attention (#1472): GDN / full-attn (MoE) / global-dims
             if (is_gdn_layer[l]) {
                 gdn_attn_step(l, h0, qo_data.data(),
-                              dm_gdn_conv.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
-                              dm_gdn_delta.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                              dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                              dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                               at_data.data());
             } else if (has_moe) {
                 int pos = sp;
@@ -2322,8 +2421,8 @@ int main(int argc,char**argv){
                 cn(qo_b.data(), qkv_n);
                 if (is_gdn_layer[l]) {
                     gdn_attn_step(l, h_b.data(), qo_b.data(),
-                                  dm_gdn_conv.data() + (size_t)l * GDN_CONV_DIM * GDN_CONV_K,
-                                  dm_gdn_delta.data() + (size_t)l * GDN_VH * GDN_HD * GDN_HD,
+                                  dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                  dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                                   at_b.data());
                 } else {
                     int pos = sp;
