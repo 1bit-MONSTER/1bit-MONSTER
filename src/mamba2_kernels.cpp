@@ -9,8 +9,9 @@
 //     1. in_proj:  z, xBC, dt = split(linear(x, in_proj_w))
 //     2. conv1d:   xBC' = silu(conv1d(xBC) + conv1d_b)
 //     3. split:    x, B, C = split(xBC')
-//     4. discretize: A_bar = exp(dt * A)  where A is stored already negated
-//        (A = -exp(A_log), GGUF llama.cpp convention; loader normalizes, #1460)
+//     4. discretize: A_bar = exp(dt * A)  where A is read directly from GGUF
+//        ssm.a (which already stores A = -exp(A_log), llama.cpp convention —
+//        do NOT re-apply -exp(), see #1460)
 //     5. selective_scan: y = ssm_scan(x, A_bar, B, C, dt + dt_bias)
 //     6. out_proj: y = linear(y * silu(z), out_proj_w)
 //
@@ -34,7 +35,7 @@ static inline float softplus(float x) {
 static void selective_scan_step(
     const float* x_t,          // [head_dim] for current head
     float dt_t,                 // discretization step for current head
-    float A_h,                  // stored A, already -exp(A_log) (GGUF convention)
+    float A_h,                  // A (already negated in GGUF ssm.a, #1460)
     const float* B_t,           // [d_state] for current head's group
     const float* C_t,           // [d_state] for current head's group
     float D_h,                  // skip connection for current head
@@ -48,7 +49,7 @@ static void selective_scan_step(
     //   state[s] = A_bar * state[s] + B_t[s] * x_t[d]   (state shared across dims)
     //   y[d] = C^T @ state + D_h * x_t[d]
     float dt_softplus = softplus(dt_t);
-    float A_bar = std::exp(dt_softplus * A_h);  // A stored negated, A_bar in (0,1)
+    float A_bar = std::exp(dt_softplus * A_h);  // A_h is -exp(A_log), A_bar in (0,1)
     float db = dt_softplus;  // discretized B multiplier
 
     for (int hd = 0; hd < head_dim; ++hd) {
@@ -171,11 +172,12 @@ void mamba2_cpu_forward(
         for (int64_t h = 0; h < heads_per_group; ++h) {
             int64_t head_id = g * heads_per_group + h;
 
-            // dt for this head: dt_raw[head_id] + dt_bias[head_id] → softplus
-            float dt_val = softplus(dt_raw[head_id] + dt_bias[head_id]);
+            // dt for this head: raw dt + dt_bias — softplus applied once inside
+            // selective_scan_step (matches the HIP kernel; the old double
+            // softplus here distorted every decay by ~60×, #1460 follow-up)
+            float dt_val = dt_raw[head_id] + dt_bias[head_id];
 
-            // A for this head: GGUF stores A already negated (A = -exp(A_log),
-            // llama.cpp convention; loader normalizes raw-A_log converters).
+            // A for this head: GGUF ssm.a already stores A = -exp(A_log) (#1460)
             float A_val = A_log[head_id];
 
             // D for this head

@@ -47,6 +47,15 @@ public:
     void dispatch(const std::string& shader, const PushConstants& push,
                   VkBuffer input, VkBuffer output, VkBuffer weights,
                   uint32_t group_x, uint32_t group_y = 1, uint32_t group_z = 1);
+    /// Dispatch with byte offsets into each bound buffer (for writing/reading
+    /// sub-ranges of a single allocation, e.g. the fused qkv [Q|K|V] buffer).
+    /// Offsets are applied via VkDescriptorBufferInfo.offset — shader indices
+    /// are relative to the offset. VK_WHOLE_SIZE range (rest of buffer).
+    void dispatch_off(const std::string& shader, const PushConstants& push,
+                      VkBuffer input, VkDeviceSize in_off,
+                      VkBuffer output, VkDeviceSize out_off,
+                      VkBuffer weights, VkDeviceSize w_off,
+                      uint32_t group_x, uint32_t group_y = 1, uint32_t group_z = 1);
     /// Batch multiple dispatches into one command buffer (avoids per-dispatch sync)
     void begin_batch();
     void end_batch();
@@ -64,12 +73,16 @@ public:
     // F32-weight GEMV (e.g. the tied lm_head, whose embeddings are stored F32,
     // not Q4_K). Uses the gemv_f32 shader instead of the dmmv_q4k dequant path.
     void gemv_f32(VkBuffer y, VkBuffer x, VkBuffer W, int M, int N, int K);
+    /// gemv_f32 writing into a sub-range of y (byte offset), e.g. the K/V
+    /// slices of the fused qkv buffer.
+    void gemv_f32_off(VkBuffer y, VkDeviceSize y_off, VkBuffer x, VkBuffer W,
+                      int M, int N, int K);
     // Debug: flush the batch, copy the first n floats of buf to host, print.
     void debug_readback(VkBuffer buf, int n, const char* tag);
     void rope(VkBuffer q, VkBuffer k, int hd, int pos, int n_heads, int n_kv, float theta);
     void flash_attn(VkBuffer q, VkBuffer k_cache, VkBuffer v_cache, VkBuffer out,
                     int seq_len, int n_heads, int n_kv, int hd, int gqa,
-                    int layer, int max_seq, int n_layers);
+                    int layer, int max_seq, int n_layers, float scale = 0.0f);
     void silu_mul(VkBuffer y, VkBuffer gate, VkBuffer up, int n);
     int argmax(VkBuffer logits, int n);
     void embed_lookup(VkBuffer out, VkBuffer embed, int token_id, int hidden);

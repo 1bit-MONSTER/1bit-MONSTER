@@ -56,7 +56,6 @@ static const std::map<std::string,std::string> shader_map = {
     {"rms_norm", "rms_norm_mul"},   // RMS norm + weight multiply (fused)
     {"rope", "rope_fused"},          // fused RoPE
     {"flash_attn", "flash_attn"},    // flash attention
-    {"silu_mul", "swiglu"},          // SiLU gate multiply
     {"argmax", "argmax"},            // argmax reduction
     {"add_residual", "vadd"},        // vector add
     {"copy_buffer", "copy_buffer"},  // out = in
@@ -85,37 +84,71 @@ void ComputeEngine::dispatch(const std::string& shader, const PushConstants& pus
     VkDescriptorBufferInfo buf_infos[3] = {};
     VkWriteDescriptorSet writes[3] = {};
     int nwrites = 0;
-    
-    if (input) {
-        buf_infos[nwrites].buffer = input; buf_infos[nwrites].range = VK_WHOLE_SIZE;
+    // Fixed binding slots: 0=input, 1=output, 2=weights. Never shift bindings
+    // when a buffer is null (group_rms_norm passes output=null and the shader
+    // reads its weights from binding 2 — incremental binding was a GPU fault).
+    auto add_desc = [&](VkBuffer buf, int binding) {
+        if (!buf) return;
+        buf_infos[binding].buffer = buf; buf_infos[binding].range = VK_WHOLE_SIZE;
         writes[nwrites].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[nwrites].dstSet = desc_set;
-        writes[nwrites].dstBinding = nwrites;
+        writes[nwrites].dstBinding = binding;
         writes[nwrites].descriptorCount = 1;
         writes[nwrites].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[nwrites].pBufferInfo = &buf_infos[nwrites];
+        writes[nwrites].pBufferInfo = &buf_infos[binding];
         nwrites++;
-    }
-    if (output) {
-        buf_infos[nwrites].buffer = output; buf_infos[nwrites].range = VK_WHOLE_SIZE;
+    };
+    add_desc(input, 0); add_desc(output, 1); add_desc(weights, 2);
+    if (nwrites > 0) vkUpdateDescriptorSets(device_, nwrites, writes, 0, nullptr);
+
+    VkCommandBuffer cmd = cmd_pool_.begin_once();
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                             layout, 0, 1, &desc_set, 0, nullptr);
+    vkCmdPushConstants(cmd, layout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    vkCmdDispatch(cmd, group_x, group_y, group_z);
+    cmd_pool_.submit_and_wait(cmd, queue_);
+}
+
+void ComputeEngine::dispatch_off(const std::string& shader, const PushConstants& push,
+                                  VkBuffer input, VkDeviceSize in_off,
+                                  VkBuffer output, VkDeviceSize out_off,
+                                  VkBuffer weights, VkDeviceSize w_off,
+                                  uint32_t group_x, uint32_t group_y, uint32_t group_z) {
+    std::string actual_shader = shader;
+    auto it = shader_map.find(shader);
+    if (it != shader_map.end()) actual_shader = it->second;
+
+    VkPipeline pipe = pipelines_.get(actual_shader);
+    VkPipelineLayout layout = pipelines_.pipeline_layout();
+
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = desc_pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &desc_set_layout_;
+    VkDescriptorSet desc_set;
+    VK_CHECK(vkAllocateDescriptorSets(device_, &ai, &desc_set));
+
+    VkDescriptorBufferInfo buf_infos[3] = {};
+    VkWriteDescriptorSet writes[3] = {};
+    int nwrites = 0;
+    // Fixed binding slots: 0=input, 1=output, 2=weights (see dispatch()).
+    auto add_desc = [&](VkBuffer buf, int binding, VkDeviceSize off) {
+        if (!buf) return;
+        buf_infos[binding].buffer = buf;
+        buf_infos[binding].offset = off;
+        buf_infos[binding].range = VK_WHOLE_SIZE;
         writes[nwrites].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[nwrites].dstSet = desc_set;
-        writes[nwrites].dstBinding = nwrites;
+        writes[nwrites].dstBinding = binding;
         writes[nwrites].descriptorCount = 1;
         writes[nwrites].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[nwrites].pBufferInfo = &buf_infos[nwrites];
+        writes[nwrites].pBufferInfo = &buf_infos[binding];
         nwrites++;
-    }
-    if (weights) {
-        buf_infos[nwrites].buffer = weights; buf_infos[nwrites].range = VK_WHOLE_SIZE;
-        writes[nwrites].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[nwrites].dstSet = desc_set;
-        writes[nwrites].dstBinding = nwrites;
-        writes[nwrites].descriptorCount = 1;
-        writes[nwrites].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[nwrites].pBufferInfo = &buf_infos[nwrites];
-        nwrites++;
-    }
+    };
+    add_desc(input, 0, in_off); add_desc(output, 1, out_off); add_desc(weights, 2, w_off);
     if (nwrites > 0) vkUpdateDescriptorSets(device_, nwrites, writes, 0, nullptr);
 
     VkCommandBuffer cmd = cmd_pool_.begin_once();
@@ -277,6 +310,17 @@ void ComputeEngine::gemv_f32(VkBuffer y, VkBuffer x, VkBuffer W, int M, int N, i
     batch_dispatch(this, "gemv_f32", push, x, y, W, gx, gy, 1);
 }
 
+void ComputeEngine::gemv_f32_off(VkBuffer y, VkDeviceSize y_off, VkBuffer x, VkBuffer W,
+                                  int M, int N, int K) {
+    PushConstants push{}; push.M = M; push.N = N; push.K = K;
+    uint32_t gx = (uint32_t)M, gy = 1;
+    if (gx > 65535u) { gy = (gx + 65534u) / 65535u; gx = 65535u; }
+    // Immediate dispatch (not batched): the batch path has no offset variant.
+    // Correct, just not fused into the batch command buffer — the per-dispatch
+    // submit is a few us and P1 targets correctness first.
+    dispatch_off("gemv_f32", push, x, 0, y, y_off, W, 0, gx, gy, 1);
+}
+
 void ComputeEngine::rope(VkBuffer q, VkBuffer k, int hd, int pos,
                           int n_heads, int n_kv, float theta) {
     PushConstants push{}; push.M = n_heads; push.N = n_kv; push.K = hd;
@@ -287,7 +331,8 @@ void ComputeEngine::rope(VkBuffer q, VkBuffer k, int hd, int pos,
 void ComputeEngine::flash_attn(VkBuffer q, VkBuffer k_cache, VkBuffer v_cache,
                                 VkBuffer out, int seq_len,
                                 int n_heads, int n_kv, int hd, int gqa,
-                                int layer, int max_seq, int n_layers) {
+                                int layer, int max_seq, int n_layers,
+                                float scale) {
     PushConstants push{};
     push.M = (uint32_t)n_heads; push.N = (uint32_t)seq_len; push.K = (uint32_t)hd;
     push.stride = (uint32_t)n_kv;      // shader reads this as 'n_kv'
@@ -295,6 +340,7 @@ void ComputeEngine::flash_attn(VkBuffer q, VkBuffer k_cache, VkBuffer v_cache,
     push.token = max_seq;              // shader reads this as 'max_seq'
     push.head = n_layers;              // shader reads this as 'n_layers'
     push.pos = seq_len - 1;
+    if (scale > 0.0f) push.scale = scale; // Zamba2: sqrt(2/hd); 0 = dense default
     batch_dispatch(this, "flash_attn", push, q, out, k_cache, n_heads);
     (void)v_cache; (void)gqa;
 }
