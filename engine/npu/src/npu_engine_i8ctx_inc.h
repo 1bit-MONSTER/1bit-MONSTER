@@ -59,6 +59,17 @@ struct I8Ctx {
         MD = M; KD = K; ND = N; NL = nlayers;
         fprintf(stderr, "  I8Ctx::init_with_generator xp=%s M=%d K=%d N=%d\n", xp, M, K, N);
 
+        // The generated sequence assumes the single-core-row topology that
+        // n1_core_i8_v26.py emitted.  An xclbin built by v27 spreads the tile
+        // grid over 4 core rows and expects a matching instruction stream, so
+        // pairing it with this fallback silently computes the wrong result
+        // rather than failing.  Xclbins built by run_build.sh always ship their
+        // instruction file, so this path is only reached when that file is
+        // missing.
+        fprintf(stderr, "  WARN: generating single-core-row instructions; if %s\n"
+                        "        was built multi-row (v27), its .txt instruction file is\n"
+                        "        required and results will be wrong without it.\n", xp);
+
         // Generate instruction sequence
         npu_sequence seq(device_npu2);
         gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)K, (uint32_t)N,
