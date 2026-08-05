@@ -183,10 +183,10 @@ void mamba2_tiled_gemv_kernel(
 // must process each of the head_dim input elements individually, updating
 // the shared d_state vector for each one.
 // ────────────────────────────────────────────────────────────────────────────
-#define SCAN_DSTATE_THREADS 64  // maximum d_state parallelism
+#define SCAN_DSTATE_THREADS 128  // maximum d_state parallelism (1.2B uses 128)
 #define SCAN_STATE_LDS      128 // LDS for cross-warp reduce
 
-__attribute__((amdgpu_flat_work_group_size(SCAN_DSTATE_THREADS, SCAN_DSTATE_THREADS)))
+__attribute__((amdgpu_flat_work_group_size(64, SCAN_DSTATE_THREADS)))
 __global__ __launch_bounds__(SCAN_DSTATE_THREADS, 4)
 void mamba2_selective_scan_tuned_kernel(
     const float* __restrict__ x,        // [B, L, d_inner]   or [d_inner] for decode
@@ -315,7 +315,7 @@ void mamba2_selective_scan_tuned_kernel(
 // separately and fuses the bias-add + softplus into the kernel.
 // If dt_bias is nullptr, assumes dt already has softplus applied.
 
-__attribute__((amdgpu_flat_work_group_size(SCAN_DSTATE_THREADS, SCAN_DSTATE_THREADS)))
+__attribute__((amdgpu_flat_work_group_size(64, SCAN_DSTATE_THREADS)))
 __global__ __launch_bounds__(SCAN_DSTATE_THREADS, 4)
 void mamba2_scan_fused_kernel(
     const float* __restrict__ x,        // [B, L, d_inner]
@@ -897,7 +897,8 @@ void mamba2_gpu_decode_block_tuned(
     // ── 4. Fused selective scan (includes dt_bias + softplus) ──
     float* y_inner = xBC_conv;  // reuse — conv output consumed, scan output here
     dim3 scan_grid(n_head, 1, 1);
-    dim3 scan_block(SCAN_DSTATE_THREADS, 1, 1);
+    int scan_threads = d_state > 64 ? ((d_state + 31) / 32) * 32 : SCAN_DSTATE_THREADS;
+    dim3 scan_block(scan_threads, 1, 1);
     hipLaunchKernelGGL(mamba2_scan_fused_kernel,
         scan_grid, scan_block, 0, stream,
         x_seg, dt, dt_bias, A_log,
