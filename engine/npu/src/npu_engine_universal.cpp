@@ -1896,14 +1896,15 @@ int main(int argc,char**argv){
         clearerr(stdout);
         fflush(stdout);
         uint32_t hdr[4];
-        static bool fuse_reset = false;   // op=31 sets it; op=32 consumes it
+        static bool fuse_reset = false;   // op=31 sets it; op=32/33 consumes it
+        static int fuse_reset_slot = -1; // op=34 sets it; op=32/33 consumes it
         while(fread(hdr,sizeof(uint32_t),4,stdin)==4){
             uint32_t op=hdr[0],layer=hdr[1],batch=hdr[2],in_dim=hdr[3];
             if(op==0) break; // QUIT
 
             // Input validation: batch and in_dim must be reasonable
             // (op=31 is the reset — it legitimately carries batch=0/in_dim=0)
-            if (op != 31 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
+            if (op != 31 && op != 33 && op != 34 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
                 uint32_t resp[2]={1,0};
                 fwrite(resp,sizeof(uint32_t),2,stdout);
                 fflush(stdout);
@@ -2000,17 +2001,27 @@ int main(int argc,char**argv){
                         FLM_GO(cd, l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
-                }else if(op==31){ // Reset KV cache + GDN state (new conversation)
-                    fuse_reset = true;   // consumed by op=32 before its next step
+                }else if(op==31){ // Reset ALL KV caches + GDN state (new conversation)
+                    fuse_reset = true;   // consumed by op=32/33 before its next step
                     out_dim = 0;
                     out_data.clear();
                     ok = true;
-                }else if(op==32){ // Fused decode step: embed → all layers (GEMM+attn) → lm_head → next token
+                }else if(op==34){ // Reset a single slot's KV cache
+                    fuse_reset_slot = (int)layer; // consumed by op=32/33
+                    out_dim = 0;
+                    out_data.clear();
+                    ok = true;
+                }else if(op==32 || op==33){ // Fused decode step: embed → all layers (GEMM+attn) → lm_head → next token
+                    // op=32: single-sequence (original). op=33: multi-slot batch decode.
+                    // op=33 header: batch=n_slots, in_dim=1. Payload: [slot0_tok, slot1_tok, ...]
+                    // op=34: reset a single slot (slot_id in hdr[1]).
                     // Maintains internal KV cache across calls.
-                    // op=31 resets the internal position to 0.
-                    static int fuse_pos = 0;
+                    // op=31 resets ALL internal positions to 0.
+                    static constexpr int MAX_BATCH_SLOTS = 8;
+                    static int fuse_pos[MAX_BATCH_SLOTS] = {};
                     static bool fuse_kv_init = false;
-                    static std::vector<KVCache> fuse_kv;
+                    static std::vector<KVCache> fuse_kv[MAX_BATCH_SLOTS];
+                    static int fuse_active_slot = 0;
                     static std::vector<float> fuse_h_b, fuse_qo_b, fuse_at_b, fuse_oo_b;
                     static std::vector<float> fuse_gt_b, fuse_su_b, fuse_dw_b, fuse_sb_b;
                     static std::vector<float> fuse_lg_buf;
@@ -2018,15 +2029,34 @@ int main(int argc,char**argv){
                     static std::vector<float> fuse_gdn_attn_out;  // [32, 128]
                     static std::vector<float> fuse_gdn_conv_state;  // [NC, 8192, 4]
                     static std::vector<int> fuse_top_ids_v;
+                    static std::vector<std::vector<float>> fuse_gdn_state_slots;
+                    static std::vector<std::vector<float>> fuse_gdn_conv_state_slots;
                     if (fuse_reset) {
                         fuse_reset = false;
                         fuse_kv_init = false;
-                        fuse_pos = 0;
+                        for (int s = 0; s < MAX_BATCH_SLOTS; s++) fuse_pos[s] = 0;
+                    }
+                    if (fuse_reset_slot >= 0 && fuse_reset_slot < MAX_BATCH_SLOTS && fuse_kv_init) {
+                        int rs = fuse_reset_slot;
+                        fuse_reset_slot = -1;
+                        fuse_pos[rs] = 0;
+                        int fkv_size = 4096 * NKV * HD;
+                        fuse_kv[rs].clear();
+                        for (int i = 0; i < NC; i++) fuse_kv[rs].emplace_back(fkv_size);
+                        if (has_moe) {
+                            std::fill(fuse_gdn_state_slots[rs].begin(), fuse_gdn_state_slots[rs].end(), 0.0f);
+                            std::fill(fuse_gdn_conv_state_slots[rs].begin(), fuse_gdn_conv_state_slots[rs].end(), 0.0f);
+                        }
+                    } else {
+                        fuse_reset_slot = -1;
                     }
                     if (!fuse_kv_init) {
                         int fkv_size = 4096 * NKV * HD;
-                        fuse_kv.clear();
-                        for (int i = 0; i < NC; i++) fuse_kv.emplace_back(fkv_size);
+                        for (int s = 0; s < MAX_BATCH_SLOTS; s++) {
+                            fuse_kv[s].clear();
+                            for (int i = 0; i < NC; i++) fuse_kv[s].emplace_back(fkv_size);
+                            fuse_pos[s] = 0;
+                        }
                         fuse_h_b.resize(XM * H);
                         fuse_qo_b.resize(XM * qkv_n);
                         fuse_at_b.resize(XM * NH * HD);
@@ -2038,15 +2068,22 @@ int main(int argc,char**argv){
                         fuse_lg_buf.resize(NV);
                         fuse_top_ids_v.resize(BS, 0);
                         fuse_kv_init = true;
-                        fuse_pos = 0;
-                        // GDN state (per-layer v-heads) + conv state + scratch, all layers.
                         if (has_moe) {
-                            fuse_gdn_state.resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
+                            fuse_gdn_state_slots.resize(MAX_BATCH_SLOTS);
+                            fuse_gdn_conv_state_slots.resize(MAX_BATCH_SLOTS);
+                            for (int s = 0; s < MAX_BATCH_SLOTS; s++) {
+                                fuse_gdn_state_slots[s].resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
+                                fuse_gdn_conv_state_slots[s].resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
+                            }
                             fuse_gdn_attn_out.resize(max_gdn_vh * max_gdn_hd, 0);
-                            fuse_gdn_conv_state.resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
                         }
                     }
-                    int token_id = (int)in_data[0];
+                    int n_slots_to_run = (op == 33) ? (int)batch : 1;
+                    if (n_slots_to_run > MAX_BATCH_SLOTS) n_slots_to_run = MAX_BATCH_SLOTS;
+                    out_data.resize(n_slots_to_run);
+                    for (int slot_iter = 0; slot_iter < n_slots_to_run; slot_iter++) {
+                    int slot = (op == 33) ? slot_iter : fuse_active_slot;
+                    int token_id = (int)in_data[slot_iter];
                     if (token_id < 0 || token_id >= NV) token_id = 0;
                     // Embed
                     for (int i = 0; i < H; i++)
@@ -2060,41 +2097,38 @@ int main(int argc,char**argv){
                         float aq = dynamic_ascale(fh, H);
                         FLM_GO(cq, l, fh, 1, H, aq, qsc[l], fuse_qo_b.data(), qkv_n);
                         cn(fuse_qo_b.data(), qkv_n);
-                        fuse_kv[l].n = fuse_pos + 1;
-                        int fcl = fuse_kv[l].n;
+                        fuse_kv[slot][l].n = fuse_pos[slot] + 1;
+                        int fcl = fuse_kv[slot][l].n;
                         float* fqo = fuse_qo_b.data();
                         bool is_gdn = is_gdn_layer[l];
                         float* fat = fuse_at_b.data();
                         if (is_gdn) {
-                            // GatedDeltaNet: shared implementation (probe-validated, #1466)
                             gdn_attn_step(l, fh, fqo,
-                                          fuse_gdn_conv_state.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
-                                          fuse_gdn_state.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
+                                          fuse_gdn_conv_state_slots[slot].data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                          fuse_gdn_state_slots[slot].data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                                           fuse_gdn_attn_out.data());
                             fat = fuse_gdn_attn_out.data();   // [32*128] → co directly
                         } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
                             float qs = dynamic_ascale(fqo, NH * HD);
                             float ks = 0;
                             for (int i = 0; i < fcl * NKV * HD; i++) {
-                                float a = fabsf(fuse_kv[l].k[i]);
+                                float a = fabsf(fuse_kv[slot][l].k[i]);
                                 if (a > ks) ks = a;
                             }
                             ks = ks < 1e-12f ? 1.0f : ks / 127.0f;
-                            auto r = ca_ptr->launch(fqo, fuse_kv[l].k.data(), fuse_kv[l].v.data(), fcl, 1, qs, ks);
+                            auto r = ca_ptr->launch(fqo, fuse_kv[slot][l].k.data(), fuse_kv[slot][l].v.data(), fcl, 1, qs, ks);
                             ca_ptr->finish(r, fat, 1, qs, ks);
                             cn(fat, NH * HD);
                         } else if (has_moe) {
-                            // Full attention (16 heads × 256, 2 KV heads, partial rotary)
-                            std_attn_step(l, fh, fqo, fuse_kv[l], fuse_pos, fat);
+                            std_attn_step(l, fh, fqo, fuse_kv[slot][l], fuse_pos[slot], fat);
                         } else {
-                            // Non-MoE models: original global-dims path (#1472 guard)
                             for (int hh = 0; hh < NH; hh++) {
                                 double sq = 0;
                                 for (int d = 0; d < HD; d++) sq += fqo[hh * HD + d] * fqo[hh * HD + d];
                                 float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
                                 for (int d = 0; d < HD; d++)
                                     fqo[hh * HD + d] *= iq * (cfg.has_q_norm ? qn_w[l][d] : 1.0f);
-                                ra(&fqo[hh * HD], HD, fuse_pos);
+                                ra(&fqo[hh * HD], HD, fuse_pos[slot]);
                                 if (hh % GQA == 0) {
                                     int kvh = hh / GQA;
                                     float* ks = &fqo[cfg.qkv_k_offset + kvh * HD];
@@ -2103,14 +2137,14 @@ int main(int argc,char**argv){
                                     float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
                                     for (int d = 0; d < HD; d++)
                                         ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
-                                    ra(ks, HD, fuse_pos);
+                                    ra(ks, HD, fuse_pos[slot]);
                                     float* vs = &fqo[cfg.qkv_v_offset + kvh * HD];
-                                    memcpy(&fuse_kv[l].k[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
-                                    memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
+                                    memcpy(&fuse_kv[slot][l].k[(size_t)fuse_pos[slot] * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
+                                    memcpy(&fuse_kv[slot][l].v[(size_t)fuse_pos[slot] * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
                                 }
                             }
-                            fuse_kv[l].n = fuse_pos + 1;
-                            attn_omp(fqo, fat, fuse_kv[l].n, fuse_kv[l].k.data(), fuse_kv[l].v.data(),
+                            fuse_kv[slot][l].n = fuse_pos[slot] + 1;
+                            attn_omp(fqo, fat, fuse_kv[slot][l].n, fuse_kv[slot][l].k.data(), fuse_kv[slot][l].v.data(),
                                      NH, NKV, HD, GQA);
                         }
                         float ao = dynamic_ascale(fat, NH * HD);
@@ -2154,14 +2188,13 @@ int main(int argc,char**argv){
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
                         }
                     }
-                    // Final norm + lm_head
                     rn_c(fuse_h_b.data(), fin_v.data(), H);
                     int* ftop = fuse_top_ids_v.data();
                     lm_topk_omp(fuse_h_b.data(), fuse_lg_buf.data(), ftop, BS, lm_nv, H, lm_emb);
-                    fuse_pos++;
-                    out_dim = 1;
-                    out_data.resize(1);
-                    out_data[0] = (float)ftop[0];
+                    fuse_pos[slot]++;
+                    out_data[slot_iter] = (float)ftop[0];
+                    } // end slot_iter loop
+                    out_dim = 1; // 1 token per slot; batch * out_dim = n_slots floats
                     ok = true;
                 }else{
                     ok=false;
