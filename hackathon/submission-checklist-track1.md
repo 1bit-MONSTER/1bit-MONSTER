@@ -1,4 +1,4 @@
-> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (July 2026). Numbers like "97 tok/s" NPU and FastFlowLM references are historical — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
+> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
 # AMD AI DevMaster Hackathon — Track 1
 ## Submission Checklist: AI Development & Fine-Tuning

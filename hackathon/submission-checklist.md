@@ -1,4 +1,4 @@
-> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (July 2026). Numbers like "97 tok/s" NPU and FastFlowLM references are historical — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
+> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
 # AMD AI DevMaster Hackathon — Track 2
 ## Submission Checklist
@@ -26,7 +26,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 
 **Key features:**
 - **One C++23 binary** — zero Python, zero Docker, zero config
-- **Multi-backend**: ROCm HIP (433 tok/s), Vulkan ternary (318 tok/s), XDNA 2 NPU (69 tok/s), CPU fallback
+- **Multi-backend**: ROCm HIP (433 tok/s), Vulkan ternary (318 tok/s), XDNA 2 NPU (11.66 tok/s Qwen3.6-35B, FLM), CPU fallback
 - **Token Router** — dispatches each token to the fastest backend with auto-failover
 - **Jarvis Agent** — local agent with RAG, multi-turn memory, tool invocation, multi-step planning, and permission gating (all 5 Track 2 capabilities)
 - **46+ 1BP models** on HuggingFace across 17 families (+12 documented Zyphra non-LLM): Qwen3, BlackMamba, Zamba2, Llama 3.1, DeepSeek, Phi-4, Gemma, Mistral, Bonsai, Granite, and more — all in native 1BP format
@@ -86,7 +86,7 @@ Private AI agents should:
        │                                       │
        │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ │
        │  │ HIP  │ │ NPU  │ │ Vulk │ │ CPU  │ │
-       │  │417/s │ │ 97/s │ │318/s │ │ fall │ │
+       │  │433/s │ │11.7/s│ │318/s │ │ fall │ │
        │  └──────┘ └──────┘ └──────┘ └──────┘ │
        └──────────────────────────────────────┘
             │                    │
@@ -107,7 +107,7 @@ Private AI agents should:
 │ Q1 GEMV (HIP fused)           │ 433 tok/s │
 │ Fused TQ2 (QKV+GU fused)     │ 420 tok/s │
 │ GPU Ternary (Vulkan ZINC)    │ 318 tok/s │
-│ NPU v12 (XDNA 2, 32 tiles)   │  69 tok/s │
+│ NPU FLM (Qwen3.6-35B-A3B)  │ 11.66 tok/s │
 │ Prefill INT8 WMMA            │ 43.2 TFLOPS │
 └────────────────────────────────────────────┘
 

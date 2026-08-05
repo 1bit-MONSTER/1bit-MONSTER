@@ -1,11 +1,11 @@
-> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (July 2026). Numbers like "97 tok/s" NPU and FastFlowLM references are historical — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
+> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
 # AMD AI DevMaster Hackathon — Track 1 Submission
 ## AI Development & Fine-Tuning
 
 **Team**: 1bit.systems  
 **Project**: 1bit.systems — Zero-Python LoRA Fine-Tuning on AMD Strix Halo  
-**Date**: July 2026  
+**Date**: August 2026  
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo) — Radeon 8060S GPU (gfx1151) + 128 GB unified LPDDR5X
 
 ---
