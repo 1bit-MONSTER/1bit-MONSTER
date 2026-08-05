@@ -330,6 +330,157 @@
   #define GU_I8R 1792        // H*IM/8192 = 7168*2048/8192
   #define D_I8R 1792         // IM*H/8192
   #define LM_I8R 113120      // NV*H/8192 = 129280*7168/8192
+=======
+// Qwen3-1.7B: tag=qwen3_1_7b
+#ifdef MODEL_qwen3_1_7b
+  #define MODEL_TAG "qwen3_1_7b"
+  #define H 2048
+  #define NC 28
+  #define NH 16
+  #define NKV 8
+  #define HD 128
+  #define IM 11008
+  #define NV 151936
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 1000000.0f
+  #define XCLBIN_SUFFIX "qwen3_1_7b"
+  #define GU_FUSED 0  // 2*IM=22016 > 14336
+  #define BOS 151643
+  #define EOS 151645
+  #define DEF_MP NULL
+  #define Q_I8R 512       // 2048*2048/8192
+  #define KV_I8R 256      // 2048*1024/8192
+  #define O_I8R 512       // 2048*2048/8192
+  #define GU_I8R 2752     // 2048*11008/8192
+  #define D_I8R 2752      // 11008*2048/8192
+  #define LM_I8R 38016    // 151936*2048/8192
+#endif
+
+// Qwen3-4B: tag=qwen3_4b
+#ifdef MODEL_qwen3_4b
+  #define MODEL_TAG "qwen3_4b"
+  #define H 2560
+  #define NC 36
+  #define NH 32
+  #define NKV 8
+  #define HD 128
+  #define IM 9728
+  #define NV 151936
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 1000000.0f
+  #define XCLBIN_SUFFIX "qwen3_4b"
+  #define GU_FUSED 0  // 2*IM=19456 > 14336
+  #define BOS 151643
+  #define EOS 151645
+  #define DEF_MP NULL
+  #define Q_I8R 1280      // 2560*4096/8192
+  #define KV_I8R 320      // 2560*1024/8192
+  #define O_I8R 1280      // 4096*2560/8192
+  #define GU_I8R 3040     // 2560*9728/8192
+  #define D_I8R 3040      // 9728*2560/8192
+  #define LM_I8R 47480    // 151936*2560/8192
+#endif
+
+// Qwen3-14B: tag=qwen3_14b
+#ifdef MODEL_qwen3_14b
+  #define MODEL_TAG "qwen3_14b"
+  #define H 5120
+  #define NC 40
+  #define NH 40
+  #define NKV 8
+  #define HD 128
+  #define IM 17408
+  #define NV 151936
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 1000000.0f
+  #define XCLBIN_SUFFIX "qwen3_14b"
+  #define GU_FUSED 0  // 2*IM=34816 > 14336
+  #define BOS 151643
+  #define EOS 151645
+  #define DEF_MP NULL
+  #define Q_I8R 3200      // 5120*5120/8192
+  #define KV_I8R 640      // 5120*1024/8192
+  #define O_I8R 3200      // 5120*5120/8192
+  #define GU_I8R 10880    // 5120*17408/8192
+  #define D_I8R 10880     // 17408*5120/8192
+  #define LM_I8R 94960    // 151936*5120/8192
+#endif
+
+// Gemma3-1B: tag=gemma3_1b (18 layers, GQA=4)
+// Verified: hidden=1152, heads=4, kv_heads=1, head_dim=256, intermediate=6912
+#ifdef MODEL_gemma3_1b
+  #define MODEL_TAG "gemma3_1b"
+  #define H 1152
+  #define NC 18
+  #define NH 4
+  #define NKV 1
+  #define HD 256
+  #define IM 6912
+  #define NV 262144
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 10000.0f
+  #define XCLBIN_SUFFIX "gemma3_1b"
+  #define GU_FUSED 1  // 2*IM=13824 <= 14336
+  #define BOS 2
+  #define EOS 1
+  #define DEF_MP NULL
+  #define Q_I8R 144       // 1152*1024/8192
+  #define KV_I8R 36       // 1152*256/8192
+  #define O_I8R 144       // 1024*1152/8192
+  #define GU_I8R 972      // 1152*6912/8192
+  #define D_I8R 972       // 6912*1152/8192
+  #define LM_I8R 36864    // 262144*1152/8192
+#endif
+
+// Gemma3-4B: tag=gemma3_4b (34 layers, GQA=2)
+// Verified: hidden=2560, heads=8, kv_heads=4, head_dim=256, intermediate=10240
+#ifdef MODEL_gemma3_4b
+  #define MODEL_TAG "gemma3_4b"
+  #define H 2560
+  #define NC 34
+  #define NH 8
+  #define NKV 4
+  #define HD 256
+  #define IM 10240
+  #define NV 262144
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 10000.0f
+  #define XCLBIN_SUFFIX "gemma3_4b"
+  #define GU_FUSED 0  // 2*IM=20480 > 14336
+  #define BOS 2
+  #define EOS 1
+  #define DEF_MP NULL
+  #define Q_I8R 640       // 2560*2048/8192
+  #define KV_I8R 320      // 2560*1024/8192
+  #define O_I8R 640       // 2048*2560/8192
+  #define GU_I8R 3200     // 2560*10240/8192
+  #define D_I8R 3200      // 10240*2560/8192
+  #define LM_I8R 81920    // 262144*2560/8192
+#endif
+
+// SmolLM2-135M: tag=smollm2_135m (30 layers, H=576 — non-128-aligned, padded by engine)
+#ifdef MODEL_smollm2_135m
+  #define MODEL_TAG "smollm2_135m"
+  #define H 576
+  #define NC 30
+  #define NH 9
+  #define NKV 3
+  #define HD 64
+  #define IM 1536
+  #define NV 49152
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 10000.0f
+  #define XCLBIN_SUFFIX "smollm2_135m"
+  #define GU_FUSED 1  // 2*IM=3072 <= 14336
+  #define BOS 0
+  #define EOS 0
+  #define DEF_MP NULL
+  #define Q_I8R 54        // ceil(576/32)*ceil(576/256) = 18*3
+  #define KV_I8R 18       // ceil(192/32)*ceil(576/256) = 6*3
+  #define O_I8R 54        // ceil(576/32)*ceil(576/256) = 18*3
+  #define GU_I8R 288      // ceil(3072/32)*ceil(576/256) = 96*3
+  #define D_I8R 108       // ceil(576/32)*ceil(1536/256) = 18*6
+  #define LM_I8R 4608     // ceil(49152/32)*ceil(576/256) = 1536*3
 #endif
 
 // Default (Qwen3-0.6B) when no model defined

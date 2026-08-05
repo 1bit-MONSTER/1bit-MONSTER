@@ -96,6 +96,10 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
     if (cfg.arch == RCPP_ARCH_DEEPSEEK) {
         return {{"hip_gpu", "cpu_generic"}, "DeepSeek — MLA + MoE, HIP GPU, generic CPU fallback"};
     }
+    // DeepSeek V4 Flash/Pro: mHC + CSA+HCA + FP4 MoE (284B/13B active)
+    if (cfg.arch == RCPP_ARCH_DEEPSEEK_V4) {
+        return {{"hip_gpu", "cpu_generic"}, "DeepSeek V4 — mHC + CSA/HCA attn + FP4 MoE, HIP GPU"};
+    }
     // Whisper (speech-to-text): uses whisper encoder/decoder (CPU) or GPU
     if (cfg.arch == RCPP_ARCH_WHISPER) {
         return {{"cpu_generic"}, "Whisper — speech-to-text, CPU inference"};

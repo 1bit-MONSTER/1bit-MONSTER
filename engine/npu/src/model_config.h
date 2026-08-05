@@ -37,6 +37,7 @@ struct ModelConfig {
     std::string model_dir;
 
     bool valid() const { return H > 0 && NC > 0 && NH > 0 && NKV > 0 && HD > 0 && IM > 0 && NV > 0; }
+    static int pad128(int v) { return (v + 127) & ~127; }
 };
 
 // Find a JSON key and extract shape[0] + data_offsets[0]
@@ -102,6 +103,35 @@ static bool key_exists(const char* js, size_t jl, const char* key) {
         p = q + kl;
     }
     return false;
+}
+
+// Parse shape[N] from a tensor entry: returns the dim-th element (0-based),
+// or 0 if absent. Handles 1D/2D/3D shapes (e.g. 3D I8 tiles [rows, cols, bytes]).
+static int get_shape_dim(const char* js, size_t jl, const char* key, int dim) {
+    size_t kl = strlen(key);
+    const char* p = js;
+    const char* e = js + jl;
+    while (p < e) {
+        auto q = (const char*)memmem(p, e - p, key, kl);
+        if (!q) return 0;
+        if ((q == js || *(q-1) == '"') && *(q + kl) == '"') {
+            auto shape_loc = strstr(q, "\"shape\"");
+            if (shape_loc) {
+                auto bracket = strchr(shape_loc, '[');
+                if (bracket) {
+                    const char* c = bracket + 1;
+                    for (int i = 0; i <= dim; i++) {
+                        while (*c == ' ' || *c == ',') c++;
+                        if (i == dim) return (int)strtoul(c, nullptr, 10);
+                        while (*c && *c != ',') c++;
+                    }
+                }
+            }
+            return 0;
+        }
+        p = q + kl;
+    }
+    return 0;
 }
 
 static int get_shape_dim1(const char* js, size_t jl, const char* key) {
@@ -190,20 +220,37 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     }
     
     // Step 2: Read I8 tile row counts for each weight
+    // Dense naming: model.layers.N.* ; Qwen3.5/3.6 (GDN/MoE) naming: model.layer.N.*
+    auto ti = [&](const char* base, int* tr) -> int {
+        char key[256];
+        snprintf(key, sizeof(key), "model.layers.0.%s", base);
+        int off = find_tensor_info(js, jl, key, tr);
+        if (*tr == 0) {
+            snprintf(key, sizeof(key), "model.layer.0.%s", base);
+            off = find_tensor_info(js, jl, key, tr);
+        }
+        return off;
+    };
     int q_tr = 0, k_tr = 0, o_tr = 0, g_tr = 0, d_tr = 0;
-    int q_off = 0;
-    q_off = find_tensor_info(js, jl, "model.layers.0.self_attn.q_proj.weight", &q_tr);
-    find_tensor_info(js, jl, "model.layers.0.self_attn.k_proj.weight", &k_tr);
-    find_tensor_info(js, jl, "model.layers.0.self_attn.o_proj.weight", &o_tr);
-    find_tensor_info(js, jl, "model.layers.0.mlp.gate_proj.weight", &g_tr);
-    find_tensor_info(js, jl, "model.layers.0.mlp.down_proj.weight", &d_tr);
+    int q_off = ti("self_attn.q_proj.weight", &q_tr);
+    // Fallback: fused QKV projection (Phi-style models use qkv_proj)
+    if (q_tr == 0) q_off = ti("self_attn.qkv_proj.weight", &q_tr);
+    ti("self_attn.k_proj.weight", &k_tr);
+    ti("self_attn.o_proj.weight", &o_tr);
+    ti("mlp.gate_proj.weight", &g_tr);
+    // Fallback: models without gate (GPT-style use up_proj only)
+    if (g_tr == 0) ti("mlp.up_proj.weight", &g_tr);
+    ti("mlp.down_proj.weight", &d_tr);
     
     // Step 3: Detect architecture features
     int qn_hd = 0;
     cfg.has_q_norm = (find_tensor_info(js, jl, "model.layers.0.self_attn.q_norm.weight", &qn_hd) > 0);
+    if (!cfg.has_q_norm)
+        cfg.has_q_norm = (find_tensor_info(js, jl, "model.layer.0.self_attn.q_norm.weight", &qn_hd) > 0);
     if (cfg.has_q_norm && qn_hd > 0) cfg.HD = qn_hd;  // q_norm shape = [HD]
     
-    cfg.has_k_norm = key_exists(js, jl, "model.layers.0.self_attn.k_norm.weight");
+    cfg.has_k_norm = key_exists(js, jl, "model.layers.0.self_attn.k_norm.weight") ||
+                     key_exists(js, jl, "model.layer.0.self_attn.k_norm.weight");
     cfg.has_rope_freqs_file = key_exists(js, jl, "rope_freqs.weight");
     cfg.has_lm_head = key_exists(js, jl, "lm_head.weight");
     
@@ -271,33 +318,66 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     // down_proj in_features=IM, out_features=H
     // tile_rows_d = ceil(H/32) * ceil(IM/256)
     
+    // Step 5b: GDN fused-QKV dims fallback (Qwen3.5/3.6 class, non-MoE siblings)
+    // linear_attn.qkv_proj rows are Q8_0 8704 B (512 B bf16 scales + 8192 int8)
+    // or INT4 5120 B (values == bytes). Convention: HD=128, GQA=2 →
+    // NKV = T/(4*HD), NH = T/(2*HD).
+    auto derive_gdn_dims = [&]() -> bool {
+        int qkv_tr = 0;
+        find_tensor_info(js, jl, "model.layer.0.linear_attn.qkv_proj.weight", &qkv_tr);
+        if (qkv_tr == 0)
+            find_tensor_info(js, jl, "model.layers.0.linear_attn.qkv_proj.weight", &qkv_tr);
+        if (qkv_tr <= 0) return false;
+        cfg.has_gated_delta_net = true;
+        int row_bytes = get_shape_dim(js, jl, "model.layer.0.linear_attn.qkv_proj.weight", 2);
+        if (row_bytes == 0)
+            row_bytes = get_shape_dim(js, jl, "model.layers.0.linear_attn.qkv_proj.weight", 2);
+        int T = (row_bytes == 8704) ? 8192 : (row_bytes > 0 ? row_bytes : 8192);
+        cfg.HD = 128;
+        cfg.NKV = T / 128 / 4;   // 16 for T=8192
+        cfg.NH = T / 128 / 2;    // 32 for T=8192
+        cfg.GQA = cfg.NH / cfg.NKV;
+        cfg.WQH = cfg.NH / cfg.AW;
+        cfg.WKVH = cfg.NKV / cfg.AW;
+        cfg.qkv_k_offset = cfg.NH * cfg.HD;
+        cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
+        cfg.qkv_total = T;
+        return true;
+    };
+    if ((cfg.NH == 0 || cfg.HD == 0) && !cfg.has_moe) derive_gdn_dims();
+
     // Step 6: Compute derived values
     if (cfg.NH > 0 && cfg.NKV > 0) cfg.GQA = cfg.NH / cfg.NKV;
-    cfg.WQH = cfg.NH / cfg.AW;
-    cfg.WKVH = cfg.NKV / cfg.AW;
+    // Adapt AW so NH and NKV divide evenly (models like SmolLM2-135M have NH=9, NKV=3)
+    if (cfg.NH > 0 && cfg.NKV > 0) {
+        while (cfg.AW > 1 && (cfg.NH % cfg.AW != 0 || cfg.NKV % cfg.AW != 0))
+            cfg.AW--;
+    }
+    cfg.WQH = cfg.AW > 0 ? cfg.NH / cfg.AW : cfg.NH;
+    cfg.WKVH = cfg.AW > 0 ? cfg.NKV / cfg.AW : cfg.NKV;
     
     cfg.qkv_k_offset = cfg.NH * cfg.HD;
     cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
     cfg.qkv_total = cfg.NH * cfg.HD + 2 * cfg.NKV * cfg.HD;
     
-    cfg.xclbin_qkv_k = cfg.H;
-    cfg.xclbin_qkv_n = cfg.qkv_total;
-    cfg.xclbin_o_k = cfg.NH * cfg.HD;
-    cfg.xclbin_o_n = cfg.H;
+    cfg.xclbin_qkv_k = ModelConfig::pad128(cfg.H);
+    cfg.xclbin_qkv_n = ModelConfig::pad128(cfg.qkv_total);
+    cfg.xclbin_o_k = ModelConfig::pad128(cfg.NH * cfg.HD);
+    cfg.xclbin_o_n = ModelConfig::pad128(cfg.H);
     
     // GU split decision
     cfg.gu_split = (cfg.IM * 2 > 14336);
     if (cfg.gu_split) {
-        cfg.xclbin_g_k = cfg.H;
-        cfg.xclbin_g_n = cfg.IM;
-        cfg.xclbin_u_k = cfg.H;
-        cfg.xclbin_u_n = cfg.IM;
+        cfg.xclbin_g_k = ModelConfig::pad128(cfg.H);
+        cfg.xclbin_g_n = ModelConfig::pad128(cfg.IM);
+        cfg.xclbin_u_k = ModelConfig::pad128(cfg.H);
+        cfg.xclbin_u_n = ModelConfig::pad128(cfg.IM);
     } else {
-        cfg.xclbin_gu_k = cfg.H;
-        cfg.xclbin_gu_n = cfg.IM * 2;
+        cfg.xclbin_gu_k = ModelConfig::pad128(cfg.H);
+        cfg.xclbin_gu_n = ModelConfig::pad128(cfg.IM * 2);
     }
-    cfg.xclbin_d_k = cfg.IM;
-    cfg.xclbin_d_n = cfg.H;
+    cfg.xclbin_d_k = ModelConfig::pad128(cfg.IM);
+    cfg.xclbin_d_n = ModelConfig::pad128(cfg.H);
     
     // Step 7: MoE detection (Qwen3.5/3.6 naming: "model.layer.N." without 's')
     // gate_exps_proj [experts*tile_rows, col_blocks, tile_bytes] — e.g. Qwen3.6:
@@ -329,18 +409,8 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
             // values_per_row = 8192 = qkv_total (NH*HD + 2*NKV*HD), and the
             // row count = in_features = H (already parsed). Qwen3.5/3.6 use
             // HD=128, GQA=2 (NH=2*NKV): NKV = T/4, NH = T/2, T = qkv_total/128.
-            if (cfg.has_gated_delta_net && cfg.NH == 0 && cfg.HD == 0) {
-                int qkv_total = 8192;  // 8704 - 512 scales
-                cfg.HD = 128;
-                cfg.NKV = qkv_total / 128 / 4;  // 8192/128/4 = 16
-                cfg.NH = qkv_total / 128 / 2;   // 8192/128/2 = 32
-                cfg.GQA = cfg.NH / cfg.NKV;
-                cfg.WQH = cfg.NH / cfg.AW;
-                cfg.WKVH = cfg.NKV / cfg.AW;
-                cfg.qkv_k_offset = cfg.NH * cfg.HD;
-                cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
-                cfg.qkv_total = qkv_total;
-            }
+            if (cfg.has_gated_delta_net && cfg.NH == 0 && cfg.HD == 0)
+                derive_gdn_dims();
             if (cfg.IM == 0) cfg.IM = cfg.IM_EXP;  // MoE FFN uses per-expert IM
             fprintf(stderr, "[ModelConfig] MoE: experts=%d top_k=%d im_exp=%d shared=%d gdn=%d\n",
                     cfg.N_EXPERTS, cfg.TOP_K, cfg.IM_EXP, cfg.N_SHARED, (int)cfg.has_gated_delta_net);
@@ -348,20 +418,22 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     }
 
     // Recompute xclbin dimensions (may have been updated by MoE detection)
+    // All xclbin dims padded to multiples of 128 (AIE tile size) so models with
+    // non-aligned hidden sizes (e.g. SmolLM2-135M H=576) work via zero-padding.
     cfg.qkv_total = cfg.NH * cfg.HD + 2 * cfg.NKV * cfg.HD;
     cfg.qkv_k_offset = cfg.NH * cfg.HD;
     cfg.qkv_v_offset = cfg.NH * cfg.HD + cfg.NKV * cfg.HD;
-    cfg.xclbin_qkv_k = cfg.H;
-    cfg.xclbin_qkv_n = cfg.qkv_total;
-    cfg.xclbin_o_k = cfg.NH * cfg.HD;
-    cfg.xclbin_o_n = cfg.H;
-    cfg.xclbin_d_k = cfg.IM;
-    cfg.xclbin_d_n = cfg.H;
+    cfg.xclbin_qkv_k = ModelConfig::pad128(cfg.H);
+    cfg.xclbin_qkv_n = ModelConfig::pad128(cfg.qkv_total);
+    cfg.xclbin_o_k = ModelConfig::pad128(cfg.NH * cfg.HD);
+    cfg.xclbin_o_n = ModelConfig::pad128(cfg.H);
+    cfg.xclbin_d_k = ModelConfig::pad128(cfg.IM);
+    cfg.xclbin_d_n = ModelConfig::pad128(cfg.H);
     if (cfg.gu_split) {
-        cfg.xclbin_g_k = cfg.H; cfg.xclbin_g_n = cfg.IM;
-        cfg.xclbin_u_k = cfg.H; cfg.xclbin_u_n = cfg.IM;
+        cfg.xclbin_g_k = ModelConfig::pad128(cfg.H); cfg.xclbin_g_n = ModelConfig::pad128(cfg.IM);
+        cfg.xclbin_u_k = ModelConfig::pad128(cfg.H); cfg.xclbin_u_n = ModelConfig::pad128(cfg.IM);
     } else {
-        cfg.xclbin_gu_k = cfg.H; cfg.xclbin_gu_n = cfg.IM * 2;
+        cfg.xclbin_gu_k = ModelConfig::pad128(cfg.H); cfg.xclbin_gu_n = ModelConfig::pad128(cfg.IM * 2);
     }
 
     munmap(md, st.st_size);

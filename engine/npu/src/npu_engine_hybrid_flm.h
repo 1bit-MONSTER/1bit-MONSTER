@@ -223,6 +223,7 @@ struct HybridFlmCtx {
         // Offset in the contiguous weight BO
         size_t layer_off = (size_t)l * KD * ND;
         auto* Bm = (int8_t*)bW->map() + layer_off;
+        memset(Bm, 0, (size_t)KD * ND);
 
         for (int g = 0; g < num_groups; g++) {
             int g_start = g * 32;
@@ -243,7 +244,7 @@ struct HybridFlmCtx {
                     if (!std::isfinite(v)) v = 0;
                     int x = (int)roundf(v * g_is);
                     if (x > 127) x = 127; else if (x < -127) x = -127;
-                    Bm[(g_start + i) * N + j] = (int8_t)x;
+                    Bm[(g_start + i) * ND + j] = (int8_t)x;
                 }
             }
         }
