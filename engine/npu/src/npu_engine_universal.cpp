@@ -733,7 +733,14 @@ int main(int argc,char**argv){
     // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
     const char* env_xd = getenv("NPU_XCLBIN_DIR");
     std::string xd = env_xd ? env_xd : "engine/npu/xclbins";
-    auto xp=[&](const char*t){return xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";};
+    // xp(): try model-tag-keyed xclbin first (backward compat), then dimension-keyed
+    // (e.g. final_i8_QKV_K2048_N2560.xclbin) so any model sharing GEMM shapes can reuse
+    // the same xclbin without a per-model rebuild.
+    auto xp=[&](const char*t, int K, int N) -> std::string {
+        std::string tp=xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";
+        FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+        return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
+    };
     auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
 
     // FLM xclbin path: respect NPU_FLM_XCLBIN_DIR env var for explicit path,
@@ -884,26 +891,23 @@ int main(int argc,char**argv){
         // Sync weights after all packB calls (done at pack time in the pipeline below)
     } else {
         // ── Legacy path: per-op xclbins + per-layer weight BOs ──
-        // MoE models may lack instruction files — check before init.
-        bool has_insts = true;
-        if (cfg.has_moe) {
-            auto check_inst = [&](const char* t) {
-                std::string ip_s = ip(t);
-                FILE* f = fopen(ip_s.c_str(), "rb");
-                if (f) { fclose(f); return true; }
-                fprintf(stderr, "  WARN: %s not found\n", ip_s.c_str());
-                return false;
-            };
-            has_insts = check_inst("QKV") && check_inst("O");
-            if (!has_insts) cpu_gemm_fallback = true;
-        }
         if (!cpu_gemm_fallback) {
+        // init_i8: load pre-compiled insts if available, else generate at runtime.
+        // This makes any model with compatible GEMM shapes (K,N multiples of 128)
+        // work without pre-compiling per-model instruction files.
+        auto init_i8=[&](I8Ctx& ctx, const char* t, int K, int N) -> bool {
+            std::string xp_s=xp(t,K,N), ip_s=ip(t);
+            FILE* f=fopen(ip_s.c_str(),"rb");
+            if(f){fclose(f); return ctx.init(dev,xp_s.c_str(),ip_s.c_str(),4,NC);}
+            fprintf(stderr,"  No insts for %s, using runtime generator\n",t);
+            return ctx.init_with_generator(dev,xp_s.c_str(),XM,K,N,NC);
+        };
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
-        if(!cq.init(dev,xp("QKV").c_str(),ip("QKV").c_str(),4,NC)){fprintf(stderr,"FAIL QKV\n");return 1;}
-        if(!co.init(dev,xp("O").c_str(),ip("O").c_str(),4,NC)){fprintf(stderr,"FAIL O\n");return 1;}
-        if(cfg.gu_split){if(!cg.init(dev,xp("G").c_str(),ip("G").c_str(),4,NC)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!cg.init(dev,xp("GU").c_str(),ip("GU").c_str(),4,NC)){fprintf(stderr,"FAIL GU\n");return 1;}}
-        if(!cd.init(dev,xp("D").c_str(),ip("D").c_str(),4,NC)){fprintf(stderr,"FAIL D\n");return 1;}
-        if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!cu_ptr->init(dev,xp("U").c_str(),ip("U").c_str(),4,NC)){fprintf(stderr,"FAIL U\n");return 1;}}
+        if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){fprintf(stderr,"FAIL QKV\n");return 1;}
+        if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
+        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
+        if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
+        if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!init_i8(*cu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL U\n");return 1;}}
         }
     }
     // NPU attention via pre-compiled KV xclbin instructions.
@@ -916,7 +920,7 @@ int main(int argc,char**argv){
             fprintf(stderr, "NPU attention disabled via NPU_ATTN=0\n");
         } else {
             // Check if the ATTN xclbin exists before trying
-            std::string xclbin_path = xp("ATTN");
+            std::string xclbin_path = xd+"/final_i8_ATTN_"+cfg.model_tag+".xclbin";
             FILE* xc_test = fopen(xclbin_path.c_str(), "rb");
             if (xc_test) {
                 fclose(xc_test);
@@ -1331,7 +1335,7 @@ int main(int argc,char**argv){
                                int K, int N, int nlayers) -> bool {
                 c = std::make_unique<I8Ctx>();
                 c->MD = XM; c->KD = K; c->ND = N;
-                if (!c->init(dev, xp(t).c_str(), ip(t).c_str(), 4, nlayers)) {
+                if (!c->init(dev, xp(t, K, N).c_str(), ip(t).c_str(), 4, nlayers)) {
                     c.reset(); return false;
                 }
                 return true;

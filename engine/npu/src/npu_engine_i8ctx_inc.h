@@ -184,10 +184,13 @@ struct I8Ctx {
     }
 
     // ── Pack weights for layer l into contiguous BO ──
+    // K×N are the logical (unpadded) weight dims; the BO is KD×ND (padded to 128).
+    // Zero-init ensures padded regions contribute zero to the GEMM output.
     void packB(int l, const float* w, int K, int N, float& sout) {
         int num_groups = (K + 31) / 32;
         group_scales[l].resize(num_groups);
         auto* Bm = (int8_t*)layerB[l]->map();
+        memset(Bm, 0, (size_t)KD * ND);
         for (int g = 0; g < num_groups; g++) {
             int g_start = g * 32;
             int g_size = std::min(32, K - g_start);
@@ -207,7 +210,7 @@ struct I8Ctx {
                     int x = (int)roundf(v * g_is);
                     if (x > 127) x = 127;
                     else if (x < -127) x = -127;
-                    Bm[(g_start + i) * N + j] = (int8_t)x;
+                    Bm[(g_start + i) * ND + j] = (int8_t)x;
                 }
         }
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
