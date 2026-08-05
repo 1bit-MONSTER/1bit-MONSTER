@@ -70,6 +70,7 @@ struct Zamba2Config {
 
     // RoPE
     float rope_theta = 10000.0f;
+    bool  use_mem_rope = true;   // 2.7B disables RoPE (use_mem_rope=false in config)
 
     // Derived
     int hyb_layer_ids[9] = {6, 12, 18, 24, 30, 36, 42, 47, 51};

@@ -219,7 +219,11 @@ void mamba2_selective_scan_tuned_kernel(
     // This matches the CPU reference layout (cpu_selective_scan: final_state + h * d_state)
     // The zamba2 engine allocates [d_state, d_inner] per layer but only
     // the [n_head, d_state] portion is used for state storage.
-    int state_offset = (batch * (n_head * d_state)) + (head_id * d_state);
+    // TRUE mamba2 state layout: [head_id][d_state][head_dim] — each head_dim
+    // slice evolves only from the PREVIOUS token's state (no intra-token
+    // coupling). The per-layer buffer is d_state*d_inner =
+    // n_head*d_state*head_dim, so the layout fits the engine's allocation.
+    int state_offset = (batch * (n_head * d_state * head_dim)) + (head_id * d_state * head_dim);
 
     // ── Load head-global parameters ──
     // Each thread loads A, D, dt for this head (broadcast via LDS)
@@ -245,7 +249,7 @@ void mamba2_selective_scan_tuned_kernel(
     float C_val = (tid < d_state) ? C[c_offset + tid] : 0.0f;
 
     // ── Each thread loads initial state ──
-    float state_reg = (tid < d_state) ? final_state[state_offset + tid] : 0.0f;
+    float state_reg = 0.0f;  // loaded per-hd inside the loop
 
     // ── Scan over all head_dim elements ──
     // This is the core fix: we MUST iterate over the head_dim dimension.
@@ -253,6 +257,8 @@ void mamba2_selective_scan_tuned_kernel(
     for (int hd = 0; hd < head_dim; ++hd) {
         // Load x element for this head_dim position
         float x_val = x[x_offset + hd];
+        // TRUE mamba2: this slice's state evolves from the previous token only
+        state_reg = (tid < d_state) ? final_state[state_offset + tid * head_dim + hd] : 0.0f;
 
         // ── SSM state update: state = A_bar * state + dt * B * x ──
         if (tid < d_state) {
@@ -295,13 +301,8 @@ void mamba2_selective_scan_tuned_kernel(
         if (tid == 0) {
             y[y_offset + hd] = c_dot;
         }
+        if (tid < d_state) final_state[state_offset + tid * head_dim + hd] = state_reg;
         __syncthreads();  // ensure output write complete before next iteration
-    }
-
-    // ── Write final state back to global memory ──
-    // After all head_dim steps, state_reg holds the final SSM state.
-    if (tid < d_state) {
-        final_state[state_offset + tid] = state_reg;
     }
 }
 
@@ -343,7 +344,11 @@ void mamba2_scan_fused_kernel(
     int b_offset     = (((batch * L) + t) * n_group + group_id) * d_state;
     int c_offset     = (((batch * L) + t) * n_group + group_id) * d_state;
     int y_offset     = ((batch * L) + t) * d_inner + head_id * head_dim;
-    int state_offset = (batch * (n_head * d_state)) + (head_id * d_state);
+    // TRUE mamba2 state layout: [head_id][d_state][head_dim] — each head_dim
+    // slice evolves only from the PREVIOUS token's state (no intra-token
+    // coupling). The per-layer buffer is d_state*d_inner =
+    // n_head*d_state*head_dim, so the layout fits the engine's allocation.
+    int state_offset = (batch * (n_head * d_state * head_dim)) + (head_id * d_state * head_dim);
 
     __shared__ float s_dt_softplus;
     __shared__ float s_A_bar;
@@ -363,11 +368,12 @@ void mamba2_scan_fused_kernel(
 
     float B_val = (tid < d_state) ? B[b_offset + tid] : 0.0f;
     float C_val = (tid < d_state) ? C[c_offset + tid] : 0.0f;
-    float state_reg = (tid < d_state) ? final_state[state_offset + tid] : 0.0f;
+    float state_reg = 0.0f;  // loaded per-hd inside the loop
 
     // ── Scan ──
     for (int hd = 0; hd < head_dim; ++hd) {
         float x_val = x[x_offset + hd];
+        state_reg = (tid < d_state) ? final_state[state_offset + tid * head_dim + hd] : 0.0f;
         if (tid < d_state) {
             state_reg = s_A_bar * state_reg + s_dt_softplus * B_val * x_val;
         }
@@ -395,11 +401,8 @@ void mamba2_scan_fused_kernel(
         }
 
         if (tid == 0) y[y_offset + hd] = c_dot;
+        if (tid < d_state) final_state[state_offset + tid * head_dim + hd] = state_reg;
         __syncthreads();
-    }
-
-    if (tid < d_state) {
-        final_state[state_offset + tid] = state_reg;
     }
 }
 
@@ -565,6 +568,23 @@ __global__ void mul_kernel(float* y, const float* x, int n) {
     }
 }
 
+// ── Fused GELU in-place + multiply: y[i] = gelu(z[i]) * x[i] ──
+// Zamba2 shared-transformer FFN uses GELU (HF: act_fn(gate_up[0]) * gate_up[1]).
+// Keep this separate from silu_mul_kernel: the Mamba2 SSM path must stay SiLU.
+__global__ void gelu_mul_kernel(float* y, float* z, int n) {
+    int i = blockIdx.x * (blockDim.x * 4) + threadIdx.x;
+    if (i >= n) return;
+    #pragma unroll
+    for (int p = 0; p < 4; ++p) {
+        int idx = i + p * blockDim.x;
+        if (idx < n) {
+            float zv = z[idx];
+            float gelu_z = 0.5f * zv * (1.0f + erff(zv * 0.70710678118f));
+            y[idx] *= gelu_z;
+        }
+    }
+}
+
 // ── Fused SiLU in-place + multiply: y[i] = silu(z[i]) * x[i] ──
 // Can be used to fuse: z = silu(z), then y = y * z.
 __global__ void silu_mul_kernel(float* y, float* z, int n) {
@@ -680,7 +700,11 @@ __global__ void mamba2_selective_scan_kernel(
     int b_offset     = (((batch * L) + t) * n_group + group_id) * d_state;
     int c_offset     = (((batch * L) + t) * n_group + group_id) * d_state;
     int y_offset     = ((batch * L) + t) * d_inner + head_id * head_dim;
-    int state_offset = (batch * (n_head * d_state)) + (head_id * d_state);
+    // TRUE mamba2 state layout: [head_id][d_state][head_dim] — each head_dim
+    // slice evolves only from the PREVIOUS token's state (no intra-token
+    // coupling). The per-layer buffer is d_state*d_inner =
+    // n_head*d_state*head_dim, so the layout fits the engine's allocation.
+    int state_offset = (batch * (n_head * d_state * head_dim)) + (head_id * d_state * head_dim);
 
     __shared__ float s_dt_softplus, s_A_bar, s_D;
     if (tid == 0) {
@@ -695,10 +719,11 @@ __global__ void mamba2_selective_scan_kernel(
 
     float B_val = (tid < d_state) ? B[b_offset + tid] : 0.0f;
     float C_val = (tid < d_state) ? C[c_offset + tid] : 0.0f;
-    float s_reg = (tid < d_state) ? final_state[state_offset + tid] : 0.0f;
+    float s_reg = 0.0f;  // loaded per-hd inside the loop
 
     for (int hd = 0; hd < head_dim; ++hd) {
         float x_val = x[x_offset + hd];
+        s_reg = (tid < d_state) ? final_state[state_offset + tid * head_dim + hd] : 0.0f;
         if (tid < d_state)
             s_reg = s_A_bar * s_reg + s_dt_softplus * B_val * x_val;
 
@@ -724,9 +749,9 @@ __global__ void mamba2_selective_scan_kernel(
             c_dot = __shfl(c_dot, 0) + s_D * x_val;
         }
         if (tid == 0) y[y_offset + hd] = c_dot;
+        if (tid < d_state) final_state[state_offset + tid * head_dim + hd] = s_reg;
         __syncthreads();
     }
-    if (tid < d_state) final_state[state_offset + tid] = s_reg;
 }
 
 // ── Legacy conv1d kernel (wraps the old single-thread signature for compat) ──
@@ -880,7 +905,14 @@ void mamba2_gpu_decode_block_tuned(
         y_inner, ssm_state,
         1, 1, d_inner, d_state, n_head, n_group, head_dim);
 
-    // ── 5. Group norm (RMS norm) on y_inner ──
+    // ── 5. Fused: y_inner = y_inner * silu(z) — gate BEFORE the group norm
+    // (HF Zamba2RMSNormGated: hidden * silu(gate) first, then RMSNorm).
+    blocks = (d_inner + threads * 4 - 1) / (threads * 4);
+    hipLaunchKernelGGL(silu_mul_kernel,
+        dim3(blocks), dim3(threads), 0, stream,
+        y_inner, z, d_inner);
+
+    // ── 6. Group norm (RMS norm) on the gated y_inner ──
     // Uses the caller-provided norm_w (may be nullptr for identity scaling).
     if (n_group > 0) {
         int group_size = d_inner / n_group;
@@ -890,12 +922,6 @@ void mamba2_gpu_decode_block_tuned(
             norm_grid, norm_block, 0, stream,
             y_inner, norm_w, d_inner, n_group, 1, 1e-6f);
     }
-
-    // ── 6. Fused: y_inner = y_inner * silu(z) ──
-    blocks = (d_inner + threads * 4 - 1) / (threads * 4);
-    hipLaunchKernelGGL(silu_mul_kernel,
-        dim3(blocks), dim3(threads), 0, stream,
-        y_inner, z, d_inner);
 
     // ── 7. out_proj: tiled GEMV ──
     gemv_blocks = (d_model + GEMV_ROWS - 1) / GEMV_ROWS;

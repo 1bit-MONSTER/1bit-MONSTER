@@ -427,6 +427,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
     // hybrid-layer attention op (buffer sizes, o_proj, RoPE). (#1460 follow-up)
     cfg.attn_head_dim  = gu32("attention.key_length", 128);
     cfg.attn_hidden_size = cfg.n_attn_heads * cfg.attn_head_dim;  // 2*d_model for zamba2 (concat)
+    cfg.use_mem_rope   = gu32("rope.use_mem_rope", 1) != 0;
     cfg.vocab_size    = gu32("vocab_size", gu32("llm.vocab_size", 32000));
     cfg.max_seq_len   = gu32("context_length", 4096);
     cfg.rope_theta    = gf32("rope.freq_base", 10000.0f);
