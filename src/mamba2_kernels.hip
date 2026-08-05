@@ -856,6 +856,9 @@ void mamba2_gpu_decode_block_tuned(
     int d_in_proj = d_inner + conv_dim + n_head;
     int blocks;
     const int threads = M2_BLOCK_SIZE;
+    static int z2_tb_calls = 0;
+    if (getenv("Z2_DEBUG_MAMBA") && z2_tb_calls++ < 20)
+        fprintf(stderr, "[tb] call %d t=%.3f\n", z2_tb_calls, (double)clock() / CLOCKS_PER_SEC);
 
     // Split pointer aliases into tmp buffer:
     //   [0..d_in_proj-1] = in_proj output
@@ -925,6 +928,18 @@ void mamba2_gpu_decode_block_tuned(
     }
 
     // ── 7. out_proj: tiled GEMV ──
+    static int z2_hyb_mb = 0;
+    if (getenv("Z2_DEBUG_HYBRID_GPU") && z2_hyb_mb++ == 5) {
+        hipStreamSynchronize(stream);
+        std::vector<float> pre(d_inner);
+        hipMemcpy(pre.data(), y_inner, d_inner * sizeof(float), hipMemcpyDeviceToHost);
+        fprintf(stderr, "[hyb-mb] y_inner[:4]: %.6f %.6f %.6f %.6f  norm0: %.6f\n",
+            pre[0], pre[1], pre[2], pre[3], pre[d_inner-1]);
+        std::vector<float> ip(d_in_proj);
+        hipMemcpy(ip.data(), tmp, d_in_proj * sizeof(float), hipMemcpyDeviceToHost);
+        fprintf(stderr, "[hyb-mb] inproj[:4]: %.6f %.6f %.6f %.6f  dt0: %.6f\n",
+            ip[0], ip[1], ip[2], ip[3], ip[d_inner + conv_dim]);
+    }
     gemv_blocks = (d_model + GEMV_ROWS - 1) / GEMV_ROWS;
     hipLaunchKernelGGL(mamba2_tiled_gemv_kernel,
         dim3(gemv_blocks), dim3(M2_BLOCK_SIZE), 0, stream,
