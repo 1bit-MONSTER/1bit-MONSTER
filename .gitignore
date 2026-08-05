@@ -126,3 +126,4 @@ heaptrack*
 models/_src_q8/
 npu-infer/mlir-aie
 reasonix.toml
+third_party/AMD-PACE/
