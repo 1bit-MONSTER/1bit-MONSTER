@@ -39,14 +39,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .text_to_codec_model import (
+if __package__ in (None, ""):
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from zaya_audio.text_to_codec_model import (
     TextToCodecConfig,
     TextToCodecModel,
     tokenize_text,
     tokenize_text_batch,
 )
-from .utils import save_audio
-from .voice_pack import load_voice_pack
+from zaya_audio.utils import save_audio
+from zaya_audio.voice_pack import load_voice_pack
 
 # ---------------------------------------------------------------------------
 # Logging

@@ -295,6 +295,43 @@
   #define LM_I8R 49152  // 262144*1536/8192 = 49152
 #endif
 
+// DeepSeek-V4-Flash-0731: tag=deepseek_v4_flash
+// 284B total / 13B active MoE.  MLA: head_dim=512, num_kv_heads=1,
+// q_lora_rank=1024, o_lora_rank=1024.  YaRN RoPE: dual-theta 10000/160000,
+// factor=16, orig_ctx=65536.  FP4 MoE: 256 routed+1 shared, top-6,
+// moe_intermediate=2048.  Layers 0-1: sliding window (128 tok); rest: CSA+HCA.
+// H/NC/NH match DeepSeek-V3 scale; NKV=1 and HD=512 reflect V4 MLA.
+// xclbins: not yet compiled — entry reserves dims for future NPU kernel work.
+#ifdef MODEL_deepseek_v4_flash
+  #define MODEL_TAG "deepseek_v4_flash"
+  #define H 7168
+  #define NC 61
+  #define NH 128
+  #define NKV 1
+  #define HD 512
+  #define IM 2048            // per-expert intermediate
+  #define NV 129280
+  #define N_EXPERTS 256
+  #define TOP_K 6            // top-6 routed experts per token
+  #define GQA (NH/NKV)
+  #define ROPE_THETA 160000.0f  // YaRN long-context theta (dual: 10000/160000)
+  #define XCLBIN_SUFFIX "deepseek_v4_flash"
+  #define GU_FUSED 1         // 2*IM=4096 <= 14336
+  #define BOS 100000  // verify against tokenizer.json — matches DS-V3, unconfirmed for V4
+  #define EOS 100001  // verify against tokenizer.json
+  #define DEF_MP NULL        /* set $NPU_MODEL_PATH */
+  // MLA note: Q projection is two-stage (W_q_a: [H, q_lora_rank=1024] then
+  // W_q_b: [q_lora_rank, NH*qk_nope_dim]).  Q_I8R covers the first stage
+  // (W_q_a tile rows = H*q_lora_rank/8192 = 7168*1024/8192 = 896).
+  // The full NH*HD layout (57344) does NOT exist as a single weight tensor.
+  #define Q_I8R 896          // W_q_a: H*q_lora_rank/8192 = 7168*1024/8192
+  #define KV_I8R 448         // W_kv_a: H*kv_lora_rank/8192 = 7168*512/8192
+  #define O_I8R 896          // W_o first stage (o_lora_rank=1024): H*1024/8192
+  #define GU_I8R 1792        // H*IM/8192 = 7168*2048/8192
+  #define D_I8R 1792         // IM*H/8192
+  #define LM_I8R 113120      // NV*H/8192 = 129280*7168/8192
+#endif
+
 // Default (Qwen3-0.6B) when no model defined
 #ifndef MODEL_TAG
   #define MODEL_TAG "qwen3_0_6b"

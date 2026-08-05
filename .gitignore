@@ -108,6 +108,7 @@ engine/npu/xclbins/backup_8tile/
 engine/npu/xclbins/backup_8tile_insts/
 build-npu/
 engine/npu/build-npu/
+engine/npu/build-fresh/
 build/*.ninja*
 .workspace/
 
@@ -126,3 +127,14 @@ heaptrack*
 models/_src_q8/
 npu-infer/mlir-aie
 reasonix.toml
+
+# machine-specific HIP search-path shim (absolute symlinks violate #1043 policy)
+.rocm-stub/
+
+# ── Vivado / Versal DPU synthesis scratch (vendored IP + tool journals) ──
+vpk180-dpu/
+vivado.jou
+vivado*.jou
+vivado*.log
+engine/npu/build-dbg/
+engine/npu/build-dbg2/
