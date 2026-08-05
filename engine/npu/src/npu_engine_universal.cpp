@@ -985,7 +985,7 @@ int main(int argc,char**argv){
     // the Qwen3.6-35B-A3B values. find_tensor_info returns shape[0]; for the
     // 3D I8 tensors the dequantized row count is shape[0] * (in_features/256).
     std::vector<int> gdn_vh(NC, 32), gdn_hd(NC, 128), gdn_conv_k(NC, 4), gdn_conv_dim(NC, 8192);
-    std::vector<int> std_nh(NC, 16), std_nkv(NC, 2), std_hd(NC, 256);
+    std::vector<int> std_nh(NC, cfg.NH), std_nkv(NC, cfg.NKV), std_hd(NC, cfg.HD);
     std::vector<float> rope_theta_per_layer(NC, cfg.rope_theta);
     std::vector<float> partial_rotary_factor(NC, 0.25f);
     if (cfg.has_moe) {
