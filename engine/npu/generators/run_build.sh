@@ -53,9 +53,13 @@ build_one() {
     echo ""
     echo "══════ Building ${tag} ${proj} K=${K} N=${N} cols=${cols} ══════"
     
-    # Generate clean MLIR (stderr to /dev/null, stdout to file)
-    $PYTHON "$GENERATOR_DIR/n1_core_i8_v26.py" \
-        -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -b 5 \
+    # Generate clean MLIR (stderr to /dev/null, stdout to file).
+    # v27 spreads the tile grid over all 4 AIE core rows; v26 used only row 2,
+    # i.e. 8 of the 32 compute tiles.  Both emit the same xclbin interface, but
+    # an xclbin and its instruction stream encode the same topology and must be
+    # regenerated as a pair — never mix a v27 xclbin with v26 instructions.
+    $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" \
+        -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -r 4 -b 5 \
         2>/dev/null > "$design"
     
     # aiecc needs kernel .o in CWD and runs from the design directory
