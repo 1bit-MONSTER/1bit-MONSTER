@@ -415,9 +415,10 @@ add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
 
-# -- zuna_port : standalone CPU port of the ZUNA EEG diffusion autoencoder -------
-add_executable(zuna_port tools/zuna_port.cpp)
-target_compile_options(zuna_port PRIVATE -O3 -std=c++17)
+# -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
+#   tools/zuna_port.cpp compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
+#   standalone `zuna_port` binary for the parity harness is built directly by
+#   tools/zuna_check_parity.sh (g++ on tools/zuna_port.cpp, no dispatch guard).
 
 # -- libvl_image : lightweight image loading + preprocessing (no HIP dep) ----
 # Uses stb_image.h (vendored at third_party/stb/) for decode. No OpenCV dep.
@@ -1266,8 +1267,12 @@ set(ONE_BIN_SOURCES
     tools/jarvis/billing.cpp
     src/codec_decoder.cpp
     tools/vision_server.cpp
+    tools/zuna_port.cpp
     tools/onebit.cpp
     tools/onebitd.cpp)
+
+# zuna_port.cpp has its own main() -> zuna_main via ONE_BIN_DISPATCH; compile as C++.
+set_source_files_properties(tools/zuna_port.cpp PROPERTIES LANGUAGE CXX)
 add_executable(onebin ${ONE_BIN_SOURCES})
 set_target_properties(onebin PROPERTIES OUTPUT_NAME "1bit")
 install(TARGETS onebin RUNTIME DESTINATION bin)
