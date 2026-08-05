@@ -35,7 +35,7 @@
 - `bf16_kernel_dev/` — All investigation artifacts
 - `docs/archive/HANDOFF-NPU-OPTIMIZATION.md` — Full handoff
 - `docs/archive/INT8-HANDOFF.md` — INT8 deep-dive
-- `docs/business/marketing/npu-REDDIT_POST.md` — Community post draft
+- `docs/goals/marketing/npu-REDDIT_POST.md` — Community post draft
 
 ### Blockers
 1. **INT8**: MLIR parser patched, xclbins build, DMA strides need recalibration
