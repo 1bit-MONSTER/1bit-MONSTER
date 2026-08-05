@@ -1058,13 +1058,15 @@ int main(int argc,char**argv){
             fprintf(stderr, "    dequant qkv done [%d,%d]\n", qr, qc);
             float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
             if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
-            // Fused QKV: pack per probe-validated split.
-            // GDN: q 16×128 (2048), k 16×128 (2048), v 32×128 (4096).
-            int t = 2048 + 2048 + 4096;
+            // Fused QKV: pack per probe-validated split, per-layer geometry.
+            // GDN: q (vh/2)×hd, k (vh/2)×hd, v vh×hd (Qwen3.6: 2048/2048/4096).
+            int gdn_k_off = (gdn_vh[l] / 2) * gdn_hd[l];
+            int gdn_v_off = gdn_vh[l] * gdn_hd[l];
+            int t = gdn_k_off + gdn_k_off + gdn_v_off;
             std::vector<float> w((size_t)H * t);
-            transpose_pack(qkv_w, 2048, H, w.data(), t, 0);            // Q
-            transpose_pack(qkv_w + 2048, 2048, H, w.data(), t, 2048);  // K
-            transpose_pack(qkv_w + 4096, 4096, H, w.data(), t, 4096);  // V
+            transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
+            transpose_pack(qkv_w + gdn_k_off, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
+            transpose_pack(qkv_w + gdn_v_off, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection
@@ -1080,14 +1082,14 @@ int main(int argc,char**argv){
         float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
         float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
         if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
-        // Standard layer: q 16×256 + output gate 16×256 fused in q_proj
-        // (per-head halves: rows [h*512, h*512+256) = q, [+256, +512) = gate);
+        // Standard layer: q nh×hd + output gate nh×hd fused in q_proj
+        // (per-head halves: rows [h*2*hd, h*2*hd+hd) = q, [+hd, +2*hd) = gate);
         // k/v projections run on CPU per token (separate tensors).
-        int t = 8192;
+        int t = std_nh[l] * std_hd[l] * 2;
         std::vector<float> w((size_t)H * t, 0.0f);
         for (int h = 0; h < std_nh[l]; h++) {
-            transpose_pack(qkv_w + h * 512, 256, H, w.data(), t, h * 256);              // q
-            transpose_pack(qkv_w + h * 512 + 256, 256, H, w.data(), t, 4096 + h * 256);  // gate
+            transpose_pack(qkv_w + h * 2 * std_hd[l], std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
+            transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
         free(qkv_w);
@@ -1748,11 +1750,13 @@ int main(int argc,char**argv){
                 s += (double)conv_state[(size_t)kk * gdn_conv_dim[l] + cc] * cw[(size_t)kk * gdn_conv_dim[l] + cc];
             fqo[cc] = silu_f((float)s);
         }
-        // split q [0,2048) k [2048,4096) v [4096,8192); repeat q/k 16→32 + l2norm
+        // split q [0,k_off) k [k_off,v_off) v [v_off,2*v_off); repeat q/k vh/2→vh + l2norm
+        const int gdn_k_off = (gdn_vh[l] / 2) * gdn_hd[l];
+        const int gdn_v_off = gdn_vh[l] * gdn_hd[l];
         std::vector<float> qq((size_t)gdn_vh[l] * gdn_hd[l]), kk((size_t)gdn_vh[l] * gdn_hd[l]);
         for (int h = 0; h < gdn_vh[l]; h++) {
             const float* qs_ = fqo + (size_t)(h / 2) * gdn_hd[l];
-            const float* ks_ = fqo + 2048 + (size_t)(h / 2) * gdn_hd[l];
+            const float* ks_ = fqo + gdn_k_off + (size_t)(h / 2) * gdn_hd[l];
             double sq = 0, sk = 0;
             for (int d = 0; d < gdn_hd[l]; d++) {
                 qq[(size_t)h * gdn_hd[l] + d] = qs_[d];
@@ -1780,13 +1784,13 @@ int main(int argc,char**argv){
             gb[h] = 1.0f / (1.0f + expf(-(float)sb));
             for (int d = 0; d < gdn_hd[l]; d++) ggate[(size_t)h * gdn_hd[l] + d] = ga[h];
         }
-        // recurrent delta rule over 32 v-heads
-        gdn_attn_cpu(qq.data(), kk.data(), fqo + 4096, ggate.data(), gb.data(),
+        // recurrent delta rule over v-heads
+        gdn_attn_cpu(qq.data(), kk.data(), fqo + gdn_v_off, ggate.data(), gb.data(),
                      delta_state, out, gdn_hd[l], gdn_vh[l], 1.0f / sqrtf((float)gdn_hd[l]));
         // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
-        std::vector<float> zout(4096);
+        std::vector<float> zout((size_t)gdn_vh[l] * gdn_hd[l]);
         const float* zw = gdn_z_w[l].data();
-        for (int i = 0; i < 4096; i++) {
+        for (int i = 0; i < gdn_vh[l] * gdn_hd[l]; i++) {
             double s = 0;
             for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
             zout[i] = (float)s;
@@ -1808,16 +1812,17 @@ int main(int argc,char**argv){
     // (STD 512-float stride); pos; out [16*256] post sigmoid-gate, feeds O.
     auto std_attn_step = [&](int l, const float* x, float* fqo, KVCache& kvc,
                              int& pos, float* out) {
-        std::vector<float> kv(1024);   // [512 k | 512 v], CPU projections
+        const int std_kv_dim = std_nkv[l] * std_hd[l];
+        std::vector<float> kv(2 * (size_t)std_kv_dim);   // [k | v], CPU projections
         const float* kw_ = std_k_w[l].data();
         const float* vw_ = std_v_w[l].data();
-        for (int i = 0; i < 512; i++) {
+        for (int i = 0; i < std_kv_dim; i++) {
             double sk = 0, sv = 0;
             for (int j = 0; j < H; j++) {
                 sk += (double)kw_[(size_t)i * H + j] * x[j];
                 sv += (double)vw_[(size_t)i * H + j] * x[j];
             }
-            kv[i] = (float)sk; kv[512 + i] = (float)sv;
+            kv[i] = (float)sk; kv[std_kv_dim + i] = (float)sv;
         }
         const float* qnw = std_qn_w[l].data();
         const float* knw = std_kn_w[l].data();
@@ -1846,12 +1851,12 @@ int main(int argc,char**argv){
                 pos = 0;
             }
             memcpy(&kvc.k[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kh, std_hd[l] * 4);
-            memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + 512 + (size_t)kvh * std_hd[l], std_hd[l] * 4);
+            memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + std_kv_dim + (size_t)kvh * std_hd[l], std_hd[l] * 4);
         }
         kvc.n = pos + 1;
         attn_omp(fqo, out, kvc.n, kvc.k.data(), kvc.v.data(),
                  std_nh[l], std_nkv[l], std_hd[l], std_nh[l] / std_nkv[l]);
-        const float* gt = fqo + 4096;
+        const float* gt = fqo + std_nh[l] * std_hd[l];
         for (int i = 0; i < std_nh[l] * std_hd[l]; i++) out[i] *= 1.0f / (1.0f + expf(-gt[i]));
     };
 
@@ -2199,9 +2204,22 @@ int main(int argc,char**argv){
     if(input_tok_file && npt > XM) npt = XM;
 
     // Direct-mode GDN state (per-layer conv + delta rule buffers) — the
-    // worker op=32 path has its own fuse_* copies (#1472).
-    std::vector<float> dm_gdn_conv(has_moe ? (size_t)NC * 8192 * 4 : 0, 0.0f);
-    std::vector<float> dm_gdn_delta(has_moe ? (size_t)NC * 32 * 128 * 128 : 0, 0.0f);
+    // worker op=32 path has its own fuse_* copies (#1472). Sized by per-layer
+    // maxima: access strides are per-layer, so fixed Qwen3.6 sizes overflow
+    // on sibling geometry (#1482 review).
+    std::vector<float> dm_gdn_conv, dm_gdn_delta;
+    if (has_moe) {
+        int max_gdn_vh = 0, max_gdn_hd = 0, max_gdn_conv_dim = 0, max_gdn_conv_k = 0;
+        for (int l = 0; l < NC; l++) {
+            if (!is_gdn_layer[l]) continue;
+            if (gdn_vh[l] > max_gdn_vh) max_gdn_vh = gdn_vh[l];
+            if (gdn_hd[l] > max_gdn_hd) max_gdn_hd = gdn_hd[l];
+            if (gdn_conv_dim[l] > max_gdn_conv_dim) max_gdn_conv_dim = gdn_conv_dim[l];
+            if (gdn_conv_k[l] > max_gdn_conv_k) max_gdn_conv_k = gdn_conv_k[l];
+        }
+        dm_gdn_conv.resize((size_t)NC * max_gdn_conv_dim * max_gdn_conv_k, 0.0f);
+        dm_gdn_delta.resize((size_t)NC * max_gdn_vh * max_gdn_hd * max_gdn_hd, 0.0f);
+    }
 
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
     printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
