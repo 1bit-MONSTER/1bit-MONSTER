@@ -40,6 +40,20 @@ The [JARVIS pipeline](../jarvis.md) is the reference end-to-end application (STT
 - [x] Persona system + multi-step planner + RAG + tool calls
 - [ ] Whisper STT on NPU end-to-end (currently GPU HIP)
 - [ ] Streaming voice codec decoder to ONNX for GPU/NPU/CPU
+
+**Voice-cloning runbook (all scripts exist and parse — verified 2026-08-05; the only missing input is the ~30 min sample recording, which is the user's step):**
+```
+# 1. Record ~30 min (VAD + loudness-normalized, 24 kHz)
+python zaya_audio/record.py --duration 1800 --speaker_name <name> --output_dir ./voice_samples
+# 2. Train the RVQ-VAE codec (5.87M params)
+python zaya_audio/train_codec.py --data_dir ./voice_samples --output_dir ./codec_out
+# 3. Train the text->codec-token adapter (QLoRA, ROCm)
+python zaya_audio/train_adapter.py --codec ./codec_out --data_dir ./voice_samples --output_dir ./adapter_out
+# 4. Export ONNX + assemble the .voice pack (~25 MB)
+python zaya_audio/export_onnx.py --checkpoint ./codec_out --output ./codec.onnx
+python zaya_audio/voice_pack.py --codec ./codec.onnx --adapter ./adapter_out --speaker <name> --output ./<name>.voice
+```
+
 - [ ] Sub-second end-to-end voice latency
 
 ## Model coverage
