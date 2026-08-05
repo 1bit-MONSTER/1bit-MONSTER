@@ -195,29 +195,37 @@ static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize(mp*hd);rs.resize(m
 static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
     float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
 // Partial rotary for full-attention layers: only the first `rope_dim` dims
-// rotate (rope_dim = round(HD * partial_rotary_factor)).  Table sized for the
-// largest rope_dim seen across all STD layers so one build covers every layer.
-// ri2(theta, max_pos, rope_dim): build cos/sin tables [max_pos × rope_dim].
-// ra2(x, p, rope_dim): apply in-place to one head at position p.
-static std::vector<float> rc2,rs2;
-static int g_rope_dim2 = 64;   // updated at init; default = Qwen3.6 (HD=256, prf=0.25)
-static void ri2(float th, int mp, int rope_dim) {
-    g_rope_dim2 = rope_dim;
+// rotate (rope_dim = round(HD * partial_rotary_factor)).
+//
+// Two tables cover dual-theta models (e.g. DS V4 Flash YaRN: layers 0-1 use
+// theta=10000 for sliding-window, remaining layers use theta=160000).
+// Table 0 (rc2/rs2): primary theta (most STD layers).
+// Table 1 (rc2b/rs2b): alternate theta (sliding-window or other minority group).
+// ri2_build(slot, theta, max_pos, rope_dim): build one table slot (0 or 1).
+// ra2(x, p, rope_dim, slot): apply table slot in-place to one head at position p.
+struct RotTable2 { std::vector<float> c, s; int rope_dim = 0; };
+static RotTable2 g_rt2[2];
+static void ri2_build(int slot, float th, int mp, int rope_dim) {
+    auto& t = g_rt2[slot];
+    t.rope_dim = rope_dim;
     int hd2 = rope_dim / 2;
-    rc2.resize((size_t)mp * rope_dim);
-    rs2.resize((size_t)mp * rope_dim);
+    t.c.resize((size_t)mp * rope_dim);
+    t.s.resize((size_t)mp * rope_dim);
     for (int p = 0; p < mp; p++) for (int d = 0; d < hd2; d++) {
         float f = 1.0f / powf(th, (float)d / hd2), a = p * f;
-        rc2[(size_t)p*rope_dim+d]       = cosf(a);
-        rc2[(size_t)p*rope_dim+d+hd2]   = cosf(a);
-        rs2[(size_t)p*rope_dim+d]       = sinf(a);
-        rs2[(size_t)p*rope_dim+d+hd2]   = sinf(a);
+        t.c[(size_t)p*rope_dim+d]      = cosf(a);
+        t.c[(size_t)p*rope_dim+d+hd2]  = cosf(a);
+        t.s[(size_t)p*rope_dim+d]      = sinf(a);
+        t.s[(size_t)p*rope_dim+d+hd2]  = sinf(a);
     }
 }
-static inline void ra2(float*x, int p, int rope_dim) {
+// Legacy single-table init: fills slot 0, leaves slot 1 empty (same theta path).
+static void ri2(float th, int mp, int rope_dim) { ri2_build(0, th, mp, rope_dim); }
+static inline void ra2(float*x, int p, int rope_dim, int slot = 0) {
+    const auto& t = g_rt2[slot];
     int hd2 = rope_dim / 2;
     for (int d = 0; d < hd2; d++) {
-        float a=x[d], b=x[d+hd2], c=rc2[(size_t)p*rope_dim+d], s=rs2[(size_t)p*rope_dim+d];
+        float a=x[d], b=x[d+hd2], c=t.c[(size_t)p*rope_dim+d], s=t.s[(size_t)p*rope_dim+d];
         x[d]=a*c-b*s; x[d+hd2]=b*c+a*s;
     }
 }
@@ -984,6 +992,13 @@ int main(int argc,char**argv){
         // Per-layer detection: probe every layer individually so heterogeneous
         // models (e.g. DS V4 Flash layers 0-1 sliding-window vs. CSA/HCA rest)
         // get accurate dims rather than inheriting from the first matching layer.
+        //
+        // Rotary theta detection: sliding-window STD layers use a different
+        // (usually shorter-context) theta than full-context STD layers.
+        // Probe self_attn.window_size per layer — if present the layer is
+        // sliding-window and we assign the base (10000) theta to it; full-
+        // context layers keep cfg.rope_theta.  If the key is absent we leave
+        // the initialized cfg.rope_theta for all layers (single-theta models).
         for (int l = 0; l < NC; l++) {
             int s0 = 0;
             if (is_gdn_layer[l]) {
@@ -1013,6 +1028,12 @@ int main(int argc,char**argv){
                     if (find_tensor_info(js, jl, bn, &s0) > 0 && s0 > 0)
                         std_nh[l] = s0 * 32 / std_hd[l] / 2;
                 }
+                // Sliding-window detection: GGUF stores window size as a
+                // per-layer metadata tensor "self_attn.window_size" with a
+                // scalar value; key presence → sliding-window layer.
+                snprintf(bn, 128, "model.layer.%d.self_attn.window_size", l);
+                if (key_exists(js, jl, bn))
+                    rope_theta_per_layer[l] = 10000.0f;  // short-context base theta
             }
         }
         fprintf(stderr, "  per-layer dims detected (all %d layers)\n", NC);
@@ -1346,21 +1367,37 @@ int main(int argc,char**argv){
 
     // RoPE — primary table for GDN/dense layers
     ri(HD,cfg.rope_theta,4096);
-    // Partial rotary table for full-attention (STD) layers: theta and
-    // partial_rotary_factor may vary per layer (DS V4 Flash YaRN etc.).
-    // Build for the largest rope_dim seen so ra2() covers every STD layer.
+    // Partial rotary tables for full-attention (STD) layers.
+    // Slot 0: primary theta (most STD layers, or the single theta for
+    //         homogeneous models).
+    // Slot 1: alternate theta (sliding-window or other minority group).
+    //         Built only when at least one STD layer has a different theta.
+    // rope_dim is taken from partial_rotary_factor × hd; we use the largest
+    // rope_dim seen for each theta group so one slot covers all its layers.
     {
-        float max_theta2 = 1e7f;
-        int max_rdim = 0;
+        float th0 = cfg.rope_theta, th1 = 0.0f;
+        int rdim0 = 0, rdim1 = 0;
         for (int l = 0; l < NC; l++) {
-            if (!is_gdn_layer[l]) {
-                int rdim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
-                rdim = (rdim / 2) * 2;  // must be even
-                if (rdim > max_rdim) { max_rdim = rdim; max_theta2 = rope_theta_per_layer[l]; }
+            if (is_gdn_layer[l]) continue;
+            int rdim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
+            rdim = (rdim / 2) * 2;
+            if (rdim <= 0) rdim = 64;
+            float th = rope_theta_per_layer[l];
+            // Primary group: theta matches cfg.rope_theta (the majority)
+            if (fabsf(th - th0) < 1.0f) {
+                if (rdim > rdim0) rdim0 = rdim;
+            } else {
+                // Alternate group: track the one non-primary theta value
+                if (th1 == 0.0f) th1 = th;
+                if (rdim > rdim1) rdim1 = rdim;
             }
         }
-        if (max_rdim <= 0) max_rdim = 64;  // fallback: Qwen3.6 default
-        ri2(max_theta2, 4096, max_rdim);
+        if (rdim0 <= 0) rdim0 = 64;  // fallback: Qwen3.6 default
+        ri2_build(0, th0, 4096, rdim0);
+        if (th1 != 0.0f && rdim1 > 0)
+            ri2_build(1, th1, 4096, rdim1);
+        else
+            g_rt2[1] = g_rt2[0];  // alias slot 1 → slot 0 for single-theta models
     }
     int kv_dwords=NKV*HD/2;
 
@@ -1786,21 +1823,24 @@ int main(int argc,char**argv){
         const float* knw = std_kn_w[l].data();
         int l_rope_dim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
         l_rope_dim = (l_rope_dim / 2) * 2;
-        if (l_rope_dim <= 0) l_rope_dim = g_rope_dim2;
+        if (l_rope_dim <= 0) l_rope_dim = g_rt2[0].rope_dim > 0 ? g_rt2[0].rope_dim : 64;
+        // Select rotary table slot by per-layer theta:
+        // slot 0 = primary (cfg.rope_theta), slot 1 = alternate (sliding-window etc.)
+        int l_slot = (fabsf(rope_theta_per_layer[l] - cfg.rope_theta) < 1.0f) ? 0 : 1;
         for (int h = 0; h < std_nh[l]; h++) {
             float* qh = fqo + (size_t)h * std_hd[l];
             double sq = 0;
             for (int d = 0; d < std_hd[l]; d++) sq += qh[d] * qh[d];
             float iq = 1.0f / sqrtf((float)(sq / std_hd[l]) + EPS);
             for (int d = 0; d < std_hd[l]; d++) qh[d] *= iq * qnw[d];
-            ra2(qh, pos, l_rope_dim);
+            ra2(qh, pos, l_rope_dim, l_slot);
             int kvh = h / (std_nh[l] / std_nkv[l]);
             float* kh = kv.data() + (size_t)kvh * std_hd[l];
             double sk = 0;
             for (int d = 0; d < std_hd[l]; d++) sk += kh[d] * kh[d];
             float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
             for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
-            ra2(kh, pos, l_rope_dim);
+            ra2(kh, pos, l_rope_dim, l_slot);
             if (pos >= 4096) {
                 fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
                 pos = 0;

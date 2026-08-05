@@ -317,12 +317,16 @@
   #define ROPE_THETA 160000.0f  // YaRN long-context theta (dual: 10000/160000)
   #define XCLBIN_SUFFIX "deepseek_v4_flash"
   #define GU_FUSED 1         // 2*IM=4096 <= 14336
-  #define BOS 100000
-  #define EOS 100001
+  #define BOS 100000  // verify against tokenizer.json — matches DS-V3, unconfirmed for V4
+  #define EOS 100001  // verify against tokenizer.json
   #define DEF_MP NULL        /* set $NPU_MODEL_PATH */
-  #define Q_I8R 57344        // H*NH*HD/8192 = 7168*128*512/8192
-  #define KV_I8R 448         // H*NKV*HD/8192 = 7168*1*512/8192
-  #define O_I8R 57344        // NH*HD*H/8192
+  // MLA note: Q projection is two-stage (W_q_a: [H, q_lora_rank=1024] then
+  // W_q_b: [q_lora_rank, NH*qk_nope_dim]).  Q_I8R covers the first stage
+  // (W_q_a tile rows = H*q_lora_rank/8192 = 7168*1024/8192 = 896).
+  // The full NH*HD layout (57344) does NOT exist as a single weight tensor.
+  #define Q_I8R 896          // W_q_a: H*q_lora_rank/8192 = 7168*1024/8192
+  #define KV_I8R 448         // W_kv_a: H*kv_lora_rank/8192 = 7168*512/8192
+  #define O_I8R 896          // W_o first stage (o_lora_rank=1024): H*1024/8192
   #define GU_I8R 1792        // H*IM/8192 = 7168*2048/8192
   #define D_I8R 1792         // IM*H/8192
   #define LM_I8R 113120      // NV*H/8192 = 129280*7168/8192
