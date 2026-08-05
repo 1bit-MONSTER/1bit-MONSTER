@@ -5,7 +5,7 @@
 //   - blk.N.ssm_in.weight         — Mamba2 in_proj
 //   - blk.N.ssm_conv1d.weight/bias — Mamba2 conv1d
 //   - blk.N.ssm_dt.bias           — Mamba2 dt bias
-//   - blk.N.ssm_a                 — Mamba2 A_log
+//   - blk.N.ssm_a                 — Mamba2 A = -exp(A_log), already negated (#1460)
 //   - blk.N.ssm_d                 — Mamba2 D
 //   - blk.N.ssm_norm.weight       — Mamba2 norm
 //   - blk.N.ssm_out.weight        — Mamba2 out_proj
@@ -409,6 +409,11 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
     cfg.n_layers      = gu32("block_count", 54);
     cfg.n_attn_heads  = gu32("attention.head_count", 32);
     cfg.n_kv_heads    = gu32("attention.head_count_kv", 32);
+    // attention_head_dim was never read from KV — it defaulted to 80 while the
+    // real value is 128 (attention.key_length). This silently broke every
+    // hybrid-layer attention op (buffer sizes, o_proj, RoPE). (#1460 follow-up)
+    cfg.attn_head_dim  = gu32("attention.key_length", 128);
+    cfg.attn_hidden_size = cfg.n_attn_heads * cfg.attn_head_dim;  // 2*d_model for zamba2 (concat)
     cfg.vocab_size    = gu32("vocab_size", gu32("llm.vocab_size", 32000));
     cfg.max_seq_len   = gu32("context_length", 4096);
     cfg.rope_theta    = gf32("rope.freq_base", 10000.0f);

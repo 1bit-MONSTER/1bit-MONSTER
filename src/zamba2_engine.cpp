@@ -59,11 +59,23 @@ static void forward_mamba_layer(
 }
 
 // Forward helper: apply one hybrid layer (Mamba2 decoder + shared attention + MLP)
-// In the GGUF format, shared block weights are duplicated per hybrid layer,
-// so we use the per-layer weights from HybridLayerWeights directly.
+// Forward helper: apply one hybrid layer — shared transformer + linear (ssm_mix)
+// + mamba decoder. REWRITTEN to match the reference (transformers
+// modeling_zamba2.py Zamba2HybridLayer / Zamba2AttentionDecoderLayer,
+// verified against GGUF tensor dims on Zamba2-1.2B):
+//
+//   th = shared_transformer(concat(hidden, embedding))   # 2*d_model input
+//   th = ssm_mix(th)                                     # hidden -> hidden
+//   hidden = hidden + th
+//   hidden = mamba_decoder(hidden)                       # attn_norm -> mamba -> +residual
+//
+// Attention: MHA, scale sqrt(2/head_dim) (concat compensation), o_proj
+// n_heads*head_dim -> d_model, then ffn_norm -> SiLU FFN. No residual
+// connections inside the transformer block (the embedding concat IS the skip).
 static void forward_hybrid_layer(
-    const float* input,
-    float* output,
+    const float* input,   // hidden state from previous layer [d_model]
+    const float* embed,   // original token embedding [d_model] (concat input)
+    float* output,        // [d_model]
     const HybridLayerWeights& hw,
     const Zamba2Config& cfg,
     float* conv_state,
@@ -73,181 +85,119 @@ static void forward_hybrid_layer(
     int pos,
     int max_seq
 ) {
-    int d_model = cfg.d_model;
-    int n = d_model;
+    int n = cfg.d_model;
+    int n_heads = cfg.n_attn_heads;
+    int n_kv = cfg.n_kv_heads;
+    int hd = cfg.attn_head_dim;
+    int attn_in = cfg.attn_hidden_size;  // n_heads * hd = 2*d_model (concat)
+    int d_ff = (int)hw.shared_transformer_up.size() / n;
 
-    std::vector<float> normed(n);
-    std::vector<float> mamba_out(n);
-    std::vector<float> projected(n);
-    std::vector<float> attn_out(n);
-    std::vector<float> ff_in(n);
-    std::vector<float> ff_out(n);
+    // ── Shared transformer ──
+    // 1. concat(hidden, embedding) + RMSNorm (post_attention_norm, 2*d_model)
+    std::vector<float> x(attn_in);
+    for (int i = 0; i < n; ++i) { x[i] = input[i]; x[n + i] = embed[i]; }
+    rms_norm(x.data(), x.data(), hw.shared_transformer_pre_ff_norm.data(), attn_in, cfg.rms_norm_eps);
 
-    // ── Step 1: Input norm ──
-    rms_norm(input, normed.data(), hw.input_norm_w.data(), n, cfg.rms_norm_eps);
+    // 2. QKV projections (MHA, no bias)
+    std::vector<float> q(attn_in), k((size_t)n_kv * hd), v((size_t)n_kv * hd);
+    for (int h = 0; h < n_heads; ++h)
+        for (int d = 0; d < hd; ++d) {
+            float sum = 0.0f;
+            for (int j = 0; j < attn_in; ++j)
+                sum += hw.shared_transformer_q[((size_t)h * hd + d) * attn_in + j] * x[j];
+            q[(size_t)h * hd + d] = sum;
+        }
+    for (int h = 0; h < n_kv; ++h)
+        for (int d = 0; d < hd; ++d) {
+            float sum_k = 0.0f, sum_v = 0.0f;
+            for (int j = 0; j < attn_in; ++j) {
+                sum_k += hw.shared_transformer_k[((size_t)h * hd + d) * attn_in + j] * x[j];
+                sum_v += hw.shared_transformer_v[((size_t)h * hd + d) * attn_in + j] * x[j];
+            }
+            k[(size_t)h * hd + d] = sum_k;
+            v[(size_t)h * hd + d] = sum_v;
+        }
 
-    // ── Step 2: Mamba2 decoder ──
-    {
-        std::vector<float> mamba_normed(n);
-        rms_norm(normed.data(), mamba_normed.data(), hw.mamba_input_norm_w.data(), n, cfg.rms_norm_eps);
+    // 3. RoPE + KV cache (1.2B/7B use RoPE; 2.7B does not — TODO config flag)
+    apply_rope(q.data(), k.data(), pos, hd, n_heads, n_kv, cfg.rope_theta);
+    for (int h = 0; h < n_kv; ++h)
+        for (int d = 0; d < hd; ++d) {
+            kv_k_cache[pos * n_kv * hd + h * hd + d] = k[h * hd + d];
+            kv_v_cache[pos * n_kv * hd + h * hd + d] = v[h * hd + d];
+        }
 
-        mamba2_cpu_forward(
-            mamba_normed.data(),
-            hw.mamba.in_proj_w.data(),
-            hw.mamba.conv1d_w.data(),
-            hw.mamba.conv1d_b.data(),
-            hw.mamba.dt_bias.data(),
-            hw.mamba.A_log.data(),
-            hw.mamba.D.data(),
-            hw.mamba.norm_w.data(),
-            hw.mamba.out_proj_w.data(),
-            conv_state,
-            ssm_state,
-            mamba_out.data(),
-            [&]() -> Mamba2Config {
-                Mamba2Config mc;
-                mc.d_model = cfg.d_model;
-                mc.d_state = cfg.d_state;
-                mc.d_conv = cfg.d_conv;
-                mc.d_inner = cfg.d_inner;
-                mc.n_head = cfg.n_head;
-                mc.n_group = cfg.n_group;
-                mc.head_dim = cfg.head_dim;
-                mc.rms_norm_eps = cfg.rms_norm_eps;
-                return mc;
-            }()
-        );
-    }
-
-    // Mamba decoder residual
-    for (int i = 0; i < n; ++i) mamba_out[i] += normed[i];
-
-    // ── Step 3: Linear projection ──
+    // 4. Attention (scale sqrt(2/hd)), o_proj attn_in -> n
+    std::vector<float> attn_out(attn_in);
+    attention_forward(q.data(), kv_k_cache, kv_v_cache, attn_out.data(),
+                      pos, max_seq, n_heads, n_kv, hd, n);
+    std::vector<float> attn_proj(n);
     for (int i = 0; i < n; ++i) {
         float sum = 0.0f;
-        for (int j = 0; j < n; ++j) {
-            sum += hw.linear_w[i * n + j] * mamba_out[j];
-        }
-        projected[i] = sum;
+        for (int j = 0; j < attn_in; ++j)
+            sum += hw.shared_transformer_o[(size_t)i * attn_in + j] * attn_out[j];
+        attn_proj[i] = sum;
     }
 
-    // ── Step 4: Transformer (attention + FFN) ──
-    // Input norm for attention
-    rms_norm(projected.data(), ff_in.data(), hw.shared_transformer_ffn_norm.data(), n, cfg.rms_norm_eps);
-
-    // Self-attention with per-layer weights (duplicated shared blocks)
+    // 5. pre-FFN RMSNorm (ffn_norm, d_model) + SiLU FFN
+    std::vector<float> ff_in(n);
+    rms_norm(attn_proj.data(), ff_in.data(), hw.shared_transformer_ffn_norm.data(), n, cfg.rms_norm_eps);
+    std::vector<float> th(n);
     {
-        int n_heads = cfg.n_attn_heads;
-        int n_kv = cfg.n_kv_heads;
-        int hd = cfg.attn_head_dim;
-
-        // QKV projections using per-hybrid-layer weights
-        std::vector<float> q(n_heads * hd, 0.0f);
-        std::vector<float> k(n_kv * hd, 0.0f);
-        std::vector<float> v(n_kv * hd, 0.0f);
-
-        for (int h = 0; h < n_heads; ++h) {
-            for (int d = 0; d < hd; ++d) {
-                float sum = 0.0f;
-                for (int j = 0; j < n; ++j) {
-                    sum += hw.shared_transformer_q[(h * hd + d) * n + j] * ff_in[j];
-                }
-                q[h * hd + d] = sum;
+        std::vector<float> gate_act(d_ff), up_act(d_ff), act(d_ff);
+        for (int i = 0; i < d_ff; ++i) {
+            float g = 0.0f, u = 0.0f;
+            for (int j = 0; j < n; ++j) {
+                g += hw.shared_transformer_gate[(size_t)i * n + j] * ff_in[j];
+                u += hw.shared_transformer_up[(size_t)i * n + j] * ff_in[j];
             }
+            gate_act[i] = g / (1.0f + std::exp(-g));  // SiLU
+            up_act[i] = u;
         }
-        for (int h = 0; h < n_kv; ++h) {
-            for (int d = 0; d < hd; ++d) {
-                float sum_k = 0.0f, sum_v = 0.0f;
-                for (int j = 0; j < n; ++j) {
-                    sum_k += hw.shared_transformer_k[(h * hd + d) * n + j] * ff_in[j];
-                    sum_v += hw.shared_transformer_v[(h * hd + d) * n + j] * ff_in[j];
-                }
-                k[h * hd + d] = sum_k;
-                v[h * hd + d] = sum_v;
-            }
-        }
-
-        // RoPE
-        apply_rope(q.data(), k.data(), pos, hd, n_heads, n_kv, cfg.rope_theta);
-
-        // Store in KV cache
-        for (int h = 0; h < n_kv; ++h) {
-            for (int d = 0; d < hd; ++d) {
-                kv_k_cache[pos * n_kv * hd + h * hd + d] = k[h * hd + d];
-                kv_v_cache[pos * n_kv * hd + h * hd + d] = v[h * hd + d];
-            }
-        }
-
-        // Attention
-        attention_forward(q.data(), kv_k_cache, kv_v_cache, attn_out.data(),
-                         pos, max_seq, n_heads, n_kv, hd, n);
-
-        // Output projection
-        std::vector<float> attn_proj(n, 0.0f);
+        for (int i = 0; i < d_ff; ++i) act[i] = gate_act[i] * up_act[i];
         for (int i = 0; i < n; ++i) {
             float sum = 0.0f;
-            for (int j = 0; j < n; ++j) {
-                sum += hw.shared_transformer_o[i * n + j] * attn_out[j];
-            }
-            attn_proj[i] = sum;
-        }
-
-        // Attention residual — add to projected (the original pre-norm input),
-        // not ff_in (the normalized version). Pre-LN: x = x + attn(x_normed)
-        for (int i = 0; i < n; ++i) {
-            projected[i] = projected[i] + attn_proj[i];
+            for (int j = 0; j < d_ff; ++j) sum += hw.shared_transformer_down[(size_t)i * d_ff + j] * act[j];
+            th[i] = sum;
         }
     }
 
-    // ── Step 5: Shared MLP (with separate gate/up/down weights) ──
-    {
-        std::vector<float> ff_normed(n);
-        rms_norm(projected.data(), ff_normed.data(), hw.shared_transformer_pre_ff_norm.data(), n, cfg.rms_norm_eps);
-
-        int d_ff = (int)hw.shared_transformer_up.size() / n;  // hidden size from up_proj
-        if (d_ff <= 0) d_ff = n;
-
-        // Gate projection: gate = gate_w @ x
-        std::vector<float> gate_act(d_ff, 0.0f);
-        for (int i = 0; i < d_ff; ++i) {
-            float sum = 0.0f;
-            for (int j = 0; j < n; ++j) {
-                sum += hw.shared_transformer_gate[i * n + j] * ff_normed[j];
-            }
-            // SiLU activation
-            gate_act[i] = sum / (1.0f + std::exp(-sum));
-        }
-
-        // Up projection: up = up_w @ x
-        std::vector<float> up_act(d_ff, 0.0f);
-        for (int i = 0; i < d_ff; ++i) {
-            float sum = 0.0f;
-            for (int j = 0; j < n; ++j) {
-                sum += hw.shared_transformer_up[i * n + j] * ff_normed[j];
-            }
-            up_act[i] = sum;
-        }
-
-        // Element-wise multiply: act = gate * up
-        std::vector<float> act(d_ff, 0.0f);
-        for (int i = 0; i < d_ff; ++i) {
-            act[i] = gate_act[i] * up_act[i];
-        }
-
-        // Down projection
-        for (int i = 0; i < n; ++i) {
-            float sum = 0.0f;
-            for (int j = 0; j < d_ff; ++j) {
-                sum += hw.shared_transformer_down[i * d_ff + j] * act[j];
-            }
-            ff_out[i] = sum;
-        }
-    }
-
-    // MLP residual + projection residual
+    // ── Linear (ssm_mix) + mamba decoder ──
+    // hidden = hidden + ssm_mix(th); then norm -> mamba -> + residual
+    std::vector<float> mixed(n);
     for (int i = 0; i < n; ++i) {
-        output[i] = projected[i] + ff_out[i];
+        float sum = 0.0f;
+        for (int j = 0; j < n; ++j) sum += hw.linear_w[(size_t)i * n + j] * th[j];
+        mixed[i] = input[i] + sum;
     }
+    std::vector<float> normed(n), mamba_out(n);
+    rms_norm(mixed.data(), normed.data(), hw.mamba_input_norm_w.data(), n, cfg.rms_norm_eps);
+    mamba2_cpu_forward(
+        normed.data(),
+        hw.mamba.in_proj_w.data(),
+        hw.mamba.conv1d_w.data(),
+        hw.mamba.conv1d_b.data(),
+        hw.mamba.dt_bias.data(),
+        hw.mamba.A_log.data(),
+        hw.mamba.D.data(),
+        hw.mamba.norm_w.data(),
+        hw.mamba.out_proj_w.data(),
+        conv_state,
+        ssm_state,
+        mamba_out.data(),
+        [&]() -> Mamba2Config {
+            Mamba2Config mc;
+            mc.d_model = cfg.d_model;
+            mc.d_state = cfg.d_state;
+            mc.d_conv = cfg.d_conv;
+            mc.d_inner = cfg.d_inner;
+            mc.n_head = cfg.n_head;
+            mc.n_group = cfg.n_group;
+            mc.head_dim = cfg.head_dim;
+            mc.rms_norm_eps = cfg.rms_norm_eps;
+            return mc;
+        }()
+    );
+    for (int i = 0; i < n; ++i) output[i] = mixed[i] + mamba_out[i];
 }
 
 // ── Full model forward pass ──
@@ -264,6 +214,7 @@ bool Zamba2Model::forward(int token_id, float* logits) {
     for (int i = 0; i < d_model; ++i) {
         hidden[i] = embed_w[token_id * d_model + i];
     }
+    std::vector<float> embedding = hidden;  // original embedding for hybrid concat
 
     // ── Layer loop ──
     for (int layer = 0; layer < n_layers; ++layer) {
@@ -290,7 +241,7 @@ bool Zamba2Model::forward(int token_id, float* logits) {
 
             std::vector<float> layer_out(d_model);
             forward_hybrid_layer(
-                hidden.data(), layer_out.data(),
+                hidden.data(), embedding.data(), layer_out.data(),
                 hl, cfg,
                 conv_states.data() + layer * (cfg.d_conv - 1) * conv_dim,
                 ssm_states.data() + layer * cfg.d_state * cfg.d_inner,
@@ -319,7 +270,7 @@ bool Zamba2Model::forward(int token_id, float* logits) {
                 ssm_states.data() + layer * cfg.d_state * cfg.d_inner,
                 mc2, conv_dim
             );
-            hidden = layer_out;
+hidden = layer_out;
         }
     }
 

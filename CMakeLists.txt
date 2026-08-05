@@ -643,7 +643,7 @@ else()
 endif()
 
 if(ZINC_CPP_AVAILABLE)
-    target_sources(backend_manager PRIVATE src/backend_zinc.cpp)
+    target_sources(backend_manager PRIVATE src/backend_zinc.cpp src/backend_zamba2_vulkan.cpp)
     target_link_libraries(backend_manager PUBLIC zinc_cpp)
     target_include_directories(backend_manager PRIVATE engine/gpu/zinc_cpp/include)
 endif()
@@ -770,6 +770,19 @@ if(RCPP_HAVE_VULKAN)
 endif()
 if(ZINC_CPP_AVAILABLE)
     list(APPEND ZAYA_SERVER_SRC tests/backends/backend_zinc.cpp)
+endif()
+
+# Zamba2 Vulkan validation: backend_zamba2_vulkan.cpp vs CPU reference
+# (zamba2_engine.cpp). P1 correctness gate from docs/research/zamba2-vulkan.md.
+if(ZINC_CPP_AVAILABLE)
+    add_executable(validate_zamba2_vulkan
+        tools/validate_zamba2_vulkan.cpp
+        src/zamba2_engine.cpp
+        src/mamba2_kernels.cpp
+        src/gguf_reader.cpp)
+    target_include_directories(validate_zamba2_vulkan PRIVATE
+        src engine/gpu/zinc_cpp/include include)
+    target_link_libraries(validate_zamba2_vulkan PRIVATE zinc_cpp)
 endif()
 # HIP backend: adapter (InferenceBackend) + canonical src (Backend + zaya_engine)
 list(APPEND ZAYA_SERVER_SRC tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp)
