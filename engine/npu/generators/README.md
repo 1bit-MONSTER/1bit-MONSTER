@@ -188,3 +188,29 @@ depth 2 (batch=1); the k=64 build's depth-6 K-batching DMA pipelining is
 worth more than the halved K-iteration count.  Tile shape is L1-bound and
 effectively optimal for this kernel structure — further kernel work should
 target operand-feed efficiency inside the mmul loop, not tile dims.
+
+### Kernel profile (source + disassembly, 2026-08-05)
+
+The k-reduction loop of `matmul_vectorized_2x2_mmul` is:
+
+```
+for i in k/s:              // colA = k/s = 8 iterations for DIM_K=64
+    load A0, A1            // 2 vector loads
+    load B0, B1            // 2 vector loads
+    C00.mac(A0,B0) C01.mac(A0,B1) C10.mac(A1,B0) C11.mac(A1,B1)  // 4 vmac
+```
+
+**4 vector loads per 4 vmacs (1:1)**; the disassembly (.LBB0_2) shows the
+compiler double-buffering the loads (bm*1/bm*2 register pairs) but the four
+macs per step share A0/A1/B0/B1, so each step is one dependency group —
+the macs cannot start until all four loads land, and the next step's macs
+wait on this step's.  That is the concrete mechanism behind the ~750 GOP/s
+(≈20-30% of the core's mmul issue capacity): **insufficient independent
+macs to hide load/mac latency, not raw load count**.
+
+The fix direction is a wider n-expansion (2x4 instead of 2x2): load A0/A1
+once per k-step, load four B pairs, issue 8 macs — halves A traffic and,
+more importantly, doubles the independent macs the pipeline can overlap.
+That is a rewrite of the mmul loop in `mm_kernel_reference.cc` — the
+generator cannot fix it, and the tile-shape experiments (DIM_K=128)
+confirmed the L1 layout is already at its limit.
