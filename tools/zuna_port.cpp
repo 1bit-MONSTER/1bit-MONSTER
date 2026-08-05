@@ -269,7 +269,11 @@ struct ZRunner {
     }
 };
 static bool load_f32_file(const char* path, std::vector<f32>& v){ FILE* f=fopen(path,"rb"); if(!f) return false; fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET); v.resize(n/4); if(n) fread(v.data(),4,v.size(),f); fclose(f); return true; }
+#ifdef ONE_BIN_DISPATCH
+int zuna_main(int argc, char** argv){
+#else
 int main(int argc, char** argv){
+#endif
     if(argc<5){ fprintf(stderr,"usage: %s <weights_dir> <tokens.bin> <tok_idx.bin> <out_recon.bin> [out_enc.bin] [seed]\n", argv[0]); return 2; }
     std::string dir=argv[1];
     FILE* fb=fopen((dir+"/weights.bin").c_str(),"rb"); if(!fb){fprintf(stderr,"no weights.bin\n");return 1;}
