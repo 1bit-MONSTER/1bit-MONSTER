@@ -96,6 +96,9 @@ Key ground truths fixed during the port (all source-verified, several correcting
   must search for `"name"` alone.
 
 `// ponytail:` This is the CPU correctness core in fp32 (matches CPU reference to machine
-precision). GPU kernels, the `1bit zuna` subcommand/server, and the C++ safetensors reader are
-**deliberately deferred** — not needed for correctness validation. Add when latency matters;
-for a 380M model on consumer GPU the CPU path at fp32 already runs sub-second.
+precision). It is wired into the engine as the `1bit zuna` subcommand (ONE_BIN_DISPATCH,
+built into `build/1bit`), verified end-to-end: `1bit zuna <weights_dir> tokens tok_idx out [enc] [seed] [z]`
+reproduces the reference encoder (MAE 1.4e-6) and 50-step reconstruction (MAE 3e-8, corr 1.0)
+when given the same initial noise file. GPU kernels and the C++ safetensors reader remain
+**deferred** — not needed; the fp32 CPU path runs sub-second on a 380M model. Add when
+latency matters.
