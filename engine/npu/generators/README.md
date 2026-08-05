@@ -160,3 +160,31 @@ The fix script:
   See [#1076](https://github.com/1bit-systems/1bit-systems/issues/1076).
 - **BD count limit**: If you increase batch_size beyond 6, verify total BDs
   stay under 16 per tile. See the table above for the formula.
+
+## Building kernel variants (mm_32x64x128.o) — measured verdict
+
+The GEMM core kernel is `mm_32x64x128.o` (DIM_M=32, DIM_K=64, DIM_N=128,
+`matmul_i8_i32` / `zero_i32` exports, 8x8x8 vectorized mmul).  The original
+compile command was not recorded anywhere — this is the verified reproduction
+(2026-08-05), with clang++ from the working Peano
+(`~/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie/bin/clang++`):
+
+```
+clang++ mm_kernel_reference.cc -c -o mm_32x64x128.o \
+  -I ~/mlir-aie/third_party/aie_api/include -I ~/mlir-aie/aie_kernels/aie2p \
+  -std=c++20 -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
+  --target=aie2p-none-unknown-elf \
+  -DDIM_M=32 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY
+```
+
+(The `npu2_40_toolchain` checkout's iron/aiecc are internally inconsistent —
+missing modules, stale binaries — do not route kernel builds through it.)
+
+**DIM_K=128 variant — measured, negative.** `mm_32x128x128.o` (same 8x8x8
+kernel, K=128 tiles) on the QKV shape: **1.943 ms / 552.6 GOP/s vs 1.591 ms /
+674.8 GOP/s** for DIM_K=64 (~18% regression), both correctness passes clean.
+Cause: the 16 KB B tile + 16 KB C tile pin core L1 at 64 KB, forcing fifo
+depth 2 (batch=1); the k=64 build's depth-6 K-batching DMA pipelining is
+worth more than the halved K-iteration count.  Tile shape is L1-bound and
+effectively optimal for this kernel structure — further kernel work should
+target operand-feed efficiency inside the mmul loop, not tile dims.
