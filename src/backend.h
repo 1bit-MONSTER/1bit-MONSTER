@@ -65,6 +65,28 @@ struct Backend {
     /// logit-level validation.
     virtual const float* last_logits() { return nullptr; }
 
+    // ── Batch decode (multi-sequence) ──
+
+    /// Maximum concurrent decode slots this backend supports.
+    /// Backends that don't implement batching return 1 (default).
+    virtual int max_batch_slots() const { return 1; }
+
+    /// Reset a single slot's KV cache (for multi-sequence backends).
+    /// Default: resets everything (single-sequence fallback).
+    virtual bool reset_slot(int slot_id) { (void)slot_id; return reset(); }
+
+    /// Batch generate: process multiple slots in one call.
+    /// Input: [(slot_id, token_id), ...]. Output: [next_token_id, ...]
+    /// Default: sequential fallback calling generate() per slot.
+    virtual std::vector<int> generate_batch(
+        const std::vector<std::pair<int,int>>& slot_tokens) {
+        std::vector<int> out;
+        out.reserve(slot_tokens.size());
+        for (auto& [slot, tok] : slot_tokens)
+            out.push_back(generate(tok));
+        return out;
+    }
+
     /// Clean up resources.
     virtual void destroy() = 0;
 
