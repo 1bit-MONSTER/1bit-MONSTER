@@ -79,6 +79,7 @@ struct Zamba2HIPState {
 
     // Working buffers
     float *d_hidden = nullptr;
+    float *d_residual = nullptr;  // [d_model] — pre-norm input for the residual
     float *d_tmp = nullptr;
     float *d_logits = nullptr;
 
@@ -96,7 +97,7 @@ struct Zamba2HIPState {
         safe_free(d_embed); safe_free(d_final_norm);
         safe_free(d_conv_state); safe_free(d_ssm_state);
         safe_free(d_k_cache); safe_free(d_v_cache);
-        safe_free(d_hidden); safe_free(d_tmp); safe_free(d_logits);
+        safe_free(d_hidden); safe_free(d_residual); safe_free(d_tmp); safe_free(d_logits);
         for (auto& lw : layer_weights) {
             safe_free(lw.in_proj_w); safe_free(lw.conv1d_w);
             safe_free(lw.conv1d_b); safe_free(lw.dt_bias);
@@ -196,9 +197,25 @@ extern "C" Zamba2HIPState* zamba2_hip_init(Zamba2Model& model) {
     hipMalloc(&s->d_v_cache, (size_t)s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
     hipMemset(s->d_v_cache, 0, (size_t)s->n_hybrid * max_seq * n_kv * hd * sizeof(float));
 
-    // Working buffers
+    // Working buffers. d_tmp must cover the hybrid scratch layout:
+    //   2*d_model (concat) + qkv + attn_out + 2*d_ff + 4*d_model + mamba_tmp
+    // where mamba_tmp = d_in_proj + conv_dim + d_inner, and the pure-mamba
+    // path needs d_in_proj + conv_dim + d_inner as well.
+    size_t d_ff_max = 0;
+    for (auto& [l, hl] : model.hybrid_layers) {
+        size_t dff = hl.shared_transformer_up.size() / (size_t)std::max(1, d_model);
+        if (dff > d_ff_max) d_ff_max = dff;
+    }
+    int d_in_proj = d_inner + conv_dim + cfg.n_head;
+    size_t mamba_tmp = (size_t)(d_in_proj + conv_dim + d_inner);
+    size_t attn_hidden = (size_t)cfg.n_attn_heads * cfg.attn_head_dim;
+    size_t kv_hidden   = (size_t)cfg.n_kv_heads * cfg.attn_head_dim;
+    size_t hyb_scratch = 2 * (size_t)d_model + (attn_hidden + 2 * kv_hidden) + attn_hidden
+                       + 2 * d_ff_max + 4 * (size_t)d_model + mamba_tmp;
+    size_t tmp_size = std::max(mamba_tmp, hyb_scratch);
     hipMalloc(&s->d_hidden, (size_t)d_model * sizeof(float));
-    hipMalloc(&s->d_tmp, (size_t)std::max(d_model, d_inner) * 4 * sizeof(float));  // multiple temps
+    hipMalloc(&s->d_residual, (size_t)d_model * sizeof(float));
+    hipMalloc(&s->d_tmp, tmp_size * sizeof(float));  // multiple temps
     hipMalloc(&s->d_logits, (size_t)cfg.vocab_size * sizeof(float));
 
     fprintf(stderr, "[zamba2-hip] GPU buffers allocated: conv=%zu ssm=%zu kv=%zu\n",
@@ -241,25 +258,40 @@ extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int to
     for (int l = 0; l < n_layers; ++l) {
         auto& lw = s->layer_weights[l];
 
-        // Input RMS norm
+        // Input RMS norm — pure mamba layers only. Hybrid layers do their own
+        // norms on the raw input (concat norm / mamba input norm); pre-norming
+        // here would double-normalize and diverge from HF.
         int threads = 256;
         int blocks = (d_model + threads - 1) / threads;
-        hipLaunchKernelGGL(zamba2_rms_norm_kernel, dim3(blocks), dim3(threads), 0, st,
-            s->d_hidden, s->d_tmp, lw.input_norm_w, d_model, cfg.rms_norm_eps);
-        HIP_CHECK(hipGetLastError());
-        hipMemcpyDtoDAsync(s->d_hidden, s->d_tmp, d_model * sizeof(float), st);
+        if (!lw.is_hybrid) {
+            // save the pre-norm input for the residual (the mamba block
+            // overwrites d_hidden with the normed input)
+            hipMemcpyDtoDAsync(s->d_residual, s->d_hidden, d_model * sizeof(float), st);
+            hipLaunchKernelGGL(zamba2_rms_norm_kernel, dim3(blocks), dim3(threads), 0, st,
+                s->d_tmp, s->d_hidden, lw.input_norm_w, d_model, cfg.rms_norm_eps);
+            HIP_CHECK(hipGetLastError());
+            hipMemcpyDtoDAsync(s->d_hidden, s->d_tmp, d_model * sizeof(float), st);
+        }
 
         float* conv_state = s->d_conv_state + (size_t)l * (cfg.d_conv - 1) * conv_dim;
         float* ssm_state  = s->d_ssm_state + (size_t)l * d_state * d_inner;
 
-        // ── Mamba2 GPU forward (single-token decode) ──
-        mamba2_gpu_decode_block(
-            s->d_hidden, lw.in_proj_w, lw.conv1d_w, lw.conv1d_b,
-            lw.dt_bias, lw.A_log, lw.D, lw.norm_w, lw.out_proj_w,
-            conv_state, ssm_state,
-            s->d_hidden, s->d_tmp,
-            d_model, d_inner, d_state, cfg.d_conv,
-            n_head, n_group, head_dim, conv_dim, st);
+        // ── Mamba2 GPU forward (single-token decode) — pure mamba layers only;
+        // hybrid layers run their mamba inside zamba2_hybrid_forward_gpu ──
+        if (!lw.is_hybrid) {
+            mamba2_gpu_decode_block(
+                s->d_hidden, lw.in_proj_w, lw.conv1d_w, lw.conv1d_b,
+                lw.dt_bias, lw.A_log, lw.D, lw.norm_w, lw.out_proj_w,
+                conv_state, ssm_state,
+                s->d_hidden, s->d_tmp,
+                d_model, d_inner, d_state, cfg.d_conv,
+                n_head, n_group, head_dim, conv_dim, st);
+            HIP_CHECK(hipGetLastError());
+            // residual: hidden = hidden + input (mamba decoder output is the
+            // out_proj result; the layer adds the pre-norm input back)
+            hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, st,
+                s->d_hidden, s->d_residual, d_model);
+        }
 
         // ── Hybrid layer: attention + FFN (CPU fallback) ──
         // ── Hybrid layer: GPU attention + FFN (zero CPU round-trips) ──
@@ -285,11 +317,14 @@ extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int to
                 lw.post_attn_norm, lw.ffn_norm,
                 lw.ffn_gate, lw.ffn_up, lw.ffn_down,
                 k_cache_gpu, v_cache_gpu,
-                s->d_hidden, s->d_tmp + d_model * 2,
+                s->d_hidden,
+                s->d_embed + (size_t)token_id * d_model,  // concat input
+                s->d_tmp,
                 d_model, d_inner, d_state, cfg.d_conv,
                 n_head, n_group, head_dim, conv_dim,
                 n_attn_heads, n_kv_heads, attn_head_dim,
-                d_ff_layer, pos, max_seq, st);
+                d_ff_layer, pos, max_seq, cfg.use_mem_rope, cfg.rms_norm_eps,
+                st);
 
             hyb_idx++;
         }
@@ -299,7 +334,7 @@ extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int to
     int threads = 256;
     int blocks = (d_model + threads - 1) / threads;
     hipLaunchKernelGGL(zamba2_rms_norm_kernel, dim3(blocks), dim3(threads), 0, st,
-        s->d_hidden, s->d_tmp, s->d_final_norm, d_model, cfg.rms_norm_eps);
+        s->d_tmp, s->d_hidden, s->d_final_norm, d_model, cfg.rms_norm_eps);
     HIP_CHECK(hipGetLastError());
     hipMemcpyDtoDAsync(s->d_hidden, s->d_tmp, d_model * sizeof(float), st);
 

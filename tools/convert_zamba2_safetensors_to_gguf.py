@@ -46,8 +46,8 @@ HYBRID_ATTN_MAP = {
     'shared_transformer.self_attn.k_proj.weight':  'attn_k.weight',
     'shared_transformer.self_attn.v_proj.weight':  'attn_v.weight',
     'shared_transformer.self_attn.o_proj.weight':  'attn_output.weight',
-    'shared_transformer.input_layernorm.weight':    None,  # This is the attention pre-norm, might map elsewhere
-    'shared_transformer.pre_ff_layernorm.weight':  'post_attention_norm.weight',
+    # input_layernorm / pre_ff_layernorm handled explicitly in load_shared_block
+    # (post_attention_norm.weight = concat norm, ffn_norm.weight = pre-FFN norm)
     'shared_transformer.feed_forward.down_proj.weight': 'ffn_down.weight',
     # gate_up_proj needs splitting into gate + up
 }
@@ -145,6 +145,8 @@ def main():
     writer.add_vocab_size(vocab)
     writer.add_rope_dimension_count(head_dim)
     writer.add_rope_freq_base(rope_base)
+    writer.add_key_length(head_dim)
+    writer.add_uint32('rope.use_mem_rope', 1 if tcfg.get('use_mem_rope', True) else 0)
     writer.add_feed_forward_length(n_ffn)
     writer.add_ssm_conv_kernel(ssm_conv)
     writer.add_ssm_inner_size(ssm_inner)
@@ -157,12 +159,94 @@ def main():
     total_tensors = 0
 
     def add_t(name, tensor):
+        """Write weights in the 1bit loader's convention:
+        - 2D matrices: flat data [input, output] row-major (= checkpoint
+          transpose) with raw_shape = original (out, in) so the GGUF ne is
+          (input, output) — the loader's read_tensor_transposed treats
+          ne[0] as the input dim and transposes to [output, input].
+        - ssm_conv1d.weight: the engine indexes the flat as [d_conv, conv_dim]
+          (k-major); write (d_conv, 1, conv_dim)."""
         nonlocal total_tensors
-        f16 = to_f16(tensor)
-        writer.add_tensor(name, f16)
+        t = to_f16(tensor)
+        if t.ndim == 2:
+            writer.add_tensor(name, np.ascontiguousarray(t.T), raw_shape=(t.shape[0], t.shape[1]))
+        elif t.ndim == 3 and name.endswith('ssm_conv1d.weight'):
+            writer.add_tensor(name, np.ascontiguousarray(t.transpose(2, 0, 1)))  # (d_conv, 1, conv_dim)
+        else:
+            writer.add_tensor(name, t)
         total_tensors += 1
         if total_tensors % 50 == 0:
             print(f"    {total_tensors} tensors ({time.time()-t0:.0f}s)...")
+
+    def add_t_embd(tensor):
+        """token_embd in llama.cpp/engine convention: data stored [d_model, vocab]
+        (numpy (d_model, vocab), ne[0]=d_model); the engine's loader transposes
+        when ne[0]==d_model. The gguf writer stores numpy bytes as-is with
+        ne=reversed(raw_shape), so pass the transposed array with the original
+        (vocab, d_model) raw_shape."""
+        nonlocal total_tensors
+        f16 = np.ascontiguousarray(to_f16(tensor).T)
+        writer.add_tensor('token_embd.weight', f16, raw_shape=(tensor.shape[0], tensor.shape[1]))
+        total_tensors += 1
+
+    # Shared transformer blocks: Zamba ties weights cyclically (num_mem_blocks=2,
+    # ABAB pattern). Only the first `num_mem_blocks` hybrid layers physically
+    # store shared_transformer tensors; every later hybrid layer must duplicate
+    # the block and fold its per-layer gate_up LoRA adapter
+    # (W_eff = W_shared + B @ A, A=adapter.0 rank->hidden, B=adapter.1 2*inter->rank).
+    n_mem_blocks = int(tcfg.get('num_mem_blocks', 2))
+    hybrid_pos = {li: p for p, li in enumerate(hybrid_ids)}
+    shared_cache = {}   # block_idx -> dict(gguf_name -> np array, adapters: {p: (A, B)})
+
+    def load_shared_block(li):
+        """Load the shared transformer block physically stored at hybrid layer li."""
+        out = {}
+        for st_suf, gguf_suf in HYBRID_ATTN_MAP.items():
+            st_name = f"{vl_prefix}model.layers.{li}.{st_suf}"
+            if st_name in wm and gguf_suf is not None:
+                out[gguf_suf] = load_tensor(model_dir, wm[st_name], st_name)
+        # Norms follow the engine/ref convention: post_attention_norm.weight =
+        # concat/attention input norm (HF input_layernorm), ffn_norm.weight =
+        # pre-FFN norm (HF pre_ff_layernorm). NOTE: the loader/ref apply
+        # post_attn_norm to the concat and ffn_norm before the FFN.
+        st_name = f"{vl_prefix}model.layers.{li}.shared_transformer.input_layernorm.weight"
+        if st_name in wm:
+            out['post_attention_norm.weight'] = load_tensor(model_dir, wm[st_name], st_name)
+        st_name = f"{vl_prefix}model.layers.{li}.shared_transformer.pre_ff_layernorm.weight"
+        if st_name in wm:
+            out['ffn_norm.weight'] = load_tensor(model_dir, wm[st_name], st_name)
+        gu_name = f"{vl_prefix}model.layers.{li}.shared_transformer.feed_forward.gate_up_proj.weight"
+        if gu_name in wm:
+            out['gate_up'] = load_tensor(model_dir, wm[gu_name], gu_name).astype(np.float32)
+        out['adapters'] = {}
+        for idx in range(len(hybrid_ids)):
+            a0 = f"{vl_prefix}model.layers.{li}.shared_transformer.feed_forward.gate_up_proj_adapter_list.{idx}.0.weight"
+            a1 = f"{vl_prefix}model.layers.{li}.shared_transformer.feed_forward.gate_up_proj_adapter_list.{idx}.1.weight"
+            if a0 in wm and a1 in wm:
+                out['adapters'][idx] = (
+                    load_tensor(model_dir, wm[a0], a0).astype(np.float32),
+                    load_tensor(model_dir, wm[a1], a1).astype(np.float32))
+        return out
+
+    def write_shared(li):
+        """Write the shared block for hybrid layer li, duplicating from the
+        physical owner and folding the per-layer gate_up adapter."""
+        p = hybrid_pos[li]
+        block_idx = p % n_mem_blocks
+        if block_idx not in shared_cache:
+            shared_cache[block_idx] = load_shared_block(li)
+        blk = shared_cache[block_idx]
+        for suf, t in blk.items():
+            if suf in ('gate_up', 'adapters'):
+                continue
+            add_t(f"blk.{li}.{suf}", t)
+        gu = blk['gate_up']
+        if p in blk['adapters']:
+            A, B = blk['adapters'][p]
+            gu = gu + B @ A
+        gate, up = np.split(gu, 2, axis=0)
+        add_t(f"blk.{li}.ffn_gate.weight", gate)
+        add_t(f"blk.{li}.ffn_up.weight", up)
 
     # Check if VL model (language_model prefix)
     vl_prefix = ''
@@ -179,9 +263,13 @@ def main():
         full_name = f"{vl_prefix}{st_name}"
         if full_name in wm:
             t = load_tensor(model_dir, wm[full_name], full_name)
-            add_t(gguf_name, t)
         elif st_name in wm:
             t = load_tensor(model_dir, wm[st_name], st_name)
+        else:
+            continue
+        if gguf_name == 'token_embd.weight':
+            add_t_embd(t)
+        else:
             add_t(gguf_name, t)
 
     # Per-layer
@@ -197,28 +285,14 @@ def main():
                     t = load_tensor(model_dir, wm[st_name], st_name)
                     add_t(f"blk.{li}.{gguf_suf}", t)
 
-            # Attention + FFN tensors
-            for st_suf, gguf_suf in HYBRID_ATTN_MAP.items():
-                st_name = f"{vl_prefix}model.layers.{li}.{st_suf}"
-                if st_name in wm:
-                    if gguf_suf is None:
-                        continue  # Skip unmapped tensors
-                    t = load_tensor(model_dir, wm[st_name], st_name)
-                    add_t(f"blk.{li}.{gguf_suf}", t)
+            # Shared transformer block (duplicated + adapter-folded)
+            write_shared(li)
 
-            # Handle gate_up_proj: split into gate + up
-            gu_name = f"{vl_prefix}model.layers.{li}.shared_transformer.feed_forward.gate_up_proj.weight"
-            if gu_name in wm:
-                t = load_tensor(model_dir, wm[gu_name], gu_name)
-                gate, up = np.split(t, 2, axis=0)
-                add_t(f"blk.{li}.ffn_gate.weight", gate)
-                add_t(f"blk.{li}.ffn_up.weight", up)
-
-            # Handle linear.weight (output projection)
+            # Linear mixing projection (ssm_mix)
             lin_name = f"{vl_prefix}model.layers.{li}.linear.weight"
             if lin_name in wm:
                 t = load_tensor(model_dir, wm[lin_name], lin_name)
-                add_t(f"blk.{li}.ffn_norm.weight", t)
+                add_t(f"blk.{li}.ssm_mix.weight", t)
 
         else:
             # Pure SSM layer

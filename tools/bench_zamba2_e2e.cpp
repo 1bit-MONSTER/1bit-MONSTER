@@ -91,6 +91,17 @@ int main(int argc, char** argv) {
 
     for (int i = 0; i < n_tokens; i++) {
         zamba2_hip_forward(gpu, model, token, logits.data(), i);
+        if (i == 0) {
+            FILE* f = fopen("/tmp/zyphra/hip_logits.f32", "wb");
+            if (f) { fwrite(logits.data(), sizeof(float), cfg.vocab_size, f); fclose(f); }
+            fprintf(stderr, "  [hip] top5: ");
+            std::vector<int> idx(cfg.vocab_size);
+            for (int v = 0; v < cfg.vocab_size; ++v) idx[v] = v;
+            std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
+                [&](int a, int b) { return logits[a] > logits[b]; });
+            for (int k = 0; k < 5; ++k) fprintf(stderr, "%d ", idx[k]);
+            fprintf(stderr, "\n");
+        }
         // Argmax for next token
         token = 0;
         for (int v = 1; v < cfg.vocab_size; v++)

@@ -131,6 +131,7 @@ __global__ void mamba2_group_norm_kernel(
 
 // Fused: y[i] *= silu(z[i]) — combines gate apply in one kernel.
 __global__ void silu_mul_kernel(float* y, float* z, int n);
+__global__ void gelu_mul_kernel(float* y, float* z, int n);
 
 // ════════════════════════════════════════════════════════════════════════
 // LEGACY KERNELS (compatibility stubs — delegate to tuned variants)

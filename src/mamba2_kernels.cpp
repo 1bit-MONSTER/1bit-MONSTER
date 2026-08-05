@@ -43,24 +43,29 @@ static void selective_scan_step(
     float* y_t,                 // [head_dim] — output for this head
     int head_dim, int d_state
 ) {
-    // Mamba2 SSD scan for one head: each head_dim element updates the shared state.
-    // Reference: Gu & Dao, "Mamba2: SSDs for Efficient Sequence Modeling" (2024)
-    // For each dimension d in 0..head_dim:
-    //   state[s] = A_bar * state[s] + B_t[s] * x_t[d]   (state shared across dims)
-    //   y[d] = C^T @ state + D_h * x_t[d]
+    // Mamba2 SSD scan for one head. TRUE mamba2 semantics: the state is
+    // [d_state, head_dim] per head and evolves per TOKEN — the head_dim
+    // elements do NOT decay each other within a token (y[hd] = C·h[:,hd] + D·x[hd]
+    // with h[:,hd] = dA·h_prev[:,hd] + dt·B·x[hd]). The old mamba1-style
+    // per-element scan (state shared across head_dim) decayed x[0] into x[1..]
+    // and diverged from every mamba2 reference. (#zamba2-validation)
+    // dt is clamped to [dt_min, inf) — HF mamba2 clamps to
+    // (config.time_step_min, float('inf')) and IGNORES time_step_max.
     float dt_softplus = softplus(dt_t);
+    if (dt_softplus < 0.001f) dt_softplus = 0.001f;
     float A_bar = std::exp(dt_softplus * A_h);  // A_h is -exp(A_log), A_bar in (0,1)
     float db = dt_softplus;  // discretized B multiplier
 
     for (int hd = 0; hd < head_dim; ++hd) {
-        // Update SSM state with this dimension's input
+        // Update this head_dim slice of the state with this dimension's input
         for (int s = 0; s < d_state; ++s) {
-            state[s] = A_bar * state[s] + db * B_t[s] * x_t[hd];
+            float& st = state[s * head_dim + hd];
+            st = A_bar * st + db * B_t[s] * x_t[hd];
         }
-        // Compute output: y = C @ state + D * x
+        // Compute output: y = C @ state[:, hd] + D * x
         float c_dot_state = 0.0f;
         for (int s = 0; s < d_state; ++s) {
-            c_dot_state += C_t[s] * state[s];
+            c_dot_state += C_t[s] * state[s * head_dim + hd];
         }
         y_t[hd] = c_dot_state + D_h * x_t[hd];
     }
@@ -190,7 +195,7 @@ void mamba2_cpu_forward(
             // x segment for this head: [head_dim] starting at head_id * head_dim
             const float* x_h = x_inner_raw + head_id * head_dim;
             float* y_h = y_inner.data() + head_id * head_dim;
-            float* ssm_h = ssm_state + head_id * d_state;
+            float* ssm_h = ssm_state + head_id * (d_state * head_dim);
 
             // Run one step of the selective scan
             selective_scan_step(
@@ -200,9 +205,15 @@ void mamba2_cpu_forward(
         }
     }
 
-    // ── Step 5b: Group norm on y_inner ──
-    // norm_w shape: [d_inner / n_group, n_group]
-    // Apply RMS norm per group
+    // ── Step 5b: Gate with z, THEN group RMS norm ──
+    // HF Zamba2RMSNormGated: hidden * silu(gate) first, then group RMSNorm
+    // (norm_before_gate=False). The old norm-then-gate order diverged from HF.
+    for (int64_t i = 0; i < d_inner; ++i) {
+        float zv = z_raw[i];
+        y_inner[i] = y_inner[i] * (zv / (1.0f + std::expf(-zv)));  // silu(z) gate
+    }
+
+    // Group RMS norm on the gated values
     int64_t group_size = d_inner / n_group;
     for (int64_t g = 0; g < n_group; ++g) {
         float* group_start = y_inner.data() + g * group_size;
@@ -221,18 +232,6 @@ void mamba2_cpu_forward(
             group_start[i] = (group_start[i] / rms) * norm_w[g + i * n_group];
             // norm_w layout: [d_inner/n_group, n_group] — accessed as norm_w[i * n_group + g]
         }
-    }
-
-    // ── Step 6: Gate with z ──
-    // Reshape z to [n_head, head_dim] and apply silu
-    for (int64_t i = 0; i < d_inner; ++i) {
-        float zv = z_raw[i];
-        z_reshaped[i] = zv / (1.0f + std::expf(-zv));  // silu(z)
-    }
-
-    // Multiply: y_inner = y_inner * silu(z)
-    for (int64_t i = 0; i < d_inner; ++i) {
-        y_inner[i] = y_inner[i] * z_reshaped[i];
     }
 
     // ── Step 7: out_proj ──

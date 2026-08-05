@@ -137,8 +137,10 @@ static void forward_hybrid_layer(
             sum += hw.shared_transformer_o[(size_t)i * attn_in + j] * attn_out[j];
         attn_proj[i] = sum;
     }
+    if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb attn_proj[0:4]: %.6f %.6f %.6f %.6f\n", attn_proj[0], attn_proj[1], attn_proj[2], attn_proj[3]);
 
-    // 5. pre-FFN RMSNorm (ffn_norm, d_model) + SiLU FFN
+    if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb concat_norm[0:4]: %.6f %.6f %.6f %.6f\n", x[0], x[1], x[2], x[3]);
+    // 5. pre-FFN RMSNorm (ffn_norm, d_model) + GELU FFN
     std::vector<float> ff_in(n);
     rms_norm(attn_proj.data(), ff_in.data(), hw.shared_transformer_ffn_norm.data(), n, cfg.rms_norm_eps);
     std::vector<float> th(n);
@@ -160,6 +162,7 @@ static void forward_hybrid_layer(
             th[i] = sum;
         }
     }
+    if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb ffn_out[0:4]: %.6f %.6f %.6f %.6f\n", th[0], th[1], th[2], th[3]);
 
     // ── Linear (ssm_mix) + mamba decoder ──
     // hidden = hidden + ssm_mix(th); then norm -> mamba -> + residual
@@ -169,6 +172,7 @@ static void forward_hybrid_layer(
         for (int j = 0; j < n; ++j) sum += hw.linear_w[(size_t)i * n + j] * th[j];
         mixed[i] = input[i] + sum;
     }
+    if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb ssm_mix[0:4]: %.6f %.6f %.6f %.6f\n", mixed[0], mixed[1], mixed[2], mixed[3]);
     std::vector<float> normed(n), mamba_out(n);
     rms_norm(mixed.data(), normed.data(), hw.mamba_input_norm_w.data(), n, cfg.rms_norm_eps);
     mamba2_cpu_forward(
@@ -197,7 +201,11 @@ static void forward_hybrid_layer(
             return mc;
         }()
     );
-    for (int i = 0; i < n; ++i) output[i] = mixed[i] + mamba_out[i];
+    // HF Zamba2MambaDecoderLayer: residual = decoder INPUT (not input+th);
+    // th is consumed inside the norm: out = input + mamba(norm(input + th)).
+    // Using mixed as the residual double-counts th.
+    for (int i = 0; i < n; ++i) output[i] = input[i] + mamba_out[i];
+    if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb mamba_out[0:4]: %.6f %.6f %.6f %.6f\n", mamba_out[0], mamba_out[1], mamba_out[2], mamba_out[3]);
 }
 
 // ── Full model forward pass ──
@@ -271,6 +279,9 @@ bool Zamba2Model::forward(int token_id, float* logits) {
                 mc2, conv_dim
             );
 hidden = layer_out;
+        }
+        if (getenv("Z2_DEBUG_HIDDEN")) {
+            fprintf(stderr, "L%d hidden0: %.6f %.6f %.6f %.6f\n", layer, hidden[0], hidden[1], hidden[2], hidden[3]);
         }
     }
 
