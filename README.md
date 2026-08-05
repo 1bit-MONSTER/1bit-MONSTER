@@ -19,9 +19,18 @@
 
 **[🌐 Website](https://1bit.systems)** · **[🤗 1BP Models](https://huggingface.co/bong-water-water-bong)** · **[📚 Docs](docs/README.md)** · **[🛠️ Journey](docs/journey.md)** · **[📊 Benchmarks](docs/wiki/performance.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
-**1bit** is an open-source, model-agnostic C++23 inference engine for running large language models on **AMD Strix Halo** (XDNA 2 NPU, RDNA 3.5 GPU), NVIDIA GPUs (CUDA), Apple Silicon (Metal), and any Vulkan 1.2+ device — all from a **single binary with zero Python at runtime**. It reads **GGUF**, **ONNX**, and the native **1BP** format (Q4NX 4-bit for dense models, TQ2 2-bit ternary for ternary-native checkpoints like Bonsai) with automatic architecture detection — no config files, no model registry, no per-model glue code. (Per the [1BP format policy](docs/wiki/models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured), TQ2 of dense models is quality-destructive — Q4NX is the dense-model format.)
+**1bit runs AI models on your own hardware, fast — including on a chip nothing else can touch.** One C++ binary, MIT-licensed, no Python or Rust in the engine, no config files: build it, point it at a model, run. It does LLM inference on AMD's Strix Halo NPU (AMD's own runtime for that chip is closed-source — we reverse-engineered it from scratch), on AMD/NVIDIA/Apple GPUs, or on plain CPU. It's an inference engine, not a chat app — bring your own frontend. 47 models run out of the box, 135M to 74B parameters. **No installer yet** — today it's build-from-source (below).
 
-We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary, the zaya_server NPU core (1,578,576 B raw / 1,302,736 B stripped); every server + CLI now ships as one ~67 MB ELF at `build/1bit` (both auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. Fully open-source under **MIT license**. 19 model architectures supported, 47 1BP models, including early support for **Moonshot AI's Kimi family** (Gated MLA MoE) — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
+Two examples of what that buys you: **Zyphra is the flagship pipeline** — LLM, TTS, and voice cloning running end-to-end from the same binary, not three stacks glued together. And when a major model drops, we don't wait for vendor support — **Kimi K3** (Moonshot's 2.8T-param model, released July 27, 2026) is already being reverse-engineered from the open weights, architecture worked out within days of release. **DeepSeek V4 Flash 0731** (released August 2, 2026) is next on the list — same pure-C++ reverse-engineering process, no Python involved.
+
+<details>
+<summary>Formats, backends, and reverse-engineering scope</summary>
+
+Reads **GGUF**, **ONNX**, and the native **1BP** format (Q4NX 4-bit for dense models, TQ2 2-bit ternary for ternary-native checkpoints like Bonsai) with automatic architecture detection — no model registry, no per-model glue code. (Per the [1BP format policy](docs/wiki/models.md#1bp-format-policy-2026-07-31-verdict-ppl-measured), TQ2 of dense models is quality-destructive — Q4NX is the dense-model format.)
+
+We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — turning 22 proprietary `.so` files into a 1.5 MB open-source binary, the zaya_server NPU core (1,578,576 B raw / 1,302,736 B stripped); every server + CLI now ships as one ~67 MB ELF at `build/1bit` (both auto-tracked in [site/numbers.json](site/numbers.json)). We then extracted 37 pre-built FLM models with 209 NPU xclbins, and created our own 1BP format to transform AMD's open-source models into high-performance ternary binaries. 19 model architectures supported, 47 1BP models, including early support for Moonshot AI's Kimi family — see [reverse-engineering notes](docs/research/kimi-k3-reverse-engineering.md).
+
+</details>
 
 **Platform support:**
 - **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + **GGML-Vulkan (llama.cpp)**
@@ -31,7 +40,7 @@ We reverse-engineered AMD's closed-source NPU stack (FastFlowLM) in 4 days — t
 - **x86 CPU** — OpenMP fallback
 
 **Key numbers** (re-measured 2026-08-01, Radeon 8060S / Strix Halo, GGML-Vulkan):
-- 19 model architectures · 47 1BP models · **9 backends** (HIP, CUDA, Metal, ZINC, **GGML-Vulkan**, NPU, Mamba1, Zamba2, CPU)
+- 19 model architectures · 47 1BP models · **5 backends** (NPU, HIP, ZINC, **GGML-Vulkan**, CPU)
 - **662 tok/s** peak end-to-end (SmolLM2-135M, **GGML-Vulkan**)
 - **373 tok/s** (Qwen3-0.6B Q4_K, **GGML-Vulkan**) — up from 344
 - **100 tok/s** (Qwen2.5-VL-3B, **GGML-Vulkan**)
@@ -75,15 +84,15 @@ Zyphra's model portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, M
 
 | Model | Params | 1BP Size | Backend(s) | Pipeline | Perf |
 |-------|:------:|:--------:|------------|:--------:|:----:|
-| **ZAYA1-8B** | 8.8B | 6.6 GB¹ | ZINC / HIP / NPU | 🧠🗣️ | 64 tok/s HIP |
-| **ZAYA1-74B-preview** | 74B | 739 MB² | ZINC / HIP | 🧠🗣️ | — |
-| **ZAYA1-VL-8B** | 8.8B | — | ZINC (vision) | 👁️🧠🗣️ | — |
+| **ZAYA1-8B** | 8.8B | 6.6 GB¹ | HIP / NPU | 🧠🗣️ | 64 tok/s HIP |
+| **ZAYA1-74B-preview** | 74B | 739 MB² | HIP | 🧠🗣️ | — |
+| **ZAYA1-VL-8B** | 8.8B | — | HIP (vision) | 👁️🧠🗣️ | — |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 🧠🗣️ | 26 tok/s ZINC |
 | **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **79.4 tok/s** 🏁 |
 | **BlackMamba-2.8B** | 2.8B | 1.8 GB | Mamba1 HIP | 🧠🗣️ | 46.0 tok/s 🏁 |
-| **Zamba2-1.2B-v2** | 1.2B | 1.1 GB | ZINC ✅ / NPU | 🧠 | 30 tok/s ZINC |
-| **Zamba2-2.7B-v2** | 2.7B | 2.4 GB | ZINC ✅ / NPU | 🧠 | — |
-| **Zamba2-7B-v2** | 7B | 6.6 GB | ZINC ✅ / NPU | 🧠 | — |
+| **Zamba2-1.2B-v2** | 1.2B | 1.1 GB | HIP / CPU | 🧠 | 30 tok/s HIP |
+| **Zamba2-2.7B-v2** | 2.7B | 2.4 GB | HIP / CPU | 🧠 | — |
+| **Zamba2-7B-v2** | 7B | 6.6 GB | HIP / CPU | 🧠 | — |
 | **Zamba-7B-v1** | 7B | 4.3 GB | Mamba1 HIP | 🧠 | — |
 
 **Pipeline depth:**
@@ -249,6 +258,16 @@ gguf · onnx · q4nx · 1bp · h1b ──▶ [model loader: auto-detect 19 archi
 | Mamba1 (HIP) | Radeon 8060S | State-space (BlackMamba, Zamba) |
 | Zamba2 (hybrid) | Radeon 8060S | Mamba2 + attention hybrids |
 | CPU (OpenMP) | x86 | Q4NX fallback |
+
+## Image & Video Generation (ComfyUI)
+
+`image_server` adds Stable Diffusion-family image and video generation on top of the same backends, via the [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) submodule, exposed as an OpenAI-style API and as ComfyUI custom nodes.
+
+- **Image — ✅ shipped.** Text-to-image and image-to-image (SD, SDXL, FLUX, Qwen-Image, Z-Image, + LoRA) — `POST /v1/images/generations`, `POST /v1/images/edits`.
+- **Video — ✅ shipped.** Text-to-video and image-to-video (Wan, LTX, Hunyuan), WebM/AVI encode — `POST /v1/video/generations`. Verified end-to-end with Wan2.1 T2V 1.3B on ROCm (2m38s vs. 8m48s CPU).
+- **ComfyUI nodes**: `1BP Image Generate`, `1BP Video Generate`, plus existing LLM/VLM/TTS nodes — see [`integrations/comfyui/`](integrations/comfyui/README.md).
+
+Build with `-DUSE_DIFFUSION=ON` (requires the `stable-diffusion.cpp` submodule); run `./build/image_server -p 8089` alongside `unified_server`.
 
 ## 📜 How We Got Here — Reverse Engineering the XDNA 2 NPU
 

@@ -7,7 +7,7 @@ After=network.target
 Type=simple
 User=1bit
 Group=render
-ExecStart=/opt/1bit-systems/build/vision_server \
+ExecStart=/opt/1bit-systems/build/1bit vision \
     --port 8099 \
     --model /opt/1bit-systems/models/Mage-VL-4B.1bp \
     --mmproj /opt/1bit-systems/models/Mage-ViT.1bp \

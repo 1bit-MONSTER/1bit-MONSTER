@@ -522,10 +522,10 @@ struct GenericBackend : Backend {
 
             lw.rms_attn = load_tensor(p + "attn_norm.weight", H);
             lw.rms_ffn  = load_tensor(p + "ffn_norm.weight", H);
-            lw.wq = load_tensor(p + "attn_q.weight", NH*HD*H);
-            lw.wk = load_tensor(p + "attn_k.weight", NKV*HD*H);
-            lw.wv = load_tensor(p + "attn_v.weight", NKV*HD*H);
-            lw.wo = load_tensor(p + "attn_output.weight", H*NH*HD);
+            lw.wq = load_tensor(p + "attn_q.weight", (size_t)NH*HD*H);
+            lw.wk = load_tensor(p + "attn_k.weight", (size_t)NKV*HD*H);
+            lw.wv = load_tensor(p + "attn_v.weight", (size_t)NKV*HD*H);
+            lw.wo = load_tensor(p + "attn_output.weight", (size_t)H*NH*HD);
 
             // Check that all required tensors loaded correctly. If any shape
             // mismatch occurred, load_tensor returns SIZE_MAX and the model
@@ -553,9 +553,9 @@ struct GenericBackend : Backend {
                     return false;
                 }
             } else {
-                lw.w1 = load_tensor(p + "ffn_gate.weight", FF*H);
-                lw.w2 = load_tensor(p + "ffn_up.weight", FF*H);
-                lw.w3 = load_tensor(p + "ffn_down.weight", H*FF);
+                lw.w1 = load_tensor(p + "ffn_gate.weight", (size_t)FF*H);
+                lw.w2 = load_tensor(p + "ffn_up.weight", (size_t)FF*H);
+                lw.w3 = load_tensor(p + "ffn_down.weight", (size_t)H*FF);
 
                 if (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX) {
                     fprintf(stderr, "  [generic] Layer %d: FFN tensor shape mismatch — ABORTING LOAD\n", i);

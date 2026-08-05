@@ -27,6 +27,7 @@
 #include "model_router.h"
 #include "simple_tokenizer.h"
 #include "vl_processor.h"
+#include "vision_encoder.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -109,6 +110,10 @@ using json = nlohmann::json;
 
 // ── Globals ──
 static std::atomic<bool> keep_running{true};
+// Vision (issue #1420): optional --mmproj for real ViT embeddings in chat.
+static VisionWeights g_vit;
+static bool g_vit_ok = false;
+static std::string g_mmproj_path;
 static std::string g_weights_dir = []() -> std::string {
     const char* env = getenv("ZAYA_WEIGHTS_DIR");
     if (env && env[0]) { std::string s(env); if (s.back()!='/') s+='/'; return s; }
@@ -868,6 +873,7 @@ int main(int argc, char** argv) {
         {"cors-origin",   required_argument, nullptr, 'c'},
         {"gen-timeout-ms", required_argument, nullptr, 't'},
         {"free-npu",      no_argument,       nullptr, 'F'},
+        {"mmproj",        required_argument, nullptr, 'M'},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -885,6 +891,7 @@ int main(int argc, char** argv) {
             case 'c': g_cors_origin = optarg; break;
             case 't': cli_gen_timeout_ms = atoi(optarg); break;
             case 'F': free_npu = true; break;
+            case 'M': g_mmproj_path = optarg; break;
         }
     }
 
@@ -1065,6 +1072,24 @@ int main(int argc, char** argv) {
         inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
     }
     if (inited) {
+        // Load vision encoder (--mmproj) for real ViT embeddings (issue #1420).
+        // Without it, image parts fall back to dummy zero embeddings.
+        if (!g_mmproj_path.empty()) {
+            if (g_mmproj_path.size() > 4 &&
+                g_mmproj_path.substr(g_mmproj_path.size() - 4) == ".1bp")
+                g_vit_ok = mage_vit_load_weights_1bp(g_mmproj_path.c_str(), g_vit);
+            else
+                g_vit_ok = g_vit.load_from_gguf(g_mmproj_path);
+            if (!g_vit_ok) {
+                fprintf(stderr, "WARNING: mmproj load failed (%s) — vision falls back to dummy embeddings\n",
+                        g_mmproj_path.c_str());
+            } else {
+                fprintf(stderr, "Vision encoder loaded: H=%d L=%d NH=%d P=%d merger=%s\n",
+                        g_vit.config.hidden_size, g_vit.config.num_layers,
+                        g_vit.config.num_heads, g_vit.config.patch_size,
+                        g_vit.mm0_w.empty() ? "no" : "yes");
+            }
+        }
         // Select active backend from the route's ordered list (not global
         // priority order), so the backend that matches the model format is
         // chosen first. Without this, npu_flm (T1_ACCELERATOR priority) gets
@@ -1493,25 +1518,65 @@ int main(int argc, char** argv) {
             const int VISION_TOKENS_PER_IMG = 64; // 16x16 patches / 4 merger
 
             mgr.generate(VISION_START);
-            std::vector<float> embed_buf(hidden, 0.0f);
-            for (auto& vp : vision_images) {
-                (void)vp;  // used when real ViT forward is implemented
-                for (int t = 0; t < VISION_TOKENS_PER_IMG; t++) {
-                    // TODO: replace with real ViT forward from vision_qwen2vl_poc
-                    // For now, feed zeros — the KV cache advances but content is
-                    // dummy. Full integration requires:
-                    //   1. Load mmproj GGUF
-                    //   2. Run ViT forward (CPU or GPU)
-                    //   3. Use projected embeddings here
-                    // See tools/vision_server.cpp for the full pipeline.
-                    if (active && active->instance) {
-                        active->instance->forward_embed(embed_buf.data());
+            if (g_vit_ok) {
+                // Real ViT forward: pixels -> mage_vit_forward (patch embed +
+                // transformer + 2x2 merger + projector) -> text-hidden
+                // embeddings, one forward_embed per token (issue #1420).
+                size_t n_embeds = 0;
+                for (auto& vp : vision_images) {
+                    std::vector<float> embs = mage_vit_forward(
+                        g_vit, vp.pixels(), 3, 1, vp.height(), vp.width(), 1);
+                    if (embs.empty()) {
+                        fprintf(stderr, "[vision] ViT forward produced no embeddings — skipping image\n");
+                        continue;
+                    }
+                    // Projector output dim: merger mlp.2 rows (mm0 is [4H, 4H]
+                    // -> mlp.2 is [th, 4H]) when a merger exists, else tower hidden.
+                    int th = g_vit.config.hidden_size;
+                    if (!g_vit.mm0_w.empty() && !g_vit.mm2_w.empty()) {
+                        int pm = (int)(g_vit.mm0_w.size() / (4 * g_vit.config.hidden_size));
+                        if (pm > 0) th = (int)(g_vit.mm2_w.size() / pm);
+                    }
+                    if (th <= 0) {
+                        fprintf(stderr, "[vision] invalid projector output dim — skipping image\n");
+                        continue;
+                    }
+                    if (th != hidden) {
+                        fprintf(stderr, "[vision] WARNING: projector dim %d != text hidden %d — mismatched mmproj/model pair?\n",
+                                th, hidden);
+                    }
+                    int n_tiles = (int)(embs.size() / th);
+                    std::vector<float> tok(hidden, 0.0f);
+                    for (int i = 0; i < n_tiles && active && active->instance; i++) {
+                        const float* e = embs.data() + (size_t)i * th;
+                        if (th == hidden) {
+                            active->instance->forward_embed(e);
+                        } else {
+                            int n = std::min(th, hidden);
+                            std::copy(e, e + n, tok.data());
+                            active->instance->forward_embed(tok.data());
+                        }
+                        n_embeds++;
                     }
                 }
+                fprintf(stderr, "[vision] injected %zu images (%zu real ViT embeddings)\n",
+                        vision_images.size(), n_embeds);
+            } else {
+                // No mmproj: feed zeros — the KV cache advances but content is
+                // dummy (historical behavior, kept as fallback).
+                std::vector<float> embed_buf(hidden, 0.0f);
+                for (auto& vp : vision_images) {
+                    (void)vp;
+                    for (int t = 0; t < VISION_TOKENS_PER_IMG; t++) {
+                        if (active && active->instance) {
+                            active->instance->forward_embed(embed_buf.data());
+                        }
+                    }
+                }
+                fprintf(stderr, "[vision] injected %zu images (%d dummy embeddings — pass --mmproj for real ViT)\n",
+                        vision_images.size(), VISION_TOKENS_PER_IMG);
             }
             mgr.generate(VISION_END);
-            fprintf(stderr, "[vision] injected %zu images (%d tokens each)\n",
-                    vision_images.size(), VISION_TOKENS_PER_IMG);
         }
 
         // Generate with strategy-aware routing (#696 fix: no global lock held)

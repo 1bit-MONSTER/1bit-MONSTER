@@ -143,6 +143,19 @@ static Backend* try_create_npu() {
     return b;
 }
 
+static Backend* try_create_vart() {
+    Backend* b = try_load_backend("librocm_cpp.so", "create_vart_backend");
+    if (!b) b = try_load_backend("libvart_backend.so", "create_vart_backend");
+    if (!b && has_static_symbol("create_vart_backend")) {
+        void* h = dlopen(nullptr, RTLD_LAZY);
+        if (h) {
+            auto* fn = (Backend*(*)())dlsym(h, "create_vart_backend");
+            if (fn) return fn();
+        }
+    }
+    return b;
+}
+
 // ── Mamba1 detection ──
 bool is_mamba1_architecture(const ModelConfig& cfg) {
     return cfg.arch == RCPP_ARCH_MAMBA || cfg.arch == RCPP_ARCH_ZAMBA;
@@ -380,6 +393,26 @@ Backend* create_backend(BackendType type) {
             auto* b = try_create_npu();
             if (b) { printf("  Created NPU XRT backend\n"); return b; }
             printf("  NPU backend unavailable (need XRT)\n");
+            return nullptr;
+        }
+        case BackendType::VART: {
+            auto* b = try_create_vart();
+            if (b) { printf("  Created VART backend\n"); return b; }
+            printf("  VART backend unavailable (need Vitis AI Runtime)\n");
+            return nullptr;
+        }
+        case BackendType::ONNX_NPU: {
+            // ponytail: try the static factory directly for ONNX
+            auto* b = try_load_backend("librocm_cpp.so", "create_onnx_npu_backend");
+            if (!b && has_static_symbol("create_onnx_npu_backend")) {
+                void* h = dlopen(nullptr, RTLD_LAZY);
+                if (h) {
+                    auto* fn = (Backend*(*)())dlsym(h, "create_onnx_npu_backend");
+                    if (fn) b = fn();
+                }
+            }
+            if (b) { printf("  Created ONNX NPU backend\n"); return b; }
+            printf("  ONNX NPU backend unavailable (need ONNX Runtime)\n");
             return nullptr;
         }
         case BackendType::CPU_AVX512:

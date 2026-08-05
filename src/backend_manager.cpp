@@ -247,6 +247,32 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2c2. Zamba2 Vulkan — Mamba2 SSD on the ZINC C++ compute path (P1 decode).
+    // Gated by ZAMBA2_VK=1 in backend_zamba2_vulkan.cpp init(); without it the
+    // backend declines and routing falls through to zamba2_gpu/HIP as before.
+    {
+        BackendInfo info;
+        info.id = "zamba2_vulkan";
+        info.type = BackendType::ZINC_GPU;
+        info.tier = BackendTier::T2_GPU;
+        info.description = "Zamba2 on Vulkan (ZINC C++ compute)";
+        info.priority = tier_priority(info.tier) + 49;  // just above zamba2_gpu
+#ifdef ZINC_DISABLED
+        info.available = false;
+#else
+        info.available = has_vulkan();
+#endif
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -443,7 +469,13 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         pilot_active_ = false;
     }
 
-    // Try ALL backends. Multiple can init — DynamicRouter routes per-token.
+    // #1427: init only the top accelerator + one CPU fallback. Extra backends
+    // each hold a full model copy (~4x model RAM) while per-token cross-backend
+    // routing is KV-incoherent anyway (each backend keeps a private KV
+    // cache/pos — a token routed to a backend that never saw the prefix
+    // attends to empty KV). Skipped backends stay discoverable and initialize
+    // lazily via failover() on first failure.
+    bool kept_accel = false, kept_cpu = false;
     bool any_ok = false;
     for (size_t idx : order) {
         auto& info = backends_[idx];
@@ -478,6 +510,18 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             continue;
         }
         if (init_ok) {
+            bool is_cpu = (info.tier == BackendTier::T3_CPU);
+            if ((kept_accel && !is_cpu) || (kept_cpu && is_cpu)) {
+                printf("  → skipped (issue #1427: keeping top backend + CPU fallback only)\n");
+                // Reload (#1021): if a previous model had this backend
+                // registered, drop it so its old instance isn't kept alive by
+                // the router's shared_ptr instead of freed.
+                router_.remove_backend(info.id);
+                destroy_instance(info);
+                continue;
+            }
+            if (is_cpu) kept_cpu = true; else kept_accel = true;
+
             if (!info.instance->can_infer()) {
                 // Detected and initialized, but cannot actually run inference
                 // (e.g. the NPU stub). Report as available but not selectable (fixes #82).
@@ -1486,6 +1530,20 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
 #ifdef ZINC_DISABLED
             return nullptr;
 #else
+            // Zamba2 on Vulkan — id-dispatched like vulkan_hpp_gpu (type reuse).
+            if (info.id == "zamba2_vulkan") {
+#ifdef ROCM_CPP_STATIC_HIP
+                extern Backend* create_zamba2_vulkan_backend();
+                b = create_zamba2_vulkan_backend();
+                if (b) return b;
+#endif
+                b = try_load_backend("librocm_cpp.so", "create_zamba2_vulkan_backend");
+                if (!b) b = try_load_backend("libzamba2_vulkan_backend.so", "create_zamba2_vulkan_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_zamba2_vulkan_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
             return create_zinc_backend();
 #endif
         default:
