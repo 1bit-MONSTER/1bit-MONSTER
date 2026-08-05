@@ -1,4 +1,4 @@
-> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (July 2026). Numbers like "97 tok/s" NPU and FastFlowLM references are historical — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
+> **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
 # Demo Video Script — 1bit.systems
 ## AMD AI DevMaster Hackathon — Track 2 Submission
@@ -49,16 +49,16 @@ Show token routing log — tokens dispatched to GPU, then NPU, then GPU again.
 
 **Visual**: Terminal showing benchmark runs:
 ```
-Benchmark: Q1 GEMV (GPU 1-bit) — 417 tok/s
-Benchmark: Fused TQ2 (GPU ternary) — 415 tok/s
-Benchmark: NPU v12 (XDNA 2) — 97 tok/s
-Benchmark: BlackMamba 1.5B (Mamba1 HIP) — 79.8 tok/s
+Benchmark: Q1 GEMV (GPU 1-bit) — 433 tok/s
+Benchmark: Fused TQ2 (GPU ternary) — 420 tok/s
+Benchmark: Qwen3.6-35B-A3B NPU (XDNA 2, FLM) — 11.66 tok/s
+Benchmark: BlackMamba 1.5B (Mamba1 HIP) — 79.4 tok/s
 ```
 
 Show a comparison chart or table.
 
 **Narration**:
-> "Performance. Our fused Q1 GEMV kernel hits 417 tokens per second on the Radeon GPU. The NPU runs at 97 tok/s with Q4NX. And the BlackMamba 1.5 billion parameter model runs at nearly 80 tok/s — faster than most humans can read. All on a laptop."
+> "Performance. Our fused Q1 GEMV kernel hits 433 tokens per second on the Radeon GPU. The XDNA 2 NPU drives a 35-billion-parameter Qwen model at 11.66 tokens per second — with prefill 8 to 24 percent faster than AMD's own published numbers. BlackMamba 1.5B runs at nearly 80 tok/s on the GPU. All on a laptop."
 
 ### Scene 6: Private Agent Capabilities (2:45–3:15)
 
