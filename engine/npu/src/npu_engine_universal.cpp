@@ -917,9 +917,9 @@ int main(int argc,char**argv){
     // insts_i8_KV_<tag>.txt were present, which made it the default for every
     // model that had them.  On qwen3_0_6b the ATTN kernel costs ~2070 ms per
     // layer against ~4 ms for the OpenMP path, so a 9-token prefill took
-    // 59.1 s enabled vs 1.07 s disabled — 55x slower, and it grew with layer
-    // count, not sequence length.  Until that kernel is understood the CPU
-    // path is strictly better, so it must be asked for explicitly.
+    // 59.1 s enabled vs 1.07 s disabled — 55x slower, and it scaled with layer
+    // count rather than sequence length.  Until that kernel is understood the
+    // CPU path is strictly better, so it must be asked for explicitly.
     bool use_npu_attn = false;
     {
         const char* npu_attn_env = getenv("NPU_ATTN");
