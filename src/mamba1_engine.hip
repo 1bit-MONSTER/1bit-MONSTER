@@ -153,8 +153,8 @@ __global__ void mamba1_inner(
         float xh = x_conv[i];
         
         for(int s = 0; s < ds; s++) {
-            // Mamba1: A = -exp(A_log), then A_bar = exp(dt * A)
-            float A_val = -expf(A[(size_t)s*di_ + i]);
+            // Mamba1: GGUF ssm.a already stores A = -exp(A_log); use directly (#1460)
+            float A_val = A[(size_t)s*di_ + i];
             float A_bar = expf(d_dt * A_val);
             ss[(size_t)i*ds + s] = A_bar * ss[(size_t)i*ds + s] + d_dt * B[s] * xh;
         }
