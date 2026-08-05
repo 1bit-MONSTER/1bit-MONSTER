@@ -120,8 +120,9 @@ enum OnebpArch : uint32_t {
     ONEBP_FLORENCE  = 15, // Florence-2 (VL encoder-decoder)
     
     // ═══ Reasoning / MoE architectures ═══
-    ONEBP_DEEPSEEK2 = 20, // DeepSeek v2/v3 MLA MoE
-    ONEBP_PHI_MOE   = 21, // Phi-4 MoE
+    ONEBP_DEEPSEEK2    = 20, // DeepSeek v2/v3 MLA MoE
+    ONEBP_PHI_MOE      = 21, // Phi-4 MoE
+    ONEBP_DEEPSEEK_V4  = 22, // DeepSeek V4 Flash/Pro — mHC + CSA+HCA + FP4 MoE (284B/13B active)
     
     // ═══ Diffusion architectures ═══
     ONEBP_SD        = 30, // Stable Diffusion 1.x

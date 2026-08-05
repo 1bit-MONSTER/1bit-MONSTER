@@ -53,6 +53,7 @@ typedef enum {
     RCPP_ARCH_MOONLIGHT = 19, // Moonshot Moonlight-16B-A3B — Gated MLA MoE
     RCPP_ARCH_KIMI_VL  = 20,  // Moonshot Kimi-VL — Moonlight + MoonViT vision encoder
     RCPP_ARCH_QWEN35   = 21,  // Qwen3.5 Gate-Delta Net — fused QKV, SSM path, GDN attention
+    RCPP_ARCH_DEEPSEEK_V4 = 22, // DeepSeek V4 Flash/Pro — mHC residual, CSA+HCA hybrid attn, FP4 MoE
 } rcpp_arch_t;
 
 #include <string.h>
@@ -109,6 +110,11 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     // ── New MoE reasoning ──
     if (strcmp(s, "phi_moe")   == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "deepseek_v3") == 0) return RCPP_ARCH_DEEPSEEK;
+    // DeepSeek V4 Flash/Pro — mHC + CSA+HCA hybrid attention + FP4 MoE experts
+    if (strcmp(s, "deepseek_v4")  == 0) return RCPP_ARCH_DEEPSEEK_V4;
+    if (strcmp(s, "deepseek4")    == 0) return RCPP_ARCH_DEEPSEEK_V4;
+    if (strcmp(s, "dflash")       == 0) return RCPP_ARCH_DEEPSEEK_V4;
+    if (strcmp(s, "deepseek4_dspark") == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "smollm")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "smollm2")   == 0) return RCPP_ARCH_LLAMA;
     // ── Moonshot Kimi family ──
