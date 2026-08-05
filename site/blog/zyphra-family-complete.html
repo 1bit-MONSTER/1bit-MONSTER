@@ -26,7 +26,7 @@
 <!-- TWITTER/X CARD -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Zyphra family complete — Zamba2 + ZR1 all running in one C++ binary">
-<meta name="twitter:description" content="Zyphra's Zamba2 (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP. 26 tok/s on ZINC GPU.">
+<meta name="twitter:description" content="Zyphra's Zamba2 (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP. ZR1: 187.9 tok/s Vulkan; Zamba2 HIP e2e validated vs HF (corr 0.997).">
 <meta name="twitter:image" content="https://1bit.systems/assets/og-default.png">
 
 <!-- JSON-LD -->
@@ -117,7 +117,7 @@
 
 <h1>Zyphra family complete — Zamba2 hybrids and ZR1 reasoning, all 1BP</h1>
 
-<p><strong>tl;dr:</strong> Zyphra ships four architecturally distinct models across two families — Mamba2-hybrid SSM (Zamba2) and dense reasoning-tuned (ZR1). All four now convert cleanly through the 1BP pipeline and run end-to-end on ZINC GPU. ZR1-1.5B does <strong>26 tok/s</strong> on a Strix Halo ZINC GPU.</p>
+<p><strong>tl;dr:</strong> Zyphra ships four architecturally distinct models across two families — Mamba2-hybrid SSM (Zamba2) and dense reasoning-tuned (ZR1). All four now convert cleanly through the 1BP pipeline and run end-to-end on ZINC GPU. ZR1-1.5B does <strong>187.9 tok/s</strong> on a Strix Halo (llama.cpp Vulkan, Q4_K_M) — the previous 26 tok/s was the ZINC path. Zamba2 2.7B/7B HIP e2e: <strong>12.5 / 4.5 tok/s</strong>, logits validated against HF transformers (corr 0.997 / 0.992).</p>
 
 <hr>
 
@@ -133,10 +133,10 @@
 
 <table>
 <tr><th>Model</th><th>Params</th><th>Architecture</th><th>1BP Size</th><th>Status</th></tr>
-<tr><td>Zamba2-1.2B-Instruct-v2</td><td>1.2B</td><td>Mamba2-hybrid (attn every 6th)</td><td>1.1 GB</td><td><strong style="color:var(--green);">✅</strong></td></tr>
-<tr><td>Zamba2-2.7B-Instruct-v2</td><td>2.7B</td><td>Mamba2-hybrid</td><td>2.4 GB</td><td><strong style="color:var(--green);">✅</strong></td></tr>
-<tr><td>Zamba2-7B-Instruct-v2</td><td>7B</td><td>Mamba2-hybrid</td><td>6.6 GB</td><td><strong style="color:var(--green);">✅</strong></td></tr>
-<tr><td>ZR1-1.5B</td><td>1.5B</td><td>Dense (Qwen2), reasoning-tuned</td><td>781 MB</td><td><strong style="color:var(--green);">✅</strong> 26 tok/s (ZINC)</td></tr>
+<tr><td>Zamba2-1.2B-Instruct-v2</td><td>1.2B</td><td>Mamba2-hybrid (attn every 6th)</td><td>1.19 GB</td><td><strong style="color:var(--green);">✅</strong></td></tr>
+<tr><td>Zamba2-2.7B-Instruct-v2</td><td>2.7B</td><td>Mamba2-hybrid</td><td>2.58 GB</td><td><strong style="color:var(--green);">✅</strong></td></tr>
+<tr><td>Zamba2-7B-Instruct-v2</td><td>7B</td><td>Mamba2-hybrid</td><td>7.25 GB</td><td><strong style="color:var(--green);">✅</strong></td></tr>
+<tr><td>ZR1-1.5B</td><td>1.5B</td><td>Dense (Qwen2), reasoning-tuned</td><td>781 MB</td><td><strong style="color:var(--green);">✅</strong> 187.9 tok/s (llama.cpp Vulkan)</td></tr>
 </table>
 
 <h2>The Mamba2-hybrid path</h2>
@@ -151,9 +151,9 @@
 
 <p>All three run on ZINC GPU today. NPU path is next — Mamba2 SSM layers need a different xclbin layout than the dense transformer kernels we've built so far.</p>
 
-<h2>ZR1-1.5B — 26 tok/s reasoning on ZINC</h2>
+<h2>ZR1-1.5B — 187.9 tok/s reasoning on Vulkan</h2>
 
-<p>ZR1-1.5B is Zyphra's reasoning-distilled dense transformer. Based on Qwen2 architecture (so it reuses the existing dense transformer GGUF path), fine-tuned for long chain-of-thought. At <strong>26 tok/s</strong> on the ZINC GPU, it's fast enough for interactive reasoning tasks — not blazing, but usable.</p>
+<p>ZR1-1.5B is Zyphra's reasoning-distilled dense transformer. Based on Qwen2 architecture (so it reuses the existing dense transformer GGUF path), fine-tuned for long chain-of-thought. At <strong>187.9 tok/s</strong> on the llama.cpp Vulkan backend (Radeon 8060S, Q4_K_M, tg32; 1936 tok/s prefill), it's comfortably fast for interactive reasoning. The earlier 26 tok/s was the ZINC Vulkan path.</p>
 
 <p>For comparison: that's on the same Strix Halo ZINC Vulkan backend that powers all our dense models. The 1BP comes in at 781 MB — small enough to load instantly from any SSD, no quantization at inference time.</p>
 
