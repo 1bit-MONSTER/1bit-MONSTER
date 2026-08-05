@@ -292,7 +292,7 @@ extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int to
             hipLaunchKernelGGL(vec_add_kernel, dim3(blocks), dim3(threads), 0, st,
                 s->d_hidden, s->d_residual, d_model);
         }
-        if (getenv("Z2_DEBUG_HIP") && l < 16) {
+        if (getenv("Z2_DEBUG_HIP") && l < 20) {
             std::vector<float> dbg(d_model);
             hipMemcpy(dbg.data(), s->d_hidden, d_model * sizeof(float), hipMemcpyDeviceToHost);
             fprintf(stderr, "[hip-debug] L%d hidden[:4]: %.4f %.4f %.4f %.4f\n", l, dbg[0], dbg[1], dbg[2], dbg[3]);
