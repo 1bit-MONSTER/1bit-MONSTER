@@ -415,6 +415,10 @@ add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
 
+# -- zuna_port : standalone CPU port of the ZUNA EEG diffusion autoencoder -------
+add_executable(zuna_port tools/zuna_port.cpp)
+target_compile_options(zuna_port PRIVATE -O3 -std=c++17)
+
 # -- libvl_image : lightweight image loading + preprocessing (no HIP dep) ----
 # Uses stb_image.h (vendored at third_party/stb/) for decode. No OpenCV dep.
 # Provides: vl_load_image, vl_resize_normalize, vl_decode_base64_image, etc.
