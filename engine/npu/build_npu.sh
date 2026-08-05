@@ -40,6 +40,12 @@ MODELS=(
     "nanbeige4_1_3b"
     "zr1"
     "deepseek_v4_flash"
+    "qwen3_1_7b"
+    "qwen3_4b"
+    "qwen3_14b"
+    "gemma3_1b"
+    "gemma3_4b"
+    "smollm2_135m"
 )
 
 CXX="${CXX:-g++}"
