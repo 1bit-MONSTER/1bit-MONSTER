@@ -457,4 +457,4 @@ This project is MIT-licensed. Sherry-specific kernels in `src/sherry_*.hip` are 
 
 - Open a [GitHub Discussion](https://github.com/1bit-systems/1bit-systems/discussions)
 - Read the [architecture docs](docs/guides/architecture.md)
-- See the [roadmap](ROADMAP.md)
+- See the [roadmap](docs/guides/roadmap.md)
