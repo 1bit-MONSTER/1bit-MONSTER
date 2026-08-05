@@ -1,6 +1,8 @@
 # Engineering Journey — Reverse-Engineering the XDNA 2 NPU
 
-> Every crash, breakthrough, and bug documented in real-time. ~1800+ hours of engineering.
+> **This is the hero story of 1bit.systems.** It started with a laptop, a disassembler, and no docs: AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime (FastFlowLM) — 22 proprietary `.so` files, 209 xclbin bitstreams, zero documentation. We reverse-engineered the entire stack in 4 days and replaced it with open C++.
+>
+> Every crash, breakthrough, and bug below is documented in real-time. ~1800+ hours of engineering, all open source, MIT.
 
 ## Table of Contents
 

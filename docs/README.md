@@ -7,11 +7,17 @@ Pure C++23, zero Python at runtime, MIT.
 
 | Doc | What it covers |
 |-----|----------------|
+| [journey.md](journey.md) | **The hero story** — reverse-engineering the XDNA 2 NPU in 4 days |
 | [guides/getting-started.md](guides/getting-started.md) | Install, build, first inference |
 | [guides/building.md](guides/building.md) | Full build guide (CMake, ROCm/TheRock, targets) |
 | [guides/architecture.md](guides/architecture.md) | Engine internals: loaders, backends, routing |
-| [journey.md](journey.md) | **The hero story** — reverse-engineering the XDNA 2 NPU in 4 days |
-| [guides/roadmap.md](guides/roadmap.md) | Where we're headed |
+| [model-families/](model-families/README.md) | **Every model family, its own page** — full breakdowns |
+| [jarvis.md](jarvis.md) | The flagship voice pipeline (STT → LLM → TTS → voice) |
+| [guides/roadmap.md](guides/roadmap.md) | Where the engine is headed |
+
+## Model families
+
+1bit auto-detects 19 architectures. Each family has a dedicated page with full data (params, 1BP size, backends, measured perf) — start at the **[model-families index](model-families/README.md)**. The [Zyphra family](model-families/zyphra.md) is the featured end-to-end ecosystem; [wiki/models.md](wiki/models.md) remains the combined support SSOT.
 
 ## Guides & platform
 
@@ -44,10 +50,9 @@ source of truth for benchmark numbers**), [Installation](wiki/Installation.md),
 [npu-architecture](wiki/npu-architecture.md), [boot-configuration](wiki/boot-configuration.md),
 [Network-Topology](wiki/Network-Topology.md).
 
-## Business & marketing
+## Goals & vision (not part of the engine)
 
-- [business/business-plan.md](business/business-plan.md) — Business plan and economics
-- [business/marketing/](business/marketing/) — Launch write-ups and social posts
+Aspirational product ideas built *on* the engine — kept separate so they don't drive the project narrative: [goals/](goals/README.md).
 
 ## Archive
 
