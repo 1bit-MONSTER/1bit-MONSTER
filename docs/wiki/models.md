@@ -124,11 +124,11 @@ AI2's OLMo. LayerNorm instead of RMSNorm, no RoPE (learned positional embeddings
 
 #### 10. ZR1
 
-Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end validated at ~26 tok/s on Vulkan ZINC. 1BP format conversion complete.
+Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end validated at ~26 tok/s on Vulkan ZINC. 1BP format conversion complete. **2026-08-05: 187.9 tok/s on llama.cpp Vulkan (Radeon 8060S, Q4_K_M, tg32)** — the ZINC figure was the previous path.
 
 - **NPU:** ZR1-1.5B (dense Qwen2 arch) — build via existing Qwen3-0.6B xclbin stanzas (same tile template, different K/N dims in config)
 - **GPU HIP:** GGUF — validated (kernel bench: 431 tok/s Q1, 426 tok/s fused TQ2)
-- **GPU Vulkan:** 1.5B at ~26 tok/s — ✅ validated end-to-end
+- **GPU Vulkan:** 1.5B at ~26 tok/s — ✅ validated end-to-end (llama.cpp Vulkan: **187.9 tok/s tg**, 1936 tok/s pp)
 - **CPU:** ✅ universal GGUF backend
 
 #### 11. Nanbeige4.1
@@ -200,13 +200,13 @@ Mamba1 SSM + top-1 MoE gating. **No attention mechanism** — alternating SSM sc
 
 #### 17. Zamba2
 
-Mamba2-hybrid architecture: Mamba2 SSM layers with sparse attention every 6 layers. End-to-end validated at ~30 tok/s on Vulkan ZINC. Mamba2 decode block benchmark measured at 1270 tok/s on ROCm HIP.
+Mamba2-hybrid architecture: Mamba2 SSM layers with sparse attention every 6 layers. End-to-end validated at ~30 tok/s on Vulkan ZINC. Mamba2 decode block benchmark measured at 1270 tok/s on ROCm HIP. Engine + converter validated against HF transformers end-to-end (logits corr 0.997, top-20 overlap 20/20 on 2.7B) — full checkpoint-faithful pipeline: shared-block duplication + per-layer gate_up LoRA folding, TRUE mamba2 scan (state [head][d_state][head_dim], gate-then-norm), GELU FFN, mem-rope flag, conv kernel cross-correlation order.
 
-- **Zamba2-1.2B:** Vulkan ZINC — ✅ validated
-- **Zamba2-2.7B:** ~30 tok/s on Vulkan ZINC — ✅ validated
-- **Zamba2-7B:** Vulkan ZINC — functional, perf data pending
+- **Zamba2-1.2B:** Vulkan ZINC — ✅ validated · HIP e2e: mamba layers match CPU (d_state=128 chunked scan); e2e hang under async WIP
+- **Zamba2-2.7B:** ~30 tok/s on Vulkan ZINC — ✅ validated · HIP e2e (2026-08-05): **12.5 tok/s** (30 tok, 54 layers) · CPU reference 0.6 tok/s · logits corr 0.997 vs HF
+- **Zamba2-7B:** HIP e2e (2026-08-05): **4.5 tok/s** (81 layers: 68 mamba + 13 hybrid) · logits corr 0.992 vs HF — ✅ validated
 - **NPU:** Zamba2-2.7B build stanza in `build_xclbins.sh` (`build_zamba2_2_7b`). AIE2 selective scan kernel in `kernel/ssm_selective_scan.cc` (per-head d_state=64 vectorized, 32 heads/tile). SSM scan MLIR generator in `generators/n1_core_ssm_scan.py` (16 tiles parallel). NPU GEMM handles in_proj/out_proj; SSM recurrence runs on AIE tiles.
-- **GPU HIP:** Mamba2 decode block: 1270 tok/s — ✅ kernel verified
+- **GPU HIP:** Mamba2 decode block: 1270 tok/s — ✅ kernel verified · e2e 12.5/4.5 tok/s (2.7B/7B) · 1.2B d_state=128 chunked scan
 - **GPU Vulkan:** ~30 tok/s (2.7B e2e) — ✅ validated
 - **CPU:** ✅ universal GGUF backend
 
