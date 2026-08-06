@@ -49,6 +49,9 @@ jobs:
   selftest:
     name: GPU selftest (strix-halo)
     runs-on: [self-hosted, strix-halo]
+    # SECURITY: public repo — fork PRs must never run on the self-hosted
+    # runner (fork-controlled code would execute with passwordless sudo).
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
     timeout-minutes: 15
     needs: build
     steps:
