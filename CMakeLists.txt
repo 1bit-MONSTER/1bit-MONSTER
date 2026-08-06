@@ -415,6 +415,11 @@ add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
 
+# -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
+#   tools/zuna_port.cpp compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
+#   standalone `zuna_port` binary for the parity harness is built directly by
+#   tools/zuna_check_parity.sh (g++ on tools/zuna_port.cpp, no dispatch guard).
+
 # -- libvl_image : lightweight image loading + preprocessing (no HIP dep) ----
 # Uses stb_image.h (vendored at third_party/stb/) for decode. No OpenCV dep.
 # Provides: vl_load_image, vl_resize_normalize, vl_decode_base64_image, etc.
@@ -786,6 +791,9 @@ if(ZINC_CPP_AVAILABLE)
     target_link_libraries(validate_zamba2_vulkan PRIVATE zinc_cpp)
 endif()
 # HIP backend: adapter (InferenceBackend) + canonical src (Backend + zaya_engine)
+# onebp_loader.cpp: OnebpModel implementations (open/get_tensor_f32/get_tensor_f32_expert).
+# NOT added as a separate TU: zaya_engine.cpp and backend_hip_1bp.cpp raw-#include this .cpp
+# directly, so compiling it as its own unit would create a duplicate OnebpModel ODR symbol.
 list(APPEND ZAYA_SERVER_SRC tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp)
 set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 # zaya_server is no longer a standalone add_executable target — its full
@@ -1262,8 +1270,12 @@ set(ONE_BIN_SOURCES
     tools/jarvis/billing.cpp
     src/codec_decoder.cpp
     tools/vision_server.cpp
+    tools/zuna_port.cpp
     tools/onebit.cpp
     tools/onebitd.cpp)
+
+# zuna_port.cpp has its own main() -> zuna_main via ONE_BIN_DISPATCH; compile as C++.
+set_source_files_properties(tools/zuna_port.cpp PROPERTIES LANGUAGE CXX)
 add_executable(onebin ${ONE_BIN_SOURCES})
 set_target_properties(onebin PROPERTIES OUTPUT_NAME "1bit")
 install(TARGETS onebin RUNTIME DESTINATION bin)

@@ -9,7 +9,7 @@ Zyphra's portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, Mamba) 
 | Model | Params | 1BP Size | Backend(s) | Pipeline | Perf |
 |-------|:------:|:--------:|------------|:--------:|:----:|
 | **ZAYA1-8B** | 8.8B | 6.6 GB¹ | HIP / NPU | 🧠🗣️ | 64 tok/s HIP |
-| **ZAYA1-74B-preview** | 74B | 739 MB² | HIP | 🧠🗣️ | 17.9 tok/s HIP (prelim) |
+| **ZAYA1-74B-preview** | 74B | 45.8 GB³ | HIP | 🧠🗣️ | **16.7 tok/s HIP** (measured 2026-08-05) |
 | **ZAYA1-VL-8B** | 8.8B | — | HIP (vision) | 👁️🧠🗣️ | — |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 🧠🗣️ | 26 tok/s ZINC |
 | **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **79.4 tok/s** 🏁 |
@@ -19,7 +19,7 @@ Zyphra's portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, Mamba) 
 | **Zamba2-7B-v2** | 7B | 6.6 GB | HIP / CPU | 🧠 | — |
 | **Zamba-7B-v1** | 7B | 4.3 GB | Mamba1 HIP | 🧠 | — |
 
-> ¹ ZAYA1-8B 1BP is ~6.6 GB full-weight — the 149 MB entry on HF is MoE-expert-stripped; use the complete file. ² 1BP is extremely small (TQ2 ternary quantization on a 74B MoE).
+> ¹ ZAYA1-8B 1BP is ~6.6 GB full-weight — the 149 MB entry on HF is MoE-expert-stripped; use the complete file. ² Earlier catalogs listed a 739 MB 1BP for the 74B — that is physically impossible for a full 74B model (even ternary ≈ 18 GB) and refers only to a stripped-expert variant; the runnable 74B Q4_K_M GGUF is 45.8 GB. ³ 74B measured on ROCm TheRock HIP 7.15a, `zaya-llama.cpp/build-hip` (Juste-Leo2 Zaya branch), full GPU offload — see `benchmarks/RESULTS-zaya1-74b-benchmark-2026-08-05.md`.
 
 ## Architectures in this family
 

@@ -300,6 +300,33 @@ void ComputeEngine::debug_readback(VkBuffer buf, int n, const char* tag) {
     if (was) begin_batch();
 }
 
+void ComputeEngine::dump_topk(VkBuffer buf, int n, const char* tag, int elem_off) {  // TEMP
+    bool was = s_batching;
+    if (was) end_batch();
+    GpuBuffer staging(device_, (size_t)n * sizeof(float),
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkCommandBuffer cmd = cmd_pool_.begin_once();
+    VkBufferCopy cp = {(VkDeviceSize)((size_t)elem_off * sizeof(float)), 0, (VkDeviceSize)((size_t)n * sizeof(float))};
+    vkCmdCopyBuffer(cmd, buf, staging.buffer(), 1, &cp);
+    cmd_pool_.submit_and_wait(cmd, queue_);
+    float* p = (float*)staging.map();
+    int best[5] = {-1,-1,-1,-1,-1}; float bv[5] = {-1e30f,-1e30f,-1e30f,-1e30f,-1e30f};
+    for (int i = 0; i < n; ++i) {
+        for (int k = 0; k < 5; ++k) {
+            if (p[i] > bv[k]) {
+                for (int j = 4; j > k; --j) { bv[j] = bv[j-1]; best[j] = best[j-1]; }
+                bv[k] = p[i]; best[k] = i;
+                break;
+            }
+        }
+    }
+    fprintf(stderr, "[zinc] %s top5: ", tag);
+    for (int k = 0; k < 5; ++k) fprintf(stderr, "(%d %.6f) ", best[k], bv[k]);
+    fprintf(stderr, " margin=%.4f\n", bv[0] - bv[1]);
+    staging.unmap();
+    if (was) begin_batch();
+}
 void ComputeEngine::gemv_f32(VkBuffer y, VkBuffer x, VkBuffer W, int M, int N, int K) {
     PushConstants push{}; push.M = M; push.N = N; push.K = K;
     // Tile into a 2D grid when M exceeds maxComputeWorkGroupCount[0] (65535 on

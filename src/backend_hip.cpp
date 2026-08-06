@@ -14,6 +14,7 @@
 #include <fstream>
 #include <chrono>
 #include <algorithm>
+#include <dirent.h>
 
 // ── Zaya engine API (declared in zaya_engine.h, compiled in zaya_engine.cpp) ──
 #include "zaya_engine.h"
@@ -32,23 +33,6 @@ struct HIPBackend : Backend {
 
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override {
         this->cfg = cfg;
-
-        // HIP backend (Zaya engine) only supports models in Zaya .bin format.
-        // GGUF models should use ZINC (Vulkan) or cpu_generic backends instead.
-        // Check for the required .bin file before attempting init.
-        std::string wd = weights_dir;
-        if (!wd.empty() && wd.back() != '/') wd += '/';
-        {
-            std::string embed_path = wd + "model_embed_tokens_weight.bin";
-            std::ifstream f(embed_path.c_str());
-            if (!f.good()) {
-                fprintf(stderr, "HIP: model at %s is not in Zaya .bin format "
-                        "(no model_embed_tokens_weight.bin) — "
-                        "use ZINC or cpu_generic backend\n",
-                        weights_dir.c_str());
-                return false;
-            }
-        }
 
         // Build ZayaConfig from the model's actual dimensions.
         // Single-token inference kernels (CCA prep, router) are fully dynamic.
@@ -69,9 +53,46 @@ struct HIPBackend : Backend {
         printf("HIP: Initializing Zaya engine (H=%d, L=%d, NH=%d, NKV=%d, V=%d)...\n",
                zcfg.h, zcfg.n_layers, zcfg.nq, zcfg.nkv, zcfg.vocab);
 
-        // Ensure trailing slash for zaya_engine.cpp's filename concatenation
-        zs = zaya_init(wd.c_str(), &zcfg);
-        if (!zs) { fprintf(stderr,"HIP: zaya_init failed\n"); return false; }
+        // Format detection: a .1bp/.q4nx file in weights_dir wins (native
+        // OneBP path via zaya_init_onebp, same directory scan pattern as
+        // backend_laguna.cpp); otherwise fall back to the legacy Zaya .bin
+        // path (zaya_init). Neither → not a HIP-loadable model.
+        std::string wd = weights_dir;
+        if (!wd.empty() && wd.back() != '/') wd += '/';
+        std::string onebp_path;
+        {
+            DIR* d = opendir(weights_dir.c_str());
+            if (d) {
+                struct dirent* entry;
+                while ((entry = readdir(d)) != nullptr) {
+                    std::string fn(entry->d_name);
+                    if (fn.size() > 4 && (fn.substr(fn.size()-4) == ".1bp" ||
+                                          (fn.size() > 5 && fn.substr(fn.size()-5) == ".q4nx"))) {
+                        onebp_path = wd + fn;
+                        break;
+                    }
+                }
+                closedir(d);
+            }
+        }
+        if (!onebp_path.empty()) {
+            printf("HIP: detected OneBP model %s — loading via zaya_init_onebp\n", onebp_path.c_str());
+            zs = zaya_init_onebp(onebp_path.c_str(), &zcfg);
+            if (!zs) { fprintf(stderr, "HIP: zaya_init_onebp failed\n"); return false; }
+        } else {
+            // Legacy Zaya .bin format (Zaya1-8B .bin dumps).
+            std::string embed_path = wd + "model_embed_tokens_weight.bin";
+            std::ifstream f(embed_path.c_str());
+            if (!f.good()) {
+                fprintf(stderr, "HIP: model at %s is not in Zaya .bin format "
+                        "(no model_embed_tokens_weight.bin) — "
+                        "use ZINC or cpu_generic backend\n",
+                        weights_dir.c_str());
+                return false;
+            }
+            zs = zaya_init(wd.c_str(), &zcfg);
+            if (!zs) { fprintf(stderr, "HIP: zaya_init failed\n"); return false; }
+        }
 
         // Apply optional LoRA adapter after base weights are loaded
         if (!cfg.lora_path.empty()) {

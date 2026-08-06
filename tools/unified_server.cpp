@@ -23,6 +23,7 @@
 #include "backend_monitor.h"
 #include "backend_plugin.h"
 #include "backend.h"
+#include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_router.h"
 #include "simple_tokenizer.h"
@@ -152,6 +153,8 @@ static int g_generation_timeout_ms = []() -> int {
 }();
 
 static std::mutex g_inference_mutex;
+static int g_batch_slots = 1;
+static std::unique_ptr<BatchScheduler> g_batch_scheduler;
 
 // ── Strategy engine + agent watchdog (global for HTTP handler access) ──
 static StrategyEngine g_strategy_engine;
@@ -857,6 +860,7 @@ int main(int argc, char** argv) {
 #ifdef EMBED_LEMONADE
             printf("      --lemonade          Run the embedded Lemonade server core\n");
 #endif
+            printf("  -B, --batch-slots N     Concurrent decode slots (default: 1)\n");
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -874,6 +878,7 @@ int main(int argc, char** argv) {
         {"gen-timeout-ms", required_argument, nullptr, 't'},
         {"free-npu",      no_argument,       nullptr, 'F'},
         {"mmproj",        required_argument, nullptr, 'M'},
+        {"batch-slots",   required_argument, nullptr, 'B'},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -892,6 +897,7 @@ int main(int argc, char** argv) {
             case 't': cli_gen_timeout_ms = atoi(optarg); break;
             case 'F': free_npu = true; break;
             case 'M': g_mmproj_path = optarg; break;
+            case 'B': g_batch_slots = atoi(optarg); break;
         }
     }
 
@@ -1240,6 +1246,32 @@ int main(int argc, char** argv) {
     // Quick mode: re-profile in background after server starts
     if (quick_mode) {
         printf("  ⚡ Quick mode: full benchmark deferred to background\n");
+    }
+
+    // ── Batch scheduler (issue #1511) ──
+    if (g_batch_slots > 1) {
+        printf("\n── Batch Decode: %d slots ──\n", g_batch_slots);
+        auto* be = mgr.active_backend();
+        int hw_max = be ? be->max_batch_slots() : 1;
+        if (g_batch_slots > hw_max) {
+            printf("  backend supports max %d slots, clamping\n", hw_max);
+            g_batch_slots = hw_max;
+        }
+        g_batch_scheduler = std::make_unique<BatchScheduler>(
+            g_batch_slots,
+            [&](const std::vector<std::pair<int,int>>& st) -> std::vector<int> {
+                std::lock_guard<std::mutex> lk(g_inference_mutex);
+                auto* b = mgr.active_backend();
+                return b ? b->generate_batch(st) : std::vector<int>{};
+            },
+            [&](int tok) -> int {
+                return mgr.generate(tok);
+            },
+            [&](int slot) -> bool {
+                auto* b = mgr.active_backend();
+                return b ? b->reset_slot(slot) : false;
+            }
+        );
     }
 
     // ── HTTP Server ──
@@ -1724,26 +1756,50 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
-        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
-        // only top_k is supplied so top-k-only sampling still samples.
         float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
         if (temperature < 0.0f) temperature = 0.0f;
         if (temperature > 5.0f) temperature = 5.0f;
 
-        std::vector<double> empty_logprobs;
         json gen_result;
-        try {
-            gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
-                                             nullptr, "", temperature, top_k);
-        } catch (const std::exception& e) {
-            fprintf(stderr, "[completions] generate error: %s\n", e.what());
-            gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
-        } catch (...) {
-            fprintf(stderr, "[completions] unknown error\n");
-            gen_result = {{"error", "Generation failed: unknown error"}};
+
+        if (g_batch_scheduler) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            auto fut = g_batch_scheduler->submit(prompt_tokens, max_tokens,
+                                                  temperature, top_k,
+                                                  g_tokenizer.eos_id);
+            std::vector<int> out_tokens;
+            try {
+                out_tokens = fut.get();
+            } catch (const std::exception& e) {
+                json err_resp = {{"error", std::string("Batch decode failed: ") + e.what()}};
+                res.status = 500;
+                res.set_content(err_resp.dump(), "application/json");
+                return;
+            }
+            float ms = std::chrono::duration<float, std::milli>(
+                std::chrono::high_resolution_clock::now() - t0).count();
+            std::string text = g_tokenizer.decode(out_tokens);
+            gen_result["tokens"] = out_tokens;
+            gen_result["text"] = text;
+            gen_result["gen_ms"] = ms;
+            gen_result["gen_tokens"] = (int)out_tokens.size();
+            gen_result["tok_s"] = out_tokens.empty() ? 0.0f : (float)out_tokens.size() / (ms / 1000.0f);
+            gen_result["backend_used"] = "batched";
+            gen_result["batch_slots"] = g_batch_slots;
+        } else {
+            std::vector<double> empty_logprobs;
+            try {
+                gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
+                                                 nullptr, "", temperature, top_k);
+            } catch (const std::exception& e) {
+                fprintf(stderr, "[completions] generate error: %s\n", e.what());
+                gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
+            } catch (...) {
+                fprintf(stderr, "[completions] unknown error\n");
+                gen_result = {{"error", "Generation failed: unknown error"}};
+            }
         }
 
-        // Check for generation errors before accessing result fields (issue #959)
         if (gen_result.contains("error")) {
             json err_resp = {{"error", gen_result["error"]}};
             res.status = 500;
@@ -1757,9 +1813,10 @@ int main(int argc, char** argv) {
         response["gen_ms"] = gen_result.value("gen_ms", 0);
         response["tok_s"] = gen_result.value("tok_s", 0.0f);
         response["backend_used"] = gen_result.value("backend_used", "unknown");
+        if (gen_result.contains("batch_slots"))
+            response["batch_slots"] = gen_result["batch_slots"];
 
         res.set_header("X-Backend-Id", gen_result.value("backend_used", "unknown"));
-        // See error_handler_t::replace note on the /v1/chat/completions handler above.
         res.set_content(response.dump(2, ' ', false, json::error_handler_t::replace), "application/json");
         add_cors(res);
     });

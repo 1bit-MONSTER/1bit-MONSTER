@@ -152,7 +152,9 @@ static void forward_hybrid_layer(
                 g += hw.shared_transformer_gate[(size_t)i * n + j] * ff_in[j];
                 u += hw.shared_transformer_up[(size_t)i * n + j] * ff_in[j];
             }
-            gate_act[i] = g / (1.0f + std::exp(-g));  // SiLU
+            // Zamba2 config hidden_act=gelu — exact GELU, not SiLU
+            // (#zamba2-validation, matches gelu_mul_kernel).
+            gate_act[i] = 0.5f * g * (1.0f + erff(g * 0.70710678118f));
             up_act[i] = u;
         }
         for (int i = 0; i < d_ff; ++i) act[i] = gate_act[i] * up_act[i];
@@ -175,6 +177,14 @@ static void forward_hybrid_layer(
     if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb ssm_mix[0:4]: %.6f %.6f %.6f %.6f\n", mixed[0], mixed[1], mixed[2], mixed[3]);
     std::vector<float> normed(n), mamba_out(n);
     rms_norm(mixed.data(), normed.data(), hw.mamba_input_norm_w.data(), n, cfg.rms_norm_eps);
+    if (getenv("Z2V_DUMP_HYBRID")) {
+        static int dbg_w = 0;
+        if (dbg_w == 0) {
+            fprintf(stderr, "[cpu] h0 in_proj_w[0..4]: %.6f %.6f %.6f %.6f %.6f  size=%zu\n", hw.mamba.in_proj_w[0], hw.mamba.in_proj_w[1], hw.mamba.in_proj_w[2], hw.mamba.in_proj_w[3], hw.mamba.in_proj_w[4], hw.mamba.in_proj_w.size());
+        }
+        dbg_w++;
+        fprintf(stderr, "[cpu] hyb mamba_in[0:4]: %.6f %.6f %.6f %.6f\n", normed[0], normed[1], normed[2], normed[3]);
+    }
     mamba2_cpu_forward(
         normed.data(),
         hw.mamba.in_proj_w.data(),
