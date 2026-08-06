@@ -26,7 +26,13 @@ jobs:
   pool-probe:
     runs-on: self-hosted
     timeout-minutes: 15
-    if: github.event.repository.owner.login == '1bit-systems'
+    # SECURITY: public repo — never run this self-hosted job on FORK PRs
+    # (fork-controlled code would execute on the runner with passwordless
+    # sudo). Same-repo PRs and pushes require write access, so they're safe.
+    if: >-
+      github.event.repository.owner.login == '1bit-systems' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
