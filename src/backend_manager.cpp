@@ -1385,9 +1385,22 @@ static void* cached_dlopen(const char* lib) {
 #endif
 
 #ifdef _WIN32
-// Windows: no dynamic backend loading — CPU-only build
+// Windows: no dynamic loading of external .so/.dll backends (no dlsym). GPU/NPU
+// backends that need it (HIP/CUDA/Vulkan/XRT) are unavailable here. The ONNX NPU
+// backend, however, is compiled directly into this library (backend_onnx.cpp) and
+// is created via its static factory symbol.
 static Backend* try_load_backend(const char*, const char*) { return nullptr; }
-Backend* BackendManager::create_instance_rt(const BackendInfo&) { return nullptr; }
+Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
+    switch (info.type) {
+        case BackendType::ONNX_NPU:
+            // create_onnx_npu_backend() returns nullptr when ONNX Runtime (and thus
+            // the VitisAI EP) isn't present — backend_onnx.cpp self-disables via
+            // HAS_ORT. Safe to call unconditionally.
+            return create_onnx_npu_backend();
+        default:
+            return nullptr;
+    }
+}
 #else
 static Backend* try_load_backend(const char* lib, const char* sym) {
     void* h = cached_dlopen(lib);
