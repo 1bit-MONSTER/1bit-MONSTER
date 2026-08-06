@@ -268,6 +268,25 @@ public:
         return bo;
     }
 
+    // Build a CU exec command (ERT_START_CU) for an ALREADY-LOADED kernel:
+    // payload = cu_mask + kernel args (the MLIR_AIE kernel reads instr_bo /
+    // ninstr / tensor bases from its RTP args — the xrt::kernel signature
+    // (opcode, instr_bo, ninstr, bA, bW, bC)). Dispatched as
+    // EXECUTE_BUFFER_CF / CHAIN_EXEC_BUFFER_CF to the configured CU.
+    span make_cu_cmd(uint32_t cu_mask, std::vector<uint32_t> args) {
+        const size_t sz = sizeof(amdxdna_cmd) + sizeof(uint32_t) +
+                          args.size() * sizeof(uint32_t);
+        span bo = alloc_cmd(sz);
+        amdxdna_cmd* cmd = reinterpret_cast<amdxdna_cmd*>(bo.host);
+        cmd->header = (18 /*ERT_START_CU*/ << 23) |
+                      (uint32_t)((1 + args.size()) << 12);
+        cmd->data[0] = cu_mask;
+        for (size_t i = 0; i < args.size(); i++)
+            cmd->data[1 + i] = args[i];
+        sync(bo.handle, SYNC_DIRECT_TO_DEVICE, 0, bo.size);
+        return bo;
+    }
+
     // Wait for command completion (ONE wait, matching one submit).
     // Kernel 7.1+ signals completion through the hwctx's DRM syncobj.
     // timeout_nsec is an ABSOLUTE CLOCK_MONOTONIC deadline, not a duration.
@@ -285,7 +304,15 @@ public:
         return ::ioctl(fd_, DRM_IOCTL_SYNCOBJ_WAIT, &w);
     }
 
+    // Sync a BO slice. Ranges are validated HERE because the 7.1.5 kernel
+    // driver oopses (clflush of an unmapped VA) on out-of-range or
+    // zero-length sync requests — issue #1536. Callers must check the return.
     int sync(uint32_t handle, uint32_t dir, uint64_t off, uint64_t size) {
+        for (auto& s : slices_)
+            if (s.handle == handle) {
+                if (size == 0 || off + size > s.size) return -EINVAL;
+                break;
+            }
         struct amdxdna_drm_sync_bo s{};
         s.handle = handle; s.direction = dir; s.offset = off; s.size = size;
         return ::ioctl(fd_, DRM_IOCTL_AMDXDNA_SYNC_BO, &s);
