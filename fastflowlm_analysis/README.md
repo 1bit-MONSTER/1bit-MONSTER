@@ -12,6 +12,7 @@ This directory contains the complete reverse-engineering extraction of **FastFlo
 | `NPU_ISA.md` | **NPU instruction set** — All 5 opcodes (0x00/0x01/0x03/0x80/0x81), exact bitfield encodings, RTP register map (0x1000-0x1f0a0), tile layout, DMA 3D addressing |
 | `Q4NX_FORMAT.md` | **Weight format spec** — 4-bit block quant with bf16 scales, 32-element groups, tile reordering algorithm (32×256 tiles), NPU DMA block alignment |
 | `API_SURFACE.md` | **All 1,390 exported symbols** — Demangled C++ signatures for every function in all 22 `.so` files |
+| `FINGERPRINT_DISPATCH.md` | **VAIP/ONNX-EP dispatch formula** — fingerprint key = MurmurHash64A("target") XOR dpu_fingerprint, version markers, EP-embedded kernel inventory (46 blobs), driver mailbox contract, live measurements |
 | `q4nx_converter/` | **Python converter** — Full Q4NX conversion for all model architectures |
 
 ## Architecture Secrets
