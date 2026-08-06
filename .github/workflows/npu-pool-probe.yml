@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   pool-probe:
-    runs-on: self-hosted
+    runs-on: [self-hosted, strix-halo]
     timeout-minutes: 15
     # SECURITY: public repo — never run this self-hosted job on FORK PRs
     # (fork-controlled code would execute on the runner with passwordless
