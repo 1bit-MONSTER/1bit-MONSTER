@@ -34,7 +34,7 @@ jobs:
 
       - name: Build
         working-directory: tools/video-lora/vulkan
-        run: cmake --build build -j$(nproc)
+        run: cmake --build build -j8
 
       # Shader compile check: every .comp must build to valid SPIR-V.
       # (Selftest needs a GPU, so CI verifies compilation + links only;
@@ -60,7 +60,7 @@ jobs:
 
       - name: Build
         working-directory: tools/video-lora/vulkan
-        run: cmake --build build -j$(nproc)
+        run: cmake --build build -j8
 
       - name: Selftest (GPU vs CPU reference)
         working-directory: tools/video-lora/vulkan
