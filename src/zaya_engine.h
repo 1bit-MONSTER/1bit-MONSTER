@@ -151,6 +151,9 @@ extern "C" {
 /// Initialize the Zaya engine for a specific model architecture.
 /// Passing nullptr for cfg uses the default Zaya1-8B config.
 ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg = nullptr);
+/// Initialize the Zaya engine directly from a .1bp (OneBP/Q4NX) model file.
+/// Loads weights via the OneBP tensor-name mapping (load_layer_onebp).
+ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg = nullptr);
 int   zaya_apply_lora(ZayaState* s, const char* lora_path);
 void zaya_forward(ZayaState* s, int token_id, float* logits_out);
 int  zaya_forward_greedy(ZayaState* s, int token_id);
