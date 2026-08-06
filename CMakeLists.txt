@@ -791,6 +791,9 @@ if(ZINC_CPP_AVAILABLE)
     target_link_libraries(validate_zamba2_vulkan PRIVATE zinc_cpp)
 endif()
 # HIP backend: adapter (InferenceBackend) + canonical src (Backend + zaya_engine)
+# onebp_loader.cpp: OnebpModel implementations (open/get_tensor_f32/get_tensor_f32_expert).
+# NOT added as a separate TU: zaya_engine.cpp and backend_hip_1bp.cpp raw-#include this .cpp
+# directly, so compiling it as its own unit would create a duplicate OnebpModel ODR symbol.
 list(APPEND ZAYA_SERVER_SRC tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp)
 set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_adapter.cpp src/backend_hip.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
 # zaya_server is no longer a standalone add_executable target — its full
