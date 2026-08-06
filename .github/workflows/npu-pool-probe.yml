@@ -11,10 +11,16 @@ on:
     paths:
       - '.github/workflows/npu-pool-probe.yml'
       - 'engine/npu/pool/**'
+  pull_request:
+    paths:
+      - 'engine/npu/pool/**'
 
 concurrency:
   group: npu-pool-probe-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   pool-probe:
