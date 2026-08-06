@@ -1,13 +1,19 @@
-// test_gemm_i32_vectorized.cpp — Test vectorized matmul_i8_i32 with microtile pre-shuffle.
-// Builds on test_gemm_i32.cpp but adds data layout transformation so the vectorized
-// 8x8x8 microtile kernel receives correctly ordered data.
+// test_gemm_i32_vectorized.cpp — Test vectorized matmul_i8_i32 against a CPU reference.
 //
-// The vectorized matmul_i8_i32 kernel expects each (m,k) tile of A and each (k,n) tile
-// of B to be arranged in 8x8 microtile order: all (m/8 * k/8) microtiles of 8x8 = 64 bytes
-// each, stored row-major by microtile-row then microtile-col.
+// The host A/B/C buffers are plain row-major.  The shim DMA BDs already emit the
+// 8x8-microtile order into the L1 fifos (4-dim BD pattern, see n1_core_i8_v26.py),
+// so no host-side shuffle is needed or correct — the old default shuffled the
+// host buffers AND the DMA reordered them again, a double transform that failed
+// 10000/10000 on every xclbin including known-good ones.  Flat buffers pass
+// 0/10000 (verified 2026-08-05 on v26 and v27 xclbins).
 //
-// Usage: ./test_gemm_i32_vectorized <xclbin> <insts.txt> M K N [--no-shuffle]
-//   --no-shuffle: run without microtile pre-shuffle (tests whether kernel actually needs it)
+// The vectorized matmul_i8_i32 kernel expects each (m,k) tile of A and each (k,n)
+// tile of B in 8x8 microtile order once they reach the fifo: all (m/8 * k/8)
+// microtiles of 8x8 = 64 bytes each, row-major by microtile-row then -col.
+//
+// Usage: ./test_gemm_i32_vectorized <xclbin> <insts.txt> M K N [--shuffle]
+//   --shuffle: opt-in legacy host-side pre-shuffle (expected to FAIL; kept to
+//              demonstrate the double-transform, and for non-DMA harnesses)
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -70,8 +76,8 @@ int main(int argc, char** argv) {
   if (argc < 6) { fprintf(stderr, "Usage: %s <xclbin> <insts.txt> M K N [--no-shuffle]\n", argv[0]); return 1; }
   const char* xp = argv[1]; const char* ip = argv[2];
   int M = atoi(argv[3]), K = atoi(argv[4]), N = atoi(argv[5]);
-  bool do_shuffle = true;
-  if (argc > 6 && strcmp(argv[6], "--no-shuffle") == 0) do_shuffle = false;
+  bool do_shuffle = false;
+  if (argc > 6 && strcmp(argv[6], "--shuffle") == 0) do_shuffle = true;
 
   printf("INT8 GEMM vectorized test: M=%d K=%d N=%d shuffle=%s\n",
          M, K, N, do_shuffle ? "yes (microtile order)" : "no (flat row-major)");
