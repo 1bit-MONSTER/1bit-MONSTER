@@ -39,6 +39,7 @@
 #include <memory>
 #include <chrono>
 #include <algorithm>
+#include <unistd.h>
 #include <iterator>
 
 #if __has_include(<onnxruntime_cxx_api.h>)

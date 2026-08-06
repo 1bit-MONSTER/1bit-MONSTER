@@ -104,11 +104,15 @@ static void attention(const f32* xq,int S,const f32* xkv,int T,int D,int H,int H
     linear(xkv,wk,nullptr,k.data(),T,D,O);
     linear(xkv,wv,nullptr,v.data(),T,D,O);
     std::vector<f32> qq((size_t)S*O),kk((size_t)T*O);
-    for(int s=0;s<S;s++) for(int h=0;h<H;h++) rmsnorm(qq.data()+((size_t)s*H+h)*HD, q.data()+((size_t)s*H+h)*HD, qn+h*HD, HD, 1e-5f);
-    for(int t=0;t<T;t++) for(int h=0;h<H;h++) rmsnorm(kk.data()+((size_t)t*H+h)*HD, k.data()+((size_t)t*H+h)*HD, kn+h*HD, HD, 1e-5f);
+    for(int s=0;s<S;s++) for(int h=0;h<H;h++) rmsnorm(qq.data()+((size_t)s*H+h)*HD, q.data()+((size_t)s*H+h)*HD, qn, HD, 1e-5f);
+    for(int t=0;t<T;t++) for(int h=0;h<H;h++) rmsnorm(kk.data()+((size_t)t*H+h)*HD, k.data()+((size_t)t*H+h)*HD, kn, HD, 1e-5f);
     freq.apply(qq.data(),S,H,HD,tq);
     freq.apply(kk.data(),T,H,HD,tk);
     sdpa(qq.data(),S,kk.data(),v.data(),T,H,HD,out);
+    // output projection O->D
+    { std::vector<f32> att((size_t)S*D);
+      linear(out,wo,nullptr,att.data(),S,O,D);
+      memcpy(out,att.data(),(size_t)S*D*sizeof(f32)); }
 }
 // ---------------- model ----------------
 struct ZModel {
@@ -126,7 +130,6 @@ struct ZModel {
         W->w2("encoder.tok_embeddings.weight",te,no,ni); W->w1("encoder.tok_embeddings.bias",teb,tn);
         std::vector<f32> h((size_t)seq*D);
         linear(xin.data(),te.data(),teb.data(),h.data(),seq,ID,D);
-        {int bad=0; for(auto&v:h) if(std::isnan(v)) bad++; fprintf(stderr,"[tok_emb] nan=%d/%d\n",bad,(int)h.size());}
         std::vector<int> itok((size_t)2*S*4);
         for(int g=0;g<S;g++) for(int a=0;a<4;a++){ itok[((size_t)2*g)*4+a]=tok_idx[g*4+a]; itok[((size_t)(2*g+1))*4+a]=tok_idx[g*4+a]; }
         for(int l=0;l<NL;l++){
@@ -150,7 +153,6 @@ struct ZModel {
             std::vector<f32> hnorm((size_t)seq*D), aatt((size_t)seq*D);
             for(int s=0;s<seq;s++) rmsnorm(hnorm.data()+s*D, h.data()+s*D, anw.data(), D, eps);
             attention(hnorm.data(),seq,hnorm.data(),seq,D,H,HD,wq.data(),wk.data(),wv.data(),wo.data(),qn.data(),kn.data(),freqs,itok,itok,aatt.data());
-            {int bad=0; for(auto&v:aatt) if(std::isnan(v)) bad++; fprintf(stderr,"[layer %d attn] nan=%d/%d\n",l,bad,(int)aatt.size());}
             for(int s=0;s<seq;s++){ f32* hh=h.data()+s*D; const f32* aa=aatt.data()+s*D; std::vector<f32> post((size_t)D); rmsnorm(post.data(),aa,anp.data(),D,eps); for(int j=0;j<D;j++) hh[j]+=post[j]; }
             std::vector<f32> hn2((size_t)seq*D);
             for(int s=0;s<seq;s++) rmsnorm(hn2.data()+s*D, h.data()+s*D, ffnw.data(), D, eps);
@@ -245,15 +247,17 @@ struct ZModel {
 struct ZRunner {
     Weights* W; ZModel M;
     explicit ZRunner(Weights* w):W(w),M(w){}
+    // z may be null -> generate from mt19937(seed); otherwise use provided initial noise
     void sample(const f32* tokens,int S,const std::vector<int>& tok_idx,unsigned int seed,
-                f32* enc_out,f32* recon){
+                f32* z_input,f32* enc_out,f32* recon){
         std::vector<f32> regmat(32), enc((size_t)S*M.ID);
         size_t rn; W->w1("encoder.registers",regmat,rn); regmat.resize(M.ID);
         M.encode(tokens,S,regmat.data(),tok_idx,enc.data());
         if(enc_out) memcpy(enc_out,enc.data(),(size_t)S*M.ID*sizeof(f32));
-        std::mt19937 rng(seed); std::normal_distribution<f32> nd(0.f,1.f);
         std::vector<f32> z((size_t)S*M.ID);
-        for(size_t i=0;i<(size_t)S*M.ID;i++) z[i]=0.1f*nd(rng);
+        if(z_input){ memcpy(z.data(),z_input,(size_t)S*M.ID*sizeof(f32)); }
+        else { std::mt19937 rng(seed); std::normal_distribution<f32> nd(0.f,1.f);
+            for(size_t i=0;i<(size_t)S*M.ID;i++) z[i]=0.1f*nd(rng); }
         f32 dt=1.0f/50.0f;
         std::vector<f32> v((size_t)S*M.ID);
         for(int step=50; step>=1; step--){
@@ -265,7 +269,11 @@ struct ZRunner {
     }
 };
 static bool load_f32_file(const char* path, std::vector<f32>& v){ FILE* f=fopen(path,"rb"); if(!f) return false; fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET); v.resize(n/4); if(n) fread(v.data(),4,v.size(),f); fclose(f); return true; }
+#ifdef ONE_BIN_DISPATCH
+int zuna_main(int argc, char** argv){
+#else
 int main(int argc, char** argv){
+#endif
     if(argc<5){ fprintf(stderr,"usage: %s <weights_dir> <tokens.bin> <tok_idx.bin> <out_recon.bin> [out_enc.bin] [seed]\n", argv[0]); return 2; }
     std::string dir=argv[1];
     FILE* fb=fopen((dir+"/weights.bin").c_str(),"rb"); if(!fb){fprintf(stderr,"no weights.bin\n");return 1;}
@@ -282,7 +290,11 @@ int main(int argc, char** argv){
     std::vector<int> tok(S*4); for(int i=0;i<S*4;i++) tok[i]=(int)ti[i];
     unsigned int seed = argc>=7 ? (unsigned int)atoi(argv[6]) : 0;
     std::vector<f32> enc((size_t)S*R.M.ID), recon((size_t)S*R.M.ID);
-    R.sample(tokens.data(),S,tok,seed,enc.data(),recon.data());
+    // optional initial-noise file as argv[7] (else generate from mt19937(seed))
+    std::vector<f32> z_in;
+    if(argc>=8 && argv[7][0]!='-') load_f32_file(argv[7], z_in);
+    R.sample(tokens.data(),S,tok,seed,z_in.empty()?nullptr:z_in.data(),enc.data(),recon.data());
+
     FILE* fo=fopen(argv[4],"wb"); fwrite(recon.data(),4,recon.size(),fo); fclose(fo);
     if(argc>=6 && argv[5][0]!='-'){ FILE* e=fopen(argv[5],"wb"); fwrite(enc.data(),4,enc.size(),e); fclose(e); }
     printf("wrote recon S=%d -> %s (enc %s)\n", S, argv[4], argc>=6?argv[5]:"<skip>");

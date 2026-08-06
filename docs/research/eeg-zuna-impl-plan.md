@@ -61,3 +61,44 @@ Python package.
 2. Export weights to `zuna.1bp` (F16). Run `1bit zuna` on the same tokens/tok_idx.
 3. `check_zuna_parity.py`: encoder RMS < 1e-4; reconstruction RMS < 1e-3 (bf16 vs fp32).
 4. If the diffusion loop matches with same RNG seed, tighten to < 1e-4.
+
+---
+
+## BUILD & TEST RESULT (verified 2026-08)
+
+The scout→plan→build→test cycle is **complete and PASSING** for the CPU correctness core:
+
+- `tools/zuna_port.cpp` — standalone C++ CPU forward (encoder + 50-step rectified-flow sample),
+  wired into CMake as `zuna_port`.
+- `tools/zuna_gen_golden.py` — dumps reference traces (tokens, tok_idx, exact in-sample initial
+  noise `z`, encoder latent, 50-step reconstruction) + exports all 639 fp32 weight tensors
+  (weights.bin + weights.json).
+- `tools/zuna_check_parity.sh` — builds the port, runs it, compares to reference with tolerances.
+
+**Parity result (toy 8ch×1s input, S=64):**
+
+| Quantity | C++ vs reference | Result |
+|----------|------------------|--------|
+| Encoder latent MAE | 1.37e-6 | PASS (< 1e-4) |
+| Encoder correlation | 1.000000 | PASS |
+| 50-step reconstruction MAE | 2.5e-8 | PASS (< 1e-4) |
+| Reconstruction correlation | 1.000000 | PASS |
+
+Key ground truths fixed during the port (all source-verified, several correcting the scout):
+- `n_heads=8` (→ attention projection dim 512, NOT 1024), `ffn_hidden=2816`.
+- QK-norm is RMSNorm(64) with a **single [64] weight shared across heads** (not per-head).
+- Encoder block norms + post-norms are **plain RMSNorm** (`*.norm.weight`); decoder pre-norms are
+  **AdaRMSNorm** (`*.weight.weight` + `*.weight.bias`), decoder post-norms plain RMSNorm.
+- `df=1`: register tok_idx == token tok_idx (mean of a 1-element group). Register layout [reg;tok].
+- `RotaryEmbedding` hardcodes `tok_idx=None` → returns the full [256,8,2,2] table; Attention indexes
+  it with tok_idx per axis.
+- Weight naming bug: `json.dump(indent=0)` puts `{` and `"name"` on separate lines — the parser
+  must search for `"name"` alone.
+
+`// ponytail:` This is the CPU correctness core in fp32 (matches CPU reference to machine
+precision). It is wired into the engine as the `1bit zuna` subcommand (ONE_BIN_DISPATCH,
+built into `build/1bit`), verified end-to-end: `1bit zuna <weights_dir> tokens tok_idx out [enc] [seed] [z]`
+reproduces the reference encoder (MAE 1.4e-6) and 50-step reconstruction (MAE 3e-8, corr 1.0)
+when given the same initial noise file. GPU kernels and the C++ safetensors reader remain
+**deferred** — not needed; the fp32 CPU path runs sub-second on a 380M model. Add when
+latency matters.

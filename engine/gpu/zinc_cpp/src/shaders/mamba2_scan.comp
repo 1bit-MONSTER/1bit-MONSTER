@@ -3,13 +3,20 @@
 // Mirrors selective_scan_step() in src/mamba2_kernels.cpp (the CPU reference):
 //
 //   dt_sp = softplus(dt[h] + dt_bias[h])          (stable: x > 20 -> x)
+//   dt_sp = max(dt_sp, 0.001)                     (HF time_step_min clamp)
 //   A_bar = exp(dt_sp * A[h])                     (GGUF ssm.a is already
 //     A = -exp(A_log), llama.cpp convention — do NOT re-apply -exp, #1460)
 //   db    = dt_sp
 //   for hd in 0..head_dim-1:
 //     for s in 0..d_state-1:
-//       state[s] = A_bar * state[s] + db * B[g,s] * x[hd]
-//     y[hd] = sum_s C[g,s]*state[s] + D[h]*x[hd]
+//       state[hd][s] = A_bar * state[hd][s] + db * B[g,s] * x[hd]
+//     y[hd] = sum_s C[g,s]*state[hd][s] + D[h]*x[hd]
+//
+// True Mamba2 semantics (#zamba2-validation): state is per-(head, head_dim)
+// slices [head][head_dim][d_state]; each slice evolves independently, once per
+// token (mamba2.py step(): state (batch, nheads, headdim, dstate)). The old
+// shared per-head state updated sequentially across head_dim decayed x[0] into
+// x[1..] and diverged from every mamba2 reference.
 //
 // Buffer 0 (input, readonly) is the per-token in_proj scratch
 // [ z: d_inner | xBC: conv_dim | dt: n_head ] AFTER the conv1d pass, so
@@ -20,7 +27,7 @@
 // Buffer 1 (output): y_inner [d_inner], y[hd] at h*head_dim + hd.
 // Buffer 2 (params + state), one contiguous model buffer:
 //   per layer: [ A_log(n_head) | D(n_head) | dt_bias(n_head) ]
-//   then: ssm_state(n_layers*n_head*d_state)
+//   then: ssm_state(n_layers*n_head*head_dim*d_state)
 // Push: M=d_inner, N=conv_dim, K=n_group, s=d_state, tok=head_dim,
 //       l=layer, h=n_head, pos=heads_per_group, p=bitcast(n_layers).
 //
@@ -64,12 +71,16 @@ void main() {
     float dt_bias = pr[pr_l + 2u * n_head + head];
     float dt_sp = dt_raw + dt_bias > 20.0f ? dt_raw + dt_bias
                                            : log(1.0 + exp(dt_raw + dt_bias));
+    dt_sp = max(dt_sp, 0.001f);  // HF time_step_min clamp (CPU ref matches)
     float A_bar = exp(dt_sp * pr[pr_l + head]);  // A already negated in GGUF (#1460)
     float db = dt_sp;
     float D_h = pr[pr_l + n_head + head];
 
     // SSM state slice for this layer+head (after all layers' params).
-    uint state_base = 3u * n_head * n_layers + (layer * n_head + head) * d_state;
+    // Per-(head, head_dim) slices: [head][head_dim][d_state], so the hd
+    // stride is d_state and each hd iteration touches only its own slice.
+    uint state_base = 3u * n_head * n_layers
+                    + (layer * n_head + head) * head_dim * d_state;
 
     // B/C group base inside buffer 0.
     uint b_base = 2u * d_inner + g * d_state;
@@ -84,7 +95,7 @@ void main() {
         float xv = ip[d_inner + head * head_dim + hd];
         float partial = 0.0;
         for (uint s = lane; s < d_state; s += 64u) {
-            uint idx = state_base + s;
+            uint idx = state_base + hd * d_state + s;
             float ns = A_bar * pr[idx] + db * ip[b_base + s] * xv;
             pr[idx] = ns;
             partial += ip[c_base + s] * ns;

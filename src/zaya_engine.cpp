@@ -17,6 +17,11 @@
 
 #include "hip_check.h"
 
+// OneBP model loader (OnebpModel::open / get_tensor_f32 / get_tensor_f32_expert
+// for ndim=1/2/3 dequant). The class lives entirely in the .cpp with no header,
+// so it is raw-included exactly like backend_hip_1bp.cpp does.
+#include "../engine/npu/src/onebp_loader.cpp"
+
 
 // ── Runtime config (set by zaya_init from model header) ──
 static constexpr float RMD_EPS=1e-5f;
@@ -162,6 +167,290 @@ static void upf32(const std::vector<float>& s,float*d,int n,hipStream_t h=0){
     HIP_OK_V(hipMemcpyAsync(d,s.data(),n*4,hipMemcpyHostToDevice,h));
 }
 
+// ── GPU buffer allocation (shared by zaya_init and zaya_init_onebp) ──
+// Extracted from zaya_init() so both init paths allocate an identical buffer
+// set. Returns false on OOM; the caller destroys the state. Sized off the
+// runtime config `eng` (thread_local).
+static bool zaya_alloc_buffers(ZayaState* s) {
+    auto alloc_f16 = [&](auto& p, size_t n) -> bool {
+        hipError_t _e = hipMalloc(&p, n*2);
+        if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
+        return true;
+    };
+    auto alloc_f32 = [&](auto& p, size_t n) -> bool {
+        hipError_t _e = hipMalloc(&p, n*4);
+        if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
+        return true;
+    };
+    #define ALLOC_OR_FAIL(s, alloc_fn, ptr, n) do { if (!alloc_fn(ptr, n)) { return false; } } while(0)
+    // Batch path (zaya_forward_batch) writes per-token slices d_hs + b*eng.h
+    // and d_lm_vocab + b*eng.vocab for up to B_MAX tokens — size for B_MAX,
+    // not one (issue #1264: OOB GPU writes for any B >= 2).
+    constexpr size_t ZAYA_B_MAX = 8;
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h * ZAYA_B_MAX);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h * ZAYA_B_MAX);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp, std::max(eng.h, 2*eng.n_ff));
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab * ZAYA_B_MAX);
+    // d_argmax_idx, d_sorted_ids, d_expert_counts, d_expert_offsets are
+    // declared as int* (and used as int by kernels) but allocated via
+    // alloc_f32 since hipMalloc works in bytes and both int/float are 4 B.
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_idx, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_val, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, 8);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, 17);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, 17);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_embed, eng.vocab * eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ibias, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_iscale, eng.h);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_token_id, 1);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_conv, eng.n_layers * 2 * eng.qkv);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_phs, eng.n_layers * eng.h);
+    // KV cache: linear contiguous by default (#3), paged pool as fallback of KV_PAGE_SIZE token pages instead of
+    // the full max_seq_len contiguous buffer. Saves ~75% memory at 64K context.
+    s->max_seq = eng.max_seq_len > 0 ? eng.max_seq_len : 4096;
+    if (s->use_linear_kv) {
+        // Linear KV cache (#3): contiguous [n_layers, max_seq, NKV, HD] — zero gather overhead
+        size_t kv_elems = (size_t)eng.n_layers * s->max_seq * eng.nkv * eng.hd;
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, kv_elems);
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, kv_elems);
+        fprintf(stderr, "  KV cache: linear contiguous %d tok x %d layers = %.1f MB\n",
+                s->max_seq, eng.n_layers, (double)kv_elems * 2 / (1024*1024));
+    } else {
+        // Paged KV cache fallback
+        s->page_size = KV_PAGE_SIZE;
+        s->n_kv_pages = (s->max_seq + s->page_size - 1) / s->page_size;
+        s->kv_pool_pages = eng.kv_pool_pages > 0 ?
+            std::min(eng.kv_pool_pages, s->n_kv_pages) :
+            std::min(s->n_kv_pages, KV_DEFAULT_PAGES);
+        if (s->kv_pool_pages < 1) s->kv_pool_pages = 1;
+        size_t kv_pool_elems = (size_t)eng.n_layers * s->kv_pool_pages * s->page_size * eng.nkv * eng.hd;
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, kv_pool_elems);
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, kv_pool_elems);
+        fprintf(stderr, "  KV cache: %d pages (%d tok/page, %d pool, %d max_seq) = %.1f MB\n",
+                s->n_kv_pages, s->page_size, s->kv_pool_pages, s->max_seq,
+                (double)kv_pool_elems * 2 / (1024*1024));
+    }
+    // Page table / gather buffers only needed for paged KV cache (#3)
+    if (!s->use_linear_kv) {
+        s->page_alloc.resize(eng.n_layers);
+        s->page_map.resize(eng.n_layers);
+        s->page_lru.resize(eng.n_layers);
+        s->page_next_evict.resize(eng.n_layers);
+        for (int il = 0; il < eng.n_layers; il++) {
+            s->page_alloc[il].assign(s->n_kv_pages, false);
+            s->page_map[il].assign(s->n_kv_pages, -1);
+            s->page_lru[il].assign(s->kv_pool_pages, -1);
+            s->page_next_evict[il] = 0;
+        }
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_k_gather, s->max_seq * eng.nkv * eng.hd);
+        ALLOC_OR_FAIL(s, alloc_f16, s->d_v_gather, s->max_seq * eng.nkv * eng.hd);
+        ALLOC_OR_FAIL(s, alloc_f32, s->d_page_map, s->n_kv_pages);
+    }
+    s->gather_seq_len = 0;
+    // Pre-allocated flash-decoding partials buffer for graph capture (#2)
+    {
+        int max_tiles = (s->max_seq + 128 - 1) / 128;
+        int partials_elems = eng.nq * max_tiles * (eng.hd + 2);
+        ALLOC_OR_FAIL(s, alloc_f32, s->d_partials, partials_elems);
+    }
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_vrec, eng.n_layers * (eng.kd / 2));
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_qout, eng.qd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_kout, eng.kd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_vout, eng.kd);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_skip_flag, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, (size_t)eng.n_layers * eng.rtr_h);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
+    #undef ALLOC_OR_FAIL
+    return true;
+}
+
+// ── OneBP per-layer weight loader (plan: tensor-name mapping table) ──
+// Maps OneBP tensor names (GGUF `blk.N.*` preserved verbatim by
+// gguf_to_onebp) onto the engine's LayerW GPU buffers. Missing or
+// wrong-sized tensors warn + zero-fill so a partially-unsupported GGUF
+// still initializes (the engine degrades instead of crashing). MoE expert
+// tensors (gu/dn) missing → left null → zaya_forward's `if (l.gu && l.dn)`
+// dense fallback. Returns false only on a real GPU alloc failure.
+static bool load_layer_onebp(OnebpModel& model, int il, LayerW& l,
+                             const ZayaConfig& eng, hipStream_t st) {
+    const std::string p = "blk." + std::to_string(il) + ".";
+    bool ok = true;
+
+    // FP16 upload (attn + norms)
+    auto f16 = [&](const char* n, __half*& gpu, int count) {
+        std::vector<float> v;
+        if (!model.get_tensor_f32((p + n).c_str(), v) || (int)v.size() != count) {
+            fprintf(stderr, "  onebp: '%s%s' missing/short (%zu floats, want %d) — zero-filled\n",
+                    p.c_str(), n, v.size(), count);
+            if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
+            (void)hipMemsetAsync(gpu, 0, (size_t)count * 2, st);
+            return;
+        }
+        if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
+        upf16(v, gpu, count, st);
+    };
+    // FP32 upload (router / residual scales / conv)
+    auto f32 = [&](const char* n, float*& gpu, int count) {
+        std::vector<float> v;
+        if (!model.get_tensor_f32((p + n).c_str(), v) || (int)v.size() != count) {
+            fprintf(stderr, "  onebp: '%s%s' missing/short (%zu floats, want %d) — zero-filled\n",
+                    p.c_str(), n, v.size(), count);
+            if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
+            (void)hipMemsetAsync(gpu, 0, (size_t)count * 4, st);
+            return;
+        }
+        if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
+        upf32(v, gpu, count, st);
+    };
+
+    // ── Attention (plan table) ──
+    f16("attn_norm.weight", l.nw, eng.h);
+    f16("attn_q.weight", l.wq, eng.qd * eng.h);
+    f16("attn_k.weight", l.wk, eng.kd * eng.h);
+    f16("cca_val_proj1.weight", l.wv1, (eng.kd / 2) * eng.h);
+    f16("cca_val_proj2.weight", l.wv2, (eng.kd / 2) * eng.h);
+    f16("attn_norm_2.weight", l.pan, eng.h);
+    f32("cca_conv_grp.weight", l.cdw, eng.qkv * 2);
+    f32("cca_conv_grp.bias", l.cdb, eng.qkv);
+    f32("cca_conv_grp_grouped.weight", l.cgw, eng.qkv * 128 * 2);
+    f32("cca_conv_grp_grouped.bias", l.cgb, eng.qkv);
+    f32("cca_k_scale.weight", l.ks, eng.nkv);
+    f32("res_scale_hs.weight", l.pahss, eng.h);
+    f32("res_scale_hs.bias", l.pahsb, eng.h);
+    f32("res_scale_res.weight", l.parss, eng.h);
+    f32("res_scale_res.bias", l.parsb, eng.h);
+
+    // wo (attn_output.weight) — kernel wants [H, QD] (moe_tiled_gemv M=H,K=QD).
+    // OneBP may store [H, QD] or the transpose [QD, H]: verify against the
+    // recorded dims and transpose only when needed (plan step 6).
+    {
+        std::string nm = p + "attn_output.weight";
+        std::vector<float> v;
+        auto* te = model.find_tensor(nm.c_str());
+        int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
+        bool found = model.get_tensor_f32(nm.c_str(), v);
+        if (found && rows == eng.h && cols == eng.qd && (int)v.size() >= eng.h * eng.qd) {
+            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
+            else upf16(v, l.wo, eng.h * eng.qd, st);
+        } else if (found && rows == eng.qd && cols == eng.h && (int)v.size() >= eng.h * eng.qd) {
+            std::vector<float> tr((size_t)eng.h * eng.qd);
+            for (int i = 0; i < eng.h; i++)
+                for (int k = 0; k < eng.qd; k++)
+                    tr[(size_t)i * eng.qd + k] = v[(size_t)k * eng.h + i];
+            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
+            else upf16(tr, l.wo, eng.h * eng.qd, st);
+        } else {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,QD=%d] — zero-filled\n",
+                    nm.c_str(), rows, cols, v.size(), eng.h, eng.qd);
+            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
+            else (void)hipMemsetAsync(l.wo, 0, (size_t)eng.h * eng.qd * 2, st);
+        }
+    }
+
+    // ── Router (plan table) ──
+    f32("ffn_gate.bias", l.gdb, eng.rtr_h);
+    f32("ffn_norm.weight", l.rfn, eng.rtr_h);
+    f32("zaya_router_mlp2.weight", l.rf1, eng.rtr_h * eng.rtr_h);
+    f32("zaya_router_mlp2.bias", l.rf1b, eng.rtr_h);
+    f32("zaya_router_mlp4.bias", l.rf2b, eng.rtr_h);
+    f32("mlp.gate.router_mlp.out_proj.weight", l.rout, eng.n_exp_t * eng.rtr_h);
+    f32("zaya_router_biases.weight", l.bb, eng.n_exp_t);
+
+    // gdw (ffn_gate.weight) — engine stores [H, rtr_h] (the transpose of the
+    // upstream [rtr_h, H]; same convention as the .bin loader and
+    // zaya_apply_lora, read stride-1 by eda_router_gpu_kernel). Transpose
+    // only when the file's recorded dims say [rtr_h, H] (plan step 6).
+    {
+        std::string nm = p + "ffn_gate.weight";
+        std::vector<float> v;
+        auto* te = model.find_tensor(nm.c_str());
+        int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
+        bool found = model.get_tensor_f32(nm.c_str(), v);
+        if (found && rows == eng.h && cols == eng.rtr_h && (int)v.size() >= eng.h * eng.rtr_h) {
+            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            else upf32(v, l.gdw, eng.h * eng.rtr_h, st);
+        } else if (found && rows == eng.rtr_h && cols == eng.h && (int)v.size() >= eng.h * eng.rtr_h) {
+            std::vector<float> tr((size_t)eng.h * eng.rtr_h);
+            for (int i = 0; i < eng.rtr_h; i++)
+                for (int j = 0; j < eng.h; j++)
+                    tr[(size_t)j * eng.rtr_h + i] = v[(size_t)i * eng.h + j];
+            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            else upf32(tr, l.gdw, eng.h * eng.rtr_h, st);
+        } else {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,rtr_h=%d] — zero-filled\n",
+                    nm.c_str(), rows, cols, v.size(), eng.h, eng.rtr_h);
+            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            else (void)hipMemsetAsync(l.gdw, 0, (size_t)eng.h * eng.rtr_h * 4, st);
+        }
+    }
+
+    // rf2 (zaya_router_mlp4.weight) — 74B quirk: file stores [n_exp_t, rtr_h]
+    // (NE+1 slots), engine wants [rtr_h, rtr_h] — zero-pad to square
+    // (plan step 6; pattern from tests/zaya_gpu_decode.cpp). Padded slots
+    // get zero logits (correct: they are invalid expert ids).
+    {
+        std::string nm = p + "zaya_router_mlp4.weight";
+        std::vector<float> v;
+        bool found = model.get_tensor_f32(nm.c_str(), v);
+        if (hipMalloc(&l.rf2, (size_t)eng.rtr_h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+        else {
+            (void)hipMemsetAsync(l.rf2, 0, (size_t)eng.rtr_h * eng.rtr_h * 4, st);
+            if (found && (int)v.size() >= eng.rtr_h * eng.rtr_h) {
+                upf32(v, l.rf2, eng.rtr_h * eng.rtr_h, st);
+            } else if (found && (int)v.size() == eng.n_exp_t * eng.rtr_h) {
+                (void)hipMemcpyAsync(l.rf2, v.data(), (size_t)v.size() * 4, hipMemcpyHostToDevice, st);
+            } else {
+                fprintf(stderr, "  onebp: '%s' size %zu (want %d or %d) — zero-filled\n",
+                        nm.c_str(), v.size(), eng.rtr_h * eng.rtr_h, eng.n_exp_t * eng.rtr_h);
+            }
+        }
+    }
+
+    // ── MoE experts (plan step 5): ndim=3 [NE, R, C], dequant each expert
+    // via get_tensor_f32_expert and concatenate. gu = [NE, 2*n_ff, H] with
+    // gate rows [0,n_ff) then up rows [n_ff,2*n_ff) per expert (the layout
+    // zaya_moe_expert_ffn.hip reads); dn = [NE, H, n_ff]. Missing → null →
+    // the engine's `if (l.gu && l.dn)` dense fallback.
+    {
+        auto experts = [&](const char* n, __half*& gpu, int rows, int cols) {
+            std::string nm = p + n;
+            auto* te = model.find_tensor(nm.c_str());
+            if (!te || te->ndim != 3 || te->num_experts != eng.n_exp) {
+                fprintf(stderr, "  onebp: '%s' not a %d-expert ndim=3 tensor — MoE skipped (dense layer?)\n",
+                        nm.c_str(), eng.n_exp);
+                gpu = nullptr;
+                return;
+            }
+            std::vector<float> allv((size_t)eng.n_exp * rows * cols);
+            for (int e = 0; e < eng.n_exp; e++) {
+                std::vector<float> v;
+                if (!model.get_tensor_f32_expert(nm.c_str(), e, v) || (int)v.size() < rows * cols) {
+                    fprintf(stderr, "  onebp: '%s' expert %d/%d missing/short — MoE skipped\n",
+                            nm.c_str(), e, eng.n_exp);
+                    gpu = nullptr;
+                    return;
+                }
+                memcpy(allv.data() + (size_t)e * rows * cols, v.data(), (size_t)rows * cols * 4);
+            }
+            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { ok = false; return; }
+            upf16(allv, gpu, eng.n_exp * rows * cols, st);
+        };
+        experts("ffn_gate_up_exps.weight", l.gu, 2 * eng.n_ff, eng.h);
+        experts("ffn_down_exps.weight", l.dn, eng.h, eng.n_ff);
+    }
+
+    // ── Post-MLP residual scales (plan table) ──
+    f32("res_scale_hs.mlp.weight", l.pmhss, eng.h);
+    f32("res_scale_hs.mlp.bias", l.pmhsb, eng.h);
+    f32("res_scale_res.mlp.weight", l.pmrss, eng.h);
+    f32("res_scale_res.mlp.bias", l.pmrsb, eng.h);
+
+    return ok;
+}
+
 extern "C" {
 
 // ── WMMA defines (redefined after zaya_moe_wmma_batched.hip undefs them) ──
@@ -254,99 +543,8 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
         return nullptr;
     }
 
-    // Allocate GPU buffers with cleanup on failure (fixes #279 — leak on alloc error)
-    auto alloc_f16 = [&](auto& p, size_t n) -> bool {
-        hipError_t _e = hipMalloc(&p, n*2);
-        if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
-        return true;
-    };
-    auto alloc_f32 = [&](auto& p, size_t n) -> bool {
-        hipError_t _e = hipMalloc(&p, n*4);
-        if (_e != hipSuccess) { fprintf(stderr,"HIP OOM at %s:%d — %s\n",__FILE__,__LINE__,hipGetErrorString(_e)); return false; }
-        return true;
-    };
-    #define ALLOC_OR_FAIL(s, alloc_fn, ptr, n) do { if (!alloc_fn(ptr, n)) { zaya_destroy(s); return nullptr; } } while(0)
-    // Batch path (zaya_forward_batch) writes per-token slices d_hs + b*eng.h
-    // and d_lm_vocab + b*eng.vocab for up to B_MAX tokens — size for B_MAX,
-    // not one (issue #1264: OOB GPU writes for any B >= 2).
-    constexpr size_t ZAYA_B_MAX = 8;
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h * ZAYA_B_MAX);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h * ZAYA_B_MAX);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp, std::max(eng.h, 2*eng.n_ff));
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab * ZAYA_B_MAX);
-    // d_argmax_idx, d_sorted_ids, d_expert_counts, d_expert_offsets are
-    // declared as int* (and used as int by kernels) but allocated via
-    // alloc_f32 since hipMalloc works in bytes and both int/float are 4 B.
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_idx, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_val, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, 8);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, 17);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, 17);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_embed, eng.vocab * eng.h);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_ibias, eng.h);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_iscale, eng.h);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_token_id, 1);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_conv, eng.n_layers * 2 * eng.qkv);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_phs, eng.n_layers * eng.h);
-    // KV cache: linear contiguous by default (#3), paged pool as fallback of KV_PAGE_SIZE token pages instead of
-    // the full max_seq_len contiguous buffer. Saves ~75% memory at 64K context.
-    s->max_seq = eng.max_seq_len > 0 ? eng.max_seq_len : 4096;
-    if (s->use_linear_kv) {
-        // Linear KV cache (#3): contiguous [n_layers, max_seq, NKV, HD] — zero gather overhead
-        size_t kv_elems = (size_t)eng.n_layers * s->max_seq * eng.nkv * eng.hd;
-        ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, kv_elems);
-        ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, kv_elems);
-        fprintf(stderr, "  KV cache: linear contiguous %d tok x %d layers = %.1f MB\n",
-                s->max_seq, eng.n_layers, (double)kv_elems * 2 / (1024*1024));
-    } else {
-        // Paged KV cache fallback
-        s->page_size = KV_PAGE_SIZE;
-        s->n_kv_pages = (s->max_seq + s->page_size - 1) / s->page_size;
-        s->kv_pool_pages = eng.kv_pool_pages > 0 ?
-            std::min(eng.kv_pool_pages, s->n_kv_pages) :
-            std::min(s->n_kv_pages, KV_DEFAULT_PAGES);
-        if (s->kv_pool_pages < 1) s->kv_pool_pages = 1;
-        size_t kv_pool_elems = (size_t)eng.n_layers * s->kv_pool_pages * s->page_size * eng.nkv * eng.hd;
-        ALLOC_OR_FAIL(s, alloc_f16, s->d_kcache, kv_pool_elems);
-        ALLOC_OR_FAIL(s, alloc_f16, s->d_vcache, kv_pool_elems);
-        fprintf(stderr, "  KV cache: %d pages (%d tok/page, %d pool, %d max_seq) = %.1f MB\n",
-                s->n_kv_pages, s->page_size, s->kv_pool_pages, s->max_seq,
-                (double)kv_pool_elems * 2 / (1024*1024));
-    }
-    // Page table / gather buffers only needed for paged KV cache (#3)
-    if (!s->use_linear_kv) {
-        s->page_alloc.resize(eng.n_layers);
-        s->page_map.resize(eng.n_layers);
-        s->page_lru.resize(eng.n_layers);
-        s->page_next_evict.resize(eng.n_layers);
-        for (int il = 0; il < eng.n_layers; il++) {
-            s->page_alloc[il].assign(s->n_kv_pages, false);
-            s->page_map[il].assign(s->n_kv_pages, -1);
-            s->page_lru[il].assign(s->kv_pool_pages, -1);
-            s->page_next_evict[il] = 0;
-        }
-        ALLOC_OR_FAIL(s, alloc_f16, s->d_k_gather, s->max_seq * eng.nkv * eng.hd);
-        ALLOC_OR_FAIL(s, alloc_f16, s->d_v_gather, s->max_seq * eng.nkv * eng.hd);
-        ALLOC_OR_FAIL(s, alloc_f32, s->d_page_map, s->n_kv_pages);
-    }
-    s->gather_seq_len = 0;
-    // Pre-allocated flash-decoding partials buffer for graph capture (#2)
-    {
-        int max_tiles = (s->max_seq + 128 - 1) / 128;
-        int partials_elems = eng.nq * max_tiles * (eng.hd + 2);
-        ALLOC_OR_FAIL(s, alloc_f32, s->d_partials, partials_elems);
-    }
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_vrec, eng.n_layers * (eng.kd / 2));
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_qout, eng.qd);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_kout, eng.kd);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_vout, eng.kd);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_skip_flag, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, (size_t)eng.n_layers * eng.rtr_h);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
-    #undef ALLOC_OR_FAIL
+    // Allocate GPU buffers (shared with zaya_init_onebp via zaya_alloc_buffers)
+    if (!zaya_alloc_buffers(s)) { zaya_destroy(s); return nullptr; }
     
     upf16(s->embed,s->d_embed,eng.vocab*eng.h,s->st);
     // Upload ibias/iscale to GPU for device-side embedding lookup (#5)
@@ -441,6 +639,138 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
         }
     }
     HIP_OK_R(hipStreamSynchronize(s->st), nullptr);
+    return s;
+}
+
+// ── Init from a .1bp file (OneBP/Q4NX format) ──
+// Opens the model with OnebpModel::open(), validates dimensions against the
+// config (same embed-size gate as zaya_init), allocates the identical GPU
+// buffer set via zaya_alloc_buffers, and loads every weight through the
+// tensor-name mapping in load_layer_onebp (get_tensor_f32 for ndim=1/2,
+// get_tensor_f32_expert per-expert for ndim=3 MoE stacks, upf16/upf32
+// uploads). Returns the engine state, or nullptr on failure.
+ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
+    // Populate runtime config from the provided ZayaConfig (or default Zaya1-8B)
+    if (cfg) {
+        eng = *cfg;
+    } else {
+        eng = ZayaConfig::zaya1_8b();
+    }
+
+    ZayaState* s = new (std::nothrow) ZayaState();
+    if (!s) {
+        fprintf(stderr, "zaya_init_onebp: failed to allocate ZayaState (OOM)\n");
+        return nullptr;
+    }
+    HIP_OK_R(hipStreamCreate(&s->st), nullptr);
+
+    OnebpModel model;
+    if (!model.open(onebp_path)) {
+        fprintf(stderr, "zaya_init_onebp: failed to open %s\n", onebp_path);
+        zaya_destroy(s);
+        return nullptr;
+    }
+    const auto& hdr = model.header();
+    fprintf(stderr, "zaya_init_onebp: %s — H=%d L=%d NH=%d NKV=%d HD=%d IM=%d V=%d (%d tensors, quant=%u)\n",
+            onebp_path, hdr.hidden_size, hdr.num_layers, hdr.num_attention_heads,
+            hdr.num_kv_heads, hdr.head_dim, hdr.intermediate_size, hdr.vocab_size,
+            model.tensor_count(), (unsigned)hdr.quant);
+
+    // Validate the model header against the runtime config before allocating or
+    // loading weights — a silent dimension mismatch would zero-fill every tensor
+    // and produce a model that loads without error but outputs garbage.
+    if (eng.h      != (int)hdr.hidden_size    ||
+        eng.n_layers != (int)hdr.num_layers    ||
+        eng.vocab  != (int)hdr.vocab_size       ) {
+        fprintf(stderr, "zaya_init_onebp: config/header dimension mismatch — aborting init "
+                "(cfg H=%d L=%d V=%d vs hdr H=%d L=%d V=%d)\n",
+                eng.h, eng.n_layers, eng.vocab,
+                (int)hdr.hidden_size, (int)hdr.num_layers, (int)hdr.vocab_size);
+        zaya_destroy(s);
+        return nullptr;
+    }
+    // Verify a GPU is available before attempting allocations (same as zaya_init)
+    int ndev = 0;
+    HIP_OK_R(hipGetDeviceCount(&ndev), nullptr);
+    if (ndev < 1) {
+        fprintf(stderr, "zaya_init_onebp: No HIP-capable GPU found (device count=%d).\n", ndev);
+        zaya_destroy(s);
+        return nullptr;
+    }
+
+    // Globals: token_embd + final norm — required (same gate as zaya_init).
+    // output_norm.weight with model.norm.weight as fallback alias (plan risk #1).
+    if (!model.get_tensor_f32("token_embd.weight", s->embed)) {
+        fprintf(stderr, "zaya_init_onebp: missing token_embd.weight — aborting init\n");
+        zaya_destroy(s);
+        return nullptr;
+    }
+    std::vector<float> fnorm;
+    if (!model.get_tensor_f32("output_norm.weight", fnorm))
+        model.get_tensor_f32("model.norm.weight", fnorm);
+    if ((int)fnorm.size() != eng.h) {
+        fprintf(stderr, "zaya_init_onebp: missing output_norm.weight/model.norm.weight (%zu, want %d) — aborting init\n",
+                fnorm.size(), eng.h);
+        zaya_destroy(s);
+        return nullptr;
+    }
+
+    // Dimension validation — same embed-size gate as zaya_init (fixes #61):
+    // refuse to load a model whose embedding table doesn't match the config.
+    size_t expected_embed = (size_t)eng.vocab * eng.h;
+    if (s->embed.size() != expected_embed) {
+        fprintf(stderr, "zaya_init_onebp: model embed size %zu != expected %zu (cfg H=%d, vocab=%d)\n",
+                s->embed.size(), expected_embed, eng.h, eng.vocab);
+        fprintf(stderr, "  Refusing to load — would produce silent garbage.\n");
+        zaya_destroy(s);
+        return nullptr;
+    }
+
+    // input_hidden_states_scale/bias are optional (plan risk #5): default
+    // scale=1.0, bias=0.0 (pattern from tests/zaya_gpu_decode.cpp).
+    s->iscale.assign(eng.h, 1.0f);
+    s->ibias.assign(eng.h, 0.0f);
+    {
+        std::vector<float> v;
+        if (model.get_tensor_f32("input_hidden_states_scale.weight", v) && (int)v.size() == eng.h) {
+            for (int i = 0; i < eng.h; i++) s->iscale[i] = v[i];
+        } else {
+            fprintf(stderr, "  zaya_init_onebp: input_hidden_states_scale.weight absent — using 1.0\n");
+        }
+        if (model.get_tensor_f32("input_hidden_states_scale.bias", v) && (int)v.size() == eng.h) {
+            for (int i = 0; i < eng.h; i++) s->ibias[i] = v[i];
+        } else {
+            fprintf(stderr, "  zaya_init_onebp: input_hidden_states_scale.bias absent — using 0.0\n");
+        }
+    }
+
+    // Allocate GPU buffers — identical set to zaya_init's
+    if (!zaya_alloc_buffers(s)) {
+        zaya_destroy(s);
+        return nullptr;
+    }
+
+    // Upload globals (host copies kept for the batch path / backend adapter)
+    upf16(s->embed, s->d_embed, eng.vocab * eng.h, s->st);
+    upf16(fnorm, s->d_fnw, eng.h, s->st);
+    upf16(s->ibias, s->d_ibias, eng.h, s->st);
+    upf16(s->iscale, s->d_iscale, eng.h, s->st);
+
+    // Per-layer weights via the tensor-name mapping table.
+    // value-init LayerW (not resize) so all raw pointers are nullptr — zaya_destroy
+    // frees s->lw via safe() and must not see indeterminate pointers on partial failure.
+    s->lw.assign(eng.n_layers, LayerW{});
+    s->has_eda.assign(eng.n_layers, false);
+    s->eda_scale.assign(eng.n_layers, 0.0f);
+    for (int il = 0; il < eng.n_layers; il++) {
+        if (!load_layer_onebp(model, il, s->lw[il], eng, s->st)) {
+            fprintf(stderr, "zaya_init_onebp: GPU alloc failed in layer %d — aborting init\n", il);
+            zaya_destroy(s);
+            return nullptr;
+        }
+    }
+    HIP_OK_R(hipStreamSynchronize(s->st), nullptr);
+    fprintf(stderr, "zaya_init_onebp: engine ready (%d layers)\n", eng.n_layers);
     return s;
 }
 

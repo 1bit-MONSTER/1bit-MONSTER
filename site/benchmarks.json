@@ -247,14 +247,14 @@
    "notes": "Decode 11.66@1k → 8.82@32k; prefill 98.05@1k → 239.79@32k tok/s. 8 iters/ctx, performance mode, Strix Halo MAX+ 395. Prefill beats AMD official (Kraken Point) +8..24%; decode trails 7-15%. Official Q4_K_S weights (FastFlowLM/Qwen3.6-35B-A3B-NPU2). See benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md"
   },
   "qwen3_0_6b_npu": {
-   "tok_s": 2.3,
+   "tok_s": 7.4,
    "status": "validated",
    "remeasured": "2026-08-05",
    "label": "Qwen3-0.6B Q4NX on native NPU engine (npu_engine_universal, v27 multi-core xclbins)",
    "table": "end_to_end",
    "display_name": "Qwen3-0.6B NPU (native)",
    "backend": "XDNA 2 (32 cores, v27)",
-   "notes": "Decode 435 ms/tok (2.3 tok/s), prefill 475 ms for 9 tok — measured 2026-08-05, bit-identical token stream vs v26. NPU attention default flipped to opt-in (was 55x slower than CPU)."
+   "notes": "Decode 435 ms/tok (B=1) → 135 ms/tok at -B 8 (7.4 tok/s aggregate, 8 independent sequences), prefill 475 ms/9 tok — measured 2026-08-05, bit-identical token stream vs v26. Multi-sequence batch decode is strictly causal (per-sequence KV); the old top-BS extension was never valid (#1485). NPU attention removed (fixed-seq kernel, 55x slower than CPU)."
   }
  },
  "table_kernel": [

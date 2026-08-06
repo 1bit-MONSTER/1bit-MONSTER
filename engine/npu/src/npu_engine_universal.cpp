@@ -331,120 +331,7 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
             auto o=strstr(q,"\"data_offsets\"");if(o){auto a=strchr(o,'[');if(a)return strtoull(a+1,NULL,10);}}p=q+1;}return 0;}
 
 
-// AttnCtx — NPU attention context with 4 BOs (Q, K, V, output).
-// The attn.xclbin kernel signature (from EMBEDDED_METADATA):
-//   args: opcode, instr, ninstr, bo0..bo4
-//   bo0=Q (i8, NH*HD), bo1=K (i8, max_seq*NKV*HD),
-//   bo2=V (i8, max_seq*NKV*HD), bo3=output (i16, NH*HD)
-// Pre-compiled attention instructions loaded from file (fixed seq_len).
-struct AttnCtx {
-    int max_seq, NH, NKV, HD, XM;
-    std::unique_ptr<xrt::xclbin> xc;
-    std::unique_ptr<xrt::hw_context> hc;
-    std::unique_ptr<xrt::module> mdl;
-    std::unique_ptr<xrt::elf> elf;
-    std::unique_ptr<xrt::ext::kernel> k;
-    std::unique_ptr<xrt::bo> bQ, bK, bV, bOut;
-    bool initialized = false;
 
-    ~AttnCtx() {}
-    bool isReady() { return initialized && k && bQ && bK && bV && bOut; }
-
-    // Initialize with xclbin + runtime-generated instructions.
-    // Pre-allocates BOs at max_seq dimensions — only the first `seq_len`
-    // entries of K/V are valid per call (quantize K/V for the active range).
-    bool init(xrt::device& d, const char* xp,
-              const std::vector<uint32_t>& instrs,
-              int max_seq_len, int nh, int nkv, int hd, int xm) {
-        max_seq = max_seq_len;
-        NH = nh; NKV = nkv; HD = hd; XM = xm;
-        try {
-            std::vector<char> iraw((char*)instrs.data(),
-                                   (char*)instrs.data() + instrs.size() * sizeof(uint32_t));
-            aiebu::aiebu_assembler asmblr(
-                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
-            xc = std::make_unique<xrt::xclbin>(std::string(xp));
-            d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (std::exception& ex) {
-            fprintf(stderr, "  AttnCtx ELF gen failed: %s\n", ex.what());
-            return false;
-        }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        // Pre-allocate BOs at max dimensions
-        size_t q_bytes = (size_t)XM * NH * HD;            // Q: batch * NH * HD
-        size_t kv_bytes = (size_t)max_seq * NKV * HD;     // K/V: max_seq * NKV * HD
-        size_t out_bytes = (size_t)XM * NH * HD * 4;       // output: i32 (NPU attention kernel may output int32 accumulators)
-        bQ = std::make_unique<xrt::bo>(d, q_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bK = std::make_unique<xrt::bo>(d, kv_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bV = std::make_unique<xrt::bo>(d, kv_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        bOut = std::make_unique<xrt::bo>(d, out_bytes, XRT_BO_FLAGS_HOST_ONLY, 0);
-        initialized = true;
-        return true;
-    }
-
-    // Quantize Q (f32) → BO (i8), sync, and launch attention.
-    // K/V caches are f32 on host — quantizes the active range [0, seq_len).
-    // Returns run handle for later wait+dequant.
-    xrt::run launch(const float* Q_f32, const float* K_cache, const float* V_cache,
-                    int seq_len, int batch, float q_scale, float kv_scale) {
-        // Quantize Q
-        auto* q_i8 = (int8_t*)bQ->map();
-        float q_is = 1.0f / q_scale;
-        for (int i = 0; i < batch * NH * HD; i++) {
-            float v = Q_f32[i];
-            if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * q_is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            q_i8[i] = (int8_t)q;
-        }
-        bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        // Quantize K cache [0, seq_len)
-        auto* k_i8 = (int8_t*)bK->map();
-        float kv_is = 1.0f / kv_scale;
-        size_t kv_len = (size_t)seq_len * NKV * HD;
-        for (size_t i = 0; i < kv_len; i++) {
-            float v = K_cache[i];
-            if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * kv_is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            k_i8[i] = (int8_t)q;
-        }
-        bK->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        // Quantize V cache [0, seq_len)
-        auto* v_i8 = (int8_t*)bV->map();
-        for (size_t i = 0; i < kv_len; i++) {
-            float v = V_cache[i];
-            if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * kv_is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            v_i8[i] = (int8_t)q;
-        }
-        bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        // Launch: bo0=Q, bo1=K, bo2=V, bo3=output
-        return k->operator()(3, 0, 0, *bQ, *bK, *bV, *bOut);
-    }
-
-    // Wait for completion and dequantize output to f32
-    void finish(xrt::run& r, float* out, int batch,
-                float q_scale, float kv_scale) {
-        r.wait();
-        bOut->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        auto* out_i32 = (int32_t*)bOut->map();
-        float cs = q_scale * kv_scale;
-        for (int i = 0; i < batch * NH * HD; i++) {
-            float val = (float)out_i32[i] * cs;
-            if (!std::isfinite(val)) val = 0;
-            out[i] = val;
-        }
-    }
-};
 
 // v12: OpenMP attention — parallelize across heads, with optional causal mask
 static inline void attn_omp(float*qo,float*at,int cl,const float*kv_k,const float*kv_v,int NH,int NKV,int HD,int GQA,int max_pos=-1){
@@ -843,19 +730,8 @@ int main(int argc,char**argv){
     // Legacy I8Ctx pointers (always available, fallback if FLM xclbin not found)
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
-    std::unique_ptr<AttnCtx> ca_ptr;
     // Hybrid FLM contexts (only used when --use-flm-xclbin and xclbin found)
     std::unique_ptr<HybridFlmCtx> hcq, hco, hcg, hcd, hcu_ptr;
-    std::vector<uint32_t> attn_instrs;
-    auto load_attn_instrs = [&](const char* path) -> bool {
-        FILE* f = fopen(path, "rb");
-        if (!f) { fprintf(stderr, "  No attn insts: %s\n", path); return false; }
-        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-        attn_instrs.resize(sz / 4);
-        fread(attn_instrs.data(), 4, attn_instrs.size(), f);
-        fclose(f);
-        return true;
-    };
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
     co.MD=XM;co.KD=cfg.xclbin_o_k;co.ND=cfg.xclbin_o_n;
     cd.MD=XM;cd.KD=cfg.xclbin_d_k;cd.ND=cfg.xclbin_d_n;
@@ -910,52 +786,6 @@ int main(int argc,char**argv){
         if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!init_i8(*cu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL U\n");return 1;}}
         }
     }
-    // NPU attention via pre-compiled KV xclbin instructions.  OPT-IN: set
-    // NPU_ATTN=1 to enable, and override the inst path with NPU_ATTN_FILE=<path>.
-    //
-    // It used to auto-enable whenever final_i8_ATTN_<tag>.xclbin and
-    // insts_i8_KV_<tag>.txt were present, which made it the default for every
-    // model that had them.  On qwen3_0_6b the ATTN kernel costs ~2070 ms per
-    // layer against ~4 ms for the OpenMP path, so a 9-token prefill took
-    // 59.1 s enabled vs 1.07 s disabled — 55x slower, and it scaled with layer
-    // count rather than sequence length.  Until that kernel is understood the
-    // CPU path is strictly better, so it must be asked for explicitly.
-    bool use_npu_attn = false;
-    {
-        const char* npu_attn_env = getenv("NPU_ATTN");
-        if (!npu_attn_env || atoi(npu_attn_env) == 0) {
-            if (npu_attn_env) fprintf(stderr, "NPU attention disabled via NPU_ATTN=0\n");
-        } else {
-            // Check if the ATTN xclbin exists before trying
-            std::string xclbin_path = xd+"/final_i8_ATTN_"+cfg.model_tag+".xclbin";
-            FILE* xc_test = fopen(xclbin_path.c_str(), "rb");
-            if (xc_test) {
-                fclose(xc_test);
-                std::string inst_path;
-                if (const char* env = getenv("NPU_ATTN_FILE")) {
-                    inst_path = env;
-                } else {
-                    inst_path = std::string(xd) + "/insts_i8_KV_" + cfg.model_tag + ".txt";
-                }
-                if (load_attn_instrs(inst_path.c_str())) {
-                    ca_ptr = std::make_unique<AttnCtx>();
-                    if (ca_ptr->init(dev, xclbin_path.c_str(), attn_instrs,
-                                     4096, NH, NKV, HD, XM)) {
-                        fprintf(stderr, "NPU attention enabled (pre-compiled insts)\n");
-                        use_npu_attn = true;
-                    } else {
-                        fprintf(stderr, "WARN: AttnCtx init failed, CPU fallback\n");
-                        ca_ptr.reset();
-                    }
-                } else {
-                    fprintf(stderr, "  ATTN xclbin found but no KV insts for '%s', CPU fallback\n", cfg.model_tag.c_str());
-                }
-            } else {
-                fprintf(stderr, "  No ATTN xclbin for '%s', CPU fallback\n", cfg.model_tag.c_str());
-            }
-        }
-    }
-
     // ── GEMM dispatch helpers ──
     // Redirect GEMM calls to either I8Ctx (legacy) or HybridFlmCtx (FLM path)
     // based on flm_xclbin_available flag.
@@ -1896,14 +1726,15 @@ int main(int argc,char**argv){
         clearerr(stdout);
         fflush(stdout);
         uint32_t hdr[4];
-        static bool fuse_reset = false;   // op=31 sets it; op=32 consumes it
+        static bool fuse_reset = false;   // op=31 sets it; op=32/33 consumes it
+        static int fuse_reset_slot = -1; // op=34 sets it; op=32/33 consumes it
         while(fread(hdr,sizeof(uint32_t),4,stdin)==4){
             uint32_t op=hdr[0],layer=hdr[1],batch=hdr[2],in_dim=hdr[3];
             if(op==0) break; // QUIT
 
             // Input validation: batch and in_dim must be reasonable
             // (op=31 is the reset — it legitimately carries batch=0/in_dim=0)
-            if (op != 31 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
+            if (op != 31 && op != 33 && op != 34 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
                 uint32_t resp[2]={1,0};
                 fwrite(resp,sizeof(uint32_t),2,stdout);
                 fflush(stdout);
@@ -2000,17 +1831,27 @@ int main(int argc,char**argv){
                         FLM_GO(cd, l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
-                }else if(op==31){ // Reset KV cache + GDN state (new conversation)
-                    fuse_reset = true;   // consumed by op=32 before its next step
+                }else if(op==31){ // Reset ALL KV caches + GDN state (new conversation)
+                    fuse_reset = true;   // consumed by op=32/33 before its next step
                     out_dim = 0;
                     out_data.clear();
                     ok = true;
-                }else if(op==32){ // Fused decode step: embed → all layers (GEMM+attn) → lm_head → next token
+                }else if(op==34){ // Reset a single slot's KV cache
+                    fuse_reset_slot = (int)layer; // consumed by op=32/33
+                    out_dim = 0;
+                    out_data.clear();
+                    ok = true;
+                }else if(op==32 || op==33){ // Fused decode step: embed → all layers (GEMM+attn) → lm_head → next token
+                    // op=32: single-sequence (original). op=33: multi-slot batch decode.
+                    // op=33 header: batch=n_slots, in_dim=1. Payload: [slot0_tok, slot1_tok, ...]
+                    // op=34: reset a single slot (slot_id in hdr[1]).
                     // Maintains internal KV cache across calls.
-                    // op=31 resets the internal position to 0.
-                    static int fuse_pos = 0;
+                    // op=31 resets ALL internal positions to 0.
+                    static constexpr int MAX_BATCH_SLOTS = 8;
+                    static int fuse_pos[MAX_BATCH_SLOTS] = {};
                     static bool fuse_kv_init = false;
-                    static std::vector<KVCache> fuse_kv;
+                    static std::vector<KVCache> fuse_kv[MAX_BATCH_SLOTS];
+                    static int fuse_active_slot = 0;
                     static std::vector<float> fuse_h_b, fuse_qo_b, fuse_at_b, fuse_oo_b;
                     static std::vector<float> fuse_gt_b, fuse_su_b, fuse_dw_b, fuse_sb_b;
                     static std::vector<float> fuse_lg_buf;
@@ -2018,15 +1859,34 @@ int main(int argc,char**argv){
                     static std::vector<float> fuse_gdn_attn_out;  // [32, 128]
                     static std::vector<float> fuse_gdn_conv_state;  // [NC, 8192, 4]
                     static std::vector<int> fuse_top_ids_v;
+                    static std::vector<std::vector<float>> fuse_gdn_state_slots;
+                    static std::vector<std::vector<float>> fuse_gdn_conv_state_slots;
                     if (fuse_reset) {
                         fuse_reset = false;
                         fuse_kv_init = false;
-                        fuse_pos = 0;
+                        for (int s = 0; s < MAX_BATCH_SLOTS; s++) fuse_pos[s] = 0;
+                    }
+                    if (fuse_reset_slot >= 0 && fuse_reset_slot < MAX_BATCH_SLOTS && fuse_kv_init) {
+                        int rs = fuse_reset_slot;
+                        fuse_reset_slot = -1;
+                        fuse_pos[rs] = 0;
+                        int fkv_size = 4096 * NKV * HD;
+                        fuse_kv[rs].clear();
+                        for (int i = 0; i < NC; i++) fuse_kv[rs].emplace_back(fkv_size);
+                        if (has_moe) {
+                            std::fill(fuse_gdn_state_slots[rs].begin(), fuse_gdn_state_slots[rs].end(), 0.0f);
+                            std::fill(fuse_gdn_conv_state_slots[rs].begin(), fuse_gdn_conv_state_slots[rs].end(), 0.0f);
+                        }
+                    } else {
+                        fuse_reset_slot = -1;
                     }
                     if (!fuse_kv_init) {
                         int fkv_size = 4096 * NKV * HD;
-                        fuse_kv.clear();
-                        for (int i = 0; i < NC; i++) fuse_kv.emplace_back(fkv_size);
+                        for (int s = 0; s < MAX_BATCH_SLOTS; s++) {
+                            fuse_kv[s].clear();
+                            for (int i = 0; i < NC; i++) fuse_kv[s].emplace_back(fkv_size);
+                            fuse_pos[s] = 0;
+                        }
                         fuse_h_b.resize(XM * H);
                         fuse_qo_b.resize(XM * qkv_n);
                         fuse_at_b.resize(XM * NH * HD);
@@ -2038,15 +1898,22 @@ int main(int argc,char**argv){
                         fuse_lg_buf.resize(NV);
                         fuse_top_ids_v.resize(BS, 0);
                         fuse_kv_init = true;
-                        fuse_pos = 0;
-                        // GDN state (per-layer v-heads) + conv state + scratch, all layers.
                         if (has_moe) {
-                            fuse_gdn_state.resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
+                            fuse_gdn_state_slots.resize(MAX_BATCH_SLOTS);
+                            fuse_gdn_conv_state_slots.resize(MAX_BATCH_SLOTS);
+                            for (int s = 0; s < MAX_BATCH_SLOTS; s++) {
+                                fuse_gdn_state_slots[s].resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
+                                fuse_gdn_conv_state_slots[s].resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
+                            }
                             fuse_gdn_attn_out.resize(max_gdn_vh * max_gdn_hd, 0);
-                            fuse_gdn_conv_state.resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
                         }
                     }
-                    int token_id = (int)in_data[0];
+                    int n_slots_to_run = (op == 33) ? (int)batch : 1;
+                    if (n_slots_to_run > MAX_BATCH_SLOTS) n_slots_to_run = MAX_BATCH_SLOTS;
+                    out_data.resize(n_slots_to_run);
+                    for (int slot_iter = 0; slot_iter < n_slots_to_run; slot_iter++) {
+                    int slot = (op == 33) ? slot_iter : fuse_active_slot;
+                    int token_id = (int)in_data[slot_iter];
                     if (token_id < 0 || token_id >= NV) token_id = 0;
                     // Embed
                     for (int i = 0; i < H; i++)
@@ -2060,41 +1927,27 @@ int main(int argc,char**argv){
                         float aq = dynamic_ascale(fh, H);
                         FLM_GO(cq, l, fh, 1, H, aq, qsc[l], fuse_qo_b.data(), qkv_n);
                         cn(fuse_qo_b.data(), qkv_n);
-                        fuse_kv[l].n = fuse_pos + 1;
-                        int fcl = fuse_kv[l].n;
+                        fuse_kv[slot][l].n = fuse_pos[slot] + 1;
+                        int fcl = fuse_kv[slot][l].n;
                         float* fqo = fuse_qo_b.data();
                         bool is_gdn = is_gdn_layer[l];
                         float* fat = fuse_at_b.data();
                         if (is_gdn) {
-                            // GatedDeltaNet: shared implementation (probe-validated, #1466)
                             gdn_attn_step(l, fh, fqo,
-                                          fuse_gdn_conv_state.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
-                                          fuse_gdn_state.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
+                                          fuse_gdn_conv_state_slots[slot].data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                          fuse_gdn_state_slots[slot].data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                                           fuse_gdn_attn_out.data());
                             fat = fuse_gdn_attn_out.data();   // [32*128] → co directly
-                        } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
-                            float qs = dynamic_ascale(fqo, NH * HD);
-                            float ks = 0;
-                            for (int i = 0; i < fcl * NKV * HD; i++) {
-                                float a = fabsf(fuse_kv[l].k[i]);
-                                if (a > ks) ks = a;
-                            }
-                            ks = ks < 1e-12f ? 1.0f : ks / 127.0f;
-                            auto r = ca_ptr->launch(fqo, fuse_kv[l].k.data(), fuse_kv[l].v.data(), fcl, 1, qs, ks);
-                            ca_ptr->finish(r, fat, 1, qs, ks);
-                            cn(fat, NH * HD);
                         } else if (has_moe) {
-                            // Full attention (16 heads × 256, 2 KV heads, partial rotary)
-                            std_attn_step(l, fh, fqo, fuse_kv[l], fuse_pos, fat);
+                            std_attn_step(l, fh, fqo, fuse_kv[slot][l], fuse_pos[slot], fat);
                         } else {
-                            // Non-MoE models: original global-dims path (#1472 guard)
                             for (int hh = 0; hh < NH; hh++) {
                                 double sq = 0;
                                 for (int d = 0; d < HD; d++) sq += fqo[hh * HD + d] * fqo[hh * HD + d];
                                 float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
                                 for (int d = 0; d < HD; d++)
                                     fqo[hh * HD + d] *= iq * (cfg.has_q_norm ? qn_w[l][d] : 1.0f);
-                                ra(&fqo[hh * HD], HD, fuse_pos);
+                                ra(&fqo[hh * HD], HD, fuse_pos[slot]);
                                 if (hh % GQA == 0) {
                                     int kvh = hh / GQA;
                                     float* ks = &fqo[cfg.qkv_k_offset + kvh * HD];
@@ -2103,14 +1956,14 @@ int main(int argc,char**argv){
                                     float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
                                     for (int d = 0; d < HD; d++)
                                         ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
-                                    ra(ks, HD, fuse_pos);
+                                    ra(ks, HD, fuse_pos[slot]);
                                     float* vs = &fqo[cfg.qkv_v_offset + kvh * HD];
-                                    memcpy(&fuse_kv[l].k[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
-                                    memcpy(&fuse_kv[l].v[(size_t)fuse_pos * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
+                                    memcpy(&fuse_kv[slot][l].k[(size_t)fuse_pos[slot] * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
+                                    memcpy(&fuse_kv[slot][l].v[(size_t)fuse_pos[slot] * NKV * HD + (size_t)kvh * HD], vs, HD * 4);
                                 }
                             }
-                            fuse_kv[l].n = fuse_pos + 1;
-                            attn_omp(fqo, fat, fuse_kv[l].n, fuse_kv[l].k.data(), fuse_kv[l].v.data(),
+                            fuse_kv[slot][l].n = fuse_pos[slot] + 1;
+                            attn_omp(fqo, fat, fuse_kv[slot][l].n, fuse_kv[slot][l].k.data(), fuse_kv[slot][l].v.data(),
                                      NH, NKV, HD, GQA);
                         }
                         float ao = dynamic_ascale(fat, NH * HD);
@@ -2154,14 +2007,13 @@ int main(int argc,char**argv){
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
                         }
                     }
-                    // Final norm + lm_head
                     rn_c(fuse_h_b.data(), fin_v.data(), H);
                     int* ftop = fuse_top_ids_v.data();
                     lm_topk_omp(fuse_h_b.data(), fuse_lg_buf.data(), ftop, BS, lm_nv, H, lm_emb);
-                    fuse_pos++;
-                    out_dim = 1;
-                    out_data.resize(1);
-                    out_data[0] = (float)ftop[0];
+                    fuse_pos[slot]++;
+                    out_data[slot_iter] = (float)ftop[0];
+                    } // end slot_iter loop
+                    out_dim = 1; // 1 token per slot; batch * out_dim = n_slots floats
                     ok = true;
                 }else{
                     ok=false;
@@ -2256,29 +2108,6 @@ int main(int argc,char**argv){
                 int pos = sp + pi;
                 std_attn_step(l, &h_b[pi * H], &qo_b[pi * qkv_n], kv_caches[l], pos,
                               &at_b[pi * NH * HD]);
-            }
-        } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
-            if (!attn_instrs.empty()) {
-                float q_ascale = dynamic_ascale(qo_b.data(), npt * NH * HD);
-                float kv_ascale = 0;
-                for (int i = 0; i < (size_t)kv_caches[l].n * NKV * HD; i++) {
-                    float a = fabsf(kv_caches[l].k[i]);
-                    if (std::isfinite(a) && a > kv_ascale) kv_ascale = a;
-                }
-                if (kv_ascale < 1e-12f) kv_ascale = 1.0f;
-                kv_ascale = kv_ascale / 127.0f;
-                auto r_attn = ca_ptr->launch(qo_b.data(), kv_caches[l].k.data(), kv_caches[l].v.data(),
-                                             kv_caches[l].n, npt, q_ascale, kv_ascale);
-                ca_ptr->finish(r_attn, at_b.data(), npt, q_ascale, kv_ascale);
-                cn(at_b.data(), npt * NH * HD);
-                fprintf(stderr, "A"); fflush(stderr);
-            } else {
-                #pragma omp parallel for
-                for (int pi = 0; pi < npt; pi++) {
-                    if (omp_get_thread_num() == 0) { fprintf(stderr, "a"); fflush(stderr); }
-                    attn_omp(&qo_b[pi * qkv_n], &at_b[pi * NH * HD], kv_caches[l].n,
-                             kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
-                }
             }
         } else {
             // non-MoE models: q/k norms + KV write + batched CPU attention
@@ -2375,12 +2204,6 @@ int main(int argc,char**argv){
             } else if (has_moe) {
                 int pos = sp;
                 std_attn_step(l, h0, qo_data.data(), kv_caches[l], pos, at_data.data());
-            } else if (use_npu_attn && ca_ptr && ca_ptr->isReady()) {
-                float qs=dynamic_ascale(qo_data.data(),NH*HD);
-                float ks=0;for(int i=0;i<kv_caches[l].n*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
-                ks=ks<1e-12f?1.0f:ks/127.0f;
-                auto r=ca_ptr->launch(qo_data.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),kv_caches[l].n,1,qs,ks);
-                ca_ptr->finish(r,at_data.data(),1,qs,ks);cn(at_data.data(),NH*HD);
             } else {
                 memcpy(ko_data.data(),&qo_data[cfg.qkv_k_offset],NKV*HD*4);memcpy(vo_data.data(),&qo_data[cfg.qkv_v_offset],NKV*HD*4);
                 float*qn=qn_w[l].data(),*kn=kn_w[l].data();
@@ -2511,14 +2334,7 @@ int main(int argc,char**argv){
                 float*ks=&qo_b[b*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[b*qkv_n+cfg.qkv_v_offset+kvh*HD];
                 memcpy(&kv_caches[l].k[(sp+b)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+b)*NKV*HD+kvh*HD],vs,HD*4);}
             kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
-            if(use_npu_attn && ca_ptr && ca_ptr->isReady()){
-                // NPU attention via pre-compiled KV xclbin (fixed max_seq=4096)
-                float qs=dynamic_ascale(qo_b.data(),batch_size*NH*HD);
-                float ks=0;for(int i=0;i<cl*NKV*HD;i++){float a=fabsf(kv_caches[l].k[i]);if(a>ks)ks=a;}
-                ks=ks<1e-12f?1.0f:ks/127.0f;
-                auto r=ca_ptr->launch(qo_b.data(),kv_caches[l].k.data(),kv_caches[l].v.data(),cl,batch_size,qs,ks);
-                ca_ptr->finish(r,at_b.data(),batch_size,qs,ks);cn(at_b.data(),batch_size*NH*HD);
-            }else{for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}}
+            for(int b=0;b<batch_size;b++){attn_omp(&qo_b[b*qkv_n],&at_b[b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
 
             // ── O GEMM: queued behind GU; its readback hides behind D later ──
             float co_ascale=dynamic_ascale(at_b.data(),batch_size*NH*HD);
