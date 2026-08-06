@@ -654,6 +654,34 @@ struct NPUBackend : Backend {
         return false;
     }
 
+    int max_batch_slots() const override { return 8; }
+
+    bool reset_slot(int slot_id) override {
+        if (!initialized || !ensure_worker()) return false;
+        std::vector<float> dummy;
+        return worker.gemm(34, slot_id, 0, 0, nullptr, dummy);
+    }
+
+    std::vector<int> generate_batch(
+        const std::vector<std::pair<int,int>>& slot_tokens) override {
+        if (!initialized || !ensure_worker() || slot_tokens.empty())
+            return {};
+        last_use_ = std::chrono::steady_clock::now();
+        int n = (int)slot_tokens.size();
+        std::vector<float> in_data(n);
+        for (int i = 0; i < n; i++) in_data[i] = (float)slot_tokens[i].second;
+        std::vector<float> out_data;
+        if (!worker.gemm(33, 0, n, 1, in_data.data(), out_data)) {
+            fprintf(stderr, "NPU: batched generate (op=33, n=%d) failed\n", n);
+            return {};
+        }
+        std::vector<int> result(n);
+        for (int i = 0; i < n && i < (int)out_data.size(); i++)
+            result[i] = (int)out_data[i];
+        pos++;
+        return result;
+    }
+
     float benchmark(int tokens = 10) override {
         if (!initialized) return 0;
         reset();

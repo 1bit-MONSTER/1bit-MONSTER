@@ -221,7 +221,7 @@ jobs:
           elif command -v cmake >/dev/null; then
             mkdir -p 1bit/build
             cmake -B 1bit/build -S . 2>&1 | tail -5
-            cmake --build 1bit/build --target bench_prefill_variants bench_sherry -j"$(nproc)" 2>&1 | tail -5
+            cmake --build 1bit/build --target bench_prefill_variants bench_sherry -j8 2>&1 | tail -5
           fi
           # If build fails, validate_claims exits 2 (soft skip) -- handled below
 

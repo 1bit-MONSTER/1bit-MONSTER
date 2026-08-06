@@ -149,7 +149,7 @@ Zyphra reasoning-tuned dense transformer (Qwen2 architecture). End-to-end valida
 Zyphra MoE architecture with CCA (Cross-Channel Attention) + MoE FFN. Our flagship 1BP ternary format model. Tile8 GEMV benchmark (28-layer, Zaya1-8B shaped) measured at 77 tok/s on ROCm HIP.
 
 - **Zaya1-8B:** ~64 tok/s on ROCm HIP — ✅ validated
-- **Zaya1-74B-A4B:** ~17.9 tok/s on ROCm HIP — 🔬 preliminary (historical measurement)
+- **Zaya1-74B-A4B:** **16.7 tok/s** on ROCm TheRock HIP 7.15a — measured live 2026-08-05 (see `benchmarks/RESULTS-zaya1-74b-benchmark-2026-08-05.md`); supersedes the earlier preliminary ~17.9 tok/s
 - **Format:** 1BP ternary native + GGUF
 - **NPU:** Native TQ2 ternary via `--native-tq2` flag in `npu_ternaryd.cpp`. Uses `gemm_generate_sequence_tq2()` for runtime instruction generation — 4× less DDR traffic than INT8 bridge. Ping-pong LUT decode in `mm_ternary_tq2.cc` (2-buffer MAC/DMA overlap). TQ1 (1.58-bit) support via `mm_ternary_tq1.cc` with base-3 LUT decode.
 - **GPU HIP:** Tile8 GEMV: 77 tok/s (28-layer synthetic, Zaya1-8B shaped) — ✅ validated
@@ -364,7 +364,7 @@ Models marked 🏃 live were downloaded fresh from HuggingFace, benchmarked with
 | Zamba2-2.7B (Zyphra) | — | ~30 | Vulkan ZINC | 1BP | ✅ validated | 📋 prior |
 | Bonsai-1.7B Q1_0 (Deepgrove) | — | 21.9 | ROCm HIP | TQ2 | ✅ validated | 📋 prior |
 | Zaya1-8B (Zyphra, 1BP) | — | ~64 | ROCm HIP | 1BP | ✅ validated | 📋 prior |
-| Zaya1-74B-A4B (Zyphra, 1BP) | — | 17.9 | ROCm HIP | 1BP | 🔬 preliminary | 📋 prior |
+| Zaya1-74B-A4B (Zyphra) | 45.8 GB | — | 16.7 | ROCm HIP (TheRock) | Q4_K_M | ✅ measured 2026-08-05 | 🏃 live |
 | Qwen 27B Q4_K | — | 30 | zaya_server | Q4_K | ⚙️ optimized | 📋 prior |
 | Qwen 35B MoE Q4_K | — | 20 | zaya_server | Q4_K | ⚙️ optimized | 📋 prior |
 | Bonsai-1.7B (ZINC) | — | 21.7 | Vulkan ZINC | TQ2 | ✅ validated | 📋 prior |

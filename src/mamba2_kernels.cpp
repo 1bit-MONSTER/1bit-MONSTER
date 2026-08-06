@@ -19,6 +19,7 @@
 
 #include "mamba2_kernels.h"
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 
@@ -123,6 +124,12 @@ void mamba2_cpu_forward(
     const float* xBC_raw = in_proj_out.data() + d_inner;
     const float* dt_raw  = in_proj_out.data() + d_inner + conv_dim;
 
+    if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
+        static int dbg_p = 0;
+        if (dbg_p == 0 || dbg_p == 6) fprintf(stderr, "[cpu] iproj l%d xBCraw[0..4]: %.6f %.6f %.6f %.6f %.6f\n", dbg_p, in_proj_out[d_inner], in_proj_out[d_inner+1], in_proj_out[d_inner+2], in_proj_out[d_inner+3], in_proj_out[d_inner+4]);
+        dbg_p++;
+    }
+
     // ── Step 2: conv1d ──
     // Shift conv state: push new input, pop oldest
     // conv_state shape: [d_conv - 1, conv_dim]
@@ -166,6 +173,12 @@ void mamba2_cpu_forward(
     const float* x_inner_raw = xBC_act.data();
     const float* B_raw = xBC_act.data() + d_inner;
     const float* C_raw = xBC_act.data() + d_inner + n_group * d_state;
+
+    if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
+        static int dbg_x = 0;
+        if (dbg_x == 0 || dbg_x == 6) fprintf(stderr, "[cpu] conv l%d xBC[0..4]: %.6f %.6f %.6f %.6f %.6f\n", dbg_x, xBC_act[0], xBC_act[1], xBC_act[2], xBC_act[3], xBC_act[4]);
+        dbg_x++;
+    }
 
     // ── Step 4 + 5: selective scan per head ──
     // Each head processes head_dim elements with the same A, dt, B, C
