@@ -1,0 +1,59 @@
+name: NPU Pool Probe
+
+# Builds and runs pool_probe — the one-heap / one-API-call regression guard
+# for the amdxdna pool (docs/plans/one-heap-pivot.md). Requires a self-hosted
+# runner with the NPU (Strix XDNA2, /dev/accel/accel0) and amdxdna loaded
+# with force_iova=1 (see /etc/modprobe.d/amdxdna.conf on the runner).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/npu-pool-probe.yml'
+      - 'engine/npu/pool/**'
+
+concurrency:
+  group: npu-pool-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pool-probe:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    if: github.event.repository.owner.login == '1bit-systems'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check NPU + driver mode
+        run: |
+          if [ ! -e /dev/accel/accel0 ]; then
+            echo "::error::/dev/accel/accel0 missing — amdxdna not loaded"
+            exit 1
+          fi
+          if [ "$(cat /sys/module/amdxdna/parameters/force_iova 2>/dev/null)" != "Y" ]; then
+            echo "::error::amdxdna must be loaded with force_iova=1 (MAP_HOST_BUFFER fails in SVA mode)"
+            exit 1
+          fi
+          echo "NPU + force_iova OK"
+          ls -l /dev/accel/accel0
+
+      - name: Build probe
+        run: |
+          cd engine/npu/pool
+          g++ -std=c++17 -O2 -I. -I/usr/include/drm \
+            -o pool_probe pool_probe.cpp
+
+      - name: Run probe (one heap, one API call)
+        run: |
+          cd engine/npu/pool
+          sudo ./pool_probe 2>&1 | tee /tmp/pool_probe.log
+          echo "---"
+          grep -q "PROBE OK" /tmp/pool_probe.log
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pool-probe-log
+          path: /tmp/pool_probe.log
+          retention-days: 30
