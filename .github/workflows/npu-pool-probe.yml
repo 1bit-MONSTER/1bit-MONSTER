@@ -42,7 +42,7 @@ jobs:
             echo "::error::/dev/accel/accel0 missing — amdxdna not loaded"
             exit 1
           fi
-          if [ "$(cat /sys/module/amdxdna/parameters/force_iova 2>/dev/null)" != "Y" ]; then
+          if [ "$(sudo cat /sys/module/amdxdna/parameters/force_iova 2>/dev/null)" != "Y" ]; then
             echo "::error::amdxdna must be loaded with force_iova=1 (MAP_HOST_BUFFER fails in SVA mode)"
             exit 1
           fi
