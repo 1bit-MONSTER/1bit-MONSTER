@@ -62,7 +62,7 @@ jobs:
           cmake -B build -G Ninja -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON \
             -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
             -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
-          cmake --build build -j$(nproc) --target ggml-vulkan llama llama-common
+          cmake --build build -j8 --target ggml-vulkan llama llama-common
           ls -la build/ggml/src/ggml-vulkan/libggml-vulkan.a build/src/libllama.a
       - name: Verify CMakeLists references resolve
         run: |
