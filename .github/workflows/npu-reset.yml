@@ -24,7 +24,7 @@ jobs:
         run: |
           source env.sh
           cmake -B build -G Ninja
-          cmake --build build --target npu_engine_universal -j$(nproc)
+          cmake --build build --target npu_engine_universal -j8
         working-directory: engine/npu
       - name: Run benchmark
         run: |

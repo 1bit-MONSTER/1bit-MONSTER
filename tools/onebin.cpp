@@ -30,6 +30,7 @@ int onebitd_main(int argc, char *argv[]);
 int onebit_main(int argc, char *argv[]);
 int jarvis_server_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
+int zuna_main(int argc, char** argv);
 int gaia_bash_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
@@ -86,6 +87,9 @@ int main(int argc, char** argv) {
         }
         if (cmd == "vision" || cmd == "vl") {
             return vision_server_main(argc - 1, argv + 1);
+        }
+        if (cmd == "zuna") {
+            return zuna_main(argc - 1, argv + 1);
         }
         if (cmd == "gaia" || cmd == "gaia-bash") {
             return gaia_bash_main(argc - 1, argv + 1);

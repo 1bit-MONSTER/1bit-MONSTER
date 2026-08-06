@@ -1,0 +1,27 @@
+#version 460
+// GELU gate multiply for the Zamba2 hybrid FFN: out[i] = gelu(gate[i]) * up[i],
+// where the fused gate_up buffer holds [gate: M][up: M] contiguously in
+// binding 0. Exact GELU (Zamba2 config hidden_act=gelu), matching
+// gelu_mul_kernel in mamba2_kernels.hip and the CPU reference:
+//   gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+// One global thread per element. Push: M = intermediate size.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer GU { float gu[]; };
+layout(std430, binding = 1) writeonly buffer Y { float y[]; };
+layout(push_constant) uniform Push { uint M, N, K, s; float sc, eps, th, p; int tok, l, h, pos; } pc;
+
+// erf via Abramowitz-Stegun 7.1.26 (max abs error 1.5e-7, fp32-exact enough)
+float erf_approx(float x) {
+    float sg = sign(x); x = abs(x);
+    float t = 1.0 / (1.0 + 0.3275911 * x);
+    float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-x * x);
+    return sg * y;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.M) return;
+    float g = gu[i];
+    float u = gu[pc.M + i];
+    y[i] = (0.5 * g * (1.0 + erf_approx(g * 0.70710678118654752440))) * u;
+}

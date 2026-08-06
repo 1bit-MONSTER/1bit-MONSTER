@@ -537,6 +537,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
             hl.shared_transformer_down = sb.down_proj_w;
 
             hl.loaded = true;
+            if (getenv("Z2V_DUMP_HYBRID")) fprintf(stderr, "[loader] hybrid layer %d\n", l);
             model.hybrid_layers[l] = std::move(hl);
             n_hybrid++;
         } else {

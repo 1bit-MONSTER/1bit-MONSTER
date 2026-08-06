@@ -53,8 +53,8 @@ Zyphra is the one family that spans the **entire stack** — EEG → LLM (dense,
 
 | Model | Params | 1BP Size | Backend(s) | Perf |
 |-------|:------:|:--------:|------------|:----:|
-| **ZAYA1-8B** | 8.8B | 6.6 GB | ZINC / HIP / NPU | 64 tok/s HIP |
-| **ZAYA1-74B-preview** | 74B | 739 MB | ZINC / HIP | — |
+| **ZAYA1-8B** | 8.8B | 6.6 GB | GGML-Vulkan (external) | via llama.cpp |
+| **ZAYA1-74B-preview** | 74B | 45.8 GB | GGML-Vulkan (external) | **17.6 tok/s** GGML-Vulkan / **16.7 tok/s** HIP (measured 2026-08-05) |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 26 tok/s ZINC |
 | **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | **79.4 tok/s** 🏁 |
 | **BlackMamba-2.8B** | 2.8B | 1.8 GB | Mamba1 HIP | 46.0 tok/s 🏁 |
