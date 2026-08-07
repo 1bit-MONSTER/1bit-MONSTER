@@ -126,6 +126,20 @@ static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
     cfg.num_experts_top   = (int32_t)header[29];
     uint32_t eos_u        = header[21];  // eos_token_id at index 21 per OnebpHeader
     cfg.eos_token_id      = (int)eos_u;
+    // rope_theta: v3 files store raw f32 bits at [19]; v1/v2 store theta*1000
+    // fixed-point. Server must pass it through — the GPU backends otherwise
+    // default to 10000, which silently breaks every model with a different
+    // base (Llama-3.2=500000, Qwen3=1e6) as soon as pos > 0 (RoPE).
+    {
+        uint32_t rope_bits = header[19];
+        if (header[1] >= 3) {
+            float t; memcpy(&t, &rope_bits, 4);
+            cfg.rope_theta = t;
+        } else {
+            cfg.rope_theta = (float)rope_bits / 1000.0f;
+        }
+        if (!(cfg.rope_theta > 0.0f)) cfg.rope_theta = 10000.0f;
+    }
     // router_hidden default (not in 1BP header for older models)
     cfg.router_hidden     = 256;
     f.close();
@@ -275,9 +289,25 @@ static std::string json_escape(const std::string& s) {
     return out;
 }
 
-static std::string build_chatml(const std::string& body) {
+static std::string build_chatml(const std::string& body, rcpp_arch_t arch) {
     try {
         json j = json::parse(body);
+
+        // Per-architecture chat template: ChatML (<|im_start|>) is Qwen's
+        // native template but Llama-3 vocab has no <|im_start|> token —
+        // feeding it ChatML text encodes as raw bytes and the model outputs
+        // degenerate repetition. Llama-3 models need the start/end_header_id
+        // template. BOS is added by the tokenizer (add_bos_token from GGUF),
+        // so templates don't prepend <|begin_of_text|> themselves.
+        const bool llama_tpl = (arch == RCPP_ARCH_LLAMA);
+        auto header_open  = [&](const std::string& role) {
+            if (llama_tpl) return "<|start_header_id|>" + role + "<|end_header_id|>\n\n";
+            return std::string("<|im_start|>") + role + "\n";
+        };
+        auto header_close = [&]() {
+            if (llama_tpl) return std::string("<|eot_id|>\n");
+            return std::string("<|im_end|>\n");
+        };
 
         // Check messages array
         if (j.contains("messages") && j["messages"].is_array()) {
@@ -286,10 +316,10 @@ static std::string build_chatml(const std::string& body) {
                 std::string role = msg.value("role", std::string());
                 std::string content = msg.value("content", std::string());
                 if (!role.empty() && !content.empty())
-                    result += "<|im_start|>" + role + "\n" + content + "<|im_end|>\n";
+                    result += header_open(role) + content + header_close();
             }
             if (!result.empty())
-                result += "<|im_start|>assistant\n";
+                result += header_open("assistant");
             return result;
         }
 
@@ -297,7 +327,7 @@ static std::string build_chatml(const std::string& body) {
         if (j.contains("prompt") && j["prompt"].is_string()) {
             std::string prompt = j["prompt"];
             if (!prompt.empty())
-                return "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n";
+                return header_open("user") + prompt + header_close() + header_open("assistant");
         }
     } catch (const json::exception& e) {
         fprintf(stderr, "  ChatML parse error: %s\n", e.what());
@@ -1183,7 +1213,7 @@ int main(int argc, char** argv) {
             use_strat = RouteStrategy::AUTO;
         }
 
-        std::string prompt = build_chatml(body);
+        std::string prompt = build_chatml(body, cfg.arch);
         if (prompt.empty()) {
             try {
                 json jbody = json::parse(body);
