@@ -58,7 +58,6 @@ static bool cpu_has_avx512() {
 }
 
 struct GenericBackend : Backend {
-    ModelConfig cfg;
     std::vector<float> embed, final_norm, output_weight;
     std::vector<std::vector<float>> layer_w;  // flat per-layer weights
     // Packed TQ2 path (WS-04): keep the 1BP mmap alive and run multiplication-free

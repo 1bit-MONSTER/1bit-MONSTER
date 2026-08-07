@@ -92,17 +92,14 @@ struct GGMLVulkanBackend : Backend {
     }
 
     int generate(int token_id) override {
-        if (!ctx) { fprintf(stderr, "[vkdbg] no ctx\n"); return -1; }
+        if (!ctx) return -1;
         llama_token tok = (llama_token)token_id;
         auto batch = llama_batch_get_one(&tok, 1);
-        int drc = llama_decode(ctx, batch);
-        if (drc != 0) { fprintf(stderr, "[vkdbg] decode ret=%d tok=%d\n", drc, token_id); return -1; }
+        if (llama_decode(ctx, batch) != 0) return -1;
 
         // Get logits and sample
         float* logits = llama_get_logits_ith(ctx, -1);
         int n_vocab = llama_vocab_n_tokens(vocab);
-        if (!logits) { fprintf(stderr, "[vkdbg] null logits tok=%d\n", token_id); return -1; }
-        if (logits[0] != logits[0]) { fprintf(stderr, "[vkdbg] NaN logits tok=%d\n", token_id); }
 
         // Build token data array for sampler
         std::vector<llama_token_data> candidates(n_vocab);
@@ -114,10 +111,7 @@ struct GGMLVulkanBackend : Backend {
         // (llama-sampler.cpp llama_sampler_apply: data[selected].id). Greedy
         // masked this — it scans the vocab-ordered array so index==id — but
         // dist/top_k permute, and returning the raw index sampled garbage.
-        if (cur_p.selected < 0 || (size_t)cur_p.selected >= candidates.size()) {
-            fprintf(stderr, "[vkdbg] sample fail selected=%d tok=%d nv=%d\n", cur_p.selected, token_id, n_vocab);
-            return -1;
-        }
+        if (cur_p.selected < 0 || (size_t)cur_p.selected >= candidates.size()) return -1;
         return (int)candidates[cur_p.selected].id;
     }
 

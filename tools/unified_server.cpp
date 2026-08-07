@@ -577,7 +577,6 @@ static json generate_completion(BackendManager& mgr,
     // Track which backend each token goes to
     std::vector<std::string> per_token_backend;
     for (int i = 0; i < max_tokens; i++) {
-        fprintf(stderr, "[loopdbg] i=%d last_token=%d n_prompt=%zu\n", i, last_token, prompt_tokens.size());
         // ── Check generation timeout (issue #948) ──
         // Timeout is checked per-token so g_inference_mutex is released promptly
         // when a slow request exceeds the wall-clock limit. This prevents a single
@@ -1642,9 +1641,6 @@ int main(int argc, char** argv) {
             } else {
                 prompt_tokens = g_tokenizer.encode(prompt);
             }
-            fprintf(stderr, "[tokdbg] model=%s n=%zu first16:", req_model.c_str(), prompt_tokens.size());
-            for (size_t i = 0; i < prompt_tokens.size() && i < 16; i++) fprintf(stderr, " %d", prompt_tokens[i]);
-            fprintf(stderr, "\n");
             if (prompt_tokens.empty()) {
                 prompt_tokens = {g_tokenizer.bos_id};
             }
