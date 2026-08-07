@@ -469,6 +469,12 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         pilot_active_ = false;
     }
 
+    // Drop router entries from the previous model — backends that fail to
+    // init for the new model would otherwise keep their old instance in the
+    // router and receive tokens meant for the new model (decode with stale
+    // weights/KV). Successful inits below re-add themselves.
+    router_.clear();
+
     // #1427: init only the top accelerator + one CPU fallback. Extra backends
     // each hold a full model copy (~4x model RAM) while per-token cross-backend
     // routing is KV-incoherent anyway (each backend keeps a private KV
@@ -829,6 +835,14 @@ int BackendManager::generate(int token_id) {
 }
 
 bool BackendManager::forward(int token_id, float* hidden_out) {
+    // Route through the DynamicRouter when active, exactly like generate() —
+    // the router's backend is the one that processed the prefill, and the
+    // logits path must see the same KV cache or it samples from an empty
+    // context (multi-backend KV incoherence). Falls back to the active
+    // backend when no router is in use (standalone/single-backend).
+    auto rt_stats = router_.stats();
+    if (!rt_stats.empty()) return router_.forward(token_id, hidden_out);
+
     std::lock_guard<std::mutex> lock(mtx_);
     auto* b = active_backend();
     if (!b || !initialized_) return false;
@@ -852,6 +866,10 @@ bool BackendManager::forward(int token_id, float* hidden_out) {
 }
 
 bool BackendManager::lm_head(const float* hidden, float* logits, int* argmax) {
+    // Same router-first rule as forward() — see above.
+    auto rt_stats = router_.stats();
+    if (!rt_stats.empty()) return router_.lm_head(hidden, logits, argmax);
+
     std::lock_guard<std::mutex> lock(mtx_);
     auto* b = active_backend();
     if (!b || !initialized_) return false;

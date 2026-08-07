@@ -78,6 +78,9 @@ public:
 
     /// Remove a backend by id.
     void remove_backend(const std::string& id);
+    // Drop every entry — called at the start of a model reload so stale
+    // instances from the previous model can't keep receiving tokens.
+    void clear();
 
     /// Reset all backends for new sequence.
     bool reset_all();
