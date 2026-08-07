@@ -24,6 +24,7 @@
 #include "backend_plugin.h"
 #include "backend.h"
 #include "backend_ggml_vulkan.h"
+#include "unified_pool.h"
 #include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_router.h"
@@ -133,6 +134,10 @@ static Backend* g_draft_backend = nullptr;      // second, small model (ggml-vul
 static std::string g_draft_model_path;          // GGUF path for the draft
 static bool g_spec_decode = false;              // master switch
 static int g_spec_n_draft = 4;                  // draft proposals per round
+
+// ── Unified model pool (--pool): all models resident, one control plane ──
+static UnifiedModelPool g_pool;
+static bool g_pool_enabled = false;
 
 // Protect global state accessed from HTTP handler threads (fixes #364)
 static std::mutex g_strategy_mutex;   // protects g_strategy_engine + g_watchdog
@@ -1136,6 +1141,7 @@ int main(int argc, char** argv) {
             printf("  -B, --batch-slots N     Concurrent decode slots (default: 1)\n");
             printf("      --draft-model PATH  Small model for speculative decode\n");
             printf("      --spec-decode       Verify draft proposals in batches (needs --draft-model)\n");
+            printf("      --pool              Keep all models resident in the unified pool\n");
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -1156,6 +1162,7 @@ int main(int argc, char** argv) {
         {"batch-slots",   required_argument, nullptr, 'B'},
         {"draft-model",   required_argument, nullptr, 1001},
         {"spec-decode",   no_argument,       nullptr, 1002},
+        {"pool",          no_argument,       nullptr, 1003},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -1177,6 +1184,7 @@ int main(int argc, char** argv) {
             case 'B': g_batch_slots = atoi(optarg); break;
             case 1001: g_draft_model_path = optarg; break;
             case 1002: g_spec_decode = true; break;
+            case 1003: g_pool_enabled = true; break;
         }
     }
 
@@ -1251,6 +1259,14 @@ int main(int argc, char** argv) {
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
     static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
+
+    // Phase 2.6: Unified model pool (--pool) — every model resident up front
+    if (g_pool_enabled) {
+        printf("\n── Unified Pool ──\n");
+        for (auto& m : discovered)
+            g_pool.load(m.model_path);
+        g_pool.report();
+    }
 
     // Helper: normalize name separators for matching (hyphens/underscores → spaces)
     auto normalize = [](std::string s) -> std::string {
@@ -1653,6 +1669,7 @@ int main(int argc, char** argv) {
             info["created"] = 0;
             info["owned_by"] = "1bit-systems";
             info["backend"] = "auto";
+            info["pooled"] = g_pool_enabled && g_pool.has_path(m.model_path);
             info["details"] = {{
                 {"hidden", m.hidden}, {"layers", m.n_layers},
                 {"heads", m.n_heads}, {"kv_heads", m.n_kv_heads},
@@ -1669,6 +1686,29 @@ int main(int argc, char** argv) {
             if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
         }
         j["data"] = models;
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    // ── POST /v1/pool — Unified pool report (control plane) ──
+    svr.Post("/v1/pool", [&](const httplib::Request&, httplib::Response& res) {
+        json j;
+        j["enabled"] = g_pool_enabled;
+        j["resident"] = g_pool.count();
+        j["total_mb"] = 0.0;
+        json slots = json::array();
+        for (int i = 0; i < g_pool.count(); i++) {
+            auto* s = g_pool.get(i);
+            if (!s) continue;
+            json sj;
+            sj["name"] = s->name;
+            sj["kind"] = s->kind;
+            sj["mb"] = (double)s->mmap_size / 1024 / 1024;
+            sj["resident"] = s->mmap_data != nullptr;
+            j["total_mb"] = j["total_mb"].get<double>() + sj["mb"].get<double>();
+            slots.push_back(sj);
+        }
+        j["slots"] = slots;
         res.set_content(j.dump(2), "application/json");
         add_cors(res);
     });
@@ -2358,6 +2398,7 @@ int main(int argc, char** argv) {
     printf("  Endpoints:\n");
     printf("    GET  /v1/health            — Backend status + metrics\n");
     printf("    GET  /v1/models            — List available models\n");
+    printf("    POST /v1/pool              — Unified pool report\n");
     printf("    POST /v1/chat/completions  — Chat with strategy routing\n");
     printf("    POST /v1/completions       — Legacy completion\n");
     printf("    GET  /v1/router            — Strategy engine status\n");

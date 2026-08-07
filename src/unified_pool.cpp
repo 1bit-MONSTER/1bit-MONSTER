@@ -1,8 +1,13 @@
-// unified_pool.cpp — Unified model memory pool (no GPU deps).
-// GPU upload lives in backend_hip_1bp.cpp via upload_to_gpu().
+// unified_pool.cpp — Unified model memory pool.
+// One control plane keeps every model resident (mmap) so the server can
+// switch/serve any of them without touching disk twice. .1bp models get
+// header-parsed metadata; every other format (gguf/q4nx/h1b/…) is pooled
+// generically (path + size + resident mapping).
+// NOTE: the device-heap single-BO carve (docs/plans/one-heap-pivot.md) is
+// the NPU-side follow-up; this pool is the control-plane residency layer.
 
 #include "unified_pool.h"
-#include "../engine/npu/src/onebp_loader.cpp"
+#include "../engine/npu/src/onebp_loader.cpp"  // NpuOnebpModel (header-only loader)
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -21,41 +26,64 @@ int UnifiedModelPool::load(const std::string& path) {
 
     printf("[pool] Loading: %s\n", path.c_str());
 
-    NpuOnebpModel model;
-    if (!model.open(path.c_str())) return -1;
-
-    auto& hdr = model.header();
-    ModelSlot slot;
-    slot.name = path.substr(path.find_last_of('/') + 1);
-    auto dot = slot.name.find_last_of('.');
-    if (dot != std::string::npos) slot.name = slot.name.substr(0, dot);
-    slot.path = path;
-    slot.H = hdr.hidden_size; slot.NC = hdr.num_layers;
-    slot.NH = hdr.num_attention_heads; slot.NKV = hdr.num_kv_heads;
-    slot.HD = hdr.head_dim; slot.IM = hdr.intermediate_size;
-    slot.V = hdr.vocab_size; slot.quant = hdr.quant;
-    slot.refcount = 1;
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr, "[pool] not a regular file: %s\n", path.c_str());
+        return -1;
+    }
 
     int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) return -1;
-    struct stat st; fstat(fd, &st);
-    slot.mmap_size = st.st_size;
-    slot.mmap_data = mmap(NULL, slot.mmap_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    void* data = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (slot.mmap_data == MAP_FAILED) { slot.mmap_data = nullptr; return -1; }
+    if (data == MAP_FAILED) { fprintf(stderr, "[pool] mmap failed: %s\n", path.c_str()); return -1; }
+
+    ModelSlot slot;
+    slot.path = path;
+    slot.name = path.substr(path.find_last_of('/') + 1);
+    auto dot = slot.name.find_last_of('.');
+    if (dot != std::string::npos) slot.name = slot.name.substr(0, dot);
+    slot.mmap_data = data;
+    slot.mmap_size = (size_t)st.st_size;
+    slot.refcount = 1;
+    slot.kind = "generic";
+
+    // .1bp: parse header for real metadata (optional — never fatal).
+    if (path.size() > 4 && path.substr(path.size() - 4) == ".1bp") {
+        NpuOnebpModel model;
+        if (model.open(path.c_str())) {
+            auto& hdr = model.header();
+            slot.H = hdr.hidden_size; slot.NC = hdr.num_layers;
+            slot.NH = hdr.num_attention_heads; slot.NKV = hdr.num_kv_heads;
+            slot.HD = hdr.head_dim; slot.IM = hdr.intermediate_size;
+            slot.V = hdr.vocab_size; slot.quant = hdr.quant;
+            slot.kind = "1bp";
+        }
+    }
 
     slots_.push_back(std::move(slot));
     auto& s = slots_.back();
-    printf("[pool]   %s: H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d quant=%u %.0fMB\n",
-           s.name.c_str(), s.H, s.NC, s.NH, s.NKV, s.HD, s.IM, s.V, s.quant,
-           (double)s.mmap_size / 1024 / 1024);
+    printf("[pool]   %s: %s %.0fMB%s\n", s.name.c_str(), s.kind.c_str(),
+           (double)s.mmap_size / 1024 / 1024,
+           s.kind == "1bp" ? "" : " (generic mmap)");
     return (int)slots_.size() - 1;
+}
+
+ModelSlot* UnifiedModelPool::get(int slot) {
+    if (slot < 0 || slot >= (int)slots_.size()) return nullptr;
+    return &slots_[slot];
 }
 
 ModelSlot* UnifiedModelPool::find(const std::string& name) {
     for (auto& s : slots_)
         if (s.name == name) return &s;
     return nullptr;
+}
+
+bool UnifiedModelPool::has_path(const std::string& path) const {
+    for (auto& s : slots_)
+        if (s.path == path) return true;
+    return false;
 }
 
 bool UnifiedModelPool::unload(int slot) {
@@ -75,11 +103,10 @@ void UnifiedModelPool::report() const {
     printf("\n╔══════════════════════════════════════════╗\n");
     printf("║     Unified Model Pool                   ║\n");
     printf("╚══════════════════════════════════════════╝\n");
-    printf("  %d model(s) loaded\n\n", (int)slots_.size());
+    printf("  %d model(s) resident\n\n", (int)slots_.size());
     for (auto& s : slots_) {
-        printf("  %-25s %s\n", s.name.c_str(), s.gpu ? "✅ GPU" : "  mmap");
-        printf("  %-25s H=%d NC=%d NH=%d IM=%d V=%d\n", "",
-               s.H, s.NC, s.NH, s.IM, s.V);
+        printf("  %-28s %-8s %6.0fMB  %s\n", s.name.c_str(), s.kind.c_str(),
+               (double)s.mmap_size / 1024 / 1024, s.gpu ? "GPU" : "mmap");
     }
     printf("\n");
 }
