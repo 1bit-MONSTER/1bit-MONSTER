@@ -256,7 +256,9 @@ struct TokenRouter {
 
     // ── Run inference with routing strategy ────────────────────────
     InferenceResult infer(const std::vector<int>& prompt_tokens, int max_tokens,
-                          RouteStrategy strat = RouteStrategy::AUTO)
+                          RouteStrategy strat = RouteStrategy::AUTO,
+                          float temperature = 0.0f, float top_p = 0.0f,
+                          float repeat_penalty = 0.0f)
     {
         InferenceResult result;
         if (!primary) { result.text = "[no backend]"; return result; }
@@ -274,15 +276,21 @@ struct TokenRouter {
         }
 
         std::vector<int> out_tokens;
+        std::vector<int> recent = prompt_tokens.size() > 64
+            ? std::vector<int>(prompt_tokens.end() - 64, prompt_tokens.end())
+            : prompt_tokens;
         int last_token = prompt_tokens.empty() ? eos_token_id : prompt_tokens.back();
 
         switch (use_strat) {
             case RouteStrategy::PASSTHROUGH:
             case RouteStrategy::AUTO:
                 for (int i = 0; i < max_tokens; i++) {
-                    int next = primary->forward(last_token, i);
+                    int next = primary->sample_token(last_token, i, temperature, top_p,
+                                                     repeat_penalty, recent);
                     out_tokens.push_back(next);
                     last_token = next;
+                    recent.push_back(next);
+                    if ((int)recent.size() > 64) recent.erase(recent.begin());
                     if (next == eos_token_id) break;
                 }
                 break;
