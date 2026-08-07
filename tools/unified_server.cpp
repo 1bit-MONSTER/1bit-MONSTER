@@ -209,6 +209,17 @@ static void load_model_tokenizer(const std::string& model_path) {
             struct stat a, b;
             if (stat(gguf.c_str(), &a) == 0 && stat(htok.c_str(), &b) == 0)
                 need = b.st_mtime < a.st_mtime;
+            // Regenerate stale-format caches: v2 files written before the
+            // BOS/EOS-specials fix carry 0 specials and silently mangle chat
+            // templates. A cached file is stale if its version < HTOK_V3.
+            if (!need) {
+                std::ifstream hf(htok, std::ios::binary);
+                char magic[4];
+                uint32_t ver = 0;
+                if (hf.read(magic, 4) && std::memcmp(magic, "HTOK", 4) == 0 &&
+                    hf.read(reinterpret_cast<char*>(&ver), 4))
+                    need = ver < 3;
+            }
         }
         if (need) {
             GgufReader r;
@@ -504,7 +515,17 @@ static json generate_completion(BackendManager& mgr,
     }
 
     auto* active = mgr.active_info();
+    // Without a strategy engine, tokens are routed per-token through the
+    // DynamicRouter — report the backend that actually served the most
+    // tokens, not the (possibly stale) active-backend pointer.
     result["backend_used"] = active ? active->id : "none";
+    if (!strategy_engine) {
+        auto rstats = mgr.router_stats();
+        long long best_n = -1;
+        for (const auto& st : rstats) {
+            if (st.total_tokens > best_n) { best_n = st.total_tokens; result["backend_used"] = st.id; }
+        }
+    }
     result["strategy"] = strategy_engine ? strategy_engine->name() : "none";
 
     // Reset backend state for new sequence
@@ -918,6 +939,10 @@ static int run_embedded_lemonade(int argc, char** argv) {
 int unified_server_main(int argc, char** argv) {
 #else
 int main(int argc, char** argv) {
+    // Line-buffer stdout when redirected (logs, CI): block buffering merged
+    // lifecycle prints with stderr and hid model-switch diagnostics (the
+    // "[auto]"/"switching" lines appeared glued to unrelated output).
+    setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
 #ifdef EMBED_LEMONADE
     // --lemonade hands off to the embedded Lemonade server core before any

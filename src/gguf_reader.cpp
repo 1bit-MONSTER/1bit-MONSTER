@@ -733,7 +733,8 @@ bool GgufReader::write_htok(const std::string& htok_path) const {
     auto wr = [&](const void* p, size_t n) { fwrite(p, 1, n, f); };
     auto wr_u32 = [&](uint32_t v) { wr(&v, 4); };
     auto wr_u16 = [&](uint16_t v) { wr(&v, 2); };
-    const uint32_t version = 2;
+    const uint32_t version = 3;  // v3: specials include BOS/EOS (v2 files with 0
+                                 // specials are stale — the loader accepts >= 2)
     wr("HTOK", 4);
     wr_u32(version);
     wr_u32(vocab_size);
