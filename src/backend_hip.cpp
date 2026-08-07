@@ -66,8 +66,10 @@ struct HIPBackend : Backend {
                 struct dirent* entry;
                 while ((entry = readdir(d)) != nullptr) {
                     std::string fn(entry->d_name);
-                    if (fn.size() > 4 && (fn.substr(fn.size()-4) == ".1bp" ||
-                                          (fn.size() > 5 && fn.substr(fn.size()-5) == ".q4nx"))) {
+                    // Only claim .1bp — .q4nx is the FastFlowLM format and the
+                    // FLM backend's domain; zaya_init_onebp crashes on the
+                    // JSON-header q4nx (bad magic) instead of failing cleanly.
+                    if (fn.size() > 4 && fn.substr(fn.size()-4) == ".1bp") {
                         onebp_path = wd + fn;
                         break;
                     }
