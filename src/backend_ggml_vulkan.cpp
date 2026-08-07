@@ -75,9 +75,17 @@ struct GGMLVulkanBackend : Backend {
         NC = llama_model_n_layer(model);
         printf("[ggml-vk] ✅ H=%d NC=%d V=%d | 357 tok/s target\n", H, NC, VOCAB);
 
-        // Greedy sampler
+        // Sampler: temp 0.8 / top-p 0.95 / repeat-penalty 1.1 — matches the
+        // unified server's defaults (greedy made small models loop). Per-request
+        // client params are ignored by this backend: forward()/lm_head() return
+        // false below, so the server's own logits-path sampling never runs here
+        // and generate() (llama.cpp's sampler) is the only path.
         smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.8f));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1u));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(1u));
+        // NOTE: no repeat-penalty sampler in this vendored llama.cpp (only the
+        // core llama.h samplers); temp+top-p suffices — greedy was the old bug.
 
         gpu_ok = true; initialized = true;
         return true;
@@ -99,12 +107,21 @@ struct GGMLVulkanBackend : Backend {
             candidates[i] = {i, logits[i], 0.0f};
         llama_token_data_array cur_p = { candidates.data(), (size_t)candidates.size(), -1, false };
         llama_sampler_apply(smpl, &cur_p);
-        return (int)cur_p.selected;
+        // cur_p.selected is an INDEX into candidates, not the token id
+        // (llama-sampler.cpp llama_sampler_apply: data[selected].id). Greedy
+        // masked this — it scans the vocab-ordered array so index==id — but
+        // dist/top_k permute, and returning the raw index sampled garbage.
+        if (cur_p.selected < 0 || (size_t)cur_p.selected >= candidates.size()) return -1;
+        return (int)candidates[cur_p.selected].id;
     }
 
     bool reset() override { return true; }
-    bool forward(int, float*) override { return true; }
-    bool lm_head(const float*, float*, int*) override { return true; }
+    // Honest stubs: this backend has no token-level forward/lm_head (llama.cpp
+    // runs the whole decode+sample internally). Returning false makes the
+    // unified server fall back to generate() instead of sampling zeroed
+    // buffers (all-zero logits → random multilingual garbage).
+    bool forward(int, float*) override { return false; }
+    bool lm_head(const float*, float*, int*) override { return false; }
 
     float benchmark(int tokens) override {
         if (!initialized) return -1;

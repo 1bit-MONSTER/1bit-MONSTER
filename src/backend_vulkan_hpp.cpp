@@ -43,12 +43,23 @@ struct VkCtx {
 static VkCtx* create_vk_context() {
     auto* ctx = new VkCtx();
 
-    // Instance
+    // Instance. Validation layer only if actually installed — requesting
+    // VK_LAYER_KHRONOS_validation unconditionally fails vkCreateInstance on
+    // boxes without the layer (e.g. stock Ubuntu), killing every backend that
+    // uses this context (fused_gpu_npu degraded, vulkan_hpp dead).
     VkApplicationInfo appInfo = {VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "1bit", 1, "Zaya", 1, VK_API_VERSION_1_3};
-    const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
+    uint32_t nlayers = 0;
+    vkEnumerateInstanceLayerProperties(&nlayers, nullptr);
+    std::vector<VkLayerProperties> layers_props(nlayers);
+    vkEnumerateInstanceLayerProperties(&nlayers, layers_props.data());
+    const char* want_layer = "VK_LAYER_KHRONOS_validation";
+    bool have_val = false;
+    for (auto& lp : layers_props)
+        if (strcmp(lp.layerName, want_layer) == 0) { have_val = true; break; }
+    const char* layers[] = {want_layer};
     const char* exts[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
     VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr, 0, &appInfo,
-                                1, layers, 1, exts};
+                                have_val ? 1u : 0u, layers, 1, exts};
     if (vkCreateInstance(&ici, nullptr, &ctx->instance) != VK_SUCCESS) {
         fprintf(stderr, "[vk] instance failed\n"); delete ctx; return nullptr;
     }

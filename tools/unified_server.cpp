@@ -26,6 +26,7 @@
 #include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_router.h"
+#include "gguf_reader.h"
 #include "simple_tokenizer.h"
 #include "vl_processor.h"
 #include "vision_encoder.h"
@@ -188,12 +189,33 @@ static std::string tokenizer_path() {
 // as garbage [id][id] through the ASCII fallback.
 static void load_model_tokenizer(const std::string& model_path) {
     if (g_tokenizer.load_from_gguf(model_path)) return;
-    if (model_path.size() >= 5 &&
-        model_path.substr(model_path.size() - 5) == ".gguf")
-        return;  // real GGUF with no usable vocab — nothing to synthesize from
+    // NOTE: no early return for .gguf paths — load_from_gguf needs the ZINC
+    // lib (usually absent → ZINC_DISABLED), so even real GGUFs must fall
+    // through to .htok synthesis below, or the server decodes their output
+    // as ASCII garbage.
     auto exists = [](const std::string& p) {
         std::ifstream f(p, std::ios::binary);
         return f.good();
+    };
+    // Synthesize a fresh .htok from the sibling GGUF and load it via the
+    // rcpp BPE path — load_from_gguf needs the ZINC lib (usually absent) and
+    // models/tokenizer.htok is a stale Llama-era v1 file. Cache next to the
+    // model so restart is cheap; regenerate when the GGUF changes.
+    auto load_or_synthesize = [&](const std::string& gguf) -> bool {
+        if (g_tokenizer.load_from_gguf(gguf)) return true;
+        std::string htok = gguf + ".htok";
+        bool need = true;
+        if (exists(htok)) {
+            struct stat a, b;
+            if (stat(gguf.c_str(), &a) == 0 && stat(htok.c_str(), &b) == 0)
+                need = b.st_mtime < a.st_mtime;
+        }
+        if (need) {
+            GgufReader r;
+            if (!r.open(gguf)) return false;
+            if (!r.write_htok(htok)) return false;
+        }
+        return g_tokenizer.load(htok);
     };
     std::vector<std::string> cands;
     for (const char* suf : {".gguf", ".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf"})
@@ -203,7 +225,7 @@ static void load_model_tokenizer(const std::string& model_path) {
     for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"})
         cands.push_back(base + suf);
     for (const auto& c : cands)
-        if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+        if (exists(c) && load_or_synthesize(c)) return;
 
     // Quantized 1BP files carry the quant in their name (Qwen3-0.6B-q8-q4nx
     // or Qwen3-0.6B.E4M3-IM) while the sibling GGUF keeps the plain base
@@ -215,7 +237,7 @@ static void load_model_tokenizer(const std::string& model_path) {
         std::string stripped = base.substr(0, pos);
         for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"}) {
             std::string c = stripped + suf;
-            if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+            if (exists(c) && load_or_synthesize(c)) return;
         }
     }
     // Directory scan: a GGUF whose stem equals our (quant-stripped) base.
@@ -238,7 +260,7 @@ static void load_model_tokenizer(const std::string& model_path) {
             if (q8 != std::string::npos) stem = stem.substr(0, q8);
             if (stem == gguf_base) {
                 std::string c = dir + n;
-                if (g_tokenizer.load_from_gguf(c)) { closedir(d); return; }
+                if (load_or_synthesize(c)) { closedir(d); return; }
             }
         }
         closedir(d);
@@ -361,7 +383,7 @@ static json health_json(BackendManager& mgr) {
     return j;
 }
 
-// ── Sampling: temperature + top-k from raw logits ──
+// ── Sampling: temperature + top-k + repetition penalty from raw logits ──
 // Returns a sampled token id. temperature<=0 → argmax (greedy), matching
 // OpenAI convention that temp 0 is deterministic even when top_k is set.
 // Thread-local RNG + scratch: decode may run on multiple threads, so the
@@ -369,7 +391,9 @@ static json health_json(BackendManager& mgr) {
 static thread_local uint64_t g_sample_state = 0;
 static thread_local std::vector<float> g_sample_scaled;
 static thread_local std::vector<float> g_sample_sorted;
-static int sample_from_logits(const float* logits, int vs, float temperature, int top_k) {
+static int sample_from_logits(const float* logits, int vs, float temperature,
+                               int top_k, const std::vector<int>& history,
+                               float repeat_penalty = 0.0f, float top_p = 0.0f) {
     if (vs <= 0 || !logits) return 0;
     if (temperature <= 0.0f) {  // greedy
         int best = 0; float bv = logits[0];
@@ -400,7 +424,33 @@ static int sample_from_logits(const float* logits, int vs, float temperature, in
     } else {
         for (int v = 0; v < vs; v++) scaled[v] = expf((logits[v] - max_l) / t);
     }
+    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f && !history.empty()) {
+        // Discourage recently-seen tokens (vanilla repetition penalty: divide
+        // logits by the penalty). Without it small models loop under sampling
+        // too ("Answer: Paris" x8). The history is short (this request's
+        // output only) so a linear scan is fine.
+        float norm = repeat_penalty / t;
+        for (int v : history)
+            if (v >= 0 && v < vs) scaled[v] = expf((logits[v] - max_l) / t - norm);
+    }
     float sum = 0; for (int v = 0; v < vs; v++) sum += scaled[v];
+    if (top_p > 0.0f && top_p < 1.0f && sum > 0) {
+        // Nucleus: keep the smallest set of tokens whose cumulative mass
+        // reaches top_p, zero the rest. Without it, temp 0.8 over a 128k
+        // vocab samples random junk (zaya defaults: 0.8 / 0.95 / 1.1).
+        auto& sorted = g_sample_sorted;
+        sorted.assign(scaled.begin(), scaled.end());
+        std::sort(sorted.begin(), sorted.end(), std::greater<float>());
+        double cum = 0.0;
+        float cutoff = 0.0f;
+        for (float s : sorted) {
+            cum += s;
+            if (cum >= (double)top_p * sum) { cutoff = s; break; }
+        }
+        for (int v = 0; v < vs; v++)
+            if (scaled[v] < cutoff) scaled[v] = 0.0f;
+        sum = 0; for (int v = 0; v < vs; v++) sum += scaled[v];
+    }
     if (!(sum > 0)) return 0;  // degenerate logits — fall back to token 0
     double rnd = (double)(r >> 11) / 9007199254740992.0 * (double)sum;
     for (int v = 0; v < vs; v++) { rnd -= scaled[v]; if (rnd <= 0) return v; }
@@ -420,7 +470,9 @@ static json generate_completion(BackendManager& mgr,
                                  const std::string& user_message = "",
                                  float temperature = 0.0f,
                                  int top_k = 0,
-                                 const std::string& raw_prompt = "") {
+                                 const std::string& raw_prompt = "",
+                                 float repeat_penalty = 0.0f,
+                                 float top_p = 0.0f) {
     json result;
 
     // Select fixed backend if specified (overrides strategy routing).
@@ -593,8 +645,21 @@ static json generate_completion(BackendManager& mgr,
             if (mgr.forward(last_token, hidden_buf.data())) {
                 int tmp_id = -1;
                 if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &tmp_id)) {
+                    if (getenv("DUMP_LOGITS")) {
+                        // Top-5 logits + gaps — sanity check for sampling
+                        std::vector<int> idx(vs);
+                        for (int v = 0; v < vs; v++) idx[v] = v;
+                        std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
+                            [&](int a, int b) { return logits_buf[a] > logits_buf[b]; });
+                        fprintf(stderr, "[sample] top5:");
+                        for (int k = 0; k < 5; k++)
+                            fprintf(stderr, " %d=%.2f", idx[k], logits_buf[idx[k]]);
+                        fprintf(stderr, " (gap %.2f, vs=%d)\n",
+                                logits_buf[idx[0]] - logits_buf[idx[1]], vs);
+                    }
                     if (want_sampling)
-                        tmp_id = sample_from_logits(logits_buf.data(), vs, temperature, top_k);
+                        tmp_id = sample_from_logits(logits_buf.data(), vs, temperature, top_k,
+                                                    output_tokens, repeat_penalty, top_p);
                     float max_l = -1e30f;
                     for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
@@ -615,7 +680,8 @@ static json generate_completion(BackendManager& mgr,
             if (mgr.forward(last_token, hidden_buf.data())) {
                 if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &next)) {
                     if (want_sampling)
-                        next = sample_from_logits(logits_buf.data(), vs, temperature, top_k);
+                        next = sample_from_logits(logits_buf.data(), vs, temperature, top_k,
+                                                  output_tokens, repeat_penalty, top_p);
                     float max_l = -1e30f;
                     for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
@@ -1480,11 +1546,14 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
-        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
-        // only top_k is supplied so top-k-only sampling still samples.
-        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        // temperature<=0 is greedy (OpenAI convention); default to 0.8 when
+        // unset — greedy argmax makes small models loop (zaya defaults were
+        // 0.8/0.95/1.1 for the same reason).
+        float temperature = body.value("temperature", 0.8f);
         if (temperature < 0.0f) temperature = 0.0f;
         if (temperature > 5.0f) temperature = 5.0f;
+        float repeat_penalty = body.value("repetition_penalty", 1.1f);
+        float top_p = body.value("top_p", 0.95f);
         std::string req_model = body.value("model", "");
 
         // ── Serialize all compute against the single shared backend context ──
@@ -1635,7 +1704,7 @@ int main(int argc, char** argv) {
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
                                                se, last_user_msg,
-                                               temperature, top_k, prompt);
+                                               temperature, top_k, prompt, repeat_penalty, top_p);
 
         // Build OpenAI-compatible response
         json response;
@@ -1778,9 +1847,11 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
-        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        float temperature = body.value("temperature", 0.8f);
         if (temperature < 0.0f) temperature = 0.0f;
         if (temperature > 5.0f) temperature = 5.0f;
+        float repeat_penalty = body.value("repetition_penalty", 1.1f);
+        float top_p = body.value("top_p", 0.95f);
 
         json gen_result;
 
@@ -1812,7 +1883,7 @@ int main(int argc, char** argv) {
             std::vector<double> empty_logprobs;
             try {
                 gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
-                                                 nullptr, "", temperature, top_k, raw_prompt);
+                                                 nullptr, "", temperature, top_k, raw_prompt, repeat_penalty, top_p);
             } catch (const std::exception& e) {
                 fprintf(stderr, "[completions] generate error: %s\n", e.what());
                 gen_result = {{"error", std::string("Generation failed: ") + e.what()}};

@@ -213,18 +213,26 @@ struct Zamba2GgufReader {
             }
             return true;
         }
-        // Q8_0: 32 elements/block, 2 bytes header + 32 bytes quads  
-        if (ti.dtype == 6 || ti.dtype == 7) {
+        // Q8_0: 32 elements/block, 2 bytes header + 32 bytes quads
+        // dtype 8 = GGUF_DTYPE_Q8_0 (this repo's enum; 6/7 are Q5_0/Q5_1 —
+        // old ggml numbering had Q8_0 at 7, which silently zero-filled every
+        // Q8_0 tensor and made zamba2_gpu "Missing embedding tensor").
+        if (ti.dtype == 8) {
             const int bs = 32, bb = 34;
             uint64_t nb = (numel + bs - 1) / bs;
-            std::vector<uint8_t> blk(bb);
+            // Bulk-read the whole tensor once — per-block f.read() was 2M+
+            // tiny syscalls and pushed init past every timeout (>30s for
+            // the 1.8GB Zamba2 GGUF; llama.cpp loads it in seconds).
+            std::vector<uint8_t> all((size_t)nb * bb);
+            f.read(reinterpret_cast<char*>(all.data()), all.size());
+            const uint8_t* p = all.data();
             for (uint64_t b = 0; b < nb; ++b) {
                 uint64_t start = b * bs, end = std::min(start + bs, numel), cnt = end - start;
-                f.read(reinterpret_cast<char*>(blk.data()), bb);
-                uint16_t sh_bits; memcpy(&sh_bits, blk.data(), 2);
+                uint16_t sh_bits; memcpy(&sh_bits, p, 2);
                 float s = half_to_float(sh_bits);
-                int8_t* q = (int8_t*)(blk.data() + 2);
+                const int8_t* q = (const int8_t*)(p + 2);
                 for (uint64_t i = 0; i < cnt; ++i) out[start + i] = q[i] * s;
+                p += bb;
             }
             return true;
         }

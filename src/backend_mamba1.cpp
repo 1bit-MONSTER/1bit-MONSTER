@@ -218,6 +218,15 @@ struct Mamba1Backend : Backend {
 
     // ── Init ──
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override {
+        // Mamba1 kernels (fp32 GEMV scan) cannot run Mamba2/SSD blocks —
+        // Zamba2 GGUFs carry the same mamba.ssm.* metadata keys, so init
+        // "succeeds" and then faults in fp32_gemv at first generate (HIP
+        // memory fault, strix). Reject anything that isn't Mamba1-family.
+        if (cfg.arch != RCPP_ARCH_MAMBA && cfg.arch != RCPP_ARCH_ZAMBA) {
+            fprintf(stderr, "[mamba1] rejecting arch %d — Mamba1 kernels only (zamba2 → zamba2_gpu/ggml_vulkan)\n",
+                    (int)cfg.arch);
+            return false;
+        }
         this->cfg = cfg;
         d_model = cfg.hidden_size;
         n_layers = cfg.num_layers;

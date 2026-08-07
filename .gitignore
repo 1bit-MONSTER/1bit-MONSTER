@@ -144,3 +144,4 @@ engine/npu/build-dbg2/
 /engine/npu/pool/pool_probe
 /engine/npu/pool/pool_kernel
 /engine/npu/pool/pool_layer
+models/*.htok

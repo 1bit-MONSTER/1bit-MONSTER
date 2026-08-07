@@ -661,3 +661,60 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
     }
     return true;
 }
+
+// ── .htok v2 export (rcpp tokenizer format) ──────────────────────────────
+// Mirrors tools/gguf_htok.cpp — keep both callers on this one implementation.
+bool GgufReader::write_htok(const std::string& htok_path) const {
+    std::vector<std::string> toks;
+    if (!get_string_array("tokenizer.ggml.tokens", toks) || toks.empty()) return false;
+    const uint32_t vocab_size = (uint32_t)toks.size();
+
+    std::unordered_map<std::string, uint32_t> id_of;
+    id_of.reserve(vocab_size);
+    for (uint32_t i = 0; i < vocab_size; ++i)
+        if (!toks[i].empty()) id_of.emplace(toks[i], i);
+
+    std::vector<std::string> merges;
+    get_string_array("tokenizer.ggml.merges", merges);
+
+    struct Merge { uint32_t a, b, merged; };
+    std::vector<Merge> out;
+    out.reserve(merges.size());
+    for (const std::string& m : merges) {
+        size_t sp = m.find(' ');
+        if (sp == std::string::npos) continue;
+        auto ita = id_of.find(m.substr(0, sp)), itb = id_of.find(m.substr(sp + 1));
+        if (ita == id_of.end() || itb == id_of.end()) continue;
+        auto itm = id_of.find(m.substr(0, sp) + m.substr(sp + 1));
+        if (itm == id_of.end()) continue;
+        out.push_back({ita->second, itb->second, itm->second});
+    }
+
+    uint32_t bos = 128000, eos = 128001;
+    get_u32("tokenizer.ggml.bos_token_id", bos);
+    get_u32("tokenizer.ggml.eos_token_id", eos);
+
+    FILE* f = fopen(htok_path.c_str(), "wb");
+    if (!f) return false;
+    auto wr = [&](const void* p, size_t n) { fwrite(p, 1, n, f); };
+    auto wr_u32 = [&](uint32_t v) { wr(&v, 4); };
+    auto wr_u16 = [&](uint16_t v) { wr(&v, 2); };
+    const uint32_t version = 2;
+    wr("HTOK", 4);
+    wr_u32(version);
+    wr_u32(vocab_size);
+    wr_u32((uint32_t)out.size());
+    wr_u32(bos);
+    wr_u32(eos);
+    for (const std::string& t : toks) {
+        if (t.size() > 65535) { fclose(f); return false; }
+        wr_u16((uint16_t)t.size());
+        wr(t.data(), t.size());
+    }
+    for (const Merge& m : out) { wr_u32(m.a); wr_u32(m.b); wr_u32(m.merged); }
+    wr_u32(0);  // num_special (v2; gate corpus is plain text)
+    fclose(f);
+    fprintf(stderr, "gguf_htok: %u tokens, %zu merges (%zu dropped)\n",
+            vocab_size, out.size(), merges.size() - out.size());
+    return true;
+}
