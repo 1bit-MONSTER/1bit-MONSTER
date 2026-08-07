@@ -14,7 +14,7 @@ if ! curl -sf -m 3 "$BASE/v1/health" > /dev/null 2>&1; then
     echo "starting unified server on :$PORT ..."
     (cd "$ROOT" && nohup ./build/1bit unified -p "$PORT" -w ./models \
         > /tmp/zoo-smoke-server.log 2>&1 &)
-    for i in $(seq 1 60); do
+    for _ in $(seq 1 60); do
         curl -sf -m 3 "$BASE/v1/health" > /dev/null 2>&1 && break
         sleep 2
     done
