@@ -38,10 +38,12 @@ static inline float half_to_float(uint16_t h) {
     uint32_t exp  = (h >> 10) & 0x1F;
     if (exp == 0) {
         if (mant == 0) return 0.0f;     // zero
-        // Denormal: fits in float32 subnormal range (shift mant to position)
-        uint32_t bits = sign | mant;
-        float f; memcpy(&f, &bits, 4);
-        return f;
+        // Denormal fp16: value = mant * 2^-24. The old code built a float32
+        // subnormal (mant<<13, exp 0) which is mant*2^-136 — off by 2^-112,
+        // so every denormal scale decoded to ~0.0 and Q8_0 blocks with
+        // tiny scales silently zero-filled (Zamba2 ssm_in had two — output
+        // diverged from the numpy reference at layer 0).
+        return (float)(h & 0x03FF) * 5.960464477539063e-08f;  // 2^-24
     }
     if (exp == 31) {  // NaN or Inf
         uint32_t bits = sign | 0x7F800000 | mant;
@@ -553,7 +555,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model) {
             Mamba2LayerWeights ml;
             reader.read_tensor(p("attn_norm.weight"), ml.input_norm_w);
             reader.read_tensor_transposed(p("ssm_in.weight"), ml.in_proj_w);
-            reader.read_tensor(p("ssm_conv1d.weight"), ml.conv1d_w);  // [d_conv, conv_dim] — already correct
+            reader.read_tensor(p("ssm_conv1d.weight"), ml.conv1d_w);  // [d_conv, conv_dim] — access matches
             normalize_conv1d_reverse(ml.conv1d_w, cfg.d_conv, cfg.d_inner + 2 * cfg.n_group * cfg.d_state);
             reader.read_tensor(p("ssm_conv1d.bias"), ml.conv1d_b);
             reader.read_tensor(p("ssm_dt.bias"), ml.dt_bias);

@@ -112,6 +112,12 @@ struct rcpp_tokenizer {
     int32_t bos_id = 128000;
     int32_t eos_id = 128001;
 
+    // SentencePiece-style vocab (Zamba2/Zamba): spaces are the "▁" token
+    // (not the GPT-2 "Ġ" glyph), the pre-tokenizer attaches whitespace to
+    // the following word so ▁-merges fire, and decode maps ▁ → ' ' and
+    // <0xXX> byte tokens → raw bytes. Detected at load: vocab contains "▁".
+    bool spm = false;
+
     // Special tokens (htok v2): matched as whole substrings BEFORE the
     // pre-tokenizer splits the text, so chat markers like "<|im_start|>"
     // map to their single ids instead of fragmenting through BPE merges.
@@ -252,6 +258,9 @@ try {
     }
 
     ensure_rank_map(t);
+    // SentencePiece detection: the vocab carries the "▁" space marker
+    // (GPT-2 vocabs use the "Ġ" glyph instead and lack "▁").
+    t->spm = t->bytes_to_id.find("\u2581") != t->bytes_to_id.end();
 
     *out = t;
     return RCPP_OK;
@@ -590,12 +599,18 @@ static std::vector<std::string> llama3_pre_tokenize(const std::string& text) {
 // Convert raw UTF-8 text into a vector of single-char (GPT-2 mapped)
 // byte-strings, one entry per input byte. These are the starting
 // "pieces" the BPE merge loop works on.
-static std::vector<std::pair<std::string,uint8_t>> byte_level_split(const std::string& text) {
+static std::vector<std::pair<std::string,uint8_t>> byte_level_split(const std::string& text, bool spm) {
     const auto& bm = byte_map();
     std::vector<std::pair<std::string,uint8_t>> pieces;
     pieces.reserve(text.size());
     char buf[4];
     for (uint8_t b : text) {
+        if (spm && b == ' ') {
+            // SentencePiece vocabs encode spaces as the "▁" token so the
+            // ▁-prefixed merges (▁ + word → ▁word) can fire.
+            pieces.emplace_back("\u2581", b);
+            continue;
+        }
         uint32_t cp = bm.byte_to_cp[b];
         int n = utf8_encode(cp, buf);
         pieces.emplace_back(std::string(buf, buf + n), b);
@@ -706,9 +721,43 @@ try {
             all_ids.push_back(seg.sid);
             continue;
         }
+        if (t->spm) {
+            // SentencePiece pre-tokenizer: whitespace attaches to the
+            // following letter/digit run so ▁-merges fire (▁ + word → ▁word).
+            // Runs of "other" chars (punctuation) are their own chunks.
+            auto spm_pre_tokenize = [](const std::string& text) {
+                std::vector<std::string> chunks;
+                size_t pos = 0, n = text.size();
+                while (pos < n) {
+                    size_t start = pos;
+                    size_t len = 0; uint32_t cp = utf8_decode(reinterpret_cast<const uint8_t*>(text.data()) + pos, n - pos, len);
+                    if (is_whitespace(cp) || is_letter(cp) || is_number(cp)) {
+                        while (pos < n) {
+                            len = 0; cp = utf8_decode(reinterpret_cast<const uint8_t*>(text.data()) + pos, n - pos, len);
+                            if (!is_whitespace(cp) && !is_letter(cp) && !is_number(cp)) break;
+                            pos += len;
+                        }
+                    } else {
+                        while (pos < n) {
+                            len = 0; cp = utf8_decode(reinterpret_cast<const uint8_t*>(text.data()) + pos, n - pos, len);
+                            if (is_whitespace(cp) || is_letter(cp) || is_number(cp)) break;
+                            pos += len;
+                        }
+                    }
+                    if (pos == start) pos += len;  // safety: always advance
+                    chunks.emplace_back(text.substr(start, pos - start));
+                }
+                return chunks;
+            };
+            for (const auto& chunk : spm_pre_tokenize(seg.text)) {
+                auto pieces = byte_level_split(chunk, true);
+                if (!bpe_chunk(pieces, all_ids)) return RCPP_INTERNAL;
+            }
+            continue;
+        }
         auto chunks = llama3_pre_tokenize(seg.text);
         for (const auto& chunk : chunks) {
-            auto pieces = byte_level_split(chunk);
+            auto pieces = byte_level_split(chunk, false);
             if (!bpe_chunk(pieces, all_ids)) return RCPP_INTERNAL;
         }
     }
@@ -738,17 +787,49 @@ try {
     const auto& bm = byte_map();
     std::string raw;
     raw.reserve(mapped.size());
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(mapped.data());
-    size_t remain = mapped.size();
-    while (remain) {
-        size_t used = 0;
-        uint32_t cp = utf8_decode(p, remain, used);
-        if (cp < bm.cp_to_byte.size() && bm.cp_to_byte[cp] >= 0) {
-            raw.push_back((char)bm.cp_to_byte[cp]);
+    if (t->spm) {
+        // SentencePiece decode: "▁" → space; "<0xXX>" byte tokens → the
+        // raw byte; everything else passes through as-is (SP vocab tokens
+        // are stored byte-decoded already).
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(mapped.data());
+        size_t remain = mapped.size();
+        while (remain) {
+            if (remain >= 3 && p[0] == 0xE2 && p[1] == 0x96 && p[2] == 0x81) {  // U+2581 ▁
+                raw.push_back(' ');
+                p += 3; remain -= 3;
+                continue;
+            }
+            if (remain >= 6 && p[0] == '<' && p[1] == '0' && p[2] == 'x' &&
+                p[5] == '>') {
+                auto hex = [](char c) -> int {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                    return -1;
+                };
+                int hi = hex((char)p[3]), lo = hex((char)p[4]);
+                if (hi >= 0 && lo >= 0) {
+                    raw.push_back((char)((hi << 4) | lo));
+                    p += 6; remain -= 6;
+                    continue;
+                }
+            }
+            raw.push_back((char)p[0]);
+            p += 1; remain -= 1;
         }
-        // unknown codepoints silently dropped — special tokens have
-        // empty decoded text by design.
-        p += used; remain -= used;
+    } else {
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(mapped.data());
+        size_t remain = mapped.size();
+        while (remain) {
+            size_t used = 0;
+            uint32_t cp = utf8_decode(p, remain, used);
+            if (cp < bm.cp_to_byte.size() && bm.cp_to_byte[cp] >= 0) {
+                raw.push_back((char)bm.cp_to_byte[cp]);
+            }
+            // unknown codepoints silently dropped — special tokens have
+            // empty decoded text by design.
+            p += used; remain -= used;
+        }
     }
 
     *out_len = raw.size();

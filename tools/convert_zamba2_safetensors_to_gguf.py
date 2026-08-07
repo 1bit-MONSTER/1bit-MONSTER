@@ -155,6 +155,32 @@ def main():
     writer.add_ssm_group_count(ssm_group)
     writer.add_file_type(1)
 
+    # ── Tokenizer vocab from the checkpoint's tokenizer.json ──
+    # Without this the GGUF has no tokenizer.ggml.tokens and the engine's
+    # per-model .htok synthesis fails (fallback ASCII tokenizer → garbage).
+    import json as _json
+    with open(os.path.join(model_dir, 'tokenizer.json'), 'r', encoding='utf-8') as f:
+        tok_json = _json.load(f)
+    vmap = tok_json['model']['vocab']
+    vtoks = [None] * vocab
+    for t, i in vmap.items():
+        if i < vocab and vtoks[i] is None:
+            vtoks[i] = t
+    for i in range(vocab):
+        if vtoks[i] is None:
+            vtoks[i] = f'<unk_{i}>'
+    writer.add_tokenizer_model('llama')
+    writer.add_token_list(vtoks)
+    if 'merges' in tok_json['model']:
+        merges_raw = tok_json['model']['merges']
+        if merges_raw and isinstance(merges_raw[0], list):
+            merges_raw = [' '.join(pair) for pair in merges_raw]
+        writer.add_token_merges(merges_raw)
+    writer.add_bos_token_id(tcfg.get('bos_token_id', 1))
+    writer.add_eos_token_id(tcfg.get('eos_token_id', 2))
+    writer.add_token_types([1] * vocab)
+    print(f"  Tokenizer: {len(vtoks)} tokens from tokenizer.json")
+
     t0 = time.time()
     total_tensors = 0
 
@@ -219,6 +245,7 @@ def main():
         if gu_name in wm:
             out['gate_up'] = load_tensor(model_dir, wm[gu_name], gu_name).astype(np.float32)
         out['adapters'] = {}
+        out['attn_adapters'] = {}
         for idx in range(len(hybrid_ids)):
             a0 = f"{vl_prefix}model.layers.{li}.shared_transformer.feed_forward.gate_up_proj_adapter_list.{idx}.0.weight"
             a1 = f"{vl_prefix}model.layers.{li}.shared_transformer.feed_forward.gate_up_proj_adapter_list.{idx}.1.weight"
@@ -226,6 +253,19 @@ def main():
                 out['adapters'][idx] = (
                     load_tensor(model_dir, wm[a0], a0).astype(np.float32),
                     load_tensor(model_dir, wm[a1], a1).astype(np.float32))
+            # Attention LoRA adapters (use_shared_attention_adapter): the
+            # effective q/k/v weights are W_shared + B@A with A = .0
+            # [rank, attn_in] (down) and B = .1 [attn_in, rank] (up). The
+            # old converter folded only the FFN gate_up adapter, so every
+            # attention head computed with the raw weights and diverged
+            # from HF at the first hybrid layer.
+            for proj in ('q', 'k', 'v'):
+                p0 = f"{vl_prefix}model.layers.{li}.shared_transformer.self_attn.linear_{proj}_adapter_list.{idx}.0.weight"
+                p1 = f"{vl_prefix}model.layers.{li}.shared_transformer.self_attn.linear_{proj}_adapter_list.{idx}.1.weight"
+                if p0 in wm and p1 in wm:
+                    out.setdefault('attn_adapters', {}).setdefault(proj, {})[idx] = (
+                        load_tensor(model_dir, wm[p0], p0).astype(np.float32),
+                        load_tensor(model_dir, wm[p1], p1).astype(np.float32))
         return out
 
     def write_shared(li):
@@ -237,7 +277,8 @@ def main():
             shared_cache[block_idx] = load_shared_block(li)
         blk = shared_cache[block_idx]
         for suf, t in blk.items():
-            if suf in ('gate_up', 'adapters'):
+            if suf in ('gate_up', 'adapters', 'attn_adapters',
+                       'attn_q.weight', 'attn_k.weight', 'attn_v.weight'):
                 continue
             add_t(f"blk.{li}.{suf}", t)
         gu = blk['gate_up']
@@ -247,6 +288,15 @@ def main():
         gate, up = np.split(gu, 2, axis=0)
         add_t(f"blk.{li}.ffn_gate.weight", gate)
         add_t(f"blk.{li}.ffn_up.weight", up)
+        # Fold the attention LoRA adapters into q/k/v (see load_shared_block).
+        for proj in ('q', 'k', 'v'):
+            gguf_suf = {'q': 'attn_q.weight', 'k': 'attn_k.weight', 'v': 'attn_v.weight'}[proj]
+            w = blk[gguf_suf].astype(np.float32)
+            aa = blk.get('attn_adapters', {}).get(proj, {})
+            if p in aa:
+                A, B = aa[p]
+                w = w + B @ A
+            add_t(f"blk.{li}.{gguf_suf}", w)
 
     # Check if VL model (language_model prefix)
     vl_prefix = ''

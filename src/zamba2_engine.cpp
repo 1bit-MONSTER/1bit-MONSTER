@@ -96,6 +96,7 @@ static void forward_hybrid_layer(
     // 1. concat(hidden, embedding) + RMSNorm (post_attention_norm, 2*d_model)
     std::vector<float> x(attn_in);
     for (int i = 0; i < n; ++i) { x[i] = input[i]; x[n + i] = embed[i]; }
+
     rms_norm(x.data(), x.data(), hw.shared_transformer_pre_ff_norm.data(), attn_in, cfg.rms_norm_eps);
 
     // 2. QKV projections (MHA, no bias)
@@ -165,6 +166,7 @@ static void forward_hybrid_layer(
         }
     }
     if (getenv("Z2_DEBUG_HYBRID")) fprintf(stderr, "hyb ffn_out[0:4]: %.6f %.6f %.6f %.6f\n", th[0], th[1], th[2], th[3]);
+
 
     // ── Linear (ssm_mix) + mamba decoder ──
     // hidden = hidden + ssm_mix(th); then norm -> mamba -> + residual

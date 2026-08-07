@@ -237,19 +237,25 @@ inline void rms_norm(const float* x, float* y, const float* w, int n, float eps)
 
 // ── Utility: RoPE ──
 inline void apply_rope(float* q, float* k, int pos, int head_dim, int n_heads, int n_kv_heads, float theta) {
+    // HF Zamba2RotaryEmbedding: rotate_half convention — pairs (d, d+hd/2)
+    // share the same frequency (inv_freq over hd/2, cat'd twice). The old
+    // interleaved (d, d+1) pairing was GPT-NeoX-style and diverged from HF
+    // at every pos >= 1.
+    const int half = head_dim / 2;
     for (int h = 0; h < n_heads; ++h) {
-        for (int d = 0; d < head_dim; d += 2) {
-            float freq = pos / std::pow(theta, (float)d / head_dim);
+        for (int d = 0; d < half; ++d) {
+            float freq = pos / std::pow(theta, (float)d / half);
             float cos_val = std::cos(freq);
             float sin_val = std::sin(freq);
-            int idx = h * head_dim + d;
-            float q0 = q[idx], q1 = q[idx + 1];
-            q[idx]     = q0 * cos_val - q1 * sin_val;
-            q[idx + 1] = q0 * sin_val + q1 * cos_val;
+            int i0 = h * head_dim + d;
+            int i1 = h * head_dim + d + half;
+            float q0 = q[i0], q1 = q[i1];
+            q[i0]     = q0 * cos_val - q1 * sin_val;
+            q[i1]     = q0 * sin_val + q1 * cos_val;
             if (h < n_kv_heads) {
-                float k0 = k[idx], k1 = k[idx + 1];
-                k[idx]     = k0 * cos_val - k1 * sin_val;
-                k[idx + 1] = k0 * sin_val + k1 * cos_val;
+                float k0 = k[i0], k1 = k[i1];
+                k[i0]     = k0 * cos_val - k1 * sin_val;
+                k[i1]     = k0 * sin_val + k1 * cos_val;
             }
         }
     }

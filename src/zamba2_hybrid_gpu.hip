@@ -61,27 +61,30 @@ void rope_fp32_kernel(
 {
     int kv_h = blockIdx.x;
     int d2   = threadIdx.x;
-    if (kv_h >= n_kv_heads || d2 * 2 >= head_dim) return;
+    if (kv_h >= n_kv_heads || d2 >= head_dim / 2) return;
     int n_groups = n_heads / n_kv_heads;
+    const int half = head_dim / 2;
 
     float freq = (float)pos;
     float pow_theta = 1.0f;
-    for (int i = 0; i < d2 * 2; ++i) pow_theta *= (1.0f / theta);
+    for (int i = 0; i < d2; ++i) pow_theta *= (1.0f / theta);
     freq *= pow_theta;
     float cos_v = cosf(freq);
     float sin_v = sinf(freq);
 
+    // HF rotate_half convention: pairs (d, d + head_dim/2) share the freq
+    // (the old interleaved (2*d2, 2*d2+1) pairing diverged from HF at pos>=1).
     for (int g = 0; g < n_groups; ++g) {
         int q_h = kv_h * n_groups + g;
         float* q = qk + q_h * head_dim;
-        float q0 = q[d2 * 2], q1 = q[d2 * 2 + 1];
-        q[d2 * 2]     = q0 * cos_v - q1 * sin_v;
-        q[d2 * 2 + 1] = q0 * sin_v + q1 * cos_v;
+        float q0 = q[d2], q1 = q[d2 + half];
+        q[d2]        = q0 * cos_v - q1 * sin_v;
+        q[d2 + half] = q0 * sin_v + q1 * cos_v;
     }
     float* k = qk + n_heads * head_dim + kv_h * head_dim;
-    float k0 = k[d2 * 2], k1 = k[d2 * 2 + 1];
-    k[d2 * 2]     = k0 * cos_v - k1 * sin_v;
-    k[d2 * 2 + 1] = k0 * sin_v + k1 * cos_v;
+    float k0 = k[d2], k1 = k[d2 + half];
+    k[d2]        = k0 * cos_v - k1 * sin_v;
+    k[d2 + half] = k0 * sin_v + k1 * cos_v;
 }
 
 // ════════════════════════════════════════════════════════════════════════
