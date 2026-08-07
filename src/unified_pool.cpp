@@ -21,7 +21,7 @@ int UnifiedModelPool::load(const std::string& path) {
 
     printf("[pool] Loading: %s\n", path.c_str());
 
-    OnebpModel model;
+    NpuOnebpModel model;
     if (!model.open(path.c_str())) return -1;
 
     auto& hdr = model.header();

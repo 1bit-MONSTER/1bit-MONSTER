@@ -17,7 +17,7 @@
 
 #include "hip_check.h"
 
-// OneBP model loader (OnebpModel::open / get_tensor_f32 / get_tensor_f32_expert
+// OneBP model loader (NpuOnebpModel::open / get_tensor_f32 / get_tensor_f32_expert
 // for ndim=1/2/3 dequant). The class lives entirely in the .cpp with no header,
 // so it is raw-included exactly like backend_hip_1bp.cpp does.
 #include "../engine/npu/src/onebp_loader.cpp"
@@ -274,7 +274,7 @@ static bool zaya_alloc_buffers(ZayaState* s) {
 // still initializes (the engine degrades instead of crashing). MoE expert
 // tensors (gu/dn) missing → left null → zaya_forward's `if (l.gu && l.dn)`
 // dense fallback. Returns false only on a real GPU alloc failure.
-static bool load_layer_onebp(OnebpModel& model, int il, LayerW& l,
+static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                              const ZayaConfig& eng, hipStream_t st) {
     const std::string p = "blk." + std::to_string(il) + ".";
     bool ok = true;
@@ -643,7 +643,7 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
 }
 
 // ── Init from a .1bp file (OneBP/Q4NX format) ──
-// Opens the model with OnebpModel::open(), validates dimensions against the
+// Opens the model with NpuOnebpModel::open(), validates dimensions against the
 // config (same embed-size gate as zaya_init), allocates the identical GPU
 // buffer set via zaya_alloc_buffers, and loads every weight through the
 // tensor-name mapping in load_layer_onebp (get_tensor_f32 for ndim=1/2,
@@ -664,7 +664,7 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
     }
     HIP_OK_R(hipStreamCreate(&s->st), nullptr);
 
-    OnebpModel model;
+    NpuOnebpModel model;
     if (!model.open(onebp_path)) {
         fprintf(stderr, "zaya_init_onebp: failed to open %s\n", onebp_path);
         zaya_destroy(s);

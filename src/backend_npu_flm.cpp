@@ -268,6 +268,17 @@ public:
         return -1;
     }
 
+    /// Text-level generation: FLM tokenizes internally, so the whole prompt
+    /// goes over the REPL pipe and the generated text comes back.
+    std::string generate_text(const std::string& prompt, int max_tokens) override {
+        (void)max_tokens;  // REPL protocol has no token cap; query() times out at 120s
+        if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
+        std::string out = query(prompt);
+        // query() error strings are non-empty — don't let them look like success.
+        if (out.empty() || out.rfind("[npu:", 0) == 0) return "";
+        return out;
+    }
+
     /// Send a text prompt to FLM and get the response.
     /// The prompt is the raw text; FLM handles tokenization internally.
     /// Returns the generated text, or error string on failure.
@@ -311,11 +322,54 @@ public:
         if (resp.size() >= 4 && resp.substr(0, 4) == ">>> ")
             resp = resp.substr(4);
 
+        // Clean REPL artifacts from the response:
+        //   - ANSI color codes ([31m...[0m)
+        //   - "<<RESET>>" echo, "... " prompt echoes, "[FLM]" log lines
+        //   - the "Model RAW Output:" re-print: when present, the streamed
+        //     output before it is a prefix of the re-print, so cut there.
+        std::string clean;
+        bool saw_raw_marker = false;
+        bool in_ansi = false;
+        {
+            std::string s;
+            for (char c : resp) {
+                if (in_ansi) {
+                    // ANSI CSI: \x1b [ ... <final byte a-z/A-Z>
+                    if (c >= 'a' && c <= 'z') in_ansi = false;
+                    else if (c >= 'A' && c <= 'Z') in_ansi = false;
+                    continue;
+                }
+                if (c == '\x1b') { in_ansi = true; continue; }
+                if (c == '\n') {
+                    if (!s.empty()) {
+                        if (s.rfind("[FLM]", 0) == 0) {
+                            // "Model RAW Output: " marker: the streamed output
+                            // before it is a prefix of the re-print — drop it
+                            // and keep only the clean copy that follows.
+                            if (s.find("Model RAW Output") != std::string::npos) {
+                                saw_raw_marker = true;
+                                clean.clear();
+                            }
+                            s.clear();
+                        } else if (s.rfind("... ", 0) == 0 || s.rfind("<<RESET>>", 0) == 0) {
+                            s.clear();  // prompt echo
+                        } else {
+                            clean += s; clean += '\n';
+                        }
+                    } else if (!clean.empty()) {
+                        clean += '\n';  // keep inner blank lines
+                    }
+                    s.clear();
+                    continue;
+                }
+                s += c;
+            }
+        }
         // Trim trailing whitespace
-        while (!resp.empty() && (resp.back() == '\n' || resp.back() == ' ' || resp.back() == '\r'))
-            resp.pop_back();
+        while (!clean.empty() && (clean.back() == '\n' || clean.back() == ' ' || clean.back() == '\r'))
+            clean.pop_back();
 
-        return resp;
+        return clean;
     }
 
     float benchmark(int tokens = 10) override {

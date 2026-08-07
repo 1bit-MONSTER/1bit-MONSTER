@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     if (acc < 0) { fprintf(stderr, "No NPU — skip.\n"); return 77; }
     close(acc);
 
-    OnebpModel model;
+    NpuOnebpModel model;
     if (!model.open(model_path)) { fprintf(stderr, "Failed to open %s\n", model_path); return 1; }
     const auto& h = model.header();
     fprintf(stderr, "Model: %s  H=%d L=%d IM=%d\n", model_path, h.hidden_size, h.num_layers, h.intermediate_size);

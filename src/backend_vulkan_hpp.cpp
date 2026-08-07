@@ -333,7 +333,7 @@ struct VulkanBackend : Backend {
 
     bool load_1bp(const std::string& path) {
         fprintf(stderr, "[vk] Loading: %s\n", path.c_str());
-        OnebpModel mdl;
+        NpuOnebpModel mdl;
         if (!mdl.open(path.c_str())) { fprintf(stderr, "[vk] open fail\n"); return false; }
         fprintf(stderr, "[vk] model opened\n");
 

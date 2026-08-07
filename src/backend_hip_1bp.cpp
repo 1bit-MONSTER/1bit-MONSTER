@@ -46,7 +46,7 @@ struct Hip1bpBackend : Backend {
     uint8_t* d_output_packed = nullptr;
     std::vector<PL> P;
     int quant2 = 0;               // 0 = f32 path, 1 = TQ2NZ bf16, 2 = TQ2NZ_E4M3
-    std::unique_ptr<OnebpModel> model_;
+    std::unique_ptr<NpuOnebpModel> model_;
 
     // GPU scratch (persistent, device-only)
     float *dh=nullptr,*datt=nullptr,*dgate=nullptr,*dup=nullptr;
@@ -101,9 +101,9 @@ struct Hip1bpBackend : Backend {
 
         if(cfg.format!=ModelFormat::ONEBP||cfg.model_path.empty())return false;
         printf("[hip1bp] Loading: %s\n",cfg.model_path.c_str());
-        model_ = std::make_unique<OnebpModel>();
+        model_ = std::make_unique<NpuOnebpModel>();
         if(!model_->open(cfg.model_path.c_str()))return false;
-        OnebpModel& mdl=*model_;
+        NpuOnebpModel& mdl=*model_;
         uint32_t q = mdl.header().quant;
         if (q == ONEBP_TQ2NZ) quant2 = 1;
         else if (q == ONEBP_TQ2NZ_E4M3) quant2 = 2;

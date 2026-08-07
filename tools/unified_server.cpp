@@ -419,7 +419,8 @@ static json generate_completion(BackendManager& mgr,
                                  StrategyEngine* strategy_engine = nullptr,
                                  const std::string& user_message = "",
                                  float temperature = 0.0f,
-                                 int top_k = 0) {
+                                 int top_k = 0,
+                                 const std::string& raw_prompt = "") {
     json result;
 
     // Select fixed backend if specified (overrides strategy routing).
@@ -460,6 +461,25 @@ static json generate_completion(BackendManager& mgr,
         result["tokens"] = json::array();
         result["text"] = "";
         return result;
+    }
+
+    // ── Text-level backends (e.g. NPU FLM): whole-prompt generation ──
+    // FLM tokenizes internally, so the token loop below can't drive it.
+    // The strategy engine already selected the initial backend above.
+    if (!raw_prompt.empty()) {
+        auto* active = mgr.active_backend();
+        if (active) {
+            std::string text = active->generate_text(raw_prompt, max_tokens);
+            if (!text.empty()) {
+                int gen_tokens = std::max(1, (int)(text.size() / 4));  // ~4 chars/token est
+                result["text"] = text;
+                result["gen_tokens"] = gen_tokens;
+                result["gen_ms"] = 0;
+                result["tok_s"] = 0.0f;
+                result["backend_used"] = active_backend_id;
+                return result;
+            }
+        }
     }
 
     std::vector<int> output_tokens;
@@ -1615,7 +1635,7 @@ int main(int argc, char** argv) {
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
                                                se, last_user_msg,
-                                               temperature, top_k);
+                                               temperature, top_k, prompt);
 
         // Build OpenAI-compatible response
         json response;
@@ -1733,6 +1753,7 @@ int main(int argc, char** argv) {
 
         // ── Tokenize under config_mutex only (#696 fix) ──
         std::vector<int> prompt_tokens;
+        std::string raw_prompt;
         {
             std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
             if (body.contains("tokens") && body["tokens"].is_array()) {
@@ -1741,7 +1762,8 @@ int main(int argc, char** argv) {
                 }
             } else if (body.contains("prompt") && body["prompt"].is_string()) {
                 try {
-                    prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+                    raw_prompt = body["prompt"].get<std::string>();
+                    prompt_tokens = g_tokenizer.encode(raw_prompt);
                 } catch (const std::exception& e) {
                     fprintf(stderr, "[completions] encode error: %s\n", e.what());
                 }
@@ -1790,7 +1812,7 @@ int main(int argc, char** argv) {
             std::vector<double> empty_logprobs;
             try {
                 gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
-                                                 nullptr, "", temperature, top_k);
+                                                 nullptr, "", temperature, top_k, raw_prompt);
             } catch (const std::exception& e) {
                 fprintf(stderr, "[completions] generate error: %s\n", e.what());
                 gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
