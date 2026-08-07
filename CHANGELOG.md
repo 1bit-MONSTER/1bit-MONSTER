@@ -3,6 +3,32 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.07 — unified control plane: pooled multi-model server + spec decode + Zamba2 Q8_0 🧠
+
+- **Unified model pool wired end to end** (`src/unified_pool.{h,cpp}`, `--pool`):
+  every model in the weights dir is mmap'd resident at boot (`.1bp` parsed,
+  `.gguf`/`.q4nx` generic); `POST /v1/pool` reports residency; `/v1/models`
+  tags pooled models. Measured on strix: **11 slots / ~6 GB resident**, all
+  five zoo models served from one process, one OpenAI-compatible API.
+- **In-server speculative decoding** (`--draft-model` + `--spec-decode`):
+  `Backend` gains `decode_one` / `verify_batch` / `rollback` (ggml-vulkan
+  impl); lossless greedy-consistent loop with batched verification and KV
+  rollback. Deterministic 3/3 identical outputs; falls back to the normal
+  loop when the target backend can't batch-verify. ggml-vulkan `reset()`
+  now truly clears the KV per sequence (was a no-op).
+- **Zamba2-1.2B-Instruct-v2 Q8_0** (1.84 GB): llama.cpp-fork arch alias +
+  kv-name fallback, quantized tensor-exact vs HF checkpoint; chat API
+  answers `4.0<|im_end|>`.
+- **Model zoo end-to-end** (`scripts/zoo-smoke.sh`, 5/5 PASS): Llama-3.2-1B
+  Instruct, Qwen3-0.6B Instruct, Bonsai-1.7B-TQ2, Zamba2 Q8_0, Qwen3-4B
+  (NPU FLM) — one command, one server.
+- **Spec-decode demo** (`tools/spec_decode.cpp`, `tools/spec_decode_README.md`):
+  lossless vs greedy, cross-model draft/target pair.
+- Fresh e2e numbers through the unified API in `README.md` (NPU Qwen3-4B
+  20.8 tok/s; GGUF 1B ~12.4 tok/s; Zamba2 2.2 tok/s HIP).
+- AMD Vitis/Unified SDI 2026.1 toolchain installed on strix
+  (`/home/bcloud/Xilinx/2026.1`) for the FPGA-side roadmap.
+
 ## 2026.08.04 — memory campaign: leak root-caused + top-1 backend init 🧠
 
 - **#1428 root-caused: not a leak — glibc arena fragmentation.** `FusedBackend::generate()`
