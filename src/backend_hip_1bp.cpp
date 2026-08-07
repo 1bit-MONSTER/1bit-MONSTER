@@ -46,7 +46,7 @@ struct Hip1bpBackend : Backend {
     uint8_t* d_output_packed = nullptr;
     std::vector<PL> P;
     int quant2 = 0;               // 0 = f32 path, 1 = TQ2NZ bf16, 2 = TQ2NZ_E4M3
-    std::unique_ptr<OnebpModel> model_;
+    std::unique_ptr<NpuOnebpModel> model_;
 
     // GPU scratch (persistent, device-only)
     float *dh=nullptr,*datt=nullptr,*dgate=nullptr,*dup=nullptr;
@@ -68,6 +68,7 @@ struct Hip1bpBackend : Backend {
         NH=cfg.num_heads; NKV=cfg.num_kv_heads; HD=cfg.head_dim;
         IM=cfg.intermediate_size; VOCAB=cfg.vocab_size;
         rope_theta=cfg.rope_theta>0?cfg.rope_theta:10000.0f;
+        { const char* rh=getenv("H1BP_ROPE"); if (rh) rope_theta=(float)atof(rh); }
         if(NKV==0)NKV=NH; if(HD==0)HD=128;
         printf("[hip1bp] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",H,NC,NH,NKV,HD,IM,VOCAB);
 
@@ -100,9 +101,9 @@ struct Hip1bpBackend : Backend {
 
         if(cfg.format!=ModelFormat::ONEBP||cfg.model_path.empty())return false;
         printf("[hip1bp] Loading: %s\n",cfg.model_path.c_str());
-        model_ = std::make_unique<OnebpModel>();
+        model_ = std::make_unique<NpuOnebpModel>();
         if(!model_->open(cfg.model_path.c_str()))return false;
-        OnebpModel& mdl=*model_;
+        NpuOnebpModel& mdl=*model_;
         uint32_t q = mdl.header().quant;
         if (q == ONEBP_TQ2NZ) quant2 = 1;
         else if (q == ONEBP_TQ2NZ_E4M3) quant2 = 2;
@@ -268,6 +269,23 @@ struct Hip1bpBackend : Backend {
             if(ll.wq) h1bp_rope_kernel<<<NH_,HD_/2,0,stream>>>(datt,HD_,pos,rope_theta,NH_);
             if(ll.wk) h1bp_rope_kernel<<<NKV_,HD_/2,0,stream>>>(dgate,HD_,pos,rope_theta,NKV_);
 
+            // QKV post-RoPE dump (bit-perfect bisection): H1BP_DUMP=<dir>
+            if (const char* dd = getenv("H1BP_DUMP")) {
+                static std::vector<float> tq, tk, tv;
+                int qn = NH_*HD_, kn = NKV_*HD_;
+                tq.resize(qn); tk.resize(kn); tv.resize(kn);
+                hipMemcpy(tq.data(), datt, qn*4, hipMemcpyDeviceToHost);
+                hipMemcpy(tk.data(), dgate, kn*4, hipMemcpyDeviceToHost);
+                hipMemcpy(tv.data(), dup, kn*4, hipMemcpyDeviceToHost);
+                char fn[512];
+                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_Q.f32", dd, l, pos);
+                FILE* f = fopen(fn, "wb"); if (f) { fwrite(tq.data(),4,qn,f); fclose(f); }
+                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_K.f32", dd, l, pos);
+                f = fopen(fn, "wb"); if (f) { fwrite(tk.data(),4,kn,f); fclose(f); }
+                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_V.f32", dd, l, pos);
+                f = fopen(fn, "wb"); if (f) { fwrite(tv.data(),4,kn,f); fclose(f); }
+            }
+
             // 4. Attention — all on stream, no syncs needed
             if(ll.wo){
                 h1bp_f2h_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(dQ,datt,NH_*HD_);
@@ -281,10 +299,26 @@ struct Hip1bpBackend : Backend {
 
                 // Use separate datt2 for attn output — avoids RAW hazard with datt (used by Q GEMV next layer)
                 h1bp_h2f_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt2,dAttn,NH_*HD_);
+                if (const char* dd = getenv("H1BP_DUMP")) {
+                    static std::vector<float> ta;
+                    int qn = NH_*HD_;
+                    ta.resize(qn);
+                    hipMemcpy(ta.data(), datt2, qn*4, hipMemcpyDeviceToHost);
+                    char fn[512];
+                    snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_ATTN.f32", dd, l, pos);
+                    FILE* f = fopen(fn, "wb"); if (f) { fwrite(ta.data(),4,qn,f); fclose(f); }
+                }
                 if(quant2&&PD[l].po){
                     launch_tq2nz(PD[l].po,datt2,doproj,H_,NH_*HD_);
                 } else {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
+                }
+                if (const char* dd = getenv("H1BP_DUMP")) {
+                    static std::vector<float> t1;
+                    t1.resize(H_);
+                    hipMemcpy(t1.data(), doproj, H_*4, hipMemcpyDeviceToHost);
+                    char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_AO.f32", dd, l, pos);
+                    FILE* f = fopen(fn, "wb"); if (f) { fwrite(t1.data(),4,H_,f); fclose(f); }
                 }
                 // Residual: dh = saved pre-norm input + attn_out
                 h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dsilu,0,H_);
@@ -315,10 +349,27 @@ struct Hip1bpBackend : Backend {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(dffn,ll.w3,dsilu,H_,IM_);
 
                 }
+                if (const char* dd = getenv("H1BP_DUMP")) {
+                    static std::vector<float> t2;
+                    t2.resize(H_);
+                    hipMemcpy(t2.data(), dffn, H_*4, hipMemcpyDeviceToHost);
+                    char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_DD.f32", dd, l, pos);
+                    FILE* f = fopen(fn, "wb"); if (f) { fwrite(t2.data(),4,H_,f); fclose(f); }
+                }
                 // Residual: dh = saved pre-FFN input + ffn_out (doproj held
                 // the pre-norm input from step 5).
                 h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,0,H_);
                 h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dffn,H_);
+            }
+
+            // Layer-output dump (bit-perfect bisection): H1BP_DUMP=<dir>
+            if (const char* dd = getenv("H1BP_DUMP")) {
+                static std::vector<float> tmp;
+                tmp.resize(H_);
+                hipMemcpy(tmp.data(), dh, H_*4, hipMemcpyDeviceToHost);
+                char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d.f32", dd, l, pos);
+                FILE* f = fopen(fn, "wb");
+                if (f) { fwrite(tmp.data(), 4, H_, f); fclose(f); }
             }
         }
 
@@ -340,6 +391,11 @@ struct Hip1bpBackend : Backend {
             h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);
         }
         HIP_CHECK(hipMemcpy(logits,dlogits,VOCAB*4,hipMemcpyDeviceToHost));
+        if (const char* dd = getenv("H1BP_DUMP")) {
+            char fn[512]; snprintf(fn, sizeof fn, "%s/hip_logits_T%05d.f32", dd, pos);
+            FILE* f = fopen(fn, "wb");
+            if (f) { fwrite(logits, 4, VOCAB, f); fclose(f); }
+        }
         if(argmax){*argmax=0;for(int v=1;v<VOCAB;v++)if(logits[v]>logits[*argmax])*argmax=v;}
         return true;
     }

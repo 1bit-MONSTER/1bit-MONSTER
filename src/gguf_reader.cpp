@@ -445,6 +445,12 @@ bool GgufReader::read_kv_value(uint32_t vtype, KV& out) {
             if (at == 8) {
                 out.arr_str.resize(an);
                 for (uint64_t j = 0; j < an; j++) out.arr_str[j] = read_string();
+            } else if (at == 4 || at == 5) {  // u32 / i32 arrays (token_type is i32 in llama.cpp GGUFs)
+                out.arr_u32.resize(an);
+                for (uint64_t j = 0; j < an; j++) {
+                    int32_t v; if (fread(&v, 4, 1, f_) != 1) return false;
+                    out.arr_u32[j] = (uint32_t)v;
+                }
             } else if (an == 1) {
                 // Single-element numeric array: store as scalar u
                 out.vtype = at;  // override to inner type
@@ -618,6 +624,13 @@ bool GgufReader::get_string_array(const std::string& key, std::vector<std::strin
     return true;
 }
 
+bool GgufReader::get_u32_array(const std::string& key, std::vector<uint32_t>& out) const {
+    const KV* kv = find_kv(key);
+    if (!kv || kv->vtype != 9 || kv->arr_u32.empty()) return false;
+    out = kv->arr_u32;
+    return true;
+}
+
 std::vector<std::string> GgufReader::kv_keys() const {
     std::vector<std::string> keys;
     keys.reserve(kv_.size());
@@ -659,5 +672,85 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
         if (fread(block_buf.data(), (size_t)bi.block_bytes, 1, f_) != 1) return false;
         if (!gguf_dequant(ti.dtype, block_buf.data(), out.data() + start, (int)count)) return false;
     }
+    return true;
+}
+
+// ── .htok v2 export (rcpp tokenizer format) ──────────────────────────────
+// Mirrors tools/gguf_htok.cpp — keep both callers on this one implementation.
+bool GgufReader::write_htok(const std::string& htok_path) const {
+    std::vector<std::string> toks;
+    if (!get_string_array("tokenizer.ggml.tokens", toks) || toks.empty()) return false;
+    const uint32_t vocab_size = (uint32_t)toks.size();
+
+    std::unordered_map<std::string, uint32_t> id_of;
+    id_of.reserve(vocab_size);
+    for (uint32_t i = 0; i < vocab_size; ++i)
+        if (!toks[i].empty()) id_of.emplace(toks[i], i);
+
+    std::vector<std::string> merges;
+    get_string_array("tokenizer.ggml.merges", merges);
+
+    struct Merge { uint32_t a, b, merged; };
+    std::vector<Merge> out;
+    out.reserve(merges.size());
+    for (const std::string& m : merges) {
+        size_t sp = m.find(' ');
+        if (sp == std::string::npos) continue;
+        auto ita = id_of.find(m.substr(0, sp)), itb = id_of.find(m.substr(sp + 1));
+        if (ita == id_of.end() || itb == id_of.end()) continue;
+        auto itm = id_of.find(m.substr(0, sp) + m.substr(sp + 1));
+        if (itm == id_of.end()) continue;
+        out.push_back({ita->second, itb->second, itm->second});
+    }
+
+    uint32_t bos = 128000, eos = 128001;
+    get_u32("tokenizer.ggml.bos_token_id", bos);
+    get_u32("tokenizer.ggml.eos_token_id", eos);
+
+    // Special/control tokens (e.g. Llama-3 <|start_header_id|>, <|eot_id|>)
+    // are not reachable via BPE merges — without them the rcpp encoder's
+    // special-token pre-pass can't rebuild chat templates and instruct
+    // models get a mangled prompt. GGUF token types: 1=NORMAL, 2=UNKNOWN,
+    // 3=CONTROL, 4=USER_DEFINED, 5=UNUSED, 6=BYTE. NORMAL and BYTE pieces
+    // participate in BPE; everything else is a special. BOS/EOS are added
+    // unconditionally — some GGUFs (Zamba2) mark their chat markers
+    // (<|im_start|>/<|im_end|>) as NORMAL even though they are not
+    // BPE-reachable, but they are exactly the bos/eos ids.
+    std::vector<uint32_t> token_type;
+    std::vector<uint32_t> special_ids;
+    if (get_u32_array("tokenizer.ggml.token_type", token_type) &&
+        token_type.size() == toks.size()) {
+        for (uint32_t i = 0; i < token_type.size(); ++i)
+            if (token_type[i] != 1 && token_type[i] != 6) special_ids.push_back(i);
+    }
+    for (uint32_t v : {bos, eos})
+        if (v < vocab_size &&
+            std::find(special_ids.begin(), special_ids.end(), v) == special_ids.end())
+            special_ids.push_back(v);
+
+    FILE* f = fopen(htok_path.c_str(), "wb");
+    if (!f) return false;
+    auto wr = [&](const void* p, size_t n) { fwrite(p, 1, n, f); };
+    auto wr_u32 = [&](uint32_t v) { wr(&v, 4); };
+    auto wr_u16 = [&](uint16_t v) { wr(&v, 2); };
+    const uint32_t version = 3;  // v3: specials include BOS/EOS (v2 files with 0
+                                 // specials are stale — the loader accepts >= 2)
+    wr("HTOK", 4);
+    wr_u32(version);
+    wr_u32(vocab_size);
+    wr_u32((uint32_t)out.size());
+    wr_u32(bos);
+    wr_u32(eos);
+    for (const std::string& t : toks) {
+        if (t.size() > 65535) { fclose(f); return false; }
+        wr_u16((uint16_t)t.size());
+        wr(t.data(), t.size());
+    }
+    for (const Merge& m : out) { wr_u32(m.a); wr_u32(m.b); wr_u32(m.merged); }
+    wr_u32((uint32_t)special_ids.size());
+    for (uint32_t sid : special_ids) wr_u32(sid);
+    fclose(f);
+    fprintf(stderr, "gguf_htok: %u tokens, %zu merges (%zu dropped), %zu specials\n",
+            vocab_size, out.size(), merges.size() - out.size(), special_ids.size());
     return true;
 }

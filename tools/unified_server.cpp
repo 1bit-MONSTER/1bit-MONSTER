@@ -23,9 +23,12 @@
 #include "backend_monitor.h"
 #include "backend_plugin.h"
 #include "backend.h"
+#include "backend_ggml_vulkan.h"
+#include "unified_pool.h"
 #include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_router.h"
+#include "gguf_reader.h"
 #include "simple_tokenizer.h"
 #include "vl_processor.h"
 #include "vision_encoder.h"
@@ -126,6 +129,16 @@ static std::string g_weights_dir = []() -> std::string {
 }();
 static int g_port = 8088;
 
+// ── Speculative decode (--draft-model / --spec-decode) ──
+static Backend* g_draft_backend = nullptr;      // second, small model (ggml-vulkan)
+static std::string g_draft_model_path;          // GGUF path for the draft
+static bool g_spec_decode = false;              // master switch
+static int g_spec_n_draft = 4;                  // draft proposals per round
+
+// ── Unified model pool (--pool): all models resident, one control plane ──
+static UnifiedModelPool g_pool;
+static bool g_pool_enabled = false;
+
 // Protect global state accessed from HTTP handler threads (fixes #364)
 static std::mutex g_strategy_mutex;   // protects g_strategy_engine + g_watchdog
 static std::mutex g_config_mutex;     // protects current_cfg, g_tokenizer, model switching
@@ -188,12 +201,44 @@ static std::string tokenizer_path() {
 // as garbage [id][id] through the ASCII fallback.
 static void load_model_tokenizer(const std::string& model_path) {
     if (g_tokenizer.load_from_gguf(model_path)) return;
-    if (model_path.size() >= 5 &&
-        model_path.substr(model_path.size() - 5) == ".gguf")
-        return;  // real GGUF with no usable vocab — nothing to synthesize from
+    // NOTE: no early return for .gguf paths — load_from_gguf needs the ZINC
+    // lib (usually absent → ZINC_DISABLED), so even real GGUFs must fall
+    // through to .htok synthesis below, or the server decodes their output
+    // as ASCII garbage.
     auto exists = [](const std::string& p) {
         std::ifstream f(p, std::ios::binary);
         return f.good();
+    };
+    // Synthesize a fresh .htok from the sibling GGUF and load it via the
+    // rcpp BPE path — load_from_gguf needs the ZINC lib (usually absent) and
+    // models/tokenizer.htok is a stale Llama-era v1 file. Cache next to the
+    // model so restart is cheap; regenerate when the GGUF changes.
+    auto load_or_synthesize = [&](const std::string& gguf) -> bool {
+        if (g_tokenizer.load_from_gguf(gguf)) return true;
+        std::string htok = gguf + ".htok";
+        bool need = true;
+        if (exists(htok)) {
+            struct stat a, b;
+            if (stat(gguf.c_str(), &a) == 0 && stat(htok.c_str(), &b) == 0)
+                need = b.st_mtime < a.st_mtime;
+            // Regenerate stale-format caches: v2 files written before the
+            // BOS/EOS-specials fix carry 0 specials and silently mangle chat
+            // templates. A cached file is stale if its version < HTOK_V3.
+            if (!need) {
+                std::ifstream hf(htok, std::ios::binary);
+                char magic[4];
+                uint32_t ver = 0;
+                if (hf.read(magic, 4) && std::memcmp(magic, "HTOK", 4) == 0 &&
+                    hf.read(reinterpret_cast<char*>(&ver), 4))
+                    need = ver < 3;
+            }
+        }
+        if (need) {
+            GgufReader r;
+            if (!r.open(gguf)) return false;
+            if (!r.write_htok(htok)) return false;
+        }
+        return g_tokenizer.load(htok);
     };
     std::vector<std::string> cands;
     for (const char* suf : {".gguf", ".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf"})
@@ -203,7 +248,7 @@ static void load_model_tokenizer(const std::string& model_path) {
     for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"})
         cands.push_back(base + suf);
     for (const auto& c : cands)
-        if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+        if (exists(c) && load_or_synthesize(c)) return;
 
     // Quantized 1BP files carry the quant in their name (Qwen3-0.6B-q8-q4nx
     // or Qwen3-0.6B.E4M3-IM) while the sibling GGUF keeps the plain base
@@ -215,7 +260,7 @@ static void load_model_tokenizer(const std::string& model_path) {
         std::string stripped = base.substr(0, pos);
         for (const char* suf : {".Q4_K_M.gguf", ".Q8_0.gguf", ".BF16.gguf", ".gguf"}) {
             std::string c = stripped + suf;
-            if (exists(c) && g_tokenizer.load_from_gguf(c)) return;
+            if (exists(c) && load_or_synthesize(c)) return;
         }
     }
     // Directory scan: a GGUF whose stem equals our (quant-stripped) base.
@@ -238,7 +283,7 @@ static void load_model_tokenizer(const std::string& model_path) {
             if (q8 != std::string::npos) stem = stem.substr(0, q8);
             if (stem == gguf_base) {
                 std::string c = dir + n;
-                if (g_tokenizer.load_from_gguf(c)) { closedir(d); return; }
+                if (load_or_synthesize(c)) { closedir(d); return; }
             }
         }
         closedir(d);
@@ -361,7 +406,7 @@ static json health_json(BackendManager& mgr) {
     return j;
 }
 
-// ── Sampling: temperature + top-k from raw logits ──
+// ── Sampling: temperature + top-k + repetition penalty from raw logits ──
 // Returns a sampled token id. temperature<=0 → argmax (greedy), matching
 // OpenAI convention that temp 0 is deterministic even when top_k is set.
 // Thread-local RNG + scratch: decode may run on multiple threads, so the
@@ -369,7 +414,9 @@ static json health_json(BackendManager& mgr) {
 static thread_local uint64_t g_sample_state = 0;
 static thread_local std::vector<float> g_sample_scaled;
 static thread_local std::vector<float> g_sample_sorted;
-static int sample_from_logits(const float* logits, int vs, float temperature, int top_k) {
+static int sample_from_logits(const float* logits, int vs, float temperature,
+                               int top_k, const std::vector<int>& history,
+                               float repeat_penalty = 0.0f, float top_p = 0.0f) {
     if (vs <= 0 || !logits) return 0;
     if (temperature <= 0.0f) {  // greedy
         int best = 0; float bv = logits[0];
@@ -400,7 +447,33 @@ static int sample_from_logits(const float* logits, int vs, float temperature, in
     } else {
         for (int v = 0; v < vs; v++) scaled[v] = expf((logits[v] - max_l) / t);
     }
+    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f && !history.empty()) {
+        // Discourage recently-seen tokens (vanilla repetition penalty: divide
+        // logits by the penalty). Without it small models loop under sampling
+        // too ("Answer: Paris" x8). The history is short (this request's
+        // output only) so a linear scan is fine.
+        float norm = repeat_penalty / t;
+        for (int v : history)
+            if (v >= 0 && v < vs) scaled[v] = expf((logits[v] - max_l) / t - norm);
+    }
     float sum = 0; for (int v = 0; v < vs; v++) sum += scaled[v];
+    if (top_p > 0.0f && top_p < 1.0f && sum > 0) {
+        // Nucleus: keep the smallest set of tokens whose cumulative mass
+        // reaches top_p, zero the rest. Without it, temp 0.8 over a 128k
+        // vocab samples random junk (zaya defaults: 0.8 / 0.95 / 1.1).
+        auto& sorted = g_sample_sorted;
+        sorted.assign(scaled.begin(), scaled.end());
+        std::sort(sorted.begin(), sorted.end(), std::greater<float>());
+        double cum = 0.0;
+        float cutoff = 0.0f;
+        for (float s : sorted) {
+            cum += s;
+            if (cum >= (double)top_p * sum) { cutoff = s; break; }
+        }
+        for (int v = 0; v < vs; v++)
+            if (scaled[v] < cutoff) scaled[v] = 0.0f;
+        sum = 0; for (int v = 0; v < vs; v++) sum += scaled[v];
+    }
     if (!(sum > 0)) return 0;  // degenerate logits — fall back to token 0
     double rnd = (double)(r >> 11) / 9007199254740992.0 * (double)sum;
     for (int v = 0; v < vs; v++) { rnd -= scaled[v]; if (rnd <= 0) return v; }
@@ -411,6 +484,118 @@ static int sample_from_logits(const float* logits, int vs, float temperature, in
 // Returns { text, tokens, backend_used, ms_per_tok, tok_s }
 // When strategy_engine is provided, routes each token through the strategy
 // instead of using a fixed backend.
+// ── Speculative decode loop ──
+// Mirrors tools/spec_decode.cpp (the verified-lossless reference): draft
+// proposes N greedy tokens, the target verifies them in ONE batch decode,
+// the longest greedy-consistent prefix is accepted, rejected positions are
+// rolled back and the fix token is re-decoded in place. Both contexts are
+// kept symmetric so the draft's KV stays a valid prefix of the target's.
+// Returns true on success (even zero-length output); false = backend failed
+// (caller falls back to the normal loop).
+static bool run_spec_decode(Backend* target, Backend* draft,
+                            const std::vector<int>& prompt_tokens,
+                            int prefill_start, int max_tokens, int eos_id,
+                            std::vector<int>& out, int& n_accept, int& n_reject,
+                            std::chrono::high_resolution_clock::time_point deadline) {
+    // Prefill BOTH contexts with the prompt (single-token decodes — the
+    // fork's KV rejects multi-token batches outside the verify step).
+    // The draft and target have DIFFERENT vocabs (and logits) — keep them
+    // separate: tlg = target's last decode, dlg = draft's last decode.
+    // (One shared buffer made the first output token the DRAFT's argmax.)
+    std::vector<float> tlg, dlg;
+    for (size_t i = prefill_start; i < prompt_tokens.size(); i++) {
+        if (!target->decode_one(prompt_tokens[i], tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] prefill target failed at %d\n", (int)i); return false; }
+        if (!draft->decode_one(prompt_tokens[i], dlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] prefill draft failed at %d\n", (int)i); return false; }
+    }
+
+    // First output token: the TARGET's greedy argmax after the last prompt
+    // token, decoded into BOTH KVs; the target's logits anchor proposal[0]
+    // of the first round, the draft's logits seed its proposals.
+    int vs = (int)tlg.size();
+    int kv_base = (int)(prompt_tokens.size() - prefill_start) + 1;  // KV len after first token
+    int tok = (int)(std::max_element(tlg.begin(), tlg.end()) - tlg.begin());
+    if (!target->decode_one(tok, tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] first-target decode failed\n"); return false; }
+    std::vector<float> prev_logits = tlg;   // target's logits after tok
+    if (!draft->decode_one(tok, dlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] first-draft decode failed\n"); return false; }
+    std::vector<float> dlogits = dlg;   // draft's logits after tok (its proposals)
+    out.push_back(tok);
+
+    auto argmax = [](const std::vector<float>& l) {
+        return (int)(std::max_element(l.begin(), l.end()) - l.begin());
+    };
+    auto argmaxp = [&](const float* l) {
+        int best = 0;
+        for (int v = 1; v < vs; v++) if (l[v] > l[best]) best = v;
+        return best;
+    };
+
+    while ((int)out.size() < max_tokens) {
+        if (std::chrono::high_resolution_clock::now() >= deadline) break;
+
+        // 1. Draft proposes N greedy tokens from its OWN logits (the tokens
+        //    are in its KV as it goes — no re-decode).
+        std::vector<int> proposals;
+        for (int i = 0; i < g_spec_n_draft; i++) {
+            int nxt = argmax(dlogits);
+            proposals.push_back(nxt);
+            if (!draft->decode_one(nxt, dlogits)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] draft propose failed at %d\n", i); return false; }
+        }
+
+        // 2. Target verifies ALL proposals in one batch at consecutive
+        //    positions, per-position logits (vocab floats each).
+        std::vector<float> vlogits;
+        if (!target->verify_batch(proposals, vlogits)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] verify_batch failed (N=%d)\n", (int)proposals.size()); return false; }
+
+        // 3. Accept the longest greedy-consistent prefix: proposal[0] must
+        //    match the LAST REAL decode's logits (prev_logits), proposal
+        //    [i>0] the verify batch's position i-1.
+        int n_acc = 0;
+        for (int i = 0; i < (int)proposals.size(); i++) {
+            const float* lgv = (i == 0) ? prev_logits.data()
+                                        : vlogits.data() + (size_t)(i - 1) * vs;
+            if (argmaxp(lgv) == proposals[i]) n_acc++;
+            else break;
+        }
+        n_accept += n_acc;
+        n_reject += (int)proposals.size() - n_acc;
+
+        // 4. Emit the accepted prefix (already in both KVs), capped.
+        for (int i = 0; i < n_acc && (int)out.size() < max_tokens; i++)
+            out.push_back(proposals[i]);
+        if (n_acc == (int)proposals.size()) {
+            // All accepted: the last proposal's logits predict the next token
+            // — decode it into the target KV (like the reject path's fix
+            // decode) so the next round starts from a real decode.
+            tok = argmaxp(vlogits.data() + (size_t)(proposals.size() - 1) * vs);
+            if (!target->decode_one(tok, tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] all-accept decode failed\n"); return false; }
+            prev_logits = tlg;
+            kv_base += (int)proposals.size() + 1;
+        } else {
+            // Rejected at n_acc: that position's prediction IS the fix token.
+            // Drop the rejected proposal from the target KV, decode the fix
+            // in place, and rewind the draft to the accepted prefix (both
+            // KVs end at kv_base + n_acc + 1).
+            const float* lgv = (n_acc == 0) ? prev_logits.data()
+                                            : vlogits.data() + (size_t)(n_acc - 1) * vs;
+            tok = argmaxp(lgv);
+            if (!target->rollback(kv_base + n_acc)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] target rollback failed\n"); return false; }
+            if (!target->decode_one(tok, tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] fix decode failed\n"); return false; }
+            prev_logits = tlg;
+            if (!draft->rollback(kv_base + n_acc)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] draft rollback failed\n"); return false; }
+            kv_base = kv_base + n_acc + 1;
+        }
+        if ((int)out.size() >= max_tokens) break;
+        out.push_back(tok);
+        // Sync the draft KV with the fix token (accepted proposals are
+        // already there — the draft proposed them itself).
+        if (!draft->decode_one(tok, dlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] draft sync failed\n"); return false; }
+        dlogits = dlg;
+        if (tok == eos_id) break;
+    }
+    return true;
+}
+
+
 static json generate_completion(BackendManager& mgr,
                                  const std::vector<int>& prompt_tokens,
                                  const std::vector<double>& prompt_logprobs,
@@ -419,7 +604,10 @@ static json generate_completion(BackendManager& mgr,
                                  StrategyEngine* strategy_engine = nullptr,
                                  const std::string& user_message = "",
                                  float temperature = 0.0f,
-                                 int top_k = 0) {
+                                 int top_k = 0,
+                                 const std::string& raw_prompt = "",
+                                 float repeat_penalty = 0.0f,
+                                 float top_p = 0.0f) {
     json result;
 
     // Select fixed backend if specified (overrides strategy routing).
@@ -451,7 +639,17 @@ static json generate_completion(BackendManager& mgr,
     }
 
     auto* active = mgr.active_info();
+    // Without a strategy engine, tokens are routed per-token through the
+    // DynamicRouter — report the backend that actually served the most
+    // tokens, not the (possibly stale) active-backend pointer.
     result["backend_used"] = active ? active->id : "none";
+    if (!strategy_engine) {
+        auto rstats = mgr.router_stats();
+        long long best_n = -1;
+        for (const auto& st : rstats) {
+            if (st.total_tokens > best_n) { best_n = st.total_tokens; result["backend_used"] = st.id; }
+        }
+    }
     result["strategy"] = strategy_engine ? strategy_engine->name() : "none";
 
     // Reset backend state for new sequence
@@ -460,6 +658,25 @@ static json generate_completion(BackendManager& mgr,
         result["tokens"] = json::array();
         result["text"] = "";
         return result;
+    }
+
+    // ── Text-level backends (e.g. NPU FLM): whole-prompt generation ──
+    // FLM tokenizes internally, so the token loop below can't drive it.
+    // The strategy engine already selected the initial backend above.
+    if (!raw_prompt.empty()) {
+        auto* active = mgr.active_backend();
+        if (active) {
+            std::string text = active->generate_text(raw_prompt, max_tokens);
+            if (!text.empty()) {
+                int gen_tokens = std::max(1, (int)(text.size() / 4));  // ~4 chars/token est
+                result["text"] = text;
+                result["gen_tokens"] = gen_tokens;
+                result["gen_ms"] = 0;
+                result["tok_s"] = 0.0f;
+                result["backend_used"] = active_backend_id;
+                return result;
+            }
+        }
     }
 
     std::vector<int> output_tokens;
@@ -476,6 +693,49 @@ static json generate_completion(BackendManager& mgr,
     if (!prompt_tokens.empty() && prompt_tokens[0] == g_tokenizer.bos_id) {
         prefill_start = 1;
     }
+
+    // ── Speculative decode: draft proposes, target verifies in batches ──
+    // Lossless vs greedy (exact-argmax acceptance). If the active backend or
+    // the draft can't do it (decode_one/verify_batch/rollback unsupported),
+    // run_spec_decode fails fast and we fall back to the normal loop below
+    // (both KVs are reset, so the fallback starts clean).
+    if (g_spec_decode && g_draft_backend && g_draft_backend->initialized) {
+        Backend* target = mgr.active_backend();
+        if (target) {
+            // Fresh draft KV per request (mgr.reset() above cleared the target).
+            g_draft_backend->reset();
+            int n_acc = 0, n_rej = 0;
+            std::vector<int> spec_toks;
+            bool ok = run_spec_decode(target, g_draft_backend, prompt_tokens,
+                                      (int)prefill_start, max_tokens,
+                                      g_tokenizer.eos_id, spec_toks, n_acc, n_rej,
+                                      timeout_deadline);
+            if (ok) {
+                float ms = std::chrono::duration<float, std::milli>(
+                    std::chrono::high_resolution_clock::now() - t0).count();
+                result["tokens"] = spec_toks;
+                result["text"] = g_tokenizer.decode(spec_toks);
+                result["gen_ms"] = ms;
+                result["gen_tokens"] = (int)spec_toks.size();
+                result["speculative"] = true;
+                result["accept_rate"] =
+                    (n_acc + n_rej) > 0 ? (float)n_acc / (float)(n_acc + n_rej) : 0.0f;
+                result["accepted"] = n_acc;
+                result["rejected"] = n_rej;
+                if (ms > 0) {
+                    result["tok_s"] = (float)spec_toks.size() / (ms / 1000.0f);
+                    result["ms_per_tok"] = ms / (float)std::max(1, (int)spec_toks.size());
+                } else {
+                    result["tok_s"] = 0; result["ms_per_tok"] = 0;
+                }
+                return result;
+            }
+            fprintf(stderr, "[spec] backend failed — falling back to normal loop\n");
+            mgr.reset();
+            g_draft_backend->reset();
+        }
+    }
+
     for (size_t i = prefill_start; i + 1 < prompt_tokens.size(); i++) {
         // Check generation timeout between prefill tokens (issue #948)
         if (g_generation_timeout_ms > 0 &&
@@ -573,8 +833,21 @@ static json generate_completion(BackendManager& mgr,
             if (mgr.forward(last_token, hidden_buf.data())) {
                 int tmp_id = -1;
                 if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &tmp_id)) {
+                    if (getenv("DUMP_LOGITS")) {
+                        // Top-5 logits + gaps — sanity check for sampling
+                        std::vector<int> idx(vs);
+                        for (int v = 0; v < vs; v++) idx[v] = v;
+                        std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
+                            [&](int a, int b) { return logits_buf[a] > logits_buf[b]; });
+                        fprintf(stderr, "[sample] top5:");
+                        for (int k = 0; k < 5; k++)
+                            fprintf(stderr, " %d=%.2f", idx[k], logits_buf[idx[k]]);
+                        fprintf(stderr, " (gap %.2f, vs=%d)\n",
+                                logits_buf[idx[0]] - logits_buf[idx[1]], vs);
+                    }
                     if (want_sampling)
-                        tmp_id = sample_from_logits(logits_buf.data(), vs, temperature, top_k);
+                        tmp_id = sample_from_logits(logits_buf.data(), vs, temperature, top_k,
+                                                    output_tokens, repeat_penalty, top_p);
                     float max_l = -1e30f;
                     for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
@@ -595,7 +868,8 @@ static json generate_completion(BackendManager& mgr,
             if (mgr.forward(last_token, hidden_buf.data())) {
                 if (mgr.lm_head(hidden_buf.data(), logits_buf.data(), &next)) {
                     if (want_sampling)
-                        next = sample_from_logits(logits_buf.data(), vs, temperature, top_k);
+                        next = sample_from_logits(logits_buf.data(), vs, temperature, top_k,
+                                                  output_tokens, repeat_penalty, top_p);
                     float max_l = -1e30f;
                     for (int v = 0; v < vs; v++)
                         if (logits_buf[v] > max_l) max_l = logits_buf[v];
@@ -832,6 +1106,10 @@ static int run_embedded_lemonade(int argc, char** argv) {
 int unified_server_main(int argc, char** argv) {
 #else
 int main(int argc, char** argv) {
+    // Line-buffer stdout when redirected (logs, CI): block buffering merged
+    // lifecycle prints with stderr and hid model-switch diagnostics (the
+    // "[auto]"/"switching" lines appeared glued to unrelated output).
+    setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
 #ifdef EMBED_LEMONADE
     // --lemonade hands off to the embedded Lemonade server core before any
@@ -861,6 +1139,9 @@ int main(int argc, char** argv) {
             printf("      --lemonade          Run the embedded Lemonade server core\n");
 #endif
             printf("  -B, --batch-slots N     Concurrent decode slots (default: 1)\n");
+            printf("      --draft-model PATH  Small model for speculative decode\n");
+            printf("      --spec-decode       Verify draft proposals in batches (needs --draft-model)\n");
+            printf("      --pool              Keep all models resident in the unified pool\n");
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -879,6 +1160,9 @@ int main(int argc, char** argv) {
         {"free-npu",      no_argument,       nullptr, 'F'},
         {"mmproj",        required_argument, nullptr, 'M'},
         {"batch-slots",   required_argument, nullptr, 'B'},
+        {"draft-model",   required_argument, nullptr, 1001},
+        {"spec-decode",   no_argument,       nullptr, 1002},
+        {"pool",          no_argument,       nullptr, 1003},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -898,7 +1182,15 @@ int main(int argc, char** argv) {
             case 'F': free_npu = true; break;
             case 'M': g_mmproj_path = optarg; break;
             case 'B': g_batch_slots = atoi(optarg); break;
+            case 1001: g_draft_model_path = optarg; break;
+            case 1002: g_spec_decode = true; break;
+            case 1003: g_pool_enabled = true; break;
         }
+    }
+
+    if (g_spec_decode && g_draft_model_path.empty()) {
+        printf("  ⚠  --spec-decode requires --draft-model; speculative mode disabled\n");
+        g_spec_decode = false;
     }
 
     // Apply CLI timeout override after env default
@@ -967,6 +1259,14 @@ int main(int argc, char** argv) {
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
     static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
+
+    // Phase 2.6: Unified model pool (--pool) — every model resident up front
+    if (g_pool_enabled) {
+        printf("\n── Unified Pool ──\n");
+        for (auto& m : discovered)
+            g_pool.load(m.model_path);
+        g_pool.report();
+    }
 
     // Helper: normalize name separators for matching (hyphens/underscores → spaces)
     auto normalize = [](std::string s) -> std::string {
@@ -1200,6 +1500,33 @@ int main(int argc, char** argv) {
             }
         }
 #endif
+
+    // ── Speculative-decode draft model (--draft-model) ──
+    // A second, smaller ggml-vulkan backend kept side-by-side with the main
+    // model. The draft proposes tokens; the main backend verifies them in
+    // batches (see run_spec_decode). Falls back silently if unsupported.
+    if (!g_draft_model_path.empty()) {
+        FILE* f = fopen(g_draft_model_path.c_str(), "rb");
+        if (!f) {
+            printf("  ⚠  --draft-model not found: %s (speculative decode disabled)\n",
+                   g_draft_model_path.c_str());
+        } else {
+            fclose(f);
+            ModelConfig dcfg = cfg;
+            dcfg.model_path = g_draft_model_path;
+            g_draft_backend = create_ggml_vulkan_backend();
+            if (g_draft_backend && g_draft_backend->init(dcfg, g_weights_dir)) {
+                printf("  ✓  Draft model: %s (speculative decode ready)\n",
+                       g_draft_model_path.c_str());
+            } else {
+                if (g_draft_backend) { g_draft_backend->destroy(); delete g_draft_backend; }
+                g_draft_backend = nullptr;
+                printf("  ⚠  Draft model load failed: %s (speculative decode disabled)\n",
+                       g_draft_model_path.c_str());
+            }
+        }
+    }
+
     } else {
         printf("  ⚠  No backend initialized (weights missing or no hardware)\n");
         printf("     Server starts in discovery-only mode.\n");
@@ -1342,6 +1669,7 @@ int main(int argc, char** argv) {
             info["created"] = 0;
             info["owned_by"] = "1bit-systems";
             info["backend"] = "auto";
+            info["pooled"] = g_pool_enabled && g_pool.has_path(m.model_path);
             info["details"] = {{
                 {"hidden", m.hidden}, {"layers", m.n_layers},
                 {"heads", m.n_heads}, {"kv_heads", m.n_kv_heads},
@@ -1358,6 +1686,29 @@ int main(int argc, char** argv) {
             if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
         }
         j["data"] = models;
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    // ── POST /v1/pool — Unified pool report (control plane) ──
+    svr.Post("/v1/pool", [&](const httplib::Request&, httplib::Response& res) {
+        json j;
+        j["enabled"] = g_pool_enabled;
+        j["resident"] = g_pool.count();
+        j["total_mb"] = 0.0;
+        json slots = json::array();
+        for (int i = 0; i < g_pool.count(); i++) {
+            auto* s = g_pool.get(i);
+            if (!s) continue;
+            json sj;
+            sj["name"] = s->name;
+            sj["kind"] = s->kind;
+            sj["mb"] = (double)s->mmap_size / 1024 / 1024;
+            sj["resident"] = s->mmap_data != nullptr;
+            j["total_mb"] = j["total_mb"].get<double>() + sj["mb"].get<double>();
+            slots.push_back(sj);
+        }
+        j["slots"] = slots;
         res.set_content(j.dump(2), "application/json");
         add_cors(res);
     });
@@ -1386,6 +1737,8 @@ int main(int argc, char** argv) {
         // Extract messages and build prompt + user message for content routing
         std::string prompt;
         std::string last_user_msg;
+        struct MsgPair { std::string role; std::string content; };
+        std::vector<MsgPair> chat_msgs;
         std::vector<VlProcessor> vision_images;  // holds processed images from content parts
         // nlohmann throws (type_error 305/306/302) on non-object messages and
         // content parts — catch and 400 instead of a bare 500 (issue #1293).
@@ -1443,6 +1796,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 prompt += role + ": " + content + "\n";
+                chat_msgs.push_back({role, content});
                 if (role == "user") last_user_msg = content;
             }
         } else if (body.contains("prompt") && body["prompt"].is_string()) {
@@ -1460,12 +1814,42 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
-        // temperature<=0 is greedy (OpenAI convention); default to 1.0 when
-        // only top_k is supplied so top-k-only sampling still samples.
-        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        // temperature<=0 is greedy (OpenAI convention); default to 0.8 when
+        // unset — greedy argmax makes small models loop (zaya defaults were
+        // 0.8/0.95/1.1 for the same reason).
+        float temperature = body.value("temperature", 0.8f);
         if (temperature < 0.0f) temperature = 0.0f;
         if (temperature > 5.0f) temperature = 5.0f;
+        float repeat_penalty = body.value("repetition_penalty", 1.1f);
+        float top_p = body.value("top_p", 0.95f);
         std::string req_model = body.value("model", "");
+        if (req_model.empty()) req_model = current_cfg.model_name;  // default model
+
+        // ── Chat template (per-arch, mirrors zaya_server build_chatml) ──
+        // Instruct models need their native template: raw "role: content"
+        // text makes Qwen/Llama/Zamba2 instruct models echo the prompt back
+        // instead of answering (their chat tokens are special ids, not bytes).
+        // Base models (no "Instruct" in the name) keep the raw format.
+        bool is_instruct = req_model.find("Instruct") != std::string::npos;
+        if (is_instruct && !chat_msgs.empty()) {
+            bool llama_tpl = false;
+            for (auto& dm : discovered) {
+                if (dm.model_name == req_model) {
+                    llama_tpl = (dm.architecture == "llama");
+                    break;
+                }
+            }
+            std::string tpl;
+            for (auto& m : chat_msgs) {
+                if (llama_tpl)
+                    tpl += "<|start_header_id|>" + m.role + "<|end_header_id|>\n\n" + m.content + "<|eot_id|>\n";
+                else
+                    tpl += "<|im_start|>" + m.role + "\n" + m.content + "<|im_end|>\n";
+            }
+            tpl += llama_tpl ? "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                             : "<|im_start|>assistant\n";
+            prompt = tpl;
+        }
 
         // ── Serialize all compute against the single shared backend context ──
         // Everything below — mgr.set_strategy, the mgr.init model switch, the
@@ -1615,7 +1999,7 @@ int main(int argc, char** argv) {
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
                                                se, last_user_msg,
-                                               temperature, top_k);
+                                               temperature, top_k, prompt, repeat_penalty, top_p);
 
         // Build OpenAI-compatible response
         json response;
@@ -1733,6 +2117,7 @@ int main(int argc, char** argv) {
 
         // ── Tokenize under config_mutex only (#696 fix) ──
         std::vector<int> prompt_tokens;
+        std::string raw_prompt;
         {
             std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
             if (body.contains("tokens") && body["tokens"].is_array()) {
@@ -1741,7 +2126,8 @@ int main(int argc, char** argv) {
                 }
             } else if (body.contains("prompt") && body["prompt"].is_string()) {
                 try {
-                    prompt_tokens = g_tokenizer.encode(body["prompt"].get<std::string>());
+                    raw_prompt = body["prompt"].get<std::string>();
+                    prompt_tokens = g_tokenizer.encode(raw_prompt);
                 } catch (const std::exception& e) {
                     fprintf(stderr, "[completions] encode error: %s\n", e.what());
                 }
@@ -1756,9 +2142,11 @@ int main(int argc, char** argv) {
         if (max_tokens > 32768) max_tokens = 32768;
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
-        float temperature = body.value("temperature", top_k > 0 ? 1.0f : 0.0f);
+        float temperature = body.value("temperature", 0.8f);
         if (temperature < 0.0f) temperature = 0.0f;
         if (temperature > 5.0f) temperature = 5.0f;
+        float repeat_penalty = body.value("repetition_penalty", 1.1f);
+        float top_p = body.value("top_p", 0.95f);
 
         json gen_result;
 
@@ -1790,7 +2178,7 @@ int main(int argc, char** argv) {
             std::vector<double> empty_logprobs;
             try {
                 gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
-                                                 nullptr, "", temperature, top_k);
+                                                 nullptr, "", temperature, top_k, raw_prompt, repeat_penalty, top_p);
             } catch (const std::exception& e) {
                 fprintf(stderr, "[completions] generate error: %s\n", e.what());
                 gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
@@ -2010,6 +2398,7 @@ int main(int argc, char** argv) {
     printf("  Endpoints:\n");
     printf("    GET  /v1/health            — Backend status + metrics\n");
     printf("    GET  /v1/models            — List available models\n");
+    printf("    POST /v1/pool              — Unified pool report\n");
     printf("    POST /v1/chat/completions  — Chat with strategy routing\n");
     printf("    POST /v1/completions       — Legacy completion\n");
     printf("    GET  /v1/router            — Strategy engine status\n");

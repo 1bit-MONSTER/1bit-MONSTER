@@ -60,10 +60,38 @@ struct Backend {
     /// Returns the predicted token ID, -1 on error.
     virtual int generate(int token_id) = 0;
 
+    /// Text-level generation: whole prompt in, text out. Backends that work
+    /// at text granularity (FLM NPU subprocess — tokenizes internally) override
+    /// this; token-level backends leave it unimplemented. Empty return = this
+    /// backend has no text-level path (caller falls back to the token loop).
+    virtual std::string generate_text(const std::string& prompt, int max_tokens) {
+        (void)prompt; (void)max_tokens; return "";
+    }
+
     /// Logits of the most recent forward/generate step (vocab floats), or
     /// nullptr if the backend doesn't retain them. Used for sampling and
     /// logit-level validation.
     virtual const float* last_logits() { return nullptr; }
+
+    // ── Speculative-decode primitives (optional; unsupported = false) ──
+
+    /// Single-token decode: advance the KV cache by token_id (auto position)
+    /// and return the logits predicting the NEXT position (vocab floats).
+    virtual bool decode_one(int token_id, std::vector<float>& logits_out) {
+        (void)token_id; (void)logits_out; return false;
+    }
+
+    /// Decode all tokens in ONE batch at consecutive positions, returning
+    /// per-position logits (vocab floats per token, in order). The verify
+    /// step of speculative decoding.
+    virtual bool verify_batch(const std::vector<int>& tokens,
+                              std::vector<float>& out_logits) {
+        (void)tokens; (void)out_logits; return false;
+    }
+
+    /// Truncate this sequence's KV cache to `keep` positions (drop the
+    /// rest). Used to roll back rejected draft proposals.
+    virtual bool rollback(int keep) { (void)keep; return false; }
 
     // ── Batch decode (multi-sequence) ──
 

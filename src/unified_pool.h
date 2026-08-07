@@ -9,6 +9,7 @@
 struct ModelSlot {
     std::string name;
     std::string path;
+    std::string kind = "generic";   // "1bp" (parsed) | "generic" (mmap only)
     void* mmap_data = nullptr;
     size_t mmap_size = 0;
 
@@ -30,6 +31,7 @@ public:
     int load(const std::string& path);
     ModelSlot* get(int slot);
     ModelSlot* find(const std::string& name);
+    bool has_path(const std::string& path) const;
     bool unload(int slot);
     int count() const;
     void report() const;

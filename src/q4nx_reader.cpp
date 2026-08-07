@@ -203,6 +203,11 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
     }
     if (max_layer >= 0) cfg.n_layers = cfg.num_layers = max_layer + 1;
 
+    cfg.format = ModelFormat::Q4NX;   // routes to the FLM backend, not GGUF
+    // Not MoE — the ModelConfig default (16) would hijack the route into the
+    // CCA/MoE kernel path, which cannot read Q4NX.
+    cfg.num_experts = cfg.n_experts = 0;
+
     // Quantization: dtype of the first tensor found.
     auto dtype_pos = header.find("\"dtype\":\"");
     if (dtype_pos != std::string::npos) {
@@ -219,6 +224,9 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
     std::string base = path.substr(slash + 1, (dot == std::string::npos ? path.size() : dot) - slash - 1);
     auto sep = base.find_first_of("-_");
     cfg.architecture = sep == std::string::npos ? base : base.substr(0, sep);
+    // GGUF arch tags are lowercase ("qwen3", "llama") — the router compares
+    // case-sensitively, so normalize ("Qwen3-4B" filename -> "qwen3").
+    for (auto& c : cfg.architecture) c = (char)tolower((unsigned char)c);
     cfg.model_name = base;
     cfg.model_path = path;
     cfg.format = ModelFormat::Q4NX;

@@ -139,3 +139,12 @@ vivado*.jou
 vivado*.log
 engine/npu/build-dbg/
 engine/npu/build-dbg2/
+
+# ── NPU pool probe binaries (build from source) ──
+/engine/npu/pool/pool_probe
+/engine/npu/pool/pool_kernel
+/engine/npu/pool/pool_layer
+models/*.htok
+
+# Local workspace (not part of the repo)
+.llm-wiki/

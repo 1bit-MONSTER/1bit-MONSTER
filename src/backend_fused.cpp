@@ -369,7 +369,7 @@ struct FusedBackend : Backend {
 
     bool load_1bp(const std::string& path) {
         printf("[fused] Loading: %s\n", path.c_str());
-        OnebpModel mdl;
+        NpuOnebpModel mdl;
         if (!mdl.open(path.c_str())) { fprintf(stderr,"[fused] open fail\n"); return false; }
         auto ld = [&](const char* n, std::vector<float>& v){ return mdl.get_tensor_f32(n,v); };
         ld("token_embd.weight", cpu_embed);

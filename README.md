@@ -97,6 +97,26 @@ Headline end-to-end decode, re-measured **2026-08-01** on AMD Ryzen AI MAX+ 395 
 
 Plus **43.2 TFLOPS** INT8 prefill (WMMA). Full per-model and kernel numbers live in the **[performance SSOT](docs/wiki/performance.md)**.
 
+### Unified control plane (one server, one API, pooled models) — measured 2026-08-07
+
+All five zoo models served from **one** `unified` process (`--pool` keeps every
+model resident in the unified model pool), one OpenAI-compatible endpoint,
+measured end-to-end through `POST /v1/chat/completions` (includes per-request
+model routing/switching):
+
+| Model | tok/s (e2e) | Backend |
+|-------|:-----------:|---------|
+| Qwen3-4B | **20.8** | NPU FLM (XDNA) |
+| Qwen3-0.6B Instruct | **12.4** | GGML-Vulkan |
+| Llama-3.2-1B Instruct | **12.4** | GGML-Vulkan |
+| Bonsai-1.7B-TQ2 | **3.1** | HIP 1BP |
+| Zamba2-1.2B-Instruct-v2 | **2.2** | HIP (Mamba2 SSD) |
+
+`scripts/zoo-smoke.sh` (5/5 PASS) runs the same path; `POST /v1/pool` reports
+residency (11 slots, incl. both `.1bp` and `.gguf` formats). Speculative
+decoding is available in the same process via `--draft-model` + `--spec-decode`
+(lossless vs greedy; see `tools/spec_decode_README.md`).
+
 ## Platforms & backends
 
 - **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + GGML-Vulkan
