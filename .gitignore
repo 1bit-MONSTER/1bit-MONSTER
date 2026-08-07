@@ -145,3 +145,6 @@ engine/npu/build-dbg2/
 /engine/npu/pool/pool_kernel
 /engine/npu/pool/pool_layer
 models/*.htok
+
+# Local workspace (not part of the repo)
+.llm-wiki/
