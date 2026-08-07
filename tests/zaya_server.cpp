@@ -133,6 +133,7 @@ static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
     cfg.model_path = path;
     cfg.weights_dir = (slash != std::string::npos) ? path.substr(0, slash + 1) : "./";
+    cfg.format = ModelFormat::ONEBP;
     fprintf(stderr, "  Auto-detected from .1bp: %s\n", cfg.model_name.c_str());
     fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d eos=%d\n",
             cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
@@ -831,35 +832,6 @@ int main(int argc, char** argv) {
     if (!cfg.lora_path.empty()) fprintf(stderr, "LoRA adapter: %s\n", cfg.lora_path.c_str());
     fprintf(stderr, "\n");
 
-    if (model_loaded && !router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
-
-    // ── Load draft model for speculative decoding ────────────────
-    bool draft_loaded = false;
-    if (!draft_model_arg.empty()) {
-        ModelConfig draft_cfg;
-        bool draft_detected = false;
-        std::string ext = draft_model_arg.size() > 5 ? draft_model_arg.substr(draft_model_arg.size() - 5) : "";
-        if (ext == ".gguf") {
-            draft_detected = detect_from_gguf(draft_model_arg, draft_cfg);
-        }
-        if (!draft_detected) {
-            draft_detected = detect_from_h1b(draft_model_arg, draft_cfg);
-        }
-        if (draft_detected) {
-            draft_cfg.weights_dir = cfg.weights_dir;
-            draft_loaded = router.load_draft_model(draft_cfg);
-        }
-        if (!draft_loaded) {
-            fprintf(stderr, "WARNING: Failed to load draft model — running without spec decode\n");
-        } else {
-            // Auto-enable spec_decode strategy when draft model is loaded
-            if (strategy == RouteStrategy::AUTO) {
-                router.strategy = RouteStrategy::SPEC_DECODE;
-                strategy = RouteStrategy::SPEC_DECODE;
-            }
-        }
-    }
-
     SimpleTokenizer tok;
 
     // Try to load tokenizer from GGUF metadata if available
@@ -979,6 +951,42 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "  Tokenizer: using default BOS=%d EOS=%d (no .htok/GGUF found)\n",
                             tok.bos_id, tok.eos_id);
                 }
+            }
+        }
+    }
+
+
+    // Coherence probe with a real prompt (raw low ids make every
+    // real model degenerate — false negatives on bit-correct backends).
+    if (!router.probe_prompt.empty() || tok.bpe_tok) {
+        std::string probe_text = "The quick brown fox jumps over the lazy dog.";
+        router.probe_prompt = tok.encode(probe_text);
+    }
+    if (model_loaded && !router.load_model(cfg)) { fprintf(stderr, "FATAL: Failed to load model\n"); return 1; }
+
+    // ── Load draft model for speculative decoding ────────────────
+    bool draft_loaded = false;
+    if (!draft_model_arg.empty()) {
+        ModelConfig draft_cfg;
+        bool draft_detected = false;
+        std::string ext = draft_model_arg.size() > 5 ? draft_model_arg.substr(draft_model_arg.size() - 5) : "";
+        if (ext == ".gguf") {
+            draft_detected = detect_from_gguf(draft_model_arg, draft_cfg);
+        }
+        if (!draft_detected) {
+            draft_detected = detect_from_h1b(draft_model_arg, draft_cfg);
+        }
+        if (draft_detected) {
+            draft_cfg.weights_dir = cfg.weights_dir;
+            draft_loaded = router.load_draft_model(draft_cfg);
+        }
+        if (!draft_loaded) {
+            fprintf(stderr, "WARNING: Failed to load draft model — running without spec decode\n");
+        } else {
+            // Auto-enable spec_decode strategy when draft model is loaded
+            if (strategy == RouteStrategy::AUTO) {
+                router.strategy = RouteStrategy::SPEC_DECODE;
+                strategy = RouteStrategy::SPEC_DECODE;
             }
         }
     }

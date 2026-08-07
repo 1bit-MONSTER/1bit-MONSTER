@@ -308,6 +308,7 @@ public:
 // Each backend provides its own detect_* function; CPU aggregates them.
 // HIP is always compiled. Vulkan/NPU are optional — weak stubs below.
 extern std::vector<InferenceBackend*> detect_backends_hip();
+extern std::vector<InferenceBackend*> detect_backends_hip1bp();
 
 // Weak stubs for optional backends (real impls in backend_vulkan.cpp / backend_npu.cpp)
 __attribute__((weak)) std::vector<InferenceBackend*> detect_backends_vulkan() { return {}; }
@@ -321,6 +322,11 @@ std::vector<InferenceBackend*> detect_backends() {
 
     auto hip_backends = detect_backends_hip();
     for (auto* b : hip_backends) backends.push_back(b);
+
+    // Qwen/Llama-style 1BP models (blk.N.attn_*) — ZAYA HIP backend zero-fills
+    // them, so this must come after detect_backends_hip() in the chain.
+    auto hip1bp_backends = detect_backends_hip1bp();
+    for (auto* b : hip1bp_backends) backends.push_back(b);
 
     auto vk_backends = detect_backends_vulkan();
     for (auto* b : vk_backends) backends.push_back(b);
