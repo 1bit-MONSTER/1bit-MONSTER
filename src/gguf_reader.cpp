@@ -445,6 +445,12 @@ bool GgufReader::read_kv_value(uint32_t vtype, KV& out) {
             if (at == 8) {
                 out.arr_str.resize(an);
                 for (uint64_t j = 0; j < an; j++) out.arr_str[j] = read_string();
+            } else if (at == 4 || at == 5) {  // u32 / i32 arrays (token_type is i32 in llama.cpp GGUFs)
+                out.arr_u32.resize(an);
+                for (uint64_t j = 0; j < an; j++) {
+                    int32_t v; if (fread(&v, 4, 1, f_) != 1) return false;
+                    out.arr_u32[j] = (uint32_t)v;
+                }
             } else if (an == 1) {
                 // Single-element numeric array: store as scalar u
                 out.vtype = at;  // override to inner type
@@ -618,6 +624,13 @@ bool GgufReader::get_string_array(const std::string& key, std::vector<std::strin
     return true;
 }
 
+bool GgufReader::get_u32_array(const std::string& key, std::vector<uint32_t>& out) const {
+    const KV* kv = find_kv(key);
+    if (!kv || kv->vtype != 9 || kv->arr_u32.empty()) return false;
+    out = kv->arr_u32;
+    return true;
+}
+
 std::vector<std::string> GgufReader::kv_keys() const {
     std::vector<std::string> keys;
     keys.reserve(kv_.size());
@@ -694,6 +707,20 @@ bool GgufReader::write_htok(const std::string& htok_path) const {
     get_u32("tokenizer.ggml.bos_token_id", bos);
     get_u32("tokenizer.ggml.eos_token_id", eos);
 
+    // Special/control tokens (e.g. Llama-3 <|start_header_id|>, <|eot_id|>)
+    // are not reachable via BPE merges — without them the rcpp encoder's
+    // special-token pre-pass can't rebuild chat templates and instruct
+    // models get a mangled prompt. GGUF token types: 1=NORMAL, 2=UNKNOWN,
+    // 3=CONTROL, 4=USER_DEFINED, 5=UNUSED, 6=BYTE. NORMAL and BYTE pieces
+    // participate in BPE; everything else is a special.
+    std::vector<uint32_t> token_type;
+    std::vector<uint32_t> special_ids;
+    if (get_u32_array("tokenizer.ggml.token_type", token_type) &&
+        token_type.size() == toks.size()) {
+        for (uint32_t i = 0; i < token_type.size(); ++i)
+            if (token_type[i] != 1 && token_type[i] != 6) special_ids.push_back(i);
+    }
+
     FILE* f = fopen(htok_path.c_str(), "wb");
     if (!f) return false;
     auto wr = [&](const void* p, size_t n) { fwrite(p, 1, n, f); };
@@ -712,9 +739,10 @@ bool GgufReader::write_htok(const std::string& htok_path) const {
         wr(t.data(), t.size());
     }
     for (const Merge& m : out) { wr_u32(m.a); wr_u32(m.b); wr_u32(m.merged); }
-    wr_u32(0);  // num_special (v2; gate corpus is plain text)
+    wr_u32((uint32_t)special_ids.size());
+    for (uint32_t sid : special_ids) wr_u32(sid);
     fclose(f);
-    fprintf(stderr, "gguf_htok: %u tokens, %zu merges (%zu dropped)\n",
-            vocab_size, out.size(), merges.size() - out.size());
+    fprintf(stderr, "gguf_htok: %u tokens, %zu merges (%zu dropped), %zu specials\n",
+            vocab_size, out.size(), merges.size() - out.size(), special_ids.size());
     return true;
 }
