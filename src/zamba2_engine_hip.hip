@@ -306,8 +306,12 @@ extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int to
             const HybridLayerWeights& hl = hit->second;
 
             int d_ff_layer = (int)hl.shared_transformer_up.size() / d_model;
-            float* k_cache_gpu = s->d_k_cache + (size_t)hyb_idx * 2 * max_seq * n_kv_heads * attn_head_dim;
-            float* v_cache_gpu = s->d_v_cache + (size_t)hyb_idx * 2 * max_seq * n_kv_heads * attn_head_dim;
+            // One max_seq slot per hybrid layer in each of d_k_cache/d_v_cache
+            // (the caches are separate allocations; the old `2 *` slot stride
+            // was a leftover from an interleaved design and wrote OOB for
+            // hybrid layers 2+ → corrupted attention → garbage logits).
+            float* k_cache_gpu = s->d_k_cache + (size_t)hyb_idx * max_seq * n_kv_heads * attn_head_dim;
+            float* v_cache_gpu = s->d_v_cache + (size_t)hyb_idx * max_seq * n_kv_heads * attn_head_dim;
 
             // Get the mamba sub-weights from the hybrid layer
             const float* mamba_inp_norm = nullptr;  // not needed separately - hybrid uses own norm
@@ -358,4 +362,19 @@ extern "C" void zamba2_hip_forward(Zamba2HIPState* s, Zamba2Model& model, int to
 
 extern "C" void zamba2_hip_destroy(Zamba2HIPState* s) {
     if (s) { s->destroy(); }
+}
+
+// ── HIP: reset state buffers for a new sequence (cheap — no weight re-upload) ──
+extern "C" void zamba2_hip_reset(Zamba2HIPState* s) {
+    if (!s) return;
+    auto memset_sz = [&](float* p, size_t bytes) {
+        if (p && bytes) hipMemsetAsync(p, 0, bytes, s->stream);
+    };
+    int d_inner = s->cfg.d_inner, d_state = s->cfg.d_state;
+    int conv_dim = s->conv_dim, n_layers = s->cfg.n_layers;
+    int max_seq = s->cfg.max_seq_len;
+    memset_sz(s->d_conv_state, (size_t)n_layers * (s->cfg.d_conv - 1) * conv_dim * sizeof(float));
+    memset_sz(s->d_ssm_state, (size_t)n_layers * d_state * d_inner * sizeof(float));
+    memset_sz(s->d_k_cache, (size_t)s->n_hybrid * max_seq * s->cfg.n_kv_heads * s->cfg.attn_head_dim * sizeof(float));
+    memset_sz(s->d_v_cache, (size_t)s->n_hybrid * max_seq * s->cfg.n_kv_heads * s->cfg.attn_head_dim * sizeof(float));
 }

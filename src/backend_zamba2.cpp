@@ -22,6 +22,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <random>
 
 // ── Tokenizer wrapper (simple BPE lookup for Zamba2) ──
 struct Zamba2Tokenizer {
@@ -72,14 +73,27 @@ private:
 };
 
 // ── Zamba2 Backend ──
+// Runs the native HIP engine (zamba2_engine_hip.hip, ~25 tok/s on Strix Halo)
+// when available, with the CPU reference as fallback.
+struct Zamba2HIPState;
+extern "C" {
+    Zamba2HIPState* zamba2_hip_init(Zamba2Model& model);
+    void zamba2_hip_forward(Zamba2HIPState*, Zamba2Model&, int, float*, int);
+    void zamba2_hip_reset(Zamba2HIPState*);
+    void zamba2_hip_destroy(Zamba2HIPState*);
+}
+
 struct Zamba2Backend : Backend {
     Zamba2Model model;
     Zamba2Tokenizer tokenizer;
     std::vector<float> logits_buf;
+    Zamba2HIPState* gpu_ = nullptr;
+    bool use_gpu = false;
     int pos = 0;
+    std::mt19937 rng_{1234};  // fixed seed — deterministic across runs
 
     Zamba2Backend() {
-        type = BackendType::CPU_AVX512;  // starts as CPU; GPU path uses HIP
+        type = BackendType::HIP_GPU;
         name = "Zamba2 (Mamba2 SSD)";
     }
 
@@ -111,8 +125,19 @@ struct Zamba2Backend : Backend {
             fprintf(stderr, "Zamba2: Warning: tokenizer may be incomplete\n");
         }
 
-        // Allocate logits buffer
+        // Allocate logits buffer; CPU state only needed for the CPU fallback
         logits_buf.resize(model.cfg.vocab_size, 0.0f);
+
+        // Try the HIP engine first (weights upload + device buffers);
+        // fall back to the CPU reference if it fails.
+        gpu_ = zamba2_hip_init(model);
+        use_gpu = (gpu_ != nullptr);
+        if (use_gpu) {
+            fprintf(stderr, "Zamba2: HIP engine ready (GPU)\n");
+        } else {
+            fprintf(stderr, "Zamba2: HIP init failed — CPU reference fallback\n");
+            model.init_state();
+        }
 
         initialized = true;
         fprintf(stderr, "Zamba2: Engine ready (%d layers, %d params)\n",
@@ -121,71 +146,65 @@ struct Zamba2Backend : Backend {
     }
 
     bool reset() override {
-        model.reset();
+        if (!use_gpu) model.reset();
+        if (use_gpu) zamba2_hip_reset(gpu_);
         pos = 0;
         return true;
     }
 
-    bool forward(int token_id, float* hidden_out) override {
-        // Zamba2 forward produces logits, not hidden states.
-        // The Backend interface's hidden_out buffer is only hidden_size floats
-        // (typically ~2048), but logits are vocab_size floats (typically ~262K).
-        // Copying vocab_size floats would overflow the caller's buffer.
-        // Instead, copy only hidden_size floats and treat the result as a
-        // projected hidden state. The lm_head() path handles full logit
-        // computation separately.
-        if (!model.forward(token_id, logits_buf.data())) {
-            return false;
-        }
-        // Copy only cfg.hidden floats to hidden_out — safe upper bound
-        std::memcpy(hidden_out, logits_buf.data(),
-                    (size_t)cfg.hidden * sizeof(float));
-        return true;
-    }
+    // Honest stubs: this backend's forward produces logits, not hidden
+    // states — the hidden_out/lm_head split cannot work (it would treat
+    // logits as a projected hidden state and re-project them, sampling
+    // garbage). Returning false makes the unified server fall back to
+    // generate(), which runs the real forward + sampler in one call.
+    bool forward(int, float*) override { return false; }
+    bool lm_head(const float*, float*, int*) override { return false; }
 
-    bool lm_head(const float* hidden, float* logits, int* argmax) override {
-        // For tied embeddings, lm_head = embedding^T
-        // hidden is the final normalized hidden state
-        int v = cfg.vocab;
-        int h = cfg.hidden;
-
+    // Sample from the logits (temp 0.8 / top-p 0.95 — matches the unified
+    // server defaults; greedy argmax makes small models loop).
+    int sample_next() {
+        const int v = model.cfg.vocab_size;
+        const float* logits = logits_buf.data();
+        float max_l = -1e30f;
+        for (int i = 0; i < v; ++i) if (logits[i] > max_l) max_l = logits[i];
+        std::vector<float> scaled(v);
+        double sum = 0.0;
         for (int i = 0; i < v; ++i) {
-            float sum = 0.0f;
-            for (int j = 0; j < h; ++j) {
-                sum += model.embed_w[i * h + j] * hidden[j];
-            }
-            logits[i] = sum;
+            scaled[i] = expf((logits[i] - max_l) / 0.8f);
+            sum += scaled[i];
         }
-
-        if (argmax) {
-            *argmax = 0;
-            float max_val = logits[0];
-            for (int i = 1; i < v; ++i) {
-                if (logits[i] > max_val) {
-                    max_val = logits[i];
-                    *argmax = i;
-                }
-            }
+        // Nucleus: keep the smallest set whose cumulative mass reaches 0.95
+        std::vector<int> idx(v);
+        for (int i = 0; i < v; ++i) idx[i] = i;
+        std::sort(idx.begin(), idx.end(), [&](int a, int b) { return scaled[a] > scaled[b]; });
+        double cum = 0.0;
+        int cutoff = v - 1;
+        for (int i = 0; i < v; ++i) {
+            cum += scaled[idx[i]];
+            if (cum >= 0.95 * sum) { cutoff = i; break; }
         }
-        return true;
+        for (int i = cutoff + 1; i < v; ++i) scaled[idx[i]] = 0.0f;
+        sum = 0.0;
+        for (int i = 0; i < v; ++i) sum += scaled[i];
+        std::uniform_real_distribution<double> dist(0.0, sum);
+        double r = dist(rng_);
+        for (int i = 0; i < v; ++i) {
+            r -= scaled[i];
+            if (r <= 0.0) return i;
+        }
+        return idx[0];
     }
 
     int generate(int token_id) override {
-        // Full generate: forward + argmax
-        if (!model.forward(token_id, logits_buf.data())) {
+        // Full generate: forward + sample in one call.
+        if (token_id < 0 || token_id >= model.cfg.vocab_size) return -1;
+        if (use_gpu) {
+            zamba2_hip_forward(gpu_, model, token_id, logits_buf.data(), pos);
+            pos++;
+        } else if (!model.forward(token_id, logits_buf.data())) {
             return -1;
         }
-
-        // Argmax
-        int next = 0;
-        float max_val = logits_buf[0];
-        for (int i = 1; i < model.cfg.vocab_size; ++i) {
-            if (logits_buf[i] > max_val) {
-                max_val = logits_buf[i];
-                next = i;
-            }
-        }
-        return next;
+        return sample_next();
     }
 
     float benchmark(int tokens = 10) override {
@@ -204,6 +223,7 @@ struct Zamba2Backend : Backend {
     }
 
     void destroy() override {
+        if (gpu_) { zamba2_hip_destroy(gpu_); gpu_ = nullptr; }
         model.loaded = false;
         logits_buf.clear();
         initialized = false;

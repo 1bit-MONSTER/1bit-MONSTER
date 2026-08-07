@@ -25,6 +25,11 @@ void DynamicRouter::remove_backend(const std::string& id) {
         [&](auto& e) { return e.id == id; }), entries_.end());
 }
 
+void DynamicRouter::clear() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    entries_.clear();
+}
+
 bool DynamicRouter::reset_all() {
     std::lock_guard<std::mutex> lock(mtx_);
     bool ok = true;

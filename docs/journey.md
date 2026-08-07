@@ -1984,3 +1984,41 @@ is real and verified against a genuinely ternary-trained model, not just a forma
 spec. Full repo build and test suite both clean as of this session's end (one
 apparent GPU memory-fault test failure turned out to be a local test
 misconfigured to point a non-MoE-scoped test at a real MoE model, not a code bug).
+
+---
+
+## 2026-08-07 — the unified control plane lands (pool wired, spec decode in-server, zoo 5/5)
+
+**What happened**: the 1bit engine went from "5 models working one at a time" to
+**one process, one API, all models resident** — plus a lossless speculative
+decoding loop running inside the server.
+
+**Unified model pool (end to end).** `UnifiedModelPool` existed as an unwired
+1bp-only class; it's now the server's residency layer (`--pool`): every model
+in the weights dir is mmap'd at boot (11 slots / ~6 GB on strix, 1bp parsed +
+generic gguf), `POST /v1/pool` is the control-plane report, `/v1/models` tags
+pooled models. One `unified` process then serves Llama-3.2-1B, Qwen3-0.6B,
+Bonsai-1.7B-TQ2 (HIP 1BP), Zamba2-1.2B Q8_0 (HIP Mamba2), and Qwen3-4B (NPU
+FLM) through the same OpenAI-compatible endpoint — `scripts/zoo-smoke.sh`
+5/5 PASS. Measured e2e (includes per-request routing): NPU 20.8 tok/s, GGUF
+1B 12.4 tok/s, Bonsai 3.1, Zamba2 2.2.
+
+**Speculative decode in-server.** The roadmap Phase-2 loop went from standalone
+demo to a server feature: `--draft-model X --spec-decode` runs the
+lossless-consistent loop with one-batch verification (`verify_batch`) and KV
+rollback (`rollback` via `llama_memory_seq_rm`). Two bugs surfaced and fixed
+while wiring: draft and target logits must never share a buffer (different
+vocabs — the first token silently became the draft's argmax), and
+ggml-vulkan's `reset()` was a no-op (every request had been extending one
+unbounded KV sequence; it now clears per request — this also made outputs
+deterministic: 3/3 identical).
+
+**Also**: Zamba2 Q8_0 (tensor-exact vs HF checkpoint), the vendored llama.cpp
+fork gained zamba2 quantize support (arch alias + kv-name fallback), AMD
+Vitis 2026.1 installed for the FPGA roadmap.
+
+**Honest status vs the "one heap, one API" NPU goal**: the CONTROL PLANE is
+unified (one process, one API, pooled models). The NPU-side single device-heap
+carve + one chained EXEC_CMD (docs/plans/one-heap-pivot.md) is still DRAFT —
+that's the next milestone, on a kernel/driver surface that's already present
+in amdxdna.

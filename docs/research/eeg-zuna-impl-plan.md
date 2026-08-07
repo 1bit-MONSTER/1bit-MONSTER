@@ -43,7 +43,9 @@ Python package.
 - **Phase 3 — CPU forward:** `zuna_encode`, `zuna_rope4d_apply`, `zuna_sample` (50 Euler steps), `zuna_main` CLI.
 - **Phase 4 — converter:** `tools/export_zuna_1bp.py` (safetensors → raw F16 1BP).
 - **Phase 5 — reference parity harness:** `tools/gen_zuna_traces.py` golden enc_out + reconstruction; `tests/check_zuna_parity.py` compares 1bit output.
-- **Phase 6 (deferred):** HTTP server, GPU 4D RoPE kernel, preprocessing pipeline (client-side tokenization in v1).
+- **Phase 6 (deferred):** HTTP server, GPU 4D RoPE kernel, C++ safetensors reader, MRI.
+  Preprocessing pipeline **delivered** — `tools/zuna_edf.py` ingests EDF/EDF+/BDF
+  (10-20 montage, `--chan-pos` override, `--bids` mode, `--selfcheck`).
 
 ## Design decisions
 
@@ -52,6 +54,14 @@ Python package.
   shoehorning it into the token decode loop is wrong. It gets its own `zuna_main` + loader.
 - **Client-side tokenization in v1.** The server takes `{tokens, tok_idx}`; raw-EEG preprocessing
   (resample/notch/reference/z-score, 10-20 montage) is a later, separable phase.
+  **Delivered** (2026-08): `tools/zuna_edf.py` — numpy-only EDF/EDF+/BDF reader,
+  embedded 10-20 xyz table (MNE spherical_1020 scaled to 0.1 m radius),
+  FFT resample + highpass/notch (reuses `zuna_preprocess` helpers),
+  writes the same tokens/tok_idx/meta contract plus `raw.npy` (the exact
+  post-conditioning array `zuna_invert_recon.py` denormalizes from).
+  `zuna_run.sh <wd> rec.edf <out.npy> [rate]` wires it end-to-end; legacy
+  `.npy` form unchanged. EDF path prints
+  `research-only: reconstruction is imputed, not ground truth`.
 - **CLI parity first.** `1bit zuna --model zuna.1bp --in raw.bin --out recon.bin` for testing;
   HTTP server deferred. Fewer moving parts to validate correctness.
 

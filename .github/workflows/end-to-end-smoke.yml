@@ -19,6 +19,10 @@ permissions:
 jobs:
   smoke-test:
     runs-on: [self-hosted, strix-halo]
+    # SECURITY: public repo — fork PRs must never run on the self-hosted
+    # runner (fork-controlled code would execute with passwordless sudo).
+    # Same-repo PRs and push require write access, so they're safe.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

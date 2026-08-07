@@ -41,7 +41,12 @@ static inline float bf16_to_f32(uint16_t v) {
 // Memory-maps the entire 1BP file for zero-copy access.
 // Provides methods to read tensor metadata and dequantize weights.
 //
-class OnebpModel {
+// NOTE: named NpuOnebpModel, not OnebpModel — include/onebp_loader.h has a
+// DIFFERENT OnebpModel (CPU-side, load()/tensor_data()) compiled into
+// libonebp_model.a. Same class name = same dtor symbol = the linker keeps one
+// implementation (the strong out-of-line one) and every TU destroys its
+// object with the wrong layout → SIGSEGV in ~OnebpModel (ODR collision).
+class NpuOnebpModel {
     int         fd_ = -1;
     uint8_t*    map_ = nullptr;
     size_t      map_size_ = 0;
@@ -60,8 +65,8 @@ class OnebpModel {
     std::vector<TensorEntry> tensors_;
 
 public:
-    OnebpModel() = default;
-    ~OnebpModel() { close(); }
+    NpuOnebpModel() = default;
+    ~NpuOnebpModel() { close(); }
 
     bool open(const char* path) {
         // Memory-map the file
@@ -377,7 +382,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    OnebpModel model;
+    NpuOnebpModel model;
     if (!model.open(argv[1])) {
         fprintf(stderr, "Failed to open %s\n", argv[1]);
         return 1;

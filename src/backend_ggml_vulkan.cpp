@@ -28,12 +28,14 @@
 struct GGMLVulkanBackend : Backend {
     struct llama_model* model = nullptr;
     struct llama_context* ctx = nullptr;
+    llama_memory_t mem = nullptr;
     const struct llama_vocab* vocab = nullptr;
     struct llama_sampler* smpl = nullptr;
     bool gpu_ok = false;
 
     int H = 0, NC = 0, VOCAB = 0;
     int n_ctx = 4096;
+    int pos_ = 0;   // current KV length (sequence 0)
 
     GGMLVulkanBackend() { type = BackendType::GENERIC; name = "GGML-Vulkan (llama.cpp)"; }
     ~GGMLVulkanBackend() override { destroy(); }
@@ -73,11 +75,20 @@ struct GGMLVulkanBackend : Backend {
         H = llama_model_n_embd(model);
         VOCAB = llama_vocab_n_tokens(vocab);
         NC = llama_model_n_layer(model);
+        mem = llama_get_memory(ctx);
         printf("[ggml-vk] ✅ H=%d NC=%d V=%d | 357 tok/s target\n", H, NC, VOCAB);
 
-        // Greedy sampler
+        // Sampler: temp 0.8 / top-p 0.95 / repeat-penalty 1.1 — matches the
+        // unified server's defaults (greedy made small models loop). Per-request
+        // client params are ignored by this backend: forward()/lm_head() return
+        // false below, so the server's own logits-path sampling never runs here
+        // and generate() (llama.cpp's sampler) is the only path.
         smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.8f));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1u));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(1u));
+        // NOTE: no repeat-penalty sampler in this vendored llama.cpp (only the
+        // core llama.h samplers); temp+top-p suffices — greedy was the old bug.
 
         gpu_ok = true; initialized = true;
         return true;
@@ -88,6 +99,7 @@ struct GGMLVulkanBackend : Backend {
         llama_token tok = (llama_token)token_id;
         auto batch = llama_batch_get_one(&tok, 1);
         if (llama_decode(ctx, batch) != 0) return -1;
+        pos_++;
 
         // Get logits and sample
         float* logits = llama_get_logits_ith(ctx, -1);
@@ -99,12 +111,75 @@ struct GGMLVulkanBackend : Backend {
             candidates[i] = {i, logits[i], 0.0f};
         llama_token_data_array cur_p = { candidates.data(), (size_t)candidates.size(), -1, false };
         llama_sampler_apply(smpl, &cur_p);
-        return (int)cur_p.selected;
+        // cur_p.selected is an INDEX into candidates, not the token id
+        // (llama-sampler.cpp llama_sampler_apply: data[selected].id). Greedy
+        // masked this — it scans the vocab-ordered array so index==id — but
+        // dist/top_k permute, and returning the raw index sampled garbage.
+        if (cur_p.selected < 0 || (size_t)cur_p.selected >= candidates.size()) return -1;
+        return (int)candidates[cur_p.selected].id;
     }
 
-    bool reset() override { return true; }
-    bool forward(int, float*) override { return true; }
-    bool lm_head(const float*, float*, int*) override { return true; }
+    bool reset() override {
+        // Real KV reset per sequence (spec decode needs a clean slate; the
+        // previous no-op made every request extend ONE unbounded sequence).
+        pos_ = 0;
+        if (mem) llama_memory_clear(mem, true);
+        return true;
+    }
+    // Honest stubs: this backend has no token-level forward/lm_head (llama.cpp
+    // runs the whole decode+sample internally). Returning false makes the
+    // unified server fall back to generate() instead of sampling zeroed
+    // buffers (all-zero logits → random multilingual garbage).
+    bool forward(int, float*) override { return false; }
+    bool lm_head(const float*, float*, int*) override { return false; }
+
+    // ── Speculative-decode primitives ──
+
+    bool decode_one(int token_id, std::vector<float>& logits_out) override {
+        if (!ctx) return false;
+        llama_token tok = (llama_token)token_id;
+        auto batch = llama_batch_get_one(&tok, 1);
+        int rc = llama_decode(ctx, batch);
+        if (rc != 0) return false;
+        float* lg = llama_get_logits_ith(ctx, -1);
+        logits_out.assign(lg, lg + VOCAB);
+        pos_++;
+        return true;
+    }
+
+    bool verify_batch(const std::vector<int>& tokens,
+                      std::vector<float>& out_logits) override {
+        if (!ctx || tokens.empty()) return false;
+        llama_batch b = llama_batch_init((int)tokens.size(), 0, 1);
+        for (int i = 0; i < (int)tokens.size(); i++) {
+            b.token[i] = (llama_token)tokens[i];
+            b.pos[i] = pos_ + i;
+            b.n_seq_id[i] = 1;
+            b.seq_id[i][0] = 0;
+            b.logits[i] = 1;   // per-position logits for acceptance
+        }
+        b.n_tokens = (int)tokens.size();
+        int rc = llama_decode(ctx, b);
+        if (rc == 0) {
+            out_logits.clear();
+            out_logits.reserve((size_t)tokens.size() * VOCAB);
+            for (int i = 0; i < (int)tokens.size(); i++) {
+                float* lg = llama_get_logits_ith(ctx, i);
+                out_logits.insert(out_logits.end(), lg, lg + VOCAB);
+            }
+            pos_ += (int)tokens.size();
+        }
+        llama_batch_free(b);
+        return rc == 0;
+    }
+
+    bool rollback(int keep) override {
+        if (!ctx || !mem) return false;
+        if (keep >= pos_) return true;
+        if (!llama_memory_seq_rm(mem, 0, keep, -1)) return false;
+        pos_ = keep;
+        return true;
+    }
 
     float benchmark(int tokens) override {
         if (!initialized) return -1;
@@ -119,6 +194,7 @@ struct GGMLVulkanBackend : Backend {
         if (smpl) { llama_sampler_free(smpl); smpl = nullptr; }
         if (ctx) { llama_free(ctx); ctx = nullptr; }
         if (model) { llama_model_free(model); model = nullptr; }
+        mem = nullptr;
         llama_backend_free();
         gpu_ok = false; initialized = false;
     }

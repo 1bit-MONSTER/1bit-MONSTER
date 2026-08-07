@@ -113,6 +113,12 @@ public:
     bool get_f32(const std::string& key, float& out) const;
     bool get_string(const std::string& key, std::string& out) const;
     bool get_string_array(const std::string& key, std::vector<std::string>& out) const;
+    bool get_u32_array(const std::string& key, std::vector<uint32_t>& out) const;
+
+    /// Export this GGUF's tokenizer to the .htok v2 binary the rcpp
+    /// tokenizer loads (same format as tools/gguf_htok.cpp). Returns false
+    /// if the file has no usable tokenizer.ggml.tokens.
+    bool write_htok(const std::string& htok_path) const;
     // All KV metadata key names present in the file, for architecture-
     // agnostic callers that need to match keys by suffix (e.g. any
     // "<arch>.attention.head_count") rather than a known exact name.
@@ -136,6 +142,7 @@ private:
         double f = 0;
         std::string s;
         std::vector<std::string> arr_str;
+        std::vector<uint32_t> arr_u32;
     };
 
     FILE* f_ = nullptr;

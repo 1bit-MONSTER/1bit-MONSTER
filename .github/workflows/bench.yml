@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   benchmark:
-    runs-on: self-hosted
+    runs-on: [self-hosted, strix-halo]
     timeout-minutes: 60
     if: github.event.repository.owner.login == '1bit-systems'
     steps:

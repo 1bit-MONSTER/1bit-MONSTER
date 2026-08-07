@@ -287,6 +287,7 @@ class UniversalBackend : public InferenceBackend {
     int seq_len_ = 0;
     float rope_base_ = 10000.0f;
     float rope_scale_ = 1.0f;
+    std::vector<float> last_logits_;  // populated by forward(); sampling uses it
 
     // Activation functions
     static float silu(float x) { return x / (1.0f + expf(-x)); }
@@ -666,26 +667,42 @@ public:
         bool has_head_q4 = !output_w_.empty() && !q4_output_.empty();
         bool has_embed_q4 = !q4_embed_.empty();
         if (has_head_q4) {
-            std::vector<float> logits(V, 0);
-            colibri_matmul_q4(logits.data(), hs.data(), q4_output_.data(), qs_output_.data(), 1, H, V);
-            for (int t = 0; t < V; t++) if (logits[t] > best_val) { best_val = logits[t]; best = t; }
+            last_logits_.assign(V, 0);
+            colibri_matmul_q4(last_logits_.data(), hs.data(), q4_output_.data(), qs_output_.data(), 1, H, V);
+            for (int t = 0; t < V; t++) if (last_logits_[t] > best_val) { best_val = last_logits_[t]; best = t; }
         } else if (has_embed_q4) {
-            std::vector<float> logits(V, 0);
-            colibri_matmul_q4(logits.data(), hs.data(), q4_embed_.data(), qs_embed_.data(), 1, H, V);
-            for (int t = 0; t < V; t++) if (logits[t] > best_val) { best_val = logits[t]; best = t; }
+            last_logits_.assign(V, 0);
+            colibri_matmul_q4(last_logits_.data(), hs.data(), q4_embed_.data(), qs_embed_.data(), 1, H, V);
+            for (int t = 0; t < V; t++) if (last_logits_[t] > best_val) { best_val = last_logits_[t]; best = t; }
         } else
 #endif
         {
+            last_logits_.assign(V, -1e30f);
             for (int t = 0; t < V; t++) {
                 float s = 0; const float* row = head_w.data() + (size_t)t * H;
                 if ((size_t)t * H + H > head_w.size()) break;
                 for (int i = 0; i < H; i++) s += hs[i] * row[i];
+                last_logits_[t] = s;
                 if (s > best_val) { best_val = s; best = t; }
             }
         }
 
         seq_len_++;
         return best;
+    }
+
+    // Logits-based sampling (temperature/top-p/repetition penalty) — argmax
+    // decoding makes small models loop. forward() already filled last_logits_.
+    int sample_token(int token_id, int pos, float temperature, float top_p,
+                     float repeat_penalty, const std::vector<int>& recent) override {
+        (void)pos;
+        int argmax = forward(token_id, 0);
+        if (argmax < 0 || last_logits_.empty()) return argmax;
+        if (temperature <= 0.0f) return argmax;
+        static unsigned seed = 0xC0FFEEU;
+        seed = seed * 1103515245U + 12345U;
+        return sample_from_logits(last_logits_, argmax, temperature, top_p,
+                                  repeat_penalty, recent, seed);
     }
 };
 

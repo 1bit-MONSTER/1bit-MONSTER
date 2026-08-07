@@ -13,6 +13,8 @@
 #include <vector>
 #include <string>
 #include <cstdio>
+#include <random>
+#include <algorithm>
 
 struct InferenceResult {
     std::vector<int> tokens;
@@ -35,7 +37,67 @@ public:
     virtual void reset_state() = 0;
     virtual float estimated_tok_s() const { return 0; }
     virtual bool is_coherent() const { return true; }
+
+    // Logits-based sampling (temperature / top-p / repetition penalty).
+    // Default implementation is greedy forward(); backends with logits
+    // access (via lm_head) override this to sample properly — argmax
+    // decoding makes small models loop ("The the capital\n...\n...").
+    virtual int sample_token(int token_id, int pos, float temperature, float top_p,
+                             float repeat_penalty, const std::vector<int>& recent) {
+        (void)temperature; (void)top_p; (void)repeat_penalty; (void)recent;
+        return forward(token_id, pos);
+    }
 };
+
+// ── CPU sampling helpers (shared by backends that expose logits) ──
+inline int sample_from_logits(std::vector<float>& logits, int argmax,
+                              float temperature, float top_p, float repeat_penalty,
+                              const std::vector<int>& recent, unsigned seed) {
+    const int V = (int)logits.size();
+    if (temperature <= 0.0f) return argmax;  // greedy
+    // repetition penalty (standard: divide positive logits, multiply negative)
+    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f) {
+        for (int id : recent) {
+            if (id >= 0 && id < V) {
+                float l = logits[id];
+                logits[id] = l > 0.0f ? l / repeat_penalty : l * repeat_penalty;
+            }
+        }
+    }
+    // temperature
+    float inv_t = 1.0f / temperature;
+    for (int i = 0; i < V; i++) logits[i] *= inv_t;
+    // top-p (nucleus): keep the smallest set whose cumulative prob >= top_p.
+    // The tail beyond the 512 top candidates is untouched (only relevant for
+    // near-uniform distributions, where any sample is fine).
+    if (top_p > 0.0f && top_p < 1.0f) {
+        std::vector<int> idx(V);
+        for (int i = 0; i < V; i++) idx[i] = i;
+        std::partial_sort(idx.begin(), idx.begin() + std::min(V, 512), idx.end(),
+                          [&](int a, int b) { return logits[a] > logits[b]; });
+        float max_l = logits[idx[0]];
+        double sum = 0.0;
+        int cut = V;
+        for (int k = 0; k < V; k++) {
+            sum += expf((double)(logits[idx[k]] - max_l));
+            if (sum >= top_p) { cut = k + 1; break; }
+        }
+        float thr = (cut < V) ? logits[idx[cut-1]] : -1e30f;
+        for (int i = 0; i < V; i++) if (logits[i] < thr) logits[i] = -1e30f;
+    }
+    // softmax + sample
+    float mx = logits[0];
+    for (int i = 1; i < V; i++) if (logits[i] > mx) mx = logits[i];
+    double sum = 0.0;
+    std::vector<float> probs(V);
+    for (int i = 0; i < V; i++) { probs[i] = expf(logits[i] - mx); sum += probs[i]; }
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    double r = dist(rng) * sum;
+    double acc = 0.0;
+    for (int i = 0; i < V; i++) { acc += probs[i]; if (acc >= r) return i; }
+    return argmax;
+}
 
 // Detect all available backends on this hardware
 std::vector<InferenceBackend*> detect_backends();
