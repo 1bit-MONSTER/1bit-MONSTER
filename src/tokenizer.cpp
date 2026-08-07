@@ -590,15 +590,15 @@ static std::vector<std::string> llama3_pre_tokenize(const std::string& text) {
 // Convert raw UTF-8 text into a vector of single-char (GPT-2 mapped)
 // byte-strings, one entry per input byte. These are the starting
 // "pieces" the BPE merge loop works on.
-static std::vector<std::string> byte_level_split(const std::string& text) {
+static std::vector<std::pair<std::string,uint8_t>> byte_level_split(const std::string& text) {
     const auto& bm = byte_map();
-    std::vector<std::string> pieces;
+    std::vector<std::pair<std::string,uint8_t>> pieces;
     pieces.reserve(text.size());
     char buf[4];
     for (uint8_t b : text) {
         uint32_t cp = bm.byte_to_cp[b];
         int n = utf8_encode(cp, buf);
-        pieces.emplace_back(buf, buf + n);
+        pieces.emplace_back(std::string(buf, buf + n), b);
     }
     return pieces;
 }
@@ -650,15 +650,28 @@ try {
     // BPE-merge a single chunk's byte pieces in place. Merges do NOT
     // cross chunk boundaries — that's the whole point of the pre-
     // tokenizer, it prevents spurious word/digit/whitespace merges.
-    auto bpe_chunk = [&](const std::vector<std::string>& pieces,
+    auto bpe_chunk = [&](const std::vector<std::pair<std::string,uint8_t>>& pieces,
                          std::vector<int32_t>& out) -> bool {
         std::vector<int32_t> ids;
         ids.reserve(pieces.size());
-        for (auto& p : pieces) {
+        for (auto& [p, raw] : pieces) {
             auto it = t->bytes_to_id.find(p);
             if (it == t->bytes_to_id.end()) {
-                fprintf(stderr, "tokenizer: unknown byte piece '%s' (len %zu)\n", p.c_str(), p.size());
-                return false;
+                // GPT-2 byte-mapped piece not in vocab — some exporters store
+                // tokens byte-decoded (plain " " instead of "Ġ"; the Zamba2
+                // GGUF does), and SentencePiece-style vocabs keep byte
+                // fallbacks as "<0xXX>" tokens. Try both before giving up.
+                std::string raw_piece(1, (char)raw);
+                it = t->bytes_to_id.find(raw_piece);
+                if (it == t->bytes_to_id.end()) {
+                    char sp[16];
+                    snprintf(sp, sizeof(sp), "<0x%02X>", raw);
+                    it = t->bytes_to_id.find(sp);
+                }
+                if (it == t->bytes_to_id.end()) {
+                    fprintf(stderr, "tokenizer: unknown byte piece '%s' (len %zu)\n", p.c_str(), p.size());
+                    return false;
+                }
             }
             ids.push_back(it->second);
         }

@@ -502,10 +502,15 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             return info.instance->init(cfg, weights_dir);
         });
         bool init_ok = false;
-        if (init_fut.wait_for(std::chrono::seconds(6)) == std::future_status::ready) {
+        // 120s cap: cold GGUF loads take a while (the zamba2 backend dequantizes
+        // every tensor to f32 at init — 1.8GB Q8 → ~7GB floats, tens of
+        // seconds on a cold cache). 6s was timing out legit backends so they
+        // never came up; still bounded so a hung init can't block forever
+        // (issue #1282).
+        if (init_fut.wait_for(std::chrono::seconds(120)) == std::future_status::ready) {
             init_ok = init_fut.get();
         } else {
-            printf("  → ⏱️  init timed out (>6s) — skipping\n");
+            printf("  → ⏱️  init timed out (>120s) — skipping\n");
             destroy_instance(info);
             continue;
         }

@@ -76,11 +76,12 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"laguna_gpu", "zinc_gpu", "cpu_generic"},
                 "Laguna model — specialized Laguna HIP backend, ZINC GPU fallback"};
     }
-    // Zamba2 (Mamba2 hybrid SSD): uses specialized Zamba2 backend with
-    // Mamba2 SSD kernels from mamba2_kernels.hip.
+    // Zamba2 (Mamba2 hybrid SSD): ggml_vulkan (llama.cpp) first — the native
+    // zamba2_gpu loader currently fails on the published GGUFs and mamba1_gpu
+    // must NOT claim zamba2 (Mamba1 kernels fault on Mamba2 blocks).
     if (cfg.arch == RCPP_ARCH_ZAMBA2) {
-        return {{"zamba2_vulkan", "zamba2_gpu", "hip_gpu", "cpu_generic"},
-                "Zamba2 model — Zamba2-on-Vulkan (ZAMBA2_VK=1), Zamba2 HIP backend, HIP GPU, generic CPU fallback"};
+        return {{"ggml_vulkan", "zamba2_vulkan", "zamba2_gpu", "cpu_generic"},
+                "Zamba2 model — GGML-Vulkan → Zamba2-on-Vulkan (ZAMBA2_VK=1) → Zamba2 HIP → CPU"};
     }
     // Mamba1 models (Zamba-7B-v1, BlackMamba): Mamba1 SSM HIP kernels,
     // with per-layer MoE expert dispatch for BlackMamba.
@@ -114,8 +115,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         // For 1BP models: GPU engine first, then NPU, then CPU. npu_flm is
         // Q4NX-only (init rejects other formats), so it's not in this route.
         if (cfg.format == ModelFormat::ONEBP)
-            return {{"fused_gpu_npu", "vulkan_hpp_gpu", "hip_1bp_gpu", "cpu_generic"},
-                    "qwen3 1BP — Fused GPU+NPU → Vulkan-Hpp → HIP → CPU"};
+            // hip_1bp first: bit-correct vs exact-f32 reference; fused_gpu_npu
+            // loops/degenerates on some models and vulkan_hpp_gpu segfaults in
+            // the RADV driver on first dispatch (both stay as fallbacks).
+            return {{"hip_1bp_gpu", "fused_gpu_npu", "vulkan_hpp_gpu", "cpu_generic"},
+                    "qwen3 1BP — HIP 1BP → Fused GPU+NPU → Vulkan-Hpp → CPU"};
         // Q4NX: FLM NPU engine is the native format owner (67.5 tok/s)
         if (cfg.format == ModelFormat::Q4NX)
             return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
@@ -131,8 +135,10 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"}, "GGUF/H1B model — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};
     }
     if (cfg.format == ModelFormat::ONEBP) {
-        return {{"fused_gpu_npu", "vulkan_hpp_gpu", "hip_1bp_gpu", "hip_gpu", "cpu_generic"},
-                "1BP model — Fused GPU+NPU → Vulkan-Hpp → HIP → CPU fallback"};
+        // hip_1bp first — proven bit-correct; fused/vulkan are experimental
+        // (fused degenerates on some models, vulkan_hpp crashes RADV).
+        return {{"hip_1bp_gpu", "fused_gpu_npu", "vulkan_hpp_gpu", "hip_gpu", "cpu_generic"},
+                "1BP model — HIP 1BP → Fused GPU+NPU → Vulkan-Hpp → HIP → CPU fallback"};
     }
     // Default: try HIP GPU first, fall back to generic CPU.
     return {{"hip_gpu", "cpu_generic"}, "generic model — HIP GPU, generic CPU fallback"};
