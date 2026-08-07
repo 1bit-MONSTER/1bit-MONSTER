@@ -771,6 +771,18 @@ set_target_properties(test_lora_merge PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
 set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
+
+# ── Speculative decode demo: draft + target llama.cpp contexts, batched
+# verification with KV rollback (roadmap Phase 2 core loop) ──
+if(TARGET ggml_vulkan)
+    add_executable(spec_decode tools/spec_decode.cpp)
+    target_include_directories(spec_decode PRIVATE ${GGML_VULKAN_DIR}/include ${GGML_VULKAN_DIR}/ggml/include)
+    target_link_libraries(spec_decode PRIVATE
+        "${GGML_BUILD_DIR}/src/libllama.a" "${GGML_BUILD_DIR}/common/libllama-common.a"
+        "${GGML_BUILD_DIR}/common/libllama-common-base.a"
+        ggml ggml_cpu ggml_base ggml_vulkan -lvulkan -ldl -lpthread -lm)
+    target_compile_options(spec_decode PRIVATE -O3 -std=c++17)
+endif()
 if(RCPP_HAVE_VULKAN)
     list(APPEND ZAYA_SERVER_SRC tests/backends/backend_vulkan.cpp)
 endif()
