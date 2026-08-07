@@ -64,7 +64,7 @@ struct GenericBackend : Backend {
     // Packed TQ2 path (WS-04): keep the 1BP mmap alive and run multiplication-free
     // GEMV on raw 2-bit tiles instead of dequantizing to fp32. Used only when
     // packed_ is true (1BP TQ2 models); all other formats use the fp32 path.
-    std::unique_ptr<OnebpModel> tq2_;
+    std::unique_ptr<NpuOnebpModel> tq2_;
     bool packed_ = false;
     int tr_ = 32, tc_ = 256, gs_ = 32;
     struct PackedW { const uint8_t* base = nullptr; int N = 0, K = 0; };
@@ -292,12 +292,12 @@ struct GenericBackend : Backend {
 
     bool load_1bp(const std::string& path) {
         printf("Generic: loading 1BP: %s\n", path.c_str());
-        tq2_ = std::make_unique<OnebpModel>();
+        tq2_ = std::make_unique<NpuOnebpModel>();
         if (!tq2_->open(path.c_str())) {
             fprintf(stderr, "Generic: failed to open 1BP\n");
             return false;
         }
-        OnebpModel& model = *tq2_;
+        NpuOnebpModel& model = *tq2_;
         auto& h = model.header();
         packed_ = (h.quant == ONEBP_TQ2) && !getenv("GENERIC_NO_PACKED") && cpu_has_packed_isa();
         if (h.quant == ONEBP_TQ2 && !packed_)

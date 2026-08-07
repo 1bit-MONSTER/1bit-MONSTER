@@ -60,6 +60,14 @@ struct Backend {
     /// Returns the predicted token ID, -1 on error.
     virtual int generate(int token_id) = 0;
 
+    /// Text-level generation: whole prompt in, text out. Backends that work
+    /// at text granularity (FLM NPU subprocess — tokenizes internally) override
+    /// this; token-level backends leave it unimplemented. Empty return = this
+    /// backend has no text-level path (caller falls back to the token loop).
+    virtual std::string generate_text(const std::string& prompt, int max_tokens) {
+        (void)prompt; (void)max_tokens; return "";
+    }
+
     /// Logits of the most recent forward/generate step (vocab floats), or
     /// nullptr if the backend doesn't retain them. Used for sampling and
     /// logit-level validation.
