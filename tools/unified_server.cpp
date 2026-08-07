@@ -23,6 +23,7 @@
 #include "backend_monitor.h"
 #include "backend_plugin.h"
 #include "backend.h"
+#include "backend_ggml_vulkan.h"
 #include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_router.h"
@@ -126,6 +127,12 @@ static std::string g_weights_dir = []() -> std::string {
     return "/tmp/zaya_weights/";
 }();
 static int g_port = 8088;
+
+// ── Speculative decode (--draft-model / --spec-decode) ──
+static Backend* g_draft_backend = nullptr;      // second, small model (ggml-vulkan)
+static std::string g_draft_model_path;          // GGUF path for the draft
+static bool g_spec_decode = false;              // master switch
+static int g_spec_n_draft = 4;                  // draft proposals per round
 
 // Protect global state accessed from HTTP handler threads (fixes #364)
 static std::mutex g_strategy_mutex;   // protects g_strategy_engine + g_watchdog
@@ -472,6 +479,118 @@ static int sample_from_logits(const float* logits, int vs, float temperature,
 // Returns { text, tokens, backend_used, ms_per_tok, tok_s }
 // When strategy_engine is provided, routes each token through the strategy
 // instead of using a fixed backend.
+// ── Speculative decode loop ──
+// Mirrors tools/spec_decode.cpp (the verified-lossless reference): draft
+// proposes N greedy tokens, the target verifies them in ONE batch decode,
+// the longest greedy-consistent prefix is accepted, rejected positions are
+// rolled back and the fix token is re-decoded in place. Both contexts are
+// kept symmetric so the draft's KV stays a valid prefix of the target's.
+// Returns true on success (even zero-length output); false = backend failed
+// (caller falls back to the normal loop).
+static bool run_spec_decode(Backend* target, Backend* draft,
+                            const std::vector<int>& prompt_tokens,
+                            int prefill_start, int max_tokens, int eos_id,
+                            std::vector<int>& out, int& n_accept, int& n_reject,
+                            std::chrono::high_resolution_clock::time_point deadline) {
+    // Prefill BOTH contexts with the prompt (single-token decodes — the
+    // fork's KV rejects multi-token batches outside the verify step).
+    // The draft and target have DIFFERENT vocabs (and logits) — keep them
+    // separate: tlg = target's last decode, dlg = draft's last decode.
+    // (One shared buffer made the first output token the DRAFT's argmax.)
+    std::vector<float> tlg, dlg;
+    for (size_t i = prefill_start; i < prompt_tokens.size(); i++) {
+        if (!target->decode_one(prompt_tokens[i], tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] prefill target failed at %d\n", (int)i); return false; }
+        if (!draft->decode_one(prompt_tokens[i], dlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] prefill draft failed at %d\n", (int)i); return false; }
+    }
+
+    // First output token: the TARGET's greedy argmax after the last prompt
+    // token, decoded into BOTH KVs; the target's logits anchor proposal[0]
+    // of the first round, the draft's logits seed its proposals.
+    int vs = (int)tlg.size();
+    int kv_base = (int)(prompt_tokens.size() - prefill_start) + 1;  // KV len after first token
+    int tok = (int)(std::max_element(tlg.begin(), tlg.end()) - tlg.begin());
+    if (!target->decode_one(tok, tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] first-target decode failed\n"); return false; }
+    std::vector<float> prev_logits = tlg;   // target's logits after tok
+    if (!draft->decode_one(tok, dlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] first-draft decode failed\n"); return false; }
+    std::vector<float> dlogits = dlg;   // draft's logits after tok (its proposals)
+    out.push_back(tok);
+
+    auto argmax = [](const std::vector<float>& l) {
+        return (int)(std::max_element(l.begin(), l.end()) - l.begin());
+    };
+    auto argmaxp = [&](const float* l) {
+        int best = 0;
+        for (int v = 1; v < vs; v++) if (l[v] > l[best]) best = v;
+        return best;
+    };
+
+    while ((int)out.size() < max_tokens) {
+        if (std::chrono::high_resolution_clock::now() >= deadline) break;
+
+        // 1. Draft proposes N greedy tokens from its OWN logits (the tokens
+        //    are in its KV as it goes — no re-decode).
+        std::vector<int> proposals;
+        for (int i = 0; i < g_spec_n_draft; i++) {
+            int nxt = argmax(dlogits);
+            proposals.push_back(nxt);
+            if (!draft->decode_one(nxt, dlogits)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] draft propose failed at %d\n", i); return false; }
+        }
+
+        // 2. Target verifies ALL proposals in one batch at consecutive
+        //    positions, per-position logits (vocab floats each).
+        std::vector<float> vlogits;
+        if (!target->verify_batch(proposals, vlogits)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] verify_batch failed (N=%d)\n", (int)proposals.size()); return false; }
+
+        // 3. Accept the longest greedy-consistent prefix: proposal[0] must
+        //    match the LAST REAL decode's logits (prev_logits), proposal
+        //    [i>0] the verify batch's position i-1.
+        int n_acc = 0;
+        for (int i = 0; i < (int)proposals.size(); i++) {
+            const float* lgv = (i == 0) ? prev_logits.data()
+                                        : vlogits.data() + (size_t)(i - 1) * vs;
+            if (argmaxp(lgv) == proposals[i]) n_acc++;
+            else break;
+        }
+        n_accept += n_acc;
+        n_reject += (int)proposals.size() - n_acc;
+
+        // 4. Emit the accepted prefix (already in both KVs), capped.
+        for (int i = 0; i < n_acc && (int)out.size() < max_tokens; i++)
+            out.push_back(proposals[i]);
+        if (n_acc == (int)proposals.size()) {
+            // All accepted: the last proposal's logits predict the next token
+            // — decode it into the target KV (like the reject path's fix
+            // decode) so the next round starts from a real decode.
+            tok = argmaxp(vlogits.data() + (size_t)(proposals.size() - 1) * vs);
+            if (!target->decode_one(tok, tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] all-accept decode failed\n"); return false; }
+            prev_logits = tlg;
+            kv_base += (int)proposals.size() + 1;
+        } else {
+            // Rejected at n_acc: that position's prediction IS the fix token.
+            // Drop the rejected proposal from the target KV, decode the fix
+            // in place, and rewind the draft to the accepted prefix (both
+            // KVs end at kv_base + n_acc + 1).
+            const float* lgv = (n_acc == 0) ? prev_logits.data()
+                                            : vlogits.data() + (size_t)(n_acc - 1) * vs;
+            tok = argmaxp(lgv);
+            if (!target->rollback(kv_base + n_acc)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] target rollback failed\n"); return false; }
+            if (!target->decode_one(tok, tlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] fix decode failed\n"); return false; }
+            prev_logits = tlg;
+            if (!draft->rollback(kv_base + n_acc)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] draft rollback failed\n"); return false; }
+            kv_base = kv_base + n_acc + 1;
+        }
+        if ((int)out.size() >= max_tokens) break;
+        out.push_back(tok);
+        // Sync the draft KV with the fix token (accepted proposals are
+        // already there — the draft proposed them itself).
+        if (!draft->decode_one(tok, dlg)) { if (getenv("SPEC_DEBUG")) fprintf(stderr, "[spec] draft sync failed\n"); return false; }
+        dlogits = dlg;
+        if (tok == eos_id) break;
+    }
+    return true;
+}
+
+
 static json generate_completion(BackendManager& mgr,
                                  const std::vector<int>& prompt_tokens,
                                  const std::vector<double>& prompt_logprobs,
@@ -569,6 +688,49 @@ static json generate_completion(BackendManager& mgr,
     if (!prompt_tokens.empty() && prompt_tokens[0] == g_tokenizer.bos_id) {
         prefill_start = 1;
     }
+
+    // ── Speculative decode: draft proposes, target verifies in batches ──
+    // Lossless vs greedy (exact-argmax acceptance). If the active backend or
+    // the draft can't do it (decode_one/verify_batch/rollback unsupported),
+    // run_spec_decode fails fast and we fall back to the normal loop below
+    // (both KVs are reset, so the fallback starts clean).
+    if (g_spec_decode && g_draft_backend && g_draft_backend->initialized) {
+        Backend* target = mgr.active_backend();
+        if (target) {
+            // Fresh draft KV per request (mgr.reset() above cleared the target).
+            g_draft_backend->reset();
+            int n_acc = 0, n_rej = 0;
+            std::vector<int> spec_toks;
+            bool ok = run_spec_decode(target, g_draft_backend, prompt_tokens,
+                                      (int)prefill_start, max_tokens,
+                                      g_tokenizer.eos_id, spec_toks, n_acc, n_rej,
+                                      timeout_deadline);
+            if (ok) {
+                float ms = std::chrono::duration<float, std::milli>(
+                    std::chrono::high_resolution_clock::now() - t0).count();
+                result["tokens"] = spec_toks;
+                result["text"] = g_tokenizer.decode(spec_toks);
+                result["gen_ms"] = ms;
+                result["gen_tokens"] = (int)spec_toks.size();
+                result["speculative"] = true;
+                result["accept_rate"] =
+                    (n_acc + n_rej) > 0 ? (float)n_acc / (float)(n_acc + n_rej) : 0.0f;
+                result["accepted"] = n_acc;
+                result["rejected"] = n_rej;
+                if (ms > 0) {
+                    result["tok_s"] = (float)spec_toks.size() / (ms / 1000.0f);
+                    result["ms_per_tok"] = ms / (float)std::max(1, (int)spec_toks.size());
+                } else {
+                    result["tok_s"] = 0; result["ms_per_tok"] = 0;
+                }
+                return result;
+            }
+            fprintf(stderr, "[spec] backend failed — falling back to normal loop\n");
+            mgr.reset();
+            g_draft_backend->reset();
+        }
+    }
+
     for (size_t i = prefill_start; i + 1 < prompt_tokens.size(); i++) {
         // Check generation timeout between prefill tokens (issue #948)
         if (g_generation_timeout_ms > 0 &&
@@ -972,6 +1134,8 @@ int main(int argc, char** argv) {
             printf("      --lemonade          Run the embedded Lemonade server core\n");
 #endif
             printf("  -B, --batch-slots N     Concurrent decode slots (default: 1)\n");
+            printf("      --draft-model PATH  Small model for speculative decode\n");
+            printf("      --spec-decode       Verify draft proposals in batches (needs --draft-model)\n");
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -990,6 +1154,8 @@ int main(int argc, char** argv) {
         {"free-npu",      no_argument,       nullptr, 'F'},
         {"mmproj",        required_argument, nullptr, 'M'},
         {"batch-slots",   required_argument, nullptr, 'B'},
+        {"draft-model",   required_argument, nullptr, 1001},
+        {"spec-decode",   no_argument,       nullptr, 1002},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -1009,7 +1175,14 @@ int main(int argc, char** argv) {
             case 'F': free_npu = true; break;
             case 'M': g_mmproj_path = optarg; break;
             case 'B': g_batch_slots = atoi(optarg); break;
+            case 1001: g_draft_model_path = optarg; break;
+            case 1002: g_spec_decode = true; break;
         }
+    }
+
+    if (g_spec_decode && g_draft_model_path.empty()) {
+        printf("  ⚠  --spec-decode requires --draft-model; speculative mode disabled\n");
+        g_spec_decode = false;
     }
 
     // Apply CLI timeout override after env default
@@ -1311,6 +1484,33 @@ int main(int argc, char** argv) {
             }
         }
 #endif
+
+    // ── Speculative-decode draft model (--draft-model) ──
+    // A second, smaller ggml-vulkan backend kept side-by-side with the main
+    // model. The draft proposes tokens; the main backend verifies them in
+    // batches (see run_spec_decode). Falls back silently if unsupported.
+    if (!g_draft_model_path.empty()) {
+        FILE* f = fopen(g_draft_model_path.c_str(), "rb");
+        if (!f) {
+            printf("  ⚠  --draft-model not found: %s (speculative decode disabled)\n",
+                   g_draft_model_path.c_str());
+        } else {
+            fclose(f);
+            ModelConfig dcfg = cfg;
+            dcfg.model_path = g_draft_model_path;
+            g_draft_backend = create_ggml_vulkan_backend();
+            if (g_draft_backend && g_draft_backend->init(dcfg, g_weights_dir)) {
+                printf("  ✓  Draft model: %s (speculative decode ready)\n",
+                       g_draft_model_path.c_str());
+            } else {
+                if (g_draft_backend) { g_draft_backend->destroy(); delete g_draft_backend; }
+                g_draft_backend = nullptr;
+                printf("  ⚠  Draft model load failed: %s (speculative decode disabled)\n",
+                       g_draft_model_path.c_str());
+            }
+        }
+    }
+
     } else {
         printf("  ⚠  No backend initialized (weights missing or no hardware)\n");
         printf("     Server starts in discovery-only mode.\n");
