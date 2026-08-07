@@ -577,6 +577,7 @@ static json generate_completion(BackendManager& mgr,
     // Track which backend each token goes to
     std::vector<std::string> per_token_backend;
     for (int i = 0; i < max_tokens; i++) {
+        fprintf(stderr, "[loopdbg] i=%d last_token=%d n_prompt=%zu\n", i, last_token, prompt_tokens.size());
         // ── Check generation timeout (issue #948) ──
         // Timeout is checked per-token so g_inference_mutex is released promptly
         // when a slow request exceeds the wall-clock limit. This prevents a single
@@ -1472,6 +1473,8 @@ int main(int argc, char** argv) {
         // Extract messages and build prompt + user message for content routing
         std::string prompt;
         std::string last_user_msg;
+        struct MsgPair { std::string role; std::string content; };
+        std::vector<MsgPair> chat_msgs;
         std::vector<VlProcessor> vision_images;  // holds processed images from content parts
         // nlohmann throws (type_error 305/306/302) on non-object messages and
         // content parts — catch and 400 instead of a bare 500 (issue #1293).
@@ -1529,6 +1532,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 prompt += role + ": " + content + "\n";
+                chat_msgs.push_back({role, content});
                 if (role == "user") last_user_msg = content;
             }
         } else if (body.contains("prompt") && body["prompt"].is_string()) {
@@ -1555,6 +1559,33 @@ int main(int argc, char** argv) {
         float repeat_penalty = body.value("repetition_penalty", 1.1f);
         float top_p = body.value("top_p", 0.95f);
         std::string req_model = body.value("model", "");
+        if (req_model.empty()) req_model = current_cfg.model_name;  // default model
+
+        // ── Chat template (per-arch, mirrors zaya_server build_chatml) ──
+        // Instruct models need their native template: raw "role: content"
+        // text makes Qwen/Llama/Zamba2 instruct models echo the prompt back
+        // instead of answering (their chat tokens are special ids, not bytes).
+        // Base models (no "Instruct" in the name) keep the raw format.
+        bool is_instruct = req_model.find("Instruct") != std::string::npos;
+        if (is_instruct && !chat_msgs.empty()) {
+            bool llama_tpl = false;
+            for (auto& dm : discovered) {
+                if (dm.model_name == req_model) {
+                    llama_tpl = (dm.architecture == "llama");
+                    break;
+                }
+            }
+            std::string tpl;
+            for (auto& m : chat_msgs) {
+                if (llama_tpl)
+                    tpl += "<|start_header_id|>" + m.role + "<|end_header_id|>\n\n" + m.content + "<|eot_id|>\n";
+                else
+                    tpl += "<|im_start|>" + m.role + "\n" + m.content + "<|im_end|>\n";
+            }
+            tpl += llama_tpl ? "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                             : "<|im_start|>assistant\n";
+            prompt = tpl;
+        }
 
         // ── Serialize all compute against the single shared backend context ──
         // Everything below — mgr.set_strategy, the mgr.init model switch, the
@@ -1611,6 +1642,9 @@ int main(int argc, char** argv) {
             } else {
                 prompt_tokens = g_tokenizer.encode(prompt);
             }
+            fprintf(stderr, "[tokdbg] model=%s n=%zu first16:", req_model.c_str(), prompt_tokens.size());
+            for (size_t i = 0; i < prompt_tokens.size() && i < 16; i++) fprintf(stderr, " %d", prompt_tokens[i]);
+            fprintf(stderr, "\n");
             if (prompt_tokens.empty()) {
                 prompt_tokens = {g_tokenizer.bos_id};
             }
