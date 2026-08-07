@@ -68,6 +68,7 @@ struct Hip1bpBackend : Backend {
         NH=cfg.num_heads; NKV=cfg.num_kv_heads; HD=cfg.head_dim;
         IM=cfg.intermediate_size; VOCAB=cfg.vocab_size;
         rope_theta=cfg.rope_theta>0?cfg.rope_theta:10000.0f;
+        { const char* rh=getenv("H1BP_ROPE"); if (rh) rope_theta=(float)atof(rh); }
         if(NKV==0)NKV=NH; if(HD==0)HD=128;
         printf("[hip1bp] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",H,NC,NH,NKV,HD,IM,VOCAB);
 
