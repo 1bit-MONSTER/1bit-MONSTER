@@ -106,6 +106,74 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
 //   [36]: rope_freq_base_swa_f  [37]: n_rot_swa  [38]: n_rot_full
 //   [39..50]: reserved[12]  [51..63]: reserved[13]
 //   [64..79]: model_tag[64] as chars (offset 192)
+// FLM Q4NX detection: FastFlowLM's model.q4nx has an 8-byte prefix + a JSON
+// tensor manifest ({"model.embed_tokens.weight":{"dtype":...,"shape":[...]}})
+// — not the 1BP magic, so detect_from_1bp rejects it. The FLM backend needs
+// ModelFormat::Q4NX and dims for tag mapping (hidden -> qwen3:Nb etc).
+static bool detect_from_flm_q4nx(const std::string& path, ModelConfig& cfg) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::string head(65536, '\0');
+    f.read(&head[0], head.size());
+    size_t n = (size_t)f.gcount();
+    head.resize(n);
+    auto j0 = head.find('{');
+    if (j0 == std::string::npos || head.find("model.embed_tokens.weight") == std::string::npos)
+        return false;
+    auto parse_shape = [&](const std::string& tensor) -> std::vector<int> {
+        auto p = head.find("\"" + tensor + "\"");
+        if (p == std::string::npos) return {};
+        auto s = head.find("shape", p);
+        if (s == std::string::npos) return {};
+        auto b = head.find('[', s);
+        if (b == std::string::npos) return {};
+        auto e = head.find(']', b);
+        if (e == std::string::npos) return {};
+        std::vector<int> out;
+        std::string nums = head.substr(b + 1, e - b - 1);
+        char* pn = &nums[0];
+        char* end = nullptr;
+        while (pn && *pn) {
+            while (*pn && !(*pn >= '0' && *pn <= '9')) pn++;   // skip separators
+            if (!*pn) break;
+            long v = strtol(pn, &end, 10);
+            if (end == pn) break;
+            out.push_back((int)v);
+            pn = end;
+        }
+        return out;
+    };
+    auto emb = parse_shape("model.embed_tokens.weight");
+    if (emb.size() < 2) return false;
+    cfg.vocab_size = emb[0];
+    cfg.hidden_size = emb[1];
+    // layer count from the max model.layers.N index
+    int max_l = -1;
+    size_t pos = 0;
+    std::string key = "model.layers.";
+    while ((pos = head.find(key, pos)) != std::string::npos) {
+        int l = atoi(head.c_str() + pos + key.size());
+        if (l > max_l) max_l = l;
+        pos += key.size();
+    }
+    cfg.num_layers = max_l + 1;
+    // heads from q_proj / k_proj shapes (Qwen3: [hidden, heads*head_dim])
+    auto qp = parse_shape("model.layers.0.self_attn.q_proj.weight");
+    auto kp = parse_shape("model.layers.0.self_attn.k_proj.weight");
+    if (qp.size() >= 2 && qp[1] > 0) { cfg.num_heads = qp[1] / 128; cfg.head_dim = 128; }
+    if (kp.size() >= 2 && kp[1] > 0) cfg.num_kv_heads = kp[1] / 128;
+    cfg.format = ModelFormat::Q4NX;
+    auto slash = path.find_last_of('/');
+    auto dot = path.find_last_of('.');
+    cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1, dot - slash - 1) : "flm-model";
+    cfg.model_path = path;
+    cfg.weights_dir = (slash != std::string::npos) ? path.substr(0, slash + 1) : "./";
+    fprintf(stderr, "  FLM Q4NX detected: %s (H=%d L=%d NH=%d NKV=%d V=%d)\n",
+            cfg.model_name.c_str(), cfg.hidden_size, cfg.num_layers, cfg.num_heads,
+            cfg.num_kv_heads, cfg.vocab_size);
+    return true;
+}
+
 static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -147,7 +215,12 @@ static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
     cfg.model_path = path;
     cfg.weights_dir = (slash != std::string::npos) ? path.substr(0, slash + 1) : "./";
-    cfg.format = ModelFormat::ONEBP;
+    // .q4nx files are the Q4NX variant of the 1BP format — the FLM backend
+    // requires ModelFormat::Q4NX exactly (it rejects ONEBP).
+    {
+        std::string ext = path.size() > 5 ? path.substr(path.size() - 5) : "";
+        cfg.format = (ext == ".q4nx") ? ModelFormat::Q4NX : ModelFormat::ONEBP;
+    }
     fprintf(stderr, "  Auto-detected from .1bp: %s\n", cfg.model_name.c_str());
     fprintf(stderr, "    hidden=%d layers=%d heads=%d kv_heads=%d head_dim=%d vocab=%d eos=%d\n",
             cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
@@ -222,6 +295,12 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
         cfg.set_layers(gu("block_count", 40));
         cfg.set_heads(gu("attention.head_count", 0));
         cfg.set_kv_heads(gu("attention.head_count_kv", 0));
+        // head_dim: GGUF stores attention.key_length (some archs); otherwise
+        // it is implied by hidden/heads (e.g. Llama-3.2-1B: 2048/32 = 64 —
+        // the default 128 silently breaks every backend's weight shape math).
+        int hd = gu("attention.key_length", 0);
+        if (hd <= 0 && cfg.num_heads > 0) hd = cfg.hidden_size / cfg.num_heads;
+        if (hd > 0) cfg.head_dim = hd;
         cfg.set_ff(gu("feed_forward_length", 0));
         cfg.set_vocab(gu("vocab_size", 0));
         cfg.set_experts(gu("expert_count", 0));   // MoE: e.g. qwen3.6-35B-A3B = 256
@@ -826,9 +905,13 @@ int main(int argc, char** argv) {
         }
     }
     if (!detected && !model_arg.empty()) {
-        std::string ext = model_arg.size() > 4 ? model_arg.substr(model_arg.size() - 4) : "";
-        if (ext == ".1bp") {
+        std::string ext4 = model_arg.size() > 4 ? model_arg.substr(model_arg.size() - 4) : "";
+        std::string ext5 = model_arg.size() > 5 ? model_arg.substr(model_arg.size() - 5) : "";
+        if (ext4 == ".1bp") {
             detected = detect_from_1bp(model_arg, cfg);
+        } else if (ext5 == ".q4nx") {
+            detected = detect_from_1bp(model_arg, cfg);   // 1BP-magic q4nx files
+            if (!detected) detected = detect_from_flm_q4nx(model_arg, cfg);
         }
     }
     if (!detected && !model_arg.empty()) {
