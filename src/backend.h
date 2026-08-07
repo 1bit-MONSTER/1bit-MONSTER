@@ -73,6 +73,26 @@ struct Backend {
     /// logit-level validation.
     virtual const float* last_logits() { return nullptr; }
 
+    // ── Speculative-decode primitives (optional; unsupported = false) ──
+
+    /// Single-token decode: advance the KV cache by token_id (auto position)
+    /// and return the logits predicting the NEXT position (vocab floats).
+    virtual bool decode_one(int token_id, std::vector<float>& logits_out) {
+        (void)token_id; (void)logits_out; return false;
+    }
+
+    /// Decode all tokens in ONE batch at consecutive positions, returning
+    /// per-position logits (vocab floats per token, in order). The verify
+    /// step of speculative decoding.
+    virtual bool verify_batch(const std::vector<int>& tokens,
+                              std::vector<float>& out_logits) {
+        (void)tokens; (void)out_logits; return false;
+    }
+
+    /// Truncate this sequence's KV cache to `keep` positions (drop the
+    /// rest). Used to roll back rejected draft proposals.
+    virtual bool rollback(int keep) { (void)keep; return false; }
+
     // ── Batch decode (multi-sequence) ──
 
     /// Maximum concurrent decode slots this backend supports.
