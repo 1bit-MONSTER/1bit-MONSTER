@@ -1237,14 +1237,28 @@ int main(int argc, char** argv) {
                 user_text.compare(user_text.size() - e.size(), e.size(), e) == 0)
                 user_text = user_text.substr(0, user_text.size() - e.size());
         }
+        // Sampling params (OpenAI-compatible): temperature/top_p/repetition_penalty.
+        // Default 0.8/0.95/1.1 — greedy (temp 0) makes small models loop.
+        float temperature = 0.8f, top_p = 0.95f, repeat_penalty = 1.1f;
+        try {
+            json jbody = json::parse(body);
+            if (jbody.contains("temperature") && jbody["temperature"].is_number())
+                temperature = jbody["temperature"].get<float>();
+            if (jbody.contains("top_p") && jbody["top_p"].is_number())
+                top_p = jbody["top_p"].get<float>();
+            if (jbody.contains("repetition_penalty") && jbody["repetition_penalty"].is_number())
+                repeat_penalty = jbody["repetition_penalty"].get<float>();
+        } catch (...) {}
         std::vector<int> tokens = tok.encode(prompt);
-        fprintf(stderr, "  → %d prompt tokens, max %d new\n", (int)tokens.size(), max_tokens);
+        fprintf(stderr, "  → %d prompt tokens, max %d new (temp=%.2f top_p=%.2f rep=%.2f)\n",
+                (int)tokens.size(), max_tokens, temperature, top_p, repeat_penalty);
         npu_flm_set_prompt_text(user_text.c_str());
 
         std::string resp_body;
         {
             std::lock_guard<std::mutex> lock(g_router_mutex);
-            InferenceResult result = router.infer(tokens, max_tokens, use_strat);
+            InferenceResult result = router.infer(tokens, max_tokens, use_strat,
+                                                  temperature, top_p, repeat_penalty);
             std::string text = tok.decode(result.tokens);
             std::string finish_reason = "stop";
             if (!result.tokens.empty() && result.tokens.back() != tok.eos_id && (int)result.tokens.size() >= max_tokens)
