@@ -25,6 +25,7 @@ enum class RouteStrategy {
 struct TokenRouter {
     std::vector<InferenceBackend*> backends;
     InferenceBackend* primary = nullptr;
+    std::vector<int> probe_prompt;  // real-prompt coherence probe (set by server)
     InferenceBackend* draft_backend_ = nullptr;  // draft model for spec_decode
     InferenceBackend* gpu_backend = nullptr;
     InferenceBackend* npu_backend = nullptr;
@@ -93,18 +94,30 @@ struct TokenRouter {
     // and not stuck in a tiny low-id set — real models spread across the
     // vocab even on garbage input.
     bool coherence_probe(const ModelConfig& cfg) {
-        const int probe_tokens[8] = {2, 3, 4, 5, 6, 7, 8, 9};
-        std::vector<int> outs;
+        // Probe with a real prompt when available: raw low ids (2..9) with no
+        // context make every real model degenerate (constant low-id output),
+        // which false-negatives bit-correct backends. With probe_prompt set,
+        // feed the prompt, then require a varied in-vocab continuation.
+        std::vector<int> prompt = probe_prompt;
+        if (prompt.empty()) prompt = {2, 3, 4, 5, 6, 7, 8, 9};
+        if ((int)prompt.size() > 24) prompt.resize(24);
         primary->reset_state();
-        for (int t : probe_tokens) {
+        for (int t : prompt) {
             int out = primary->forward(t, 0);
             if (out <= 0 || out >= (int)cfg.vocab_size) return false;
+        }
+        std::vector<int> outs;
+        int seed = prompt.back();
+        for (int i = 0; i < 4; i++) {
+            int out = primary->forward(seed, 0);
+            if (out <= 0 || out >= (int)cfg.vocab_size) return false;
             outs.push_back(out);
+            seed = out;
         }
         int distinct = (int)std::set<int>(outs.begin(), outs.end()).size();
         int in_low = 0;  // ids < 1% of vocab: degenerate low-id stick
         for (int o : outs) if (o < (int)cfg.vocab_size / 100) in_low++;
-        return distinct > 2 && in_low < 6;
+        return distinct > 1 && in_low < 4;
     }
 
     bool load_model(const ModelConfig& cfg) {

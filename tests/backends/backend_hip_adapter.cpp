@@ -39,6 +39,8 @@ public:
 
 // Factory from src/backend_hip.cpp (linked into the same target)
 extern "C" Backend* create_hip_backend();
+// Factory from src/backend_hip_1bp.cpp — Qwen/LLaMA-style 1BP models (blk.N.attn_*).
+extern "C" Backend* create_hip_1bp_backend();
 
 // ── Adapter: wraps Backend* into InferenceBackend ──
 class HipBackendAdapter : public InferenceBackend {
@@ -114,10 +116,65 @@ public:
     bool is_coherent() const override { return true; }
 };
 
+// ── Adapter: wraps the Qwen/LLaMA-style 1BP HIP backend (src/backend_hip_1bp.cpp) ──
+// Loads blk.N.attn_* / ffn_gate-up-down 1BP models (Qwen3, Llama, …) that the
+// ZAYA-only create_hip_backend() cannot read (it zero-fills them, then fails
+// the coherence probe). Registered after HipBackendAdapter so ZAYA models keep
+// winning; 1BP Qwen-style models fall through to this one.
+class Hip1bpBackendAdapter : public InferenceBackend {
+    Backend* backend_ = nullptr;
+    bool loaded_ = false;
+public:
+    ~Hip1bpBackendAdapter() override { unload_model(); }
+    BackendType type() const override { return BackendType::HIP_GPU; }
+    const char* name() const override { return "HIP 1BP (Qwen/Llama)"; }
+    bool is_available() override {
+        fprintf(stderr, "  HIP 1BP: checking availability\n");
+        return true;
+    }
+    bool load_model(const ModelConfig& cfg) override {
+        unload_model();
+        if (cfg.format != ModelFormat::ONEBP || cfg.model_path.empty()) return false;
+        backend_ = create_hip_1bp_backend();
+        if (!backend_) return false;
+        std::string wd = cfg.weights_dir;
+        if (!wd.empty() && wd.back() != '/') wd += '/';
+        if (!backend_->init(cfg, wd)) {
+            fprintf(stderr, "  HIP 1BP adapter: backend init failed\n");
+            delete backend_;
+            backend_ = nullptr;
+            return false;
+        }
+        loaded_ = true;
+        fprintf(stderr, "  HIP 1BP: loaded %s (H=%d L=%d V=%d)\n",
+                cfg.model_path.c_str(), cfg.hidden_size, cfg.num_layers, cfg.vocab_size);
+        return true;
+    }
+    void unload_model() override {
+        if (backend_) { backend_->destroy(); delete backend_; backend_ = nullptr; }
+        loaded_ = false;
+    }
+    int forward(int token_id, int pos) override {
+        (void)pos;
+        if (!backend_ || !loaded_) return -1;
+        return backend_->generate(token_id);
+    }
+    void reset_state() override { if (backend_) backend_->reset(); }
+    float estimated_tok_s() const override { return 64.0f; }
+    bool is_coherent() const override { return true; }
+};
+
 // ── Detection entry point (called by backend_cpu.cpp's detect_backends()) ──
 std::vector<InferenceBackend*> detect_backends_hip() {
     std::vector<InferenceBackend*> backends;
     static HipBackendAdapter hip;
     backends.push_back(&hip);
+    return backends;
+}
+
+std::vector<InferenceBackend*> detect_backends_hip1bp() {
+    std::vector<InferenceBackend*> backends;
+    static Hip1bpBackendAdapter hip1bp;
+    backends.push_back(&hip1bp);
     return backends;
 }
