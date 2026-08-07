@@ -4,7 +4,7 @@ transformers modeling_zamba2.py (NOT from the C++ engine). Reads the same GGUF
 (Q4_0 dequant) and prints top-5 logits for token 0 (BOS). Used to verify the
 C++ engine fixes (#1460 + hybrid rewrite) — logits must agree to ~1e-3.
 """
-import struct, sys
+import struct, sys, math
 from pathlib import Path
 import numpy as np
 
@@ -57,6 +57,13 @@ def dequant(raw, ti):
         v[:, :16] = (q & 0x0F).astype(np.int16) - 8
         v[:, 16:] = (q >> 4).astype(np.int16) - 8
         return (v * scales[:, None]).reshape(-1)
+    if t == 8:  # Q8_0 per ggml dequantize_row_q8_0: 34 B/block, 32 elems
+        nblk = n // 32
+        blk = np.frombuffer(raw, dtype=np.uint8, count=34*nblk, offset=off).reshape(nblk, 34)
+        sc_u16 = blk[:, 0].astype(np.uint16) | (blk[:, 1].astype(np.uint16) << 8)
+        scales = sc_u16.view("<f2").astype("<f4")
+        q = blk[:, 2:].astype(np.int8).astype("<f4")
+        return (q * scales[:, None]).reshape(-1)
     if t == 14:  # Q6_K per ggml dequantize_row_q6_K: 210 B/block, 256 elems
         #   2 halves of 128; y = d*sc*(q-32); q = 4-bit nib | 2-bit<<4
         nblk = n // 256
@@ -105,11 +112,16 @@ def mamba2_block(x, L, cfg, conv_state, ssm_state):
     d_in_proj = d_inner + conv_dim + n_head
     z = L["ssm_in"] @ x  # [d_in_proj] — GGUF [input, output] → output = W^T @ x
     z_seg, xbc, dt = z[:d_inner], z[d_inner:d_inner+conv_dim], z[d_inner+conv_dim:]
-    # conv1d (causal, d_conv=4) with state
+    # conv1d (causal, d_conv=4) with state — HF decode convention: w[0] pairs
+    # with the OLDEST input (x[t-3]), w[d_conv-1] with the current x[t]
+    # (torch_forward: sum_k conv_state[k] * conv1d.weight[:,0,k]). The old
+    # w[0]-on-current pairing was the mamba-ssm kernel order and diverged.
     xbc_conv = L["ssm_conv1d_b"].copy()
-    xbc_conv += L["ssm_conv1d_w"][0] * xbc
-    for k in range(1, d_conv):
-        xbc_conv += L["ssm_conv1d_w"][k] * conv_state[k-1]
+    for k in range(d_conv):
+        if k == 0:
+            xbc_conv += L["ssm_conv1d_w"][d_conv-1] * xbc
+        else:
+            xbc_conv += L["ssm_conv1d_w"][d_conv-1-k] * conv_state[k-1]
     conv_state[1:] = conv_state[:-1]; conv_state[0] = xbc
     xbc_act = xbc_conv / (1 + np.exp(-xbc_conv))
     x_inner = xbc_act[:d_inner]
@@ -123,18 +135,27 @@ def mamba2_block(x, L, cfg, conv_state, ssm_state):
         g = h // (n_head // n_group)
         dA = np.exp(dt_sp[h] * A[h])
         xh = x_inner[h*head_dim:(h+1)*head_dim]
+        # TRUE mamba2 semantics: each head_dim slice of the state evolves
+        # independently from the PREVIOUS token's slice (y[hd] = C@h[:,hd] +
+        # D*x[hd] with h[:,hd] = dA*h_prev[:,hd] + dt*B*x[hd]). The old
+        # shared-`s` loop (mamba1-style) decayed x[0] into x[1..] and
+        # diverged from the mamba-ssm kernels at every hd > 0.
         s = ssm_state[h]
         for hd in range(head_dim):
-            s = dA * s + dt_sp[h] * B[g] * xh[hd]
-            y[h*head_dim+hd] = C[g] @ s + L["ssm_d"][h] * xh[hd]
+            s_hd = dA * s[:, hd] + dt_sp[h] * B[g] * xh[hd]
+            y[h*head_dim+hd] = C[g] @ s_hd + L["ssm_d"][h] * xh[hd]
+            s[:, hd] = s_hd
         ssm_state[h] = s
     # grouped gated RMSNorm (Zamba2RMSNormGated): norm layout [gs, n_group]
+    # HF modeling_zamba2.py: hidden * silu(gate) FIRST, then group RMS norm
+    # (norm_before_gate=False — the old norm-then-gate order here was wrong
+    # and made the whole reference diverge from HF at layer 0).
     gs = d_inner // n_group
     y = y.reshape(n_group, gs)
+    y = y * (z_seg / (1 + np.exp(-z_seg))).reshape(n_group, gs)
     y = y * (1.0 / np.sqrt(np.mean(y*y, axis=1, keepdims=True) + 1e-6))
     y = y * L["ssm_norm"].reshape(gs, n_group).T   # y[g,i] * norm[i,g]
     y = y.reshape(-1)
-    y = y * (z_seg / (1 + np.exp(-z_seg)))
     return L["ssm_out"] @ y  # GGUF [d_model, d_inner] → W^T @ y? ssm_out GGUF dims [d_inner, d_model]
 
 def main():
@@ -194,7 +215,7 @@ def main():
     hidden = emb[:, tok].copy()
     embedding = hidden.copy()
     conv_states = {l: np.zeros((d_conv-1, conv_dim)) for l in range(n_layers)}
-    ssm_states = {l: np.zeros((n_head, d_state)) for l in range(n_layers)}
+    ssm_states = {l: np.zeros((n_head, d_state, head_dim)) for l in range(n_layers)}
     kv_k = {h: np.zeros((4096, n_kv*hd)) for h in hybrid_ids}
     kv_v = {h: np.zeros((4096, n_kv*hd)) for h in hybrid_ids}
     pos = 0
@@ -206,18 +227,24 @@ def main():
             x = np.concatenate([hidden, embedding])
             x = rms_norm(x, L["post_attn_norm"], 1e-5)
             q = L["attn_q"] @ x; k = L["attn_k"] @ x; v = L["attn_v"] @ x
-            # RoPE (freqs: theta 10000, head_dim 128)
+            # RoPE (freqs: theta 10000, head_dim 128) — HF rotate_half
+            # convention: pairs (d, d+hd/2) with freq[d] = freq[d+hd/2]
+            # (Zamba2RotaryEmbedding: inv_freq over dim/2, cat'd twice). The
+            # old interleaved (d, d+1) pairing was the GPT-NeoX convention
+            # and diverged from HF at every pos >= 1.
             q = q.reshape(n_attn, hd); k = k.reshape(n_kv, hd)
             for h in range(n_attn):
-                for d in range(0, hd, 2):
-                    fr = pos / 10000.0 ** (d / hd)
+                for d in range(0, hd // 2):
+                    fr = pos / 10000.0 ** (d / (hd // 2))
                     c, s = np.cos(fr), np.sin(fr)
-                    q[h, d], q[h, d+1] = q[h,d]*c - q[h,d+1]*s, q[h,d]*s + q[h,d+1]*c
+                    d2 = d + hd // 2
+                    q[h, d], q[h, d2] = q[h,d]*c - q[h,d2]*s, q[h,d]*s + q[h,d2]*c
             for h in range(n_kv):
-                for d in range(0, hd, 2):
-                    fr = pos / 10000.0 ** (d / hd)
+                for d in range(0, hd // 2):
+                    fr = pos / 10000.0 ** (d / (hd // 2))
                     c, s = np.cos(fr), np.sin(fr)
-                    k[h, d], k[h, d+1] = k[h,d]*c - k[h,d+1]*s, k[h,d]*s + k[h,d+1]*c
+                    d2 = d + hd // 2
+                    k[h, d], k[h, d2] = k[h,d]*c - k[h,d2]*s, k[h,d]*s + k[h,d2]*c
             kv_k[l][pos] = k.reshape(-1); kv_v[l][pos] = v.reshape(-1)
             # attention with scale sqrt(2/hd)
             scale = np.sqrt(2.0/hd)
@@ -231,11 +258,14 @@ def main():
             attn_out = L["attn_o"] @ attn_out  # [d_model]
             ff = rms_norm(attn_out, L["ffn_norm"], 1e-5)
             g = L["ffn_gate"] @ ff; u = L["ffn_up"] @ ff
-            th = L["ffn_down"] @ (g/(1+np.exp(-g)) * u)
+            # Zamba2 config hidden_act="gelu" (exact GELU, not SiLU)
+            th = L["ffn_down"] @ (0.5 * g * (1 + np.vectorize(math.erf)(g * 0.70710678118)) * u)
             th = L["ssm_mix"] @ th
-            hidden = hidden + th
-            # mamba decoder
-            normed = rms_norm(hidden, L["attn_norm"], 1e-5)
+            # Zamba2MambaDecoderLayer: residual = layer INPUT (before +th);
+            # th is consumed inside the norm. Using hidden+th as the
+            # residual double-counts th.
+            mixed = hidden + th
+            normed = rms_norm(mixed, L["attn_norm"], 1e-5)
             mb = mamba2_block(normed, L, cfg, conv_states[l], ssm_states[l])
             hidden = hidden + mb
         else:

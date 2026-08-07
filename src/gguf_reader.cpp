@@ -712,7 +712,10 @@ bool GgufReader::write_htok(const std::string& htok_path) const {
     // special-token pre-pass can't rebuild chat templates and instruct
     // models get a mangled prompt. GGUF token types: 1=NORMAL, 2=UNKNOWN,
     // 3=CONTROL, 4=USER_DEFINED, 5=UNUSED, 6=BYTE. NORMAL and BYTE pieces
-    // participate in BPE; everything else is a special.
+    // participate in BPE; everything else is a special. BOS/EOS are added
+    // unconditionally — some GGUFs (Zamba2) mark their chat markers
+    // (<|im_start|>/<|im_end|>) as NORMAL even though they are not
+    // BPE-reachable, but they are exactly the bos/eos ids.
     std::vector<uint32_t> token_type;
     std::vector<uint32_t> special_ids;
     if (get_u32_array("tokenizer.ggml.token_type", token_type) &&
@@ -720,6 +723,10 @@ bool GgufReader::write_htok(const std::string& htok_path) const {
         for (uint32_t i = 0; i < token_type.size(); ++i)
             if (token_type[i] != 1 && token_type[i] != 6) special_ids.push_back(i);
     }
+    for (uint32_t v : {bos, eos})
+        if (v < vocab_size &&
+            std::find(special_ids.begin(), special_ids.end(), v) == special_ids.end())
+            special_ids.push_back(v);
 
     FILE* f = fopen(htok_path.c_str(), "wb");
     if (!f) return false;
