@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:record/record.dart';
 
@@ -127,6 +128,14 @@ abstract class ReplyPlayer {
 /// Thin audioplayers glue: converts PCM16 to WAV and plays it from bytes.
 class WavReplyPlayer implements ReplyPlayer {
   final AudioPlayer _player = AudioPlayer();
+
+  WavReplyPlayer() {
+    // A failed reply playback (e.g. no audio device on a simulator) must
+    // not surface as an unhandled async error — consume and log it.
+    _player.eventStream.listen((_) {}, onError: (Object e) {
+      debugPrint('reply playback error: $e');
+    });
+  }
 
   @override
   Future<void> playPcm16(Uint8List pcm16, int sampleRate) async {
