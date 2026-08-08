@@ -644,7 +644,7 @@ bool GgufReader::get_tensor_raw(const std::string& name, int block_size, int blo
     if (it == tensors_.end() || !f_ || block_size <= 0 || block_bytes <= 0) return false;
     const GgufTensorInfo& ti = it->second;
     if (out_numel) *out_numel = ti.numel;
-    constexpr uint64_t MAX_TENSOR_ELEMENTS = 1ULL << 30;  // fixes #1320: guard sentinel-numel
+    constexpr uint64_t MAX_TENSOR_ELEMENTS = 1ULL << 31;  // fixes #1320: guard sentinel-numel; 2^31 elems = 8.6 GB f32 ceiling (74B embeddings are 1.07G elems, #1522)
     if (ti.numel > MAX_TENSOR_ELEMENTS) return false;
     uint64_t n_blocks = (ti.numel + block_size - 1) / block_size;
     out.resize(n_blocks * (uint64_t)block_bytes);
@@ -656,7 +656,7 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
     auto it = tensors_.find(name);
     if (it == tensors_.end() || !f_) return false;
     const GgufTensorInfo& ti = it->second;
-    static constexpr uint64_t MAX_TENSOR_ELEMENTS = 1ULL << 30;
+    static constexpr uint64_t MAX_TENSOR_ELEMENTS = 1ULL << 31;
     if (ti.numel > MAX_TENSOR_ELEMENTS) return false;
     out.resize(ti.numel);
     if (out_n) *out_n = ti.numel;
