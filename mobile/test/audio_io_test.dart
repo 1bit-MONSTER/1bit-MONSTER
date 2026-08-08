@@ -28,6 +28,42 @@ void main() {
     });
   });
 
+  group('WavPcm16Framer', () {
+    test('header split across chunks: zero PCM loss, byte-identical frames',
+        () {
+      final header = Uint8List.fromList(List.generate(44, (i) => 0xAA));
+      final pcm = Uint8List.fromList(List.generate(640 * 3, (i) => i % 256));
+      final frames = <Uint8List>[];
+      final framer = WavPcm16Framer(kUplinkFrameBytes);
+
+      // 20 header bytes, then 24 header + 76 PCM bytes, then the rest.
+      framer.add(Uint8List.sublistView(header, 0, 20), frames.add);
+      framer.add(
+          Uint8List.fromList([
+            ...header.sublist(20),
+            ...pcm.sublist(0, 76),
+          ]),
+          frames.add);
+      framer.add(Uint8List.sublistView(pcm, 76), frames.add);
+
+      expect(frames, hasLength(3));
+      expect(frames[0], orderedEquals(pcm.sublist(0, 640)));
+      expect(frames[1], orderedEquals(pcm.sublist(640, 1280)));
+      expect(frames[2], orderedEquals(pcm.sublist(1280, 1920)));
+    });
+
+    test('header entirely inside one chunk, then a partial frame remainder',
+        () {
+      final frames = <Uint8List>[];
+      final framer = WavPcm16Framer(kUplinkFrameBytes);
+      framer.add(Uint8List(kWavHeaderSize + 640 + 10), frames.add);
+      framer.add(Uint8List(630), frames.add); // 630 + 10 carried = 640
+      expect(frames, hasLength(2));
+      expect(frames[0].length, 640);
+      expect(frames[1].length, 640);
+    });
+  });
+
   group('chunkPcm16', () {
     test('44-byte header + 1280 bytes -> two 640-byte frames', () {
       final wav = Uint8List(kWavHeaderSize + 1280);
