@@ -133,7 +133,8 @@ struct OnnxNode {
 
 // Recursively find all initializer tensors in an ONNX protobuf
 static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors,
-                              std::vector<OnnxNode>& nodes, int depth = 0) {
+                              std::vector<OnnxNode>& nodes,
+                              const char* model_dir, FILE** ext_file, int depth = 0) {
     if (depth > 20 || !pb.ok()) return;
 
     while (pb.ok()) {
@@ -153,7 +154,7 @@ static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors,
 
             if (field_num == 7) {
                 // ModelProto.graph — recurse to find initializers
-                find_initializers(sub, tensors, nodes, depth + 1);
+                find_initializers(sub, tensors, nodes, model_dir, ext_file, depth + 1);
             } else if (field_num == 1) {
                 // GraphProto.node (field 1) — a NodeProto: parse DQ/Q nodes
                 OnnxNode nd;
@@ -175,6 +176,8 @@ static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors,
                 OnnxTensor t;
                 PbReader tp(content.data(), content.size());
                 std::vector<uint8_t> raw9, raw10;  // raw_data candidates (1.22=9, legacy=10)
+                std::string ext_loc;                  // external data location
+                uint64_t ext_off = 0, ext_len = 0;
                 while (tp.ok()) {
                     size_t tk = tp.pos;
                     if (tk >= content.size()) break;
@@ -219,8 +222,24 @@ static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors,
                         raw9 = tp.bytes();
                     } else if (tf == 10) { // double_data (field 10) OR legacy raw_data
                         raw10 = tp.bytes();
-                    } else if (tf == 11 || tf == 12 || tf == 13 || tf == 14) {
-                        // uint64_data / doc_string / external_data / data_location — skip
+                    } else if (tf == 13) {  // external_data (repeated msg: key=1, value=2)
+                        auto extmsg = tp.bytes();
+                        PbReader ep(extmsg.data(), extmsg.size());
+                        std::string k, v;
+                        while (ep.ok()) {
+                            size_t ek = ep.pos;
+                            if (ek >= content.size()) break;
+                            uint8_t ekb = ep.data[ep.pos++];
+                            uint32_t ef = ekb >> 3, ew = ekb & 0x7;
+                            if (ef == 1 && ew == 2) { auto b = ep.bytes(); k.assign((char*)b.data(), b.size()); }
+                            else if (ef == 2 && ew == 2) { auto b = ep.bytes(); v.assign((char*)b.data(), b.size()); }
+                            else ep.skip_field(ew);
+                        }
+                        if (k == "location") ext_loc = v;
+                        else if (k == "offset") ext_off = strtoull(v.c_str(), nullptr, 10);
+                        else if (k == "length") ext_len = strtoull(v.c_str(), nullptr, 10);
+                    } else if (tf == 11 || tf == 12 || tf == 14) {
+                        // uint64_data / doc_string / data_location — skip
                         tp.skip_field(tw);
                     } else {
                         tp.skip_field(tw);
@@ -231,23 +250,46 @@ static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors,
                 // raw_data moved from field 10 → 9 in modern onnx; pick the
                 // candidate whose byte count exactly matches dims × dtype width
                 // (a legacy doc_string at 9 is short and never matches).
-                if (!t.dims.empty() && !raw9.empty()) {
+                if (!t.dims.empty()) {
                     size_t elem = 1;
                     for (auto d : t.dims) elem *= (size_t)d;
                     size_t width = 4;
                     if (t.data_type == ONNX_FLOAT16 || t.data_type == ONNX_BFLOAT16) width = 2;
                     else if (t.data_type == ONNX_INT8 || t.data_type == ONNX_UINT8) width = 1;
+
+                    // External data (tensors >2GB-model threshold live in a
+                    // sibling <location> file; offsets are relative to it).
+                    std::vector<uint8_t> ext_buf;
+                    const std::vector<uint8_t>* raw = nullptr;
+                    if (raw9.size() == elem * width) raw = &raw9;
+                    else if (raw10.size() == elem * width) raw = &raw10;
+                    else if (!ext_loc.empty() && ext_len == elem * width) {
+                        if (getenv("DBG_EXT")) {
+                            fprintf(stderr, "[dbg-ext] %s loc=%s off=%llu len=%llu (want %zu) dir=%s ext=%p\n",
+                                    t.name.c_str(), ext_loc.c_str(), (unsigned long long)ext_off,
+                                    (unsigned long long)ext_len, elem * width, model_dir, (void*)*ext_file);
+                        }
+                        if (!*ext_file) {
+                            std::string p = std::string(model_dir) + "/" + ext_loc;
+                            *ext_file = fopen(p.c_str(), "rb");
+                            if (!*ext_file)
+                                fprintf(stderr, "[onnx] WARN cannot open external data %s\n", p.c_str());
+                        }
+                        if (*ext_file) {
+                            ext_buf.resize(ext_len);
+                            if (fseek(*ext_file, (long)ext_off, SEEK_SET) == 0 &&
+                                fread(ext_buf.data(), 1, ext_len, *ext_file) == ext_len)
+                                raw = &ext_buf;
+                        }
+                    }
+
                     if (t.data_type == ONNX_DOUBLE && !raw10.empty() &&
-                        raw10.size() == elem * 8 && raw9.size() != elem * width) {
+                        raw10.size() == elem * 8 && raw == nullptr) {
                         // double_data lives at 10; try that first for DOUBLE
                         for (size_t i = 0; i + 8 <= raw10.size(); i += 8) {
                             double v; memcpy(&v, &raw10[i], 8); t.float_data.push_back((float)v);
                         }
-                    } else {
-                        const std::vector<uint8_t>* raw = &raw9;
-                        if (raw->size() != elem * width && raw10.size() == elem * width)
-                            raw = &raw10;  // legacy raw_data at 10
-                        if (raw->size() == elem * width) {
+                    } else if (raw && raw->size() == elem * width) {
                             if (t.data_type == ONNX_FLOAT16) {
                                 // Proper IEEE float16 → float32 (not bfloat16 shift trick)
                                 t.float_data.resize(raw->size() / 2);
@@ -292,7 +334,6 @@ static void find_initializers(PbReader& pb, std::vector<OnnxTensor>& tensors,
                                 }
                             }
                         }
-                    }
                 }
                 if (!t.name.empty() && !t.dims.empty() &&
                     (!t.float_data.empty() || !t.i8_data.empty())) {
@@ -410,11 +451,17 @@ rcpp_status_t rcpp_bitnet_load_onnx(const char* path, rcpp_bitnet_model_t* out_m
     f.read((char*)file_data.data(), file_size);
     if (!f) return RCPP_INVALID_ARG;
 
-    // Parse protobuf to find initializer tensors + DequantizeLinear nodes
+    // Parse protobuf to find initializer tensors + DequantizeLinear nodes.
+    // External tensor data lives next to the model file (ONNX external_data).
+    std::string model_dir = path;
+    auto slash = model_dir.rfind('/');
+    if (slash != std::string::npos) model_dir.resize(slash);
+    FILE* ext_file = nullptr;
     PbReader pb(file_data.data(), file_size);
     std::vector<OnnxTensor> tensors;
     std::vector<OnnxNode> nodes;
-    find_initializers(pb, tensors, nodes);
+    find_initializers(pb, tensors, nodes, model_dir.c_str(), &ext_file);
+    if (ext_file) fclose(ext_file);
 
     fprintf(stderr, "[onnx] Found %zu tensors, %zu nodes\n", tensors.size(), nodes.size());
 
