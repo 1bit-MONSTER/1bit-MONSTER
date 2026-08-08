@@ -825,6 +825,7 @@ set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_ada
 # no symlink — the standalone target was pure duplication of onebin.
 
 rocm_hip_target(test_wmma_i8_gemv tests/test_wmma_i8_gemv.cpp)
+rocm_hip_target(test_onnx_wmma_i8 tests/test_onnx_wmma_i8.cpp)
 rocm_hip_target(test_bonsai_e2e tests/test_bonsai_e2e.cpp)
 
 add_executable(test_medusa_skeleton tests/test_medusa_skeleton.cpp)
@@ -913,6 +914,8 @@ add_test(NAME test_cca_attn                COMMAND test_cca_attn)
 set_tests_properties(test_cca_attn          PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
 add_test(NAME test_wmma_i8_gemv            COMMAND test_wmma_i8_gemv)
 set_tests_properties(test_wmma_i8_gemv     PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
+add_test(NAME test_onnx_wmma_i8             COMMAND test_onnx_wmma_i8)
+set_tests_properties(test_onnx_wmma_i8      PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
 
 add_test(NAME test_bonsai_e2e              COMMAND test_bonsai_e2e ${BONSAI_H1B_MODEL})
 set_tests_properties(test_bonsai_e2e       PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
@@ -936,7 +939,7 @@ target_link_libraries(test_generic_attention PRIVATE backend_manager)
 add_test(NAME test_generic_attention COMMAND test_generic_attention ${GGUF_TEST_MODEL})
 set_tests_properties(test_generic_attention PROPERTIES LABELS "model_required;e2e" SKIP_RETURN_CODE 77)
 
-add_executable(bitnet_decode tools/bitnet_decode.cpp)
+add_executable(bitnet_decode tools/bitnet_decode.cpp src/safetensors_reader.cpp)
 set_source_files_properties(tools/bitnet_decode.cpp PROPERTIES LANGUAGE HIP)
 target_compile_options(bitnet_decode PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
 target_link_libraries(bitnet_decode PRIVATE rocm_cpp hip::host hip::device httplib::httplib nlohmann_json::nlohmann_json)

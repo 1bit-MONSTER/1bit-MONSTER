@@ -185,6 +185,7 @@ typedef struct {
     void* embedding_dev;
     void* embedding_packed_dev;
     void* final_norm_weight_dev;
+    void* lm_head_dev;              // untied LM head (NULL = tied to embedding)
     rcpp_bitnet_layer_t* layers;
 } rcpp_bitnet_model_t;
 
