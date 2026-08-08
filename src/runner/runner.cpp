@@ -39,7 +39,16 @@ std::map<std::string, runner_cmd_t> cmd_map = {
 Runner::Runner(model_list& supported_models, ModelDownloader& downloader, program_args_t& args)
     : supported_models(supported_models), downloader(downloader), tag(args.model_tag), asr(args.asr), embed(args.embed), img_pre_resize(args.img_pre_resize), preemption(args.preemption) {
 
-    this->npu_device_inst = xrt::device(0);
+    // NPU device handle — optional: a wedged NPU (firmware timeout, issue
+    // #1536 class) makes xrt::device(0) throw, which in a constructor would
+    // abort the whole process even for models that never touch the NPU.
+    try {
+        this->npu_device_inst = xrt::device(0);
+    } catch (const std::exception& e) {
+        fprintf(stderr, "Warning: NPU unavailable (%s) — continuing without NPU\n", e.what());
+    } catch (...) {
+        fprintf(stderr, "Warning: NPU unavailable — continuing without NPU\n");
+    }
 
     if (args.ctx_length != -1) {
         this->ctx_length = args.ctx_length >= 512 ? args.ctx_length : 512;
