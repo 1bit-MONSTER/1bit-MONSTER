@@ -479,6 +479,13 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
     // zaya_moe_expert_ffn.hip reads); dn = [NE, H, n_ff]. Missing → null
     // (MoE sublayer absent on even layers); expert-count mismatch or a
     // short expert → abort (issue #1527 — never "skip MoE" silently).
+    //
+    // Streamed per-expert (issue #1529): dequant one expert to fp32, convert
+    // to fp16, and async-copy into the preallocated half buffer. The old
+    // all-experts fp32 concat peaked at ~19 GB transient host allocation for
+    // the 74B (24 experts × 2*n_ff × H × 4 B) and churned ~2.3 TB of host
+    // traffic per model load; per-expert the peak is rows*cols*(4+2) B and
+    // the next expert's dequant overlaps with the previous upload.
     {
         auto experts = [&](const char* n, __half*& gpu, int rows, int cols) {
             std::string nm = p + n;
@@ -491,7 +498,8 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                 ok = false;
                 return;
             }
-            std::vector<float> allv((size_t)eng.n_exp * rows * cols);
+            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { ok = false; return; }
+            std::vector<__half> hbuf((size_t)rows * cols);
             for (int e = 0; e < eng.n_exp; e++) {
                 std::vector<float> v;
                 if (!model.get_tensor_f32_expert(nm.c_str(), e, v) || (int)v.size() < rows * cols) {
@@ -500,10 +508,10 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                     ok = false;
                     return;
                 }
-                memcpy(allv.data() + (size_t)e * rows * cols, v.data(), (size_t)rows * cols * 4);
+                for (size_t i = 0; i < (size_t)rows * cols; i++) hbuf[i] = __float2half(v[i]);
+                (void)hipMemcpyAsync(gpu + (size_t)e * rows * cols, hbuf.data(),
+                                     (size_t)rows * cols * 2, hipMemcpyHostToDevice, st);
             }
-            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { ok = false; return; }
-            upf16(allv, gpu, eng.n_exp * rows * cols, st);
         };
         experts("ffn_gate_up_exps.weight", l.gu, 2 * eng.n_ff, eng.h);
         experts("ffn_down_exps.weight", l.dn, eng.h, eng.n_ff);
