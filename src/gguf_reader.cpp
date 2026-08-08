@@ -309,7 +309,7 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         case GGUF_DTYPE_F32:    return {1, 4};
         case GGUF_DTYPE_F16:    return {1, 2};
         case GGUF_DTYPE_BF16:   return {1, 2};
-        case GGUF_DTYPE_F32_V3: return {1, 4};  // dtype 30: GGUF v3 F32
+        case GGUF_DTYPE_F32_V3: return {1, 2};  // dtype 30: GGML_TYPE_BF16 in current llama.cpp
         case GGUF_DTYPE_Q4_0:   return {32, 18};
         case GGUF_DTYPE_Q4_1:   return {32, 20};
         case GGUF_DTYPE_Q5_0:   return {32, 22};
@@ -350,7 +350,10 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
 bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
     switch (dtype) {
         case GGUF_DTYPE_F32:
-        case GGUF_DTYPE_F32_V3: memcpy(out, data, (size_t)count * 4); return true;
+            memcpy(out, data, (size_t)count * 4); return true;
+        case GGUF_DTYPE_F32_V3:  // dtype 30: GGML_TYPE_BF16 (current llama.cpp numbering)
+            for (int i = 0; i < count; i++) out[i] = bf16_to_fp32(((const uint16_t*)data)[i]);
+            return true;
         case GGUF_DTYPE_F16:
             for (int i = 0; i < count; i++) out[i] = read_f16(data + (size_t)i * 2);
             return true;

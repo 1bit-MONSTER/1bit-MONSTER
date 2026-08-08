@@ -79,15 +79,16 @@ __launch_bounds__(128) __global__ void wmma_gateup_kernel(
 
     // Final warp 0 writes results
     if (warp == 0 && lane < WMMA_THREADS / 32) {
-        for (int j = 0; j < WMMA_M; j++)
-            acc[j] = s_acc[lane * WMMA_M + j];
-        for (int o = 16; o > 0; o >>= 1)
-            for (int j = 0; j < WMMA_M; j++)
-                acc[j] += __shfl_xor_sync(0xffffffffULL, acc[j], o);
+        // The 4 warp partials are already in s_acc — sum them directly.
+        // A full-mask __shfl_xor_sync here (only lanes 0-3 converged) is UB
+        // and traps as a hardware exception on RDNA (issue #1521).
         if (lane == 0)
-            for (int j = 0; j < WMMA_M; j++)
+            for (int j = 0; j < WMMA_M; j++) {
+                float s = 0;
+                for (int l = 0; l < WMMA_THREADS / 32; l++) s += s_acc[l * WMMA_M + j];
                 if (row + j < 2 * n_ff)
-                    tmp[row + j] = __float2half(acc[j]);
+                    tmp[row + j] = __float2half(s);
+            }
     }
 }
 
@@ -145,15 +146,16 @@ __launch_bounds__(128) __global__ void wmma_down_kernel(
     __syncthreads();
 
     if (warp == 0 && lane < WMMA_THREADS / 32) {
-        for (int j = 0; j < WMMA_M; j++)
-            acc[j] = s_acc[lane * WMMA_M + j];
-        for (int o = 16; o > 0; o >>= 1)
-            for (int j = 0; j < WMMA_M; j++)
-                acc[j] += __shfl_xor_sync(0xffffffffULL, acc[j], o);
+        // The 4 warp partials are already in s_acc — sum them directly.
+        // A full-mask __shfl_xor_sync here (only lanes 0-3 converged) is UB
+        // and traps as a hardware exception on RDNA (issue #1521).
         if (lane == 0)
-            for (int j = 0; j < WMMA_M; j++)
+            for (int j = 0; j < WMMA_M; j++) {
+                float s = 0;
+                for (int l = 0; l < WMMA_THREADS / 32; l++) s += s_acc[l * WMMA_M + j];
                 if (row + j < h_dim)
-                    out[row + j] = __float2half(acc[j]);
+                    out[row + j] = __float2half(s);
+            }
     }
 }
 

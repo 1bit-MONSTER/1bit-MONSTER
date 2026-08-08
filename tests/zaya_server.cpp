@@ -102,7 +102,7 @@ static bool detect_from_h1b(const std::string& path, ModelConfig& cfg) {
 //   [21]: has_q_norm  [22]: has_k_norm  [23]: has_bias
 //   [19]: rope_theta_f  [20]: bos_token_id  [21]: eos_token_id
 //   [22]: tensor_count
-//   [28]: num_experts  [29]: n_expert_used  [30..35]: expert config
+//   [23]: num_experts  [24]: n_expert_used  [25..35]: expert config
 //   [36]: rope_freq_base_swa_f  [37]: n_rot_swa  [38]: n_rot_full
 //   [39..50]: reserved[12]  [51..63]: reserved[13]
 //   [64..79]: model_tag[64] as chars (offset 192)
@@ -190,8 +190,8 @@ static bool detect_from_1bp(const std::string& path, ModelConfig& cfg) {
     cfg.intermediate_size = (int32_t)header[10];
     cfg.vocab_size        = (int32_t)header[11];
     cfg.max_seq_len       = (int32_t)header[12];
-    cfg.num_experts       = (int32_t)header[28];
-    cfg.num_experts_top   = (int32_t)header[29];
+    cfg.num_experts       = (int32_t)header[23];
+    cfg.num_experts_top   = (int32_t)header[24];
     uint32_t eos_u        = header[21];  // eos_token_id at index 21 per OnebpHeader
     cfg.eos_token_id      = (int)eos_u;
     // rope_theta: v3 files store raw f32 bits at [19]; v1/v2 store theta*1000
