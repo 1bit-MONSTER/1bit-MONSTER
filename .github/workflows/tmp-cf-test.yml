@@ -4,7 +4,7 @@ jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - name: Repoint eeg-medical Pages project
+      - name: Repoint eeg-medical Pages project (full config)
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -12,6 +12,6 @@ jobs:
           curl -s -X PATCH \
             -H "Authorization: Bearer $CF_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"source": {"type": "github", "config": {"owner": "1bit-systems", "repo_name": "eeg-medical", "production_branch": "main"}}}' \
+            -d '{"source": {"type": "github", "config": {"owner": "1bit-systems", "owner_id": "284460686", "repo_name": "eeg-medical", "repo_id": "1328139606", "production_branch": "main", "deployments_enabled": true, "production_deployments_enabled": true}}}' \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('success:', d.get('success')); print('errors:', d.get('errors')); s=r.get('source',{}); print('source now:', s.get('type'), s.get('config',{}).get('owner'), s.get('config',{}).get('repo_name'))"
+            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('success:', d.get('success')); print('errors:', d.get('errors')); s=r.get('source',{}); print('source now:', s.get('config',{}).get('owner'), s.get('config',{}).get('repo_name'))"
