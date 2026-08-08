@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -132,7 +133,7 @@ static std::string base64_encode(const unsigned char* data, size_t len) {
 
 // Compute the WebSocket accept key (SHA-1 of key + magic GUID → base64).
 static std::string compute_accept_key(const std::string& ws_key) {
-    static const char* kMagicGUID = "258EAFA5-E914-47DA-95CA-5AB9DC11B85B";
+    static const char* kMagicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     std::string concat = ws_key + kMagicGUID;
     unsigned char hash[20];
 
@@ -202,7 +203,13 @@ static bool ws_read_exact(int fd, void* buf, size_t len) {
     size_t total = 0;
     while (total < len) {
         ssize_t n = read(fd, (char*)buf + total, len - total);
-        if (n <= 0) return false;
+        if (n <= 0) {
+            // read() does not touch errno on EOF, so a caller checking
+            // errno after this would see a stale EAGAIN and busy-loop;
+            // pin errno to 0 so EOF is distinguishable from recv timeout.
+            if (n == 0) errno = 0;
+            return false;
+        }
         total += (size_t)n;
     }
     return true;
@@ -367,15 +374,18 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
         auto colon = line.find(':');
         if (colon != std::string::npos) {
             std::string key = line.substr(0, colon);
+            // HTTP header names are case-insensitive (undici sends
+            // lowercase); normalize before comparing.
+            for (auto& c : key) c = (char)tolower((unsigned char)c);
             std::string value = line.substr(colon + 1);
             // Trim
             while (!value.empty() && (value[0] == ' ' || value[0] == '\t')) value = value.substr(1);
 
-            if (key == "Upgrade" && (value == "websocket" || value == "WebSocket"))
+            if (key == "upgrade" && (value == "websocket" || value == "WebSocket"))
                 has_upgrade = true;
-            if (key == "Sec-WebSocket-Key")
+            if (key == "sec-websocket-key")
                 ws_key = value;
-            if (key == "Authorization")
+            if (key == "authorization")
                 auth_header = value;
         }
         pos = line_end + 2;
@@ -429,25 +439,7 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
         return;
     }
 
-    // ── Request path routing ─────────────────────────────────
-    // /v1/voice/session → full-duplex conversation path (no voice/text
-    // query params required).  Anything else → legacy /v1/audio/stream
-    // downlink, unchanged.
-    std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
-    if (path_base == "/v1/voice/session") {
-        handle_session_connection(client_fd, session_slot, slot_mu);
-        return;
-    }
-
-    if (voice.empty() || text.empty()) {
-        // Send HTTP error response
-        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        write(client_fd, err, strlen(err));
-        close(client_fd);
-        return;
-    }
-
-    // ── Send 101 Switching Protocols ─────────────────────────
+    // ── Send 101 Switching Protocols (both request paths) ────
     {
         std::string accept = compute_accept_key(ws_key);
         std::string response =
@@ -465,6 +457,24 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
     // Set TCP_NODELAY for low-latency streaming
     int flag = 1;
     setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+    // ── Request path routing ─────────────────────────────────
+    // /v1/voice/session → full-duplex conversation path (no voice/text
+    // query params required).  Anything else → legacy /v1/audio/stream
+    // downlink, unchanged.
+    std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
+    if (path_base == "/v1/voice/session") {
+        handle_session_connection(client_fd, session_slot, slot_mu);
+        return;
+    }
+
+    if (voice.empty() || text.empty()) {
+        // Send HTTP error response
+        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        write(client_fd, err, strlen(err));
+        close(client_fd);
+        return;
+    }
 
     // ── Send metadata frame ──────────────────────────────────
     std::string meta = R"({"type":"meta","sample_rate":24000,"channels":1,"format":"float32"})";
@@ -675,6 +685,9 @@ static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionCo
     raw->session_->stop();
     {
         std::lock_guard<std::mutex> lock(raw->send_mu_);
+        // Echo a close frame so a standards-compliant client (browser,
+        // node's WebSocket) sees a clean shutdown instead of an error.
+        ws_send_frame(client_fd, nullptr, 0, 0x08);
         raw->fd_ = -1;
     }
     close(client_fd);
