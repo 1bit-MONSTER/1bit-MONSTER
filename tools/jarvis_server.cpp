@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -353,8 +354,10 @@ static WhisperModel* get_whisper_model() {
 // (see WsSessionConn lifetime in audio_stream.h).  VoiceSession itself is
 // server-thread-only, so the worker only pokes the cross-thread
 // set_speaking_requested flag, which the server loop applies at its next
-// 50 ms tick; the loop's own 100 ms Speaking→Listening re-arm covers the
-// tail of the stream.
+// 50 ms tick.  The flag is a LEVEL: the worker keeps it at 1 for the whole
+// TTS turn (heartbeat re-assert inside ws_session_speak) and clears it to
+// 0 after the last frame; the loop's 100 ms Speaking→Listening auto-rearm
+// is only a worker-death safety net, not the stream-tail path.
 
 // Stream one synthesized WAV through send_audio as float32 frames, paced
 // at real time — mirrors the legacy downlink loop in audio_stream.cpp
@@ -368,6 +371,7 @@ static void ws_stream_wav(std::shared_ptr<jarvis::WsSessionConn> conn, const std
         off += 8 + chunk_size;
     }
     if (pcm_off == 0 || pcm_off >= wav.size()) return;
+    pcm_size = std::min(pcm_size, wav.size() - pcm_off);   // clamp bogus chunk size to the buffer
     const int16_t* s16 = reinterpret_cast<const int16_t*>(wav.data() + pcm_off);
     size_t n_samples = pcm_size / 2;
     constexpr int kChunk = 312;        // 13 ms @ 24 kHz (codec frame size)
@@ -382,19 +386,46 @@ static void ws_stream_wav(std::shared_ptr<jarvis::WsSessionConn> conn, const std
 }
 
 // Synthesize + stream text through the codec voice pack (Piper fallback).
+// Holds the speaking LEVEL for the whole call: the worker is blocked in
+// synthesize() here, so a heartbeat thread re-asserts
+// set_speaking_requested(true) ~every 40 ms (the server loop drains the
+// flag every 50 ms tick, so a single store would be consumed mid-turn and
+// the 100 ms auto-rearm would flip Speaking→Listening while TTS is still
+// running).  The level is cleared to 0 only after the last frame — the
+// server loop's next tick applies it: Listening + VAD reset.
 static void ws_session_speak(std::shared_ptr<jarvis::WsSessionConn> conn, const std::string& text) {
     std::string voice = g_persona_mgr.active().voice_pack;
     if (voice.empty()) voice = "en_US-lessac-medium";
+    std::atomic<bool> done{false};
+    std::thread heartbeat([&] {
+        while (!done.load(std::memory_order_relaxed)) {
+            conn->set_speaking_requested(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        }
+    });
     std::string wav = g_codec_tts.has_voice(voice) ? g_codec_tts.synthesize(text, voice) : "";
     if (wav.empty()) wav = synthesize_speech(text, voice);
-    if (!wav.empty()) ws_stream_wav(conn, wav);
+    if (!wav.empty()) {
+        ws_stream_wav(conn, wav);
+    } else {
+        // Total TTS failure (codec + Piper both empty): the spec's error
+        // table wants an error frame; a spoken error is impossible by
+        // definition here.
+        conn->send_text(nlohmann::json{{"type", "error"}, {"message", "TTS failed"}}.dump());
+    }
+    done = true;
+    heartbeat.join();
+    // End of stream: drop the speaking level.  The server loop applies it
+    // at its next tick → Listening + VAD reset (no mid-stream re-arm).
+    conn->set_speaking_requested(false);
 }
 
-// Re-arm Processing→Speaking→Listening via the cross-thread flag: the
-// server thread applies one value per 50 ms tick, so back-to-back true/false
-// stores collapse into the false and the session would stay in Processing
-// forever (set_speaking only leaves Processing through Speaking).  Hold the
-// flag true ~200 ms before clearing it.
+// Brief Processing→Speaking→Listening blip via the cross-thread flag for
+// the no-TTS paths (empty/silence transcription): the server thread applies
+// one value per 50 ms tick, so back-to-back true/false stores collapse into
+// the false and the session would stay in Processing forever (set_speaking
+// only leaves Processing through Speaking).  Hold the flag true ~200 ms
+// before clearing it.
 static void ws_session_rearm(std::shared_ptr<jarvis::WsSessionConn> conn) {
     conn->set_speaking_requested(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -415,7 +446,6 @@ static void ws_session_handle_utterance(std::shared_ptr<jarvis::WsSessionConn> c
             {"message", "STT unavailable (WHISPER_MODEL_PATH not set)"}}.dump());
         conn->set_speaking_requested(true);
         ws_session_speak(conn, "Sorry, speech recognition is not available right now.");
-        ws_session_rearm(conn);
         return;
     }
     std::vector<float> pcm_f(utt.size());
@@ -461,15 +491,18 @@ static void ws_session_handle_utterance(std::shared_ptr<jarvis::WsSessionConn> c
     if (llm_ok) reply = g_persona_mgr.apply_catchphrases(reply);
     conn->send_text(nlohmann::json{{"type", "transcript"}, {"role", "assistant"}, {"text", reply}}.dump());
 
-    // 3. TTS — codec path, streamed while the Speaking state is armed; the
-    //    server loop's 100 ms re-arm returns the session to Listening.
+    // 3. TTS — hold the speaking LEVEL (armed above, heartbeat-held inside
+    //    ws_session_speak, cleared after the last frame) so the session
+    //    stays Speaking for the whole stream; the loop's 100 ms auto-rearm
+    //    only fires if the worker dies mid-stream.
     conn->set_speaking_requested(true);
     ws_session_speak(conn, reply);
-    ws_session_rearm(conn);
 }
 
 // WS bearer-token gate: JARVIS_WS_TOKEN set → constant-time compare against
 // the Authorization bearer; unset → accept all (VPN-only deployment).
+// Note: the gate covers BOTH WS paths — with JARVIS_WS_TOKEN set, legacy
+// /v1/audio/stream WS clients must also send Authorization or they get 403.
 static jarvis::WSAuthCheck make_ws_auth_check() {
     const char* tok = getenv("JARVIS_WS_TOKEN");
     if (!tok || !*tok) return {};

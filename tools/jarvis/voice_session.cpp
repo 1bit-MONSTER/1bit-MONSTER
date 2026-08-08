@@ -64,6 +64,11 @@ void VoiceSession::set_speaking(bool speaking) {
     if (speaking && impl_->st == SessionState::Processing) {
         impl_->speaking_ms = 0;
         impl_->set(SessionState::Speaking);
+    } else if (speaking && impl_->st == SessionState::Speaking) {
+        // Level re-assert: the worker holds the speaking level for the
+        // whole TTS stream, so a re-assert restarts the tick() timer
+        // instead of letting it accumulate to the 100 ms auto-rearm.
+        impl_->speaking_ms = 0;
     } else if (!speaking && impl_->st == SessionState::Speaking) {
         impl_->set(SessionState::Listening);
         impl_->vad.reset();

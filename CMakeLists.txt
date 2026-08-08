@@ -868,6 +868,8 @@ set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
 # package. Runs unconditionally in every CI invocation.
 add_executable(test_voice_session tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp)
 target_include_directories(test_voice_session PRIVATE tools/)
+add_test(NAME test_voice_session COMMAND test_voice_session)
+set_tests_properties(test_voice_session PROPERTIES LABELS "host")
 add_executable(jarvis_ws_proto_test tests/jarvis_ws_proto_test.cpp tools/jarvis/ws_proto.cpp)
 target_include_directories(jarvis_ws_proto_test PRIVATE tools/)
 target_link_libraries(jarvis_ws_proto_test PRIVATE nlohmann_json::nlohmann_json)

@@ -93,7 +93,9 @@ public:
 
     /// Thread-safe: request the server thread to apply
     /// VoiceSession::set_speaking at its next session tick.  Safe from any
-    /// thread; ignored once the connection is retired.
+    /// thread; ignored once the connection is retired.  Treat as a LEVEL:
+    /// hold at true for the whole TTS turn (re-assert periodically) and
+    /// clear to false only after the last frame — see ws_session_speak.
     void set_speaking_requested(bool speaking) { speak_pending_.store(speaking ? 1 : 0); }
 
     /// True while a session client is connected.
@@ -111,7 +113,7 @@ public:
     std::mutex send_mu_;                       // serializes downlink writes
     std::vector<uint8_t> pcm_buf_;             // partial 20ms uplink frames
     std::atomic<bool> cancelled_{false};
-    std::atomic<int> speak_pending_{-1};       // -1 none, 0/1 pending set_speaking
+    std::atomic<int> speak_pending_{-1};       // -1 none, 0/1 speaking level (1 held while TTS streams)
     std::unique_ptr<VoiceSession> session_;
     UtteranceCallback utterance_cb_;
 };
