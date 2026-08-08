@@ -100,12 +100,26 @@ class _VoiceScreenState extends State<VoiceScreen>
       return;
     }
     if (!mounted) return;
-    setState(() => _connecting = false);
+    setState(() {
+      _connecting = false;
+      _offline = false;
+    });
     // Only the connecting state pulses; stop the ticker when leaving it.
     _pulse.stop();
   }
 
   void _onEvent(GatewayEvent e) {
+    final err = e.maybeError;
+    if (err != null && err.contains('connection lost')) {
+      // Socket dropped: stop capture, mark offline, offer Reconnect.
+      // Transcript is per-screen memory and survives the reconnect.
+      _sessionActive = false;
+      _mic.stop();
+      _replyBuffer.takePcm16(); // discard stale buffered audio
+      _controller.setOffline(err);
+      if (mounted) setState(() => _offline = true);
+      return;
+    }
     final prevState = _controller.state;
     final end = e.maybeEnd;
     if (end != null) {
@@ -154,6 +168,22 @@ class _VoiceScreenState extends State<VoiceScreen>
       }
       _client.start();
     }
+  }
+
+  /// Reconnect after a connection loss: re-establish the socket, then start
+  /// a fresh session (start frame + mic) without clearing the transcript.
+  Future<void> _onReconnectTap() async {
+    await _connect();
+    if (!mounted || _offline) return; // reconnect failed: stay on Reconnect
+    setState(() => _sessionActive = true);
+    try {
+      await _mic.start();
+    } catch (e) {
+      if (mounted) setState(() => _sessionActive = false);
+      _controller.setOffline('Microphone unavailable: $e');
+      return;
+    }
+    _client.start();
   }
 
   void _onControllerChanged() {
@@ -286,8 +316,12 @@ class _VoiceScreenState extends State<VoiceScreen>
   }
 
   Widget _buildButton(ThemeData theme, _Status status) {
-    final busy = _connecting || _offline || !_controller.connected;
+    // Offline is a recoverable state: the button turns into an enabled
+    // Reconnect action instead of the disabled spinner.
+    final busy = _connecting || (!_offline && !_controller.connected);
     final isActive = _sessionActive;
+    final labelStyle = theme.textTheme.titleLarge?.copyWith(
+        color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 2);
     return Column(
       children: [
         if (_controller.errorMessage != null) ...[
@@ -313,7 +347,9 @@ class _VoiceScreenState extends State<VoiceScreen>
         ],
         InkWell(
           key: const Key('jarvis-button'),
-          onTap: busy && !isActive ? null : _onButtonTap,
+          onTap: busy && !isActive
+              ? null
+              : (_offline ? _onReconnectTap : _onButtonTap),
           customBorder: const CircleBorder(),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 300),
@@ -342,10 +378,21 @@ class _VoiceScreenState extends State<VoiceScreen>
                       height: 36,
                       child: CircularProgressIndicator(
                           color: Colors.white, strokeWidth: 3))
-                  : Text(isActive ? 'STOP' : 'JARVIS',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                          color: Colors.white, fontWeight: FontWeight.bold,
-                          letterSpacing: 2)),
+                  : _offline
+                      ? FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.refresh,
+                                  color: Colors.white, size: 20),
+                              const SizedBox(width: 8),
+                              Text('Reconnect', style: labelStyle),
+                            ],
+                          ),
+                        )
+                      : Text(isActive ? 'STOP' : 'JARVIS',
+                          style: labelStyle),
             ),
           ),
         ),

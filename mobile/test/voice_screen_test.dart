@@ -19,6 +19,7 @@ class FakeGatewayClient implements GatewayClient {
   int? lastPort;
   String? lastToken;
   bool closed = false;
+  int connectCount = 0;
 
   /// When set, connect() waits on it — lets tests observe the connecting
   /// state before the connection completes.
@@ -35,6 +36,7 @@ class FakeGatewayClient implements GatewayClient {
 
   @override
   Future<void> connect(String host, int port, String? token) async {
+    connectCount++;
     lastHost = host;
     lastPort = port;
     lastToken = token;
@@ -229,6 +231,48 @@ void main() {
     expect(player.played, hasLength(1));
     expect(player.played.single.$2, 24000);
     expect(player.played.single.$1.lengthInBytes, f32.lengthInBytes ~/ 2);
+  });
+
+  testWidgets('disconnect stops mic and shows Reconnect button',
+      (tester) async {
+    final client = FakeGatewayClient();
+    final mic = FakeMic();
+    await pumpVoice(tester, client, mic: mic);
+    client.emitMeta();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('jarvis-button')));
+    await tester.pump();
+    expect(mic.startCalls, 1);
+    expect(find.text('STOP'), findsOneWidget);
+
+    client.emitError('gateway connection lost');
+    await tester.pump();
+
+    expect(mic.stopCalls, 1); // mic stopped
+    expect(find.text('Reconnect'), findsOneWidget); // button relabeled
+    expect(find.text('OFFLINE'), findsOneWidget); // status label
+  });
+
+  testWidgets('Reconnect reconnects and starts a new session', (tester) async {
+    final client = FakeGatewayClient();
+    final mic = FakeMic();
+    await pumpVoice(tester, client, mic: mic);
+    client.emitMeta();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('jarvis-button')));
+    await tester.pump();
+    client.emitError('gateway connection lost');
+    await tester.pump();
+    expect(client.connectCount, 1);
+
+    await tester.tap(find.text('Reconnect'));
+    await tester.pump();
+
+    expect(client.connectCount, 2); // re-connected
+    expect(client.sent, contains('start')); // fresh session started
+    expect(mic.startCalls, 2);
   });
 
   testWidgets('error event shows the banner', (tester) async {
