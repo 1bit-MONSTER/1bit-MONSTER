@@ -461,9 +461,14 @@ g_mobile_session = std::make_unique<MobileSession>();
 //   5. build msgs: system (g_persona_mgr.build_system_prompt()) + history + user
 //   6. Route route = resolve_model(""); llm_result = unified_chat(...) / ollama_chat(...)
 //   7. reply text; g_context_mem.add_turn("assistant", reply); send transcript assistant
-//   8. wav = g_codec_tts.synthesize(reply, default_voice); if empty -> synthesize_speech fallback
-//   9. parse WAV (44-byte header, s16 @ 24 kHz) -> float32 -> send_audio() in
-//      312-sample frames while vs.state()==Speaking; then vs.set_speaking(false)
+//   8. TTS: use the Zyphra codec pipeline the same way the existing WS
+//      downlink does — read tools/jarvis/audio_stream.cpp's downlink TTS
+//      path (codec_tts + StreamingDecoder, codec tokens -> float32 frames)
+//      and reuse that flow (stream tokens through StreamingDecoder,
+//      send_audio() each decoded frame while vs.state()==Speaking).
+//      Fallback: g_codec_tts.synthesize -> WAV only if streaming decode is
+//      unavailable. Voice pack + persona from the same config as downlink.
+//      Zyphra voice pipeline is the product: never transcode its output.
 // on_state: forward ws_state_json frames (Task 2 already sends them from
 //           the connection loop — choose ONE owner: if the connection loop
 //           sends on_state, the wiring only handles utterance->TTS).
