@@ -14,7 +14,7 @@ The reference product is "Lemonade mobile": a mobile app that connects to a loca
 
 - No on-device inference of any kind (no wake word, no on-device STT/TTS).
 - No push notifications, no background wake, no widget.
-- No iOS build (Android-first; Flutter keeps the door open).
+- ~~No iOS build~~ — **iOS IS a target**: cloud Mac mini (rentamac.io, macOS 26.6, Xcode 26.6, Flutter 3.44.9, CocoaPods 1.17.0) is provisioned; iOS 26.5 simulator runtime installed. Owner has an Apple Developer account — device signing + TestFlight available (Apple ID needed at signing time). Android remains a target too (Flutter cross-platform).
 - No WebRTC (WebSocket + Opus; ~200 ms added latency is acceptable for voice-active conversation).
 - No multi-user/multi-device session management.
 
@@ -115,6 +115,7 @@ Already in the repo (`tools/jarvis_server.cpp`, dispatched from the onebin; runs
 
 ## Open Questions (tracked, not blockers)
 
-- Opus binding choice for Flutter (pure-Dart vs FFI) — decide in M2.
-- VAD: reuse `tools/jarvis/vad.*` in the WS loop vs the existing `/v1/audio/chat` path — confirm in M1.
-- WS wire format for mic audio: Opus vs PCM16 — decide in M1 (Opus preferred; server decodes either).
+- VAD: reuse `tools/jarvis/vad.*` in the WS loop vs the existing `/v1/audio/chat` path — confirm in M1 (WS loop uses `jarvis::VAD` directly; the codec StreamingDecoder path from the existing downlink is reused for TTS).
+- Uplink wire format: PCM16 @ 16 kHz (decided in M1 — VAD/Whisper native; Opus = follow-up with libopus).
+- iOS signing team ID / Apple ID — needed at M2 device-build time (user has Apple Developer account).
+- Opus binding choice for Flutter (pure-Dart vs FFI) — decide in M2 (downlink is float32 @ 24 kHz from the Zyphra codec; no Opus on the wire).
