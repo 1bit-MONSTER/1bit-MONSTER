@@ -39,6 +39,19 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
     int H = cfg.hidden_size;
     const std::string& arch = cfg.architecture;
 
+    // Llama family (official FLM registry: llama3.1:8b / llama3.2:1b / llama3.2:3b).
+    // Weights come from the ROCm FLM_Q4NX_Converter (Q4NX pivot — no more custom
+    // per-model loaders for llama-family models). q4nx manifests carry no arch,
+    // so disambiguate by H+L (llama3.2:1b=2048/16, 3b=3072/28, 3.1:8b=4096/32).
+    if (arch == "llama" ||
+        (H == 2048 && cfg.num_layers == 16) ||
+        (H == 3072 && cfg.num_layers == 28) ||
+        (H == 4096 && cfg.num_layers == 32)) {
+        if (H <= 2048) return "llama3.2:1b";
+        if (H <= 3072) return "llama3.2:3b";
+        return "llama3.1:8b";
+    }
+
     // Qwen3.5 Gate-Delta family
     if (arch == "qwen35" || arch == "qwen35moe") {
         // Qwen3.6-35B-A3B MoE: same qwen3_5_moe GGUF arch, but 256 experts

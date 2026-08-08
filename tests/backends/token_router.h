@@ -116,7 +116,15 @@ struct TokenRouter {
         }
         int distinct = (int)std::set<int>(outs.begin(), outs.end()).size();
         int in_low = 0;  // ids < 1% of vocab: degenerate low-id stick
-        for (int o : outs) if (o < (int)cfg.vocab_size / 100) in_low++;
+        bool all_char_band = true;  // NPU FLM text backend shifts ASCII -> 132..226
+        for (int o : outs) {
+            if (o < (int)cfg.vocab_size / 100) in_low++;
+            if (o < 132 || o > 226) all_char_band = false;
+        }
+        // The per-request FLM backend returns char-shifted ids, which always
+        // sit in the low-id band — the in_low rule would false-negative it.
+        // A stuck model still repeats the same char (distinct == 1).
+        if (all_char_band) return distinct > 1;
         return distinct > 1 && in_low < 4;
     }
 
