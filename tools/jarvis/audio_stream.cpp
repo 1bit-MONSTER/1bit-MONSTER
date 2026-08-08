@@ -319,10 +319,12 @@ bool WsSessionConn::send_text(const std::string& json) {
 // audio frames, cleans up.
 
 static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionConn>* slot,
-                                      std::mutex* slot_mu);
+                                      std::mutex* slot_mu,
+                                      const SessionConnectCallback& connect_cb);
 
 static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
                                  const WSAuthCheck& auth_check,
+                                 const SessionConnectCallback& connect_cb,
                                  std::shared_ptr<WsSessionConn>* session_slot,
                                  std::mutex* slot_mu) {
     if (client_fd < 0) return;
@@ -464,7 +466,7 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
     // downlink, unchanged.
     std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
     if (path_base == "/v1/voice/session") {
-        handle_session_connection(client_fd, session_slot, slot_mu);
+        handle_session_connection(client_fd, session_slot, slot_mu, connect_cb);
         return;
     }
 
@@ -603,7 +605,8 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
 // turn; close frames end it.
 static constexpr size_t kMaxUplinkFrame = 65536; // sanity cap for session uplink frames
 static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionConn>* slot,
-                                      std::mutex* slot_mu) {
+                                      std::mutex* slot_mu,
+                                      const SessionConnectCallback& connect_cb) {
     if (!slot || !slot_mu) { close(client_fd); return; }
 
     // Retire the previous connection instead of destroying it: a Task 3
@@ -623,6 +626,14 @@ static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionCo
         [raw](const std::string& msg) {
             raw->send_text(nlohmann::json{{"type", "error"}, {"message", msg}}.dump());
         });
+    // Task 3 wiring hook: register the utterance callback before the
+    // receive loop below can feed any frame — no window between
+    // WebSocketServer::start() and registration where a connected client's
+    // utterance is dropped (callback null).  Runs before the conn is
+    // published to the slot / the handshake, so no worker thread can have
+    // grabbed it yet.
+    if (connect_cb) connect_cb(conn);
+
     {
         std::lock_guard<std::mutex> lock(*slot_mu);
         *slot = std::move(conn);
@@ -770,7 +781,7 @@ int WebSocketServer::start(int port, void* codec_tts_ptr, WSAuthCheck auth_check
             }
 
             STREAM_LOG("WebSocket client connected");
-            handle_ws_connection(client_fd, tts, auth_check_, &session_conn_, &session_conn_mu_);
+            handle_ws_connection(client_fd, tts, auth_check_, session_connect_cb_, &session_conn_, &session_conn_mu_);
             STREAM_LOG("WebSocket client disconnected");
         }
 

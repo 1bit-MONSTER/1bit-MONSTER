@@ -134,6 +134,12 @@ public:
 // Authorization header value (may be empty). Null = accept everything.
 using WSAuthCheck = std::function<bool(const std::string& auth_header)>;
 
+// Hook applied by the server thread at /v1/voice/session connection
+// creation, before any uplink frame is processed: lets jarvis_server
+// register the utterance callback before the client can speak (no window
+// between start() and registration where an utterance is dropped).
+using SessionConnectCallback = std::function<void(const std::shared_ptr<WsSessionConn>&)>;
+
 struct WebSocketServerImpl;
 
 class WebSocketServer {
@@ -150,6 +156,11 @@ public:
     /// Start with an auth gate: every upgrade (both request paths) must
     /// pass auth_check or is rejected with 403 (no 101).  Null = open.
     int start(int port, void* codec_tts_ptr, WSAuthCheck auth_check);
+
+    /// Set the session-connect hook before start(): called on the server
+    /// thread for every new /v1/voice/session connection, before the
+    /// receive loop can feed uplink frames.  Unset = no hook (legacy).
+    void set_session_connect_callback(SessionConnectCallback cb) { session_connect_cb_ = std::move(cb); }
 
     /// Handle for the active /v1/voice/session connection: returns a
     /// shared_ptr copy that keeps the connection alive even if the server
@@ -175,6 +186,7 @@ private:
     int listen_fd_{-1};
     std::unique_ptr<std::thread> server_thread_;
     WSAuthCheck auth_check_;
+    SessionConnectCallback session_connect_cb_;   // applied at session-conn creation (set before start)
     mutable std::mutex session_conn_mu_;             // guards session_conn_
     std::shared_ptr<WsSessionConn> session_conn_;  // latest session conn (retired, not freed, on reconnect)
 };
