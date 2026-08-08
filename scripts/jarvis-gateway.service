@@ -1,0 +1,77 @@
+# jarvis-gateway.service — JARVIS mobile voice gateway (systemd template)
+#
+# TEMPLATE: replace <user> in ExecStart (and any Environment= paths) with the
+# deploy user's name. Nothing here is hardcoded for a specific box.
+#
+# ── Dependency ────────────────────────────────────────────────────────────
+# The gateway is NOT self-contained: it routes LLM calls to the unified
+# server (build/1bit unified, UNIFIED_URL, default http://127.0.0.1:8088).
+# Start the unified server FIRST, e.g.:
+#     systemd-run --unit=jarvis-unified build/1bit unified
+# or add a second unit with After=jarvis-unified.service. If the unified
+# server is down the gateway still starts, but every voice turn fails at the
+# LLM step.
+#
+# ── Install ───────────────────────────────────────────────────────────────
+#     sudo cp scripts/jarvis-gateway.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now jarvis-gateway
+#     journalctl -u jarvis-gateway -f
+
+[Unit]
+Description=JARVIS mobile voice gateway (WS voice session, STT/TTS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust <user> to the deploy user.
+ExecStart=/home/<user>/1bit-systems/build/1bit jarvis
+WorkingDirectory=/home/<user>/1bit-systems
+
+# ── Environment ───────────────────────────────────────────────────────────
+# All names verified against tools/jarvis_server.cpp. Uncomment and set the
+# ones you need; commented-out defaults match the server's built-ins.
+
+# WebSocket voice-session port the phone app connects to (default 8082).
+#Environment=WS_STREAM_PORT=8082
+
+# Bearer-token gate for the WS endpoints. UNSET = no auth (phone connects
+# with any/empty token). SET = phone must send the same token in
+# Authorization: Bearer <token> or it gets 403 Forbidden
+# (tools/jarvis_server.cpp:502-507).
+#Environment=JARVIS_WS_TOKEN=change-me
+
+# Whisper GGUF model for speech-to-text. UNSET = STT unavailable, gateway
+# logs "STT unavailable (WHISPER_MODEL_PATH not set)" and turns fail at the
+# transcription step (tools/jarvis_server.cpp:330, 446).
+#Environment=WHISPER_MODEL_PATH=/home/<user>/models/whisper-small.gguf
+
+# Directory of Zyphra codec voice packs (default ~/voice-packs). TTS replies
+# come back empty/silent when no pack is found. Packs are hot-reloaded every
+# VOICE_PACKS_SCAN_SECS (default 5) — no restart needed to swap a pack
+# (tools/jarvis_server.cpp:1892, 1949).
+#Environment=VOICE_PACKS_DIR=/home/<user>/voice-packs
+
+# Persona directory (default ~/personas). Persona JSON files select the
+# voice pack and speaking style; the active persona defaults to Zaya with
+# voice pack "zaya_default.voice" (tools/jarvis/persona.cpp:37, 44).
+#Environment=PERSONAS_DIR=/home/<user>/personas
+
+# Unified server base URL for LLM routing (default http://127.0.0.1:8088,
+# tools/jarvis/routing.cpp:54-57). Point this at the unified server you
+# started first.
+#Environment=UNIFIED_URL=http://127.0.0.1:8088
+
+# HTTP API bind address (default 127.0.0.1, tools/jarvis_server.cpp:840).
+# NOTE: the WS voice port binds loopback only, with no env override
+# (tools/jarvis/audio_stream.cpp:758) — a phone over LAN/VPN cannot reach
+# ws://<box>:8082 unless a reverse proxy on this box forwards
+# /v1/voice/session to 127.0.0.1:8082.
+#Environment=JARVIS_BIND_ADDR=127.0.0.1
+
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
