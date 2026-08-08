@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eeg-medical.1bit.systems — Open EEG Foundation Models for Healthcare</title>
+<meta name="description" content="Fine-tuning Zyphra's ZUNA1.1 EEG foundation model on the Temple University Hospital EEG Corpus. Free, open-source (AGPL-3.0), no closed-source profiteering.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#021621">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+--bg:#021621; --panel:#06222f; --tile:#06222f; --inner:#021018;
+--border:#0e3346; --border2:#123a4d;
+--text:#e7f6fd; --muted:#86adbf; --dim:#4a6a7a;
+--green:#00ff00; --green-d:#00c853; --pink:#f00fd2; --blue:#12a0ed;
+--sans:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif;
+--mono:'JetBrains Mono','SFMono-Regular','Menlo',Consolas,monospace;
+--maxw:1180px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;scroll-padding-top:84px;}
+body{background:radial-gradient(1100px 560px at 80% -10%,rgba(240,15,210,.10),transparent 60%),radial-gradient(950px 520px at 4% 8%,rgba(18,160,237,.10),transparent 60%),var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;min-height:100vh;overflow-x:hidden;}
+a{color:inherit;text-decoration:none;}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 32px;}
+section{max-width:var(--maxw);margin:0 auto;}
+nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(2,22,33,.78);border-bottom:1px solid var(--border);}
+.nav-in{max-width:var(--maxw);margin:0 auto;padding:0 32px;height:68px;display:flex;align-items:center;gap:24px;}
+.brand{display:flex;align-items:center;gap:11px;}
+.mark{width:40px;height:40px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 16px rgba(240,15,210,.35);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:13px;letter-spacing:-.04em;color:var(--green);}
+.wordmark{font-size:17px;letter-spacing:-.025em;font-weight:800;}
+.wordmark .g{color:var(--green);}
+.nav-links{flex:1;display:flex;align-items:center;justify-content:center;gap:30px;}
+.nav-links a{color:var(--muted);font-size:14px;font-weight:600;transition:color .16s ease;}
+.nav-links a:hover{color:var(--text);}
+.nav-cta{display:flex;align-items:center;gap:14px;}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--sans);font-weight:700;border-radius:999px;cursor:pointer;white-space:nowrap;transition:background .16s ease,box-shadow .18s ease,border-color .16s ease,transform .12s ease;border:1px solid transparent;}
+.btn:active{transform:scale(.99);}
+.btn-primary{background:var(--green);color:var(--bg);box-shadow:0 2px 6px rgba(16,42,67,.2);}
+.btn-primary:hover{background:var(--green-d);box-shadow:0 6px 22px rgba(0,255,0,.30);}
+.btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border2);}
+.btn-ghost:hover{background:rgba(18,160,237,.08);border-color:var(--blue);}
+.btn-sm{height:36px;padding:0 16px;font-size:14px;}
+.btn-lg{height:56px;padding:0 28px;font-size:18px;}
+.eyebrow{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;background:var(--panel);color:var(--text);font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--border);}
+.pill{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 11px 0 9px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;}
+.pill .dot{width:8px;height:8px;border-radius:999px;flex:none;background:var(--pink);}
+.pill.warn{background:rgba(240,15,210,.16);color:#f5a3e6;}
+h2{font-size:clamp(26px,3vw,38px);font-weight:800;letter-spacing:-.02em;color:var(--text);}
+.lead{max-width:660px;font-size:17px;line-height:1.55;color:var(--muted);}
+.hero{padding:76px 0 44px;}
+h1{margin-top:20px;font-size:clamp(32px,4.4vw,52px);font-weight:900;line-height:1.06;letter-spacing:-.025em;max-width:760px;}
+h1 .g{color:var(--green);}
+.hero p.sub{margin-top:22px;max-width:620px;font-size:clamp(16px,1.4vw,19px);line-height:1.55;color:var(--muted);font-weight:500;}
+.cta-row{display:flex;flex-wrap:wrap;gap:14px;margin-top:30px;}
+.card{border-radius:18px;border:1px solid var(--border);background:var(--tile);}
+.mono{font-family:var(--mono);}
+.code{background:var(--inner);border:1px solid var(--border);border-radius:14px;font-family:var(--mono);white-space:pre;overflow:auto;padding:24px;max-width:680px;font-size:13px;line-height:1.8;}
+.code .c{color:var(--dim);} .code .g{color:var(--green);}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:16px;margin-top:34px;}
+.stat{padding:20px;border-radius:14px;border:1px solid var(--border);background:var(--tile);display:flex;flex-direction:column;gap:6px;}
+.stat .lbl{color:var(--muted);font-size:12px;}
+.stat .val{font-family:var(--mono);font-size:30px;font-weight:800;line-height:1;color:var(--text);}
+.block{padding:56px 32px;}
+table{width:100%;border-collapse:collapse;font-size:14px;}
+th{text-align:left;padding:10px 12px;color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);}
+td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);}
+.disclaimer{border-left:3px solid var(--pink);background:var(--inner);border-radius:10px;padding:16px 20px;font-size:13.5px;color:var(--muted);line-height:1.6;margin-top:28px;}
+footer{border-top:1px solid var(--border);margin-top:20px;padding:40px 32px;}
+.foot-links{display:flex;flex-wrap:wrap;gap:18px 22px;}
+.foot-links a{color:var(--muted);font-size:14px;font-weight:600;}
+.foot-links a:hover{color:var(--blue);}
+.foot-fine{margin-top:28px;padding-top:22px;border-top:1px solid var(--border);font-family:var(--mono);font-size:12.5px;line-height:1.9;color:var(--dim);}
+.foot-fine .p{color:var(--pink);font-style:italic;}
+.foot-fine a{color:var(--blue);font-style:normal;}
+@media (max-width:860px){.nav-links{display:none;}}
+</style>
+</head>
+<body>
+
+<nav>
+<div class="nav-in">
+<a class="brand" href="#top"><span class="mark">1bs</span><span class="wordmark"><span class="g">1</span>bit<span style="color:var(--pink);">.</span>systems <span style="color:var(--muted);font-weight:600;">/ eeg-medical</span></span></a>
+<div class="nav-links"><a href="#why">Why</a><a href="#capabilities">Capabilities</a><a href="#data">Data Access</a><a href="#quickstart">Quick Start</a></div>
+<div class="nav-cta"><a class="btn btn-primary btn-sm" href="https://github.com/bong-water-water-bong/eeg-medical" target="_blank" rel="noopener">GitHub</a></div>
+</div>
+</nav>
+
+<section id="top" class="hero wrap">
+<span class="eyebrow">Zyphra ZUNA1.1 · Clinical EEG</span>
+<div style="margin-top:14px;"><span class="pill warn"><span class="dot"></span>⚕ Open foundation models for clinical EEG</span></div>
+<h1>Clinical-grade EEG AI. <span class="g">Open. Free.</span> Not for sale.</h1>
+<p class="sub">Fine-tuning Zyphra's ZUNA1.1 EEG foundation model on the Temple University Hospital EEG Corpus — the largest public clinical EEG dataset. AGPL-3.0 code, CC-BY-4.0 data. No closed-source profiteering from this research.</p>
+<div class="cta-row">
+<a class="btn btn-primary btn-lg" href="https://github.com/bong-water-water-bong/eeg-medical" target="_blank" rel="noopener">View on GitHub →</a>
+<a class="btn btn-ghost btn-lg" href="#data">Data Access Guide →</a>
+</div>
+<div class="stats">
+<div class="stat"><span class="lbl">Base model</span><span class="val">380M</span></div>
+<div class="stat"><span class="lbl">TUH recordings</span><span class="val">30,000+</span></div>
+<div class="stat"><span class="lbl">Code license</span><span class="val" style="font-size:20px;">AGPL-3.0</span></div>
+<div class="stat"><span class="lbl">Data license</span><span class="val" style="font-size:20px;">CC-BY-4.0</span></div>
+</div>
+</section>
+
+<section id="why" class="block">
+<span class="eyebrow">Why</span>
+<h2 style="margin:16px 0 8px;">Most clinical EEG AI is locked behind a paywall.</h2>
+<p class="lead">Clinical EEG is underserved by AI. Most existing models are proprietary, gated behind vendor licenses, or trained only on healthy subjects rather than real clinical seizure and non-seizure recordings. ZUNA1.1 is a 380M-parameter diffusion autoencoder that can reconstruct, denoise, and upsample EEG from any montage — but it was trained on public research datasets, not clinical-grade data. This project fine-tunes it on real hospital recordings and publishes the result freely, so researchers and clinics don't have to buy access to a black box.</p>
+</section>
+
+<section id="capabilities" class="block">
+<span class="eyebrow">Capabilities</span>
+<h2 style="margin:16px 0 20px;">What ZUNA1.1 does.</h2>
+<div class="card" style="padding:8px 24px;overflow-x:auto;">
+<table>
+<tr><th>Capability</th><th>Clinical relevance</th></tr>
+<tr><td>Denoise channels</td><td>Removes muscle/eye-blink artifacts without losing signal</td></tr>
+<tr><td>Reconstruct missing channels</td><td>Fixes dead electrodes, extends recordings from sparse montages</td></tr>
+<tr><td>Upsample montages</td><td>Predicts 128-channel EEG from a standard 19-channel clinical recording</td></tr>
+<tr><td>Channel-agnostic (3D scalp coordinates + time)</td><td>Works on any electrode layout via 4D rotary position encoding — no retraining per montage</td></tr>
+<tr><td>Variable-length input (0.5–30s)</td><td>Handles short trial snippets and long continuous recordings with no reconfiguration</td></tr>
+</table>
+</div>
+<h2 style="margin:40px 0 16px;font-size:22px;">Planned clinical benchmarks</h2>
+<p class="lead">The following evaluations are <strong style="color:var(--text);">planned, not yet completed</strong>: seizure detection (ictal vs. interictal vs. normal), artifact robustness under clinical noise, montage generalization (10-20, neonatal, intraoperative ECoG), pathology-aware denoising, and cross-dataset transfer beyond TUH.</p>
+</section>
+
+<section id="data" class="block">
+<span class="eyebrow">Data Access</span>
+<h2 style="margin:16px 0 8px;">Temple University Hospital EEG Corpus.</h2>
+<p class="lead">The TUH EEG Corpus requires a data access request directly from Temple University. Once access is granted: place EDF files under <code>data/tuh_raw/</code>, run <code>scripts/preprocess_tuh.py</code>, and the output lands in <code>data/tuh_processed/</code> as ZUNA-compatible pairs, ready for fine-tuning.</p>
+<div class="disclaimer">This is a research pipeline, not a diagnostic tool. Outputs have not been validated for clinical decision-making and should not be used to diagnose or treat patients.</div>
+</section>
+
+<section id="quickstart" class="block">
+<span class="eyebrow">Quick Start</span>
+<h2 style="margin:16px 0 20px;">Fine-tune in five commands.</h2>
+<div class="code">
+<span class="c"># Install</span>
+<span class="g">git clone https://github.com/eeg-medical/eeg-medical.git && cd eeg-medical
+pip install -e ".[gpu]"</span>
+
+<span class="c"># Download TUH EEG (requires Temple University access grant)</span>
+<span class="g">python scripts/download_tuh.py --output data/tuh_raw</span>
+
+<span class="c"># Preprocess into ZUNA-compatible format</span>
+<span class="g">python scripts/preprocess_tuh.py --input data/tuh_raw --output data/tuh_processed</span>
+
+<span class="c"># Fine-tune ZUNA1.1 on clinical EEG</span>
+<span class="g">python scripts/finetune.py --config configs/tuh_clinical_finetune.yaml</span>
+</div>
+</section>
+
+<footer class="wrap">
+<div class="foot-links">
+<a href="https://github.com/bong-water-water-bong/eeg-medical" target="_blank" rel="noopener">GitHub</a>
+<a href="https://1bit.systems">1bit.systems</a>
+<a href="#data">Data Access</a>
+<a href="https://github.com/bong-water-water-bong/eeg-medical/blob/main/LICENSE">License</a>
+</div>
+<div class="foot-fine">
+AGPL-3.0 code · CC-BY-4.0 data · research software, not a certified medical device.<br>
+Built on <a href="https://huggingface.co/Zyphra/ZUNA1.1" target="_blank" rel="noopener" class="p">ZUNA1.1 by Zyphra</a> (<a href="https://www.zyphra.com/our-work/zuna1.1" target="_blank" rel="noopener">announcement</a>, Apache-2.0). Fine-tuned on the Temple University Hospital EEG Corpus.<br>
+—bong-water-water-bong · "free for research and commercial use, no closed-source profiteering"
+</div>
+</footer>
+
+</body>
+</html>
