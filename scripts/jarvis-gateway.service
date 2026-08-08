@@ -36,6 +36,13 @@ WorkingDirectory=/home/<user>/1bit-systems
 # WebSocket voice-session port the phone app connects to (default 8082).
 #Environment=WS_STREAM_PORT=8082
 
+# WebSocket bind address (default 127.0.0.1, loopback only — safe). Set
+# 0.0.0.0 to bind all interfaces so the phone can reach the WS port over
+# LAN/VPN (tools/jarvis/audio_stream.cpp:758). RECOMMENDED: keep
+# JARVIS_WS_TOKEN set when binding 0.0.0.0 — the WS endpoints are then
+# reachable from anywhere on the network.
+#Environment=WS_STREAM_BIND=0.0.0.0
+
 # Bearer-token gate for the WS endpoints. UNSET = no auth (phone connects
 # with any/empty token). SET = phone must send the same token in
 # Authorization: Bearer <token> or it gets 403 Forbidden
@@ -64,10 +71,6 @@ WorkingDirectory=/home/<user>/1bit-systems
 #Environment=UNIFIED_URL=http://127.0.0.1:8088
 
 # HTTP API bind address (default 127.0.0.1, tools/jarvis_server.cpp:840).
-# NOTE: the WS voice port binds loopback only, with no env override
-# (tools/jarvis/audio_stream.cpp:758) — a phone over LAN/VPN cannot reach
-# ws://<box>:8082 unless a reverse proxy on this box forwards
-# /v1/voice/session to 127.0.0.1:8082.
 #Environment=JARVIS_BIND_ADDR=127.0.0.1
 
 Restart=on-failure
