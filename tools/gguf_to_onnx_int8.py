@@ -141,7 +141,7 @@ def main():
             add_tensor(f"model.layers.{l}.self_attn.q_norm.weight", qn.astype(np.float32))
         if kn is not None:
             add_tensor(f"model.layers.{l}.self_attn.k_norm.weight", kn.astype(np.float32))
-        for gguf_name, onnx_name in linear_map.items():
+for gguf_name, onnx_name in linear_map.items():
             w = get(f"blk.{l}.{gguf_name}")
             if w is None: raise SystemExit(f"missing {gguf_name} layer {l}")
             # gguf stores [N, K] row-major already (output-first) — ONNX wants
