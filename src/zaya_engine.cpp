@@ -304,9 +304,32 @@ static void dump_layer_tensors(const NpuOnebpModel& model, const std::string& p)
 }
 
 static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
-                             const ZayaConfig& eng, hipStream_t st) {
+                             const ZayaConfig& eng, ZayaState* s, hipStream_t st) {
     const std::string p = "blk." + std::to_string(il) + ".";
     bool ok = true;
+
+    // Issue #1521: an allocation failure mid-load used to be silent (the layer
+    // just "failed to load" with no reason). The 74B's fp16 expert buffers
+    // (~145 GB) exceed the 62 GB Strix Halo pool — without this print that OOM
+    // looked like a loader mapping bug.
+// Issue #1521: an allocation failure mid-load used to be silent (the layer
+// just "failed to load" with no reason). The 74B's fp16 expert buffers
+// (~145 GB) exceed the 62 GB Strix Halo pool — without this print that OOM
+// looked like a loader mapping bug.
+#define LOADER_ALLOC_OR_FAIL(expr, what)                                          \
+    do {                                                                          \
+        if ((expr) != hipSuccess) {                                               \
+            fprintf(stderr, "  onebp: %s allocation failed (%s) — aborting\n",   \
+                    (what), hipGetErrorString(hipGetLastError()));                \
+            ok = false;                                                           \
+        }                                                                         \
+    } while (0)
+
+    auto alloc_fail = [&](const char* what) {
+        fprintf(stderr, "  onebp: %s allocation failed (%s) — aborting\n",
+                what, hipGetErrorString(hipGetLastError()));
+        ok = false;
+    };
 
     // FP16 upload. optional=true (bias terms): missing → zero-fill (bias=0
     // default). optional=false (weights): missing → gpu stays null (sublayer
@@ -318,7 +341,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         if (!model.get_tensor_f32((p + n).c_str(), v)) {
             if (optional) {
                 fprintf(stderr, "  onebp: '%s%s' absent — zero-filled (optional bias)\n", p.c_str(), n);
-                if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
+                if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { alloc_fail("f16"); return; }
                 (void)hipMemsetAsync(gpu, 0, (size_t)count * 2, st);
             }
             return;
@@ -328,7 +351,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                     p.c_str(), n, v.size(), count);
             ok = false; return;
         }
-        if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
+        if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { alloc_fail("f16"); return; }
         upf16(v, gpu, count, st);
     };
     // FP32 upload — same semantics as f16.
@@ -338,7 +361,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         if (!model.get_tensor_f32((p + n).c_str(), v)) {
             if (optional) {
                 fprintf(stderr, "  onebp: '%s%s' absent — zero-filled (optional bias)\n", p.c_str(), n);
-                if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
+                if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { alloc_fail("f32"); return; }
                 (void)hipMemsetAsync(gpu, 0, (size_t)count * 4, st);
             }
             return;
@@ -348,7 +371,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                     p.c_str(), n, v.size(), count);
             ok = false; return;
         }
-        if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
+        if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { alloc_fail("f32"); return; }
         upf32(v, gpu, count, st);
     };
 
@@ -361,20 +384,109 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         fprintf(stderr, "  onebp: '%sattn_norm.weight' missing — required on every layer — aborting\n", p.c_str());
         return false;
     }
-    f16("attn_q.weight", l.wq, eng.qd * eng.h, false);
-    f16("attn_k.weight", l.wk, eng.kd * eng.h, false);
-    f16("cca_val_proj1.weight", l.wv1, (eng.kd / 2) * eng.h, false);
-    f16("cca_val_proj2.weight", l.wv2, (eng.kd / 2) * eng.h, false);
+    // QKV projections (issue #1521): GGUF stores [in=H, out=d] (llama.cpp
+    // mul_mat convention); the engine's moe_tiled_gemv reads [out=d, in=H].
+    // Accept both orientations — transpose the GGUF one, take 8B-era dumps
+    // ([d, h]) as-is. The old loader took the file as-is → garbage for any
+    // GGUF-derived .1bp.
+    auto f16_mm = [&](const char* n, __half*& gpu, int d) {
+        gpu = nullptr;
+        std::string nm = p + n;
+        auto* te = model.find_tensor(nm.c_str());
+        int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
+        std::vector<float> v;
+        if (!model.get_tensor_f32(nm.c_str(), v)) return;  // sublayer absent
+        if (rows == d && cols == eng.h && (int)v.size() >= (size_t)d * eng.h) {
+            if (hipMalloc(&gpu, (size_t)d * eng.h * 2) != hipSuccess) { alloc_fail("qkv proj"); return; }
+            upf16(v, gpu, d * eng.h, st);
+        } else if (rows == eng.h && cols == d && (int)v.size() >= (size_t)d * eng.h) {
+            std::vector<float> tr((size_t)d * eng.h);
+            for (int i = 0; i < d; i++)
+                for (int j = 0; j < eng.h; j++)
+                    tr[(size_t)i * eng.h + j] = v[(size_t)j * d + i];
+            if (hipMalloc(&gpu, (size_t)d * eng.h * 2) != hipSuccess) { alloc_fail("qkv proj"); return; }
+            upf16(tr, gpu, d * eng.h, st);
+        } else {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [d=%d,H=%d] either way — aborting\n",
+                    nm.c_str(), rows, cols, v.size(), d, eng.h);
+            ok = false;
+        }
+    };
+    f16_mm("attn_q.weight", l.wq, eng.qd);
+    f16_mm("attn_k.weight", l.wk, eng.kd);
+    f16_mm("cca_val_proj1.weight", l.wv1, eng.kd / 2);
+    f16_mm("cca_val_proj2.weight", l.wv2, eng.kd / 2);
     f16("attn_norm_2.weight", l.pan, eng.h, false);  // .bin-era only; absent in GGUF → null → skipped at use
-    f32("cca_conv_grp.weight", l.cdw, eng.qkv * 2, false);
-    f32("cca_conv_grp_grouped.weight", l.cgw, eng.qkv * 128 * 2, false);
     f32("cca_k_scale.weight", l.ks, eng.nkv, false);
     f32("res_scale_hs.weight", l.pahss, eng.h, false);
-    f32("res_scale_res.weight", l.parss, eng.h, false);
+    f32("res_scale_res.weight", l.parss, eng.h, true);  // TENSOR_NOT_REQUIRED in llama.cpp — absent on attention layers in the real 74B; zero = residual term dropped
+    if (!ok) return false;
+
+    // CCA conv weights (issue #1521). GGUF names: ssm_conv1d (depthwise,
+    // [t=2, qkv]) and cca_conv_grp (grouped, 3D [t, qkv/n_groups, qkv]). The
+    // cca_prep kernel reads cdw[c*2+t] and cgw[oc*2*gc + j*2 + t]. gguf_to_onebp
+    // stores 2D tensors transposed (rows=shape[1], cols=shape[0]), so the
+    // converted ssm_conv1d is already [c, t] = engine-native; accept both
+    // orientations. The old names (cca_conv_grp.weight [qkv,2],
+    // cca_conv_grp_grouped.*) do not exist in zaya GGUFs.
+    {
+        std::string nm = p + "ssm_conv1d.weight";
+        auto* te = model.find_tensor(nm.c_str());
+        int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
+        std::vector<float> v;
+        l.cdw = nullptr;
+        if (!te) { /* sublayer absent */ }
+        else if (model.get_tensor_f32(nm.c_str(), v) && rows == eng.qkv && cols == 2 && (int)v.size() >= eng.qkv * 2) {
+            // [c, t] — engine-native (converter's transposed 2D layout)
+            if (hipMalloc(&l.cdw, (size_t)eng.qkv * 2 * 4) != hipSuccess) alloc_fail("ssm_conv1d");
+            else upf32(v, l.cdw, eng.qkv * 2, st);
+        } else if (model.get_tensor_f32(nm.c_str(), v) && rows == 2 && cols == eng.qkv && (int)v.size() >= eng.qkv * 2) {
+            std::vector<float> tr((size_t)eng.qkv * 2);
+            for (int c = 0; c < eng.qkv; c++)
+                for (int t = 0; t < 2; t++)
+                    tr[(size_t)c * 2 + t] = v[(size_t)t * eng.qkv + c];
+            if (hipMalloc(&l.cdw, (size_t)eng.qkv * 2 * 4) != hipSuccess) alloc_fail("ssm_conv1d");
+            else upf32(tr, l.cdw, eng.qkv * 2, st);
+        } else {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [qkv=%d,2] either way — aborting\n",
+                    nm.c_str(), rows, cols, v.size(), eng.qkv);
+            ok = false;
+        }
+    }
+    if (!ok) return false;
+    {
+        std::string nm = p + "cca_conv_grp.weight";
+        auto* te = model.find_tensor(nm.c_str());
+        const int gc = eng.qkv / (eng.nq + eng.nkv);  // group width (128 for 8B/74B)
+        l.cgw = nullptr;
+        if (!te) { /* sublayer absent */ }
+        else if (te->ndim != 3 || te->num_experts != 2 || te->rows != gc || te->cols != eng.qkv) {
+            fprintf(stderr, "  onebp: '%s' is [%d x %d x %d], want 2 x %d x %d — aborting\n",
+                    nm.c_str(), te->num_experts, te->rows, te->cols, gc, eng.qkv);
+            ok = false;
+        } else {
+            std::vector<float> tr((size_t)eng.qkv * gc * 2);
+            for (int t = 0; t < 2; t++) {
+                std::vector<float> v;
+                if (!model.get_tensor_f32_expert(nm.c_str(), t, v) || (int)v.size() < (size_t)gc * eng.qkv) {
+                    fprintf(stderr, "  onebp: '%s' expert %d/2 missing/short — aborting\n", nm.c_str(), t);
+                    ok = false;
+                    break;
+                }
+                for (int j = 0; j < gc; j++)
+                    for (int oc = 0; oc < eng.qkv; oc++)
+                        tr[(size_t)oc * gc * 2 + j * 2 + t] = v[(size_t)j * eng.qkv + oc];
+            }
+            if (ok) {
+                if (hipMalloc(&l.cgw, (size_t)eng.qkv * gc * 2 * 4) != hipSuccess) alloc_fail("cca_conv_grp");
+                if (ok) upf32(tr, l.cgw, eng.qkv * gc * 2, st);
+            }
+        }
+    }
     if (!ok) return false;
     // Conv / residual-scale BIASES are optional (bias=0 default).
-    f32("cca_conv_grp.bias", l.cdb, eng.qkv, true);
-    f32("cca_conv_grp_grouped.bias", l.cgb, eng.qkv, true);
+    f32("ssm_conv1d.bias", l.cdb, eng.qkv, true);
+    f32("cca_conv_grp.bias", l.cgb, eng.qkv, true);
     f32("res_scale_hs.bias", l.pahsb, eng.h, true);
     f32("res_scale_res.bias", l.parsb, eng.h, true);
     if (!ok) return false;
@@ -390,14 +502,14 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         bool found = model.get_tensor_f32(nm.c_str(), v);
         l.wo = nullptr;
         if (found && rows == eng.h && cols == eng.qd && (int)v.size() >= eng.h * eng.qd) {
-            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
+            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) alloc_fail("attn_output");
             else upf16(v, l.wo, eng.h * eng.qd, st);
         } else if (found && rows == eng.qd && cols == eng.h && (int)v.size() >= eng.h * eng.qd) {
             std::vector<float> tr((size_t)eng.h * eng.qd);
             for (int i = 0; i < eng.h; i++)
                 for (int k = 0; k < eng.qd; k++)
                     tr[(size_t)i * eng.qd + k] = v[(size_t)k * eng.h + i];
-            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
+            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) alloc_fail("attn_output");
             else upf16(tr, l.wo, eng.h * eng.qd, st);
         } else if (found) {
             fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,QD=%d] — aborting\n",
@@ -408,27 +520,32 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
     }
     if (!ok) return false;
 
-    // ── Router group (odd layers) ──
-    // gdw (ffn_gate.weight) — engine stores [H, rtr_h] (the transpose of the
-    // upstream [rtr_h, H]; same convention as the .bin loader and
-    // zaya_apply_lora, read stride-1 by eda_router_gpu_kernel). Transpose
-    // only when the file's recorded dims say [rtr_h, H] (plan step 6).
+    // ── Router group (odd layers) — GGUF topology (issue #1521):
+    //   down(ffn_gate_inp) → norm(ffn_norm) → mlp0(ffn_gate) → gelu →
+    //   mlp2(zaya_router_mlp2) → gelu → mlp4(zaya_router_mlp4) → softmax
+    // maps 1:1 onto the engine kernel (gdw → rfn → rf1 → gelu → rf2 → gelu
+    // → rout). The old 8B-era names (zaya_router_mlp2→rf1, mlp4-pad→rf2,
+    // out_proj→rout) do not exist in zaya GGUFs and were silently
+    // zero-filled/garbage before the strict loader.
+    // gdw (ffn_gate_inp.weight) — engine reads [H, rtr_h] stride-1
+    // (gdw[j*rtr_h+i]); GGUF stores [in=H, out=rtr_h] — direct, with the
+    // transpose branch for [rtr_h, H] dumps.
     {
-        std::string nm = p + "ffn_gate.weight";
+        std::string nm = p + "ffn_gate_inp.weight";
         std::vector<float> v;
         auto* te = model.find_tensor(nm.c_str());
         int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
         bool found = model.get_tensor_f32(nm.c_str(), v);
         l.gdw = nullptr;
         if (found && rows == eng.h && cols == eng.rtr_h && (int)v.size() >= eng.h * eng.rtr_h) {
-            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) alloc_fail("ffn_gate_inp");
             else upf32(v, l.gdw, eng.h * eng.rtr_h, st);
         } else if (found && rows == eng.rtr_h && cols == eng.h && (int)v.size() >= eng.h * eng.rtr_h) {
             std::vector<float> tr((size_t)eng.h * eng.rtr_h);
             for (int i = 0; i < eng.rtr_h; i++)
                 for (int j = 0; j < eng.h; j++)
                     tr[(size_t)j * eng.rtr_h + i] = v[(size_t)i * eng.h + j];
-            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) alloc_fail("ffn_gate_inp");
             else upf32(tr, l.gdw, eng.h * eng.rtr_h, st);
         } else if (found) {
             fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,rtr_h=%d] — aborting\n",
@@ -438,40 +555,60 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         // not found → l.gdw stays null (MoE sublayer absent on even layers)
     }
     if (!ok) return false;
-    f32("ffn_gate.bias", l.gdb, eng.rtr_h, true);
+    // Router biases/norms (biases optional, bias=0 default).
+    f32("ffn_gate_inp.bias", l.gdb, eng.rtr_h, true);
     f32("ffn_norm.weight", l.rfn, eng.rtr_h, false);
-    f32("zaya_router_mlp2.weight", l.rf1, eng.rtr_h * eng.rtr_h, false);
-    f32("zaya_router_mlp2.bias", l.rf1b, eng.rtr_h, true);
-    f32("zaya_router_mlp4.bias", l.rf2b, eng.rtr_h, true);
-    f32("mlp.gate.router_mlp.out_proj.weight", l.rout, eng.n_exp_t * eng.rtr_h, false);
+    f32("ffn_gate.weight", l.rf1, eng.rtr_h * eng.rtr_h, false);        // mlp0
+    f32("ffn_gate.bias", l.rf1b, eng.rtr_h, true);
+    f32("zaya_router_mlp2.weight", l.rf2, eng.rtr_h * eng.rtr_h, false); // mlp2
+    f32("zaya_router_mlp2.bias", l.rf2b, eng.rtr_h, true);
     f32("zaya_router_biases.weight", l.bb, eng.n_exp_t, true);
     if (!ok) return false;
 
-    // rf2 (zaya_router_mlp4.weight) — 74B quirk: file stores [n_exp_t, rtr_h]
-    // (NE+1 slots), engine wants [rtr_h, rtr_h] — zero-pad to square
-    // (plan step 6; pattern from tests/zaya_gpu_decode.cpp). Padded slots
-    // get zero logits (correct: they are invalid expert ids).
+    // rout (zaya_router_mlp4.weight) — the GGUF's final projection is
+    // [rtr_h, n_exp_t] (mlp4, llama.cpp mul_mat [in, out]); the engine's
+    // router kernel reads [out=n_exp_t, in=rtr_h] — transpose. Accept
+    // [n_exp_t, rtr_h] dumps as-is. (The old zero-pad-to-square quirk was
+    // based on a stale plan and produced garbage for the real 74B.)
     {
         std::string nm = p + "zaya_router_mlp4.weight";
         std::vector<float> v;
+        auto* te = model.find_tensor(nm.c_str());
+        int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
         bool found = model.get_tensor_f32(nm.c_str(), v);
-        l.rf2 = nullptr;
-        if (found && (int)v.size() == eng.rtr_h * eng.rtr_h) {
-            if (hipMalloc(&l.rf2, (size_t)eng.rtr_h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
-            else upf32(v, l.rf2, eng.rtr_h * eng.rtr_h, st);
-        } else if (found && (int)v.size() == eng.n_exp_t * eng.rtr_h) {
-            if (hipMalloc(&l.rf2, (size_t)eng.rtr_h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
-            else {
-                (void)hipMemsetAsync(l.rf2, 0, (size_t)eng.rtr_h * eng.rtr_h * 4, st);
-                (void)hipMemcpyAsync(l.rf2, v.data(), (size_t)v.size() * 4, hipMemcpyHostToDevice, st);
-            }
-        } else if (found) {
-            fprintf(stderr, "  onebp: '%s' size %zu (want %d or %d) — aborting\n",
-                    nm.c_str(), v.size(), eng.rtr_h * eng.rtr_h, eng.n_exp_t * eng.rtr_h);
+        l.rout = nullptr;
+        if (!found) { /* sublayer absent */ }
+        else if (found && rows == eng.rtr_h && cols == eng.n_exp_t && (int)v.size() >= (size_t)eng.rtr_h * eng.n_exp_t) {
+            std::vector<float> tr((size_t)eng.n_exp_t * eng.rtr_h);
+            for (int i = 0; i < eng.n_exp_t; i++)
+                for (int j = 0; j < eng.rtr_h; j++)
+                    tr[(size_t)i * eng.rtr_h + j] = v[(size_t)j * eng.n_exp_t + i];
+            if (hipMalloc(&l.rout, (size_t)eng.n_exp_t * eng.rtr_h * 4) != hipSuccess) alloc_fail("zaya_router_mlp4");
+            else upf32(tr, l.rout, eng.n_exp_t * eng.rtr_h, st);
+        } else if (found && rows == eng.n_exp_t && cols == eng.rtr_h && (int)v.size() >= (size_t)eng.n_exp_t * eng.rtr_h) {
+            if (hipMalloc(&l.rout, (size_t)eng.n_exp_t * eng.rtr_h * 4) != hipSuccess) alloc_fail("zaya_router_mlp4");
+            else upf32(v, l.rout, eng.n_exp_t * eng.rtr_h, st);
+        } else {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [rtr_h=%d,n_exp_t=%d] either way — aborting\n",
+                    nm.c_str(), rows, cols, v.size(), eng.rtr_h, eng.n_exp_t);
             ok = false;
         }
     }
     if (!ok) return false;
+
+    // EDA scale (zaya_router_eda.weight [rtr_h] → mean scalar; same handling
+    // as the .bin loader's router_states_scale). Optional.
+    {
+        std::string nm = p + "zaya_router_eda.weight";
+        std::vector<float> v;
+        s->has_eda[il] = false;
+        s->eda_scale[il] = 0.0f;
+        if (model.get_tensor_f32(nm.c_str(), v) && (int)v.size() >= eng.rtr_h) {
+            float sum = 0; for (float x : v) sum += x;
+            s->eda_scale[il] = sum / (float)eng.rtr_h;
+            s->has_eda[il] = true;
+        }
+    }
 
     // ── MoE experts (plan step 5): ndim=3 [NE, R, C], dequant each expert
     // via get_tensor_f32_expert and concatenate. gu = [NE, 2*n_ff, H] with
@@ -498,7 +635,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                 ok = false;
                 return;
             }
-            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { ok = false; return; }
+            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { alloc_fail("experts"); return; }
             std::vector<__half> hbuf((size_t)rows * cols);
             for (int e = 0; e < eng.n_exp; e++) {
                 std::vector<float> v;
@@ -565,8 +702,8 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         dump_layer_tensors(model, p);
         return false;
     }
-    if (attn_all && (!l.pahss || !l.parss)) {
-        fprintf(stderr, "  onebp: layer %d has attention but no res_scale_hs/res_scale_res — aborting\n", il);
+    if (attn_all && !l.pahss) {
+        fprintf(stderr, "  onebp: layer %d has attention but no res_scale_hs — aborting\n", il);
         dump_layer_tensors(model, p);
         return false;
     }
@@ -903,7 +1040,7 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
     s->has_eda.assign(eng.n_layers, false);
     s->eda_scale.assign(eng.n_layers, 0.0f);
     for (int il = 0; il < eng.n_layers; il++) {
-        if (!load_layer_onebp(model, il, s->lw[il], eng, s->st)) {
+        if (!load_layer_onebp(model, il, s->lw[il], eng, s, s->st)) {
             fprintf(stderr, "zaya_init_onebp: layer %d failed to load (see messages above) — aborting init\n", il);
             zaya_destroy(s);
             return nullptr;

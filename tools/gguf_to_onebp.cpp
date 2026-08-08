@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
         // If shape[2] is more consistent than shape[0], use column-major
         // Require at least 2 matching tensors and shape[2] being plausible as expert count
         // (expert count should be smaller than feature dimensions)
-        if (s2_count > s0_count && s2_count >= 2 &&
+        if (s2_count >= s0_count && s2_count >= 2 &&
             (first_gate_s0 == 0 || s2_first < first_gate_s0)) {
             moe_shape_colmajor = true;
         }
@@ -211,6 +211,24 @@ int main(int argc, char** argv) {
     // Key-value heads default to attention heads; head_dim derived if absent.
     if (!hdr.num_kv_heads && hdr.num_attention_heads) hdr.num_kv_heads = hdr.num_attention_heads;
 
+    // Tensor-shape fallback for metadata-less GGUFs (JusteLeo's ZAYA1-8B
+    // has NO dims keys — only general.* and tokenizer.*; issue #1521).
+    if (!hdr.hidden_size || !hdr.num_layers || !hdr.vocab_size) {
+        auto* emb = reader.tensor_info("token_embd.weight");
+        if (!hdr.hidden_size && emb && emb->shape.size() >= 2) hdr.hidden_size = (int)emb->shape[0];
+        if (!hdr.vocab_size && emb && emb->shape.size() >= 2) hdr.vocab_size = (int)emb->shape[1];
+        if (!hdr.num_layers) {
+            int max_blk = -1;
+            for (auto& tn : reader.tensor_names()) {
+                if (tn.rfind("blk.", 0) == 0 && tn.find('.', 4) != std::string::npos) {
+                    int n = atoi(tn.c_str() + 4);
+                    if (n > max_blk) max_blk = n;
+                }
+            }
+            if (max_blk >= 0) hdr.num_layers = max_blk + 1;
+        }
+    }
+
     // Infer head_dim from the Q/K projection shapes when the metadata lacks it
     // (fixes #1243 re-conversion: dense llama/qwen2vl/olmo2 GGUFs without
     // attention.key_length hit HD=0 and refused to convert — the old fallback
@@ -227,6 +245,8 @@ int main(int argc, char** argv) {
                 hd = q_dim / hdr.num_attention_heads;
             else if (hdr.num_kv_heads > 0 && k_dim > 0 && k_dim % hdr.num_kv_heads == 0)
                 hd = k_dim / hdr.num_kv_heads;
+            else if (q_dim > 0 && k_dim > 0 && q_dim % 128 == 0 && k_dim % 128 == 0)
+                hd = 128;  // zaya/CCA archs use hd=128 (8B: qd=1024, kd=256; 74B: qd=2048, kd=256)
             else if (q_dim > 0) {
                 // heuristic fallback (same as the old MoE-path code)
                 hd = hdr.hidden_size >= 8192 ? 256 : hdr.hidden_size >= 4096 ? 128 : 64;
@@ -306,6 +326,17 @@ int main(int argc, char** argv) {
         // else keep default ONEBP_DENSE (0) for standard dense transformers
     }
 
+    // Some zaya GGUFs declare vocab_size larger than the embedding rows
+    // (8B: 262272 metadata vs 262147 rows) — the embedding defines the real
+    // vocab for the engine (tied lm_head), so prefer the rows (issue #1521).
+    {
+        auto* emb = reader.tensor_info("token_embd.weight");
+        if (emb && emb->shape.size() >= 2 && (int)emb->shape[1] != hdr.vocab_size) {
+            fprintf(stderr, "  NOTE: vocab_size %d != token_embd rows %d — using rows\n",
+                    hdr.vocab_size, (int)emb->shape[1]);
+            hdr.vocab_size = (int)emb->shape[1];
+        }
+    }
     printf("Model: H=%d L=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",
            hdr.hidden_size, hdr.num_layers, hdr.num_attention_heads,
            hdr.num_kv_heads, hdr.head_dim, hdr.intermediate_size, hdr.vocab_size);
@@ -359,10 +390,19 @@ int main(int argc, char** argv) {
             data_off += tiled;
             if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
-            // ndim == 3: MoE expert-stacked tensor [num_experts, rows, cols]
+            // ndim == 3: expert-stacked tensor. Expert tensors (name contains
+            // 'exps.'/'shexp') follow the detected layout; non-expert 3D
+            // tensors (zaya's cca_conv_grp.weight [t, qkv/n_groups, qkv]) are
+            // NOT expert stacks — always read row-major (issue #1522).
+            bool expert_tensor = (tn.find("exps.") != std::string::npos || tn.find("shexp") != std::string::npos);
             int ne, r, c;
-            if (moe_shape_colmajor) {
-                // column-major [cols, rows, experts]
+            if (!expert_tensor) {
+                ne = (int)inf->shape[0];
+                r  = (int)inf->shape[1];
+                c  = (int)inf->shape[2];
+            } else if (moe_shape_colmajor) {
+                // column-major [cols, rows, experts] (also zaya's [rows,
+                // cols, experts] read back as cols=shape[0], rows=shape[1])
                 ne = (int)inf->shape[2];  // experts
                 r  = (int)inf->shape[1];  // rows
                 c  = (int)inf->shape[0];  // cols

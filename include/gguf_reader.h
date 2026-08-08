@@ -55,8 +55,10 @@ enum GgufDtype : uint32_t {
     GGUF_DTYPE_IQ2_S   = 21,
     GGUF_DTYPE_IQ4_XS  = 22,
     GGUF_DTYPE_IQ1_M   = 23,
-    GGUF_DTYPE_BF16   = 24,
-    GGUF_DTYPE_F32_V3 = 30,  // GGUF v3: F32 with alternate encoding (fixes Qwen3 loading)
+    GGUF_DTYPE_BF16   = 24,  // legacy fork numbering (current llama.cpp: 30); kept for enum stability
+    GGUF_DTYPE_F32_V3 = 30,  // current llama.cpp: GGML_TYPE_BF16 (issue #1521 — zaya GGUFs store
+                             // cca_conv_grp as BF16; reading it as 4-byte f32 halves the tensor
+                             // and bleeds the next tensor's bytes into the second slab)
     GGUF_DTYPE_Q4_0_4_4 = 26,
     GGUF_DTYPE_Q4_0_4_8 = 27,
     GGUF_DTYPE_Q4_0_8_8 = 28,
