@@ -337,6 +337,153 @@ static WhisperModel* get_whisper_model() {
     return g_whisper;
 }
 
+// ── /v1/voice/session : full-duplex mobile voice loop (Task 3) ──────────
+//
+// Wiring between the WebSocketServer session connection (Task 2) and the
+// real STT/LLM/TTS stack.  The connection loop forwards on_state/on_error
+// itself; this block owns on_utterance: whisper (fed the PCM16 utterance
+// directly — it is already 16k mono, no ffmpeg round-trip), LLM via the
+// /v1/audio/chat message-building pattern, and TTS streamed through the
+// same codec path as the legacy WS downlink (CodecTts::synthesize → WAV
+// data chunk → float32 frames; the codec output is never transcoded).
+//
+// Threading: the utterance callback fires on the server thread; the whole
+// STT→LLM→TTS chain runs on a detached worker holding a shared_ptr copy of
+// the connection, so a reconnect mid-stream retires (never frees) the conn
+// (see WsSessionConn lifetime in audio_stream.h).  VoiceSession itself is
+// server-thread-only, so the worker only pokes the cross-thread
+// set_speaking_requested flag, which the server loop applies at its next
+// 50 ms tick; the loop's own 100 ms Speaking→Listening re-arm covers the
+// tail of the stream.
+
+// Stream one synthesized WAV through send_audio as float32 frames, paced
+// at real time — mirrors the legacy downlink loop in audio_stream.cpp
+// (CodecTts output is 24 kHz mono s16).
+static void ws_stream_wav(std::shared_ptr<jarvis::WsSessionConn> conn, const std::string& wav) {
+    if (wav.size() < 44 || conn->cancelled()) return;
+    size_t off = 12, pcm_off = 0, pcm_size = 0;
+    while (off + 8 <= wav.size()) {
+        uint32_t chunk_size = *(const uint32_t*)(wav.data() + off + 4);
+        if (wav.compare(off, 4, "data") == 0) { pcm_off = off + 8; pcm_size = chunk_size; break; }
+        off += 8 + chunk_size;
+    }
+    if (pcm_off == 0 || pcm_off >= wav.size()) return;
+    const int16_t* s16 = reinterpret_cast<const int16_t*>(wav.data() + pcm_off);
+    size_t n_samples = pcm_size / 2;
+    constexpr int kChunk = 312;        // 13 ms @ 24 kHz (codec frame size)
+    constexpr int kRate = 24000;
+    std::vector<float> f32(kChunk);
+    for (size_t i = 0; i < n_samples; i += kChunk) {
+        size_t n = std::min<size_t>(kChunk, n_samples - i);
+        for (size_t j = 0; j < n; j++) f32[j] = s16[i + j] / 32768.0f;
+        if (!conn->send_audio(f32.data(), (int)n)) break;   // cancelled / peer gone
+        std::this_thread::sleep_for(std::chrono::milliseconds((int)(n * 1000 / kRate)));
+    }
+}
+
+// Synthesize + stream text through the codec voice pack (Piper fallback).
+static void ws_session_speak(std::shared_ptr<jarvis::WsSessionConn> conn, const std::string& text) {
+    std::string voice = g_persona_mgr.active().voice_pack;
+    if (voice.empty()) voice = "en_US-lessac-medium";
+    std::string wav = g_codec_tts.has_voice(voice) ? g_codec_tts.synthesize(text, voice) : "";
+    if (wav.empty()) wav = synthesize_speech(text, voice);
+    if (!wav.empty()) ws_stream_wav(conn, wav);
+}
+
+// Re-arm Processing→Speaking→Listening via the cross-thread flag: the
+// server thread applies one value per 50 ms tick, so back-to-back true/false
+// stores collapse into the false and the session would stay in Processing
+// forever (set_speaking only leaves Processing through Speaking).  Hold the
+// flag true ~200 ms before clearing it.
+static void ws_session_rearm(std::shared_ptr<jarvis::WsSessionConn> conn) {
+    conn->set_speaking_requested(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    conn->set_speaking_requested(false);
+}
+
+// One utterance turn: STT → LLM → TTS.  Mirrors /v1/audio/chat (lines
+// ~1126-1172) but transcribes the VAD utterance in place.
+static void ws_session_handle_utterance(std::shared_ptr<jarvis::WsSessionConn> conn,
+                                        std::vector<int16_t> utt) {
+    if (!conn->active()) return;
+
+    // 1. STT — utterance is already 16k mono PCM16 from the VAD.
+    WhisperModel* model = get_whisper_model();
+    if (!model) {
+        // Models absent: error frame + spoken fallback, session stays usable.
+        conn->send_text(nlohmann::json{{"type", "error"},
+            {"message", "STT unavailable (WHISPER_MODEL_PATH not set)"}}.dump());
+        conn->set_speaking_requested(true);
+        ws_session_speak(conn, "Sorry, speech recognition is not available right now.");
+        ws_session_rearm(conn);
+        return;
+    }
+    std::vector<float> pcm_f(utt.size());
+    for (size_t i = 0; i < utt.size(); i++) pcm_f[i] = utt[i] / 32768.0f;
+    std::string text = whisper_transcribe(*model, pcm_f.data(), (int)pcm_f.size());
+    if (text.empty() || text == "[silence]") {
+        // Nothing to reply: re-arm via a brief Speaking blip.
+        ws_session_rearm(conn);
+        return;
+    }
+    conn->send_text(nlohmann::json{{"type", "transcript"}, {"role", "user"}, {"text", text}}.dump());
+
+    // 2. LLM — exact /v1/audio/chat message-building pattern
+    //    (g_persona_mgr.build_system_prompt + build_context(5) + user turn).
+    g_context_mem.add_turn("user", text);
+    nlohmann::json msgs = nlohmann::json::array();
+    std::string sys_prompt = g_persona_mgr.build_system_prompt();
+    if (!sys_prompt.empty()) msgs.push_back({{"role", "system"}, {"content", sys_prompt}});
+    std::string ctx = g_context_mem.build_context(5);
+    if (!ctx.empty()) msgs.push_back({{"role", "system"}, {"content", ctx}});
+    msgs.push_back({{"role", "user"}, {"content", text}});
+
+    std::string model_id = "qwen3:0.6b";   // fast default for voice, as /v1/audio/chat
+    Route route = resolve_model(model_id);
+    nlohmann::json llm_result;
+    if (route.backend == RouteBackend::Ollama)
+        llm_result = ollama_chat(route.target_model, msgs, 128, 0.7f);
+    else
+        llm_result = unified_chat(route.target_model, msgs, 128, 0.7f);
+
+    std::string reply;
+    bool llm_ok = true;
+    if (llm_result.contains("choices") && !llm_result["choices"].empty())
+        reply = llm_result["choices"][0]["message"].value("content", "");
+    else if (llm_result.contains("response"))
+        reply = llm_result.value("response", "");
+    else {
+        llm_ok = false;
+        reply = "Sorry, I could not reach the language model right now.";
+        conn->send_text(nlohmann::json{{"type", "error"}, {"message", "LLM call failed"}}.dump());
+    }
+    g_context_mem.add_turn("assistant", reply);
+    if (llm_ok) reply = g_persona_mgr.apply_catchphrases(reply);
+    conn->send_text(nlohmann::json{{"type", "transcript"}, {"role", "assistant"}, {"text", reply}}.dump());
+
+    // 3. TTS — codec path, streamed while the Speaking state is armed; the
+    //    server loop's 100 ms re-arm returns the session to Listening.
+    conn->set_speaking_requested(true);
+    ws_session_speak(conn, reply);
+    ws_session_rearm(conn);
+}
+
+// WS bearer-token gate: JARVIS_WS_TOKEN set → constant-time compare against
+// the Authorization bearer; unset → accept all (VPN-only deployment).
+static jarvis::WSAuthCheck make_ws_auth_check() {
+    const char* tok = getenv("JARVIS_WS_TOKEN");
+    if (!tok || !*tok) return {};
+    std::string expected(tok);
+    return [expected](const std::string& auth_header) {
+        std::string bearer = jarvis::AuthManager::extract_bearer(auth_header);
+        if (bearer.size() != expected.size()) return false;
+        unsigned char diff = 0;
+        for (size_t i = 0; i < bearer.size(); i++)
+            diff |= (unsigned char)(bearer[i] ^ expected[i]);
+        return diff == 0;
+    };
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 // Flattens a message's `content` field (string, or array of {type,text}
@@ -1730,9 +1877,39 @@ int main(int argc, char** argv) {
         if (ws_port_env && *ws_port_env) ws_port = atoi(ws_port_env);
 
         g_ws_server = std::make_unique<WebSocketServer>();
-        int actual_port = g_ws_server->start(ws_port, &g_codec_tts);
+        int actual_port = g_ws_server->start(ws_port, &g_codec_tts, make_ws_auth_check());
         if (actual_port > 0) {
             printf("  WS stream:        ws://127.0.0.1:%d/v1/audio/stream?voice=X&text=Y\n", actual_port);
+            printf("  WS session:       ws://127.0.0.1:%d/v1/voice/session (full-duplex voice loop)\n", actual_port);
+
+            // Session wiring (Task 3): the connection loop forwards
+            // on_state/on_error itself; this watcher registers the
+            // utterance handler (STT→LLM→TTS→send_audio) once per new
+            // connection.  The handler runs on a detached worker holding a
+            // shared_ptr copy of the conn, so the server thread keeps
+            // ticking the session (Speaking re-arm, cancel, uplink) while
+            // the turn is processed.
+            std::thread([ws = g_ws_server.get()]() {
+                jarvis::WsSessionConn* registered = nullptr;
+                while (ws->is_running()) {
+                    auto conn = ws->session_conn();
+                    if (conn && conn.get() != registered) {
+                        registered = conn.get();
+                        // weak: the callback lives inside the conn, a
+                        // shared_ptr capture would be a reference cycle.
+                        std::weak_ptr<jarvis::WsSessionConn> weak = conn;
+                        conn->set_utterance_callback([weak](const std::vector<int16_t>& utt) {
+                            auto c = weak.lock();
+                            if (!c || !c->active() || utt.empty()) return;
+                            std::vector<int16_t> copy = utt;
+                            std::thread([c, copy = std::move(copy)]() mutable {
+                                ws_session_handle_utterance(std::move(c), std::move(copy));
+                            }).detach();
+                        });
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
+            }).detach();
         } else {
             printf("  WS stream:        FAILED to start\n");
         }
