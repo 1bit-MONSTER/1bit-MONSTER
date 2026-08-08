@@ -4,16 +4,18 @@ jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete domain+project, recreate with new source
+      - name: Delete project (retry loop), recreate
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           P="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical"
-          echo "--- DEL DOMAIN ---"
-          curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" "$P/domains/eeg-medical.1bit.systems" | python3 -c "import json,sys; d=json.load(sys.stdin); print('del domain success:', d.get('success'), json.dumps(d.get('errors'))[:150])"
-          echo "--- DEL PROJECT ---"
-          curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" "$P" | python3 -c "import json,sys; d=json.load(sys.stdin); print('del project success:', d.get('success'), json.dumps(d.get('errors'))[:150])"
+          for i in 1 2 3 4 5; do
+            OUT=$(curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" "$P")
+            echo "try $i: $(echo "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print('del project success:', d.get('success'), json.dumps(d.get('errors'))[:120])")"
+            echo "$OUT" | grep -q '"success":true' && break
+            sleep 15
+          done
           echo "--- CREATE ---"
           curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
             -d '{"name": "eeg-medical", "production_branch": "main", "build_config": {"build_command": "", "destination_dir": "site/eeg-medical", "root_dir": ""}, "source": {"type": "github", "config": {"owner": "1bit-systems", "repo_name": "eeg-medical", "production_branch": "main"}}}' \
