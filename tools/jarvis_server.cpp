@@ -1877,39 +1877,32 @@ int main(int argc, char** argv) {
         if (ws_port_env && *ws_port_env) ws_port = atoi(ws_port_env);
 
         g_ws_server = std::make_unique<WebSocketServer>();
+
+        // Session wiring (Task 3): register the utterance handler
+        // (STT→LLM→TTS→send_audio) BEFORE start() — the server applies
+        // this hook at session-connection creation, before any uplink
+        // frame is processed, so no connected client can speak into a
+        // connection with no callback (registration race fixed).  The
+        // handler runs on a detached worker holding a shared_ptr copy of
+        // the conn, so the server thread keeps ticking the session
+        // (Speaking re-arm, cancel, uplink) while the turn is processed.
+        g_ws_server->set_session_connect_callback([](std::shared_ptr<jarvis::WsSessionConn> conn) {
+            // weak: the callback lives inside the conn, a shared_ptr
+            // capture would be a reference cycle.
+            std::weak_ptr<jarvis::WsSessionConn> weak = conn;
+            conn->set_utterance_callback([weak](const std::vector<int16_t>& utt) {
+                auto c = weak.lock();
+                if (!c || !c->active() || utt.empty()) return;
+                std::vector<int16_t> copy = utt;
+                std::thread([c, copy = std::move(copy)]() mutable {
+                    ws_session_handle_utterance(std::move(c), std::move(copy));
+                }).detach();
+            });
+        });
         int actual_port = g_ws_server->start(ws_port, &g_codec_tts, make_ws_auth_check());
         if (actual_port > 0) {
             printf("  WS stream:        ws://127.0.0.1:%d/v1/audio/stream?voice=X&text=Y\n", actual_port);
             printf("  WS session:       ws://127.0.0.1:%d/v1/voice/session (full-duplex voice loop)\n", actual_port);
-
-            // Session wiring (Task 3): the connection loop forwards
-            // on_state/on_error itself; this watcher registers the
-            // utterance handler (STT→LLM→TTS→send_audio) once per new
-            // connection.  The handler runs on a detached worker holding a
-            // shared_ptr copy of the conn, so the server thread keeps
-            // ticking the session (Speaking re-arm, cancel, uplink) while
-            // the turn is processed.
-            std::thread([ws = g_ws_server.get()]() {
-                jarvis::WsSessionConn* registered = nullptr;
-                while (ws->is_running()) {
-                    auto conn = ws->session_conn();
-                    if (conn && conn.get() != registered) {
-                        registered = conn.get();
-                        // weak: the callback lives inside the conn, a
-                        // shared_ptr capture would be a reference cycle.
-                        std::weak_ptr<jarvis::WsSessionConn> weak = conn;
-                        conn->set_utterance_callback([weak](const std::vector<int16_t>& utt) {
-                            auto c = weak.lock();
-                            if (!c || !c->active() || utt.empty()) return;
-                            std::vector<int16_t> copy = utt;
-                            std::thread([c, copy = std::move(copy)]() mutable {
-                                ws_session_handle_utterance(std::move(c), std::move(copy));
-                            }).detach();
-                        });
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                }
-            }).detach();
         } else {
             printf("  WS stream:        FAILED to start\n");
         }
