@@ -10,12 +10,11 @@ the mobile app (M1–M3). All paths assume the repo lives at
 |---|---|---|---|
 | Unified server (LLM routing) | `build/1bit unified` | 8088 (default) | 127.0.0.1 |
 | Gateway HTTP API | `build/1bit jarvis` | 8080 (default) | 127.0.0.1 (`JARVIS_BIND_ADDR`) |
-| Gateway WS voice session | `build/1bit jarvis` | 8082 (`WS_STREAM_PORT`) | **127.0.0.1 only** |
+| Gateway WS voice session | `build/1bit jarvis` | 8082 (`WS_STREAM_PORT`) | 127.0.0.1 default (`WS_STREAM_BIND`) |
 
 The gateway routes every LLM call to `UNIFIED_URL` (default
-`http://127.0.0.1:8088`). The WS port binds loopback only with no env
-override (`tools/jarvis/audio_stream.cpp:758`) — see "LAN reachability"
-below before expecting the phone to connect.
+`http://127.0.0.1:8088`). The WS port binds loopback by default; set
+`WS_STREAM_BIND=0.0.0.0` for the phone to reach it over LAN/VPN (see §1.5).
 
 ## 1. Box setup (Strix Halo)
 
@@ -28,7 +27,7 @@ below before expecting the phone to connect.
 2. Start the unified server first (the gateway depends on it for LLM turns):
    ```sh
    ./build/1bit unified &        # or: systemd-run --unit=jarvis-unified ./build/1bit unified
-   curl -s http://127.0.0.1:8088/health   # expect {"ok":true} (or similar 200)
+   curl -s http://127.0.0.1:8088/v1/health   # expect {"ok":true} (or similar 200)
    ```
 3. Set gateway environment and start it once, by hand, to check startup logs:
    ```sh
@@ -50,19 +49,19 @@ below before expecting the phone to connect.
    sudo systemctl enable --now jarvis-gateway
    journalctl -u jarvis-gateway -f
    ```
-5. LAN reachability (required for the phone): the WS port is loopback-only.
-   Put a reverse proxy on the box that forwards the app's WS path to it:
-   ```nginx
-   # /etc/nginx/sites-available/jarvis  (stream block or server block)
-   location /v1/voice/session {
-       proxy_pass http://127.0.0.1:8082;
-       proxy_http_version 1.1;
-       proxy_set_header Upgrade $http_upgrade;
-       proxy_set_header Connection "upgrade";
-   }
+5. LAN reachability (required for the phone): the WS port binds loopback by
+   default, so make the gateway bind all interfaces — the phone then talks
+   directly to `ws://<box-lan-ip>:8082/v1/voice/session`:
+   ```sh
+   # in the unit (scripts/jarvis-gateway.service):
+   Environment=WS_STREAM_BIND=0.0.0.0
+   # or, when running by hand:
+   WS_STREAM_BIND=0.0.0.0 ./build/1bit jarvis
    ```
-   The app then connects to `ws://<box-lan-ip>/v1/voice/session` (port 80/443)
-   instead of `:8082` directly. Skip this only if testing from the box itself.
+   `WS_STREAM_BIND` defaults to `127.0.0.1` (loopback only, safe). Binding
+   `0.0.0.0` exposes the WS port on the network — keep `JARVIS_WS_TOKEN`
+   set so the phone still needs the bearer token. Verify the listener is on
+   all interfaces: `ss -tlnp | grep 8082` shows `*:8082` (or `0.0.0.0:8082`).
 
 ## 2. Phone setup
 
@@ -71,9 +70,8 @@ below before expecting the phone to connect.
 2. Install the app: `flutter build apk` / `flutter build ios` from
    `mobile/` (per M2), or `flutter run` on a dev device.
 3. Connect screen values:
-   - Host: `<box-lan-ip>` (the IP the proxy listens on; port if not 80/443)
-   - Port: `8082` if the proxy forwards to a non-standard listener, else the
-     proxy's port
+   - Host: `<box-lan-ip>` (the LAN/VPN IP of the box)
+   - Port: `8082` (the WS voice port)
    - Token: the same value as `JARVIS_WS_TOKEN` on the box (leave empty only
      if the gateway runs without a token)
 
@@ -98,8 +96,9 @@ observable expectation — pass/fail is unambiguous.
 - [ ] Tap stop → light returns to idle, transcript stays visible until you
       leave the screen.
 - [ ] Kill the gateway mid-session (`sudo systemctl kill jarvis-gateway`) →
-      phone shows Offline + Reconnect within seconds; restart the gateway,
-      tap Reconnect → session works again (transcript may be reset).
+      phone shows Offline + Reconnect within seconds; `Restart=on-failure`
+      brings the unit back within `RestartSec=2`, tap Reconnect → session
+      works again (transcript may be reset).
 - [ ] VPN off mid-session → same Offline + Reconnect path; VPN back on →
       tap Reconnect → session works again (no gateway restart needed).
 - [ ] Voice-cloned pack: add a cloned pack to `VOICE_PACKS_DIR`, switch the
@@ -114,5 +113,5 @@ observable expectation — pass/fail is unambiguous.
 | Reply comes back empty/silent | No voice pack found in `VOICE_PACKS_DIR` | Put at least `zaya_default.voice` (or the persona's pack) in the dir; startup log shows `codec TTS: no voice packs found` |
 | App gets 403 on connect | `JARVIS_WS_TOKEN` on the box differs from the token in the app | Match them; unset the var on the box if you want auth off |
 | App gets 400 right after connect / cannot establish session | Stale gateway binary predating the WS upgrade-parser fix (`d3eb550d`) | Rebuild: `cmake --build build --target onebin`, `sudo systemctl restart jarvis-gateway` |
-| Phone cannot reach `ws://<box>:8082` at all | WS listener is loopback-only (`tools/jarvis/audio_stream.cpp:758`) | Use the reverse proxy from §1.5; verify with `curl http://127.0.0.1:8082/v1/voice/session` on the box (expect 400/403, not connection refused) |
+| Phone cannot reach `ws://<box>:8082` at all | WS listener still on loopback (`WS_STREAM_BIND` unset) | Set `Environment=WS_STREAM_BIND=0.0.0.0` in the unit (see §1.5), `systemctl daemon-reload` + restart; verify with `curl http://127.0.0.1:8082/v1/voice/session` on the box (expect 400/403, not connection refused) |
 | Voice turns fail at LLM step | Unified server not running | Start `build/1bit unified`; check `UNIFIED_URL` (default `http://127.0.0.1:8088`) |
