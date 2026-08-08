@@ -102,6 +102,7 @@ struct GgufReader {
     std::unordered_map<std::string, GgufTensor> tensors;
     std::vector<float> scratch;
     int vocab_size = 0;
+    std::string arch;   // "general.architecture" (zaya/zamba2/... — arch guard, issue #1520)
     float rope_freq_base = 10000.0f;   // from *.rope.freq_base metadata (Qwen3 = 1e6)
     float rope_freq_scale = 1.0f;      // from *.rope.freq_scale metadata
 
@@ -122,7 +123,7 @@ struct GgufReader {
             // Arrays are encoded as: int32 element_type THEN uint64 element_count
             // (llama.cpp layout — reading them the other way desyncs the stream
             // and turns the next key length into garbage -> std::bad_alloc).
-            if (vtype == 2 || vtype == 8) { uint64_t slen; if (fread(&slen, 8, 1, f) != 1 || slen > MAX_KVLEN) { fclose(f); return false; } fseek(f, slen, SEEK_CUR); }
+            if (vtype == 2 || vtype == 8) { uint64_t slen; if (fread(&slen, 8, 1, f) != 1 || slen > MAX_KVLEN) { fclose(f); return false; } if (vtype == 8 && key == "general.architecture") { arch.resize(slen); if (slen && fread(&arch[0], 1, slen, f) != slen) { fclose(f); return false; } } else fseek(f, slen, SEEK_CUR); }
             else if (vtype == 4) { uint32_t v; if (fread(&v, 4, 1, f) != 1) { fclose(f); return false; } if (key == "general.alignment" && v > 0) alignment = v; }
             else if (vtype == 3 || vtype == 5) { fseek(f, 4, SEEK_CUR); }
             else if (vtype == 6) { float v; if (fread(&v, 4, 1, f) != 1) { fclose(f); return false; }
@@ -328,6 +329,22 @@ public:
         fprintf(stderr, "  Universal: loading %s\n", gguf_path.c_str());
 
         if (!gguf_.open(gguf_path)) { fprintf(stderr, "  Universal: failed to open GGUF\n"); return false; }
+
+        // Architecture guard (mirrors src/backend_generic.cpp, issue #947):
+        // this loader understands dense transformer layouts only. Zaya MoE
+        // uses a non-standard GGUF layout (zaya_router_*, per-expert stacked
+        // FFNs, CCA attention) — loading it here misreads every expert tensor
+        // and spews per-layer size mismatches (issue #1520). Zamba/Mamba2
+        // have dedicated backends.
+        {
+            const std::string& arch = gguf_.arch;
+            if (arch.rfind("zaya", 0) == 0 || arch == "zamba2" || arch == "zamba" || arch == "mamba") {
+                fprintf(stderr, "  Universal: refusing to load %s (arch=%s) — MoE/hybrid layouts need a "
+                        "dedicated backend (HIP/zamba2_vulkan/GGML-Vulkan)\n",
+                        gguf_path.c_str(), arch.c_str());
+                return false;
+            }
+        }
 
         // Read dimensions from GGUF if not already set. Use the canonical
         // long-name fields only: the deprecated short aliases (n_heads etc.)
