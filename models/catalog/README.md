@@ -97,8 +97,8 @@ Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 ### Zaya — 4
 | Model | Params | 1BP Size | Backend | Architecture |
 |-------|:------:|:--------:|---------|:------------:|
-| ZAYA1-8B | 8.8B | 149 MB | GGML-Vulkan (external) | zaya ⚠️ in-engine UNIMPLEMENTED |
-| ZAYA1-74B-preview | 74B | 45.8 GB | GGML-Vulkan (external) | zaya ⚠️ in-engine UNIMPLEMENTED |
+| ZAYA1-8B | 8.8B | 149 MB | GGML-Vulkan (external) | zaya ⚠️ UNIMPLEMENTED — native HIP path landed (#1537), blocked on #1522 converter, unvalidated (#1521) |
+| ZAYA1-74B-preview | 74B | 45.8 GB | GGML-Vulkan (external) | zaya ⚠️ UNIMPLEMENTED — native HIP path landed (#1537), blocked on #1522 converter, unvalidated (#1521) |
 | ZAYA1-base | 8.8B | — | — | zaya (dense) ⏳ |
 | ZAYA1-reasoning-base | 8.8B | — | — | zaya (dense, reasoning) ⏳ |
 
