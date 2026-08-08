@@ -69,6 +69,13 @@ jobs:
           # (curl 56), or hold the port so our server can't bind.
           pkill -f "1bit [u]nified.*8099" || true
           pkill -9 -f "1bit [u]nified.*8099" || true
+          # Any other process squatting on 8099 (llama-server, dev agents,
+          # manual curl-test servers) answers /v1/health with the wrong
+          # schema and makes the test "pass" against the squatter while the
+          # real server fails to bind (issue #1257 incident class, observed
+          # with a stray llama-server on 2026-08-08). Kill by port, not name.
+          # Only touch 8099 — production 1bit-systems.service uses 8088.
+          fuser -k 8099/tcp 2>/dev/null || true
           sleep 2
 
       - name: Start server
