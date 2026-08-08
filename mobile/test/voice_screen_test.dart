@@ -104,6 +104,9 @@ class FakePlayer implements ReplyPlayer {
 
   @override
   Future<void> stop() async {}
+
+  @override
+  Future<void> dispose() async {}
 }
 
 Future<void> pumpVoice(WidgetTester tester, FakeGatewayClient client,

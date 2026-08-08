@@ -55,7 +55,6 @@ class _VoiceScreenState extends State<VoiceScreen>
   late final AnimationController _pulse = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 800))
     ..repeat(reverse: true);
-
   StreamSubscription<GatewayEvent>? _eventsSub;
   StreamSubscription<Uint8List>? _audioSub;
   StreamSubscription<Uint8List>? _micSub;
@@ -95,12 +94,15 @@ class _VoiceScreenState extends State<VoiceScreen>
         _connecting = false;
         _offline = true;
       });
+      _pulse.stop();
       _controller.setOffline(
           'Cannot reach ${widget.host}:${widget.port} — ${e.toString()}');
       return;
     }
     if (!mounted) return;
     setState(() => _connecting = false);
+    // Only the connecting state pulses; stop the ticker when leaving it.
+    _pulse.stop();
   }
 
   void _onEvent(GatewayEvent e) {
@@ -139,14 +141,18 @@ class _VoiceScreenState extends State<VoiceScreen>
       await _mic.stop();
       if (mounted) setState(() => _sessionActive = false);
     } else {
+      // Guard the double-tap race synchronously: _sessionActive flips before
+      // the first await so a second tap takes the stop branch, never a second
+      // start frame. Reverted if the mic fails to start.
+      setState(() => _sessionActive = true);
       try {
         await _mic.start();
       } catch (e) {
+        if (mounted) setState(() => _sessionActive = false);
         _controller.setOffline('Microphone unavailable: $e');
         return;
       }
       _client.start();
-      if (mounted) setState(() => _sessionActive = true);
     }
   }
 
@@ -183,6 +189,7 @@ class _VoiceScreenState extends State<VoiceScreen>
     _controller.removeListener(_onControllerChanged);
     _mic.stop();
     _player.stop();
+    _player.dispose();
     _client.close();
     _controller.reset();
     super.dispose();

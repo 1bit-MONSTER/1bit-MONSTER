@@ -64,7 +64,16 @@ class _ConnectScreenState extends State<ConnectScreen> {
       ..host = host
       ..port = port
       ..token = token.isEmpty ? null : token;
-    await _settings.save();
+    try {
+      await _settings.save();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = 'Could not save settings: $e';
+      });
+      return;
+    }
     if (!mounted) return;
     setState(() => _saving = false);
     Navigator.of(context).push(MaterialPageRoute<void>(
