@@ -2084,3 +2084,6 @@ set_tests_properties(test_fd_seq3 PROPERTIES LABELS "gpu_required" SKIP_RETURN_C
 rocm_hip_target(test_fd_o tests/test_fd_o.cpp)
 add_test(NAME test_fd_o COMMAND test_fd_o)
 set_tests_properties(test_fd_o PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
+rocm_hip_target(test_fd_ratio8 tests/test_fd_ratio8.cpp)
+add_test(NAME test_fd_ratio8 COMMAND test_fd_ratio8)
+set_tests_properties(test_fd_ratio8 PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
