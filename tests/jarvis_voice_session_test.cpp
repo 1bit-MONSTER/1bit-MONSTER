@@ -60,22 +60,53 @@ int main() {
     s.tick(200);  // > 100 ms quiet timeout
     assert_state(s.state(), SessionState::Listening, "tick -> Listening");
 
+    // (d) tick-boundary regression (final-review I1): the 100 ms auto-rearm
+    // is a strict boundary — tick(100) exactly must NOT flip.  A re-assert
+    // of set_speaking(true) while already Speaking resets the timer (the
+    // worker holds the speaking level for the whole TTS stream, so without
+    // this the timer would accumulate and flip Speaking mid-stream).
+    s.feed(speech.data(), speech.size());
+    s.feed(silence.data(), silence.size());
+    assert(utterances == 3);
+    assert_state(s.state(), SessionState::Processing, "utterance3 -> Processing");
+    s.set_speaking(true);
+    s.tick(100);  // boundary: 100 ms is not > 100 ms
+    assert_state(s.state(), SessionState::Speaking, "tick(100) boundary keeps Speaking");
+    s.tick(50);   // 150 ms total with no re-assert -> flips
+    assert_state(s.state(), SessionState::Listening, "150ms no re-assert -> Listening");
+
+    // re-assert at 100 ms resets the timer: 100ms + re-assert + 100ms must
+    // stay Speaking; 150 ms after the re-assert must flip.
+    s.feed(speech.data(), speech.size());
+    s.feed(silence.data(), silence.size());
+    assert(utterances == 4);
+    assert_state(s.state(), SessionState::Processing, "utterance4 -> Processing");
+    s.set_speaking(true);
+    s.tick(50);
+    s.tick(50);             // 100 ms elapsed
+    s.set_speaking(true);   // level re-assert: resets the timer
+    s.tick(50);
+    s.tick(50);             // 100 ms since re-assert
+    assert_state(s.state(), SessionState::Speaking, "re-assert resets the timer");
+    s.tick(50);             // 150 ms since re-assert -> flips
+    assert_state(s.state(), SessionState::Listening, "150ms after re-assert -> Listening");
+
     // (c) regression: short burst after the transition must NOT include stale
-    // pre-transition audio; utterance 3 is fresh VAD output.
+    // pre-transition audio; utterance 5 is fresh VAD output.
     std::vector<int16_t> burst(4800);  // 0.3 s of speech
     for (int i = 0; i < 4800; ++i) burst[i] = (int16_t)(12000 * std::sin(2 * 3.14159 * 440 * i / 16000.0));
     s.feed(burst.data(), burst.size());
     s.feed(silence.data(), silence.size());
     assert_state(s.state(), SessionState::Processing, "burst utterance -> Processing");
-    assert(utterances == 3);
-    assert(rms(got_audio[2]) > 1000.0);                      // real speech, not silence
-    assert(got_audio[2].size() < 20000);                     // stale pre-roll would push it past this
+    assert(utterances == 5);
+    assert(rms(got_audio[4]) > 1000.0);                      // real speech, not silence
+    assert(got_audio[4].size() < 20000);                     // stale pre-roll would push it past this
 
     // stop drops audio, returns Idle
     s.feed(speech.data(), speech.size());
     s.stop();
     assert_state(s.state(), SessionState::Idle, "stop -> Idle");
-    assert(utterances == 3);
+    assert(utterances == 5);
 
     std::printf("PASS voice_session_test (%d utterances, %zu states)\n", utterances, states.size());
     return 0;

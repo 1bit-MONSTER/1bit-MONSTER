@@ -441,6 +441,21 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
         return;
     }
 
+    // ── Request path routing decision (needed before the 101) ──
+    // /v1/voice/session → full-duplex conversation path (no voice/text
+    // query params required).  Anything else → legacy /v1/audio/stream
+    // downlink, unchanged.
+    std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
+    if (path_base != "/v1/voice/session" && (voice.empty() || text.empty())) {
+        // Legacy /v1/audio/stream requires voice+text: reject with a clean
+        // HTTP 400 BEFORE the 101 — standards clients must never get a
+        // successful upgrade followed by garbage frames.
+        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        write(client_fd, err, strlen(err));
+        close(client_fd);
+        return;
+    }
+
     // ── Send 101 Switching Protocols (both request paths) ────
     {
         std::string accept = compute_accept_key(ws_key);
@@ -461,20 +476,8 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
     setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
     // ── Request path routing ─────────────────────────────────
-    // /v1/voice/session → full-duplex conversation path (no voice/text
-    // query params required).  Anything else → legacy /v1/audio/stream
-    // downlink, unchanged.
-    std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
     if (path_base == "/v1/voice/session") {
         handle_session_connection(client_fd, session_slot, slot_mu, connect_cb);
-        return;
-    }
-
-    if (voice.empty() || text.empty()) {
-        // Send HTTP error response
-        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        write(client_fd, err, strlen(err));
-        close(client_fd);
         return;
     }
 
@@ -655,6 +658,7 @@ static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionCo
         int ret = ws_recv_frame(client_fd, &incoming, &opcode, kMaxUplinkFrame);
         if (ret == 2) break;                    // close frame
         if (ret < 0) {
+            if (errno == EINTR) continue;       // signal (e.g. SIGCHLD from ffmpeg) — not a disconnect
             if (errno != EAGAIN && errno != EWOULDBLOCK) break; // peer gone / oversized frame
         } else if (opcode == 0x01) {            // text: control
             std::string type;
@@ -681,11 +685,17 @@ static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionCo
             }
             raw->pcm_buf_.erase(raw->pcm_buf_.begin(), raw->pcm_buf_.begin() + off);
         }
-        // Apply a cross-thread set_speaking_requested on the server thread;
-        // VoiceSession itself is server-thread-only.
+        // Apply the cross-thread speaking level on the server thread;
+        // VoiceSession itself is server-thread-only.  The worker holds the
+        // level at 1 for the whole TTS turn (heartbeat re-assert, see
+        // jarvis_server.cpp) and drops it to 0 after the last frame.  tick()
+        // runs only while nothing is pending, so the 100 ms auto-rearm is a
+        // worker-death safety net — the normal end-of-stream path is the
+        // explicit level-0 application above.
         int sp = raw->speak_pending_.exchange(-1);
-        if (sp >= 0) raw->session_->set_speaking(sp != 0);
-        raw->session_->tick(50);
+        if (sp == 1) raw->session_->set_speaking(true);
+        else if (sp == 0) raw->session_->set_speaking(false);
+        else raw->session_->tick(50);
     }
 
     // Teardown: stop the session, mark the handle dead.  The object stays
