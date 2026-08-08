@@ -273,59 +273,115 @@ static bool zaya_alloc_buffers(ZayaState* s) {
 
 // ── OneBP per-layer weight loader (plan: tensor-name mapping table) ──
 // Maps OneBP tensor names (GGUF `blk.N.*` preserved verbatim by
-// gguf_to_onebp) onto the engine's LayerW GPU buffers. Missing or
-// wrong-sized tensors warn + zero-fill so a partially-unsupported GGUF
-// still initializes (the engine degrades instead of crashing). MoE expert
-// tensors (gu/dn) missing → left null → zaya_forward's `if (l.gu && l.dn)`
-// dense fallback. Returns false only on a real GPU alloc failure.
+// gguf_to_onebp) onto the engine's LayerW GPU buffers.
+//
+// Zaya layers ALTERNATE: even layers are CCA-attention only, odd layers are
+// MoE-only (llama.cpp zaya.cpp: "ZAYA1-8B: 40 sub-blocks (20 CCA + 20 MoE)").
+// A sublayer is present iff its tensors exist in the file, so:
+//   * missing weight  → pointer stays null → zaya_forward's guards skip that
+//     sublayer (same pattern as the reference tests/zaya_gpu_decode.cpp;
+//     there is NO dense-FFN fallback in this architecture — a layer with no
+//     MoE tensors simply has no MLP, and the old comment claiming a "dense
+//     fallback" was fiction, issue #1527).
+//   * present but wrong-sized, PARTIAL groups (some of a sublayer's tensors
+//     only), or a layer with neither sublayer → ABORT init loudly. Zero-
+//     filling attention/FFN weights used to "load successfully" and emit
+//     garbage logits.
+//   * optional BIAS tensors (conv/router/residual-scale biases) missing →
+//     zero-fill (bias=0 is a correct default; the kernels dereference them
+//     unconditionally — llama.cpp marks them TENSOR_NOT_REQUIRED).
+// Returns false on any fatal condition (alloc failure, size mismatch,
+// inconsistent layer structure).
+
+// Issue #1527 diagnostics: list every tensor of one layer so a mapping
+// mismatch (wrong GGUF names, e.g. ssm_conv1d vs cca_conv_grp) is visible
+// in the abort message instead of degrading to zero weights.
+static void dump_layer_tensors(const NpuOnebpModel& model, const std::string& p) {
+    for (int i = 0; i < model.tensor_count(); i++) {
+        const auto* t = model.tensor(i);
+        if (t && t->name.rfind(p, 0) == 0) {
+            fprintf(stderr, "    %s [ndim=%d %dx%dx%d quant=%u]\n",
+                    t->name.c_str(), t->ndim, t->num_experts, t->rows, t->cols,
+                    (unsigned)t->quant);
+        }
+    }
+}
+
 static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                              const ZayaConfig& eng, hipStream_t st) {
     const std::string p = "blk." + std::to_string(il) + ".";
     bool ok = true;
 
-    // FP16 upload (attn + norms)
-    auto f16 = [&](const char* n, __half*& gpu, int count) {
+    // FP16 upload. optional=true (bias terms): missing → zero-fill (bias=0
+    // default). optional=false (weights): missing → gpu stays null (sublayer
+    // absent, valid on the alternating layers). Any present-but-wrong-sized
+    // tensor is fatal (issue #1527).
+    auto f16 = [&](const char* n, __half*& gpu, int count, bool optional) {
+        gpu = nullptr;
         std::vector<float> v;
-        if (!model.get_tensor_f32((p + n).c_str(), v) || (int)v.size() != count) {
-            fprintf(stderr, "  onebp: '%s%s' missing/short (%zu floats, want %d) — zero-filled\n",
-                    p.c_str(), n, v.size(), count);
-            if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
-            (void)hipMemsetAsync(gpu, 0, (size_t)count * 2, st);
+        if (!model.get_tensor_f32((p + n).c_str(), v)) {
+            if (optional) {
+                fprintf(stderr, "  onebp: '%s%s' absent — zero-filled (optional bias)\n", p.c_str(), n);
+                if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
+                (void)hipMemsetAsync(gpu, 0, (size_t)count * 2, st);
+            }
             return;
+        }
+        if ((int)v.size() != count) {
+            fprintf(stderr, "  onebp: '%s%s' size %zu != %d — aborting (a weight path must never be zero-filled)\n",
+                    p.c_str(), n, v.size(), count);
+            ok = false; return;
         }
         if (hipMalloc(&gpu, (size_t)count * 2) != hipSuccess) { ok = false; return; }
         upf16(v, gpu, count, st);
     };
-    // FP32 upload (router / residual scales / conv)
-    auto f32 = [&](const char* n, float*& gpu, int count) {
+    // FP32 upload — same semantics as f16.
+    auto f32 = [&](const char* n, float*& gpu, int count, bool optional) {
+        gpu = nullptr;
         std::vector<float> v;
-        if (!model.get_tensor_f32((p + n).c_str(), v) || (int)v.size() != count) {
-            fprintf(stderr, "  onebp: '%s%s' missing/short (%zu floats, want %d) — zero-filled\n",
-                    p.c_str(), n, v.size(), count);
-            if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
-            (void)hipMemsetAsync(gpu, 0, (size_t)count * 4, st);
+        if (!model.get_tensor_f32((p + n).c_str(), v)) {
+            if (optional) {
+                fprintf(stderr, "  onebp: '%s%s' absent — zero-filled (optional bias)\n", p.c_str(), n);
+                if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
+                (void)hipMemsetAsync(gpu, 0, (size_t)count * 4, st);
+            }
             return;
+        }
+        if ((int)v.size() != count) {
+            fprintf(stderr, "  onebp: '%s%s' size %zu != %d — aborting (a weight path must never be zero-filled)\n",
+                    p.c_str(), n, v.size(), count);
+            ok = false; return;
         }
         if (hipMalloc(&gpu, (size_t)count * 4) != hipSuccess) { ok = false; return; }
         upf32(v, gpu, count, st);
     };
 
-    // ── Attention (plan table) ──
-    f16("attn_norm.weight", l.nw, eng.h);
-    f16("attn_q.weight", l.wq, eng.qd * eng.h);
-    f16("attn_k.weight", l.wk, eng.kd * eng.h);
-    f16("cca_val_proj1.weight", l.wv1, (eng.kd / 2) * eng.h);
-    f16("cca_val_proj2.weight", l.wv2, (eng.kd / 2) * eng.h);
-    f16("attn_norm_2.weight", l.pan, eng.h);
-    f32("cca_conv_grp.weight", l.cdw, eng.qkv * 2);
-    f32("cca_conv_grp.bias", l.cdb, eng.qkv);
-    f32("cca_conv_grp_grouped.weight", l.cgw, eng.qkv * 128 * 2);
-    f32("cca_conv_grp_grouped.bias", l.cgb, eng.qkv);
-    f32("cca_k_scale.weight", l.ks, eng.nkv);
-    f32("res_scale_hs.weight", l.pahss, eng.h);
-    f32("res_scale_hs.bias", l.pahsb, eng.h);
-    f32("res_scale_res.weight", l.parss, eng.h);
-    f32("res_scale_res.bias", l.parsb, eng.h);
+    // ── Attention group (even layers) ──
+    // attn_norm: required on EVERY layer — it is the pre-norm that runs
+    // before either sublayer (llama.cpp builds it for all layers).
+    f16("attn_norm.weight", l.nw, eng.h, false);
+    if (!ok) return false;
+    if (!l.nw) {
+        fprintf(stderr, "  onebp: '%sattn_norm.weight' missing — required on every layer — aborting\n", p.c_str());
+        return false;
+    }
+    f16("attn_q.weight", l.wq, eng.qd * eng.h, false);
+    f16("attn_k.weight", l.wk, eng.kd * eng.h, false);
+    f16("cca_val_proj1.weight", l.wv1, (eng.kd / 2) * eng.h, false);
+    f16("cca_val_proj2.weight", l.wv2, (eng.kd / 2) * eng.h, false);
+    f16("attn_norm_2.weight", l.pan, eng.h, false);  // .bin-era only; absent in GGUF → null → skipped at use
+    f32("cca_conv_grp.weight", l.cdw, eng.qkv * 2, false);
+    f32("cca_conv_grp_grouped.weight", l.cgw, eng.qkv * 128 * 2, false);
+    f32("cca_k_scale.weight", l.ks, eng.nkv, false);
+    f32("res_scale_hs.weight", l.pahss, eng.h, false);
+    f32("res_scale_res.weight", l.parss, eng.h, false);
+    if (!ok) return false;
+    // Conv / residual-scale BIASES are optional (bias=0 default).
+    f32("cca_conv_grp.bias", l.cdb, eng.qkv, true);
+    f32("cca_conv_grp_grouped.bias", l.cgb, eng.qkv, true);
+    f32("res_scale_hs.bias", l.pahsb, eng.h, true);
+    f32("res_scale_res.bias", l.parsb, eng.h, true);
+    if (!ok) return false;
 
     // wo (attn_output.weight) — kernel wants [H, QD] (moe_tiled_gemv M=H,K=QD).
     // OneBP may store [H, QD] or the transpose [QD, H]: verify against the
@@ -336,6 +392,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         auto* te = model.find_tensor(nm.c_str());
         int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
         bool found = model.get_tensor_f32(nm.c_str(), v);
+        l.wo = nullptr;
         if (found && rows == eng.h && cols == eng.qd && (int)v.size() >= eng.h * eng.qd) {
             if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
             else upf16(v, l.wo, eng.h * eng.qd, st);
@@ -346,23 +403,16 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                     tr[(size_t)i * eng.qd + k] = v[(size_t)k * eng.h + i];
             if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
             else upf16(tr, l.wo, eng.h * eng.qd, st);
-        } else {
-            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,QD=%d] — zero-filled\n",
+        } else if (found) {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,QD=%d] — aborting\n",
                     nm.c_str(), rows, cols, v.size(), eng.h, eng.qd);
-            if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) { ok = false; }
-            else (void)hipMemsetAsync(l.wo, 0, (size_t)eng.h * eng.qd * 2, st);
+            ok = false;
         }
+        // not found → l.wo stays null (attention sublayer absent on odd layers)
     }
+    if (!ok) return false;
 
-    // ── Router (plan table) ──
-    f32("ffn_gate.bias", l.gdb, eng.rtr_h);
-    f32("ffn_norm.weight", l.rfn, eng.rtr_h);
-    f32("zaya_router_mlp2.weight", l.rf1, eng.rtr_h * eng.rtr_h);
-    f32("zaya_router_mlp2.bias", l.rf1b, eng.rtr_h);
-    f32("zaya_router_mlp4.bias", l.rf2b, eng.rtr_h);
-    f32("mlp.gate.router_mlp.out_proj.weight", l.rout, eng.n_exp_t * eng.rtr_h);
-    f32("zaya_router_biases.weight", l.bb, eng.n_exp_t);
-
+    // ── Router group (odd layers) ──
     // gdw (ffn_gate.weight) — engine stores [H, rtr_h] (the transpose of the
     // upstream [rtr_h, H]; same convention as the .bin loader and
     // zaya_apply_lora, read stride-1 by eda_router_gpu_kernel). Transpose
@@ -373,6 +423,7 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         auto* te = model.find_tensor(nm.c_str());
         int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
         bool found = model.get_tensor_f32(nm.c_str(), v);
+        l.gdw = nullptr;
         if (found && rows == eng.h && cols == eng.rtr_h && (int)v.size() >= eng.h * eng.rtr_h) {
             if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
             else upf32(v, l.gdw, eng.h * eng.rtr_h, st);
@@ -383,13 +434,22 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                     tr[(size_t)j * eng.rtr_h + i] = v[(size_t)i * eng.h + j];
             if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
             else upf32(tr, l.gdw, eng.h * eng.rtr_h, st);
-        } else {
-            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,rtr_h=%d] — zero-filled\n",
+        } else if (found) {
+            fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,rtr_h=%d] — aborting\n",
                     nm.c_str(), rows, cols, v.size(), eng.h, eng.rtr_h);
-            if (hipMalloc(&l.gdw, (size_t)eng.h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
-            else (void)hipMemsetAsync(l.gdw, 0, (size_t)eng.h * eng.rtr_h * 4, st);
+            ok = false;
         }
+        // not found → l.gdw stays null (MoE sublayer absent on even layers)
     }
+    if (!ok) return false;
+    f32("ffn_gate.bias", l.gdb, eng.rtr_h, true);
+    f32("ffn_norm.weight", l.rfn, eng.rtr_h, false);
+    f32("zaya_router_mlp2.weight", l.rf1, eng.rtr_h * eng.rtr_h, false);
+    f32("zaya_router_mlp2.bias", l.rf1b, eng.rtr_h, true);
+    f32("zaya_router_mlp4.bias", l.rf2b, eng.rtr_h, true);
+    f32("mlp.gate.router_mlp.out_proj.weight", l.rout, eng.n_exp_t * eng.rtr_h, false);
+    f32("zaya_router_biases.weight", l.bb, eng.n_exp_t, true);
+    if (!ok) return false;
 
     // rf2 (zaya_router_mlp4.weight) — 74B quirk: file stores [n_exp_t, rtr_h]
     // (NE+1 slots), engine wants [rtr_h, rtr_h] — zero-pad to square
@@ -399,58 +459,126 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         std::string nm = p + "zaya_router_mlp4.weight";
         std::vector<float> v;
         bool found = model.get_tensor_f32(nm.c_str(), v);
-        if (hipMalloc(&l.rf2, (size_t)eng.rtr_h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
-        else {
-            (void)hipMemsetAsync(l.rf2, 0, (size_t)eng.rtr_h * eng.rtr_h * 4, st);
-            if (found && (int)v.size() >= eng.rtr_h * eng.rtr_h) {
-                upf32(v, l.rf2, eng.rtr_h * eng.rtr_h, st);
-            } else if (found && (int)v.size() == eng.n_exp_t * eng.rtr_h) {
+        l.rf2 = nullptr;
+        if (found && (int)v.size() == eng.rtr_h * eng.rtr_h) {
+            if (hipMalloc(&l.rf2, (size_t)eng.rtr_h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            else upf32(v, l.rf2, eng.rtr_h * eng.rtr_h, st);
+        } else if (found && (int)v.size() == eng.n_exp_t * eng.rtr_h) {
+            if (hipMalloc(&l.rf2, (size_t)eng.rtr_h * eng.rtr_h * 4) != hipSuccess) { ok = false; }
+            else {
+                (void)hipMemsetAsync(l.rf2, 0, (size_t)eng.rtr_h * eng.rtr_h * 4, st);
                 (void)hipMemcpyAsync(l.rf2, v.data(), (size_t)v.size() * 4, hipMemcpyHostToDevice, st);
-            } else {
-                fprintf(stderr, "  onebp: '%s' size %zu (want %d or %d) — zero-filled\n",
-                        nm.c_str(), v.size(), eng.rtr_h * eng.rtr_h, eng.n_exp_t * eng.rtr_h);
             }
+        } else if (found) {
+            fprintf(stderr, "  onebp: '%s' size %zu (want %d or %d) — aborting\n",
+                    nm.c_str(), v.size(), eng.rtr_h * eng.rtr_h, eng.n_exp_t * eng.rtr_h);
+            ok = false;
         }
     }
+    if (!ok) return false;
 
     // ── MoE experts (plan step 5): ndim=3 [NE, R, C], dequant each expert
     // via get_tensor_f32_expert and concatenate. gu = [NE, 2*n_ff, H] with
     // gate rows [0,n_ff) then up rows [n_ff,2*n_ff) per expert (the layout
-    // zaya_moe_expert_ffn.hip reads); dn = [NE, H, n_ff]. Missing → null →
-    // the engine's `if (l.gu && l.dn)` dense fallback.
+    // zaya_moe_expert_ffn.hip reads); dn = [NE, H, n_ff]. Missing → null
+    // (MoE sublayer absent on even layers); expert-count mismatch or a
+    // short expert → abort (issue #1527 — never "skip MoE" silently).
+    //
+    // Streamed per-expert (issue #1529): dequant one expert to fp32, convert
+    // to fp16, and async-copy into the preallocated half buffer. The old
+    // all-experts fp32 concat peaked at ~19 GB transient host allocation for
+    // the 74B (24 experts × 2*n_ff × H × 4 B) and churned ~2.3 TB of host
+    // traffic per model load; per-expert the peak is rows*cols*(4+2) B and
+    // the next expert's dequant overlaps with the previous upload.
     {
         auto experts = [&](const char* n, __half*& gpu, int rows, int cols) {
             std::string nm = p + n;
             auto* te = model.find_tensor(nm.c_str());
-            if (!te || te->ndim != 3 || te->num_experts != eng.n_exp) {
-                fprintf(stderr, "  onebp: '%s' not a %d-expert ndim=3 tensor — MoE skipped (dense layer?)\n",
-                        nm.c_str(), eng.n_exp);
-                gpu = nullptr;
+            gpu = nullptr;
+            if (!te) return;  // sublayer absent
+            if (te->ndim != 3 || te->num_experts != eng.n_exp) {
+                fprintf(stderr, "  onebp: '%s' is [%d x %d x %d], want %d-expert ndim=3 — aborting\n",
+                        nm.c_str(), te->num_experts, te->rows, te->cols, eng.n_exp);
+                ok = false;
                 return;
             }
-            std::vector<float> allv((size_t)eng.n_exp * rows * cols);
+            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { ok = false; return; }
+            std::vector<__half> hbuf((size_t)rows * cols);
             for (int e = 0; e < eng.n_exp; e++) {
                 std::vector<float> v;
                 if (!model.get_tensor_f32_expert(nm.c_str(), e, v) || (int)v.size() < rows * cols) {
-                    fprintf(stderr, "  onebp: '%s' expert %d/%d missing/short — MoE skipped\n",
+                    fprintf(stderr, "  onebp: '%s' expert %d/%d missing/short — aborting\n",
                             nm.c_str(), e, eng.n_exp);
-                    gpu = nullptr;
+                    ok = false;
                     return;
                 }
-                memcpy(allv.data() + (size_t)e * rows * cols, v.data(), (size_t)rows * cols * 4);
+                for (size_t i = 0; i < (size_t)rows * cols; i++) hbuf[i] = __float2half(v[i]);
+                (void)hipMemcpyAsync(gpu + (size_t)e * rows * cols, hbuf.data(),
+                                     (size_t)rows * cols * 2, hipMemcpyHostToDevice, st);
             }
-            if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { ok = false; return; }
-            upf16(allv, gpu, eng.n_exp * rows * cols, st);
         };
         experts("ffn_gate_up_exps.weight", l.gu, 2 * eng.n_ff, eng.h);
         experts("ffn_down_exps.weight", l.dn, eng.h, eng.n_ff);
     }
+    if (!ok) return false;
 
-    // ── Post-MLP residual scales (plan table) ──
-    f32("res_scale_hs.mlp.weight", l.pmhss, eng.h);
-    f32("res_scale_hs.mlp.bias", l.pmhsb, eng.h);
-    f32("res_scale_res.mlp.weight", l.pmrss, eng.h);
-    f32("res_scale_res.mlp.bias", l.pmrsb, eng.h);
+    // ── Post-MLP residual scales. The reference llama.cpp loader falls back
+    // to the attention res_scale when res_scale_hs.mlp.* is absent, so a
+    // missing .mlp group is fine (and it is never used on attention-only
+    // layers). A PARTIAL .mlp group is a broken file. The scales are
+    // weights: residual_scale_k dereferences them unconditionally, so a MoE
+    // layer with no scales at all is fatal too.
+    f32("res_scale_hs.mlp.weight", l.pmhss, eng.h, false);
+    f32("res_scale_res.mlp.weight", l.pmrss, eng.h, false);
+    if (!ok) return false;
+    f32("res_scale_hs.mlp.bias", l.pmhsb, eng.h, true);
+    f32("res_scale_res.mlp.bias", l.pmrsb, eng.h, true);
+    if (!ok) return false;
+    if ((l.pmhss != nullptr) != (l.pmrss != nullptr)) {
+        fprintf(stderr, "  onebp: layer %d has a PARTIAL res_scale_hs.mlp group — aborting\n", il);
+        dump_layer_tensors(model, p);
+        return false;
+    }
+    if (!l.pmhss && l.pahss && l.parss) {
+        // llama.cpp fallback: res_scale_hs_mlp ? res_scale_hs_mlp : res_scale_hs
+        l.pmhss = l.pahss; l.pmhsb = l.pahsb; l.pmrss = l.parss; l.pmrsb = l.parsb;
+    }
+
+    // ── Sublayer consistency (issue #1527) ──
+    // A valid layer has ALL of a sublayer's weight tensors or NONE of them
+    // (even layers are attention-only, odd layers are MoE-only). Anything
+    // else means a broken or mismatched file — abort rather than silently
+    // run garbage through zeroed weights. res_scale_hs/res are excluded:
+    // they exist on EVERY layer in the reference format.
+    const bool attn_any = l.wq || l.wk || l.wv1 || l.wv2 || l.wo || l.cdw || l.cgw || l.ks;
+    const bool attn_all = l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks;
+    const bool moe_any  = l.gdw || l.rfn || l.rf1 || l.rf2 || l.rout || l.gu || l.dn;
+    const bool moe_all  = l.gdw && l.rfn && l.rf1 && l.rf2 && l.rout && l.gu && l.dn;
+    if (attn_any != attn_all) {
+        fprintf(stderr, "  onebp: layer %d has PARTIAL attention tensors (some but not all) — broken or mismatched file, aborting\n", il);
+        dump_layer_tensors(model, p);
+        return false;
+    }
+    if (moe_any != moe_all) {
+        fprintf(stderr, "  onebp: layer %d has PARTIAL MoE tensors (router without experts or vice versa) — aborting\n", il);
+        dump_layer_tensors(model, p);
+        return false;
+    }
+    if (!attn_any && !moe_any) {
+        fprintf(stderr, "  onebp: layer %d has NEITHER attention nor MoE weights — aborting\n", il);
+        dump_layer_tensors(model, p);
+        return false;
+    }
+    if (attn_all && (!l.pahss || !l.parss)) {
+        fprintf(stderr, "  onebp: layer %d has attention but no res_scale_hs/res_scale_res — aborting\n", il);
+        dump_layer_tensors(model, p);
+        return false;
+    }
+    if (moe_all && !l.pmhss) {
+        fprintf(stderr, "  onebp: layer %d has MoE but no residual scales (res_scale_hs.mlp.* or res_scale_hs.*) — aborting\n", il);
+        dump_layer_tensors(model, p);
+        return false;
+    }
 
     return ok;
 }
@@ -683,13 +811,25 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
     // Validate the model header against the runtime config before allocating or
     // loading weights — a silent dimension mismatch would zero-fill every tensor
     // and produce a model that loads without error but outputs garbage.
+    // Extended in #1527: attention geometry and the expert count were previously
+    // unchecked, so a 24-expert 74B could load under a 16-expert config and
+    // silently zero-fill every layer. intermediate_size is deliberately NOT
+    // checked: gguf_to_onebp infers it from the first MoE tensor's shape
+    // (2*n_ff rows for gate_up), which is not the engine's n_ff — those
+    // mismatches surface as wrong-sized expert tensors in load_layer_onebp.
     if (eng.h      != (int)hdr.hidden_size    ||
         eng.n_layers != (int)hdr.num_layers    ||
-        eng.vocab  != (int)hdr.vocab_size       ) {
+        eng.vocab  != (int)hdr.vocab_size       ||
+        (eng.nq  > 0 && hdr.num_attention_heads > 0 && eng.nq  != (int)hdr.num_attention_heads) ||
+        (eng.nkv > 0 && hdr.num_kv_heads       > 0 && eng.nkv != (int)hdr.num_kv_heads)       ||
+        (eng.hd  > 0 && hdr.head_dim           > 0 && eng.hd  != (int)hdr.head_dim)           ||
+        (hdr.num_experts > 0 && hdr.num_experts != (uint32_t)eng.n_exp)) {
         fprintf(stderr, "zaya_init_onebp: config/header dimension mismatch — aborting init "
-                "(cfg H=%d L=%d V=%d vs hdr H=%d L=%d V=%d)\n",
-                eng.h, eng.n_layers, eng.vocab,
-                (int)hdr.hidden_size, (int)hdr.num_layers, (int)hdr.vocab_size);
+                "(cfg H=%d L=%d V=%d NH=%d NKV=%d HD=%d NE=%d vs hdr H=%d L=%d V=%d NH=%d NKV=%d HD=%d NE=%u)\n",
+                eng.h, eng.n_layers, eng.vocab, eng.nq, eng.nkv, eng.hd, eng.n_exp,
+                (int)hdr.hidden_size, (int)hdr.num_layers, (int)hdr.vocab_size,
+                (int)hdr.num_attention_heads, (int)hdr.num_kv_heads, (int)hdr.head_dim,
+                (unsigned)hdr.num_experts);
         zaya_destroy(s);
         return nullptr;
     }
@@ -768,7 +908,7 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
     s->eda_scale.assign(eng.n_layers, 0.0f);
     for (int il = 0; il < eng.n_layers; il++) {
         if (!load_layer_onebp(model, il, s->lw[il], eng, s->st)) {
-            fprintf(stderr, "zaya_init_onebp: GPU alloc failed in layer %d — aborting init\n", il);
+            fprintf(stderr, "zaya_init_onebp: layer %d failed to load (see messages above) — aborting init\n", il);
             zaya_destroy(s);
             return nullptr;
         }
@@ -822,6 +962,14 @@ static void zaya_kv_gather(ZayaState* s, int il, int seq_len) {
 }
 
 // ── Forward: token in, logits out ──
+// Zaya layers alternate CCA-attention / MoE (issue #1527): each sublayer
+// runs only when its weights were loaded (null when absent in the file —
+// same pattern as the reference tests/zaya_gpu_decode.cpp). The per-layer
+// pre-norm (attn_norm) runs on every layer, matching llama.cpp's graph.
+static inline bool layer_has_attn(const LayerW& l) {
+    return l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks;
+}
+
 void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
     if (token_id < 0 || token_id >= eng.vocab) { if (logits_out) memset(logits_out, 0, eng.vocab * sizeof(float)); return; }
     int g1 = (eng.h+BLK-1)/BLK;
@@ -836,6 +984,7 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         // RMSNorm (separate launch to avoid cross-block data race, issue #870)
         rmsnorm_fused_kernel<<<1, 256, 0, s->st>>>(s->d_hs, l.nw, eng.h);
         HIP_CHECK(hipGetLastError());
+        if (layer_has_attn(l)) {
         // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
         { int hv2=eng.kd/2;
           mm_k<<<(eng.qd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);
@@ -872,8 +1021,11 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         HIP_CHECK(hipGetLastError());
         copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_ao,eng.h);
         HIP_CHECK(hipGetLastError());
+        if (l.pan) {  // .bin-era second norm; absent in GGUF-derived models
         rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,l.pan,eng.h);
         HIP_CHECK(hipGetLastError());
+        }
+        }
         if(l.gu&&l.dn){
             eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
             HIP_CHECK(hipGetLastError());
@@ -930,6 +1082,7 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         // RMSNorm (separate launch to avoid cross-block data race, issue #870)
         rmsnorm_fused_kernel<<<1, 256, 0, s->st>>>(s->d_hs, l.nw, eng.h);
         HIP_CHECK(hipGetLastError());
+        if (layer_has_attn(l)) {
         // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
         { int hv2=eng.kd/2;
           mm_k<<<(eng.qd+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.wq,eng.qd,eng.h);
@@ -967,8 +1120,11 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_ao,eng.h);
         HIP_CHECK(hipGetLastError());
         nan_clean_k<<<g1,BLK,0,s->st>>>(s->d_hs,eng.h);
+        if (l.pan) {  // .bin-era second norm; absent in GGUF-derived models
         rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,l.pan,eng.h);
         HIP_CHECK(hipGetLastError());
+        }
+        }
         if(l.gu&&l.dn){
             eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
             HIP_CHECK(hipGetLastError());
@@ -1049,12 +1205,19 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
     for (int il = 0; il < eng.n_layers; il++) {
         auto& l = s->lw[il];
 
-        // CCA attention: per-token rmsnorm + Q/K/V proj → V interleave → GQA broadcast → o_proj
+        // Per-layer pre-norm (attn_norm) runs on every layer, matching
+        // llama.cpp's graph. The sublayers are guarded by their weights
+        // (issue #1527 — Zaya layers alternate attention-only / MoE-only).
+        for (int b = 0; b < B; b++) {
+            __half* hs_b = s->d_hs + (size_t)b * eng.h;
+            rmsnorm_k<<<1, BLK, 0, s->st>>>(hs_b, l.nw, eng.h);
+            HIP_CHECK(hipGetLastError());
+        }
+        if (layer_has_attn(l)) {
+        // CCA attention: per-token Q/K/V proj → V interleave → GQA broadcast → o_proj
         for (int b = 0; b < B; b++) {
             __half* hs_b = s->d_hs + (size_t)b * eng.h;
             __half* ao_b = s->d_ao + (size_t)b * eng.h;
-            rmsnorm_k<<<1, BLK, 0, s->st>>>(hs_b, l.nw, eng.h);
-            HIP_CHECK(hipGetLastError());
             moe_tiled_gemv<<<eng.qd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp, hs_b, l.wq, eng.qd, eng.h);
             HIP_CHECK(hipGetLastError());
             moe_tiled_gemv<<<eng.kd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd, hs_b, l.wk, eng.kd, eng.h);
@@ -1080,8 +1243,11 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
             HIP_CHECK(hipGetLastError());
             copy_k<<<g1, BLK, 0, s->st>>>(hs_b, ao_b, eng.h);
             HIP_CHECK(hipGetLastError());
+            if (l.pan) {  // .bin-era second norm; absent in GGUF-derived models
             rmsnorm_k<<<1, BLK, 0, s->st>>>(hs_b, l.pan, eng.h);
-        HIP_CHECK(hipGetLastError());
+            HIP_CHECK(hipGetLastError());
+            }
+        }
         }
 
         // Batched router + batch-union MoE

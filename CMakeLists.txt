@@ -768,6 +768,17 @@ target_compile_options(test_lora_merge PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wn
 target_link_libraries(test_lora_merge PRIVATE rocm_cpp hip::host hip::device)
 set_target_properties(test_lora_merge PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
+# Issue #1527 regression guard: load_layer_onebp must REJECT a dense non-Zaya
+# .1bp loudly (partial attention group / wrong-sized weights) instead of
+# zero-filling every weight and "succeeding" with garbage logits. Skips when
+# models/Qwen3-0.6B.1bp is absent.
+add_executable(issue1527_loader_check tests/issue1527_loader_check.cpp src/zaya_engine.cpp)
+set_source_files_properties(tests/issue1527_loader_check.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
+target_include_directories(issue1527_loader_check PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/kernels)
+target_compile_options(issue1527_loader_check PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
+target_link_libraries(issue1527_loader_check PRIVATE rocm_cpp hip::host hip::device)
+set_target_properties(issue1527_loader_check PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
 set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
