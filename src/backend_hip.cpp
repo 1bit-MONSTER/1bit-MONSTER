@@ -53,14 +53,18 @@ struct HIPBackend : Backend {
         printf("HIP: Initializing Zaya engine (H=%d, L=%d, NH=%d, NKV=%d, V=%d)...\n",
                zcfg.h, zcfg.n_layers, zcfg.nq, zcfg.nkv, zcfg.vocab);
 
-        // Format detection: a .1bp/.q4nx file in weights_dir wins (native
-        // OneBP path via zaya_init_onebp, same directory scan pattern as
-        // backend_laguna.cpp); otherwise fall back to the legacy Zaya .bin
-        // path (zaya_init). Neither → not a HIP-loadable model.
+        // Format detection: an explicit model_path ending in .1bp wins;
+        // otherwise scan weights_dir. With multiple candidates the choice
+        // would be filesystem-defined (readdir order) — refuse loudly
+        // instead (issue #1532). No candidates → legacy Zaya .bin path.
+        // Neither → not a HIP-loadable model.
         std::string wd = weights_dir;
         if (!wd.empty() && wd.back() != '/') wd += '/';
         std::string onebp_path;
-        {
+        if (cfg.model_path.size() > 4 && cfg.model_path.substr(cfg.model_path.size()-4) == ".1bp") {
+            onebp_path = cfg.model_path;
+        } else {
+            std::vector<std::string> cands;
             DIR* d = opendir(weights_dir.c_str());
             if (d) {
                 struct dirent* entry;
@@ -69,12 +73,19 @@ struct HIPBackend : Backend {
                     // Only claim .1bp — .q4nx is the FastFlowLM format and the
                     // FLM backend's domain; zaya_init_onebp crashes on the
                     // JSON-header q4nx (bad magic) instead of failing cleanly.
-                    if (fn.size() > 4 && fn.substr(fn.size()-4) == ".1bp") {
-                        onebp_path = wd + fn;
-                        break;
-                    }
+                    if (fn.size() > 4 && fn.substr(fn.size()-4) == ".1bp")
+                        cands.push_back(wd + fn);
                 }
                 closedir(d);
+            }
+            if (cands.size() == 1) {
+                onebp_path = cands[0];
+            } else if (cands.size() > 1) {
+                fprintf(stderr, "HIP: %zu .1bp files in %s — ambiguous, refusing to pick one "
+                        "arbitrarily (set model_path explicitly). Candidates:\n",
+                        cands.size(), weights_dir.c_str());
+                for (const auto& c : cands) fprintf(stderr, "  %s\n", c.c_str());
+                return false;
             }
         }
         if (!onebp_path.empty()) {

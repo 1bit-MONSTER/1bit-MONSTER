@@ -260,17 +260,30 @@ struct LagunaBackend : Backend {
         this->cfg = cfg;
 
         std::string bp_path;
-        DIR* d = opendir(weights_dir.c_str());
-        if (d) {
-            struct dirent* entry;
-            while ((entry = readdir(d)) != nullptr) {
-                std::string fn(entry->d_name);
-                if (fn.size() > 4 && fn.substr(fn.size()-4) == ".1bp") {
-                    bp_path = weights_dir + "/" + fn;
-                    break;
+        if (cfg.model_path.size() > 4 && cfg.model_path.substr(cfg.model_path.size()-4) == ".1bp") {
+            bp_path = cfg.model_path;
+        } else {
+            // Multiple candidates → refuse loudly; readdir order is
+            // filesystem-defined (same rule as backend_hip, issue #1532).
+            std::vector<std::string> cands;
+            DIR* d = opendir(weights_dir.c_str());
+            if (d) {
+                struct dirent* entry;
+                while ((entry = readdir(d)) != nullptr) {
+                    std::string fn(entry->d_name);
+                    if (fn.size() > 4 && fn.substr(fn.size()-4) == ".1bp")
+                        cands.push_back(weights_dir + "/" + fn);
                 }
+                closedir(d);
             }
-            closedir(d);
+            if (cands.size() == 1) bp_path = cands[0];
+            else if (cands.size() > 1) {
+                fprintf(stderr, "Laguna: %zu .1bp files in %s — ambiguous, refusing to pick one "
+                        "arbitrarily (set model_path explicitly). Candidates:\n",
+                        cands.size(), weights_dir.c_str());
+                for (const auto& c : cands) fprintf(stderr, "  %s\n", c.c_str());
+                return false;
+            }
         }
         if (bp_path.empty() && !cfg.model_path.empty()) bp_path = cfg.model_path;
         if (bp_path.empty()) {
