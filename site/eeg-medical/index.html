@@ -74,6 +74,7 @@ footer{border-top:1px solid var(--border);margin-top:20px;padding:40px 32px;}
 .foot-links a:hover{color:var(--blue);}
 .foot-fine{margin-top:28px;padding-top:22px;border-top:1px solid var(--border);font-family:var(--mono);font-size:12.5px;line-height:1.9;color:var(--dim);}
 .foot-fine .p{color:var(--pink);font-style:italic;}
+.foot-fine a{color:var(--blue);font-style:normal;}
 @media (max-width:860px){.nav-links{display:none;}}
 </style>
 </head>
@@ -119,7 +120,8 @@ footer{border-top:1px solid var(--border);margin-top:20px;padding:40px 32px;}
 <tr><td>Denoise channels</td><td>Removes muscle/eye-blink artifacts without losing signal</td></tr>
 <tr><td>Reconstruct missing channels</td><td>Fixes dead electrodes, extends recordings from sparse montages</td></tr>
 <tr><td>Upsample montages</td><td>Predicts 128-channel EEG from a standard 19-channel clinical recording</td></tr>
-<tr><td>Channel-agnostic (3D scalp coordinates)</td><td>Works on any electrode layout — no retraining per montage</td></tr>
+<tr><td>Channel-agnostic (3D scalp coordinates + time)</td><td>Works on any electrode layout via 4D rotary position encoding — no retraining per montage</td></tr>
+<tr><td>Variable-length input (0.5–30s)</td><td>Handles short trial snippets and long continuous recordings with no reconfiguration</td></tr>
 </table>
 </div>
 <h2 style="margin:40px 0 16px;font-size:22px;">Planned clinical benchmarks</h2>
@@ -161,7 +163,7 @@ pip install -e ".[gpu]"</span>
 </div>
 <div class="foot-fine">
 AGPL-3.0 code · CC-BY-4.0 data · research software, not a certified medical device.<br>
-Built on <span style="color:var(--pink);font-style:italic;">ZUNA1.1 by Zyphra</span>. Fine-tuned on the Temple University Hospital EEG Corpus.<br>
+Built on <a href="https://huggingface.co/Zyphra/ZUNA1.1" target="_blank" rel="noopener" class="p">ZUNA1.1 by Zyphra</a> (<a href="https://www.zyphra.com/our-work/zuna1.1" target="_blank" rel="noopener">announcement</a>, Apache-2.0). Fine-tuned on the Temple University Hospital EEG Corpus.<br>
 —bong-water-water-bong · "free for research and commercial use, no closed-source profiteering"
 </div>
 </footer>
