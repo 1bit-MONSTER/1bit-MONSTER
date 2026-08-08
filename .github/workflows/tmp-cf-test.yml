@@ -4,4 +4,25 @@ jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "alive"
+      - name: Inspect eeg-medical Pages project
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          curl -s -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical" \
+            > /tmp/proj.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/proj.json'))
+          if not d.get('success'):
+              print('ERROR:', json.dumps(d.get('errors', d))[:500])
+              raise SystemExit
+          r = d['result']
+          print('name:', r.get('name'))
+          print('subdomain:', r.get('subdomain'))
+          print('domains:', r.get('domains'))
+          print('production_branch:', r.get('production_branch'))
+          print('source:', json.dumps(r.get('source'), indent=2))
+          print('build_config:', json.dumps(r.get('build_config'), indent=2))
+          PY
