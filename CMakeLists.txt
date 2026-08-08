@@ -1295,6 +1295,7 @@ set(ONE_BIN_SOURCES
     tools/jarvis/persona.cpp
     tools/jarvis/vad.cpp
     tools/jarvis/voice_session.cpp
+    tools/jarvis/ws_proto.cpp
     tools/jarvis/context.cpp
     tools/jarvis/auth.cpp
     tools/jarvis/usage.cpp
