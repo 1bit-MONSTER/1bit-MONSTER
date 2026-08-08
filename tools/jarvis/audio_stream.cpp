@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -281,12 +282,34 @@ static int ws_recv_frame(int fd, std::string* out_payload, uint8_t* out_opcode) 
     return 0;
 }
 
+// ── Session connection downlink (called from jarvis_server, Task 3) ────
+
+WsSessionConn::~WsSessionConn() = default;
+
+bool WsSessionConn::send_audio(const float* samples, int n_samples) {
+    if (n_samples <= 0 || cancelled_ || fd_ < 0) return false;
+    std::lock_guard<std::mutex> lock(send_mu_);
+    if (cancelled_ || fd_ < 0) return false;   // abort current TTS send
+    return ws_send_frame(fd_, samples, (size_t)n_samples * sizeof(float), 0x02);
+}
+
+bool WsSessionConn::send_text(const std::string& json) {
+    if (fd_ < 0) return false;
+    std::lock_guard<std::mutex> lock(send_mu_);
+    if (fd_ < 0) return false;
+    return ws_send_frame(fd_, json.data(), json.size(), 0x01);
+}
+
 // ── WebSocket upgrade handler ─────────────────────────────────────────
 //
 // Handles one WebSocket connection: performs upgrade handshake, streams
 // audio frames, cleans up.
 
-static void handle_ws_connection(int client_fd, void* codec_tts_ptr) {
+static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionConn>* slot);
+
+static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
+                                 const WSAuthCheck& auth_check,
+                                 std::unique_ptr<WsSessionConn>* session_slot) {
     if (client_fd < 0) return;
 
     // ── Read HTTP upgrade request ────────────────────────────
@@ -308,6 +331,7 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr) {
     // Crude HTTP header parser — good enough for the WebSocket upgrade
     std::string ws_key;
     std::string path;
+    std::string auth_header;
     bool has_upgrade = false;
 
     // Parse first line: GET /path?query HTTP/1.1
@@ -343,6 +367,8 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr) {
                 has_upgrade = true;
             if (key == "Sec-WebSocket-Key")
                 ws_key = value;
+            if (key == "Authorization")
+                auth_header = value;
         }
         pos = line_end + 2;
     }
@@ -379,7 +405,33 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr) {
         }
     }
 
-    if (!has_upgrade || ws_key.empty() || voice.empty() || text.empty()) {
+    if (!has_upgrade || ws_key.empty()) {
+        // Send HTTP error response
+        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        write(client_fd, err, strlen(err));
+        close(client_fd);
+        return;
+    }
+
+    // ── Auth gate (both request paths) ───────────────────────
+    if (auth_check && !auth_check(auth_header)) {
+        const char* err = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        write(client_fd, err, strlen(err));
+        close(client_fd);
+        return;
+    }
+
+    // ── Request path routing ─────────────────────────────────
+    // /v1/voice/session → full-duplex conversation path (no voice/text
+    // query params required).  Anything else → legacy /v1/audio/stream
+    // downlink, unchanged.
+    std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
+    if (path_base == "/v1/voice/session") {
+        handle_session_connection(client_fd, session_slot);
+        return;
+    }
+
+    if (voice.empty() || text.empty()) {
         // Send HTTP error response
         const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         write(client_fd, err, strlen(err));
@@ -523,6 +575,90 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr) {
     close(client_fd);
 }
 
+// ── /v1/voice/session: full-duplex conversation path ─────────────────
+//
+// Uplink:   text {"type":"start|stop|cancel"} + binary PCM16 @ 16 kHz,
+//           20 ms (640-byte) frames — partial frames are buffered.
+// Downlink: text meta/state/end/error frames + binary float32 @ 24 kHz
+//           pushed by jarvis_server via WsSessionConn::send_audio/text.
+// The connection stays open after "stop" so the client can start a new
+// turn; close frames end it.
+static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionConn>* slot) {
+    if (!slot) { close(client_fd); return; }
+
+    // Replace the previous (dead) session handle.  Server thread only.
+    slot->reset();
+    auto conn = std::make_unique<WsSessionConn>();
+    conn->fd_ = client_fd;
+    conn->session_ = std::make_unique<VoiceSession>();
+    WsSessionConn* raw = conn.get();
+    conn->session_->set_callbacks(
+        [raw](SessionState st) { raw->send_text(ws_state_json(st)); },
+        [raw](const std::vector<int16_t>& pcm16) {   // forwarded to Task 3 wiring
+            if (raw->utterance_cb_) raw->utterance_cb_(pcm16);
+        },
+        [raw](const std::string& msg) {
+            raw->send_text(nlohmann::json{{"type", "error"}, {"message", msg}}.dump());
+        });
+    *slot = std::move(conn);
+
+    // ── Session handshake: meta first ────────────────────────
+    if (!raw->send_text(ws_meta_json(true))) { close(client_fd); raw->fd_ = -1; return; }
+
+    // 50ms receive timeout so we can tick the session state machine
+    timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 50000;
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    static constexpr size_t kFrameBytes = 640; // 320 int16 samples, 20ms @ 16kHz
+    while (true) {
+        std::string incoming;
+        uint8_t opcode = 0;
+        int ret = ws_recv_frame(client_fd, &incoming, &opcode);
+        if (ret == 2) break;                    // close frame
+        if (ret < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) break; // peer gone
+        } else if (opcode == 0x01) {            // text: control
+            std::string type;
+            nlohmann::json payload;
+            if (ws_parse_control(incoming, type, payload)) {
+                if (type == "start") {
+                    raw->cancelled_ = false;    // new turn, clear stale cancel
+                    raw->session_->start();
+                } else if (type == "stop") {
+                    raw->session_->stop();
+                    raw->send_text(R"({"type":"end","reason":"stopped"})");
+                } else if (type == "cancel") {
+                    raw->cancelled_ = true;     // send_audio aborts current TTS send
+                }
+            }
+        } else if (opcode == 0x02) {            // binary: PCM16 uplink
+            raw->pcm_buf_.insert(raw->pcm_buf_.end(), incoming.begin(), incoming.end());
+            size_t off = 0;
+            while (raw->pcm_buf_.size() - off >= kFrameBytes) {
+                int16_t frame[320];
+                std::memcpy(frame, raw->pcm_buf_.data() + off, kFrameBytes);
+                raw->session_->feed(frame, 320);
+                off += kFrameBytes;
+            }
+            raw->pcm_buf_.erase(raw->pcm_buf_.begin(), raw->pcm_buf_.begin() + off);
+        }
+        raw->session_->tick(50);
+    }
+
+    // Teardown: stop the session, mark the handle dead.  The object stays
+    // in *slot until the next session connects (or server stop), so a
+    // jarvis_server thread mid-send_audio never touches freed memory.
+    // (session_->stop() may fire on_state → send_text, so no mutex held.)
+    raw->session_->stop();
+    {
+        std::lock_guard<std::mutex> lock(raw->send_mu_);
+        raw->fd_ = -1;
+    }
+    close(client_fd);
+}
+
 // ── WebSocketServer implementation ────────────────────────────────────
 
 struct WebSocketServerImpl {
@@ -533,7 +669,12 @@ WebSocketServer::WebSocketServer() = default;
 WebSocketServer::~WebSocketServer() { stop(); }
 
 int WebSocketServer::start(int port, void* codec_tts_ptr) {
+    return start(port, codec_tts_ptr, WSAuthCheck{});
+}
+
+int WebSocketServer::start(int port, void* codec_tts_ptr, WSAuthCheck auth_check) {
     if (running_) return port_;
+    auth_check_ = std::move(auth_check);
 
     listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
@@ -595,7 +736,7 @@ int WebSocketServer::start(int port, void* codec_tts_ptr) {
             }
 
             STREAM_LOG("WebSocket client connected");
-            handle_ws_connection(client_fd, tts);
+            handle_ws_connection(client_fd, tts, auth_check_, &session_conn_);
             STREAM_LOG("WebSocket client disconnected");
         }
 
