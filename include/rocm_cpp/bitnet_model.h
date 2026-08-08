@@ -164,6 +164,11 @@ typedef struct {
     void* bst_gate_packed_dev;  void* bst_gate_scales_dev;
     void* bst_up_packed_dev;    void* bst_up_scales_dev;
     void* bst_down_packed_dev;  void* bst_down_scales_dev;
+
+    // Attention biases (qwen2.5-family; GGUF conversions drop them)
+    void* q_bias_dev;
+    void* k_bias_dev;
+    void* v_bias_dev;
 } rcpp_bitnet_layer_t;
 
 typedef struct {

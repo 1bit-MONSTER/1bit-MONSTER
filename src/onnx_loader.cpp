@@ -620,6 +620,15 @@ rcpp_status_t rcpp_bitnet_load_onnx(const char* path, rcpp_bitnet_model_t* out_m
         snprintf(buf, sizeof(buf), "model.layers.%d.post_attention_layernorm.weight", i);
         L.post_attn_norm_dev = tensor_to_dev(lookup(buf));
 
+        snprintf(buf, sizeof(buf), "model.layers.%d.self_attn.q_proj.bias", i);
+        L.q_bias_dev = tensor_to_dev(lookup(buf));
+
+        snprintf(buf, sizeof(buf), "model.layers.%d.self_attn.k_proj.bias", i);
+        L.k_bias_dev = tensor_to_dev(lookup(buf));
+
+        snprintf(buf, sizeof(buf), "model.layers.%d.self_attn.v_proj.bias", i);
+        L.v_bias_dev = tensor_to_dev(lookup(buf));
+
         snprintf(buf, sizeof(buf), "model.layers.%d.self_attn.q_norm.weight", i);
         L.attn_q_norm_dev = tensor_to_dev(lookup(buf));
 

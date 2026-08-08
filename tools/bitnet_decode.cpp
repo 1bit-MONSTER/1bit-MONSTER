@@ -830,6 +830,10 @@ int main(int argc, char** argv) {
                 RC_OK(ternary_gemv(ly.q_i8_dev, x_i8, x_scale, ly.q_i8_scales_dev, normed, q_fp16, nh*hd, hs, decode_stream));
                 RC_OK(ternary_gemv(ly.k_i8_dev, x_i8, x_scale, ly.k_i8_scales_dev, normed, k_fp16, nkv*hd, hs, decode_stream));
                 RC_OK(ternary_gemv(ly.v_i8_dev, x_i8, x_scale, ly.v_i8_scales_dev, normed, v_fp16, nkv*hd, hs, decode_stream));
+                // qwen2.5-family attention biases (GGUF conversions drop them)
+                if (ly.q_bias_dev) RC_OK(rcpp_residual_add_fp16(q_fp16, ly.q_bias_dev, nh*hd, ds));
+                if (ly.k_bias_dev) RC_OK(rcpp_residual_add_fp16(k_fp16, ly.k_bias_dev, nkv*hd, ds));
+                if (ly.v_bias_dev) RC_OK(rcpp_residual_add_fp16(v_fp16, ly.v_bias_dev, nkv*hd, ds));
             } else {
                 // INT8-act path: quantize, memcpy scale to host, dispatch.
                 RC_OK(rcpp_quantize_fp16_to_i8(normed, x_i8, x_scale_dev, hs, ds));
