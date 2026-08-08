@@ -132,7 +132,13 @@ footer{border-top:1px solid var(--border);margin-top:20px;padding:40px 32px;}
 <span class="eyebrow">Data Access</span>
 <h2 style="margin:16px 0 8px;">Temple University Hospital EEG Corpus.</h2>
 <p class="lead">The TUH EEG Corpus requires a data access request directly from Temple University. Once access is granted: place EDF files under <code>data/tuh_raw/</code>, run <code>scripts/preprocess_tuh.py</code>, and the output lands in <code>data/tuh_processed/</code> as ZUNA-compatible pairs, ready for fine-tuning.</p>
-<div class="disclaimer">This is a research pipeline, not a diagnostic tool. Outputs have not been validated for clinical decision-making and should not be used to diagnose or treat patients.</div>
+<div class="stats" id="sync-stats" style="margin-top:28px;">
+<div class="stat"><span class="lbl">Recordings synced</span><span class="val" id="stat-synced">—</span></div>
+<div class="stat"><span class="lbl">Data synced</span><span class="val" id="stat-gb">—</span></div>
+<div class="stat"><span class="lbl">% of corpus</span><span class="val" id="stat-pct">—</span></div>
+<div class="stat"><span class="lbl">Last sync</span><span class="val" id="stat-lastsync" style="font-size:16px;">—</span></div>
+</div>
+<div class="disclaimer">This is a research pipeline, not a diagnostic tool. Outputs have not been validated for clinical decision-making and should not be used to diagnose or treat patients. The sync stats above are aggregate pipeline progress metrics only — no raw EEG data, file listings, or patient information is published here, per Temple University's data use agreement.</div>
 </section>
 
 <section id="quickstart" class="block">
@@ -167,6 +173,25 @@ Built on <a href="https://huggingface.co/Zyphra/ZUNA1.1" target="_blank" rel="no
 —bong-water-water-bong · "free for research and commercial use, no closed-source profiteering"
 </div>
 </footer>
+
+<script>
+fetch('./stats.json?_=' + Date.now())
+  .then(function(r){ return r.ok ? r.json() : null; })
+  .then(function(d){
+    if(!d) return;
+    function set(id, v){ var el = document.getElementById(id); if(el && v !== undefined && v !== null) el.textContent = v; }
+    if(typeof d.recordings_synced === 'number') set('stat-synced', d.recordings_synced.toLocaleString());
+    if(typeof d.gb_synced === 'number') set('stat-gb', d.gb_synced.toLocaleString() + ' GB');
+    if(typeof d.recordings_synced === 'number' && typeof d.total_available === 'number' && d.total_available > 0){
+      set('stat-pct', Math.round((d.recordings_synced / d.total_available) * 100) + '%');
+    }
+    if(d.last_sync_utc){
+      var dt = new Date(d.last_sync_utc);
+      if(!isNaN(dt.getTime())) set('stat-lastsync', dt.toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'}));
+    }
+  })
+  .catch(function(){});
+</script>
 
 </body>
 </html>
