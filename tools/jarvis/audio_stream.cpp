@@ -232,7 +232,11 @@ static bool ws_send_frame(int fd, const void* data, size_t len, uint8_t opcode) 
 
 // Returns: 0 = success with payload, 1 = ping (pong sent), 2 = close, -1 = error
 // Payload written to out_payload, opcode written to out_opcode.
-static int ws_recv_frame(int fd, std::string* out_payload, uint8_t* out_opcode) {
+// max_payload bounds a client-declared payload length *before* any
+// allocation; the session uplink path caps it, the downlink path keeps the
+// default (behavior unchanged).
+static int ws_recv_frame(int fd, std::string* out_payload, uint8_t* out_opcode,
+                         size_t max_payload = SIZE_MAX) {
     uint8_t h[2];
     if (!ws_read_exact(fd, h, 2)) return -1;
 
@@ -250,6 +254,8 @@ static int ws_recv_frame(int fd, std::string* out_payload, uint8_t* out_opcode) 
         payload_len = 0;
         for (int i = 0; i < 8; i++) payload_len = (payload_len << 8) | (uint64_t)ext[i];
     }
+
+    if (payload_len > max_payload) { errno = EMSGSIZE; return -1; }  // reject oversized frame before allocating
 
     uint8_t mask_key[4] = {0};
     if (masked && !ws_read_exact(fd, mask_key, 4)) return -1;
@@ -305,11 +311,13 @@ bool WsSessionConn::send_text(const std::string& json) {
 // Handles one WebSocket connection: performs upgrade handshake, streams
 // audio frames, cleans up.
 
-static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionConn>* slot);
+static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionConn>* slot,
+                                      std::mutex* slot_mu);
 
 static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
                                  const WSAuthCheck& auth_check,
-                                 std::unique_ptr<WsSessionConn>* session_slot) {
+                                 std::shared_ptr<WsSessionConn>* session_slot,
+                                 std::mutex* slot_mu) {
     if (client_fd < 0) return;
 
     // ── Read HTTP upgrade request ────────────────────────────
@@ -427,7 +435,7 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
     // downlink, unchanged.
     std::string path_base = (qmark != std::string::npos) ? path.substr(0, qmark) : path;
     if (path_base == "/v1/voice/session") {
-        handle_session_connection(client_fd, session_slot);
+        handle_session_connection(client_fd, session_slot, slot_mu);
         return;
     }
 
@@ -583,12 +591,17 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
 //           pushed by jarvis_server via WsSessionConn::send_audio/text.
 // The connection stays open after "stop" so the client can start a new
 // turn; close frames end it.
-static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionConn>* slot) {
-    if (!slot) { close(client_fd); return; }
+static constexpr size_t kMaxUplinkFrame = 65536; // sanity cap for session uplink frames
+static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionConn>* slot,
+                                      std::mutex* slot_mu) {
+    if (!slot || !slot_mu) { close(client_fd); return; }
 
-    // Replace the previous (dead) session handle.  Server thread only.
-    slot->reset();
-    auto conn = std::make_unique<WsSessionConn>();
+    // Retire the previous connection instead of destroying it: a Task 3
+    // thread may hold a shared_ptr copy and be mid-send_audio on it.  The
+    // old object lives until the last copy drops; the server thread's own
+    // reference is the slot, published under slot_mu below.  Server thread
+    // only.
+    auto conn = std::make_shared<WsSessionConn>();
     conn->fd_ = client_fd;
     conn->session_ = std::make_unique<VoiceSession>();
     WsSessionConn* raw = conn.get();
@@ -600,7 +613,10 @@ static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionCo
         [raw](const std::string& msg) {
             raw->send_text(nlohmann::json{{"type", "error"}, {"message", msg}}.dump());
         });
-    *slot = std::move(conn);
+    {
+        std::lock_guard<std::mutex> lock(*slot_mu);
+        *slot = std::move(conn);
+    }
 
     // ── Session handshake: meta first ────────────────────────
     if (!raw->send_text(ws_meta_json(true))) { close(client_fd); raw->fd_ = -1; return; }
@@ -615,10 +631,10 @@ static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionCo
     while (true) {
         std::string incoming;
         uint8_t opcode = 0;
-        int ret = ws_recv_frame(client_fd, &incoming, &opcode);
+        int ret = ws_recv_frame(client_fd, &incoming, &opcode, kMaxUplinkFrame);
         if (ret == 2) break;                    // close frame
         if (ret < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) break; // peer gone
+            if (errno != EAGAIN && errno != EWOULDBLOCK) break; // peer gone / oversized frame
         } else if (opcode == 0x01) {            // text: control
             std::string type;
             nlohmann::json payload;
@@ -644,12 +660,17 @@ static void handle_session_connection(int client_fd, std::unique_ptr<WsSessionCo
             }
             raw->pcm_buf_.erase(raw->pcm_buf_.begin(), raw->pcm_buf_.begin() + off);
         }
+        // Apply a cross-thread set_speaking_requested on the server thread;
+        // VoiceSession itself is server-thread-only.
+        int sp = raw->speak_pending_.exchange(-1);
+        if (sp >= 0) raw->session_->set_speaking(sp != 0);
         raw->session_->tick(50);
     }
 
     // Teardown: stop the session, mark the handle dead.  The object stays
-    // in *slot until the next session connects (or server stop), so a
-    // jarvis_server thread mid-send_audio never touches freed memory.
+    // referenced by the slot (and any shared_ptr copies Task 3 holds
+    // mid-send), so it is retired — never freed — on reconnect; a Task 3
+    // thread mid-send_audio/send_text never touches freed memory.
     // (session_->stop() may fire on_state → send_text, so no mutex held.)
     raw->session_->stop();
     {
@@ -736,7 +757,7 @@ int WebSocketServer::start(int port, void* codec_tts_ptr, WSAuthCheck auth_check
             }
 
             STREAM_LOG("WebSocket client connected");
-            handle_ws_connection(client_fd, tts, auth_check_, &session_conn_);
+            handle_ws_connection(client_fd, tts, auth_check_, &session_conn_, &session_conn_mu_);
             STREAM_LOG("WebSocket client disconnected");
         }
 

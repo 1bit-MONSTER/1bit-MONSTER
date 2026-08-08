@@ -61,10 +61,17 @@ private:
 // audio/text downlink through send_audio/send_text and receives user
 // utterances via set_utterance_callback.
 //
-// Lifetime: WebSocketServer::session_conn() returns non-null from the
-// moment a session client connects until the *next* session connects or
-// the server stops.  Check active() before sending — a dead handle's
-// send_* return false and are safe to call.
+// Lifetime: WebSocketServer::session_conn() returns a shared_ptr copy of
+// the current connection.  The object stays alive as long as any copy is
+// held, so a Task 3 thread can safely be mid-send_audio/send_text while
+// the server thread retires the connection on reconnect.  Check active()
+// before sending — a dead handle's send_* return false and are safe.
+//
+// Thread domains: feed/tick/start/stop, session(), and the members fd_,
+// pcm_buf_, session_, utterance_cb_, send_mu_ are server-thread-only.
+// send_audio, send_text, set_speaking_requested, active, cancelled, and
+// set_utterance_callback may be called from any thread.  Hold the
+// shared_ptr copy from session_conn() for the duration of any send call.
 class WsSessionConn {
 public:
     WsSessionConn() = default;
@@ -79,9 +86,15 @@ public:
     /// Send a text (JSON) frame to the session client.
     bool send_text(const std::string& json);
 
-    /// The VoiceSession driving this connection.  feed/tick/start/stop run
-    /// on the server thread; set_speaking may be called from jarvis_server.
+    /// The VoiceSession driving this connection.  Server-thread-only:
+    /// feed/tick/start/stop must run on the server thread.  To change the
+    /// speaking flag from another thread, use set_speaking_requested().
     VoiceSession& session() { return *session_; }
+
+    /// Thread-safe: request the server thread to apply
+    /// VoiceSession::set_speaking at its next session tick.  Safe from any
+    /// thread; ignored once the connection is retired.
+    void set_speaking_requested(bool speaking) { speak_pending_.store(speaking ? 1 : 0); }
 
     /// True while a session client is connected.
     bool active() const { return fd_ >= 0; }
@@ -94,10 +107,11 @@ public:
     void set_utterance_callback(UtteranceCallback cb) { utterance_cb_ = std::move(cb); }
 
     // Implementation detail; manipulated by the server thread.
-    int fd_ = -1;
+    std::atomic<int> fd_{-1};                  // -1 = disconnected
     std::mutex send_mu_;                       // serializes downlink writes
     std::vector<uint8_t> pcm_buf_;             // partial 20ms uplink frames
     std::atomic<bool> cancelled_{false};
+    std::atomic<int> speak_pending_{-1};       // -1 none, 0/1 pending set_speaking
     std::unique_ptr<VoiceSession> session_;
     UtteranceCallback utterance_cb_;
 };
@@ -137,9 +151,14 @@ public:
     /// pass auth_check or is rejected with 403 (no 101).  Null = open.
     int start(int port, void* codec_tts_ptr, WSAuthCheck auth_check);
 
-    /// Handle for the active /v1/voice/session connection, or nullptr if
-    /// no session client has connected yet (see WsSessionConn lifetime).
-    WsSessionConn* session_conn() const { return session_conn_.get(); }
+    /// Handle for the active /v1/voice/session connection: returns a
+    /// shared_ptr copy that keeps the connection alive even if the server
+    /// thread retires it on a reconnect.  nullptr if no session client has
+    /// connected yet (see WsSessionConn lifetime).
+    std::shared_ptr<WsSessionConn> session_conn() const {
+        std::lock_guard<std::mutex> lock(session_conn_mu_);
+        return session_conn_;
+    }
 
     /// Stop the server and join the background thread.
     void stop();
@@ -156,7 +175,8 @@ private:
     int listen_fd_{-1};
     std::unique_ptr<std::thread> server_thread_;
     WSAuthCheck auth_check_;
-    std::unique_ptr<WsSessionConn> session_conn_;  // latest session conn (kept after close)
+    mutable std::mutex session_conn_mu_;             // guards session_conn_
+    std::shared_ptr<WsSessionConn> session_conn_;  // latest session conn (retired, not freed, on reconnect)
 };
 
 } // namespace jarvis
