@@ -7,6 +7,7 @@
 ### An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python. MIT.
 
 [![CI](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml)
+[![GitHub Ops](https://github.com/1bit-systems/1bit-systems/actions/workflows/gh-ops.yml/badge.svg)](https://github.com/1bit-systems/1bit-systems/actions/workflows/gh-ops.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-00ff00.svg)](LICENSE)
 [![Site](https://img.shields.io/badge/site-1bit.systems-12a0ed.svg)](https://1bit.systems)
 [![Strix Halo](https://img.shields.io/badge/strix%20halo-gfx1151%20%2B%20XDNA%202-12a0ed.svg)](https://www.amd.com/en/products/processors/laptop/ryzen/ai-max-series.html)
