@@ -80,15 +80,45 @@ def main():
         t = numpy_helper.from_array(arr.astype(dtype) if dtype else arr, name)
         inits.append(t)
 
-    add_tensor("model.embed_tokens.weight", emb.astype(np.float16))
+    # Size estimate (protobuf caps serialized messages at 2 GB): int8 linears
+    # + fp16 embed + fp16 lm_head. When over, store embed + lm_head as
+    # per-row INT8 + DQ in the file — the loader's INT8 branch reconstructs
+    # FP16 in device memory, so runtime behavior is unchanged.
+    weight_bytes = sum(int(np.prod(tensors[f"blk.{l}.{n}"].shape))
+                      for l in range(n_layer)
+                      for n in ["attn_q.weight", "attn_k.weight", "attn_v.weight",
+                                "attn_output.weight", "ffn_gate.weight", "ffn_up.weight",
+                                "ffn_down.weight"] if f"blk.{l}.{n}" in tensors)
+    emb_bytes = emb.size * 2
+    lm = get("output.weight")
+    lm_bytes = lm.size * 2 if lm is not None else 0
+    big = (weight_bytes + emb_bytes + lm_bytes + 8 * 1024 * 1024) > 1.9e9
+    if big:
+        embq, embs = int8_quant(emb.astype(np.float32))
+        add_tensor("model.embed_tokens.weight", embq)
+        add_tensor("model.embed_tokens.weight_scale", embs.reshape(-1))
+        nodes.append(helper.make_node("DequantizeLinear",
+                                      ["model.embed_tokens.weight", "model.embed_tokens.weight_scale"],
+                                      ["model.embed_tokens.weight_dq"], name="dq_embed"))
+        print(f"[conv] embed: int8 per-row ({weight_bytes/1e9:.2f}+{emb_bytes/1e9:.2f}+{lm_bytes/1e9:.2f} GB — over 2GB limit)")
+    else:
+        add_tensor("model.embed_tokens.weight", emb.astype(np.float16))
     add_tensor("model.norm.weight", get("output_norm.weight").astype(np.float32))
 
-    # Untied LM head (llama-family): keep FP16 — full precision on the final
-    # projection, routed via out_model->lm_head_dev (existing fp16_gemv path).
-    lm = get("output.weight")
+    # Untied LM head (llama-family): FP16 normally, per-row INT8 when the
+    # file is over the 2 GB protobuf limit (loader reconstructs FP16).
     if lm is not None:
-        add_tensor("lm_head.weight", lm.astype(np.float16))
-        print(f"[conv] lm_head: {lm.shape} (fp16, untied)")
+        if big:
+            lmq, lms = int8_quant(lm.astype(np.float32))
+            add_tensor("lm_head.weight", lmq)
+            add_tensor("lm_head.weight_scale", lms.reshape(-1))
+            nodes.append(helper.make_node("DequantizeLinear",
+                                          ["lm_head.weight", "lm_head.weight_scale"],
+                                          ["lm_head.weight_dq"], name="dq_lm_head"))
+            print(f"[conv] lm_head: {lm.shape} (int8 per-row)")
+        else:
+            add_tensor("lm_head.weight", lm.astype(np.float16))
+            print(f"[conv] lm_head: {lm.shape} (fp16, untied)")
 
     linear_map = {
         "attn_q.weight":  "self_attn.q_proj.weight",
