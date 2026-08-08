@@ -23,7 +23,7 @@
 #include "backend.h"
 #include "model_discovery.h"
 
-#define STB_IMAGE_IMPLEMENTATION
+// stbi implementation lives in src/vl_processor.cpp (libvl_image) — include header only.
 #include "../third_party/stb/stb_image.h"
 
 #include <cstdio>
