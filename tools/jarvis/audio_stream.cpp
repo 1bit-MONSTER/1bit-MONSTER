@@ -367,7 +367,10 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
     auto header_end = request.find("\r\n\r\n");
     if (header_end == std::string::npos) { close(client_fd); return; }
 
-    auto headers_section = request.substr(header_start, header_end - header_start);
+    // Trailing CRLF so the final header line (e.g. Sec-WebSocket-Key)
+    // is parsed: without it, find("\r\n", pos) hits npos and the loop
+    // breaks before the last line.
+    auto headers_section = request.substr(header_start, header_end - header_start) + "\r\n";
     size_t pos = 0;
     while (pos < headers_section.size()) {
         auto line_end = headers_section.find("\r\n", pos);
