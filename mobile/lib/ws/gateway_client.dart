@@ -30,7 +30,12 @@ class GatewayClient {
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
-  final _events = StreamController<GatewayEvent>.broadcast();
+  // Broadcast stream, but events arriving with zero listeners (e.g. the meta
+  // frame right after the 101, before the caller subscribes) are buffered and
+  // flushed when the first listener attaches.
+  final _pendingEvents = <GatewayEvent>[];
+  late final StreamController<GatewayEvent> _events =
+      StreamController<GatewayEvent>.broadcast(onListen: _flushPendingEvents);
   final _audio = StreamController<Uint8List>.broadcast();
 
   /// Parsed text frames from the server (malformed/unknown frames skipped).
@@ -96,9 +101,24 @@ class GatewayClient {
   void _onData(dynamic data) {
     if (data is String) {
       final event = parseGatewayFrame(data);
-      if (event != null) _events.add(event);
+      if (event != null) _emitEvent(event);
     } else if (data is List<int>) {
       _audio.add(Uint8List.fromList(data));
     }
+  }
+
+  void _emitEvent(GatewayEvent event) {
+    if (_events.hasListener) {
+      _events.add(event);
+    } else {
+      _pendingEvents.add(event);
+    }
+  }
+
+  void _flushPendingEvents() {
+    for (final e in _pendingEvents) {
+      _events.add(e);
+    }
+    _pendingEvents.clear();
   }
 }

@@ -31,6 +31,35 @@ List<Uint8List> chunkPcm16(Uint8List pcm, int frameBytes) {
   return chunks;
 }
 
+/// Strips a leading WAV header (handles the header split across chunks) and
+/// emits complete [frameBytes]-byte PCM16 frames, carrying the partial-frame
+/// remainder across chunks. Testable without the record plugin.
+class WavPcm16Framer {
+  WavPcm16Framer(this.frameBytes);
+
+  final int frameBytes;
+  final BytesBuilder _buf = BytesBuilder();
+  int _headerLeft = kWavHeaderSize;
+
+  /// Feeds [bytes] (header and/or PCM) and emits complete frames via [emit].
+  void add(Uint8List bytes, void Function(Uint8List) emit) {
+    var data = bytes;
+    if (_headerLeft > 0) {
+      final strip = math.min(_headerLeft, bytes.length);
+      data = bytes.sublist(strip);
+      _headerLeft -= strip;
+    }
+    if (data.isEmpty) return;
+    _buf.add(data);
+    final pcm = _buf.takeBytes();
+    for (final frame in chunkPcm16(pcm, frameBytes)) {
+      emit(frame);
+    }
+    final rest = pcm.length % frameBytes;
+    if (rest > 0) _buf.add(Uint8List.sublistView(pcm, pcm.length - rest));
+  }
+}
+
 /// Source of microphone PCM16 frames.
 abstract class MicSource {
   Stream<Uint8List> get pcm16Frames;
@@ -49,9 +78,8 @@ class RecordMicSource implements MicSource {
 
   final AudioRecorder _recorder = AudioRecorder();
   final _frames = StreamController<Uint8List>();
-  final BytesBuilder _buf = BytesBuilder();
+  final _framer = WavPcm16Framer(kUplinkFrameBytes);
   StreamSubscription<Uint8List>? _sub;
-  int _headerLeft = kWavHeaderSize;
   bool _started = false;
 
   @override
@@ -87,21 +115,7 @@ class RecordMicSource implements MicSource {
     await _recorder.stop();
   }
 
-  void _onChunk(Uint8List bytes) {
-    var data = bytes;
-    if (_headerLeft > 0) {
-      data = stripWavHeader(bytes);
-      _headerLeft = math.max(0, _headerLeft - bytes.length);
-    }
-    if (data.isEmpty) return;
-    _buf.add(data);
-    final pcm = _buf.takeBytes();
-    for (final frame in chunkPcm16(pcm, kUplinkFrameBytes)) {
-      _frames.add(frame);
-    }
-    final rest = pcm.length % kUplinkFrameBytes;
-    if (rest > 0) _buf.add(Uint8List.sublistView(pcm, pcm.length - rest));
-  }
+  void _onChunk(Uint8List bytes) => _framer.add(bytes, _frames.add);
 }
 
 /// Plays back PCM16 reply audio.

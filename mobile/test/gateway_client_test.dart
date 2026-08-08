@@ -17,7 +17,8 @@ Future<void> waitUntil(bool Function() cond,
 
 /// Test WebSocket server: upgrades every request, records received frames,
 /// answers `{"type":"start"}` with meta + state text frames and one
-/// 1248-byte binary frame.
+/// 1248-byte binary frame. With [metaOnUpgrade], the meta frame is sent
+/// immediately after the upgrade (before any `start`), like the real gateway.
 class TestWsServer {
   final HttpServer http;
   final List<Object> received = [];
@@ -27,12 +28,16 @@ class TestWsServer {
 
   int get port => http.port;
 
-  static Future<TestWsServer> start() async {
+  static Future<TestWsServer> start({bool metaOnUpgrade = false}) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final s = TestWsServer._(server);
     server.listen((request) async {
       s.authHeader = request.headers.value('authorization');
       final ws = await WebSocketTransformer.upgrade(request);
+      if (metaOnUpgrade) {
+        ws.add(
+            '{"type":"meta","sample_rate":24000,"channels":1,"format":"float32","frame_ms":13,"session":true}');
+      }
       ws.listen((data) {
         s.received.add(data);
         if (data == ControlFrame.start) {
@@ -95,6 +100,23 @@ void main() {
 
       await client.close();
       expect(client.connected, isFalse);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('meta sent right after upgrade survives late subscribe', () async {
+    final server = await TestWsServer.start(metaOnUpgrade: true);
+    final client = GatewayClient();
+    try {
+      await client.connect('127.0.0.1', server.port, null);
+      // Subscribe only after connect() completes; the meta frame may already
+      // have arrived (buffered until the first listener attaches).
+      final events = <GatewayEvent>[];
+      addTearDown(client.events.listen(events.add).cancel);
+      await waitUntil(() => events.isNotEmpty);
+      expect(events.single.maybeMeta?.sampleRate, 24000);
+      expect(events.single.maybeMeta?.format, 'float32');
     } finally {
       await server.close();
     }
