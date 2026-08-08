@@ -17,13 +17,20 @@
 // Any /dev/accel/accelN node present — the index isn't stable across driver
 // resets (the XDNA driver has been observed renumbering accel0 -> accel1
 // after an IOMMU page fault / device reset), so don't hardcode accel0.
+// The node lives at /dev/accel/accelN (amdxdna >= 0.6) or flat /dev/accelN
+// on older drivers — probe both (issue #1517).
 static bool any_accel_device_present() {
     DIR* d = opendir("/dev/accel");
+    if (!d) d = opendir("/dev");
     if (!d) return false;
     bool found = false;
     struct dirent* e;
     while ((e = readdir(d)) != nullptr) {
-        if (strncmp(e->d_name, "accel", 5) == 0) { found = true; break; }
+        // 'accel' + digit — scanning /dev directly also sees the "accel"
+        // directory entry itself, which must not count as a device.
+        if (strncmp(e->d_name, "accel", 5) == 0 && e->d_name[5] >= '0' && e->d_name[5] <= '9') {
+            found = true; break;
+        }
     }
     closedir(d);
     return found;

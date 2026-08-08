@@ -13,6 +13,7 @@
 // Part of the unified zaya_server binary.
 
 #include "backend.h"
+#include "npu_device_path.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -154,9 +155,10 @@ public:
             return false;
         }
 
-        // Detect NPU hardware
-        if (access("/dev/accel/accel0", F_OK) != 0) {
-            fprintf(stderr, "NPU: no /dev/accel/accel0 — XDNA 2 not available\n");
+        // Detect NPU hardware (node layout varies: /dev/accel/accelN or
+        // flat /dev/accelN — issue #1517)
+        if (!npu_device_present()) {
+            fprintf(stderr, "NPU: no %s — XDNA 2 not available\n", npu_device_path());
             return false;
         }
 
