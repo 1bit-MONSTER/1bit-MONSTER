@@ -756,7 +756,13 @@ int WebSocketServer::start(int port, void* codec_tts_ptr, WSAuthCheck auth_check
     struct sockaddr_in addr;
     std::memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // localhost only
+    // WS_STREAM_BIND: default loopback (safe); "0.0.0.0" binds INADDR_ANY so
+    // the phone can reach the WS port over LAN/VPN — keep JARVIS_WS_TOKEN
+    // set when binding 0.0.0.0.
+    const char* bind_env = getenv("WS_STREAM_BIND");
+    addr.sin_addr.s_addr = (bind_env && std::strcmp(bind_env, "0.0.0.0") == 0)
+                               ? htonl(INADDR_ANY)
+                               : htonl(INADDR_LOOPBACK);
     addr.sin_port = htons((uint16_t)port);
 
     if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
