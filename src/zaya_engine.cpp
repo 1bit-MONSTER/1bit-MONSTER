@@ -196,11 +196,15 @@ static bool zaya_alloc_buffers(ZayaState* s) {
     // d_argmax_idx, d_sorted_ids, d_expert_counts, d_expert_offsets are
     // declared as int* (and used as int by kernels) but allocated via
     // alloc_f32 since hipMalloc works in bytes and both int/float are 4 B.
+    // Sized from the RUNTIME config, not the 8B defaults (issue #1528):
+    // moe_sort_histogram_kernel writes [n_exp_t] counts+offsets (25 for the
+    // 24-expert 74B) and the batch kernels write expert_idx/wt[B] per token
+    // — the old fixed 17/1 sizes were 32-byte OOB GPU writes for B≥2 or 74B.
     ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_idx, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_argmax_val, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, 8);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, 17);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, 17);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_sorted_ids, ZAYA_B_MAX);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, eng.n_exp_t);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, eng.n_exp_t);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_embed, eng.vocab * eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_ibias, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_iscale, eng.h);
@@ -261,8 +265,8 @@ static bool zaya_alloc_buffers(ZayaState* s) {
     ALLOC_OR_FAIL(s, alloc_f16, s->d_vout, eng.kd);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_skip_flag, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, (size_t)eng.n_layers * eng.rtr_h);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, 1);
-    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, ZAYA_B_MAX);
+    ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, ZAYA_B_MAX);
     #undef ALLOC_OR_FAIL
     return true;
 }
