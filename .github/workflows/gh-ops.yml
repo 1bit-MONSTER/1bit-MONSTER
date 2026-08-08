@@ -29,6 +29,8 @@ jobs:
   gh-health:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: gh version
         run: gh --version | head -1
@@ -82,7 +84,8 @@ jobs:
           {
             echo "## Failed runs on main (last 7d)"
             ROWS=$(gh run list --branch main --status failure --limit 20 --json databaseId,workflowName,headBranch,createdAt,url \
-              --jq '.[] | "| [\(.workflowName)](\(.url)) | \(.createdAt) |"')
+              --jq '.[] | "| [\(.workflowName)](\(.url)) | \(.createdAt) |"') 2>/dev/null \
+              || { echo "::warning::gh run list failed — skipping"; ROWS=''; }
             if [ -n "$ROWS" ]; then printf '%s\n' "$ROWS"; else echo "None."; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
