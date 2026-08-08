@@ -1,6 +1,7 @@
 // backend_fused_npu.cpp — NPU FFN caller (pure C++, not HIP).
 // Compiled as CXX to avoid HIP compiler context conflicts with XRT.
 #include "backend_fused_npu.h"
+#include "npu_device_path.h"
 #include "../engine/fusion/zero_copy/npu_gemm_kernel.h"
 #include <cmath>
 #include <vector>
@@ -17,7 +18,7 @@ struct NpuState {
 };
 
 NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
-    int npu_fd = open("/dev/accel/accel0", O_RDONLY);
+    int npu_fd = open(npu_device_path(), O_RDONLY);
     if (npu_fd < 0) return nullptr;
     close(npu_fd);
 
