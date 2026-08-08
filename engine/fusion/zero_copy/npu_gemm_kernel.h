@@ -72,15 +72,18 @@ public:
             d.register_xclbin(*xc);
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
             k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
+
+            // BO allocation does an mmap on the NPU device — on a wedged
+            // NPU (firmware timeout) this throws; the backend must degrade
+            // to GPU-only, never crash the host process.
+            bI = std::make_unique<xrt::bo>(d, ins.size() * 4, XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
+            memcpy(bI->map(), ins.data(), ins.size() * 4);
+            bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+            bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
+            bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(4));
+            bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
         } catch (...) { return false; }
-
-        bI = std::make_unique<xrt::bo>(d, ins.size() * 4, XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
-        memcpy(bI->map(), ins.data(), ins.size() * 4);
-        bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
-        bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(4));
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
         memset(bA->map(), 0, (size_t)MD * KD);
         memset(bC->map(), 0, (size_t)MD * ND * 4);
         Am = (int8_t*)bA->map(); Cm = (int32_t*)bC->map(); ok = true; return true;
