@@ -81,6 +81,7 @@ class FakeMic implements MicSource {
   final _frames = StreamController<Uint8List>.broadcast();
   int startCalls = 0;
   int stopCalls = 0;
+  bool failStart = false;
 
   @override
   Stream<Uint8List> get pcm16Frames => _frames.stream;
@@ -88,6 +89,7 @@ class FakeMic implements MicSource {
   @override
   Future<void> start() async {
     startCalls++;
+    if (failStart) throw StateError('mic unavailable');
   }
 
   @override
@@ -263,6 +265,8 @@ void main() {
 
     await tester.tap(find.byKey(const Key('jarvis-button')));
     await tester.pump();
+    client.emitTranscript('user', 'hello there');
+    await tester.pump();
     client.emitError('gateway connection lost');
     await tester.pump();
     expect(client.connectCount, 1);
@@ -271,8 +275,35 @@ void main() {
     await tester.pump();
 
     expect(client.connectCount, 2); // re-connected
-    expect(client.sent, contains('start')); // fresh session started
+    expect(client.sent.last, 'start'); // fresh session started
     expect(mic.startCalls, 2);
+    expect(find.text('hello there'), findsOneWidget); // transcript survives
+  });
+
+  testWidgets('reconnect mic failure stays on recoverable Reconnect state',
+      (tester) async {
+    final client = FakeGatewayClient();
+    final mic = FakeMic()..failStart = true;
+    await pumpVoice(tester, client, mic: mic);
+    client.emitMeta();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('jarvis-button')));
+    await tester.pump();
+    client.emitError('gateway connection lost');
+    await tester.pump();
+
+    await tester.tap(find.text('Reconnect'));
+    await tester.pump();
+
+    // Mic failed after a successful socket reconnect: the button must stay
+    // an enabled Reconnect (offline), not fall into the dead busy-spinner.
+    expect(mic.startCalls, 2);
+    expect(find.text('Reconnect'), findsOneWidget);
+    expect(find.text('OFFLINE'), findsOneWidget);
+    expect(
+        tester.widget<InkWell>(find.byKey(const Key('jarvis-button'))).onTap,
+        isNotNull);
   });
 
   testWidgets('error event shows the banner', (tester) async {

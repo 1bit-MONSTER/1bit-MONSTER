@@ -179,7 +179,12 @@ class _VoiceScreenState extends State<VoiceScreen>
     try {
       await _mic.start();
     } catch (e) {
-      if (mounted) setState(() => _sessionActive = false);
+      if (mounted) {
+        setState(() {
+          _sessionActive = false;
+          _offline = true; // stay on the recoverable Reconnect state
+        });
+      }
       _controller.setOffline('Microphone unavailable: $e');
       return;
     }
