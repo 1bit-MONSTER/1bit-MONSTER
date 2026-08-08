@@ -303,6 +303,38 @@ int main(int argc, char** argv) {
         return buf;
     };
 
+    // Arch-aware chat templates. llama-3.2 uses the <|start_header_id|> family
+    // (special tokens live in the .htok vocab); BitNet-family uses
+    // "User:/Assistant:" lines with <|eot_id|>. Arch comes from the config
+    // sidecar since the model isn't loaded yet at prompt-build time.
+    const bool llama_chat = [&]() {
+        if (config_path.empty()) return false;
+        std::ifstream cf(config_path);
+        if (!cf) return false;
+        std::stringstream ss; ss << cf.rdbuf();
+        std::string s;
+        return safetensors_detail::json_find_string(ss.str(), "model_type", s) && s == "llama";
+    }();
+    auto chat_append = [&](std::vector<int>& ids, rcpp_tokenizer_t* tok,
+                           const std::string& role, const std::string& content) {
+        if (llama_chat) {
+            auto v = tokenize(tok, ("<|start_header_id|>" + role + "<|end_header_id|>\n\n" + content).c_str());
+            ids.insert(ids.end(), v.begin(), v.end());
+            ids.push_back(128009);  // <|eot_id|>
+        } else {
+            std::string r = role;
+            if (!r.empty()) r[0] = (char)std::toupper((unsigned char)r[0]);
+            auto v = tokenize(tok, (r + ": " + content).c_str());
+            ids.insert(ids.end(), v.begin(), v.end());
+            ids.push_back(128009);  // <|eot_id|>
+        }
+    };
+    auto chat_assistant_pre = [&](rcpp_tokenizer_t* tok) -> std::vector<int> {
+        if (llama_chat)
+            return tokenize(tok, "<|start_header_id|>assistant<|end_header_id|>\n\n");
+        return tokenize(tok, "Assistant: ");
+    };
+
     std::vector<int> prompt_ids;
     if (std::string(prompt_arg) == "--text") {
         // layout: bitnet_decode <model> --text "<prompt>" <num_new> [tokenizer.htok]
@@ -346,29 +378,18 @@ int main(int argc, char** argv) {
         if (rcpp_tokenizer_load(tok_path, &tok) != RCPP_OK) {
             fprintf(stderr, "cannot load tokenizer .htok: %s\n", tok_path); return 1;
         }
-        const int BOS = rcpp_tokenizer_bos_id(tok);
-        const int EOT = 128009;  // <|eot_id|>
-
-        prompt_ids.push_back(BOS);
-        if (system_msg) {
-            std::string s = std::string("System: ") + system_msg;
-            auto ids = tokenize(tok, s.c_str());
-            prompt_ids.insert(prompt_ids.end(), ids.begin(), ids.end());
-            prompt_ids.push_back(EOT);
+        if (llama_chat) {
+            prompt_ids.push_back(128000);  // <|begin_of_text|>
+        } else {
+            prompt_ids.push_back(rcpp_tokenizer_bos_id(tok));
         }
-        {
-            std::string s = std::string("User: ") + user_msg;
-            auto ids = tokenize(tok, s.c_str());
-            prompt_ids.insert(prompt_ids.end(), ids.begin(), ids.end());
-            prompt_ids.push_back(EOT);
-        }
-        {
-            auto ids = tokenize(tok, "Assistant: ");
-            prompt_ids.insert(prompt_ids.end(), ids.begin(), ids.end());
-        }
+        if (system_msg) chat_append(prompt_ids, tok, "system", system_msg);
+        chat_append(prompt_ids, tok, "user", user_msg);
+        auto pre = chat_assistant_pre(tok);
+        prompt_ids.insert(prompt_ids.end(), pre.begin(), pre.end());
         rcpp_tokenizer_free(tok);
-        fprintf(stderr, "[chat] user=\"%s\"%s -> %zu prompt tokens\n",
-                user_msg, system_msg ? " (with system)" : "", prompt_ids.size());
+        fprintf(stderr, "[chat] user=\"%s\"%s -> %zu prompt tokens ids:",
+                user_msg, system_msg ? " (with system)" : "", prompt_ids.size()); for (auto id : prompt_ids) fprintf(stderr, " %d", id); fprintf(stderr, "\n");
     } else if (std::string(prompt_arg) == "--server") {
         // Server mode: don't build a single prompt — each HTTP request
         // carries its own conversation in OpenAI format. Prime the cache
@@ -1198,12 +1219,9 @@ int main(int argc, char** argv) {
             if (!std::getline(std::cin, line)) break;
             if (line == "quit" || line == "exit") break;
             if (line.empty()) continue;
-            auto user_ids = encode_chunk((std::string("User: ") + line).c_str());
-            user_ids.push_back(EOT);
-            auto assist_pre = encode_chunk("Assistant: ");
             std::vector<int> turn;
-            turn.reserve(user_ids.size() + assist_pre.size());
-            turn.insert(turn.end(), user_ids.begin(), user_ids.end());
+            chat_append(turn, rtok, "user", line);
+            auto assist_pre = chat_assistant_pre(rtok);
             turn.insert(turn.end(), assist_pre.begin(), assist_pre.end());
             if (cache_pos + (int)turn.size() + num_tokens >= max_len) {
                 fprintf(stderr, "\n[repl] context full (%d/%d), resetting\n",
@@ -1261,18 +1279,20 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            // Build prompt token stream from OpenAI-format messages using
-            // BitNet's chat template.
-            std::vector<int> req_prompt = { BOS };
+            // Build prompt token stream from OpenAI-format messages using the
+            // arch-aware chat template.
+            std::vector<int> req_prompt;
+            if (llama_chat) {
+                req_prompt.push_back(128000);  // <|begin_of_text|>
+            } else {
+                req_prompt.push_back(rcpp_tokenizer_bos_id(stok));
+            }
             for (auto& m : j["messages"]) {
                 std::string role = m.value("role", std::string("user"));
                 std::string content = m.value("content", std::string(""));
-                if (!role.empty()) role[0] = (char)std::toupper((unsigned char)role[0]);
-                auto ids = srv_encode(role + ": " + content);
-                req_prompt.insert(req_prompt.end(), ids.begin(), ids.end());
-                req_prompt.push_back(EOT);
+                chat_append(req_prompt, stok, role, content);
             }
-            auto pre = srv_encode("Assistant: ");
+            auto pre = chat_assistant_pre(stok);
             req_prompt.insert(req_prompt.end(), pre.begin(), pre.end());
 
             int   req_max = j.value("max_tokens", 256);
