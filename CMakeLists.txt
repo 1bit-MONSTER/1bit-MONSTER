@@ -866,6 +866,7 @@ set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
 # supports, against reference values baked in from the Python `gguf`
 # package. Runs unconditionally in every CI invocation.
 add_executable(test_voice_session tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp)
+target_include_directories(test_voice_session PRIVATE tools/)
 add_executable(test_gguf_reader_dequant tests/test_gguf_reader_dequant.cpp)
 target_include_directories(test_gguf_reader_dequant PRIVATE tests/)
 target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
