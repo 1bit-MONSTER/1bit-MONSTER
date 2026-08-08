@@ -4,16 +4,12 @@ name: Validate claims
 # fail (opening an issue) if a claim drifts beyond tolerance.
 #
 # STATUS: the re-measurement drivers (tools/validate_claims.py, tools/gen_numbers.py)
-# have been retired, so the hardware steps below currently self-skip with a
-# "retired (pure-C++ repo)" notice. Until they are restored, this workflow only
-# enforces that benchmarks/latest.json is internally consistent (every published
-# key has a validator entry) — it does NOT re-measure on hardware. Do not cite
-# this workflow as proof that published numbers are continuously verified.
-#
-# Requires (for the hardware jobs, when restored) a self-hosted runner with:
-#   - /dev/kfd        (ROCm GPU, gfx1151)
-#   - /dev/accel/*    (XDNA2 NPU, optional -- reported but not yet asserted)
-#   - zig             (to build the fused engine we publish the size of)
+# have been retired and the self-hosted strix-halo runner was removed, so this
+# workflow only enforces that benchmarks/latest.json is internally consistent
+# (every published key has a validator entry) - it does NOT re-measure on
+# hardware. Do not cite this workflow as proof that published numbers are
+# continuously verified. Re-measure manually on the box:
+#   python3 tools/validate_claims.py --build-dir 1bit/build --repeat 3 --warmup 1
 
 on:
   schedule:
@@ -179,131 +175,3 @@ jobs:
           else
             echo "::notice::tools/gen_numbers.py not present (pure-C++ repo) — skipping numbers.json check."
           fi
-
-  # Requires the Strix Halo box.
-  measure:
-    name: Re-measure on gfx1151
-    runs-on: [self-hosted, linux, x64]
-    # SECURITY: self-hosted runner — only run for same-repo PRs, not external forks.
-    # External contributors must submit benchmark changes for manual re-measurement.
-    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Clean stale CMake build artifacts (prevents git submodule confusion)
-        run: |
-          rm -rf 1bit/build
-
-      - name: Hardware present
-        run: |
-          test -e /dev/kfd || { echo "::error::no /dev/kfd -- GPU missing"; exit 1; }
-          ls /dev/accel/accel* >/dev/null 2>&1 && echo "NPU present" || echo "::warning::no NPU"
-          command -v zig >/dev/null || echo "::warning::zig not on PATH (Zig build retired in the pure-C++ repo)"
-
-      - name: Build fused engine (its size is a published claim)
-        working-directory: engine/fusion
-        run: |
-          if [ -f build.zig ]; then
-            zig build -Drelease
-          else
-            echo "::notice::engine/fusion/build.zig not present (Zig retired, pure-C++ repo) — skipping fused-engine build."
-          fi
-
-      - name: Regenerate numbers.json from real artifacts
-        run: |
-          if [ -f tools/gen_numbers.py ]; then python3 tools/gen_numbers.py; else echo "::notice::gen_numbers.py retired — skipping."; fi
-
-      - name: Build benchmark tools (for re-measurement)
-        run: |
-          if [ -d 1bit/build ]; then
-            echo "build dir exists, skipping configure"
-          elif command -v cmake >/dev/null; then
-            mkdir -p 1bit/build
-            cmake -B 1bit/build -S . 2>&1 | tail -5
-            cmake --build 1bit/build --target bench_prefill_variants bench_sherry -j8 2>&1 | tail -5
-          fi
-          # If build fails, validate_claims exits 2 (soft skip) -- handled below
-
-      - name: Published binary sizes match the real build
-        run: |
-          # gen_numbers.py --check fails when a tracked artifact that IS present
-          # (built) has a size disagreeing with site/numbers.json. Catches the
-          # class of bug where a binary silently drifts -- e.g. the stale
-          # 25 MB fused-engine that was committed while a clean release build
-          # is 622 KB. The fused engine is always built above; the cmake-built
-          # zaya/decode/tui binaries are checked too when present in build/.
-          # (issue #186)
-          if [ -f tools/gen_numbers.py ]; then python3 tools/gen_numbers.py --check; else echo "::notice::gen_numbers.py retired — skipping size check."; fi
-
-      - name: Re-measure every published benchmark
-        id: measure
-        # continue-on-error was removed in #75 — it masked real drift by making
-        # every step conclusion 'success' even when validate_claims.py returned
-        # exit code 1 (real drift). The downstream steps check outcome instead.
-        run: |
-          if [ ! -f tools/validate_claims.py ]; then
-            echo "::notice::tools/validate_claims.py retired (pure-C++ repo) — skipping re-measurement."
-            exit 0
-          fi
-          python3 tools/validate_claims.py \
-            --build-dir "${BUILD_DIR:-1bit/build}" \
-            --repeat "${{ github.event.inputs.repeat || 3 }}" \
-            --warmup 1 \
-            --json claims-report.json
-
-      - name: Upload claims report
-        if: always() && hashFiles('claims-report.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: claims-report
-          path: claims-report.json
-
-      - name: Mark job failed on real claim drift (not infrastructure)
-        # `continue-on-error: true` on the measure step makes its *conclusion*
-        # always "success" (so plain `failure()` here would never fire, no
-        # matter what validate_claims.py found -- see issue #75). `outcome`
-        # reflects what actually happened before continue-on-error masked it.
-        if: steps.measure.outcome == 'failure'
-        run: |
-          # Read claims report to distinguish drift (exit 1) from infra (exit 2)
-          set +e
-          EXIT_CODE=$(python3 -c "import json; r=json.load(open('claims-report.json')); print(r.get('exit_code',1))" 2>/dev/null || echo 1)
-          set -e
-          if [ "$EXIT_CODE" = 2 ]; then
-            echo "Exit code 2 = infrastructure issue (hw/missing build). Treating as soft skip, not drift."
-          else
-            echo "Exit code $EXIT_CODE = real claim drift. Failing."
-            exit 1
-          fi
-
-      - name: Open an issue if a claim drifted
-        if: steps.measure.outcome == 'failure' && github.event_name == 'schedule'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
-        with:
-          script: |
-            const fs = require('fs');
-            const r = JSON.parse(fs.readFileSync('claims-report.json', 'utf8'));
-            // Do not open an issue for infrastructure problems (exit code 2)
-            if (r.exit_code === 2) {
-              console.log('Exit code 2 = infrastructure, skipping issue');
-              return;
-            }
-            let body = [
-              '## Claim validation failed',
-              '',
-              '**Drifted:**', ...(r.drifted.length ? r.drifted.map(x => '- ' + x) : ['- none']),
-              '',
-              '**Failures:**', ...(r.failures.length ? r.failures.map(x => '- ' + x) : ['- none']),
-              '',
-              '**Intermittent crashes:**', ...(r.crashes.length ? r.crashes.map(x => '- ' + x) : ['- none']),
-              '',
-              '```json', JSON.stringify(r.measured, null, 2), '```',
-            ].join('\n');
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: 'Claim validation failed on ' + new Date().toISOString().slice(0, 10),
-              body,
-              labels: ['claims', 'automated'],
-            });
