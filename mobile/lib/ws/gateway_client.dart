@@ -67,7 +67,10 @@ class GatewayClient {
           _channel = null;
           _events.add(ErrorEvent('gateway connection lost: $e'));
         },
-        onDone: () => _channel = null,
+        onDone: () {
+          _channel = null;
+          _events.add(ErrorEvent('gateway connection lost'));
+        },
       );
     } on GatewayException {
       rethrow;

@@ -123,6 +123,7 @@ class RecordMicSource implements MicSource {
 abstract class ReplyPlayer {
   Future<void> playPcm16(Uint8List pcm16, int sampleRate);
   Future<void> stop();
+  Future<void> dispose();
 }
 
 /// Thin audioplayers glue: converts PCM16 to WAV and plays it from bytes.
@@ -147,7 +148,8 @@ class WavReplyPlayer implements ReplyPlayer {
   @override
   Future<void> stop() => _player.stop();
 
-  void dispose() => _player.dispose();
+  @override
+  Future<void> dispose() async => _player.dispose();
 }
 
 /// Accumulates float32 downlink frames; converts to PCM16 on demand.

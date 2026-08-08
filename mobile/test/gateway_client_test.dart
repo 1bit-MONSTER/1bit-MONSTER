@@ -170,4 +170,25 @@ void main() {
         throwsA(isA<GatewayException>()));
     expect(client.connected, isFalse);
   });
+
+  test('server-closed connection emits ErrorEvent on onDone', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      final ws = await WebSocketTransformer.upgrade(request);
+      await ws.close(); // drop the connection right after the upgrade
+    });
+    final client = GatewayClient();
+    try {
+      await client.connect('127.0.0.1', server.port, null);
+      final events = <GatewayEvent>[];
+      addTearDown(client.events.listen(events.add).cancel);
+      await waitUntil(
+          () => events.whereType<ErrorEvent>().isNotEmpty);
+      expect(events.whereType<ErrorEvent>().single.message,
+          'gateway connection lost');
+      expect(client.connected, isFalse);
+    } finally {
+      await server.close(force: true);
+    }
+  });
 }
