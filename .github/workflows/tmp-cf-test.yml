@@ -4,25 +4,28 @@ jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete project (retry loop), recreate
+      - name: List/clear domains, delete project, recreate
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           P="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical"
-          for i in 1 2 3 4 5; do
-            OUT=$(curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" "$P")
-            echo "try $i: $(echo "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print('del project success:', d.get('success'), json.dumps(d.get('errors'))[:120])")"
-            echo "$OUT" | grep -q '"success":true' && break
-            sleep 15
+          echo "--- DOMAINS NOW ---"
+          curl -s -H "Authorization: Bearer $CF_TOKEN" "$P/domains" | python3 -c "import json,sys; d=json.load(sys.stdin); print([ (r.get('name'), r.get('status')) for r in d.get('result',[]) ])"
+          echo "--- DELETE EACH ---"
+          for DOM in $(curl -s -H "Authorization: Bearer $CF_TOKEN" "$P/domains" | python3 -c "import json,sys; [print(r['name']) for r in json.load(sys.stdin).get('result',[])]"); do
+            echo "del $DOM: $(curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" "$P/domains/$DOM" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('success'), json.dumps(d.get('errors'))[:100])")"
+            sleep 5
           done
+          echo "--- DELETE PROJECT ---"
+          curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" "$P" | python3 -c "import json,sys; d=json.load(sys.stdin); print('del project:', d.get('success'), json.dumps(d.get('errors'))[:150])"
           echo "--- CREATE ---"
           curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
             -d '{"name": "eeg-medical", "production_branch": "main", "build_config": {"build_command": "", "destination_dir": "site/eeg-medical", "root_dir": ""}, "source": {"type": "github", "config": {"owner": "1bit-systems", "repo_name": "eeg-medical", "production_branch": "main"}}}' \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('create success:', d.get('success'), json.dumps(d.get('errors'))[:300]); s=r.get('source',{}); print('source:', s.get('config',{}).get('owner'), s.get('config',{}).get('repo_name')); print('subdomain:', r.get('subdomain'))"
+            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('create:', d.get('success'), json.dumps(d.get('errors'))[:300]); s=r.get('source',{}); print('source:', s.get('config',{}).get('owner'), s.get('config',{}).get('repo_name')); print('subdomain:', r.get('subdomain'))"
           echo "--- ADD DOMAIN ---"
           curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
             -d '{"name": "eeg-medical.1bit.systems"}' \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical/domains" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('add domain success:', d.get('success'), json.dumps(d.get('errors'))[:200]); print('domain:', r.get('name'), r.get('status'))"
+            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('add domain:', d.get('success'), json.dumps(d.get('errors'))[:200], r.get('name'), r.get('status'))"
