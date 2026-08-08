@@ -865,6 +865,7 @@ set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
 # test time. Byte-exact dequant check for every dtype gguf_reader.cpp
 # supports, against reference values baked in from the Python `gguf`
 # package. Runs unconditionally in every CI invocation.
+add_executable(test_voice_session tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp)
 add_executable(test_gguf_reader_dequant tests/test_gguf_reader_dequant.cpp)
 target_include_directories(test_gguf_reader_dequant PRIVATE tests/)
 target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
@@ -1287,6 +1288,7 @@ set(ONE_BIN_SOURCES
     tools/jarvis/codec_tts.cpp
     tools/jarvis/persona.cpp
     tools/jarvis/vad.cpp
+    tools/jarvis/voice_session.cpp
     tools/jarvis/context.cpp
     tools/jarvis/auth.cpp
     tools/jarvis/usage.cpp
