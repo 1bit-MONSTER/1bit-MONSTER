@@ -1,0 +1,7 @@
+name: tmp-cf-test
+on: [push, pull_request]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "alive"
