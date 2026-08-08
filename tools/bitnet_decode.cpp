@@ -511,7 +511,8 @@ int main(int argc, char** argv) {
             if (safetensors_detail::json_find_float(cfg, "rms_norm_eps", f)) m.rms_norm_eps = f;
             if (safetensors_detail::json_find_string(cfg, "model_type", s)) m.arch = rcpp_arch_from_string(s.c_str());
         }
-        if (m.num_heads <= 0 || m.num_kv_heads <= 0 || m.hidden_size % m.num_heads != 0) {
+        if (m.num_heads <= 0 || m.num_kv_heads <= 0 ||
+            (hd_override <= 0 && m.hidden_size % m.num_heads != 0)) {
             fprintf(stderr, "[onnx] config missing/invalid num_attention_heads / num_key_value_heads (use --config config.json)\n");
             return 1;
         }
