@@ -4,11 +4,14 @@ jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - name: Show full project JSON
+      - name: Repoint eeg-medical Pages project
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          curl -s -H "Authorization: Bearer $CF_TOKEN" \
+          curl -s -X PATCH \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"source": {"type": "github", "config": {"owner": "1bit-systems", "repo_name": "eeg-medical", "production_branch": "main"}}}' \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d.get('result', d.get('errors')), indent=1)[:4000])"
+            | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('success:', d.get('success')); print('errors:', d.get('errors')); s=r.get('source',{}); print('source now:', s.get('type'), s.get('config',{}).get('owner'), s.get('config',{}).get('repo_name'))"
