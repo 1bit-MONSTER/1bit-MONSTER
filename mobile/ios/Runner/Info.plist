@@ -26,6 +26,14 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JARVIS listens only while you hold the session open.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- JARVIS talks plain ws:// to a LAN/VPN gateway host; ATS would otherwise block the connection. -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
