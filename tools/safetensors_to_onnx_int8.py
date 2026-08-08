@@ -75,7 +75,11 @@ def main():
         repo = os.environ.get('HF_REPO', 'Qwen/Qwen2.5-1.5B-Instruct')
         cfg = json.loads(urllib.request.urlopen(
             f"https://huggingface.co/{repo}/resolve/main/config.json").read())
-    L = cfg['num_hidden_layers']; hs = cfg['hidden_size']; is_ = cfg['intermediate_size']
+    # Layer count comes from the INDEX/tensors, never the config fallback —
+    # a stale/wrong config silently truncates the model (the 3B's 8 missing
+    # layers were the root cause of its garbage output).
+    L = max(int(n.split('.')[2]) for n in names if '.layers.' in n) + 1
+    hs = cfg['hidden_size']; is_ = cfg['intermediate_size']
     nh = cfg['num_attention_heads']; nkv = cfg['num_key_value_heads']
     print(f"[st] {L} layers hs={hs} is={is_} heads={nh} nkv={nkv}")
 
