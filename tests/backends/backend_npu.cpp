@@ -132,6 +132,14 @@ public:
             else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3.5:2b";
             else if (cfg.hidden_size <= 2560) model_tag_ = "qwen3.5:4b";
             else model_tag_ = "qwen3.5:9b";
+        } else if (cfg.architecture == "llama" ||
+                   (cfg.hidden_size == 2048 && cfg.num_layers == 16) ||   // llama3.2:1b
+                   (cfg.hidden_size == 3072 && cfg.num_layers == 28) ||   // llama3.2:3b
+                   (cfg.hidden_size == 4096 && cfg.num_layers == 32)) {   // llama3.1:8b
+            // Llama family (Q4NX pivot — weights from the ROCm FLM_Q4NX_Converter)
+            if (cfg.hidden_size <= 2048)      model_tag_ = "llama3.2:1b";
+            else if (cfg.hidden_size <= 3072) model_tag_ = "llama3.2:3b";
+            else                              model_tag_ = "llama3.1:8b";
         } else if (cfg.hidden_size <= 1024)      model_tag_ = "qwen3:0.6b";
         else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3:1.7b";
         else if (cfg.hidden_size <= 2560) model_tag_ = "qwen3:4b";
@@ -328,6 +336,13 @@ public:
             if (out > 2) close(out);
             if (err > 2) close(err);
             for (int fd = 3; fd < 1024; fd++) close(fd);
+            // FLM needs its model registry; without FLM_CONFIG_PATH it exits
+            // immediately ("model_list.json not found") and every probe reads
+            // an empty transcript → the backend always looks degenerate.
+            const char* cfg = getenv("NPU_FLM_CONFIG");
+            setenv("FLM_CONFIG_PATH", cfg ? cfg : "/opt/fastflowlm/etc/flm/model_list.json", 1);
+            const char* xclb = getenv("NPU_FLM_XCLBINS");
+            if (xclb) setenv("FLM_XCLBIN_PATH", xclb, 1);
             execl(flm_bin_.c_str(), "flm", "run", model_tag_.c_str(), nullptr);
             _exit(1);
         }
