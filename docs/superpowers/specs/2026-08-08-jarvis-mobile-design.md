@@ -24,31 +24,36 @@ All code lives in the `1bit-systems/1bit-systems` repo (single repo, single CI):
 
 ```
 phone (Flutter, Android)                  Strix Halo box
-┌─────────────────────┐   WSS over VPN    ┌──────────────────────────────┐
-│ mic → Opus → ───────┼─── WebSocket ────┼──▶ voice-gateway (C++23)      │
+┌─────────────────────┐   WS over VPN     ┌──────────────────────────────┐
+│ mic → Opus → ───────┼─── WebSocket ────┼──▶ 1bit jarvis-server (C++23)│
 │ Opus → speaker ◀────┼───────────────────┼──▶ VAD → STT → LLM → TTS    │
-│ tap-to-start,       │                   │         │                   │
-│ no data stored      │                   │         ▼                   │
-└─────────────────────┘                   │  engine: unified server     │
-                                          │  + /v1/audio/transcriptions │
-                                          │  + /v1/audio/speech (new)   │
+│ tap-to-start,       │                   │   (exists: /v1/audio/chat,  │
+│ no data stored      │                   │    /v1/audio/stream WS)     │
+└─────────────────────┘                   │         │                   │
+                                          │         ▼                   │
+                                          │  unified server (LLM)       │
                                           └──────────────────────────────┘
 ```
 
 ### Components
 
-**1. `voice-gateway/` — C++23 daemon (new, standalone)**
+**1. `1bit jarvis-server` (existing, extended) — the gateway process**
 
-- WebSocket server (reuse engine's existing HTTP/WS server code where practical).
-- Opus decode (phone → PCM16 @ 16 kHz mono) / encode (PCM16 → phone).
-- VAD: reuse the engine's existing `vad.*` stages (silence gating) to segment speech.
-- Session state machine: `idle → listening → processing → speaking → listening …`; tap-stop from phone ends session.
-- Never touches models directly. Talks to the engine over HTTP:
-  - `POST /v1/audio/transcriptions` (Whisper STT) — new engine endpoint
-  - `POST /v1/audio/speech` (codec TTS, voice-pack aware) — new engine endpoint
-  - `POST /v1/chat/completions` (LLM/router/planner) — exists
-- Config: `voice-gateway/config.toml` — listen addr/port, engine base URL, bearer token, persona name, voice-pack path.
-- Binary name: `jarvis-gateway`, built by the repo's existing CMake build.
+Already in the repo (`tools/jarvis_server.cpp`, dispatched from the onebin; runs as its own process, separate from `unified`). Existing surface:
+- `POST /v1/audio/transcriptions` — Whisper STT
+- `POST /v1/audio/speech` — codec TTS (Piper fallback), WAV out
+- `POST /v1/audio/chat` — voice-in/voice-out (VAD + Whisper + LLM + TTS)
+- `GET /v1/audio/stream` — HTTP chunked TTS streaming
+- `WebSocketServer` (tools/jarvis/audio_stream.*, raw POSIX RFC 6455, port 8082) — TTS **downlink** only today
+- API-key auth (`/v1/api-key/*`, `tools/jarvis/auth.*`), personas, planner, RAG, usage/billing
+
+**Gap-fill (M1) — WS uplink + control protocol:**
+- Extend `WebSocketServer` to accept mic audio frames (Opus or PCM16) from the phone.
+- Control messages (JSON): `hello`, `start`, `stop`, `state`, `transcript`, `error`, `bye` (per protocol below).
+- Voice-active loop on the server: VAD segments incoming speech → STT → LLM (via existing planner/router → unified) → TTS → audio downlink → VAD re-arms.
+- Bearer-token auth on WS handshake (config option; audio HTTP endpoints remain as-is for the web UI).
+
+**2. `mobile/` — Flutter app (new, Android-first)**
 
 **2. `mobile/` — Flutter app (new, Android-first)**
 
@@ -58,15 +63,9 @@ phone (Flutter, Android)                  Strix Halo box
 - Foreground service while a session is active (screen-off support).
 - Dependencies: `web_socket_channel`, `record` (mic), `just_audio` or `audioplayers` (playback), `flutter_secure_storage`, an Opus codec binding (e.g. `opus_dart`/`flutter_opus` or a small FFI shim to libopus).
 
-**3. Engine changes (small, additive)**
-
-- `POST /v1/audio/transcriptions` on `unified` — accepts PCM16 or Opus, runs Whisper, returns text.
-- `POST /v1/audio/speech` on `unified` — accepts text + persona/voice-pack, streams codec-TTS audio (PCM16 or Opus).
-- The engine remains the single AI front door; the gateway is pure orchestration.
-
 ### WebSocket protocol (v1, JSON control + binary audio)
 
-- Handshake: HTTP Upgrade with `Authorization: Bearer <token>`.
+- Handshake: HTTP Upgrade with `Authorization: Bearer <token>` (configurable; disabled = LAN/VPN only).
 - Control messages (JSON, text frames):
   - `{"type":"hello","version":1}` — client → server on connect
   - `{"type":"start"}` / `{"type":"stop"}` — session control
@@ -110,13 +109,12 @@ phone (Flutter, Android)                  Strix Halo box
 
 ### Milestones
 
-1. **M1 — Engine audio endpoints:** `/v1/audio/transcriptions` + `/v1/audio/speech` on `unified`, curl-verified.
-2. **M2 — Gateway:** WS server, Opus, VAD loop, engine calls, session state machine; CLI-driven test with fixture audio.
-3. **M3 — App:** Flutter shell, connect screen, WS client, mic/playback, state UI, transcript log.
-4. **M4 — E2E:** real VPN + phone session; polish (errors, reconnect, foreground service).
+1. **M1 — Server WS uplink:** extend `WebSocketServer` + `jarvis_server.cpp` with control protocol, mic audio in, voice-active loop, token auth. Tested with a scripted WS client (node) + fixture audio.
+2. **M2 — App:** Flutter shell, connect screen, WS client, mic/Opus, playback, state UI, transcript log.
+3. **M3 — E2E:** real VPN + phone session; polish (errors, reconnect, foreground service).
 
 ## Open Questions (tracked, not blockers)
 
-- Opus binding choice for Flutter (pure-Dart vs FFI) — decide in M3.
-- Exact VAD parameters reuse from `tools/jarvis/vad.*` — confirm in M2.
-- Where the gateway daemon lives on the Strix Halo box (systemd unit) — packaging in M4.
+- Opus binding choice for Flutter (pure-Dart vs FFI) — decide in M2.
+- VAD: reuse `tools/jarvis/vad.*` in the WS loop vs the existing `/v1/audio/chat` path — confirm in M1.
+- WS wire format for mic audio: Opus vs PCM16 — decide in M1 (Opus preferred; server decodes either).
