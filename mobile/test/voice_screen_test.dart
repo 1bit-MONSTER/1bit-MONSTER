@@ -280,6 +280,43 @@ void main() {
     expect(find.text('hello there'), findsOneWidget); // transcript survives
   });
 
+  testWidgets('Reconnect double-tap fires a single connect', (tester) async {
+    final client = FakeGatewayClient();
+    final mic = FakeMic();
+    await pumpVoice(tester, client, mic: mic);
+    client.emitMeta();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('jarvis-button')));
+    await tester.pump();
+    client.emitError('gateway connection lost');
+    await tester.pump();
+    expect(client.connectCount, 1);
+
+    // Hold the reconnect open so the connect window stays visible.
+    client.connectGate = Completer<void>();
+    final connectsBefore = client.connectCount;
+    // Two rapid taps, no pump between them: the second must be a no-op.
+    await tester.tap(find.byKey(const Key('jarvis-button')));
+    await tester.tap(find.byKey(const Key('jarvis-button')));
+    await tester.pump();
+
+    expect(client.connectCount, connectsBefore + 1); // one connect in flight, not two
+    expect(find.text('Reconnect'), findsNothing); // spinner, not the label
+    expect(
+        tester.widget<InkWell>(find.byKey(const Key('jarvis-button'))).onTap,
+        isNull); // disabled while connecting
+
+    client.connectGate!.complete();
+    await tester.pump();
+    await tester.pump();
+
+    expect(client.connectCount, connectsBefore + 1);
+    expect(client.sent.last, 'start'); // fresh session started
+    expect(mic.startCalls, 2);
+    expect(find.text('STOP'), findsOneWidget);
+  });
+
   testWidgets('reconnect mic failure stays on recoverable Reconnect state',
       (tester) async {
     final client = FakeGatewayClient();
