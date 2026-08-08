@@ -235,7 +235,6 @@ struct Zamba2VulkanBackend : Backend {
                 alloc(g.out_proj, d_model * d_inner * 4, "out_proj");
                 alloc(g.norm_w, (size_t)c.d_inner * 4, "norm_w");
                 alloc(g.input_norm, d_model * 4, "input_norm");
-                if (layer == 6 && getenv("Z2V_DUMP_HYBRID")) fprintf(stderr, "[vk] l6 in_proj_w size=%zu d_in_proj*d_model=%zu\n", ml.in_proj_w.size(), (size_t)d_in_proj * d_model);
                 upload_float_data(dev, q, pool, g.in_proj, ml.in_proj_w.data(), ml.in_proj_w.size());
                 upload_float_data(dev, q, pool, g.out_proj, ml.out_proj_w.data(), ml.out_proj_w.size());
                 upload_float_data(dev, q, pool, g.norm_w, ml.norm_w.data(), ml.norm_w.size());
@@ -253,11 +252,6 @@ struct Zamba2VulkanBackend : Backend {
                 return g;
             };
 
-            if (getenv("Z2V_DUMP_HYBRID")) {
-                fprintf(stderr, "[vk] hybrid layers: ");
-                for (auto& kv : model_.hybrid_layers) fprintf(stderr, "%d ", kv.first);
-                fprintf(stderr, "\n");
-            }
             layers_.resize(c.n_layers);
             for (int layer = 0; layer < c.n_layers; ++layer) {
                 auto it = model_.hybrid_layers.find(layer);
@@ -380,31 +374,9 @@ struct Zamba2VulkanBackend : Backend {
         Z2vLayerGPU& g = layers_[layer];
 
         // in_proj: [d_in_proj, d_model] @ tmp
-        fprintf(stderr, "Z2V L%d in_proj\n", layer);
-        if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-            static int dbg_w3 = 0;
-            if (dbg_w3 == 6) compute_->dump_topk(tmp_.buffer(), 8, "vk-h6-tmp_BEFORE_gemv");
-            dbg_w3++;
-        }
         compute_->gemv_f32(in_proj_.buffer(), tmp_.buffer(), g.in_proj.buffer(),
                            (int)d_in_proj, 1, (int)d_model);
-        if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-            static int dbg_w2 = 0;
-            if (dbg_w2 == 6) {
-                compute_->dump_topk(g.in_proj.buffer(), 8, "vk-h6-in_proj_w");
-                compute_->dump_topk(tmp_.buffer(), 8, "vk-h6-gemv_in");
-            }
-            dbg_w2++;
-        }
         // conv1d in-place on the xBC region (descriptor offset d_inner).
-        if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-            static int dbg_p2 = 0;
-            if (dbg_p2 == 0 || dbg_p2 == 6) {
-                char tag[64]; snprintf(tag, sizeof tag, "vk-iproj-l%d", dbg_p2);
-                compute_->dump_topk(in_proj_.buffer(), 8, tag, (int)d_inner);
-            }
-            dbg_p2++;
-        }
         PushConstants pc_c{};
         pc_c.M = (uint32_t)conv_dim; pc_c.N = (uint32_t)c.d_conv;
         pc_c.stride = conv_off_[layer]; pc_c.layer = layer; pc_c.head = n_layers;
@@ -413,15 +385,6 @@ struct Zamba2VulkanBackend : Backend {
                                in_proj_.buffer(), (VkDeviceSize)d_inner * 4,
                                conv_pack.buffer(), 0,
                                (uint32_t)((conv_dim + 255) / 256));
-        if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-            static int dbg_c = 0;
-            if (dbg_c == 0 || dbg_c == 6) {
-                char tag[64]; snprintf(tag, sizeof tag, "vk-conv-l%d", dbg_c);
-                compute_->dump_topk(in_proj_.buffer(), 8, tag, (int)d_inner);
-            }
-            dbg_c++;
-        }
-        fprintf(stderr, "Z2V L%d conv\n", layer);
         conv_off_[layer] = (conv_off_[layer] + 1) % (uint32_t)(c.d_conv - 1);
         // scan: x/B/C/dt in in_proj_, y in y_inner_, params+state in params_.
         PushConstants pc_s{};
@@ -430,18 +393,9 @@ struct Zamba2VulkanBackend : Backend {
         pc_s.token = c.head_dim; pc_s.layer = layer; pc_s.head = c.n_head;
         pc_s.pos = c.n_head / c.n_group;
         pc_s.pad0 = fbits((uint32_t)n_layers);
-        fprintf(stderr, "Z2V L%d scan\n", layer);
         compute_->dispatch("mamba2_scan", pc_s,
                            in_proj_.buffer(), y_inner_.buffer(), params.buffer(),
                            (uint32_t)c.n_head);
-        if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-            static int dbg_s2 = 0;
-            if (dbg_s2 == 0 || dbg_s2 == 6) {
-                char tag[64]; snprintf(tag, sizeof tag, "vk-scan-l%d", dbg_s2);
-                compute_->dump_topk(y_inner_.buffer(), 8, tag);
-            }
-            dbg_s2++;
-        }
         // z-gate: y_inner *= silu(z) — BEFORE the group norm (HF
         // Zamba2RMSNormGated: hidden * silu(gate) first, then RMSNorm;
         // matches mamba2_cpu_forward step 5b). z at in_proj_[0..d_inner).
@@ -449,22 +403,13 @@ struct Zamba2VulkanBackend : Backend {
         compute_->dispatch("silu_mul", pc_z,
                            in_proj_.buffer(), y_inner_.buffer(), y_inner_.buffer(),
                            (uint32_t)((d_inner + 255) / 256));
-        fprintf(stderr, "Z2V L%d zgate\n", layer);
         // group RMSNorm (eps 1e-6 hardcoded in the CPU reference).
         PushConstants pc_n{};
         pc_n.M = (uint32_t)d_inner; pc_n.N = (uint32_t)c.n_group;
         pc_n.K = (uint32_t)(d_inner / c.n_group); pc_n.eps = 1e-6f;
-        fprintf(stderr, "Z2V L%d groupnorm\n", layer);
         compute_->dispatch("group_rms_norm", pc_n,
                            y_inner_.buffer(), VK_NULL_HANDLE, g.norm_w.buffer(),
                            (uint32_t)c.n_group);
-        if (getenv("Z2V_DUMP_LAYER0")) {  // TEMP
-            static int dbg_l = 0;
-            char tag[64]; snprintf(tag, sizeof tag, "vk-mb-l%d", dbg_l);
-            compute_->dump_topk(y_inner_.buffer(), 8, tag);
-            dbg_l++;
-        }
-        fprintf(stderr, "Z2V L%d out_proj\n", layer);
         // out_proj → tmp_
         compute_->gemv_f32(tmp_.buffer(), y_inner_.buffer(), g.out_proj.buffer(),
                            (int)d_model, 1, (int)d_inner);
@@ -545,7 +490,6 @@ struct Zamba2VulkanBackend : Backend {
                 for (int ll = 0; ll <= layer; ++ll)
                     if (model_.hybrid_layers.count(ll)) hyb_idx++;
                 hyb_idx--;
-                fprintf(stderr, "Z2V L%d hybrid attn\n", layer);
                 compute_->flash_attn(qkv_.buffer(), kv_cache.buffer(), kv_cache.buffer(),
                                      attn_out_.buffer(), pos_ + 1,
                                      c.n_attn_heads, c.n_kv_heads, c.attn_head_dim,
@@ -556,12 +500,6 @@ struct Zamba2VulkanBackend : Backend {
                 // 5. o_proj [d_model, n_at] → tmp_
                 compute_->gemv_f32(tmp_.buffer(), attn_out_.buffer(), g.ow.buffer(),
                                    (int)d_model, 1, (int)n_at);
-                if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-                    static int dbg_h = 0;
-                    char tag[64]; snprintf(tag, sizeof tag, "vk-h%d-attn_proj", dbg_h);
-                    compute_->dump_topk(tmp_.buffer(), 8, tag);
-                    compute_->dump_topk(projected_.buffer(), 8, "vk-th-pre");
-                }
 
                 // 6. pre-FFN RMSNorm (ffn_norm) + SiLU FFN → projected_ = th
                 compute_->rms_norm(tmp_.buffer(), g.ffn_norm.buffer(),
@@ -581,12 +519,6 @@ struct Zamba2VulkanBackend : Backend {
                                    (uint32_t)((d_ff + 255) / 256));
                 compute_->gemv_f32(projected_.buffer(), act_.buffer(), g.down_w.buffer(),
                                    (int)d_model, 1, (int)d_ff);
-                if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-                    static int dbg_h2 = 0;
-                    char tag[64]; snprintf(tag, sizeof tag, "vk-h%d-th", dbg_h2);
-                    compute_->dump_topk(projected_.buffer(), 8, tag);
-                    dbg_h2++;
-                }
 
                 // 7. hidden = hidden + ssm_mix(th). The mamba residual must be
                 // the layer INPUT, not input+th — HF Zamba2MambaDecoderLayer:
@@ -606,12 +538,6 @@ struct Zamba2VulkanBackend : Backend {
                                   hidden_.buffer(), tmp_.buffer(), VK_NULL_HANDLE, 1);
                 compute_->rms_norm(tmp_.buffer(), g.mamba_input_norm.buffer(),
                                    (int)d_model, c.rms_norm_eps);
-                if (getenv("Z2V_DUMP_HYBRID")) {  // TEMP
-                    static int dbg_h4 = 0;
-                    char tag[64]; snprintf(tag, sizeof tag, "vk-h%d-mamba_in", dbg_h4);
-                    compute_->dump_topk(tmp_.buffer(), 8, tag);
-                    dbg_h4++;
-                }
                 mamba_block(layer, c.n_layers);   // tmp_ = mamba_out
                 compute_->dispatch_batch("add_residual", pc,
                                   tmp_.buffer(), residual_.buffer(), VK_NULL_HANDLE, 1);
@@ -624,12 +550,6 @@ struct Zamba2VulkanBackend : Backend {
         compute_->rms_norm(hidden_.buffer(), final_norm.buffer(), (int)d_model, c.rms_norm_eps);
         compute_->gemv_f32(logits_.buffer(), hidden_.buffer(), embed.buffer(),
                            c.vocab_size, 1, (int)d_model);
-        if (getenv("Z2V_DUMP_LOGITS")) {  // TEMP
-            static int dbg_t = 0;
-            char tag[64]; snprintf(tag, sizeof tag, "vk-t%d", dbg_t);
-            compute_->dump_topk(logits_.buffer(), c.vocab_size, tag);
-            dbg_t++;
-        }
         pos_++;
         return compute_->argmax(logits_.buffer(), c.vocab_size);
     }
