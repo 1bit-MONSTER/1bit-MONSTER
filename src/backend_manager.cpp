@@ -514,7 +514,17 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         // never came up; still bounded so a hung init can't block forever
         // (issue #1282).
         if (init_fut.wait_for(std::chrono::seconds(120)) == std::future_status::ready) {
-            init_ok = init_fut.get();
+            // init() may THROW (wedged NPU/XRT, driver fault, OOM) — the
+            // exception is captured by the future and rethrown here. A
+            // broken backend must be skipped, never allowed to terminate
+            // the whole server (mirrors benchmark_all()'s handling below).
+            try {
+                init_ok = init_fut.get();
+            } catch (const std::exception& e) {
+                printf("  → ❌ (init threw: %s)\n", e.what());
+            } catch (...) {
+                printf("  → ❌ (init threw unknown exception)\n");
+            }
         } else {
             printf("  → ⏱️  init timed out (>120s) — skipping\n");
             destroy_instance(info);
