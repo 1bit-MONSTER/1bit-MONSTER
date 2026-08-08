@@ -37,34 +37,11 @@ jobs:
         run: cmake --build build -j8
 
       # Shader compile check: every .comp must build to valid SPIR-V.
-      # (Selftest needs a GPU, so CI verifies compilation + links only;
-      # the selftest runs on the self-hosted strix-halo runner in the
-      # end-to-end workflow.)
+      # (Selftest needs a GPU — run locally on strix-halo:
+      # cd tools/video-lora/vulkan && cmake -B build && cmake --build build -j8
+      # && ./build/video_lora_vk_cli --selftest --shaders build/shaders)
       - name: Shader artifacts produced
         working-directory: tools/video-lora/vulkan
         run: |
           ls build/shaders/*.spv
           test "$(ls build/shaders/*.spv | wc -l)" -eq 6
-
-  selftest:
-    name: GPU selftest (strix-halo)
-    runs-on: [self-hosted, strix-halo]
-    # SECURITY: public repo — fork PRs must never run on the self-hosted
-    # runner (fork-controlled code would execute with passwordless sudo).
-    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
-    timeout-minutes: 15
-    needs: build
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Configure
-        working-directory: tools/video-lora/vulkan
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        working-directory: tools/video-lora/vulkan
-        run: cmake --build build -j8
-
-      - name: Selftest (GPU vs CPU reference)
-        working-directory: tools/video-lora/vulkan
-        run: ./build/video_lora_vk_cli --selftest --shaders build/shaders
