@@ -61,8 +61,8 @@ int main() {
     // 1 second of 16k sine = "speech" (RMS >> 0.01 threshold)
     std::vector<int16_t> speech(16000);
     for (int i = 0; i < 16000; ++i) speech[i] = (int16_t)(12000 * std::sin(2 * 3.14159 * 440 * i / 16000.0));
-    // 0.5 s of silence
-    std::vector<int16_t> silence(8000, 0);
+    // 1 s of silence (well past min_silence_ms=500)
+    std::vector<int16_t> silence(16000, 0);
 
     VoiceSession s;
     std::vector<SessionState> states;
