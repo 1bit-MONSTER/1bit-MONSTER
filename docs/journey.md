@@ -6,6 +6,7 @@
 
 ## Table of Contents
 
+- [UPDATE 30: The One-Heap Pool — all models resident, spec-decode in-server](#update-30-2026-08-07-the-one-heap-pool--all-models-resident-spec-decode-in-server)
 - [UPDATE 29: Memory Campaign — arena-frag leak fixed, top-1 backend init](#update-29-2026-08-03-memory-campaign--arena-frag-leak-fixed-top-1-backend-init-10-bug-audit)
 - [UPDATE 28: Mamba1 GPU Backend — 79.4 tok/s](#update-28-2026-07-20-mamba1-gpu-backend--794-toks-9-bugs-killed)
 - [UPDATE 27: Fused Layer Engine — 291 tok/s](#update-27-2026-07-06-fused-layer-engine-goes-production--291-toks-3×-v12)
@@ -22,6 +23,45 @@
 - [UPDATE 16: Full Profile + 50 ms/tok Batch-4](#update-16-2026-07-02-0200-adt-full-profile--50-mstok-batch-4-decode)
 - [UPDATE 15: PR-Agent Live, Landing Page](#update-15-2026-07-01-1500-adt-pr-agent-live-landing-page-deployed-242-mstok-verified)
 - [Earlier Updates (14–1)](#earlier-updates)
+
+---
+
+## UPDATE 30 (2026-08-07): THE ONE-HEAP POOL — ALL MODELS RESIDENT, SPEC-DECODE IN-SERVER
+
+**The unified server now boots with every model in the zoo resident in one mmap'd pool (11 slots, ~6 GB on Strix), runs lossless speculative decoding in-process (`--draft-model`), and finally produces coherent answers from all 9 models end-to-end — Zamba2, the NPU FLM path, and the HIP 1BP backends all fixed. 13 commits landed on main via PR #1535.**
+
+### The unified model pool (#1535)
+
+The pool idea from UPDATE 29's roadmap is now end-to-end. `UnifiedModelPool` was generalized: any model file (gguf/q4nx/h1b/1bp) is mmap'd resident — `.1bp` gets header-parsed metadata, everything else generic. `--pool` makes the server load every discovered model at boot; `POST /v1/pool` reports residency, `/v1/models` tags pooled models. One process, one API, all models resident. Measured through the single endpoint: Qwen3-4B (NPU FLM) 20.8 tok/s, Llama-3.2-1B/Qwen3-0.6B (Vulkan) 12.4, Bonsai (HIP 1BP) 3.1, Zamba2 Q8_0 (HIP) 2.2; zoo-smoke 5/5 PASS.
+
+### In-server speculative decode
+
+Phase 2 core is now a server flag, not a demo. The backend interface gained the three spec-decode primitives (`decode_one` / `verify_batch` / `rollback`), implemented by the ggml-vulkan backend with multi-token `llama_decode` (per-position logits + KV rollback via `llama_memory_seq_rm`). `--draft-model` loads a second side-by-side ggml-vulkan backend; `--spec-decode` runs the lossless loop (draft proposes N greedy tokens, target verifies in one batch, longest consistent prefix accepted, rejected positions rolled back and fix re-decoded). Two real bugs found along the way: `reset()` was a no-op — every request extended ONE unbounded sequence, so KV never actually cleared per request; and the first-token bug — draft and target logits share a vocab size but NOT a vocab, and a shared buffer made the first output token the draft's argmax.
+
+### Zamba2 end-to-end (5dcef800)
+
+Zamba2-1.2B-Instruct-v2 now generates coherent answers through the unified server on the HIP GPU engine — verified vs HF transformers with identical top-1 (`'4<|im_end|>'` greedy). Three root causes, all found:
+
+1. **The GGUF on disk was corrupt** — ~60% of weight elements didn't match the checkpoint (spot-checked ssm_in, embedding). Re-converted a clean F16 GGUF from the safetensors.
+2. **Converter bugs**: `use_shared_attention_adapter=True` never folded the q/k/v LoRA adapters (only the FFN gate_up one was) — every attention head computed with raw weights; and the tokenizer vocab was never written, so `.htok` synthesis failed and the server fell back to the previous model's tokenizer (Qwen3 ids fed to a 32k-vocab model).
+3. **Merges format**: `tokenizer.json` merges are `[a, b]` pairs, the gguf lib wants `'a b'` strings.
+
+### Model zoo sweep: 8/9 coherent (04271bd8, 0bab2f6e)
+
+Full regression sweep of all 9 models through the unified server — 8/9 now generate coherent responses. Tokenizer synthesis was the big one: the server now builds a fresh `.htok` from the model's own or sibling GGUF (`GgufReader::write_htok`), because the checked-in `tokenizer.htok` was a stale Llama-era v1 file and without it every non-NPU model decoded as ASCII-garbage `[id]` soup. Plus: byte-piece fallbacks for non-GPT-2 vocabs, the ggml_vulkan sampler chain switched from greedy (which made small models loop) to temp 0.8/top_p 0.95/dist, and a nasty `cur_p.selected` bug — it's an INDEX into the candidates array, not the token id.
+
+NPU FLM went end-to-end too: an ODR collision where two distinct `OnebpModel` classes (CPU vs NPU) shared one dtor symbol meant every NPU-side object was destroyed with the wrong layout → SIGSEGV after any failed 1BP open (fixed by renaming the NPU-side class to `NpuOnebpModel`). The FLM backend got a `generate_text()` hook driving the subprocess REPL with the whole prompt (FLM tokenizes internally; a token loop can't drive it), with REPL artifacts (ANSI codes, `<<RESET>>` echoes, `[FLM]` log lines) stripped from responses. And the Qwen3-4B-NPU2 model cache was corrupt — bad download pre-reboot.
+
+### Zaya 1BP + routing (9ed7eb94, 7ae82829, 4c68f3ff)
+
+The HIP 1BP backend is wired into the router chain with logits-based sampling (temperature/top-p/repetition penalty — replacing argmax), `rope_theta` passed from the `.1bp` header, and per-arch chat templates — verified with a real-prompt coherence probe.
+
+### CI + housekeeping
+
+- The e2e smoke job no longer breaks when built without the llama.cpp submodule (`backend_ggml_vulkan.h` self-stubs the factory, mirroring the `.cpp`'s `#else` stub); submodule pinned to the fork so CI can fetch the zamba2-quantize commit.
+- ShellCheck SC2034 in `scripts/zoo-smoke.sh` fixed (unused loop var — was blocking the required C++ check on every PR).
+- **Branch cleanup**: 7 stale remote branches deleted (3 dependabot bumps, superseded fingerprint-dispatch docs, merged/closed eeg-zuna-research, zamba2-ssm-a-convention, ws05 per-vocab-ppl-gates), 4 stale PRs closed. `origin/main` had been sitting at Aug 5 — the whole Aug 7 work landed via PR #1535.
+- **CI flake found, not fixed**: the smoke-test's NPU `mmap EAGAIN` failures are the `pool-probe` job wedging the amdxdna driver (`Can not get flush memory` in dmesg) — the server runs clean locally with the NPU free. Root-caused in the wiki; workaround is a reboot before needing smoke green.
 
 ---
 
