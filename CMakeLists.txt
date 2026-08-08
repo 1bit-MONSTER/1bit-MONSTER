@@ -415,6 +415,16 @@ add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
 
+# -- gguf_to_tilefuse : GGUF -> TileFuse pre-tiled int4 layout (arXiv 2606.11357)
+add_executable(gguf_to_tilefuse tools/gguf_to_tilefuse.cpp)
+target_link_libraries(gguf_to_tilefuse PRIVATE gguf_reader)
+target_compile_options(gguf_to_tilefuse PRIVATE -O3 -std=c++23)
+
+# -- tf_gemv : reference fused GEMV over the TileFuse layout (M2 kernel logic)
+add_executable(tf_gemv tools/tf_gemv.cpp)
+target_link_libraries(tf_gemv PRIVATE gguf_reader)
+target_compile_options(tf_gemv PRIVATE -O3 -std=c++23)
+
 # -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
 #   tools/zuna_port.cpp compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
 #   standalone `zuna_port` binary for the parity harness is built directly by

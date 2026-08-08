@@ -304,23 +304,30 @@ int main(int argc, char** argv) {
     };
 
     // Arch-aware chat templates. llama-3.2 uses the <|start_header_id|> family
-    // (special tokens live in the .htok vocab); BitNet-family uses
-    // "User:/Assistant:" lines with <|eot_id|>. Arch comes from the config
-    // sidecar since the model isn't loaded yet at prompt-build time.
-    const bool llama_chat = [&]() {
-        if (config_path.empty()) return false;
+    // (special tokens live in the .htok vocab); qwen uses <|im_start|>/<|im_end|>;
+    // BitNet-family uses "User:/Assistant:" lines with <|eot_id|>. Arch comes
+    // from the config sidecar since the model isn't loaded yet at prompt-build
+    // time.
+    const std::string chat_arch = [&]() {
+        if (config_path.empty()) return std::string();
         std::ifstream cf(config_path);
-        if (!cf) return false;
+        if (!cf) return std::string();
         std::stringstream ss; ss << cf.rdbuf();
         std::string s;
-        return safetensors_detail::json_find_string(ss.str(), "model_type", s) && s == "llama";
+        return safetensors_detail::json_find_string(ss.str(), "model_type", s) ? s : std::string();
     }();
+    const bool llama_chat = (chat_arch == "llama");
+    const bool qwen_chat  = (chat_arch == "qwen2" || chat_arch == "qwen3" ||
+                             chat_arch == "qwen2.5" || chat_arch == "qwen3.5");
     auto chat_append = [&](std::vector<int>& ids, rcpp_tokenizer_t* tok,
                            const std::string& role, const std::string& content) {
         if (llama_chat) {
             auto v = tokenize(tok, ("<|start_header_id|>" + role + "<|end_header_id|>\n\n" + content).c_str());
             ids.insert(ids.end(), v.begin(), v.end());
             ids.push_back(128009);  // <|eot_id|>
+        } else if (qwen_chat) {
+            auto v = tokenize(tok, ("<|im_start|>" + role + "\n" + content + "<|im_end|>\n").c_str());
+            ids.insert(ids.end(), v.begin(), v.end());
         } else {
             std::string r = role;
             if (!r.empty()) r[0] = (char)std::toupper((unsigned char)r[0]);
@@ -332,7 +339,13 @@ int main(int argc, char** argv) {
     auto chat_assistant_pre = [&](rcpp_tokenizer_t* tok) -> std::vector<int> {
         if (llama_chat)
             return tokenize(tok, "<|start_header_id|>assistant<|end_header_id|>\n\n");
+        if (qwen_chat)
+            return tokenize(tok, "<|im_start|>assistant\n");
         return tokenize(tok, "Assistant: ");
+    };
+    auto chat_begin = [&](rcpp_tokenizer_t* tok) {
+        if (llama_chat) return 128000;  // <|begin_of_text|>
+        return rcpp_tokenizer_bos_id(tok);
     };
 
     std::vector<int> prompt_ids;
@@ -378,11 +391,7 @@ int main(int argc, char** argv) {
         if (rcpp_tokenizer_load(tok_path, &tok) != RCPP_OK) {
             fprintf(stderr, "cannot load tokenizer .htok: %s\n", tok_path); return 1;
         }
-        if (llama_chat) {
-            prompt_ids.push_back(128000);  // <|begin_of_text|>
-        } else {
-            prompt_ids.push_back(rcpp_tokenizer_bos_id(tok));
-        }
+        prompt_ids.push_back(chat_begin(tok));
         if (system_msg) chat_append(prompt_ids, tok, "system", system_msg);
         chat_append(prompt_ids, tok, "user", user_msg);
         auto pre = chat_assistant_pre(tok);
@@ -888,8 +897,14 @@ int main(int argc, char** argv) {
                     o_fp16, nh, nkv, hd, pos+1, l, scale, nullptr);
                 if (rrc != 0) { fprintf(stderr, "kv-rotor rc=%d layer=%d\n", rrc, l); return 1; }
             } else {
+                // Stream-ordered KV writes: plain hipMemcpy (default stream) is
+                // NOT ordered against decode_stream's async gemvs — it could run
+                // before the gemv completes, caching stale zeros (silent garbage
+                // attention). Async on decode_stream keeps write-before-read.
+                HIP_OK(hipDeviceSynchronize());
                 HIP_OK(hipMemcpy(K_caches[l] + (size_t)pos * nkv * hd, k_fp16, nkv*hd*2, hipMemcpyDeviceToDevice));
                 HIP_OK(hipMemcpy(V_caches[l] + (size_t)pos * nkv * hd, v_fp16, nkv*hd*2, hipMemcpyDeviceToDevice));
+                HIP_OK(hipDeviceSynchronize());
                 RC_OK(rcpp_kv_cache_attn_decode_fd(q_fp16, K_caches[l], V_caches[l],
                                                    o_fp16, nh, nkv, hd, pos+1, scale, ds));
             }
@@ -1282,11 +1297,7 @@ int main(int argc, char** argv) {
             // Build prompt token stream from OpenAI-format messages using the
             // arch-aware chat template.
             std::vector<int> req_prompt;
-            if (llama_chat) {
-                req_prompt.push_back(128000);  // <|begin_of_text|>
-            } else {
-                req_prompt.push_back(rcpp_tokenizer_bos_id(stok));
-            }
+            req_prompt.push_back(chat_begin(stok));
             for (auto& m : j["messages"]) {
                 std::string role = m.value("role", std::string("user"));
                 std::string content = m.value("content", std::string(""));

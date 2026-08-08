@@ -522,9 +522,14 @@ rcpp_status_t rcpp_bitnet_load_onnx(const char* path, rcpp_bitnet_model_t* out_m
             auto zit = dq_zp.find(t->name);
             if (zit != dq_zp.end()) zp = zit->second;
             auto sit = dq_scale.find(t->name);
-            float s = sit != dq_scale.end() && !sit->second->float_data.empty()
-                          ? sit->second->float_data[0] : 1.0f;
+            const OnnxTensor* st = sit != dq_scale.end() ? sit->second : nullptr;
+            // Per-row scales (embeddings quantized along dim 0) or per-tensor.
+            bool per_row = st && t->dims.size() == 2 &&
+                           st->float_data.size() == (size_t)t->dims[0];
+            size_t row_len = per_row ? (size_t)t->dims[1] : n_elems;
             for (size_t i = 0; i < n_elems; i++) {
+                float s = per_row ? st->float_data[i / row_len]
+                                  : (st && !st->float_data.empty() ? st->float_data[0] : 1.0f);
                 float v = (float)((int32_t)t->i8_data[i] - zp) * s;
                 uint32_t f32_bits; memcpy(&f32_bits, &v, 4);
                 uint32_t sign = (f32_bits >> 16) & 0x8000;
