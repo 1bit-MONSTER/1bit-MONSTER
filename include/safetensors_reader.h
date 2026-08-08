@@ -16,4 +16,12 @@
 #include "q4nx_reader.h"
 #include <string>
 
+// Minimal flat-JSON field finders for HF config.json files (also used by
+// tools/bitnet_decode.cpp for ONNX config sidecars).
+namespace safetensors_detail {
+bool json_find_string(const std::string& text, const std::string& key, std::string& out);
+bool json_find_int(const std::string& text, const std::string& key, int& out);
+bool json_find_float(const std::string& text, const std::string& key, float& out);
+}
+
 bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg);
