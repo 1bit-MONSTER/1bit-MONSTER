@@ -173,6 +173,12 @@ class _VoiceScreenState extends State<VoiceScreen>
   /// Reconnect after a connection loss: re-establish the socket, then start
   /// a fresh session (start frame + mic) without clearing the transcript.
   Future<void> _onReconnectTap() async {
+    // Guard the double-tap race synchronously, mirroring _onButtonTap: the
+    // flag flips before the first await so the busy branch disables the
+    // button for the whole connect window and a second tap (even before the
+    // next frame rebuilds the button) cannot fire a second connect().
+    if (_connecting) return;
+    if (mounted) setState(() => _connecting = true);
     await _connect();
     if (!mounted || _offline) return; // reconnect failed: stay on Reconnect
     setState(() => _sessionActive = true);
