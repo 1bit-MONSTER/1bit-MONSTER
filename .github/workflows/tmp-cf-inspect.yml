@@ -1,5 +1,5 @@
 name: tmp-cf-inspect
-on: workflow_dispatch
+on: pull_request
 jobs:
   inspect:
     runs-on: ubuntu-latest
@@ -23,5 +23,4 @@ print('domains:', r.get('domains'))
 print('production_branch:', r.get('production_branch'))
 print('source:', json.dumps(r.get('source'), indent=2))
 print('build_config:', json.dumps(r.get('build_config'), indent=2))
-print('deployment_configs:', json.dumps(r.get('deployment_configs', {}).get('production', {}), indent=2)[:800])
 "
