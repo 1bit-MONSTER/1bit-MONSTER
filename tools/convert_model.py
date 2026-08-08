@@ -30,7 +30,7 @@ def main():
     os.makedirs(tmp, exist_ok=True)
 
     py = sys.executable
-    if src.endswith('.safetensors'):
+    if src.endswith('.safetensors') or os.path.isdir(src) or src.endswith('index.json'):
         subprocess.run([py, os.path.join(HERE, 'safetensors_to_onnx_int8.py'), src, tmp], check=True)
         if args.tokenizer:
             subprocess.run([py, os.path.join(HERE, 'tokenizer_json_to_htok.py'), args.tokenizer,

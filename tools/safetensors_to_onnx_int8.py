@@ -68,7 +68,8 @@ def main():
     # config: prefer a local config.json next to the source, else fetch from
     # the HF repo (models/<name> flow drops config.json alongside the shards).
     import urllib.request
-    cfg_path = os.path.join(os.path.dirname(os.path.abspath(st_path)), 'config.json')
+    base_dir = st_path if os.path.isdir(st_path) else os.path.dirname(os.path.abspath(st_path))
+    cfg_path = os.path.join(base_dir, 'config.json')
     if os.path.exists(cfg_path):
         cfg = json.load(open(cfg_path))
     else:
@@ -123,6 +124,16 @@ def main():
             add(full + '_scale', s.reshape(-1))
             nodes.append(helper.make_node("DequantizeLinear", [full, full + '_scale'], [full + '_dq'], name=f"dq_l{l}_{ln}"))
 
+    # Untied LM head (e.g. qwen2.5-7b): the tied path silently uses the
+    # embedding, producing garbage logits.
+    if 'lm_head.weight' in names:
+        lm = T('lm_head.weight')
+        add('lm_head.weight', lm.astype(np.float16))
+        print(f"[st] lm_head: {lm.shape} (fp16, untied)")
+        tie = 0
+    else:
+        tie = 1
+
     graph = helper.make_graph(nodes, "g", [], [], inits)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     out_path = os.path.join(outdir, "model_int8.onnx")
@@ -140,7 +151,7 @@ def main():
                "num_attention_heads": nh, "num_key_value_heads": nkv, "head_dim": hd,
                "max_position_embeddings": cfg['max_position_embeddings'],
                "rms_norm_eps": cfg['rms_norm_eps'], "rope_theta": cfg['rope_theta'],
-               "vocab_size": cfg['vocab_size'], "tie_word_embeddings": 1}
+               "vocab_size": cfg['vocab_size'], "tie_word_embeddings": tie}
     with open(os.path.join(outdir, "config.json"), "w") as f2:
         json.dump(cfg_out, f2, indent=2)
     print("[st] wrote config.json")
