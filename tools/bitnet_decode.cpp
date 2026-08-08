@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
             auto text_ids = tokenize(tok, text);
             prompt_ids.insert(prompt_ids.end(), text_ids.begin(), text_ids.end());
             rcpp_tokenizer_free(tok);
-            fprintf(stderr, "[tokenizer] \"%s\" -> %zu tokens\n", text, prompt_ids.size());
+            fprintf(stderr, "[tokenizer] \"%s\" -> %zu tokens ids:", text, prompt_ids.size()); for (auto id : prompt_ids) fprintf(stderr, " %d", id); fprintf(stderr, "\n");
         }
     } else if (std::string(prompt_arg) == "--chat") {
         // layout: bitnet_decode <model> --chat "<user msg>" <num_new> [system_msg]
