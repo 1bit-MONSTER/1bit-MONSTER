@@ -320,13 +320,15 @@ bool WsSessionConn::send_text(const std::string& json) {
 
 static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionConn>* slot,
                                       std::mutex* slot_mu,
-                                      const SessionConnectCallback& connect_cb);
+                                      const SessionConnectCallback& connect_cb,
+                                      const std::atomic<bool>& running);
 
 static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
                                  const WSAuthCheck& auth_check,
                                  const SessionConnectCallback& connect_cb,
                                  std::shared_ptr<WsSessionConn>* session_slot,
-                                 std::mutex* slot_mu) {
+                                 std::mutex* slot_mu,
+                                 const std::atomic<bool>& running) {
     if (client_fd < 0) return;
 
     // ── Read HTTP upgrade request ────────────────────────────
@@ -480,7 +482,7 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
 
     // ── Request path routing ─────────────────────────────────
     if (path_base == "/v1/voice/session") {
-        handle_session_connection(client_fd, session_slot, slot_mu, connect_cb);
+        handle_session_connection(client_fd, session_slot, slot_mu, connect_cb, running);
         return;
     }
 
@@ -558,7 +560,10 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
     size_t sample_offset = 0;
     bool cancelled = false;
 
-    while (sample_offset < num_samples) {
+    // running: stop() clears the flag; this loop wakes every ~50 ms via
+    // SO_RCVTIMEO, so a shutdown unblocks it within one wake (same pattern
+    // as the session loop below).
+    while (running && sample_offset < num_samples) {
         // Check for cancel frame (non-blocking due to SO_RCVTIMEO)
         std::string incoming;
         uint8_t opcode;
@@ -612,7 +617,8 @@ static void handle_ws_connection(int client_fd, void* codec_tts_ptr,
 static constexpr size_t kMaxUplinkFrame = 65536; // sanity cap for session uplink frames
 static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionConn>* slot,
                                       std::mutex* slot_mu,
-                                      const SessionConnectCallback& connect_cb) {
+                                      const SessionConnectCallback& connect_cb,
+                                      const std::atomic<bool>& running) {
     if (!slot || !slot_mu) { close(client_fd); return; }
 
     // Retire the previous connection instead of destroying it: a Task 3
@@ -655,7 +661,10 @@ static void handle_session_connection(int client_fd, std::shared_ptr<WsSessionCo
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     static constexpr size_t kFrameBytes = 640; // 320 int16 samples, 20ms @ 16kHz
-    while (true) {
+    // running: stop() clears the flag before joining the server thread;
+    // this loop wakes every ~50 ms via SO_RCVTIMEO, so shutdown exits here
+    // within one wake instead of hanging until the client disconnects.
+    while (running) {
         std::string incoming;
         uint8_t opcode = 0;
         int ret = ws_recv_frame(client_fd, &incoming, &opcode, kMaxUplinkFrame);
@@ -794,7 +803,7 @@ int WebSocketServer::start(int port, void* codec_tts_ptr, WSAuthCheck auth_check
             }
 
             STREAM_LOG("WebSocket client connected");
-            handle_ws_connection(client_fd, tts, auth_check_, session_connect_cb_, &session_conn_, &session_conn_mu_);
+            handle_ws_connection(client_fd, tts, auth_check_, session_connect_cb_, &session_conn_, &session_conn_mu_, running_);
             STREAM_LOG("WebSocket client disconnected");
         }
 
