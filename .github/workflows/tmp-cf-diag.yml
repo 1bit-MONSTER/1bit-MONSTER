@@ -10,35 +10,17 @@ jobs:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          set +e
           ACCT="$CF_ACCOUNT"
+          H="Authorization: Bearer $CF_TOKEN"
+          api() { curl -s -H "$H" "$@"; }
           echo "== whoami =="
-          curl -s -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/user" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print('email:', d['result'].get('email'))"
+          api "https://api.cloudflare.com/client/v4/user" | head -c 400; echo
           echo "== zones visible to token =="
-          curl -s -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/zones?per_page=50" \
-            | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          print('success:', d.get('success'), 'errors:', d.get('errors'))
-          for z in d.get('result', []):
-              print('zone:', z['name'], z['id'])
-          "
+          api "https://api.cloudflare.com/client/v4/zones?per_page=50" | head -c 600; echo
           echo "== add custom domain =="
-          curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+          api -X POST -H "Content-Type: application/json" \
             "https://api.cloudflare.com/client/v4/accounts/$ACCT/pages/projects/eeg-medical/domains" \
-            -d '{"name":"eeg-medical.1bit.systems"}' \
-            | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          print('success:', d.get('success'))
-          print(json.dumps(d.get('result', d.get('errors')), indent=1)[:800])
-          "
+            -d '{"name":"eeg-medical.1bit.systems"}' | head -c 600; echo
           echo "== domain list after add =="
-          curl -s -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$ACCT/pages/projects/eeg-medical/domains" \
-            | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          for r in d.get('result', []):
-              print(r.get('name'), '|', r.get('status'))
-          "
+          api "https://api.cloudflare.com/client/v4/accounts/$ACCT/pages/projects/eeg-medical/domains" | head -c 800; echo
