@@ -1265,6 +1265,8 @@ int main(int argc, char** argv) {
     // Q4_K_M only lossless ≥7B, 1bp loses to INT8 on every model gated).
     // GGUF (Q8_0/Q4_K_M) > Q4NX > H1B > 1BP. Exact .1bp requests still work
     // — exact match runs on the full name before this ordering matters.
+    // Within GGUF, rank by quant quality: Q8_0 > Q6/Q5 > Q4 (Q8_0 is the
+    // quality default on <7B; Q4 is a memory-constrained explicit choice).
     auto fmt_rank = [](ModelFormat f) {
         switch (f) {
             case ModelFormat::GGUF:  return 0;
@@ -1274,9 +1276,19 @@ int main(int argc, char** argv) {
             default:                 return 4;
         }
     };
+    auto quant_rank = [](const std::string& q) {
+        if (q.find("Q8_0") != std::string::npos) return 0;
+        if (q.find("Q6_K") != std::string::npos || q.find("Q5") != std::string::npos) return 1;
+        if (q.find("Q4_K") != std::string::npos || q.find("Q4_0") != std::string::npos) return 2;
+        return 3;
+    };
     std::stable_sort(discovered.begin(), discovered.end(),
         [&](const ModelConfig& a, const ModelConfig& b) {
-            return fmt_rank(a.format) < fmt_rank(b.format);
+            if (fmt_rank(a.format) != fmt_rank(b.format))
+                return fmt_rank(a.format) < fmt_rank(b.format);
+            if (a.format == ModelFormat::GGUF)
+                return quant_rank(a.quantization) < quant_rank(b.quantization);
+            return false;
         });
 
     // Phase 2.6: Unified model pool (--pool) — every model resident up front

@@ -2355,6 +2355,14 @@ int main(int argc,char**argv){
                     int n_slots_to_run = (op == 33) ? (int)batch : 1;
                     if (n_slots_to_run > MAX_BATCH_SLOTS) n_slots_to_run = MAX_BATCH_SLOTS;
                     out_data.resize(n_slots_to_run);
+                    // NOTE (2026-08-09): batched-launch op33 was attempted and
+                    // REVERTED because the QKV/O xclbins were sized N=5120 while
+                    // the engine reads qkv_total=8192 — batched (M>1) launches
+                    // misaligned C rows (worker op1 batch=2 diff 2.18). RESOLVED:
+                    // run_build.sh now emits QKV at N=8192 (qkv_total) and the
+                    // rebuilt pair is verified — identical inputs give identical
+                    // rows (diff 0.0). The serial-slot path below is correct and
+                    // kept; a fresh batched-launch op33 can be built on top of it.
                     for (int slot_iter = 0; slot_iter < n_slots_to_run; slot_iter++) {
                     int slot = (op == 33) ? slot_iter : fuse_active_slot;
                     int token_id = (int)in_data[slot_iter];
