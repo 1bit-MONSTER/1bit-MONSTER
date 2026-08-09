@@ -1260,6 +1260,25 @@ int main(int argc, char** argv) {
     printf("\n── Model Discovery ──\n");
     static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
 
+    // Format preference: when several files share a base model name, prefer
+    // the quality format over the size tier (measured: Q8_0 near-lossless,
+    // Q4_K_M only lossless ≥7B, 1bp loses to INT8 on every model gated).
+    // GGUF (Q8_0/Q4_K_M) > Q4NX > H1B > 1BP. Exact .1bp requests still work
+    // — exact match runs on the full name before this ordering matters.
+    auto fmt_rank = [](ModelFormat f) {
+        switch (f) {
+            case ModelFormat::GGUF:  return 0;
+            case ModelFormat::Q4NX:  return 1;
+            case ModelFormat::H1B:   return 2;
+            case ModelFormat::ONEBP: return 3;
+            default:                 return 4;
+        }
+    };
+    std::stable_sort(discovered.begin(), discovered.end(),
+        [&](const ModelConfig& a, const ModelConfig& b) {
+            return fmt_rank(a.format) < fmt_rank(b.format);
+        });
+
     // Phase 2.6: Unified model pool (--pool) — every model resident up front
     if (g_pool_enabled) {
         printf("\n── Unified Pool ──\n");

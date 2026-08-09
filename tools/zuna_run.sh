@@ -39,10 +39,23 @@ case "$EEG" in
     ORIG="$EEG"
     ;;
 esac
-if [ -z "$Z" ]; then
-  "$BIN" zuna "$WD" "$TMP/tokens.bin" "$TMP/tok_idx.bin" "$TMP/recon.bin" "$TMP/enc.bin" 0
-else
-  "$BIN" zuna "$WD" "$TMP/tokens.bin" "$TMP/tok_idx.bin" "$TMP/recon.bin" "$TMP/enc.bin" 0 "$Z"
-fi
+# onebin dispatches on a "zuna" subcommand; the standalone zuna_port build
+# takes the weights dir directly. Detect by binary name.
+case "$(basename "$BIN")" in
+  onebin|1bit)
+    if [ -z "$Z" ]; then
+      "$BIN" zuna "$WD" "$TMP/tokens.bin" "$TMP/tok_idx.bin" "$TMP/recon.bin" "$TMP/enc.bin" 0
+    else
+      "$BIN" zuna "$WD" "$TMP/tokens.bin" "$TMP/tok_idx.bin" "$TMP/recon.bin" "$TMP/enc.bin" 0 "$Z"
+    fi
+    ;;
+  *)
+    if [ -z "$Z" ]; then
+      "$BIN" "$WD" "$TMP/tokens.bin" "$TMP/tok_idx.bin" "$TMP/recon.bin" "$TMP/enc.bin" 0
+    else
+      "$BIN" "$WD" "$TMP/tokens.bin" "$TMP/tok_idx.bin" "$TMP/recon.bin" "$TMP/enc.bin" 0 "$Z"
+    fi
+    ;;
+esac
 python3 "$(dirname "$0")/zuna_invert_recon.py" "$TMP/recon.bin" "$ORIG" "$TMP/meta.json" "$OUT"
 echo "reconstructed -> $OUT"

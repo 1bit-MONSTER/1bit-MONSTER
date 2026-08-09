@@ -257,3 +257,13 @@ If a HuggingFace repo contains a 0-byte or truncated model file:
 
    And verify the output says `GGUF ✅` (or the appropriate format) with a
    reasonable file size for the parameter count.
+
+5. **Every published model gets a quality-gate row** in
+   [QUALITY.md](QUALITY.md) — measured PPL per format (f16/Q8_0/Q4_K_M/1bp)
+   on the WS-00 gate set. No gate row = not published.
+
+**Format guidance:** Q8_0/INT8 is the quality default for <7B models; INT4
+(Q4_K_M/Q4NX) only for ≥7B where it's lossless; 1BP is the size tier (NPU
+pool, edge). Never convert 1BP TQ2 from Q4_K_M/Q8_0 sources — always from
+f16/bf16 (WS-05 finding: 93% of weights get zeroed on double-quantized
+sources, PPL 3.7e8).

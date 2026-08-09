@@ -155,8 +155,15 @@ for gguf_name, onnx_name in linear_map.items():
 
     graph = helper.make_graph(nodes, "g", [], [], inits)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-    onnx.save(model, os.path.join(outdir, "model_int8.onnx"))
-    print(f"[conv] wrote {os.path.join(outdir, 'model_int8.onnx')}: {len(inits)} initializers, {len(nodes)} DQ nodes")
+    out_path = os.path.join(outdir, "model_int8.onnx")
+    if big:
+        onnx.save(model, out_path, save_as_external_data=True,
+                  all_tensors_to_one_file=True, location="model_int8.onnx.data",
+                  size_threshold=1024)
+        print(f"[conv] wrote {out_path} + model_int8.onnx.data (external)")
+    else:
+        onnx.save(model, out_path)
+        print(f"[conv] wrote {out_path}: {len(inits)} initializers, {len(nodes)} DQ nodes")
 
     # head_dim: q_proj rows / num_heads (qwen3 small models use 128, not hs/nh)
     hd = int(tensors["blk.0.attn_q.weight"].shape[-1]) // nh if nh else 0

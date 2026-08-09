@@ -198,36 +198,35 @@ struct I8Ctx {
     // K×N are the logical (unpadded) weight dims; the BO is KD×ND (padded to 128).
     // Zero-init ensures padded regions contribute zero to the GEMM output.
     void packB(int l, const float* w, int K, int N, float& sout) {
-        int num_groups = (K + 31) / 32;
-        group_scales[l].resize(num_groups);
+        // Single per-tensor scale: the host dequant (dequant_only) applies ONE
+        // scalar to every output column, so the weight quantization must use
+        // that same single scale. Per-32-group scales were a precision attempt
+        // that broke correctness: dequant used mean(s_g) for all columns while
+        // weights were divided by s_g per group, distorting activations per
+        // K-channel by up to mean(s)/s_g (measured 0.53x-1.66x on Qwen3-0.6B).
         auto* Bm = (int8_t*)layerB[l]->map();
         memset(Bm, 0, (size_t)KD * ND);
-        for (int g = 0; g < num_groups; g++) {
-            int g_start = g * 32;
-            int g_size = std::min(32, K - g_start);
-            float g_amax = 0;
-            for (int j = 0; j < N; j++)
-                for (int i = 0; i < g_size; i++) {
-                    float a = fabsf(w[(g_start + i) * N + j]);
-                    if (std::isfinite(a) && a > g_amax) g_amax = a;
-                }
-            if (g_amax < 1e-12f) g_amax = 1.0f;
-            group_scales[l][g] = g_amax / 127.0f;
-            float g_is = 127.0f / g_amax;
-            for (int j = 0; j < N; j++)
-                for (int i = 0; i < g_size; i++) {
-                    float v = w[(g_start + i) * N + j];
-                    if (!std::isfinite(v)) v = 0;
-                    int x = (int)roundf(v * g_is);
-                    if (x > 127) x = 127;
-                    else if (x < -127) x = -127;
-                    Bm[(g_start + i) * ND + j] = (int8_t)x;
-                }
-        }
+        float t_amax = 0;
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < K; i++) {
+                float a = fabsf(w[(size_t)i * N + j]);
+                if (std::isfinite(a) && a > t_amax) t_amax = a;
+            }
+        if (t_amax < 1e-12f) t_amax = 1.0f;
+        float ts = t_amax / 127.0f;
+        float tis = 127.0f / t_amax;
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < K; i++) {
+                float v = w[(size_t)i * N + j];
+                if (!std::isfinite(v)) v = 0;
+                int x = (int)roundf(v * tis);
+                if (x > 127) x = 127;
+                else if (x < -127) x = -127;
+                Bm[(size_t)i * ND + j] = (int8_t)x;
+            }
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        float ssum = 0;
-        for (int g = 0; g < num_groups; g++) ssum += group_scales[l][g];
-        sout = ssum / num_groups;
+        group_scales[l].assign((K + 31) / 32, ts);  // uniform: dequant mean == ts
+        sout = ts;
     }
 
     // ── Quantize activations into bA ──
@@ -245,6 +244,27 @@ struct I8Ctx {
             }
         return Am;
     }
+
+    // Per-row activation scales (batched MoE prefill): row m quantized with
+    // 1/ascales[m], so each token keeps its own dynamic range. Dequant must
+    // use the matching per-row scale (dequant_only_rows).
+    inline int8_t* quantize_async_rows(const float* A, int am, int ak,
+                                       const float* ascales) {
+        memset(Am, 0, (size_t)am * KD);
+        for (int m = 0; m < am; m++) {
+            float ais = 1.0f / ascales[m];
+            for (int k = 0; k < ak; k++) {
+                float v = A[m * ak + k];
+                if (!std::isfinite(v)) v = 0;
+                int q = (int)roundf(v * ais);
+                if (q > 127) q = 127;
+                else if (q < -127) q = -127;
+                Am[m * KD + k] = (int8_t)q;
+            }
+        }
+        return Am;
+    }
+
 
     inline void sync_A(int /*l*/) { bA->sync(XCL_BO_SYNC_BO_TO_DEVICE); }
 
@@ -287,6 +307,26 @@ struct I8Ctx {
             }
     }
 
+    // Per-row dequant (batched MoE prefill): row m scaled by ascales[m].
+    inline void dequant_only_rows(float* C, int am, int an,
+                                  const float* ascales, float Bscale,
+                                  int layer = -1) {
+        if (layer >= 0 && (size_t)layer < group_scales.size() &&
+            !group_scales[layer].empty()) {
+            float ssum = 0;
+            for (float s : group_scales[layer]) ssum += s;
+            Bscale = ssum / group_scales[layer].size();
+        }
+        for (int m = 0; m < am; m++) {
+            float cs = ascales[m] * Bscale;
+            for (int n = 0; n < an; n++) {
+                float val = (float)((int32_t)Cm[m * ND + n]) * cs;
+                if (!std::isfinite(val)) val = 0;
+                C[m * an + n] = val;
+            }
+        }
+    }
+
     inline void dequantize(xrt::run& r, float* C, int am, int an,
                            float ascale, float Bscale, int layer = -1) {
         r.wait();
@@ -304,10 +344,36 @@ struct I8Ctx {
     // ── Synchronous go() ──
     inline bool go(int l, const float* A, int am, int ak, float ascale,
                    float Bscale, float* C, int an) {
+        auto t0 = std::chrono::steady_clock::now();
         quantize_async(A, am, ak, ascale);
+        auto t1 = std::chrono::steady_clock::now();
+        auto r = sync_and_launch(l);
+        auto t2 = std::chrono::steady_clock::now();
+        r.wait();
+        auto t3 = std::chrono::steady_clock::now();
+        dequantize(r, C, am, an, ascale, Bscale, l);
+        auto t4 = std::chrono::steady_clock::now();
+        if (getenv("NPU_GO_STATS"))
+            fprintf(stderr, "[go] q=%.2f sync+launch=%.2f wait=%.2f deq=%.2f ms\n",
+                    std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                    std::chrono::duration<double, std::milli>(t2 - t1).count(),
+                    std::chrono::duration<double, std::milli>(t3 - t2).count(),
+                    std::chrono::duration<double, std::milli>(t4 - t3).count());
+        return true;
+    }
+
+    // Synchronous go() with per-row activation scales (batched MoE prefill):
+    // row m of A quantized with ascales_q[m], row m of C dequantized with
+    // ascales_d[m] (GU: q==d; D: q=asu, d=asu*d_sc so per-token dequant
+    // matches sequential's per-token expert-mean scale).
+    inline bool go_rows(int l, const float* A, int am, int ak,
+                        const float* ascales_q, const float* ascales_d,
+                        float Bscale, float* C, int an) {
+        quantize_async_rows(A, am, ak, ascales_q);
         auto r = sync_and_launch(l);
         r.wait();
-        dequantize(r, C, am, an, ascale, Bscale, l);
+        readback();
+        dequant_only_rows(C, am, an, ascales_d, Bscale, l);
         return true;
     }
 
