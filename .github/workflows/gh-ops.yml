@@ -38,7 +38,7 @@ jobs:
       - name: Code scanning alerts
         id: code-scan
         run: |
-          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts" --paginate --jq '[.[] | select(.state=="open")]' 2>/dev/null || echo '[]')
+          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts" --paginate 2>/dev/null | jq -s 'map(.[] | select(.state=="open"))' || echo '[]')
           TOTAL=$(printf '%s' "$DATA" | jq length)
           echo "CS_OPEN=$TOTAL" >> "$GITHUB_OUTPUT"
           {
@@ -54,7 +54,7 @@ jobs:
       - name: Dependabot alerts
         id: dependabot
         run: |
-          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open" --paginate 2>/dev/null || echo '[]')
+          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open" --paginate 2>/dev/null | jq -s 'map(.[] | select(.state=="open"))' || echo '[]')
           TOTAL=$(printf '%s' "$DATA" | jq length)
           echo "DEP_OPEN=$TOTAL" >> "$GITHUB_OUTPUT"
           {
@@ -70,8 +70,9 @@ jobs:
       - name: Secret scanning alerts
         id: secret-scan
         run: |
-          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/secret-scanning/alerts?state=open" --paginate 2>/dev/null) \
-            || { echo "::warning::secret-scanning API unavailable (token scope or plan) — skipping"; DATA='[]'; }
+          SS_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/secret-scanning/alerts?state=open" --paginate 2>/dev/null) \
+            || { echo "::warning::secret-scanning API unavailable (token scope or plan) — skipping"; SS_JSON='[]'; }
+          DATA=$(printf '%s' "$SS_JSON" | jq -s 'map(.[] | select(.state=="open"))' || echo '[]')
           TOTAL=$(printf '%s' "$DATA" | jq length)
           echo "SS_OPEN=$TOTAL" >> "$GITHUB_OUTPUT"
           {
