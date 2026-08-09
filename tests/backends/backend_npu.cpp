@@ -128,6 +128,9 @@ public:
         // FLM's catalog has no other model with >= 100 experts.
         if (cfg.num_experts >= 100) {
             model_tag_ = "qwen3.6-moe:35b-a3b";
+        } else if (cfg.architecture == "qwen3.6") {
+            // Q4NX filename-derived arch ("Qwen3.6-35B-A3B-NPU2")
+            model_tag_ = "qwen3.6-moe:35b-a3b";
         } else if (cfg.architecture == "qwen35moe" || cfg.architecture == "qwen36moe") {
             if (cfg.hidden_size <= 1024) model_tag_ = "qwen3.5:0.8b";
             else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3.5:2b";
