@@ -1,6 +1,13 @@
-# 1bit.systems Model Catalog — 47+ Models (1BP + Documented)
+# 1bit.systems Model Catalog — 47+ Models (Q4NX + 1BP + Documented)
 
-All models available in **1BP format** — single-file, zero-config, memory-mappable —
+**Q4NX is the canonical format (q4nx pivot, 2026-08-08)** — every zoo model
+that maps to an official ROCm converter config ships as Q4NX, produced with
+the official `FLM_Q4NX_Converter` via `tools/batch_convert_q4nx.sh`, landing
+in `~/.config/flm/models/<Name>/model.q4nx` for the FLM/NPU backend. Models
+with no official Q4NX converter (zaya, zamba2, mistral, falcon, olmo,
+granite, deepseek2/3) stay on their native backends (HIP 1BP / GGML-Vulkan).
+
+Also available in **1BP format** — single-file, zero-config, memory-mappable —
 plus documented models from the Zyphra ecosystem (EEG, TTS) that aren't convertible to 1BP.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 
