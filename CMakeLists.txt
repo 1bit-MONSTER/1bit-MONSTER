@@ -416,9 +416,9 @@ target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
 
 # -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
-#   tools/zuna_port.cpp compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
-#   standalone `zuna_port` binary for the parity harness is built directly by
-#   tools/zuna_check_parity.sh (g++ on tools/zuna_port.cpp, no dispatch guard).
+#   tools/zuna_port.cpp (vendored from github.com/1bit-systems/eeg-medical, the
+#   canonical home) compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
+#   the parity harness + EDF tooling live in eeg-medical/tools/.
 
 # -- libvl_image : lightweight image loading + preprocessing (no HIP dep) ----
 # Uses stb_image.h (vendored at third_party/stb/) for decode. No OpenCV dep.

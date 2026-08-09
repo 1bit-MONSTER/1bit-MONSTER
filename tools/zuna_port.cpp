@@ -1,6 +1,10 @@
 // zuna_port.cpp — standalone C++ CPU port of ZUNA1.1 (masked diffusion autoencoder)
 // Numerical parity vs the reference `zuna` Python package.
 //
+// CANONICAL HOME: github.com/1bit-systems/eeg-medical (tools/zuna_port.cpp).
+// This copy is vendored into the 1bit engine build (ONE_BIN_SOURCES); sync
+// changes back to eeg-medical first, then copy into tools/ here.
+//
 // Hyperparams (resolved from Zyphra/ZUNA1.1 config.json + package source):
 //   dim=1024 head_dim=64 n_heads=8 n_kv_heads=8 ffn_hidden=2816 n_layers=16
 //   rope_dim=4 rope_theta=1.0e4 max_seqlen=256 norm_eps=1e-5 (QK-norms 1e-5)
