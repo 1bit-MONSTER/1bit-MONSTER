@@ -1,5 +1,6 @@
 name: tmp-cf-diag
-on: workflow_dispatch
+on:
+  workflow_dispatch:
 jobs:
   inspect:
     runs-on: ubuntu-latest
