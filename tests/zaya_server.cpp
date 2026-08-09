@@ -148,13 +148,15 @@ static bool detect_from_flm_q4nx(const std::string& path, ModelConfig& cfg) {
     cfg.vocab_size = emb[0];
     cfg.hidden_size = emb[1];
     // layer count from the max model.layers.N index
+    // Qwen3.6-35B-A3B q4nx uses SINGULAR "model.layer.N." — try both.
     int max_l = -1;
-    size_t pos = 0;
-    std::string key = "model.layers.";
-    while ((pos = head.find(key, pos)) != std::string::npos) {
-        int l = atoi(head.c_str() + pos + key.size());
-        if (l > max_l) max_l = l;
-        pos += key.size();
+    for (const char* key : {"model.layers.", "model.layer."}) {
+        size_t pos = 0;
+        while ((pos = head.find(key, pos)) != std::string::npos) {
+            int l = atoi(head.c_str() + pos + strlen(key));
+            if (l > max_l) max_l = l;
+            pos += strlen(key);
+        }
     }
     cfg.num_layers = max_l + 1;
     // heads from q_proj / k_proj shapes (Qwen3: [hidden, heads*head_dim])
@@ -166,6 +168,22 @@ static bool detect_from_flm_q4nx(const std::string& path, ModelConfig& cfg) {
     auto slash = path.find_last_of('/');
     auto dot = path.find_last_of('.');
     cfg.model_name = (slash != std::string::npos) ? path.substr(slash + 1, dot - slash - 1) : "flm-model";
+    // Architecture from the PARENT DIRECTORY name (FLM layout is
+    // <ModelName>/model.q4nx — the file basename is always "model"):
+    // "Qwen3.6-35B-A3B-NPU2" -> "qwen3.6".
+    {
+        std::string dirname = "flm-model";
+        auto dir_end = slash;
+        if (dir_end != std::string::npos) {
+            auto dir_start = path.rfind('/', dir_end > 0 ? dir_end - 1 : 0);
+            if (dir_start != std::string::npos)
+                dirname = path.substr(dir_start + 1, dir_end - dir_start - 1);
+        }
+        auto sep = dirname.find_first_of("-_");
+        std::string arch = (sep == std::string::npos) ? dirname : dirname.substr(0, sep);
+        for (auto& c : arch) c = (char)tolower((unsigned char)c);
+        cfg.architecture = arch;
+    }
     cfg.model_path = path;
     cfg.weights_dir = (slash != std::string::npos) ? path.substr(0, slash + 1) : "./";
     fprintf(stderr, "  FLM Q4NX detected: %s (H=%d L=%d NH=%d NKV=%d V=%d)\n",

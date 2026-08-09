@@ -102,8 +102,12 @@ struct TokenRouter {
         if (prompt.empty()) prompt = {2, 3, 4, 5, 6, 7, 8, 9};
         if ((int)prompt.size() > 24) prompt.resize(24);
         primary->reset_state();
-        for (int t : prompt) {
-            int out = primary->forward(t, 0);
+        // Feed prefill at real positions (pos=i): backends like NPU-FLM treat a
+        // pos reset to 0 as "prompt complete" and fire their query then. Feeding
+        // everything at pos=0 made the FLM backend query on a 2-token prompt and
+        // read a degenerate continuation — false-rejecting qwen3:4b.
+        for (int i = 0; i < (int)prompt.size(); i++) {
+            int out = primary->forward(prompt[i], i);
             if (out <= 0 || out >= (int)cfg.vocab_size) return false;
         }
         std::vector<int> outs;

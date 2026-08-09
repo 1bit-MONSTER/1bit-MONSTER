@@ -67,8 +67,8 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
         return "qwen3.5:9b";
     }
 
-    // Qwen3.6-MoE
-    if (arch == "qwen36moe") {
+    // Qwen3.6-MoE (GGUF arch qwen3_6_moe, and q4nx filename "Qwen3.6-...")
+    if (arch == "qwen3.6" || arch == "qwen36moe") {
         return "qwen3.6-moe:35b-a3b";
     }
 
