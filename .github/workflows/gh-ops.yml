@@ -1,0 +1,144 @@
+name: GitHub Ops
+
+# Intent: host-side health report for 1bit-systems built entirely on the
+# preinstalled gh CLI — the "onus back to GitHub" workflow, no local runner,
+# no extra actions (not even checkout; everything is API reads).
+# Surfaces code scanning / dependabot / secret scanning alert counts, recent
+# failed runs, and Actions billing in the job summary; opens (or reuses) a
+# single security-triage issue when open alerts exist.
+#
+# Token notes: GITHUB_TOKEN with `security-events: read` covers code scanning
+# alerts. Secret-scanning and billing endpoints can 404 for this token/repo
+# type — those steps degrade to a warning instead of failing the job.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * 1'   # weekly, Monday 05:00 UTC
+
+permissions:
+  contents: read
+  issues: write
+  security-events: read
+
+concurrency:
+  group: gh-ops-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gh-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}  # no checkout; gh needs explicit repo
+    steps:
+      - name: gh version
+        run: gh --version | head -1
+
+      - name: Code scanning alerts
+        id: code-scan
+        run: |
+          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/alerts" --paginate 2>/dev/null | jq -s 'map(.[] | select(.state=="open"))' || echo '[]')
+          TOTAL=$(printf '%s' "$DATA" | jq length)
+          echo "CS_OPEN=$TOTAL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Code scanning — $TOTAL open"
+            if [ "$TOTAL" -gt 0 ]; then
+              printf '%s' "$DATA" | jq -r '.[].rule.id' | sort | uniq -c | sort -rn | head -5 \
+                | awk '{printf "| %s | %d |\n", $2, $1}'
+            else
+              echo "No open alerts."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dependabot alerts
+        id: dependabot
+        run: |
+          DATA=$(gh api "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open" --paginate 2>/dev/null | jq -s 'map(.[] | select(.state=="open"))' || echo '[]')
+          TOTAL=$(printf '%s' "$DATA" | jq length)
+          echo "DEP_OPEN=$TOTAL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Dependabot — $TOTAL open"
+            if [ "$TOTAL" -gt 0 ]; then
+              printf '%s' "$DATA" | jq -r '.[].security_advisory.severity' | sort | uniq -c | sort -rn \
+                | awk '{printf "| %s | %d |\n", $2, $1}'
+            else
+              echo "No open alerts."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Secret scanning alerts
+        id: secret-scan
+        run: |
+          SS_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/secret-scanning/alerts?state=open" --paginate 2>/dev/null) \
+            || { echo "::warning::secret-scanning API unavailable (token scope or plan) — skipping"; SS_JSON='[]'; }
+          DATA=$(printf '%s' "$SS_JSON" | jq -s 'map(.[] | select(.state=="open"))' || echo '[]')
+          TOTAL=$(printf '%s' "$DATA" | jq length)
+          echo "SS_OPEN=$TOTAL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Secret scanning — $TOTAL open"
+            [ "$TOTAL" -gt 0 ] || echo "No open alerts."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failed runs (last 7 days)
+        run: |
+          {
+            echo "## Failed runs on main (last 7d)"
+            ROWS=$(gh run list --branch main --status failure --limit 20 --json databaseId,workflowName,headBranch,createdAt,url \
+              --jq '.[] | "| [\(.workflowName)](\(.url)) | \(.createdAt) |"') 2>/dev/null \
+              || { echo "::warning::gh run list failed — skipping"; ROWS=''; }
+            if [ -n "$ROWS" ]; then printf '%s\n' "$ROWS"; else echo "None."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Actions billing
+        run: |
+          OUT=$(gh api "repos/${GITHUB_REPOSITORY}/settings/billing/actions" --jq '.total_minutes_used' 2>/dev/null) \
+            || { echo "::warning::billing API unavailable (public repo) — skipped"; exit 0; }
+          echo "## Actions billing — $OUT minutes used this cycle" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Totals + security-triage issue
+        if: always()
+        env:
+          CS_OPEN: ${{ steps.code-scan.outputs.CS_OPEN }}
+          DEP_OPEN: ${{ steps.dependabot.outputs.DEP_OPEN }}
+          SS_OPEN: ${{ steps.secret-scan.outputs.SS_OPEN }}
+        run: |
+          CS=${CS_OPEN:-0}; DEP=${DEP_OPEN:-0}; SS=${SS_OPEN:-0}
+          TOTAL=$((CS + DEP + SS))
+          {
+            echo "## Totals"
+            echo "| Alert type | Open |"
+            echo "|---|---|"
+            echo "| Code scanning | $CS |"
+            echo "| Dependabot | $DEP |"
+            echo "| Secret scanning | $SS |"
+            echo "| **Total** | **$TOTAL** |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TOTAL" -le 0 ]; then
+            echo "No open security alerts — no triage issue needed."
+            exit 0
+          fi
+          gh label create security-triage 2>/dev/null || true
+          EXISTING=$(gh issue list --label security-triage --state open --json number --jq 'length')
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "security-triage issue already open — skipping"
+            exit 0
+          fi
+          {
+            echo "## Security triage needed"
+            echo ""
+            echo "Open alerts found by the weekly GitHub Ops run:"
+            echo ""
+            echo "| Alert type | Open |"
+            echo "|---|---|"
+            echo "| Code scanning | $CS |"
+            echo "| Dependabot | $DEP |"
+            echo "| Secret scanning | $SS |"
+            echo ""
+            echo "Report: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > /tmp/triage_body.md
+          gh issue create \
+            --title "Security triage: $TOTAL open alerts" \
+            --label security-triage \
+            --body-file /tmp/triage_body.md

@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstring>
 #include "onebp_format.h"
+#include "block_scaled_ternary.h"
 #include <signal.h>
 #include "gguf_reader.h"
 
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
         if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
         else if (strcmp(argv[ai], "--tq2nz") == 0) quant = ONEBP_TQ2NZ;
         else if (strcmp(argv[ai], "--tq2nz-e4m3") == 0) quant = ONEBP_TQ2NZ_E4M3;
+        else if (strcmp(argv[ai], "--tq2bs") == 0) quant = ONEBP_TQ2BS;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
         else if (strcmp(argv[ai], "--imatrix") == 0 && ai + 1 < argc) imatrix_path = argv[++ai];
@@ -94,6 +96,7 @@ int main(int argc, char** argv) {
     const char* quant_name = (quant == ONEBP_TQ2) ? "TQ2 (ternary 2-bit)" :
                              (quant == ONEBP_TQ2NZ) ? "TQ2NZ (no-zero 2-bit S40)" :
                              (quant == ONEBP_TQ2NZ_E4M3) ? "TQ2NZ-E4M3 (no-zero 2-bit, UE4M3 scales)" :
+                             (quant == ONEBP_TQ2BS) ? "TQ2BS (block-scaled ternary, FP8 scales)" :
                              (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
                              "Q4NX (4-bit)";
     GgufReader reader;
@@ -142,6 +145,7 @@ int main(int argc, char** argv) {
     // Detect by checking whether shape[0] or shape[2] is consistent across
     // gate/down/up MoE tensors.
     bool moe_shape_colmajor = false;  // row-major [experts, rows, cols] by default
+    uint32_t meta_num_experts = 0;    // <arch>.expert_count metadata, authoritative
     {
         int s0_first = 0, s2_first = 0;
         int s0_count = 0, s2_count = 0;
@@ -154,7 +158,7 @@ int main(int argc, char** argv) {
             if (s0_first == 0) { s0_first = s0; s2_first = s2; }
             if (s0 == s0_first && s0 > 0) s0_count++;
             if (s2 == s2_first && s2 > 0) s2_count++;
-            if (tn.find("gate_exps") != std::string::npos) {
+            if (tn.find("gate_exps") != std::string::npos || tn.find("gate_up_exps") != std::string::npos) {
                 if (first_gate_s0 == 0) first_gate_s0 = s0;
             }
         }
@@ -164,6 +168,27 @@ int main(int argc, char** argv) {
         if (s2_count >= s0_count && s2_count >= 2 &&
             (first_gate_s0 == 0 || s2_first < first_gate_s0)) {
             moe_shape_colmajor = true;
+        }
+
+        // Metadata expert count is authoritative and beats the shape heuristic:
+        // zaya stores expert tensors as [rows, cols, experts] (dims[2] = count),
+        // which ties the consistency vote 2:2 (both dims constant across
+        // tensors) and loses to row-major — the converter then reads 4096
+        // 'experts' and emits a ~242 GB fp32 garbage artifact (issue #1522).
+        // Qwen/Mixtral store [experts, rows, cols] (dims[0] = count).
+        if (!reader.get_u32(reader.architecture() + ".expert_count", meta_num_experts))
+            reader.get_u32("expert_count", meta_num_experts);
+        if (meta_num_experts > 0) {
+            for (auto& tn : reader.tensor_names()) {
+                auto* inf = reader.tensor_info(tn);
+                if (!inf || inf->shape.size() != 3) continue;
+                if (tn.find("exps.") == std::string::npos && tn.find("shexp") == std::string::npos) continue;
+                if ((int)inf->shape[2] == (int)meta_num_experts && (int)inf->shape[0] != (int)meta_num_experts)
+                    moe_shape_colmajor = true;   // zaya convention [rows, cols, experts]
+                else if ((int)inf->shape[0] == (int)meta_num_experts && (int)inf->shape[2] != (int)meta_num_experts)
+                    moe_shape_colmajor = false;  // qwen convention [experts, rows, cols]
+                break;
+            }
         }
     }
 
@@ -176,8 +201,19 @@ int main(int argc, char** argv) {
             if (inf && inf->shape.size() == 3) { is_moe = true; break; }
         }
         if (is_moe) {
-            // Infer intermediate_size and expert count from first MoE tensor
-            if (!hdr.intermediate_size || !hdr.num_experts) {
+            // Infer intermediate_size and expert count from metadata first
+            // (authoritative — beats the tensor-shape guess below, which
+            // cannot find zaya's ffn_gate_up_exps names, issue #1522).
+            if (!hdr.num_experts) hdr.num_experts = meta_num_experts;
+            if (!hdr.n_expert_used) {
+                uint32_t neu = 0;
+                if (!reader.get_u32(reader.architecture() + ".expert_used_count", neu))
+                    reader.get_u32("expert_used_count", neu);
+                hdr.n_expert_used = neu ? neu : 8;
+            }
+            // Fall back to the first MoE tensor's shape only when metadata
+            // is absent.
+            if (!hdr.num_experts || !hdr.intermediate_size) {
                 auto* exps = reader.tensor_info("blk.0.ffn_gate_exps.weight");
                 if (!exps) exps = reader.tensor_info("blk.0.ffn_down_exps.weight");
                 if (!exps) exps = reader.tensor_info("blk.0.ffn_up_exps.weight");
@@ -491,7 +527,14 @@ int main(int argc, char** argv) {
         if (inf) printf("%lu elements at offset %lu\n", inf->numel, inf->abs_offset);
         fflush(stdout);
         if (!reader.get_tensor_f32(ti.name, fw)) {
-            printf("SKIP (get_tensor_f32 failed)\n"); continue;
+            // A skipped tensor writes NOTHING while the index already reserved
+            // its tiled bytes — every subsequent offset desyncs and the whole
+            // file is silently garbage (issue #1522: token_embd 1.07G elems
+            // tripped the reader's size cap and produced a ~44 GB corrupt
+            // artifact). Never skip: abort so the failure is loud.
+            fprintf(stderr, "\nFATAL: get_tensor_f32 failed for %s — aborting (a skipped tensor would "
+                    "desync every subsequent offset)\n", ti.name.c_str());
+            return 1;
         }
         if (ti.ndim == 1) {
             // Raw, unquantized float32 — no tiling (norm weights, biases).
@@ -552,6 +595,24 @@ int main(int argc, char** argv) {
                                 qd[pos / 4] |= (uint8_t)(code << ((pos & 3) * 2));
                             }
                         }
+                    }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
+                if (ti.tq == ONEBP_TQ2BS) {
+                    // ── TQ2BS: block-scaled ternary, per-16 blocks with FP8
+                    // E4M3 scale (5 B/block). Row-major within tile: 32 rows ×
+                    // 16 blocks × 5 B = 2560 B. Single quant from source —
+                    // avoids the TQ2→TQ2BS double-quant loss (see
+                    // tools/tq2_to_bst.cpp for the double-quant variant).
+                    std::vector<uint8_t> tdata((size_t)tr * (tc / 16) * BST_BLOCK_BYTES, 0);
+                    for (int rr = 0; rr < tr; rr++) {
+                        int ar = r0 + rr;
+                        if (ar >= R) break;  // partial last tile row → zero-pad
+                        int cw = std::min(tc, C - c0);
+                        uint8_t* blocks = tdata.data() + (size_t)rr * (tc / 16) * BST_BLOCK_BYTES;
+                        block_scaled_ternary_pack_row(
+                            fw.data() + expert_off + (size_t)ar * C + c0, blocks, cw);
                     }
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
