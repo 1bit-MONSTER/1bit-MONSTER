@@ -13,26 +13,29 @@ jobs:
           curl -s -H "Authorization: Bearer $CF_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/eeg-medical" \
             | python3 -c "
-import json,sys
-d = json.load(sys.stdin)
-if not d.get('success'):
-    print('ERROR:', json.dumps(d.get('errors', d))[:500]); sys.exit(0)
-r = d['result']
-print('name:', r.get('name'))
-print('subdomain:', r.get('subdomain'))
-print('domains:', r.get('domains'))
-print('production_branch:', r.get('production_branch'))
-print('source:', json.dumps(r.get('source'), indent=2))
-"
+          import json,sys
+          d = json.load(sys.stdin)
+          if not d.get('success'):
+              print('ERROR:', json.dumps(d.get('errors', d))[:500]); sys.exit(0)
+          r = d['result']
+          print('name:', r.get('name'))
+          print('subdomain:', r.get('subdomain'))
+          print('domains:', r.get('domains'))
+          print('production_branch:', r.get('production_branch'))
+          print('source:', json.dumps(r.get('source'), indent=2))
+          "
           echo '--- zone record ---'
           ZONE=$(curl -s -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/zones?name=1bit.systems" | python3 -c "import json,sys; print(json.load(sys.stdin)['result'][0]['id'])")
+            "https://api.cloudflare.com/client/v4/zones?name=1bit.systems" | python3 -c "
+          import json,sys
+          print(json.load(sys.stdin)['result'][0]['id'])
+          ")
           curl -s -H "Authorization: Bearer $CF_TOKEN" \
             "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records?name=eeg-medical.1bit.systems" \
             | python3 -c "
-import json,sys
-d = json.load(sys.stdin)
-print('dns success:', d.get('success'))
-for r in d.get('result', []):
-    print('record:', r['type'], r['name'], '->', r.get('content'), 'proxied:', r.get('proxied'), 'id:', r['id'])
-"
+          import json,sys
+          d = json.load(sys.stdin)
+          print('dns success:', d.get('success'))
+          for r in d.get('result', []):
+              print('record:', r['type'], r['name'], '->', r.get('content'), 'proxied:', r.get('proxied'), 'id:', r['id'])
+          "
