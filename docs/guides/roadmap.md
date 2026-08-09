@@ -15,6 +15,14 @@ The engine roadmap. This is the **single source of truth** for where 1bit is hea
 - [x] Packaging: deb, snap, tarball, docker, ollama, AUR
 - [x] Image & video generation (`image_server`, ComfyUI nodes)
 
+## Format policy (measured, 2026-08-09 — see [models/catalog/QUALITY.md](../../models/catalog/QUALITY.md))
+
+- **Q8_0 / INT8 = quality default for <7B models** (near-lossless vs f16).
+- **Q4_K_M / Q4NX = INT4 for ≥7B** where it is genuinely lossless; NOT for the sub-4B catalog (2.1× PPL on 0.6B).
+- **1BP (TQ2 ternary) = size tier only** — NPU pool / edge / disk-constrained targets.
+- **Never requantize** — always from f16/bf16 sources (Q4→TQ2 and Q8→Q4 both measured destructive).
+- **Sparsity: out of scope** on Strix Halo (no 2:4 HW, memory-bound). Revisit only for data-center GPUs.
+
 ## Engine phases
 
 ### Phase 1 — INT8 NPU inference ✅

@@ -49,6 +49,11 @@ TEN_TWENTY_XYZ = {
 }
 for _k, _v in list(TEN_TWENTY_XYZ.items()):
     TEN_TWENTY_XYZ[_k] = tuple(c * _R for c in _v)
+# TUH uses the older 10-20 names T3/T4/T5/T6 for T7/T8/P7/P8.
+TEN_TWENTY_XYZ["T3"] = TEN_TWENTY_XYZ["T7"]
+TEN_TWENTY_XYZ["T4"] = TEN_TWENTY_XYZ["T8"]
+TEN_TWENTY_XYZ["T5"] = TEN_TWENTY_XYZ["P7"]
+TEN_TWENTY_XYZ["T6"] = TEN_TWENTY_XYZ["P8"]
 
 
 def norm_label(raw):
@@ -64,64 +69,47 @@ def norm_label(raw):
 
 
 def read_edf(path):
-    """Return (labels, data[n_chans, n_samples], rate). Tolerates EDF+
-    annotation records and truncated final records. BDF 24-bit sign-extended."""
+    """Return (labels, data[n_chans, n_samples], is_bdf, rate).
+
+    Reads real EDF/EDF+/BDF files via pyedflib. The manual parser this
+    replaces used a self-consistent custom dialect (writer and reader agreed
+    with each other but not with any real EDF), which rejected every real
+    file. pyedflib handles the standard spec layout, TUH's non-standard
+    header dialect (numeric fields shifted from spec positions, 16-byte
+    label runs), EDF+ annotation channels, and BDF 24-bit sign extension.
+    Annotation channels are excluded; data is scaled digital -> physical.
+    """
+    try:
+        import pyedflib
+    except ImportError:
+        raise ImportError(
+            "zuna_edf.py needs pyedflib to read real EDF files; "
+            "install it with: pip install pyedflib")
     with open(path, "rb") as f:
-        hdr = f.read(256)
-        if len(hdr) < 256:
-            raise ValueError(f"{path}: header truncated ({len(hdr)} bytes)")
-        version = hdr[0:8].decode("ascii", "ignore").strip()
-        is_bdf = version.startswith("BIOSEMI") or hdr[44:48] == b"24BIT"
-        try:
-            n_records = int(hdr[48:52].decode().strip())
-            n_chans = int(hdr[56:60].decode().strip())
-            rec_dur = float(hdr[52:56].decode().strip())
-        except ValueError:
-            raise ValueError(f"{path}: bad header counts")
-        labels, nsamp, chans = [], [], []
-        for c in range(n_chans):
-            ch = f.read(256)
-            labels.append(ch[0:16].decode("ascii", "ignore").strip())
-            nsamp.append(int(ch[216:224].decode().strip() or 0))
-            chans.append({"pmin": float(ch[104:112].decode().strip().strip("\x00") or 0),
-                          "pmax": float(ch[112:120].decode().strip().strip("\x00") or 0),
-                          "dmin": float(ch[120:128].decode().strip().strip("\x00") or 0),
-                          "dmax": float(ch[128:136].decode().strip().strip("\x00") or 0)})
-        data = [[] for _ in range(n_chans)]
-        for r in range(n_records):
-            for c in range(n_chans):
-                lbl = labels[c].lower()
-                if "annotation" in lbl:  # EDF+: 2-byte TAL length + payload
-                    n = struct.unpack("<H", f.read(2))[0]
-                    f.seek(n, 1)
-                    continue
-                n = nsamp[c]
-                if is_bdf:
-                    raw = np.frombuffer(f.read(3 * n), dtype=np.uint8).reshape(n, 3)
-                    v = raw[:, 0].astype(np.int64) | (raw[:, 1].astype(np.int64) << 8) \
-                        | (raw[:, 2].astype(np.int64) << 16)
-                    v = np.where(v & 0x800000, v - 0x1000000, v)  # sign-extend 24-bit
-                else:
-                    v = np.frombuffer(f.read(2 * n), dtype="<i2").astype(np.int64)
-                if v.size < n:  # truncated final record
-                    break
-                if chans[c]["dmax"] != chans[c]["dmin"]:  # digital -> physical
-                    v = (v - chans[c]["dmin"]) * (chans[c]["pmax"] - chans[c]["pmin"]) \
-                        / (chans[c]["dmax"] - chans[c]["dmin"]) + chans[c]["pmin"]
-                data[c].append(v)
-        labels2, data2 = [], []
-        for c in range(n_chans):
-            if "annotation" in labels[c].lower():
+        head = f.read(48)
+    is_bdf = head[:8].decode("ascii", "ignore").strip().startswith("BIOSEMI") \
+        or head[44:48] == b"24BIT"
+    f = pyedflib.EdfReader(path)
+    rate = 0.0
+    try:
+        all_labels = f.getSignalLabels()
+        signals = []
+        for c in range(f.signals_in_file):
+            nsamp = f.getNSamples()[c]
+            if nsamp <= 0:
                 continue
-            if data[c]:
-                labels2.append(labels[c])
-                data2.append(np.concatenate(data[c]))
-        if not data2:
-            raise ValueError(f"{path}: no signal channels found")
-        n = min(len(d) for d in data2)
-        data2 = [d[:n] for d in data2]
-        rate = nsamp[0] / rec_dur if rec_dur > 0 else 0.0
-        return labels2, np.stack(data2).astype(np.float64), is_bdf, rate
+            signals.append((all_labels[c], f.readSignal(c, 0, nsamp)))
+            if rate == 0.0:
+                rate = float(f.getSampleFrequencies()[c])
+    finally:
+        f.close()
+    if not signals:
+        raise ValueError(f"{path}: no signal channels found")
+    labels = [l for l, _ in signals]
+    n = min(len(d) for _, d in signals)
+    data = np.stack([d[:n] for _, d in signals]).astype(np.float64)
+    return labels, data, is_bdf, rate
+
 
 
 def phys_scale(data, dig_min, dig_max, phys_min, phys_max):
@@ -206,46 +194,42 @@ def tokenize(eeg, chan_pos, out_dir, rate, tf=32, num_bins=100):
 # ---------------------------------------------------------------- selfcheck
 
 def _write_synth_edf(path, labels, data, rate, is_bdf=False, annotate=False):
-    """Minimal EDF/BDF writer (1 record, 1 s, int16 / 24-bit LE)."""
-    n_ch, n_pts = data.shape
-    n_sig = n_ch + (1 if annotate else 0)
-    hdr = bytearray(256 + 256 * n_sig)
-    hdr[0:8] = b"0       " if not is_bdf else b"BIOSEMI"
-    hdr[8:16] = b"synth   "
-    hdr[16:24] = b"selfchk "
-    hdr[24:32] = b"01.01.70"
-    hdr[32:40] = b"00.00.00"
-    hdr[40:44] = str(256 + 256 * n_sig).encode().ljust(4)
-    hdr[44:48] = b"EDF+" if annotate else (b"24BIT" if is_bdf else b"    ")
-    hdr[48:52] = b"1".ljust(4)
-    hdr[52:56] = b"1".ljust(4)
-    hdr[56:60] = str(n_sig).encode().ljust(4)
-    for c in range(n_ch):
-        o = 256 + 256 * c
-        hdr[o:o + 16] = labels[c].encode().ljust(16)
-        hdr[o + 96:o + 104] = b"uV".ljust(8)
-        hdr[o + 104:o + 112] = b"-1000".ljust(8)
-        hdr[o + 112:o + 120] = b"1000".ljust(8)
-        hdr[o + 120:o + 128] = b"-32768".ljust(8)
-        hdr[o + 128:o + 136] = b"32767".ljust(8)
-        hdr[o + 216:o + 224] = str(n_pts).encode().ljust(8)
-    if annotate:
-        o = 256 + 256 * n_ch
-        hdr[o:o + 16] = b"EDF Annotations".ljust(16)
-        hdr[o + 216:o + 224] = b"0".ljust(8)
-    with open(path, "wb") as f:
-        f.write(hdr)
+    """Minimal EDF/BDF writer via pyedflib (1 record, 1 s, int16 / 24-bit LE).
+
+    (Replaced the hand-rolled header writer, which emitted a non-standard
+    dialect that pyedflib rejects. For EDF+, pyedflib manages the annotation
+    channel internally; writeAnnotation() feeds it.)"""
+    import datetime
+    import pyedflib
+    n_ch, _ = data.shape
+    if is_bdf:
+        file_type = pyedflib.FILETYPE_BDF
+    elif annotate:
+        file_type = pyedflib.FILETYPE_EDFPLUS
+    else:
+        file_type = pyedflib.FILETYPE_EDF
+    f = pyedflib.EdfWriter(path, n_ch, file_type=file_type)
+    try:
+        ch_info = []
         for c in range(n_ch):
-            # uV -> digital (phys ±1000 uV maps to dig ±32767)
-            d = np.clip(np.round(data[c] * (32767.0 / 1000.0)), -32767, 32767).astype(np.int64)
-            if is_bdf:
-                d24 = np.stack([d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF], axis=1)
-                f.write(d24.astype(np.uint8).tobytes())
-            else:
-                f.write(d.astype("<i2").tobytes())
-        if annotate:  # one TAL: 2-byte length + payload
-            tal = b"1\x14synth event\x00"
-            f.write(struct.pack("<H", len(tal)) + tal)
+            ch_info.append({"label": labels[c], "dimension": "uV",
+                            "sample_frequency": rate,
+                            "physical_min": -1000.0, "physical_max": 1000.0,
+                            "digital_min": -32768, "digital_max": 32767,
+                            "transducer": "", "prefilter": ""})
+        f.setSignalHeaders(ch_info)
+        f.setHeader({"technician": "synth", "recording_additional": "selfchk",
+                     "patientname": "synth", "patient_additional": "",
+                     "patientcode": "synth", "equipment": "", "admincode": "",
+                     "sex": "", "birthdate": datetime.datetime(1970, 1, 1),
+                     "startdate": datetime.datetime(1970, 1, 1)})
+        f.setStartdatetime(datetime.datetime(1970, 1, 1))
+        f.writeSamples([data[c].astype(np.float64) for c in range(n_ch)])
+        if annotate:
+            f.writeAnnotation(0, 0, "synth event")
+    finally:
+        f.close()
+
 
 
 def _selfcheck():
@@ -319,6 +303,18 @@ def main():
     labels, eeg, is_bdf, src_rate = read_edf(a.input)
     if src_rate <= 0:
         raise SystemExit(f"{a.input}: cannot determine sample rate from header")
+    if a.chan_pos is None:
+        # Clinical recordings carry reference (A1/A2), EKG, photic and other
+        # non-scalp channels; keep only channels that map onto the 10-20 table.
+        keep = [i for i, l in enumerate(labels) if norm_label(l) in TEN_TWENTY_XYZ]
+        dropped = [labels[i] for i in range(len(labels)) if i not in keep]
+        if not keep:
+            raise SystemExit(f"{a.input}: no channels map to the 10-20 table; "
+                             "provide --chan-pos file.npy")
+        if dropped:
+            print(f"note: dropping non-10-20 channels: {dropped}", file=sys.stderr)
+        labels = [labels[i] for i in keep]
+        eeg = eeg[keep]
     eeg, rate = condition(eeg, src_rate, a.rate, a.filter)
     pos = label_to_pos(labels, a.chan_pos)
     os.makedirs(a.out_dir, exist_ok=True)
