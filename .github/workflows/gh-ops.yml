@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}  # no checkout; gh needs explicit repo
     steps:
       - name: gh version
         run: gh --version | head -1
