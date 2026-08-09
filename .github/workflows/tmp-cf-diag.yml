@@ -1,0 +1,26 @@
+name: tmp-cf-repair
+on:
+  workflow_dispatch:
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Attach custom domain + fix DNS
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set +e
+          ACCT="$CF_ACCOUNT"
+          H="Authorization: Bearer $CF_TOKEN"
+          api() { curl -s -H "$H" "$@"; }
+          echo "== whoami =="
+          api "https://api.cloudflare.com/client/v4/user" | head -c 400; echo
+          echo "== zones visible to token =="
+          api "https://api.cloudflare.com/client/v4/zones?per_page=50" | head -c 600; echo
+          echo "== add custom domain =="
+          api -X POST -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/accounts/$ACCT/pages/projects/eeg-medical/domains" \
+            -d '{"name":"eeg-medical.1bit.systems"}' | head -c 600; echo
+          echo "== domain list after add =="
+          api "https://api.cloudflare.com/client/v4/accounts/$ACCT/pages/projects/eeg-medical/domains" | head -c 800; echo

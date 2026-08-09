@@ -92,6 +92,7 @@ enum OnebpQuant : uint32_t {
     ONEBP_F32  = 5,   // Float32 (no quant)
     ONEBP_TQ2NZ= 6,   // No-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2-style)
     ONEBP_TQ2NZ_E4M3 = 7, // TQ2NZ with 1-byte UE4M3 scales (2.25 bpw)
+    ONEBP_TQ2BS = 8,      // Block-scaled ternary, per-16 FP8 E4M3 scales (5 B/block)
 };
 
 // ─── Scale types ───────────────────────────────────────────────────
