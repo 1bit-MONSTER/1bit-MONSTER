@@ -102,8 +102,9 @@ std::vector<Turn> ContextMemory::get_recent(int n) const {
 }
 
 std::string ContextMemory::build_context(int max_recent_turns) const {
-    std::lock_guard<std::mutex> lock(impl_->mutex_);
-
+    // get_recent snapshots under the lock; do NOT also lock here (the
+    // mutex is non-recursive — locking twice self-deadlocks, which
+    // hung every /v1/chat/completions call).
     std::vector<Turn> recent = get_recent(max_recent_turns);
     if (recent.empty()) return "";
 
