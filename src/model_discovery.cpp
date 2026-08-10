@@ -7,16 +7,7 @@
 #include "safetensors_reader.h"
 #include <cstdio>
 #include <cstring>
-#ifndef _WIN32
-#include <dirent.h>
-#include <sys/stat.h>
-#endif
-#ifdef _WIN32
-#include <io.h>
-#include <windows.h>
-// Windows equivalent for struct dirent iteration
-struct WIN32_FIND_DATAA;
-#endif
+#include <filesystem>
 
 // Best-effort mapping of GGUF's general.file_type (ggml_ftype) to a human-readable
 // quantization tag. Not exhaustive — covers the common cases, falls back to a
@@ -381,16 +372,16 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
 // ── Scan directory for model files ──────────────────────────────────────────
 std::vector<ModelConfig> discover_models(const std::string& dir) {
     std::vector<ModelConfig> models;
-    DIR* d = opendir(dir.c_str());
-    if (!d) {
+    std::error_code ec;
+    std::filesystem::directory_iterator dir_it(dir, ec);
+    if (ec) {
         fprintf(stderr, "[discover] could not open %s\n", dir.c_str());
         return models;
     }
 
-    struct dirent* entry;
-    while ((entry = readdir(d)) != nullptr) {
-        std::string name(entry->d_name);
-        if (name == "." || name == "..") continue;
+    for (const auto& dirent_entry : dir_it) {
+        if (!dirent_entry.is_regular_file(ec)) continue;
+        std::string name = dirent_entry.path().filename().string();
 
         // Check extension
         auto dot = name.find_last_of('.');
@@ -399,8 +390,6 @@ std::vector<ModelConfig> discover_models(const std::string& dir) {
         if (ext != ".gguf" && ext != ".h1b" && ext != ".safetensors" && ext != ".bin" && ext != ".q4nx" && ext != ".1bp") continue;
 
         std::string full = dir + "/" + name;
-        struct stat st;
-        if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
 
         ModelConfig cfg;
         bool ok = false;
@@ -444,7 +433,6 @@ std::vector<ModelConfig> discover_models(const std::string& dir) {
                    cfg.quantization.empty() ? "?" : cfg.quantization.c_str());
         }
     }
-    closedir(d);
 
     printf("[discover] %zu model(s) found in %s\n", models.size(), dir.c_str());
     return models;

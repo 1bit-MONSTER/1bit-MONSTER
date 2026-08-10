@@ -21,10 +21,14 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #include "onebp_format.h"
 
@@ -70,6 +74,23 @@ public:
 
     bool open(const char* path) {
         // Memory-map the file
+#ifdef _WIN32
+        // File/mapping handles can be closed right after MapViewOfFile
+        // succeeds — the view keeps its own reference (same pattern as
+        // Q4nxReader::open in src/q4nx_reader.cpp) — so fd_ stays unused.
+        HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) { fprintf(stderr, "open: %s\n", path); return false; }
+        LARGE_INTEGER li;
+        if (!GetFileSizeEx(hFile, &li)) { CloseHandle(hFile); return false; }
+        map_size_ = (size_t)li.QuadPart;
+        HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (!hMap) { CloseHandle(hFile); return false; }
+        map_ = (uint8_t*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+        CloseHandle(hMap);
+        CloseHandle(hFile);
+        if (!map_) { return false; }
+#else
         fd_ = ::open(path, O_RDONLY);
         if (fd_ < 0) { perror("open"); return false; }
 
@@ -79,6 +100,7 @@ public:
 
         map_ = (uint8_t*)mmap(nullptr, map_size_, PROT_READ, MAP_PRIVATE, fd_, 0);
         if (map_ == MAP_FAILED) { close(); return false; }
+#endif
 
         // Read header
         if (map_size_ < sizeof(OnebpHeader)) { fprintf(stderr, "File too small\n"); close(); return false; }
@@ -149,8 +171,12 @@ public:
     }
 
     void close() {
+#ifdef _WIN32
+        if (map_) UnmapViewOfFile(map_);
+#else
         if (map_ && map_ != MAP_FAILED) munmap(map_, map_size_);
         if (fd_ >= 0) ::close(fd_);
+#endif
         map_ = nullptr; fd_ = -1; map_size_ = 0;
         tensors_.clear();
     }

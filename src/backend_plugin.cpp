@@ -1,21 +1,52 @@
 // backend_plugin.cpp — Plugin loader for external backend modules
-// ONNX Runtime EP equivalent: load backends from .so files at runtime.
+// ONNX Runtime EP equivalent: load backends from .so (POSIX) / .dll (Windows)
+// files at runtime.
 
 #include "backend_plugin.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <algorithm>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <filesystem>
+static const char* const PLUGIN_EXT = ".dll";
+
+static void* plugin_dlopen(const std::string& path, std::string* error_out) {
+    HMODULE h = LoadLibraryA(path.c_str());
+    if (!h && error_out) *error_out = "LoadLibrary failed (error " + std::to_string(GetLastError()) + ")";
+    return (void*)h;
+}
+static void* plugin_dlsym(void* handle, const char* name) {
+    return (void*)GetProcAddress((HMODULE)handle, name);
+}
+static void plugin_dlclose(void* handle) {
+    FreeLibrary((HMODULE)handle);
+}
+#else
 #include <dlfcn.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <algorithm>
+static const char* const PLUGIN_EXT = ".so";
+
+static void* plugin_dlopen(const std::string& path, std::string* error_out) {
+    void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!h && error_out) *error_out = std::string("dlopen failed: ") + dlerror();
+    return h;
+}
+static void* plugin_dlsym(void* handle, const char* name) {
+    return dlsym(handle, name);
+}
+static void plugin_dlclose(void* handle) {
+    dlclose(handle);
+}
+#endif
 
 // ── Load a single plugin ──
 BackendPluginLoader* BackendPluginLoader::load(const std::string& so_path, std::string* error_out) {
-    void* handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        if (error_out) *error_out = std::string("dlopen failed: ") + dlerror();
-        return nullptr;
-    }
+    void* handle = plugin_dlopen(so_path, error_out);
+    if (!handle) return nullptr;
 
     auto* loader = new BackendPluginLoader();
     loader->handle_ = handle;
@@ -34,7 +65,27 @@ BackendPluginLoader* BackendPluginLoader::load(const std::string& so_path, std::
 std::vector<BackendPluginLoader*> BackendPluginLoader::scan_directory(
     const std::string& dir, std::vector<std::string>* errors) {
     std::vector<BackendPluginLoader*> loaders;
+    size_t ext_len = strlen(PLUGIN_EXT);
 
+#ifdef _WIN32
+    std::error_code ec;
+    std::filesystem::directory_iterator dir_it(dir, ec);
+    if (ec) {
+        if (errors) errors->push_back("Cannot open plugin directory: " + dir);
+        return loaders;
+    }
+    for (const auto& entry : dir_it) {
+        if (!entry.is_regular_file(ec)) continue;
+        std::string name = entry.path().filename().string();
+        if (name.size() < ext_len || name.substr(name.size() - ext_len) != PLUGIN_EXT) continue;
+
+        std::string full_path = dir + "\\" + name;
+        std::string error;
+        auto* loader = load(full_path, &error);
+        if (loader) loaders.push_back(loader);
+        else if (errors) errors->push_back(name + ": " + error);
+    }
+#else
     DIR* d = opendir(dir.c_str());
     if (!d) {
         if (errors) errors->push_back("Cannot open plugin directory: " + dir);
@@ -45,8 +96,7 @@ std::vector<BackendPluginLoader*> BackendPluginLoader::scan_directory(
     while ((entry = readdir(d)) != nullptr) {
         std::string name = entry->d_name;
 
-        // Must be a .so file
-        if (name.size() < 3 || name.substr(name.size() - 3) != ".so") continue;
+        if (name.size() < ext_len || name.substr(name.size() - ext_len) != PLUGIN_EXT) continue;
         // Skip backup/versioned .so files (e.g., .so.1)
         if (name.find(".so.") != std::string::npos) continue;
 
@@ -56,13 +106,11 @@ std::vector<BackendPluginLoader*> BackendPluginLoader::scan_directory(
 
         std::string error;
         auto* loader = load(full_path, &error);
-        if (loader) {
-            loaders.push_back(loader);
-        } else if (errors) {
-            errors->push_back(name + ": " + error);
-        }
+        if (loader) loaders.push_back(loader);
+        else if (errors) errors->push_back(name + ": " + error);
     }
     closedir(d);
+#endif
 
     // Sort by id for deterministic ordering
     std::sort(loaders.begin(), loaders.end(),
@@ -81,7 +129,7 @@ BackendPluginLoader::~BackendPluginLoader() {
 // ── Resolve all required symbols ──
 bool BackendPluginLoader::resolve_symbols(std::string* error) {
     auto resolve = [&](const char* name) -> void* {
-        void* sym = dlsym(handle_, name);
+        void* sym = plugin_dlsym(handle_, name);
         if (!sym && error) *error = "Missing symbol: " + std::string(name);
         return sym;
     };
@@ -127,7 +175,7 @@ void BackendPluginLoader::destroy(Backend* backend) {
 // ── Close plugin ──
 void BackendPluginLoader::close() {
     if (handle_) {
-        dlclose(handle_);
+        plugin_dlclose(handle_);
         handle_ = nullptr;
     }
     valid_ = false;
@@ -140,18 +188,23 @@ std::vector<BackendPluginLoader*> load_backend_plugins(const std::string& custom
 
     // Search order:
     // 1. Custom directory (if specified)
-    // 2. $HOME/.backends/
-    // 3. /usr/lib/backends/
-    // 4. ./backends/ (relative to cwd)
+    // 2. $HOME/.backends (%USERPROFILE%\.backends on Windows)
+    // 3. /usr/lib/backends (Windows has no equivalent system path)
+    // 4. ./backends (relative to cwd)
 
     std::vector<std::string> dirs;
     if (!custom_dir.empty()) dirs.push_back(custom_dir);
 
+#ifdef _WIN32
+    const char* home = getenv("USERPROFILE");
+    if (home) dirs.push_back(std::string(home) + "\\.backends");
+    dirs.push_back(".\\backends");
+#else
     const char* home = getenv("HOME");
     if (home) dirs.push_back(std::string(home) + "/.backends");
-
     dirs.push_back("/usr/lib/backends");
     dirs.push_back("./backends");
+#endif
 
     for (auto& dir : dirs) {
         auto found = BackendPluginLoader::scan_directory(dir, &errors);

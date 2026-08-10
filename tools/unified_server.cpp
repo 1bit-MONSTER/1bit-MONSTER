@@ -46,6 +46,7 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <filesystem>
 #include <signal.h>
 #ifdef _WIN32
 // Minimal getopt for Windows — MSVC doesn't ship it
@@ -282,22 +283,21 @@ static void load_model_tokenizer(const std::string& model_path) {
     }
     auto slash = model_path.find_last_of('/');
     std::string dir = (slash != std::string::npos) ? model_path.substr(0, slash + 1) : "";
-    if (auto* d = opendir(dir.empty() ? "." : dir.c_str())) {
-        while (struct dirent* e = readdir(d)) {
-            std::string n(e->d_name);
-            if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
-            std::string stem = n.substr(0, n.size() - 5);
-            // Qwen3-0.6B.Q4_K_M → Qwen3-0.6B
-            auto q = stem.find(".Q4_K");
-            if (q != std::string::npos) stem = stem.substr(0, q);
-            auto q8 = stem.find(".Q8_0");
-            if (q8 != std::string::npos) stem = stem.substr(0, q8);
-            if (stem == gguf_base) {
-                std::string c = dir + n;
-                if (load_or_synthesize(c)) { closedir(d); return; }
-            }
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.empty() ? "." : dir, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
+        std::string n = entry.path().filename().string();
+        if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
+        std::string stem = n.substr(0, n.size() - 5);
+        // Qwen3-0.6B.Q4_K_M → Qwen3-0.6B
+        auto q = stem.find(".Q4_K");
+        if (q != std::string::npos) stem = stem.substr(0, q);
+        auto q8 = stem.find(".Q8_0");
+        if (q8 != std::string::npos) stem = stem.substr(0, q8);
+        if (stem == gguf_base) {
+            std::string c = dir + n;
+            if (load_or_synthesize(c)) return;
         }
-        closedir(d);
     }
 }
 
@@ -1144,7 +1144,14 @@ int main(int argc, char** argv) {
     // Line-buffer stdout when redirected (logs, CI): block buffering merged
     // lifecycle prints with stderr and hid model-switch diagnostics (the
     // "[auto]"/"switching" lines appeared glued to unrelated output).
+    // Windows-skipped: MSVC's setvbuf doesn't support true line buffering —
+    // Microsoft's own docs say _IOLBF is mapped to _IOFBF internally — and
+    // calling it here with this UCRT + static-CRT (/MT) combination crashes
+    // with a stack-buffer-overrun fastfail (0xC0000409) before main() gets
+    // anywhere near argv parsing. No portable behavior lost by skipping it.
+#ifndef _WIN32
     setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
 #endif
 #ifdef EMBED_LEMONADE
     // --lemonade hands off to the embedded Lemonade server core before any

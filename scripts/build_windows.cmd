@@ -25,7 +25,7 @@ if not exist "%VSWHERE%" (
     exit /b 1
 )
 
-for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -property installationPath`) do set VSINST=%%i
+for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set VSINST=%%i
 if "%VSINST%"=="" (
     echo [ERROR] Visual Studio not found
     exit /b 1
@@ -69,7 +69,8 @@ echo [*] Configuring...
 cmake -B "%BUILD_DIR%" -S "%BUILD_DIR%" -G "Visual Studio 17 2022" ^
     -DCMAKE_BUILD_TYPE=Release ^
     -DUSE_VULKAN=ON ^
-    -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+    -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+    -DREPO_ROOT="%REPO_DIR%"
 
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] CMake configuration failed

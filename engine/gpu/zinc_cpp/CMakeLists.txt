@@ -59,11 +59,14 @@ target_include_directories(zinc_cpp PRIVATE
 
 target_link_libraries(zinc_cpp PRIVATE
     ${Vulkan_LIBRARIES}
-    dl pthread
 )
+if(NOT MSVC)
+    target_link_libraries(zinc_cpp PRIVATE dl pthread)
+endif()
 
 target_compile_options(zinc_cpp PRIVATE
-    -O3 -Wall -Wno-unused-result
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3 -Wall -Wno-unused-result>
+    $<$<CXX_COMPILER_ID:MSVC>:/O2 /W4>
 )
 
 if(ZINC_INCLUDE_DIRS)

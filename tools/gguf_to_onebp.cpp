@@ -29,8 +29,15 @@ static void sigfpe_handler(int sig) {
     _exit(1);
 }
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    // little-endian (x86, AMD64) — OK
+#elif defined(_MSC_VER) || defined(__i386__) || defined(__x86_64__) || defined(__amd64__)
+    // MSVC or x86 target — always little-endian
+#else
+    #error "gguf_to_onebp requires little-endian host (x86/AMD64). Big-endian not supported."
+#endif
+
 static inline uint16_t f32b(float v) {
-    static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "gguf_to_onebp requires little-endian host");
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
@@ -424,7 +431,7 @@ int main(int argc, char** argv) {
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
             tensors.push_back({tn, 2, r, c, 1, data_off, tiled, tq});
             data_off += tiled;
-            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
+            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%llu quant=%d\n", tn.c_str(), r, c, (unsigned long long)tiled, (int)tq);
         } else {
             // ndim == 3: expert-stacked tensor. Expert tensors (name contains
             // 'exps.'/'shexp') follow the detected layout; non-expert 3D
@@ -457,8 +464,8 @@ int main(int argc, char** argv) {
             uint64_t total_tiled = (uint64_t)ne * per_expert;
             tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled, tq});
             data_off += total_tiled;
-            printf("  tensor %s: %d experts x %dx%d per-expert=%lu total=%lu\n",
-                   tn.c_str(), ne, r, c, per_expert, total_tiled);
+            printf("  tensor %s: %d experts x %dx%d per-expert=%llu total=%llu\n",
+                   tn.c_str(), ne, r, c, (unsigned long long)per_expert, (unsigned long long)total_tiled);
         }
     }
     printf("  Total tensors: %zu, data size: %.1f MB\n", tensors.size(), data_off / (1024.0*1024.0));
@@ -524,7 +531,7 @@ int main(int argc, char** argv) {
         // All tensors processed
         std::vector<float> fw;
         auto* inf = reader.tensor_info(ti.name);
-        if (inf) printf("%lu elements at offset %lu\n", inf->numel, inf->abs_offset);
+        if (inf) printf("%llu elements at offset %llu\n", (unsigned long long)inf->numel, (unsigned long long)inf->abs_offset);
         fflush(stdout);
         if (!reader.get_tensor_f32(ti.name, fw)) {
             // A skipped tensor writes NOTHING while the index already reserved
