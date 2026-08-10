@@ -8,6 +8,8 @@ PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 AIETOOLS=/home/bcloud/mlir-aie/build_tmp
 KERNEL_O="$(cd "$(dirname "$0")/../.." && pwd)/engine/npu/generators/mm_32x64x128.o"
 
+export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
+
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
 
@@ -16,7 +18,7 @@ XCLBIN_DIR="$GENERATOR_DIR/../xclbins"
 mkdir -p "$XCLBIN_DIR"
 
 SHAPES=(
-    "qwen3_6_35b_a3b:QKV:2048:5120:8"
+    "qwen3_6_35b_a3b:QKV:2048:8192:8"
     "qwen3_6_35b_a3b:O:4096:2048:8"
     "qwen3_6_35b_a3b:G:2048:512:4"
     "qwen3_6_35b_a3b:U:2048:512:4"
@@ -36,7 +38,7 @@ SHAPES=(
     "phi4_mini_4b:G:3072:8192:8"
     "phi4_mini_4b:U:3072:8192:8"
     "phi4_mini_4b:D:8192:3072:4"
-    "nanbeige4_1_3b:QKV:2560:3840:8"
+    "nanbeige4_1_3b:QKV:2560:3840:6"   # N//n=30 not %8; 6 cols divides 30
     "nanbeige4_1_3b:O:2560:2560:4"
     "nanbeige4_1_3b:G:2560:8192:8"
     "nanbeige4_1_3b:U:2560:8192:8"
@@ -96,9 +98,9 @@ fail=0
 for entry in "${SHAPES[@]}"; do
     IFS=':' read -r tag proj K N cols <<< "$entry"
     if build_one "$tag" "$proj" "$K" "$N" "$cols"; then
-        ((ok++))
+        ok=$((ok+1))
     else
-        ((fail++))
+        fail=$((fail+1))
     fi
 done
 

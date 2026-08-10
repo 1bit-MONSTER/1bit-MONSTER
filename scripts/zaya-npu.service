@@ -1,0 +1,36 @@
+# zaya-npu.service — NPU inference server (zaya_server on :8088, NPU FLM backend)
+#
+# Serves the Qwen3.6-35B-A3B MoE (or swap --model for any FLM q4nx) through
+# the per-request FastFlowLM backend on the AMD XDNA NPU.
+#
+# ── Install ───────────────────────────────────────────────────────────────
+#     sudo cp scripts/zaya-npu.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now zaya-npu
+#     journalctl -u zaya-npu -f
+#
+# ── Notes ─────────────────────────────────────────────────────────────────
+# FLM_CONFIG_PATH must point at the model_list.json FILE (not the dir).
+# Environment: 76Gi RAM free with the 23GB 35B resident (strix, 122Gi total).
+
+[Unit]
+Description=zaya NPU inference server (FLM backend, :8088)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bcloud
+Group=bcloud
+WorkingDirectory=/home/bcloud/1bit-systems
+ExecStart=/home/bcloud/1bit-systems/build/1bit zaya --port 8088 --model /home/bcloud/.config/flm/models/Llama-3.2-1B-NPU2/model.q4nx
+Environment=FLM_CONFIG_PATH=/home/bcloud/.config/flm/model_list.json
+Restart=on-failure
+RestartSec=5
+# FLM's NPU runtime mlock's ~1.5GB for xclbin buffers; systemd's default
+# 8MB LimitMEMLOCK makes every mmap fail with EAGAIN ("flm serve on :8097
+# unavailable" -> all backends fail -> FATAL: Failed to load model).
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

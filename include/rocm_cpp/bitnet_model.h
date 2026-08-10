@@ -164,6 +164,11 @@ typedef struct {
     void* bst_gate_packed_dev;  void* bst_gate_scales_dev;
     void* bst_up_packed_dev;    void* bst_up_scales_dev;
     void* bst_down_packed_dev;  void* bst_down_scales_dev;
+
+    // Attention biases (qwen2.5-family; GGUF conversions drop them)
+    void* q_bias_dev;
+    void* k_bias_dev;
+    void* v_bias_dev;
 } rcpp_bitnet_layer_t;
 
 typedef struct {
@@ -185,6 +190,7 @@ typedef struct {
     void* embedding_dev;
     void* embedding_packed_dev;
     void* final_norm_weight_dev;
+    void* lm_head_dev;              // untied LM head (NULL = tied to embedding)
     rcpp_bitnet_layer_t* layers;
 } rcpp_bitnet_model_t;
 

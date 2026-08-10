@@ -68,6 +68,14 @@ struct Backend {
         (void)prompt; (void)max_tokens; return "";
     }
 
+    /// Continue an existing text-level session: write delta without resetting
+    /// the backend's KV cache (multi-turn reuse — the caller computed the
+    /// delta and owns the session bookkeeping). Empty return = unsupported or
+    /// write failure.
+    virtual std::string continue_text(const std::string& delta) {
+        (void)delta; return "";
+    }
+
     /// Logits of the most recent forward/generate step (vocab floats), or
     /// nullptr if the backend doesn't retain them. Used for sampling and
     /// logit-level validation.

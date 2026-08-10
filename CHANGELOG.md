@@ -3,6 +3,47 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.10 — 35B MoE native path: fused v28 xclbins + FLM multi-turn KV reuse 🧠
+
+- **35B MoE NPU workstream lands native + fused.** All four MOE xclbins rebuilt
+  with the v27 multi-row flow (`build_moe_v27.sh`); new **v28 fused**
+  `MOE_GUSGU` (routed+shared GU, N=8192+1024) and `MOE_DSD` (K=4096+512, N=2H)
+  xclbins cut **4 → 2 launches/layer** — pure concat along N/K in the same
+  single-GEMM kernel, opt-in via `NPU_MOE_FUSED`. Fused concat contexts
+  (`mgu_f`/`mde_f`), pack routing, block-diagonal DSD zero-init;
+  `test_moe_fused_math` verifies v28 against the 4-launch reference (host sim).
+- **FLM multi-turn KV reuse.** `npu_flm_delta.h` pure decision fn + backend
+  `continue_text()`/delta send — clients resending growing history get no
+  `<<RESET>>`/re-prefill; shifted char-token decode detector
+  (ASCII+100 / raw+300 / EOS=106) stops FLM output being decoded as garbage
+  vocab ids.
+- **`zaya-npu.service`** — systemd unit serving 35B MoE via FLM on :8088,
+  `LimitMEMLOCK=infinity` (FLM NPU runtime mlocks ~1.5 GB of xclbin buffers;
+  the default 8 MB made every mmap EAGAIN).
+- **Q4NX pivot stack.** `gguf_to_onebp` emits valid Zaya MoE Q4NX (#1522);
+  batch GGUF→Q4NX converter for the model zoo; FLM q4nx-pivot fixes (llama
+  tags, config path, probe band); measured format gate + INT8-default routing
+  + format policy.
+- **JARVIS mobile (Flutter).** Voice gateway: full-duplex WS
+  `/v1/voice/session` with token auth, RFC-compliant handshake + parser, VAD
+  utterance state machine, `WS_STREAM_BIND` + systemd unit + Strix Halo
+  runbook. App: connect/voice screens, state lights, transcript UI,
+  offline/reconnect resilience, gateway WS client + audio IO with tests,
+  live-gateway simulator E2E.
+- **INT8 QDQ converters + one-command zoo conversion.** safetensors→INT8 ONNX
+  (attention bias, shards, external data, head_dim from config; Qwen2.5-1.5B /
+  7B work), >2 GB ONNX via per-row INT8 embed/lm_head, stream-ordered KV
+  writes; `convert_model.py` turns safetensors/gguf → INT8 ONNX + htok +
+  config in one command.
+- **CI: off the self-hosted runner.** strix-halo runner dependency removed
+  (#1555), gh-ops health workflow via gh CLI (#1556), smoke test kills 8099
+  port squatters by port; eeg-medical custom domain repaired on Cloudflare
+  Pages.
+- **Ops: watchdog-armed reboot + amdxdna hardening.** `scripts/reboot.sh`
+  arms sp5100_tco (hard reset if the reboot hangs); NPU firmware RE (ws04:
+  driver + npu.sbin full map); pool sync hardened against the 7.1.5 amdxdna
+  clflush oops; flat `/dev/accelN` layout probed.
+
 ## 2026.08.07 — unified control plane: pooled multi-model server + spec decode + Zamba2 Q8_0 🧠
 
 - **Unified model pool wired end to end** (`src/unified_pool.{h,cpp}`, `--pool`):

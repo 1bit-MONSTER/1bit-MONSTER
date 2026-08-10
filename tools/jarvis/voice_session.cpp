@@ -1,0 +1,89 @@
+#include "voice_session.h"
+#include "vad.h"
+#include <algorithm>
+
+namespace jarvis {
+
+struct VoiceSession::Impl {
+    VAD vad{VADConfig{}};
+    SessionState st = SessionState::Idle;
+    std::vector<float> pcm_f32;
+    int speaking_ms = 0;
+    StateCallback on_state;
+    UtteranceCallback on_utterance;
+    ErrorCallback on_error;
+
+    void set(SessionState next) {
+        if (st == next) return;
+        st = next;
+        if (on_state) on_state(st);
+    }
+};
+
+VoiceSession::VoiceSession() : impl_(new Impl) {}
+VoiceSession::~VoiceSession() = default;
+
+void VoiceSession::set_callbacks(StateCallback s, UtteranceCallback u, ErrorCallback e) {
+    impl_->on_state = std::move(s);
+    impl_->on_utterance = std::move(u);
+    impl_->on_error = std::move(e);
+}
+
+SessionState VoiceSession::state() const { return impl_->st; }
+
+void VoiceSession::start() {
+    impl_->vad.reset();
+    impl_->speaking_ms = 0;
+    impl_->set(SessionState::Listening);
+}
+
+void VoiceSession::stop() {
+    impl_->vad.reset();
+    impl_->speaking_ms = 0;
+    impl_->set(SessionState::Idle);
+}
+
+void VoiceSession::feed(const int16_t* pcm16, size_t n_samples) {
+    if (impl_->st == SessionState::Idle || n_samples == 0) return;
+    impl_->pcm_f32.resize(n_samples);
+    for (size_t i = 0; i < n_samples; ++i) impl_->pcm_f32[i] = pcm16[i] / 32768.0f;
+    impl_->vad.process(impl_->pcm_f32.data(), (int)n_samples);
+    auto utt = impl_->vad.get_last_utterance();  // VAD-purified, includes ramp-up lookback
+    if (!utt.empty() && impl_->st == SessionState::Listening) {
+        impl_->set(SessionState::Processing);
+        impl_->vad.reset();
+        std::vector<int16_t> pcm16_utt(utt.size());
+        for (size_t i = 0; i < utt.size(); ++i) {
+            pcm16_utt[i] = (int16_t)(std::clamp(utt[i], -1.0f, 1.0f) * 32767.0f);
+        }
+        if (impl_->on_utterance) impl_->on_utterance(pcm16_utt);
+    }
+}
+
+void VoiceSession::set_speaking(bool speaking) {
+    if (speaking && impl_->st == SessionState::Processing) {
+        impl_->speaking_ms = 0;
+        impl_->set(SessionState::Speaking);
+    } else if (speaking && impl_->st == SessionState::Speaking) {
+        // Level re-assert: the worker holds the speaking level for the
+        // whole TTS stream, so a re-assert restarts the tick() timer
+        // instead of letting it accumulate to the 100 ms auto-rearm.
+        impl_->speaking_ms = 0;
+    } else if (!speaking && impl_->st == SessionState::Speaking) {
+        impl_->set(SessionState::Listening);
+        impl_->vad.reset();
+        impl_->speaking_ms = 0;
+    }
+}
+
+void VoiceSession::tick(int ms_elapsed) {
+    if (impl_->st != SessionState::Speaking) return;
+    impl_->speaking_ms += ms_elapsed;
+    if (impl_->speaking_ms > 100) {  // quiet timeout after speech playback
+        impl_->set(SessionState::Listening);
+        impl_->vad.reset();
+        impl_->speaking_ms = 0;
+    }
+}
+
+} // namespace jarvis

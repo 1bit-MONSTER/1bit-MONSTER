@@ -143,21 +143,26 @@ struct HIPBackend : Backend {
     }
 
     bool forward(int token_id, float* hidden_out) override {
-        (void)token_id; (void)hidden_out;
+        (void)hidden_out;
+        if (!zs || !initialized) return false;
         // The Backend forward()/lm_head() split is not wired for HIP: zaya_forward
-        // fuses forward+lm_head and does not expose the pre-head hidden state, so the
-        // split needs a zaya API change to implement correctly. generate() (the path
-        // BackendManager actually uses) IS implemented. Fail loudly here (fixes #82).
-        static bool warned = false;
-        if (!warned) { fprintf(stderr, "HIP Backend: forward() not implemented on the adapter (generate() works); see #82\n"); warned = true; }
-        return false;
+        // fuses forward+lm_head and does not expose the pre-head hidden state (the
+        // split needs a zaya API change, #82). Emulate it at this boundary: run the
+        // full pass and stash the logits; lm_head() below returns them. The only
+        // caller is HipBackendAdapter::sample_token, which passes the hidden buffer
+        // straight to lm_head() — so the hidden buffer staying stale is harmless.
+        zaya_forward(zs, token_id, logits_buf);
+        return true;
     }
 
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
-        (void)hidden; (void)logits; (void)argmax;
-        static bool warned = false;
-        if (!warned) { fprintf(stderr, "HIP Backend: lm_head() not implemented on the adapter (generate() works); see #82\n"); warned = true; }
-        return false;
+        (void)hidden;
+        if (!zs || !initialized || !logits) return false;
+        memcpy(logits, logits_buf, (size_t)zcfg.vocab * sizeof(float));
+        int best = 0;
+        for (int i = 1; i < zcfg.vocab; i++) if (logits[i] > logits[best]) best = i;
+        if (argmax) *argmax = best;
+        return true;
     }
 
     int generate(int token_id) override {

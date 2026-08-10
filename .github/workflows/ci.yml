@@ -103,6 +103,7 @@ jobs:
               test_bonsai_e2e test_sherry_e2e test_block_scaled_ternary \
               test_gguf_reader_dequant test_tokenizer_logprobs test_backend \
               test_lora_runtime test_auth test_billing \
+              test_voice_session jarvis_ws_proto_test test_npu_flm_delta test_moe_fused_math \
               ppl_generic gguf_to_onebp vl_logit_check
           else
             echo "ROCm not available on this runner — reference checks only."

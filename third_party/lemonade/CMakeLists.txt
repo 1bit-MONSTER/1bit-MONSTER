@@ -1931,6 +1931,10 @@ if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 # FastFlowLM argument validation. Keep this test independent from the server
+# (ponytail: whole tail block wrapped in BUILD_TESTING — upstream guarded the
+# add_tests with EXISTS only, so tests were registered without being built when
+# lemonade is EXCLUDE_FROM_ALL + BUILD_TESTING=OFF; revisit on lemonade update)
+if(BUILD_TESTING)
 set(_FLM_ARG_RESOLVER_TEST_SRC
     "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_flm_arg_resolver.cpp"
 )
@@ -2511,3 +2515,4 @@ if(EXISTS "${_ORIGIN_UTILS_TEST_SRC}")
     target_link_libraries(test_origin_utils PRIVATE lemonade-server-core)
     add_test(NAME OriginUtilsTest COMMAND test_origin_utils)
 endif()
+endif()  # BUILD_TESTING

@@ -64,7 +64,8 @@ class NpuFlmTestBackend : public InferenceBackend {
     std::string flm_bin_ = "/opt/fastflowlm/bin/flm";
     std::string model_tag_ = "qwen3:0.6b";
     int timeout_ms_ = 300000;
-    int port_ = 0;  // 5 min: 23 GB Qwen3.6-35B-A3B load takes ~60-90s
+    int port_ = 8097;            // flm serve port (NPU_FLM_PORT overrides)
+    int max_gen_tokens_ = 512;   // per-request generation cap (probe needs ~4)
 
     // Cached generation state
     std::vector<int> pending_prompt_;
@@ -127,11 +128,22 @@ public:
         // FLM's catalog has no other model with >= 100 experts.
         if (cfg.num_experts >= 100) {
             model_tag_ = "qwen3.6-moe:35b-a3b";
+        } else if (cfg.architecture == "qwen3.6") {
+            // Q4NX filename-derived arch ("Qwen3.6-35B-A3B-NPU2")
+            model_tag_ = "qwen3.6-moe:35b-a3b";
         } else if (cfg.architecture == "qwen35moe" || cfg.architecture == "qwen36moe") {
             if (cfg.hidden_size <= 1024) model_tag_ = "qwen3.5:0.8b";
             else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3.5:2b";
             else if (cfg.hidden_size <= 2560) model_tag_ = "qwen3.5:4b";
             else model_tag_ = "qwen3.5:9b";
+        } else if (cfg.architecture == "llama" ||
+                   (cfg.hidden_size == 2048 && cfg.num_layers == 16) ||   // llama3.2:1b
+                   (cfg.hidden_size == 3072 && cfg.num_layers == 28) ||   // llama3.2:3b
+                   (cfg.hidden_size == 4096 && cfg.num_layers == 32)) {   // llama3.1:8b
+            // Llama family (Q4NX pivot — weights from the ROCm FLM_Q4NX_Converter)
+            if (cfg.hidden_size <= 2048)      model_tag_ = "llama3.2:1b";
+            else if (cfg.hidden_size <= 3072) model_tag_ = "llama3.2:3b";
+            else                              model_tag_ = "llama3.1:8b";
         } else if (cfg.hidden_size <= 1024)      model_tag_ = "qwen3:0.6b";
         else if (cfg.hidden_size <= 1536) model_tag_ = "qwen3:1.7b";
         else if (cfg.hidden_size <= 2560) model_tag_ = "qwen3:4b";
@@ -143,7 +155,8 @@ public:
         //  - `flm serve` mode degenerates into repeated-token loops ("plplpl")
         // FILE stdio works correctly ("2+2 equals 4" verified), so each query
         // spawns a fresh CLI process (warm model load ~11s).
-        fprintf(stderr, "  NPU: FLM ready (%s, per-request spawn)\n", model_tag_.c_str());
+        if (const char* p = getenv("NPU_FLM_PORT")) port_ = atoi(p);
+        fprintf(stderr, "  NPU: FLM ready (%s, serve :%d, lazy spawn)\n", model_tag_.c_str(), port_);
         loaded_ = true;
 
         loaded_ = true;
@@ -165,18 +178,13 @@ public:
             // SIGTERM had already worked. Same bug class as #3
             // (backend_npu.cpp/backend_flm.cpp's already-fixed shutdown
             // paths), just a separate, not-yet-fixed occurrence here.
-            const char* exit_cmd = "/exit\n";
-            if (stdin_fd_ >= 0) write(stdin_fd_, exit_cmd, strlen(exit_cmd));
-            if (!wait_for_child(pid_, 500)) {
-                kill(pid_, SIGTERM);
-                if (!wait_for_child(pid_, 2000)) {
-                    kill(pid_, SIGKILL);
-                    wait_for_child(pid_, 1000);
-                }
+            // flm serve is a plain HTTP server: no stdin protocol, just
+            // SIGTERM and escalate if it lingers.
+            kill(pid_, SIGTERM);
+            if (!wait_for_child(pid_, 3000)) {
+                kill(pid_, SIGKILL);
+                wait_for_child(pid_, 1000);
             }
-            if (stdin_fd_ >= 0) close(stdin_fd_);
-            if (stdout_fd_ >= 0) close(stdout_fd_);
-            if (stderr_fd_ >= 0) close(stderr_fd_);
             waitpid(pid_, nullptr, WNOHANG);
             pid_ = 0;
         }
@@ -225,9 +233,10 @@ public:
         return (hdr == std::string::npos) ? resp : resp.substr(hdr + 4);
     }
 
-    // Extract and unescape "content" from an OpenAI chat completion JSON.
-    static std::string extract_content(const std::string& json) {
-        std::string key = "\"content\":\"";
+    // Extract and unescape a string field from a JSON response body
+    // (e.g. "content" in chat completions, "text" in completions).
+    static std::string extract_json_string(const std::string& json, const std::string& field) {
+        std::string key = "\"" + field + "\":\"";
         size_t p = json.find(key);
         if (p == std::string::npos) return "";
         p += key.size();
@@ -278,22 +287,13 @@ public:
     // fork children; serve mode degenerates). Writes the prompt to a file,
     // waits for the session transcript to reach the final ">>> ", parses
     // the response from after "Model RAW Output: ", then kills the child.
-    std::string query_flm(const std::string& prompt) {
-        fprintf(stderr, "  NPU: query_flm(prompt=%zu B): %.120s\n", prompt.size(), prompt.c_str());
-
-        std::string in_path  = "/tmp/flm_in_"  + std::to_string(getpid()) + ".txt";
-        std::string out_path = "/tmp/flm_out_" + std::to_string(getpid()) + ".txt";
-        std::string err_path = "/tmp/flm_err_" + std::to_string(getpid()) + ".txt";
-
-        {
-            FILE* f = fopen(in_path.c_str(), "wb");
-            if (!f) return "";
-            fwrite(prompt.data(), 1, prompt.size(), f);
-            fwrite("\n/bye\n", 1, 7, f);
-            fclose(f);
-        }
-        unlink(out_path.c_str());
-        unlink(err_path.c_str());
+    // ── flm serve mode ──────────────────────────────────────────────
+    // One persistent `flm serve <tag> -p <port>` child, spawned lazily on the
+    // first query (model load ~11-25s, amortized). Queries go over the OpenAI
+    // /v1/completions API. Measured ~45 tok/s vs ~4.8 tok/s for the retired
+    // per-request `flm run` spawn (official FastFlowLM q4nx weights).
+    bool ensure_serve() {
+        if (pid_ > 0) return true;
 
         // Sanitize LD_LIBRARY_PATH: the parent may have the-rock HIP libs
         // (needed for zaya's GPU backends) which corrupt FLM's NPU runtime.
@@ -316,90 +316,56 @@ public:
         }
 
         pid_t pid = fork();
-        if (pid < 0) return "";
+        if (pid < 0) return false;
         if (pid == 0) {
-            int in = open(in_path.c_str(), O_RDONLY);
-            int out = open(out_path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
-            int err = open(err_path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
-            dup2(in, STDIN_FILENO);
-            dup2(out, STDOUT_FILENO);
-            dup2(err, STDERR_FILENO);
-            if (in > 2) close(in);
-            if (out > 2) close(out);
-            if (err > 2) close(err);
+            std::string log = "/tmp/flm_serve_" + std::to_string(getpid()) + ".log";
+            int lfd = open(log.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
+            if (lfd >= 0) { dup2(lfd, STDOUT_FILENO); dup2(lfd, STDERR_FILENO); }
+            int devnull = open("/dev/null", O_RDONLY);
+            if (devnull >= 0) dup2(devnull, STDIN_FILENO);
             for (int fd = 3; fd < 1024; fd++) close(fd);
-            execl(flm_bin_.c_str(), "flm", "run", model_tag_.c_str(), nullptr);
+            // FLM needs its model registry; without FLM_CONFIG_PATH it exits
+            // immediately ("model_list.json not found").
+            const char* cfg = getenv("NPU_FLM_CONFIG");
+            setenv("FLM_CONFIG_PATH", cfg ? cfg : "/opt/fastflowlm/etc/flm/model_list.json", 1);
+            const char* xclb = getenv("NPU_FLM_XCLBINS");
+            if (xclb) setenv("FLM_XCLBIN_PATH", xclb, 1);
+            std::string port_s = std::to_string(port_);
+            execl(flm_bin_.c_str(), "flm", "serve", model_tag_.c_str(),
+                  "-p", port_s.c_str(), nullptr);
             _exit(1);
         }
+        pid_ = pid;
 
-        // Poll the transcript file for the final ">>> " prompt
-        std::string resp;
+        // Wait for the HTTP port to accept (model load takes ~11-25s).
         auto t0 = std::chrono::steady_clock::now();
         while (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - t0).count() < timeout_ms_ / 1000) {
-            FILE* f = fopen(out_path.c_str(), "rb");
-            if (f) {
-                fseek(f, 0, SEEK_END);
-                long sz = ftell(f);
-                if (sz > 0) {
-                    resp.resize((size_t)sz);
-                    fseek(f, 0, SEEK_SET);
-                    size_t rd = fread(&resp[0], 1, (size_t)sz, f);
-                    resp.resize(rd);
-                }
-                fclose(f);
-                // Completion: the transcript ends with ">>> " (possibly with
-                // a trailing newline) after the response.
-                std::string tail = resp;
-                while (!tail.empty() && (tail.back() == '\n' || tail.back() == '\r'))
-                    tail.pop_back();
-                if (tail.size() >= 4 && tail.substr(tail.size()-4) == ">>> ")
-                    break;
-                // Dead child: keep the last transcript read and finish.
-                int st = 0;
-                if (waitpid(pid, &st, WNOHANG) == pid) break;
+                std::chrono::steady_clock::now() - t0).count() < 90) {
+            int s = socket(AF_INET, SOCK_STREAM, 0);
+            if (s >= 0) {
+                sockaddr_in a{}; a.sin_family = AF_INET;
+                a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                a.sin_port = htons((uint16_t)port_);
+                if (connect(s, (sockaddr*)&a, sizeof(a)) == 0) { close(s); return true; }
+                close(s);
             }
-            usleep(250000);
+            int st = 0;
+            if (waitpid(pid_, &st, WNOHANG) == pid_) { pid_ = 0; return false; }
+            usleep(500000);
         }
+        return false;
+    }
 
-        kill(pid, SIGTERM);
-        waitpid(pid, nullptr, 0);
-
-        // Parse: response = text after the LAST "Model RAW Output:" line,
-        // up to the final "\n>>> ". Strip ANSI codes.
-        std::string content;
-        size_t raw = resp.rfind("Model RAW Output:");
-        if (raw != std::string::npos) {
-            size_t nl = resp.find('\n', raw);
-            if (nl != std::string::npos) content = resp.substr(nl + 1);
+    std::string query_flm(const std::string& prompt) {
+        fprintf(stderr, "  NPU: query_flm(prompt=%zu B): %.120s\n", prompt.size(), prompt.c_str());
+        if (!ensure_serve()) {
+            fprintf(stderr, "  NPU: flm serve on :%d unavailable\n", port_);
+            return "";
         }
-        if (content.empty()) {
-            // Fallback: text between the last [FLM] log line and ">>> "
-            size_t flm = resp.rfind("[FLM]");
-            if (flm != std::string::npos) {
-                size_t nl = resp.find('\n', flm);
-                if (nl != std::string::npos) content = resp.substr(nl + 1);
-            }
-        }
-        size_t endp = content.rfind("\n>>> ");
-        if (endp != std::string::npos) content = content.substr(0, endp);
-        // trailing newline + the "/bye" quit echo
-        while (!content.empty() && (content.back() == '\n' || content.back() == '\r'))
-            content.pop_back();
-        // strip the /bye quit echo (the CLI echoes it after processing)
-        {
-            size_t bye = content.rfind("/bye");
-            if (bye != std::string::npos && bye + 4 >= content.size())
-                content = content.substr(0, bye);
-        }
-        while (!content.empty() && (content.back() == '\n' || content.back() == ' '))
-            content.pop_back();
-
-        // Debug dump
-        if (const char* dump = getenv("NPU_FLM_DEBUG_DUMP")) {
-            FILE* df = fopen(dump, "ab");
-            if (df) { fwrite(resp.data(), 1, resp.size(), df); fclose(df); }
-        }
+        std::string body = "{\"prompt\":\"" + json_escape(prompt) +
+                           "\",\"max_tokens\":" + std::to_string(max_gen_tokens_) + "}";
+        std::string resp = http_post_json(port_, "/v1/completions", body);
+        std::string content = extract_json_string(resp, "text");
         return content;
     }
 
