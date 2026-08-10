@@ -3,6 +3,15 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.10 — ops: reboot.sh watchdog EBUSY fix 🛡️
+
+- **reboot.sh no longer aborts when `/dev/watchdog` is busy.** systemd holds
+  the watchdog open (`RuntimeWatchdogSec=60`), so a second open returns EBUSY
+  and `set -e` killed the script before `systemctl reboot` ran — leaving a
+  wedged NPU box hung with no reboot and no hard reset. When systemd holds
+  the watchdog its own runtime watchdog is the hang safety net, so warn and
+  continue instead of aborting.
+
 ## 2026.08.10 — 35B MoE native path: fused v28 xclbins + FLM multi-turn KV reuse 🧠
 
 - **35B MoE NPU workstream lands native + fused.** All four MOE xclbins rebuilt
