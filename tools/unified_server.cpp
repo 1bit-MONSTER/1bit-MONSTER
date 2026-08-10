@@ -20,6 +20,7 @@
 //   X-Strategy: fastest | lowest_power | manual | round_robin
 
 #include "backend_manager.h"
+#include "npu_flm_delta.h"
 #include "backend_monitor.h"
 #include "backend_plugin.h"
 #include "backend.h"
@@ -168,6 +169,16 @@ static int g_generation_timeout_ms = []() -> int {
 static std::mutex g_inference_mutex;
 static int g_batch_slots = 1;
 static std::unique_ptr<BatchScheduler> g_batch_scheduler;
+
+// ── FLM text-level session state (multi-turn KV reuse) ──
+// One live session owns the FLM subprocess's device-resident KV cache
+// (generate_completion is serialized by g_inference_mutex; the mutex here
+// also covers backend benchmark paths that call the FLM REPL directly).
+// Requests continuing the live session send only the delta; anything else
+// resets the session (full re-prefill).
+static std::mutex g_flm_session_mutex;
+static std::string g_flm_session_id;    // session owning the live FLM context
+static std::string g_flm_session_last;  // last full prompt sent to it
 
 // ── Strategy engine + agent watchdog (global for HTTP handler access) ──
 static StrategyEngine g_strategy_engine;
@@ -607,7 +618,8 @@ static json generate_completion(BackendManager& mgr,
                                  int top_k = 0,
                                  const std::string& raw_prompt = "",
                                  float repeat_penalty = 0.0f,
-                                 float top_p = 0.0f) {
+                                 float top_p = 0.0f,
+                                 const std::string& session_id = "") {
     json result;
 
     // Select fixed backend if specified (overrides strategy routing).
@@ -666,7 +678,30 @@ static json generate_completion(BackendManager& mgr,
     if (!raw_prompt.empty()) {
         auto* active = mgr.active_backend();
         if (active) {
-            std::string text = active->generate_text(raw_prompt, max_tokens);
+            // Multi-turn KV reuse: when this request continues the live
+            // session (same session_id, prompt extends the previous one),
+            // send only the delta — the device-resident KV cache stays warm.
+            // Otherwise send the full prompt, which resets the session.
+            std::string text;
+            std::string delta;
+            bool cont = false;
+            {
+                std::lock_guard<std::mutex> lock(g_flm_session_mutex);
+                cont = npu_flm_session_continue(session_id, g_flm_session_id,
+                                                g_flm_session_last, raw_prompt, delta);
+            }
+            if (cont) {
+                text = active->continue_text(delta);
+                if (text.empty()) cont = false;  // continuation failed → full reset retry
+            }
+            if (!cont) {
+                text = active->generate_text(raw_prompt, max_tokens);
+                if (!text.empty()) {  // only record the baseline on success
+                    std::lock_guard<std::mutex> lock(g_flm_session_mutex);
+                    g_flm_session_id = session_id;
+                    g_flm_session_last = raw_prompt;
+                }
+            }
             if (!text.empty()) {
                 int gen_tokens = std::max(1, (int)(text.size() / 4));  // ~4 chars/token est
                 result["text"] = text;
@@ -1843,6 +1878,10 @@ int main(int argc, char** argv) {
         int max_tokens = body.value("max_tokens", 256);
         if (max_tokens < 1) max_tokens = 1;
         if (max_tokens > 32768) max_tokens = 32768;
+        // Optional conversation id: enables multi-turn KV reuse in text-level
+        // backends (FLM) — continuation turns send only the delta instead of
+        // re-prefilling the full history. Omit it for stateless behavior.
+        std::string session_id = body.value("session_id", "");
         int top_k = body.value("top_k", 0);
         if (top_k < 0) top_k = 0;
         // temperature<=0 is greedy (OpenAI convention); default to 0.8 when
@@ -2030,7 +2069,8 @@ int main(int argc, char** argv) {
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
                                                se, last_user_msg,
-                                               temperature, top_k, prompt, repeat_penalty, top_p);
+                                               temperature, top_k, prompt, repeat_penalty, top_p,
+                                               session_id);
 
         // Build OpenAI-compatible response
         json response;
@@ -2178,6 +2218,9 @@ int main(int argc, char** argv) {
         if (temperature > 5.0f) temperature = 5.0f;
         float repeat_penalty = body.value("repetition_penalty", 1.1f);
         float top_p = body.value("top_p", 0.95f);
+        // Optional conversation id: multi-turn KV reuse for text-level
+        // backends (FLM) — see the /v1/chat/completions handler.
+        std::string session_id = body.value("session_id", "");
 
         json gen_result;
 
@@ -2209,7 +2252,8 @@ int main(int argc, char** argv) {
             std::vector<double> empty_logprobs;
             try {
                 gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
-                                                 nullptr, "", temperature, top_k, raw_prompt, repeat_penalty, top_p);
+                                                 nullptr, "", temperature, top_k, raw_prompt, repeat_penalty, top_p,
+                                                 session_id);
             } catch (const std::exception& e) {
                 fprintf(stderr, "[completions] generate error: %s\n", e.what());
                 gen_result = {{"error", std::string("Generation failed: ") + e.what()}};

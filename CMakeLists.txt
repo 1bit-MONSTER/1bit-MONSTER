@@ -891,6 +891,17 @@ target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
 add_test(NAME test_gguf_reader_dequant COMMAND test_gguf_reader_dequant)
 set_tests_properties(test_gguf_reader_dequant PROPERTIES LABELS "host")
 
+# -- test_npu_flm_delta: FLM multi-turn KV-reuse decision (host-only, no NPU).
+add_executable(test_npu_flm_delta tests/test_npu_flm_delta.cpp)
+add_test(NAME test_npu_flm_delta COMMAND test_npu_flm_delta)
+set_tests_properties(test_npu_flm_delta PROPERTIES LABELS "host")
+
+# -- test_moe_fused_math: v28 fused FFN (GUSGU/DSD concat) vs 4-launch
+# reference — pure host simulation of the int8 arithmetic, no NPU needed.
+add_executable(test_moe_fused_math tests/test_moe_fused_math.cpp)
+add_test(NAME test_moe_fused_math COMMAND test_moe_fused_math)
+set_tests_properties(test_moe_fused_math PROPERTIES LABELS "host")
+
 # -- test_tokenizer_logprobs: tokenizer logprob API (#81) -- restored after --
 # being dropped in the dead-code purge (issue #1341). The API is live
 # (unified_server prompt-logprob path: encode_with_logprobs) so it needs

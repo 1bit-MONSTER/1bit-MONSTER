@@ -14,6 +14,7 @@
 
 #include "backend.h"
 #include "npu_device_path.h"
+#include "npu_flm_delta.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -93,6 +94,7 @@ class NpuFlmBackend : public Backend {
     std::string flm_config_;
     std::string flm_xclbins_;
     std::string model_tag_;
+    std::string last_prompt_;  // previous prompt text, for multi-turn KV reuse
     pid_t pid_ = 0;
     int stdin_fd_ = -1;   // write to child's stdin
     int stdout_fd_ = -1;  // read from child's stdout
@@ -258,6 +260,7 @@ public:
         }
 
         initialized = true;
+        last_prompt_.clear();  // fresh process → no KV continuity from any previous one
         fprintf(stderr, "NPU: FLM ready — %s (%s)\n", model_tag_.c_str(), flm_bin_.c_str());
         return true;
     }
@@ -294,25 +297,49 @@ public:
         return out;
     }
 
+    /// Continue the live FLM session with a delta (no <<RESET>>): multi-turn
+    /// KV reuse. The caller owns session bookkeeping and supplies the delta
+    /// (a suffix of the growing conversation prompt, newline-terminated).
+    std::string continue_text(const std::string& delta) override {
+        if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
+        if (delta.empty()) return "";
+        std::string req = delta;
+        if (req.back() != '\n') req += '\n';  // REPL reads until newline
+        ssize_t written = write(stdin_fd_, req.c_str(), req.size());
+        if (written < 0 || (size_t)written != req.size()) return "";
+        std::string out = read_response();
+        if (out.rfind("[npu:", 0) == 0) return "";  // error strings aren't text
+        return out;
+    }
+
     /// Send a text prompt to FLM and get the response.
     /// The prompt is the raw text; FLM handles tokenization internally.
     /// Returns the generated text, or error string on failure.
     std::string query(const std::string& prompt) {
         if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "[npu: not loaded]";
 
-        // 1. Reset FLM state for new prompt
-        // FLM expects: <<RESET>>\nprompt_text\n
-        // The <<RESET>> clears KV cache for a new conversation
-        const char* reset_cmd = "<<RESET>>\n";
-        write(stdin_fd_, reset_cmd, strlen(reset_cmd));
+        // 1. Multi-turn KV reuse. FLM keeps its KV cache resident across
+        // inserts, so a prompt that extends the previous one (client resends
+        // full history every turn) continues the session with just the delta
+        // — no <<RESET>>, no full re-prefill of the conversation per turn.
+        // New conversation or diverged history → reset and re-prefill.
+        std::string send;
+        if (npu_flm_send_delta(last_prompt_, prompt, send))
+            write(stdin_fd_, "<<RESET>>\n", strlen("<<RESET>>\n"));
 
-        // 2. Send prompt
-        std::string req = prompt + "\n";
+        // 2. Send prompt (delta on continuation, full prompt otherwise)
+        std::string req = send + "\n";
         ssize_t written = write(stdin_fd_, req.c_str(), req.size());
         if (written < 0 || (size_t)written != req.size())
             return "[npu: write error]";
 
-        // 3. Read response until ">>> " prompt
+        last_prompt_ = prompt;
+
+        return read_response();
+    }
+
+    std::string read_response() {
+        // Read response until ">>> " prompt
         std::string resp;
         char c;
         auto t0 = std::chrono::steady_clock::now();
@@ -402,6 +429,7 @@ public:
 
     void destroy() override {
         initialized = false;
+        last_prompt_.clear();
         if (pid_ > 0) {
             // Send graceful exit
             const char* exit_cmd = "/exit\n";
