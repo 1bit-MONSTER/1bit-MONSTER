@@ -39,8 +39,14 @@
 #include <memory>
 #include <chrono>
 #include <algorithm>
-#include <unistd.h>
 #include <iterator>
+#ifdef _WIN32
+#include <io.h>
+#define access _access
+#define R_OK 4
+#else
+#include <unistd.h>
+#endif
 
 #if __has_include(<onnxruntime_cxx_api.h>)
 #define HAS_ORT 1

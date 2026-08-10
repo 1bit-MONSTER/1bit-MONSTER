@@ -16,7 +16,6 @@
 #include <vector>
 #include <chrono>
 #include <thread>
-#include <getopt.h>
 #include <signal.h>
 #include <atomic>
 
@@ -43,20 +42,17 @@ int main(int argc, char** argv) {
     int port = 8080;
     int device_idx = -1;
 
-    // Parse args
-    static struct option opts[] = {
-        {"model",  required_argument, nullptr, 'm'},
-        {"port",   required_argument, nullptr, 'p'},
-        {"device", required_argument, nullptr, 'd'},
-        {nullptr, 0, nullptr, 0}
-    };
-    int opt;
-    while ((opt = getopt_long(argc, argv, "m:p:d:", opts, nullptr)) != -1) {
-        switch (opt) {
-            case 'm': model_path = optarg; break;
-            case 'p': port = atoi(optarg); break;
-            case 'd': device_idx = atoi(optarg); break;
-        }
+    // Parse args (manual --long/-short scan; avoids GNU-only <getopt.h> so
+    // this builds portably on MSVC, which has no getopt_long)
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : nullptr; };
+        if (a == "-m" || a == "--model") { if (const char* v = next()) model_path = v; }
+        else if (a.rfind("--model=", 0) == 0) model_path = a.substr(8);
+        else if (a == "-p" || a == "--port") { if (const char* v = next()) port = atoi(v); }
+        else if (a.rfind("--port=", 0) == 0) port = atoi(a.c_str() + 7);
+        else if (a == "-d" || a == "--device") { if (const char* v = next()) device_idx = atoi(v); }
+        else if (a.rfind("--device=", 0) == 0) device_idx = atoi(a.c_str() + 9);
     }
 
     printf("\n╔═══════════════════════════════════════════╗\n");
