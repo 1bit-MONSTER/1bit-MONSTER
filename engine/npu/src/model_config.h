@@ -41,7 +41,12 @@ struct ModelConfig {
 };
 
 // Find a JSON key and extract shape[0] + data_offsets[0]
-static int find_tensor_info(const char* js, size_t jl, const char* key, int* out_tile_rows) {
+// Returns the tensor's data offset (uint64_t: offsets >= 2^31 overflow int32
+// and broke every `> 0` caller on models with >2GB payloads — Qwen3.6-35B
+// k_proj sits at 3.7GB; the negative return silently skipped per-layer dims
+// detection, leaving std_nkv at its default and the STD attention crashing
+// on an empty weight vector). shape[0] goes to *out_tile_rows.
+static uint64_t find_tensor_info(const char* js, size_t jl, const char* key, int* out_tile_rows) {
     size_t kl = strlen(key);
     const char* p = js;
     const char* e = js + jl;
@@ -59,7 +64,7 @@ static int find_tensor_info(const char* js, size_t jl, const char* key, int* out
             auto offs_loc = strstr(q, "\"data_offsets\"");
             if (offs_loc) {
                 auto bracket = strchr(offs_loc, '[');
-                if (bracket) return (int)strtoul(bracket + 1, nullptr, 10);
+                if (bracket) return (uint64_t)strtoull(bracket + 1, nullptr, 10);
             }
             return 0;
         }
@@ -221,10 +226,10 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     
     // Step 2: Read I8 tile row counts for each weight
     // Dense naming: model.layers.N.* ; Qwen3.5/3.6 (GDN/MoE) naming: model.layer.N.*
-    auto ti = [&](const char* base, int* tr) -> int {
+    auto ti = [&](const char* base, int* tr) -> uint64_t {
         char key[256];
         snprintf(key, sizeof(key), "model.layers.0.%s", base);
-        int off = find_tensor_info(js, jl, key, tr);
+        uint64_t off = find_tensor_info(js, jl, key, tr);
         if (*tr == 0) {
             snprintf(key, sizeof(key), "model.layer.0.%s", base);
             off = find_tensor_info(js, jl, key, tr);
@@ -232,7 +237,7 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         return off;
     };
     int q_tr = 0, k_tr = 0, o_tr = 0, g_tr = 0, d_tr = 0;
-    int q_off = ti("self_attn.q_proj.weight", &q_tr);
+    uint64_t q_off = ti("self_attn.q_proj.weight", &q_tr);
     // Fallback: fused QKV projection (Phi-style models use qkv_proj)
     if (q_tr == 0) q_off = ti("self_attn.qkv_proj.weight", &q_tr);
     ti("self_attn.k_proj.weight", &k_tr);

@@ -101,7 +101,75 @@ static float* dequant_1bp(const uint8_t* data, int i8_rows, int in_features,
     return out;
 }
 
-// ── Q8_0 tile dequant (8704 B/row: 512 B bf16 scales + 8192 signed INT8) ──
+// ── Q4NX 1BP dequant, TRANSPOSED output (MoE miss path) ──
+// Same tile decode as dequant_1bp but writes out_T[col][r] into a
+// caller-provided [out_cols, out_rows] buffer with stride/offset — the
+// expert assembly then needs NO transpose pass (gate/up/down dequant
+// directly into the gu_f/d_f [K, N] layout).
+static float* dequant_1bp_T(const uint8_t* data, int i8_rows, int in_features,
+                             int* out_rows, int* out_cols,
+                             float* dst = nullptr, int dst_stride = 0, int dst_col_off = 0) {
+    constexpr int TR = 32, TC = 256, GS = 32;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    int nrows = ntr * TR, ncols = ntc * TC;
+    *out_rows = nrows; *out_cols = ncols;
+    float* out = dst ? dst : (float*)calloc((size_t)ncols * nrows, sizeof(float));
+    if (!out) return nullptr;
+    int grps = TC / GS;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * (TR*grps*2 + TR*grps*2 + TR*TC/2);
+        const uint16_t* sc = (const uint16_t*)t;
+        const uint16_t* zp = (const uint16_t*)(t + (size_t)TR*grps*2);
+        const uint8_t* qd = t + (size_t)TR*grps*4;
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < grps; g++) {
+                float s = bf16f(sc[r*grps + g]);
+                float z = bf16f(zp[r*grps + g]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                if (!std::isfinite(z) || std::fabs(z) > 100.0f) z = 0.0f;
+                float* row = out + (size_t)(tc_*TC + g*GS) * (dst ? dst_stride : nrows) + dst_col_off;
+                for (int i = 0; i < GS; i++) {
+                    int col = g*GS + i;
+                    uint8_t b = qd[((size_t)r*TC + col) / 2];
+                    uint8_t v = (col & 1) ? (b >> 4) : (b & 0x0F);
+                    row[(size_t)(tr_*TR + r)] = (float)v*s + z;
+                }
+            }
+    }
+    return out;
+}
+
+// ── Q8_0 1BP dequant, TRANSPOSED output (same contract as dequant_1bp_T) ──
+static float* dequant_q8_0_T(const uint8_t* data, int i8_rows, int in_features,
+                              int* out_rows, int* out_cols,
+                              float* dst = nullptr, int dst_stride = 0, int dst_col_off = 0) {
+    constexpr int TR = 32, TC = 256, Q8_0_ROW_BYTES = 8704;
+    int ntc = in_features / TC, ntr = i8_rows / ntc;
+    int nrows = ntr * TR, ncols = ntc * TC;
+    *out_rows = nrows; *out_cols = ncols;
+    float* out = dst ? dst : (float*)calloc((size_t)ncols * nrows, sizeof(float));
+    if (!out) return nullptr;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* t = data + (size_t)ir * Q8_0_ROW_BYTES;
+        const uint16_t* sc = (const uint16_t*)t;
+        const int8_t* vals = (const int8_t*)(t + 512);
+        int tr_ = ir / ntc, tc_ = ir % ntc;
+        for (int r = 0; r < TR; r++)
+            for (int g = 0; g < TC / 32; g++) {
+                float s = bf16f(sc[g*TR + r]);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+                float* row = out + (size_t)(tc_*TC + g*32) * (dst ? dst_stride : nrows) + dst_col_off;
+                for (int i = 0; i < 32; i++) {
+                    int col = g*32 + i;
+                    row[(size_t)(tr_*TR + r)] = (float)vals[r*TC + col] * s;
+                }
+            }
+    }
+    return out;
+}
+
+
 // Shared-expert / attention-projection tensors; mirrors dequant_q8_0_to_float_ex.
 static float* dequant_q8_0(const uint8_t* data, int i8_rows, int in_features,
                            int* out_rows, int* out_cols) {
@@ -420,7 +488,7 @@ int main(int argc,char**argv){
 
 #ifdef ONEBP_SUPPORT
     bool is_onebp = strlen(mp) > 4 && strcmp(mp + strlen(mp) - 4, ".1bp") == 0;
-    OnebpModel onebp_model;
+    NpuOnebpModel onebp_model;
 #endif
     // Parse config
     ModelConfig cfg;
@@ -446,6 +514,17 @@ int main(int argc,char**argv){
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
     uint8_t*md=(uint8_t*)mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);
     uint64_t hsz;memcpy(&hsz,md,8);uint64_t df=8+hsz;
+    // The weight loader below is Q4NX-JSON only (manifest at offset 8). The
+    // 1BP binary format (256-byte header + tensor index, no JSON) makes hsz
+    // garbage -> memmem past the mapping in jo()/key_exists = SIGSEGV. The
+    // engine's 1BP support is cfg+emb only; weights require .q4nx conversion
+    // (tools/tq2_to_q4nx.cpp). Convert instead of crashing.
+    if (is_onebp && (hsz > (uint64_t)st.st_size || hsz < 8)) {
+        fprintf(stderr, "ERR: legacy 1BP model has no JSON manifest — this engine "
+                        "loads weights from .q4nx only.\n"
+                        "     Convert with: build/tq2_to_q4nx %s out.q4nx\n", mp);
+        return 1;
+    }
     auto i8p=[&](uint64_t o){return md+df+o;};
     const char*js=(const char*)(md+8);size_t jl=hsz;
     // Embeddings by JSON offset, NOT data-start-by-assumption — the first
@@ -1067,6 +1146,17 @@ int main(int argc,char**argv){
         if (bpt == 8704) return dequant_q8_0(i8p(off), rows, in_f, or_, oc);
         return dequant_1bp(i8p(off), rows, in_f, or_, oc);
     };
+    // Transposed variant: writes directly into the caller's [N, K] buffer
+    // (gu_f/d_f layout) — kills the separate transpose pass in the miss path.
+    // dst=nullptr → allocates; returns the dst or the allocation (caller frees
+    // only when it supplied no dst). out_cols is the SOURCE column count.
+    auto deq_exp_T = [&](uint64_t off, int rows, int in_f, int bpt,
+                         int* or_, int* oc, float* dst = nullptr,
+                         int dst_stride = 0, int dst_col_off = 0) -> float* {
+        if (bpt == 8704)
+            return dequant_q8_0_T(i8p(off), rows, in_f, or_, oc, dst, dst_stride, dst_col_off);
+        return dequant_1bp_T(i8p(off), rows, in_f, or_, oc, dst, dst_stride, dst_col_off);
+    };
 
     // ── Per-layer GDN / full-attention extras (probe-validated layouts) ──
     // GDN (linear_attn): alpha/beta proj [H,32] plain BF16; conv1d [4,8192];
@@ -1160,7 +1250,42 @@ int main(int argc,char**argv){
     // matmuls. Revisit when batching >1 or the 40-col driver lands.
     // Falls back to moe_ffn_cpu on any init failure.
     std::unique_ptr<I8Ctx> mgu, mde, msg, msd;
+    // v28 fused concat contexts (NPU_MOE_FUSED=1): MOE_GUSGU (routed GU +
+    // shared GU in one launch) and MOE_DSD (routed D + shared D in one
+    // launch). Null when the opt-in is off or the xclbins are missing.
+    std::unique_ptr<I8Ctx> mgu_f, mde_f;
+    // Pack target for moe_pack_experts: set to the fused contexts while the
+    // decode path packs, null otherwise (ops 40/41 + batch keep mgu/mde).
+    I8Ctx* pack_gu_ = nullptr;
+    I8Ctx* pack_de_ = nullptr;
     std::vector<float> msg_scale, msd_scale;
+    // Shared-expert weights are static per layer: pack ALL layers into host
+    // memory at init (packB-equivalent, single per-tensor scale, KD×ND padded
+    // layout) and memcpy the active layer's slice into the single BO at decode
+    // time. Keeps NPU BO usage flat (msg/msd NL=1) — the 40-layer BO variant
+    // exhausted NPU memory on the 35B MoE (DRM_IOCTL_AMDXDNA_CREATE_BO ENOSPC
+    // at ~1.2GB of BOs; dense QKV/O layer BOs alone are 1,080MB).
+    std::vector<std::vector<int8_t>> sh_gu_packed, sh_d_packed;
+    auto host_pack_i8 = [](const float* w, int K, int N, int KD, int ND,
+                           std::vector<int8_t>& out, float& scale) {
+        out.assign((size_t)KD * ND, 0);
+        float amax = 0;
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < K; i++) {
+                float a = fabsf(w[(size_t)i * N + j]);
+                if (std::isfinite(a) && a > amax) amax = a;
+            }
+        if (amax < 1e-12f) amax = 1.0f;
+        scale = amax / 127.0f;
+        float is = 127.0f / amax;
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < K; i++) {
+                float v = w[(size_t)i * N + j];
+                if (!std::isfinite(v)) v = 0;
+                int x = (int)roundf(v * is);
+                out[(size_t)i * ND + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+            }
+    };
     bool use_npu_moe = false;
     if (has_moe && !cpu_gemm_fallback) {
         const char* npu_moe_env = getenv("NPU_MOE");
@@ -1179,10 +1304,32 @@ int main(int argc,char**argv){
             };
             bool ok = moe_ctx(mgu, "MOE_GU", H, moe_n, 1) &&
                       moe_ctx(mde, "MOE_D",  moe_n, H, 1) &&
-                      moe_ctx(msg, "MOE_SGU", H, 2 * IM_EXP, NC) &&
-                      moe_ctx(msd, "MOE_SD", IM_EXP, H, NC);
+                      moe_ctx(msg, "MOE_SGU", H, 2 * IM_EXP, 1) &&
+                      moe_ctx(msd, "MOE_SD", IM_EXP, H, 1);
+            bool fused = false;
+            if (ok && N_SHARED > 0 && getenv("NPU_MOE_FUSED") &&
+                atoi(getenv("NPU_MOE_FUSED")) != 0) {
+                // v28: fuse the shared expert into the routed concat launches
+                // (GUSGU N=8192+1024 same input x; DSD K=4096+512, N=2*H) →
+                // 2 launches per layer instead of 4. Same single-GEMM kernel
+                // as v27 — pure concat along N (GU) and K (D).
+                fused = moe_ctx(mgu_f, "MOE_GUSGU", H, moe_n + 2 * IM_EXP, 1) &&
+                        moe_ctx(mde_f, "MOE_DSD", TOP_K * IM_EXP + IM_EXP, 2 * H, 1);
+                if (fused) {
+                    // The DSD weight BO is block-diagonal: routed D in cols
+                    // [0,H), shared D in cols [H,2H). The two zero blocks are
+                    // never rewritten per layer — zero the host mapping once;
+                    // the first pack's sync uploads it.
+                    memset(mde_f->layerB[0]->map(), 0,
+                           (size_t)mde_f->KD * mde_f->ND);
+                } else {
+                    mgu_f.reset(); mde_f.reset();
+                }
+            }
             if (ok) {
-                // Shared expert weights are static per layer — dequant + pack once.
+                // Shared expert weights are static per layer: pack all layers
+                // into host caches (single per-tensor scale, padded layout).
+                sh_gu_packed.resize(NC); sh_d_packed.resize(NC);
                 msg_scale.resize(NC); msd_scale.resize(NC);
                 for (int l = 0; l < NC && ok; l++) {
                     if (!sh_off[l].gate) { ok = false; break; }
@@ -1200,20 +1347,24 @@ int main(int argc,char**argv){
                             sg_w[(size_t)k * (2 * IM_EXP) + i] = SG[i * H + k];
                             sg_w[(size_t)k * (2 * IM_EXP) + IM_EXP + i] = SU[i * H + k];
                         }
-                    msg->packB(l, sg_w.data(), H, 2 * IM_EXP, msg_scale[l]);
+                    host_pack_i8(sg_w.data(), H, 2 * IM_EXP, (int)msg->KD, (int)msg->ND,
+                                 sh_gu_packed[l], msg_scale[l]);
                     std::vector<float> sd_w((size_t)IM_EXP * H);
                     for (int i = 0; i < H; i++)
                         for (int k = 0; k < IM_EXP; k++)
                             sd_w[(size_t)k * H + i] = SD[i * IM_EXP + k];
-                    msd->packB(l, sd_w.data(), IM_EXP, H, msd_scale[l]);
+                    host_pack_i8(sd_w.data(), IM_EXP, H, (int)msd->KD, (int)msd->ND,
+                                 sh_d_packed[l], msd_scale[l]);
                     free(SG); free(SU); free(SD);
                 }
             }
             if (ok) {
                 use_npu_moe = true;
-                fprintf(stderr, "NPU MoE enabled (MOE_GU/D/SGU/SD xclbins)\n");
+                fprintf(stderr, "NPU MoE enabled (MOE_GU/D/SGU/SD xclbins%s)\n",
+                        fused ? " + fused v28 GUSGU/DSD" : "");
             } else {
                 mgu.reset(); mde.reset(); msg.reset(); msd.reset();
+                mgu_f.reset(); mde_f.reset();
                 fprintf(stderr, "WARN: NPU MoE init failed, CPU MoE fallback\n");
             }
         }
@@ -1419,8 +1570,15 @@ int main(int argc,char**argv){
         std::vector<float> d_scales;     // [IM_EXP/32]
         float gu_mean = 0, d_mean = 0;
     };
-    const int EXP_CACHE_SZ = 32;         // slots per layer (32*4 MB*40 = 5.1 GB — top-K working set is sticky)
+    const int EXP_CACHE_SZ = 256;        // slots per layer (256*4 MB*40 = 41 GB — an 8-token
+    // top-k window touches ~80+ distinct experts/layer on Qwen3.6-35B; 32/64
+    // slots measured at ~100% miss rate. Host RAM is the bound — 122 GB box.
+    // ponytail: fixed size; shrink via LRU hit-rate telemetry if RAM matters
     std::vector<std::vector<PackedExpert>> exp_cache(NC);
+    // Route statistics (NPU_ROUTE_STATS=path): per-layer expert selection
+    // counts, dumped at exit — feeds NPU_WARM_EXPERTS hot-expert pre-warming.
+    std::vector<std::vector<int>> route_counts;
+    if (getenv("NPU_ROUTE_STATS")) route_counts.assign(NC, std::vector<int>(N_EXPERTS, 0));
     int cache_stamp = 0;
     auto quant_slice = [](const float* w, int K, int N, std::vector<int8_t>& out,
                           std::vector<float>& scales, float& mean) {
@@ -1428,6 +1586,10 @@ int main(int argc,char**argv){
         scales.resize(ng);
         out.resize((size_t)K * N);
         double ssum = 0;
+        // Parallel over 32-row groups: disjoint output rows, disjoint scale
+        // slots. Scalar version measured at ~32 ms/expert on Qwen3.6-35B
+        // (2048x1024 gu + 512x2048 d) — the dominant cost of a cache miss.
+        #pragma omp parallel for reduction(+:ssum) schedule(static) if(ng >= 8)
         for (int g = 0; g < ng; g++) {
             int gs = g * 32, gn = std::min(32, K - gs);
             float amax = 0;
@@ -1451,9 +1613,173 @@ int main(int argc,char**argv){
         mean = (float)(ssum / ng);
     };
 
+    // Pack k experts (ids[]) into the MOE concat BOs using the per-expert
+    // int8 LRU cache. Shared by moe_ffn_npu (router-chosen topk) and the
+    // worker ops 40/41 (caller-chosen experts). On success fills:
+    //   gu_sc/d_sc = mean of the selected experts' per-expert mean scales
+    //   gu_corr[e] = expert e's exact mean scale / gu_sc (column correction)
+    auto moe_pack_experts = [&](int l, const int* ids, int k,
+                                float& gu_sc, float& d_sc,
+                                std::vector<float>& gu_corr) -> bool {
+        const bool t_on = getenv("NPU_TIMING") != nullptr;
+        auto tp_ = std::chrono::steady_clock::now();
+        double t_miss = 0, t_mem = 0, t_sync = 0;
+        auto tseg = [&](double& acc) { return acc; };
+        const auto eo = exp_off[l];
+        if (k < 1 || k > TOP_K || !mgu || !mde ||
+            !mgu->isReady() || !mde->isReady()) return false;
+        // Per-expert I8 rows + byte stride (same math as moe_ffn_cpu, #1467)
+        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;
+        int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
+        int exp_down_tr_per = eo.down_tr / N_EXPERTS;
+        int exp_gate_off_stride = exp_gate_tr_per * 5120;
+        int exp_up_off_stride   = exp_up_tr_per   * 5120;
+        int exp_down_off_stride = exp_down_tr_per * 5120;
+        auto& cache = exp_cache[l];
+        if (cache.empty()) cache.resize(EXP_CACHE_SZ);
+        const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
+        // v28 fused: moe_ffn_npu sets pack_gu_/pack_de_ to the concat
+        // contexts before packing; everyone else packs into plain mgu/mde.
+        // GU stride comes from the target ctx's ND (8192 plain, 9216 fused).
+        I8Ctx* pgu = (pack_gu_ && pack_gu_->isReady()) ? pack_gu_ : mgu.get();
+        I8Ctx* pde = (pack_de_ && pack_de_->isReady()) ? pack_de_ : mde.get();
+        const size_t gu_stride = pgu->ND;
+        int8_t* guB = (int8_t*)pgu->layerB[0]->map();   // [H, ND] int8
+        int8_t* dB = (int8_t*)pde->layerB[0]->map();    // [KD, H] int8
+        // Scratch [K, N] dequant targets (reused across misses)
+        std::vector<float> gu_f((size_t)H * 2 * IM_EXP), d_f((size_t)IM_EXP * H);
+        double gu_sum = 0, d_sum = 0;
+        if (!route_counts.empty())
+            for (int e = 0; e < k; e++) route_counts[l][ids[e]]++;
+        for (int e = 0; e < k; e++) {
+            int ex = ids[e];
+            if (ex < 0 || ex >= N_EXPERTS) return false;
+            PackedExpert* slot = nullptr;
+            for (auto& s : cache) if (s.expert == ex) { slot = &s; break; }
+            if (!slot) {
+                // miss: evict LRU, dequant + pack this expert
+                PackedExpert* victim = &cache[0];
+                for (auto& s : cache) if (s.stamp < victim->stamp) victim = &s;
+                slot = victim;
+                int gr, gc, ur, uc, dr, dc;
+                auto tm0 = std::chrono::steady_clock::now();
+                // Direct [K, N] dequant into the fused buffers (no transpose
+                // pass, no f32 intermediates): gate→gu_f cols[0,IM), up→gu_f
+                // cols[IM,2IM), down→d_f. deq_exp_T writes out_T[col][r].
+                float* G = deq_exp_T(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                                     exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc,
+                                     gu_f.data(), 2 * IM_EXP, 0);
+                auto tm1 = std::chrono::steady_clock::now();
+                float* U = deq_exp_T(eo.up + (uint64_t)ex * exp_up_off_stride,
+                                     exp_up_tr_per, H, eo.up_bpt, &ur, &uc,
+                                     gu_f.data(), 2 * IM_EXP, IM_EXP);
+                float* D = deq_exp_T(eo.down + (uint64_t)ex * exp_down_off_stride,
+                                     exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc,
+                                     d_f.data(), H, 0);
+                auto tm2 = std::chrono::steady_clock::now();
+                if (!G || !U || !D) return false;  // dst-backed: no frees
+                auto tm3 = tm2;
+                quant_slice(gu_f.data(), H, 2 * IM_EXP, slot->gu, slot->gu_scales, slot->gu_mean);
+                quant_slice(d_f.data(), IM_EXP, H, slot->d, slot->d_scales, slot->d_mean);
+                auto tm4 = std::chrono::steady_clock::now();
+                slot->expert = ex;
+                if (getenv("NPU_TIMING"))
+                    fprintf(stderr, "      [miss e=%d] deq=%.1f q=%.1f\n", ex,
+                            std::chrono::duration<double, std::milli>(tm2 - tm0).count(),
+                            std::chrono::duration<double, std::milli>(tm4 - tm3).count());
+                t_miss += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tm0).count();
+            }
+            slot->stamp = ++cache_stamp;
+            gu_sum += slot->gu_mean;
+            d_sum += slot->d_mean;
+            // assemble: GU expert e at columns [e*2*IM, (e+1)*2*IM); D at rows [e*IM, (e+1)*IM)
+            for (int r = 0; r < H; r++)
+                memcpy(guB + (size_t)r * gu_stride + (size_t)e * 2 * IM_EXP,
+                       slot->gu.data() + (size_t)r * 2 * IM_EXP, (size_t)2 * IM_EXP);
+            // D is row-major [KD, ND] with ND = pde->ND (H plain, 2*H fused
+            // block-diagonal), so copy per row with the target row stride.
+            for (int r = 0; r < IM_EXP; r++)
+                memcpy(dB + (size_t)(e * IM_EXP + r) * pde->ND,
+                       slot->d.data() + (size_t)r * H, (size_t)H);
+        }
+        gu_sc = (float)(gu_sum / k);   // mean of selected experts' means
+        d_sc = (float)(d_sum / k);
+        gu_corr.resize(k);
+        for (int e = 0; e < k; e++) {
+            PackedExpert* slot = nullptr;
+            for (auto& s : cache) if (s.expert == ids[e]) { slot = &s; break; }
+            gu_corr[e] = (slot && gu_sc != 0) ? slot->gu_mean / gu_sc : 1.0f;
+        }
+        auto ts0 = std::chrono::steady_clock::now();
+        // v28 fused: append the static shared-expert slice into the same
+        // concat BOs (GUSGU columns [gu_n, gu_n+2*IM); DSD rows [TOP_K*IM,
+        // TOP_K*IM+IM)). Skipped on the plain path (msg/msd launches handle
+        // the shared expert there).
+        if (pgu != mgu.get()) {
+            // fused: shared GU at columns [gu_n, gu_n+2*IM) of the wide GU BO;
+            // shared D in the block-diagonal corner — rows [TOP_K*IM, +IM),
+            // cols [H, 2*H) — leaving the zero blocks (routed×shared and
+            // shared×routed) untouched (zeroed once at init).
+            for (int r = 0; r < H; r++)
+                memcpy(guB + (size_t)r * gu_stride + gu_n,
+                       sh_gu_packed[l].data() + (size_t)r * 2 * IM_EXP, (size_t)2 * IM_EXP);
+            for (int r = 0; r < IM_EXP; r++)
+                memcpy(dB + (size_t)(TOP_K * IM_EXP + r) * pde->ND + H,
+                       sh_d_packed[l].data() + (size_t)r * H, (size_t)H);
+        }
+        pgu->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        pde->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        t_sync = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts0).count();
+        if (t_on)
+            fprintf(stderr, "[pack l=%d] %.1f ms (miss=%.1f sync=%.1f)\n", l,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp_).count(),
+                    t_miss, t_sync);
+        return true;
+    };
+
+    // ── Hot-expert pre-warm (NPU_WARM_EXPERTS=path): pack the top-N most-
+    // routed experts per layer at init so decode starts cache-warm. The file
+    // is produced by NPU_ROUTE_STATS (per-layer sorted "expert count" lines).
+    if (use_npu_moe && has_moe) {
+        const char* warm_file = getenv("NPU_WARM_EXPERTS");
+        int warm_top = warm_file ? atoi(getenv("NPU_WARM_TOP") ?: "64") : 0;
+        if (warm_file && warm_file[0] && warm_top > 0) {
+            FILE* wf = fopen(warm_file, "r");
+            if (wf) {
+                auto tw0 = std::chrono::steady_clock::now();
+                int line, layer = -1, expert, cnt;
+                std::vector<std::vector<int>> top(NC);
+                while (fscanf(wf, "%d %d %d", &line, &expert, &cnt) == 3) {
+                    if (line < 0 || line >= NC) continue;
+                    if (top[line].size() < (size_t)warm_top) top[line].push_back(expert);
+                }
+                fclose(wf);
+                int packed = 0;
+                for (int l = 0; l < NC; l++) {
+                    if (top[l].empty()) continue;
+                    // Pack in TOP_K-sized chunks (BO width = TOP_K columns)
+                    for (size_t off = 0; off < top[l].size(); off += TOP_K) {
+                        size_t n = std::min((size_t)TOP_K, top[l].size() - off);
+                        std::vector<float> gu_corr;
+                        float gs = 0, ds = 0;
+                        if (!moe_pack_experts(l, top[l].data() + off, (int)n, gs, ds, gu_corr)) {
+                            fprintf(stderr, "  warm: layer %d chunk %zu failed\n", l, off / TOP_K);
+                            break;
+                        }
+                        packed += (int)n;
+                    }
+                }
+                fprintf(stderr, "  warm: %d experts pre-packed in %.0fms\n", packed,
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw0).count());
+            } else {
+                fprintf(stderr, "  WARN: NPU_WARM_EXPERTS=%s unreadable\n", warm_file);
+            }
+        }
+    }
+
     auto moe_ffn_npu = [&](const float* x, float* out, int l) {
-        const auto& eo = exp_off[l];
-        // Router: softmax → top-K (identical to moe_ffn_cpu)
+        auto tf_ = std::chrono::steady_clock::now();
+        const bool t_on = getenv("NPU_TIMING") != nullptr;        // Router: softmax → top-K (identical to moe_ffn_cpu)
         const float* rt = router_w[l].data();
         std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
         double lmax = -1e30;
@@ -1474,79 +1800,97 @@ int main(int argc,char**argv){
         std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
             [&](int a, int b) { return probs[a] > probs[b]; });
 
-        // Per-expert I8 rows + byte stride (same math as moe_ffn_cpu, #1467)
-        int exp_gate_tr_per = eo.gate_tr / N_EXPERTS;
-        int exp_up_tr_per   = eo.up_tr   / N_EXPERTS;
-        int exp_down_tr_per = eo.down_tr / N_EXPERTS;
-        int exp_gate_off_stride = exp_gate_tr_per * 5120;
-        int exp_up_off_stride   = exp_up_tr_per   * 5120;
-        int exp_down_off_stride = exp_down_tr_per * 5120;
-
         // ── Expert cache (LRU): pack on miss, memcpy on hit (#1473) ──
-        auto& cache = exp_cache[l];
-        if (cache.empty()) cache.resize(EXP_CACHE_SZ);
         const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
-        int8_t* guB = (int8_t*)mgu->layerB[0]->map();   // [H, 8*2*IM] int8
-        int8_t* dB = (int8_t*)mde->layerB[0]->map();    // [8*IM, H] int8
-        double gu_sum = 0, d_sum = 0;
-        for (int e = 0; e < TOP_K; e++) {
-            int ex = topk[e];
-            PackedExpert* slot = nullptr;
-            for (auto& s : cache) if (s.expert == ex) { slot = &s; break; }
-            if (!slot) {
-                // miss: evict LRU, dequant + pack this expert
-                PackedExpert* victim = &cache[0];
-                for (auto& s : cache) if (s.stamp < victim->stamp) victim = &s;
-                slot = victim;
-                int gr, gc, ur, uc, dr, dc;
-                float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
-                                   exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
-                float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
-                                   exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
-                float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
-                                   exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
-                if (!G || !U || !D) { free(G); free(U); free(D); continue; }
-                // fused gate|up slice [K=H, N=2*IM] (same column order as the concat)
-                std::vector<float> gu_f((size_t)H * 2 * IM_EXP);
-                for (int i = 0; i < IM_EXP; i++)
-                    for (int k = 0; k < H; k++) {
-                        gu_f[(size_t)k * (2 * IM_EXP) + i] = G[i * H + k];
-                        gu_f[(size_t)k * (2 * IM_EXP) + IM_EXP + i] = U[i * H + k];
-                    }
-                std::vector<float> d_f((size_t)IM_EXP * H);
-                for (int i = 0; i < H; i++)
-                    for (int k = 0; k < IM_EXP; k++)
-                        d_f[(size_t)k * H + i] = D[i * IM_EXP + k];
-                quant_slice(gu_f.data(), H, 2 * IM_EXP, slot->gu, slot->gu_scales, slot->gu_mean);
-                quant_slice(d_f.data(), IM_EXP, H, slot->d, slot->d_scales, slot->d_mean);
-                free(G); free(U); free(D);
-                slot->expert = ex;
-            }
-            slot->stamp = ++cache_stamp;
-            gu_sum += slot->gu_mean;
-            d_sum += slot->d_mean;
-            // assemble: GU expert e at columns [e*2*IM, (e+1)*2*IM); D at rows [e*IM, (e+1)*IM)
-            for (int r = 0; r < H; r++)
-                memcpy(guB + (size_t)r * gu_n + (size_t)e * 2 * IM_EXP,
-                       slot->gu.data() + (size_t)r * 2 * IM_EXP, (size_t)2 * IM_EXP);
-            memcpy(dB + (size_t)e * IM_EXP * H, slot->d.data(), (size_t)IM_EXP * H);
+        std::vector<float> gu_corr;
+        float gu_sc = 0, d_sc = 0;
+        // v28 fused: pack into the concat BOs (wider GU stride + shared
+        // slice) when the fused contexts are live; reset right after so
+        // ops 40/41 and the batch path keep packing into plain mgu/mde.
+        bool fused_run = mgu_f && mgu_f->isReady() && mde_f && mde_f->isReady();
+        if (fused_run) { pack_gu_ = mgu_f.get(); pack_de_ = mde_f.get(); }
+        if (!moe_pack_experts(l, topk.data(), TOP_K, gu_sc, d_sc, gu_corr)) {
+            pack_gu_ = pack_de_ = nullptr;
+            std::fill(out, out + H, 0.0f);
+            return;
         }
-        float gu_sc = (float)(gu_sum / TOP_K);   // mean of selected experts' means
-        float d_sc = (float)(d_sum / TOP_K);
-        mgu->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        mde->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        pack_gu_ = pack_de_ = nullptr;
+        if (t_on) fprintf(stderr, "[moe l=%d pack] %.1f ms\n", l,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
 
-        // Run: GU concat GEMM → SiLU × router prob → D concat GEMM
+        if (fused_run) {
+            // ── v28 fused FFN: 2 launches per layer instead of 4 ──
+            // 1) GU concat: routed experts (gu_n cols) + shared GU (2*IM cols)
+            //    in ONE launch (same input x, same ascale ag).
+            std::vector<float> gu_all(gu_n + 2 * IM_EXP), ssu(IM_EXP);
+            float ag = dynamic_ascale(x, H);
+            mgu_f->go(0, x, 1, H, ag, gu_sc, gu_all.data(), (int)(gu_n + 2 * IM_EXP));
+            if (t_on) fprintf(stderr, "[moe l=%d gu] %.1f ms\n", l,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
+            // per-expert dequant correction (routed columns)
+            for (int e = 0; e < TOP_K; e++) {
+                if (gu_sc == 0) continue;
+                float corr = gu_corr[e];
+                float* col = gu_all.data() + (size_t)e * 2 * IM_EXP;
+                for (int i = 0; i < 2 * IM_EXP; i++) col[i] *= corr;
+            }
+            // shared GU columns: dequant used gu_sc, shared weights used
+            // msg_scale[l] → per-column correction, then SiLU × up.
+            float scorr = (gu_sc != 0) ? msg_scale[l] / gu_sc : 1.0f;
+            float* sgw = gu_all.data() + gu_n;
+            for (int i = 0; i < 2 * IM_EXP; i++) sgw[i] *= scorr;
+            std::vector<float> su((size_t)TOP_K * IM_EXP);
+            for (int e = 0; e < TOP_K; e++)
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = gu_all[e * 2 * IM_EXP + i];
+                    if (!std::isfinite(gv)) gv = 0;
+                    su[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) *
+                                         gu_all[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
+                }
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = sgw[i];
+                if (!std::isfinite(gv)) gv = 0;
+                ssu[i] = (gv / (1.0f + expf(-gv))) * sgw[IM_EXP + i];
+            }
+            // 2) D concat: routed su (TOP_K*IM rows) + shared ssu (IM rows),
+            //    output = [d_out(H) | sh_out(H)] in ONE launch.
+            std::vector<float> su_all((size_t)TOP_K * IM_EXP + IM_EXP);
+            std::memcpy(su_all.data(), su.data(), (size_t)TOP_K * IM_EXP * sizeof(float));
+            std::memcpy(su_all.data() + TOP_K * IM_EXP, ssu.data(), (size_t)IM_EXP * sizeof(float));
+            float aall = dynamic_ascale(su_all.data(), (int)su_all.size());
+            std::vector<float> ff_out(2 * H);
+            mde_f->go(0, su_all.data(), 1, (int)su_all.size(), aall, d_sc, ff_out.data(), 2 * H);
+            if (t_on) fprintf(stderr, "[moe l=%d d] %.1f ms\n", l,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
+            // shared D columns: dequant used d_sc, shared weights used
+            // msd_scale[l] → correction, then sigmoid-gate blend.
+            float dcorr = (d_sc != 0) ? msd_scale[l] / d_sc : 1.0f;
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+            if (N_SHARED > 0 && sh_off[l].gate) {
+                for (int i = 0; i < H; i++)
+                    out[i] = ff_out[i] + sg_sig * (ff_out[H + i] * dcorr);
+            } else {
+                for (int i = 0; i < H; i++) out[i] = ff_out[i];
+            }
+        } else {
+        // ── v27 path: 4 launches (GU, D, shared GU, shared D). Kept as the
+        // fallback when NPU_MOE_FUSED is off or the fused xclbins are absent.
+        // (Async launch-overlap of GU∥SGU / D∥SD measured WORSE on this NPU
+        // — kernels share AIE columns so they serialize, and interleaving the
+        // waits adds jitter: FFN 43.6ms vs 32.8ms sync. Kept sync.)
         std::vector<float> gu_out(gu_n), su((size_t)TOP_K * IM_EXP), d_out(H);
         float ag = dynamic_ascale(x, H);
         mgu->go(0, x, 1, H, ag, gu_sc, gu_out.data(), (int)gu_n);
+        if (t_on) fprintf(stderr, "[moe l=%d gu] %.1f ms\n", l,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
         // per-expert dequant correction: columns were scaled by the global mean;
         // each expert's own mean scale is the exact per-expert dequant.
         for (int e = 0; e < TOP_K; e++) {
-            PackedExpert* slot = nullptr;
-            for (auto& s : cache) if (s.expert == topk[e]) { slot = &s; break; }
-            if (!slot || gu_sc == 0) continue;
-            float corr = slot->gu_mean / gu_sc;
+            if (gu_sc == 0) continue;
+            float corr = gu_corr[e];
             float* col = gu_out.data() + (size_t)e * 2 * IM_EXP;
             for (int i = 0; i < 2 * IM_EXP; i++) col[i] *= corr;
         }
@@ -1559,19 +1903,32 @@ int main(int argc,char**argv){
             }
         float asu = dynamic_ascale(su.data(), TOP_K * IM_EXP);
         mde->go(0, su.data(), 1, TOP_K * IM_EXP, asu, d_sc, d_out.data(), H);
+        if (t_on) fprintf(stderr, "[moe l=%d d] %.1f ms\n", l,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
 
         // Shared expert (static weights, packed at init): fused GU + D, ×sigmoid gate
+        // (CPU fallback NPU_SHARED_CPU tried 2026-08-09: SLOWER — scalar fp32
+        // GEMMs of 2M+1M MACs cost more than the NPU launches here; kept NPU.)
         if (N_SHARED > 0 && sh_off[l].gate && msg->isReady()) {
+            auto tsh0 = std::chrono::steady_clock::now();
             std::vector<float> sg_out(2 * IM_EXP), ssu(IM_EXP), sh_out(H);
             float asg = dynamic_ascale(x, H);
-            msg->go(l, x, 1, H, asg, msg_scale[l], sg_out.data(), 2 * IM_EXP);
+            int8_t* sguB = (int8_t*)msg->layerB[0]->map();
+            memcpy(sguB, sh_gu_packed[l].data(), (size_t)msg->KD * msg->ND);
+            msg->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            msg->go(0, x, 1, H, asg, msg_scale[l], sg_out.data(), 2 * IM_EXP);
             for (int i = 0; i < IM_EXP; i++) {
                 float gv = sg_out[i];
                 if (!std::isfinite(gv)) gv = 0;
                 ssu[i] = (gv / (1.0f + expf(-gv))) * sg_out[IM_EXP + i];
             }
             float assu = dynamic_ascale(ssu.data(), IM_EXP);
-            msd->go(l, ssu.data(), 1, IM_EXP, assu, msd_scale[l], sh_out.data(), H);
+            int8_t* sdB = (int8_t*)msd->layerB[0]->map();
+            memcpy(sdB, sh_d_packed[l].data(), (size_t)msd->KD * msd->ND);
+            msd->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            msd->go(0, ssu.data(), 1, IM_EXP, assu, msd_scale[l], sh_out.data(), H);
+            if (t_on) fprintf(stderr, "[moe l=%d shared] %.1f ms\n", l,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tsh0).count());
             double sg = 0;
             const float* sg_ptr = sh_gate_vec[l].data();
             for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
@@ -1580,7 +1937,168 @@ int main(int argc,char**argv){
         } else {
             for (int i = 0; i < H; i++) out[i] = d_out[i];
         }
+        }  // end fused_run else (v27 4-launch path)
         for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+        if (t_on)
+            fprintf(stderr, "[moe_ffn_npu l=%d] %.1f ms\n", l,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - tf_).count());
+    };
+
+    // ── Batched MoE (paper §4.2 grouped execution): M prefill tokens per
+    // layer. Router per token → union of distinct experts (dedupe via cache) →
+    // chunked into TOP_K-sized launches (xclbin N = 8 experts). Each token's
+    // su is placed at its expert's columns × its prob; non-routed (t, e) pairs
+    // contribute 0 to the D concat. Batch ascale over M×H (differs slightly
+    // from per-token ascale — same int8 GEMM family, tolerance-checked).
+    auto moe_ffn_npu_batch = [&](const float* x, float* out, int l, int M) {
+        auto tf_ = std::chrono::steady_clock::now();
+        const bool t_on = getenv("NPU_TIMING") != nullptr;
+        const float* rt = router_w[l].data();
+        std::vector<std::vector<int>> topk(M);
+        std::vector<std::vector<float>> prob(M);
+        std::vector<int> union_ids;
+        std::vector<char> in_union(N_EXPERTS, 0);
+        for (int t = 0; t < M; t++) {
+            const float* xv = x + (size_t)t * H;
+            std::vector<float> logits(N_EXPERTS), probs(N_EXPERTS);
+            double lmax = -1e30;
+            for (int j = 0; j < N_EXPERTS; j++) {
+                double s = 0;
+                for (int i = 0; i < H; i++) s += (double)xv[i] * rt[i * N_EXPERTS + j];
+                logits[j] = (float)s;
+                if (logits[j] > lmax) lmax = logits[j];
+            }
+            double lsum = 0;
+            for (int j = 0; j < N_EXPERTS; j++) { probs[j] = expf(logits[j] - (float)lmax); lsum += probs[j]; }
+            for (int j = 0; j < N_EXPERTS; j++) probs[j] /= (float)lsum;
+            std::vector<int> top(N_EXPERTS);
+            for (int j = 0; j < N_EXPERTS; j++) top[j] = j;
+            std::partial_sort(top.begin(), top.begin() + TOP_K, top.end(),
+                [&](int a, int b) { return probs[a] > probs[b]; });
+            topk[t].assign(top.begin(), top.begin() + TOP_K);
+            prob[t].resize(TOP_K);
+            for (int j = 0; j < TOP_K; j++) {
+                prob[t][j] = probs[top[j]];
+                if (!in_union[top[j]]) { in_union[top[j]] = 1; union_ids.push_back(top[j]); }
+            }
+        }
+        std::fill(out, out + (size_t)M * H, 0.0f);
+        // Full per-token su (all TOP_K experts, token-expert indexed like
+        // sequential) + per-chunk GU. Two passes over the union chunks: pass 1
+        // runs the GU GEMM and fills su_all (so per-token ascale/d_sc are
+        // computed over the token's FULL expert set, matching sequential);
+        // pass 2 runs the D GEMMs with those per-token scales.
+        std::vector<float> su_all((size_t)M * TOP_K * IM_EXP),
+                           gu_out((size_t)M * TOP_K * 2 * IM_EXP),
+                           d_out((size_t)M * H);
+        for (size_t cs = 0; cs < union_ids.size(); cs += TOP_K) {
+            int n = (int)std::min((size_t)TOP_K, union_ids.size() - cs);
+            std::vector<float> gu_corr;
+            float gu_sc = 0, d_sc = 0;
+            if (!moe_pack_experts(l, union_ids.data() + cs, n, gu_sc, d_sc, gu_corr)) continue;
+            std::vector<float> ag(M);
+            for (int t = 0; t < M; t++) ag[t] = dynamic_ascale(x + (size_t)t * H, H);
+            mgu->go_rows(0, x, M, H, ag.data(), ag.data(), gu_sc, gu_out.data(), n * 2 * IM_EXP);
+            for (int e = 0; e < n; e++) {
+                if (gu_sc == 0) continue;
+                float corr = gu_corr[e];
+                for (int t = 0; t < M; t++)
+                    for (int i = 0; i < 2 * IM_EXP; i++)
+                        gu_out[(size_t)t * n * 2 * IM_EXP + (size_t)e * 2 * IM_EXP + i] *= corr;
+            }
+            for (int t = 0; t < M; t++)
+                for (int j = 0; j < TOP_K; j++) {
+                    int ex = topk[t][j];
+                    int local = -1;
+                    for (int e = 0; e < n; e++) if (union_ids[cs + e] == ex) { local = e; break; }
+                    if (local < 0) continue;
+                    const float* gcol = gu_out.data() + (size_t)t * n * 2 * IM_EXP + (size_t)local * 2 * IM_EXP;
+                    float* srow = su_all.data() + (size_t)t * TOP_K * IM_EXP + (size_t)j * IM_EXP;
+                    float p = prob[t][j];
+                    for (int i = 0; i < IM_EXP; i++) {
+                        float gv = gcol[i];
+                        if (!std::isfinite(gv)) gv = 0;
+                        srow[i] = (gv / (1.0f + expf(-gv))) * gcol[IM_EXP + i] * p;
+                    }
+                }
+        }
+        // Per-token D scales over the FULL expert set (sequential-equivalent).
+        std::vector<float> asu(M), dsc(M);
+        auto& cache = exp_cache[l];
+        for (int t = 0; t < M; t++) {
+            asu[t] = dynamic_ascale(su_all.data() + (size_t)t * TOP_K * IM_EXP, TOP_K * IM_EXP);
+            double s = 0;
+            for (int j = 0; j < TOP_K; j++) {
+                for (auto& sl : cache)
+                    if (sl.expert == topk[t][j]) { s += sl.d_mean; break; }
+            }
+            dsc[t] = (float)(s / TOP_K);
+        }
+        std::vector<float> su_chunk((size_t)M * TOP_K * IM_EXP);
+        for (size_t cs = 0; cs < union_ids.size(); cs += TOP_K) {
+            int n = (int)std::min((size_t)TOP_K, union_ids.size() - cs);
+            std::vector<float> gu_corr;
+            float gu_sc = 0, d_sc = 0;
+            if (!moe_pack_experts(l, union_ids.data() + cs, n, gu_sc, d_sc, gu_corr)) continue;
+            std::fill(su_chunk.begin(), su_chunk.begin() + (size_t)M * n * IM_EXP, 0.0f);
+            for (int t = 0; t < M; t++)
+                for (int j = 0; j < TOP_K; j++) {
+                    int ex = topk[t][j];
+                    int local = -1;
+                    for (int e = 0; e < n; e++) if (union_ids[cs + e] == ex) { local = e; break; }
+                    if (local < 0) continue;
+                    memcpy(su_chunk.data() + (size_t)t * n * IM_EXP + (size_t)local * IM_EXP,
+                           su_all.data() + (size_t)t * TOP_K * IM_EXP + (size_t)j * IM_EXP,
+                           (size_t)IM_EXP * 4);
+                }
+            std::vector<float> ad(M);
+            for (int t = 0; t < M; t++) ad[t] = asu[t] * dsc[t];
+            mde->go_rows(0, su_chunk.data(), M, n * IM_EXP, asu.data(), ad.data(), 1.0f, d_out.data(), H);
+            for (int t = 0; t < M; t++)
+                for (int i = 0; i < H; i++) out[(size_t)t * H + i] += d_out[(size_t)t * H + i];
+        }
+        // Shared expert (batch): fused GU + D, ×sigmoid gate per token
+        if (N_SHARED > 0 && sh_off[l].gate && msg->isReady()) {
+            std::vector<float> sg_out((size_t)M * 2 * IM_EXP), ssu((size_t)M * IM_EXP), sh_out((size_t)M * H);
+            std::vector<float> asg(M);
+            for (int t = 0; t < M; t++) asg[t] = dynamic_ascale(x + (size_t)t * H, H);
+            int8_t* sguB = (int8_t*)msg->layerB[0]->map();
+            memcpy(sguB, sh_gu_packed[l].data(), (size_t)msg->KD * msg->ND);
+            msg->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            msg->go_rows(0, x, M, H, asg.data(), asg.data(), msg_scale[l], sg_out.data(), 2 * IM_EXP);
+            for (int t = 0; t < M; t++)
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = sg_out[(size_t)t * 2 * IM_EXP + i];
+                    if (!std::isfinite(gv)) gv = 0;
+                    ssu[(size_t)t * IM_EXP + i] =
+                        (gv / (1.0f + expf(-gv))) * sg_out[(size_t)t * 2 * IM_EXP + IM_EXP + i];
+                }
+            std::vector<float> assu(M);
+            for (int t = 0; t < M; t++) assu[t] = dynamic_ascale(ssu.data() + (size_t)t * IM_EXP, IM_EXP);
+            int8_t* sdB = (int8_t*)msd->layerB[0]->map();
+            memcpy(sdB, sh_d_packed[l].data(), (size_t)msd->KD * msd->ND);
+            msd->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            msd->go_rows(0, ssu.data(), M, IM_EXP, assu.data(), assu.data(), msd_scale[l], sh_out.data(), H);
+            for (int t = 0; t < M; t++) {
+                double sg = 0;
+                const float* sg_ptr = sh_gate_vec[l].data();
+                const float* xv = x + (size_t)t * H;
+                for (int i = 0; i < H; i++) sg += (double)xv[i] * sg_ptr[i];
+                float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+                float* orow = out + (size_t)t * H;
+                const float* srow = sh_out.data() + (size_t)t * H;
+                for (int i = 0; i < H; i++) orow[i] += sg_sig * srow[i];
+            }
+        }
+        for (int t = 0; t < M; t++)
+            for (int i = 0; i < H; i++)
+                if (!std::isfinite(out[(size_t)t * H + i])) out[(size_t)t * H + i] = 0;
+        if (t_on)
+            fprintf(stderr, "[moe_ffn_npu_batch l=%d M=%d] %.1f ms (U=%zu)\n", l, M,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - tf_).count(),
+                    union_ids.size());
     };
 
     // ── Shared per-layer attention (#1472): one implementation for the worker
@@ -1717,6 +2235,7 @@ int main(int argc,char**argv){
     // operations (QKV, OPROJ, GATEUP, DOWN) via this protocol. Each request
     // is header[4] (op, layer, batch, in_dim) followed by float input data.
     // Response is header[2] (0=ok, out_dim) followed by float output data.
+    // MoE ops 40/41 append: u32 k, k×u32 expert ids, then the float payload.
     if(worker_mode){
         fprintf(stderr,"WORKER_READY\n");
         fflush(stderr);
@@ -1734,7 +2253,10 @@ int main(int argc,char**argv){
 
             // Input validation: batch and in_dim must be reasonable
             // (op=31 is the reset — it legitimately carries batch=0/in_dim=0)
-            if (op != 31 && op != 33 && op != 34 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
+            // (op=40/41 carry an extra u32 k + k u32 expert ids before the
+            //  float payload — their header fields alone are not enough to
+            //  drain the pipe, so they self-validate in their own branch)
+            if (op != 31 && op != 33 && op != 34 && op != 40 && op != 41 && (batch==0||batch>XM||in_dim==0||in_dim>4096||layer>=(uint32_t)NC)){
                 uint32_t resp[2]={1,0};
                 fwrite(resp,sizeof(uint32_t),2,stdout);
                 fflush(stdout);
@@ -1831,6 +2353,51 @@ int main(int argc,char**argv){
                         FLM_GO(cd, l, in_data.data() + (size_t)l * batch * in_dim, batch, (int)in_dim,
                               ascale, dsc[l], out_data.data() + (size_t)l * batch * out_dim, (int)out_dim);
                     }
+                }else if(op==40||op==41){ // MoE expert GEMMs
+                    // Header {op, layer, 1, in_dim}; payload:
+                    //   batch*in_dim floats (already consumed by the generic
+                    //   read above), then u32 k, then k×u32 expert ids.
+                    // op=40: x[H] -> raw gate|up concat [k*2*IM_EXP] (per-expert
+                    //        scale-corrected; caller applies SiLU/gate/prob).
+                    // op=41: su[k*IM_EXP] -> D concat -> [H].
+                    // Both reuse moe_pack_experts (LRU int8 expert cache), so
+                    // the same pack cost amortizes across calls.
+                    uint32_t k = 0;
+                    fread(&k, sizeof(uint32_t), 1, stdin);
+                    bool vok = has_moe && batch == 1 && k >= 1 && k <= (uint32_t)TOP_K &&
+                               layer < (uint32_t)NC &&
+                               (op == 40 ? in_dim == (uint32_t)H
+                                         : in_dim == k * (uint32_t)IM_EXP);
+                    std::vector<uint32_t> ids(k, 0);
+                    if (k > 0) fread(ids.data(), sizeof(uint32_t), k, stdin);
+                    std::vector<float> gu_corr;
+                    float gu_sc = 0, d_sc = 0;
+                    if (!vok) {
+                        ok = false;
+                    } else if (op == 40 && mgu && mgu->isReady() &&
+                               moe_pack_experts(layer, (const int*)ids.data(), (int)k,
+                                                gu_sc, d_sc, gu_corr)) {
+                        out_dim = (int)(k * 2 * IM_EXP);
+                        out_data.resize(out_dim, 0);
+                        float ag = dynamic_ascale(in_data.data(), H);
+                        mgu->go(0, in_data.data(), 1, H, ag, gu_sc, out_data.data(), out_dim);
+                        for (int e = 0; e < (int)k; e++) {
+                            if (gu_sc == 0) continue;
+                            float corr = gu_corr[e];
+                            float* col = out_data.data() + (size_t)e * 2 * IM_EXP;
+                            for (int i = 0; i < 2 * IM_EXP; i++) col[i] *= corr;
+                        }
+                    } else if (op == 41 && mde && mde->isReady() &&
+                               moe_pack_experts(layer, (const int*)ids.data(), (int)k,
+                                                gu_sc, d_sc, gu_corr)) {
+                        out_dim = H;
+                        out_data.resize(H, 0);
+                        float asu = dynamic_ascale(in_data.data(), (int)(k * IM_EXP));
+                        mde->go(0, in_data.data(), 1, (int)(k * IM_EXP), asu, d_sc,
+                                out_data.data(), H);
+                    } else {
+                        ok = false;
+                    }
                 }else if(op==31){ // Reset ALL KV caches + GDN state (new conversation)
                     fuse_reset = true;   // consumed by op=32/33 before its next step
                     out_dim = 0;
@@ -1911,6 +2478,14 @@ int main(int argc,char**argv){
                     int n_slots_to_run = (op == 33) ? (int)batch : 1;
                     if (n_slots_to_run > MAX_BATCH_SLOTS) n_slots_to_run = MAX_BATCH_SLOTS;
                     out_data.resize(n_slots_to_run);
+                    // NOTE (2026-08-09): batched-launch op33 was attempted and
+                    // REVERTED because the QKV/O xclbins were sized N=5120 while
+                    // the engine reads qkv_total=8192 — batched (M>1) launches
+                    // misaligned C rows (worker op1 batch=2 diff 2.18). RESOLVED:
+                    // run_build.sh now emits QKV at N=8192 (qkv_total) and the
+                    // rebuilt pair is verified — identical inputs give identical
+                    // rows (diff 0.0). The serial-slot path below is correct and
+                    // kept; a fresh batched-launch op33 can be built on top of it.
                     for (int slot_iter = 0; slot_iter < n_slots_to_run; slot_iter++) {
                     int slot = (op == 33) ? slot_iter : fuse_active_slot;
                     int token_id = (int)in_data[slot_iter];
@@ -2149,15 +2724,30 @@ int main(int argc,char**argv){
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l].data(),H);
         // FFN: MoE layers use the shared router→expert path (NPU cached or CPU);
-        // non-MoE keeps the GU/D xclbin path.
+        // non-MoE keeps the GU/D xclbin path. Batched union-pack prefill
+        // (NPU_MOE_BATCH=1) now uses PER-TOKEN ascales (go_rows q/d scales;
+        // fixed 2026-08-09): measured prefill 3.0-3.1s/tok vs sequential
+        // 3.5-3.7s/tok at M=9 (13-17%), 2.67 vs 3.49 at M=32 (24%).
+        // Correctness vs sequential (NPU_DUMP_HIDDEN): M=1 bit-identical;
+        // M=9 layers 0-19 bit-identical, L20+ FP accumulation-order noise
+        // (chunked D GEMMs sum in a different order) max|d| 2.4e-7 → 3.7e-2
+        // at L39 — same order as the engine's int8 noise, argmax stable to
+        // ~2 tokens. The earlier "2.25x MORE MACs ... sequential is faster"
+        // rejection was wrong on speed (launch amortization beats padding
+        // waste); the real bug was the shared M×H batch ascale, now per-token.
         if (has_moe && exp_off[l].gate) {
-            for (int pi = 0; pi < npt; pi++) {
-                if (use_npu_moe && mgu && mgu->isReady())
-                    moe_ffn_npu(&h_b[pi * H], &dw_b[pi * H], l);
-                else
-                    moe_ffn_cpu(&h_b[pi * H], &dw_b[pi * H], l);
-                cn(&dw_b[pi * H], H);
-            }
+            if (use_npu_moe && mgu && mgu->isReady() &&
+                getenv("NPU_MOE_BATCH") && getenv("NPU_MOE_BATCH")[0] != '0')
+                moe_ffn_npu_batch(h_b.data(), dw_b.data(), l, npt);
+            else
+                for (int pi = 0; pi < npt; pi++) {
+                    if (use_npu_moe && mgu && mgu->isReady())
+                        moe_ffn_npu(&h_b[pi * H], &dw_b[pi * H], l);
+                    else
+                        moe_ffn_cpu(&h_b[pi * H], &dw_b[pi * H], l);
+                    cn(&dw_b[pi * H], H);
+                }
+            for (int pi = 0; pi < npt; pi++) cn(&dw_b[pi * H], H);
         } else {
         int mlp_out=cfg.gu_split?IM:2*IM;
         float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
@@ -2247,12 +2837,18 @@ int main(int argc,char**argv){
             // Serial per-layer path for MoE models (#1472): the pipelined
             // QKV∥GU∥D structure assumes the standard MLP; the MoE FFN is
             // data-dependent (router → top-K) and GDN attention is sequential.
+            const bool dec_t = getenv("NPU_TIMING") != nullptr;
+            double t_qkv=0, t_attn=0, t_o=0, t_ffn=0, t_misc=0;
             for (int l = 0; l < NC; l++) {
+                auto tl0 = std::chrono::steady_clock::now();
                 for (int i = 0; i < H; i++) sb_data[i] = h_b[i];
                 rn_c(h_b.data(), in_n[l].data(), H);
                 FLM_GO(cq, l, h_b.data(), 1, H, dynamic_ascale(h_b.data(), H),
                        qsc[l], qo_b.data(), qkv_n);
                 cn(qo_b.data(), qkv_n);
+                double dq = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl0).count();
+                t_qkv += dq;
+                auto tl1 = std::chrono::steady_clock::now();
                 if (is_gdn_layer[l]) {
                     gdn_attn_step(l, h_b.data(), qo_b.data(),
                                   dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
@@ -2262,19 +2858,32 @@ int main(int argc,char**argv){
                     int pos = sp;
                     std_attn_step(l, h_b.data(), qo_b.data(), kv_caches[l], pos, at_b.data());
                 }
+                double da = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl1).count();
+                t_attn += da;
+                auto tl2 = std::chrono::steady_clock::now();
                 FLM_GO(co, l, at_b.data(), 1, NH * HD, dynamic_ascale(at_b.data(), NH * HD),
                        osc[l], oo_b.data(), H);
                 cn(oo_b.data(), H);
                 for (int i = 0; i < H; i++) h_b[i] = sb_data[i] + oo_b[i];
                 for (int i = 0; i < H; i++) sb_data[i] = h_b[i];
                 rn_c(h_b.data(), pa_n[l].data(), H);
+                double do_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl2).count();
+                t_o += do_;
+                auto tl3 = std::chrono::steady_clock::now();
                 if (use_npu_moe && mgu && mgu->isReady())
                     moe_ffn_npu(h_b.data(), dw_b.data(), l);
                 else
                     moe_ffn_cpu(h_b.data(), dw_b.data(), l);
                 cn(dw_b.data(), H);
                 for (int i = 0; i < H; i++) h_b[i] = sb_data[i] + dw_b[i];
+                double df = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl3).count();
+                t_ffn += df;
+                double dtotal = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl0).count();
+                t_misc += dtotal - (dq + da + do_ + df);
             }
+            if (dec_t)
+                fprintf(stderr, "[decode-stage] QKV=%.1fms attn=%.1fms O=%.1fms FFN=%.1fms misc=%.1fms per-layer\n",
+                        t_qkv/NC, t_attn/NC, t_o/NC, t_ffn/NC, t_misc/NC);
         } else {
         // ===== PIPELINED LAYER LOOP (cross-layer, roadmap step 3) =====
         // NPU runs QKV → GU → O → D back-to-back; all CPU work hides behind a kernel:
@@ -2415,6 +3024,26 @@ int main(int argc,char**argv){
 
     double tts=std::chrono::duration<double>(std::chrono::steady_clock::now()-tgs).count();
     printf("\n=== %.1f ms/tok (%.0f tok/s) | boot=%.0fms batches=%d tokens=%d ===\n",tts*1000/ng,ng/tts,t_boot,n_batches,total_generated);
+
+    // Route statistics dump (NPU_ROUTE_STATS=path): per-layer sorted
+    // "expert count" lines, consumed by NPU_WARM_EXPERTS on the next run.
+    if (!route_counts.empty()) {
+        const char* rs = getenv("NPU_ROUTE_STATS");
+        if (rs && rs[0]) {
+            FILE* rf = fopen(rs, "w");
+            if (rf) {
+                for (int l = 0; l < NC; l++) {
+                    std::vector<std::pair<int,int>> v;
+                    for (int e = 0; e < N_EXPERTS; e++)
+                        if (route_counts[l][e] > 0) v.push_back({route_counts[l][e], e});
+                    std::sort(v.rbegin(), v.rend());
+                    for (auto& p : v) fprintf(rf, "%d %d %d\n", l, p.second, p.first);
+                }
+                fclose(rf);
+                fprintf(stderr, "  route stats written to %s\n", rs);
+            }
+        }
+    }
 
     // Graceful exit: the XRT BO destructors (unique_ptr cleanup) can corrupt
     // glibc's heap when GB-scale vectors race with dma-buf teardown.

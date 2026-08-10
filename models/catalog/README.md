@@ -1,6 +1,13 @@
-# 1bit.systems Model Catalog — 47+ Models (1BP + Documented)
+# 1bit.systems Model Catalog — 47+ Models (Q4NX + 1BP + Documented)
 
-All models available in **1BP format** — single-file, zero-config, memory-mappable —
+**Q4NX is the canonical format (q4nx pivot, 2026-08-08)** — every zoo model
+that maps to an official ROCm converter config ships as Q4NX, produced with
+the official `FLM_Q4NX_Converter` via `tools/batch_convert_q4nx.sh`, landing
+in `~/.config/flm/models/<Name>/model.q4nx` for the FLM/NPU backend. Models
+with no official Q4NX converter (zaya, zamba2, mistral, falcon, olmo,
+granite, deepseek2/3) stay on their native backends (HIP 1BP / GGML-Vulkan).
+
+Also available in **1BP format** — single-file, zero-config, memory-mappable —
 plus documented models from the Zyphra ecosystem (EEG, TTS) that aren't convertible to 1BP.
 Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
 
@@ -257,3 +264,13 @@ If a HuggingFace repo contains a 0-byte or truncated model file:
 
    And verify the output says `GGUF ✅` (or the appropriate format) with a
    reasonable file size for the parameter count.
+
+5. **Every published model gets a quality-gate row** in
+   [QUALITY.md](QUALITY.md) — measured PPL per format (f16/Q8_0/Q4_K_M/1bp)
+   on the WS-00 gate set. No gate row = not published.
+
+**Format guidance:** Q8_0/INT8 is the quality default for <7B models; INT4
+(Q4_K_M/Q4NX) only for ≥7B where it's lossless; 1BP is the size tier (NPU
+pool, edge). Never convert 1BP TQ2 from Q4_K_M/Q8_0 sources — always from
+f16/bf16 (WS-05 finding: 93% of weights get zeroed on double-quantized
+sources, PPL 3.7e8).

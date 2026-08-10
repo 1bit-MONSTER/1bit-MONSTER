@@ -415,6 +415,16 @@ add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
 
+# -- gguf_to_tilefuse : GGUF -> TileFuse pre-tiled int4 layout (arXiv 2606.11357)
+add_executable(gguf_to_tilefuse tools/gguf_to_tilefuse.cpp)
+target_link_libraries(gguf_to_tilefuse PRIVATE gguf_reader)
+target_compile_options(gguf_to_tilefuse PRIVATE -O3 -std=c++23)
+
+# -- tf_gemv : reference fused GEMV over the TileFuse layout (M2 kernel logic)
+add_executable(tf_gemv tools/tf_gemv.cpp)
+target_link_libraries(tf_gemv PRIVATE gguf_reader)
+target_compile_options(tf_gemv PRIVATE -O3 -std=c++23)
+
 # -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
 #   tools/zuna_port.cpp (vendored from github.com/1bit-systems/eeg-medical, the
 #   canonical home) compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
@@ -825,6 +835,7 @@ set_source_files_properties(tests/zaya_server.cpp tests/backends/backend_hip_ada
 # no symlink — the standalone target was pure duplication of onebin.
 
 rocm_hip_target(test_wmma_i8_gemv tests/test_wmma_i8_gemv.cpp)
+rocm_hip_target(test_onnx_wmma_i8 tests/test_onnx_wmma_i8.cpp)
 rocm_hip_target(test_bonsai_e2e tests/test_bonsai_e2e.cpp)
 
 add_executable(test_medusa_skeleton tests/test_medusa_skeleton.cpp)
@@ -865,11 +876,31 @@ set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
 # test time. Byte-exact dequant check for every dtype gguf_reader.cpp
 # supports, against reference values baked in from the Python `gguf`
 # package. Runs unconditionally in every CI invocation.
+add_executable(test_voice_session tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp)
+target_include_directories(test_voice_session PRIVATE tools/)
+add_test(NAME test_voice_session COMMAND test_voice_session)
+set_tests_properties(test_voice_session PROPERTIES LABELS "host")
+add_executable(jarvis_ws_proto_test tests/jarvis_ws_proto_test.cpp tools/jarvis/ws_proto.cpp)
+target_include_directories(jarvis_ws_proto_test PRIVATE tools/)
+target_link_libraries(jarvis_ws_proto_test PRIVATE nlohmann_json::nlohmann_json)
+add_test(NAME jarvis_ws_proto_test COMMAND jarvis_ws_proto_test)
+set_tests_properties(jarvis_ws_proto_test PROPERTIES LABELS "host")
 add_executable(test_gguf_reader_dequant tests/test_gguf_reader_dequant.cpp)
 target_include_directories(test_gguf_reader_dequant PRIVATE tests/)
 target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
 add_test(NAME test_gguf_reader_dequant COMMAND test_gguf_reader_dequant)
 set_tests_properties(test_gguf_reader_dequant PROPERTIES LABELS "host")
+
+# -- test_npu_flm_delta: FLM multi-turn KV-reuse decision (host-only, no NPU).
+add_executable(test_npu_flm_delta tests/test_npu_flm_delta.cpp)
+add_test(NAME test_npu_flm_delta COMMAND test_npu_flm_delta)
+set_tests_properties(test_npu_flm_delta PROPERTIES LABELS "host")
+
+# -- test_moe_fused_math: v28 fused FFN (GUSGU/DSD concat) vs 4-launch
+# reference — pure host simulation of the int8 arithmetic, no NPU needed.
+add_executable(test_moe_fused_math tests/test_moe_fused_math.cpp)
+add_test(NAME test_moe_fused_math COMMAND test_moe_fused_math)
+set_tests_properties(test_moe_fused_math PROPERTIES LABELS "host")
 
 # -- test_tokenizer_logprobs: tokenizer logprob API (#81) -- restored after --
 # being dropped in the dead-code purge (issue #1341). The API is live
@@ -906,6 +937,8 @@ add_test(NAME test_cca_attn                COMMAND test_cca_attn)
 set_tests_properties(test_cca_attn          PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
 add_test(NAME test_wmma_i8_gemv            COMMAND test_wmma_i8_gemv)
 set_tests_properties(test_wmma_i8_gemv     PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
+add_test(NAME test_onnx_wmma_i8             COMMAND test_onnx_wmma_i8)
+set_tests_properties(test_onnx_wmma_i8      PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
 
 add_test(NAME test_bonsai_e2e              COMMAND test_bonsai_e2e ${BONSAI_H1B_MODEL})
 set_tests_properties(test_bonsai_e2e       PROPERTIES LABELS "gpu_required;model_required;e2e" SKIP_RETURN_CODE 77)
@@ -929,7 +962,7 @@ target_link_libraries(test_generic_attention PRIVATE backend_manager)
 add_test(NAME test_generic_attention COMMAND test_generic_attention ${GGUF_TEST_MODEL})
 set_tests_properties(test_generic_attention PROPERTIES LABELS "model_required;e2e" SKIP_RETURN_CODE 77)
 
-add_executable(bitnet_decode tools/bitnet_decode.cpp)
+add_executable(bitnet_decode tools/bitnet_decode.cpp src/safetensors_reader.cpp)
 set_source_files_properties(tools/bitnet_decode.cpp PROPERTIES LANGUAGE HIP)
 target_compile_options(bitnet_decode PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
 target_link_libraries(bitnet_decode PRIVATE rocm_cpp hip::host hip::device httplib::httplib nlohmann_json::nlohmann_json)
@@ -1287,6 +1320,8 @@ set(ONE_BIN_SOURCES
     tools/jarvis/codec_tts.cpp
     tools/jarvis/persona.cpp
     tools/jarvis/vad.cpp
+    tools/jarvis/voice_session.cpp
+    tools/jarvis/ws_proto.cpp
     tools/jarvis/context.cpp
     tools/jarvis/auth.cpp
     tools/jarvis/usage.cpp
@@ -2054,3 +2089,12 @@ add_executable(test_zaya_codec tests/test_zaya_codec.cpp)
 target_include_directories(test_zaya_codec PRIVATE include/)
 target_compile_options(test_zaya_codec PRIVATE -O3 -std=c++17)
 target_link_libraries(test_zaya_codec PRIVATE zaya_codec)
+rocm_hip_target(test_fd_seq3 tests/test_fd_seq3.cpp)
+add_test(NAME test_fd_seq3 COMMAND test_fd_seq3)
+set_tests_properties(test_fd_seq3 PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
+rocm_hip_target(test_fd_o tests/test_fd_o.cpp)
+add_test(NAME test_fd_o COMMAND test_fd_o)
+set_tests_properties(test_fd_o PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)
+rocm_hip_target(test_fd_ratio8 tests/test_fd_ratio8.cpp)
+add_test(NAME test_fd_ratio8 COMMAND test_fd_ratio8)
+set_tests_properties(test_fd_ratio8 PROPERTIES LABELS "gpu_required" SKIP_RETURN_CODE 77)

@@ -147,6 +147,29 @@ std::string SimpleTokenizer::decode(const std::vector<int>& tokens) {
     }
 #endif
     if (use_bpe && bpe_tok) {
+        // NPU FLM backend convention: shifted char-tokens, not vocab IDs
+        // (ASCII -> +100, raw bytes -> +300, EOS=106). Real BPE streams
+        // from a 128000-vocab model are never confined to this narrow set,
+        // so all-in-range is a safe detector (same heuristic as the
+        // fallback below). Without this, FLM-generated text decodes as
+        // garbage vocab ids once a real .htok is loaded.
+        bool npu_shifted = true;
+        for (int v : tokens) {
+            if (v == 106) continue;
+            if (!((v >= 132 && v <= 226) || (v >= 300 && v <= 555))) {
+                npu_shifted = false;
+                break;
+            }
+        }
+        if (npu_shifted && !tokens.empty()) {
+            std::string r;
+            for (int v : tokens) {
+                if (v == 106) continue;
+                if (v >= 132 && v <= 226) r += (char)(v - 100);
+                else if (v >= 300 && v <= 555) r += (char)(v - 300);
+            }
+            return r;
+        }
         std::string r(4096, '\0');
         size_t out_len = 0;
         rcpp_status_t st = rcpp_tokenizer_decode(bpe_tok, tokens.data(), tokens.size(),
@@ -158,14 +181,18 @@ std::string SimpleTokenizer::decode(const std::vector<int>& tokens) {
         }
         return "";
     }
-    // Fallback: ASCII + UTF-8 byte passthrough
+    // Fallback: ASCII + UTF-8 byte passthrough.
+    // Bands must match the backend encoders (backend_npu.cpp forward):
+    // printable ASCII 32-126 -> id 132-226 (+100); control/raw bytes ->
+    // id 300-555 (+300). (The old +200 scheme's band 201-226 decoded
+    // letters as control chars — fixed 2026-08-08.)
     std::string r;
     for (int v : tokens) {
         if (v == bos_id || v == eos_id) continue;
-        if (v > 100 && v < 200)
+        if (v >= 132 && v <= 226)
             r += (char)(v - 100);
-        else if (v > 200 && v < 456)
-            r += (char)(v - 200);
+        else if (v >= 300 && v <= 555)
+            r += (char)(v - 300);
         else {
             r += '['; r += std::to_string(v); r += ']';
         }

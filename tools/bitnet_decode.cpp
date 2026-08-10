@@ -22,6 +22,7 @@
 #include "rocm_cpp/sherry.h"
 #include "rocm_cpp/tokenizer.h"
 #include "rocm_cpp/kv_rotorquant.h"
+#include "safetensors_reader.h"
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
@@ -237,6 +238,9 @@ int main(int argc, char** argv) {
     if (derived_tok_path.size() > 4 &&
         derived_tok_path.compare(derived_tok_path.size() - 4, 4, ".h1b") == 0) {
         derived_tok_path.replace(derived_tok_path.size() - 4, 4, ".htok");
+    } else if (derived_tok_path.size() > 5 &&
+               derived_tok_path.compare(derived_tok_path.size() - 5, 5, ".onnx") == 0) {
+        derived_tok_path.replace(derived_tok_path.size() - 5, 5, ".htok");
     } else {
         derived_tok_path += ".htok";
     }
@@ -265,6 +269,7 @@ int main(int argc, char** argv) {
     std::string server_bind = "127.0.0.1";
     bool        kv_int8 = false;       // --kv-int8 : halve KV DRAM + bandwidth
     bool        kv_rotor = false;      // --kv-rotor : PQ3 rotorquant KV (5.33x DRAM)
+    std::string config_path;           // --config : HF config.json sidecar for .onnx models
     int argc_use = argc;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
@@ -278,6 +283,7 @@ int main(int argc, char** argv) {
         else if (a == "--server"       && i + 1 < argc) { server_port  = std::atoi(argv[++i]); }
         else if (a == "--bind"         && i + 1 < argc) { server_bind  = argv[++i]; }
         else if (a == "--tokenizer"    && i + 1 < argc) { tok_path     = argv[++i]; }
+        else if (a == "--config"       && i + 1 < argc) { config_path  = argv[++i]; }
         else if (a == "--kv-int8")                      { kv_int8      = true; if (argc_use > i) argc_use = i; continue; }
         else if (a == "--kv-rotor")                     { kv_rotor     = true; if (argc_use > i) argc_use = i; continue; }
         else continue;
@@ -295,6 +301,51 @@ int main(int argc, char** argv) {
         }
         buf.resize(count);
         return buf;
+    };
+
+    // Arch-aware chat templates. llama-3.2 uses the <|start_header_id|> family
+    // (special tokens live in the .htok vocab); qwen uses <|im_start|>/<|im_end|>;
+    // BitNet-family uses "User:/Assistant:" lines with <|eot_id|>. Arch comes
+    // from the config sidecar since the model isn't loaded yet at prompt-build
+    // time.
+    const std::string chat_arch = [&]() {
+        if (config_path.empty()) return std::string();
+        std::ifstream cf(config_path);
+        if (!cf) return std::string();
+        std::stringstream ss; ss << cf.rdbuf();
+        std::string s;
+        return safetensors_detail::json_find_string(ss.str(), "model_type", s) ? s : std::string();
+    }();
+    const bool llama_chat = (chat_arch == "llama");
+    const bool qwen_chat  = (chat_arch == "qwen2" || chat_arch == "qwen3" ||
+                             chat_arch == "qwen2.5" || chat_arch == "qwen3.5");
+    auto chat_append = [&](std::vector<int>& ids, rcpp_tokenizer_t* tok,
+                           const std::string& role, const std::string& content) {
+        if (llama_chat) {
+            auto v = tokenize(tok, ("<|start_header_id|>" + role + "<|end_header_id|>\n\n" + content).c_str());
+            ids.insert(ids.end(), v.begin(), v.end());
+            ids.push_back(128009);  // <|eot_id|>
+        } else if (qwen_chat) {
+            auto v = tokenize(tok, ("<|im_start|>" + role + "\n" + content + "<|im_end|>\n").c_str());
+            ids.insert(ids.end(), v.begin(), v.end());
+        } else {
+            std::string r = role;
+            if (!r.empty()) r[0] = (char)std::toupper((unsigned char)r[0]);
+            auto v = tokenize(tok, (r + ": " + content).c_str());
+            ids.insert(ids.end(), v.begin(), v.end());
+            ids.push_back(128009);  // <|eot_id|>
+        }
+    };
+    auto chat_assistant_pre = [&](rcpp_tokenizer_t* tok) -> std::vector<int> {
+        if (llama_chat)
+            return tokenize(tok, "<|start_header_id|>assistant<|end_header_id|>\n\n");
+        if (qwen_chat)
+            return tokenize(tok, "<|im_start|>assistant\n");
+        return tokenize(tok, "Assistant: ");
+    };
+    auto chat_begin = [&](rcpp_tokenizer_t* tok) {
+        if (llama_chat) return 128000;  // <|begin_of_text|>
+        return rcpp_tokenizer_bos_id(tok);
     };
 
     std::vector<int> prompt_ids;
@@ -325,7 +376,7 @@ int main(int argc, char** argv) {
             auto text_ids = tokenize(tok, text);
             prompt_ids.insert(prompt_ids.end(), text_ids.begin(), text_ids.end());
             rcpp_tokenizer_free(tok);
-            fprintf(stderr, "[tokenizer] \"%s\" -> %zu tokens\n", text, prompt_ids.size());
+            fprintf(stderr, "[tokenizer] \"%s\" -> %zu tokens ids:", text, prompt_ids.size()); for (auto id : prompt_ids) fprintf(stderr, " %d", id); fprintf(stderr, "\n");
         }
     } else if (std::string(prompt_arg) == "--chat") {
         // layout: bitnet_decode <model> --chat "<user msg>" <num_new> [system_msg]
@@ -340,29 +391,14 @@ int main(int argc, char** argv) {
         if (rcpp_tokenizer_load(tok_path, &tok) != RCPP_OK) {
             fprintf(stderr, "cannot load tokenizer .htok: %s\n", tok_path); return 1;
         }
-        const int BOS = rcpp_tokenizer_bos_id(tok);
-        const int EOT = 128009;  // <|eot_id|>
-
-        prompt_ids.push_back(BOS);
-        if (system_msg) {
-            std::string s = std::string("System: ") + system_msg;
-            auto ids = tokenize(tok, s.c_str());
-            prompt_ids.insert(prompt_ids.end(), ids.begin(), ids.end());
-            prompt_ids.push_back(EOT);
-        }
-        {
-            std::string s = std::string("User: ") + user_msg;
-            auto ids = tokenize(tok, s.c_str());
-            prompt_ids.insert(prompt_ids.end(), ids.begin(), ids.end());
-            prompt_ids.push_back(EOT);
-        }
-        {
-            auto ids = tokenize(tok, "Assistant: ");
-            prompt_ids.insert(prompt_ids.end(), ids.begin(), ids.end());
-        }
+        prompt_ids.push_back(chat_begin(tok));
+        if (system_msg) chat_append(prompt_ids, tok, "system", system_msg);
+        chat_append(prompt_ids, tok, "user", user_msg);
+        auto pre = chat_assistant_pre(tok);
+        prompt_ids.insert(prompt_ids.end(), pre.begin(), pre.end());
         rcpp_tokenizer_free(tok);
-        fprintf(stderr, "[chat] user=\"%s\"%s -> %zu prompt tokens\n",
-                user_msg, system_msg ? " (with system)" : "", prompt_ids.size());
+        fprintf(stderr, "[chat] user=\"%s\"%s -> %zu prompt tokens ids:",
+                user_msg, system_msg ? " (with system)" : "", prompt_ids.size()); for (auto id : prompt_ids) fprintf(stderr, " %d", id); fprintf(stderr, "\n");
     } else if (std::string(prompt_arg) == "--server") {
         // Server mode: don't build a single prompt — each HTTP request
         // carries its own conversation in OpenAI format. Prime the cache
@@ -445,9 +481,45 @@ int main(int argc, char** argv) {
     const int start_tok = prompt_ids.front();
 
     rcpp_bitnet_model_t m;
-    if (rcpp_bitnet_load_h1b(path, &m) != RCPP_OK) {
+    const std::string path_s = path;
+    const bool is_onnx = (path_s.size() > 5 &&
+                          path_s.compare(path_s.size() - 5, 5, ".onnx") == 0);
+    rcpp_status_t load_st = is_onnx ? rcpp_bitnet_load_onnx(path, &m)
+                                    : rcpp_bitnet_load_h1b(path, &m);
+    if (load_st != RCPP_OK) {
         fprintf(stderr, "failed to load %s\n", path);
         return 1;
+    }
+
+    int  hd_override = 0;                    // config "head_dim" (qwen3 small: 128)
+    if (is_onnx) {
+        // ONNX carries weights only — config comes from a sibling config.json
+        // (HF standard). Fill the fields the loader can't know.
+        if (!config_path.empty()) {
+            std::ifstream cf(config_path);
+            if (!cf) { fprintf(stderr, "cannot open --config %s\n", config_path.c_str()); return 1; }
+            std::stringstream ss; ss << cf.rdbuf();
+            std::string cfg = ss.str();
+            int v; float f; std::string s;
+            if (safetensors_detail::json_find_int(cfg, "num_attention_heads", v)) m.num_heads = v;
+            if (safetensors_detail::json_find_int(cfg, "num_key_value_heads", v)) m.num_kv_heads = v;
+            else if (m.num_heads > 0) m.num_kv_heads = m.num_heads;  // MHA models omit it
+            if (safetensors_detail::json_find_int(cfg, "head_dim", v)) hd_override = v;
+            if (safetensors_detail::json_find_int(cfg, "max_position_embeddings", v)) m.max_seq_len = v;
+            if (safetensors_detail::json_find_int(cfg, "tie_word_embeddings", v)) m.tie_embeddings = v;
+            if (safetensors_detail::json_find_float(cfg, "rope_theta", f)) m.rope_theta = f;
+            if (safetensors_detail::json_find_float(cfg, "rms_norm_eps", f)) m.rms_norm_eps = f;
+            if (safetensors_detail::json_find_string(cfg, "model_type", s)) m.arch = rcpp_arch_from_string(s.c_str());
+        }
+        if (m.num_heads <= 0 || m.num_kv_heads <= 0 ||
+            (hd_override <= 0 && m.hidden_size % m.num_heads != 0)) {
+            fprintf(stderr, "[onnx] config missing/invalid num_attention_heads / num_key_value_heads (use --config config.json)\n");
+            return 1;
+        }
+        fprintf(stderr, "[onnx] model: %d layers, hs=%d is=%d heads=%d nkv=%d hd=%d rope=%.0f eps=%g\n",
+                m.num_layers, m.hidden_size, m.intermediate_size, m.num_heads, m.num_kv_heads,
+                hd_override > 0 ? hd_override : m.hidden_size / m.num_heads,
+                m.rope_theta, m.rms_norm_eps);
     }
 
     // halo-ai Lane B/B'/B'': select ternary GEMV by resolved weight_format.
@@ -470,8 +542,12 @@ int main(int argc, char** argv) {
     // ffn_sub_norm) — orthogonal to the ternary GEMV dispatch. A
     // BitNet-repacked Bonsai .h1b has arch=BITNET + weight_format=BONSAI_TQ2.
     const bool is_qwen3       = (m.arch == RCPP_ARCH_QWEN3);
+    // Standard (llama-family) path: direct O proj + SiLU-GLU. BitNet is the
+    // only arch with attn_sub_norm/ffn_sub_norm + squared-ReLU GLU. ONNX
+    // models (phi, etc.) land here via --config model_type.
+    const bool std_arch       = (m.arch != RCPP_ARCH_BITNET);
     fprintf(stderr, "[bitnet_decode] arch=%s weight_format=%d\n",
-            is_qwen3 ? "qwen3" : "bitnet", (int)m.weight_format);
+            is_qwen3 ? "qwen3" : (std_arch ? "standard" : "bitnet"), (int)m.weight_format);
 
     // Int8-activation dispatch (HALO_V2 / SHERRY_I8 / TQ1).
     // DP4A (halo_f16) is the default — faster than WMMA for GEMV (vector×matrix)
@@ -495,9 +571,11 @@ int main(int argc, char** argv) {
     const int is  = m.intermediate_size;
     const int nh  = m.num_heads;
     const int nkv = m.num_kv_heads;
-    const int hd  = hs / nh;
-    const int hs_k = align_k(hs);   // K for GEMVs that take hs as input dim (Q/K/V/O/gate/up)
+    const int hd  = (hd_override > 0) ? hd_override : hs / nh;
+    const int hs_k = align_k(hs);   // K for GEMVs that take hs as input dim (Q/K/V/gate/up)
     const int is_k = align_k(is);   // K for down_proj (takes is as input dim)
+    const int attn_k = align_k(nh * hd);  // K for O proj (== hs when hd == hs/nh)
+    const int x_i8_k = std::max(hs_k, std::max(is_k, attn_k));  // widest act quant
     const int L   = m.num_layers;
     const int V   = m.vocab_size;
     const bool repl_mode = (std::string(prompt_arg) == "--repl");
@@ -536,8 +614,8 @@ int main(int argc, char** argv) {
     HIP_OK(hipMalloc(&x,             hs * 2));
     HIP_OK(hipMalloc(&normed,        hs * 2));
     HIP_OK(hipMalloc(&x_i8_scratch_fp16, hs * 2));  // unused slot, kept for parity
-    HIP_OK(hipMalloc(&x_i8,          hs_k));
-    HIP_OK(hipMemsetAsync(x_i8, 0, hs_k));
+    HIP_OK(hipMalloc(&x_i8,          x_i8_k));
+    HIP_OK(hipMemsetAsync(x_i8, 0, x_i8_k, decode_stream));
     HIP_OK(hipMalloc(&x_scale_dev,   4));
     HIP_OK(hipMalloc(&q_raw,         nh * hd * 4));
     HIP_OK(hipMalloc(&k_raw,         nkv * hd * 4));
@@ -545,8 +623,8 @@ int main(int argc, char** argv) {
     HIP_OK(hipMalloc(&q_fp16,        nh * hd * 2));
     HIP_OK(hipMalloc(&k_fp16,        nkv * hd * 2));
     HIP_OK(hipMalloc(&v_fp16,        nkv * hd * 2));
-    HIP_OK(hipMalloc(&o_raw,         hs * 4));
-    HIP_OK(hipMalloc(&o_fp16,        hs * 2));
+    HIP_OK(hipMalloc(&o_raw,         attn_k * 4));
+    HIP_OK(hipMalloc(&o_fp16,        attn_k * 2));
     HIP_OK(hipMalloc(&gate_raw,      is * 4));
     HIP_OK(hipMalloc(&up_raw,        is * 4));
     HIP_OK(hipMalloc(&down_raw,      hs * 4));
@@ -555,7 +633,7 @@ int main(int argc, char** argv) {
     HIP_OK(hipMalloc(&down_fp16,     hs * 2));
     HIP_OK(hipMalloc(&silu_out,      is * 2));
     HIP_OK(hipMalloc(&silu_i8,       is_k));
-    HIP_OK(hipMemsetAsync(silu_i8, 0, is_k));
+    HIP_OK(hipMemsetAsync(silu_i8, 0, is_k, decode_stream));
     HIP_OK(hipMalloc(&silu_scale_dev, 4));
     HIP_OK(hipMalloc(&logits,        V * 4));
     HIP_OK(hipMalloc(&logits_fp16,   V * 2));
@@ -725,7 +803,7 @@ int main(int argc, char** argv) {
     auto forward_token = [&](int token_id, int pos) -> int {
         // Seed the FP32 residual stream from the FP16 embedding.
         RC_OK(rcpp_embedding_lookup_fp16(m.embedding_dev, token_id, x, hs, ds));
-        HIP_OK(hipMemsetAsync(x_fp32, 0, hs * sizeof(float)));
+        HIP_OK(hipMemsetAsync(x_fp32, 0, hs * sizeof(float), decode_stream));
         RC_OK(rcpp_residual_add_fp32_from_fp16(x_fp32, x, hs, ds));
 
         for (int l = 0; l < L; ++l) {
@@ -753,6 +831,10 @@ int main(int argc, char** argv) {
                 RC_OK(ternary_gemv(ly.q_i8_dev, x_i8, x_scale, ly.q_i8_scales_dev, normed, q_fp16, nh*hd, hs, decode_stream));
                 RC_OK(ternary_gemv(ly.k_i8_dev, x_i8, x_scale, ly.k_i8_scales_dev, normed, k_fp16, nkv*hd, hs, decode_stream));
                 RC_OK(ternary_gemv(ly.v_i8_dev, x_i8, x_scale, ly.v_i8_scales_dev, normed, v_fp16, nkv*hd, hs, decode_stream));
+                // qwen2.5-family attention biases (GGUF conversions drop them)
+                if (ly.q_bias_dev) RC_OK(rcpp_residual_add_fp16(q_fp16, ly.q_bias_dev, nh*hd, ds));
+                if (ly.k_bias_dev) RC_OK(rcpp_residual_add_fp16(k_fp16, ly.k_bias_dev, nkv*hd, ds));
+                if (ly.v_bias_dev) RC_OK(rcpp_residual_add_fp16(v_fp16, ly.v_bias_dev, nkv*hd, ds));
             } else {
                 // INT8-act path: quantize, memcpy scale to host, dispatch.
                 RC_OK(rcpp_quantize_fp16_to_i8(normed, x_i8, x_scale_dev, hs, ds));
@@ -820,28 +902,36 @@ int main(int argc, char** argv) {
                     o_fp16, nh, nkv, hd, pos+1, l, scale, nullptr);
                 if (rrc != 0) { fprintf(stderr, "kv-rotor rc=%d layer=%d\n", rrc, l); return 1; }
             } else {
+                // Stream-ordered KV writes: plain hipMemcpy (default stream) is
+                // NOT ordered against decode_stream's async gemvs — it could run
+                // before the gemv completes, caching stale zeros (silent garbage
+                // attention). Async on decode_stream keeps write-before-read.
+                HIP_OK(hipDeviceSynchronize());
                 HIP_OK(hipMemcpy(K_caches[l] + (size_t)pos * nkv * hd, k_fp16, nkv*hd*2, hipMemcpyDeviceToDevice));
                 HIP_OK(hipMemcpy(V_caches[l] + (size_t)pos * nkv * hd, v_fp16, nkv*hd*2, hipMemcpyDeviceToDevice));
+                HIP_OK(hipDeviceSynchronize());
                 RC_OK(rcpp_kv_cache_attn_decode_fd(q_fp16, K_caches[l], V_caches[l],
                                                    o_fp16, nh, nkv, hd, pos+1, scale, ds));
             }
 
-            if (is_qwen3) {
-                // Qwen3: attn output feeds O proj directly (no attn_sub_norm).
+            if (std_arch) {
+                // Standard: attn output feeds O proj directly (no attn_sub_norm).
                 // Reuse `normed` as the O-proj output buffer.
                 if (is_bonsai) {
                     RC_OK(ternary_gemv(ly.o_packed_dev, nullptr, 0.0f,
-                                       nullptr, o_fp16, normed, hs, align_k(nh*hd), decode_stream));
+                                       nullptr, o_fp16, normed, hs, attn_k, decode_stream));
                 } else {
-                    if (is_wmma_i8) RC_OK(rcpp_hadamard_rotate_fp16(o_fp16, o_fp16, hs, ds));
-                    RC_OK(rcpp_quantize_fp16_to_i8(o_fp16, x_i8, x_scale_dev, hs, ds));
+                    // O proj input is the nh*hd attention output — rotate +
+                    // quantize the FULL width (== hs when hd == hs/nh).
+                    if (is_wmma_i8) RC_OK(rcpp_hadamard_rotate_fp16(o_fp16, o_fp16, nh*hd, ds));
+                    RC_OK(rcpp_quantize_fp16_to_i8(o_fp16, x_i8, x_scale_dev, nh*hd, ds));
                     float x_scale = 0.0f;
                     if (!is_sherry_fp16) {
                         HIP_OK(hipMemcpy(&x_scale, x_scale_dev, 4, hipMemcpyDeviceToHost));
                     }
                     RC_OK(ternary_gemv(is_wmma_i8 ? ly.o_i8_dev : ly.o_packed_dev,
                                        x_i8, x_scale, is_wmma_i8 ? ly.o_i8_scales_dev : ly.o_scales_dev,
-                                       o_fp16, normed, hs, align_k(nh*hd), decode_stream));
+                                       o_fp16, normed, hs, attn_k, decode_stream));
                 }
                 RC_OK(rcpp_residual_add_fp32_from_fp16(x_fp32, normed, hs, ds));
             } else {
@@ -884,7 +974,7 @@ int main(int argc, char** argv) {
                                    normed, up_fp16,   is, hs_k, decode_stream));
             }
 
-            if (is_qwen3) {
+            if (std_arch) {
                 RC_OK(rcpp_silu_glu_fp16(gate_fp16, up_fp16, silu_out, is, ds));
             } else {
                 RC_OK(rcpp_relu2_glu_rmsnorm_fp16(gate_fp16, up_fp16, ly.ffn_sub_norm_dev,
@@ -915,8 +1005,7 @@ int main(int argc, char** argv) {
                                             m.rms_norm_eps, hs, ds));
 
         // LM head GEMV: use TQ2 packed embedding if available (82 MB read vs 621 MB FP16).
-        if (is_bonsai && m.embedding_packed_dev) {
-            // TQ2 kernel writes FP16; convert to FP32 for argmax.
+        if (is_bonsai && m.embedding_packed_dev) {            // TQ2 kernel writes FP16; convert to FP32 for argmax.
             bonsai_tq2_gemv_launch(
                 static_cast<const uint8_t*>(m.embedding_packed_dev),
                 reinterpret_cast<const uint16_t*>(normed),
@@ -924,7 +1013,8 @@ int main(int argc, char** argv) {
                 V, hs, nullptr);
             RC_OK(rcpp_fp16_to_fp32(logits_fp16, logits, V, ds));
         } else {
-            RC_OK(rcpp_fp16_gemv(m.embedding_dev, normed, logits, V, hs, ds));
+            RC_OK(rcpp_fp16_gemv(m.lm_head_dev ? m.lm_head_dev : m.embedding_dev,
+                                 normed, logits, V, hs, ds));
         }
 
         // Fast path: greedy argmax on device. Full sampler chain (rep
@@ -1149,12 +1239,9 @@ int main(int argc, char** argv) {
             if (!std::getline(std::cin, line)) break;
             if (line == "quit" || line == "exit") break;
             if (line.empty()) continue;
-            auto user_ids = encode_chunk((std::string("User: ") + line).c_str());
-            user_ids.push_back(EOT);
-            auto assist_pre = encode_chunk("Assistant: ");
             std::vector<int> turn;
-            turn.reserve(user_ids.size() + assist_pre.size());
-            turn.insert(turn.end(), user_ids.begin(), user_ids.end());
+            chat_append(turn, rtok, "user", line);
+            auto assist_pre = chat_assistant_pre(rtok);
             turn.insert(turn.end(), assist_pre.begin(), assist_pre.end());
             if (cache_pos + (int)turn.size() + num_tokens >= max_len) {
                 fprintf(stderr, "\n[repl] context full (%d/%d), resetting\n",
@@ -1212,18 +1299,16 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            // Build prompt token stream from OpenAI-format messages using
-            // BitNet's chat template.
-            std::vector<int> req_prompt = { BOS };
+            // Build prompt token stream from OpenAI-format messages using the
+            // arch-aware chat template.
+            std::vector<int> req_prompt;
+            req_prompt.push_back(chat_begin(stok));
             for (auto& m : j["messages"]) {
                 std::string role = m.value("role", std::string("user"));
                 std::string content = m.value("content", std::string(""));
-                if (!role.empty()) role[0] = (char)std::toupper((unsigned char)role[0]);
-                auto ids = srv_encode(role + ": " + content);
-                req_prompt.insert(req_prompt.end(), ids.begin(), ids.end());
-                req_prompt.push_back(EOT);
+                chat_append(req_prompt, stok, role, content);
             }
-            auto pre = srv_encode("Assistant: ");
+            auto pre = chat_assistant_pre(stok);
             req_prompt.insert(req_prompt.end(), pre.begin(), pre.end());
 
             int   req_max = j.value("max_tokens", 256);

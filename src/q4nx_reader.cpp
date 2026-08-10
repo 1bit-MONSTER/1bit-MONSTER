@@ -170,7 +170,7 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
 
     uint64_t hdr_len = 0;
     memcpy(&hdr_len, r.data, 8);
-    if (hdr_len == 0 || hdr_len > r.size || 8 > r.size - hdr_len || hdr_len > (r.size > 65536 ? 65536 : r.size)) {
+    if (hdr_len == 0 || hdr_len > r.size || 8 > r.size - hdr_len || hdr_len > (r.size > 262144 ? 262144 : r.size)) {
         r.close();
         return false; // not a Q4NX/safetensors-style header
     }
@@ -193,13 +193,16 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
     }
 
     // Layer count: highest "model.layers.N." index + 1.
+    // Qwen3.6-35B-A3B q4nx headers use SINGULAR "model.layer.N." — try both.
     int max_layer = -1;
-    size_t search = 0;
-    const std::string marker = "\"model.layers.";
-    while ((search = header.find(marker, search)) != std::string::npos) {
-        int n = atoi(header.c_str() + search + marker.size());
-        if (n > max_layer) max_layer = n;
-        search += marker.size();
+    for (const char* marker : {"\"model.layers.", "\"model.layer."}) {
+        size_t search = 0;
+        const size_t mlen = strlen(marker);
+        while ((search = header.find(marker, search)) != std::string::npos) {
+            int n = atoi(header.c_str() + search + mlen);
+            if (n > max_layer) max_layer = n;
+            search += mlen;
+        }
     }
     if (max_layer >= 0) cfg.n_layers = cfg.num_layers = max_layer + 1;
 
@@ -216,12 +219,20 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
         if (end != std::string::npos) cfg.quantization = header.substr(dtype_pos, end - dtype_pos);
     }
 
-    // Architecture: best-effort from filename (no self-describing field in Q4NX).
+    // Architecture: best-effort from the PARENT DIRECTORY name (FLM layout
     // Split on '-'/'_' only, not digits — real GGUF architecture tags keep the
     // version digit as part of the name (e.g. "qwen3", "zaya1"), so match that.
     auto slash = path.find_last_of('/');
-    auto dot = path.find_last_of('.');
-    std::string base = path.substr(slash + 1, (dot == std::string::npos ? path.size() : dot) - slash - 1);
+    // Directory name (FLM layout: <ModelName>/model.q4nx — the basename is
+    // always "model"). Fall back to basename for bare paths.
+    std::string dirname;
+    if (slash != std::string::npos) {
+        auto dir_start = path.rfind('/', slash > 0 ? slash - 1 : 0);
+        dirname = (dir_start == std::string::npos)
+                      ? path.substr(0, slash)
+                      : path.substr(dir_start + 1, slash - dir_start - 1);
+    }
+    std::string base = dirname.empty() ? path.substr(slash + 1) : dirname;
     auto sep = base.find_first_of("-_");
     cfg.architecture = sep == std::string::npos ? base : base.substr(0, sep);
     // GGUF arch tags are lowercase ("qwen3", "llama") — the router compares

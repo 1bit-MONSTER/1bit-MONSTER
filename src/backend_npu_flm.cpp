@@ -14,6 +14,7 @@
 
 #include "backend.h"
 #include "npu_device_path.h"
+#include "npu_flm_delta.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -40,6 +41,19 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
     int H = cfg.hidden_size;
     const std::string& arch = cfg.architecture;
 
+    // Llama family (official FLM registry: llama3.1:8b / llama3.2:1b / llama3.2:3b).
+    // Weights come from the ROCm FLM_Q4NX_Converter (Q4NX pivot — no more custom
+    // per-model loaders for llama-family models). q4nx manifests carry no arch,
+    // so disambiguate by H+L (llama3.2:1b=2048/16, 3b=3072/28, 3.1:8b=4096/32).
+    if (arch == "llama" ||
+        (H == 2048 && cfg.num_layers == 16) ||
+        (H == 3072 && cfg.num_layers == 28) ||
+        (H == 4096 && cfg.num_layers == 32)) {
+        if (H <= 2048) return "llama3.2:1b";
+        if (H <= 3072) return "llama3.2:3b";
+        return "llama3.1:8b";
+    }
+
     // Qwen3.5 Gate-Delta family
     if (arch == "qwen35" || arch == "qwen35moe") {
         // Qwen3.6-35B-A3B MoE: same qwen3_5_moe GGUF arch, but 256 experts
@@ -55,8 +69,8 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
         return "qwen3.5:9b";
     }
 
-    // Qwen3.6-MoE
-    if (arch == "qwen36moe") {
+    // Qwen3.6-MoE (GGUF arch qwen3_6_moe, and q4nx filename "Qwen3.6-...")
+    if (arch == "qwen3.6" || arch == "qwen36moe") {
         return "qwen3.6-moe:35b-a3b";
     }
 
@@ -80,6 +94,7 @@ class NpuFlmBackend : public Backend {
     std::string flm_config_;
     std::string flm_xclbins_;
     std::string model_tag_;
+    std::string last_prompt_;  // previous prompt text, for multi-turn KV reuse
     pid_t pid_ = 0;
     int stdin_fd_ = -1;   // write to child's stdin
     int stdout_fd_ = -1;  // read from child's stdout
@@ -245,6 +260,7 @@ public:
         }
 
         initialized = true;
+        last_prompt_.clear();  // fresh process → no KV continuity from any previous one
         fprintf(stderr, "NPU: FLM ready — %s (%s)\n", model_tag_.c_str(), flm_bin_.c_str());
         return true;
     }
@@ -281,25 +297,49 @@ public:
         return out;
     }
 
+    /// Continue the live FLM session with a delta (no <<RESET>>): multi-turn
+    /// KV reuse. The caller owns session bookkeeping and supplies the delta
+    /// (a suffix of the growing conversation prompt, newline-terminated).
+    std::string continue_text(const std::string& delta) override {
+        if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
+        if (delta.empty()) return "";
+        std::string req = delta;
+        if (req.back() != '\n') req += '\n';  // REPL reads until newline
+        ssize_t written = write(stdin_fd_, req.c_str(), req.size());
+        if (written < 0 || (size_t)written != req.size()) return "";
+        std::string out = read_response();
+        if (out.rfind("[npu:", 0) == 0) return "";  // error strings aren't text
+        return out;
+    }
+
     /// Send a text prompt to FLM and get the response.
     /// The prompt is the raw text; FLM handles tokenization internally.
     /// Returns the generated text, or error string on failure.
     std::string query(const std::string& prompt) {
         if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "[npu: not loaded]";
 
-        // 1. Reset FLM state for new prompt
-        // FLM expects: <<RESET>>\nprompt_text\n
-        // The <<RESET>> clears KV cache for a new conversation
-        const char* reset_cmd = "<<RESET>>\n";
-        write(stdin_fd_, reset_cmd, strlen(reset_cmd));
+        // 1. Multi-turn KV reuse. FLM keeps its KV cache resident across
+        // inserts, so a prompt that extends the previous one (client resends
+        // full history every turn) continues the session with just the delta
+        // — no <<RESET>>, no full re-prefill of the conversation per turn.
+        // New conversation or diverged history → reset and re-prefill.
+        std::string send;
+        if (npu_flm_send_delta(last_prompt_, prompt, send))
+            write(stdin_fd_, "<<RESET>>\n", strlen("<<RESET>>\n"));
 
-        // 2. Send prompt
-        std::string req = prompt + "\n";
+        // 2. Send prompt (delta on continuation, full prompt otherwise)
+        std::string req = send + "\n";
         ssize_t written = write(stdin_fd_, req.c_str(), req.size());
         if (written < 0 || (size_t)written != req.size())
             return "[npu: write error]";
 
-        // 3. Read response until ">>> " prompt
+        last_prompt_ = prompt;
+
+        return read_response();
+    }
+
+    std::string read_response() {
+        // Read response until ">>> " prompt
         std::string resp;
         char c;
         auto t0 = std::chrono::steady_clock::now();
@@ -389,6 +429,7 @@ public:
 
     void destroy() override {
         initialized = false;
+        last_prompt_.clear();
         if (pid_ > 0) {
             // Send graceful exit
             const char* exit_cmd = "/exit\n";

@@ -102,8 +102,12 @@ struct TokenRouter {
         if (prompt.empty()) prompt = {2, 3, 4, 5, 6, 7, 8, 9};
         if ((int)prompt.size() > 24) prompt.resize(24);
         primary->reset_state();
-        for (int t : prompt) {
-            int out = primary->forward(t, 0);
+        // Feed prefill at real positions (pos=i): backends like NPU-FLM treat a
+        // pos reset to 0 as "prompt complete" and fire their query then. Feeding
+        // everything at pos=0 made the FLM backend query on a 2-token prompt and
+        // read a degenerate continuation — false-rejecting qwen3:4b.
+        for (int i = 0; i < (int)prompt.size(); i++) {
+            int out = primary->forward(prompt[i], i);
             if (out <= 0 || out >= (int)cfg.vocab_size) return false;
         }
         std::vector<int> outs;
@@ -116,7 +120,15 @@ struct TokenRouter {
         }
         int distinct = (int)std::set<int>(outs.begin(), outs.end()).size();
         int in_low = 0;  // ids < 1% of vocab: degenerate low-id stick
-        for (int o : outs) if (o < (int)cfg.vocab_size / 100) in_low++;
+        bool all_char_band = true;  // NPU FLM text backend shifts ASCII -> 132..226
+        for (int o : outs) {
+            if (o < (int)cfg.vocab_size / 100) in_low++;
+            if (o < 132 || o > 226) all_char_band = false;
+        }
+        // The per-request FLM backend returns char-shifted ids, which always
+        // sit in the low-id band — the in_low rule would false-negative it.
+        // A stuck model still repeats the same char (distinct == 1).
+        if (all_char_band) return distinct > 1;
         return distinct > 1 && in_low < 4;
     }
 
