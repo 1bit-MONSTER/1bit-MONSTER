@@ -1250,6 +1250,14 @@ int main(int argc,char**argv){
     // matmuls. Revisit when batching >1 or the 40-col driver lands.
     // Falls back to moe_ffn_cpu on any init failure.
     std::unique_ptr<I8Ctx> mgu, mde, msg, msd;
+    // v28 fused concat contexts (NPU_MOE_FUSED=1): MOE_GUSGU (routed GU +
+    // shared GU in one launch) and MOE_DSD (routed D + shared D in one
+    // launch). Null when the opt-in is off or the xclbins are missing.
+    std::unique_ptr<I8Ctx> mgu_f, mde_f;
+    // Pack target for moe_pack_experts: set to the fused contexts while the
+    // decode path packs, null otherwise (ops 40/41 + batch keep mgu/mde).
+    I8Ctx* pack_gu_ = nullptr;
+    I8Ctx* pack_de_ = nullptr;
     std::vector<float> msg_scale, msd_scale;
     // Shared-expert weights are static per layer: pack ALL layers into host
     // memory at init (packB-equivalent, single per-tensor scale, KD×ND padded
@@ -1298,6 +1306,26 @@ int main(int argc,char**argv){
                       moe_ctx(mde, "MOE_D",  moe_n, H, 1) &&
                       moe_ctx(msg, "MOE_SGU", H, 2 * IM_EXP, 1) &&
                       moe_ctx(msd, "MOE_SD", IM_EXP, H, 1);
+            bool fused = false;
+            if (ok && N_SHARED > 0 && getenv("NPU_MOE_FUSED") &&
+                atoi(getenv("NPU_MOE_FUSED")) != 0) {
+                // v28: fuse the shared expert into the routed concat launches
+                // (GUSGU N=8192+1024 same input x; DSD K=4096+512, N=2*H) →
+                // 2 launches per layer instead of 4. Same single-GEMM kernel
+                // as v27 — pure concat along N (GU) and K (D).
+                fused = moe_ctx(mgu_f, "MOE_GUSGU", H, moe_n + 2 * IM_EXP, 1) &&
+                        moe_ctx(mde_f, "MOE_DSD", TOP_K * IM_EXP + IM_EXP, 2 * H, 1);
+                if (fused) {
+                    // The DSD weight BO is block-diagonal: routed D in cols
+                    // [0,H), shared D in cols [H,2H). The two zero blocks are
+                    // never rewritten per layer — zero the host mapping once;
+                    // the first pack's sync uploads it.
+                    memset(mde_f->layerB[0]->map(), 0,
+                           (size_t)mde_f->KD * mde_f->ND);
+                } else {
+                    mgu_f.reset(); mde_f.reset();
+                }
+            }
             if (ok) {
                 // Shared expert weights are static per layer: pack all layers
                 // into host caches (single per-tensor scale, padded layout).
@@ -1332,9 +1360,11 @@ int main(int argc,char**argv){
             }
             if (ok) {
                 use_npu_moe = true;
-                fprintf(stderr, "NPU MoE enabled (MOE_GU/D/SGU/SD xclbins)\n");
+                fprintf(stderr, "NPU MoE enabled (MOE_GU/D/SGU/SD xclbins%s)\n",
+                        fused ? " + fused v28 GUSGU/DSD" : "");
             } else {
                 mgu.reset(); mde.reset(); msg.reset(); msd.reset();
+                mgu_f.reset(); mde_f.reset();
                 fprintf(stderr, "WARN: NPU MoE init failed, CPU MoE fallback\n");
             }
         }
@@ -1608,8 +1638,14 @@ int main(int argc,char**argv){
         auto& cache = exp_cache[l];
         if (cache.empty()) cache.resize(EXP_CACHE_SZ);
         const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
-        int8_t* guB = (int8_t*)mgu->layerB[0]->map();   // [H, 8*2*IM] int8
-        int8_t* dB = (int8_t*)mde->layerB[0]->map();    // [8*IM, H] int8
+        // v28 fused: moe_ffn_npu sets pack_gu_/pack_de_ to the concat
+        // contexts before packing; everyone else packs into plain mgu/mde.
+        // GU stride comes from the target ctx's ND (8192 plain, 9216 fused).
+        I8Ctx* pgu = (pack_gu_ && pack_gu_->isReady()) ? pack_gu_ : mgu.get();
+        I8Ctx* pde = (pack_de_ && pack_de_->isReady()) ? pack_de_ : mde.get();
+        const size_t gu_stride = pgu->ND;
+        int8_t* guB = (int8_t*)pgu->layerB[0]->map();   // [H, ND] int8
+        int8_t* dB = (int8_t*)pde->layerB[0]->map();    // [KD, H] int8
         // Scratch [K, N] dequant targets (reused across misses)
         std::vector<float> gu_f((size_t)H * 2 * IM_EXP), d_f((size_t)IM_EXP * H);
         double gu_sum = 0, d_sum = 0;
@@ -1658,9 +1694,13 @@ int main(int argc,char**argv){
             d_sum += slot->d_mean;
             // assemble: GU expert e at columns [e*2*IM, (e+1)*2*IM); D at rows [e*IM, (e+1)*IM)
             for (int r = 0; r < H; r++)
-                memcpy(guB + (size_t)r * gu_n + (size_t)e * 2 * IM_EXP,
+                memcpy(guB + (size_t)r * gu_stride + (size_t)e * 2 * IM_EXP,
                        slot->gu.data() + (size_t)r * 2 * IM_EXP, (size_t)2 * IM_EXP);
-            memcpy(dB + (size_t)e * IM_EXP * H, slot->d.data(), (size_t)IM_EXP * H);
+            // D is row-major [KD, ND] with ND = pde->ND (H plain, 2*H fused
+            // block-diagonal), so copy per row with the target row stride.
+            for (int r = 0; r < IM_EXP; r++)
+                memcpy(dB + (size_t)(e * IM_EXP + r) * pde->ND,
+                       slot->d.data() + (size_t)r * H, (size_t)H);
         }
         gu_sc = (float)(gu_sum / k);   // mean of selected experts' means
         d_sc = (float)(d_sum / k);
@@ -1671,8 +1711,24 @@ int main(int argc,char**argv){
             gu_corr[e] = (slot && gu_sc != 0) ? slot->gu_mean / gu_sc : 1.0f;
         }
         auto ts0 = std::chrono::steady_clock::now();
-        mgu->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        mde->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // v28 fused: append the static shared-expert slice into the same
+        // concat BOs (GUSGU columns [gu_n, gu_n+2*IM); DSD rows [TOP_K*IM,
+        // TOP_K*IM+IM)). Skipped on the plain path (msg/msd launches handle
+        // the shared expert there).
+        if (pgu != mgu.get()) {
+            // fused: shared GU at columns [gu_n, gu_n+2*IM) of the wide GU BO;
+            // shared D in the block-diagonal corner — rows [TOP_K*IM, +IM),
+            // cols [H, 2*H) — leaving the zero blocks (routed×shared and
+            // shared×routed) untouched (zeroed once at init).
+            for (int r = 0; r < H; r++)
+                memcpy(guB + (size_t)r * gu_stride + gu_n,
+                       sh_gu_packed[l].data() + (size_t)r * 2 * IM_EXP, (size_t)2 * IM_EXP);
+            for (int r = 0; r < IM_EXP; r++)
+                memcpy(dB + (size_t)(TOP_K * IM_EXP + r) * pde->ND + H,
+                       sh_d_packed[l].data() + (size_t)r * H, (size_t)H);
+        }
+        pgu->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        pde->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         t_sync = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts0).count();
         if (t_on)
             fprintf(stderr, "[pack l=%d] %.1f ms (miss=%.1f sync=%.1f)\n", l,
@@ -1748,18 +1804,84 @@ int main(int argc,char**argv){
         const size_t gu_n = (size_t)TOP_K * 2 * IM_EXP;
         std::vector<float> gu_corr;
         float gu_sc = 0, d_sc = 0;
+        // v28 fused: pack into the concat BOs (wider GU stride + shared
+        // slice) when the fused contexts are live; reset right after so
+        // ops 40/41 and the batch path keep packing into plain mgu/mde.
+        bool fused_run = mgu_f && mgu_f->isReady() && mde_f && mde_f->isReady();
+        if (fused_run) { pack_gu_ = mgu_f.get(); pack_de_ = mde_f.get(); }
         if (!moe_pack_experts(l, topk.data(), TOP_K, gu_sc, d_sc, gu_corr)) {
+            pack_gu_ = pack_de_ = nullptr;
             std::fill(out, out + H, 0.0f);
             return;
         }
+        pack_gu_ = pack_de_ = nullptr;
+        if (t_on) fprintf(stderr, "[moe l=%d pack] %.1f ms\n", l,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
 
-        // Run: GU concat GEMM → SiLU × router prob → D concat GEMM.
+        if (fused_run) {
+            // ── v28 fused FFN: 2 launches per layer instead of 4 ──
+            // 1) GU concat: routed experts (gu_n cols) + shared GU (2*IM cols)
+            //    in ONE launch (same input x, same ascale ag).
+            std::vector<float> gu_all(gu_n + 2 * IM_EXP), ssu(IM_EXP);
+            float ag = dynamic_ascale(x, H);
+            mgu_f->go(0, x, 1, H, ag, gu_sc, gu_all.data(), (int)(gu_n + 2 * IM_EXP));
+            if (t_on) fprintf(stderr, "[moe l=%d gu] %.1f ms\n", l,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
+            // per-expert dequant correction (routed columns)
+            for (int e = 0; e < TOP_K; e++) {
+                if (gu_sc == 0) continue;
+                float corr = gu_corr[e];
+                float* col = gu_all.data() + (size_t)e * 2 * IM_EXP;
+                for (int i = 0; i < 2 * IM_EXP; i++) col[i] *= corr;
+            }
+            // shared GU columns: dequant used gu_sc, shared weights used
+            // msg_scale[l] → per-column correction, then SiLU × up.
+            float scorr = (gu_sc != 0) ? msg_scale[l] / gu_sc : 1.0f;
+            float* sgw = gu_all.data() + gu_n;
+            for (int i = 0; i < 2 * IM_EXP; i++) sgw[i] *= scorr;
+            std::vector<float> su((size_t)TOP_K * IM_EXP);
+            for (int e = 0; e < TOP_K; e++)
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = gu_all[e * 2 * IM_EXP + i];
+                    if (!std::isfinite(gv)) gv = 0;
+                    su[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) *
+                                         gu_all[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
+                }
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = sgw[i];
+                if (!std::isfinite(gv)) gv = 0;
+                ssu[i] = (gv / (1.0f + expf(-gv))) * sgw[IM_EXP + i];
+            }
+            // 2) D concat: routed su (TOP_K*IM rows) + shared ssu (IM rows),
+            //    output = [d_out(H) | sh_out(H)] in ONE launch.
+            std::vector<float> su_all((size_t)TOP_K * IM_EXP + IM_EXP);
+            std::memcpy(su_all.data(), su.data(), (size_t)TOP_K * IM_EXP * sizeof(float));
+            std::memcpy(su_all.data() + TOP_K * IM_EXP, ssu.data(), (size_t)IM_EXP * sizeof(float));
+            float aall = dynamic_ascale(su_all.data(), (int)su_all.size());
+            std::vector<float> ff_out(2 * H);
+            mde_f->go(0, su_all.data(), 1, (int)su_all.size(), aall, d_sc, ff_out.data(), 2 * H);
+            if (t_on) fprintf(stderr, "[moe l=%d d] %.1f ms\n", l,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
+            // shared D columns: dequant used d_sc, shared weights used
+            // msd_scale[l] → correction, then sigmoid-gate blend.
+            float dcorr = (d_sc != 0) ? msd_scale[l] / d_sc : 1.0f;
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+            if (N_SHARED > 0 && sh_off[l].gate) {
+                for (int i = 0; i < H; i++)
+                    out[i] = ff_out[i] + sg_sig * (ff_out[H + i] * dcorr);
+            } else {
+                for (int i = 0; i < H; i++) out[i] = ff_out[i];
+            }
+        } else {
+        // ── v27 path: 4 launches (GU, D, shared GU, shared D). Kept as the
+        // fallback when NPU_MOE_FUSED is off or the fused xclbins are absent.
         // (Async launch-overlap of GU∥SGU / D∥SD measured WORSE on this NPU
         // — kernels share AIE columns so they serialize, and interleaving the
         // waits adds jitter: FFN 43.6ms vs 32.8ms sync. Kept sync.)
         std::vector<float> gu_out(gu_n), su((size_t)TOP_K * IM_EXP), d_out(H);
-        if (t_on) fprintf(stderr, "[moe l=%d pack] %.1f ms\n", l,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
         float ag = dynamic_ascale(x, H);
         mgu->go(0, x, 1, H, ag, gu_sc, gu_out.data(), (int)gu_n);
         if (t_on) fprintf(stderr, "[moe l=%d gu] %.1f ms\n", l,
@@ -1815,6 +1937,7 @@ int main(int argc,char**argv){
         } else {
             for (int i = 0; i < H; i++) out[i] = d_out[i];
         }
+        }  // end fused_run else (v27 4-launch path)
         for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
         if (t_on)
             fprintf(stderr, "[moe_ffn_npu l=%d] %.1f ms\n", l,

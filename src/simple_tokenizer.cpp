@@ -147,6 +147,29 @@ std::string SimpleTokenizer::decode(const std::vector<int>& tokens) {
     }
 #endif
     if (use_bpe && bpe_tok) {
+        // NPU FLM backend convention: shifted char-tokens, not vocab IDs
+        // (ASCII -> +100, raw bytes -> +300, EOS=106). Real BPE streams
+        // from a 128000-vocab model are never confined to this narrow set,
+        // so all-in-range is a safe detector (same heuristic as the
+        // fallback below). Without this, FLM-generated text decodes as
+        // garbage vocab ids once a real .htok is loaded.
+        bool npu_shifted = true;
+        for (int v : tokens) {
+            if (v == 106) continue;
+            if (!((v >= 132 && v <= 226) || (v >= 300 && v <= 555))) {
+                npu_shifted = false;
+                break;
+            }
+        }
+        if (npu_shifted && !tokens.empty()) {
+            std::string r;
+            for (int v : tokens) {
+                if (v == 106) continue;
+                if (v >= 132 && v <= 226) r += (char)(v - 100);
+                else if (v >= 300 && v <= 555) r += (char)(v - 300);
+            }
+            return r;
+        }
         std::string r(4096, '\0');
         size_t out_len = 0;
         rcpp_status_t st = rcpp_tokenizer_decode(bpe_tok, tokens.data(), tokens.size(),
