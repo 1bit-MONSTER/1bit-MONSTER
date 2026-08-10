@@ -34,8 +34,13 @@ os.close(fd)
 " 2>/dev/null || echo "$TIMEOUT" > "$WDSYS/timeout" 2>/dev/null \
     || echo "reboot.sh: WARNING: could not set timeout, using current value"
     # opening /dev/watchdog arms it; holding fd open guarantees it stays
-    # armed and unpetted even after systemd exits
-    exec 9<>"$WD"
+    # armed and unpetted even after systemd exits. If systemd already holds
+    # it (RuntimeWatchdogSec=60), the watchdog core returns EBUSY — that's
+    # fine: systemd's own watchdog is then the safety net, so warn and
+    # continue to the reboot instead of aborting (set -e would kill the
+    # script before `systemctl reboot` ever runs — the 2026-08-10 hang).
+    exec 9<>"$WD" 2>/dev/null \
+        || echo "reboot.sh: WARNING: $WD busy (systemd holds it) — systemd RuntimeWatchdog covers hangs; continuing"
 }
 
 case "${1:-}" in
