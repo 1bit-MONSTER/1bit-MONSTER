@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <inttypes.h>
 #include <cstring>
 #include <cmath>
 #include <string>
@@ -30,7 +31,15 @@ static void sigfpe_handler(int sig) {
 }
 
 static inline uint16_t f32b(float v) {
+#ifdef __BYTE_ORDER__
+#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "gguf_to_onebp requires little-endian host"
+#endif
+#elif defined(_MSC_VER)
+// MSVC targets are always little-endian
+#else
     static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "gguf_to_onebp requires little-endian host");
+#endif
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
@@ -424,7 +433,7 @@ int main(int argc, char** argv) {
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
             tensors.push_back({tn, 2, r, c, 1, data_off, tiled, tq});
             data_off += tiled;
-            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%lu quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
+            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%" PRIu64 " quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
             // ndim == 3: expert-stacked tensor. Expert tensors (name contains
             // 'exps.'/'shexp') follow the detected layout; non-expert 3D
@@ -457,7 +466,7 @@ int main(int argc, char** argv) {
             uint64_t total_tiled = (uint64_t)ne * per_expert;
             tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled, tq});
             data_off += total_tiled;
-            printf("  tensor %s: %d experts x %dx%d per-expert=%lu total=%lu\n",
+            printf("  tensor %s: %d experts x %dx%d per-expert=%" PRIu64 " total=%" PRIu64 "\n",
                    tn.c_str(), ne, r, c, per_expert, total_tiled);
         }
     }
@@ -524,7 +533,7 @@ int main(int argc, char** argv) {
         // All tensors processed
         std::vector<float> fw;
         auto* inf = reader.tensor_info(ti.name);
-        if (inf) printf("%lu elements at offset %lu\n", inf->numel, inf->abs_offset);
+printf("%" PRIu64 " elements at offset %" PRIu64 "\n", inf->numel, inf->abs_offset);
         fflush(stdout);
         if (!reader.get_tensor_f32(ti.name, fw)) {
             // A skipped tensor writes NOTHING while the index already reserved

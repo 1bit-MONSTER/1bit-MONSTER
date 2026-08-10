@@ -250,43 +250,46 @@ struct NpuClient {
 
 // ── Process management ──────────────────────────────────────────────────
 
-static void cmd_status() {
-    // The engine ships as a single `1bit` binary dispatched by subcommand
-    // (zaya, jarvis, unified, vision, serve) — older builds spawned separate
-    // onebitd/zaya_server/bitnet_decode binaries, but those names no longer
-    // appear in `ps aux`, so match the current invocation instead.
-    std::cout << "  🔍 Checking NPU stack...\n";
-
+// Discover ports from running 1bit processes (zaya, jarvis, ...).
+// Returns true if at least one process was found.
+static bool discover_npu_ports(std::vector<int> &out_ports) {
     FILE *fp = popen("ps aux | grep -E '1bit (zaya|jarvis|unified|vision|serve)' | grep -v grep", "r");
-    if (!fp) {
-        std::cout << "  ⚠️  Could not check processes\n";
-        return;
-    }
-
+    if (!fp) return false;
     char buf[1024];
     bool found = false;
-    std::vector<int> ports;
     while (fgets(buf, sizeof(buf), fp)) {
-        std::cout << "  📡 " << buf;
         found = true;
-
         std::string line(buf);
         size_t pos = line.find("--port");
         if (pos != std::string::npos) {
-            try { ports.push_back(std::stoi(line.substr(pos + 6))); } catch (...) {}
+            try { out_ports.push_back(std::stoi(line.substr(pos + 6))); } catch (...) {}
         }
     }
     pclose(fp);
+    if (out_ports.empty()) out_ports.push_back(9090); // legacy onebitd default
+    return found;
+}
 
-    if (!found) {
+// Return the first discovered port whose server responds to health_check,
+// or 0 if none are reachable.
+static int find_responding_port() {
+    std::vector<int> ports;
+    if (!discover_npu_ports(ports)) return 0;
+    for (int port : ports) {
+        std::string ep = "http://127.0.0.1:" + std::to_string(port) + "/v1";
+        if (NpuClient(ep).health_check()) return port;
+    }
+    return 0;
+}
+
+static void cmd_status() {
+    std::cout << "  🔍 Checking NPU stack...\n";
+
+    std::vector<int> ports;
+    if (!discover_npu_ports(ports)) {
         std::cout << "  ℹ️  NPU stack is not running. Type '1bit up' to start.\n";
         return;
     }
-
-    // Each discovered process may be its own independent model server
-    // (e.g. separate systemd units per model), so probe every port found
-    // rather than a single hardcoded/default endpoint.
-    if (ports.empty()) ports.push_back(9090); // legacy onebitd default
 
     for (int port : ports) {
         std::string endpoint = "http://127.0.0.1:" + std::to_string(port) + "/v1";
@@ -305,10 +308,10 @@ static void cmd_status() {
 static void cmd_up() {
     std::cout << "  🚀 Starting NPU stack...\n";
 
-    // Check if already running
-    NpuClient client(kDefaultEndpoint);
-    if (client.health_check()) {
-        std::cout << "  ✅ NPU stack is already running.\n";
+    // Check if already running (discover ports like cmd_status does)
+    int responding_port = find_responding_port();
+    if (responding_port) {
+        std::cout << "  ✅ NPU stack is already running on :" << responding_port << ".\n";
         return;
     }
 
@@ -327,11 +330,12 @@ static void cmd_up() {
         std::cout << "  ✅ onebitd started (pid " << pid << ")\n";
         std::cout << "  ⏳ Waiting for API to come online...\n";
 
-        // Wait for health
+        // Wait for health (try discovered ports first, then default)
         for (int i = 0; i < 30; ++i) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (client.health_check()) {
-                std::cout << "  ✅ NPU API is ready at " << kDefaultEndpoint << "\n";
+            int p = find_responding_port();
+            if (p) {
+                std::cout << "  ✅ NPU API is ready at http://127.0.0.1:" << p << "/v1\n";
                 return;
             }
             if (i % 5 == 4) std::cout << "  ⏳ Still waiting... (" << (i + 1) << "s)\n";
@@ -378,6 +382,10 @@ static void cmd_chat(const std::string &model_override) {
     std::string model = model_override.empty() ? settings.default_model : model_override;
 
     NpuClient client(settings.npu_endpoint);
+    if (!client.health_check()) {
+        int port = find_responding_port();
+        if (port) client = NpuClient("http://127.0.0.1:" + std::to_string(port) + "/v1");
+    }
     bool npu_online = client.health_check();
 
     printf(kBanner, kVersion);
@@ -767,10 +775,10 @@ int main(int argc, char *argv[]) {
         if (arg[0] != '-' && command.empty()) {
             // First non-flag arg could be a command
             if (arg == "chat" || arg == "up" || arg == "down" ||
-                arg == "status" || arg == "build" || arg == "config" ||
-                arg == "auth" || arg == "serve" || arg == "update" ||
-                arg == "pull" || arg == "download" || arg == "get" ||
-                arg == "list" || arg == "models" || arg == "ls") {
+                arg == "status" || arg == "health" || arg == "build" ||
+                arg == "config" || arg == "auth" || arg == "serve" ||
+                arg == "update" || arg == "pull" || arg == "download" ||
+                arg == "get" || arg == "list" || arg == "models" || arg == "ls") {
                 command = arg;
                 continue;
             }
@@ -789,12 +797,18 @@ int main(int argc, char *argv[]) {
         // Non-interactive chat mode
         Settings settings;
         settings.load();
-        NpuClient client(settings.npu_endpoint);
-
-        if (!client.health_check()) {
+        // Use port discovery when no config endpoint is set, so 1bit up/chat
+    // work out of the box on any port without requiring a config file edit.
+    NpuClient client(settings.npu_endpoint);
+    if (!client.health_check()) {
+        int port = find_responding_port();
+        if (port) {
+            client = NpuClient("http://127.0.0.1:" + std::to_string(port) + "/v1");
+        } else {
             std::cerr << "⚠️  NPU stack is not running. Run '1bit up' to start.\n";
             return 1;
         }
+    }
 
         std::string response = client.chat(settings.default_model, prompt);
         std::cout << response << std::endl;
@@ -811,7 +825,7 @@ int main(int argc, char *argv[]) {
         cmd_up();
     } else if (command == "down") {
         cmd_down();
-    } else if (command == "status") {
+    } else if (command == "status" || command == "health") {
         cmd_status();
     } else if (command == "build") {
         cmd_build(args.empty() ? "" : args[0]);

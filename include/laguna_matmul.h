@@ -12,8 +12,7 @@
 // (bf16 << 16) bit pattern. x86 and AMD GPU are little-endian.
 // NOTE: This is a practical constraint, not a theoretical limitation.
 // On big-endian hosts, a manual sign/exp/mantissa reconstruction would be needed.
-static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
-              "1bit-systems requires little-endian host (x86/AMD64)");
+// byte-order guard below (first added for #659) replaces the static_assert that was here.
 
 // Byte-order guard — 1bit-systems requires little-endian host
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
