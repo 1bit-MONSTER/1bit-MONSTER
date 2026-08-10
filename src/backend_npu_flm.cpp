@@ -81,7 +81,7 @@ static const char* flm_tag_for_model(const ModelConfig& cfg) {
 
     // Qwen3 family (default catch-all for most models)
     if (H <= 1024) return "qwen3:0.6b";
-    if (H <= 1536) return "qwen3:1.7b";
+    if (H <= 2048) return "qwen3:1.7b";
     if (H <= 2560) return "qwen3:4b";
     if (H <= 4096) return "qwen3:8b";
     if (H <= 5120) return "qwen3:14b";

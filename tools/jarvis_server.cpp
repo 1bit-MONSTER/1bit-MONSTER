@@ -552,7 +552,7 @@ static std::string auto_select_model(const json& messages) {
             if (msg["content"].is_string()) total_chars += msg["content"].get<std::string>().size();
         }
     }
-    return total_chars < 500 ? "qwen3:0.6b" : "qwen3.5:9b";
+    return total_chars < 500 ? "qwen3:0.6b" : "qwen3:4b";
 }
 
 static bool any_system_mentions_tool_call(const json& messages) {
@@ -901,6 +901,13 @@ int main(int argc, char** argv) {
 
         if (protected_path) {
             auto auth_it = req.headers.find("Authorization");
+            // Local UI (served same-box, no key) — trusted loopback.
+            bool loopback = (req.remote_addr == "127.0.0.1" || req.remote_addr == "::1" ||
+                             req.remote_addr == "localhost");
+            if (auth_it == req.headers.end() && loopback) {
+                tls_current_owner = "local";
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
             if (auth_it == req.headers.end()) {
                 res.status = 401;
                 res.set_content(json{{"error", "missing Authorization header"}}.dump(), "application/json");
@@ -1023,7 +1030,18 @@ int main(int argc, char** argv) {
             return;
         }
         json response = handle_chat(body);
-        res.set_content(response.dump(2), "application/json");
+        if (body.value("stream", false)) {
+            // Backend chat is non-streaming (one unified HTTP call); deliver
+            // the full reply as a single SSE chunk so the web UI renders it.
+            std::string content;
+            std::string model = response.value("model", "");
+            if (response.contains("choices") && !response["choices"].empty())
+                content = response["choices"][0]["message"].value("content", "");
+            json chunk = {{"choices", {{{ "delta", {{"content", content}} }}}}, {"model", model}};
+            res.set_content("data: " + chunk.dump() + "\n\ndata: [DONE]\n\n", "text/event-stream");
+        } else {
+            res.set_content(response.dump(2), "application/json");
+        }
         add_cors(res);
     };
     svr.Post("/v1/chat/completions", chat_handler);
@@ -1136,64 +1154,39 @@ int main(int argc, char** argv) {
             return;
         }
 
-        WhisperModel* model = get_whisper_model();
-        if (!model) {
-            res.set_content(json{{"text", "[transcription unavailable: WHISPER_MODEL_PATH not set or model failed to load]"}}.dump(),
-                             "application/json");
-            add_cors(res);
-            return;
-        }
+        // STT via the NPU FLM whisper server (fast NPU path) instead of the
+        // native scalar whisper.cpp reference implementation (~10 min per
+        // utterance). FLM decodes any audio format (FFmpeg) and resamples to
+        // 16k internally, so the raw client bytes pass through untouched.
+        static const std::string stt_url = [] {
+            const char* env = getenv("JARVIS_STT_URL");
+            return env ? std::string(env) : std::string("http://127.0.0.1:8496");
+        }();
+        std::string text = "[silence]";
+        try {
+            std::string boundary = "----jarvis" + std::to_string((long)getpid());
+            std::string body;
+            body += "--" + boundary + "\r\n";
+            body += "Content-Disposition: form-data; name=\"file\"; filename=\"audio.webm\"\r\n";
+            body += "Content-Type: application/octet-stream\r\n\r\n";
+            body += audio_bytes;
+            body += "\r\n--" + boundary + "\r\n";
+            body += "Content-Disposition: form-data; name=\"model\"\r\n\r\n";
+            body += "whisper-v3:turbo\r\n";
+            body += "--" + boundary + "--\r\n";
 
-        // Normalize to 16kHz mono s16 WAV via ffmpeg — handles whatever
-        // format the client actually sent (the UI's mic button records
-        // audio/webm, not WAV) and any sample rate; matches the original
-        // Python's ffmpeg-based resample step, just applied unconditionally
-        // instead of only for non-WAV input.
-        std::string tag = std::to_string((long)getpid()) + "_" + std::to_string((long)time(nullptr));
-        std::string in_path = "/tmp/jarvis_stt_in_" + tag + ".bin";
-        std::string out_path = "/tmp/jarvis_stt_out_" + tag + ".wav";
-        {
-            std::ofstream f(in_path, std::ios::binary | std::ios::trunc);
-            f.write(audio_bytes.data(), (std::streamsize)audio_bytes.size());
+            httplib::Client cli(stt_url);
+            cli.set_connection_timeout(5);
+            cli.set_read_timeout(120);
+            auto r = cli.Post("/v1/audio/transcriptions", body,
+                              "multipart/form-data; boundary=" + boundary);
+            if (r && r->status == 200)
+                text = json::parse(r->body).value("text", "[silence]");
+            else
+                text = "[transcription unavailable: STT server unreachable]";
+        } catch (const std::exception& e) {
+            text = std::string("[transcription error: ") + e.what() + "]";
         }
-
-        // Paths are server-generated (pid + timestamp, alphanumeric + underscore),
-        // but use fork/exec rather than system() to avoid any shell interpretation
-        // even if paths somehow contain special characters (issue #964).
-        pid_t child = fork();
-        int rc = -1;
-        if (child == 0) {
-            // Child: exec ffmpeg directly, no shell
-            execlp("ffmpeg", "ffmpeg", "-y", "-loglevel", "error",
-                   "-i", in_path.c_str(),
-                   "-f", "wav", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-                   out_path.c_str(), nullptr);
-            _exit(127);  // exec failed
-        } else if (child > 0) {
-            int status;
-            waitpid(child, &status, 0);
-            rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        }
-        std::error_code ec;
-        std::filesystem::remove(in_path, ec);
-
-        std::string text;
-        double audio_minutes = 0.0;
-        if (rc == 0 && std::filesystem::exists(out_path)) {
-            int sr = 16000;
-            auto pcm = whisper_load_wav(out_path, &sr);
-            std::filesystem::remove(out_path, ec);
-            if (!pcm.empty()) {
-                text = whisper_transcribe(*model, pcm.data(), (int)pcm.size());
-                audio_minutes = pcm.size() / (16000.0 * 60.0);
-            }
-        } else {
-            std::filesystem::remove(out_path, ec);
-        }
-        if (text.empty()) text = "[silence]";
-
-        // Track usage: estimate audio duration from PCM size
-        g_usage_tracker.record_usage(current_owner(), audio_minutes, 0);
 
         res.set_content(json{{"text", text}}.dump(), "application/json");
         add_cors(res);
