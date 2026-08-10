@@ -54,6 +54,7 @@ jobs:
             packaging snap
             docs site
             tools scripts bin
+            mobile  # JARVIS mobile Flutter app (voice gateway client) — Jarvis offline layer, engine scope
             third_party  # vendored engine deps: Lemonade server core + Gaia C++ (embedded, engine scope)
             tools/video-lora  # C++ Vulkan inference backend (SD1.5/AnimateDiff) — engine scope, NOT an app
             experimental research hackathon fastflowlm_analysis npu-infer
