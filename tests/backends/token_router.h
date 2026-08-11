@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <unistd.h>  // sleep() for the NPU-probe retry loop
 
 // ─── Routing strategy ───────────────────────────────────────────────
 enum class RouteStrategy {
@@ -155,6 +156,31 @@ struct TokenRouter {
             loaded = false;
         }
 
+        // Retry helper: the NPU's column/slot budget is shared with the other
+        // zaya/FLM services (each model takes 8 of the 40 columns). When
+        // another service holds the columns, flm-real serves WITHOUT the
+        // model (CREATE_CONTEXT fails with EINVAL but the HTTP port still
+        // opens), so the coherence probe sees degenerate output. A column
+        // always frees up (total footprints fit): retry load+probe with
+        // backoff before falling through to another backend.
+        // NPU_PROBE_RETRIES / NPU_PROBE_RETRY_DELAY_S tune the budget
+        // (defaults: 6 retries, 5s backoff). `be` must already be loaded.
+        auto probe_with_retry = [this, &cfg](InferenceBackend* be) -> bool {
+            int prets = getenv("NPU_PROBE_RETRIES") ? atoi(getenv("NPU_PROBE_RETRIES")) : 6;
+            int pdelay = getenv("NPU_PROBE_RETRY_DELAY_S") ? atoi(getenv("NPU_PROBE_RETRY_DELAY_S")) : 5;
+            for (int i = 0; i <= prets; i++) {
+                if (i > 0) {
+                    fprintf(stderr, "  %s: coherence probe FAILED (NPU busy?) — retry %d/%d in %ds\n",
+                            be->name(), i, prets, pdelay);
+                    be->unload_model();
+                    sleep(pdelay);
+                    if (!be->load_model(cfg)) return false;
+                }
+                if (coherence_probe(cfg)) return true;
+            }
+            return false;
+        };
+
         if (!loaded) {
             // Try next backend
             for (auto* b : backends) {
@@ -162,14 +188,12 @@ struct TokenRouter {
                     fprintf(stderr, "  Falling back to %s...\n", b->name());
                     if (b->load_model(cfg)) {
                         primary = b;
-                        if (!coherence_probe(cfg)) {
-                            fprintf(stderr, "  %s: coherence probe FAILED (degenerate output) — trying next backend\n",
-                                    primary->name());
-                            primary->unload_model();
-                            continue;
+                        if (probe_with_retry(primary)) {
+                            loaded_models.push_back(cfg);
+                            return true;
                         }
-                        loaded_models.push_back(cfg);
-                        return true;
+                        primary->unload_model();
+                        continue;
                     }
                 }
             }
@@ -177,13 +201,7 @@ struct TokenRouter {
             return false;
         }
 
-        // ── Coherence probe: a backend that loads but emits degenerate
-        // output (e.g. always token 0/1, or an out-of-range id) must not
-        // win. Verified by running forward() on a few tokens and checking
-        // the argmax ids are (a) in-vocab, (b) not all identical, and
-        // (c) not stuck in a tiny low-id set — real models spread across
-        // the vocab even on garbage input.
-        if (!coherence_probe(cfg)) {
+        if (!probe_with_retry(primary)) {
             fprintf(stderr, "  %s: coherence probe FAILED (degenerate output) — trying next backend\n",
                     primary->name());
             primary->unload_model();
@@ -193,7 +211,7 @@ struct TokenRouter {
                     fprintf(stderr, "  Falling back to %s...\n", b->name());
                     if (b->load_model(cfg)) {
                         primary = b;
-                        if (coherence_probe(cfg)) {
+                        if (probe_with_retry(primary)) {
                             loaded_models.push_back(cfg);
                             fell_back = true;
                             break;

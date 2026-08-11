@@ -59,12 +59,16 @@ target_include_directories(zinc_cpp PRIVATE
 
 target_link_libraries(zinc_cpp PRIVATE
     ${Vulkan_LIBRARIES}
-    dl pthread
 )
+if(NOT MSVC)
+    target_link_libraries(zinc_cpp PRIVATE dl pthread)
+endif()
 
-target_compile_options(zinc_cpp PRIVATE
-    -O3 -Wall -Wno-unused-result
-)
+if(MSVC)
+    target_compile_options(zinc_cpp PRIVATE /O2 /W3)
+else()
+    target_compile_options(zinc_cpp PRIVATE -O3 -Wall -Wno-unused-result)
+endif()
 
 if(ZINC_INCLUDE_DIRS)
     target_compile_definitions(zinc_cpp PRIVATE HAS_GGUF_READER=1)
