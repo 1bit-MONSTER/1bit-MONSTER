@@ -12,7 +12,7 @@ This directory contains the complete reverse-engineering extraction of **FastFlo
 | `NPU_ISA.md` | **NPU instruction set** — All 5 opcodes (0x00/0x01/0x03/0x80/0x81), exact bitfield encodings, RTP register map (0x1000-0x1f0a0), tile layout, DMA 3D addressing |
 | `Q4NX_FORMAT.md` | **Weight format spec** — 4-bit block quant with bf16 scales, 32-element groups, tile reordering algorithm (32×256 tiles), NPU DMA block alignment |
 | `API_SURFACE.md` | **All 1,390 exported symbols** — Demangled C++ signatures for every function in all 22 `.so` files |
-| `q4nx_converter/` | **Python converter** — Full Q4NX conversion for all model architectures |
+| [`q4nx_converter/`](../../../fastflowlm_analysis/q4nx_converter/) | **Python converter** — Full Q4NX conversion for all model architectures (lives at repo-root `fastflowlm_analysis/`, not under this directory) |
 
 ## Architecture Secrets
 
@@ -73,6 +73,6 @@ Model Code → npu_sequence → npu_app (compiles to ELF) → XRT → xrt::bo/xr
 - `NPU_ISA.md` — NPU instruction set architecture (10.7 KB)
 - `Q4NX_FORMAT.md` — Weight format specification (8.2 KB)
 - `API_SURFACE.md` — All 1,390 exported symbols (115 KB)
-- `q4nx_converter/` — Tools for converting models to/from Q4NX format
-- `../engine/npu/src/gemm_npu_instructions.cpp` — Open-source GEMM/MHA instruction generator
-- `../engine/npu/src/checkpoint_restore.cpp` — KV cache checkpoint/restore implementation
+- [`q4nx_converter/`](../../../fastflowlm_analysis/q4nx_converter/) — Tools for converting models to/from Q4NX format (repo-root `fastflowlm_analysis/`, mirrored copy of this directory)
+- `../../../engine/npu/src/gemm_npu_instructions.cpp` — Open-source GEMM/MHA instruction generator
+- `../../../npu-infer/src/engine.cpp` (`NpuBo::sync_to_device` / `sync_from_device`) — KV cache checkpoint/restore implementation

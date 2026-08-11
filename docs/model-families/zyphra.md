@@ -9,7 +9,7 @@ Zyphra's portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, Mamba) 
 | Model | Params | 1BP Size | Backend(s) | Pipeline | Perf |
 |-------|:------:|:--------:|------------|:--------:|:----:|
 | **ZAYA1-8B** | 8.8B | 6.6 GB¹ | HIP / NPU | 🧠🗣️ | 64 tok/s HIP |
-| **ZAYA1-74B-preview** | 74B | 45.8 GB³ | HIP | 🧠🗣️ | **16.7 tok/s HIP** (measured 2026-08-05) |
+| **ZAYA1-74B-preview** | 74B | 45.8 GB² | HIP | 🧠🗣️ | **16.7 tok/s HIP**³ (measured 2026-08-05) |
 | **ZAYA1-VL-8B** | 8.8B | — | HIP (vision) | 👁️🧠🗣️ | — |
 | **ZR1-1.5B** | 1.5B | 781 MB | ZINC / NPU | 🧠🗣️ | 26 tok/s ZINC |
 | **BlackMamba-1.5B** | 1.5B | 970 MB | Mamba1 HIP | 🧠🗣️ | **79.4 tok/s** 🏁 |
@@ -23,7 +23,7 @@ Zyphra's portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, Mamba) 
 
 ## Architectures in this family
 
-- **Zaya1 — MoE + CCA.** Zyphra MoE architecture with Cross-Channel Attention + MoE FFN. Flagship 1BP ternary model. Tile8 GEMV (28-layer, Zaya1-8B shaped) measured at 77 tok/s on ROCm HIP. Native TQ2 ternary on NPU via `--native-tq2` (`npu_ternaryd.cpp`, `gemm_generate_sequence_tq2()`) — 4× less DDR traffic than the INT8 bridge. CPU AVX-512 portable path ~2.5 tok/s (8B-shaped).
+- **Zaya1 — MoE + CCA.** Zyphra MoE architecture with Cross-Channel Attention + MoE FFN. Flagship 1BP ternary model. Tile8 GEMV (28-layer, Zaya1-8B shaped) measured at 77 tok/s on ROCm HIP. TQ2 ternary weights bridged to INT8 for NPU via `ternary_npu_bridge.h` (`pack_tq2_to_npu_int8()`) onto existing INT8 xclbin kernels — a true native 2-bit AIE microkernel (4× less DDR traffic) is designed but not yet the default path, see the [NPU ternary roadmap](../research/npu-ternary-roadmap.md). CPU AVX-512 portable path ~2.5 tok/s (8B-shaped).
 - **ZR1 — dense reasoning.** Reasoning-tuned dense transformer (Qwen2 architecture). End-to-end validated ~26 tok/s on Vulkan ZINC; 1BP conversion complete. Builds via the Qwen3-0.6B xclbin stanzas (same tile template).
 - **BlackMamba — Mamba1 + top-1 MoE.** No attention mechanism — alternating SSM scan and MoE FFN per layer. The engine's fastest end-to-end family (79.4 tok/s at 1.5B). SSM scan via `kernel/ssm_selective_scan.cc`.
 - **Zamba2 — Mamba2 hybrid.** Mamba2 SSM layers with sparse attention every 6 layers. ~30 tok/s at 2.7B on Vulkan ZINC; Mamba2 decode block benchmarked at 1270 tok/s on ROCm HIP. NPU AIE2 selective-scan kernel (per-head d_state=64 vectorized, 32 heads/tile).
@@ -41,9 +41,9 @@ Zyphra's portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, Mamba) 
 
 | Model | 1BP Size | Verified |
 |-------|:--------:|:--------:|
-| ZAYA1-8B, ZAYA1-74B-preview | 469 MB / 4.2 GB | ✅ loads |
+| ZAYA1-8B, ZAYA1-74B-preview | 6.6 GB / 45.8 GB | ✅ loads |
 | ZR1-1.5B | 373 MB | hosted |
-| Zamba2-1.2B / 2.7B / 7B v2 | 375 MB – 1.8 GB | hosted |
+| Zamba2-1.2B / 2.7B / 7B v2 | 1.15 – 7.25 GB | hosted |
 | BlackMamba-1.5B / 2.8B | 1.0 / 1.9 GB | ✅ loads |
 
 **See also:** [full model support detail](../wiki/models.md) · [benchmarks SSOT](../wiki/performance.md) · [all families](README.md)

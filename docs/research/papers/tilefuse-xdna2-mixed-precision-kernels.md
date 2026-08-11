@@ -218,9 +218,9 @@ Table 1. GEMV performance (1×4096×143361\times 4096\times 14336) measured in G
 | Processor | Dtype | NPU (GOPs) | CPU (GOPs) | iGPU (GOPs) |
 | --- | --- | --- | --- | --- |
 | Ryzen AI 7 350 | 4-bit | 206.21 | 298.86 | 215.69 |
-| 8-bit | 104.16 | 140.14 | 145.45 |
+| Ryzen AI 7 350 | 8-bit | 104.16 | 140.14 | 145.45 |
 | Ryzen AI HX 370 | 4-bit | 181.22 | 301.76 | 239.48 |
-| 8-bit | 96.95 | 141.74 | 133.10 |
+| Ryzen AI HX 370 | 8-bit | 96.95 | 141.74 | 133.10 |
 
 Finally, results for General Matrix-Vector Multiplication (GEMV) (Table 1) show consistent performance across various CPU and iGPU configurations, with the CPU being more performant and close to the results derived by the theoretical DRAM bandwidth limit. In contrast, the NPU is optimized for compute rather than memory bandwidth, so its GEMV performance is lower; Krackan Point only slightly outperforms Strix Point on these tasks for the NPU.
 
@@ -232,45 +232,44 @@ Finally, results for General Matrix-Vector Multiplication (GEMV) (Table 1) show 
 
 Table 2. LLM prefill latency by prompt size on Ryzen AI 7 350 and Ryzen AI 9 HX 370. GPU and NPU report latency in milliseconds. Speedup is GPU latency divided by NPU latency.
 
-| Model | Precision | Prompt | AMD Ryzen AI 7 350 | | | AMD Ryzen AI 9 HX 370 | | |
+| Model | Precision | Prompt | AMD Ryzen AI 7 350 GPU | AMD Ryzen AI 7 350 NPU | AMD Ryzen AI 7 350 Speedup | AMD Ryzen AI 9 HX 370 GPU | AMD Ryzen AI 9 HX 370 NPU | AMD Ryzen AI 9 HX 370 Speedup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| GPU | NPU | Speedup | GPU | NPU | Speedup |
 | Llama3 8B | W4A16 | 256 | 869.7 ms | 650.8 ms | 1.34x | 569.3 ms | 722.2 ms | 0.79x |
-| W4A16 | 512 | 1801.0 ms | 1101.5 ms | 1.64x | 1116.6 ms | 1210.1 ms | 0.92x |
-| W4A16 | 1024 | 3700.7 ms | 2048.5 ms | 1.81x | 2240.7 ms | 2219.4 ms | 1.01x |
-| W4A16 | 2048 | 8246.9 ms | 4129.9 ms | 2.00x | 4858.9 ms | 4194.9 ms | 1.16x |
-| W4A16 | 4096 | 18141.9 ms | 9209.2 ms | 1.97x | 10380.7 ms | 8700.4 ms | 1.19x |
-| W4A16 | 8192 | 44707.0 ms | 23506.2 ms | 1.90x | 24544.4 ms | 20043.8 ms | 1.22x |
-| W8A16 | 256 | 862.3 ms | 662.4 ms | 1.30x | 671.3 ms | 1045.7 ms | 0.64x |
-| W8A16 | 512 | 1690.5 ms | 1099.2 ms | 1.54x | 1212.2 ms | 1654.8 ms | 0.73x |
-| W8A16 | 1024 | 3545.0 ms | 2080.8 ms | 1.70x | 2341.1 ms | 3140.2 ms | 0.75x |
-| W8A16 | 2048 | 7638.3 ms | 4284.1 ms | 1.78x | 4919.1 ms | 6629.1 ms | 0.74x |
-| W8A16 | 4096 | 17613.2 ms | 9923.6 ms | 1.77x | 10291.2 ms | 15546.9 ms | 0.66x |
-| W8A16 | 8192 | 44569.3 ms | 24510.9 ms | 1.82x | 23983.5 ms | 38539.4 ms | 0.62x |
+| Llama3 8B | W4A16 | 512 | 1801.0 ms | 1101.5 ms | 1.64x | 1116.6 ms | 1210.1 ms | 0.92x |
+| Llama3 8B | W4A16 | 1024 | 3700.7 ms | 2048.5 ms | 1.81x | 2240.7 ms | 2219.4 ms | 1.01x |
+| Llama3 8B | W4A16 | 2048 | 8246.9 ms | 4129.9 ms | 2.00x | 4858.9 ms | 4194.9 ms | 1.16x |
+| Llama3 8B | W4A16 | 4096 | 18141.9 ms | 9209.2 ms | 1.97x | 10380.7 ms | 8700.4 ms | 1.19x |
+| Llama3 8B | W4A16 | 8192 | 44707.0 ms | 23506.2 ms | 1.90x | 24544.4 ms | 20043.8 ms | 1.22x |
+| Llama3 8B | W8A16 | 256 | 862.3 ms | 662.4 ms | 1.30x | 671.3 ms | 1045.7 ms | 0.64x |
+| Llama3 8B | W8A16 | 512 | 1690.5 ms | 1099.2 ms | 1.54x | 1212.2 ms | 1654.8 ms | 0.73x |
+| Llama3 8B | W8A16 | 1024 | 3545.0 ms | 2080.8 ms | 1.70x | 2341.1 ms | 3140.2 ms | 0.75x |
+| Llama3 8B | W8A16 | 2048 | 7638.3 ms | 4284.1 ms | 1.78x | 4919.1 ms | 6629.1 ms | 0.74x |
+| Llama3 8B | W8A16 | 4096 | 17613.2 ms | 9923.6 ms | 1.77x | 10291.2 ms | 15546.9 ms | 0.66x |
+| Llama3 8B | W8A16 | 8192 | 44569.3 ms | 24510.9 ms | 1.82x | 23983.5 ms | 38539.4 ms | 0.62x |
 | Gemma 2B | W4A16 | 256 | 301.6 ms | 441.8 ms | 0.68x | 217.1 ms | 458.6 ms | 0.47x |
-| W4A16 | 512 | 566.8 ms | 552.5 ms | 1.03x | 389.2 ms | 559.6 ms | 0.70x |
-| W4A16 | 1024 | 1188.5 ms | 888.7 ms | 1.34x | 771.4 ms | 832.1 ms | 0.93x |
-| W4A16 | 2048 | 2659.7 ms | 1566.1 ms | 1.70x | 1690.4 ms | 1503.4 ms | 1.12x |
-| W4A16 | 4096 | 5638.8 ms | 3253.2 ms | 1.73x | 3841.5 ms | 3066.1 ms | 1.25x |
-| W4A16 | 8192 | 13030.9 ms | 8343.6 ms | 1.56x | 9943.3 ms | 7097.7 ms | 1.40x |
-| W8A16 | 256 | 295.1 ms | 495.5 ms | 0.60x | 220.3 ms | 546.5 ms | 0.40x |
-| W8A16 | 512 | 559.5 ms | 562.0 ms | 1.00x | 410.8 ms | 808.8 ms | 0.51x |
-| W8A16 | 1024 | 1147.6 ms | 952.9 ms | 1.20x | 860.9 ms | 1393.8 ms | 0.62x |
-| W8A16 | 2048 | 2517.3 ms | 1870.6 ms | 1.35x | 1719.1 ms | 2859.7 ms | 0.60x |
-| W8A16 | 4096 | 5114.9 ms | 4187.0 ms | 1.22x | 3296.2 ms | 6489.7 ms | 0.51x |
-| W8A16 | 8192 | 12029.8 ms | 10219.0 ms | 1.18x | 7624.7 ms | 15990.4 ms | 0.48x |
+| Gemma 2B | W4A16 | 512 | 566.8 ms | 552.5 ms | 1.03x | 389.2 ms | 559.6 ms | 0.70x |
+| Gemma 2B | W4A16 | 1024 | 1188.5 ms | 888.7 ms | 1.34x | 771.4 ms | 832.1 ms | 0.93x |
+| Gemma 2B | W4A16 | 2048 | 2659.7 ms | 1566.1 ms | 1.70x | 1690.4 ms | 1503.4 ms | 1.12x |
+| Gemma 2B | W4A16 | 4096 | 5638.8 ms | 3253.2 ms | 1.73x | 3841.5 ms | 3066.1 ms | 1.25x |
+| Gemma 2B | W4A16 | 8192 | 13030.9 ms | 8343.6 ms | 1.56x | 9943.3 ms | 7097.7 ms | 1.40x |
+| Gemma 2B | W8A16 | 256 | 295.1 ms | 495.5 ms | 0.60x | 220.3 ms | 546.5 ms | 0.40x |
+| Gemma 2B | W8A16 | 512 | 559.5 ms | 562.0 ms | 1.00x | 410.8 ms | 808.8 ms | 0.51x |
+| Gemma 2B | W8A16 | 1024 | 1147.6 ms | 952.9 ms | 1.20x | 860.9 ms | 1393.8 ms | 0.62x |
+| Gemma 2B | W8A16 | 2048 | 2517.3 ms | 1870.6 ms | 1.35x | 1719.1 ms | 2859.7 ms | 0.60x |
+| Gemma 2B | W8A16 | 4096 | 5114.9 ms | 4187.0 ms | 1.22x | 3296.2 ms | 6489.7 ms | 0.51x |
+| Gemma 2B | W8A16 | 8192 | 12029.8 ms | 10219.0 ms | 1.18x | 7624.7 ms | 15990.4 ms | 0.48x |
 | Qwen2.5 3B | W4A16 | 256 | 402.5 ms | 490.1 ms | 0.82x | 303.0 ms | 598.2 ms | 0.51x |
-| W4A16 | 512 | 790.0 ms | 696.1 ms | 1.13x | 518.2 ms | 714.6 ms | 0.73x |
-| W4A16 | 1024 | 1629.6 ms | 1155.3 ms | 1.41x | 1064.0 ms | 1190.6 ms | 0.89x |
-| W4A16 | 2048 | 3482.6 ms | 2216.7 ms | 1.57x | 2163.0 ms | 2173.9 ms | 0.99x |
-| W4A16 | 4096 | 8158.5 ms | 4800.3 ms | 1.70x | 4936.0 ms | 4409.2 ms | 1.12x |
-| W4A16 | 8192 | 20231.4 ms | 12334.4 ms | 1.64x | 11804.0 ms | 10060.5 ms | 1.17x |
-| W8A16 | 256 | 386.4 ms | 449.8 ms | 0.86x | 399.0 ms | 518.8 ms | 0.77x |
-| W8A16 | 512 | 758.3 ms | 702.8 ms | 1.08x | 585.4 ms | 786.6 ms | 0.74x |
-| W8A16 | 1024 | 1563.4 ms | 1287.4 ms | 1.21x | 1098.9 ms | 1399.0 ms | 0.79x |
-| W8A16 | 2048 | 3310.3 ms | 2663.6 ms | 1.24x | 2249.5 ms | 2870.5 ms | 0.78x |
-| W8A16 | 4096 | 7691.8 ms | 6091.1 ms | 1.26x | 4830.4 ms | 6604.9 ms | 0.73x |
-| W8A16 | 8192 | 19749.1 ms | 14959.2 ms | 1.32x | 10599.8 ms | 16249.8 ms | 0.65x |
+| Qwen2.5 3B | W4A16 | 512 | 790.0 ms | 696.1 ms | 1.13x | 518.2 ms | 714.6 ms | 0.73x |
+| Qwen2.5 3B | W4A16 | 1024 | 1629.6 ms | 1155.3 ms | 1.41x | 1064.0 ms | 1190.6 ms | 0.89x |
+| Qwen2.5 3B | W4A16 | 2048 | 3482.6 ms | 2216.7 ms | 1.57x | 2163.0 ms | 2173.9 ms | 0.99x |
+| Qwen2.5 3B | W4A16 | 4096 | 8158.5 ms | 4800.3 ms | 1.70x | 4936.0 ms | 4409.2 ms | 1.12x |
+| Qwen2.5 3B | W4A16 | 8192 | 20231.4 ms | 12334.4 ms | 1.64x | 11804.0 ms | 10060.5 ms | 1.17x |
+| Qwen2.5 3B | W8A16 | 256 | 386.4 ms | 449.8 ms | 0.86x | 399.0 ms | 518.8 ms | 0.77x |
+| Qwen2.5 3B | W8A16 | 512 | 758.3 ms | 702.8 ms | 1.08x | 585.4 ms | 786.6 ms | 0.74x |
+| Qwen2.5 3B | W8A16 | 1024 | 1563.4 ms | 1287.4 ms | 1.21x | 1098.9 ms | 1399.0 ms | 0.79x |
+| Qwen2.5 3B | W8A16 | 2048 | 3310.3 ms | 2663.6 ms | 1.24x | 2249.5 ms | 2870.5 ms | 0.78x |
+| Qwen2.5 3B | W8A16 | 4096 | 7691.8 ms | 6091.1 ms | 1.26x | 4830.4 ms | 6604.9 ms | 0.73x |
+| Qwen2.5 3B | W8A16 | 8192 | 19749.1 ms | 14959.2 ms | 1.32x | 10599.8 ms | 16249.8 ms | 0.65x |
 
 With our custom end-to-end framework setup introduced in Section 4.6, we evaluate the end-to-end performance. Note that the Ryzen AI 7 350 provides a more informative comparison for isolating NPU-side benefits because its iGPU baseline is substantially smaller, while the HX 370 has a stronger iGPU that can partially mask NPU-side gains in end-to-end comparisons. The end-to-end performance of the evaluated LLMs is shown in Figure 7 and Figure 8. Full request latency can be estimated as L=lp+n⋅lgL=l\_{p}+n\cdot l\_{g}, where lpl\_{p} is prefilling latency, lgl\_{g} is per-token generation latency (the inverse of tok/s), and nn is the number of generated output tokens. Figure 7 reports prefilling latency across prompt lengths, while Figure 8 reports generation throughput. We further break down prefilling latency for both W​4​A​16W4A16 and W​8​A​16W8A16 in Table 2.
 
