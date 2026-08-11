@@ -47,6 +47,11 @@
 #include <mutex>
 #include <algorithm>
 #include <signal.h>
+#ifndef _MSC_VER
+#include <dirent.h>
+#else
+#include <filesystem>
+#endif
 #ifdef _WIN32
 // Minimal getopt for Windows — MSVC doesn't ship it
 #include <io.h>
@@ -282,23 +287,37 @@ static void load_model_tokenizer(const std::string& model_path) {
     }
     auto slash = model_path.find_last_of('/');
     std::string dir = (slash != std::string::npos) ? model_path.substr(0, slash + 1) : "";
+#ifndef _MSC_VER
     if (auto* d = opendir(dir.empty() ? "." : dir.c_str())) {
         while (struct dirent* e = readdir(d)) {
             std::string n(e->d_name);
+#else
+    { std::error_code scan_ec;
+      for (auto& entry : std::filesystem::directory_iterator(dir.empty() ? "." : dir, scan_ec)) {
+        std::string n = entry.path().filename().string();
+#endif
             if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
             std::string stem = n.substr(0, n.size() - 5);
-            // Qwen3-0.6B.Q4_K_M → Qwen3-0.6B
             auto q = stem.find(".Q4_K");
             if (q != std::string::npos) stem = stem.substr(0, q);
             auto q8 = stem.find(".Q8_0");
             if (q8 != std::string::npos) stem = stem.substr(0, q8);
             if (stem == gguf_base) {
                 std::string c = dir + n;
+#ifndef _MSC_VER
                 if (load_or_synthesize(c)) { closedir(d); return; }
+#else
+                if (load_or_synthesize(c)) return;
+#endif
             }
+#ifndef _MSC_VER
         }
         closedir(d);
     }
+#else
+      }
+    }
+#endif
 }
 
 static ModelConfig default_model_config() {
@@ -1144,8 +1163,10 @@ int main(int argc, char** argv) {
     // Line-buffer stdout when redirected (logs, CI): block buffering merged
     // lifecycle prints with stderr and hid model-switch diagnostics (the
     // "[auto]"/"switching" lines appeared glued to unrelated output).
+#ifndef _MSC_VER  // CRT fastfail on UCRT + static CRT (#1589)
     setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
+#endif  // ONE_BIN_DISPATCH
 #ifdef EMBED_LEMONADE
     // --lemonade hands off to the embedded Lemonade server core before any
     // of the native arg parsing / hardware init below.
