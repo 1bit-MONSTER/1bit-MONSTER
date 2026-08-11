@@ -86,7 +86,7 @@ static void dequant_q4nx_tile(const uint8_t* tile_data, float* out,
 static void matmul_q4nx(float* y, const float* x, const uint8_t* w_data,
                         int M, int K, int tr, int tc, int gs) {
     std::fill(y, y + M, 0.0f);
-    std::vector<float> tile_buf(tr * tc);
+    std::vector<float> tile_buf((size_t)tr * tc);
     int n_tr = (K + tr - 1) / tr;
     int n_tc = (M + tc - 1) / tc;
     int row_bytes = (tc / gs) * 4 + tc / 2;
@@ -337,8 +337,8 @@ struct LagunaBackend : Backend {
         max_pos = 2048;
         k_cache.resize(L);
         v_cache.resize(L);
-        for (auto& k : k_cache) k.resize(max_pos * NKV * HD, 0.0f);
-        for (auto& v : v_cache) v.resize(max_pos * NKV * HD, 0.0f);
+        for (auto& k : k_cache) k.resize((size_t)max_pos * NKV * HD, 0.0f);
+        for (auto& v : v_cache) v.resize((size_t)max_pos * NKV * HD, 0.0f);
 
         // Init HIP GPU with full weight pre-upload
         hip_lib = dlopen("libamdhip64.so", RTLD_NOW | RTLD_LOCAL);
@@ -409,8 +409,8 @@ struct LagunaBackend : Backend {
         }
         max_pos = capped;
         for (int il = 0; il < L; il++) {
-            k_cache[il].resize(max_pos * NKV * HD, 0.0f);
-            v_cache[il].resize(max_pos * NKV * HD, 0.0f);
+            k_cache[il].resize((size_t)max_pos * NKV * HD, 0.0f);
+            v_cache[il].resize((size_t)max_pos * NKV * HD, 0.0f);
         }
     }
 
@@ -418,8 +418,8 @@ struct LagunaBackend : Backend {
         if (pos < max_pos) return;
         int new_cap = max_pos * 2;
         if (new_cap > MAX_KV_POS) new_cap = MAX_KV_POS;
-        for (auto& k : k_cache) k.resize(new_cap * NKV * HD, 0.0f);
-        for (auto& v : v_cache) v.resize(new_cap * NKV * HD, 0.0f);
+        for (auto& k : k_cache) k.resize((size_t)new_cap * NKV * HD, 0.0f);
+        for (auto& v : v_cache) v.resize((size_t)new_cap * NKV * HD, 0.0f);
         max_pos = new_cap;
     }
 
@@ -603,11 +603,11 @@ struct LagunaBackend : Backend {
                 float* kn = w1d(pkn);
                 if (qn) {
                     for (int h = 0; h < n_head_il; h++)
-                        rmsnorm(&Q[h*HD], &Q[h*HD], qn, HD, RMS_EPS);
+                        rmsnorm(&Q[(size_t)h*HD], &Q[(size_t)h*HD], qn, HD, RMS_EPS);
                 }
                 if (kn) {
                     for (int h = 0; h < NKV; h++)
-                        rmsnorm(&K[h*HD], &K[h*HD], kn, HD, RMS_EPS);
+                        rmsnorm(&K[(size_t)h*HD], &K[(size_t)h*HD], kn, HD, RMS_EPS);
                 }
 
                 // RoPE (per-layer-type)
@@ -615,8 +615,8 @@ struct LagunaBackend : Backend {
 
                 // KV cache
                 int kv_base = pos * NKV * HD;
-                memcpy(&k_cache[il][kv_base], K.data(), NKV * HD * sizeof(float));
-                memcpy(&v_cache[il][kv_base], V_buf.data(), NKV * HD * sizeof(float));
+                memcpy(&k_cache[il][kv_base], K.data(), (size_t)NKV * HD * sizeof(float));
+                memcpy(&v_cache[il][kv_base], V_buf.data(), (size_t)NKV * HD * sizeof(float));
 
                 // Attention with optional sliding window
                 int kv_start = 0;
@@ -626,11 +626,11 @@ struct LagunaBackend : Backend {
                 int kv_end = pos + 1;
 
                 // Attention computation
-                std::vector<float> att(n_head_il * HD, 0.0f);
+                std::vector<float> att((size_t)n_head_il * HD, 0.0f);
                 std::vector<float> scores(kv_end - kv_start);
                 for (int h = 0; h < n_head_il; h++) {
                     int kv_h = h / gqa_ratio;
-                    float* Qh = &Q[h * HD];
+                    float* Qh = &Q[(size_t)h * HD];
                     // Compute scores over KV range
                     for (int t = kv_start; t < kv_end; t++) {
                         float* Kh = &k_cache[il][t * NKV * HD + kv_h * HD];

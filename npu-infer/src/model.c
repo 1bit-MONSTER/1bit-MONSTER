@@ -82,7 +82,7 @@ int npu_dequant_block(void* out, const void* in,
         num_rows = (int)config->npu_block_rows;
     
     // Zero entire output block
-    memset(bf16_out, 0, num_rows * block_cols * 2);
+    memset(bf16_out, 0, (size_t)num_rows * block_cols * 2);
     
     // For each BF16 value, read 2 consecutive I8 bytes as little-endian BF16
     // I8 data layout: [lo_byte_0, hi_byte_0, lo_byte_1, hi_byte_1, ...] per row

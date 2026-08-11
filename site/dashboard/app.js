@@ -88,7 +88,7 @@ function toast(message, type = 'info') {
   if (!container) return;
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.innerHTML = `<span class="icon">${icons[type] || icons.info}</span><span>${message}</span>`;
+  el.innerHTML = `<span class="icon">${icons[type] || icons.info}</span><span>${esc(message)}</span>`;
   el.addEventListener('click', () => el.remove());
   container.appendChild(el);
   setTimeout(() => { if (el.parentNode) el.remove(); }, 4000);
@@ -158,7 +158,7 @@ function renderPage(page) {
       default: renderDashboard(main); break;
     }
   } catch (e) {
-    main.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>Error: ${e.message}</span></div>`;
+    main.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>Error: ${esc(e.message)}</span></div>`;
     toast('Error loading page: ' + e.message, 'error');
   }
   closeSidebarMobile();
@@ -281,7 +281,7 @@ async function renderDashboard(main) {
         </div>
       </div>`;
   } catch (e) {
-    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>Failed to load dashboard: ${e.message}</span><span class="text-xs mt-2">Make sure the API key is set in Settings and the Jarvis server is running.</span></div>`;
+    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>Failed to load dashboard: ${esc(e.message)}</span><span class="text-xs mt-2">Make sure the API key is set in Settings and the Jarvis server is running.</span></div>`;
   }
 }
 
@@ -324,7 +324,7 @@ async function renderVoicePacks(main) {
         </div>
       </div>`).join('')}</div>`;
   } catch (e) {
-    body.innerHTML = `<div class="empty-state"><span style="font-size:48px">🎤</span><span>Could not load voice packs</span><span class="text-xs">${e.message}</span></div>`;
+    body.innerHTML = `<div class="empty-state"><span style="font-size:48px">🎤</span><span>Could not load voice packs</span><span class="text-xs">${esc(e.message)}</span></div>`;
   }
 }
 
@@ -501,7 +501,7 @@ async function renderPersonas(main) {
         </div>
       </div>`;
   } catch (e) {
-    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${e.message}</span></div>`;
+    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${esc(e.message)}</span></div>`;
   }
 }
 
@@ -627,7 +627,7 @@ async function renderUsage(main) {
     // Initialize charts
     initUsageCharts(minUsed, tokUsed);
   } catch (e) {
-    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${e.message}</span></div>`;
+    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${esc(e.message)}</span></div>`;
   }
 }
 
@@ -726,11 +726,11 @@ async function renderApiKeys(main) {
                 <thead><tr><th>Key</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead>
                 <tbody>${keys.map(k => `
                   <tr>
-                    <td style="font-family:var(--mono);font-size:12px;">${k.key}</td>
+                    <td style="font-family:var(--mono);font-size:12px;">${esc(k.key)}</td>
                     <td><span class="badge ${k.active ? 'ok' : 'err'}"><span class="dot"></span>${k.active ? 'Active' : 'Revoked'}</span></td>
                     <td>${k.created_at || '—'}</td>
                     <td>${k.expires_at || '—'}</td>
-                    <td>${k.active ? `<button class="btn btn-danger btn-sm" onclick="revokeApiKey('${k.key}')">Revoke</button>` : ''}</td>
+                    <td>${k.active ? `<button class="btn btn-danger btn-sm" onclick="revokeApiKey('${esc(k.key)}')">Revoke</button>` : ''}</td>
                   </tr>`).join('')}
                 </tbody>
               </table></div>`
@@ -754,7 +754,7 @@ async function renderApiKeys(main) {
         </div>
       </div>`;
   } catch (e) {
-    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${e.message}</span></div>`;
+    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${esc(e.message)}</span></div>`;
   }
 }
 
@@ -867,7 +867,7 @@ async function renderBilling(main) {
         </div>` : ''}
     `;
   } catch (e) {
-    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${e.message}</span></div>`;
+    body.innerHTML = `<div class="error-state"><span style="font-size:32px">⚠</span><span>${esc(e.message)}</span></div>`;
   }
 }
 
@@ -890,7 +890,7 @@ async function renderSettings(main) {
         <div class="card-body">
           <div class="form-group">
             <label>Your API Key</label>
-            <input class="form-input" id="settings-api-key" placeholder="sk-..." value="${savedKey}">
+            <input class="form-input" id="settings-api-key" placeholder="sk-..." value="${esc(savedKey)}">
             <div class="form-hint">This key is used for all API calls from the dashboard. Stored in localStorage.</div>
           </div>
           <div class="flex gap-2 mt-2">
@@ -900,7 +900,7 @@ async function renderSettings(main) {
           <div class="mt-3 code-block" style="font-size:12px;">
 <span class="c"># Example: Using your API key with curl</span>
 <span class="g">$</span> curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: ${savedKey || 'sk-your-key-here'}" \
+  -H "Authorization: ${esc(savedKey) || 'sk-your-key-here'}" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}]}'</div>
         </div>
@@ -919,7 +919,7 @@ async function renderSettings(main) {
           <div class="flex flex-col gap-3">
             <div class="flex items-center justify-between">
               <span>API key (localStorage)</span>
-              <span class="text-xs">${savedKey ? '✓ Set' : '— Not set'}</span>
+              <span class="text-xs">${esc(savedKey) ? '✓ Set' : '— Not set'}</span>
             </div>
             <div class="flex gap-2">
               <button class="btn btn-outline btn-sm" onclick="clearAllLocalData()">Clear All Local Data</button>

@@ -53,13 +53,13 @@ int main() {
     MTPDraftState state;
     state.resize(cfg.num_kv_heads, cfg.head_dim, 4096);
     TEST("State initialized with correct dimensions",
-         state.k_cache.size() == cfg.num_kv_heads * 4096 * cfg.head_dim &&
+         state.k_cache.size() == (size_t)cfg.num_kv_heads * 4096 * cfg.head_dim &&
          state.max_seq == 4096 &&
          state.seq_len == 0);
     
     // Test 4: Forward pass shape correctness
     // Input: trunk_hidden [num_target_layers, hidden_size]
-    std::vector<float> trunk_hidden(cfg.num_target_layers * cfg.hidden_size, 0.5f);
+    std::vector<float> trunk_hidden((size_t)cfg.num_target_layers * cfg.hidden_size, 0.5f);
     int32_t last_token_id = 42;
     std::vector<float> draft_logits(cfg.vocab_size, 0.0f);
     std::vector<float> draft_hidden(cfg.hidden_size, 0.0f);

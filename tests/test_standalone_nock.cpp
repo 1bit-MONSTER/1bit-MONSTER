@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
         float max_abs = 0.0f; double sum_sq = 0.0;
         for(size_t i = 0; i < C_cpu.size(); ++i) {
             float d = std::fabs((float)C_cpu[i] - (float)got[i]);
-            max_abs = std::max(max_abs, d); sum_sq += d * d;
+            max_abs = std::max(max_abs, d); sum_sq += (double)d * d;
         }
         float rmse = (float)std::sqrt(sum_sq / C_cpu.size());
         printf("  %-22s  max_abs=%.6f  rmse=%.6f\n", label, max_abs, rmse);

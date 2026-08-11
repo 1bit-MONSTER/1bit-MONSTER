@@ -52,16 +52,16 @@ static void cpu_group_norm(Tensor& t, uint32_t G, float eps, float gamma,
         for (uint32_t g = 0; g < G; g++) {
             float mean = 0, var = 0;
             for (size_t i = 0; i < gsz; i++)
-                mean += t.data[(size_t(n) * C + g * gc) * H * W + i];
+                mean += t.data[(size_t(n) * C + (size_t)g * gc) * H * W + i];
             mean /= (float)gsz;
             for (size_t i = 0; i < gsz; i++) {
-                float d = t.data[(size_t(n) * C + g * gc) * H * W + i] - mean;
+                float d = t.data[(size_t(n) * C + (size_t)g * gc) * H * W + i] - mean;
                 var += d * d;
             }
             var /= (float)gsz;
             float inv = 1.0f / std::sqrt(var + eps);
             for (size_t i = 0; i < gsz; i++) {
-                size_t idx = (size_t(n) * C + g * gc) * H * W + i;
+                size_t idx = (size_t(n) * C + (size_t)g * gc) * H * W + i;
                 uint32_t c = g * gc + (uint32_t)(i / (H * W)) % gc;
                 (void)c;  // shader applies scalar gamma/beta for now
                 t.data[idx] = (t.data[idx] - mean) * inv * gamma + beta;

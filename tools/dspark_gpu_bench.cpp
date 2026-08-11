@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
     // Run first n_target target layers on CPU, collect intermediate hidden states,
     // then feed them to the trained Eagle3 draft model for real spec-decode (fixes #57).
     auto cpu_draft=[&](float*hd,int pos,int input_id)->int{
-        std::vector<float> layer_out(n_target*H);
+        std::vector<float> layer_out((size_t)n_target*H);
         float hidden[4096];memcpy(hidden,hd,H*4);
         for(int l=0;l<n_target;l++){
             float res[4096];memcpy(res,hidden,H*4);
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
             for(int h=0;h<NKV;h++)cpu_rmsnorm(qkvv.data()+NH*HD+h*HD,F(o_norms)+2*L*H+L*HD+l*HD,qkvv.data()+NH*HD+h*HD,HD,1e-6f);
             cpu_rope(qkvv.data()+NH*HD,pos,NKV,HD,st.data(),ct.data());
             for(int h=0;h<NKV;h++){memcpy(&kcv[l*4096*NKV*HD+pos*NKV*HD+h*HD],qkvv.data()+NH*HD+h*HD,HD*4);memcpy(&vcv[l*4096*NKV*HD+pos*NKV*HD+h*HD],qkvv.data()+NH*HD+NKV*HD+h*HD,HD*4);}
-            cpu_attention(qkvv.data(),&kcv[l*4096*NKV*HD],&vcv[l*4096*NKV*HD],atv.data(),NH,NKV,HD,pos+1,GQA);
+            cpu_attention(qkvv.data(),&kcv[(size_t)l*4096*NKV*HD],&vcv[(size_t)l*4096*NKV*HD],atv.data(),NH,NKV,HD,pos+1,GQA);
             cpu_ternary_gemv(pw,atv.data(),sw,hidden,rows[3],KK[3]);pw+=ps[3];sw+=rows[3];
             for(int i=0;i<H;i++)hidden[i]=res[i]+hidden[i];memcpy(res,hidden,H*4);
             cpu_rmsnorm(hidden,F(o_norms)+L*H+l*H,hidden,H,1e-6f);

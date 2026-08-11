@@ -48,7 +48,7 @@ static int run_test(int M, int K, const char* label) {
     int nb = (K + BST_BLOCK_K - 1) / BST_BLOCK_K;
 
     // Generate random weights and activations
-    std::vector<float> wt(M * K);
+    std::vector<float> wt((size_t)M * K);
     std::vector<int8_t> act(K);
     for (int i = 0; i < M * K; ++i)
         wt[i] = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
@@ -57,7 +57,7 @@ static int run_test(int M, int K, const char* label) {
     float x_scale = 0.1f;
 
     // Pack to block-scaled ternary
-    std::vector<uint8_t> packed(M * nb * BST_BLOCK_BYTES);
+    std::vector<uint8_t> packed((size_t)M * nb * BST_BLOCK_BYTES);
     for (int r = 0; r < M; ++r)
         block_scaled_ternary_pack_row(
             wt.data() + r * K, packed.data() + r * nb * BST_BLOCK_BYTES, K);
