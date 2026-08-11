@@ -855,7 +855,7 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
         if(!B(l.gdw,eng.h*eng.rtr_h)){zaya_destroy(s);return nullptr;}
         {
             auto raw=WF("model_layers_"+L(il)+"_mlp_gate_down_proj_weight.bin");
-            std::vector<float> tr(eng.h*eng.rtr_h);
+            std::vector<float> tr((size_t)eng.h*eng.rtr_h);
             for(int i=0;i<eng.rtr_h;i++)for(int j=0;j<eng.h;j++)tr[j*eng.rtr_h+i]=raw[i*eng.h+j];
             upf32(tr,l.gdw,eng.h*eng.rtr_h,s->st);
         }
@@ -1325,7 +1325,7 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
         fprintf(stderr, "[zaya] batch B=%d out of range [1,%zu]\n", B, ZAYA_B_MAX);
         return;
     }
-    std::vector<__half> hh(B * eng.h);
+    std::vector<__half> hh((size_t)B * eng.h);
     for (int b = 0; b < B; b++) {
         int tid = token_ids[b];
         if (tid < 0 || tid >= eng.vocab) {
@@ -1486,7 +1486,7 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
     HIP_OK_V(hipStreamSynchronize(s->st));
 
     // Copy logits for all B tokens
-    std::vector<__half> lh(B * eng.vocab);
+    std::vector<__half> lh((size_t)B * eng.vocab);
     HIP_OK_V(hipMemcpy(lh.data(), s->d_lm_vocab, (size_t)B * eng.vocab * 2, hipMemcpyDeviceToHost));
     for (int b = 0; b < B; b++)
         for (int v = 0; v < eng.vocab; v++)
@@ -1618,7 +1618,7 @@ extern "C" int zaya_apply_lora(ZayaState* s, const char* lora_path) {
             if (mod.mod_id == 0) {  // q_proj → wq [QD, H]
                 if ((size_t)mod.out_dim == eng.qd && (size_t)mod.in_dim == eng.h) {
                     // Download GPU weight, add delta, upload back
-                    std::vector<__half> gpu_w(eng.qd * eng.h);
+                    std::vector<__half> gpu_w((size_t)eng.qd * eng.h);
                     HIP_OK_R(hipMemcpy(gpu_w.data(), l.wq, eng.qd * eng.h * 2, hipMemcpyDeviceToHost), -1);
                     for (int i = 0; i < eng.qd * eng.h; i++) {
                         float v = __half2float(gpu_w[i]) + delta[i];
@@ -1630,7 +1630,7 @@ extern "C" int zaya_apply_lora(ZayaState* s, const char* lora_path) {
                 }
             } else if (mod.mod_id == 1) {  // k_proj → wk [KD, H]
                 if ((size_t)mod.out_dim == eng.kd && (size_t)mod.in_dim == eng.h) {
-                    std::vector<__half> gpu_w(eng.kd * eng.h);
+                    std::vector<__half> gpu_w((size_t)eng.kd * eng.h);
                     HIP_OK_R(hipMemcpy(gpu_w.data(), l.wk, eng.kd * eng.h * 2, hipMemcpyDeviceToHost), -1);
                     for (int i = 0; i < eng.kd * eng.h; i++) {
                         float v = __half2float(gpu_w[i]) + delta[i];
@@ -1642,7 +1642,7 @@ extern "C" int zaya_apply_lora(ZayaState* s, const char* lora_path) {
                 }
             } else if (mod.mod_id == 3) {  // o_proj → wo [H, QD]
                 if ((size_t)mod.out_dim == eng.h && (size_t)mod.in_dim == eng.qd) {
-                    std::vector<__half> gpu_w(eng.h * eng.qd);
+                    std::vector<__half> gpu_w((size_t)eng.h * eng.qd);
                     HIP_OK_R(hipMemcpy(gpu_w.data(), l.wo, eng.h * eng.qd * 2, hipMemcpyDeviceToHost), -1);
                     for (int i = 0; i < eng.h * eng.qd; i++) {
                         float v = __half2float(gpu_w[i]) + delta[i];
@@ -1656,7 +1656,7 @@ extern "C" int zaya_apply_lora(ZayaState* s, const char* lora_path) {
                 // File stores raw gate_down_proj weight as [RTR_H, H]. LoRA delta is [RTR_H, H].
                 // On GPU, gdw is transposed to [H, RTR_H]. We need to apply delta then retranspose.
                 if ((size_t)mod.out_dim == eng.rtr_h && (size_t)mod.in_dim == eng.h) {
-                    std::vector<float> gpu_w(eng.h * eng.rtr_h);
+                    std::vector<float> gpu_w((size_t)eng.h * eng.rtr_h);
                     HIP_OK_R(hipMemcpy(gpu_w.data(), l.gdw, eng.h * eng.rtr_h * 4, hipMemcpyDeviceToHost), -1);
                     // delta is [RTR_H, H]; gpu_w is [H, RTR_H] (transposed)
                     // We add delta^T to gpu_w: gpu_w[j][i] += delta[i][j]

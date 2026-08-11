@@ -58,8 +58,8 @@ static void build_rope_cache(int max_pos, int head_dim, float theta) {
     if (head_dim == rope_hd && !cos_cache.empty()) return;
     rope_hd = head_dim;
     int hd2 = head_dim / 2;
-    cos_cache.resize(max_pos * head_dim);
-    sin_cache.resize(max_pos * head_dim);
+    cos_cache.resize((size_t)max_pos * head_dim);
+    sin_cache.resize((size_t)max_pos * head_dim);
     for (int p = 0; p < max_pos; p++) {
         for (int d = 0; d < hd2; d++) {
             float f = 1.0f / powf(theta, (float)d / hd2);

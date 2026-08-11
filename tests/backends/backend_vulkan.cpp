@@ -363,8 +363,8 @@ public:
             auto& vc = v_cache_[il];
             int seq = pos + 1;
             if ((int)kc.size() < seq * cache_stride) {
-                kc.resize(seq * cache_stride);
-                vc.resize(seq * cache_stride);
+                kc.resize((size_t)seq * cache_stride);
+                vc.resize((size_t)seq * cache_stride);
             }
             for (int h = 0; h < NKV; h++) {
                 for (int i = 0; i < HD; i++) {

@@ -449,7 +449,7 @@ int main(int argc, char** argv) {
             std::vector<float> npu_sim(H);
             for (int i = 0; i < H; i++) npu_sim[i] = d_sim[i] + sg_sig * sh_sim[i];
             double snum = 0, sden = 0;
-            for (int i = 0; i < H; i++) { double d = npu_out[i] - npu_sim[i]; snum += d*d; sden += npu_sim[i]*npu_sim[i]; }
+            for (int i = 0; i < H; i++) { double d = npu_out[i] - npu_sim[i]; snum += d*d; sden += (double)npu_sim[i]*npu_sim[i]; }
             double sim_rmse = sqrt(snum / sden);
             // sim vs f32 ref correlation (documents quantization error)
             double sa = 0, sb = 0, sab = 0, saa = 0, sbb = 0;

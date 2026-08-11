@@ -124,7 +124,7 @@ public:
         // Buffer for hidden states from target
         const int32_t num_model_layers = 28; // Qwen3-0.6B full layers
         std::vector<float> target_hidden(
-            cfg_.num_target_layers * cfg_.hidden_size
+            (size_t)cfg_.num_target_layers * cfg_.hidden_size
         );
 
         // Prefill: run target on full prompt

@@ -269,13 +269,13 @@ std::vector<float> deepseek_v4_forward(
     // Working buffers
     std::vector<float> norm(H);
     std::vector<float> q_comp(cfg.q_lora_rank);
-    std::vector<float> q_nope(cfg.num_heads * cfg.qk_nope_head_dim);
-    std::vector<float> q_rope_all(cfg.num_heads * cfg.qk_rope_head_dim);
+    std::vector<float> q_nope((size_t)cfg.num_heads * cfg.qk_nope_head_dim);
+    std::vector<float> q_rope_all((size_t)cfg.num_heads * cfg.qk_rope_head_dim);
     std::vector<float> kv_comp(cfg.kv_lora_rank + cfg.qk_rope_head_dim);
-    std::vector<float> k_nope(cfg.num_heads * cfg.qk_nope_head_dim);
-    std::vector<float> v_all(cfg.num_heads * cfg.v_head_dim);
+    std::vector<float> k_nope((size_t)cfg.num_heads * cfg.qk_nope_head_dim);
+    std::vector<float> v_all((size_t)cfg.num_heads * cfg.v_head_dim);
     std::vector<float> attn_scores(4096);
-    std::vector<float> attn_out(cfg.num_heads * cfg.v_head_dim, 0.0f);
+    std::vector<float> attn_out((size_t)cfg.num_heads * cfg.v_head_dim, 0.0f);
     std::vector<float> o_lora(cfg.o_lora_rank);
     std::vector<float> attn_proj(H);
     std::vector<float> shared_gate(cfg.moe_intermediate);
