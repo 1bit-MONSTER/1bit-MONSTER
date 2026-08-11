@@ -221,16 +221,16 @@ struct ZModel {
             snprintf(bf,sizeof(bf),"decoder.layers.%d.feed_forward.w2.weight",l); W->w2(bf,fn2,no,ni);
             snprintf(bf,sizeof(bf),"decoder.layers.%d.feed_forward.w3.weight",l); W->w2(bf,fn3,no,ni);
             snprintf(bf,sizeof(bf),"decoder.layers.%d.ffn_norm_post.norm.weight",l); W->w1(bf,fp,nn);
-            std::vector<f32> xnx(S*D), ynx(T*D), ca(S*D);
+            std::vector<f32> xnx((size_t)S*D), ynx((size_t)T*D), ca((size_t)S*D);
             adarnorm_rows(xnx.data(),h.data(),c,cxw.data(),cxb.data(),S,D,TD,eps);
             adarnorm_rows(ynx.data(),cross.data(),c,cyw.data(),cyb.data(),T,D,TD,eps);
             attention(xnx.data(),S,ynx.data(),T,D,H,HD,cq.data(),ck.data(),cv.data(),co.data(),cqn.data(),ckn.data(),freqs,tok_idx,tok_idx,ca.data());
             for(int s=0;s<S;s++){ f32* hh=h.data()+s*D; const f32* aa=ca.data()+s*D; std::vector<f32> post((size_t)D); rmsnorm(post.data(),aa,cpost.data(),D,eps); for(int j=0;j<D;j++) hh[j]+=post[j]; }
-            std::vector<f32> snx(S*D), sa(S*D);
+            std::vector<f32> snx((size_t)S*D), sa((size_t)S*D);
             adarnorm_rows(snx.data(),h.data(),c,sann.data(),sanb.data(),S,D,TD,eps);
             attention(snx.data(),S,snx.data(),S,D,H,HD,sq.data(),sk.data(),sv.data(),so.data(),sqn.data(),skn.data(),freqs,tok_idx,tok_idx,sa.data());
             for(int s=0;s<S;s++){ f32* hh=h.data()+s*D; const f32* aa=sa.data()+s*D; std::vector<f32> post((size_t)D); rmsnorm(post.data(),aa,sanp.data(),D,eps); for(int j=0;j<D;j++) hh[j]+=post[j]; }
-            std::vector<f32> fnx(S*D);
+            std::vector<f32> fnx((size_t)S*D);
             adarnorm_rows(fnx.data(),h.data(),c,fann.data(),fanb.data(),S,D,TD,eps);
             for(int s=0;s<S;s++){ const f32* x=fnx.data()+s*D; f32* hh=h.data()+s*D;
                 f32 g1[4096],g3[4096],mid[4096],ffb[4096];
