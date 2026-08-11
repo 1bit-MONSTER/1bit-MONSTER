@@ -125,7 +125,11 @@ set(BACKEND_MANAGER_SOURCES
     ${SRC_DIR}/tokenizer.cpp
     ${SRC_DIR}/kv_rotorquant.cpp
     ${SRC_DIR}/zamba2_engine.cpp
-    ${SRC_DIR}/backend_onnx.cpp)
+    ${SRC_DIR}/backend_onnx.cpp
+    ${SRC_DIR}/dynamic_router.cpp
+    ${SRC_DIR}/strategy_engine.cpp
+    ${SRC_DIR}/agent_watchdog.cpp
+    ${SRC_DIR}/vl_processor.cpp)
 
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
 target_include_directories(backend_manager PUBLIC
