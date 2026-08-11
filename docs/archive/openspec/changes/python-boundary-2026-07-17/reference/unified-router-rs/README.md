@@ -15,7 +15,7 @@ cargo build --release
 - `npu` → SMALL, `gpu` → BIG, any other model → pass-through unchanged
 - Non-completion paths (GET, other POST) → transparent proxy
 
-Verified against a mock backend: see ../findings.md §4.
+Verified against a mock backend: see ../../findings.md §4.
 
 ## Note
 Long-term this policy should fold into `rust/onebit` (the repo's Rust HTTP frontend)

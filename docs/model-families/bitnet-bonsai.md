@@ -13,7 +13,7 @@ Deepgrove's Bonsai models are ternary b1.58 — weights constrained to {−1, 0,
 
 ## Notes
 
-- **NPU:** ternary 1.58-bit / TQ1 via `mm_ternary_tq1.cc` (base-3 LUT decode + ping-pong); TQ2 models via `gemm_generate_sequence_tq2()` and `--native-tq2` in `npu_ternaryd.cpp`.
+- **NPU:** ternary 1.58-bit / TQ1 and TQ2 bridged to INT8 via `ternary_npu_bridge.h` (`pack_tq1_to_npu_int8()` / `pack_tq2_to_npu_int8()`) onto existing INT8 xclbin kernels; `mm_ternary_tq1.cc` / `mm_ternary_tq2.cc` are the on-tile LUT-decode microkernels for a true native 2-bit path, not yet the default — see the [NPU ternary roadmap](../research/npu-ternary-roadmap.md).
 - **GPU:** Q1_0 1024-block kernel — 433 tok/s synthetic (kernel-level, HIP); 318 tok/s kernel-level on Vulkan ZINC.
 - **CPU:** universal GGUF backend.
 

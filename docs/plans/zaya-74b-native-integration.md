@@ -1,7 +1,7 @@
 ---
 Type: plan
 Context: Native ZAYA1-74B HIP integration — gguf_to_onebp → .1bp → zaya_init_onebp (issue #1521; loader strictness #1527)
-Status: DRAFT (scout + planner)
+Status: PARTIALLY SHIPPED — the `gguf_to_onebp` converter step landed (PR #1546, 2026-08-08), producing a verified `ZAYA1-74B.1bp` (43.6 GiB, round-trip Pearson r=0.994-0.999, zero NaNs). The `zaya_init_onebp()` wiring below is still blocked: the 74B needs ~145GB fp16 GPU expert buffers against a 62GB Strix pool, and Zaya's router "EDA" temporal-state semantics have no working reference implementation to verify against (the 8B `.1bp` loads end-to-end but its output isn't conditioned on the prompt). See [journey.md UPDATE 31](../journey.md#update-31-2026-08-08-the-tilefuse-day--npu-kernel-from-scratch-q4nx-pivot-converter-ladder), "Zaya GGUF/.1bp conversion" section.
 Date: 2026-08-05
 ---
 
