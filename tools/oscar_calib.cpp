@@ -27,8 +27,8 @@
 // columns of Q (column j = eigenvector for lambda[j]).
 static bool jacobi_eigh(float* A, float* lambda, float* Q, int n, int max_iter = 50) {
     // Copy A to current matrix
-    std::vector<float> B(n * n);
-    std::vector<float> Qv(n * n);
+    std::vector<float> B((size_t)n * n);
+    std::vector<float> Qv((size_t)n * n);
     for (int i = 0; i < n * n; i++) { B[i] = A[i]; Qv[i] = 0; }
     for (int i = 0; i < n; i++) Qv[i * n + i] = 1.0f; // Identity
 
@@ -179,8 +179,8 @@ int main(int argc, char** argv) {
     std::mt19937_64 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
-    std::vector<float> R_K_all(L * HD * HD);
-    std::vector<float> R_V_all(L * HD * HD);
+    std::vector<float> R_K_all((size_t)L * HD * HD);
+    std::vector<float> R_V_all((size_t)L * HD * HD);
 
     // For each layer, compute the covariance from random inputs through Q/K/V projections
     for (int l = 0; l < L; l++) {
@@ -195,8 +195,8 @@ int main(int argc, char** argv) {
         if (wq.empty() || wk.empty() || wv.empty()) continue;
 
         // Accumulate covariance matrices
-        std::vector<double> C_Q(HD * HD, 0.0);  // query covariance
-        std::vector<double> C_S(HD * HD, 0.0);  // score-aware value cov
+        std::vector<double> C_Q((size_t)HD * HD, 0.0);  // query covariance
+        std::vector<double> C_S((size_t)HD * HD, 0.0);  // score-aware value cov
 
         for (int t = 0; t < calib_tokens; t++) {
             // Random hidden state (one head's worth)
@@ -230,24 +230,24 @@ int main(int argc, char** argv) {
 
         // Normalize
         float inv_n = 1.0f / calib_tokens;
-        std::vector<float> CQ_f(HD * HD), CS_f(HD * HD);
+        std::vector<float> CQ_f((size_t)HD * HD), CS_f((size_t)HD * HD);
         for (int i = 0; i < HD * HD; i++) {
             CQ_f[i] = (float)(C_Q[i] * inv_n);
             CS_f[i] = (float)(C_S[i] * inv_n);
         }
 
         // Eigendecomposition: C_Q = U_Q * Lambda_Q * U_Q^T
-        std::vector<float> lambda_Q(HD), U_Q(HD * HD);
-        std::vector<float> lambda_S(HD), U_S(HD * HD);
+        std::vector<float> lambda_Q(HD), U_Q((size_t)HD * HD);
+        std::vector<float> lambda_S(HD), U_S((size_t)HD * HD);
         jacobi_eigh(CQ_f.data(), lambda_Q.data(), U_Q.data(), HD);
         jacobi_eigh(CS_f.data(), lambda_S.data(), U_S.data(), HD);
 
         // Build R_K = U_Q * H_Had * P_br
-        std::vector<float> H_had(HD * HD), P_br(HD * HD);
+        std::vector<float> H_had((size_t)HD * HD), P_br((size_t)HD * HD);
         hadamard(H_had.data(), HD);
         bit_reversal_perm(P_br.data(), HD);
 
-        std::vector<float> temp(HD * HD);
+        std::vector<float> temp((size_t)HD * HD);
         // R_K = U_Q * (H_Had * P_br)
         matmul(H_had.data(), P_br.data(), temp.data(), HD);
         matmul(U_Q.data(), temp.data(), &R_K_all[(size_t)l * HD * HD], HD);

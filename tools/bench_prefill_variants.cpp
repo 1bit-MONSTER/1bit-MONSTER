@@ -139,8 +139,8 @@ int main(int argc, char** argv) {
     HIP_CHECK(hipMalloc(&B_i8_tiled_d, b_i8_tiled_bytes));
 
     // Fill with random data
-    std::vector<__half> A_host(M*K);
-    std::vector<int8_t> A_i8_host(M*K);  // pre-quantized INT8 A
+    std::vector<__half> A_host((size_t)M*K);
+    std::vector<int8_t> A_i8_host((size_t)M*K);  // pre-quantized INT8 A
     std::vector<uint8_t> B_host(K*N/2);
     std::vector<int8_t> B_i8_tiled_host(b_i8_tiled_bytes);
     for (size_t i = 0; i < A_host.size(); ++i) {

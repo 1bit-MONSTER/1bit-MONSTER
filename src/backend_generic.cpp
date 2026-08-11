@@ -248,8 +248,8 @@ struct GenericBackend : Backend {
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim, FF = cfg.intermediate_size;
         size_t score_sz = (size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD;
         scratch_x.resize(H); scratch_x2.resize(H);
-        scratch_q.resize(NH * HD); scratch_k.resize(NKV * HD); scratch_v.resize(NKV * HD);
-        scratch_scores.resize(score_sz); scratch_att.resize(NH * HD);
+        scratch_q.resize((size_t)NH * HD); scratch_k.resize((size_t)NKV * HD); scratch_v.resize((size_t)NKV * HD);
+        scratch_scores.resize(score_sz); scratch_att.resize((size_t)NH * HD);
         scratch_gate_up.resize(FF * 2); scratch_silu_buf.resize(FF);
         if (cfg.n_experts > 0) {
             scratch_moe_router_probs.resize(cfg.n_experts);
@@ -561,9 +561,9 @@ struct GenericBackend : Backend {
                     return false;
                 }
             }
-            lw.bq = load_tensor_optional(p + "attn_q.bias", NH*HD);
-            lw.bk = load_tensor_optional(p + "attn_k.bias", NKV*HD);
-            lw.bv = load_tensor_optional(p + "attn_v.bias", NKV*HD);
+            lw.bq = load_tensor_optional(p + "attn_q.bias", (size_t)NH*HD);
+            lw.bk = load_tensor_optional(p + "attn_k.bias", (size_t)NKV*HD);
+            lw.bv = load_tensor_optional(p + "attn_v.bias", (size_t)NKV*HD);
             lw.q_norm = load_tensor_optional(p + "attn_q_norm.weight", HD);
             lw.k_norm = load_tensor_optional(p + "attn_k_norm.weight", HD);
             // Gemma-2/3 post-norms: RMSNorm applied to the attention and FFN
@@ -954,11 +954,11 @@ struct GenericBackend : Backend {
                 q[0], q[1], q[2], k[0], k[1], k[2]);
 
             // KV cache
-            memcpy(&k_cache[il][kv_begin], k, NKV * HD * sizeof(float));
-            memcpy(&v_cache[il][kv_begin], v, NKV * HD * sizeof(float));
+            memcpy(&k_cache[il][kv_begin], k, (size_t)NKV * HD * sizeof(float));
+            memcpy(&v_cache[il][kv_begin], v, (size_t)NKV * HD * sizeof(float));
 
             // Attention: GQA
-            memset(att, 0, NH * HD * sizeof(float));
+            memset(att, 0, (size_t)NH * HD * sizeof(float));
             float attn_scale = inv_sqrt_hd_;  // precomputed 1/sqrt(HD)
             int kvs = NKV * HD;  // stride per position in KV cache
             for (int h = 0; h < NH; h++) {

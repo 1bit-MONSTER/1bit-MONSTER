@@ -109,13 +109,13 @@ int main(int argc, char** argv) {
   bI.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
   // Generate deterministic random-ish data
-  int8_t* A_flat = (int8_t*)malloc(M*K);
-  int8_t* B_flat = (int8_t*)malloc(K*N);
+  int8_t* A_flat = (int8_t*)malloc((size_t)M*K);
+  int8_t* B_flat = (int8_t*)malloc((size_t)K*N);
   for (int i=0;i<M*K;i++) A_flat[i] = (int8_t)((i*7+13)%63-31);
   for (int i=0;i<K*N;i++) B_flat[i] = (int8_t)((i*3+7)%63-31);
 
   // Compute reference on flat data
-  std::vector<int32_t> ref(M*N);
+  std::vector<int32_t> ref((size_t)M*N);
   ref_gemm(A_flat, B_flat, ref.data(), M, K, N);
 
   // Prepare NPU data: either shuffle to microtile order or keep flat
@@ -127,8 +127,8 @@ int main(int argc, char** argv) {
     // Shuffle B (K×N) into microtile order
     shuffle_to_microtile(B_flat, B_npu, K, N);
   } else {
-    memcpy(A_npu, A_flat, M*K);
-    memcpy(B_npu, B_flat, K*N);
+    memcpy(A_npu, A_flat, (size_t)M*K);
+    memcpy(B_npu, B_flat, (size_t)K*N);
   }
 
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -142,12 +142,12 @@ int main(int argc, char** argv) {
   bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
   // Read NPU output
-  std::vector<int32_t> C_npu_flat(M*N);
+  std::vector<int32_t> C_npu_flat((size_t)M*N);
   int32_t* C_raw = (int32_t*)bC.map();
   if (do_shuffle) {
     unshuffle_from_microtile(C_raw, C_npu_flat.data(), M, N);
   } else {
-    memcpy(C_npu_flat.data(), C_raw, M*N*4);
+    memcpy(C_npu_flat.data(), C_raw, (size_t)M*N*4);
   }
 
   // Compare with reference
