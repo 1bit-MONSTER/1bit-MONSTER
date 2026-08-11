@@ -46,7 +46,8 @@ The [JARVIS pipeline](../jarvis.md) is the reference end-to-end application (STT
 
 - [x] Local voice loop: VAD → Whisper STT → routed LLM → codec TTS → playback
 - [x] Persona system + multi-step planner + RAG + tool calls
-- [ ] Whisper STT on NPU end-to-end (currently GPU HIP)
+- [x] Whisper STT on NPU end-to-end (NPU-FLM STT via `:8496`, replacing the whisper.cpp+ffmpeg fork/exec path — 2026-08-10)
+- [x] JARVIS mobile — Flutter app (Android/iOS), phone as thin terminal (mic/speaker/VPN client only) over a WebSocket+Opus gateway; see [docs/mobile/RUNBOOK.md](../mobile/RUNBOOK.md)
 - [ ] Streaming voice codec decoder to ONNX for GPU/NPU/CPU
 
 **Voice-cloning runbook (all scripts exist and parse — verified 2026-08-05; the only missing input is the ~30 min sample recording, which is the user's step):**

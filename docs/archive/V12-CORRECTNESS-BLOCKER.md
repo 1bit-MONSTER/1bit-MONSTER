@@ -20,7 +20,10 @@ it was never real.
 ## What Was Found and Fixed
 
 Three real, independently confirmed bugs, all still present as of this write-up
-after fixing them — meaning at least one more bug remains (see below).
+after fixing them — meaning at least one more bug remains (see below). (A fourth
+bug — a RoPE convention mismatch — was found and fixed in a follow-up pass; see
+"What's Still Broken" and the July 4 status note below, which reference it as
+already applied even though it isn't itemized in the numbered list above.)
 
 ### 1. LM head weight substitution
 

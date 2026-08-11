@@ -1,6 +1,6 @@
 # One Heap, One API Call — Linux NPU Pivot Plan
 
-Status: **DRAFT** (scout + plan)
+Status: **SHIPPED** — the single-pool goal below landed as `UnifiedModelPool` (PR #1535, 2026-08-07); see [journey.md UPDATE 30](../journey.md#update-30-2026-08-07-the-one-heap-pool--all-models-resident-spec-decode-in-server) for the delivered implementation and measured numbers. This document is kept as the original design rationale.
 Date: 2026-08-06
 Author: scout/planner
 Source tree mirrors: ryzen `~/onnx-extract/` (Windows RE corpus), `~/1bit-systems` (engine dev)

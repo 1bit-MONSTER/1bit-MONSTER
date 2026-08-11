@@ -501,7 +501,11 @@ with QKV/O in one xclbin (FLM approach — 1 dispatch for 3 operations).
 
 ---
 
-## UPDATE 18 (2026-07-02 04:00 ADT): M=32 BATCH + NPU LM HEAD — TARGET: BEAT FLM
+## UPDATE 17 (2026-07-02 04:00 ADT): M=32 BATCH + NPU LM HEAD — TARGET: BEAT FLM
+
+<!-- Renumbered from duplicate "UPDATE 18" heading during docs audit: this entry (v11 still
+     RUNNING) chronologically precedes the other same-timestamped UPDATE 18 entry below
+     (which reports v12 as done), and the sequence otherwise skipped 17 entirely. -->
 
 ### FLM Benchmark (Kraken Point — smaller NPU than Strix Halo)
 
@@ -1265,7 +1269,7 @@ The mm.xclbin/attn.xclbin/layer.xclbin kernels are "weight-stationary" — they 
 3. Replicate FLM's complete weight-DMA-then-compute protocol
 4. This reveals what tile SRAM state the xclbin expects
 
-### ## Session 2026-06-28 Final — 40-Column NPU2 Compiler & Firmware Analysis
+## Session 2026-06-28 Final — 40-Column NPU2 Compiler & Firmware Analysis
 
 ### 40-Column Compiler Build — SUCCESSFUL
 
@@ -1414,6 +1418,17 @@ Since we now have actual BO content dumps from FLM, we can either:
 ## Session 2026-06-28 — Q4NX Format Fully Reverse-Engineered
 
 ### Weight Format Breakthrough
+
+> Note added during docs audit: this supersedes the earlier same-titled "Weight
+> Format Breakthrough" section above (under "Session 2025-06-28 Findings"),
+> which concluded the data was flat BF16 byte-pairs needing no per-group
+> dequant and that "the per-group absmax scaling approach was incorrect." This
+> section's byte-accounting proof ("EVERY BYTE ACCOUNTED FOR!") shows
+> quantized weight tensors are in fact per-group I4 with scale/zero_point —
+> the opposite conclusion. The two sections were never explicitly reconciled
+> in the original document; the BF16-byte-pair reading turns out to only be
+> valid for non-quantized tensors (norms/embeddings), as this section's final
+> paragraph notes.
 
 Q4NX `dtype=I8` is **MISLEADING**. The data is actually **INT4** (not INT8):
 
