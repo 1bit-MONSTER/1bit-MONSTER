@@ -23,6 +23,7 @@
 #include <chrono>
 #include <algorithm>
 #include <unistd.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <fcntl.h>
@@ -98,6 +99,8 @@ class NpuFlmBackend : public Backend {
     pid_t pid_ = 0;
     int stdin_fd_ = -1;   // write to child's stdin
     int stdout_fd_ = -1;  // read from child's stdout
+    int spawn_retries_ = 10;      // spawn retries on NPU busy (env NPU_FLM_SPAWN_RETRIES)
+    int spawn_retry_delay_s_ = 5; // backoff between retries (env NPU_FLM_RETRY_DELAY_S)
     int stderr_fd_ = -1;  // read from child's stderr
 
 public:
@@ -149,6 +152,17 @@ public:
                 flm_xclbins_ = "/opt/rocm/share/flm/xclbins";
             }
         }
+
+        // The NPU's column/slot budget is shared with the other zaya/FLM
+        // services (each model takes 8 of the 40 columns). When another
+        // service is mid-startup, CREATE_CONTEXT fails with MGMT_ERT_NOAVAIL
+        // and flm-real exits after its own short retry budget. Retrying the
+        // spawn here makes service starts order-independent: a column always
+        // frees up (total footprints fit), so a later attempt succeeds.
+        if (getenv("NPU_FLM_SPAWN_RETRIES"))
+            spawn_retries_ = atoi(getenv("NPU_FLM_SPAWN_RETRIES"));
+        if (getenv("NPU_FLM_RETRY_DELAY_S"))
+            spawn_retry_delay_s_ = atoi(getenv("NPU_FLM_RETRY_DELAY_S"));
     }
 
     ~NpuFlmBackend() override { destroy(); }
@@ -191,6 +205,9 @@ public:
         model_tag_ = flm_tag_for_model(cfg);
         fprintf(stderr, "NPU: launching FLM %s...\n", model_tag_.c_str());
 
+        // Retry the spawn until the NPU has a free column/slot (see
+        // constructor comment). Each attempt is bounded by NPU_FLM_TIMEOUT.
+        for (int attempt = 1; attempt <= spawn_retries_; attempt++) {
         // Spawn FLM subprocess
         int to_child[2], from_child[2], err_child[2];
         if (pipe(to_child) < 0 || pipe(from_child) < 0 || pipe(err_child) < 0) {
@@ -217,6 +234,11 @@ public:
             dup2(from_child[1], STDOUT_FILENO);
             dup2(err_child[1], STDERR_FILENO);
             close(to_child[0]); close(from_child[1]); close(err_child[1]);
+
+            // Die with the parent so a crashed service cannot leak an FLM
+            // child holding an NPU context (see ensure_serve() in the zaya
+            // backend — same orphan/NOAVAIL problem).
+            prctl(PR_SET_PDEATHSIG, SIGTERM);
 
             setenv("FLM_CONFIG_PATH", flm_config_.c_str(), 1);
             setenv("FLM_XCLBIN_PATH", flm_xclbins_.c_str(), 1);
@@ -253,9 +275,11 @@ public:
                 } else if (r < 0) break;
             }
             if (!got_prompt) {
-                fprintf(stderr, "NPU: FLM init timeout (%ds)\n", timeout_s);
+                fprintf(stderr, "NPU: FLM spawn attempt %d/%d failed (NPU busy?) — retrying in %ds\n",
+                        attempt, spawn_retries_, spawn_retry_delay_s_);
                 destroy();
-                return false;
+                sleep(spawn_retry_delay_s_);
+                continue;
             }
         }
 
@@ -263,6 +287,9 @@ public:
         last_prompt_.clear();  // fresh process → no KV continuity from any previous one
         fprintf(stderr, "NPU: FLM ready — %s (%s)\n", model_tag_.c_str(), flm_bin_.c_str());
         return true;
+        }  // retry loop
+        fprintf(stderr, "NPU: FLM failed after %d spawn attempts\n", spawn_retries_);
+        return false;
     }
 
     bool reset() override { return true; }

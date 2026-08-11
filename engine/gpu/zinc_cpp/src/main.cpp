@@ -16,7 +16,11 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#ifndef _MSC_VER
 #include <getopt.h>
+#else
+#include <io.h>
+#endif
 #include <signal.h>
 #include <atomic>
 
@@ -44,6 +48,7 @@ int main(int argc, char** argv) {
     int device_idx = -1;
 
     // Parse args
+#ifndef _MSC_VER
     static struct option opts[] = {
         {"model",  required_argument, nullptr, 'm'},
         {"port",   required_argument, nullptr, 'p'},
@@ -58,6 +63,15 @@ int main(int argc, char** argv) {
             case 'd': device_idx = atoi(optarg); break;
         }
     }
+#else
+    // MSVC: no getopt_long, simple argv scan
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if ((arg == "--model" || arg == "-m") && i + 1 < argc) model_path = argv[++i];
+        else if ((arg == "--port" || arg == "-p") && i + 1 < argc) port = atoi(argv[++i]);
+        else if ((arg == "--device" || arg == "-d") && i + 1 < argc) device_idx = atoi(argv[++i]);
+    }
+#endif
 
     printf("\n╔═══════════════════════════════════════════╗\n");
     printf("║    ZINC C++ — GPU Inference Engine       ║\n");
