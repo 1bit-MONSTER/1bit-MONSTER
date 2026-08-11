@@ -4,16 +4,20 @@
 // Same design bet: raw 2-bit ternary weights on AIE cut DDR traffic 4× for
 // batch=1 decode of 8B+ models (DDR-bound regime).
 //
-// Layout (per output row n): K = 64 columns = 2 scale groups of 32.
-//   pB: N × K/4 bytes, 4 codes/byte, group-major (8 bytes per 32-col group)
-//   pS: N × 2 bf16 scales
-// Decode: byte -> 4 × int8 {-1,0,+1,0}; accumulate per group; final
-//   pC[m][n] = acc0*s0 + acc1*s1.
+// Phase 3 step 2 (vectorized): scalar LUT unpack feeds tile-major int8
+// buffers consumed by aie::mmul<4,8,8,int8,int8,accauto>.
 //
-// This is the CORRECTNESS port (Phase 3 step 1). mmul tile-major packing and
-// the spreadsheet-scheduled vectorization are step 2, once this validates on
-// the board/emulator.
+// Layout (per output row n): K = 64 columns = 2 scale groups of 32.
+//   pB: N × K/4 bytes, 4 codes/byte, byte i covers k = 4i (k 0-31 = group 0,
+//       k 32-63 = group 1).  pS: N × 2 bf16 scales.
+// Decode: byte -> 4 × int8 {-1,0,+1,0} via 256-entry LUT.
+// MAC per scale group, then pC[m][n] = acc0*s0 + acc1*s1.
+//
+// Weight streaming: pB stays packed 2-bit in DDR (4× traffic cut); unpack to
+// int8 happens once per tile in L1. A is pre-packed tile-major once per call.
 
+#include <array>
+#include <utility>
 #include "aie_kernel_utils.h"
 #include <aie_api/aie.hpp>
 
@@ -21,50 +25,91 @@ constexpr int M = 32, K = 64, N = 128;
 constexpr int GROUP = 32;           // columns per scale group
 constexpr int NGROUPS = K / GROUP;  // 2
 
+// mmul tile shapes (r × s × t)
+constexpr int R = 4, S = 8, T = 8;
+constexpr int MB = M / R, KB = K / S, NB = N / T;   // 8 × 8 × 16 tiles
+constexpr int KBPG = GROUP / S;                     // kb-blocks per group (4)
+
+// LUT[byte] -> uint32 with 4 int8 values (code 0=-1, 1=0, 2=+1, 3=0)
+// Byte position k holds the int8 for 2-bit code at position k (k=0..3).
+static constexpr uint32_t lut_entry(uint8_t b) {
+    uint32_t v = 0;
+    for (int k = 0; k < 4; k++) {
+        uint8_t c = (b >> (2 * k)) & 0x3;
+        int8_t val = c == 0 ? -1 : (c == 2 ? 1 : 0);
+        v |= (uint8_t)val << (8 * k);
+    }
+    return v;
+}
+template <size_t... I>
+static constexpr auto make_lut(std::index_sequence<I...>) {
+    return std::array<uint32_t, 256>{lut_entry(I)...};
+}
+static constexpr auto ternary_lut = make_lut(std::make_index_sequence<256>{});
+
 extern "C" {
 
-static inline int8_t tq2_code(uint8_t c) {
-    return c == 0 ? -1 : (c == 2 ? 1 : 0);
-}
-
-// pA: M×K int8 activations
+// pA: M×K int8 activations (host pre-quantized, row-major)
 // pB: N × K/4 bytes packed codes
 // pS: N × 2 bf16 scales
 // pC: M×N bf16 output
 void ternary_tq2_gemv_aie2(int8_t *pA, uint8_t *pB, bfloat16 *pS, bfloat16 *pC) {
     event0();
 
-    // per (m, n): two int32 group accumulators
-    alignas(32) int32_t acc[N * NGROUPS];  // [n][g], reused across m
+    // ── tile-major activation tiles: a_tiles[mb][kb], 4×8 int8 contiguous ──
+    alignas(32) int8_t a_tiles[MB][KB][R * S];
+    for (int mb = 0; mb < MB; mb++)
+        for (int kb = 0; kb < KB; kb++)
+            for (int i = 0; i < R; i++)
+                for (int j = 0; j < S; j++)
+                    a_tiles[mb][kb][i * S + j] = pA[(mb * R + i) * K + kb * S + j];
 
-    for (int m = 0; m < M; m++) {
-        // clear group accumulators
-        for (int n = 0; n < N; n++)
-            for (int g = 0; g < NGROUPS; g++)
-                acc[n * NGROUPS + g] = 0;
-
-        const int8_t *a = pA + m * K;
-
-        // decode + MAC: each byte -> 4 codes; codes land in one group each
-        for (int n = 0; n < N; n++) {
-            const uint8_t *src = pB + n * (K / 4);
-            for (int i = 0; i < K / 4; i++) {
-                uint8_t b = src[i];
-                int g = i / 8;                       // 8 bytes per 32-col group
-                int k0 = g * GROUP + (i % 8) * 4;    // absolute k offset
-                acc[n * NGROUPS + g] += (int)a[k0 + 0] * tq2_code(b & 0x3);
-                acc[n * NGROUPS + g] += (int)a[k0 + 1] * tq2_code((b >> 2) & 0x3);
-                acc[n * NGROUPS + g] += (int)a[k0 + 2] * tq2_code((b >> 4) & 0x3);
-                acc[n * NGROUPS + g] += (int)a[k0 + 3] * tq2_code((b >> 6) & 0x3);
+    // ── unpack weights to tile-major int8: b_tiles[nb][kb], 8×8 contiguous ──
+    // B tile element (i,j) = code(col = nb*8+j, k = kb*8+i)
+    alignas(32) int8_t b_tiles[NB][KB][S * T];
+    for (int nb = 0; nb < NB; nb++)
+        for (int kb = 0; kb < KB; kb++)
+            for (int i = 0; i < S; i++) {
+                int k = kb * S + i;
+                for (int j = 0; j < T; j++) {
+                    int n = nb * T + j;
+                    uint8_t byte = pB[n * (K / 4) + k / 4];
+                    uint32_t packed = ternary_lut[byte];
+                    // byte position k%4 holds the int8 for column k
+                    int8_t val = (int8_t)(packed >> (8 * (k % 4)));
+                    b_tiles[nb][kb][i * T + j] = val;
+                }
             }
-        }
 
-        // scale + store
-        for (int n = 0; n < N; n++) {
-            float s0 = (float)pS[n * 2 + 0];
-            float s1 = (float)pS[n * 2 + 1];
-            pC[m * N + n] =
-                (bfloat16)(acc[n * NGROUPS + 0] * s0 + acc[n * NGROUPS + 1] * s1);
+    // ── mmul: two group accumulators per (mb, nb), combined with scales ──
+    using MMUL = aie::mmul<R, S, T, int8, int8, accauto>;
+
+    for (int mb = 0; mb < MB; mb++) {
+        for (int nb = 0; nb < NB; nb++) {
+            MMUL acc0;  // group 0 (k 0-31)
+            MMUL acc1;  // group 1 (k 32-63)
+            for (int kbb = 0; kbb < KBPG; kbb++) {
+                auto A = aie::load_v<MMUL::size_A>(a_tiles[mb][kbb]);
+                auto B = aie::load_v<MMUL::size_B>(b_tiles[nb][kbb]);
+                acc0.mac(A, B);
+                A = aie::load_v<MMUL::size_A>(a_tiles[mb][kbb + KBPG]);
+                B = aie::load_v<MMUL::size_B>(b_tiles[nb][kbb + KBPG]);
+                acc1.mac(A, B);
+            }
+
+            auto c0 = acc0.template to_vector<int32_t>();
+            auto c1 = acc1.template to_vector<int32_t>();
+
+            // scales are per output column n: pS[n*2 + g]
+            for (int i = 0; i < R; i++)
+                for (int j = 0; j < T; j++) {
+                    int n = nb * T + j;
+                    float s0 = (float)pS[n * NGROUPS + 0];
+                    float s1 = (float)pS[n * NGROUPS + 1];
+                    int idx = i * T + j;
+                    pC[(mb * R + i) * N + n] =
+                        (bfloat16)((float)c0[idx] * s0 + (float)c1[idx] * s1);
+                }
         }
     }
 
