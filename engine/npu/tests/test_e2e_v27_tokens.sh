@@ -83,7 +83,7 @@ for entry in "${MODELS[@]}"; do
   IFS='|' read -r tag dir extra tok <<< "$entry"
   q4nx="$HOME/.config/flm/models/$dir/model.q4nx"
   [ -s "$q4nx" ] || { echo "SKIP  $tag: missing $q4nx"; skipped=$((skipped+1)); continue; }
-  [ -x "$ENG"_"$tag" ] || { echo "SKIP  $tag: binary $ENG"_"$tag not built"; skipped=$((skipped+1)); continue; }
+  [ -x "$ENG"_"$tag" ] || { echo "SKIP  $tag: binary ${ENG}_${tag} not built"; skipped=$((skipped+1)); continue; }
   if [ "$tag" = "qwen3_6_35b_a3b" ]; then build_v26_35b; v26d="$V26_35B";
   else extract_v26 "$tag"; v26d="$V26DIR"; fi
   # both xclbin sets present?
