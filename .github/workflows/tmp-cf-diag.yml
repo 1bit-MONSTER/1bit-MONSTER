@@ -1,6 +1,8 @@
 name: tmp-cf-repair
 on:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   repair:
     runs-on: ubuntu-latest

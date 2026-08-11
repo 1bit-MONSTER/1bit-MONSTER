@@ -2472,7 +2472,7 @@ int main(int argc,char**argv){
                                 fuse_gdn_state_slots[s].resize(NC * (size_t)max_gdn_vh * max_gdn_hd * max_gdn_hd, 0);
                                 fuse_gdn_conv_state_slots[s].resize(NC * (size_t)max_gdn_conv_dim * max_gdn_conv_k, 0);
                             }
-                            fuse_gdn_attn_out.resize(max_gdn_vh * max_gdn_hd, 0);
+                            fuse_gdn_attn_out.resize((size_t)max_gdn_vh * max_gdn_hd, 0);
                         }
                     }
                     int n_slots_to_run = (op == 33) ? (int)batch : 1;
