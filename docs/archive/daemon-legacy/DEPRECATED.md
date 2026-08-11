@@ -11,7 +11,8 @@ They have been fully replaced by the pure C++ stack:
 | `npu-gpu-cpud.py.legacy` (869 lines) | `tools/onebitd.cpp` + `tools/unified_router.cpp` |
 
 The Rust crates in `daemon/npu-cppd/`, `daemon/npu-gpu-cpud/`, and
-`daemon/1bit-npu-server/` are similarly deprecated — see `rust/DEPRECATED.md`.
+`daemon/1bit-npu-server/` are similarly deprecated — see `../rust-DEPRECATED.md`
+(moved/renamed from `rust/DEPRECATED.md` during archiving).
 
 The `npu-daemon.service` systemd unit should be updated to point at
 `onebitd` instead of the legacy Python daemon.

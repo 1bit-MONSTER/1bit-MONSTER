@@ -388,18 +388,16 @@ Finally, throughout all experiments, NPUs are configured at their maximum perfor
 
 Table 1. Single-core GEMM results for XDNA & XDNA2.
 
-| Dev. | Precision | Kernel Size | Throughput | L1 Core |
+| Dev. | Precision | Kernel Size (In-Out, m_ct × k_ct × n_ct) | Throughput (MACs/cycle) | L1 Core Mem. (KB) |
 | --- | --- | --- | --- | --- |
-| In-Out | mctm\_{\text{ct}} ×\times kctk\_{\text{ct}} ×\times nctn\_{\text{ct}} | MACs/cycle | Mem. (KB) |
-| XDNA | int8-int8 | 64 ×\times 232 ×\times 64 | 233.0 | 62.0 (97%) |
-| int8-int16 | 64 ×\times 216 ×\times 64 | 217.6 | 62.0 (97%) |
-| int8-int32 | 48 ×\times 280 ×\times 48 | 192.0 | 61.5 (96%) |
-| bf16-bf16 | 64 ×\times 104 ×\times 64 | 112.6 | 60.0 (94%) |
-| XDNA2 | int8-int8 | 64 ×\times 232 ×\times 64 | 450.6 | 62.0 (97%) |
-| int8-int16 | 64 ×\times 216 ×\times 64 | 419.8 | 62.0 (97%) |
-| int8-int32 | 48 ×\times 280 ×\times 48 | 384.0 | 61.5 (96%) |
-| bf16-bf16 | 48 ×\times 152 ×\times 48 | 158.1 | 61.5 (96%) |
-|  |  |  |  |  |
+| XDNA | int8-int8 | 64 × 232 × 64 | 233.0 | 62.0 (97%) |
+| XDNA | int8-int16 | 64 × 216 × 64 | 217.6 | 62.0 (97%) |
+| XDNA | int8-int32 | 48 × 280 × 48 | 192.0 | 61.5 (96%) |
+| XDNA | bf16-bf16 | 64 × 104 × 64 | 112.6 | 60.0 (94%) |
+| XDNA2 | int8-int8 | 64 × 232 × 64 | 450.6 | 62.0 (97%) |
+| XDNA2 | int8-int16 | 64 × 216 × 64 | 419.8 | 62.0 (97%) |
+| XDNA2 | int8-int32 | 48 × 280 × 48 | 384.0 | 61.5 (96%) |
+| XDNA2 | bf16-bf16 | 48 × 152 × 48 | 158.1 | 61.5 (96%) |
 
 ### 5.1. Single-Core GEMM Performance
 
@@ -420,33 +418,29 @@ Finally, very high L1 memory usage is achieved across all solutions, ranging fro
 
 Table 2. Evaluation of two top-ranked solutions for XDNA across various data types (BB column-major).
 
-| Precision | Kernel Size | Product | Thrghpt. | L1 Core | L2 Total | Peak | GEMM Size | Actual |
+| Precision | Kernel Size (In-Out, m_ct × k_ct × n_ct) | Product (m_ct · n_ct) | Thrghpt. (MACs/cyc) | L1 Core Mem. (KB) | L2 Total Mem. (KB) | Peak Comp. (TOPS) | GEMM Size (MM × KK × NN) | Actual (NPU TOPS) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| In-Out | mctm\_{\text{ct}} ×\times kctk\_{\text{ct}} ×\times nctn\_{\text{ct}} | mctm\_{\text{ct}} ⋅\cdot nctn\_{\text{ct}} | MACs/cyc | Mem. (KB) | Mem. (KB) | Comp. TOPS | MM ×\times KK ×\times NN | NPU TOPS |
-| int8-int8 | 112 ×\times 112 ×\times 112 | 12.3K | 212.5 | 61.3 (96%) | 980 (48%) | 6.80 | 4032 ×\times 4032 ×\times 4032 | 6.52 |
-| 112 ×\times 104 ×\times 128 | 14.0K | 207.4 | 62.8 (98%) | 1004 (49%) | 6.63 | 4032 ×\times 4160 ×\times 4096 | 6.48 |
-| int8-int16 | 96 ×\times 112 ×\times 96 | 9.0K | 192.0 | 60.0 (94%) | 960 (47%) | 6.14 | 4224 ×\times 4032 ×\times 4224 | 5.85 |
-| 80 ×\times 104 ×\times 128 | 10.0K | 186.9 | 62.3 (97%) | 996 (49%) | 5.98 | 4160 ×\times 4160 ×\times 4096 | 5.75 |
-| int8-int32 | 80 ×\times 88 ×\times 96 | 7.5K | 146.0 | 60.3 (94%) | 964 (47%) | 4.67 | 4160 ×\times 4224 ×\times 4224 | 4.42 |
-| 64 ×\times 80 ×\times 128 | 8.0K | 133.1 | 62.0 (97%) | 992 (48%) | 4.26 | 4096 ×\times 4160 ×\times 4096 | 4.09 |
-| bf16-bf16 | 96 ×\times 56 ×\times 96 | 9.0K | 99.8 | 60.0 (94%) | 960 (47%) | 3.19 | 4224 ×\times 4032 ×\times 4224 | 3.12 |
-| 96 ×\times 48 ×\times 112 | 10.5K | 97.3 | 60.0 (94%) | 960 (47%) | 3.11 | 4224 ×\times 4032 ×\times 4032 | 3.02 |
-|  |  |  |  |  |  |  |  |  |
+| int8-int8 | 112 × 112 × 112 | 12.3K | 212.5 | 61.3 (96%) | 980 (48%) | 6.80 | 4032 × 4032 × 4032 | 6.52 |
+| int8-int8 | 112 × 104 × 128 | 14.0K | 207.4 | 62.8 (98%) | 1004 (49%) | 6.63 | 4032 × 4160 × 4096 | 6.48 |
+| int8-int16 | 96 × 112 × 96 | 9.0K | 192.0 | 60.0 (94%) | 960 (47%) | 6.14 | 4224 × 4032 × 4224 | 5.85 |
+| int8-int16 | 80 × 104 × 128 | 10.0K | 186.9 | 62.3 (97%) | 996 (49%) | 5.98 | 4160 × 4160 × 4096 | 5.75 |
+| int8-int32 | 80 × 88 × 96 | 7.5K | 146.0 | 60.3 (94%) | 964 (47%) | 4.67 | 4160 × 4224 × 4224 | 4.42 |
+| int8-int32 | 64 × 80 × 128 | 8.0K | 133.1 | 62.0 (97%) | 992 (48%) | 4.26 | 4096 × 4160 × 4096 | 4.09 |
+| bf16-bf16 | 96 × 56 × 96 | 9.0K | 99.8 | 60.0 (94%) | 960 (47%) | 3.19 | 4224 × 4032 × 4224 | 3.12 |
+| bf16-bf16 | 96 × 48 × 112 | 10.5K | 97.3 | 60.0 (94%) | 960 (47%) | 3.11 | 4224 × 4032 × 4032 | 3.02 |
 
 Table 3. Evaluation of two top-ranked solutions for XDNA2 across various data types (BB column-major).
 
-| Precision | Kernel Size | Product | Thrghpt. | L1 Core | L2 Total | Peak | GEMM Size | Actual |
+| Precision | Kernel Size (In-Out, m_ct × k_ct × n_ct) | Product (m_ct · n_ct) | Thrghpt. (MACs/cyc) | L1 Core Mem. (KB) | L2 Total Mem. (KB) | Peak Comp. (TOPS) | GEMM Size (MM × KK × NN) | Actual (NPU TOPS) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| In-Out | mctm\_{\text{ct}} ×\times kctk\_{\text{ct}} ×\times nctn\_{\text{ct}} | mctm\_{\text{ct}} ⋅\cdot nctn\_{\text{ct}} | MACs/cyc | Mem. (KB) | Mem. (KB) | Comp. TOPS | MM ×\times KK ×\times NN | NPU TOPS |
-| int8-int8 | 144 ×\times 72 ×\times 144 | 20.3K | 343.0 | 60.8 (95%) | 2106 (51%) | 39.52 | 4032 ×\times 4320 ×\times 4608 | 37.35 |
-| 160 ×\times 64 ×\times 144 | 22.5K | 322.6 | 60.5 (95%) | 2064 (50%) | 37.16 | 4480 ×\times 4224 ×\times 4608 | 36.13 |
-| int8-int16 | 128 ×\times 72 ×\times 112 | 14.0K | 307.2 | 61.8 (97%) | 2084 (51%) | 35.39 | 4096 ×\times 4320 ×\times 4480 | 30.77 |
-| 160 ×\times 64 ×\times 96 | 15.0K | 271.4 | 62.0 (97%) | 2016 (49%) | 31.26 | 4480 ×\times 4224 ×\times 4608 | 29.59 |
-| int8-int32 | 96 ×\times 64 ×\times 96 | 9.0K | 256.0 | 60.0 (94%) | 2016 (49%) | 29.49 | 4224 ×\times 4224 ×\times 4608 | 24.74 |
-| 128 ×\times 56 ×\times 80 | 10.0K | 209.9 | 62.3 (97%) | 2036 (50%) | 24.18 | 4096 ×\times 4032 ×\times 4480 | 21.67 |
-| bf16-bf16 | 112 ×\times 48 ×\times 96 | 10.5K | 137.2 | 60.0 (94%) | 2496 (61%) | 15.81 | 4032 ×\times 4224 ×\times 4608 | 14.52 |
-| 160 ×\times 40 ×\times 80 | 12.5K | 124.1 | 62.5 (98%) | 2400 (59%) | 14.30 | 4480 ×\times 4160 ×\times 4480 | 13.67 |
-|  |  |  |  |  |  |  |  |  |
+| int8-int8 | 144 × 72 × 144 | 20.3K | 343.0 | 60.8 (95%) | 2106 (51%) | 39.52 | 4032 × 4320 × 4608 | 37.35 |
+| int8-int8 | 160 × 64 × 144 | 22.5K | 322.6 | 60.5 (95%) | 2064 (50%) | 37.16 | 4480 × 4224 × 4608 | 36.13 |
+| int8-int16 | 128 × 72 × 112 | 14.0K | 307.2 | 61.8 (97%) | 2084 (51%) | 35.39 | 4096 × 4320 × 4480 | 30.77 |
+| int8-int16 | 160 × 64 × 96 | 15.0K | 271.4 | 62.0 (97%) | 2016 (49%) | 31.26 | 4480 × 4224 × 4608 | 29.59 |
+| int8-int32 | 96 × 64 × 96 | 9.0K | 256.0 | 60.0 (94%) | 2016 (49%) | 29.49 | 4224 × 4224 × 4608 | 24.74 |
+| int8-int32 | 128 × 56 × 80 | 10.0K | 209.9 | 62.3 (97%) | 2036 (50%) | 24.18 | 4096 × 4032 × 4480 | 21.67 |
+| bf16-bf16 | 112 × 48 × 96 | 10.5K | 137.2 | 60.0 (94%) | 2496 (61%) | 15.81 | 4032 × 4224 × 4608 | 14.52 |
+| bf16-bf16 | 160 × 40 × 80 | 12.5K | 124.1 | 62.5 (98%) | 2400 (59%) | 14.30 | 4480 × 4160 × 4480 | 13.67 |
 
 ### 5.2. GEMM Performance on NPU Array
 

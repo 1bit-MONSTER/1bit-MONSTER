@@ -43,6 +43,7 @@ check "Qwen3 0.6B Instruct"         "four|\\b4\\b"
 check "Bonsai-1.7B-TQ2"             "four|\\b4\\b"
 check "Zamba2-1.2B-Instruct-v2.Q8_0" "four|\\b4\\b"
 check "Qwen3-4B"                    "four|\\b4\\b"
+check "ZAYA1-8B"                  "four|\\b4\\b"
 
 echo "----------------------------------------"
 echo "zoo-smoke: $PASS passed, $FAIL failed"

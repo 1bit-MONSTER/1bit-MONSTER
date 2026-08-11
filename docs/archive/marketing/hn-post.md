@@ -21,6 +21,14 @@ Recent progress:
 | ROCm HIP | 64 | validated |
 | Speculative decode | 8x | 100% accept rate in test |
 
+> Note added during docs audit: the headline's "291 tok/s" doesn't match any
+> row in this table — per `docs/journey.md` (UPDATE 27), 291 tok/s is the
+> *fused layer engine*'s figure, a separate/later milestone from the "NPU
+> fused v12" row above (97 tok/s), which journey.md describes as the
+> pre-fusion standalone-INT8 baseline that the fused engine superseded. This
+> table appears to predate that milestone despite the post's headline
+> referencing it.
+
 **Speculative decoding** also works — draft-verify with MTP head, 8x speedup in the bench. Already built, tests pass.
 
 **What's under the hood:**

@@ -96,11 +96,11 @@ int main(int argc, char** argv) {
         fprintf(stdout, "kernels: 4 PDIs loaded (CONFIG_CU 0x11) — QKV/O/GU/D in the AIE array\n");
 
         // ── tensors from the ONE heap ──
-        npu::span bA = p.alloc(M * K);
-        npu::span bW = p.alloc(K * N);
-        npu::span bC = p.alloc(M * N * 4);
-        for (int i = 0; i < (int)(M * K); i++) bA.host[i] = (int8_t)(i % 7);
-        for (int i = 0; i < (int)(K * N); i++) bW.host[i] = (int8_t)(i % 5);
+        npu::span bA = p.alloc((size_t)M * K);
+        npu::span bW = p.alloc((size_t)K * N);
+        npu::span bC = p.alloc((size_t)M * N * 4);
+        for (int i = 0; i < (int)((size_t)M * K); i++) bA.host[i] = (int8_t)(i % 7);
+        for (int i = 0; i < (int)((size_t)K * N); i++) bW.host[i] = (int8_t)(i % 5);
         memset(bC.host, 0, bC.size);
         if (p.sync(bA.handle, SYNC_DIRECT_TO_DEVICE, 0, bA.size) != 0)
             throw std::runtime_error("sync bA");
