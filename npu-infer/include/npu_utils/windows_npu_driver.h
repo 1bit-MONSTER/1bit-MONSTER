@@ -79,6 +79,18 @@
 
 #include <cstdint>
 
+// Windows API headers MUST be included outside any namespace: winnt.h cascades
+// into the C++ stdlib headers (via x86intrin.h -> mm_malloc.h -> <stdlib.h>),
+// which break when parsed inside a user namespace (::abs/::div_t not declared).
+#if defined(_WIN32) || defined(__WINDOWS__)
+#include <windows.h>
+#include <winioctl.h>
+
+#include <cstring>
+#include <string>
+#include <vector>
+#endif
+
 namespace windows_npu {
 
 // -- 2. Control device ------------------------------------------------------
@@ -102,15 +114,6 @@ inline constexpr std::uint32_t ctl_code(std::uint32_t dev_type,
 }
 
 #if defined(_WIN32) || defined(__WINDOWS__)
-
-#include <windows.h>
-#include <winioctl.h>
-
-#include <cstring>
-#include <string>
-#include <vector>
-
-namespace windows_npu {
 
 // -- Control-plane driver wrapper (raw ioctl equivalent) --------------------
 class Driver {
