@@ -204,7 +204,7 @@ int main(int argc,char**argv){
         }
         // Packed weights
         auto pw=[&](const std::vector<float>& d,int r,int c){
-            if(d.empty()){size_t sz=r*(c/128)*34;std::vector<uint8_t>z(sz,0);f.write((const char*)z.data(),sz);return;}
+            if(d.empty()){size_t sz=(size_t)r*(c/128)*34;std::vector<uint8_t>z(sz,0);f.write((const char*)z.data(),sz);return;}
             std::vector<uint8_t> pk; ternarize_to_tq2(d.data(),r,c,pk); f.write((const char*)pk.data(),pk.size());
         };
         for(uint32_t l=0;l<nl;++l){

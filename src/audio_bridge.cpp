@@ -353,7 +353,7 @@ std::vector<float> AudioEngine::load_wav(const std::string& path,
             std::vector<float> pcm(n_samples);
             
             if (bits_per_sample == 16) {
-                std::vector<int16_t> raw(n_samples * num_channels);
+                std::vector<int16_t> raw((size_t)n_samples * num_channels);
                 file.read((char*)raw.data(), chunk_size);
                 // Mix down to mono
                 for (int i = 0; i < n_samples; i++) {

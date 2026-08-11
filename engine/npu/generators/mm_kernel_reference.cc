@@ -51,11 +51,16 @@ static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
  * for the aie:mmul class: A => rxs, B => sxt, C => rxt.
  *
  * The matrix dimensions of the kernel are defined by rowA, colA and colB.
- * In this particular kernel we expand the aie::mmul two times in each
- * input matrices A (in 'm' dimension, or rowA) and B (in 'n' dimension, or
- * ColB), leading to a 2x2 expansion in output matrix C (see C00, C01, C10, C11
+ * In this particular kernel we expand the aie::mmul two times in the 'm'
+ * dimension of A (rowA) and four times in the 'n' dimension of B (colB),
+ * leading to a 2x4 expansion in output matrix C (see C00..C03, C10..C13
  * below). This expansion helps with accumulator registers usage, which leads in
  * attaining high kernel efficiency (SIMD utilization).
+ *
+ * The 2x4 expansion (vs the earlier 2x2) is the scoped fix for the ILP-bound
+ * k-reduction loop: per k-step it loads A0/A1 once and four B pairs, issuing
+ * 8 independent macs (vs 4 dependent on 4 loads), so the pipeline can overlap
+ * load latency across twice as many independent macs.
  *
  * Data within each tile (rxs, sxt and rxt) are assumed to be in row-major
  * order. Also, the entire tiles themselves are stored in row-major order, as
@@ -95,7 +100,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
         pC2 = pC + ((z + 1) * colB) * MMUL::size_C;
       }
 
-      for (unsigned j = 0; j < colB; j += 2)
+      for (unsigned j = 0; j < colB; j += 4)
 #ifdef OPT_PERF_ENABLED
         chess_flatten_loop
 #endif
@@ -109,44 +114,76 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
           const T_in *__restrict pA2 = pA + ((z + 1) * colA) * MMUL::size_A;
           const T_in *__restrict pB1;
           const T_in *__restrict pB2;
+          const T_in *__restrict pB3;
+          const T_in *__restrict pB4;
           if constexpr (b_row_maj) {
             pB1 = pB + (j)*MMUL::size_B;
             pB2 = pB + (j + 1) * MMUL::size_B;
+            pB3 = pB + (j + 2) * MMUL::size_B;
+            pB4 = pB + (j + 3) * MMUL::size_B;
           } else {
             pB1 = pB + (j * colA) * MMUL::size_B;
             pB2 = pB + ((j + 1) * colA) * MMUL::size_B;
+            pB3 = pB + ((j + 2) * colA) * MMUL::size_B;
+            pB4 = pB + ((j + 3) * colA) * MMUL::size_B;
           }
 
           aie::vector<T_in, MMUL::size_A> A0;
           aie::vector<T_in, MMUL::size_A> A1;
           aie::vector<T_in, MMUL::size_B> B0;
           aie::vector<T_in, MMUL::size_B> B1;
+          aie::vector<T_in, MMUL::size_B> B2;
+          aie::vector<T_in, MMUL::size_B> B3;
 
           // Load partial results from C buffer for accumulation in-place. The
           // zero.cc function handles the zeroing of data when a new
           // accumulation is needed (after the 'K' reduction dimension)
           aie::vector<T_out, MMUL::size_C> acc_C00;
           aie::vector<T_out, MMUL::size_C> acc_C01;
+          aie::vector<T_out, MMUL::size_C> acc_C02;
+          aie::vector<T_out, MMUL::size_C> acc_C03;
           aie::vector<T_out, MMUL::size_C> acc_C10;
           aie::vector<T_out, MMUL::size_C> acc_C11;
+          aie::vector<T_out, MMUL::size_C> acc_C12;
+          aie::vector<T_out, MMUL::size_C> acc_C13;
           if constexpr (c_row_maj) {
             acc_C00 = aie::load_v<MMUL::size_C>(pC1);
             acc_C01 = aie::load_v<MMUL::size_C>(pC1 + MMUL::size_C);
+            acc_C02 = aie::load_v<MMUL::size_C>(pC1 + 2 * MMUL::size_C);
+            acc_C03 = aie::load_v<MMUL::size_C>(pC1 + 3 * MMUL::size_C);
             acc_C10 = aie::load_v<MMUL::size_C>(pC2);
             acc_C11 = aie::load_v<MMUL::size_C>(pC2 + MMUL::size_C);
+            acc_C12 = aie::load_v<MMUL::size_C>(pC2 + 2 * MMUL::size_C);
+            acc_C13 = aie::load_v<MMUL::size_C>(pC2 + 3 * MMUL::size_C);
           } else {
             acc_C00 = aie::transpose(aie::load_v<MMUL::size_C>(pC1), t, r);
             acc_C01 = aie::transpose(aie::load_v<MMUL::size_C>(pC2), t, r);
+            acc_C02 = aie::transpose(
+                aie::load_v<MMUL::size_C>(pC1 + 2 * rowA * MMUL::size_C), t, r);
+            acc_C03 = aie::transpose(
+                aie::load_v<MMUL::size_C>(pC2 + 2 * rowA * MMUL::size_C), t, r);
             acc_C10 = aie::transpose(
                 aie::load_v<MMUL::size_C>(pC1 + MMUL::size_C), t, r);
             acc_C11 = aie::transpose(
                 aie::load_v<MMUL::size_C>(pC2 + MMUL::size_C), t, r);
+            acc_C12 = aie::transpose(
+                aie::load_v<MMUL::size_C>(pC1 + 2 * rowA * MMUL::size_C +
+                                          MMUL::size_C),
+                t, r);
+            acc_C13 = aie::transpose(
+                aie::load_v<MMUL::size_C>(pC2 + 2 * rowA * MMUL::size_C +
+                                          MMUL::size_C),
+                t, r);
           }
 
           MMUL C00(acc_C00);
           MMUL C01(acc_C01);
+          MMUL C02(acc_C02);
+          MMUL C03(acc_C03);
           MMUL C10(acc_C10);
           MMUL C11(acc_C11);
+          MMUL C12(acc_C12);
+          MMUL C13(acc_C13);
 
           for (unsigned i = 0; i < colA; ++i)
 #ifdef OPT_PERF_ENABLED
@@ -162,17 +199,29 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                 pB1 += MMUL::size_B * colB;
                 B1 = aie::load_v<MMUL::size_B>(pB2);
                 pB2 += MMUL::size_B * colB;
+                B2 = aie::load_v<MMUL::size_B>(pB3);
+                pB3 += MMUL::size_B * colB;
+                B3 = aie::load_v<MMUL::size_B>(pB4);
+                pB4 += MMUL::size_B * colB;
               } else {
                 B0 = aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
                 pB1 += MMUL::size_B;
                 B1 = aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
                 pB2 += MMUL::size_B;
+                B2 = aie::transpose(aie::load_v<MMUL::size_B>(pB3), t, s);
+                pB3 += MMUL::size_B;
+                B3 = aie::transpose(aie::load_v<MMUL::size_B>(pB4), t, s);
+                pB4 += MMUL::size_B;
               }
 
               C00.mac(A0, B0);
               C01.mac(A0, B1);
+              C02.mac(A0, B2);
+              C03.mac(A0, B3);
               C10.mac(A1, B0);
               C11.mac(A1, B1);
+              C12.mac(A1, B2);
+              C13.mac(A1, B3);
             }
 
           // TODO make shift right here to keep most significat bits
@@ -186,23 +235,35 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
             pC1 += MMUL::size_C;
             aie::store_v(pC1, C01.template to_vector<T_out>());
             pC1 += MMUL::size_C;
+            aie::store_v(pC1, C02.template to_vector<T_out>());
+            pC1 += MMUL::size_C;
+            aie::store_v(pC1, C03.template to_vector<T_out>());
+            pC1 += MMUL::size_C;
             aie::store_v(pC2, C10.template to_vector<T_out>());
             pC2 += MMUL::size_C;
             aie::store_v(pC2, C11.template to_vector<T_out>());
             pC2 += MMUL::size_C;
+            aie::store_v(pC2, C12.template to_vector<T_out>());
+            pC2 += MMUL::size_C;
+            aie::store_v(pC2, C13.template to_vector<T_out>());
+            pC2 += MMUL::size_C;
           } else {
             aie::store_v(pC1,
                          aie::transpose(C00.template to_vector<T_out>(), r, t));
-            pC1 += MMUL::size_C;
             aie::store_v(pC2,
                          aie::transpose(C01.template to_vector<T_out>(), r, t));
-            pC2 += MMUL::size_C;
-            aie::store_v(pC1,
+            aie::store_v(pC1 + 2 * rowA * MMUL::size_C,
+                         aie::transpose(C02.template to_vector<T_out>(), r, t));
+            aie::store_v(pC2 + 2 * rowA * MMUL::size_C,
+                         aie::transpose(C03.template to_vector<T_out>(), r, t));
+            aie::store_v(pC1 + MMUL::size_C,
                          aie::transpose(C10.template to_vector<T_out>(), r, t));
-            pC1 += MMUL::size_C;
-            aie::store_v(pC2,
+            aie::store_v(pC2 + MMUL::size_C,
                          aie::transpose(C11.template to_vector<T_out>(), r, t));
-            pC2 += MMUL::size_C;
+            aie::store_v(pC1 + 2 * rowA * MMUL::size_C + MMUL::size_C,
+                         aie::transpose(C12.template to_vector<T_out>(), r, t));
+            aie::store_v(pC2 + 2 * rowA * MMUL::size_C + MMUL::size_C,
+                         aie::transpose(C13.template to_vector<T_out>(), r, t));
           }
         }
     }
@@ -223,7 +284,7 @@ constexpr bool is_c_row_maj = true;
 #endif
 
 // The following kernel definitions use mmul shapes that have been found to be
-// optimal for AIE2P in combination with the 2x2 mmul expanded kernel.
+// optimal for AIE2P in combination with the 2x4 mmul expanded kernel.
 //
 // All available matrix multiplication shapes in the AIE-API can be found here:
 // https://xilinx.github.io/aie_api/group__group__mmul.html
@@ -245,7 +306,7 @@ static inline void matmul_vectorized_4x4x8_i16_i16(const int16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<int16, int16, (m / r), (k / s), (n / t), r,
                                     s, t, is_b_row_maj, is_c_row_maj>(pA, pB,
@@ -262,7 +323,7 @@ static inline void matmul_vectorized_4x4x8_i16_i32(const int16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<int16, int32, (m / r), (k / s), (n / t), r,
                                     s, t, is_b_row_maj, is_c_row_maj>(pA, pB,
@@ -280,7 +341,7 @@ matmul_vectorized_4x8x8_bf16_bf16(const bfloat16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
                                     (n / t), r, s, t, is_b_row_maj,
@@ -300,7 +361,7 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
                                     (n / t), r, s, t, is_b_row_maj,
@@ -318,7 +379,7 @@ matmul_vectorized_4x8x8_bf16_f32(const bfloat16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<bfloat16, float, (m / r), (k / s), (n / t),
                                     r, s, t, is_b_row_maj, is_c_row_maj>(pA, pB,
@@ -336,7 +397,7 @@ matmul_vectorized_8x8x8_bf16_f32(const bfloat16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<bfloat16, float, (m / r), (k / s), (n / t),
                                     r, s, t, is_b_row_maj, is_c_row_maj>(pA, pB,
@@ -353,7 +414,7 @@ static inline void matmul_vectorized_8x8x8_i8_i8(const int8 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<int8, int8, (m / r), (k / s), (n / t), r, s,
                                     t, is_b_row_maj, is_c_row_maj>(pA, pB, pC);
@@ -369,7 +430,7 @@ static inline void matmul_vectorized_8x8x8_i8_i16(const int8 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<int8, int16, (m / r), (k / s), (n / t), r,
                                     s, t, is_b_row_maj, is_c_row_maj>(pA, pB,
@@ -386,7 +447,7 @@ static inline void matmul_vectorized_8x8x8_i8_i32(const int8 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
-  static_assert(n % (2 * t) == 0);
+  static_assert(n % (4 * t) == 0);
 
   return matmul_vectorized_2x2_mmul<int8, int32, (m / r), (k / s), (n / t), r,
                                     s, t, is_b_row_maj, is_c_row_maj>(pA, pB,

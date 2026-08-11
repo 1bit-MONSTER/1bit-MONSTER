@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
     // --- Data layout transformations ---
 
     // A: convert to BF16 directly (NPU-side A_transformations handle the shuffle)
-    std::vector<uint16_t> A_bf16(M * K);
+    std::vector<uint16_t> A_bf16((size_t)M * K);
     for (int i = 0; i < M * K; i++) {
         A_bf16[i] = float_to_bf16(A_float[i]);
     }
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     uint16_t* C_bf16_raw = (uint16_t*)bo_C.map();
 
     // Convert BF16 to float
-    std::vector<float> C_raw_float(M * N);
+    std::vector<float> C_raw_float((size_t)M * N);
     for (int i = 0; i < M * N; i++) {
         C_raw_float[i] = bf16_to_float(C_bf16_raw[i]);
     }

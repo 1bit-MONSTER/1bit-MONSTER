@@ -110,7 +110,7 @@ static int save_trg(const char* q4nx_path, const char* trg_path) {
     if (lm.empty()) lm = emb;
 
     // Per-layer norms: in_norm [L*H], pa_norm [L*H], q_norm [L*HD], k_norm [L*HD]
-    std::vector<float> in_norm(L*H), pa_norm(L*H), q_norm(L*HD), k_norm(L*HD);
+    std::vector<float> in_norm((size_t)L*H), pa_norm((size_t)L*H), q_norm((size_t)L*HD), k_norm((size_t)L*HD);
 
     // Packed weights + scales (flat, all layers concatenated)
     // Layout per layer: q_packed, k_packed, v_packed, o_packed, g_packed, u_packed, d_packed
@@ -259,13 +259,13 @@ struct TrgModel {
             memcpy(vec.data(), ptr(off), bytes);
         };
 
-        copy_vec(emb, hdr.offset_emb, (hdr.V * hdr.H) * 4);
+        copy_vec(emb, hdr.offset_emb, ((size_t)hdr.V * hdr.H) * 4);
         copy_vec(fn,  hdr.offset_fn,  hdr.H * 4);
-        copy_vec(lm,  hdr.offset_lm,  (hdr.V * hdr.H) * 4);
-        copy_vec(in_norm, hdr.offset_norms, hdr.L * hdr.H * 4);
-        copy_vec(pa_norm, hdr.offset_norms + hdr.L * hdr.H * 4, hdr.L * hdr.H * 4);
-        copy_vec(q_norm,  hdr.offset_norms + 2 * hdr.L * hdr.H * 4, hdr.L * hdr.HD * 4);
-        copy_vec(k_norm,  hdr.offset_norms + 2 * hdr.L * hdr.H * 4 + hdr.L * hdr.HD * 4, hdr.L * hdr.HD * 4);
+        copy_vec(lm,  hdr.offset_lm,  ((size_t)hdr.V * hdr.H) * 4);
+        copy_vec(in_norm, hdr.offset_norms, (size_t)hdr.L * hdr.H * 4);
+        copy_vec(pa_norm, hdr.offset_norms + (size_t)hdr.L * hdr.H * 4, (size_t)hdr.L * hdr.H * 4);
+        copy_vec(q_norm,  hdr.offset_norms + (size_t)2 * hdr.L * hdr.H * 4, (size_t)hdr.L * hdr.HD * 4);
+        copy_vec(k_norm,  hdr.offset_norms + (size_t)2 * hdr.L * hdr.H * 4 + (size_t)hdr.L * hdr.HD * 4, (size_t)hdr.L * hdr.HD * 4);
         copy_vec(packed, hdr.offset_weights, hdr.offset_scales - hdr.offset_weights);
         copy_vec(scales, hdr.offset_scales, fsz - hdr.offset_scales);
 
@@ -288,16 +288,16 @@ struct TrgModel {
         // Manually expand to track pk/bs correctly per projection
         for (int l = 0; l < L; l++) {
             std::vector<float> res(H); memcpy(res.data(), hidden, H*4);
-            cpu_rmsnorm(hidden, &in_norm[l*H], hidden, H, 1e-6f);
+            cpu_rmsnorm(hidden, &in_norm[(size_t)l*H], hidden, H, 1e-6f);
             // q_proj: M=NH*HD, K=H, nb=bs[0]
             cpu_ternary_gemv_block(pw, hidden, sw, sq, NH*HD, H, bs[0]); pw += pk[0]; sw += bs[0] * NH*HD;
             // k_proj: M=NKV*HD, K=H, nb=bs[1]
             cpu_ternary_gemv_block(pw, hidden, sw, sq+NH*HD, NKV*HD, H, bs[1]); pw += pk[1]; sw += bs[1] * NKV*HD;
             // v_proj: M=NKV*HD, K=H, nb=bs[2]
             cpu_ternary_gemv_block(pw, hidden, sw, sq+NH*HD+NKV*HD, NKV*HD, H, bs[2]); pw += pk[2]; sw += bs[2] * NKV*HD;
-            for(int h=0;h<NH;h++) cpu_rmsnorm(sq+h*HD, &q_norm[l*HD], sq+h*HD, HD, 1e-6f);
+            for(int h=0;h<NH;h++) cpu_rmsnorm(sq+h*HD, &q_norm[(size_t)l*HD], sq+h*HD, HD, 1e-6f);
             cpu_rope(sq,pos,NH,HD,st,ct);
-            for(int h=0;h<NKV;h++) cpu_rmsnorm(sq+NH*HD+h*HD, &k_norm[l*HD], sq+NH*HD+h*HD, HD, 1e-6f);
+            for(int h=0;h<NKV;h++) cpu_rmsnorm(sq+NH*HD+h*HD, &k_norm[(size_t)l*HD], sq+NH*HD+h*HD, HD, 1e-6f);
             cpu_rope(sq+NH*HD,pos,NKV,HD,st,ct);
             for(int h=0;h<NKV;h++){
                 memcpy(&kc[l*4096*NKV*HD+pos*NKV*HD+h*HD], sq+NH*HD+h*HD, HD*4);
@@ -308,7 +308,7 @@ struct TrgModel {
             cpu_ternary_gemv_block(pw, sa, sw, hidden, H, NH*HD, bs[3]); pw += pk[3]; sw += bs[3] * H;
             for(int i=0;i<H;i++)hidden[i]=res[i]+hidden[i];
             memcpy(res.data(),hidden,H*4);
-            cpu_rmsnorm(hidden,&pa_norm[l*H],hidden,H,1e-6f);
+            cpu_rmsnorm(hidden,&pa_norm[(size_t)l*H],hidden,H,1e-6f);
             // gate_proj: M=IM, K=H, nb=bs[4]
             cpu_ternary_gemv_block(pw, hidden, sw, sf, IM, H, bs[4]); pw += pk[4]; sw += bs[4] * IM;
             // up_proj: M=IM, K=H, nb=bs[5]
@@ -334,8 +334,8 @@ static int load_bench(const char* trg_path, int n_layers_override) {
 
     const int H=m.H, IM=m.IM, NH=m.NH, NKV=m.NKV, HD=m.HD, V=m.V, GQA=m.GQA;
 
-    std::vector<float> hidden(H), sq(NH*HD+2*NKV*HD), sa(NH*HD), sf(2*IM), sa2(IM);
-    std::vector<float> kc(4096*NKV*HD,0), vc(4096*NKV*HD,0);
+    std::vector<float> hidden(H), sq(NH*HD+2*NKV*HD), sa((size_t)NH*HD), sf(2*IM), sa2(IM);
+    std::vector<float> kc((size_t)4096*NKV*HD,0), vc((size_t)4096*NKV*HD,0);
 
     std::vector<float> st(4096*HD), ct(4096*HD);
     for (int p = 0; p < 4096; p++)

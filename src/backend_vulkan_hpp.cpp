@@ -311,11 +311,11 @@ struct VulkanBackend : Backend {
         int qkvSize = (NH + 2 * NKV) * HD_;
         mkBuf(bHidden,  H,       "hidden");
         mkBuf(bResid,   H,       "resid");
-        mkBuf(bQ,       NH*HD_,  "bQ");
-        mkBuf(bK,       NKV*HD_, "bK");
-        mkBuf(bV,       NKV*HD_, "bV");
+        mkBuf(bQ,       (size_t)NH*HD_,  "bQ");
+        mkBuf(bK,       (size_t)NKV*HD_, "bK");
+        mkBuf(bV,       (size_t)NKV*HD_, "bV");
         mkBuf(bQKV,     qkvSize, "bQKV");
-        mkBuf(bAttn,    NH*HD_,  "bAttn");
+        mkBuf(bAttn,    (size_t)NH*HD_,  "bAttn");
         mkBuf(bGate,    IM,      "bGate");
         mkBuf(bUp,      IM,      "bUp");
         mkBuf(bGateAll, 2*IM,    "bGateAll");

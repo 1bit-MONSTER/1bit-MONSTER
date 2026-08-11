@@ -396,7 +396,7 @@ struct Q4nxModel {
                 int ntr = n_blocks / ntc;            // tile rows
                 int actual_OUT = ntr * 32;           // output dimension
 
-                tensor.fp32.resize(actual_OUT * actual_IN, 0.0f);
+                tensor.fp32.resize((size_t)actual_OUT * actual_IN, 0.0f);
 
                 size_t byte_pos = 8 + hdr_size + tensor.data_offset;
                 f.clear();
