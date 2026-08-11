@@ -70,8 +70,10 @@ amdclang++ --version
 # Configure
 cmake -B build -G Ninja
 
-# Build the server (and its librocm_cpp dependency)
-cmake --build build --target zaya_server -j$(nproc)
+# Build the single binary (the `zaya` server, along with `unified`, `jarvis`,
+# `vision`, and the CLI, all live in this one target — `zaya_server` is not
+# a standalone CMake target)
+cmake --build build --target onebin -j$(nproc)
 ```
 
 The build fetches three header-only dependencies automatically via CMake
@@ -84,15 +86,18 @@ The build fetches three header-only dependencies automatically via CMake
 On success you'll have a single binary:
 
 ```bash
-ls -lh build/zaya_server
-# -rwxrwxr-x  ... 207K build/zaya_server
+ls -lh build/1bit
+# -rwxrwxr-x  ... build/1bit
 ```
+
+Run the zaya server via `./build/1bit zaya [flags]` (packaged installs also
+ship a `zaya_server` symlink to the same binary, dispatched by `argv[0]`).
 
 > **Build targets reference** — other useful targets in the same project:
 >
 > | Target | Description |
 > |--------|-------------|
-> | `zaya_server` | HTTP inference server (this guide) |
+> | `onebin` (→ `build/1bit`) | Single binary — `1bit zaya` is the HTTP inference server (this guide) |
 > | `zaya_full` | Full 40‑layer GPU inference loop (no HTTP) |
 > | `zaya_gpu_decode` | Q4NX model decoder |
 > | `bitnet_decode` | BitNet/tri‑bit decode CLI |
@@ -152,18 +157,10 @@ curl -L https://github.com/1bit-systems/1bit-systems/releases/download/v0.2.1/za
 source env.sh
 
 # Start on default port 8088
-./build/zaya_server
+./build/1bit zaya
 
 # Or specify a custom port
-./build/zaya_server 8080
-```
-
-You should see:
-
-```
-Zaya1-8B Server (pure C++, no Python/Rust)
-Loading 40 layers...
-Ready on port 8088
+./build/1bit zaya --port 8080
 ```
 
 The server loads all 40 layers of weights into GPU memory on startup (~6 GB for
@@ -218,7 +215,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8088",
-    api_key="not-needed"   # zaya_server does not require an API key
+    api_key="not-needed"   # 1bit zaya does not require an API key
 )
 
 response = client.completions.create(
@@ -230,21 +227,32 @@ response = client.completions.create(
 print(response.choices[0].text)
 ```
 
-> **Note:** The server implements the legacy `/completion` endpoint (not the
-> OpenAI chat completions format). Use `client.completions.create(...)` rather
-> than `client.chat.completions.create(...)`.
+> **Note:** The example above uses the legacy `/completion` endpoint (not the
+> OpenAI chat completions format), so use `client.completions.create(...)`
+> rather than `client.chat.completions.create(...)`. The server also exposes
+> a real OpenAI-compatible `POST /v1/chat/completions` endpoint (see the CLI
+> reference below) if you want `client.chat.completions.create(...)` instead.
 
 ---
 
 ## CLI Reference
 
 ```
-zaya_server [port]
+1bit zaya [flags]
 ```
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `port`   | `8088`  | TCP port to listen on |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port N` | `8088` | TCP port to listen on |
+| `--model PATH.h1b` | — | Auto-detect architecture from a `.h1b` header |
+| `--weights-dir DIR` | — | Directory of weight `.bin` files (see step 4 above) |
+| `--manifest PATH` | — | Load model config from a JSON manifest |
+| `--strategy auto\|cascade\|spec_decode\|content\|parallel_moe\|passthrough` | `auto` | Routing strategy |
+
+Run `./build/1bit zaya --help` for the full, current flag list — this table
+is a summary, not exhaustive (it also serves `GET /v1/models`,
+`POST /v1/chat/completions`, `POST /v1/batch/completions`, and the A2A
+agent-card endpoints).
 
 ### Request body (`POST /completion`)
 
@@ -334,7 +342,7 @@ expert data fits in VRAM (16 experts × 2 layers = heavy memory pressure).
 | `hipErrorNoBinaryForGpu` | Set `HSA_OVERRIDE_GFX_VERSION=11.5.1` (done by `source env.sh`) |
 | `Missing: /tmp/zaya_weights/...` | Download and extract weights to `/tmp/zaya_weights/` |
 | `hipMalloc failed` | Not enough GPU memory. Zaya1‑8B needs ~6 GB free. Check `rocm-smi` |
-| `bind: Address already in use` | Port taken. Use a different port: `./build/zaya_server 8080` |
+| `bind: Address already in use` | Port taken. Use a different port: `./build/1bit zaya --port 8080` |
 | Slow generation | Ensure weights are on a fast NVMe SSD for first‑load time. Sequential decode speed is bound by GPU memory bandwidth |
 
 ---

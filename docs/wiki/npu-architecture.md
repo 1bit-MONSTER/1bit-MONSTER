@@ -1,12 +1,19 @@
 # NPU Engine Architecture — Knowledge Base
 
 > Auto-generated from reverse engineering sessions. Last updated: 2026-07-24.
+> **This is a research/kernel-internals knowledge base, not the current
+> production architecture** — the "Engine Stack" diagram below describes a
+> since-removed Python daemon and a since-abandoned Zig fusion engine (see
+> the correction note under it). For current architecture, see
+> [Network Topology](Network-Topology.md) and `docs/journey.md` UPDATE 33.
+> The kernel-level material further down (xclbin layouts, bug fixes, tiling)
+> is still historically accurate for the research it documents.
 
 **Update Jul 24**: NPU ternary bridge + on-tile LUT-decode kernels added.
 FLM now fallback — native npu_xrt routes first.
 GPU ternary/binary kernels have full native HIP/Vulkan support.
 
-## Engine Stack
+## Engine Stack (as of 2026-07-24 — superseded, see banner above)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -26,6 +33,18 @@ GPU ternary/binary kernels have full native HIP/Vulkan support.
 │   └── GPU Zinc (ternary, needs GGUF model)                  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+> **Correction (2026-08-10):** `daemon/npu-gpu-cpud` (the Python/C++ HTTP
+> proxy in "Layer 3") no longer exists in this repo — it was replaced by the
+> native engine during the July 2026 "FLM fully replaced" work, and the
+> `daemon/` directory is gone. The single `build/1bit` binary (dispatched by
+> subcommand: `1bit zaya`, `1bit unified`, `1bit jarvis`, ...) is Layer 1 and
+> the HTTP server in one; there is no separate proxy layer. `engine/fusion/`
+> ("Layer 2", Zig) is not the production fused path either — `main.zig` never
+> shipped a working inference loop (see `docs/journey.md`'s July session
+> notes); the real fused-xclbin work moved into the C++ engine
+> (`engine/npu/src/npu_engine_universal.cpp` and the v27/v28 multi-row/fused
+> MoE kernels — see UPDATE 31–33 in `docs/journey.md`).
 
 ## XCLBIN Architecture
 

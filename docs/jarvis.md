@@ -17,7 +17,7 @@ mic ─▶ VAD ─▶ STT (Whisper) ─▶ router ─▶ LLM ─▶ TTS (codec) 
 | Stage | What it does | Backed by |
 |-------|--------------|-----------|
 | **Capture / VAD** | Mic streaming + voice-activity detection (silence gating) | `tools/jarvis/audio_stream.*`, `vad.*` |
-| **STT** | Speech → text | [Whisper V3 Turbo](model-families/whisper.md) on NPU / GPU HIP |
+| **STT** | Speech → text | [Whisper V3 Turbo](model-families/whisper.md) via FLM's whisper HTTP endpoint (`:8496`, override `JARVIS_STT_URL`) — replaced the earlier whisper.cpp+ffmpeg fork/exec path |
 | **Route** | Pick the best model/backend per request | `tools/jarvis/routing.*` → `unified_server` `/v1/chat/completions` |
 | **Reason** | Multi-step planning, retrieval, tool calls | `planner.*`, `rag.*`, `tools.*`, `context.*` |
 | **LLM** | Generate the response | any catalog model — auto-backend-selected |
@@ -32,10 +32,12 @@ The **router** sends every catalog model through `unified_server`'s own auto-bac
 
 ```bash
 # build the engine (single binary)
-cmake -B build && cmake --build build
+cmake -B build && cmake --build build --target onebin
 
-# start the inference server the pipeline routes to
-./build/1bit unified -p 8080
+# start the inference server the pipeline routes to (default port 8088 —
+# jarvis's router defaults to http://127.0.0.1:8088, override with UNIFIED_URL
+# if you pick a different port here)
+./build/1bit unified
 
 # run the JARVIS voice loop (subcommand of the same binary)
 ./build/1bit jarvis

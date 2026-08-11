@@ -2,8 +2,8 @@
 >
 > This describes an **early, abandoned architecture** (a Rust HTTP server runtime).
 > The current project is the opposite of what's described below: **pure C++,
-> zero Rust at runtime, zero Python at runtime.** See [README.md](../README.md)
-> and [CONTRIBUTING.md](../CONTRIBUTING.md) for the current architecture. Kept
+> zero Rust at runtime, zero Python at runtime.** See [README.md](../../README.md)
+> and [CONTRIBUTING.md](../../CONTRIBUTING.md) for the current architecture. Kept
 > only for historical reference — do not copy claims or numbers from this file.
 
 ---

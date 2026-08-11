@@ -80,7 +80,7 @@ The CPU attention is the current bottleneck. An NPU attention xclbin would signi
 
 ## Worker Mode
 
-The engine supports a subprocess protocol for the Zig fused executor (`engine/fusion/main.zig`):
+The engine supports a subprocess protocol used by the C++ NPU backend (`src/backend_npu.cpp`, which spawns `npu_engine_universal` in worker mode):
 
 ```bash
 ./npu_engine model.q4nx --worker
