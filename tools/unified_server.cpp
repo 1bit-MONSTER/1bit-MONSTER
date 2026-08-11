@@ -1166,6 +1166,7 @@ int main(int argc, char** argv) {
 #ifndef _MSC_VER  // CRT fastfail on UCRT + static CRT (#1589)
     setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
+#endif  // ONE_BIN_DISPATCH
 #ifdef EMBED_LEMONADE
     // --lemonade hands off to the embedded Lemonade server core before any
     // of the native arg parsing / hardware init below.
