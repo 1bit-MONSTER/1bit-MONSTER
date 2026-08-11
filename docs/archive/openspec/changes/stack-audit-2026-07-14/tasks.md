@@ -21,11 +21,11 @@ Looking for the benchmark commands/scripts behind these two numbers before re-ru
 
 | Gate | Cmd | Expected | Status |
 |------|-----|----------|--------|
-| Router unified | single `/v1/router` reports one active strategy set, not 3 separate services | 🔧 not started |
-| NPU fusion works | `engine/fusion/main.zig` end-to-end run, non-zero tokens, no hang | 🔧 not started |
-| 40-column resolved | one doc marked current, other marked superseded with date | ✅ done 2026-07-14 |
-| No duplicate dirs | `find ~ -maxdepth 3 -iname '.git' -type d` shows one entry per remote URL | 🔧 not started |
-| ROCm HIP re-measured | fresh run, methodology documented same as NPU v12 entry | 🔧 in progress |
-| DSpark re-measured | confirm training-data blocker still the root cause | 🔧 in progress |
+| Router unified | | single `/v1/router` reports one active strategy set, not 3 separate services | 🔧 not started |
+| NPU fusion works | | `engine/fusion/main.zig` end-to-end run, non-zero tokens, no hang | 🔧 not started |
+| 40-column resolved | | one doc marked current, other marked superseded with date | ✅ done 2026-07-14 |
+| No duplicate dirs | | `find ~ -maxdepth 3 -iname '.git' -type d` shows one entry per remote URL | 🔧 not started |
+| ROCm HIP re-measured | | fresh run, methodology documented same as NPU v12 entry | 🔧 in progress |
+| DSpark re-measured | | confirm training-data blocker still the root cause | 🔧 in progress |
 
 Any agent picking up a task: update its checkbox and the matching verification-gate row when done, and note what changed in `~/STATE-OF-THE-STACK-2026-07-14.md` so the audit doesn't go stale.
