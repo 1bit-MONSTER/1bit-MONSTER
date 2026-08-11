@@ -144,7 +144,7 @@ std::vector<uint64_t> Q4nxReader::get_tensor_shape(
     if (shape_key == std::string::npos) return result;
     auto start = shape_key + strlen("\"shape\":[");
     uint64_t r = 0, c = 0;
-    if (sscanf(json_header.c_str() + start, "%" SCNu64 ",%" SCNu64 ", &r, &c) == 2) {
+    if (sscanf(json_header.c_str() + start, "%" SCNu64 ",%" SCNu64, &r, &c) == 2) {
         result.push_back(r);
         result.push_back(c);
     }
