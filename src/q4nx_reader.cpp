@@ -3,7 +3,7 @@
 #include "q4nx_reader.h"
 #include <cstdio>
 #include <cstdlib>
-#include <inttypes.h>
+#include <cinttypes>
 
 // ── Q4nxReader methods ─────────────────────────────────────────────────────
 

@@ -46,6 +46,7 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <filesystem>
 #include <signal.h>
 #ifndef _MSC_VER
 #include <dirent.h>
@@ -287,37 +288,22 @@ static void load_model_tokenizer(const std::string& model_path) {
     }
     auto slash = model_path.find_last_of('/');
     std::string dir = (slash != std::string::npos) ? model_path.substr(0, slash + 1) : "";
-#ifndef _MSC_VER
-    if (auto* d = opendir(dir.empty() ? "." : dir.c_str())) {
-        while (struct dirent* e = readdir(d)) {
-            std::string n(e->d_name);
-#else
-    { std::error_code scan_ec;
-      for (auto& entry : std::filesystem::directory_iterator(dir.empty() ? "." : dir, scan_ec)) {
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.empty() ? "." : dir, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
         std::string n = entry.path().filename().string();
-#endif
-            if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
-            std::string stem = n.substr(0, n.size() - 5);
-            auto q = stem.find(".Q4_K");
-            if (q != std::string::npos) stem = stem.substr(0, q);
-            auto q8 = stem.find(".Q8_0");
-            if (q8 != std::string::npos) stem = stem.substr(0, q8);
-            if (stem == gguf_base) {
-                std::string c = dir + n;
-#ifndef _MSC_VER
-                if (load_or_synthesize(c)) { closedir(d); return; }
-#else
-                if (load_or_synthesize(c)) return;
-#endif
-            }
-#ifndef _MSC_VER
+        if (n.size() < 6 || n.substr(n.size() - 5) != ".gguf") continue;
+        std::string stem = n.substr(0, n.size() - 5);
+        // Qwen3-0.6B.Q4_K_M → Qwen3-0.6B
+        auto q = stem.find(".Q4_K");
+        if (q != std::string::npos) stem = stem.substr(0, q);
+        auto q8 = stem.find(".Q8_0");
+        if (q8 != std::string::npos) stem = stem.substr(0, q8);
+        if (stem == gguf_base) {
+            std::string c = dir + n;
+            if (load_or_synthesize(c)) return;
         }
-        closedir(d);
     }
-#else
-      }
-    }
-#endif
 }
 
 static ModelConfig default_model_config() {
@@ -1163,7 +1149,12 @@ int main(int argc, char** argv) {
     // Line-buffer stdout when redirected (logs, CI): block buffering merged
     // lifecycle prints with stderr and hid model-switch diagnostics (the
     // "[auto]"/"switching" lines appeared glued to unrelated output).
-#ifndef _MSC_VER  // CRT fastfail on UCRT + static CRT (#1589)
+    // Windows-skipped: MSVC's setvbuf doesn't support true line buffering —
+    // Microsoft's own docs say _IOLBF is mapped to _IOFBF internally — and
+    // calling it here with this UCRT + static-CRT (/MT) combination crashes
+    // with a stack-buffer-overrun fastfail (0xC0000409) before main() gets
+    // anywhere near argv parsing. No portable behavior lost by skipping it.
+#ifndef _WIN32
     setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
 #endif  // ONE_BIN_DISPATCH

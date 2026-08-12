@@ -24,6 +24,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(MSVC)
     # MSVC 19.44 needs explicit /std:c++latest for C++17/20 features
     add_compile_options("/std:c++latest")
+    # Force UTF-8 source/execution charset regardless of host code page —
+    # narrow string literals with non-ASCII \u escapes (e.g. tokenizer.cpp's
+    # SentencePiece "▁" marker) must encode as UTF-8, not codepage-1252 (#1583)
+    add_compile_options("/utf-8")
     # Static MSVC runtime — no VC redist DLL dependency
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
@@ -72,6 +76,10 @@ endif()
 if(NOT REPO_ROOT)
     set(REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+# Normalize to forward slashes — a Windows-style REPO_ROOT (e.g. from a .cmd
+# script passing "C:\repo\..") makes CMake's string parser choke on sequences
+# like "\1" as an invalid character escape (#1578 follow-up).
+file(TO_CMAKE_PATH "${REPO_ROOT}" REPO_ROOT)
 set(SRC_DIR ${REPO_ROOT}/src)
 set(INCLUDE_DIR ${REPO_ROOT}/include)
 set(KERNELS_DIR ${REPO_ROOT}/kernels)
@@ -89,13 +97,21 @@ add_library(gguf_reader STATIC
 target_include_directories(gguf_reader PUBLIC ${INCLUDE_DIR})
 target_compile_options(gguf_reader PRIVATE /O2)
 
-# ── libvl_image : image loading (stb_image) ──
-# vl_image excluded on Windows — uses POSIX fork/pipe/exec for curl image download
-# add_library(vl_image STATIC ...)
+# ── libonebp_model : mmap-backed .1bp loader (CreateFileMapping on Windows) ──
+add_library(onebp_model STATIC
+    ${SRC_DIR}/onebp_model.cpp)
+target_include_directories(onebp_model PUBLIC ${INCLUDE_DIR})
+target_compile_options(onebp_model PRIVATE /O2)
 
-# ── libvision_encoder : ViT encoder ──
-# vision_encoder excluded on Windows — depends on vl_image
-# add_library(vision_encoder STATIC ...)
+# ── libvision_encoder : ViT encoder + vision-text projector ──
+# vl_processor.cpp's SSRF-guard was ported off netdb.h/arpa-inet.h to
+# Winsock2 (#1587); onebp_model.cpp off mmap to CreateFileMapping — so this
+# is no longer POSIX-only.
+add_library(vision_encoder STATIC
+    ${SRC_DIR}/vision_encoder.cpp)
+target_include_directories(vision_encoder PUBLIC ${BASE_INCLUDES})
+target_link_libraries(vision_encoder PUBLIC onebp_model)
+target_compile_options(vision_encoder PRIVATE /O2)
 
 # ── libwhisper (CPU) ──
 add_library(whisper STATIC
@@ -105,9 +121,8 @@ target_compile_options(whisper PRIVATE /O2)
 
 # ── libbackend_manager (CPU + Vulkan backends, Windows portable subset) ──
 # Only includes sources with no POSIX/HIP/ROCm dependencies.
-# Files excluded for Windows portability:
-#   backend_factory.cpp   — dlfcn.h (dynamic loading)
-#   backend_plugin.cpp    — dlfcn.h
+# Files excluded for Windows portability (tracked in #1588):
+#   backend_factory.cpp   — dlfcn.h (dynamic loading) + has_hip_gpu/has_vulkan/has_npu/has_avx512
 #   backend_cpu.cpp       — sys/mman.h
 #   backend_generic.cpp   — dirent.h
 #   h1b_loader.cpp        — hip/hip_runtime.h
@@ -120,23 +135,42 @@ set(BACKEND_MANAGER_SOURCES
     ${SRC_DIR}/simple_tokenizer.cpp
     ${SRC_DIR}/q4nx_reader.cpp
     ${SRC_DIR}/safetensors_reader.cpp
-    # model_discovery.cpp excluded — uses POSIX dirent.h for directory traversal
     ${SRC_DIR}/model_router.cpp
     ${SRC_DIR}/tokenizer.cpp
     ${SRC_DIR}/kv_rotorquant.cpp
     ${SRC_DIR}/zamba2_engine.cpp
-    ${SRC_DIR}/backend_onnx.cpp
+    # No POSIX deps — safe on Windows, just never wired in before (#1587)
     ${SRC_DIR}/dynamic_router.cpp
     ${SRC_DIR}/strategy_engine.cpp
     ${SRC_DIR}/agent_watchdog.cpp
-    ${SRC_DIR}/vl_processor.cpp)
+    # netdb.h/arpa/inet.h ported to winsock2.h/ws2tcpip.h for the SSRF
+    # host-resolution guard (#1587); rest of the file was already portable
+    ${SRC_DIR}/vl_processor.cpp
+    # dirent.h -> std::filesystem::directory_iterator (finishes the _WIN32
+    # scaffolding this file already had half-written)
+    ${SRC_DIR}/model_discovery.cpp
+    # mmap -> CreateFileMapping, same pattern as q4nx_reader.cpp/onebp_model.cpp
+    ${SRC_DIR}/unified_pool.cpp
+    # has_hip_gpu/has_vulkan/has_npu/has_avx512 split out of backend_factory.cpp
+    # (which stays excluded for its dlfcn.h/dirent.h backend-creation logic)
+    ${SRC_DIR}/backend_detect_win.cpp
+    # dlopen/dlsym/dlclose -> LoadLibrary/GetProcAddress/FreeLibrary,
+    # dirent -> std::filesystem (#1588)
+    ${SRC_DIR}/backend_plugin.cpp
+    ${SRC_DIR}/backend_onnx.cpp)
 
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
 target_include_directories(backend_manager PUBLIC
     ${INCLUDE_DIR}
-    ${SRC_DIR})
+    ${SRC_DIR}
+    ${cpp_httplib_SOURCE_DIR})
 target_compile_options(backend_manager PRIVATE /O2)
 target_link_libraries(backend_manager PUBLIC gguf_reader)
+# No Windows build of libzinc (the real GGUF tokenizer C ABI, built from a
+# separate Zig repo) exists yet — fall back to simple_tokenizer.cpp's C++
+# stubs (.htok/BPE or ASCII passthrough), same as CMakeLists.txt does
+# whenever find_library(ZINC_LIB) comes up empty (issue #798).
+target_compile_definitions(backend_manager PRIVATE ZINC_DISABLED=1)
 
 # ONNX Runtime + VitisAI EP for NPU backend — MSVC/build-time ORT is optional;
 # backend_onnx.cpp self-disables via __has_include(<onnxruntime_cxx_api.h>) when
@@ -180,7 +214,10 @@ target_compile_options(gguf_to_onebp PRIVATE /O2)
 add_executable(unified_server
     ${REPO_ROOT}/tools/unified_server.cpp)
 target_include_directories(unified_server PRIVATE ${BASE_INCLUDES})
-target_link_libraries(unified_server PRIVATE backend_manager gguf_reader)
+target_link_libraries(unified_server PRIVATE backend_manager gguf_reader vision_encoder)
+if(WIN32)
+    target_link_libraries(unified_server PRIVATE ws2_32)
+endif()
 target_compile_options(unified_server PRIVATE /O2)
 
 # ── Tests (key validation tests, CPU-only) ──
