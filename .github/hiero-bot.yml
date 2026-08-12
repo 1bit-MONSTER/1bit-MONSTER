@@ -1,0 +1,52 @@
+# .github/hiero-bot.yml — Hiero Maintainer Bot config for 1bit-systems
+# Self-hosted on the Pi (bcloud@192.168.50.216:8000), webhook via cloudflared tunnel.
+repo: "1bit-systems/1bit-systems"
+
+workflows:
+  # PR quality gates: DCO + tests, auto-label
+  pull_request:
+    enabled: true
+    reviewer_recommendation: true
+    ai_review:
+      enabled: false          # PR-Agent owns AI review; hiero stays rule-based
+    quality_gates:
+      require_tests: false     # CI already enforces; hiero reports only
+      require_dco: true
+      require_gpg_signature: false
+      min_reviewers: 0
+    auto_label: true
+    stale_pr_days: 30
+    auto_close_stale: false
+
+  # PR health scoring (0-100), comment only when score < 60
+  pr_health:
+    enabled: true
+    score_weights:
+      has_tests: 0.25
+      has_linked_issue: 0.15
+      has_description: 0.15
+      dco_signed: 0.20
+      review_count: 0.15
+      small_diff: 0.10
+    comment_threshold: 60
+    label_healthy_above: 75
+
+  # Stale issue sweep + security-label escalation
+  issue_management:
+    enabled: true
+    stale_issue_days: 90
+    close_stale_after_days: 14
+    stale_label: "stale"
+    exempt_labels:
+      - pinned
+      - security
+      - in-progress
+    label_escalation_rules:
+      - label: "security"
+        notify_team: "maintainers"
+        after_hours: 24
+
+  onboarding:
+    enabled: false
+  progression:
+    enabled: false
