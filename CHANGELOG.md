@@ -3,6 +3,43 @@
 All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.08.10 — JARVIS ships NPU-FLM STT + SSE, amdxdna driver regression fixed, eeg-medical archived 🎙️
+
+- **JARVIS: NPU-FLM speech-to-text, SSE streaming, loopback-trusted web UI** (PR #1576).
+  STT now goes through FLM's whisper HTTP endpoint (`:8496`), replacing the
+  whisper.cpp+ffmpeg fork/exec path; `stream:true` requests are answered as a
+  single SSE chunk; long-prompt model selection fixed (was targeting a
+  nonexistent `qwen3.5:9b`, now `qwen3:4b`). Same PR also fixes a
+  `build_context` double-lock deadlock that had been hanging every
+  `/v1/chat/completions` request.
+- **amdxdna driver regression found and fixed.** The custom 0.16.0 driver
+  build from the wedge-recovery work (below) made the 35B MoE model produce
+  garbage on any fresh NPU context — reverting to the kernel's in-tree
+  amdxdna **0.7.0** fixes it. Also removed: a `zaya-qwen36.service`
+  `Requires=zaya-gpu8b.service` chain that pulled up the whole small-model
+  fleet and starved the 35B of NPU columns on start. The 35B and the
+  3-small-model fleet are confirmed mutually exclusive on NPU column budget,
+  not a context-count cap.
+- **NPU firmware RE: verified GEMM via raw ioctls**, entirely outside FLM's
+  own binary for the first time — found the correct PDI (Program Device
+  Image) offset inside an xclbin's `AIE_PARTITION` section, then ran real
+  bit-exact GEMMs on all four of qwen3-0.6b's NPU op shapes (QKV/O/GU/D).
+- **`eeg-medical` repository archived.** ZUNA1.1 (the model this project
+  ports via `tools/zuna_port.cpp`) already trains on the TUH EEG corpus this
+  project had separately been syncing — continuing would have retrained on
+  duplicate data toward a duplicate objective, and eeg-medical's README
+  claim that "ZUNA1.1 trained on research data, not clinical" is factually
+  wrong (TUH is clinical). The ZUNA port stays in this repo as the canonical
+  copy; the TUH→B2 sync was stopped ~2 days into a ~17-day run.
+- **Ops hardening.** Fixed a watchdog safety net that had never actually
+  worked — the kernel package's own modprobe blacklist was silently
+  deny-listing `sp5100_tco` at boot; deployed a netconsole capture rig to
+  diagnose a separate, still-unresolved intermittent slow clean-shutdown
+  stall (not watchdog-related, despite the similarly-named fix below);
+  closed a Docker/ufw firewall bypass (`DOCKER-USER` iptables chain — ufw
+  doesn't filter Docker-published ports) and an SSH brute-force exposure
+  (fail2ban + `ufw limit 22/tcp`).
+
 ## 2026.08.10 — ops: reboot.sh watchdog EBUSY fix 🛡️
 
 - **reboot.sh no longer aborts when `/dev/watchdog` is busy.** systemd holds

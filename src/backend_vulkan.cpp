@@ -429,7 +429,7 @@ struct VKBackend : Backend {
         const float* ks, const float* nw, float* phs, float* cs, int l) {
         float b[H],q[QD],k[KD],v[KD],sk[QKV],d0[QKV],d1[QKV];
         auto mm=[](float*o,const float*a,const float*w,int M,int K){for(int i=0;i<M;i++){float s=0;for(int t=0;t<K;t++)s+=a[t]*w[(size_t)i*K+t];o[i]=s;}};
-        memcpy(b,h,H*4); double ss=0; for(int i=0;i<H;i++)ss+=b[i]*b[i];
+        memcpy(b,h,H*4); double ss=0; for(int i=0;i<H;i++)ss+=(double)b[i]*b[i];
         float ir=1.0f/sqrtf((float)(ss/H)+1e-5f); for(int i=0;i<H;i++)b[i]=b[i]*ir*nw[i];
         mm(q,b,wq,QD,H); mm(k,b,wk,KD,H); memcpy(sk,q,QD*4); memcpy(sk+QD,k,KD*4);
         mm(v,b,wv1,KD/2,H); mm(&v[KD/2],phs,wv2,KD/2,H);
@@ -448,7 +448,7 @@ struct VKBackend : Backend {
     }
 
     static void rmsnorm(float* x, const float* w, int n) {
-        double ss=0; for(int i=0;i<n;i++)ss+=x[i]*x[i];
+        double ss=0; for(int i=0;i<n;i++)ss+=(double)x[i]*x[i];
         float ir=1.0f/sqrtf((float)(ss/n)+1e-5f); for(int i=0;i<n;i++)x[i]=x[i]*ir*w[i];
     }
 
@@ -459,7 +459,7 @@ struct VKBackend : Backend {
         float rs[256],tmp[256],sc[17];
         auto mm=[](float*o,const float*a,const float*w,int M,int K){for(int i=0;i<M;i++){float s=0;for(int t=0;t<K;t++)s+=a[t]*w[(size_t)i*K+t];o[i]=s;}};
         mm(rs,h,gdw,256,H); for(int i=0;i<256;i++)rs[i]+=gdb[i]+prs[i]; memcpy(prs,rs,256*4);
-        double ss=0; for(int i=0;i<256;i++)ss+=rs[i]*rs[i]; float ir=1.0f/sqrtf((float)(ss/256)+1e-5f);
+        double ss=0; for(int i=0;i<256;i++)ss+=(double)rs[i]*rs[i]; float ir=1.0f/sqrtf((float)(ss/256)+1e-5f);
         for(int i=0;i<256;i++)rs[i]=rs[i]*ir*rfn[i]; mm(tmp,rs,rf1,256,256);
         for(int i=0;i<256;i++)tmp[i]+=rf1b[i]; for(int i=0;i<256;i++){float v=tmp[i];tmp[i]=0.5f*v*(1+tanhf(0.79788456f*(v+0.044715f*v*v*v)));}
         mm(rs,tmp,rf2,256,256); for(int i=0;i<256;i++)rs[i]+=rf2b[i];
@@ -503,7 +503,7 @@ struct VKBackend : Backend {
 
             // ── LN1 (CPU) ──
             memcpy(buf,hs,H*4);
-            double ss=0; for(int i=0;i<H;i++)ss+=buf[i]*buf[i];
+            double ss=0; for(int i=0;i<H;i++)ss+=(double)buf[i]*buf[i];
             float ir=1.0f/sqrtf((float)(ss/H)+1e-5f);
             for(int i=0;i<H;i++)buf[i]=buf[i]*ir*l.nw[i];
 
@@ -543,7 +543,7 @@ struct VKBackend : Backend {
             for(int i=0;i<H;i++)o_out[i]=o_out[i]*l.pahss[i]+l.pahsb[i]+hs[i]*l.parss[i]+l.parsb[i];
             memcpy(hs,o_out,H*4);
             memcpy(buf,hs,H*4);
-            ss=0; for(int i=0;i<H;i++)ss+=buf[i]*buf[i];
+            ss=0; for(int i=0;i<H;i++)ss+=(double)buf[i]*buf[i];
             ir=1.0f/sqrtf((float)(ss/H)+1e-5f);
             for(int i=0;i<H;i++)buf[i]=buf[i]*ir*l.pan[i];
 
@@ -552,7 +552,7 @@ struct VKBackend : Backend {
             vk_mm(rs, buf, l.gdw, RTR_H, H);
             for(int i=0;i<RTR_H;i++)rs[i]+=l.gdb[i]+prev_rs[i];
             memcpy(prev_rs,rs,RTR_H*4);
-            ss=0; for(int i=0;i<RTR_H;i++)ss+=rs[i]*rs[i];
+            ss=0; for(int i=0;i<RTR_H;i++)ss+=(double)rs[i]*rs[i];
             ir=1.0f/sqrtf((float)(ss/RTR_H)+1e-5f);
             for(int i=0;i<RTR_H;i++)rs[i]=rs[i]*ir*l.rfn[i];
 

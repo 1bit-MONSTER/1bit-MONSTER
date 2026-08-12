@@ -31,6 +31,7 @@ extern "C" void npu_flm_set_prompt_text(const char* s) {
 #include <chrono>
 #include <algorithm>
 #include <unistd.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -315,44 +316,78 @@ public:
             else unsetenv("LD_LIBRARY_PATH");
         }
 
-        pid_t pid = fork();
-        if (pid < 0) return false;
-        if (pid == 0) {
-            std::string log = "/tmp/flm_serve_" + std::to_string(getpid()) + ".log";
-            int lfd = open(log.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
-            if (lfd >= 0) { dup2(lfd, STDOUT_FILENO); dup2(lfd, STDERR_FILENO); }
-            int devnull = open("/dev/null", O_RDONLY);
-            if (devnull >= 0) dup2(devnull, STDIN_FILENO);
-            for (int fd = 3; fd < 1024; fd++) close(fd);
-            // FLM needs its model registry; without FLM_CONFIG_PATH it exits
-            // immediately ("model_list.json not found").
-            const char* cfg = getenv("NPU_FLM_CONFIG");
-            setenv("FLM_CONFIG_PATH", cfg ? cfg : "/opt/fastflowlm/etc/flm/model_list.json", 1);
-            const char* xclb = getenv("NPU_FLM_XCLBINS");
-            if (xclb) setenv("FLM_XCLBIN_PATH", xclb, 1);
-            std::string port_s = std::to_string(port_);
-            execl(flm_bin_.c_str(), "flm", "serve", model_tag_.c_str(),
-                  "-p", port_s.c_str(), nullptr);
-            _exit(1);
-        }
-        pid_ = pid;
-
-        // Wait for the HTTP port to accept (model load takes ~11-25s).
-        auto t0 = std::chrono::steady_clock::now();
-        while (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - t0).count() < 90) {
-            int s = socket(AF_INET, SOCK_STREAM, 0);
-            if (s >= 0) {
-                sockaddr_in a{}; a.sin_family = AF_INET;
-                a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                a.sin_port = htons((uint16_t)port_);
-                if (connect(s, (sockaddr*)&a, sizeof(a)) == 0) { close(s); return true; }
-                close(s);
+        // Retry the spawn: the NPU's column/slot budget is shared with the
+        // other zaya/FLM services (each model takes 8 of the 40 columns).
+        // When another service is mid-startup, flm-real's CREATE_CONTEXT
+        // fails with MGMT_ERT_NOAVAIL and the child exits after its own
+        // short retry budget. A column always frees up (total footprints
+        // fit), so a later attempt succeeds — wait it out instead of
+        // failing the request. NPU_FLM_SERVE_RETRIES / NPU_FLM_SERVE_RETRY_DELAY_S
+        // tune the budget (defaults: 6 attempts, 5s backoff).
+        int attempts = getenv("NPU_FLM_SERVE_RETRIES") ? atoi(getenv("NPU_FLM_SERVE_RETRIES")) : 6;
+        int delay_s = getenv("NPU_FLM_SERVE_RETRY_DELAY_S") ? atoi(getenv("NPU_FLM_SERVE_RETRY_DELAY_S")) : 5;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            if (attempt > 1) {
+                fprintf(stderr, "  NPU: flm serve spawn attempt %d/%d failed (NPU busy?) — retrying in %ds\n",
+                        attempt, attempts, delay_s);
+                sleep(delay_s);
             }
-            int st = 0;
-            if (waitpid(pid_, &st, WNOHANG) == pid_) { pid_ = 0; return false; }
-            usleep(500000);
+
+            pid_t pid = fork();
+            if (pid < 0) return false;
+            if (pid == 0) {
+                // Die with the parent: a crashed/restarted zaya server must not
+                // leak a flm-real child holding an NPU context. Leaked contexts
+                // accumulate until CREATE_CONTEXT fails with MGMT_ERT_NOAVAIL
+                // for everyone else.
+                prctl(PR_SET_PDEATHSIG, SIGTERM);
+                std::string log = "/tmp/flm_serve_" + std::to_string(getpid()) + ".log";
+                int lfd = open(log.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
+                if (lfd >= 0) { dup2(lfd, STDOUT_FILENO); dup2(lfd, STDERR_FILENO); }
+                int devnull = open("/dev/null", O_RDONLY);
+                if (devnull >= 0) dup2(devnull, STDIN_FILENO);
+                for (int fd = 3; fd < 1024; fd++) close(fd);
+                // FLM needs its model registry; without FLM_CONFIG_PATH it exits
+                // immediately ("model_list.json not found").
+                const char* cfg = getenv("NPU_FLM_CONFIG");
+                setenv("FLM_CONFIG_PATH", cfg ? cfg : "/opt/fastflowlm/etc/flm/model_list.json", 1);
+                const char* xclb = getenv("NPU_FLM_XCLBINS");
+                if (xclb) setenv("FLM_XCLBIN_PATH", xclb, 1);
+                std::string port_s = std::to_string(port_);
+                execl(flm_bin_.c_str(), "flm", "serve", model_tag_.c_str(),
+                      "-p", port_s.c_str(), nullptr);
+                _exit(1);
+            }
+            pid_ = pid;
+
+            // Wait for the HTTP port to accept (model load takes ~11-25s).
+            auto t0 = std::chrono::steady_clock::now();
+            bool opened = false, died = false;
+            while (std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - t0).count() < 90) {
+                int s = socket(AF_INET, SOCK_STREAM, 0);
+                if (s >= 0) {
+                    sockaddr_in a{}; a.sin_family = AF_INET;
+                    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                    a.sin_port = htons((uint16_t)port_);
+                    if (connect(s, (sockaddr*)&a, sizeof(a)) == 0) { close(s); opened = true; break; }
+                    close(s);
+                }
+                int st = 0;
+                if (waitpid(pid_, &st, WNOHANG) == pid_) { died = true; break; }
+                usleep(500000);
+            }
+            if (opened) return true;
+            if (!died) {
+                // Port never opened but the child is still alive: tear it down.
+                kill(pid_, SIGTERM);
+                wait_for_child(pid_, 3000);
+                kill(pid_, SIGKILL);
+                waitpid(pid_, nullptr, WNOHANG);
+            }
+            pid_ = 0;
         }
+        fprintf(stderr, "  NPU: flm serve failed after %d spawn attempts\n", attempts);
         return false;
     }
 

@@ -367,7 +367,7 @@ static void eda_router_moe_cpu(float* h, const float* gate_down_w, const float* 
     memcpy(prev_rs, rs, RTR_H * sizeof(float));
 
     // RMSNorm
-    double ss = 0; for (int i = 0; i < RTR_H; i++) ss += rs[i] * rs[i];
+    double ss = 0; for (int i = 0; i < RTR_H; i++) ss += (double)rs[i] * rs[i];
     float inv = 1.0f / sqrtf((float)(ss / RTR_H) + 1e-5f);
     for (int i = 0; i < RTR_H; i++) rs[i] = rs[i] * inv * router_norm_w[i];
 

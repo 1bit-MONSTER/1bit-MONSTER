@@ -1,8 +1,16 @@
-# Building zaya_server (C++ / ROCm)
+# Building zaya (C++ / ROCm)
 
-This document covers building **zaya_server** — a pure C++ inference server with optional
-GPU decoding support. No Rust, no Python at runtime. The host CPU is **AMD Strix Halo**
+This document covers building **zaya** — a pure C++ inference server with optional
+GPU decoding support, one entry point of the single binary `build/1bit` (run via
+`1bit zaya`). No Rust, no Python at runtime. The host CPU is **AMD Strix Halo**
 (Ryzen AI Max+ 395) and GPU acceleration uses **TheRock 7.15.0a** targeting `gfx1151`.
+
+> `zaya_server` is no longer a standalone CMake **build target** — its full
+> source list is compiled into `onebin`/`build/1bit` only (see
+> `CMakeLists.txt`). Build `onebin` and run the server via
+> `./build/1bit zaya [flags]`. Packaged installs (tarball/deb) do still ship
+> a `zaya_server` symlink to that same binary for convenience, but there is
+> no separate `zaya_server` binary to build from source.
 
 ---
 
@@ -56,7 +64,7 @@ echo 'export CMAKE_HIP_ARCHITECTURES=gfx1151' >> ~/.bashrc
 
 ---
 
-## Build: zaya_server (required)
+## Build: zaya (required)
 
 Clone the repository and build the main server binary:
 
@@ -72,11 +80,14 @@ cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_HIP_ARCHITECTURES=gfx1151
 
-# Build the server binary
-cmake --build build --target zaya_server
+# Build the single binary (zaya, unified, jarvis, vision, and the CLI all
+# live in this one target — there is no standalone `zaya_server` target)
+cmake --build build --target onebin
 ```
 
-The resulting binary is `build/zaya_server`.
+The resulting binary is `build/1bit`. Run the zaya server via `./build/1bit zaya [flags]`
+(the packaged tarball/deb also installs a `zaya_server` symlink to the same binary
+for backward compatibility, dispatched by `argv[0]`).
 
 ---
 
@@ -155,7 +166,7 @@ Then ensure `zaya_server`'s CMake configuration points to this build (e.g. via
 ## Running
 
 ```bash
-./build/zaya_server --model /path/to/model
+./build/1bit zaya --model /path/to/model
 ```
 
 If `libzaya_gpu_decode.so` was built and is findable, the server will print a

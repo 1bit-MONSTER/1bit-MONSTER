@@ -214,3 +214,23 @@ more importantly, doubles the independent macs the pipeline can overlap.
 That is a rewrite of the mmul loop in `mm_kernel_reference.cc` — the
 generator cannot fix it, and the tile-shape experiments (DIM_K=128)
 confirmed the L1 layout is already at its limit.
+
+### 2x4 n-expansion verdict (measured 2026-08-11)
+
+The 2x4 rewrite shipped in `matmul_vectorized_2x2_mmul` (A0/A1 loaded once
+per k-step, four B pairs, 8 independent macs). Correctness: bit-identical —
+`bench_gemm_analytical` QKV 128x2048x8192, both passes wrong=0/1048576.
+Performance: **neutral within run noise** — interleaved 200-iter rounds,
+2x2 ≈ 675 GOP/s vs 2x4 ≈ 679 GOP/s (±8%). The expected speedup did not
+materialize: Peano's aie2p scheduler software-pipelines the doubled B set
+**through the stack** (16 vst + 16 vlda per k-step in the loop core — the
+2x4 loop carries 6 live vector operands, and spill traffic eats the ILP the
+wider expansion was supposed to buy). A control experiment proved the
+k-loop dominates end-to-end time (scalar-kernel symbol swap in the same
+DMA pipeline: 152.7 vs 5.8 ms/launch, 26x), so the neutrality is a real
+no-gain from this toolchain, not a harness artifact. Eight structural
+variants (load order, grouped B pairs, interleaved macs,
+`chess_prepare_for_pipelining`, `-O3`, `-funroll-loops`, OPT_PERF_ENABLED)
+were tried; none beat 2x2. The canonical all-loads-then-8-macs order ships
+as the reference — correctness identical to 2x2, no perf gain. Runnable
+check: `engine/npu/tests/check_mm_kernel_2x4.sh`.

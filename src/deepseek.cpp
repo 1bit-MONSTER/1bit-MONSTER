@@ -147,10 +147,10 @@ std::vector<float> deepseek_forward(
     // Allocate per-layer buffers
     std::vector<float> norm(H), q_rope(cfg.qk_rope_dim);
     std::vector<float> q_comp(cfg.q_lora_rank), k_comp(cfg.kv_lora_rank + cfg.qk_rope_dim);
-    std::vector<float> k_nope(cfg.num_heads * cfg.qk_nope_dim);
-    std::vector<float> q_nope(cfg.num_heads * cfg.qk_nope_dim);
-    std::vector<float> v(cfg.num_heads * cfg.v_dim);
-    std::vector<float> attn_out(cfg.num_heads * cfg.v_dim);
+    std::vector<float> k_nope((size_t)cfg.num_heads * cfg.qk_nope_dim);
+    std::vector<float> q_nope((size_t)cfg.num_heads * cfg.qk_nope_dim);
+    std::vector<float> v((size_t)cfg.num_heads * cfg.v_dim);
+    std::vector<float> attn_out((size_t)cfg.num_heads * cfg.v_dim);
     std::vector<float> scores(cfg.max_seq_len);
     std::vector<float> shared_gate(cfg.moe_intermediate), shared_up(cfg.moe_intermediate), shared_down(H);
     std::vector<float> expert_gate(cfg.moe_intermediate), expert_up(cfg.moe_intermediate), expert_down(H);

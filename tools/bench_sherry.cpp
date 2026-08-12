@@ -128,20 +128,20 @@ int main(int argc, char** argv) {
     printf("[bench_sherry] M=%d K=%d iters=%d\n", M, K, iters);
 
     // Generate 3:4-sparse weights identical across both packers.
-    std::vector<int8_t> weights(M * K);
-    for (int r = 0; r < M; ++r) gen_ternary_3_of_4(&weights[r * K], K, 0xC0FFEE ^ (uint32_t)r);
+    std::vector<int8_t> weights((size_t)M * K);
+    for (int r = 0; r < M; ++r) gen_ternary_3_of_4(&weights[(size_t)r * K], K, 0xC0FFEE ^ (uint32_t)r);
 
     // Pack all three formats.
     const int halo_u32_per_row = K / 16;
-    std::vector<uint32_t> halo_packed(M * halo_u32_per_row);
+    std::vector<uint32_t> halo_packed((size_t)M * halo_u32_per_row);
     const int sherry_bytes_per_row = K * 5 / 32;
-    std::vector<uint8_t>  sherry_packed(M * sherry_bytes_per_row);
+    std::vector<uint8_t>  sherry_packed((size_t)M * sherry_bytes_per_row);
     const int tq1_bytes_per_row    = K / 5;  // K must be multiple of 20 for kernel alignment
-    std::vector<uint8_t>  tq1_packed(M * tq1_bytes_per_row);
+    std::vector<uint8_t>  tq1_packed((size_t)M * tq1_bytes_per_row);
     for (int r = 0; r < M; ++r) {
-        pack_halo_v2(&halo_packed[r * halo_u32_per_row], &weights[r * K], K);
-        pack_sherry_v3(&sherry_packed[r * sherry_bytes_per_row], &weights[r * K], K);
-        pack_tq1_v4(&tq1_packed[r * tq1_bytes_per_row], &weights[r * K], K);
+        pack_halo_v2(&halo_packed[(size_t)r * halo_u32_per_row], &weights[(size_t)r * K], K);
+        pack_sherry_v3(&sherry_packed[(size_t)r * sherry_bytes_per_row], &weights[(size_t)r * K], K);
+        pack_tq1_v4(&tq1_packed[(size_t)r * tq1_bytes_per_row], &weights[(size_t)r * K], K);
     }
 
     // Activations, scales, outputs.

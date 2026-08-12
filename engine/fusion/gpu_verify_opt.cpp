@@ -27,10 +27,10 @@ int main() {
     float *d_pk,*d_sc,*d_inorm,*d_pan,*d_qn,*d_kn,*d_fn,*d_hf,*d_xs;
     _Float16 *d_h,*d_qkv,*d_at,*d_ff,*d_ac,*d_res,*d_kc,*d_vc; int8_t *d_i8;
     auto ml=[&](auto&p_,size_t b){hipMalloc((void**)&p_,b);};
-    ml(d_pk,L*per_layer*4);ml(d_sc,L*per_sc*4);
-    ml(d_inorm,L*H*4);ml(d_pan,L*H*4);ml(d_qn,L*HD*4);ml(d_kn,L*HD*4);
+    ml(d_pk,(size_t)L*per_layer*4);ml(d_sc,(size_t)L*per_sc*4);
+    ml(d_inorm,(size_t)L*H*4);ml(d_pan,(size_t)L*H*4);ml(d_qn,(size_t)L*HD*4);ml(d_kn,(size_t)L*HD*4);
     ml(d_fn,H*4);ml(d_hf,8192*4);ml(d_h,H*2);
-    ml(d_qkv,(NH*HD+2*NKV*HD)*2);ml(d_at,NH*HD*2);
+    ml(d_qkv,(NH*HD+2*NKV*HD)*2);ml(d_at,(size_t)NH*HD*2);
     ml(d_ff,2*IM*2);ml(d_ac,IM*2);ml(d_res,H*2);
     ml(d_i8,H);ml(d_xs,4);
     int MP=4096;
@@ -96,7 +96,7 @@ int main() {
             for(int h=0;h<NKV;h++)rcpp_rmsnorm_fp16(d_qkv+NH*HD+h*HD,d_kn+l*HD,d_qkv+NH*HD+h*HD,1e-6f,HD,s);
             rcpp_rope_fp16(d_qkv+NH*HD,l,1000000.0f,NKV,HD,s);
             
-            size_t kvo=(size_t)l*MP*NKV*HD+l*NKV*HD;
+            size_t kvo=(size_t)l*MP*NKV*HD+(size_t)l*NKV*HD;
             hipMemcpy(d_kc+kvo,d_qkv+NH*HD,NKV*HD*2,hipMemcpyDeviceToDevice);
             hipMemcpy(d_vc+kvo,d_qkv+NH*HD+NKV*HD,NKV*HD*2,hipMemcpyDeviceToDevice);
             

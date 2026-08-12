@@ -229,7 +229,7 @@ bool load_zamba2_from_gguf(const std::string& path, Zamba2Model& model);
 // ── Utility: RMS Norm ──
 inline void rms_norm(const float* x, float* y, const float* w, int n, float eps) {
     double ss = 0.0;  // double accumulation for precision (fixes #1320)
-    for (int i = 0; i < n; ++i) ss += x[i] * x[i];
+    for (int i = 0; i < n; ++i) ss += (double)x[i] * x[i];
     float rms = std::sqrt(ss / n + eps);
     float inv_rms = 1.0f / rms;
     for (int i = 0; i < n; ++i) y[i] = x[i] * inv_rms * w[i];

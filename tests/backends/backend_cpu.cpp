@@ -213,7 +213,7 @@ public:
 #endif
                 { for (int i = 0; i < VK; i++) for (int j = 0; j < H; j++) v[i] += hidden[j] * l.wv1[j * VK + i]; }
                 // Simplified single-token attention
-                std::vector<float> att(NQ * NKV * HD, 0);
+                std::vector<float> att((size_t)NQ * NKV * HD, 0);
                 for (int h = 0; h < NQ; h++) {
                     int kvh = h / (NQ / NKV);
                     float* qh = q.data() + h * HD;

@@ -156,29 +156,41 @@ struct Settings {
 // ── NPU API Client ──────────────────────────────────────────────────────
 
 struct NpuClient {
-    std::string base_url;
+    // httplib::Client's string constructor keeps only scheme/host/port from
+    // the URL and silently drops any path — so a "/v1" suffix must be
+    // re-added on every request instead of relying on the constructor.
+    std::string base_url;   // scheme://host:port only
+    std::string base_path;  // e.g. "/v1", or "" if the endpoint has none
 
-    explicit NpuClient(const std::string &url) : base_url(url) {
-        while (!base_url.empty() && base_url.back() == '/') base_url.pop_back();
+    explicit NpuClient(const std::string &url) {
+        std::string u = url;
+        while (!u.empty() && u.back() == '/') u.pop_back();
+
+        size_t scheme_end = u.find("://");
+        size_t path_start = u.find('/', scheme_end == std::string::npos ? 0 : scheme_end + 3);
+        if (path_start != std::string::npos) {
+            base_path = u.substr(path_start);
+            base_url = u.substr(0, path_start);
+        } else {
+            base_url = u;
+        }
     }
+
+    std::string p(const std::string &path) const { return base_path + path; }
 
     bool health_check() {
         httplib::Client cli(base_url);
         cli.set_connection_timeout(3);
         cli.set_read_timeout(3);
 
-        // Try /health first
-        std::string health_url = base_url;
-        auto v1pos = health_url.rfind("/v1");
-        if (v1pos != std::string::npos) health_url = health_url.substr(0, v1pos);
+        // Try /health first (root-level, not under base_path)
         {
-            httplib::Client hcli(health_url);
+            httplib::Client hcli(base_url);
             auto res = hcli.Get("/health");
             if (res && res->status == 200) return true;
         }
 
-        // Try /v1/models
-        auto res = cli.Get("/models");
+        auto res = cli.Get(p("/models"));
         return res && res->status == 200;
     }
 
@@ -186,7 +198,7 @@ struct NpuClient {
         std::vector<std::string> models;
         httplib::Client cli(base_url);
         cli.set_connection_timeout(5);
-        auto res = cli.Get("/models");
+        auto res = cli.Get(p("/models"));
         if (!res || res->status != 200) return models;
         try {
             json j = json::parse(res->body);
@@ -212,7 +224,7 @@ struct NpuClient {
         })});
         body["stream"] = false;
 
-        auto res = cli.Post("/chat/completions",
+        auto res = cli.Post(p("/chat/completions"),
                            httplib::Headers{{"Content-Type", "application/json"}},
                            body.dump(), "application/json");
 
@@ -238,37 +250,57 @@ struct NpuClient {
 
 // ── Process management ──────────────────────────────────────────────────
 
-static void cmd_status() {
-    // Check if onebitd or zaya_server is running
-    std::cout << "  🔍 Checking NPU stack...\n";
-
-    // Check via ps
-    FILE *fp = popen("ps aux | grep -E '(onebitd|zaya_server|bitnet_decode)' | grep -v grep", "r");
-    if (!fp) {
-        std::cout << "  ⚠️  Could not check processes\n";
-        return;
-    }
-
+// Discover ports from running 1bit processes (zaya, jarvis, ...).
+// Returns true if at least one process was found.
+static bool discover_npu_ports(std::vector<int> &out_ports) {
+    FILE *fp = popen("ps aux | grep -E '1bit (zaya|jarvis|unified|vision|serve)' | grep -v grep", "r");
+    if (!fp) return false;
     char buf[1024];
     bool found = false;
     while (fgets(buf, sizeof(buf), fp)) {
-        std::cout << "  📡 " << buf;
         found = true;
+        std::string line(buf);
+        size_t pos = line.find("--port");
+        if (pos != std::string::npos) {
+            try { out_ports.push_back(std::stoi(line.substr(pos + 6))); } catch (...) {}
+        }
     }
     pclose(fp);
+    if (out_ports.empty()) out_ports.push_back(9090); // legacy onebitd default
+    return found;
+}
 
-    if (!found) {
+// Return the first discovered port whose server responds to health_check,
+// or 0 if none are reachable.
+static int find_responding_port() {
+    std::vector<int> ports;
+    if (!discover_npu_ports(ports)) return 0;
+    for (int port : ports) {
+        std::string ep = "http://127.0.0.1:" + std::to_string(port) + "/v1";
+        if (NpuClient(ep).health_check()) return port;
+    }
+    return 0;
+}
+
+static void cmd_status() {
+    std::cout << "  🔍 Checking NPU stack...\n";
+
+    std::vector<int> ports;
+    if (!discover_npu_ports(ports)) {
         std::cout << "  ℹ️  NPU stack is not running. Type '1bit up' to start.\n";
+        return;
     }
 
-    // Check API health
-    NpuClient client(kDefaultEndpoint);
-    if (client.health_check()) {
-        std::cout << "  ✅ NPU API is responding at " << kDefaultEndpoint << "\n";
-        auto models = client.list_models();
-        if (!models.empty()) {
-            std::cout << "  📦 Available models:\n";
-            for (auto &m : models) std::cout << "     • " << m << "\n";
+    for (int port : ports) {
+        std::string endpoint = "http://127.0.0.1:" + std::to_string(port) + "/v1";
+        NpuClient client(endpoint);
+        if (client.health_check()) {
+            std::cout << "  ✅ NPU API is responding at " << endpoint << "\n";
+            auto models = client.list_models();
+            if (!models.empty()) {
+                std::cout << "  📦 Available models:\n";
+                for (auto &m : models) std::cout << "     • " << m << "\n";
+            }
         }
     }
 }
@@ -276,10 +308,10 @@ static void cmd_status() {
 static void cmd_up() {
     std::cout << "  🚀 Starting NPU stack...\n";
 
-    // Check if already running
-    NpuClient client(kDefaultEndpoint);
-    if (client.health_check()) {
-        std::cout << "  ✅ NPU stack is already running.\n";
+    // Check if already running (discover ports like cmd_status does)
+    int responding_port = find_responding_port();
+    if (responding_port) {
+        std::cout << "  ✅ NPU stack is already running on :" << responding_port << ".\n";
         return;
     }
 
@@ -298,11 +330,12 @@ static void cmd_up() {
         std::cout << "  ✅ onebitd started (pid " << pid << ")\n";
         std::cout << "  ⏳ Waiting for API to come online...\n";
 
-        // Wait for health
+        // Wait for health (try discovered ports first, then default)
         for (int i = 0; i < 30; ++i) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (client.health_check()) {
-                std::cout << "  ✅ NPU API is ready at " << kDefaultEndpoint << "\n";
+            int p = find_responding_port();
+            if (p) {
+                std::cout << "  ✅ NPU API is ready at http://127.0.0.1:" << p << "/v1\n";
                 return;
             }
             if (i % 5 == 4) std::cout << "  ⏳ Still waiting... (" << (i + 1) << "s)\n";
@@ -349,6 +382,10 @@ static void cmd_chat(const std::string &model_override) {
     std::string model = model_override.empty() ? settings.default_model : model_override;
 
     NpuClient client(settings.npu_endpoint);
+    if (!client.health_check()) {
+        int port = find_responding_port();
+        if (port) client = NpuClient("http://127.0.0.1:" + std::to_string(port) + "/v1");
+    }
     bool npu_online = client.health_check();
 
     printf(kBanner, kVersion);
@@ -738,10 +775,10 @@ int main(int argc, char *argv[]) {
         if (arg[0] != '-' && command.empty()) {
             // First non-flag arg could be a command
             if (arg == "chat" || arg == "up" || arg == "down" ||
-                arg == "status" || arg == "build" || arg == "config" ||
-                arg == "auth" || arg == "serve" || arg == "update" ||
-                arg == "pull" || arg == "download" || arg == "get" ||
-                arg == "list" || arg == "models" || arg == "ls") {
+                arg == "status" || arg == "health" || arg == "build" ||
+                arg == "config" || arg == "auth" || arg == "serve" ||
+                arg == "update" || arg == "pull" || arg == "download" ||
+                arg == "get" || arg == "list" || arg == "models" || arg == "ls") {
                 command = arg;
                 continue;
             }
@@ -760,12 +797,18 @@ int main(int argc, char *argv[]) {
         // Non-interactive chat mode
         Settings settings;
         settings.load();
-        NpuClient client(settings.npu_endpoint);
-
-        if (!client.health_check()) {
+        // Use port discovery when no config endpoint is set, so 1bit up/chat
+    // work out of the box on any port without requiring a config file edit.
+    NpuClient client(settings.npu_endpoint);
+    if (!client.health_check()) {
+        int port = find_responding_port();
+        if (port) {
+            client = NpuClient("http://127.0.0.1:" + std::to_string(port) + "/v1");
+        } else {
             std::cerr << "⚠️  NPU stack is not running. Run '1bit up' to start.\n";
             return 1;
         }
+    }
 
         std::string response = client.chat(settings.default_model, prompt);
         std::cout << response << std::endl;
@@ -782,7 +825,7 @@ int main(int argc, char *argv[]) {
         cmd_up();
     } else if (command == "down") {
         cmd_down();
-    } else if (command == "status") {
+    } else if (command == "status" || command == "health") {
         cmd_status();
     } else if (command == "build") {
         cmd_build(args.empty() ? "" : args[0]);

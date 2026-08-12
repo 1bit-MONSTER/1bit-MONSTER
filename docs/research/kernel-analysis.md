@@ -1,4 +1,4 @@
-> **📜 Historical reference** — This document references the closed-source FastFlowLM runtime which has since been fully reverse-engineered and replaced. See [How We Got Here](../README.md#-how-we-got-here--reverse-engineering-the-xdna-2-npu) for the current state.
+> **📜 Historical reference** — This document references the closed-source FastFlowLM runtime which has since been fully reverse-engineered and replaced. See [The story](../../README.md#the-story) for the current state.
 >
 # Kernel Analysis — FLM xclbin Architecture & Instruction Format
 
