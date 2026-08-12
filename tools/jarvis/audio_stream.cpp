@@ -794,7 +794,7 @@ int WebSocketServer::start(int port, void* codec_tts_ptr, WSAuthCheck auth_check
     auto* tts = static_cast<jarvis::CodecTts*>(codec_tts_ptr);
 
     server_thread_ = std::make_unique<std::thread>([this, tts]() {
-        STREAM_LOG("WebSocket server started on port %d", port_);
+        STREAM_LOG("WebSocket server started on port %d", port_.load());
 
         while (running_ && listen_fd_ >= 0) {
             struct sockaddr_in client_addr;
