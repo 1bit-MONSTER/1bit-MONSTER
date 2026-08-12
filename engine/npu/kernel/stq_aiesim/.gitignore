@@ -1,0 +1,12 @@
+Work/
+x86simulator_output/
+libadf.a
+gen_data
+outC.txt
+golden.txt
+data/
+*.log
+fp_*.txt
+fpm_*.txt
+probe_*.txt
+W_dump.txt
