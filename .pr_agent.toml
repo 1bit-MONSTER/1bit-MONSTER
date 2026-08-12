@@ -42,3 +42,7 @@ ignore_pr_labels = []
 # Deepseek key expired -> silent failures. K3 note: temperature/top_p are
 # FIXED server-side; do not add sampling params here or requests 400.
 custom_model_max_tokens = 128000
+
+[litellm]
+# K3 400s on sampling params (temperature is pinned server-side).
+drop_params = true
