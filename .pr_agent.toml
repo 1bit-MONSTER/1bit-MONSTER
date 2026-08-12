@@ -45,3 +45,6 @@ custom_model_max_tokens = 128000
 # K3 allows ONLY temperature=1 (server-pinned). drop_params doesn't strip it
 # because litellm treats openai/* as temperature-capable. Send 1 explicitly.
 temperature = 1
+# K3 runs thinking=max by default; 120s default times out on real diffs
+# (litellm.Timeout in run 31629721723).
+ai_timeout = 600
