@@ -64,7 +64,8 @@ jobs:
             high-risk changes and to verify the PR's impact claims against
             the repo's actual call graph.
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          OPENAI_API_BASE: https://api.moonshot.ai/v1
           # SECURITY: GITHUB_TOKEN with contents:write scope is passed to the
           # third-party action The-PR-Agent/pr-agent. Mitigation: the job-level
           # `if` guard above restricts execution to same-repo PRs only;
