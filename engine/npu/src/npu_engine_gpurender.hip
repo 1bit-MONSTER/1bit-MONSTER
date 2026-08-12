@@ -236,9 +236,10 @@ int main(int argc,char**argv){
             launch_f32_to_f16(d_hid,d_tmp,cfg.H,gs);
             launch_rmsnorm(d_tmp,d_in_w,cfg.H,EPS,gs);
             ctx_qkv[l].gemv_gpu(d_tmp,d_qkv,gs);
-            launch_rmsnorm(d_qkv,d_qn,cfg.NH*cfg.HD,EPS,gs);
+            // ponytail: per-head qk-norm loop (d_qn/d_kn are HD floats; was OOB read past HD) — batch if profiled hot
+            for(int h=0;h<cfg.NH;h++) launch_rmsnorm(&d_qkv[h*cfg.HD],d_qn,cfg.HD,EPS,gs);
             launch_rope(d_qkv,d_cos,d_sin,sp+pi,cfg.HD,cfg.NH,gs);
-            launch_rmsnorm(&d_qkv[cfg.NH*cfg.HD],d_kn,cfg.NKV*cfg.HD,EPS,gs);
+            for(int h=0;h<cfg.NKV;h++) launch_rmsnorm(&d_qkv[cfg.NH*cfg.HD+h*cfg.HD],d_kn,cfg.HD,EPS,gs);
             launch_rope(&d_qkv[cfg.NH*cfg.HD],d_cos,d_sin,sp+pi,cfg.HD,cfg.NKV,gs);
             launch_copy(&d_qkv[cfg.NH*cfg.HD],&d_K[(size_t)(sp+pi)*cfg.NKV*cfg.HD],cfg.NKV*cfg.HD,gs);
             launch_copy(&d_qkv[cfg.NH*cfg.HD+cfg.NKV*cfg.HD],&d_V[(size_t)(sp+pi)*cfg.NKV*cfg.HD],cfg.NKV*cfg.HD,gs);
@@ -310,9 +311,9 @@ int main(int argc,char**argv){
             // RMS norm → QKV gemv → Q norms+RoPE → K norms+RoPE → KV cache
             launch_rmsnorm(d_tmp,d_in_w,cfg.H,EPS,gs);
             ctx_qkv[l].gemv_gpu(d_tmp,d_qkv,gs);
-            launch_rmsnorm(d_qkv,d_qn,cfg.NH*cfg.HD,EPS,gs);
+            for(int h=0;h<cfg.NH;h++) launch_rmsnorm(&d_qkv[h*cfg.HD],d_qn,cfg.HD,EPS,gs);
             launch_rope(d_qkv,d_cos,d_sin,ctx,cfg.HD,cfg.NH,gs);
-            launch_rmsnorm(&d_qkv[cfg.NH*cfg.HD],d_kn,cfg.NKV*cfg.HD,EPS,gs);
+            for(int h=0;h<cfg.NKV;h++) launch_rmsnorm(&d_qkv[cfg.NH*cfg.HD+h*cfg.HD],d_kn,cfg.HD,EPS,gs);
             launch_rope(&d_qkv[cfg.NH*cfg.HD],d_cos,d_sin,ctx,cfg.HD,cfg.NKV,gs);
             launch_copy(&d_qkv[cfg.NH*cfg.HD],&d_K[(size_t)ctx*cfg.NKV*cfg.HD],cfg.NKV*cfg.HD,gs);
             launch_copy(&d_qkv[cfg.NH*cfg.HD+cfg.NKV*cfg.HD],&d_V[(size_t)ctx*cfg.NKV*cfg.HD],cfg.NKV*cfg.HD,gs);

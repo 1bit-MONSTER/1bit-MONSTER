@@ -1,6 +1,6 @@
 [pr_agent]
-model = "deepseek/deepseek-v4-flash"
-model_turbo = "deepseek/deepseek-v4-flash"
+model = "openai/kimi-k3"
+model_turbo = "openai/kimi-k3"
 fallback_models = []
 verbosity_level = 2
 publish_output = true
@@ -34,12 +34,11 @@ push_changelog_changes = true
 enable_help_text = false
 
 [config]
-model = "deepseek/deepseek-v4-flash"
+model = "openai/kimi-k3"
 fallback_models = []
 ignore_pr_labels = []
-# deepseek/deepseek-v4-flash isn't registered in pr-agent's internal MAX_TOKENS
-# table, so every review/description/suggestion call was throwing
-# "Ensure deepseek/deepseek-v4-flash is defined in MAX_TOKENS ... or set a
-# positive value for it in config.custom_model_max_tokens" and failing
-# silently on every PR. 128000 matches V4-Flash's context window.
+# 2026-08-12: deepseek-v4-flash replaced by Kimi K3 via OpenAI-compatible
+# endpoint (api.moonshot.ai/v1, OPENAI_API_KEY/OPENAI_API_BASE in workflow).
+# Deepseek key expired -> silent failures. K3 note: temperature/top_p are
+# FIXED server-side; do not add sampling params here or requests 400.
 custom_model_max_tokens = 128000

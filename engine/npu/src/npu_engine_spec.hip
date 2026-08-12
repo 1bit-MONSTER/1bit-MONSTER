@@ -274,8 +274,9 @@ int main(int argc,char**argv){
         gv(d_scr,dws.vP,d_hid,2*H,NKV*HD); // V in d_hid
         cp(d_emb,&dK_d[(size_t)pos*NKV*HD],NKV*HD); // K to cache
         cp(d_hid,&dV_d[(size_t)pos*NKV*HD],NKV*HD); // V to cache
-        nr(d_attn,dws.qN,NH*HD); rp(d_attn,pos,NH);
-        nr(&dK_d[(size_t)pos*NKV*HD],dws.kN,NKV*HD); rp(&dK_d[(size_t)pos*NKV*HD],pos,NKV);
+        // ponytail: per-head qk-norm loop (qN/kN are HD floats, Qwen3 semantics; was OOB read past HD) — batch into one kernel if profiled hot
+        for(int h=0;h<NH;h++) nr(&d_attn[h*HD],dws.qN,HD); rp(d_attn,pos,NH);
+        for(int h=0;h<NKV;h++) nr(&dK_d[(size_t)pos*NKV*HD+h*HD],dws.kN,HD); rp(&dK_d[(size_t)pos*NKV*HD],pos,NKV);
 
         // Attention + O projection
         rcpp_kv_cache_attn_decode(d_attn,dK_d,dV_d,d_scr,NH,NKV,HD,pos+1,0.0883883476f,gs);
