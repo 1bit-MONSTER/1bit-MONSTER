@@ -48,6 +48,11 @@
 #include <algorithm>
 #include <filesystem>
 #include <signal.h>
+#ifndef _MSC_VER
+#include <dirent.h>
+#else
+#include <filesystem>
+#endif
 #ifdef _WIN32
 // Minimal getopt for Windows — MSVC doesn't ship it
 #include <io.h>
@@ -1152,7 +1157,7 @@ int main(int argc, char** argv) {
 #ifndef _WIN32
     setvbuf(stdout, nullptr, _IOLBF, 0);
 #endif
-#endif
+#endif  // ONE_BIN_DISPATCH
 #ifdef EMBED_LEMONADE
     // --lemonade hands off to the embedded Lemonade server core before any
     // of the native arg parsing / hardware init below.

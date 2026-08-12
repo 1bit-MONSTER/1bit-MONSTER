@@ -37,7 +37,14 @@ cores       (row 1 col 3)    tiles      tile     Main16  tile    Main16 tile
 
 **Compiled kernels:** `/home/bcloud/torch2aie/build/qwen3_decode_layer_objects/`
 
-### Step 1: Recompile Kernels for Qwen3-0.6B ✅ Partial
+### Step 1 (original per-kernel breakdown — superseded by the "✅ DONE" status above)
+
+> Note added during docs audit: this table's ❌ Need rows for postprocess_qkv,
+> full_vector_station, and qwen3_decode_kernels (main16) predate the top-of-doc
+> "Step 1: Recompile Kernels ✅ DONE" table, which lists compiled objects for
+> all 5 kernels (`postprocess_qkv_06b.o` 34KB, `full_vector_station_06b.o`
+> 20KB, `main_projection_q4nx_06b.o` 80KB) — i.e. this earlier plan-stage table
+> was left in place without being updated when that work completed.
 
 | Kernel | Source | Object | Status | Changes Needed |
 |--------|--------|--------|--------|---------------|

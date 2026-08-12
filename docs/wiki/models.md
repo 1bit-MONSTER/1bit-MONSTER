@@ -295,9 +295,9 @@ Our HuggingFace organization ([bong-water-water-bong](https://huggingface.co/bon
 
 | Family | 1BP Models | Typical Size | Verified |
 |--------|-----------|:------------:|:--------:|
-| Zyphra Zaya1 | ZAYA1-8B, ZAYA1-74B-preview | 469 MB / 4.2 GB | ✅ loads |
+| Zyphra Zaya1 | ZAYA1-8B, ZAYA1-74B-preview | 6.6 GB / 45.8 GB | ✅ loads |
 | Zyphra ZR1 | ZR1-1.5B | 373 MB | hosted |
-| Zyphra Zamba2 | Zamba2-1.2B/2.7B/7B v2 | 375 MB – 1.8 GB | hosted |
+| Zyphra Zamba2 | Zamba2-1.2B/2.7B/7B v2 | 1.15 – 7.25 GB | hosted (rebuilt 2026-08-05, see `docs/zyphra-handoff-2026-08-05.md`) |
 | BlackMamba | BlackMamba-1.5B, BlackMamba-2.8B | 1.0 / 1.9 GB | ✅ loads |
 | Qwen3 | Qwen3-0.6B, Qwen3-4B | 373 MB / 2.1 GB | ✅ loads · ppl 16.3 (Q4NX, gate set) |
 | Qwen2.5 | Qwen2.5-7B-Instruct, Qwen2.5-Coder-7B | 3.6 GB | hosted |

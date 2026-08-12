@@ -214,29 +214,29 @@ private:
 
     void self_attention(const float* x /* [2*hidden] */, int pos, MTPDraftState& state, float* out) {
         int H = cfg_.hidden_size, NH = cfg_.num_heads, NKV = cfg_.num_kv_heads, D = cfg_.head_dim;
-        std::vector<float> q(NH * D), k(NKV * D), v(NKV * D);
+        std::vector<float> q((size_t)NH * D), k((size_t)NKV * D), v((size_t)NKV * D);
         linear(x, w_.q_proj.data(), q.data(), 2 * H, NH * D);
         linear(x, w_.k_proj.data(), k.data(), 2 * H, NKV * D);
         linear(x, w_.v_proj.data(), v.data(), 2 * H, NKV * D);
 
         for (int h = 0; h < NH; h++) {
-            rms_norm(&q[h * D], &q[h * D], w_.q_norm.data(), D);
-            apply_rope(&q[h * D], D, pos);
+            rms_norm(&q[(size_t)h * D], &q[(size_t)h * D], w_.q_norm.data(), D);
+            apply_rope(&q[(size_t)h * D], D, pos);
         }
         for (int h = 0; h < NKV; h++) {
-            rms_norm(&k[h * D], &k[h * D], w_.k_norm.data(), D);
-            apply_rope(&k[h * D], D, pos);
+            rms_norm(&k[(size_t)h * D], &k[(size_t)h * D], w_.k_norm.data(), D);
+            apply_rope(&k[(size_t)h * D], D, pos);
         }
 
         for (int h = 0; h < NKV; h++) {
-            std::copy(&k[h * D], &k[h * D] + D, &state.k_cache[((size_t)pos * NKV + h) * D]);
-            std::copy(&v[h * D], &v[h * D] + D, &state.v_cache[((size_t)pos * NKV + h) * D]);
+            std::copy(&k[(size_t)h * D], &k[(size_t)h * D] + D, &state.k_cache[((size_t)pos * NKV + h) * D]);
+            std::copy(&v[(size_t)h * D], &v[(size_t)h * D] + D, &state.v_cache[((size_t)pos * NKV + h) * D]);
         }
         state.seq_len = pos + 1;
         int gqa = NH / NKV;
         int ctx = pos + 1;
 
-        std::vector<float> attn_out(NH * D, 0.0f);
+        std::vector<float> attn_out((size_t)NH * D, 0.0f);
         std::vector<float> scores(ctx);
         for (int h = 0; h < NH; h++) {
             int kvh = h / gqa;

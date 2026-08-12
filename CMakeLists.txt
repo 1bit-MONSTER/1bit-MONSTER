@@ -804,6 +804,20 @@ if(TARGET ggml_vulkan)
         ggml ggml_cpu ggml_base ggml_vulkan -lvulkan -ldl -lpthread -lm)
     target_compile_options(spec_decode PRIVATE -O3 -std=c++17)
 endif()
+
+# ── Zaya GGUF-vs-BF16 logit validation ──
+# C++ side dumps greedy logits + token ids; tools/zaya_logit_check_ref.py replays
+# the ids through transformers and compares top-k agreement. Uses the submodule's
+# Zaya arch (llama.h), so it links the same static libs as spec_decode.
+if(TARGET ggml_vulkan)
+    add_executable(zaya_logit_check tools/zaya_logit_check.cpp)
+    target_include_directories(zaya_logit_check PRIVATE ${GGML_VULKAN_DIR}/include ${GGML_VULKAN_DIR}/ggml/include)
+    target_link_libraries(zaya_logit_check PRIVATE
+        "${GGML_BUILD_DIR}/src/libllama.a" "${GGML_BUILD_DIR}/common/libllama-common.a"
+        "${GGML_BUILD_DIR}/common/libllama-common-base.a"
+        ggml ggml_cpu ggml_base ggml_vulkan -lvulkan -ldl -lpthread -lm)
+    target_compile_options(zaya_logit_check PRIVATE -O3 -std=c++17)
+endif()
 if(RCPP_HAVE_VULKAN)
     list(APPEND ZAYA_SERVER_SRC tests/backends/backend_vulkan.cpp)
 endif()

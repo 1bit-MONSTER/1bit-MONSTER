@@ -40,11 +40,11 @@ inline void laguna_matmul(float* y, const float* x, const uint8_t* wd, int M, in
     int ng=tc/gs, rb=ng*4+tc/2, tby=tr*rb;
     int n_tr=(K+tr-1)/tr, n_tc=(M+tc-1)/tc;
     std::fill(y,y+M,0.0f);
-    std::vector<float> tb(tr*tc);
+    std::vector<float> tb((size_t)tr*tc);
     for(int trr=0;trr<n_tr;trr++){int rs=trr*tr,re=std::min(rs+tr,K),reff=re-rs;
         for(int tcc=0;tcc<n_tc;tcc++){int cs=tcc*tc,ce=std::min(cs+tc,M),ceff=ce-cs;
             const uint8_t*tp=wd+((trr*(size_t)n_tc+tcc)*tby);
-            for(int r=0;r<tr;r++)laguna_deq_row(tp+r*rb,&tb[r*tc],ng,gs);
+            for(int r=0;r<tr;r++)laguna_deq_row(tp+r*rb,&tb[(size_t)r*tc],ng,gs);
             for(int c=0;c<ceff;c++){float s=0;for(int r=0;r<reff;r++)s+=x[rs+r]*tb[r*(size_t)tc+c];y[cs+c]+=s;}}}
 }
 

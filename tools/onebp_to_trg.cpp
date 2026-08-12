@@ -35,7 +35,7 @@ static uint64_t tiled_size_q4nx(uint32_t rows, uint32_t cols, uint32_t tr, uint3
     uint64_t tile = (uint64_t)tr * gpr * 2  // scales bf16
                   + (uint64_t)tr * gpr * 2  // zero_points bf16
                   + (uint64_t)tr * tc / 2;  // 4-bit packed
-    return ntr * ntc * tile;
+    return (size_t)ntr * ntc * tile;
 }
 
 // Pack one projection to TRG format (ternary with per-block scales)
@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
         for (auto& t : tensors) {
             if (t.name == name) {
                 // Buffer for dequantized output
-                std::vector<float> fp32(t.rows * t.cols);
+                std::vector<float> fp32((size_t)t.rows * t.cols);
                 // Read tile data from mmap
                 const uint8_t* tile_data = data + t.offset;
                 uint32_t ntr = (t.rows + tr - 1) / tr;
@@ -397,9 +397,9 @@ int main(int argc, char** argv) {
     
     // Norms: input_norm + post_attn_norm + q_norm + k_norm per layer
     // For now, approximate size. In practice norms are loaded separately.
-    th.o_norms = off; off += L * (H + H + HD + HD) * 4;
-    th.o_pk = off; off += L * 7 * pp[0]; // approx
-    th.o_sc = off; off += L * 7 * bb[0]; // approx
+    th.o_norms = off; off += (size_t)L * (H + H + HD + HD) * 4;
+    th.o_pk = off; off += (size_t)L * 7 * pp[0]; // approx
+    th.o_sc = off; off += (size_t)L * 7 * bb[0]; // approx
     th.file_size = 0; // filled later
     
     fwrite(&th, sizeof(th), 1, ftrg);
@@ -418,7 +418,7 @@ int main(int argc, char** argv) {
     else { for (int i = 0; i < V*H; i++) { float z=0; fwrite(&z,4,1,ftrg); } }
     
     // Write norms (placeholder zeros for now)
-    size_t norms_size = L * (H + H + HD + HD);
+    size_t norms_size = (size_t)L * (H + H + HD + HD);
     for (size_t i = 0; i < norms_size; i++) { float z=0; fwrite(&z,4,1,ftrg); }
     
     // Write packed weights per layer
@@ -452,8 +452,8 @@ int main(int argc, char** argv) {
             if (w.empty() || out_d <= 0 || in_d <= 0) return;
             int n_blocks = in_d / 256;
             int n_packed = ((in_d + 15) / 16) * sizeof(uint32_t);
-            std::vector<uint32_t> packed(out_d * ((in_d+15)/16));
-            std::vector<float> scales(out_d * n_blocks);
+            std::vector<uint32_t> packed((size_t)out_d * ((in_d+15)/16));
+            std::vector<float> scales((size_t)out_d * n_blocks);
             pack_proj(w.data(), packed.data(), scales.data(), out_d, in_d, n_blocks);
             fwrite(packed.data(), 1, packed.size() * 4, ftrg);
             th.o_sc = ftell(ftrg); // update scale offset

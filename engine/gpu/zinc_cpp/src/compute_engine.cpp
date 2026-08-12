@@ -388,7 +388,7 @@ bool InferenceEngine::init(ComputeEngine& ce, ModelGPU& m) {
     alloc(hidden,     d.hidden * sizeof(float),                              "hidden");
     alloc(residual,   d.hidden * sizeof(float),                              "residual");
     alloc(qkv,        (d.n_heads * d.head_dim + d.n_kv_heads * d.head_dim * 2) * sizeof(float), "qkv");
-    alloc(attn_out,   d.n_heads * d.head_dim * sizeof(float),                 "attn_out");
+    alloc(attn_out,   (size_t)d.n_heads * d.head_dim * sizeof(float),                 "attn_out");
     alloc(gate_up,    d.inter * 2 * sizeof(float),                            "gate_up");
     alloc(silu_buf,   d.inter * sizeof(float),                                "silu_buf");
     alloc(logits,     d.vocab * sizeof(float),                                "logits");
@@ -497,4 +497,3 @@ int InferenceEngine::generate(int token_id) {
     pos++;
     return compute->argmax(logits.buffer(), d.vocab);
 }
-
