@@ -15,8 +15,13 @@
 #include "vl_processor.h"
 
 #include <cstdio>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <netdb.h>
 #include <arpa/inet.h>
+#endif
 #include <cstring>
 #include <cstdlib>
 #include <cstring>

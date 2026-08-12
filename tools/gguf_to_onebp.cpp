@@ -30,16 +30,16 @@ static void sigfpe_handler(int sig) {
     _exit(1);
 }
 
-static inline uint16_t f32b(float v) {
-#ifdef __BYTE_ORDER__
-#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "gguf_to_onebp requires little-endian host"
-#endif
-#elif defined(_MSC_VER)
-// MSVC targets are always little-endian
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    // little-endian (x86, AMD64) — OK
+#elif defined(_MSC_VER) || defined(__i386__) || defined(__x86_64__) || defined(__amd64__)
+    // MSVC or x86 target — always little-endian
 #else
-    static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "gguf_to_onebp requires little-endian host");
+    #error "gguf_to_onebp requires little-endian host (x86/AMD64). Big-endian not supported."
 #endif
+
+static inline uint16_t f32b(float v) {
+
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
@@ -533,7 +533,7 @@ int main(int argc, char** argv) {
         // All tensors processed
         std::vector<float> fw;
         auto* inf = reader.tensor_info(ti.name);
-printf("%" PRIu64 " elements at offset %" PRIu64 "\n", inf->numel, inf->abs_offset);
+        if (inf) printf("%" PRIu64 " elements at offset %" PRIu64 "\n", inf->numel, inf->abs_offset);
         fflush(stdout);
         if (!reader.get_tensor_f32(ti.name, fw)) {
             // A skipped tensor writes NOTHING while the index already reserved
