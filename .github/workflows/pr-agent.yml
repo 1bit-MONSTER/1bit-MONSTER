@@ -18,7 +18,7 @@ jobs:
     # Only run for same-repo PRs and trusted commenters (not external forks)
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issue_comment' && github.event.comment.author_association == 'OWNER')
+      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
