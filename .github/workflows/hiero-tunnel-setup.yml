@@ -10,48 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Create named tunnel + DNS for hiero
+      - name: Diagnose token scopes
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          set -e
           H="Authorization: Bearer $CF_TOKEN"
-          api() { curl -s -H "$H" "$@"; }
-
-          echo "== whoami =="
-          api "https://api.cloudflare.com/client/v4/user" | jq -r '.result.email // .errors[0].message' | head -1
-
-          # Create named tunnel (idempotent-ish: list first)
-          EXISTING=$(api "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/cfd_tunnel?is_deleted=false" | jq -r '.result[]? | select(.name=="hiero") | .id')
-          if [ -n "$EXISTING" ]; then
-            TUNNEL_ID="$EXISTING"
-            echo "Tunnel exists: $TUNNEL_ID"
-          else
-            TUNNEL_ID=$(api -X POST -H "Content-Type: application/json" \
-              "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/cfd_tunnel" \
-              -d '{"name":"hiero","config":{"ingress":[{"hostname":"hiero.1bit.systems","service":"http://127.0.0.1:8000"},{"service":"http_status:404"}]}}' \
-              | jq -r '.result.id')
-            echo "Tunnel created: $TUNNEL_ID"
-          fi
-
-          # Get tunnel credentials (secret)
-          CREDS=$(api "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/cfd_tunnel/$TUNNEL_ID" | jq -c '.result.credentials')
-          SECRET=$(echo "$CREDS" | jq -r '.tunnel_secret')
-          ACCOUNT_TAG=$(echo "$CREDS" | jq -r '.account_tag')
-
-          # DNS record: hiero.1bit.systems -> tunnel.cfargotunnel.com
-          ZONE_ID=$(api "https://api.cloudflare.com/client/v4/zones?name=1bit.systems" | jq -r '.result[0].id')
-          DNS_EXISTS=$(api "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=hiero.1bit.systems" | jq -r '.result | length')
-          if [ "$DNS_EXISTS" = "0" ]; then
-            api -X POST -H "Content-Type: application/json" \
-              "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
-              -d "{\"type\":\"CNAME\",\"name\":\"hiero.1bit.systems\",\"content\":\"$TUNNEL_ID.cfargotunnel.com\",\"proxied\":true}" \
-              | jq -r '.success'
-          else
-            echo "DNS exists"
-          fi
-
-          # Emit tunnel token (base64 of account_tag:tunnel_id:tunnel_secret)
-          TOKEN=$(printf '%s:%s:%s' "$ACCOUNT_TAG" "$TUNNEL_ID" "$SECRET" | base64 -w0)
-          echo "TUNNEL_TOKEN=$TOKEN"
+          echo "== token verify =="
+          curl -s -H "$H" "https://api.cloudflare.com/client/v4/user/tokens/verify" | jq -c '.result | {id, status}'
+          echo "== token permissions =="
+          curl -s -H "$H" "https://api.cloudflare.com/client/v4/user/tokens/verify" | jq -c '.result.policies[]? | {groups: [.groups[]?.id], resources: .resources}'
+          echo "== zones visible =="
+          curl -s -H "$H" "https://api.cloudflare.com/client/v4/zones?per_page=50" | jq -c '{success, count: (.result|length), zones: [.result[]?.name], errors}'
+          echo "== accounts visible =="
+          curl -s -H "$H" "https://api.cloudflare.com/client/v4/accounts?per_page=50" | jq -c '{success, count: (.result|length), accts: [.result[]?.name]}'
+          echo "== existing tunnels =="
+          curl -s -H "$H" "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/cfd_tunnel?is_deleted=false" | jq -c '{success, tunnels: [.result[]? | {name, id}], errors}'
