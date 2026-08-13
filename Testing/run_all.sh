@@ -54,5 +54,4 @@ echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }
 
-# AIE2P bf16 RNI rounding (hardware-measured rule)
-g++ -std=c++17 -O2 Testing/aie2p_bf16_rni_selfcheck.cpp -o /tmp/rni_check && /tmp/rni_check
+run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
