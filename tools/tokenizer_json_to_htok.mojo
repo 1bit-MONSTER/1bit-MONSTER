@@ -15,6 +15,13 @@
 # Build:
 #   mojo build tools/tokenizer_json_to_htok.mojo -o build/tokenizer_json_to_htok
 
+from jsonx import (
+    is_ws,
+    parse_int,
+    parse_string,
+    skip_value,
+    skip_ws,
+)
 from std.collections import Dict, List
 from std.sys import argv
 
@@ -37,167 +44,17 @@ def b_str(mut buf: List[UInt8], s: String):
         buf.append(sb[i])
 
 
-# ── JSON scanner (tokenizer.json is fixed-shape: we only materialize the
-#    vocab dict, the merges array and added_tokens; everything else is
-#    skipped syntactically). ─────────────────────────────────────────────
+# JSON scanner lives in jsonx.mojo (shared with the other converter twins);
+# this file only adds the .htok-specific extraction.
 
-def is_ws(c: Byte) -> Bool:
-    return c == 32 or c == 9 or c == 10 or c == 13  # space \t \n \r
-
-
-def skip_ws(b: Span[Byte, _], mut p: Int) raises:
-    while p < b.__len__() and is_ws(b[p]):
-        p += 1
-    if p >= b.__len__():
-        raise Error("unexpected end of JSON")
-
-
-def parse_hex4(b: Span[Byte, _], p: Int) -> Int:
-    var v = 0
-    for k in range(4):
-        var c = Int(b[p + k])
-        v = v * 16
-        if c >= 48 and c <= 57:  # 0-9
-            v += c - 48
-        elif c >= 97 and c <= 102:  # a-f
-            v += c - 87
-        elif c >= 65 and c <= 70:  # A-F
-            v += c - 55
-        else:
-            v = -1
-            break
-    return v
-
-
-def parse_string(s: String, b: Span[Byte, _], mut p: Int) raises -> String:
-    # p points at the opening quote; returns the unescaped string.
-    var n = b.__len__()
-    p += 1
-    var out = String()
-    var run = p
-    while p < n:
-        var c = b[p]
-        if c == 34:  # "
-            if p > run:
-                out += s[byte=run:p]
-            p += 1
-            return out
-        if c == 92:  # \
-            if p > run:
-                out += s[byte=run:p]
-            p += 1
-            if p >= n:
-                break
-            var e = b[p]
-            p += 1
-            if e == 34 or e == 92 or e == 47:  # \" \\ \/
-                out += chr(Int(e))
-            elif e == 98:  # \b
-                out += chr(8)
-            elif e == 102:  # \f
-                out += chr(12)
-            elif e == 110:  # \n
-                out += chr(10)
-            elif e == 114:  # \r
-                out += chr(13)
-            elif e == 116:  # \t
-                out += chr(9)
-            elif e == 117:  # \uXXXX (surrogate pairs combined)
-                if p + 4 > n:
-                    break
-                var cp = parse_hex4(b, p)
-                p += 4
-                if (
-                    cp >= 0xD800
-                    and cp <= 0xDBFF
-                    and p + 6 <= n
-                    and b[p] == 92
-                    and b[p + 1] == 117
-                ):
-                    var lo = parse_hex4(b, p + 2)
-                    if lo < 0xDC00 or lo > 0xDFFF:
-                        raise Error("bad surrogate pair in \\u escape")
-                    p += 6
-                    cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)
-                if cp >= 0xD800 and cp <= 0xDFFF:
-                    raise Error("unpaired surrogate in \\u escape")
-                out += chr(cp)
-            else:
-                raise Error("bad escape in JSON string")
-            run = p
-        else:
-            p += 1
-    raise Error("unterminated JSON string")
-
-
-def parse_int(b: Span[Byte, _], mut p: Int) -> Int:
-    var neg = False
-    if b[p] == 45:  # -
-        neg = True
-        p += 1
-    var v = 0
-    while p < b.__len__() and b[p] >= 48 and b[p] <= 57:
-        v = v * 10 + (Int(b[p]) - 48)
-        p += 1
-    return -v if neg else v
-
-
-def skip_value(s: String, b: Span[Byte, _], mut p: Int) raises:
-    skip_ws(b, p)
-    var c = b[p]
-    if c == 123:  # {
-        p += 1
-        skip_ws(b, p)
-        if b[p] == 125:
-            p += 1
-            return
-        while True:
-            _ = parse_string(s, b, p)
-            skip_ws(b, p)
-            p += 1  # :
-            skip_value(s, b, p)
-            skip_ws(b, p)
-            if b[p] == 44:  # ,
-                p += 1
-                skip_ws(b, p)
-            elif b[p] == 125:
-                p += 1
-                return
-            else:
-                raise Error("bad object in skip_value")
-    elif c == 91:  # [
-        p += 1
-        skip_ws(b, p)
-        if b[p] == 93:
-            p += 1
-            return
-        while True:
-            skip_value(s, b, p)
-            skip_ws(b, p)
-            if b[p] == 44:
-                p += 1
-                skip_ws(b, p)
-            elif b[p] == 93:
-                p += 1
-                return
-            else:
-                raise Error("bad array in skip_value")
-    elif c == 34:  # "
-        _ = parse_string(s, b, p)
-    else:
-        # number / true / false / null
-        while p < b.__len__() and not is_ws(b[p]) and b[p] != 44 and b[p] != 93 and b[p] != 125:
-            p += 1
-
-
-def parse_vocab(s: String, b: Span[Byte, _], mut p: Int, mut vocab: Dict[String, Int]) raises:
+def parse_vocab(b: Span[Byte, _], mut p: Int, mut vocab: Dict[String, Int]) raises:
     p += 1  # {
     skip_ws(b, p)
     if b[p] == 125:
         p += 1
         return
     while True:
-        var key = parse_string(s, b, p)
+        var key = parse_string(b, p)
         skip_ws(b, p)
         p += 1  # :
         skip_ws(b, p)
@@ -240,7 +97,6 @@ def split_pair(v: String) raises -> Tuple[String, String]:
 
 
 def parse_merges(
-    s: String,
     b: Span[Byte, _],
     mut p: Int,
     mut merges: List[Tuple[String, String]],
@@ -253,21 +109,21 @@ def parse_merges(
     while True:
         skip_ws(b, p)
         if b[p] == 34:  # string form "a b"
-            merges.append(split_pair(parse_string(s, b, p)))
+            merges.append(split_pair(parse_string(b, p)))
         elif b[p] == 91:  # list form ["a", "b"] (Qwen3+)
             p += 1
             skip_ws(b, p)
-            var a = parse_string(s, b, p)
+            var a = parse_string(b, p)
             skip_ws(b, p)
             if b[p] == 44:  # ,
                 p += 1
                 skip_ws(b, p)
-            var bb = parse_string(s, b, p)
+            var bb = parse_string(b, p)
             skip_ws(b, p)
             while b[p] == 44:  # Python keeps only [0] and [1]
                 p += 1
                 skip_ws(b, p)
-                skip_value(s, b, p)
+                skip_value(b, p)
                 skip_ws(b, p)
             if b[p] != 93:
                 raise Error("bad merge list")
@@ -286,7 +142,6 @@ def parse_merges(
 
 
 def parse_added(
-    s: String,
     b: Span[Byte, _],
     mut p: Int,
     mut added: Dict[String, Int],
@@ -304,16 +159,16 @@ def parse_added(
         skip_ws(b, p)
         if b[p] != 125:
             while True:
-                var key = parse_string(s, b, p)
+                var key = parse_string(b, p)
                 skip_ws(b, p)
                 p += 1  # :
                 skip_ws(b, p)
                 if key == "content":
-                    content = parse_string(s, b, p)
+                    content = parse_string(b, p)
                 elif key == "id":
                     id = parse_int(b, p)
                 else:
-                    skip_value(s, b, p)
+                    skip_value(b, p)
                 skip_ws(b, p)
                 if b[p] == 44:  # ,
                     p += 1
@@ -336,7 +191,6 @@ def parse_added(
 
 
 def parse_model(
-    s: String,
     b: Span[Byte, _],
     mut p: Int,
     mut vocab: Dict[String, Int],
@@ -347,16 +201,16 @@ def parse_model(
     if b[p] == 125:
         return
     while True:
-        var key = parse_string(s, b, p)
+        var key = parse_string(b, p)
         skip_ws(b, p)
         p += 1  # :
         skip_ws(b, p)
         if key == "vocab":
-            parse_vocab(s, b, p, vocab)
+            parse_vocab(b, p, vocab)
         elif key == "merges":
-            parse_merges(s, b, p, merges)
+            parse_merges(b, p, merges)
         else:
-            skip_value(s, b, p)
+            skip_value(b, p)
         skip_ws(b, p)
         if b[p] == 44:  # ,
             p += 1
@@ -369,7 +223,6 @@ def parse_model(
 
 
 def parse_tokenizer(
-    s: String,
     b: Span[Byte, _],
     mut p: Int,
     mut vocab: Dict[String, Int],
@@ -384,18 +237,18 @@ def parse_tokenizer(
     if b[p] == 125:
         return
     while True:
-        var key = parse_string(s, b, p)
+        var key = parse_string(b, p)
         skip_ws(b, p)
         if b[p] != 58:  # :
             raise Error("expected ':' after key")
         p += 1
         skip_ws(b, p)
         if key == "model":
-            parse_model(s, b, p, vocab, merges)
+            parse_model(b, p, vocab, merges)
         elif key == "added_tokens":
-            parse_added(s, b, p, added)
+            parse_added(b, p, added)
         else:
-            skip_value(s, b, p)
+            skip_value(b, p)
         skip_ws(b, p)
         if b[p] == 44:  # ,
             p += 1
@@ -424,7 +277,7 @@ def main() raises:
     var merges = List[Tuple[String, String]]()
     var added = Dict[String, Int](capacity=512)
     var p = 0
-    parse_tokenizer(s, b, p, vocab, merges, added)
+    parse_tokenizer(b, p, vocab, merges, added)
 
     # id -> string, size = max id + 1; added_tokens override vocab entries
     # (same dict-overwrite order as the Python original).
