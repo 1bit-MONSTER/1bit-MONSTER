@@ -16,7 +16,7 @@ The engine (C++23 compute kernels, one binary, NPU+GPU+CPU) stays. Everything ar
 | max serve | **Cannot host external engines.** Serving is hardwired to `PIPELINE_REGISTRY`. 1bit keeps its own OpenAI-compatible server. |
 | MAX fold-ins that DO work | Custom architectures (MAX Graph models — not us), CustomOps (export 1bit kernels as Mojo `CustomOp`s — later), `max benchmark` can measure external servers (validation), agent skills (open standard, no registry gate). |
 | Mojo 1.0 stdlib gaps | No `std.net`, no regex, no `std.json` (confirmed in ingested stdlib source). Hand-rolled libc patterns stay (already the UPDATE 34 decision). |
-| Toolchain | `mojo` + `pixi` installed on dev machine. No `pixi.toml` in repo yet. Pin: `mojo==1.0.0`. |
+| Toolchain | `mojo` + `pixi` installed on dev machine. `pixi.toml` + `pixi.lock` in repo since the htok twin (P2.2). Pin: `mojo==1.0.0`. |
 
 ## Phase 0 — Land the burn on `main`
 
@@ -30,10 +30,10 @@ The engine (C++23 compute kernels, one binary, NPU+GPU+CPU) stays. Everything ar
 
 Mojo can only call `extern "C"`. `npu-infer/ffi_bridge.cpp` already proves the pattern (opaque handle + flat C functions for the raw NPU engine). Extend it to the full engine:
 
-- [ ] New `include/onebit_c.h` + `src/onebit_c.cpp`: opaque `OneBitHandle`, flat C surface — `onebit_create/destroy/init(model_path)/generate(tokens)/config/health/server_lifecycle`. Thin wrappers over `backend_manager` (already static libs: `libbackend_manager.a`, `libgguf_reader.a`, `libonebp_model.a`, `liblora_runtime.a`).
-- [ ] New CMake target `onebit_engine` → `libonebit.so` (the only shared lib Mojo/MAX/Rust-era-tools ever touch).
+- [x] New `include/onebit_c.h` + `src/onebit_c.cpp`: opaque `OneBitHandle`, flat C surface — `onebit_create/destroy/init(model_path)/generate(tokens)/config/health/server_lifecycle`. Thin wrappers over `backend_manager` (already static libs: `libbackend_manager.a`, `libgguf_reader.a`, `libonebp_model.a`, `liblora_runtime.a`). — landed `a73e6844`
+- [x] New CMake target `onebit_engine` → `libonebit.so` (the only shared lib Mojo/MAX/Rust-era-tools ever touch). — landed `a73e6844`
 - [ ] `npu-infer/ffi_bridge.cpp` folds into the same header family (single ABI story).
-- [ ] Smoke test: a 30-line Mojo program dlopens `libonebit.so`, loads a model, generates tokens — via `OwnedDLHandle` (runtime) and `external_call` (compile-time) variants.
+- [x] Smoke test: a 30-line Mojo program dlopens `libonebit.so`, loads a model, generates tokens — via `OwnedDLHandle` (runtime) and `external_call` (compile-time) variants. — landed `a73e6844` (OwnedDLHandle variant; `external_call` variant still TODO)
 
 ## Phase 2 — The Mojo envelope (rewrite, then cut)
 
@@ -41,13 +41,14 @@ Every non-kernel component gets a Mojo twin; the C++/Python original is deleted 
 
 Priority order (existing momentum first):
 
-1. **Adrenalin control plane** (M0–M2, from UPDATE 34) — first production Mojo target.
+1. **Adrenalin control plane** (M0–M2, from UPDATE 34) — first production Mojo target. — DONE in `AMD-gui` repo (`app/adrenalin.mojo`, single binary, wire-compatible, deployed to strixhalo)
 2. **Python tooling → Mojo** (24 files in `tools/`, 5 in `scripts/`): `gguf_to_onebp.py`, `hf_to_onebp.py`, `qwen3_to_onebp.py`, `hf_tokenizer_to_htok.py`, `convert_*_to_gguf.py`, `safetensors_to_onnx_int8.py`… These are the "converters" of the through-line. Mojo native exes, same CLI contract. Delete the `.py` on parity.
+   - [x] `tokenizer_json_to_htok` → `tools/tokenizer_json_to_htok.mojo` (byte-identical on qwen2.5-0.5b / qwen3.5-4b / bonsai-1.7b + synthetic escape/gap-id edge cases; engine loader round-trip verified; `convert_model.py` rewired). Supersedes BOTH `tokenizer_json_to_htok.py` and `hf_tokenizer_to_htok.py` — the latter's `<>|` specials heuristic lives on in the GGUF route (`gguf_htok.cpp` → `build_htok_from_gguf`).
 3. **`tools/train/`** (SFT/RL training scripts) — check against MAX training story; likely cut entirely (Modular owns training).
 4. **`npu-infer/rust/`** (187-line Rust FFI binding) → Mojo binding over the same C FFI. **Delete Rust.**
 5. **Onebit CLI** (`tools/onebit.cpp`/`onebin.cpp` dispatch: chat/up/serve/config/auth/pull) — the control-plane CLI becomes a Mojo exe; C++ keeps only compute subcommands (`zaya`/`unified`/`vision` server cores, `jarvis` pipeline).
 6. **`engine/npu` Python** (13 src + 8 generators files) — audit; generators/validators → Mojo where they're tooling, keep Python only if it's a test harness with no Mojo equivalent yet (`mojo test` exists — migrate).
-7. **Repackaging** (`pixi.toml`, `mojoproject.toml`-era none) — pin `mojo==1.0.0`, channels `https://conda.modular.com/max`, `conda-forge`.
+7. **Repackaging** (`pixi.toml`, `mojoproject.toml`-era none) — pin `mojo==1.0.0`, channels `https://conda.modular.com/max`, `conda-forge`. — [x] `pixi.toml` + `pixi.lock` landed with the htok twin; env verified.
 
 ## Phase 3 — Platform fold (1bit in the Modular ecosystem)
 
@@ -93,4 +94,4 @@ Priority order (existing momentum first):
 
 1. P0: ff-merge burn onto `main`, push, delete stale backup branch.
 2. P1: `onebit_c.h` + `onebit_c.cpp` + `libonebit.so` CMake target + Mojo dlopen smoke test.
-3. P2.1: Adrenalin M0 (toolchain) — `pixi.toml` with `mojo==1.0.0`.
+3. P2.1: Adrenalin M0 (toolchain) — `pixi.toml` with `mojo==1.0.0`. — DONE (pixi.toml + pixi.lock landed; Adrenalin M0–M2 done in `AMD-gui`). Next: P2.2 converters — `gguf_to_onebp.py` / `hf_to_onebp.py` / `qwen3_to_onebp.py` are the remaining big ones.

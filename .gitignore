@@ -151,3 +151,6 @@ models/*.htok
 models/int8/
 engine/npu/xclbins/v26_backup/
 *.bak
+
+# pixi env is a local toolchain cache (mojo==1.0.0 pinned in pixi.lock)
+.pixi/

@@ -33,8 +33,14 @@ def main():
     if src.endswith('.safetensors') or os.path.isdir(src) or src.endswith('index.json'):
         subprocess.run([py, os.path.join(HERE, 'safetensors_to_onnx_int8.py'), src, tmp], check=True)
         if args.tokenizer:
-            subprocess.run([py, os.path.join(HERE, 'tokenizer_json_to_htok.py'), args.tokenizer,
-                            os.path.join(tmp, args.name + '.htok')], check=True)
+            htok = os.path.join(ROOT, 'build', 'tokenizer_json_to_htok')
+            if os.path.exists(htok):
+                # Mojo twin of the deleted tokenizer_json_to_htok.py (fold P2.2)
+                subprocess.run([htok, args.tokenizer,
+                                os.path.join(tmp, args.name + '.htok')], check=True)
+            else:
+                print('[convert] WARN: build/tokenizer_json_to_htok missing — skipping .htok\n'
+                      '[convert]   build: mojo build tools/tokenizer_json_to_htok.mojo -o build/tokenizer_json_to_htok')
         else:
             print('[convert] WARN: no --tokenizer — skipping .htok (serve needs it)')
     elif src.endswith('.gguf'):
