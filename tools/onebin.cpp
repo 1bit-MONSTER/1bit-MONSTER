@@ -11,7 +11,7 @@
 //   unified           → unified_server (multi-backend + embedded Lemonade core)
 //   router            → unified_router (NPU/GPU policy routing proxy)
 //   lemonade          → unified_server --lemonade (Lemonade's full server)
-//   jarvis, voice     → jarvis_server (TTS/voice clone + chat server)
+//   jarvis, voice     → jarvis_app (clean-slate voice assistant, pure C++)
 //   vision, vl        → vision_server (vision-language server)
 //   gaia, gaia-bash   → gaia-bash (AMD Gaia C++ agent loop — tools/repl/session)
 //   onebitd, daemon   → onebitd (inference daemon)
@@ -28,7 +28,7 @@ int unified_server_main(int argc, char** argv);
 int unified_router_main(int argc, char *argv[]);
 int onebitd_main(int argc, char *argv[]);
 int onebit_main(int argc, char *argv[]);
-int jarvis_server_main(int argc, char** argv);
+int jarvis_app_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
 int zuna_main(int argc, char** argv);
 int gaia_bash_main(int argc, char** argv);
@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     if (prog == "unified_server") return unified_server_main(argc, argv);
     if (prog == "unified_router") return unified_router_main(argc, argv);
     if (prog == "onebitd")        return onebitd_main(argc, argv);
-    if (prog == "jarvis_server")  return jarvis_server_main(argc, argv);
+    if (prog == "jarvis_server")  return jarvis_app_main(argc, argv);  // legacy symlink → JARVIS v2
     if (prog == "vision_server")  return vision_server_main(argc, argv);
     if (prog == "gaia-bash")      return gaia_bash_main(argc, argv);
     if (prog == "onebit" || prog == "1bit") {
@@ -82,8 +82,8 @@ int main(int argc, char** argv) {
         if (cmd == "onebitd" || cmd == "daemon") {
             return onebitd_main(argc - 1, argv + 1);
         }
-        if (cmd == "jarvis" || cmd == "voice" || cmd == "tts") {
-            return jarvis_server_main(argc - 1, argv + 1);
+        if (cmd == "jarvis" || cmd == "voice") {
+            return jarvis_app_main(argc - 1, argv + 1);
         }
         if (cmd == "vision" || cmd == "vl") {
             return vision_server_main(argc - 1, argv + 1);

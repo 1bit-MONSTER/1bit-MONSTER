@@ -141,6 +141,19 @@ struct WhisperModel {
     void clear();
 };
 
+// ─── GPU acceleration bridge (implemented in src/whisper_hip.hip) ──
+// whisper.cpp routes through these when a HIP device is present at
+// runtime (WHISPER_GPU=0 to force the scalar path). The scalar path
+// remains the reference and the fallback.
+extern "C" {
+int whisper_gpu_available(void);
+int whisper_gpu_encode(const void* model, const float* mel, int n_frames,
+                       float* out_x, int* out_ctx);
+int whisper_gpu_decode_step(const void* model, const int* tokens, int n_tokens,
+                            float* out_logits);
+void whisper_gpu_free(const void* model);
+}
+
 // ─── Audio processing ──────────────────────────────────────────────
 // Load WAV file and return 16-bit PCM samples
 std::vector<float> whisper_load_wav(const std::string& path, int* out_sample_rate = nullptr);

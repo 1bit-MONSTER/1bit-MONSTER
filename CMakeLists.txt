@@ -373,7 +373,6 @@ set(RCPP_SOURCES
     src/fused_gemv_tq2_1024.hip
     src/bonsai_tq2_1024_opt.hip
     kernels/vl_resize_norm.hip
-    kernels/whisper_kernels.hip
     kernels/deepseek_mla.hip
     kernels/vitallm_sparse_kv.hip
     kernels/twla_int4_gemv.hip
@@ -459,12 +458,15 @@ target_compile_options(vision_encoder PRIVATE -O3 -march=native -std=c++23 -Wno-
 target_link_libraries(vision_encoder PUBLIC vl_image backend_manager onebp_model)
 
 # -- libwhisper : Speech-to-text (Whisper) ----------------------------------------------
-add_library(whisper STATIC src/whisper.cpp)
+# Scalar reference (src/whisper.cpp) + HIP acceleration (src/whisper_hip.hip).
+# The GPU path is chosen at runtime when a device is present; WHISPER_GPU=0
+# forces the scalar path. Mel spectrogram is always scalar (cheap, exact).
+add_library(whisper STATIC src/whisper.cpp src/whisper_hip.hip)
 target_include_directories(whisper PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_options(whisper PRIVATE -O3 -march=native -std=c++23 -Wno-unused-result)
-target_link_libraries(whisper PUBLIC backend_manager)
+target_link_libraries(whisper PUBLIC backend_manager hip::host)
 
 # -- libpixtral : Pixtral (Mistral) vision-language connector --------------------------
 add_library(pixtral STATIC src/pixtral.cpp)
@@ -890,15 +892,6 @@ set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")
 # test time. Byte-exact dequant check for every dtype gguf_reader.cpp
 # supports, against reference values baked in from the Python `gguf`
 # package. Runs unconditionally in every CI invocation.
-add_executable(test_voice_session tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp)
-target_include_directories(test_voice_session PRIVATE tools/)
-add_test(NAME test_voice_session COMMAND test_voice_session)
-set_tests_properties(test_voice_session PROPERTIES LABELS "host")
-add_executable(jarvis_ws_proto_test tests/jarvis_ws_proto_test.cpp tools/jarvis/ws_proto.cpp)
-target_include_directories(jarvis_ws_proto_test PRIVATE tools/)
-target_link_libraries(jarvis_ws_proto_test PRIVATE nlohmann_json::nlohmann_json)
-add_test(NAME jarvis_ws_proto_test COMMAND jarvis_ws_proto_test)
-set_tests_properties(jarvis_ws_proto_test PROPERTIES LABELS "host")
 add_executable(test_gguf_reader_dequant tests/test_gguf_reader_dequant.cpp)
 target_include_directories(test_gguf_reader_dequant PRIVATE tests/)
 target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
@@ -1322,25 +1315,12 @@ set(ONE_BIN_SOURCES
     ${ZAYA_SERVER_SRC}
     ${UNIFIED_SERVER_SOURCES}
     tools/unified_router.cpp
-    tools/jarvis_server.cpp
-    tools/jarvis/rag.cpp
-    tools/jarvis/tools.cpp
-    tools/jarvis/routing.cpp
-    tools/jarvis/planner.cpp
-    tools/jarvis/beacon.cpp
+    tools/jarvis/jarvis_app.cpp
+    tools/jarvis/audio.cpp
+    tools/jarvis/stt.cpp
     tools/jarvis/tts.cpp
-    tools/jarvis/audio_out.cpp
-    tools/jarvis/audio_stream.cpp
-    tools/jarvis/codec_tts.cpp
-    tools/jarvis/persona.cpp
     tools/jarvis/vad.cpp
-    tools/jarvis/voice_session.cpp
-    tools/jarvis/ws_proto.cpp
-    tools/jarvis/context.cpp
-    tools/jarvis/auth.cpp
-    tools/jarvis/usage.cpp
-    tools/jarvis/billing.cpp
-    src/codec_decoder.cpp
+
     tools/vision_server.cpp
     tools/zuna_port.cpp
     tools/onebit.cpp
@@ -1434,28 +1414,6 @@ endif()
 # No standalone add_executable — tools/onebitd.cpp compiles into onebin/1bit
 # only; run via `1bit onebitd` / `1bit daemon`.
 
-# -- jarvis_server : local private AI agent server (RAG, tools, planner) ---
-# C++ port of the deleted jarvis/ Python package (recovered from git
-# history at c252174aa~1 — see .claude/plans/swirling-tumbling-frost.md).
-# Talks to unified_server (127.0.0.1:8088) and Ollama over HTTP rather than
-# embedding a second BackendManager; own port 8080.
-# ── Optional: ONNX Runtime for codec decoder (voice cloning TTS) ──
-# The codec decoder compiles without it — decode() returns empty PCM.
-# Set ONNXRUNTIME_ROOT_DIR to help find_package locate the SDK.
-set(ONNXRUNTIME_ROOT_DIR "" CACHE PATH "ONNX Runtime install root")
-find_package(onnxruntime QUIET HINTS "${ONNXRUNTIME_ROOT_DIR}")
-if(onnxruntime_FOUND)
-    message(STATUS "codec: ONNX Runtime FOUND — building codec decoder with real inference")
-    add_definitions(-DUSE_ONNXRUNTIME)
-    target_link_libraries(onebin PRIVATE onnxruntime::onnxruntime)
-else()
-    message(STATUS "codec: ONNX Runtime NOT found — codec decoder will return empty PCM")
-endif()
-
-# No standalone add_executable — jarvis_server.cpp + tools/jarvis/*.cpp +
-# src/codec_decoder.cpp (all listed in ONE_BIN_SOURCES above) compile into
-# onebin/1bit only; run via `1bit jarvis` / `1bit voice`.
-
 # -- zaya1_vl_demo : ZAYA1-VL-8B vision-language inference demo -------------
 add_executable(zaya1_vl_demo tools/zaya1_vl_demo.cpp)
 target_include_directories(zaya1_vl_demo PRIVATE src/ include/)
@@ -1474,7 +1432,7 @@ target_link_libraries(whisper_demo PRIVATE
 
 # -- whisper_ggml_to_gguf : one-off asset-prep converter (legacy ggml.bin
 # whisper models -> this project's own strict-GGUF format). Not part of
-# the runtime product; only used to prepare a model file for jarvis_server.
+# the runtime product; only used to prepare a model file for JARVIS STT.
 add_executable(whisper_ggml_to_gguf tools/whisper_ggml_to_gguf.cpp)
 target_compile_options(whisper_ggml_to_gguf PRIVATE -O3 -Wall -Wno-unused-result -std=c++23)
 
@@ -1999,13 +1957,11 @@ if(USE_AUDIO_CPP)
             ${AUDIO_GGML_CPU_LIB}
             ${AUDIO_GGML_BASE_LIB}
             m pthread)
-        
-        # jarvis_server is no longer a standalone target (see onebin) —
-        # give onebin native audio.cpp TTS instead of Piper.
+
+        # JARVIS v2: native in-process audio (tools/jarvis/audio.cpp) into onebin
         if(TARGET onebin)
             target_link_libraries(onebin PRIVATE audio_bridge)
         endif()
-        
         message(STATUS "audio: audio.cpp integration enabled (${AUDIO_CPP_LIB})")
     else()
         message(STATUS "audio: engine_runtime library not found — set -DUSE_AUDIO_CPP=OFF or build audio.cpp first")
@@ -2046,28 +2002,7 @@ endif()
 # Phase 2.3 Commercial API tests (auth + billing)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Auth module unit tests
-add_executable(test_auth
-    tests/test_auth.cpp
-    tools/jarvis/auth.cpp)
-target_include_directories(test_auth PRIVATE tools/ src/ include/)
-target_compile_options(test_auth PRIVATE -O3 -std=c++23)
-target_link_libraries(test_auth PRIVATE nlohmann_json::nlohmann_json)
-add_test(NAME test_auth COMMAND test_auth)
-set_tests_properties(test_auth PROPERTIES LABELS "host")
 
-# Billing module unit tests
-add_executable(test_billing
-    tests/test_billing.cpp
-    tools/jarvis/auth.cpp
-    tools/jarvis/billing.cpp)
-target_include_directories(test_billing PRIVATE tools/ src/ include/)
-target_compile_options(test_billing PRIVATE -O3 -std=c++23)
-target_link_libraries(test_billing PRIVATE nlohmann_json::nlohmann_json)
-add_test(NAME test_billing COMMAND test_billing)
-set_tests_properties(test_billing PROPERTIES LABELS "host")
-
-message(STATUS "tests: Phase 2.3 Commercial API tests enabled")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TRACK 2: New 1BP model architecture additions
