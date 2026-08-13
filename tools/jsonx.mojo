@@ -14,7 +14,7 @@
 # document never reads OOB).
 
 from std.io import FileDescriptor
-from std.memory import alloc, Layout
+from std.memory import alloc, bitcast, Layout
 from std.os.path import getsize
 
 
@@ -274,3 +274,280 @@ def str_to_float(s: String) -> Float64:
     var sb = s.as_bytes()
     var q = 0
     return parse_float(sb, q)
+
+
+# ── safetensors (shared by the qwen3 + hf converter twins) ─────────────
+# dtype codes: 0=bf16 1=f32 2=f16 3=i8 4=u8 5=i16 6=u16 7=i32 8=u32
+# 9=i64 10=u64
+
+struct STensor:
+    var name: String
+    var shard: Int
+    var off: Int  # absolute byte offset into the shard buffer
+    var size: Int
+    var dtype: Int
+    var ndim: Int
+    var dims: List[Int]
+
+    def __init__(
+        out self,
+        name: String,
+        shard: Int,
+        off: Int,
+        size: Int,
+        dtype: Int,
+        ndim: Int,
+        var dims: List[Int],
+    ):
+        self.name = name
+        self.shard = shard
+        self.off = off
+        self.size = size
+        self.dtype = dtype
+        self.ndim = ndim
+        self.dims = dims^
+
+
+def dtype_code(dt: String, tensor_name: String) raises -> Int:
+    # returns the dtype code or raises with the .py-compatible message
+    if dt == "BF16":
+        return 0
+    if dt == "F32":
+        return 1
+    if dt == "F16":
+        return 2
+    if dt == "I8":
+        return 3
+    if dt == "U8":
+        return 4
+    if dt == "I16":
+        return 5
+    if dt == "U16":
+        return 6
+    if dt == "I32":
+        return 7
+    if dt == "U32":
+        return 8
+    if dt == "I64":
+        return 9
+    if dt == "U64":
+        return 10
+    raise Error("unhandled dtype " + dt + " for " + tensor_name)
+
+
+def u64le_at(src: Span[Byte, _], i: Int) -> Int:
+    var v = 0
+    for k in range(8):
+        v |= Int(src[i + k]) << (8 * k)
+    return v
+
+
+def parse_safetensors(
+    src: Span[Byte, _],
+    shard_idx: Int,
+    mut out: List[STensor],
+) raises:
+    # Parse one safetensors shard (u64 header length, JSON header, data
+    # blob). Every tensor is appended; callers filter/quantize as needed.
+    var hlen = u64le_at(src, 0)
+    var data_start = 8 + hlen
+    var p = 8
+    skip_ws(src, p)
+    if src[p] != 123:  # {
+        raise Error("bad safetensors header")
+    p += 1
+    skip_ws(src, p)
+    if src[p] == 125:
+        return
+    while True:
+        var name = parse_string(src, p)
+        skip_ws(src, p)
+        p += 1  # :
+        skip_ws(src, p)
+        if name == "__metadata__":
+            skip_value(src, p)
+        else:
+            p += 1  # {
+            var dtype = -1
+            var shape = List[Int]()
+            var o0 = 0
+            var o1 = 0
+            skip_ws(src, p)
+            if src[p] != 125:
+                while True:
+                    var k = parse_string(src, p)
+                    skip_ws(src, p)
+                    p += 1  # :
+                    skip_ws(src, p)
+                    if k == "dtype":
+                        var dt = parse_string(src, p)
+                        dtype = dtype_code(dt, name)
+                    elif k == "shape":
+                        shape = parse_array_of_ints(src, p)
+                    elif k == "data_offsets":
+                        var ds = parse_array_of_ints(src, p)
+                        o0 = ds[0]
+                        o1 = ds[1]
+                    else:
+                        skip_value(src, p)
+                    skip_ws(src, p)
+                    if src[p] == 44:  # ,
+                        p += 1
+                        skip_ws(src, p)
+                    elif src[p] == 125:
+                        p += 1
+                        break
+                    else:
+                        raise Error("bad tensor entry " + name)
+            if dtype < 0:
+                raise Error("missing dtype for " + name)
+            out.append(
+                STensor(name, shard_idx, data_start + o0, o1 - o0, dtype, shape.__len__(), shape^)
+            )
+        skip_ws(src, p)
+        if src[p] == 44:  # ,
+            p += 1
+            skip_ws(src, p)
+        elif src[p] == 125:
+            p += 1
+            return
+        else:
+            raise Error("bad safetensors object")
+
+
+def elem_f32(src: Span[Byte, _], off: Int, dtype: Int, i: Int) -> Float32:
+    # Element i of a tensor as float32 (numpy astype(f32) semantics:
+    # exact for bf16/f16/f32, widening for ints, RN rounding for i64/u64
+    # beyond 2^24).
+    if dtype == 0:  # BF16
+        var u = UInt32(src[off + 2 * i]) | (UInt32(src[off + 2 * i + 1]) << 8)
+        return bitcast[DType.float32, 1](u << 16)
+    if dtype == 1:  # F32
+        var u = (
+            UInt32(src[off + 4 * i])
+            | (UInt32(src[off + 4 * i + 1]) << 8)
+            | (UInt32(src[off + 4 * i + 2]) << 16)
+            | (UInt32(src[off + 4 * i + 3]) << 24)
+        )
+        return bitcast[DType.float32, 1](u)
+    if dtype == 2:  # F16
+        var u = UInt16(src[off + 2 * i]) | (UInt16(src[off + 2 * i + 1]) << 8)
+        return Float32(bitcast[DType.float16, 1](u))
+    if dtype == 3:  # I8
+        var b = Int(src[off + i])
+        return Float32(b - 256 if b >= 128 else b)
+    if dtype == 4:  # U8
+        return Float32(Int(src[off + i]))
+    if dtype == 5:  # I16
+        var u = Int(src[off + 2 * i]) | (Int(src[off + 2 * i + 1]) << 8)
+        return Float32(u - 65536 if u >= 32768 else u)
+    if dtype == 6:  # U16
+        var u = Int(src[off + 2 * i]) | (Int(src[off + 2 * i + 1]) << 8)
+        return Float32(u)
+    if dtype == 7:  # I32
+        var u = (
+            Int(src[off + 4 * i])
+            | (Int(src[off + 4 * i + 1]) << 8)
+            | (Int(src[off + 4 * i + 2]) << 16)
+            | (Int(src[off + 4 * i + 3]) << 24)
+        )
+        return Float32(u - 4294967296 if u >= 2147483648 else u)
+    if dtype == 8:  # U32
+        var u = (
+            Int(src[off + 4 * i])
+            | (Int(src[off + 4 * i + 1]) << 8)
+            | (Int(src[off + 4 * i + 2]) << 16)
+            | (Int(src[off + 4 * i + 3]) << 24)
+        )
+        return Float32(u)
+    if dtype == 9:  # I64
+        var u = Int(src[off + 8 * i]) | (Int(src[off + 8 * i + 1]) << 8) | (Int(src[off + 8 * i + 2]) << 16) | (
+            Int(src[off + 8 * i + 3]) << 24
+        ) | (Int(src[off + 8 * i + 4]) << 32) | (Int(src[off + 8 * i + 5]) << 40) | (
+            Int(src[off + 8 * i + 6]) << 48
+        ) | (Int(src[off + 8 * i + 7]) << 56)
+        return Float32(u)
+    # U64
+    var u = Int(src[off + 8 * i]) | (Int(src[off + 8 * i + 1]) << 8) | (Int(src[off + 8 * i + 2]) << 16) | (
+        Int(src[off + 8 * i + 3]) << 24
+    ) | (Int(src[off + 8 * i + 4]) << 32) | (Int(src[off + 8 * i + 5]) << 40) | (
+        Int(src[off + 8 * i + 6]) << 48
+    ) | (Int(src[off + 8 * i + 7]) << 56)
+    return Float32(u)
+
+
+# ── config.json (raw-value dict; text_config merge by re-invoking) ─────
+
+def parse_cfg_object(b: Span[Byte, _], mut p: Int, mut cfg: Dict[String, String]) raises:
+    # Walk an object, storing raw JSON value text per key.
+    skip_ws(b, p)
+    p += 1  # {
+    skip_ws(b, p)
+    if b[p] == 125:
+        p += 1
+        return
+    while True:
+        var key = parse_string(b, p)
+        skip_ws(b, p)
+        p += 1  # :
+        skip_ws(b, p)
+        cfg[key] = raw_value(b, p)
+        skip_ws(b, p)
+        if b[p] == 44:  # ,
+            p += 1
+            skip_ws(b, p)
+        elif b[p] == 125:
+            p += 1
+            return
+        else:
+            raise Error("bad config object")
+
+
+def cfg_int(cfg: Dict[String, String], key: String, default: Int) -> Int:
+    var v = cfg.get(key)
+    if not v:
+        return default
+    var raw = v.value()
+    if raw == "true" or raw == "True":
+        return 1
+    if raw == "false" or raw == "False":
+        return 0
+    return str_to_int(raw)
+
+
+def cfg_float(cfg: Dict[String, String], key: String, default: Float64) -> Float64:
+    var v = cfg.get(key)
+    if not v:
+        return default
+    return str_to_float(v.value())
+
+
+def cfg_str(cfg: Dict[String, String], key: String, default: String) raises -> String:
+    # String value: raw JSON text is quoted; strip the quotes.
+    var v = cfg.get(key)
+    if not v:
+        return default
+    var raw = v.value()
+    if raw.startswith("\""):
+        var rb = raw.as_bytes()
+        var q = 0
+        return parse_string(rb, q)
+    return raw
+
+
+def cfg_first_list_str(cfg: Dict[String, String], key: String, default: String) raises -> String:
+    # config.get("architectures", [""])[0] — first element of a JSON array.
+    var v = cfg.get(key)
+    if not v:
+        return default
+    var raw = v.value()
+    var rb = raw.as_bytes()
+    var q = 0
+    skip_ws(rb, q)
+    if q >= rb.__len__() or rb[q] != 91:  # [
+        return default
+    q += 1
+    skip_ws(rb, q)
+    if q >= rb.__len__() or rb[q] != 34:  # "
+        return default
+    return parse_string(rb, q)

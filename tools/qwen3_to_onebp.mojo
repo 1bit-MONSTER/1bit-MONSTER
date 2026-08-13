@@ -13,15 +13,13 @@
 # repos like Qwen's own model.safetensors).
 
 from jsonx import (
+    STensor,
+    cfg_float,
+    cfg_int,
+    elem_f32,
+    parse_cfg_object,
+    parse_safetensors,
     read_file_bytes,
-    parse_array_of_ints,
-    parse_float,
-    parse_int,
-    parse_string,
-    raw_value,
-    skip_value,
-    skip_ws,
-    str_to_float,
     str_to_int,
 )
 from std.collections import Dict, List
@@ -91,169 +89,6 @@ def b_str(mut buf: List[UInt8], s: String):
     var sb = s.as_bytes()
     for i in range(sb.__len__()):
         buf.append(sb[i])
-
-
-def u64le_at(b: Span[Byte, _], i: Int) -> Int:
-    var v = 0
-    for k in range(8):
-        v |= Int(b[i + k]) << (8 * k)
-    return v
-
-
-# ── safetensors ─────────────────────────────────────────────────────────
-
-def parse_safetensors(
-    b: Span[Byte, _],
-    shard_idx: Int,
-    mut tensors: Dict[String, Entry],
-) raises:
-    var hlen = u64le_at(b, 0)
-    var data_start = 8 + hlen
-    var p = 8
-    skip_ws(b, p)
-    if b[p] != 123:  # {
-        raise Error("bad safetensors header")
-    p += 1
-    skip_ws(b, p)
-    if b[p] == 125:
-        return
-    while True:
-        var name = parse_string(b, p)
-        skip_ws(b, p)
-        p += 1  # :
-        skip_ws(b, p)
-        if name == "__metadata__":
-            skip_value(b, p)
-        else:
-            p += 1  # {
-            var dtype = -1
-            var shape = List[Int]()
-            var o0 = 0
-            var o1 = 0
-            skip_ws(b, p)
-            if b[p] != 125:
-                while True:
-                    var k = parse_string(b, p)
-                    skip_ws(b, p)
-                    p += 1  # :
-                    skip_ws(b, p)
-                    if k == "dtype":
-                        var dt = parse_string(b, p)
-                        if dt == "BF16":
-                            dtype = 0
-                        elif dt == "F32":
-                            dtype = 1
-                        elif dt == "F16":
-                            dtype = 2
-                        else:
-                            raise Error("unhandled dtype " + dt + " for " + name)
-                    elif k == "shape":
-                        shape = parse_array_of_ints(b, p)
-                    elif k == "data_offsets":
-                        var ds = parse_array_of_ints(b, p)
-                        o0 = ds[0]
-                        o1 = ds[1]
-                    else:
-                        skip_value(b, p)
-                    skip_ws(b, p)
-                    if b[p] == 44:  # ,
-                        p += 1
-                        skip_ws(b, p)
-                    elif b[p] == 125:
-                        p += 1
-                        break
-                    else:
-                        raise Error("bad tensor entry " + name)
-            if dtype < 0:
-                raise Error("missing dtype for " + name)
-            if shape.__len__() == 1:
-                tensors[name] = Entry(
-                    name, shard_idx, data_start + o0, o1 - o0, dtype, shape[0], -1
-                )
-            elif shape.__len__() == 2:
-                tensors[name] = Entry(
-                    name,
-                    shard_idx,
-                    data_start + o0,
-                    o1 - o0,
-                    dtype,
-                    shape[0],
-                    shape[1],
-                )
-            else:
-                # ndim > 2 is never mapped by map_name; keep a marker and
-                # error only if it somehow gets mapped (mirrors the .py's
-                # crash on ndim>2 mapped tensors)
-                tensors[name] = Entry(name, shard_idx, 0, 0, dtype, -2, -2)
-        skip_ws(b, p)
-        if b[p] == 44:  # ,
-            p += 1
-            skip_ws(b, p)
-        elif b[p] == 125:
-            p += 1
-            return
-        else:
-            raise Error("bad safetensors object")
-
-
-def elem_f32(b: Span[Byte, _], off: Int, dtype: Int, i: Int) -> Float32:
-    if dtype == 0:  # BF16
-        var u = UInt32(b[off + 2 * i]) | (UInt32(b[off + 2 * i + 1]) << 8)
-        return bitcast[DType.float32, 1](u << 16)
-    if dtype == 1:  # F32
-        var u = (
-            UInt32(b[off + 4 * i])
-            | (UInt32(b[off + 4 * i + 1]) << 8)
-            | (UInt32(b[off + 4 * i + 2]) << 16)
-            | (UInt32(b[off + 4 * i + 3]) << 24)
-        )
-        return bitcast[DType.float32, 1](u)
-    # F16
-    var u = UInt16(b[off + 2 * i]) | (UInt16(b[off + 2 * i + 1]) << 8)
-    return Float32(bitcast[DType.float16, 1](u))
-
-
-# ── config.json ─────────────────────────────────────────────────────────
-
-def parse_config_into(b: Span[Byte, _], mut p: Int, mut cfg: Dict[String, String]) raises:
-    # Walk an object, storing raw JSON value text per key. The caller
-    # re-invokes this on the nested text_config object to merge it
-    # (text_config keys override top-level ones, like {**cfg, **tc}).
-    skip_ws(b, p)
-    p += 1  # {
-    skip_ws(b, p)
-    if b[p] == 125:
-        p += 1
-        return
-    while True:
-        var key = parse_string(b, p)
-        skip_ws(b, p)
-        p += 1  # :
-        skip_ws(b, p)
-        cfg[key] = raw_value(b, p)
-        skip_ws(b, p)
-        if b[p] == 44:  # ,
-            p += 1
-            skip_ws(b, p)
-        elif b[p] == 125:
-            p += 1
-            return
-        else:
-            raise Error("bad config object")
-
-
-def cfg_int(cfg: Dict[String, String], key: String, default: Int) -> Int:
-    var v = cfg.get(key)
-    if not v:
-        return default
-    return str_to_int(v.value())
-
-
-def cfg_float(cfg: Dict[String, String], key: String, default: Float64) -> Float64:
-    var v = cfg.get(key)
-    if not v:
-        return default
-    return str_to_float(v.value())
 
 
 # ── name mapping ────────────────────────────────────────────────────────
@@ -363,53 +198,60 @@ def append_tile_2d(
     var grps = TC // GS
     var row_max = (rows + TR - 1) // TR
     var col_max = (cols + TC - 1) // TC
+    var esize = 2 if dtype != 1 else 4
     for r0 in range(row_max):
         for c0 in range(col_max):
+            # .py semantics: min/max are PER ROW (grouped.min(axis=2) over
+            # (TR, grps, GS)); each (row, group) has its own scale/zp.
             var scale = List[Float32]()
             var zp = List[Float32]()
-            for g in range(grps):
-                var gcol = c0 * TC + g * GS
-                # min/max over the 32x32 group; padding cells are 0.0
-                var mn: Float32 = 0.0
-                var mx: Float32 = 0.0
-                for r in range(TR):
-                    var rrow = r0 * TR + r
-                    if rrow >= rows:
-                        continue
+            for r in range(TR):
+                var rrow = r0 * TR + r
+                var row_off = off + rrow * cols * esize
+                for g in range(grps):
+                    var gcol = c0 * TC + g * GS
+                    # first-element init; padding cells (x=0.0) participate
+                    # exactly like numpy's padded array
+                    var mn: Float32 = 0.0
+                    var mx: Float32 = 0.0
+                    var have = False
                     for c in range(GS):
                         var ccol = gcol + c
-                        if ccol >= cols:
-                            continue
-                        var x = elem_f32(b, off, dtype, rrow * cols + ccol)
-                        if x < mn:
+                        var x: Float32
+                        if rrow < rows and ccol < cols:
+                            x = elem_f32(b, row_off, dtype, ccol)
+                        else:
+                            x = Float32(0.0)
+                        if not have:
+                            mn = x
+                            mx = x
+                            have = True
+                        elif x < mn:
                             mn = x
                         elif x > mx:
                             mx = x
-                var rng = mx - mn
-                var sc: Float32
-                var z: Float32
-                if rng < Float32(1e-10):
-                    sc = Float32(1.0)
-                    z = Float32(0.0)
-                else:
-                    sc = rng / Float32(15.0)
-                    z = mn
-                # quantization uses the FULL-precision f32 scale/zp (like
-                # the .py); only the file copy is truncated to bf16
-                scale.append(sc)
-                zp.append(z)
+                    var rng = mx - mn
+                    var sc: Float32
+                    var z: Float32
+                    if rng < Float32(1e-10):
+                        sc = Float32(1.0)
+                        z = Float32(0.0)
+                    else:
+                        sc = rng / Float32(15.0)
+                        z = mn
+                    # quantization uses the FULL-precision f32 scale/zp (like
+                    # the .py); only the file copy is truncated to bf16
+                    scale.append(sc)
+                    zp.append(z)
             # scales block: 32 rows x 8 groups
-            for _ in range(TR):
-                for g in range(grps):
-                    b_u16(buf, Int(bitcast[DType.uint32, 1](scale[g]) >> 16))
+            for i in range(scale.__len__()):
+                b_u16(buf, Int(bitcast[DType.uint32, 1](scale[i]) >> 16))
             # zps block
-            for _ in range(TR):
-                for g in range(grps):
-                    b_u16(buf, Int(bitcast[DType.uint32, 1](zp[g]) >> 16))
+            for i in range(zp.__len__()):
+                b_u16(buf, Int(bitcast[DType.uint32, 1](zp[i]) >> 16))
             # codes block
             for r in range(TR):
                 var rrow = r0 * TR + r
-                var esize = 2 if dtype != 1 else 4
                 var row_off = off + rrow * cols * esize
                 for g in range(grps):
                     var gcol = c0 * TC + g * GS
@@ -425,8 +267,8 @@ def append_tile_2d(
                             xo = elem_f32(b, row_off, dtype, ccol + 1)
                         else:
                             xo = Float32(0.0)
-                        var qe = quant_qi(xe, scale[g], zp[g])
-                        var qo = quant_qi(xo, scale[g], zp[g])
+                        var qe = quant_qi(xe, scale[r * grps + g], zp[r * grps + g])
+                        var qo = quant_qi(xo, scale[r * grps + g], zp[r * grps + g])
                         buf.append(UInt8((qo << 4) | qe))
 
 
@@ -490,7 +332,25 @@ def main() raises:
         var sb = Span[UInt8, MutUntrackedOrigin](
             unsafe_ptr=shard_ptr, length=shard_sz
         )
-        parse_safetensors(sb, shards.__len__(), tensors)
+        var sts = List[STensor]()
+        parse_safetensors(sb, shards.__len__(), sts)
+        for i in range(sts.__len__()):
+            var nm = sts[i].name
+            var rows: Int
+            var cols: Int
+            if sts[i].ndim == 1:
+                rows = sts[i].dims[0]
+                cols = -1
+            elif sts[i].ndim == 2:
+                rows = sts[i].dims[0]
+                cols = sts[i].dims[1]
+            else:
+                # ndim > 2 never maps; marker errors if it somehow does
+                rows = -2
+                cols = -2
+            tensors[nm] = Entry(
+                nm, sts[i].shard, sts[i].off, sts[i].size, sts[i].dtype, rows, cols
+            )
         shards.append((shard_ptr, shard_sz))
     print("loaded", tensors.__len__(), "tensors")
 
@@ -501,13 +361,13 @@ def main() raises:
     cf.close()
     var cb = cs.as_bytes()
     var cp = 0
-    parse_config_into(cb, cp, cfg)
+    parse_cfg_object(cb, cp, cfg)
     var tc = cfg.get("text_config")
     if tc:
         var tcv = tc.value()
         var tcb = tcv.as_bytes()
         var tcp = 0
-        parse_config_into(tcb, tcp, cfg)
+        parse_cfg_object(tcb, tcp, cfg)
 
     var H = cfg_int(cfg, "hidden_size", 0)
     var L = cfg_int(cfg, "num_hidden_layers", 0)
