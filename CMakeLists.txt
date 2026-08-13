@@ -666,6 +666,20 @@ if(ZINC_CPP_AVAILABLE)
     target_include_directories(backend_manager PRIVATE engine/gpu/zinc_cpp/include)
 endif()
 
+# -- onebit_engine : the C ABI seam (libonebit.so) --
+# The ONLY surface Mojo/MAX/anything-else touches (see docs/plans/mojo-fold-1bit-monster.md).
+# backend_manager carries its deps (gguf_reader, OpenMP, dl, rocm_cpp, hip) PUBLICly.
+add_library(onebit_engine SHARED src/onebit_c.cpp)
+target_include_directories(onebit_engine PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_include_directories(onebit_engine PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+target_compile_options(onebit_engine PRIVATE -O2 -std=c++23 -fPIC)
+target_link_libraries(onebit_engine PRIVATE backend_manager dl)
+target_link_options(onebit_engine PRIVATE -rdynamic)
+set_target_properties(onebit_engine PROPERTIES OUTPUT_NAME "onebit")
+
 set(RCPP_HIP_SOURCES ${RCPP_SOURCES} src/prefill_dispatcher.cpp)
 list(FILTER RCPP_HIP_SOURCES INCLUDE REGEX "\\.hip$|prefill_dispatcher\\.cpp$")
 if(RCPP_HAVE_CK)
