@@ -280,7 +280,7 @@ def str_to_float(s: String) -> Float64:
 # dtype codes: 0=bf16 1=f32 2=f16 3=i8 4=u8 5=i16 6=u16 7=i32 8=u32
 # 9=i64 10=u64
 
-struct STensor:
+struct STensor(Copyable):
     var name: String
     var shard: Int
     var off: Int  # absolute byte offset into the shard buffer
@@ -306,6 +306,17 @@ struct STensor:
         self.dtype = dtype
         self.ndim = ndim
         self.dims = dims^
+
+    def __copyinit__(out self, other: Self):
+        # explicit copy (List member is not implicitly copyable) so
+        # Dict[String, STensor].get works
+        self.name = other.name
+        self.shard = other.shard
+        self.off = other.off
+        self.size = other.size
+        self.dtype = other.dtype
+        self.ndim = other.ndim
+        self.dims = other.dims.copy()
 
 
 def dtype_code(dt: String, tensor_name: String) raises -> Int:
