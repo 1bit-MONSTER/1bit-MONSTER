@@ -40,6 +40,14 @@ static inline uint16_t rni_reference(uint16_t a, uint16_t b) {
   if (frac != 0 && sign) truncated += 1;  // more negative
   return (uint16_t)truncated;
 }
+// Full measured hardware model: finite -> RNI bit rule; NaN result -> fixed
+// quiet-NaN 0x7f81; zero (either sign) canonicalized to +0.
+static inline uint16_t aie2p_bf16_add_hw(uint16_t a, uint16_t b) {
+  float s = bf16_to_f32(a) + bf16_to_f32(b);
+  if (s != s) return 0x7f81;                    // NaN (also inf + -inf)
+  if (s == 0.0f) return 0x0000;                 // -0 + -0 -> +0
+  return aie2p_bf16_add(a, b);
+}
 // Deterministic LCG (no deps).
 static inline uint32_t lcg(uint32_t* s) {
   *s = *s * 1664525u + 1013904223u; return *s;
@@ -71,8 +79,24 @@ int main() {
       fails++;
     }
   }
+  // (3) Measured special-value behavior (edge cases; NOT covered by the finite
+  // rule — documented so future verification knows what hardware actually does):
+  //   -0 + -0 -> +0 (hardware canonicalizes the sign)
+  //   NaN result -> fixed quiet-NaN pattern 0x7f81 regardless of input NaNs
+  struct { uint16_t a, b, expect; } special[] = {
+      {0x8000, 0x8000, 0x0000},  // -0 + -0 -> +0 (rule would say 0x8000)
+      {0x7f80, 0xff80, 0x7f81},  // inf + -inf -> quiet NaN 0x7f81
+      {0x7fc0, 0x3f80, 0x7f81},  // nan + 1.0 -> quiet NaN 0x7f81 (payload dropped)
+  };
+  for (auto& c : special) {
+    uint16_t got = aie2p_bf16_add_hw(c.a, c.b);
+    if (got != c.expect) {
+      printf("FAIL special %04x+%04x: got %04x expect %04x\n", c.a, c.b, got, c.expect);
+      fails++;
+    }
+  }
   if (fails == 0) {
-    printf("PASS: aie2p_bf16_add matches RNI reference (100k batch) and 4 measured hw cases\n");
+    printf("PASS: aie2p_bf16_add matches RNI reference (100k batch), 4 finite hw cases, 3 special-value hw cases\n");
     return 0;
   }
   printf("FAILED: %d checks\n", fails);

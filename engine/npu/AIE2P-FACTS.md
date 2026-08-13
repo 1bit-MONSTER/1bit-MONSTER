@@ -26,6 +26,12 @@ mismatches vs this rule; RNE / round-half-away / ties-to-odd / RZ all
 mismatch ~24% of elements on random data. IRON's own elementwise-add test
 only passes on `rel_tol=0.04`, which hides this.
 
+Measured scope: exact for ALL finite bf16 pairs (0/4096 across 6 fresh seeds,
+incl. negative/positive values). Edge behavior (documented, not covered by the
+rule): `-0 + -0` → `+0` (sign canonicalized); any NaN result → fixed quiet-NaN
+pattern `0x7f81` (input NaN payloads are dropped, `inf + -inf` also yields
+`0x7f81`).
+
 **Any bf16 kernel verification on this NPU must use the RNI reference.**
 Reference recipe (numpy):
 
