@@ -538,7 +538,9 @@ endif()
 # VART backend is always compiled — uses __has_include guards for the stub fallback
 list(APPEND BACKEND_MANAGER_SOURCES src/backend_vart.cpp)
 
-# ONNX NPU backend — always compiled, uses __has_include guard
+# ONNX NPU backend — always compiled, uses __has_include guard. Only does
+# anything when -DONNX_VITISAI_NPU=ON (see that option, below); otherwise
+# HAS_ORT is unset and this compiles to a self-disabling stub.
 list(APPEND BACKEND_MANAGER_SOURCES src/backend_onnx.cpp)
 
 add_library(backend_manager STATIC ${BACKEND_MANAGER_SOURCES})
@@ -632,12 +634,28 @@ if(RCPP_HAVE_VART)
     target_include_directories(backend_manager PRIVATE ${VART_INCLUDE_DIR})
     target_link_libraries(backend_manager PRIVATE ${VART_RUNNER_LIB} ${VART_DPU_RUNNER_LIB} ${XIR_LIB})
 endif()
-# ONNX Runtime + VitisAI EP for NPU backend
-# ponytail: link only the base ORT lib; VitisAI EP provider .so is loaded at
-# runtime by ORT's AppendExecutionProvider (must match ORT version exactly)
-if(onnxruntime_FOUND)
+# ONNX Runtime is an optional third-party SDK, shared by the codec decoder
+# (further below) and, opt-in only, the VitisAI NPU backend here. Located
+# once, up front, so both consumers see the same onnxruntime_FOUND result.
+set(ONNXRUNTIME_ROOT_DIR "" CACHE PATH "ONNX Runtime install root")
+find_package(onnxruntime QUIET HINTS "${ONNXRUNTIME_ROOT_DIR}")
+
+# ONNX Runtime + VitisAI EP for NPU backend — OPT-IN ONLY, off by default.
+# AMD's VitisAI execution provider embeds its own Python runtime (flexml) and
+# needs libpython3.12 on LD_LIBRARY_PATH at runtime (ponytail: only the base
+# ORT lib is linked here; the VitisAI EP provider .so itself is loaded at
+# runtime by ORT's AppendExecutionProvider, must match ORT version exactly).
+# That Python dependency has no place in a build that ships "zero Python in
+# the runtime" by default, so this requires an explicit -DONNX_VITISAI_NPU=ON
+# in addition to onnxruntime being found. A plain `cmake -B build` never
+# links onnxruntime here; backend_onnx.cpp self-disables via its HAS_ORT guard.
+option(ONNX_VITISAI_NPU "Build the AMD VitisAI ONNX NPU backend (requires ONNX Runtime + AMD's VitisAI EP, which embeds a Python runtime — opt-in, off by default)" OFF)
+if(ONNX_VITISAI_NPU AND onnxruntime_FOUND)
+    message(STATUS "backend_onnx: ONNX_VITISAI_NPU=ON and ONNX Runtime found — building VitisAI NPU backend (pulls in AMD's Python-embedding EP at runtime)")
     target_include_directories(backend_manager PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
     target_link_libraries(backend_manager PRIVATE onnxruntime::onnxruntime)
+elseif(ONNX_VITISAI_NPU AND NOT onnxruntime_FOUND)
+    message(WARNING "backend_onnx: ONNX_VITISAI_NPU=ON but ONNX Runtime not found (set ONNXRUNTIME_ROOT_DIR) — backend will self-disable")
 endif()
 target_compile_options(backend_manager PRIVATE -O3 -march=native -Wall -Wno-unused-result -std=c++23)
 # NOTE: no -ffast-math here (deliberately) — it implies -ffinite-math-only and
@@ -1403,9 +1421,8 @@ endif()
 # embedding a second BackendManager; own port 8080.
 # ── Optional: ONNX Runtime for codec decoder (voice cloning TTS) ──
 # The codec decoder compiles without it — decode() returns empty PCM.
-# Set ONNXRUNTIME_ROOT_DIR to help find_package locate the SDK.
-set(ONNXRUNTIME_ROOT_DIR "" CACHE PATH "ONNX Runtime install root")
-find_package(onnxruntime QUIET HINTS "${ONNXRUNTIME_ROOT_DIR}")
+# ONNX Runtime itself and ONNXRUNTIME_ROOT_DIR are located once, earlier,
+# alongside the (separately opt-in) VitisAI NPU backend — see that comment.
 if(onnxruntime_FOUND)
     message(STATUS "codec: ONNX Runtime FOUND — building codec decoder with real inference")
     add_definitions(-DUSE_ONNXRUNTIME)

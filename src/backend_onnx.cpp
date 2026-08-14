@@ -1,5 +1,15 @@
 // backend_onnx.cpp — ONNX Runtime + VitisAI EP backend for Strix Halo NPU.
 //
+// NOT part of the engine's "zero Python in the runtime" pure-C++ story. This
+// backend wraps AMD's own VitisAI execution provider, a vendor .so that
+// embeds a Python runtime (flexml) internally — that dependency lives inside
+// AMD's binary, not in code we own, so it can't be rewritten away. It's an
+// optional, off-by-default comparison path against the project's real,
+// reverse-engineered pure-C++ NPU backend (backend_npu.cpp / backend_npu_flm.cpp).
+// Requires an explicit -DONNX_VITISAI_NPU=ON at configure time (see
+// CMakeLists.txt); a plain `cmake -B build` never links ONNX Runtime here and
+// this file compiles to a self-disabling stub via the HAS_ORT guard below.
+//
 // Runs a GGUF-exported LLM ONNX graph (see tools/gguf_to_onnx.py) on the
 // XDNA 2 NPU via AMD's VitisAI execution provider. Pinned format (issue
 // #1468, hardware-verified 2026-08-05):
