@@ -579,6 +579,18 @@ struct GenericBackend : Backend {
             cfg.pos_offset = 2;  // OPT pads 2 positions (offset=2 in embed_positions)
             cfg.rms_norm_eps = 1e-5f;
         }
+        // GPT-Neo: gpt2-style names (separate q/k/v projs), nn.LayerNorm
+        // weight+bias, learned wte/wpe, non-gated gelu_new FFN, no rotary,
+        // sequential. Windowed attention (attention_layers, window 256) is a
+        // no-op for prompts < 256 tokens — validated there; >256t needs the
+        // window mask (not implemented, documented).
+        if (cfg.arch == RCPP_ARCH_GPTNEO) {
+            cfg.norm_is_layernorm = true;
+            cfg.use_learned_pos = true;
+            cfg.no_rope = true;
+            cfg.attention_multiplier = 1.0f;  // GPT-Neo attention is UNSCALED (no 1/sqrt(hd) — known quirk)
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
@@ -915,6 +927,33 @@ struct GenericBackend : Backend {
                 load2("self_attn_layer_norm.bias", lw.rms_attn_b, H, 1);
                 load2("final_layer_norm.weight", lw.rms_ffn, H, 1);
                 load2("final_layer_norm.bias", lw.rms_ffn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_GPTNEO) {
+                // GPT-Neo: gpt2-style names (transformer.h.N.*) with SEPARATE
+                // q/k/v projs + biases, LN weight+bias (ln_1/ln_2), learned
+                // wte/wpe, non-gated gelu_new FFN (c_fc/c_proj). w2 SIZE_MAX.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.attention.q_proj.weight", lw.wq, H, NH * HD);
+                load2("attn.attention.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("attn.attention.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("attn.attention.out_proj.weight", lw.wo, NH * HD, H);
+                load2("attn.attention.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("attn.attention.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("attn.attention.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("attn.attention.out_proj.bias", lw.bo, H, 1);
+                load2("mlp.c_fc.weight", lw.w1, H, IM);
+                load2("mlp.c_fc.bias", lw.w1_b, IM, 1);
+                load2("mlp.c_proj.weight", lw.w3, IM, H);
+                load2("mlp.c_proj.bias", lw.w3_b, H, 1);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_1.bias", lw.rms_attn_b, H, 1);
+                load2("ln_2.weight", lw.rms_ffn, H, 1);
+                load2("ln_2.bias", lw.rms_ffn_b, H, 1);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -1044,9 +1083,10 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT: non-gated FFN — w2 (gate) legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo: non-gated FFN — w2 (gate) legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
-                           cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
+                           cfg.arch == RCPP_ARCH_GPTNEO) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;

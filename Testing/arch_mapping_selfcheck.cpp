@@ -66,6 +66,7 @@ int main() {
     check("gpt2", RCPP_ARCH_GPT2, "gpt2 (GPT2LMHeadModel)");
     check("gptneox", RCPP_ARCH_GPTNEOX, "gptneox (GPTNeoXForCausalLM)");
     check("opt", RCPP_ARCH_OPT, "opt (OPTForCausalLM)");
+    check("gptneo", RCPP_ARCH_GPTNEO, "gptneo (GPTNeoForCausalLM)");
 
     // ── Decision (pilot #10): unknown archs -> UNKNOWN (loud), not BITNET
     check("totally_unknown_arch", RCPP_ARCH_UNKNOWN, "unknown->UNKNOWN (loud fail)");
