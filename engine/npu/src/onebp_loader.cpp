@@ -167,6 +167,20 @@ public:
             t.file_offset += data_start;
         }
 
+        // #1605: validate the tensor table against the mapped file length — a
+        // truncated file (intact header, partial weights) must fail cleanly
+        // here instead of SIGSEGVing on reads past EOF (ndim==1 memcpy,
+        // dequant_matrix, get_tile_ptr all deref map_ + file_offset).
+        for (auto& t : tensors_) {
+            if (t.file_offset > map_size_ || t.total_bytes > map_size_ - t.file_offset) {
+                fprintf(stderr, "'%s' extends past EOF (off=%llu bytes=%llu > map=%zu) — truncated/corrupt file\n",
+                        t.name.c_str(), (unsigned long long)t.file_offset,
+                        (unsigned long long)t.total_bytes, map_size_);
+                close();
+                return false;
+            }
+        }
+
         return true;
     }
 
