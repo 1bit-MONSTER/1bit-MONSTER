@@ -61,6 +61,9 @@ jobs:
             integrations themes
             npu_smoke.py  # pyxrt NPU engine smoke test (CI/bench harness on strix-halo runner) — engine scope
             .gitmodules .gitignore PLAN-GAIA.md third_party  # embedded Lemonade server core + vendored Gaia (zero-Python agent layer) — engine scope
+            pixi.toml pixi.lock  # Mojo 1.0 toolchain pin (build tooling, like install.sh) — engine scope
+            .rocm-stub  # ROCm stub headers/lib for build machines without a full ROCm install (whisper HIP port) — engine scope
+            personas prompts skills workers zaya_audio  # burn-era deletions (UPDATE 34 cut) — removal-only, see docs/wiki/decisions.md
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"
