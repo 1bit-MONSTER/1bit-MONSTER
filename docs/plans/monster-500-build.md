@@ -7,7 +7,7 @@
 ## The math (how 500 is reached)
 
 Models are data. 500 models = ~50 HF architecture classes mapping onto validated layouts.
-Current: **25 arch tokens, 50 arch checks, 37 rotation checks, 15 families validated** — 14 torch-full 20/20 (llama, qwen2, qwen3, gemma, granite-MoE, mistral, phi, olmo, gpt2, falcon, opt, gptj, gptneo, **step1** 2026-08-15), exaone Q8-oracle 20/20, 4 numpy-exact (internlm2, minicpm, gptneox, codegen), **gptoss numpy-exact 20/20** (2026-08-14, the memory-blocked family now runs via packed-MXFP4 per-expert dequant — see Phase 2 #7).
+Current: **25 arch tokens, 50 arch checks, 37 rotation checks, 19 families validated** — 14 torch-full 20/20 (llama, qwen2, qwen3, gemma, granite-MoE, mistral, phi, olmo, gpt2, falcon, opt, gptj, gptneo, **step1** 2026-08-15), exaone Q8-oracle 20/20, 4 numpy-exact (internlm2, minicpm, gptneox, codegen), **gptoss numpy-exact 20/20** (2026-08-14, the memory-blocked family now runs via packed-MXFP4 per-expert dequant — see Phase 2 #7), **deepseek-mla numpy-exact** (2026-08-15 — bespoke MLA backend rewritten, see Phase 2 #6).
 
 Unlock table (each ✅ family adds every HF checkpoint of that class):
 
@@ -91,7 +91,7 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 ## Phase 4 — Catalog & the count
 
 - [x] Publish arch→checkpoint table in `docs/wiki/models.md` — **DONE 2026-08-14**
-- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → 11 validated families covered 193,318 checkpoints (88%); **+GPT-OSS 407** (2026-08-14) **+ Step1MoE-class 2,882** (2026-08-15 — the census class is dense-mislabeled pretrain runs; sqrt-ALiBi path handles them). Biggest remaining causal-LM classes: **DeepSeek-V3** · Bloom · Qwen2VL · Mamba. Encoder-decoders out of scope.
+- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → 11 validated families covered 193,318 checkpoints (88%); **+GPT-OSS 407** (2026-08-14) **+ Step1MoE-class 2,882** (2026-08-15) **+ DeepSeek-V2/V3-class** (2026-08-15, MLA path validated on V2-Lite). **Remaining uncovered causal-LM classes: Bloom · Qwen2VL · Mamba · Kimi-K3 · Whisper** (encoder-decoders + STT/SSM bespoke backends, GPU workstreams). Phase 3 runner now dispatches per-family gates from the manifest (`gate` field) — add a family = manifest entry + gate, no runner surgery.
 - [ ] Refresh HF 1BP catalog (37 → grow with new families) + NPU FLM map as xclbins land
 - [x] Count claim lands in `docs/wiki/models.md` header ("193k / 88% of HF text-gen")
 

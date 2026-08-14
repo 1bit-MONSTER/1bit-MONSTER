@@ -6,18 +6,22 @@ The 1bit-systems engine auto-detects 24 model architectures from GGUF/1BP/safete
 
 ## HF-Native coverage (measured 2026-08-14)
 
-Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`, 220k models sampled): the **11 validation-gated families cover 193,318 / 220,049 text-generation checkpoints (88%)** — far beyond "500 models". The validated families (torch/numpy/llama.cpp-exact generation gates, see `Testing/bringup_runner.sh` + `docs/plans/monster-500-build.md`):
+Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`, 220k models sampled): the original **11 validated families covered 193,318 / 220,049 text-generation checkpoints (88%)**; the 8 families validated since (2026-08-14/15: gptneox 5,652 · opt 1,877 · gptneo 1,355 · gptj 609 · codegen 348 · gptoss 407 · step1-class 2,882 · deepseek v2/v3-class — all were census-listed uncovered classes) bring the gated coverage to **~206,400+ / 220,049 (~93.8%)** (deepseek v2/v3 checkpoint count not re-censused). The validated families (torch/numpy/llama.cpp-exact generation gates; `Testing/bringup_runner.sh` is now manifest-driven with per-family `gate` commands):
 
 | Family | HF checkpoints covered | | Family | HF checkpoints covered |
 |--------|------:|---|---|--------|------:|
 | llama (incl. mistral/cohere/…) | 116,642 | | qwen2 | 26,291 |
 | gpt2 | 24,914 | | gemma (incl. granite) | 11,008 |
 | qwen3 | 8,427 | | phi | 4,041 |
-| falcon | 904 | | olmo | 744 |
-| exaone | 156 | | internlm2 | 115 |
-| minicpm | 76 | | **TOTAL** | **193,318 (88%)** |
+| gptneox | 5,652 | | step1 (Step1MoE-class) | 2,882 |
+| opt | 1,877 | | gptneo | 1,355 |
+| gptj | 609 | | falcon | 904 |
+| olmo | 744 | | gptoss | 407 |
+| codegen | 348 | | exaone | 156 |
+| internlm2 | 115 | | minicpm | 76 |
+| deepseek v2/v3 | (uncensused) | | **TOTAL** | **~206,400 (93.8%)** |
 
-**Next-family targets** (4-5 families → 95%+): GPTNeoX 5,652 · Step1MoE 2,882 · OPT 1,877 · GPTNeo 1,355 · GPT-J 609 · GPT-OSS 407 · CodeGen 348. Encoder-decoders (T5 788 / MT5 328 / Bloom 1,086) are out of scope for the decode-loop engine.
+**Remaining uncovered causal-LM classes:** Bloom · Qwen2VL · Mamba · Kimi-K3 · Whisper (bespoke SSM/STT/GPU backends — separate workstreams; encoder-decoders T5/MT5 out of scope for the decode-loop engine).
 
 **DONE 2026-08-14 — gpt_neox (5,652 — the biggest miss):** validated on EleutherAI/pythia-70m. Three real bugs found: (1) fused query_key_value is HEAD-INTERLEAVED [q_h,k_h,v_h] per head (llama.cpp conversion reshapes (n_head,3,hd,embed) — raw safetensors is NOT [q|k|v]); (2) **rotary_pct 0.25 → rot_dim = head_dim/4** (new cfg.rope_dim; gguf rope.dimension_count=16 is the tell) — the engine rotated the full head_dim; (3) untied LM head is `embed_out.weight` (loader fell back to the tied embedding → wrong logits). Also: reader rotary_emb_base→rope_theta fallback; parallel attn+FFN (use_parallel_residual) + nn.LayerNorm weight+bias + biases-everywhere + non-gated erf-gelu — all via existing falcon/gpt2 paths. Result: engine ≡ HF-semantics numpy top-8 EXACT + top-1 logits == torch (253:1064.9 vs torch 1078.4 — pythia-70m has near-flat logits, tail shuffles on near-ties; llama.cpp's neox-rope convention disagrees). Coverage now ~199k / 220k (90%).
 
