@@ -135,6 +135,15 @@ struct Hip1bpBackend : Backend {
         if(!model_->open(cfg.model_path.c_str()))return false;
         NpuOnebpModel& mdl=*model_;
         uint32_t q = mdl.header().quant;
+        // #1627: only quants the loader dequantizes (dequant_tile/dequant_tile_tq2)
+        // or the packed path (TQ2NZ family) are supported here. TQ1/TQ2BS/I8/F16/F32
+        // fall through to the Q4NX-layout dequant -> garbage weights -> NaN logits
+        // -> argmax -1 with zero diagnostics. Reject loudly at init instead.
+        if (q != ONEBP_Q4NX && q != ONEBP_TQ2 && q != ONEBP_TQ2NZ && q != ONEBP_TQ2NZ_E4M3) {
+            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3 only). "
+                    "TQ1/TQ2BS/I8/F16/F32 models must be converted first (see gguf_to_onebp --tq2nz).\n", q);
+            return false;
+        }
         if (q == ONEBP_TQ2NZ) quant2 = 1;
         else if (q == ONEBP_TQ2NZ_E4M3) quant2 = 2;
         if (getenv("H1BP_F32")) quant2 = 0;   // debug: force f32 path
@@ -495,6 +504,10 @@ struct Hip1bpBackend : Backend {
         h1bp_argmax_pass2_kernel<<<1,256,0,stream>>>(d_amx,d_ami,nblk,d_argmax);
         int n=-1;
         HIP_CHECK(hipMemcpy(&n,d_argmax,sizeof(int),hipMemcpyDeviceToHost));
+        if (n < 0) {  // #1627: NaN/garbage logits surface as argmax -1 — never silent
+            fprintf(stderr, "[hip1bp] generate(): argmax returned %d — logits NaN/garbage? "
+                    "(unsupported quant or corrupt model)\n", n);
+        }
         pos++;
         return n;
     }
