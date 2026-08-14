@@ -7,7 +7,7 @@
 ## The math (how 500 is reached)
 
 Models are data. 500 models = ~50 HF architecture classes mapping onto validated layouts.
-Current: **23 arch tokens, 80 fixture checks, 6 families torch-EXACT** (llama, qwen2, gemma3, granite-MoE, mistral, phi).
+Current: **24 arch tokens, 48 arch checks, 35 rotation checks, 14 families validated** — 13 torch-full 20/20 (llama, qwen2, qwen3, gemma, granite-MoE, mistral, phi, olmo, gpt2, falcon, opt, gptj, gptneo), exaone Q8-oracle 20/20, 4 numpy-exact (internlm2, minicpm, gptneox, codegen), **gptoss numpy-exact 20/20** (2026-08-14, the memory-blocked family now runs via packed-MXFP4 per-expert dequant — see Phase 2 #7).
 
 Unlock table (each ✅ family adds every HF checkpoint of that class):
 
@@ -67,6 +67,8 @@ Order by unlock size:
 5. **Validation batch (cheap, no new code):** baichuan, exaone, solar, internlm2, openelm, nemotron, minicpm — already mapped to LLAMA; each gets one real-checkpoint e2e entry.
    **DONE 2026-08-14:** exaone **20/20 vs llama.cpp** (reader needed `num_layers` fallback + GPT-2-style name branch: transformer.h.N.attn.attention.*, ln_1/ln_2, c_fc_0/c_fc_1 gate/up); internlm2 **engine ≡ authoritative modeling_internlm2.py numpy top-8 EXACT** — TWO real bugs found: (a) fused wqkv is HEAD-INTERLEAVED [group(q,q,k,v)] not [q|k|v], (b) MLP is `down = w2(silu(w1 x) * (w3 x))` — w2 is the DOWN projection (w1/w3 up), was assigned swapped; vs Q8 oracle: near-tie top-3 (the/a/Paris within 0.5 logits); minicpm **engine ≡ authoritative openbmb modeling numpy top-8 EXACT** — three quirks landed (scale_emb→embedding_multiplier 12, scale_depth→residual_multiplier 1.4/√40, logits÷9→logits_scaling) PLUS a real engine bug found: **the gated-dense FFN residual ignored residual_multiplier** (granite is MoE so never hit it — fixed both dense paths); llama.cpp's minicpm oracle is UNRELIABLE (treats it as plain llama, misses the quirks); openelm **documented limitation confirmed** (heterogeneous per-layer heads/ffn + fused qkv + per-head norms — refuses loudly, needs bespoke path). New gates: `Testing/e2e_gen_check_llamacpp.py` (llama.cpp oracle for archs torch 5.x dropped) + `Testing/e2e_numpy_ref.py` (authoritative numpy for oracle-unreliable families, internlm2/minicpm). bringup_runner now selects torch/llamacpp/numpy oracle per manifest.
 6. **Bespoke re-validation:** zamba2, mamba, deepseek, kimi, whisper — existing backends; one e2e per family (SSM/MLA/STT paths need their own oracles; whisper via transcript compare).
+7. **gpt-oss (OpenAI, MXFP4-packed MoE) — DONE 2026-08-14: engine 20/20 generated tokens == numpy reference** (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint (13.4GB packed, in `/tmp/onebit-e2e/gptoss`), full logits max|diff| 6.7e-5, top-8 EXACT. The memory-block (dequantized ~105GB fp32) is sidestepped by keeping the MoE **packed U8 blocks+scales in RAM and dequantizing only the selected 4 experts per token** (~17GB total, no torch reference needed). Quirks landed: YARN rope (theta 150000, factor 32, beta 32/1, orig_max 4096 — the ramp runs over FREQ indices arange(dim//2), an easy 2x), attention sinks (per-head learned logit cat to scores before softmax, dropped after), router bias, MXFP4 decode (FP4 e2m1, value = FP4[nibble]·2^(scale−127), low nibble→even/high→odd, 32 vals/block), interleaved gate/up rows, gate=min(g,7)·sigmoid(1.702g), **gated=(up+1)·glu** (the `+1` was missing in the first pass), top-4 softmax gating (softmax over top-k only), untied lm_head, head_dim 64, odd-safe rope pairing. Validation harness: `Testing/e2e_numpy_ref_gptoss.py` (reference) + `e2e_seq_gen` (engine). Known gap: sliding-window (128) attention on sliding layers is a no-op < 128 tokens and unimplemented beyond (same class as the gemma3 SWA gap).
+   Gate: `python3 Testing/e2e_numpy_ref_gptoss.py /tmp/onebit-e2e/gptoss /tmp/gptoss_ids.txt 20` — ref-gen must equal engine-gen.
 
 Each family lands: mapping (+self-check) → quirk code → fixture → e2e entry in `Testing/run_all.sh`.
 
@@ -86,7 +88,7 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 ## Phase 4 — Catalog & the count
 
 - [x] Publish arch→checkpoint table in `docs/wiki/models.md` — **DONE 2026-08-14**
-- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → **11 validated families cover 193,318 checkpoints (88%)**. Top uncovered causal-LM classes: GPTNeoX 5,652 · Step1MoE 2,882 · OPT 1,877 · GPTNeo 1,355 · GPT-J 609 · GPT-OSS 407 · CodeGen 348 (4–5 more families → ~95%+). Encoder-decoders out of scope.
+- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → 11 validated families covered 193,318 checkpoints (88%); **+GPT-OSS 407 checkpoints validated 2026-08-14** (was the #2 uncovered class; packed-MXFP4 engine path needs no torch reference). Biggest remaining causal-LM classes: **Step1MoE 2,882** · DeepSeek-V3 · Bloom · Qwen2VL · Mamba. Encoder-decoders out of scope.
 - [ ] Refresh HF 1BP catalog (37 → grow with new families) + NPU FLM map as xclbins land
 - [x] Count claim lands in `docs/wiki/models.md` header ("193k / 88% of HF text-gen")
 
@@ -96,7 +98,7 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 
 - **Encoder-decoder (t5, bloom, bart, m2m):** new engine paths (cross-attention). Recommend OUT of phase-1 scope; revisit when dense coverage is done.
 - **Per-family quirks are the real work** — budget 1–2 days/family; the manifest runner (Phase 3) is what makes 50 families tractable, so start it early (parallel with Phase 2 #1).
-- **MoE CPU validation** still blocked on engine tokenizer (htok workstream) — granite MoE validated via real prompts; other MoE (qwen3moe, deepseek) deferred to tokenizer or per-family oracle.
+- **MoE CPU validation** — gptoss MoE now validated via the packed per-expert numpy oracle (2026-08-14); other MoE (qwen3moe, deepseek) still deferred to the engine tokenizer (htok workstream) or per-family oracle. Step1MoE (2,882 checkpoints) is now the biggest remaining causal-LM class.
 - **ggml_vulkan safetensors-first routing** (pilot #3 note): safetensors models hit GGUF-first routes and failover — fine by design, revisit if first-load latency matters.
 - **gemma3 SWA masking >512 tokens** — known gap, affects long-context gemma only.
 
