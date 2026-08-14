@@ -24,6 +24,61 @@ Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-ge
 
 **Remaining uncovered classes:** Qwen2VL · Mamba · Kimi-K3 (bespoke VLM/SSM backends — GPU workstreams; encoder-decoders T5/MT5 out of scope). Bloom (1,086) and Whisper STT (transcript-exact) validated 2026-08-15.
 
+## The 500+ agnostic engine
+
+**One binary, no per-model config files.** The arch registry (`rcpp_arch_from_string`)
+maps **91 HF `architectures` strings → 32 engine tokens** — every checkpoint
+whose arch string is in the table loads through the same discovery → arch-map →
+router → decode path. The tokens group onto the validated families (see the
+manifest tiers); the VLM/SSM tokens (qwen2vl, mamba, kimi, whisper, ...) route
+to the bespoke backends (GPU/VLM workstreams, separate validation).
+
+| Token | Family | HF arch strings |
+|-------|--------|-----------------|
+| `BITNET` | bitnet | bitnet |
+| `BLOOM` | bloom | bloom |
+| `CODEGEN` | codegen | codegen |
+| `DEEPSEEK` | deepseek-mla | deepseek2, deepseek3, deepseek_v3, deepseekv2, deepseekv3 |
+| `DEEPSEEK_V4` | deepseek-v4 | deepseek_v4, deepseek4, dflash, deepseek4_dspark, deepseekv4 |
+| `FALCON` | falcon | falcon, falcon3 |
+| `GEMMA` | gemma | gemma, gemma2, gemma3, gemma4, granite, granitemoe, ovis, paligemma |
+| `GPT2` | gpt2 | gpt2 |
+| `GPTJ` | gptj | gptj |
+| `GPTNEO` | gptneo | gptneo |
+| `GPTNEOX` | gptneox | gptneox |
+| `GPTOSS` | gptoss | gptoss |
+| `KIMI_K3` | kimi-k3 | kimi_k3, kimi |
+| `KIMI_VL` | kimi-vl | kimi_vl, kimi_vl_a3b |
+| `LAGUNA` | laguna | laguna |
+| `LLAMA` | llama | llama, stablelm, mosaic, mpt, starcoder, starcoder2, dbrx, jamba, baichuan, baichuan2, exaone, solar, internlm, internlm2, xverse, openelm, nemotron, minicpm, smollm, smollm2, smollm3, apertus, cohere, gptbigcode, internlm3 |
+| `MAMBA` | mamba | mamba |
+| `MISTRAL` | mistral | mistral, pixtral, mixtral |
+| `MOONLIGHT` | moonlight | moonlight |
+| `OLMO` | olmo | olmo, olmo2, olmoe, molmo |
+| `OPT` | opt | opt |
+| `PHI` | phi | phi, phi3, phi4, phi_moe |
+| `QWEN2` | qwen2 | qwen2, deepseek, qwen, qwen2moe |
+| `QWEN2VL` | qwen2vl | qwen2vl, smolvlm, llava, florence |
+| `QWEN3` | qwen3 | qwen3, qwen3moe |
+| `QWEN35` | qwen3.5 | qwen35, qwen35moe |
+| `QWEN3VL` | qwen3vl | qwen3vl |
+| `STEP1` | step1 | step1, step1moe |
+| `WHISPER` | whisper | whisper |
+| `ZAMBA` | zamba | zamba |
+| `ZAMBA2` | zamba2 | zamba2 |
+| `ZAYA` | zaya | zaya |
+
+The **500+ models** floor is long since passed: the census counted 193,318
+text-gen checkpoints for the original 11 families alone; the 8 families
+validated since (gptneox 5,652 - opt 1,877 - gptneo 1,355 - gptj 609 -
+codegen 348 - gptoss 407 - step1-class 2,882 - bloom 1,086) bring the gated
+coverage to ~207,500+ / 220,049 (~94.3%), plus the uncounted deepseek/VLM
+classes. **NO-MORE-SECRETS caveat:** the census is a 250-page SAMPLED count,
+not a validated registry; "the engine loads them" means the arch string maps
+to a token whose layout is validated — not that each of the ~207k checkpoints
+was individually run.
+
+
 **DONE 2026-08-14 — gpt_neox (5,652 — the biggest miss):** validated on EleutherAI/pythia-70m. Three real bugs found: (1) fused query_key_value is HEAD-INTERLEAVED [q_h,k_h,v_h] per head (llama.cpp conversion reshapes (n_head,3,hd,embed) — raw safetensors is NOT [q|k|v]); (2) **rotary_pct 0.25 → rot_dim = head_dim/4** (new cfg.rope_dim; gguf rope.dimension_count=16 is the tell) — the engine rotated the full head_dim; (3) untied LM head is `embed_out.weight` (loader fell back to the tied embedding → wrong logits). Also: reader rotary_emb_base→rope_theta fallback; parallel attn+FFN (use_parallel_residual) + nn.LayerNorm weight+bias + biases-everywhere + non-gated erf-gelu — all via existing falcon/gpt2 paths. Result: engine ≡ HF-semantics numpy top-8 EXACT + top-1 logits == torch (253:1064.9 vs torch 1078.4 — pythia-70m has near-flat logits, tail shuffles on near-ties; llama.cpp's neox-rope convention disagrees). Coverage now ~199k / 220k (90%).
 
 ## Backend Availability Legend
