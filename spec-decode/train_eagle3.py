@@ -134,9 +134,15 @@ class Eagle3Draft(nn.Module):
         """Teacher-force a 7-token window; returns (hidden [K,H], targets [K])."""
         self._ks, self._vs = [], []
         hs, tgts = [], []
+        # #1509: deployment-equivalent — at decode the target hasn't computed
+        # the future positions yet, so the draft gets the BLOCK-START trunk for
+        # every step and evolves its own hidden state (the old per-position
+        # trunk[i] is only available under teacher forcing and made the draft
+        # untrainable for the real harness behavior).
+        trunk0 = trunk[w0]
         for k in range(min(TTT, len(toks) - 1 - w0)):
             i = w0 + k
-            h, kk, vv = self.step(trunk[i], toks[i], k, cos_t, sin_t)
+            h, kk, vv = self.step(trunk0, toks[i], k, cos_t, sin_t)
             hs.append(h)
             tgts.append(toks[i + 1])
         hs_t = torch.stack(hs)
@@ -201,7 +207,14 @@ def load_samples(path, tokenizer, max_len=512, limit=None):
         ids = enc[0].input_ids if isinstance(enc, list) else enc.input_ids
         if len(ids) < 8 or len(ids) > max_len:
             continue
-        out.append(ids)
+        # #1509: mask = 1 for assistant-answer tokens only (deployment-relevant).
+        # User-turn tokens are trivially predictable and would dominate the loss.
+        try:
+            as_start = ids.index(151644, ids.index(151644) + 1)  # 2nd <|im_start|> = assistant turn
+        except ValueError:
+            as_start = len(ids)
+        msk = [1 if i >= as_start else 0 for i in range(len(ids))]
+        out.append((ids, msk))
     return out
 
 
@@ -266,7 +279,7 @@ def main():
     print(f"Dataset: {len(samples)} samples from {args.data}")
     if not samples:
         sys.exit("ERROR: no training samples — dataset format or tokenizer issue")
-    lens = [len(s) for s in samples]
+    lens = [len(s[0]) for s in samples]
     print(f"  token lengths: min={min(lens)} max={max(lens)} mean={sum(lens)/len(lens):.0f}")
 
     opt = torch.optim.AdamW([p for p in draft.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.0)
@@ -274,7 +287,7 @@ def main():
     losses = []
     t_train = time.time()
     for ep in range(args.epochs):
-        for si, ids in enumerate(samples):
+        for si, (ids, msk) in enumerate(samples):
             trunk = trunk_features(model, ids, device)                      # [L, 5H]
             n_pos = 0
             loss_sum = torch.zeros(())
@@ -282,8 +295,15 @@ def main():
                 for w0 in range(0, len(ids) - 1, TTT):                          # non-overlapping windows
                     hs, tgts = draft.window(trunk, ids, w0, cos_t, sin_t)       # [K, H], [K]
                     logits = hs @ embed.t()                                     # [K, V] (tied, frozen)
-                    loss_sum = loss_sum + F.cross_entropy(logits.float(), tgts)
-                    n_pos += len(tgts)
+                    # #1509: mask to assistant-answer positions (deployment-relevant)
+                    k = len(tgts)
+                    w = torch.tensor([msk[w0 + 1 + j] for j in range(k)], device=device, dtype=torch.float32)
+                    if w.sum() == 0:
+                        continue
+                    n_pos += 1
+                    loss_sum = loss_sum + (F.cross_entropy(logits.float(), tgts, reduction='none') * w).sum() / w.sum()
+            if n_pos == 0:
+                continue
             loss = loss_sum / n_pos
             opt.zero_grad()
             loss.backward()
