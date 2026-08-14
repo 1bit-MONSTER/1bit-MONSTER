@@ -569,6 +569,16 @@ struct GenericBackend : Backend {
             cfg.parallel_attn_ffn = true;
             cfg.rms_norm_eps = 1e-5f;
         }
+        // OPT: learned position embeddings (embed_positions), nn.LayerNorm
+        // weight+bias, projection biases everywhere, NON-GATED RELU FFN
+        // (fc1/fc2), no rotary, sequential structure. Names: model.decoder.*.
+        if (cfg.arch == RCPP_ARCH_OPT) {
+            cfg.norm_is_layernorm = true;
+            cfg.use_learned_pos = true;
+            cfg.no_rope = true;
+            cfg.pos_offset = 2;  // OPT pads 2 positions (offset=2 in embed_positions)
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
@@ -576,22 +586,25 @@ struct GenericBackend : Backend {
             !r.get_tensor_f32("wte.weight", embed) &&
             !r.get_tensor_f32("transformer.word_embeddings.weight", embed) &&
             !r.get_tensor_f32("model.tok_embeddings.weight", embed) &&
-            !r.get_tensor_f32("gpt_neox.embed_in.weight", embed)) {
+            !r.get_tensor_f32("gpt_neox.embed_in.weight", embed) &&
+            !r.get_tensor_f32("model.decoder.embed_tokens.weight", embed)) {
             fprintf(stderr, "Generic: safetensors: missing embedding\n");
             return false;
         }
         if (cfg.hidden > 0 && embed.size() % (size_t)cfg.hidden == 0 && !embed.empty())
             cfg.vocab = cfg.vocab_size = (int)(embed.size() / (size_t)cfg.hidden);
 
-        if (cfg.arch == RCPP_ARCH_GPT2) {
-            // Learned position table (wpe) — authoritative for max_seq_len.
+        if (cfg.use_learned_pos) {
+            // Learned position table — authoritative for max_seq_len (gpt2 wpe,
+            // OPT embed_positions).
             if (!r.get_tensor_f32("transformer.wpe.weight", pos_embed) &&
-                !r.get_tensor_f32("wpe.weight", pos_embed)) {
-                fprintf(stderr, "Generic: safetensors: GPT-2 missing wpe table\n");
+                !r.get_tensor_f32("wpe.weight", pos_embed) &&
+                !r.get_tensor_f32("model.decoder.embed_positions.weight", pos_embed)) {
+                fprintf(stderr, "Generic: safetensors: missing position table\n");
                 return false;
             }
             if (pos_embed.empty() || pos_embed.size() % (size_t)cfg.hidden != 0) {
-                fprintf(stderr, "Generic: safetensors: GPT-2 wpe misized\n");
+                fprintf(stderr, "Generic: safetensors: position table misized\n");
                 return false;
             }
             cfg.max_seq_len = (int)(pos_embed.size() / (size_t)cfg.hidden);
@@ -605,10 +618,12 @@ struct GenericBackend : Backend {
             if (!r.get_tensor_f32("token_embd_norm.weight", final_norm))
                 if (!r.get_tensor_f32("transformer.ln_f.weight", final_norm))
                     if (!r.get_tensor_f32("gpt_neox.final_layer_norm.weight", final_norm))
-                        r.get_tensor_f32("ln_f.weight", final_norm);
+                        if (!r.get_tensor_f32("model.decoder.final_layer_norm.weight", final_norm))
+                            r.get_tensor_f32("ln_f.weight", final_norm);
         if (!r.get_tensor_f32("transformer.ln_f.bias", final_norm_bias))
             if (!r.get_tensor_f32("gpt_neox.final_layer_norm.bias", final_norm_bias))
-                r.get_tensor_f32("ln_f.bias", final_norm_bias);
+                if (!r.get_tensor_f32("model.decoder.final_layer_norm.bias", final_norm_bias))
+                    r.get_tensor_f32("ln_f.bias", final_norm_bias);
         if (gemma_post_norms && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         if (!r.get_tensor_f32("output.weight", output_weight))
@@ -872,6 +887,34 @@ struct GenericBackend : Backend {
                 load2("attention.dense.bias", lw.bo, NH * HD, 1);
                 load2("mlp.dense_h_to_4h.bias", lw.w1_b, IM, 1);
                 load2("mlp.dense_4h_to_h.bias", lw.w3_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_OPT) {
+                // OPT: model.decoder.layers.N.* names, sequential structure,
+                // nn.LayerNorm weight+bias (self_attn_layer_norm /
+                // final_layer_norm), projection biases everywhere, NON-GATED
+                // RELU FFN (fc1/fc2), no rotary. lw.w2 stays SIZE_MAX.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "model.decoder.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("self_attn.q_proj.weight", lw.wq, H, NH * HD);
+                load2("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("self_attn.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("self_attn.out_proj.weight", lw.wo, NH * HD, H);
+                load2("self_attn.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("self_attn.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("self_attn.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("self_attn.out_proj.bias", lw.bo, H, 1);
+                load2("fc1.weight", lw.w1, H, IM);
+                load2("fc1.bias", lw.w1_b, IM, 1);
+                load2("fc2.weight", lw.w3, IM, H);
+                load2("fc2.bias", lw.w3_b, H, 1);
+                load2("self_attn_layer_norm.weight", lw.rms_attn, H, 1);
+                load2("self_attn_layer_norm.bias", lw.rms_attn_b, H, 1);
+                load2("final_layer_norm.weight", lw.rms_ffn, H, 1);
+                load2("final_layer_norm.bias", lw.rms_ffn_b, H, 1);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -1001,9 +1044,9 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX: non-gated FFN — w2 (gate) legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT: non-gated FFN — w2 (gate) legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
-                           cfg.arch == RCPP_ARCH_GPTNEOX) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -1512,11 +1555,10 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
-        // GPT-2: learned position embeddings — add the wpe row for the
-        // CURRENT position (pos is not yet incremented; matches the KV
-        // position written in forward_embed).
+        // GPT-2/OPT: learned position embeddings — add the wpe/embed_positions
+        // row for the CURRENT position (pos + pos_offset; OPT pads 2 slots).
         if (cfg.use_learned_pos)
-            for (int i = 0; i < cfg.hidden; i++) x0[i] += pos_embed[(size_t)pos * cfg.hidden + i];
+            for (int i = 0; i < cfg.hidden; i++) x0[i] += pos_embed[((size_t)pos + cfg.pos_offset) * cfg.hidden + i];
         // Granite: embeddings pre-scaled by embedding_multiplier (12.0).
         if (cfg.embedding_multiplier != 1.0f)
             for (int i = 0; i < cfg.hidden; i++) x0[i] *= cfg.embedding_multiplier;
@@ -1764,6 +1806,7 @@ struct GenericBackend : Backend {
                 mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
                 if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
                 if (cfg.arch == RCPP_ARCH_FALCON || cfg.arch == RCPP_ARCH_GPTNEOX) gelu_erf(gate_up, gate_up, FF);
+                else if (cfg.arch == RCPP_ARCH_OPT) { for (int i = 0; i < FF; i++) gate_up[i] = gate_up[i] > 0 ? gate_up[i] : 0.0f; }  // ReLU
                 else gelu(gate_up, gate_up, FF);
                 mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
                 if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }

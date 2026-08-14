@@ -320,6 +320,24 @@
       "numpy_ref": true,
       "status": "validated",
       "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable"
+    },
+    {
+      "family": "opt",
+      "hf_arch_strings": [
+        "opt"
+      ],
+      "mapping_target": "OPT",
+      "quirk_flags": {
+        "pos": "LEARNED embed_positions with +2 OFFSET (OPT pads 2 slots) \u2014 cfg.pos_offset",
+        "norm": "nn.LayerNorm weight+bias",
+        "ffn": "NON-GATED RELU (fc1/fc2)",
+        "bias": "projections everywhere",
+        "rope": "none"
+      },
+      "e2e_model": "facebook/opt-125m (converted to safetensors locally; no HF safetensors exists)",
+      "oracle": "torch (OPT in transformers 5.14; no GGUF available)",
+      "status": "validated",
+      "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)"
     }
   ]
 }

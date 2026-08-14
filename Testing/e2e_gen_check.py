@@ -1,4 +1,4 @@
-import torch, subprocess, sys
+import torch, subprocess, sys, os
 from transformers import AutoModelForCausalLM, AutoConfig
 from llama_cpp import Llama
 import numpy as np
@@ -8,9 +8,17 @@ dir, N = sys.argv[1], 20
 cfg = AutoConfig.from_pretrained(dir, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(dir, torch_dtype=torch.float32, config=cfg)
 model.eval()
-llm = Llama(model_path=f"{dir}/oracle-q8.gguf", n_ctx=512, n_gpu_layers=0, verbose=False)
 p = "The capital of France is"
-ids = llm.tokenize(p.encode(), add_bos=False)
+if os.path.exists(f"{dir}/oracle-q8.gguf"):
+    llm = Llama(model_path=f"{dir}/oracle-q8.gguf", n_ctx=512, n_gpu_layers=0, verbose=False)
+    ids = llm.tokenize(p.encode(), add_bos=False)
+    detok = lambda toks: llm.detokenize(toks)
+else:
+    # no GGUF oracle — use the transformers tokenizer (e.g. OPT)
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(dir)
+    ids = tok.encode(p, add_special_tokens=False)
+    detok = lambda toks: tok.decode(toks)
 with open("/tmp/ids.txt", "w") as f: f.write(" ".join(map(str, ids)))
 st = subprocess.run(["/tmp/e2e_seq", dir, "/tmp/ids.txt", str(N)], capture_output=True, text=True, timeout=600)
 seg = st.stdout.split("engine-gen:")[1].split()
@@ -25,5 +33,5 @@ with torch.no_grad():
         if len(input_ids[0]) > 100: input_ids = input_ids[:, -100:]
 m = sum(1 for a, b in zip(eng, torch_gen) if a == b)
 print(f"{dir.split('/')[-1]}: {m}/{N} tokens identical")
-print("  engine:", repr(llm.detokenize(eng)))
-print("  torch :", repr(llm.detokenize(torch_gen)))
+print("  engine:", repr(detok(eng)))
+print("  torch :", repr(detok(torch_gen)))
