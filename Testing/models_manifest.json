@@ -471,6 +471,16 @@
       "tier": "full",
       "gate": "E2E_FULL_LOGITS=/tmp/bloom_gate_l.txt timeout 300 /tmp/e2e_seq_gen /tmp/onebit-e2e/bloom /tmp/bloom_ids.txt 20 2>/dev/null | grep -q 'engine-gen: 17 1387 23714 73173 144252 138207 3478 368 109586 35433 17 1387 23714 73173 144252 138207 3478 368 109586 35433'",
       "result": "VALIDATED 2026-08-15: 20/20 generated tokens identical to torch (transformers 5.14 bloom, f32), full logits max|diff| 7.6e-4 corr 1.0 (bigscience/bloom-560m, /tmp/onebit-e2e/bloom). Quirks landed: RCPP_ARCH_BLOOM (31), fused query_key_value HEAD-INTERLEAVED (per-head [q,k,v] groups \u2014 NOT a [q|k|v] row split; modeling_bloom._reshape view(seq,heads,3,hd)), LayerNorm w+bias (input_layernorm + post_attention_layernorm, SEQUENTIAL), non-gated tanh-gelu FFN w/ bias (gelu_new), LINEAR ALiBi (same slope table as step1's sqrt variant \u2014 2^(-8(h+1)/n) then 2^(-4(2h+1)/n) \u2014 but linear distance; softmax-equivalent to modeling_bloom's slope*pos_k cumsum trick), word_embeddings_layernorm (embedding LayerNorm, cfg.embed_ln), tied lm_head, config keys n_embed/n_head/n_layer/layer_norm_epsilon, 4x-hidden FFN fallback. First-pass bugs caught: wrong qkv split (row-split produced scrambled attention \u2014 hidden states 4.6x off at layer 0) and n_embed missing from the reader."
+    },
+    {
+      "family": "whisper",
+      "hf_arch_strings": [
+        "whisper"
+      ],
+      "mapping_target": "WHISPER",
+      "status": "documented-limitation",
+      "tier": "documented-limitation",
+      "result": "PARTIAL 2026-08-15: loader + mel fixed (see result), STT encode/decode unvalidated."
     }
   ]
 }

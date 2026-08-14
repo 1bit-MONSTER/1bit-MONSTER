@@ -33,8 +33,9 @@ std::vector<float> whisper_load_wav(const std::string& path, int* out_sample_rat
             if (fread(&sample_rate, 4, 1, f) != 1) { fclose(f); return {}; }
             fseek(f, 6, SEEK_CUR); // skip byte rate + block align
             if (fread(&bits, 2, 1, f) != 1) { fclose(f); return {}; }
-            if (chunk_size > 16) fseek(f, chunk_size - 16, SEEK_CUR);
-            else if (chunk_size > 0) fseek(f, chunk_size, SEEK_CUR); // skip remaining fmt bytes
+            // 16 fmt bytes already consumed (audio_fmt 2 + channels 2 + rate 4
+            // + byte-rate/align 6 + bits 2); skip the remainder (may be 0).
+            fseek(f, (long)chunk_size - 16, SEEK_CUR);
         } else if (memcmp(chunk_id, "data", 4) == 0) {
             int bytes_per_sample = (bits >= 8) ? (bits / 8) : 2;
             if (bytes_per_sample <= 0) bytes_per_sample = 2;
@@ -105,30 +106,31 @@ struct MelFilterbank {
         }
     }
     
-    void apply(const float* stft_mag, int n_frames, float* out) const {
+    void apply_raw(const float* stft_mag, int n_frames, float* out) const {
         for (int m = 0; m < n_mels; m++) {
             for (int t = 0; t < n_frames; t++) {
                 float val = 0;
                 for (auto& [bin, weight] : banks[m]) {
                     val += stft_mag[(size_t)bin * n_frames + t] * (1.0f - fabsf(weight));
                 }
-                // Log: log10(max(val, 1e-10)) * 10 (or clamp)
-                val = std::max(val, 1e-10f);
-                out[(size_t)m * n_frames + t] = log10f(val) * 10.0f;
+                out[(size_t)m * n_frames + t] = val;
             }
         }
     }
 };
 
-// Hann window
+// Hann window — PERIODIC (transformers window_function periodic=True, the
+// whisper convention). The symmetric 2*pi*i/(n-1) variant shifts the bins.
 static std::vector<float> hann_window(int n) {
     std::vector<float> w(n);
-    for (int i = 0; i < n; i++) w[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (n - 1)));
+    for (int i = 0; i < n; i++) w[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / n));
     return w;
 }
 
 std::vector<float> whisper_log_mel_spectrogram(const float* audio, int n_samples,
-                                                int sample_rate, int n_mels, int n_fft, int hop) {
+                                                int sample_rate, int n_mels,
+                                                int n_fft, int hop,
+                                                const float* mel_filters /* 80x201 */) {
     // Resample to 16kHz if needed
     std::vector<float> pcm;
     if (sample_rate != 16000) {
@@ -150,12 +152,23 @@ std::vector<float> whisper_log_mel_spectrogram(const float* audio, int n_samples
     
     // Pad to at least n_fft
     if ((int)pcm.size() < n_fft) pcm.resize(n_fft, 0.0f);
-    
-    int n_frames = (pcm.size() - n_fft) / hop + 1;
+
+    // Center frames with reflect padding (transformers.audio_utils center=True)
+    {
+        std::vector<float> padded((size_t)(n_fft / 2) * 2 + pcm.size());
+        int hp = n_fft / 2;
+        for (int i = 0; i < hp; i++) {
+            padded[hp - 1 - i] = pcm[i + 1 < (int)pcm.size() ? i + 1 : (int)pcm.size() - 1];
+            padded[(int)pcm.size() + hp + i] = pcm[(int)pcm.size() - 2 - i > 0 ? (int)pcm.size() - 2 - i : 0];
+        }
+        for (size_t i = 0; i < pcm.size(); i++) padded[(size_t)hp + i] = pcm[i];
+        pcm = std::move(padded);
+    }
+
+    int n_frames = (int)((pcm.size() - n_fft) / hop + 1) - 1;  // drop the last frame (HF: log_spec[:, :-1])
     int n_fft_bins = n_fft / 2 + 1;
     
     auto hann = hann_window(n_fft);
-    MelFilterbank filterbank(n_mels, n_fft, 0, 8000, 16000);
     
     // STFT → magnitude using pre-computed twiddle factors (FFT-based)
     std::vector<float> stft_mag((size_t)n_fft_bins * n_frames, 0.0f);
@@ -195,24 +208,49 @@ std::vector<float> whisper_log_mel_spectrogram(const float* audio, int n_samples
                 re += frame[i] * ct[i];
                 im += frame[i] * st[i];
             }
-            stft_mag[(size_t)k * n_frames + t] = sqrtf(re * re + im * im);
+            float mag2 = re * re + im * im;
+            stft_mag[(size_t)k * n_frames + t] = mag2;  // power=2 (HF spectrogram power=2.0)
         }
     }
     
-    // Apply mel filterbank
-    std::vector<float> mel((size_t)n_mels * n_frames);
-    filterbank.apply(stft_mag.data(), n_frames, mel.data());
+    // Apply the WHISPER mel filterbank (80x201 from the GGUF mel_filters
+    // tensor; the backend's own 2-point triangular approximation diverges)
+    // then whisper log-mel normalization: log10(clamp(spec,1e-10)),
+    // dynamic-range clamp to max-8, (x+4)/4.
+    std::vector<float> mel((size_t)n_mels * n_frames, 0.0f);
+    const float* fb = mel_filters;
+    if (fb) {
+        for (int m = 0; m < n_mels; m++)
+            for (int t = 0; t < n_frames; t++) {
+                float val = 0;
+                // GGUF mel_filters is [80 mels][201 bins] (whisper mel_80 layout).
+                for (int b = 0; b < n_fft_bins; b++)
+                    val += fb[(size_t)m * n_fft_bins + b] * stft_mag[(size_t)b * n_frames + t];
+                mel[(size_t)m * n_frames + t] = val;
+            }
+    } else {
+        MelFilterbank filterbank(n_mels, n_fft, 0, 8000, 16000);
+        filterbank.apply_raw(stft_mag.data(), n_frames, mel.data());
+    }
+    float mx = -1e30f;
+    for (float& v : mel) {
+        v = log10f(v > 1e-10f ? v : 1e-10f);
+        if (v > mx) mx = v;
+    }
+    for (float& v : mel) {
+        if (v < mx - 8.0f) v = mx - 8.0f;
+        v = (v + 4.0f) / 4.0f;
+    }
     
-    // Normalize: subtract mean (Whisper-style)
-    double mean = 0;
-    for (float v : mel) mean += v;
-    mean /= mel.size();
-    for (float& v : mel) v -= (float)mean;
-    
-    // Pad or truncate to n_audio_ctx (1500 for 30s)
+    // Pad to n_audio_ctx (1500 for 30s) — PER-ROW (a trailing resize breaks
+    // the [m][t] layout: row m must start at m*1500).
     int target_frames = 1500;
     if (n_frames < target_frames) {
-        mel.resize((size_t)n_mels * target_frames, 0.0f);
+        std::vector<float> padded_mel((size_t)n_mels * target_frames, 0.0f);
+        for (int m = 0; m < n_mels; m++)
+            memcpy(padded_mel.data() + (size_t)m * target_frames,
+                   mel.data() + (size_t)m * n_frames, (size_t)n_frames * sizeof(float));
+        mel = std::move(padded_mel);
     }
     
     return mel;
@@ -253,11 +291,50 @@ bool WhisperModel::load_from_gguf(const std::string& path, const WhisperConfig* 
         if (cfg.n_text_head == 0)  cfg.n_text_head  = cfg.n_text_state / 64;
     }
     
+    // Map the backend's legacy ggml-whisper tensor names to the HF-style
+    // GGUF conversion (model.encoder.layers.N.self_attn.q_proj etc.) — the
+    // oxide-lab/whisper-tiny-GGUF files use the modern naming.
+    auto wmap = [](std::string n) -> std::string {
+        auto rep = [&](const char* a, const char* b) {
+            std::string sa(a); size_t p = n.find(sa);
+            if (p != std::string::npos) n.replace(p, sa.size(), b);
+        };
+        rep("encoder.blocks.", "model.encoder.layers.");
+        rep("decoder.blocks.", "model.decoder.layers.");
+        // cross_* FIRST — 'attn_ln.' / 'attn.query.' match inside
+        // 'cross_attn_ln.' / 'cross_attn.query.' (order matters).
+        rep("cross_attn_ln.", "encoder_attn_layer_norm.");
+        rep("cross_attn.query.", "encoder_attn.q_proj.");
+        rep("cross_attn.key.", "encoder_attn.k_proj.");
+        rep("cross_attn.value.", "encoder_attn.v_proj.");
+        rep("cross_attn.output.", "encoder_attn.out_proj.");
+        rep("attn_ln.", "self_attn_layer_norm.");
+        rep("attn.query.", "self_attn.q_proj.");
+        rep("attn.key.", "self_attn.k_proj.");
+        rep("attn.value.", "self_attn.v_proj.");
+        rep("attn.output.", "self_attn.out_proj.");
+        rep("mlp_ln.", "final_layer_norm.");
+        rep("mlp.0.", "fc1.");
+        rep("mlp.2.", "fc2.");
+        rep("encoder.conv1", "model.encoder.conv1");
+        rep("encoder.conv2", "model.encoder.conv2");
+        rep("encoder.ln.", "model.encoder.layer_norm.");
+        rep("decoder.ln.", "model.decoder.layer_norm.");
+        rep("decoder.position_embedding.", "model.decoder.embed_positions.");
+        rep("decoder.token_embedding.", "model.decoder.embed_tokens.");
+        rep("encoder.position_embedding.", "model.encoder.embed_positions.");
+        return n;
+    };
     auto get = [&](const std::string& name, std::vector<float>& dst, size_t expect) -> bool {
         size_t n = 0;
         if (!r.get_tensor_f32(name, dst, &n)) {
-            fprintf(stderr, "  [whisper] missing: %s\n", name.c_str());
-            return false;
+            std::string mapped = wmap(name);
+            if (mapped != name && r.get_tensor_f32(mapped, dst, &n)) {
+                // ok via the HF-style name
+            } else {
+                fprintf(stderr, "  [whisper] missing: %s (tried %s)\n", name.c_str(), mapped.c_str());
+                return false;
+            }
         }
         if (expect > 0 && n != expect) {
             fprintf(stderr, "  [whisper] %s: expected %zu, got %zu\n", name.c_str(), expect, n);
@@ -278,17 +355,23 @@ bool WhisperModel::load_from_gguf(const std::string& path, const WhisperConfig* 
     int DA = cfg.n_audio_state, DT = cfg.n_text_state;
     
     // Encoder conv layers
+    // Whisper mel filterbank (80x201) — the authoritative STFT->mel projection.
+    { size_t n = 0; r.get_tensor_f32("mel_filters", mel_filters, &n); }
     if (!get("encoder.conv1.weight", enc_conv1_w, (size_t)cfg.n_mels * DA * 3)) return false;
     if (!get("encoder.conv1.bias", enc_conv1_b, (size_t)DA)) return false;
     if (!get("encoder.conv2.weight", enc_conv2_w, (size_t)DA * DA * 3)) return false;
     if (!get("encoder.conv2.bias", enc_conv2_b, (size_t)DA)) return false;
     
-    // Encoder position embedding (sinusoidal, not stored as tensor)
-    enc_pos_emb.resize((size_t)cfg.n_audio_ctx * DA);
-    for (int p = 0; p < cfg.n_audio_ctx; p++) {
-        for (int d = 0; d < DA; d++) {
-            float theta = 1.0f / powf(10000.0f, (float)d / DA);
-            enc_pos_emb[(size_t)p * DA + d] = (d % 2 == 0) ? sinf(p * theta) : cosf(p * theta);
+    // Encoder position embedding: LEARNABLE in the real whisper model
+    // (model.encoder.embed_positions — present in HF-style GGUFs); sinusoidal
+    // fallback for the legacy ggml conversion which stored no such tensor.
+    if (!get("encoder.position_embedding.weight", enc_pos_emb, (size_t)cfg.n_audio_ctx * DA)) {
+        enc_pos_emb.resize((size_t)cfg.n_audio_ctx * DA);
+        for (int p = 0; p < cfg.n_audio_ctx; p++) {
+            for (int d = 0; d < DA; d++) {
+                float theta = 1.0f / powf(10000.0f, (float)d / DA);
+                enc_pos_emb[(size_t)p * DA + d] = (d % 2 == 0) ? sinf(p * theta) : cosf(p * theta);
+            }
         }
     }
     
@@ -423,7 +506,8 @@ std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, i
             x[(size_t)t * DA + d] = h2[(size_t)t * DA + d] + model.enc_pos_emb[(size_t)t * DA + d];
     
     // Transformer encoder layers
-    std::vector<float> x2(DA), attn_out(DA), ffn_up(DA * 4), ffn_gate(DA * 4);
+    std::vector<float> x2(DA), ffn_up(DA * 4), ffn_gate(DA * 4);
+    std::vector<float> attn_out((size_t)n_ctx * DA);  // self_attn writes N token rows
     for (int il = 0; il < L; il++) {
         auto& l = model.enc_layers[il];
         
@@ -487,7 +571,8 @@ std::vector<float> whisper_decode_step(const WhisperModel& model, const std::vec
         }
     }
     
-    std::vector<float> x2(DT), attn_out(DT), ca_out(DT), ffn_up(DT * 4), ffn_gate(DT * 4);
+    std::vector<float> x2(DT), ffn_up(DT * 4), ffn_gate(DT * 4);
+    std::vector<float> attn_out((size_t)N * DT), ca_out((size_t)N * DT);  // self/cross_attn write N rows
     
     for (int il = 0; il < cfg.n_text_layer; il++) {
         auto& l = model.dec_layers[il];
@@ -654,7 +739,8 @@ std::string whisper_decode_bpe_token(const std::string& token_text) {
 std::string whisper_transcribe(const WhisperModel& model, const float* audio_pcm, int n_samples) {
     // Compute log-mel spectrogram
     int sr = 16000;
-    auto mel = whisper_log_mel_spectrogram(audio_pcm, n_samples, sr, model.cfg.n_mels);
+    auto mel = whisper_log_mel_spectrogram(audio_pcm, n_samples, sr, model.cfg.n_mels,
+                                 400, 160, model.mel_filters.empty() ? nullptr : model.mel_filters.data());
     if (mel.empty()) return "";
     
     // Run encoder

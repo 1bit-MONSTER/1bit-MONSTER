@@ -112,6 +112,7 @@ struct WhisperLayerWeights {
 
 // ─── Full Whisper model weights ────────────────────────────────────
 struct WhisperModel {
+    std::vector<float> mel_filters;  // 80x201 whisper mel filterbank (GGUF mel_filters)
     WhisperConfig cfg;
 
     // Encoder
@@ -150,7 +151,8 @@ std::vector<float> whisper_load_wav(const std::string& path, int* out_sample_rat
 // Output: log-mel spectrogram [n_mels × n_frames]
 std::vector<float> whisper_log_mel_spectrogram(
     const float* audio, int n_samples, int sample_rate,
-    int n_mels = 80, int n_fft = 400, int hop = 160);
+    int n_mels = 80, int n_fft = 400, int hop = 160,
+    const float* mel_filters = nullptr);
 
 // ─── Math helpers (shared with vision_encoder conventions) ─────────
 namespace whisper_math {
