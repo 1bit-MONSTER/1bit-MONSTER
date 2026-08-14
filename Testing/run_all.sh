@@ -29,6 +29,7 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
+run dsv3gate Testing/deepseek_v3_gating_selfcheck.cpp src/deepseek.cpp src/gguf_reader.cpp
 
 echo "== backend compile =="
 total=$((total+1))

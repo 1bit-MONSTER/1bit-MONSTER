@@ -53,6 +53,7 @@ struct DeepSeekConfig {
     int n_limited_groups = 1;
     int score_func       = 0;       // 0=softmax, 1=sigmoid
     float routed_scaling = 1.0f;
+    int norm_topk_prob   = 0;       // V3: renormalize the top-k weights (llama.cpp expert_weights_norm)
     int first_k_dense = 1;          // layers < first_k_dense are DENSE FFN (V2-Lite: layer 0)
     int dense_intermediate = 0;     // dense-layer FFN width (V2-Lite: 10944)
     float rms_norm_eps = 1e-6f;
@@ -113,6 +114,7 @@ struct DeepSeekLayerWeights {
 
     // MoE FFN
     std::vector<float> w_gate;       // router weights [hidden, n_routed_experts]
+    std::vector<float> w_exp_bias;   // V3 correction bias [n_routed_experts] (selection only — weights stay unbiased)
     // Shared experts: n_shared_experts fused along the intermediate dim
     std::vector<float> w_shared_gate; // [hidden, n_shared * moe_intermediate]
     std::vector<float> w_shared_up;   // [hidden, n_shared * moe_intermediate]
@@ -181,6 +183,16 @@ namespace deepseek_math {
         float sum = 0; for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); sum += x[i]; }
         float inv = 1.0f / sum; for (int i = 0; i < n; i++) x[i] *= inv;
     }
+
+    // V2/V3 MoE expert selection (llama.cpp build_moe_ffn). Extracted for the
+    // synthetic gating self-check (#1637). router_logits: the raw router output.
+    // bias: optional V3 e_score_correction_bias [NE] (selection only).
+    // Fills expert_ids + expert_wts (unbiased sigmoid/softmax, optionally
+    // normalized x routed_scaling). Returns the number of experts written.
+    int select_experts(
+        const float* router_logits, int NE, int TOPK,
+        const struct DeepSeekConfig& cfg, const float* bias,
+        int* expert_ids, float* expert_wts);
 
     // RoPE (rotary position embedding)
     // RoPE (rotary position embedding). DeepSeek-V2/V3 use the "normal"

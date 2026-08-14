@@ -70,6 +70,33 @@ bool DeepSeekModel::load_from_gguf(const std::string& path, const DeepSeekConfig
         cfg.first_k_dense     = gu32("attention.first_k_dense_replace", 1);
         cfg.dense_intermediate = 0;  // set from the actual tensor shape below
         cfg.rms_norm_eps      = 1e-6f;
+        // V3 MoE gating (DeepSeek-V3: sigmoid scoring + group-limited top-k +
+        // routed_scaling + norm_topk_prob). Defaults match V2-Lite (softmax,
+        // no groups, no bias) so the validated V2 path is untouched unless the
+        // GGUF declares the V3 keys.
+        {
+            auto gstr = [&](const std::string& key) {
+                std::string v; if (r.get_string(key, v)) return v;
+                std::string arch = r.architecture();
+                if (!arch.empty() && r.get_string(arch + "." + key, v)) return v;
+                return std::string();
+            };
+            if (gstr("expert_gating_func") == "sigmoid") cfg.score_func = 1;
+            cfg.routed_scaling    = (float)gu32("expert_weights_scale", 1);
+            {
+                float ws = 0;
+                if (r.get_f32("expert_weights_scale", ws) && ws > 0) cfg.routed_scaling = ws;
+                std::string arch = r.architecture();
+                float ws2 = 0;
+                if (ws == 0 && !arch.empty() && r.get_f32(arch + ".expert_weights_scale", ws2) && ws2 > 0) cfg.routed_scaling = ws2;
+            }
+            cfg.norm_topk_prob    = gu32("expert_weights_norm", 0);
+            cfg.n_expert_groups   = gu32("expert_group_count", 1);
+            cfg.n_limited_groups  = gu32("expert_group_used_count", 1);
+            if (cfg.score_func == 1 || cfg.n_expert_groups > 1)
+                fprintf(stderr, "[deepseek] V3 gating: sigmoid=%d groups=%d used=%d routed_scaling=%.3f norm_topk=%d\n",
+                        cfg.score_func, cfg.n_expert_groups, cfg.n_limited_groups, cfg.routed_scaling, cfg.norm_topk_prob);
+        }
     }
     int H = cfg.hidden_size, NH = cfg.num_heads;
     int QKD = cfg.qk_nope_dim + cfg.qk_rope_dim;          // per-head q dim
@@ -111,6 +138,11 @@ bool DeepSeekModel::load_from_gguf(const std::string& path, const DeepSeekConfig
         } else {
             // MoE layer
             ok &= get(p + "ffn_gate_inp.weight", l.w_gate, (size_t)H * cfg.n_routed_experts);
+            {
+                size_t bn = 0;
+                if (r.get_tensor_f32(p + "exp_probs_b.bias", l.w_exp_bias, &bn))
+                    fprintf(stderr, "[deepseek] layer %d: V3 correction bias loaded (%zu experts)\n", il, bn);
+            }
             ok &= get(p + "ffn_gate_shexp.weight", l.w_shared_gate, (size_t)H * cfg.n_shared_experts * cfg.moe_intermediate);
             ok &= get(p + "ffn_up_shexp.weight",   l.w_shared_up,   (size_t)H * cfg.n_shared_experts * cfg.moe_intermediate);
             ok &= get(p + "ffn_down_shexp.weight", l.w_shared_down, (size_t)cfg.n_shared_experts * cfg.moe_intermediate * H);
@@ -172,6 +204,60 @@ void DeepSeekModel::clear() {
 }
 
 using namespace deepseek_math;
+
+// V2/V3 MoE expert selection (see deepseek.h). Mirrors llama.cpp build_moe_ffn.
+int deepseek_math::select_experts(
+    const float* router_logits, int NE, int TOPK,
+    const DeepSeekConfig& cfg, const float* bias,
+    int* expert_ids, float* expert_wts)
+{
+    std::vector<float> probs(NE);
+    if (cfg.score_func == 1) {
+        for (int i = 0; i < NE; i++) probs[i] = 1.0f / (1.0f + expf(-router_logits[i]));
+    } else {
+        memcpy(probs.data(), router_logits, NE * sizeof(float));
+        softmax_inplace(probs.data(), NE);
+    }
+    // selection probabilities: + correction bias (weights stay unbiased)
+    std::vector<float> sel(NE);
+    if (bias) for (int i = 0; i < NE; i++) sel[i] = probs[i] + bias[i];
+    else memcpy(sel.data(), probs.data(), NE * sizeof(float));
+    // group-limited greedy: keep the top n_limited_groups groups
+    // (group score = top-2 experts per group, summed)
+    if (cfg.n_expert_groups > 1) {
+        int NG = cfg.n_expert_groups, NPG = NE / NG;
+        std::vector<float> gs(NG);
+        for (int g = 0; g < NG; g++) {
+            float b1 = -1e30f, b2 = -1e30f;
+            for (int i = 0; i < NPG; i++) {
+                float v = sel[g * NPG + i];
+                if (v > b1) { b2 = b1; b1 = v; } else if (v > b2) b2 = v;
+            }
+            gs[g] = b1 + b2;
+        }
+        for (int g = 0; g < NG; g++) {
+            int rank = 0;
+            for (int g2 = 0; g2 < NG; g2++) if (gs[g2] > gs[g]) rank++;
+            if (rank >= cfg.n_limited_groups)
+                for (int i = 0; i < NPG; i++) sel[g * NPG + i] = -1e30f;
+        }
+    }
+    // greedy top-k on the (masked) selection probabilities
+    for (int k = 0; k < TOPK; k++) {
+        int best = 0; float bv = -1e30f;
+        for (int i = 0; i < NE; i++) if (sel[i] > bv) { bv = sel[i]; best = i; }
+        expert_ids[k] = best; expert_wts[k] = probs[best];
+        sel[best] = -1e30f;
+    }
+    if (cfg.norm_topk_prob && TOPK > 1) {
+        float sum = 0; for (int k = 0; k < TOPK; k++) sum += expert_wts[k];
+        if (sum < 6.1e-5f) sum = 6.1e-5f;
+        for (int k = 0; k < TOPK; k++) expert_wts[k] /= sum;
+    }
+    if (cfg.routed_scaling != 0.0f && cfg.routed_scaling != 1.0f)
+        for (int k = 0; k < TOPK; k++) expert_wts[k] *= cfg.routed_scaling;
+    return TOPK;
+}
 
 std::vector<float> deepseek_forward(
     const DeepSeekModel& model, int token_id,
@@ -294,12 +380,9 @@ std::vector<float> deepseek_forward(
         } else {
             // MoE
             matmul(router_probs.data(), norm.data(), l.w_gate.data(), NE, H);
-            softmax_inplace(router_probs.data(), NE);
-            for (int k = 0; k < TOPK; k++) {
-                int best = 0; float bv = -1e30f;
-                for (int i = 0; i < NE; i++) if (router_probs[i] > bv) { bv = router_probs[i]; best = i; }
-                expert_ids[k] = best; expert_wts[k] = bv; router_probs[best] = -1e30f;
-            }
+            select_experts(router_probs.data(), NE, TOPK, cfg,
+                           l.w_exp_bias.empty() ? nullptr : l.w_exp_bias.data(),
+                           expert_ids, expert_wts.data());
             std::fill(shared_down.begin(), shared_down.end(), 0.0f);
             // Shared experts: one fused [out=n_shared*MOE][in=H] MLP, down [out=H][in=n_shared*MOE].
             {
