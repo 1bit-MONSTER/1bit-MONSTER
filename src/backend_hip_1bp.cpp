@@ -243,6 +243,24 @@ struct Hip1bpBackend : Backend {
             else printf("[hip1bp] packed fast path: TQ2NZ bf16 (%d layers)\n", NC);
         }
 
+        // #1624: architecture validation — hip_1bp implements the dense GQA
+        // transformer path only (QKV + gated FFN). Hybrid models (SSM/Mamba
+        // layers, CCA, MoE: ZAYA1-8B has cca_*/ssm_conv1d/res_scale and NO
+        // ffn_gate/up/down) leave null weight pointers here and fault in the
+        // first packed launch or silently produce garbage on the f32 path.
+        {
+            bool ok_q = (L[0].wq || (quant2 && PD[0].pq)), ok_v = (L[0].wv || (quant2 && PD[0].pv)),
+                 ok_f1 = (L[0].w1 || (quant2 && PD[0].p1)), ok_f2 = (L[0].w2 || (quant2 && PD[0].p2)),
+                 ok_f3 = (L[0].w3 || (quant2 && PD[0].p3));
+            if (!ok_q || !ok_v || !ok_f1 || !ok_f2 || !ok_f3) {
+                fprintf(stderr, "[hip1bp] unsupported architecture: missing required tensors "
+                        "(attn_v/ffn_gate/ffn_up/ffn_down). Hybrid SSM/MoE models (e.g. ZAYA1-8B) "
+                        "are not supported by the GPU backend — use a dense GQA transformer "
+                        "(Llama/Qwen family) model.\n");
+                return false;
+            }
+        }
+
         // Phase 2: capture the full per-token step (embed → layers → final
         // norm → lm_head → device argmax → 4B result copy) into a hipGraph.
         // Kernels read *d_pos / *d_token at replay time, so one capture serves
