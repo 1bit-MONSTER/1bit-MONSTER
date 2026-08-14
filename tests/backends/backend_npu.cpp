@@ -12,6 +12,7 @@
 // Part of the unified zaya_server binary.
 
 #include "backend.h"
+#include <nlohmann/json.hpp>
 
 // Raw prompt text for the NPU FLM backend (set by the server via a plain
 // extern function — a virtual method would change the vtable layout and
@@ -157,6 +158,50 @@ public:
         // FILE stdio works correctly ("2+2 equals 4" verified), so each query
         // spawns a fresh CLI process (warm model load ~11s).
         if (const char* p = getenv("NPU_FLM_PORT")) port_ = atoi(p);
+
+        // #1604: the FLM registry (model_list.json) silently overrides the
+        // requested --model path — the tag resolves to whatever the registry
+        // points at. Warn loudly when the registry's model for the resolved
+        // tag differs from the requested file, so a redirected service is
+        // discoverable without digging through the FLM child's log.
+        {
+            std::string tag = model_tag_, variant;
+            size_t colon = tag.find(':');
+            if (colon != std::string::npos) { variant = tag.substr(colon + 1); tag = tag.substr(0, colon); }
+            std::string cfgp = getenv("FLM_CONFIG_PATH") ? getenv("FLM_CONFIG_PATH") : "/opt/fastflowlm/etc/flm/model_list.json";
+            std::ifstream f(cfgp);
+            if (f) {
+                try {
+                    nlohmann::json j; f >> j;
+                    std::string reg_name;
+                    auto models = j.value("models", nlohmann::json::object());
+                    if (models.contains(tag)) {
+                        auto& v = models[tag];
+                        if (v.is_object()) {
+                            if (!variant.empty() && v.contains(variant) && v[variant].is_object())
+                                reg_name = v[variant].value("name", "");
+                            else if (v.contains("name")) reg_name = v.value("name", "");
+                        }
+                    }
+                    if (!reg_name.empty()) {
+                        std::string req = cfg.model_path, req_dir = req;
+                        size_t sl = req.find_last_of('/');
+                        if (sl != std::string::npos) { req = req.substr(sl + 1); req_dir = req_dir.substr(0, sl); }
+                        size_t dl = req_dir.find_last_of('/');
+                        std::string req_dir_name = dl == std::string::npos ? req_dir : req_dir.substr(dl + 1);
+                        if (req_dir_name != reg_name && req != reg_name) {
+                            fprintf(stderr,
+                                "WARNING #1604: requested --model %s but FLM registry %s maps tag '%s' to "
+                                "registry model '%s' — serving the REGISTRY model, not the requested file. "
+                                "Set NPU_MODEL_TAG or fix model_list.json to serve the requested model.\n",
+                                cfg.model_path.c_str(), cfgp.c_str(), model_tag_.c_str(), reg_name.c_str());
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "NPU: failed to parse %s for model validation: %s\n", cfgp.c_str(), e.what());
+                }
+            }
+        }
         fprintf(stderr, "  NPU: FLM ready (%s, serve :%d, lazy spawn)\n", model_tag_.c_str(), port_);
         loaded_ = true;
 
