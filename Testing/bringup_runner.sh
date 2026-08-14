@@ -4,7 +4,7 @@
 # is wired and runs the real-checkpoint generation gate (20/20 vs torch) when
 # the fixture dir exists. Add a family = manifest entry + fixture, then run.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 CXX="${CXX:-g++}"; FLAGS="-std=c++17 -O2 -Iinclude -Isrc"
 BIN=/tmp/onebit_bringup; mkdir -p "$BIN"
 fail=0; total=0

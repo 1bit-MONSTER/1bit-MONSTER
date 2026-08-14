@@ -3,7 +3,7 @@
 # Compiles + runs every self-check and the real-checkpoint e2e families.
 # (mirrors the bring-up arc documented in ~/onebit-modular-research.md §1-23)
 set -u
-cd "$(dirname "$0")/.."   # repo root
+cd "$(dirname "$0")/.." || exit 1   # repo root
 CXX="${CXX:-g++}"; FLAGS="-std=c++17 -Iinclude -Isrc -O2"
 BIN=/tmp/onebit_tests; mkdir -p "$BIN"
 fail=0; total=0
