@@ -77,12 +77,14 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qwen3")   == 0) return RCPP_ARCH_QWEN3;
     if (strcmp(s, "llama")   == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mistral") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "ministral") == 0) return RCPP_ARCH_MISTRAL;  // Ministral (config declares MistralForCausalLM)
     if (strcmp(s, "qwen2")   == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "gemma")   == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "gemma2")  == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "gemma3")  == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "gemma4")  == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "phi")     == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "mixformersequential") == 0) return RCPP_ARCH_PHI;  // phi-1/1.5 HF class (model_type=phi)
     if (strcmp(s, "zamba2")  == 0) return RCPP_ARCH_ZAMBA2;
     if (strcmp(s, "zamba")   == 0) return RCPP_ARCH_ZAMBA;
     if (strcmp(s, "mamba")   == 0) return RCPP_ARCH_MAMBA;
@@ -92,6 +94,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "rw")      == 0) return RCPP_ARCH_FALCON;  // Falcon 7B/40B HF arch (RWForCausalLM)
     if (strcmp(s, "olmo")    == 0) return RCPP_ARCH_OLMO;
     if (strcmp(s, "olmo2")   == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "olmo3")   == 0) return RCPP_ARCH_OLMO;   // OLMo 3 (olmo2 arch: QK-norm, RMSNorm, rope)
     if (strcmp(s, "olmoe")   == 0) return RCPP_ARCH_OLMO;
     if (strcmp(s, "zaya")    == 0) return RCPP_ARCH_ZAYA;
     if (strcmp(s, "qwen2vl") == 0) return RCPP_ARCH_QWEN2VL;
@@ -102,6 +105,15 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "deepseek2")  == 0) return RCPP_ARCH_DEEPSEEK;
     if (strcmp(s, "deepseek3")  == 0) return RCPP_ARCH_DEEPSEEK;
     if (strcmp(s, "stablelm")  == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "stablelmepoch") == 0) return RCPP_ARCH_LLAMA;  // StableLM-Epoch (llama-layout, census alias)
+    if (strcmp(s, "tinyllama") == 0) return RCPP_ARCH_LLAMA;      // TinyLlama (config declares LlamaForCausalLM)
+    if (strcmp(s, "openlm")    == 0) return RCPP_ARCH_LLAMA;      // OpenLM / open-llama (config declares LlamaForCausalLM)
+    if (strcmp(s, "mobilellm") == 0) return RCPP_ARCH_LLAMA;      // Meta MobileLLM (llama-layout: rope, RMSNorm, swiglu)
+    if (strcmp(s, "customllama") == 0) return RCPP_ARCH_LLAMA;    // cosmetic llama renames (CustomLlamaForCausalLM)
+    if (strcmp(s, "yi")        == 0) return RCPP_ARCH_LLAMA;      // Yi (01-ai; config model_type=llama)
+    if (strcmp(s, "decilm")    == 0) return RCPP_ARCH_LLAMA;      // DeciLM (llama-layout, GQA)
+    if (strcmp(s, "hunyuan")   == 0) return RCPP_ARCH_LLAMA;      // HunYuan dense (llama-layout)
+    if (strcmp(s, "nanbeige")  == 0) return RCPP_ARCH_LLAMA;      // Nanbeige (llama-layout)
     if (strcmp(s, "mosaic")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mpt")       == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "pixtral")   == 0) return RCPP_ARCH_MISTRAL;
@@ -165,6 +177,9 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "deepseekv3")== 0) return RCPP_ARCH_DEEPSEEK;   // DeepseekV3ForCausalLM (MLA)
     if (strcmp(s, "deepseekv4")== 0) return RCPP_ARCH_DEEPSEEK_V4; // DeepseekV4ForCausalLM
     if (strcmp(s, "gpt2")     == 0) return RCPP_ARCH_GPT2;   // GPT2LMHeadModel (custom tensor map)
+    if (strcmp(s, "gpt2lmheadcustom") == 0) return RCPP_ARCH_GPT2;  // GPT2LMHeadCustomModel (gpt2 layout)
+    if (strcmp(s, "biogpt")    == 0) return RCPP_ARCH_GPT2;       // BioGPT (gpt2-layout: learned pos emb, gelu)
+    if (strcmp(s, "xglm")      == 0) return RCPP_ARCH_GPT2;       // XGLM (gpt2-layout)
     if (strcmp(s, "gptneox")   == 0) return RCPP_ARCH_GPTNEOX; // GPTNeoXForCausalLM (parallel attn+FFN, LN+bias)
     if (strcmp(s, "opt")       == 0) return RCPP_ARCH_OPT;    // OPTForCausalLM (learned pos, relu)
     if (strcmp(s, "gptneo")    == 0) return RCPP_ARCH_GPTNEO; // GPTNeoForCausalLM
