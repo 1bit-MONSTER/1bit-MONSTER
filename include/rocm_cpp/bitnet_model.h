@@ -59,6 +59,10 @@ typedef enum {
     RCPP_ARCH_OPT = 25,     // OPT — learned positions, LN weight+bias, biases everywhere, no-gate RELU FFN
     RCPP_ARCH_GPTNEO = 26,  // GPT-Neo — gpt2-style names, LN+bias, learned wte/wpe, no-gate gelu_new FFN, windowed attn (>256t)
     RCPP_ARCH_CODEGEN = 27, // CodeGen — fused qkv, partial rotary (rotary_dim), LN+bias, no-gate gelu_new FFN
+    RCPP_ARCH_GPTJ = 28,    // GPT-J — separate qkv, adjacent partial rotary (rotary_dim), LN+bias, gelu_new
+    RCPP_ARCH_GPTOSS = 29,  // GPT-OSS — MXFP4 packed MoE (FP4 blocks+scales, interleaved gate/up), YARN rope, attention sinks, head_dim 64
+    RCPP_ARCH_STEP1 = 30,   // Step1 (StepLaw / stepfun Step-Audio) — dense llama-layout, sqrt-ALiBi (no RoPE), num_attention_groups
+    RCPP_ARCH_BLOOM = 31,   // Bloom — fused qkv, LayerNorm w/bias, sequential + post_attn_norm, gelu_new, LINEAR ALiBi, embed LN, tied lm_head
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -164,6 +168,11 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "opt")       == 0) return RCPP_ARCH_OPT;    // OPTForCausalLM (learned pos, relu)
     if (strcmp(s, "gptneo")    == 0) return RCPP_ARCH_GPTNEO; // GPTNeoForCausalLM
     if (strcmp(s, "codegen")   == 0) return RCPP_ARCH_CODEGEN; // CodeGenForCausalLM (fused qkv, partial rotary)
+    if (strcmp(s, "gptj")      == 0) return RCPP_ARCH_GPTJ;    // GPTJForCausalLM (adjacent partial rotary)
+    if (strcmp(s, "gptoss")    == 0) return RCPP_ARCH_GPTOSS;  // GptOssForCausalLM (packed FP4 MoE)
+    if (strcmp(s, "step1")     == 0) return RCPP_ARCH_STEP1;   // Step1ForCausalLM (sqrt-ALiBi, no RoPE)
+    if (strcmp(s, "step1moe")  == 0) return RCPP_ARCH_STEP1;   // Step1MoEForCausalLM (dense weights in practice; MoE cfg ignored until an expert-bearing ckpt is seen)
+    if (strcmp(s, "bloom")     == 0) return RCPP_ARCH_BLOOM;   // BloomForCausalLM (fused qkv, linear ALiBi, LayerNorm)
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

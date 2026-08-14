@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1bit MONSTER</title>
+<meta name="description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python. Reverse-engineered from a locked-down AMD NPU in 4 days.">
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/favicon-32x32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/assets/favicon-16x16.png" type="image/png" sizes="16x16">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#0a0a0a">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="1bit MONSTER">
+<meta property="og:title" content="1bit MONSTER">
+<meta property="og:description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python.">
+<meta property="og:url" content="https://1bit.monster/">
+<meta property="og:image" content="https://1bit.monster/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="1bit MONSTER">
+<meta name="twitter:description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python.">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-image.png">
+
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg-raised: #111111;
+    --fg: #f2f2f2;
+    --dim: #888888;
+    --line: #2a2a2a;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Courier New', Courier, monospace;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 3px);
+  }
+
+  a { color: var(--fg); }
+
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* ---- hero ---- */
+  header.hero {
+    text-align: center;
+    padding: 5rem 24px 3rem;
+  }
+
+  .glyph {
+    width: 96px;
+    height: 96px;
+    margin: 0 auto 1.5rem;
+    image-rendering: pixelated;
+  }
+
+  h1 {
+    font-size: clamp(1.8rem, 6vw, 3rem);
+    letter-spacing: 0.15em;
+    margin: 0 0 1rem;
+    text-transform: uppercase;
+  }
+
+  .lede {
+    color: var(--dim);
+    font-size: 1rem;
+    line-height: 1.6;
+    max-width: 46ch;
+    margin: 0 auto 2rem;
+  }
+
+  .lede strong { color: var(--fg); font-weight: normal; }
+
+  nav.links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.5rem 1rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+  }
+
+  nav.links a {
+    text-decoration: none;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 2px;
+  }
+
+  nav.links a:hover { border-bottom-color: var(--fg); }
+
+  /* ---- stat row ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .stat {
+    padding: 1.5rem 1rem;
+    text-align: center;
+    border-left: 1px solid var(--line);
+  }
+
+  .stat:first-child { border-left: none; }
+
+  .stat .num {
+    font-size: 1.6rem;
+    display: block;
+  }
+
+  .stat .label {
+    color: var(--dim);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-top: 0.3rem;
+    display: block;
+  }
+
+  /* ---- sections ---- */
+  section {
+    padding: 3.5rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  section:last-of-type { border-bottom: none; }
+
+  section h2 {
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 0 0 1.25rem;
+  }
+
+  section h2::before { content: "// "; }
+
+  section p {
+    line-height: 1.7;
+    margin: 0 0 1rem;
+  }
+
+  section p:last-child { margin-bottom: 0; }
+
+  code, .mono-inline {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    padding: 0.1em 0.4em;
+    font-size: 0.9em;
+  }
+
+  ul.checklist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  ul.checklist li {
+    padding: 0.35rem 0;
+    line-height: 1.6;
+  }
+
+  ul.checklist li::before {
+    content: "✓ ";
+  }
+
+  .quickstart {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    padding: 1rem 1.25rem;
+    font-size: 0.85rem;
+    line-height: 1.8;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .quickstart .comment { color: var(--dim); }
+
+  footer {
+    text-align: center;
+    padding: 2.5rem 24px 3rem;
+    font-size: 0.7rem;
+    color: var(--dim);
+    letter-spacing: 0.1em;
+  }
+
+  footer a { color: var(--dim); }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <img class="glyph" src="/favicon.svg" alt="" aria-hidden="true">
+  <h1>1bit MONSTER</h1>
+  <p class="lede">
+    An open-source, pure-C++ inference engine. <strong>NPU + GPU + CPU in one binary.</strong>
+    Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.
+  </p>
+  <nav class="links">
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">The Story</a>
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/jarvis.md">JARVIS Pipeline</a>
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md">Docs</a>
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/roadmap.md">Roadmap</a>
+  </nav>
+</header>
+
+<div class="stats">
+  <div class="stat"><span class="num">19</span><span class="label">architectures</span></div>
+  <div class="stat"><span class="num">47</span><span class="label">models today</span></div>
+  <div class="stat"><span class="num">500+</span><span class="label">models — in progress</span></div>
+  <div class="stat"><span class="num">0</span><span class="label">python in the runtime</span></div>
+</div>
+
+<div class="wrap">
+
+  <section>
+    <h2>the hard truth</h2>
+    <p>
+      AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU — and locked it behind
+      a closed-source runtime: 22 proprietary <code>.so</code> files, 209 bitstreams,
+      zero documentation. Nothing else could touch that chip.
+    </p>
+    <p>
+      We reverse-engineered the whole stack in 4 days and replaced it with open C++ —
+      turning 22 proprietary libraries into one open-source binary. That effort grew into
+      <strong class="mono-inline">1bit</strong>: a single MIT-licensed C++ engine that runs
+      LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
+    </p>
+  </section>
+
+  <section>
+    <h2>what it is</h2>
+    <ul class="checklist">
+      <li>One binary, every backend — CLI and every server dispatched by subcommand.</li>
+      <li>Reads GGUF, ONNX, and the native 1BP format — auto-detects the architecture, no config files.</li>
+      <li>NPU + HIP + ZINC + GGML-Vulkan + CPU — five backends, one process.</li>
+      <li>Pure C++23. Zero Python in the engine. MIT licensed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>quick start</h2>
+    <div class="quickstart"><span class="comment"># build from source — no installer yet</span>
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-MONSTER && cmake -B build && cmake --build build
+./build/1bit zaya -m model.1bp -p "Hello world"</div>
+  </section>
+
+  <section>
+    <h2>where this goes</h2>
+    <p>
+      19 architectures and 47 models today, climbing toward the full catalog — not one
+      port at a time, but by decoding the pattern: ~50 architecture classes cover the
+      long tail of what HuggingFace hosts. The registry, the kernels, and the validation
+      harness are already proven; what's left is coverage.
+    </p>
+    <p>
+      JARVIS — mic → VAD → STT → router → LLM → TTS → cloned voice → speaker — is the
+      flagship end-to-end application built on top, running fully local. No cloud, no
+      Python in the hot path.
+    </p>
+  </section>
+
+</div>
+
+<footer>&copy; <span id="year"></span> 1bit MONSTER · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a></footer>
+
+<script>
+  document.getElementById('year').textContent = new Date().getFullYear();
+</script>
+</body>
+</html>

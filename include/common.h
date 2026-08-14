@@ -125,6 +125,27 @@ struct ModelConfig {
     // rope_theta; the rest are LOCAL with rope_local_base_freq. 0 = none.
     float rope_local_base_freq = 0.0f;
     int sliding_window_pattern = 0;
+    // GPT-OSS (OpenAI): YARN RoPE (theta 150000, factor 32, beta_fast/slow
+    // 32/1, original_max 4096) + attention scaling 0.1*ln(factor)+1 applied
+    // to cos/sin (squared into the score scale by the engine). Sliding
+    // layers (layer_types alternate) use a 128-token window. Set by the
+    // loader for RCPP_ARCH_GPTOSS.
+    bool rope_yarn = false;
+    float yarn_factor = 32.0f, yarn_beta_fast = 32.0f, yarn_beta_slow = 1.0f;
+    float yarn_orig_max = 4096.0f;
+    float rope_attn_scaling = 1.0f;
+    int sliding_window = 0;
+    // Step1 (StepLaw / stepfun Step-Audio): sqrt-ALiBi positional bias —
+    // scores[h, t] -= slope[h] * sqrt(pos - t) for past positions (no RoPE).
+    // Slopes: 2^(-8*h/n) for h in [0,n) with n = 2^floor(log2(heads)), then
+    // 2^(-(2h+1)*4/n) for the remainder (build_alibi_cache convention).
+    bool alibi = false;
+    // Bloom: LINEAR ALiBi — scores[h, t] -= slope[h] * (pos - t). The slope
+    // table is the SAME as step1's (2^(-8(h+1)/n) then 2^(-4(2h+1)/n), the
+    // ggml get_alibi_slope convention); only the distance is linear.
+    bool alibi_linear = false;
+    // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+    bool embed_ln = false;
     // Per-model residual scaling (granite: residual_multiplier=0.22; the
     // block output is scaled before adding to the residual). 1.0 = none.
     // Found 2026-08-13 via the granite real-prompt torch oracle — the engine

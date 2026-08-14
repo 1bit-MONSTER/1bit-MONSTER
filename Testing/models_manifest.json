@@ -40,7 +40,8 @@
       },
       "e2e_model": "HuggingFaceTB/SmolLM2-135M-Instruct",
       "oracle": "unsloth q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "qwen2",
@@ -60,7 +61,8 @@
       },
       "e2e_model": "Qwen/Qwen2.5-0.5B-Instruct",
       "oracle": "bartowski q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "qwen3",
@@ -78,7 +80,8 @@
       },
       "e2e_model": "Qwen/Qwen3-0.6B",
       "oracle": "local Q8_0 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "mistral",
@@ -96,7 +99,8 @@
       },
       "e2e_model": "mistralai/Mistral-7B-v0.1",
       "oracle": "q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "gemma",
@@ -121,7 +125,8 @@
       },
       "e2e_model": "google/gemma-3-1b-it",
       "oracle": "unsloth q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "granite-moe",
@@ -139,7 +144,8 @@
       },
       "e2e_model": "ibm-granite/granite-3.1-3b-a800m-instruct",
       "oracle": "bartowski q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "phi",
@@ -160,7 +166,8 @@
       },
       "e2e_model": "microsoft/Phi-3-mini-4k-instruct",
       "oracle": "q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "olmo",
@@ -180,7 +187,8 @@
       },
       "e2e_model": "allenai/OLMo-1B-0724-hf",
       "oracle": "mradermacher/OLMo-1B-0724-hf-GGUF Q8_0",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "falcon",
@@ -199,7 +207,8 @@
       },
       "e2e_model": "tiiuae/falcon-7b (7.2GB, auto_map stripped for torch oracle)",
       "oracle": "maddes8cht/tiiuae-falcon-7b-gguf Q8_0",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "gpt2",
@@ -218,7 +227,8 @@
       },
       "e2e_model": "openai-community/gpt2",
       "oracle": "RichardErkhov/openai-community_-_gpt2-gguf Q6_K",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "exaone",
@@ -235,7 +245,8 @@
       "e2e_model": "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct",
       "oracle": "llamacpp Q8 (official GGUF repo)",
       "status": "validated",
-      "result": "20/20 identical vs llama.cpp Q8; reader needed num_layers fallback"
+      "result": "20/20 identical vs llama.cpp Q8; reader needed num_layers fallback",
+      "tier": "full-llamacpp"
     },
     {
       "family": "internlm2",
@@ -252,7 +263,8 @@
       "oracle": "llamacpp Q8 (mradermacher)",
       "status": "validated",
       "result": "engine \u2261 authoritative modeling_internlm2.py numpy EXACT; vs Q8 oracle near-tie top-3 (the/a/Paris within 0.5 logits) \u2014 Q8 drift pattern",
-      "numpy_ref": true
+      "numpy_ref": true,
+      "tier": "numpy-exact-near-tie"
     },
     {
       "family": "minicpm",
@@ -270,7 +282,8 @@
       "oracle": "llamacpp Q8 sft (UNRELIABLE \u2014 llama.cpp treats minicpm as plain llama, ignores scale quirks)",
       "status": "validated",
       "result": "engine \u2261 authoritative openbmb modeling numpy EXACT (top-6 logits identical); llama.cpp oracle disagrees because it misses scale_emb/scale_depth/logits_scaling",
-      "numpy_ref": true
+      "numpy_ref": true,
+      "tier": "numpy-exact-oracle-wrong"
     },
     {
       "family": "openelm",
@@ -284,7 +297,8 @@
       "e2e_model": "apple/OpenELM-270M",
       "oracle": "none",
       "status": "documented-limitation",
-      "result": "refuses loudly at load ('missing embedding'); needs bespoke path \u2014 out of generic-engine scope"
+      "result": "refuses loudly at load ('missing embedding'); needs bespoke path \u2014 out of generic-engine scope",
+      "tier": "documented-limitation"
     },
     {
       "family": "deepseek-mla",
@@ -299,7 +313,10 @@
       },
       "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
       "oracle": "q8 gguf",
-      "status": "pending"
+      "status": "validated",
+      "tier": "numpy-exact",
+      "result": "VALIDATED 2026-08-15 (commit pending): engine \u2261 f32 numpy port of authoritative modeling_deepseek.py (+ llama.cpp deepseek2.cpp conventions) at ALL 27 layers and multi-position attention (max|diff| ~0.01-0.9 = f16 expert storage; layers 0-2 exact). Correct next-token behavior on the natural prompt (predicts fox/jumps/over/the/lazy/dog/.). Router top-6 expert selections identical to llama.cpp. Generation on the periodic prompt matches llama-completion 19/20 (one whitespace near-tie: 429 ' The' vs 185 '\\n'+549). REWRITTEN deepseek.cpp (was dead unwired code written for a different GGUF variant): real bugs found & fixed \u2014 (a) missing q_a/kv_a latent RMSNorms, (b) expert block-offset bug (base never added \u2192 all blocks wrote the first 32 slots), (c) down-projection transposed read, (d) chunk\u2192ADJACENT rope pairing (llama.cpp LLAMA_ROPE_TYPE_NORM), (e) exps stored [A innermost, expert outer] not experts-innermost, (f) shared experts fused [H, n_shared*MOE], (g) q_lora_rank=None \u2192 uncompressed attn_q, (h) dense layer 0 (first_k_dense=1, DI=10944 from tensor), (i) untied lm_head (output.weight), (j) scale 1/sqrt(192). KNOWN GAP: on weak random-text positions (model PPL ~21) the engine/numpy diverge from llama.cpp's argmax at some positions with non-trivial margins \u2014 an unresolved small detail (rope/yarn no-op confirmed, all layouts verified); the model is a degenerate base (echoes prompts) and both implementations echo. NOT claimed: clean 20/20 vs llama on arbitrary text. Memory: experts Q8\u2192f16 (~29GB) vs f32 (~63GB). Gate: Testing/e2e_deepseek.cpp + /tmp/DeepSeek-V2-Lite.Q8_0.gguf.",
+      "gate": "/tmp/e2e_deepseek /tmp/DeepSeek-V2-Lite.Q8_0.gguf /tmp/dsv2_ids.txt 20 2>/dev/null | grep -q 'chain: 2 207 3510 32431 33747 855 254 24547 5025 13'"
     },
     {
       "family": "gptneox",
@@ -319,7 +336,8 @@
       "oracle": "torch (GPTNeoX in transformers 5.14) + llama.cpp Q8",
       "numpy_ref": true,
       "status": "validated",
-      "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable"
+      "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable",
+      "tier": "numpy-exact-degenerate"
     },
     {
       "family": "opt",
@@ -337,7 +355,8 @@
       "e2e_model": "facebook/opt-125m (converted to safetensors locally; no HF safetensors exists)",
       "oracle": "torch (OPT in transformers 5.14; no GGUF available)",
       "status": "validated",
-      "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)"
+      "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)",
+      "tier": "full"
     },
     {
       "family": "gptneo",
@@ -356,7 +375,8 @@
       "e2e_model": "EleutherAI/gpt-neo-125M",
       "oracle": "torch (GPTNeo in transformers 5.14)",
       "status": "validated",
-      "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)"
+      "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)",
+      "tier": "full"
     },
     {
       "family": "codegen",
@@ -376,7 +396,81 @@
       "e2e_model": "Salesforce/codegen-350M-mono (converted bin\u2192safetensors locally)",
       "oracle": "torch (CodeGen in transformers 5.14)",
       "status": "validated",
-      "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)"
+      "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)",
+      "tier": "numpy-exact-near-tie"
+    },
+    {
+      "family": "gptj",
+      "hf_arch_strings": [
+        "gptj"
+      ],
+      "mapping_target": "GPTJ",
+      "quirk_flags": {
+        "rope": "ADJACENT (rotate_every_two) partial rotary_dim=64 of 256 (cfg.adjacent_rope + rope_dim)",
+        "parallel": "attn+FFN on same ln_1",
+        "attn": "scaled 1/sqrt(hd) \u2014 normal",
+        "qkv": "separate projs w/ bias",
+        "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
+        "norm": "nn.LayerNorm weight+bias",
+        "lm_head": "untied"
+      },
+      "e2e_model": "EleutherAI/gpt-j-6B (bin\u2192safetensors conversion)",
+      "oracle": "torch (GPTJ in transformers 5.14)",
+      "status": "validated",
+      "result": "20/20 tokens identical vs torch, first try \u2014 adjacent partial rotary + parallel paths from codegen carried over",
+      "tier": "full"
+    },
+    {
+      "family": "gptoss",
+      "hf_arch_strings": [
+        "gptoss"
+      ],
+      "mapping_target": "GPTOSS",
+      "status": "validated",
+      "tier": "numpy-exact-20of20",
+      "result": "VALIDATED 2026-08-14: engine 20/20 generated tokens == numpy reference (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint, full logits max|diff| 6.7e-5, top-8 EXACT. Engine keeps MXFP4 MoE packed (U8 blocks+scales, per-expert per-token dequant, ~17GB) \u2014 no torch reference needed. Quirks landed: YARN rope (theta 150000, factor 32, freq-index ramp), attention sinks (per-head logit cat before softmax), router bias, MXFP4 dequant (FP4 e2m1, value=FP4[nibble]*2^(scale-127), low->even/high->odd, 32/block), interleaved gate/up, gate=min(g,7) up=clamp(\u00b17), glu=gate*sigmoid(1.702*gate), gated=(up+1)*glu, top-4 softmax gating, untied lm_head, head_dim 64, odd-safe rope. Known gap: sliding-window (128) attention on sliding layers \u2014 no-op < 128 tokens, unimplemented beyond (same class as gemma3 SWA).",
+      "gate": "E2E_FULL_LOGITS=/tmp/gptoss_ref.txt timeout 900 python3 Testing/e2e_numpy_ref_gptoss.py /tmp/onebit-e2e/gptoss /tmp/gptoss_ids.txt 20 2>/dev/null | grep -q 'ref-gen: 271 1069 15629 316 11643 198 271 1238 28036 314 1238 6182 31812 706 13353 12 23 2515 271 1069'"
+    },
+    {
+      "family": "step1",
+      "hf_arch_strings": [
+        "step1",
+        "step1moe"
+      ],
+      "mapping_target": "STEP1",
+      "quirk_flags": {
+        "rope": "none (sqrt-ALiBi)",
+        "alibi": "sqrt: -slope[h]*sqrt(pos-t), slopes 2^(-8(h+1)/n)+2^(-4(2h+1)/n)",
+        "norm": "RMSNorm",
+        "bias": "none",
+        "attention": "GQA via num_attention_groups (groups==heads on validated ckpt)"
+      },
+      "e2e_model": "StepLaw/StepLaw-N_214M-D_99.0B-LR1.953e-03-BS1048576",
+      "oracle": "torch fallback (modeling_step1.py build_alibi_cache + SDPA)",
+      "status": "validated",
+      "tier": "full",
+      "result": "VALIDATED 2026-08-15: 20/20 generated tokens == torch (modeling_step1.py fallback path, CPU f32), 16-position chain identical, full logits max|diff| 5.6e-5 top-8 EXACT. Quirks landed: sqrt-ALiBi attention (bias = -slope[h]*sqrt(pos-t), NO RoPE \u2014 cfg.alibi + per-head slope table built from build_alibi_cache convention), num_attention_groups -> n_kv_heads (reader), dense llama-layout (separate q/k/v/o, RMSNorm eps 1e-5, gated SwiGLU, no biases), untied-in-file lm_head. NOTE: 'Step1MoEForCausalLM' arch string + use_moe/moe_num_experts config but the weights are DENSE (no expert tensors) \u2014 the 2,882-checkpoint census class is mostly dense-mislabeled pretrain runs; expert-bearing Step1MoE ckpts not yet seen (defer moe_num_experts key until one is). Model itself is a mid-training run (LR 1.9e-3) \u2014 degenerate repeated-token output, engine==torch exactly.",
+      "gate": "timeout 900 python3 Testing/e2e_torch_oracle_step1.py /tmp/onebit-e2e/step1 /tmp/step1_ids.txt 20 2>/dev/null | grep -q 'ref-gen: 78 78 794 794 794 794 794 794 324 331 329 328 333 337 329 338 337 331 342 324'"
+    },
+    {
+      "family": "bloom",
+      "hf_arch_strings": [
+        "bloom"
+      ],
+      "mapping_target": "BLOOM",
+      "quirk_flags": {
+        "attention": "fused query_key_value HEAD-INTERLEAVED [h(q,k,v)] + bias, linear ALiBi (no RoPE)",
+        "norm": "LayerNorm w+bias (input + post_attention, sequential)",
+        "ffn": "non-gated tanh-gelu w/ bias",
+        "embed": "word_embeddings_layernorm (LayerNorm on embedding)",
+        "lm_head": "tied"
+      },
+      "e2e_model": "bigscience/bloom-560m",
+      "oracle": "torch (transformers bloom, f32)",
+      "status": "validated",
+      "tier": "full",
+      "gate": "E2E_FULL_LOGITS=/tmp/bloom_gate_l.txt timeout 300 /tmp/e2e_seq_gen /tmp/onebit-e2e/bloom /tmp/bloom_ids.txt 20 2>/dev/null | grep -q 'engine-gen: 17 1387 23714 73173 144252 138207 3478 368 109586 35433 17 1387 23714 73173 144252 138207 3478 368 109586 35433'",
+      "result": "VALIDATED 2026-08-15: 20/20 generated tokens identical to torch (transformers 5.14 bloom, f32), full logits max|diff| 7.6e-4 corr 1.0 (bigscience/bloom-560m, /tmp/onebit-e2e/bloom). Quirks landed: RCPP_ARCH_BLOOM (31), fused query_key_value HEAD-INTERLEAVED (per-head [q,k,v] groups \u2014 NOT a [q|k|v] row split; modeling_bloom._reshape view(seq,heads,3,hd)), LayerNorm w+bias (input_layernorm + post_attention_layernorm, SEQUENTIAL), non-gated tanh-gelu FFN w/ bias (gelu_new), LINEAR ALiBi (same slope table as step1's sqrt variant \u2014 2^(-8(h+1)/n) then 2^(-4(2h+1)/n) \u2014 but linear distance; softmax-equivalent to modeling_bloom's slope*pos_k cumsum trick), word_embeddings_layernorm (embedding LayerNorm, cfg.embed_ln), tied lm_head, config keys n_embed/n_head/n_layer/layer_norm_epsilon, 4x-hidden FFN fallback. First-pass bugs caught: wrong qkv split (row-split produced scrambled attention \u2014 hidden states 4.6x off at layer 0) and n_embed missing from the reader."
     }
   ]
 }

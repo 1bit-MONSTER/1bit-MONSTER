@@ -1,6 +1,6 @@
 # PLAN: Gut 1bit's agent stack, replace with AMD Gaia
 
-**Date:** 2026-08-01 · **Status:** proposal, awaiting sign-off
+**Date:** 2026-08-01 · **Status:** SUPERSEDED 2026-08-14 — this doc's own doc-status label was stale: D1–D3 were already actioned in code (EMBED_GAIA_CPP wired into CMakeLists.txt, third_party/gaia vendored and linked into `onebin`, replacing tools/onebit.cpp/onebitd.cpp) without this file ever being updated to say so. On the 1bit → 1bit MONSTER migration, that decision was reversed: **both** Gaia and the old `onebit` CLI were removed outright (neither is in the new repo). D3 ("keep repo name 1bit-systems") is moot — the repo is now `1bit-MONSTER`. JARVIS (`tools/jarvis/`) was never gutted and remains the one agent/voice pipeline. Kept here for history only; do not action anything below.
 
 ## Why this works (the key insight)
 

@@ -79,9 +79,11 @@ struct GenericBackend : Backend {
     std::vector<float> scratch_scores, scratch_att, scratch_gate_up, scratch_silu_buf;
     std::vector<float> scratch_moe_router_probs, scratch_moe_ffn_acc;
     std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_silu, scratch_moe_down;
+    std::vector<float> scratch_moe_row;  // GPT-OSS: per-row MXFP4 dequant buffer (H wide)
     std::vector<int> scratch_moe_idx;  // expert index for partial_sort
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
     std::vector<float> rope_freqs_local; // gemma3 hybrid: local-layer theta table (0 = same)
+    std::vector<float> alibi_slopes;   // Step1 sqrt-ALiBi: per-head slope (build_alibi_cache convention)
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
     bool scratch_allocated_ = false;
     int cached_debug_ops_ = -1;  // cached getenv("CPU_DEBUG_OPS") — checked once
@@ -112,11 +114,21 @@ struct GenericBackend : Backend {
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
         size_t post_attn_norm = SIZE_MAX, post_ffn_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
+        // GPT-OSS packed MXFP4 MoE: FP4 blocks + per-row-block scales + biases.
+        // blocks/scales stay RAW U8 (kept packed in RAM — per-token dequant
+        // in forward; converting to f32 would 4x memory to ~45GB).
+        size_t moe_gate_blocks = SIZE_MAX, moe_gate_scales = SIZE_MAX, moe_gate_bias = SIZE_MAX;
+        size_t moe_down_blocks = SIZE_MAX, moe_down_scales = SIZE_MAX, moe_down_bias = SIZE_MAX;
+        std::vector<uint8_t> gate_blocks, gate_scales, down_blocks, down_scales;
+        size_t router_bias = SIZE_MAX;   // GPT-OSS: mlp.router.bias (add to router logits)
+        size_t sinks = SIZE_MAX;         // GPT-OSS: self_attn.sinks (per-head learned sink logit)
         int pk_q = -1, pk_k = -1, pk_v = -1, pk_o = -1, pk_w1 = -1, pk_w2 = -1, pk_w3 = -1;  // packed TQ2 slots
     };
     std::vector<LayerW> layers;
     // GPT-2: learned position-embedding table (wpe) + final LayerNorm bias.
     std::vector<float> pos_embed, final_norm_bias;
+    // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+    std::vector<float> embed_ln_w, embed_ln_b;
     // Gemma-2/3/4 logit soft-capping (attn cap 50, final cap 30). Keyed on
     // the arch STRING, not the enum — RCPP_ARCH_GEMMA also covers Granite
     // (Llama-style: no caps, rms eps 1e-5) and Gemma-1 (no caps).
@@ -269,6 +281,7 @@ struct GenericBackend : Backend {
         // Pre-allocate scratch buffers (avoid per-token heap allocations)
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim, FF = cfg.intermediate_size;
         size_t score_sz = (size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD;
+        score_sz += 1;  // +1: GPT-OSS attention-sink column appended to the scores
         scratch_x.resize(H); scratch_x2.resize(H); scratch_x3.resize(H);
         scratch_q.resize((size_t)NH * HD); scratch_k.resize((size_t)NKV * HD); scratch_v.resize((size_t)NKV * HD);
         scratch_scores.resize(score_sz); scratch_att.resize((size_t)NH * HD);
@@ -279,24 +292,59 @@ struct GenericBackend : Backend {
             scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF);
             scratch_moe_silu.resize(FF);  // #1342: silu output is FF-sized — must NOT share the H-sized down buffer
             scratch_moe_down.resize(H);
+            scratch_moe_row.resize(cfg.hidden);
             scratch_moe_idx.resize(cfg.n_experts);
         }
         scratch_allocated_ = true;
 
         // Precompute RoPE frequencies (avoid powf+cosf+sinf per token)
-        int rot_dim = cfg.rope_dim > 0 ? cfg.rope_dim : cfg.head_dim, half = rot_dim / 2;
-        rope_freqs.resize(half);
+        int rot_dim = cfg.rope_dim > 0 ? cfg.rope_dim : cfg.head_dim;
+        int half = (rot_dim + 1) / 2, nfreq = rot_dim - half;  // pairs (odd-safe)
+        rope_freqs.resize(nfreq);
         float theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
-        for (int i = 0; i < half; i++)
-            rope_freqs[i] = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
-        // Gemma-3 hybrid: local layers use rope_local_base_freq (10000), full
-        // layers use rope_theta (1e6). Precompute both tables.
+        if (cfg.rope_yarn && rot_dim >= 2) {
+            // YARN (NTK-aware interpolation, transformers _compute_yarn_parameters):
+            // inv_freq = interp*ramp + extrap*(1-ramp) where the ramp runs
+            // over the dims whose wavelength falls between beta_fast and
+            // beta_slow rotations at original_max_position_embeddings.
+            auto yarn_dim = [&](float num_rot) {
+                return (rot_dim * logf(cfg.yarn_orig_max / (num_rot * 2.0f * (float)M_PI))) / (2.0f * logf(theta));
+            };
+            float lo = yarn_dim(cfg.yarn_beta_fast), hi = yarn_dim(cfg.yarn_beta_slow);
+            if (lo < 0) lo = 0; if (hi > rot_dim - 1) hi = (float)(rot_dim - 1);
+            for (int i = 0; i < nfreq; i++) {
+                float ramp = (hi > lo) ? ((float)i - lo) / (hi - lo) : 0.0f;
+                if (ramp < 0) ramp = 0; else if (ramp > 1) ramp = 1;
+                float pf = powf(theta, (2.0f * i) / (float)rot_dim);
+                rope_freqs[i] = (1.0f / (cfg.yarn_factor * pf)) * ramp + (1.0f / pf) * (1.0f - ramp);
+            }
+        } else {
+            for (int i = 0; i < nfreq; i++)
+                rope_freqs[i] = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
+        }
         if (cfg.sliding_window_pattern > 0 && cfg.rope_local_base_freq > 0.0f) {
-            rope_freqs_local.resize(half);
-            for (int i = 0; i < half; i++)
+            rope_freqs_local.resize(nfreq);
+            for (int i = 0; i < nfreq; i++)
                 rope_freqs_local[i] = 1.0f / powf(cfg.rope_local_base_freq, (2.0f * i) / (float)rot_dim);
         }
         inv_sqrt_hd_ = 1.0f / sqrtf((float)cfg.head_dim);
+        // YARN attention scaling: the reference multiplies cos/sin by
+        // attention_factor (0.1*ln(factor)+1), scaling q·k scores by its
+        // square (gpt-oss: 1.34657^2 = 1.8139).
+        if (cfg.rope_yarn) inv_sqrt_hd_ *= cfg.rope_attn_scaling * cfg.rope_attn_scaling;
+        // Step1/Bloom ALiBi slopes (build_alibi_cache / ggml get_alibi_slope):
+        // n = 2^floor(log2(NH)); slopes[0..n) = 2^(-8*(h+1)/n); remainder
+        // 2^(-4*(2h+1)/n). Step1 applies sqrt(distance), Bloom linear.
+        if ((cfg.alibi || cfg.alibi_linear) && NH > 0) {
+            alibi_slopes.resize(NH);
+            int n = 1 << (int)floorf(log2f((float)NH));
+            float m0 = powf(2.0f, -8.0f / n);
+            for (int h = 0; h < n; h++) alibi_slopes[h] = powf(m0, (float)(h + 1));
+            if (n < NH) {
+                float m1 = powf(2.0f, -4.0f / n);
+                for (int h = n; h < NH; h++) alibi_slopes[h] = powf(m1, (float)(2 * (h - n) + 1));
+            }
+        }
 
         // Cache getenv results checked in the hot path
         cached_debug_ops_ = getenv("CPU_DEBUG_OPS") ? 1 : 0;
@@ -589,12 +637,49 @@ struct GenericBackend : Backend {
             cfg.adjacent_rope = true;       // rotate_every_two — adjacent pairs (i, i+1)
             cfg.rms_norm_eps = 1e-5f;
         }
+        // GPT-J: separate q/k/v projs w/ bias, adjacent PARTIAL rotary
+        // (rotary_dim 64 of 256 — cfg.adjacent_rope + rope_dim), nn.LayerNorm
+        // weight+bias, non-gated gelu_new FFN (fc_in/fc_out w/ bias), untied
+        // lm_head, PARALLEL attn+FFN (single ln_1). Names: transformer.h.N.*.
+        if (cfg.arch == RCPP_ARCH_GPTJ) {
+            cfg.norm_is_layernorm = true;
+            cfg.adjacent_rope = true;
+            cfg.parallel_attn_ffn = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // Step1 (StepLaw / stepfun-ai Step-Audio): dense llama-layout
+        // (separate q/k/v/o, RMSNorm, gated SwiGLU, no biases) but NO RoPE —
+        // sqrt-ALiBi attention (bias = -slope[h]*sqrt(pos-t)). GQA via
+        // num_attention_groups (reader). Verified vs modeling_step1.py
+        // (build_alibi_cache fallback) 2026-08-15.
+        if (cfg.arch == RCPP_ARCH_STEP1) {
+            cfg.no_rope = true;
+            cfg.alibi = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // Bloom (bigscience): fused query_key_value [3H,H] w/ bias (ROW split
+        // q|k|v — NOT head-interleaved like GPT-NeoX), nn.LayerNorm w+bias on
+        // input_layernorm + post_attention_layernorm (SEQUENTIAL: attn →
+        // residual → LN → MLP → residual), non-gated tanh-gelu FFN w/ bias,
+        // LINEAR ALiBi (no RoPE — slope table identical to step1's, distance
+        // linear not sqrt), LayerNorm on the token embedding
+        // (word_embeddings_layernorm), tied lm_head. Config keys: n_head /
+        // n_layer / layer_norm_epsilon. Verified vs modeling_bloom.py +
+        // llama.cpp bloom.cpp 2026-08-15.
+        if (cfg.arch == RCPP_ARCH_BLOOM) {
+            cfg.norm_is_layernorm = true;
+            cfg.no_rope = true;
+            cfg.alibi_linear = true;
+            cfg.embed_ln = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
             !r.get_tensor_f32("transformer.wte.weight", embed) &&
             !r.get_tensor_f32("wte.weight", embed) &&
             !r.get_tensor_f32("transformer.word_embeddings.weight", embed) &&
+            !r.get_tensor_f32("word_embeddings.weight", embed) &&
             !r.get_tensor_f32("model.tok_embeddings.weight", embed) &&
             !r.get_tensor_f32("gpt_neox.embed_in.weight", embed) &&
             !r.get_tensor_f32("model.decoder.embed_tokens.weight", embed)) {
@@ -634,6 +719,9 @@ struct GenericBackend : Backend {
             if (!r.get_tensor_f32("gpt_neox.final_layer_norm.bias", final_norm_bias))
                 if (!r.get_tensor_f32("model.decoder.final_layer_norm.bias", final_norm_bias))
                     r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+        r.get_tensor_f32("word_embeddings_layernorm.weight", embed_ln_w);
+        r.get_tensor_f32("word_embeddings_layernorm.bias", embed_ln_b);
         if (gemma_post_norms && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         if (!r.get_tensor_f32("output.weight", output_weight))
@@ -752,7 +840,7 @@ struct GenericBackend : Backend {
                 // Parallel attn+FFN: rms_ffn stays SIZE_MAX (single
                 // input_layernorm feeds both); w2 stays SIZE_MAX (erf-gelu).
                 std::vector<float> qkv;
-                snprintf(buf, sizeof(buf), "transformer.h.%d.self_attention.query_key_value.weight", l);
+                snprintf(buf, sizeof(buf), "h.%d.self_attention.query_key_value.weight", l);
                 size_t qkv_rows = (size_t)NH * HD + 2 * (size_t)HD;
                 if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != (int)(qkv_rows * H)) {
                     fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
@@ -769,7 +857,7 @@ struct GenericBackend : Backend {
                 lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -833,7 +921,7 @@ struct GenericBackend : Backend {
                 // gate/up tensors (c_fc_0 = gate, c_fc_1 = up), c_proj down.
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -897,6 +985,55 @@ struct GenericBackend : Backend {
                 load2("attention.dense.bias", lw.bo, NH * HD, 1);
                 load2("mlp.dense_h_to_4h.bias", lw.w1_b, IM, 1);
                 load2("mlp.dense_4h_to_h.bias", lw.w3_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_BLOOM) {
+                // Bloom: fused query_key_value [3H, H] w/ bias — HEAD-INTERLEAVED
+                // [h0(q,k,v), h1(q,k,v), ...] per modeling_bloom._reshape
+                // (view(seq, heads, 3, head_dim) — same as GPT-NeoX, NOT a
+                // [q_all|k_all|v_all] row split). nn.LayerNorm w+bias
+                // (input_layernorm + post_attention_layernorm, SEQUENTIAL),
+                // non-gated tanh-gelu FFN w/ bias, linear ALiBi.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "h.%d.self_attention.query_key_value.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != 3 * H * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                size_t hd2 = (size_t)HD;
+                std::vector<float> q(NH * hd2 * H), k(NH * hd2 * H), v(NH * hd2 * H);
+                for (size_t h = 0; h < (size_t)NH; h++) {
+                    memcpy(q.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 0) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                    memcpy(k.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 1) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                    memcpy(v.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 2) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                std::vector<float> qkvb;
+                snprintf(buf, sizeof(buf), "h.%d.self_attention.query_key_value.bias", l);
+                if (r.get_tensor_f32(buf, qkvb) && (int)qkvb.size() == 3 * H) {
+                    std::vector<float> bq((size_t)NH * HD), bk((size_t)NH * HD), bv((size_t)NH * HD);
+                    for (size_t h = 0; h < (size_t)NH; h++) {
+                        memcpy(bq.data() + h * HD, qkvb.data() + (h * 3 + 0) * HD, HD * sizeof(float));
+                        memcpy(bk.data() + h * HD, qkvb.data() + (h * 3 + 1) * HD, HD * sizeof(float));
+                        memcpy(bv.data() + h * HD, qkvb.data() + (h * 3 + 2) * HD, HD * sizeof(float));
+                    }
+                    lw.bq = push(std::move(bq)); lw.bk = push(std::move(bk)); lw.bv = push(std::move(bv));
+                }
+                load2("self_attention.dense.weight", lw.wo, NH * HD, H);
+                load2("self_attention.dense.bias", lw.bo, NH * HD, 1);
+                load2("mlp.dense_h_to_4h.weight", lw.w1, H, IM);
+                load2("mlp.dense_h_to_4h.bias", lw.w1_b, IM, 1);
+                load2("mlp.dense_4h_to_h.weight", lw.w3, IM, H);
+                load2("mlp.dense_4h_to_h.bias", lw.w3_b, H, 1);
+                load2("input_layernorm.weight", lw.rms_attn, H, 1);
+                load2("input_layernorm.bias", lw.rms_attn_b, H, 1);
+                load2("post_attention_layernorm.weight", lw.rms_ffn, H, 1);
+                load2("post_attention_layernorm.bias", lw.rms_ffn_b, H, 1);
             } else if (cfg.arch == RCPP_ARCH_OPT) {
                 // OPT: model.decoder.layers.N.* names, sequential structure,
                 // nn.LayerNorm weight+bias (self_attn_layer_norm /
@@ -931,7 +1068,7 @@ struct GenericBackend : Backend {
                 // wte/wpe, non-gated gelu_new FFN (c_fc/c_proj). w2 SIZE_MAX.
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -980,7 +1117,7 @@ struct GenericBackend : Backend {
                 lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -994,6 +1131,75 @@ struct GenericBackend : Backend {
                 load2("ln_1.bias", lw.rms_attn_b, H, 1);
                 load2("ln_2.weight", lw.rms_ffn, H, 1);
                 load2("ln_2.bias", lw.rms_ffn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_GPTJ) {
+                // GPT-J: transformer.h.N.* names, SEPARATE q/k/v/out projs
+                // w/ bias, LN weight+bias (ln_1/ln_f — single per-layer norm,
+                // sequential), non-gated gelu_new FFN (fc_in/fc_out w/ bias).
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.q_proj.weight", lw.wq, H, NH * HD);
+                load2("attn.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("attn.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("attn.out_proj.weight", lw.wo, NH * HD, H);
+                load2("attn.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("attn.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("attn.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("attn.out_proj.bias", lw.bo, H, 1);
+                load2("mlp.fc_in.weight", lw.w1, H, IM);
+                load2("mlp.fc_in.bias", lw.w1_b, IM, 1);
+                load2("mlp.fc_out.weight", lw.w3, IM, H);
+                load2("mlp.fc_out.bias", lw.w3_b, H, 1);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_1.bias", lw.rms_attn_b, H, 1);
+                // GPT-J single ln_1 feeds BOTH attn and MLP (parallel);
+                // rms_ffn stays SIZE_MAX (parallel path uses x3).
+            } else if (cfg.arch == RCPP_ARCH_GPTOSS) {
+                // GPT-OSS: standard attention (q/k/v/o w/ bias, GQA), RMSNorm,
+                // and the PACKED MXFP4 MoE (FP4 blocks + scales + biases).
+                // The blocks stay packed; the forward dequants only the
+                // selected experts per token (~9GB vs ~105GB fp32).
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w2;
+                    snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w2)) return;
+                    if ((int)w2.size() == rows * cols) idx = push(std::move(w2));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w2.size(), rows * cols);
+                };
+                auto load2u8 = [&](const char* tname, std::vector<uint8_t>& dst, int rows, int cols) {
+                    std::vector<uint8_t> w2;
+                    snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_u8(buf, w2)) return;
+                    if ((int)w2.size() == rows * cols) dst = std::move(w2);
+                    else fprintf(stderr, "Generic: safetensors %s: %d bytes, want %d\n", buf, (int)w2.size(), rows * cols);
+                };
+                load2("self_attn.q_proj.weight", lw.wq, H, NH * HD);
+                load2("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("self_attn.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("self_attn.o_proj.weight", lw.wo, NH * HD, H);
+                load2("self_attn.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("self_attn.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("self_attn.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("self_attn.o_proj.bias", lw.bo, H, 1);
+                load2("input_layernorm.weight", lw.rms_attn, H, 1);
+                load2("post_attention_layernorm.weight", lw.rms_ffn, H, 1);
+                // Attention sinks: one learned logit per head, cat to the
+                // scores before softmax (dropped after — see forward).
+                load2("self_attn.sinks", lw.sinks, NH, 1);
+                // Packed MXFP4 MoE (kept packed — per-token dequant in forward).
+                int nblocks = cfg.hidden / 32;
+                load2("mlp.router.weight", lw.moe_gate_inp, cfg.n_experts, H);
+                load2("mlp.router.bias", lw.router_bias, cfg.n_experts, 1);
+                load2u8("mlp.experts.gate_up_proj_blocks", lw.gate_blocks, cfg.n_experts * 2 * IM, nblocks * 16);
+                load2u8("mlp.experts.gate_up_proj_scales", lw.gate_scales, cfg.n_experts * 2 * IM, nblocks);
+                load2("mlp.experts.gate_up_proj_bias", lw.moe_gate_bias, cfg.n_experts, 2 * IM);
+                load2u8("mlp.experts.down_proj_blocks", lw.down_blocks, cfg.n_experts * IM, nblocks * 16);
+                load2u8("mlp.experts.down_proj_scales", lw.down_scales, cfg.n_experts * IM, nblocks);
+                load2("mlp.experts.down_proj_bias", lw.moe_down_bias, cfg.n_experts, IM);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -1114,8 +1320,9 @@ struct GenericBackend : Backend {
             load_bias("self_attn.v_proj.bias", lw.bv, NKV * HD);
 
             if (cfg.n_experts > 0) {
-                if (lw.moe_gate_inp == SIZE_MAX || lw.moe_gate_exps == SIZE_MAX ||
-                    lw.moe_up_exps == SIZE_MAX || lw.moe_down_exps == SIZE_MAX) {
+                if (lw.moe_gate_inp == SIZE_MAX || lw.router_bias == SIZE_MAX ||
+                    (lw.gate_blocks.empty() &&  // GPT-OSS packed MoE
+                     (lw.moe_gate_exps == SIZE_MAX || lw.moe_up_exps == SIZE_MAX || lw.moe_down_exps == SIZE_MAX))) {
                     fprintf(stderr, "Generic: safetensors layer %d: MoE tensors incomplete — ABORTING LOAD\n", l);
                     return false;
                 }
@@ -1123,10 +1330,11 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen: non-gated FFN — w2 legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
-                           cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN ||
+                           cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -1383,9 +1591,14 @@ struct GenericBackend : Backend {
     // convention, wrong for this model family, and produced incoherent
     // (real-vocabulary but semantically scrambled) output as a result.
     static void rope(float* q, float* k, int pos, int n_heads, int n_kv, int hd, int rot_dim, float theta, const float* freqs) {
-        int half = rot_dim / 2;
+        // half = ceil(rot_dim/2) — for ODD head dims HF chunk(x,2) splits
+        // [ceil, floor] (e.g. 45 -> 23+22) and pairs (i, i+ceil). The old
+        // floor split left the last dim unrotated (latent bug, hit by
+        // GPT-OSS head_dim=45, fixed 2026-08-14).
+        int half = (rot_dim + 1) / 2;
+        int pairs = rot_dim - half;
         for (int h = 0; h < n_heads; h++) {
-            for (int i = 0; i < half; i++) {
+            for (int i = 0; i < pairs; i++) {
                 float t = pos * freqs[i];
                 float cosv = cosf(t), sinv = sinf(t);
                 int i0 = h * hd + i, i1 = h * hd + i + half;
@@ -1395,7 +1608,7 @@ struct GenericBackend : Backend {
             }
         }
         for (int h = 0; h < n_kv; h++) {
-            for (int i = 0; i < half; i++) {
+            for (int i = 0; i < pairs; i++) {
                 float t = pos * freqs[i];
                 float cosv = cosf(t), sinv = sinf(t);
                 int i0 = h * hd + i, i1 = h * hd + i + half;
@@ -1619,6 +1832,24 @@ struct GenericBackend : Backend {
         for (int i = 0; i < n; i++) x[i] = expf(x[i] - mx) * inv;
     }
 
+    // MXFP4 (GPT-OSS): FP4 e2m1 values, value = FP4[nibble] * 2^(scale-127),
+    // low nibble -> even idx, high nibble -> odd (transformers mxfp4.py).
+    // blocks/scales are the raw U8 checkpoint tensors (kept packed).
+    static constexpr float FP4_LUT[16] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+        -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
+    static void dequant_mxfp4_row(const uint8_t* blocks, const uint8_t* scales,
+                                  int nblocks, float* out) {
+        for (int b = 0; b < nblocks; b++) {
+            float s = ldexpf(1.0f, (int)scales[b] - 127);
+            const uint8_t* by = blocks + (size_t)b * 16;
+            for (int j = 0; j < 16; j++) {
+                out[(size_t)b * 32 + 2 * j]     = FP4_LUT[by[j] & 0x0F] * s;
+                out[(size_t)b * 32 + 2 * j + 1] = FP4_LUT[by[j] >> 4] * s;
+            }
+        }
+    }
+
     int generate(int token_id) override {
         if (!initialized) return -1;
         return forward(token_id);
@@ -1662,6 +1893,12 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
+        // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+        if (cfg.embed_ln) {
+            layernorm_affine(x0.data(), x0.data(), embed_ln_w.data(),
+                             embed_ln_b.empty() ? nullptr : embed_ln_b.data(),
+                             cfg.hidden, cfg.rms_norm_eps);
+        }
         // GPT-2/OPT: learned position embeddings — add the wpe/embed_positions
         // row for the CURRENT position (pos + pos_offset; OPT pads 2 slots).
         if (cfg.use_learned_pos)
@@ -1808,13 +2045,24 @@ struct GenericBackend : Backend {
                     float s = 0;
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
                     scores[t] = s * attn_scale;  // multiply instead of divide
+                    if (cfg.alibi_linear) scores[t] -= alibi_slopes[h] * (float)(pos - t);      // Bloom LINEAR ALiBi
+                    else if (cfg.alibi) scores[t] -= alibi_slopes[h] * sqrtf((float)(pos - t));  // Step1 sqrt-ALiBi
                 }
                 // Gemma-2/3 attention-logit soft-cap (config attn_logit_softcapping,
                 // gemma2=50.0; gemma3-1b has NONE). qk-norm + query_pre_attn_scalar
                 // produce large scores that must be tanh-capped before softmax.
                 if (attn_cap_ > 0.0f)
                     for (int t = 0; t <= pos; t++) scores[t] = attn_cap_ * tanhf(scores[t] / attn_cap_);
-                softmax(scores, pos + 1);
+                int nscores = pos + 1;
+                if (l.sinks != SIZE_MAX) {
+                    // GPT-OSS attention sinks: one learned logit per head cat
+                    // to the scores before softmax, dropped after (the V sum
+                    // only reads real positions). Reference: combined =
+                    // cat([attn_weights, sinks]); softmax; probs[..., :-1].
+                    scores[nscores] = w(l.sinks)[h];
+                    nscores++;
+                }
+                softmax(scores, nscores);
                 // Weighted sum of V
                 for (int d = 0; d < HD; d++) {
                     float sum = 0;
@@ -1859,6 +2107,10 @@ struct GenericBackend : Backend {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
                 float* router_probs = scratch_moe_router_probs.data();
                 mm(router_probs, x2, w(l.moe_gate_inp), NE, H, -1);
+                if (l.router_bias != SIZE_MAX) {  // GPT-OSS: router has a bias
+                    const float* rb = w(l.router_bias);
+                    for (int e = 0; e < NE; e++) router_probs[e] += rb[e];
+                }
 
                 // Top-k expert selection (same indices either way — softmax
                 // is monotonic, so top-k on raw logits == top-k on probs).
@@ -1872,7 +2124,8 @@ struct GenericBackend : Backend {
                 // differ).
                 const bool topk_softmax_gating =
                     (cfg.architecture == "granite" || cfg.architecture == "granitemoe" ||
-                     cfg.arch == RCPP_ARCH_QWEN3 || cfg.arch == RCPP_ARCH_QWEN35);
+                     cfg.arch == RCPP_ARCH_QWEN3 || cfg.arch == RCPP_ARCH_QWEN35 ||
+                     cfg.arch == RCPP_ARCH_GPTOSS);
                 float wsum = 0.0f;
                 if (topk_softmax_gating) {
                     float mx = router_probs[idx[0]];
@@ -1894,6 +2147,47 @@ struct GenericBackend : Backend {
                 float* up_buf = scratch_moe_up.data();
                 float* moe_silu = scratch_moe_silu.data();  // #1342: FF-sized, distinct from down output
                 float* down_buf = scratch_moe_down.data();  // H-sized
+                if (!l.gate_blocks.empty()) {
+                    // GPT-OSS packed MXFP4 MoE: dequant ONLY the selected
+                    // experts per token (keeps memory at ~9GB packed vs ~105GB
+                    // fp32). gate/up rows interleaved (even=gate, odd=up);
+                    // reference: glu = gate*sigmoid(1.702*gate) clamped,
+                    // gated = (up+1)*glu.
+                    int nblocks = cfg.hidden / 32;
+                    float* moe_row = scratch_moe_row.data();
+                    for (int t = 0; t < NEU; t++) {
+                        int e = idx[t];
+                        float we = router_probs[e] / wsum;
+                        const uint8_t* gb = l.gate_blocks.data() + (size_t)e * 2 * FF * nblocks * 16;
+                        const uint8_t* gs = l.gate_scales.data() + (size_t)e * 2 * FF * nblocks;
+                        const float* gbi = w(l.moe_gate_bias) + (size_t)e * 2 * FF;
+                        const uint8_t* db = l.down_blocks.data() + (size_t)e * FF * nblocks * 16;
+                        const uint8_t* ds = l.down_scales.data() + (size_t)e * FF * nblocks;
+                        const float* dbi = w(l.moe_down_bias) + (size_t)e * FF;
+                        for (int r = 0; r < 2 * FF; r++) {
+                            dequant_mxfp4_row(gb + (size_t)r * nblocks * 16, gs + (size_t)r * nblocks,
+                                              nblocks, moe_row);
+                            float acc = 0;
+                            for (int c = 0; c < H; c++) acc += moe_row[c] * x2[c];
+                            acc += gbi[r];
+                            if (r & 1) up_buf[r >> 1] = acc; else gate_buf[r >> 1] = acc;
+                        }
+                        for (int i = 0; i < FF; i++) {
+                            float g = gate_buf[i] < 7.0f ? gate_buf[i] : 7.0f;
+                            float u = up_buf[i]; u = u > 7.0f ? 7.0f : (u < -7.0f ? -7.0f : u);
+                            float glu = g * (1.0f / (1.0f + expf(-1.702f * g)));
+                            moe_silu[i] = (u + 1.0f) * glu;  // reference: (up+1)*glu
+                        }
+                        for (int r = 0; r < FF; r++) {
+                            dequant_mxfp4_row(db + (size_t)r * nblocks * 16, ds + (size_t)r * nblocks,
+                                              nblocks, moe_row);
+                            float acc = 0;
+                            for (int c = 0; c < FF; c++) acc += moe_row[c] * moe_silu[c];
+                            down_buf[r] = acc + dbi[r];
+                        }
+                        for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
+                    }
+                } else {
                 for (int t = 0; t < NEU; t++) {
                     int e = idx[t];
                     float we = router_probs[e] / wsum;
@@ -1905,6 +2199,7 @@ struct GenericBackend : Backend {
                     ffn_activate(moe_silu, gate_buf, up_buf, FF, cfg.arch, cfg.architecture.c_str());
                     mm(down_buf, moe_silu, wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
+                }
                 }
                 if (cfg.residual_multiplier != 1.0f)
                     for (int i = 0; i < H; i++) x[i] += ffn_acc[i] * cfg.residual_multiplier;
@@ -1934,7 +2229,7 @@ struct GenericBackend : Backend {
                 ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch, cfg.architecture.c_str());
                 mm(x2, silu_buf, w(l.w3), H, FF, l.pk_w3);
                 if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
-                if (debug_ops && il < 3) {
+                if (debug_ops) {
                     double sg = 0, sd = 0;
                     for (int i = 0; i < FF; i++) sg += fabs(gate_up[i]);
                     for (int i = 0; i < H; i++) sd += fabs(x2[i]);
