@@ -4,6 +4,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cfloat>
+#include <cmath>
 #include <cstdint>
 
 // ── Custom GEMV: y[M] = W[M,N] @ x[N], row-major W ──
@@ -98,8 +99,9 @@ __global__ void h1bp_head_rmsnorm_kernel(float* __restrict__ x, const float* __r
 }
 
 // ── RoPE ──
-__global__ void h1bp_rope_kernel(float* __restrict__ x, int head_dim, int pos,
+__global__ void h1bp_rope_kernel(float* __restrict__ x, int head_dim, const int* __restrict__ d_pos,
                              float theta_base, int num_heads) {
+    const int pos = *d_pos;
     int h = blockIdx.x;
     int d = threadIdx.x;
     if (h >= num_heads || d >= head_dim/2) return;
@@ -145,7 +147,8 @@ __global__ void h1bp_h2f_kernel(float* dst, const __half* src, int N) {
 // ── Fused K,V store: convert f32→f16 and store in KV cache ──
 __global__ void h1bp_kv_store_kernel(__half* __restrict__ dK, __half* __restrict__ dV,
                                  const float* __restrict__ k, const float* __restrict__ v,
-                                 int pos, int NKV, int HD, int max_seq) {
+                                 const int* __restrict__ d_pos, int NKV, int HD, int max_seq) {
+    const int pos = *d_pos;
     int h = blockIdx.x;
     int d = threadIdx.x;
     if (h >= NKV || d >= HD) return;
@@ -157,9 +160,10 @@ __global__ void h1bp_kv_store_kernel(__half* __restrict__ dK, __half* __restrict
 // ── Copy embedding row to output ──
 __global__ void h1bp_embed_copy_kernel(float* __restrict__ dst,
                                    const float* __restrict__ embed,
-                                   int token_id, int H) {
+                                   const int* __restrict__ d_token, int H, int V) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < H) dst[i] = embed[(size_t)token_id * H + i];
+    const int t = *d_token;
+    if (i < H) dst[i] = (t < 0 || t >= V) ? 0.0f : embed[(size_t)t * H + i];
 }
 
 // ═══ TQ2NZ / TQ2NZ_E4M3 packed-decode GEMV (2-bit S40 {-4,-1,+1,+4}) ═══
@@ -235,4 +239,59 @@ __global__ void h1bp_tq2nz_sum_kernel(const float* __restrict__ part,
     float s = 0.0f;
     for (int i = 0; i < 32 * wpr; i++) s += part[(size_t)row * 32 * wpr + i];
     out[row] = s;
+}
+
+// ── Device argmax (Phase 1): two-pass reduction over V logits ──
+// Pass 1: each block reduces a slice into scratch[2*bid] = (max_val, max_idx).
+// Pass 2: single block reduces the scratch. Scratches sized AMX_MAXB=512.
+__global__ void h1bp_argmax_pass1_kernel(const float* __restrict__ l, int V,
+                                         float* __restrict__ mx, int* __restrict__ mi) {
+    const int bid = blockIdx.x, nblk = gridDim.x;
+    const int chunk = (V + nblk - 1) / nblk;
+    const int start = bid * chunk, end = min(start + chunk, V);
+    float bm = -INFINITY; int bi = -1;
+    for (int i = start + threadIdx.x; i < end; i += blockDim.x) {
+        if (l[i] > bm) { bm = l[i]; bi = i; }
+    }
+    __shared__ float sm[256]; __shared__ int si[256];
+    sm[threadIdx.x] = bm; si[threadIdx.x] = bi;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s && (sm[threadIdx.x + s] > sm[threadIdx.x] ||
+            (sm[threadIdx.x + s] == sm[threadIdx.x] && si[threadIdx.x + s] < si[threadIdx.x]))) {
+            sm[threadIdx.x] = sm[threadIdx.x + s];
+            si[threadIdx.x] = si[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) { mx[bid] = sm[0]; mi[bid] = si[0]; }
+}
+
+__global__ void h1bp_argmax_pass2_kernel(const float* __restrict__ mx,
+                                         const int* __restrict__ mi,
+                                         int nblk, int* __restrict__ out) {
+    float bm = -INFINITY; int bi = -1;
+    for (int i = threadIdx.x; i < nblk; i += blockDim.x) {
+        if (mx[i] > bm || (mx[i] == bm && mi[i] < bi)) { bm = mx[i]; bi = mi[i]; }
+    }
+    __shared__ float sm[256]; __shared__ int si[256];
+    sm[threadIdx.x] = bm; si[threadIdx.x] = bi;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s && (sm[threadIdx.x + s] > sm[threadIdx.x] ||
+            (sm[threadIdx.x + s] == sm[threadIdx.x] && si[threadIdx.x + s] < si[threadIdx.x]))) {
+            sm[threadIdx.x] = sm[threadIdx.x + s];
+            si[threadIdx.x] = si[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *out = si[0];
+}
+
+// Generic device copy (the embed-copy kernel doubles as a copy helper with
+// token 0; that hack broke when embed gained a device-token pointer).
+__global__ void h1bp_copy_kernel(float* __restrict__ dst,
+                                 const float* __restrict__ src, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) dst[i] = src[i];
 }

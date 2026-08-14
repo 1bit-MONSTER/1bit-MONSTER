@@ -14,6 +14,11 @@
 
 #include "hip_1bp_kernels.hip"
 
+extern "C" rcpp_status_t rcpp_kv_cache_attn_decode_dpos(
+    const void* Q_dev, const void* K_dev, const void* V_dev, void* out_dev,
+    int num_q_heads, int num_kv_heads, int head_dim,
+    const int* seq_len_dev, float scale, void* stream);
+
 static constexpr float EPS = 1e-6f;
 
 #define HIP_CHECK(call) \
@@ -59,6 +64,23 @@ struct Hip1bpBackend : Backend {
     size_t kvb=0; int pos=0;
     std::vector<float> cpu_final_norm;
 
+    // Phase 1: device argmax scratch (argmax kernel + 4-byte result)
+    static constexpr int AMX_MAXB = 512;
+    int* d_argmax = nullptr;
+    float* d_amx = nullptr;   // [AMX_MAXB]
+    int* d_ami = nullptr;     // [AMX_MAXB]
+
+    // Phase 2: hipGraph capture — per-token step captured once, replayed.
+    // d_pos/d_token are read by kernels at replay; h_* are pinned host sides.
+    int* d_pos = nullptr;   // device pos (written by kernels' *d_pos reads)
+    int* d_token = nullptr; // device token id
+    int* h_token = nullptr; // pinned host mirrors (updated per replay)
+    int* h_pos = nullptr;
+    int* h_res = nullptr;
+    hipGraph_t graph = nullptr;
+    hipGraphExec_t graphExec = nullptr;
+    bool graph_ok = false;
+
     Hip1bpBackend(){type=BackendType::HIP_GPU;name="HIP 1BP GPU";}
     ~Hip1bpBackend()override{destroy();}
     bool can_infer()const override{return true;}
@@ -98,6 +120,14 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipMalloc(&dffn,H*4));
         HIP_CHECK(hipMalloc(&dlogits,VOCAB*4));
         HIP_CHECK(hipMalloc(&dpart,(size_t)std::max(IM,H)*96*4));  // 32 lanes * 3 warps
+        HIP_CHECK(hipMalloc(&d_argmax,4));
+        HIP_CHECK(hipMalloc(&d_amx,AMX_MAXB*4));
+        HIP_CHECK(hipMalloc(&d_ami,AMX_MAXB*4));
+        HIP_CHECK(hipMalloc(&d_pos,4));
+        HIP_CHECK(hipMalloc(&d_token,4));
+        HIP_CHECK(hipHostMalloc(&h_token,sizeof(int),hipHostMallocMapped));
+        HIP_CHECK(hipHostMalloc(&h_pos,sizeof(int),hipHostMallocMapped));
+        HIP_CHECK(hipHostMalloc(&h_res,sizeof(int),hipHostMallocMapped));
 
         if(cfg.format!=ModelFormat::ONEBP||cfg.model_path.empty())return false;
         printf("[hip1bp] Loading: %s\n",cfg.model_path.c_str());
@@ -204,7 +234,44 @@ struct Hip1bpBackend : Backend {
             else printf("[hip1bp] packed fast path: TQ2NZ bf16 (%d layers)\n", NC);
         }
 
-        gpu_ok=true;initialized=true;
+        // Phase 2: capture the full per-token step (embed → layers → final
+        // norm → lm_head → device argmax → 4B result copy) into a hipGraph.
+        // Kernels read *d_pos / *d_token at replay time, so one capture serves
+        // every decode step; the KV cache writes land at the replayed *d_pos.
+        gpu_ok = true;   // forward_dev() checks this — needed during capture
+        *h_token = 0; *h_pos = 0; *h_res = -1;
+        HIP_CHECK(hipMemcpy(d_token, h_token, sizeof(int), hipMemcpyHostToDevice));
+        HIP_CHECK(hipMemcpy(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice));
+        if (d_output || d_embed) {
+            hipError_t ce = hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal);
+            if (ce == hipSuccess) {
+                bool ok = forward_dev(0, false);
+                if (ok) {
+                    if (quant2 && d_output_packed) launch_tq2nz(d_output_packed, dh, dlogits, VOCAB, H);
+                    else h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits, d_output?d_output:d_embed, dh, VOCAB, H);
+                    int nblk = std::min(AMX_MAXB, (VOCAB + 255) / 256);
+                    h1bp_argmax_pass1_kernel<<<nblk,256,0,stream>>>(dlogits, VOCAB, d_amx, d_ami);
+                    h1bp_argmax_pass2_kernel<<<1,256,0,stream>>>(d_amx, d_ami, nblk, d_argmax);
+                    HIP_CHECK(hipMemcpyAsync(h_res, d_argmax, sizeof(int), hipMemcpyDeviceToHost, stream));
+                }
+                ce = hipStreamEndCapture(stream, &graph);
+                if (ce == hipSuccess && ok) {
+                    hipError_t ie = hipGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0);
+                    if (ie == hipSuccess) {
+                        graph_ok = true;
+                        printf("[hip1bp] Phase 2: decode graph captured OK\n");
+                    } else {
+                        fprintf(stderr, "[hip1bp] graph instantiate failed: %s\n", hipGetErrorString(ie));
+                    }
+                } else {
+                    fprintf(stderr, "[hip1bp] capture failed: ok=%d err=%s\n", ok ? 1 : 0, hipGetErrorString(ce));
+                }
+            } else {
+                fprintf(stderr, "[hip1bp] capture begin failed: %s\n", hipGetErrorString(ce));
+            }
+        }
+
+        initialized=true;
         printf("[hip1bp] ✅ GPU 1BP ready\n");
         return true;
     }
@@ -222,19 +289,28 @@ struct Hip1bpBackend : Backend {
         h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
     }
 
-    bool forward(int token_id,float* hidden_out)override{
+    // Device-resident layer loop: runs the full forward, leaves the final
+    // hidden state in dh. No D2H copies, no pos++ — caller decides.
+    // with_dumps=false when capturing (H1BP_DUMP does host I/O — not capturable).
+    bool forward_dev(int token_id, bool with_dumps){
         if(!gpu_ok)return false;
         // KV cache holds max_seq positions (issue #1267)
         if (pos >= max_seq) {
             fprintf(stderr, "[hip_1bp] KV overflow: pos=%d >= max_seq=%d\n", pos, max_seq);
             return false;
         }
+        // Phase 2: pos/token live in device memory so the captured graph
+        // re-reads them every replay. Pinned host → async 4B copies.
+        *h_token = token_id; *h_pos = pos;
+        HIP_CHECK(hipMemcpyAsync(d_token, h_token, sizeof(int), hipMemcpyHostToDevice, stream));
+        HIP_CHECK(hipMemcpyAsync(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice, stream));
         int H_=H,NH_=NH,NKV_=NKV,HD_=HD,IM_=IM,NC_=NC;
         int block=256;
+        const char* dump_dir = with_dumps ? getenv("H1BP_DUMP") : nullptr;
 
-        // Embedding
-        if(token_id>=0&&token_id<VOCAB&&d_embed)
-            h1bp_embed_copy_kernel<<<(H_+block-1)/block,block,0,stream>>>(dh,d_embed,token_id,H_);
+        // Embedding (token guard moved into the kernel — reads *d_token)
+        if(d_embed)
+            h1bp_embed_copy_kernel<<<(H_+block-1)/block,block,0,stream>>>(dh,d_embed,d_token,H_,VOCAB);
         else
             HIP_CHECK(hipMemset(dh,0,H_*4));
 
@@ -245,7 +321,7 @@ struct Hip1bpBackend : Backend {
             //    (rmsnorm is in-place; adding the normed value instead of the
             //    original input breaks the residual stream — same bug the
             //    fused backend had). dsilu is free during attention.
-            h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dsilu,dh,0,H_);
+            h1bp_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dsilu,dh,H_);
             if(ll.pn)h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pn,H_,EPS);
             else h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
 
@@ -265,12 +341,12 @@ struct Hip1bpBackend : Backend {
             if(ll.q_norm) h1bp_head_rmsnorm_kernel<<<NH_,256,0,stream>>>(datt,ll.q_norm,HD_,EPS);
             if(ll.k_norm) h1bp_head_rmsnorm_kernel<<<NKV_,256,0,stream>>>(dgate,ll.k_norm,HD_,EPS);
 
-            // 3. RoPE
-            if(ll.wq) h1bp_rope_kernel<<<NH_,HD_/2,0,stream>>>(datt,HD_,pos,rope_theta,NH_);
-            if(ll.wk) h1bp_rope_kernel<<<NKV_,HD_/2,0,stream>>>(dgate,HD_,pos,rope_theta,NKV_);
+            // 3. RoPE (pos read from *d_pos)
+            if(ll.wq) h1bp_rope_kernel<<<NH_,HD_/2,0,stream>>>(datt,HD_,d_pos,rope_theta,NH_);
+            if(ll.wk) h1bp_rope_kernel<<<NKV_,HD_/2,0,stream>>>(dgate,HD_,d_pos,rope_theta,NKV_);
 
             // QKV post-RoPE dump (bit-perfect bisection): H1BP_DUMP=<dir>
-            if (const char* dd = getenv("H1BP_DUMP")) {
+            if (dump_dir) {
                 static std::vector<float> tq, tk, tv;
                 int qn = NH_*HD_, kn = NKV_*HD_;
                 tq.resize(qn); tk.resize(kn); tv.resize(kn);
@@ -278,11 +354,11 @@ struct Hip1bpBackend : Backend {
                 hipMemcpy(tk.data(), dgate, kn*4, hipMemcpyDeviceToHost);
                 hipMemcpy(tv.data(), dup, kn*4, hipMemcpyDeviceToHost);
                 char fn[512];
-                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_Q.f32", dd, l, pos);
+                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_Q.f32", dump_dir, l, pos);
                 FILE* f = fopen(fn, "wb"); if (f) { fwrite(tq.data(),4,qn,f); fclose(f); }
-                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_K.f32", dd, l, pos);
+                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_K.f32", dump_dir, l, pos);
                 f = fopen(fn, "wb"); if (f) { fwrite(tk.data(),4,kn,f); fclose(f); }
-                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_V.f32", dd, l, pos);
+                snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_V.f32", dump_dir, l, pos);
                 f = fopen(fn, "wb"); if (f) { fwrite(tv.data(),4,kn,f); fclose(f); }
             }
 
@@ -292,20 +368,20 @@ struct Hip1bpBackend : Backend {
                 // Per-layer KV: layer l owns [l*max_seq*NKV*HD, (l+1)*...)
                 __half* lk=dK+(size_t)l*max_seq*NKV_*HD_;
                 __half* lv=dV+(size_t)l*max_seq*NKV_*HD_;
-                h1bp_kv_store_kernel<<<NKV_,HD_,0,stream>>>(lk,lv,dgate,dup,pos,NKV_,HD_,max_seq);
+                h1bp_kv_store_kernel<<<NKV_,HD_,0,stream>>>(lk,lv,dgate,dup,d_pos,NKV_,HD_,max_seq);
 
                 float scl=1.0f/sqrtf((float)HD_);
-                rcpp_kv_cache_attn_decode(dQ,lk,lv,dAttn,NH_,NKV_,HD_,pos+1,scl,stream);
+                rcpp_kv_cache_attn_decode_dpos(dQ,lk,lv,dAttn,NH_,NKV_,HD_,d_pos,scl,stream);
 
                 // Use separate datt2 for attn output — avoids RAW hazard with datt (used by Q GEMV next layer)
                 h1bp_h2f_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt2,dAttn,NH_*HD_);
-                if (const char* dd = getenv("H1BP_DUMP")) {
+                if (dump_dir) {
                     static std::vector<float> ta;
                     int qn = NH_*HD_;
                     ta.resize(qn);
                     hipMemcpy(ta.data(), datt2, qn*4, hipMemcpyDeviceToHost);
                     char fn[512];
-                    snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_ATTN.f32", dd, l, pos);
+                    snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_ATTN.f32", dump_dir, l, pos);
                     FILE* f = fopen(fn, "wb"); if (f) { fwrite(ta.data(),4,qn,f); fclose(f); }
                 }
                 if(quant2&&PD[l].po){
@@ -313,21 +389,21 @@ struct Hip1bpBackend : Backend {
                 } else {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
                 }
-                if (const char* dd = getenv("H1BP_DUMP")) {
+                if (dump_dir) {
                     static std::vector<float> t1;
                     t1.resize(H_);
                     hipMemcpy(t1.data(), doproj, H_*4, hipMemcpyDeviceToHost);
-                    char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_AO.f32", dd, l, pos);
+                    char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_AO.f32", dump_dir, l, pos);
                     FILE* f = fopen(fn, "wb"); if (f) { fwrite(t1.data(),4,H_,f); fclose(f); }
                 }
                 // Residual: dh = saved pre-norm input + attn_out
-                h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dsilu,0,H_);
+                h1bp_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dsilu,H_);
                 h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,H_);
             }
 
             // 5. Post-attention RMSNorm — save pre-norm input for the residual
             //    (doproj is free during FFN).
-            h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(doproj,dh,0,H_);
+            h1bp_copy_kernel<<<(H_+255)/256,256,0,stream>>>(doproj,dh,H_);
             if(ll.pon)h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,ll.pon,H_,EPS);
             else h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,nullptr,H_,EPS);
 
@@ -349,25 +425,25 @@ struct Hip1bpBackend : Backend {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(dffn,ll.w3,dsilu,H_,IM_);
 
                 }
-                if (const char* dd = getenv("H1BP_DUMP")) {
+                if (dump_dir) {
                     static std::vector<float> t2;
                     t2.resize(H_);
                     hipMemcpy(t2.data(), dffn, H_*4, hipMemcpyDeviceToHost);
-                    char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_DD.f32", dd, l, pos);
+                    char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d_DD.f32", dump_dir, l, pos);
                     FILE* f = fopen(fn, "wb"); if (f) { fwrite(t2.data(),4,H_,f); fclose(f); }
                 }
                 // Residual: dh = saved pre-FFN input + ffn_out (doproj held
                 // the pre-norm input from step 5).
-                h1bp_embed_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,0,H_);
+                h1bp_copy_kernel<<<(H_+255)/256,256,0,stream>>>(dh,doproj,H_);
                 h1bp_add_kernel<<<(H_+255)/256,256,0,stream>>>(dh,dffn,H_);
             }
 
             // Layer-output dump (bit-perfect bisection): H1BP_DUMP=<dir>
-            if (const char* dd = getenv("H1BP_DUMP")) {
+            if (dump_dir) {
                 static std::vector<float> tmp;
                 tmp.resize(H_);
                 hipMemcpy(tmp.data(), dh, H_*4, hipMemcpyDeviceToHost);
-                char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d.f32", dd, l, pos);
+                char fn[512]; snprintf(fn, sizeof fn, "%s/hip_L%02d_T%05d.f32", dump_dir, l, pos);
                 FILE* f = fopen(fn, "wb");
                 if (f) { fwrite(tmp.data(), 4, H_, f); fclose(f); }
             }
@@ -375,9 +451,43 @@ struct Hip1bpBackend : Backend {
 
         // Final RMSNorm
         h1bp_rmsnorm_kernel<<<1,256,0,stream>>>(dh,d_final_norm,H_,EPS);
-        HIP_CHECK(hipMemcpy(hidden_out,dh,H_*4,hipMemcpyDeviceToHost));
+        return true;
+    }
+
+    bool forward(int token_id,float* hidden_out)override{
+        if(!forward_dev(token_id,true))return false;
+        HIP_CHECK(hipMemcpy(hidden_out,dh,H*4,hipMemcpyDeviceToHost));
         pos++;
         return true;
+    }
+
+    // Phase 1 fused fast path: forward + lm_head + argmax all on device,
+    // single 4-byte D2H copy of the token id per step (kills the H-sized
+    // hidden round-trip and the VOCAB-sized logits copy). Bit-identical to
+    // generate() == forward() + lm_head() — argmax semantics unchanged.
+    // Phase 2: when graph_ok, the whole step replays from the captured graph.
+    int generate_fast(int token_id){
+        if (graph_ok) {
+            *h_token = token_id; *h_pos = pos;
+            HIP_CHECK(hipGraphLaunch(graphExec, stream));
+            HIP_CHECK(hipStreamSynchronize(stream));
+            pos++;
+            return *h_res;
+        }
+        if(!forward_dev(token_id,false))return -1;
+        if(!d_output&&!d_embed){pos++;return 0;}
+        if(quant2&&d_output_packed){
+            launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
+        } else {
+            h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);
+        }
+        int nblk=std::min(AMX_MAXB,(VOCAB+255)/256);
+        h1bp_argmax_pass1_kernel<<<nblk,256,0,stream>>>(dlogits,VOCAB,d_amx,d_ami);
+        h1bp_argmax_pass2_kernel<<<1,256,0,stream>>>(d_amx,d_ami,nblk,d_argmax);
+        int n=-1;
+        HIP_CHECK(hipMemcpy(&n,d_argmax,sizeof(int),hipMemcpyDeviceToHost));
+        pos++;
+        return n;
     }
 
     bool lm_head(const float* hidden,float* logits,int* argmax)override{
@@ -401,10 +511,7 @@ struct Hip1bpBackend : Backend {
     }
 
     int generate(int token_id)override{
-        std::vector<float>hidden(H);
-        if(!forward(token_id,hidden.data()))return-1;
-        std::vector<float>logits(VOCAB);
-        int n=-1;lm_head(hidden.data(),logits.data(),&n);return n;
+        return generate_fast(token_id);
     }
 
     float benchmark(int tokens)override{
@@ -424,6 +531,14 @@ struct Hip1bpBackend : Backend {
         L.clear();P.clear();model_.reset();
         hf(dh);hf(datt);hf(dgate);hf(dup);hf(dsilu);hf(doproj);hf(dffn);hf(dlogits);hf(dpart);
         hf(datt2);hf(dK);hf(dV);hf(dQ);hf(dAttn);
+        hf(d_argmax);hf(d_amx);hf(d_ami);
+        hf(d_pos);hf(d_token);
+        if (graphExec) { HIP_CHECK_D(hipGraphExecDestroy(graphExec)); graphExec = nullptr; }
+        if (graph) { HIP_CHECK_D(hipGraphDestroy(graph)); graph = nullptr; }
+        graph_ok = false;
+        if (h_token) { HIP_CHECK_D(hipHostFree(h_token)); h_token = nullptr; }
+        if (h_pos) { HIP_CHECK_D(hipHostFree(h_pos)); h_pos = nullptr; }
+        if (h_res) { HIP_CHECK_D(hipHostFree(h_res)); h_res = nullptr; }
         if(stream){HIP_CHECK_D(hipStreamDestroy(stream));stream=nullptr;}
         gpu_ok=false;initialized=false;
     }
