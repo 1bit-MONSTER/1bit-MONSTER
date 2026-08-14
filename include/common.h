@@ -108,6 +108,9 @@ struct ModelConfig {
     // no RoPE + non-gated gelu FFN. Set by the loader for RCPP_ARCH_GPT2.
     bool use_learned_pos = false;
     bool no_rope = false;
+    // Falcon (old arch): parallel attention+FFN — both consume the SAME
+    // layer-norm output and both add to the residual. Set for RCPP_ARCH_FALCON.
+    bool parallel_attn_ffn = false;
     // Gemma-2/3: logit soft-caps from config (0 = none). Gemma3-1b has both
     // None; Gemma-2 has attn=50.0 / final=30.0. The engine must NOT hardcode
     // these on the arch string — gemma3-1b would be wrongly capped.
