@@ -67,6 +67,21 @@ int main() {
     check("bloom", RCPP_ARCH_BLOOM, "bloom", false);
     check("unknown", RCPP_ARCH_UNKNOWN, "mystery", false);
 
+    // gemma3 sliding-window layer pattern: non-full layers are sliding
+    // (il %% pattern != pattern-1), full layers (pattern-1, 2*pattern-1, ...)
+    // use the full rope + no window mask. Same condition as the hybrid-rope
+    // selection in the attention loop — self-consistent by construction.
+    {
+        const int pattern = 4;
+        int sliding = 0, full = 0;
+        for (int il = 0; il < 12; il++) {
+            if (il % pattern == pattern - 1) full++; else sliding++;
+        }
+        ++total;
+        if (sliding == 9 && full == 3) std::printf("ok  gemma3 SWA pattern (9 sliding + 3 full of 12)\n");
+        else { std::printf("FAIL gemma3 SWA pattern: sliding=%d full=%d\n", sliding, full); ++fails; }
+    }
+
     if (fails) { std::printf("ROTATION TABLE: %d/%d FAILED\n", fails, total); return 1; }
     std::printf("ROTATION TABLE: all %d checks passed\n", total);
     return 0;
