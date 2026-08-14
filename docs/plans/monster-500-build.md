@@ -85,7 +85,7 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 
 - [x] `Testing/models_manifest.json`: per family {hf_arch_strings, mapping_target, quirk_flags (rotate/neox/bias/norms/moe/fused), e2e_model, oracle, budget} — **seed landed 2026-08-14** (11 families, validated + pending deck)
 - [x] `Testing/bringup_runner.sh`: mapping gate + per-family generation gate (20/20 vs torch) — **skeleton landed 2026-08-14**, qwen3 gate passes
-- [ ] Codify as repo skill (`skills/` — seed is `skills/1bit-writer`): "add a family" = edit manifest + quirk code + run bringup_runner
+- [x] Codify as repo skill — **`skills/model-bringup/SKILL.md` (2026-08-15)**: the guided process (recon → mapping → quirk code → honest tier → gate), with the recurring gotchas catalogued (head-interleaved qkv, GGUF [out][in], exps layout + the circular-verification trap, NORM vs NEOX rope, ALiBi variants, residual clobbering, buffer sizing, name-mapping substring order, dead-code-backend warning). Note: the plan's assumption that `skills/1bit-writer` was the bring-up seed was wrong — that skill is content-writing; the bring-up skill is new.
 - [ ] CI hook: manifest additions gated on `run_all.sh`
 
 **Gate:** a new family added with zero human archaeology — mapping + manifest + runner → green.
