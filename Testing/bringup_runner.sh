@@ -35,6 +35,24 @@ EOF
 echo
 for fam in $(python3 -c "
 import json; print(' '.join(f['family'] for f in json.load(open('Testing/models_manifest.json'))['families'] if f['status']=='validated'))"); do
+    # Families with a manifest-level gate command (custom harness/oracle: numpy
+    # refs, torch remote-code oracles, bespoke backends). The gate is the
+    # exact command that must exit 0 — "add a family" = manifest entry with a
+    # gate, no runner surgery.
+    gate_cmd=$(python3 -c "
+import json
+for f in json.load(open('Testing/models_manifest.json'))['families']:
+    if f['family']=='$fam' and f.get('gate'): print(f['gate']); break")
+    if [ -n "$gate_cmd" ]; then
+        total=$((total+1))
+        if eval "$gate_cmd" 2>/dev/null; then
+            echo "  $fam [gate]: PASS"
+        else
+            echo "  $fam [gate]: FAIL"
+            fail=$((fail+1))
+        fi
+        continue
+    fi
     dir=/tmp/onebit-e2e/$fam
     if [ -f "$dir/oracle-q8.gguf" ] && [ -f "$dir/config.json" ]; then
         # families whose torch oracle is unavailable (archs dropped from
