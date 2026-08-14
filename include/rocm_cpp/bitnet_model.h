@@ -78,6 +78,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "llama")   == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mistral") == 0) return RCPP_ARCH_MISTRAL;
     if (strcmp(s, "ministral") == 0) return RCPP_ARCH_MISTRAL;  // Ministral (config declares MistralForCausalLM)
+    if (strcmp(s, "sparsemistralforcausallm") == 0) return RCPP_ARCH_MISTRAL;  // SparseMistral (mistral layout)
     if (strcmp(s, "qwen2")   == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "gemma")   == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "gemma2")  == 0) return RCPP_ARCH_GEMMA;
@@ -114,6 +115,10 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "decilm")    == 0) return RCPP_ARCH_LLAMA;      // DeciLM (llama-layout, GQA)
     if (strcmp(s, "hunyuan")   == 0) return RCPP_ARCH_LLAMA;      // HunYuan dense (llama-layout)
     if (strcmp(s, "nanbeige")  == 0) return RCPP_ARCH_LLAMA;      // Nanbeige (llama-layout)
+    if (strcmp(s, "recast8b_llama") == 0) return RCPP_ARCH_LLAMA; // RECAST (llama-layout)
+    if (strcmp(s, "hyperllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "sparsellama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "constrainedllama") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mosaic")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mpt")       == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "pixtral")   == 0) return RCPP_ARCH_MISTRAL;
@@ -121,6 +126,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "granite")  == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "granitemoe") == 0) return RCPP_ARCH_GEMMA;
     if (strcmp(s, "phi3")    == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "phi3small") == 0) return RCPP_ARCH_PHI;  // Phi-3-small (phi layout)
+    if (strcmp(s, "kphi3")   == 0) return RCPP_ARCH_PHI;    // K-Phi3 (phi layout)
     if (strcmp(s, "phi4")    == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "starcoder") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "starcoder2") == 0) return RCPP_ARCH_LLAMA;
@@ -134,6 +141,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "exaone")     == 0) return RCPP_ARCH_LLAMA;  // LG EXAONE 3 (LLaMA-layout)
     if (strcmp(s, "ExaoneForCausalLM")   == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "solar")      == 0) return RCPP_ARCH_LLAMA;  // upstage SOLAR (LLaMA-layout)
+    if (strcmp(s, "solaropen")  == 0) return RCPP_ARCH_LLAMA;  // SolarOpen (llama-layout)
+    if (strcmp(s, "solaropen2") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "internlm")   == 0) return RCPP_ARCH_LLAMA;  // InternLM-1
     if (strcmp(s, "internlm2")  == 0) return RCPP_ARCH_LLAMA;  // InternLM-2 (LLaMA-layout)
     if (strcmp(s, "xverse")     == 0) return RCPP_ARCH_LLAMA;  // xverse (LLaMA-layout)
@@ -175,16 +184,21 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qwen3moe")  == 0) return RCPP_ARCH_QWEN3;   // Qwen3MoeForCausalLM (128/8 experts, mixtral-style)
     if (strcmp(s, "deepseekv2")== 0) return RCPP_ARCH_DEEPSEEK;   // DeepseekV2ForCausalLM (MLA)
     if (strcmp(s, "deepseekv3")== 0) return RCPP_ARCH_DEEPSEEK;   // DeepseekV3ForCausalLM (MLA)
+    if (strcmp(s, "deepseekv32")== 0) return RCPP_ARCH_DEEPSEEK;  // DeepseekV32ForCausalLM (V3.2, MLA)
     if (strcmp(s, "deepseekv4")== 0) return RCPP_ARCH_DEEPSEEK_V4; // DeepseekV4ForCausalLM
     if (strcmp(s, "gpt2")     == 0) return RCPP_ARCH_GPT2;   // GPT2LMHeadModel (custom tensor map)
     if (strcmp(s, "gpt2lmheadcustom") == 0) return RCPP_ARCH_GPT2;  // GPT2LMHeadCustomModel (gpt2 layout)
     if (strcmp(s, "biogpt")    == 0) return RCPP_ARCH_GPT2;       // BioGPT (gpt2-layout: learned pos emb, gelu)
     if (strcmp(s, "xglm")      == 0) return RCPP_ARCH_GPT2;       // XGLM (gpt2-layout)
+    if (strcmp(s, "gpjtgpt2model") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2almhead") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "poptorchpipelinedgpt2lmhead") == 0) return RCPP_ARCH_GPT2;
     if (strcmp(s, "gptneox")   == 0) return RCPP_ARCH_GPTNEOX; // GPTNeoXForCausalLM (parallel attn+FFN, LN+bias)
     if (strcmp(s, "opt")       == 0) return RCPP_ARCH_OPT;    // OPTForCausalLM (learned pos, relu)
     if (strcmp(s, "gptneo")    == 0) return RCPP_ARCH_GPTNEO; // GPTNeoForCausalLM
     if (strcmp(s, "codegen")   == 0) return RCPP_ARCH_CODEGEN; // CodeGenForCausalLM (fused qkv, partial rotary)
     if (strcmp(s, "gptj")      == 0) return RCPP_ARCH_GPTJ;    // GPTJForCausalLM (adjacent partial rotary)
+    if (strcmp(s, "gptjiang")  == 0) return RCPP_ARCH_GPTJ;    // GPTJiang (gptj layout)
     if (strcmp(s, "gptoss")    == 0) return RCPP_ARCH_GPTOSS;  // GptOssForCausalLM (packed FP4 MoE)
     if (strcmp(s, "step1")     == 0) return RCPP_ARCH_STEP1;   // Step1ForCausalLM (sqrt-ALiBi, no RoPE)
     if (strcmp(s, "step1moe")  == 0) return RCPP_ARCH_STEP1;   // Step1MoEForCausalLM (dense weights in practice; MoE cfg ignored until an expert-bearing ckpt is seen)
