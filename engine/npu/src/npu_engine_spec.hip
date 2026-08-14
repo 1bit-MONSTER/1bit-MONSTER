@@ -77,18 +77,28 @@ struct RopeTables{std::vector<float>cos,sin;int mp=0,hd=0;float th=1000000.0f;
 };
 
 static void quantize_avx(const float*A,int8_t*D,int n,float s){float is=1.0f/s;__m512 v_is=_mm512_set1_ps(is),v_max=_mm512_set1_ps(127.0f),v_min=_mm512_set1_ps(-127.0f);int i=0;for(;i+16<=n;i+=16){__m512 v=_mm512_loadu_ps(&A[i]);v=_mm512_mul_ps(v,v_is);v=_mm512_max_ps(v_min,_mm512_min_ps(v_max,v));__m512i vi=_mm512_cvtps_epi32(v);__m256i lo=_mm512_cvtepi32_epi16(vi);__m128i i8=_mm256_cvtepi16_epi8(lo);_mm_storeu_si128((__m128i*)&D[i],i8);}for(;i<n;i++){int q=(int)roundf(A[i]*is);if(q>127)q=127;else if(q<-127)q=-127;D[i]=(int8_t)q;}}
-static void dequant_avx(const int16_t*Cm,float*C,int n,float s){__m512 v_s=_mm512_set1_ps(s);int i=0;for(;i+16<=n;i+=16){__m256i vi16=_mm256_loadu_si256((__m256i*)&Cm[i]);__m512i vi32=_mm512_cvtepi16_epi32(vi16);__m512 v=_mm512_cvtepi32_ps(vi32);v=_mm512_mul_ps(v,v_s);_mm512_storeu_ps(&C[i],v);}for(;i<n;i++)C[i]=(float)Cm[i]*s;}
+static void dequant_avx(const int32_t*Cm,float*C,int n,float s){for(int i=0;i<n;i++)C[i]=(float)Cm[i]*s;}
 
-struct NpuGemmCtx{int MD,KD,ND;std::vector<uint32_t>ins;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;std::unique_ptr<xrt::module>mdl;std::unique_ptr<xrt::elf>elf;std::unique_ptr<xrt::ext::kernel>k;std::unique_ptr<xrt::bo>bA,bB,bC;int8_t*Am=nullptr;int16_t*Cm=nullptr;xrt::run run_;bool busy_=false;
+struct NpuGemmCtx{int MD,KD,ND;std::vector<uint32_t>ins;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;std::unique_ptr<xrt::kernel>k;std::unique_ptr<xrt::bo>bI,bA,bC,layerB[NC];int8_t*Am=nullptr;int32_t*Cm=nullptr;xrt::run run_;bool busy_=false;
     bool init(xrt::device&d,const char*xp,const char*ip,int md,int kd,int nd){
         MD=md;KD=kd;ND=nd;FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,SEEK_END);long sz=ftell(f);fseek(f,0,SEEK_SET);ins.resize(sz/4);if(fread(ins.data(),4,ins.size(),f)!=ins.size()){fclose(f);return false;}fclose(f);
-        try{std::vector<char>iraw((char*)ins.data(),(char*)ins.data()+ins.size()*4);aiebu::aiebu_assembler asmblr(aiebu::aiebu_assembler::buffer_type::blob_instr_transaction,iraw);auto e=asmblr.get_elf();xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());elf=std::make_unique<xrt::elf>(e.data(),e.size());}catch(...){return false;}
-        mdl=std::make_unique<xrt::module>(*elf);k=std::make_unique<xrt::ext::kernel>(*hc,*mdl,"MLIR_AIE");
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,0);bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2,XRT_BO_FLAGS_HOST_ONLY,0);bB=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,0);Am=(int8_t*)bA->map();Cm=(int16_t*)bC->map();return true;}
-    void packB(const float*w,int K,int N,float&sout){float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}sout=(amax<1e-12f)?1.0f:amax/127.0f;float is=127.0f/(amax<1e-12f?1.0f:amax);auto*Bm=(int8_t*)bB->map();for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;int q=(int)roundf(v*is);if(q>127)q=127;else if(q<-127)q=-127;Bm[i]=(int8_t)q;}bB->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
-    void launch(const float*A,int am,int ak,float as_){memset(Am,0,(size_t)am*KD);quantize_avx(A,Am,am*ak,as_);bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);run_=k->operator()(3,0,0,*bA,*bB,*bC);busy_=true;}
+        // #1601: bind BOs to the kernel argument groups (proven pattern from
+        // npu_engine_cb.cpp). The previous group_id-0 xrt::ext::kernel + aiebu
+        // ELF path left the HOST_ONLY BOs unmapped for AIE DMA, flooding
+        // AMD-Vi IO_PAGE_FAULT and stalling every GEMM (~17s/layer).
+        try{xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");}catch(...){return false;}
+        bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
+        memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
+        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
+        Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();
+        for(int l=0;l<NC;l++)layerB[l]=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(4));
+        printf("  [GEMM %s] bI=%p bA=%p bB=%p bC=%p ins=%zu\n", xp, (void*)bI->map(), (void*)bA->map(), (void*)bB->map(), (void*)bC->map(), ins.size());
+        return true;}
+    void packB(int l,const float*w,int K,int N,float&sout){float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}sout=(amax<1e-12f)?1.0f:amax/127.0f;float is=127.0f/(amax<1e-12f?1.0f:amax);auto*Bm=(int8_t*)layerB[l]->map();for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;int q=(int)roundf(v*is);if(q>127)q=127;else if(q<-127)q=-127;Bm[i]=(int8_t)q;}layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
+    void launch(int l,const float*A,int am,int ak,float as_){memset(Am,0,(size_t)am*KD);quantize_avx(A,Am,am*ak,as_);bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);run_=k->operator()((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);busy_=true;}
     void wait(float*C,int am,int an,float as_,float Bs){if(!busy_)return;run_.wait();bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);float cs=as_*Bs;dequant_avx(Cm,C,am*an,cs);busy_=false;}
-    void go(int l,const float*A,int am,int ak,float as_,float Bs,float*C,int an){(void)l;launch(A,am,ak,as_);wait(C,am,an,as_,Bs);}
+    void go(int l,const float*A,int am,int ak,float as_,float Bs,float*C,int an){launch(l,A,am,ak,as_);wait(C,am,an,as_,Bs);}
 };
 
 // ── Tiled f16 GEMV (column-major weights) ─────────────────────────
@@ -163,12 +173,12 @@ int main(int argc,char**argv){
     for(int l=0;l<cfg.NC;l++){int qr,kr,vr,or_,gr,ur,dr,u;
         float*qw=dequant_i8_to_float(i8p(lo[l].q),256,&qr,&u),*kw=dequant_i8_to_float(i8p(lo[l].k),128,&kr,&u),*vw=dequant_i8_to_float(i8p(lo[l].v),128,&vr,&u);
         int t=qr+kr+vr;std::vector<float>w((size_t)cfg.H*t);for(int kk=0;kk<cfg.H;kk++){memcpy(&w[(size_t)kk*t],&qw[(size_t)kk*qr],(size_t)qr*4);memcpy(&w[(size_t)kk*t+qr],&kw[(size_t)kk*kr],(size_t)kr*4);memcpy(&w[(size_t)kk*t+qr+kr],&vw[(size_t)kk*vr],(size_t)vr*4);}
-        cq.packB(w.data(),cfg.H,t,ws[l].qk);free(qw);free(kw);free(vw);
-        float*ow=dequant_i8_to_float(i8p(lo[l].o),256,&or_,&u);co.packB(ow,or_,cfg.H,ws[l].o_);free(ow);
+        cq.packB(l,w.data(),cfg.H,t,ws[l].qk);free(qw);free(kw);free(vw);
+        float*ow=dequant_i8_to_float(i8p(lo[l].o),256,&or_,&u);co.packB(l,ow,or_,cfg.H,ws[l].o_);free(ow);
         float*gw=dequant_i8_to_float(i8p(lo[l].g),384,&gr,&u),*uw=dequant_i8_to_float(i8p(lo[l].u),384,&ur,&u);
         int t2=gr+ur;std::vector<float>w2((size_t)cfg.H*t2);for(int kk=0;kk<cfg.H;kk++){memcpy(&w2[(size_t)kk*t2],&gw[(size_t)kk*gr],(size_t)gr*4);memcpy(&w2[(size_t)kk*t2+gr],&uw[(size_t)kk*ur],(size_t)ur*4);}
-        cg.packB(w2.data(),cfg.H,t2,ws[l].g_);free(gw);free(uw);
-        float*dw=dequant_i8_to_float(i8p(lo[l].d),384,&dr,&u);cd.packB(dw,dr,cfg.H,ws[l].d_);free(dw);}
+        cg.packB(l,w2.data(),cfg.H,t2,ws[l].g_);free(gw);free(uw);
+        float*dw=dequant_i8_to_float(i8p(lo[l].d),384,&dr,&u);cd.packB(l,dw,dr,cfg.H,ws[l].d_);free(dw);}
 
     // ── GPU KV cache + attn buffers ────────────────────────────────
     __half *dK=nullptr,*dV=nullptr,*dQ=nullptr,*dAO=nullptr;
@@ -225,7 +235,7 @@ int main(int argc,char**argv){
     hipMalloc(&dV_d,(size_t)7*NKV*HD*2);hipMemset(dV_d,0,(size_t)7*NKV*HD*2);
     hipMalloc(&d_hid,(size_t)H*2);hipMalloc(&d_emb,(size_t)H*2);
     hipMalloc(&d_con,(size_t)(2*H)*2);hipMalloc(&d_attn,(size_t)(NH*HD)*2);
-    hipMalloc(&d_scr,(size_t)max(IM,2*H)*2);
+    hipMalloc(&d_scr,(size_t)std::max(IM,2*H)*2);
     hipMalloc(&d_lgt,(size_t)V*4); // f32 logits
 
     // RoPE tables on GPU
