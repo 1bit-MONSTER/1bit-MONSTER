@@ -239,6 +239,12 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
     // GGUF arch tags are lowercase ("qwen3", "llama") — the router compares
     // case-sensitively, so normalize ("Qwen3-4B" filename -> "qwen3").
     for (auto& c : cfg.architecture) c = (char)tolower((unsigned char)c);
+
+    // Dispatch enum — same mapping GGUF/safetensors use. Without this,
+    // Q4NX models always dispatch as RCPP_ARCH_BITNET and skip the qwen3
+    // route entirely (npu_flm never engages). Found 2026-08-13, same class
+    // of gap as the safetensors one.
+    cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
     cfg.model_name = base;
     cfg.model_path = path;
     cfg.format = ModelFormat::Q4NX;

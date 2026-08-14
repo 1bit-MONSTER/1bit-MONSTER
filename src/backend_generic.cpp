@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include "model_discovery.h"
+#include "safetensors_reader.h"
 #include "rocm_cpp/tokenizer.h"
 
 // 1BP loader with full TQ2/Q4NX tile dequant (unity build)
@@ -80,6 +81,7 @@ struct GenericBackend : Backend {
     std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_silu, scratch_moe_down;
     std::vector<int> scratch_moe_idx;  // expert index for partial_sort
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
+    std::vector<float> rope_freqs_local; // gemma3 hybrid: local-layer theta table (0 = same)
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
     bool scratch_allocated_ = false;
     int cached_debug_ops_ = -1;  // cached getenv("CPU_DEBUG_OPS") — checked once
@@ -114,6 +116,8 @@ struct GenericBackend : Backend {
     // the arch STRING, not the enum — RCPP_ARCH_GEMMA also covers Granite
     // (Llama-style: no caps, rms eps 1e-5) and Gemma-1 (no caps).
     bool gemma_softcap_ = false;
+    float attn_cap_ = 0.0f;    // attention-logit tanh cap (gemma-2/3, 0 = none)
+    float final_cap_ = 0.0f;   // LM-head-logit tanh cap (gemma-2/3, 0 = none)
     // Gemma-family embeddings are stored unscaled; the model expects them
     // scaled by sqrt(hidden) at the input (gemma_pytorch / llama.cpp
     // gemma/gemma2/gemma3 graphs: inpL = scale(inpL, sqrtf(n_embd))).
@@ -222,12 +226,25 @@ struct GenericBackend : Backend {
                     closedir(d);
                 }
             }
-            printf("Generic: trying GGUF path: %s\n", gguf_path.c_str());
-            loaded = load_gguf(gguf_path);
+            FILE* mf = fopen(gguf_path.c_str(), "rb");
+            bool is_gguf = false;
+            if (mf) {
+                char magic[4] = {0};
+                if (fread(magic, 1, 4, mf) == 4) is_gguf = (memcmp(magic, "GGUF", 4) == 0);
+                fclose(mf);
+            }
+            if (is_gguf) {
+                printf("Generic: trying GGUF path: %s\n", gguf_path.c_str());
+                loaded = load_gguf(gguf_path);
+            }
         }
         if (!loaded && cfg.format == ModelFormat::ONEBP && !cfg.model_path.empty()) {
             // Try loading from 1BP format (shared with NPU engine)
             loaded = load_1bp(cfg.model_path);
+        }
+        if (!loaded && cfg.format == ModelFormat::SAFETENSORS && !cfg.model_path.empty()) {
+            // HF-native: load weights directly from a .safetensors checkpoint.
+            loaded = load_safetensors(cfg.model_path);
         }
         if (!loaded) {
             // Fall back: old .bin format
@@ -267,6 +284,13 @@ struct GenericBackend : Backend {
         float theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
         for (int i = 0; i < half; i++)
             rope_freqs[i] = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
+        // Gemma-3 hybrid: local layers use rope_local_base_freq (10000), full
+        // layers use rope_theta (1e6). Precompute both tables.
+        if (cfg.sliding_window_pattern > 0 && cfg.rope_local_base_freq > 0.0f) {
+            rope_freqs_local.resize(half);
+            for (int i = 0; i < half; i++)
+                rope_freqs_local[i] = 1.0f / powf(cfg.rope_local_base_freq, (2.0f * i) / (float)rot_dim);
+        }
         inv_sqrt_hd_ = 1.0f / sqrtf((float)cfg.head_dim);
 
         // Cache getenv results checked in the hot path
@@ -276,13 +300,21 @@ struct GenericBackend : Backend {
             cached_num_layers_ = (nl && nl[0]) ? atoi(nl) : cfg.n_layers;
         }
 
-        // Gemma-2/3/4: logit soft-capping + rms eps 1e-6. Keyed on the arch
-        // string (gemma2/gemma3/gemma4) — the RCPP_ARCH_GEMMA enum also
-        // covers Granite and Gemma-1, which need neither.
+        // Gemma-2/3/4: logit soft-capping + rms eps 1e-6. Caps come from the
+        // config when present (gemma2: 50/30; gemma3-1b: none), with the old
+        // arch-string defaults as fallback for config-less GGUF loads.
         gemma_softcap_ = cfg.architecture.rfind("gemma", 0) == 0 && cfg.architecture != "gemma";
+        attn_cap_ = cfg.attn_logit_softcapping > 0.0f ? cfg.attn_logit_softcapping
+                  : (gemma_softcap_ ? 50.0f : 0.0f);
+        final_cap_ = cfg.final_logit_softcapping > 0.0f ? cfg.final_logit_softcapping
+                   : (gemma_softcap_ ? 30.0f : 0.0f);
         if (cfg.architecture.rfind("gemma", 0) == 0) cfg.rms_norm_eps = 1e-6f;
         // Gemma-family input embedding scaling (sqrt(hidden)); Granite shares
         // the enum but is Llama-style and must NOT be scaled.
+        // Gemma-2/3 input embedding scaling: the HF path multiplies token
+        // embeddings by sqrt(hidden) (verified empirically for gemma3: lookup
+        // output norm 32.46 = 0.956 x sqrt(1152)); llama.cpp's gemma graphs
+        // bake the same. Granite shares the enum but is Llama-style.
         gemma_emb_scale_ = cfg.architecture.rfind("gemma", 0) == 0;
 
         initialized = true;
@@ -424,6 +456,275 @@ struct GenericBackend : Backend {
         return true;
     }
 
+    // Inverse of llama.cpp's convert-time RoPE pre-rotation: GGUF stores
+    // attn_q/k with dims interleaved [0, hd/2, 1, hd/2+1, ...]; the engine's
+    // half-split pairing expects natural order (corrected 2026-08-13).
+    void unrotate_rope_rows(std::vector<float>& flat, size_t idx, int heads, int dim, int in) {
+        if (dim < 2 || (dim & 1)) return;
+        std::vector<float> tmp(&flat[idx], &flat[idx] + (size_t)heads * dim * in);
+        std::vector<float> out(tmp.size());
+        for (int h = 0; h < heads; h++) {
+            for (int p = 0; p < dim; p++) {
+                int d = (p % 2) * (dim / 2) + (p / 2);   // inverse of the interleave
+                memcpy(&out[(size_t)(h * dim + d) * in], &tmp[(size_t)(h * dim + p) * in],
+                       (size_t)in * sizeof(float));
+            }
+        }
+        memcpy(&flat[idx], out.data(), out.size() * sizeof(float));
+    }
+
+
+    // HF-native weight loading: read a .safetensors checkpoint directly into
+    // the same flat-weights structure the GGUF/.bin loaders use. Weights are
+    // NATURAL order (no RoPE pre-rotation) — the engine's half-split rope
+    // pairing matches transformers exactly (corrected 2026-08-13).
+    bool load_safetensors(const std::string& path) {
+        std::string f = path;
+        struct stat st;
+        if (stat(f.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            DIR* d = opendir(f.c_str());
+            if (d) {
+                struct dirent* e;
+                while ((e = readdir(d)) != nullptr) {
+                    std::string n(e->d_name);
+                    if (n.size() > 12 && n.substr(n.size() - 12) == ".safetensors") { f = f + "/" + n; break; }
+                }
+                closedir(d);
+            }
+        }
+        SafetensorsWeightReader r;
+        bool opened = false;
+        // Sharded checkpoint? A sibling model.safetensors.index.json means the
+        // real tensors span shards — the index MUST take precedence over a
+        // single-shard open.
+        std::string dir = f;
+        size_t slash = dir.find_last_of('/');
+        if (slash != std::string::npos) dir = dir.substr(0, slash);
+        else dir = ".";
+        struct stat idx_st;
+        if (stat((dir + "/model.safetensors.index.json").c_str(), &idx_st) == 0 && S_ISREG(idx_st.st_mode))
+            opened = r.open_dir(dir);
+        if (!opened && stat(f.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            opened = r.open(f);
+        if (!opened) {
+            fprintf(stderr, "Generic: safetensors: cannot read %s (%s)\n", f.c_str(), r.error().c_str());
+            return false;
+        }
+
+        // Gemma2/3/4 RMSNorm convention: HF stores gamma and the model computes
+        // x * (1 + gamma); llama.cpp's GGUF bakes the +1. The safetensors
+        // loader adds +1 to every norm weight for gemma2/3/4.
+        const bool gemma_post_norms = (cfg.architecture == "gemma2" ||
+                                       cfg.architecture == "gemma3" ||
+                                       cfg.architecture == "gemma4");
+
+        // Arch guard — same refusal list as load_gguf + unknown.
+        if (cfg.arch == RCPP_ARCH_UNKNOWN ||
+            cfg.arch == RCPP_ARCH_ZAYA || cfg.arch == RCPP_ARCH_ZAMBA2 ||
+            cfg.arch == RCPP_ARCH_ZAMBA || cfg.arch == RCPP_ARCH_MAMBA ||
+            cfg.arch == RCPP_ARCH_QWEN35) {
+            fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
+                    f.c_str(), (int)cfg.arch,
+                    cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" : "");
+            return false;
+        }
+
+        if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
+            !r.get_tensor_f32("token_embd.weight", embed)) {
+            fprintf(stderr, "Generic: safetensors: missing embedding\n");
+            return false;
+        }
+        if (cfg.hidden > 0 && embed.size() % (size_t)cfg.hidden == 0 && !embed.empty())
+            cfg.vocab = cfg.vocab_size = (int)(embed.size() / (size_t)cfg.hidden);
+
+        if (!r.get_tensor_f32("model.norm.weight", final_norm))
+            r.get_tensor_f32("token_embd_norm.weight", final_norm);
+        if (gemma_post_norms && !final_norm.empty())
+            for (auto& v : final_norm) v += 1.0f;
+        r.get_tensor_f32("lm_head.weight", output_weight);   // optional: tied embeddings
+
+        layers.resize(cfg.n_layers);
+        char buf[128];
+        for (int l = 0; l < cfg.n_layers; l++) {
+            auto& lw = layers[l];
+            auto load = [&](const char* hf_name, size_t& idx, int rows, int cols) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
+                if (!r.get_tensor_f32(buf, w)) return;
+                if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n",
+                             buf, (int)w.size(), rows * cols);
+            };
+            int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads;
+            int HD = cfg.head_dim, IM = cfg.n_ff;
+            if (cfg.arch == RCPP_ARCH_PHI) {
+                // Phi-3 (and Phi-2 fused variants): self_attn.qkv_proj.weight
+                // is Q+K+V stacked row-wise [Q(NH*HD) | K(NKV*HD) | V(NKV*HD)];
+                // mlp.gate_up_proj.weight is [gate(IM) | up(IM)].
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "model.layers.%d.self_attn.qkv_proj.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) ||
+                    (int)qkv.size() != (size_t)(NH + 2 * NKV) * HD * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> q, k, v;
+                q.reserve((size_t)NH * HD * H); k.reserve((size_t)NKV * HD * H); v.reserve((size_t)NKV * HD * H);
+                size_t qr = (size_t)NH * HD, kr = (size_t)NKV * HD;
+                for (size_t r = 0; r < qr; r++) q.insert(q.end(), qkv.begin() + r * H, qkv.begin() + (r + 1) * H);
+                for (size_t r = 0; r < kr; r++) k.insert(k.end(), qkv.begin() + (qr + r) * H, qkv.begin() + (qr + r + 1) * H);
+                for (size_t r = 0; r < kr; r++) v.insert(v.end(), qkv.begin() + (qr + kr + r) * H, qkv.begin() + (qr + kr + r + 1) * H);
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                load("self_attn.o_proj.weight", lw.wo, NH * HD, H);
+                std::vector<float> gu;
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate_up_proj.weight", l);
+                if (!r.get_tensor_f32(buf, gu) || (int)gu.size() != (size_t)2 * IM * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized gate_up_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> gate, up;
+                gate.reserve((size_t)IM * H); up.reserve((size_t)IM * H);
+                for (size_t r = 0; r < (size_t)IM; r++) gate.insert(gate.end(), gu.begin() + r * H, gu.begin() + (r + 1) * H);
+                for (size_t r = 0; r < (size_t)IM; r++) up.insert(up.end(), gu.begin() + ((size_t)IM + r) * H, gu.begin() + ((size_t)IM + r + 1) * H);
+                lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
+                load("mlp.down_proj.weight", lw.w3, IM, H);
+            } else {
+            load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
+            load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
+            load("self_attn.v_proj.weight", lw.wv, H, NKV * HD);
+            load("self_attn.o_proj.weight", lw.wo, NH * HD, H);
+            if (cfg.n_experts > 0) {
+                // MoE layer — two HF conventions:
+                //  Mixtral/Qwen3: router mlp.gate.weight + per-expert files.
+                //  Granite: fused block_sparse_moe 3D tensors.
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate.weight", l);
+                const bool mixtral_style = r.has(buf);
+                if (mixtral_style) {
+                    std::vector<float> router;
+                    if (!r.get_tensor_f32(buf, router) || (int)router.size() != cfg.n_experts * H) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized router\n", buf);
+                        return false;
+                    }
+                    lw.moe_gate_inp = push(std::move(router));
+                    bool experts_ok = true;
+                    auto load_experts = [&](const char* hf_suffix, size_t& idx2, int rows, int cols) {
+                        if (!experts_ok) return;
+                        std::vector<float> stacked;
+                        stacked.reserve((size_t)cfg.n_experts * rows * cols);
+                        for (int e = 0; e < cfg.n_experts; e++) {
+                            std::vector<float> w;
+                            snprintf(buf, sizeof(buf), "model.layers.%d.mlp.experts.%d.%s", l, e, hf_suffix);
+                            if (!r.get_tensor_f32(buf, w) || (int)w.size() != rows * cols) {
+                                fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n",
+                                        buf, (int)w.size(), rows * cols);
+                                experts_ok = false;
+                                return;
+                            }
+                            stacked.insert(stacked.end(), w.begin(), w.end());
+                        }
+                        idx2 = push(std::move(stacked));
+                    };
+                    load_experts("gate_proj.weight", lw.moe_gate_exps, IM, H);
+                    load_experts("up_proj.weight", lw.moe_up_exps, IM, H);
+                    load_experts("down_proj.weight", lw.moe_down_exps, H, IM);
+                    snprintf(buf, sizeof(buf), "model.layers.%d.mlp.shared_expert.gate_proj.weight", l);
+                    if (r.has(buf))
+                        fprintf(stderr, "Generic: safetensors layer %d: shared expert present but unsupported (engine MoE path) — IGNORING\n", l);
+                    if (!experts_ok) {
+                        fprintf(stderr, "Generic: safetensors layer %d: MoE tensor missing — ABORTING LOAD\n", l);
+                        return false;
+                    }
+                } else {
+                    // Granite-style fused MoE.
+                    snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.router.layer.weight", l);
+                    std::vector<float> router;
+                    if (!r.get_tensor_f32(buf, router) || (int)router.size() != cfg.n_experts * H) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized router\n", buf);
+                        return false;
+                    }
+                    lw.moe_gate_inp = push(std::move(router));
+                    std::vector<float> input_linear, output_linear;
+                    snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.input_linear.weight", l);
+                    if (!r.get_tensor_f32(buf, input_linear) ||
+                        (int)input_linear.size() != cfg.n_experts * 2 * IM * H) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized input_linear\n", buf);
+                        return false;
+                    }
+                    snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.output_linear.weight", l);
+                    if (!r.get_tensor_f32(buf, output_linear) ||
+                        (int)output_linear.size() != cfg.n_experts * H * IM) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized output_linear\n", buf);
+                        return false;
+                    }
+                    std::vector<float> gate, up;
+                    gate.reserve((size_t)cfg.n_experts * IM * H);
+                    up.reserve((size_t)cfg.n_experts * IM * H);
+                    size_t per = (size_t)2 * IM * H, half = (size_t)IM * H;
+                    for (int e = 0; e < cfg.n_experts; e++) {
+                        gate.insert(gate.end(), input_linear.begin() + e * per,
+                                     input_linear.begin() + e * per + half);
+                        up.insert(up.end(), input_linear.begin() + e * per + half,
+                                  input_linear.begin() + (e + 1) * per);
+                    }
+                    lw.moe_gate_exps = push(std::move(gate));
+                    lw.moe_up_exps = push(std::move(up));
+                    lw.moe_down_exps = push(std::move(output_linear));
+                }
+            } else {
+                load("mlp.gate_proj.weight", lw.w1, H, IM);
+                load("mlp.up_proj.weight", lw.w2, H, IM);
+                load("mlp.down_proj.weight", lw.w3, IM, H);
+            }
+            }
+            // Norms: gemma2/3/4 need the +1 and post-norm naming.
+            auto load_norm = [&](const char* hf_name, size_t& idx, int n) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
+                if (!r.get_tensor_f32(buf, w)) return;
+                if ((int)w.size() != n) return;
+                if (gemma_post_norms)
+                    for (auto& v : w) v += 1.0f;
+                idx = push(std::move(w));
+            };
+            load_norm("input_layernorm.weight", lw.rms_attn, H);
+            if (gemma_post_norms) {
+                load_norm("pre_feedforward_layernorm.weight", lw.rms_ffn, H);
+                load_norm("post_attention_layernorm.weight", lw.post_attn_norm, H);
+                load_norm("post_feedforward_layernorm.weight", lw.post_ffn_norm, H);
+            } else {
+                load_norm("post_attention_layernorm.weight", lw.rms_ffn, H);
+            }
+            load_norm("self_attn.q_norm.weight", lw.q_norm, HD);
+            load_norm("self_attn.k_norm.weight", lw.k_norm, HD);
+            // Optional QKV bias (Qwen2 family).
+            auto load_bias = [&](const char* hf_name, size_t& idx, int n) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
+                if (!r.get_tensor_f32(buf, w)) return;
+                if ((int)w.size() == n) idx = push(std::move(w));
+            };
+            load_bias("self_attn.q_proj.bias", lw.bq, NH * HD);
+            load_bias("self_attn.k_proj.bias", lw.bk, NKV * HD);
+            load_bias("self_attn.v_proj.bias", lw.bv, NKV * HD);
+
+            if (cfg.n_experts > 0) {
+                if (lw.moe_gate_inp == SIZE_MAX || lw.moe_gate_exps == SIZE_MAX ||
+                    lw.moe_up_exps == SIZE_MAX || lw.moe_down_exps == SIZE_MAX) {
+                    fprintf(stderr, "Generic: safetensors layer %d: MoE tensors incomplete — ABORTING LOAD\n", l);
+                    return false;
+                }
+            } else if (lw.wq == SIZE_MAX || lw.wk == SIZE_MAX || lw.wv == SIZE_MAX ||
+                       lw.wo == SIZE_MAX || lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX ||
+                       lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX) {
+                fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
+                return false;
+            }
+        }
+        printf("Generic: safetensors loaded — %d layers, %.1fM params, arch=%s\n",
+               cfg.n_layers, (double)embed.size() / 1e6, cfg.architecture.c_str());
+        return true;
+    }
+
     bool load_gguf(const std::string& path) {
         ModelConfig hdr_cfg;
         if (!read_gguf_header(path, hdr_cfg)) return false;
@@ -525,6 +826,8 @@ struct GenericBackend : Backend {
             lw.wk = load_tensor(p + "attn_k.weight", (size_t)NKV*HD*H);
             lw.wv = load_tensor(p + "attn_v.weight", (size_t)NKV*HD*H);
             lw.wo = load_tensor(p + "attn_output.weight", (size_t)H*NH*HD);
+            if (lw.wq != SIZE_MAX) unrotate_rope_rows(flat_weights, lw.wq, NH, HD, H);
+            if (lw.wk != SIZE_MAX) unrotate_rope_rows(flat_weights, lw.wk, NKV, HD, H);
 
             // Check that all required tensors loaded correctly. If any shape
             // mismatch occurred, load_tensor returns SIZE_MAX and the model
@@ -661,16 +964,26 @@ struct GenericBackend : Backend {
     }
 
     // AVX-512 GEMV row kernel (always compiled, runtime-dispatched — #1346).
-    __attribute__((target("avx512f")))
+    // Accumulates in F64: gemma-family models reach activations O(1e4) with
+    // final-layer norm gammas ~500, so f32 accumulation noise (1e-5 relative)
+    // is amplified to visible logit errors. F64 accumulation is exact to
+    // f32 inputs and removes that noise source.
+    __attribute__((target("avx512f,avx512dq")))
     static float gemv_row_avx512(const float* in, const float* wr, int K) {
-        float s = 0;
+        double s = 0;
         int j = 0;
-        __m512 acc = _mm512_setzero_ps();
-        for (; j + 15 < K; j += 16)
-            acc = _mm512_fmadd_ps(_mm512_loadu_ps(in + j), _mm512_loadu_ps(wr + j), acc);
-        s = _mm512_reduce_add_ps(acc);
-        for (; j < K; j++) s += in[j] * wr[j];
-        return s;
+        __m512d acc = _mm512_setzero_pd();
+        for (; j + 15 < K; j += 16) {
+            __m256 a0 = _mm256_loadu_ps(in + j);
+            __m256 a1 = _mm256_loadu_ps(in + j + 8);
+            __m256 b0 = _mm256_loadu_ps(wr + j);
+            __m256 b1 = _mm256_loadu_ps(wr + j + 8);
+            acc = _mm512_fmadd_pd(_mm512_cvtps_pd(a0), _mm512_cvtps_pd(b0), acc);
+            acc = _mm512_fmadd_pd(_mm512_cvtps_pd(a1), _mm512_cvtps_pd(b1), acc);
+        }
+        s = _mm512_reduce_add_pd(acc);
+        for (; j < K; j++) s += (double)in[j] * wr[j];
+        return (float)s;
     }
 
     static void matmul(float* out, const float* in, const float* w, int M, int K) {
@@ -682,14 +995,15 @@ struct GenericBackend : Backend {
         for (int i = 0; i < M; i++) {
             const float* wr = w + (size_t)i * K;
             if (avx512) { out[i] = gemv_row_avx512(in, wr, K); continue; }
-            float s = 0;
+            double s = 0;
             int j = 0;
 #if defined(__AVX2__)
+            // FMA-8 accumulator for the main body; converted to double for the
+            // tail so long dot products don't accumulate f32 rounding.
             __m256 acc = _mm256_setzero_ps();
             for (; j + 7 < K; j += 8) {
                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(in + j), _mm256_loadu_ps(wr + j), acc);
             }
-            // horizontal sum of 8 floats
             __m128 lo = _mm256_castps256_ps128(acc);
             __m128 hi = _mm256_extractf128_ps(acc, 1);
             lo = _mm_add_ps(lo, hi);
@@ -697,8 +1011,8 @@ struct GenericBackend : Backend {
             lo = _mm_hadd_ps(lo, lo);
             s = _mm_cvtss_f32(lo);
 #endif
-            for (; j < K; j++) s += in[j] * wr[j];  // scalar tail
-            out[i] = s;
+            for (; j < K; j++) s += (double)in[j] * wr[j];  // scalar tail in double
+            out[i] = (float)s;
         }
     }
 
@@ -798,15 +1112,22 @@ struct GenericBackend : Backend {
     }
 
     // Architecture-specific FFN activation dispatch
-    static void ffn_activate(float* out, const float* gate, const float* up, int n, rcpp_arch_t arch) {
+    static void ffn_activate(float* out, const float* gate, const float* up, int n,
+                             rcpp_arch_t arch, const char* arch_str) {
         switch (arch) {
             case RCPP_ARCH_GEMMA:
-                // GeGLU: gelu(gate) * up
-                geglu(out, gate, up, n);
+                // GeGLU: gelu(gate) * up — true gemma families.
+                // Granite shares the GEMMA enum but is SwiGLU.
+                if (arch_str && (strcmp(arch_str, "granite") == 0 || strcmp(arch_str, "granitemoe") == 0))
+                    silu(out, gate, up, n);
+                else
+                    geglu(out, gate, up, n);
                 break;
             case RCPP_ARCH_PHI:
-                // Squared ReLU GLU: relu(gate)^2 * up
-                squared_relu_glu(out, gate, up, n);
+                // Phi-3/4 (and phi-2's GELU is handled at load-time only for
+                // the fused gate_up split — the activation is SwiGLU for
+                // phi-3-mini/4; squared-relu GLU was speculative and wrong).
+                silu(out, gate, up, n);
                 break;
             default:
                 // SwiGLU: silu(gate) * up — Llama, Mistral, Qwen2, Qwen3, BitNet, fallback
@@ -865,6 +1186,9 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
+        // Granite: embeddings pre-scaled by embedding_multiplier (12.0).
+        if (cfg.embedding_multiplier != 1.0f)
+            for (int i = 0; i < cfg.hidden; i++) x0[i] *= cfg.embedding_multiplier;
         // Gemma-family: scale the token embedding by sqrt(hidden) — the model
         // was trained with this scaling (gemma_pytorch; llama.cpp gemma2/3
         // graphs). Only for real token rows; forward_embed (vision splice)
@@ -948,8 +1272,12 @@ struct GenericBackend : Backend {
                 "[cpu] L0 q_pre=[%g %g %g] k_pre=[%g %g %g] v=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2], v[0], v[1], v[2]);
 
-            // RoPE
-            rope(q, k, pos, NH, NKV, HD, rot_dim, theta, rope_freqs.data());
+            // RoPE — gemma3 hybrid: layer il is FULL when il%pattern==pattern-1
+            // (uses rope_theta), otherwise LOCAL (rope_local_base_freq).
+            const float* freqs = rope_freqs.data();
+            if (!rope_freqs_local.empty() && il % cfg.sliding_window_pattern != cfg.sliding_window_pattern - 1)
+                freqs = rope_freqs_local.data();
+            rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
             if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2]);
 
@@ -959,7 +1287,9 @@ struct GenericBackend : Backend {
 
             // Attention: GQA
             memset(att, 0, (size_t)NH * HD * sizeof(float));
-            float attn_scale = inv_sqrt_hd_;  // precomputed 1/sqrt(HD)
+            float attn_scale = cfg.attention_multiplier > 0.0f
+                ? cfg.attention_multiplier   // granite: explicit per-model scale
+                : inv_sqrt_hd_;              // default: 1/sqrt(HD)
             int kvs = NKV * HD;  // stride per position in KV cache
             for (int h = 0; h < NH; h++) {
                 int kv_h = h / GQA;
@@ -972,11 +1302,11 @@ struct GenericBackend : Backend {
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
                     scores[t] = s * attn_scale;  // multiply instead of divide
                 }
-                // Gemma-2/3/4 attention-logit soft-cap (50.0): the qk-norm +
-                // query_pre_attn_scalar combination produces large scores that
-                // must be tanh-capped before softmax, or attention over-peaks.
-                if (gemma_softcap_)
-                    for (int t = 0; t <= pos; t++) scores[t] = 50.0f * tanhf(scores[t] / 50.0f);
+                // Gemma-2/3 attention-logit soft-cap (config attn_logit_softcapping,
+                // gemma2=50.0; gemma3-1b has NONE). qk-norm + query_pre_attn_scalar
+                // produce large scores that must be tanh-capped before softmax.
+                if (attn_cap_ > 0.0f)
+                    for (int t = 0; t <= pos; t++) scores[t] = attn_cap_ * tanhf(scores[t] / attn_cap_);
                 softmax(scores, pos + 1);
                 // Weighted sum of V
                 for (int d = 0; d < HD; d++) {
@@ -994,8 +1324,11 @@ struct GenericBackend : Backend {
             // O proj
             mm(x2, att, w(l.wo), H, NH*HD, l.pk_o);
             if (l.post_attn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_attn_norm), H, eps);
-            // Residual
-            for (int i = 0; i < H; i++) x[i] += x2[i];
+            // Residual (granite: block output scaled by residual_multiplier=0.22)
+            if (cfg.residual_multiplier != 1.0f)
+                for (int i = 0; i < H; i++) x[i] += x2[i] * cfg.residual_multiplier;
+            else
+                for (int i = 0; i < H; i++) x[i] += x2[i];
             if (debug_ops && il < 3) {
                 double s = 0; for (int i = 0; i < H; i++) s += fabs(x[i]);
                 fprintf(stderr, "[cpu] L%d after attn: mean|.|=%g\n", il, s / H);
@@ -1009,15 +1342,33 @@ struct GenericBackend : Backend {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
                 float* router_probs = scratch_moe_router_probs.data();
                 mm(router_probs, x2, w(l.moe_gate_inp), NE, H, -1);
-                softmax(router_probs, NE);
 
-                // Top-k expert selection
+                // Top-k expert selection (same indices either way — softmax
+                // is monotonic, so top-k on raw logits == top-k on probs).
                 int* idx = scratch_moe_idx.data();
                 for (int e = 0; e < NE; e++) idx[e] = e;
                 std::partial_sort(idx, idx + NEU, idx + NE,
                                    [&](int a, int b) { return router_probs[a] > router_probs[b]; });
+
+                // Gating convention: Mixtral softmax-all-renorm vs
+                // granite/qwen3 top-k-logits-then-softmax (normalizations
+                // differ).
+                const bool topk_softmax_gating =
+                    (cfg.architecture == "granite" || cfg.architecture == "granitemoe" ||
+                     cfg.arch == RCPP_ARCH_QWEN3 || cfg.arch == RCPP_ARCH_QWEN35);
                 float wsum = 0.0f;
-                for (int t = 0; t < NEU; t++) wsum += router_probs[idx[t]];
+                if (topk_softmax_gating) {
+                    float mx = router_probs[idx[0]];
+                    for (int t = 1; t < NEU; t++)
+                        if (router_probs[idx[t]] > mx) mx = router_probs[idx[t]];
+                    for (int t = 0; t < NEU; t++) {
+                        router_probs[idx[t]] = expf(router_probs[idx[t]] - mx);
+                        wsum += router_probs[idx[t]];
+                    }
+                } else {
+                    softmax(router_probs, NE);
+                    for (int t = 0; t < NEU; t++) wsum += router_probs[idx[t]];
+                }
                 if (wsum < 6.103515625e-5f) wsum = 6.103515625e-5f;
 
                 float* ffn_acc = scratch_moe_ffn_acc.data();
@@ -1034,15 +1385,18 @@ struct GenericBackend : Backend {
                     float* wd = w(l.moe_down_exps) + (size_t)e * H * FF;
                     mm(gate_buf, x2, wg, FF, H, -1);
                     mm(up_buf, x2, wu, FF, H, -1);
-                    ffn_activate(moe_silu, gate_buf, up_buf, FF, cfg.arch);
+                    ffn_activate(moe_silu, gate_buf, up_buf, FF, cfg.arch, cfg.architecture.c_str());
                     mm(down_buf, moe_silu, wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
                 }
-                for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
+                if (cfg.residual_multiplier != 1.0f)
+                    for (int i = 0; i < H; i++) x[i] += ffn_acc[i] * cfg.residual_multiplier;
+                else
+                    for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
             } else {
                 mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
                 mm(&gate_up[FF], x2, w(l.w2), FF, H, l.pk_w2);
-                ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch);
+                ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch, cfg.architecture.c_str());
                 mm(x2, silu_buf, w(l.w3), H, FF, l.pk_w3);
                 if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
                 if (debug_ops && il < 3) {
@@ -1066,12 +1420,19 @@ struct GenericBackend : Backend {
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();
         mm(logits_buf.data(), x2, lm_head, V, H, pk_lm_);
-        // Gemma-2/3/4 final-logit soft-cap (30.0): tanh(logits/30)*30. The
-        // uncapped LM-head logits run ±100+, over-peaking softmax so the
-        // target token lands 10-29 nats below the max — caught by the #1243
-        // ppl gate (Gemma-2-2B 2e8, Gemma-3-1B 5e9).
-        if (gemma_softcap_)
-            for (int i = 0; i < V; i++) logits_buf[i] = 30.0f * tanhf(logits_buf[i] / 30.0f);
+        // Granite (6th quirk): LM-head logits divided by logits_scaling (6.0)
+        // BEFORE any soft-cap. Argmax-invariant — invisible to every argmax
+        // test; matters for sampling and perplexity.
+        if (cfg.logits_scaling != 1.0f)
+            for (int i = 0; i < V; i++) logits_buf[i] /= cfg.logits_scaling;
+
+        // Gemma-2/3 final-logit soft-cap (config final_logit_softcapping,
+        // gemma2=30.0; gemma3-1b has NONE — the arch-string default wrongly
+        // compressed gemma3 logits). Uncapped LM-head logits run ±100+ for
+        // gemma2 (ppl gate #1243), but gemma3-1b logits are small and must
+        // pass through untouched.
+        if (final_cap_ > 0.0f)
+            for (int i = 0; i < V; i++) logits_buf[i] = final_cap_ * tanhf(logits_buf[i] / final_cap_);
 
         pos++;
 
