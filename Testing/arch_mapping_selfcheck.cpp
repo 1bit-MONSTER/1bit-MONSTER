@@ -70,6 +70,8 @@ int main() {
     check("codegen", RCPP_ARCH_CODEGEN, "codegen (CodeGenForCausalLM)");
     check("gptj", RCPP_ARCH_GPTJ, "gptj (GPTJForCausalLM)");
     check("gptoss", RCPP_ARCH_GPTOSS, "gptoss (GptOssForCausalLM)");
+    check("step1", RCPP_ARCH_STEP1, "step1 (Step1ForCausalLM)");
+    check("step1moe", RCPP_ARCH_STEP1, "step1moe (Step1MoEForCausalLM — dense weights in practice)");
 
     // ── Decision (pilot #10): unknown archs -> UNKNOWN (loud), not BITNET
     check("totally_unknown_arch", RCPP_ARCH_UNKNOWN, "unknown->UNKNOWN (loud fail)");

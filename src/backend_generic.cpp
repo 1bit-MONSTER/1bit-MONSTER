@@ -83,6 +83,7 @@ struct GenericBackend : Backend {
     std::vector<int> scratch_moe_idx;  // expert index for partial_sort
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
     std::vector<float> rope_freqs_local; // gemma3 hybrid: local-layer theta table (0 = same)
+    std::vector<float> alibi_slopes;   // Step1 sqrt-ALiBi: per-head slope (build_alibi_cache convention)
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
     bool scratch_allocated_ = false;
     int cached_debug_ops_ = -1;  // cached getenv("CPU_DEBUG_OPS") — checked once
@@ -329,6 +330,19 @@ struct GenericBackend : Backend {
         // attention_factor (0.1*ln(factor)+1), scaling q·k scores by its
         // square (gpt-oss: 1.34657^2 = 1.8139).
         if (cfg.rope_yarn) inv_sqrt_hd_ *= cfg.rope_attn_scaling * cfg.rope_attn_scaling;
+        // Step1 sqrt-ALiBi slopes (modeling_step1.build_alibi_cache): n =
+        // 2^floor(log2(NH)); slopes[0..n) = 2^(-8*(h+1)/n); remainder
+        // 2^(-4*(2h+1)/n).
+        if (cfg.alibi && NH > 0) {
+            alibi_slopes.resize(NH);
+            int n = 1 << (int)floorf(log2f((float)NH));
+            float m0 = powf(2.0f, -8.0f / n);
+            for (int h = 0; h < n; h++) alibi_slopes[h] = powf(m0, (float)(h + 1));
+            if (n < NH) {
+                float m1 = powf(2.0f, -4.0f / n);
+                for (int h = n; h < NH; h++) alibi_slopes[h] = powf(m1, (float)(2 * (h - n) + 1));
+            }
+        }
 
         // Cache getenv results checked in the hot path
         cached_debug_ops_ = getenv("CPU_DEBUG_OPS") ? 1 : 0;
@@ -629,6 +643,16 @@ struct GenericBackend : Backend {
             cfg.norm_is_layernorm = true;
             cfg.adjacent_rope = true;
             cfg.parallel_attn_ffn = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // Step1 (StepLaw / stepfun-ai Step-Audio): dense llama-layout
+        // (separate q/k/v/o, RMSNorm, gated SwiGLU, no biases) but NO RoPE —
+        // sqrt-ALiBi attention (bias = -slope[h]*sqrt(pos-t)). GQA via
+        // num_attention_groups (reader). Verified vs modeling_step1.py
+        // (build_alibi_cache fallback) 2026-08-15.
+        if (cfg.arch == RCPP_ARCH_STEP1) {
+            cfg.no_rope = true;
+            cfg.alibi = true;
             cfg.rms_norm_eps = 1e-5f;
         }
 
@@ -1944,6 +1968,7 @@ struct GenericBackend : Backend {
                     float s = 0;
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
                     scores[t] = s * attn_scale;  // multiply instead of divide
+                    if (cfg.alibi) scores[t] -= alibi_slopes[h] * sqrtf((float)(pos - t));  // Step1 sqrt-ALiBi
                 }
                 // Gemma-2/3 attention-logit soft-cap (config attn_logit_softcapping,
                 // gemma2=50.0; gemma3-1b has NONE). qk-norm + query_pre_attn_scalar

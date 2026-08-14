@@ -153,6 +153,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         else if (json_find_int(config_text, "n_head", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-2
         else if (json_find_int(config_text, "num_heads", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-Neo
         if (json_find_int(config_text, "num_key_value_heads", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;
+        else if (json_find_int(config_text, "num_attention_groups", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // Step1 GQA key
         else if (json_find_int(config_text, "n_head", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // GPT-2: no GQA, kv = heads
         else cfg.n_kv_heads = cfg.num_kv_heads = cfg.n_heads;
         // Falcon MQA: multi_query=true → exactly 1 kv head (query heads stay).
