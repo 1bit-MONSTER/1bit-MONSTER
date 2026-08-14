@@ -6,7 +6,7 @@ The 1bit-systems engine auto-detects 24 model architectures from GGUF/1BP/safete
 
 ## HF-Native coverage (measured 2026-08-14)
 
-Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`, 220k models sampled): the original **11 validated families covered 193,318 / 220,049 text-generation checkpoints (88%)**; the 8 families validated since (2026-08-14/15: gptneox 5,652 · opt 1,877 · gptneo 1,355 · gptj 609 · codegen 348 · gptoss 407 · step1-class 2,882 · deepseek v2/v3-class — all were census-listed uncovered classes) bring the gated coverage to **~206,400+ / 220,049 (~93.8%)** (deepseek v2/v3 checkpoint count not re-censused). The validated families (torch/numpy/llama.cpp-exact generation gates; `Testing/bringup_runner.sh` is now manifest-driven with per-family `gate` commands):
+Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`, 220k models sampled): the original **11 validated families covered 193,318 / 220,049 text-generation checkpoints (88%)**; the 9 families validated since (2026-08-14/15: gptneox 5,652 · opt 1,877 · gptneo 1,355 · gptj 609 · codegen 348 · gptoss 407 · step1-class 2,882 · bloom 1,086 · deepseek v2/v3-class — all were census-listed uncovered classes) bring the gated coverage to **~207,500+ / 220,049 (~94.3%)** (deepseek v2/v3 checkpoint count not re-censused). The validated families (torch/numpy/llama.cpp-exact generation gates; `Testing/bringup_runner.sh` is now manifest-driven with per-family `gate` commands):
 
 | Family | HF checkpoints covered | | Family | HF checkpoints covered |
 |--------|------:|---|---|--------|------:|
