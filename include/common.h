@@ -103,6 +103,11 @@ struct ModelConfig {
     // + QKV value clipping. Set by the loader for RCPP_ARCH_OLMO.
     bool norm_is_layernorm = false;   // true: no norm weights, centered norm
     float clip_qkv = 0.0f;            // clamp q/k/v to [-clip, clip] before rope (0 = none)
+    // GPT-2 family: learned position embeddings (wpe table added to the
+    // embedding at each position) + LayerNorm with affine weight AND bias +
+    // no RoPE + non-gated gelu FFN. Set by the loader for RCPP_ARCH_GPT2.
+    bool use_learned_pos = false;
+    bool no_rope = false;
     // Gemma-2/3: logit soft-caps from config (0 = none). Gemma3-1b has both
     // None; Gemma-2 has attn=50.0 / final=30.0. The engine must NOT hardcode
     // these on the arch string — gemma3-1b would be wrongly capped.

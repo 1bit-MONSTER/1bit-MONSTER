@@ -106,12 +106,17 @@ struct GenericBackend : Backend {
         size_t rms_attn = SIZE_MAX, rms_ffn = SIZE_MAX;
         size_t w1 = SIZE_MAX, w2 = SIZE_MAX, w3 = SIZE_MAX;
         size_t bq = SIZE_MAX, bk = SIZE_MAX, bv = SIZE_MAX;
+        size_t bo = SIZE_MAX;              // attention-output bias (GPT-2 c_proj.bias)
+        size_t w1_b = SIZE_MAX, w3_b = SIZE_MAX;  // FFN up/down biases (GPT-2 c_fc/c_proj)
+        size_t rms_attn_b = SIZE_MAX, rms_ffn_b = SIZE_MAX;  // LayerNorm biases (GPT-2 ln_1/ln_2)
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
         size_t post_attn_norm = SIZE_MAX, post_ffn_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
         int pk_q = -1, pk_k = -1, pk_v = -1, pk_o = -1, pk_w1 = -1, pk_w2 = -1, pk_w3 = -1;  // packed TQ2 slots
     };
     std::vector<LayerW> layers;
+    // GPT-2: learned position-embedding table (wpe) + final LayerNorm bias.
+    std::vector<float> pos_embed, final_norm_bias;
     // Gemma-2/3/4 logit soft-capping (attn cap 50, final cap 30). Keyed on
     // the arch STRING, not the enum — RCPP_ARCH_GEMMA also covers Granite
     // (Llama-style: no caps, rms eps 1e-5) and Gemma-1 (no caps).
@@ -538,17 +543,48 @@ struct GenericBackend : Backend {
             cfg.clip_qkv = 8.0f;
             cfg.rms_norm_eps = 1e-5f;
         }
+        // GPT-2: learned position embeddings (wpe), LayerNorm with affine
+        // weight+bias, no RoPE, non-gated gelu FFN. Names are h.N.* (no
+        // "model." prefix), wte/wpe/ln_f under "transformer.".
+        if (cfg.arch == RCPP_ARCH_GPT2) {
+            cfg.norm_is_layernorm = true;
+            cfg.use_learned_pos = true;
+            cfg.no_rope = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
-            !r.get_tensor_f32("token_embd.weight", embed)) {
+            !r.get_tensor_f32("token_embd.weight", embed) &&
+            !r.get_tensor_f32("transformer.wte.weight", embed) &&
+            !r.get_tensor_f32("wte.weight", embed)) {
             fprintf(stderr, "Generic: safetensors: missing embedding\n");
             return false;
         }
         if (cfg.hidden > 0 && embed.size() % (size_t)cfg.hidden == 0 && !embed.empty())
             cfg.vocab = cfg.vocab_size = (int)(embed.size() / (size_t)cfg.hidden);
 
+        if (cfg.arch == RCPP_ARCH_GPT2) {
+            // Learned position table (wpe) — authoritative for max_seq_len.
+            if (!r.get_tensor_f32("transformer.wpe.weight", pos_embed) &&
+                !r.get_tensor_f32("wpe.weight", pos_embed)) {
+                fprintf(stderr, "Generic: safetensors: GPT-2 missing wpe table\n");
+                return false;
+            }
+            if (pos_embed.empty() || pos_embed.size() % (size_t)cfg.hidden != 0) {
+                fprintf(stderr, "Generic: safetensors: GPT-2 wpe misized\n");
+                return false;
+            }
+            cfg.max_seq_len = (int)(pos_embed.size() / (size_t)cfg.hidden);
+            if (!r.get_tensor_f32("transformer.ln_f.weight", final_norm))
+                r.get_tensor_f32("ln_f.weight", final_norm);
+            if (!r.get_tensor_f32("transformer.ln_f.bias", final_norm_bias))
+                r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        }
+
         if (!r.get_tensor_f32("model.norm.weight", final_norm))
-            r.get_tensor_f32("token_embd_norm.weight", final_norm);
+            if (!r.get_tensor_f32("token_embd_norm.weight", final_norm))
+                if (!r.get_tensor_f32("transformer.ln_f.weight", final_norm))
+                    r.get_tensor_f32("ln_f.weight", final_norm);
         if (gemma_post_norms && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         r.get_tensor_f32("lm_head.weight", output_weight);   // optional: tied embeddings
@@ -598,6 +634,65 @@ struct GenericBackend : Backend {
                 for (size_t r = 0; r < (size_t)IM; r++) up.insert(up.end(), gu.begin() + ((size_t)IM + r) * H, gu.begin() + ((size_t)IM + r + 1) * H);
                 lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
                 load("mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_GPT2) {
+                // GPT-2: h.N.* names (no "model." prefix), fused c_attn, biases
+                // everywhere, LayerNorm with weight+bias (ln_1/ln_2), non-gated
+                // gelu FFN (c_fc/c_proj). lw.w2 stays SIZE_MAX (no gate).
+                // CRITICAL: GPT-2 Conv1D stores weights [in, out] (NOT the
+                // HF-linear [out, in]) — every projection must be transposed.
+                auto push_t = [&](const std::vector<float>& w, int rows, int cols) {
+                    // w is [rows, cols]; return transposed [cols, rows] index
+                    std::vector<float> t((size_t)rows * cols);
+                    for (int r = 0; r < rows; r++)
+                        for (int c = 0; c < cols; c++)
+                            t[(size_t)c * rows + r] = w[(size_t)r * cols + c];
+                    return push(std::move(t));
+                };
+                auto load2 = [&](const char* tname, size_t& idx, int in_rows, int out_cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == in_rows * out_cols) idx = push_t(w, in_rows, out_cols);
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), in_rows * out_cols);
+                };
+                // c_attn.weight [H, 3H] (in, out) — split COLUMNS into
+                // q/k/v [H, H] each, then transpose to engine [out, in].
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "h.%d.attn.c_attn.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != H * 3 * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized c_attn\n", buf);
+                    return false;
+                }
+                {
+                    std::vector<float> q((size_t)H * H), k((size_t)H * H), v((size_t)H * H);
+                    for (int r = 0; r < H; r++) {
+                        for (int c = 0; c < H; c++) {
+                            q[(size_t)c * H + r] = qkv[(size_t)r * 3 * H + c];
+                            k[(size_t)c * H + r] = qkv[(size_t)r * 3 * H + H + c];
+                            v[(size_t)c * H + r] = qkv[(size_t)r * 3 * H + 2 * H + c];
+                        }
+                    }
+                    lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                }
+                load2("attn.c_proj.weight", lw.wo, H, H);
+                load2("mlp.c_fc.weight", lw.w1, H, IM);
+                load2("mlp.c_proj.weight", lw.w3, IM, H);
+                // c_attn.bias [3H] (out dim) → split q/k/v head biases.
+                std::vector<float> qkvb;
+                snprintf(buf, sizeof(buf), "h.%d.attn.c_attn.bias", l);
+                if (r.get_tensor_f32(buf, qkvb) && (int)qkvb.size() == 3 * NH * HD) {
+                    std::vector<float> bq(qkvb.begin(), qkvb.begin() + NH * HD);
+                    std::vector<float> bk(qkvb.begin() + NH * HD, qkvb.begin() + 2 * NH * HD);
+                    std::vector<float> bv(qkvb.begin() + 2 * NH * HD, qkvb.end());
+                    lw.bq = push(std::move(bq)); lw.bk = push(std::move(bk)); lw.bv = push(std::move(bv));
+                }
+                load2("attn.c_proj.bias", lw.bo, 1, NH * HD);
+                load2("mlp.c_fc.bias", lw.w1_b, 1, IM);
+                load2("mlp.c_proj.bias", lw.w3_b, 1, H);
+                load2("ln_1.weight", lw.rms_attn, 1, H);
+                load2("ln_1.bias", lw.rms_attn_b, 1, H);
+                load2("ln_2.weight", lw.rms_ffn, 1, H);
+                load2("ln_2.bias", lw.rms_ffn_b, 1, H);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -727,7 +822,9 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX) {
+                       // GPT-2: non-gated FFN — w2 (gate) is legitimately absent
+                       (!(cfg.arch == RCPP_ARCH_GPT2 && lw.w2 == SIZE_MAX) &&
+                        (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
             }
@@ -964,6 +1061,13 @@ struct GenericBackend : Backend {
         var /= n;
         float r = 1.0f / sqrtf((float)var + eps);
         for (int i = 0; i < n; i++) o[i] = (float)((x[i] - mean) * r);
+    }
+
+    // LayerNorm with affine weight (+optional bias) — GPT-2 ln_1/ln_2/ln_f.
+    static void layernorm_affine(float* o, const float* x, const float* w,
+                                 const float* b, int n, float eps) {
+        layernorm(o, x, n, eps);
+        for (int i = 0; i < n; i++) o[i] = o[i] * w[i] + (b ? b[i] : 0.0f);
     }
 
     // NeoX-style (half-split) RoPE — the convention GGUF/llama.cpp-family
@@ -1222,6 +1326,11 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
+        // GPT-2: learned position embeddings — add the wpe row for the
+        // CURRENT position (pos is not yet incremented; matches the KV
+        // position written in forward_embed).
+        if (cfg.use_learned_pos)
+            for (int i = 0; i < cfg.hidden; i++) x0[i] += pos_embed[(size_t)pos * cfg.hidden + i];
         // Granite: embeddings pre-scaled by embedding_multiplier (12.0).
         if (cfg.embedding_multiplier != 1.0f)
             for (int i = 0; i < cfg.hidden; i++) x0[i] *= cfg.embedding_multiplier;
@@ -1274,7 +1383,12 @@ struct GenericBackend : Backend {
             int kv_begin = pos * NKV * HD;
 
             // RMSNorm → QKV
-            if (cfg.norm_is_layernorm) layernorm(x2, x, H, eps);
+            if (cfg.norm_is_layernorm) {
+                if (l.rms_attn != SIZE_MAX)
+                    layernorm_affine(x2, x, w(l.rms_attn),
+                                     l.rms_attn_b != SIZE_MAX ? w(l.rms_attn_b) : nullptr, H, eps);
+                else layernorm(x2, x, H, eps);
+            }
             else rmsnorm(x2, x, w(l.rms_attn), H, eps);
             if (il == 0 && debug_ops) {
                 double ss = 0; for (int i = 0; i < H; i++) ss += (double)x[i] * x[i];
@@ -1325,7 +1439,7 @@ struct GenericBackend : Backend {
             const float* freqs = rope_freqs.data();
             if (!rope_freqs_local.empty() && il % cfg.sliding_window_pattern != cfg.sliding_window_pattern - 1)
                 freqs = rope_freqs_local.data();
-            rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+            if (!cfg.no_rope) rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
             if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2]);
 
@@ -1371,6 +1485,7 @@ struct GenericBackend : Backend {
 
             // O proj
             mm(x2, att, w(l.wo), H, NH*HD, l.pk_o);
+            if (l.bo != SIZE_MAX) { float* b = w(l.bo); for (int i = 0; i < H; i++) x2[i] += b[i]; }
             if (l.post_attn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_attn_norm), H, eps);
             // Residual (granite: block output scaled by residual_multiplier=0.22)
             if (cfg.residual_multiplier != 1.0f)
@@ -1385,7 +1500,12 @@ struct GenericBackend : Backend {
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
             // weighted sum → residual (MoE).
-            if (cfg.norm_is_layernorm) layernorm(x2, x, H, eps);
+            if (cfg.norm_is_layernorm) {
+                if (l.rms_ffn != SIZE_MAX)
+                    layernorm_affine(x2, x, w(l.rms_ffn),
+                                     l.rms_ffn_b != SIZE_MAX ? w(l.rms_ffn_b) : nullptr, H, eps);
+                else layernorm(x2, x, H, eps);
+            }
             else rmsnorm(x2, x, w(l.rms_ffn), H, eps);
             if (l.moe_gate_inp != SIZE_MAX) {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
@@ -1442,6 +1562,15 @@ struct GenericBackend : Backend {
                     for (int i = 0; i < H; i++) x[i] += ffn_acc[i] * cfg.residual_multiplier;
                 else
                     for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
+            } else if (l.w2 == SIZE_MAX) {
+                // Non-gated FFN (GPT-2): gelu(w1 x + b1) then w3 + b3.
+                mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
+                if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
+                gelu(gate_up, gate_up, FF);
+                mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
+                if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }
+                if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
+                for (int i = 0; i < H; i++) x[i] += x2[i];
             } else {
                 mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
                 mm(&gate_up[FF], x2, w(l.w2), FF, H, l.pk_w2);
@@ -1463,8 +1592,14 @@ struct GenericBackend : Backend {
             for (int i = 0; i < H; i++) { s += fabs(x[i]); if (fabs(x[i]) > mx) mx = fabs(x[i]); }
             fprintf(stderr, "[cpu] final hidden mean|.|=%g max|.|=%g\n", s / H, mx);
         }
-        // Final norm — RMSNorm (weighted) or OLMo LayerNorm (no affine params)
-        if (cfg.norm_is_layernorm) layernorm(x2, x, H, eps);
+        // Final norm — RMSNorm (weighted), OLMo LayerNorm (no affine), or
+        // GPT-2 LayerNorm with weight+bias.
+        if (cfg.norm_is_layernorm) {
+            if (!final_norm.empty())
+                layernorm_affine(x2, x, final_norm.data(),
+                                 final_norm_bias.empty() ? nullptr : final_norm_bias.data(), H, eps);
+            else layernorm(x2, x, H, eps);
+        }
         else rmsnorm(x2, x, final_norm.data(), H, eps);
 
         // LM head — untied output.weight when the model has one, else tied embedding.
