@@ -122,6 +122,27 @@ struct I8Ctx {
         initialized = true;
         return true;
     }
+
+    // ── Regenerate the instruction stream for a different batch M (decode
+    // runs at M=1; init_with_generator bakes M=XM, so every decode launch
+    // executes 128 rows of DMA/compute for 1 row of data). The generated
+    // stream has the same word count for any M (M is baked into descriptor
+    // sizes), so the per-layer insts BOs fit without reallocation. ──
+    bool regen_insts(int M) {
+        if (!initialized || M < 1 || M > MD) return false;
+        npu_sequence seq(device_npu2);
+        gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)KD, (uint32_t)ND,
+                                  0, 0, false, 0, 0, 0);
+        seq.cmds2seq();
+        auto [dp, sz] = seq.dump();
+        std::vector<uint32_t> ins(dp, dp + sz / 4);
+        for (int l = 0; l < NL; l++) {
+            layerInstrData[l] = ins;
+            memcpy(layerInstr[l]->map(), ins.data(), ins.size() * sizeof(uint32_t));
+            layerInstr[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        }
+        return true;
+    }
 #else
     // Stub: npu_instr_utils.hpp not available — use init() with pre-gen'd files
     bool init_with_generator(xrt::device&, const char*, int, int, int, int) {

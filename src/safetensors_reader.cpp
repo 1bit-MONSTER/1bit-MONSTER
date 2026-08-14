@@ -4,6 +4,7 @@
 #include <cctype>
 #include <climits>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -138,9 +139,38 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         if (json_find_int(config_text, "intermediate_size", iv)) cfg.n_ff = cfg.intermediate_size = iv;
         if (json_find_int(config_text, "vocab_size", iv)) cfg.vocab = cfg.vocab_size = iv;
         if (json_find_int(config_text, "max_position_embeddings", iv)) cfg.max_seq_len = iv;
+        // MoE: HF keys num_local_experts / num_experts_per_tok (Mixtral/Qwen3/Granite).
+        // Absent key = dense model — MUST zero the ModelConfig default (16,
+        // the Zaya .bin convention) or every dense checkpoint takes the MoE
+        // branch and aborts (found 2026-08-13 on the SmolLM2 regression).
+        cfg.num_experts = cfg.n_experts = 0;
+        if (json_find_int(config_text, "num_local_experts", iv)) {
+            cfg.num_experts = cfg.n_experts = iv;
+            if (json_find_int(config_text, "num_experts_per_tok", iv))
+                cfg.num_experts_top = iv;
+        }
         float fv;
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
         if (json_find_float(config_text, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;
+        if (json_find_float(config_text, "attention_multiplier", fv)) cfg.attention_multiplier = fv;
+        // Gemma-2/3 key attention scaling by query_pre_attn_scalar: the true
+        // scale is 1/sqrt(scalar), NOT 1/sqrt(head_dim).
+        if (cfg.attention_multiplier <= 0.0f && json_find_float(config_text, "query_pre_attn_scalar", fv) && fv > 0.0f)
+            cfg.attention_multiplier = 1.0f / sqrtf(fv);
+        // Soft-caps: "present" (even null = no cap) must override arch
+        // defaults; only a truly absent key falls back to the arch default.
+        if (config_text.find("attn_logit_softcapping") != std::string::npos) {
+            if (json_find_float(config_text, "attn_logit_softcapping", fv)) cfg.attn_logit_softcapping = fv;
+        }
+        if (config_text.find("final_logit_softcapping") != std::string::npos) {
+            if (json_find_float(config_text, "final_logit_softcapping", fv)) cfg.final_logit_softcapping = fv;
+        }
+        if (json_find_float(config_text, "logits_scaling", fv) && fv > 0.0f) cfg.logits_scaling = fv;
+        if (json_find_float(config_text, "rope_local_base_freq", fv) && fv > 0.0f) cfg.rope_local_base_freq = fv;
+        int iv2;
+        if (json_find_int(config_text, "sliding_window_pattern", iv2)) cfg.sliding_window_pattern = iv2;
+        if (json_find_float(config_text, "residual_multiplier", fv)) cfg.residual_multiplier = fv;
+        if (json_find_float(config_text, "embedding_multiplier", fv)) cfg.embedding_multiplier = fv;
         // Prefer an explicit head_dim key when present — some architectures
         // (e.g. Qwen3: hidden_size=1024, num_attention_heads=16, but
         // head_dim=128) are NOT hidden_size/num_attention_heads.
@@ -197,6 +227,12 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         cfg.architecture = sep == std::string::npos ? cfg.model_name : cfg.model_name.substr(0, sep);
     }
 
+    // Dispatch enum: same mapping the GGUF path uses (rcpp_arch_from_string).
+    // Without this, safetensors-discovered models would always route as
+    // RCPP_ARCH_BITNET regardless of architecture (bug found 2026-08-13 by
+    // Testing/discovery_selfcheck.cpp).
+    cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
+
     // Quantization: dtype of the first tensor found in the safetensors header
     // itself (ground truth for the on-disk data, not config.json's
     // torch_dtype which can describe the compute dtype instead).
@@ -207,5 +243,266 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         if (end != std::string::npos) cfg.quantization = header.substr(dtype_pos, end - dtype_pos);
     }
 
+    return true;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SafetensorsWeightReader — HF-native weight loading (dtype -> f32)
+// ════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Real IEEE754 half-precision float16 (5-bit exponent, bias 15). NOT the
+// naive `bits << 16` trick — that is only valid for bfloat16 (see #473).
+inline float f16_to_f32(uint16_t h) {
+    uint32_t s = (h >> 15) & 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+    float sign = s ? -1.0f : 1.0f;
+    if (e == 0) return sign * (float)m * 5.9604644775390625e-08f;  // subnormal: m * 2^-24
+    if (e == 31) return m ? NAN : sign * INFINITY;
+    return sign * (1.0f + (float)m / 1024.0f) * powf(2.0f, (float)((int)e - 15));
+}
+
+// bfloat16: bits are float32's truncated upper half.
+inline float bf16_to_f32(uint16_t bf) {
+    uint32_t bits = (uint32_t)bf << 16;
+    float f; memcpy(&f, &bits, 4); return f;
+}
+
+// FP8 E4M3FN: sign + 4-bit exponent (bias 7) + 3-bit mantissa (implicit 1).
+inline float f8_e4m3_to_f32(uint8_t v) {
+    int sign = (v & 0x80) ? -1 : 1;
+    int e = (v >> 3) & 0x0F, m = v & 0x07;
+    if (e == 0) return sign * (float)m * 0.015625f;        // subnormal: m * 2^-6
+    return sign * (float)(8 + m) * powf(2.0f, (float)(e - 7) - 3.0f);
+}
+
+// FP8 E5M2: sign + 5-bit exponent (bias 15) + 2-bit mantissa.
+inline float f8_e5m2_to_f32(uint8_t v) {
+    int sign = (v & 0x80) ? -1 : 1;
+    int e = (v >> 2) & 0x1F, m = v & 0x03;
+    if (e == 0) return sign * (float)m * 0.00006103515625f;  // subnormal: m * 2^-14
+    if (e == 31) return m ? NAN : sign * INFINITY;
+    return sign * (float)(4 + m) * powf(2.0f, (float)(e - 15) - 2.0f);
+}
+
+const char* st_error(const char* msg) { return msg; }
+
+} // namespace
+
+static bool parse_container(const uint8_t* base, size_t size,
+                             uint64_t& data_start, std::vector<SafetensorsTensor>& out,
+                             std::string& err) {
+    if (size < 16) { err = "too small"; return false; }
+    uint64_t hdr_len = 0;
+    memcpy(&hdr_len, base, 8);
+    if (hdr_len == 0 || hdr_len > size || 8 > size - hdr_len || hdr_len > 256u * 1024 * 1024) {
+        err = "bad header length"; return false;
+    }
+    std::string header((const char*)base + 8, (size_t)hdr_len);
+    data_start = 8 + hdr_len;
+
+    size_t pos = 0;
+    while (pos < header.size()) {
+        pos = header.find('"', pos);
+        if (pos == std::string::npos) break;
+        size_t key_end = header.find('"', pos + 1);
+        if (key_end == std::string::npos) break;
+        std::string name = header.substr(pos + 1, key_end - pos - 1);
+        pos = header.find('{', key_end);
+        if (pos == std::string::npos) break;
+        int depth = 0;
+        size_t obj_end = std::string::npos;
+        for (size_t i = pos; i < header.size(); i++) {
+            if (header[i] == '{') depth++;
+            else if (header[i] == '}') { depth--; if (depth == 0) { obj_end = i; break; } }
+        }
+        if (obj_end == std::string::npos) break;
+        std::string obj = header.substr(pos, obj_end - pos + 1);
+
+        SafetensorsTensor t;
+        t.name = name;
+        using namespace safetensors_detail;
+        if (json_find_string(obj, "dtype", t.dtype)) {
+            int64_t off0 = 0, off1 = 0;
+            auto shape_pos = obj.find("\"shape\":[");
+            if (shape_pos != std::string::npos) {
+                shape_pos += strlen("\"shape\":[");
+                // Arbitrary rank: read all integer dims (2D for linear layers,
+                // 3D for fused MoE expert tensors).
+                const char* s = obj.c_str() + shape_pos;
+                while (*s && *s != ']') {
+                    char* endp = nullptr;
+                    long v = strtol(s, &endp, 10);
+                    if (endp == s) break;
+                    t.shape.push_back(v);
+                    s = endp;
+                    if (*s == ',') s++;
+                }
+            }
+            auto off_pos = obj.find("\"data_offsets\":[");
+            if (off_pos != std::string::npos) {
+                off_pos += strlen("\"data_offsets\":[");
+                sscanf(obj.c_str() + off_pos, "%lld,%lld", (long long*)&off0, (long long*)&off1);
+            }
+            t.data_off = (uint64_t)off0;
+            t.data_len = (uint64_t)(off1 - off0);
+            if (t.data_off + t.data_len > size - data_start) {
+                err = "tensor " + name + " out of bounds";
+                return false;
+            }
+            out.push_back(std::move(t));
+        }
+        pos = obj_end + 1;
+    }
+    if (out.empty()) { err = "no tensors parsed"; return false; }
+    return true;
+}
+
+bool SafetensorsWeightReader::open(const std::string& path) {
+    shards_.clear();
+    tensors_.clear();
+    name_to_shard_.clear();
+    err_.clear();
+    dir_prefix_.clear();
+
+    Q4nxReader r;
+    if (!r.open(path)) { err_ = "cannot open"; return false; }
+    std::vector<uint8_t> bytes(r.data, r.data + r.size);
+    r.close();
+
+    Shard sh;
+    sh.path = path;
+    sh.data = std::move(bytes);
+    if (!parse_container(sh.data.data(), sh.data.size(), sh.data_start, sh.tensors, err_))
+        return false;
+    sh.loaded = true;
+
+    shards_.push_back(std::move(sh));
+    for (auto& t : shards_[0].tensors) {
+        tensors_.push_back(t);
+        name_to_shard_[t.name] = 0;
+    }
+    return true;
+}
+
+bool SafetensorsWeightReader::open_dir(const std::string& dir) {
+    shards_.clear();
+    tensors_.clear();
+    name_to_shard_.clear();
+    err_.clear();
+    dir_prefix_ = dir;
+
+    // model.safetensors.index.json: {"metadata":{}, "weight_map": {name: file}}
+    std::string idx_text = safetensors_detail::read_small_file(dir + "/model.safetensors.index.json");
+    if (idx_text.empty()) { err_ = "no model.safetensors.index.json in " + dir; return false; }
+    auto wm = idx_text.find("\"weight_map\"");
+    if (wm == std::string::npos) { err_ = "index has no weight_map"; return false; }
+    size_t pos = wm + strlen("\"weight_map\"");
+    pos = idx_text.find('{', pos);
+    if (pos == std::string::npos) { err_ = "bad weight_map"; return false; }
+
+    // Parse "tensor.name": "shard.safetensors" pairs inside weight_map.
+    // Bound the scan to the weight_map object (balanced braces) so the loop
+    // never confuses the root object's closing brace with the map's.
+    size_t wm_end = std::string::npos;
+    {
+        int depth = 0;
+        for (size_t i = pos; i < idx_text.size(); i++) {
+            if (idx_text[i] == '{') depth++;
+            else if (idx_text[i] == '}') { depth--; if (depth == 0) { wm_end = i; break; } }
+        }
+    }
+    size_t p = pos + 1;
+    while (p < wm_end) {
+        p = idx_text.find('"', p);
+        if (p == std::string::npos || p >= wm_end) break;
+        size_t ke = idx_text.find('"', p + 1);
+        if (ke == std::string::npos || ke >= wm_end) break;
+        std::string name = idx_text.substr(p + 1, ke - p - 1);
+        p = idx_text.find('"', ke + 1);
+        if (p == std::string::npos || p >= wm_end) break;
+        size_t ve = idx_text.find('"', p + 1);
+        if (ve == std::string::npos || ve >= wm_end) break;
+        std::string file = idx_text.substr(p + 1, ve - p - 1);
+        std::string full = (dir.empty() || dir == ".") ? file : dir + "/" + file;
+        bool found = false;
+        size_t si = 0;
+        for (size_t i = 0; i < shards_.size(); i++)
+            if (shards_[i].path == full) { si = i; found = true; break; }   // dedup by FULL path
+        if (!found) {
+            Shard sh;
+            sh.path = full;
+            shards_.push_back(std::move(sh));
+            si = shards_.size() - 1;
+        }
+        name_to_shard_[name] = si;
+        p = ve + 1;
+    }
+
+    if (name_to_shard_.empty()) { err_ = "empty weight_map"; return false; }
+    return true;
+}
+
+const SafetensorsTensor* SafetensorsWeightReader::find(const std::string& name) const {
+    auto it = name_to_shard_.find(name);
+    if (it == name_to_shard_.end()) return nullptr;
+    if (!load_shard(it->second)) return nullptr;
+    for (auto& t : shards_[it->second].tensors)
+        if (t.name == name) return &t;
+    return nullptr;
+}
+
+bool SafetensorsWeightReader::load_shard(size_t i) const {
+    if (i >= shards_.size()) return false;
+    Shard& sh = shards_[i];
+    if (sh.loaded) return true;
+    Q4nxReader r;
+    if (!r.open(sh.path)) { err_ = "cannot open shard " + sh.path; return false; }
+    sh.data.assign(r.data, r.data + r.size);
+    r.close();
+    std::string e;
+    if (!parse_container(sh.data.data(), sh.data.size(), sh.data_start, sh.tensors, e)) {
+        err_ = "shard " + sh.path + ": " + e;
+        return false;
+    }
+    sh.loaded = true;
+    return true;
+}
+bool SafetensorsWeightReader::get_tensor_f32(const std::string& name, std::vector<float>& out) const {
+    const SafetensorsTensor* t = find(name);
+    if (!t) return false;
+    const uint8_t* src2 = shards_[name_to_shard_.at(name)].data.data() + shards_[name_to_shard_.at(name)].data_start + t->data_off;
+
+    size_t elems = 1;
+    for (int64_t d : t->shape) elems *= (size_t)d;
+
+    out.clear();
+    out.reserve(elems);
+    const char* dt = t->dtype.c_str();
+
+    if (strcmp(dt, "F32") == 0) {
+        const float* p = (const float*)src2;
+        for (size_t i = 0; i < elems; i++) out.push_back(p[i]);
+    } else if (strcmp(dt, "F16") == 0) {
+        for (size_t i = 0; i < elems; i++) { uint16_t h; memcpy(&h, src2 + i * 2, 2); out.push_back(f16_to_f32(h)); }
+    } else if (strcmp(dt, "BF16") == 0) {
+        for (size_t i = 0; i < elems; i++) { uint16_t h; memcpy(&h, src2 + i * 2, 2); out.push_back(bf16_to_f32(h)); }
+    } else if (strcmp(dt, "F8_E4M3") == 0 || strcmp(dt, "F8_E4M3FN") == 0) {
+        for (size_t i = 0; i < elems; i++) out.push_back(f8_e4m3_to_f32(src2[i]));
+    } else if (strcmp(dt, "F8_E5M2") == 0) {
+        for (size_t i = 0; i < elems; i++) out.push_back(f8_e5m2_to_f32(src2[i]));
+    } else if (strcmp(dt, "I8") == 0) {
+        for (size_t i = 0; i < elems; i++) out.push_back((float)(int8_t)src2[i]);
+    } else if (strcmp(dt, "U8") == 0) {
+        for (size_t i = 0; i < elems; i++) out.push_back((float)src2[i]);
+    } else if (strcmp(dt, "I16") == 0) {
+        for (size_t i = 0; i < elems; i++) { int16_t v; memcpy(&v, src2 + i * 2, 2); out.push_back((float)v); }
+    } else if (strcmp(dt, "I32") == 0) {
+        for (size_t i = 0; i < elems; i++) { int32_t v; memcpy(&v, src2 + i * 4, 4); out.push_back((float)v); }
+    } else if (strcmp(dt, "F64") == 0) {
+        for (size_t i = 0; i < elems; i++) { double v; memcpy(&v, src2 + i * 8, 8); out.push_back((float)v); }
+    } else {
+        return false;  // unsupported dtype: get_tensor_f32 only reports via return
+    }
     return true;
 }

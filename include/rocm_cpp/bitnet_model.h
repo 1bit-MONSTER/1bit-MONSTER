@@ -54,12 +54,17 @@ typedef enum {
     RCPP_ARCH_KIMI_VL  = 20,  // Moonshot Kimi-VL — Moonlight + MoonViT vision encoder
     RCPP_ARCH_QWEN35   = 21,  // Qwen3.5 Gate-Delta Net — fused QKV, SSM path, GDN attention
     RCPP_ARCH_DEEPSEEK_V4 = 22, // DeepSeek V4 Flash/Pro — mHC residual, CSA+HCA hybrid attn, FP4 MoE
+    // Sentinel for unmapped architecture strings. Unmapped archs used to
+    // silently become RCPP_ARCH_BITNET (wrong activation / attention for
+    // most families) — now they fail loudly at discovery/load (decision
+    // 2026-08-13, bring-up pilot #10).
+    RCPP_ARCH_UNKNOWN = 255,
 } rcpp_arch_t;
 
 #include <string.h>
 
 static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
-    if (!s) return RCPP_ARCH_BITNET;
+    if (!s || strcmp(s, "bitnet") == 0) return RCPP_ARCH_BITNET;
     if (strcmp(s, "qwen3")   == 0) return RCPP_ARCH_QWEN3;
     if (strcmp(s, "llama")   == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mistral") == 0) return RCPP_ARCH_MISTRAL;
@@ -100,6 +105,24 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "command-r") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "dbrx")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "jamba")   == 0) return RCPP_ARCH_LLAMA;
+    // ── 2026-08-13 arch-string coverage batch (LLaMA-layout families) ──
+    if (strcmp(s, "baichuan")   == 0) return RCPP_ARCH_LLAMA;  // Baichuan-1/2 (LLaMA-layout)
+    if (strcmp(s, "baichuan2")  == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "BaichuanForCausalLM") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "exaone")     == 0) return RCPP_ARCH_LLAMA;  // LG EXAONE 3 (LLaMA-layout)
+    if (strcmp(s, "ExaoneForCausalLM")   == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "solar")      == 0) return RCPP_ARCH_LLAMA;  // upstage SOLAR (LLaMA-layout)
+    if (strcmp(s, "internlm")   == 0) return RCPP_ARCH_LLAMA;  // InternLM-1
+    if (strcmp(s, "internlm2")  == 0) return RCPP_ARCH_LLAMA;  // InternLM-2 (LLaMA-layout)
+    if (strcmp(s, "xverse")     == 0) return RCPP_ARCH_LLAMA;  // xverse (LLaMA-layout)
+    if (strcmp(s, "qwen")       == 0) return RCPP_ARCH_QWEN2;  // Qwen1 (attention-layout ~ Qwen2)
+    // ── 2026-08-13 bring-up pilot: LLaMA-layout architectures (GGUF + HF class names) ──
+    if (strcmp(s, "openelm")        == 0) return RCPP_ARCH_LLAMA;  // Apple OpenELM (RMSNorm, GQA, RoPE)
+    if (strcmp(s, "OpenELMForCausalLM") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "nemotron")       == 0) return RCPP_ARCH_LLAMA;  // NVIDIA Nemotron (Llama-3.1 layout)
+    if (strcmp(s, "NemotronForCausalLM") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "minicpm")        == 0) return RCPP_ARCH_LLAMA;  // MiniCPM (LLaMA-layout, added bias)
+    if (strcmp(s, "MiniCPMForCausalLM")  == 0) return RCPP_ARCH_LLAMA;
     // ── New VLM architectures ──
     if (strcmp(s, "smolvlm")   == 0) return RCPP_ARCH_QWEN2VL;
     if (strcmp(s, "llava")     == 0) return RCPP_ARCH_QWEN2VL;
@@ -126,7 +149,21 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     // ── Qwen3.6-MoE (shared-expert MoE, Qwen2-compatible attention) ──
     if (strcmp(s, "qwen35")   == 0) return RCPP_ARCH_QWEN35;
     if (strcmp(s, "qwen35moe") == 0) return RCPP_ARCH_QWEN35;
-    return RCPP_ARCH_BITNET;
+    // Unmapped architecture — do NOT fall back to BITNET silently.
+    return RCPP_ARCH_UNKNOWN;
+}
+
+// RoPE weight convention (corrected 2026-08-13, pilot #16/17): the engine's
+// half-split pairing (i, i+head_dim/2) is correct for NATURAL weights —
+// verified EXACTLY (max diff 0) against transformers for both llama and
+// granite at pos > 0. The earlier "pre-rotated GGUF" theory was wrong for the
+// engine's pairing: rotated weights + half-split mismatched torch (corr 0.07)
+// — the pre-rotation is llama.cpp's internal convention, not applicable to
+// the engine's rope. The loader therefore never rotates; the GGUF path
+// un-rotates (inverse permutation) to natural at load.
+static inline bool rcpp_arch_rotates_rope(rcpp_arch_t arch, const char* architecture) {
+    (void)arch; (void)architecture;
+    return false;
 }
 
 typedef struct {
