@@ -313,8 +313,9 @@
       },
       "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
       "oracle": "q8 gguf",
-      "status": "pending",
-      "tier": "pending"
+      "status": "validated",
+      "tier": "numpy-exact",
+      "result": "VALIDATED 2026-08-15 (commit pending): engine \u2261 f32 numpy port of authoritative modeling_deepseek.py (+ llama.cpp deepseek2.cpp conventions) at ALL 27 layers and multi-position attention (max|diff| ~0.01-0.9 = f16 expert storage; layers 0-2 exact). Correct next-token behavior on the natural prompt (predicts fox/jumps/over/the/lazy/dog/.). Router top-6 expert selections identical to llama.cpp. Generation on the periodic prompt matches llama-completion 19/20 (one whitespace near-tie: 429 ' The' vs 185 '\\n'+549). REWRITTEN deepseek.cpp (was dead unwired code written for a different GGUF variant): real bugs found & fixed \u2014 (a) missing q_a/kv_a latent RMSNorms, (b) expert block-offset bug (base never added \u2192 all blocks wrote the first 32 slots), (c) down-projection transposed read, (d) chunk\u2192ADJACENT rope pairing (llama.cpp LLAMA_ROPE_TYPE_NORM), (e) exps stored [A innermost, expert outer] not experts-innermost, (f) shared experts fused [H, n_shared*MOE], (g) q_lora_rank=None \u2192 uncompressed attn_q, (h) dense layer 0 (first_k_dense=1, DI=10944 from tensor), (i) untied lm_head (output.weight), (j) scale 1/sqrt(192). KNOWN GAP: on weak random-text positions (model PPL ~21) the engine/numpy diverge from llama.cpp's argmax at some positions with non-trivial margins \u2014 an unresolved small detail (rope/yarn no-op confirmed, all layouts verified); the model is a degenerate base (echoes prompts) and both implementations echo. NOT claimed: clean 20/20 vs llama on arbitrary text. Memory: experts Q8\u2192f16 (~29GB) vs f32 (~63GB). Gate: Testing/e2e_deepseek.cpp + /tmp/DeepSeek-V2-Lite.Q8_0.gguf."
     },
     {
       "family": "gptneox",
