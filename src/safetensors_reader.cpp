@@ -188,9 +188,11 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
             cfg.yarn_factor = 32.0f; cfg.yarn_beta_fast = 32.0f;
             cfg.yarn_beta_slow = 1.0f; cfg.yarn_orig_max = 4096.0f;
             cfg.rope_attn_scaling = 0.1f * logf(cfg.yarn_factor) + 1.0f;
-            int sw = 0;
-            if (json_find_int(config_text, "sliding_window", sw)) cfg.sliding_window = sw;
         }
+        // Sliding-window attention (gemma3 512, gptoss 128, ...) — read for
+        // every arch; the attention masks past positions beyond the window on
+        // sliding layers.
+        { int sw2 = 0; if (json_find_int(config_text, "sliding_window", sw2) && sw2 > 0) cfg.sliding_window = sw2; }
         float fv;
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
         else if (json_find_float(config_text, "rotary_emb_base", fv)) cfg.rope_theta = fv;  // GPT-NeoX

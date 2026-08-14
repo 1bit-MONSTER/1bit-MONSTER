@@ -2008,6 +2008,17 @@ struct GenericBackend : Backend {
                 for (int h = 0; h < NKV; h++) rmsnorm(&k[h*HD], &k[h*HD], kn, HD, eps);
             }
 
+            // Sliding-window attention: mask past positions beyond the window
+            // on sliding layers (gptoss: even layers, layer_types alternate
+            // starting at sliding; gemma3: non-full layers per
+            // sliding_window_pattern). Was a no-op < window and unimplemented
+            // beyond (gemma3 512 / gptoss 128 gap, closed 2026-08-15).
+            const bool sliding_layer =
+                cfg.sliding_window > 0 &&
+                (cfg.arch == RCPP_ARCH_GPTOSS ? (il % 2 == 0) :
+                 (cfg.sliding_window_pattern > 0 &&
+                  il % cfg.sliding_window_pattern != cfg.sliding_window_pattern - 1));
+
             bool _dbg_ops = (il == 0 && debug_ops);
             if (_dbg_ops) fprintf(stderr,
                 "[cpu] L0 q_pre=[%g %g %g] k_pre=[%g %g %g] v=[%g %g %g]\n",
@@ -2041,6 +2052,10 @@ struct GenericBackend : Backend {
                 int kv_base = kv_h * HD;  // precompute base offset for this KV head
                 // Score over all past positions
                 for (int t = 0; t <= pos; t++) {
+                    if (sliding_layer && t < pos - cfg.sliding_window + 1) {
+                        scores[t] = -1e30f;  // outside the window: -inf through softmax
+                        continue;
+                    }
                     float* K = &k_cache[il][t * kvs + kv_base];
                     float s = 0;
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];

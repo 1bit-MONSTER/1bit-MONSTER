@@ -30,7 +30,7 @@ Coverage + process, not architecture: every new HF family needs (1) arch-string�
 ## Path to MONSTER (in order)
 
 1. **Rotate the bring-up loop into an agent skill.** The pilot pipeline (arch mapping → discovery fixture → router check → real-checkpoint e2e vs torch) is now scriptable; codify it as a repo skill so adding a family is a guided process, not archaeology. `skills/1bit-writer` is the seed.
-2. **Per-family quirk table → validated families list.** Standing deck (research §27–30): zamba/mamba/whisper/kimi/olmo real-prompt validation; MoE real-prompt via engine tokenizer (htok workstream); gemma3 sliding-window masking >512 tok; gpt2 custom tensor map; **gptoss sliding-window attention >128 tok (packed-MXFP4 path validated 2026-08-14)**. Each lands with a rotation-table + e2e check.
+2. **Per-family quirk table → validated families list.** Standing deck (research §27–30): zamba/mamba/whisper/kimi/olmo real-prompt validation; MoE real-prompt via engine tokenizer (htok workstream); gemma3 sliding-window masking >512 tok — **IMPLEMENTED 2026-08-15** (attention window mask mirrors the reference; long-context e2e pending fixture); gpt2 custom tensor map; **gptoss sliding-window attention >128 tok (packed-MXFP4 path validated 2026-08-14; mask landed 2026-08-15)**. Each lands with a rotation-table + e2e check.
 3. **Breadth sweep: bulk-mint the LLaMA-layout long tail** (one-line arch mappings; verified against the arch self-check) — biggest models-per-line-of-code ratio.
 4. **Publish the arch→checkpoint table** (MAX's marketing artifact) in `docs/wiki/models.md`.
 5. **Catalog ops:** refresh the 37 1BP HF catalog + 37 NPU FLM map as families land.
