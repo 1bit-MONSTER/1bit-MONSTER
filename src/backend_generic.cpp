@@ -579,16 +579,14 @@ struct GenericBackend : Backend {
             cfg.pos_offset = 2;  // OPT pads 2 positions (offset=2 in embed_positions)
             cfg.rms_norm_eps = 1e-5f;
         }
-        // GPT-Neo: gpt2-style names (separate q/k/v projs), nn.LayerNorm
-        // weight+bias, learned wte/wpe, non-gated gelu_new FFN, no rotary,
-        // sequential. Windowed attention (attention_layers, window 256) is a
-        // no-op for prompts < 256 tokens — validated there; >256t needs the
-        // window mask (not implemented, documented).
-        if (cfg.arch == RCPP_ARCH_GPTNEO) {
+        // CodeGen: fused qkv_proj [3H,H] (bias=False), normal attention scale,
+        // PARTIAL rotary (rotary_dim 32 of 64 — cfg.rope_dim), nn.LayerNorm
+        // weight+bias, non-gated gelu_new FFN (fc_in/fc_out w/ bias), untied
+        // lm_head, PARALLEL attn+FFN. Names: transformer.h.N.*.
+        if (cfg.arch == RCPP_ARCH_CODEGEN) {
             cfg.norm_is_layernorm = true;
-            cfg.use_learned_pos = true;
-            cfg.no_rope = true;
-            cfg.attention_multiplier = 1.0f;  // GPT-Neo attention is UNSCALED (no 1/sqrt(hd) — known quirk)
+            cfg.parallel_attn_ffn = true;   // CodeGen: attn+FFN on SAME ln_1 output
+            cfg.adjacent_rope = true;       // rotate_every_two — adjacent pairs (i, i+1)
             cfg.rms_norm_eps = 1e-5f;
         }
 
@@ -954,6 +952,48 @@ struct GenericBackend : Backend {
                 load2("ln_1.bias", lw.rms_attn_b, H, 1);
                 load2("ln_2.weight", lw.rms_ffn, H, 1);
                 load2("ln_2.bias", lw.rms_ffn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_CODEGEN) {
+                // CodeGen: fused qkv_proj [3H,H] (no bias), LN weight+bias
+                // (ln_1/ln_f), non-gated gelu_new FFN (fc_in/fc_out w/ bias),
+                // partial rotary (rotary_dim via cfg.rope_dim). w2 SIZE_MAX.
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "transformer.h.%d.attn.qkv_proj.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != 3 * NH * HD * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                size_t qr2 = (size_t)NH * HD;  // == kr2 == vr2 (no GQA)
+                // CodeGen qkv layout: mp_num=4 model-parallel shards, each
+                // [q(H/4) | v(H/4) | k(H/4)] with contiguous 64-row heads
+                // (forward: reshape (mp_num,-1), split local_dim=H/mp_num,
+                // _split_heads shard-major). Verified 2026-08-14 by matching
+                // torch's post-split q/k/v against qkv rows.
+                const size_t mp_num = 4, shard = (size_t)cfg.hidden / mp_num;
+                std::vector<float> q(qr2 * H), k(qr2 * H), v(qr2 * H);
+                for (size_t h = 0; h < (size_t)NH; h++) {
+                    size_t s = h / (NH / mp_num), l = h % (NH / mp_num);
+                    size_t base = s * 3 * shard;
+                    memcpy(q.data() + (h * HD) * H, qkv.data() + (base + l * HD) * H, (size_t)HD * H * sizeof(float));
+                    memcpy(v.data() + (h * HD) * H, qkv.data() + (base + shard + l * HD) * H, (size_t)HD * H * sizeof(float));
+                    memcpy(k.data() + (h * HD) * H, qkv.data() + (base + 2 * shard + l * HD) * H, (size_t)HD * H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.out_proj.weight", lw.wo, NH * HD, H);
+                load2("mlp.fc_in.weight", lw.w1, H, IM);
+                load2("mlp.fc_in.bias", lw.w1_b, IM, 1);
+                load2("mlp.fc_out.weight", lw.w3, IM, H);
+                load2("mlp.fc_out.bias", lw.w3_b, H, 1);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_1.bias", lw.rms_attn_b, H, 1);
+                load2("ln_2.weight", lw.rms_ffn, H, 1);
+                load2("ln_2.bias", lw.rms_ffn_b, H, 1);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -1083,10 +1123,10 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo: non-gated FFN — w2 (gate) legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
-                           cfg.arch == RCPP_ARCH_GPTNEO) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -1359,6 +1399,33 @@ struct GenericBackend : Backend {
                 float t = pos * freqs[i];
                 float cosv = cosf(t), sinv = sinf(t);
                 int i0 = h * hd + i, i1 = h * hd + i + half;
+                float k0 = k[i0], k1 = k[i1];
+                k[i0] = k0 * cosv - k1 * sinv;
+                k[i1] = k0 * sinv + k1 * cosv;
+            }
+        }
+    }
+
+    // CodeGen/GPT-J style rotary: rotate_every_two — ADJACENT pairs (2i, 2i+1)
+    // within rot_dim (modeling_codegen.py apply_rotary_pos_emb). Same freq
+    // table (theta^(-2p/rot_dim) per pair).
+    static void rope_adjacent(float* q, float* k, int pos, int n_heads, int n_kv, int hd, int rot_dim, float theta, const float* freqs) {
+        int pairs = rot_dim / 2;
+        for (int h = 0; h < n_heads; h++) {
+            for (int p = 0; p < pairs; p++) {
+                float t = pos * freqs[p];
+                float cosv = cosf(t), sinv = sinf(t);
+                int i0 = h * hd + 2 * p, i1 = h * hd + 2 * p + 1;
+                float q0 = q[i0], q1 = q[i1];
+                q[i0] = q0 * cosv - q1 * sinv;
+                q[i1] = q0 * sinv + q1 * cosv;
+            }
+        }
+        for (int h = 0; h < n_kv; h++) {
+            for (int p = 0; p < pairs; p++) {
+                float t = pos * freqs[p];
+                float cosv = cosf(t), sinv = sinf(t);
+                int i0 = h * hd + 2 * p, i1 = h * hd + 2 * p + 1;
                 float k0 = k[i0], k1 = k[i1];
                 k[i0] = k0 * cosv - k1 * sinv;
                 k[i1] = k0 * sinv + k1 * cosv;
@@ -1714,7 +1781,10 @@ struct GenericBackend : Backend {
             const float* freqs = rope_freqs.data();
             if (!rope_freqs_local.empty() && il % cfg.sliding_window_pattern != cfg.sliding_window_pattern - 1)
                 freqs = rope_freqs_local.data();
-            if (!cfg.no_rope) rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+            if (!cfg.no_rope) {
+                if (cfg.adjacent_rope) rope_adjacent(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+                else rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+            }
             if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2]);
 

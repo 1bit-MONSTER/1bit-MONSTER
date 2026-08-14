@@ -357,6 +357,26 @@
       "oracle": "torch (GPTNeo in transformers 5.14)",
       "status": "validated",
       "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)"
+    },
+    {
+      "family": "codegen",
+      "hf_arch_strings": [
+        "codegen"
+      ],
+      "mapping_target": "CODEGEN",
+      "quirk_flags": {
+        "qkv": "fused qkv_proj with mp_num=4 model-parallel layout [q(4h)|v(4h)|k(4h)] per shard \u2014 NOT [q|k|v]",
+        "rope": "ADJACENT pairing (rotate_every_two) + partial rotary_dim=32 (cfg.adjacent_rope + rope_dim)",
+        "parallel": "attn+FFN on same ln_1",
+        "attn": "scaled 1/sqrt(hd) \u2014 normal",
+        "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
+        "norm": "nn.LayerNorm weight+bias",
+        "lm_head": "untied"
+      },
+      "e2e_model": "Salesforce/codegen-350M-mono (converted bin\u2192safetensors locally)",
+      "oracle": "torch (CodeGen in transformers 5.14)",
+      "status": "validated",
+      "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)"
     }
   ]
 }
