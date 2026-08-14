@@ -1,19 +1,19 @@
 <div align="center">
 
-<img src="site/assets/brand-lockup.svg" alt="1bit.systems" width="540">
+<img src="site/assets/brand-lockup.svg" alt="1bit MONSTER" width="540">
 
 # Run AI on your own hardware — fast
 
 ### An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python. MIT.
 
-[![CI](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-systems/1bit-systems/actions/workflows/ci.yml)
-[![GitHub Ops](https://github.com/1bit-systems/1bit-systems/actions/workflows/gh-ops.yml/badge.svg)](https://github.com/1bit-systems/1bit-systems/actions/workflows/gh-ops.yml)
+[![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
+[![GitHub Ops](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/gh-ops.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/gh-ops.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-00ff00.svg)](LICENSE)
-[![Site](https://img.shields.io/badge/site-1bit.systems-12a0ed.svg)](https://1bit.systems)
+[![Site](https://img.shields.io/badge/site-1bit.monster-12a0ed.svg)](https://1bit.monster)
 [![Strix Halo](https://img.shields.io/badge/strix%20halo-gfx1151%20%2B%20XDNA%202-12a0ed.svg)](https://www.amd.com/en/products/processors/laptop/ryzen/ai-max-series.html)
 [![Models](https://img.shields.io/badge/models-19%20architectures%20%C2%B7%2047%201BP-00ffaa)](docs/model-families/README.md)
 
-**[🌐 Website](https://1bit.systems)** · **[📚 Docs](docs/README.md)** · **[🧬 Model Families](docs/model-families/README.md)** · **[🗣️ JARVIS Pipeline](docs/jarvis.md)** · **[🛠️ The Story](docs/journey.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
+**[🌐 Website](https://1bit.monster)** · **[📚 Docs](docs/README.md)** · **[🧬 Model Families](docs/model-families/README.md)** · **[🗣️ JARVIS Pipeline](docs/jarvis.md)** · **[🛠️ The Story](docs/journey.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
 </div>
 
@@ -41,8 +41,8 @@ AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU — and locked it be
 ## Quick start
 
 ```bash
-git clone https://github.com/1bit-systems/1bit-systems
-cd 1bit-systems && cmake -B build && cmake --build build
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-MONSTER && cmake -B build && cmake --build build
 ./build/1bit zaya -m model.1bp -p "Hello world"
 ```
 
