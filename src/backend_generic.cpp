@@ -529,6 +529,16 @@ struct GenericBackend : Backend {
             return false;
         }
 
+        // OLMo (allenai OLMo-1B-0724-hf): LayerNorm has NO learnable weights
+        // (OlmoLayerNorm: mean/var only, eps 1e-5) and attention clips QKV to
+        // [-8, 8] (config clip_qkv: 8.0). Verified against modeling_olmo.py
+        // 2026-08-14. Also uses RoPE theta 10000 (natural order).
+        if (cfg.arch == RCPP_ARCH_OLMO) {
+            cfg.norm_is_layernorm = true;
+            cfg.clip_qkv = 8.0f;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed)) {
             fprintf(stderr, "Generic: safetensors: missing embedding\n");
@@ -714,7 +724,9 @@ struct GenericBackend : Backend {
                     return false;
                 }
             } else if (lw.wq == SIZE_MAX || lw.wk == SIZE_MAX || lw.wv == SIZE_MAX ||
-                       lw.wo == SIZE_MAX || lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX ||
+                       lw.wo == SIZE_MAX ||
+                       (!cfg.norm_is_layernorm &&
+                        (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
                        lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -832,9 +844,12 @@ struct GenericBackend : Backend {
             // Check that all required tensors loaded correctly. If any shape
             // mismatch occurred, load_tensor returns SIZE_MAX and the model
             // will produce garbage — abort early (issue #947).
-            bool layer_ok = (lw.rms_attn != SIZE_MAX) && (lw.rms_ffn != SIZE_MAX)
-                         && (lw.wq != SIZE_MAX) && (lw.wk != SIZE_MAX)
-                         && (lw.wv != SIZE_MAX) && (lw.wo != SIZE_MAX);
+            // OLMo: rms_attn/rms_ffn are legitimately absent (no-affine
+            // LayerNorm — llama.cpp writes no norm tensors for OLMo).
+            bool layer_ok = (lw.wq != SIZE_MAX) && (lw.wk != SIZE_MAX)
+                         && (lw.wv != SIZE_MAX) && (lw.wo != SIZE_MAX)
+                         && (hdr_cfg.arch == RCPP_ARCH_OLMO ||
+                             (lw.rms_attn != SIZE_MAX && lw.rms_ffn != SIZE_MAX));
             if (!layer_ok) {
                 fprintf(stderr, "  [generic] Layer %d: required tensor shape mismatch — ABORTING LOAD\n", i);
                 return false;
@@ -907,6 +922,15 @@ struct GenericBackend : Backend {
         cfg.rms_norm_eps = hdr_cfg.rms_norm_eps;
         cfg.rope_theta = hdr_cfg.rope_theta;
         if (hdr_cfg.max_seq_len > 0) cfg.max_seq_len = hdr_cfg.max_seq_len;
+        // OLMo: LayerNorm (no affine params, eps 1e-5) + QKV clip 8.0. The
+        // GGUF carries NO norm tensors (llama.cpp skips no-affine norms —
+        // see the layer_ok relaxation above). Must run AFTER the hdr->cfg
+        // copies above (they'd clobber eps with the header default 1e-6).
+        if (hdr_cfg.arch == RCPP_ARCH_OLMO) {
+            cfg.norm_is_layernorm = true;
+            cfg.clip_qkv = 8.0f;
+            cfg.rms_norm_eps = 1e-5f;
+        }
         return !embed.empty() && layers.size() == (size_t)L;
     }
 
@@ -928,6 +952,18 @@ struct GenericBackend : Backend {
         float ss = 0; for (int i = 0; i < n; i++) ss += x[i] * x[i];
         float r = 1.0f / sqrtf(ss / n + eps);
         for (int i = 0; i < n; i++) o[i] = x[i] * r * w[i];
+    }
+
+    // OLMo LayerNorm: no learnable weight/bias (OlmoLayerNorm in
+    // modeling_olmo.py — F.layer_norm(x, shape, None, None, eps=1e-5), biased
+    // variance). Different from rmsnorm: centered, no affine params.
+    static void layernorm(float* o, const float* x, int n, float eps) {
+        double mean = 0; for (int i = 0; i < n; i++) mean += x[i];
+        mean /= n;
+        double var = 0; for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
+        var /= n;
+        float r = 1.0f / sqrtf((float)var + eps);
+        for (int i = 0; i < n; i++) o[i] = (float)((x[i] - mean) * r);
     }
 
     // NeoX-style (half-split) RoPE — the convention GGUF/llama.cpp-family
@@ -1238,7 +1274,8 @@ struct GenericBackend : Backend {
             int kv_begin = pos * NKV * HD;
 
             // RMSNorm → QKV
-            rmsnorm(x2, x, w(l.rms_attn), H, eps);
+            if (cfg.norm_is_layernorm) layernorm(x2, x, H, eps);
+            else rmsnorm(x2, x, w(l.rms_attn), H, eps);
             if (il == 0 && debug_ops) {
                 double ss = 0; for (int i = 0; i < H; i++) ss += (double)x[i] * x[i];
                 fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g] mean2=%g eps=%g r=%g\n",
@@ -1254,6 +1291,17 @@ struct GenericBackend : Backend {
             if (l.bq != SIZE_MAX) { float* b = w(l.bq); for (int i = 0; i < NH*HD; i++) q[i] += b[i]; }
             if (l.bk != SIZE_MAX) { float* b = w(l.bk); for (int i = 0; i < NKV*HD; i++) k[i] += b[i]; }
             if (l.bv != SIZE_MAX) { float* b = w(l.bv); for (int i = 0; i < NKV*HD; i++) v[i] += b[i]; }
+
+            // OLMo: clip QKV values to [-clip_qkv, clip_qkv] before RoPE
+            // (config clip_qkv: 8.0, applied in OlmoAttention.forward).
+            if (cfg.clip_qkv > 0.0f) {
+                for (int i = 0; i < NH*HD; i++)
+                    q[i] = q[i] > cfg.clip_qkv ? cfg.clip_qkv : (q[i] < -cfg.clip_qkv ? -cfg.clip_qkv : q[i]);
+                for (int i = 0; i < NKV*HD; i++) {
+                    k[i] = k[i] > cfg.clip_qkv ? cfg.clip_qkv : (k[i] < -cfg.clip_qkv ? -cfg.clip_qkv : k[i]);
+                    v[i] = v[i] > cfg.clip_qkv ? cfg.clip_qkv : (v[i] < -cfg.clip_qkv ? -cfg.clip_qkv : v[i]);
+                }
+            }
 
             // Optional per-head QK-norm (Qwen3 and others): RMSNorm applied
             // independently to each head's head_dim-sized slice with a
@@ -1337,7 +1385,8 @@ struct GenericBackend : Backend {
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
             // weighted sum → residual (MoE).
-            rmsnorm(x2, x, w(l.rms_ffn), H, eps);
+            if (cfg.norm_is_layernorm) layernorm(x2, x, H, eps);
+            else rmsnorm(x2, x, w(l.rms_ffn), H, eps);
             if (l.moe_gate_inp != SIZE_MAX) {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
                 float* router_probs = scratch_moe_router_probs.data();
@@ -1414,8 +1463,9 @@ struct GenericBackend : Backend {
             for (int i = 0; i < H; i++) { s += fabs(x[i]); if (fabs(x[i]) > mx) mx = fabs(x[i]); }
             fprintf(stderr, "[cpu] final hidden mean|.|=%g max|.|=%g\n", s / H, mx);
         }
-        // Final RMSNorm
-        rmsnorm(x2, x, final_norm.data(), H, eps);
+        // Final norm — RMSNorm (weighted) or OLMo LayerNorm (no affine params)
+        if (cfg.norm_is_layernorm) layernorm(x2, x, H, eps);
+        else rmsnorm(x2, x, final_norm.data(), H, eps);
 
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();

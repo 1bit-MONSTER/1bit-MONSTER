@@ -99,6 +99,10 @@ struct ModelConfig {
     // 0.015625; 0 = default 1/sqrt(head_dim)). Found 2026-08-13 via the
     // granite real-prompt torch oracle — the engine was 8x off (1/sqrt(64)).
     float attention_multiplier = 0.0f;
+    // OLMo (allenai): LayerNorm WITHOUT learnable affine params (mean/var only)
+    // + QKV value clipping. Set by the loader for RCPP_ARCH_OLMO.
+    bool norm_is_layernorm = false;   // true: no norm weights, centered norm
+    float clip_qkv = 0.0f;            // clamp q/k/v to [-clip, clip] before rope (0 = none)
     // Gemma-2/3: logit soft-caps from config (0 = none). Gemma3-1b has both
     // None; Gemma-2 has attn=50.0 / final=30.0. The engine must NOT hardcode
     // these on the arch string — gemma3-1b would be wrongly capped.

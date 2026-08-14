@@ -68,10 +68,10 @@
       "family": "olmo",
       "hf_arch_strings": ["olmo", "olmo2", "olmoe", "molmo"],
       "mapping_target": "OLMO",
-      "quirk_flags": { "rope": "none (learned pos)", "norm": "layernorm", "rotate_at_load": false },
-      "e2e_model": "allenai/OLMo-1B",
-      "oracle": "q8 gguf",
-      "status": "pending"
+      "quirk_flags": { "rope": "natural theta=10000", "norm": "LayerNorm NO affine params (eps 1e-5)", "clip_qkv": 8.0, "rotate_at_load": false, "gguf": "no norm tensors; unrotate q/k (llama.cpp pre-rotates)" },
+      "e2e_model": "allenai/OLMo-1B-0724-hf",
+      "oracle": "mradermacher/OLMo-1B-0724-hf-GGUF Q8_0",
+      "status": "validated"
     },
     {
       "family": "falcon",
