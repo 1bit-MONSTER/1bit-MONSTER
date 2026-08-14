@@ -62,6 +62,8 @@ int main() {
     check("codegen", RCPP_ARCH_CODEGEN, "codegen", false);
     check("gptj", RCPP_ARCH_GPTJ, "gptj", false);
     check("gptoss", RCPP_ARCH_GPTOSS, "gptoss", false);
+    check("step1", RCPP_ARCH_STEP1, "step1", false);
+    check("step1moe", RCPP_ARCH_STEP1, "step1moe", false);
     check("unknown", RCPP_ARCH_UNKNOWN, "mystery", false);
 
     if (fails) { std::printf("ROTATION TABLE: %d/%d FAILED\n", fails, total); return 1; }

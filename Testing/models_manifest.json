@@ -427,6 +427,26 @@
       "status": "validated",
       "tier": "numpy-exact-20of20",
       "result": "VALIDATED 2026-08-14: engine 20/20 generated tokens == numpy reference (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint, full logits max|diff| 6.7e-5, top-8 EXACT. Engine keeps MXFP4 MoE packed (U8 blocks+scales, per-expert per-token dequant, ~17GB) \u2014 no torch reference needed. Quirks landed: YARN rope (theta 150000, factor 32, freq-index ramp), attention sinks (per-head logit cat before softmax), router bias, MXFP4 dequant (FP4 e2m1, value=FP4[nibble]*2^(scale-127), low->even/high->odd, 32/block), interleaved gate/up, gate=min(g,7) up=clamp(\u00b17), glu=gate*sigmoid(1.702*gate), gated=(up+1)*glu, top-4 softmax gating, untied lm_head, head_dim 64, odd-safe rope. Known gap: sliding-window (128) attention on sliding layers \u2014 no-op < 128 tokens, unimplemented beyond (same class as gemma3 SWA)."
+    },
+    {
+      "family": "step1",
+      "hf_arch_strings": [
+        "step1",
+        "step1moe"
+      ],
+      "mapping_target": "STEP1",
+      "quirk_flags": {
+        "rope": "none (sqrt-ALiBi)",
+        "alibi": "sqrt: -slope[h]*sqrt(pos-t), slopes 2^(-8(h+1)/n)+2^(-4(2h+1)/n)",
+        "norm": "RMSNorm",
+        "bias": "none",
+        "attention": "GQA via num_attention_groups (groups==heads on validated ckpt)"
+      },
+      "e2e_model": "StepLaw/StepLaw-N_214M-D_99.0B-LR1.953e-03-BS1048576",
+      "oracle": "torch fallback (modeling_step1.py build_alibi_cache + SDPA)",
+      "status": "validated",
+      "tier": "full",
+      "result": "VALIDATED 2026-08-15: 20/20 generated tokens == torch (modeling_step1.py fallback path, CPU f32), 16-position chain identical, full logits max|diff| 5.6e-5 top-8 EXACT. Quirks landed: sqrt-ALiBi attention (bias = -slope[h]*sqrt(pos-t), NO RoPE \u2014 cfg.alibi + per-head slope table built from build_alibi_cache convention), num_attention_groups -> n_kv_heads (reader), dense llama-layout (separate q/k/v/o, RMSNorm eps 1e-5, gated SwiGLU, no biases), untied-in-file lm_head. NOTE: 'Step1MoEForCausalLM' arch string + use_moe/moe_num_experts config but the weights are DENSE (no expert tensors) \u2014 the 2,882-checkpoint census class is mostly dense-mislabeled pretrain runs; expert-bearing Step1MoE ckpts not yet seen (defer moe_num_experts key until one is). Model itself is a mid-training run (LR 1.9e-3) \u2014 degenerate repeated-token output, engine==torch exactly."
     }
   ]
 }

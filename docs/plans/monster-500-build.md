@@ -7,7 +7,7 @@
 ## The math (how 500 is reached)
 
 Models are data. 500 models = ~50 HF architecture classes mapping onto validated layouts.
-Current: **24 arch tokens, 48 arch checks, 35 rotation checks, 14 families validated** — 13 torch-full 20/20 (llama, qwen2, qwen3, gemma, granite-MoE, mistral, phi, olmo, gpt2, falcon, opt, gptj, gptneo), exaone Q8-oracle 20/20, 4 numpy-exact (internlm2, minicpm, gptneox, codegen), **gptoss numpy-exact 20/20** (2026-08-14, the memory-blocked family now runs via packed-MXFP4 per-expert dequant — see Phase 2 #7).
+Current: **25 arch tokens, 50 arch checks, 37 rotation checks, 15 families validated** — 14 torch-full 20/20 (llama, qwen2, qwen3, gemma, granite-MoE, mistral, phi, olmo, gpt2, falcon, opt, gptj, gptneo, **step1** 2026-08-15), exaone Q8-oracle 20/20, 4 numpy-exact (internlm2, minicpm, gptneox, codegen), **gptoss numpy-exact 20/20** (2026-08-14, the memory-blocked family now runs via packed-MXFP4 per-expert dequant — see Phase 2 #7).
 
 Unlock table (each ✅ family adds every HF checkpoint of that class):
 
@@ -69,6 +69,8 @@ Order by unlock size:
 6. **Bespoke re-validation:** zamba2, mamba, deepseek, kimi, whisper — existing backends; one e2e per family (SSM/MLA/STT paths need their own oracles; whisper via transcript compare).
 7. **gpt-oss (OpenAI, MXFP4-packed MoE) — DONE 2026-08-14: engine 20/20 generated tokens == numpy reference** (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint (13.4GB packed, in `/tmp/onebit-e2e/gptoss`), full logits max|diff| 6.7e-5, top-8 EXACT. The memory-block (dequantized ~105GB fp32) is sidestepped by keeping the MoE **packed U8 blocks+scales in RAM and dequantizing only the selected 4 experts per token** (~17GB total, no torch reference needed). Quirks landed: YARN rope (theta 150000, factor 32, beta 32/1, orig_max 4096 — the ramp runs over FREQ indices arange(dim//2), an easy 2x), attention sinks (per-head learned logit cat to scores before softmax, dropped after), router bias, MXFP4 decode (FP4 e2m1, value = FP4[nibble]·2^(scale−127), low nibble→even/high→odd, 32 vals/block), interleaved gate/up rows, gate=min(g,7)·sigmoid(1.702g), **gated=(up+1)·glu** (the `+1` was missing in the first pass), top-4 softmax gating (softmax over top-k only), untied lm_head, head_dim 64, odd-safe rope pairing. Validation harness: `Testing/e2e_numpy_ref_gptoss.py` (reference) + `e2e_seq_gen` (engine). Known gap: sliding-window (128) attention on sliding layers is a no-op < 128 tokens and unimplemented beyond (same class as the gemma3 SWA gap).
    Gate: `python3 Testing/e2e_numpy_ref_gptoss.py /tmp/onebit-e2e/gptoss /tmp/gptoss_ids.txt 20` — ref-gen must equal engine-gen.
+8. **step1 (StepLaw / stepfun Step-Audio family) — DONE 2026-08-15: engine 20/20 generated tokens == torch** (modeling_step1.py fallback path — build_alibi_cache sqrt-ALiBi + SDPA on CPU, the path that matches the custom Optimus kernel at short lengths per stepfun-ai/Step-Audio#138) on StepLaw/StepLaw-N_214M-D_99.0B (681MB, `/tmp/onebit-e2e/step1`). 16-position chain identical, full logits max|diff| 5.6e-5, top-8 EXACT. Quirks landed: **sqrt-ALiBi** (bias = −slope[h]·√(pos−t), NO RoPE; slopes per build_alibi_cache: n=2^⌊log2(heads)⌋, 2^(−8(h+1)/n) then 2^(−4(2h+1)/n)), `num_attention_groups` → n_kv_heads (reader), dense llama-layout (q/k/v/o, RMSNorm, gated SwiGLU, no biases), untied-in-file lm_head. **Gotcha: the 'Step1MoEForCausalLM' arch string + use_moe/moe_num_experts config are STALE — the weights are dense** (no expert tensors; param count = dense exact). The 2,882-checkpoint census class is mostly dense-mislabeled pretrain runs; a real expert-bearing Step1MoE ckpt would need the `moe_num_experts` config key + expert tensor layout — deferred until one is seen. The model itself is a mid-training run (LR 1.9e-3): degenerate repeated-token output, engine == torch exactly.
+   Gate: `python3 Testing/e2e_torch_oracle_step1.py /tmp/onebit-e2e/step1 /tmp/step1_ids.txt 20` — ref-gen must equal the engine's.
 
 Each family lands: mapping (+self-check) → quirk code → fixture → e2e entry in `Testing/run_all.sh`.
 
@@ -88,7 +90,7 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 ## Phase 4 — Catalog & the count
 
 - [x] Publish arch→checkpoint table in `docs/wiki/models.md` — **DONE 2026-08-14**
-- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → 11 validated families covered 193,318 checkpoints (88%); **+GPT-OSS 407 checkpoints validated 2026-08-14** (was the #2 uncovered class; packed-MXFP4 engine path needs no torch reference). Biggest remaining causal-LM classes: **Step1MoE 2,882** · DeepSeek-V3 · Bloom · Qwen2VL · Mamba. Encoder-decoders out of scope.
+- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → 11 validated families covered 193,318 checkpoints (88%); **+GPT-OSS 407** (2026-08-14) **+ Step1MoE-class 2,882** (2026-08-15 — the census class is dense-mislabeled pretrain runs; sqrt-ALiBi path handles them). Biggest remaining causal-LM classes: **DeepSeek-V3** · Bloom · Qwen2VL · Mamba. Encoder-decoders out of scope.
 - [ ] Refresh HF 1BP catalog (37 → grow with new families) + NPU FLM map as xclbins land
 - [x] Count claim lands in `docs/wiki/models.md` header ("193k / 88% of HF text-gen")
 
@@ -98,7 +100,7 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 
 - **Encoder-decoder (t5, bloom, bart, m2m):** new engine paths (cross-attention). Recommend OUT of phase-1 scope; revisit when dense coverage is done.
 - **Per-family quirks are the real work** — budget 1–2 days/family; the manifest runner (Phase 3) is what makes 50 families tractable, so start it early (parallel with Phase 2 #1).
-- **MoE CPU validation** — gptoss MoE now validated via the packed per-expert numpy oracle (2026-08-14); other MoE (qwen3moe, deepseek) still deferred to the engine tokenizer (htok workstream) or per-family oracle. Step1MoE (2,882 checkpoints) is now the biggest remaining causal-LM class.
+- **MoE CPU validation** — gptoss MoE validated via the packed per-expert numpy oracle (2026-08-14); other MoE (qwen3moe, deepseek) deferred to the engine tokenizer (htok workstream) or per-family oracle. Biggest remaining causal-LM class: **DeepSeek-V3** (bespoke MLA path exists — needs validation).
 - **ggml_vulkan safetensors-first routing** (pilot #3 note): safetensors models hit GGUF-first routes and failover — fine by design, revisit if first-load latency matters.
 - **gemma3 SWA masking >512 tokens** — known gap, affects long-context gemma only.
 
