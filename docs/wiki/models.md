@@ -19,9 +19,10 @@ Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-ge
 | olmo | 744 | | gptoss | 407 |
 | codegen | 348 | | exaone | 156 |
 | internlm2 | 115 | | minicpm | 76 |
-| deepseek v2/v3 | (uncensused) | | **TOTAL** | **~206,400 (93.8%)** |
+| bloom | 1,086 | | deepseek v2/v3 | (uncensused) |
+| **TOTAL** | **~207,500 (94.3%)** |
 
-**Remaining uncovered causal-LM classes:** Bloom · Qwen2VL · Mamba · Kimi-K3 · Whisper (bespoke SSM/STT/GPU backends — separate workstreams; encoder-decoders T5/MT5 out of scope for the decode-loop engine).
+**Remaining uncovered causal-LM classes:** Qwen2VL · Mamba · Kimi-K3 · Whisper (bespoke SSM/STT/VLM backends — separate workstreams; encoder-decoders T5/MT5 out of scope for the decode-loop engine). Bloom (1,086) validated 2026-08-15.
 
 **DONE 2026-08-14 — gpt_neox (5,652 — the biggest miss):** validated on EleutherAI/pythia-70m. Three real bugs found: (1) fused query_key_value is HEAD-INTERLEAVED [q_h,k_h,v_h] per head (llama.cpp conversion reshapes (n_head,3,hd,embed) — raw safetensors is NOT [q|k|v]); (2) **rotary_pct 0.25 → rot_dim = head_dim/4** (new cfg.rope_dim; gguf rope.dimension_count=16 is the tell) — the engine rotated the full head_dim; (3) untied LM head is `embed_out.weight` (loader fell back to the tied embedding → wrong logits). Also: reader rotary_emb_base→rope_theta fallback; parallel attn+FFN (use_parallel_residual) + nn.LayerNorm weight+bias + biases-everywhere + non-gated erf-gelu — all via existing falcon/gpt2 paths. Result: engine ≡ HF-semantics numpy top-8 EXACT + top-1 logits == torch (253:1064.9 vs torch 1078.4 — pythia-70m has near-flat logits, tail shuffles on near-ties; llama.cpp's neox-rope convention disagrees). Coverage now ~199k / 220k (90%).
 

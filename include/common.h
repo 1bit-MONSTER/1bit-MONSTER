@@ -140,6 +140,12 @@ struct ModelConfig {
     // Slopes: 2^(-8*h/n) for h in [0,n) with n = 2^floor(log2(heads)), then
     // 2^(-(2h+1)*4/n) for the remainder (build_alibi_cache convention).
     bool alibi = false;
+    // Bloom: LINEAR ALiBi — scores[h, t] -= slope[h] * (pos - t). The slope
+    // table is the SAME as step1's (2^(-8(h+1)/n) then 2^(-4(2h+1)/n), the
+    // ggml get_alibi_slope convention); only the distance is linear.
+    bool alibi_linear = false;
+    // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+    bool embed_ln = false;
     // Per-model residual scaling (granite: residual_multiplier=0.22; the
     // block output is scaled before adding to the residual). 1.0 = none.
     // Found 2026-08-13 via the granite real-prompt torch oracle — the engine

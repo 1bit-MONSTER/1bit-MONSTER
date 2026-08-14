@@ -127,6 +127,8 @@ struct GenericBackend : Backend {
     std::vector<LayerW> layers;
     // GPT-2: learned position-embedding table (wpe) + final LayerNorm bias.
     std::vector<float> pos_embed, final_norm_bias;
+    // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+    std::vector<float> embed_ln_w, embed_ln_b;
     // Gemma-2/3/4 logit soft-capping (attn cap 50, final cap 30). Keyed on
     // the arch STRING, not the enum — RCPP_ARCH_GEMMA also covers Granite
     // (Llama-style: no caps, rms eps 1e-5) and Gemma-1 (no caps).
@@ -330,10 +332,10 @@ struct GenericBackend : Backend {
         // attention_factor (0.1*ln(factor)+1), scaling q·k scores by its
         // square (gpt-oss: 1.34657^2 = 1.8139).
         if (cfg.rope_yarn) inv_sqrt_hd_ *= cfg.rope_attn_scaling * cfg.rope_attn_scaling;
-        // Step1 sqrt-ALiBi slopes (modeling_step1.build_alibi_cache): n =
-        // 2^floor(log2(NH)); slopes[0..n) = 2^(-8*(h+1)/n); remainder
-        // 2^(-4*(2h+1)/n).
-        if (cfg.alibi && NH > 0) {
+        // Step1/Bloom ALiBi slopes (build_alibi_cache / ggml get_alibi_slope):
+        // n = 2^floor(log2(NH)); slopes[0..n) = 2^(-8*(h+1)/n); remainder
+        // 2^(-4*(2h+1)/n). Step1 applies sqrt(distance), Bloom linear.
+        if ((cfg.alibi || cfg.alibi_linear) && NH > 0) {
             alibi_slopes.resize(NH);
             int n = 1 << (int)floorf(log2f((float)NH));
             float m0 = powf(2.0f, -8.0f / n);
@@ -655,12 +657,29 @@ struct GenericBackend : Backend {
             cfg.alibi = true;
             cfg.rms_norm_eps = 1e-5f;
         }
+        // Bloom (bigscience): fused query_key_value [3H,H] w/ bias (ROW split
+        // q|k|v — NOT head-interleaved like GPT-NeoX), nn.LayerNorm w+bias on
+        // input_layernorm + post_attention_layernorm (SEQUENTIAL: attn →
+        // residual → LN → MLP → residual), non-gated tanh-gelu FFN w/ bias,
+        // LINEAR ALiBi (no RoPE — slope table identical to step1's, distance
+        // linear not sqrt), LayerNorm on the token embedding
+        // (word_embeddings_layernorm), tied lm_head. Config keys: n_head /
+        // n_layer / layer_norm_epsilon. Verified vs modeling_bloom.py +
+        // llama.cpp bloom.cpp 2026-08-15.
+        if (cfg.arch == RCPP_ARCH_BLOOM) {
+            cfg.norm_is_layernorm = true;
+            cfg.no_rope = true;
+            cfg.alibi_linear = true;
+            cfg.embed_ln = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
             !r.get_tensor_f32("transformer.wte.weight", embed) &&
             !r.get_tensor_f32("wte.weight", embed) &&
             !r.get_tensor_f32("transformer.word_embeddings.weight", embed) &&
+            !r.get_tensor_f32("word_embeddings.weight", embed) &&
             !r.get_tensor_f32("model.tok_embeddings.weight", embed) &&
             !r.get_tensor_f32("gpt_neox.embed_in.weight", embed) &&
             !r.get_tensor_f32("model.decoder.embed_tokens.weight", embed)) {
@@ -700,6 +719,9 @@ struct GenericBackend : Backend {
             if (!r.get_tensor_f32("gpt_neox.final_layer_norm.bias", final_norm_bias))
                 if (!r.get_tensor_f32("model.decoder.final_layer_norm.bias", final_norm_bias))
                     r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+        r.get_tensor_f32("word_embeddings_layernorm.weight", embed_ln_w);
+        r.get_tensor_f32("word_embeddings_layernorm.bias", embed_ln_b);
         if (gemma_post_norms && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         if (!r.get_tensor_f32("output.weight", output_weight))
@@ -818,7 +840,7 @@ struct GenericBackend : Backend {
                 // Parallel attn+FFN: rms_ffn stays SIZE_MAX (single
                 // input_layernorm feeds both); w2 stays SIZE_MAX (erf-gelu).
                 std::vector<float> qkv;
-                snprintf(buf, sizeof(buf), "transformer.h.%d.self_attention.query_key_value.weight", l);
+                snprintf(buf, sizeof(buf), "h.%d.self_attention.query_key_value.weight", l);
                 size_t qkv_rows = (size_t)NH * HD + 2 * (size_t)HD;
                 if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != (int)(qkv_rows * H)) {
                     fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
@@ -835,7 +857,7 @@ struct GenericBackend : Backend {
                 lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -899,7 +921,7 @@ struct GenericBackend : Backend {
                 // gate/up tensors (c_fc_0 = gate, c_fc_1 = up), c_proj down.
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -963,6 +985,55 @@ struct GenericBackend : Backend {
                 load2("attention.dense.bias", lw.bo, NH * HD, 1);
                 load2("mlp.dense_h_to_4h.bias", lw.w1_b, IM, 1);
                 load2("mlp.dense_4h_to_h.bias", lw.w3_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_BLOOM) {
+                // Bloom: fused query_key_value [3H, H] w/ bias — HEAD-INTERLEAVED
+                // [h0(q,k,v), h1(q,k,v), ...] per modeling_bloom._reshape
+                // (view(seq, heads, 3, head_dim) — same as GPT-NeoX, NOT a
+                // [q_all|k_all|v_all] row split). nn.LayerNorm w+bias
+                // (input_layernorm + post_attention_layernorm, SEQUENTIAL),
+                // non-gated tanh-gelu FFN w/ bias, linear ALiBi.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "h.%d.self_attention.query_key_value.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != 3 * H * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                size_t hd2 = (size_t)HD;
+                std::vector<float> q(NH * hd2 * H), k(NH * hd2 * H), v(NH * hd2 * H);
+                for (size_t h = 0; h < (size_t)NH; h++) {
+                    memcpy(q.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 0) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                    memcpy(k.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 1) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                    memcpy(v.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 2) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                std::vector<float> qkvb;
+                snprintf(buf, sizeof(buf), "h.%d.self_attention.query_key_value.bias", l);
+                if (r.get_tensor_f32(buf, qkvb) && (int)qkvb.size() == 3 * H) {
+                    std::vector<float> bq((size_t)NH * HD), bk((size_t)NH * HD), bv((size_t)NH * HD);
+                    for (size_t h = 0; h < (size_t)NH; h++) {
+                        memcpy(bq.data() + h * HD, qkvb.data() + (h * 3 + 0) * HD, HD * sizeof(float));
+                        memcpy(bk.data() + h * HD, qkvb.data() + (h * 3 + 1) * HD, HD * sizeof(float));
+                        memcpy(bv.data() + h * HD, qkvb.data() + (h * 3 + 2) * HD, HD * sizeof(float));
+                    }
+                    lw.bq = push(std::move(bq)); lw.bk = push(std::move(bk)); lw.bv = push(std::move(bv));
+                }
+                load2("self_attention.dense.weight", lw.wo, NH * HD, H);
+                load2("self_attention.dense.bias", lw.bo, NH * HD, 1);
+                load2("mlp.dense_h_to_4h.weight", lw.w1, H, IM);
+                load2("mlp.dense_h_to_4h.bias", lw.w1_b, IM, 1);
+                load2("mlp.dense_4h_to_h.weight", lw.w3, IM, H);
+                load2("mlp.dense_4h_to_h.bias", lw.w3_b, H, 1);
+                load2("input_layernorm.weight", lw.rms_attn, H, 1);
+                load2("input_layernorm.bias", lw.rms_attn_b, H, 1);
+                load2("post_attention_layernorm.weight", lw.rms_ffn, H, 1);
+                load2("post_attention_layernorm.bias", lw.rms_ffn_b, H, 1);
             } else if (cfg.arch == RCPP_ARCH_OPT) {
                 // OPT: model.decoder.layers.N.* names, sequential structure,
                 // nn.LayerNorm weight+bias (self_attn_layer_norm /
@@ -997,7 +1068,7 @@ struct GenericBackend : Backend {
                 // wte/wpe, non-gated gelu_new FFN (c_fc/c_proj). w2 SIZE_MAX.
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -1046,7 +1117,7 @@ struct GenericBackend : Backend {
                 lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -1066,7 +1137,7 @@ struct GenericBackend : Backend {
                 // sequential), non-gated gelu_new FFN (fc_in/fc_out w/ bias).
                 auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
                     std::vector<float> w;
-                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
                     if (!r.get_tensor_f32(buf, w)) return;
                     if ((int)w.size() == rows * cols) idx = push(std::move(w));
                     else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
@@ -1259,11 +1330,11 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J: non-gated FFN — w2 legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
                            cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN ||
-                           cfg.arch == RCPP_ARCH_GPTJ) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -1822,6 +1893,12 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
+        // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+        if (cfg.embed_ln) {
+            layernorm_affine(x0.data(), x0.data(), embed_ln_w.data(),
+                             embed_ln_b.empty() ? nullptr : embed_ln_b.data(),
+                             cfg.hidden, cfg.rms_norm_eps);
+        }
         // GPT-2/OPT: learned position embeddings — add the wpe/embed_positions
         // row for the CURRENT position (pos + pos_offset; OPT pads 2 slots).
         if (cfg.use_learned_pos)
@@ -1968,7 +2045,8 @@ struct GenericBackend : Backend {
                     float s = 0;
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
                     scores[t] = s * attn_scale;  // multiply instead of divide
-                    if (cfg.alibi) scores[t] -= alibi_slopes[h] * sqrtf((float)(pos - t));  // Step1 sqrt-ALiBi
+                    if (cfg.alibi_linear) scores[t] -= alibi_slopes[h] * (float)(pos - t);      // Bloom LINEAR ALiBi
+                    else if (cfg.alibi) scores[t] -= alibi_slopes[h] * sqrtf((float)(pos - t));  // Step1 sqrt-ALiBi
                 }
                 // Gemma-2/3 attention-logit soft-cap (config attn_logit_softcapping,
                 // gemma2=50.0; gemma3-1b has NONE). qk-norm + query_pre_attn_scalar
@@ -2151,7 +2229,7 @@ struct GenericBackend : Backend {
                 ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch, cfg.architecture.c_str());
                 mm(x2, silu_buf, w(l.w3), H, FF, l.pk_w3);
                 if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
-                if (debug_ops && il < 3) {
+                if (debug_ops) {
                     double sg = 0, sd = 0;
                     for (int i = 0; i < FF; i++) sg += fabs(gate_up[i]);
                     for (int i = 0; i < H; i++) sd += fabs(x2[i]);

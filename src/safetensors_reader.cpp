@@ -146,6 +146,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         int iv;
         if (json_find_int(config_text, "hidden_size", iv)) cfg.hidden = cfg.hidden_size = iv;
         else if (json_find_int(config_text, "n_embd", iv)) cfg.hidden = cfg.hidden_size = iv;  // GPT-2
+        else if (json_find_int(config_text, "n_embed", iv)) cfg.hidden = cfg.hidden_size = iv;  // Bloom
         if (json_find_int(config_text, "num_hidden_layers", iv)) cfg.n_layers = cfg.num_layers = iv;
         else if (json_find_int(config_text, "n_layer", iv)) cfg.n_layers = cfg.num_layers = iv;  // GPT-2
         else if (json_find_int(config_text, "num_layers", iv)) cfg.n_layers = cfg.num_layers = iv;  // EXAONE
@@ -194,6 +195,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
         else if (json_find_float(config_text, "rotary_emb_base", fv)) cfg.rope_theta = fv;  // GPT-NeoX
         if (json_find_float(config_text, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;
+        if (json_find_float(config_text, "layer_norm_epsilon", fv)) cfg.rms_norm_eps = fv;  // Bloom
         if (json_find_float(config_text, "attention_multiplier", fv)) cfg.attention_multiplier = fv;
         // Gemma-2/3 key attention scaling by query_pre_attn_scalar: the true
         // scale is 1/sqrt(scalar), NOT 1/sqrt(head_dim).
