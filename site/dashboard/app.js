@@ -934,7 +934,7 @@ async function renderSettings(main) {
           <div class="kv"><span class="k">Dashboard Version</span><span class="v">1.0.0</span></div>
           <div class="kv"><span class="k">Platform</span><span class="v">Zaya Co-Host</span></div>
           <div class="kv"><span class="k">API Endpoint</span><span class="v">${location.origin}</span></div>
-          <div class="text-xs mt-3">Powered by 1bit.systems · Open-source inference engine</div>
+          <div class="text-xs mt-3">Powered by 1bit.monster · Open-source inference engine</div>
         </div>
       </div>
     </div>`;

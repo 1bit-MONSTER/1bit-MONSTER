@@ -1,6 +1,6 @@
 # 1bit-site
 
-Static Cloudflare Pages site for `1bit.systems`.
+Static Cloudflare Pages site for `1bit.monster`.
 
 The site is deliberately simple: vanilla HTML/CSS/JS, no framework, no CDN, no analytics. The landing page is the public docs surface for the current repair path; legacy `/docs/*` paths redirect back to anchors on `/` through `_redirects`.
 
@@ -64,7 +64,7 @@ npx wrangler pages deploy . \
   --commit-dirty=true
 ```
 
-The custom domain `1bit.systems` is bound to the `main` branch in Cloudflare Pages. `_headers` is applied automatically.
+The custom domain `1bit.monster` is bound to the `main` branch in Cloudflare Pages. `_headers` is applied automatically.
 
 ## Rules
 

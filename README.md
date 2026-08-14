@@ -8,10 +8,10 @@
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![GitHub Ops](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/gh-ops.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/gh-ops.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-00ff00.svg)](LICENSE)
-[![Site](https://img.shields.io/badge/site-1bit.monster-12a0ed.svg)](https://1bit.monster)
-[![Strix Halo](https://img.shields.io/badge/strix%20halo-gfx1151%20%2B%20XDNA%202-12a0ed.svg)](https://www.amd.com/en/products/processors/laptop/ryzen/ai-max-series.html)
-[![Models](https://img.shields.io/badge/models-19%20architectures%20%C2%B7%2047%201BP-00ffaa)](docs/model-families/README.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
+[![Site](https://img.shields.io/badge/site-1bit.monster-C6FF3D.svg)](https://1bit.monster)
+[![Strix Halo](https://img.shields.io/badge/strix%20halo-gfx1151%20%2B%20XDNA%202-C6FF3D.svg)](https://www.amd.com/en/products/processors/laptop/ryzen/ai-max-series.html)
+[![Models](https://img.shields.io/badge/models-19%20architectures%20%C2%B7%2047%201BP-C6FF3D)](docs/model-families/README.md)
 
 **[🌐 Website](https://1bit.monster)** · **[📚 Docs](docs/README.md)** · **[🧬 Model Families](docs/model-families/README.md)** · **[🗣️ JARVIS Pipeline](docs/jarvis.md)** · **[🛠️ The Story](docs/journey.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
