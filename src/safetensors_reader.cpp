@@ -148,6 +148,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         else if (json_find_int(config_text, "n_embd", iv)) cfg.hidden = cfg.hidden_size = iv;  // GPT-2
         if (json_find_int(config_text, "num_hidden_layers", iv)) cfg.n_layers = cfg.num_layers = iv;
         else if (json_find_int(config_text, "n_layer", iv)) cfg.n_layers = cfg.num_layers = iv;  // GPT-2
+        else if (json_find_int(config_text, "num_layers", iv)) cfg.n_layers = cfg.num_layers = iv;  // EXAONE
         if (json_find_int(config_text, "num_attention_heads", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;
         else if (json_find_int(config_text, "n_head", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-2
         if (json_find_int(config_text, "num_key_value_heads", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;
@@ -200,6 +201,24 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         // head_dim=128) are NOT hidden_size/num_attention_heads.
         if (json_find_int(config_text, "head_dim", iv)) cfg.head_dim = iv;
         else if (cfg.n_heads > 0) cfg.head_dim = cfg.hidden / cfg.n_heads;
+        // MiniCPM-style per-model scaling flags (absent = defaults):
+        //   scale_emb → embedding_multiplier (embeddings × scale_emb)
+        //   scale_depth + dim_model_base → residual_multiplier
+        //     (layer outputs × scale_depth/√layers before BOTH residual adds)
+        //     and logits_scaling (hidden/dim_model_base — the lm_head input
+        //     is divided; linear so == post-head division, engine convention).
+        {
+            float sf = 0;
+            if (json_find_float(config_text, "scale_emb", sf)) cfg.embedding_multiplier = sf;
+            if (json_find_float(config_text, "scale_depth", sf)) {
+                int dim_base = 0;
+                json_find_int(config_text, "dim_model_base", dim_base);
+                if (dim_base > 0 && cfg.n_layers > 0) {
+                    cfg.residual_multiplier = sf / sqrtf((float)cfg.n_layers);
+                    if (cfg.hidden > 0) cfg.logits_scaling = (float)cfg.hidden / (float)dim_base;
+                }
+            }
+        }
         got_config = true;
     }
 

@@ -565,7 +565,8 @@ struct GenericBackend : Backend {
             !r.get_tensor_f32("token_embd.weight", embed) &&
             !r.get_tensor_f32("transformer.wte.weight", embed) &&
             !r.get_tensor_f32("wte.weight", embed) &&
-            !r.get_tensor_f32("transformer.word_embeddings.weight", embed)) {
+            !r.get_tensor_f32("transformer.word_embeddings.weight", embed) &&
+            !r.get_tensor_f32("model.tok_embeddings.weight", embed)) {
             fprintf(stderr, "Generic: safetensors: missing embedding\n");
             return false;
         }
@@ -598,7 +599,8 @@ struct GenericBackend : Backend {
             r.get_tensor_f32("ln_f.bias", final_norm_bias);
         if (gemma_post_norms && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
-        r.get_tensor_f32("lm_head.weight", output_weight);   // optional: tied embeddings
+        if (!r.get_tensor_f32("output.weight", output_weight))
+            r.get_tensor_f32("lm_head.weight", output_weight);   // optional: tied embeddings
 
         layers.resize(cfg.n_layers);
         char buf[128];
@@ -739,6 +741,74 @@ struct GenericBackend : Backend {
                 load2("mlp.dense_4h_to_h.weight", lw.w3, IM, H);
                 load2("input_layernorm.weight", lw.rms_attn, H, 1);
                 load2("input_layernorm.bias", lw.rms_attn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_LLAMA && cfg.architecture == "internlm2") {
+                // InternLM2: fused wqkv [(NH+2·NKV)·HD, H] with HEAD-INTERLEAVED
+                // layout (llama.cpp conversion/ internlm.py): each kv-group is
+                // [q(×qpk) | k | v] rows — NOT [all-q | all-k | all-v].
+                // Names: attention.wqkv/wo, attention_norm/ffn_norm (RMSNorm),
+                // feed_forward.w1/w2/w3. Llama orientation [out,in].
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "model.layers.%d.attention.wqkv.weight", l);
+                size_t qr2 = (size_t)NH * HD, kr2 = (size_t)NKV * HD;
+                size_t qkv_rows = qr2 + 2 * kr2;
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != (int)(qkv_rows * H)) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized wqkv\n", buf);
+                    return false;
+                }
+                {
+                    size_t qpk = (size_t)NH / NKV;          // q heads per kv group
+                    size_t gsize = (qpk + 2) * (size_t)HD;  // rows per group
+                    std::vector<float> q(qr2 * H), k(kr2 * H), v(kr2 * H);
+                    for (size_t g = 0; g < (size_t)NKV; g++) {
+                        for (size_t qh = 0; qh < qpk; qh++) {
+                            memcpy(q.data() + ((g * qpk + qh) * HD) * H,
+                                   qkv.data() + ((g * gsize + qh * HD)) * H, (size_t)HD * H * sizeof(float));
+                        }
+                        memcpy(k.data() + (g * HD) * H,
+                               qkv.data() + ((g * gsize + qpk * HD)) * H, (size_t)HD * H * sizeof(float));
+                        memcpy(v.data() + (g * HD) * H,
+                               qkv.data() + ((g * gsize + (qpk + 1) * HD)) * H, (size_t)HD * H * sizeof(float));
+                    }
+                    lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                }
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                // InternLM2 MLP (modeling_internlm2.py):
+                //   down = w2( silu(w1 x) * (w3 x) )  — w1 AND w3 are the
+                //   UP projections ([IM,H], standard orientation), w2 is the
+                //   DOWN ([H,IM]). So: engine w1(gate) ← w1, w2(up) ← w3,
+                //   w3(down) ← w2. No transposes.
+                load2("attention.wo.weight", lw.wo, NH * HD, H);
+                load2("feed_forward.w1.weight", lw.w1, H, IM);
+                load2("feed_forward.w3.weight", lw.w2, H, IM);
+                load2("feed_forward.w2.weight", lw.w3, IM, H);
+                load2("attention_norm.weight", lw.rms_attn, H, 1);
+                load2("ffn_norm.weight", lw.rms_ffn, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_LLAMA && cfg.architecture == "exaone") {
+                // EXAONE-3.5: llama-layout with GPT-2-style names. Sequential
+                // attn→ln_2→FFN; RMSNorm (no bias); silu GLU with SEPARATE
+                // gate/up tensors (c_fc_0 = gate, c_fc_1 = up), c_proj down.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.attention.q_proj.weight", lw.wq, H, NH * HD);
+                load2("attn.attention.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("attn.attention.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("attn.attention.out_proj.weight", lw.wo, NH * HD, H);
+                load2("mlp.c_fc_0.weight", lw.w1, H, IM);
+                load2("mlp.c_fc_1.weight", lw.w2, H, IM);
+                load2("mlp.c_proj.weight", lw.w3, IM, H);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_2.weight", lw.rms_ffn, H, 1);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -1634,7 +1704,13 @@ struct GenericBackend : Backend {
                 mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
                 if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }
                 if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
-                for (int i = 0; i < H; i++) x[i] += x2[i];
+                // Residual — scale_depth (MiniCPM) / residual_multiplier (granite)
+                // applies to BOTH residual adds; the gated dense path was missing
+                // it (only attn + MoE paths scaled). Fixed 2026-08-14 (minicpm).
+                if (cfg.residual_multiplier != 1.0f)
+                    for (int i = 0; i < H; i++) x[i] += x2[i] * cfg.residual_multiplier;
+                else
+                    for (int i = 0; i < H; i++) x[i] += x2[i];
             } else {
                 mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
                 mm(&gate_up[FF], x2, w(l.w2), FF, H, l.pk_w2);
@@ -1647,7 +1723,12 @@ struct GenericBackend : Backend {
                     for (int i = 0; i < H; i++) sd += fabs(x2[i]);
                     fprintf(stderr, "[cpu] L%d ffn gate mean|.|=%g down mean|.|=%g\n", il, sg / FF, sd / H);
                 }
-                for (int i = 0; i < H; i++) x[i] += x2[i];
+                // Residual — same scale_depth/residual_multiplier fix as the
+                // no-gate path (gated dense FFN, 2026-08-14).
+                if (cfg.residual_multiplier != 1.0f)
+                    for (int i = 0; i < H; i++) x[i] += x2[i] * cfg.residual_multiplier;
+                else
+                    for (int i = 0; i < H; i++) x[i] += x2[i];
             }
         }
 
