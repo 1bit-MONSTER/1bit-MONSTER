@@ -55,12 +55,14 @@ jobs:
             docs site
             tools scripts bin
             mobile  # JARVIS mobile Flutter app (voice gateway client) — Jarvis offline layer, engine scope
-            third_party  # vendored engine deps: Lemonade server core + Gaia C++ (embedded, engine scope)
+            third_party  # vendored engine deps: Lemonade server core (embedded, engine scope)
             tools/video-lora  # C++ Vulkan inference backend (SD1.5/AnimateDiff) — engine scope, NOT an app
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations personas prompts skills themes workers zaya_audio
             npu_smoke.py  # pyxrt NPU engine smoke test (CI/bench harness on strix-halo runner) — engine scope
-            .gitmodules .gitignore PLAN-GAIA.md third_party  # embedded Lemonade server core + vendored Gaia (zero-Python agent layer) — engine scope
+            .gitmodules .gitignore PLAN-GAIA.md third_party  # embedded Lemonade server core — engine scope
+            .nojekyll CNAME apple-touch-icon.png assets favicon.ico favicon.svg
+            index.html site.webmanifest  # 1bit.monster landing page, served via GitHub Pages from repo root — public-facing site scope
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"

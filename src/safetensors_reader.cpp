@@ -146,6 +146,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         int iv;
         if (json_find_int(config_text, "hidden_size", iv)) cfg.hidden = cfg.hidden_size = iv;
         else if (json_find_int(config_text, "n_embd", iv)) cfg.hidden = cfg.hidden_size = iv;  // GPT-2
+        else if (json_find_int(config_text, "n_embed", iv)) cfg.hidden = cfg.hidden_size = iv;  // Bloom
         if (json_find_int(config_text, "num_hidden_layers", iv)) cfg.n_layers = cfg.num_layers = iv;
         else if (json_find_int(config_text, "n_layer", iv)) cfg.n_layers = cfg.num_layers = iv;  // GPT-2
         else if (json_find_int(config_text, "num_layers", iv)) cfg.n_layers = cfg.num_layers = iv;  // EXAONE
@@ -153,6 +154,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         else if (json_find_int(config_text, "n_head", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-2
         else if (json_find_int(config_text, "num_heads", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-Neo
         if (json_find_int(config_text, "num_key_value_heads", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;
+        else if (json_find_int(config_text, "num_attention_groups", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // Step1 GQA key
         else if (json_find_int(config_text, "n_head", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // GPT-2: no GQA, kv = heads
         else cfg.n_kv_heads = cfg.num_kv_heads = cfg.n_heads;
         // Falcon MQA: multi_query=true → exactly 1 kv head (query heads stay).
@@ -172,13 +174,28 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         cfg.num_experts = cfg.n_experts = 0;
         if (json_find_int(config_text, "num_local_experts", iv)) {
             cfg.num_experts = cfg.n_experts = iv;
-            if (json_find_int(config_text, "num_experts_per_tok", iv))
+            if (json_find_int(config_text, "num_experts_per_tok", iv) ||
+                json_find_int(config_text, "experts_per_token", iv))  // GPT-OSS key name
                 cfg.num_experts_top = iv;
+        }
+        // GPT-OSS (OpenAI): YARN RoPE defaults (GptOssConfig: theta 150000,
+        // factor 32, beta_fast/slow 32/1, original_max 4096) + 128-token
+        // sliding window on sliding layers. MXFP4-packed MoE weights are
+        // loaded as raw U8 blocks+scales (kept packed — per-token dequant).
+        if (cfg.architecture == "gptoss") {
+            cfg.rope_theta = 150000.0f;
+            cfg.rope_yarn = true;
+            cfg.yarn_factor = 32.0f; cfg.yarn_beta_fast = 32.0f;
+            cfg.yarn_beta_slow = 1.0f; cfg.yarn_orig_max = 4096.0f;
+            cfg.rope_attn_scaling = 0.1f * logf(cfg.yarn_factor) + 1.0f;
+            int sw = 0;
+            if (json_find_int(config_text, "sliding_window", sw)) cfg.sliding_window = sw;
         }
         float fv;
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
         else if (json_find_float(config_text, "rotary_emb_base", fv)) cfg.rope_theta = fv;  // GPT-NeoX
         if (json_find_float(config_text, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;
+        if (json_find_float(config_text, "layer_norm_epsilon", fv)) cfg.rms_norm_eps = fv;  // Bloom
         if (json_find_float(config_text, "attention_multiplier", fv)) cfg.attention_multiplier = fv;
         // Gemma-2/3 key attention scaling by query_pre_attn_scalar: the true
         // scale is 1/sqrt(scalar), NOT 1/sqrt(head_dim).
@@ -521,6 +538,17 @@ bool SafetensorsWeightReader::load_shard(size_t i) const {
         return false;
     }
     sh.loaded = true;
+    return true;
+}
+bool SafetensorsWeightReader::get_tensor_u8(const std::string& name, std::vector<uint8_t>& out) const {
+    const SafetensorsTensor* t = find(name);
+    if (!t) return false;
+    if (strcmp(t->dtype.c_str(), "U8") != 0) return false;
+    const uint8_t* src2 = shards_[name_to_shard_.at(name)].data.data()
+        + shards_[name_to_shard_.at(name)].data_start + t->data_off;
+    size_t elems = 1;
+    for (int64_t d : t->shape) elems *= (size_t)d;
+    out.assign(src2, src2 + elems);
     return true;
 }
 bool SafetensorsWeightReader::get_tensor_f32(const std::string& name, std::vector<float>& out) const {
