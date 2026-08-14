@@ -50,7 +50,7 @@ struct Hip1bpBackend : Backend {
     std::vector<PLD> PD;
     uint8_t* d_output_packed = nullptr;
     std::vector<PL> P;
-    int quant2 = 0;               // 0 = f32 path, 1 = TQ2NZ bf16, 2 = TQ2NZ_E4M3
+    int quant2 = 0;               // 0 = f32 path, 1 = TQ2NZ bf16, 2 = TQ2NZ_E4M3, 3 = Q4NX packed
     std::unique_ptr<NpuOnebpModel> model_;
 
     // GPU scratch (persistent, device-only)
@@ -146,6 +146,7 @@ struct Hip1bpBackend : Backend {
         }
         if (q == ONEBP_TQ2NZ) quant2 = 1;
         else if (q == ONEBP_TQ2NZ_E4M3) quant2 = 2;
+        else if (q == ONEBP_Q4NX) quant2 = 3;   // #1625: packed Q4NX GEMV
         if (getenv("H1BP_F32")) quant2 = 0;   // debug: force f32 path
 
         std::vector<float> emb,fn,out;
@@ -210,7 +211,7 @@ struct Hip1bpBackend : Backend {
             // lm_head packed path only when it shares the TQ2NZ-family quant
             auto* out_t = mdl.find_tensor("output.weight");
             if (!out_t) out_t = mdl.find_tensor("lm_head.weight");
-            if (out_t && (out_t->quant == ONEBP_TQ2NZ || out_t->quant == ONEBP_TQ2NZ_E4M3))
+            if (out_t && (out_t->quant == ONEBP_TQ2NZ || out_t->quant == ONEBP_TQ2NZ_E4M3 || out_t->quant == ONEBP_Q4NX))
                 d_output_packed = (uint8_t*)mdl.get_tile_ptr(out_t->name.c_str(),0,0);
             // Device copies of the packed tiles (kernel cannot read the mmap)
             PD.resize(NC);
@@ -240,6 +241,7 @@ struct Hip1bpBackend : Backend {
                 d_output_packed = dc;
             }
             if (quant2 == 2) printf("[hip1bp] packed fast path: TQ2NZ_E4M3 (%d layers)\n", NC);
+            else if (quant2 == 3) printf("[hip1bp] packed fast path: Q4NX (%d layers)\n", NC);
             else printf("[hip1bp] packed fast path: TQ2NZ bf16 (%d layers)\n", NC);
         }
 
@@ -279,8 +281,10 @@ struct Hip1bpBackend : Backend {
             if (ce == hipSuccess) {
                 bool ok = forward_dev(0, false);
                 if (ok) {
-                    if (quant2 && d_output_packed) launch_tq2nz(d_output_packed, dh, dlogits, VOCAB, H);
-                    else h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits, d_output?d_output:d_embed, dh, VOCAB, H);
+                    if (quant2 && d_output_packed) {
+                        if (quant2 == 3) launch_q4nx(d_output_packed, dh, dlogits, VOCAB, H);
+                        else launch_tq2nz(d_output_packed, dh, dlogits, VOCAB, H);
+                    } else h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits, d_output?d_output:d_embed, dh, VOCAB, H);
                     int nblk = std::min(AMX_MAXB, (VOCAB + 255) / 256);
                     h1bp_argmax_pass1_kernel<<<nblk,256,0,stream>>>(dlogits, VOCAB, d_amx, d_ami);
                     h1bp_argmax_pass2_kernel<<<1,256,0,stream>>>(d_amx, d_ami, nblk, d_argmax);
@@ -325,6 +329,14 @@ struct Hip1bpBackend : Backend {
         h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
     }
 
+    void launch_q4nx(const uint8_t* w, const float* x, float* out, int N, int K) {
+        int ntc = (K + 255) / 256;
+        int wpr = (ntc + 3) >> 2;
+        int blocks = (N * wpr + 3) / 4;
+        h1bp_q4nx_part_kernel<<<blocks,128,0,stream>>>(w,x,dpart,N,ntc);
+        h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
+    }
+
     // Device-resident layer loop: runs the full forward, leaves the final
     // hidden state in dh. No D2H copies, no pos++ — caller decides.
     // with_dumps=false when capturing (H1BP_DUMP does host I/O — not capturable).
@@ -363,9 +375,15 @@ struct Hip1bpBackend : Backend {
 
             // 2. QKV via custom GEMV (device-only, no CPU copies)
             if(quant2&&PD[l].pq){
-                launch_tq2nz(PD[l].pq,dh,datt,NH_*HD_,H_);
-                launch_tq2nz(PD[l].pk,dh,dgate,NKV_*HD_,H_);
-                launch_tq2nz(PD[l].pv,dh,dup,NKV_*HD_,H_);
+                if (quant2 == 3) {
+                    launch_q4nx(PD[l].pq,dh,datt,NH_*HD_,H_);
+                    launch_q4nx(PD[l].pk,dh,dgate,NKV_*HD_,H_);
+                    launch_q4nx(PD[l].pv,dh,dup,NKV_*HD_,H_);
+                } else {
+                    launch_tq2nz(PD[l].pq,dh,datt,NH_*HD_,H_);
+                    launch_tq2nz(PD[l].pk,dh,dgate,NKV_*HD_,H_);
+                    launch_tq2nz(PD[l].pv,dh,dup,NKV_*HD_,H_);
+                }
             } else {
                 if(ll.wq) h1bp_gemv_kernel<<<NH_*HD_,256,0,stream>>>(datt,ll.wq,dh,NH_*HD_,H_);
                 if(ll.wk) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dgate,ll.wk,dh,NKV_*HD_,H_);
@@ -421,7 +439,8 @@ struct Hip1bpBackend : Backend {
                     FILE* f = fopen(fn, "wb"); if (f) { fwrite(ta.data(),4,qn,f); fclose(f); }
                 }
                 if(quant2&&PD[l].po){
-                    launch_tq2nz(PD[l].po,datt2,doproj,H_,NH_*HD_);
+                    if (quant2 == 3) launch_q4nx(PD[l].po,datt2,doproj,H_,NH_*HD_);
+                    else launch_tq2nz(PD[l].po,datt2,doproj,H_,NH_*HD_);
                 } else {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
                 }
@@ -446,13 +465,18 @@ struct Hip1bpBackend : Backend {
             // 6. FFN (all on-device)
             if(ll.w1&&ll.w2&&ll.w3){
                 if(quant2&&PD[l].p1){
-                    // K=1024: 1 warp/row, no atomics; K=3072 (down): 3 warps/row + atomics
-                    launch_tq2nz(PD[l].p1,dh,dgate,IM_,H_);
-                    launch_tq2nz(PD[l].p2,dh,dup,IM_,H_);
-
-                    h1bp_silu_kernel<<<(IM_+255)/256,256,0,stream>>>(dsilu,dgate,dup,IM_);
-                    launch_tq2nz(PD[l].p3,dsilu,dffn,H_,IM_);
-
+                    if (quant2 == 3) {
+                        launch_q4nx(PD[l].p1,dh,dgate,IM_,H_);
+                        launch_q4nx(PD[l].p2,dh,dup,IM_,H_);
+                        h1bp_silu_kernel<<<(IM_+255)/256,256,0,stream>>>(dsilu,dgate,dup,IM_);
+                        launch_q4nx(PD[l].p3,dsilu,dffn,H_,IM_);
+                    } else {
+                        // K=1024: 1 warp/row, no atomics; K=3072 (down): 3 warps/row + atomics
+                        launch_tq2nz(PD[l].p1,dh,dgate,IM_,H_);
+                        launch_tq2nz(PD[l].p2,dh,dup,IM_,H_);
+                        h1bp_silu_kernel<<<(IM_+255)/256,256,0,stream>>>(dsilu,dgate,dup,IM_);
+                        launch_tq2nz(PD[l].p3,dsilu,dffn,H_,IM_);
+                    }
                 } else {
                     h1bp_gemv_kernel<<<IM_,256,0,stream>>>(dgate,ll.w1,dh,IM_,H_);
                     h1bp_gemv_kernel<<<IM_,256,0,stream>>>(dup,ll.w2,dh,IM_,H_);
@@ -513,7 +537,8 @@ struct Hip1bpBackend : Backend {
         if(!forward_dev(token_id, getenv("H1BP_DUMP") ? true : false))return -1;  // #1626: dumps in eager mode
         if(!d_output&&!d_embed){pos++;return 0;}
         if(quant2&&d_output_packed){
-            launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
+            if (quant2 == 3) launch_q4nx(d_output_packed,dh,dlogits,VOCAB,H);
+            else launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
         } else {
             h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);
         }
@@ -536,7 +561,8 @@ struct Hip1bpBackend : Backend {
         if(!d_output&&!d_embed){memset(logits,0,VOCAB*4);logits[0]=1;if(argmax)*argmax=0;return true;}
         HIP_CHECK(hipMemcpy(dh,hidden,H*4,hipMemcpyHostToDevice));
         if(quant2&&d_output_packed){
-            launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
+            if (quant2 == 3) launch_q4nx(d_output_packed,dh,dlogits,VOCAB,H);
+            else launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
         } else {
             h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);
         }
