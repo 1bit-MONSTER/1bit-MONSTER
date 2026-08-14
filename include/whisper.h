@@ -80,12 +80,13 @@ struct WhisperConfig {
 
 // ─── Whisper special tokens ────────────────────────────────────────
 enum WhisperToken : int {
-    WHISPER_SOT      = 50257,  // start-of-transcript
-    WHISPER_ENC      = 50258,  // no-timestamps
-    WHISPER_NONE     = 50259,  // (unused)
-    WHISPER_EOT      = 50256,  // end-of-transcript
+    WHISPER_SOT      = 50258,  // decoder_start_token_id (transformers generate)
+    WHISPER_ENC      = 50258,  // (same)
+    WHISPER_NONE     = 50259,  // English language token
+    WHISPER_EOT      = 50257,  // eos_token_id (whisper-tiny config: 50257, NOT 50256)
     WHISPER_TRANSCRIBE = 50359, // transcribe task
     WHISPER_ENGLISH  = 50259,  // English language token
+    WHISPER_NOTIMESTAMPS = 50363,  // no-timestamps token
 };
 
 // ─── Whisper weights (per layer) ───────────────────────────────────
@@ -156,10 +157,10 @@ std::vector<float> whisper_log_mel_spectrogram(
 
 // ─── Math helpers (shared with vision_encoder conventions) ─────────
 namespace whisper_math {
-    static inline float gelu(float x) {
-        const float c = 0.7978845608f;
-        return 0.5f * x * (1.0f + tanhf(c * (x + 0.044715f * x * x * x)));
-    }
+    // Whisper uses nn.GELU() = the EXACT erf gelu (0.5*x*(1+erf(x/sqrt2))),
+    // not the tanh approximation (which shifts values ~1e-3-1e-2, enough to
+    // break the exactness bar).
+    static inline float gelu(float x) { return 0.5f * x * (1.0f + erff(x * 0.70710678118f)); }
     static inline float silu(float x) { return x / (1.0f + expf(-x)); }
     static inline float relu(float x) { return x > 0 ? x : 0; }
 
@@ -187,14 +188,19 @@ namespace whisper_math {
     // 1D convolution (conv1d): out[C_out, L_out] = in[C_in, L_in] * weight[C_out, C_in, K]
     // K = kernel_size, stride = 1 (Whisper uses stride=1 for conv2, stride not important for our CPU impl)
     static inline void conv1d(float* out, const float* in, int C_in, int L_in,
-                               const float* w, const float* b, int C_out, int K, int stride = 1) {
-        int L_out = (L_in - K) / stride + 1;
+                               const float* w, const float* b, int C_out, int K,
+                               int stride = 1, int padding = 0) {
+        // whisper convs use padding=1 (torch Conv1d padding=1): conv1 keeps
+        // L_in, conv2 (stride 2) gives (L_in+1)/2. Without padding the frame
+        // count shrank 1500 -> 748 (should be 750) and every value shifted.
+        int L_out = (L_in + 2 * padding - K) / stride + 1;
         for (int co = 0; co < C_out; co++) {
             for (int lo = 0; lo < L_out; lo++) {
                 float s = b ? b[co] : 0;
                 for (int ci = 0; ci < C_in; ci++) {
                     for (int ki = 0; ki < K; ki++) {
-                        int li = lo * stride + ki;
+                        int li = lo * stride - padding + ki;  // zero-padded edges
+                        if (li < 0 || li >= L_in) continue;
                         s += in[ci * (size_t)L_in + li] * w[(size_t)co * C_in * K + (size_t)ci * K + ki];
                     }
                 }

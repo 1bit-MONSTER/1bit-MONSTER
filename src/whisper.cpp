@@ -244,7 +244,7 @@ std::vector<float> whisper_log_mel_spectrogram(const float* audio, int n_samples
     
     // Pad to n_audio_ctx (1500 for 30s) — PER-ROW (a trailing resize breaks
     // the [m][t] layout: row m must start at m*1500).
-    int target_frames = 1500;
+    int target_frames = 3000;  // 30s of mel at hop 160; convs halve to n_audio_ctx=1500
     if (n_frames < target_frames) {
         std::vector<float> padded_mel((size_t)n_mels * target_frames, 0.0f);
         for (int m = 0; m < n_mels; m++)
@@ -484,18 +484,18 @@ std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, i
     int n_ctx = std::min(n_frames, cfg.n_audio_ctx);
     int L = cfg.n_audio_layer;
     
-    // Conv1D: n_mels → DA, kernel=3, stride=1
-    int c1_out = n_frames - 3 + 1;
+    // Conv1D: n_mels → DA, kernel=3, stride=1, padding=1 (length preserved)
+    int c1_out = n_frames;
     std::vector<float> h1((size_t)DA * c1_out);
     conv1d(h1.data(), mel, cfg.n_mels, n_frames,
-           model.enc_conv1_w.data(), model.enc_conv1_b.data(), DA, 3);
+           model.enc_conv1_w.data(), model.enc_conv1_b.data(), DA, 3, 1, 1);
     for (size_t i = 0; i < h1.size(); i++) h1[i] = gelu(h1[i]);
     
-    // Conv1D: DA → DA, kernel=3, stride=2 (downsample)
-    int c2_out = (c1_out - 3) / 2 + 1;
+    // Conv1D: DA → DA, kernel=3, stride=2, padding=1 (downsample)
+    int c2_out = (c1_out + 1) / 2;
     std::vector<float> h2((size_t)DA * c2_out);
     conv1d(h2.data(), h1.data(), DA, c1_out,
-           model.enc_conv2_w.data(), model.enc_conv2_b.data(), DA, 3, 2);
+           model.enc_conv2_w.data(), model.enc_conv2_b.data(), DA, 3, 2, 1);
     for (size_t i = 0; i < h2.size(); i++) h2[i] = gelu(h2[i]);
     
     // Pad to n_audio_ctx
@@ -503,21 +503,20 @@ std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, i
     std::vector<float> x((size_t)n_ctx * DA);
     for (int t = 0; t < n_ctx; t++)
         for (int d = 0; d < DA; d++)
-            x[(size_t)t * DA + d] = h2[(size_t)t * DA + d] + model.enc_pos_emb[(size_t)t * DA + d];
+            // h2 is [channel][frame] (conv output); x must be [frame][channel].
+            x[(size_t)t * DA + d] = h2[(size_t)d * n_ctx + t] + model.enc_pos_emb[(size_t)t * DA + d];
     
     // Transformer encoder layers
-    std::vector<float> x2(DA), ffn_up(DA * 4), ffn_gate(DA * 4);
+    std::vector<float> x2((size_t)n_ctx * DA), ffn_up(DA * 4), ffn_gate(DA * 4);
     std::vector<float> attn_out((size_t)n_ctx * DA);  // self_attn writes N token rows
     for (int il = 0; il < L; il++) {
         auto& l = model.enc_layers[il];
         
-        // Self-attention with residual
-        for (int t = 0; t < n_ctx; t++) {
-            float* xt = &x[(size_t)t * DA];
-            layernorm(x2.data(), xt, l.attn_ln_w.data(), l.attn_ln_b.data(), DA, 1e-5f);
-            std::copy(x2.begin(), x2.end(), xt);
-        }
-        self_attn(attn_out.data(), x.data(), n_ctx, DA,
+        // Self-attention with residual (norm into x2 — x keeps the residual)
+        for (int t = 0; t < n_ctx; t++)
+            layernorm(x2.data() + (size_t)t * DA, x.data() + (size_t)t * DA,
+                      l.attn_ln_w.data(), l.attn_ln_b.data(), DA, 1e-5f);
+        self_attn(attn_out.data(), x2.data(), n_ctx, DA,
                   l.attn_q_w.data(), l.attn_q_b.data(),
                   l.attn_k_w.data(), l.attn_k_b.data(),
                   l.attn_v_w.data(), l.attn_v_b.data(),
@@ -543,9 +542,9 @@ std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, i
     // Final encoder LN
     for (int t = 0; t < n_ctx; t++) {
         float* xt = &x[(size_t)t * DA];
-        layernorm(x2.data(), xt, model.enc_ln_w.data(), model.enc_ln_b.data(), DA, 1e-5f);
-        std::copy(x2.begin(), x2.end(), xt);
+        layernorm(x2.data() + (size_t)t * DA, xt, model.enc_ln_w.data(), model.enc_ln_b.data(), DA, 1e-5f);
     }
+    std::copy(x2.begin(), x2.end(), x.begin());
     
     return x;
 }
@@ -571,26 +570,23 @@ std::vector<float> whisper_decode_step(const WhisperModel& model, const std::vec
         }
     }
     
-    std::vector<float> x2(DT), ffn_up(DT * 4), ffn_gate(DT * 4);
+    std::vector<float> x2((size_t)N * DT), ffn_up(DT * 4), ffn_gate(DT * 4);
     std::vector<float> attn_out((size_t)N * DT), ca_out((size_t)N * DT);  // self/cross_attn write N rows
     
     for (int il = 0; il < cfg.n_text_layer; il++) {
         auto& l = model.dec_layers[il];
         
-        // Self-attention (causal mask)
-        for (int t = 0; t < N; t++) {
-            float* xt = &x[(size_t)t * DT];
-            layernorm(x2.data(), xt, l.attn_ln_w.data(), l.attn_ln_b.data(), DT, 1e-5f);
-            std::copy(x2.begin(), x2.end(), xt);
-        }
-        // Self-attention with causal mask
+        // Self-attention with causal mask (norm into x2 — x keeps the residual)
         int H = DT / cfg.n_text_head;
         std::vector<float> Q((size_t)N * DT), K((size_t)N * DT), V((size_t)N * DT);
         std::vector<float> scores(N);
+        for (int t = 0; t < N; t++)
+            layernorm(x2.data() + (size_t)t * DT, x.data() + (size_t)t * DT,
+                      l.attn_ln_w.data(), l.attn_ln_b.data(), DT, 1e-5f);
         for (int t = 0; t < N; t++) {
-            matmul(&Q[(size_t)t * DT], &x[(size_t)t * DT], l.attn_q_w.data(), DT, DT);
-            matmul(&K[(size_t)t * DT], &x[(size_t)t * DT], l.attn_k_w.data(), DT, DT);
-            matmul(&V[(size_t)t * DT], &x[(size_t)t * DT], l.attn_v_w.data(), DT, DT);
+            matmul(&Q[(size_t)t * DT], x2.data() + (size_t)t * DT, l.attn_q_w.data(), DT, DT);
+            matmul(&K[(size_t)t * DT], x2.data() + (size_t)t * DT, l.attn_k_w.data(), DT, DT);
+            matmul(&V[(size_t)t * DT], x2.data() + (size_t)t * DT, l.attn_v_w.data(), DT, DT);
             // Real Whisper: key projection has no bias — checked
             // independently, not bundled under q_b (see include/whisper.h's
             // self_attn/cross_attn for the same fix).
@@ -621,13 +617,11 @@ std::vector<float> whisper_decode_step(const WhisperModel& model, const std::vec
             for (int d = 0; d < DT; d++) x[(size_t)t * DT + d] += x2[d];
         }
         
-        // Cross-attention
-        for (int t = 0; t < N; t++) {
-            float* xt = &x[(size_t)t * DT];
-            layernorm(x2.data(), xt, l.cross_ln_w.data(), l.cross_ln_b.data(), DT, 1e-5f);
-            std::copy(x2.begin(), x2.end(), xt);
-        }
-        cross_attn(ca_out.data(), x.data(), N, DT, enc_out, n_enc_ctx,
+        // Cross-attention (norm into x2 — x keeps the residual)
+        for (int t = 0; t < N; t++)
+            layernorm(x2.data() + (size_t)t * DT, x.data() + (size_t)t * DT,
+                      l.cross_ln_w.data(), l.cross_ln_b.data(), DT, 1e-5f);
+        cross_attn(ca_out.data(), x2.data(), N, DT, enc_out, n_enc_ctx,
                    l.cross_q_w.data(), l.cross_q_b.data(),
                    l.cross_k_w.data(), l.cross_k_b.data(),
                    l.cross_v_w.data(), l.cross_v_b.data(),
@@ -749,7 +743,13 @@ std::string whisper_transcribe(const WhisperModel& model, const float* audio_pcm
     int n_enc_ctx = (int)(enc_out.size() / model.cfg.n_audio_state);
     
     // Greedy decoder loop
-    std::vector<int> tokens = {WHISPER_SOT, WHISPER_TRANSCRIBE, WHISPER_ENGLISH};
+    // whisper forced-decoder prefix order: [SOT, lang, task, no_timestamps]
+    // (the old [SOT, task, lang] order mis-conditions the decoder — repeated
+    // blanks).
+    // whisper generate decoder_start_token_id is 50258 (not 50257) — the
+    // correct prefix verified from transformers generate: [50258, en,
+    // transcribe, no_timestamps].
+    std::vector<int> tokens = {WHISPER_ENC, WHISPER_ENGLISH, WHISPER_TRANSCRIBE, WHISPER_NOTIMESTAMPS};
     std::vector<float> kv_cache; // not used in CPU impl
     std::vector<int> output;
     

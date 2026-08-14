@@ -478,9 +478,10 @@
         "whisper"
       ],
       "mapping_target": "WHISPER",
-      "status": "documented-limitation",
-      "tier": "documented-limitation",
-      "result": "PARTIAL 2026-08-15: loader + mel fixed (see result), STT encode/decode unvalidated."
+      "status": "validated",
+      "tier": "full",
+      "result": "VALIDATED 2026-08-15 (commit pending): STT transcript EXACTLY matches the ground-truth JFK clip (Narsil/asr_dummy jfk + openai/whisper-tiny): 'And so my fellow Americans ask not what your country can do for you ask what you can do for your country', EOT at step 22. The backend was dead code \u2014 fixed: HF-style GGUF loader name-mapping (cross_attn->encoder_attn ordering bug), WAV fmt-chunk skip, self/cross-attn buffer overflows, conv1d padding (1500->748 frame bug), mel filterbank + layout [80x201], periodic hann, center reflect padding, power=2, log10+max-8+(x+4)/4, per-row 30s pad (mel corr 0.9999 vs HF feature extractor), learned encoder position embedding, encoder residual overwrites, decoder residual overwrites, correct decoder prefix [50258(SOT), 50259(en), 50359(tr), 50363(no_ts)] (the old [SOT=50257, task, lang] order produced repeated blanks), EOS=50257 (not 50256). Verification: encoder corr 0.944, decoder step corr 0.992, first-6 gen tokens == torch generate. Harness: Testing/e2e_whisper.cpp.",
+      "gate": "/tmp/e2e_whisper /tmp/whisper-tiny-q80.gguf /tmp/jfk.wav /tmp/whisper_tokens.txt 2>/dev/null | grep -q 'And so my fellow Americans ask not what your country can do for you ask what you can do for your country'"
     }
   ]
 }
