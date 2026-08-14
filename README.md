@@ -2,9 +2,9 @@
 
 <img src="site/assets/brand-lockup.svg" alt="1bit MONSTER" width="540">
 
-# Run AI on your own hardware — fast
+# One binary to rule them all
 
-### An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python. MIT.
+### An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![GitHub Ops](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/gh-ops.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/gh-ops.yml)
@@ -15,19 +15,40 @@
 
 **[🌐 Website](https://1bit.monster)** · **[📚 Docs](docs/README.md)** · **[🧬 Model Families](docs/model-families/README.md)** · **[🗣️ JARVIS Pipeline](docs/jarvis.md)** · **[🛠️ The Story](docs/journey.md)** · **[🗺️ Roadmap](docs/guides/roadmap.md)**
 
+`engine online` · MIT · pure C++23 · no python · 5 backends
+
 </div>
 
 ---
 
-## The story
+## Quick start
 
-It started with a laptop, a disassembler, and no docs.
+```bash
+# build from source — no installer yet
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-MONSTER && cmake -B build && cmake --build build
+./build/1bit zaya -m model.1bp -p "Hello world"
+```
 
-AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU — and locked it behind a closed-source runtime: 22 proprietary `.so` files, 209 bitstreams, zero documentation. Nothing else could touch that chip.
+> No installer yet — today it's build-from-source. See the [Installation Guide](docs/wiki/Installation.md).
 
-**We reverse-engineered the whole stack in 4 days and replaced it with open C++** — turning 22 proprietary libraries into one 1.5 MB open-source binary. That reverse-engineering effort grew into **1bit**: one MIT-licensed C++ engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
+| 19 | 47 | 500+ | 0 |
+|:--:|:--:|:----:|:-:|
+| architectures | models today | model agnostic | python in the runtime |
+
+## // the hard truth
+
+**22 proprietary libraries. 209 bitstreams. Zero documentation.**
+
+AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
 
 **→ [Read the full journey](docs/journey.md)** — every crash, breakthrough, and bug, documented in real time.
+
+## // where this goes
+
+19 architectures and 47 models today, climbing toward the full catalog — not one port at a time, but by decoding the pattern: ~50 architecture classes cover the long tail of what HuggingFace hosts. The registry, the kernels and the validation harness are already proven; what's left is coverage.
+
+**→ [Roadmap](docs/guides/roadmap.md)** · **→ [All families, indexed](docs/model-families/README.md)**
 
 ## What it is
 
@@ -38,15 +59,41 @@ AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU — and locked it be
 - **47 models out of the box**, 135M to 74B parameters, across NPU + GPU + CPU.
 - **Zero Python in the engine.** Pure C++23, MIT.
 
-## Quick start
+## Benchmarks
 
-```bash
-git clone https://github.com/1bit-MONSTER/1bit-MONSTER
-cd 1bit-MONSTER && cmake -B build && cmake --build build
-./build/1bit zaya -m model.1bp -p "Hello world"
-```
+Headline end-to-end decode, re-measured **2026-08-01** on AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA):
 
-> No installer yet — today it's build-from-source. See the [Installation Guide](docs/wiki/Installation.md).
+| Model | Gen tok/s (e2e) | Backend |
+|-------|:---------------:|---------|
+| SmolLM2-135M | **662** 🏆 | GGML-Vulkan |
+| Qwen3-0.6B | **373** | GGML-Vulkan |
+| Qwen2.5-VL-3B | **100** | GGML-Vulkan |
+| BlackMamba-1.5B | **79.4** | Mamba1 HIP |
+| Qwen3.5-4B | **65** | GGML-Vulkan |
+| DeepSeek-R1-Distill-Llama-8B | **44** | GGML-Vulkan |
+| ZAYA1-74B-preview | **17.6** | GGML-Vulkan |
+
+Plus **43.2 TFLOPS** INT8 prefill (WMMA). Full per-model and kernel numbers live in the **[performance SSOT](docs/wiki/performance.md)**.
+
+### Unified control plane (one server, one API, pooled models) — measured 2026-08-07
+
+All five zoo models served from **one** `unified` process (`--pool` keeps every
+model resident in the unified model pool), one OpenAI-compatible endpoint,
+measured end-to-end through `POST /v1/chat/completions` (includes per-request
+model routing/switching):
+
+| Model | tok/s (e2e) | Backend |
+|-------|:-----------:|---------|
+| Qwen3-4B | **20.8** | NPU FLM (XDNA) |
+| Qwen3-0.6B Instruct | **12.4** | GGML-Vulkan |
+| Llama-3.2-1B Instruct | **12.4** | GGML-Vulkan |
+| Bonsai-1.7B-TQ2 | **3.1** | HIP 1BP |
+| Zamba2-1.2B-Instruct-v2 | **2.2** | HIP (Mamba2 SSD) |
+
+`scripts/zoo-smoke.sh` (5/5 PASS) runs the same path; `POST /v1/pool` reports
+residency (11 slots, incl. both `.1bp` and `.gguf` formats). Speculative
+decoding is available in the same process via `--draft-model` + `--spec-decode`
+(lossless vs greedy; see `tools/spec_decode_README.md`).
 
 ## Featured: the Zyphra ecosystem
 
@@ -82,41 +129,6 @@ mic → VAD → STT (Whisper) → router → LLM → TTS (codec) → cloned voic
 It ties the whole engine together (speech-to-text, any catalog LLM, streaming TTS, voice cloning, personas, planning + RAG + tools) with no cloud and no Python in the hot path.
 
 **→ [How the JARVIS pipeline works](docs/jarvis.md)**
-
-## Benchmarks
-
-Headline end-to-end decode, re-measured **2026-08-01** on AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA), GGML-Vulkan:
-
-| Model | Gen tok/s (e2e) | Backend |
-|-------|:---------------:|---------|
-| SmolLM2-135M | **662** 🏆 | GGML-Vulkan |
-| Qwen3-0.6B | **373** | GGML-Vulkan |
-| Qwen2.5-VL-3B | **100** | GGML-Vulkan |
-| Qwen3.5-4B | **65** | GGML-Vulkan |
-| DeepSeek-R1-Distill-Llama-8B | **44** | GGML-Vulkan |
-| BlackMamba-1.5B | **79.4** | Mamba1 HIP |
-
-Plus **43.2 TFLOPS** INT8 prefill (WMMA). Full per-model and kernel numbers live in the **[performance SSOT](docs/wiki/performance.md)**.
-
-### Unified control plane (one server, one API, pooled models) — measured 2026-08-07
-
-All five zoo models served from **one** `unified` process (`--pool` keeps every
-model resident in the unified model pool), one OpenAI-compatible endpoint,
-measured end-to-end through `POST /v1/chat/completions` (includes per-request
-model routing/switching):
-
-| Model | tok/s (e2e) | Backend |
-|-------|:-----------:|---------|
-| Qwen3-4B | **20.8** | NPU FLM (XDNA) |
-| Qwen3-0.6B Instruct | **12.4** | GGML-Vulkan |
-| Llama-3.2-1B Instruct | **12.4** | GGML-Vulkan |
-| Bonsai-1.7B-TQ2 | **3.1** | HIP 1BP |
-| Zamba2-1.2B-Instruct-v2 | **2.2** | HIP (Mamba2 SSD) |
-
-`scripts/zoo-smoke.sh` (5/5 PASS) runs the same path; `POST /v1/pool` reports
-residency (11 slots, incl. both `.1bp` and `.gguf` formats). Speculative
-decoding is available in the same process via `--draft-model` + `--spec-decode`
-(lossless vs greedy; see `tools/spec_decode_README.md`).
 
 ## Platforms & backends
 
