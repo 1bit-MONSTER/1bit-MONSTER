@@ -63,6 +63,7 @@ int main() {
     check("deepseekv2", RCPP_ARCH_DEEPSEEK, "deepseekv2 (DeepseekV2ForCausalLM)");
     check("deepseekv3", RCPP_ARCH_DEEPSEEK, "deepseekv3 (DeepseekV3ForCausalLM)");
     check("deepseekv4", RCPP_ARCH_DEEPSEEK_V4, "deepseekv4 (DeepseekV4ForCausalLM)");
+    check("gpt2", RCPP_ARCH_GPT2, "gpt2 (GPT2LMHeadModel)");
 
     // ── Decision (pilot #10): unknown archs -> UNKNOWN (loud), not BITNET
     check("totally_unknown_arch", RCPP_ARCH_UNKNOWN, "unknown->UNKNOWN (loud fail)");

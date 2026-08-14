@@ -85,11 +85,11 @@
     {
       "family": "gpt2",
       "hf_arch_strings": ["gpt2"],
-      "mapping_target": "UNKNOWN (custom tensor map needed — ln_1/ln_2, no GQA, tied embed)",
-      "quirk_flags": { "rope": "natural", "tensor_map": "custom" },
+      "mapping_target": "GPT2",
+      "quirk_flags": { "rope": "none (learned wpe positions)", "norm": "LayerNorm weight+bias (ln_1/ln_2/ln_f)", "ffn": "non-gated gelu_new (c_fc/c_proj)", "weights": "Conv1D [in,out] — TRANSPOSED at load", "attn": "fused c_attn [H,3H] split cols", "bias": "everywhere (c_attn/c_proj/c_fc/ln)", "config_keys": "n_embd/n_layer/n_head/n_positions/n_ctx" },
       "e2e_model": "openai-community/gpt2",
-      "oracle": "q8 gguf",
-      "status": "pending"
+      "oracle": "RichardErkhov/openai-community_-_gpt2-gguf Q6_K",
+      "status": "validated"
     },
     {
       "family": "deepseek-mla",

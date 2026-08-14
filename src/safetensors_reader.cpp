@@ -132,13 +132,21 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         }
         int iv;
         if (json_find_int(config_text, "hidden_size", iv)) cfg.hidden = cfg.hidden_size = iv;
+        else if (json_find_int(config_text, "n_embd", iv)) cfg.hidden = cfg.hidden_size = iv;  // GPT-2
         if (json_find_int(config_text, "num_hidden_layers", iv)) cfg.n_layers = cfg.num_layers = iv;
+        else if (json_find_int(config_text, "n_layer", iv)) cfg.n_layers = cfg.num_layers = iv;  // GPT-2
         if (json_find_int(config_text, "num_attention_heads", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;
+        else if (json_find_int(config_text, "n_head", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-2
         if (json_find_int(config_text, "num_key_value_heads", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;
+        else if (json_find_int(config_text, "n_head", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // GPT-2: no GQA, kv = heads
         else cfg.n_kv_heads = cfg.num_kv_heads = cfg.n_heads;
         if (json_find_int(config_text, "intermediate_size", iv)) cfg.n_ff = cfg.intermediate_size = iv;
+        else if (json_find_int(config_text, "n_inner", iv)) cfg.n_ff = cfg.intermediate_size = iv;  // GPT-2
+        else if (cfg.hidden > 0 && cfg.architecture == "gpt2") cfg.n_ff = cfg.intermediate_size = 4 * cfg.hidden;  // GPT-2 default 4x
         if (json_find_int(config_text, "vocab_size", iv)) cfg.vocab = cfg.vocab_size = iv;
         if (json_find_int(config_text, "max_position_embeddings", iv)) cfg.max_seq_len = iv;
+        else if (json_find_int(config_text, "n_positions", iv)) cfg.max_seq_len = iv;  // GPT-2
+        else if (json_find_int(config_text, "n_ctx", iv)) cfg.max_seq_len = iv;  // GPT-2
         // MoE: HF keys num_local_experts / num_experts_per_tok (Mixtral/Qwen3/Granite).
         // Absent key = dense model — MUST zero the ModelConfig default (16,
         // the Zaya .bin convention) or every dense checkpoint takes the MoE
