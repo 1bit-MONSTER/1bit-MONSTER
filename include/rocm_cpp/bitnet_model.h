@@ -140,6 +140,20 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "deepseek4_dspark") == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "smollm")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "smollm2")   == 0) return RCPP_ARCH_LLAMA;
+    // ── MONSTER breadth batch 2026-08-14 (from llama.cpp convert_hf_to_gguf
+    //    conversion/ registry — HF class names, suffix-stripped by
+    //    safetensors_reader) ──
+    if (strcmp(s, "smollm3")   == 0) return RCPP_ARCH_LLAMA;   // SmolLM3ForCausalLM (llama-layout)
+    if (strcmp(s, "apertus")   == 0) return RCPP_ARCH_LLAMA;   // ApertusForCausalLM (LlamaModel)
+    if (strcmp(s, "cohere")    == 0) return RCPP_ARCH_LLAMA;   // CohereForCausalLM (= command-r)
+    if (strcmp(s, "gptbigcode")== 0) return RCPP_ARCH_LLAMA;   // GPTBigCodeForCausalLM (StarCoder1)
+    if (strcmp(s, "internlm3") == 0) return RCPP_ARCH_LLAMA;   // InternLM3ForCausalLM
+    if (strcmp(s, "mixtral")   == 0) return RCPP_ARCH_MISTRAL; // MixtralForCausalLM (mistral layout, MoE)
+    if (strcmp(s, "qwen2moe")  == 0) return RCPP_ARCH_QWEN2;   // Qwen2MoeForCausalLM (shared-expert MoE: warned+ignored, pilot #8)
+    if (strcmp(s, "qwen3moe")  == 0) return RCPP_ARCH_QWEN3;   // Qwen3MoeForCausalLM (128/8 experts, mixtral-style)
+    if (strcmp(s, "deepseekv2")== 0) return RCPP_ARCH_DEEPSEEK;   // DeepseekV2ForCausalLM (MLA)
+    if (strcmp(s, "deepseekv3")== 0) return RCPP_ARCH_DEEPSEEK;   // DeepseekV3ForCausalLM (MLA)
+    if (strcmp(s, "deepseekv4")== 0) return RCPP_ARCH_DEEPSEEK_V4; // DeepseekV4ForCausalLM
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

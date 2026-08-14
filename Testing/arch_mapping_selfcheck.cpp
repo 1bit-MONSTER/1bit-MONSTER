@@ -51,6 +51,19 @@ int main() {
     check("qwen35moe", RCPP_ARCH_QWEN35, "qwen35moe");
     check("whisper", RCPP_ARCH_WHISPER, "whisper");
 
+    // ── MONSTER breadth batch 2026-08-14 (llama.cpp conversion/ registry) ──
+    check("smollm3", RCPP_ARCH_LLAMA, "smollm3 (SmolLM3ForCausalLM)");
+    check("apertus", RCPP_ARCH_LLAMA, "apertus (ApertusForCausalLM)");
+    check("cohere", RCPP_ARCH_LLAMA, "cohere (CohereForCausalLM)");
+    check("gptbigcode", RCPP_ARCH_LLAMA, "gptbigcode (GPTBigCodeForCausalLM)");
+    check("internlm3", RCPP_ARCH_LLAMA, "internlm3 (InternLM3ForCausalLM)");
+    check("mixtral", RCPP_ARCH_MISTRAL, "mixtral (MixtralForCausalLM)");
+    check("qwen2moe", RCPP_ARCH_QWEN2, "qwen2moe (Qwen2MoeForCausalLM)");
+    check("qwen3moe", RCPP_ARCH_QWEN3, "qwen3moe (Qwen3MoeForCausalLM)");
+    check("deepseekv2", RCPP_ARCH_DEEPSEEK, "deepseekv2 (DeepseekV2ForCausalLM)");
+    check("deepseekv3", RCPP_ARCH_DEEPSEEK, "deepseekv3 (DeepseekV3ForCausalLM)");
+    check("deepseekv4", RCPP_ARCH_DEEPSEEK_V4, "deepseekv4 (DeepseekV4ForCausalLM)");
+
     // ── Decision (pilot #10): unknown archs -> UNKNOWN (loud), not BITNET
     check("totally_unknown_arch", RCPP_ARCH_UNKNOWN, "unknown->UNKNOWN (loud fail)");
 
