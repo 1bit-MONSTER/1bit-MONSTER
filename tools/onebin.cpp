@@ -2,21 +2,18 @@
 //
 // ONE BINARY. Every entry point dispatches on argv[0] (symlink names) or a
 // subcommand, so `1bit zaya`, `1bit unified`, `1bit router`, `1bit lemonade`,
-// `1bit chat`, and the legacy names `zaya_server` / `unified_server` /
-// `unified_router` / `onebitd` / `onebit` (symlinks to this binary) all work
-// without changing a single exec/pkill site in the tools.
+// and the legacy names `zaya_server` / `unified_server` / `unified_router`
+// (symlinks to this binary) all work without changing a single exec/pkill
+// site in the tools.
 //
 // Subcommands:
 //   zaya              → zaya_server (HIP/NPU/CPU multi-backend server)
 //   unified           → unified_server (multi-backend + embedded Lemonade core)
 //   router            → unified_router (NPU/GPU policy routing proxy)
 //   lemonade          → unified_server --lemonade (Lemonade's full server)
-//   jarvis, voice     → jarvis_server (TTS/voice clone + chat server)
+//   jarvis, voice, tts → jarvis_server (voice pipeline: STT/router/LLM/TTS)
 //   vision, vl        → vision_server (vision-language server)
-//   gaia, gaia-bash   → gaia-bash (AMD Gaia C++ agent loop — tools/repl/session)
-//   onebitd, daemon   → onebitd (inference daemon)
-//   everything else   → onebit (agent CLI: chat, up, down, status, build,
-//                        config, auth, serve, pull, list, update)
+//   zuna              → zuna_port
 
 #include <cstdio>
 #include <cstring>
@@ -26,12 +23,9 @@
 int zaya_server_main(int argc, char** argv);
 int unified_server_main(int argc, char** argv);
 int unified_router_main(int argc, char *argv[]);
-int onebitd_main(int argc, char *argv[]);
-int onebit_main(int argc, char *argv[]);
 int jarvis_server_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
 int zuna_main(int argc, char** argv);
-int gaia_bash_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
     std::string p = argv0 ? argv0 : "1bit";
@@ -40,22 +34,28 @@ static std::string prog_name(const char* argv0) {
     return p;
 }
 
+static int print_usage() {
+    std::fprintf(stderr,
+        "usage: 1bit <subcommand> [args...]\n\n"
+        "subcommands:\n"
+        "  zaya              multi-backend inference server\n"
+        "  unified           multi-backend server + embedded Lemonade core\n"
+        "  router            NPU/GPU policy routing proxy\n"
+        "  lemonade          Lemonade-compatible server\n"
+        "  jarvis|voice|tts  voice pipeline server\n"
+        "  vision|vl         vision-language server\n"
+        "  zuna              zuna_port\n");
+    return 1;
+}
+
 int main(int argc, char** argv) {
     // ── argv[0] dispatch (symlink names) ──
     std::string prog = prog_name(argv[0]);
     if (prog == "zaya_server")    return zaya_server_main(argc, argv);
     if (prog == "unified_server") return unified_server_main(argc, argv);
     if (prog == "unified_router") return unified_router_main(argc, argv);
-    if (prog == "onebitd")        return onebitd_main(argc, argv);
     if (prog == "jarvis_server")  return jarvis_server_main(argc, argv);
     if (prog == "vision_server")  return vision_server_main(argc, argv);
-    if (prog == "gaia-bash")      return gaia_bash_main(argc, argv);
-    if (prog == "onebit" || prog == "1bit") {
-        // fall through to subcommand dispatch below
-    } else {
-        // Unknown name: treat as agent CLI anyway (best effort).
-        return onebit_main(argc, argv);
-    }
 
     // ── Subcommand dispatch ──
     if (argc > 1) {
@@ -79,9 +79,6 @@ int main(int argc, char** argv) {
             for (int i = 2; i < argc; ++i) args.push_back(argv[i]);
             return unified_server_main(static_cast<int>(args.size()), args.data());
         }
-        if (cmd == "onebitd" || cmd == "daemon") {
-            return onebitd_main(argc - 1, argv + 1);
-        }
         if (cmd == "jarvis" || cmd == "voice" || cmd == "tts") {
             return jarvis_server_main(argc - 1, argv + 1);
         }
@@ -91,11 +88,9 @@ int main(int argc, char** argv) {
         if (cmd == "zuna") {
             return zuna_main(argc - 1, argv + 1);
         }
-        if (cmd == "gaia" || cmd == "gaia-bash") {
-            return gaia_bash_main(argc - 1, argv + 1);
+        if (cmd == "-h" || cmd == "--help" || cmd == "help") {
+            return print_usage();
         }
-        // Everything else falls through to the agent CLI (chat, up, down,
-        // status, build, config, auth, serve, update, --help).
     }
-    return onebit_main(argc, argv);
+    return print_usage();
 }
