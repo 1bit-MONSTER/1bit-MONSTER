@@ -89,6 +89,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "laguna")  == 0) return RCPP_ARCH_LAGUNA;
     if (strcmp(s, "falcon")  == 0) return RCPP_ARCH_FALCON;
     if (strcmp(s, "falcon3") == 0) return RCPP_ARCH_FALCON;
+    if (strcmp(s, "rw")      == 0) return RCPP_ARCH_FALCON;  // Falcon 7B/40B HF arch (RWForCausalLM)
     if (strcmp(s, "olmo")    == 0) return RCPP_ARCH_OLMO;
     if (strcmp(s, "olmo2")   == 0) return RCPP_ARCH_OLMO;
     if (strcmp(s, "olmoe")   == 0) return RCPP_ARCH_OLMO;
