@@ -154,3 +154,8 @@ engine/npu/xclbins/v26_backup/
 
 # ASan build dir
 build-asan/
+
+# ── AIE/Vitis sim artifacts ──
+.Xil/
+x86simulator_output/
+Work/
