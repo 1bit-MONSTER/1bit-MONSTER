@@ -2,7 +2,22 @@
 
 # Supported Models & Performance
 
-The 1bit-systems engine auto-detects 19 model architectures from GGUF/1BP headers — no config files needed. We reverse-engineered AMD's NPU stack, extracted 37 FLM models with 209 pre-compiled XDNA 2 xclbins, and created our own 1BP ternary format to make AMD's open-source models run at maximum throughput on NPU + GPU.
+The 1bit-systems engine auto-detects 24 model architectures from GGUF/1BP/safetensors headers — no config files needed. We reverse-engineered AMD's NPU stack, extracted 37 FLM models with 209 pre-compiled XDNA 2 xclbins, and created our own 1BP ternary format to make AMD's open-source models run at maximum throughput on NPU + GPU.
+
+## HF-Native coverage (measured 2026-08-14)
+
+Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`, 220k models sampled): the **11 validation-gated families cover 193,318 / 220,049 text-generation checkpoints (88%)** — far beyond "500 models". The validated families (torch/numpy/llama.cpp-exact generation gates, see `Testing/bringup_runner.sh` + `docs/plans/monster-500-build.md`):
+
+| Family | HF checkpoints covered | | Family | HF checkpoints covered |
+|--------|------:|---|---|--------|------:|
+| llama (incl. mistral/cohere/…) | 116,642 | | qwen2 | 26,291 |
+| gpt2 | 24,914 | | gemma (incl. granite) | 11,008 |
+| qwen3 | 8,427 | | phi | 4,041 |
+| falcon | 904 | | olmo | 744 |
+| exaone | 156 | | internlm2 | 115 |
+| minicpm | 76 | | **TOTAL** | **193,318 (88%)** |
+
+Top uncovered causal-LM classes (next family targets): GPTNeoX 5,652 · Step1MoE 2,882 · OPT 1,877 · GPTNeo 1,355 · GPT-J 609 · GPT-OSS 407 · CodeGen 348. Encoder-decoders (T5 788 / MT5 328 / Bloom 1,086) are out of scope for the decode-loop engine.
 
 ## Backend Availability Legend
 

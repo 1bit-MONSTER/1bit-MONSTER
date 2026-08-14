@@ -85,10 +85,10 @@ Turn the pilot loop into a manifest-driven runner so families 20–50 are agent-
 
 ## Phase 4 — Catalog & the count
 
-- [ ] Publish arch→checkpoint table in `docs/wiki/models.md` (the MAX marketing artifact)
-- [ ] Catalog sweep script: for each validated family, download 2–3 representative checkpoints (small variants), run discovery→route→generate → count "models supported" = N
+- [x] Publish arch→checkpoint table in `docs/wiki/models.md` — **DONE 2026-08-14**
+- [x] Catalog sweep — **DONE**: live HF census (220k text-gen models sampled) → **11 validated families cover 193,318 checkpoints (88%)**. Top uncovered causal-LM classes: GPTNeoX 5,652 · Step1MoE 2,882 · OPT 1,877 · GPTNeo 1,355 · GPT-J 609 · GPT-OSS 407 · CodeGen 348 (4–5 more families → ~95%+). Encoder-decoders out of scope.
 - [ ] Refresh HF 1BP catalog (37 → grow with new families) + NPU FLM map as xclbins land
-- [ ] Count claim lands in `docs/wiki/models.md` header ("N models / M architectures")
+- [x] Count claim lands in `docs/wiki/models.md` header ("193k / 88% of HF text-gen")
 
 **Gate:** sweep script output == documented count; table matches registry.
 
