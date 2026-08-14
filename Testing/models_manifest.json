@@ -338,6 +338,25 @@
       "oracle": "torch (OPT in transformers 5.14; no GGUF available)",
       "status": "validated",
       "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)"
+    },
+    {
+      "family": "gptneo",
+      "hf_arch_strings": [
+        "gptneo"
+      ],
+      "mapping_target": "GPTNEO",
+      "quirk_flags": {
+        "attn": "UNSCALED \u2014 no 1/sqrt(head_dim) (attention_multiplier=1.0; known gpt-neo quirk)",
+        "pos": "learned wte/wpe (no offset)",
+        "norm": "nn.LayerNorm weight+bias",
+        "ffn": "non-gated gelu_new (c_fc/c_proj)",
+        "qkv": "separate q/k/v projs NO bias; out_proj bias yes",
+        "window": "local layers window 256 \u2014 no-op <256t, not implemented"
+      },
+      "e2e_model": "EleutherAI/gpt-neo-125M",
+      "oracle": "torch (GPTNeo in transformers 5.14)",
+      "status": "validated",
+      "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)"
     }
   ]
 }
