@@ -1,7 +1,9 @@
 // test_tq2_gemv_ref.cc — host check for mm_ternary_tq2_aie2.cc math.
-// Mirrors the Phase 3 step 2 kernel: LUT decode -> tile-major int8 packing ->
-// per-group accumulation -> bf16 scale combine; compares against a naive
-// reference. Fails if they diverge.
+// Mirrors the Phase 3 step 3 kernel: LUT decode -> ping-pong tile-major int8
+// buffers (one per scale group) -> per-group mmul-equivalent accumulation ->
+// bf16 scale combine; compares against a naive reference. Also reports DDR
+// bytes/token for the TQ2 packed layout vs an INT8 baseline (the 4× win).
+// Fails if they diverge.
 //
 // Build: g++ -O2 -o test_tq2_gemv_ref test_tq2_gemv_ref.cc && ./test_tq2_gemv_ref
 #include <cassert>
@@ -51,16 +53,23 @@ static void kern_gemv(const std::vector<int8_t> &A, const std::vector<uint8_t> &
         lut[i] = v;
     }
 
-    // tile-major weights: b_tiles[nb][kb][i*T+j] = code(nb*T+j, kb*S+i)
-    std::vector<int8_t> b_tiles(NB * KB * S * T);
+    // tile-major weights, ping-pong buffers per scale group:
+    // b_ping[nb][kbb][i*T+j] = code(nb*T+j, kbb*S+i)         (group 0)
+    // b_pong[nb][kbb][i*T+j] = code(nb*T+j, (kbb+KBPG)*S+i) (group 1)
+    std::vector<int8_t> b_ping(NB * KBPG * S * T), b_pong(NB * KBPG * S * T);
     for (int nb = 0; nb < NB; nb++)
-        for (int kb = 0; kb < KB; kb++)
+        for (int kbb = 0; kbb < KBPG; kbb++)
             for (int i = 0; i < S; i++)
                 for (int j = 0; j < T; j++) {
-                    int n = nb * T + j, k = kb * S + i;
-                    uint8_t byte = B[n * (K / 4) + k / 4];
-                    int8_t val = (int8_t)(lut[byte] >> (8 * (k % 4)));
-                    b_tiles[(nb * KB + kb) * (S * T) + i * T + j] = val;
+                    int n = nb * T + j;
+                    int k0 = kbb * S + i;
+                    uint8_t byte0 = B[n * (K / 4) + k0 / 4];
+                    b_ping[(nb * KBPG + kbb) * (S * T) + i * T + j] =
+                        (int8_t)(lut[byte0] >> (8 * (k0 % 4)));
+                    int k1 = (kbb + KBPG) * S + i;
+                    uint8_t byte1 = B[n * (K / 4) + k1 / 4];
+                    b_pong[(nb * KBPG + kbb) * (S * T) + i * T + j] =
+                        (int8_t)(lut[byte1] >> (8 * (k1 % 4)));
                 }
 
     for (int mb = 0; mb < MB; mb++)
@@ -74,8 +83,8 @@ static void kern_gemv(const std::vector<int8_t> &A, const std::vector<uint8_t> &
                             auto a0 = A[(mb * R + i) * K + kbb * S + s];
                             auto a1 = A[(mb * R + i) * K + (kbb + KBPG) * S + s];
                             // B tile (nb,kb): element (s,j) = code(col=nb*T+j, k=kb*S+s)
-                            auto b0 = b_tiles[(nb * KB + kbb) * (S * T) + s * T + j];
-                            auto b1 = b_tiles[(nb * KB + (kbb + KBPG)) * (S * T) + s * T + j];
+                            auto b0 = b_ping[(nb * KBPG + kbb) * (S * T) + s * T + j];
+                            auto b1 = b_pong[(nb * KBPG + kbb) * (S * T) + s * T + j];
                             acc0[i * T + j] += (int)a0 * (int)b0;
                             acc1[i * T + j] += (int)a1 * (int)b1;
                         }
@@ -110,5 +119,18 @@ int main() {
 
     bool ok = maxerr < 0.1;
     printf("%s\n", ok ? "PASS" : "FAIL");
+
+    // ── DDR bytes/token (batch=1 decode, one weight stream per token) ──
+    // TQ2 packed: codes N×K/4 bytes + scales N×NGROUPS×2 bytes (bf16).
+    // INT8 baseline: N×K bytes. Activations are M×K, amortized to zero at
+    // batch=1 as K,N grow — the weight stream dominates.
+    const long tq2_codes = (long)N * K / 4;
+    const long tq2_scales = (long)N * NGROUPS * 2;
+    const long tq2_bytes = tq2_codes + tq2_scales;
+    const long int8_bytes = (long)N * K;
+    printf("DDR bytes/token: TQ2 %ld (%ld codes + %ld scales) vs INT8 %ld → %.1f× cut\n",
+           tq2_bytes, tq2_codes, tq2_scales, int8_bytes,
+           (double)int8_bytes / tq2_bytes);
+
     return ok ? 0 : 1;
 }
