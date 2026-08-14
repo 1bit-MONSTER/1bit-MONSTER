@@ -52,6 +52,30 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
   would be ~6× faster — the engine's multi-column xclbins are essential for
   real decode workloads.
 
+## 3b. Decode launch-cost diagnosis (2026-08-13, measured)
+
+- Per-launch breakdown (NPU_GO_STATS on the universal engine): quantize ~0.1ms,
+  **sync+launch ~0.02-0.06ms, kernel wait ~3.4-4.9ms**, dequant ~0.01ms. Decode =
+  112 launches/token (4 GEMMs × 28 layers) → ~460ms/token (2 tok/s).
+- The ~4ms/launch is the kernel executing its **fixed M=128 stream** (the FLM
+  mm.xclbin is baked for XM=128). The generated stream has the SAME word count
+  for any M (M is baked into descriptor values, not the stream length).
+- regen_insts(M<XM) DEADLOCKS (~2048ms/launch, kernel never completes): REG_M
+  cannot resize the baked kernel's tiling. M=1 and M=8 both hang.
+- Pre-compiled `_v` streams are WORSE: 99-150K words → ~154ms/launch → 16.4s/token
+  (the npu_engine_cb path). The runtime generator's 32K-word streams are the
+  good path (35x faster).
+- The generated path's addressing: B-DMA offset includes K*M (packed A+B
+  convention); the engine uses separate A/B BOs. Removing the K*M term is
+  TOKEN-IDENTICAL — descriptor addressing doesn't affect this kernel's result.
+- **The fix that works:** per-shape SMALL-M xclbins (build_xclbins.sh Peano
+  path — the missing final_i8_*_K1024_N4096.xclbin files) so decode launches
+  run M=1 streams (~50µs), or fused whole-layer streams (FLM-style, one launch
+  per token). Estimated 460ms → 5-15ms/token with either.
+- Correctness caveat: the generated path's output was never oracle-validated
+  (the single-core-row vs multi-row WARN). Verify tokens vs the CPU engine
+  before trusting any speedup.
+
 ## 4. XRT dispatch protocol (matches what engine/npu already does)
 
 - Kernel name in mlir-aie xclbins: `MLIR_AIE`; metadata args

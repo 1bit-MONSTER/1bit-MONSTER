@@ -2797,12 +2797,11 @@ int main(int argc,char**argv){
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count()/npt);
 
     // ===== v12: M=32 BATCHED DECODE =====
-    // Decode runs at M=1 (boot + greedy steps) but the generated streams are
-    // baked for M=XM — every launch would execute 128 rows of DMA/compute for
-    // 1 row of data. Regen the streams for M=1 first (no-op on the FLM path).
-    if (!flm_xclbin_available) {
-        cq.regen_insts(1); co.regen_insts(1); cg.regen_insts(1); cd.regen_insts(1);
-    }
+    // NOTE (2026-08-13, perf diagnosis): decode = 112 launches/token × ~4ms.
+    // The ~4ms is the kernel (FLM mm.xclbin) executing its fixed M=128 stream:
+    // regen_insts(M<XM) deadlocks (REG_M can't resize the baked kernel), so
+    // the fix is per-shape small-M xclbins (build_xclbins.sh Peano path) or
+    // fused layer streams — not a runtime regen. See engine/npu/AIE2P-FACTS.md.
     printf("=== M=%d Batch Decode (%d tokens) ===\n",BS,ng);
     auto tgs=std::chrono::steady_clock::now();
     // NOTE: greedy batched decode — runs batch_size tokens per step, no draft verification.
