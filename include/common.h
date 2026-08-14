@@ -109,6 +109,7 @@ struct ModelConfig {
     // no RoPE + non-gated gelu FFN. Set by the loader for RCPP_ARCH_GPT2.
     bool use_learned_pos = false;
     bool no_rope = false;
+    bool adjacent_rope = false;  // CodeGen: rotate_every_two — pairs (2i, 2i+1), not half-split
     int pos_offset = 0;  // learned-position base (OPT: 2 padding slots → +2)
     // Falcon (old arch): parallel attention+FFN — both consume the SAME
     // layer-norm output and both add to the residual. Set for RCPP_ARCH_FALCON.

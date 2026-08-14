@@ -59,6 +59,7 @@ int main() {
     check("gptneox", RCPP_ARCH_GPTNEOX, "gptneox", false);
     check("opt", RCPP_ARCH_OPT, "opt", false);
     check("gptneo", RCPP_ARCH_GPTNEO, "gptneo", false);
+    check("codegen", RCPP_ARCH_CODEGEN, "codegen", false);
     check("unknown", RCPP_ARCH_UNKNOWN, "mystery", false);
 
     if (fails) { std::printf("ROTATION TABLE: %d/%d FAILED\n", fails, total); return 1; }
