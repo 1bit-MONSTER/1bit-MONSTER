@@ -1,0 +1,104 @@
+{
+  "_comment": "MONSTER family manifest (Phase 3, 2026-08-14). One entry per validated family. hf_arch_strings = suffix-stripped family tags (see safetensors_reader.cpp) + HF class names; mapping_target = rcpp_arch_t token; quirk_flags = what backend_generic must handle; e2e_model = HF repo for the real-checkpoint gate; oracle = GGUF for tokenize/detokenize parity. Status: validated | in_progress | pending.",
+  "families": [
+    {
+      "family": "llama",
+      "hf_arch_strings": ["llama", "smollm", "smollm2", "smollm3", "openelm", "nemotron", "minicpm", "baichuan", "baichuan2", "exaone", "solar", "internlm", "internlm2", "internlm3", "xverse", "apertus", "cohere", "gptbigcode", "stablelm", "mosaic", "mpt", "starcoder", "starcoder2", "command-r", "dbrx", "jamba"],
+      "mapping_target": "LLAMA",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "moe": false, "bias": "none" },
+      "e2e_model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "oracle": "unsloth q8 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "qwen2",
+      "hf_arch_strings": ["qwen2", "qwen", "qwen2moe", "deepseek"],
+      "mapping_target": "QWEN2",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "moe": false, "bias": "qkv", "qk_norm": false },
+      "e2e_model": "Qwen/Qwen2.5-0.5B-Instruct",
+      "oracle": "bartowski q8 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "qwen3",
+      "hf_arch_strings": ["qwen3", "qwen3moe"],
+      "mapping_target": "QWEN3",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "moe": false, "bias": "none", "qk_norm": "optional" },
+      "e2e_model": "Qwen/Qwen3-0.6B",
+      "oracle": "local Q8_0 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "mistral",
+      "hf_arch_strings": ["mistral", "pixtral", "mixtral"],
+      "mapping_target": "MISTRAL",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "moe": false, "bias": "none" },
+      "e2e_model": "mistralai/Mistral-7B-v0.1",
+      "oracle": "q8 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "gemma",
+      "hf_arch_strings": ["gemma", "gemma2", "gemma3", "gemma4", "granite", "granitemoe", "ovis", "paligemma"],
+      "mapping_target": "GEMMA",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "moe": false, "bias": "none", "norm": "+1 convention", "post_norms": true },
+      "e2e_model": "google/gemma-3-1b-it",
+      "oracle": "unsloth q8 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "granite-moe",
+      "hf_arch_strings": ["granitemoe"],
+      "mapping_target": "GEMMA",
+      "quirk_flags": { "moe": "fused block_sparse", "activation": "swiglu", "attn_multiplier": 0.015625, "residual_multiplier": 0.22, "embedding_multiplier": 12.0, "logits_scaling": 6.0 },
+      "e2e_model": "ibm-granite/granite-3.1-3b-a800m-instruct",
+      "oracle": "bartowski q8 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "phi",
+      "hf_arch_strings": ["phi", "phi3", "phi4", "phi_moe"],
+      "mapping_target": "PHI",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "moe": false, "bias": "none", "fused_proj": "qkv+gate_up", "activation": "swiglu (phi3/4)" },
+      "e2e_model": "microsoft/Phi-3-mini-4k-instruct",
+      "oracle": "q8 gguf",
+      "status": "validated"
+    },
+    {
+      "family": "olmo",
+      "hf_arch_strings": ["olmo", "olmo2", "olmoe", "molmo"],
+      "mapping_target": "OLMO",
+      "quirk_flags": { "rope": "none (learned pos)", "norm": "layernorm", "rotate_at_load": false },
+      "e2e_model": "allenai/OLMo-1B",
+      "oracle": "q8 gguf",
+      "status": "pending"
+    },
+    {
+      "family": "falcon",
+      "hf_arch_strings": ["falcon", "falcon3"],
+      "mapping_target": "FALCON",
+      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "attention": "parallel attn+ffn, MQA" },
+      "e2e_model": "tiiuae/falcon-7b (legacy, may lack safetensors)",
+      "oracle": "q8 gguf",
+      "status": "pending"
+    },
+    {
+      "family": "gpt2",
+      "hf_arch_strings": ["gpt2"],
+      "mapping_target": "UNKNOWN (custom tensor map needed — ln_1/ln_2, no GQA, tied embed)",
+      "quirk_flags": { "rope": "natural", "tensor_map": "custom" },
+      "e2e_model": "openai-community/gpt2",
+      "oracle": "q8 gguf",
+      "status": "pending"
+    },
+    {
+      "family": "deepseek-mla",
+      "hf_arch_strings": ["deepseekv2", "deepseekv3"],
+      "mapping_target": "DEEPSEEK",
+      "quirk_flags": { "attention": "MLA", "moe": true },
+      "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
+      "oracle": "q8 gguf",
+      "status": "pending"
+    }
+  ]
+}
