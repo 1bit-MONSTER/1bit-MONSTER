@@ -40,7 +40,8 @@
       },
       "e2e_model": "HuggingFaceTB/SmolLM2-135M-Instruct",
       "oracle": "unsloth q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "qwen2",
@@ -60,7 +61,8 @@
       },
       "e2e_model": "Qwen/Qwen2.5-0.5B-Instruct",
       "oracle": "bartowski q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "qwen3",
@@ -78,7 +80,8 @@
       },
       "e2e_model": "Qwen/Qwen3-0.6B",
       "oracle": "local Q8_0 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "mistral",
@@ -96,7 +99,8 @@
       },
       "e2e_model": "mistralai/Mistral-7B-v0.1",
       "oracle": "q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "gemma",
@@ -121,7 +125,8 @@
       },
       "e2e_model": "google/gemma-3-1b-it",
       "oracle": "unsloth q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "granite-moe",
@@ -139,7 +144,8 @@
       },
       "e2e_model": "ibm-granite/granite-3.1-3b-a800m-instruct",
       "oracle": "bartowski q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "phi",
@@ -160,7 +166,8 @@
       },
       "e2e_model": "microsoft/Phi-3-mini-4k-instruct",
       "oracle": "q8 gguf",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "olmo",
@@ -180,7 +187,8 @@
       },
       "e2e_model": "allenai/OLMo-1B-0724-hf",
       "oracle": "mradermacher/OLMo-1B-0724-hf-GGUF Q8_0",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "falcon",
@@ -199,7 +207,8 @@
       },
       "e2e_model": "tiiuae/falcon-7b (7.2GB, auto_map stripped for torch oracle)",
       "oracle": "maddes8cht/tiiuae-falcon-7b-gguf Q8_0",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "gpt2",
@@ -218,7 +227,8 @@
       },
       "e2e_model": "openai-community/gpt2",
       "oracle": "RichardErkhov/openai-community_-_gpt2-gguf Q6_K",
-      "status": "validated"
+      "status": "validated",
+      "tier": "full"
     },
     {
       "family": "exaone",
@@ -235,7 +245,8 @@
       "e2e_model": "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct",
       "oracle": "llamacpp Q8 (official GGUF repo)",
       "status": "validated",
-      "result": "20/20 identical vs llama.cpp Q8; reader needed num_layers fallback"
+      "result": "20/20 identical vs llama.cpp Q8; reader needed num_layers fallback",
+      "tier": "full-llamacpp"
     },
     {
       "family": "internlm2",
@@ -252,7 +263,8 @@
       "oracle": "llamacpp Q8 (mradermacher)",
       "status": "validated",
       "result": "engine \u2261 authoritative modeling_internlm2.py numpy EXACT; vs Q8 oracle near-tie top-3 (the/a/Paris within 0.5 logits) \u2014 Q8 drift pattern",
-      "numpy_ref": true
+      "numpy_ref": true,
+      "tier": "numpy-exact-near-tie"
     },
     {
       "family": "minicpm",
@@ -270,7 +282,8 @@
       "oracle": "llamacpp Q8 sft (UNRELIABLE \u2014 llama.cpp treats minicpm as plain llama, ignores scale quirks)",
       "status": "validated",
       "result": "engine \u2261 authoritative openbmb modeling numpy EXACT (top-6 logits identical); llama.cpp oracle disagrees because it misses scale_emb/scale_depth/logits_scaling",
-      "numpy_ref": true
+      "numpy_ref": true,
+      "tier": "numpy-exact-oracle-wrong"
     },
     {
       "family": "openelm",
@@ -284,7 +297,8 @@
       "e2e_model": "apple/OpenELM-270M",
       "oracle": "none",
       "status": "documented-limitation",
-      "result": "refuses loudly at load ('missing embedding'); needs bespoke path \u2014 out of generic-engine scope"
+      "result": "refuses loudly at load ('missing embedding'); needs bespoke path \u2014 out of generic-engine scope",
+      "tier": "documented-limitation"
     },
     {
       "family": "deepseek-mla",
@@ -299,7 +313,8 @@
       },
       "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
       "oracle": "q8 gguf",
-      "status": "pending"
+      "status": "pending",
+      "tier": "pending"
     },
     {
       "family": "gptneox",
@@ -319,7 +334,8 @@
       "oracle": "torch (GPTNeoX in transformers 5.14) + llama.cpp Q8",
       "numpy_ref": true,
       "status": "validated",
-      "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable"
+      "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable",
+      "tier": "numpy-exact-degenerate"
     },
     {
       "family": "opt",
@@ -337,7 +353,8 @@
       "e2e_model": "facebook/opt-125m (converted to safetensors locally; no HF safetensors exists)",
       "oracle": "torch (OPT in transformers 5.14; no GGUF available)",
       "status": "validated",
-      "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)"
+      "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)",
+      "tier": "full"
     },
     {
       "family": "gptneo",
@@ -356,7 +373,8 @@
       "e2e_model": "EleutherAI/gpt-neo-125M",
       "oracle": "torch (GPTNeo in transformers 5.14)",
       "status": "validated",
-      "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)"
+      "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)",
+      "tier": "full"
     },
     {
       "family": "codegen",
@@ -376,7 +394,8 @@
       "e2e_model": "Salesforce/codegen-350M-mono (converted bin\u2192safetensors locally)",
       "oracle": "torch (CodeGen in transformers 5.14)",
       "status": "validated",
-      "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)"
+      "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)",
+      "tier": "numpy-exact-near-tie"
     },
     {
       "family": "gptj",
@@ -396,7 +415,18 @@
       "e2e_model": "EleutherAI/gpt-j-6B (bin\u2192safetensors conversion)",
       "oracle": "torch (GPTJ in transformers 5.14)",
       "status": "validated",
-      "result": "20/20 tokens identical vs torch, first try \u2014 adjacent partial rotary + parallel paths from codegen carried over"
+      "result": "20/20 tokens identical vs torch, first try \u2014 adjacent partial rotary + parallel paths from codegen carried over",
+      "tier": "full"
+    },
+    {
+      "family": "gptoss",
+      "hf_arch_strings": [
+        "gptoss"
+      ],
+      "mapping_target": "GPTOSS",
+      "status": "blocked-memory",
+      "tier": "not-validated",
+      "result": "Decode fully reverse-engineered (MXFP4: FP4_VALUES e2m1 table, value = FP4[nibble] * 2^(scale-127), low nibble->even, high->odd, 32 vals/block; interleaved gate/up split; gate*sigmoid(1.702*gate) activation with clamps; top-4 softmax gating; half-split rope theta 150000) \u2014 but GPT-OSS-20B dequantizes to ~105GB fp32, memory-infeasible on this box with a torch reference. No gpt-oss-4b exists (20B/120B only). Needs quantized-MoE path or a beefier box."
     }
   ]
 }
