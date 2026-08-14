@@ -589,6 +589,16 @@ struct GenericBackend : Backend {
             cfg.adjacent_rope = true;       // rotate_every_two — adjacent pairs (i, i+1)
             cfg.rms_norm_eps = 1e-5f;
         }
+        // GPT-J: separate q/k/v projs w/ bias, adjacent PARTIAL rotary
+        // (rotary_dim 64 of 256 — cfg.adjacent_rope + rope_dim), nn.LayerNorm
+        // weight+bias, non-gated gelu_new FFN (fc_in/fc_out w/ bias), untied
+        // lm_head, PARALLEL attn+FFN (single ln_1). Names: transformer.h.N.*.
+        if (cfg.arch == RCPP_ARCH_GPTJ) {
+            cfg.norm_is_layernorm = true;
+            cfg.adjacent_rope = true;
+            cfg.parallel_attn_ffn = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
@@ -994,6 +1004,33 @@ struct GenericBackend : Backend {
                 load2("ln_1.bias", lw.rms_attn_b, H, 1);
                 load2("ln_2.weight", lw.rms_ffn, H, 1);
                 load2("ln_2.bias", lw.rms_ffn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_GPTJ) {
+                // GPT-J: transformer.h.N.* names, SEPARATE q/k/v/out projs
+                // w/ bias, LN weight+bias (ln_1/ln_f — single per-layer norm,
+                // sequential), non-gated gelu_new FFN (fc_in/fc_out w/ bias).
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.q_proj.weight", lw.wq, H, NH * HD);
+                load2("attn.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("attn.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("attn.out_proj.weight", lw.wo, NH * HD, H);
+                load2("attn.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("attn.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("attn.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("attn.out_proj.bias", lw.bo, H, 1);
+                load2("mlp.fc_in.weight", lw.w1, H, IM);
+                load2("mlp.fc_in.bias", lw.w1_b, IM, 1);
+                load2("mlp.fc_out.weight", lw.w3, IM, H);
+                load2("mlp.fc_out.bias", lw.w3_b, H, 1);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_1.bias", lw.rms_attn_b, H, 1);
+                // GPT-J single ln_1 feeds BOTH attn and MLP (parallel);
+                // rms_ffn stays SIZE_MAX (parallel path uses x3).
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -1123,10 +1160,11 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen: non-gated FFN — w2 legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
-                           cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN ||
+                           cfg.arch == RCPP_ARCH_GPTJ) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;

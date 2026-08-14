@@ -377,6 +377,26 @@
       "oracle": "torch (CodeGen in transformers 5.14)",
       "status": "validated",
       "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)"
+    },
+    {
+      "family": "gptj",
+      "hf_arch_strings": [
+        "gptj"
+      ],
+      "mapping_target": "GPTJ",
+      "quirk_flags": {
+        "rope": "ADJACENT (rotate_every_two) partial rotary_dim=64 of 256 (cfg.adjacent_rope + rope_dim)",
+        "parallel": "attn+FFN on same ln_1",
+        "attn": "scaled 1/sqrt(hd) \u2014 normal",
+        "qkv": "separate projs w/ bias",
+        "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
+        "norm": "nn.LayerNorm weight+bias",
+        "lm_head": "untied"
+      },
+      "e2e_model": "EleutherAI/gpt-j-6B (bin\u2192safetensors conversion)",
+      "oracle": "torch (GPTJ in transformers 5.14)",
+      "status": "validated",
+      "result": "20/20 tokens identical vs torch, first try \u2014 adjacent partial rotary + parallel paths from codegen carried over"
     }
   ]
 }

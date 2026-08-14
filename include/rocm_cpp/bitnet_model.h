@@ -59,6 +59,7 @@ typedef enum {
     RCPP_ARCH_OPT = 25,     // OPT — learned positions, LN weight+bias, biases everywhere, no-gate RELU FFN
     RCPP_ARCH_GPTNEO = 26,  // GPT-Neo — gpt2-style names, LN+bias, learned wte/wpe, no-gate gelu_new FFN, windowed attn (>256t)
     RCPP_ARCH_CODEGEN = 27, // CodeGen — fused qkv, partial rotary (rotary_dim), LN+bias, no-gate gelu_new FFN
+    RCPP_ARCH_GPTJ = 28,    // GPT-J — separate qkv, adjacent partial rotary (rotary_dim), LN+bias, gelu_new
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -164,6 +165,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "opt")       == 0) return RCPP_ARCH_OPT;    // OPTForCausalLM (learned pos, relu)
     if (strcmp(s, "gptneo")    == 0) return RCPP_ARCH_GPTNEO; // GPTNeoForCausalLM
     if (strcmp(s, "codegen")   == 0) return RCPP_ARCH_CODEGEN; // CodeGenForCausalLM (fused qkv, partial rotary)
+    if (strcmp(s, "gptj")      == 0) return RCPP_ARCH_GPTJ;    // GPTJForCausalLM (adjacent partial rotary)
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;
