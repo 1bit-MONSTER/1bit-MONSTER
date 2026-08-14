@@ -28,6 +28,19 @@ bool json_find_string(const std::string& text, const std::string& key, std::stri
     return true;
 }
 
+// json_find_bool: "key": true|false (mirrors json_find_int).
+bool json_find_bool(const std::string& text, const std::string& key, bool& out) {
+    auto pos = text.find("\"" + key + "\"");
+    if (pos == std::string::npos) return false;
+    pos = text.find(':', pos);
+    if (pos == std::string::npos) return false;
+    pos++;
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n')) pos++;
+    if (text.compare(pos, 4, "true") == 0) { out = true; return true; }
+    if (text.compare(pos, 5, "false") == 0) { out = false; return true; }
+    return false;
+}
+
 bool json_find_int(const std::string& text, const std::string& key, int& out) {
     auto pos = text.find("\"" + key + "\"");
     if (pos == std::string::npos) return false;
@@ -140,9 +153,12 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         if (json_find_int(config_text, "num_key_value_heads", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;
         else if (json_find_int(config_text, "n_head", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // GPT-2: no GQA, kv = heads
         else cfg.n_kv_heads = cfg.num_kv_heads = cfg.n_heads;
+        // Falcon MQA: multi_query=true → exactly 1 kv head (query heads stay).
+        bool mq = false;
+        if (json_find_bool(config_text, "multi_query", mq) && mq) cfg.n_kv_heads = cfg.num_kv_heads = 1;
         if (json_find_int(config_text, "intermediate_size", iv)) cfg.n_ff = cfg.intermediate_size = iv;
         else if (json_find_int(config_text, "n_inner", iv)) cfg.n_ff = cfg.intermediate_size = iv;  // GPT-2
-        else if (cfg.hidden > 0 && cfg.architecture == "gpt2") cfg.n_ff = cfg.intermediate_size = 4 * cfg.hidden;  // GPT-2 default 4x
+        else if (cfg.hidden > 0) cfg.n_ff = cfg.intermediate_size = 4 * cfg.hidden;  // GPT-2/Falcon: no explicit FF dim → 4×
         if (json_find_int(config_text, "vocab_size", iv)) cfg.vocab = cfg.vocab_size = iv;
         if (json_find_int(config_text, "max_position_embeddings", iv)) cfg.max_seq_len = iv;
         else if (json_find_int(config_text, "n_positions", iv)) cfg.max_seq_len = iv;  // GPT-2

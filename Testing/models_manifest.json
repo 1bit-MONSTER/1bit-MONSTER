@@ -77,10 +77,10 @@
       "family": "falcon",
       "hf_arch_strings": ["falcon", "falcon3"],
       "mapping_target": "FALCON",
-      "quirk_flags": { "rope": "natural", "rotate_at_load": false, "attention": "parallel attn+ffn, MQA" },
-      "e2e_model": "tiiuae/falcon-7b (legacy, may lack safetensors)",
-      "oracle": "q8 gguf",
-      "status": "pending"
+      "quirk_flags": { "rope": "natural theta=10000", "norm": "nn.LayerNorm weight+bias (input_layernorm)", "parallel": "attn+FFN on SAME norm output", "attn": "fused query_key_value [H+2HD,H] MQA split cols, 1 kv head", "ffn": "non-gated erf-gelu (dense_h_to_4h/dense_4h_to_h)", "config_keys": "multi_query=true→kv=1; no intermediate_size→4×hidden; head_dim=hidden/heads" },
+      "e2e_model": "tiiuae/falcon-7b (7.2GB, auto_map stripped for torch oracle)",
+      "oracle": "maddes8cht/tiiuae-falcon-7b-gguf Q8_0",
+      "status": "validated"
     },
     {
       "family": "gpt2",

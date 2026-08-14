@@ -75,7 +75,7 @@ struct GenericBackend : Backend {
     std::vector<float> logits_buf;
 
     // Pre-allocated scratch buffers (avoid per-token heap allocations in forward_embed)
-    std::vector<float> scratch_x, scratch_x2, scratch_q, scratch_k, scratch_v;
+    std::vector<float> scratch_x, scratch_x2, scratch_x3, scratch_q, scratch_k, scratch_v;
     std::vector<float> scratch_scores, scratch_att, scratch_gate_up, scratch_silu_buf;
     std::vector<float> scratch_moe_router_probs, scratch_moe_ffn_acc;
     std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_silu, scratch_moe_down;
@@ -269,7 +269,7 @@ struct GenericBackend : Backend {
         // Pre-allocate scratch buffers (avoid per-token heap allocations)
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim, FF = cfg.intermediate_size;
         size_t score_sz = (size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD;
-        scratch_x.resize(H); scratch_x2.resize(H);
+        scratch_x.resize(H); scratch_x2.resize(H); scratch_x3.resize(H);
         scratch_q.resize((size_t)NH * HD); scratch_k.resize((size_t)NKV * HD); scratch_v.resize((size_t)NKV * HD);
         scratch_scores.resize(score_sz); scratch_att.resize((size_t)NH * HD);
         scratch_gate_up.resize(FF * 2); scratch_silu_buf.resize(FF);
@@ -552,11 +552,20 @@ struct GenericBackend : Backend {
             cfg.no_rope = true;
             cfg.rms_norm_eps = 1e-5f;
         }
+        // Falcon (old arch): nn.LayerNorm with weight+bias, PARALLEL
+        // attention+FFN on one norm, fused MQA qkv, erf-gelu non-gated FFN,
+        // RoPE theta 10000 (natural). Names: transformer.h.N.*.
+        if (cfg.arch == RCPP_ARCH_FALCON) {
+            cfg.norm_is_layernorm = true;
+            cfg.parallel_attn_ffn = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
             !r.get_tensor_f32("transformer.wte.weight", embed) &&
-            !r.get_tensor_f32("wte.weight", embed)) {
+            !r.get_tensor_f32("wte.weight", embed) &&
+            !r.get_tensor_f32("transformer.word_embeddings.weight", embed)) {
             fprintf(stderr, "Generic: safetensors: missing embedding\n");
             return false;
         }
@@ -585,6 +594,8 @@ struct GenericBackend : Backend {
             if (!r.get_tensor_f32("token_embd_norm.weight", final_norm))
                 if (!r.get_tensor_f32("transformer.ln_f.weight", final_norm))
                     r.get_tensor_f32("ln_f.weight", final_norm);
+        if (!r.get_tensor_f32("transformer.ln_f.bias", final_norm_bias))
+            r.get_tensor_f32("ln_f.bias", final_norm_bias);
         if (gemma_post_norms && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         r.get_tensor_f32("lm_head.weight", output_weight);   // optional: tied embeddings
@@ -693,6 +704,41 @@ struct GenericBackend : Backend {
                 load2("ln_1.bias", lw.rms_attn_b, 1, H);
                 load2("ln_2.weight", lw.rms_ffn, 1, H);
                 load2("ln_2.bias", lw.rms_ffn_b, 1, H);
+            } else if (cfg.arch == RCPP_ARCH_FALCON) {
+                // Falcon (old arch): transformer.h.N.* names. Fused MQA
+                // query_key_value [H + 2*HD, H] (config: multi_query=True):
+                // q rows [0,H), k rows [H,H+HD), v rows [H+HD, H+2HD) — one
+                // kv head. nn.Linear [out,in] orientation (no transpose).
+                // Parallel attn+FFN: rms_ffn stays SIZE_MAX (single
+                // input_layernorm feeds both); w2 stays SIZE_MAX (erf-gelu).
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "transformer.h.%d.self_attention.query_key_value.weight", l);
+                size_t qkv_rows = (size_t)NH * HD + 2 * (size_t)HD;
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != (int)(qkv_rows * H)) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                size_t qrows = (size_t)NH * HD, krows = (size_t)HD;
+                std::vector<float> q(qrows * H), k(krows * H), v(krows * H);
+                for (size_t row = 0; row < qrows; row++)
+                    memcpy(q.data() + row * H, qkv.data() + row * H, H * sizeof(float));
+                for (size_t row = 0; row < krows; row++) {
+                    memcpy(k.data() + row * H, qkv.data() + (qrows + row) * H, H * sizeof(float));
+                    memcpy(v.data() + row * H, qkv.data() + (qrows + krows + row) * H, H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("self_attention.dense.weight", lw.wo, NH * HD, H);
+                load2("mlp.dense_h_to_4h.weight", lw.w1, H, IM);
+                load2("mlp.dense_4h_to_h.weight", lw.w3, IM, H);
+                load2("input_layernorm.weight", lw.rms_attn, H, 1);
+                load2("input_layernorm.bias", lw.rms_attn_b, H, 1);
             } else {
             load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
@@ -822,8 +868,8 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2: non-gated FFN — w2 (gate) is legitimately absent
-                       (!(cfg.arch == RCPP_ARCH_GPT2 && lw.w2 == SIZE_MAX) &&
+                       // GPT-2/Falcon: non-gated FFN — w2 (gate) is legitimately absent
+                       (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -1242,6 +1288,12 @@ struct GenericBackend : Backend {
         for (int i = 0; i < n; i++) out[i] *= up[i];
     }
 
+    // Standard erf-based GELU (nn.GELU default) — Falcon's MLP activation.
+    // Distinct from gelu() (gelu_new / tanh approx) used elsewhere.
+    static void gelu_erf(float* o, const float* x, int n) {
+        for (int i = 0; i < n; i++) o[i] = 0.5f * x[i] * (1.0f + erff(x[i] * 0.70710678118f));
+    }
+
     // Squared ReLU GLU: relu(gate)^2 * up — used by Phi
     static void squared_relu_glu(float* out, const float* gate, const float* up, int n) {
         for (int i = 0; i < n; i++) {
@@ -1365,6 +1417,7 @@ struct GenericBackend : Backend {
         // All buffers are pre-allocated class members — no heap allocs per token.
         float* x = scratch_x.data();
         float* x2 = scratch_x2.data();
+        float* x3 = scratch_x3.data();  // falcon parallel: saved normed input
         float* q = scratch_q.data();
         float* k = scratch_k.data();
         float* v = scratch_v.data();
@@ -1405,6 +1458,12 @@ struct GenericBackend : Backend {
             if (l.bq != SIZE_MAX) { float* b = w(l.bq); for (int i = 0; i < NH*HD; i++) q[i] += b[i]; }
             if (l.bk != SIZE_MAX) { float* b = w(l.bk); for (int i = 0; i < NKV*HD; i++) k[i] += b[i]; }
             if (l.bv != SIZE_MAX) { float* b = w(l.bv); for (int i = 0; i < NKV*HD; i++) v[i] += b[i]; }
+
+            // Falcon parallel: save the normed input for the FFN (attn and
+            // FFN both consume input_layernorm output — no second norm).
+            if (cfg.parallel_attn_ffn)
+                memcpy(x3, x2, (size_t)H * sizeof(float));
+
 
             // OLMo: clip QKV values to [-clip_qkv, clip_qkv] before RoPE
             // (config clip_qkv: 8.0, applied in OlmoAttention.forward).
@@ -1500,7 +1559,10 @@ struct GenericBackend : Backend {
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
             // weighted sum → residual (MoE).
-            if (cfg.norm_is_layernorm) {
+            if (cfg.parallel_attn_ffn) {
+                // Falcon: FFN input = the SAME normed output as attention.
+                memcpy(x2, x3, (size_t)H * sizeof(float));
+            } else if (cfg.norm_is_layernorm) {
                 if (l.rms_ffn != SIZE_MAX)
                     layernorm_affine(x2, x, w(l.rms_ffn),
                                      l.rms_ffn_b != SIZE_MAX ? w(l.rms_ffn_b) : nullptr, H, eps);
@@ -1563,10 +1625,12 @@ struct GenericBackend : Backend {
                 else
                     for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
             } else if (l.w2 == SIZE_MAX) {
-                // Non-gated FFN (GPT-2): gelu(w1 x + b1) then w3 + b3.
+                // Non-gated FFN (GPT-2: gelu_new; Falcon: erf-gelu):
+                // act(w1 x + b1) then w3 + b3.
                 mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
                 if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
-                gelu(gate_up, gate_up, FF);
+                if (cfg.arch == RCPP_ARCH_FALCON) gelu_erf(gate_up, gate_up, FF);
+                else gelu(gate_up, gate_up, FF);
                 mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
                 if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }
                 if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
