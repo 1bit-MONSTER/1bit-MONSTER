@@ -241,6 +241,41 @@ __global__ void h1bp_tq2nz_sum_kernel(const float* __restrict__ part,
     out[row] = s;
 }
 
+// ═══ Q4NX packed-decode GEMV (asymmetric 4-bit: int4 code, bf16 scale+zp) ═══
+// Tile = 32 rows × 256 cols: [scales: 32×8×2 B][zps: 512 B][codes: 32×256/2 B]
+// (5120 B/tile). code v0 = low nibble (even col), v1 = high nibble (odd col);
+// value = code*scale + zp. Same warp/part structure as the TQ2NZ kernel.
+__global__ void h1bp_q4nx_part_kernel(const uint8_t* __restrict__ w,
+                                      const float* __restrict__ x,
+                                      float* __restrict__ part,
+                                      int N, int ntc) {
+    const int lane = threadIdx.x & 31;
+    const int wpr  = (ntc + 3) >> 2;
+    const int warp = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    const int row  = warp / wpr;
+    if (row >= N) return;
+    const int tw = (warp % wpr) * 4 + (lane >> 3);
+    const int g  = lane & 7;
+    if (tw >= ntc) { part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = 0.0f; return; }
+
+    const uint8_t* tb = w + (size_t)((row >> 5) * ntc + tw) * 5120;
+    const uint16_t* sc = (const uint16_t*)tb;
+    const uint16_t* zp = (const uint16_t*)(tb + 512);
+    const int rri = row & 31;
+    float scale = h1bp_bf16_to_f32(sc[rri * 8 + g]);
+    float z     = h1bp_bf16_to_f32(zp[rri * 8 + g]);
+    const uint8_t* codes = tb + 1024 + rri * 128 + g * 16;
+    const float*   xp    = x + tw * 256 + g * 32;
+    float acc = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        uint8_t b = codes[i];
+        acc += ((float)(b & 0xF) * scale + z) * xp[i * 2];
+        acc += ((float)(b >> 4)  * scale + z) * xp[i * 2 + 1];
+    }
+    part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = acc;
+}
+
 // ── Device argmax (Phase 1): two-pass reduction over V logits ──
 // Pass 1: each block reduces a slice into scratch[2*bid] = (max_val, max_idx).
 // Pass 2: single block reduces the scratch. Scratches sized AMX_MAXB=512.
