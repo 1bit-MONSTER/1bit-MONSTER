@@ -242,7 +242,12 @@ struct Hip1bpBackend : Backend {
         *h_token = 0; *h_pos = 0; *h_res = -1;
         HIP_CHECK(hipMemcpy(d_token, h_token, sizeof(int), hipMemcpyHostToDevice));
         HIP_CHECK(hipMemcpy(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice));
-        if (d_output || d_embed) {
+        // #1626: H1BP_GRAPH=0 or H1BP_DUMP set -> eager mode (no graph capture),
+        // so H1BP_DUMP host I/O fires and packed-path debugging is possible.
+        bool want_graph = (d_output || d_embed);
+        if (const char* g = getenv("H1BP_GRAPH")) want_graph = want_graph && (atoi(g) != 0);
+        if (getenv("H1BP_DUMP")) want_graph = false;  // dumps do host I/O — not capturable
+        if (want_graph) {
             hipError_t ce = hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal);
             if (ce == hipSuccess) {
                 bool ok = forward_dev(0, false);
@@ -269,6 +274,10 @@ struct Hip1bpBackend : Backend {
             } else {
                 fprintf(stderr, "[hip1bp] capture begin failed: %s\n", hipGetErrorString(ce));
             }
+        } else if (getenv("H1BP_DUMP")) {
+            printf("[hip1bp] H1BP_DUMP set: graph capture skipped so dumps fire (eager mode)\n");
+        } else if (d_output || d_embed) {
+            printf("[hip1bp] H1BP_GRAPH=0: graph capture disabled (eager mode)\n");
         }
 
         initialized=true;
@@ -474,7 +483,7 @@ struct Hip1bpBackend : Backend {
             pos++;
             return *h_res;
         }
-        if(!forward_dev(token_id,false))return -1;
+        if(!forward_dev(token_id, getenv("H1BP_DUMP") ? true : false))return -1;  // #1626: dumps in eager mode
         if(!d_output&&!d_embed){pos++;return 0;}
         if(quant2&&d_output_packed){
             launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
