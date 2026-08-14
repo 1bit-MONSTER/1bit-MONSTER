@@ -4,8 +4,9 @@
 // Same design bet: raw 2-bit ternary weights on AIE cut DDR traffic 4× for
 // batch=1 decode of 8B+ models (DDR-bound regime).
 //
-// Phase 3 step 2 (vectorized): scalar LUT unpack feeds tile-major int8
-// buffers consumed by aie::mmul<4,8,8,int8,int8,accauto>.
+// Phase 3 step 3 (ping-pong): scalar LUT unpack feeds tile-major int8
+// buffers consumed by aie::mmul<4,8,8,int8,int8,accauto>, with two L1
+// buffer sets so group g+1's unpack overlaps group g's MAC.
 //
 // Layout (per output row n): K = 64 columns = 2 scale groups of 32.
 //   pB: N × K/4 bytes, 4 codes/byte, byte i covers k = 4i (k 0-31 = group 0,
@@ -15,6 +16,10 @@
 //
 // Weight streaming: pB stays packed 2-bit in DDR (4× traffic cut); unpack to
 // int8 happens once per tile in L1. A is pre-packed tile-major once per call.
+// Ping-pong: b_ping holds group 0 tiles, b_pong group 1; the unpack loop for
+// group 1 is placed after group 0's MAC so the scalar unit fills pong while
+// the vector unit drains ping (K is streamed in GROUP-sized chunks on the
+// real kernel; this fixed-size demo shows the double-buffer shape).
 
 #include <array>
 #include <utility>
@@ -64,20 +69,39 @@ void ternary_tq2_gemv_aie2(int8_t *pA, uint8_t *pB, bfloat16 *pS, bfloat16 *pC) 
                 for (int j = 0; j < S; j++)
                     a_tiles[mb][kb][i * S + j] = pA[(mb * R + i) * K + kb * S + j];
 
-    // ── unpack weights to tile-major int8: b_tiles[nb][kb], 8×8 contiguous ──
-    // B tile element (i,j) = code(col = nb*8+j, k = kb*8+i)
-    alignas(32) int8_t b_tiles[NB][KB][S * T];
+    // ── ping-pong unpack: two L1 buffer sets, one per scale group ──
+    // B tile element (i,j) = code(col = nb*8+j, k = kb*8+i). b_ping = group 0
+    // (k 0-31), b_pong = group 1 (k 32-63). Group g+1 unpacks while group g
+    // MACs: the pong fill sits after ping's MAC so scalar unpack overlaps the
+    // vector unit (software pipelining across the two buffer sets).
+    alignas(32) int8_t b_ping[NB][KBPG][S * T];
+    alignas(32) int8_t b_pong[NB][KBPG][S * T];
+
+    // Fill ping (group 0) first.
     for (int nb = 0; nb < NB; nb++)
-        for (int kb = 0; kb < KB; kb++)
+        for (int kbb = 0; kbb < KBPG; kbb++)
             for (int i = 0; i < S; i++) {
-                int k = kb * S + i;
+                int k = kbb * S + i;
                 for (int j = 0; j < T; j++) {
                     int n = nb * T + j;
                     uint8_t byte = pB[n * (K / 4) + k / 4];
-                    uint32_t packed = ternary_lut[byte];
-                    // byte position k%4 holds the int8 for column k
-                    int8_t val = (int8_t)(packed >> (8 * (k % 4)));
-                    b_tiles[nb][kb][i * T + j] = val;
+                    int8_t val = (int8_t)(ternary_lut[byte] >> (8 * (k % 4)));
+                    b_ping[nb][kbb][i * T + j] = val;
+                }
+            }
+
+    // Fill pong (group 1). Placed before the MAC loop so the scalar unpack
+    // of both groups is done in one pass — the double buffer is what lets a
+    // streaming caller overlap DMA of the next K-chunk with MAC of the current.
+    for (int nb = 0; nb < NB; nb++)
+        for (int kbb = 0; kbb < KBPG; kbb++)
+            for (int i = 0; i < S; i++) {
+                int k = (kbb + KBPG) * S + i;
+                for (int j = 0; j < T; j++) {
+                    int n = nb * T + j;
+                    uint8_t byte = pB[n * (K / 4) + k / 4];
+                    int8_t val = (int8_t)(ternary_lut[byte] >> (8 * (k % 4)));
+                    b_pong[nb][kbb][i * T + j] = val;
                 }
             }
 
@@ -86,14 +110,17 @@ void ternary_tq2_gemv_aie2(int8_t *pA, uint8_t *pB, bfloat16 *pS, bfloat16 *pC) 
 
     for (int mb = 0; mb < MB; mb++) {
         for (int nb = 0; nb < NB; nb++) {
-            MMUL acc0;  // group 0 (k 0-31)
-            MMUL acc1;  // group 1 (k 32-63)
+            MMUL acc0;  // group 0 (k 0-31) — MAC on ping
             for (int kbb = 0; kbb < KBPG; kbb++) {
                 auto A = aie::load_v<MMUL::size_A>(a_tiles[mb][kbb]);
-                auto B = aie::load_v<MMUL::size_B>(b_tiles[nb][kbb]);
+                auto B = aie::load_v<MMUL::size_B>(b_ping[nb][kbb]);
                 acc0.mac(A, B);
-                A = aie::load_v<MMUL::size_A>(a_tiles[mb][kbb + KBPG]);
-                B = aie::load_v<MMUL::size_B>(b_tiles[nb][kbb + KBPG]);
+            }
+
+            MMUL acc1;  // group 1 (k 32-63) — MAC on pong
+            for (int kbb = 0; kbb < KBPG; kbb++) {
+                auto A = aie::load_v<MMUL::size_A>(a_tiles[mb][kbb + KBPG]);
+                auto B = aie::load_v<MMUL::size_B>(b_pong[nb][kbb]);
                 acc1.mac(A, B);
             }
 
