@@ -71,6 +71,7 @@ struct ModelConfig {
 
     // ── CANONICAL LONG-NAME FIELDS ──────────────────────────────
     int head_dim          = 128;   // single field (no duplicate — see issue #358)
+    int rope_dim          = 0;     // rotated dims per head (0 = head_dim; GPT-NeoX: rotary_pct×hd)
     int hidden_size       = 2048;
     int num_heads         = 8;
     int num_kv_heads      = 2;
@@ -95,6 +96,43 @@ struct ModelConfig {
     std::string lora_path;   // optional .lora file for adapter merge
 
     ModelFormat format = ModelFormat::UNKNOWN;
+    // Per-model attention score scaling (granite: attention_multiplier, e.g.
+    // 0.015625; 0 = default 1/sqrt(head_dim)). Found 2026-08-13 via the
+    // granite real-prompt torch oracle — the engine was 8x off (1/sqrt(64)).
+    float attention_multiplier = 0.0f;
+    // OLMo (allenai): LayerNorm WITHOUT learnable affine params (mean/var only)
+    // + QKV value clipping. Set by the loader for RCPP_ARCH_OLMO.
+    bool norm_is_layernorm = false;   // true: no norm weights, centered norm
+    float clip_qkv = 0.0f;            // clamp q/k/v to [-clip, clip] before rope (0 = none)
+    // GPT-2 family: learned position embeddings (wpe table added to the
+    // embedding at each position) + LayerNorm with affine weight AND bias +
+    // no RoPE + non-gated gelu FFN. Set by the loader for RCPP_ARCH_GPT2.
+    bool use_learned_pos = false;
+    bool no_rope = false;
+    bool adjacent_rope = false;  // CodeGen: rotate_every_two — pairs (2i, 2i+1), not half-split
+    int pos_offset = 0;  // learned-position base (OPT: 2 padding slots → +2)
+    // Falcon (old arch): parallel attention+FFN — both consume the SAME
+    // layer-norm output and both add to the residual. Set for RCPP_ARCH_FALCON.
+    bool parallel_attn_ffn = false;
+    // Gemma-2/3: logit soft-caps from config (0 = none). Gemma3-1b has both
+    // None; Gemma-2 has attn=50.0 / final=30.0. The engine must NOT hardcode
+    // these on the arch string — gemma3-1b would be wrongly capped.
+    float attn_logit_softcapping = 0.0f;    // >0: tanh(x/c)*c before attention softmax
+    float final_logit_softcapping = 0.0f;   // >0: tanh(x/c)*c on LM-head logits
+    float logits_scaling = 1.0f;             // granite: logits = lm_head_out / logits_scaling (6.0)
+    // Gemma-3 hybrid attention: every sliding_window_pattern-th layer (the
+    // last of each group, i%pattern==pattern-1) is FULL attention with
+    // rope_theta; the rest are LOCAL with rope_local_base_freq. 0 = none.
+    float rope_local_base_freq = 0.0f;
+    int sliding_window_pattern = 0;
+    // Per-model residual scaling (granite: residual_multiplier=0.22; the
+    // block output is scaled before adding to the residual). 1.0 = none.
+    // Found 2026-08-13 via the granite real-prompt torch oracle — the engine
+    // added block outputs unscaled, so the residual stream was ~4.5x too big.
+    float residual_multiplier = 1.0f;
+    // Per-model embedding scaling (granite: embedding_multiplier=12.0; the
+    // embedding rows are multiplied before the first layer). 1.0 = none.
+    float embedding_multiplier = 1.0f;
     std::string architecture;   // e.g. "llama", "qwen2", "qwen3", "gemma", "phi3", "zaya1" — from
                                  // general.architecture (GGUF) or format-specific header, NOT model_name
     rcpp_arch_t arch = RCPP_ARCH_BITNET;  // enum from architecture string; used for dispatch

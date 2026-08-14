@@ -2,7 +2,9 @@
 
 JARVIS is the reference **end-to-end application** built on the 1bit engine: a fully local voice assistant where every stage — listening, understanding, thinking, and speaking — runs on the same binary, on your own hardware. It's the clearest demonstration of what the engine is *for*.
 
-> JARVIS is an application of the engine, not a separate product. If you only want raw inference, you never need it — but it shows the whole stack working together: STT + LLM + TTS + voice cloning, no cloud, no Python in the hot path.
+> JARVIS is an application of the engine, not a separate product.
+
+> **Ecosystem:** [max-xdna-backend](https://github.com/1bit-systems/max-xdna-backend) is a secondary experiment documenting the XDNA 2 NPU work for the upstream/funding story — the engine itself runs the same NPU natively, no MAX involved. If you only want raw inference, you never need it — but it shows the whole stack working together: STT + LLM + TTS + voice cloning, no cloud, no Python in the hot path.
 
 ## The pipeline
 

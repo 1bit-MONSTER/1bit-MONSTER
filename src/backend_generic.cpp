@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include "model_discovery.h"
+#include "safetensors_reader.h"
 #include "rocm_cpp/tokenizer.h"
 
 // 1BP loader with full TQ2/Q4NX tile dequant (unity build)
@@ -74,12 +75,13 @@ struct GenericBackend : Backend {
     std::vector<float> logits_buf;
 
     // Pre-allocated scratch buffers (avoid per-token heap allocations in forward_embed)
-    std::vector<float> scratch_x, scratch_x2, scratch_q, scratch_k, scratch_v;
+    std::vector<float> scratch_x, scratch_x2, scratch_x3, scratch_q, scratch_k, scratch_v;
     std::vector<float> scratch_scores, scratch_att, scratch_gate_up, scratch_silu_buf;
     std::vector<float> scratch_moe_router_probs, scratch_moe_ffn_acc;
     std::vector<float> scratch_moe_gate, scratch_moe_up, scratch_moe_silu, scratch_moe_down;
     std::vector<int> scratch_moe_idx;  // expert index for partial_sort
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
+    std::vector<float> rope_freqs_local; // gemma3 hybrid: local-layer theta table (0 = same)
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
     bool scratch_allocated_ = false;
     int cached_debug_ops_ = -1;  // cached getenv("CPU_DEBUG_OPS") — checked once
@@ -104,16 +106,23 @@ struct GenericBackend : Backend {
         size_t rms_attn = SIZE_MAX, rms_ffn = SIZE_MAX;
         size_t w1 = SIZE_MAX, w2 = SIZE_MAX, w3 = SIZE_MAX;
         size_t bq = SIZE_MAX, bk = SIZE_MAX, bv = SIZE_MAX;
+        size_t bo = SIZE_MAX;              // attention-output bias (GPT-2 c_proj.bias)
+        size_t w1_b = SIZE_MAX, w3_b = SIZE_MAX;  // FFN up/down biases (GPT-2 c_fc/c_proj)
+        size_t rms_attn_b = SIZE_MAX, rms_ffn_b = SIZE_MAX;  // LayerNorm biases (GPT-2 ln_1/ln_2)
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
         size_t post_attn_norm = SIZE_MAX, post_ffn_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
         int pk_q = -1, pk_k = -1, pk_v = -1, pk_o = -1, pk_w1 = -1, pk_w2 = -1, pk_w3 = -1;  // packed TQ2 slots
     };
     std::vector<LayerW> layers;
+    // GPT-2: learned position-embedding table (wpe) + final LayerNorm bias.
+    std::vector<float> pos_embed, final_norm_bias;
     // Gemma-2/3/4 logit soft-capping (attn cap 50, final cap 30). Keyed on
     // the arch STRING, not the enum — RCPP_ARCH_GEMMA also covers Granite
     // (Llama-style: no caps, rms eps 1e-5) and Gemma-1 (no caps).
     bool gemma_softcap_ = false;
+    float attn_cap_ = 0.0f;    // attention-logit tanh cap (gemma-2/3, 0 = none)
+    float final_cap_ = 0.0f;   // LM-head-logit tanh cap (gemma-2/3, 0 = none)
     // Gemma-family embeddings are stored unscaled; the model expects them
     // scaled by sqrt(hidden) at the input (gemma_pytorch / llama.cpp
     // gemma/gemma2/gemma3 graphs: inpL = scale(inpL, sqrtf(n_embd))).
@@ -222,12 +231,25 @@ struct GenericBackend : Backend {
                     closedir(d);
                 }
             }
-            printf("Generic: trying GGUF path: %s\n", gguf_path.c_str());
-            loaded = load_gguf(gguf_path);
+            FILE* mf = fopen(gguf_path.c_str(), "rb");
+            bool is_gguf = false;
+            if (mf) {
+                char magic[4] = {0};
+                if (fread(magic, 1, 4, mf) == 4) is_gguf = (memcmp(magic, "GGUF", 4) == 0);
+                fclose(mf);
+            }
+            if (is_gguf) {
+                printf("Generic: trying GGUF path: %s\n", gguf_path.c_str());
+                loaded = load_gguf(gguf_path);
+            }
         }
         if (!loaded && cfg.format == ModelFormat::ONEBP && !cfg.model_path.empty()) {
             // Try loading from 1BP format (shared with NPU engine)
             loaded = load_1bp(cfg.model_path);
+        }
+        if (!loaded && cfg.format == ModelFormat::SAFETENSORS && !cfg.model_path.empty()) {
+            // HF-native: load weights directly from a .safetensors checkpoint.
+            loaded = load_safetensors(cfg.model_path);
         }
         if (!loaded) {
             // Fall back: old .bin format
@@ -247,7 +269,7 @@ struct GenericBackend : Backend {
         // Pre-allocate scratch buffers (avoid per-token heap allocations)
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim, FF = cfg.intermediate_size;
         size_t score_sz = (size_t)cfg.max_seq_len > (size_t)HD ? (size_t)cfg.max_seq_len : (size_t)HD;
-        scratch_x.resize(H); scratch_x2.resize(H);
+        scratch_x.resize(H); scratch_x2.resize(H); scratch_x3.resize(H);
         scratch_q.resize((size_t)NH * HD); scratch_k.resize((size_t)NKV * HD); scratch_v.resize((size_t)NKV * HD);
         scratch_scores.resize(score_sz); scratch_att.resize((size_t)NH * HD);
         scratch_gate_up.resize(FF * 2); scratch_silu_buf.resize(FF);
@@ -262,11 +284,18 @@ struct GenericBackend : Backend {
         scratch_allocated_ = true;
 
         // Precompute RoPE frequencies (avoid powf+cosf+sinf per token)
-        int rot_dim = cfg.head_dim, half = rot_dim / 2;
+        int rot_dim = cfg.rope_dim > 0 ? cfg.rope_dim : cfg.head_dim, half = rot_dim / 2;
         rope_freqs.resize(half);
         float theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
         for (int i = 0; i < half; i++)
             rope_freqs[i] = 1.0f / powf(theta, (2.0f * i) / (float)rot_dim);
+        // Gemma-3 hybrid: local layers use rope_local_base_freq (10000), full
+        // layers use rope_theta (1e6). Precompute both tables.
+        if (cfg.sliding_window_pattern > 0 && cfg.rope_local_base_freq > 0.0f) {
+            rope_freqs_local.resize(half);
+            for (int i = 0; i < half; i++)
+                rope_freqs_local[i] = 1.0f / powf(cfg.rope_local_base_freq, (2.0f * i) / (float)rot_dim);
+        }
         inv_sqrt_hd_ = 1.0f / sqrtf((float)cfg.head_dim);
 
         // Cache getenv results checked in the hot path
@@ -276,13 +305,21 @@ struct GenericBackend : Backend {
             cached_num_layers_ = (nl && nl[0]) ? atoi(nl) : cfg.n_layers;
         }
 
-        // Gemma-2/3/4: logit soft-capping + rms eps 1e-6. Keyed on the arch
-        // string (gemma2/gemma3/gemma4) — the RCPP_ARCH_GEMMA enum also
-        // covers Granite and Gemma-1, which need neither.
+        // Gemma-2/3/4: logit soft-capping + rms eps 1e-6. Caps come from the
+        // config when present (gemma2: 50/30; gemma3-1b: none), with the old
+        // arch-string defaults as fallback for config-less GGUF loads.
         gemma_softcap_ = cfg.architecture.rfind("gemma", 0) == 0 && cfg.architecture != "gemma";
+        attn_cap_ = cfg.attn_logit_softcapping > 0.0f ? cfg.attn_logit_softcapping
+                  : (gemma_softcap_ ? 50.0f : 0.0f);
+        final_cap_ = cfg.final_logit_softcapping > 0.0f ? cfg.final_logit_softcapping
+                   : (gemma_softcap_ ? 30.0f : 0.0f);
         if (cfg.architecture.rfind("gemma", 0) == 0) cfg.rms_norm_eps = 1e-6f;
         // Gemma-family input embedding scaling (sqrt(hidden)); Granite shares
         // the enum but is Llama-style and must NOT be scaled.
+        // Gemma-2/3 input embedding scaling: the HF path multiplies token
+        // embeddings by sqrt(hidden) (verified empirically for gemma3: lookup
+        // output norm 32.46 = 0.956 x sqrt(1152)); llama.cpp's gemma graphs
+        // bake the same. Granite shares the enum but is Llama-style.
         gemma_emb_scale_ = cfg.architecture.rfind("gemma", 0) == 0;
 
         initialized = true;
@@ -424,6 +461,682 @@ struct GenericBackend : Backend {
         return true;
     }
 
+    // Inverse of llama.cpp's convert-time RoPE pre-rotation: GGUF stores
+    // attn_q/k with dims interleaved [0, hd/2, 1, hd/2+1, ...]; the engine's
+    // half-split pairing expects natural order (corrected 2026-08-13).
+    void unrotate_rope_rows(std::vector<float>& flat, size_t idx, int heads, int dim, int in) {
+        if (dim < 2 || (dim & 1)) return;
+        std::vector<float> tmp(&flat[idx], &flat[idx] + (size_t)heads * dim * in);
+        std::vector<float> out(tmp.size());
+        for (int h = 0; h < heads; h++) {
+            for (int p = 0; p < dim; p++) {
+                int d = (p % 2) * (dim / 2) + (p / 2);   // inverse of the interleave
+                memcpy(&out[(size_t)(h * dim + d) * in], &tmp[(size_t)(h * dim + p) * in],
+                       (size_t)in * sizeof(float));
+            }
+        }
+        memcpy(&flat[idx], out.data(), out.size() * sizeof(float));
+    }
+
+
+    // HF-native weight loading: read a .safetensors checkpoint directly into
+    // the same flat-weights structure the GGUF/.bin loaders use. Weights are
+    // NATURAL order (no RoPE pre-rotation) — the engine's half-split rope
+    // pairing matches transformers exactly (corrected 2026-08-13).
+    bool load_safetensors(const std::string& path) {
+        std::string f = path;
+        struct stat st;
+        if (stat(f.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            DIR* d = opendir(f.c_str());
+            if (d) {
+                struct dirent* e;
+                while ((e = readdir(d)) != nullptr) {
+                    std::string n(e->d_name);
+                    if (n.size() > 12 && n.substr(n.size() - 12) == ".safetensors") { f = f + "/" + n; break; }
+                }
+                closedir(d);
+            }
+        }
+        SafetensorsWeightReader r;
+        bool opened = false;
+        // Sharded checkpoint? A sibling model.safetensors.index.json means the
+        // real tensors span shards — the index MUST take precedence over a
+        // single-shard open.
+        std::string dir = f;
+        size_t slash = dir.find_last_of('/');
+        if (slash != std::string::npos) dir = dir.substr(0, slash);
+        else dir = ".";
+        struct stat idx_st;
+        if (stat((dir + "/model.safetensors.index.json").c_str(), &idx_st) == 0 && S_ISREG(idx_st.st_mode))
+            opened = r.open_dir(dir);
+        if (!opened && stat(f.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            opened = r.open(f);
+        if (!opened) {
+            fprintf(stderr, "Generic: safetensors: cannot read %s (%s)\n", f.c_str(), r.error().c_str());
+            return false;
+        }
+
+        // Gemma2/3/4 RMSNorm convention: HF stores gamma and the model computes
+        // x * (1 + gamma); llama.cpp's GGUF bakes the +1. The safetensors
+        // loader adds +1 to every norm weight for gemma2/3/4.
+        const bool gemma_post_norms = (cfg.architecture == "gemma2" ||
+                                       cfg.architecture == "gemma3" ||
+                                       cfg.architecture == "gemma4");
+
+        // Arch guard — same refusal list as load_gguf + unknown.
+        if (cfg.arch == RCPP_ARCH_UNKNOWN ||
+            cfg.arch == RCPP_ARCH_ZAYA || cfg.arch == RCPP_ARCH_ZAMBA2 ||
+            cfg.arch == RCPP_ARCH_ZAMBA || cfg.arch == RCPP_ARCH_MAMBA ||
+            cfg.arch == RCPP_ARCH_QWEN35) {
+            fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
+                    f.c_str(), (int)cfg.arch,
+                    cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" : "");
+            return false;
+        }
+
+        // OLMo (allenai OLMo-1B-0724-hf): LayerNorm has NO learnable weights
+        // (OlmoLayerNorm: mean/var only, eps 1e-5) and attention clips QKV to
+        // [-8, 8] (config clip_qkv: 8.0). Verified against modeling_olmo.py
+        // 2026-08-14. Also uses RoPE theta 10000 (natural order).
+        if (cfg.arch == RCPP_ARCH_OLMO) {
+            cfg.norm_is_layernorm = true;
+            cfg.clip_qkv = 8.0f;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // GPT-2: learned position embeddings (wpe), LayerNorm with affine
+        // weight+bias, no RoPE, non-gated gelu FFN. Names are h.N.* (no
+        // "model." prefix), wte/wpe/ln_f under "transformer.".
+        if (cfg.arch == RCPP_ARCH_GPT2) {
+            cfg.norm_is_layernorm = true;
+            cfg.use_learned_pos = true;
+            cfg.no_rope = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // Falcon (old arch): nn.LayerNorm with weight+bias, PARALLEL
+        // attention+FFN on one norm, fused MQA qkv, erf-gelu non-gated FFN,
+        // RoPE theta 10000 (natural). Names: transformer.h.N.*.
+        if (cfg.arch == RCPP_ARCH_FALCON) {
+            cfg.norm_is_layernorm = true;
+            cfg.parallel_attn_ffn = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // GPT-NeoX/Pythia: nn.LayerNorm weight+bias, PARALLEL attn+FFN on
+        // one norm (use_parallel_residual), fused query_key_value, no-GQA,
+        // non-gated erf-gelu FFN with biases everywhere, rotary theta from
+        // rotary_emb_base. Names: gpt_neox.layers.N.*.
+        if (cfg.arch == RCPP_ARCH_GPTNEOX) {
+            cfg.norm_is_layernorm = true;
+            cfg.parallel_attn_ffn = true;
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // OPT: learned position embeddings (embed_positions), nn.LayerNorm
+        // weight+bias, projection biases everywhere, NON-GATED RELU FFN
+        // (fc1/fc2), no rotary, sequential structure. Names: model.decoder.*.
+        if (cfg.arch == RCPP_ARCH_OPT) {
+            cfg.norm_is_layernorm = true;
+            cfg.use_learned_pos = true;
+            cfg.no_rope = true;
+            cfg.pos_offset = 2;  // OPT pads 2 positions (offset=2 in embed_positions)
+            cfg.rms_norm_eps = 1e-5f;
+        }
+        // CodeGen: fused qkv_proj [3H,H] (bias=False), normal attention scale,
+        // PARTIAL rotary (rotary_dim 32 of 64 — cfg.rope_dim), nn.LayerNorm
+        // weight+bias, non-gated gelu_new FFN (fc_in/fc_out w/ bias), untied
+        // lm_head, PARALLEL attn+FFN. Names: transformer.h.N.*.
+        if (cfg.arch == RCPP_ARCH_CODEGEN) {
+            cfg.norm_is_layernorm = true;
+            cfg.parallel_attn_ffn = true;   // CodeGen: attn+FFN on SAME ln_1 output
+            cfg.adjacent_rope = true;       // rotate_every_two — adjacent pairs (i, i+1)
+            cfg.rms_norm_eps = 1e-5f;
+        }
+
+        if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
+            !r.get_tensor_f32("token_embd.weight", embed) &&
+            !r.get_tensor_f32("transformer.wte.weight", embed) &&
+            !r.get_tensor_f32("wte.weight", embed) &&
+            !r.get_tensor_f32("transformer.word_embeddings.weight", embed) &&
+            !r.get_tensor_f32("model.tok_embeddings.weight", embed) &&
+            !r.get_tensor_f32("gpt_neox.embed_in.weight", embed) &&
+            !r.get_tensor_f32("model.decoder.embed_tokens.weight", embed)) {
+            fprintf(stderr, "Generic: safetensors: missing embedding\n");
+            return false;
+        }
+        if (cfg.hidden > 0 && embed.size() % (size_t)cfg.hidden == 0 && !embed.empty())
+            cfg.vocab = cfg.vocab_size = (int)(embed.size() / (size_t)cfg.hidden);
+
+        if (cfg.use_learned_pos) {
+            // Learned position table — authoritative for max_seq_len (gpt2 wpe,
+            // OPT embed_positions).
+            if (!r.get_tensor_f32("transformer.wpe.weight", pos_embed) &&
+                !r.get_tensor_f32("wpe.weight", pos_embed) &&
+                !r.get_tensor_f32("model.decoder.embed_positions.weight", pos_embed)) {
+                fprintf(stderr, "Generic: safetensors: missing position table\n");
+                return false;
+            }
+            if (pos_embed.empty() || pos_embed.size() % (size_t)cfg.hidden != 0) {
+                fprintf(stderr, "Generic: safetensors: position table misized\n");
+                return false;
+            }
+            cfg.max_seq_len = (int)(pos_embed.size() / (size_t)cfg.hidden);
+            if (!r.get_tensor_f32("transformer.ln_f.weight", final_norm))
+                r.get_tensor_f32("ln_f.weight", final_norm);
+            if (!r.get_tensor_f32("transformer.ln_f.bias", final_norm_bias))
+                r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        }
+
+        if (!r.get_tensor_f32("model.norm.weight", final_norm))
+            if (!r.get_tensor_f32("token_embd_norm.weight", final_norm))
+                if (!r.get_tensor_f32("transformer.ln_f.weight", final_norm))
+                    if (!r.get_tensor_f32("gpt_neox.final_layer_norm.weight", final_norm))
+                        if (!r.get_tensor_f32("model.decoder.final_layer_norm.weight", final_norm))
+                            r.get_tensor_f32("ln_f.weight", final_norm);
+        if (!r.get_tensor_f32("transformer.ln_f.bias", final_norm_bias))
+            if (!r.get_tensor_f32("gpt_neox.final_layer_norm.bias", final_norm_bias))
+                if (!r.get_tensor_f32("model.decoder.final_layer_norm.bias", final_norm_bias))
+                    r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        if (gemma_post_norms && !final_norm.empty())
+            for (auto& v : final_norm) v += 1.0f;
+        if (!r.get_tensor_f32("output.weight", output_weight))
+            if (!r.get_tensor_f32("lm_head.weight", output_weight))
+                r.get_tensor_f32("embed_out.weight", output_weight);  // GPT-NeoX untied lm_head
+
+        layers.resize(cfg.n_layers);
+        char buf[128];
+        for (int l = 0; l < cfg.n_layers; l++) {
+            auto& lw = layers[l];
+            auto load = [&](const char* hf_name, size_t& idx, int rows, int cols) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
+                if (!r.get_tensor_f32(buf, w)) return;
+                if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n",
+                             buf, (int)w.size(), rows * cols);
+            };
+            int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads;
+            int HD = cfg.head_dim, IM = cfg.n_ff;
+            if (cfg.arch == RCPP_ARCH_PHI) {
+                // Phi-3 (and Phi-2 fused variants): self_attn.qkv_proj.weight
+                // is Q+K+V stacked row-wise [Q(NH*HD) | K(NKV*HD) | V(NKV*HD)];
+                // mlp.gate_up_proj.weight is [gate(IM) | up(IM)].
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "model.layers.%d.self_attn.qkv_proj.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) ||
+                    (int)qkv.size() != (size_t)(NH + 2 * NKV) * HD * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> q, k, v;
+                q.reserve((size_t)NH * HD * H); k.reserve((size_t)NKV * HD * H); v.reserve((size_t)NKV * HD * H);
+                size_t qr = (size_t)NH * HD, kr = (size_t)NKV * HD;
+                for (size_t r = 0; r < qr; r++) q.insert(q.end(), qkv.begin() + r * H, qkv.begin() + (r + 1) * H);
+                for (size_t r = 0; r < kr; r++) k.insert(k.end(), qkv.begin() + (qr + r) * H, qkv.begin() + (qr + r + 1) * H);
+                for (size_t r = 0; r < kr; r++) v.insert(v.end(), qkv.begin() + (qr + kr + r) * H, qkv.begin() + (qr + kr + r + 1) * H);
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                load("self_attn.o_proj.weight", lw.wo, NH * HD, H);
+                std::vector<float> gu;
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate_up_proj.weight", l);
+                if (!r.get_tensor_f32(buf, gu) || (int)gu.size() != (size_t)2 * IM * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized gate_up_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> gate, up;
+                gate.reserve((size_t)IM * H); up.reserve((size_t)IM * H);
+                for (size_t r = 0; r < (size_t)IM; r++) gate.insert(gate.end(), gu.begin() + r * H, gu.begin() + (r + 1) * H);
+                for (size_t r = 0; r < (size_t)IM; r++) up.insert(up.end(), gu.begin() + ((size_t)IM + r) * H, gu.begin() + ((size_t)IM + r + 1) * H);
+                lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
+                load("mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_GPT2) {
+                // GPT-2: h.N.* names (no "model." prefix), fused c_attn, biases
+                // everywhere, LayerNorm with weight+bias (ln_1/ln_2), non-gated
+                // gelu FFN (c_fc/c_proj). lw.w2 stays SIZE_MAX (no gate).
+                // CRITICAL: GPT-2 Conv1D stores weights [in, out] (NOT the
+                // HF-linear [out, in]) — every projection must be transposed.
+                auto push_t = [&](const std::vector<float>& w, int rows, int cols) {
+                    // w is [rows, cols]; return transposed [cols, rows] index
+                    std::vector<float> t((size_t)rows * cols);
+                    for (int r = 0; r < rows; r++)
+                        for (int c = 0; c < cols; c++)
+                            t[(size_t)c * rows + r] = w[(size_t)r * cols + c];
+                    return push(std::move(t));
+                };
+                auto load2 = [&](const char* tname, size_t& idx, int in_rows, int out_cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == in_rows * out_cols) idx = push_t(w, in_rows, out_cols);
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), in_rows * out_cols);
+                };
+                // c_attn.weight [H, 3H] (in, out) — split COLUMNS into
+                // q/k/v [H, H] each, then transpose to engine [out, in].
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "h.%d.attn.c_attn.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != H * 3 * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized c_attn\n", buf);
+                    return false;
+                }
+                {
+                    std::vector<float> q((size_t)H * H), k((size_t)H * H), v((size_t)H * H);
+                    for (int r = 0; r < H; r++) {
+                        for (int c = 0; c < H; c++) {
+                            q[(size_t)c * H + r] = qkv[(size_t)r * 3 * H + c];
+                            k[(size_t)c * H + r] = qkv[(size_t)r * 3 * H + H + c];
+                            v[(size_t)c * H + r] = qkv[(size_t)r * 3 * H + 2 * H + c];
+                        }
+                    }
+                    lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                }
+                load2("attn.c_proj.weight", lw.wo, H, H);
+                load2("mlp.c_fc.weight", lw.w1, H, IM);
+                load2("mlp.c_proj.weight", lw.w3, IM, H);
+                // c_attn.bias [3H] (out dim) → split q/k/v head biases.
+                std::vector<float> qkvb;
+                snprintf(buf, sizeof(buf), "h.%d.attn.c_attn.bias", l);
+                if (r.get_tensor_f32(buf, qkvb) && (int)qkvb.size() == 3 * NH * HD) {
+                    std::vector<float> bq(qkvb.begin(), qkvb.begin() + NH * HD);
+                    std::vector<float> bk(qkvb.begin() + NH * HD, qkvb.begin() + 2 * NH * HD);
+                    std::vector<float> bv(qkvb.begin() + 2 * NH * HD, qkvb.end());
+                    lw.bq = push(std::move(bq)); lw.bk = push(std::move(bk)); lw.bv = push(std::move(bv));
+                }
+                load2("attn.c_proj.bias", lw.bo, 1, NH * HD);
+                load2("mlp.c_fc.bias", lw.w1_b, 1, IM);
+                load2("mlp.c_proj.bias", lw.w3_b, 1, H);
+                load2("ln_1.weight", lw.rms_attn, 1, H);
+                load2("ln_1.bias", lw.rms_attn_b, 1, H);
+                load2("ln_2.weight", lw.rms_ffn, 1, H);
+                load2("ln_2.bias", lw.rms_ffn_b, 1, H);
+            } else if (cfg.arch == RCPP_ARCH_FALCON) {
+                // Falcon (old arch): transformer.h.N.* names. Fused MQA
+                // query_key_value [H + 2*HD, H] (config: multi_query=True):
+                // q rows [0,H), k rows [H,H+HD), v rows [H+HD, H+2HD) — one
+                // kv head. nn.Linear [out,in] orientation (no transpose).
+                // Parallel attn+FFN: rms_ffn stays SIZE_MAX (single
+                // input_layernorm feeds both); w2 stays SIZE_MAX (erf-gelu).
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "transformer.h.%d.self_attention.query_key_value.weight", l);
+                size_t qkv_rows = (size_t)NH * HD + 2 * (size_t)HD;
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != (int)(qkv_rows * H)) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                size_t qrows = (size_t)NH * HD, krows = (size_t)HD;
+                std::vector<float> q(qrows * H), k(krows * H), v(krows * H);
+                for (size_t row = 0; row < qrows; row++)
+                    memcpy(q.data() + row * H, qkv.data() + row * H, H * sizeof(float));
+                for (size_t row = 0; row < krows; row++) {
+                    memcpy(k.data() + row * H, qkv.data() + (qrows + row) * H, H * sizeof(float));
+                    memcpy(v.data() + row * H, qkv.data() + (qrows + krows + row) * H, H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("self_attention.dense.weight", lw.wo, NH * HD, H);
+                load2("mlp.dense_h_to_4h.weight", lw.w1, H, IM);
+                load2("mlp.dense_4h_to_h.weight", lw.w3, IM, H);
+                load2("input_layernorm.weight", lw.rms_attn, H, 1);
+                load2("input_layernorm.bias", lw.rms_attn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_LLAMA && cfg.architecture == "internlm2") {
+                // InternLM2: fused wqkv [(NH+2·NKV)·HD, H] with HEAD-INTERLEAVED
+                // layout (llama.cpp conversion/ internlm.py): each kv-group is
+                // [q(×qpk) | k | v] rows — NOT [all-q | all-k | all-v].
+                // Names: attention.wqkv/wo, attention_norm/ffn_norm (RMSNorm),
+                // feed_forward.w1/w2/w3. Llama orientation [out,in].
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "model.layers.%d.attention.wqkv.weight", l);
+                size_t qr2 = (size_t)NH * HD, kr2 = (size_t)NKV * HD;
+                size_t qkv_rows = qr2 + 2 * kr2;
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != (int)(qkv_rows * H)) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized wqkv\n", buf);
+                    return false;
+                }
+                {
+                    size_t qpk = (size_t)NH / NKV;          // q heads per kv group
+                    size_t gsize = (qpk + 2) * (size_t)HD;  // rows per group
+                    std::vector<float> q(qr2 * H), k(kr2 * H), v(kr2 * H);
+                    for (size_t g = 0; g < (size_t)NKV; g++) {
+                        for (size_t qh = 0; qh < qpk; qh++) {
+                            memcpy(q.data() + ((g * qpk + qh) * HD) * H,
+                                   qkv.data() + ((g * gsize + qh * HD)) * H, (size_t)HD * H * sizeof(float));
+                        }
+                        memcpy(k.data() + (g * HD) * H,
+                               qkv.data() + ((g * gsize + qpk * HD)) * H, (size_t)HD * H * sizeof(float));
+                        memcpy(v.data() + (g * HD) * H,
+                               qkv.data() + ((g * gsize + (qpk + 1) * HD)) * H, (size_t)HD * H * sizeof(float));
+                    }
+                    lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                }
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                // InternLM2 MLP (modeling_internlm2.py):
+                //   down = w2( silu(w1 x) * (w3 x) )  — w1 AND w3 are the
+                //   UP projections ([IM,H], standard orientation), w2 is the
+                //   DOWN ([H,IM]). So: engine w1(gate) ← w1, w2(up) ← w3,
+                //   w3(down) ← w2. No transposes.
+                load2("attention.wo.weight", lw.wo, NH * HD, H);
+                load2("feed_forward.w1.weight", lw.w1, H, IM);
+                load2("feed_forward.w3.weight", lw.w2, H, IM);
+                load2("feed_forward.w2.weight", lw.w3, IM, H);
+                load2("attention_norm.weight", lw.rms_attn, H, 1);
+                load2("ffn_norm.weight", lw.rms_ffn, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_LLAMA && cfg.architecture == "exaone") {
+                // EXAONE-3.5: llama-layout with GPT-2-style names. Sequential
+                // attn→ln_2→FFN; RMSNorm (no bias); silu GLU with SEPARATE
+                // gate/up tensors (c_fc_0 = gate, c_fc_1 = up), c_proj down.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.attention.q_proj.weight", lw.wq, H, NH * HD);
+                load2("attn.attention.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("attn.attention.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("attn.attention.out_proj.weight", lw.wo, NH * HD, H);
+                load2("mlp.c_fc_0.weight", lw.w1, H, IM);
+                load2("mlp.c_fc_1.weight", lw.w2, H, IM);
+                load2("mlp.c_proj.weight", lw.w3, IM, H);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_2.weight", lw.rms_ffn, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_GPTNEOX) {
+                // GPT-NeoX/Pythia: gpt_neox.layers.N.* names, fused
+                // query_key_value [3H, H] (no GQA — q/k/v each H rows),
+                // biases everywhere, nn.LayerNorm weight+bias, PARALLEL
+                // attn+FFN (single input_layernorm), non-gated erf-gelu FFN.
+                // lw.rms_ffn/w2 stay SIZE_MAX (parallel + no gate).
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "gpt_neox.layers.%d.attention.query_key_value.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != 3 * NH * HD * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                // GPT-NeoX qkv is HEAD-INTERLEAVED [q_h, k_h, v_h] per head
+                // (llama.cpp conversion reshapes (n_head, 3, hd, embed) then
+                // cats — the raw safetensors is NOT [q|k|v] grouped).
+                size_t hd2 = (size_t)HD;
+                std::vector<float> q(NH * hd2 * H), k(NH * hd2 * H), v(NH * hd2 * H);
+                for (size_t h = 0; h < (size_t)NH; h++) {
+                    memcpy(q.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 0) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                    memcpy(k.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 1) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                    memcpy(v.data() + (h * hd2) * H, qkv.data() + ((h * 3 + 2) * hd2) * H, (size_t)hd2 * H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "gpt_neox.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attention.dense.weight", lw.wo, NH * HD, H);
+                load2("mlp.dense_h_to_4h.weight", lw.w1, H, IM);
+                load2("mlp.dense_4h_to_h.weight", lw.w3, IM, H);
+                load2("input_layernorm.weight", lw.rms_attn, H, 1);
+                load2("input_layernorm.bias", lw.rms_attn_b, H, 1);
+                // qkv bias [3H] head-interleaved → bq/bk/bv head groups.
+                std::vector<float> qkvb;
+                snprintf(buf, sizeof(buf), "gpt_neox.layers.%d.attention.query_key_value.bias", l);
+                if (r.get_tensor_f32(buf, qkvb) && (int)qkvb.size() == 3 * NH * HD) {
+                    std::vector<float> bq((size_t)NH * HD), bk((size_t)NH * HD), bv((size_t)NH * HD);
+                    for (size_t h = 0; h < (size_t)NH; h++) {
+                        memcpy(bq.data() + h * HD, qkvb.data() + (h * 3 + 0) * HD, HD * sizeof(float));
+                        memcpy(bk.data() + h * HD, qkvb.data() + (h * 3 + 1) * HD, HD * sizeof(float));
+                        memcpy(bv.data() + h * HD, qkvb.data() + (h * 3 + 2) * HD, HD * sizeof(float));
+                    }
+                    lw.bq = push(std::move(bq)); lw.bk = push(std::move(bk)); lw.bv = push(std::move(bv));
+                }
+                load2("attention.dense.bias", lw.bo, NH * HD, 1);
+                load2("mlp.dense_h_to_4h.bias", lw.w1_b, IM, 1);
+                load2("mlp.dense_4h_to_h.bias", lw.w3_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_OPT) {
+                // OPT: model.decoder.layers.N.* names, sequential structure,
+                // nn.LayerNorm weight+bias (self_attn_layer_norm /
+                // final_layer_norm), projection biases everywhere, NON-GATED
+                // RELU FFN (fc1/fc2), no rotary. lw.w2 stays SIZE_MAX.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "model.decoder.layers.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("self_attn.q_proj.weight", lw.wq, H, NH * HD);
+                load2("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("self_attn.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("self_attn.out_proj.weight", lw.wo, NH * HD, H);
+                load2("self_attn.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("self_attn.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("self_attn.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("self_attn.out_proj.bias", lw.bo, H, 1);
+                load2("fc1.weight", lw.w1, H, IM);
+                load2("fc1.bias", lw.w1_b, IM, 1);
+                load2("fc2.weight", lw.w3, IM, H);
+                load2("fc2.bias", lw.w3_b, H, 1);
+                load2("self_attn_layer_norm.weight", lw.rms_attn, H, 1);
+                load2("self_attn_layer_norm.bias", lw.rms_attn_b, H, 1);
+                load2("final_layer_norm.weight", lw.rms_ffn, H, 1);
+                load2("final_layer_norm.bias", lw.rms_ffn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_GPTNEO) {
+                // GPT-Neo: gpt2-style names (transformer.h.N.*) with SEPARATE
+                // q/k/v projs + biases, LN weight+bias (ln_1/ln_2), learned
+                // wte/wpe, non-gated gelu_new FFN (c_fc/c_proj). w2 SIZE_MAX.
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.attention.q_proj.weight", lw.wq, H, NH * HD);
+                load2("attn.attention.k_proj.weight", lw.wk, H, NKV * HD);
+                load2("attn.attention.v_proj.weight", lw.wv, H, NKV * HD);
+                load2("attn.attention.out_proj.weight", lw.wo, NH * HD, H);
+                load2("attn.attention.q_proj.bias", lw.bq, NH * HD, 1);
+                load2("attn.attention.k_proj.bias", lw.bk, NKV * HD, 1);
+                load2("attn.attention.v_proj.bias", lw.bv, NKV * HD, 1);
+                load2("attn.attention.out_proj.bias", lw.bo, H, 1);
+                load2("mlp.c_fc.weight", lw.w1, H, IM);
+                load2("mlp.c_fc.bias", lw.w1_b, IM, 1);
+                load2("mlp.c_proj.weight", lw.w3, IM, H);
+                load2("mlp.c_proj.bias", lw.w3_b, H, 1);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_1.bias", lw.rms_attn_b, H, 1);
+                load2("ln_2.weight", lw.rms_ffn, H, 1);
+                load2("ln_2.bias", lw.rms_ffn_b, H, 1);
+            } else if (cfg.arch == RCPP_ARCH_CODEGEN) {
+                // CodeGen: fused qkv_proj [3H,H] (no bias), LN weight+bias
+                // (ln_1/ln_f), non-gated gelu_new FFN (fc_in/fc_out w/ bias),
+                // partial rotary (rotary_dim via cfg.rope_dim). w2 SIZE_MAX.
+                std::vector<float> qkv;
+                snprintf(buf, sizeof(buf), "transformer.h.%d.attn.qkv_proj.weight", l);
+                if (!r.get_tensor_f32(buf, qkv) || (int)qkv.size() != 3 * NH * HD * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized qkv\n", buf);
+                    return false;
+                }
+                size_t qr2 = (size_t)NH * HD;  // == kr2 == vr2 (no GQA)
+                // CodeGen qkv layout: mp_num=4 model-parallel shards, each
+                // [q(H/4) | v(H/4) | k(H/4)] with contiguous 64-row heads
+                // (forward: reshape (mp_num,-1), split local_dim=H/mp_num,
+                // _split_heads shard-major). Verified 2026-08-14 by matching
+                // torch's post-split q/k/v against qkv rows.
+                const size_t mp_num = 4, shard = (size_t)cfg.hidden / mp_num;
+                std::vector<float> q(qr2 * H), k(qr2 * H), v(qr2 * H);
+                for (size_t h = 0; h < (size_t)NH; h++) {
+                    size_t s = h / (NH / mp_num), l = h % (NH / mp_num);
+                    size_t base = s * 3 * shard;
+                    memcpy(q.data() + (h * HD) * H, qkv.data() + (base + l * HD) * H, (size_t)HD * H * sizeof(float));
+                    memcpy(v.data() + (h * HD) * H, qkv.data() + (base + shard + l * HD) * H, (size_t)HD * H * sizeof(float));
+                    memcpy(k.data() + (h * HD) * H, qkv.data() + (base + 2 * shard + l * HD) * H, (size_t)HD * H * sizeof(float));
+                }
+                lw.wq = push(std::move(q)); lw.wk = push(std::move(k)); lw.wv = push(std::move(v));
+                auto load2 = [&](const char* tname, size_t& idx, int rows, int cols) {
+                    std::vector<float> w;
+                    snprintf(buf, sizeof(buf), "transformer.h.%d.%s", l, tname);
+                    if (!r.get_tensor_f32(buf, w)) return;
+                    if ((int)w.size() == rows * cols) idx = push(std::move(w));
+                    else fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n", buf, (int)w.size(), rows * cols);
+                };
+                load2("attn.out_proj.weight", lw.wo, NH * HD, H);
+                load2("mlp.fc_in.weight", lw.w1, H, IM);
+                load2("mlp.fc_in.bias", lw.w1_b, IM, 1);
+                load2("mlp.fc_out.weight", lw.w3, IM, H);
+                load2("mlp.fc_out.bias", lw.w3_b, H, 1);
+                load2("ln_1.weight", lw.rms_attn, H, 1);
+                load2("ln_1.bias", lw.rms_attn_b, H, 1);
+                load2("ln_2.weight", lw.rms_ffn, H, 1);
+                load2("ln_2.bias", lw.rms_ffn_b, H, 1);
+            } else {
+            load("self_attn.q_proj.weight", lw.wq, H, NH * HD);
+            load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
+            load("self_attn.v_proj.weight", lw.wv, H, NKV * HD);
+            load("self_attn.o_proj.weight", lw.wo, NH * HD, H);
+            if (cfg.n_experts > 0) {
+                // MoE layer — two HF conventions:
+                //  Mixtral/Qwen3: router mlp.gate.weight + per-expert files.
+                //  Granite: fused block_sparse_moe 3D tensors.
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate.weight", l);
+                const bool mixtral_style = r.has(buf);
+                if (mixtral_style) {
+                    std::vector<float> router;
+                    if (!r.get_tensor_f32(buf, router) || (int)router.size() != cfg.n_experts * H) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized router\n", buf);
+                        return false;
+                    }
+                    lw.moe_gate_inp = push(std::move(router));
+                    bool experts_ok = true;
+                    auto load_experts = [&](const char* hf_suffix, size_t& idx2, int rows, int cols) {
+                        if (!experts_ok) return;
+                        std::vector<float> stacked;
+                        stacked.reserve((size_t)cfg.n_experts * rows * cols);
+                        for (int e = 0; e < cfg.n_experts; e++) {
+                            std::vector<float> w;
+                            snprintf(buf, sizeof(buf), "model.layers.%d.mlp.experts.%d.%s", l, e, hf_suffix);
+                            if (!r.get_tensor_f32(buf, w) || (int)w.size() != rows * cols) {
+                                fprintf(stderr, "Generic: safetensors %s: %d elems, want %d\n",
+                                        buf, (int)w.size(), rows * cols);
+                                experts_ok = false;
+                                return;
+                            }
+                            stacked.insert(stacked.end(), w.begin(), w.end());
+                        }
+                        idx2 = push(std::move(stacked));
+                    };
+                    load_experts("gate_proj.weight", lw.moe_gate_exps, IM, H);
+                    load_experts("up_proj.weight", lw.moe_up_exps, IM, H);
+                    load_experts("down_proj.weight", lw.moe_down_exps, H, IM);
+                    snprintf(buf, sizeof(buf), "model.layers.%d.mlp.shared_expert.gate_proj.weight", l);
+                    if (r.has(buf))
+                        fprintf(stderr, "Generic: safetensors layer %d: shared expert present but unsupported (engine MoE path) — IGNORING\n", l);
+                    if (!experts_ok) {
+                        fprintf(stderr, "Generic: safetensors layer %d: MoE tensor missing — ABORTING LOAD\n", l);
+                        return false;
+                    }
+                } else {
+                    // Granite-style fused MoE.
+                    snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.router.layer.weight", l);
+                    std::vector<float> router;
+                    if (!r.get_tensor_f32(buf, router) || (int)router.size() != cfg.n_experts * H) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized router\n", buf);
+                        return false;
+                    }
+                    lw.moe_gate_inp = push(std::move(router));
+                    std::vector<float> input_linear, output_linear;
+                    snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.input_linear.weight", l);
+                    if (!r.get_tensor_f32(buf, input_linear) ||
+                        (int)input_linear.size() != cfg.n_experts * 2 * IM * H) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized input_linear\n", buf);
+                        return false;
+                    }
+                    snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.output_linear.weight", l);
+                    if (!r.get_tensor_f32(buf, output_linear) ||
+                        (int)output_linear.size() != cfg.n_experts * H * IM) {
+                        fprintf(stderr, "Generic: safetensors %s: missing/misized output_linear\n", buf);
+                        return false;
+                    }
+                    std::vector<float> gate, up;
+                    gate.reserve((size_t)cfg.n_experts * IM * H);
+                    up.reserve((size_t)cfg.n_experts * IM * H);
+                    size_t per = (size_t)2 * IM * H, half = (size_t)IM * H;
+                    for (int e = 0; e < cfg.n_experts; e++) {
+                        gate.insert(gate.end(), input_linear.begin() + e * per,
+                                     input_linear.begin() + e * per + half);
+                        up.insert(up.end(), input_linear.begin() + e * per + half,
+                                  input_linear.begin() + (e + 1) * per);
+                    }
+                    lw.moe_gate_exps = push(std::move(gate));
+                    lw.moe_up_exps = push(std::move(up));
+                    lw.moe_down_exps = push(std::move(output_linear));
+                }
+            } else {
+                load("mlp.gate_proj.weight", lw.w1, H, IM);
+                load("mlp.up_proj.weight", lw.w2, H, IM);
+                load("mlp.down_proj.weight", lw.w3, IM, H);
+            }
+            }
+            // Norms: gemma2/3/4 need the +1 and post-norm naming.
+            auto load_norm = [&](const char* hf_name, size_t& idx, int n) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
+                if (!r.get_tensor_f32(buf, w)) return;
+                if ((int)w.size() != n) return;
+                if (gemma_post_norms)
+                    for (auto& v : w) v += 1.0f;
+                idx = push(std::move(w));
+            };
+            load_norm("input_layernorm.weight", lw.rms_attn, H);
+            if (gemma_post_norms) {
+                load_norm("pre_feedforward_layernorm.weight", lw.rms_ffn, H);
+                load_norm("post_attention_layernorm.weight", lw.post_attn_norm, H);
+                load_norm("post_feedforward_layernorm.weight", lw.post_ffn_norm, H);
+            } else {
+                load_norm("post_attention_layernorm.weight", lw.rms_ffn, H);
+            }
+            load_norm("self_attn.q_norm.weight", lw.q_norm, HD);
+            load_norm("self_attn.k_norm.weight", lw.k_norm, HD);
+            // Optional QKV bias (Qwen2 family).
+            auto load_bias = [&](const char* hf_name, size_t& idx, int n) {
+                std::vector<float> w;
+                snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
+                if (!r.get_tensor_f32(buf, w)) return;
+                if ((int)w.size() == n) idx = push(std::move(w));
+            };
+            load_bias("self_attn.q_proj.bias", lw.bq, NH * HD);
+            load_bias("self_attn.k_proj.bias", lw.bk, NKV * HD);
+            load_bias("self_attn.v_proj.bias", lw.bv, NKV * HD);
+
+            if (cfg.n_experts > 0) {
+                if (lw.moe_gate_inp == SIZE_MAX || lw.moe_gate_exps == SIZE_MAX ||
+                    lw.moe_up_exps == SIZE_MAX || lw.moe_down_exps == SIZE_MAX) {
+                    fprintf(stderr, "Generic: safetensors layer %d: MoE tensors incomplete — ABORTING LOAD\n", l);
+                    return false;
+                }
+            } else if (lw.wq == SIZE_MAX || lw.wk == SIZE_MAX || lw.wv == SIZE_MAX ||
+                       lw.wo == SIZE_MAX ||
+                       (!cfg.norm_is_layernorm &&
+                        (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen: non-gated FFN — w2 legitimately absent
+                       (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
+                           cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
+                           cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN) && lw.w2 == SIZE_MAX) &&
+                        (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
+                fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
+                return false;
+            }
+        }
+        printf("Generic: safetensors loaded — %d layers, %.1fM params, arch=%s\n",
+               cfg.n_layers, (double)embed.size() / 1e6, cfg.architecture.c_str());
+        return true;
+    }
+
     bool load_gguf(const std::string& path) {
         ModelConfig hdr_cfg;
         if (!read_gguf_header(path, hdr_cfg)) return false;
@@ -525,13 +1238,18 @@ struct GenericBackend : Backend {
             lw.wk = load_tensor(p + "attn_k.weight", (size_t)NKV*HD*H);
             lw.wv = load_tensor(p + "attn_v.weight", (size_t)NKV*HD*H);
             lw.wo = load_tensor(p + "attn_output.weight", (size_t)H*NH*HD);
+            if (lw.wq != SIZE_MAX) unrotate_rope_rows(flat_weights, lw.wq, NH, HD, H);
+            if (lw.wk != SIZE_MAX) unrotate_rope_rows(flat_weights, lw.wk, NKV, HD, H);
 
             // Check that all required tensors loaded correctly. If any shape
             // mismatch occurred, load_tensor returns SIZE_MAX and the model
             // will produce garbage — abort early (issue #947).
-            bool layer_ok = (lw.rms_attn != SIZE_MAX) && (lw.rms_ffn != SIZE_MAX)
-                         && (lw.wq != SIZE_MAX) && (lw.wk != SIZE_MAX)
-                         && (lw.wv != SIZE_MAX) && (lw.wo != SIZE_MAX);
+            // OLMo: rms_attn/rms_ffn are legitimately absent (no-affine
+            // LayerNorm — llama.cpp writes no norm tensors for OLMo).
+            bool layer_ok = (lw.wq != SIZE_MAX) && (lw.wk != SIZE_MAX)
+                         && (lw.wv != SIZE_MAX) && (lw.wo != SIZE_MAX)
+                         && (hdr_cfg.arch == RCPP_ARCH_OLMO ||
+                             (lw.rms_attn != SIZE_MAX && lw.rms_ffn != SIZE_MAX));
             if (!layer_ok) {
                 fprintf(stderr, "  [generic] Layer %d: required tensor shape mismatch — ABORTING LOAD\n", i);
                 return false;
@@ -604,6 +1322,15 @@ struct GenericBackend : Backend {
         cfg.rms_norm_eps = hdr_cfg.rms_norm_eps;
         cfg.rope_theta = hdr_cfg.rope_theta;
         if (hdr_cfg.max_seq_len > 0) cfg.max_seq_len = hdr_cfg.max_seq_len;
+        // OLMo: LayerNorm (no affine params, eps 1e-5) + QKV clip 8.0. The
+        // GGUF carries NO norm tensors (llama.cpp skips no-affine norms —
+        // see the layer_ok relaxation above). Must run AFTER the hdr->cfg
+        // copies above (they'd clobber eps with the header default 1e-6).
+        if (hdr_cfg.arch == RCPP_ARCH_OLMO) {
+            cfg.norm_is_layernorm = true;
+            cfg.clip_qkv = 8.0f;
+            cfg.rms_norm_eps = 1e-5f;
+        }
         return !embed.empty() && layers.size() == (size_t)L;
     }
 
@@ -625,6 +1352,25 @@ struct GenericBackend : Backend {
         float ss = 0; for (int i = 0; i < n; i++) ss += x[i] * x[i];
         float r = 1.0f / sqrtf(ss / n + eps);
         for (int i = 0; i < n; i++) o[i] = x[i] * r * w[i];
+    }
+
+    // OLMo LayerNorm: no learnable weight/bias (OlmoLayerNorm in
+    // modeling_olmo.py — F.layer_norm(x, shape, None, None, eps=1e-5), biased
+    // variance). Different from rmsnorm: centered, no affine params.
+    static void layernorm(float* o, const float* x, int n, float eps) {
+        double mean = 0; for (int i = 0; i < n; i++) mean += x[i];
+        mean /= n;
+        double var = 0; for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
+        var /= n;
+        float r = 1.0f / sqrtf((float)var + eps);
+        for (int i = 0; i < n; i++) o[i] = (float)((x[i] - mean) * r);
+    }
+
+    // LayerNorm with affine weight (+optional bias) — GPT-2 ln_1/ln_2/ln_f.
+    static void layernorm_affine(float* o, const float* x, const float* w,
+                                 const float* b, int n, float eps) {
+        layernorm(o, x, n, eps);
+        for (int i = 0; i < n; i++) o[i] = o[i] * w[i] + (b ? b[i] : 0.0f);
     }
 
     // NeoX-style (half-split) RoPE — the convention GGUF/llama.cpp-family
@@ -660,17 +1406,54 @@ struct GenericBackend : Backend {
         }
     }
 
+    // CodeGen/GPT-J style rotary: rotate_every_two — ADJACENT pairs (2i, 2i+1)
+    // within rot_dim (modeling_codegen.py apply_rotary_pos_emb). Same freq
+    // table (theta^(-2p/rot_dim) per pair).
+    static void rope_adjacent(float* q, float* k, int pos, int n_heads, int n_kv, int hd, int rot_dim, float theta, const float* freqs) {
+        int pairs = rot_dim / 2;
+        for (int h = 0; h < n_heads; h++) {
+            for (int p = 0; p < pairs; p++) {
+                float t = pos * freqs[p];
+                float cosv = cosf(t), sinv = sinf(t);
+                int i0 = h * hd + 2 * p, i1 = h * hd + 2 * p + 1;
+                float q0 = q[i0], q1 = q[i1];
+                q[i0] = q0 * cosv - q1 * sinv;
+                q[i1] = q0 * sinv + q1 * cosv;
+            }
+        }
+        for (int h = 0; h < n_kv; h++) {
+            for (int p = 0; p < pairs; p++) {
+                float t = pos * freqs[p];
+                float cosv = cosf(t), sinv = sinf(t);
+                int i0 = h * hd + 2 * p, i1 = h * hd + 2 * p + 1;
+                float k0 = k[i0], k1 = k[i1];
+                k[i0] = k0 * cosv - k1 * sinv;
+                k[i1] = k0 * sinv + k1 * cosv;
+            }
+        }
+    }
+
     // AVX-512 GEMV row kernel (always compiled, runtime-dispatched — #1346).
-    __attribute__((target("avx512f")))
+    // Accumulates in F64: gemma-family models reach activations O(1e4) with
+    // final-layer norm gammas ~500, so f32 accumulation noise (1e-5 relative)
+    // is amplified to visible logit errors. F64 accumulation is exact to
+    // f32 inputs and removes that noise source.
+    __attribute__((target("avx512f,avx512dq")))
     static float gemv_row_avx512(const float* in, const float* wr, int K) {
-        float s = 0;
+        double s = 0;
         int j = 0;
-        __m512 acc = _mm512_setzero_ps();
-        for (; j + 15 < K; j += 16)
-            acc = _mm512_fmadd_ps(_mm512_loadu_ps(in + j), _mm512_loadu_ps(wr + j), acc);
-        s = _mm512_reduce_add_ps(acc);
-        for (; j < K; j++) s += in[j] * wr[j];
-        return s;
+        __m512d acc = _mm512_setzero_pd();
+        for (; j + 15 < K; j += 16) {
+            __m256 a0 = _mm256_loadu_ps(in + j);
+            __m256 a1 = _mm256_loadu_ps(in + j + 8);
+            __m256 b0 = _mm256_loadu_ps(wr + j);
+            __m256 b1 = _mm256_loadu_ps(wr + j + 8);
+            acc = _mm512_fmadd_pd(_mm512_cvtps_pd(a0), _mm512_cvtps_pd(b0), acc);
+            acc = _mm512_fmadd_pd(_mm512_cvtps_pd(a1), _mm512_cvtps_pd(b1), acc);
+        }
+        s = _mm512_reduce_add_pd(acc);
+        for (; j < K; j++) s += (double)in[j] * wr[j];
+        return (float)s;
     }
 
     static void matmul(float* out, const float* in, const float* w, int M, int K) {
@@ -682,14 +1465,15 @@ struct GenericBackend : Backend {
         for (int i = 0; i < M; i++) {
             const float* wr = w + (size_t)i * K;
             if (avx512) { out[i] = gemv_row_avx512(in, wr, K); continue; }
-            float s = 0;
+            double s = 0;
             int j = 0;
 #if defined(__AVX2__)
+            // FMA-8 accumulator for the main body; converted to double for the
+            // tail so long dot products don't accumulate f32 rounding.
             __m256 acc = _mm256_setzero_ps();
             for (; j + 7 < K; j += 8) {
                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(in + j), _mm256_loadu_ps(wr + j), acc);
             }
-            // horizontal sum of 8 floats
             __m128 lo = _mm256_castps256_ps128(acc);
             __m128 hi = _mm256_extractf128_ps(acc, 1);
             lo = _mm_add_ps(lo, hi);
@@ -697,8 +1481,8 @@ struct GenericBackend : Backend {
             lo = _mm_hadd_ps(lo, lo);
             s = _mm_cvtss_f32(lo);
 #endif
-            for (; j < K; j++) s += in[j] * wr[j];  // scalar tail
-            out[i] = s;
+            for (; j < K; j++) s += (double)in[j] * wr[j];  // scalar tail in double
+            out[i] = (float)s;
         }
     }
 
@@ -788,6 +1572,12 @@ struct GenericBackend : Backend {
         for (int i = 0; i < n; i++) out[i] *= up[i];
     }
 
+    // Standard erf-based GELU (nn.GELU default) — Falcon's MLP activation.
+    // Distinct from gelu() (gelu_new / tanh approx) used elsewhere.
+    static void gelu_erf(float* o, const float* x, int n) {
+        for (int i = 0; i < n; i++) o[i] = 0.5f * x[i] * (1.0f + erff(x[i] * 0.70710678118f));
+    }
+
     // Squared ReLU GLU: relu(gate)^2 * up — used by Phi
     static void squared_relu_glu(float* out, const float* gate, const float* up, int n) {
         for (int i = 0; i < n; i++) {
@@ -798,15 +1588,22 @@ struct GenericBackend : Backend {
     }
 
     // Architecture-specific FFN activation dispatch
-    static void ffn_activate(float* out, const float* gate, const float* up, int n, rcpp_arch_t arch) {
+    static void ffn_activate(float* out, const float* gate, const float* up, int n,
+                             rcpp_arch_t arch, const char* arch_str) {
         switch (arch) {
             case RCPP_ARCH_GEMMA:
-                // GeGLU: gelu(gate) * up
-                geglu(out, gate, up, n);
+                // GeGLU: gelu(gate) * up — true gemma families.
+                // Granite shares the GEMMA enum but is SwiGLU.
+                if (arch_str && (strcmp(arch_str, "granite") == 0 || strcmp(arch_str, "granitemoe") == 0))
+                    silu(out, gate, up, n);
+                else
+                    geglu(out, gate, up, n);
                 break;
             case RCPP_ARCH_PHI:
-                // Squared ReLU GLU: relu(gate)^2 * up
-                squared_relu_glu(out, gate, up, n);
+                // Phi-3/4 (and phi-2's GELU is handled at load-time only for
+                // the fused gate_up split — the activation is SwiGLU for
+                // phi-3-mini/4; squared-relu GLU was speculative and wrong).
+                silu(out, gate, up, n);
                 break;
             default:
                 // SwiGLU: silu(gate) * up — Llama, Mistral, Qwen2, Qwen3, BitNet, fallback
@@ -865,6 +1662,13 @@ struct GenericBackend : Backend {
         }
         std::vector<float> x0(cfg.hidden);
         for (int i = 0; i < cfg.hidden; i++) x0[i] = embed[token * (size_t)cfg.hidden + i];
+        // GPT-2/OPT: learned position embeddings — add the wpe/embed_positions
+        // row for the CURRENT position (pos + pos_offset; OPT pads 2 slots).
+        if (cfg.use_learned_pos)
+            for (int i = 0; i < cfg.hidden; i++) x0[i] += pos_embed[((size_t)pos + cfg.pos_offset) * cfg.hidden + i];
+        // Granite: embeddings pre-scaled by embedding_multiplier (12.0).
+        if (cfg.embedding_multiplier != 1.0f)
+            for (int i = 0; i < cfg.hidden; i++) x0[i] *= cfg.embedding_multiplier;
         // Gemma-family: scale the token embedding by sqrt(hidden) — the model
         // was trained with this scaling (gemma_pytorch; llama.cpp gemma2/3
         // graphs). Only for real token rows; forward_embed (vision splice)
@@ -889,13 +1693,14 @@ struct GenericBackend : Backend {
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim;
         int GQA = NH / NKV, FF = cfg.intermediate_size, V = cfg.vocab;
         float eps = cfg.rms_norm_eps, theta = cfg.rope_theta;
-        int rot_dim = cfg.head_dim;  // full RoPE by default
+        int rot_dim = cfg.rope_dim > 0 ? cfg.rope_dim : cfg.head_dim;  // full RoPE by default
 
         // scores indexed by past position (t <= pos) — must hold max_seq_len,
         // not HD (issue #1263: heap OOB for prompts > head_dim tokens).
         // All buffers are pre-allocated class members — no heap allocs per token.
         float* x = scratch_x.data();
         float* x2 = scratch_x2.data();
+        float* x3 = scratch_x3.data();  // falcon parallel: saved normed input
         float* q = scratch_q.data();
         float* k = scratch_k.data();
         float* v = scratch_v.data();
@@ -914,7 +1719,13 @@ struct GenericBackend : Backend {
             int kv_begin = pos * NKV * HD;
 
             // RMSNorm → QKV
-            rmsnorm(x2, x, w(l.rms_attn), H, eps);
+            if (cfg.norm_is_layernorm) {
+                if (l.rms_attn != SIZE_MAX)
+                    layernorm_affine(x2, x, w(l.rms_attn),
+                                     l.rms_attn_b != SIZE_MAX ? w(l.rms_attn_b) : nullptr, H, eps);
+                else layernorm(x2, x, H, eps);
+            }
+            else rmsnorm(x2, x, w(l.rms_attn), H, eps);
             if (il == 0 && debug_ops) {
                 double ss = 0; for (int i = 0; i < H; i++) ss += (double)x[i] * x[i];
                 fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g] mean2=%g eps=%g r=%g\n",
@@ -930,6 +1741,23 @@ struct GenericBackend : Backend {
             if (l.bq != SIZE_MAX) { float* b = w(l.bq); for (int i = 0; i < NH*HD; i++) q[i] += b[i]; }
             if (l.bk != SIZE_MAX) { float* b = w(l.bk); for (int i = 0; i < NKV*HD; i++) k[i] += b[i]; }
             if (l.bv != SIZE_MAX) { float* b = w(l.bv); for (int i = 0; i < NKV*HD; i++) v[i] += b[i]; }
+
+            // Falcon parallel: save the normed input for the FFN (attn and
+            // FFN both consume input_layernorm output — no second norm).
+            if (cfg.parallel_attn_ffn)
+                memcpy(x3, x2, (size_t)H * sizeof(float));
+
+
+            // OLMo: clip QKV values to [-clip_qkv, clip_qkv] before RoPE
+            // (config clip_qkv: 8.0, applied in OlmoAttention.forward).
+            if (cfg.clip_qkv > 0.0f) {
+                for (int i = 0; i < NH*HD; i++)
+                    q[i] = q[i] > cfg.clip_qkv ? cfg.clip_qkv : (q[i] < -cfg.clip_qkv ? -cfg.clip_qkv : q[i]);
+                for (int i = 0; i < NKV*HD; i++) {
+                    k[i] = k[i] > cfg.clip_qkv ? cfg.clip_qkv : (k[i] < -cfg.clip_qkv ? -cfg.clip_qkv : k[i]);
+                    v[i] = v[i] > cfg.clip_qkv ? cfg.clip_qkv : (v[i] < -cfg.clip_qkv ? -cfg.clip_qkv : v[i]);
+                }
+            }
 
             // Optional per-head QK-norm (Qwen3 and others): RMSNorm applied
             // independently to each head's head_dim-sized slice with a
@@ -948,8 +1776,15 @@ struct GenericBackend : Backend {
                 "[cpu] L0 q_pre=[%g %g %g] k_pre=[%g %g %g] v=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2], v[0], v[1], v[2]);
 
-            // RoPE
-            rope(q, k, pos, NH, NKV, HD, rot_dim, theta, rope_freqs.data());
+            // RoPE — gemma3 hybrid: layer il is FULL when il%pattern==pattern-1
+            // (uses rope_theta), otherwise LOCAL (rope_local_base_freq).
+            const float* freqs = rope_freqs.data();
+            if (!rope_freqs_local.empty() && il % cfg.sliding_window_pattern != cfg.sliding_window_pattern - 1)
+                freqs = rope_freqs_local.data();
+            if (!cfg.no_rope) {
+                if (cfg.adjacent_rope) rope_adjacent(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+                else rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+            }
             if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
                 q[0], q[1], q[2], k[0], k[1], k[2]);
 
@@ -959,7 +1794,9 @@ struct GenericBackend : Backend {
 
             // Attention: GQA
             memset(att, 0, (size_t)NH * HD * sizeof(float));
-            float attn_scale = inv_sqrt_hd_;  // precomputed 1/sqrt(HD)
+            float attn_scale = cfg.attention_multiplier > 0.0f
+                ? cfg.attention_multiplier   // granite: explicit per-model scale
+                : inv_sqrt_hd_;              // default: 1/sqrt(HD)
             int kvs = NKV * HD;  // stride per position in KV cache
             for (int h = 0; h < NH; h++) {
                 int kv_h = h / GQA;
@@ -972,11 +1809,11 @@ struct GenericBackend : Backend {
                     for (int d = 0; d < HD; d++) s += Q[d] * K[d];
                     scores[t] = s * attn_scale;  // multiply instead of divide
                 }
-                // Gemma-2/3/4 attention-logit soft-cap (50.0): the qk-norm +
-                // query_pre_attn_scalar combination produces large scores that
-                // must be tanh-capped before softmax, or attention over-peaks.
-                if (gemma_softcap_)
-                    for (int t = 0; t <= pos; t++) scores[t] = 50.0f * tanhf(scores[t] / 50.0f);
+                // Gemma-2/3 attention-logit soft-cap (config attn_logit_softcapping,
+                // gemma2=50.0; gemma3-1b has NONE). qk-norm + query_pre_attn_scalar
+                // produce large scores that must be tanh-capped before softmax.
+                if (attn_cap_ > 0.0f)
+                    for (int t = 0; t <= pos; t++) scores[t] = attn_cap_ * tanhf(scores[t] / attn_cap_);
                 softmax(scores, pos + 1);
                 // Weighted sum of V
                 for (int d = 0; d < HD; d++) {
@@ -993,9 +1830,13 @@ struct GenericBackend : Backend {
 
             // O proj
             mm(x2, att, w(l.wo), H, NH*HD, l.pk_o);
+            if (l.bo != SIZE_MAX) { float* b = w(l.bo); for (int i = 0; i < H; i++) x2[i] += b[i]; }
             if (l.post_attn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_attn_norm), H, eps);
-            // Residual
-            for (int i = 0; i < H; i++) x[i] += x2[i];
+            // Residual (granite: block output scaled by residual_multiplier=0.22)
+            if (cfg.residual_multiplier != 1.0f)
+                for (int i = 0; i < H; i++) x[i] += x2[i] * cfg.residual_multiplier;
+            else
+                for (int i = 0; i < H; i++) x[i] += x2[i];
             if (debug_ops && il < 3) {
                 double s = 0; for (int i = 0; i < H; i++) s += fabs(x[i]);
                 fprintf(stderr, "[cpu] L%d after attn: mean|.|=%g\n", il, s / H);
@@ -1004,20 +1845,47 @@ struct GenericBackend : Backend {
             // FFN: RMSNorm → gate/up → activation (arch-specific) → down → residual (dense), or
             // RMSNorm → router top-k → per-expert gate/up/activation/down,
             // weighted sum → residual (MoE).
-            rmsnorm(x2, x, w(l.rms_ffn), H, eps);
+            if (cfg.parallel_attn_ffn) {
+                // Falcon: FFN input = the SAME normed output as attention.
+                memcpy(x2, x3, (size_t)H * sizeof(float));
+            } else if (cfg.norm_is_layernorm) {
+                if (l.rms_ffn != SIZE_MAX)
+                    layernorm_affine(x2, x, w(l.rms_ffn),
+                                     l.rms_ffn_b != SIZE_MAX ? w(l.rms_ffn_b) : nullptr, H, eps);
+                else layernorm(x2, x, H, eps);
+            }
+            else rmsnorm(x2, x, w(l.rms_ffn), H, eps);
             if (l.moe_gate_inp != SIZE_MAX) {
                 int NE = cfg.n_experts, NEU = cfg.num_experts_top;
                 float* router_probs = scratch_moe_router_probs.data();
                 mm(router_probs, x2, w(l.moe_gate_inp), NE, H, -1);
-                softmax(router_probs, NE);
 
-                // Top-k expert selection
+                // Top-k expert selection (same indices either way — softmax
+                // is monotonic, so top-k on raw logits == top-k on probs).
                 int* idx = scratch_moe_idx.data();
                 for (int e = 0; e < NE; e++) idx[e] = e;
                 std::partial_sort(idx, idx + NEU, idx + NE,
                                    [&](int a, int b) { return router_probs[a] > router_probs[b]; });
+
+                // Gating convention: Mixtral softmax-all-renorm vs
+                // granite/qwen3 top-k-logits-then-softmax (normalizations
+                // differ).
+                const bool topk_softmax_gating =
+                    (cfg.architecture == "granite" || cfg.architecture == "granitemoe" ||
+                     cfg.arch == RCPP_ARCH_QWEN3 || cfg.arch == RCPP_ARCH_QWEN35);
                 float wsum = 0.0f;
-                for (int t = 0; t < NEU; t++) wsum += router_probs[idx[t]];
+                if (topk_softmax_gating) {
+                    float mx = router_probs[idx[0]];
+                    for (int t = 1; t < NEU; t++)
+                        if (router_probs[idx[t]] > mx) mx = router_probs[idx[t]];
+                    for (int t = 0; t < NEU; t++) {
+                        router_probs[idx[t]] = expf(router_probs[idx[t]] - mx);
+                        wsum += router_probs[idx[t]];
+                    }
+                } else {
+                    softmax(router_probs, NE);
+                    for (int t = 0; t < NEU; t++) wsum += router_probs[idx[t]];
+                }
                 if (wsum < 6.103515625e-5f) wsum = 6.103515625e-5f;
 
                 float* ffn_acc = scratch_moe_ffn_acc.data();
@@ -1034,15 +1902,36 @@ struct GenericBackend : Backend {
                     float* wd = w(l.moe_down_exps) + (size_t)e * H * FF;
                     mm(gate_buf, x2, wg, FF, H, -1);
                     mm(up_buf, x2, wu, FF, H, -1);
-                    ffn_activate(moe_silu, gate_buf, up_buf, FF, cfg.arch);
+                    ffn_activate(moe_silu, gate_buf, up_buf, FF, cfg.arch, cfg.architecture.c_str());
                     mm(down_buf, moe_silu, wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
                 }
-                for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
+                if (cfg.residual_multiplier != 1.0f)
+                    for (int i = 0; i < H; i++) x[i] += ffn_acc[i] * cfg.residual_multiplier;
+                else
+                    for (int i = 0; i < H; i++) x[i] += ffn_acc[i];
+            } else if (l.w2 == SIZE_MAX) {
+                // Non-gated FFN (GPT-2: gelu_new; Falcon: erf-gelu):
+                // act(w1 x + b1) then w3 + b3.
+                mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
+                if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
+                if (cfg.arch == RCPP_ARCH_FALCON || cfg.arch == RCPP_ARCH_GPTNEOX) gelu_erf(gate_up, gate_up, FF);
+                else if (cfg.arch == RCPP_ARCH_OPT) { for (int i = 0; i < FF; i++) gate_up[i] = gate_up[i] > 0 ? gate_up[i] : 0.0f; }  // ReLU
+                else gelu(gate_up, gate_up, FF);
+                mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
+                if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }
+                if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
+                // Residual — scale_depth (MiniCPM) / residual_multiplier (granite)
+                // applies to BOTH residual adds; the gated dense path was missing
+                // it (only attn + MoE paths scaled). Fixed 2026-08-14 (minicpm).
+                if (cfg.residual_multiplier != 1.0f)
+                    for (int i = 0; i < H; i++) x[i] += x2[i] * cfg.residual_multiplier;
+                else
+                    for (int i = 0; i < H; i++) x[i] += x2[i];
             } else {
                 mm(gate_up, x2, w(l.w1), FF, H, l.pk_w1);
                 mm(&gate_up[FF], x2, w(l.w2), FF, H, l.pk_w2);
-                ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch);
+                ffn_activate(silu_buf, gate_up, &gate_up[FF], FF, cfg.arch, cfg.architecture.c_str());
                 mm(x2, silu_buf, w(l.w3), H, FF, l.pk_w3);
                 if (l.post_ffn_norm != SIZE_MAX) rmsnorm(x2, x2, w(l.post_ffn_norm), H, eps);
                 if (debug_ops && il < 3) {
@@ -1051,7 +1940,12 @@ struct GenericBackend : Backend {
                     for (int i = 0; i < H; i++) sd += fabs(x2[i]);
                     fprintf(stderr, "[cpu] L%d ffn gate mean|.|=%g down mean|.|=%g\n", il, sg / FF, sd / H);
                 }
-                for (int i = 0; i < H; i++) x[i] += x2[i];
+                // Residual — same scale_depth/residual_multiplier fix as the
+                // no-gate path (gated dense FFN, 2026-08-14).
+                if (cfg.residual_multiplier != 1.0f)
+                    for (int i = 0; i < H; i++) x[i] += x2[i] * cfg.residual_multiplier;
+                else
+                    for (int i = 0; i < H; i++) x[i] += x2[i];
             }
         }
 
@@ -1060,18 +1954,32 @@ struct GenericBackend : Backend {
             for (int i = 0; i < H; i++) { s += fabs(x[i]); if (fabs(x[i]) > mx) mx = fabs(x[i]); }
             fprintf(stderr, "[cpu] final hidden mean|.|=%g max|.|=%g\n", s / H, mx);
         }
-        // Final RMSNorm
-        rmsnorm(x2, x, final_norm.data(), H, eps);
+        // Final norm — RMSNorm (weighted), OLMo LayerNorm (no affine), or
+        // GPT-2 LayerNorm with weight+bias.
+        if (cfg.norm_is_layernorm) {
+            if (!final_norm.empty())
+                layernorm_affine(x2, x, final_norm.data(),
+                                 final_norm_bias.empty() ? nullptr : final_norm_bias.data(), H, eps);
+            else layernorm(x2, x, H, eps);
+        }
+        else rmsnorm(x2, x, final_norm.data(), H, eps);
 
         // LM head — untied output.weight when the model has one, else tied embedding.
         const float* lm_head = output_weight.empty() ? embed.data() : output_weight.data();
         mm(logits_buf.data(), x2, lm_head, V, H, pk_lm_);
-        // Gemma-2/3/4 final-logit soft-cap (30.0): tanh(logits/30)*30. The
-        // uncapped LM-head logits run ±100+, over-peaking softmax so the
-        // target token lands 10-29 nats below the max — caught by the #1243
-        // ppl gate (Gemma-2-2B 2e8, Gemma-3-1B 5e9).
-        if (gemma_softcap_)
-            for (int i = 0; i < V; i++) logits_buf[i] = 30.0f * tanhf(logits_buf[i] / 30.0f);
+        // Granite (6th quirk): LM-head logits divided by logits_scaling (6.0)
+        // BEFORE any soft-cap. Argmax-invariant — invisible to every argmax
+        // test; matters for sampling and perplexity.
+        if (cfg.logits_scaling != 1.0f)
+            for (int i = 0; i < V; i++) logits_buf[i] /= cfg.logits_scaling;
+
+        // Gemma-2/3 final-logit soft-cap (config final_logit_softcapping,
+        // gemma2=30.0; gemma3-1b has NONE — the arch-string default wrongly
+        // compressed gemma3 logits). Uncapped LM-head logits run ±100+ for
+        // gemma2 (ppl gate #1243), but gemma3-1b logits are small and must
+        // pass through untouched.
+        if (final_cap_ > 0.0f)
+            for (int i = 0; i < V; i++) logits_buf[i] = final_cap_ * tanhf(logits_buf[i] / final_cap_);
 
         pos++;
 
