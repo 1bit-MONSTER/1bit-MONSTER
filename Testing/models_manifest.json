@@ -424,9 +424,9 @@
         "gptoss"
       ],
       "mapping_target": "GPTOSS",
-      "status": "blocked-memory",
-      "tier": "not-validated",
-      "result": "Decode fully reverse-engineered (MXFP4: FP4_VALUES e2m1 table, value = FP4[nibble] * 2^(scale-127), low nibble->even, high->odd, 32 vals/block; interleaved gate/up split; gate*sigmoid(1.702*gate) activation with clamps; top-4 softmax gating; half-split rope theta 150000) \u2014 but GPT-OSS-20B dequantizes to ~105GB fp32, memory-infeasible on this box with a torch reference. No gpt-oss-4b exists (20B/120B only). Needs quantized-MoE path or a beefier box."
+      "status": "validated",
+      "tier": "numpy-exact-20of20",
+      "result": "VALIDATED 2026-08-14: engine 20/20 generated tokens == numpy reference (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint, full logits max|diff| 6.7e-5, top-8 EXACT. Engine keeps MXFP4 MoE packed (U8 blocks+scales, per-expert per-token dequant, ~17GB) \u2014 no torch reference needed. Quirks landed: YARN rope (theta 150000, factor 32, freq-index ramp), attention sinks (per-head logit cat before softmax), router bias, MXFP4 dequant (FP4 e2m1, value=FP4[nibble]*2^(scale-127), low->even/high->odd, 32/block), interleaved gate/up, gate=min(g,7) up=clamp(\u00b17), glu=gate*sigmoid(1.702*gate), gated=(up+1)*glu, top-4 softmax gating, untied lm_head, head_dim 64, odd-safe rope. Known gap: sliding-window (128) attention on sliding layers \u2014 no-op < 128 tokens, unimplemented beyond (same class as gemma3 SWA)."
     }
   ]
 }

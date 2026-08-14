@@ -17,9 +17,9 @@
 
 ## Current state (post-pilots 1–22)
 
-- **6 families validated end-to-end vs torch (f32), 20/20 generated tokens identical:** llama, qwen2, gemma3, granite (MoE), mistral-7B, phi-3-mini. 5/6 bit-exact logits (0.000); gemma3 at the chaos-bound f32 floor (argmax correct, logits carry model-amplified rounding — proven unreachable for any independent impl).
+- **14 families validated end-to-end, 20/20 generated tokens identical to the oracle:** 13 full vs torch (f32) — llama, qwen2, qwen3, gemma3, granite (MoE), mistral-7B, phi-3-mini, olmo, gpt2, falcon, opt, gptj, gptneo; exaone vs llama.cpp Q8; **gptoss (20B, 407 checkpoints) vs a numpy port of the authoritative modeling_gpt_oss.py on the real checkpoint** — the memory-blocked family now runs via packed-MXFP4 per-expert dequant (engine ≡ reference, logits max|diff| 6.7e-5). 4 more families numpy-exact top-8 but no 20/20 (internlm2, minicpm, gptneox, codegen — near-tie/degenerate). 5/6 torch families bit-exact logits (0.000); gemma3 at the chaos-bound f32 floor (argmax correct, logits carry model-amplified rounding — proven unreachable for any independent impl).
 - **80 fixture checks green** (`Testing/run_all.sh` 10/10): arch mapping (30), discovery (5), router (11), dtype decode (11), sharded reader (6), rotation table (17).
-- **Arch registry:** `rcpp_arch_t` 23+ tokens; LLaMA-layout breadth added (openelm, nemotron, minicpm, baichuan, exaone, solar, internlm, xverse); unknown archs now fail LOUDLY (`RCPP_ARCH_UNKNOWN` sentinel, no silent BITNET).
+- **Arch registry:** `rcpp_arch_t` 24 tokens (gpt2/gptneox/codegen/gptj/gptoss/opt landed during the sweep); LLaMA-layout breadth added (openelm, nemotron, minicpm, baichuan, exaone, solar, internlm, xverse); unknown archs now fail LOUDLY (`RCPP_ARCH_UNKNOWN` sentinel, no silent BITNET).
 - **Formats:** GGUF, H1B, 1BP/Q4NX, safetensors (incl. sharded + MoE fused/stacked), ONNX.
 - **Catalog today:** 19 documented families / ~47 models / 37 NPU FLM / 37 1BP on HF.
 
@@ -30,7 +30,7 @@ Coverage + process, not architecture: every new HF family needs (1) arch-string�
 ## Path to MONSTER (in order)
 
 1. **Rotate the bring-up loop into an agent skill.** The pilot pipeline (arch mapping → discovery fixture → router check → real-checkpoint e2e vs torch) is now scriptable; codify it as a repo skill so adding a family is a guided process, not archaeology. `skills/1bit-writer` is the seed.
-2. **Per-family quirk table → validated families list.** Standing deck (research §27–30): falcon/zamba/mamba/whisper/kimi/olmo real-prompt validation; MoE real-prompt via engine tokenizer (htok workstream); gemma3 sliding-window masking >512 tok; gpt2 custom tensor map. Each lands with a rotation-table + e2e check.
+2. **Per-family quirk table → validated families list.** Standing deck (research §27–30): zamba/mamba/whisper/kimi/olmo real-prompt validation; MoE real-prompt via engine tokenizer (htok workstream); gemma3 sliding-window masking >512 tok; gpt2 custom tensor map; **gptoss sliding-window attention >128 tok (packed-MXFP4 path validated 2026-08-14)**. Each lands with a rotation-table + e2e check.
 3. **Breadth sweep: bulk-mint the LLaMA-layout long tail** (one-line arch mappings; verified against the arch self-check) — biggest models-per-line-of-code ratio.
 4. **Publish the arch→checkpoint table** (MAX's marketing artifact) in `docs/wiki/models.md`.
 5. **Catalog ops:** refresh the 37 1BP HF catalog + 37 NPU FLM map as families land.

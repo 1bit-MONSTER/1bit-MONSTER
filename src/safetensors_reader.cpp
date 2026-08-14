@@ -172,8 +172,22 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         cfg.num_experts = cfg.n_experts = 0;
         if (json_find_int(config_text, "num_local_experts", iv)) {
             cfg.num_experts = cfg.n_experts = iv;
-            if (json_find_int(config_text, "num_experts_per_tok", iv))
+            if (json_find_int(config_text, "num_experts_per_tok", iv) ||
+                json_find_int(config_text, "experts_per_token", iv))  // GPT-OSS key name
                 cfg.num_experts_top = iv;
+        }
+        // GPT-OSS (OpenAI): YARN RoPE defaults (GptOssConfig: theta 150000,
+        // factor 32, beta_fast/slow 32/1, original_max 4096) + 128-token
+        // sliding window on sliding layers. MXFP4-packed MoE weights are
+        // loaded as raw U8 blocks+scales (kept packed — per-token dequant).
+        if (cfg.architecture == "gptoss") {
+            cfg.rope_theta = 150000.0f;
+            cfg.rope_yarn = true;
+            cfg.yarn_factor = 32.0f; cfg.yarn_beta_fast = 32.0f;
+            cfg.yarn_beta_slow = 1.0f; cfg.yarn_orig_max = 4096.0f;
+            cfg.rope_attn_scaling = 0.1f * logf(cfg.yarn_factor) + 1.0f;
+            int sw = 0;
+            if (json_find_int(config_text, "sliding_window", sw)) cfg.sliding_window = sw;
         }
         float fv;
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
@@ -521,6 +535,17 @@ bool SafetensorsWeightReader::load_shard(size_t i) const {
         return false;
     }
     sh.loaded = true;
+    return true;
+}
+bool SafetensorsWeightReader::get_tensor_u8(const std::string& name, std::vector<uint8_t>& out) const {
+    const SafetensorsTensor* t = find(name);
+    if (!t) return false;
+    if (strcmp(t->dtype.c_str(), "U8") != 0) return false;
+    const uint8_t* src2 = shards_[name_to_shard_.at(name)].data.data()
+        + shards_[name_to_shard_.at(name)].data_start + t->data_off;
+    size_t elems = 1;
+    for (int64_t d : t->shape) elems *= (size_t)d;
+    out.assign(src2, src2 + elems);
     return true;
 }
 bool SafetensorsWeightReader::get_tensor_f32(const std::string& name, std::vector<float>& out) const {

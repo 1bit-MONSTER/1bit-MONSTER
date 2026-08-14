@@ -69,6 +69,7 @@ int main() {
     check("gptneo", RCPP_ARCH_GPTNEO, "gptneo (GPTNeoForCausalLM)");
     check("codegen", RCPP_ARCH_CODEGEN, "codegen (CodeGenForCausalLM)");
     check("gptj", RCPP_ARCH_GPTJ, "gptj (GPTJForCausalLM)");
+    check("gptoss", RCPP_ARCH_GPTOSS, "gptoss (GptOssForCausalLM)");
 
     // ── Decision (pilot #10): unknown archs -> UNKNOWN (loud), not BITNET
     check("totally_unknown_arch", RCPP_ARCH_UNKNOWN, "unknown->UNKNOWN (loud fail)");

@@ -125,6 +125,16 @@ struct ModelConfig {
     // rope_theta; the rest are LOCAL with rope_local_base_freq. 0 = none.
     float rope_local_base_freq = 0.0f;
     int sliding_window_pattern = 0;
+    // GPT-OSS (OpenAI): YARN RoPE (theta 150000, factor 32, beta_fast/slow
+    // 32/1, original_max 4096) + attention scaling 0.1*ln(factor)+1 applied
+    // to cos/sin (squared into the score scale by the engine). Sliding
+    // layers (layer_types alternate) use a 128-token window. Set by the
+    // loader for RCPP_ARCH_GPTOSS.
+    bool rope_yarn = false;
+    float yarn_factor = 32.0f, yarn_beta_fast = 32.0f, yarn_beta_slow = 1.0f;
+    float yarn_orig_max = 4096.0f;
+    float rope_attn_scaling = 1.0f;
+    int sliding_window = 0;
     // Per-model residual scaling (granite: residual_multiplier=0.22; the
     // block output is scaled before adding to the residual). 1.0 = none.
     // Found 2026-08-13 via the granite real-prompt torch oracle — the engine
