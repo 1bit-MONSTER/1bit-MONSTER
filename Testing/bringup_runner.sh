@@ -37,12 +37,27 @@ for fam in $(python3 -c "
 import json; print(' '.join(f['family'] for f in json.load(open('Testing/models_manifest.json'))['families'] if f['status']=='validated'))"); do
     dir=/tmp/onebit-e2e/$fam
     if [ -f "$dir/oracle-q8.gguf" ] && [ -f "$dir/config.json" ]; then
+        # families whose torch oracle is unavailable (archs dropped from
+        # transformers 5.x) use the llama.cpp reference instead
+        oracle=$(python3 -c "
+import json
+for f in json.load(open('Testing/models_manifest.json'))['families']:
+    if f['family']=='$fam':
+        if f.get('numpy_ref'): print('numpy');
+        else:
+            o=f.get('oracle','torch'); print('llamacpp' if o.startswith('llamacpp') else 'torch'); break")
         total=$((total+1))
-        out=$(timeout 570 python3 Testing/e2e_gen_check.py "$dir" 2>/dev/null | head -1)
-        echo "  $fam: ${out:-GATE FAILED}"
+        if [ "$oracle" = "numpy" ]; then
+            out=$(E2E_FULL_LOGITS=/tmp/onebit_ref_logits.txt timeout 570 python3 Testing/e2e_numpy_ref.py "$dir" "$fam" 2>/dev/null | head -1)
+        elif [ "$oracle" = "llamacpp" ]; then
+            out=$(timeout 570 python3 Testing/e2e_gen_check_llamacpp.py "$dir" 2>/dev/null | head -1)
+        else
+            out=$(timeout 570 python3 Testing/e2e_gen_check.py "$dir" 2>/dev/null | head -1)
+        fi
+        echo "  $fam [$oracle]: ${out:-GATE FAILED}"
         case "$out" in
-            *"20/20"*) ;;
-            *) echo "  ✗ $fam not 20/20"; fail=$((fail+1));;
+            *"20/20"*|*"MATCHES"*) ;;
+            *) echo "  ✗ $fam gate failed ($out)"; fail=$((fail+1));;
         esac
     else
         echo "  $fam: fixture absent ($dir), skipped"
