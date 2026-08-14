@@ -404,7 +404,10 @@ int main(int argc,char**argv){
     };
 
     // ── Prefill ──────────────────────────────────────────────────
-    int pt[]={151643,872,198,11852,151644,198,151643,77091,198},npt=9,sp=0;
+    // #1509: real chat-template prefill (the old 9-token sequence was malformed:
+    // <|endoftext|>user\nems<|im_start|>... — the draft trained on valid templates
+    // saw nonsense input, so acceptance measured ~0% regardless of draft quality).
+    int pt[]={151644,8948,198,2610,525,264,10950,17847,13,151645,198,151644,872,198,3838,374,220,16,22,3039,220,17,18,30,151645,198,151644,77091,198},npt=28,sp=0;
     printf("Prefill %d...\n",npt);auto t0=std::chrono::steady_clock::now();
     for(int pi=0;pi<npt;pi++){
         emb(pt[pi],h_b.data());
@@ -448,8 +451,12 @@ int main(int argc,char**argv){
         }else{
             // ── Draft: GPU generates block candidate tokens ──
             for(int di=0;di<block;di++){
-                float tf[5*H];for(int i=0;i<5*H;i++)tf[i]=h_b[i%H]; // trunk from last verify output
-                int tok=draft_forward(tf,out.back()+di,di,block);
+                // #1509: use the REAL 5-layer trunk (verify_batch fills trunk[]
+                // with hidden states at layers {1,6,12,18,24} of the current
+                // position). The old h_b[i%H] replicated one hidden state 5x
+                // — a degenerate input the draft never saw in training, which
+                // pinned acceptance at 0%.
+                int tok=draft_forward(trunk.data(),out.back()+di,di,block);
                 dt[di]=tok;
             }
             np+=block;
