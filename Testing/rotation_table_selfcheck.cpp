@@ -56,6 +56,7 @@ int main() {
     check("deepseekv3", RCPP_ARCH_DEEPSEEK, "deepseekv3", false);
     check("deepseekv4", RCPP_ARCH_DEEPSEEK_V4, "deepseekv4", false);
     check("gpt2", RCPP_ARCH_GPT2, "gpt2", false);
+    check("gptneox", RCPP_ARCH_GPTNEOX, "gptneox", false);
     check("unknown", RCPP_ARCH_UNKNOWN, "mystery", false);
 
     if (fails) { std::printf("ROTATION TABLE: %d/%d FAILED\n", fails, total); return 1; }

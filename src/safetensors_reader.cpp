@@ -176,6 +176,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         }
         float fv;
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
+        else if (json_find_float(config_text, "rotary_emb_base", fv)) cfg.rope_theta = fv;  // GPT-NeoX
         if (json_find_float(config_text, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;
         if (json_find_float(config_text, "attention_multiplier", fv)) cfg.attention_multiplier = fv;
         // Gemma-2/3 key attention scaling by query_pre_attn_scalar: the true
@@ -201,6 +202,15 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         // head_dim=128) are NOT hidden_size/num_attention_heads.
         if (json_find_int(config_text, "head_dim", iv)) cfg.head_dim = iv;
         else if (cfg.n_heads > 0) cfg.head_dim = cfg.hidden / cfg.n_heads;
+        // GPT-NeoX: rotary_pct — only a fraction of head_dim rotates
+        // (pythia: 0.25 × 64 = 16 dims, confirmed via gguf rope.dimension_count).
+        {
+            float rp = 0;
+            if (json_find_float(config_text, "rotary_pct", rp) && cfg.head_dim > 0)
+                cfg.rope_dim = (int)(rp * cfg.head_dim);
+            else if (cfg.architecture == "gptneox" && cfg.head_dim > 0)
+                cfg.rope_dim = cfg.head_dim / 4;  // GPTNeoXConfig default rotary_pct=0.25
+        }
         // MiniCPM-style per-model scaling flags (absent = defaults):
         //   scale_emb → embedding_multiplier (embeddings × scale_emb)
         //   scale_depth + dim_model_base → residual_multiplier

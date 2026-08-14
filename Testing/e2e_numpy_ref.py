@@ -19,20 +19,69 @@ def rms(x, w, eps=1e-5): return x * (1.0/np.sqrt((x*x).mean(-1,keepdims=True)+ep
 def forward(ids):
     if family == "internlm2":
         H, NH, NKV, HD, IM, L = 2048, 16, 8, 128, 8192, 24
-        theta = 1e6
+        theta, ROT = 1e6, 128
+    elif family == "gptneox":
+        H, NH, NKV, HD, IM, L = 512, 8, 8, 64, 2048, 6
+        theta, ROT = 10000.0, 16  # rotary_pct 0.25
     else:  # minicpm
         H, NH, NKV, HD, IM, L = 2304, 36, 36, 64, 5760, 40
-        theta = 10000.0
+        theta, ROT = 10000.0, 64
     def rope(qk, pos, nh):
-        d = HD
+        d = ROT
         freqs = 1.0/(theta ** (np.arange(0, d, 2)/d))
         t = pos*freqs; c = np.cos(t); s = np.sin(t)
-        r = qk.reshape(-1, nh, HD); o = np.empty_like(r)
+        r = qk.reshape(-1, nh, HD); o = r.copy()
         for h in range(nh):
             x = r[:, h]
-            half = np.concatenate([-x[:, d//2:], x[:, :d//2]], axis=1)
-            o[:, h] = x * np.concatenate([c,c]) + half * np.concatenate([s,s])
+            half = np.concatenate([-x[:, d//2:d], x[:, :d//2]], axis=1)
+            o[:, h, :d] = x[:, :d] * np.concatenate([c,c]) + half * np.concatenate([s,s])
         return o.reshape(-1, nh*HD)
+    if family == "gptneox":
+        import math as _m
+        erf = np.vectorize(_m.erf)
+        def gelu_erf(x): return 0.5*x*(1+erf(x/1.41421356237))
+        def ln(x, w, b, eps=1e-5):
+            m = x.mean(-1, keepdims=True); v = ((x-m)**2).mean(-1, keepdims=True)
+            return (x-m)/np.sqrt(v+eps)*w + b
+        emb = np.array(f.get_slice("gpt_neox.embed_in.weight")[:].tolist(), dtype=np.float64)
+        fn = np.array(f.get_slice("gpt_neox.final_layer_norm.weight")[:].tolist(), dtype=np.float64)
+        fnb = np.array(f.get_slice("gpt_neox.final_layer_norm.bias")[:].tolist(), dtype=np.float64)
+        lm = np.array(f.get_slice("embed_out.weight")[:].tolist(), dtype=np.float64)  # untied
+        x = emb[ids]
+        K = np.zeros((L, len(ids), NKV*HD)); V = np.zeros((L, len(ids), NKV*HD))
+        for l in range(L):
+            nw1 = np.array(f.get_slice(f"gpt_neox.layers.{l}.input_layernorm.weight")[:].tolist(), dtype=np.float64)
+            nb1 = np.array(f.get_slice(f"gpt_neox.layers.{l}.input_layernorm.bias")[:].tolist(), dtype=np.float64)
+            qkv = np.array(f.get_slice(f"gpt_neox.layers.{l}.attention.query_key_value.weight")[:].tolist(), dtype=np.float64)
+            qkvb = np.array(f.get_slice(f"gpt_neox.layers.{l}.attention.query_key_value.bias")[:].tolist(), dtype=np.float64)
+            wo = np.array(f.get_slice(f"gpt_neox.layers.{l}.attention.dense.weight")[:].tolist(), dtype=np.float64)
+            wob = np.array(f.get_slice(f"gpt_neox.layers.{l}.attention.dense.bias")[:].tolist(), dtype=np.float64)
+            w1 = np.array(f.get_slice(f"gpt_neox.layers.{l}.mlp.dense_h_to_4h.weight")[:].tolist(), dtype=np.float64)
+            w1b = np.array(f.get_slice(f"gpt_neox.layers.{l}.mlp.dense_h_to_4h.bias")[:].tolist(), dtype=np.float64)
+            w3 = np.array(f.get_slice(f"gpt_neox.layers.{l}.mlp.dense_4h_to_h.weight")[:].tolist(), dtype=np.float64)
+            w3b = np.array(f.get_slice(f"gpt_neox.layers.{l}.mlp.dense_4h_to_h.bias")[:].tolist(), dtype=np.float64)
+            xn = ln(x, nw1, nb1)
+            qkv_out = xn @ qkv.T + qkvb
+            q = np.stack([qkv_out[:, (h*3+0)*HD:(h*3+1)*HD] for h in range(NH)], axis=1).reshape(len(ids), NH*HD)
+            k = np.stack([qkv_out[:, (h*3+1)*HD:(h*3+2)*HD] for h in range(NH)], axis=1).reshape(len(ids), NKV*HD)
+            v = np.stack([qkv_out[:, (h*3+2)*HD:(h*3+3)*HD] for h in range(NH)], axis=1).reshape(len(ids), NKV*HD)
+            qr = np.stack([rope(q[i:i+1], i, NH) for i in range(len(ids))]).reshape(len(ids), NH*HD)
+            kr = np.stack([rope(k[i:i+1], i, NKV) for i in range(len(ids))]).reshape(len(ids), NKV*HD)
+            K[l] = kr; V[l] = v
+            att_out = np.zeros((len(ids), NH*HD))
+            for t in range(len(ids)):
+                qq = qr[t].reshape(NH, HD)
+                for h in range(NH):
+                    kvh = h//(NH//NKV)
+                    kk = K[l, :t+1, kvh*HD:(kvh+1)*HD]; vv = V[l, :t+1, kvh*HD:(kvh+1)*HD]
+                    sc = qq[h] @ kk.T / np.sqrt(HD)
+                    sc = np.exp(sc - sc.max()); sc /= sc.sum()
+                    att_out[t, h*HD:(h+1)*HD] = sc @ vv
+            x = x + (att_out @ wo.T + wob)
+            g = xn @ w1.T + w1b
+            x = x + (gelu_erf(g) @ w3.T + w3b)  # parallel: same normed input
+        xf = ln(x, fn, fnb)
+        return xf @ lm.T
     emb = np.array(f.get_slice("model.tok_embeddings.weight" if family=="internlm2" else "model.embed_tokens.weight")[:].tolist(), dtype=np.float64)
     if family == "internlm2":
         fn = np.array(f.get_slice("model.norm.weight")[:].tolist(), dtype=np.float64)
@@ -72,8 +121,6 @@ def forward(ids):
                     att_out[t, h*HD:(h+1)*HD] = sc @ vv
             x = x + (att_out @ wo.T) * sres
             xf = rms(x, nw2)
-            # Authoritative (modeling_internlm2.py): down = w2(silu(w1 x) * (w3 x));
-            # w1/w3 [IM,H] up, w2 [H,IM] down.
             x = x + (silu(xf @ w1.T) * (xf @ w3.T)) @ w2.T * sres
         else:
             wq = np.array(f.get_slice(f"model.layers.{l}.self_attn.q_proj.weight")[:].tolist(), dtype=np.float64)
