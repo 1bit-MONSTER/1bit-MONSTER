@@ -71,6 +71,7 @@ struct ModelConfig {
 
     // ── CANONICAL LONG-NAME FIELDS ──────────────────────────────
     int head_dim          = 128;   // single field (no duplicate — see issue #358)
+    int rope_dim          = 0;     // rotated dims per head (0 = head_dim; GPT-NeoX: rotary_pct×hd)
     int hidden_size       = 2048;
     int num_heads         = 8;
     int num_kv_heads      = 2;

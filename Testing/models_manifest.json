@@ -300,6 +300,26 @@
       "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
       "oracle": "q8 gguf",
       "status": "pending"
+    },
+    {
+      "family": "gptneox",
+      "hf_arch_strings": [
+        "gptneox"
+      ],
+      "mapping_target": "GPTNEOX",
+      "quirk_flags": {
+        "parallel": "attn+FFN on same LN (use_parallel_residual=True)",
+        "norm": "nn.LayerNorm weight+bias",
+        "qkv": "fused query_key_value HEAD-INTERLEAVED [q_h,k_h,v_h] (llama.cpp reorders)",
+        "rope": "rotary_pct 0.25 \u2192 rot_dim=head_dim/4 (gguf dimension_count=16)",
+        "ffn": "non-gated gelu_erf + biases everywhere",
+        "lm_head": "untied embed_out.weight"
+      },
+      "e2e_model": "EleutherAI/pythia-70m",
+      "oracle": "torch (GPTNeoX in transformers 5.14) + llama.cpp Q8",
+      "numpy_ref": true,
+      "status": "validated",
+      "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable"
     }
   ]
 }

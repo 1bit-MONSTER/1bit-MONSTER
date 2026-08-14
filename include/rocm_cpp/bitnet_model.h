@@ -55,6 +55,7 @@ typedef enum {
     RCPP_ARCH_QWEN35   = 21,  // Qwen3.5 Gate-Delta Net — fused QKV, SSM path, GDN attention
     RCPP_ARCH_DEEPSEEK_V4 = 22, // DeepSeek V4 Flash/Pro — mHC residual, CSA+HCA hybrid attn, FP4 MoE
     RCPP_ARCH_GPT2 = 23,    // GPT-2 — learned pos embeddings, LN weight+bias, no RoPE, no-gate gelu FFN
+    RCPP_ARCH_GPTNEOX = 24, // GPT-NeoX/Pythia — parallel attn+FFN, LN weight+bias, fused qkv, no-gate gelu FFN
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -156,6 +157,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "deepseekv3")== 0) return RCPP_ARCH_DEEPSEEK;   // DeepseekV3ForCausalLM (MLA)
     if (strcmp(s, "deepseekv4")== 0) return RCPP_ARCH_DEEPSEEK_V4; // DeepseekV4ForCausalLM
     if (strcmp(s, "gpt2")     == 0) return RCPP_ARCH_GPT2;   // GPT2LMHeadModel (custom tensor map)
+    if (strcmp(s, "gptneox")   == 0) return RCPP_ARCH_GPTNEOX; // GPTNeoXForCausalLM (parallel attn+FFN, LN+bias)
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;
