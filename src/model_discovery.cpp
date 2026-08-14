@@ -103,6 +103,9 @@ static bool read_gguf_metadata(const std::string& path, ModelConfig& cfg) {
 
     cfg.architecture = r.architecture();
     cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
+    if (cfg.arch == RCPP_ARCH_UNKNOWN)
+        fprintf(stderr, "[discovery] WARNING: unsupported architecture '%s' (%s) — load will refuse\n",
+                cfg.architecture.c_str(), cfg.model_path.c_str());
 
     std::string name;
     if (r.get_string("general.name", name)) cfg.model_name = name;
@@ -346,7 +349,11 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     // Propagate it to the dispatch enum or every 1BP model runs the default
     // (BITNET -> SiLU) activation, silently breaking GeGLU families (Gemma,
     // Falcon) — caught by the #1243 per-vocab ppl gate (Gemma-3-1B: 2.1e10).
-    cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
+        cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
+    if (cfg.arch == RCPP_ARCH_UNKNOWN)
+        fprintf(stderr, "[discovery] WARNING: unsupported architecture '%s' (%s) — load will refuse\n",
+                cfg.architecture.c_str(), cfg.model_path.c_str());
+
 
     // Quantization tag from enum
     switch (quant_raw) {

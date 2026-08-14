@@ -123,6 +123,8 @@ decoding is available in the same process via `--draft-model` + `--spec-decode`
 - **AMD Strix Halo** — XDNA 2 NPU + ROCm HIP GPU + GGML-Vulkan
 - **NVIDIA GPU** — CUDA (sm_70+) · **Apple Silicon** — Metal · **Any Vulkan 1.2+ GPU** — ZINC + GGML-Vulkan · **x86 CPU** — OpenMP
 
+**→ [MAX XDNA backend](https://github.com/1bit-systems/max-xdna-backend)** — secondary evidence repo (MIT): proves the XDNA 2 NPU can be driven from outside AMD tooling and documents hardware facts (AIE2P bf16 RNI rounding, dispatch overhead). The engine itself is MAX-free by design.
+
 **5 backends** (NPU, HIP, ZINC, GGML-Vulkan, CPU). It also does Stable-Diffusion-family image & video generation via `image_server`.
 
 **→ [Architecture deep-dive](docs/guides/architecture.md)** · **→ [Backends & internals](docs/README.md)** · **→ [Image/video generation](integrations/comfyui/README.md)**
