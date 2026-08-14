@@ -139,13 +139,14 @@ class Eagle3Draft(nn.Module):
             h, kk, vv = self.step(trunk[i], toks[i], k, cos_t, sin_t)
             hs.append(h)
             tgts.append(toks[i + 1])
-        return torch.stack(hs), torch.tensor(tgts)
+        hs_t = torch.stack(hs)
+        return hs_t, torch.tensor(tgts, device=hs_t.device)
 
 
 def build_checkpoint(draft, vocab, out_path):
     """Write the 16 f32 tensors in the exact npu_engine_spec.hip order."""
     with torch.no_grad():
-        w = lambda t: t.detach().float().reshape(-1).numpy()
+        w = lambda t: t.detach().float().cpu().reshape(-1).numpy()
         parts = [
             w(draft.embed), w(draft.fc.weight), w(draft.hn), w(draft.iln),
             w(draft.qP.weight), w(draft.kP.weight), w(draft.vP.weight), w(draft.oP.weight),
@@ -189,7 +190,15 @@ def load_samples(path, tokenizer, max_len=512, limit=None):
                 break
     out = []
     for q, a in rows:
-        ids = tokenizer(f"{q}\n\n{a}", add_special_tokens=True).input_ids
+        # #1509: train on the DEPLOYMENT distribution — the C++ spec harness
+        # feeds chat-template-formatted prompts (system + user), so raw
+        # question text was out-of-distribution and the trained draft scored
+        # ~0% acceptance at decode. Wrap in the Qwen chat template.
+        enc = tokenizer.apply_chat_template(
+            [{"role": "user", "content": q}, {"role": "assistant", "content": a}],
+            tokenize=True, add_generation_prompt=False,
+        )
+        ids = enc[0].input_ids if isinstance(enc, list) else enc.input_ids
         if len(ids) < 8 or len(ids) > max_len:
             continue
         out.append(ids)
@@ -235,22 +244,24 @@ def main():
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
-    device = "cpu"
+    device = "cuda"  # ROCm GPU (8060S)
     t0 = time.time()
     print("Loading Qwen3-0.6B (target) + tokenizer...")
     tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B")
+    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B", torch_dtype=torch.float16)
+    model.to(device).eval()
     model.eval()
     V = model.config.vocab_size
     assert V == 151936, f"vocab mismatch: {V}"
-    embed = model.model.embed_tokens.weight.detach().float()
+    embed = model.model.embed_tokens.weight.detach().float().to(device)
     print(f"  target loaded in {time.time() - t0:.1f}s, vocab={V}")
 
-    draft = Eagle3Draft(embed)
+    draft = Eagle3Draft(embed).to(device)
     n_train = sum(p.numel() for p in draft.parameters() if p.requires_grad)
     print(f"Draft params (trainable): {n_train/1e6:.1f}M")
 
     cos_t, sin_t = make_rope(0, TTT)
+    cos_t, sin_t = cos_t.to(device), sin_t.to(device)
     samples = load_samples(args.data, tok, args.max_len, args.max_samples)
     print(f"Dataset: {len(samples)} samples from {args.data}")
     if not samples:
@@ -259,7 +270,7 @@ def main():
     print(f"  token lengths: min={min(lens)} max={max(lens)} mean={sum(lens)/len(lens):.0f}")
 
     opt = torch.optim.AdamW([p for p in draft.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.0)
-    autocast = torch.autocast(device_type="cpu", dtype=torch.bfloat16)  # config precision="bf16"
+    autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16)  # config precision="bf16"
     losses = []
     t_train = time.time()
     for ep in range(args.epochs):
