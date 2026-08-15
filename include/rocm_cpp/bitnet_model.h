@@ -71,6 +71,7 @@ typedef enum {
     RCPP_ARCH_FALCONH1 = 37, // Falcon-H1 — Mamba-2 SSM + GQA attention + MuP multipliers
     RCPP_ARCH_RWKV = 38,    // RWKV-4/5/6 — linear-attention WKV recurrence + channel mixing
     RCPP_ARCH_GRANITEMOEHYBRID = 39, // GraniteMoeHybrid — Mamba-2 + NoPE GQA + top-k MoE + shared MLP
+    RCPP_ARCH_LFM2MOE = 40,  // LFM2-MoE — ShortConv conv1d + GQA + dense-then-MoE
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -423,6 +424,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "falcon_h1") == 0) return RCPP_ARCH_FALCONH1;    // HF model_type
     if (strcmp(s, "rwkv") == 0) return RCPP_ARCH_RWKV;             // RwkvForCausalLM (RWKV-4)
     if (strcmp(s, "granitemoehybrid") == 0) return RCPP_ARCH_GRANITEMOEHYBRID;  // GraniteMoeHybridForCausalLM
+    if (strcmp(s, "lfm2_moe") == 0) return RCPP_ARCH_LFM2MOE;                  // Lfm2MoeForCausalLM
+    if (strcmp(s, "lfm2moe") == 0) return RCPP_ARCH_LFM2MOE;                   // class name
     // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
     // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──

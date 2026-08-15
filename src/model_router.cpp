@@ -103,6 +103,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"granitemoehybrid_cpu", "cpu_generic"},
                 "GraniteMoeHybrid model — native Mamba2+NoPE-GQA+MoE CPU backend → generic CPU"};
     }
+    // LFM2-MoE (ShortConv conv1d + GQA + dense-then-MoE).
+    if (cfg.arch == RCPP_ARCH_LFM2MOE) {
+        return {{"lfm2moe_cpu", "cpu_generic"},
+                "LFM2-MoE model — native conv+GQA+dense/MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

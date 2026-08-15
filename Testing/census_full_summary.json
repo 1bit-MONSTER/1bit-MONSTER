@@ -38,6 +38,7 @@
   "KIMI_VL": 1,
   "LAGUNA": 168,
   "LFM2": 950,
+  "LFM2MOE": 214,
   "LLAMA": 112583,
   "MAMBA": 181,
   "MINIMAXM2": 333,
@@ -61,7 +62,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 311290,
+ "registry_covered": 311504,
  "total": 399220,
  "with_arch": 317978
 }
