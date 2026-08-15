@@ -15,7 +15,7 @@
   "KIMI_K3": 1,
   "LAGUNA": 161,
   "LFM2": 949,
-  "LLAMA": 110697,
+  "LLAMA": 111637,
   "MAMBA": 160,
   "MISTRAL": 30907,
   "OLMO": 2133,
@@ -34,7 +34,7 @@
  },
  "n_archs": 2155,
  "no_arch": 77210,
- "registry_covered": 304534,
+ "registry_covered": 305474,
  "total": 399220,
  "with_arch": 322029
 }
