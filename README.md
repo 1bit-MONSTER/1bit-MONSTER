@@ -4,6 +4,8 @@
 
 ## One binary to rule them all
 
+<sub>(bong-water-water-bong "Sorry but not sorry.")</sub>
+
 ### 94% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
