@@ -694,6 +694,26 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([9173, 35914, 9173]) on yujiepan/lfm2-moe-tiny-random. New bespoke CPU backend src/lfm2moe_engine.cpp: ShortConv (in_proj B/C/x split, Bx=B*x, depthwise causal conv1d L_cache=3, y=C*conv_out, out_proj), GQA attention with per-head q/k RMSNorm + full-dim RoPE + scaling=head_dim^-0.5, dense silu MLP (w1/w3->silu->w2) for layers < num_dense_layers then sigmoid-gated MoE (router + expert_bias selection, top-k, norm_topk_prob /(sum+1e-6), routed_scaling_factor, per-expert w1/w2/w3), final embedding_norm, tied lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_lfm2moe.py <dir> <ids> 3"
+  },
+  {
+   "family": "hy-v3",
+   "hf_arch_strings": [
+    "hy_v3",
+    "hyv3"
+   ],
+   "mapping_target": "HYV3",
+   "quirk_flags": {
+    "attention": "gqa-qk-rmsnorm-full-rope",
+    "moe": "sigmoid-router-expert-bias-shared-experts-scaling",
+    "mlp": "dense-gate-up-down-silu",
+    "untied_lm_head": true,
+    "mtp_nextn": "excluded-from-generation"
+   },
+   "e2e_model": "yujiepan/hy-v3-tiny-random",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_hyv3.py)",
+   "status": "validated",
+   "tier": "full",
+   "result": "VALIDATED 2026-08-16 (FULL tier \u2014 real logit spread 0.40): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([90642, 90642, 90642]) on yujiepan/hy-v3-tiny-random, corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/hyv3_engine.cpp: GQA attention with per-head q/k RMSNorm + full-dim RoPE + scaling=head_dim^-0.5 and REPEAT_INTERLEAVE kv mapping (hh//groups \u2014 the naive hh%NKV mod mapping diverges, found 2026-08-16), dense silu MLP for dense layers, sigmoid-gated MoE (router + e_score_correction_bias selection, top-k, /(sum+1e-20), router_scaling_factor, per-expert gate/down/up + shared_mlp), final model.norm, UNTIED lm_head, nextn (MTP) predictor layer excluded exactly like transformers (layers[:num_hidden_layers]). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_hyv3.py <dir> <ids> 3"
   }
  ]
 }

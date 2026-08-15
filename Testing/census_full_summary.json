@@ -34,6 +34,7 @@
   "GPTNEOX": 7655,
   "GPTOSS": 1884,
   "GRANITEMOEHYBRID": 524,
+  "HYV3": 91,
   "KIMI_K3": 17,
   "KIMI_VL": 1,
   "LAGUNA": 168,
@@ -43,7 +44,7 @@
   "MAMBA": 181,
   "MINIMAXM2": 333,
   "MISTRAL": 31069,
-  "NEMOTRONH": 411,
+  "NEMOTRONH": 492,
   "OLMO": 2176,
   "OPT": 2101,
   "PHI": 5182,
@@ -62,7 +63,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 311504,
+ "registry_covered": 311676,
  "total": 399220,
  "with_arch": 317978
 }

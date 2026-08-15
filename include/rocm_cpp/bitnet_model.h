@@ -63,7 +63,8 @@ typedef enum {
     RCPP_ARCH_GPTOSS = 29,  // GPT-OSS — MXFP4 packed MoE (FP4 blocks+scales, interleaved gate/up), YARN rope, attention sinks, head_dim 64
     RCPP_ARCH_STEP1 = 30,   // Step1 (StepLaw / stepfun Step-Audio) — dense llama-layout, sqrt-ALiBi (no RoPE), num_attention_groups
     RCPP_ARCH_BLOOM = 31,    // Bloom — fused qkv, LayerNorm w/bias, sequential + post_attn_norm, gelu_new, LINEAR ALiBi, embed LN, tied lm_head
-    RCPP_ARCH_LFM2 = 32,    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
+    RCPP_ARCH_LFM2 = 32,
+    RCPP_ARCH_NANOCHAT = 33,  // NanoChat — gpt2-skeleton: unweighted RMSNorm, relu^2 MLP, adjacent-pair RoPE, logit softcap    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
     RCPP_ARCH_NEMOTRONH = 33, // Nemotron-H — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid
     RCPP_ARCH_QWEN3NEXT = 34, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
     RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
@@ -72,6 +73,7 @@ typedef enum {
     RCPP_ARCH_RWKV = 38,    // RWKV-4/5/6 — linear-attention WKV recurrence + channel mixing
     RCPP_ARCH_GRANITEMOEHYBRID = 39, // GraniteMoeHybrid — Mamba-2 + NoPE GQA + top-k MoE + shared MLP
     RCPP_ARCH_LFM2MOE = 40,  // LFM2-MoE — ShortConv conv1d + GQA + dense-then-MoE
+    RCPP_ARCH_HYV3 = 41,    // HY-V3 — GQA + q/k RMSNorm + dense/MoE
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -332,6 +334,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "vlclipgptneox") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
     if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
     if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2
+    if (strcmp(s, "nanochat") == 0) return RCPP_ARCH_NANOCHAT;  // NanoChatForCausalLM (verified vs modeling_nanochat.py 2026-08-15)
     // ── end census tail sweep ──
     if (strcmp(s, "openaigpt") == 0) return RCPP_ARCH_GPT2;  // openai-gpt (gpt2 layout, Conv1D)
     if (strcmp(s, "ctrl") == 0) return RCPP_ARCH_GPT2;  // CTRL (gpt2 layout, extra conditioning embed ignored)
@@ -426,6 +429,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "granitemoehybrid") == 0) return RCPP_ARCH_GRANITEMOEHYBRID;  // GraniteMoeHybridForCausalLM
     if (strcmp(s, "lfm2_moe") == 0) return RCPP_ARCH_LFM2MOE;                  // Lfm2MoeForCausalLM
     if (strcmp(s, "lfm2moe") == 0) return RCPP_ARCH_LFM2MOE;                   // class name
+    if (strcmp(s, "hy_v3") == 0) return RCPP_ARCH_HYV3;                               // HYV3ForCausalLM
+    if (strcmp(s, "hyv3") == 0) return RCPP_ARCH_HYV3;                                // class name
     // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
     // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──
