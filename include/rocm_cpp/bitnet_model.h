@@ -230,6 +230,9 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "hunyuandensev1") == 0) return RCPP_ARCH_LLAMA; // HunYuan dense V1 (llama-layout)
     if (strcmp(s, "seedoss")      == 0) return RCPP_ARCH_LLAMA;   // ByteDance Seed-OSS dense (llama-layout, GQA)
     if (strcmp(s, "glm4")         == 0) return RCPP_ARCH_LLAMA;   // GLM-4 (llama + partial-rope 0.5 + qkv bias)
+    if (strcmp(s, "glm4moe")      == 0) return RCPP_ARCH_LLAMA;   // GLM-4-MoE (same attn + deepseek-style gating)
+    if (strcmp(s, "glmmoedsa")    == 0) return RCPP_ARCH_LLAMA;   // GLM-4.5 MoE (DSA attention)
+    if (strcmp(s, "glm4moelite")  == 0) return RCPP_ARCH_LLAMA;   // GLM-4-MoE-Lite
   // Gemma4-Unified (text decoder = gemma)
     if (strcmp(s, "qwen3_5vl")   == 0) return RCPP_ARCH_QWEN35;   // Qwen3.5-VL (text decoder = qwen3.5)
     // ── HF model_type values (snake_case family tags; the reader falls back
