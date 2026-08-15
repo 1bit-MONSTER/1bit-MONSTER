@@ -640,6 +640,10 @@ class npu_sequence{
 
 
         ///@brief clear the npu commands
+        // Public raw-sequence access (added 2026-08-15 for the FLM-parity
+        // generator: gemm_generate_sequence_i8 emits blob words directly).
+        std::vector<uint32_t>& raw_seq() { return npu_seq; }
+
         void clear_cmds(){
             this->cmds.clear();
             this->npu_seq.clear();

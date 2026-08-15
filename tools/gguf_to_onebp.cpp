@@ -395,9 +395,8 @@ int main(int argc, char** argv) {
     // (shape.size() != 2 filtered out every 1D tensor), which meant every
     // .1bp file ever produced was missing all its normalization weights —
     // structurally incapable of correct inference. See issue #1023.
-    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; };
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; int alias_of = -1; };
     std::vector<TInfo> tensors;
-    uint64_t data_off = 0;
     int tr = 32, tc = 256, gs = 32;
 
     if (moe_shape_colmajor) {
@@ -414,8 +413,7 @@ int main(int argc, char** argv) {
             int len = (int)inf->shape[0];
             if (len <= 0) continue;
             uint64_t raw_bytes = (uint64_t)len * 4;  // f32, unquantized
-            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes, quant});
-            data_off += raw_bytes;
+            tensors.push_back({tn, 1, 1, len, 1, 0, raw_bytes, quant});
             continue;
         }
         if (ndim != 2 && ndim != 3) continue;  // skip unknown shapes
@@ -431,8 +429,7 @@ int main(int argc, char** argv) {
                 (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
                 tq = ONEBP_Q4NX;
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
-            tensors.push_back({tn, 2, r, c, 1, data_off, tiled, tq});
-            data_off += tiled;
+            tensors.push_back({tn, 2, r, c, 1, 0, tiled, tq});
             if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%" PRIu64 " quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
             // ndim == 3: expert-stacked tensor. Expert tensors (name contains
@@ -464,10 +461,44 @@ int main(int argc, char** argv) {
                 tq = ONEBP_Q4NX;
             uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, tq);
             uint64_t total_tiled = (uint64_t)ne * per_expert;
-            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled, tq});
-            data_off += total_tiled;
+            tensors.push_back({tn, 3, r, c, ne, 0, total_tiled, tq});
             printf("  tensor %s: %d experts x %dx%d per-expert=%" PRIu64 " total=%" PRIu64 "\n",
                    tn.c_str(), ne, r, c, per_expert, total_tiled);
+        }
+    }
+    // ── v4 dedup: byte-identical tensors share one storage block ──
+    // Shared layers (Zamba-style) appear once per use in the GGUF; the
+    // quantizer is deterministic, so equal source floats -> equal quantized
+    // bytes. Hash each tensor's f32 source (FNV-1a 64) and keep one copy;
+    // later duplicates become aliases (offset = index of the first, bytes=0).
+    // ponytail: FNV-1a collision on a dedup key would silently alias two
+    // different tensors; 64-bit + shape/quant match makes this negligible for
+    // a converter, upgrade to full-byte compare if it ever misfires.
+    uint64_t data_off = 0;
+    struct DedupKey { uint64_t hash; int ndim, rows, cols, num_experts; uint32_t tq; uint64_t tiled; };
+    std::vector<std::pair<DedupKey,int>> seen;
+    for (size_t ti = 0; ti < tensors.size(); ti++) {
+        auto& t = tensors[ti];
+        std::vector<float> fw;
+        if (!reader.get_tensor_f32(t.name, fw)) {
+            fprintf(stderr, "\nFATAL: get_tensor_f32 failed for %s during dedup pass\n", t.name.c_str());
+            return 1;
+        }
+        uint64_t h = 1469598103934665603ull;
+        const uint8_t* b = (const uint8_t*)fw.data();
+        for (size_t i = 0; i < fw.size() * sizeof(float); i++) { h ^= b[i]; h *= 1099511628211ull; }
+        DedupKey key{h, t.ndim, t.rows, t.cols, t.num_experts, (uint32_t)t.tq, t.tiled};
+        int first = -1;
+        for (auto& s : seen)
+            if (s.first.hash == key.hash && s.first.ndim == key.ndim && s.first.rows == key.rows &&
+                s.first.cols == key.cols && s.first.num_experts == key.num_experts &&
+                s.first.tq == key.tq && s.first.tiled == key.tiled) { first = s.second; break; }
+        if (first >= 0) {
+            t.alias_of = first; t.offset = (uint64_t)first; t.tiled = 0;
+            printf("  dedup: %s -> alias of tensor #%d\n", t.name.c_str(), first);
+        } else {
+            seen.push_back({key, (int)ti});
+            t.offset = data_off; data_off += t.tiled;
         }
     }
     printf("  Total tensors: %zu, data size: %.1f MB\n", tensors.size(), data_off / (1024.0*1024.0));
@@ -530,6 +561,7 @@ int main(int argc, char** argv) {
     for (auto& ti : tensors) {
         count++;
         printf("  [%d/%zu] %s... ", count, tensors.size(), ti.name.c_str()); fflush(stdout);
+        if (ti.alias_of >= 0) { printf("(alias of #%d)\n", ti.alias_of); continue; }  // v4 dedup: data already written
         // All tensors processed
         std::vector<float> fw;
         auto* inf = reader.tensor_info(ti.name);

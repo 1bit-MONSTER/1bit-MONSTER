@@ -556,7 +556,26 @@ extern "C" {
     zero_scalar<ctype_out, DIM_M, DIM_N>(c_out);                               \
   }
 
-combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func)
-    combos(zero_vectorized_c_func) combos(zero_scalar_c_func)
+#if DIM_M >= 16
+combos(matmul_vectorized_c_func)
+#endif
+combos(matmul_scalar_c_func)
+#if DIM_M >= 16
+    combos(zero_vectorized_c_func)
+#endif
+combos(zero_scalar_c_func)
+
+// The MLIR designs always call matmul_i8_i32 / zero_i32 (the vectorized
+// names). For decode-optimized microkernels (DIM_M < 16, e.g. M=1) the
+// vectorized path can't instantiate (mmul needs m % 16 == 0), so alias the
+// names to the scalar implementations. Added 2026-08-15 for the M=1 kernels.
+#if DIM_M < 16
+extern "C" void matmul_i8_i32(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
+    matmul_scalar<int8_t, int32_t, DIM_M, DIM_K, DIM_N, true, true>(a_in, b_in, c_out);
+}
+extern "C" void zero_i32(int32_t *c_out) {
+    zero_scalar<int32_t, DIM_M, DIM_N>(c_out);
+}
+#endif
 
 } // extern "C"

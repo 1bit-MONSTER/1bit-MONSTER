@@ -29,6 +29,25 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
+run iq1       Testing/iq1_selfcheck.cpp --
+run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
+
+# v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
+DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
+total=$((total+1))
+if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
+   "$CXX" $FLAGS tools/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
+       -o "$BIN/g2o" 2>/dev/null; then
+    conv_out=$("$BIN/g2o" "$DEDUP_DIR/mini.gguf" "$DEDUP_DIR/mini.1bp" 2>&1)
+    if [ $? -eq 0 ] && printf '%s' "$conv_out" | grep -q 'dedup: blk.1.attn_q.weight'; then
+        echo "✓ dedup converter (alias emitted)"
+        run dedup_e2e Testing/dedup_loader_check.cpp src/onebp_model.cpp -- "$DEDUP_DIR/mini.1bp"
+    else
+        echo "✗ dedup converter: no alias emitted"; fail=$((fail+1))
+    fi
+else
+    echo "✗ dedup converter: build/generate failed"; fail=$((fail+1))
+fi
 
 echo "== backend compile =="
 total=$((total+1))

@@ -402,7 +402,7 @@ Models marked 🏃 live were downloaded fresh from HuggingFace, benchmarked with
 
 **Prior data** (📋 prior / 📋 zinc) = from `site/benchmarks.json` (authoritative) or ZINC GPU benchmark logs.
 
-**Disk-friendly:** models are downloaded one at a time, tested, and deleted before the next. Peak disk usage never exceeds ∼1 GB beyond baseline.
+**Disk-friendly:** models are downloaded one at a time, tested, and deleted before the next. Peak disk usage never exceeds ∼1 GB beyond baseline. For re-runs that reuse a model, `scripts/model-cache.sh link <name> <url> <dest>` keeps one canonical copy and symlinks every consumer dir — re-downloads and duplicate copies are both symlink-free shortcuts (one real copy, N links).
 
 ### Kernel-Level Microbenchmarks
 

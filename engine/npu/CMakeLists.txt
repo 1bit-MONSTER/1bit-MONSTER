@@ -16,8 +16,11 @@ set(NPU_ENGINE_SOURCES
     ${NPU_SRC_DIR}/npu_engine_universal.cpp
     ${NPU_SRC_DIR}/dequant_q4nx.cpp
     ${NPU_SRC_DIR}/gemm_npu_instructions.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/src/flm_bridge.cpp
 )
+# flm_bridge.cpp (FLM dlopen wrapper) was removed 2026-08-15: no engine code
+# calls FlmBridge — HybridFlmCtx generates instructions via the open-source
+# gemm_generate_sequence_i8_split(), and the pre-compiled .txt streams load
+# through aiebu. FLM libs (libgemm.so et al) are never dlopened at runtime.
 
 add_executable(npu_engine_universal ${NPU_ENGINE_SOURCES})
 

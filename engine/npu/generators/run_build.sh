@@ -7,6 +7,16 @@ AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
 PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 AIETOOLS=/home/bcloud/mlir-aie/build_tmp
 KERNEL_O="$(cd "$(dirname "$0")/../.." && pwd)/engine/npu/generators/mm_32x64x128.o"
+# The microkernel .o is gitignored and was missing from clones. Rebuild it with
+# the peano clang (no xchesscc needed) — verified 2026-08-15:
+#   P=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
+#   $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
+#       -DDIM_M=32 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY \
+#       -isystem $P/include/c++/v1 \
+#       -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+#       -I <mlir_aie>/include/aie_kernels/aie2p \
+#       -c <repo>/engine/npu/generators/mm_kernel_reference.cc -o mm_32x64x128.o
+# (aie_clang++'s wrapper is broken — hardcoded /aietools paths.)
 
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 

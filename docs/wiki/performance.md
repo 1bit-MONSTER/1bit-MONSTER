@@ -41,7 +41,7 @@ weeks out of date the last time it was hand-maintained (see git history).
 | GPU ternary (Vulkan) | **318 tok/s** | Vulkan ZINC | ✅ validated |
 | BitNet TQ1_0 (base-3 LUT) | **202 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | Prefill INT8 WMMA (I8-APRE) | **43.2 TFLOPS** | INT8 WMMA | ✅ re-measured 2026-08-01 (was 39.4) |
-| IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — correctness pending full IQ1_M port |
+| IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — IQ1_M dequant also bit-exact vs llama.cpp reference (`Testing/iq1_selfcheck.cpp`); 50/56-byte block sizes fixed in reader |
 | NPU INT8 GEMM | **0/10000 errors (22/22 shapes)** | XDNA 2 via Peano | ✅ verified 2026-07-28 — npu_engine_universal, 4 native ops (QKV/O/GU/D). **2026-08-05: multi-row generator (v27, 4 core rows / 32 cores) — 5.6× kernel-level** (QKV 675, O 757, GU 646, D 751 GOP/s). Chess toolchain deprecated. |
 
 **NPU raw hardware validation** (`xrt-smi validate`, 2026-07-25): 51 TOPS INT8 GEMM,

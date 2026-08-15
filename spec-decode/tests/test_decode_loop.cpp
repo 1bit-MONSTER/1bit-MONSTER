@@ -8,6 +8,7 @@ int main() {
     printf("Minimal spec decode test\n");
     
     MTPDraftConfig cfg;
+    cfg.vocab_size = 50000;  // must match the static buffers below (and sc.vocab_size)
     MTPDraftModel draft(cfg);
     MTPDraftState state;
     state.resize(8, 128, 4096);
@@ -69,6 +70,13 @@ int main() {
            dec.stats().acceptance_rate() * 100,
            dec.stats().speedup_factor(),
            (long)dec.stats().verify_calls);
-    
-    return 0;
+
+    // Regression gates: agreeing mock target + passthrough draft must accept
+    // everything and produce exactly prompt + max_new tokens.
+    int fails = 0;
+    if (n != 128 + 256) { printf("FAIL token count %d\n", n); fails++; }
+    if (dec.stats().acceptance_rate() < 0.999f) { printf("FAIL accept rate\n"); fails++; }
+    if (output[127] != 0 || output[383] != 0) { printf("FAIL output tokens\n"); fails++; }
+    printf(fails ? "spec_decode_loop: %d FAILS\n" : "spec_decode_loop: OK\n", fails);
+    return fails ? 1 : 0;
 }

@@ -58,6 +58,12 @@
  *  Tensor index entry (variable-length):
  *    [name_len:u32][name:str][ndim:u32][dims:u32 × ndim][offset:u64][bytes:u64]
  *
+ *    v4 dedup alias: when `bytes` == 0, the entry shares data with an earlier
+ *    tensor — `offset` holds that tensor's INDEX in the index (not a byte
+ *    offset). dims/quant are still written normally; the loader resolves
+ *    location + size from the aliased entry. Aliases always point backward
+ *    to a real (bytes > 0) entry.
+ *
  *    ndim=2: dims=[rows, cols] — a plain weight matrix. `bytes` is the
  *      tiled size of that one matrix.
  *    ndim=3: dims=[num_experts, rows, cols] — a stack of `num_experts`
@@ -76,11 +82,14 @@
 #include <cmath>
 
 static constexpr uint32_t ONEBP_MAGIC        = 0x00504231;  // "1BP\0"
-static constexpr uint32_t ONEBP_VERSION      = 3;  // v2: per-entry quant field (mixed-quant files);
+static constexpr uint32_t ONEBP_VERSION      = 4;  // v2: per-entry quant field (mixed-quant files);
                                                   // v3: rope_theta_f / rope_freq_base_swa_f hold
                                                   // RAW f32 bits (v1/v2: theta*1000 fixed-point,
                                                   // which overflows for theta > 4.29e6 — Granite's
                                                   // rope.freq_base 1e7 wrapped to garbage 1410065408)
+                                                  // v4: dedup aliases — an index entry with
+                                                  // bytes==0 is an alias whose offset field is the
+                                                  // INDEX of an earlier tensor it shares data with
 
 // ─── Quantization types ────────────────────────────────────────────
 enum OnebpQuant : uint32_t {
