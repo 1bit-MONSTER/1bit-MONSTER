@@ -14,6 +14,7 @@ name: Scope Guard
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  merge_group:
 
 permissions:
   contents: read
@@ -30,8 +31,8 @@ jobs:
 
       - name: Check changed paths against engine scope
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
