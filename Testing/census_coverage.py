@@ -34,6 +34,74 @@ NON_TEXT_GEN = {
     "t5gemma",                            # T5+Gemma hybrid (encoder-decoder)
     "bert", "roberta", "xlmroberta", "xlnet",  # masked-LM / encoder heads
     "morpht5auto", "morpht5concat", "morpht5sum",  # MorphT5 (encoder-decoder)
+    "m2m100",                             # M2M-100 (encoder-decoder seq2seq)
+    "alfredunimodel",  # encoder-decoder / masked-LM variant
+    "automodelforseq2seqlm",  # encoder-decoder / masked-LM variant
+    "bartencodec",  # encoder-decoder / masked-LM variant
+    "bartforsequenceclassification",  # encoder-decoder / masked-LM variant
+    "bartprefixprop",  # encoder-decoder / masked-LM variant
+    "bertformtsparseffdedit",  # encoder-decoder / masked-LM variant
+    "bertforsequenceclassification",  # encoder-decoder / masked-LM variant
+    "bertfortokenclassification",  # encoder-decoder / masked-LM variant
+    "bertgenerationdecoder",  # encoder-decoder / masked-LM variant
+    "bottleneckt5lmwithperturb",  # encoder-decoder / masked-LM variant
+    "clipt5",  # encoder-decoder / masked-LM variant
+    "cpt",  # encoder-decoder / masked-LM variant
+    "custombart",  # encoder-decoder / masked-LM variant
+    "decoderonlyt5",  # encoder-decoder / masked-LM variant
+    "dnikud",  # encoder-decoder / masked-LM variant
+    "e5_base_ctseg",  # encoder-decoder / masked-LM variant
+    "efflongt5",  # encoder-decoder / masked-LM variant
+    "efft5",  # encoder-decoder / masked-LM variant
+    "elbart",  # encoder-decoder / masked-LM variant
+    "fiphi-neuralmark-v3",  # encoder-decoder / masked-LM variant
+    "fsdpt5",  # encoder-decoder / masked-LM variant
+    "fusionindecoder",  # encoder-decoder / masked-LM variant
+    "gistt5",  # encoder-decoder / masked-LM variant
+    "grapht5transformer",  # encoder-decoder / masked-LM variant
+    "latr",  # encoder-decoder / masked-LM variant
+    "llavat5",  # encoder-decoder / masked-LM variant
+    "longformerbartwithdoctype",  # encoder-decoder / masked-LM variant
+    "longformerencoderbartdecoder",  # encoder-decoder / masked-LM variant
+    "longformerencoderdecoder",  # encoder-decoder / masked-LM variant
+    "longt5",  # encoder-decoder / masked-LM variant
+    "lsgbart",  # encoder-decoder / masked-LM variant
+    "marianmt",  # encoder-decoder / masked-LM variant
+    "mlongformerencoderdecoder",  # encoder-decoder / masked-LM variant
+    "modernmarianmt",  # encoder-decoder / masked-LM variant
+    "mt5lsaalibi",  # encoder-decoder / masked-LM variant
+    "myt5",  # encoder-decoder / masked-LM variant
+    "narbart",  # encoder-decoder / masked-LM variant
+    "omflaxt5",  # encoder-decoder / masked-LM variant
+    "pipelinedbart",  # encoder-decoder / masked-LM variant
+    "pipelinedt5",  # encoder-decoder / masked-LM variant
+    "poptorchpipelinedbart",  # encoder-decoder / masked-LM variant
+    "poptorchpipelinedt5",  # encoder-decoder / masked-LM variant
+    "prophetnet",  # encoder-decoder / masked-LM variant
+    "quantizedt5",  # encoder-decoder / masked-LM variant
+    "robertaforcl",  # encoder-decoder / masked-LM variant
+    "robertaformaskedlm",  # encoder-decoder / masked-LM variant
+    "robertaprelayernorm",  # encoder-decoder / masked-LM variant
+    "ropemhdat5",  # encoder-decoder / masked-LM variant
+    "rr",  # encoder-decoder / masked-LM variant
+    "sonar",  # encoder-decoder / masked-LM variant
+    "spectus",  # encoder-decoder / masked-LM variant
+    "svdcompressedbartforconditiongeneration",  # encoder-decoder / masked-LM variant
+    "t5encoder",  # encoder-decoder / masked-LM variant
+    "t5forsequenceclassification",  # encoder-decoder / masked-LM variant
+    "t5gemma2",  # encoder-decoder / masked-LM variant
+    "t5graph",  # encoder-decoder / masked-LM variant
+    "t5la",  # encoder-decoder / masked-LM variant
+    "texttotext",  # encoder-decoder / masked-LM variant
+    "trainablem2m",  # encoder-decoder / masked-LM variant
+    "ttcompressedbartforconditiongeneration",  # encoder-decoder / masked-LM variant
+    "udopunimodel",  # encoder-decoder / masked-LM variant
+    "unilm",  # encoder-decoder / masked-LM variant
+    "vilt5",  # encoder-decoder / masked-LM variant
+    "xlmrobertaforsequenceclassification",  # encoder-decoder / masked-LM variant
+    "xlmrobertafortokenclassification",  # encoder-decoder / masked-LM variant
+    "xlmrobertaxl",  # encoder-decoder / masked-LM variant
+
     "bertformaskedlm", "distilbertforsequenceclassification", "electra",
     "camembert",  # encoder-only classes (not causal decoders)
 }
