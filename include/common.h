@@ -80,6 +80,17 @@ struct ModelConfig {
     int intermediate_size = 2048;
     int num_experts       = 16;
     int num_experts_top   = 2;
+    // GLM-4-MoE / DeepSeek-style gating (generic MoE path):
+    int n_shared_experts  = 0;      // fused shared-expert MLP (n_shared × moe_int)
+    int first_k_dense     = 0;      // layers < first_k are DENSE FFN (GLM-4-MoE: 1)
+    int moe_intermediate  = 0;      // per-expert FFN width (0 = intermediate_size)
+    int expert_groups     = 0;      // group-limited top-k (GLM-4-MoE n_group)
+    int limited_groups    = 0;      // groups selected (topk_group)
+    bool norm_topk_prob   = false;  // renormalize top-k weights
+    float routed_scaling  = 1.0f;   // expert output scale
+    // GLM-4-MoE: mlp.gate.e_score_correction_bias [NE] added to router logits
+    // (DeepSeek-V3 convention). 0 experts = absent.
+    int correction_bias   = 0;
     int num_attention_heads = 8;
     int router_hidden     = 256;
     int qkv_dim           = 1280;
