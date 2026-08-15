@@ -43,6 +43,7 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
 
 **→ [Read the full journey](docs/journey.md)** — every crash, breakthrough, and bug, documented in real time.
+**→ [The Audit Trail](docs/audit-trail.md)** — 1.5 TB of raw evidence, archived nightly on the Raspberry Pi backup server.
 
 ## // where this goes
 
