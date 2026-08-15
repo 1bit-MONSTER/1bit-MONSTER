@@ -614,6 +614,26 @@
       "status": "validated",
       "tier": "full",
       "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real logit spread): engine 10-token chain == numpy ref EXACTLY, corr 1.0000, top-5 exact vs torch on tiny-Cohere2ForCausalLM. Rides the GENERIC engine (no bespoke backend): parallel_attn_ffn (attn+MLP from same input_layernorm output \u2014 falcon/codegen convention), mean-centered LayerNorm weight-only (layernorm_affine with b=NULL), adjacent-pair interleaved rope (matches rope_adjacent), gated SwiGLU, sliding-window attention, tied lm_head. arch selfcheck +cohere2/cohere2_model. Gate: python3 Testing/e2e_numpy_ref_cohere2.py <dir> <ids> 10 == engine-gen"
+    },
+    {
+      "family": "falcon-h1",
+      "hf_arch_strings": [
+        "falconh1",
+        "falcon_h1"
+      ],
+      "mapping_target": "FALCONH1",
+      "quirk_flags": {
+        "mamba2": true,
+        "attention": "gqa-key-mult",
+        "mup_multipliers": true,
+        "mlp": "gated-mult",
+        "parallel_mamba_attn": true
+      },
+      "e2e_model": "yujiepan/falcon-h1-tiny-random",
+      "oracle": "numpy ref (Testing/e2e_numpy_ref_falconh1.py)",
+      "status": "validated",
+      "tier": "full",
+      "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real logit spread): engine 10-token chain == numpy ref EXACTLY on yujiepan/falcon-h1-tiny-random, corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/falconh1_engine.cpp: Mamba-2 SSM mixer (ssm_in_multiplier, in_proj + mup_vector per-section multipliers, causal depthwise conv w[0]=oldest, Euler dB=dt*B, dt=softplus(dt+dt_bias), gated RMSNorm norm_before_gate=False) + GQA attention (k x key_multiplier, full rope) from the SAME normed input, each scaled (ssm_out/attn_out multipliers), residual, gated FFN (gate x gate_multiplier, out x down_multiplier), embeddings x embedding_multiplier, logits x lm_head_multiplier, tied lm_head. Clean 20/20 \u2014 the tiny model has real logit spread. Gate: python3 Testing/e2e_numpy_ref_falconh1.py <dir> <ids> 10 == engine-gen"
     }
   ]
 }

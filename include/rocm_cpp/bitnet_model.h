@@ -68,6 +68,7 @@ typedef enum {
     RCPP_ARCH_QWEN3NEXT = 34, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
     RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
     RCPP_ARCH_COHERE2 = 36,  // Cohere2 — parallel attn+FFN, mean-centered LayerNorm, adjacent-pair rope, SWA
+    RCPP_ARCH_FALCONH1 = 37, // Falcon-H1 — Mamba-2 SSM + GQA attention + MuP multipliers
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -355,6 +356,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "minimax_m2") == 0) return RCPP_ARCH_MINIMAXM2;  // HF model_type
     if (strcmp(s, "cohere2") == 0) return RCPP_ARCH_COHERE2;       // Cohere2ForCausalLM
     if (strcmp(s, "cohere2_model") == 0) return RCPP_ARCH_COHERE2;  // HF model_type
+    if (strcmp(s, "falconh1") == 0) return RCPP_ARCH_FALCONH1;     // FalconH1ForCausalLM
+    if (strcmp(s, "falcon_h1") == 0) return RCPP_ARCH_FALCONH1;    // HF model_type
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

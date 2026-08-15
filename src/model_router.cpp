@@ -88,6 +88,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"nemotron_h_cpu", "cpu_generic"},
                 "Nemotron-H model — native Mamba2+attn+MLP+MoE CPU backend → generic CPU"};
     }
+    // Falcon-H1 (Mamba-2 SSM + GQA attention + MuP multipliers hybrid).
+    if (cfg.arch == RCPP_ARCH_FALCONH1) {
+        return {{"falconh1_cpu", "cpu_generic"},
+                "Falcon-H1 model — native Mamba2+attn+MuP CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

@@ -149,6 +149,8 @@ int main() {
     check("minimax_m2", RCPP_ARCH_MINIMAXM2, "model_type minimax_m2");
     check("cohere2", RCPP_ARCH_COHERE2, "cohere2 (Cohere2)");
     check("cohere2_model", RCPP_ARCH_COHERE2, "model_type cohere2_model");
+    check("falconh1", RCPP_ARCH_FALCONH1, "falconh1 (Falcon-H1)");
+    check("falcon_h1", RCPP_ARCH_FALCONH1, "model_type falcon_h1");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");

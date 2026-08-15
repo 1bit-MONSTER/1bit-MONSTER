@@ -22,6 +22,7 @@
   "DEEPSEEK": 800,
   "DEEPSEEK_V4": 514,
   "FALCON": 1222,
+  "FALCONH1": 156,
   "GEMMA": 20304,
   "GPT2": 30925,
   "GPTJ": 627,
@@ -54,7 +55,7 @@
  },
  "n_archs": 2142,
  "no_arch": 77210,
- "registry_covered": 308033,
+ "registry_covered": 308189,
  "total": 399220,
  "with_arch": 318041
 }
