@@ -6,7 +6,7 @@ The 1bit-systems engine auto-detects 24 model architectures from GGUF/1BP/safete
 
 ## HF-Native coverage (measured 2026-08-14)
 
-Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`, 220k models sampled): the original **11 validated families covered 193,318 / 220,049 text-generation checkpoints (88%)**; the 9 families validated since (2026-08-14/15: gptneox 5,652 · opt 1,877 · gptneo 1,355 · gptj 609 · codegen 348 · gptoss 407 · step1-class 2,882 · bloom 1,086 · deepseek v2/v3-class — all were census-listed uncovered classes) bring the gated coverage to **~207,500+ / 220,049 (~94.3%)** (deepseek v2/v3 checkpoint count not re-censused). The validated families (torch/numpy/llama.cpp-exact generation gates; `Testing/bringup_runner.sh` is now manifest-driven with per-family `gate` commands):
+Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-generation&config=true`). **FULL 100% enumeration 2026-08-15** (`Testing/census_full_summary.json`, every page walked): **399,220 text-generation checkpoints** (the earlier 220,049 figure was a 250-page sample — it undercounted by 1.81x), of which **322,010 declare an `architectures` field** (77,210 have none — unmappable). **299,415 / 322,010 arch-bearing checkpoints (92.98%) map to an engine token** (the `rcpp_arch_from_string` registry, incl. the `rw`→FALCON fix this census surfaced) = **75.0% of all text-gen checkpoints**. The 24 validated manifest families (e2e generation gates) cover **293,732 / 322,010 (91.22%)** — the gap to the registry number is the loadable-but-unvalidated tokens (qwen35 ~4,300, deepseek v2/v3 ~780, VLM/SSM tails). The validated families (torch/numpy/llama.cpp-exact generation gates; `Testing/bringup_runner.sh` is now manifest-driven with per-family `gate` commands):
 
 | Family | HF checkpoints covered | | Family | HF checkpoints covered |
 |--------|------:|---|---|--------|------:|
@@ -19,10 +19,66 @@ Real-checkpoint census of the HuggingFace hub (`/api/models?pipeline_tag=text-ge
 | olmo | 744 | | gptoss | 407 |
 | codegen | 348 | | exaone | 156 |
 | internlm2 | 115 | | minicpm | 76 |
-| bloom | 1,086 | | deepseek v2/v3 | (uncensused) |
+| bloom | 1,086 | | deepseek v2/v3 | ~780 (V2 183 + V32 89 + V3 508) |
 | **TOTAL** | **~207,500 (94.3%)** |
 
 **Remaining uncovered causal-LM classes:** Qwen2VL · Mamba · Kimi-K3 · Whisper (bespoke SSM/STT/VLM backends — separate workstreams; encoder-decoders T5/MT5 out of scope for the decode-loop engine). Bloom (1,086) validated 2026-08-15.
+
+## The 500+ agnostic engine
+
+**One binary, no per-model config files.** The arch registry (`rcpp_arch_from_string`)
+maps **91 HF `architectures` strings → 32 engine tokens** — every checkpoint
+whose arch string is in the table loads through the same discovery → arch-map →
+router → decode path. The tokens group onto the validated families (see the
+manifest tiers); the VLM/SSM tokens (qwen2vl, mamba, kimi, whisper, ...) route
+to the bespoke backends (GPU/VLM workstreams, separate validation).
+
+| Token | Family | HF arch strings |
+|-------|--------|-----------------|
+| `BITNET` | bitnet | bitnet |
+| `BLOOM` | bloom | bloom |
+| `CODEGEN` | codegen | codegen |
+| `DEEPSEEK` | deepseek-mla | deepseek2, deepseek3, deepseek_v3, deepseekv2, deepseekv3 |
+| `DEEPSEEK_V4` | deepseek-v4 | deepseek_v4, deepseek4, dflash, deepseek4_dspark, deepseekv4 |
+| `FALCON` | falcon | falcon, falcon3 |
+| `GEMMA` | gemma | gemma, gemma2, gemma3, gemma4, granite, granitemoe, ovis, paligemma |
+| `GPT2` | gpt2 | gpt2 |
+| `GPTJ` | gptj | gptj |
+| `GPTNEO` | gptneo | gptneo |
+| `GPTNEOX` | gptneox | gptneox |
+| `GPTOSS` | gptoss | gptoss |
+| `KIMI_K3` | kimi-k3 | kimi_k3, kimi |
+| `KIMI_VL` | kimi-vl | kimi_vl, kimi_vl_a3b |
+| `LAGUNA` | laguna | laguna |
+| `LLAMA` | llama | llama, stablelm, mosaic, mpt, starcoder, starcoder2, dbrx, jamba, baichuan, baichuan2, exaone, solar, internlm, internlm2, xverse, openelm, nemotron, minicpm, smollm, smollm2, smollm3, apertus, cohere, gptbigcode, internlm3 |
+| `MAMBA` | mamba | mamba |
+| `MISTRAL` | mistral | mistral, pixtral, mixtral |
+| `MOONLIGHT` | moonlight | moonlight |
+| `OLMO` | olmo | olmo, olmo2, olmoe, molmo |
+| `OPT` | opt | opt |
+| `PHI` | phi | phi, phi3, phi4, phi_moe |
+| `QWEN2` | qwen2 | qwen2, deepseek, qwen, qwen2moe |
+| `QWEN2VL` | qwen2vl | qwen2vl, smolvlm, llava, florence |
+| `QWEN3` | qwen3 | qwen3, qwen3moe |
+| `QWEN35` | qwen3.5 | qwen35, qwen35moe |
+| `QWEN3VL` | qwen3vl | qwen3vl |
+| `STEP1` | step1 | step1, step1moe |
+| `WHISPER` | whisper | whisper |
+| `ZAMBA` | zamba | zamba |
+| `ZAMBA2` | zamba2 | zamba2 |
+| `ZAYA` | zaya | zaya |
+
+The **500+ models** floor is long since passed: the FULL census (2026-08-15,
+every page walked) counts **399,220 text-gen checkpoints**, 322,010 with an
+`architectures` field. **299,415 / 322,010 (92.98%) map to an engine token**;
+the 24 validated families gate 293,732 / 322,010 (91.22%). Per-class counts
+are now exact, not sampled: deepseek v2/v3 ~780 (V4 513), qwen3.5 ~4,300
+(loadable via the QWEN35 token, unvalidated), kimi ~84, mamba ~220, whisper
+~20. **NO-MORE-SECRETS caveat:** "the engine loads them" means the arch
+string maps to a token whose layout is validated — not that each of the
+~299k checkpoints was individually run. The full per-arch table is in
+`Testing/census_full_summary.json`.
+
 
 **DONE 2026-08-14 — gpt_neox (5,652 — the biggest miss):** validated on EleutherAI/pythia-70m. Three real bugs found: (1) fused query_key_value is HEAD-INTERLEAVED [q_h,k_h,v_h] per head (llama.cpp conversion reshapes (n_head,3,hd,embed) — raw safetensors is NOT [q|k|v]); (2) **rotary_pct 0.25 → rot_dim = head_dim/4** (new cfg.rope_dim; gguf rope.dimension_count=16 is the tell) — the engine rotated the full head_dim; (3) untied LM head is `embed_out.weight` (loader fell back to the tied embedding → wrong logits). Also: reader rotary_emb_base→rope_theta fallback; parallel attn+FFN (use_parallel_residual) + nn.LayerNorm weight+bias + biases-everywhere + non-gated erf-gelu — all via existing falcon/gpt2 paths. Result: engine ≡ HF-semantics numpy top-8 EXACT + top-1 logits == torch (253:1064.9 vs torch 1078.4 — pythia-70m has near-flat logits, tail shuffles on near-ties; llama.cpp's neox-rope convention disagrees). Coverage now ~199k / 220k (90%).
 
