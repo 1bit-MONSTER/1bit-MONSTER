@@ -118,6 +118,30 @@ int main() {
     check("mt5", RCPP_ARCH_UNKNOWN, "mt5 enc-dec stays UNKNOWN");
     check("bart", RCPP_ARCH_UNKNOWN, "bart enc-dec stays UNKNOWN");
 
+    // ── HF model_type values (reader falls back to model_type when the
+    //    class name maps UNKNOWN — extraction 2026-08-15) ──
+    check("gpt_neox", RCPP_ARCH_GPTNEOX, "model_type gpt_neox");
+    check("gpt_neo", RCPP_ARCH_GPTNEO, "model_type gpt_neo");
+    check("gpt_bigcode", RCPP_ARCH_LLAMA, "model_type gpt_bigcode");
+    check("qwen2_vl", RCPP_ARCH_QWEN2VL, "model_type qwen2_vl");
+    check("qwen3_vl", RCPP_ARCH_QWEN3VL, "model_type qwen3_vl");
+    check("qwen3_moe", RCPP_ARCH_QWEN3, "model_type qwen3_moe");
+    check("qwen2_moe", RCPP_ARCH_QWEN2, "model_type qwen2_moe");
+    check("granite_moe", RCPP_ARCH_GEMMA, "model_type granite_moe");
+    check("gemma3_text", RCPP_ARCH_GEMMA, "model_type gemma3_text");
+    check("llava", RCPP_ARCH_QWEN2VL, "model_type llava");
+    check("llava_llama", RCPP_ARCH_LLAMA, "model_type llava_llama");
+    check("llava_qwen2", RCPP_ARCH_QWEN2, "model_type llava_qwen2");
+    check("deepseek_v2", RCPP_ARCH_DEEPSEEK, "model_type deepseek_v2");
+    check("deepseek_v3", RCPP_ARCH_DEEPSEEK, "model_type deepseek_v3");
+    check("cambrian_qwen", RCPP_ARCH_QWEN2, "model_type cambrian_qwen");
+    check("hunyuan_v1_dense", RCPP_ARCH_LLAMA, "model_type hunyuan_v1_dense");
+    check("seedoss", RCPP_ARCH_LLAMA, "model_type seedoss");
+    check("glm4", RCPP_ARCH_LLAMA, "model_type glm4");
+    check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
+    check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
+    check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");
+
     if (fails) {
         std::printf("ARCH MAPPING: %d/%d FAILED\n", fails, total);
         return 1;
