@@ -98,6 +98,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"rwkv_cpu", "cpu_generic"},
                 "RWKV model — native WKV linear-attention CPU backend → generic CPU"};
     }
+    // GraniteMoeHybrid (Mamba-2 + NoPE GQA + top-k MoE + shared MLP).
+    if (cfg.arch == RCPP_ARCH_GRANITEMOEHYBRID) {
+        return {{"granitemoehybrid_cpu", "cpu_generic"},
+                "GraniteMoeHybrid model — native Mamba2+NoPE-GQA+MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

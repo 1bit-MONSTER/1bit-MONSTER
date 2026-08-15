@@ -374,6 +374,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2c8. GraniteMoeHybrid CPU — Mamba-2 + NoPE GQA + top-k MoE + shared MLP.
+    {
+        BackendInfo info;
+        info.id = "granitemoehybrid_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "GraniteMoeHybrid (Mamba2+GQA+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 35;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "GraniteMoeHybrid CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1601,6 +1621,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("librwkv_backend.so", "create_rwkv_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_rwkv_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // GraniteMoeHybrid backend (Mamba-2 + NoPE GQA + top-k MoE + shared MLP)
+            if (info.id == "granitemoehybrid_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_granitemoehybrid_backend");
+                if (!b) b = try_load_backend("libgranitemoehybrid_backend.so", "create_granitemoehybrid_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_granitemoehybrid_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

@@ -70,6 +70,7 @@ typedef enum {
     RCPP_ARCH_COHERE2 = 36,  // Cohere2 — parallel attn+FFN, mean-centered LayerNorm, adjacent-pair rope, SWA
     RCPP_ARCH_FALCONH1 = 37, // Falcon-H1 — Mamba-2 SSM + GQA attention + MuP multipliers
     RCPP_ARCH_RWKV = 38,    // RWKV-4/5/6 — linear-attention WKV recurrence + channel mixing
+    RCPP_ARCH_GRANITEMOEHYBRID = 39, // GraniteMoeHybrid — Mamba-2 + NoPE GQA + top-k MoE + shared MLP
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -331,6 +332,47 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
     if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2
     // ── end census tail sweep ──
+    if (strcmp(s, "bitllama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (bit_llama)
+    if (strcmp(s, "iquestcoder") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (IQuest-Coder-7B)
+    if (strcmp(s, "mplugowl2llama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (VLM, llama text decoder)
+    if (strcmp(s, "zhinao") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (360Zhinao-7B)
+    if (strcmp(s, "kimilinear") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Kimi-Linear, dense-declared)
+    if (strcmp(s, "flexolmo") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (FlexOLMo, dense-declared)
+    if (strcmp(s, "hymba") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Hymba, dense-declared)
+    if (strcmp(s, "longcatflashngram") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile
+    if (strcmp(s, "arcee") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Arcee trinity-mini)
+    if (strcmp(s, "revision") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Mark1-revision)
+    if (strcmp(s, "tinyllava") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (VLM, llama text decoder)
+    if (strcmp(s, "ernie4_5_") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (ERNIE-4.5 dense)
+    if (strcmp(s, "ernie4_5") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (ERNIE-4.5 dense)
+    if (strcmp(s, "mobilintllama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (mobilint Llama-3.1)
+    if (strcmp(s, "minicpm3") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (MiniCPM3)
+    if (strcmp(s, "yuan") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Tencent Yuan)
+    if (strcmp(s, "anemone") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (law-guardian-llama)
+    if (strcmp(s, "babyllama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile
+    if (strcmp(s, "iquestloopcoder") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile
+    if (strcmp(s, "moshi") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Moshi text tower, dense-declared)
+    if (strcmp(s, "transformer") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (codeparrot-small)
+    if (strcmp(s, "lisa") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (dialogpt-based)
+    if (strcmp(s, "helix") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (dialogpt-small)
+    if (strcmp(s, "sdar") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "ouro") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "doge") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (dialogpt)
+    if (strcmp(s, "skywork") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (skycode)
+    if (strcmp(s, "progen") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (ProGen)
+    if (strcmp(s, "gpt2a") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (distilgpt2)
+    if (strcmp(s, "quiet") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "nandi") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "pegasus") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (gpt-jonsnow)
+    if (strcmp(s, "tinygpt") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (tinygpt2)
+    if (strcmp(s, "ttt") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "avey") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "mega") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (aragpt2-mega)
+    if (strcmp(s, "mobilintqwen3") == 0) return RCPP_ARCH_QWEN3;  // config-verified qwen3 (mobilint Qwen3-0.6B)
+
+    if (strcmp(s, "chess") == 0) return RCPP_ARCH_GPT2;  // ChessForCausalLM (LLM-course chess_transformer — gpt2 layout, verified vs model.py 2026-08-15)
+    if (strcmp(s, "chesstransformer") == 0) return RCPP_ARCH_GPT2;  // model_type chess_transformer (gpt2 layout)
+
     
     if (strcmp(s, "gemma4assistant") == 0) return RCPP_ARCH_GEMMA;  // model_type gemma4_assistant (gemma4 family)
     if (strcmp(s, "phi3v") == 0) return RCPP_ARCH_PHI;  // model_type phi3_v (phi-3 vision, text decoder phi3)
@@ -360,6 +402,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "falconh1") == 0) return RCPP_ARCH_FALCONH1;     // FalconH1ForCausalLM
     if (strcmp(s, "falcon_h1") == 0) return RCPP_ARCH_FALCONH1;    // HF model_type
     if (strcmp(s, "rwkv") == 0) return RCPP_ARCH_RWKV;             // RwkvForCausalLM (RWKV-4)
+    if (strcmp(s, "granitemoehybrid") == 0) return RCPP_ARCH_GRANITEMOEHYBRID;  // GraniteMoeHybridForCausalLM
     // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
     // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──

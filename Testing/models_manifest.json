@@ -654,6 +654,26 @@
    "status": "validated",
    "tier": "full",
    "result": "VALIDATED 2026-08-16 (FULL tier \u2014 real logit spread): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([156, 166, 782]) on a tiny RWKV-4 checkpoint (RwkvForCausalLM, hidden 16, 3 layers), corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/rwkv_engine.cpp: per-layer WKV recurrence (num/den/max state per channel, output=num/den with time_first, state update uses PRE-update num/den), token-shift time mixing (attn: key/value/receptance blend + sigmoid receptance gate; channel mixing: relu2 key, sigmoid receptance), mean-centered LayerNorm (weight+bias, NOT RMSNorm), untied head, inference weight rescale (output projections divided by 2^int(l/rescale_every) at load \u2014 transformers _rescale_layers). rwkv5/rwkv6/rwkv7 use different recurrences and deliberately stay UNKNOWN. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_rwkv.py <dir> <ids> 3"
+  },
+  {
+   "family": "granitemoehybrid",
+   "hf_arch_strings": [
+    "granitemoehybrid"
+   ],
+   "mapping_target": "GRANITEMOEHYBRID",
+   "quirk_flags": {
+    "mamba2": true,
+    "attention": "nope-gqa-scaling-multiplier",
+    "moe": "topk-softmax-gate-up-down",
+    "mlp": "shared-silu-gate",
+    "per_layer_kind": "layers_block_type-linear_attention-full_attention",
+    "multipliers": "residual-embedding-logits"
+   },
+   "e2e_model": "yujiepan/granite-moe-hybrid-tiny-random",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_granitemoehybrid.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact \u2014 small logit spread 0.0386): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([74720, 25708, 92417]) on yujiepan/granite-moe-hybrid-tiny-random, corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/granitemoehybrid_engine.cpp: per-layer layers_block_type dispatch (linear_attention = Mamba-2 mixer with Euler dB=dt*B, dt=softplus(dt+dt_bias) no clamp (time_step_limit (0,inf)), A=-exp(A_log), y=C*h+D*x, gated RMSNorm silu(gate); full_attention = NoPE GQA with scaling = attention_multiplier NOT 1/sqrt(d)), residual x residual_multiplier after each sub-block, top-k softmax MoE (gate_up/down 3D experts) + shared silu-gated MLP summed, embeddings x embedding_multiplier, logits x logits_scaling, tied lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_granitemoehybrid.py <dir> <ids> 3"
   }
  ]
 }

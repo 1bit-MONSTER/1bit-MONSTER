@@ -152,6 +152,7 @@ int main() {
     check("falconh1", RCPP_ARCH_FALCONH1, "falconh1 (Falcon-H1)");
     check("falcon_h1", RCPP_ARCH_FALCONH1, "model_type falcon_h1");
     check("rwkv", RCPP_ARCH_RWKV, "rwkv (RWKV-4)");
+    check("granitemoehybrid", RCPP_ARCH_GRANITEMOEHYBRID, "granitemoehybrid (GraniteMoeHybrid)");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");
