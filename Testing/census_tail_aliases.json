@@ -293,6 +293,12 @@
   "source": "http:EmanuelBP/kblam_phi3_01",
   "token": "PHI"
  },
+ "kimik2": {
+  "checkpoints": 2,
+  "model_type": "qwen3_5",
+  "source": "crawl:openintelligencenet/qwen-3.52b-kimik2.5-claudeopus-4.6-uncensored",
+  "token": "QWEN35"
+ },
  "layerwiseminicpm": {
   "checkpoints": 3,
   "model_type": "minicpm",

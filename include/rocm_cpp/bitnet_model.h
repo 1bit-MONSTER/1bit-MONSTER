@@ -67,6 +67,7 @@ typedef enum {
     RCPP_ARCH_NEMOTRONH = 33, // Nemotron-H — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid
     RCPP_ARCH_QWEN3NEXT = 34, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
     RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
+    RCPP_ARCH_COHERE2 = 36,  // Cohere2 — parallel attn+FFN, mean-centered LayerNorm, adjacent-pair rope, SWA
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -259,6 +260,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "internlmxcomposer2") == 0) return RCPP_ARCH_LLAMA;  // internlm
     if (strcmp(s, "interns2preview") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5_moe
     if (strcmp(s, "kblamphi3") == 0) return RCPP_ARCH_PHI;  // phi3
+    if (strcmp(s, "kimik2") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5
     if (strcmp(s, "layerwiseminicpm") == 0) return RCPP_ARCH_LLAMA;  // minicpm
     if (strcmp(s, "leanllama") == 0) return RCPP_ARCH_LLAMA;  // llama
     if (strcmp(s, "leanmixtral") == 0) return RCPP_ARCH_MISTRAL;  // mixtral
@@ -286,6 +288,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "mybaichuan") == 0) return RCPP_ARCH_LLAMA;  // baichuan
     if (strcmp(s, "myqwen") == 0) return RCPP_ARCH_QWEN2;  // qwen
     if (strcmp(s, "myxverse") == 0) return RCPP_ARCH_LLAMA;  // xverse
+    if (strcmp(s, "nemotronhaugmented") == 0) return RCPP_ARCH_NEMOTRONH;  // nemotron_h
     if (strcmp(s, "notagen") == 0) return RCPP_ARCH_GPT2;  // gpt2
     if (strcmp(s, "olmo2forsequenceclassification") == 0) return RCPP_ARCH_OLMO;  // olmo2
     if (strcmp(s, "olmo3sink") == 0) return RCPP_ARCH_OLMO;  // olmo3
@@ -325,19 +328,10 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "vlclipgptneox") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
     if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
     if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "gemma4assistant") == 0) return RCPP_ARCH_GEMMA;  // model_type gemma4_assistant (gemma4 family)
-    if (strcmp(s, "phi3v") == 0) return RCPP_ARCH_PHI;  // model_type phi3_v (phi-3 vision, text decoder phi3)
-    if (strcmp(s, "phi4mm") == 0) return RCPP_ARCH_PHI;  // model_type phi4mm (phi-4 multimodal, text decoder phi4)
-    if (strcmp(s, "moondream1") == 0) return RCPP_ARCH_PHI;  // model_type moondream1 (moondream VLM, phi-1.5 text decoder)
-    if (strcmp(s, "llavamistral") == 0) return RCPP_ARCH_MISTRAL;  // model_type llava_mistral (VLM, mistral text decoder)
-    if (strcmp(s, "sparsemistral") == 0) return RCPP_ARCH_MISTRAL;  // model_type sparse_mistral (mistral layout)
-    if (strcmp(s, "mimov2") == 0) return RCPP_ARCH_QWEN2;  // model_type mimo_v2 (MiMo, qwen2-derived)
-    if (strcmp(s, "mplugowl2") == 0) return RCPP_ARCH_LLAMA;  // model_type mplug_owl2 (VLM, llama-2 text decoder)
-    if (strcmp(s, "orion") == 0) return RCPP_ARCH_LLAMA;  // model_type orion (Orion-14B, llama layout)
-    if (strcmp(s, "qwen35text") == 0) return RCPP_ARCH_QWEN35;  // model_type qwen3_5_text (tag form of qwen3_5)
-    if (strcmp(s, "refinedwebmodel") == 0) return RCPP_ARCH_FALCON;  // model_type RefinedWebModel (falcon-rw layout)
-    if (strcmp(s, "phimsft") == 0) return RCPP_ARCH_PHI;  // model_type phi-msft (Microsoft Phi)
     // ── end census tail sweep ──
+    
+    
+    
     
     if (strcmp(s, "nemotronh") == 0) return RCPP_ARCH_NEMOTRONH; // NemotronHForCausalLM
     if (strcmp(s, "nemotron_h") == 0) return RCPP_ARCH_NEMOTRONH; // HF model_type
@@ -345,6 +339,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qwen3_next") == 0) return RCPP_ARCH_QWEN3NEXT;  // HF model_type
     if (strcmp(s, "minimaxm2") == 0) return RCPP_ARCH_MINIMAXM2;   // MiniMaxM2ForCausalLM
     if (strcmp(s, "minimax_m2") == 0) return RCPP_ARCH_MINIMAXM2;  // HF model_type
+    if (strcmp(s, "cohere2") == 0) return RCPP_ARCH_COHERE2;       // Cohere2ForCausalLM
+    if (strcmp(s, "cohere2_model") == 0) return RCPP_ARCH_COHERE2;  // HF model_type
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

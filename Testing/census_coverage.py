@@ -7,12 +7,17 @@ gate: "sweep script output == documented count". Run:
 
 The script compiles a tiny probe against include/rocm_cpp/bitnet_model.h so
 coverage is measured by the real mapping function, not a copy. The strip logic
-mirrors src/safetensors_reader.cpp (lowercase + suffix strip).
+mirrors src/safetensors_reader.cpp (lowercase + suffix strip), and the
+model_type fallback mirrors the reader's 2026-08-15 behavior: an unknown
+class name resolves through its config's model_type (as-is, then
+underscore/dash-stripped) — the dominant model_type per class comes from
+census_modeltype_aggregate.json.
 """
 import json, os, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COUNTS = os.path.join(ROOT, "Testing", "census_arch_counts.json")
+AGG = os.path.join(ROOT, "Testing", "census_modeltype_aggregate.json")
 OUT = os.path.join(ROOT, "Testing", "census_full_summary.json")
 
 STRIP_SUFFIXES = ("forcausallm", "lmheadmodel", "model",
@@ -26,25 +31,10 @@ NON_TEXT_GEN = {
     "parlertts",      # TTS (Parler-TTS)
     "t5", "mt5", "t5with", "umt5",        # encoder-decoder
     "bart", "mbart", "marian", "longformerbart",  # encoder-decoder
-    "bert", "roberta",                    # masked-LM heads (not decoders)
+    "t5gemma",                            # T5+Gemma hybrid (encoder-decoder)
+    "bert", "roberta", "xlmroberta", "xlnet",  # masked-LM / encoder heads
 }
 
-# model_type values map directly through rcpp_arch_from_string (snake_case
-# aliases live in bitnet_model.h); the reader falls back to model_type when
-# the class name maps UNKNOWN. This mirrors src/safetensors_reader.cpp.
-MT_MAP = {
-    "gpt_neox": "gptneox", "gpt_neo": "gptneo", "gpt_j": "gptj",
-    "gpt_bigcode": "gptbigcode", "qwen2_vl": "qwen2vl", "qwen3_vl": "qwen3vl",
-    "qwen3_moe": "qwen3moe", "qwen2_moe": "qwen2moe", "mistral_moe": "mixtral",
-    "granite_moe": "granitemoe", "gemma3_text": "gemma3", "gemma4_text": "gemma4",
-    "llava": "llava", "llava_llama": "llavallama", "llava_qwen2": "llavaqwen2",
-    "deepseek_v2": "deepseekv2", "deepseek_v3": "deepseekv3",
-    "deepseek_v4": "deepseekv4", "stablelm_epoch": "stablelmepoch",
-    "openelm": "openelm", "cohere": "cohere", "cambrian_qwen": "cambrianqwen",
-    "hunyuan_v1_dense": "hunyuandensev1", "exaone4": "exaone4",
-    "nemotron": "nemotron", "fp8_qwen3": "fp8_qwen3", "fp8_qwen2": "fp8_qwen2",
-    "fp8_llama": "fp8_llama", "bit_llama": "bitllama",
-}
 
 def strip_arch(arch: str) -> str:
     low = arch.lower()
@@ -52,6 +42,7 @@ def strip_arch(arch: str) -> str:
         if len(low) > len(suf) and low.endswith(suf):
             return low[: -len(suf)]
     return low
+
 
 def build_mapper():
     """Compile a stdin->token probe linked against the real header."""
@@ -74,6 +65,15 @@ int main() {
                     src, "-o", exe], check=True)
     return exe
 
+
+def probe(mapper, keys):
+    if not keys:
+        return []
+    out = subprocess.run([mapper], input="\n".join(keys), text=True,
+                         capture_output=True, check=True)
+    return [int(t) for t in out.stdout.split()]
+
+
 def main():
     raw = json.load(open(COUNTS))
     counts = raw["counts"]
@@ -91,32 +91,65 @@ def main():
         if s in NON_TEXT_GEN:
             excluded[s] = stripped.pop(s)
 
+    agg = json.load(open(AGG))
+    # stripped class -> dominant (model_type, count) from the aggregate
+    mt_of = {}
+    for mt, info in agg.items():
+        for a in info.get("top_archs", []):
+            sk = strip_arch(a["arch"])
+            if sk not in mt_of or a["n"] > mt_of[sk][1]:
+                mt_of[sk] = (mt, a["n"])
+
+    # secondary evidence: the crawl index (census_model_index.json, id ->
+    # _text tags) supplies model_type for classes the aggregate truncated.
+    INDEX = os.path.join(ROOT, "Testing", "census_model_index.json")
+    if os.path.exists(INDEX):
+        import re as _re
+        missing = [s for s in stripped if s not in mt_of]
+        if missing:
+            index = json.load(open(INDEX))
+            pat = _re.compile("|".join(sorted(missing, key=len, reverse=True)))
+            for mid, mts in index.items():
+                m = pat.search(mid)
+                if m and m.group(0) not in mt_of:
+                    mts2 = [t for t in mts if t != "none"]
+                    if len(mts2) == 1:
+                        mt_of[m.group(0)] = (mts2[0], 1)
+
     mapper = build_mapper()
-    probe = subprocess.run([mapper], input="\n".join(stripped), text=True,
-                           capture_output=True, check=True)
-    toks = [int(t) for t in probe.stdout.split()]
-    # class-name mapping first
+    toks = probe(mapper, list(stripped))
     class_mapped = {s: t != 255 for s, t in zip(stripped, toks)}
-    # model_type fallback (mirror the reader): unknown class -> try model_type
-    # NOTE: census_arch_counts.json only stores class names, so model_type
-    # fallback is modeled per-class from the known MT_MAP (the full per-model
-    # extraction lives in /tmp/census_full_data.jsonl + docs).
-    fallback = {}
-    for mt, alias in MT_MAP.items():
-        if mt in stripped and not class_mapped.get(mt):
-            fallback[mt] = stripped[mt]  # count via the model_type-as-class proxy
-    # Re-derive per-class counts with fallback applied.
+
+    # model_type fallback (mirror the reader): unknown class -> model_type
+    # as-is -> underscore/dash-stripped. Batch-probe all distinct model_types.
+    mts = set()
+    for s in stripped:
+        if class_mapped.get(s):
+            continue
+        e = mt_of.get(s)
+        if e and e[0] != "<none>":
+            mts.add(e[0])
+            mts.add(e[0].replace("_", "").replace("-", ""))
+    mt_toks = dict(zip(mts, probe(mapper, list(mts))))
+
     merged = {}
     for s, c in stripped.items():
-        key = s
-        if not class_mapped.get(s) and MT_MAP.get(s) in stripped:
-            key = MT_MAP[s]  # route through the alias token
-        merged[key] = merged.get(key, 0) + c
+        if class_mapped.get(s):
+            merged[s] = merged.get(s, 0) + c
+            continue
+        e = mt_of.get(s)
+        if not e or e[0] == "<none>":
+            continue  # no model_type evidence — stays uncovered
+        mt = e[0]
+        if mt_toks.get(mt, 255) != 255:
+            merged[mt] = merged.get(mt, 0) + c
+        else:
+            n = mt.replace("_", "").replace("-", "")
+            if mt_toks.get(n, 255) != 255:
+                merged[n] = merged.get(n, 0) + c
+            # else: model_type unknown to registry — stays uncovered
 
-    merged_lines = "\n".join(merged)
-    probe2 = subprocess.run([mapper], input=merged_lines, text=True,
-                            capture_output=True, check=True)
-    merged_toks = [int(t) for t in probe2.stdout.split()]
+    merged_toks = probe(mapper, list(merged))
 
     # token id -> family name (mirror bitnet_model.h enum)
     hdr = open(os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")).read()
@@ -148,6 +181,7 @@ def main():
     json.dump(summary, open(OUT, "w"), indent=1, sort_keys=True)
     print(f"total={summary['total']} with_arch={with_arch} "
           f"registry_covered={covered} ({100*covered/with_arch:.2f}%) -> {OUT}")
+
 
 if __name__ == "__main__":
     main()

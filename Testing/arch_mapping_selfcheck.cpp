@@ -151,7 +151,7 @@ int main() {
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");
 
-                        // ── census tail sweep checks ──
+                                    // ── census tail sweep checks ──
     check("adavocabgemma", RCPP_ARCH_GEMMA, "adavocabgemma");
     check("aicraftar-tharo.g-conditionalgeneration", RCPP_ARCH_QWEN2VL, "aicraftar-tharo.g-conditionalgeneration");
     check("antihal", RCPP_ARCH_GEMMA, "antihal");
@@ -201,6 +201,7 @@ int main() {
     check("internlmxcomposer2", RCPP_ARCH_LLAMA, "internlmxcomposer2");
     check("interns2preview", RCPP_ARCH_QWEN35, "interns2preview");
     check("kblamphi3", RCPP_ARCH_PHI, "kblamphi3");
+    check("kimik2", RCPP_ARCH_QWEN35, "kimik2");
     check("layerwiseminicpm", RCPP_ARCH_LLAMA, "layerwiseminicpm");
     check("leanllama", RCPP_ARCH_LLAMA, "leanllama");
     check("leanmixtral", RCPP_ARCH_MISTRAL, "leanmixtral");
@@ -228,6 +229,7 @@ int main() {
     check("mybaichuan", RCPP_ARCH_LLAMA, "mybaichuan");
     check("myqwen", RCPP_ARCH_QWEN2, "myqwen");
     check("myxverse", RCPP_ARCH_LLAMA, "myxverse");
+    check("nemotronhaugmented", RCPP_ARCH_NEMOTRONH, "nemotronhaugmented");
     check("notagen", RCPP_ARCH_GPT2, "notagen");
     check("olmo2forsequenceclassification", RCPP_ARCH_OLMO, "olmo2forsequenceclassification");
     check("olmo3sink", RCPP_ARCH_OLMO, "olmo3sink");

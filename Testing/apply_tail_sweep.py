@@ -34,6 +34,13 @@ def patch(path, block, marker):
     print("patched:", path)
 
 
+def repo_tokens(repo):
+    h = os.path.join(repo, "include", "rocm_cpp", "bitnet_model.h")
+    import re
+    hdr = open(h).read()
+    return {name for name, _ in re.findall(r"RCPP_ARCH_(\w+)\s*=\s*(\d+)", hdr)}
+
+
 def main():
     a = json.load(open(ALIASES))
     lines = ["    %s (auto-generated, model_type-verified) ──" % "// ── 2026-08-15 census tail sweep"]
@@ -48,6 +55,15 @@ def main():
         checks.append('    check("%s", RCPP_ARCH_%s, "%s");' % (s, v["token"], s))
     cblock = "\n".join(checks) + "\n"
 
+    def filter_block(blk, toks):
+        keep = []
+        for ln in blk.split("\n"):
+            if ln.strip().startswith("check(") and not any(
+                    "RCPP_ARCH_%s" % t in ln for t in toks):
+                continue
+            keep.append(ln)
+        return "\n".join(keep) + "\n"
+
     repos = []
     for i, arg in enumerate(sys.argv[1:]):
         if arg == "--repo":
@@ -55,9 +71,14 @@ def main():
     if not repos:
         repos = ["."]
     for r in repos:
+        toks = repo_tokens(r)
+        rblock = "\n".join(
+            ln for ln in block.split("\n")
+            if not ln.strip().startswith("if (strcmp") or
+            any("RCPP_ARCH_%s" % t in ln for t in toks)) + "\n"
         h = os.path.join(r, "include", "rocm_cpp", "bitnet_model.h")
         if os.path.exists(h):
-            patch(h, block, HEADER_MARK)
+            patch(h, rblock, HEADER_MARK)
         sc = os.path.join(r, "Testing", "arch_mapping_selfcheck.cpp")
         if os.path.exists(sc):
             src = open(sc).read()
@@ -67,7 +88,7 @@ def main():
                 src = src[:start] + src[end:]
             anchor = "    if (fails) {"
             assert src.count(anchor) == 1, sc
-            src = src.replace(anchor, cblock.rstrip("\n") + "\n" + anchor, 1)
+            src = src.replace(anchor, filter_block(cblock, toks).rstrip("\n") + "\n" + anchor, 1)
             open(sc, "w").write(src)
             print("patched:", sc)
     print("aliases applied: %d" % len(a))
