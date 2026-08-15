@@ -199,6 +199,14 @@ def main():
             mt, n = cc.most_common(1)[0]
             if sk not in mt_of or n > mt_of[sk][1]:
                 mt_of[sk] = (mt, n)
+    # (3b) dump-evidence restore (census_dump_evidence_restore.json — the
+    # per-class dominant model_types captured from /tmp/census_full_data.jsonl
+    # before it was deleted; preserves the dump's fallback contribution).
+    RESTORE = os.path.join(ROOT, "Testing", "census_dump_evidence_restore.json")
+    if os.path.exists(RESTORE):
+        for s, mt in json.load(open(RESTORE)).items():
+            if s not in mt_of:
+                mt_of[s] = (mt, 5)
     # (4) crawl index (census_model_index.json — model_id -> _text tags):
     # substring match for classes with no other evidence (the model's tag is
     # its config model_type). Regenerated auth-free via the Link-header cursor.
