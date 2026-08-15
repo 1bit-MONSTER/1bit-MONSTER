@@ -57,6 +57,7 @@ int main() {
     check("olmo3", RCPP_ARCH_OLMO, "olmo3");
     check("gpt2lmheadcustom", RCPP_ARCH_GPT2, "gpt2 custom");
     check("yi", RCPP_ARCH_LLAMA, "yi");
+    check("glm4", RCPP_ARCH_LLAMA, "glm4");
     check("decilm", RCPP_ARCH_LLAMA, "decilm");
     check("hunyuan", RCPP_ARCH_LLAMA, "hunyuan");
     check("nanbeige", RCPP_ARCH_LLAMA, "nanbeige");

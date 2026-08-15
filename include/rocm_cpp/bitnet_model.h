@@ -139,6 +139,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "baichuan2")  == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "BaichuanForCausalLM") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "exaone")     == 0) return RCPP_ARCH_LLAMA;  // LG EXAONE 3 (LLaMA-layout)
+    if (strcmp(s, "glm4")       == 0) return RCPP_ARCH_LLAMA;  // GLM-4 (llama + partial-rope 0.5 + qkv bias)
     if (strcmp(s, "ExaoneForCausalLM")   == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "solar")      == 0) return RCPP_ARCH_LLAMA;  // upstage SOLAR (LLaMA-layout)
     if (strcmp(s, "solaropen")  == 0) return RCPP_ARCH_LLAMA;  // SolarOpen (llama-layout)
