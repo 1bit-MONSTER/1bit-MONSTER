@@ -33,6 +33,7 @@
   "LFM2": 950,
   "LLAMA": 111916,
   "MAMBA": 181,
+  "MINIMAXM2": 333,
   "MISTRAL": 31054,
   "NEMOTRONH": 411,
   "OLMO": 2147,
@@ -52,7 +53,7 @@
  },
  "n_archs": 2142,
  "no_arch": 77210,
- "registry_covered": 307489,
+ "registry_covered": 307822,
  "total": 399220,
  "with_arch": 318041
 }

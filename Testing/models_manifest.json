@@ -575,6 +575,24 @@
       "status": "validated",
       "tier": "numpy-structural",
       "result": "VALIDATED 2026-08-15 (numpy-structural): engine per-layer hidden states, attention probs/scores/acc EXACT vs numpy port of modeling_qwen3_next.py 5.14 on tiny-random/qwen3-next-moe (corr 0.9997, top-5 exact vs torch). New bespoke CPU backend src/qwen3next_engine.cpp (GatedDeltaNet delta-rule: in_proj_qkvz+in_proj_ba, causal depthwise conv w[0]=oldest, q/k l2norm + q scaled 1/sqrt(KHD), recurrent delta rule state*=exp(g), kv_mem, delta=(v-kv_mem)*beta, st+=k*delta, out=sum st*q; g=-exp(A_log)*softplus(a+dt_bias); norm DIRECT weight * silu(z); full attn q_proj [2*hd] INTERLEAVED q|gate split, q/k RMSNorm (1+w), partial rope, attn*sigmoid(gate); softmax router MoE + shared expert + sigmoid shared_gate). Argmax drifts on the degenerate random-init checkpoint (f32 vs f64 floor); clean 20/20 needs a real Qwen3-Next checkpoint (deferred). Gate: python3 Testing/e2e_numpy_ref_qwen3next.py <dir> <ids> 10"
+    },
+    {
+      "family": "minimax-m2",
+      "hf_arch_strings": [
+        "minimaxm2",
+        "minimax_m2"
+      ],
+      "mapping_target": "MINIMAXM2",
+      "quirk_flags": {
+        "attention": "gqa-flattened-qk-rmsnorm-partial-rope",
+        "moe": "sigmoid-correction-rawsigmoid-norm",
+        "experts": "w1-w2-w3-gated"
+      },
+      "e2e_model": "tiny-random/minimax-m2",
+      "oracle": "numpy ref (Testing/e2e_numpy_ref_minimaxm2.py)",
+      "status": "validated",
+      "tier": "full",
+      "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real-logit model): engine 10-token chain == numpy ref EXACTLY, corr 1.0000, top-5 exact vs torch on tiny-random/minimax-m2. New bespoke CPU backend src/minimaxm2_engine.cpp: GQA attention with SINGLE RMSNorm over flattened q (NH*HD) and k (NKV*HD) dims (NOT per-head \u2014 q_norm/k_norm weights are full-dim), partial rope (rotary_dim 16, theta 5e6), pos-major KV cache; sigmoid MoE: router sigmoid + e_score_correction_bias, top-k on sigmoid+correction, weights from RAW sigmoid normalized (\u00f7sum), gated w1/w2/w3 experts (silu(w1x)*(w3x) then w2). Clean 20/20 \u2014 the tiny model has real logit spread so argmax is exact. Gate: python3 Testing/e2e_numpy_ref_minimaxm2.py <dir> <ids> 10 == engine-gen"
     }
   ]
 }

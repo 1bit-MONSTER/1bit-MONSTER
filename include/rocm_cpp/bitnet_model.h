@@ -66,6 +66,7 @@ typedef enum {
     RCPP_ARCH_LFM2 = 32,    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
     RCPP_ARCH_NEMOTRONH = 33, // Nemotron-H — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid
     RCPP_ARCH_QWEN3NEXT = 34, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
+    RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -342,6 +343,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "nemotron_h") == 0) return RCPP_ARCH_NEMOTRONH; // HF model_type
     if (strcmp(s, "qwen3next") == 0) return RCPP_ARCH_QWEN3NEXT;  // Qwen3NextForCausalLM
     if (strcmp(s, "qwen3_next") == 0) return RCPP_ARCH_QWEN3NEXT;  // HF model_type
+    if (strcmp(s, "minimaxm2") == 0) return RCPP_ARCH_MINIMAXM2;   // MiniMaxM2ForCausalLM
+    if (strcmp(s, "minimax_m2") == 0) return RCPP_ARCH_MINIMAXM2;  // HF model_type
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

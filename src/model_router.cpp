@@ -88,6 +88,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"nemotron_h_cpu", "cpu_generic"},
                 "Nemotron-H model — native Mamba2+attn+MLP+MoE CPU backend → generic CPU"};
     }
+    // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
+    if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
+        return {{"minimaxm2_cpu", "cpu_generic"},
+                "MiniMax-M2 model — native GQA+sigmoid-MoE CPU backend → generic CPU"};
+    }
     // Qwen3-Next (GatedDeltaNet linear attention + full GQA + MoE hybrid).
     if (cfg.arch == RCPP_ARCH_QWEN3NEXT) {
         return {{"qwen3next_cpu", "cpu_generic"},
