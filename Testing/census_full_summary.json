@@ -46,6 +46,7 @@
   "LLAMA": 112735,
   "MAMBA": 181,
   "MELLUM": 286,
+  "MINIMAX": 4,
   "MINIMAXM2": 333,
   "MISTRAL": 31073,
   "NANOCHAT": 81,
@@ -67,7 +68,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 312520,
+ "registry_covered": 312524,
  "total": 399220,
  "with_arch": 317978
 }

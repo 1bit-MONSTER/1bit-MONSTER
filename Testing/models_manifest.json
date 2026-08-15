@@ -792,6 +792,26 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([30229, 23988, 12777]) on hf-tiny-v2/tiny-random-PhiMoEForCausalLM. New bespoke CPU backend src/phimoe_engine.cpp: LayerNorm (weight+bias, NOT RMSNorm) around attention and MoE, GQA attention (full rope, repeat_interleave kv mapping), ALL layers sparsemixer MoE (router logits -> threshold mask ((max-score)/|scores|.clamp(min=max)) > 2*jitter_eps -> -inf, softmax over masked gates, top-2 sequential selection, per-expert w1/w3->gelu->w2), final model.norm LayerNorm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_phimoe.py <dir> <ids> 3"
+  },
+  {
+   "family": "minimax",
+   "hf_arch_strings": [
+    "minimax"
+   ],
+   "mapping_target": "MINIMAX",
+   "quirk_flags": {
+    "attention": "lightning-linear-attention-recurrent-kv",
+    "full_attention": "gqa-full-rope",
+    "moe": "softmax-router-topk-norm",
+    "norm": "rmsnorm",
+    "residual": "normed-input-alpha-beta-blend",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-MiniMaxForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_minimax.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([144314, 21548, 140145]) on hf-tiny-v2/tiny-random-MiniMaxForCausalLM. New bespoke CPU backend src/minimax_engine.cpp: per-layer layer_types dispatch \u2014 lightning_attention (act(qkv_proj)->q/k/v, per-head [HD,HD] state update state=exp(-slope_rate)*state + k^T v (kv[h,o,d]=k[h,o]*v[h,d] \u2014 transposed outer, found 2026-08-16), out=q@state, RMSNorm eps 1e-6, sigmoid output_gate, out_proj) vs full_attention (GQA+rope), residual = NORMED input with alpha/beta blend (NOT the pre-norm hidden), softmax-router MoE (topk, /sum, per-expert w1/w3->gelu->w2), final model.norm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_minimax.py <dir> <ids> 3"
   }
  ]
 }

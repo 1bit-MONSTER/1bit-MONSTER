@@ -133,6 +133,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"phimoe_cpu", "cpu_generic"},
                 "PhiMoE model — native GQA+LayerNorm+sparsemixer-MoE CPU backend → generic CPU"};
     }
+    // MiniMax (lightning linear attn + GQA + MoE).
+    if (cfg.arch == RCPP_ARCH_MINIMAX) {
+        return {{"minimax_cpu", "cpu_generic"},
+                "MiniMax model — native lightning-attn+GQA+MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},
