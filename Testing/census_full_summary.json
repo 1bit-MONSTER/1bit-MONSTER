@@ -18,6 +18,7 @@
   "LLAMA": 111760,
   "MAMBA": 181,
   "MISTRAL": 30945,
+  "NEMOTRONH": 409,
   "OLMO": 2147,
   "OPT": 2100,
   "PHI": 5022,
@@ -34,7 +35,7 @@
  },
  "n_archs": 2155,
  "no_arch": 77210,
- "registry_covered": 305959,
+ "registry_covered": 306368,
  "total": 399220,
  "with_arch": 322029
 }

@@ -141,6 +141,8 @@ int main() {
     check("glm4moe", RCPP_ARCH_LLAMA, "glm4moe (GLM-4-MoE)");
     check("glmmoedsa", RCPP_ARCH_LLAMA, "glmmoedsa (GLM-4.5 MoE)");
     check("glm4moelite", RCPP_ARCH_LLAMA, "glm4moelite (GLM-4-MoE-Lite)");
+    check("nemotronh", RCPP_ARCH_NEMOTRONH, "nemotronh (Nemotron-H)");
+    check("nemotron_h", RCPP_ARCH_NEMOTRONH, "model_type nemotron_h");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");
