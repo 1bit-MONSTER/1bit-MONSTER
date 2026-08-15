@@ -134,15 +134,18 @@ class Eagle3Draft(nn.Module):
         """Teacher-force a 7-token window; returns (hidden [K,H], targets [K])."""
         self._ks, self._vs = [], []
         hs, tgts = [], []
-        # #1509: deployment-equivalent — at decode the target hasn't computed
-        # the future positions yet, so the draft gets the BLOCK-START trunk for
-        # every step and evolves its own hidden state (the old per-position
-        # trunk[i] is only available under teacher forcing and made the draft
-        # untrainable for the real harness behavior).
-        trunk0 = trunk[w0]
+        # #1509: MTP trunk evolution — position 0 uses the target trunk at the
+        # window start; every later position uses the draft's OWN previous
+        # hidden state as its trunk (DeepSeek MTP style). This matches
+        # deployment exactly: the target hasn't computed future positions, so
+        # the draft must carry its own state forward. (Constant-trunk training
+        # collapsed the draft to a fixed token; per-position target trunks are
+        # only available under teacher forcing.)
+        h_in = trunk[w0]
         for k in range(min(TTT, len(toks) - 1 - w0)):
             i = w0 + k
-            h, kk, vv = self.step(trunk0, toks[i], k, cos_t, sin_t)
+            h, kk, vv = self.step(h_in, toks[i], k, cos_t, sin_t)
+            h_in = h.repeat(NTL)
             hs.append(h)
             tgts.append(toks[i + 1])
         hs_t = torch.stack(hs)
@@ -292,6 +295,22 @@ def main():
             n_pos = 0
             loss_sum = torch.zeros(())
             with autocast:
+                # #1509: deployment window — the harness starts a draft block at
+                # the answer boundary with an EMPTY cache. Regular windows start
+                # at multiples of 7 (non-empty cache after the first step), so
+                # the empty-cache start was never trained. Add an explicit
+                # window at the boundary position.
+                if any(msk):
+                    as_start = msk.index(1)
+                    if as_start >= 1 and as_start < len(ids):
+                        w0d = as_start - 1
+                        hs, tgts = draft.window(trunk, ids, w0d, cos_t, sin_t)
+                        logits = hs @ embed.t()
+                        k = len(tgts)
+                        w = torch.tensor([msk[w0d + 1 + j] for j in range(k)], device=device, dtype=torch.float32)
+                        if w.sum() > 0:
+                            n_pos += 1
+                            loss_sum = loss_sum + (F.cross_entropy(logits.float(), tgts, reduction='none') * w).sum() / w.sum()
                 for w0 in range(0, len(ids) - 1, TTT):                          # non-overlapping windows
                     hs, tgts = draft.window(trunk, ids, w0, cos_t, sin_t)       # [K, H], [K]
                     logits = hs @ embed.t()                                     # [K, V] (tied, frozen)

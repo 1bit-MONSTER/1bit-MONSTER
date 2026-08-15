@@ -248,7 +248,6 @@ void BackendManager::discover() {
     }
 
     // 2c2. Zamba2 Vulkan — Mamba2 SSD on the ZINC C++ compute path (P1 decode).
-    // Gated by ZAMBA2_VK=1 in backend_zamba2_vulkan.cpp init(); without it the
     // backend declines and routing falls through to zamba2_gpu/HIP as before.
     {
         BackendInfo info;
@@ -270,6 +269,28 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 2c3. Nemotron-H CPU — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE
+    // hybrid (per-layer layers_block_type). CPU-only reference backend;
+    // created on-demand by architecture (nemotron_h).
+    {
+        BackendInfo info;
+        info.id = "nemotron_h_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "Nemotron-H hybrid (Mamba2+attn+MLP+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 30;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Nemotron-H CPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -1472,6 +1493,16 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libzamba2_backend.so", "create_zamba2_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_zamba2_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // Nemotron-H backend (Nemotron-H 4B/8B) — Mamba-2 + NoPE GQA +
+            // relu2 MLP + sigmoid MoE hybrid (per-layer layers_block_type)
+            if (info.id == "nemotron_h_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_nemotron_h_backend");
+                if (!b) b = try_load_backend("libnemotron_h_backend.so", "create_nemotron_h_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_nemotron_h_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

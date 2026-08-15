@@ -1,141 +1,123 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>1bit MONSTER — One binary to rule them all</title>
-<meta name="description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since. Zero Python, MIT-licensed.">
-<meta name="keywords" content="AMD Strix Halo, NPU inference, 1-bit LLM, ternary inference, TQ2 quantization, 1BP format, BitNet, local AI, model-agnostic inference engine, NPU GPU fused engine, ROCm, XDNA 2, open source NPU driver, FastFlowLM alternative, GGUF inference, Zyphra Zamba2, C++ LLM inference, AI inference without Python">
-<meta property="og:title" content="1bit MONSTER — One binary to rule them all">
-<meta property="og:description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Reverse-engineered from a closed-source AMD NPU stack in 4 days. Zero Python. MIT.">
-<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:url" content="https://1bit.monster">
-<meta property="og:type" content="website">
-<meta name="robots" content="index, follow">
-<meta name="theme-color" content="#0B0B0B">
-<link rel="canonical" href="https://1bit.monster">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="1bit MONSTER — One binary to rule them all">
-<meta name="twitter:description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Reverse-engineered from a closed-source AMD NPU stack in 4 days. Zero Python. MIT.">
-<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="alternate icon" href="/favicon.ico">
-<link rel="preconnect" href="https://fonts.googleapis.com">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1bit MONSTER — one binary to rule them all</title>
+<meta name="description" content="94% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python. MIT.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/1bm.css">
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
-<style>
-  html, body { margin: 0; padding: 0; background: #0B0B0B; }
-  a { color: #C6FF3D; text-decoration: none; }
-  a:hover { color: #EDEFEA; }
-</style>
 </head>
 <body>
-<div style="display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; background: #0B0B0B; color: #EDEFEA; font-family: 'DM Mono', monospace;">
-  <div style="border-right: 1px solid #232323; padding: 30px 24px; display: flex; flex-direction: column; gap: 26px;">
-    <div style="display: flex; flex-direction: column; gap: 12px;">
-      <span style="font-family: 'DM Serif Display', serif; font-size: 62px; line-height: .8; letter-spacing: -0.04em; color: #C6FF3D; display: block; margin-bottom: 6px;">1bm</span>
-      <span style="font-family: 'DM Serif Display', serif; font-size: 27px; line-height: 1.05; color: #EDEFEA;">1bit<br>monster</span>
-      <span style="font-size: 12px; line-height: 1.6; color: #FFD83D;">"Sorry but not sorry." <span style="color: #EDEFEA;">— bong-water-water-bong</span></span>
+<div class="shell">
+  <aside class="rail">
+    <div>
+      <span class="mark">1bm</span>
+      <span class="wordmark">1bit<br>MONSTER</span>
+      <p class="quote">"Sorry but not sorry." <span>— bong-water-water-bong</span></p>
     </div>
-    <div style="display: flex; flex-direction: column; gap: 11px; font-size: 13px;">
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md" style="color: #B9BEB4;">docs</a>
-      <a href="#benchmarks" style="color: #B9BEB4;">benchmarks</a>
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/roadmap.md" style="color: #B9BEB4;">roadmap</a>
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/jarvis.md" style="color: #B9BEB4;">jarvis pipeline</a>
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" style="color: #B9BEB4;">the story</a>
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color: #C6FF3D;">github</a>
-    </div>
-    <div style="display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid #232323; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #B9BEB4;">
-      <span style="width: 7px; height: 7px; background: #C6FF3D; border-radius: 999px;"></span>engine online
-    </div>
-    <div style="margin-top: auto; font-size: 11px; line-height: 1.8; color: #A0A599;">MIT<br>pure C++23<br>no python<br>5 backends</div>
-  </div>
-
-  <div>
-    <div style="display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 44px; border-bottom: 1px solid #232323; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: #A0A599;">
-      <span>npu + gpu + cpu · one binary · zero python</span>
-      <span>measured 2026-08-01</span>
-    </div>
-
-    <div style="padding: 64px 44px 44px; display: flex; flex-direction: column; gap: 22px;">
-      <h1 style="margin: 0; font-family: 'DM Serif Display', serif; font-size: 80px; line-height: .98; letter-spacing: -0.02em; max-width: 19ch;">One binary to rule <span style="color: #C6FF3D;">them all</span></h1>
-      <p style="margin: 0; max-width: 58ch; font-size: 15px; line-height: 1.75; color: #B9BEB4;">An open-source, pure-C++ inference engine — <span style="color: #EDEFEA;">model-agnostic and hardware-agnostic.</span> NPU + GPU + CPU in one binary. Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.</p>
-      <pre style="margin: 0; padding: 16px 18px; border: 1px solid #232323; font-size: 13px; line-height: 1.9; color: #D5D9D0; white-space: pre-wrap;"><span style="color: #A0A599;"># build from source — no installer yet</span>
+    <nav>
+      <a href="index.html" aria-current="page">overview</a>
+      <a href="models.html">models</a>
+      <a href="benchmarks.html">benchmarks</a>
+      <a href="docs.html">docs</a>
+      <a href="story.html">the story</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
+    </nav>
+    <div class="status"><span class="dot"></span>engine online</div>
+    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
+  </aside>
+  <main>
+    <div class="topbar"><span>94% HF coverage · any hardware · one binary</span><span>measured 2026-08-01</span></div>
+    <div class="hero">
+      <h1>One binary to rule <span style="color:var(--lime)">them all</span></h1>
+      <p class="lead"><strong>94% HF model coverage. Any hardware.</strong> An open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic, hardware agnostic, zero Python. Reverse-engineered from a closed-source AMD NPU stack in 4 days, and growing ever since.</p>
+      <pre><span class="c"># build from source — no installer yet</span>
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
-./build/1bit zaya -m model.1bp -p <span style="color: #C6FF3D;">"Hello world"</span></pre>
-      <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="display: inline-flex; align-items: center; height: 50px; padding: 0 26px; background: #C6FF3D; color: #0B0B0B; font-size: 12px; letter-spacing: .16em; text-transform: uppercase;">try it now</a>
-        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md" style="display: inline-flex; align-items: center; height: 50px; padding: 0 26px; border: 1px solid #3A3A3A; color: #EDEFEA; font-size: 12px; letter-spacing: .16em; text-transform: uppercase;">read the docs</a>
+./build/1bit zaya -m model.1bp -p <span class="s">"Hello world"</span></pre>
+      <div class="btns">
+        <a class="btn" href="https://github.com/1bit-MONSTER/1bit-MONSTER">try it now</a>
+        <a class="btn ghost" href="docs.html">read the docs</a>
       </div>
-      <span style="font-size: 12px; color: #A0A599;">no installer yet — build from source.</span>
+      <span class="note">That is the whole install. No runtime, no virtualenv, no Python.</span>
     </div>
-
-    <div style="border-top: 1px solid #232323; border-bottom: 1px solid #232323; display: grid; grid-template-columns: repeat(4, 1fr);">
-      <div style="padding: 24px 32px; border-right: 1px solid #232323;"><div style="font-family: 'DM Serif Display', serif; font-size: 32px; color: #C6FF3D;">19</div><div style="font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #A0A599;">architectures</div></div>
-      <div style="padding: 24px 32px; border-right: 1px solid #232323;"><div style="font-family: 'DM Serif Display', serif; font-size: 32px; color: #C6FF3D;">47</div><div style="font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #A0A599;">models today</div></div>
-      <div style="padding: 24px 32px; border-right: 1px solid #232323;"><div style="font-family: 'DM Serif Display', serif; font-size: 32px; color: #C6FF3D;">500+</div><div style="font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #A0A599;">models — in progress</div></div>
-      <div style="padding: 24px 32px;"><div style="font-family: 'DM Serif Display', serif; font-size: 32px; color: #C6FF3D;">0</div><div style="font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #A0A599;">python in the runtime</div></div>
+    <div class="stats">
+      <div><b>94%</b><span>HF models covered</span></div>
+      <div><b>19</b><span>architecture classes</span></div>
+      <div><b>6</b><span>hardware targets</span></div>
+      <div><b>0</b><span>python in the runtime</span></div>
     </div>
-
-    <div id="benchmarks" style="display: grid; grid-template-columns: .95fr 1.05fr; gap: 44px; padding: 44px;">
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <span style="font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: #A0A599;">// the hard truth</span>
-        <p style="margin: 0; font-family: 'DM Serif Display', serif; font-size: 30px; line-height: 1.2;">22 proprietary libraries. 209 bitstreams. Zero documentation.</p>
-        <p style="margin: 0; font-size: 14.5px; line-height: 1.75; color: #B9BEB4;">AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the AMD NPU, on AMD / NVIDIA / Apple GPUs — including Apple's MLX and the upcoming NVIDIA RTX Spark — or on plain CPU.</p>
-        <span style="font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: #A0A599;">// where this goes</span>
-        <p style="margin: 0; font-size: 14.5px; line-height: 1.75; color: #B9BEB4;">19 architectures and 47 models today, climbing toward the full catalog — not one port at a time, but by decoding the pattern: ~50 architecture classes cover the long tail of what HuggingFace hosts. The registry, the kernels and the validation harness are already proven; what's left is coverage.</p>
-        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" style="font-size: 14px; color: #C6FF3D;">read the full journey →</a>
+    <section class="cols">
+      <div>
+        <h2>Model agnostic</h2>
+        <p class="lead">Point it at a model and run. The engine reads GGUF, ONNX and the native 1BP format, detects the architecture and picks a kernel path — no config files, no per-model glue.</p>
+        <p class="lead" style="margin-top:14px">Coverage does not come from porting models one at a time. It comes from the architecture class: ~50 classes cover the long tail of what HuggingFace hosts, and a class that works brings its whole family with it. <strong>19 are live today.</strong></p>
+        <p style="margin:14px 0 0"><a href="models.html">every family, indexed →</a></p>
       </div>
-      <div style="display: flex; flex-direction: column; gap: 11px;">
-        <div style="display: flex; justify-content: space-between; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: #A0A599;"><span>decode, end-to-end</span><span>tok/s</span></div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">SmolLM2-135M</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">662</span>
-          <span style="font-size: 11.5px; color: #A0A599;">GGML-Vulkan</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">Qwen3-0.6B</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">373</span>
-          <span style="font-size: 11.5px; color: #A0A599;">GGML-Vulkan</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">Qwen2.5-VL-3B</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">100</span>
-          <span style="font-size: 11.5px; color: #A0A599;">GGML-Vulkan</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">BlackMamba-1.5B</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">79.4</span>
-          <span style="font-size: 11.5px; color: #A0A599;">Mamba1 HIP</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">Qwen3.5-4B</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">65</span>
-          <span style="font-size: 11.5px; color: #A0A599;">GGML-Vulkan</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">DeepSeek-R1-Distill-Llama-8B</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">44</span>
-          <span style="font-size: 11.5px; color: #A0A599;">GGML-Vulkan</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr auto 128px; gap: 14px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #1D1D1D;">
-          <span style="font-size: 13.5px; color: #E4E7E0;">ZAYA1-74B-preview</span>
-          <span style="font-family: 'DM Serif Display', serif; font-size: 21px; color: #C6FF3D; font-variant-numeric: tabular-nums;">17.6</span>
-          <span style="font-size: 11.5px; color: #A0A599;">GGML-Vulkan</span>
-        </div>
-        <span style="font-size: 11.5px; color: #A0A599;">AMD Ryzen AI MAX+ 395 · Radeon 8060S · 32 GB UMA</span>
+      <div>
+        <h2>Hardware agnostic</h2>
+        <p class="lead">The same binary and the same command line, on whatever silicon you have. Six hardware targets probed at startup, 12 backend implementations behind them — no rebuild to move a model from NPU to GPU to CPU.</p>
+        <table style="margin-top:16px">
+          <tr><td>AMD Strix Halo</td><td class="b">XDNA 2 NPU · HIP · Vulkan</td></tr>
+          <tr><td>NVIDIA GPU</td><td class="b">CUDA sm_70+</td></tr>
+          <tr><td>Apple Silicon</td><td class="b">Metal</td></tr>
+          <tr><td>Any Vulkan 1.2+ GPU</td><td class="b">ZINC · GGML-Vulkan</td></tr>
+          <tr><td>x86 CPU</td><td class="b">OpenMP</td></tr>
+        </table>
       </div>
-    </div>
-
-    <div style="border-top: 1px solid #232323; padding: 16px 44px; display: flex; align-items: center; justify-content: space-between; gap: 24px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #A0A599;">
-      <span style="text-transform: none;">© 1bit monster</span>
-      <span style="color: #C6FF3D;">mit — do whatever you want</span>
-    </div>
-  </div>
+    </section>
+    <section class="two">
+      <div>
+        <span class="eyebrow">// the hard truth</span>
+        <h2 style="margin-top:14px">22 proprietary libraries. 209 bitstreams. Zero documentation.</h2>
+        <p class="lead">AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.</p>
+        <p style="margin:14px 0 0"><a href="story.html">read the full journey →</a></p>
+      </div>
+      <div>
+        <span class="eyebrow">// headline decode, e2e</span>
+        <table style="margin-top:14px">
+          <tr><th>model</th><th style="text-align:right">tok/s</th><th>backend</th></tr>
+          <tr><td>SmolLM2-135M</td><td class="n">662</td><td class="b">GGML-Vulkan</td></tr>
+          <tr><td>Qwen3-0.6B</td><td class="n">373</td><td class="b">GGML-Vulkan</td></tr>
+          <tr><td>Qwen2.5-VL-3B</td><td class="n">100</td><td class="b">GGML-Vulkan</td></tr>
+          <tr><td>BlackMamba-1.5B</td><td class="n">79.4</td><td class="b">Mamba1 HIP</td></tr>
+          <tr><td>DeepSeek-R1-Distill-8B</td><td class="n">44</td><td class="b">GGML-Vulkan</td></tr>
+          <tr><td>ZAYA1-74B-preview</td><td class="n">17.6</td><td class="b">GGML-Vulkan</td></tr>
+        </table>
+        <p class="note" style="margin-top:12px">AMD Ryzen AI MAX+ 395 · Radeon 8060S · 32 GB UMA · measured 2026-08-01. Plus 43.2 TFLOPS INT8 prefill. <a href="benchmarks.html">all numbers →</a></p>
+      </div>
+    </section>
+    <section>
+      <span class="eyebrow">// status</span>
+      <div class="cols" style="margin-top:18px">
+        <div class="card">
+          <span class="eyebrow">shipped</span>
+          <ul class="plain">
+            <li>19 architecture classes: dense, MoE, Mamba/SSM hybrid, vision-language, speech</li>
+            <li>5 backends in one binary; three formats read directly</li>
+            <li>OpenAI-compatible API and resident model pool, measured across four backends in one process</li>
+            <li>Speculative decoding, lossless vs greedy</li>
+            <li>JARVIS: local voice pipeline, mic to speaker</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="eyebrow">in progress</span>
+          <ul class="plain">
+            <li>500+ coverage by architecture class — registry, kernels and validation harness proven; what remains is coverage</li>
+            <li>Per-class validation sweeps so every family page carries measured numbers</li>
+            <li>More classes onto the XDNA 2 NPU path</li>
+            <li>The single control plane — measured, not finished; toolbox-backed Strix Halo inference is the supported out-of-box path today</li>
+            <li>Installer and prebuilt binaries</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+    <footer><span>© 1bit MONSTER</span><span style="color:var(--lime)">mit — do whatever you want</span></footer>
+  </main>
 </div>
 </body>
 </html>

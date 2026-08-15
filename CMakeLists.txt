@@ -385,7 +385,9 @@ set(RCPP_SOURCES
     src/mamba2_kernels.cpp
     src/mamba2_kernels.hip
     src/zamba2_engine.cpp
-    src/zamba2_engine_hip.hip)
+    src/zamba2_engine_hip.hip
+    src/nemotron_h_engine.cpp
+    src/safetensors_reader.cpp)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
