@@ -733,6 +733,26 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([53928, 91683, 53251]) on onnx-internal-testing/tiny-random-AfmoeForCausalLM. New bespoke CPU backend src/afmoe_engine.cpp: DUAL normalization around both attention and MLP (pre+post each), GQA attention with per-head q/k RMSNorm + gate_proj (output*sigmoid(gate) before o_proj), RoPE ONLY on sliding_attention layers, dense silu MLP then sigmoid-gated MoE (router + expert_bias selection, top-k, /(sum+1e-20), route_scale, per-expert gate/up/down + shared_experts), final model.norm, UNTIED lm_head, optional muP embed x sqrt(H). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_afmoe.py <dir> <ids> 3"
+  },
+  {
+   "family": "ernie4.5-moe",
+   "hf_arch_strings": [
+    "ernie4_5_moe",
+    "ernie45moe"
+   ],
+   "mapping_target": "ERNIE45MOE",
+   "quirk_flags": {
+    "attention": "gqa-full-rope",
+    "moe": "softmax-router-e-score-bias-shared-experts-norm-min",
+    "ffn": "dense-gelu-then-moe",
+    "mlp_layers": "interval-start-end",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-Ernie4_5_MoeForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_ernie45moe.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([61888, 44726, 93515]) on hf-tiny-v2/tiny-random-Ernie4_5_MoeForCausalLM, top-5 exact vs torch (corr 0.9997 \u2014 tiny checkpoint's router is all-zero so softmax ties make logits float-sensitive; argmax chain is the gate). New bespoke CPU backend src/ernie45moe_engine.cpp: GQA attention (full rope, repeat_interleave kv mapping), dense GELU gate/up/down MLP then softmax-router MoE (router logits -> softmax, topk on scores+e_score_correction_bias, gather RAW softmax weights, /clamp(sum, min=moe_norm_min), per-expert gate/up/down + shared_experts), MoE layers per (l+1)%interval==0 && l in [start,end], final model.norm, UNTIED lm_head. torch.topk tie-break on equal scores picks the HIGHER index \u2014 replicated (matters for degenerate zero routers). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_ernie45moe.py <dir> <ids> 3"
   }
  ]
 }

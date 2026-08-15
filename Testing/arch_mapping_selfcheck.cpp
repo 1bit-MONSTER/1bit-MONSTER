@@ -156,6 +156,7 @@ int main() {
     check("lfm2_moe", RCPP_ARCH_LFM2MOE, "lfm2_moe (LFM2-MoE)");
     check("hy_v3", RCPP_ARCH_HYV3, "hy_v3 (HY-V3)");
     check("afmoe", RCPP_ARCH_AFMOE, "afmoe (AfMoE)");
+    check("ernie4_5_moe", RCPP_ARCH_ERNIE45MOE, "ernie4_5_moe (Ernie4.5-MoE)");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");

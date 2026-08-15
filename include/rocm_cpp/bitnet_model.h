@@ -76,10 +76,12 @@ typedef enum {
     RCPP_ARCH_LFM2MOE = 40,  // LFM2-MoE — ShortConv conv1d + GQA + dense-then-MoE
     RCPP_ARCH_HYV3 = 41,    // HY-V3 — GQA + q/k RMSNorm + dense/MoE
     RCPP_ARCH_AFMOE = 42,   // AfMoE — dual-norm GQA + sigmoid-gated sliding attn + shared-expert MoE
+    RCPP_ARCH_ERNIE45MOE = 43, // Ernie4.5-MoE — GQA + softmax-router MoE + shared experts
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
     // 2026-08-13, bring-up pilot #10).
+    RCPP_ARCH_DYNAMICALIBI = 45, // DynamicAlibiForCausalLM — llama-skeleton + LINEAR ALiBi (static at inference) + fused gate_up swish MLP
     RCPP_ARCH_UNKNOWN = 255,
 } rcpp_arch_t;
 
@@ -342,6 +344,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "picodecoderhf") == 0) return RCPP_ARCH_PICO;  // PicoDecoderHF (llama-layout + adjacent rope)
     if (strcmp(s, "caca") == 0) return RCPP_ARCH_LLAMA;  // CacaForCausalLM (llama profile, rms+rope+GQA, verified 2026-08-15)
     if (strcmp(s, "gateddeltanet") == 0) return RCPP_ARCH_QWEN3NEXT;  // GatedDeltaNet (same attention as qwen3next backend)
+    if (strcmp(s, "dynamicalibi") == 0) return RCPP_ARCH_DYNAMICALIBI;  // DynamicAlibiForCausalLM (static ALiBi at inference, verified 2026-08-15)
     // ── end census tail sweep ──
     if (strcmp(s, "openaigpt") == 0) return RCPP_ARCH_GPT2;  // openai-gpt (gpt2 layout, Conv1D)
     if (strcmp(s, "ctrl") == 0) return RCPP_ARCH_GPT2;  // CTRL (gpt2 layout, extra conditioning embed ignored)
@@ -439,6 +442,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "hy_v3") == 0) return RCPP_ARCH_HYV3;                               // HYV3ForCausalLM
     if (strcmp(s, "hyv3") == 0) return RCPP_ARCH_HYV3;                                // class name
     if (strcmp(s, "afmoe") == 0) return RCPP_ARCH_AFMOE;                              // AfmoeForCausalLM
+    if (strcmp(s, "ernie4_5_moe") == 0) return RCPP_ARCH_ERNIE45MOE;                   // Ernie4_5_MoeForCausalLM
+    if (strcmp(s, "ernie45moe") == 0) return RCPP_ARCH_ERNIE45MOE;                     // class name
     // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
     // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──

@@ -26,6 +26,8 @@
   "COHERE2": 176,
   "DEEPSEEK": 800,
   "DEEPSEEK_V4": 514,
+  "DYNAMICALIBI": 86,
+  "ERNIE45MOE": 414,
   "FALCON": 1222,
   "FALCONH1": 156,
   "GEMMA": 20333,
@@ -55,7 +57,6 @@
   "QWEN2VL": 164,
   "QWEN3": 31809,
   "QWEN35": 4419,
-  "QWEN3NEXT": 337,
   "QWEN3VL": 63,
   "RWKV": 95,
   "STEP1": 2884,
@@ -66,7 +67,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 312054,
+ "registry_covered": 312217,
  "total": 399220,
  "with_arch": 317978
 }

@@ -118,6 +118,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"afmoe_cpu", "cpu_generic"},
                 "AfMoE model — native dual-norm GQA+MoE CPU backend → generic CPU"};
     }
+    // Ernie4.5-MoE (GQA + softmax-router MoE + shared experts).
+    if (cfg.arch == RCPP_ARCH_ERNIE45MOE) {
+        return {{"ernie45moe_cpu", "cpu_generic"},
+                "Ernie4.5-MoE model — native GQA+softmax-MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},
