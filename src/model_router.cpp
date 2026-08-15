@@ -88,6 +88,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"nemotron_h_cpu", "cpu_generic"},
                 "Nemotron-H model — native Mamba2+attn+MLP+MoE CPU backend → generic CPU"};
     }
+    // Qwen3-Next (GatedDeltaNet linear attention + full GQA + MoE hybrid).
+    if (cfg.arch == RCPP_ARCH_QWEN3NEXT) {
+        return {{"qwen3next_cpu", "cpu_generic"},
+                "Qwen3-Next model — native GatedDeltaNet+attn+MoE CPU backend → generic CPU"};
+    }
     // Mamba1 models (Zamba-7B-v1, BlackMamba): Mamba1 SSM HIP kernels,
     // with per-layer MoE expert dispatch for BlackMamba.
     if (cfg.arch == RCPP_ARCH_MAMBA || cfg.arch == RCPP_ARCH_ZAMBA) {

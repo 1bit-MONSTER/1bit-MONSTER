@@ -555,6 +555,26 @@
       "status": "validated",
       "tier": "numpy-structural",
       "result": "VALIDATED 2026-08-15 (numpy-structural): engine hidden states corr 0.9999 vs numpy port of modeling_nemotron_h.py 5.14 on tiny-NemotronHForCausalLM-nano. New bespoke CPU backend src/nemotron_h_engine.cpp (per-layer layers_block_type dispatch: Mamba-2 mixer with Euler dB=dt*B discretization + causal depthwise conv (w[0]=oldest tap), NoPE GQA attention, relu2 MLP, sigmoid+correction-bias group-topk MoE with up/down-only experts + shared experts). Final-logit argmax flips on the degenerate random-init checkpoint (logits +/-0.06, pythia-70m situation); clean 20/20 needs a real Nemotron-H-4B/8B checkpoint. Gate: python3 Testing/e2e_numpy_ref_nemotronh.py <dir> <ids> 10"
+    },
+    {
+      "family": "qwen3-next",
+      "hf_arch_strings": [
+        "qwen3next",
+        "qwen3_next"
+      ],
+      "mapping_target": "QWEN3NEXT",
+      "quirk_flags": {
+        "linear_attn": "gated-delta-rule",
+        "nope_full_attn": true,
+        "mlp": "swiglu",
+        "moe": "softmax-topk-normtopk-shared-gate",
+        "per_layer_kind": "layer_types"
+      },
+      "e2e_model": "tiny-random/qwen3-next-moe",
+      "oracle": "numpy ref (Testing/e2e_numpy_ref_qwen3next.py)",
+      "status": "validated",
+      "tier": "numpy-structural",
+      "result": "VALIDATED 2026-08-15 (numpy-structural): engine per-layer hidden states, attention probs/scores/acc EXACT vs numpy port of modeling_qwen3_next.py 5.14 on tiny-random/qwen3-next-moe (corr 0.9997, top-5 exact vs torch). New bespoke CPU backend src/qwen3next_engine.cpp (GatedDeltaNet delta-rule: in_proj_qkvz+in_proj_ba, causal depthwise conv w[0]=oldest, q/k l2norm + q scaled 1/sqrt(KHD), recurrent delta rule state*=exp(g), kv_mem, delta=(v-kv_mem)*beta, st+=k*delta, out=sum st*q; g=-exp(A_log)*softplus(a+dt_bias); norm DIRECT weight * silu(z); full attn q_proj [2*hd] INTERLEAVED q|gate split, q/k RMSNorm (1+w), partial rope, attn*sigmoid(gate); softmax router MoE + shared expert + sigmoid shared_gate). Argmax drifts on the degenerate random-init checkpoint (f32 vs f64 floor); clean 20/20 needs a real Qwen3-Next checkpoint (deferred). Gate: python3 Testing/e2e_numpy_ref_qwen3next.py <dir> <ids> 10"
     }
   ]
 }

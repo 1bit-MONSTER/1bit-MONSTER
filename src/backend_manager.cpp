@@ -294,6 +294,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2c4. Qwen3-Next CPU — GatedDeltaNet + full GQA + gated MoE hybrid.
+    {
+        BackendInfo info;
+        info.id = "qwen3next_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "Qwen3-Next hybrid (GatedDeltaNet+attn+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 31;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Qwen3-Next CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1503,6 +1523,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libnemotron_h_backend.so", "create_nemotron_h_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_nemotron_h_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // Qwen3-Next backend (GatedDeltaNet + full GQA + gated MoE hybrid)
+            if (info.id == "qwen3next_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_qwen3next_backend");
+                if (!b) b = try_load_backend("libqwen3next_backend.so", "create_qwen3next_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_qwen3next_backend");
                         if (fn) b = fn(); } }
                 return b;
             }
