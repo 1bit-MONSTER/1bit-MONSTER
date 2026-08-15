@@ -3,30 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Qwen3.6-35B-A3B fully on the Ryzen™ AI NPU — AMD's official 13.65 tok/s decode · 1bit.systems</title>
+<title>Qwen3.6-35B-A3B fully on the Ryzen™ AI NPU — AMD's official 13.65 tok/s decode · 1bit.monster</title>
 <meta name="description" content="AMD's official Qwen3.6-35B-A3B numbers — 13.65 tok/s decode, 222 tok/s prefill fully on the Ryzen AI NPU, zero GPU. We extracted the same stack; here's the decode.">
 <meta name="keywords" content="Qwen3.6-35B-A3B, Ryzen AI NPU, FastFlowLM, MoE inference, XDNA 2, Strix Halo, GGUF, NPU streaming">
 <meta name="robots" content="index, follow">
-<link rel="canonical" href="https://1bit.systems/blog/qwen35b-a3b-fully-on-npu">
+<link rel="canonical" href="https://1bit.monster/blog/qwen35b-a3b-fully-on-npu">
 <link rel="alternate" href="/blog/qwen35b-a3b-fully-on-npu.html">
 <meta property="og:title" content="Qwen3.6-35B-A3B fully on NPU — AMD's 13.65 tok/s decode">
 <meta property="og:description" content="AMD's official Qwen3.6-35B-A3B numbers — 13.65 tok/s decode, 222 tok/s prefill fully on the Ryzen AI NPU, zero GPU. We extracted the same stack; here's the decode.">
-<meta property="og:url" content="https://1bit.systems/blog/qwen35b-a3b-fully-on-npu">
+<meta property="og:url" content="https://1bit.monster/blog/qwen35b-a3b-fully-on-npu">
 <meta property="og:type" content="article">
-<meta property="og:image" content="https://1bit.systems/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Qwen3.6-35B-A3B fully on NPU — AMD's 13.65 tok/s decode">
 <meta name="twitter:description" content="AMD's official Qwen3.6-35B-A3B numbers — 13.65 tok/s decode, 222 tok/s prefill fully on the Ryzen AI NPU, zero GPU. We extracted the same stack; here's the decode.">
-<meta name="twitter:image" content="https://1bit.systems/assets/og-default.png">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
 <style>
   :root{
-    --bg:#021621; --panel:#06222f; --tile:#06222f; --inner:#021018;
-    --border:#0e3346; --border2:#123a4d;
-    --text:#e7f6fd; --muted:#86adbf; --dim:#4a6a7a;
-    --green:#00ff00; --green-d:#00c853; --pink:#f00fd2; --blue:#12a0ed;
+    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
+    --border:#232323; --border2:#123a4d;
+    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
+    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
     --sans:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif;
     --mono:'JetBrains Mono','SFMono-Regular','Menlo',Consolas,monospace;
     --maxw:780px;
@@ -85,15 +85,15 @@
   "dateModified": "2026-07-30",
   "publisher": {
     "@type": "Organization",
-    "name": "1bit.systems",
-    "url": "https://1bit.systems",
-    "logo": "https://1bit.systems/assets/favicon.svg"
+    "name": "1bit.monster",
+    "url": "https://1bit.monster",
+    "logo": "https://1bit.monster/assets/favicon.svg"
   },
   "mainEntityOfPage": {
     "@type": "WebPage",
-    "@id": "https://1bit.systems/blog/qwen35b-a3b-fully-on-npu"
+    "@id": "https://1bit.monster/blog/qwen35b-a3b-fully-on-npu"
   },
-  "image": "https://1bit.systems/assets/og-default.png",
+  "image": "https://1bit.monster/assets/og-default.png",
   "keywords": "Qwen3.6-35B-A3B, Ryzen AI NPU, FastFlowLM, MoE inference, XDNA 2, Strix Halo"
 }
 </script>
@@ -102,7 +102,7 @@
 <nav>
   <div class="nav-in">
     <div class="mark">1b</div>
-    <span class="wordmark"><span class="p">1bit</span><span class="g">.systems</span></span>
+    <span class="wordmark"><span class="p">1bit</span><span class="g"> MONSTER</span></span>
   </div>
 </nav>
 <article>
@@ -344,11 +344,11 @@
 <h2>Try it</h2>
 
 <pre><span class="c"># one binary, all backends — NPU, GPU, CPU</span>
-git clone https://github.com/1bit-systems/1bit-systems
-<span class="g">cd 1bit-systems && cmake -B build && cmake --build build</span></pre>
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+<span class="g">cd 1bit-MONSTER && cmake -B build && cmake --build build</span></pre>
 
 <p>
-  Or the one-liner: <code>curl -sL https://1bit.systems/install.sh | bash</code>.
+  Or the one-liner: <code>curl -sL https://1bit.monster/install.sh | bash</code>.
 </p>
 
 <hr>
@@ -358,9 +358,9 @@ git clone https://github.com/1bit-systems/1bit-systems
   <a href="https://fastflowlm.com/docs/benchmarks/qwen3.6_results/">AMD/FastFlowLM official Qwen 3.6 benchmarks</a>
   · <a href="https://fastflowlm.com/benchmarks/">fastflowlm.com power-efficiency claims</a>
   · our extraction report:
-  <a href="https://github.com/1bit-systems/1bit-systems/blob/main/engine/npu/EXTRACTED_FROM_FLM.md">EXTRACTED_FROM_FLM.md</a>
+  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/EXTRACTED_FROM_FLM.md">EXTRACTED_FROM_FLM.md</a>
   · engineering journal:
-  <a href="https://github.com/1bit-systems/1bit-systems/blob/main/docs/journey.md">docs/journey.md</a>.
+  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">docs/journey.md</a>.
   All our numbers carry status tags; broken paths stay labeled broken.
 </p>
 
@@ -372,7 +372,7 @@ git clone https://github.com/1bit-systems/1bit-systems
 </article>
 <div class="foot">
   <a href="/blog/">← All posts</a> &middot;
-  <a href="/">1bit.systems</a>
+  <a href="/">1bit.monster</a>
 </div>
 </body>
 </html>

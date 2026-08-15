@@ -2,9 +2,9 @@
 set -euo pipefail
 #!/usr/bin/env bash
 set -euo pipefail
-# 1bit.systems bootstrap — GAIA + Lemonade + FastFlowLM on Strix Halo.
+# 1bit.monster bootstrap — GAIA + Lemonade + FastFlowLM on Strix Halo.
 #
-# Usage: curl -fsSL https://1bit.systems/install.sh | bash
+# Usage: curl -fsSL https://1bit.monster/install.sh | bash
 #
 # What it does, in order:
 #   1. Refuses to run on anything that isn't "AMD Ryzen AI MAX+ 395" (Strix Halo).
@@ -23,7 +23,7 @@ banner() {
   printf '\n'
   printf '%b╔══════════════════════════════════════════════════════════════╗%b\n' "$C" "$N"
   printf '%b║                                                              ║%b\n' "$C" "$N"
-  printf '%b║   %b1bit.systems · GAIA + Lemonade + FastFlowLM%b        %b║%b\n' "$C" "$B" "$N" "$C" "$N"
+  printf '%b║   %b1bit.monster · GAIA + Lemonade + FastFlowLM%b        %b║%b\n' "$C" "$B" "$N" "$C" "$N"
   printf '%b║   %bgfx1151 iGPU · XDNA NPU · local OpenAI endpoints%b      %b║%b\n' "$C" "$D" "$N" "$C" "$N"
   printf '%b║                                                              ║%b\n' "$C" "$N"
   printf '%b╚══════════════════════════════════════════════════════════════╝%b\n\n' "$C" "$N"
@@ -51,7 +51,7 @@ case "$MODEL_LC" in
     ;;
   *)
     printf '\n%b┌──────────────────────────────────────────────────────────┐%b\n' "$R" "$N"
-    printf '%b│  STOP — 1bit.systems runs on Strix Halo only, for now.   │%b\n' "$R" "$N"
+    printf '%b│  STOP — 1bit.monster runs on Strix Halo only, for now.   │%b\n' "$R" "$N"
     printf '%b│                                                          │%b\n' "$R" "$N"
     printf '%b│  Your CPU reports:                                       │%b\n' "$R" "$N"
     printf '%b│    %-56s│%b\n' "$R" "$MODEL" "$N"
@@ -118,7 +118,7 @@ step "cloning 1bit"
 SRC="${HOME}/1bit"
 mkdir -p "${HOME}"
 if [ ! -d "$SRC/.git" ]; then
-  git clone --depth 1 https://github.com/1bit-systems/1bit-systems.git "$SRC"
+  git clone --depth 1 https://github.com/1bit-MONSTER/1bit-MONSTER.git "$SRC"
   ok "cloned into $SRC"
 else
   info "repo already present — pulling latest"

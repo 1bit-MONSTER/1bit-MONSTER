@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>1bit.systems — Live NPU Output</title>
+<title>1bit.monster — Live NPU Output</title>
 <style>
   :root {
-    --bg: #021621; --text: #e7f6fd; --green: #00ff00; --pink: #f00fd2; --blue: #12a0ed; --dim: #4a6a7a;
+    --bg: #0B0B0B; --text: #EDEFEA; --green: #C6FF3D; --pink: #C6FF3D; --blue: #C6FF3D; --dim: #6B706A;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -46,8 +46,8 @@
 <body>
 <div class="container">
   <header>
-    <svg width="48" height="48" viewBox="0 0 200 200"><circle r="92" cx="100" cy="100" fill="none" stroke="#f00fd2" stroke-width="6"/><circle r="60" cx="100" cy="100" fill="none" stroke="#12a0ed" stroke-width="2" opacity="0.3"/><text x="100" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="56" font-weight="800" fill="#00ff00">1bs</text></svg>
-    <h1>1bit.systems <span class="pulse"></span> NPU Live</h1>
+    <svg width="48" height="48" viewBox="0 0 200 200"><circle r="92" cx="100" cy="100" fill="none" stroke="#C6FF3D" stroke-width="6"/><circle r="60" cx="100" cy="100" fill="none" stroke="#C6FF3D" stroke-width="2" opacity="0.3"/><text x="100" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="56" font-weight="800" fill="#C6FF3D">1bm</text></svg>
+    <h1>1bit.monster <span class="pulse"></span> NPU Live</h1>
   </header>
 
   <div class="tabs">
@@ -86,7 +86,7 @@
 
   <div class="footer">
     Strix Halo NPU — XDNA 2, 32 AIE2P tiles, 128 GB LPDDR5x — Ubuntu 26.04 — Pure C++<br>
-    <a href="https://github.com/1bit-systems/1bit-systems">github.com/1bit-systems/1bit-systems</a> · <a href="https://1bit.systems">1bit.systems</a>
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER/1bit-MONSTER</a> · <a href="https://1bit.monster">1bit.monster</a>
   </div>
 </div>
 
@@ -253,7 +253,7 @@ ${lines}
 function showBench() {
   const el = document.getElementById('term');
   const b = TOKENS.bench.data;
-  el.innerHTML = `<div class="line dim">=== 1bit.systems Benchmarks ===</div>
+  el.innerHTML = `<div class="line dim">=== 1bit.monster Benchmarks ===</div>
 <div class="line g">Raw GEMM (NPU silicon):</div>
 <div class="line">  D projection:  <span class="p">55.7 TFLOPS</span> (1024×3072×1024 INT8)</div>
 <div class="line">  O projection:  <span class="p">39.7 TFLOPS</span> (1024×2048×1024 INT8)</div>

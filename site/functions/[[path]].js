@@ -78,7 +78,7 @@ export async function onRequest(context) {
   }
 
   // Pass through to static file serving
-  return context.env.ASSETS && request.url.startsWith('https://1bit.systems/')
+  return context.env.ASSETS && request.url.startsWith('https://1bit.monster/')
     ? await context.env.ASSETS.fetch(request)
     : await next();
 }

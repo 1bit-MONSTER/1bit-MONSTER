@@ -107,7 +107,7 @@
    "table": "end_to_end",
    "display_name": "llama.cpp ROCm (PrismML)",
    "backend": "PrismML on same hardware",
-   "notes": "See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235)"
+   "notes": "See [issue #235](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/235)"
   },
   "dspark": {
    "tok_s": 0.8,
