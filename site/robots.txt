@@ -3,4 +3,4 @@ Allow: /
 Disallow: /releases.json
 Disallow: /private/
 
-Sitemap: https://1bit.systems/sitemap.xml
+Sitemap: https://1bit.monster/sitemap.xml
