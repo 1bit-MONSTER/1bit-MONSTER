@@ -229,6 +229,8 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
             else if (cfg.architecture == "gptneox" && cfg.head_dim > 0)
                 cfg.rope_dim = cfg.head_dim / 4;  // GPTNeoXConfig default rotary_pct=0.25
             if (json_find_int(config_text, "rotary_dim", iv) && iv > 0) cfg.rope_dim = iv;  // CodeGen
+            if (json_find_float(config_text, "partial_rotary_factor", rp) && cfg.head_dim > 0)
+                cfg.rope_dim = (int)(rp * cfg.head_dim);  // GLM-4 (partial_rotary_factor 0.5)
         }
         // MiniCPM-style per-model scaling flags (absent = defaults):
         //   scale_emb → embedding_multiplier (embeddings × scale_emb)
