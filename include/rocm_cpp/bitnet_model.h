@@ -99,6 +99,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "llama")   == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "mistral") == 0) return RCPP_ARCH_MISTRAL;
     if (strcmp(s, "ministral") == 0) return RCPP_ARCH_MISTRAL;  // Ministral (config declares MistralForCausalLM)
+    if (strcmp(s, "ministral3") == 0) return RCPP_ARCH_LLAMA;   // Ministral3 — llama-layout + YARN rope + llama-4 attn scale
     if (strcmp(s, "sparsemistralforcausallm") == 0) return RCPP_ARCH_MISTRAL;  // SparseMistral (mistral layout)
     if (strcmp(s, "qwen2")   == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "gemma")   == 0) return RCPP_ARCH_GEMMA;

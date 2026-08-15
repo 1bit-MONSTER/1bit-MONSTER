@@ -872,6 +872,25 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([5579, 22348, 46776]) on hf-tiny-v2/tiny-random-FalconMambaForCausalLM, corr 1.0000. New bespoke CPU backend src/falconmamba_engine.cpp: Mamba1 SSM (in_proj hidden/gate split, depthwise causal conv1d K=4 w[0]=oldest \u2014 found & fixed orientation 2026-08-16, silu, x_proj -> dt/B/C with RMSNorm each (non-learnable ones weights), dt_proj+bias -> softplus -> dt, A=-exp(A_log), Euler discretization dA=exp(A*dt), dB=dt*B, h=h*dA+dB*x, y=C*h+D*x, y*=silu(gate), out_proj), block norm + residual, final norm_f, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_falconmamba.py <dir> <ids> 3"
+  },
+  {
+   "family": "ministral3",
+   "hf_arch_strings": [
+    "ministral3"
+   ],
+   "mapping_target": "LLAMA",
+   "quirk_flags": {
+    "attention": "gqa-full-rope",
+    "rope": "yarn-ramp-mscale",
+    "llama4_attn_scale": "beta-log-1-floor-pos-origmax",
+    "mlp": "dense-gelu",
+    "rides": "generic-engine"
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-Ministral3ForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_ministral3.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): GENERIC engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([92, 88, 81]) on hf-tiny-v2/tiny-random-Ministral3ForCausalLM. Ministral3 is llama-layout (RMSNorm, GQA, dense gelu MLP) + YaRN rope \u2014 rides the generic engine. Added generic YARN parsing to src/safetensors_reader.cpp (rope_type: \"yarn\" -> theta/factor/beta_fast/beta_slow/original_max_position_embeddings from rope_parameters, attn scaling 0.1*ln(factor)+1). Documented limitation: llama-4 attention scaling (1 + beta*log(1+floor(pos/orig_max))) applies a per-position q multiplier beyond original_max_position_embeddings; the engine does not implement it (no-op below orig_max, which the tiny validation covers). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_ministral3.py <dir> <ids> 3"
   }
  ]
 }

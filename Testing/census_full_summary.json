@@ -48,7 +48,7 @@
   "LAGUNA": 168,
   "LFM2": 955,
   "LFM2MOE": 214,
-  "LLAMA": 112931,
+  "LLAMA": 112960,
   "MAMBA": 181,
   "MELLUM": 286,
   "MINIMAX": 4,
@@ -73,7 +73,7 @@
  },
  "n_archs": 2136,
  "no_arch": 77210,
- "registry_covered": 312815,
+ "registry_covered": 312844,
  "total": 399220,
  "with_arch": 317941
 }
