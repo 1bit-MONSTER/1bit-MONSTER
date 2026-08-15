@@ -178,6 +178,24 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
                 json_find_int(config_text, "experts_per_token", iv))  // GPT-OSS key name
                 cfg.num_experts_top = iv;
         }
+        // GLM-4-MoE / DeepSeek-style gating keys (n_routed_experts, groups,
+        // shared experts, correction bias, routed scaling).
+        if (json_find_int(config_text, "n_routed_experts", iv)) {
+            cfg.num_experts = cfg.n_experts = iv;
+            if (json_find_int(config_text, "num_experts_per_tok", iv) ||
+                json_find_int(config_text, "experts_per_token", iv))
+                cfg.num_experts_top = iv;
+        }
+        if (json_find_int(config_text, "n_shared_experts", iv)) cfg.n_shared_experts = iv;
+        if (json_find_int(config_text, "first_k_dense_replace", iv)) cfg.first_k_dense = iv;
+        if (json_find_int(config_text, "moe_intermediate_size", iv)) cfg.moe_intermediate = iv;
+        if (json_find_int(config_text, "n_group", iv)) cfg.expert_groups = iv;
+        if (json_find_int(config_text, "topk_group", iv)) cfg.limited_groups = iv;
+        bool bt = false;
+        if (json_find_bool(config_text, "norm_topk_prob", bt)) cfg.norm_topk_prob = bt;
+        float rf = 0.0f;
+        if (json_find_float(config_text, "routed_scaling_factor", rf)) cfg.routed_scaling = rf;
+        if (cfg.routed_scaling <= 0.0f) cfg.routed_scaling = 1.0f;
         // GPT-OSS (OpenAI): YARN RoPE defaults (GptOssConfig: theta 150000,
         // factor 32, beta_fast/slow 32/1, original_max 4096) + 128-token
         // sliding window on sliding layers. MXFP4-packed MoE weights are
@@ -230,7 +248,11 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
                 cfg.rope_dim = cfg.head_dim / 4;  // GPTNeoXConfig default rotary_pct=0.25
             if (json_find_int(config_text, "rotary_dim", iv) && iv > 0) cfg.rope_dim = iv;  // CodeGen
             if (json_find_float(config_text, "partial_rotary_factor", rp) && cfg.head_dim > 0)
-                cfg.rope_dim = (int)(rp * cfg.head_dim);  // GLM-4 (partial_rotary_factor 0.5)
+                // HF rotary_dim = 2*ceil(dim/2) (the cat-double in the rotary
+                // embedding: dim = int(hd*partial), emb = cat([freqs, freqs])
+                // doubles to the next even). Odd dims (tiny models) rotate the
+                // FULL head; real GLM-4-MoE (hd 128, partial 0.5) -> 64.
+                cfg.rope_dim = ((int)(rp * cfg.head_dim) + 1) & ~1;  // GLM-4 (partial_rotary_factor 0.5)
         }
         // MiniCPM-style per-model scaling flags (absent = defaults):
         //   scale_emb → embedding_multiplier (embeddings × scale_emb)

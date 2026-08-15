@@ -512,6 +512,29 @@
       "status": "mapped-unvalidated",
       "tier": "registry",
       "result": "MAPPED 2026-08-16: MAX-style text-decoder mapping (mistral3->MISTRAL, qwen2_5_vl->QWEN2VL, qwen3vlmoe->QWEN3VL, gemma4unified->GEMMA). Registry-only tier; vision tower unwired (documented)."
+    },
+    {
+      "family": "glm4-moe",
+      "hf_arch_strings": [
+        "glm4moe",
+        "glmmoedsa",
+        "glm4moelite"
+      ],
+      "mapping_target": "LLAMA",
+      "quirk_flags": {
+        "rope": "partial-0.5",
+        "rotate_at_load": false,
+        "moe": "sigmoid-group-topk-shared",
+        "bias": "qkv",
+        "qk_norm": "per-head",
+        "first_k_dense": 1,
+        "routed_scaling": 2.5
+      },
+      "e2e_model": "trl-internal-testing/tiny-Glm4MoeForCausalLM",
+      "oracle": "numpy ref (Testing/e2e_numpy_ref_glm4moe.py)",
+      "status": "validated",
+      "tier": "numpy-structural",
+      "result": "VALIDATED 2026-08-15 (numpy-ref structural tier): engine hidden states == numpy port of modeling_glm4_moe.py at ALL positions (exact to 4-5 decimals) on tiny-Glm4MoeForCausalLM \u2014 sigmoid+correction-bias group-limited topk gating, norm_topk, routed_scaling 2.5, shared experts (mlp.shared_experts.*), per-head QK-norm, partial-rope 0.5 (rotary_dim rounded up to even per HF cat-double), first_k_dense dense layer 0. Final-logit corr 0.92 = f32 floor on the degenerate random-init checkpoint (all logits +/-0.036, pythia-70m situation); clean 20/20 needs the real GLM-4-32B-0414 (~70GB, deferred). Gate: python3 Testing/e2e_numpy_ref_glm4moe.py <dir> <ids> 10"
     }
   ]
 }
