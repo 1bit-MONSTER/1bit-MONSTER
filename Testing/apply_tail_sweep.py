@@ -11,21 +11,22 @@ HEADER_MARK = "// ── 2026-08-15 census tail sweep"
 CHECK_MARK = "// ── census tail sweep checks ──"
 
 
+HEADER_END = "// ── end census tail sweep ──"
+
+
 def patch(path, block, marker):
     src = open(path).read()
     # remove previous auto block if present (idempotent re-runs)
     if marker in src:
-        lines = src.split("\n")
-        out, skipping = [], False
-        for ln in lines:
-            if marker in ln:
-                skipping = True
-                continue
-            if skipping and (ln.strip().startswith("//") or ln.strip().startswith("check(")):
-                continue
-            skipping = False
-            out.append(ln)
-        src = "\n".join(out)
+        if HEADER_END in src:
+            a = src.index(marker)
+            b = src.index(HEADER_END) + len(HEADER_END)
+            src = src[:a] + src[b:]
+        else:
+            raise SystemExit(
+                "%s: sweep block has no end marker — commit the end-marker "
+                "version first (never auto-remove marker-only blocks: the "
+                "greedy removal eats following family blocks)" % path)
     anchor = '    if (strcmp(s, "lfm2")      == 0) return RCPP_ARCH_LFM2;'
     assert src.count(anchor) == 1
     src = src.replace(anchor, anchor + "\n" + block.rstrip("\n"), 1)
@@ -39,6 +40,7 @@ def main():
     for s, v in sorted(a.items()):
         lines.append('    if (strcmp(s, "%s") == 0) return RCPP_ARCH_%s;  // %s' %
                      (s, v["token"], v["model_type"]))
+    lines.append("    %s" % HEADER_END)
     block = "\n".join(lines) + "\n"
 
     checks = ["    %s" % "// ── census tail sweep checks ──"]
@@ -60,7 +62,9 @@ def main():
         if os.path.exists(sc):
             src = open(sc).read()
             if CHECK_MARK in src:
-                src = src[:src.index(CHECK_MARK)].rstrip("\n") + "\n"
+                start = src.index(CHECK_MARK)
+                end = src.index("    if (fails) {", start)
+                src = src[:start] + src[end:]
             anchor = "    if (fails) {"
             assert src.count(anchor) == 1, sc
             src = src.replace(anchor, cblock.rstrip("\n") + "\n" + anchor, 1)

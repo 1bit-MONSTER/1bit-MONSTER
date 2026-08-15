@@ -65,6 +65,12 @@
   "source": "http:WilliamJQ/Co_gpt2_activate_adapters",
   "token": "GPT2"
  },
+ "craneai": {
+  "checkpoints": 1,
+  "model_type": "gemma3",
+  "source": "crawl:craneailabs/ganda-gemma-1b",
+  "token": "GEMMA"
+ },
  "custom_mpt": {
   "checkpoints": 1,
   "model_type": "mpt",
@@ -190,6 +196,12 @@
   "model_type": "gpt_oss",
   "source": "aggregate",
   "token": "GPTOSS"
+ },
+ "gemma4text": {
+  "checkpoints": 3,
+  "model_type": "gemma4",
+  "source": "search:OpenMOSE/Gemma4-Text",
+  "token": "GEMMA"
  },
  "gemmagain": {
   "checkpoints": 1,
@@ -497,6 +509,12 @@
   "source": "aggregate",
   "token": "WHISPER"
  },
+ "quark": {
+  "checkpoints": 4,
+  "model_type": "qwen3_5_moe",
+  "source": "crawl:amd/qwen3.8-2.4t-a95b-quark-mxfp4",
+  "token": "QWEN35"
+ },
  "qwen2forcausallmpostblocksteeringfixed": {
   "checkpoints": 6,
   "model_type": "qwen2",
@@ -545,6 +563,12 @@
   "source": "aggregate",
   "token": "QWEN35"
  },
+ "qwen3_5text": {
+  "checkpoints": 2,
+  "model_type": "qwen3_5",
+  "source": "search:yesabhishek/qwen35-text2sql",
+  "token": "QWEN35"
+ },
  "qwen3forsequenceclassification": {
   "checkpoints": 1,
   "model_type": "qwen3",
@@ -574,6 +598,12 @@
   "model_type": "qwen3_vl",
   "source": "aggregate",
   "token": "QWEN3VL"
+ },
+ "rnj1": {
+  "checkpoints": 1,
+  "model_type": "gemma3",
+  "source": "search:EssentialAI/rnj-1",
+  "token": "GEMMA"
  },
  "ruqwen2": {
   "checkpoints": 1,
@@ -634,6 +664,12 @@
   "model_type": "qwen3",
   "source": "http:ngocbh/TrimKV-Qwen3-4B-Math",
   "token": "QWEN3"
+ },
+ "uyu2": {
+  "checkpoints": 1,
+  "model_type": "gemma4",
+  "source": "search:mente-ai/uyu-2-28B",
+  "token": "GEMMA"
  },
  "vlclipgptneox": {
   "checkpoints": 2,

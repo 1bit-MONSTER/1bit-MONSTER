@@ -18,6 +18,17 @@ OUT = os.path.join(ROOT, "Testing", "census_full_summary.json")
 STRIP_SUFFIXES = ("forcausallm", "lmheadmodel", "model",
                   "forconditionalgeneration", "forvisiontext2text")
 
+# #1676 (2026-08-15): NOT causal text decoders — TTS, encoder-decoder, and
+# masked-LM classes sit in the census only because they carry an architectures
+# string. The plan declared encoder-decoders OUT of scope; the engine has no
+# cross-attention or TTS path. Excluded from the with_arch denominator.
+NON_TEXT_GEN = {
+    "parlertts",      # TTS (Parler-TTS)
+    "t5", "mt5", "t5with", "umt5",        # encoder-decoder
+    "bart", "mbart", "marian", "longformerbart",  # encoder-decoder
+    "bert", "roberta",                    # masked-LM heads (not decoders)
+}
+
 # model_type values map directly through rcpp_arch_from_string (snake_case
 # aliases live in bitnet_model.h); the reader falls back to model_type when
 # the class name maps UNKNOWN. This mirrors src/safetensors_reader.cpp.
@@ -73,6 +84,13 @@ def main():
         s = strip_arch(arch)
         stripped[s] = stripped.get(s, 0) + cnt
 
+    # #1676: drop non-causal-decoder classes from the denominator BEFORE the
+    # probe so they can never inflate coverage (all are UNKNOWN today).
+    excluded = {}
+    for s in list(stripped):
+        if s in NON_TEXT_GEN:
+            excluded[s] = stripped.pop(s)
+
     mapper = build_mapper()
     probe = subprocess.run([mapper], input="\n".join(stripped), text=True,
                            capture_output=True, check=True)
@@ -124,6 +142,7 @@ def main():
         "no_arch": raw.get("no_arch", counts.get("<none>", 0)),
         "n_archs": len(stripped),
         "registry_covered": covered,
+        "excluded_non_text_gen": excluded,   # #1676: not causal decoders
         "family_counts": {k: family_counts[k] for k in sorted(family_counts)},
     }
     json.dump(summary, open(OUT, "w"), indent=1, sort_keys=True)

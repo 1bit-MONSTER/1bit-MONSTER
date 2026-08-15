@@ -207,8 +207,6 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "step1moe")  == 0) return RCPP_ARCH_STEP1;   // Step1MoEForCausalLM (dense weights in practice; MoE cfg ignored until an expert-bearing ckpt is seen)
     if (strcmp(s, "bloom")     == 0) return RCPP_ARCH_BLOOM;   // BloomForCausalLM (fused qkv, linear ALiBi, LayerNorm)
     if (strcmp(s, "lfm2")      == 0) return RCPP_ARCH_LFM2;
-    if (strcmp(s, "nemotronh") == 0) return RCPP_ARCH_NEMOTRONH; // NemotronHForCausalLM
-    if (strcmp(s, "nemotron_h") == 0) return RCPP_ARCH_NEMOTRONH; // HF model_type
     // ── 2026-08-15 census tail sweep (auto-generated, model_type-verified) ──
     if (strcmp(s, "adavocabgemma") == 0) return RCPP_ARCH_GEMMA;  // gemma
     if (strcmp(s, "aicraftar-tharo.g-conditionalgeneration") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
@@ -221,6 +219,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "chexagent") == 0) return RCPP_ARCH_PHI;  // phi
     if (strcmp(s, "codebharat") == 0) return RCPP_ARCH_LLAMA;  // llama
     if (strcmp(s, "cogpt2") == 0) return RCPP_ARCH_GPT2;  // gpt2
+    if (strcmp(s, "craneai") == 0) return RCPP_ARCH_GEMMA;  // gemma3
     if (strcmp(s, "custom_mpt") == 0) return RCPP_ARCH_LLAMA;  // mpt
     if (strcmp(s, "custombiogpt") == 0) return RCPP_ARCH_GPT2;  // biogpt
     if (strcmp(s, "custommixtral") == 0) return RCPP_ARCH_MISTRAL;  // mixtral
@@ -242,6 +241,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "flaxgptj") == 0) return RCPP_ARCH_GPTJ;  // gptj
     if (strcmp(s, "forcausallm") == 0) return RCPP_ARCH_GEMMA;  // gemma4
     if (strcmp(s, "fsdpgptoss") == 0) return RCPP_ARCH_GPTOSS;  // gpt_oss
+    if (strcmp(s, "gemma4text") == 0) return RCPP_ARCH_GEMMA;  // gemma4
     if (strcmp(s, "gemmagain") == 0) return RCPP_ARCH_GEMMA;  // gemma3
     if (strcmp(s, "gfusionfordiffusionlm") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v3
     if (strcmp(s, "gistgptneo") == 0) return RCPP_ARCH_GPTNEO;  // gpt_neo
@@ -293,6 +293,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "phi3forsequenceclassification") == 0) return RCPP_ARCH_PHI;  // phi3
     if (strcmp(s, "poptorchpipelinedgpt2") == 0) return RCPP_ARCH_GPT2;  // gpt2
     if (strcmp(s, "poptorchpipelinedwhisper") == 0) return RCPP_ARCH_WHISPER;  // whisper
+    if (strcmp(s, "quark") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5_moe
     if (strcmp(s, "qwen2forcausallmpostblocksteeringfixed") == 0) return RCPP_ARCH_QWEN2;  // qwen2
     if (strcmp(s, "qwen2forprocessreward") == 0) return RCPP_ARCH_QWEN2;  // qwen2
     if (strcmp(s, "qwen2forsequenceclassification") == 0) return RCPP_ARCH_QWEN2;  // qwen2
@@ -301,11 +302,13 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qwen2vlextended") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
     if (strcmp(s, "qwen2vlforconditionalgenerationwithaudio") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
     if (strcmp(s, "qwen3_5dllm") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5
+    if (strcmp(s, "qwen3_5text") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5
     if (strcmp(s, "qwen3forsequenceclassification") == 0) return RCPP_ARCH_QWEN3;  // qwen3
     if (strcmp(s, "qwen3gated") == 0) return RCPP_ARCH_QWEN3;  // qwen3
     if (strcmp(s, "qwen3mobe") == 0) return RCPP_ARCH_QWEN3;  // qwen3_moe
     if (strcmp(s, "qwen3sparsemobe") == 0) return RCPP_ARCH_QWEN3;  // qwen3_moe
     if (strcmp(s, "qwen3vlseg") == 0) return RCPP_ARCH_QWEN3VL;  // qwen3_vl
+    if (strcmp(s, "rnj1") == 0) return RCPP_ARCH_GEMMA;  // gemma3
     if (strcmp(s, "ruqwen2") == 0) return RCPP_ARCH_QWEN2;  // qwen2
     if (strcmp(s, "serayuki") == 0) return RCPP_ARCH_LLAMA;  // llama
     if (strcmp(s, "sewy3") == 0) return RCPP_ARCH_GEMMA;  // gemma
@@ -316,118 +319,14 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "titansmactransformer") == 0) return RCPP_ARCH_LLAMA;  // llama
     if (strcmp(s, "trimkvphi3") == 0) return RCPP_ARCH_PHI;  // phi3
     if (strcmp(s, "trimkvqwen3") == 0) return RCPP_ARCH_QWEN3;  // qwen3
+    if (strcmp(s, "uyu2") == 0) return RCPP_ARCH_GEMMA;  // gemma4
     if (strcmp(s, "vlclipgptneox") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
     if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
     if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "adavocabgemma") == 0) return RCPP_ARCH_GEMMA;  // gemma
-    if (strcmp(s, "aicraftar-tharo.g-conditionalgeneration") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
-    if (strcmp(s, "antihal") == 0) return RCPP_ARCH_GEMMA;  // gemma4
-    if (strcmp(s, "asvdopt") == 0) return RCPP_ARCH_OPT;  // opt
-    if (strcmp(s, "automodel") == 0) return RCPP_ARCH_MISTRAL;  // mistral
-    if (strcmp(s, "backpackgpt2") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "bunnyqwen") == 0) return RCPP_ARCH_QWEN2;  // llava-qwen2
-    if (strcmp(s, "careaqa") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "chexagent") == 0) return RCPP_ARCH_PHI;  // phi
-    if (strcmp(s, "codebharat") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "cogpt2") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "custom_mpt") == 0) return RCPP_ARCH_LLAMA;  // mpt
-    if (strcmp(s, "custombiogpt") == 0) return RCPP_ARCH_GPT2;  // biogpt
-    if (strcmp(s, "custommixtral") == 0) return RCPP_ARCH_MISTRAL;  // mixtral
-    if (strcmp(s, "custommodel3") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
-    if (strcmp(s, "dashqphi3") == 0) return RCPP_ARCH_PHI;  // phi3
-    if (strcmp(s, "deepseekv2mobe") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v2
-    if (strcmp(s, "deepseekv2sparsemobe") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v2
-    if (strcmp(s, "deepseekv3forcausallmnextn") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v3
-    if (strcmp(s, "denseformer") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "dflashlaguna") == 0) return RCPP_ARCH_LAGUNA;  // laguna
-    if (strcmp(s, "dribble") == 0) return RCPP_ARCH_PHI;  // phi
-    if (strcmp(s, "dribblellama") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "duolaguna") == 0) return RCPP_ARCH_LAGUNA;  // laguna
-    if (strcmp(s, "dusmistral") == 0) return RCPP_ARCH_MISTRAL;  // mistral
-    if (strcmp(s, "edullm") == 0) return RCPP_ARCH_MISTRAL;  // mixtral
-    if (strcmp(s, "efficientdlm") == 0) return RCPP_ARCH_QWEN3;  // qwen3
-    if (strcmp(s, "exaonetd") == 0) return RCPP_ARCH_LLAMA;  // exaone
-    if (strcmp(s, "flashgptneox") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
-    if (strcmp(s, "flaxgptj") == 0) return RCPP_ARCH_GPTJ;  // gptj
-    if (strcmp(s, "forcausallm") == 0) return RCPP_ARCH_GEMMA;  // gemma4
-    if (strcmp(s, "fsdpgptoss") == 0) return RCPP_ARCH_GPTOSS;  // gpt_oss
-    if (strcmp(s, "gemmagain") == 0) return RCPP_ARCH_GEMMA;  // gemma3
-    if (strcmp(s, "gfusionfordiffusionlm") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v3
-    if (strcmp(s, "gistgptneo") == 0) return RCPP_ARCH_GPTNEO;  // gpt_neo
-    if (strcmp(s, "glamm") == 0) return RCPP_ARCH_QWEN2VL;  // llava
-    if (strcmp(s, "glus") == 0) return RCPP_ARCH_QWEN2VL;  // llava
-    if (strcmp(s, "gpt2forquestionanswering") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "gpt2forsequenceclassification") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "gpt2lmandvaluehead") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "gptbigcodeforsequenceclassification") == 0) return RCPP_ARCH_LLAMA;  // gpt_bigcode
-    if (strcmp(s, "gretriever") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "int8opt") == 0) return RCPP_ARCH_OPT;  // opt
-    if (strcmp(s, "internlm2forreward") == 0) return RCPP_ARCH_LLAMA;  // internlm2
-    if (strcmp(s, "internlmxcomposer2") == 0) return RCPP_ARCH_LLAMA;  // internlm
-    if (strcmp(s, "interns2preview") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5_moe
-    if (strcmp(s, "kblamphi3") == 0) return RCPP_ARCH_PHI;  // phi3
-    if (strcmp(s, "layerwiseminicpm") == 0) return RCPP_ARCH_LLAMA;  // minicpm
-    if (strcmp(s, "leanllama") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "leanmixtral") == 0) return RCPP_ARCH_MISTRAL;  // mixtral
-    if (strcmp(s, "lexadelta") == 0) return RCPP_ARCH_GPTOSS;  // gpt_oss
-    if (strcmp(s, "lfm2bidirectionalformaskedlm") == 0) return RCPP_ARCH_LFM2;  // lfm2
-    if (strcmp(s, "lightonocr") == 0) return RCPP_ARCH_MISTRAL;  // mistral3
-    if (strcmp(s, "llamaforcausallmeagle3") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "llamaforsequenceclassification") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "llavaqwen") == 0) return RCPP_ARCH_QWEN2VL;  // llava
-    if (strcmp(s, "loragpt2") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "mahler60/prueba") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
-    if (strcmp(s, "mamba2") == 0) return RCPP_ARCH_MAMBA;  // mamba2
-    if (strcmp(s, "mambamodel") == 0) return RCPP_ARCH_MAMBA;  // mamba
-    if (strcmp(s, "memllama") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "meteormamba") == 0) return RCPP_ARCH_MAMBA;  // mamba
-    if (strcmp(s, "mimoaudio") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "miniphi3") == 0) return RCPP_ARCH_PHI;  // phi3
-    if (strcmp(s, "mixformervlsequential") == 0) return RCPP_ARCH_PHI;  // mixformer-sequential
-    if (strcmp(s, "mobillama") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "monoformer") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "moyi") == 0) return RCPP_ARCH_QWEN2;  // deepseek
-    if (strcmp(s, "multiheadgptneo") == 0) return RCPP_ARCH_GPTNEO;  // gpt_neo
-    if (strcmp(s, "multimodalstarcoder2") == 0) return RCPP_ARCH_LLAMA;  // starcoder2
-    if (strcmp(s, "mutorgemma") == 0) return RCPP_ARCH_GEMMA;  // gemma
-    if (strcmp(s, "mybaichuan") == 0) return RCPP_ARCH_LLAMA;  // baichuan
-    if (strcmp(s, "myqwen") == 0) return RCPP_ARCH_QWEN2;  // qwen
-    if (strcmp(s, "myxverse") == 0) return RCPP_ARCH_LLAMA;  // xverse
-    if (strcmp(s, "notagen") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "olmo2forsequenceclassification") == 0) return RCPP_ARCH_OLMO;  // olmo2
-    if (strcmp(s, "olmo3sink") == 0) return RCPP_ARCH_OLMO;  // olmo3
-    if (strcmp(s, "olmomodel") == 0) return RCPP_ARCH_OLMO;  // olmo
-    if (strcmp(s, "opt_prompttuned_for_sentimentanalysis") == 0) return RCPP_ARCH_OPT;  // opt
-    if (strcmp(s, "pawqwen3") == 0) return RCPP_ARCH_QWEN3;  // qwen3
-    if (strcmp(s, "phi3forsequenceclassification") == 0) return RCPP_ARCH_PHI;  // phi3
-    if (strcmp(s, "poptorchpipelinedgpt2") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "poptorchpipelinedwhisper") == 0) return RCPP_ARCH_WHISPER;  // whisper
-    if (strcmp(s, "qwen2forcausallmpostblocksteeringfixed") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "qwen2forprocessreward") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "qwen2forsequenceclassification") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "qwen2reasoning") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "qwen2vlaudio") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
-    if (strcmp(s, "qwen2vlextended") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
-    if (strcmp(s, "qwen2vlforconditionalgenerationwithaudio") == 0) return RCPP_ARCH_QWEN2VL;  // qwen2_vl
-    if (strcmp(s, "qwen3_5dllm") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5
-    if (strcmp(s, "qwen3forsequenceclassification") == 0) return RCPP_ARCH_QWEN3;  // qwen3
-    if (strcmp(s, "qwen3gated") == 0) return RCPP_ARCH_QWEN3;  // qwen3
-    if (strcmp(s, "qwen3mobe") == 0) return RCPP_ARCH_QWEN3;  // qwen3_moe
-    if (strcmp(s, "qwen3sparsemobe") == 0) return RCPP_ARCH_QWEN3;  // qwen3_moe
-    if (strcmp(s, "qwen3vlseg") == 0) return RCPP_ARCH_QWEN3VL;  // qwen3_vl
-    if (strcmp(s, "ruqwen2") == 0) return RCPP_ARCH_QWEN2;  // qwen2
-    if (strcmp(s, "serayuki") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "sewy3") == 0) return RCPP_ARCH_GEMMA;  // gemma
-    if (strcmp(s, "smollm3model") == 0) return RCPP_ARCH_LLAMA;  // smollm3
-    if (strcmp(s, "stablediffcoder") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "streamvln") == 0) return RCPP_ARCH_QWEN2VL;  // llava
-    if (strcmp(s, "symbolicgpt") == 0) return RCPP_ARCH_GPT2;  // gpt2
-    if (strcmp(s, "titansmactransformer") == 0) return RCPP_ARCH_LLAMA;  // llama
-    if (strcmp(s, "trimkvphi3") == 0) return RCPP_ARCH_PHI;  // phi3
-    if (strcmp(s, "trimkvqwen3") == 0) return RCPP_ARCH_QWEN3;  // qwen3
-    if (strcmp(s, "vlclipgptneox") == 0) return RCPP_ARCH_GPTNEOX;  // gpt_neox
-    if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
-    if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2    // Lfm2ForCausalLM (conv+attention hybrid)
+    // ── end census tail sweep ──
+    
+    if (strcmp(s, "nemotronh") == 0) return RCPP_ARCH_NEMOTRONH; // NemotronHForCausalLM
+    if (strcmp(s, "nemotron_h") == 0) return RCPP_ARCH_NEMOTRONH; // HF model_type
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

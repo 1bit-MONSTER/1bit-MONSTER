@@ -1,4 +1,16 @@
 {
+ "excluded_non_text_gen": {
+  "bart": 284,
+  "bert": 221,
+  "marian": 76,
+  "mbart": 140,
+  "mt5": 362,
+  "parlertts": 1587,
+  "roberta": 141,
+  "t5": 1005,
+  "t5with": 59,
+  "umt5": 6
+ },
  "family_counts": {
   "BITNET": 65,
   "BLOOM": 1175,
@@ -6,7 +18,7 @@
   "DEEPSEEK": 790,
   "DEEPSEEK_V4": 514,
   "FALCON": 1222,
-  "GEMMA": 20222,
+  "GEMMA": 20228,
   "GPT2": 30925,
   "GPTJ": 627,
   "GPTNEO": 1569,
@@ -25,7 +37,7 @@
   "QWEN2": 46567,
   "QWEN2VL": 127,
   "QWEN3": 31577,
-  "QWEN35": 4393,
+  "QWEN35": 4399,
   "QWEN3VL": 63,
   "STEP1": 2884,
   "WHISPER": 17,
@@ -33,9 +45,9 @@
   "ZAMBA2": 11,
   "ZAYA": 22
  },
- "n_archs": 2155,
+ "n_archs": 2145,
  "no_arch": 77210,
- "registry_covered": 306368,
+ "registry_covered": 306380,
  "total": 399220,
- "with_arch": 322029
+ "with_arch": 318148
 }
