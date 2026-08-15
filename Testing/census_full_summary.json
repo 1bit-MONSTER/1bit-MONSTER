@@ -45,6 +45,7 @@
   "LFM2MOE": 214,
   "LLAMA": 112638,
   "MAMBA": 181,
+  "MELLUM": 286,
   "MINIMAXM2": 333,
   "MISTRAL": 31069,
   "NANOCHAT": 81,
@@ -52,7 +53,6 @@
   "OLMO": 2176,
   "OPT": 2101,
   "PHI": 5182,
-  "PICO": 246,
   "QWEN2": 46704,
   "QWEN2VL": 164,
   "QWEN3": 31809,
@@ -67,7 +67,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 312217,
+ "registry_covered": 312257,
  "total": 399220,
  "with_arch": 317978
 }

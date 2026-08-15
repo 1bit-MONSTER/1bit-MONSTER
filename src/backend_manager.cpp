@@ -474,6 +474,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2cd. Mellum CPU — GQA + q/k RMSNorm + per-layer-type rope + dense/MoE.
+    {
+        BackendInfo info;
+        info.id = "mellum_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "Mellum (GQA+q/k-RMSNorm+per-layer-rope+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 40;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Mellum CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1746,6 +1766,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libernie45moe_backend.so", "create_ernie45moe_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_ernie45moe_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // Mellum backend (GQA + q/k RMSNorm + per-layer-type rope + dense/MoE)
+            if (info.id == "mellum_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_mellum_backend");
+                if (!b) b = try_load_backend("libmellum_backend.so", "create_mellum_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_mellum_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

@@ -753,6 +753,25 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([61888, 44726, 93515]) on hf-tiny-v2/tiny-random-Ernie4_5_MoeForCausalLM, top-5 exact vs torch (corr 0.9997 \u2014 tiny checkpoint's router is all-zero so softmax ties make logits float-sensitive; argmax chain is the gate). New bespoke CPU backend src/ernie45moe_engine.cpp: GQA attention (full rope, repeat_interleave kv mapping), dense GELU gate/up/down MLP then softmax-router MoE (router logits -> softmax, topk on scores+e_score_correction_bias, gather RAW softmax weights, /clamp(sum, min=moe_norm_min), per-expert gate/up/down + shared_experts), MoE layers per (l+1)%interval==0 && l in [start,end], final model.norm, UNTIED lm_head. torch.topk tie-break on equal scores picks the HIGHER index \u2014 replicated (matters for degenerate zero routers). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_ernie45moe.py <dir> <ids> 3"
+  },
+  {
+   "family": "mellum",
+   "hf_arch_strings": [
+    "mellum"
+   ],
+   "mapping_target": "MELLUM",
+   "quirk_flags": {
+    "attention": "gqa-qk-rmsnorm",
+    "rope": "per-layer-type-theta-optional-partial",
+    "moe": "softmax-router-norm-topk",
+    "ffn": "dense-gelu-then-moe",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-MellumForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_mellum.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([40011, 44037, 15998]) on hf-tiny-v2/tiny-random-MellumForCausalLM. New bespoke CPU backend src/mellum_engine.cpp: GQA attention with per-head q/k RMSNorm + RoPE with PER-LAYER-TYPE theta (full_attention 500k vs sliding_attention 10k in the tiny config) and optional partial rotary factor, dense GELU MLP then softmax-router MoE (topk, norm_topk_prob /sum, per-expert gate/up/down), final model.norm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_mellum.py <dir> <ids> 3"
   }
  ]
 }
