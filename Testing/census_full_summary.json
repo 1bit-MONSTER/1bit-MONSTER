@@ -43,6 +43,7 @@
   "GPTOSS": 1884,
   "GRANITEMOEHYBRID": 524,
   "HYV3": 91,
+  "JETMOE": 19,
   "KIMI_K3": 17,
   "KIMI_VL": 1,
   "LAGUNA": 168,
@@ -73,7 +74,7 @@
  },
  "n_archs": 2136,
  "no_arch": 77210,
- "registry_covered": 312844,
+ "registry_covered": 312863,
  "total": 399220,
  "with_arch": 317941
 }

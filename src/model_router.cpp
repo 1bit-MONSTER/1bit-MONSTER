@@ -153,6 +153,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"falconmamba_cpu", "cpu_generic"},
                 "FalconMamba model — native Mamba1-SSM CPU backend → generic CPU"};
     }
+    // JetMoE (Mixture of Attention + MoE FFN).
+    if (cfg.arch == RCPP_ARCH_JETMOE) {
+        return {{"jetmoe_cpu", "cpu_generic"},
+                "JetMoE model — native MoA+MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

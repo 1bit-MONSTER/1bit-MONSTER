@@ -891,6 +891,25 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): GENERIC engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([92, 88, 81]) on hf-tiny-v2/tiny-random-Ministral3ForCausalLM. Ministral3 is llama-layout (RMSNorm, GQA, dense gelu MLP) + YaRN rope \u2014 rides the generic engine. Added generic YARN parsing to src/safetensors_reader.cpp (rope_type: \"yarn\" -> theta/factor/beta_fast/beta_slow/original_max_position_embeddings from rope_parameters, attn scaling 0.1*ln(factor)+1). Documented limitation: llama-4 attention scaling (1 + beta*log(1+floor(pos/orig_max))) applies a per-position q multiplier beyond original_max_position_embeddings; the engine does not implement it (no-op below orig_max, which the tiny validation covers). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_ministral3.py <dir> <ids> 3"
+  },
+  {
+   "family": "jetmoe",
+   "hf_arch_strings": [
+    "jetmoe"
+   ],
+   "mapping_target": "JETMOE",
+   "quirk_flags": {
+    "attention": "mixture-of-attention-routed-q-per-expert",
+    "kv": "shared-kv-proj-repeat-not-interleave",
+    "moe": "topk-softmax-silu-ffn",
+    "head_dim": "kv-channels",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-JetMoEForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_jetmoe.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([10510, 12574, 11705]) on hf-tiny-v2/tiny-random-JetMoEForCausalLM. New bespoke CPU backend src/jetmoe_engine.cpp: Mixture of Attention (topk softmax router -> per-expert input_linear query projections [kv_channels*nkv], shared kv_proj, rope on q/k, attention with kv REPEATED top_k (repeat not interleave \u2014 groups forced 1), per-expert output_linear reduce weighted by gates + bias) + MoE FFN (topk softmax router, per-expert input_linear [2*FF] silu gate, output_linear, gates + bias). head_dim = kv_channels (NOT hidden/NH). Final model.norm; UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_jetmoe.py <dir> <ids> 3"
   }
  ]
 }

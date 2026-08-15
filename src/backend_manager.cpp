@@ -594,6 +594,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2cj. JetMoE CPU — Mixture of Attention + MoE FFN.
+    {
+        BackendInfo info;
+        info.id = "jetmoe_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "JetMoE (MoA+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 46;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "JetMoE CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1920,6 +1940,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libfalconmamba_backend.so", "create_falconmamba_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_falconmamba_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // JetMoE backend (Mixture of Attention + MoE FFN)
+            if (info.id == "jetmoe_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_jetmoe_backend");
+                if (!b) b = try_load_backend("libjetmoe_backend.so", "create_jetmoe_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_jetmoe_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

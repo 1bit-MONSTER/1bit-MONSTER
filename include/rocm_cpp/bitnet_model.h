@@ -83,6 +83,7 @@ typedef enum {
     RCPP_ARCH_COHERE2MOE = 47, // Cohere2Moe — parallel GQA + dense/MoE + mean-centered LN
     RCPP_ARCH_EXAONEMOE = 48, // ExaoneMoe — GQA + q/k RMSNorm + group-limited MoE + shared experts
     RCPP_ARCH_FALCONMAMBA = 49, // FalconMamba — Mamba1 SSM + RMSNorm on B/C/dt
+    RCPP_ARCH_JETMOE = 50,   // JetMoE — Mixture of Attention + MoE FFN
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -555,6 +556,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "exaonemoe") == 0) return RCPP_ARCH_EXAONEMOE;                          // class name
     if (strcmp(s, "falcon_mamba") == 0) return RCPP_ARCH_FALCONMAMBA;                     // FalconMambaForCausalLM
     if (strcmp(s, "falconmamba") == 0) return RCPP_ARCH_FALCONMAMBA;                      // class name
+    if (strcmp(s, "jetmoe") == 0) return RCPP_ARCH_JETMOE;                               // JetMoeForCausalLM
     // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
     // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──
