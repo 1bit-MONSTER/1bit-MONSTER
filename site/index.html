@@ -3,23 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>1bit.systems — Run AI Models Fast on Your Own Hardware, Including AMD Strix Halo's NPU</title>
+<title>1bit.monster — Run AI Models Fast on Your Own Hardware, Including AMD Strix Halo's NPU</title>
 <meta name="description" content="Run AI models fast on your own hardware — including AMD's Strix Halo NPU, whose closed-source runtime we reverse-engineered from scratch. One C++ binary, zero Python, MIT-licensed. 47 models, 135M to 74B parameters, plus NVIDIA/Apple GPU and CPU backends.">
 <meta name="keywords" content="AMD Strix Halo, NPU inference, 1-bit LLM, ternary inference, TQ2 quantization, 1BP format, BitNet, local AI, model-agnostic inference engine, NPU GPU fused engine, ROCm, XDNA 2, open source NPU driver, FastFlowLM alternative, GGUF inference, Zyphra Zamba2, C++ LLM inference, AI inference without Python">
-<meta property="og:title" content="1bit.systems — Run AI Models Fast on Your Own Hardware">
+<meta property="og:title" content="1bit.monster — Run AI Models Fast on Your Own Hardware">
 <meta property="og:description" content="One C++ binary runs AI models on AMD's Strix Halo NPU (reverse-engineered from scratch — AMD's own runtime is closed-source), NVIDIA/Apple GPUs, or CPU. Zero Python. MIT. 47 models, 135M–74B params.">
-<meta property="og:image" content="https://1bit.systems/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:url" content="https://1bit.systems">
+<meta property="og:url" content="https://1bit.monster">
 <meta property="og:type" content="website">
 <meta name="robots" content="index, follow">
-<meta name="theme-color" content="#021621">
-<link rel="canonical" href="https://1bit.systems">
+<meta name="theme-color" content="#0B0B0B">
+<link rel="canonical" href="https://1bit.monster">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="1bit.systems — Run AI Models Fast on Your Own Hardware">
+<meta name="twitter:title" content="1bit.monster — Run AI Models Fast on Your Own Hardware">
 <meta name="twitter:description" content="One C++ binary runs AI models on AMD's Strix Halo NPU (reverse-engineered from scratch), NVIDIA/Apple GPUs, or CPU. Zero Python. MIT. 47 models, 135M–74B params.">
-<meta name="twitter:image" content="https://1bit.systems/assets/og-default.png">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
 <link rel="alternate icon" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -28,10 +28,10 @@
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
 <style>
   :root{
-    --bg:#021621; --panel:#06222f; --tile:#06222f; --inner:#021018;
-    --border:#0e3346; --border2:#123a4d;
-    --text:#e7f6fd; --muted:#86adbf; --dim:#4a6a7a;
-    --green:#00ff00; --green-d:#00c853; --pink:#f00fd2; --blue:#12a0ed;
+    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
+    --border:#232323; --border2:#123a4d;
+    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
+    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
     --sans:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif;
     --mono:'JetBrains Mono','SFMono-Regular','Menlo',Consolas,monospace;
     --maxw:1180px;
@@ -89,7 +89,7 @@
   .row{display:flex;flex-wrap:wrap;gap:10px;}
   .cta-row{display:flex;flex-wrap:wrap;gap:14px;margin-top:30px;}
   .card{border-radius:18px;border:1px solid var(--border);background:var(--tile);}
-  .panel{border-radius:28px;border:1px solid var(--border);background:linear-gradient(150deg,#062230 0%,#021621 100%);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);}
+  .panel{border-radius:28px;border:1px solid var(--border);background:linear-gradient(150deg,#062230 0%,#0B0B0B 100%);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);}
   .console-hd{display:flex;align-items:center;gap:10px;}
   .dots{display:flex;gap:6px;}
   .dots span{width:11px;height:11px;border-radius:999px;opacity:.75;}
@@ -113,7 +113,7 @@
   .check{display:flex;gap:12px;align-items:flex-start;}
   .check .ck{flex:none;width:22px;height:22px;border-radius:999px;background:rgba(0,255,0,.14);color:var(--green);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;margin-top:1px;}
   .check span.txt{font-size:15px;line-height:1.5;color:#cfe6ef;} .check a{color:var(--blue);font-weight:600;}
-  .cta-band{border:1px solid var(--border);border-radius:28px;background:linear-gradient(150deg,#062230,#021621);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);padding:44px 40px;text-align:center;}
+  .cta-band{border:1px solid var(--border);border-radius:28px;background:linear-gradient(150deg,#062230,#0B0B0B);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);padding:44px 40px;text-align:center;}
   footer{border-top:1px solid var(--border);margin-top:20px;}
   .foot-top{display:flex;flex-wrap:wrap;gap:22px 28px;align-items:center;}
   .foot-links{display:flex;flex-wrap:wrap;gap:18px 22px;}
@@ -134,9 +134,9 @@
   {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    "name": "1bit.systems",
+    "name": "1bit.monster",
     "description": "Model-agnostic NPU+GPU+CPU inference engine for AMD Strix Halo. FastFlowLM was fully reverse-engineered and replaced with a native open-source XDNA 2 NPU stack (zero proprietary code). GGUF/ONNX/1BP ternary formats, TQ2 2-bit quantization, 43.2 TFLOPS INT8 prefill peak (measured 2026-08-01). 47 1BP models across 17 families, 5 backends. No Python at runtime.",
-    "url": "https://1bit.systems",
+    "url": "https://1bit.monster",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux",
     "author": { "@type": "Person", "name": "bong-water-water-bong" },
@@ -147,10 +147,10 @@
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
     "itemListElement": [
-      { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://1bit.systems" },
-      { "@type": "ListItem", "position": 2, "name": "Model Library", "item": "https://1bit.systems/models/" },
-      { "@type": "ListItem", "position": 3, "name": "JARVIS AI", "item": "https://1bit.systems/jarvis/" },
-      { "@type": "ListItem", "position": 4, "name": "Store", "item": "https://1bit.systems/store/" }
+      { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://1bit.monster" },
+      { "@type": "ListItem", "position": 2, "name": "Model Library", "item": "https://1bit.monster/models/" },
+      { "@type": "ListItem", "position": 3, "name": "JARVIS AI", "item": "https://1bit.monster/jarvis/" },
+      { "@type": "ListItem", "position": 4, "name": "Store", "item": "https://1bit.monster/store/" }
     ]
   },
   {
@@ -159,7 +159,7 @@
     "mainEntity": [
       {
         "@type": "Question",
-        "name": "What is 1bit.systems?",
+        "name": "What is 1bit.monster?",
         "acceptedAnswer": {
           "@type": "Answer",
           "text": "A model-agnostic NPU+GPU+CPU inference engine for AMD Strix Halo. FastFlowLM (AMD's closed-source NPU runtime) was fully reverse-engineered and replaced with a native open-source XDNA 2 stack — no proprietary code, no Python subprocess. Reads GGUF, ONNX, and its own 1BP ternary format (including TQ2 2-bit quantization). 47 1BP models across 17 families, 5 backends. No Python at runtime. MIT licensed."
@@ -167,7 +167,7 @@
       },
       {
         "@type": "Question",
-        "name": "Does 1bit.systems require Python?",
+        "name": "Does 1bit.monster require Python?",
         "acceptedAnswer": {
           "@type": "Answer",
           "text": "No. No Python at runtime. The engine is pure C++ and installs via curl | bash. No pip, no Docker, no compilation required."
@@ -198,9 +198,9 @@
 
 <nav>
   <div class="nav-in">
-    <a class="brand" href="#top"><span class="mark">1bs</span><span class="wordmark"><span class="g">1</span>bit<span class="p">.</span>systems</span></a>
+    <a class="brand" href="#top"><span class="mark">1bm</span><span class="wordmark"><span class="g">1</span>bit MONSTER</span></a>
     <div class="nav-links" id="navLinks"><a href="#flagship">1BP Models</a><a href="#families">Models</a><a href="#benchmarks">Benchmarks</a><a href="#backends">Backends</a><a href="#quickstart">Quick Start</a><a href="#faq">FAQ</a></div>
-    <div class="nav-cta"><a class="btn btn-primary btn-sm" href="https://github.com/1bit-systems/1bit-systems" target="_blank" rel="noopener">GitHub</a></div>
+    <div class="nav-cta"><a class="btn btn-primary btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank" rel="noopener">GitHub</a></div>
     <button class="hamburger" id="hamburger" aria-label="Menu"><span></span><span></span><span></span></button>
   </div>
 </nav>
@@ -215,13 +215,13 @@
       <p style="margin-top:2px;font-size:clamp(22px,2.8vw,34px);font-weight:800;letter-spacing:-.025em;line-height:1.04;color:var(--blue);">One C++ binary. Zero Python. MIT licensed.</p>
       <p class="sub">Including on a chip nothing else can touch: AMD's own runtime for the Strix Halo NPU is closed-source, so we reverse-engineered it from scratch. Also runs on AMD/NVIDIA/Apple GPUs and plain CPU. It's an inference engine, not a chat app — bring your own frontend. 47 models run out of the box, 135M to 74B parameters.</p>
       <div class="cta-row">
-        <a class="btn btn-primary btn-lg" href="https://github.com/1bit-systems/1bit-systems" target="_blank" rel="noopener">View on GitHub →</a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank" rel="noopener">View on GitHub →</a>
         <a class="btn btn-ghost btn-lg" href="#quickstart">Get Started →</a>
       </div>
     </div>
     <div class="panel">
       <div style="padding:18px 20px;">
-        <div class="console-hd"><span class="dots"><span style="background:var(--pink)"></span><span style="background:var(--blue)"></span><span style="background:var(--green)"></span></span><span class="mono" style="font-size:12px;color:var(--muted);">1bit.systems</span><span style="flex:1"></span><span class="eyebrow">Strix Halo</span></div>
+        <div class="console-hd"><span class="dots"><span style="background:var(--pink)"></span><span style="background:var(--blue)"></span><span style="background:var(--green)"></span></span><span class="mono" style="font-size:12px;color:var(--muted);">1bit.monster</span><span style="flex:1"></span><span class="eyebrow">Strix Halo</span></div>
         <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--green);font-size:10px;">NPU models</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--green);"><span id="model-count">37</span></span></div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;"><span class="caps" style="color:var(--pink);font-size:10px;">Architectures</span><span class="mono" style="font-size:20px;font-weight:800;color:var(--pink);">18</span></div>
@@ -294,7 +294,7 @@
 <section id="families" class="block">
   <span class="eyebrow">Model Families</span>
   <h2 style="margin:16px 0 8px;">Built around <span style="color:var(--green);">Zaya.</span> Extended to everything else.</h2>
-  <p class="lead" style="margin-bottom:28px;">Zaya1-8B is the model this project was built around — the first validated end-to-end through Q4NX, GGUF, and 1BP. The same auto-detect pipeline now covers 17 families and 47 1BP models (+12 documented Zyphra non-LLM models), from dense transformers to MoE to state-space hybrids. Full specs for every family live in the <a href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md" style="color:var(--blue);font-weight:600;">catalog on GitHub →</a></p>
+  <p class="lead" style="margin-bottom:28px;">Zaya1-8B is the model this project was built around — the first validated end-to-end through Q4NX, GGUF, and 1BP. The same auto-detect pipeline now covers 17 families and 47 1BP models (+12 documented Zyphra non-LLM models), from dense transformers to MoE to state-space hybrids. Full specs for every family live in the <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md" style="color:var(--blue);font-weight:600;">catalog on GitHub →</a></p>
 
   <div class="panel" style="padding:32px;">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
@@ -321,7 +321,7 @@
     </div>
     <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;">
       <a class="btn btn-primary btn-sm" href="https://huggingface.co/bong-water-water-bong/ZAYA1-8B-1BP" target="_blank" rel="noopener">🤗 ZAYA1-8B on Hugging Face →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#zaya--2" target="_blank" rel="noopener">Full Zaya specs →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#zaya--2" target="_blank" rel="noopener">Full Zaya specs →</a>
     </div>
   </div>
 
@@ -349,21 +349,21 @@
     </div>
     <p class="caps" style="color:var(--muted);font-size:11px;margin-bottom:12px;">+ 15 more families · 40+ more 1BP models + documented Zyphra non-LLM</p>
     <div style="display:flex;flex-wrap:wrap;gap:8px;">
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#laguna-poolside--3" target="_blank" rel="noopener">Laguna · 3 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#qwen--4" target="_blank" rel="noopener">Qwen · 4 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#llama-family--4" target="_blank" rel="noopener">Llama · 4 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#mistral--2" target="_blank" rel="noopener">Mistral · 2 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#gemma--4" target="_blank" rel="noopener">Gemma · 4 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#phi--3" target="_blank" rel="noopener">Phi · 3 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#deepseek--2" target="_blank" rel="noopener">DeepSeek · 2 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#falcon3-tii--2" target="_blank" rel="noopener">Falcon3 · 2 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#olmo-ai2--1" target="_blank" rel="noopener">OLMo · 1 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#granite-ibm--1" target="_blank" rel="noopener">Granite · 1 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#mamba--2" target="_blank" rel="noopener">Mamba · 2 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#zamba-mamba2-hybrid--3" target="_blank" rel="noopener">Zamba (Hybrid) · 3 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#zamba-mamba1attn--1" target="_blank" rel="noopener">Zamba (Mamba1+Attn) · 1 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#ternary--1-bit--4" target="_blank" rel="noopener">Ternary / Bonsai · 4 →</a>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md#vision-language--2" target="_blank" rel="noopener">Vision-Language · 2 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#laguna-poolside--3" target="_blank" rel="noopener">Laguna · 3 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#qwen--4" target="_blank" rel="noopener">Qwen · 4 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#llama-family--4" target="_blank" rel="noopener">Llama · 4 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#mistral--2" target="_blank" rel="noopener">Mistral · 2 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#gemma--4" target="_blank" rel="noopener">Gemma · 4 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#phi--3" target="_blank" rel="noopener">Phi · 3 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#deepseek--2" target="_blank" rel="noopener">DeepSeek · 2 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#falcon3-tii--2" target="_blank" rel="noopener">Falcon3 · 2 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#olmo-ai2--1" target="_blank" rel="noopener">OLMo · 1 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#granite-ibm--1" target="_blank" rel="noopener">Granite · 1 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#mamba--2" target="_blank" rel="noopener">Mamba · 2 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#zamba-mamba2-hybrid--3" target="_blank" rel="noopener">Zamba (Hybrid) · 3 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#zamba-mamba1attn--1" target="_blank" rel="noopener">Zamba (Mamba1+Attn) · 1 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#ternary--1-bit--4" target="_blank" rel="noopener">Ternary / Bonsai · 4 →</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md#vision-language--2" target="_blank" rel="noopener">Vision-Language · 2 →</a>
     </div>
   </div>
 </section>
@@ -442,11 +442,11 @@
     </div>
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;"><span class="tag npu" style="background:var(--pink);">Router</span><span class="pill ok"><span class="dot"></span>per-token dispatch</span></div>
-      <div style="margin-top:12px;font-size:14px;line-height:1.5;color:var(--muted);"><strong style="color:var(--text);">Dynamic Router</strong> — built into the single binary. Tracks live per-backend latency and routes each token to the fastest GPU/NPU backend (or a configurable backfill ratio), with automatic failover if a backend dies mid-stream. <a href="https://github.com/1bit-systems/1bit-systems/blob/main/src/dynamic_router.cpp" style="color:var(--blue);">Source →</a></div>
+      <div style="margin-top:12px;font-size:14px;line-height:1.5;color:var(--muted);"><strong style="color:var(--text);">Dynamic Router</strong> — built into the single binary. Tracks live per-backend latency and routes each token to the fastest GPU/NPU backend (or a configurable backfill ratio), with automatic failover if a backend dies mid-stream. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/src/dynamic_router.cpp" style="color:var(--blue);">Source →</a></div>
     </div>
   </div>
   <div style="margin-top:24px;text-align:center;font-size:13px;color:var(--dim);">
-    <a href="https://github.com/1bit-systems/1bit-systems/blob/main/docs/journey.md" style="color:var(--blue);font-weight:600;">Read the reverse-engineering story →</a> · 22 proprietary .so → one 67 MB open-source binary
+    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" style="color:var(--blue);font-weight:600;">Read the reverse-engineering story →</a> · 22 proprietary .so → one 67 MB open-source binary
   </div>
 </section>
 
@@ -457,16 +457,16 @@
   <p class="lead" style="margin-bottom:24px;">No Python. No pip. No Docker. One binary runs any model.</p>
   <div class="code" style="font-size:13px;line-height:1.8;padding:24px;max-width:640px;margin:0 auto;">
 <span class="c"># Install — auto-detects OS:</span>
-<span class="g">$ curl -fsSL https://1bit.systems/install.sh | sh</span>
+<span class="g">$ curl -fsSL https://1bit.monster/install.sh | sh</span>
 
 <span class="c"># Start inference with any GGUF model:</span>
 <span class="g">$ 1bit serve --model qwen3-0.6b</span>
 
 <span class="c"># Or build from source:</span>
-<span class="g">$ git clone https://github.com/1bit-systems/1bit-systems</span>
-<span class="g">$ cd 1bit-systems && cmake -B build && cmake --build build -j$(nproc)</span>
+<span class="g">$ git clone https://github.com/1bit-MONSTER/1bit-MONSTER</span>
+<span class="g">$ cd 1bit-MONSTER && cmake -B build && cmake --build build -j$(nproc)</span>
   </div>
-  <p style="margin-top:20px;text-align:center;font-size:13px;color:var(--dim);">Package formats: deb · snap · AppImage · Homebrew · AUR · Docker · Ollama · <a href="https://github.com/1bit-systems/1bit-systems" style="color:var(--blue);">more →</a></p>
+  <p style="margin-top:20px;text-align:center;font-size:13px;color:var(--dim);">Package formats: deb · snap · AppImage · Homebrew · AUR · Docker · Ollama · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:var(--blue);">more →</a></p>
 </section>
 
 <!-- ===== FAQ ===== -->
@@ -488,11 +488,11 @@
     </div>
     <div class="card" style="padding:18px 22px;">
       <div style="font-weight:700;font-size:15px;color:var(--text);">What's the license?</div>
-      <p style="margin-top:6px;font-size:14px;color:var(--muted);line-height:1.5;">MIT. <a href="https://github.com/1bit-systems/1bit-systems/blob/main/LICENSE" style="color:var(--blue);font-weight:600;">View license →</a></p>
+      <p style="margin-top:6px;font-size:14px;color:var(--muted);line-height:1.5;">MIT. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/LICENSE" style="color:var(--blue);font-weight:600;">View license →</a></p>
     </div>
     <div class="card" style="padding:18px 22px;">
       <div style="font-weight:700;font-size:15px;color:var(--text);">How does it compare to llama.cpp?</div>
-      <p style="margin-top:6px;font-size:14px;color:var(--muted);line-height:1.5;">llama.cpp is faster on the same hardware (229 tok/s vs our 30-80 tok/s). We say so in the README. Our advantage is NPU support, model-agnostic auto-detection, and zero Python — all in a single binary. See <a href="https://github.com/1bit-systems/1bit-systems/issues/235" style="color:var(--blue);">issue #235</a> for discussion.</p>
+      <p style="margin-top:6px;font-size:14px;color:var(--muted);line-height:1.5;">llama.cpp is faster on the same hardware (229 tok/s vs our 30-80 tok/s). We say so in the README. Our advantage is NPU support, model-agnostic auto-detection, and zero Python — all in a single binary. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/issues/235" style="color:var(--blue);">issue #235</a> for discussion.</p>
     </div>
     <div class="card" style="padding:18px 22px;">
       <div style="font-weight:700;font-size:15px;color:var(--text);">Kernel crash on 6.19.x?</div>
@@ -508,13 +508,13 @@
 <footer>
   <div class="wrap" style="padding-top:40px;padding-bottom:56px;">
     <div class="foot-top">
-      <a class="brand" href="#top"><span class="mark" style="width:34px;height:34px;font-size:11px;">1bs</span><span class="wordmark" style="font-size:16px;"><span class="g">1</span>bit<span class="p">.</span>systems</span></a>
+      <a class="brand" href="#top"><span class="mark" style="width:34px;height:34px;font-size:11px;">1bm</span><span class="wordmark" style="font-size:16px;"><span class="g">1</span>bit MONSTER</span></a>
       <span style="flex:1"></span>
       <div class="foot-links">
-        <a href="https://github.com/1bit-systems/1bit-systems" target="_blank" rel="noopener">GitHub</a>
-        <a href="https://github.com/1bit-systems/1bit-systems/blob/main/docs/wiki/Installation.md" target="_blank" rel="noopener">Install Guide</a>
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/Installation.md" target="_blank" rel="noopener">Install Guide</a>
         <a href="/wiki/performance">Benchmarks</a>
-        <a href="https://github.com/1bit-systems/1bit-systems/blob/main/docs/journey.md" target="_blank" rel="noopener">Audit Trail</a>
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" target="_blank" rel="noopener">Audit Trail</a>
       </div>
     </div>
     <div class="foot-fine">
@@ -522,7 +522,7 @@
       <div>Coding agent based on <a href="https://github.com/earendil-works/pi" style="color:var(--muted);">pi</a> (MIT, © Earendil Works). Inference engines original to this repo.</div>
       <div><span id="binary-size6">67 MB</span> single binary · open-source NPU stack · <span id="tflops3">43.2 TFLOPS</span> prefill · MIT</div>
       <div style="margin-top:8px;">—bong-water-water-bong · <span class="p">"Sorry but not Sorry :)"</span></div>
-      <div style="margin-top:8px;"><a href="mailto:admin@1bit.systems" style="color:var(--muted);">admin@1bit.systems</a> · <a href="/s/" style="color:#21262d;font-size:10px;" title="stats for nerds">.</a></div>
+      <div style="margin-top:8px;"><a href="mailto:admin@1bit.monster" style="color:var(--muted);">admin@1bit.monster</a> · <a href="/s/" style="color:#21262d;font-size:10px;" title="stats for nerds">.</a></div>
     </div>
   </div>
 </footer>
@@ -554,7 +554,7 @@
         var b=N.binary,B=N.benchmarks,R=N.repo,S=N.site;
 
         // Update meta tags
-        var title='1bit.systems — '+b.onebin_kb+' KB Single Binary · '+S.models+' managed models';
+        var title='1bit.monster — '+b.onebin_kb+' KB Single Binary · '+S.models+' managed models';
         document.title=title;
         var mt=document.querySelector('meta[property="og:title"]');if(mt)mt.content=title;
         var tt=document.querySelector('meta[name="twitter:title"]');if(tt)tt.content=title;

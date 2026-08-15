@@ -3,28 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JARVIS — 1bit.systems</title>
-<meta name="description" content="JARVIS — your private AI assistant. Runs entirely on-device on 1bit.systems NPU+GPU+CPU. 94 tok/s. Chat, voice, vision, RAG, agents. Zero cloud. Zero subscriptions. Open source.">
-<meta property="og:title" content="JARVIS — Private AI on 1bit.systems">
+<title>JARVIS — 1bit.monster</title>
+<meta name="description" content="JARVIS — your private AI assistant. Runs entirely on-device on 1bit.monster NPU+GPU+CPU. 94 tok/s. Chat, voice, vision, RAG, agents. Zero cloud. Zero subscriptions. Open source.">
+<meta property="og:title" content="JARVIS — Private AI on 1bit.monster">
 <meta property="og:description" content="Your private AI assistant. NPU+GPU+CPU. 94 tok/s. Chat, voice, vision, RAG. Zero cloud. Open source.">
 <meta property="og:image" content="/assets/og-default.png">
-<meta property="og:url" content="https://1bit.systems/jarvis/">
+<meta property="og:url" content="https://1bit.monster/jarvis/">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="JARVIS — 1bit.systems">
+<meta name="twitter:title" content="JARVIS — 1bit.monster">
 <meta name="twitter:description" content="Private AI on your hardware. 94 tok/s. Chat, voice, vision. Zero cloud.">
 <meta name="robots" content="index, follow">
-<link rel="canonical" href="https://1bit.systems/jarvis/">
+<link rel="canonical" href="https://1bit.monster/jarvis/">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#021621; --panel:#06222f; --tile:#06222f; --inner:#021018;
-    --border:#0e3346; --border2:#123a4d;
-    --text:#e7f6fd; --muted:#86adbf; --dim:#4a6a7a;
-    --green:#00ff00; --green-d:#00c853; --pink:#f00fd2; --blue:#12a0ed;
+    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
+    --border:#232323; --border2:#123a4d;
+    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
+    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
     --sans:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif;
     --mono:'JetBrains Mono','SFMono-Regular','Menlo',Consolas,monospace;
     --maxw:1100px;
@@ -76,7 +76,7 @@
   .hero .cta-row{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:28px;}
   .hero-panel{background:var(--tile);border:1px solid var(--border);border-radius:20px;padding:28px;margin-top:36px;text-align:left;}
   .card{border-radius:16px;border:1px solid var(--border);background:var(--tile);}
-  .panel-a{border-radius:24px;border:1px solid var(--border);background:linear-gradient(150deg,#062230,#021621);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);padding:32px;}
+  .panel-a{border-radius:24px;border:1px solid var(--border);background:linear-gradient(150deg,#062230,#0B0B0B);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);padding:32px;}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;}
   .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;}
   .grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px;}
@@ -99,7 +99,7 @@
   .console-hd{display:flex;align-items:center;gap:10px;}
   .dots{display:flex;gap:6px;}
   .dots span{width:10px;height:10px;border-radius:999px;}
-  .cta-band{border:1px solid var(--border);border-radius:24px;background:linear-gradient(150deg,#062230,#021621);padding:48px 36px;text-align:center;}
+  .cta-band{border:1px solid var(--border);border-radius:24px;background:linear-gradient(150deg,#062230,#0B0B0B);padding:48px 36px;text-align:center;}
   .tabs{display:flex;gap:2px;background:var(--inner);border-radius:10px;padding:3px;margin-bottom:20px;}
   .tab{padding:8px 18px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;color:var(--muted);border:none;background:transparent;font-family:var(--sans);}
   .tab.active{background:var(--panel);color:var(--green);}
@@ -121,8 +121,8 @@
 <nav>
   <div class="nav-in">
     <a class="brand" href="/"><span class="mark">J</span><span class="wordmark"><span class="g">J</span>AR<span class="p">V</span>IS</span></a>
-    <div class="nav-links"><a href="#capabilities">Capabilities</a><a href="#architecture">Architecture</a><a href="#open-knowledge">Knowledge</a><a href="#install">Install</a><a href="https://1bit.systems">1bit.systems</a></div>
-    <div class="nav-cta"><a class="btn btn-ghost btn-sm" href="https://github.com/1bit-systems/1bit-systems" target="_blank">GitHub</a><a class="btn btn-primary btn-sm" href="#install">Get Started</a></div>
+    <div class="nav-links"><a href="#capabilities">Capabilities</a><a href="#architecture">Architecture</a><a href="#open-knowledge">Knowledge</a><a href="#install">Install</a><a href="https://1bit.monster">1bit.monster</a></div>
+    <div class="nav-cta"><a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank">GitHub</a><a class="btn btn-primary btn-sm" href="#install">Get Started</a></div>
   </div>
 </nav>
 
@@ -409,13 +409,13 @@
     </div>
     <div class="card" style="padding:24px;">
       <h3 style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:8px;">Mobile access</h3>
-      <div class="code" style="font-size:12px;"><span class="g">curl -fsSL 1bit.systems/mobile.sh | sh</span>
+      <div class="code" style="font-size:12px;"><span class="g">curl -fsSL 1bit.monster/mobile.sh | sh</span>
 <span class="b">→ ngrok tunnel + QR code</span></div>
       <p style="font-size:13px;color:var(--muted);margin-top:12px;">Expose JARVIS via ngrok. Scan the QR code with JARVIS Mobile (iOS/Android) to chat from anywhere.</p>
     </div>
   </div>
   <div class="code" style="margin-top:24px;font-size:13px;text-align:center;padding:20px;">
-<span class="g">curl -fsSL https://1bit.systems/jarvis/install.sh | sh</span>
+<span class="g">curl -fsSL https://1bit.monster/jarvis/install.sh | sh</span>
 <span class="c"># Coming soon: one-command JARVIS install</span></div>
 </section>
 
@@ -425,8 +425,8 @@
     <h2 style="font-weight:900;">Your private JARVIS. On your machine.</h2>
     <p class="lead" style="margin:14px auto 0;max-width:500px;">94 tok/s. Zero cloud. Zero subscriptions. Full voice, vision, and RAG. Open source.</p>
     <div class="cta-row" style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:24px;">
-      <a class="btn btn-primary btn-md" href="https://github.com/1bit-systems/1bit-systems" target="_blank">View on GitHub →</a>
-      <a class="btn btn-ghost btn-md" href="https://1bit.systems">1bit.systems</a>
+      <a class="btn btn-primary btn-md" href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank">View on GitHub →</a>
+      <a class="btn btn-ghost btn-md" href="https://1bit.monster">1bit.monster</a>
     </div>
     <div style="margin-top:18px;display:flex;flex-wrap:wrap;gap:8px;justify-content:center;">
       <span class="pill ok"><span class="dot"></span>Strix Halo required</span>
@@ -443,9 +443,9 @@
       <a class="brand" href="/"><span class="mark" style="width:32px;height:32px;font-size:12px;">J</span><span class="wordmark" style="font-size:15px;"><span class="g">J</span>AR<span class="p">V</span>IS</span></a>
       <span style="flex:1"></span>
       <div class="foot-links">
-        <a href="https://github.com/1bit-systems/1bit-systems" target="_blank">GitHub</a>
-        <a href="https://1bit.systems">1bit.systems</a>
-        <a href="mailto:admin@1bit.systems">Email</a>
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank">GitHub</a>
+        <a href="https://1bit.monster">1bit.monster</a>
+        <a href="mailto:admin@1bit.monster">Email</a>
       </div>
     </div>
     <div class="foot-fine">

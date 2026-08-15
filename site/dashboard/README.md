@@ -106,7 +106,7 @@ await API.put('/v1/my-endpoint', { key: 'value' });
 
 ## Dark Theme
 
-The dashboard uses the 1bit.systems brand colors:
+The dashboard uses the 1bit.monster brand colors:
 
 | Role | Color | Hex |
 |------|-------|-----|
@@ -145,4 +145,4 @@ http://localhost:8080/dashboard/
 
 ## License
 
-MIT — part of the 1bit.systems open-source project.
+MIT — part of the 1bit.monster open-source project.

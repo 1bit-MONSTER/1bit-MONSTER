@@ -1,5 +1,5 @@
 /* ============================================================
-   1bit.systems — "Bonsai Spec Sheet"
+   1bit.monster — "Bonsai Spec Sheet"
    Industrial datasheet × refined editorial. Three colors total.
    Self-hosted variable fonts under /assets/fonts/ (no CDN dep).
    ============================================================ */
@@ -47,21 +47,21 @@
 }
 
 :root{
-  /* palette — current 1bit.systems portal: purple/lime/blue-bell */
-  --bg:        #021621;
-  --bg-2:      #04202f;
-  --bg-3:      #07405f;
-  --ink:       #e7f6fd;
-  --ink-2:     #a0d9f8;
-  --ink-3:     #5d9ec2;
-  --rule:      rgba(14, 128, 190, 0.42);
-  --rule-soft: rgba(14, 128, 190, 0.18);
-  --accent:    #00ff00;
-  --accent-dim:#00cc00;
-  --blue:      #12a0ed;
-  --live:      #f00fd2;
-  --live-dark: #c00ca8;
-  --highlight: #e5ffe5;
+  /* palette — 1bit MONSTER: black, white, one lime accent */
+  --bg:        #0B0B0B;
+  --bg-2:      #141414;
+  --bg-3:      #1D1D1D;
+  --ink:       #EDEFEA;
+  --ink-2:     #B9BEB4;
+  --ink-3:     #A0A599;
+  --rule:      #232323;
+  --rule-soft: rgba(198, 255, 61, 0.15);
+  --accent:    #C6FF3D;
+  --accent-dim:#9FCC20;
+  --blue:      var(--accent);
+  --live:      var(--accent);
+  --live-dark: #9FCC20;
+  --highlight: rgba(198, 255, 61, 0.12);
 
   /* legacy aliases so existing class hooks still pick up */
   --fg: var(--ink);
@@ -104,7 +104,7 @@ body::before{
   content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
   background-image:
     radial-gradient(rgba(201,209,217,.025) 1px, transparent 1.2px),
-    radial-gradient(rgba(0,212,255,.012) 1px, transparent 1.5px);
+    radial-gradient(rgba(198,255,61,.012) 1px, transparent 1.5px);
   background-size: 3px 3px, 7px 7px;
   background-position: 0 0, 1px 1px;
   mix-blend-mode: screen;
@@ -418,9 +418,9 @@ table.bench th, table.bench td{
   color:var(--ink-2);background:transparent;
   border-bottom:1px solid var(--ink);border-top:0;
 }
-.data-table tr:hover td, table.bench tr:hover td{background:rgba(0,212,255,.04)}
+.data-table tr:hover td, table.bench tr:hover td{background:rgba(198,255,61,.04)}
 .data-table tr.flagship td, table.bench tr.flagship td{
-  background:rgba(0,212,255,.07);font-weight:500;
+  background:rgba(198,255,61,.07);font-weight:500;
 }
 .data-table tr.flagship td:first-child{color:var(--accent)}
 .data-table .num, table.bench .num{
@@ -606,7 +606,7 @@ section#status li::marker{content:""}
 .callout{
   margin:1.5rem 0;padding:1.1rem 1.3rem;
   border-left:2px solid var(--accent);
-  background:rgba(0,212,255,.05);
+  background:rgba(198,255,61,.05);
   font-size:.95rem;
 }
 .callout strong{color:var(--accent);font-weight:600}
@@ -657,18 +657,18 @@ body {
 body {
   min-width: 320px;
   background:
-    radial-gradient(circle at 20% 8%, rgba(240, 15, 210, 0.22), transparent 28rem),
-    radial-gradient(circle at 82% 18%, rgba(18, 160, 237, 0.28), transparent 34rem),
-    radial-gradient(circle at 48% 0%, rgba(0, 255, 0, 0.12), transparent 22rem),
+    radial-gradient(circle at 20% 8%, rgba(198, 255, 61, 0.22), transparent 28rem),
+    radial-gradient(circle at 82% 18%, rgba(198, 255, 61, 0.28), transparent 34rem),
+    radial-gradient(circle at 48% 0%, rgba(198, 255, 61, 0.12), transparent 22rem),
     linear-gradient(145deg, #021621 0%, #04202f 46%, #000000 100%);
 }
 
 body::before {
   opacity: 0.55;
   background-image:
-    linear-gradient(90deg, rgba(18, 160, 237, 0.06) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(18, 160, 237, 0.05) 1px, transparent 1px),
-    radial-gradient(rgba(0, 255, 0, 0.16) 1px, transparent 1.5px);
+    linear-gradient(90deg, rgba(198, 255, 61, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(198, 255, 61, 0.05) 1px, transparent 1px),
+    radial-gradient(rgba(198, 255, 61, 0.16) 1px, transparent 1.5px);
   background-size: 44px 44px, 44px 44px, 7px 7px;
   background-position: center top, center top, 0 0;
   mix-blend-mode: screen;
@@ -682,7 +682,7 @@ body::before {
 
 a {
   color: var(--ink);
-  text-decoration-color: rgba(0, 255, 0, 0.62);
+  text-decoration-color: rgba(198, 255, 61, 0.62);
 }
 
 a:hover {
@@ -691,14 +691,14 @@ a:hover {
 
 .topbar {
   padding: 0.9rem 1.4rem;
-  background: rgba(2, 22, 33, 0.82);
-  border-bottom: 1px solid rgba(160, 217, 248, 0.16);
+  background: rgba(11, 11, 11, 0.82);
+  border-bottom: 1px solid rgba(185, 190, 180, 0.16);
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
 }
 
 .brand img {
   border-radius: 8px;
-  box-shadow: 0 0 28px rgba(240, 15, 210, 0.18);
+  box-shadow: 0 0 28px rgba(198, 255, 61, 0.18);
 }
 
 .brand span {
@@ -724,7 +724,7 @@ a:hover {
 }
 
 .gh-btn {
-  border-color: rgba(0, 255, 0, 0.42) !important;
+  border-color: rgba(198, 255, 61, 0.42) !important;
   border-radius: 6px;
   color: var(--accent) !important;
 }
@@ -735,9 +735,9 @@ a:hover {
 }
 
 .side-toggle {
-  border-color: rgba(160, 217, 248, 0.24);
+  border-color: rgba(185, 190, 180, 0.24);
   border-radius: 6px;
-  background: rgba(4, 32, 47, 0.72);
+  background: rgba(20, 20, 20, 0.72);
   color: var(--ink);
   letter-spacing: 0;
 }
@@ -756,7 +756,7 @@ a:hover {
 .page-side {
   top: 66px;
   padding-top: 2rem;
-  border-right: 1px solid rgba(160, 217, 248, 0.14);
+  border-right: 1px solid rgba(185, 190, 180, 0.14);
 }
 
 .page-side h4,
@@ -769,7 +769,7 @@ table.bench th {
 
 .side-nav a {
   border-left-width: 3px;
-  color: rgba(160, 217, 248, 0.78);
+  color: rgba(185, 190, 180, 0.78);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-size: 0.88rem;
 }
@@ -789,12 +789,12 @@ main.page-main > section {
   min-width: 0;
   max-width: 1040px;
   padding: 5rem 0;
-  border-top-color: rgba(160, 217, 248, 0.14);
+  border-top-color: rgba(185, 190, 180, 0.14);
 }
 
 main.page-main > section[id]::before {
   left: -4rem;
-  color: rgba(160, 217, 248, 0.46);
+  color: rgba(185, 190, 180, 0.46);
   letter-spacing: 0;
 }
 
@@ -846,7 +846,7 @@ main.page-main > section h3 {
   width: min(430px, 86%);
   max-width: 100%;
   margin-bottom: 2.2rem;
-  filter: drop-shadow(0 0 34px rgba(18, 160, 237, 0.20));
+  filter: drop-shadow(0 0 34px rgba(198, 255, 61, 0.20));
 }
 
 .eyebrow {
@@ -901,7 +901,7 @@ main.page-main > section h3 {
 .lede {
   width: 100%;
   max-width: 66ch;
-  color: rgba(231, 246, 253, 0.84);
+  color: rgba(237, 239, 234, 0.84);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-size: 1rem;
 }
@@ -910,8 +910,8 @@ main.page-main > section h3 {
 p code,
 li code,
 .muted code {
-  background: rgba(4, 32, 47, 0.88);
-  border: 1px solid rgba(160, 217, 248, 0.16);
+  background: rgba(20, 20, 20, 0.88);
+  border: 1px solid rgba(185, 190, 180, 0.16);
   border-radius: 5px;
   color: var(--highlight);
 }
@@ -925,7 +925,7 @@ li code,
   border-radius: 7px;
   border-color: var(--accent);
   background: var(--accent);
-  box-shadow: 0 0 34px rgba(0, 255, 0, 0.16);
+  box-shadow: 0 0 34px rgba(198, 255, 61, 0.16);
   color: var(--bg) !important;
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-size: 0.86rem;
@@ -936,19 +936,19 @@ li code,
 
 .btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 18px 48px rgba(0, 255, 0, 0.18);
+  box-shadow: 0 18px 48px rgba(198, 255, 61, 0.18);
 }
 
 .btn.ghost {
   color: var(--ink) !important;
-  border-color: rgba(160, 217, 248, 0.28);
-  background: rgba(4, 32, 47, 0.64);
+  border-color: rgba(185, 190, 180, 0.28);
+  background: rgba(20, 20, 20, 0.64);
   box-shadow: none;
 }
 
 .btn.ghost:hover {
   border-color: var(--live);
-  box-shadow: 0 18px 48px rgba(240, 15, 210, 0.14);
+  box-shadow: 0 18px 48px rgba(198, 255, 61, 0.14);
 }
 
 .hero-console {
@@ -957,15 +957,15 @@ li code,
   min-width: 0;
   width: 100%;
   padding: 1.1rem;
-  border: 1px solid rgba(160, 217, 248, 0.20);
+  border: 1px solid rgba(185, 190, 180, 0.20);
   border-radius: 8px;
   background:
-    linear-gradient(145deg, rgba(4, 32, 47, 0.92), rgba(2, 22, 33, 0.74)),
-    radial-gradient(circle at 82% 16%, rgba(240, 15, 210, 0.28), transparent 42%),
-    radial-gradient(circle at 8% 92%, rgba(0, 255, 0, 0.16), transparent 35%);
+    linear-gradient(145deg, rgba(20, 20, 20, 0.92), rgba(11, 11, 11, 0.74)),
+    radial-gradient(circle at 82% 16%, rgba(198, 255, 61, 0.28), transparent 42%),
+    radial-gradient(circle at 8% 92%, rgba(198, 255, 61, 0.16), transparent 35%);
   box-shadow:
     0 26px 90px rgba(0, 0, 0, 0.38),
-    inset 0 1px 0 rgba(231, 246, 253, 0.08);
+    inset 0 1px 0 rgba(237, 239, 234, 0.08);
 }
 
 .hero-console::before {
@@ -974,8 +974,8 @@ li code,
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(18, 160, 237, 0.08) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(18, 160, 237, 0.08) 1px, transparent 1px);
+    linear-gradient(90deg, rgba(198, 255, 61, 0.08) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(198, 255, 61, 0.08) 1px, transparent 1px);
   background-size: 28px 28px;
   mask-image: linear-gradient(180deg, black, transparent);
 }
@@ -1008,19 +1008,19 @@ li code,
   height: 9px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 6px rgba(0, 255, 0, 0.12);
+  box-shadow: 0 0 0 6px rgba(198, 255, 61, 0.12);
 }
 
 .endpoint {
   padding: 1rem;
-  border: 1px solid rgba(160, 217, 248, 0.16);
+  border: 1px solid rgba(185, 190, 180, 0.16);
   border-radius: 8px;
-  background: rgba(2, 22, 33, 0.58);
+  background: rgba(11, 11, 11, 0.58);
 }
 
 .primary-endpoint {
   margin-bottom: 0.75rem;
-  border-color: rgba(0, 255, 0, 0.35);
+  border-color: rgba(198, 255, 61, 0.35);
 }
 
 .endpoint-grid {
@@ -1050,26 +1050,26 @@ li code,
 
 .endpoint em {
   display: block;
-  color: rgba(231, 246, 253, 0.66);
+  color: rgba(237, 239, 234, 0.66);
   font-size: 0.8rem;
   font-style: normal;
 }
 
 .hero-console pre {
   margin: 0.85rem 0 0;
-  border: 1px solid rgba(0, 255, 0, 0.28);
-  border-left: 1px solid rgba(0, 255, 0, 0.28);
+  border: 1px solid rgba(198, 255, 61, 0.28);
+  border-left: 1px solid rgba(198, 255, 61, 0.28);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.46);
   color: var(--accent);
 }
 
 pre {
-  border: 1px solid rgba(160, 217, 248, 0.18);
+  border: 1px solid rgba(185, 190, 180, 0.18);
   border-left: 3px solid var(--accent);
   border-radius: 8px;
-  background: rgba(2, 22, 33, 0.76);
-  box-shadow: inset 0 1px 0 rgba(231, 246, 253, 0.05);
+  background: rgba(11, 11, 11, 0.76);
+  box-shadow: inset 0 1px 0 rgba(237, 239, 234, 0.05);
 }
 
 pre code {
@@ -1090,19 +1090,19 @@ pre code {
   min-width: 0;
   min-height: 100%;
   padding: 1.15rem !important;
-  border: 1px solid rgba(160, 217, 248, 0.16) !important;
+  border: 1px solid rgba(185, 190, 180, 0.16) !important;
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(7, 64, 95, 0.28), rgba(4, 32, 47, 0.56)),
-    rgba(4, 32, 47, 0.52);
-  box-shadow: inset 0 1px 0 rgba(231, 246, 253, 0.05);
+    linear-gradient(180deg, rgba(29, 29, 29, 0.28), rgba(20, 20, 20, 0.56)),
+    rgba(20, 20, 20, 0.52);
+  box-shadow: inset 0 1px 0 rgba(237, 239, 234, 0.05);
 }
 
 .pillar:hover {
-  border-color: rgba(0, 255, 0, 0.34) !important;
+  border-color: rgba(198, 255, 61, 0.34) !important;
   background:
-    linear-gradient(180deg, rgba(7, 64, 95, 0.42), rgba(4, 32, 47, 0.66)),
-    rgba(4, 32, 47, 0.72);
+    linear-gradient(180deg, rgba(29, 29, 29, 0.42), rgba(20, 20, 20, 0.66)),
+    rgba(20, 20, 20, 0.72);
 }
 
 .pillar h3 {
@@ -1112,7 +1112,7 @@ pre code {
 }
 
 .pillar p {
-  color: rgba(231, 246, 253, 0.82) !important;
+  color: rgba(237, 239, 234, 0.82) !important;
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   overflow-wrap: anywhere;
 }
@@ -1127,9 +1127,9 @@ td code {
 .data-table,
 table.bench {
   overflow: hidden;
-  border: 1px solid rgba(160, 217, 248, 0.16);
+  border: 1px solid rgba(185, 190, 180, 0.16);
   border-radius: 8px;
-  background: rgba(4, 32, 47, 0.48);
+  background: rgba(20, 20, 20, 0.48);
 }
 
 .scroll-x {
@@ -1140,18 +1140,18 @@ table.bench {
 .data-table th,
 table.bench th {
   color: var(--accent);
-  background: rgba(2, 22, 33, 0.76);
-  border-bottom-color: rgba(160, 217, 248, 0.18);
+  background: rgba(11, 11, 11, 0.76);
+  border-bottom-color: rgba(185, 190, 180, 0.18);
 }
 
 .data-table td,
 table.bench td {
-  border-top-color: rgba(160, 217, 248, 0.12);
+  border-top-color: rgba(185, 190, 180, 0.12);
 }
 
 .data-table tr:hover td,
 table.bench tr:hover td {
-  background: rgba(18, 160, 237, 0.09);
+  background: rgba(198, 255, 61, 0.09);
 }
 
 .muted,
@@ -1164,15 +1164,15 @@ table.bench tr:hover td {
 .callout,
 .result-card {
   border-left-color: var(--live);
-  background: rgba(240, 15, 210, 0.06);
+  background: rgba(198, 255, 61, 0.06);
 }
 
 * {
-  scrollbar-color: rgba(14, 128, 190, 0.55) transparent;
+  scrollbar-color: rgba(198, 255, 61, 0.55) transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(14, 128, 190, 0.55);
+  background: rgba(198, 255, 61, 0.55);
   border-color: var(--bg);
 }
 
