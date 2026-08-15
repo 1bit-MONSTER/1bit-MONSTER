@@ -10,10 +10,10 @@
 
   <g transform="translate(220,118)">
     <text x="0" y="0"
-          font-family="'JetBrains Mono','SF Mono','Fira Code',ui-monospace,monospace"
+          font-family="'DM Serif Display',Georgia,'Times New Roman',serif"
           font-size="72" font-weight="800" letter-spacing="-0.02em">
       <tspan fill="#C6FF3D">1bit</tspan><tspan fill="#EDEFEA"> MONSTER</tspan>
     </text>
-    <text x="1" y="34" font-family="'JetBrains Mono','SF Mono',monospace" font-size="15" letter-spacing="0.02em" fill="#A0A599">sorry but not sorry.</text>
+    <text x="1" y="34" font-family="'DM Mono','SF Mono',monospace" font-size="15" letter-spacing="0.02em" fill="#A0A599">sorry but not sorry.</text>
   </g>
 </svg>
