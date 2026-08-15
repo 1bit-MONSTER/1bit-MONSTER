@@ -69,6 +69,7 @@ typedef enum {
     RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
     RCPP_ARCH_COHERE2 = 36,  // Cohere2 — parallel attn+FFN, mean-centered LayerNorm, adjacent-pair rope, SWA
     RCPP_ARCH_FALCONH1 = 37, // Falcon-H1 — Mamba-2 SSM + GQA attention + MuP multipliers
+    RCPP_ARCH_RWKV = 38,    // RWKV-4/5/6 — linear-attention WKV recurrence + channel mixing
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -358,6 +359,9 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "cohere2_model") == 0) return RCPP_ARCH_COHERE2;  // HF model_type
     if (strcmp(s, "falconh1") == 0) return RCPP_ARCH_FALCONH1;     // FalconH1ForCausalLM
     if (strcmp(s, "falcon_h1") == 0) return RCPP_ARCH_FALCONH1;    // HF model_type
+    if (strcmp(s, "rwkv") == 0) return RCPP_ARCH_RWKV;             // RwkvForCausalLM (RWKV-4)
+    // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
+    // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;

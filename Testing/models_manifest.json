@@ -1,639 +1,659 @@
 {
-  "_comment": "MONSTER family manifest (Phase 3, 2026-08-14). One entry per validated family. hf_arch_strings = suffix-stripped family tags (see safetensors_reader.cpp) + HF class names; mapping_target = rcpp_arch_t token; quirk_flags = what backend_generic must handle; e2e_model = HF repo for the real-checkpoint gate; oracle = GGUF for tokenize/detokenize parity. Status: validated | in_progress | pending.",
-  "families": [
-    {
-      "family": "llama",
-      "hf_arch_strings": [
-        "llama",
-        "smollm",
-        "smollm2",
-        "smollm3",
-        "openelm",
-        "nemotron",
-        "minicpm",
-        "baichuan",
-        "baichuan2",
-        "exaone",
-        "solar",
-        "internlm",
-        "internlm2",
-        "internlm3",
-        "xverse",
-        "apertus",
-        "cohere",
-        "gptbigcode",
-        "stablelm",
-        "mosaic",
-        "mpt",
-        "starcoder",
-        "starcoder2",
-        "command-r",
-        "dbrx",
-        "jamba"
-      ],
-      "mapping_target": "LLAMA",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "none"
-      },
-      "e2e_model": "HuggingFaceTB/SmolLM2-135M-Instruct",
-      "oracle": "unsloth q8 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "qwen2",
-      "hf_arch_strings": [
-        "qwen2",
-        "qwen",
-        "qwen2moe",
-        "deepseek"
-      ],
-      "mapping_target": "QWEN2",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "qkv",
-        "qk_norm": false
-      },
-      "e2e_model": "Qwen/Qwen2.5-0.5B-Instruct",
-      "oracle": "bartowski q8 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "qwen3",
-      "hf_arch_strings": [
-        "qwen3",
-        "qwen3moe"
-      ],
-      "mapping_target": "QWEN3",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "none",
-        "qk_norm": "optional"
-      },
-      "e2e_model": "Qwen/Qwen3-0.6B",
-      "oracle": "local Q8_0 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "mistral",
-      "hf_arch_strings": [
-        "mistral",
-        "pixtral",
-        "mixtral"
-      ],
-      "mapping_target": "MISTRAL",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "none"
-      },
-      "e2e_model": "mistralai/Mistral-7B-v0.1",
-      "oracle": "q8 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "gemma",
-      "hf_arch_strings": [
-        "gemma",
-        "gemma2",
-        "gemma3",
-        "gemma4",
-        "granite",
-        "granitemoe",
-        "ovis",
-        "paligemma"
-      ],
-      "mapping_target": "GEMMA",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "none",
-        "norm": "+1 convention",
-        "post_norms": true
-      },
-      "e2e_model": "google/gemma-3-1b-it",
-      "oracle": "unsloth q8 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "granite-moe",
-      "hf_arch_strings": [
-        "granitemoe"
-      ],
-      "mapping_target": "GEMMA",
-      "quirk_flags": {
-        "moe": "fused block_sparse",
-        "activation": "swiglu",
-        "attn_multiplier": 0.015625,
-        "residual_multiplier": 0.22,
-        "embedding_multiplier": 12.0,
-        "logits_scaling": 6.0
-      },
-      "e2e_model": "ibm-granite/granite-3.1-3b-a800m-instruct",
-      "oracle": "bartowski q8 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "phi",
-      "hf_arch_strings": [
-        "phi",
-        "phi3",
-        "phi4",
-        "phi_moe"
-      ],
-      "mapping_target": "PHI",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "none",
-        "fused_proj": "qkv+gate_up",
-        "activation": "swiglu (phi3/4)"
-      },
-      "e2e_model": "microsoft/Phi-3-mini-4k-instruct",
-      "oracle": "q8 gguf",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "olmo",
-      "hf_arch_strings": [
-        "olmo",
-        "olmo2",
-        "olmoe",
-        "molmo"
-      ],
-      "mapping_target": "OLMO",
-      "quirk_flags": {
-        "rope": "natural theta=10000",
-        "norm": "LayerNorm NO affine params (eps 1e-5)",
-        "clip_qkv": 8.0,
-        "rotate_at_load": false,
-        "gguf": "no norm tensors; unrotate q/k (llama.cpp pre-rotates)"
-      },
-      "e2e_model": "allenai/OLMo-1B-0724-hf",
-      "oracle": "mradermacher/OLMo-1B-0724-hf-GGUF Q8_0",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "falcon",
-      "hf_arch_strings": [
-        "falcon",
-        "falcon3"
-      ],
-      "mapping_target": "FALCON",
-      "quirk_flags": {
-        "rope": "natural theta=10000",
-        "norm": "nn.LayerNorm weight+bias (input_layernorm)",
-        "parallel": "attn+FFN on SAME norm output",
-        "attn": "fused query_key_value [H+2HD,H] MQA split cols, 1 kv head",
-        "ffn": "non-gated erf-gelu (dense_h_to_4h/dense_4h_to_h)",
-        "config_keys": "multi_query=true\u2192kv=1; no intermediate_size\u21924\u00d7hidden; head_dim=hidden/heads"
-      },
-      "e2e_model": "tiiuae/falcon-7b (7.2GB, auto_map stripped for torch oracle)",
-      "oracle": "maddes8cht/tiiuae-falcon-7b-gguf Q8_0",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "gpt2",
-      "hf_arch_strings": [
-        "gpt2"
-      ],
-      "mapping_target": "GPT2",
-      "quirk_flags": {
-        "rope": "none (learned wpe positions)",
-        "norm": "LayerNorm weight+bias (ln_1/ln_2/ln_f)",
-        "ffn": "non-gated gelu_new (c_fc/c_proj)",
-        "weights": "Conv1D [in,out] \u2014 TRANSPOSED at load",
-        "attn": "fused c_attn [H,3H] split cols",
-        "bias": "everywhere (c_attn/c_proj/c_fc/ln)",
-        "config_keys": "n_embd/n_layer/n_head/n_positions/n_ctx"
-      },
-      "e2e_model": "openai-community/gpt2",
-      "oracle": "RichardErkhov/openai-community_-_gpt2-gguf Q6_K",
-      "status": "validated",
-      "tier": "full"
-    },
-    {
-      "family": "exaone",
-      "hf_arch_strings": [
-        "exaone"
-      ],
-      "mapping_target": "LLAMA",
-      "quirk_flags": {
-        "rope": "natural theta=1e6 head_dim=80",
-        "norm": "RMSNorm",
-        "names": "GPT-2 style: transformer.h.N.attn.attention.* / ln_1/ln_2 / mlp.c_fc_0(c_fc_1)/c_proj",
-        "config_keys": "num_layers (not num_hidden_layers)"
-      },
-      "e2e_model": "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct",
-      "oracle": "llamacpp Q8 (official GGUF repo)",
-      "status": "validated",
-      "result": "20/20 identical vs llama.cpp Q8; reader needed num_layers fallback",
-      "tier": "full-llamacpp"
-    },
-    {
-      "family": "internlm2",
-      "hf_arch_strings": [
-        "internlm2"
-      ],
-      "mapping_target": "LLAMA",
-      "quirk_flags": {
-        "rope": "natural theta=1e6",
-        "qkv": "fused wqkv HEAD-INTERLEAVED [group(q,q,k,v)]",
-        "ffn": "down = w2(silu(w1 x)*(w3 x)) \u2014 w2 is DOWN, w1/w3 up"
-      },
-      "e2e_model": "Granther/InternLM2-1.8B-OpenOrca (safetensors)",
-      "oracle": "llamacpp Q8 (mradermacher)",
-      "status": "validated",
-      "result": "engine \u2261 authoritative modeling_internlm2.py numpy EXACT; vs Q8 oracle near-tie top-3 (the/a/Paris within 0.5 logits) \u2014 Q8 drift pattern",
-      "numpy_ref": true,
-      "tier": "numpy-exact-near-tie"
-    },
-    {
-      "family": "minicpm",
-      "hf_arch_strings": [
-        "minicpm"
-      ],
-      "mapping_target": "LLAMA",
-      "quirk_flags": {
-        "scale_emb": "12.0 (embedding_multiplier)",
-        "scale_depth": "1.4/\u221a40 on BOTH residuals",
-        "logits": "\u00f7(hidden/dim_model_base)=9",
-        "bug_fixed": "gated dense FFN residual was UNSCALED \u2014 fixed 2026-08-14"
-      },
-      "e2e_model": "Goekdeniz-Guelmez/MiniCPM-2B-sft-fp32-safetensors",
-      "oracle": "llamacpp Q8 sft (UNRELIABLE \u2014 llama.cpp treats minicpm as plain llama, ignores scale quirks)",
-      "status": "validated",
-      "result": "engine \u2261 authoritative openbmb modeling numpy EXACT (top-6 logits identical); llama.cpp oracle disagrees because it misses scale_emb/scale_depth/logits_scaling",
-      "numpy_ref": true,
-      "tier": "numpy-exact-oracle-wrong"
-    },
-    {
-      "family": "openelm",
-      "hf_arch_strings": [
-        "openelm"
-      ],
-      "mapping_target": "LLAMA (load refuses loudly)",
-      "quirk_flags": {
-        "limitation": "heterogeneous per-layer heads/ffn + fused qkv_proj + per-head q/k_norm + transformer.token_embeddings naming \u2014 does NOT fit the uniform generic engine (pilot #14 confirmed 2026-08-14)"
-      },
-      "e2e_model": "apple/OpenELM-270M",
-      "oracle": "none",
-      "status": "documented-limitation",
-      "result": "refuses loudly at load ('missing embedding'); needs bespoke path \u2014 out of generic-engine scope",
-      "tier": "documented-limitation"
-    },
-    {
-      "family": "deepseek-mla",
-      "hf_arch_strings": [
-        "deepseekv2",
-        "deepseekv3"
-      ],
-      "mapping_target": "DEEPSEEK",
-      "quirk_flags": {
-        "attention": "MLA",
-        "moe": true
-      },
-      "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
-      "oracle": "q8 gguf",
-      "status": "validated",
-      "tier": "numpy-exact",
-      "result": "VALIDATED 2026-08-15 (commit pending): engine \u2261 f32 numpy port of authoritative modeling_deepseek.py (+ llama.cpp deepseek2.cpp conventions) at ALL 27 layers and multi-position attention (max|diff| ~0.01-0.9 = f16 expert storage; layers 0-2 exact). Correct next-token behavior on the natural prompt (predicts fox/jumps/over/the/lazy/dog/.). Router top-6 expert selections identical to llama.cpp. Generation on the periodic prompt matches llama-completion 19/20 (one whitespace near-tie: 429 ' The' vs 185 '\\n'+549). REWRITTEN deepseek.cpp (was dead unwired code written for a different GGUF variant): real bugs found & fixed \u2014 (a) missing q_a/kv_a latent RMSNorms, (b) expert block-offset bug (base never added \u2192 all blocks wrote the first 32 slots), (c) down-projection transposed read, (d) chunk\u2192ADJACENT rope pairing (llama.cpp LLAMA_ROPE_TYPE_NORM), (e) exps stored [A innermost, expert outer] not experts-innermost, (f) shared experts fused [H, n_shared*MOE], (g) q_lora_rank=None \u2192 uncompressed attn_q, (h) dense layer 0 (first_k_dense=1, DI=10944 from tensor), (i) untied lm_head (output.weight), (j) scale 1/sqrt(192). KNOWN GAP: on weak random-text positions (model PPL ~21) the engine/numpy diverge from llama.cpp's argmax at some positions with non-trivial margins \u2014 an unresolved small detail (rope/yarn no-op confirmed, all layouts verified); the model is a degenerate base (echoes prompts) and both implementations echo. NOT claimed: clean 20/20 vs llama on arbitrary text. Memory: experts Q8\u2192f16 (~29GB) vs f32 (~63GB). Gate: Testing/e2e_deepseek.cpp + /tmp/DeepSeek-V2-Lite.Q8_0.gguf.",
-      "gate": "/tmp/e2e_deepseek /tmp/DeepSeek-V2-Lite.Q8_0.gguf /tmp/dsv2_ids.txt 20 2>/dev/null | grep -q 'chain: 2 207 3510 32431 33747 855 254 24547 5025 13'"
-    },
-    {
-      "family": "gptneox",
-      "hf_arch_strings": [
-        "gptneox"
-      ],
-      "mapping_target": "GPTNEOX",
-      "quirk_flags": {
-        "parallel": "attn+FFN on same LN (use_parallel_residual=True)",
-        "norm": "nn.LayerNorm weight+bias",
-        "qkv": "fused query_key_value HEAD-INTERLEAVED [q_h,k_h,v_h] (llama.cpp reorders)",
-        "rope": "rotary_pct 0.25 \u2192 rot_dim=head_dim/4 (gguf dimension_count=16)",
-        "ffn": "non-gated gelu_erf + biases everywhere",
-        "lm_head": "untied embed_out.weight"
-      },
-      "e2e_model": "EleutherAI/pythia-70m",
-      "oracle": "torch (GPTNeoX in transformers 5.14) + llama.cpp Q8",
-      "numpy_ref": true,
-      "status": "validated",
-      "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable",
-      "tier": "numpy-exact-degenerate"
-    },
-    {
-      "family": "opt",
-      "hf_arch_strings": [
-        "opt"
-      ],
-      "mapping_target": "OPT",
-      "quirk_flags": {
-        "pos": "LEARNED embed_positions with +2 OFFSET (OPT pads 2 slots) \u2014 cfg.pos_offset",
-        "norm": "nn.LayerNorm weight+bias",
-        "ffn": "NON-GATED RELU (fc1/fc2)",
-        "bias": "projections everywhere",
-        "rope": "none"
-      },
-      "e2e_model": "facebook/opt-125m (converted to safetensors locally; no HF safetensors exists)",
-      "oracle": "torch (OPT in transformers 5.14; no GGUF available)",
-      "status": "validated",
-      "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)",
-      "tier": "full"
-    },
-    {
-      "family": "gptneo",
-      "hf_arch_strings": [
-        "gptneo"
-      ],
-      "mapping_target": "GPTNEO",
-      "quirk_flags": {
-        "attn": "UNSCALED \u2014 no 1/sqrt(head_dim) (attention_multiplier=1.0; known gpt-neo quirk)",
-        "pos": "learned wte/wpe (no offset)",
-        "norm": "nn.LayerNorm weight+bias",
-        "ffn": "non-gated gelu_new (c_fc/c_proj)",
-        "qkv": "separate q/k/v projs NO bias; out_proj bias yes",
-        "window": "local layers window 256 \u2014 no-op <256t, not implemented"
-      },
-      "e2e_model": "EleutherAI/gpt-neo-125M",
-      "oracle": "torch (GPTNeo in transformers 5.14)",
-      "status": "validated",
-      "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)",
-      "tier": "full"
-    },
-    {
-      "family": "codegen",
-      "hf_arch_strings": [
-        "codegen"
-      ],
-      "mapping_target": "CODEGEN",
-      "quirk_flags": {
-        "qkv": "fused qkv_proj with mp_num=4 model-parallel layout [q(4h)|v(4h)|k(4h)] per shard \u2014 NOT [q|k|v]",
-        "rope": "ADJACENT pairing (rotate_every_two) + partial rotary_dim=32 (cfg.adjacent_rope + rope_dim)",
-        "parallel": "attn+FFN on same ln_1",
-        "attn": "scaled 1/sqrt(hd) \u2014 normal",
-        "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
-        "norm": "nn.LayerNorm weight+bias",
-        "lm_head": "untied"
-      },
-      "e2e_model": "Salesforce/codegen-350M-mono (converted bin\u2192safetensors locally)",
-      "oracle": "torch (CodeGen in transformers 5.14)",
-      "status": "validated",
-      "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)",
-      "tier": "numpy-exact-near-tie"
-    },
-    {
-      "family": "gptj",
-      "hf_arch_strings": [
-        "gptj"
-      ],
-      "mapping_target": "GPTJ",
-      "quirk_flags": {
-        "rope": "ADJACENT (rotate_every_two) partial rotary_dim=64 of 256 (cfg.adjacent_rope + rope_dim)",
-        "parallel": "attn+FFN on same ln_1",
-        "attn": "scaled 1/sqrt(hd) \u2014 normal",
-        "qkv": "separate projs w/ bias",
-        "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
-        "norm": "nn.LayerNorm weight+bias",
-        "lm_head": "untied"
-      },
-      "e2e_model": "EleutherAI/gpt-j-6B (bin\u2192safetensors conversion)",
-      "oracle": "torch (GPTJ in transformers 5.14)",
-      "status": "validated",
-      "result": "20/20 tokens identical vs torch, first try \u2014 adjacent partial rotary + parallel paths from codegen carried over",
-      "tier": "full"
-    },
-    {
-      "family": "gptoss",
-      "hf_arch_strings": [
-        "gptoss"
-      ],
-      "mapping_target": "GPTOSS",
-      "status": "validated",
-      "tier": "numpy-exact-20of20",
-      "result": "VALIDATED 2026-08-14: engine 20/20 generated tokens == numpy reference (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint, full logits max|diff| 6.7e-5, top-8 EXACT. Engine keeps MXFP4 MoE packed (U8 blocks+scales, per-expert per-token dequant, ~17GB) \u2014 no torch reference needed. Quirks landed: YARN rope (theta 150000, factor 32, freq-index ramp), attention sinks (per-head logit cat before softmax), router bias, MXFP4 dequant (FP4 e2m1, value=FP4[nibble]*2^(scale-127), low->even/high->odd, 32/block), interleaved gate/up, gate=min(g,7) up=clamp(\u00b17), glu=gate*sigmoid(1.702*gate), gated=(up+1)*glu, top-4 softmax gating, untied lm_head, head_dim 64, odd-safe rope. Known gap: sliding-window (128) attention on sliding layers \u2014 no-op < 128 tokens, unimplemented beyond (same class as gemma3 SWA).",
-      "gate": "E2E_FULL_LOGITS=/tmp/gptoss_ref.txt timeout 900 python3 Testing/e2e_numpy_ref_gptoss.py /tmp/onebit-e2e/gptoss /tmp/gptoss_ids.txt 20 2>/dev/null | grep -q 'ref-gen: 271 1069 15629 316 11643 198 271 1238 28036 314 1238 6182 31812 706 13353 12 23 2515 271 1069'"
-    },
-    {
-      "family": "step1",
-      "hf_arch_strings": [
-        "step1",
-        "step1moe"
-      ],
-      "mapping_target": "STEP1",
-      "quirk_flags": {
-        "rope": "none (sqrt-ALiBi)",
-        "alibi": "sqrt: -slope[h]*sqrt(pos-t), slopes 2^(-8(h+1)/n)+2^(-4(2h+1)/n)",
-        "norm": "RMSNorm",
-        "bias": "none",
-        "attention": "GQA via num_attention_groups (groups==heads on validated ckpt)"
-      },
-      "e2e_model": "StepLaw/StepLaw-N_214M-D_99.0B-LR1.953e-03-BS1048576",
-      "oracle": "torch fallback (modeling_step1.py build_alibi_cache + SDPA)",
-      "status": "validated",
-      "tier": "full",
-      "result": "VALIDATED 2026-08-15: 20/20 generated tokens == torch (modeling_step1.py fallback path, CPU f32), 16-position chain identical, full logits max|diff| 5.6e-5 top-8 EXACT. Quirks landed: sqrt-ALiBi attention (bias = -slope[h]*sqrt(pos-t), NO RoPE \u2014 cfg.alibi + per-head slope table built from build_alibi_cache convention), num_attention_groups -> n_kv_heads (reader), dense llama-layout (separate q/k/v/o, RMSNorm eps 1e-5, gated SwiGLU, no biases), untied-in-file lm_head. NOTE: 'Step1MoEForCausalLM' arch string + use_moe/moe_num_experts config but the weights are DENSE (no expert tensors) \u2014 the 2,882-checkpoint census class is mostly dense-mislabeled pretrain runs; expert-bearing Step1MoE ckpts not yet seen (defer moe_num_experts key until one is). Model itself is a mid-training run (LR 1.9e-3) \u2014 degenerate repeated-token output, engine==torch exactly.",
-      "gate": "timeout 900 python3 Testing/e2e_torch_oracle_step1.py /tmp/onebit-e2e/step1 /tmp/step1_ids.txt 20 2>/dev/null | grep -q 'ref-gen: 78 78 794 794 794 794 794 794 324 331 329 328 333 337 329 338 337 331 342 324'"
-    },
-    {
-      "family": "bloom",
-      "hf_arch_strings": [
-        "bloom"
-      ],
-      "mapping_target": "BLOOM",
-      "quirk_flags": {
-        "attention": "fused query_key_value HEAD-INTERLEAVED [h(q,k,v)] + bias, linear ALiBi (no RoPE)",
-        "norm": "LayerNorm w+bias (input + post_attention, sequential)",
-        "ffn": "non-gated tanh-gelu w/ bias",
-        "embed": "word_embeddings_layernorm (LayerNorm on embedding)",
-        "lm_head": "tied"
-      },
-      "e2e_model": "bigscience/bloom-560m",
-      "oracle": "torch (transformers bloom, f32)",
-      "status": "validated",
-      "tier": "full",
-      "gate": "E2E_FULL_LOGITS=/tmp/bloom_gate_l.txt timeout 300 /tmp/e2e_seq_gen /tmp/onebit-e2e/bloom /tmp/bloom_ids.txt 20 2>/dev/null | grep -q 'engine-gen: 17 1387 23714 73173 144252 138207 3478 368 109586 35433 17 1387 23714 73173 144252 138207 3478 368 109586 35433'",
-      "result": "VALIDATED 2026-08-15: 20/20 generated tokens identical to torch (transformers 5.14 bloom, f32), full logits max|diff| 7.6e-4 corr 1.0 (bigscience/bloom-560m, /tmp/onebit-e2e/bloom). Quirks landed: RCPP_ARCH_BLOOM (31), fused query_key_value HEAD-INTERLEAVED (per-head [q,k,v] groups \u2014 NOT a [q|k|v] row split; modeling_bloom._reshape view(seq,heads,3,hd)), LayerNorm w+bias (input_layernorm + post_attention_layernorm, SEQUENTIAL), non-gated tanh-gelu FFN w/ bias (gelu_new), LINEAR ALiBi (same slope table as step1's sqrt variant \u2014 2^(-8(h+1)/n) then 2^(-4(2h+1)/n) \u2014 but linear distance; softmax-equivalent to modeling_bloom's slope*pos_k cumsum trick), word_embeddings_layernorm (embedding LayerNorm, cfg.embed_ln), tied lm_head, config keys n_embed/n_head/n_layer/layer_norm_epsilon, 4x-hidden FFN fallback. First-pass bugs caught: wrong qkv split (row-split produced scrambled attention \u2014 hidden states 4.6x off at layer 0) and n_embed missing from the reader."
-    },
-    {
-      "family": "qwen3.5-vl-condgen",
-      "hf_arch_strings": [
-        "qwen3_5",
-        "qwen3_5moe",
-        "qwen3_5vl"
-      ],
-      "mapping_target": "QWEN35",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": "qwen3.5-gdn",
-        "bias": "none"
-      },
-      "e2e_model": null,
-      "oracle": "none",
-      "status": "mapped-unvalidated",
-      "tier": "registry",
-      "result": "MAPPED 2026-08-16: VLM conditional-generation classes land on the QWEN35 token (text-decoder layout). Registry-only tier: no e2e gate yet \u2014 validates with the Qwen3.5 family bring-up."
-    },
-    {
-      "family": "vlm-condgen-textdecoder",
-      "hf_arch_strings": [
-        "mistral3",
-        "qwen2_5_vl",
-        "qwen3vlmoe",
-        "gemma4unified"
-      ],
-      "mapping_target": "MIXED",
-      "quirk_flags": {
-        "rope": "natural",
-        "rotate_at_load": false,
-        "moe": false,
-        "bias": "none"
-      },
-      "e2e_model": null,
-      "oracle": "none",
-      "status": "mapped-unvalidated",
-      "tier": "registry",
-      "result": "MAPPED 2026-08-16: MAX-style text-decoder mapping (mistral3->MISTRAL, qwen2_5_vl->QWEN2VL, qwen3vlmoe->QWEN3VL, gemma4unified->GEMMA). Registry-only tier; vision tower unwired (documented)."
-    },
-    {
-      "family": "glm4-moe",
-      "hf_arch_strings": [
-        "glm4moe",
-        "glmmoedsa",
-        "glm4moelite"
-      ],
-      "mapping_target": "LLAMA",
-      "quirk_flags": {
-        "rope": "partial-0.5",
-        "rotate_at_load": false,
-        "moe": "sigmoid-group-topk-shared",
-        "bias": "qkv",
-        "qk_norm": "per-head",
-        "first_k_dense": 1,
-        "routed_scaling": 2.5
-      },
-      "e2e_model": "trl-internal-testing/tiny-Glm4MoeForCausalLM",
-      "oracle": "numpy ref (Testing/e2e_numpy_ref_glm4moe.py)",
-      "status": "validated",
-      "tier": "numpy-structural",
-      "result": "VALIDATED 2026-08-15 (numpy-ref structural tier): engine hidden states == numpy port of modeling_glm4_moe.py at ALL positions (exact to 4-5 decimals) on tiny-Glm4MoeForCausalLM \u2014 sigmoid+correction-bias group-limited topk gating, norm_topk, routed_scaling 2.5, shared experts (mlp.shared_experts.*), per-head QK-norm, partial-rope 0.5 (rotary_dim rounded up to even per HF cat-double), first_k_dense dense layer 0. Final-logit corr 0.92 = f32 floor on the degenerate random-init checkpoint (all logits +/-0.036, pythia-70m situation); clean 20/20 needs the real GLM-4-32B-0414 (~70GB, deferred). Gate: python3 Testing/e2e_numpy_ref_glm4moe.py <dir> <ids> 10"
-    },
-    {
-      "family": "nemotron-h",
-      "hf_arch_strings": [
-        "nemotronh",
-        "nemotron_h"
-      ],
-      "mapping_target": "NEMOTRONH",
-      "quirk_flags": {
-        "mamba2": true,
-        "nope_attention": true,
-        "mlp": "relu2",
-        "moe": "sigmoid-group-topk-shared",
-        "per_layer_kind": "layers_block_type"
-      },
-      "e2e_model": "trl-internal-testing/tiny-NemotronHForCausalLM-nano",
-      "oracle": "numpy ref (Testing/e2e_numpy_ref_nemotronh.py)",
-      "status": "validated",
-      "tier": "numpy-structural",
-      "result": "VALIDATED 2026-08-15 (numpy-structural): engine hidden states corr 0.9999 vs numpy port of modeling_nemotron_h.py 5.14 on tiny-NemotronHForCausalLM-nano. New bespoke CPU backend src/nemotron_h_engine.cpp (per-layer layers_block_type dispatch: Mamba-2 mixer with Euler dB=dt*B discretization + causal depthwise conv (w[0]=oldest tap), NoPE GQA attention, relu2 MLP, sigmoid+correction-bias group-topk MoE with up/down-only experts + shared experts). Final-logit argmax flips on the degenerate random-init checkpoint (logits +/-0.06, pythia-70m situation); clean 20/20 needs a real Nemotron-H-4B/8B checkpoint. Gate: python3 Testing/e2e_numpy_ref_nemotronh.py <dir> <ids> 10"
-    },
-    {
-      "family": "qwen3-next",
-      "hf_arch_strings": [
-        "qwen3next",
-        "qwen3_next"
-      ],
-      "mapping_target": "QWEN3NEXT",
-      "quirk_flags": {
-        "linear_attn": "gated-delta-rule",
-        "nope_full_attn": true,
-        "mlp": "swiglu",
-        "moe": "softmax-topk-normtopk-shared-gate",
-        "per_layer_kind": "layer_types"
-      },
-      "e2e_model": "tiny-random/qwen3-next-moe",
-      "oracle": "numpy ref (Testing/e2e_numpy_ref_qwen3next.py)",
-      "status": "validated",
-      "tier": "numpy-structural",
-      "result": "VALIDATED 2026-08-15 (numpy-structural): engine per-layer hidden states, attention probs/scores/acc EXACT vs numpy port of modeling_qwen3_next.py 5.14 on tiny-random/qwen3-next-moe (corr 0.9997, top-5 exact vs torch). New bespoke CPU backend src/qwen3next_engine.cpp (GatedDeltaNet delta-rule: in_proj_qkvz+in_proj_ba, causal depthwise conv w[0]=oldest, q/k l2norm + q scaled 1/sqrt(KHD), recurrent delta rule state*=exp(g), kv_mem, delta=(v-kv_mem)*beta, st+=k*delta, out=sum st*q; g=-exp(A_log)*softplus(a+dt_bias); norm DIRECT weight * silu(z); full attn q_proj [2*hd] INTERLEAVED q|gate split, q/k RMSNorm (1+w), partial rope, attn*sigmoid(gate); softmax router MoE + shared expert + sigmoid shared_gate). Argmax drifts on the degenerate random-init checkpoint (f32 vs f64 floor); clean 20/20 needs a real Qwen3-Next checkpoint (deferred). Gate: python3 Testing/e2e_numpy_ref_qwen3next.py <dir> <ids> 10"
-    },
-    {
-      "family": "minimax-m2",
-      "hf_arch_strings": [
-        "minimaxm2",
-        "minimax_m2"
-      ],
-      "mapping_target": "MINIMAXM2",
-      "quirk_flags": {
-        "attention": "gqa-flattened-qk-rmsnorm-partial-rope",
-        "moe": "sigmoid-correction-rawsigmoid-norm",
-        "experts": "w1-w2-w3-gated"
-      },
-      "e2e_model": "tiny-random/minimax-m2",
-      "oracle": "numpy ref (Testing/e2e_numpy_ref_minimaxm2.py)",
-      "status": "validated",
-      "tier": "full",
-      "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real-logit model): engine 10-token chain == numpy ref EXACTLY, corr 1.0000, top-5 exact vs torch on tiny-random/minimax-m2. New bespoke CPU backend src/minimaxm2_engine.cpp: GQA attention with SINGLE RMSNorm over flattened q (NH*HD) and k (NKV*HD) dims (NOT per-head \u2014 q_norm/k_norm weights are full-dim), partial rope (rotary_dim 16, theta 5e6), pos-major KV cache; sigmoid MoE: router sigmoid + e_score_correction_bias, top-k on sigmoid+correction, weights from RAW sigmoid normalized (\u00f7sum), gated w1/w2/w3 experts (silu(w1x)*(w3x) then w2). Clean 20/20 \u2014 the tiny model has real logit spread so argmax is exact. Gate: python3 Testing/e2e_numpy_ref_minimaxm2.py <dir> <ids> 10 == engine-gen"
-    },
-    {
-      "family": "cohere2",
-      "hf_arch_strings": [
-        "cohere2",
-        "cohere2_model"
-      ],
-      "mapping_target": "COHERE2",
-      "quirk_flags": {
-        "parallel_attn_ffn": true,
-        "norm": "mean-centered-layernorm-weight-only",
-        "rope": "adjacent-pair-interleaved",
-        "mlp": "swiglu",
-        "sliding_window": true,
-        "tied_lm_head": true
-      },
-      "e2e_model": "trl-internal-testing/tiny-Cohere2ForCausalLM",
-      "oracle": "numpy ref (Testing/e2e_numpy_ref_cohere2.py)",
-      "status": "validated",
-      "tier": "full",
-      "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real logit spread): engine 10-token chain == numpy ref EXACTLY, corr 1.0000, top-5 exact vs torch on tiny-Cohere2ForCausalLM. Rides the GENERIC engine (no bespoke backend): parallel_attn_ffn (attn+MLP from same input_layernorm output \u2014 falcon/codegen convention), mean-centered LayerNorm weight-only (layernorm_affine with b=NULL), adjacent-pair interleaved rope (matches rope_adjacent), gated SwiGLU, sliding-window attention, tied lm_head. arch selfcheck +cohere2/cohere2_model. Gate: python3 Testing/e2e_numpy_ref_cohere2.py <dir> <ids> 10 == engine-gen"
-    },
-    {
-      "family": "falcon-h1",
-      "hf_arch_strings": [
-        "falconh1",
-        "falcon_h1"
-      ],
-      "mapping_target": "FALCONH1",
-      "quirk_flags": {
-        "mamba2": true,
-        "attention": "gqa-key-mult",
-        "mup_multipliers": true,
-        "mlp": "gated-mult",
-        "parallel_mamba_attn": true
-      },
-      "e2e_model": "yujiepan/falcon-h1-tiny-random",
-      "oracle": "numpy ref (Testing/e2e_numpy_ref_falconh1.py)",
-      "status": "validated",
-      "tier": "full",
-      "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real logit spread): engine 10-token chain == numpy ref EXACTLY on yujiepan/falcon-h1-tiny-random, corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/falconh1_engine.cpp: Mamba-2 SSM mixer (ssm_in_multiplier, in_proj + mup_vector per-section multipliers, causal depthwise conv w[0]=oldest, Euler dB=dt*B, dt=softplus(dt+dt_bias), gated RMSNorm norm_before_gate=False) + GQA attention (k x key_multiplier, full rope) from the SAME normed input, each scaled (ssm_out/attn_out multipliers), residual, gated FFN (gate x gate_multiplier, out x down_multiplier), embeddings x embedding_multiplier, logits x lm_head_multiplier, tied lm_head. Clean 20/20 \u2014 the tiny model has real logit spread. Gate: python3 Testing/e2e_numpy_ref_falconh1.py <dir> <ids> 10 == engine-gen"
-    }
-  ]
+ "_comment": "MONSTER family manifest (Phase 3, 2026-08-14). One entry per validated family. hf_arch_strings = suffix-stripped family tags (see safetensors_reader.cpp) + HF class names; mapping_target = rcpp_arch_t token; quirk_flags = what backend_generic must handle; e2e_model = HF repo for the real-checkpoint gate; oracle = GGUF for tokenize/detokenize parity. Status: validated | in_progress | pending.",
+ "families": [
+  {
+   "family": "llama",
+   "hf_arch_strings": [
+    "llama",
+    "smollm",
+    "smollm2",
+    "smollm3",
+    "openelm",
+    "nemotron",
+    "minicpm",
+    "baichuan",
+    "baichuan2",
+    "exaone",
+    "solar",
+    "internlm",
+    "internlm2",
+    "internlm3",
+    "xverse",
+    "apertus",
+    "cohere",
+    "gptbigcode",
+    "stablelm",
+    "mosaic",
+    "mpt",
+    "starcoder",
+    "starcoder2",
+    "command-r",
+    "dbrx",
+    "jamba"
+   ],
+   "mapping_target": "LLAMA",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "none"
+   },
+   "e2e_model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+   "oracle": "unsloth q8 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "qwen2",
+   "hf_arch_strings": [
+    "qwen2",
+    "qwen",
+    "qwen2moe",
+    "deepseek"
+   ],
+   "mapping_target": "QWEN2",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "qkv",
+    "qk_norm": false
+   },
+   "e2e_model": "Qwen/Qwen2.5-0.5B-Instruct",
+   "oracle": "bartowski q8 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "qwen3",
+   "hf_arch_strings": [
+    "qwen3",
+    "qwen3moe"
+   ],
+   "mapping_target": "QWEN3",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "none",
+    "qk_norm": "optional"
+   },
+   "e2e_model": "Qwen/Qwen3-0.6B",
+   "oracle": "local Q8_0 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "mistral",
+   "hf_arch_strings": [
+    "mistral",
+    "pixtral",
+    "mixtral"
+   ],
+   "mapping_target": "MISTRAL",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "none"
+   },
+   "e2e_model": "mistralai/Mistral-7B-v0.1",
+   "oracle": "q8 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "gemma",
+   "hf_arch_strings": [
+    "gemma",
+    "gemma2",
+    "gemma3",
+    "gemma4",
+    "granite",
+    "granitemoe",
+    "ovis",
+    "paligemma"
+   ],
+   "mapping_target": "GEMMA",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "none",
+    "norm": "+1 convention",
+    "post_norms": true
+   },
+   "e2e_model": "google/gemma-3-1b-it",
+   "oracle": "unsloth q8 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "granite-moe",
+   "hf_arch_strings": [
+    "granitemoe"
+   ],
+   "mapping_target": "GEMMA",
+   "quirk_flags": {
+    "moe": "fused block_sparse",
+    "activation": "swiglu",
+    "attn_multiplier": 0.015625,
+    "residual_multiplier": 0.22,
+    "embedding_multiplier": 12.0,
+    "logits_scaling": 6.0
+   },
+   "e2e_model": "ibm-granite/granite-3.1-3b-a800m-instruct",
+   "oracle": "bartowski q8 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "phi",
+   "hf_arch_strings": [
+    "phi",
+    "phi3",
+    "phi4",
+    "phi_moe"
+   ],
+   "mapping_target": "PHI",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "none",
+    "fused_proj": "qkv+gate_up",
+    "activation": "swiglu (phi3/4)"
+   },
+   "e2e_model": "microsoft/Phi-3-mini-4k-instruct",
+   "oracle": "q8 gguf",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "olmo",
+   "hf_arch_strings": [
+    "olmo",
+    "olmo2",
+    "olmoe",
+    "molmo"
+   ],
+   "mapping_target": "OLMO",
+   "quirk_flags": {
+    "rope": "natural theta=10000",
+    "norm": "LayerNorm NO affine params (eps 1e-5)",
+    "clip_qkv": 8.0,
+    "rotate_at_load": false,
+    "gguf": "no norm tensors; unrotate q/k (llama.cpp pre-rotates)"
+   },
+   "e2e_model": "allenai/OLMo-1B-0724-hf",
+   "oracle": "mradermacher/OLMo-1B-0724-hf-GGUF Q8_0",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "falcon",
+   "hf_arch_strings": [
+    "falcon",
+    "falcon3"
+   ],
+   "mapping_target": "FALCON",
+   "quirk_flags": {
+    "rope": "natural theta=10000",
+    "norm": "nn.LayerNorm weight+bias (input_layernorm)",
+    "parallel": "attn+FFN on SAME norm output",
+    "attn": "fused query_key_value [H+2HD,H] MQA split cols, 1 kv head",
+    "ffn": "non-gated erf-gelu (dense_h_to_4h/dense_4h_to_h)",
+    "config_keys": "multi_query=true\u2192kv=1; no intermediate_size\u21924\u00d7hidden; head_dim=hidden/heads"
+   },
+   "e2e_model": "tiiuae/falcon-7b (7.2GB, auto_map stripped for torch oracle)",
+   "oracle": "maddes8cht/tiiuae-falcon-7b-gguf Q8_0",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "gpt2",
+   "hf_arch_strings": [
+    "gpt2"
+   ],
+   "mapping_target": "GPT2",
+   "quirk_flags": {
+    "rope": "none (learned wpe positions)",
+    "norm": "LayerNorm weight+bias (ln_1/ln_2/ln_f)",
+    "ffn": "non-gated gelu_new (c_fc/c_proj)",
+    "weights": "Conv1D [in,out] \u2014 TRANSPOSED at load",
+    "attn": "fused c_attn [H,3H] split cols",
+    "bias": "everywhere (c_attn/c_proj/c_fc/ln)",
+    "config_keys": "n_embd/n_layer/n_head/n_positions/n_ctx"
+   },
+   "e2e_model": "openai-community/gpt2",
+   "oracle": "RichardErkhov/openai-community_-_gpt2-gguf Q6_K",
+   "status": "validated",
+   "tier": "full"
+  },
+  {
+   "family": "exaone",
+   "hf_arch_strings": [
+    "exaone"
+   ],
+   "mapping_target": "LLAMA",
+   "quirk_flags": {
+    "rope": "natural theta=1e6 head_dim=80",
+    "norm": "RMSNorm",
+    "names": "GPT-2 style: transformer.h.N.attn.attention.* / ln_1/ln_2 / mlp.c_fc_0(c_fc_1)/c_proj",
+    "config_keys": "num_layers (not num_hidden_layers)"
+   },
+   "e2e_model": "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct",
+   "oracle": "llamacpp Q8 (official GGUF repo)",
+   "status": "validated",
+   "result": "20/20 identical vs llama.cpp Q8; reader needed num_layers fallback",
+   "tier": "full-llamacpp"
+  },
+  {
+   "family": "internlm2",
+   "hf_arch_strings": [
+    "internlm2"
+   ],
+   "mapping_target": "LLAMA",
+   "quirk_flags": {
+    "rope": "natural theta=1e6",
+    "qkv": "fused wqkv HEAD-INTERLEAVED [group(q,q,k,v)]",
+    "ffn": "down = w2(silu(w1 x)*(w3 x)) \u2014 w2 is DOWN, w1/w3 up"
+   },
+   "e2e_model": "Granther/InternLM2-1.8B-OpenOrca (safetensors)",
+   "oracle": "llamacpp Q8 (mradermacher)",
+   "status": "validated",
+   "result": "engine \u2261 authoritative modeling_internlm2.py numpy EXACT; vs Q8 oracle near-tie top-3 (the/a/Paris within 0.5 logits) \u2014 Q8 drift pattern",
+   "numpy_ref": true,
+   "tier": "numpy-exact-near-tie"
+  },
+  {
+   "family": "minicpm",
+   "hf_arch_strings": [
+    "minicpm"
+   ],
+   "mapping_target": "LLAMA",
+   "quirk_flags": {
+    "scale_emb": "12.0 (embedding_multiplier)",
+    "scale_depth": "1.4/\u221a40 on BOTH residuals",
+    "logits": "\u00f7(hidden/dim_model_base)=9",
+    "bug_fixed": "gated dense FFN residual was UNSCALED \u2014 fixed 2026-08-14"
+   },
+   "e2e_model": "Goekdeniz-Guelmez/MiniCPM-2B-sft-fp32-safetensors",
+   "oracle": "llamacpp Q8 sft (UNRELIABLE \u2014 llama.cpp treats minicpm as plain llama, ignores scale quirks)",
+   "status": "validated",
+   "result": "engine \u2261 authoritative openbmb modeling numpy EXACT (top-6 logits identical); llama.cpp oracle disagrees because it misses scale_emb/scale_depth/logits_scaling",
+   "numpy_ref": true,
+   "tier": "numpy-exact-oracle-wrong"
+  },
+  {
+   "family": "openelm",
+   "hf_arch_strings": [
+    "openelm"
+   ],
+   "mapping_target": "LLAMA (load refuses loudly)",
+   "quirk_flags": {
+    "limitation": "heterogeneous per-layer heads/ffn + fused qkv_proj + per-head q/k_norm + transformer.token_embeddings naming \u2014 does NOT fit the uniform generic engine (pilot #14 confirmed 2026-08-14)"
+   },
+   "e2e_model": "apple/OpenELM-270M",
+   "oracle": "none",
+   "status": "documented-limitation",
+   "result": "refuses loudly at load ('missing embedding'); needs bespoke path \u2014 out of generic-engine scope",
+   "tier": "documented-limitation"
+  },
+  {
+   "family": "deepseek-mla",
+   "hf_arch_strings": [
+    "deepseekv2",
+    "deepseekv3"
+   ],
+   "mapping_target": "DEEPSEEK",
+   "quirk_flags": {
+    "attention": "MLA",
+    "moe": true
+   },
+   "e2e_model": "deepseek-ai/DeepSeek-V2-Lite",
+   "oracle": "q8 gguf",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-15 (commit pending): engine \u2261 f32 numpy port of authoritative modeling_deepseek.py (+ llama.cpp deepseek2.cpp conventions) at ALL 27 layers and multi-position attention (max|diff| ~0.01-0.9 = f16 expert storage; layers 0-2 exact). Correct next-token behavior on the natural prompt (predicts fox/jumps/over/the/lazy/dog/.). Router top-6 expert selections identical to llama.cpp. Generation on the periodic prompt matches llama-completion 19/20 (one whitespace near-tie: 429 ' The' vs 185 '\\n'+549). REWRITTEN deepseek.cpp (was dead unwired code written for a different GGUF variant): real bugs found & fixed \u2014 (a) missing q_a/kv_a latent RMSNorms, (b) expert block-offset bug (base never added \u2192 all blocks wrote the first 32 slots), (c) down-projection transposed read, (d) chunk\u2192ADJACENT rope pairing (llama.cpp LLAMA_ROPE_TYPE_NORM), (e) exps stored [A innermost, expert outer] not experts-innermost, (f) shared experts fused [H, n_shared*MOE], (g) q_lora_rank=None \u2192 uncompressed attn_q, (h) dense layer 0 (first_k_dense=1, DI=10944 from tensor), (i) untied lm_head (output.weight), (j) scale 1/sqrt(192). KNOWN GAP: on weak random-text positions (model PPL ~21) the engine/numpy diverge from llama.cpp's argmax at some positions with non-trivial margins \u2014 an unresolved small detail (rope/yarn no-op confirmed, all layouts verified); the model is a degenerate base (echoes prompts) and both implementations echo. NOT claimed: clean 20/20 vs llama on arbitrary text. Memory: experts Q8\u2192f16 (~29GB) vs f32 (~63GB). Gate: Testing/e2e_deepseek.cpp + /tmp/DeepSeek-V2-Lite.Q8_0.gguf.",
+   "gate": "/tmp/e2e_deepseek /tmp/DeepSeek-V2-Lite.Q8_0.gguf /tmp/dsv2_ids.txt 20 2>/dev/null | grep -q 'chain: 2 207 3510 32431 33747 855 254 24547 5025 13'"
+  },
+  {
+   "family": "gptneox",
+   "hf_arch_strings": [
+    "gptneox"
+   ],
+   "mapping_target": "GPTNEOX",
+   "quirk_flags": {
+    "parallel": "attn+FFN on same LN (use_parallel_residual=True)",
+    "norm": "nn.LayerNorm weight+bias",
+    "qkv": "fused query_key_value HEAD-INTERLEAVED [q_h,k_h,v_h] (llama.cpp reorders)",
+    "rope": "rotary_pct 0.25 \u2192 rot_dim=head_dim/4 (gguf dimension_count=16)",
+    "ffn": "non-gated gelu_erf + biases everywhere",
+    "lm_head": "untied embed_out.weight"
+   },
+   "e2e_model": "EleutherAI/pythia-70m",
+   "oracle": "torch (GPTNeoX in transformers 5.14) + llama.cpp Q8",
+   "numpy_ref": true,
+   "status": "validated",
+   "result": "engine \u2261 HF-semantics numpy EXACT (all 6 layers + logits); top-1 logits == torch (253:1064.9 vs 1078.4 \u2014 flat distribution, near-tie tail); llama.cpp disagrees (neox-rope convention); degenerate tiny model \u2014 20/20 gate not applicable",
+   "tier": "numpy-exact-degenerate"
+  },
+  {
+   "family": "opt",
+   "hf_arch_strings": [
+    "opt"
+   ],
+   "mapping_target": "OPT",
+   "quirk_flags": {
+    "pos": "LEARNED embed_positions with +2 OFFSET (OPT pads 2 slots) \u2014 cfg.pos_offset",
+    "norm": "nn.LayerNorm weight+bias",
+    "ffn": "NON-GATED RELU (fc1/fc2)",
+    "bias": "projections everywhere",
+    "rope": "none"
+   },
+   "e2e_model": "facebook/opt-125m (converted to safetensors locally; no HF safetensors exists)",
+   "oracle": "torch (OPT in transformers 5.14; no GGUF available)",
+   "status": "validated",
+   "result": "20/20 tokens identical vs torch; torch-only harness fallback added to e2e_gen_check.py (no-GGUF tokenizer)",
+   "tier": "full"
+  },
+  {
+   "family": "gptneo",
+   "hf_arch_strings": [
+    "gptneo"
+   ],
+   "mapping_target": "GPTNEO",
+   "quirk_flags": {
+    "attn": "UNSCALED \u2014 no 1/sqrt(head_dim) (attention_multiplier=1.0; known gpt-neo quirk)",
+    "pos": "learned wte/wpe (no offset)",
+    "norm": "nn.LayerNorm weight+bias",
+    "ffn": "non-gated gelu_new (c_fc/c_proj)",
+    "qkv": "separate q/k/v projs NO bias; out_proj bias yes",
+    "window": "local layers window 256 \u2014 no-op <256t, not implemented"
+   },
+   "e2e_model": "EleutherAI/gpt-neo-125M",
+   "oracle": "torch (GPTNeo in transformers 5.14)",
+   "status": "validated",
+   "result": "20/20 tokens identical vs torch; config uses num_layers/num_heads keys (reader fallbacks added)",
+   "tier": "full"
+  },
+  {
+   "family": "codegen",
+   "hf_arch_strings": [
+    "codegen"
+   ],
+   "mapping_target": "CODEGEN",
+   "quirk_flags": {
+    "qkv": "fused qkv_proj with mp_num=4 model-parallel layout [q(4h)|v(4h)|k(4h)] per shard \u2014 NOT [q|k|v]",
+    "rope": "ADJACENT pairing (rotate_every_two) + partial rotary_dim=32 (cfg.adjacent_rope + rope_dim)",
+    "parallel": "attn+FFN on same ln_1",
+    "attn": "scaled 1/sqrt(hd) \u2014 normal",
+    "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
+    "norm": "nn.LayerNorm weight+bias",
+    "lm_head": "untied"
+   },
+   "e2e_model": "Salesforce/codegen-350M-mono (converted bin\u2192safetensors locally)",
+   "oracle": "torch (CodeGen in transformers 5.14)",
+   "status": "validated",
+   "result": "engine \u2261 corrected numpy EXACT (top-6 identical); same top-6 SET as torch with near-tie margins (0.01-0.6 logits, flat distribution); 3/20 chain (near-tie flips)",
+   "tier": "numpy-exact-near-tie"
+  },
+  {
+   "family": "gptj",
+   "hf_arch_strings": [
+    "gptj"
+   ],
+   "mapping_target": "GPTJ",
+   "quirk_flags": {
+    "rope": "ADJACENT (rotate_every_two) partial rotary_dim=64 of 256 (cfg.adjacent_rope + rope_dim)",
+    "parallel": "attn+FFN on same ln_1",
+    "attn": "scaled 1/sqrt(hd) \u2014 normal",
+    "qkv": "separate projs w/ bias",
+    "ffn": "non-gated gelu_new (fc_in/fc_out w/ bias)",
+    "norm": "nn.LayerNorm weight+bias",
+    "lm_head": "untied"
+   },
+   "e2e_model": "EleutherAI/gpt-j-6B (bin\u2192safetensors conversion)",
+   "oracle": "torch (GPTJ in transformers 5.14)",
+   "status": "validated",
+   "result": "20/20 tokens identical vs torch, first try \u2014 adjacent partial rotary + parallel paths from codegen carried over",
+   "tier": "full"
+  },
+  {
+   "family": "gptoss",
+   "hf_arch_strings": [
+    "gptoss"
+   ],
+   "mapping_target": "GPTOSS",
+   "status": "validated",
+   "tier": "numpy-exact-20of20",
+   "result": "VALIDATED 2026-08-14: engine 20/20 generated tokens == numpy reference (port of authoritative modeling_gpt_oss.py) on the REAL openai/gpt-oss-20b checkpoint, full logits max|diff| 6.7e-5, top-8 EXACT. Engine keeps MXFP4 MoE packed (U8 blocks+scales, per-expert per-token dequant, ~17GB) \u2014 no torch reference needed. Quirks landed: YARN rope (theta 150000, factor 32, freq-index ramp), attention sinks (per-head logit cat before softmax), router bias, MXFP4 dequant (FP4 e2m1, value=FP4[nibble]*2^(scale-127), low->even/high->odd, 32/block), interleaved gate/up, gate=min(g,7) up=clamp(\u00b17), glu=gate*sigmoid(1.702*gate), gated=(up+1)*glu, top-4 softmax gating, untied lm_head, head_dim 64, odd-safe rope. Known gap: sliding-window (128) attention on sliding layers \u2014 no-op < 128 tokens, unimplemented beyond (same class as gemma3 SWA).",
+   "gate": "E2E_FULL_LOGITS=/tmp/gptoss_ref.txt timeout 900 python3 Testing/e2e_numpy_ref_gptoss.py /tmp/onebit-e2e/gptoss /tmp/gptoss_ids.txt 20 2>/dev/null | grep -q 'ref-gen: 271 1069 15629 316 11643 198 271 1238 28036 314 1238 6182 31812 706 13353 12 23 2515 271 1069'"
+  },
+  {
+   "family": "step1",
+   "hf_arch_strings": [
+    "step1",
+    "step1moe"
+   ],
+   "mapping_target": "STEP1",
+   "quirk_flags": {
+    "rope": "none (sqrt-ALiBi)",
+    "alibi": "sqrt: -slope[h]*sqrt(pos-t), slopes 2^(-8(h+1)/n)+2^(-4(2h+1)/n)",
+    "norm": "RMSNorm",
+    "bias": "none",
+    "attention": "GQA via num_attention_groups (groups==heads on validated ckpt)"
+   },
+   "e2e_model": "StepLaw/StepLaw-N_214M-D_99.0B-LR1.953e-03-BS1048576",
+   "oracle": "torch fallback (modeling_step1.py build_alibi_cache + SDPA)",
+   "status": "validated",
+   "tier": "full",
+   "result": "VALIDATED 2026-08-15: 20/20 generated tokens == torch (modeling_step1.py fallback path, CPU f32), 16-position chain identical, full logits max|diff| 5.6e-5 top-8 EXACT. Quirks landed: sqrt-ALiBi attention (bias = -slope[h]*sqrt(pos-t), NO RoPE \u2014 cfg.alibi + per-head slope table built from build_alibi_cache convention), num_attention_groups -> n_kv_heads (reader), dense llama-layout (separate q/k/v/o, RMSNorm eps 1e-5, gated SwiGLU, no biases), untied-in-file lm_head. NOTE: 'Step1MoEForCausalLM' arch string + use_moe/moe_num_experts config but the weights are DENSE (no expert tensors) \u2014 the 2,882-checkpoint census class is mostly dense-mislabeled pretrain runs; expert-bearing Step1MoE ckpts not yet seen (defer moe_num_experts key until one is). Model itself is a mid-training run (LR 1.9e-3) \u2014 degenerate repeated-token output, engine==torch exactly.",
+   "gate": "timeout 900 python3 Testing/e2e_torch_oracle_step1.py /tmp/onebit-e2e/step1 /tmp/step1_ids.txt 20 2>/dev/null | grep -q 'ref-gen: 78 78 794 794 794 794 794 794 324 331 329 328 333 337 329 338 337 331 342 324'"
+  },
+  {
+   "family": "bloom",
+   "hf_arch_strings": [
+    "bloom"
+   ],
+   "mapping_target": "BLOOM",
+   "quirk_flags": {
+    "attention": "fused query_key_value HEAD-INTERLEAVED [h(q,k,v)] + bias, linear ALiBi (no RoPE)",
+    "norm": "LayerNorm w+bias (input + post_attention, sequential)",
+    "ffn": "non-gated tanh-gelu w/ bias",
+    "embed": "word_embeddings_layernorm (LayerNorm on embedding)",
+    "lm_head": "tied"
+   },
+   "e2e_model": "bigscience/bloom-560m",
+   "oracle": "torch (transformers bloom, f32)",
+   "status": "validated",
+   "tier": "full",
+   "gate": "E2E_FULL_LOGITS=/tmp/bloom_gate_l.txt timeout 300 /tmp/e2e_seq_gen /tmp/onebit-e2e/bloom /tmp/bloom_ids.txt 20 2>/dev/null | grep -q 'engine-gen: 17 1387 23714 73173 144252 138207 3478 368 109586 35433 17 1387 23714 73173 144252 138207 3478 368 109586 35433'",
+   "result": "VALIDATED 2026-08-15: 20/20 generated tokens identical to torch (transformers 5.14 bloom, f32), full logits max|diff| 7.6e-4 corr 1.0 (bigscience/bloom-560m, /tmp/onebit-e2e/bloom). Quirks landed: RCPP_ARCH_BLOOM (31), fused query_key_value HEAD-INTERLEAVED (per-head [q,k,v] groups \u2014 NOT a [q|k|v] row split; modeling_bloom._reshape view(seq,heads,3,hd)), LayerNorm w+bias (input_layernorm + post_attention_layernorm, SEQUENTIAL), non-gated tanh-gelu FFN w/ bias (gelu_new), LINEAR ALiBi (same slope table as step1's sqrt variant \u2014 2^(-8(h+1)/n) then 2^(-4(2h+1)/n) \u2014 but linear distance; softmax-equivalent to modeling_bloom's slope*pos_k cumsum trick), word_embeddings_layernorm (embedding LayerNorm, cfg.embed_ln), tied lm_head, config keys n_embed/n_head/n_layer/layer_norm_epsilon, 4x-hidden FFN fallback. First-pass bugs caught: wrong qkv split (row-split produced scrambled attention \u2014 hidden states 4.6x off at layer 0) and n_embed missing from the reader."
+  },
+  {
+   "family": "qwen3.5-vl-condgen",
+   "hf_arch_strings": [
+    "qwen3_5",
+    "qwen3_5moe",
+    "qwen3_5vl"
+   ],
+   "mapping_target": "QWEN35",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": "qwen3.5-gdn",
+    "bias": "none"
+   },
+   "e2e_model": null,
+   "oracle": "none",
+   "status": "mapped-unvalidated",
+   "tier": "registry",
+   "result": "MAPPED 2026-08-16: VLM conditional-generation classes land on the QWEN35 token (text-decoder layout). Registry-only tier: no e2e gate yet \u2014 validates with the Qwen3.5 family bring-up."
+  },
+  {
+   "family": "vlm-condgen-textdecoder",
+   "hf_arch_strings": [
+    "mistral3",
+    "qwen2_5_vl",
+    "qwen3vlmoe",
+    "gemma4unified"
+   ],
+   "mapping_target": "MIXED",
+   "quirk_flags": {
+    "rope": "natural",
+    "rotate_at_load": false,
+    "moe": false,
+    "bias": "none"
+   },
+   "e2e_model": null,
+   "oracle": "none",
+   "status": "mapped-unvalidated",
+   "tier": "registry",
+   "result": "MAPPED 2026-08-16: MAX-style text-decoder mapping (mistral3->MISTRAL, qwen2_5_vl->QWEN2VL, qwen3vlmoe->QWEN3VL, gemma4unified->GEMMA). Registry-only tier; vision tower unwired (documented)."
+  },
+  {
+   "family": "glm4-moe",
+   "hf_arch_strings": [
+    "glm4moe",
+    "glmmoedsa",
+    "glm4moelite"
+   ],
+   "mapping_target": "LLAMA",
+   "quirk_flags": {
+    "rope": "partial-0.5",
+    "rotate_at_load": false,
+    "moe": "sigmoid-group-topk-shared",
+    "bias": "qkv",
+    "qk_norm": "per-head",
+    "first_k_dense": 1,
+    "routed_scaling": 2.5
+   },
+   "e2e_model": "trl-internal-testing/tiny-Glm4MoeForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_glm4moe.py)",
+   "status": "validated",
+   "tier": "numpy-structural",
+   "result": "VALIDATED 2026-08-15 (numpy-ref structural tier): engine hidden states == numpy port of modeling_glm4_moe.py at ALL positions (exact to 4-5 decimals) on tiny-Glm4MoeForCausalLM \u2014 sigmoid+correction-bias group-limited topk gating, norm_topk, routed_scaling 2.5, shared experts (mlp.shared_experts.*), per-head QK-norm, partial-rope 0.5 (rotary_dim rounded up to even per HF cat-double), first_k_dense dense layer 0. Final-logit corr 0.92 = f32 floor on the degenerate random-init checkpoint (all logits +/-0.036, pythia-70m situation); clean 20/20 needs the real GLM-4-32B-0414 (~70GB, deferred). Gate: python3 Testing/e2e_numpy_ref_glm4moe.py <dir> <ids> 10"
+  },
+  {
+   "family": "nemotron-h",
+   "hf_arch_strings": [
+    "nemotronh",
+    "nemotron_h"
+   ],
+   "mapping_target": "NEMOTRONH",
+   "quirk_flags": {
+    "mamba2": true,
+    "nope_attention": true,
+    "mlp": "relu2",
+    "moe": "sigmoid-group-topk-shared",
+    "per_layer_kind": "layers_block_type"
+   },
+   "e2e_model": "trl-internal-testing/tiny-NemotronHForCausalLM-nano",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_nemotronh.py)",
+   "status": "validated",
+   "tier": "numpy-structural",
+   "result": "VALIDATED 2026-08-15 (numpy-structural): engine hidden states corr 0.9999 vs numpy port of modeling_nemotron_h.py 5.14 on tiny-NemotronHForCausalLM-nano. New bespoke CPU backend src/nemotron_h_engine.cpp (per-layer layers_block_type dispatch: Mamba-2 mixer with Euler dB=dt*B discretization + causal depthwise conv (w[0]=oldest tap), NoPE GQA attention, relu2 MLP, sigmoid+correction-bias group-topk MoE with up/down-only experts + shared experts). Final-logit argmax flips on the degenerate random-init checkpoint (logits +/-0.06, pythia-70m situation); clean 20/20 needs a real Nemotron-H-4B/8B checkpoint. Gate: python3 Testing/e2e_numpy_ref_nemotronh.py <dir> <ids> 10"
+  },
+  {
+   "family": "qwen3-next",
+   "hf_arch_strings": [
+    "qwen3next",
+    "qwen3_next"
+   ],
+   "mapping_target": "QWEN3NEXT",
+   "quirk_flags": {
+    "linear_attn": "gated-delta-rule",
+    "nope_full_attn": true,
+    "mlp": "swiglu",
+    "moe": "softmax-topk-normtopk-shared-gate",
+    "per_layer_kind": "layer_types"
+   },
+   "e2e_model": "tiny-random/qwen3-next-moe",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_qwen3next.py)",
+   "status": "validated",
+   "tier": "numpy-structural",
+   "result": "VALIDATED 2026-08-15 (numpy-structural): engine per-layer hidden states, attention probs/scores/acc EXACT vs numpy port of modeling_qwen3_next.py 5.14 on tiny-random/qwen3-next-moe (corr 0.9997, top-5 exact vs torch). New bespoke CPU backend src/qwen3next_engine.cpp (GatedDeltaNet delta-rule: in_proj_qkvz+in_proj_ba, causal depthwise conv w[0]=oldest, q/k l2norm + q scaled 1/sqrt(KHD), recurrent delta rule state*=exp(g), kv_mem, delta=(v-kv_mem)*beta, st+=k*delta, out=sum st*q; g=-exp(A_log)*softplus(a+dt_bias); norm DIRECT weight * silu(z); full attn q_proj [2*hd] INTERLEAVED q|gate split, q/k RMSNorm (1+w), partial rope, attn*sigmoid(gate); softmax router MoE + shared expert + sigmoid shared_gate). Argmax drifts on the degenerate random-init checkpoint (f32 vs f64 floor); clean 20/20 needs a real Qwen3-Next checkpoint (deferred). Gate: python3 Testing/e2e_numpy_ref_qwen3next.py <dir> <ids> 10"
+  },
+  {
+   "family": "minimax-m2",
+   "hf_arch_strings": [
+    "minimaxm2",
+    "minimax_m2"
+   ],
+   "mapping_target": "MINIMAXM2",
+   "quirk_flags": {
+    "attention": "gqa-flattened-qk-rmsnorm-partial-rope",
+    "moe": "sigmoid-correction-rawsigmoid-norm",
+    "experts": "w1-w2-w3-gated"
+   },
+   "e2e_model": "tiny-random/minimax-m2",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_minimaxm2.py)",
+   "status": "validated",
+   "tier": "full",
+   "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real-logit model): engine 10-token chain == numpy ref EXACTLY, corr 1.0000, top-5 exact vs torch on tiny-random/minimax-m2. New bespoke CPU backend src/minimaxm2_engine.cpp: GQA attention with SINGLE RMSNorm over flattened q (NH*HD) and k (NKV*HD) dims (NOT per-head \u2014 q_norm/k_norm weights are full-dim), partial rope (rotary_dim 16, theta 5e6), pos-major KV cache; sigmoid MoE: router sigmoid + e_score_correction_bias, top-k on sigmoid+correction, weights from RAW sigmoid normalized (\u00f7sum), gated w1/w2/w3 experts (silu(w1x)*(w3x) then w2). Clean 20/20 \u2014 the tiny model has real logit spread so argmax is exact. Gate: python3 Testing/e2e_numpy_ref_minimaxm2.py <dir> <ids> 10 == engine-gen"
+  },
+  {
+   "family": "cohere2",
+   "hf_arch_strings": [
+    "cohere2",
+    "cohere2_model"
+   ],
+   "mapping_target": "COHERE2",
+   "quirk_flags": {
+    "parallel_attn_ffn": true,
+    "norm": "mean-centered-layernorm-weight-only",
+    "rope": "adjacent-pair-interleaved",
+    "mlp": "swiglu",
+    "sliding_window": true,
+    "tied_lm_head": true
+   },
+   "e2e_model": "trl-internal-testing/tiny-Cohere2ForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_cohere2.py)",
+   "status": "validated",
+   "tier": "full",
+   "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real logit spread): engine 10-token chain == numpy ref EXACTLY, corr 1.0000, top-5 exact vs torch on tiny-Cohere2ForCausalLM. Rides the GENERIC engine (no bespoke backend): parallel_attn_ffn (attn+MLP from same input_layernorm output \u2014 falcon/codegen convention), mean-centered LayerNorm weight-only (layernorm_affine with b=NULL), adjacent-pair interleaved rope (matches rope_adjacent), gated SwiGLU, sliding-window attention, tied lm_head. arch selfcheck +cohere2/cohere2_model. Gate: python3 Testing/e2e_numpy_ref_cohere2.py <dir> <ids> 10 == engine-gen"
+  },
+  {
+   "family": "falcon-h1",
+   "hf_arch_strings": [
+    "falconh1",
+    "falcon_h1"
+   ],
+   "mapping_target": "FALCONH1",
+   "quirk_flags": {
+    "mamba2": true,
+    "attention": "gqa-key-mult",
+    "mup_multipliers": true,
+    "mlp": "gated-mult",
+    "parallel_mamba_attn": true
+   },
+   "e2e_model": "yujiepan/falcon-h1-tiny-random",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_falconh1.py)",
+   "status": "validated",
+   "tier": "full",
+   "result": "VALIDATED 2026-08-15 (FULL tier \u2014 real logit spread): engine 10-token chain == numpy ref EXACTLY on yujiepan/falcon-h1-tiny-random, corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/falconh1_engine.cpp: Mamba-2 SSM mixer (ssm_in_multiplier, in_proj + mup_vector per-section multipliers, causal depthwise conv w[0]=oldest, Euler dB=dt*B, dt=softplus(dt+dt_bias), gated RMSNorm norm_before_gate=False) + GQA attention (k x key_multiplier, full rope) from the SAME normed input, each scaled (ssm_out/attn_out multipliers), residual, gated FFN (gate x gate_multiplier, out x down_multiplier), embeddings x embedding_multiplier, logits x lm_head_multiplier, tied lm_head. Clean 20/20 \u2014 the tiny model has real logit spread. Gate: python3 Testing/e2e_numpy_ref_falconh1.py <dir> <ids> 10 == engine-gen"
+  },
+  {
+   "family": "rwkv",
+   "hf_arch_strings": [
+    "rwkv"
+   ],
+   "mapping_target": "RWKV",
+   "quirk_flags": {
+    "attention": "wkv-linear-attention",
+    "norm": "mean-centered-layernorm-weight-bias",
+    "mlp": "channel-mixing-relu2",
+    "time_mixing": "token-shift-blend",
+    "untied_lm_head": true,
+    "inference_rescale": "output-proj-div-2^k"
+   },
+   "e2e_model": "tiny-random (RWKV-4 structure, hidden 16, layers 3)",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_rwkv.py)",
+   "status": "validated",
+   "tier": "full",
+   "result": "VALIDATED 2026-08-16 (FULL tier \u2014 real logit spread): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([156, 166, 782]) on a tiny RWKV-4 checkpoint (RwkvForCausalLM, hidden 16, 3 layers), corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/rwkv_engine.cpp: per-layer WKV recurrence (num/den/max state per channel, output=num/den with time_first, state update uses PRE-update num/den), token-shift time mixing (attn: key/value/receptance blend + sigmoid receptance gate; channel mixing: relu2 key, sigmoid receptance), mean-centered LayerNorm (weight+bias, NOT RMSNorm), untied head, inference weight rescale (output projections divided by 2^int(l/rescale_every) at load \u2014 transformers _rescale_layers). rwkv5/rwkv6/rwkv7 use different recurrences and deliberately stay UNKNOWN. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_rwkv.py <dir> <ids> 3"
+  }
+ ]
 }

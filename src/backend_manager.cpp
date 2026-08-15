@@ -354,6 +354,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2c7. RWKV CPU — WKV linear attention + channel mixing.
+    {
+        BackendInfo info;
+        info.id = "rwkv_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "RWKV (WKV linear-attn) CPU";
+        info.priority = tier_priority(info.tier) + 34;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "RWKV CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1572,6 +1592,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libfalconh1_backend.so", "create_falconh1_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_falconh1_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // RWKV backend (WKV linear attention + channel mixing)
+            if (info.id == "rwkv_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_rwkv_backend");
+                if (!b) b = try_load_backend("librwkv_backend.so", "create_rwkv_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_rwkv_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

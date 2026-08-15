@@ -93,6 +93,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"falconh1_cpu", "cpu_generic"},
                 "Falcon-H1 model — native Mamba2+attn+MuP CPU backend → generic CPU"};
     }
+    // RWKV-4 (linear-attention WKV recurrence + channel mixing).
+    if (cfg.arch == RCPP_ARCH_RWKV) {
+        return {{"rwkv_cpu", "cpu_generic"},
+                "RWKV model — native WKV linear-attention CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

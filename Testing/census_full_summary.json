@@ -47,6 +47,7 @@
   "QWEN35": 4418,
   "QWEN3NEXT": 337,
   "QWEN3VL": 63,
+  "RWKV": 95,
   "STEP1": 2884,
   "WHISPER": 17,
   "ZAMBA": 6,
@@ -55,7 +56,7 @@
  },
  "n_archs": 2142,
  "no_arch": 77210,
- "registry_covered": 308189,
+ "registry_covered": 308284,
  "total": 399220,
  "with_arch": 318041
 }
