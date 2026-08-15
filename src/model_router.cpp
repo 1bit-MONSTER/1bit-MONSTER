@@ -128,6 +128,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"mellum_cpu", "cpu_generic"},
                 "Mellum model — native GQA+q/k-RMSNorm+per-layer-rope CPU backend → generic CPU"};
     }
+    // PhiMoE (GQA + LayerNorm + sparsemixer MoE).
+    if (cfg.arch == RCPP_ARCH_PHIMOE) {
+        return {{"phimoe_cpu", "cpu_generic"},
+                "PhiMoE model — native GQA+LayerNorm+sparsemixer-MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

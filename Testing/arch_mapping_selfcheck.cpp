@@ -158,6 +158,7 @@ int main() {
     check("afmoe", RCPP_ARCH_AFMOE, "afmoe (AfMoE)");
     check("ernie4_5_moe", RCPP_ARCH_ERNIE45MOE, "ernie4_5_moe (Ernie4.5-MoE)");
     check("mellum", RCPP_ARCH_MELLUM, "mellum (Mellum)");
+    check("phimoe", RCPP_ARCH_PHIMOE, "phimoe (PhiMoE)");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");

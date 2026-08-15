@@ -772,6 +772,26 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([40011, 44037, 15998]) on hf-tiny-v2/tiny-random-MellumForCausalLM. New bespoke CPU backend src/mellum_engine.cpp: GQA attention with per-head q/k RMSNorm + RoPE with PER-LAYER-TYPE theta (full_attention 500k vs sliding_attention 10k in the tiny config) and optional partial rotary factor, dense GELU MLP then softmax-router MoE (topk, norm_topk_prob /sum, per-expert gate/up/down), final model.norm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_mellum.py <dir> <ids> 3"
+  },
+  {
+   "family": "phimoe",
+   "hf_arch_strings": [
+    "phimoe"
+   ],
+   "mapping_target": "PHIMOE",
+   "quirk_flags": {
+    "attention": "gqa-full-rope",
+    "norm": "layernorm-weight-bias",
+    "moe": "sparsemixer-threshold-mask-top2-softmax",
+    "experts": "w1-w2-w3-gelu",
+    "all_layers_moe": true,
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-PhiMoEForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_phimoe.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([30229, 23988, 12777]) on hf-tiny-v2/tiny-random-PhiMoEForCausalLM. New bespoke CPU backend src/phimoe_engine.cpp: LayerNorm (weight+bias, NOT RMSNorm) around attention and MoE, GQA attention (full rope, repeat_interleave kv mapping), ALL layers sparsemixer MoE (router logits -> threshold mask ((max-score)/|scores|.clamp(min=max)) > 2*jitter_eps -> -inf, softmax over masked gates, top-2 sequential selection, per-expert w1/w3->gelu->w2), final model.norm LayerNorm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_phimoe.py <dir> <ids> 3"
   }
  ]
 }
