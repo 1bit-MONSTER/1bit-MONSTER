@@ -63,11 +63,11 @@ typedef enum {
     RCPP_ARCH_GPTOSS = 29,  // GPT-OSS — MXFP4 packed MoE (FP4 blocks+scales, interleaved gate/up), YARN rope, attention sinks, head_dim 64
     RCPP_ARCH_STEP1 = 30,   // Step1 (StepLaw / stepfun Step-Audio) — dense llama-layout, sqrt-ALiBi (no RoPE), num_attention_groups
     RCPP_ARCH_BLOOM = 31,    // Bloom — fused qkv, LayerNorm w/bias, sequential + post_attn_norm, gelu_new, LINEAR ALiBi, embed LN, tied lm_head
-    RCPP_ARCH_LFM2 = 32,
-    RCPP_ARCH_NANOCHAT = 33,
-    RCPP_ARCH_PICO = 34,     // PicoDecoderHF — llama-layout with adjacent-pair RoPE (view_as_complex)  // NanoChat — gpt2-skeleton: unweighted RMSNorm, relu^2 MLP, adjacent-pair RoPE, logit softcap    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
-    RCPP_ARCH_NEMOTRONH = 33, // Nemotron-H — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid
-    RCPP_ARCH_QWEN3NEXT = 34, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
+    RCPP_ARCH_LFM2 = 32,    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks, per-head QK-norm, tied lm_head
+    RCPP_ARCH_NANOCHAT = 33, // NanoChat — gpt2-skeleton: unweighted RMSNorm, relu^2 MLP, adjacent-pair RoPE, logit softcap
+    RCPP_ARCH_NEMOTRONH = 34, // Nemotron-H — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid
+    RCPP_ARCH_QWEN3NEXT = 43, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
+    RCPP_ARCH_PICO = 44,     // PicoDecoderHF — llama-layout with adjacent-pair RoPE (view_as_complex)
     RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
     RCPP_ARCH_COHERE2 = 36,  // Cohere2 — parallel attn+FFN, mean-centered LayerNorm, adjacent-pair rope, SWA
     RCPP_ARCH_FALCONH1 = 37, // Falcon-H1 — Mamba-2 SSM + GQA attention + MuP multipliers
@@ -341,6 +341,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "picodecoder") == 0) return RCPP_ARCH_PICO;  // PicoDecoderHF (llama-layout + adjacent rope)
     if (strcmp(s, "picodecoderhf") == 0) return RCPP_ARCH_PICO;  // PicoDecoderHF (llama-layout + adjacent rope)
     if (strcmp(s, "caca") == 0) return RCPP_ARCH_LLAMA;  // CacaForCausalLM (llama profile, rms+rope+GQA, verified 2026-08-15)
+    if (strcmp(s, "gateddeltanet") == 0) return RCPP_ARCH_QWEN3NEXT;  // GatedDeltaNet (same attention as qwen3next backend)
     // ── end census tail sweep ──
     if (strcmp(s, "openaigpt") == 0) return RCPP_ARCH_GPT2;  // openai-gpt (gpt2 layout, Conv1D)
     if (strcmp(s, "ctrl") == 0) return RCPP_ARCH_GPT2;  // CTRL (gpt2 layout, extra conditioning embed ignored)
