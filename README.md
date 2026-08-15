@@ -4,12 +4,12 @@
 
 ## One binary to rule them all
 
-### 500+ models. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
+### 94% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
 [![Site](https://img.shields.io/badge/site-1bit.monster-C6FF3D.svg)](https://1bit.monster)
-[![Models](https://img.shields.io/badge/models-500%2B-C6FF3D.svg)](docs/model-families/README.md)
+[![Models](https://img.shields.io/badge/HF%20coverage-94%25-C6FF3D.svg)](docs/model-families/README.md)
 [![Backends](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-C6FF3D.svg)](docs/guides/architecture.md)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
@@ -31,9 +31,9 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 
 That is the whole install. One binary, no runtime, no virtualenv, no Python.
 
-| 500+ | 32 | 25 | 6 | 0 |
-|:----:|:--:|:--:|:-:|:-:|
-| models | arch tokens | families in manifest | hardware targets | Python in the runtime |
+| 94% | 32 | 25 | 6 | 0 |
+|:---:|:--:|:--:|:-:|:-:|
+| HF checkpoints covered | arch tokens | families in manifest | hardware targets | Python in the runtime |
 
 ## Model agnostic
 
