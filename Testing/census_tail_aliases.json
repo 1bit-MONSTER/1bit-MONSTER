@@ -455,6 +455,12 @@
   "source": "aggregate",
   "token": "LLAMA"
  },
+ "nemotronhaugmented": {
+  "checkpoints": 1,
+  "model_type": "nemotron_h",
+  "source": "aggregate",
+  "token": "NEMOTRONH"
+ },
  "notagen": {
   "checkpoints": 41,
   "model_type": "gpt2",
