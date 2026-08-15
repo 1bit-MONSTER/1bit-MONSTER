@@ -33,6 +33,8 @@ NON_TEXT_GEN = {
     "bart", "mbart", "marian", "longformerbart",  # encoder-decoder
     "t5gemma",                            # T5+Gemma hybrid (encoder-decoder)
     "bert", "roberta", "xlmroberta", "xlnet",  # masked-LM / encoder heads
+    "bertformaskedlm", "distilbertforsequenceclassification", "electra",
+    "camembert",  # encoder-only classes (not causal decoders)
 }
 
 

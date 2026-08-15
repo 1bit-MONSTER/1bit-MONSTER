@@ -332,6 +332,26 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
     if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2
     // ── end census tail sweep ──
+    if (strcmp(s, "openaigpt") == 0) return RCPP_ARCH_GPT2;  // openai-gpt (gpt2 layout, Conv1D)
+    if (strcmp(s, "ctrl") == 0) return RCPP_ARCH_GPT2;  // CTRL (gpt2 layout, extra conditioning embed ignored)
+    if (strcmp(s, "chessgpt") == 0) return RCPP_ARCH_GPTNEOX;  // ChessGPT (gpt_neox config, verified)
+    if (strcmp(s, "opensci") == 0) return RCPP_ARCH_LLAMA;  // OpenSci (med-llama-7b config, llama profile)
+    if (strcmp(s, "myllama") == 0) return RCPP_ARCH_LLAMA;  // myllama (LLaMa model_type, silu+rms)
+    if (strcmp(s, "plamo") == 0) return RCPP_ARCH_LLAMA;  // PLaMo-13B (llama profile)
+    if (strcmp(s, "internvlchat") == 0) return RCPP_ARCH_LLAMA;  // InternVL-Chat (VLM, vicuna/llama text decoder)
+    if (strcmp(s, "ncpolmo3") == 0) return RCPP_ARCH_OLMO;  // NCP-Olmo3 (olmo3 family)
+    if (strcmp(s, "detikzify") == 0) return RCPP_ARCH_LLAMA;  // Detikzify-CL-7B (VLM, llama text decoder)
+    if (strcmp(s, "cogvlm") == 0) return RCPP_ARCH_LLAMA;  // CogVLM (VLM, llama-2 text decoder)
+    if (strcmp(s, "aquila") == 0) return RCPP_ARCH_LLAMA;  // Aquila/Aquila2 (llama-derived; qwen3.5-moe VLMs fail loud)
+    if (strcmp(s, "dream") == 0) return RCPP_ARCH_GEMMA;  // DreamFast (VLM, gemma-3 text decoder)
+    if (strcmp(s, "index") == 0) return RCPP_ARCH_GEMMA;  // Index (VLM, gemma-3 text decoder)
+    if (strcmp(s, "mimov2flash") == 0) return RCPP_ARCH_QWEN2;  // MiMo-V2-Flash (qwen2-derived)
+    if (strcmp(s, "mimo") == 0) return RCPP_ARCH_QWEN2;  // MiMo-v2.5 (qwen2-derived)
+    if (strcmp(s, "qwen2_5omni") == 0) return RCPP_ARCH_QWEN2;  // Qwen2.5-Omni (VLM, qwen2.5 text decoder)
+    if (strcmp(s, "llavanext") == 0) return RCPP_ARCH_QWEN2;  // LLaVA-NeXT (qwen text decoder variant)
+    if (strcmp(s, "molm") == 0) return RCPP_ARCH_OLMO;  // MoLM/Molmo (VLM, olmo text decoder)
+    if (strcmp(s, "moondream") == 0) return RCPP_ARCH_PHI;  // Moondream (VLM, phi-1.5 text decoder)
+
     if (strcmp(s, "bitllama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (bit_llama)
     if (strcmp(s, "iquestcoder") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (IQuest-Coder-7B)
     if (strcmp(s, "mplugowl2llama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (VLM, llama text decoder)
