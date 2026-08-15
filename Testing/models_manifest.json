@@ -535,6 +535,26 @@
       "status": "validated",
       "tier": "numpy-structural",
       "result": "VALIDATED 2026-08-15 (numpy-ref structural tier): engine hidden states == numpy port of modeling_glm4_moe.py at ALL positions (exact to 4-5 decimals) on tiny-Glm4MoeForCausalLM \u2014 sigmoid+correction-bias group-limited topk gating, norm_topk, routed_scaling 2.5, shared experts (mlp.shared_experts.*), per-head QK-norm, partial-rope 0.5 (rotary_dim rounded up to even per HF cat-double), first_k_dense dense layer 0. Final-logit corr 0.92 = f32 floor on the degenerate random-init checkpoint (all logits +/-0.036, pythia-70m situation); clean 20/20 needs the real GLM-4-32B-0414 (~70GB, deferred). Gate: python3 Testing/e2e_numpy_ref_glm4moe.py <dir> <ids> 10"
+    },
+    {
+      "family": "nemotron-h",
+      "hf_arch_strings": [
+        "nemotronh",
+        "nemotron_h"
+      ],
+      "mapping_target": "NEMOTRONH",
+      "quirk_flags": {
+        "mamba2": true,
+        "nope_attention": true,
+        "mlp": "relu2",
+        "moe": "sigmoid-group-topk-shared",
+        "per_layer_kind": "layers_block_type"
+      },
+      "e2e_model": "trl-internal-testing/tiny-NemotronHForCausalLM-nano",
+      "oracle": "numpy ref (Testing/e2e_numpy_ref_nemotronh.py)",
+      "status": "validated",
+      "tier": "numpy-structural",
+      "result": "VALIDATED 2026-08-15 (numpy-structural): engine hidden states corr 0.9999 vs numpy port of modeling_nemotron_h.py 5.14 on tiny-NemotronHForCausalLM-nano. New bespoke CPU backend src/nemotron_h_engine.cpp (per-layer layers_block_type dispatch: Mamba-2 mixer with Euler dB=dt*B discretization + causal depthwise conv (w[0]=oldest tap), NoPE GQA attention, relu2 MLP, sigmoid+correction-bias group-topk MoE with up/down-only experts + shared experts). Final-logit argmax flips on the degenerate random-init checkpoint (logits +/-0.06, pythia-70m situation); clean 20/20 needs a real Nemotron-H-4B/8B checkpoint. Gate: python3 Testing/e2e_numpy_ref_nemotronh.py <dir> <ids> 10"
     }
   ]
 }

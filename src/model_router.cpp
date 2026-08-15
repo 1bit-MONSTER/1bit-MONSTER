@@ -83,6 +83,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"ggml_vulkan", "zamba2_vulkan", "zamba2_gpu", "cpu_generic"},
                 "Zamba2 model — GGML-Vulkan → Zamba2-on-Vulkan (ZAMBA2_VK=1) → Zamba2 HIP → CPU"};
     }
+    // Nemotron-H (Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid).
+    if (cfg.arch == RCPP_ARCH_NEMOTRONH) {
+        return {{"nemotron_h_cpu", "cpu_generic"},
+                "Nemotron-H model — native Mamba2+attn+MLP+MoE CPU backend → generic CPU"};
+    }
     // Mamba1 models (Zamba-7B-v1, BlackMamba): Mamba1 SSM HIP kernels,
     // with per-layer MoE expert dispatch for BlackMamba.
     if (cfg.arch == RCPP_ARCH_MAMBA || cfg.arch == RCPP_ARCH_ZAMBA) {
