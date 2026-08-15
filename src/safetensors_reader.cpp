@@ -134,7 +134,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
             // convention ("qwen2", "llama", version digit kept).
             std::string low = arch;
             for (auto& c : low) c = (char)tolower((unsigned char)c);
-            for (const char* suf : {"forcausallm", "lmheadmodel", "model"}) {
+            for (const char* suf : {"forcausallm", "lmheadmodel", "model", "forconditionalgeneration", "forvisiontext2text"}) {
                 size_t sl = strlen(suf);
                 if (low.size() > sl && low.compare(low.size() - sl, sl, suf) == 0) {
                     low = low.substr(0, low.size() - sl);

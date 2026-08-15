@@ -93,6 +93,30 @@ int main() {
     // ── Decision (pilot #10): unknown archs -> UNKNOWN (loud), not BITNET
     check("totally_unknown_arch", RCPP_ARCH_UNKNOWN, "unknown->UNKNOWN (loud fail)");
 
+    // ── VLM conditional-generation classes (MAX-style text-decoder mapping) ──
+    // The reader strips "forconditionalgeneration"/"forvisiontext2text" suffixes
+    // (see safetensors_reader.cpp) before calling rcpp_arch_from_string, so these
+    // assert the stripped forms the mapping actually receives.
+    check("qwen3_5", RCPP_ARCH_QWEN35, "qwen3_5 (Qwen3.5 dense)");
+    check("qwen3_5moe", RCPP_ARCH_QWEN35, "qwen3_5moe (Qwen3.5-MoE)");
+    check("mistral3", RCPP_ARCH_MISTRAL, "mistral3 (Mistral3-VL text decoder)");
+    check("qwen2_5_vl", RCPP_ARCH_QWEN2VL, "qwen2_5_vl (Qwen2.5-VL text decoder)");
+    check("qwen3vlmoe", RCPP_ARCH_QWEN3VL, "qwen3vlmoe (Qwen3-VL-MoE)");
+    check("gemma4unified", RCPP_ARCH_GEMMA, "gemma4unified (Gemma4-Unified)");
+    check("qwen3_5vl", RCPP_ARCH_QWEN35, "qwen3_5vl (Qwen3.5-VL text decoder)");
+    // Reader-strip equivalence (suffix -> stripped form -> token)
+    check("gemma3", RCPP_ARCH_GEMMA, "gemma3 (from Gemma3ForConditionalGeneration)");
+    check("gemma4", RCPP_ARCH_GEMMA, "gemma4 (from Gemma4ForConditionalGeneration)");
+    check("qwen2vl", RCPP_ARCH_QWEN2VL, "qwen2vl (from Qwen2VLForConditionalGeneration)");
+    check("qwen3vl", RCPP_ARCH_QWEN3VL, "qwen3vl (from Qwen3VLForConditionalGeneration)");
+    check("llava", RCPP_ARCH_QWEN2VL, "llava (from LlavaForConditionalGeneration)");
+    check("smolvlm", RCPP_ARCH_QWEN2VL, "smolvlm (from SmolVLMForConditionalGeneration)");
+    check("paligemma", RCPP_ARCH_GEMMA, "paligemma (from PaliGemmaForConditionalGeneration)");
+    // Encoder-decoder stays UNKNOWN (decoder-only engine, out of scope)
+    check("t5", RCPP_ARCH_UNKNOWN, "t5 enc-dec stays UNKNOWN");
+    check("mt5", RCPP_ARCH_UNKNOWN, "mt5 enc-dec stays UNKNOWN");
+    check("bart", RCPP_ARCH_UNKNOWN, "bart enc-dec stays UNKNOWN");
+
     if (fails) {
         std::printf("ARCH MAPPING: %d/%d FAILED\n", fails, total);
         return 1;
