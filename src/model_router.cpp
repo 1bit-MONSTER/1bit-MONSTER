@@ -148,6 +148,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"exaonemoe_cpu", "cpu_generic"},
                 "ExaoneMoe model — native GQA+q/k-RMSNorm+group-MoE CPU backend → generic CPU"};
     }
+    // FalconMamba (Mamba1 SSM + RMSNorm on B/C/dt).
+    if (cfg.arch == RCPP_ARCH_FALCONMAMBA) {
+        return {{"falconmamba_cpu", "cpu_generic"},
+                "FalconMamba model — native Mamba1-SSM CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

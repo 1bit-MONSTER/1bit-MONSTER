@@ -400,7 +400,8 @@ set(RCPP_SOURCES
     src/phimoe_engine.cpp
     src/minimax_engine.cpp
     src/cohere2moe_engine.cpp
-    src/exaonemoe_engine.cpp)
+    src/exaonemoe_engine.cpp
+    src/falconmamba_engine.cpp)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()

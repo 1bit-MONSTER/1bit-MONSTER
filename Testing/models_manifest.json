@@ -853,6 +853,25 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([111758, 24564, 23644]) on hf-tiny-v2/tiny-random-ExaoneMoeForCausalLM. New bespoke CPU backend src/exaonemoe_engine.cpp: GQA attention with per-head q/k RMSNorm ALWAYS applied (found & fixed 2026-08-16 \u2014 the module applies q/k norm unconditionally), rope on sliding layers, dense gelu MLP then group-limited sigmoid MoE (router + e_score_correction_bias, top2-per-group -> topk_group groups, topk within mask, norm_topk_prob /sum, routed_scaling_factor, per-expert gate/up/down + shared_experts), final model.norm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_exaonemoe.py <dir> <ids> 3"
+  },
+  {
+   "family": "falcon-mamba",
+   "hf_arch_strings": [
+    "falcon_mamba",
+    "falconmamba"
+   ],
+   "mapping_target": "FALCONMAMBA",
+   "quirk_flags": {
+    "ssm": "mamba1-euler-dt-softplus",
+    "norm": "rmsnorm-on-b-c-dt-before-dt-proj",
+    "conv": "depthwise-causal-conv1d",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-FalconMambaForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_falconmamba.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([5579, 22348, 46776]) on hf-tiny-v2/tiny-random-FalconMambaForCausalLM, corr 1.0000. New bespoke CPU backend src/falconmamba_engine.cpp: Mamba1 SSM (in_proj hidden/gate split, depthwise causal conv1d K=4 w[0]=oldest \u2014 found & fixed orientation 2026-08-16, silu, x_proj -> dt/B/C with RMSNorm each (non-learnable ones weights), dt_proj+bias -> softplus -> dt, A=-exp(A_log), Euler discretization dA=exp(A*dt), dB=dt*B, h=h*dA+dB*x, y=C*h+D*x, y*=silu(gate), out_proj), block norm + residual, final norm_f, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_falconmamba.py <dir> <ids> 3"
   }
  ]
 }

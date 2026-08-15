@@ -162,6 +162,7 @@ int main() {
     check("minimax", RCPP_ARCH_MINIMAX, "minimax (MiniMax)");
     check("cohere2_moe", RCPP_ARCH_COHERE2MOE, "cohere2_moe (Cohere2Moe)");
     check("exaone_moe", RCPP_ARCH_EXAONEMOE, "exaone_moe (ExaoneMoe)");
+    check("falcon_mamba", RCPP_ARCH_FALCONMAMBA, "falcon_mamba (FalconMamba)");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");

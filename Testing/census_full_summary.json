@@ -34,6 +34,7 @@
   "EXAONEMOE": 22,
   "FALCON": 1222,
   "FALCONH1": 156,
+  "FALCONMAMBA": 17,
   "GEMMA": 20333,
   "GPT2": 32609,
   "GPTJ": 627,
@@ -72,7 +73,7 @@
  },
  "n_archs": 2136,
  "no_arch": 77210,
- "registry_covered": 312798,
+ "registry_covered": 312815,
  "total": 399220,
  "with_arch": 317941
 }
