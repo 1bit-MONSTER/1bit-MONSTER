@@ -113,6 +113,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"hyv3_cpu", "cpu_generic"},
                 "HY-V3 model — native GQA+q/k-RMSNorm+dense/MoE CPU backend → generic CPU"};
     }
+    // AfMoE (dual-norm GQA + sigmoid-gated sliding attn + shared-expert MoE).
+    if (cfg.arch == RCPP_ARCH_AFMOE) {
+        return {{"afmoe_cpu", "cpu_generic"},
+                "AfMoE model — native dual-norm GQA+MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

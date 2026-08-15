@@ -434,6 +434,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2cb. AfMoE CPU — dual-norm GQA + sigmoid-gated sliding attn + shared-expert MoE.
+    {
+        BackendInfo info;
+        info.id = "afmoe_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "AfMoE (dual-norm GQA+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 38;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "AfMoE CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1688,6 +1708,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libhyv3_backend.so", "create_hyv3_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_hyv3_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // AfMoE backend (dual-norm GQA + sigmoid-gated sliding attn + MoE)
+            if (info.id == "afmoe_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_afmoe_backend");
+                if (!b) b = try_load_backend("libafmoe_backend.so", "create_afmoe_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_afmoe_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

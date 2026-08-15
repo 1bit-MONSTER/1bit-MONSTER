@@ -714,6 +714,25 @@
    "status": "validated",
    "tier": "full",
    "result": "VALIDATED 2026-08-16 (FULL tier \u2014 real logit spread 0.40): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([90642, 90642, 90642]) on yujiepan/hy-v3-tiny-random, corr 1.0000, top-5 exact vs torch. New bespoke CPU backend src/hyv3_engine.cpp: GQA attention with per-head q/k RMSNorm + full-dim RoPE + scaling=head_dim^-0.5 and REPEAT_INTERLEAVE kv mapping (hh//groups \u2014 the naive hh%NKV mod mapping diverges, found 2026-08-16), dense silu MLP for dense layers, sigmoid-gated MoE (router + e_score_correction_bias selection, top-k, /(sum+1e-20), router_scaling_factor, per-expert gate/down/up + shared_mlp), final model.norm, UNTIED lm_head, nextn (MTP) predictor layer excluded exactly like transformers (layers[:num_hidden_layers]). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_hyv3.py <dir> <ids> 3"
+  },
+  {
+   "family": "afmoe",
+   "hf_arch_strings": [
+    "afmoe"
+   ],
+   "mapping_target": "AFMOE",
+   "quirk_flags": {
+    "attention": "dual-norm-gqa-qk-rmsnorm-sigmoid-gate",
+    "rope": "sliding-attn-only",
+    "moe": "sigmoid-router-expert-bias-shared-experts-route-scale",
+    "ffn": "dense-then-moe-dual-norm",
+    "mup": "optional-embed-sqrt-h"
+   },
+   "e2e_model": "onnx-internal-testing/tiny-random-AfmoeForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_afmoe.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([53928, 91683, 53251]) on onnx-internal-testing/tiny-random-AfmoeForCausalLM. New bespoke CPU backend src/afmoe_engine.cpp: DUAL normalization around both attention and MLP (pre+post each), GQA attention with per-head q/k RMSNorm + gate_proj (output*sigmoid(gate) before o_proj), RoPE ONLY on sliding_attention layers, dense silu MLP then sigmoid-gated MoE (router + expert_bias selection, top-k, /(sum+1e-20), route_scale, per-expert gate/up/down + shared_experts), final model.norm, UNTIED lm_head, optional muP embed x sqrt(H). Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_afmoe.py <dir> <ids> 3"
   }
  ]
 }

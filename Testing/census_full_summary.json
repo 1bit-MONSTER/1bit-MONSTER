@@ -19,6 +19,7 @@
   "xlnet": 37
  },
  "family_counts": {
+  "AFMOE": 77,
   "BITNET": 65,
   "BLOOM": 1175,
   "CODEGEN": 386,
@@ -63,7 +64,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 311676,
+ "registry_covered": 311753,
  "total": 399220,
  "with_arch": 317978
 }
