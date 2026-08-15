@@ -31,6 +31,7 @@ AGG = os.path.join(ROOT, "Testing", "census_modeltype_aggregate.json")
 OUT_A = os.path.join(ROOT, "Testing", "census_tail_aliases.json")
 OUT_S = os.path.join(ROOT, "Testing", "census_tail_skipped.json")
 PROBE = os.path.join(ROOT, "Testing", "arch_mapper_probe.cpp")
+INDEX = os.path.join(ROOT, "Testing", "census_model_index.json")
 
 STRIP = ("forcausallm", "lmheadmodel", "model",
          "forconditionalgeneration", "forvisiontext2text")
@@ -54,7 +55,7 @@ KNOWN_HARD = {
 }
 OUT_OF_SCOPE = {
     "parlertts", "t5", "mt5", "bart", "mbart", "marian", "bert", "roberta",
-    "whisper",
+    "t5with", "umt5", "longformerbart", "whisper",
 }
 
 
@@ -84,13 +85,43 @@ def probe(mapper, keys):
     return [int(t) for t in out.stdout.split()]
 
 
-TOKEN_NAMES = {"1": "QWEN3", "2": "LLAMA", "3": "MISTRAL", "4": "QWEN2",
-               "5": "GEMMA", "6": "PHI", "7": "ZAMBA2", "8": "ZAMBA",
-               "9": "MAMBA", "11": "FALCON", "12": "OLMO", "14": "QWEN2VL",
-               "15": "WHISPER", "16": "DEEPSEEK", "17": "QWEN3VL",
-               "18": "KIMI_K3", "23": "GPT2", "24": "GPTNEOX", "25": "OPT",
-               "26": "GPTNEO", "27": "CODEGEN", "28": "GPTJ", "29": "GPTOSS",
-               "30": "STEP1", "31": "BLOOM", "32": "LFM2"}
+def load_token_names():
+    """Parse RCPP_ARCH_<NAME> = <N> from the live header (single source)."""
+    import re
+    hdr = open(os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")).read()
+    return {n: name for name, n in re.findall(
+        r"RCPP_ARCH_(\w+)\s*=\s*(\d+)", hdr)}
+
+
+TOKEN_NAMES = load_token_names()
+
+
+FAMILY_KEYS = ("deepseek", "qwen3", "qwen2", "llama", "mistral", "gemma",
+              "phi", "gpt2", "falcon", "olmo", "mamba", "zamba", "opt",
+              "gptj", "bloom", "step1", "gptoss", "kimi", "qwen35", "internlm",
+              "minicpm", "hunyuan", "granite", "exaone", "glm", "xglm", "biogpt")
+
+
+def double_evidence(s, mt, src):
+    """Alias only when the class name AND the model_type both contain the
+    same registry family key (e.g. mobilintqwen2 + mobilint-qwen2 -> qwen2).
+    Never alias on model_type alone."""
+    nm = norm_mt(mt)
+    hit = None
+    for k in FAMILY_KEYS:
+        if k in s and k in nm:
+            if hit is None or len(k) > len(hit):
+                hit = k
+    if not hit:
+        return False
+    t = probe(mapper, [norm_mt(hit)])[0]
+    if t == 255:
+        return False
+    fam = TOKEN_NAMES.get(str(t), "TOKEN%d" % t)
+    aliases[s] = {"token": fam, "model_type": mt,
+                  "source": src + " (double-evidence)",
+                  "checkpoints": stripped[s]}
+    return True
 
 
 def hf_get(url, tries=3):
@@ -105,27 +136,37 @@ def hf_get(url, tries=3):
 
 
 def crawl_text_gen(max_pages):
-    """Paginate the models index; return {model_id: [model_type tags]}."""
+    """Paginate the models index via the Link-header cursor (auth-free);
+    return {model_id: [model_type tags]} — the _text tags are the config's
+    model_type, so this index classifies every crawled model."""
+    import re as _re
+    from urllib.parse import parse_qs
     out = {}
     cursor = None
     for page in range(max_pages):
         url = ("https://huggingface.co/api/models?filter=text-generation&limit=1000")
         if cursor:
-            url += "&pagination_token=%s" % urllib.parse.quote(cursor)
-        d = hf_get(url)
-        if not d or not d:
+            url += "&cursor=%s" % urllib.parse.quote(cursor)
+        req = urllib.request.Request(url)
+        try:
+            r = urllib.request.urlopen(req, timeout=30)
+            d = json.load(r)
+            link = r.headers.get("Link", "")
+        except Exception:
             break
         for m in d:
             mts = [t[:-5] for t in m.get("tags", []) if t.endswith("_text")]
             out[m["id"].lower()] = mts
-        if len(d) < 1000:
+        nxt = None
+        m = _re.search(r'<([^>]+)>; rel="next"', link)
+        if m:
+            nxt = parse_qs(urllib.parse.urlparse(m.group(1)).query).get("cursor", [None])[0]
+        if not nxt:
             break
-        cursor = d[-1].get("_id")
-        if not cursor:
-            break
+        cursor = nxt
         if page % 25 == 0:
             print("  crawl page %d, %d models..." % (page, len(out)), flush=True)
-        time.sleep(0.25)
+        time.sleep(0.2)
     return out
 
 
@@ -184,7 +225,7 @@ def main():
             skipped[s] = "name suggests MoE — recon required"
             continue
         if s in KNOWN_HARD:
-            skipped[s] = "filed as bring-up issue (recon required)"
+            skipped[s] = "filed issue — pass 2 evidence check"
             continue
         if s in OUT_OF_SCOPE:
             skipped[s] = "not a causal text decoder (denominator #1676)"
@@ -203,58 +244,75 @@ def main():
     if not skip_http:
         todo = [s for s in skipped
                 if skipped[s] == "no model_type in aggregate (needs HTTP)"
-                or skipped[s].startswith("model_type ")]
+                or skipped[s].startswith("model_type ")
+                or skipped[s] == "filed issue — pass 2 evidence check"
+                or skipped[s].startswith("no single model_type tag")]
         for s in todo:
             del skipped[s]
-        print("pass 2: %d classes to resolve..." % len(todo), flush=True)
+        print("pass 2: %d classes to resolve; crawling index..." % len(todo),
+              flush=True)
+        index = {}
+        if os.path.exists(INDEX) and "--fresh-crawl" not in sys.argv:
+            index = json.load(open(INDEX))
+            print("  reused saved index: %d models" % len(index), flush=True)
+        else:
+            index = crawl_text_gen(max_pages)
+            print("  index: %d models" % len(index), flush=True)
+            json.dump(index, open(INDEX, "w"))
+        cands = {}
+        for mid, mts in index.items():
+            for s in todo:
+                if s in cands or s in aliases or s in skipped:
+                    continue
+                if s in mid:
+                    cands[s] = (mid, mts)
+        print("  candidates found for %d classes" % len(cands), flush=True)
         done = 0
         for s in todo:
             if limit is not None and done >= limit:
                 break
             done += 1
-            # search the stripped class name; confirm via config.architectures
-            mt = None
-            src = None
-            d = hf_get("https://huggingface.co/api/models?search=%s&limit=5"
-                       % urllib.parse.quote(s))
-            if d:
-                for m in d[:3]:
-                    cfg = hf_get("https://huggingface.co/%s/resolve/main/config.json"
-                                 % m["id"])
-                    if cfg and any(strip_arch(a) == s
-                                   for a in (cfg.get("architectures") or [])):
-                        mt = cfg.get("model_type") or ""
-                        src = "http:" + m["id"]
-                        break
-            if not mt:
-                skipped[s] = "no HF candidate"
-            elif not classify_mt(s, mt, src or "http"):
-                # Double evidence: the class name AND the model_type must both
-                # contain the same registry family key (e.g. mobilintqwen2 +
-                # mobilint-qwen2 -> qwen2). Never alias on model_type alone.
-                keys = ("deepseek", "qwen3", "qwen2", "llama", "mistral",
-                        "gemma", "phi", "gpt2", "falcon", "olmo", "mamba",
-                        "zamba", "opt", "gptj", "bloom", "step1", "gptoss",
-                        "kimi", "qwen35", "internlm", "minicpm", "hunyuan",
-                        "granite", "exaone", "glm", "xglm", "biogpt")
-                hit = None
-                nm = norm_mt(mt)
-                for k in keys:
-                    if k in s and k in nm:
-                        if hit is None or len(k) > len(hit):
-                            hit = k
-                if hit:
-                    t = probe(mapper, [norm_mt(hit)])[0]
-                    if t != 255:
-                        fam = TOKEN_NAMES.get(str(t), "TOKEN%d" % t)
-                        aliases[s] = {"token": fam, "model_type": mt,
-                                      "source": (src or "") + " (double-evidence)",
-                                      "checkpoints": stripped[s]}
-                    else:
-                        skipped[s] = "family key %r unknown" % hit
+            if s in aliases or s in skipped:
+                continue
+            cand = cands.get(s)
+            if cand:
+                mts = [m for m in cand[1] if m != "none"]
+                if len(mts) == 1:
+                    if not classify_mt(s, mts[0], "crawl:" + cand[0]):
+                        if not double_evidence(s, mts[0], "crawl:" + cand[0]):
+                            skipped[s] = "model_type %r unknown to registry" % mts[0]
+                elif len(mts) > 1:
+                    # multiple tags: exact classify on a text-decoder family,
+                    # else double-evidence per tag (class name must contain
+                    # the family key too — never alias on tags alone)
+                    done2 = False
+                    for m in sorted(set(mts)):
+                        if norm_mt(m) in ("llama", "qwen2", "qwen3") and classify_mt(s, m, "crawl:" + cand[0]):
+                            done2 = True
+                            break
+                    if not done2:
+                        for m in sorted(set(mts)):
+                            if double_evidence(s, m, "crawl:" + cand[0]):
+                                done2 = True
+                                break
+                    if not done2:
+                        skipped[s] = "no single model_type tag (%s)" % mts
                 else:
-                    skipped[s] = "model_type %r unknown to registry" % mt
-            time.sleep(0.5)
+                    skipped[s] = "no single model_type tag (%s)" % (mts or cand[1])
+            else:
+                d = hf_get("https://huggingface.co/api/models?search=%s&limit=3"
+                           % urllib.parse.quote(s))
+                if d and d:
+                    mts = [t[:-5] for t in d[0].get("tags", []) if t.endswith("_text")]
+                    if len(mts) == 1:
+                        if not classify_mt(s, mts[0], "search:" + d[0]["id"]):
+                            if not double_evidence(s, mts[0], "search:" + d[0]["id"]):
+                                skipped[s] = "model_type %r unknown to registry" % mts[0]
+                    else:
+                        skipped[s] = "no single model_type tag (search)"
+                else:
+                    skipped[s] = "no HF candidate"
+                time.sleep(0.4)
             if done % 50 == 0:
                 json.dump(aliases, open(OUT_A, "w"), indent=1, sort_keys=True)
                 json.dump(skipped, open(OUT_S, "w"), indent=1, sort_keys=True)
