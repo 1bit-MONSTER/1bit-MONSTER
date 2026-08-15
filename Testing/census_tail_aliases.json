@@ -1,0 +1,656 @@
+{
+ "adavocabgemma": {
+  "checkpoints": 2,
+  "model_type": "gemma",
+  "source": "http:reflectio/AdaVocab-Gemma-2b-1024",
+  "token": "GEMMA"
+ },
+ "aicraftar-tharo.g-conditionalgeneration": {
+  "checkpoints": 1,
+  "model_type": "qwen2_vl",
+  "source": "aggregate",
+  "token": "QWEN2VL"
+ },
+ "antihal": {
+  "checkpoints": 1,
+  "model_type": "gemma4",
+  "source": "aggregate",
+  "token": "GEMMA"
+ },
+ "asvdopt": {
+  "checkpoints": 1,
+  "model_type": "opt",
+  "source": "aggregate",
+  "token": "OPT"
+ },
+ "automodel": {
+  "checkpoints": 20,
+  "model_type": "mistral",
+  "source": "aggregate",
+  "token": "MISTRAL"
+ },
+ "backpackgpt2": {
+  "checkpoints": 2,
+  "model_type": "gpt2",
+  "source": "http:lora-x/backpack-gpt2",
+  "token": "GPT2"
+ },
+ "bunnyqwen": {
+  "checkpoints": 2,
+  "model_type": "llava-qwen2",
+  "source": "aggregate",
+  "token": "QWEN2"
+ },
+ "careaqa": {
+  "checkpoints": 1,
+  "model_type": "llama",
+  "source": "http:tsnngw/CaReAQA",
+  "token": "LLAMA"
+ },
+ "chexagent": {
+  "checkpoints": 4,
+  "model_type": "phi",
+  "source": "aggregate",
+  "token": "PHI"
+ },
+ "codebharat": {
+  "checkpoints": 1,
+  "model_type": "llama",
+  "source": "http:Ravi5528/codebharat-100m",
+  "token": "LLAMA"
+ },
+ "cogpt2": {
+  "checkpoints": 2,
+  "model_type": "gpt2",
+  "source": "http:WilliamJQ/Co_gpt2_activate_adapters",
+  "token": "GPT2"
+ },
+ "custom_mpt": {
+  "checkpoints": 1,
+  "model_type": "mpt",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "custombiogpt": {
+  "checkpoints": 1,
+  "model_type": "biogpt",
+  "source": "aggregate",
+  "token": "GPT2"
+ },
+ "custommixtral": {
+  "checkpoints": 2,
+  "model_type": "mixtral",
+  "source": "aggregate",
+  "token": "MISTRAL"
+ },
+ "custommodel3": {
+  "checkpoints": 2,
+  "model_type": "gpt_neox",
+  "source": "aggregate",
+  "token": "GPTNEOX"
+ },
+ "dashqphi3": {
+  "checkpoints": 5,
+  "model_type": "phi3",
+  "source": "aggregate",
+  "token": "PHI"
+ },
+ "deepseekv2mobe": {
+  "checkpoints": 1,
+  "model_type": "deepseek_v2",
+  "source": "aggregate",
+  "token": "DEEPSEEK"
+ },
+ "deepseekv2sparsemobe": {
+  "checkpoints": 1,
+  "model_type": "deepseek_v2",
+  "source": "aggregate",
+  "token": "DEEPSEEK"
+ },
+ "deepseekv3forcausallmnextn": {
+  "checkpoints": 3,
+  "model_type": "deepseek_v3",
+  "source": "aggregate",
+  "token": "DEEPSEEK"
+ },
+ "denseformer": {
+  "checkpoints": 3,
+  "model_type": "llama",
+  "source": "http:gudleifrr/denseformer_746",
+  "token": "LLAMA"
+ },
+ "dflashlaguna": {
+  "checkpoints": 3,
+  "model_type": "laguna",
+  "source": "aggregate",
+  "token": "LAGUNA"
+ },
+ "dribble": {
+  "checkpoints": 2,
+  "model_type": "phi",
+  "source": "aggregate",
+  "token": "PHI"
+ },
+ "dribblellama": {
+  "checkpoints": 1,
+  "model_type": "llama",
+  "source": "http:awilliamson/dribble-llama",
+  "token": "LLAMA"
+ },
+ "duolaguna": {
+  "checkpoints": 4,
+  "model_type": "laguna",
+  "source": "aggregate",
+  "token": "LAGUNA"
+ },
+ "dusmistral": {
+  "checkpoints": 1,
+  "model_type": "mistral",
+  "source": "http:adalbertojunior/DUSMistral",
+  "token": "MISTRAL"
+ },
+ "edullm": {
+  "checkpoints": 7,
+  "model_type": "mixtral",
+  "source": "aggregate",
+  "token": "MISTRAL"
+ },
+ "efficientdlm": {
+  "checkpoints": 4,
+  "model_type": "qwen3",
+  "source": "http:nvidia/Efficient-DLM-4B",
+  "token": "QWEN3"
+ },
+ "exaonetd": {
+  "checkpoints": 1,
+  "model_type": "exaone",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "flashgptneox": {
+  "checkpoints": 2,
+  "model_type": "gpt_neox",
+  "source": "aggregate",
+  "token": "GPTNEOX"
+ },
+ "flaxgptj": {
+  "checkpoints": 1,
+  "model_type": "gptj",
+  "source": "aggregate",
+  "token": "GPTJ"
+ },
+ "forcausallm": {
+  "checkpoints": 3,
+  "model_type": "gemma4",
+  "source": "aggregate",
+  "token": "GEMMA"
+ },
+ "fsdpgptoss": {
+  "checkpoints": 1,
+  "model_type": "gpt_oss",
+  "source": "aggregate",
+  "token": "GPTOSS"
+ },
+ "gemmagain": {
+  "checkpoints": 1,
+  "model_type": "gemma3",
+  "source": "http:rpDungeon/gemmagain-trained-s1",
+  "token": "GEMMA"
+ },
+ "gfusionfordiffusionlm": {
+  "checkpoints": 3,
+  "model_type": "deepseek_v3",
+  "source": "aggregate",
+  "token": "DEEPSEEK"
+ },
+ "gistgptneo": {
+  "checkpoints": 2,
+  "model_type": "gpt_neo",
+  "source": "aggregate",
+  "token": "GPTNEO"
+ },
+ "glamm": {
+  "checkpoints": 3,
+  "model_type": "llava",
+  "source": "http:MBZUAI/GLaMM-GCG",
+  "token": "QWEN2VL"
+ },
+ "glus": {
+  "checkpoints": 2,
+  "model_type": "llava",
+  "source": "http:Swindl/GLUS-S",
+  "token": "QWEN2VL"
+ },
+ "gpt2forquestionanswering": {
+  "checkpoints": 1,
+  "model_type": "gpt2",
+  "source": "http:minkhantycc/GPT2forQuestionAnswering",
+  "token": "GPT2"
+ },
+ "gpt2forsequenceclassification": {
+  "checkpoints": 3,
+  "model_type": "gpt2",
+  "source": "http:ydshieh/tiny-random-GPT2ForSequenceClassification",
+  "token": "GPT2"
+ },
+ "gpt2lmandvaluehead": {
+  "checkpoints": 22,
+  "model_type": "gpt2",
+  "source": "aggregate",
+  "token": "GPT2"
+ },
+ "gptbigcodeforsequenceclassification": {
+  "checkpoints": 1,
+  "model_type": "gpt_bigcode",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "gretriever": {
+  "checkpoints": 3,
+  "model_type": "llama",
+  "source": "http:alfiannajih/g-retriever-resume-reviewer",
+  "token": "LLAMA"
+ },
+ "int8opt": {
+  "checkpoints": 7,
+  "model_type": "opt",
+  "source": "aggregate",
+  "token": "OPT"
+ },
+ "internlm2forreward": {
+  "checkpoints": 1,
+  "model_type": "internlm2",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "internlmxcomposer2": {
+  "checkpoints": 6,
+  "model_type": "internlm",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "interns2preview": {
+  "checkpoints": 3,
+  "model_type": "qwen3_5_moe",
+  "source": "aggregate",
+  "token": "QWEN35"
+ },
+ "kblamphi3": {
+  "checkpoints": 1,
+  "model_type": "phi3",
+  "source": "http:EmanuelBP/kblam_phi3_01",
+  "token": "PHI"
+ },
+ "layerwiseminicpm": {
+  "checkpoints": 3,
+  "model_type": "minicpm",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "leanllama": {
+  "checkpoints": 1,
+  "model_type": "llama",
+  "source": "http:miike-ai/LeanLlama-8B",
+  "token": "LLAMA"
+ },
+ "leanmixtral": {
+  "checkpoints": 1,
+  "model_type": "mixtral",
+  "source": "http:miike-ai/LeanMixtral-8x7B",
+  "token": "MISTRAL"
+ },
+ "lexadelta": {
+  "checkpoints": 1,
+  "model_type": "gpt_oss",
+  "source": "aggregate",
+  "token": "GPTOSS"
+ },
+ "lfm2bidirectionalformaskedlm": {
+  "checkpoints": 1,
+  "model_type": "lfm2",
+  "source": "aggregate",
+  "token": "LFM2"
+ },
+ "lightonocr": {
+  "checkpoints": 7,
+  "model_type": "mistral3",
+  "source": "aggregate",
+  "token": "MISTRAL"
+ },
+ "llamaforcausallmeagle3": {
+  "checkpoints": 66,
+  "model_type": "llama",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "llamaforsequenceclassification": {
+  "checkpoints": 5,
+  "model_type": "llama",
+  "source": "http:HuggingFaceH4/tiny-random-LlamaForSequenceClassification",
+  "token": "LLAMA"
+ },
+ "llavaqwen": {
+  "checkpoints": 32,
+  "model_type": "llava",
+  "source": "aggregate",
+  "token": "QWEN2VL"
+ },
+ "loragpt2": {
+  "checkpoints": 1,
+  "model_type": "gpt2",
+  "source": "http:Zuckerbird/LoRAgpt2-0.0",
+  "token": "GPT2"
+ },
+ "mahler60/prueba": {
+  "checkpoints": 1,
+  "model_type": "gpt_neox",
+  "source": "http:Mahler60/Prueba",
+  "token": "GPTNEOX"
+ },
+ "mamba2": {
+  "checkpoints": 16,
+  "model_type": "mamba2",
+  "source": "aggregate",
+  "token": "MAMBA"
+ },
+ "mambamodel": {
+  "checkpoints": 4,
+  "model_type": "mamba",
+  "source": "aggregate",
+  "token": "MAMBA"
+ },
+ "memllama": {
+  "checkpoints": 1,
+  "model_type": "llama",
+  "source": "http:memllm/memllama-7b-B1A-init",
+  "token": "LLAMA"
+ },
+ "meteormamba": {
+  "checkpoints": 1,
+  "model_type": "mamba",
+  "source": "aggregate",
+  "token": "MAMBA"
+ },
+ "mimoaudio": {
+  "checkpoints": 2,
+  "model_type": "qwen2",
+  "source": "http:XiaomiMiMo/MiMo-Audio-7B-Base",
+  "token": "QWEN2"
+ },
+ "miniphi3": {
+  "checkpoints": 1,
+  "model_type": "phi3",
+  "source": "aggregate",
+  "token": "PHI"
+ },
+ "mixformervlsequential": {
+  "checkpoints": 1,
+  "model_type": "mixformer-sequential",
+  "source": "aggregate",
+  "token": "PHI"
+ },
+ "mobillama": {
+  "checkpoints": 12,
+  "model_type": "llama",
+  "source": "http:MBZUAI/MobiLlama-05B",
+  "token": "LLAMA"
+ },
+ "monoformer": {
+  "checkpoints": 3,
+  "model_type": "llama",
+  "source": "http:MonoFormer/MonoFormer_ImageNet_256",
+  "token": "LLAMA"
+ },
+ "moyi": {
+  "checkpoints": 1,
+  "model_type": "deepseek",
+  "source": "aggregate",
+  "token": "QWEN2"
+ },
+ "multiheadgptneo": {
+  "checkpoints": 1,
+  "model_type": "gpt_neo",
+  "source": "aggregate",
+  "token": "GPTNEO"
+ },
+ "multimodalstarcoder2": {
+  "checkpoints": 2,
+  "model_type": "starcoder2",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "mutorgemma": {
+  "checkpoints": 3,
+  "model_type": "gemma",
+  "source": "aggregate",
+  "token": "GEMMA"
+ },
+ "mybaichuan": {
+  "checkpoints": 2,
+  "model_type": "baichuan",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "myqwen": {
+  "checkpoints": 1,
+  "model_type": "qwen",
+  "source": "aggregate",
+  "token": "QWEN2"
+ },
+ "myxverse": {
+  "checkpoints": 1,
+  "model_type": "xverse",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "notagen": {
+  "checkpoints": 41,
+  "model_type": "gpt2",
+  "source": "aggregate",
+  "token": "GPT2"
+ },
+ "olmo2forsequenceclassification": {
+  "checkpoints": 3,
+  "model_type": "olmo2",
+  "source": "aggregate",
+  "token": "OLMO"
+ },
+ "olmo3sink": {
+  "checkpoints": 1,
+  "model_type": "olmo3",
+  "source": "aggregate",
+  "token": "OLMO"
+ },
+ "olmomodel": {
+  "checkpoints": 10,
+  "model_type": "olmo",
+  "source": "aggregate",
+  "token": "OLMO"
+ },
+ "opt_prompttuned_for_sentimentanalysis": {
+  "checkpoints": 2,
+  "model_type": "opt",
+  "source": "aggregate",
+  "token": "OPT"
+ },
+ "pawqwen3": {
+  "checkpoints": 14,
+  "model_type": "qwen3",
+  "source": "aggregate",
+  "token": "QWEN3"
+ },
+ "phi3forsequenceclassification": {
+  "checkpoints": 1,
+  "model_type": "phi3",
+  "source": "http:bumblebee-testing/tiny-random-Phi3ForSequenceClassification",
+  "token": "PHI"
+ },
+ "poptorchpipelinedgpt2": {
+  "checkpoints": 20,
+  "model_type": "gpt2",
+  "source": "aggregate",
+  "token": "GPT2"
+ },
+ "poptorchpipelinedwhisper": {
+  "checkpoints": 1,
+  "model_type": "whisper",
+  "source": "aggregate",
+  "token": "WHISPER"
+ },
+ "qwen2forcausallmpostblocksteeringfixed": {
+  "checkpoints": 6,
+  "model_type": "qwen2",
+  "source": "aggregate",
+  "token": "QWEN2"
+ },
+ "qwen2forprocessreward": {
+  "checkpoints": 6,
+  "model_type": "qwen2",
+  "source": "aggregate",
+  "token": "QWEN2"
+ },
+ "qwen2forsequenceclassification": {
+  "checkpoints": 2,
+  "model_type": "qwen2",
+  "source": "http:qgallouedec/tiny-Qwen2ForSequenceClassification-2.5",
+  "token": "QWEN2"
+ },
+ "qwen2reasoning": {
+  "checkpoints": 14,
+  "model_type": "qwen2",
+  "source": "aggregate",
+  "token": "QWEN2"
+ },
+ "qwen2vlaudio": {
+  "checkpoints": 9,
+  "model_type": "qwen2_vl",
+  "source": "aggregate",
+  "token": "QWEN2VL"
+ },
+ "qwen2vlextended": {
+  "checkpoints": 1,
+  "model_type": "qwen2_vl",
+  "source": "aggregate",
+  "token": "QWEN2VL"
+ },
+ "qwen2vlforconditionalgenerationwithaudio": {
+  "checkpoints": 1,
+  "model_type": "qwen2_vl",
+  "source": "aggregate",
+  "token": "QWEN2VL"
+ },
+ "qwen3_5dllm": {
+  "checkpoints": 3,
+  "model_type": "qwen3_5",
+  "source": "aggregate",
+  "token": "QWEN35"
+ },
+ "qwen3forsequenceclassification": {
+  "checkpoints": 1,
+  "model_type": "qwen3",
+  "source": "http:trl-internal-testing/tiny-Qwen3ForSequenceClassification",
+  "token": "QWEN3"
+ },
+ "qwen3gated": {
+  "checkpoints": 1,
+  "model_type": "qwen3",
+  "source": "http:michal-stefanik/Qwen3-gated-0.6B",
+  "token": "QWEN3"
+ },
+ "qwen3mobe": {
+  "checkpoints": 3,
+  "model_type": "qwen3_moe",
+  "source": "aggregate",
+  "token": "QWEN3"
+ },
+ "qwen3sparsemobe": {
+  "checkpoints": 4,
+  "model_type": "qwen3_moe",
+  "source": "aggregate",
+  "token": "QWEN3"
+ },
+ "qwen3vlseg": {
+  "checkpoints": 1,
+  "model_type": "qwen3_vl",
+  "source": "aggregate",
+  "token": "QWEN3VL"
+ },
+ "ruqwen2": {
+  "checkpoints": 1,
+  "model_type": "qwen2",
+  "source": "http:FractalGPT/RuQwen2.5-3B-Instruct-AWQ",
+  "token": "QWEN2"
+ },
+ "serayuki": {
+  "checkpoints": 2,
+  "model_type": "llama",
+  "source": "http:SeraphyneLab/Serayuki-1B",
+  "token": "LLAMA"
+ },
+ "sewy3": {
+  "checkpoints": 3,
+  "model_type": "gemma",
+  "source": "aggregate",
+  "token": "GEMMA"
+ },
+ "smollm3model": {
+  "checkpoints": 1,
+  "model_type": "smollm3",
+  "source": "aggregate",
+  "token": "LLAMA"
+ },
+ "stablediffcoder": {
+  "checkpoints": 4,
+  "model_type": "llama",
+  "source": "http:ByteDance-Seed/Stable-DiffCoder-8B-Base",
+  "token": "LLAMA"
+ },
+ "streamvln": {
+  "checkpoints": 1,
+  "model_type": "llava",
+  "source": "http:mengwei0427/StreamVLN_Video_qwen_1_5_r2r_rxr_envdrop_scalevln",
+  "token": "QWEN2VL"
+ },
+ "symbolicgpt": {
+  "checkpoints": 1,
+  "model_type": "gpt2",
+  "source": "http:DataAnalyticsLab/SymbolicGPT-1Vars-30Points-1Ys",
+  "token": "GPT2"
+ },
+ "titansmactransformer": {
+  "checkpoints": 1,
+  "model_type": "llama",
+  "source": "http:himanshu-skid19/titans-mac-transformer",
+  "token": "LLAMA"
+ },
+ "trimkvphi3": {
+  "checkpoints": 1,
+  "model_type": "phi3",
+  "source": "http:ngocbh/TrimKV-Phi-3-mini-128k-instruct",
+  "token": "PHI"
+ },
+ "trimkvqwen3": {
+  "checkpoints": 4,
+  "model_type": "qwen3",
+  "source": "http:ngocbh/TrimKV-Qwen3-4B-Math",
+  "token": "QWEN3"
+ },
+ "vlclipgptneox": {
+  "checkpoints": 2,
+  "model_type": "gpt_neox",
+  "source": "aggregate",
+  "token": "GPTNEOX"
+ },
+ "whaleye": {
+  "checkpoints": 2,
+  "model_type": "deepseek_v32",
+  "source": "aggregate",
+  "token": "DEEPSEEK"
+ },
+ "xcuros": {
+  "checkpoints": 1,
+  "model_type": "qwen2",
+  "source": "http:XCurOS/XCurOS0.1-8B-Instruct",
+  "token": "QWEN2"
+ }
+}
