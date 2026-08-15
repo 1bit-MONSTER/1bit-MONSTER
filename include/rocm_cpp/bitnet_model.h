@@ -64,7 +64,8 @@ typedef enum {
     RCPP_ARCH_STEP1 = 30,   // Step1 (StepLaw / stepfun Step-Audio) — dense llama-layout, sqrt-ALiBi (no RoPE), num_attention_groups
     RCPP_ARCH_BLOOM = 31,    // Bloom — fused qkv, LayerNorm w/bias, sequential + post_attn_norm, gelu_new, LINEAR ALiBi, embed LN, tied lm_head
     RCPP_ARCH_LFM2 = 32,
-    RCPP_ARCH_NANOCHAT = 33,  // NanoChat — gpt2-skeleton: unweighted RMSNorm, relu^2 MLP, adjacent-pair RoPE, logit softcap    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
+    RCPP_ARCH_NANOCHAT = 33,
+    RCPP_ARCH_PICO = 34,     // PicoDecoderHF — llama-layout with adjacent-pair RoPE (view_as_complex)  // NanoChat — gpt2-skeleton: unweighted RMSNorm, relu^2 MLP, adjacent-pair RoPE, logit softcap    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
     RCPP_ARCH_NEMOTRONH = 33, // Nemotron-H — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid
     RCPP_ARCH_QWEN3NEXT = 34, // Qwen3-Next — GatedDeltaNet linear attention + full attn + MoE
     RCPP_ARCH_MINIMAXM2 = 35, // MiniMax-M2 — GQA + single flattened q/k RMSNorm + partial rope + sigmoid MoE
@@ -336,6 +337,10 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "whaleye") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v32
     if (strcmp(s, "xcuros") == 0) return RCPP_ARCH_QWEN2;  // qwen2
     if (strcmp(s, "nanochat") == 0) return RCPP_ARCH_NANOCHAT;  // NanoChatForCausalLM (verified vs modeling_nanochat.py 2026-08-15)
+    if (strcmp(s, "pico") == 0) return RCPP_ARCH_PICO;  // PicoDecoderHF (llama-layout + adjacent rope)
+    if (strcmp(s, "picodecoder") == 0) return RCPP_ARCH_PICO;  // PicoDecoderHF (llama-layout + adjacent rope)
+    if (strcmp(s, "picodecoderhf") == 0) return RCPP_ARCH_PICO;  // PicoDecoderHF (llama-layout + adjacent rope)
+    if (strcmp(s, "caca") == 0) return RCPP_ARCH_LLAMA;  // CacaForCausalLM (llama profile, rms+rope+GQA, verified 2026-08-15)
     // ── end census tail sweep ──
     if (strcmp(s, "openaigpt") == 0) return RCPP_ARCH_GPT2;  // openai-gpt (gpt2 layout, Conv1D)
     if (strcmp(s, "ctrl") == 0) return RCPP_ARCH_GPT2;  // CTRL (gpt2 layout, extra conditioning embed ignored)
