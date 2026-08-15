@@ -833,6 +833,26 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([8988, 192950, 5810]) on hf-tiny-v2/tiny-random-Cohere2MoeForCausalLM. New bespoke CPU backend src/cohere2moe_engine.cpp: PARALLEL block (residual + attn + mlp from the SAME normed input), mean-centered LayerNorm weight-only (bias-free, used when rms_norm_eps is null), GQA attention with RoPE ONLY on sliding_attention OR dense+prefix_dense_sliding_window_pattern==1 layers, dense gelu MLP then softmax-router MoE (expert_selection_fn=softmax, topk, norm_topk_prob /sum, per-expert gate/up/down), final model.norm LayerNorm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_cohere2moe.py <dir> <ids> 3"
+  },
+  {
+   "family": "exaone-moe",
+   "hf_arch_strings": [
+    "exaone_moe",
+    "exaonemoe"
+   ],
+   "mapping_target": "EXAONEMOE",
+   "quirk_flags": {
+    "attention": "gqa-qk-rmsnorm",
+    "rope": "sliding-only-when-window-set",
+    "moe": "sigmoid-router-group-limited-shared-experts-scaling",
+    "mlp": "dense-gelu-then-moe",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-ExaoneMoeForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_exaonemoe.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([111758, 24564, 23644]) on hf-tiny-v2/tiny-random-ExaoneMoeForCausalLM. New bespoke CPU backend src/exaonemoe_engine.cpp: GQA attention with per-head q/k RMSNorm ALWAYS applied (found & fixed 2026-08-16 \u2014 the module applies q/k norm unconditionally), rope on sliding layers, dense gelu MLP then group-limited sigmoid MoE (router + e_score_correction_bias, top2-per-group -> topk_group groups, topk within mask, norm_topk_prob /sum, routed_scaling_factor, per-expert gate/up/down + shared_experts), final model.norm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_exaonemoe.py <dir> <ids> 3"
   }
  ]
 }

@@ -143,6 +143,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"cohere2moe_cpu", "cpu_generic"},
                 "Cohere2Moe model — native parallel-GQA+dense/MoE CPU backend → generic CPU"};
     }
+    // ExaoneMoe (GQA + q/k RMSNorm + group-limited MoE + shared experts).
+    if (cfg.arch == RCPP_ARCH_EXAONEMOE) {
+        return {{"exaonemoe_cpu", "cpu_generic"},
+                "ExaoneMoe model — native GQA+q/k-RMSNorm+group-MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},
