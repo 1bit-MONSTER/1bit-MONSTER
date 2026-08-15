@@ -8,12 +8,14 @@
   "electra": 11,
   "marian": 76,
   "mbart": 140,
+  "morpht5auto": 32,
+  "morpht5concat": 32,
+  "morpht5sum": 32,
   "mt5": 362,
   "parlertts": 1587,
   "roberta": 141,
   "t5": 1005,
   "t5gemma": 36,
-  "t5with": 59,
   "umt5": 6,
   "xlmroberta": 34,
   "xlnet": 37
@@ -68,9 +70,9 @@
   "ZAMBA2": 11,
   "ZAYA": 22
  },
- "n_archs": 2138,
+ "n_archs": 2136,
  "no_arch": 77210,
  "registry_covered": 312798,
  "total": 399220,
- "with_arch": 317978
+ "with_arch": 317941
 }

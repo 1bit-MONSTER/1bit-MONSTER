@@ -29,10 +29,11 @@ STRIP_SUFFIXES = ("forcausallm", "lmheadmodel", "model",
 # cross-attention or TTS path. Excluded from the with_arch denominator.
 NON_TEXT_GEN = {
     "parlertts",      # TTS (Parler-TTS)
-    "t5", "mt5", "t5with", "umt5",        # encoder-decoder
+    "t5", "mt5", "umt5",              # encoder-decoder
     "bart", "mbart", "marian", "longformerbart",  # encoder-decoder
     "t5gemma",                            # T5+Gemma hybrid (encoder-decoder)
     "bert", "roberta", "xlmroberta", "xlnet",  # masked-LM / encoder heads
+    "morpht5auto", "morpht5concat", "morpht5sum",  # MorphT5 (encoder-decoder)
     "bertformaskedlm", "distilbertforsequenceclassification", "electra",
     "camembert",  # encoder-only classes (not causal decoders)
 }
