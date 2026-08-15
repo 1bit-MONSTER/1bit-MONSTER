@@ -29,6 +29,28 @@
 
 ---
 
+## UPDATE 34 (2026-08-15): FLM IS FULLY GONE — BYTE-IDENTICAL STREAMS, TRUE BATCH, 2× ON THE 35B
+
+**The last FLM artifact is dead. The open instruction generator now emits byte-identical streams to FLM's proprietary dumps (verified with `cmp` on all 4 ops), the open aiecc toolchain builds the xclbins (microkernel compiled with peano clang — no xchesscc), and true batch decode replaces the invalid fake-batch that had inflated our "-B 8" numbers. Validated head-to-head: we match FLM exactly at M=128 and beat it 11-15% with M=32 kernels on the 0.6B, and 2× on the 35B-A3B.**
+
+### The FLM-free zone, completed in one day
+
+1. **Instruction streams: byte-identical.** Reverse-engineered the complete FLM stream spec from the dumps (M=128 kernel = 4×32-row slices; N in 1024-tiles, K in 64-chunks; per-block bd rotation; the 12R-TCT sync pattern; all offsets/strides/values as formulas). The reworked `gemm_generate_sequence_i8` emits identical bytes — the old open generator was 230× slower (per-tile RTP config).
+2. **Xclbins: open-built.** The v27 MLIR-AIE flow + a peano-clang-compiled microkernel (`-Di8_i32_ONLY`, the repo's `.o` was gitignored/missing) produce xclbin+insts pairs; M=32 decode-optimized kernels beat FLM.
+3. **True batch decode.** The "-B 8 = 7.4 tok/s" claim was a fake batch (issue #111 — top-K candidates as sequential tokens, non-causal). Rewrote it: BS=8 independent sequences, per-sequence KV caches, causal attention, per-seq LM head, NPU am=B. Tokens verified identical to BS=1.
+4. **35B 2×.** The CPU MoE FFN dequantized experts fresh per token (~33M floats/layer/token). A per-layer dequant LRU cache (16 slots) cut the FFN 107.5→61.6 ms/layer; with BS=8 grouped expert execution: 2900→1450 ms/tok, tokens identical.
+
+### Validated numbers (Qwen3-0.6B, universal engine)
+
+| Config | ms/tok |
+|---|---|
+| FLM M=128 (BS=1) | 255-262 |
+| Open M=32 (BS=1) | 230-233 (~11% better) |
+| Open M=32 (BS=8) | 235-237 |
+| 35B-A3B BS=8 + cache | 1450 (vs 2900 = 2×) |
+
+Also shipped: 1BP v4 dedup (shared Zamba blocks stored once, alias index entries), IQ1_S/IQ1_M block-size fixes (206/230 → 50/56 — every IQ1 file offset was wrong), spec-decode draft-vocab overflow fix (was segfaulting), fused-engine port to the validated execution model (fixing a shared-weight-BO bug), symlink model cache.
+
 ## UPDATE 33 (2026-08-10): NPU FIRMWARE RE VIA RAW IOCTLS, DRIVER REGRESSION FIXED, JARVIS SHIPS
 
 **Raw ioctls now drive the NPU directly and produce bit-exact GEMM output — the first compute outside FLM's own stack. A driver regression that made the 35B MoE model spit garbage was root-caused to amdxdna 0.16.0 and fixed by reverting to the in-tree 0.7.0 build. JARVIS shipped NPU-FLM speech-to-text, SSE streaming, and a loopback-trusted web UI (PR #1576), plus a deadlock fix that had been hanging every chat request. eeg-medical was archived — its foundation-model retraining was redundant with ZUNA1.1, which already trains on the same TUH-EEG corpus.**
