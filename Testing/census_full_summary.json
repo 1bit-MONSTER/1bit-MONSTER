@@ -30,7 +30,7 @@
   "DEEPSEEK": 800,
   "DEEPSEEK_V4": 522,
   "DYNAMICALIBI": 118,
-  "ERNIE45MOE": 414,
+  "ERNIE45MOE": 419,
   "EXAONEMOE": 22,
   "FALCON": 1222,
   "FALCONH1": 156,
@@ -74,7 +74,7 @@
  },
  "n_archs": 2136,
  "no_arch": 77210,
- "registry_covered": 312863,
+ "registry_covered": 312868,
  "total": 399220,
  "with_arch": 317941
 }

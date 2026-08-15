@@ -37,7 +37,9 @@ struct QnLayer {
     size_t norm = SIZE_MAX, norm_post = SIZE_MAX;
     // linear_attention
     size_t in_qkvz = SIZE_MAX, in_ba = SIZE_MAX, conv1d_w = SIZE_MAX;
+    size_t in_qkv = SIZE_MAX, in_z = SIZE_MAX, in_a = SIZE_MAX, in_b = SIZE_MAX;  // qwen3.5 layout
     size_t dt_bias = SIZE_MAX, A_log = SIZE_MAX, norm_m = SIZE_MAX, out_proj = SIZE_MAX;
+    bool q35 = false;
     // full_attention
     size_t q_proj = SIZE_MAX, k_proj = SIZE_MAX, v_proj = SIZE_MAX, o_proj = SIZE_MAX;
     size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
@@ -215,6 +217,7 @@ private:
     bool load_weights() {
         lm_head_w = store_t("lm_head.weight", V, H);
         embed_w = store_t("model.embed_tokens.weight", V, H);
+        if (lm_head_w == SIZE_MAX) lm_head_w = embed_w;  // tied embeddings
         final_norm = store_t("model.norm.weight", H);
         for (int l = 0; l < L; l++) {
             auto& ly = layers[l];
@@ -224,8 +227,17 @@ private:
             snprintf(b, sizeof b, "model.layers.%d.", l);
             std::string pfx = b;
             if (ly.kind == 'l') {
+                // qwen3next fused layout: in_proj_qkvz [KD*2+VD*2] + in_proj_ba [NV*2]
                 ly.in_qkvz = store_t(pfx + "linear_attn.in_proj_qkvz.weight", KD * 2 + VD * 2, H);
                 ly.in_ba = store_t(pfx + "linear_attn.in_proj_ba.weight", NV * 2, H);
+                if (ly.in_qkvz == SIZE_MAX || ly.in_ba == SIZE_MAX) {
+                    // qwen3.5 layout: in_proj_qkv [KD*2+VD] + in_proj_z [VD] + a/b [NV]
+                    ly.q35 = true;
+                    ly.in_qkv = store_t(pfx + "linear_attn.in_proj_qkv.weight", KD * 2 + VD, H);
+                    ly.in_z = store_t(pfx + "linear_attn.in_proj_z.weight", VD, H);
+                    ly.in_a = store_t(pfx + "linear_attn.in_proj_a.weight", NV, H);
+                    ly.in_b = store_t(pfx + "linear_attn.in_proj_b.weight", NV, H);
+                }
                 ly.conv1d_w = store_t(pfx + "linear_attn.conv1d.weight", conv_dim * K);
                 ly.dt_bias = store_t(pfx + "linear_attn.dt_bias", NV);
                 ly.A_log = store_t(pfx + "linear_attn.A_log", NV);
@@ -290,20 +302,32 @@ private:
     void linear_attn(const float* xn, const QnLayer& ly, int l, float* out) {
         int proj_qkvz = KD * 2 + VD * 2;
         std::vector<float> qkvz(proj_qkvz), ba(NV * 2);
-        mm(ly.in_qkvz, xn, H, proj_qkvz, qkvz.data());
-        mm(ly.in_ba, xn, H, NV * 2, ba.data());
-        int rep = NV / NK;
-        int vper = rep * VHD;
-        std::vector<float> q(KHD * NK), k2(KHD * NK), v(VD), z(VD), b(NV), a(NV);
-        for (int h = 0; h < NK; h++) {
-            const float* row = qkvz.data() + (size_t)h * (2 * KHD + 2 * vper);
-            std::memcpy(q.data() + (size_t)h * KHD, row, KHD * sizeof(float));
-            std::memcpy(k2.data() + (size_t)h * KHD, row + KHD, KHD * sizeof(float));
-            std::memcpy(v.data() + (size_t)h * vper, row + 2 * KHD, (size_t)vper * sizeof(float));
-            std::memcpy(z.data() + (size_t)h * vper, row + 2 * KHD + vper, (size_t)vper * sizeof(float));
-            const float* brow = ba.data() + (size_t)h * 2 * rep;
-            std::memcpy(b.data() + (size_t)h * rep, brow, (size_t)rep * sizeof(float));
-            std::memcpy(a.data() + (size_t)h * rep, brow + rep, (size_t)rep * sizeof(float));
+        std::vector<float> q(KD), k2(KD), v(VD), z(VD), b(NV), a(NV);
+        if (ly.q35) {
+            // qwen3.5: in_proj_qkv [q(KD), k(KD), v(VD)] contiguous + z + a/b
+            std::vector<float> qkv(KD * 2 + VD);
+            mm(ly.in_qkv, xn, H, KD * 2 + VD, qkv.data());
+            std::memcpy(q.data(), qkv.data(), KD * sizeof(float));
+            std::memcpy(k2.data(), qkv.data() + KD, KD * sizeof(float));
+            std::memcpy(v.data(), qkv.data() + 2 * KD, VD * sizeof(float));
+            mm(ly.in_z, xn, H, VD, z.data());
+            mm(ly.in_a, xn, H, NV, a.data());
+            mm(ly.in_b, xn, H, NV, b.data());
+        } else {
+            mm(ly.in_qkvz, xn, H, proj_qkvz, qkvz.data());
+            mm(ly.in_ba, xn, H, NV * 2, ba.data());
+            int rep = NV / NK;
+            int vper = rep * VHD;
+            for (int h = 0; h < NK; h++) {
+                const float* row = qkvz.data() + (size_t)h * (2 * KHD + 2 * vper);
+                std::memcpy(q.data() + (size_t)h * KHD, row, KHD * sizeof(float));
+                std::memcpy(k2.data() + (size_t)h * KHD, row + KHD, KHD * sizeof(float));
+                std::memcpy(v.data() + (size_t)h * vper, row + 2 * KHD, (size_t)vper * sizeof(float));
+                std::memcpy(z.data() + (size_t)h * vper, row + 2 * KHD + vper, (size_t)vper * sizeof(float));
+                const float* brow = ba.data() + (size_t)h * 2 * rep;
+                std::memcpy(b.data() + (size_t)h * rep, brow, (size_t)rep * sizeof(float));
+                std::memcpy(a.data() + (size_t)h * rep, brow + rep, (size_t)rep * sizeof(float));
+            }
         }
         std::vector<float> mixed(conv_dim);
         std::memcpy(mixed.data(), q.data(), KD * sizeof(float));
@@ -325,6 +349,7 @@ private:
                 cst[(size_t)c * (K - 1) + (K - 2)] = mixed[c];
             }
         }
+        int rep = NV / NK;
         std::vector<float> qh(NK * KHD), kh(NK * KHD), vh(VD);
         std::memcpy(qh.data(), conv_out.data(), KD * sizeof(float));
         std::memcpy(kh.data(), conv_out.data() + KD, KD * sizeof(float));

@@ -910,6 +910,24 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([10510, 12574, 11705]) on hf-tiny-v2/tiny-random-JetMoEForCausalLM. New bespoke CPU backend src/jetmoe_engine.cpp: Mixture of Attention (topk softmax router -> per-expert input_linear query projections [kv_channels*nkv], shared kv_proj, rope on q/k, attention with kv REPEATED top_k (repeat not interleave \u2014 groups forced 1), per-expert output_linear reduce weighted by gates + bias) + MoE FFN (topk softmax router, per-expert input_linear [2*FF] silu gate, output_linear, gates + bias). head_dim = kv_channels (NOT hidden/NH). Final model.norm; UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_jetmoe.py <dir> <ids> 3"
+  },
+  {
+   "family": "qwen3.5-moe-text",
+   "hf_arch_strings": [
+    "qwen3_5_moe_text"
+   ],
+   "mapping_target": "QWEN3NEXT",
+   "quirk_flags": {
+    "linear_attn": "gated-deltanet",
+    "weight_layout": "separate-in-proj-qkv-z-a-b",
+    "moe": "softmax-router-shared-expert-gate",
+    "tied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-Qwen3_5MoeForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_qwen3next.py, extended)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): qwen3next engine (extended for qwen3.5 weight layout) 3-token chain == torch EXACTLY ([5, 5, 5]) on hf-tiny-v2/tiny-random-Qwen3_5MoeForCausalLM (qwen3_5_moe_text). Qwen3.5-MoE text decoder is the SAME GatedDeltaNet + full-attn + MoE hybrid as Qwen3-Next \u2014 mapped to RCPP_ARCH_QWEN3NEXT and extended src/qwen3next_engine.cpp to load the qwen3.5 separate in_proj_qkv/in_proj_z/in_proj_a/in_proj_b layout (vs the fused in_proj_qkvz/in_proj_ba), plus tied-embedding lm_head fallback. Original qwen3next regression: [45374, 151671, 66719] == torch exact. Gate: engine 3-token chain == torch"
   }
  ]
 }

@@ -530,7 +530,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     
     if (strcmp(s, "nemotronh") == 0) return RCPP_ARCH_NEMOTRONH; // NemotronHForCausalLM
     if (strcmp(s, "nemotron_h") == 0) return RCPP_ARCH_NEMOTRONH; // HF model_type
-    if (strcmp(s, "qwen3next") == 0) return RCPP_ARCH_QWEN3NEXT;  // Qwen3NextForCausalLM
+    if (strcmp(s, "qwen3next") == 0) return RCPP_ARCH_QWEN3NEXT;
+    if (strcmp(s, "qwen3_5_moe_text") == 0) return RCPP_ARCH_QWEN3NEXT;  // Qwen3.5-MoE text decoder = GatedDeltaNet  // Qwen3NextForCausalLM
     if (strcmp(s, "qwen3_next") == 0) return RCPP_ARCH_QWEN3NEXT;  // HF model_type
     if (strcmp(s, "minimaxm2") == 0) return RCPP_ARCH_MINIMAXM2;   // MiniMaxM2ForCausalLM
     if (strcmp(s, "minimax_m2") == 0) return RCPP_ARCH_MINIMAXM2;  // HF model_type
