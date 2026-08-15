@@ -80,6 +80,7 @@ typedef enum {
     RCPP_ARCH_MELLUM = 44,  // Mellum — GQA + q/k RMSNorm + per-layer-type rope + dense/MoE
     RCPP_ARCH_PHIMOE = 45,  // PhiMoE — GQA + LayerNorm + sparsemixer MoE
     RCPP_ARCH_MINIMAX = 46, // MiniMax — lightning linear attn + GQA + MoE
+    RCPP_ARCH_COHERE2MOE = 47, // Cohere2Moe — parallel GQA + dense/MoE + mean-centered LN
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -488,6 +489,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "mellum") == 0) return RCPP_ARCH_MELLUM;                               // MellumForCausalLM
     if (strcmp(s, "phimoe") == 0) return RCPP_ARCH_PHIMOE;                               // PhimoeForCausalLM
     if (strcmp(s, "minimax") == 0) return RCPP_ARCH_MINIMAX;                             // MiniMaxForCausalLM
+    if (strcmp(s, "cohere2_moe") == 0) return RCPP_ARCH_COHERE2MOE;                       // Cohere2MoeForCausalLM
+    if (strcmp(s, "cohere2moe") == 0) return RCPP_ARCH_COHERE2MOE;                        // class name
     // NOTE: rwkv5/rwkv6/rwkv7 use different time-mixing recurrences and
     // must NOT map here — they stay UNKNOWN and refuse loudly.
     // ── Moonshot Kimi family ──

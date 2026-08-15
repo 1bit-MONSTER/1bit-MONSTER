@@ -534,6 +534,26 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 2cg. Cohere2Moe CPU — parallel GQA + dense/MoE + mean-centered LN.
+    {
+        BackendInfo info;
+        info.id = "cohere2moe_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "Cohere2Moe (parallel GQA+dense/MoE) CPU";
+        info.priority = tier_priority(info.tier) + 43;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Cohere2Moe CPU", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
     // 2d. Laguna — specialized backend for arch=6 (.1bp) MoE models with
     // sigmoid-routed experts + hybrid SWA/global attention. Loads .1bp
     // containers directly via OnebpModel (src/backend_laguna.cpp). model_router.cpp
@@ -1833,6 +1853,15 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                 if (!b) b = try_load_backend("libminimax_backend.so", "create_minimax_backend");
                 if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_minimax_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
+            // Cohere2Moe backend (parallel GQA + dense/MoE + mean-centered LN)
+            if (info.id == "cohere2moe_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_cohere2moe_backend");
+                if (!b) b = try_load_backend("libcohere2moe_backend.so", "create_cohere2moe_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_cohere2moe_backend");
                         if (fn) b = fn(); } }
                 return b;
             }

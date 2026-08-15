@@ -812,6 +812,27 @@
    "status": "validated",
    "tier": "numpy-exact",
    "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([144314, 21548, 140145]) on hf-tiny-v2/tiny-random-MiniMaxForCausalLM. New bespoke CPU backend src/minimax_engine.cpp: per-layer layer_types dispatch \u2014 lightning_attention (act(qkv_proj)->q/k/v, per-head [HD,HD] state update state=exp(-slope_rate)*state + k^T v (kv[h,o,d]=k[h,o]*v[h,d] \u2014 transposed outer, found 2026-08-16), out=q@state, RMSNorm eps 1e-6, sigmoid output_gate, out_proj) vs full_attention (GQA+rope), residual = NORMED input with alpha/beta blend (NOT the pre-norm hidden), softmax-router MoE (topk, /sum, per-expert w1/w3->gelu->w2), final model.norm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_minimax.py <dir> <ids> 3"
+  },
+  {
+   "family": "cohere2-moe",
+   "hf_arch_strings": [
+    "cohere2_moe",
+    "cohere2moe"
+   ],
+   "mapping_target": "COHERE2MOE",
+   "quirk_flags": {
+    "parallel_attn_ffn": true,
+    "norm": "mean-centered-layernorm-weight-only",
+    "rope": "sliding-or-forced-only",
+    "moe": "softmax-router-norm-topk",
+    "mlp": "dense-gelu-then-moe",
+    "untied_lm_head": true
+   },
+   "e2e_model": "hf-tiny-v2/tiny-random-Cohere2MoeForCausalLM",
+   "oracle": "numpy ref (Testing/e2e_numpy_ref_cohere2moe.py)",
+   "status": "validated",
+   "tier": "numpy-exact",
+   "result": "VALIDATED 2026-08-16 (numpy-exact): engine 3-token chain == numpy ref EXACTLY == torch EXACTLY ([8988, 192950, 5810]) on hf-tiny-v2/tiny-random-Cohere2MoeForCausalLM. New bespoke CPU backend src/cohere2moe_engine.cpp: PARALLEL block (residual + attn + mlp from the SAME normed input), mean-centered LayerNorm weight-only (bias-free, used when rms_norm_eps is null), GQA attention with RoPE ONLY on sliding_attention OR dense+prefix_dense_sliding_window_pattern==1 layers, dense gelu MLP then softmax-router MoE (expert_selection_fn=softmax, topk, norm_topk_prob /sum, per-expert gate/up/down), final model.norm LayerNorm, UNTIED lm_head. Gate: engine 3-token chain == python3 Testing/e2e_numpy_ref_cohere2moe.py <dir> <ids> 3"
   }
  ]
 }

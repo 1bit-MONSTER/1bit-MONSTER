@@ -138,6 +138,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"minimax_cpu", "cpu_generic"},
                 "MiniMax model — native lightning-attn+GQA+MoE CPU backend → generic CPU"};
     }
+    // Cohere2Moe (parallel GQA + dense/MoE + mean-centered LN).
+    if (cfg.arch == RCPP_ARCH_COHERE2MOE) {
+        return {{"cohere2moe_cpu", "cpu_generic"},
+                "Cohere2Moe model — native parallel-GQA+dense/MoE CPU backend → generic CPU"};
+    }
     // MiniMax-M2 (GQA + flattened q/k RMSNorm + partial rope + sigmoid MoE).
     if (cfg.arch == RCPP_ARCH_MINIMAXM2) {
         return {{"minimaxm2_cpu", "cpu_generic"},

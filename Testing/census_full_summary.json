@@ -24,6 +24,7 @@
   "BLOOM": 1175,
   "CODEGEN": 386,
   "COHERE2": 180,
+  "COHERE2MOE": 25,
   "DEEPSEEK": 800,
   "DEEPSEEK_V4": 522,
   "DYNAMICALIBI": 118,
@@ -68,7 +69,7 @@
  },
  "n_archs": 2138,
  "no_arch": 77210,
- "registry_covered": 312524,
+ "registry_covered": 312549,
  "total": 399220,
  "with_arch": 317978
 }
