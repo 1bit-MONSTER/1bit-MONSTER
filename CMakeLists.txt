@@ -387,22 +387,7 @@ set(RCPP_SOURCES
     src/zamba2_engine.cpp
     src/zamba2_engine_hip.hip
     src/nemotron_h_engine.cpp
-    src/qwen3next_engine.cpp
-    src/minimaxm2_engine.cpp
-    src/falconh1_engine.cpp
-    src/rwkv_engine.cpp
-    src/granitemoehybrid_engine.cpp
-    src/lfm2moe_engine.cpp
-    src/hyv3_engine.cpp
-    src/afmoe_engine.cpp
-    src/ernie45moe_engine.cpp
-    src/mellum_engine.cpp
-    src/phimoe_engine.cpp
-    src/minimax_engine.cpp
-    src/cohere2moe_engine.cpp
-    src/exaonemoe_engine.cpp
-    src/falconmamba_engine.cpp
-    src/jetmoe_engine.cpp)
+    src/safetensors_reader.cpp)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()

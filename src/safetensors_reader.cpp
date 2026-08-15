@@ -1,7 +1,6 @@
 // safetensors_reader.cpp — method bodies moved out of include/safetensors_reader.h
 // to avoid recompilation cascades (issue #375).
 #include "safetensors_reader.h"
-#include "rocm_cpp/bitnet_model.h"  // rcpp_arch_from_string (model_type fallback)
 #include <cctype>
 #include <climits>
 #include <cstdio>
@@ -143,26 +142,6 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
                 }
             }
             cfg.architecture = low;
-            // model_type fallback (mirrors census_coverage.py): fine-tune
-            // classes are arbitrary renames; the config's model_type is the
-            // declared layout family. Try as-is, then underscore/dash-
-            // stripped (qwen2_vl -> qwen2vl). 2026-08-15.
-            if (rcpp_arch_from_string(low.c_str()) == RCPP_ARCH_UNKNOWN) {
-                std::string mt;
-                if (json_find_string(config_text, "model_type", mt)) {
-                    for (auto& c : mt) c = (char)tolower((unsigned char)c);
-                    if (rcpp_arch_from_string(mt.c_str()) != RCPP_ARCH_UNKNOWN) {
-                        cfg.architecture = mt;
-                    } else {
-                        std::string n;
-                        n.reserve(mt.size());
-                        for (char c : mt)
-                            if (c != '_' && c != '-') n += c;
-                        if (rcpp_arch_from_string(n.c_str()) != RCPP_ARCH_UNKNOWN)
-                            cfg.architecture = n;
-                    }
-                }
-            }
         }
         int iv;
         if (json_find_int(config_text, "hidden_size", iv)) cfg.hidden = cfg.hidden_size = iv;
@@ -230,22 +209,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
             int sw = 0;
             if (json_find_int(config_text, "sliding_window", sw)) cfg.sliding_window = sw;
         }
-        // Generic YARN parsing (rope_type: "yarn" — e.g. Ministral3, Llama-4):
-        // theta/factor/beta_fast/beta_slow/original_max_position_embeddings
-        // from rope_parameters; attention scaling 0.1*ln(factor)+1 (mscale 1).
         float fv;
-        if (!cfg.rope_yarn && config_text.find("\"yarn\"") != std::string::npos &&
-            (config_text.find("rope_type") != std::string::npos)) {
-            cfg.rope_yarn = true;
-            cfg.yarn_factor = 32.0f; cfg.yarn_beta_fast = 32.0f;
-            cfg.yarn_beta_slow = 1.0f; cfg.yarn_orig_max = 16384.0f;
-            if (json_find_float(config_text, "factor", fv) && fv > 0) cfg.yarn_factor = fv;
-            if (json_find_float(config_text, "beta_fast", fv) && fv > 0) cfg.yarn_beta_fast = fv;
-            if (json_find_float(config_text, "beta_slow", fv) && fv > 0) cfg.yarn_beta_slow = fv;
-            if (json_find_float(config_text, "original_max_position_embeddings", fv) && fv > 0)
-                cfg.yarn_orig_max = fv;
-            cfg.rope_attn_scaling = 0.1f * logf(cfg.yarn_factor) + 1.0f;
-        }
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
         else if (json_find_float(config_text, "rotary_emb_base", fv)) cfg.rope_theta = fv;  // GPT-NeoX
         if (json_find_float(config_text, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;

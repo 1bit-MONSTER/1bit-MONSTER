@@ -712,19 +712,6 @@ struct GenericBackend : Backend {
             cfg.embed_ln = true;
             cfg.rms_norm_eps = 1e-5f;
         }
-        // Cohere2 (CohereForAI): PARALLEL attn+FFN (both from the SAME
-        // input_layernorm output, added to the residual together — falcon/
-        // codegen convention), mean-centered LayerNorm weight-only (no bias),
-        // ADJACENT-pair interleaved rope (repeat_interleave freqs + ::2
-        // rotate_half — matches the engine's rope_adjacent), GQA, gated
-        // SwiGLU MLP, sliding-window attention on sliding_attention layers,
-        // tied lm_head. Verified vs modeling_cohere2.py 5.14 (corr 1.0).
-        if (cfg.arch == RCPP_ARCH_COHERE2) {
-            cfg.norm_is_layernorm = true;
-            cfg.parallel_attn_ffn = true;
-            cfg.adjacent_rope = true;
-            cfg.rms_norm_eps = 1e-5f;
-        }
 
         if (!r.get_tensor_f32("model.embed_tokens.weight", embed) &&
             !r.get_tensor_f32("token_embd.weight", embed) &&
@@ -2474,7 +2461,6 @@ struct GenericBackend : Backend {
                     for (int i = 0; i < H; i++) sd += fabs(x2[i]);
                     fprintf(stderr, "[cpu] L%d ffn gate mean|.|=%g down mean|.|=%g\n", il, sg / FF, sd / H);
                 }
-
                 // Residual — same scale_depth/residual_multiplier fix as the
                 // no-gate path (gated dense FFN, 2026-08-14).
                 if (cfg.residual_multiplier != 1.0f)

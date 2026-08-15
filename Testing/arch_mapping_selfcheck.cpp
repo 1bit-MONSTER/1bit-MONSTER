@@ -143,32 +143,11 @@ int main() {
     check("glm4moelite", RCPP_ARCH_LLAMA, "glm4moelite (GLM-4-MoE-Lite)");
     check("nemotronh", RCPP_ARCH_NEMOTRONH, "nemotronh (Nemotron-H)");
     check("nemotron_h", RCPP_ARCH_NEMOTRONH, "model_type nemotron_h");
-    check("qwen3next", RCPP_ARCH_QWEN3NEXT, "qwen3next (Qwen3-Next)");
-    check("qwen3_next", RCPP_ARCH_QWEN3NEXT, "model_type qwen3_next");
-    check("minimaxm2", RCPP_ARCH_MINIMAXM2, "minimaxm2 (MiniMax-M2)");
-    check("minimax_m2", RCPP_ARCH_MINIMAXM2, "model_type minimax_m2");
-    check("cohere2", RCPP_ARCH_COHERE2, "cohere2 (Cohere2)");
-    check("cohere2_model", RCPP_ARCH_COHERE2, "model_type cohere2_model");
-    check("falconh1", RCPP_ARCH_FALCONH1, "falconh1 (Falcon-H1)");
-    check("falcon_h1", RCPP_ARCH_FALCONH1, "model_type falcon_h1");
-    check("rwkv", RCPP_ARCH_RWKV, "rwkv (RWKV-4)");
-    check("granitemoehybrid", RCPP_ARCH_GRANITEMOEHYBRID, "granitemoehybrid (GraniteMoeHybrid)");
-    check("lfm2_moe", RCPP_ARCH_LFM2MOE, "lfm2_moe (LFM2-MoE)");
-    check("hy_v3", RCPP_ARCH_HYV3, "hy_v3 (HY-V3)");
-    check("afmoe", RCPP_ARCH_AFMOE, "afmoe (AfMoE)");
-    check("ernie4_5_moe", RCPP_ARCH_ERNIE45MOE, "ernie4_5_moe (Ernie4.5-MoE)");
-    check("mellum", RCPP_ARCH_MELLUM, "mellum (Mellum)");
-    check("phimoe", RCPP_ARCH_PHIMOE, "phimoe (PhiMoE)");
-    check("minimax", RCPP_ARCH_MINIMAX, "minimax (MiniMax)");
-    check("cohere2_moe", RCPP_ARCH_COHERE2MOE, "cohere2_moe (Cohere2Moe)");
-    check("exaone_moe", RCPP_ARCH_EXAONEMOE, "exaone_moe (ExaoneMoe)");
-    check("falcon_mamba", RCPP_ARCH_FALCONMAMBA, "falcon_mamba (FalconMamba)");
-    check("jetmoe", RCPP_ARCH_JETMOE, "jetmoe (JetMoE)");
     check("fp8_qwen3", RCPP_ARCH_QWEN3, "model_type fp8_qwen3 (FP8 wrapper)");
     check("fp8_llama", RCPP_ARCH_LLAMA, "model_type fp8_llama");
     check("bit_llama", RCPP_ARCH_LLAMA, "model_type bit_llama");
 
-                                        // ── census tail sweep checks ──
+    // ── census tail sweep checks ──
     check("adavocabgemma", RCPP_ARCH_GEMMA, "adavocabgemma");
     check("aicraftar-tharo.g-conditionalgeneration", RCPP_ARCH_QWEN2VL, "aicraftar-tharo.g-conditionalgeneration");
     check("antihal", RCPP_ARCH_GEMMA, "antihal");
@@ -180,7 +159,6 @@ int main() {
     check("chexagent", RCPP_ARCH_PHI, "chexagent");
     check("codebharat", RCPP_ARCH_LLAMA, "codebharat");
     check("cogpt2", RCPP_ARCH_GPT2, "cogpt2");
-    check("craneai", RCPP_ARCH_GEMMA, "craneai");
     check("custom_mpt", RCPP_ARCH_LLAMA, "custom_mpt");
     check("custombiogpt", RCPP_ARCH_GPT2, "custombiogpt");
     check("custommixtral", RCPP_ARCH_MISTRAL, "custommixtral");
@@ -202,7 +180,6 @@ int main() {
     check("flaxgptj", RCPP_ARCH_GPTJ, "flaxgptj");
     check("forcausallm", RCPP_ARCH_GEMMA, "forcausallm");
     check("fsdpgptoss", RCPP_ARCH_GPTOSS, "fsdpgptoss");
-    check("gemma4text", RCPP_ARCH_GEMMA, "gemma4text");
     check("gemmagain", RCPP_ARCH_GEMMA, "gemmagain");
     check("gfusionfordiffusionlm", RCPP_ARCH_DEEPSEEK, "gfusionfordiffusionlm");
     check("gistgptneo", RCPP_ARCH_GPTNEO, "gistgptneo");
@@ -218,7 +195,6 @@ int main() {
     check("internlmxcomposer2", RCPP_ARCH_LLAMA, "internlmxcomposer2");
     check("interns2preview", RCPP_ARCH_QWEN35, "interns2preview");
     check("kblamphi3", RCPP_ARCH_PHI, "kblamphi3");
-    check("kimik2", RCPP_ARCH_QWEN35, "kimik2");
     check("layerwiseminicpm", RCPP_ARCH_LLAMA, "layerwiseminicpm");
     check("leanllama", RCPP_ARCH_LLAMA, "leanllama");
     check("leanmixtral", RCPP_ARCH_MISTRAL, "leanmixtral");
@@ -246,7 +222,6 @@ int main() {
     check("mybaichuan", RCPP_ARCH_LLAMA, "mybaichuan");
     check("myqwen", RCPP_ARCH_QWEN2, "myqwen");
     check("myxverse", RCPP_ARCH_LLAMA, "myxverse");
-    check("nemotronhaugmented", RCPP_ARCH_NEMOTRONH, "nemotronhaugmented");
     check("notagen", RCPP_ARCH_GPT2, "notagen");
     check("olmo2forsequenceclassification", RCPP_ARCH_OLMO, "olmo2forsequenceclassification");
     check("olmo3sink", RCPP_ARCH_OLMO, "olmo3sink");
@@ -256,7 +231,6 @@ int main() {
     check("phi3forsequenceclassification", RCPP_ARCH_PHI, "phi3forsequenceclassification");
     check("poptorchpipelinedgpt2", RCPP_ARCH_GPT2, "poptorchpipelinedgpt2");
     check("poptorchpipelinedwhisper", RCPP_ARCH_WHISPER, "poptorchpipelinedwhisper");
-    check("quark", RCPP_ARCH_QWEN35, "quark");
     check("qwen2forcausallmpostblocksteeringfixed", RCPP_ARCH_QWEN2, "qwen2forcausallmpostblocksteeringfixed");
     check("qwen2forprocessreward", RCPP_ARCH_QWEN2, "qwen2forprocessreward");
     check("qwen2forsequenceclassification", RCPP_ARCH_QWEN2, "qwen2forsequenceclassification");
@@ -265,13 +239,11 @@ int main() {
     check("qwen2vlextended", RCPP_ARCH_QWEN2VL, "qwen2vlextended");
     check("qwen2vlforconditionalgenerationwithaudio", RCPP_ARCH_QWEN2VL, "qwen2vlforconditionalgenerationwithaudio");
     check("qwen3_5dllm", RCPP_ARCH_QWEN35, "qwen3_5dllm");
-    check("qwen3_5text", RCPP_ARCH_QWEN35, "qwen3_5text");
     check("qwen3forsequenceclassification", RCPP_ARCH_QWEN3, "qwen3forsequenceclassification");
     check("qwen3gated", RCPP_ARCH_QWEN3, "qwen3gated");
     check("qwen3mobe", RCPP_ARCH_QWEN3, "qwen3mobe");
     check("qwen3sparsemobe", RCPP_ARCH_QWEN3, "qwen3sparsemobe");
     check("qwen3vlseg", RCPP_ARCH_QWEN3VL, "qwen3vlseg");
-    check("rnj1", RCPP_ARCH_GEMMA, "rnj1");
     check("ruqwen2", RCPP_ARCH_QWEN2, "ruqwen2");
     check("serayuki", RCPP_ARCH_LLAMA, "serayuki");
     check("sewy3", RCPP_ARCH_GEMMA, "sewy3");
@@ -282,7 +254,6 @@ int main() {
     check("titansmactransformer", RCPP_ARCH_LLAMA, "titansmactransformer");
     check("trimkvphi3", RCPP_ARCH_PHI, "trimkvphi3");
     check("trimkvqwen3", RCPP_ARCH_QWEN3, "trimkvqwen3");
-    check("uyu2", RCPP_ARCH_GEMMA, "uyu2");
     check("vlclipgptneox", RCPP_ARCH_GPTNEOX, "vlclipgptneox");
     check("whaleye", RCPP_ARCH_DEEPSEEK, "whaleye");
     check("xcuros", RCPP_ARCH_QWEN2, "xcuros");
