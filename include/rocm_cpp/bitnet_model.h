@@ -220,7 +220,14 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "mistral3")    == 0) return RCPP_ARCH_MISTRAL;  // Mistral3 (text decoder = mistral)
     if (strcmp(s, "qwen2_5_vl")  == 0) return RCPP_ARCH_QWEN2VL;  // Qwen2.5-VL (text decoder = qwen2)
     if (strcmp(s, "qwen3vlmoe")  == 0) return RCPP_ARCH_QWEN3VL;  // Qwen3-VL-MoE
-    if (strcmp(s, "gemma4unified") == 0) return RCPP_ARCH_GEMMA;  // Gemma4-Unified (text decoder = gemma)
+    if (strcmp(s, "gemma4unified") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "llavallama")   == 0) return RCPP_ARCH_LLAMA;  // LLaVA w/ llama-2 text decoder (MAX-style: decoder maps to base token)
+    if (strcmp(s, "cambrianqwen") == 0) return RCPP_ARCH_QWEN2;   // Cambrian-1 (qwen2 text decoder)
+    if (strcmp(s, "llavaqwen2")   == 0) return RCPP_ARCH_QWEN2;   // LLaVA w/ qwen2 text decoder
+    if (strcmp(s, "hunyuandensev1") == 0) return RCPP_ARCH_LLAMA; // HunYuan dense V1 (llama-layout)
+    if (strcmp(s, "seedoss")      == 0) return RCPP_ARCH_LLAMA;   // ByteDance Seed-OSS dense (llama-layout, GQA)
+    if (strcmp(s, "glm4")         == 0) return RCPP_ARCH_LLAMA;   // GLM-4 (llama + partial-rope 0.5 + qkv bias)
+  // Gemma4-Unified (text decoder = gemma)
     if (strcmp(s, "qwen3_5vl")   == 0) return RCPP_ARCH_QWEN35;   // Qwen3.5-VL (text decoder = qwen3.5)
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
