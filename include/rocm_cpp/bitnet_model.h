@@ -348,6 +348,44 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "gateddeltanet") == 0) return RCPP_ARCH_QWEN3NEXT;  // GatedDeltaNet (same attention as qwen3next backend)
     if (strcmp(s, "dynamicalibi") == 0) return RCPP_ARCH_DYNAMICALIBI;  // DynamicAlibiForCausalLM (static ALiBi at inference, verified 2026-08-15)
     // ── end census tail sweep ──
+    if (strcmp(s, "helpingai") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (HelpingAI)
+    if (strcmp(s, "maple") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (maple-preview)
+    if (strcmp(s, "wedlm") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Tencent WEDLM)
+    if (strcmp(s, "helium") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (L3-8B-helium3)
+    if (strcmp(s, "bluelm") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (vivo BlueLM)
+    if (strcmp(s, "bunnyllama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Bunny VLM, llama text decoder)
+    if (strcmp(s, "longllama") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (LongLLaMA)
+    if (strcmp(s, "minimind") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (MiniMind)
+    if (strcmp(s, "bolmo") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Bolmo-1B)
+    if (strcmp(s, "imp") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile (Imp VLM)
+    if (strcmp(s, "llavamistral7") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama profile
+    if (strcmp(s, "tpp") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "monet") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (huggingtweets)
+    if (strcmp(s, "gpt3dev") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "gpt2l") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (homergpt2l)
+    if (strcmp(s, "lordcoder") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "gear") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (dialogpt-small)
+    if (strcmp(s, "hawk") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (gpt-morty)
+    if (strcmp(s, "smallm") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "aragpt2") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (aragpt2-mega)
+    if (strcmp(s, "arctic") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "customgpt") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (custom-gpt2)
+    if (strcmp(s, "isaac") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (distilgpt2)
+    if (strcmp(s, "otter") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile (dialogpt-small)
+    if (strcmp(s, "taonet") == 0) return RCPP_ARCH_GPT2;  // config-verified gpt2 profile
+    if (strcmp(s, "idefics") == 0) return RCPP_ARCH_LLAMA;  // Idefics-80B (VLM, llama-2 text decoder)
+    if (strcmp(s, "cogagent") == 0) return RCPP_ARCH_LLAMA;  // CogAgent (VLM, llama-2 text decoder)
+    if (strcmp(s, "idefics3") == 0) return RCPP_ARCH_LLAMA;  // Idefics3-8B-Llama3 (VLM, llama-3 text decoder)
+    if (strcmp(s, "detikzifycambrian") == 0) return RCPP_ARCH_QWEN2;  // Detikzify-Cambrian (VLM, qwen2 text decoder)
+    if (strcmp(s, "lfm2vl") == 0) return RCPP_ARCH_LFM2;  // LFM2-VL (VLM, lfm2 text decoder)
+    if (strcmp(s, "cohere2vision") == 0) return RCPP_ARCH_COHERE2;  // Cohere2-Vision (VLM, cohere2 text decoder)
+    if (strcmp(s, "llavaqwen1_5") == 0) return RCPP_ARCH_QWEN2;  // LLaVA-Qwen1.5 (VLM, qwen2 text decoder)
+    if (strcmp(s, "qwen2_5omnithinker") == 0) return RCPP_ARCH_QWEN2;  // Qwen2.5-OmniThinker (VLM, qwen2.5 text decoder)
+    if (strcmp(s, "vmistral") == 0) return RCPP_ARCH_MISTRAL;  // VMistral (VLM, mistral text decoder)
+    if (strcmp(s, "deep") == 0) return RCPP_ARCH_DEEPSEEK_V4;  // DeepForCausalLM (deepseek-v4 config)
+    if (strcmp(s, "mobilintqwen2") == 0) return RCPP_ARCH_QWEN2;  // mobilint Qwen2.5 (qwen2 layout)
+    if (strcmp(s, "qwen2bm") == 0) return RCPP_ARCH_QWEN2;  // QWEN-2B-More (qwen2 layout)
+
     if (strcmp(s, "openaigpt") == 0) return RCPP_ARCH_GPT2;  // openai-gpt (gpt2 layout, Conv1D)
     if (strcmp(s, "ctrl") == 0) return RCPP_ARCH_GPT2;  // CTRL (gpt2 layout, extra conditioning embed ignored)
     if (strcmp(s, "chessgpt") == 0) return RCPP_ARCH_GPTNEOX;  // ChessGPT (gpt_neox config, verified)
