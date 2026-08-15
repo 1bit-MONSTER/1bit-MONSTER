@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benchmarks — 1bit MONSTER</title>
+<meta name="description" content="Measured decode and prefill numbers, with hardware and date attached.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/1bm.css">
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div>
+      <span class="mark">1bm</span>
+      <span class="wordmark">1bit<br>MONSTER</span>
+      <p class="quote"><span>bong-water-water-bong</span> "Sorry but not sorry."</p>
+    </div>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="models.html">models</a>
+      <a href="benchmarks.html" aria-current="page">benchmarks</a>
+      <a href="docs.html">docs</a>
+      <a href="story.html">the story</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
+    </nav>
+    <div class="status"><span class="dot"></span>engine online</div>
+    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
+  </aside>
+  <main>
+    <div class="topbar"><span>500+ models · any hardware · one binary</span><span>measured 2026-08-01 / 08-07</span></div>
+    <div class="hero">
+      <h1>Measured, <span style="color:var(--lime)">not estimated</span></h1>
+      <p class="lead">Every number here carries its hardware and its date. Reference machine: <strong>AMD Ryzen AI MAX+ 395</strong> · Radeon 8060S · 32 GB UMA. If a number has no provenance, treat it as a bug in the docs.</p>
+    </div>
+    <div class="stats">
+      <div><b>43.2</b><span>TFLOPS int8 prefill (WMMA)</span></div>
+      <div><b>662</b><span>tok/s peak decode</span></div>
+      <div><b>6</b><span>hardware targets</span></div>
+      <div><b>5/5</b><span>zoo smoke pass</span></div>
+    </div>
+    <section>
+      <h2>Headline decode, end-to-end</h2>
+      <p class="note" style="margin-bottom:16px">Single-model path (<code>zaya</code>), measured 2026-08-01.</p>
+      <table>
+        <tr><th>model</th><th style="text-align:right">tok/s</th><th>backend</th></tr>
+        <tr><td>SmolLM2-135M</td><td class="n">662</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>Qwen3-0.6B</td><td class="n">373</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>Qwen2.5-VL-3B</td><td class="n">100</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>BlackMamba-1.5B</td><td class="n">79.4</td><td class="b">Mamba1 HIP</td></tr>
+        <tr><td>Qwen3.5-4B</td><td class="n">65</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>DeepSeek-R1-Distill-Llama-8B</td><td class="n">44</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>ZAYA1-74B-preview</td><td class="n">17.6</td><td class="b">GGML-Vulkan</td></tr>
+      </table>
+      <p class="note" style="margin-top:12px">ZAYA1-74B-preview also measured at 16.7 tok/s on HIP (2026-08-05).</p>
+    </section>
+    <section>
+      <h2>Unified control plane</h2>
+      <p class="note" style="margin-bottom:16px">The single control plane is measured but <strong>not finished</strong>. The supported out-of-box path today is toolbox-backed Strix Halo inference.</p>
+      <p class="lead">All five zoo models served from <strong>one</strong> <code>unified</code> process — <code>--pool</code> keeps every model resident — through a single OpenAI-compatible endpoint. Measured end-to-end via <code>POST /v1/chat/completions</code>, including per-request model routing. 2026-08-07.</p>
+      <table style="margin-top:18px">
+        <tr><th>model</th><th style="text-align:right">tok/s</th><th>backend</th></tr>
+        <tr><td>Qwen3-4B</td><td class="n">20.8</td><td class="b">NPU FLM (XDNA)</td></tr>
+        <tr><td>Qwen3-0.6B Instruct</td><td class="n">12.4</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>Llama-3.2-1B Instruct</td><td class="n">12.4</td><td class="b">GGML-Vulkan</td></tr>
+        <tr><td>Bonsai-1.7B-TQ2</td><td class="n">3.1</td><td class="b">HIP 1BP</td></tr>
+        <tr><td>Zamba2-1.2B-Instruct-v2</td><td class="n">2.2</td><td class="b">HIP (Mamba2 SSD)</td></tr>
+      </table>
+      <p class="note" style="margin-top:12px">Four backends in one process. <code>scripts/zoo-smoke.sh</code> runs the same path (5/5 PASS); <code>POST /v1/pool</code> reports residency — 11 slots across <code>.1bp</code> and <code>.gguf</code>. Speculative decoding is available in-process via <code>--draft-model</code> + <code>--spec-decode</code>, lossless vs greedy.</p>
+    </section>
+    <section>
+      <h2>How to reproduce</h2>
+      <pre>./build/1bit zaya -m &lt;checkpoint&gt; -p <span class="s">"Hello world"</span>
+./build/1bit unified --pool
+scripts/zoo-smoke.sh</pre>
+      <p class="note" style="margin-top:12px">Build <code>Release</code>, or the numbers will not match. Full per-model and per-kernel detail lives in the performance SSOT: <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">docs/wiki/performance.md →</a></p>
+    </section>
+    <footer><span>© 1bit MONSTER</span><span style="color:var(--lime)">mit — do whatever you want</span></footer>
+  </main>
+</div>
+</body>
+</html>
