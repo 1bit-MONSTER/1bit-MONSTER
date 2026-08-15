@@ -456,9 +456,38 @@ struct GenericBackend : Backend {
             load("attn_k.weight", "self_attn.k_proj.weight", lw.wk, H, NKV*HD);
             load("attn_v.weight", "self_attn.v_proj.weight", lw.wv, H, NKV*HD);
             load("attn_output.weight", "self_attn.o_proj.weight", lw.wo, NH*HD, H);
-            load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
-            load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
-            load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            // GLM-4 / biased-llama variants: optional q/k/v biases (absent for
+            // plain llama — the lenient load skips them).
+            load("attn_q.bias", "self_attn.q_proj.bias", lw.bq, NH*HD, 1);
+            load("attn_k.bias", "self_attn.k_proj.bias", lw.bk, NKV*HD, 1);
+            load("attn_v.bias", "self_attn.v_proj.bias", lw.bv, NKV*HD, 1);
+            // GLM-4 post-norms (post_self_attn_layernorm after attention,
+            // post_mlp_layernorm after the MLP — applied before the residual).
+            // The forward applies post_attn_norm/post_ffn_norm conditionally.
+            if (cfg.architecture == "glm4") {
+                load("post_attn_norm.weight", "post_self_attn_layernorm.weight", lw.post_attn_norm, H, 1);
+                load("post_ffn_norm.weight",  "post_mlp_layernorm.weight",      lw.post_ffn_norm,  H, 1);
+            }
+            if (cfg.architecture == "glm4") {
+                // GLM-4: fused mlp.gate_up_proj.weight [gate(IM) | up(IM)] ->
+                // split into separate gate/up for the gated-FFN forward.
+                std::vector<float> gu;
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate_up_proj.weight", l);
+                if (!model.get_tensor_f32(buf, gu) || (int)gu.size() != 2 * IM * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized glm4 gate_up_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> gate, up;
+                gate.reserve((size_t)IM * H); up.reserve((size_t)IM * H);
+                for (int r = 0; r < IM; r++) gate.insert(gate.end(), gu.begin() + (size_t)r * H, gu.begin() + (size_t)(r + 1) * H);
+                for (int r = 0; r < IM; r++) up.insert(up.end(), gu.begin() + (size_t)(IM + r) * H, gu.begin() + (size_t)(IM + r + 1) * H);
+                lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
+                load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            } else {
+                load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
+                load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
+                load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            }
             if (packed_) {
                 auto pk = [&](const char* blk, const char* legacy, int& idx, int M, int K) {
                     char b2[128];
@@ -1282,6 +1311,21 @@ struct GenericBackend : Backend {
                     lw.moe_up_exps = push(std::move(up));
                     lw.moe_down_exps = push(std::move(output_linear));
                 }
+            } else if (cfg.architecture == "glm4") {
+                // GLM-4: fused mlp.gate_up_proj.weight [gate(IM) | up(IM)] ->
+                // split into separate gate/up; post-norms loaded below.
+                std::vector<float> gu;
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate_up_proj.weight", l);
+                if (!r.get_tensor_f32(buf, gu) || (int)gu.size() != 2 * IM * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized glm4 gate_up_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> gate, up;
+                gate.reserve((size_t)IM * H); up.reserve((size_t)IM * H);
+                for (int r2 = 0; r2 < IM; r2++) gate.insert(gate.end(), gu.begin() + (size_t)r2 * H, gu.begin() + (size_t)(r2 + 1) * H);
+                for (int r2 = 0; r2 < IM; r2++) up.insert(up.end(), gu.begin() + (size_t)(IM + r2) * H, gu.begin() + (size_t)(IM + r2 + 1) * H);
+                lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
+                load("mlp.down_proj.weight", lw.w3, IM, H);
             } else {
                 load("mlp.gate_proj.weight", lw.w1, H, IM);
                 load("mlp.up_proj.weight", lw.w2, H, IM);
@@ -1305,6 +1349,12 @@ struct GenericBackend : Backend {
                 load_norm("post_feedforward_layernorm.weight", lw.post_ffn_norm, H);
             } else {
                 load_norm("post_attention_layernorm.weight", lw.rms_ffn, H);
+            }
+            // GLM-4 post-norms (post_self_attn_layernorm after attn, post_mlp_layernorm
+            // after MLP, applied before the residual). Standard RMSNorm (no +1).
+            if (cfg.architecture == "glm4") {
+                load_norm("post_self_attn_layernorm.weight", lw.post_attn_norm, H);
+                load_norm("post_mlp_layernorm.weight", lw.post_ffn_norm, H);
             }
             load_norm("self_attn.q_norm.weight", lw.q_norm, HD);
             load_norm("self_attn.k_norm.weight", lw.k_norm, HD);
