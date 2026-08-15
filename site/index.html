@@ -62,7 +62,7 @@
 
     <div style="padding: 64px 44px 44px; display: flex; flex-direction: column; gap: 22px;">
       <h1 style="margin: 0; font-family: 'DM Serif Display', serif; font-size: 80px; line-height: .98; letter-spacing: -0.02em; max-width: 19ch;">One binary to rule <span style="color: #C6FF3D;">them all</span></h1>
-      <p style="margin: 0; max-width: 58ch; font-size: 15px; line-height: 1.75; color: #B9BEB4;">An open-source, pure-C++ inference engine. <span style="color: #EDEFEA;">NPU + GPU + CPU in one binary.</span> Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.</p>
+      <p style="margin: 0; max-width: 58ch; font-size: 15px; line-height: 1.75; color: #B9BEB4;">An open-source, pure-C++ inference engine — <span style="color: #EDEFEA;">model-agnostic and hardware-agnostic.</span> NPU + GPU + CPU in one binary. Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.</p>
       <pre style="margin: 0; padding: 16px 18px; border: 1px solid #232323; font-size: 13px; line-height: 1.9; color: #D5D9D0; white-space: pre-wrap;"><span style="color: #A0A599;"># build from source — no installer yet</span>
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
@@ -85,7 +85,7 @@ cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
       <div style="display: flex; flex-direction: column; gap: 14px;">
         <span style="font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: #A0A599;">// the hard truth</span>
         <p style="margin: 0; font-family: 'DM Serif Display', serif; font-size: 30px; line-height: 1.2;">22 proprietary libraries. 209 bitstreams. Zero documentation.</p>
-        <p style="margin: 0; font-size: 14.5px; line-height: 1.75; color: #B9BEB4;">AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.</p>
+        <p style="margin: 0; font-size: 14.5px; line-height: 1.75; color: #B9BEB4;">AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the AMD NPU, on AMD / NVIDIA / Apple GPUs — including Apple's MLX and the upcoming NVIDIA RTX Spark — or on plain CPU.</p>
         <span style="font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: #A0A599;">// where this goes</span>
         <p style="margin: 0; font-size: 14.5px; line-height: 1.75; color: #B9BEB4;">19 architectures and 47 models today, climbing toward the full catalog — not one port at a time, but by decoding the pattern: ~50 architecture classes cover the long tail of what HuggingFace hosts. The registry, the kernels and the validation harness are already proven; what's left is coverage.</p>
         <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" style="font-size: 14px; color: #C6FF3D;">read the full journey →</a>
