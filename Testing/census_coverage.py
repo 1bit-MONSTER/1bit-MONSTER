@@ -92,8 +92,33 @@ def main():
             excluded[s] = stripped.pop(s)
 
     agg = json.load(open(AGG))
-    # stripped class -> dominant (model_type, count) from the aggregate
+    # stripped class -> dominant (model_type, count). Preferred source: the
+    # full per-model dump (/tmp/census_full_data.jsonl — one entry per model,
+    # model_type filled for ~81% — beats the aggregate's top-5 truncation).
+    # Fallback: the aggregate's per-bucket top archs.
     mt_of = {}
+    DUMP = "/tmp/census_full_data.jsonl"
+    if os.path.exists(DUMP):
+        from collections import Counter as _C
+        mt_counts = {}
+        with open(DUMP) as f:
+            for ln in f:
+                try:
+                    d = json.loads(ln)
+                except Exception:
+                    continue
+                mt = d.get("model_type")
+                if not mt:
+                    continue
+                for a in d.get("architectures") or []:
+                    sk = strip_arch(str(a))
+                    if sk not in stripped:
+                        continue
+                    mt_counts.setdefault(sk, _C())[mt] += 1
+        for sk, cc in mt_counts.items():
+            mt, n = cc.most_common(1)[0]
+            if sk not in mt_of or n > mt_of[sk][1]:
+                mt_of[sk] = (mt, n)
     for mt, info in agg.items():
         for a in info.get("top_archs", []):
             sk = strip_arch(a["arch"])
