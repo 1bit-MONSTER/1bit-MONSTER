@@ -62,7 +62,8 @@ typedef enum {
     RCPP_ARCH_GPTJ = 28,    // GPT-J — separate qkv, adjacent partial rotary (rotary_dim), LN+bias, gelu_new
     RCPP_ARCH_GPTOSS = 29,  // GPT-OSS — MXFP4 packed MoE (FP4 blocks+scales, interleaved gate/up), YARN rope, attention sinks, head_dim 64
     RCPP_ARCH_STEP1 = 30,   // Step1 (StepLaw / stepfun Step-Audio) — dense llama-layout, sqrt-ALiBi (no RoPE), num_attention_groups
-    RCPP_ARCH_BLOOM = 31,   // Bloom — fused qkv, LayerNorm w/bias, sequential + post_attn_norm, gelu_new, LINEAR ALiBi, embed LN, tied lm_head
+    RCPP_ARCH_BLOOM = 31,    // Bloom — fused qkv, LayerNorm w/bias, sequential + post_attn_norm, gelu_new, LINEAR ALiBi, embed LN, tied lm_head
+    RCPP_ARCH_LFM2 = 32,    // Liquid LFM2/LFM2.5 — conv+attention hybrid: depthwise causal conv1d blocks + full-attention blocks
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -204,6 +205,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "step1")     == 0) return RCPP_ARCH_STEP1;   // Step1ForCausalLM (sqrt-ALiBi, no RoPE)
     if (strcmp(s, "step1moe")  == 0) return RCPP_ARCH_STEP1;   // Step1MoEForCausalLM (dense weights in practice; MoE cfg ignored until an expert-bearing ckpt is seen)
     if (strcmp(s, "bloom")     == 0) return RCPP_ARCH_BLOOM;   // BloomForCausalLM (fused qkv, linear ALiBi, LayerNorm)
+    if (strcmp(s, "lfm2")      == 0) return RCPP_ARCH_LFM2;    // Lfm2ForCausalLM (conv+attention hybrid)
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;
@@ -230,6 +232,37 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "glm4")         == 0) return RCPP_ARCH_LLAMA;   // GLM-4 (llama + partial-rope 0.5 + qkv bias)
   // Gemma4-Unified (text decoder = gemma)
     if (strcmp(s, "qwen3_5vl")   == 0) return RCPP_ARCH_QWEN35;   // Qwen3.5-VL (text decoder = qwen3.5)
+    // ── HF model_type values (snake_case family tags; the reader falls back
+    //    to these when the class name maps UNKNOWN — extraction 2026-08-15) ──
+    if (strcmp(s, "gpt_neox")    == 0) return RCPP_ARCH_GPTNEOX;  // GPTNeoXConfig model_type
+    if (strcmp(s, "gpt_neo")     == 0) return RCPP_ARCH_GPTNEO;   // GPTNeoConfig model_type
+    if (strcmp(s, "gpt_j")       == 0) return RCPP_ARCH_GPTJ;
+    if (strcmp(s, "gpt_bigcode") == 0) return RCPP_ARCH_LLAMA;    // StarCoder/GPT-BigCode layout
+    if (strcmp(s, "qwen2_vl")    == 0) return RCPP_ARCH_QWEN2VL;  // Qwen2VLConfig model_type
+    if (strcmp(s, "qwen3_vl")    == 0) return RCPP_ARCH_QWEN3VL;
+    if (strcmp(s, "qwen3_moe")   == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen2_moe")   == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "mistral_moe") == 0) return RCPP_ARCH_MISTRAL;  // mixtral-style
+    if (strcmp(s, "granite_moe") == 0) return RCPP_ARCH_GEMMA;    // granite MoE (gemma layout)
+    if (strcmp(s, "gemma3_text") == 0) return RCPP_ARCH_GEMMA;    // Gemma3TextConfig
+    if (strcmp(s, "gemma4_text") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "llava")       == 0) return RCPP_ARCH_QWEN2VL;  // LLaVA model_type
+    if (strcmp(s, "llava_llama") == 0) return RCPP_ARCH_LLAMA;    // LLaVA-llama text decoder
+    if (strcmp(s, "llava_qwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "deepseek_v2") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "deepseek_v3") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "deepseek_v4") == 0) return RCPP_ARCH_DEEPSEEK_V4;
+    if (strcmp(s, "stablelm_epoch") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "openelm")     == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "cohere")      == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "cambrian_qwen") == 0) return RCPP_ARCH_QWEN2;  // Cambrian-1 (qwen2 text)
+    if (strcmp(s, "hunyuan_v1_dense") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "exaone4")     == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "nemotron")    == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "fp8_qwen3")   == 0) return RCPP_ARCH_QWEN3;    // FP8 wrapper, same layout
+    if (strcmp(s, "fp8_qwen2")   == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "fp8_llama")   == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "bit_llama")   == 0) return RCPP_ARCH_LLAMA;    // BitNet-style llama
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
 }

@@ -307,6 +307,25 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
     // Testing/discovery_selfcheck.cpp).
     cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
 
+    // model_type fallback (extraction 2026-08-15): HF's model_type is the
+    // authoritative family tag that custom class names inherit (e.g.
+    // "MyLlamaForCausalLM" declares model_type="llama", "ChessForCausalLM"
+    // declares model_type="gpt2"). When the class name maps to UNKNOWN, fall
+    // back to model_type — the census showed this catches ~3,900 more
+    // checkpoints than class-name mapping alone (76.7% vs 75.7%).
+    if (cfg.arch == RCPP_ARCH_UNKNOWN) {
+        std::string mt;
+        if (safetensors_detail::json_find_string(config_text, "model_type", mt)) {
+            std::string low = mt;
+            for (auto& c : low) c = (char)tolower((unsigned char)c);
+            rcpp_arch_t mt_arch = rcpp_arch_from_string(low.c_str());
+            if (mt_arch != RCPP_ARCH_UNKNOWN) {
+                cfg.architecture = low;
+                cfg.arch = mt_arch;
+            }
+        }
+    }
+
     // Quantization: dtype of the first tensor found in the safetensors header
     // itself (ground truth for the on-disk data, not config.json's
     // torch_dtype which can describe the compute dtype instead).
