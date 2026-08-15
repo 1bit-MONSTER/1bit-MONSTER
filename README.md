@@ -1,6 +1,6 @@
 <div align="center">
 
-# 1bit MONSTER
+<img src="site/assets/brand-lockup.svg" alt="1bit MONSTER" width="540">
 
 ## One binary to rule them all
 
