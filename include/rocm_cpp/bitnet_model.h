@@ -212,6 +212,16 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     // ── Qwen3.6-MoE (shared-expert MoE, Qwen2-compatible attention) ──
     if (strcmp(s, "qwen35")   == 0) return RCPP_ARCH_QWEN35;
     if (strcmp(s, "qwen35moe") == 0) return RCPP_ARCH_QWEN35;
+    // ── VLM conditional-generation classes (MAX-style: text decoder maps to
+    //    the base token; vision tower is a separate workstream, NO-MORE-SECRETS
+    //    documented in docs/wiki/models.md) ──
+    if (strcmp(s, "qwen3_5")     == 0) return RCPP_ARCH_QWEN35;   // Qwen3.5 (GDN dense)
+    if (strcmp(s, "qwen3_5moe")  == 0) return RCPP_ARCH_QWEN35;   // Qwen3.5-MoE
+    if (strcmp(s, "mistral3")    == 0) return RCPP_ARCH_MISTRAL;  // Mistral3 (text decoder = mistral)
+    if (strcmp(s, "qwen2_5_vl")  == 0) return RCPP_ARCH_QWEN2VL;  // Qwen2.5-VL (text decoder = qwen2)
+    if (strcmp(s, "qwen3vlmoe")  == 0) return RCPP_ARCH_QWEN3VL;  // Qwen3-VL-MoE
+    if (strcmp(s, "gemma4unified") == 0) return RCPP_ARCH_GEMMA;  // Gemma4-Unified (text decoder = gemma)
+    if (strcmp(s, "qwen3_5vl")   == 0) return RCPP_ARCH_QWEN35;   // Qwen3.5-VL (text decoder = qwen3.5)
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
 }
