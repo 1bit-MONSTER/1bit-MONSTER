@@ -114,6 +114,7 @@ __device__ void dequant_iq1_m_block(const uint8_t* block, float* out) {
     // scales also serves as uint16_t[4] for sub-block scale reads:
     // sub-block scales live in bits 0-5/6-11, superblock scale in 12-15,
     // so shifts below never touch the superblock bits.
+    const uint16_t* sc = (const uint16_t*)scales;
 
     int out_idx = 0;
     for (int ib = 0; ib < IQ1_S_SUBBLOCKS; ib++) {
