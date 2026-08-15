@@ -354,6 +354,10 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "gateddeltanet") == 0) return RCPP_ARCH_QWEN3NEXT;  // GatedDeltaNet (same attention as qwen3next backend)
     if (strcmp(s, "dynamicalibi") == 0) return RCPP_ARCH_DYNAMICALIBI;  // DynamicAlibiForCausalLM (static ALiBi at inference, verified 2026-08-15)
     // ── end census tail sweep ──
+    if (strcmp(s, "rwkv5") == 0) return RCPP_ARCH_RWKV;  // rwkv5 (RWKV backend covers 4/5/6)
+    if (strcmp(s, "rwkv6") == 0) return RCPP_ARCH_RWKV;  // rwkv6 (RWKV backend covers 4/5/6)
+    if (strcmp(s, "llavaphi") == 0) return RCPP_ARCH_PHI;  // LLaVA-Phi (VLM, phi text decoder)
+
     if (strcmp(s, "adelicllama") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "aligngpt") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "axk2") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
