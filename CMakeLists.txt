@@ -905,6 +905,11 @@ target_include_directories(jarvis_ws_proto_test PRIVATE tools/)
 target_link_libraries(jarvis_ws_proto_test PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME jarvis_ws_proto_test COMMAND jarvis_ws_proto_test)
 set_tests_properties(jarvis_ws_proto_test PROPERTIES LABELS "host")
+
+add_executable(jarvis_pair_test tests/jarvis_pair_test.cpp tools/jarvis/pair.cpp)
+target_include_directories(jarvis_pair_test PRIVATE tools/)
+add_test(NAME jarvis_pair_test COMMAND jarvis_pair_test)
+set_tests_properties(jarvis_pair_test PROPERTIES LABELS "host")
 add_executable(test_gguf_reader_dequant tests/test_gguf_reader_dequant.cpp)
 target_include_directories(test_gguf_reader_dequant PRIVATE tests/)
 target_link_libraries(test_gguf_reader_dequant PRIVATE gguf_reader)
@@ -1329,6 +1334,7 @@ set(ONE_BIN_SOURCES
     tools/jarvis/ws_proto.cpp
     tools/jarvis/context.cpp
     tools/jarvis/auth.cpp
+    tools/jarvis/pair.cpp
     tools/jarvis/usage.cpp
     tools/jarvis/billing.cpp
     src/codec_decoder.cpp

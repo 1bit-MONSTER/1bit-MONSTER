@@ -13,4 +13,7 @@ constexpr int kBeaconPort = 13305;
 // indefinitely. Safe to call once at server startup; does not block.
 void start_beacon(int server_port, double interval_seconds = 3.0);
 
+// Outbound-facing LAN IP (UDP connect trick, no packet sent).
+std::string lan_ip();
+
 } // namespace jarvis

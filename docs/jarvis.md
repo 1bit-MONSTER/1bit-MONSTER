@@ -62,4 +62,112 @@ Personas (`personas/zaya_default.json`, `personas/zaya_professional.json`) set t
 
 ---
 
+## Connecting to the frontend (web UI)
+
+JARVIS ships a built-in browser chat UI. No setup, no key — just open it:
+
+```bash
+1bit jarvis                    # start the agent (or it runs as a service)
+# then open in your browser:
+#   http://localhost:8080/chat      ← the chat UI (also served at /)
+#   http://localhost:8080/dashboard ← usage/status dashboard
+```
+
+The UI is **local-only by design** (zero trust): the browser sends no API
+key, so the server only serves it to loopback connections. Remote devices
+use the keyed API instead (next section) — or pair the phone app, which
+finds the server automatically via the UDP beacon (`:13305`).
+
+### Desktop install
+Run `1bit jarvis` in a terminal, then open `http://localhost:8080/chat`.
+That's it.
+
+### ISO / appliance (headless)
+The ISO installs JARVIS as a service (starts at boot, no terminal needed).
+
+- **On the appliance itself** (if it has a display/browser): open
+  `http://localhost:8080/chat`.
+- **From another machine**: the UI is not reachable remotely (loopback
+  bind + no key path in the browser — that's intentional). Connect over
+  the API instead:
+  1. On the appliance, get a pairing code:
+     `curl -X POST http://localhost:8080/v1/pair/start`
+  2. Open the returned `claim_url` on your device → your `sk_live_...` key
+  3. Use it as `Authorization: Bearer <key>` (see API section below)
+- To let LAN devices reach JARVIS at all, set `JARVIS_BIND_ADDR=0.0.0.0`
+  in the service environment. The web UI still needs a key from remote —
+  this only opens the API/ports. Remote UI access is deliberately not
+  supported: use the API or the mobile app.
+
+---
+
+## Connecting to the API (after install)
+
+Two processes, two ports:
+
+| Process | Command | Port | Purpose |
+|---------|---------|------|---------|
+| inference | `1bit unified` | **8088** | model backend (JARVIS routes here) |
+| JARVIS | `1bit jarvis` | **8080** | agent API: chat, voice, RAG, personas, pairing |
+
+### 1. Pair a device (one-time, QR zero-trust)
+
+At startup JARVIS prints a **QR code** + one-time code on the console (5-min
+TTL, single-use). Scan it with a phone on the same network → it claims the
+code and returns a per-device API key. To generate a fresh code any time:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/pair/start
+# → {"code":"AB3...", "claim_url":"http://192.168.1.5:8080/v1/pair/claim?code=AB3..."}
+# open claim_url (or scan its QR) → get your sk_live_... key
+```
+
+Set `JARVIS_PUBLIC_URL=https://your.tunnel.url` when running `1bit jarvis`
+so the QR/claim/base URLs use your HTTPS tunnel instead of the LAN IP.
+
+### 2. Talk to it
+
+**Same machine (loopback):** local requests are trusted — no key needed.
+
+```bash
+curl http://127.0.0.1:8080/v1/models
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hello"}],"max_tokens":256}'
+```
+
+**Any other device (LAN/remote):** send the key you got from pairing.
+
+```bash
+KEY=sk_live_xxx
+curl -X POST http://192.168.1.5:8080/v1/chat/completions \
+  -H 'Authorization: Bearer '"$KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hello"}]}'
+```
+
+OpenAI-compatible, so any OpenAI SDK works: `base_url=http://<host>:8080/v1`,
+`api_key=<your key>`.
+
+### Endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/v1/models` | public | model list |
+| POST | `/v1/chat/completions`, `/api/chat` | Bearer | chat (streaming via `stream:true`) |
+| POST | `/v1/audio/transcriptions` | Bearer | STT (multipart `file`) |
+| POST | `/v1/audio/speech` | Bearer | TTS |
+| POST | `/v1/audio/chat` | Bearer | voice-in/voice-out round trip |
+| POST | `/v1/knowledge/upload`, `/v1/knowledge/search` | Bearer | RAG |
+| GET | `/v1/persona`; POST `/v1/persona` | Bearer | persona control |
+| POST | `/v1/agent/plan` | Bearer | planner (multi-step, tools) |
+| POST | `/v1/api-key/create`; `/v1/api-key/revoke`; GET `/v1/api-key/list` | Bearer | key management |
+| GET | `/v1/usage` | Bearer | quotas |
+| GET | `/health`, `/live` | public | liveness |
+
+Revoke a device: `curl -X POST http://127.0.0.1:8080/v1/api-key/revoke -d '{"key":"<the-key>"}'`
+(loopback trusted; from a device use its own Bearer key).
+
+---
+
 **See also:** [Zyphra family](model-families/zyphra.md) (the LLM/TTS/voice models) · [Whisper](model-families/whisper.md) (STT) · [architecture](guides/architecture.md)

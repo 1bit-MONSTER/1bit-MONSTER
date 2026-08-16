@@ -59,15 +59,15 @@ install_deps() {
     if command -v apt-get &>/dev/null; then
         log "Installing build deps (apt)..."
         sudo apt-get update -qq
-        sudo apt-get install -y -qq build-essential cmake ninja-build git curl python3-pip
+        sudo apt-get install -y -qq build-essential cmake ninja-build git curl python3-pip qrencode
     elif command -v pacman &>/dev/null; then
         log "Installing build deps (pacman)..."
-        sudo pacman -Sy --noconfirm base-devel cmake ninja git curl python-pip
+        sudo pacman -Sy --noconfirm base-devel cmake ninja git curl python-pip qrencode
     elif command -v dnf &>/dev/null; then
         log "Installing build deps (dnf)..."
-        sudo dnf install -y gcc-c++ cmake ninja-build git curl python3-pip
+        sudo dnf install -y gcc-c++ cmake ninja-build git curl python3-pip qrencode
     else
-        warn "Unknown package manager. Install: cmake ninja git curl build-essential python3-pip"
+        warn "Unknown package manager. Install: cmake ninja git curl build-essential python3-pip qrencode"
     fi
     command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
     
@@ -117,6 +117,13 @@ log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
 log "  export HSA_ENABLE_SDMA=0"
 log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
 log "  $DIR/build/1bit zaya"
+log ""
+log "JARVIS (voice/chat agent):"
+log "  $DIR/build/1bit jarvis --port 8080"
+log "  # Frontend: open http://localhost:8080/chat in your browser (no key needed)."
+log "  # Remote devices: scan the pairing QR for a key, then use the API"
+log "  # (docs/jarvis.md has pairing, endpoints, and curl examples)."
+log "  # Rebind for LAN: JARVIS_BIND_ADDR=0.0.0.0 ; HTTPS: JARVIS_PUBLIC_URL=..."
 log ""
 log "Then send requests:"
 log '  curl -X POST http://localhost:8088/completion \'

@@ -47,6 +47,7 @@ namespace fs = std::filesystem;
 #include "jarvis/beacon.h"
 #include "jarvis/codec_tts.h"
 #include "jarvis/context.h"
+#include "jarvis/pair.h"
 #include "jarvis/persona.h"
 #include "jarvis/planner.h"
 #include "jarvis/rag.h"
@@ -180,6 +181,7 @@ static jarvis::ContextMemory g_context_mem(50);
 static jarvis::AuthManager g_auth_mgr;
 static jarvis::UsageTracker g_usage_tracker;
 static jarvis::BillingManager g_billing_mgr;
+static jarvis::PairingManager g_pairing;
 
 // ── Voice clone jobs (#1371) ─────────────────────────────────────────
 // Upload samples → background train (codec + adapter) → export .voice pack.
@@ -860,11 +862,21 @@ int main(int argc, char** argv) {
     // /v1/usage, /v1/billing/* require API key auth.
     // Free tier: /, /chat, /health, /live, /v1/models, /v1/pricing,
     // /v1/billing/webhook, /v1/audio/devices — public, no auth.
-    static const std::string kAllowedOrigin = "http://127.0.0.1";
+    // CORS origin: allow the public https origin when JARVIS_PUBLIC_URL or
+    // JARVIS_ALLOWED_ORIGIN is set (TLS terminates at a tunnel/proxy — the
+    // phone's browser hits the https origin, so it must be echoed back).
+    auto allowed_origin = []() -> std::string {
+        if (const char* e = getenv("JARVIS_ALLOWED_ORIGIN"); e && *e) return e;
+        if (const char* e = getenv("JARVIS_PUBLIC_URL"); e && *e) return e;
+        return "http://127.0.0.1";
+    };
+    auto set_origin = [&](httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", allowed_origin());
+    };
     svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
         // CORS preflight
         if (req.method == "OPTIONS") {
-            res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+            set_origin(res);
             res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
             res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
             res.status = 204;
@@ -878,6 +890,7 @@ int main(int argc, char** argv) {
             path == "/v1/models" ||
             path == "/v1/pricing" ||
             path == "/v1/billing/webhook" ||
+            path.rfind("/v1/pair", 0) == 0 ||   // bootstrap: OTP-gated, no key yet
             path.rfind("/v1/audio/devices", 0) == 0);
         if (public_path) {
             return httplib::Server::HandlerResponse::Unhandled;
@@ -911,7 +924,7 @@ int main(int argc, char** argv) {
             if (auth_it == req.headers.end()) {
                 res.status = 401;
                 res.set_content(json{{"error", "missing Authorization header"}}.dump(), "application/json");
-                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                set_origin(res);
                 return httplib::Server::HandlerResponse::Handled;
             }
 
@@ -919,7 +932,7 @@ int main(int argc, char** argv) {
             if (!key) {
                 res.status = 401;
                 res.set_content(json{{"error", "invalid or expired API key"}}.dump(), "application/json");
-                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                set_origin(res);
                 return httplib::Server::HandlerResponse::Handled;
             }
 
@@ -927,7 +940,7 @@ int main(int argc, char** argv) {
             if (!g_auth_mgr.check_rate_limit(key->owner_id)) {
                 res.status = 429;
                 res.set_content(json{{"error", "rate limit exceeded"}}.dump(), "application/json");
-                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                set_origin(res);
                 return httplib::Server::HandlerResponse::Handled;
             }
 
@@ -940,7 +953,7 @@ int main(int argc, char** argv) {
                     {"upgrade", "Please upgrade your plan at https://zaya.ai/billing"}
                 };
                 res.set_content(err_body.dump(), "application/json");
-                res.set_header("Access-Control-Allow-Origin", kAllowedOrigin);
+                set_origin(res);
                 return httplib::Server::HandlerResponse::Handled;
             }
 
@@ -950,7 +963,7 @@ int main(int argc, char** argv) {
 
         return httplib::Server::HandlerResponse::Unhandled;
     });
-    auto add_cors = [](httplib::Response& res) { res.set_header("Access-Control-Allow-Origin", kAllowedOrigin); };
+    auto add_cors = [&](httplib::Response& res) { set_origin(res); };
 
     auto serve_ui = [&](const httplib::Request&, httplib::Response& res) {
         res.set_content(CHAT_HTML, "text/html");
@@ -978,6 +991,108 @@ int main(int argc, char** argv) {
         json arr = json::array();
         for (auto& id : model_ids()) arr.push_back(id);
         res.set_content(json{{"models", arr}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // ── QR-code zero-trust pairing ─────────────────────────────────
+    // Bootstrap: POST /v1/pair/start mints a one-time 5-min code and
+    // renders a QR of the claim URL on the console. Scanning it opens
+    // GET /v1/pair/claim?code=X which consumes the code (single-use)
+    // and returns a per-device API key. Everything after is Bearer auth.
+    // Base URL for pairing: JARVIS_PUBLIC_URL (https tunnel/proxy) when set,
+    // else the LAN address. TLS terminates at the proxy — the server itself
+    // stays on plain HTTP bound to loopback, which the proxy forwards to.
+    auto pair_base = [&]() -> std::string {
+        if (const char* e = getenv("JARVIS_PUBLIC_URL"); e && *e) return e;
+        return "http://" + jarvis::lan_ip() + ":" + std::to_string(g_port);
+    };
+    auto pair_claim_url = [&](const std::string& code) {
+        return pair_base() + "/v1/pair/claim?code=" + code;
+    };
+
+    svr.Post("/v1/pair/start", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!g_pairing.start_allowed(req.remote_addr)) {
+            res.status = 429;
+            res.set_content(json{{"error", "too many pairing requests"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        auto [code, expires] = g_pairing.start();
+        std::string url = pair_claim_url(code);
+        fprintf(stderr, "\n[1bit] Pair this device — scan the QR with your phone:\n");
+        jarvis::print_qr(url);
+        fprintf(stderr, "[1bit] or open: %s (single-use, 5 min)\n\n", url.c_str());
+        res.set_content(json{{"code", code}, {"expires_at", expires}, {"claim_url", url}}.dump(), "application/json");
+        add_cors(res);
+    });
+
+    // Browser flow: the QR URL opens this — one-tap pairing, shows the key.
+    svr.Get("/v1/pair/claim", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string code = req.get_param_value("code");
+        std::string owner;
+        if (code.empty()) {
+            res.status = 400;
+            res.set_content("<h2>Missing ?code= in URL</h2>", "text/html");
+            return;
+        }
+        if (!g_pairing.claim_allowed(req.remote_addr)) {
+            res.status = 429;
+            res.set_content("<h2>Too many attempts — try again in a minute</h2>", "text/html");
+            return;
+        }
+        std::string st = g_pairing.claim(code, &owner);
+        if (st != "ok") {
+            res.status = 403;
+            res.set_content(std::string("<h2>Pairing failed: ") + st + "</h2>", "text/html");
+            return;
+        }
+        std::string key = g_auth_mgr.create_key(owner, PlanTier::FREE, 365);
+        g_auth_mgr.save_keys("keys.json");
+        std::string base = pair_base();
+        std::string html =
+            std::string("<!DOCTYPE html><html><body style='font-family:monospace;padding:2em'>") +
+            "<h2>✅ Paired with 1bit JARVIS</h2>" +
+            "<p>Your API key (copy it now — shown once):</p>" +
+            "<p style='background:#eee;padding:1em;word-break:break-all'><b>" + key + "</b></p>" +
+            "<p>Base URL: <b>" + base + "</b></p>" +
+            "<p>Use <code>Authorization: Bearer &lt;key&gt;</code> on all /v1/ requests.</p>" +
+            "<p>Revoke anytime from the machine: <code>curl -X POST " + base +
+            "/v1/api-key/revoke -H 'Authorization: Bearer " + key +
+            "' -d '{\"key\":\"" + key + "\"}'</code></p>" +
+            "</body></html>";
+        res.set_content(html, "text/html");
+    });
+
+    // App flow: JSON in, JSON out.
+    svr.Post("/v1/pair/claim", [&](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) { body = json::object(); }
+        std::string code = body.value("code", "");
+        std::string owner;
+        if (code.empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "code required"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        if (!g_pairing.claim_allowed(req.remote_addr)) {
+            res.status = 429;
+            res.set_content(json{{"error", "too many attempts"}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        std::string st = g_pairing.claim(code, &owner);
+        if (st != "ok") {
+            res.status = 403;
+            res.set_content(json{{"error", st}}.dump(), "application/json");
+            add_cors(res);
+            return;
+        }
+        std::string key = g_auth_mgr.create_key(owner, PlanTier::FREE, 365);
+        g_auth_mgr.save_keys("keys.json");
+        std::string base = pair_base();
+        res.set_content(json{{"status", "ok"}, {"key", key}, {"base_url", base},
+                             {"owner_id", owner}}.dump(), "application/json");
         add_cors(res);
     });
 
@@ -1868,6 +1983,19 @@ int main(int argc, char** argv) {
     printf("  unified_server: %s\n", unified_server_url().c_str());
     printf("  ollama:         %s\n", ollama_url().c_str());
     printf("  knowledge base: %s\n", g_kb.root().c_str());
+
+    // QR-code zero-trust pairing — print a fresh one-time code at startup
+    // so a phone on the same LAN can connect immediately.
+    {
+        auto [code, expires] = g_pairing.start();
+        std::string url = pair_claim_url(code);
+        fprintf(stderr, "\n[1bit] Pair this device — scan the QR with your phone\n");
+        if (const char* pub = getenv("JARVIS_PUBLIC_URL"); pub && *pub)
+            fprintf(stderr, "[1bit] public endpoint: %s (TLS terminates at the proxy)\n", pub);
+        fprintf(stderr, "[1bit] (code: %s, single-use, expires in 5 min; rebind with JARVIS_BIND_ADDR=0.0.0.0 to allow LAN access)\n", code.c_str());
+        jarvis::print_qr(url);
+        fprintf(stderr, "\n");
+    }
 
     // Initialise persona manager
     {
