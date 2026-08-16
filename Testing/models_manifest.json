@@ -619,6 +619,31 @@
       "status": "validated",
       "tier": "mini-gate",
       "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 171 == HF oracle, top-20 overlap 20/20. V3-style MLA (q_a/q_b + kv_a/kv_b lora compression) + DSA indexer (relu-scored top-k token selection, cross-layer shared top-k on 'shared' layers) + sigmoid group-topk MoE with e_score_correction_bias + shared experts. Indexer uses NON-interleaved half-split RoPE while main MLA uses interleaved \u2014 both wired. Indexer wk/weights_proj consume the NORMED attention input (decoder feeds input_layernorm into self_attn)."
+    },
+    {
+      "family": "mimo_v2",
+      "hf_arch_strings": [
+        "mimo_v2",
+        "mimo_v2_flash",
+        "mimov2flash",
+        "mimo"
+      ],
+      "mapping_target": "MIMO",
+      "quirk_flags": {
+        "rope": "partial-first-0.334",
+        "rotate_at_load": false,
+        "moe": "sigmoid-group-topk-noaux_tc",
+        "bias": "none",
+        "norm": "rmsnorm",
+        "attention": "gqa-hybrid-swa+full",
+        "sink": "swa-layers-only",
+        "v_scale": "0.707"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_mimo_v2.py, vendored remote modeling)",
+      "oracle": "remote modeling_mimo_v2_flash.py (patched for transformers 5.13)",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 524 == oracle, top-20 overlap 20/20, logit corr 0.99997. MoD hybrid: hybrid_layer_pattern full/SWA attention (separate head dims + swa_rope_theta + sliding window), v_scale on values, attention sink bias on SWA layers, partial RoPE on FIRST dims (rope|nope), sigmoid noaux_tc group-topk MoE with per-expert gate/up/down (not fused). Fixture needed gate.weight init (remote code leaves torch.empty -> garbage) + bias zero + weight scaling for deterministic routing."
     }
   ]
 }

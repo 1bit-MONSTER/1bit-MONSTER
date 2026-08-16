@@ -137,6 +137,20 @@ else
     echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"
 fi
 
+# ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
+total=$((total+1))
+mimo_dir=/tmp/onebit-mimo
+if [ -f "$mimo_dir/logits_last.npy" ] && [ -f "$mimo_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-mimo-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_mimo_v2.cpp src/mimo_v2.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_mimo" 2>/dev/null; then echo "✗ mimo_v2: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_mimo" "$mimo_dir" /tmp/onebit-mimo-ids.txt "$mimo_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ mimo_v2 engine (MoD hybrid: SWA+full GQA, sigmoid group-topk MoE)";
+    else echo "✗ mimo_v2 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"
+fi
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }

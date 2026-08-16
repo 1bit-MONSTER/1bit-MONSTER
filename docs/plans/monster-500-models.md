@@ -49,7 +49,7 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
 |---|---|---|---|---|---|---|
 | DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — engine exists but written against FICTIONAL arch (audit 2026-08-16, see note) | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
 | ~~GLM-5.2~~ **DONE (mini-gate)** | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2) | **validated** — V3-MLA + DSA indexer + sigmoid group-topk MoE (2026-08-16, mini fixture, top1 171, 20/20) | `zai-org/GLM-4.5` | large |
-| MiMo | `MiMoV2ForCausalLM` | `mimo_v2` | `MIMO` (4) | **0** — needs MoE routing | `XiaomiMiMo/MiMo-V2-Flash` | **313 GB** |
+| ~~MiMo~~ **DONE (mini-gate)** | `MiMoV2FlashForCausalLM` | `mimo_v2_flash` | `MIMO` (4) | **validated** — MoD hybrid SWA+full GQA + sigmoid noaux_tc group-topk MoE (2026-08-16, mini fixture, top1 524, 20/20) | `XiaomiMiMo/MiMo-V2-Flash` | 313 GB |
 | ~~Nemotron 3~~ **DONE** | `NemotronForCausalLM` | `nemotron` | `NEMOTRON` (989) | **validated** — LayerNorm1P, relu2 non-gated MLP, partial rope (2026-08-16, `mgoin/nemotron-3-8b-chat-4k-sft-hf`, top1 7503 ' Paris', corr 0.99986) | `mgoin/nemotron-3-8b-chat-4k-sft-hf` | 17 GB |
 | Qwen3.5 | (Gate-Delta Net) | `qwen3_5` | `QWEN35` (21) | **4** — but **REFUSED** by generic CPU backend ("requires NPU/HIP") | — | — |
 
@@ -66,7 +66,7 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
    - MoE: `mlp.gate.weight` router (sqrtsoftplus, e_score_correction_bias `exp_probs_b`); **first 3 layers = hash_moe** (frozen `tid2eid[input_ids]` lookup!); **fused `experts.gate_up_proj`** (not separate gate/up); `shared_experts.gate/up/down_proj` with swiglu_limit clamp.
    - Engine rewrite path: port from our llama.cpp fork's `deepseek4.cpp` (1172 lines, correct). Gate impossible on this box (smallest GGUF = UD-IQ1_M 87GB > 79GB RAM + f32 dequant). Mini-fixture gate feasible (tiny DeepseekV4Config runs in torch 5.14, verified 2026-08-16).
 3. **GLM-5.2** — **MINI-GATE 2026-08-16: engine src/glm_moe_dsa.cpp implements the real arch (V3-MLA + DSA indexer with cross-layer shared top-k + sigmoid group-topk MoE); top1 171 == HF, 20/20. Real checkpoint gate deferred (160-exp MoE, needs GPU box).**
-4. **MiMo** — 256-expert MoE, add to dispatch, gate against MiMo-V2-Flash.
+4. **MiMo** — **MINI-GATE 2026-08-16: engine src/mimo_v2.cpp implements the real MoD hybrid (hybrid_layer_pattern SWA/full attention with separate dims + sliding window, v_scale, SWA sink bias, partial rope on first dims, sigmoid noaux_tc group-topk MoE); top1 524 == oracle, 20/20. Real 313GB checkpoint gate deferred to GPU box.**
 5. **Qwen3.5** — Gate-Delta Net; REFUSED by the generic backend, needs the NPU (FLM/XRT) or HIP path, not a CPU e2e gate. Separate workstream.
 
 **The gate mechanism (already built):** `Testing/bringup_runner.sh` + `Testing/models_manifest.json` + `Testing/e2e_seq_gen.cpp` (engine) + `Testing/e2e_gen_check.py` (torch oracle) / `e2e_numpy_ref*.py` (numpy oracle) / `e2e_gen_check_llamacpp.py` (llama.cpp oracle). A gate = manifest entry with a `gate` command that runs the engine on a prompt-id sequence and greps for the golden token chain captured once from the reference oracle. Adding a family = manifest entry + (on the right box) the checkpoint + the captured golden chain — no runner surgery.
