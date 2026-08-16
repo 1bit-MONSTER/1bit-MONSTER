@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="site/assets/brand-lockup.svg" alt="1bit.MONSTER" width="540">
+<img src="site/assets/og-default.png" alt="1bit MONSTER — One engine. Every model. Any chip." width="540">
 
 ## One engine. Every model. Any chip.
 
