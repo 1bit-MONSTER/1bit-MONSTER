@@ -1,17 +1,18 @@
 <div align="center">
 
-<img src="site/assets/og-default.png" alt="1bit MONSTER — One engine. Every model. Any chip." width="540">
+<img src="site/assets/banner.png" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
 ## One engine to rule them all
-
 
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
-[![Site](https://img.shields.io/badge/site-1bit.monster-C6FF3D.svg)](https://1bit.monster)
-[![Models](https://img.shields.io/badge/HF%20coverage-100%25-C6FF3D.svg)](docs/model-families/README.md)
-[![Backends](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-C6FF3D.svg)](docs/guides/architecture.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0E80BE?style=flat-square&labelColor=021621)](LICENSE)
+[![HF coverage](https://img.shields.io/badge/HF%20coverage-100%25-0E80BE?style=flat-square&labelColor=021621)](docs/model-families/README.md)
+[![Hardware](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-B26400?style=flat-square&labelColor=021621)](docs/guides/architecture.md)
+[![Gates](https://img.shields.io/badge/gates-17%2F17%20green-0E80BE?style=flat-square&labelColor=021621)](Testing/run_all.sh)
+[![Prefill](https://img.shields.io/badge/prefill-43.2%20TFLOPS-B26400?style=flat-square&labelColor=021621)](docs/wiki/performance.md)
+[![Site](https://img.shields.io/badge/site-1bit.monster-0E80BE?style=flat-square&labelColor=021621)](https://1bit.monster)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 
@@ -45,6 +46,12 @@ Coverage does not come from porting models one at a time. It comes from the arch
 The full-catalog end state — 500+ models, HuggingFace-native bring-up — is planned in **[docs/plans/monster-500-models.md](docs/plans/monster-500-models.md)**. The [models SSOT](docs/wiki/models.md) is the single source of truth for coverage; the [roadmap](docs/guides/roadmap.md) tracks the remaining gap (glm4/cohere2/lfm2 hybrid families, encoder-decoder T5/BART out of scope, ~2,000 one-off custom classes).
 
 **→ [All families, indexed](docs/model-families/README.md)** · **→ [Combined support SSOT](docs/wiki/models.md)**
+
+### Model families
+
+Every architecture the engine detects has its own page — params, 1BP size, backends, measured perf. 500+ HuggingFace-native bring-up is the end-state goal ([roadmap](docs/plans/monster-500-models.md)); today's manifest already spans:
+
+[Zyphra](docs/model-families/zyphra.md) · [Qwen](docs/model-families/qwen.md) · [Llama](docs/model-families/llama.md) · [Mistral](docs/model-families/mistral.md) · [Gemma](docs/model-families/gemma.md) · [Phi](docs/model-families/phi.md) · [Falcon](docs/model-families/falcon.md) · [OLMo](docs/model-families/olmo.md) · [Granite](docs/model-families/granite.md) · [SmolLM](docs/model-families/smollm.md) · [DeepSeek](docs/model-families/deepseek.md) · [GPT-OSS](docs/model-families/gpt-oss.md) · [Laguna](docs/model-families/laguna.md) · [Kimi](docs/model-families/kimi.md) · [BitNet / Bonsai](docs/model-families/bitnet-bonsai.md) · [Whisper](docs/model-families/whisper.md)
 
 ## Frontier gates: 5/5 validated against reference implementations
 
@@ -85,6 +92,8 @@ Six hardware targets are probed at startup (`has_npu`, `has_hip_gpu`, `has_vulka
 **22 proprietary libraries. 209 bitstreams. Zero documentation.**
 
 AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
+
+**As of 2026-08-15, the last proprietary dependency is gone.** The engine's own instruction-stream generator emits **byte-identical** output to the closed-source runtime's own dumps (verified `cmp`-exact on every op), builds xclbins with the fully open `aiecc`/`peano-clang` toolchain, and now **beats** the proprietary stack's own kernels by 11-15% — 2× on a 35B MoE model. Not just replicated: outperformed, with nothing closed-source left in the loop.
 
 **→ [Read the full journey](docs/journey.md)** — every crash, breakthrough, and bug, documented in real time.
 **→ [The Audit Trail](docs/audit-trail.md)** — 1.5 TB of raw evidence, archived nightly on the Raspberry Pi backup server.
