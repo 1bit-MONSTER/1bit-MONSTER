@@ -694,6 +694,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "deepseek_v4")  == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "deepseek4")    == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "dflash")       == 0) return RCPP_ARCH_DEEPSEEK_V4;
+    if (strcmp(s, "dflashdraft")  == 0) return RCPP_ARCH_QWEN3;  // DFlashDraftModel (model_type qwen3 — nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash, recon 2026-08-16)
     if (strcmp(s, "deepseek4_dspark") == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "smollm")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "smollm2")   == 0) return RCPP_ARCH_LLAMA;

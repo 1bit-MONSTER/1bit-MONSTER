@@ -1050,6 +1050,39 @@ int main() {
     check("zzjrabbit22", RCPP_ARCH_ZZJRABBIT22, "zzjrabbit22");
     check("zzjrabbit3", RCPP_ARCH_ZZJRABBIT3, "zzjrabbit3");
     check("zzjrabbitmodel", RCPP_ARCH_ZZJRABBIT, "zzjrabbitmodel");
+
+    // ── 2026-08-16 MONSTER ticket closures (#1649-#1687) — arch mappings landed with the
+    //    engine bring-up; these lock in the registry mapping each ticket required.
+    check("granitemoehybrid", RCPP_ARCH_GRANITEMOEHYBRID, "granitemoehybrid (#1649)");
+    check("qwen3next", RCPP_ARCH_QWEN3NEXT, "qwen3next (#1650)");
+    check("minimaxm2", RCPP_ARCH_MINIMAXM2, "minimaxm2 (#1651)");
+    check("lfm2moe", RCPP_ARCH_LFM2MOE, "lfm2moe (#1655)");
+    check("cohere2", RCPP_ARCH_COHERE2, "cohere2 (#1656)");
+    check("falconh1", RCPP_ARCH_FALCONH1, "falconh1 (#1657)");
+    check("dflashdraft", RCPP_ARCH_QWEN3, "dflashdraft (#1659) — DFlashDraftModel model_type qwen3");
+    check("rwkv", RCPP_ARCH_RWKV, "rwkv (#1660)");
+    check("dynamicalibi", RCPP_ARCH_DYNAMICALIBI, "dynamicalibi (#1663)");
+    check("opensci", RCPP_ARCH_LLAMA, "opensci (#1664)");
+    check("transformer", RCPP_ARCH_GPT2, "transformer (#1665) — gpt2 profile (codeparrot-small)");
+    check("nanochat", RCPP_ARCH_NANOCHAT, "nanochat (#1668)");
+    check("afmoe", RCPP_ARCH_AFMOE, "afmoe (#1669)");
+    check("lisa", RCPP_ARCH_GPT2, "lisa (#1670) — dialogpt-based gpt2 profile");
+    check("gpt", RCPP_ARCH_GPT2, "gpt (#1673) — GptForCausalLM gpt2 profile");
+    check("chess", RCPP_ARCH_GPT2, "chess (#1680) — ChessForCausalLM gpt2 layout");
+    check("ernie4_5_moe", RCPP_ARCH_ERNIE45MOE, "ernie4_5_moe (#1682)");
+    check("llada", RCPP_ARCH_LLAMA, "llada (#1685) — llama profile");
+    check("slm", RCPP_ARCH_LLAMA, "slm (#1686) — sathishphdai SLM family");
+    check("bailingmoe", RCPP_ARCH_LLAMA, "bailingmoe (#1683) — llama-layout MoE");
+    check("sarvammoe", RCPP_ARCH_SARVAM, "sarvammoe (#1684)");
+    check("mellum", RCPP_ARCH_MELLUM, "mellum (#1687)");
+    check("raven", RCPP_ARCH_RAVEN, "raven (#1687)");
+    check("talkie", RCPP_ARCH_TALKIE, "talkie (#1687)");
+    check("sdar", RCPP_ARCH_GPT2, "sdar (#1687) — gpt2 profile");
+    check("caca", RCPP_ARCH_LLAMA, "caca (#1687) — llama profile");
+    check("kimik25", RCPP_ARCH_DEEPSEEK, "kimik25 (#1687) — deepseek-v3 layout");
+    check("detikzify", RCPP_ARCH_LLAMA, "detikzify (#1687) — llama text decoder");
+    check("iquestcoder", RCPP_ARCH_LLAMA, "iquestcoder (#1687) — llama profile");
+    check("helix", RCPP_ARCH_GPT2, "helix (#1687) — gpt2 profile");
     std::printf("ARCH MAPPING: all %d checks passed\n", total);
     return 0;
 }
