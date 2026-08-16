@@ -9,7 +9,6 @@
         "smollm2",
         "smollm3",
         "openelm",
-        "nemotron",
         "minicpm",
         "baichuan",
         "baichuan2",
@@ -555,6 +554,25 @@
       "status": "validated",
       "tier": "numpy-structural",
       "result": "VALIDATED 2026-08-15 (numpy-structural): engine hidden states corr 0.9999 vs numpy port of modeling_nemotron_h.py 5.14 on tiny-NemotronHForCausalLM-nano. New bespoke CPU backend src/nemotron_h_engine.cpp (per-layer layers_block_type dispatch: Mamba-2 mixer with Euler dB=dt*B discretization + causal depthwise conv (w[0]=oldest tap), NoPE GQA attention, relu2 MLP, sigmoid+correction-bias group-topk MoE with up/down-only experts + shared experts). Final-logit argmax flips on the degenerate random-init checkpoint (logits +/-0.06, pythia-70m situation); clean 20/20 needs a real Nemotron-H-4B/8B checkpoint. Gate: python3 Testing/e2e_numpy_ref_nemotronh.py <dir> <ids> 10"
+    },
+    {
+      "family": "nemotron",
+      "hf_arch_strings": [
+        "nemotron"
+      ],
+      "mapping_target": "NEMOTRON",
+      "quirk_flags": {
+        "rope": "partial-0.5",
+        "rotate_at_load": false,
+        "moe": false,
+        "bias": "qkv+layernorm",
+        "norm": "layernorm1p",
+        "mlp": "relu2-non-gated"
+      },
+      "e2e_model": "mgoin/nemotron-3-8b-chat-4k-sft-hf",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "full"
     }
   ]
 }

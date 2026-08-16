@@ -100,7 +100,7 @@ int main() {
         else std::printf("      %s -> arch=%d (%s)\n", label, (int)m->arch, m->architecture.c_str());
     };
     expect_arch("openelm", RCPP_ARCH_LLAMA, "OpenELMForCausalLM");
-    expect_arch("nemotron", RCPP_ARCH_LLAMA, "NemotronForCausalLM");
+    expect_arch("nemotron", RCPP_ARCH_NEMOTRON, "NemotronForCausalLM");
     expect_arch("minicpm", RCPP_ARCH_LLAMA, "MiniCPMForCausalLM");
     expect_arch("qwen3", RCPP_ARCH_QWEN3, "Qwen3ForCausalLM (regression)");
 

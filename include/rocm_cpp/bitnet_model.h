@@ -586,6 +586,7 @@ typedef enum {
     RCPP_ARCH_ZZJRABBIT = 985,             // BVV (model_unfrozen)
     RCPP_ARCH_FUYU = 986,            // FuyuForCausalLM (VLM — causal decoder, image tokens inline)
     RCPP_ARCH_MUSE = 987,            // Muse-Glimmer (VLM — causal multimodal decoder)
+    RCPP_ARCH_NEMOTRON = 989,        // Nemotron-3/4 — LayerNorm1P (weight+1, bias), relu2 non-GLU MLP, partial rope
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -675,8 +676,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     // ── 2026-08-13 bring-up pilot: LLaMA-layout architectures (GGUF + HF class names) ──
     if (strcmp(s, "openelm")        == 0) return RCPP_ARCH_LLAMA;  // Apple OpenELM (RMSNorm, GQA, RoPE)
     if (strcmp(s, "OpenELMForCausalLM") == 0) return RCPP_ARCH_LLAMA;
-    if (strcmp(s, "nemotron")       == 0) return RCPP_ARCH_LLAMA;  // NVIDIA Nemotron (Llama-3.1 layout)
-    if (strcmp(s, "NemotronForCausalLM") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "nemotron")       == 0) return RCPP_ARCH_NEMOTRON;  // Nemotron-3/4 (LayerNorm1P + relu2 MLP + partial rope)
+    if (strcmp(s, "NemotronForCausalLM") == 0) return RCPP_ARCH_NEMOTRON;
     if (strcmp(s, "minicpm")        == 0) return RCPP_ARCH_LLAMA;  // MiniCPM (LLaMA-layout, added bias)
     if (strcmp(s, "MiniCPMForCausalLM")  == 0) return RCPP_ARCH_LLAMA;
     // ── New VLM architectures ──
@@ -1618,7 +1619,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "cambrian_qwen") == 0) return RCPP_ARCH_QWEN2;  // Cambrian-1 (qwen2 text)
     if (strcmp(s, "hunyuan_v1_dense") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "exaone4")     == 0) return RCPP_ARCH_LLAMA;
-    if (strcmp(s, "nemotron")    == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "nemotron")    == 0) return RCPP_ARCH_NEMOTRON;
     if (strcmp(s, "fp8_qwen3")   == 0) return RCPP_ARCH_QWEN3;    // FP8 wrapper, same layout
     if (strcmp(s, "fp8_qwen2")   == 0) return RCPP_ARCH_QWEN2;
     if (strcmp(s, "fp8_llama")   == 0) return RCPP_ARCH_LLAMA;

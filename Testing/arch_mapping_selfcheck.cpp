@@ -21,8 +21,8 @@ int main() {
     // ── 2026-08-13 bring-up pilot: LLaMA-layout architectures (GGUF + HF class names)
     check("openelm", RCPP_ARCH_LLAMA, "openelm");
     check("OpenELMForCausalLM", RCPP_ARCH_LLAMA, "OpenELMForCausalLM");
-    check("nemotron", RCPP_ARCH_LLAMA, "nemotron");
-    check("NemotronForCausalLM", RCPP_ARCH_LLAMA, "NemotronForCausalLM");
+    check("nemotron", RCPP_ARCH_NEMOTRON, "nemotron (Nemotron-3 dense)");
+    check("NemotronForCausalLM", RCPP_ARCH_NEMOTRON, "NemotronForCausalLM");
     check("minicpm", RCPP_ARCH_LLAMA, "minicpm");
     check("MiniCPMForCausalLM", RCPP_ARCH_LLAMA, "MiniCPMForCausalLM");
 
