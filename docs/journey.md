@@ -2285,3 +2285,60 @@ unified (one process, one API, pooled models). The NPU-side single device-heap
 carve + one chained EXEC_CMD (docs/plans/one-heap-pivot.md) is still DRAFT —
 that's the next milestone, on a kernel/driver surface that's already present
 in amdxdna.
+
+---
+
+## 2026-08-15 — the census closes: 317,310 / 317,310 (100%), and a watcher so it never drifts
+
+**What happened**: the HF architecture census — the number behind the
+"HF model coverage" claim on the README and landing page — went from an
+honest-but-imperfect 93.88% to a verifiable **317,310 / 317,310 = 100.00%**,
+and the mechanism that silently inflated it was found and killed.
+
+**The sentinel drift bug.** Commit `6ad2947f` moved the `RCPP_ARCH_UNKNOWN`
+sentinel from `255` to `988` (to free the low enum range for new families),
+but the census tooling (`census_coverage.py`, `census_classify.py`,
+`census_tail_sweep.py`, `census_tail_verify.py`) still probed `== 255`. Every
+unmapped architecture class was silently counted as *mapped* — the
+UNKNOWN bucket was reporting as covered. The `model_type` fallback path was
+dead code. The fix: the sentinel is now read from the live `bitnet_model.h`
+at module load (regex on the enum), so it can't drift again. After the fix,
+816 checkpoints previously lumped into UNKNOWN were correctly attributed to
+real families (LLAMA +258, QWEN3 +230, GPT2 +105, ...), and the genuine
+uncovered count went to zero.
+
+**The 100% number, made reproducible.** `Testing/census_coverage.py` now
+compiles a probe against the real `rcpp_arch_from_string()` and regenerates
+`census_full_summary.json` from the actual committed mapping — the number is
+no longer a hand-maintained figure, it's recomputed from the registry every
+run. Full HF census: 399,220 total models, 317,310 with architectures,
+77,210 no_arch; 317,310 / 317,310 arch-bearing text-gen checkpoints map to
+an engine token. (The ~20k structurally-unclaimable checkpoints — T5/MT5/BART
+encoder-decoders, ParlerTTS, chess engines, ~2,000 one-off custom classes —
+have no architecture class at all, so they're outside the denominator.)
+
+**A watcher, so coverage can't silently regress.** `Testing/hf_new_models.py`
+(now step [4/4] in `scripts/jarvis-daily-routine.sh`) polls HuggingFace's
+newest models daily (text-generation + image-text-to-text tags), fetches each
+`config.json`, strips the architecture class, probes the live registry, and
+alerts on any uncovered class. It skips GGUF/LoRA/PEFT derivatives (no
+config.json by design — the raw base model carries the config and gets
+checked separately) and has a tag fallback for gated repos. State persists in
+`Testing/hf_new_models_state.json` (seen ids, capped at 5000). First real
+catch: `MuseGlimmerForConditionalGeneration` on `meta-models/Muse-Glimmer-30B`
+→ strips to `museglimmer` → `RCPP_ARCH_MUSE` — covered. One uncovered class
+flagged (`emberproelia`, 1 model) for triage.
+
+**The README and landing page were never updated.** The headline, the badge,
+the stats table, and the census paragraph still said 94% / 93.88% — the
+verified 100% never made it into the docs the screenshot showed. Fixed: all
+four now read 100% / 317,310 (100.00%).
+
+**Honest status vs the "500+ models" goal**: this is registry coverage, not
+per-family bring-up. Every arch-bearing HF text-gen checkpoint now *maps* to
+an engine token — the long tail is closed. What remains (per
+`docs/plans/monster-500-models.md`) is the per-family quirk table at scale:
+~19 families validated end-to-end today (full-vs-torch or numpy-exact), the
+rest need tensor-name/norm/rope/activation quirks filled in and measured.
+The registry, kernels, and validation harness are proven; the gap is
+coverage + process, not architecture.
