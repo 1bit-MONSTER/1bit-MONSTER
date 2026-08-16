@@ -27,7 +27,16 @@ autoinstall:
     allow-pw: false
     authorized-keys:
       - "__SSH_PUBLIC_KEY__"
-  packages: []
+  # unified_server (from the 1bit-systems .deb) dynamically links against
+  # XRT (NPU runtime) and libwebsockets, neither of which the .deb declares
+  # as a Depends and neither of which TheRock/ROCm vendors — both are
+  # ordinary Ubuntu universe packages. Without these the API service fails
+  # to exec at all (dynamic linker can't resolve them) — found by actually
+  # booting a built ISO in QEMU and inspecting the failing systemd unit.
+  packages:
+    - libxrt2
+    - libxrt-npu2
+    - libwebsockets19t64
   late-commands:
     - "mkdir -p /target/opt/1bit-iso-pool"
     - "cp -r /cdrom/pool/. /target/opt/1bit-iso-pool/"
@@ -36,6 +45,9 @@ autoinstall:
     - "curtin in-target --target=/target -- apt-mark hold mesa-vulkan-drivers libvulkan1 bolt linux-image-generic linux-headers-generic linux-generic"
     - "curtin in-target --target=/target -- mkdir -p /opt/rocm-therock"
     - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-7.14.0a20260612-gfx1151.tar.gz -C /opt/rocm-therock"
+    - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-7.14.0a20260612-core.tar.gz -C /opt/rocm-therock"
+    - "curtin in-target --target=/target -- sh -c \"printf '/opt/rocm-therock/_rocm_sdk_libraries_gfx1151/lib\\n/opt/rocm-therock/_rocm_sdk_core/lib\\n/opt/rocm-therock/_rocm_sdk_core/lib/llvm/lib\\n' > /etc/ld.so.conf.d/rocm-therock.conf\""
+    - "curtin in-target --target=/target -- ldconfig"
     - "curtin in-target --target=/target -- mkdir -p /etc/default/grub.d"
     - "curtin in-target --target=/target -- sh -c \"printf 'GRUB_CMDLINE_LINUX_DEFAULT=\\\"\\$GRUB_CMDLINE_LINUX_DEFAULT ttm.pages_limit=31457280 amdgpu.no_system_mem_limit=1\\\"\\n' > /etc/default/grub.d/1bit.cfg\""
     - "curtin in-target --target=/target -- update-grub"
