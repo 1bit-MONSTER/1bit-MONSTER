@@ -154,5 +154,10 @@ engine/npu/xclbins/v26_backup/
 
 # pixi env is a local toolchain cache (mojo==1.0.0 pinned in pixi.lock)
 .pixi/
-# ASan build dir
+# ASan build tree (local debug)
 build-asan/
+
+# ── AIE/Vitis sim artifacts ──
+.Xil/
+x86simulator_output/
+Work/
