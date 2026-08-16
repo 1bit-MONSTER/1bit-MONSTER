@@ -113,10 +113,17 @@ convert_model() {
     echo "    Architecture: $arch"
     echo "    Quantization: $quant"
 
-    # Use the Python converter with safetensors support
-    python3 "$SCRIPT_DIR/hf_to_onebp.py" \
-        --input "$source_dir" \
-        --output "$output_file" \
+    # Mojo twin (tools/hf_to_onebp.mojo); .py cut in the Mojo fold (P2.2)
+    if [ ! -x "$SCRIPT_DIR/build/hf_to_onebp" ]; then
+        echo "    Building hf_to_onebp (Mojo twin)..."
+        (cd "$SCRIPT_DIR" && mojo build tools/hf_to_onebp.mojo -o build/hf_to_onebp) || {
+            echo "    ERROR: failed to build hf_to_onebp (mojo build)" >&2
+            return 1
+        }
+    fi
+    "$SCRIPT_DIR/build/hf_to_onebp" \
+        -i "$source_dir" \
+        -o "$output_file" \
         --arch "$arch" \
         --quant "$quant" \
         2>&1 | sed 's/^/    /'

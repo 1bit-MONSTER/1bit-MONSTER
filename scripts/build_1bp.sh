@@ -13,7 +13,9 @@ HF_REPO="${4:-$MODEL_NAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="$SCRIPT_DIR/models"
-CONVERTER="$SCRIPT_DIR/tools/gguf_to_onebp.py"
+# C++ twin (tools/gguf_to_onebp.cpp) — v3 header with GGUF metadata; the
+# .py legacy converter was cut in the Mojo fold (P2.2). Same CLI contract.
+CONVERTER="$SCRIPT_DIR/build/gguf_to_onebp"
 HF_TOKEN="${HF_TOKEN:-$(cat ~/.cache/huggingface/token)}"
 
 # Determine if this is a TQ2 ternary model
@@ -46,7 +48,14 @@ fi
 echo ""
 echo "--- Step 2: Converting to 1BP ---"
 OUTPUT_FILE="$MODELS_DIR/$MODEL_NAME.1bp"
-python3 "$CONVERTER" "$GGUF_PATH" "$OUTPUT_FILE" $TQ2_FLAG
+if [ ! -x "$CONVERTER" ]; then
+    echo "Building gguf_to_onebp (C++ twin)..."
+    cmake --build "$SCRIPT_DIR/build" --target gguf_to_onebp -j8 2>/dev/null || {
+        echo "ERROR: failed to build converter. Run cmake -B build first." >&2
+        exit 1
+    }
+fi
+"$CONVERTER" "$GGUF_PATH" "$OUTPUT_FILE" $TQ2_FLAG
 echo "Converted to $OUTPUT_FILE"
 
 # Step 3: Upload to HuggingFace

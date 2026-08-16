@@ -34,7 +34,8 @@ std::vector<float> whisper_load_wav(const std::string& path, int* out_sample_rat
             fseek(f, 6, SEEK_CUR); // skip byte rate + block align
             if (fread(&bits, 2, 1, f) != 1) { fclose(f); return {}; }
             if (chunk_size > 16) fseek(f, chunk_size - 16, SEEK_CUR);
-            else if (chunk_size > 0) fseek(f, chunk_size, SEEK_CUR); // skip remaining fmt bytes
+            // fmt chunks of exactly 16 bytes (plain PCM) are fully consumed
+            // above — do NOT skip chunk_size again or we land mid-next-chunk.
         } else if (memcmp(chunk_id, "data", 4) == 0) {
             int bytes_per_sample = (bits >= 8) ? (bits / 8) : 2;
             if (bytes_per_sample <= 0) bytes_per_sample = 2;
@@ -222,6 +223,7 @@ std::vector<float> whisper_log_mel_spectrogram(const float* audio, int n_samples
 // GGUF model loader
 // ====================================================================
 bool WhisperModel::load_from_gguf(const std::string& path, const WhisperConfig* override_cfg) {
+    whisper_gpu_free(this);  // drop any stale GPU weight registry entry for this object
     GgufReader r;
     if (!r.open(path)) {
         fprintf(stderr, "[whisper] FAIL: could not open %s\n", path.c_str());
@@ -392,9 +394,31 @@ void WhisperModel::clear() {
 }
 
 // ====================================================================
+// GPU routing
+// ====================================================================
+
+static bool whisper_gpu_active() {
+    static int on = [] {
+        const char* e = getenv("WHISPER_GPU");
+        if (e && (!strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false"))) return 0;
+        return whisper_gpu_available() ? 1 : 0;
+    }();
+    return on == 1;
+}
+
+// ====================================================================
 // Encoder forward
 // ====================================================================
 std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, int n_frames) {
+    if (whisper_gpu_active()) {
+        std::vector<float> out((size_t)model.cfg.n_audio_ctx * model.cfg.n_audio_state);
+        int ctx = 0;
+        if (whisper_gpu_encode(&model, mel, n_frames, out.data(), &ctx) == 0) {
+            out.resize((size_t)ctx * model.cfg.n_audio_state);
+            return out;
+        }
+        fprintf(stderr, "[whisper] GPU encode failed — falling back to scalar\n");
+    }
     using namespace whisper_math;
     const auto& cfg = model.cfg;
     int DA = cfg.n_audio_state;
@@ -423,7 +447,7 @@ std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, i
             x[(size_t)t * DA + d] = h2[(size_t)t * DA + d] + model.enc_pos_emb[(size_t)t * DA + d];
     
     // Transformer encoder layers
-    std::vector<float> x2(DA), attn_out(DA), ffn_up(DA * 4), ffn_gate(DA * 4);
+    std::vector<float> x2(DA), attn_out((size_t)n_ctx * DA), ffn_up(DA * 4), ffn_gate(DA * 4);
     for (int il = 0; il < L; il++) {
         auto& l = model.enc_layers[il];
         
@@ -472,6 +496,13 @@ std::vector<float> whisper_encode(const WhisperModel& model, const float* mel, i
 std::vector<float> whisper_decode_step(const WhisperModel& model, const std::vector<int>& tokens,
                                         const float* enc_out, int n_enc_ctx,
                                         std::vector<float>& kv_cache) {
+    if (whisper_gpu_active()) {
+        std::vector<float> logits((size_t)model.cfg.n_vocab);
+        if (whisper_gpu_decode_step(&model, tokens.data(), (int)tokens.size(), logits.data()) == 0) {
+            return logits;
+        }
+        fprintf(stderr, "[whisper] GPU decode failed — falling back to scalar\n");
+    }
     using namespace whisper_math;
     const auto& cfg = model.cfg;
     int DT = cfg.n_text_state;
@@ -487,7 +518,7 @@ std::vector<float> whisper_decode_step(const WhisperModel& model, const std::vec
         }
     }
     
-    std::vector<float> x2(DT), attn_out(DT), ca_out(DT), ffn_up(DT * 4), ffn_gate(DT * 4);
+    std::vector<float> x2(DT), attn_out(DT), ca_out((size_t)N * DT), ffn_up(DT * 4), ffn_gate(DT * 4);
     
     for (int il = 0; il < cfg.n_text_layer; il++) {
         auto& l = model.dec_layers[il];

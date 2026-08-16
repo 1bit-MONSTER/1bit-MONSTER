@@ -1,65 +1,93 @@
-# JARVIS — The Flagship Voice Pipeline
-
-JARVIS is the reference **end-to-end application** built on the 1bit engine: a fully local voice assistant where every stage — listening, understanding, thinking, and speaking — runs on the same binary, on your own hardware. It's the clearest demonstration of what the engine is *for*.
-
-> JARVIS is an application of the engine, not a separate product.
-
-> **Ecosystem:** [max-xdna-backend](https://github.com/1bit-systems/max-xdna-backend) is a secondary experiment documenting the XDNA 2 NPU work for the upstream/funding story — the engine itself runs the same NPU natively, no MAX involved. If you only want raw inference, you never need it — but it shows the whole stack working together: STT + LLM + TTS + voice cloning, no cloud, no Python in the hot path.
-
-## The pipeline
+# JARVIS — the voice assistant that ships with 1bit
 
 ```
-mic ─▶ VAD ─▶ STT (Whisper) ─▶ router ─▶ LLM ─▶ TTS (codec) ─▶ voice ─▶ speaker
-        │                          │        │        │            │
-     silence                   picks the  planner  persona    voice-clone
-     detection                 best model + RAG +   /style     adapter
-                               per request  tools
+mic → VAD → STT (libwhisper) → LLM (engine) → TTS (piper) → speaker
 ```
 
-| Stage | What it does | Backed by |
-|-------|--------------|-----------|
-| **Capture / VAD** | Mic streaming + voice-activity detection (silence gating) | `tools/jarvis/audio_stream.*`, `vad.*` |
-| **STT** | Speech → text | [Whisper V3 Turbo](model-families/whisper.md) via FLM's whisper HTTP endpoint (`:8496`, override `JARVIS_STT_URL`) — replaced the earlier whisper.cpp+ffmpeg fork/exec path |
-| **Route** | Pick the best model/backend per request | `tools/jarvis/routing.*` → `unified_server` `/v1/chat/completions` |
-| **Reason** | Multi-step planning, retrieval, tool calls | `planner.*`, `rag.*`, `tools.*`, `context.*` |
-| **LLM** | Generate the response | any catalog model — auto-backend-selected |
-| **Persona** | Voice/character + response style | `persona.*`, `personas/*.json` |
-| **TTS** | Text → speech (streaming) | `codec_tts.*`, `tts.*` |
-| **Voice clone** | Custom cloned voice | RVQ-VAE codec + QLoRA adapter + ONNX decoder (`zaya_audio/`) |
-| **Playback** | Stream audio out | `audio_out.*` |
+JARVIS is the reference app for the engine: every stage is in-process,
+pure C++, and (for the LLM stage) runs on any engine backend — NPU, GPU, CPU.
 
-The **router** sends every catalog model through `unified_server`'s own auto-backend-selecting endpoint (NPU/GPU/CPU chosen automatically); unknown model ids fall through to Ollama. The **planner** decomposes a request into 2–5 subtasks, routes each to the model that fits it best, runs each with its own tool-call sub-loop, then synthesizes one grounded final answer.
+## Default stack: Zyphra (the crown jewel)
 
-## Running it
+JARVIS's default experience is the **Zyphra ecosystem** — the complete
+MIT open-source pipeline (ZR1 routing → ZAYA / BlackMamba / Zamba2 LLMs →
+codec voice). When started without `--model`, JARVIS picks the first Zyphra
+model found in the weights dir (preference: ZAYA1-8B → ZAYA1-74B →
+BlackMamba-2.8B → BlackMamba-1.5B → Zamba2-7B/2.7B/1.2B → ZR1-1.5B).
+
+Clients can bypass the default entirely: `jarvis --model <any>` loads
+their own model for a different experience. Install with
+`bash install.sh --with-jarvis` to build JARVIS, get a `jarvis` launcher
++ config at `~/.config/1bit/jarvis.env`, and an optional systemd user
+unit to start it at login.
+
+## The rebuild (2026-08-06)
+
+JARVIS v1 was a C++ port of the deleted Python `jarvis/` package — and it
+carried every fork that ever lived inside it:
+
+| Gutted | Was | Why |
+|--------|-----|-----|
+| `auth.cpp/h` | API-key auth for the SaaS | voice-cloning product, gone |
+| `billing.cpp/h` | Stripe metering | voice-cloning product, gone |
+| `usage.cpp/h` | per-user usage caps | voice-cloning product, gone |
+| `beacon.cpp/h` | 1bit-Mobile pairing | agent stack, gone |
+| `persona.cpp/h`, `planner.cpp/h` | agent personas/planner | agent stack, gone |
+| `rag.cpp/h`, `tools.cpp/h` | RAG + tool calling | agent stack, gone |
+| `routing.cpp/h`, `context.cpp/h` | agent routing/memory | engine routers own this now |
+| `audio_stream.cpp/h` | WebSocket side-server (own port) | two servers for one voice loop |
+| `codec_tts.cpp/h`, `voice_cli.py` | ONNX codec TTS + Python CLI | voice-cloning (personal quest — kept out of the repo; the codec decoder can return as a stock voice later) |
+| `jarvis_server.cpp` | 1761-line HTTP agent server (port 8080 → talks to unified_server :8088) | the fork condenser itself |
+| `zaya_audio/` | Python training toolkit (codec, voice packs) | personal quest, gutted |
+
+Rebuilt as **JARVIS v2**:
+
+- **One process.** In-process `BackendManager` — the old JARVIS talked to a
+  second server over HTTP. The engine IS the app.
+- **Pure C++.** No Python anywhere. The only subprocesses are `arecord`,
+  `aplay`, and `piper` — the same fork/exec idiom as the engine's own NPU
+  worker.
+- **Thin.** `tools/jarvis/` is 9 files, ~1300 lines: `audio` (capture +
+  playback), `stt` (libwhisper wrapper), `tts` (piper bridge), `vad`
+  (energy-based, kept from v1), `jarvis_app` (the pipeline).
+
+## Build & run
 
 ```bash
-# build the engine (single binary)
-cmake -B build && cmake --build build --target onebin
-
-# start the inference server the pipeline routes to (default port 8088 —
-# jarvis's router defaults to http://127.0.0.1:8088, override with UNIFIED_URL
-# if you pick a different port here)
-./build/1bit unified
-
-# run the JARVIS voice loop (subcommand of the same binary)
-./build/1bit jarvis
+cmake --build build --target jarvis_app    # build/jarvis
+# or inside the one binary:
+./build/1bit jarvis --model "Qwen3-0.6B" --text        # text chat
+./build/1bit jarvis --model "Qwen3-0.6B" \
+    --whisper models/whisper-tiny.gguf \
+    --piper-model ~/piper/en_US-lessac-medium.onnx    # voice
 ```
 
-## Voice cloning
+Flags: `--model` (required), `--weights-dir`, `--text`, `--whisper`,
+`--piper` / `--piper-model`, `--mic DEVICE`, `--system`, `--max-tokens`.
 
-Cloned voices are produced offline by the `zaya_audio` pipeline and then loaded as a voice pack at runtime:
+## Status & known limits (honest)
 
-```bash
-# record → train codec → extract embeddings → train adapter → export
-python -m zaya_audio.pipeline --mode all --voice-name my_voice
-```
+| Stage | Status |
+|-------|--------|
+| VAD | ✅ energy-based, 20 ms frames, lookback/ramp-down |
+| LLM | ✅ in-process engine, any backend, history (last 6 turns); default = Zyphra stack |
+| TTS | ✅ piper (fork/exec, 22050 Hz); codec voice = P2 |
+| STT | ✅ GPU-accelerated (src/whisper_hip.hip) when a HIP device is present; scalar CPU fallback; `WHISPER_GPU=0` forces scalar. Verify on hardware: `whisper_demo model.gguf audio.wav --check-gpu` |
+| Barge-in | 🔲 utterances during a reply are dropped (P1) |
 
-Stages can be run independently and resumed. The exported adapter + ONNX decoder is what the TTS stage streams at inference time.
+## Roadmap
 
-## Personas
-
-Personas (`personas/zaya_default.json`, `personas/zaya_professional.json`) set the assistant's character, system prompt, and voice/style. Swap or add your own JSON to change how JARVIS sounds and behaves.
-
----
-
-**See also:** [Zyphra family](model-families/zyphra.md) (the LLM/TTS/voice models) · [Whisper](model-families/whisper.md) (STT) · [architecture](guides/architecture.md)
+- **P1 — STT on the engine.** GPU path landed 2026-08-06
+  (`src/whisper_hip.hip`, runtime-detected, `WHISPER_GPU=0` to force
+  scalar). Remaining: route whisper through an engine backend for NPU.
+  Verify on hardware first: `whisper_demo model.gguf audio.wav --check-gpu`
+- **P1 — sentence streaming.** Piper per sentence while the LLM keeps
+  generating (the old codec decoder's 13 ms framing was built for this;
+  the clean pipeline makes it a queue, not a server).
+- **P1 — barge-in.** VAD detects speech during playback → stop TTS, new
+  turn.
+- **P2 — codec voice returns.** The RVQ codec decoder (`src/codec_decoder`
+  pattern) as a *stock* voice via ONNX Runtime — no training, no voice
+  packs, no per-user anything.
+- **P2 — ALSA native audio.** `arecord`/`aplay` pipes → `snd_pcm` when
+  latency tuning matters (see `ponytail:` note in `audio.h`).

@@ -10,7 +10,7 @@
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s model.1bp [name]\n", argv[0]); return 2; }
     const char* want = argc > 2 ? argv[2] : "token_embd.weight";
-    OnebpModel m;
+    NpuOnebpModel m;
     if (!m.open(argv[1])) { printf("NOOPEN %s\n", argv[1]); return 1; }
     int n = m.tensor_count();
     bool found = false;

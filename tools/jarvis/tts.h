@@ -1,24 +1,30 @@
-// tts.h — text-to-speech via the Piper CLI.
-// C++ port of jarvis/tts.py (recovered from git history at c252174aa~1).
-// Piper itself is a compiled C++ binary (not Python) — shelling out to it
-// stays within this project's zero-Python-at-runtime mandate, same as
-// this file's own use of ffmpeg/aplay elsewhere in the jarvis port.
-//
-// Scope note: the original also had a custom RVQ-VAE voice-cloning engine
-// (jarvis/voice/engine.py+codec.py, PyTorch) tried before this Piper
-// fallback. That's explicitly out of scope for this port (see the plan
-// file) — Piper's stock voice is what this file provides.
+// tts.h — Text-to-speech via the `piper` binary (fork/exec, pure C++).
+// Out-of-the-box voice: Piper runs anywhere, one ONNX voice file, no
+// training. The trained RVQ codec voice (voice cloning) was deliberately
+// gutted — see docs/jarvis.md.
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace jarvis {
 
-// Synthesizes `text` with the named Piper voice (a "<voice>.onnx" model
-// under $PIPER_VOICES_DIR, default ~/piper-voices) and returns a complete
-// WAV file (mono, 16-bit, 22050 Hz — Piper's raw output rate, matches the
-// original's hardcoded assumption for this specific voice model). Returns
-// an empty string if the voice model isn't found or piper fails/times out.
-std::string synthesize_speech(const std::string& text, const std::string& voice = "en_US-lessac-medium");
+class TTS {
+public:
+    /// piper_bin: path to piper binary (default "piper" on PATH).
+    /// model_path: path to a piper .onnx voice.
+    bool load(const std::string& piper_bin, const std::string& model_path);
 
-} // namespace jarvis
+    bool loaded() const { return loaded_; }
+
+    /// Synthesize text; returns f32 mono PCM at out_sample_rate (22050).
+    /// Empty vector on failure (missing piper, model, or synth error).
+    std::vector<float> synth(const std::string& text, int& out_sample_rate);
+
+private:
+    std::string piper_bin_;
+    std::string model_path_;
+    bool loaded_ = false;
+};
+
+}  // namespace jarvis

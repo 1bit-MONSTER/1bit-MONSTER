@@ -6,7 +6,13 @@ warn() { echo -e "${YELLOW}[1bit]${NC} $*"; }
 
 REPO_URL="https://github.com/1bit-systems/1bit-systems.git"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/1bit}"
-SKIP_ROCM=false; [ "${1:-}" = "--skip-rocm" ] && SKIP_ROCM=true
+SKIP_ROCM=false; WITH_JARVIS=false
+for arg in "$@"; do
+    case "$arg" in
+        --skip-rocm) SKIP_ROCM=true ;;
+        --with-jarvis) WITH_JARVIS=true ;;
+    esac
+done
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 
 # ── Kernel version check ───────────────────────────────────────────────────────
@@ -25,16 +31,17 @@ fi
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     echo "Usage: curl -fsSL https://raw.githubusercontent.com/1bit-systems/1bit-systems/main/install.sh -o install.sh"
     echo "       # Review the script, then:"
-    echo "       bash install.sh [--skip-rocm]"
+    echo "       bash install.sh [--skip-rocm] [--with-jarvis]"
     echo ""
-    echo "  --skip-rocm  Skip kernel build (use pre-build librocm_cpp.so)"
+    echo "  --skip-rocm    Skip kernel build (use pre-build librocm_cpp.so)"
+    echo "  --with-jarvis  Also build JARVIS (voice assistant) and offer to start it"
     echo ""
     echo "If a SHA256 checksum file is available, verify before running:"
     echo "       sha256sum -c install.sh.sha256"
     echo ""
     echo "Installs 1bit inference engine for AMD Strix Halo (gfx1151)."
-    echo "Builds pure C++ end-to-end: 1bit (single binary — zaya/unified/router/"
-    echo "jarvis/vision/gaia subcommands), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
+    echo "Builds pure C++ end-to-end: zaya_server, onebit (CLI), onebitd (daemon),"
+    echo "unified_router (proxy), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
     exit 0
 fi
 
@@ -94,19 +101,57 @@ if [ "$SKIP_ROCM" = false ]; then
     log "Building C++ inference stack (server + CLI + daemon)..."
     cd "$DIR"
     cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
-    cmake --build build --target onebin -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    cmake --build build --target zaya_server onebitd onebit onebin unified_router ${WITH_JARVIS:+jarvis_app} -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
     log "Build complete:"
-    log "  $DIR/build/1bit ($(stat -c%s "$DIR/build/1bit" 2>/dev/null || echo '?') bytes) — zaya/unified/router/jarvis/vision/gaia subcommands"
+    log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/onebitd      ($(stat -c%s "$DIR/build/onebitd" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/onebit       ($(stat -c%s "$DIR/build/onebit" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/1bit         → onebit"
+    log "  $DIR/build/unified_router"
 else
     warn "--skip-rocm: kernel build skipped."
-    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running 1bit."
-    log "Checking for pre-built binary..."
-    if [ -f "$DIR/build/1bit" ]; then
-        log "Found existing build: $DIR/build/1bit"
+    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running zaya_server."
+    log "Checking for pre-built server binary..."
+    if [ -f "$DIR/build/zaya_server" ]; then
+        log "Found existing build: $DIR/build/zaya_server"
     else
-        warn "No pre-built binary found at $DIR/build/1bit."
+        warn "No pre-built server found at $DIR/build/zaya_server."
         warn "Run without --skip-rocm on a ROCm-equipped machine, or"
         warn "download a pre-built release from GitHub."
+    fi
+fi
+
+# ── JARVIS (optional) ────────────────────────────────────────────────────────
+if [ "$WITH_JARVIS" = true ]; then
+    log "Installing JARVIS (Zyphra default stack)..."
+    mkdir -p "$HOME/.local/bin" "$HOME/.config/1bit"
+    ln -sf "$DIR/build/jarvis" "$HOME/.local/bin/jarvis"
+    cat > "$HOME/.config/1bit/jarvis.env" <<EOF
+# JARVIS defaults — edit to taste, or pass flags: jarvis --help
+1BIT_WEIGHTS_DIR=$MODELS_DIR
+# Uncomment to force a specific model (default: first Zyphra model found):
+# JARVIS_MODEL=ZAYA1-8B
+EOF
+    log "JARVIS installed: $HOME/.local/bin/jarvis (config: $HOME/.config/1bit/jarvis.env)"
+    log "Default experience is the Zyphra stack (ZAYA/ZR1/BlackMamba/Zamba2);"
+    log "use 'jarvis --model <name>' to load any other model."
+    if command -v systemctl &>/dev/null && systemctl --user list-units >/dev/null 2>&1; then
+        cat > "$HOME/.config/systemd/user/jarvis.service" <<EOF
+[Unit]
+Description=JARVIS voice assistant (1bit engine)
+After=network.target
+
+[Service]
+EnvironmentFile=$HOME/.config/1bit/jarvis.env
+ExecStart=$HOME/.local/bin/jarvis --text
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+        log "systemd user unit installed — start now with:"
+        log "  systemctl --user enable --now jarvis"
+        log "  systemctl --user status jarvis"
     fi
 fi
 
@@ -116,7 +161,7 @@ log "Done. Run:"
 log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
 log "  export HSA_ENABLE_SDMA=0"
 log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
-log "  $DIR/build/1bit zaya"
+log "  $DIR/build/zaya_server"
 log ""
 log "Then send requests:"
 log '  curl -X POST http://localhost:8088/completion \'
