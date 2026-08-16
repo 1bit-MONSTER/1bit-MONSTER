@@ -154,3 +154,7 @@ engine/npu/xclbins/v26_backup/
 
 # ASan build dir
 build-asan/
+
+# packaging/iso build output (multi-GB, never committed)
+packaging/iso/build/
+*.iso
