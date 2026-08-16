@@ -222,8 +222,6 @@ public:
     const TensorEntry* tensor(int i) const {
         return (i >= 0 && i < (int)tensors_.size()) ? &tensors_[i] : nullptr;
     }
-    size_t map_size() const { return map_size_; }
-    const std::vector<TensorEntry>& debug_tensors() const { return tensors_; }
     const TensorEntry* find_tensor(const char* name) const {
         for (auto& t : tensors_)
             if (t.name == name) return &t;

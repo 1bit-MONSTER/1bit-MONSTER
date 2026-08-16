@@ -86,6 +86,29 @@ else
     echo "  - instella: fixtures absent, skipped (cp -r 1bit-systems/models/kl-test/mini-full* /tmp/onebit-instella/)"
 fi
 
+# Instella 1bp loader gate (Gate 5): convert mini GGUF -> Q4NX 1bp -> load via
+# DeepSeekModel::load_from_1bp, assert MLA dims + gated/farskip flags round-trip
+# and the forward runs. Golden top1 = the fp16 GGUF engine's own output (mini
+# weights are random ~0.01 so quantization drifts top-1 — the STRUCTURE is the
+# gate here; the real-16B Q4NX top1=128804 == fp16 is the manual validation).
+instella_mini=/tmp/onebit-instella/mini-full-f16.gguf
+instella_1bp=/tmp/onebit-instella/mini-full-q4nx.1bp
+if [ -f "$instella_mini" ]; then
+    total=$((total+1))
+    if ! "$CXX" $FLAGS tools/gguf_to_onebp.cpp src/gguf_reader.cpp -o "$BIN/gguf_to_onebp" 2>/dev/null; then
+        echo "✗ instella-1bp: converter COMPILE FAILED"; fail=$((fail+1))
+    else
+        "$BIN/gguf_to_onebp" "$instella_mini" "$instella_1bp" >/dev/null 2>&1
+        if ! "$CXX" $FLAGS Testing/cmp_instella_1bp.cpp src/deepseek.cpp src/gguf_reader.cpp \
+            -o "$BIN/cmp_instella_1bp" 2>/dev/null; then echo "✗ instella-1bp: COMPILE FAILED"; fail=$((fail+1));
+        elif "$BIN/cmp_instella_1bp" "$instella_1bp" /tmp/onebit-instella/ids.txt 178 >/dev/null 2>&1; then
+            echo "✓ instella 1bp loader (MLA dims + gated + farskip round-trip)";
+        else echo "✗ instella 1bp loader: structure/top1 mismatch"; fail=$((fail+1)); fi
+    fi
+else
+    echo "  - instella-1bp: fixture absent, skipped"
+fi
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }
