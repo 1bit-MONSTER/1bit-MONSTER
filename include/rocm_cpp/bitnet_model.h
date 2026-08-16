@@ -355,6 +355,14 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "dynamicalibi") == 0) return RCPP_ARCH_DYNAMICALIBI;  // DynamicAlibiForCausalLM (static ALiBi at inference, verified 2026-08-15)
     if (strcmp(s, "glm") == 0) return RCPP_ARCH_LLAMA;  // GlmForCausalLM (glm-4-9b config: partial-rope + qkv bias — needs the glm4 quirks)
     // ── end census tail sweep ──
+    if (strcmp(s, "roleslm") == 0) return RCPP_ARCH_LLAMA;  // RoleSLM (sathishphdai SLM family — llama layout, blocks.N names, verified vs model.py)
+    if (strcmp(s, "slm") == 0) return RCPP_ARCH_LLAMA;  // SLM (sathishphdai SLM family)
+    if (strcmp(s, "slmforcausallm") == 0) return RCPP_ARCH_LLAMA;  // SLMForCausalLM (SLM family)
+    if (strcmp(s, "slmmodel") == 0) return RCPP_ARCH_LLAMA;  // SLMModel (SLM family)
+    if (strcmp(s, "industryslm") == 0) return RCPP_ARCH_LLAMA;  // IndustrySLM (SLM family)
+    if (strcmp(s, "hfhealthslm") == 0) return RCPP_ARCH_LLAMA;  // HFHealthSLM (SLM family)
+    if (strcmp(s, "sdlcslm") == 0) return RCPP_ARCH_LLAMA;  // SDLC-SLM (SLM family)
+
     if (strcmp(s, "hrmtext") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama (rms 1e-6 + rope 10000 + silu, sapient HRM-Text)
     if (strcmp(s, "longcatcausallm") == 0) return RCPP_ARCH_LLAMA;  // config-verified llama (num_layers 38, rms 1e-5, rope 1e6, LongCat-2.0)
     if (strcmp(s, "gpt") == 0) return RCPP_ARCH_GPT2;  // GptForCausalLM — dominant layout gpt2 (htmLLM/mgpt2/nanogpt configs)
