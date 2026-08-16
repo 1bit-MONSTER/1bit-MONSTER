@@ -47,7 +47,7 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
 
 | Family | HF arch string | model_type | token | backend refs | smallest checkpoint | size |
 |---|---|---|---|---|---|---|
-| DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — needs MoE+MLA routing | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
+| DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — engine exists but written against FICTIONAL arch (audit 2026-08-16, see note) | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
 | GLM-5.2 | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2, LLAMA-layout) | **0** — needs DSA MoE routing | `zai-org/GLM-4.5` (160-exp MoE) | large |
 | MiMo | `MiMoV2ForCausalLM` | `mimo_v2` | `MIMO` (4) | **0** — needs MoE routing | `XiaomiMiMo/MiMo-V2-Flash` | **313 GB** |
 | ~~Nemotron 3~~ **DONE** | `NemotronForCausalLM` | `nemotron` | `NEMOTRON` (989) | **validated** — LayerNorm1P, relu2 non-gated MLP, partial rope (2026-08-16, `mgoin/nemotron-3-8b-chat-4k-sft-hf`, top1 7503 ' Paris', corr 0.99986) | `mgoin/nemotron-3-8b-chat-4k-sft-hf` | 17 GB |
@@ -59,7 +59,12 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
 
 **Per-family work order (most tractable first):**
 1. **Nemotron 3** — if it's a dense Llama-layout Nemotron (routes to `LLAMA`), the default path may already produce correct logits → gate = download + capture golden chain (the only candidate for a near-free gate; verify the real arch first, Ultra-253B is gated but a smaller Nemotron-51B may exist).
-2. **DeepSeek V4** — nearest to validated V3 (MLA MoE), but `kv_lora_rank=None` where V3 had 512 → the MLA KV-compression path differs. Add `DEEPSEEK_V4` to the MoE dispatch, fix the MLA path, gate against V4-Flash on the GPU box.
+2. **DeepSeek V4** — **AUDITED 2026-08-16: the `src/deepseek_v4.cpp` engine is written against a fictional architecture; the "MLA" premise was wrong.** Real V4 (verified against HF `modeling_deepseek_v4.py` 5.14 + our llama.cpp fork `src/models/deepseek4.cpp`) has **NO MLA and NO kv_lora_rank at all**:
+   - Attention = Shared-KV MQA (1 KV head, K=V): `q_a_proj`(H→q_lora=1024)→`q_a_norm`→`q_b_proj`(q_lora→64×512)→`q_b_norm`(unweighted!), `kv_proj`(H→512)→`kv_norm`; **partial RoPE** on first 64/512 dims; **per-head learnable attention sinks** (gpt-OSS style, cat to scores pre-softmax); **grouped output proj** `o_a_proj` (GroupedLinear, o_groups=8) + `o_b_proj`.
+   - Compressor branches per layer (compress_ratios 0/4/128): `compressor.kv_proj/gate_proj/position_bias/kv_norm` (windowed softmax-gated pooling), CSA layers add a **Lightning Indexer** (`indexer.proj`, `indexer.attn_q_b`, `indexer_compressor_*`).
+   - **mHC is NOT a 4×4 mixing matrix** — it's `attn_hc`/`ffn_hc` modules with `fn`[24, hc_dim], `base`, `scale` params + Sinkhorn-Knopp projection (20 iters) of the comb matrix, plus a final `hc_head`.
+   - MoE: `mlp.gate.weight` router (sqrtsoftplus, e_score_correction_bias `exp_probs_b`); **first 3 layers = hash_moe** (frozen `tid2eid[input_ids]` lookup!); **fused `experts.gate_up_proj`** (not separate gate/up); `shared_experts.gate/up/down_proj` with swiglu_limit clamp.
+   - Engine rewrite path: port from our llama.cpp fork's `deepseek4.cpp` (1172 lines, correct). Gate impossible on this box (smallest GGUF = UD-IQ1_M 87GB > 79GB RAM + f32 dequant). Mini-fixture gate feasible (tiny DeepseekV4Config runs in torch 5.14, verified 2026-08-16).
 3. **GLM-5.2** — DSA (Deep Seek Attention) is a new MoE variant; needs its own gating convention in the dispatch.
 4. **MiMo** — 256-expert MoE, add to dispatch, gate against MiMo-V2-Flash.
 5. **Qwen3.5** — Gate-Delta Net; REFUSED by the generic backend, needs the NPU (FLM/XRT) or HIP path, not a CPU e2e gate. Separate workstream.
