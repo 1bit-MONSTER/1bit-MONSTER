@@ -114,6 +114,11 @@ struct GenericBackend : Backend {
         size_t q_norm = SIZE_MAX, k_norm = SIZE_MAX;
         size_t post_attn_norm = SIZE_MAX, post_ffn_norm = SIZE_MAX;
         size_t moe_gate_inp = SIZE_MAX, moe_gate_exps = SIZE_MAX, moe_up_exps = SIZE_MAX, moe_down_exps = SIZE_MAX;
+        // GLM-4-MoE / DeepSeek shared experts: one fused MLP on every MoE layer
+        // (mlp.shared_experts.{gate,up,down}_proj — plural 'experts'). Also
+        // mlp.gate.e_score_correction_bias [NE] added to router logits (V3).
+        size_t shexp_gate = SIZE_MAX, shexp_up = SIZE_MAX, shexp_down = SIZE_MAX;
+        size_t router_correction_bias = SIZE_MAX;
         // GPT-OSS packed MXFP4 MoE: FP4 blocks + per-row-block scales + biases.
         // blocks/scales stay RAW U8 (kept packed in RAM — per-token dequant
         // in forward; converting to f32 would 4x memory to ~45GB).
@@ -287,13 +292,16 @@ struct GenericBackend : Backend {
         scratch_scores.resize(score_sz); scratch_att.resize((size_t)NH * HD);
         scratch_gate_up.resize(FF * 2); scratch_silu_buf.resize(FF);
         if (cfg.n_experts > 0) {
-            scratch_moe_router_probs.resize(cfg.n_experts);
+            // +group scratch tail: GLM-4-MoE group-limited top-k writes group
+            // means + group indices past the expert arrays (groups <= NE).
+            const int moe_scratch_sz = std::max(cfg.n_experts, cfg.expert_groups);
+            scratch_moe_router_probs.resize(moe_scratch_sz);
             scratch_moe_ffn_acc.resize(H);
             scratch_moe_gate.resize(FF); scratch_moe_up.resize(FF);
             scratch_moe_silu.resize(FF);  // #1342: silu output is FF-sized — must NOT share the H-sized down buffer
             scratch_moe_down.resize(H);
             scratch_moe_row.resize(cfg.hidden);
-            scratch_moe_idx.resize(cfg.n_experts);
+            scratch_moe_idx.resize(moe_scratch_sz);
         }
         scratch_allocated_ = true;
 
@@ -456,9 +464,47 @@ struct GenericBackend : Backend {
             load("attn_k.weight", "self_attn.k_proj.weight", lw.wk, H, NKV*HD);
             load("attn_v.weight", "self_attn.v_proj.weight", lw.wv, H, NKV*HD);
             load("attn_output.weight", "self_attn.o_proj.weight", lw.wo, NH*HD, H);
-            load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
-            load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
-            load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            // GLM-4 / biased-llama variants: optional q/k/v biases (absent for
+            // plain llama — the lenient load skips them).
+            load("attn_q.bias", "self_attn.q_proj.bias", lw.bq, NH*HD, 1);
+            load("attn_k.bias", "self_attn.k_proj.bias", lw.bk, NKV*HD, 1);
+            load("attn_v.bias", "self_attn.v_proj.bias", lw.bv, NKV*HD, 1);
+            // GLM-4 post-norms (post_self_attn_layernorm after attention,
+            // post_mlp_layernorm after the MLP — applied before the residual).
+            // The forward applies post_attn_norm/post_ffn_norm conditionally.
+            if (cfg.architecture == "glm4" || cfg.architecture == "glm4moe" ||
+                cfg.architecture == "glmmoedsa" || cfg.architecture == "glm4moelite") {
+                load("post_attn_norm.weight", "post_self_attn_layernorm.weight", lw.post_attn_norm, H, 1);
+                load("post_ffn_norm.weight",  "post_mlp_layernorm.weight",      lw.post_ffn_norm,  H, 1);
+            }
+            if (cfg.architecture == "glm4") {
+                // GLM-4 (dense): fused mlp.gate_up_proj.weight [gate(IM) | up(IM)] ->
+                // split into separate gate/up for the gated-FFN forward.
+                // (GLM-4-MoE dense first_k layers use SEPARATE gate/up/down.)
+                std::vector<float> gu;
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate_up_proj.weight", l);
+                if (!model.get_tensor_f32(buf, gu) || (int)gu.size() != 2 * IM * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized glm4 gate_up_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> gate, up;
+                gate.reserve((size_t)IM * H); up.reserve((size_t)IM * H);
+                for (int r = 0; r < IM; r++) gate.insert(gate.end(), gu.begin() + (size_t)r * H, gu.begin() + (size_t)(r + 1) * H);
+                for (int r = 0; r < IM; r++) up.insert(up.end(), gu.begin() + (size_t)(IM + r) * H, gu.begin() + (size_t)(IM + r + 1) * H);
+                lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
+                load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_NEMOTRON) {
+                // Nemotron-3/4: NON-gated MLP — up_proj -> relu2 -> down_proj.
+                // (no gate_proj). Load up into w1 (no-gate path uses w1 as
+                // the up projection), leave w2 = SIZE_MAX to select the
+                // non-gated branch, down into w3. HF [out=IM, in=H] layout.
+                load("ffn_up.weight", "mlp.up_proj.weight", lw.w1, IM, H);
+                load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            } else {
+                load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
+                load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
+                load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            }
             if (packed_) {
                 auto pk = [&](const char* blk, const char* legacy, int& idx, int M, int K) {
                     char b2[128];
@@ -591,6 +637,19 @@ struct GenericBackend : Backend {
             cfg.clip_qkv = 8.0f;
             cfg.rms_norm_eps = 1e-5f;
         }
+        // Nemotron-3/4 (NVIDIA NemotronForCausalLM, 2026-08-16 gate):
+        //   LayerNorm1P = nn.LayerNorm(weight+1, bias) — weight stored on disk
+        //   is w-1, engine adds +1 at load (gemma_post_norms already does the
+        //   +1 convention; Nemotron uses the same weight+1 trick). relu2 MLP
+        //   (non-gated), partial rope (rope_percent 0.5 -> rope_dim = half
+        //   head_dim), qkv biases, GQA, no gate.
+        if (cfg.arch == RCPP_ARCH_NEMOTRON) {
+            cfg.norm_is_layernorm = true;
+            cfg.nemotron_layernorm1p = true;   // weight stored as w-1
+            cfg.rms_norm_eps = 1e-5f;
+            if (cfg.rope_dim == 0 && cfg.head_dim > 0)
+                cfg.rope_dim = cfg.head_dim / 2;  // rope_percent 0.5
+        }
         // GPT-2: learned position embeddings (wpe), LayerNorm with affine
         // weight+bias, no RoPE, non-gated gelu FFN. Names are h.N.* (no
         // "model." prefix), wte/wpe/ln_f under "transformer.".
@@ -719,10 +778,12 @@ struct GenericBackend : Backend {
             if (!r.get_tensor_f32("gpt_neox.final_layer_norm.bias", final_norm_bias))
                 if (!r.get_tensor_f32("model.decoder.final_layer_norm.bias", final_norm_bias))
                     r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        if (cfg.nemotron_layernorm1p)
+            r.get_tensor_f32("model.norm.bias", final_norm_bias);  // Nemotron LayerNorm1P final norm bias
         // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
         r.get_tensor_f32("word_embeddings_layernorm.weight", embed_ln_w);
         r.get_tensor_f32("word_embeddings_layernorm.bias", embed_ln_b);
-        if (gemma_post_norms && !final_norm.empty())
+        if ((gemma_post_norms || cfg.nemotron_layernorm1p) && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         if (!r.get_tensor_f32("output.weight", output_weight))
             if (!r.get_tensor_f32("lm_head.weight", output_weight))
@@ -1205,12 +1266,18 @@ struct GenericBackend : Backend {
             load("self_attn.k_proj.weight", lw.wk, H, NKV * HD);
             load("self_attn.v_proj.weight", lw.wv, H, NKV * HD);
             load("self_attn.o_proj.weight", lw.wo, NH * HD, H);
-            if (cfg.n_experts > 0) {
-                // MoE layer — two HF conventions:
-                //  Mixtral/Qwen3: router mlp.gate.weight + per-expert files.
-                //  Granite: fused block_sparse_moe 3D tensors.
+            // Per-layer MoE dispatch (GLM-4-MoE first_k_dense layers are dense
+            // even when cfg.n_experts > 0): a layer is MoE iff it carries the
+            // router tensor. Two HF conventions:
+            //  Mixtral/Qwen3/GLM-4-MoE: router mlp.gate.weight + per-expert files.
+            //  Granite: fused block_sparse_moe 3D tensors.
+            snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate.weight", l);
+            const bool has_router = r.has(buf);
+            snprintf(buf, sizeof(buf), "model.layers.%d.block_sparse_moe.router.layer.weight", l);
+            const bool has_granite_router = r.has(buf);
+            if (cfg.n_experts > 0 && (has_router || has_granite_router)) {
                 snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate.weight", l);
-                const bool mixtral_style = r.has(buf);
+                const bool mixtral_style = has_router;
                 if (mixtral_style) {
                     std::vector<float> router;
                     if (!r.get_tensor_f32(buf, router) || (int)router.size() != cfg.n_experts * H) {
@@ -1239,8 +1306,48 @@ struct GenericBackend : Backend {
                     load_experts("gate_proj.weight", lw.moe_gate_exps, IM, H);
                     load_experts("up_proj.weight", lw.moe_up_exps, IM, H);
                     load_experts("down_proj.weight", lw.moe_down_exps, H, IM);
+                    // GLM-4-MoE: shared experts (mlp.shared_experts.{gate,up,down}_proj)
+                    // — one fused MLP added to EVERY token, not routed.
+                    {
+                        const int SH = cfg.n_shared_experts > 0 ? cfg.n_shared_experts : 0;
+                        if (SH > 0) {
+                            std::vector<float> sg, su, sd;
+                            int SIM = cfg.moe_intermediate > 0 ? cfg.moe_intermediate : IM;
+                            snprintf(buf, sizeof(buf), "model.layers.%d.mlp.shared_experts.gate_proj.weight", l);
+                            if (!r.get_tensor_f32(buf, sg) || (int)sg.size() != SH * SIM * H) {
+                                fprintf(stderr, "Generic: safetensors %s: missing/misized shared gate\n", buf);
+                                return false;
+                            }
+                            snprintf(buf, sizeof(buf), "model.layers.%d.mlp.shared_experts.up_proj.weight", l);
+                            if (!r.get_tensor_f32(buf, su) || (int)su.size() != SH * SIM * H) {
+                                fprintf(stderr, "Generic: safetensors %s: missing/misized shared up\n", buf);
+                                return false;
+                            }
+                            snprintf(buf, sizeof(buf), "model.layers.%d.mlp.shared_experts.down_proj.weight", l);
+                            if (!r.get_tensor_f32(buf, sd) || (int)sd.size() != H * SH * SIM) {
+                                fprintf(stderr, "Generic: safetensors %s: missing/misized shared down\n", buf);
+                                return false;
+                            }
+                            lw.shexp_gate = push(std::move(sg));
+                            lw.shexp_up = push(std::move(su));
+                            lw.shexp_down = push(std::move(sd));
+                        }
+                    }
+                    // GLM-4-MoE / DeepSeek-V3: mlp.gate.e_score_correction_bias [NE]
+                    // added to the router logits before top-k (V3 gating).
+                    snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate.e_score_correction_bias", l);
+                    if (r.has(buf)) {
+                        std::vector<float> cb;
+                        if (!r.get_tensor_f32(buf, cb) || (int)cb.size() != cfg.n_experts) {
+                            fprintf(stderr, "Generic: safetensors %s: bad correction bias\n", buf);
+                            return false;
+                        }
+                        lw.router_correction_bias = push(std::move(cb));
+                    }
+                    // Legacy Mixtral-style shared_expert (singular) stays unsupported
+                    // (the plural path above covers GLM-4-MoE/DeepSeek).
                     snprintf(buf, sizeof(buf), "model.layers.%d.mlp.shared_expert.gate_proj.weight", l);
-                    if (r.has(buf))
+                    if (r.has(buf) && lw.shexp_gate == SIZE_MAX)
                         fprintf(stderr, "Generic: safetensors layer %d: shared expert present but unsupported (engine MoE path) — IGNORING\n", l);
                     if (!experts_ok) {
                         fprintf(stderr, "Generic: safetensors layer %d: MoE tensor missing — ABORTING LOAD\n", l);
@@ -1282,19 +1389,40 @@ struct GenericBackend : Backend {
                     lw.moe_up_exps = push(std::move(up));
                     lw.moe_down_exps = push(std::move(output_linear));
                 }
+            } else if (cfg.architecture == "glm4") {
+                // GLM-4 (dense): fused mlp.gate_up_proj.weight [gate(IM) | up(IM)] ->
+                // split into separate gate/up; post-norms loaded below.
+                std::vector<float> gu;
+                snprintf(buf, sizeof(buf), "model.layers.%d.mlp.gate_up_proj.weight", l);
+                if (!r.get_tensor_f32(buf, gu) || (int)gu.size() != 2 * IM * H) {
+                    fprintf(stderr, "Generic: safetensors %s: missing/misized glm4 gate_up_proj\n", buf);
+                    return false;
+                }
+                std::vector<float> gate, up;
+                gate.reserve((size_t)IM * H); up.reserve((size_t)IM * H);
+                for (int r2 = 0; r2 < IM; r2++) gate.insert(gate.end(), gu.begin() + (size_t)r2 * H, gu.begin() + (size_t)(r2 + 1) * H);
+                for (int r2 = 0; r2 < IM; r2++) up.insert(up.end(), gu.begin() + (size_t)(IM + r2) * H, gu.begin() + (size_t)(IM + r2 + 1) * H);
+                lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
+                load("mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_NEMOTRON) {
+                // Nemotron-3/4: NON-gated relu2 MLP — up_proj -> relu2 -> down_proj
+                // (no gate_proj). w1 = up, w3 = down, w2 stays SIZE_MAX.
+                load("mlp.up_proj.weight", lw.w1, IM, H);
+                load("mlp.down_proj.weight", lw.w3, IM, H);
             } else {
                 load("mlp.gate_proj.weight", lw.w1, H, IM);
                 load("mlp.up_proj.weight", lw.w2, H, IM);
                 load("mlp.down_proj.weight", lw.w3, IM, H);
             }
             }
-            // Norms: gemma2/3/4 need the +1 and post-norm naming.
+            // Norms: gemma2/3/4 need the +1 and post-norm naming; Nemotron
+            // LayerNorm1P also stores weight as w-1 (add +1 at load).
             auto load_norm = [&](const char* hf_name, size_t& idx, int n) {
                 std::vector<float> w;
                 snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
                 if (!r.get_tensor_f32(buf, w)) return;
                 if ((int)w.size() != n) return;
-                if (gemma_post_norms)
+                if (gemma_post_norms || cfg.nemotron_layernorm1p)
                     for (auto& v : w) v += 1.0f;
                 idx = push(std::move(w));
             };
@@ -1305,6 +1433,12 @@ struct GenericBackend : Backend {
                 load_norm("post_feedforward_layernorm.weight", lw.post_ffn_norm, H);
             } else {
                 load_norm("post_attention_layernorm.weight", lw.rms_ffn, H);
+            }
+            // GLM-4 post-norms (post_self_attn_layernorm after attn, post_mlp_layernorm
+            // after MLP, applied before the residual). Standard RMSNorm (no +1).
+            if (cfg.architecture == "glm4") {
+                load_norm("post_self_attn_layernorm.weight", lw.post_attn_norm, H);
+                load_norm("post_mlp_layernorm.weight", lw.post_ffn_norm, H);
             }
             load_norm("self_attn.q_norm.weight", lw.q_norm, HD);
             load_norm("self_attn.k_norm.weight", lw.k_norm, HD);
@@ -1318,10 +1452,18 @@ struct GenericBackend : Backend {
             load_bias("self_attn.q_proj.bias", lw.bq, NH * HD);
             load_bias("self_attn.k_proj.bias", lw.bk, NKV * HD);
             load_bias("self_attn.v_proj.bias", lw.bv, NKV * HD);
+            // Nemotron LayerNorm1P: per-layer norm BIASES.
+            if (cfg.nemotron_layernorm1p) {
+                load_bias("input_layernorm.bias", lw.rms_attn_b, H);
+                load_bias("post_attention_layernorm.bias", lw.rms_ffn_b, H);
+            }
 
-            if (cfg.n_experts > 0) {
-                if (lw.moe_gate_inp == SIZE_MAX || lw.router_bias == SIZE_MAX ||
-                    (lw.gate_blocks.empty() &&  // GPT-OSS packed MoE
+            if (cfg.n_experts > 0 && lw.moe_gate_inp != SIZE_MAX) {
+                // MoE layer completeness: router + experts (router bias and
+                // correction bias are optional — GPT-OSS has router.bias,
+                // GLM-4-MoE/DeepSeek have gate.e_score_correction_bias, Mixtral
+                // has neither).
+                if ((lw.gate_blocks.empty() &&  // GPT-OSS packed MoE
                      (lw.moe_gate_exps == SIZE_MAX || lw.moe_up_exps == SIZE_MAX || lw.moe_down_exps == SIZE_MAX))) {
                     fprintf(stderr, "Generic: safetensors layer %d: MoE tensors incomplete — ABORTING LOAD\n", l);
                     return false;
@@ -1330,11 +1472,12 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom: non-gated FFN — w2 legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom/Nemotron: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
                            cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN ||
-                           cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM ||
+                           cfg.arch == RCPP_ARCH_NEMOTRON) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -1963,12 +2106,6 @@ struct GenericBackend : Backend {
                 else layernorm(x2, x, H, eps);
             }
             else rmsnorm(x2, x, w(l.rms_attn), H, eps);
-            if (il == 0 && debug_ops) {
-                double ss = 0; for (int i = 0; i < H; i++) ss += (double)x[i] * x[i];
-                fprintf(stderr, "[cpu] pos=%d in=[%g %g %g] normed=[%g %g %g] mean2=%g eps=%g r=%g\n",
-                        pos, x[0], x[1], x[2], x2[0], x2[1], x2[2],
-                        ss / H, eps, 1.0f / sqrtf((float)(ss / H) + eps));
-            }
             mm(q, x2, w(l.wq), NH*HD, H, l.pk_q);
             mm(k, x2, w(l.wk), NKV*HD, H, l.pk_k);
             mm(v, x2, w(l.wv), NKV*HD, H, l.pk_v);
@@ -2111,10 +2248,105 @@ struct GenericBackend : Backend {
                     const float* rb = w(l.router_bias);
                     for (int e = 0; e < NE; e++) router_probs[e] += rb[e];
                 }
+                if (l.router_correction_bias != SIZE_MAX) {  // GLM-4-MoE/DeepSeek-V3
+                    const float* cb = w(l.router_correction_bias);
+                    for (int e = 0; e < NE; e++) router_probs[e] += cb[e];
+                }
 
+                // GLM-4-MoE / DeepSeek-V3 group-limited top-k: pick the
+                // limited_groups groups with the highest group-mean logit,
+                // then top-k within those. (n_group=1/topk_group=1 = no-op.)
+                int groups = cfg.expert_groups, lgroups = cfg.limited_groups;
+                if (groups > 1 && lgroups > 0 && lgroups < groups && NE % groups == 0) {
+                    const int per = NE / groups;
+                    float* gmeans = scratch_moe_router_probs.data() + NE;  // reuse tail (NE + groups <= scratch)
+                    for (int g = 0; g < groups; g++) {
+                        float s = 0.0f;
+                        for (int e = g * per; e < (g + 1) * per; e++) s += router_probs[e];
+                        gmeans[g] = s / (float)per;
+                    }
+                    int* gidx = scratch_moe_idx.data() + NE;  // reuse tail
+                    for (int g = 0; g < groups; g++) gidx[g] = g;
+                    std::partial_sort(gidx, gidx + lgroups, gidx + groups,
+                                       [&](int a, int b) { return gmeans[a] > gmeans[b]; });
+                    // Keep excluded groups very negative so partial_sort's top-k
+                    // can never select them; the softmax path turns -1e30 into 0.
+                    for (int e = 0; e < NE; e++)
+                        if (router_probs[e] > -1e20f) router_probs[e] = -1e30f;
+                    for (int g = 0; g < lgroups; g++) {
+                        int base = gidx[g] * per;
+                        for (int e = base; e < base + per; e++) router_probs[e] = 0.0f;
+                    }
+                }
+
+                // GLM-4-MoE/DeepSeek-V3 gating: scores = sigmoid(logits);
+                // scores_for_choice = scores + correction_bias; group-limited
+                // top-k on scores_for_choice; WEIGHTS = raw sigmoid scores
+                // (pre-correction), norm_topk divide by sum, x routed_scaling.
+                const bool glm4moe_gating = (cfg.architecture == "glm4moe" ||
+                                             cfg.architecture == "glmmoedsa" ||
+                                             cfg.architecture == "glm4moelite");
+                int* idx = scratch_moe_idx.data();
+                float wsum = 1.0f;
+                float rscale = 1.0f;
+                if (glm4moe_gating) {
+                    // router_probs holds raw logits. GLM-4-MoE/DeepSeek-V3:
+                    // scores = sigmoid(logits); scores_for_choice = scores +
+                    // correction_bias; group-limited top-k on scores_for_choice;
+                    // WEIGHTS = raw sigmoid scores, norm_topk /sum, x routed
+                    // scaling. Selection uses the corrected scores, weights use
+                    // the raw sigmoid — so compute both.
+                    float* sfc = scratch_moe_router_probs.data();       // scores_for_choice
+                    float* raw = scratch_moe_router_probs.data() + NE;  // raw sigmoid (scratch sized max(NE, groups); groups<=NE so NE+NE may overflow — use moe_idx tail instead)
+                    // NOTE: scratch_moe_router_probs is sized max(NE, groups);
+                    // store raw sigmoid in the moe_idx scratch (int) is unsafe.
+                    // Reuse: sfc holds scores_for_choice; keep raw in the same
+                    // array by recomputing sigmoid from logits after selection
+                    // (logits are sfc minus correction bias).
+                    for (int e = 0; e < NE; e++) sfc[e] = 1.0f / (1.0f + expf(-sfc[e]));
+                    const float* cb = l.router_correction_bias != SIZE_MAX ? w(l.router_correction_bias) : nullptr;
+                    if (cb) for (int e = 0; e < NE; e++) sfc[e] += cb[e];
+                    int groups = cfg.expert_groups, lgroups = cfg.limited_groups;
+                    if (groups > 1 && lgroups > 0 && lgroups < groups && NE % groups == 0) {
+                        const int per = NE / groups;
+                        float* gmeans = scratch_moe_router_probs.data() + NE;  // within scratch (max(NE,groups))
+                        for (int g = 0; g < groups; g++) {
+                            float s = 0.0f;
+                            for (int e = g * per; e < (g + 1) * per; e++) s += sfc[e];
+                            gmeans[g] = s / (float)per;
+                        }
+                        int* gidx = scratch_moe_idx.data() + NE;  // sized max(NE,groups)
+                        for (int g = 0; g < groups; g++) gidx[g] = g;
+                        std::partial_sort(gidx, gidx + lgroups, gidx + groups,
+                                           [&](int a, int b) { return gmeans[a] > gmeans[b]; });
+                        for (int e = 0; e < NE; e++)
+                            if (sfc[e] > -1e20f) sfc[e] = -1e30f;
+                        for (int g = 0; g < lgroups; g++) {
+                            int base = gidx[g] * per;
+                            for (int e = base; e < base + per; e++) sfc[e] = 0.0f;
+                        }
+                    }
+                    for (int e = 0; e < NE; e++) idx[e] = e;
+                    std::partial_sort(idx, idx + NEU, idx + NE,
+                                       [&](int a, int b) { return sfc[a] > sfc[b]; });
+                    // Weights: recompute raw sigmoid from logits (sfc minus cb),
+                    // norm_topk divide by sum, x routed scaling. wsum stays 1.0
+                    // so the shared accumulator (router_probs[e]/wsum) yields
+                    // the final weight directly.
+                    wsum = 0.0f;
+                    for (int t = 0; t < NEU; t++) {
+                        float lg = sfc[idx[t]] - (cb ? cb[idx[t]] : 0.0f);
+                        router_probs[idx[t]] = 1.0f / (1.0f + expf(-lg));
+                        wsum += router_probs[idx[t]];
+                    }
+                    if (wsum < 1e-20f) wsum = 1e-20f;
+                    for (int t = 0; t < NEU; t++) router_probs[idx[t]] /= wsum;
+                    rscale = cfg.routed_scaling > 0.0f ? cfg.routed_scaling : 1.0f;
+                    for (int t = 0; t < NEU; t++) router_probs[idx[t]] *= rscale;
+                    wsum = 1.0f;  // weights now final (scaling baked in)
+                } else {
                 // Top-k expert selection (same indices either way — softmax
                 // is monotonic, so top-k on raw logits == top-k on probs).
-                int* idx = scratch_moe_idx.data();
                 for (int e = 0; e < NE; e++) idx[e] = e;
                 std::partial_sort(idx, idx + NEU, idx + NE,
                                    [&](int a, int b) { return router_probs[a] > router_probs[b]; });
@@ -2126,7 +2358,7 @@ struct GenericBackend : Backend {
                     (cfg.architecture == "granite" || cfg.architecture == "granitemoe" ||
                      cfg.arch == RCPP_ARCH_QWEN3 || cfg.arch == RCPP_ARCH_QWEN35 ||
                      cfg.arch == RCPP_ARCH_GPTOSS);
-                float wsum = 0.0f;
+                wsum = 0.0f;
                 if (topk_softmax_gating) {
                     float mx = router_probs[idx[0]];
                     for (int t = 1; t < NEU; t++)
@@ -2140,6 +2372,9 @@ struct GenericBackend : Backend {
                     for (int t = 0; t < NEU; t++) wsum += router_probs[idx[t]];
                 }
                 if (wsum < 6.103515625e-5f) wsum = 6.103515625e-5f;
+                rscale = cfg.routed_scaling > 0.0f ? cfg.routed_scaling : 1.0f;
+                }
+                // (glm4moe_gating path set router_probs + idx directly above)
 
                 float* ffn_acc = scratch_moe_ffn_acc.data();
                 memset(ffn_acc, 0, H * sizeof(float));
@@ -2190,7 +2425,7 @@ struct GenericBackend : Backend {
                 } else {
                 for (int t = 0; t < NEU; t++) {
                     int e = idx[t];
-                    float we = router_probs[e] / wsum;
+                    float we = router_probs[e] / wsum * rscale;
                     float* wg = w(l.moe_gate_exps) + (size_t)e * FF * H;
                     float* wu = w(l.moe_up_exps)   + (size_t)e * FF * H;
                     float* wd = w(l.moe_down_exps) + (size_t)e * H * FF;
@@ -2200,6 +2435,31 @@ struct GenericBackend : Backend {
                     mm(down_buf, moe_silu, wd, H, FF, -1);
                     for (int i = 0; i < H; i++) ffn_acc[i] += we * down_buf[i];
                 }
+                }
+                // GLM-4-MoE/DeepSeek shared experts: one fused MLP added to
+                // EVERY token (not routed). gate/up rows are [SH*SIM, H] with
+                // SH experts stacked along the FF dim; down is [H, SH*SIM].
+                if (l.shexp_gate != SIZE_MAX) {
+                    const int SH = cfg.n_shared_experts > 0 ? cfg.n_shared_experts : 1;
+                    const int SIM = cfg.moe_intermediate > 0 ? cfg.moe_intermediate : FF;
+                    const int SM = SH * SIM;
+                    const float* sg = w(l.shexp_gate);
+                    const float* su = w(l.shexp_up);
+                    const float* sd = w(l.shexp_down);
+                    for (int i = 0; i < SIM; i++) {  // per shared-expert slot, accumulate
+                        gate_buf[i] = 0.0f; up_buf[i] = 0.0f;
+                        for (int s = 0; s < SH; s++) {
+                            const float* sgi = sg + ((size_t)s * SIM + i) * H;
+                            const float* sui = su + ((size_t)s * SIM + i) * H;
+                            for (int c = 0; c < H; c++) { gate_buf[i] += sgi[c] * x2[c]; up_buf[i] += sui[c] * x2[c]; }
+                        }
+                    }
+                    for (int i = 0; i < SIM; i++)
+                        moe_silu[i] = (gate_buf[i] / (1.0f + expf(-gate_buf[i]))) * up_buf[i];                    for (int i = 0; i < H; i++) {
+                        float acc = 0.0f;
+                        for (int j = 0; j < SM; j++) acc += sd[(size_t)i * SM + j] * moe_silu[j];
+                        ffn_acc[i] += acc;
+                    }
                 }
                 if (cfg.residual_multiplier != 1.0f)
                     for (int i = 0; i < H; i++) x[i] += ffn_acc[i] * cfg.residual_multiplier;
@@ -2212,6 +2472,7 @@ struct GenericBackend : Backend {
                 if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
                 if (cfg.arch == RCPP_ARCH_FALCON || cfg.arch == RCPP_ARCH_GPTNEOX) gelu_erf(gate_up, gate_up, FF);
                 else if (cfg.arch == RCPP_ARCH_OPT) { for (int i = 0; i < FF; i++) gate_up[i] = gate_up[i] > 0 ? gate_up[i] : 0.0f; }  // ReLU
+                else if (cfg.arch == RCPP_ARCH_NEMOTRON) { for (int i = 0; i < FF; i++) { float v = gate_up[i]; gate_up[i] = v > 0 ? v * v : 0.0f; } }  // relu2
                 else gelu(gate_up, gate_up, FF);
                 mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
                 if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }

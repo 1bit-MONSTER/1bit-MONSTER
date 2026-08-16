@@ -3,25 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>One binary to rule them all — 5 model families, auto-detect · 1bit.systems</title>
+<title>One binary to rule them all — 5 model families, auto-detect · 1bit.monster</title>
 <meta name="description" content="How a single 38KB C++ binary auto-detects 73+ models across 6 backends — NPU, ROCm, Vulkan, CUDA, Metal, CPU — from one Q4NX header parse.">
 <meta name="keywords" content="multi-model inference, GGUF, Q4NX, auto-detect, universal engine, AMD NPU, ROCm, Vulkan">
 <meta name="robots" content="index, follow">
-<link rel="canonical" href="https://1bit.systems/blog/one-binary-to-rule-them-all">
+<link rel="canonical" href="https://1bit.monster/blog/one-binary-to-rule-them-all">
 <meta property="og:title" content="One binary to rule them all — 5 model families, auto-detect">
-<meta property="og:image" content="https://1bit.systems/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:description" content="A single 38KB binary auto-detects 73+ models across 6 backends. No config files. No model registry.">
-<meta property="og:url" content="https://1bit.systems/blog/one-binary-to-rule-them-all">
+<meta property="og:url" content="https://1bit.monster/blog/one-binary-to-rule-them-all">
 <meta property="og:type" content="article">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 <style>
-  :root{--bg:#021621;--panel:#06222f;--border:#0e3346;--text:#e7f6fd;--muted:#86adbf;--dim:#4a6a7a;--green:#00ff00;--pink:#f00fd2;--blue:#12a0ed;--sans:'Inter',Helvetica,Arial,sans-serif;--mono:'JetBrains Mono',Consolas,monospace;--maxw:780px;}
+  :root{--bg:#0B0B0B;--panel:#141414;--border:#232323;--text:#EDEFEA;--muted:#A0A599;--dim:#6B706A;--green:#C6FF3D;--pink:#C6FF3D;--blue:#C6FF3D;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
   *{margin:0;padding:0;box-sizing:border-box;}
   body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;}
   a{color:var(--blue);font-weight:600;text-decoration:none;}a:hover{color:var(--green);}
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(2,22,33,.78);border-bottom:1px solid var(--border);}
+  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
   .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:var(--green);}
   .wordmark{font-size:15px;font-weight:800;letter-spacing:-.025em;}.wordmark .g{color:var(--green);}.wordmark .p{color:var(--pink);}
@@ -45,12 +46,12 @@
 </style>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
-<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #f00fd2;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#f00fd2;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.systems/#benchmarks" style="color:#12a0ed;">current benchmarks →</a></div>
+<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #C6FF3D;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#C6FF3D;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#C6FF3D;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-systems/1bit-systems" style="color:#06c;">the README</a> for current numbers.</div>
-<nav><div class="nav-in"><a class="mark" href="/">1bs</a><a class="wordmark" href="/"><span class="g">1</span>bit<span class="p">.</span>systems</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
+<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
+<nav><div class="nav-in"><a class="mark" href="/">1bm</a><a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
 <article class="wrap">
-<blockquote style="border-left-color:var(--pink);background:#33110022;"><strong>&#9888;&#65039; Correction:</strong> Performance figures in this post are historical and may not reflect current, source-backed numbers. Several headline engine figures were later found to have no reproducible source and are quarantined in <a href="https://github.com/1bit-systems/1bit-systems/blob/main/benchmarks/latest.json">benchmarks/latest.json</a> (the NPU-fused path does not currently produce validated generation). For current, sourced numbers see the <a href="https://github.com/1bit-systems/1bit-systems/blob/main/docs/wiki/performance.md">performance SSOT</a>. (issue #107)</blockquote>
+<blockquote style="border-left-color:var(--pink);background:#33110022;"><strong>&#9888;&#65039; Correction:</strong> Performance figures in this post are historical and may not reflect current, source-backed numbers. Several headline engine figures were later found to have no reproducible source and are quarantined in <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/benchmarks/latest.json">benchmarks/latest.json</a> (the NPU-fused path does not currently produce validated generation). For current, sourced numbers see the <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">performance SSOT</a>. (issue #107)</blockquote>
 
 <div class="meta"><span class="tag npu">NPU</span> <span class="tag g">Architecture</span> <span class="tag b">Multi-Platform</span><br><br><strong style="color:var(--text);">bong-water-water-bong</strong> · July 6, 2026 · 5 min read</div>
 <h1>One binary to rule them all — 5 model families, auto-detect</h1>
@@ -87,8 +88,8 @@
 <hr>
 <p style="font-size:14px;color:var(--dim);"><em>Post 5 of the series. <a href="/blog/three-bugs-broke-97-tok-per-second">Previous: Three bugs saga →</a></em></p>
 <h3>Links</h3>
-<ul><li><a href="https://1bit.systems">1bit.systems</a></li><li><a href="https://github.com/1bit-systems/1bit-systems">GitHub</a></li></ul>
+<ul><li><a href="https://1bit.monster">1bit.monster</a></li><li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a></li></ul>
 </article>
-<div class="foot wrap"><a href="/">← back to 1bit.systems</a> · MIT</div>
+<div class="foot wrap"><a href="/">← back to 1bit.monster</a> · MIT</div>
 </body>
 </html>

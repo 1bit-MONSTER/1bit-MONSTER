@@ -162,6 +162,26 @@ public:
         // Compute data section start = position after all index entries
         uint64_t data_start = (uint64_t)(p - map_);
 
+        // v4 dedup aliases: an entry with total_bytes==0 is an alias whose
+        // file_offset field holds the INDEX of an earlier tensor it shares
+        // data with (dims/quant are repeated in the entry, but data
+        // location comes from the aliased tensor). Resolve BEFORE the
+        // offset fixup — file_offset is still a small index here.
+        for (size_t i = 0; i < tensors_.size(); i++) {
+            auto& t = tensors_[i];
+            if (t.total_bytes != 0) continue;
+            size_t ali = (size_t)t.file_offset;
+            if (ali >= i || ali >= tensors_.size()) {
+                fprintf(stderr, "'%s': bad alias index %zu\n", t.name.c_str(), ali);
+                close();
+                return false;
+            }
+            const TensorEntry& src = tensors_[ali];
+            t.ndim = src.ndim; t.rows = src.rows; t.cols = src.cols;
+            t.num_experts = src.num_experts; t.quant = src.quant;
+            t.file_offset = src.file_offset; t.total_bytes = src.total_bytes;
+        }
+
         // Fix offsets: they are relative to data_start
         for (auto& t : tensors_) {
             t.file_offset += data_start;

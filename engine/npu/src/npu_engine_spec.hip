@@ -263,9 +263,14 @@ int main(int argc,char**argv){
 
     // Full draft forward pass: trunk_feat[5*H] + token_id → logits[V] (f32 on CPU)
     // No CPU sync until the final lmhead_k readback below.
+    // MTP: after each draft step, the draft's own final hidden becomes the
+    // trunk for the next position (pos>0). Position 0 uses the target trunk.
+    std::vector<float>draft_hid(H,0);
     auto draft_forward=[&](const float*trunk_feat,int token_id,int pos,int)->int{
         // Upload trunk (f32→f16, H2D, synchronous for simplicity)
-        std::vector<__half>tb(NTL*H);for(int i=0;i<NTL*H;i++)tb[i]=__float2half(trunk_feat[i]);
+        std::vector<__half>tb(NTL*H);
+        if (pos == 0) { for(int i=0;i<NTL*H;i++)tb[i]=__float2half(trunk_feat[i]); }
+        else          { for(int i=0;i<NTL*H;i++)tb[i]=__float2half(draft_hid[i%H]); }
         hipMemcpyAsync(d_scr,tb.data(),(size_t)NTL*H*2,hipMemcpyHostToDevice,gs);
 
         // FC: [5*H]×[H,5*H]→[H]; save to d_hid, embed token
@@ -306,6 +311,9 @@ int main(int argc,char**argv){
 
         // Final norm + LM head → f32 logits
         nr(d_hid,dws.fN,H);
+        // MTP: save the draft's own hidden for the next position's trunk
+        { std::vector<__half>hh(H);hipMemcpy(hh.data(),d_hid,H*2,hipMemcpyDeviceToHost);
+          for(int i=0;i<H;i++)draft_hid[i]=__half2float(hh[i]); }
         lm(d_hid,dws.lmH,(float*)d_lgt,H,V);
 
         // Readback logits and argmax

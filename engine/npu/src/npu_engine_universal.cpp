@@ -1446,10 +1446,15 @@ int main(int argc,char**argv){
     // longest matching prefix, roll the KV cache back on a miss), BS is pinned
     // to 1 -> plain causal single-token greedy decode, which is correct.
     // Do not raise this without implementing verification.
-    int BS=1;
+    // TRUE batch decode (issue #111 fixed 2026-08-15): B independent
+    // sequences share the prompt, each with its own KV cache and causal
+    // attention; NPU GEMMs run am=B (M=32 kernels amortize the ~4ms
+    // per-op driver overhead across the batch). MoE path stays serial.
+    int BS=8;
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
     int kv_size=4096*NKV*HD;
-    std::vector<KVCache> kv_caches;for(int i=0;i<NC;i++)kv_caches.emplace_back(kv_size);
+    std::vector<std::vector<KVCache>> kv_caches;
+    for(int i=0;i<NC;i++){ kv_caches.emplace_back(); for(int b=0;b<BS;b++) kv_caches[i].emplace_back(kv_size); }
     int qkv_n=cfg.qkv_total;
     std::vector<float> h_b(XM*H), qo_b(XM*qkv_n), at_b(XM*NH*HD), oo_b(XM*H), gt_b(XM*(cfg.gu_split?IM:2*IM)), su_b(XM*IM), dw_b(XM*H);
     std::vector<float> h_data(H), qo_data(qkv_n*BS), ko_data((size_t)NKV*HD*BS), vo_data((size_t)NKV*HD*BS), at_data((size_t)NH*HD*BS), oo_data(H*BS);
@@ -1459,6 +1464,17 @@ int main(int argc,char**argv){
     // ── CPU MoE FFN helper (dequant active experts on-the-fly) ──
     // x: input [H], out: output [H], l: layer index
     // ponytail: CPU matmul, NPU I8Ctx later when per-layer latency matters
+    //
+    // 2026-08-15: dequant LRU cache — the on-the-fly deq_exp per token was the
+    // dominant CPU FFN cost (~33M floats/layer/token at 35B). Same experts get
+    // routed repeatedly (identical batch), so cache the dequantized f32 tensors.
+    // 16 slots/layer = ~8GB (12.6MB/expert) — fits the 128GB box; the benchmark
+    // working set is ~8 experts/layer.
+    struct CpuExp { int expert = -1; int stamp = 0; std::vector<float> gu, d; };
+    std::vector<std::vector<CpuExp>> cpu_exp_cache(NC);
+    for (auto& c : cpu_exp_cache) c.resize(16);
+    int cpu_cache_stamp = 0;
+
     auto moe_ffn_cpu = [&](const float* x, float* out, int l) {
         const auto& eo = exp_off[l];
         const auto& so = sh_off[l];
@@ -1496,15 +1512,48 @@ int main(int argc,char**argv){
 
         for (int e = 0; e < TOP_K; e++) {
             int ex = topk[e];
-            // Dequant this expert's G/U/D from Q4NX/Q8_0 on-the-fly
-            int gr, gc, ur, uc, dr, dc;
-            float* G = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
-                               exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
-            float* U = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
-                               exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
-            float* D = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
-                               exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
-            if (!G || !U || !D) { free(G); free(U); free(D); continue; }
+            // Dequant LRU cache lookup (2026-08-15)
+            float *G = nullptr, *U = nullptr, *D = nullptr;
+            bool owned = true;   // true = deq_exp buffers to free; false = cache data
+            auto& cc = cpu_exp_cache[l];
+            int slot = -1;
+            for (int si = 0; si < 16; si++)
+                if (cc[si].expert == ex) { slot = si; break; }
+            if (slot >= 0) {
+                cc[slot].stamp = ++cpu_cache_stamp;
+                G = cc[slot].gu.data(); U = G + (size_t)IM_EXP * H; D = cc[slot].d.data();
+                owned = false;
+            } else {
+                // Dequant this expert's G/U/D from Q4NX/Q8_0 (cache miss)
+                int gr, gc, ur, uc, dr, dc;
+                float* Gt = deq_exp(eo.gate + (uint64_t)ex * exp_gate_off_stride,
+                                    exp_gate_tr_per, H, eo.gate_bpt, &gr, &gc);
+                float* Ut = deq_exp(eo.up + (uint64_t)ex * exp_up_off_stride,
+                                    exp_up_tr_per, H, eo.up_bpt, &ur, &uc);
+                float* Dt = deq_exp(eo.down + (uint64_t)ex * exp_down_off_stride,
+                                    exp_down_tr_per, IM_EXP, eo.down_bpt, &dr, &dc);
+                if (!Gt || !Ut || !Dt) { free(Gt); free(Ut); free(Dt); continue; }
+                // evict the least-recently-used slot (use the deq_exp dims
+                // gr/gc etc. — they can differ from IM_EXP/H assumptions)
+                int evict = 0;
+                for (int si = 1; si < 16; si++)
+                    if (cc[si].stamp < cc[evict].stamp) evict = si;
+                cc[evict].expert = ex; cc[evict].stamp = ++cpu_cache_stamp;
+                cc[evict].gu.resize((size_t)gr * gc + (size_t)ur * uc);
+                cc[evict].d.resize((size_t)dr * dc);
+                std::memcpy(cc[evict].gu.data(), Gt, (size_t)gr * gc * 4);
+                std::memcpy(cc[evict].gu.data() + (size_t)gr * gc, Ut, (size_t)ur * uc * 4);
+                std::memcpy(cc[evict].d.data(), Dt, (size_t)dr * dc * 4);
+                free(Gt); free(Ut); free(Dt);
+                G = cc[evict].gu.data(); U = G + (size_t)gr * gc; D = cc[evict].d.data();
+                owned = false;   // G/U/D now point into the cache
+                // sanity: the matmul loops expect [IM_EXP, H] / [H, IM_EXP]
+                if ((size_t)gr * gc != (size_t)IM_EXP * H ||
+                    (size_t)dr * dc != (size_t)H * IM_EXP) {
+                    fprintf(stderr, "[moe_ffn_cpu] expert %d dims gr=%d gc=%d dr=%d dc=%d "
+                            "(expected %dx%d / %dx%d)\n", ex, gr, gc, dr, dc, IM_EXP, H, H, IM_EXP);
+                }
+            }
             // G/U: [IM_EXP, H] @ x → [IM_EXP]
             std::vector<float> gu(IM_EXP * 2);
             for (int i = 0; i < IM_EXP; i++) {
@@ -1530,7 +1579,7 @@ int main(int argc,char**argv){
                 for (int k = 0; k < IM_EXP; k++) d += (double)D[i * IM_EXP + k] * gu[k];
                 out[i] += pw * (float)d;
             }
-            free(G); free(U); free(D);
+            if (owned) { free(G); free(U); free(D); }
         }
 
         // Shared expert: sigmoid gate → SiLU(G@x) * U@x → D @ activation
@@ -2696,7 +2745,7 @@ int main(int argc,char**argv){
         // ── per-layer attention (#1472): GDN is sequential (conv + delta rule);
         // full-attn layers use CPU k/v + per-layer dims; other models keep the
         // global-dims path. All feed the same batched O GEMM. ──
-        kv_caches[l].n = sp + npt;
+        kv_caches[l][0].n = sp + npt;
         if (is_gdn_layer[l]) {
             for (int pi = 0; pi < npt; pi++)
                 gdn_attn_step(l, &h_b[pi * H], &qo_b[(size_t)pi * qkv_n],
@@ -2706,7 +2755,7 @@ int main(int argc,char**argv){
         } else if (has_moe) {
             for (int pi = 0; pi < npt; pi++) {
                 int pos = sp + pi;
-                std_attn_step(l, &h_b[pi * H], &qo_b[(size_t)pi * qkv_n], kv_caches[l], pos,
+                std_attn_step(l, &h_b[pi * H], &qo_b[(size_t)pi * qkv_n], kv_caches[l][0], pos,
                               &at_b[(size_t)pi * NH * HD]);
             }
         } else {
@@ -2728,15 +2777,15 @@ int main(int argc,char**argv){
                     float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
                     for (int d = 0; d < HD; d++) ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
                     ra(ks, HD, sp + pi);
-                    memcpy(&kv_caches[l].k[(sp + pi) * NKV * HD + kvh * HD], ks, HD * 4);
-                    memcpy(&kv_caches[l].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
+                    memcpy(&kv_caches[l][0].k[(sp + pi) * NKV * HD + kvh * HD], ks, HD * 4);
+                    memcpy(&kv_caches[l][0].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
                 }
             }
             #pragma omp parallel for
             for (int pi = 0; pi < npt; pi++) {
                 if (omp_get_thread_num() == 0) { fprintf(stderr, "a"); fflush(stderr); }
-                attn_omp(&qo_b[(size_t)pi * qkv_n], &at_b[(size_t)pi * NH * HD], kv_caches[l].n,
-                         kv_caches[l].k.data(), kv_caches[l].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                attn_omp(&qo_b[(size_t)pi * qkv_n], &at_b[(size_t)pi * NH * HD], kv_caches[l][0].n,
+                         kv_caches[l][0].k.data(), kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
             }
         }
         // O GEMM (batched) + residual
@@ -2823,7 +2872,7 @@ int main(int argc,char**argv){
                               at_data.data());
             } else if (has_moe) {
                 int pos = sp;
-                std_attn_step(l, h0, qo_data.data(), kv_caches[l], pos, at_data.data());
+                std_attn_step(l, h0, qo_data.data(), kv_caches[l][0], pos, at_data.data());
             } else {
                 memcpy(ko_data.data(),&qo_data[cfg.qkv_k_offset],(size_t)NKV*HD*4);memcpy(vo_data.data(),&qo_data[cfg.qkv_v_offset],(size_t)NKV*HD*4);
                 float*qn=qn_w[l].data(),*kn=kn_w[l].data();
@@ -2831,9 +2880,9 @@ int main(int argc,char**argv){
                     for(int d=0;d<HD;d++)qo_data[hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_data[(size_t)hh*HD],HD,sp);
                     if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=(double)ko_data[kvh*HD+d]*ko_data[kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
                     for(int d=0;d<HD;d++)ko_data[kvh*HD+d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(&ko_data[(size_t)kvh*HD],HD,sp);
-                    memcpy(&kv_caches[l].k[sp*NKV*HD+kvh*HD],&ko_data[(size_t)kvh*HD],HD*4);memcpy(&kv_caches[l].v[sp*NKV*HD+kvh*HD],&vo_data[(size_t)kvh*HD],HD*4);}}
-                kv_caches[l].n=sp+1;
-                attn_omp(qo_data.data(),at_data.data(),kv_caches[l].n,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);
+                    memcpy(&kv_caches[l][0].k[sp*NKV*HD+kvh*HD],&ko_data[(size_t)kvh*HD],HD*4);memcpy(&kv_caches[l][0].v[sp*NKV*HD+kvh*HD],&vo_data[(size_t)kvh*HD],HD*4);}}
+                kv_caches[l][0].n=sp+1;
+                attn_omp(qo_data.data(),at_data.data(),kv_caches[l][0].n,kv_caches[l][0].k.data(),kv_caches[l][0].v.data(),NH,NKV,HD,GQA);
             }
             FLM_GO(co,l,at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
             memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
@@ -2855,6 +2904,11 @@ int main(int argc,char**argv){
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
         memcpy(h_data.data(),h0,H*4);sp++;total_generated++;
         t_boot=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_boot).count();
+        // True batch: replicate the prompt+boot KV and first token to all
+        // sequences (identical shared prompt -> identical first tokens).
+        for (int l = 0; l < NC; l++)
+            for (int b = 1; b < BS; b++) kv_caches[l][b] = kv_caches[l][0];
+        for (int b = 1; b < BS; b++) top_ids[b] = top_ids[0];
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
     }
 
@@ -2871,41 +2925,44 @@ int main(int argc,char**argv){
             double t_qkv=0, t_attn=0, t_o=0, t_ffn=0, t_misc=0;
             for (int l = 0; l < NC; l++) {
                 auto tl0 = std::chrono::steady_clock::now();
-                for (int i = 0; i < H; i++) sb_data[i] = h_b[i];
-                rn_c(h_b.data(), in_n[l].data(), H);
-                FLM_GO(cq, l, h_b.data(), 1, H, dynamic_ascale(h_b.data(), H),
+                for (int b = 0; b < batch_size; b++) for (int i = 0; i < H; i++) sb_data[b*H+i] = h_b[b*H+i];
+                for (int b = 0; b < batch_size; b++) rn_c(&h_b[b*H], in_n[l].data(), H);
+                FLM_GO(cq, l, h_b.data(), batch_size, H, dynamic_ascale(h_b.data(), batch_size*H),
                        qsc[l], qo_b.data(), qkv_n);
-                cn(qo_b.data(), qkv_n);
+                cn(qo_b.data(), batch_size*qkv_n);
                 double dq = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl0).count();
                 t_qkv += dq;
                 auto tl1 = std::chrono::steady_clock::now();
-                if (is_gdn_layer[l]) {
-                    gdn_attn_step(l, h_b.data(), qo_b.data(),
-                                  dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
-                                  dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
-                                  at_b.data());
-                } else {
-                    int pos = sp;
-                    std_attn_step(l, h_b.data(), qo_b.data(), kv_caches[l], pos, at_b.data());
+                for (int b = 0; b < batch_size; b++) {
+                    if (is_gdn_layer[l]) {
+                        gdn_attn_step(l, &h_b[b*H], &qo_b[(size_t)b*qkv_n],
+                                      dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
+                                      dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
+                                      &at_b[(size_t)b*NH*HD]);
+                    } else {
+                        int pos = sp;
+                        std_attn_step(l, &h_b[b*H], &qo_b[(size_t)b*qkv_n], kv_caches[l][b], pos,
+                                      &at_b[(size_t)b*NH*HD]);
+                    }
                 }
                 double da = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl1).count();
                 t_attn += da;
                 auto tl2 = std::chrono::steady_clock::now();
-                FLM_GO(co, l, at_b.data(), 1, NH * HD, dynamic_ascale(at_b.data(), NH * HD),
+                FLM_GO(co, l, at_b.data(), batch_size, NH * HD, dynamic_ascale(at_b.data(), batch_size*NH*HD),
                        osc[l], oo_b.data(), H);
-                cn(oo_b.data(), H);
-                for (int i = 0; i < H; i++) h_b[i] = sb_data[i] + oo_b[i];
-                for (int i = 0; i < H; i++) sb_data[i] = h_b[i];
-                rn_c(h_b.data(), pa_n[l].data(), H);
+                cn(oo_b.data(), batch_size*H);
+                for (int b = 0; b < batch_size; b++) for (int i = 0; i < H; i++) h_b[b*H+i] = sb_data[b*H+i] + oo_b[b*H+i];
+                for (int b = 0; b < batch_size; b++) for (int i = 0; i < H; i++) sb_data[b*H+i] = h_b[b*H+i];
+                for (int b = 0; b < batch_size; b++) rn_c(&h_b[b*H], pa_n[l].data(), H);
                 double do_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl2).count();
                 t_o += do_;
                 auto tl3 = std::chrono::steady_clock::now();
                 if (use_npu_moe && mgu && mgu->isReady())
-                    moe_ffn_npu(h_b.data(), dw_b.data(), l);
+                    moe_ffn_npu_batch(h_b.data(), dw_b.data(), l, batch_size);  // grouped expert execution
                 else
-                    moe_ffn_cpu(h_b.data(), dw_b.data(), l);
-                cn(dw_b.data(), H);
-                for (int i = 0; i < H; i++) h_b[i] = sb_data[i] + dw_b[i];
+                    for (int b = 0; b < batch_size; b++) moe_ffn_cpu(&h_b[b*H], &dw_b[b*H], l);
+                cn(dw_b.data(), batch_size*H);
+                for (int b = 0; b < batch_size; b++) for (int i = 0; i < H; i++) h_b[b*H+i] = sb_data[b*H+i] + dw_b[b*H+i];
                 double df = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl3).count();
                 t_ffn += df;
                 double dtotal = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl0).count();
@@ -2958,22 +3015,24 @@ int main(int argc,char**argv){
             float*qn=qn_w[l].data(),*kn=kn_w[l].data();
             for(int b=0;b<batch_size;b++){
                 for(int hh=0;hh<NH;hh++){double s=0;for(int d=0;d<HD;d++)s+=(double)qo_b[b*qkv_n+hh*HD+d]*qo_b[b*qkv_n+hh*HD+d];float iq=1.0f/sqrtf((float)(s/HD)+EPS);
-                    for(int d=0;d<HD;d++)qo_b[b*qkv_n+hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_b[b*qkv_n+hh*HD],HD,sp+b);}
+                    for(int d=0;d<HD;d++)qo_b[b*qkv_n+hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_b[b*qkv_n+hh*HD],HD,sp);}  // true batch: shared position
                 for(int kvh=0;kvh<NKV;kvh++){float*ks=&qo_b[b*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[b*qkv_n+cfg.qkv_v_offset+kvh*HD];
                     double sk=0;for(int d=0;d<HD;d++)sk+=(double)ks[d]*ks[d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                    for(int d=0;d<HD;d++)ks[d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(ks,HD,sp+b);}
+                    for(int d=0;d<HD;d++)ks[d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(ks,HD,sp);}  // shared position
             }
             // KV capacity is 4096 positions (issue #1267) — restart the
             // context instead of writing OOB once exhausted.
-            if (sp + batch_size > 4096) {
+            if (sp + 1 > 4096) {
                 fprintf(stderr, "[npu] KV overflow at layer %d (sp=%d) — restarting context\n", l, sp);
                 sp = 0;
             }
+            // True batch: each sequence writes its own position to its own cache.
             for(int b=0;b<batch_size;b++)for(int kvh=0;kvh<NKV;kvh++){
                 float*ks=&qo_b[b*qkv_n+cfg.qkv_k_offset+kvh*HD],*vs=&qo_b[b*qkv_n+cfg.qkv_v_offset+kvh*HD];
-                memcpy(&kv_caches[l].k[(sp+b)*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l].v[(sp+b)*NKV*HD+kvh*HD],vs,HD*4);}
-            kv_caches[l].n=sp+batch_size;int cl=kv_caches[l].n;
-            for(int b=0;b<batch_size;b++){attn_omp(&qo_b[(size_t)b*qkv_n],&at_b[(size_t)b*NH*HD],cl,kv_caches[l].k.data(),kv_caches[l].v.data(),NH,NKV,HD,GQA);}
+                memcpy(&kv_caches[l][b].k[sp*NKV*HD+kvh*HD],ks,HD*4);memcpy(&kv_caches[l][b].v[sp*NKV*HD+kvh*HD],vs,HD*4);}
+            for(int b=0;b<batch_size;b++){kv_caches[l][b].n=sp+1;}
+            // Per-sequence causal attention over each sequence's OWN cache.
+            for(int b=0;b<batch_size;b++){attn_omp(&qo_b[(size_t)b*qkv_n],&at_b[(size_t)b*NH*HD],kv_caches[l][b].n,kv_caches[l][b].k.data(),kv_caches[l][b].v.data(),NH,NKV,HD,GQA);}
 
             // ── O GEMM: queued behind GU; its readback hides behind D later ──
             float co_ascale=dynamic_ascale(at_b.data(),batch_size*NH*HD);
@@ -3043,10 +3102,13 @@ int main(int argc,char**argv){
         // LM head on the (single, BS=1) decoded position -> greedy next token.
         // total_verified == total_generated because every emitted token is a
         // real causal decode, not a speculative candidate (issue #111).
-        memcpy(sb_data.data(),&h_b[0],H*4);rn_c(sb_data.data(),fin_v.data(),H);
-        lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
+        // Per-sequence LM head: each sequence's hidden -> its own next token.
+        for(int b=0;b<batch_size;b++){
+            memcpy(sb_data.data(),&h_b[(size_t)b*H],H*4);rn_c(sb_data.data(),fin_v.data(),H);
+            lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids+b,1,lm_nv,H,lm_emb);
+        }
 
-        total_generated+=batch_size;total_verified+=batch_size;sp+=batch_size;n_batches++;
+        total_generated+=batch_size;total_verified+=batch_size;sp+=1;n_batches++;
         double batch_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_batch).count();
         printf("  [%d] batch=%d tok=%d %.0fms (%.0f ms/tok)\n",step,batch_size,top_ids[0],batch_ms,batch_ms/batch_size);
         step+=batch_size;

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs — 1bit MONSTER</title>
+<meta name="description" content="Build it, run a model, serve an API. Architecture, model families, benchmarks.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/1bm.css">
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div>
+      <span class="mark">1bm</span>
+      <span class="wordmark">1bit<br>MONSTER</span>
+      <p class="quote">"Sorry but not sorry." <span>— bong-water-water-bong</span></p>
+    </div>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="models.html">models</a>
+      <a href="benchmarks.html">benchmarks</a>
+      <a href="docs.html" aria-current="page">docs</a>
+      <a href="story.html">the story</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
+    </nav>
+    <div class="status"><span class="dot"></span>engine online</div>
+    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
+  </aside>
+  <main>
+    <div class="topbar"><span>94% HF coverage · any hardware · one binary</span><span>pure C++23</span></div>
+    <div class="hero">
+      <h1>Documentation</h1>
+      <p class="lead">Build it, run a model, hit the API. Everything below lives in the repo under <code>docs/</code>.</p>
+      <div class="btns">
+        <a class="btn" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/getting-started.md">getting started</a>
+        <a class="btn ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md">full docs index</a>
+      </div>
+    </div>
+    <section>
+      <h2>Quick start</h2>
+      <pre><span class="c"># build</span>
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-MONSTER &amp;&amp; cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+<span class="c"># run a model — GGUF, ONNX or native 1BP</span>
+./build/1bit zaya -m model.1bp -p <span class="s">"Hello world"</span>
+
+<span class="c"># serve an OpenAI-compatible API with a resident model pool</span>
+./build/1bit unified --pool</pre>
+      <p class="note" style="margin-top:12px">No installer yet — build from source.</p>
+    </section>
+    <section class="cols">
+      <div>
+        <h3>Guides</h3>
+        <ul class="plain">
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/getting-started.md">Getting started</a> — build, run, serve</li>
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/building.md">Build guide</a> — platforms, backend flags, troubleshooting</li>
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/architecture.md">Architecture</a> — how one binary reaches five backends</li>
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/roadmap.md">Roadmap</a> — shipped vs in progress</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Reference</h3>
+        <ul class="plain">
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/model-families/README.md">Model families</a> — 19 classes, one page each</li>
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">Performance SSOT</a> — every measured number</li>
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/models.md">Support SSOT</a> — combined matrix</li>
+          <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/jarvis.md">JARVIS pipeline</a> — local voice, end to end</li>
+        </ul>
+      </div>
+    </section>
+    <section>
+      <h2>Subcommands</h2>
+      <table>
+        <tr><th>subcommand</th><th>what it does</th></tr>
+        <tr><td>zaya</td><td class="b">single-model CLI inference</td></tr>
+        <tr><td>unified</td><td class="b">multi-model server, OpenAI-compatible API, model pool</td></tr>
+        <tr><td>jarvis</td><td class="b">end-to-end local voice assistant</td></tr>
+        <tr><td>vision</td><td class="b">vision-language models</td></tr>
+        <tr><td>chat</td><td class="b">interactive terminal chat</td></tr>
+        <tr><td>image_server</td><td class="b">Stable-Diffusion-family image and video generation</td></tr>
+      </table>
+    </section>
+    <section>
+      <h2>Conventions</h2>
+      <ul class="plain">
+        <li><strong>Every number is measured</strong>, and carries its hardware and date.</li>
+        <li><strong>Shipped and planned are separated.</strong> Anything not yet shipped says so.</li>
+        <li>No Python in the runtime. Tooling may use it; the engine may not.</li>
+      </ul>
+    </section>
+    <footer><span>© 1bit MONSTER</span><span style="color:var(--lime)">mit — do whatever you want</span></footer>
+  </main>
+</div>
+</body>
+</html>

@@ -1,10 +1,10 @@
 :root{
-  --bg:#0d1117; --fg:#c9d1d9; --muted:#8b949e;
-  --accent:#00d4ff;
+  --bg:#0B0B0B; --fg:#EDEFEA; --muted:#A0A599;
+  --accent:#C6FF3D;
   --warn:#d4a520; --warn-fg:#f0b429;
-  --card:#11161d;
-  --border:#1f2630;
-  --code-bg:#0a0e14;
+  --card:#141414;
+  --border:#232323;
+  --code-bg:#0a0a0a;
   /* legacy aliases — collapse to canonical tokens for backwards-compat */
   --accent-dim:var(--accent);
   --panel:var(--card); --panel-2:var(--card);
@@ -20,9 +20,9 @@ a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
 code,pre{font-family:var(--mono)}
 img,svg{display:block;max-width:100%}
-::selection{background:rgba(0,212,255,.28);color:var(--fg)}
+::selection{background:rgba(198,255,61,.28);color:var(--fg)}
 
-.topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:1rem;padding:12px 20px;background:rgba(13,17,23,.82);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border-dim)}
+.topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:1rem;padding:12px 20px;background:rgba(11,11,11,.82);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border-dim)}
 .topbar .brand{display:flex;align-items:center;gap:10px;color:var(--fg);font-weight:600;font-family:var(--mono);font-size:15px}
 .topbar .brand:hover{text-decoration:none}
 .topbar .brand b{color:var(--accent)}
@@ -31,7 +31,7 @@ img,svg{display:block;max-width:100%}
 .topbar nav a{color:var(--fg);font-size:14px;padding:7px 11px;border-radius:6px}
 .topbar nav a:hover{background:var(--panel);color:var(--accent);text-decoration:none}
 .topbar nav a.active{color:var(--accent)}
-.topbar nav a.gh-btn{background:var(--accent);color:#0d1117;font-weight:600;margin-left:4px}
+.topbar nav a.gh-btn{background:var(--accent);color:var(--bg);font-weight:600;margin-left:4px}
 .topbar nav a.gh-btn:hover{background:transparent;color:var(--accent)}
 
 /* landing page */
@@ -57,7 +57,7 @@ img,svg{display:block;max-width:100%}
 .docs-side h4{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;margin:12px 0 6px}
 .docs-side a{display:block;color:var(--fg);font-size:14px;padding:5px 8px;border-radius:4px}
 .docs-side a:hover{background:var(--panel);text-decoration:none;color:var(--accent)}
-.docs-side a.active{color:var(--accent);background:rgba(0,212,255,.08)}
+.docs-side a.active{color:var(--accent);background:rgba(198,255,61,.08)}
 
 .docs-body{min-width:0;padding:12px 0 64px}
 .docs-body h1{font-size:clamp(26px,3.8vw,34px);margin:8px 0 16px;letter-spacing:-.02em}
@@ -70,7 +70,7 @@ img,svg{display:block;max-width:100%}
 .docs-body code{background:var(--panel);border:1px solid var(--border-dim);border-radius:4px;padding:1px 6px;font-size:13.5px}
 .docs-body pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0 0 16px}
 .docs-body pre code{background:transparent;border:0;padding:0;font-size:13px;color:var(--fg)}
-.docs-body blockquote{margin:0 0 16px;padding:10px 14px;border-left:3px solid var(--accent);background:rgba(0,212,255,.06);color:var(--fg);border-radius:0 6px 6px 0}
+.docs-body blockquote{margin:0 0 16px;padding:10px 14px;border-left:3px solid var(--accent);background:rgba(198,255,61,.06);color:var(--fg);border-radius:0 6px 6px 0}
 .docs-body table{border-collapse:collapse;width:100%;margin:0 0 16px;font-size:14px}
 .docs-body th,.docs-body td{border:1px solid var(--border-dim);padding:7px 10px;text-align:left}
 .docs-body th{background:var(--panel);color:var(--accent);font-weight:600;font-family:var(--mono);font-size:13px}
@@ -108,7 +108,7 @@ html{scroll-behavior:smooth}
 .docs-stats{
   display:flex;flex-wrap:wrap;gap:6px;align-items:center;
   padding:10px 20px;border-bottom:1px solid var(--border-dim);
-  background:rgba(13,17,23,.6);
+  background:rgba(11,11,11,.6);
 }
 .docs-stats img{height:20px;display:inline-block;border-radius:3px}
 .docs-stats a:hover{text-decoration:none;opacity:.85}
@@ -127,7 +127,7 @@ html{scroll-behavior:smooth}
   padding:8px 10px;font:inherit;font-size:13.5px;
   font-family:var(--mono);
 }
-#docs-search:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(0,212,255,.18)}
+#docs-search:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(198,255,61,.18)}
 #docs-search::placeholder{color:var(--muted)}
 
 /* nav reading width tighter, content wider */

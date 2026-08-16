@@ -14,6 +14,7 @@ name: Scope Guard
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  merge_group:
 
 permissions:
   contents: read
@@ -30,8 +31,8 @@ jobs:
 
       - name: Check changed paths against engine scope
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
@@ -42,7 +43,7 @@ jobs:
           # Anything else (new dirs, unrelated apps/services) fails the PR.
           ALLOWED='
             AGENTS.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
-            CMakeLists_windows.txt CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
+            CMakeLists_windows.txt CODE_OF_CONDUCT.md CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
             Makefile.zamba2 PLAN-GAIA.md README.md ROADMAP.md SECURITY.md
             SHERRY-FILES.txt TODO_TRACKING.md VERSION env.sh install.sh
             package.json replace_i8ctx.py

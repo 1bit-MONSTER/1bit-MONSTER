@@ -3,7 +3,7 @@
 // Full port of llama.cpp ggml-quants.c dequantize_row_iq1_s to GPU.
 // Block structure (from llama.cpp ggml-common.h):
 //
-//   IQ1_S (1.5625 bpw): 256 elements, 206 bytes (50 actual + padding)
+//   IQ1_S (1.5625 bpw): 256 elements, 50 bytes
 //     struct { ggml_half d; uint8_t qs[32]; uint16_t qh[8]; }  // 2+32+16=50
 //     d:    superblock fp16 scale
 //     qs:   grid index low 8 bits (4 per sub-block, 8 sub-blocks)
@@ -12,10 +12,10 @@
 //             bits 12-14: sub-block scale multiplier (0-7)
 //             bit 15: delta sign
 //
-//   IQ1_M (1.75 bpw): 256 elements, 230 bytes
-//     struct { uint8_t qs[32]; uint8_t qh[32]; uint8_t scales[8]; } // 72 bytes main
-//     + d (fp16 scale) packed into scales via iq1m_scale_t
-//     More complex multi-level scaling
+//   IQ1_M (1.75 bpw): 256 elements, 56 bytes
+//     struct { uint8_t qs[32]; uint8_t qh[16]; uint8_t scales[8]; } // 32+16+8=56
+//     superblock fp16 scale d packed across scales[0..7] via iq1m_scale_t;
+//     3-bit sub-block scales in scales[ib/2] >> 6*(ib%2) (+3 for dl2)
 //
 // Dequant: for each 32-element sub-block (8 per block):
 //   dl = d * (2 * ((qh >> 12) & 7) + 1)        // scale
@@ -31,9 +31,9 @@
 #include "hip_check.h"
 
 #define IQ_BLOCK_SIZE 256
-#define IQ1_S_BYTES 206
-#define IQ1_S_CORE_BYTES 50   // actual block struct size: d(2) + qs(32) + qh(16)
-#define IQ1_M_BYTES 230
+#define IQ1_S_BYTES 50    // GGUF block size: d(2) + qs(32) + qh(16)
+#define IQ1_S_CORE_BYTES 50
+#define IQ1_M_BYTES 56    // GGUF block size: qs(32) + qh(16) + scales(8)
 #define IQ1_S_SUBBLOCKS 8     // 256/32
 
 #include "iq1s_grid_data.h"
@@ -49,7 +49,7 @@ extern "C" void iq_upload_grid(hipStream_t stream) {
 
 // ─── IQ1_S: dequantize one 256-element block to float ───────────
 // Ported from llama.cpp ggml-quants.c dequantize_row_iq1_s
-// Block data: first IQ1_S_CORE_BYTES (50) of the IQ1_S_BYTES (206) block
+// Block data: first IQ1_S_CORE_BYTES (50) of the IQ1_S_BYTES (50) block
 __device__ void dequant_iq1_s_block(const uint8_t* block, float* out) {
     // Read superblock scale d (fp16 at offset 0)
     __half d_h;
@@ -83,9 +83,9 @@ __device__ void dequant_iq1_s_block(const uint8_t* block, float* out) {
 
 // ─── IQ1_M dequant: 256-element block → float32 ─────────────────
 // Ported from llama.cpp ggml-quants.c dequantize_row_iq1_m
-// Block layout (block_iq1_m): qs[32] + qh[16] + scales[8] = 56 bytes core
-// within the 230-byte GGUF block. scales stores 4 uint16_t with 6-bit
-// sub-block scales + 4-bit superblock scale packed in upper bits.
+// Block layout (block_iq1_m): qs[32] + qh[16] + scales[8] = 56 bytes.
+// scales holds 4 uint16_t; each carries two 3-bit sub-block scales (bits
+// 0-5 and 6-11) and one nibble of the fp16 superblock scale (bits 12-15).
 // Decode IQ1_M superblock scale from 4 uint16_t scale entries
 // scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000)
 // where sc = (const uint16_t*)scales (8 bytes = 4 uint16_t)
@@ -95,11 +95,10 @@ static inline __device__ uint16_t iq1m_combine_scales(const uint16_t* sc) {
 }
 
 __device__ void dequant_iq1_m_block(const uint8_t* block, float* out) {
-    // IQ1_M layout within 230-byte GGUF block:
+    // IQ1_M layout (56-byte GGUF block):
     //   qs[32] at offset 0
     //   qh[16] at offset 32
     //   scales[8] at offset 48
-    //   remaining 174 bytes: padding/metadata (ignored)
     const uint8_t* qs = block;
     const uint8_t* qh = block + 32;
     const uint8_t* scales = block + 48;
@@ -112,13 +111,10 @@ __device__ void dequant_iq1_m_block(const uint8_t* block, float* out) {
     memcpy(&d_h, &scale_u16, 2);
     float d = (float)d_h;
 
-    // Scales are also used as uint16_t[4] for sub-block scale reads
+    // scales also serves as uint16_t[4] for sub-block scale reads:
+    // sub-block scales live in bits 0-5/6-11, superblock scale in 12-15,
+    // so shifts below never touch the superblock bits.
     const uint16_t* sc = (const uint16_t*)scales;
-    // Zero out the low 4 bits of each uint16_t (they're used for superblock
-    // scale packing, not sub-block scales)
-    // Wait — the sub-block scales are in bits 0-5 and 6-11 of each sc[i].
-    // The superblock scale uses bits 12-15. So reading sc[ib/2] and shifting
-    // gives the correct sub-block scale without masking the superblock bits.
 
     int out_idx = 0;
     for (int ib = 0; ib < IQ1_S_SUBBLOCKS; ib++) {

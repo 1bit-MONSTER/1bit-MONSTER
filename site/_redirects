@@ -2,9 +2,9 @@
 # Format: <from> <to> <status>
 
 # Short permalinks
-/gh           https://github.com/1bit-systems/1bit-systems        302
-/github       https://github.com/1bit-systems/1bit-systems        302
-/wiki         https://github.com/1bit-systems/1bit-systems/wiki   302
+/gh           https://github.com/1bit-MONSTER/1bit-MONSTER        302
+/github       https://github.com/1bit-MONSTER/1bit-MONSTER        302
+/wiki         https://github.com/1bit-MONSTER/1bit-MONSTER/wiki   302
 /install      /#quickstart                                                 302
 
 # 1bit coding agent
@@ -45,5 +45,5 @@
 /docs/changelog             /                           301
 
 # Repo docs (paths removed from /docs/ collapse)
-/wiki/models        https://github.com/1bit-systems/1bit-systems/blob/main/docs/wiki/models.md        302
-/wiki/performance   https://github.com/1bit-systems/1bit-systems/blob/main/docs/wiki/performance.md   302
+/wiki/models        https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/models.md        302
+/wiki/performance   https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md   302

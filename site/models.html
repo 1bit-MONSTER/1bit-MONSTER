@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Models — 1bit MONSTER</title>
+<meta name="description" content="94% HF model coverage across 32 architecture tokens. Coverage by class, not by port.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/1bm.css">
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div>
+      <span class="mark">1bm</span>
+      <span class="wordmark">1bit<br>MONSTER</span>
+      <p class="quote">"Sorry but not sorry." <span>— bong-water-water-bong</span></p>
+    </div>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="models.html" aria-current="page">models</a>
+      <a href="benchmarks.html">benchmarks</a>
+      <a href="docs.html">docs</a>
+      <a href="story.html">the story</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
+    </nav>
+    <div class="status"><span class="dot"></span>engine online</div>
+    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
+  </aside>
+  <main>
+    <div class="topbar"><span>94% HF coverage · any hardware · one binary</span><span>32 arch tokens · 302,330 / 322,029 checkpoints</span></div>
+    <div class="hero">
+      <h1>94% HF coverage, <span style="color:var(--lime)">one binary</span></h1>
+      <p class="lead">Coverage is defined at the <strong>architecture class</strong>, not per checkpoint. A class that works brings its whole family with it — including checkpoints that did not exist when the class was written. Roughly 50 classes cover the long tail of what HuggingFace hosts; 19 are live.</p>
+      <p class="lead">Three components make a new class cheap: the <strong>registry</strong> (detection and metadata), the <strong>kernel path</strong> (reused ops, quant-aware), and the <strong>validation harness</strong> (numerical comparison against the reference). All three are proven.</p>
+    </div>
+    <section>
+      <h2>Families</h2>
+      <table>
+        <tr><th>family</th><th>class</th><th>highlight</th></tr>
+        <tr><td>Zyphra</td><td class="b">dense · MoE · Mamba/SSM</td><td class="b">BlackMamba-1.5B — 79.4 tok/s</td></tr>
+        <tr><td>Qwen</td><td class="b">dense · MoE · vision-language</td><td class="b">Qwen3-0.6B — 373 tok/s</td></tr>
+        <tr><td>Llama</td><td class="b">dense</td><td class="b">widest third-party fine-tune surface</td></tr>
+        <tr><td>Mistral</td><td class="b">dense · MoE</td><td class="b">sliding-window attention</td></tr>
+        <tr><td>Gemma</td><td class="b">dense</td><td class="b">GeGLU, distinct norm layout</td></tr>
+        <tr><td>Phi</td><td class="b">dense</td><td class="b">strong draft-model candidate</td></tr>
+        <tr><td>Falcon</td><td class="b">dense</td><td class="b">multi-query attention</td></tr>
+        <tr><td>OLMo</td><td class="b">dense</td><td class="b">clean-room numerics reference</td></tr>
+        <tr><td>Granite</td><td class="b">dense · MoE</td><td class="b">enterprise + code variants</td></tr>
+        <tr><td>SmolLM</td><td class="b">dense</td><td class="b">SmolLM2-135M — 662 tok/s</td></tr>
+        <tr><td>DeepSeek</td><td class="b">dense · MoE</td><td class="b">R1-Distill-Llama-8B — 44 tok/s</td></tr>
+        <tr><td>GPT-OSS</td><td class="b">MoE</td><td class="b">expert routing at scale</td></tr>
+        <tr><td>Laguna</td><td class="b">dense</td><td class="b">shared dense kernel path</td></tr>
+        <tr><td>Kimi</td><td class="b">dense · MoE</td><td class="b">long-context KV residency</td></tr>
+        <tr><td>BitNet / Bonsai</td><td class="b">ternary</td><td class="b">native 1BP TQ2 layouts</td></tr>
+        <tr><td>Whisper</td><td class="b">speech (STT)</td><td class="b">front end of the JARVIS pipeline</td></tr>
+      </table>
+      <p class="note" style="margin-top:14px">Per-family pages, with measured numbers where published: <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/model-families/README.md">docs/model-families →</a></p>
+    </section>
+    <section class="cols">
+      <div>
+        <h3>Formats</h3>
+        <p class="lead">GGUF, ONNX, and the native 1BP format are read directly. Architecture detection is automatic; there is no per-model configuration file and no conversion step to babysit.</p>
+      </div>
+      <div>
+        <h3>Featured: Zyphra</h3>
+        <p class="lead">The one family that spans the entire stack — EEG → LLM (dense, MoE, Mamba) → TTS → voice cloning — all on the same binary. ZAYA1-74B-preview at 17.6 tok/s; BlackMamba-1.5B at 79.4.</p>
+      </div>
+    </section>
+    <footer><span>© 1bit MONSTER</span><span style="color:var(--lime)">mit — do whatever you want</span></footer>
+  </main>
+</div>
+</body>
+</html>
