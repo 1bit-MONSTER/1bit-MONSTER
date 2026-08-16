@@ -9,7 +9,7 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap');
 
 :root{
-  /* palette — 1bit systems: purple/lime/blue-bell */
+  /* palette — 1bit.MONSTER: cyan/amber on navy */
   --bg:        #021621;
   --bg-2:      #04202f;
   --bg-3:      #07405f;
@@ -18,12 +18,12 @@
   --ink-3:     #5d9ec2;
   --rule:      rgba(14, 128, 190, 0.42);
   --rule-soft: rgba(14, 128, 190, 0.18);
-  --accent:    #00ff00;
-  --accent-dim:#00cc00;
-  --blue:      #12a0ed;
-  --live:      #f00fd2;
-  --live-dark: #c00ca8;
-  --highlight: #e5ffe5;
+  --accent:    #00e5ff;
+  --accent-dim:#00b8d4;
+  --blue:      #0e80be;
+  --live:      #ff9f1c;
+  --live-dark: #0e80be;
+  --highlight: #e5faff;
 
   /* legacy aliases so existing class hooks still pick up */
   --fg: var(--ink);

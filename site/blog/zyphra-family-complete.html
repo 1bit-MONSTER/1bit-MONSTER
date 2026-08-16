@@ -27,7 +27,7 @@
 <meta property="og:description" content="Zyphra's Zamba2 Mamba2-hybrid (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP and validated end-to-end. Zero Python, one engine.">
 <meta property="og:url" content="https://1bit.monster/blog/zyphra-family-complete">
 <meta property="og:type" content="article">
-<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:site_name" content="1bit.monster">
@@ -36,7 +36,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Zyphra family complete — Zamba2 + ZR1 all running in one C++ binary">
 <meta name="twitter:description" content="Zyphra's Zamba2 (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP. ZR1: 187.9 tok/s Vulkan; Zamba2 HIP e2e validated vs HF (corr 0.997).">
-<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
 
 <!-- JSON-LD -->
 <script type="application/ld+json">
@@ -67,7 +67,7 @@
   },
   "image": {
     "@type": "ImageObject",
-    "url": "https://1bit.monster/assets/og-default.png",
+    "url": "https://1bit.monster/assets/og-card.png",
     "width": 1200,
     "height": 630
   },
@@ -82,7 +82,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 
 <style>
-  :root{--bg:#021621;--panel:#04202f;--border:rgba(14,128,190,.42);--text:#e7f6fd;--muted:#a0d9f8;--dim:#5d9ec2;--green:#00ff00;--pink:#f00fd2;--blue:#12a0ed;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
+  :root{--bg:#021621;--panel:#04202f;--border:rgba(14,128,190,.42);--text:#e7f6fd;--muted:#a0d9f8;--dim:#5d9ec2;--green:#00e5ff;--pink:#ff9f1c;--blue:#0e80be;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
   *{margin:0;padding:0;box-sizing:border-box;}
   body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;}
   a{color:var(--blue);font-weight:600;text-decoration:none;}a:hover{color:var(--green);}
@@ -113,7 +113,7 @@
 </style>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
-<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00ff00;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00ff00;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00ff00;">current benchmarks →</a></div>
+<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00e5ff;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00e5ff;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00e5ff;">current benchmarks →</a></div>
 
 <div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
 <nav><div class="nav-in"><a class="mark" href="/">1bm</a><a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
