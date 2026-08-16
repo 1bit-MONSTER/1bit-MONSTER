@@ -573,6 +573,31 @@
       "oracle": "transformers bf16 cpu",
       "status": "validated",
       "tier": "full"
+    },
+    {
+      "family": "deepseek_v4",
+      "hf_arch_strings": [
+        "deepseek_v4",
+        "deepseek4",
+        "dflash",
+        "deepseek4_dspark",
+        "deepseekv4"
+      ],
+      "mapping_target": "DEEPSEEK_V4",
+      "quirk_flags": {
+        "rope": "partial-0.125-yarn",
+        "rotate_at_load": false,
+        "moe": "hash+sqrtsoftplus-topk",
+        "bias": "none",
+        "norm": "rmsnorm",
+        "attention": "shared-kv-mqa+sinks+grouped-out",
+        "residual": "mhc-sinkhorn"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_deepseek_v4.py)",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 342 == HF oracle, top-20 overlap 20/20. Engine rewritten from fictional arch to real Shared-KV MQA + mHC Sinkhorn + hash-MoE (was MLA-based fiction, audited same day). Compressor branches (CSA/HCA) + Lightning Indexer NOT yet implemented \u2014 mini fixture uses sliding_attention only; real-checkpoint gate on GPU box needs them."
     }
   ]
 }

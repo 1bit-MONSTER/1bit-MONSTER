@@ -109,6 +109,20 @@ else
     echo "  - instella-1bp: fixture absent, skipped"
 fi
 
+# ── DeepSeek V4 gate (mini fixture, HF safetensors oracle) ──
+total=$((total+1))
+dsv4_dir=/tmp/onebit-dsv4
+if [ -f "$dsv4_dir/logits_last.npy" ] && [ -f "$dsv4_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-dsv4-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_deepseek_v4.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_dsv4" 2>/dev/null; then echo "✗ deepseek_v4: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_dsv4" "$dsv4_dir" /tmp/onebit-dsv4-ids.txt "$dsv4_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ deepseek_v4 engine (Shared-KV MQA + mHC + hash-MoE)";
+    else echo "✗ deepseek_v4 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"
+fi
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }
