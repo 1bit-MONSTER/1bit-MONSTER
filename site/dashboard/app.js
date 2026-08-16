@@ -744,7 +744,7 @@ async function renderApiKeys(main) {
           <div class="form-row">
             <div class="form-group" style="flex:3">
               <label>API Key for Dashboard Requests</label>
-              <input class="form-input" id="api-key-input" placeholder="sk-..." value="${localStorage.getItem('zaya_api_key') || ''}">
+              <input class="form-input" id="api-key-input" placeholder="sk-..." value="${esc(localStorage.getItem('zaya_api_key') || '')}">
               <div class="form-hint">Stored in localStorage. Used for all dashboard API calls.</div>
             </div>
             <div class="form-group" style="flex:0">
