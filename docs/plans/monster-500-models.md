@@ -40,3 +40,28 @@ Coverage + process, not architecture: every new HF family needs (1) arch-string�
 - **"Modular gets M3 working on 700MB" — RESOLVED 2026-08-14:** it's the container, not a chip/model. modular.com/pricing: the free Self-Hosted Community Edition is "one container, under 700MB" carrying MAX + Mojo + the hundreds-of-models catalog. Models are data (pulled from HF), the platform stays tiny. **Our standing: `build/1bit` is 68MB (+ flm-real 106MB) — already ~10x under their container.** The MONSTER lesson isn't size, it's the distribution pattern: free self-hosted community edition + models-as-data + OpenAI-compatible API. (Bonus from the pricing page: their hosted endpoint list now includes MiniMax M3, DeepSeek V4, Qwen 3.7-Max, GLM 5.1/5.2, Kimi K2.6, Nemotron 3, GPT-OSS 120B, Gemma 4 31B — useful MONSTER-family watchlist.)
 - **Where should scattered home-dir knowledge live from now on?** Proposal: `docs/research/` (logs) + `docs/wiki/` (canonical) + wiki (immutable sources) — three places, no more. `~/research-papers/`, `~/npu_re_workspace`, `~/xdna-driver`, `~/max-xdna-backend` stay as working dirs, referenced by the logs.
 - **MONSTER as product name? — RESOLVED 2026-08-14:** yes. The product is now **1bit MONSTER**, repo `1bit-MONSTER/1bit-MONSTER`, domain `1bit.monster`. "One Bit Systems" / `1bit-systems` is the predecessor identity; this repo is being transferred/renamed to become the new `1bit-MONSTER/1bit-MONSTER` (GitHub-native transfer, keeps stars/issues/PR/Actions history intact). Gaia (third_party/gaia) and the old hand-rolled `onebit` agent CLI were both removed in the same pass — JARVIS (`tools/jarvis/`) is the one agent/voice pipeline going forward.
+
+## Frontier gate spec — the 5 routed-but-unvalidated families (verified 2026-08-15)
+
+Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the marketing "500+"), **18/18 route to an engine token** — the registry is complete against the market reference. What remains is per-family **generation gates** (engine ≡ torch on a real checkpoint). The 5 routed-but-unvalidated families, with verified architecture facts:
+
+| Family | HF arch string | model_type | token | backend refs | smallest checkpoint | size |
+|---|---|---|---|---|---|---|
+| DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — needs MoE+MLA routing | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
+| GLM-5.2 | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2, LLAMA-layout) | **0** — needs DSA MoE routing | `zai-org/GLM-4.5` (160-exp MoE) | large |
+| MiMo | `MiMoV2ForCausalLM` | `mimo_v2` | `MIMO` (4) | **0** — needs MoE routing | `XiaomiMiMo/MiMo-V2-Flash` | **313 GB** |
+| Nemotron 3 | (gated, `NemotronForCausalLM`→LLAMA) | — | LLAMA (2) | **0** — needs verify (Ultra-253B) | `nvidia/Nemotron-3-Ultra-253B` | gated/253B |
+| Qwen3.5 | (Gate-Delta Net) | `qwen3_5` | `QWEN35` (21) | **4** — but **REFUSED** by generic CPU backend ("requires NPU/HIP") | — | — |
+
+**Why none is a free gate.** All 5 are MoE (256 experts), Mamba-hybrid, or Gate-Delta-Net — not dense Llama-layout. The generic backend's default SwiGLU path + the existing `topk_softmax_gating` dispatch (wired for QWEN3/QWEN35/GPTOSS/GRANITE only) do not cover them. Each needs C++ backend work (add to the MoE-routing dispatch + verify that family's gating convention / expert layout / shared experts), and each needs a real checkpoint to validate against — like the gpt_neox gate that found 3 real bugs.
+
+**Hardware blocker (why this runs on the GPU/NPU box, not the CPU session).** The frontier checkpoints are 160–315 GB each (256-expert MoEs). They do not fit on a 58 GB disk or 41 GB RAM, and torch float32 would need 4×. The CPU session (torch 2.13 CPU-only) cannot load or oracle them. DeepSeek-V2-Lite (31 GB, the validated reference) was the largest gate that fit; the V4 class is 5× that.
+
+**Per-family work order (most tractable first):**
+1. **Nemotron 3** — if it's a dense Llama-layout Nemotron (routes to `LLAMA`), the default path may already produce correct logits → gate = download + capture golden chain (the only candidate for a near-free gate; verify the real arch first, Ultra-253B is gated but a smaller Nemotron-51B may exist).
+2. **DeepSeek V4** — nearest to validated V3 (MLA MoE), but `kv_lora_rank=None` where V3 had 512 → the MLA KV-compression path differs. Add `DEEPSEEK_V4` to the MoE dispatch, fix the MLA path, gate against V4-Flash on the GPU box.
+3. **GLM-5.2** — DSA (Deep Seek Attention) is a new MoE variant; needs its own gating convention in the dispatch.
+4. **MiMo** — 256-expert MoE, add to dispatch, gate against MiMo-V2-Flash.
+5. **Qwen3.5** — Gate-Delta Net; REFUSED by the generic backend, needs the NPU (FLM/XRT) or HIP path, not a CPU e2e gate. Separate workstream.
+
+**The gate mechanism (already built):** `Testing/bringup_runner.sh` + `Testing/models_manifest.json` + `Testing/e2e_seq_gen.cpp` (engine) + `Testing/e2e_gen_check.py` (torch oracle) / `e2e_numpy_ref*.py` (numpy oracle) / `e2e_gen_check_llamacpp.py` (llama.cpp oracle). A gate = manifest entry with a `gate` command that runs the engine on a prompt-id sequence and greps for the golden token chain captured once from the reference oracle. Adding a family = manifest entry + (on the right box) the checkpoint + the captured golden chain — no runner surgery.
