@@ -260,6 +260,7 @@ cmake --build build -j$(nproc)
 4. **Existing tests pass** — run relevant `test_*` binaries from `build/`
 5. **Add tests** for new kernels, backends, or features
 6. **Benchmark data** — for performance changes, include before/after `ms/tok` or `tok/s` deltas
+7. **Symlinks allowed** — tracked symlinks are fine (there is no CI check against them). If you add one, make sure it resolves inside the repo on a fresh checkout.
 7. **Size awareness** — for new features, document the binary size impact (`ls -lh build/zaya_server`)
 8. **No Python or Rust dependencies at runtime** — the binary must run with zero interpreters
 

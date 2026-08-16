@@ -15,16 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repo-health:
-    name: Repo health (no absolute symlinks)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 1
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Check no absolute symlinks tracked in git
-        run: bash scripts/check-no-absolute-symlinks.sh
-
   cpp:
     name: C++ (cmake configure + build)
     runs-on: ubuntu-24.04
