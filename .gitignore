@@ -158,6 +158,7 @@ engine/npu/xclbins/v26_backup/
 # ASan build tree (local debug)
 build-asan/
 
+<<<<<<< HEAD
 # ── AIE/Vitis sim artifacts ──
 .Xil/
 x86simulator_output/
@@ -166,3 +167,7 @@ build-1715/
 # ── hw/1bit-llm generated sim/build outputs (DESIGN.md §6: gitignored) ──
 hw/1bit-llm/sim/
 .gitnexus/
+
+# packaging/iso build output (multi-GB, never committed)
+packaging/iso/build/
+*.iso
