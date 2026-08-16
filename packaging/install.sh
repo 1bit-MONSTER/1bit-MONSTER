@@ -36,7 +36,7 @@ cp "$SRC" "${INSTALL_DIR}/1bit"
 chmod +x "${INSTALL_DIR}/1bit"
 ln -sf "${INSTALL_DIR}/1bit" "${BIN_DIR}/1bit"
 # legacy server names → the same binary (argv[0] dispatch)
-for name in zaya_server unified_server unified_router jarvis_server vision_server onebitd; do
+for name in zaya_server unified_server unified_router vision_server onebitd; do
   ln -sf "${INSTALL_DIR}/1bit" "${BIN_DIR}/$name"
 done
 if [ -f "$NPU_SRC" ]; then

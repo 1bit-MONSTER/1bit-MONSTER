@@ -11,7 +11,7 @@
 //   unified           → unified_server (multi-backend + embedded Lemonade core)
 //   router            → unified_router (NPU/GPU policy routing proxy)
 //   lemonade          → unified_server --lemonade (Lemonade's full server)
-//   jarvis, voice, tts → jarvis_server (voice pipeline: STT/router/LLM/TTS)
+//   jarvis, voice     → jarvis_app (clean-slate voice assistant, pure C++)
 //   vision, vl        → vision_server (vision-language server)
 //   zuna              → zuna_port
 
@@ -23,7 +23,9 @@
 int zaya_server_main(int argc, char** argv);
 int unified_server_main(int argc, char** argv);
 int unified_router_main(int argc, char *argv[]);
-int jarvis_server_main(int argc, char** argv);
+int onebitd_main(int argc, char *argv[]);
+int onebit_main(int argc, char *argv[]);
+int jarvis_app_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
 int zuna_main(int argc, char** argv);
 
@@ -54,7 +56,8 @@ int main(int argc, char** argv) {
     if (prog == "zaya_server")    return zaya_server_main(argc, argv);
     if (prog == "unified_server") return unified_server_main(argc, argv);
     if (prog == "unified_router") return unified_router_main(argc, argv);
-    if (prog == "jarvis_server")  return jarvis_server_main(argc, argv);
+    if (prog == "onebitd")        return onebitd_main(argc, argv);
+    if (prog == "jarvis_server")  return jarvis_app_main(argc, argv);  // legacy symlink → JARVIS v2
     if (prog == "vision_server")  return vision_server_main(argc, argv);
 
     // ── Subcommand dispatch ──
@@ -79,8 +82,11 @@ int main(int argc, char** argv) {
             for (int i = 2; i < argc; ++i) args.push_back(argv[i]);
             return unified_server_main(static_cast<int>(args.size()), args.data());
         }
-        if (cmd == "jarvis" || cmd == "voice" || cmd == "tts") {
-            return jarvis_server_main(argc - 1, argv + 1);
+        if (cmd == "onebitd" || cmd == "daemon") {
+            return onebitd_main(argc - 1, argv + 1);
+        }
+        if (cmd == "jarvis" || cmd == "voice") {
+            return jarvis_app_main(argc - 1, argv + 1);
         }
         if (cmd == "vision" || cmd == "vl") {
             return vision_server_main(argc - 1, argv + 1);

@@ -287,8 +287,8 @@ std::vector<float> glm_moe_dsa_forward(GlmMoeDsaModel& model, int token_id,
 
     std::vector<float> ffn_out(H), shared_out(H);
     std::vector<float> exp_gate_up(2 * cfg.moe_intermediate), exp_act(cfg.moe_intermediate);
-    std::vector<float> sh_g(cfg.n_shared_experts * cfg.moe_intermediate);
-    std::vector<float> sh_u(cfg.n_shared_experts * cfg.moe_intermediate);
+    std::vector<float> sh_g((size_t)cfg.n_shared_experts * cfg.moe_intermediate);
+    std::vector<float> sh_u((size_t)cfg.n_shared_experts * cfg.moe_intermediate);
     std::vector<float> router_logits(cfg.n_routed_experts);
     std::vector<float> router_scores(cfg.n_routed_experts);
     std::vector<float> group_scores(cfg.n_group);

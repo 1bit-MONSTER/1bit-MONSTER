@@ -19,19 +19,19 @@
 <link rel="canonical" href="https://1bit.monster/blog/flm-37-models-extracted">
 <link rel="alternate" href="/blog/flm-37-models-extracted.html">
 <meta property="og:title" content="37 FLM models, 209 xclbins, zero config files — we extracted AMD's entire NPU model zoo">
-<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:description" content="37 pre-built FLM models, 209 NPU xclbins, Qwen3.5 Omni multi-modal, Qwen3.6-MoE-35B. Auto-detection from Q4NX header — zero config.">
 <meta property="og:url" content="https://1bit.monster/blog/flm-37-models-extracted">
 <meta property="og:type" content="article">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 <style>
   :root{
-    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
-    --border:#232323; --border2:#123a4d;
-    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
-    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
+    --bg:#021621; --panel:#04202f; --tile:#04202f; --inner:#04202f;
+    --border:rgba(14,128,190,.42); --border2:rgba(14,128,190,.6);
+    --text:#e7f6fd; --muted:#a0d9f8; --dim:#5d9ec2;
+    --green:#00e5ff; --green-d:#00c853; --pink:#ff9f1c; --blue:#0e80be;
     --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
     --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
     --maxw:780px;
@@ -43,7 +43,7 @@
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
   nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
-  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(198,255,61,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
+  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(255,159,28,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
   .wordmark{font-size:15px;letter-spacing:-.025em;font-weight:800;}
   .wordmark .g{color:var(--green);} .wordmark .p{color:var(--pink);}
   article{padding:48px 0 64px;}

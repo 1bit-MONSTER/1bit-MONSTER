@@ -224,7 +224,7 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
     std::vector<float> q((size_t)NVH * KHD), k((size_t)NVH * KHD), v((size_t)NVH * VHD);
     std::vector<float> out_h((size_t)NVH * VHD);
     // full attention buffers
-    std::vector<float> qg(NH * HD * 2), qs(NH * HD), gate_buf(NH * HD), ks(NKV * HD), vs(NKV * HD);
+    std::vector<float> qg((size_t)NH * HD * 2), qs((size_t)NH * HD), gate_buf((size_t)NH * HD), ks((size_t)NKV * HD), vs((size_t)NKV * HD);
     std::vector<float> scores_buf(4096), probs_buf(4096);
 
     for (int il = 0; il < cfg.num_layers; il++) {
@@ -242,7 +242,7 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
             {
                 const int K = cfg.linear_conv_kernel_dim;
                 float* st = cache.conv_state[il].data();  // [conv_dim][K-1]
-                std::vector<float> full(conv_dim * K);
+                std::vector<float> full((size_t)conv_dim * K);
                 for (int i = 0; i < conv_dim; i++) {
                     for (int j = 0; j < K - 1; j++) full[i * K + j] = st[i * (K - 1) + j];
                     full[i * K + (K - 1)] = mixed_qkv[i];
@@ -263,7 +263,7 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
             for (int i = 0; i < key_dim; i++) k[i] = conv_out[key_dim + i];
             for (int i = 0; i < value_dim; i++) v[i] = conv_out[key_dim * 2 + i];
             // reshape to heads
-            std::vector<float> qh(NKH * KHD), kh(NKH * KHD), vh(NVH * VHD);
+            std::vector<float> qh((size_t)NKH * KHD), kh((size_t)NKH * KHD), vh((size_t)NVH * VHD);
             for (int h = 0; h < NKH; h++)
                 for (int d = 0; d < KHD; d++) { qh[h * KHD + d] = q[h * KHD + d]; kh[h * KHD + d] = k[h * KHD + d]; }
             for (int h = 0; h < NVH; h++)
@@ -279,17 +279,17 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
                 g[h] = -std::exp(l.A_log[h]) * softplus(a[h] + l.dt_bias[h]);
             }
             // repeat q/k heads (NVH/NKH)
-            std::vector<float> qr(NVH * KHD), kr(NVH * KHD);
+            std::vector<float> qr((size_t)NVH * KHD), kr((size_t)NVH * KHD);
             const int rep = NVH / NKH;
             for (int h = 0; h < NVH; h++)
                 for (int d = 0; d < KHD; d++) { qr[h * KHD + d] = qh[(h / rep) * KHD + d]; kr[h * KHD + d] = kh[(h / rep) * KHD + d]; }
 
             // l2norm q/k + scale
-            std::vector<float> ql(NVH * KHD), kl(NVH * KHD);
+            std::vector<float> ql((size_t)NVH * KHD), kl((size_t)NVH * KHD);
             const float scale = 1.0f / std::sqrt((float)KHD);
             for (int h = 0; h < NVH; h++) {
-                l2norm(&ql[h * KHD], &qr[h * KHD], KHD);
-                l2norm(&kl[h * KHD], &kr[h * KHD], KHD);
+                l2norm(&ql[(size_t)h * KHD], &qr[(size_t)h * KHD], KHD);
+                l2norm(&kl[(size_t)h * KHD], &kr[(size_t)h * KHD], KHD);
                 for (int d = 0; d < KHD; d++) { ql[h * KHD + d] *= scale; }
             }
 
@@ -327,12 +327,12 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
 
             // RMSNormGated(out, z): plain rmsnorm, then * weight, then * silu(z)
             for (int h = 0; h < NVH; h++) {
-                float* oh = &out_h[h * VHD];
+                float* oh = &out_h[(size_t)h * VHD];
                 // plain rmsnorm (no affine)
                 float ss = 0;
                 for (int d = 0; d < VHD; d++) ss += oh[d] * oh[d];
                 float inv = 1.0f / std::sqrt(ss / VHD + cfg.rms_norm_eps);
-                const float* zw = &z[h * VHD];
+                const float* zw = &z[(size_t)h * VHD];
                 const float* ww = l.lnn_gated_w.data();
                 for (int d = 0; d < VHD; d++)
                     oh[d] = oh[d] * inv * ww[d] * silu(zw[d]);
@@ -354,14 +354,14 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
             matmul(vs.data(), norm.data(), l.v_proj.data(), NKV * HD, H);
             // q_norm/k_norm: RMSNorm on head dim (per head)
             for (int h = 0; h < NH; h++)
-                rmsnorm15(&qs[h * HD], &qs[h * HD], l.q_norm.data(), HD, cfg.rms_norm_eps);
+                rmsnorm15(&qs[(size_t)h * HD], &qs[(size_t)h * HD], l.q_norm.data(), HD, cfg.rms_norm_eps);
             for (int h = 0; h < NKV; h++)
-                rmsnorm15(&ks[h * HD], &ks[h * HD], l.k_norm.data(), HD, cfg.rms_norm_eps);
+                rmsnorm15(&ks[(size_t)h * HD], &ks[(size_t)h * HD], l.k_norm.data(), HD, cfg.rms_norm_eps);
             // partial rope on first rope_dim
             for (int h = 0; h < NH; h++)
-                rope_partial_first(&qs[h * HD], &qs[h * HD], rope_dim, pos, cfg.rope_theta);
+                rope_partial_first(&qs[(size_t)h * HD], &qs[(size_t)h * HD], rope_dim, pos, cfg.rope_theta);
             for (int h = 0; h < NKV; h++)
-                rope_partial_first(&ks[h * HD], &ks[h * HD], rope_dim, pos, cfg.rope_theta);
+                rope_partial_first(&ks[(size_t)h * HD], &ks[(size_t)h * HD], rope_dim, pos, cfg.rope_theta);
             // store kv
             {
                 float* krow = cache.k_cache[il].data() + (size_t)pos * (NKV * HD);
@@ -373,10 +373,10 @@ std::vector<float> qwen3_5_forward(Qwen3_5Model& model, int token_id,
             const int seq_len = pos + 1;
             const float scale = 1.0f / std::sqrt((float)HD);
             const int kv_groups = NH / NKV;
-            std::vector<float> attn_out(NH * HD, 0.0f);
+            std::vector<float> attn_out((size_t)NH * HD, 0.0f);
             for (int h = 0; h < NH; h++) {
                 const int kvh = h / kv_groups;
-                const float* qh = &qs[h * HD];
+                const float* qh = &qs[(size_t)h * HD];
                 const float* kbase = cache.k_cache[il].data() + (size_t)kvh * HD;
                 const float* vbase = cache.v_cache[il].data() + (size_t)kvh * HD;
                 for (int t = 0; t < seq_len; t++) {

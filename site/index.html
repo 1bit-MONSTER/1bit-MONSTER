@@ -13,22 +13,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>1bit MONSTER — One engine. Every model. Any chip.</title>
-<meta name="description" content="94% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.">
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta name="description" content="100% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.">
+<link rel="icon" href="assets/favicon.svg?v=2" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/1bm.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
 <link rel="canonical" href="https://1bit.monster/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="1bit MONSTER">
 <meta property="og:title" content="1bit MONSTER — One engine. Every model. Any chip.">
-<meta property="og:description" content="94% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.">
+<meta property="og:description" content="100% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.">
 <meta property="og:url" content="https://1bit.monster/">
-<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="1bit MONSTER — One engine. Every model. Any chip.">
-<meta name="twitter:description" content="94% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.">
-<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
+<meta name="twitter:description" content="100% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -37,7 +36,7 @@
       "@type": "WebSite",
       "name": "1bit MONSTER",
       "url": "https://1bit.monster/",
-      "description": "94% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT."
+      "description": "100% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT."
     },
     {
       "@type": "Organization",
@@ -53,7 +52,7 @@
       "name": "1bit MONSTER",
       "operatingSystem": "Linux, macOS, Windows",
       "applicationCategory": "DeveloperApplication",
-      "description": "94% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.",
+      "description": "100% HF model coverage, any hardware. An open-source, pure-C++ inference engine. NPU + GPU + CPU in one engine. Zero Python. MIT.",
       "url": "https://1bit.monster/",
       "downloadUrl": "https://github.com/1bit-MONSTER/1bit-MONSTER",
       "offers": {
@@ -67,119 +66,66 @@
 </script>
 
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
+<style>
+  body{margin:0}
+  *{box-sizing:border-box}
+  .bh-badge:hover{border-color:#00e5ff}
+  .bh-nav a:hover{color:#ff9f1c}
+  .bh-cta-ghost:hover{border-color:#00e5ff;color:#00e5ff}
+  .bh-cta-primary:hover{filter:brightness(1.08)}
+  .bh-hw:hover{border-color:#00e5ff}
+  .bh-hw.bh-hw-untested:hover{border-color:#ff9f1c}
+</style>
 </head>
 <body>
-<div class="shell">
-  <aside class="rail">
-    <div>
-      <span class="mark">1bm</span>
-      <span class="wordmark">1bit<br>MONSTER</span>
-      <p class="quote">"Sorry but not sorry." <span>— bong-water-water-bong</span></p>
-    </div>
-    <nav>
-      <a href="index.html" aria-current="page">overview</a>
-      <a href="models.html">models</a>
-      <a href="benchmarks.html">benchmarks</a>
-      <a href="docs.html">docs</a>
-      <a href="story.html">the story</a>
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
-    </nav>
-    <div class="status"><span class="dot"></span>engine online</div>
-    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
-  </aside>
-  <main>
-    <div class="topbar"><span>94% HF coverage · any hardware · one engine</span><span>measured 2026-08-01</span></div>
-    <div class="hero">
-      <h1>One binary to rule <span style="color:var(--lime)">them all</span></h1>
-      <p class="lead"><strong>94% HF model coverage. Any hardware.</strong> An open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic, hardware agnostic, zero Python. Reverse-engineered from a closed-source AMD NPU stack in 4 days, and growing ever since.</p>
-      <pre><span class="c"># build from source — no installer yet</span>
+<div style="background:radial-gradient(1200px 600px at 15% -10%, rgba(0,229,255,.12), transparent 60%),radial-gradient(1000px 550px at 90% 0%, rgba(255,159,28,.10), transparent 60%),#021621;color:#e7f6fd;font-family:'DM Mono',ui-monospace,Menlo,monospace;line-height:1.6;min-height:100vh">
+<nav style="display:flex;align-items:center;justify-content:space-between;max-width:1100px;margin:0 auto;padding:28px 24px">
+<div style="font-family:'DM Serif Display',Georgia,serif;font-size:20px"><span style="color:#00e5ff">1bit</span>.MONSTER</div>
+<div class="bh-nav" style="display:flex;gap:28px;font-size:13px;color:#a0d9f8">
+<a href="models.html" style="color:inherit;text-decoration:none">Models</a>
+<a href="benchmarks.html" style="color:inherit;text-decoration:none">Benchmarks</a>
+<a href="docs.html" style="color:inherit;text-decoration:none">Docs</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:inherit;text-decoration:none">GitHub</a>
+</div>
+</nav>
+<div style="max-width:920px;margin:60px auto 0;padding:0 24px;text-align:center">
+<div class="bh-badge" style="display:inline-flex;align-items:center;gap:8px;padding:7px 16px;border:1px solid #0e80be;border-radius:999px;font-size:12px;color:#00e5ff;margin-bottom:28px;transition:border-color .15s"><span style="width:6px;height:6px;background:#ff9f1c;border-radius:999px"></span>engine online — 6 hardware targets probed</div>
+<h1 style="font-family:'DM Serif Display',Georgia,serif;font-weight:400;font-size:clamp(44px,7vw,88px);line-height:1.02;margin:0 0 24px;letter-spacing:-.02em">One engine. <span style="color:#00e5ff">Any</span> model. <span style="color:#ff9f1c">Zero</span> Python.</h1>
+<p style="max-width:64ch;margin:0 auto 40px;font-size:18px;color:#a0d9f8">A pure C++23 inference engine that runs on NPU, GPU, or CPU with the same binary. 100% HF architecture coverage. Reverse-engineered AMD's closed NPU stack in 4 days — and now beats it.</p>
+<div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:80px">
+<a href="docs.html" class="bh-cta-primary" style="display:inline-flex;align-items:center;height:54px;padding:0 32px;border-radius:6px;font-size:13px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;text-decoration:none;background:linear-gradient(90deg,#00e5ff,#ff9f1c);color:#021621;transition:filter .15s">Get started</a>
+<a href="story.html" class="bh-cta-ghost" style="display:inline-flex;align-items:center;height:54px;padding:0 32px;border-radius:6px;font-size:13px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;text-decoration:none;border:1px solid #5d9ec2;color:#e7f6fd;transition:border-color .15s,color .15s">Read the journey →</a>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4,1fr);max-width:1000px;margin:0 auto 96px;padding:0 24px">
+<div style="text-align:center;padding:20px 12px"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#00e5ff">100%</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">HF coverage</span></div>
+<div style="text-align:center;padding:20px 12px;border-left:1px solid rgba(93,158,194,.2)"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#ff9f1c">6</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">hardware targets</span></div>
+<div style="text-align:center;padding:20px 12px;border-left:1px solid rgba(93,158,194,.2)"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#0e80be">17.6</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">tok/s · 74B model</span></div>
+<div style="text-align:center;padding:20px 12px;border-left:1px solid rgba(93,158,194,.2)"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#00e5ff">0</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">Python in runtime</span></div>
+</div>
+<div style="max-width:1000px;margin:0 auto 96px;padding:0 24px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#5d9ec2;border-bottom:1px solid rgba(93,158,194,.24);padding-bottom:12px;margin-bottom:20px"><span>Hardware targets</span><span>same binary</span></div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">
+<div class="bh-hw" style="border:1px solid rgba(93,158,194,.24);border-radius:12px;padding:20px;background:rgba(4,32,47,.6);transition:border-color .15s"><div style="font-size:15px;font-weight:500;margin-bottom:6px">AMD Strix Halo</div><div style="font-size:12px;color:#00e5ff">XDNA 2 NPU</div></div>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703" class="bh-hw bh-hw-untested" style="display:block;text-decoration:none;color:inherit;border:1px dashed rgba(255,159,28,.5);border-radius:12px;padding:20px;background:rgba(4,32,47,.6);transition:border-color .15s"><div style="font-size:15px;font-weight:500;margin-bottom:6px">NVIDIA GPU (sm_70+)</div><div style="font-size:12px;color:#ff9f1c">CUDA — untested, testers wanted →</div></a>
+<div class="bh-hw" style="border:1px solid rgba(93,158,194,.24);border-radius:12px;padding:20px;background:rgba(4,32,47,.6);transition:border-color .15s"><div style="font-size:15px;font-weight:500;margin-bottom:6px">AMD GPU</div><div style="font-size:12px;color:#00e5ff">ROCm HIP</div></div>
+<div class="bh-hw" style="border:1px solid rgba(93,158,194,.24);border-radius:12px;padding:20px;background:rgba(4,32,47,.6);transition:border-color .15s"><div style="font-size:15px;font-weight:500;margin-bottom:6px">Any Vulkan 1.2+ GPU</div><div style="font-size:12px;color:#00e5ff">ZINC + GGML-Vulkan</div></div>
+<div class="bh-hw" style="border:1px solid rgba(93,158,194,.24);border-radius:12px;padding:20px;background:rgba(4,32,47,.6);transition:border-color .15s"><div style="font-size:15px;font-weight:500;margin-bottom:6px">Apple Silicon</div><div style="font-size:12px;color:#00e5ff">Metal</div></div>
+<div class="bh-hw" style="border:1px solid rgba(93,158,194,.24);border-radius:12px;padding:20px;background:rgba(4,32,47,.6);transition:border-color .15s"><div style="font-size:15px;font-weight:500;margin-bottom:6px">x86 CPU</div><div style="font-size:12px;color:#00e5ff">OpenMP</div></div>
+</div>
+</div>
+<div style="max-width:820px;margin:0 auto 96px;padding:44px;border:1px solid rgba(255,159,28,.35);border-radius:16px;background:rgba(255,159,28,.05);text-align:center">
+<h2 style="font-family:'DM Serif Display',Georgia,serif;font-weight:400;font-size:30px;color:#ff9f1c;margin:0 0 14px">22 proprietary libraries. Zero documentation.</h2>
+<p style="color:#a0d9f8;font-size:15px;max-width:60ch;margin:0 auto">AMD locked the XDNA 2 NPU behind a closed-source runtime. We reverse-engineered it in 4 days — and as of this week, the engine's own instruction streams are byte-identical to the original, and faster.</p>
+</div>
+<div style="max-width:820px;margin:0 auto 100px;padding:0 24px">
+<div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#5d9ec2;margin-bottom:14px">Quick start</div>
+<pre style="margin:0;background:#010d15;border:1px solid rgba(0,229,255,.22);border-radius:12px;padding:22px 24px;font-size:13px;line-height:1.9;overflow-x:auto;color:#a0d9f8;font-family:'DM Mono',ui-monospace,Menlo,monospace"><span style="color:#5d9ec2"># build from source</span>
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
-./build/1bit zaya -m model.1bp -p <span class="s">"Hello world"</span></pre>
-      <div class="btns">
-        <a class="btn" href="https://github.com/1bit-MONSTER/1bit-MONSTER">try it now</a>
-        <a class="btn ghost" href="docs.html">read the docs</a>
-      </div>
-      <span class="note">That is the whole install. No runtime, no virtualenv, no Python.</span>
-    </div>
-    <div class="stats">
-      <div><b>94%</b><span>HF models covered</span></div>
-      <div><b>19</b><span>architecture classes</span></div>
-      <div><b>6</b><span>hardware targets</span></div>
-      <div><b>0</b><span>python in the runtime</span></div>
-    </div>
-    <section class="cols">
-      <div>
-        <h2>Model agnostic</h2>
-        <p class="lead">Point it at a model and run. The engine reads GGUF, ONNX and the native 1BP format, detects the architecture and picks a kernel path — no config files, no per-model glue.</p>
-        <p class="lead" style="margin-top:14px">Coverage does not come from porting models one at a time. It comes from the architecture class: ~50 classes cover the long tail of what HuggingFace hosts, and a class that works brings its whole family with it. <strong>19 are live today.</strong></p>
-        <p style="margin:14px 0 0"><a href="models.html">every family, indexed →</a></p>
-      </div>
-      <div>
-        <h2>Hardware agnostic</h2>
-        <p class="lead">The same binary and the same command line, on whatever silicon you have. Six hardware targets probed at startup, 12 backend implementations behind them — no rebuild to move a model from NPU to GPU to CPU.</p>
-        <table style="margin-top:16px">
-          <tr><td>AMD Strix Halo</td><td class="b">XDNA 2 NPU · HIP · Vulkan</td></tr>
-          <tr><td>NVIDIA GPU</td><td class="b">CUDA sm_70+</td></tr>
-          <tr><td>Apple Silicon</td><td class="b">Metal</td></tr>
-          <tr><td>Any Vulkan 1.2+ GPU</td><td class="b">ZINC · GGML-Vulkan</td></tr>
-          <tr><td>x86 CPU</td><td class="b">OpenMP</td></tr>
-        </table>
-      </div>
-    </section>
-    <section class="two">
-      <div>
-        <span class="eyebrow">// the hard truth</span>
-        <h2 style="margin-top:14px">22 proprietary libraries. 209 bitstreams. Zero documentation.</h2>
-        <p class="lead">AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.</p>
-        <p style="margin:14px 0 0"><a href="story.html">read the full journey →</a></p>
-      </div>
-      <div>
-        <span class="eyebrow">// headline decode, e2e</span>
-        <table style="margin-top:14px">
-          <tr><th>model</th><th style="text-align:right">tok/s</th><th>backend</th></tr>
-          <tr><td>SmolLM2-135M</td><td class="n">662</td><td class="b">GGML-Vulkan</td></tr>
-          <tr><td>Qwen3-0.6B</td><td class="n">373</td><td class="b">GGML-Vulkan</td></tr>
-          <tr><td>Qwen2.5-VL-3B</td><td class="n">100</td><td class="b">GGML-Vulkan</td></tr>
-          <tr><td>BlackMamba-1.5B</td><td class="n">79.4</td><td class="b">Mamba1 HIP</td></tr>
-          <tr><td>DeepSeek-R1-Distill-8B</td><td class="n">44</td><td class="b">GGML-Vulkan</td></tr>
-          <tr><td>ZAYA1-74B-preview</td><td class="n">17.6</td><td class="b">GGML-Vulkan</td></tr>
-        </table>
-        <p class="note" style="margin-top:12px">AMD Ryzen AI MAX+ 395 · Radeon 8060S · 32 GB UMA · measured 2026-08-01. Plus 43.2 TFLOPS INT8 prefill. <a href="benchmarks.html">all numbers →</a></p>
-      </div>
-    </section>
-    <section>
-      <span class="eyebrow">// status</span>
-      <div class="cols" style="margin-top:18px">
-        <div class="card">
-          <span class="eyebrow">shipped</span>
-          <ul class="plain">
-            <li>19 architecture classes: dense, MoE, Mamba/SSM hybrid, vision-language, speech</li>
-            <li>5 backends in one engine; three formats read directly</li>
-            <li>OpenAI-compatible API and resident model pool, measured across four backends in one process</li>
-            <li>Speculative decoding, lossless vs greedy</li>
-            <li>JARVIS: local voice pipeline, mic to speaker</li>
-          </ul>
-        </div>
-        <div class="card">
-          <span class="eyebrow">in progress</span>
-          <ul class="plain">
-            <li>500+ coverage by architecture class — registry, kernels and validation harness proven; what remains is coverage</li>
-            <li>Per-class validation sweeps so every family page carries measured numbers</li>
-            <li>More classes onto the XDNA 2 NPU path</li>
-            <li>The single control plane — measured, not finished; toolbox-backed Strix Halo inference is the supported out-of-box path today</li>
-            <li>Installer and prebuilt binaries</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-    <footer>
-  <span>© 1bit MONSTER</span>
-  <span style="color:var(--lime)">mit — do whatever you want</span>
-  <span>Metepenagiag Mi&rsquo;kmaq Nation &middot; New Brunswick, Canada &middot; <a href="mailto:admin@1bit.monster" style="color:var(--faint)">admin@1bit.monster</a></span>
-  <span style="text-transform:none;letter-spacing:0">&ldquo;Sorry but not sorry.&rdquo; &mdash; bong-water-water-bong</span>
-</footer>
-  </main>
+<span style="color:#00e5ff">./build/1bit</span> zaya -m model.1bp -p <span style="color:#ff9f1c">"Hello world"</span></pre>
+</div>
+<footer style="text-align:center;padding:30px;font-size:12px;color:#5d9ec2;border-top:1px solid rgba(93,158,194,.2)">MIT License · github.com/1bit-MONSTER · "Sorry but not sorry."</footer>
 </div>
 </body>
 </html>

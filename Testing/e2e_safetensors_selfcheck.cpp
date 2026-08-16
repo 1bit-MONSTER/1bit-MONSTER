@@ -73,7 +73,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 8; i++) { t = gg->generate(t); chain_gg.push_back(t); }
     int same = 0;
     for (size_t i = 0; i < chain_st.size(); i++) if (chain_st[i] == chain_gg[i]) same++;
-    std::printf("8-step chain: %zu/%zu identical tokens\n", same, chain_st.size());
+    std::printf("8-step chain: %zu/%zu identical tokens\n", (size_t)same, chain_st.size());
 
     if (mismatch == 0 && same == (int)chain_st.size()) {
         std::printf("SUSPICIOUS: loaders agree everywhere — verify safetensors weights are real (torch oracle)\n");
