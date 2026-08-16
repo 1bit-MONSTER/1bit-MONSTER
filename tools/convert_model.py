@@ -31,10 +31,23 @@ def main():
 
     py = sys.executable
     if src.endswith('.safetensors') or os.path.isdir(src) or src.endswith('index.json'):
-        subprocess.run([py, os.path.join(HERE, 'safetensors_to_onnx_int8.py'), src, tmp], check=True)
+        st = os.path.join(ROOT, 'build', 'safetensors_to_onnx_int8')
+        if os.path.exists(st):
+            # Mojo twin of the deleted safetensors_to_onnx_int8.py (fold P2.2)
+            subprocess.run([st, src, tmp], check=True)
+        else:
+            print('[convert] WARN: build/safetensors_to_onnx_int8 missing — skipping ONNX\n'
+                  '[convert]   build: mojo build tools/safetensors_to_onnx_int8.mojo -o build/safetensors_to_onnx_int8')
+            sys.exit(1)
         if args.tokenizer:
-            subprocess.run([py, os.path.join(HERE, 'tokenizer_json_to_htok.py'), args.tokenizer,
-                            os.path.join(tmp, args.name + '.htok')], check=True)
+            htok = os.path.join(ROOT, 'build', 'tokenizer_json_to_htok')
+            if os.path.exists(htok):
+                # Mojo twin of the deleted tokenizer_json_to_htok.py (fold P2.2)
+                subprocess.run([htok, args.tokenizer,
+                                os.path.join(tmp, args.name + '.htok')], check=True)
+            else:
+                print('[convert] WARN: build/tokenizer_json_to_htok missing — skipping .htok\n'
+                      '[convert]   build: mojo build tools/tokenizer_json_to_htok.mojo -o build/tokenizer_json_to_htok')
         else:
             print('[convert] WARN: no --tokenizer — skipping .htok (serve needs it)')
     elif src.endswith('.gguf'):

@@ -48,7 +48,7 @@ jobs:
           head -30 gitnexus-context.md
 
       - name: PR Agent
-        uses: The-PR-Agent/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d  # v0.41.0
+        uses: The-PR-Agent/pr-agent@f6af7d77554ff8d26adffded077e6461329e92fa  # v0.42.0
         with:
           artifact_path: gitnexus-context.md
           artifact_instructions: >

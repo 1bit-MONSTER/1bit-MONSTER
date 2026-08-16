@@ -881,9 +881,9 @@ struct GenericBackend : Backend {
                 std::vector<float> qkvb;
                 snprintf(buf, sizeof(buf), "h.%d.attn.c_attn.bias", l);
                 if (r.get_tensor_f32(buf, qkvb) && (int)qkvb.size() == 3 * NH * HD) {
-                    std::vector<float> bq(qkvb.begin(), qkvb.begin() + NH * HD);
-                    std::vector<float> bk(qkvb.begin() + NH * HD, qkvb.begin() + 2 * NH * HD);
-                    std::vector<float> bv(qkvb.begin() + 2 * NH * HD, qkvb.end());
+                    std::vector<float> bq(qkvb.begin(), qkvb.begin() + (size_t)NH * HD);
+                    std::vector<float> bk(qkvb.begin() + (size_t)NH * HD, qkvb.begin() + 2 * (size_t)NH * HD);
+                    std::vector<float> bv(qkvb.begin() + 2 * (size_t)NH * HD, qkvb.end());
                     lw.bq = push(std::move(bq)); lw.bk = push(std::move(bk)); lw.bv = push(std::move(bv));
                 }
                 load2("attn.c_proj.bias", lw.bo, 1, NH * HD);

@@ -214,24 +214,31 @@ bool NpuInferenceEngine::init(const char* model_path) {
     return true;
 }
 
-// === Sequential GEMM ===
-// Individual kernel call with wait
+// === Asynchronous GEMM enqueue ===
+// Individual kernel call: enqueue and return, no wait.
+// All pending runs are flushed at safe boundaries (embed_lookup, readback).
 static void run_gemm(xrt::kernel* kern, xrt::bo& act, xrt::bo& ws,
-                      xrt::bo& w1, xrt::bo& w2, xrt::bo& kv) {
-    auto r = (*kern)(
+                      xrt::bo& w1, xrt::bo& w2, xrt::bo& kv,
+                      std::vector<xrt::run>& pending) {
+    pending.push_back((*kern)(
         (uint64_t)3,
         (uint64_t)0,
         (uint32_t)0,
         act, ws, w1, w2, kv
-    );
-    r.wait();
+    ));
 }
 
 static void run_blocked_gemm(xrt::kernel* kern, xrt::bo& act, xrt::bo& ws,
-                              xrt::bo& kv, std::vector<NpuBo>& weights) {
+                              xrt::bo& kv, std::vector<NpuBo>& weights,
+                              std::vector<xrt::run>& pending) {
     for (auto& w : weights) {
-        run_gemm(kern, act, ws, *w.bo, *w.bo, kv);
+        run_gemm(kern, act, ws, *w.bo, *w.bo, kv, pending);
     }
+}
+
+void NpuInferenceEngine::flush_runs() {
+    for (auto& r : pending_runs_) r.wait();
+    pending_runs_.clear();
 }
 
 // === Layer MM pipeline ===
@@ -242,9 +249,9 @@ void NpuInferenceEngine::run_layer_mm(HwCtxState& ctx, int layer_idx) {
     xrt::bo& act = *ctx.act_bo.bo;
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.q_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.k_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.v_proj_blocks);
+    run_blocked_gemm(mm_kern, act, ws, kv, wc.q_proj_blocks, pending_runs_);
+    run_blocked_gemm(mm_kern, act, ws, kv, wc.k_proj_blocks, pending_runs_);
+    run_blocked_gemm(mm_kern, act, ws, kv, wc.v_proj_blocks, pending_runs_);
 }
 
 // === Attention pipeline ===
@@ -256,9 +263,9 @@ void NpuInferenceEngine::run_layer_attn(HwCtxState& ctx, int layer_idx) {
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
     xrt::bo& w = (!wc.o_proj_blocks.empty()) ? *wc.o_proj_blocks[0].bo : act;
-    run_gemm(attn_kern, act, ws, w, w, kv);
+    run_gemm(attn_kern, act, ws, w, w, kv, pending_runs_);
     if (!wc.o_proj_blocks.empty()) {
-        run_blocked_gemm(xclbins_->kernel(XCLBIN_MM), act, ws, kv, wc.o_proj_blocks);
+        run_blocked_gemm(xclbins_->kernel(XCLBIN_MM), act, ws, kv, wc.o_proj_blocks, pending_runs_);
     }
 }
 
@@ -270,9 +277,9 @@ void NpuInferenceEngine::run_layer_mlp(HwCtxState& ctx, int layer_idx) {
     xrt::bo& act = *ctx.act_bo.bo;
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.gate_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.up_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.down_proj_blocks);
+    run_blocked_gemm(mm_kern, act, ws, kv, wc.gate_proj_blocks, pending_runs_);
+    run_blocked_gemm(mm_kern, act, ws, kv, wc.up_proj_blocks, pending_runs_);
+    run_blocked_gemm(mm_kern, act, ws, kv, wc.down_proj_blocks, pending_runs_);
 }
 
 // === Prefill ===
@@ -290,6 +297,7 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
             if (l % 7 == 0) LOG_DEBUG("  Layer %d done", l);
         }
     }
+    flush_runs();
     
     LOG_INFO("Prefill complete");
     return true;
@@ -312,9 +320,12 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         xrt::bo& ws = *hwctx_[0].act_workspace.bo;
         xrt::bo& kv = *hwctx_[0].kv_cache.bo;
         for (auto& w : lm_head_blocks_) {
-            run_gemm(mm_kern, act, ws, *w.bo, *w.bo, kv);
+            run_gemm(mm_kern, act, ws, *w.bo, *w.bo, kv, pending_runs_);
         }
     }
+    
+    // Ensure all NPU work completes before reading back logits.
+    flush_runs();
     
     // Read logits (first vocab_size BF16 values from activation BO)
     hwctx_[0].act_bo.sync_from_device(0, config_.vocab_size * 2);
@@ -343,12 +354,14 @@ int NpuInferenceEngine::sample_token(const float* logits, int vocab_size, float 
 
 // === Embed lookup ===
 void NpuInferenceEngine::embed_lookup(int token, NpuBo& dest) {
+    // Any pending NPU work may still be reading dest; flush before overwriting.
+    flush_runs();
     TensorDesc* emb = &model_->embed_tokens;
     if (emb->ndim == 2 && token >= 0 && token < emb->shape[0]) {
         uint64_t offset = (uint64_t)token * emb->shape[1] * 2;
         size_t copy_size = emb->shape[1] * 2;
         if (copy_size > dest.size) copy_size = dest.size;
-        memcpy(dest.map, model_->file_data + emb->data_offset + offset, copy_size);
+        memcpy(dest.map, model_->file_data + model_->data_base + emb->data_offset + offset, copy_size);
         dest.sync_to_device(0, copy_size);
     }
 }

@@ -27,81 +27,85 @@ uint16_t float_to_bf16(float v) {
     return (uint16_t)truncated;
 }
 
-// ========= Q4NX I8 format =========
-// Q4NX stores I8 weights as raw int8 values with NO embedded scale factors.
-// For inference, I8 values are dequantized using per-group absmax:
-//   For each group of 32 I8 values:
-//     scale = max(|I8_values|) / 127
-//     BF16_val = I8_val * scale
-// This converts [-128, 127] I8 range to [-absmax, absmax] BF16 range.
+// ========= Q4NX weight format (verified 2026-08-16) =========
 //
-// FLM's reorder_cpy rearranges I8 data into NPU's blocked format.
-// Our engine: convert I8→BF16 per group, then pack into [npu_block_rows, npu_block_cols] blocks.
+// File layout: [8-byte header_size][JSON metadata][tensor data...]
+//   - All metadata data_offsets are RELATIVE to data_base = 8 + header_size.
+//   - Tensors of dtype "BF16": direct BF16 values, shape [rows, cols].
+//   - Tensors of dtype "I8": I4 group-quantized, shape [R, 5120].
+//     Each row (5120 B) is PLANAR:
+//       [0..512)    256 BF16 scales  (scales[r*256+g])
+//       [512..1024) 256 BF16 zps     (zps[r*256+g])
+//       [1024..5120) 4096 B I4 nibbles (group g at nib_off + g*16, 32 nibbles)
+//     Dequantized BF16 matrix is [R*8, 1024] (each I8 row expands to 8 rows).
+//     value(j, c) = (signed_i4(nib[i][c/32][c%32])) * scale[i][g] + zp[i][g]
 
-// ========= NPU blocked format =========
-//
-// NPU expects weights in blocked format:
-// For weight matrix [out_features, in_features]:
-//   - Column-blocks of 1024 columns
-//   - Row-blocks of 256 rows
-//   - Each block = [min(256,out_rem), 1024] BF16 values in row-major
-//   - Padded within a 1MB BO (second half zero padding)
-
-// ========= Q4NX format =========
-// Q4NX stores weights in a hybrid I8/BF16 format.
-// Each 2 consecutive I8 bytes form one BF16 value: [lo_byte, hi_byte] little-endian.
-// The shape [rows, cols] in the metadata refers to I8 ELEMENTS (1 byte each).
-// Actual BF16 elements = rows * cols / 2.
-// NPU blocking: each BO holds [npu_block_rows, npu_block_cols] BF16 values = 512KB data + 512KB zeros.
-// Number of column blocks = ceil(cols / 2 / block_cols).
+static int npu_bf16_rows(const TensorDesc* desc) {
+    if (desc->ndim != 2) return 0;
+    return (strcmp(desc->dtype, "BF16") == 0)
+        ? (int)desc->shape[0]
+        : (int)(desc->shape[0] * 8);   // I8 row -> 8 BF16 rows of 1024
+}
 
 int npu_weight_num_blocks(const TensorDesc* desc, const ModelConfig* config) {
     if (desc->ndim != 2) return 0;
-    int64_t i8_cols = desc->shape[1];
-    int64_t bf16_cols = i8_cols / 2;  // 2 I8 bytes per BF16
-    return (int)((bf16_cols + config->npu_block_cols - 1) / config->npu_block_cols);
+    int rows = npu_bf16_rows(desc);
+    return (rows + (int)config->npu_block_rows - 1) / (int)config->npu_block_rows;
 }
 
 int npu_dequant_block(void* out, const void* in,
                        const TensorDesc* desc, const ModelConfig* config,
                        int block_idx) {
-    int64_t rows = desc->shape[0];
-    int64_t i8_cols = desc->shape[1];
-    int64_t bf16_cols = i8_cols / 2;  // Elements per row in BF16
-    int block_cols = config->npu_block_cols;  // 1024
-    
-    const uint8_t* data = (const uint8_t*)in;
+    if (desc->ndim != 2) return 0;
     uint16_t* bf16_out = (uint16_t*)out;
-    
-    int col_start = block_idx * block_cols;
-    int col_end = col_start + block_cols;
-    if (col_end > bf16_cols) col_end = (int)bf16_cols;
-    int num_cols = col_end - col_start;
-    int num_rows = (int)rows;
-    if (num_rows > (int)config->npu_block_rows) 
-        num_rows = (int)config->npu_block_rows;
-    
-    // Zero entire output block
-    memset(bf16_out, 0, (size_t)num_rows * block_cols * 2);
-    
-    // For each BF16 value, read 2 consecutive I8 bytes as little-endian BF16
-    // I8 data layout: [lo_byte_0, hi_byte_0, lo_byte_1, hi_byte_1, ...] per row
-    for (int r = 0; r < num_rows; r++) {
-        for (int c = 0; c < num_cols; c++) {
-            // Position in BF16 space
-            int bf16_idx = r * bf16_cols + col_start + c;
-            // Position in I8 byte space (2 bytes per BF16)
-            int i8_byte_idx = bf16_idx * 2;
-            if (i8_byte_idx + 1 >= rows * i8_cols) break;
-            
-            // Read as little-endian uint16 = BF16
-            uint16_t bf16_val;
-            memcpy(&bf16_val, &data[i8_byte_idx], 2);
-            bf16_out[r * block_cols + c] = bf16_val;
+    int block_rows = (int)config->npu_block_rows;   // 256
+    int block_cols = (int)config->npu_block_cols;   // 1024
+    memset(bf16_out, 0, (size_t)block_rows * block_cols * 2);
+
+    if (strcmp(desc->dtype, "BF16") == 0) {
+        int64_t bf16_rows = desc->shape[0];
+        int64_t bf16_cols = desc->shape[1];
+        const uint16_t* src = (const uint16_t*)in;
+        int r0 = block_idx * block_rows;
+        for (int r = 0; r < block_rows; r++) {
+            if (r0 + r >= bf16_rows) break;
+            int ncol = (int)(bf16_cols < block_cols ? bf16_cols : block_cols);
+            memcpy(&bf16_out[r * block_cols], &src[(size_t)(r0 + r) * bf16_cols],
+                   (size_t)ncol * 2);
+        }
+        return block_rows * block_cols;
+    }
+
+    // I8 planar I4
+    const uint8_t* data = (const uint8_t*)in;
+    const int G = 256;            // groups per I8 row
+    const int NIB_OFF = G * 4;    // 1024
+    const int ROW_BYTES = 5120;
+    int64_t bf16_rows = desc->shape[0] * 8;
+    int r0 = block_idx * block_rows;
+    for (int r = 0; r < block_rows; r++) {
+        int64_t j = r0 + r;
+        if (j >= bf16_rows) break;
+        int i = (int)(j / 8);
+        int k = (int)(j % 8);
+        const uint8_t* row = data + (size_t)i * ROW_BYTES;
+        const uint16_t* scales = (const uint16_t*)row;        // [256]
+        const uint16_t* zps = (const uint16_t*)(row + 512);   // [256]
+        const uint8_t* nib = row + NIB_OFF;                   // [4096]
+        int base_val = k * 1024;
+        for (int c = 0; c < 1024; c++) {
+            int p = base_val + c;
+            int g = p / 32;
+            int off = p % 32;
+            float scale = bf16_to_float(scales[g]);
+            float zp = bf16_to_float(zps[g]);
+            uint8_t byte = nib[g * 16 + off / 2];
+            int nib_v = (off % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+            int sval = nib_v < 8 ? nib_v : nib_v - 16;
+            bf16_out[r * block_cols + c] = float_to_bf16((float)sval * scale + zp);
         }
     }
-    
-    return num_rows * num_cols;
+    return block_rows * block_cols;
 }
 
 int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
@@ -109,11 +113,7 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
                         int block_idx) {
     int bo_size = config->npu_weight_bo_size;
     memset(bo_buffer, 0, bo_size);
-    
-    int num_written = npu_dequant_block(bo_buffer, in, desc, config, block_idx);
-    if (num_written < 0) return num_written;
-    
-    return 0;
+    return npu_dequant_block(bo_buffer, in, desc, config, block_idx);
 }
 
 // ========= Simple JSON Parser =========
@@ -152,6 +152,7 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
     
     uint64_t header_size;
     memcpy(&header_size, mw->file_data, 8);
+    mw->data_base = 8 + header_size;  // tensor data starts after header
     
     LOG_INFO("Model file: %s (%lu MB)", path, (unsigned long)(mw->file_size / 1024 / 1024));
     LOG_INFO("Header: %lu bytes JSON", (unsigned long)header_size);
@@ -256,7 +257,7 @@ void model_free(ModelWeights* mw) {
 
 void* model_tensor_data(ModelWeights* mw, TensorDesc* desc) {
     if (!mw || !desc) return NULL;
-    return mw->file_data + desc->data_offset;
+    return mw->file_data + mw->data_base + desc->data_offset;
 }
 
 int model_find_tensor(const char* name, ModelWeights* mw) {

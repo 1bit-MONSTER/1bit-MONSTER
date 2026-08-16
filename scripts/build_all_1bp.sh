@@ -73,7 +73,8 @@ PYEOF
     # The converter needs a lot of memory and time - capture timing
     START_TIME=$(date +%s)
     
-    python3 "$SCRIPT_DIR/tools/gguf_to_onebp.py" "$GGUF_PATH" "$OUTPUT_FILE" $TQ2_FLAG
+    # C++ twin (v3 header + GGUF metadata); .py cut in the Mojo fold (P2.2)
+    "$SCRIPT_DIR/build/gguf_to_onebp" "$GGUF_PATH" "$OUTPUT_FILE" $TQ2_FLAG
     
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))

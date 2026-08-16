@@ -264,7 +264,7 @@ std::vector<float> mimo_v2_forward(MiMoV2Model& model, int token_id,
         rmsnorm(norm.data(), x.data(), l.rms_attn_w.data(), H, cfg.rms_norm_eps);
 
         // projections
-        std::vector<float> q(nh * hd), k(nkv * hd), v(nkv * vd);
+        std::vector<float> q((size_t)nh * hd), k((size_t)nkv * hd), v((size_t)nkv * vd);
         matmul(q.data(), norm.data(), l.q_proj.data(), nh * hd, H);
         matmul(k.data(), norm.data(), l.k_proj.data(), nkv * hd, H);
         matmul(v.data(), norm.data(), l.v_proj.data(), nkv * vd, H);
@@ -289,7 +289,7 @@ std::vector<float> mimo_v2_forward(MiMoV2Model& model, int token_id,
         const int seq_len = pos + 1;
         const float scale = 1.0f / std::sqrt((float)hd);
         const int win_start = is_swa ? std::max(0, seq_len - cfg.sliding_window) : 0;
-        std::vector<float> attn_out(nh * vd, 0.0f);
+        std::vector<float> attn_out((size_t)nh * vd, 0.0f);
         for (int h = 0; h < nh; h++) {
             const int kvh = h / kv_groups;
             const float* qh = &q[(size_t)h * hd];

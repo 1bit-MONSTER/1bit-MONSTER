@@ -244,24 +244,24 @@ private:
         int idx[64]; float gates[64];
         topk_gate(x, ly.attn_router, E, TOPK, idx, gates);
         // per-expert query projections
-        std::vector<float> qs(TOPK * qdim);
+        std::vector<float> qs((size_t)TOPK * qdim);
         for (int k = 0; k < TOPK && k < 64; k++) {
             mm3(ly.attn_input_linear, idx[k], x, H, qdim, qs.data() + (size_t)k * qdim);
         }
         // shared kv
         std::vector<float> kv(2 * qdim);
         mm(ly.kv_proj, x, H, 2 * qdim, kv.data());
-        std::vector<float> k(NKV * HD), v(NKV * HD);
+        std::vector<float> k((size_t)NKV * HD), v((size_t)NKV * HD);
         memcpy(k.data(), kv.data(), qdim * sizeof(float));
         memcpy(v.data(), kv.data() + qdim, qdim * sizeof(float));
-        std::vector<float> kr(NKV * HD);
+        std::vector<float> kr((size_t)NKV * HD);
         rope_apply(k.data(), NKV, HD, kr.data(), pos);
         auto& kk = attn_k[l]; auto& vv = attn_v[l];
         for (int i = 0; i < qdim; i++) { kk.push_back(kr[i]); vv.push_back(v[i]); }
         int T = (int)kk.size() / qdim;
         float scale = 1.0f / std::sqrt((float)HD);
         // attention per (expert, head) — kv shared, groups=1 (repeat not interleave)
-        std::vector<float> outs(TOPK * qdim);
+        std::vector<float> outs((size_t)TOPK * qdim);
         for (int k = 0; k < TOPK && k < 64; k++) {
             std::vector<float> qr(qdim);
             rope_apply(qs.data() + (size_t)k * qdim, NKV, HD, qr.data(), pos);
@@ -270,7 +270,7 @@ private:
                 float mx = -1e30f;
                 for (int t = 0; t < T; t++) {
                     float s = 0;
-                    for (int d = 0; d < HD; d++) s += qr[hh * HD + d] * kk[(size_t)t * qdim + hh * HD + d];
+                    for (int d = 0; d < HD; d++) s += qr[(size_t)hh * HD + d] * kk[(size_t)t * qdim + (size_t)hh * HD + d];
                     scores[t] = s * scale;
                     if (scores[t] > mx) mx = scores[t];
                 }
@@ -278,8 +278,8 @@ private:
                 for (int t = 0; t < T; t++) { scores[t] = std::exp(scores[t] - mx); sum += scores[t]; }
                 for (int d = 0; d < HD; d++) {
                     float acc = 0;
-                    for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * qdim + hh * HD + d];
-                    outs[(size_t)k * qdim + hh * HD + d] = acc;
+                    for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * qdim + (size_t)hh * HD + d];
+                    outs[(size_t)k * qdim + (size_t)hh * HD + d] = acc;
                 }
             }
         }

@@ -294,17 +294,17 @@ private:
         const float* dt_b = wt(ly.dt_bias);
         const float* Dp = wt(ly.D);
         float* rec = rec_state.data() + (size_t)l * MH * MHD * DS;
-        std::vector<float> y(MH * MHD);
+        std::vector<float> y((size_t)MH * MHD);
         // precompute dB [MH*MHD*DS] and dA
-        std::vector<float> dA(MH * MHD * DS), dBx(MH * MHD * DS);
+        std::vector<float> dA((size_t)MH * MHD * DS), dBx((size_t)MH * MHD * DS);
         for (int hh = 0; hh < MH; hh++) {
             float dt = softplus(dt_in[hh] + dt_b[hh]);
             float A = -std::exp(A_log[hh]);
             for (int d = 0; d < MHD; d++) {
                 float dt_d = dt;  // time_step_limit (0, inf): no clamp
                 for (int s = 0; s < DS; s++) {
-                    dA[(size_t)hh * MHD * DS + d * DS + s] = std::exp(dt_d * A);
-                    dBx[(size_t)hh * MHD * DS + d * DS + s] = dt_d * Bp[hh % NG * DS + s] * h[hh * MHD + d];
+                    dA[(size_t)hh * MHD * DS + (size_t)d * DS + s] = std::exp(dt_d * A);
+                    dBx[(size_t)hh * MHD * DS + (size_t)d * DS + s] = dt_d * Bp[(size_t)(hh % NG) * DS + s] * h[(size_t)hh * MHD + d];
                 }
             }
         }
@@ -313,7 +313,7 @@ private:
             for (int d = 0; d < MHD; d++) {
                 float acc = 0;
                 for (int s = 0; s < DS; s++)
-                    acc += rec[(size_t)hh * MHD * DS + d * DS + s] * Cp[hh % NG * DS + s];
+                    acc += rec[(size_t)hh * MHD * DS + (size_t)d * DS + s] * Cp[(size_t)(hh % NG) * DS + s];
                 y[hh * MHD + d] = acc + h[hh * MHD + d] * Dp[hh];
             }
         }
@@ -325,7 +325,7 @@ private:
     }
 
     void attention_mix(const float* x, const GmhLayer& ly, int l, float* out) {
-        std::vector<float> q(NH * HD), k(NKV * HD), v(NKV * HD);
+        std::vector<float> q((size_t)NH * HD), k((size_t)NKV * HD), v((size_t)NKV * HD);
         mm(ly.q_proj, x, H, NH * HD, q.data());
         mm(ly.k_proj, x, H, NKV * HD, k.data());
         mm(ly.v_proj, x, H, NKV * HD, v.data());
@@ -333,7 +333,7 @@ private:
         auto& kk = attn_k[l]; auto& vv = attn_v[l];
         for (int i = 0; i < NKV * HD; i++) { kk.push_back(k[i]); vv.push_back(v[i]); }
         int T = (int)kk.size() / (NKV * HD);
-        std::vector<float> out_heads(NH * HD);
+        std::vector<float> out_heads((size_t)NH * HD);
         for (int hh = 0; hh < NH; hh++) {
             int kh = hh % NKV;
             // scores
@@ -341,7 +341,7 @@ private:
             float mx = -1e30f;
             for (int t = 0; t < T; t++) {
                 float s = 0;
-                for (int d = 0; d < HD; d++) s += q[hh * HD + d] * kk[(size_t)t * NKV * HD + kh * HD + d];
+                for (int d = 0; d < HD; d++) s += q[(size_t)hh * HD + d] * kk[(size_t)t * NKV * HD + (size_t)kh * HD + d];
                 scores[t] = s * attn_mult;
                 if (scores[t] > mx) mx = scores[t];
             }
@@ -349,7 +349,7 @@ private:
             for (int t = 0; t < T; t++) { scores[t] = std::exp(scores[t] - mx); sum += scores[t]; }
             for (int d = 0; d < HD; d++) {
                 float acc = 0;
-                for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * NKV * HD + kh * HD + d];
+                for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * NKV * HD + (size_t)kh * HD + d];
                 out_heads[hh * HD + d] = acc;
             }
         }

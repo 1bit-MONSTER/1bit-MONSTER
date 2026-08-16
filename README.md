@@ -1,18 +1,17 @@
 <div align="center">
 
-<img src="site/assets/brand-lockup.svg" alt="1bit MONSTER" width="540">
+<img src="site/assets/brand-lockup.svg" alt="1bit.MONSTER" width="540">
 
 ## One engine. Every model. Any chip.
 
-<sub>("Sorry but not sorry." — bong-water-water-bong)</sub>
 
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
-[![Site](https://img.shields.io/badge/site-1bit.monster-C6FF3D.svg)](https://1bit.monster)
-[![Models](https://img.shields.io/badge/HF%20coverage-100%25-C6FF3D.svg)](docs/model-families/README.md)
-[![Backends](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-C6FF3D.svg)](docs/guides/architecture.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-00e5ff.svg)](LICENSE)
+[![Site](https://img.shields.io/badge/site-1bit.monster-00e5ff.svg)](https://1bit.monster)
+[![Models](https://img.shields.io/badge/HF%20coverage-100%25-00e5ff.svg)](docs/model-families/README.md)
+[![Backends](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-00e5ff.svg)](docs/guides/architecture.md)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 

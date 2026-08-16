@@ -1,25 +1,46 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>1bit.monster — One Engine Demo</title>
 <style>
-  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0a0a0a; color: #C6FF3D; padding: 20px; max-width: 900px; margin: auto; }
-  h1 { color: #fff; border-bottom: 2px solid #C6FF3D; padding-bottom: 10px; }
-  h2 { color: #9FCC20; margin-top: 30px; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0a0a0a; color: #00e5ff; padding: 20px; max-width: 900px; margin: auto; }
+  h1 { color: #fff; border-bottom: 2px solid #00e5ff; padding-bottom: 10px; }
+  h2 { color: #00cc00; margin-top: 30px; }
   .section { border: 1px solid #333; padding: 15px; margin: 10px 0; border-radius: 5px; }
-  .ok { color: #C6FF3D; }
+  .ok { color: #00e5ff; }
   .info { color: #888; }
   .value { color: #fff; font-weight: bold; }
   table { width: 100%; border-collapse: collapse; margin: 10px 0; }
   td, th { padding: 8px; border-bottom: 1px solid #333; text-align: left; }
-  th { color: #9FCC20; }
+  th { color: #00cc00; }
   td { color: #ccc; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-  .badge-ok { background: #003300; color: #C6FF3D; border: 1px solid #C6FF3D; }
+  .badge-ok { background: #003300; color: #00e5ff; border: 1px solid #00e5ff; }
   .badge-warn { background: #332200; color: #ffaa00; border: 1px solid #ffaa00; }
 </style>
+<link rel="canonical" href="https://1bit.monster/demo/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="1bit MONSTER">
+<meta property="og:title" content="1bit.monster — One Engine Demo">
+<meta property="og:description" content="1bit MONSTER — One engine. Every model. Any chip.">
+<meta property="og:url" content="https://1bit.monster/demo/">
+<meta property="og:image" content="https://1bit.monster/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="1bit.monster — One Engine Demo">
+<meta name="twitter:description" content="1bit MONSTER — One engine. Every model. Any chip.">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
+
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
 
@@ -110,7 +131,7 @@
 <div class="section">
   <h2>✅ Tests</h2>
   <p>All 11 tests pass — HIP kernels, RoPE, attention, ternary GEMM, MoE routing, CPU reference.</p>
-  <pre style="color:#C6FF3D;">
+  <pre style="color:#00e5ff;">
   test_bonsai_gemv        ✅ PASS
   test_cca_attn           ✅ PASS
   test_medusa_skeleton    ✅ PASS

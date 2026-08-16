@@ -1,14 +1,48 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Benchmarks — 1bit MONSTER</title>
 <meta name="description" content="Measured decode and prefill numbers, with hardware and date attached.">
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/favicon.svg?v=2" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="assets/1bm.css">
+<link rel="canonical" href="https://1bit.monster/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="1bit MONSTER">
+<meta property="og:title" content="Benchmarks — 1bit MONSTER">
+<meta property="og:description" content="Measured decode and prefill numbers, with hardware and date attached.">
+<meta property="og:url" content="https://1bit.monster/">
+<meta property="og:image" content="https://1bit.monster/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Benchmarks — 1bit MONSTER">
+<meta name="twitter:description" content="Measured decode and prefill numbers, with hardware and date attached.">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "Benchmarks \u2014 1bit MONSTER",
+  "description": "Measured decode and prefill numbers, with hardware and date attached.",
+  "url": "https://1bit.monster/",
+  "about": {
+    "@type": "SoftwareApplication",
+    "name": "1bit MONSTER"
+  }
+}
+</script>
+
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
 </head>
 <body>
@@ -58,6 +92,19 @@
       <p class="note" style="margin-top:12px">ZAYA1-74B-preview also measured at 16.7 tok/s on HIP (2026-08-05).</p>
     </section>
     <section>
+      <h2>Frontier gates</h2>
+      <p class="note" style="margin-bottom:16px">The five newest architecture families, each held to a <strong>generation gate</strong> — full-logit comparison against the HuggingFace reference on a real (or mini) checkpoint, 2026-08-16. tok/s is measured end-to-end through the engine's <code>generate()</code> chain.</p>
+      <table>
+        <tr><th>family</th><th>arch</th><th>gate result</th><th style="text-align:right">tok/s</th><th>backend</th></tr>
+        <tr><td>Nemotron 3</td><td>LayerNorm1P + relu2 MLP + partial RoPE</td><td class="b">✅ real 8B ckpt, top1 == HF, corr 0.99986</td><td class="n">1.04</td><td class="b">CPU generic (fp32)</td></tr>
+        <tr><td>Qwen3.5</td><td>GatedDeltaNet + gated GQA hybrid</td><td class="b">✅ mini-gate top1 == HF, 20/20, corr 1.0</td><td class="n">65</td><td class="b">GGML-Vulkan (4B)</td></tr>
+        <tr><td>DeepSeek V4</td><td>Shared-KV MQA + mHC (Sinkhorn) + hash-MoE</td><td class="b">✅ mini-gate top1 == HF, 20/20</td><td class="n">—</td><td class="b">ckpt 160 GB &gt; this box</td></tr>
+        <tr><td>GLM-5.2</td><td>V3-MLA + DSA indexer</td><td class="b">✅ mini-gate top1 == HF, 20/20</td><td class="n">—</td><td class="b">full ckpt &gt; this box</td></tr>
+        <tr><td>MiMo V2</td><td>MoD hybrid SWA+full GQA, sigmoid group-topk</td><td class="b">✅ mini-gate top1 == HF, 20/20</td><td class="n">—</td><td class="b">ckpt 313 GB &gt; this box</td></tr>
+      </table>
+      <p class="note" style="margin-top:12px">Nemotron 3 8B measured 2026-08-16 on this box (fp32, generic CPU path — no GPU backend wired for Nemotron yet; expect a step change when it lands). Qwen3.5 row is the 4B member already in the headline table. The three <code>—</code> rows are gate-validated but their real checkpoints (160–315 GB MoEs) exceed this machine — numbers land when the GPU box gets them.</p>
+    </section>
+    <section>
       <h2>Unified control plane</h2>
       <p class="note" style="margin-bottom:16px">The single control plane is measured but <strong>not finished</strong>. The supported out-of-box path today is toolbox-backed Strix Halo inference.</p>
       <p class="lead">All five zoo models served from <strong>one</strong> <code>unified</code> process — <code>--pool</code> keeps every model resident — through a single OpenAI-compatible endpoint. Measured end-to-end via <code>POST /v1/chat/completions</code>, including per-request model routing. 2026-08-07.</p>
@@ -78,7 +125,12 @@
 scripts/zoo-smoke.sh</pre>
       <p class="note" style="margin-top:12px">Build <code>Release</code>, or the numbers will not match. Full per-model and per-kernel detail lives in the performance SSOT: <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">docs/wiki/performance.md →</a></p>
     </section>
-    <footer><span>© 1bit MONSTER</span><span style="color:var(--lime)">mit — do whatever you want</span></footer>
+    <footer>
+  <span>© 1bit MONSTER</span>
+  <span style="color:var(--lime)">mit — do whatever you want</span>
+  <span>Metepenagiag Mi&rsquo;kmaq Nation &middot; New Brunswick, Canada &middot; <a href="mailto:admin@1bit.monster" style="color:var(--faint)">admin@1bit.monster</a></span>
+  <span style="text-transform:none;letter-spacing:0">&ldquo;Sorry but not sorry.&rdquo; &mdash; bong-water-water-bong</span>
+</footer>
   </main>
 </div>
 </body>

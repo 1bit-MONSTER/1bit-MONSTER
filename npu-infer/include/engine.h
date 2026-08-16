@@ -8,11 +8,12 @@
 #include <string>
 #include <memory>
 
+#include <xrt/xrt_kernel.h>
+
 namespace xrt {
     class device;
     class kernel;
     class bo;
-    class run;
     class hw_context;
     class xclbin;
 }
@@ -112,6 +113,8 @@ private:
     std::vector<NpuBo> lm_head_blocks_;
     std::vector<float> lm_head_buffer_;
     int current_token_ = 0;
+    std::vector<xrt::run> pending_runs_;
+    void flush_runs();
     
     bool cache_all_weights();
     bool pack_tensor_blocks(std::vector<NpuBo>& blocks, const TensorDesc* desc, const char* label_prefix);

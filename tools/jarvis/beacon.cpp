@@ -16,6 +16,15 @@ using json = nlohmann::json;
 namespace jarvis {
 namespace {
 
+std::string hostname() {
+    char buf[256];
+    if (gethostname(buf, sizeof(buf)) == 0) return buf;
+    return "unknown";
+}
+
+} // namespace
+
+// Outbound-facing LAN IP (UDP connect trick, no packet sent).
 std::string lan_ip() {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) return "127.0.0.1";
@@ -26,8 +35,7 @@ std::string lan_ip() {
     inet_pton(AF_INET, "8.8.8.8", &addr.sin_addr);
 
     // connect() on a UDP socket doesn't send a packet — it just picks the
-    // outbound-facing local address for getsockname(), same trick the
-    // original Python used.
+    // outbound-facing local address for getsockname().
     std::string result = "127.0.0.1";
     if (connect(sock, (sockaddr*)&addr, sizeof(addr)) == 0) {
         sockaddr_in local{};
@@ -40,14 +48,6 @@ std::string lan_ip() {
     close(sock);
     return result;
 }
-
-std::string hostname() {
-    char buf[256];
-    if (gethostname(buf, sizeof(buf)) == 0) return buf;
-    return "unknown";
-}
-
-} // namespace
 
 void start_beacon(int server_port, double interval_seconds) {
     std::string url = "http://" + lan_ip() + ":" + std::to_string(server_port);
