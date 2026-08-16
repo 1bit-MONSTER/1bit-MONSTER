@@ -47,10 +47,11 @@ rootfs. It:
      - The built `1bit-MONSTER` `.deb` (from `packaging/deb`, current
        `VERSION`).
      - The pinned driver payload (TheRock `7.14.0a20260612` gfx1151 libs
-       package; cached `mesa-vulkan-drivers=26.0.3-1ubuntu1` and
-       `libvulkan1=1.4.341.0-1` `.deb`s).
+       package; cached `mesa-vulkan-drivers=26.0.3-1ubuntu1`,
+       `libvulkan1=1.4.341.0-1`, and `bolt=0.9.10-1` `.deb`s — the last one
+       is the Thunderbolt/USB4 userspace daemon; see the new bullet below).
      - The new systemd unit files (`1bit-unified.service`,
-       `1bit-model-fetch.service`) and an apt-pin preferences file.
+       `1bit-model-fetch.service`).
 3. Repacks with `xorriso`, preserving the hybrid El Torito boot catalog so
    the output is bootable both as an optical image and `dd`'d to USB.
 4. Output: `1bit-monster-26.04-amd64.iso`.
@@ -60,6 +61,37 @@ detection logic), and `packaging/model-download.sh` as-is rather than
 duplicating packaging logic. Re-running the script against a newer Ubuntu
 26.04 point-release ISO, or a newer `1bit-MONSTER` `.deb`, is the entire
 update story — no separate rootfs to maintain.
+
+## Driver/runtime stack baked in (no Ubuntu-default drift)
+
+- **ROCm/HIP (GPU compute)**: TheRock `7.14.0a20260612` (gfx1151 device
+  libs) — bundled as a payload on the ISO, installed via `late-commands`,
+  never sourced from any Ubuntu apt ROCm package.
+- **Vulkan**: `mesa-vulkan-drivers=26.0.3-1ubuntu1` + `libvulkan1=1.4.341.0-1`
+  — the only Vulkan stack ever tested with this engine is Ubuntu's own
+  Mesa/RADV; there is no separate "stable Vulkan SDK." These exact `.deb`s
+  are cached on the ISO and held via `apt-mark hold` post-install so a
+  later `apt upgrade` can't drift them.
+- **Thunderbolt/USB4**: this hardware has AMD's own USB4 Host Router
+  (confirmed via `lspci`), already working via 100% stock Ubuntu — the
+  in-kernel `thunderbolt` module and the `bolt` daemon
+  (`bolt=0.9.10-1`, `bolt.service`). No custom driver exists anywhere in
+  this project's repo ecosystem (confirmed by grep across all ~50 repos)
+  — unlike ROCm/NPU, there was never any reverse-engineering angle here.
+  Treated the same way as Vulkan: freeze the exact tested `bolt` version,
+  cached on the ISO and held via `apt-mark hold`, rather than relying on
+  whatever Ubuntu's live repo happens to have at install time.
+- **CUDA**: dropped from v1 — no NVIDIA hardware exists to validate
+  against, and nothing in the codebase pins a version. The engine's CUDA
+  path stays dormant.
+- **NPU (XDNA)**: unchanged — documented manual follow-up, not unattended
+  in v1.
+- **llama.cpp**: vendored source (submodule pinned at a fixed commit),
+  built from source as part of the engine build — not a separate runtime
+  driver; its Vulkan/HIP backends ride the pins above.
+- The same `apt-mark hold` treatment extends to the kernel meta-package
+  (whichever tracks `7.0.0-27-generic`) so a kernel bump can't silently
+  break the tuned `amdgpu`/GTT cmdline params either.
 
 ## Install-time flow (fully unattended)
 
@@ -76,14 +108,13 @@ update story — no separate rootfs to maintain.
    at this point in the installer):
    - `dpkg -i` the `.deb` from `/pool/` on the ISO — no network required
      for the engine install itself.
-   - `dpkg -i` the pinned Vulkan `.deb`s from `/pool/`, install the
-     TheRock gfx1151 payload to `/opt/rocm-therock` (matching the path
+   - `dpkg -i` the pinned Vulkan and `bolt` `.deb`s from `/pool/`, install
+     the TheRock gfx1151 payload to `/opt/rocm-therock` (matching the path
      `CMakeLists.txt` / `env.sh` already expect).
-   - Write `/etc/apt/preferences.d/1bit-monster-drivers` pinning
-     `mesa-vulkan-drivers`, `libvulkan1`, and the kernel meta-package
-     (whichever tracks `7.0.0-27-generic`) to their installed versions,
-     so a later `apt upgrade` can't silently drift the driver stack or
-     kernel and break ABI/GTT-tuning compatibility with the engine.
+   - `apt-mark hold` on `mesa-vulkan-drivers`, `libvulkan1`, `bolt`, and
+     the kernel meta-package (whichever tracks `7.0.0-27-generic`), so a
+     later `apt upgrade` can't silently drift the driver stack or kernel
+     and break ABI/GTT-tuning compatibility with the engine.
    - `lspci | grep -i xdna` — if a Strix Halo NPU is detected, note it
      for the first-boot MOTD ("NPU detected — see docs for the manual
      driver setup to enable acceleration"). No driver install attempted.
