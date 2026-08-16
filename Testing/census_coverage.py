@@ -122,6 +122,10 @@ NON_TEXT_GEN = {
     "speech2texttransformer", "speechlmm", "speechunit", "stepaudio2",
     "t5with", "tabletransformerforobjectdetection", "typhoonaudio",
     "vaswanirope", "visionencoderdecoder", "vitgpt2lm", "whisperaccent",
+
+    # ── 2026-08-15 pass-3: encoder-decoder / audio / non-transformer ──
+    "bigbird", "bigbirdpegasus", "longformerforsequenceclassification",
+    "blenderbotsmall", "vibevoice", "qwen3asr", "lstm", "prot2text",
 }
 
 

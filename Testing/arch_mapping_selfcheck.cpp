@@ -261,6 +261,158 @@ int main() {
         std::printf("ARCH MAPPING: %d/%d FAILED\n", fails, total);
         return 1;
     }
+
+
+    // ── 2026-08-15 census pass-3 checks (new families + verified aliases) ──
+    check("acip", RCPP_ARCH_ACIP, "acip");
+    check("argonne", RCPP_ARCH_ARGONNE, "argonne");
+    check("bailingmoe", RCPP_ARCH_LLAMA, "bailingmoe");
+    check("bailingmoelinearv2", RCPP_ARCH_LLAMA, "bailingmoelinearv2");
+    check("bailingmoev2", RCPP_ARCH_LLAMA, "bailingmoev2");
+    check("bailingmoev2_5", RCPP_ARCH_LLAMA, "bailingmoev2_5");
+    check("bailingmoev3", RCPP_ARCH_LLAMA, "bailingmoev3");
+    check("bamba", RCPP_ARCH_LLAMA, "bamba");
+    check("btlm", RCPP_ARCH_BTLM, "btlm");
+    check("bvv", RCPP_ARCH_BVV, "bvv");
+    check("ceno", RCPP_ARCH_CENO, "ceno");
+    check("chatglm", RCPP_ARCH_CHATGLM, "chatglm");
+    check("cognicapoe", RCPP_ARCH_COGNICAPOE, "cognicapoe");
+    check("cubelm", RCPP_ARCH_CUBELM, "cubelm");
+    check("daisy", RCPP_ARCH_DAISY, "daisy");
+    check("duchifatcore", RCPP_ARCH_DUCHIFAT, "duchifatcore");
+    check("duo", RCPP_ARCH_DUO, "duo");
+    check("dynamicforgetting", RCPP_ARCH_DYNAMICFORGETTING, "dynamicforgetting");
+    check("dynamicslidingwindow", RCPP_ARCH_DYNAMICSLIDINGWINDOW, "dynamicslidingwindow");
+    check("emo", RCPP_ARCH_EMO, "emo");
+    check("eshmun", RCPP_ARCH_ESHMUN, "eshmun");
+    check("fimmy", RCPP_ARCH_FIMMY, "fimmy");
+    check("financedecoder", RCPP_ARCH_FINANCEDECODER, "financedecoder");
+    check("forgettingtransformer", RCPP_ARCH_FORGETTINGTRANSFORMER, "forgettingtransformer");
+    check("gla", RCPP_ARCH_GLA, "gla");
+    check("gpt2moe", RCPP_ARCH_GPT2, "gpt2moe");
+    check("gptbert", RCPP_ARCH_GPTBERT, "gptbert");
+    check("gptjxmoe", RCPP_ARCH_GPTJXMOE, "gptjxmoe");
+    check("gptpangu", RCPP_ARCH_GPTPANGU, "gptpangu");
+    check("grugmoe", RCPP_ARCH_GRUGMOE, "grugmoe");
+    check("hgrn", RCPP_ARCH_HGRN, "hgrn");
+    check("hybridqwen3", RCPP_ARCH_LLAMA, "hybridqwen3");
+    check("hyenadna", RCPP_ARCH_HYENADNA, "hyenadna");
+    check("instella", RCPP_ARCH_DEEPSEEK, "instella");
+    check("jais", RCPP_ARCH_JAIS, "jais");
+    check("keuralmoecausallm", RCPP_ARCH_KEURALMOE, "keuralmoecausallm");
+    check("kimik25", RCPP_ARCH_DEEPSEEK, "kimik25");
+    check("kormo", RCPP_ARCH_KORMO, "kormo");
+    check("lightningtransformermodel", RCPP_ARCH_LIGHTNINGTRANSFORMER, "lightningtransformermodel");
+    check("llada2moemodellm", RCPP_ARCH_LLADA2, "llada2moemodellm");
+    check("llama4", RCPP_ARCH_LLAMA4, "llama4");
+    check("llamamoe", RCPP_ARCH_LLAMAMOE, "llamamoe");
+    check("longcatflash", RCPP_ARCH_LONGCAT, "longcatflash");
+    check("looplm", RCPP_ARCH_LOOPLM, "looplm");
+    check("modeling_sparsetral.mistral", RCPP_ARCH_MISTRAL, "modeling_sparsetral.mistral");
+    check("modernbertdecoder", RCPP_ARCH_MODERNBERTDECODER, "modernbertdecoder");
+    check("motif", RCPP_ARCH_MOTIF, "motif");
+    check("multiscale", RCPP_ARCH_MULTISCALE, "multiscale");
+    check("orkhon", RCPP_ARCH_ORKHON, "orkhon");
+    check("polyverse", RCPP_ARCH_POLYVERSE, "polyverse");
+    check("quasar", RCPP_ARCH_QUASAR, "quasar");
+    check("raven", RCPP_ARCH_RAVEN, "raven");
+    check("recurrentgemma", RCPP_ARCH_RECURRENTGEMMA, "recurrentgemma");
+    check("reformermodelwithlmhead", RCPP_ARCH_REFORMER, "reformermodelwithlmhead");
+    check("retnet", RCPP_ARCH_RETNET, "retnet");
+    check("roformer", RCPP_ARCH_ROFORMER, "roformer");
+    check("rwkv7", RCPP_ARCH_RWKV7, "rwkv7");
+    check("sarvammla", RCPP_ARCH_SARVAM, "sarvammla");
+    check("sarvammoe", RCPP_ARCH_SARVAM, "sarvammoe");
+    check("skipmiddle", RCPP_ARCH_SKIPMIDDLE, "skipmiddle");
+    check("spikewhalelm", RCPP_ARCH_SPIKEWHALE, "spikewhalelm");
+    check("step3p5", RCPP_ARCH_STEP3P5, "step3p5");
+    check("stl", RCPP_ARCH_STL, "stl");
+    check("stripedhyenamodel", RCPP_ARCH_STRIPEDHYENA, "stripedhyenamodel");
+    check("talkie", RCPP_ARCH_TALKIE, "talkie");
+    check("telechat", RCPP_ARCH_TELECHAT, "telechat");
+    check("transfoxl", RCPP_ARCH_TRANSFOXL, "transfoxl");
+    check("transnormer", RCPP_ARCH_TRANSNORMER, "transnormer");
+    check("twiny", RCPP_ARCH_TWINY, "twiny");
+    check("xpertgpt", RCPP_ARCH_XPERTGPT, "xpertgpt");
+    check("yatgpt", RCPP_ARCH_YATGPT, "yatgpt");
+
+
+    // ── 2026-08-15 census pass-3 batch 2 checks ──
+    check("adaptermoellavaqwen3", RCPP_ARCH_QWEN3VL, "adaptermoellavaqwen3");
+    check("bananamind2pico", RCPP_ARCH_PICO, "bananamind2pico");
+    check("bunnyphi", RCPP_ARCH_PHI, "bunnyphi");
+    check("bunnyphi3", RCPP_ARCH_PHI, "bunnyphi3");
+    check("colmaskmoellavaqwen3", RCPP_ARCH_QWEN3VL, "colmaskmoellavaqwen3");
+    check("deepqwenvl", RCPP_ARCH_QWEN2VL, "deepqwenvl");
+    check("dyncolmaskmoellavaqwen2", RCPP_ARCH_QWEN2VL, "dyncolmaskmoellavaqwen2");
+    check("emu3", RCPP_ARCH_LLAMA, "emu3");
+    check("gemma4unifiedassistant", RCPP_ARCH_GEMMA, "gemma4unifiedassistant");
+    check("gptjx", RCPP_ARCH_GPTJ, "gptjx");
+    check("graniteswitch", RCPP_ARCH_GEMMA, "graniteswitch");
+    check("hgrn2", RCPP_ARCH_HGRN, "hgrn2");
+    check("jais2", RCPP_ARCH_JAIS, "jais2");
+    check("japanesestablelmalpha", RCPP_ARCH_LLAMA, "japanesestablelmalpha");
+    check("llavagemma", RCPP_ARCH_GEMMA, "llavagemma");
+    check("llavagpt2", RCPP_ARCH_GPT2, "llavagpt2");
+    check("llavamamba", RCPP_ARCH_MAMBA, "llavamamba");
+    check("llavampt", RCPP_ARCH_LLAMA, "llavampt");
+    check("llavaqwen3", RCPP_ARCH_QWEN3VL, "llavaqwen3");
+    check("maskmoellavaqwen3", RCPP_ARCH_QWEN3VL, "maskmoellavaqwen3");
+    check("minimaxm1", RCPP_ARCH_MINIMAX, "minimaxm1");
+    check("minimaxm3sparse", RCPP_ARCH_MINIMAX, "minimaxm3sparse");
+    check("mobilintexaone", RCPP_ARCH_LLAMA, "mobilintexaone");
+    check("moellavaqwen3", RCPP_ARCH_QWEN3VL, "moellavaqwen3");
+    check("mosaicgpt", RCPP_ARCH_LLAMA, "mosaicgpt");
+    check("nanogpt", RCPP_ARCH_GPT2, "nanogpt");
+    check("nmmaskmoellavaqwen3", RCPP_ARCH_QWEN3VL, "nmmaskmoellavaqwen3");
+    check("phi4flash", RCPP_ARCH_PHI, "phi4flash");
+    check("plamo2", RCPP_ARCH_LLAMA, "plamo2");
+    check("plamo3", RCPP_ARCH_LLAMA, "plamo3");
+    check("qwen2chunking", RCPP_ARCH_QWEN2, "qwen2chunking");
+    check("qwen3omnimoe", RCPP_ARCH_QWEN3VL, "qwen3omnimoe");
+    check("rwkv6qwen2", RCPP_ARCH_QWEN2, "rwkv6qwen2");
+    check("spatiallmqwen", RCPP_ARCH_QWEN2VL, "spatiallmqwen");
+    check("stablelmalpha", RCPP_ARCH_LLAMA, "stablelmalpha");
+    check("tpugemma3", RCPP_ARCH_GEMMA, "tpugemma3");
+
+
+    // ── 2026-08-15 census pass-3 batch 3 checks ──
+    check("activationsgptneo", RCPP_ARCH_GPTNEOX, "activationsgptneo");
+    check("alibi", RCPP_ARCH_GPT2, "alibi");
+    check("attnqwen", RCPP_ARCH_QWEN3, "attnqwen");
+    check("bitmamba2lm", RCPP_ARCH_MAMBA, "bitmamba2lm");
+    check("deltanet", RCPP_ARCH_QWEN3NEXT, "deltanet");
+    check("extendedmpt", RCPP_ARCH_LLAMA, "extendedmpt");
+    check("gemma3moe", RCPP_ARCH_GEMMA, "gemma3moe");
+    check("gemmoe", RCPP_ARCH_GEMMA, "gemmoe");
+    check("gptx2", RCPP_ARCH_LLAMA, "gptx2");
+    check("gsa", RCPP_ARCH_LLAMA, "gsa");
+    check("hybridgpt2", RCPP_ARCH_GPT2, "hybridgpt2");
+    check("inflm", RCPP_ARCH_LLAMA, "inflm");
+    check("latentmoellavaphi", RCPP_ARCH_PHI, "latentmoellavaphi");
+    check("mfuyu", RCPP_ARCH_FUYU, "mfuyu");
+    check("mixtralmole", RCPP_ARCH_MISTRAL, "mixtralmole");
+    check("mosmamba", RCPP_ARCH_MAMBA, "mosmamba");
+    check("museglimmer", RCPP_ARCH_MUSE, "museglimmer");
+    check("nanochatgpt", RCPP_ARCH_NANOCHAT, "nanochatgpt");
+    check("nmmaskmoellavaphi", RCPP_ARCH_PHI, "nmmaskmoellavaphi");
+    check("pharia", RCPP_ARCH_LLAMA, "pharia");
+    check("phi2moe", RCPP_ARCH_PHI, "phi2moe");
+    check("qwen3sharedmoe", RCPP_ARCH_QWEN3, "qwen3sharedmoe");
+    check("replitlm", RCPP_ARCH_LLAMA, "replitlm");
+    check("step3p7", RCPP_ARCH_STEP3P5, "step3p7");
+    check("tinygdn", RCPP_ARCH_QWEN3NEXT, "tinygdn");
+
+
+    // ── 2026-08-15 census pass-3 batch 4 checks ──
+    check("brujula", RCPP_ARCH_GPT2, "brujula");
+    check("chesstrm", RCPP_ARCH_GPT2, "chesstrm");
+    check("norovoxalphamoe", RCPP_ARCH_LLAMA, "norovoxalphamoe");
+    check("phonelm", RCPP_ARCH_LLAMA, "phonelm");
+    check("pinyincode", RCPP_ARCH_GPT2, "pinyincode");
+    check("pit", RCPP_ARCH_GPT2, "pit");
+    check("randygpt", RCPP_ARCH_GPT2, "randygpt");
+    check("stickbreaking", RCPP_ARCH_GPT2, "stickbreaking");
     std::printf("ARCH MAPPING: all %d checks passed\n", total);
     return 0;
 }
