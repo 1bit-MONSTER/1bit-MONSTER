@@ -244,13 +244,13 @@ private:
     }
 
     void lightning_mix(const float* x, const MiniMaxLayer& ly, int l, float* out) {
-        std::vector<float> qkv(NH * HD * 3);
+        std::vector<float> qkv((size_t)NH * HD * 3);
         mm(ly.qkv_proj, x, H, NH * HD * 3, qkv.data());
-        std::vector<float> act(NH * HD * 3);
+        std::vector<float> act((size_t)NH * HD * 3);
         for (int i = 0; i < NH * HD * 3; i++) act[i] = gelu(qkv[i]);
         float* st = lt_state.data() + (size_t)l * NH * HD * HD;
         float ratio = std::exp(-ly.slope);
-        std::vector<float> out_heads(NH * HD);
+        std::vector<float> out_heads((size_t)NH * HD);
         for (int hh = 0; hh < NH; hh++) {
             const float* q = act.data() + hh * 3 * HD;
             const float* k = q + HD;
@@ -266,15 +266,15 @@ private:
             }
         }
         rmsnorm(out_heads.data(), wt(ly.norm_attn), NH * HD, 1e-6f, out_heads.data());
-        std::vector<float> gate(NH * HD);
+        std::vector<float> gate((size_t)NH * HD);
         mm(ly.output_gate, x, H, NH * HD, gate.data());
         for (int i = 0; i < NH * HD; i++) out_heads[i] *= 1.0f / (1.0f + std::exp(-gate[i]));
         mm(ly.out_proj, out_heads.data(), NH * HD, H, out);
     }
 
     void attention_mix(const float* x, const MiniMaxLayer& ly, int l, int pos, float* out) {
-        std::vector<float> q(NH * HD), k(NKV * HD), v(NKV * HD);
-        std::vector<float> qr(NH * HD), kr(NKV * HD);
+        std::vector<float> q((size_t)NH * HD), k((size_t)NKV * HD), v((size_t)NKV * HD);
+        std::vector<float> qr((size_t)NH * HD), kr((size_t)NKV * HD);
         mm(ly.q_proj, x, H, NH * HD, q.data());
         mm(ly.k_proj, x, H, NKV * HD, k.data());
         mm(ly.v_proj, x, H, NKV * HD, v.data());
@@ -285,14 +285,14 @@ private:
         int T = (int)kk.size() / (NKV * HD);
         float scale = 1.0f / std::sqrt((float)HD);
         int groups = NH / NKV;
-        std::vector<float> out_heads(NH * HD);
+        std::vector<float> out_heads((size_t)NH * HD);
         for (int hh = 0; hh < NH; hh++) {
             int kh = hh / groups;
             std::vector<float> scores(T);
             float mx = -1e30f;
             for (int t = 0; t < T; t++) {
                 float s = 0;
-                for (int d = 0; d < HD; d++) s += qr[hh * HD + d] * kk[(size_t)t * NKV * HD + kh * HD + d];
+                for (int d = 0; d < HD; d++) s += qr[(size_t)hh * HD + d] * kk[(size_t)t * NKV * HD + (size_t)kh * HD + d];
                 scores[t] = s * scale;
                 if (scores[t] > mx) mx = scores[t];
             }
@@ -300,7 +300,7 @@ private:
             for (int t = 0; t < T; t++) { scores[t] = std::exp(scores[t] - mx); sum += scores[t]; }
             for (int d = 0; d < HD; d++) {
                 float acc = 0;
-                for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * NKV * HD + kh * HD + d];
+                for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * NKV * HD + (size_t)kh * HD + d];
                 out_heads[hh * HD + d] = acc;
             }
         }

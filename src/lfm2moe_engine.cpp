@@ -296,28 +296,28 @@ private:
     }
 
     void attention_mix(const float* x, const L2mLayer& ly, int l, int pos, float* out) {
-        std::vector<float> q(NH * HD), k(NKV * HD), v(NKV * HD);
-        std::vector<float> qn(NH * HD), kn(NKV * HD);
+        std::vector<float> q((size_t)NH * HD), k((size_t)NKV * HD), v((size_t)NKV * HD);
+        std::vector<float> qn((size_t)NH * HD), kn((size_t)NKV * HD);
         mm(ly.q_proj, x, H, NH * HD, q.data());
         mm(ly.k_proj, x, H, NKV * HD, k.data());
         mm(ly.v_proj, x, H, NKV * HD, v.data());
         for (int hh = 0; hh < NH; hh++) rmsnorm(q.data() + hh * HD, wt(ly.q_ln), HD, eps, qn.data() + hh * HD);
         for (int hh = 0; hh < NKV; hh++) rmsnorm(k.data() + hh * HD, wt(ly.k_ln), HD, eps, kn.data() + hh * HD);
-        std::vector<float> qr(NH * HD), kr(NKV * HD);
+        std::vector<float> qr((size_t)NH * HD), kr((size_t)NKV * HD);
         rope_apply(qn.data(), NH, HD, qr.data(), pos);
         rope_apply(kn.data(), NKV, HD, kr.data(), pos);
         auto& kk = attn_k[l]; auto& vv = attn_v[l];
         for (int i = 0; i < NKV * HD; i++) { kk.push_back(kr[i]); vv.push_back(v[i]); }
         int T = (int)kk.size() / (NKV * HD);
         float scale = 1.0f / std::sqrt((float)HD);
-        std::vector<float> out_heads(NH * HD);
+        std::vector<float> out_heads((size_t)NH * HD);
         for (int hh = 0; hh < NH; hh++) {
             int kh = hh % NKV;
             std::vector<float> scores(T);
             float mx = -1e30f;
             for (int t = 0; t < T; t++) {
                 float s = 0;
-                for (int d = 0; d < HD; d++) s += qr[hh * HD + d] * kk[(size_t)t * NKV * HD + kh * HD + d];
+                for (int d = 0; d < HD; d++) s += qr[(size_t)hh * HD + d] * kk[(size_t)t * NKV * HD + (size_t)kh * HD + d];
                 scores[t] = s * scale;
                 if (scores[t] > mx) mx = scores[t];
             }
@@ -325,7 +325,7 @@ private:
             for (int t = 0; t < T; t++) { scores[t] = std::exp(scores[t] - mx); sum += scores[t]; }
             for (int d = 0; d < HD; d++) {
                 float acc = 0;
-                for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * NKV * HD + kh * HD + d];
+                for (int t = 0; t < T; t++) acc += scores[t] / sum * vv[(size_t)t * NKV * HD + (size_t)kh * HD + d];
                 out_heads[hh * HD + d] = acc;
             }
         }

@@ -728,8 +728,8 @@ async function renderApiKeys(main) {
                   <tr>
                     <td style="font-family:var(--mono);font-size:12px;">${esc(k.key)}</td>
                     <td><span class="badge ${k.active ? 'ok' : 'err'}"><span class="dot"></span>${k.active ? 'Active' : 'Revoked'}</span></td>
-                    <td>${k.created_at || '—'}</td>
-                    <td>${k.expires_at || '—'}</td>
+                    <td>${esc(k.created_at) || '—'}</td>
+                    <td>${esc(k.expires_at) || '—'}</td>
                     <td>${k.active ? `<button class="btn btn-danger btn-sm" onclick="revokeApiKey('${esc(k.key)}')">Revoke</button>` : ''}</td>
                   </tr>`).join('')}
                 </tbody>

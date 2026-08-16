@@ -357,7 +357,7 @@ private:
         auto& kcache = attn_k[l];
         auto& vcache = attn_v[l];
         int klen = (int)(kcache.size() / (NKV * HD));
-        std::vector<float> q(NH * HD), k(NKV * HD), v(NKV * HD);
+        std::vector<float> q((size_t)NH * HD), k((size_t)NKV * HD), v((size_t)NKV * HD);
         mm(ly.q_proj, xn, H, NH * HD, q.data());
         mm(ly.k_proj, xn, H, NKV * HD, k.data());
         for (int i = 0; i < NKV * HD; i++) k[i] *= key_mult;
@@ -399,7 +399,7 @@ private:
             for (int t = 0; t < seq; t++) { float e = std::exp(srow[t] - mx); probs[(size_t)h * seq + t] = e; sum += e; }
             for (int t = 0; t < seq; t++) probs[(size_t)h * seq + t] /= sum;
         }
-        std::vector<float> acc(NH * HD, 0.0f);
+        std::vector<float> acc((size_t)NH * HD, 0.0f);
         for (int h = 0; h < NH; h++) {
             int kh = h / (NH / NKV);
             const float* vv = vcache.data() + (size_t)kh * HD;
