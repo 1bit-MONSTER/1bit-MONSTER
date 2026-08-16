@@ -1,17 +1,18 @@
 <div align="center">
 
-<img src="site/assets/og-default.png" alt="1bit MONSTER — One engine. Every model. Any chip." width="540">
+<img src="site/assets/banner.png" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
 ## One engine to rule them all
-
 
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
-[![Site](https://img.shields.io/badge/site-1bit.monster-C6FF3D.svg)](https://1bit.monster)
-[![Models](https://img.shields.io/badge/HF%20coverage-100%25-C6FF3D.svg)](docs/model-families/README.md)
-[![Backends](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-C6FF3D.svg)](docs/guides/architecture.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0E80BE?style=flat-square&labelColor=021621)](LICENSE)
+[![HF coverage](https://img.shields.io/badge/HF%20coverage-100%25-0E80BE?style=flat-square&labelColor=021621)](docs/model-families/README.md)
+[![Hardware](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-B26400?style=flat-square&labelColor=021621)](docs/guides/architecture.md)
+[![Gates](https://img.shields.io/badge/gates-17%2F17%20green-0E80BE?style=flat-square&labelColor=021621)](Testing/run_all.sh)
+[![Prefill](https://img.shields.io/badge/prefill-43.2%20TFLOPS-B26400?style=flat-square&labelColor=021621)](docs/wiki/performance.md)
+[![Site](https://img.shields.io/badge/site-1bit.monster-0E80BE?style=flat-square&labelColor=021621)](https://1bit.monster)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 

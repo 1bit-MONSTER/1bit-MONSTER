@@ -1,24 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 270" role="img" aria-label="1bit.MONSTER">
   <title>1bit.MONSTER</title>
 
-  <!-- mark: 1bm in lime (matches site .mark) -->
+  <!-- mark: 1bm in cyan (matches site .mark) -->
   <text x="310" y="104"
         text-anchor="middle"
         font-family="'DM Serif Display',Georgia,'Times New Roman',serif"
         font-size="108" font-weight="800" letter-spacing="-0.04em"
-        fill="#C6FF3D">1bm</text>
+        fill="#00e5ff">1bm</text>
 
   <!-- wordmark: 1bit.MONSTER on a single line -->
   <text x="310" y="178"
         text-anchor="middle"
         font-family="'DM Serif Display',Georgia,'Times New Roman',serif"
         font-size="58" font-weight="800" letter-spacing="-0.01em"
-        fill="#EDEFEA">1bit.MONSTER</text>
+        fill="#e7f6fd">1bit.MONSTER</text>
 
   <!-- tagline: "Sorry but not sorry." — bong-water-water-bong (matches site .quote) -->
   <text x="310" y="238"
         text-anchor="middle"
         font-family="'DM Mono','SF Mono',monospace"
         font-size="15" letter-spacing="0.02em"
-        fill="#A0A599">"Sorry but not sorry." — bong-water-water-bong</text>
+        fill="#ff9f1c">"Sorry but not sorry." — bong-water-water-bong</text>
 </svg>

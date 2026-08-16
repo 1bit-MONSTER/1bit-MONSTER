@@ -19,7 +19,7 @@
 <link rel="canonical" href="https://1bit.monster/blog/reverse-engineered-amd-npu-4-days">
 <link rel="alternate" href="/blog/reverse-engineered-amd-npu-4-days.html">
 <meta property="og:title" content="I reverse-engineered AMD's NPU stack in 4 days — 38KB binary">
-<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:description" content="One person, a free Chess license, and a C++ compiler turned AMD's locked NPU into the fastest open-source inference engine.">
 <meta property="og:url" content="https://1bit.monster/blog/reverse-engineered-amd-npu-4-days">
 <meta property="og:type" content="article">
@@ -28,10 +28,10 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 <style>
   :root{
-    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
-    --border:#232323; --border2:#123a4d;
-    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
-    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
+    --bg:#021621; --panel:#04202f; --tile:#04202f; --inner:#04202f;
+    --border:rgba(14,128,190,.42); --border2:rgba(14,128,190,.6);
+    --text:#e7f6fd; --muted:#a0d9f8; --dim:#5d9ec2;
+    --green:#00e5ff; --green-d:#00c853; --pink:#ff9f1c; --blue:#0e80be;
     --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
     --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
     --maxw:780px;
@@ -43,7 +43,7 @@
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
   nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
-  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(198,255,61,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
+  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(255,159,28,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
   .wordmark{font-size:15px;letter-spacing:-.025em;font-weight:800;}
   .wordmark .g{color:var(--green);} .wordmark .p{color:var(--pink);}
   article{padding:48px 0 64px;}
@@ -88,7 +88,7 @@
 </script>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
-<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #C6FF3D;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#C6FF3D;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#C6FF3D;">current benchmarks →</a></div>
+<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00e5ff;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00e5ff;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00e5ff;">current benchmarks →</a></div>
 
 <div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
 
