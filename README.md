@@ -4,14 +4,14 @@
 
 ## One binary to rule them all
 
-<sub>(bong-water-water-bong "Sorry but not sorry.")</sub>
+<sub>("Sorry but not sorry." — bong-water-water-bong)</sub>
 
-### 94% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
+### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
 [![Site](https://img.shields.io/badge/site-1bit.monster-C6FF3D.svg)](https://1bit.monster)
-[![Models](https://img.shields.io/badge/HF%20coverage-94%25-C6FF3D.svg)](docs/model-families/README.md)
+[![Models](https://img.shields.io/badge/HF%20coverage-100%25-C6FF3D.svg)](docs/model-families/README.md)
 [![Backends](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-C6FF3D.svg)](docs/guides/architecture.md)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
@@ -33,7 +33,7 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 
 That is the whole install. One binary, no runtime, no virtualenv, no Python.
 
-| 94% | 32 | 25 | 6 | 0 |
+| 100% | 32 | 25 | 6 | 0 |
 |:---:|:--:|:--:|:-:|:-:|
 | HF checkpoints covered | arch tokens | families in manifest | hardware targets | Python in the runtime |
 
@@ -41,7 +41,7 @@ That is the whole install. One binary, no runtime, no virtualenv, no Python.
 
 Point it at a model and run. The engine reads **GGUF**, **ONNX**, and the native **1BP** format, detects the architecture, and picks a kernel path — no config files, no per-model glue, no conversion step you have to babysit.
 
-Coverage does not come from porting models one at a time. It comes from the architecture class: 32 arch tokens map 120+ HF architecture strings — roughly 50 classes cover the long tail of what HuggingFace hosts, and a class that works brings its whole family with it. The registry is measured against a full HF census: **302,330 / 322,029 arch-bearing text-gen checkpoints (93.88%) map to an engine token** (`Testing/census_coverage.py` regenerates the count from the actual committed mapping).
+Coverage does not come from porting models one at a time. It comes from the architecture class: 32 arch tokens map 120+ HF architecture strings — roughly 50 classes cover the long tail of what HuggingFace hosts, and a class that works brings its whole family with it. The registry is measured against a full HF census: **317,310 / 317,310 arch-bearing text-gen checkpoints (100.00%) map to an engine token** (`Testing/census_coverage.py` regenerates the count from the actual committed mapping).
 
 The full-catalog end state — 500+ models, HuggingFace-native bring-up — is planned in **[docs/plans/monster-500-models.md](docs/plans/monster-500-models.md)**. The [models SSOT](docs/wiki/models.md) is the single source of truth for coverage; the [roadmap](docs/guides/roadmap.md) tracks the remaining gap (glm4/cohere2/lfm2 hybrid families, encoder-decoder T5/BART out of scope, ~2,000 one-off custom classes).
 

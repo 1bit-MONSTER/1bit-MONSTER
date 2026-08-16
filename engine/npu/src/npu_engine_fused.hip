@@ -177,100 +177,108 @@ static void dequant_avx(const int16_t* Cm, float* C, int n, float scale) {
 }
 
 // ── NPU GEMM context (reused from v12 for GU + D) ────────────────
-// Manages one I8 GEMM kernel on the NPU. Used for GU and D projections
-// (the FFN path). QKV and O are done on GPU.
+// Manages one I8 GEMM kernel on the NPU (GU / D projections).
+//
+// 2026-08-15: PORTED to the universal-engine execution model (I8Ctx in
+// npu_engine_i8ctx_inc.h). The previous ext::kernel + aiebu-ELF path only
+// worked with FLM-dumped instruction streams; the open-source generator
+// (gemm_generate_sequence_i8) is validated against THIS model — xrt::kernel,
+// an explicit instruction BO, int32 output, kernel signature
+// k(3, instr_bo, ninstr, bA, bB, bC). This also fixes a latent bug: the old
+// ctx shared ONE weight BO across all layers, so the pack loop left the LAST
+// layer's weights in place for every layer. Now weights are per-layer BOs.
 struct NpuGemmCtx {
-    int MD, KD, ND;
-    std::vector<uint32_t> ins;
+    int MD = 0, KD = 0, ND = 0;
+    int NL = 1;
+    std::vector<uint32_t> instrData;
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
-    std::unique_ptr<xrt::module> mdl;
-    std::unique_ptr<xrt::elf> elf;
-    std::unique_ptr<xrt::ext::kernel> k;
-    std::unique_ptr<xrt::bo> bA, bB, bC;
+    std::unique_ptr<xrt::kernel> k;
+    std::vector<std::unique_ptr<xrt::bo>> layerB;      // [NL] weights [KD*ND] i8
+    std::vector<std::unique_ptr<xrt::bo>> layerInstr;  // [NL] instruction BOs
+    std::unique_ptr<xrt::bo> bA, bC;
     int8_t* Am = nullptr;
-    int16_t* Cm = nullptr;
+    int32_t* Cm = nullptr;
     xrt::run run_;
     bool busy_ = false;
-    bool ok_ = false;
 
     bool init(xrt::device& d, const char* xp, const char* ip,
-              int md, int kd, int nd) {
-        MD = md; KD = kd; ND = nd;
+              int md, int kd, int nd, int nlayers) {
+        MD = md; KD = kd; ND = nd; NL = nlayers;
         FILE* f = fopen(ip, "rb");
-        if (!f) return false;
+        if (!f) { fprintf(stderr, "  [init %s] fopen failed\n", ip); return false; }
         fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-        ins.resize(sz / 4);
-        if (fread(ins.data(), 4, ins.size(), f) != ins.size()) {
-            fclose(f); return false;
+        instrData.resize(sz / 4);
+        if (fread(instrData.data(), 4, instrData.size(), f) != instrData.size()) {
+            fclose(f); fprintf(stderr, "  [init %s] fread failed\n", ip); return false;
         }
         fclose(f);
         try {
-            std::vector<char> iraw((char*)ins.data(),
-                                   (char*)ins.data() + ins.size() * 4);
-            aiebu::aiebu_assembler asmblr(
-                aiebu::aiebu_assembler::buffer_type::blob_instr_transaction, iraw);
-            auto e = asmblr.get_elf();
             xc = std::make_unique<xrt::xclbin>(std::string(xp));
             d.register_xclbin(*xc);
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            elf = std::make_unique<xrt::elf>(e.data(), e.size());
-        } catch (...) { return false; }
-        mdl = std::make_unique<xrt::module>(*elf);
-        k = std::make_unique<xrt::ext::kernel>(*hc, *mdl, "MLIR_AIE");
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD,
-                                       XRT_BO_FLAGS_HOST_ONLY, 0);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2,
-                                       XRT_BO_FLAGS_HOST_ONLY, 0);
-        bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND,
-                                       XRT_BO_FLAGS_HOST_ONLY, 0);
+            k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
+        } catch (const std::exception& e) { fprintf(stderr, "  [init %s] xrt exception: %s\n", xp, e.what()); return false; }
+        catch (...) { fprintf(stderr, "  [init %s] unknown xrt exception\n", xp); return false; }
+        int grp_a = k->group_id(3), grp_w = k->group_id(4), grp_c = k->group_id(5), grp_ins = k->group_id(1);
+        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
-        Cm = (int16_t*)bC->map();
-        ok_ = true;
+        Cm = (int32_t*)bC->map();
+        layerB.resize(NL);
+        layerInstr.resize(NL);
+        for (int l = 0; l < NL; l++) {
+            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, grp_w);
+            layerInstr[l] = std::make_unique<xrt::bo>(d, instrData.size() * sizeof(uint32_t),
+                                                      XCL_BO_FLAGS_CACHEABLE, grp_ins);
+            memcpy(layerInstr[l]->map(), instrData.data(), instrData.size() * sizeof(uint32_t));
+            layerInstr[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        }
         return true;
     }
 
-    void packB(const float* w, int K, int N, float& sout) {
+    // Pack layer-l weights [K][N] i8 into a zero-padded [KD][ND] BO.
+    void packB(int l, const float* w, int K, int N, float& sout) {
+        auto* Bm = (int8_t*)layerB[l]->map();
+        memset(Bm, 0, (size_t)KD * ND);
         float amax = 0;
-        for (int i = 0; i < K * N; i++) {
-            float a = fabsf(w[i]);
-            if (std::isfinite(a) && a > amax) amax = a;
-        }
-        sout = (amax < 1e-12f) ? 1.0f : amax / 127.0f;
-        float is = 127.0f / (amax < 1e-12f ? 1.0f : amax);
-        auto* Bm = (int8_t*)bB->map();
-        for (int i = 0; i < K * N; i++) {
-            float v = w[i]; if (!std::isfinite(v)) v = 0;
-            int q = (int)roundf(v * is);
-            if (q > 127) q = 127; else if (q < -127) q = -127;
-            Bm[i] = (int8_t)q;
-        }
-        bB->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        for (int i = 0; i < K * N; i++) { float a = fabsf(w[i]); if (std::isfinite(a) && a > amax) amax = a; }
+        if (amax < 1e-12f) amax = 1.0f;
+        float ts = amax / 127.0f, tis = 127.0f / amax;
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < K; i++) {
+                float v = w[i * N + j]; if (!std::isfinite(v)) v = 0;
+                int x = (int)roundf(v * tis); if (x > 127) x = 127; else if (x < -127) x = -127;
+                Bm[(size_t)i * ND + j] = (int8_t)x;
+            }
+        layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        sout = ts;
     }
 
-    // Async launch: quantize → sync → submit NPU kernel
-    void launch(const float* A, int am, int ak, float as_) {
+    void launch(int l, const float* A, int am, int ak, float as_) {
         memset(Am, 0, (size_t)am * KD);
         quantize_avx(A, Am, am * ak, as_);
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        run_ = k->operator()(3, 0, 0, *bA, *bB, *bC);
+        run_ = (*k)((unsigned)3, *layerInstr[l], (unsigned)instrData.size(), *bA, *layerB[l], *bC);
         busy_ = true;
     }
 
-    // Async wait: wait NPU → sync back → dequantize to C
     void wait(float* C, int am, int an, float as_, float Bs) {
         if (!busy_) return;
         run_.wait();
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         float cs = as_ * Bs;
-        dequant_avx(Cm, C, am * an, cs);
+        for (int m = 0; m < am; m++)
+            for (int n = 0; n < an; n++) {
+                float val = (float)((int32_t)Cm[m * ND + n]) * cs;
+                C[m * an + n] = std::isfinite(val) ? val : 0.0f;
+            }
         busy_ = false;
     }
 
-    // Blocking go: launch + wait
-    void go(const float* A, int am, int ak, float as_, float Bs,
+    void go(int l, const float* A, int am, int ak, float as_, float Bs,
             float* C, int an) {
-        launch(A, am, ak, as_);
+        launch(l, A, am, ak, as_);
         wait(C, am, an, as_, Bs);
     }
 };
@@ -296,6 +304,9 @@ struct GpuProjCtx {
     __half* d_A = nullptr;     // f16 activation [K]
     __half* d_C = nullptr;     // f16 output [N]
     __half* h_C = nullptr;     // host readback buffer [N] (persistent, avoids per-call alloc)
+    __half* h_stage = nullptr; // pinned H2D staging [K] — 2026-08-15 restructure:
+                               // kills the per-call std::vector + pageable
+                               // (silently synchronous) hipMemcpyAsync in launch_gemv
 
     bool init(int k, int n, const float* W_f32) {
         K = k; N = n;
@@ -305,6 +316,7 @@ struct GpuProjCtx {
         if (hipSuccess != hipMalloc(&d_A, (size_t)K * sizeof(__half))) return false;
         if (hipSuccess != hipMalloc(&d_C, (size_t)N * sizeof(__half))) return false;
         hipHostMalloc(&h_C, (size_t)N * sizeof(__half)); // pinned memory for fast readback
+        hipHostMalloc(&h_stage, (size_t)K * sizeof(__half)); // pinned H2D staging
 
         // Convert FP32 → FP16 AND transpose to column-major: W_col[n][k] = W_row[k][n]
         // Column-major means output column n reads contiguous f16 values [n][0..K-1]
@@ -354,10 +366,9 @@ struct GpuProjCtx {
         int grid = (N + BN - 1) / BN;
         size_t shmem = BK * sizeof(__half);
 
-        std::vector<__half> A_f16(K);
-        for (int i = 0; i < K; i++) A_f16[i] = __float2half(A_f32[i]);
-        hipMemcpyAsync(d_A, A_f16.data(), K * sizeof(__half),
-                       hipMemcpyHostToDevice, stream);
+        for (int i = 0; i < K; i++) h_stage[i] = __float2half(A_f32[i]);
+        hipMemcpyAsync(d_A, h_stage, K * sizeof(__half),
+                       hipMemcpyHostToDevice, stream);  // pinned: true async
         gemv_kernel_tiled<<<grid, 128, shmem, stream>>>(
             d_A, d_W, d_C, K, N, BK, BN);
     }
@@ -371,6 +382,7 @@ struct GpuProjCtx {
     }
 
     void destroy() {
+        if (h_stage) hipHostFree(h_stage);
         if (d_W) hipFree(d_W);
         if (d_A) hipFree(d_A);
         if (d_C) hipFree(d_C);
@@ -560,22 +572,31 @@ int main(int argc, char** argv) {
     // GPU gets QKV + O projections (dequantized I4 → f16 on device)
     // NPU gets GU + D projections (repacked as I8)
     const char* xd = getenv("NPU_XCLBIN_DIR") ?: "engine/npu/xclbins";
-    auto xp = [&](const char* t) {
-        static char b[256]; snprintf(b, 256, "%s/final_i8_%s_v.xclbin", xd, t); return b;
-    };
-    auto ip = [&](const char* t) {
-        static char b[256]; snprintf(b, 256, "%s/insts_i8_%s_v.txt", xd, t); return b;
-    };
+    // NOTE: these MUST return std::string — the old shared `static char b[256]`
+    // made every xp()/ip() pair alias the same buffer, so the second call
+    // clobbered the first's path (GU read the insts file as its xclbin, D's
+    // path was garbage). First fixed 2026-08-15 during GPU+NPU engine bring-up.
+    // Per-model kernels: the un-suffixed "*_v" set is a different (3x larger)
+    // instruction stream — GU/D ran 232/116 ms per layer with it. Use the
+    // model-tagged files (final_i8_<op>_qwen3_0_6b.*) that match these dims.
+    // Per-model kernels: the un-suffixed "*_v" set is a different (3x larger)
+    // instruction stream — GU/D ran 232/116 ms per layer with it. Use the
+    // model-tagged files. This engine is Qwen3-0.6B-specific (GPU attn kernel
+    // is 0.6B-shaped), so the suffix is fixed; a multi-model engine needs a
+    // cfg-derived suffix. First fixed 2026-08-15 during bring-up.
+    const char* xsfx = "qwen3_0_6b";
+    auto xp = [&](const char* t) { return std::string(xd) + "/final_i8_" + std::string(t) + "_" + xsfx + ".xclbin"; };
+    auto ip = [&](const char* t) { return std::string(xd) + "/insts_i8_" + std::string(t) + "_" + xsfx + ".txt"; };
 
     int XM = 128;
     NpuGemmCtx ctx_gu, ctx_d;
 
     printf("Init NPU GEMM: GU(%dx%d) D(%dx%d)...\n", cfg.H, 2*cfg.IM, cfg.IM, cfg.H);
     bool npu_ok = true;
-    if (!ctx_gu.init(npu_dev, xp("GU"), ip("GU"), XM, cfg.H, 2*cfg.IM)) {
+    if (!ctx_gu.init(npu_dev, xp("GU").c_str(), ip("GU").c_str(), XM, cfg.H, 2*cfg.IM, cfg.NC)) {
         fprintf(stderr, "FAIL: NPU GU init\n"); npu_ok = false;
     }
-    if (!ctx_d.init(npu_dev, xp("D"), ip("D"), XM, cfg.IM, cfg.H)) {
+    if (!ctx_d.init(npu_dev, xp("D").c_str(), ip("D").c_str(), XM, cfg.IM, cfg.H, cfg.NC)) {
         fprintf(stderr, "FAIL: NPU D init\n"); npu_ok = false;
     }
     if (!npu_ok) return 1;
@@ -595,11 +616,11 @@ int main(int argc, char** argv) {
             memcpy(&w2[(size_t)k * t2], &gw[(size_t)k * gr], (size_t)gr * 4);
             memcpy(&w2[(size_t)k * t2 + gr], &uw[(size_t)k * ur], (size_t)ur * 4);
         }
-        ctx_gu.packB(w2.data(), cfg.H, t2, wsc[l].gu);
+        ctx_gu.packB(l, w2.data(), cfg.H, t2, wsc[l].gu);
         free(gw); free(uw);
 
         float* dw = dequant_i8_to_float(i8p(lo[l].d), 384, &dr, &unused);
-        ctx_d.packB(dw, dr, cfg.H, wsc[l].d);
+        ctx_d.packB(l, dw, dr, cfg.H, wsc[l].d);
         free(dw);
     }
     printf("  NPU weights packed: %.0fms\n",
@@ -731,11 +752,12 @@ int main(int argc, char** argv) {
 
         // Async: upload hidden to GPU, launch LM head GEMV, read back logits.
         // Returns sampled token. Stream-syncs internally for now.
+        __half* h_stage = nullptr;  // pinned H2D staging [H] (2026-08-15)
         int sample(const float* hidden_f32, float* logits_out, hipStream_t stream) {
-            std::vector<__half> h_f16(H);
-            for (int i = 0; i < H; i++) h_f16[i] = __float2half(hidden_f32[i]);
-            hipMemcpyAsync(d_hidden, h_f16.data(), H * sizeof(__half),
-                           hipMemcpyHostToDevice, stream);
+            if (!h_stage) hipHostMalloc(&h_stage, (size_t)H * sizeof(__half));
+            for (int i = 0; i < H; i++) h_stage[i] = __float2half(hidden_f32[i]);
+            hipMemcpyAsync(d_hidden, h_stage, H * sizeof(__half),
+                           hipMemcpyHostToDevice, stream);  // pinned: true async
 
             constexpr int BK = 1024, BN = 256;
             int grid = (NV + BN - 1) / BN;
@@ -844,6 +866,17 @@ int main(int argc, char** argv) {
     int npt = 9;
     int sp = 0;
 
+    // phase timing helper: enable with NPU_PHASES=1 (per-layer decode breakdown)
+    static auto tphase_t0 = std::chrono::steady_clock::now();
+    static const bool tph_on = getenv("NPU_PHASES") != nullptr;
+    auto tphase = [](const char* tag) {
+        if (!tph_on) return;
+        double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - tphase_t0).count();
+        printf("  [phase] %-16s %.1f ms\n", tag, ms);
+        tphase_t0 = std::chrono::steady_clock::now();
+    };
+
     printf("\n=== Prefill (%d tokens) ===\n", npt);
     auto t0 = std::chrono::steady_clock::now();
 
@@ -895,6 +928,7 @@ int main(int argc, char** argv) {
                 }
             }
             hipStreamSynchronize(gpu_stream);
+            tphase("attn");
 
             // CPU attention (prefill: multi-token, simpler on CPU)
             int cl = sp + pi + 1;
@@ -956,7 +990,7 @@ int main(int argc, char** argv) {
 
             // 6. GU projection (NPU)
             float as_g = dyn_scale(hidden.data(), cfg.H);
-            ctx_gu.go(hidden.data(), 1, cfg.H, as_g, wsc[l].gu, gt.data(), 2 * cfg.IM);
+            ctx_gu.go(l, hidden.data(), 1, cfg.H, as_g, wsc[l].gu, gt.data(), 2 * cfg.IM);
             clean_nans(gt.data(), 2 * cfg.IM);
 
             // 7. SiLU gate
@@ -968,7 +1002,7 @@ int main(int argc, char** argv) {
 
             // 8. D projection (NPU)
             float as_d = dyn_scale(su.data(), cfg.IM);
-            ctx_d.go(su.data(), 1, cfg.IM, as_d, wsc[l].d, d_out.data(), cfg.H);
+            ctx_d.go(l, su.data(), 1, cfg.IM, as_d, wsc[l].d, d_out.data(), cfg.H);
             clean_nans(d_out.data(), cfg.H);
 
             // 9. Residual add
@@ -992,6 +1026,15 @@ int main(int argc, char** argv) {
     GpuLMHead lm_head;
     lm_head.init(cfg.H, cfg.NV, emb_f32.data());
 
+    // ── Persistent pinned staging (2026-08-15 restructure): replaces the
+    // per-token std::vector allocs + pageable (synchronous) hipMemcpyAsync
+    // copies with pinned buffers → true async H2D/D2H. ──
+    __half *q_f16 = nullptr, *kv_staging = nullptr, *attn_f16 = nullptr;
+    hipHostMalloc(&q_f16, (size_t)cfg.NH * cfg.HD * sizeof(__half));
+    hipHostMalloc(&kv_staging, (size_t)cfg.NKV * cfg.HD * sizeof(__half));
+    hipHostMalloc(&attn_f16, (size_t)cfg.NH * cfg.HD * sizeof(__half));
+    std::vector<float> residual(cfg.H);  // persistent per-layer residual copy
+
     auto t_gen = std::chrono::steady_clock::now();
     int cur_token = pt[npt - 1];
 
@@ -1001,14 +1044,9 @@ int main(int argc, char** argv) {
         // Embed current token
         embed(cur_token, hidden.data());
 
-        // ── Pre-allocated staging buffers (avoid vector alloc per layer) ──
-        std::vector<__half> q_f16(cfg.NH * cfg.HD);
-        std::vector<__half> kv_staging(cfg.NKV * cfg.HD);
-        std::vector<__half> attn_f16(cfg.NH * cfg.HD);
-
         for (int l = 0; l < cfg.NC; l++) {
             // ── Phase 1: Attention path (GPU: QKV + attn + O) ──
-            std::vector<float> residual = hidden;
+            std::copy(hidden.begin(), hidden.end(), residual.begin());
 
             // RMS Norm (CPU)
             rms_norm(hidden.data(), in_norm[l].data(), cfg.H);
@@ -1020,6 +1058,7 @@ int main(int argc, char** argv) {
             // Q norms + RoPE will use the QKV output... but we don't have it yet.
             // We need to read QKV back first.
             ctx_qkv[l].readback(qkv_out.data(), gpu_stream);
+            tphase("qkv");
 
             // Q norms + RoPE (CPU)
             for (int hh = 0; hh < cfg.NH; hh++) {
@@ -1044,7 +1083,7 @@ int main(int argc, char** argv) {
             // Upload Q
             for (int i = 0; i < cfg.NH * cfg.HD; i++)
                 q_f16[i] = __float2half(qkv_out[i]);
-            hipMemcpyAsync(d_Q, q_f16.data(),
+            hipMemcpyAsync(d_Q, q_f16,
                           (size_t)cfg.NH * cfg.HD * sizeof(__half),
                           hipMemcpyHostToDevice, gpu_stream);
 
@@ -1053,7 +1092,7 @@ int main(int argc, char** argv) {
             for (int kvh = 0; kvh < cfg.NKV; kvh++)
                 for (int d = 0; d < cfg.HD; d++)
                     kv_staging[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + kvh * cfg.HD + d]);
-            hipMemcpyAsync(&d_K_cache[kv_off], kv_staging.data(),
+            hipMemcpyAsync(&d_K_cache[kv_off], kv_staging,
                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
                           hipMemcpyHostToDevice, gpu_stream);
 
@@ -1061,7 +1100,7 @@ int main(int argc, char** argv) {
             for (int kvh = 0; kvh < cfg.NKV; kvh++)
                 for (int d = 0; d < cfg.HD; d++)
                     kv_staging[kvh * cfg.HD + d] = __float2half(qkv_out[cfg.NH * cfg.HD + cfg.NKV * cfg.HD + kvh * cfg.HD + d]);
-            hipMemcpyAsync(&d_V_cache[kv_off], kv_staging.data(),
+            hipMemcpyAsync(&d_V_cache[kv_off], kv_staging,
                           (size_t)cfg.NKV * cfg.HD * sizeof(__half),
                           hipMemcpyHostToDevice, gpu_stream);
 
@@ -1070,7 +1109,7 @@ int main(int argc, char** argv) {
                 cfg.NH, cfg.NKV, cfg.HD, context_len + 1, attn_scale, gpu_stream);
 
             // Readback attention (async then sync ONCE for the whole batch)
-            hipMemcpyAsync(attn_f16.data(), d_AttnOut,
+            hipMemcpyAsync(attn_f16, d_AttnOut,
                           (size_t)cfg.NH * cfg.HD * sizeof(__half),
                           hipMemcpyDeviceToHost, gpu_stream);
             hipStreamSynchronize(gpu_stream);
@@ -1081,6 +1120,7 @@ int main(int argc, char** argv) {
             // O projection: launch + readback (one more sync)
             ctx_o[l].launch_gemv(attn_out.data(), gpu_stream);
             ctx_o[l].readback(o_out.data(), gpu_stream);
+            tphase("o");
 
             // ── Phase 2: FFN path (NPU) ──
             // Residual + RMS Norm
@@ -1089,8 +1129,9 @@ int main(int argc, char** argv) {
 
             // NPU GU (async launch → wait)
             float as_g = dyn_scale(hidden.data(), cfg.H);
-            ctx_gu.launch(hidden.data(), 1, cfg.H, as_g);
+            ctx_gu.launch(l, hidden.data(), 1, cfg.H, as_g);
             ctx_gu.wait(gt.data(), 1, 2 * cfg.IM, as_g, wsc[l].gu);
+            tphase("gu");
             clean_nans(gt.data(), 2 * cfg.IM);
 
             // SiLU gate (CPU)
@@ -1102,8 +1143,9 @@ int main(int argc, char** argv) {
 
             // NPU D (async launch → wait)
             float as_d = dyn_scale(su.data(), cfg.IM);
-            ctx_d.launch(su.data(), 1, cfg.IM, as_d);
+            ctx_d.launch(l, su.data(), 1, cfg.IM, as_d);
             ctx_d.wait(d_out.data(), 1, cfg.H, as_d, wsc[l].d);
+            tphase("d");
             clean_nans(d_out.data(), cfg.H);
 
             // Final residual
@@ -1121,6 +1163,9 @@ int main(int argc, char** argv) {
     }
 
     lm_head.destroy();
+    if (q_f16) hipHostFree(q_f16);
+    if (kv_staging) hipHostFree(kv_staging);
+    if (attn_f16) hipHostFree(attn_f16);
 
     double gen_s = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t_gen).count();

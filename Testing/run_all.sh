@@ -29,6 +29,25 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
+run iq1       Testing/iq1_selfcheck.cpp --
+run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
+
+# v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
+DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
+total=$((total+1))
+if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
+   "$CXX" $FLAGS tools/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
+       -o "$BIN/g2o" 2>/dev/null; then
+    conv_out=$("$BIN/g2o" "$DEDUP_DIR/mini.gguf" "$DEDUP_DIR/mini.1bp" 2>&1)
+    if [ $? -eq 0 ] && printf '%s' "$conv_out" | grep -q 'dedup: blk.1.attn_q.weight'; then
+        echo "✓ dedup converter (alias emitted)"
+        run dedup_e2e Testing/dedup_loader_check.cpp src/onebp_model.cpp -- "$DEDUP_DIR/mini.1bp"
+    else
+        echo "✗ dedup converter: no alias emitted"; fail=$((fail+1))
+    fi
+else
+    echo "✗ dedup converter: build/generate failed"; fail=$((fail+1))
+fi
 
 echo "== backend compile =="
 total=$((total+1))
@@ -50,6 +69,22 @@ e2e llama  /tmp/onebit-e2e/smollm  /tmp/onebit-e2e/smollm/oracle-q8.gguf
 e2e qwen2  /tmp/onebit-e2e/qwen2    /tmp/onebit-e2e/qwen2/oracle-q8.gguf
 e2e gemma  /tmp/onebit-e2e/gemma    /tmp/onebit-e2e/gemma/oracle-q8.gguf
 e2e qwen3  /tmp/onebit-e2e/qwen3    /tmp/onebit-e2e/qwen3/oracle-q8.gguf
+
+# Instella-MoE (DeepSeek-V3 clone): gated MLA + FarSkip dual-residual + sigmoid
+# router engine gate — mini fixture (real tokenizer, mini dims) vs HF logits.
+# Fixtures live in 1bit-systems/models/kl-test/ (mini-full-f16.gguf + mini-full-hf.pt).
+instella_mini=/tmp/onebit-instella/mini-full-f16.gguf
+instella_ref=/tmp/onebit-instella/hf.npy
+if [ -f "$instella_mini" ] && [ -f "$instella_ref" ]; then
+    total=$((total+1))
+    if ! "$CXX" $FLAGS Testing/cmp_instella.cpp src/deepseek.cpp src/gguf_reader.cpp \
+        -o "$BIN/cmp_instella" 2>/dev/null; then echo "✗ instella: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_instella" "$instella_mini" /tmp/onebit-instella/ids.txt "$instella_ref" 20 18 >/dev/null 2>&1; then
+        echo "✓ instella engine (gated MLA + FarSkip)";
+    else echo "✗ instella engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - instella: fixtures absent, skipped (cp -r 1bit-systems/models/kl-test/mini-full* /tmp/onebit-instella/)"
+fi
 
 echo "======================================"
 echo "$((total-fail))/$total passed"
