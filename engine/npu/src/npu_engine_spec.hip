@@ -79,8 +79,8 @@ struct RopeTables{std::vector<float>cos,sin;int mp=0,hd=0;float th=1000000.0f;
 static void quantize_avx(const float*A,int8_t*D,int n,float s){float is=1.0f/s;__m512 v_is=_mm512_set1_ps(is),v_max=_mm512_set1_ps(127.0f),v_min=_mm512_set1_ps(-127.0f);int i=0;for(;i+16<=n;i+=16){__m512 v=_mm512_loadu_ps(&A[i]);v=_mm512_mul_ps(v,v_is);v=_mm512_max_ps(v_min,_mm512_min_ps(v_max,v));__m512i vi=_mm512_cvtps_epi32(v);__m256i lo=_mm512_cvtepi32_epi16(vi);__m128i i8=_mm256_cvtepi16_epi8(lo);_mm_storeu_si128((__m128i*)&D[i],i8);}for(;i<n;i++){int q=(int)roundf(A[i]*is);if(q>127)q=127;else if(q<-127)q=-127;D[i]=(int8_t)q;}}
 static void dequant_avx(const int32_t*Cm,float*C,int n,float s){for(int i=0;i<n;i++)C[i]=(float)Cm[i]*s;}
 
-struct NpuGemmCtx{int MD,KD,ND;std::vector<uint32_t>ins;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;std::unique_ptr<xrt::kernel>k;std::unique_ptr<xrt::bo>bI,bA,bC,layerB[NC];int8_t*Am=nullptr;int32_t*Cm=nullptr;xrt::run run_;bool busy_=false;
-    bool init(xrt::device&d,const char*xp,const char*ip,int md,int kd,int nd){
+struct NpuGemmCtx{int MD,KD,ND;std::vector<uint32_t>ins;std::unique_ptr<xrt::xclbin>xc;std::unique_ptr<xrt::hw_context>hc;std::unique_ptr<xrt::kernel>k;std::unique_ptr<xrt::bo>bI,bA,bC;std::vector<std::unique_ptr<xrt::bo>>layerB;int8_t*Am=nullptr;int32_t*Cm=nullptr;xrt::run run_;bool busy_=false;
+    bool init(xrt::device&d,const char*xp,const char*ip,int md,int kd,int nd,int nlayers){
         MD=md;KD=kd;ND=nd;FILE*f=fopen(ip,"rb");if(!f)return false;fseek(f,0,SEEK_END);long sz=ftell(f);fseek(f,0,SEEK_SET);ins.resize(sz/4);if(fread(ins.data(),4,ins.size(),f)!=ins.size()){fclose(f);return false;}fclose(f);
         // #1601: bind BOs to the kernel argument groups (proven pattern from
         // npu_engine_cb.cpp). The previous group_id-0 xrt::ext::kernel + aiebu
@@ -89,11 +89,16 @@ struct NpuGemmCtx{int MD,KD,ND;std::vector<uint32_t>ins;std::unique_ptr<xrt::xcl
         try{xc=std::make_unique<xrt::xclbin>(std::string(xp));d.register_xclbin(*xc);hc=std::make_unique<xrt::hw_context>(d,xc->get_uuid());k=std::make_unique<xrt::kernel>(*hc,"MLIR_AIE");}catch(...){return false;}
         bI=std::make_unique<xrt::bo>(d,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(1));
         memcpy(bI->map(),ins.data(),ins.size()*4);bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XCL_BO_FLAGS_CACHEABLE,k->group_id(3));
-        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XCL_BO_FLAGS_CACHEABLE,k->group_id(5));
+        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD,XRT_BO_FLAGS_HOST_ONLY,k->group_id(3));
+        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*4,XRT_BO_FLAGS_HOST_ONLY,k->group_id(5));
         Am=(int8_t*)bA->map();Cm=(int32_t*)bC->map();
-        for(int l=0;l<NC;l++)layerB[l]=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XCL_BO_FLAGS_CACHEABLE,k->group_id(4));
-        printf("  [GEMM %s] bI=%p bA=%p bB=%p bC=%p ins=%zu\n", xp, (void*)bI->map(), (void*)bA->map(), (void*)bB->map(), (void*)bC->map(), ins.size());
+        layerB.resize(nlayers);
+        for(int l=0;l<nlayers;l++){
+            layerB[l]=std::make_unique<xrt::bo>(d,(size_t)KD*ND,XRT_BO_FLAGS_HOST_ONLY,k->group_id(4));
+            fprintf(stderr,"  layerB[%d] ok\n",l);
+        }
+        fprintf(stderr,"  BOs done: bI=%d bA=%d bC=%d layerB=%d\n",(int)bI->size(),(int)bA->size(),(int)bC->size(),nlayers);
+        printf("  [GEMM %s] bI=%p bA=%p bB=%p bC=%p ins=%zu\n", xp, (void*)bI->map(), (void*)bA->map(), (void*)layerB[0]->map(), (void*)bC->map(), ins.size());
         return true;}
     void packB(int l,const float*w,int K,int N,float&sout){float amax=0;for(int i=0;i<K*N;i++){float a=fabsf(w[i]);if(std::isfinite(a)&&a>amax)amax=a;}sout=(amax<1e-12f)?1.0f:amax/127.0f;float is=127.0f/(amax<1e-12f?1.0f:amax);auto*Bm=(int8_t*)layerB[l]->map();for(int i=0;i<K*N;i++){float v=w[i];if(!std::isfinite(v))v=0;int q=(int)roundf(v*is);if(q>127)q=127;else if(q<-127)q=-127;Bm[i]=(int8_t)q;}layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);}
     void launch(int l,const float*A,int am,int ak,float as_){memset(Am,0,(size_t)am*KD);quantize_avx(A,Am,am*ak,as_);bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);run_=k->operator()((unsigned)3,*bI,(unsigned)ins.size(),*bA,*layerB[l],*bC);busy_=true;}
@@ -165,10 +170,10 @@ int main(int argc,char**argv){
     auto ip_=[&](const char*t){static char b[256];snprintf(b,256,"%s/insts_i8_%s_v.txt",xd,t);return b;};
     int XM=128;
     NpuGemmCtx cq,co,cg,cd;
-    if(!cq.init(nd,xp("QKV"),ip_("QKV"),XM,cfg.H,cfg.qkv_n())){fprintf(stderr,"FAIL QKV\n");return 1;}
-    if(!co.init(nd,xp("O"),ip_("O"),XM,cfg.NH*cfg.HD,cfg.H)){fprintf(stderr,"FAIL O\n");return 1;}
-    if(!cg.init(nd,xp("GU"),ip_("GU"),XM,cfg.H,2*cfg.IM)){fprintf(stderr,"FAIL GU\n");return 1;}
-    if(!cd.init(nd,xp("D"),ip_("D"),XM,cfg.IM,cfg.H)){fprintf(stderr,"FAIL D\n");return 1;}
+    fprintf(stderr,"init QKV...\n");if(!cq.init(nd,xp("QKV"),ip_("QKV"),XM,cfg.H,cfg.qkv_n(),cfg.NC)){fprintf(stderr,"FAIL QKV\n");return 1;}fprintf(stderr,"QKV OK\n");
+    fprintf(stderr,"init O...\n");if(!co.init(nd,xp("O"),ip_("O"),XM,cfg.NH*cfg.HD,cfg.H,cfg.NC)){fprintf(stderr,"FAIL O\n");return 1;}fprintf(stderr,"O OK\n");
+    if(!cg.init(nd,xp("GU"),ip_("GU"),XM,cfg.H,2*cfg.IM,cfg.NC)){fprintf(stderr,"FAIL GU\n");return 1;}
+    if(!cd.init(nd,xp("D"),ip_("D"),XM,cfg.IM,cfg.H,cfg.NC)){fprintf(stderr,"FAIL D\n");return 1;}
     struct WS{float qk,o_,g_,d_;};std::vector<WS>ws(cfg.NC);
     for(int l=0;l<cfg.NC;l++){int qr,kr,vr,or_,gr,ur,dr,u;
         float*qw=dequant_i8_to_float(i8p(lo[l].q),256,&qr,&u),*kw=dequant_i8_to_float(i8p(lo[l].k),128,&kr,&u),*vw=dequant_i8_to_float(i8p(lo[l].v),128,&vr,&u);
