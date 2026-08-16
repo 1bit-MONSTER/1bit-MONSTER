@@ -147,14 +147,450 @@ typedef enum {
     RCPP_ARCH_TRANSNORMER = 109,     // TransNormer
     RCPP_ARCH_TWINY = 110,           // Twiny
     RCPP_ARCH_GPTPANGU = 111,        // GPT-Pangu
-    RCPP_ARCH_BVV = 112,             // BVV (model_unfrozen)
-    RCPP_ARCH_FUYU = 113,            // FuyuForCausalLM (VLM — causal decoder, image tokens inline)
-    RCPP_ARCH_MUSE = 114,            // Muse-Glimmer (VLM — causal multimodal decoder)
+    RCPP_ARCH_BVV = 112,
+    // ── 2026-08-16 census pass-4: tail families (registry tokens; bring-up deck) ──
+    RCPP_ARCH_A194LOGITENSEMBLE = 551,
+    RCPP_ARCH_ABIR = 552,
+    RCPP_ARCH_ABU2HEAD = 553,
+    RCPP_ARCH_ACERAG = 554,
+    RCPP_ARCH_ACSWIGLU = 555,
+    RCPP_ARCH_ADAPTIVERIVER = 556,
+    RCPP_ARCH_AETHERMICRO = 557,
+    RCPP_ARCH_AILO = 558,
+    RCPP_ARCH_AILOLOOP = 559,
+    RCPP_ARCH_ALINLIGHT = 560,
+    RCPP_ARCH_AMADABLAM = 561,
+    RCPP_ARCH_ANCIENTAIV = 562,
+    RCPP_ARCH_ANUBISMOE = 563,
+    RCPP_ARCH_APRIEL2 = 564,
+    RCPP_ARCH_ARAR381M = 565,
+    RCPP_ARCH_ASCLE = 566,
+    RCPP_ARCH_ASGTRANSFORMER = 567,
+    RCPP_ARCH_ATTNONLY = 568,
+    RCPP_ARCH_AUTOENCODER = 569,
+    RCPP_ARCH_AUTOGUI = 570,
+    RCPP_ARCH_AVEYDECODERMOE = 571,
+    RCPP_ARCH_AXON = 572,
+    RCPP_ARCH_AYAVISION = 573,
+    RCPP_ARCH_BACFORMERGM = 574,
+    RCPP_ARCH_BACKBONECONCEPT = 575,
+    RCPP_ARCH_BAC = 576,
+    RCPP_ARCH_BAILINGMOELINEAR = 577,
+    RCPP_ARCH_BANANAMIND2MEDIUM = 578,
+    RCPP_ARCH_BANANAMIND2MICRO = 579,
+    RCPP_ARCH_BANANAMIND2MINI = 580,
+    RCPP_ARCH_BANANAMIND2MOE = 581,
+    RCPP_ARCH_BANANAMIND2NANO = 582,
+    RCPP_ARCH_BANANAMIND2PRO = 583,
+    RCPP_ARCH_BANGLAGAMBA = 584,
+    RCPP_ARCH_BANGLAGSG = 585,
+    RCPP_ARCH_BARBET = 586,
+    RCPP_ARCH_BEETLEMOEHF = 587,
+    RCPP_ARCH_BHARATAI = 588,
+    RCPP_ARCH_BIATRON = 589,
+    RCPP_ARCH_BIGBRAINLANGUAGE = 590,
+    RCPP_ARCH_BINARYL = 591,
+    RCPP_ARCH_BITSKIPV1WITHEARLYEXIT = 592,
+    RCPP_ARCH_BITSKIPV2WITHEARLYEXIT = 593,
+    RCPP_ARCH_BITSKIPV3 = 594,
+    RCPP_ARCH_BORAMOE = 595,
+    RCPP_ARCH_BRAILLE256 = 596,
+    RCPP_ARCH_BRANCHYCAUSAL = 597,
+    RCPP_ARCH_BRIDGEVQA = 598,
+    RCPP_ARCH_BUCKETMEMORY = 599,
+    RCPP_ARCH_BUNGEO = 600,
+    RCPP_ARCH_CABLE = 601,
+    RCPP_ARCH_CAUSALLMOE = 602,
+    RCPP_ARCH_CELERITY = 603,
+    RCPP_ARCH_CFRD = 604,
+    RCPP_ARCH_CHAMELEONXLLMX = 605,
+    RCPP_ARCH_CI = 606,
+    RCPP_ARCH_CINNABAR = 607,
+    RCPP_ARCH_CLARITYMR1 = 608,
+    RCPP_ARCH_CLINAMEN = 609,
+    RCPP_ARCH_CLOVER = 610,
+    RCPP_ARCH_CMA = 611,
+    RCPP_ARCH_CODIFY = 612,
+    RCPP_ARCH_CODVA1 = 613,
+    RCPP_ARCH_COFFEECHATAI = 614,
+    RCPP_ARCH_COHERENCEMOMENTUM = 615,
+    RCPP_ARCH_COMPLIANTL = 616,
+    RCPP_ARCH_CONVAICAUSAL = 617,
+    RCPP_ARCH_COSMICFISH = 618,
+    RCPP_ARCH_CPMANT = 619,
+    RCPP_ARCH_CPMBEE = 620,
+    RCPP_ARCH_CUBICPIPELINEOPTIMIZER = 621,
+    RCPP_ARCH_CUBICV11LONGCONTEXT = 622,
+    RCPP_ARCH_CUBICZANMOE = 623,
+    RCPP_ARCH_CUSTOMDECODERONLYT5 = 624,
+    RCPP_ARCH_CUSTOM5 = 625,
+    RCPP_ARCH_CUSTOMTAGALOGL = 626,
+    RCPP_ARCH_CUSTOMTRANSFORMER = 627,
+    RCPP_ARCH_CYCLICFORMER = 628,
+    RCPP_ARCH_D3PMSANSKRIT = 629,
+    RCPP_ARCH_DARKITV15 = 630,
+    RCPP_ARCH_DARKITV25 = 631,
+    RCPP_ARCH_DARWINDUOORCHESTRATOR = 632,
+    RCPP_ARCH_DATA2VECTEXT = 633,
+    RCPP_ARCH_DCFORMER = 634,
+    RCPP_ARCH_DECODERONLYTRANSFORMER = 635,
+    RCPP_ARCH_DECODON = 636,
+    RCPP_ARCH_DENSEL = 637,
+    RCPP_ARCH_DFM = 638,
+    RCPP_ARCH_DISTILLIX = 639,
+    RCPP_ARCH_DOMAINTRANSFORMER = 640,
+    RCPP_ARCH_DOT = 641,
+    RCPP_ARCH_DOTSOCR = 642,
+    RCPP_ARCH_DSHYBRID = 643,
+    RCPP_ARCH_DWARF = 644,
+    RCPP_ARCH_DYNAMICMINDMOE = 645,
+    RCPP_ARCH_DYNAMICNEURALNETWORK = 646,
+    RCPP_ARCH_ECHO = 647,
+    RCPP_ARCH_ECHOES = 648,
+    RCPP_ARCH_ECOACO = 649,
+    RCPP_ARCH_ELASTICGPT = 650,
+    RCPP_ARCH_ENSEMBLE = 651,
+    RCPP_ARCH_ERKLINEAR = 652,
+    RCPP_ARCH_EVAFRILLMO = 653,
+    RCPP_ARCH_EVEMOE = 654,
+    RCPP_ARCH_EVO1 = 655,
+    RCPP_ARCH_FASTPLUS = 656,
+    RCPP_ARCH_FASTPLUS125M = 657,
+    RCPP_ARCH_FASTPLUS40M = 658,
+    RCPP_ARCH_FASTY = 659,
+    RCPP_ARCH_FELA = 660,
+    RCPP_ARCH_FERN3B = 661,
+    RCPP_ARCH_FIELDSHUB = 662,
+    RCPP_ARCH_FIPHINEURALARK39ULTRA = 663,
+    RCPP_ARCH_FIXEDENHANCEDHYBRIDTRANS = 664,
+    RCPP_ARCH_FLEXRANK = 665,
+    RCPP_ARCH_FONTAINE = 666,
+    RCPP_ARCH_FRAWDL = 667,
+    RCPP_ARCH_FRENCHL = 668,
+    RCPP_ARCH_FSGPT = 669,
+    RCPP_ARCH_FSGPTMOE = 670,
+    RCPP_ARCH_FUSE3 = 671,
+    RCPP_ARCH_FUSE3V2 = 672,
+    RCPP_ARCH_FUTUREGQ47M = 673,
+    RCPP_ARCH_FUTUREGQ47Q = 674,
+    RCPP_ARCH_FUXITRANYU = 675,
+    RCPP_ARCH_FWKVLANGUAGE = 676,
+    RCPP_ARCH_G0NANO = 677,
+    RCPP_ARCH_GAD2FORAGENTICING = 678,
+    RCPP_ARCH_GADFORAGENTICING = 679,
+    RCPP_ARCH_GALAHAD = 680,
+    RCPP_ARCH_GATEDDELTAPRODUCT = 681,
+    RCPP_ARCH_GAZELLE = 682,
+    RCPP_ARCH_GEMBYTINY = 683,
+    RCPP_ARCH_GEOV = 684,
+    RCPP_ARCH_GIFTOFGAB = 685,
+    RCPP_ARCH_GLUB = 686,
+    RCPP_ARCH_GODQUEENIV = 687,
+    RCPP_ARCH_GRAVITYMOE = 688,
+    RCPP_ARCH_GROK2 = 689,
+    RCPP_ARCH_GROUNDEDBLIP = 690,
+    RCPP_ARCH_GUPPY = 691,
+    RCPP_ARCH_H2OVLCHAT = 692,
+    RCPP_ARCH_HAIPAI = 693,
+    RCPP_ARCH_HALTCOT = 694,
+    RCPP_ARCH_HANFORGE = 695,
+    RCPP_ARCH_HCXVISION = 696,
+    RCPP_ARCH_HCXVISIONV2 = 697,
+    RCPP_ARCH_HELLOAGENT = 698,
+    RCPP_ARCH_HENLACONFED = 699,
+    RCPP_ARCH_HFBYTEETM = 700,
+    RCPP_ARCH_HFOPENMOE = 701,
+    RCPP_ARCH_HINDICAUSAL = 702,
+    RCPP_ARCH_HLM5 = 703,
+    RCPP_ARCH_HRM = 704,
+    RCPP_ARCH_HRMCOSMICFISH = 705,
+    RCPP_ARCH_HRMTEXTMOE = 706,
+    RCPP_ARCH_HTDN = 707,
+    RCPP_ARCH_HYBRIDECHO = 708,
+    RCPP_ARCH_HYBRIDFOURIER = 709,
+    RCPP_ARCH_HYBRIDGATEDDELTANET = 710,
+    RCPP_ARCH_HYBRIDMORMOE = 711,
+    RCPP_ARCH_HYBRIDTINY = 712,
+    RCPP_ARCH_HYBRIDTRANSFORMERV2 = 713,
+    RCPP_ARCH_HYBRIKO = 714,
+    RCPP_ARCH_I3HYBRIDCHAT = 715,
+    RCPP_ARCH_INFIMMHD = 716,
+    RCPP_ARCH_INFIMMVICUNA = 717,
+    RCPP_ARCH_INFIMMZEPHYR = 718,
+    RCPP_ARCH_INKLING = 719,
+    RCPP_ARCH_INVERSIONFROMHIDDENSTATE = 720,
+    RCPP_ARCH_IONS1 = 721,
+    RCPP_ARCH_ISLLMAI50M = 722,
+    RCPP_ARCH_IVMECODERV1 = 723,
+    RCPP_ARCH_IVMECONVERSATES = 724,
+    RCPP_ARCH_IVMECONVERSATESV2INSTRUC = 725,
+    RCPP_ARCH_IVMEXL = 726,
+    RCPP_ARCH_JEENEY = 727,
+    RCPP_ARCH_JEEVES = 728,
+    RCPP_ARCH_JUDGEXL = 729,
+    RCPP_ARCH_KATEAI = 730,
+    RCPP_ARCH_KEYSTONEFUSE = 731,
+    RCPP_ARCH_KFM = 732,
+    RCPP_ARCH_KLEARMOE = 733,
+    RCPP_ARCH_KNKVF = 734,
+    RCPP_ARCH_KOPRIA = 735,
+    RCPP_ARCH_KORMOMOE = 736,
+    RCPP_ARCH_KOSMOS25TEXT = 737,
+    RCPP_ARCH_KSBYTE = 738,
+    RCPP_ARCH_KVLATENT = 739,
+    RCPP_ARCH_LAMINARNET = 740,
+    RCPP_ARCH_LANCEAI = 741,
+    RCPP_ARCH_LANEFORMER = 742,
+    RCPP_ARCH_LATENTRECURRENTDEPTH = 743,
+    RCPP_ARCH_LEDGERNET = 744,
+    RCPP_ARCH_LIGERGLA = 745,
+    RCPP_ARCH_LIGHTBRAINHYBRID = 746,
+    RCPP_ARCH_LLAVAMONET = 747,
+    RCPP_ARCH_LLAVAVISTRAL = 748,
+    RCPP_ARCH_LLTRANSFORMER = 749,
+    RCPP_ARCH_LOAF = 750,
+    RCPP_ARCH_LOCALL = 751,
+    RCPP_ARCH_LOLEVE = 752,
+    RCPP_ARCH_LONGCATFLASHOMNI = 753,
+    RCPP_ARCH_LONGCATNEXT = 754,
+    RCPP_ARCH_LOOMFORMER = 755,
+    RCPP_ARCH_LSMOE = 756,
+    RCPP_ARCH_LSWT = 757,
+    RCPP_ARCH_LUMEES = 758,
+    RCPP_ARCH_LUMEN = 759,
+    RCPP_ARCH_LUMENSPARK = 760,
+    RCPP_ARCH_MACCY = 761,
+    RCPP_ARCH_MAGNETAR = 762,
+    RCPP_ARCH_MARKUPDM = 763,
+    RCPP_ARCH_MATHBANANAMIND = 764,
+    RCPP_ARCH_MATILDA = 765,
+    RCPP_ARCH_MATRIOCHKA = 766,
+    RCPP_ARCH_MCQHF = 767,
+    RCPP_ARCH_MD = 768,
+    RCPP_ARCH_MDLMBPEV4 = 769,
+    RCPP_ARCH_MEDHEMO = 770,
+    RCPP_ARCH_MEDHEMOEARCP = 771,
+    RCPP_ARCH_MEGATRON = 772,
+    RCPP_ARCH_MEGREZMOE = 773,
+    RCPP_ARCH_METAL = 774,
+    RCPP_ARCH_METISMOR = 775,
+    RCPP_ARCH_MICROBANANA = 776,
+    RCPP_ARCH_MICROSTORYBANANAMIND = 777,
+    RCPP_ARCH_MINGRU = 778,
+    RCPP_ARCH_MINGRU_MING = 779,
+    RCPP_ARCH_MINIART = 780,
+    RCPP_ARCH_MINIENEDINA = 781,
+    RCPP_ARCH_MINIGEMINIMIXTRAL = 782,
+    RCPP_ARCH_MINITRANSFORMER = 783,
+    RCPP_ARCH_MINSPARK = 784,
+    RCPP_ARCH_MIRIDIHLLAVA = 785,
+    RCPP_ARCH_MIXTRAL8X7B = 786,
+    RCPP_ARCH_MLPSPECULATORPRETRAINED = 787,
+    RCPP_ARCH_MMMADNESSLLM = 788,
+    RCPP_ARCH_MOAMETRIC = 789,
+    RCPP_ARCH_MOBILINTCOHERE2 = 790,
+    RCPP_ARCH_MOCHIVA = 791,
+    RCPP_ARCH_MODULEFORMER = 792,
+    RCPP_ARCH_MOE = 793,
+    RCPP_ARCH_MOETRANSFORMER = 794,
+    RCPP_ARCH_MOIRAICAUSAL = 795,
+    RCPP_ARCH_MOLEXAR = 796,
+    RCPP_ARCH_MONAD1 = 797,
+    RCPP_ARCH_MOTHERCORE = 798,
+    RCPP_ARCH_MUDDFORMER = 799,
+    RCPP_ARCH_MULTIMODALSUPER = 800,
+    RCPP_ARCH_MULTISCREEN = 801,
+    RCPP_ARCH_MUXX11 = 802,
+    RCPP_ARCH_MYCOACH = 803,
+    RCPP_ARCH_MYGROK = 804,
+    RCPP_ARCH_NABLAVL = 805,
+    RCPP_ARCH_NAFIE = 806,
+    RCPP_ARCH_NANOCHRONO = 807,
+    RCPP_ARCH_NANOMOE = 808,
+    RCPP_ARCH_NANOS11LITE = 809,
+    RCPP_ARCH_NANOTHINK = 810,
+    RCPP_ARCH_NANOTRANSFORMER = 811,
+    RCPP_ARCH_NANOWHALEDIME = 812,
+    RCPP_ARCH_NARCTINY = 813,
+    RCPP_ARCH_NATURECODEOCEAN = 814,
+    RCPP_ARCH_NDLMOE = 815,
+    RCPP_ARCH_NEE = 816,
+    RCPP_ARCH_NEEDCONVERSATIONAL = 817,
+    RCPP_ARCH_NEKOMINDMOE = 818,
+    RCPP_ARCH_NEPALEDGE = 819,
+    RCPP_ARCH_NEURON = 820,
+    RCPP_ARCH_NEURONSPARK = 821,
+    RCPP_ARCH_NEXARA = 822,
+    RCPP_ARCH_NGEN3 = 823,
+    RCPP_ARCH_NGEN3_NGEN = 824,
+    RCPP_ARCH_NGEN4 = 825,
+    RCPP_ARCH_NGEN4OW10T = 826,
+    RCPP_ARCH_NILEX = 827,
+    RCPP_ARCH_NOEUM = 828,
+    RCPP_ARCH_NOTOKENGEN = 829,
+    RCPP_ARCH_NTV3GENERATIVE = 830,
+    RCPP_ARCH_NUSHY5 = 831,
+    RCPP_ARCH_OBILANGUAGE = 832,
+    RCPP_ARCH_OBSIDIANMULTISCREEN = 833,
+    RCPP_ARCH_ODINNEXT = 834,
+    RCPP_ARCH_OLM3NANO = 835,
+    RCPP_ARCH_OPENMYTHOS = 836,
+    RCPP_ARCH_OPENTHAIWILAI = 837,
+    RCPP_ARCH_OPENVLAFORACTIONPREDICTI = 838,
+    RCPP_ARCH_ORIONMOECAUSAL = 839,
+    RCPP_ARCH_OS24 = 840,
+    RCPP_ARCH_OTTER = 841,
+    RCPP_ARCH_OUTLIERMOE = 842,
+    RCPP_ARCH_PACKEDL = 843,
+    RCPP_ARCH_PAGNOLXL = 844,
+    RCPP_ARCH_PAINTER = 845,
+    RCPP_ARCH_PANO = 846,
+    RCPP_ARCH_PARAM1MOE = 847,
+    RCPP_ARCH_PARAM2MOE = 848,
+    RCPP_ARCH_PARAMTATVATRANSFORMER = 849,
+    RCPP_ARCH_PARCHMENT = 850,
+    RCPP_ARCH_PERSIMMON = 851,
+    RCPP_ARCH_PINANOLM100M = 852,
+    RCPP_ARCH_PINANOLM20M = 853,
+    RCPP_ARCH_PINANOLM50M = 854,
+    RCPP_ARCH_PINKELEPHANT = 855,
+    RCPP_ARCH_PLAPT = 856,
+    RCPP_ARCH_PLBART = 857,
+    RCPP_ARCH_PLETINY = 858,
+    RCPP_ARCH_PMMINIFINL = 859,
+    RCPP_ARCH_PORTHORMOE = 860,
+    RCPP_ARCH_PRAJNASTUDENTMULTILAYER = 861,
+    RCPP_ARCH_PRATCHYA = 862,
+    RCPP_ARCH_PRISMCHARMLP = 863,
+    RCPP_ARCH_PRIVATEL = 864,
+    RCPP_ARCH_PZDRKREASONING = 865,
+    RCPP_ARCH_QMOE = 866,
+    RCPP_ARCH_QOFFICESUITERUNTIME = 867,
+    RCPP_ARCH_QOVARYX = 868,
+    RCPP_ARCH_QUADORBIT = 869,
+    RCPP_ARCH_RAMO = 870,
+    RCPP_ARCH_RAVENGUARD = 871,
+    RCPP_ARCH_REALTRANSFORMER = 872,
+    RCPP_ARCH_RECOMBINATIONTRANSFORMER = 873,
+    RCPP_ARCH_RECURSIVECOMPRESSOR = 874,
+    RCPP_ARCH_RECURSIVELANGUAGE = 875,
+    RCPP_ARCH_REGRESSIONISATTENTION = 876,
+    RCPP_ARCH_RITA = 877,
+    RCPP_ARCH_RUBIR = 878,
+    RCPP_ARCH_SAFFU = 879,
+    RCPP_ARCH_SASEQUINTILLIONASI = 880,
+    RCPP_ARCH_SDARMOE = 881,
+    RCPP_ARCH_SENTINELBRAIN = 882,
+    RCPP_ARCH_SEQAX = 883,
+    RCPP_ARCH_SEQCOND = 884,
+    RCPP_ARCH_SERMENTAL = 885,
+    RCPP_ARCH_SEWYV2 = 886,
+    RCPP_ARCH_SHIVIKM1 = 887,
+    RCPP_ARCH_SHIVIKM2 = 888,
+    RCPP_ARCH_SHIVIKM4 = 889,
+    RCPP_ARCH_SHRINK = 890,
+    RCPP_ARCH_SIGER = 891,
+    RCPP_ARCH_SIMPLESTORIES = 892,
+    RCPP_ARCH_SIMPLESTORIES4M = 893,
+    RCPP_ARCH_SIXPERTMOE = 894,
+    RCPP_ARCH_SLIMMOE = 895,
+    RCPP_ARCH_SLMOE = 896,
+    RCPP_ARCH_SMALLLANGUAGE = 897,
+    RCPP_ARCH_SMARTCODERMOE = 898,
+    RCPP_ARCH_SMDM = 899,
+    RCPP_ARCH_SM = 900,
+    RCPP_ARCH_SMT = 901,
+    RCPP_ARCH_SOFANOR = 902,
+    RCPP_ARCH_SOLOL = 903,
+    RCPP_ARCH_SONAMATH = 904,
+    RCPP_ARCH_SORAFORS = 905,
+    RCPP_ARCH_SOVYTHOS = 906,
+    RCPP_ARCH_SPHERICALKANBYTE = 907,
+    RCPP_ARCH_SRCPROBER = 908,
+    RCPP_ARCH_STATEHEAD = 909,
+    RCPP_ARCH_STEERLING = 910,
+    RCPP_ARCH_STELLARAI = 911,
+    RCPP_ARCH_STOCHASTICFREQUENCYFILTE = 912,
+    RCPP_ARCH_SUPRABRAIN = 913,
+    RCPP_ARCH_SWARMMOE = 914,
+    RCPP_ARCH_SWETA = 915,
+    RCPP_ARCH_SYKOCAUSAL = 916,
+    RCPP_ARCH_TAHQIQGENESIS = 917,
+    RCPP_ARCH_TAMAZIGHT = 918,
+    RCPP_ARCH_TAME = 919,
+    RCPP_ARCH_TAMILTINYSTORIES = 920,
+    RCPP_ARCH_TAONETMINIT2 = 921,
+    RCPP_ARCH_TCMOE = 922,
+    RCPP_ARCH_THINKER = 923,
+    RCPP_ARCH_TINY = 924,
+    RCPP_ARCH_TINYBUDDY = 925,
+    RCPP_ARCH_TINY_TINY = 926,
+    RCPP_ARCH_TINYMIND = 927,
+    RCPP_ARCH_TINYPEL = 928,
+    RCPP_ARCH_TINYV4 = 929,
+    RCPP_ARCH_TINYWAY = 930,
+    RCPP_ARCH_TNL1385M10BTOKENNOACT = 931,
+    RCPP_ARCH_TOKENFORMER = 932,
+    RCPP_ARCH_TOKI = 933,
+    RCPP_ARCH_TOYL = 934,
+    RCPP_ARCH_TRANSCOREMQWEN = 935,
+    RCPP_ARCH_TRANSFORMERCHATBOT = 936,
+    RCPP_ARCH_TRANSFORMER = 937,
+    RCPP_ARCH_TRANSFORMERWITHPRUNING = 938,
+    RCPP_ARCH_TRMTEXTISM = 939,
+    RCPP_ARCH_TROCR = 940,
+    RCPP_ARCH_TRTCV4 = 941,
+    RCPP_ARCH_TTTPILOTMAC = 942,
+    RCPP_ARCH_TURING = 943,
+    RCPP_ARCH_TWINKELL = 944,
+    RCPP_ARCH_TYNEROX = 945,
+    RCPP_ARCH_ULLAVA = 946,
+    RCPP_ARCH_ULLAVACORE = 947,
+    RCPP_ARCH_UNIFIED = 948,
+    RCPP_ARCH_URCHINPARALLEL = 949,
+    RCPP_ARCH_VANFAST = 950,
+    RCPP_ARCH_VEGA = 951,
+    RCPP_ARCH_VEGAV1 = 952,
+    RCPP_ARCH_VERAMOELITE = 953,
+    RCPP_ARCH_VERANTYX = 954,
+    RCPP_ARCH_VGT8LENGINE = 955,
+    RCPP_ARCH_VILA = 956,
+    RCPP_ARCH_VLITE3 = 957,
+    RCPP_ARCH_VLITE35 = 958,
+    RCPP_ARCH_VLITE7 = 959,
+    RCPP_ARCH_VLITE7MINI20M = 960,
+    RCPP_ARCH_VRINDA = 961,
+    RCPP_ARCH_VRITYA = 962,
+    RCPP_ARCH_VSB = 963,
+    RCPP_ARCH_WASMINTERPRETERTRANSFORM = 964,
+    RCPP_ARCH_WBOT15 = 965,
+    RCPP_ARCH_WELMIA = 966,
+    RCPP_ARCH_WILDNERVETLM01 = 967,
+    RCPP_ARCH_WIOLA = 968,
+    RCPP_ARCH_WORDLATENTTRANSFORMER = 969,
+    RCPP_ARCH_WYRMLING = 970,
+    RCPP_ARCH_XEROBIOAI = 971,
+    RCPP_ARCH_XLSTM = 972,
+    RCPP_ARCH_XOMDICH = 973,
+    RCPP_ARCH_YAZH = 974,
+    RCPP_ARCH_Y11 = 975,
+    RCPP_ARCH_Y2 = 976,
+    RCPP_ARCH_Y3 = 977,
+    RCPP_ARCH_Y31 = 978,
+    RCPP_ARCH_ZETAGRID25B = 979,
+    RCPP_ARCH_ZIPFORMER = 980,
+    RCPP_ARCH_ZORIXNANO = 981,
+    RCPP_ARCH_ZZJRABBIT2 = 982,
+    RCPP_ARCH_ZZJRABBIT22 = 983,
+    RCPP_ARCH_ZZJRABBIT3 = 984,
+    RCPP_ARCH_ZZJRABBIT = 985,             // BVV (model_unfrozen)
+    RCPP_ARCH_FUYU = 986,            // FuyuForCausalLM (VLM — causal decoder, image tokens inline)
+    RCPP_ARCH_MUSE = 987,            // Muse-Glimmer (VLM — causal multimodal decoder)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
     // 2026-08-13, bring-up pilot #10).
-    RCPP_ARCH_UNKNOWN = 255,
+    RCPP_ARCH_UNKNOWN = 988,
 } rcpp_arch_t;
 
 #include <string.h>
@@ -1366,6 +1802,634 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "starvector") == 0) return RCPP_ARCH_LLAMA;  // StarVector (VLM, starcoder text decoder — llama layout)
     if (strcmp(s, "eagle3speculator") == 0) return RCPP_ARCH_LLAMA;  // LlamaForCausalLMEagle3 (arch declares Llama, config-verified)
 
+    // ── 2026-08-16 census pass-4: config-verified tail aliases (batch 1) ──
+    // Each class fetched + classified against its real config.json (strict:
+    // only explicit model_type family names or matching structural profiles).
+    if (strcmp(s, "agora") == 0) return RCPP_ARCH_QWEN2;  // model_type qwen
+    if (strcmp(s, "andrea") == 0) return RCPP_ARCH_GPTNEOX;  // model_type gpt_neox
+    if (strcmp(s, "aquilamoe") == 0) return RCPP_ARCH_LLAMA;  // AquilaMoE (rms+rope+silu)
+    if (strcmp(s, "babylm") == 0) return RCPP_ARCH_OPT;  // model_type opt
+    if (strcmp(s, "chessllm") == 0) return RCPP_ARCH_GPTNEOX;  // model_type gpt_neox
+    if (strcmp(s, "custom") == 0) return RCPP_ARCH_QWEN3;  // model_type qwen3
+    if (strcmp(s, "custommodel") == 0) return RCPP_ARCH_FALCON;  // model_type falcon
+    if (strcmp(s, "dendro") == 0) return RCPP_ARCH_GPTNEOX;  // model_type gpt_neox
+    if (strcmp(s, "eryon") == 0) return RCPP_ARCH_MISTRAL;  // everyone-coder-4x7b (mixtral layout)
+    if (strcmp(s, "expandedjetmoe") == 0) return RCPP_ARCH_LLAMA;  // expanded-jetmoe (llama layout)
+    if (strcmp(s, "finermoe") == 0) return RCPP_ARCH_LLAMA;  // FineRMoE (llama layout)
+    if (strcmp(s, "gitllama") == 0) return RCPP_ARCH_LLAMA;  // model_type gitllama (llama layout)
+    if (strcmp(s, "grin-moe") == 0) return RCPP_ARCH_LLAMA;  // Microsoft GRIN-MoE (llama layout)
+    if (strcmp(s, "gtlm") == 0) return RCPP_ARCH_MISTRAL;  // model_type mistral
+    if (strcmp(s, "helion") == 0) return RCPP_ARCH_MISTRAL;  // helion-4x34b (mixtral layout)
+    if (strcmp(s, "husky") == 0) return RCPP_ARCH_QWEN2;  // model_type qwen
+    if (strcmp(s, "i3") == 0) return RCPP_ARCH_LLAMA;  // i3 (llama profile)
+    if (strcmp(s, "iconn") == 0) return RCPP_ARCH_MISTRAL;  // iconn (mixtral layout)
+    if (strcmp(s, "idefics2") == 0) return RCPP_ARCH_LLAMA;  // Idefics2 (VLM, llama text decoder)
+    if (strcmp(s, "intellix") == 0) return RCPP_ARCH_QWEN2;  // model_type qwen2
+    if (strcmp(s, "ivme") == 0) return RCPP_ARCH_LLAMA;  // model_type llama
+    if (strcmp(s, "llama3") == 0) return RCPP_ARCH_LLAMA;  // model_type llama
+    if (strcmp(s, "llamavision") == 0) return RCPP_ARCH_LLAMA;  // model_type llama (VLM)
+    if (strcmp(s, "llamoe") == 0) return RCPP_ARCH_LLAMA;  // llama-MoE (llama layout)
+    if (strcmp(s, "logos") == 0) return RCPP_ARCH_MISTRAL;  // logos-7bx2 (mixtral layout)
+    if (strcmp(s, "mgmomni") == 0) return RCPP_ARCH_LLAMA;  // MGM-Omni (VLM, llama text decoder)
+    if (strcmp(s, "minicpmo") == 0) return RCPP_ARCH_LLAMA;  // MiniCPM-o (VLM, llama layout)
+    if (strcmp(s, "minimaxtext01") == 0) return RCPP_ARCH_LLAMA;  // MiniMax-Text-01 (llama profile)
+    if (strcmp(s, "moedl") == 0) return RCPP_ARCH_LLAMA;  // MoE-DL (llama layout)
+    if (strcmp(s, "moegpt") == 0) return RCPP_ARCH_GPTNEOX;  // model_type gpt_neox
+    if (strcmp(s, "moellavaqwen") == 0) return RCPP_ARCH_LLAMA;  // MoE-Llava-Qwen (llama layout)
+    if (strcmp(s, "moellavaqwen2") == 0) return RCPP_ARCH_LLAMA;  // MoE-Llava-Qwen2 (llama layout)
+    if (strcmp(s, "monkey") == 0) return RCPP_ARCH_LLAMA;  // MonkeyOCR (VLM, llama layout)
+    if (strcmp(s, "nanonano") == 0) return RCPP_ARCH_QWEN3;  // model_type qwen3
+    if (strcmp(s, "new") == 0) return RCPP_ARCH_QWEN3;  // model_type qwen3
+    if (strcmp(s, "openaimoe") == 0) return RCPP_ARCH_MISTRAL;  // openai-moe (mixtral layout)
+    if (strcmp(s, "pangupromoe") == 0) return RCPP_ARCH_LLAMA;  // pangu-pro-moe (llama layout)
+    if (strcmp(s, "phogpt") == 0) return RCPP_ARCH_LLAMA;  // PhoGPT (llama layout)
+    if (strcmp(s, "rabbit") == 0) return RCPP_ARCH_LLAMA;  // model_type llama
+    if (strcmp(s, "ressai") == 0) return RCPP_ARCH_GEMMA;  // model_type gemma2
+    if (strcmp(s, "rwkv-6") == 0) return RCPP_ARCH_RWKV;  // model_type rwkv (kor RWKV-6)
+    if (strcmp(s, "scidfm") == 0) return RCPP_ARCH_LLAMA;  // SciDFM (llama layout MoE)
+    if (strcmp(s, "tanuki") == 0) return RCPP_ARCH_LLAMA;  // Tanuki (llama layout)
+    if (strcmp(s, "thanatos") == 0) return RCPP_ARCH_GPTNEOX;  // model_type gpt_neox
+    if (strcmp(s, "tinymixtral") == 0) return RCPP_ARCH_MISTRAL;  // model_type mixtral
+    if (strcmp(s, "traxlmistral") == 0) return RCPP_ARCH_MISTRAL;  // model_type mistral
+    if (strcmp(s, "trm") == 0) return RCPP_ARCH_BLOOM;  // model_type bloom
+    if (strcmp(s, "wikimini") == 0) return RCPP_ARCH_GEMMA;  // model_type gemma2
+    if (strcmp(s, "yayi") == 0) return RCPP_ARCH_BLOOM;  // model_type bloom
+    // hixtral is phixtral — phi-msft layout, NOT gpt2 (structural fallback caught it wrong)
+    if (strcmp(s, "hixtral") == 0) return RCPP_ARCH_PHI;
+
+
+    // ── 2026-08-16 census pass-4: tail aliases (config/name-verified) ──
+    if (strcmp(s, "a2dgptneox") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "arabicgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "axion") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "batgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "bettergpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "bharatgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "birwkv7") == 0) return RCPP_ARCH_RWKV;
+    if (strcmp(s, "bytegpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "campgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "circuitgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "cognitiveagent") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "colmaskmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "convgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "costwisegemma") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "cubichierlm") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "dcpythia") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "deepseeknano") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "deepseekocr") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "deepseekvlv2") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "diseasegpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "dyncolmaskmoellavaqwen3") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "dynhiercolmaskmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "enggptmoe") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "esm2llamainstruct") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "evagpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "exaone4_5_") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "flex_qwen2_5_vlmoe") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "gelugpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gemma2moe") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "gemma3px") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "gemma4e2bithybrid") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "gemma4nano") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "glm4moeliteplusplus") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "glm4v") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "goatvvv") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2vision") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt300m") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt4dev") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gptcustom") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gptjmoe") == 0) return RCPP_ARCH_GPTJ;
+    if (strcmp(s, "gptneoxjapanese") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "gptossmoe") == 0) return RCPP_ARCH_GPTOSS;
+    if (strcmp(s, "gptossvl") == 0) return RCPP_ARCH_GPTOSS;
+    if (strcmp(s, "gptsanjapanese") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gqagpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "granitemoeswa") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "graniteswa") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "haipailm") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "hangulgemmadeobfuscator") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "hebrewgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "hiercolmaskmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "huazangqwen") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "hybridgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "hybridmamba") == 0) return RCPP_ARCH_MAMBA;
+    if (strcmp(s, "hypermambalm") == 0) return RCPP_ARCH_MAMBA;
+    if (strcmp(s, "impphi3") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "latentmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "lfm2idk") == 0) return RCPP_ARCH_LFM2;
+    if (strcmp(s, "lfm2moecustom") == 0) return RCPP_ARCH_LFM2;
+    if (strcmp(s, "lightgpthuggingface") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "llama3custom") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llama3forcausallmwithearlyexit") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamamoeupscaling") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamavarlayer") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamawithmoe") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llavamixtral") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "llavapythia") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "llavastablelm") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "mamba3causallm") == 0) return RCPP_ARCH_MAMBA;
+    if (strcmp(s, "marshmellogpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "maskmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "mcgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "meglm") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "minicpmv") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "minicpmv4_6") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "minideepseekv3") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "minideepseekv4") == 0) return RCPP_ARCH_DEEPSEEK;
+    if (strcmp(s, "minigeminigemma") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "miniqwen3next") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "mmgptqwen") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "moderngptmoe") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "moegpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "moellavamistral") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "moellavaphi") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "moellavaqwen1_5") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "moellavastablelm") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "muddpythia") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "muongpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "myphi") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "nanochatwasmfused") == 0) return RCPP_ARCH_NANOCHAT;
+    if (strcmp(s, "nanogptcompressed") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "nemotrondenseaudex") == 0) return RCPP_ARCH_NEMOTRONH;
+    if (strcmp(s, "nemotronhaudex") == 0) return RCPP_ARCH_NEMOTRONH;
+    if (strcmp(s, "nemotronhpuzzle") == 0) return RCPP_ARCH_NEMOTRONH;
+    if (strcmp(s, "nmmaskmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "nopegpthuggingface") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "nrgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "olmoeuprop") == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "optimus3") == 0) return RCPP_ARCH_OPT;
+    if (strcmp(s, "optrix") == 0) return RCPP_ARCH_OPT;
+    if (strcmp(s, "phiforlogicalreasoning") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "polyllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "qwen2mtp") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "qwen3moeplusplus") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "qwen3omni") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "recgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "renneellamahfwrapper") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "ropegpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "rugpt3xl") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "rustnngpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "rwkv07i") == 0) return RCPP_ARCH_RWKV;
+    if (strcmp(s, "rwkv07imoe") == 0) return RCPP_ARCH_RWKV;
+    if (strcmp(s, "schoolmoe") == 0) return RCPP_ARCH_OLMO;
+    if (strcmp(s, "semiticgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "sentinelguardedphi") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "simamba") == 0) return RCPP_ARCH_MAMBA;
+    if (strcmp(s, "smallllm") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "smollllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "sologpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "sovyn85m") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "stepvl") == 0) return RCPP_ARCH_STEP1;
+    if (strcmp(s, "stieltjesgpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "supermaskmoellavagemma") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "tallavagemma") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "tinychartphi") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "tinyqwen3engramhc") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "tinyqwen3novelty") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "traxl") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "trmgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "vaultgemma") == 0) return RCPP_ARCH_GEMMA;
+    if (strcmp(s, "verysmollgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "vexiongpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "vopt") == 0) return RCPP_ARCH_OPT;
+    if (strcmp(s, "yatfullgpt") == 0) return RCPP_ARCH_GPT2;
+    // ── 2026-08-16 census pass-4: tail families (registry tokens) ──
+    if (strcmp(s, "a194logitensemble") == 0) return RCPP_ARCH_A194LOGITENSEMBLE;
+    if (strcmp(s, "abir") == 0) return RCPP_ARCH_ABIR;
+    if (strcmp(s, "abu2head") == 0) return RCPP_ARCH_ABU2HEAD;
+    if (strcmp(s, "acerag") == 0) return RCPP_ARCH_ACERAG;
+    if (strcmp(s, "acswiglu") == 0) return RCPP_ARCH_ACSWIGLU;
+    if (strcmp(s, "adaptiveriverlm") == 0) return RCPP_ARCH_ADAPTIVERIVER;
+    if (strcmp(s, "aethermicro") == 0) return RCPP_ARCH_AETHERMICRO;
+    if (strcmp(s, "ailo") == 0) return RCPP_ARCH_AILO;
+    if (strcmp(s, "ailoloop") == 0) return RCPP_ARCH_AILOLOOP;
+    if (strcmp(s, "alinlight") == 0) return RCPP_ARCH_ALINLIGHT;
+    if (strcmp(s, "amadablam") == 0) return RCPP_ARCH_AMADABLAM;
+    if (strcmp(s, "ancientaiv") == 0) return RCPP_ARCH_ANCIENTAIV;
+    if (strcmp(s, "anubismoe") == 0) return RCPP_ARCH_ANUBISMOE;
+    if (strcmp(s, "apriel2") == 0) return RCPP_ARCH_APRIEL2;
+    if (strcmp(s, "arar381m") == 0) return RCPP_ARCH_ARAR381M;
+    if (strcmp(s, "asclelm") == 0) return RCPP_ARCH_ASCLE;
+    if (strcmp(s, "asgtransformer") == 0) return RCPP_ARCH_ASGTRANSFORMER;
+    if (strcmp(s, "attnonly") == 0) return RCPP_ARCH_ATTNONLY;
+    if (strcmp(s, "autoencoder") == 0) return RCPP_ARCH_AUTOENCODER;
+    if (strcmp(s, "autogui") == 0) return RCPP_ARCH_AUTOGUI;
+    if (strcmp(s, "aveydecodermoe") == 0) return RCPP_ARCH_AVEYDECODERMOE;
+    if (strcmp(s, "axon") == 0) return RCPP_ARCH_AXON;
+    if (strcmp(s, "ayavision") == 0) return RCPP_ARCH_AYAVISION;
+    if (strcmp(s, "bacformerforcausalgm") == 0) return RCPP_ARCH_BACFORMERGM;
+    if (strcmp(s, "backboneconceptlm") == 0) return RCPP_ARCH_BACKBONECONCEPT;
+    if (strcmp(s, "baclm") == 0) return RCPP_ARCH_BAC;
+    if (strcmp(s, "bailingmoelinear") == 0) return RCPP_ARCH_BAILINGMOELINEAR;
+    if (strcmp(s, "bananamind2medium") == 0) return RCPP_ARCH_BANANAMIND2MEDIUM;
+    if (strcmp(s, "bananamind2micro") == 0) return RCPP_ARCH_BANANAMIND2MICRO;
+    if (strcmp(s, "bananamind2mini") == 0) return RCPP_ARCH_BANANAMIND2MINI;
+    if (strcmp(s, "bananamind2moe") == 0) return RCPP_ARCH_BANANAMIND2MOE;
+    if (strcmp(s, "bananamind2nano") == 0) return RCPP_ARCH_BANANAMIND2NANO;
+    if (strcmp(s, "bananamind2pro") == 0) return RCPP_ARCH_BANANAMIND2PRO;
+    if (strcmp(s, "banglagamba") == 0) return RCPP_ARCH_BANGLAGAMBA;
+    if (strcmp(s, "banglagsg") == 0) return RCPP_ARCH_BANGLAGSG;
+    if (strcmp(s, "barbet") == 0) return RCPP_ARCH_BARBET;
+    if (strcmp(s, "beetlemoehf") == 0) return RCPP_ARCH_BEETLEMOEHF;
+    if (strcmp(s, "bharatai") == 0) return RCPP_ARCH_BHARATAI;
+    if (strcmp(s, "biatron") == 0) return RCPP_ARCH_BIATRON;
+    if (strcmp(s, "bigbrainlanguage") == 0) return RCPP_ARCH_BIGBRAINLANGUAGE;
+    if (strcmp(s, "binaryllm") == 0) return RCPP_ARCH_BINARYL;
+    if (strcmp(s, "bitskipv1forcausallmwithearlyexit") == 0) return RCPP_ARCH_BITSKIPV1WITHEARLYEXIT;
+    if (strcmp(s, "bitskipv2forcausallmwithearlyexit") == 0) return RCPP_ARCH_BITSKIPV2WITHEARLYEXIT;
+    if (strcmp(s, "bitskipv3") == 0) return RCPP_ARCH_BITSKIPV3;
+    if (strcmp(s, "boramoe") == 0) return RCPP_ARCH_BORAMOE;
+    if (strcmp(s, "braille256") == 0) return RCPP_ARCH_BRAILLE256;
+    if (strcmp(s, "branchycausal") == 0) return RCPP_ARCH_BRANCHYCAUSAL;
+    if (strcmp(s, "bridgevqa") == 0) return RCPP_ARCH_BRIDGEVQA;
+    if (strcmp(s, "bucketmemory") == 0) return RCPP_ARCH_BUCKETMEMORY;
+    if (strcmp(s, "bungeo") == 0) return RCPP_ARCH_BUNGEO;
+    if (strcmp(s, "cable") == 0) return RCPP_ARCH_CABLE;
+    if (strcmp(s, "causallmoe") == 0) return RCPP_ARCH_CAUSALLMOE;
+    if (strcmp(s, "celerity") == 0) return RCPP_ARCH_CELERITY;
+    if (strcmp(s, "cfrd") == 0) return RCPP_ARCH_CFRD;
+    if (strcmp(s, "chameleonxllmx") == 0) return RCPP_ARCH_CHAMELEONXLLMX;
+    if (strcmp(s, "cimodel") == 0) return RCPP_ARCH_CI;
+    if (strcmp(s, "cinnabarlm") == 0) return RCPP_ARCH_CINNABAR;
+    if (strcmp(s, "claritymr1") == 0) return RCPP_ARCH_CLARITYMR1;
+    if (strcmp(s, "clinamen") == 0) return RCPP_ARCH_CLINAMEN;
+    if (strcmp(s, "cloverlm") == 0) return RCPP_ARCH_CLOVER;
+    if (strcmp(s, "cma") == 0) return RCPP_ARCH_CMA;
+    if (strcmp(s, "codify") == 0) return RCPP_ARCH_CODIFY;
+    if (strcmp(s, "codva1") == 0) return RCPP_ARCH_CODVA1;
+    if (strcmp(s, "coffeechatai") == 0) return RCPP_ARCH_COFFEECHATAI;
+    if (strcmp(s, "coherencemomentum") == 0) return RCPP_ARCH_COHERENCEMOMENTUM;
+    if (strcmp(s, "compliantllm") == 0) return RCPP_ARCH_COMPLIANTL;
+    if (strcmp(s, "convaicausallm") == 0) return RCPP_ARCH_CONVAICAUSAL;
+    if (strcmp(s, "cosmicfish") == 0) return RCPP_ARCH_COSMICFISH;
+    if (strcmp(s, "cpmant") == 0) return RCPP_ARCH_CPMANT;
+    if (strcmp(s, "cpmbee") == 0) return RCPP_ARCH_CPMBEE;
+    if (strcmp(s, "cubicpipelineoptimizer") == 0) return RCPP_ARCH_CUBICPIPELINEOPTIMIZER;
+    if (strcmp(s, "cubicv11longcontext") == 0) return RCPP_ARCH_CUBICV11LONGCONTEXT;
+    if (strcmp(s, "cubiczanmoe") == 0) return RCPP_ARCH_CUBICZANMOE;
+    if (strcmp(s, "customdecoderonlyt5") == 0) return RCPP_ARCH_CUSTOMDECODERONLYT5;
+    if (strcmp(s, "custommodel5") == 0) return RCPP_ARCH_CUSTOM5;
+    if (strcmp(s, "customtagalogllm") == 0) return RCPP_ARCH_CUSTOMTAGALOGL;
+    if (strcmp(s, "customtransformer") == 0) return RCPP_ARCH_CUSTOMTRANSFORMER;
+    if (strcmp(s, "cyclicformer") == 0) return RCPP_ARCH_CYCLICFORMER;
+    if (strcmp(s, "d3pmsanskrit") == 0) return RCPP_ARCH_D3PMSANSKRIT;
+    if (strcmp(s, "darkit-v1.5") == 0) return RCPP_ARCH_DARKITV15;
+    if (strcmp(s, "darkit-v2.5") == 0) return RCPP_ARCH_DARKITV25;
+    if (strcmp(s, "darwinduoorchestrator") == 0) return RCPP_ARCH_DARWINDUOORCHESTRATOR;
+    if (strcmp(s, "data2vectext") == 0) return RCPP_ARCH_DATA2VECTEXT;
+    if (strcmp(s, "dcformer") == 0) return RCPP_ARCH_DCFORMER;
+    if (strcmp(s, "decoderonlytransformer") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;
+    if (strcmp(s, "decodon") == 0) return RCPP_ARCH_DECODON;
+    if (strcmp(s, "densellm") == 0) return RCPP_ARCH_DENSEL;
+    if (strcmp(s, "dfm") == 0) return RCPP_ARCH_DFM;
+    if (strcmp(s, "distillix") == 0) return RCPP_ARCH_DISTILLIX;
+    if (strcmp(s, "domaintransformer") == 0) return RCPP_ARCH_DOMAINTRANSFORMER;
+    if (strcmp(s, "dotlm") == 0) return RCPP_ARCH_DOT;
+    if (strcmp(s, "dotsocr") == 0) return RCPP_ARCH_DOTSOCR;
+    if (strcmp(s, "dshybrid") == 0) return RCPP_ARCH_DSHYBRID;
+    if (strcmp(s, "dwarf") == 0) return RCPP_ARCH_DWARF;
+    if (strcmp(s, "dynamicmindmoe") == 0) return RCPP_ARCH_DYNAMICMINDMOE;
+    if (strcmp(s, "dynamicneuralnetwork") == 0) return RCPP_ARCH_DYNAMICNEURALNETWORK;
+    if (strcmp(s, "echo") == 0) return RCPP_ARCH_ECHO;
+    if (strcmp(s, "echoes") == 0) return RCPP_ARCH_ECHOES;
+    if (strcmp(s, "ecoaco") == 0) return RCPP_ARCH_ECOACO;
+    if (strcmp(s, "elasticgpt") == 0) return RCPP_ARCH_ELASTICGPT;
+    if (strcmp(s, "ensemblemodel") == 0) return RCPP_ARCH_ENSEMBLE;
+    if (strcmp(s, "erklinear") == 0) return RCPP_ARCH_ERKLINEAR;
+    if (strcmp(s, "evafrillmo") == 0) return RCPP_ARCH_EVAFRILLMO;
+    if (strcmp(s, "evemoe") == 0) return RCPP_ARCH_EVEMOE;
+    if (strcmp(s, "evo1") == 0) return RCPP_ARCH_EVO1;
+    if (strcmp(s, "fastplus") == 0) return RCPP_ARCH_FASTPLUS;
+    if (strcmp(s, "fastplus125m") == 0) return RCPP_ARCH_FASTPLUS125M;
+    if (strcmp(s, "fastplus40m") == 0) return RCPP_ARCH_FASTPLUS40M;
+    if (strcmp(s, "fasty") == 0) return RCPP_ARCH_FASTY;
+    if (strcmp(s, "fela") == 0) return RCPP_ARCH_FELA;
+    if (strcmp(s, "fern3b") == 0) return RCPP_ARCH_FERN3B;
+    if (strcmp(s, "fieldshub") == 0) return RCPP_ARCH_FIELDSHUB;
+    if (strcmp(s, "fiphi-neuralark-3.9-ultra") == 0) return RCPP_ARCH_FIPHINEURALARK39ULTRA;
+    if (strcmp(s, "fixedenhancedhybridtransformer") == 0) return RCPP_ARCH_FIXEDENHANCEDHYBRIDTRANS;
+    if (strcmp(s, "flexrank") == 0) return RCPP_ARCH_FLEXRANK;
+    if (strcmp(s, "fontainelm") == 0) return RCPP_ARCH_FONTAINE;
+    if (strcmp(s, "frawdllm") == 0) return RCPP_ARCH_FRAWDL;
+    if (strcmp(s, "frenchllm") == 0) return RCPP_ARCH_FRENCHL;
+    if (strcmp(s, "fsgpt") == 0) return RCPP_ARCH_FSGPT;
+    if (strcmp(s, "fsgptmoe") == 0) return RCPP_ARCH_FSGPTMOE;
+    if (strcmp(s, "fuse3") == 0) return RCPP_ARCH_FUSE3;
+    if (strcmp(s, "fuse3v2") == 0) return RCPP_ARCH_FUSE3V2;
+    if (strcmp(s, "futuregq47m") == 0) return RCPP_ARCH_FUTUREGQ47M;
+    if (strcmp(s, "futuregq47q") == 0) return RCPP_ARCH_FUTUREGQ47Q;
+    if (strcmp(s, "fuxitranyu") == 0) return RCPP_ARCH_FUXITRANYU;
+    if (strcmp(s, "fwkvlanguage") == 0) return RCPP_ARCH_FWKVLANGUAGE;
+    if (strcmp(s, "g0nano") == 0) return RCPP_ARCH_G0NANO;
+    if (strcmp(s, "gad2foragenticmodeling") == 0) return RCPP_ARCH_GAD2FORAGENTICING;
+    if (strcmp(s, "gadforagenticmodeling") == 0) return RCPP_ARCH_GADFORAGENTICING;
+    if (strcmp(s, "galahad") == 0) return RCPP_ARCH_GALAHAD;
+    if (strcmp(s, "gateddeltaproduct") == 0) return RCPP_ARCH_GATEDDELTAPRODUCT;
+    if (strcmp(s, "gazelle") == 0) return RCPP_ARCH_GAZELLE;
+    if (strcmp(s, "gembytiny") == 0) return RCPP_ARCH_GEMBYTINY;
+    if (strcmp(s, "geov") == 0) return RCPP_ARCH_GEOV;
+    if (strcmp(s, "giftofgab") == 0) return RCPP_ARCH_GIFTOFGAB;
+    if (strcmp(s, "glublm") == 0) return RCPP_ARCH_GLUB;
+    if (strcmp(s, "godqueeniv") == 0) return RCPP_ARCH_GODQUEENIV;
+    if (strcmp(s, "gravitymoe") == 0) return RCPP_ARCH_GRAVITYMOE;
+    if (strcmp(s, "grok2") == 0) return RCPP_ARCH_GROK2;
+    if (strcmp(s, "groundedbliplm") == 0) return RCPP_ARCH_GROUNDEDBLIP;
+    if (strcmp(s, "guppylm") == 0) return RCPP_ARCH_GUPPY;
+    if (strcmp(s, "h2ovlchat") == 0) return RCPP_ARCH_H2OVLCHAT;
+    if (strcmp(s, "haipai") == 0) return RCPP_ARCH_HAIPAI;
+    if (strcmp(s, "haltcot") == 0) return RCPP_ARCH_HALTCOT;
+    if (strcmp(s, "hanforge") == 0) return RCPP_ARCH_HANFORGE;
+    if (strcmp(s, "hcxvision") == 0) return RCPP_ARCH_HCXVISION;
+    if (strcmp(s, "hcxvisionv2") == 0) return RCPP_ARCH_HCXVISIONV2;
+    if (strcmp(s, "helloagent") == 0) return RCPP_ARCH_HELLOAGENT;
+    if (strcmp(s, "henlaconfed") == 0) return RCPP_ARCH_HENLACONFED;
+    if (strcmp(s, "hfbyteetm") == 0) return RCPP_ARCH_HFBYTEETM;
+    if (strcmp(s, "hfopenmoe") == 0) return RCPP_ARCH_HFOPENMOE;
+    if (strcmp(s, "hindicausallm") == 0) return RCPP_ARCH_HINDICAUSAL;
+    if (strcmp(s, "hlm5") == 0) return RCPP_ARCH_HLM5;
+    if (strcmp(s, "hrm") == 0) return RCPP_ARCH_HRM;
+    if (strcmp(s, "hrmcosmicfish") == 0) return RCPP_ARCH_HRMCOSMICFISH;
+    if (strcmp(s, "hrmtextmoe") == 0) return RCPP_ARCH_HRMTEXTMOE;
+    if (strcmp(s, "htdn") == 0) return RCPP_ARCH_HTDN;
+    if (strcmp(s, "hybridecho") == 0) return RCPP_ARCH_HYBRIDECHO;
+    if (strcmp(s, "hybridfourierlm") == 0) return RCPP_ARCH_HYBRIDFOURIER;
+    if (strcmp(s, "hybridgateddeltanet") == 0) return RCPP_ARCH_HYBRIDGATEDDELTANET;
+    if (strcmp(s, "hybridmormoe") == 0) return RCPP_ARCH_HYBRIDMORMOE;
+    if (strcmp(s, "hybridtiny") == 0) return RCPP_ARCH_HYBRIDTINY;
+    if (strcmp(s, "hybridtransformerv2") == 0) return RCPP_ARCH_HYBRIDTRANSFORMERV2;
+    if (strcmp(s, "hybriko") == 0) return RCPP_ARCH_HYBRIKO;
+    if (strcmp(s, "i3hybridchat") == 0) return RCPP_ARCH_I3HYBRIDCHAT;
+    if (strcmp(s, "infimmhd") == 0) return RCPP_ARCH_INFIMMHD;
+    if (strcmp(s, "infimmvicuna") == 0) return RCPP_ARCH_INFIMMVICUNA;
+    if (strcmp(s, "infimmzephyr") == 0) return RCPP_ARCH_INFIMMZEPHYR;
+    if (strcmp(s, "inkling") == 0) return RCPP_ARCH_INKLING;
+    if (strcmp(s, "inversionfromhiddenstates") == 0) return RCPP_ARCH_INVERSIONFROMHIDDENSTATE;
+    if (strcmp(s, "ions1") == 0) return RCPP_ARCH_IONS1;
+    if (strcmp(s, "isllmai50m") == 0) return RCPP_ARCH_ISLLMAI50M;
+    if (strcmp(s, "ivmecoderv1") == 0) return RCPP_ARCH_IVMECODERV1;
+    if (strcmp(s, "ivmeconversates") == 0) return RCPP_ARCH_IVMECONVERSATES;
+    if (strcmp(s, "ivmeconversatesv2instruct") == 0) return RCPP_ARCH_IVMECONVERSATESV2INSTRUC;
+    if (strcmp(s, "ivmexl") == 0) return RCPP_ARCH_IVMEXL;
+    if (strcmp(s, "jeeney") == 0) return RCPP_ARCH_JEENEY;
+    if (strcmp(s, "jeeves") == 0) return RCPP_ARCH_JEEVES;
+    if (strcmp(s, "judgexl") == 0) return RCPP_ARCH_JUDGEXL;
+    if (strcmp(s, "kateai") == 0) return RCPP_ARCH_KATEAI;
+    if (strcmp(s, "keystonefuse") == 0) return RCPP_ARCH_KEYSTONEFUSE;
+    if (strcmp(s, "kfm") == 0) return RCPP_ARCH_KFM;
+    if (strcmp(s, "klearmoe") == 0) return RCPP_ARCH_KLEARMOE;
+    if (strcmp(s, "knkvf") == 0) return RCPP_ARCH_KNKVF;
+    if (strcmp(s, "koprialm") == 0) return RCPP_ARCH_KOPRIA;
+    if (strcmp(s, "kormomoe") == 0) return RCPP_ARCH_KORMOMOE;
+    if (strcmp(s, "kosmos2_5text") == 0) return RCPP_ARCH_KOSMOS25TEXT;
+    if (strcmp(s, "ksbyte") == 0) return RCPP_ARCH_KSBYTE;
+    if (strcmp(s, "kvlatent") == 0) return RCPP_ARCH_KVLATENT;
+    if (strcmp(s, "laminarnet") == 0) return RCPP_ARCH_LAMINARNET;
+    if (strcmp(s, "lanceai") == 0) return RCPP_ARCH_LANCEAI;
+    if (strcmp(s, "laneformer") == 0) return RCPP_ARCH_LANEFORMER;
+    if (strcmp(s, "latentrecurrentdepth") == 0) return RCPP_ARCH_LATENTRECURRENTDEPTH;
+    if (strcmp(s, "ledgernet") == 0) return RCPP_ARCH_LEDGERNET;
+    if (strcmp(s, "ligergla") == 0) return RCPP_ARCH_LIGERGLA;
+    if (strcmp(s, "lightbrainhybrid") == 0) return RCPP_ARCH_LIGHTBRAINHYBRID;
+    if (strcmp(s, "llavamonet") == 0) return RCPP_ARCH_LLAVAMONET;
+    if (strcmp(s, "llavavistral") == 0) return RCPP_ARCH_LLAVAVISTRAL;
+    if (strcmp(s, "lltransformer") == 0) return RCPP_ARCH_LLTRANSFORMER;
+    if (strcmp(s, "loaflm") == 0) return RCPP_ARCH_LOAF;
+    if (strcmp(s, "localllm") == 0) return RCPP_ARCH_LOCALL;
+    if (strcmp(s, "loleve") == 0) return RCPP_ARCH_LOLEVE;
+    if (strcmp(s, "longcat") == 0) return RCPP_ARCH_LONGCAT;
+    if (strcmp(s, "longcatflashomni") == 0) return RCPP_ARCH_LONGCATFLASHOMNI;
+    if (strcmp(s, "longcatnext") == 0) return RCPP_ARCH_LONGCATNEXT;
+    if (strcmp(s, "loomformer") == 0) return RCPP_ARCH_LOOMFORMER;
+    if (strcmp(s, "lsmoe") == 0) return RCPP_ARCH_LSMOE;
+    if (strcmp(s, "lswt") == 0) return RCPP_ARCH_LSWT;
+    if (strcmp(s, "lumees") == 0) return RCPP_ARCH_LUMEES;
+    if (strcmp(s, "lumen") == 0) return RCPP_ARCH_LUMEN;
+    if (strcmp(s, "lumenspark") == 0) return RCPP_ARCH_LUMENSPARK;
+    if (strcmp(s, "maccy") == 0) return RCPP_ARCH_MACCY;
+    if (strcmp(s, "magnetar") == 0) return RCPP_ARCH_MAGNETAR;
+    if (strcmp(s, "markupdm") == 0) return RCPP_ARCH_MARKUPDM;
+    if (strcmp(s, "mathbananamind") == 0) return RCPP_ARCH_MATHBANANAMIND;
+    if (strcmp(s, "matilda") == 0) return RCPP_ARCH_MATILDA;
+    if (strcmp(s, "matriochka") == 0) return RCPP_ARCH_MATRIOCHKA;
+    if (strcmp(s, "mcqhf") == 0) return RCPP_ARCH_MCQHF;
+    if (strcmp(s, "mdlm") == 0) return RCPP_ARCH_MD;
+    if (strcmp(s, "mdlmbpev4") == 0) return RCPP_ARCH_MDLMBPEV4;
+    if (strcmp(s, "medhemo") == 0) return RCPP_ARCH_MEDHEMO;
+    if (strcmp(s, "medhemoearcp") == 0) return RCPP_ARCH_MEDHEMOEARCP;
+    if (strcmp(s, "megatron") == 0) return RCPP_ARCH_MEGATRON;
+    if (strcmp(s, "megrezmoe") == 0) return RCPP_ARCH_MEGREZMOE;
+    if (strcmp(s, "metallm") == 0) return RCPP_ARCH_METAL;
+    if (strcmp(s, "metismor") == 0) return RCPP_ARCH_METISMOR;
+    if (strcmp(s, "microbanana") == 0) return RCPP_ARCH_MICROBANANA;
+    if (strcmp(s, "microstorybananamind") == 0) return RCPP_ARCH_MICROSTORYBANANAMIND;
+    if (strcmp(s, "mingru") == 0) return RCPP_ARCH_MINGRU;
+    if (strcmp(s, "mingrulm") == 0) return RCPP_ARCH_MINGRU_MING;
+    if (strcmp(s, "miniart") == 0) return RCPP_ARCH_MINIART;
+    if (strcmp(s, "minienedina") == 0) return RCPP_ARCH_MINIENEDINA;
+    if (strcmp(s, "minigeminimixtral") == 0) return RCPP_ARCH_MINIGEMINIMIXTRAL;
+    if (strcmp(s, "minitransformer") == 0) return RCPP_ARCH_MINITRANSFORMER;
+    if (strcmp(s, "minspark") == 0) return RCPP_ARCH_MINSPARK;
+    if (strcmp(s, "miridih_llava") == 0) return RCPP_ARCH_MIRIDIHLLAVA;
+    if (strcmp(s, "mixtral 8x7b") == 0) return RCPP_ARCH_MIXTRAL8X7B;
+    if (strcmp(s, "mlpspeculatorpretrained") == 0) return RCPP_ARCH_MLPSPECULATORPRETRAINED;
+    if (strcmp(s, "mmmadnessllmmodel") == 0) return RCPP_ARCH_MMMADNESSLLM;
+    if (strcmp(s, "moametriclm") == 0) return RCPP_ARCH_MOAMETRIC;
+    if (strcmp(s, "mobilintcohere2") == 0) return RCPP_ARCH_MOBILINTCOHERE2;
+    if (strcmp(s, "mochiva") == 0) return RCPP_ARCH_MOCHIVA;
+    if (strcmp(s, "moduleformer") == 0) return RCPP_ARCH_MODULEFORMER;
+    if (strcmp(s, "moe") == 0) return RCPP_ARCH_MOE;
+    if (strcmp(s, "moetransformer") == 0) return RCPP_ARCH_MOETRANSFORMER;
+    if (strcmp(s, "moiraicausallm") == 0) return RCPP_ARCH_MOIRAICAUSAL;
+    if (strcmp(s, "molexar") == 0) return RCPP_ARCH_MOLEXAR;
+    if (strcmp(s, "monad1") == 0) return RCPP_ARCH_MONAD1;
+    if (strcmp(s, "mothercore") == 0) return RCPP_ARCH_MOTHERCORE;
+    if (strcmp(s, "muddformer") == 0) return RCPP_ARCH_MUDDFORMER;
+    if (strcmp(s, "multimodalsuper") == 0) return RCPP_ARCH_MULTIMODALSUPER;
+    if (strcmp(s, "multiscreen") == 0) return RCPP_ARCH_MULTISCREEN;
+    if (strcmp(s, "muxx11") == 0) return RCPP_ARCH_MUXX11;
+    if (strcmp(s, "mycoach") == 0) return RCPP_ARCH_MYCOACH;
+    if (strcmp(s, "mygrok") == 0) return RCPP_ARCH_MYGROK;
+    if (strcmp(s, "nablavl") == 0) return RCPP_ARCH_NABLAVL;
+    if (strcmp(s, "nafie") == 0) return RCPP_ARCH_NAFIE;
+    if (strcmp(s, "nanochrono") == 0) return RCPP_ARCH_NANOCHRONO;
+    if (strcmp(s, "nanomoe") == 0) return RCPP_ARCH_NANOMOE;
+    if (strcmp(s, "nanos1_1lite") == 0) return RCPP_ARCH_NANOS11LITE;
+    if (strcmp(s, "nanothink") == 0) return RCPP_ARCH_NANOTHINK;
+    if (strcmp(s, "nanotransformer") == 0) return RCPP_ARCH_NANOTRANSFORMER;
+    if (strcmp(s, "nanowhaledime") == 0) return RCPP_ARCH_NANOWHALEDIME;
+    if (strcmp(s, "narctiny") == 0) return RCPP_ARCH_NARCTINY;
+    if (strcmp(s, "naturecodeocean") == 0) return RCPP_ARCH_NATURECODEOCEAN;
+    if (strcmp(s, "ndlmoe") == 0) return RCPP_ARCH_NDLMOE;
+    if (strcmp(s, "nee") == 0) return RCPP_ARCH_NEE;
+    if (strcmp(s, "needconversational") == 0) return RCPP_ARCH_NEEDCONVERSATIONAL;
+    if (strcmp(s, "nekomindmoe") == 0) return RCPP_ARCH_NEKOMINDMOE;
+    if (strcmp(s, "nepaledgelm") == 0) return RCPP_ARCH_NEPALEDGE;
+    if (strcmp(s, "neuronlm") == 0) return RCPP_ARCH_NEURON;
+    if (strcmp(s, "neuronspark") == 0) return RCPP_ARCH_NEURONSPARK;
+    if (strcmp(s, "nexara") == 0) return RCPP_ARCH_NEXARA;
+    if (strcmp(s, "ngen3") == 0) return RCPP_ARCH_NGEN3;
+    if (strcmp(s, "ngen3forcasuallm") == 0) return RCPP_ARCH_NGEN3_NGEN;
+    if (strcmp(s, "ngen4") == 0) return RCPP_ARCH_NGEN4;
+    if (strcmp(s, "ngen4ow10t") == 0) return RCPP_ARCH_NGEN4OW10T;
+    if (strcmp(s, "nilex") == 0) return RCPP_ARCH_NILEX;
+    if (strcmp(s, "noeum") == 0) return RCPP_ARCH_NOEUM;
+    if (strcmp(s, "notokengen") == 0) return RCPP_ARCH_NOTOKENGEN;
+    if (strcmp(s, "ntv3generative") == 0) return RCPP_ARCH_NTV3GENERATIVE;
+    if (strcmp(s, "nushy5") == 0) return RCPP_ARCH_NUSHY5;
+    if (strcmp(s, "obilanguage") == 0) return RCPP_ARCH_OBILANGUAGE;
+    if (strcmp(s, "obsidianmultiscreen") == 0) return RCPP_ARCH_OBSIDIANMULTISCREEN;
+    if (strcmp(s, "odinnext") == 0) return RCPP_ARCH_ODINNEXT;
+    if (strcmp(s, "olm3nano") == 0) return RCPP_ARCH_OLM3NANO;
+    if (strcmp(s, "openmythos") == 0) return RCPP_ARCH_OPENMYTHOS;
+    if (strcmp(s, "openthaiwilai") == 0) return RCPP_ARCH_OPENTHAIWILAI;
+    if (strcmp(s, "openvlaforactionprediction") == 0) return RCPP_ARCH_OPENVLAFORACTIONPREDICTI;
+    if (strcmp(s, "orionmoecausallm") == 0) return RCPP_ARCH_ORIONMOECAUSAL;
+    if (strcmp(s, "os24") == 0) return RCPP_ARCH_OS24;
+    if (strcmp(s, "otterlm") == 0) return RCPP_ARCH_OTTER;
+    if (strcmp(s, "outliermoe") == 0) return RCPP_ARCH_OUTLIERMOE;
+    if (strcmp(s, "packedllm") == 0) return RCPP_ARCH_PACKEDL;
+    if (strcmp(s, "pagnolxl") == 0) return RCPP_ARCH_PAGNOLXL;
+    if (strcmp(s, "paintermodel") == 0) return RCPP_ARCH_PAINTER;
+    if (strcmp(s, "panolm") == 0) return RCPP_ARCH_PANO;
+    if (strcmp(s, "param1moe") == 0) return RCPP_ARCH_PARAM1MOE;
+    if (strcmp(s, "param2moe") == 0) return RCPP_ARCH_PARAM2MOE;
+    if (strcmp(s, "paramtatvatransformer") == 0) return RCPP_ARCH_PARAMTATVATRANSFORMER;
+    if (strcmp(s, "parchment") == 0) return RCPP_ARCH_PARCHMENT;
+    if (strcmp(s, "persimmon") == 0) return RCPP_ARCH_PERSIMMON;
+    if (strcmp(s, "pinanolm100m") == 0) return RCPP_ARCH_PINANOLM100M;
+    if (strcmp(s, "pinanolm20m") == 0) return RCPP_ARCH_PINANOLM20M;
+    if (strcmp(s, "pinanolm50m") == 0) return RCPP_ARCH_PINANOLM50M;
+    if (strcmp(s, "pinkelephant") == 0) return RCPP_ARCH_PINKELEPHANT;
+    if (strcmp(s, "plapt") == 0) return RCPP_ARCH_PLAPT;
+    if (strcmp(s, "plbart") == 0) return RCPP_ARCH_PLBART;
+    if (strcmp(s, "pletinylm") == 0) return RCPP_ARCH_PLETINY;
+    if (strcmp(s, "pm_minifinllm_") == 0) return RCPP_ARCH_PMMINIFINL;
+    if (strcmp(s, "porthormoe") == 0) return RCPP_ARCH_PORTHORMOE;
+    if (strcmp(s, "prajnastudentmultilayer") == 0) return RCPP_ARCH_PRAJNASTUDENTMULTILAYER;
+    if (strcmp(s, "pratchya") == 0) return RCPP_ARCH_PRATCHYA;
+    if (strcmp(s, "prismcharmlp") == 0) return RCPP_ARCH_PRISMCHARMLP;
+    if (strcmp(s, "privatellm") == 0) return RCPP_ARCH_PRIVATEL;
+    if (strcmp(s, "pzdrk-reasoning") == 0) return RCPP_ARCH_PZDRKREASONING;
+    if (strcmp(s, "qmoe") == 0) return RCPP_ARCH_QMOE;
+    if (strcmp(s, "qofficesuiteruntime") == 0) return RCPP_ARCH_QOFFICESUITERUNTIME;
+    if (strcmp(s, "qovaryx") == 0) return RCPP_ARCH_QOVARYX;
+    if (strcmp(s, "quadorbit") == 0) return RCPP_ARCH_QUADORBIT;
+    if (strcmp(s, "ramo") == 0) return RCPP_ARCH_RAMO;
+    if (strcmp(s, "ravenguard") == 0) return RCPP_ARCH_RAVENGUARD;
+    if (strcmp(s, "realtransformer") == 0) return RCPP_ARCH_REALTRANSFORMER;
+    if (strcmp(s, "recombinationtransformer") == 0) return RCPP_ARCH_RECOMBINATIONTRANSFORMER;
+    if (strcmp(s, "recursivecompressorlm") == 0) return RCPP_ARCH_RECURSIVECOMPRESSOR;
+    if (strcmp(s, "recursivelanguage") == 0) return RCPP_ARCH_RECURSIVELANGUAGE;
+    if (strcmp(s, "regressionisattention") == 0) return RCPP_ARCH_REGRESSIONISATTENTION;
+    if (strcmp(s, "ritamodel") == 0) return RCPP_ARCH_RITA;
+    if (strcmp(s, "rubirlm") == 0) return RCPP_ARCH_RUBIR;
+    if (strcmp(s, "saffu") == 0) return RCPP_ARCH_SAFFU;
+    if (strcmp(s, "sasequintillionasi") == 0) return RCPP_ARCH_SASEQUINTILLIONASI;
+    if (strcmp(s, "sdarmoe") == 0) return RCPP_ARCH_SDARMOE;
+    if (strcmp(s, "sentinelbrain") == 0) return RCPP_ARCH_SENTINELBRAIN;
+    if (strcmp(s, "seqax") == 0) return RCPP_ARCH_SEQAX;
+    if (strcmp(s, "seqcond") == 0) return RCPP_ARCH_SEQCOND;
+    if (strcmp(s, "sermental") == 0) return RCPP_ARCH_SERMENTAL;
+    if (strcmp(s, "sewyv2") == 0) return RCPP_ARCH_SEWYV2;
+    if (strcmp(s, "shivikm1") == 0) return RCPP_ARCH_SHIVIKM1;
+    if (strcmp(s, "shivikm2") == 0) return RCPP_ARCH_SHIVIKM2;
+    if (strcmp(s, "shivikm4") == 0) return RCPP_ARCH_SHIVIKM4;
+    if (strcmp(s, "shrinkmodel") == 0) return RCPP_ARCH_SHRINK;
+    if (strcmp(s, "siger") == 0) return RCPP_ARCH_SIGER;
+    if (strcmp(s, "simplestories") == 0) return RCPP_ARCH_SIMPLESTORIES;
+    if (strcmp(s, "simplestories4m") == 0) return RCPP_ARCH_SIMPLESTORIES4M;
+    if (strcmp(s, "sixpertmoe") == 0) return RCPP_ARCH_SIXPERTMOE;
+    if (strcmp(s, "slimmoe") == 0) return RCPP_ARCH_SLIMMOE;
+    if (strcmp(s, "slmoe") == 0) return RCPP_ARCH_SLMOE;
+    if (strcmp(s, "smalllanguage") == 0) return RCPP_ARCH_SMALLLANGUAGE;
+    if (strcmp(s, "smartcodermoe") == 0) return RCPP_ARCH_SMARTCODERMOE;
+    if (strcmp(s, "smdm") == 0) return RCPP_ARCH_SMDM;
+    if (strcmp(s, "smmodel") == 0) return RCPP_ARCH_SM;
+    if (strcmp(s, "smtmodel") == 0) return RCPP_ARCH_SMT;
+    if (strcmp(s, "sofanor") == 0) return RCPP_ARCH_SOFANOR;
+    if (strcmp(s, "solollm") == 0) return RCPP_ARCH_SOLOL;
+    if (strcmp(s, "sonamath") == 0) return RCPP_ARCH_SONAMATH;
+    if (strcmp(s, "soraforslm") == 0) return RCPP_ARCH_SORAFORS;
+    if (strcmp(s, "sovythos") == 0) return RCPP_ARCH_SOVYTHOS;
+    if (strcmp(s, "sphericalkanbytelm") == 0) return RCPP_ARCH_SPHERICALKANBYTE;
+    if (strcmp(s, "srcprober") == 0) return RCPP_ARCH_SRCPROBER;
+    if (strcmp(s, "statehead") == 0) return RCPP_ARCH_STATEHEAD;
+    if (strcmp(s, "steerling") == 0) return RCPP_ARCH_STEERLING;
+    if (strcmp(s, "stellarai") == 0) return RCPP_ARCH_STELLARAI;
+    if (strcmp(s, "stochasticfrequencyfilter") == 0) return RCPP_ARCH_STOCHASTICFREQUENCYFILTE;
+    if (strcmp(s, "suprabrain") == 0) return RCPP_ARCH_SUPRABRAIN;
+    if (strcmp(s, "swarmmoe") == 0) return RCPP_ARCH_SWARMMOE;
+    if (strcmp(s, "sweta") == 0) return RCPP_ARCH_SWETA;
+    if (strcmp(s, "sykocausallm") == 0) return RCPP_ARCH_SYKOCAUSAL;
+    if (strcmp(s, "tahqiqgenesis") == 0) return RCPP_ARCH_TAHQIQGENESIS;
+    if (strcmp(s, "tamazight") == 0) return RCPP_ARCH_TAMAZIGHT;
+    if (strcmp(s, "tamelm") == 0) return RCPP_ARCH_TAME;
+    if (strcmp(s, "tamiltinystories") == 0) return RCPP_ARCH_TAMILTINYSTORIES;
+    if (strcmp(s, "taonetminit2") == 0) return RCPP_ARCH_TAONETMINIT2;
+    if (strcmp(s, "tcmoe") == 0) return RCPP_ARCH_TCMOE;
+    if (strcmp(s, "thinkerlm") == 0) return RCPP_ARCH_THINKER;
+    if (strcmp(s, "tiny") == 0) return RCPP_ARCH_TINY;
+    if (strcmp(s, "tinybuddy") == 0) return RCPP_ARCH_TINYBUDDY;
+    if (strcmp(s, "tinylm") == 0) return RCPP_ARCH_TINY_TINY;
+    if (strcmp(s, "tinymind") == 0) return RCPP_ARCH_TINYMIND;
+    if (strcmp(s, "tinypellm") == 0) return RCPP_ARCH_TINYPEL;
+    if (strcmp(s, "tinyv4") == 0) return RCPP_ARCH_TINYV4;
+    if (strcmp(s, "tinyway") == 0) return RCPP_ARCH_TINYWAY;
+    if (strcmp(s, "tnl1-385m-10b-token_no-act") == 0) return RCPP_ARCH_TNL1385M10BTOKENNOACT;
+    if (strcmp(s, "tokenformer") == 0) return RCPP_ARCH_TOKENFORMER;
+    if (strcmp(s, "tokilm") == 0) return RCPP_ARCH_TOKI;
+    if (strcmp(s, "toyllm") == 0) return RCPP_ARCH_TOYL;
+    if (strcmp(s, "transcoremqwen") == 0) return RCPP_ARCH_TRANSCOREMQWEN;
+    if (strcmp(s, "transformerchatbot") == 0) return RCPP_ARCH_TRANSFORMERCHATBOT;
+    if (strcmp(s, "transformermodel") == 0) return RCPP_ARCH_TRANSFORMER;
+    if (strcmp(s, "transformerwithpruning") == 0) return RCPP_ARCH_TRANSFORMERWITHPRUNING;
+    if (strcmp(s, "trmtextism") == 0) return RCPP_ARCH_TRMTEXTISM;
+    if (strcmp(s, "trocr") == 0) return RCPP_ARCH_TROCR;
+    if (strcmp(s, "trtcv4") == 0) return RCPP_ARCH_TRTCV4;
+    if (strcmp(s, "tttpilotmac") == 0) return RCPP_ARCH_TTTPILOTMAC;
+    if (strcmp(s, "turinglm") == 0) return RCPP_ARCH_TURING;
+    if (strcmp(s, "twinkelllm") == 0) return RCPP_ARCH_TWINKELL;
+    if (strcmp(s, "tynerox") == 0) return RCPP_ARCH_TYNEROX;
+    if (strcmp(s, "ullava") == 0) return RCPP_ARCH_ULLAVA;
+    if (strcmp(s, "ullavacore") == 0) return RCPP_ARCH_ULLAVACORE;
+    if (strcmp(s, "unifiedlm") == 0) return RCPP_ARCH_UNIFIED;
+    if (strcmp(s, "urchinparallel") == 0) return RCPP_ARCH_URCHINPARALLEL;
+    if (strcmp(s, "vanfast") == 0) return RCPP_ARCH_VANFAST;
+    if (strcmp(s, "vegalm") == 0) return RCPP_ARCH_VEGA;
+    if (strcmp(s, "vegav1") == 0) return RCPP_ARCH_VEGAV1;
+    if (strcmp(s, "veramoelite") == 0) return RCPP_ARCH_VERAMOELITE;
+    if (strcmp(s, "verantyx") == 0) return RCPP_ARCH_VERANTYX;
+    if (strcmp(s, "vgt_8l_engine") == 0) return RCPP_ARCH_VGT8LENGINE;
+    if (strcmp(s, "vilaforcasuallm") == 0) return RCPP_ARCH_VILA;
+    if (strcmp(s, "vlite3") == 0) return RCPP_ARCH_VLITE3;
+    if (strcmp(s, "vlite3_5") == 0) return RCPP_ARCH_VLITE35;
+    if (strcmp(s, "vlite7") == 0) return RCPP_ARCH_VLITE7;
+    if (strcmp(s, "vlite7mini20m") == 0) return RCPP_ARCH_VLITE7MINI20M;
+    if (strcmp(s, "vrinda") == 0) return RCPP_ARCH_VRINDA;
+    if (strcmp(s, "vritya") == 0) return RCPP_ARCH_VRITYA;
+    if (strcmp(s, "vsb") == 0) return RCPP_ARCH_VSB;
+    if (strcmp(s, "wasminterpretertransformer") == 0) return RCPP_ARCH_WASMINTERPRETERTRANSFORM;
+    if (strcmp(s, "wbot_1_5") == 0) return RCPP_ARCH_WBOT15;
+    if (strcmp(s, "welmia") == 0) return RCPP_ARCH_WELMIA;
+    if (strcmp(s, "wildnerve_tlm01") == 0) return RCPP_ARCH_WILDNERVETLM01;
+    if (strcmp(s, "wiola") == 0) return RCPP_ARCH_WIOLA;
+    if (strcmp(s, "wordlatenttransformer") == 0) return RCPP_ARCH_WORDLATENTTRANSFORMER;
+    if (strcmp(s, "wyrmling") == 0) return RCPP_ARCH_WYRMLING;
+    if (strcmp(s, "xerobioai") == 0) return RCPP_ARCH_XEROBIOAI;
+    if (strcmp(s, "xlstm") == 0) return RCPP_ARCH_XLSTM;
+    if (strcmp(s, "xomdich") == 0) return RCPP_ARCH_XOMDICH;
+    if (strcmp(s, "yazh") == 0) return RCPP_ARCH_YAZH;
+    if (strcmp(s, "yforcausallm1_1") == 0) return RCPP_ARCH_Y11;
+    if (strcmp(s, "yforcausallm2") == 0) return RCPP_ARCH_Y2;
+    if (strcmp(s, "yforcausallm3") == 0) return RCPP_ARCH_Y3;
+    if (strcmp(s, "yforcausallm31") == 0) return RCPP_ARCH_Y31;
+    if (strcmp(s, "zetagrid25b") == 0) return RCPP_ARCH_ZETAGRID25B;
+    if (strcmp(s, "zipformer") == 0) return RCPP_ARCH_ZIPFORMER;
+    if (strcmp(s, "zorixnano") == 0) return RCPP_ARCH_ZORIXNANO;
+    if (strcmp(s, "zzjrabbit2") == 0) return RCPP_ARCH_ZZJRABBIT2;
+    if (strcmp(s, "zzjrabbit22") == 0) return RCPP_ARCH_ZZJRABBIT22;
+    if (strcmp(s, "zzjrabbit3") == 0) return RCPP_ARCH_ZZJRABBIT3;
+    if (strcmp(s, "zzjrabbitmodel") == 0) return RCPP_ARCH_ZZJRABBIT;
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
 }

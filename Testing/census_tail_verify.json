@@ -78,9 +78,9 @@
  "acerag": {
   "candidate": "wcyno23/acerag-llama2-7b",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=8 nh=0)",
-  "model_type": "AceRAG"
+  "model_type": "acerag"
  },
  "acip": {
   "candidate": "merantixmomentum/acip_llama1_7b",
@@ -135,9 +135,9 @@
  "aero": {
   "candidate": "kcz358/aero-realtime-4b",
   "count": 1,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "aero"
+  "model_type": "aero_realtime"
  },
  "aethermicro": {
   "candidate": "Be2Jay/AETHER-Micro-0.5B",
@@ -168,9 +168,9 @@
  "agora": {
   "candidate": "agorax/lumixion-e1-70k-fncall-qlora",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=1e-06)",
-  "model_type": "agora"
+  "model_type": "qwen"
  },
  "ahaqwen3": {
   "candidate": "xuan-luo/ahaqwen3-0.6b",
@@ -254,9 +254,9 @@
  "andrea": {
   "candidate": "andreaskoepf/oasst-1_12b_3000",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=None ln=None)",
-  "model_type": "andrea"
+  "model_type": "gpt_neox"
  },
  "anubismoe": {
   "candidate": null,
@@ -300,9 +300,9 @@
  "aq": {
   "candidate": "xyzailab/xyz-aquila-mini",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "aq"
+  "model_type": "qwen3_5_moe"
  },
  "aquiladense": {
   "candidate": "baai/aquiladense-16b",
@@ -504,9 +504,9 @@
  "axion": {
   "candidate": "axionlab-co/axionmoe-350k-a250k",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "axion"
+  "model_type": "deepseek_nano"
  },
  "axk1": {
   "candidate": "thkim93/axk1-2layers",
@@ -531,16 +531,16 @@
  "ayavision": {
   "candidate": "trishanudas/tayavision-instruct-665k",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "aya_vision"
+  "model_type": "tiny_aya_vision"
  },
  "babylm": {
   "candidate": "babylm/opt-125m-strict-small-2023",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=relu eps=None rope=None ln=None)",
-  "model_type": "babylm"
+  "model_type": "opt"
  },
  "bacformerforcausalgm": {
   "candidate": null,
@@ -557,9 +557,9 @@
  "baclm": {
   "candidate": "macwiatrak/baclm-350m-causal",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=swiglu eps=None rope=None ln=None)",
-  "model_type": "BacLM"
+  "model_type": "baclm"
  },
  "bagel": {
   "candidate": "huggingtweets/samebagels",
@@ -783,9 +783,9 @@
  "bharatai": {
   "candidate": "recag/bharatai",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "BharatAI"
+  "model_type": "bharatai"
  },
  "bharatgpt": {
   "candidate": "corover/bharatgpt-3b-indic",
@@ -796,9 +796,9 @@
  "biatron": {
   "candidate": "biatron/biatron-345m",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=10000.0 ln=None)",
-  "model_type": "Biatron"
+  "model_type": "biatron"
  },
  "bigbird": {
   "candidate": "schreon/bigbird-lhm-large",
@@ -823,9 +823,9 @@
  "bija": {
   "candidate": "hgnoi/ba6abija92tfamlp",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "bija"
+  "model_type": "stablelm"
  },
  "binaryllm": {
   "candidate": "LLM4Binary/binaryLLM",
@@ -909,9 +909,9 @@
  "blip": {
   "candidate": "kpyu/video-blip-opt-2.7b-ego4d",
   "count": 1,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "blip"
+  "model_type": "blip-2"
  },
  "blockffn": {
   "candidate": "sparsellm/blockffn-3b-sft",
@@ -923,9 +923,9 @@
  "blt": {
   "candidate": "hgnoi/jsdokiy2fyibltgs",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "blt"
+  "model_type": "stablelm"
  },
  "boomer": {
   "candidate": "budecosystem/boomer-1b",
@@ -1103,9 +1103,9 @@
  "cascade": {
   "candidate": "nvidia/nemotron-cascade-2-30b-a3b",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=10000 ln=1e-05)",
-  "model_type": "cascade_byte_lm"
+  "model_type": "nemotron_h"
  },
  "cats": {
   "candidate": "thecatsmoo/dialoggpt-small-joshua",
@@ -1194,9 +1194,9 @@
  "chattitle": {
   "candidate": "OleFranz/Chat-Titles-230M",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "encoder_decoder"
+  "model_type": "lfm2"
  },
  "chatunivillama": {
   "candidate": null,
@@ -1214,9 +1214,9 @@
  "chessllm": {
   "candidate": "huyvux3005/chessllm_fpt",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=10000 ln=None)",
-  "model_type": "chess_llm"
+  "model_type": "gpt_neox"
  },
  "chesstrm": {
   "candidate": "LLM-course/chess-trm-powerful",
@@ -1595,9 +1595,9 @@
  "custom": {
   "candidate": "blazingcustoms/acrostic-4b-v4a",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=1e-06 rope=None ln=None)",
-  "model_type": "custom"
+  "model_type": "qwen3"
  },
  "custombart": {
   "candidate": "SoooSlooow/custom-bart-large-cnn",
@@ -1620,9 +1620,9 @@
  "custommodel": {
   "candidate": "abc7431/custommodel",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=1e-05)",
-  "model_type": "custom_llm"
+  "model_type": "falcon"
  },
  "custommodel4": {
   "candidate": null,
@@ -1807,9 +1807,9 @@
  "debertav2": {
   "candidate": "ku-nlp/deberta-v2-tiny-japanese",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=None ln=None)",
-  "model_type": null
+  "model_type": "deberta-v2"
  },
  "debertav2forsequenceclassification": {
   "candidate": "ydshieh/tiny-random-DebertaV2ForSequenceClassification",
@@ -1879,9 +1879,9 @@
  "deepseekocr": {
   "candidate": "deepseek-ai/DeepSeek-OCR-2",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "DeepseekOCR"
+  "model_type": "deepseek_vl_v2"
  },
  "deepseekvlv2": {
   "candidate": "Baldezo313/deepseek_vl_v2_lora_model",
@@ -1912,9 +1912,9 @@
  "dendro": {
   "candidate": "eleutherai/pythia-160m-hiddendropout",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=None ln=None)",
-  "model_type": "dendro_omni"
+  "model_type": "gpt_neox"
  },
  "densellm": {
   "candidate": "algodriveai/akkadian_english_densellm_1b",
@@ -2043,16 +2043,16 @@
  "dit": {
   "candidate": "mkurman/lfm2.5-2.6b-medit-mesh",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "dit-instruct"
+  "model_type": "mistral3"
  },
  "divedoc": {
   "candidate": "JayRay5/DIVE-Doc-ARD-LRes",
   "count": 1,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "DIVEdoc"
+  "model_type": "divedoc"
  },
  "dlmllama": {
   "candidate": null,
@@ -2453,9 +2453,9 @@
  "eryon": {
   "candidate": "rombodawg/everyone-coder-4x7b-base",
   "count": 2,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=4",
-  "model_type": "Eryon"
+  "model_type": "mixtral"
  },
  "eshmun": {
   "candidate": "khairi/eshmun-r1-400m-grpo",
@@ -2607,9 +2607,9 @@
  "fastplus": {
   "candidate": "aixk/fastplus-42m",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "fastplus"
+  "model_type": "fastplus_40m"
  },
  "fastplus125m": {
   "candidate": "aixk/fastplus-125m",
@@ -3315,9 +3315,9 @@
  "gpt2rope": {
   "candidate": "shubham212/gpt2_rope_swi",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "gpt2_rope"
+  "model_type": "custom_gpt"
  },
  "gpt2tokenizer": {
   "candidate": "SaulLu/gpt2_tokenizer_fixed",
@@ -3551,9 +3551,9 @@
  "graniteswa": {
   "candidate": "ibm-granite/granite-swash-3b-a600m",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=48",
-  "model_type": "granite_swa"
+  "model_type": "granitemoe_swa"
  },
  "graniteswitch": {
   "candidate": "ibm-granite/granite-switch-4.1-8b-preview",
@@ -3617,9 +3617,9 @@
  "grok2": {
   "candidate": "xai-org/grok-2",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=8",
-  "model_type": "grok2"
+  "model_type": "git"
  },
  "groundedbliplm": {
   "candidate": null,
@@ -3643,9 +3643,9 @@
  "gtlm": {
   "candidate": "selmisskilig/egtlm-mistral7b-instruct",
   "count": 2,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=0",
-  "model_type": "gtlm_moe"
+  "model_type": "mistral"
  },
  "guppylm": {
   "candidate": "arman-bd/guppylm-9m",
@@ -3755,9 +3755,9 @@
  "helion": {
   "candidate": "weyaxi/helion-4x34b",
   "count": 2,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=4",
-  "model_type": "helion"
+  "model_type": "mixtral"
  },
  "helionosc": {
   "candidate": "DeepXR/Helion-OSC",
@@ -3850,9 +3850,9 @@
  "hfp": {
   "candidate": "tistak/hvfjkaxhrgvkzhfp",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "hfp"
+  "model_type": "stablelm"
  },
  "hftransformer": {
   "candidate": "paarandika/hf_transformer_test_BART",
@@ -3904,16 +3904,16 @@
  "hindicausallm": {
   "candidate": "convaiinnovations/hindi-causal-lm",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000.0 ln=None)",
-  "model_type": "hindi_causal_lm"
+  "model_type": "convaicausallm"
  },
  "hixtral": {
   "candidate": "mlabonne/phixtral-2x2_8",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=2",
-  "model_type": "hixtral"
+  "model_type": "phi-msft"
  },
  "hlm5": {
   "candidate": "qriton/hlm5-3b-base",
@@ -3938,9 +3938,9 @@
  "hrm": {
   "candidate": "mistyozai/cosmicfish-hrm",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=448 L=0 nh=8)",
-  "model_type": "hrm"
+  "model_type": "cosmicfish_hrm"
  },
  "hrmcosmicfish": {
   "candidate": null,
@@ -4022,9 +4022,9 @@
  "husky": {
   "candidate": "huskyhong/noname-ai-v1",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=1e-06)",
-  "model_type": "husky"
+  "model_type": "qwen"
  },
  "hybrid": {
   "candidate": "jashepp/ornith-1.0-35b-a3b-mxfp4_moe_hybrid-imatrix-gguf",
@@ -4120,9 +4120,9 @@
  "hyperclovax": {
   "candidate": "naver-hyperclovax/hyperclovax-seed-omni-8b",
   "count": 6,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "hyperclovax"
+  "model_type": "vlm"
  },
  "hypermambalm": {
   "candidate": "hoanghai2110/hypermambalm-300m",
@@ -4140,9 +4140,9 @@
  "hyperpartisan": {
   "candidate": "allenai/dsp_roberta_base_dapt_news_tapt_hyperpartisan_news_5015",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=None ln=None)",
-  "model_type": "ft_emb_traits"
+  "model_type": "roberta"
  },
  "hyv3vl": {
   "candidate": null,
@@ -4153,9 +4153,9 @@
  "i3": {
   "candidate": "yuuki367/gpt-oss-20b-chat-lawyer",
   "count": 5,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=32",
-  "model_type": "i3"
+  "model_type": "llama"
  },
  "i3hybrid": {
   "candidate": null,
@@ -4185,9 +4185,9 @@
  "iconn": {
   "candidate": "iconnai/iconn-e1-beta",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=4",
-  "model_type": "iconn"
+  "model_type": "mixtral"
  },
  "idefics2": {
   "candidate": "huggingfacem4/idefics2_raven_finetuned",
@@ -4315,9 +4315,9 @@
  "innovatorvl": {
   "candidate": "InnovatorLab/Innovator-VL-8B-Instruct",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "innovator_vl"
+  "model_type": "innovator_vl_text"
  },
  "instella": {
   "candidate": "amd/instella-moe-16b-a3b-think",
@@ -4342,9 +4342,9 @@
  "intellix": {
   "candidate": "mediusware-ai/intellix",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=1e-06 rope=None ln=None)",
-  "model_type": "intellix"
+  "model_type": "qwen2"
  },
  "internlmxcomposer": {
   "candidate": "internlm/internlm-xcomposer-7b",
@@ -4402,9 +4402,9 @@
  "ivme": {
   "candidate": "ivmelabs/ivme-conversate-s-v1-base",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "ivme"
+  "model_type": "llama"
  },
  "ivmecoderv1": {
   "candidate": "IvmeLabs/Ivme-Coder-v1",
@@ -4586,9 +4586,9 @@
  "keystonefuse": {
   "candidate": "hyper-ai-computer/keystonefuse-init",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=1e-06 rope=1000000 ln=None)",
-  "model_type": "KeystoneFuse"
+  "model_type": "keystonefuse"
  },
  "kfm": {
   "candidate": "kfmix/pub-kfmodel",
@@ -4690,9 +4690,9 @@
  "kv1": {
   "candidate": "tistak/96xtgilyvjwqkv1f",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "banana_kv1"
+  "model_type": "stablelm"
  },
  "kvlatent": {
   "candidate": null,
@@ -4891,9 +4891,9 @@
  "lil": {
   "candidate": "lilarest/gemma-4-31b-it-nvfp4-turbo",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "lilm"
+  "model_type": "gemma4"
  },
  "lime": {
   "candidate": "huggingtweets/beingandslime",
@@ -4919,9 +4919,9 @@
  "liquid": {
   "candidate": "liquidai/lfm2.5-2.6b",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "liquid-former"
+  "model_type": "lfm2"
  },
  "litallama": {
   "candidate": null,
@@ -4996,9 +4996,9 @@
  "llama3": {
   "candidate": "davidau/llama3.2-24b-a3b-ii-dark-champion-instruct-heretic-abliterated-uncensored",
   "count": 2,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=8",
-  "model_type": "llama3"
+  "model_type": "llama"
  },
  "llama3custom": {
   "candidate": "nurungzi/llama3-custom_v2",
@@ -5185,9 +5185,9 @@
  "llamavision": {
   "candidate": "kiddobellamy/Llama_Vision",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=1e-05 rope=500000.0 ln=None)",
-  "model_type": "llamavision"
+  "model_type": "llama"
  },
  "llamawithintervention": {
   "candidate": null,
@@ -5204,16 +5204,16 @@
  "llamiaflux": {
   "candidate": "ssingh22/llamiaflux-7b-unprojector-inverted",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "LLAMIAFlux"
+  "model_type": "llamiaflux"
  },
  "llamoe": {
   "candidate": "damerajee/llamoe-test",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=4",
-  "model_type": "Llamoe"
+  "model_type": "llamoe"
  },
  "llasa": {
   "candidate": "josedellasala/llama-3-8b-instruct-e7000-final-3epochs-rag",
@@ -5331,9 +5331,9 @@
  "llavastablelm": {
   "candidate": "ZhangAnny/llavastablelm-1.6b-finetune-moePlus3_zero-only",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "llava_stablelm"
+  "model_type": "moe_plus_llava_stablelm"
  },
  "llavastablelm_1_6b": {
   "candidate": null,
@@ -5362,9 +5362,9 @@
  "llm": {
   "candidate": "orionllm/lrm-3.2",
   "count": 3,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "lingua_laboratorium_mechanicus"
+  "model_type": "qwen3_5"
  },
  "llm2slmgpt2": {
   "candidate": null,
@@ -5375,9 +5375,9 @@
  "lltransformer": {
   "candidate": "mtzig/lltransformer-fwe",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "LLTransformer"
+  "model_type": "lltransformer"
  },
  "lmdeploy": {
   "candidate": "lmdeploy/internlm-chat-7b-w4",
@@ -5422,9 +5422,9 @@
  "logos": {
   "candidate": "rubiellabarta/logos-7bx2-moe-13b-v0.2",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=2",
-  "model_type": "logos"
+  "model_type": "mixtral"
  },
  "loleve": {
   "candidate": "Marks-lab/LOL-EVE",
@@ -5699,16 +5699,16 @@
  "matchcommentary": {
   "candidate": "abocide/matchcommentary",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "Matchcommentary"
+  "model_type": "matchcommentary"
  },
  "matformer": {
   "candidate": "varshu23/gemma3n-text-matformer",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "matformer"
+  "model_type": "gemma3n"
  },
  "mathbananamind": {
   "candidate": "bananamind/mathbananamind-1.1",
@@ -5752,9 +5752,9 @@
  "mdlm": {
   "candidate": "kuleshov-group/mdlm-owt-noeos",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "mdlm"
+  "model_type": "bd3lm"
  },
  "mdlmbpev4": {
   "candidate": null,
@@ -5843,9 +5843,9 @@
  "mesh": {
   "candidate": "mkurman/lfm2.5-2.6b-medit-mesh",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "mesh"
+  "model_type": "lfm2"
  },
  "metadiffusion": {
   "candidate": "codesoft/metadiffusion-150m-exp",
@@ -5882,9 +5882,9 @@
  "mgmomni": {
   "candidate": "wcy1122/MGM-Omni-7B",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "MGMOmni"
+  "model_type": "mgmomni"
  },
  "microbanana": {
   "candidate": "bananamind/microbananamind-v1",
@@ -6073,9 +6073,9 @@
  "minimaxm3vl": {
   "candidate": "hf-tiny-v2/tiny-random-MiniMaxM3VLModel",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "minimax_m3_vl_text"
+  "model_type": "minimax_m3_vl"
  },
  "minimaxtext01": {
   "candidate": "MiniMaxAI/MiniMax-Text-01",
@@ -6406,9 +6406,9 @@
  "moe": {
   "candidate": "bananamind/bananamind-2-slmoe",
   "count": 5,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=0",
-  "model_type": "MoE++"
+  "model_type": "slmoe"
  },
  "moedl": {
   "candidate": "vuiseng9/01_moedl_dense-0119",
@@ -6420,9 +6420,9 @@
  "moegpt": {
   "candidate": "Kiy-K/moe-gpt-neox-125m-v1.1",
   "count": 2,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=0",
-  "model_type": "moe_gpt"
+  "model_type": "gpt_neox"
  },
  "moegpt2": {
   "candidate": null,
@@ -6453,9 +6453,9 @@
  "moellavaqwen": {
   "candidate": "tuanio/moellavaqwen1.5-1.8b-ft",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=0",
-  "model_type": "moe_llava_qwen"
+  "model_type": "moe_llava_qwen1_5"
  },
  "moellavaqwen1_5": {
   "candidate": null,
@@ -6544,9 +6544,9 @@
  "monkey": {
   "candidate": "zenosai/monkeyocrv2-b-parsing",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "monkey"
+  "model_type": "monkeyocrv2"
  },
  "monoid": {
   "candidate": null,
@@ -6614,9 +6614,9 @@
  "mot": {
   "candidate": "nvidia/nvidia-nemotron-3.5-lightning-30b-a3b-nvfp4",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=10000 ln=1e-05)",
-  "model_type": "mot"
+  "model_type": "nemotron_h"
  },
  "mothercore": {
   "candidate": "MediaStreamAI/MOTHER_CORE_V3",
@@ -6892,9 +6892,9 @@
  "nanonano": {
   "candidate": "ray0rf1re/nano-nano-669-v1",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "nano-nano"
+  "model_type": "qwen3"
  },
  "nanoqwen": {
   "candidate": "Secbone/nano-Qwen3",
@@ -6965,9 +6965,9 @@
  "ndlmoe": {
   "candidate": "ndlcwx/ndlmoe_1.3b-base",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=0",
-  "model_type": "NdlMOE"
+  "model_type": "ndlmoe"
  },
  "nebulax": {
   "candidate": "TeeZee/NEBULA-XB-v1.0",
@@ -6979,9 +6979,9 @@
  "nee": {
   "candidate": "cactus-compute/needle2",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=100000.0 ln=None)",
-  "model_type": "nee"
+  "model_type": "needle"
  },
  "needconversational": {
   "candidate": null,
@@ -7074,9 +7074,9 @@
  "neuralquantumnqlm": {
   "candidate": "NeuralQuantum/nqlm-base",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "neuralquantum_nqlm"
+  "model_type": "nqlm"
  },
  "neuronlm": {
   "candidate": null,
@@ -7108,9 +7108,9 @@
  "new": {
   "candidate": "minhtoan/gpt3-small-finetune-cnndaily-news",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=768 L=0 nh=0)",
-  "model_type": "new"
+  "model_type": "qwen3"
  },
  "newfortokenclassification": {
   "candidate": null,
@@ -7205,9 +7205,9 @@
  "noeum": {
   "candidate": "noeum/noeum-1-nano",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "noeum"
+  "model_type": "ramo"
  },
  "nopegpthuggingface": {
   "candidate": null,
@@ -7397,9 +7397,9 @@
  "openaimoe": {
   "candidate": "alfuyao/openai-moe-sft-mixtral-skeleton-4kseq-2bs_pd-gas2",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=32",
-  "model_type": "openai_moe"
+  "model_type": "mixtral"
  },
  "openba": {
   "candidate": "opennlg/openba-v1-flan",
@@ -7443,9 +7443,9 @@
  "openthaiwilai": {
   "candidate": "jonusnattapong/openthaiwilai",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=768 L=0 nh=0)",
-  "model_type": "OpenThaiWilai"
+  "model_type": "openthaiwilai"
  },
  "openvlaforactionprediction": {
   "candidate": null,
@@ -7590,9 +7590,9 @@
  "pangupromoe": {
   "candidate": "IntervitensInc/pangu-pro-moe-model",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=0",
-  "model_type": "PanguProMoE"
+  "model_type": "pangupromoe"
  },
  "panolm": {
   "candidate": "panocularai/panolm-380m",
@@ -7776,9 +7776,9 @@
  "phogpt": {
   "candidate": "tiennguyenbnbk/phogpt_7b5_instruct",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "phogpt"
+  "model_type": "mpt"
  },
  "phonelm": {
   "candidate": "mllmteam/phonelm-0.5b",
@@ -7941,9 +7941,9 @@
  "pm_minifinllm_": {
   "candidate": "Pankaj121212/PM_MiniFinLLM",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=12 nh=12)",
-  "model_type": "PM_MiniFinLLM"
+  "model_type": "pm_minifinllm"
  },
  "pointllmllama": {
   "candidate": null,
@@ -8542,9 +8542,9 @@
  "rabbit": {
   "candidate": "maziyarpanahi/rabbit-7b-dpo-chat-mistral-7b-instruct-v0.1-gguf",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "rabbit_ssm"
+  "model_type": "llama"
  },
  "race": {
   "candidate": "edaizi/kg-traces",
@@ -8655,9 +8655,9 @@
  "recombinationtransformer": {
   "candidate": "xuezha/recombinationtransformer-base",
   "count": 3,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "RecombinationTransformer"
+  "model_type": "recombinationtransformer"
  },
  "recurrentgemma": {
   "candidate": "google/recurrentgemma-2b",
@@ -8700,9 +8700,9 @@
  "regressionisattention": {
   "candidate": "Kratim-Budhimata/Regression-is-Attention",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "Regression-is-Attention"
+  "model_type": "regression-is-attention"
  },
  "rembert": {
   "candidate": "hf-tiny-model-private/tiny-random-rembertforcausallm",
@@ -8746,9 +8746,9 @@
  "ressai": {
   "candidate": "claudioitaly/typressai-9b",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu_pytorch_tanh eps=1e-06 rope=10000.0 ln=None)",
-  "model_type": "onner"
+  "model_type": "gemma2"
  },
  "retnet": {
   "candidate": "parsee-mizuhashi/retnet-tiny-wikitext-undertrained",
@@ -8759,9 +8759,9 @@
  "retrogpt": {
   "candidate": "kssrikar4/RetroGPT",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "adaptive_retro_gpt"
+  "model_type": "retrogpt"
  },
  "reward": {
   "candidate": "hereward/dialogpt_medium_obiwan_kenobi",
@@ -8773,9 +8773,9 @@
  "rex": {
   "candidate": "baai/arex-turbo",
   "count": 1,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "rex"
+  "model_type": "qwen3_5"
  },
  "ringattentiongpt2": {
   "candidate": null,
@@ -8944,9 +8944,9 @@
  "rwkv-6": {
   "candidate": "beomi/korwkv-6b",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=4096 L=28 nh=0)",
-  "model_type": "RWKV-6"
+  "model_type": "rwkv"
  },
  "rwkv07i": {
   "candidate": null,
@@ -9001,9 +9001,9 @@
  "saffu": {
   "candidate": "haoranzhao419/saffu-head",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "saffu-100M-0.1"
+  "model_type": "saffu-100m-0.1"
  },
  "sageloopcoder": {
   "candidate": null,
@@ -9066,9 +9066,9 @@
  "scidfm": {
   "candidate": "opendfm/scidfm-moe-a5.6b-v1.0",
   "count": 1,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=8",
-  "model_type": "SciDFM"
+  "model_type": "scidfm"
  },
  "scrapegoat": {
   "candidate": "nathan9/scrapegoatmusic-s1-7b-anneal-en-cot",
@@ -9167,9 +9167,9 @@
  "sentinelbrain": {
   "candidate": "lablab-ai-amd-developer-hackathon/sentinelbrain-14b-moe-v0.1",
   "count": 3,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=4",
-  "model_type": "sentinel_brain"
+  "model_type": "sentinelbrain"
  },
  "sentinelguardedphi": {
   "candidate": null,
@@ -9700,9 +9700,9 @@
  "srlm": {
   "candidate": "tistak/6t3ipekignjnsrlm",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "srlm"
+  "model_type": "stablelm"
  },
  "ssai": {
   "candidate": "houssaineamzil/dialogpt-small-joey",
@@ -9721,9 +9721,9 @@
  "ssn1": {
   "candidate": "hgnoi/51ldxcuimu7ssn1n",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "ssn1"
+  "model_type": "stablelm"
  },
  "stablelmalpha": {
   "candidate": null,
@@ -9774,16 +9774,16 @@
  "step3v": {
   "candidate": "stepfun-ai/Step3-VL-10B",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "step3_vl"
+  "model_type": "step_robotics"
  },
  "step3vl": {
   "candidate": "stepfun-ai/Step3-VL-10B",
   "count": 2,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "step3_vl"
+  "model_type": "step_robotics"
  },
  "stepaudio2": {
   "candidate": "yigagilbert/stepaudio2-mini-luganda-english-s2st",
@@ -10028,9 +10028,9 @@
  "tanuki": {
   "candidate": "tanukimao/mpt7b-text-summ",
   "count": 4,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "Tanuki"
+  "model_type": "mpt"
  },
  "taonetminit2": {
   "candidate": "TaoTern/TaoNet-mini-T2",
@@ -10115,9 +10115,9 @@
  "thanatos": {
   "candidate": "thanatosq/dolly_v2_3b_0",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu eps=None rope=None ln=None)",
-  "model_type": "purcar_thanatos"
+  "model_type": "gpt_neox"
  },
  "tharo.g": {
   "candidate": "aicraftar/tharo.g-eco",
@@ -10193,9 +10193,9 @@
  "tinylm": {
   "candidate": "fu01978/tinylm",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "babylm-tinylm"
+  "model_type": "tinylm"
  },
  "tinymind": {
   "candidate": "henrysentinel/tinymind",
@@ -10207,9 +10207,9 @@
  "tinymixtral": {
   "candidate": "mmnga/tinymixtral-x8-clonebase-7b",
   "count": 3,
-  "decision": "MOE",
+  "decision": "CONFIG",
   "evidence": "num_local_experts=8",
-  "model_type": "tinymixtral"
+  "model_type": "mixtral"
  },
  "tinypellm": {
   "candidate": "herutriana44/tiny-pellm",
@@ -10274,9 +10274,9 @@
  "tomato": {
   "candidate": "automatosx/ax-qwen3.8-27b-mlx-axq-6bit-mtp",
   "count": 1,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "tomato"
+  "model_type": "qwen3_5"
  },
  "torchmultiomics": {
   "candidate": null,
@@ -10381,16 +10381,16 @@
  "traxl": {
   "candidate": "wonder-griffin/traxl",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "GPT2LMHeadModel"
+  "model_type": "gpt2lmheadmodel"
  },
  "traxlmistral": {
   "candidate": "wonder-griffin/traxlmistralv1-1",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "TraXLMistral"
+  "model_type": "mistral"
  },
  "treeflashdraft": {
   "candidate": null,
@@ -10407,9 +10407,9 @@
  "trm": {
   "candidate": "language-and-voice-lab/bloom560ftrmh",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=1e-05)",
-  "model_type": "trm"
+  "model_type": "bloom"
  },
  "trmgpt": {
   "candidate": null,
@@ -10576,9 +10576,9 @@
  "urm": {
   "candidate": "mkurman/lfm2.5-2.6b-medit-mesh",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "urm"
+  "model_type": "nemotron_h"
  },
  "userllama": {
   "candidate": null,
@@ -10665,9 +10665,9 @@
  "verysmollgpt": {
   "candidate": "igidn/verysmollgpt-5m-base",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "VerySmollGPT"
+  "model_type": "verysmollgpt"
  },
  "vexiongpt": {
   "candidate": "DZER-Studios/Vexion-gpt-medium",
@@ -10713,16 +10713,16 @@
  "vibevoicerealtime": {
   "candidate": "microsoft/VibeVoice-Realtime-0.5B",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "vibevoice_realtime"
+  "model_type": "vibevoice_streaming"
  },
  "videoblip": {
   "candidate": "kpyu/video-blip-opt-2.7b-ego4d",
   "count": 3,
-  "decision": "VLM",
+  "decision": "CONFIG",
   "evidence": "vision tower present",
-  "model_type": "video_blip"
+  "model_type": "blip-2"
  },
  "videochatgptllama": {
   "candidate": null,
@@ -10778,16 +10778,16 @@
  "vlite3_5": {
   "candidate": "aixk/vlite3-59M",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=512 L=8 nh=0)",
-  "model_type": "vlite3.5"
+  "model_type": "vlite3"
  },
  "vlite7": {
   "candidate": "aixk/vlite7-mini-12m-eng",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=None)",
-  "model_type": "vlite7"
+  "model_type": "vlite7_mini_20m"
  },
  "vlite7mini20m": {
   "candidate": null,
@@ -10892,9 +10892,9 @@
  "wbot_1_5": {
   "candidate": "WZH-Team/Wbot-1-5-small",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "no standard dims (h=0 L=0 nh=0)",
-  "model_type": "Wbot"
+  "model_type": "wbot"
  },
  "welmia": {
   "candidate": "welmia/welmia-1.0-81m",
@@ -10912,9 +10912,9 @@
  "wikimini": {
   "candidate": "studio-silon/wikimini-v2",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu_pytorch_tanh eps=1e-06 rope=10000.0 ln=None)",
-  "model_type": "tinystories"
+  "model_type": "gemma2"
  },
  "wildnerve_tlm01": {
   "candidate": "WildnerveAI/Wildnerve_tlm01_0.6B",
@@ -11047,9 +11047,9 @@
  "xomdich": {
   "candidate": "b3x0m/xomdich-mobile",
   "count": 2,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=gelu_pytorch_tanh eps=1e-05 rope=10000.0 ln=None)",
-  "model_type": "Xomdich"
+  "model_type": "xomdich"
  },
  "xpertgpt": {
   "candidate": "anonym5035/xpertgpt-babylm2026-strict-small",
@@ -11092,9 +11092,9 @@
  "yayi": {
   "candidate": "wenge-research/yayi-7b",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act= eps=None rope=None ln=1e-05)",
-  "model_type": "yayi"
+  "model_type": "bloom"
  },
  "yayiuie": {
   "candidate": "wenge-research/yayi-uie",
@@ -11157,9 +11157,9 @@
  "yuaz": {
   "candidate": "hgnoi/fbwxavtw3pyuazvc",
   "count": 1,
-  "decision": "UNKNOWN",
+  "decision": "CONFIG",
   "evidence": "dims ok but no strict profile (act=silu eps=None rope=10000 ln=None)",
-  "model_type": "yuaz"
+  "model_type": "stablelm"
  },
  "zagros": {
   "candidate": "nebularesearch/zagros-preview",
