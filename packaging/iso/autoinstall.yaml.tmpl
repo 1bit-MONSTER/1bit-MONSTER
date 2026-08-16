@@ -31,8 +31,8 @@ autoinstall:
   late-commands:
     - "mkdir -p /target/opt/1bit-iso-pool"
     - "cp -r /cdrom/pool/. /target/opt/1bit-iso-pool/"
-    - "curtin in-target --target=/target -- sh -c \"dpkg -i /opt/1bit-iso-pool/1bit-systems_*_amd64.deb\""
-    - "curtin in-target --target=/target -- dpkg -i /opt/1bit-iso-pool/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb /opt/1bit-iso-pool/libvulkan1_1.4.341.0-1_amd64.deb /opt/1bit-iso-pool/bolt_0.9.10-1_amd64.deb"
+    - "curtin in-target --target=/target -- sh -c \"env DEBIAN_FRONTEND=noninteractive apt-get install -y /opt/1bit-iso-pool/1bit-systems_*_amd64.deb\""
+    - "curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install -y /opt/1bit-iso-pool/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb /opt/1bit-iso-pool/libvulkan1_1.4.341.0-1_amd64.deb /opt/1bit-iso-pool/bolt_0.9.10-1_amd64.deb"
     - "curtin in-target --target=/target -- apt-mark hold mesa-vulkan-drivers libvulkan1 bolt linux-image-generic linux-headers-generic linux-generic"
     - "curtin in-target --target=/target -- mkdir -p /opt/rocm-therock"
     - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-7.14.0a20260612-gfx1151.tar.gz -C /opt/rocm-therock"
