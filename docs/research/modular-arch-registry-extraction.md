@@ -50,6 +50,7 @@ inherit. Empirical proof from the full census:
 | + model_type fallback | 307,437 | 77.0% |
 | arch-bearing subset | 304,534 / 322,029 | 94.57% |
 | **2026-08-15 final (after pass-3)** | **316,280 / 317,419** | **99.64%** |
+| **2026-08-16 FINAL (after pass-4)** | **317,310 / 317,310** | **100.00%** |
 
 Pass-3 (2026-08-15 evening): 62 new-family tokens (llama4/jais/kormo/rwkv7/
 chatglm/sarvam/daisy/retnet/hgrn/quasar/talkie/cubelm/motif/multiscale/
@@ -60,8 +61,11 @@ plamo2/mobilintexaone→LLAMA, …), +71 exclusions (encoder-decoder, diffusion,
 audio/TTS, non-transformer). Also fixed the QWEN3NEXT/PICO/DYNAMICALIBI
 enum collisions (43/44/45 → 51/52/53) that the merge restore had clobbered.
 
-Remaining tail (722 classes / ~1,150 ckpts): all ≤4-ckpt one-offs in the
-"needs per-model weight download to sniff layout" bucket.
+Pass-4 (2026-08-16) closed the tail to **100.00%**: +134 config-verified
+ailases, +436 new-family registry tokens (bring-up deck), +83 honest
+exclusions (ASR/TTS/masked-LM/image/test junk — real causal decoders like
+persimmon/xlstm stay in the denominator). Every arch string in the census
+now resolves; engine backends land per the bring-up deck.
 
 `Testing/census_coverage.py` models the two-step dispatch and regenerates
 `census_full_summary.json` (Phase-4 gate: sweep output == documented count).
