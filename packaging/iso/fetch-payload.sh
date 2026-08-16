@@ -37,7 +37,21 @@ TMP_PIP="$(mktemp -d)"
 if pip download "rocm-sdk-libraries-gfx1151==${THEROCK_VER}" \
     --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
     --no-deps -d "$TMP_PIP" > /tmp/therock-pip.log 2>&1; then
-  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$TMP_PIP" .
+  # `pip download` only fetches the raw .whl (itself a zip archive) — it does
+  # NOT unpack it the way `pip install` would. Tarring $TMP_PIP directly here
+  # would produce a tarball containing just the .whl file, not the
+  # _rocm_sdk_libraries_gfx1151/ tree the rest of this pipeline expects
+  # (caught by actually extracting the sibling rocm-sdk-core payload below
+  # and finding no lib/ directory at all inside it).
+  WHL="$(ls "${TMP_PIP}"/rocm_sdk_libraries_gfx1151-*.whl | head -1)"
+  UNZIP_DIR="$(mktemp -d)"
+  python3 -m zipfile -e "$WHL" "$UNZIP_DIR"
+  test -d "${UNZIP_DIR}/_rocm_sdk_libraries_gfx1151" || {
+    echo "FATAL: ${WHL} did not contain _rocm_sdk_libraries_gfx1151/ once unzipped." >&2
+    exit 1
+  }
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$UNZIP_DIR" "_rocm_sdk_libraries_gfx1151"
+  rm -rf "$UNZIP_DIR"
   echo "   fetched from nightlies index"
 else
   echo "   not available in nightlies index (log: /tmp/therock-pip.log)"
@@ -86,7 +100,21 @@ TMP_PIP="$(mktemp -d)"
 if pip download "rocm-sdk-core==${THEROCK_VER}" \
     --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
     --no-deps -d "$TMP_PIP" > /tmp/therock-core-pip.log 2>&1; then
-  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-core.tar.gz" -C "$TMP_PIP" .
+  # See the matching comment in the gfx1151 block above: `pip download` does
+  # not unpack the wheel, so it must be unzipped explicitly before tarring —
+  # tarring $TMP_PIP directly would archive the raw .whl file, not a usable
+  # _rocm_sdk_core/ tree (this is exactly what shipped in the first version
+  # of this fix: the ISO installed a rocm_sdk_core-*.whl file, unextracted,
+  # to /opt/rocm-therock, and unified_server kept failing on missing libs).
+  WHL="$(ls "${TMP_PIP}"/rocm_sdk_core-*.whl | head -1)"
+  UNZIP_DIR="$(mktemp -d)"
+  python3 -m zipfile -e "$WHL" "$UNZIP_DIR"
+  test -d "${UNZIP_DIR}/_rocm_sdk_core" || {
+    echo "FATAL: ${WHL} did not contain _rocm_sdk_core/ once unzipped." >&2
+    exit 1
+  }
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-core.tar.gz" -C "$UNZIP_DIR" "_rocm_sdk_core"
+  rm -rf "$UNZIP_DIR"
   echo "   fetched from nightlies index"
 else
   echo "   not available in nightlies index (log: /tmp/therock-core-pip.log)"
