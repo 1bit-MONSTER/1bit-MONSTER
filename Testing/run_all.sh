@@ -70,6 +70,22 @@ e2e qwen2  /tmp/onebit-e2e/qwen2    /tmp/onebit-e2e/qwen2/oracle-q8.gguf
 e2e gemma  /tmp/onebit-e2e/gemma    /tmp/onebit-e2e/gemma/oracle-q8.gguf
 e2e qwen3  /tmp/onebit-e2e/qwen3    /tmp/onebit-e2e/qwen3/oracle-q8.gguf
 
+# Instella-MoE (DeepSeek-V3 clone): gated MLA + FarSkip dual-residual + sigmoid
+# router engine gate — mini fixture (real tokenizer, mini dims) vs HF logits.
+# Fixtures live in 1bit-systems/models/kl-test/ (mini-full-f16.gguf + mini-full-hf.pt).
+instella_mini=/tmp/onebit-instella/mini-full-f16.gguf
+instella_ref=/tmp/onebit-instella/hf.npy
+if [ -f "$instella_mini" ] && [ -f "$instella_ref" ]; then
+    total=$((total+1))
+    if ! "$CXX" $FLAGS Testing/cmp_instella.cpp src/deepseek.cpp src/gguf_reader.cpp \
+        -o "$BIN/cmp_instella" 2>/dev/null; then echo "✗ instella: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_instella" "$instella_mini" /tmp/onebit-instella/ids.txt "$instella_ref" 20 18 >/dev/null 2>&1; then
+        echo "✓ instella engine (gated MLA + FarSkip)";
+    else echo "✗ instella engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - instella: fixtures absent, skipped (cp -r 1bit-systems/models/kl-test/mini-full* /tmp/onebit-instella/)"
+fi
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }

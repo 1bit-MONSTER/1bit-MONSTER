@@ -56,6 +56,15 @@ struct DeepSeekConfig {
     int first_k_dense = 1;          // layers < first_k_dense are DENSE FFN (V2-Lite: layer 0)
     int dense_intermediate = 0;     // dense-layer FFN width (V2-Lite: 10944)
     float rms_norm_eps = 1e-6f;
+    int norm_topk_prob = 0;         // Instella: sum-normalize top-k expert weights
+
+    // Instella (DeepSeek-V3 clone, amd/Instella-MoE-16B-A3B) trained-in bits
+    // (see docs/plans/instella-moe-16b-1bp.md — verified against the llama.cpp
+    // fork patch a897ea2f1 + HF modeling_instella_moe.py 2026-08-16):
+    int gated_attention = 0;        // attn_out * sigmoid(gate_proj(pre_norm_input)) before o_proj
+    int farskip = 0;                // FarSkip-Collective dual-residual connectivity
+    int farskip_start = 0;          // first farskip layer index
+    int farskip_end = 100000;       // last farskip layer index (config: 1e4 > n_layers)
 
     // Factory helpers
     static DeepSeekConfig deepseek_v2() {
@@ -106,6 +115,8 @@ struct DeepSeekLayerWeights {
     std::vector<float> w_kv_a_norm;  // [kv_lora_rank] RMSNorm on the latent BEFORE kv_b
     std::vector<float> w_kv_b;       // [kv_lora_rank, n_heads * (qk_nope_dim + v_dim)] per head [nope|v]
     std::vector<float> w_o;          // [n_heads * v_dim, hidden]
+    std::vector<float> w_attn_gate;  // [n_heads * v_dim, hidden] — Instella gated MLA (optional)
+    std::vector<float> w_exp_probs_b; // [n_routed_experts] router bias (e_score_correction_bias, optional)
 
     // Dense FFN (first_k_dense_replace layers — layer 0 on V2-Lite)
     std::vector<float> d_gate, d_up; // [hidden, dense_intermediate]
