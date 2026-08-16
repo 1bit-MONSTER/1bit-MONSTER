@@ -173,8 +173,8 @@ jobs:
           # backend_metal.mm has never been compiled in CI — this is the real
           # gate: catches ObjC/ARC/Metal-framework errors. Builds the backend
           # object + a smoke harness that instantiates it and generates tokens.
-          clang++ -std=c++17 -fobjc-arc -Iinclude -c src/backend_metal.mm -o /tmp/backend_metal.o
-          clang++ -std=c++17 -fobjc-arc -Iinclude Testing/metal_smoke.mm src/backend_metal.mm \
+          clang++ -std=c++17 -fobjc-arc -Iinclude -Isrc -c src/backend_metal.mm -o /tmp/backend_metal.o
+          clang++ -std=c++17 -fobjc-arc -Iinclude -Isrc Testing/metal_smoke.mm src/backend_metal.mm \
             -framework Metal -framework MetalPerformanceShaders \
             -framework MetalPerformanceShadersGraph -o /tmp/metal_smoke
       - name: Run Metal smoke gate (synthetic model, real GPU)
