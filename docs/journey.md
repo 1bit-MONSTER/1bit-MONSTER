@@ -2344,3 +2344,96 @@ an engine token — the long tail is closed. What remains (per
 rest need tensor-name/norm/rope/activation quirks filled in and measured.
 The registry, kernels, and validation harness are proven; the gap is
 coverage + process, not architecture.
+
+## 2026-08-16 — the frontier gates: 5/5 validated, then the repo tried to eat it
+
+**What happened**: the five routed-but-unvalidated frontier families — the
+last gap between "every arch maps to a token" (2026-08-15) and "every arch
+actually *runs*" — were audited, implemented, and gated against their
+reference implementations in one session. All five passed. Then a merge
+came through that silently dropped the whole session's work from the main
+line, and the recovery — via `git reflog` and a lost-branch merge — is
+half the story.
+
+### The five gates
+
+Each family was held to a **generation gate**: run the engine on a real (or
+mini) checkpoint and compare full logits against the authoritative
+reference — the HuggingFace modeling source for the exact checkpoint. Not
+greedy argmax, full logit vectors.
+
+| Family | What the audit found | Engine | Gate result |
+|--------|----------------------|--------|-------------|
+| **Nemotron 3** | LayerNorm1P (weight stored as w−1), relu2 non-gated MLP, partial RoPE 0.5 | `backend_generic` (arch token 989) | ✅ **real** 8B checkpoint, top1 7503 *" Paris"* == HF, corr 0.99986 |
+| **DeepSeek V4** | **the existing engine was fiction** — MLA + a 4×4 "mHC mix matrix" don't exist in V4 | `src/deepseek_v4.cpp` rewritten | ✅ mini-gate top1 342 == HF, 20/20 |
+| **GLM-5.2** | V3-MLA + DSA indexer with cross-layer shared top-k | `src/glm_moe_dsa.cpp` new | ✅ mini-gate top1 171 == HF, 20/20 |
+| **MiMo V2** | MoD hybrid: SWA/full attention with separate dims, sigmoid group-topk MoE | `src/mimo_v2.cpp` new | ✅ mini-gate top1 524 == HF, 20/20 |
+| **Qwen3.5** | GatedDeltaNet + gated GQA hybrid; the "NPU refusal" was only the VLM | `src/qwen3_5.cpp` new | ✅ mini-gate top1 142 == HF, 20/20, corr 1.0 |
+
+**The audit was the part that earned its keep.** Two of the five engines
+shipped *before* the audit were written against architectures that don't
+exist. DeepSeek V4's previous `deepseek_v4.cpp` assumed MLA KV compression
+and a learned 4×4 residual-mixing matrix — the real V4 has **Shared-KV MQA**
+(one KV head, K=V), **mHC hyper-connections** (fn/base/scale + Sinkhorn-Knopp
+projection of a doubly-stochastic comb matrix, 20 iterations), per-head
+learnable attention sinks, grouped output projection, and frozen
+`tid2eid[input_ids]` hash routing on the first three MoE layers. The plan
+doc's framing ("nearest to validated V3 (MLA)") was wrong; the real V4
+dropped MLA entirely.
+
+**Every gate caught a real math bug:**
+- *DeepSeek V4*: integer division in the grouped-output width
+  (`(heads/groups)*head_dim` = 0 for 4 heads / 8 groups), and **in-place mHC
+  stream corruption** — the comb matrix mixes the *old* streams, and writing
+  the new streams in place breaks streams 1–3 while stream 0 looks fine.
+- *GLM-MoE-DSA*: the DSA indexer consumes the **normed** attention input
+  (the decoder feeds `input_layernorm(h)` into `self_attn`), and the roped
+  indexer query was never written back before scoring.
+- *MiMo-V2*: the checkpoint's remote modeling code never initializes
+  `gate.weight` / `e_score_correction_bias` (`torch.empty` → ±1e35 garbage),
+  and random-init sigmoid scores all ≈0.5 make top-k an arbitrary tie —
+  the fixture had to init the router properly to make routing deterministic.
+- *Qwen3.5*: `q_proj` emits per-head **[query|gate] interleaved**, not two
+  contiguous blocks.
+
+**Test suite:** `Testing/run_all.sh` went 13/13 → 17/17. Census held
+100.00% (317,310 / 317,310). The engines were then wired into the router
+and backend manager (`src/backend_frontier.cpp`) so `1bit` actually serves
+them — GLM/MiMo discriminate by arch string, since the census maps them
+into LLAMA/QWEN2 tokens.
+
+### The merge that tried to erase it
+
+The session's work was committed on a detached lineage. A `monster-rebrand`
+merge (PR #1630) rewrote `include/rocm_cpp/bitnet_model.h` from 552 to 33
+arch tokens, and the two histories diverged *at* that merge. `main` ended
+up on the stripped side: 33 tokens, no NEMOTRON, none of the frontier
+engines, none of the census — while the 2,223-commit frontier lineage
+(b0b4fd66 → 76e91550) sat with no branch ref pointing at it. The README
+showcase commit landed on the stripped main, so even the docs looked fine
+while the substance was gone.
+
+**Recovery, the honest way:** the commits were still valid objects — no
+force-push had run, nothing was garbage-collected. A `git reflog` showed
+the detached checkout; recreating the branch at the lineage tip
+(`frontier-recovery`), cherry-picking the README commit (conflict-resolved),
+wiring the engines, then merging the whole thing into `main` restored
+everything: 552 tokens, 5/5 frontier engines, census 100.00%, run_all
+17/17, router selfcheck 14/14. `origin/main` (PR #1689, FLM-free NPU stack)
+was merged in afterwards — its content was already present on the frontier
+lineage; the merge only needed conflict resolution on the files both sides
+had edited (bitnet_model.h, deepseek.cpp, run_all.sh, the frontier plan).
+
+**What the incident proved:** `git reflog` + `git merge-base` are the
+recovery tools when a branch is lost — the objects are almost always still
+there. And the merge-time conflict resolution mattered: `origin/main` had
+re-introduced a leftover `DS_DUMP_ALL` debug hook that the lineage had
+deliberately removed (`40f1b9d3`), and its plan doc still said "needs MoE
+routing" for families already gated. Taking the lineage side in each
+conflict kept the validated state, not the stale one.
+
+**Status at session end:** every one of the five frontier families now has
+a gated engine reachable through the router. The registry → engine → gate
+loop is closed end to end; the remaining work is per-family perf and the
+real-checkpoint gates (V4-Flash 87GB smallest GGUF, GLM-4.5, MiMo 313GB)
+that need the GPU box.
