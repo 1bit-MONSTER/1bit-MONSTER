@@ -17,6 +17,7 @@ QK-Normed MLA (2606.16310) is a free implementation: RMSNorm decomposes into sta
 ### P0
 - [x] `codec_gauge_probe.py` — orthogonal channel gauge → **2.96× lower MSE at int8, 1.57× at int4** on correlated KV channels; must pair with per-channel scales (FINDINGS.md)
 - [ ] QK-Normed MLA absorption on Kimi K3 gated-MLA decode; verify numerically vs reference
+  - [x] Mechanism reference test (arXiv:2606.16310 App. E): `qk_norm_absorb_probe.py` — absorbed latent path ≡ explicit full-key QK RMSNorm, max diff 3.6e-14 (fp64) / 3.1e-5 (fp32); blockwise content+RoPE ✓; scalar cache = 0.78% of full-key cache
 
 ### P1 (next)
 - [ ] Rerun gauge probe on real KV dumps (`tools/capture_attn.cpp`); if ~3× holds, add per-head learned gauge to the KV quant path (128×128 rotation, write-time apply, read-time invert)

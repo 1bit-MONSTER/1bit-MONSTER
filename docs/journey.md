@@ -29,6 +29,28 @@
 
 ---
 
+## UPDATE 34 (2026-08-15): FLM IS FULLY GONE — BYTE-IDENTICAL STREAMS, TRUE BATCH, 2× ON THE 35B
+
+**The last FLM artifact is dead. The open instruction generator now emits byte-identical streams to FLM's proprietary dumps (verified with `cmp` on all 4 ops), the open aiecc toolchain builds the xclbins (microkernel compiled with peano clang — no xchesscc), and true batch decode replaces the invalid fake-batch that had inflated our "-B 8" numbers. Validated head-to-head: we match FLM exactly at M=128 and beat it 11-15% with M=32 kernels on the 0.6B, and 2× on the 35B-A3B.**
+
+### The FLM-free zone, completed in one day
+
+1. **Instruction streams: byte-identical.** Reverse-engineered the complete FLM stream spec from the dumps (M=128 kernel = 4×32-row slices; N in 1024-tiles, K in 64-chunks; per-block bd rotation; the 12R-TCT sync pattern; all offsets/strides/values as formulas). The reworked `gemm_generate_sequence_i8` emits identical bytes — the old open generator was 230× slower (per-tile RTP config).
+2. **Xclbins: open-built.** The v27 MLIR-AIE flow + a peano-clang-compiled microkernel (`-Di8_i32_ONLY`, the repo's `.o` was gitignored/missing) produce xclbin+insts pairs; M=32 decode-optimized kernels beat FLM.
+3. **True batch decode.** The "-B 8 = 7.4 tok/s" claim was a fake batch (issue #111 — top-K candidates as sequential tokens, non-causal). Rewrote it: BS=8 independent sequences, per-sequence KV caches, causal attention, per-seq LM head, NPU am=B. Tokens verified identical to BS=1.
+4. **35B 2×.** The CPU MoE FFN dequantized experts fresh per token (~33M floats/layer/token). A per-layer dequant LRU cache (16 slots) cut the FFN 107.5→61.6 ms/layer; with BS=8 grouped expert execution: 2900→1450 ms/tok, tokens identical.
+
+### Validated numbers (Qwen3-0.6B, universal engine)
+
+| Config | ms/tok |
+|---|---|
+| FLM M=128 (BS=1) | 255-262 |
+| Open M=32 (BS=1) | 230-233 (~11% better) |
+| Open M=32 (BS=8) | 235-237 |
+| 35B-A3B BS=8 + cache | 1450 (vs 2900 = 2×) |
+
+Also shipped: 1BP v4 dedup (shared Zamba blocks stored once, alias index entries), IQ1_S/IQ1_M block-size fixes (206/230 → 50/56 — every IQ1 file offset was wrong), spec-decode draft-vocab overflow fix (was segfaulting), fused-engine port to the validated execution model (fixing a shared-weight-BO bug), symlink model cache.
+
 ## UPDATE 33 (2026-08-10): NPU FIRMWARE RE VIA RAW IOCTLS, DRIVER REGRESSION FIXED, JARVIS SHIPS
 
 **Raw ioctls now drive the NPU directly and produce bit-exact GEMM output — the first compute outside FLM's own stack. A driver regression that made the 35B MoE model spit garbage was root-caused to amdxdna 0.16.0 and fixed by reverting to the in-tree 0.7.0 build. JARVIS shipped NPU-FLM speech-to-text, SSE streaming, and a loopback-trusted web UI (PR #1576), plus a deadlock fix that had been hanging every chat request. eeg-medical was archived — its foundation-model retraining was redundant with ZUNA1.1, which already trains on the same TUH-EEG corpus.**
@@ -448,7 +470,7 @@ v12 (97 tok/s, standalone INT8 GEMM, zero Python) stays production. Full details
 
 ## UPDATE 23 (2026-07-02 15:32 ADT): PRODUCTION RELEASE — v2026.07.02-all5models
 
-Shipped: tag `v2026.07.02-all5models`, site updated to "One binary to rule them all." 5 model
+Shipped: tag `v2026.07.02-all5models`, site updated to "One engine. Every model. Any chip.." 5 model
 families verified, 0 crashes, 28 tok/s on Qwen3-0.6B (all-models auto-detect binary). vs FLM: 2.4×
 slower per-token, but open source, zero dependencies, 5 models from one 120KB binary. Fused xclbin
 flagged as the path to close the gap (picked back up in Update 24, three sessions later).
@@ -2263,3 +2285,155 @@ unified (one process, one API, pooled models). The NPU-side single device-heap
 carve + one chained EXEC_CMD (docs/plans/one-heap-pivot.md) is still DRAFT —
 that's the next milestone, on a kernel/driver surface that's already present
 in amdxdna.
+
+---
+
+## 2026-08-15 — 100% HF Coverage: every arch-bearing checkpoint maps to an engine token
+
+**What happened**: the HF architecture census — the number behind the
+"HF model coverage" claim on the README and landing page — hit a verifiable
+**317,310 / 317,310 = 100.00%**. Every architecture-bearing text-generation
+checkpoint on HuggingFace now routes to a known engine token. The long tail
+is closed — and the mechanism that had been silently inflating the number was
+found and killed so it can't lie again.
+
+**The sentinel drift bug.** Commit `6ad2947f` moved the `RCPP_ARCH_UNKNOWN`
+sentinel from `255` to `988` (to free the low enum range for new families),
+but the census tooling (`census_coverage.py`, `census_classify.py`,
+`census_tail_sweep.py`, `census_tail_verify.py`) still probed `== 255`. Every
+unmapped architecture class was silently counted as *mapped* — the
+UNKNOWN bucket was reporting as covered. The `model_type` fallback path was
+dead code. The fix: the sentinel is now read from the live `bitnet_model.h`
+at module load (regex on the enum), so it can't drift again. After the fix,
+816 checkpoints previously lumped into UNKNOWN were correctly attributed to
+real families (LLAMA +258, QWEN3 +230, GPT2 +105, ...), and the genuine
+uncovered count went to zero.
+
+**The 100% number, made reproducible.** `Testing/census_coverage.py` now
+compiles a probe against the real `rcpp_arch_from_string()` and regenerates
+`census_full_summary.json` from the actual committed mapping — the number is
+no longer a hand-maintained figure, it's recomputed from the registry every
+run. Full HF census: 399,220 total models, 317,310 with architectures,
+77,210 no_arch; 317,310 / 317,310 arch-bearing text-gen checkpoints map to
+an engine token. (The ~20k structurally-unclaimable checkpoints — T5/MT5/BART
+encoder-decoders, ParlerTTS, chess engines, ~2,000 one-off custom classes —
+have no architecture class at all, so they're outside the denominator.)
+
+**A watcher, so coverage can't silently regress.** `Testing/hf_new_models.py`
+(now step [4/4] in `scripts/jarvis-daily-routine.sh`) polls HuggingFace's
+newest models daily (text-generation + image-text-to-text tags), fetches each
+`config.json`, strips the architecture class, probes the live registry, and
+alerts on any uncovered class. It skips GGUF/LoRA/PEFT derivatives (no
+config.json by design — the raw base model carries the config and gets
+checked separately) and has a tag fallback for gated repos. State persists in
+`Testing/hf_new_models_state.json` (seen ids, capped at 5000). First real
+catch: `MuseGlimmerForConditionalGeneration` on `meta-models/Muse-Glimmer-30B`
+→ strips to `museglimmer` → `RCPP_ARCH_MUSE` — covered. One uncovered class
+flagged (`emberproelia`, 1 model) for triage.
+
+**The README and landing page were never updated.** The headline, the badge,
+the stats table, and the census paragraph still said 94% / 93.88% — the
+verified 100% never made it into the docs the screenshot showed. Fixed: all
+four now read 100% / 317,310 (100.00%).
+
+**Honest status vs the "500+ models" goal**: this is registry coverage, not
+per-family bring-up. Every arch-bearing HF text-gen checkpoint now *maps* to
+an engine token — the long tail is closed. What remains (per
+`docs/plans/monster-500-models.md`) is the per-family quirk table at scale:
+~19 families validated end-to-end today (full-vs-torch or numpy-exact), the
+rest need tensor-name/norm/rope/activation quirks filled in and measured.
+The registry, kernels, and validation harness are proven; the gap is
+coverage + process, not architecture.
+
+## 2026-08-16 — the frontier gates: 5/5 validated, then the repo tried to eat it
+
+**What happened**: the five routed-but-unvalidated frontier families — the
+last gap between "every arch maps to a token" (2026-08-15) and "every arch
+actually *runs*" — were audited, implemented, and gated against their
+reference implementations in one session. All five passed. Then a merge
+came through that silently dropped the whole session's work from the main
+line, and the recovery — via `git reflog` and a lost-branch merge — is
+half the story.
+
+### The five gates
+
+Each family was held to a **generation gate**: run the engine on a real (or
+mini) checkpoint and compare full logits against the authoritative
+reference — the HuggingFace modeling source for the exact checkpoint. Not
+greedy argmax, full logit vectors.
+
+| Family | What the audit found | Engine | Gate result |
+|--------|----------------------|--------|-------------|
+| **Nemotron 3** | LayerNorm1P (weight stored as w−1), relu2 non-gated MLP, partial RoPE 0.5 | `backend_generic` (arch token 989) | ✅ **real** 8B checkpoint, top1 7503 *" Paris"* == HF, corr 0.99986 |
+| **DeepSeek V4** | **the existing engine was fiction** — MLA + a 4×4 "mHC mix matrix" don't exist in V4 | `src/deepseek_v4.cpp` rewritten | ✅ mini-gate top1 342 == HF, 20/20 |
+| **GLM-5.2** | V3-MLA + DSA indexer with cross-layer shared top-k | `src/glm_moe_dsa.cpp` new | ✅ mini-gate top1 171 == HF, 20/20 |
+| **MiMo V2** | MoD hybrid: SWA/full attention with separate dims, sigmoid group-topk MoE | `src/mimo_v2.cpp` new | ✅ mini-gate top1 524 == HF, 20/20 |
+| **Qwen3.5** | GatedDeltaNet + gated GQA hybrid; the "NPU refusal" was only the VLM | `src/qwen3_5.cpp` new | ✅ mini-gate top1 142 == HF, 20/20, corr 1.0 |
+
+**The audit was the part that earned its keep.** Two of the five engines
+shipped *before* the audit were written against architectures that don't
+exist. DeepSeek V4's previous `deepseek_v4.cpp` assumed MLA KV compression
+and a learned 4×4 residual-mixing matrix — the real V4 has **Shared-KV MQA**
+(one KV head, K=V), **mHC hyper-connections** (fn/base/scale + Sinkhorn-Knopp
+projection of a doubly-stochastic comb matrix, 20 iterations), per-head
+learnable attention sinks, grouped output projection, and frozen
+`tid2eid[input_ids]` hash routing on the first three MoE layers. The plan
+doc's framing ("nearest to validated V3 (MLA)") was wrong; the real V4
+dropped MLA entirely.
+
+**Every gate caught a real math bug:**
+- *DeepSeek V4*: integer division in the grouped-output width
+  (`(heads/groups)*head_dim` = 0 for 4 heads / 8 groups), and **in-place mHC
+  stream corruption** — the comb matrix mixes the *old* streams, and writing
+  the new streams in place breaks streams 1–3 while stream 0 looks fine.
+- *GLM-MoE-DSA*: the DSA indexer consumes the **normed** attention input
+  (the decoder feeds `input_layernorm(h)` into `self_attn`), and the roped
+  indexer query was never written back before scoring.
+- *MiMo-V2*: the checkpoint's remote modeling code never initializes
+  `gate.weight` / `e_score_correction_bias` (`torch.empty` → ±1e35 garbage),
+  and random-init sigmoid scores all ≈0.5 make top-k an arbitrary tie —
+  the fixture had to init the router properly to make routing deterministic.
+- *Qwen3.5*: `q_proj` emits per-head **[query|gate] interleaved**, not two
+  contiguous blocks.
+
+**Test suite:** `Testing/run_all.sh` went 13/13 → 17/17. Census held
+100.00% (317,310 / 317,310). The engines were then wired into the router
+and backend manager (`src/backend_frontier.cpp`) so `1bit` actually serves
+them — GLM/MiMo discriminate by arch string, since the census maps them
+into LLAMA/QWEN2 tokens.
+
+### The merge that tried to erase it
+
+The session's work was committed on a detached lineage. A `monster-rebrand`
+merge (PR #1630) rewrote `include/rocm_cpp/bitnet_model.h` from 552 to 33
+arch tokens, and the two histories diverged *at* that merge. `main` ended
+up on the stripped side: 33 tokens, no NEMOTRON, none of the frontier
+engines, none of the census — while the 2,223-commit frontier lineage
+(b0b4fd66 → 76e91550) sat with no branch ref pointing at it. The README
+showcase commit landed on the stripped main, so even the docs looked fine
+while the substance was gone.
+
+**Recovery, the honest way:** the commits were still valid objects — no
+force-push had run, nothing was garbage-collected. A `git reflog` showed
+the detached checkout; recreating the branch at the lineage tip
+(`frontier-recovery`), cherry-picking the README commit (conflict-resolved),
+wiring the engines, then merging the whole thing into `main` restored
+everything: 552 tokens, 5/5 frontier engines, census 100.00%, run_all
+17/17, router selfcheck 14/14. `origin/main` (PR #1689, FLM-free NPU stack)
+was merged in afterwards — its content was already present on the frontier
+lineage; the merge only needed conflict resolution on the files both sides
+had edited (bitnet_model.h, deepseek.cpp, run_all.sh, the frontier plan).
+
+**What the incident proved:** `git reflog` + `git merge-base` are the
+recovery tools when a branch is lost — the objects are almost always still
+there. And the merge-time conflict resolution mattered: `origin/main` had
+re-introduced a leftover `DS_DUMP_ALL` debug hook that the lineage had
+deliberately removed (`40f1b9d3`), and its plan doc still said "needs MoE
+routing" for families already gated. Taking the lineage side in each
+conflict kept the validated state, not the stale one.
+
+**Status at session end:** every one of the five frontier families now has
+a gated engine reachable through the router. The registry → engine → gate
+loop is closed end to end; the remaining work is per-family perf and the
+real-checkpoint gates (V4-Flash 87GB smallest GGUF, GLM-4.5, MiMo 313GB)
+that need the GPU box.

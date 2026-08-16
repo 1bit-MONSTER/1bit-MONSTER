@@ -12,11 +12,11 @@
 <link rel="icon" href="/assets/favicon-16x16.png" type="image/png" sizes="16x16">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#0B0B0B">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="1bit MONSTER">
-<meta property="og:title" content="1bit MONSTER">
+<meta property="og:title" content="1bit MONSTER — One engine. Every model. Any chip.">
 <meta property="og:description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python.">
 <meta property="og:url" content="https://1bit.monster/">
 <meta property="og:image" content="https://1bit.monster/assets/og-image.png">
@@ -24,268 +24,413 @@
 <meta property="og:image:height" content="630">
 
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="1bit MONSTER">
+<meta name="twitter:title" content="1bit MONSTER — One engine. Every model. Any chip.">
 <meta name="twitter:description" content="An open-source, pure-C++ inference engine. NPU + GPU + CPU in one binary. Zero Python.">
 <meta name="twitter:image" content="https://1bit.monster/assets/og-image.png">
 
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
+
 <style>
   :root {
-    --bg: #0a0a0a;
-    --bg-raised: #111111;
-    --fg: #f2f2f2;
-    --dim: #888888;
-    --line: #2a2a2a;
+    --bg: #0B0B0B;
+    --line: #232323;
+    --line-dim: #1D1D1D;
+    --fg: #EDEFEA;
+    --dim: #B9BEB4;
+    --dim2: #A0A599;
+    --accent: #C6FF3D;
+    --border: #3A3A3A;
+    --font-display: 'DM Serif Display', serif;
+    --font-mono: 'DM Mono', 'Courier New', monospace;
   }
 
   * { box-sizing: border-box; }
-
   html { scroll-behavior: smooth; }
 
   body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font-family: 'Courier New', Courier, monospace;
-    background-image:
-      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 3px);
+    font-family: var(--font-mono);
   }
 
-  a { color: var(--fg); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--fg); }
 
-  .wrap {
-    max-width: 760px;
-    margin: 0 auto;
-    padding: 0 24px;
+  .layout {
+    display: grid;
+    grid-template-columns: 232px 1fr;
+    min-height: 100vh;
   }
 
-  /* ---- hero ---- */
-  header.hero {
-    text-align: center;
-    padding: 5rem 24px 3rem;
+  /* ---- sidebar ---- */
+  .sidebar {
+    border-right: 1px solid var(--line);
+    padding: 30px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
   }
 
-  .glyph {
-    width: 96px;
-    height: 96px;
-    margin: 0 auto 1.5rem;
-    image-rendering: pixelated;
+  .mark {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
 
-  h1 {
-    font-size: clamp(1.8rem, 6vw, 3rem);
-    letter-spacing: 0.15em;
-    margin: 0 0 1rem;
+  .mark .glyph {
+    font-family: var(--font-display);
+    font-size: 62px;
+    line-height: .8;
+    letter-spacing: -0.04em;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+
+  .mark .name {
+    font-family: var(--font-display);
+    font-size: 27px;
+    line-height: 1.05;
+    color: var(--fg);
+  }
+
+  .mark .tagline {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--dim);
+  }
+
+  nav.side-links {
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    font-size: 13px;
+  }
+
+  nav.side-links a { color: var(--dim); }
+  nav.side-links a.accent { color: var(--accent); }
+  nav.side-links a:hover { color: var(--fg); }
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  .status .dot {
+    width: 7px;
+    height: 7px;
+    background: var(--accent);
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  .sidebar .colophon {
+    margin-top: auto;
+    font-size: 11px;
+    line-height: 1.8;
+    color: var(--dim2);
+  }
+
+  /* ---- main ---- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 13px 44px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--dim2);
+  }
+
+  .hero {
+    padding: 64px 44px 44px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .hero h1 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: clamp(38px, 6.5vw, 80px);
+    line-height: .98;
+    letter-spacing: -0.02em;
+    max-width: 19ch;
+    font-weight: normal;
+  }
+
+  .hero h1 .accent { color: var(--accent); }
+
+  .hero .lede {
+    margin: 0;
+    max-width: 58ch;
+    font-size: 15px;
+    line-height: 1.75;
+    color: var(--dim);
+  }
+
+  .hero .lede strong { color: var(--fg); font-weight: normal; }
+
+  .quickstart {
+    margin: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--line);
+    font-size: 13px;
+    line-height: 1.9;
+    color: #D5D9D0;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+
+  .quickstart .comment { color: var(--dim2); }
+  .quickstart .accent { color: var(--accent); }
+
+  .cta-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    height: 50px;
+    padding: 0 26px;
+    font-size: 12px;
+    letter-spacing: .16em;
     text-transform: uppercase;
   }
 
-  .lede {
-    color: var(--dim);
-    font-size: 1rem;
-    line-height: 1.6;
-    max-width: 46ch;
-    margin: 0 auto 2rem;
-  }
+  .btn.primary { background: var(--accent); color: var(--bg); }
+  .btn.primary:hover { background: var(--fg); color: var(--bg); }
+  .btn.secondary { border: 1px solid var(--border); color: var(--fg); }
+  .btn.secondary:hover { border-color: var(--fg); color: var(--fg); }
 
-  .lede strong { color: var(--fg); font-weight: normal; }
+  .hero .note { font-size: 12px; color: var(--dim2); }
 
-  nav.links {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 0.5rem 1rem;
-    font-size: 0.8rem;
-    letter-spacing: 0.05em;
-  }
-
-  nav.links a {
-    text-decoration: none;
-    border-bottom: 1px solid var(--line);
-    padding-bottom: 2px;
-  }
-
-  nav.links a:hover { border-bottom-color: var(--fg); }
-
-  /* ---- stat row ---- */
   .stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     border-top: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
   }
 
   .stat {
-    padding: 1.5rem 1rem;
-    text-align: center;
-    border-left: 1px solid var(--line);
+    padding: 24px 32px;
+    border-right: 1px solid var(--line);
   }
 
-  .stat:first-child { border-left: none; }
+  .stat:last-child { border-right: none; }
 
   .stat .num {
-    font-size: 1.6rem;
-    display: block;
+    font-family: var(--font-display);
+    font-size: 32px;
+    color: var(--accent);
   }
 
   .stat .label {
-    color: var(--dim);
-    font-size: 0.7rem;
-    letter-spacing: 0.1em;
+    font-size: 11px;
+    letter-spacing: .14em;
     text-transform: uppercase;
-    margin-top: 0.3rem;
-    display: block;
+    color: var(--dim2);
   }
 
-  /* ---- sections ---- */
-  section {
-    padding: 3.5rem 0;
-    border-bottom: 1px solid var(--line);
+  .benchmarks {
+    display: grid;
+    grid-template-columns: .95fr 1.05fr;
+    gap: 44px;
+    padding: 44px;
   }
 
-  section:last-of-type { border-bottom: none; }
+  .benchmarks .copy {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
 
-  section h2 {
-    font-size: 0.75rem;
-    letter-spacing: 0.2em;
+  .benchmarks .kicker {
+    font-size: 11px;
+    letter-spacing: .2em;
     text-transform: uppercase;
-    color: var(--dim);
-    margin: 0 0 1.25rem;
+    color: var(--dim2);
   }
 
-  section h2::before { content: "// "; }
-
-  section p {
-    line-height: 1.7;
-    margin: 0 0 1rem;
-  }
-
-  section p:last-child { margin-bottom: 0; }
-
-  code, .mono-inline {
-    background: var(--bg-raised);
-    border: 1px solid var(--line);
-    padding: 0.1em 0.4em;
-    font-size: 0.9em;
-  }
-
-  ul.checklist {
-    list-style: none;
+  .benchmarks h2 {
     margin: 0;
-    padding: 0;
+    font-family: var(--font-display);
+    font-size: 30px;
+    line-height: 1.2;
+    font-weight: normal;
   }
 
-  ul.checklist li {
-    padding: 0.35rem 0;
-    line-height: 1.6;
-  }
-
-  ul.checklist li::before {
-    content: "✓ ";
-  }
-
-  .quickstart {
-    background: var(--bg-raised);
-    border: 1px solid var(--line);
-    padding: 1rem 1.25rem;
-    font-size: 0.85rem;
-    line-height: 1.8;
-    overflow-x: auto;
-    white-space: pre;
-  }
-
-  .quickstart .comment { color: var(--dim); }
-
-  footer {
-    text-align: center;
-    padding: 2.5rem 24px 3rem;
-    font-size: 0.7rem;
+  .benchmarks p {
+    margin: 0;
+    font-size: 14.5px;
+    line-height: 1.75;
     color: var(--dim);
-    letter-spacing: 0.1em;
   }
 
-  footer a { color: var(--dim); }
+  .benchmarks .journey-link { font-size: 14px; }
+
+  .bench-table {
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+  }
+
+  .bench-table .head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--dim2);
+  }
+
+  .bench-row {
+    display: grid;
+    grid-template-columns: 1fr auto 128px;
+    gap: 14px;
+    align-items: baseline;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line-dim);
+  }
+
+  .bench-row .model { font-size: 13.5px; color: #E4E7E0; }
+  .bench-row .tps {
+    font-family: var(--font-display);
+    font-size: 21px;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .bench-row .backend { font-size: 11.5px; color: var(--dim2); text-align: right; }
+  .bench-table .rig { font-size: 11.5px; color: var(--dim2); }
+
+  .footerbar {
+    border-top: 1px solid var(--line);
+    padding: 16px 44px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--dim2);
+  }
+
+  .footerbar .copy-line { text-transform: none; }
+  .footerbar .license { color: var(--accent); }
+
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar {
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 20px;
+    }
+    .sidebar .colophon { display: none; }
+    nav.side-links { flex-direction: row; flex-wrap: wrap; gap: 14px; }
+    .hero { padding: 44px 24px 32px; }
+    .topbar { padding: 13px 24px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .stat:nth-child(2) { border-right: none; }
+    .benchmarks { grid-template-columns: 1fr; padding: 32px 24px; }
+    .footerbar { padding: 16px 24px 32px; }
+  }
 </style>
 </head>
 <body>
 
-<header class="hero">
-  <img class="glyph" src="/favicon.svg" alt="" aria-hidden="true">
-  <h1>1bit MONSTER</h1>
-  <p class="lede">
-    An open-source, pure-C++ inference engine. <strong>NPU + GPU + CPU in one binary.</strong>
-    Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.
-  </p>
-  <nav class="links">
-    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
-    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">The Story</a>
-    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/jarvis.md">JARVIS Pipeline</a>
-    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md">Docs</a>
-    <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/roadmap.md">Roadmap</a>
-  </nav>
-</header>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="mark">
+      <span class="glyph">1bm</span>
+      <span class="name">1bit<br>monster</span>
+      <span class="tagline">Sorry but not sorry.</span>
+    </div>
+    <nav class="side-links">
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md">docs</a>
+      <a href="#benchmarks">benchmarks</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/roadmap.md">roadmap</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/jarvis.md">jarvis pipeline</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">the story</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" class="accent">github</a>
+    </nav>
+    <div class="status"><span class="dot"></span>engine online</div>
+    <div class="colophon">MIT<br>pure C++23<br>no python<br>5 backends</div>
+  </aside>
 
-<div class="stats">
-  <div class="stat"><span class="num">19</span><span class="label">architectures</span></div>
-  <div class="stat"><span class="num">47</span><span class="label">models today</span></div>
-  <div class="stat"><span class="num">500+</span><span class="label">models — in progress</span></div>
-  <div class="stat"><span class="num">0</span><span class="label">python in the runtime</span></div>
-</div>
+  <main>
+    <div class="topbar">
+      <span>npu + gpu + cpu · one binary · zero python</span>
+      <span>measured 2026-08-01</span>
+    </div>
 
-<div class="wrap">
-
-  <section>
-    <h2>the hard truth</h2>
-    <p>
-      AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU — and locked it behind
-      a closed-source runtime: 22 proprietary <code>.so</code> files, 209 bitstreams,
-      zero documentation. Nothing else could touch that chip.
-    </p>
-    <p>
-      We reverse-engineered the whole stack in 4 days and replaced it with open C++ —
-      turning 22 proprietary libraries into one open-source binary. That effort grew into
-      <strong class="mono-inline">1bit</strong>: a single MIT-licensed C++ engine that runs
-      LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
-    </p>
-  </section>
-
-  <section>
-    <h2>what it is</h2>
-    <ul class="checklist">
-      <li>One binary, every backend — CLI and every server dispatched by subcommand.</li>
-      <li>Reads GGUF, ONNX, and the native 1BP format — auto-detects the architecture, no config files.</li>
-      <li>NPU + HIP + ZINC + GGML-Vulkan + CPU — five backends, one process.</li>
-      <li>Pure C++23. Zero Python in the engine. MIT licensed.</li>
-    </ul>
-  </section>
-
-  <section>
-    <h2>quick start</h2>
-    <div class="quickstart"><span class="comment"># build from source — no installer yet</span>
+    <div class="hero">
+      <h1>One binary to rule <span class="accent">them all</span></h1>
+      <p class="lede">An open-source, pure-C++ inference engine. <strong>NPU + GPU + CPU in one binary.</strong> Reverse-engineered from a closed-source AMD NPU stack in 4 days — and it's been growing ever since.</p>
+      <pre class="quickstart"><span class="comment"># build from source — no installer yet</span>
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
-cd 1bit-MONSTER && cmake -B build && cmake --build build
-./build/1bit zaya -m model.1bp -p "Hello world"</div>
-  </section>
+cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
+./build/1bit zaya -m model.1bp -p <span class="accent">"Hello world"</span></pre>
+      <div class="cta-row">
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" class="btn primary">try it now</a>
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/README.md" class="btn secondary">read the docs</a>
+      </div>
+      <span class="note">no installer yet — build from source.</span>
+    </div>
 
-  <section>
-    <h2>where this goes</h2>
-    <p>
-      19 architectures and 47 models today, climbing toward the full catalog — not one
-      port at a time, but by decoding the pattern: ~50 architecture classes cover the
-      long tail of what HuggingFace hosts. The registry, the kernels, and the validation
-      harness are already proven; what's left is coverage.
-    </p>
-    <p>
-      JARVIS — mic → VAD → STT → router → LLM → TTS → cloned voice → speaker — is the
-      flagship end-to-end application built on top, running fully local. No cloud, no
-      Python in the hot path.
-    </p>
-  </section>
+    <div class="stats">
+      <div class="stat"><div class="num">19</div><div class="label">architectures</div></div>
+      <div class="stat"><div class="num">47</div><div class="label">models today</div></div>
+      <div class="stat"><div class="num">500+</div><div class="label">model agnostic</div></div>
+      <div class="stat"><div class="num">0</div><div class="label">python in the runtime</div></div>
+    </div>
 
+    <div class="benchmarks" id="benchmarks">
+      <div class="copy">
+        <span class="kicker">// the hard truth</span>
+        <h2>22 proprietary libraries. 209 bitstreams. Zero documentation.</h2>
+        <p>AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.</p>
+        <span class="kicker">// where this goes</span>
+        <p>19 architectures and 47 models today, climbing toward the full catalog — not one port at a time, but by decoding the pattern: ~50 architecture classes cover the long tail of what HuggingFace hosts. The registry, the kernels and the validation harness are already proven; what's left is coverage.</p>
+        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" class="journey-link">read the full journey →</a>
+      </div>
+      <div class="bench-table">
+        <div class="head"><span>decode, end-to-end</span><span>tok/s</span></div>
+        <div class="bench-row"><span class="model">SmolLM2-135M</span><span class="tps">662</span><span class="backend">GGML-Vulkan</span></div>
+        <div class="bench-row"><span class="model">Qwen3-0.6B</span><span class="tps">373</span><span class="backend">GGML-Vulkan</span></div>
+        <div class="bench-row"><span class="model">Qwen2.5-VL-3B</span><span class="tps">100</span><span class="backend">GGML-Vulkan</span></div>
+        <div class="bench-row"><span class="model">BlackMamba-1.5B</span><span class="tps">79.4</span><span class="backend">Mamba1 HIP</span></div>
+        <div class="bench-row"><span class="model">Qwen3.5-4B</span><span class="tps">65</span><span class="backend">GGML-Vulkan</span></div>
+        <div class="bench-row"><span class="model">ZAYA1-74B-preview</span><span class="tps">17.6</span><span class="backend">GGML-Vulkan</span></div>
+        <span class="rig">AMD Ryzen AI MAX+ 395 · Radeon 8060S · 32 GB UMA</span>
+      </div>
+    </div>
+
+    <div class="footerbar">
+      <span class="copy-line">&copy; 1bit monster</span>
+      <span class="license">mit — do whatever you want</span>
+    </div>
+  </main>
 </div>
 
-<footer>&copy; <span id="year"></span> 1bit MONSTER · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a></footer>
-
-<script>
-  document.getElementById('year').textContent = new Date().getFullYear();
-</script>
 </body>
 </html>

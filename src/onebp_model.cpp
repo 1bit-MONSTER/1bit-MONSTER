@@ -126,6 +126,24 @@ bool OnebpModel::load(const char* path) {
     // The index position (pos) now points to the start of data.
     data_section_offset = pos;
 
+    // v4 dedup aliases: an entry with bytes==0 is an alias whose offset
+    // field holds the INDEX of an earlier tensor it shares data with.
+    // Resolve before validation so bounds checks see real sizes.
+    for (size_t i = 0; i < tensors.size(); i++) {
+        auto& t = tensors[i];
+        if (t.bytes != 0) continue;
+        size_t ali = (size_t)t.offset;
+        if (ali >= i || ali >= tensors.size()) {
+            fprintf(stderr, "1BP: bad alias index %zu at '%s'\n", ali, t.name.c_str());
+            return false;
+        }
+        t.offset = tensors[ali].offset;
+        t.bytes  = tensors[ali].bytes;
+        t.quant  = tensors[ali].quant;
+        t.dims   = tensors[ali].dims;
+        t.ndim   = tensors[ali].ndim;
+    }
+
     // Validate all tensor offsets against file size (issue #1145).
     for (auto& t : tensors) {
         uint64_t abs_off = data_section_offset + t.offset;

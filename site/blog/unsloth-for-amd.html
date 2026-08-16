@@ -1,27 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Unsloth for AMD — Train &amp; Fine-Tune LLMs on Radeon, Instinct &amp; Ryzen AI — 1bit.systems</title>
+<title>Unsloth for AMD — Train &amp; Fine-Tune LLMs on Radeon, Instinct &amp; Ryzen AI — 1bit.monster</title>
 <meta name="description" content="Unsloth announced native AMD GPU support for LLM training, fine-tuning, and RL across Radeon, Instinct, and Ryzen AI hardware — with 2x faster training, 70% less VRAM, and 3GB VRAM entry point.">
 <meta name="keywords" content="Unsloth, AMD, ROCm, LLM training, fine-tuning, Radeon, Instinct, Ryzen AI, Strix Halo, RL, Triton kernels, MI300X, RDNA 4">
 <meta name="robots" content="index, follow">
-<link rel="canonical" href="https://1bit.systems/blog/unsloth-for-amd">
+<link rel="canonical" href="https://1bit.monster/blog/unsloth-for-amd">
 <meta property="og:title" content="Unsloth for AMD — Train &amp; Fine-Tune LLMs on Radeon, Instinct &amp; Ryzen AI">
-<meta property="og:image" content="https://1bit.systems/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:description" content="Unsloth announced native AMD GPU support for training, RL, and inference. 2x faster, 70% less VRAM, runs on 3GB. Covers Radeon, Instinct, and Ryzen AI (including Strix Halo).">
-<meta property="og:url" content="https://1bit.systems/blog/unsloth-for-amd">
+<meta property="og:url" content="https://1bit.monster/blog/unsloth-for-amd">
 <meta property="og:type" content="article">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 <style>
-  :root{--bg:#021621;--panel:#06222f;--border:#0e3346;--text:#e7f6fd;--muted:#86adbf;--dim:#4a6a7a;--green:#00ff00;--pink:#f00fd2;--blue:#12a0ed;--sans:'Inter',Helvetica,Arial,sans-serif;--mono:'JetBrains Mono',Consolas,monospace;--maxw:780px;}
+  :root{--bg:#0B0B0B;--panel:#141414;--border:#232323;--text:#EDEFEA;--muted:#A0A599;--dim:#6B706A;--green:#C6FF3D;--pink:#C6FF3D;--blue:#C6FF3D;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
   *{margin:0;padding:0;box-sizing:border-box;}
   body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;}
   a{color:var(--blue);font-weight:600;text-decoration:none;}a:hover{color:var(--green);}
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(2,22,33,.78);border-bottom:1px solid var(--border);}
+  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
   .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:var(--green);}
   .wordmark{font-size:15px;font-weight:800;letter-spacing:-.025em;}.wordmark .g{color:var(--green);}.wordmark .p{color:var(--pink);}
@@ -48,15 +58,15 @@
   .pill{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 11px 0 9px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;}
   .pill .dot{width:8px;height:8px;border-radius:999px;flex:none;}
   .pill.ok{background:rgba(0,255,0,.12);color:#7dffb0;} .pill.ok .dot{background:var(--green);}
-  .pill.info{background:rgba(18,160,237,.14);color:#7cc8f5;} .pill.info .dot{background:var(--blue);}
-  .pill.warn{background:rgba(240,15,210,.16);color:#f5a3e6;} .pill.warn .dot{background:var(--pink);}
+  .pill.info{background:rgba(198,255,61,.14);color:#7cc8f5;} .pill.info .dot{background:var(--blue);}
+  .pill.warn{background:rgba(198,255,61,.16);color:#f5a3e6;} .pill.warn .dot{background:var(--pink);}
 </style>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
-<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #f00fd2;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#f00fd2;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.systems/#benchmarks" style="color:#12a0ed;">current benchmarks →</a></div>
+<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #C6FF3D;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#C6FF3D;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#C6FF3D;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-systems/1bit-systems" style="color:#06c;">the README</a> for current numbers.</div>
-<nav><div class="nav-in"><a class="mark" href="/">1bs</a><a class="wordmark" href="/"><span class="g">1</span>bit<span class="p">.</span>systems</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
+<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
+<nav><div class="nav-in"><a class="mark" href="/">1bm</a><a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
 <article class="wrap">
 
 <div class="meta"><span class="tag news">News</span> <span class="tag b">AMD</span> <span class="tag npu">Training</span><br><br><strong style="color:var(--text);">industry note</strong> · July 2026 · 6 min read</div>
@@ -66,7 +76,7 @@
 <p><strong>tl;dr:</strong> Unsloth released native AMD GPU support for LLM training, fine-tuning, reinforcement learning, and inference. Up to <strong>2x faster</strong> with <strong>70% less VRAM</strong>. Runs on as little as <strong>3GB VRAM</strong> (Qwen3.5, Gemma 4). Covers Radeon, Instinct, Ryzen AI (including Strix Halo's Radeon 8060S), and data-center GPUs — across Windows, WSL, and Linux.</p>
 
 <blockquote>
-<strong>Why this matters for Strix Halo owners:</strong> Unsloth lets you <em>train</em> on the same AMD hardware where 1bit.systems handles inference. Complementary stack: train with Unsloth on the GPU, deploy with 1bit on the NPU+GPU.
+<strong>Why this matters for Strix Halo owners:</strong> Unsloth lets you <em>train</em> on the same AMD hardware where 1bit.monster handles inference. Complementary stack: train with Unsloth on the GPU, deploy with 1bit on the NPU+GPU.
 </blockquote>
 
 <hr>
@@ -224,7 +234,7 @@ snapshot_download(
 )</span></pre>
 
 <blockquote class="b">
-<strong>1bit.systems compat:</strong> These are standard GGUF files under the hood — the engine's GGUF loader auto-detects architecture from metadata, same as any other GGUF. No special handling needed.
+<strong>1bit.monster compat:</strong> These are standard GGUF files under the hood — the engine's GGUF loader auto-detects architecture from metadata, same as any other GGUF. No special handling needed.
 </blockquote>
 
 <hr>
@@ -307,10 +317,10 @@ snapshot_download(
 
 <h2>Strix Halo Synergy</h2>
 
-<p>For the 1bit.systems community, Unsloth for AMD fills the <strong>training gap</strong> on Strix Halo hardware:</p>
+<p>For the 1bit.monster community, Unsloth for AMD fills the <strong>training gap</strong> on Strix Halo hardware:</p>
 
 <blockquote class="g">
-<strong>1bit.systems</strong> → Inference on NPU + GPU (ROCm/Vulkan)<br>
+<strong>1bit.monster</strong> → Inference on NPU + GPU (ROCm/Vulkan)<br>
 <strong>Unsloth</strong> → Training, fine-tuning, and RL on the same GPU<br>
 <strong>llama.cpp (ROCm)</strong> → Fast GGUF inference (229 tok/s on same hardware)
 </blockquote>
@@ -324,10 +334,10 @@ snapshot_download(
   <li><a href="https://github.com/unslothai/unsloth">Unsloth GitHub →</a></li>
   <li><a href="https://unsloth.ai/docs/basics/amd">AMD Setup Guide →</a></li>
   <li><a href="https://www.reddit.com/r/unsloth/comments/1v1mqgq/introducing_unsloth_for_amd/">Reddit Announcement →</a></li>
-  <li><a href="https://1bit.systems">1bit.systems — NPU+GPU inference for Strix Halo →</a></li>
+  <li><a href="https://1bit.monster">1bit.monster — NPU+GPU inference for Strix Halo →</a></li>
 </ul>
 
 </article>
-<div class="foot wrap"><a href="/blog/">← research blog</a> · <a href="/">1bit.systems</a> · MIT</div>
+<div class="foot wrap"><a href="/blog/">← research blog</a> · <a href="/">1bit.monster</a> · MIT</div>
 </body>
 </html>

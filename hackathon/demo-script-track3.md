@@ -90,7 +90,7 @@ github.com/1bit-systems/1bit-systems
 ```
 
 **Narration**:
-> "One binary to rule them all. Check out the repo at github.com/1bit-systems/1bit-systems. Try it on your Strix Halo. Thank you."
+> "One engine. Every model. Any chip.. Check out the repo at github.com/1bit-systems/1bit-systems. Try it on your Strix Halo. Thank you."
 
 ---
 

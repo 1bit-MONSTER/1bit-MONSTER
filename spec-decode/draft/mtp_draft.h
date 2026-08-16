@@ -181,6 +181,10 @@ private:
     MTPDraftWeights w_;
     std::vector<float> inv_freq_;
 
+public:
+    int32_t vocab_size() const { return cfg_.vocab_size; }
+
+private:
     void rms_norm(const float* x, float* y, const float* weight, int n) {
         double ss = 0.0;
         for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];

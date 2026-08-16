@@ -44,7 +44,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 ╔══════════════════════════════════════════════════════════╗
 ║                                                          ║
 ║                   1bit.systems                           ║
-║        One Binary to rule them all                       ║
+║        One engine. Every model. Any chip.                       ║
 ║                                                          ║
 ║     Pure C++ inference engine · 400 KB · Zero Python     ║
 ║     NPU + GPU + CPU · Auto-detect · No config            ║

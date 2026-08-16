@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   pr_agent:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, pr-agent]
     timeout-minutes: 20
     # Only run for same-repo PRs and trusted commenters (not external forks)
     if: |
@@ -23,32 +23,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0  # needed for gitnexus compare against origin/main
+          clean: false    # self-hosted: keep .gitnexus across runs so analyze is incremental
 
       # GitNexus: build/refresh the local knowledge-graph index (incremental),
       # then map the PR diff to indexed symbols + affected execution flows.
       # The report is injected into the review via artifact_path below.
       # Only on pull_request events: comment-triggered runs have no
       # pull_request.base.sha for the cache key (PR agent still runs).
-      - name: Cache GitNexus index
-        if: github.event_name == 'pull_request'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: .gitnexus
-          key: gitnexus-${{ github.event.pull_request.base.sha }}
-          restore-keys: |
-            gitnexus-
-
+      # NOTE: self-hosted runner — the GitNexus index persists in the work
+      # dir across runs, so analyze is incremental (no cold rebuild per PR).
       - name: GitNexus impact analysis
         if: github.event_name == 'pull_request'
         run: |
           set +e  # GitNexus is context-only; infra hiccups must not block the review
-          npm install -g gitnexus@1.6.9
+          npm install -g gitnexus@1.6.10-rc.204 2>/dev/null || true  # pre-installed on the self-hosted runner; no-op here
           # Register a restored cache index (no-op if absent), then refresh
-          # incrementally. analyze can transiently fail to finalize on fresh
-          # runners — retry once per its own diagnostic.
+          # incrementally. rc.204 pins the #2432 native-worker abort fix
+          # (SIGABRT in Napi::Error on analyze) — 1.6.9 lacks it.
           gitnexus index . 2>/dev/null
           gitnexus analyze || gitnexus analyze
-          gitnexus detect-changes --scope compare --base-ref "origin/${{ github.event.pull_request.base.ref }}" --repo 1bit-systems \
+          gitnexus detect-changes --scope compare --base-ref "origin/${{ github.event.pull_request.base.ref }}" --repo 1bit-MONSTER \
             > gitnexus-context.md 2>&1
           echo "--- gitnexus report (first 30 lines) ---"
           head -30 gitnexus-context.md
