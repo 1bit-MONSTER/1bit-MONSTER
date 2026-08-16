@@ -49,6 +49,19 @@ inherit. Empirical proof from the full census:
 | class name only | 303,688 | 76.0% |
 | + model_type fallback | 307,437 | 77.0% |
 | arch-bearing subset | 304,534 / 322,029 | 94.57% |
+| **2026-08-15 final (after pass-3)** | **316,280 / 317,419** | **99.64%** |
+
+Pass-3 (2026-08-15 evening): 62 new-family tokens (llama4/jais/kormo/rwkv7/
+chatglm/sarvam/daisy/retnet/hgrn/quasar/talkie/cubelm/motif/multiscale/
+dynamicforgetting/dynamicslidingwindow/raven/step3p5/fuyu/muse/…), 60+
+config-verified aliases (bailing-MoE→LLAMA, kimik25/instella→DEEPSEEK via
+deepseek_v3 arch, llava-qwen3 VLMs→QWEN3VL, rwkv6qwen2→QWEN2, phonelm/
+plamo2/mobilintexaone→LLAMA, …), +71 exclusions (encoder-decoder, diffusion,
+audio/TTS, non-transformer). Also fixed the QWEN3NEXT/PICO/DYNAMICALIBI
+enum collisions (43/44/45 → 51/52/53) that the merge restore had clobbered.
+
+Remaining tail (722 classes / ~1,150 ckpts): all ≤4-ckpt one-offs in the
+"needs per-model weight download to sniff layout" bucket.
 
 `Testing/census_coverage.py` models the two-step dispatch and regenerates
 `census_full_summary.json` (Phase-4 gate: sweep output == documented count).
