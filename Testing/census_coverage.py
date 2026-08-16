@@ -123,9 +123,13 @@ NON_TEXT_GEN = {
     "t5with", "tabletransformerforobjectdetection", "typhoonaudio",
     "vaswanirope", "visionencoderdecoder", "vitgpt2lm", "whisperaccent",
 
-    # ── 2026-08-15 pass-3: encoder-decoder / audio / non-transformer ──
+    # ── 2026-08-15 pass-3: encoder-decoder / audio / non-transformer / diffusion ──
     "bigbird", "bigbirdpegasus", "longformerforsequenceclassification",
     "blenderbotsmall", "vibevoice", "qwen3asr", "lstm", "prot2text",
+    "bd3lm",  # BD3-LM — block discrete DENOISING DIFFUSION LM (not causal decoder, verified 2026-08-15)
+    "plusmodel",  # LiltForTokenClassification (token classification, not causal LM)
+    "kosine",  # SpeechT5 TTS
+    "helloworld",  # junk test repo (model_type custom)
 }
 
 

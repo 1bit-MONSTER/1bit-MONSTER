@@ -1360,6 +1360,11 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "brujula") == 0) return RCPP_ARCH_GPT2;  // Brujula (n_embd keys, gpt2-layout)
     if (strcmp(s, "phonelm") == 0) return RCPP_ARCH_LLAMA;  // PhoneLM (rms+rope+relu, config-verified)
     if (strcmp(s, "norovoxalphamoe") == 0) return RCPP_ARCH_LLAMA;  // Norovox-Alpha-MoE (rope 1e6, llama-layout MoE)
+    if (strcmp(s, "progen2forpretraining") == 0) return RCPP_ARCH_GPT2;  // ProGen2 (n_embd/n_positions/layer_norm — gpt2 layout, config-verified)
+    if (strcmp(s, "evo2") == 0) return RCPP_ARCH_STRIPEDHYENA;  // Evo2 (arch StripedHyena2, config-verified)
+    if (strcmp(s, "embformer") == 0) return RCPP_ARCH_LLAMA;  // Embformer (llama profile: rms 1e-06 rope 10000 silu, config-verified)
+    if (strcmp(s, "starvector") == 0) return RCPP_ARCH_LLAMA;  // StarVector (VLM, starcoder text decoder — llama layout)
+    if (strcmp(s, "eagle3speculator") == 0) return RCPP_ARCH_LLAMA;  // LlamaForCausalLMEagle3 (arch declares Llama, config-verified)
 
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;

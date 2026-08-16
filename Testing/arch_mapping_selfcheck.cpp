@@ -413,6 +413,17 @@ int main() {
     check("pit", RCPP_ARCH_GPT2, "pit");
     check("randygpt", RCPP_ARCH_GPT2, "randygpt");
     check("stickbreaking", RCPP_ARCH_GPT2, "stickbreaking");
+
+
+    // ── 2026-08-15 census pass-3 batch 5 checks ──
+    check("evo2", RCPP_ARCH_STRIPEDHYENA, "evo2");
+    check("progen2forpretraining", RCPP_ARCH_GPT2, "progen2forpretraining");
+
+
+    // ── 2026-08-15 census pass-3 batch 5b checks ──
+    check("eagle3speculator", RCPP_ARCH_LLAMA, "eagle3speculator");
+    check("embformer", RCPP_ARCH_LLAMA, "embformer");
+    check("starvector", RCPP_ARCH_LLAMA, "starvector");
     std::printf("ARCH MAPPING: all %d checks passed\n", total);
     return 0;
 }
