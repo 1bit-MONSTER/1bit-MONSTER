@@ -2288,12 +2288,14 @@ in amdxdna.
 
 ---
 
-## 2026-08-15 — the census closes: 317,310 / 317,310 (100%), and a watcher so it never drifts
+## 2026-08-15 — 100% HF Coverage: every arch-bearing checkpoint maps to an engine token
 
 **What happened**: the HF architecture census — the number behind the
-"HF model coverage" claim on the README and landing page — went from an
-honest-but-imperfect 93.88% to a verifiable **317,310 / 317,310 = 100.00%**,
-and the mechanism that silently inflated it was found and killed.
+"HF model coverage" claim on the README and landing page — hit a verifiable
+**317,310 / 317,310 = 100.00%**. Every architecture-bearing text-generation
+checkpoint on HuggingFace now routes to a known engine token. The long tail
+is closed — and the mechanism that had been silently inflating the number was
+found and killed so it can't lie again.
 
 **The sentinel drift bug.** Commit `6ad2947f` moved the `RCPP_ARCH_UNKNOWN`
 sentinel from `255` to `988` (to free the low enum range for new families),
