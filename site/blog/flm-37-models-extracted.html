@@ -1,29 +1,39 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>37 FLM models, 209 xclbins, zero config files — we extracted AMD's entire NPU model zoo · 1bit.systems</title>
+<title>37 FLM models, 209 xclbins, zero config files — we extracted AMD's entire NPU model zoo · 1bit.monster</title>
 <meta name="description" content="We pulled 37 pre-built FLM models from ROCm/FastFlowLM v0.9.46 — 209 NPU xclbins, auto-detection from Q4NX headers, and Qwen3.5 Omni multi-modal C++ source. No config files. No Python. Just the NPU doing work.">
 <meta name="keywords" content="FLM extraction, AMD NPU, XDNA 2 xclbins, Qwen3.5 Omni, Qwen3.6 MoE, FastFlowLM, NPU model zoo, C++ inference, zero config">
 <meta name="robots" content="index, follow">
-<link rel="canonical" href="https://1bit.systems/blog/flm-37-models-extracted">
+<link rel="canonical" href="https://1bit.monster/blog/flm-37-models-extracted">
 <link rel="alternate" href="/blog/flm-37-models-extracted.html">
 <meta property="og:title" content="37 FLM models, 209 xclbins, zero config files — we extracted AMD's entire NPU model zoo">
-<meta property="og:image" content="https://1bit.systems/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:description" content="37 pre-built FLM models, 209 NPU xclbins, Qwen3.5 Omni multi-modal, Qwen3.6-MoE-35B. Auto-detection from Q4NX header — zero config.">
-<meta property="og:url" content="https://1bit.systems/blog/flm-37-models-extracted">
+<meta property="og:url" content="https://1bit.monster/blog/flm-37-models-extracted">
 <meta property="og:type" content="article">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 <style>
   :root{
-    --bg:#021621; --panel:#06222f; --tile:#06222f; --inner:#021018;
-    --border:#0e3346; --border2:#123a4d;
-    --text:#e7f6fd; --muted:#86adbf; --dim:#4a6a7a;
-    --green:#00ff00; --green-d:#00c853; --pink:#f00fd2; --blue:#12a0ed;
-    --sans:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif;
-    --mono:'JetBrains Mono','SFMono-Regular','Menlo',Consolas,monospace;
+    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
+    --border:#232323; --border2:#123a4d;
+    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
+    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
+    --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
+    --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
     --maxw:780px;
   }
   *{margin:0;padding:0;box-sizing:border-box;}
@@ -31,9 +41,9 @@
   a{color:var(--blue);font-weight:600;text-decoration:none;transition:color .16s ease;}
   a:hover{color:var(--green);}
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(2,22,33,.78);border-bottom:1px solid var(--border);}
+  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
-  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(240,15,210,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
+  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(198,255,61,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
   .wordmark{font-size:15px;letter-spacing:-.025em;font-weight:800;}
   .wordmark .g{color:var(--green);} .wordmark .p{color:var(--pink);}
   article{padding:48px 0 64px;}
@@ -73,7 +83,7 @@
   "description": "37 pre-built FLM models, 209 NPU xclbins, Qwen3.5 Omni multi-modal, Qwen3.6-MoE-35B. Auto-detection from Q4NX header — zero config.",
   "author": { "@type": "Person", "name": "bong-water-water-bong" },
   "datePublished": "2026-07-29",
-  "publisher": { "@type": "Organization", "name": "1bit.systems" }
+  "publisher": { "@type": "Organization", "name": "1bit.monster" }
 }
 </script>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
@@ -81,7 +91,7 @@
 <nav>
   <div class="nav-in">
     <div class="mark">1b</div>
-    <span class="wordmark"><span class="p">1bit</span><span class="g">.systems</span></span>
+    <span class="wordmark"><span class="p">1bit</span><span class="g"> MONSTER</span></span>
   </div>
 </nav>
 <article>
@@ -270,14 +280,14 @@ G:   K= 2048, N=  512, cols=<span class="g">4</span></pre>
   <strong>Source:</strong> <a href="https://github.com/ROCm/FastFlowLM">ROCm/FastFlowLM</a> (mirror).
   All extracted files live in <code>engine/npu/xclbins/flm_models/</code>.
   The full extraction log is at
-  <a href="https://github.com/1bit-systems/1bit-systems/blob/main/engine/npu/EXTRACTED_FROM_FLM.md">EXTRACTED_FROM_FLM.md</a>.
+  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/EXTRACTED_FROM_FLM.md">EXTRACTED_FROM_FLM.md</a>.
 </p>
 
 </div>
 </article>
 <div class="foot">
   <a href="/blog/">← All posts</a> &middot;
-  <a href="/">1bit.systems</a>
+  <a href="/">1bit.monster</a>
 </div>
 </body>
 </html>

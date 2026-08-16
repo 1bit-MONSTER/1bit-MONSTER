@@ -360,6 +360,44 @@ int main(int argc, char** argv) {
             hdr.arch = ONEBP_DENSE;  // default is already 0
         } else if (arch_str == "deepseek2" || arch_str == "deepseek3") {
             hdr.arch = ONEBP_DEEPSEEK2;
+            // DeepSeek2/Instella MLA dims (2026-08-16): key_length_mla =
+            // qk_nope+qk_rope; qk_rope = rope.dimension_count; v_dim =
+            // value_length_mla; kv_lora = attention.kv_lora_rank.
+            auto gu32 = [&](const std::string& key, uint32_t def) {
+                uint32_t v;
+                if (reader.get_u32(key, v)) return v;
+                if (reader.get_u32(arch_str + "." + key, v)) return v;
+                return def;
+            };
+            uint32_t kl_mla = gu32("attention.key_length_mla", 0);
+            uint32_t vl_mla = gu32("attention.value_length_mla", 0);
+            uint32_t n_rot  = gu32("rope.dimension_count", 0);
+            hdr.mla_qk_rope_dim = n_rot;
+            hdr.mla_qk_nope_dim = kl_mla >= n_rot ? kl_mla - n_rot : 0;
+            hdr.mla_v_dim       = vl_mla;
+            hdr.mla_kv_lora_rank = gu32("attention.kv_lora_rank", 0);
+            hdr.mla_gated_attn = reader.tensor_info("blk.0.attn_gate.weight") ? 1 : 0;
+            if (reader.get_u32(arch_str + ".instella_farskip", hdr.mla_farskip)) {
+                hdr.mla_farskip_start = gu32("instella_farskip_start", 0);
+                hdr.mla_farskip_end   = gu32("instella_farskip_end", 100000);
+            }
+            printf("  DeepSeek2 MLA: qk_nope=%u qk_rope=%u v_dim=%u kv_lora=%u gated=%u farskip=%u[%u..%u]\n",
+                   hdr.mla_qk_nope_dim, hdr.mla_qk_rope_dim, hdr.mla_v_dim,
+                   hdr.mla_kv_lora_rank, hdr.mla_gated_attn, hdr.mla_farskip,
+                   hdr.mla_farskip_start, hdr.mla_farskip_end);
+            hdr.n_layer_dense_lead = gu32("leading_dense_block_count", 0);
+            hdr.n_ff_exp   = gu32("expert_feed_forward_length", 0);
+            uint32_t n_sh = gu32("expert_shared_count", 0);
+            hdr.n_ff_shexp = n_sh * hdr.n_ff_exp;
+            if (hdr.n_ff_exp) hdr.intermediate_size = hdr.n_ff_exp;  // MoE: expert FFN width
+            hdr.expert_gating_func = gu32("expert_gating_func", 0);
+            hdr.expert_weights_norm = gu32("expert_weights_norm", 0);
+            float ews = 0;
+            if (reader.get_f32("expert_weights_scale", ews) || reader.get_f32(arch_str + ".expert_weights_scale", ews))
+                hdr.set_expert_weights_scale(ews);
+            printf("  DeepSeek2 MoE: experts=%u topk=%u n_ff_exp=%u n_shared=%u dense_lead=%u gating=%u norm_topk=%u scale=%.2f\n",
+                   hdr.num_experts, hdr.n_expert_used, hdr.n_ff_exp, n_sh, hdr.n_layer_dense_lead,
+                   hdr.expert_gating_func, hdr.expert_weights_norm, ews);
         } else if (arch_str == "gemma4") {
             // gemma4: can be dense (31B) or MoE (26B) — auto-detect handles MoE
             hdr.arch = ONEBP_DENSE;
@@ -395,9 +433,8 @@ int main(int argc, char** argv) {
     // (shape.size() != 2 filtered out every 1D tensor), which meant every
     // .1bp file ever produced was missing all its normalization weights —
     // structurally incapable of correct inference. See issue #1023.
-    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; };
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; int alias_of = -1; };
     std::vector<TInfo> tensors;
-    uint64_t data_off = 0;
     int tr = 32, tc = 256, gs = 32;
 
     if (moe_shape_colmajor) {
@@ -414,8 +451,7 @@ int main(int argc, char** argv) {
             int len = (int)inf->shape[0];
             if (len <= 0) continue;
             uint64_t raw_bytes = (uint64_t)len * 4;  // f32, unquantized
-            tensors.push_back({tn, 1, 1, len, 1, data_off, raw_bytes, quant});
-            data_off += raw_bytes;
+            tensors.push_back({tn, 1, 1, len, 1, 0, raw_bytes, quant});
             continue;
         }
         if (ndim != 2 && ndim != 3) continue;  // skip unknown shapes
@@ -431,9 +467,9 @@ int main(int argc, char** argv) {
                 (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
                 tq = ONEBP_Q4NX;
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
-            tensors.push_back({tn, 2, r, c, 1, data_off, tiled, tq});
-            data_off += tiled;
-            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%" PRIu64 " quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
+            tensors.push_back({tn, 2, r, c, 1, 0, tiled, tq});
+            if (tensors.size() <= 3 || tn.find("shexp") != std::string::npos)
+                printf("  tensor %s: %dx%d tiled=%" PRIu64 " quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
             // ndim == 3: expert-stacked tensor. Expert tensors (name contains
             // 'exps.'/'shexp') follow the detected layout; non-expert 3D
@@ -442,9 +478,20 @@ int main(int argc, char** argv) {
             bool expert_tensor = (tn.find("exps.") != std::string::npos || tn.find("shexp") != std::string::npos);
             int ne, r, c;
             if (!expert_tensor) {
+                // Non-expert 3D (MLA attn_k_b/attn_v_b): NOT an expert stack.
+                // GGUF 3D is ne0-contiguous; storing as 2D [shape[0],
+                // shape[1]*shape[2]] keeps get_tensor_f32's flat order identical
+                // to the GGUF reader (verified 2026-08-16).
+                OnebpQuant tq2 = quant;
+                if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
+                    (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
+                    tq2 = ONEBP_Q4NX;
                 ne = (int)inf->shape[0];
                 r  = (int)inf->shape[1];
                 c  = (int)inf->shape[2];
+                tensors.push_back({tn, 2, ne, r * c, 1, 0,
+                                   onebp_tiled_size(ne, r*c, tr, tc, gs, tq2), tq2});
+                continue;
             } else if (moe_shape_colmajor) {
                 // column-major [cols, rows, experts] (also zaya's [rows,
                 // cols, experts] read back as cols=shape[0], rows=shape[1])
@@ -464,10 +511,44 @@ int main(int argc, char** argv) {
                 tq = ONEBP_Q4NX;
             uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, tq);
             uint64_t total_tiled = (uint64_t)ne * per_expert;
-            tensors.push_back({tn, 3, r, c, ne, data_off, total_tiled, tq});
-            data_off += total_tiled;
+            tensors.push_back({tn, 3, r, c, ne, 0, total_tiled, tq});
             printf("  tensor %s: %d experts x %dx%d per-expert=%" PRIu64 " total=%" PRIu64 "\n",
                    tn.c_str(), ne, r, c, per_expert, total_tiled);
+        }
+    }
+    // ── v4 dedup: byte-identical tensors share one storage block ──
+    // Shared layers (Zamba-style) appear once per use in the GGUF; the
+    // quantizer is deterministic, so equal source floats -> equal quantized
+    // bytes. Hash each tensor's f32 source (FNV-1a 64) and keep one copy;
+    // later duplicates become aliases (offset = index of the first, bytes=0).
+    // ponytail: FNV-1a collision on a dedup key would silently alias two
+    // different tensors; 64-bit + shape/quant match makes this negligible for
+    // a converter, upgrade to full-byte compare if it ever misfires.
+    uint64_t data_off = 0;
+    struct DedupKey { uint64_t hash; int ndim, rows, cols, num_experts; uint32_t tq; uint64_t tiled; };
+    std::vector<std::pair<DedupKey,int>> seen;
+    for (size_t ti = 0; ti < tensors.size(); ti++) {
+        auto& t = tensors[ti];
+        std::vector<float> fw;
+        if (!reader.get_tensor_f32(t.name, fw)) {
+            fprintf(stderr, "\nFATAL: get_tensor_f32 failed for %s during dedup pass\n", t.name.c_str());
+            return 1;
+        }
+        uint64_t h = 1469598103934665603ull;
+        const uint8_t* b = (const uint8_t*)fw.data();
+        for (size_t i = 0; i < fw.size() * sizeof(float); i++) { h ^= b[i]; h *= 1099511628211ull; }
+        DedupKey key{h, t.ndim, t.rows, t.cols, t.num_experts, (uint32_t)t.tq, t.tiled};
+        int first = -1;
+        for (auto& s : seen)
+            if (s.first.hash == key.hash && s.first.ndim == key.ndim && s.first.rows == key.rows &&
+                s.first.cols == key.cols && s.first.num_experts == key.num_experts &&
+                s.first.tq == key.tq && s.first.tiled == key.tiled) { first = s.second; break; }
+        if (first >= 0) {
+            t.alias_of = first; t.offset = (uint64_t)first; t.tiled = 0;
+            printf("  dedup: %s -> alias of tensor #%d\n", t.name.c_str(), first);
+        } else {
+            seen.push_back({key, (int)ti});
+            t.offset = data_off; data_off += t.tiled;
         }
     }
     printf("  Total tensors: %zu, data size: %.1f MB\n", tensors.size(), data_off / (1024.0*1024.0));
@@ -530,6 +611,7 @@ int main(int argc, char** argv) {
     for (auto& ti : tensors) {
         count++;
         printf("  [%d/%zu] %s... ", count, tensors.size(), ti.name.c_str()); fflush(stdout);
+        if (ti.alias_of >= 0) { printf("(alias of #%d)\n", ti.alias_of); continue; }  // v4 dedup: data already written
         // All tensors processed
         std::vector<float> fw;
         auto* inf = reader.tensor_info(ti.name);

@@ -41,7 +41,7 @@ weeks out of date the last time it was hand-maintained (see git history).
 | GPU ternary (Vulkan) | **318 tok/s** | Vulkan ZINC | ✅ validated |
 | BitNet TQ1_0 (base-3 LUT) | **202 tok/s** | ROCm HIP | ✅ validated, re-measured 2026-07-24 |
 | Prefill INT8 WMMA (I8-APRE) | **43.2 TFLOPS** | INT8 WMMA | ✅ re-measured 2026-08-01 (was 39.4) |
-| IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — correctness pending full IQ1_M port |
+| IQ1_S dequant+GEMV | **45 tok/s** | ROCm HIP | ✅ validated — IQ1_M dequant also bit-exact vs llama.cpp reference (`Testing/iq1_selfcheck.cpp`); 50/56-byte block sizes fixed in reader |
 | NPU INT8 GEMM | **0/10000 errors (22/22 shapes)** | XDNA 2 via Peano | ✅ verified 2026-07-28 — npu_engine_universal, 4 native ops (QKV/O/GU/D). **2026-08-05: multi-row generator (v27, 4 core rows / 32 cores) — 5.6× kernel-level** (QKV 675, O 757, GU 646, D 751 GOP/s). Chess toolchain deprecated. |
 
 **NPU raw hardware validation** (`xrt-smi validate`, 2026-07-25): 51 TOPS INT8 GEMM,
@@ -59,7 +59,7 @@ This is a device-level number, not a model-inference tok/s figure.
 | SmolLM2-135M Q4_K_M | **662 tok/s** | GGML-Vulkan | Peak end-to-end decode |
 | SmolLM2-360M Q4_K_M | **389 tok/s** | GGML-Vulkan | |
 | SmolLM2-1.7B Q4_K_M | **167 tok/s** | GGML-Vulkan | |
-| Qwen3-0.6B (native NPU engine) | **2.3 tok/s (435 ms/tok); 7.4 tok/s @ -B 8** | XDNA 2 (32 cores, v27) | Measured 2026-08-05 — bit-identical token stream vs v26; prefill 475 ms/9 tok. Multi-sequence batch decode (-B N) is strictly causal per-sequence. See `site/benchmarks.json` |
+| Qwen3-0.6B (native NPU engine) | **2.3 tok/s (435 ms/tok); 230-255 ms/tok** | XDNA 2 (M=32 open kernels, BS=1) | **2026-08-15**: the old "7.4 tok/s @ -B 8" was an INVALID fake batch (issue #111 — top-K candidates as sequential tokens, non-causal). True batch (BS=8, per-sequence KV + causal attention) measures 235-237 ms/tok; the M=32 open kernels are ~11% faster than the FLM M=128 baseline (255-262). Prefill 475 ms/9 tok. See `site/benchmarks.json` |
 | Qwen3-0.6B Q4_K_M | **373 tok/s** | GGML-Vulkan | |
 | Qwen2.5-VL-3B Q4_K_M | **100 tok/s** | GGML-Vulkan | |
 | Qwen3.5-4B Q4_K_M | **65 tok/s** | GGML-Vulkan | |
@@ -110,6 +110,7 @@ This is a device-level number, not a model-inference tok/s figure.
 | Jul 25 | NPU HW re-validated + zero-copy fusion fix | — | `xrt-smi validate` clean; fixed buffer-overflow segfault in fusion pipeline test |
 | Jul 28 | npu_engine_universal INT8 GEMM + Peano xclbins | **22/22 shapes, 0 errors** | All 4 ops (QKV/O/GU/D) across 5 models verified on real hardware. NPU attention fixed (xrt::ext::bo overload bug). Chess deprecated. |
 | Aug 5 | Multi-core GEMM (v27) | 435 ms/tok | All 4 AIE core rows (32 cores) instead of 1; 5.6× kernel-level, 2.4× e2e decode. NPU attention default → opt-in (was 55× slower than CPU). |
+| Aug 15 | FLM-free + M=32 kernels | 230-255 ms/tok | Open toolchain (v27 + peano-clang microkernel) builds byte-identical instruction streams; M=32 kernels beat FLM 11% (universal) / 15% (fused); 35B-A3B BS=8 + expert dequant cache 2× (2900→1450). True batch decode replaces the invalid fake-batch "-B 8". |
 | Jul 26 | Mamba1 HIP re-measure | 79.4 / 46.0 tok/s | Fixed `__shfl_xor_sync` correctness bug, numbers went *up* |
 
 ---

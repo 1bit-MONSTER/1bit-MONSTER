@@ -1,157 +1,157 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://1bit.systems/</loc>
+    <loc>https://1bit.monster/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/jarvis/</loc>
+    <loc>https://1bit.monster/jarvis/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/store/</loc>
+    <loc>https://1bit.monster/store/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/store/success.html</loc>
+    <loc>https://1bit.monster/store/success.html</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/live.html</loc>
+    <loc>https://1bit.monster/live.html</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/</loc>
+    <loc>https://1bit.monster/blog/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/analytics/</loc>
+    <loc>https://1bit.monster/analytics/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/dspark-speculative-decoding-572-tok-per-second</loc>
+    <loc>https://1bit.monster/blog/dspark-speculative-decoding-572-tok-per-second</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/fused-layer-engine-one-xclbin-per-layer</loc>
+    <loc>https://1bit.monster/blog/fused-layer-engine-one-xclbin-per-layer</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/npu-optimization-sprint-72x-speedup</loc>
+    <loc>https://1bit.monster/blog/npu-optimization-sprint-72x-speedup</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/three-bugs-broke-97-tok-per-second</loc>
+    <loc>https://1bit.monster/blog/three-bugs-broke-97-tok-per-second</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/one-binary-to-rule-them-all</loc>
+    <loc>https://1bit.monster/blog/one-engine-every-model-any-chip</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/npu-benchmarks-55-tflops</loc>
+    <loc>https://1bit.monster/blog/npu-benchmarks-55-tflops</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/npu-132x-more-efficient-than-gpu</loc>
+    <loc>https://1bit.monster/blog/npu-132x-more-efficient-than-gpu</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/what-reviews-didnt-tell-you-ryzen-ai-halo</loc>
+    <loc>https://1bit.monster/blog/what-reviews-didnt-tell-you-ryzen-ai-halo</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/token-router</loc>
+    <loc>https://1bit.monster/blog/token-router</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/one-binary-all-formats</loc>
+    <loc>https://1bit.monster/blog/one-binary-all-formats</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/qwen35b-a3b-fully-on-npu</loc>
+    <loc>https://1bit.monster/blog/qwen35b-a3b-fully-on-npu</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/flm-37-models-extracted</loc>
+    <loc>https://1bit.monster/blog/flm-37-models-extracted</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/unsloth-for-amd</loc>
+    <loc>https://1bit.monster/blog/unsloth-for-amd</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/blog/zyphra-family-complete</loc>
+    <loc>https://1bit.monster/blog/zyphra-family-complete</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/demo/</loc>
+    <loc>https://1bit.monster/demo/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/demo/audio/</loc>
+    <loc>https://1bit.monster/demo/audio/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/demo/gpu/</loc>
+    <loc>https://1bit.monster/demo/gpu/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/demo/text/</loc>
+    <loc>https://1bit.monster/demo/text/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://1bit.systems/demo/vision/</loc>
+    <loc>https://1bit.monster/demo/vision/</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>

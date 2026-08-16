@@ -728,8 +728,8 @@ async function renderApiKeys(main) {
                   <tr>
                     <td style="font-family:var(--mono);font-size:12px;">${esc(k.key)}</td>
                     <td><span class="badge ${k.active ? 'ok' : 'err'}"><span class="dot"></span>${k.active ? 'Active' : 'Revoked'}</span></td>
-                    <td>${k.created_at || '—'}</td>
-                    <td>${k.expires_at || '—'}</td>
+                    <td>${esc(k.created_at) || '—'}</td>
+                    <td>${esc(k.expires_at) || '—'}</td>
                     <td>${k.active ? `<button class="btn btn-danger btn-sm" onclick="revokeApiKey('${esc(k.key)}')">Revoke</button>` : ''}</td>
                   </tr>`).join('')}
                 </tbody>
@@ -744,7 +744,7 @@ async function renderApiKeys(main) {
           <div class="form-row">
             <div class="form-group" style="flex:3">
               <label>API Key for Dashboard Requests</label>
-              <input class="form-input" id="api-key-input" placeholder="sk-..." value="${localStorage.getItem('zaya_api_key') || ''}">
+              <input class="form-input" id="api-key-input" placeholder="sk-..." value="${esc(localStorage.getItem('zaya_api_key') || '')}">
               <div class="form-hint">Stored in localStorage. Used for all dashboard API calls.</div>
             </div>
             <div class="form-group" style="flex:0">
@@ -934,7 +934,7 @@ async function renderSettings(main) {
           <div class="kv"><span class="k">Dashboard Version</span><span class="v">1.0.0</span></div>
           <div class="kv"><span class="k">Platform</span><span class="v">Zaya Co-Host</span></div>
           <div class="kv"><span class="k">API Endpoint</span><span class="v">${location.origin}</span></div>
-          <div class="text-xs mt-3">Powered by 1bit.systems · Open-source inference engine</div>
+          <div class="text-xs mt-3">Powered by 1bit.monster · Open-source inference engine</div>
         </div>
       </div>
     </div>`;

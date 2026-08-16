@@ -1,0 +1,594 @@
+{
+ "parlertts": {
+  "count": 1587,
+  "model": "ittailup/parler-bayly"
+ },
+ "t5": {
+  "count": 1005,
+  "model": "kalpeshk2011/dipper-paraphraser-xxl"
+ },
+ "mt5": {
+  "count": 362,
+  "model": "lmqg/mt5-small-jaquad-qg-ae"
+ },
+ "bart": {
+  "count": 284,
+  "model": "research-backup/bart-base-squad-qg-default"
+ },
+ "picodecoderhf": {
+  "count": 245,
+  "model": "pico-lm/pico-decoder-large"
+ },
+ "bert": {
+  "count": 221,
+  "model": "Ebtihal/AraDiaBERT"
+ },
+ "lfm2moe": {
+  "count": 211,
+  "model": "LiquidAI/LFM2.5-8B-A1B"
+ },
+ "roberta": {
+  "count": 141,
+  "model": "uf-aice-lab/math-roberta"
+ },
+ "mbart": {
+  "count": 140,
+  "model": "lincoln/barthez-squadFR-fquad-piaf-question-generation"
+ },
+ "llama4": {
+  "count": 109,
+  "model": "prathmeshadsod/MoneyOps-Llama-4-Scout-17B-16E-Instruct"
+ },
+ "dflashdraft": {
+  "count": 104,
+  "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash"
+ },
+ "hyv3": {
+  "count": 91,
+  "model": "tencent/Hy3"
+ },
+ "jais": {
+  "count": 91,
+  "model": "inceptionai/jais-13b"
+ },
+ "dynamicalibi": {
+  "count": 86,
+  "model": "Lanni-ni/dynamic_alibi_babylm_10m_2layer"
+ },
+ "dynamicforgetting": {
+  "count": 80,
+  "model": "Lanni-ni/dynamic_forgetting_2_4_256_babylm_10m_epoch1"
+ },
+ "dynamicslidingwindow": {
+  "count": 80,
+  "model": "Lanni-ni/dynamic_sliding_window_2_4_256_babylm_10m_epoch1"
+ },
+ "nanochat": {
+  "count": 79,
+  "model": "HarleyCooper/nanochat561"
+ },
+ "afmoe": {
+  "count": 77,
+  "model": "arcee-ai/Trinity-Mini"
+ },
+ "marian": {
+  "count": 76,
+  "model": "AhmedSSoliman/TestMarianCausalLM"
+ },
+ "kormo": {
+  "count": 72,
+  "model": "kormo-lm/dclm_fullcausal_1B"
+ },
+ "gpt": {
+  "count": 64,
+  "model": "LH-Tech-AI/htmLLM-124M"
+ },
+ "t5with": {
+  "count": 59,
+  "model": "GermanT5/t5-efficient-gc4-german-base-nl36-old"
+ },
+ "nmmaskmoellavaqwen3": {
+  "count": 56,
+  "model": "KKHYA/llavaqwen3-1.7b-finetune-nm-mask-moe-sparse-4e-2k-2of4-imp-skiplast3-sd3_20260812_063343"
+ },
+ "caca": {
+  "count": 55,
+  "model": "Lyon28/caca-1M-untrained"
+ },
+ "rwkv7": {
+  "count": 53,
+  "model": "RWKV/RWKV7-Goose-World3-2.9B-HF"
+ },
+ "ernie4_5_moe": {
+  "count": 51,
+  "model": "DavidAU/ERNIE-4.5-37B-A3B-Thinking-Brainstorm20x"
+ },
+ "chatglm": {
+  "count": 50,
+  "model": "qiuhuachuan/MeChat"
+ },
+ "sarvammoe": {
+  "count": 48,
+  "model": "sarvamai/sarvam-30b"
+ },
+ "lladamodellm": {
+  "count": 41,
+  "model": "Epsilonoid/Diffusion-Engram-IME-Demo"
+ },
+ "roleslm": {
+  "count": 41,
+  "model": "sathishphdai/data-scientist-slm-1m"
+ },
+ "mellum": {
+  "count": 40,
+  "model": "JetBrains/Mellum2-12B-A2.5B-Thinking"
+ },
+ "xlnet": {
+  "count": 37,
+  "model": "xlnet/xlnet-base-cased"
+ },
+ "raven": {
+  "count": 37,
+  "model": "tomg-group-umd/huginn-0125"
+ },
+ "kimik25": {
+  "count": 36,
+  "model": "spicyneuron/Kimi-K2.7-Code-MLX-3.6bit"
+ },
+ "t5gemma": {
+  "count": 36,
+  "model": "google/t5gemma-2b-2b-ul2"
+ },
+ "bailingmoev2": {
+  "count": 35,
+  "model": "inclusionAI/Ling-flash-2.0"
+ },
+ "talkie": {
+  "count": 35,
+  "model": "Abstract4700/frankentalkie-20b"
+ },
+ "llada2moemodellm": {
+  "count": 34,
+  "model": "inclusionAI/LLaDA2.2-flash"
+ },
+ "xlmroberta": {
+  "count": 34,
+  "model": "wzhouad/prix-lm"
+ },
+ "transformerlm": {
+  "count": 34,
+  "model": "fukugawa/transformer-lm-japanese-0.1b"
+ },
+ "hrmtext": {
+  "count": 34,
+  "model": "sapientinc/HRM-Text-1B"
+ },
+ "looplm": {
+  "count": 34,
+  "model": "harims95/LoopLM-135M-naive"
+ },
+ "phimoe": {
+  "count": 32,
+  "model": "microsoft/Phi-3.5-MoE-instruct"
+ },
+ "morpht5concat": {
+  "count": 32,
+  "model": "mrapacz/interlinear-en-philta-emb-concat-diacritics-bh"
+ },
+ "morpht5sum": {
+  "count": 32,
+  "model": "mrapacz/interlinear-pl-philta-emb-sum-normalized-bh"
+ },
+ "morpht5auto": {
+  "count": 32,
+  "model": "mrapacz/interlinear-pl-mt5-large-emb-auto-diacritics-bh"
+ },
+ "gemma3n": {
+  "count": 32,
+  "model": "h4shy/gemma-3n-E2B-prototype-pytorch"
+ },
+ "longcatcausallm": {
+  "count": 29,
+  "model": "meituan-longcat/LongCat-2.0"
+ },
+ "bailingmoev2_5": {
+  "count": 29,
+  "model": "inclusionAI/Ling-2.6-1T"
+ },
+ "ministral3": {
+  "count": 29,
+  "model": "Pageshift-Entertainment/pagestorm-research-preview-14b-full-book"
+ },
+ "mllama": {
+  "count": 29,
+  "model": "RedHatAI/Llama-3.2-90B-Vision-Instruct-FP8-dynamic"
+ },
+ "step3p5": {
+  "count": 28,
+  "model": "stepfun-ai/Step-3.5-Flash"
+ },
+ "daisy": {
+  "count": 27,
+  "model": "JonathanMiddleton/daisy-milli-18.11"
+ },
+ "gateddeltanet": {
+  "count": 26,
+  "model": "PatrickHaller/gdn-midtraining-sft"
+ },
+ "multiscale": {
+  "count": 26,
+  "model": "CubicLabs/AXL-300M"
+ },
+ "cohere2moe": {
+  "count": 25,
+  "model": "CohereLabs/North-Mini-Code-1.0"
+ },
+ "fp8qwen3": {
+  "count": 24,
+  "model": "xihc-ucb/Qwen3-4B-train-Quasar-0807"
+ },
+ "bailingmoev3": {
+  "count": 23,
+  "model": "inclusionAI/Ling-3.0-flash"
+ },
+ "dsparkdraft": {
+  "count": 23,
+  "model": "RadixArk/Qwen3.8-27B-DSpark"
+ },
+ "gpt2moe": {
+  "count": 23,
+  "model": "i-be-snek/gpt2_moe_eng_hom_1025_10mb"
+ },
+ "exaonemoe": {
+  "count": 22,
+  "model": "LGAI-EXAONE/K-EXAONE-2.0-750B-A37B"
+ },
+ "hunyuanmoev1": {
+  "count": 22,
+  "model": "tencent/Hunyuan-A13B-Instruct"
+ },
+ "m2m100": {
+  "count": 21,
+  "model": "dsfsi/ss-en-m2m100-gov"
+ },
+ "distilbertforsequenceclassification": {
+  "count": 21,
+  "model": "nicotaroni/fine_tuned_classification"
+ },
+ "llavaphi": {
+  "count": 21,
+  "model": "zxmonent/llava-phi"
+ },
+ "glm": {
+  "count": 21,
+  "model": "ModelCloud/glm-4-9b-chat-gptqmodel-w4a16"
+ },
+ "skipmiddle": {
+  "count": 21,
+  "model": "tim-lawson/skip-middle-fineweb-baseline-12-layers"
+ },
+ "motif": {
+  "count": 20,
+  "model": "Motif-Technologies/Motif-3"
+ },
+ "bertformaskedlm": {
+  "count": 20,
+  "model": "shibing624/macbert4csc-base-chinese"
+ },
+ "quasar": {
+  "count": 20,
+  "model": "silx-ai/Quasar-10B"
+ },
+ "hgrn": {
+  "count": 19,
+  "model": "OpenNLPLab/HGRN-1B"
+ },
+ "jetmoe": {
+  "count": 19,
+  "model": "jetmoe/jetmoe-8b"
+ },
+ "blenderbot": {
+  "count": 18,
+  "model": "thu-coai/blenderbot-400M-esconv"
+ },
+ "retnet": {
+  "count": 18,
+  "model": "jploski/retnet-mini-shakespeare"
+ },
+ "mfuyu": {
+  "count": 18,
+  "model": "Mantis-VL/mfuyu_llava50k"
+ },
+ "bailingmoelinearv2": {
+  "count": 18,
+  "model": "inclusionAI/Ring-mini-linear-2.0"
+ },
+ "slidingwindow": {
+  "count": 18,
+  "model": "Lanni-ni/hard_2gram_babylm_10m_2layer"
+ },
+ "bvv": {
+  "count": 18,
+  "model": "Bochkov/emergent-semantics-model-uni-glyph-335m"
+ },
+ "falconmamba": {
+  "count": 17,
+  "model": "tiiuae/falcon-mamba-7b"
+ },
+ "pldrllm": {
+  "count": 17,
+  "model": "fromthesky/PLDR-LLM-v51-SOC-110M-1"
+ },
+ "recurrentgemma": {
+  "count": 17,
+  "model": "google/recurrentgemma-2b"
+ },
+ "cubelm": {
+  "count": 17,
+  "model": "ajyl/joint_seed_1423_alpha_1.0"
+ },
+ "kimik3": {
+  "count": 16,
+  "model": "pipenetwork/Kimi-K3-REAP73-MLX-mxfp4-q8"
+ },
+ "narbart": {
+  "count": 16,
+  "model": "lca0503/encodec-tts-nar"
+ },
+ "lightningtransformermodel": {
+  "count": 16,
+  "model": "Jumpr/HF_compatibility_testv3-ForCausalLM"
+ },
+ "minimaxm3sparse": {
+  "count": 15,
+  "model": "nvidia/MiniMax-M3-NVFP4"
+ },
+ "sarvammla": {
+  "count": 15,
+  "model": "sarvamai/sarvam-105b"
+ },
+ "nemotronlabsdiffusion": {
+  "count": 15,
+  "model": "nvidia/Nemotron-Labs-Diffusion-8B"
+ },
+ "rwkv6": {
+  "count": 15,
+  "model": "paperfun/rwkv"
+ },
+ "youtu": {
+  "count": 14,
+  "model": "tencent/Youtu-LLM-2B-Base"
+ },
+ "progressiveyocollama": {
+  "count": 14,
+  "model": "hosseinbv/prog-y-tiny-llama-CDL-19"
+ },
+ "stl": {
+  "count": 14,
+  "model": "saracandu/stldec_random_512"
+ },
+ "nemotronh_nano_omni_reasoning_v3": {
+  "count": 14,
+  "model": "unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning"
+ },
+ "spikewhalelm": {
+  "count": 14,
+  "model": "Quazim0t0/Escarda-86M"
+ },
+ "xpertgpt": {
+  "count": 14,
+  "model": "anonym5035/XpertGPT-BabyLM2026-Strict-Small"
+ },
+ "encoderdecoder": {
+  "count": 13,
+  "model": "LeoCordoba/beto2beto"
+ },
+ "selfdebiasinggpt2": {
+  "count": 13,
+  "model": "newtonkwan/gpt2-xl-ft-1"
+ },
+ "openmoe": {
+  "count": 13,
+  "model": "hpcai-tech/openmoe-base"
+ },
+ "t5la": {
+  "count": 13,
+  "model": "hrezaei/T5LA"
+ },
+ "recast1b_llama": {
+  "count": 13,
+  "model": "appledora/recast-llama3.2-f8t2"
+ },
+ "bailingmoe": {
+  "count": 13,
+  "model": "inclusionAI/Ling-lite-base"
+ },
+ "discretediffusion": {
+  "count": 13,
+  "model": "myduy/dlm-vi2en-checkpoint-61500"
+ },
+ "yatgpt": {
+  "count": 13,
+  "model": "mlnomad/yatnmn-softplus-d12-chinchilla-261M-pytorch"
+ },
+ "qwen3recovered": {
+  "count": 13,
+  "model": "atlasium-efficient/Qwen3-12B-20pct-Compressed-14B-EN-V1"
+ },
+ "adaptermoellavaqwen3": {
+  "count": 13,
+  "model": "KKHYA/llavaqwen3-1.7b-finetune-adapter-moe-sparse-4e-2k-B7a-pesc-d64_20260806_215150"
+ },
+ "diffusiongemmaforblockdiffusion": {
+  "count": 12,
+  "model": "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
+ },
+ "stripedhyenamodel": {
+  "count": 12,
+  "model": "togethercomputer/evo-1-131k-base"
+ },
+ "llamamoe": {
+  "count": 12,
+  "model": "aungkomyint/tara1.4.1"
+ },
+ "roformer": {
+  "count": 12,
+  "model": "junnyu/roformer_chinese_sim_char_base"
+ },
+ "hyenadna": {
+  "count": 12,
+  "model": "LongSafari/hyenadna-small-32k-seqlen-hf"
+ },
+ "gptjx": {
+  "count": 12,
+  "model": "KnutJaegersberg/GPT-JX-3b"
+ },
+ "av2text": {
+  "count": 12,
+  "model": "nguyenvulebinh/AV-HuBERT"
+ },
+ "modernbertdecoder": {
+  "count": 12,
+  "model": "jhu-clsp/ettin-decoder-400m"
+ },
+ "industryslm": {
+  "count": 12,
+  "model": "sathishphdai/healthcare-slm-1m"
+ },
+ "llamalongbel": {
+  "count": 12,
+  "model": "AnonymousARR42/LongBEL_8B_MedMentions_st21pv"
+ },
+ "orkhon": {
+  "count": 12,
+  "model": "korkmazumut/orkhon-bumin"
+ },
+ "ceno": {
+  "count": 12,
+  "model": "CladeTeam/CENO-80M-base"
+ },
+ "fimmy": {
+  "count": 12,
+  "model": "di-zhang-fdu/fimmy-nano"
+ },
+ "eagle3draft": {
+  "count": 11,
+  "model": "RedHatAI/gpt-oss-20b-speculator.eagle3"
+ },
+ "eagle3deepseekv2": {
+  "count": 11,
+  "model": "skt/A.X-K2-EAGLE3"
+ },
+ "camembert": {
+  "count": 11,
+  "model": "maelfabien/marcel_customer_service"
+ },
+ "electra": {
+  "count": 11,
+  "model": "smeoni/nbme-electra-large-generator"
+ },
+ "videochatgptllama": {
+  "count": 11,
+  "model": "heldJan/llama-2-7b-miniplatypus"
+ },
+ "hgrnbit": {
+  "count": 11,
+  "model": "ridger/MMfreeLM-1.3B"
+ },
+ "gptjxmoe": {
+  "count": 11,
+  "model": "BeardedMonster/SabiYarn-125M-finetune"
+ },
+ "forgettingtransformer": {
+  "count": 11,
+  "model": "zhixuan-lin/fox-pro-760m-longcrawl64-48b"
+ },
+ "qwen2parscale": {
+  "count": 11,
+  "model": "ParScale/ParScale-1.8B-P1"
+ },
+ "qwen2bm": {
+  "count": 11,
+  "model": "hdong0/deepseek-Qwen2.5-Math-1.5B-baseline-init"
+ },
+ "qwen2adapter": {
+  "count": 11,
+  "model": "zeliang0426/Fix-Strict_Darpo-cache-adapter-3k"
+ },
+ "gptbert": {
+  "count": 11,
+  "model": "Jorgeis1/jorge-babylm-10m-gptbert"
+ },
+ "a2dqwen3": {
+  "count": 11,
+  "model": "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1"
+ },
+ "argonne": {
+  "count": 11,
+  "model": "PursuitOfDataScience/Argonne-2.0"
+ },
+ "emo": {
+  "count": 11,
+  "model": "allenai/Emo_1b14b_1T"
+ },
+ "keuralmoecausallm": {
+  "count": 11,
+  "model": "mkd-hossain/keural-sft-18k"
+ },
+ "instellamoe": {
+  "count": 10,
+  "model": "amd/Instella-MoE-16B-A3B-Think"
+ },
+ "museglimmer": {
+  "count": 10,
+  "model": "RadixArk/Muse-Glimmer-q4-MLX"
+ },
+ "graniteswitch": {
+  "count": 10,
+  "model": "ibm-granite/granite-switch-4.1-8b-preview"
+ },
+ "bamba": {
+  "count": 10,
+  "model": "ibm-ai-platform/Bamba-9B-v2"
+ },
+ "parambharatgen": {
+  "count": 10,
+  "model": "bharatgenai/LegalParam"
+ },
+ "reformermodelwithlmhead": {
+  "count": 10,
+  "model": "google/reformer-crime-and-punishment"
+ },
+ "moss": {
+  "count": 10,
+  "model": "OpenMOSS-Team/moss-moon-003-base"
+ },
+ "japanesestablelmalpha": {
+  "count": 10,
+  "model": "stabilityai/japanese-stablelm-base-alpha-7b"
+ },
+ "modeling_sparsetral.mistral": {
+  "count": 10,
+  "model": "serpdotai/sparsetral-16x7B-v1"
+ },
+ "prot2text": {
+  "count": 10,
+  "model": "habdine/Prot2Text-Small-v1-1"
+ },
+ "ringattentiongpt2": {
+  "count": 10,
+  "model": "Progz/CyclicGPT2-1.1.3"
+ },
+ "qwen3omnimoe": {
+  "count": 10,
+  "model": "vito95311/Qwen3-Omni-30B-A3B-Thinking-INT8FP16"
+ },
+ "financedecoder": {
+  "count": 10,
+  "model": "tjarvis91/Q-Triage-50M-Sovereign"
+ },
+ "gemma4unifiedassistant": {
+  "count": 10,
+  "model": "bahadirakdemir/gemma-4-12B-it-assistant-fp8"
+ }
+}

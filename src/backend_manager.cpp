@@ -248,7 +248,6 @@ void BackendManager::discover() {
     }
 
     // 2c2. Zamba2 Vulkan — Mamba2 SSD on the ZINC C++ compute path (P1 decode).
-    // Gated by ZAMBA2_VK=1 in backend_zamba2_vulkan.cpp init(); without it the
     // backend declines and routing falls through to zamba2_gpu/HIP as before.
     {
         BackendInfo info;
@@ -270,6 +269,28 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
+
+    // 2c3. Nemotron-H CPU — Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE
+    // hybrid (per-layer layers_block_type). CPU-only reference backend;
+    // created on-demand by architecture (nemotron_h).
+    {
+        BackendInfo info;
+        info.id = "nemotron_h_cpu";
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = "Nemotron-H hybrid (Mamba2+attn+MLP+MoE) CPU";
+        info.priority = tier_priority(info.tier) + 30;
+        info.available = true;
+        info.functional = false;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "Nemotron-H CPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -379,6 +400,31 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "CPU Generic (GGUF)", "✅ always available");
+        backends_.push_back(info);
+    }
+
+    // 6b. Frontier CPU engines — dedicated safetensors backends for the five
+    // mini-gate-validated families (2026-08-16). Not auto-selectable: the
+    // router picks them by id when the arch matches.
+    struct { const char* id; const char* desc; } frontier[] = {
+        {"cpu_deepseek_v4",  "CPU DeepSeek V4 (mHC + CSA/HCA + FP4 MoE)"},
+        {"cpu_glm_moe_dsa",  "CPU GLM-MoE-DSA (MLA + DSA indexer)"},
+        {"cpu_mimo_v2",      "CPU MiMo-V2 (MoD hybrid SWA+full)"},
+        {"cpu_qwen3_5",      "CPU Qwen3.5 (GatedDeltaNet + gated GQA)"},
+    };
+    for (auto& f : frontier) {
+        BackendInfo info;
+        info.id = f.id;
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = f.desc;
+        info.priority = tier_priority(info.tier) + 15;
+        info.available = true;
+        info.functional = false;
+        info.auto_selectable = false;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
         backends_.push_back(info);
     }
 
@@ -1475,6 +1521,16 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                         if (fn) b = fn(); } }
                 return b;
             }
+            // Nemotron-H backend (Nemotron-H 4B/8B) — Mamba-2 + NoPE GQA +
+            // relu2 MLP + sigmoid MoE hybrid (per-layer layers_block_type)
+            if (info.id == "nemotron_h_cpu") {
+                b = try_load_backend("librocm_cpp.so", "create_nemotron_h_backend");
+                if (!b) b = try_load_backend("libnemotron_h_backend.so", "create_nemotron_h_backend");
+                if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                    if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_nemotron_h_backend");
+                        if (fn) b = fn(); } }
+                return b;
+            }
             // HIP 1BP GPU engine — full GPU inference for 1BP models, statically linked
             if (info.id == "hip_1bp_gpu") {
 #ifdef ROCM_CPP_STATIC_HIP
@@ -1570,6 +1626,21 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_laguna_backend");
                         if (fn) b = fn(); } }
                 return b;
+            }
+            // Frontier CPU engines (mini-gate validated 2026-08-16):
+            // dedicated safetensors engines for DeepSeek V4 / GLM-MoE-DSA /
+            // MiMo-V2 / Qwen3.5. Routed by model_router id.
+            if (info.id == "cpu_deepseek_v4" || info.id == "cpu_glm_moe_dsa" ||
+                info.id == "cpu_mimo_v2" || info.id == "cpu_qwen3_5") {
+                extern Backend* create_frontier_deepseek_v4_backend();
+                extern Backend* create_frontier_glm_moe_dsa_backend();
+                extern Backend* create_frontier_mimo_v2_backend();
+                extern Backend* create_frontier_qwen3_5_backend();
+                if (info.id == "cpu_deepseek_v4") b = create_frontier_deepseek_v4_backend();
+                else if (info.id == "cpu_glm_moe_dsa") b = create_frontier_glm_moe_dsa_backend();
+                else if (info.id == "cpu_mimo_v2") b = create_frontier_mimo_v2_backend();
+                else b = create_frontier_qwen3_5_backend();
+                if (b) return b;
             }
             return create_generic_backend();
         case BackendType::ZINC_GPU:

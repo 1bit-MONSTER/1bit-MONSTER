@@ -385,7 +385,9 @@ set(RCPP_SOURCES
     src/mamba2_kernels.cpp
     src/mamba2_kernels.hip
     src/zamba2_engine.cpp
-    src/zamba2_engine_hip.hip)
+    src/zamba2_engine_hip.hip
+    src/nemotron_h_engine.cpp
+    src/safetensors_reader.cpp)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
@@ -515,9 +517,13 @@ set(BACKEND_MANAGER_SOURCES
     src/backend_plugin.cpp
     src/backend_cpu.cpp
     src/backend_generic.cpp
+    src/backend_frontier.cpp
     src/backend_mamba1.cpp
     src/deepseek.cpp
     src/deepseek_v4.cpp
+    src/glm_moe_dsa.cpp
+    src/mimo_v2.cpp
+    src/qwen3_5.cpp
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp

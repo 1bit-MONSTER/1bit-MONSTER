@@ -25,6 +25,7 @@ namespace safetensors_detail {
 bool json_find_string(const std::string& text, const std::string& key, std::string& out);
 bool json_find_int(const std::string& text, const std::string& key, int& out);
 bool json_find_float(const std::string& text, const std::string& key, float& out);
+bool json_find_bool(const std::string& text, const std::string& key, bool& out);
 }
 
 bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg);

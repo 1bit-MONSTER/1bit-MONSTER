@@ -164,8 +164,13 @@ public:
             // (real token id, not a stub) and reuses the same target_hidden trunk features
             // for the whole round (matches training: one fc-projected feature set per round).
             std::vector<int32_t> draft_tokens(cfg_.block_size);
+            // Size draft buffers by the DRAFT's vocab, not the target's — the
+            // draft fills vocab_size(draft) logits per step; if the caller's
+            // cfg_.vocab_size is smaller (mismatched config), the fill would
+            // overflow the slice (test_decode_loop.cpp caught exactly this).
+            const int32_t draft_vocab = draft_.vocab_size();
             std::vector<float> draft_logits(
-                (size_t)cfg_.block_size * cfg_.vocab_size
+                (size_t)cfg_.block_size * draft_vocab
             );
             std::vector<float> draft_hidden_step(cfg_.hidden_size);
 
@@ -178,18 +183,18 @@ public:
                     draft_input_id,
                     /*pos=*/i,
                     draft_state,
-                    draft_logits.data() + (size_t)i * cfg_.vocab_size,
+                    draft_logits.data() + (size_t)i * draft_vocab,
                     draft_hidden_step.data()
                 );
                 draft_input_id = argmax(
-                    draft_logits.data() + (size_t)i * cfg_.vocab_size, cfg_.vocab_size
+                    draft_logits.data() + (size_t)i * draft_vocab, draft_vocab
                 );
             }
 
             // Sample draft tokens greedily
             for (int i = 0; i < cfg_.block_size; i++) {
-                float* logits_i = draft_logits.data() + (size_t)i * cfg_.vocab_size;
-                draft_tokens[i] = argmax(logits_i, cfg_.vocab_size);
+                float* logits_i = draft_logits.data() + (size_t)i * draft_vocab;
+                draft_tokens[i] = argmax(logits_i, draft_vocab);
             }
             stats_.total_draft_proposed += cfg_.block_size;
 

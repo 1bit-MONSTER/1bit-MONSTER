@@ -4,7 +4,7 @@
 
 **Tag:** `v2026.07.02-all5models`  
 **Release:** https://github.com/1bit-systems/1bit-systems/releases/tag/v2026.07.02-all5models  
-**Site:** https://1bit.systems — "One binary to rule them all. 35 models. ~400 KB. Auto-detect."
+**Site:** https://1bit.systems — "One engine. Every model. Any chip.. 35 models. ~400 KB. Auto-detect."
 
 ### The Pitch
 
@@ -56,7 +56,7 @@ per-projection in_features (H for Q/K/V/G/U, NH×HD for O, IM for D).
 
 ### Website
 
-- Hero: "One binary to rule them all. 35 models. ~400 KB. Auto-detect."
+- Hero: "One engine. Every model. Any chip.. 35 models. ~400 KB. Auto-detect."
 - Subtitle: "No Python. No pip. No Docker. Just g++ and run."
 - Engine card: 5-Model Engine, 28 tok/s, 120KB
 - Stats: 35 models supported, 24× speedup

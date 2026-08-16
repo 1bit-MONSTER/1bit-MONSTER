@@ -25,23 +25,37 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # ── Step 1: Analytics ──────────────────────────────────
-echo "📊 [1/3] Project Analytics..."
+echo "📊 [1/4] Project Analytics..."
 if [ -x "$HOME/scripts/jarvis-analytics-sweep.sh" ]; then
     bash "$HOME/scripts/jarvis-analytics-sweep.sh" 2>/dev/null && echo "  ✓ Analytics recorded" || echo "  ⚠ Analytics skipped"
 fi
 echo ""
 
 # ── Step 2: World brief ─────────────────────────────────
-echo "🌍 [2/3] World Engineering Brief..."
+echo "🌍 [2/4] World Engineering Brief..."
 if [ -x "$HOME/.1bit/agent/skills/jarvis-world/scripts/daily-brief.sh" ]; then
     bash "$HOME/.1bit/agent/skills/jarvis-world/scripts/daily-brief.sh" 2>/dev/null && echo "  ✓ World brief recorded" || echo "  ⚠ World brief skipped"
 fi
 echo ""
 
 # ── Step 3: PR brief ────────────────────────────────────
-echo "📬 [3/3] PR Brief..."
+echo "📬 [3/4] PR Brief..."
 if [ -x "$HOME/.1bit/agent/skills/jarvis-pr/scripts/pr-sweep.sh" ]; then
     bash "$HOME/.1bit/agent/skills/jarvis-pr/scripts/pr-sweep.sh" 2>/dev/null && echo "  ✓ PR sweep recorded" || echo "  ⚠ PR sweep skipped"
+fi
+echo ""
+
+# ── Step 4: HF model watch ───────────────────────────────
+echo "🆕 [4/4] HF New-Model Watch..."
+HF_WATCH="$HOME/1bit-MONSTER/Testing/hf_new_models.py"
+if [ -f "$HF_WATCH" ]; then
+    if python3 "$HF_WATCH" 2>/dev/null; then
+        echo "  ✓ No uncovered HF models"
+    else
+        echo "  ⚠ UNCOVERED HF models found — see output above, add archs to bitnet_model.h"
+    fi
+else
+    echo "  ⚠ hf_new_models.py missing"
 fi
 echo ""
 

@@ -1,33 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>1bit.systems Store — Sorry but not Sorry</title>
-<meta name="description" content="1bit.systems official store. Merch, gear, and swag for the 38KB binary NPU+GPU+CPU inference engine community. Stripe-powered. No Shopify.">
+<title>1bit.monster Store — Sorry but not Sorry</title>
+<meta name="description" content="1bit.monster official store. Merch, gear, and swag for the 38KB binary NPU+GPU+CPU inference engine community. Stripe-powered. No Shopify.">
 <meta name="robots" content="index, follow">
-<link rel="canonical" href="https://1bit.systems/store/">
+<link rel="canonical" href="https://1bit.monster/store/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://js.stripe.com/v3/"></script>
 <style>
   :root{
-    --bg:#021621; --panel:#06222f; --tile:#06222f; --inner:#021018;
-    --border:#0e3346; --border2:#123a4d;
-    --text:#e7f6fd; --muted:#86adbf; --dim:#4a6a7a;
-    --green:#00ff00; --green-d:#00c853; --pink:#f00fd2; --blue:#12a0ed;
-    --sans:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif;
-    --mono:'JetBrains Mono','SFMono-Regular','Menlo',Consolas,monospace;
+    --bg:#0B0B0B; --panel:#141414; --tile:#141414; --inner:#021018;
+    --border:#232323; --border2:#123a4d;
+    --text:#EDEFEA; --muted:#A0A599; --dim:#6B706A;
+    --green:#C6FF3D; --green-d:#00c853; --pink:#C6FF3D; --blue:#C6FF3D;
+    --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
+    --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
   }
   *{margin:0;padding:0;box-sizing:border-box;}
-  body{background:radial-gradient(1100px 560px at 80% -10%,rgba(240,15,210,.10),transparent 60%),radial-gradient(950px 520px at 4% 8%,rgba(18,160,237,.10),transparent 60%),var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;min-height:100vh;}
+  body{background:radial-gradient(1100px 560px at 80% -10%,rgba(198,255,61,.10),transparent 60%),radial-gradient(950px 520px at 4% 8%,rgba(198,255,61,.10),transparent 60%),var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;min-height:100vh;}
   a{color:inherit;text-decoration:none;}
   .wrap{max-width:1040px;margin:0 auto;padding:0 28px;}
   nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(2,22,33,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1040px;margin:0 auto;padding:0 28px;height:64px;display:flex;align-items:center;gap:20px;}
   .brand{display:flex;align-items:center;gap:10px;}
-  .mark{width:36px;height:36px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 14px rgba(240,15,210,.35);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:12px;color:var(--green);}
+  .mark{width:36px;height:36px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 14px rgba(198,255,61,.35);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:12px;color:var(--green);}
   .wordmark{font-size:18px;letter-spacing:-.02em;font-weight:800;}
   .wordmark .g{color:var(--green);} .wordmark .p{color:var(--pink);}
   .b{color:var(--blue);} .p{color:var(--pink);} .g{color:var(--green);}
@@ -38,23 +47,23 @@
   .btn-primary{background:var(--green);color:var(--bg);}
   .btn-primary:hover{background:var(--green-d);box-shadow:0 6px 22px rgba(0,255,0,.30);}
   .btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border2);}
-  .btn-ghost:hover{background:rgba(18,160,237,.08);border-color:var(--blue);}
+  .btn-ghost:hover{background:rgba(198,255,61,.08);border-color:var(--blue);}
   .btn-pink{background:var(--pink);color:#fff;}
-  .btn-pink:hover{box-shadow:0 6px 22px rgba(240,15,210,.35);}
+  .btn-pink:hover{box-shadow:0 6px 22px rgba(198,255,61,.35);}
   .btn-outline{background:transparent;color:var(--green);border:1px solid var(--green);}
   .hero{padding:60px 0 36px;text-align:center;}
   h1{font-size:clamp(32px,4.5vw,50px);font-weight:900;line-height:1.06;letter-spacing:-.025em;}
   .sub{max-width:500px;margin:16px auto;font-size:16px;line-height:1.5;color:var(--muted);}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin:36px 0;}
   .card{border-radius:16px;border:1px solid var(--border);background:var(--tile);overflow:hidden;transition:border-color .2s,box-shadow .2s;}
-  .card:hover{border-color:rgba(240,15,210,.4);box-shadow:0 8px 28px rgba(240,15,210,.12);}
+  .card:hover{border-color:rgba(198,255,61,.4);box-shadow:0 8px 28px rgba(198,255,61,.12);}
   .card-img{height:220px;background:var(--inner);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border);}
   .card-body{padding:18px 20px 22px;}
   .card-body h3{font-size:17px;font-weight:800;margin-bottom:4px;}
   .price{font-family:var(--mono);font-size:20px;font-weight:800;color:var(--green);}
   .desc{font-size:13px;color:var(--muted);margin:6px 0 12px;line-height:1.4;}
   .pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:700;}
-  .pill.warn{background:rgba(240,15,210,.16);color:#f5a3e6;}
+  .pill.warn{background:rgba(198,255,61,.16);color:#f5a3e6;}
   .pill.ok{background:rgba(0,255,0,.12);color:#7dffb0;}
   .size-select{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap;}
   .size-btn{height:32px;padding:0 12px;border-radius:6px;font-family:var(--mono);font-size:12px;font-weight:700;border:1px solid var(--border2);background:var(--inner);color:var(--muted);cursor:pointer;transition:all .15s;}
@@ -72,16 +81,41 @@
   .branding-showcase span{padding:7px 16px;border-radius:999px;font-family:var(--mono);font-weight:800;font-size:13px;border:1px solid var(--border2);}
   @media (max-width:600px){.wrap,.nav-in{padding:0 16px;}.hero{padding:40px 0 24px;}.grid{grid-template-columns:1fr;}}
 </style>
+<link rel="canonical" href="https://1bit.monster/store/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="1bit MONSTER">
+<meta property="og:title" content="1bit.monster Store — Sorry but not Sorry">
+<meta property="og:description" content="1bit.monster official store. Merch, gear, and swag for the 38KB binary NPU+GPU+CPU inference engine community. Stripe-powered. No Shopify.">
+<meta property="og:url" content="https://1bit.monster/store/">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="1bit.monster Store — Sorry but not Sorry">
+<meta name="twitter:description" content="1bit.monster official store. Merch, gear, and swag for the 38KB binary NPU+GPU+CPU inference engine community. Stripe-powered. No Shopify.">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "1bit.monster Store \u2014 Sorry but not Sorry",
+  "description": "1bit.monster official store. Merch, gear, and swag for the 38KB binary NPU+GPU+CPU inference engine community. Stripe-powered. No Shopify.",
+  "url": "https://1bit.monster/store/",
+  "about": {
+    "@type": "SoftwareApplication",
+    "name": "1bit MONSTER"
+  }
+}
+</script>
+
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
 
 <nav>
   <div class="nav-in">
-    <a class="brand" href="https://1bit.systems"><span class="mark">1bs</span><span class="wordmark"><span class="g">1</span>bit<span class="p">.</span>systems</span></a>
+    <a class="brand" href="https://1bit.monster"><span class="mark">1bm</span><span class="wordmark"><span class="g">1</span>bit MONSTER</span></a>
     <span class="caps" style="color:var(--pink);">Store</span>
     <div class="nav-cta">
-      <a class="btn btn-ghost" href="https://1bit.systems">← 1bit.systems</a>
-      <a class="btn btn-ghost" href="https://github.com/1bit-systems/1bit-systems">GitHub</a>
+      <a class="btn btn-ghost" href="https://1bit.monster">← 1bit.monster</a>
+      <a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
     </div>
   </div>
 </nav>
@@ -116,7 +150,7 @@
     <div style="background:var(--tile);border:1px solid var(--border);border-radius:14px;padding:16px;">
       <div style="font-size:24px;margin-bottom:6px;">🪢</div>
       <div style="font-weight:800;font-size:14px;">1bit Lanyard</div>
-      <div style="font-size:12px;color:var(--muted);">Black polyester · "1bit.systems" repeat · metal clip</div>
+      <div style="font-size:12px;color:var(--muted);">Black polyester · "1bit.monster" repeat · metal clip</div>
     </div>
     <div style="background:var(--tile);border:1px solid var(--border);border-radius:14px;padding:16px;">
       <div style="font-size:24px;margin-bottom:6px;">💌</div>
@@ -145,8 +179,8 @@
 
 <footer>
   <div class="wrap">
-    <p>1bit.systems Merch · Payments by Stripe · Fulfillment by Printful Canada</p>
-    <p style="margin-top:6px;"><a href="mailto:admin@1bit.systems" style="color:var(--blue);">admin@1bit.systems</a></p>
+    <p>1bit.monster Merch · Payments by Stripe · Fulfillment by Printful Canada</p>
+    <p style="margin-top:6px;"><a href="mailto:admin@1bit.monster" style="color:var(--blue);">admin@1bit.monster</a></p>
     <p style="margin-top:8px;color:var(--dim);">—bong-water-water-bong · <span class="p">Sorry but not Sorry :)</span></p>
   </div>
 </footer>
@@ -163,8 +197,8 @@ const PRODUCTS = [
   { id:"hoodie",        name:"Zero Dependencies Hoodie", price:4999, img:"hoodie",
     desc:"Heavyweight fleece, black. \"Zero Python. Zero Dependencies.\" on back. 1bit mark on chest. S-3XL.",
     sizes:["S","M","L","XL","2XL","3XL"] },
-  { id:"mug",           name:"1bit.systems Coffee Mug", price:1899, img:"mug",
-    desc:"11oz ceramic, matte black. \"1bit.systems\" in blue. Dishwasher safe.",
+  { id:"mug",           name:"1bit.monster Coffee Mug", price:1899, img:"mug",
+    desc:"11oz ceramic, matte black. \"1bit.monster\" in blue. Dishwasher safe.",
     sizes:[] },
   { id:"bottle",        name:"100% Local AI Water Bottle", price:2499, img:"bottle",
     desc:"20oz stainless steel, vacuum insulated. \"100% local AI\" + 1bit lockup. 24hr cold.",
@@ -206,15 +240,15 @@ function msg(text, cls='ok') {
 
 function svgImg(type) {
   const map = {
-    tshirt: `<text x="100" y="80" text-anchor="middle" fill="#00ff00" font-family="monospace" font-size="48" font-weight="900">1bs</text><text x="100" y="115" text-anchor="middle" fill="#86adbf" font-family="monospace" font-size="14">50 TOPS · 94 tok/s</text><text x="100" y="150" text-anchor="middle" fill="#f00fd2" font-family="monospace" font-size="15" font-weight="800">Sorry but not Sorry</text>`,
-    npu: `<text x="100" y="85" text-anchor="middle" fill="#f00fd2" font-family="monospace" font-size="44" font-weight="900">NPU</text><text x="100" y="120" text-anchor="middle" fill="#00ff00" font-family="monospace" font-size="18" font-weight="800">UNLOCKED</text><text x="100" y="152" text-anchor="middle" fill="#86adbf" font-family="monospace" font-size="11">Strix Halo · 32 tiles</text>`,
-    hoodie: `<text x="100" y="80" text-anchor="middle" fill="#f00fd2" font-family="monospace" font-size="40" font-weight="900">1bs</text><text x="100" y="112" text-anchor="middle" fill="#00ff00" font-family="monospace" font-size="16" font-weight="800">HOODIE</text><text x="100" y="145" text-anchor="middle" fill="#86adbf" font-family="monospace" font-size="11">Zero Python. Zero Deps.</text>`,
-    mug: `<text x="100" y="80" text-anchor="middle" fill="#12a0ed" font-family="monospace" font-size="38" font-weight="900">1bit</text><text x="100" y="112" text-anchor="middle" fill="#e7f6fd" font-family="monospace" font-size="16" font-weight="800">systems</text><text x="100" y="145" text-anchor="middle" fill="#f00fd2" font-family="monospace" font-size="12">est. 2026</text>`,
-    bottle: `<text x="100" y="80" text-anchor="middle" fill="#00ff00" font-family="monospace" font-size="32" font-weight="900">94 tok/s</text><text x="100" y="110" text-anchor="middle" fill="#86adbf" font-family="monospace" font-size="14">AMD Strix Halo</text><text x="100" y="140" text-anchor="middle" fill="#f00fd2" font-family="monospace" font-size="13" font-weight="800">100% local AI</text>`,
-    sticker: `<text x="100" y="72" text-anchor="middle" fill="#00ff00" font-family="monospace" font-size="22" font-weight="900">STICKER</text><text x="100" y="98" text-anchor="middle" fill="#f00fd2" font-family="monospace" font-size="18" font-weight="800">PACK</text><text x="100" y="130" text-anchor="middle" fill="#12a0ed" font-family="monospace" font-size="12">1bit · NPU · 94 tok/s</text><text x="100" y="155" text-anchor="middle" fill="#86adbf" font-family="monospace" font-size="11">weatherproof vinyl</text>`,
+    tshirt: `<text x="100" y="80" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="48" font-weight="900">1bm</text><text x="100" y="115" text-anchor="middle" fill="#A0A599" font-family="monospace" font-size="14">50 TOPS · 94 tok/s</text><text x="100" y="150" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="15" font-weight="800">Sorry but not Sorry</text>`,
+    npu: `<text x="100" y="85" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="44" font-weight="900">NPU</text><text x="100" y="120" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="18" font-weight="800">UNLOCKED</text><text x="100" y="152" text-anchor="middle" fill="#A0A599" font-family="monospace" font-size="11">Strix Halo · 32 tiles</text>`,
+    hoodie: `<text x="100" y="80" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="40" font-weight="900">1bm</text><text x="100" y="112" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="16" font-weight="800">HOODIE</text><text x="100" y="145" text-anchor="middle" fill="#A0A599" font-family="monospace" font-size="11">Zero Python. Zero Deps.</text>`,
+    mug: `<text x="100" y="80" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="38" font-weight="900">1bit</text><text x="100" y="112" text-anchor="middle" fill="#EDEFEA" font-family="monospace" font-size="16" font-weight="800">MONSTER</text><text x="100" y="145" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="12">est. 2026</text>`,
+    bottle: `<text x="100" y="80" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="32" font-weight="900">94 tok/s</text><text x="100" y="110" text-anchor="middle" fill="#A0A599" font-family="monospace" font-size="14">AMD Strix Halo</text><text x="100" y="140" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="13" font-weight="800">100% local AI</text>`,
+    sticker: `<text x="100" y="72" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="22" font-weight="900">STICKER</text><text x="100" y="98" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="18" font-weight="800">PACK</text><text x="100" y="130" text-anchor="middle" fill="#C6FF3D" font-family="monospace" font-size="12">1bit · NPU · 94 tok/s</text><text x="100" y="155" text-anchor="middle" fill="#A0A599" font-family="monospace" font-size="11">weatherproof vinyl</text>`,
   };
   // All stickers share the same SVG
-  return `<svg width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" rx="16" fill="#021621" stroke="#0e3346" stroke-width="2"/>${map[type]||map['sticker']}</svg>`;
+  return `<svg width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" rx="16" fill="#0B0B0B" stroke="#232323" stroke-width="2"/>${map[type]||map['sticker']}</svg>`;
 }
 
 function fmt( cents) { return '$' + (cents/100).toFixed(2); }
@@ -265,8 +299,8 @@ async function checkout() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items: items,
-        successUrl: 'https://1bit.systems/store/success',
-        cancelUrl: 'https://1bit.systems/store',
+        successUrl: 'https://1bit.monster/store/success',
+        cancelUrl: 'https://1bit.monster/store',
       }),
     });
     const data = await resp.json();

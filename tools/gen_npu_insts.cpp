@@ -36,16 +36,22 @@ static void generate(const char* out_dir, const char* tag,
                      const char* op_name, int M, int K, int N) {
     std::string path = std::string(out_dir) + "/insts_i8_" + op_name + "_" + tag + ".txt";
     npu_sequence seq(device_npu2);
+    // FLM-parity generator (2026-08-15): emits raw blob words directly.
+    // Do NOT call cmds2seq() — it appends a stale header after the payload.
+    // The generator stashes the command count as its final word.
     gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)K, (uint32_t)N,
                               0, 0, false, 0, 0, 0);
-    seq.cmds2seq();
-    auto [dp, sz] = seq.dump();
+    std::vector<uint32_t>& raw = seq.raw_seq();
+    uint32_t ncmds = raw.back(); raw.pop_back();
+    uint32_t nbytes = (uint32_t)(raw.size() * 4 + 16);
+    uint32_t hdr[4] = { 0x06040100, 0x00000108, ncmds, nbytes };
 
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) { fprintf(stderr, "FAIL: can't write %s\n", path.c_str()); return; }
-    fwrite(dp, 1, sz, f);
+    fwrite(hdr, 4, 4, f);
+    fwrite(raw.data(), 4, raw.size(), f);
     fclose(f);
-    printf("  %s: M=%d K=%d N=%d → %zu bytes\n", op_name, M, K, N, sz);
+    printf("  %s: M=%d K=%d N=%d → %u bytes (%u cmds)\n", op_name, M, K, N, nbytes, ncmds);
 }
 
 int main(int argc, char** argv) {
@@ -71,7 +77,11 @@ int main(int argc, char** argv) {
     int QOUT = NH * HD;           // Q output dim
     int KVOUT = NKV * HD;         // K/V output dim
     int qkv_n = QOUT + 2 * KVOUT; // fused QKV output
-    int XM = 128;                  // batch tile (M dimension for GEMM)
+    // Batch tile (M dimension for GEMM). FLM generated M=512-padded streams;
+    // the open generator defaulted to M=128. Decode (M=1) wastes the whole
+    // padded batch — pass M=1 to emit single-token streams (~30x smaller).
+    // Optional arg 9:  ./gen_npu_insts ... out_dir tag [M]
+    int XM = (argc > 9) ? atoi(argv[9]) : 128;
 
     // Each GEMM: activations[M, K] × weights[K, N] → output[M, N]
     // Instructions configure the NPU for these dims.

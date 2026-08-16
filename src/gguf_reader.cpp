@@ -326,8 +326,8 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         // Dequantization is not implemented here — these return false
         // from gguf_dequant; callers can use get_tensor_raw() for
         // custom dequant.
-        case GGUF_DTYPE_IQ1_S:  return {256, 206};
-        case GGUF_DTYPE_IQ1_M:  return {256, 230};
+        case GGUF_DTYPE_IQ1_S:  return {256, 50};   // 2 + QK_K/8 + QK_K/16 (gguf-py GGML_QUANT_SIZES)
+        case GGUF_DTYPE_IQ1_M:  return {256, 56};   // QK_K/8 + QK_K/16 + QK_K/32
         case GGUF_DTYPE_IQ2_XXS: return {256, 166};
         case GGUF_DTYPE_IQ2_S:  return {256, 214};
         case GGUF_DTYPE_IQ3_XXS: return {256, 198};

@@ -83,6 +83,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"ggml_vulkan", "zamba2_vulkan", "zamba2_gpu", "cpu_generic"},
                 "Zamba2 model — GGML-Vulkan → Zamba2-on-Vulkan (ZAMBA2_VK=1) → Zamba2 HIP → CPU"};
     }
+    // Nemotron-H (Mamba-2 + NoPE GQA + relu2 MLP + sigmoid MoE hybrid).
+    if (cfg.arch == RCPP_ARCH_NEMOTRONH) {
+        return {{"nemotron_h_cpu", "cpu_generic"},
+                "Nemotron-H model — native Mamba2+attn+MLP+MoE CPU backend → generic CPU"};
+    }
     // Mamba1 models (Zamba-7B-v1, BlackMamba): Mamba1 SSM HIP kernels,
     // with per-layer MoE expert dispatch for BlackMamba.
     if (cfg.arch == RCPP_ARCH_MAMBA || cfg.arch == RCPP_ARCH_ZAMBA) {
@@ -97,9 +102,34 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
     if (cfg.arch == RCPP_ARCH_DEEPSEEK) {
         return {{"hip_gpu", "cpu_generic"}, "DeepSeek — MLA + MoE, HIP GPU, generic CPU fallback"};
     }
-    // DeepSeek V4 Flash/Pro: mHC + CSA+HCA + FP4 MoE (284B/13B active)
+    // DeepSeek V4 Flash/Pro: mHC + CSA+HCA + FP4 MoE (284B/13B active).
+    // Dedicated CPU engine (src/deepseek_v4.cpp, mini-gate 20/20 2026-08-16)
+    // — the generic backend does NOT implement this math.
     if (cfg.arch == RCPP_ARCH_DEEPSEEK_V4) {
-        return {{"hip_gpu", "cpu_generic"}, "DeepSeek V4 — mHC + CSA/HCA attn + FP4 MoE, HIP GPU"};
+        return {{"cpu_deepseek_v4", "hip_gpu", "cpu_generic"},
+                "DeepSeek V4 — dedicated CPU engine (mHC + CSA/HCA + FP4 MoE), HIP GPU, generic CPU"};
+    }
+    // GLM-MoE-DSA (GLM-5): V3-MLA + DSA indexer + sigmoid group-topk MoE.
+    // Dedicated CPU engine (src/glm_moe_dsa.cpp, mini-gate 20/20 2026-08-16).
+    // Census maps glm_moe_dsa -> LLAMA (2); discriminate on the arch string.
+    if (cfg.architecture == "glmmoedsa" || cfg.architecture == "glm_moe_dsa") {
+        return {{"cpu_glm_moe_dsa", "hip_gpu", "cpu_generic"},
+                "GLM-MoE-DSA — dedicated CPU engine (MLA + DSA indexer + group-topk MoE)"};
+    }
+    // MiMo-V2: MoD hybrid (SWA+full GQA, sigmoid group-topk MoE).
+    // Dedicated CPU engine (src/mimo_v2.cpp, mini-gate 20/20 2026-08-16).
+    // Census maps mimo_v2/mimov2flash -> QWEN2 (4); discriminate on the string.
+    if (cfg.architecture == "mimov2flash" || cfg.architecture == "mimo_v2" ||
+        cfg.architecture == "mimov2" || cfg.architecture == "mimo") {
+        return {{"cpu_mimo_v2", "hip_gpu", "cpu_generic"},
+                "MiMo-V2 — dedicated CPU engine (MoD hybrid SWA+full, group-topk MoE)"};
+    }
+    // Qwen3.5 text decoder: GatedDeltaNet + gated GQA hybrid.
+    // Dedicated CPU engine (src/qwen3_5.cpp, mini-gate 20/20 2026-08-16).
+    if (cfg.arch == RCPP_ARCH_QWEN35 || cfg.architecture == "qwen35" ||
+        cfg.architecture == "qwen3_5" || cfg.architecture == "qwen3_5text") {
+        return {{"cpu_qwen3_5", "hip_gpu", "cpu_generic"},
+                "Qwen3.5 — dedicated CPU engine (GatedDeltaNet + gated GQA)"};
     }
     // Whisper (speech-to-text): uses whisper encoder/decoder (CPU) or GPU
     if (cfg.arch == RCPP_ARCH_WHISPER) {

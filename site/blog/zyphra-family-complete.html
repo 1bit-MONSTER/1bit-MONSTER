@@ -1,33 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <!-- PRIMARY META -->
-<title>Zyphra family complete — Zamba2 hybrid SSM and ZR1 reasoning, all 1BP · 1bit.systems</title>
-<meta name="description" content="Zyphra's entire model line runs on 1bit.systems — Zamba2 Mamba2-hybrid (1.2B/2.7B/7B) and ZR1-1.5B reasoning-tuned dense. Two architectures, one pipeline, ZINC GPU validated.">
+<title>Zyphra family complete — Zamba2 hybrid SSM and ZR1 reasoning, all 1BP · 1bit.monster</title>
+<meta name="description" content="Zyphra's entire model line runs on 1bit.monster — Zamba2 Mamba2-hybrid (1.2B/2.7B/7B) and ZR1-1.5B reasoning-tuned dense. Two architectures, one pipeline, ZINC GPU validated.">
 <meta name="keywords" content="Zyphra, Zamba2, ZR1, Mamba2-hybrid, SSM, 1BP, model conversion, GGUF, ZINC GPU, Strix Halo, AMD NPU, C++23">
 <meta name="robots" content="index, follow">
 
 <!-- CANONICAL -->
-<link rel="canonical" href="https://1bit.systems/blog/zyphra-family-complete">
+<link rel="canonical" href="https://1bit.monster/blog/zyphra-family-complete">
 
 <!-- OPEN GRAPH -->
 <meta property="og:title" content="Zyphra family complete — Zamba2 + ZR1 all running in one C++ binary">
-<meta property="og:description" content="Zyphra's Zamba2 Mamba2-hybrid (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP and validated end-to-end. Zero Python, one binary.">
-<meta property="og:url" content="https://1bit.systems/blog/zyphra-family-complete">
+<meta property="og:description" content="Zyphra's Zamba2 Mamba2-hybrid (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP and validated end-to-end. Zero Python, one engine.">
+<meta property="og:url" content="https://1bit.monster/blog/zyphra-family-complete">
 <meta property="og:type" content="article">
-<meta property="og:image" content="https://1bit.systems/assets/og-default.png">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:site_name" content="1bit.systems">
+<meta property="og:site_name" content="1bit.monster">
 
 <!-- TWITTER/X CARD -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Zyphra family complete — Zamba2 + ZR1 all running in one C++ binary">
 <meta name="twitter:description" content="Zyphra's Zamba2 (1.2B/2.7B/7B) and ZR1-1.5B reasoning model all converted to 1BP. ZR1: 187.9 tok/s Vulkan; Zamba2 HIP e2e validated vs HF (corr 0.997).">
-<meta name="twitter:image" content="https://1bit.systems/assets/og-default.png">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
 
 <!-- JSON-LD -->
 <script type="application/ld+json">
@@ -45,20 +54,20 @@
   "dateModified": "2026-07-26",
   "publisher": {
     "@type": "Organization",
-    "name": "1bit.systems",
-    "url": "https://1bit.systems",
+    "name": "1bit.monster",
+    "url": "https://1bit.monster",
     "logo": {
       "@type": "ImageObject",
-      "url": "https://1bit.systems/assets/favicon.svg"
+      "url": "https://1bit.monster/assets/favicon.svg"
     }
   },
   "mainEntityOfPage": {
     "@type": "WebPage",
-    "@id": "https://1bit.systems/blog/zyphra-family-complete"
+    "@id": "https://1bit.monster/blog/zyphra-family-complete"
   },
   "image": {
     "@type": "ImageObject",
-    "url": "https://1bit.systems/assets/og-default.png",
+    "url": "https://1bit.monster/assets/og-default.png",
     "width": 1200,
     "height": 630
   },
@@ -69,15 +78,16 @@
 }
 </script>
 
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 
 <style>
-  :root{--bg:#021621;--panel:#06222f;--border:#0e3346;--text:#e7f6fd;--muted:#86adbf;--dim:#4a6a7a;--green:#00ff00;--pink:#f00fd2;--blue:#12a0ed;--sans:'Inter',Helvetica,Arial,sans-serif;--mono:'JetBrains Mono',Consolas,monospace;--maxw:780px;}
+  :root{--bg:#0B0B0B;--panel:#141414;--border:#232323;--text:#EDEFEA;--muted:#A0A599;--dim:#6B706A;--green:#C6FF3D;--pink:#C6FF3D;--blue:#C6FF3D;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
   *{margin:0;padding:0;box-sizing:border-box;}
   body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;}
   a{color:var(--blue);font-weight:600;text-decoration:none;}a:hover{color:var(--green);}
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(2,22,33,.78);border-bottom:1px solid var(--border);}
+  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
   .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
   .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:var(--green);}
   .wordmark{font-size:15px;font-weight:800;letter-spacing:-.025em;}.wordmark .g{color:var(--green);}.wordmark .p{color:var(--pink);}
@@ -103,10 +113,10 @@
 </style>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
-<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #f00fd2;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#f00fd2;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.systems/#benchmarks" style="color:#12a0ed;">current benchmarks →</a></div>
+<!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #C6FF3D;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#C6FF3D;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#C6FF3D;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-systems/1bit-systems" style="color:#06c;">the README</a> for current numbers.</div>
-<nav><div class="nav-in"><a class="mark" href="/">1bs</a><a class="wordmark" href="/"><span class="g">1</span>bit<span class="p">.</span>systems</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
+<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
+<nav><div class="nav-in"><a class="mark" href="/">1bm</a><a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
 <article class="wrap">
 
 <div class="meta">
@@ -178,13 +188,13 @@
 
 <h2>Try it</h2>
 
-<pre><code><span class="g">$</span> curl -sL https://1bit.systems/install.sh | bash
+<pre><code><span class="g">$</span> curl -sL https://1bit.monster/install.sh | bash
 <span class="g">$</span> 1bit pull zamba2-1.2b
 <span class="g">$</span> 1bit serve 8081</code></pre>
 
 <p>Or clone and build from source:</p>
 
-<pre><code><span class="g">$</span> git clone https://github.com/1bit-systems/1bit-systems
+<pre><code><span class="g">$</span> git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 <span class="g">$</span> cmake -B build && cmake --build build
 <span class="g">$</span> ./build/zaya_server --model models/Zamba2-1.2B.1bp --port 8088</code></pre>
 
@@ -194,10 +204,10 @@
 
 <h3>Links</h3>
 <ul>
-  <li><a href="https://1bit.systems">1bit.systems</a></li>
-  <li><a href="https://github.com/1bit-systems/1bit-systems">GitHub</a> — MIT, open source</li>
-  <li><a href="https://github.com/1bit-systems/1bit-systems/blob/main/models/catalog/README.md">Full model catalog</a> — 46+ 1BP models, 17 families (+12 documented Zyphra non-LLM)</li>
-  <li><a href="https://github.com/1bit-systems/1bit-systems/blob/main/docs/journey.md">Engineering journal</a> — every bug and fix documented</li>
+  <li><a href="https://1bit.monster">1bit.monster</a></li>
+  <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a> — MIT, open source</li>
+  <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/models/catalog/README.md">Full model catalog</a> — 46+ 1BP models, 17 families (+12 documented Zyphra non-LLM)</li>
+  <li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Engineering journal</a> — every bug and fix documented</li>
 </ul>
 
 <p style="font-size:14px;color:var(--dim);text-align:center;padding:20px 0;border-top:1px solid var(--border);margin:32px 0 0;">
@@ -206,6 +216,6 @@
 </p>
 
 </article>
-<div class="foot wrap"><a href="/">← back to 1bit.systems</a> · MIT</div>
+<div class="foot wrap"><a href="/">← back to 1bit.monster</a> · MIT</div>
 </body>
 </html>
