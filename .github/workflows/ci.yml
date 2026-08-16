@@ -161,6 +161,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: All manifests match root VERSION
         run: bash scripts/sync-version.sh --check
+
+  metal:
+    name: Metal backend (macOS build + smoke gate)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Build backend_metal (compile + link gate)
+        run: |
+          # backend_metal.mm has never been compiled in CI — this is the real
+          # gate: catches ObjC/ARC/Metal-framework errors. Builds the backend
+          # object + a smoke harness that instantiates it and generates tokens.
+          clang++ -std=c++17 -fobjc-arc -Iinclude -Isrc -c src/backend_metal.mm -o /tmp/backend_metal.o
+          clang++ -std=c++17 -fobjc-arc -Iinclude -Isrc Testing/metal_smoke.mm src/backend_metal.mm \
+            -framework Metal -framework MetalPerformanceShaders \
+            -framework MetalPerformanceShadersGraph -o /tmp/metal_smoke
+      - name: Run Metal smoke gate (synthetic model, real GPU)
+        run: |
+          mkdir -p /tmp/metal-w
+          /tmp/metal_smoke /tmp/metal-w 8
+
   smoke-test:
     name: Inference smoke test
     runs-on: ubuntu-24.04

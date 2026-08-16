@@ -6,9 +6,20 @@
 
 #include "backend.h"
 
+// Portable half — the HIP headers that normally provide `half` don't exist on
+// macOS; __fp16 is the native Apple equivalent (same storage, same conversions).
+#ifndef __HIP__
+using half = __fp16;
+#endif
+
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
+
+// MPSNDArray enforces a minimum buffer footprint (observed floor = 2×hidden,
+// scaling with dims). Round every device buffer up to 16 KiB so GEMV/MPS
+// operands never trip it — real 2K-hidden models need 8 KiB already.
+static NSUInteger mps_round(NSUInteger n) { return ((n + 16383) / 16384) * 16384; }
 
 #include <cstdio>
 #include <cstdlib>
@@ -244,8 +255,7 @@ struct MetalBackend : Backend {
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override {
         this->cfg = cfg;
         
-        hidden = cfg.hidden_size > 0 ? cfg.hidden_size : cfg.hidden;
-        n_layers = cfg.num_layers > 0 ? cfg.num_layers : cfg.n_layers;
+        hidden = cfg.hidden_size > 0 ? cfg.hidden_size : cfg.hidden;        n_layers = cfg.num_layers > 0 ? cfg.num_layers : cfg.n_layers;
         n_heads = cfg.num_heads > 0 ? cfg.num_heads : cfg.n_heads;
         n_kv_heads = cfg.num_kv_heads > 0 ? cfg.num_kv_heads : cfg.n_kv_heads;
         head_dim = cfg.head_dim;
@@ -293,9 +303,9 @@ struct MetalBackend : Backend {
 
         // Allocate buffers
         int buf_size = hidden * sizeof(half);
-        d_hs = [device newBufferWithLength:buf_size options:MTLResourceStorageModeShared];
-        d_ao = [device newBufferWithLength:buf_size options:MTLResourceStorageModeShared];
-        d_tmp = [device newBufferWithLength:std::max(hidden, 2 * n_ff) * sizeof(half) options:MTLResourceStorageModeShared];
+        d_hs = [device newBufferWithLength:mps_round(buf_size) options:MTLResourceStorageModeShared];
+        d_ao = [device newBufferWithLength:mps_round(buf_size) options:MTLResourceStorageModeShared];
+        d_tmp = [device newBufferWithLength:mps_round(std::max(hidden, 2 * n_ff) * sizeof(half)) options:MTLResourceStorageModeShared];
         d_fnw = to_half_buffer(fnorm);
         d_embed = to_half_buffer(embed);
         d_ibias = to_half_buffer(ibias);
@@ -305,10 +315,10 @@ struct MetalBackend : Backend {
         d_kcache = [device newBufferWithLength:kv_elem * sizeof(half) options:MTLResourceStorageModeShared];
         d_vcache = [device newBufferWithLength:kv_elem * sizeof(half) options:MTLResourceStorageModeShared];
         
-        d_qout = [device newBufferWithLength:(n_heads * head_dim) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_kout = [device newBufferWithLength:(n_kv_heads * head_dim) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_vout = [device newBufferWithLength:(n_kv_heads * head_dim) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_lm_vocab = [device newBufferWithLength:vocab * sizeof(float) options:MTLResourceStorageModeShared];
+        d_qout = [device newBufferWithLength:mps_round((n_heads * head_dim) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_kout = [device newBufferWithLength:mps_round((n_kv_heads * head_dim) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_vout = [device newBufferWithLength:mps_round((n_kv_heads * head_dim) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_lm_vocab = [device newBufferWithLength:mps_round(vocab * sizeof(float)) options:MTLResourceStorageModeShared];
         d_argmax_idx = [device newBufferWithLength:sizeof(int) options:MTLResourceStorageModeShared];
         d_argmax_val = [device newBufferWithLength:sizeof(float) options:MTLResourceStorageModeShared];
 
