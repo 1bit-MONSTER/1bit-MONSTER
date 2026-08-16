@@ -151,6 +151,20 @@ else
     echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"
 fi
 
+# ── Qwen3_5 text gate (mini fixture, HF oracle) ──
+total=$((total+1))
+q35_dir=/tmp/onebit-q35
+if [ -f "$q35_dir/logits_last.npy" ] && [ -f "$q35_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-q35-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_qwen3_5.cpp src/qwen3_5.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_q35" 2>/dev/null; then echo "✗ qwen3_5: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_q35" "$q35_dir" /tmp/onebit-q35-ids.txt "$q35_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ qwen3_5 text engine (GatedDeltaNet + gated GQA hybrid)";
+    else echo "✗ qwen3_5 text engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"
+fi
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }

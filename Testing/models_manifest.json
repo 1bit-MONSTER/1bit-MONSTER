@@ -644,6 +644,29 @@
       "status": "validated",
       "tier": "mini-gate",
       "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 524 == oracle, top-20 overlap 20/20, logit corr 0.99997. MoD hybrid: hybrid_layer_pattern full/SWA attention (separate head dims + swa_rope_theta + sliding window), v_scale on values, attention sink bias on SWA layers, partial RoPE on FIRST dims (rope|nope), sigmoid noaux_tc group-topk MoE with per-expert gate/up/down (not fused). Fixture needed gate.weight init (remote code leaves torch.empty -> garbage) + bias zero + weight scaling for deterministic routing."
+    },
+    {
+      "family": "qwen3_5",
+      "hf_arch_strings": [
+        "qwen3_5",
+        "qwen3_5_text",
+        "qwen3_5_moe"
+      ],
+      "mapping_target": "QWEN35",
+      "quirk_flags": {
+        "rope": "partial-first-0.25",
+        "rotate_at_load": false,
+        "moe": "none",
+        "bias": "none",
+        "norm": "rmsnorm-(1+w)-zeros-init",
+        "attention": "hybrid-gateddelta+full-gated-gqa",
+        "norm_gated": "plain-rmsnorm-then-silu(z)"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_qwen3_5.py)",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 142 == HF oracle, top-20 overlap 20/20, logit corr 1.0. Text decoder hybrid: GatedDeltaNet linear-attention layers (causal conv1d kernel 4 + l2norm + recurrent gated delta rule + RMSNormGated(z)) interleaved with gated GQA full-attention layers (q_proj emits per-head query|gate, q_norm/k_norm on head dim, attn_out * sigmoid(gate)). Partial RoPE first dims, RMSNorm multiplies (1+w) with weight init ZEROS. Gate-caught bug: q_proj per-head interleaved [query|gate] layout, not two blocks."
     }
   ]
 }
