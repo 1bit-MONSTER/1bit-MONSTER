@@ -18,6 +18,7 @@
   - TheRock (ROCm/HIP, gfx1151): `7.14.0a20260612`
   - `mesa-vulkan-drivers`: `26.0.3-1ubuntu1`
   - `libvulkan1`: `1.4.341.0-1`
+  - `bolt` (Thunderbolt/USB4 userspace daemon): `0.9.10-1` — this hardware's USB4 Host Router already works via 100% stock Ubuntu (in-kernel `thunderbolt` module + the `bolt` package); no custom driver exists anywhere in this project. Same treatment as Vulkan: freeze the exact tested version rather than let a later apt update drift it.
   - Held via `apt-mark hold` post-install (not an apt-preferences pin file) so `apt upgrade` on the running appliance can't drift them, alongside the kernel meta-packages (`linux-image-generic`, `linux-headers-generic`, `linux-generic`).
 - No CUDA in v1 (no NVIDIA hardware to validate against, nothing pinned in the codebase). No unattended NPU/XDNA driver install in v1 (no installable package exists anywhere yet) — NPU presence is detected and only noted in the MOTD.
 - API server: binary `unified_server` (symlink to the one-ELF `1bit` binary, dispatch confirmed at `tools/onebin.cpp:66`, `cmd == "unified"`), default port **8088** (confirmed at `tools/unified_server.cpp` header comment), endpoints include `GET /v1/health`, `POST /v1/chat/completions`.
@@ -129,7 +130,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add pack
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `packaging/iso/build/payload/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `packaging/iso/build/payload/libvulkan1_1.4.341.0-1_amd64.deb`, `packaging/iso/build/payload/therock-7.14.0a20260612-gfx1151.tar.gz` — Task 6's `build.sh` copies these three files into the ISO's `/pool/`.
+- Produces: `packaging/iso/build/payload/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `packaging/iso/build/payload/libvulkan1_1.4.341.0-1_amd64.deb`, `packaging/iso/build/payload/bolt_0.9.10-1_amd64.deb`, `packaging/iso/build/payload/therock-7.14.0a20260612-gfx1151.tar.gz` — Task 6's `build.sh` copies these four files into the ISO's `/pool/`.
 
 - [ ] **Step 1: Write the script locally**
 
@@ -151,10 +152,11 @@ mkdir -p "$PAYLOAD"
 THEROCK_VER="7.14.0a20260612"
 MESA_VER="26.0.3-1ubuntu1"
 VULKAN1_VER="1.4.341.0-1"
+BOLT_VER="0.9.10-1"
 
-echo "-- Vulkan: apt-get download pinned versions --"
+echo "-- Vulkan + Thunderbolt (bolt): apt-get download pinned versions --"
 ( cd "$PAYLOAD" && \
-  apt-get download "mesa-vulkan-drivers=${MESA_VER}" "libvulkan1=${VULKAN1_VER}" )
+  apt-get download "mesa-vulkan-drivers=${MESA_VER}" "libvulkan1=${VULKAN1_VER}" "bolt=${BOLT_VER}" )
 test -f "${PAYLOAD}/mesa-vulkan-drivers_${MESA_VER}_amd64.deb" || {
   echo "FATAL: mesa-vulkan-drivers ${MESA_VER} not available via apt-get download." >&2
   echo "       Try: sudo apt-get update, or check 'apt-cache policy mesa-vulkan-drivers'." >&2
@@ -162,6 +164,10 @@ test -f "${PAYLOAD}/mesa-vulkan-drivers_${MESA_VER}_amd64.deb" || {
 }
 test -f "${PAYLOAD}/libvulkan1_${VULKAN1_VER}_amd64.deb" || {
   echo "FATAL: libvulkan1 ${VULKAN1_VER} not available via apt-get download." >&2
+  exit 1
+}
+test -f "${PAYLOAD}/bolt_${BOLT_VER}_amd64.deb" || {
+  echo "FATAL: bolt ${BOLT_VER} not available via apt-get download." >&2
   exit 1
 }
 
@@ -219,8 +225,8 @@ Run:
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && bash packaging/iso/fetch-payload.sh'
 ```
-Expected: script exits 0, final `ls -la` listing shows all three files:
-`mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `libvulkan1_1.4.341.0-1_amd64.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`.
+Expected: script exits 0, final `ls -la` listing shows all four files:
+`mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `libvulkan1_1.4.341.0-1_amd64.deb`, `bolt_0.9.10-1_amd64.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`.
 
 If the TheRock fetch falls into the local-vendoring branch, follow up manually per its printed warning (attempt loading `librocm_cpp.so` against the vendored payload, e.g. `ldd` it against the tarball's `.so` files) before trusting it — record the outcome in a one-line comment added to the top of `fetch-payload.sh` for whoever runs this next.
 
@@ -316,7 +322,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add pack
 
 **Interfaces:**
 - Consumes: `__SSH_PUBLIC_KEY__` and `__PASSWORD_HASH__` placeholders, substituted by Task 6's `build.sh`.
-- Produces: the autoinstall seed that Task 6 copies (post-substitution) to the extracted ISO root as `autoinstall.yaml`; references filenames from Task 3's payload and Task 4's unit files by name (`1bit-monster_*.deb`, `mesa-vulkan-drivers_*.deb`, `libvulkan1_*.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`, `1bit-unified.service`, `1bit-model-fetch.service`, `model-download.sh`).
+- Produces: the autoinstall seed that Task 6 copies (post-substitution) to the extracted ISO root as `autoinstall.yaml`; references filenames from Task 3's payload and Task 4's unit files by name (`1bit-systems_*_amd64.deb`, `mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `libvulkan1_1.4.341.0-1_amd64.deb`, `bolt_0.9.10-1_amd64.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`, `1bit-unified.service`, `1bit-model-fetch.service`, `model-download.sh`).
 
 - [ ] **Step 1: Write the template locally**
 
@@ -355,8 +361,8 @@ autoinstall:
     - "mkdir -p /target/opt/1bit-iso-pool"
     - "cp -r /cdrom/pool/. /target/opt/1bit-iso-pool/"
     - "curtin in-target --target=/target -- sh -c \"dpkg -i /opt/1bit-iso-pool/1bit-systems_*_amd64.deb\""
-    - "curtin in-target --target=/target -- dpkg -i /opt/1bit-iso-pool/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb /opt/1bit-iso-pool/libvulkan1_1.4.341.0-1_amd64.deb"
-    - "curtin in-target --target=/target -- apt-mark hold mesa-vulkan-drivers libvulkan1 linux-image-generic linux-headers-generic linux-generic"
+    - "curtin in-target --target=/target -- dpkg -i /opt/1bit-iso-pool/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb /opt/1bit-iso-pool/libvulkan1_1.4.341.0-1_amd64.deb /opt/1bit-iso-pool/bolt_0.9.10-1_amd64.deb"
+    - "curtin in-target --target=/target -- apt-mark hold mesa-vulkan-drivers libvulkan1 bolt linux-image-generic linux-headers-generic linux-generic"
     - "curtin in-target --target=/target -- mkdir -p /opt/rocm-therock"
     - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-7.14.0a20260612-gfx1151.tar.gz -C /opt/rocm-therock"
     - "curtin in-target --target=/target -- mkdir -p /etc/default/grub.d"
@@ -621,6 +627,9 @@ echo "-- GTT kernel params present --"
 RUN "cat /proc/cmdline | grep -o 'ttm.pages_limit=[0-9]*'" || { echo "FAIL: GTT kernel params missing"; FAIL=1; }
 echo "-- driver packages held --"
 RUN "apt-mark showhold | grep -q mesa-vulkan-drivers" || { echo "FAIL: mesa-vulkan-drivers not held"; FAIL=1; }
+RUN "apt-mark showhold | grep -q bolt" || { echo "FAIL: bolt not held"; FAIL=1; }
+echo "-- Thunderbolt daemon active --"
+RUN "systemctl is-active bolt.service" || { echo "FAIL: bolt.service not active"; FAIL=1; }
 echo "-- API health --"
 RUN "curl -sf localhost:8088/v1/health" || { echo "FAIL: /v1/health not responding"; FAIL=1; }
 
@@ -703,8 +712,10 @@ alongside the build output).
 ## What's baked in vs. what happens on first boot
 
 - Baked in (no network needed at install time): the engine `.deb`, pinned
-  `mesa-vulkan-drivers`/`libvulkan1`, pinned TheRock gfx1151 libraries,
-  the `1bit-unified.service` and `1bit-model-fetch.service` units.
+  `mesa-vulkan-drivers`/`libvulkan1`/`bolt` (Thunderbolt/USB4 — stock
+  Ubuntu, frozen at the tested version, same rationale as Vulkan), pinned
+  TheRock gfx1151 libraries, the `1bit-unified.service` and
+  `1bit-model-fetch.service` units.
 - First boot (needs network): the `1bit-model-fetch` service downloads the
   default `qwen3-0.6b` model in the background; the API is listening on
   `:8088` immediately but has nothing to serve until that finishes.
