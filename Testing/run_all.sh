@@ -123,6 +123,20 @@ else
     echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"
 fi
 
+# ── GLM-MoE-DSA gate (mini fixture, HF safetensors oracle) ──
+total=$((total+1))
+glmdsa_dir=/tmp/onebit-glmdsa
+if [ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-glmdsa-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_glm_moe_dsa.cpp src/glm_moe_dsa.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_glmdsa" 2>/dev/null; then echo "✗ glm_moe_dsa: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_glmdsa" "$glmdsa_dir" /tmp/onebit-glmdsa-ids.txt "$glmdsa_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ glm_moe_dsa engine (V3-MLA + DSA indexer + group-topk MoE)";
+    else echo "✗ glm_moe_dsa engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"
+fi
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }

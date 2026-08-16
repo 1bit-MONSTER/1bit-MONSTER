@@ -598,6 +598,27 @@
       "status": "validated",
       "tier": "mini-gate",
       "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 342 == HF oracle, top-20 overlap 20/20. Engine rewritten from fictional arch to real Shared-KV MQA + mHC Sinkhorn + hash-MoE (was MLA-based fiction, audited same day). Compressor branches (CSA/HCA) + Lightning Indexer NOT yet implemented \u2014 mini fixture uses sliding_attention only; real-checkpoint gate on GPU box needs them."
+    },
+    {
+      "family": "glm_moe_dsa",
+      "hf_arch_strings": [
+        "glm_moe_dsa"
+      ],
+      "mapping_target": "GLM",
+      "quirk_flags": {
+        "rope": "interleave-main/halfsplit-indexer",
+        "rotate_at_load": false,
+        "moe": "sigmoid-group-topk",
+        "bias": "none",
+        "norm": "rmsnorm",
+        "attention": "v3-mla+dsa-indexer",
+        "shared_topk": "cross-layer"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_glm_moe_dsa.py)",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 171 == HF oracle, top-20 overlap 20/20. V3-style MLA (q_a/q_b + kv_a/kv_b lora compression) + DSA indexer (relu-scored top-k token selection, cross-layer shared top-k on 'shared' layers) + sigmoid group-topk MoE with e_score_correction_bias + shared experts. Indexer uses NON-interleaved half-split RoPE while main MLA uses interleaved \u2014 both wired. Indexer wk/weights_proj consume the NORMED attention input (decoder feeds input_layernorm into self_attn)."
     }
   ]
 }

@@ -48,7 +48,7 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
 | Family | HF arch string | model_type | token | backend refs | smallest checkpoint | size |
 |---|---|---|---|---|---|---|
 | DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — engine exists but written against FICTIONAL arch (audit 2026-08-16, see note) | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
-| GLM-5.2 | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2, LLAMA-layout) | **0** — needs DSA MoE routing | `zai-org/GLM-4.5` (160-exp MoE) | large |
+| ~~GLM-5.2~~ **DONE (mini-gate)** | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2) | **validated** — V3-MLA + DSA indexer + sigmoid group-topk MoE (2026-08-16, mini fixture, top1 171, 20/20) | `zai-org/GLM-4.5` | large |
 | MiMo | `MiMoV2ForCausalLM` | `mimo_v2` | `MIMO` (4) | **0** — needs MoE routing | `XiaomiMiMo/MiMo-V2-Flash` | **313 GB** |
 | ~~Nemotron 3~~ **DONE** | `NemotronForCausalLM` | `nemotron` | `NEMOTRON` (989) | **validated** — LayerNorm1P, relu2 non-gated MLP, partial rope (2026-08-16, `mgoin/nemotron-3-8b-chat-4k-sft-hf`, top1 7503 ' Paris', corr 0.99986) | `mgoin/nemotron-3-8b-chat-4k-sft-hf` | 17 GB |
 | Qwen3.5 | (Gate-Delta Net) | `qwen3_5` | `QWEN35` (21) | **4** — but **REFUSED** by generic CPU backend ("requires NPU/HIP") | — | — |
@@ -65,7 +65,7 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
    - **mHC is NOT a 4×4 mixing matrix** — it's `attn_hc`/`ffn_hc` modules with `fn`[24, hc_dim], `base`, `scale` params + Sinkhorn-Knopp projection (20 iters) of the comb matrix, plus a final `hc_head`.
    - MoE: `mlp.gate.weight` router (sqrtsoftplus, e_score_correction_bias `exp_probs_b`); **first 3 layers = hash_moe** (frozen `tid2eid[input_ids]` lookup!); **fused `experts.gate_up_proj`** (not separate gate/up); `shared_experts.gate/up/down_proj` with swiglu_limit clamp.
    - Engine rewrite path: port from our llama.cpp fork's `deepseek4.cpp` (1172 lines, correct). Gate impossible on this box (smallest GGUF = UD-IQ1_M 87GB > 79GB RAM + f32 dequant). Mini-fixture gate feasible (tiny DeepseekV4Config runs in torch 5.14, verified 2026-08-16).
-3. **GLM-5.2** — DSA (Deep Seek Attention) is a new MoE variant; needs its own gating convention in the dispatch.
+3. **GLM-5.2** — **MINI-GATE 2026-08-16: engine src/glm_moe_dsa.cpp implements the real arch (V3-MLA + DSA indexer with cross-layer shared top-k + sigmoid group-topk MoE); top1 171 == HF, 20/20. Real checkpoint gate deferred (160-exp MoE, needs GPU box).**
 4. **MiMo** — 256-expert MoE, add to dispatch, gate against MiMo-V2-Flash.
 5. **Qwen3.5** — Gate-Delta Net; REFUSED by the generic backend, needs the NPU (FLM/XRT) or HIP path, not a CPU e2e gate. Separate workstream.
 
