@@ -209,7 +209,7 @@ xrtKernelWait(kernel);</pre>
   <p>Key wins:</p>
   <ol>
     <li><strong>M=32 batch decode</strong> amortizes NPU dispatch overhead across 32 tokens</li>
-    <li><strong>Q4NX header parse</strong> means one binary auto-detects any model — no config files</li>
+    <li><strong>Q4NX header parse</strong> means one engine auto-detects any model — no config files</li>
     <li><strong>Fused layer dispatch</strong> eliminates 5/6 of per-layer xclbin calls</li>
     <li><strong>H2O KV cache</strong> with zero-page eviction keeps memory flat regardless of context length</li>
   </ol>

@@ -96,7 +96,7 @@ Always reference this file for current numbers. Status tags:
 
 1. Reverse-engineered AMD NPU in 4 days
 2. Three bugs that broke 97 tok/s
-3. One binary to rule them all (model auto-detection)
+3. One engine. Every model. Any chip. (model auto-detection)
 4. Token router (model-agnostic GGUF routing)
 5. NPU optimization sprint (72× speedup)
 6. NPU benchmarks (55 TFLOPS)
