@@ -6,6 +6,10 @@
 
 ## Table of Contents
 
+- [2026-08-16 — The Frontier Gates: 5/5 Validated, Then the Repo Tried to Eat It](#2026-08-16--the-frontier-gates-55-validated-then-the-repo-tried-to-eat-it)
+- [2026-08-15 — 100% HF Coverage: Every Arch-Bearing Checkpoint Maps to an Engine Token](#2026-08-15--100-hf-coverage-every-arch-bearing-checkpoint-maps-to-an-engine-token)
+- [2026-08-07 — The Unified Control Plane Lands](#2026-08-07--the-unified-control-plane-lands-pool-wired-spec-decode-in-server-zoo-55)
+- [UPDATE 34: FLM Is Fully Gone — Byte-Identical Streams, True Batch, 2× on the 35B](#update-34-2026-08-15-flm-is-fully-gone--byte-identical-streams-true-batch-2×-on-the-35b)
 - [UPDATE 33: NPU Firmware RE via Raw ioctls, Driver Regression Fixed, JARVIS Ships](#update-33-2026-08-10-npu-firmware-re-via-raw-ioctls-driver-regression-fixed-jarvis-ships)
 - [UPDATE 32: amdxdna Wedge Saga, 35B MoE Goes Live, Vivado-Free FPGA Toolchain](#update-32-2026-08-09-amdxdna-wedge-saga-35b-moe-goes-live-vivado-free-fpga-toolchain)
 - [UPDATE 31: The TileFuse Day — NPU Kernel From Scratch, Q4NX Pivot, Converter Ladder](#update-31-2026-08-08-the-tilefuse-day--npu-kernel-from-scratch-q4nx-pivot-converter-ladder)
@@ -25,6 +29,10 @@
 - [UPDATE 17: M=16 Batch Decode — 16 ms/tok](#update-17-2026-07-02-0300-adt-m16-batch-decode--16-mstok-152×-speedup)
 - [UPDATE 16: Full Profile + 50 ms/tok Batch-4](#update-16-2026-07-02-0200-adt-full-profile--50-mstok-batch-4-decode)
 - [UPDATE 15: PR-Agent Live, Landing Page](#update-15-2026-07-01-1500-adt-pr-agent-live-landing-page-deployed-242-mstok-verified)
+- [Session 2026-07-16/20 — FLM Fully Replaced, Model-Agnostic Broadening, TQ2 Ternary](#session-2026-07-1620--flm-fully-replaced-model-agnostic-broadening-tq2-ternary)
+- [Session 2026-07-05/06 — Q4NX/GGUF Fully Decoded, NPU GEMM Root-Caused, First Validated 1-Bit Number, DSpark](#session-2026-07-0506--q4nxgguf-fully-decoded-npu-gemm-root-caused-first-validated-1-bit-number-dspark)
+- [Session 2026-07-03/04 — Triton-XDNA Eval, memlock Fix, Spec-Decode Reality Check](#session-2026-07-0304--triton-xdna-eval-memlock-fix-spec-decode-reality-check)
+- [Session 2026-07-02/03 — Production Stack, Release, Site Refresh](#session-2026-07-0203--production-stack-release-site-refresh)
 - [Earlier Updates (14–1)](#earlier-updates)
 
 ---
