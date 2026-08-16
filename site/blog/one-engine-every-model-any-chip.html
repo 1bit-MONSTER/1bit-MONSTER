@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>One binary to rule them all — 5 model families, auto-detect · 1bit.monster</title>
+<title>One engine. Every model. Any chip. — 5 model families, auto-detect · 1bit.monster</title>
 <meta name="description" content="How a single 38KB C++ binary auto-detects 73+ models across 6 backends — NPU, ROCm, Vulkan, CUDA, Metal, CPU — from one Q4NX header parse.">
 <meta name="keywords" content="multi-model inference, GGUF, Q4NX, auto-detect, universal engine, AMD NPU, ROCm, Vulkan">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://1bit.monster/blog/one-binary-to-rule-them-all">
-<meta property="og:title" content="One binary to rule them all — 5 model families, auto-detect">
+<meta property="og:title" content="One engine. Every model. Any chip. — 5 model families, auto-detect">
 <meta property="og:image" content="https://1bit.monster/assets/og-default.png">
 <meta property="og:description" content="A single 38KB binary auto-detects 73+ models across 6 backends. No config files. No model registry.">
 <meta property="og:url" content="https://1bit.monster/blog/one-binary-to-rule-them-all">
@@ -54,7 +54,7 @@
 <blockquote style="border-left-color:var(--pink);background:#33110022;"><strong>&#9888;&#65039; Correction:</strong> Performance figures in this post are historical and may not reflect current, source-backed numbers. Several headline engine figures were later found to have no reproducible source and are quarantined in <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/benchmarks/latest.json">benchmarks/latest.json</a> (the NPU-fused path does not currently produce validated generation). For current, sourced numbers see the <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">performance SSOT</a>. (issue #107)</blockquote>
 
 <div class="meta"><span class="tag npu">NPU</span> <span class="tag g">Architecture</span> <span class="tag b">Multi-Platform</span><br><br><strong style="color:var(--text);">bong-water-water-bong</strong> · July 6, 2026 · 5 min read</div>
-<h1>One binary to rule them all — 5 model families, auto-detect</h1>
+<h1>One engine. Every model. Any chip. — 5 model families, auto-detect</h1>
 <p><strong>tl;dr:</strong> A single 38KB binary reads the Q4NX header of any supported model, auto-detects architecture dimensions, and dispatches to the right backend. <strong>Zero config files.</strong></p>
 <hr>
 <h2>The model explosion problem</h2>

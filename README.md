@@ -2,7 +2,7 @@
 
 <img src="site/assets/brand-lockup.svg" alt="1bit MONSTER" width="540">
 
-## One binary to rule them all
+## One engine. Every model. Any chip.
 
 <sub>("Sorry but not sorry." — bong-water-water-bong)</sub>
 

@@ -377,7 +377,7 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
   on Strix Halo (Radeon 8060S, gfx1151), three clean runs, no hangs.
 - **Landing page**: new flagship 1BP model showcase (measured perf + direct
   Hugging Face download links) and a second-level **Zyphra** + **Poolside Laguna**
-  family showcase. "One binary to rule them all" badge restored.
+  family showcase. "One engine. Every model. Any chip." badge restored.
 - **Repo hygiene**: untracked 431 committed `build_cmake/` artifacts + stray
   `Desktop/` that had been polluting every diff; reorganized 50 flat docs into
   `docs/{archive,marketing}/` + a navigation index; README marketing refresh.
