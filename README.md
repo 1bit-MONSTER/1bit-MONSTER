@@ -1,11 +1,11 @@
 <div align="center">
 
-<img src="site/assets/brand-lockup.svg" alt="1bit.MONSTER" width="540">
+<img src="site/assets/og-default.png" alt="1bit MONSTER — One engine. Every model. Any chip." width="540">
 
-## One engine. Every model. Any chip.
+## One engine to rule them all
 
 
-### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
+### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-C6FF3D.svg)](LICENSE)
@@ -30,7 +30,7 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 ./build/1bit zaya -m model.1bp -p "Hello world"
 ```
 
-That is the whole install. One binary, no runtime, no virtualenv, no Python.
+That is the whole install. One engine, no runtime, no virtualenv, no Python.
 
 | 100% | 32 | 25 | 6 | 0 |
 |:---:|:--:|:--:|:-:|:-:|
@@ -93,7 +93,7 @@ AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind
 
 1bit MONSTER is an **inference engine** — the thing that actually runs the model. It is not a chat app; bring your own frontend.
 
-- **One binary, every target.** `build/1bit` holds every server and the CLI, dispatched by subcommand (`zaya`, `unified`, `jarvis`, `vision`, `chat`, …).
+- **One engine, every target.** `build/1bit` holds every server and the CLI, dispatched by subcommand (`zaya`, `unified`, `jarvis`, `vision`, `chat`, …).
 - **OpenAI-compatible API.** `POST /v1/chat/completions` against the `unified` server; pooled models, per-request routing.
 - **Speculative decoding** in-process via `--draft-model` + `--spec-decode` (lossless vs greedy).
 - **Beyond text.** Stable-Diffusion-family image and video generation via `image_server`; Whisper STT and codec TTS for voice.
