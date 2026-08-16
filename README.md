@@ -1,10 +1,9 @@
 <div align="center">
 
-<img src="site/assets/brand-lockup.svg" alt="1bit MONSTER" width="540">
+<img src="site/assets/brand-lockup.svg" alt="1bit.MONSTER" width="540">
 
 ## One engine. Every model. Any chip.
 
-<sub>("Sorry but not sorry." — bong-water-water-bong)</sub>
 
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
 
