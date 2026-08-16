@@ -53,6 +53,18 @@ struct DeepSeekConfig {
     int n_limited_groups = 1;
     int score_func       = 0;       // 0=softmax, 1=sigmoid
     float routed_scaling = 1.0f;
+    int first_k_dense = 1;          // layers < first_k_dense are DENSE FFN (V2-Lite: layer 0)
+    int dense_intermediate = 0;     // dense-layer FFN width (V2-Lite: 10944)
+    float rms_norm_eps = 1e-6f;
+    int norm_topk_prob = 0;         // Instella: sum-normalize top-k expert weights
+
+    // Instella (DeepSeek-V3 clone, amd/Instella-MoE-16B-A3B) trained-in bits
+    // (see docs/plans/instella-moe-16b-1bp.md — verified against the llama.cpp
+    // fork patch a897ea2f1 + HF modeling_instella_moe.py 2026-08-16):
+    int gated_attention = 0;        // attn_out * sigmoid(gate_proj(pre_norm_input)) before o_proj
+    int farskip = 0;                // FarSkip-Collective dual-residual connectivity
+    int farskip_start = 0;          // first farskip layer index
+    int farskip_end = 100000;       // last farskip layer index (config: 1e4 > n_layers)
 
     // Factory helpers
     static DeepSeekConfig deepseek_v2() {
@@ -86,33 +98,40 @@ struct DeepSeekConfig {
 };
 
 // ─── Per-layer weights ───────────────────────────────────────────
+// Layout matches the llama.cpp deepseek2 GGUF (verified against
+// mradermacher/DeepSeek-V2-Lite-Q8_0 2026-08-15): uncompressed Q
+// (q_lora_rank=None -> attn_q), MLA kv (kv_a_mqa + kv_a_norm + kv_b),
+// 2 fused shared experts [H, 2*moe_int], routed experts stored
+// [H, moe_int, n_experts] (experts INNERMOST) and kept as f16 in RAM
+// (transposed to [e, j, i] at load) — Q8 f32 would be ~63GB, f16 is ~29GB.
 struct DeepSeekLayerWeights {
     // RMSNorm
     std::vector<float> rms_attn_w;   // pre-attention norm
     std::vector<float> rms_ffn_w;    // pre-FFN norm
 
-    // MLA compressed projections
+    // MLA (V2-Lite variant: q NOT compressed)
+    std::vector<float> w_q;          // [hidden, n_heads * (qk_nope + qk_rope)] per head [nope|rope]
     std::vector<float> w_kv_a;       // [hidden, kv_lora_rank + qk_rope_dim]
-    std::vector<float> w_kv_a_bias;
-    std::vector<float> w_kv_b;       // [kv_lora_rank, num_heads * (qk_nope_dim + v_dim)]
-    std::vector<float> w_q_a;        // [hidden, q_lora_rank]
-    std::vector<float> w_q_a_bias;
-    std::vector<float> w_q_b;        // [q_lora_rank, num_heads * qk_nope_dim]
-    std::vector<float> w_rope;       // RoPE frequency (learned or computed)
-    
-    // Output projection
-    std::vector<float> w_o;          // [num_heads * v_dim, hidden]
-    
+    std::vector<float> w_kv_a_norm;  // [kv_lora_rank] RMSNorm on the latent BEFORE kv_b
+    std::vector<float> w_kv_b;       // [kv_lora_rank, n_heads * (qk_nope_dim + v_dim)] per head [nope|v]
+    std::vector<float> w_o;          // [n_heads * v_dim, hidden]
+    std::vector<float> w_attn_gate;  // [n_heads * v_dim, hidden] — Instella gated MLA (optional)
+    std::vector<float> w_exp_probs_b; // [n_routed_experts] router bias (e_score_correction_bias, optional)
+
+    // Dense FFN (first_k_dense_replace layers — layer 0 on V2-Lite)
+    std::vector<float> d_gate, d_up; // [hidden, dense_intermediate]
+    std::vector<float> d_down;       // [dense_intermediate, hidden]
+
     // MoE FFN
     std::vector<float> w_gate;       // router weights [hidden, n_routed_experts]
-    std::vector<float> w_gate_bias;
-    std::vector<float> w_shared_gate; // shared expert gate [hidden, moe_intermediate]
-    std::vector<float> w_shared_up;   // shared expert up [hidden, moe_intermediate]
-    std::vector<float> w_shared_down; // shared expert down [moe_intermediate, hidden]
-    // Per-expert weights (stored flat: [n_routed_experts * hidden * moe_intermediate])
-    std::vector<float> exp_gate;     // expert gate [n_routed_experts, hidden, moe_intermediate]
-    std::vector<float> exp_up;       // expert up   [n_routed_experts, hidden, moe_intermediate]
-    std::vector<float> exp_down;     // expert down [n_routed_experts, moe_intermediate, hidden]
+    // Shared experts: n_shared_experts fused along the intermediate dim
+    std::vector<float> w_shared_gate; // [hidden, n_shared * moe_intermediate]
+    std::vector<float> w_shared_up;   // [hidden, n_shared * moe_intermediate]
+    std::vector<float> w_shared_down; // [n_shared * moe_intermediate, hidden]
+    // Routed experts, f16, transposed [n_experts, hidden, moe_intermediate]
+    std::vector<uint16_t> exp_gate;  // expert gate
+    std::vector<uint16_t> exp_up;    // expert up
+    std::vector<uint16_t> exp_down;  // expert down
 };
 
 // ─── Full DeepSeek model weights ──────────────────────────────────
@@ -128,6 +147,7 @@ struct DeepSeekModel {
     std::vector<DeepSeekLayerWeights> layers;
     
     bool load_from_gguf(const std::string& path, const DeepSeekConfig* override_cfg = nullptr);
+    bool load_from_1bp(const std::string& path, const DeepSeekConfig* override_cfg = nullptr);
     void clear();
 };
 
@@ -175,13 +195,19 @@ namespace deepseek_math {
     }
 
     // RoPE (rotary position embedding)
+    // RoPE (rotary position embedding). DeepSeek-V2/V3 use the "normal"
+    // (adjacent-pair) convention (llama.cpp LLAMA_ROPE_TYPE_NORM: pairs of
+    // consecutive head values 2i, 2i+1 with freq_i = 1/theta^(2i/dim)). The
+    // HF forward interleaves via view/transpose to the same effect. Found
+    // 2026-08-15: chunk pairing (i, i+dim/2) produced garbage logits; the
+    // q_pe/k_pe GGUF rows are stored in the interleaved layout.
     static inline void rope(float* x, int dim, int pos, float theta = 10000.0f) {
         for (int i = 0; i < dim / 2; i++) {
             float freq = pos / powf(theta, 2.0f * i / dim);
             float c = cosf(freq), s = sinf(freq);
-            float a = x[i], b = x[i + dim / 2];
-            x[i] = a * c - b * s;
-            x[i + dim / 2] = b * c + a * s;
+            float a = x[2 * i], b = x[2 * i + 1];
+            x[2 * i] = a * c - b * s;
+            x[2 * i + 1] = b * c + a * s;
         }
     }
 };

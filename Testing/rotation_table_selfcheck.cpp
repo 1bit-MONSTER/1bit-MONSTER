@@ -43,6 +43,28 @@ int main() {
     check("deepseek_v4", RCPP_ARCH_DEEPSEEK_V4, "deepseek_v4", false);
     check("whisper", RCPP_ARCH_WHISPER, "whisper", false);
     check("kimi", RCPP_ARCH_KIMI_K3, "kimi", false);
+    // ── MONSTER breadth batch 2026-08-14 (all natural per pilot #16/17) ──
+    check("smollm3", RCPP_ARCH_LLAMA, "smollm3", false);
+    check("apertus", RCPP_ARCH_LLAMA, "apertus", false);
+    check("cohere", RCPP_ARCH_LLAMA, "cohere", false);
+    check("gptbigcode", RCPP_ARCH_LLAMA, "gptbigcode", false);
+    check("internlm3", RCPP_ARCH_LLAMA, "internlm3", false);
+    check("mixtral", RCPP_ARCH_MISTRAL, "mixtral", false);
+    check("qwen2moe", RCPP_ARCH_QWEN2, "qwen2moe", false);
+    check("qwen3moe", RCPP_ARCH_QWEN3, "qwen3moe", false);
+    check("deepseekv2", RCPP_ARCH_DEEPSEEK, "deepseekv2", false);
+    check("deepseekv3", RCPP_ARCH_DEEPSEEK, "deepseekv3", false);
+    check("deepseekv4", RCPP_ARCH_DEEPSEEK_V4, "deepseekv4", false);
+    check("gpt2", RCPP_ARCH_GPT2, "gpt2", false);
+    check("gptneox", RCPP_ARCH_GPTNEOX, "gptneox", false);
+    check("opt", RCPP_ARCH_OPT, "opt", false);
+    check("gptneo", RCPP_ARCH_GPTNEO, "gptneo", false);
+    check("codegen", RCPP_ARCH_CODEGEN, "codegen", false);
+    check("gptj", RCPP_ARCH_GPTJ, "gptj", false);
+    check("gptoss", RCPP_ARCH_GPTOSS, "gptoss", false);
+    check("step1", RCPP_ARCH_STEP1, "step1", false);
+    check("step1moe", RCPP_ARCH_STEP1, "step1moe", false);
+    check("bloom", RCPP_ARCH_BLOOM, "bloom", false);
     check("unknown", RCPP_ARCH_UNKNOWN, "mystery", false);
 
     if (fails) { std::printf("ROTATION TABLE: %d/%d FAILED\n", fails, total); return 1; }

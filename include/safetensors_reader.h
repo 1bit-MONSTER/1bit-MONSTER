@@ -25,6 +25,7 @@ namespace safetensors_detail {
 bool json_find_string(const std::string& text, const std::string& key, std::string& out);
 bool json_find_int(const std::string& text, const std::string& key, int& out);
 bool json_find_float(const std::string& text, const std::string& key, float& out);
+bool json_find_bool(const std::string& text, const std::string& key, bool& out);
 }
 
 bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg);
@@ -50,6 +51,10 @@ public:
     bool open_dir(const std::string& dir);
     // Decode one tensor into f32. Returns false if absent or dtype unsupported.
     bool get_tensor_f32(const std::string& name, std::vector<float>& out) const;
+    // GPT-OSS packed MXFP4: raw U8 copy of a tensor (blocks + E8M0 scales),
+    // kept packed in RAM — dequantized per-row in the forward. Fails for
+    // non-U8 tensors.
+    bool get_tensor_u8(const std::string& name, std::vector<uint8_t>& out) const;
     bool has(const std::string& name) const { return find(name) != nullptr; }
     const std::vector<SafetensorsTensor>& tensors() const { return tensors_; }
     const std::string& error() const { return err_; }

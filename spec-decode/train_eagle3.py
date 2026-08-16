@@ -134,18 +134,28 @@ class Eagle3Draft(nn.Module):
         """Teacher-force a 7-token window; returns (hidden [K,H], targets [K])."""
         self._ks, self._vs = [], []
         hs, tgts = [], []
+        # #1509: MTP trunk evolution — position 0 uses the target trunk at the
+        # window start; every later position uses the draft's OWN previous
+        # hidden state as its trunk (DeepSeek MTP style). This matches
+        # deployment exactly: the target hasn't computed future positions, so
+        # the draft must carry its own state forward. (Constant-trunk training
+        # collapsed the draft to a fixed token; per-position target trunks are
+        # only available under teacher forcing.)
+        h_in = trunk[w0]
         for k in range(min(TTT, len(toks) - 1 - w0)):
             i = w0 + k
-            h, kk, vv = self.step(trunk[i], toks[i], k, cos_t, sin_t)
+            h, kk, vv = self.step(h_in, toks[i], k, cos_t, sin_t)
+            h_in = h.repeat(NTL)
             hs.append(h)
             tgts.append(toks[i + 1])
-        return torch.stack(hs), torch.tensor(tgts)
+        hs_t = torch.stack(hs)
+        return hs_t, torch.tensor(tgts, device=hs_t.device)
 
 
 def build_checkpoint(draft, vocab, out_path):
     """Write the 16 f32 tensors in the exact npu_engine_spec.hip order."""
     with torch.no_grad():
-        w = lambda t: t.detach().float().reshape(-1).numpy()
+        w = lambda t: t.detach().float().cpu().reshape(-1).numpy()
         parts = [
             w(draft.embed), w(draft.fc.weight), w(draft.hn), w(draft.iln),
             w(draft.qP.weight), w(draft.kP.weight), w(draft.vP.weight), w(draft.oP.weight),
@@ -189,10 +199,25 @@ def load_samples(path, tokenizer, max_len=512, limit=None):
                 break
     out = []
     for q, a in rows:
-        ids = tokenizer(f"{q}\n\n{a}", add_special_tokens=True).input_ids
+        # #1509: train on the DEPLOYMENT distribution — the C++ spec harness
+        # feeds chat-template-formatted prompts (system + user), so raw
+        # question text was out-of-distribution and the trained draft scored
+        # ~0% acceptance at decode. Wrap in the Qwen chat template.
+        enc = tokenizer.apply_chat_template(
+            [{"role": "user", "content": q}, {"role": "assistant", "content": a}],
+            tokenize=True, add_generation_prompt=False,
+        )
+        ids = enc[0].input_ids if isinstance(enc, list) else enc.input_ids
         if len(ids) < 8 or len(ids) > max_len:
             continue
-        out.append(ids)
+        # #1509: mask = 1 for assistant-answer tokens only (deployment-relevant).
+        # User-turn tokens are trivially predictable and would dominate the loss.
+        try:
+            as_start = ids.index(151644, ids.index(151644) + 1)  # 2nd <|im_start|> = assistant turn
+        except ValueError:
+            as_start = len(ids)
+        msk = [1 if i >= as_start else 0 for i in range(len(ids))]
+        out.append((ids, msk))
     return out
 
 
@@ -235,44 +260,69 @@ def main():
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
-    device = "cpu"
+    device = "cuda"  # ROCm GPU (8060S)
     t0 = time.time()
     print("Loading Qwen3-0.6B (target) + tokenizer...")
     tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B")
+    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B", torch_dtype=torch.float16)
+    model.to(device).eval()
     model.eval()
     V = model.config.vocab_size
     assert V == 151936, f"vocab mismatch: {V}"
-    embed = model.model.embed_tokens.weight.detach().float()
+    embed = model.model.embed_tokens.weight.detach().float().to(device)
     print(f"  target loaded in {time.time() - t0:.1f}s, vocab={V}")
 
-    draft = Eagle3Draft(embed)
+    draft = Eagle3Draft(embed).to(device)
     n_train = sum(p.numel() for p in draft.parameters() if p.requires_grad)
     print(f"Draft params (trainable): {n_train/1e6:.1f}M")
 
     cos_t, sin_t = make_rope(0, TTT)
+    cos_t, sin_t = cos_t.to(device), sin_t.to(device)
     samples = load_samples(args.data, tok, args.max_len, args.max_samples)
     print(f"Dataset: {len(samples)} samples from {args.data}")
     if not samples:
         sys.exit("ERROR: no training samples — dataset format or tokenizer issue")
-    lens = [len(s) for s in samples]
+    lens = [len(s[0]) for s in samples]
     print(f"  token lengths: min={min(lens)} max={max(lens)} mean={sum(lens)/len(lens):.0f}")
 
     opt = torch.optim.AdamW([p for p in draft.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.0)
-    autocast = torch.autocast(device_type="cpu", dtype=torch.bfloat16)  # config precision="bf16"
+    autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16)  # config precision="bf16"
     losses = []
     t_train = time.time()
     for ep in range(args.epochs):
-        for si, ids in enumerate(samples):
+        for si, (ids, msk) in enumerate(samples):
             trunk = trunk_features(model, ids, device)                      # [L, 5H]
             n_pos = 0
             loss_sum = torch.zeros(())
             with autocast:
+                # #1509: deployment window — the harness starts a draft block at
+                # the answer boundary with an EMPTY cache. Regular windows start
+                # at multiples of 7 (non-empty cache after the first step), so
+                # the empty-cache start was never trained. Add an explicit
+                # window at the boundary position.
+                if any(msk):
+                    as_start = msk.index(1)
+                    if as_start >= 1 and as_start < len(ids):
+                        w0d = as_start - 1
+                        hs, tgts = draft.window(trunk, ids, w0d, cos_t, sin_t)
+                        logits = hs @ embed.t()
+                        k = len(tgts)
+                        w = torch.tensor([msk[w0d + 1 + j] for j in range(k)], device=device, dtype=torch.float32)
+                        if w.sum() > 0:
+                            n_pos += 1
+                            loss_sum = loss_sum + (F.cross_entropy(logits.float(), tgts, reduction='none') * w).sum() / w.sum()
                 for w0 in range(0, len(ids) - 1, TTT):                          # non-overlapping windows
                     hs, tgts = draft.window(trunk, ids, w0, cos_t, sin_t)       # [K, H], [K]
                     logits = hs @ embed.t()                                     # [K, V] (tied, frozen)
-                    loss_sum = loss_sum + F.cross_entropy(logits.float(), tgts)
-                    n_pos += len(tgts)
+                    # #1509: mask to assistant-answer positions (deployment-relevant)
+                    k = len(tgts)
+                    w = torch.tensor([msk[w0 + 1 + j] for j in range(k)], device=device, dtype=torch.float32)
+                    if w.sum() == 0:
+                        continue
+                    n_pos += 1
+                    loss_sum = loss_sum + (F.cross_entropy(logits.float(), tgts, reduction='none') * w).sum() / w.sum()
+            if n_pos == 0:
+                continue
             loss = loss_sum / n_pos
             opt.zero_grad()
             loss.backward()

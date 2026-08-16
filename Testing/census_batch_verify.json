@@ -1,0 +1,571 @@
+{
+ "adaptermoellavaqwen3": {
+  "candidates": [],
+  "ckpts": 13,
+  "decision": "NO_CANDIDATE"
+ },
+ "argonne": {
+  "candidates": [
+   "pursuitofdatascience/argonne-4.0-base",
+   "pursuitofdatascience/argonne-1.0-instruct",
+   "pursuitofdatascience/argonne-2.0"
+  ],
+  "ckpts": 11,
+  "decision": "UNKNOWN",
+  "evidence": "argonne-4.0-base:dims ok no strict profile (act= eps=1e-06 rope=1000000.0 ln=None); argonne-1.0-instruct:dims ok no strict profile (act= eps=None rope=None ln=None); argonne-2.0:dims ok no strict profile (act= eps=1e-06 rope=10000.0 ln=None)"
+ },
+ "bailingmoe": {
+  "candidates": [
+   "yujiepan/bailing-moe-v2-tiny-random",
+   "tiny-random/bailing-moe-v2",
+   "yujiepan/bailing-moe-v2.5-tiny-random"
+  ],
+  "ckpts": 13,
+  "decision": "LLAMA",
+  "evidence": "bailing-moe-v2-tiny-random:llama profile (rms 1e-06 rope 600000 act silu); bailing-moe-v2:llama profile (rms 1e-06 rope 600000 act silu); bailing-moe-v2.5-tiny-random:llama profile (rms 1e-06 rope 6000000 act silu)"
+ },
+ "bailingmoelinearv2": {
+  "candidates": [],
+  "ckpts": 18,
+  "decision": "NO_CANDIDATE"
+ },
+ "bailingmoev2": {
+  "candidates": [
+   "yujiepan/bailing-moe-v2-tiny-random",
+   "tiny-random/bailing-moe-v2",
+   "yujiepan/bailing-moe-v2.5-tiny-random"
+  ],
+  "ckpts": 35,
+  "decision": "LLAMA",
+  "evidence": "bailing-moe-v2-tiny-random:llama profile (rms 1e-06 rope 600000 act silu); bailing-moe-v2:llama profile (rms 1e-06 rope 600000 act silu); bailing-moe-v2.5-tiny-random:llama profile (rms 1e-06 rope 6000000 act silu)"
+ },
+ "bailingmoev2_5": {
+  "candidates": [],
+  "ckpts": 29,
+  "decision": "NO_CANDIDATE"
+ },
+ "bailingmoev3": {
+  "candidates": [],
+  "ckpts": 23,
+  "decision": "NO_CANDIDATE"
+ },
+ "bamba": {
+  "candidates": [
+   "ibm-ai-platform/bamba-9b-v2",
+   "ibm-ai-platform/bamba-9b-1.8t",
+   "ibm-ai-platform/bamba-9b-v1"
+  ],
+  "ckpts": 10,
+  "decision": "DISAGREE",
+  "evidence": "bamba-9b-v2:llama profile (rms 1e-05 rope 10000.0 act silu); bamba-9b-1.8t:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None); bamba-9b-v1:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None)"
+ },
+ "bvv": {
+  "candidates": [
+   "vijaygbvv/results_modified_rp",
+   "tistak/m8lbvvxliucesacy",
+   "tistak/slc4qj5kvdbvvedi"
+  ],
+  "ckpts": 18,
+  "decision": "DISAGREE",
+  "evidence": "results_modified_rp:model_type gpt_neox; m8lbvvxliucesacy:dims ok no strict profile (act=silu eps=None rope=10000 ln=None); slc4qj5kvdbvvedi:dims ok no strict profile (act=silu eps=None rope=10000 ln=None)"
+ },
+ "ceno": {
+  "candidates": [
+   "gracenote/llama-2-7b-chat-finetuned",
+   "vepraj/llama-2-7b-cenomirv",
+   "ab6407032/servicenow-gpt2-text-gen"
+  ],
+  "ckpts": 12,
+  "decision": "DISAGREE",
+  "evidence": "llama-2-7b-cenomirv:model_type llama; servicenow-gpt2-text-gen:model_type gpt2"
+ },
+ "chatglm": {
+  "candidates": [
+   "shibing624/chatglm-6b-belle-zh-lora",
+   "wgs/chatglm-medical",
+   "tiansz/fastllm_chatglm"
+  ],
+  "ckpts": 50,
+  "decision": "FETCH_FAIL"
+ },
+ "cubelm": {
+  "candidates": [],
+  "ckpts": 17,
+  "decision": "NO_CANDIDATE"
+ },
+ "daisy": {
+  "candidates": [
+   "jevalent/daisybeta",
+   "daisystar004/llama-2-7b-covid",
+   "achdaisy/openpipe_mistral-ft-optimized-1227_merged"
+  ],
+  "ckpts": 27,
+  "decision": "DISAGREE",
+  "evidence": "llama-2-7b-covid:model_type llama; openpipe_mistral-ft-optimized-1227_merged:model_type mistral"
+ },
+ "dynamicforgetting": {
+  "candidates": [
+   "Lanni-ni/dynamic_forgetting_2_4_256_babylm_10m_epoch1",
+   "Lanni-ni/dynamic_forgetting_2_4_256_babylm_10m_epoch2",
+   "Lanni-ni/dynamic_forgetting_2_4_256_babylm_10m_epoch3"
+  ],
+  "ckpts": 80,
+  "decision": "UNKNOWN",
+  "evidence": "dynamic_forgetting_2_4_256_babylm_10m_epoch1:no standard dims (h=256 L=2 nh=0); dynamic_forgetting_2_4_256_babylm_10m_epoch2:no standard dims (h=256 L=2 nh=0); dynamic_forgetting_2_4_256_babylm_10m_epoch3:no standard dims (h=256 L=2 nh=0)"
+ },
+ "dynamicslidingwindow": {
+  "candidates": [
+   "Lanni-ni/dynamic_sliding_window_2_4_256_babylm_10m_epoch1",
+   "Lanni-ni/dynamic_sliding_window_2_4_256_babylm_10m_epoch2",
+   "Lanni-ni/dynamic_sliding_window_2_4_256_babylm_10m_epoch3"
+  ],
+  "ckpts": 80,
+  "decision": "UNKNOWN",
+  "evidence": "dynamic_sliding_window_2_4_256_babylm_10m_epoch1:no standard dims (h=256 L=2 nh=0); dynamic_sliding_window_2_4_256_babylm_10m_epoch2:no standard dims (h=256 L=2 nh=0); dynamic_sliding_window_2_4_256_babylm_10m_epoch3:no standard dims (h=256 L=2 nh=0)"
+ },
+ "emo": {
+  "candidates": [
+   "nvidia/nvidia-nemotron-3.5-lightning-30b-a3b-nvfp4",
+   "nvidia/nvidia-nemotron-3.5-lightning-30b-a3b-bf16",
+   "unsloth/nvidia-nemotron-3.5-lightning-30b-a3b-gguf"
+  ],
+  "ckpts": 11,
+  "decision": "UNKNOWN",
+  "evidence": "nvidia-nemotron-3.5-lightning-30b-a3b-nvfp4:dims ok no strict profile (act= eps=None rope=10000 ln=1e-05); nvidia-nemotron-3.5-lightning-30b-a3b-bf16:dims ok no strict profile (act= eps=None rope=10000 ln=1e-05)"
+ },
+ "fimmy": {
+  "candidates": [
+   "di-zhang-fdu/fimmy-nano",
+   "di-zhang-fdu/fimmy-small-python",
+   "di-zhang-fdu/fimmy-small-java"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "fimmy-nano:dims ok no strict profile (act= eps=None rope=None ln=None); fimmy-small-python:dims ok no strict profile (act= eps=None rope=None ln=None); fimmy-small-java:dims ok no strict profile (act= eps=None rope=None ln=None)"
+ },
+ "financedecoder": {
+  "candidates": [],
+  "ckpts": 10,
+  "decision": "NO_CANDIDATE"
+ },
+ "forgettingtransformer": {
+  "candidates": [
+   "xiulinyang/forgetting_transformer"
+  ],
+  "ckpts": 11,
+  "decision": "UNKNOWN",
+  "evidence": "forgetting_transformer:no standard dims (h=256 L=2 nh=0)"
+ },
+ "gemma4unifiedassistant": {
+  "candidates": [],
+  "ckpts": 10,
+  "decision": "NO_CANDIDATE"
+ },
+ "gpt2moe": {
+  "candidates": [
+   "i-be-snek/gpt2moe_hom_100mb",
+   "i-be-snek/gpt2moe_het_100mb",
+   "i-be-snek/gpt2moe_hom_1000mb"
+  ],
+  "ckpts": 23,
+  "decision": "FETCH_FAIL"
+ },
+ "gptbert": {
+  "candidates": [
+   "jorgeis1/jorge-babylm-10m-gptbert",
+   "mrothroc/mixlab-gptbert-masked-focus-replica",
+   "ltg/gpt-bert-babylm-base"
+  ],
+  "ckpts": 11,
+  "decision": "UNKNOWN",
+  "evidence": "jorge-babylm-10m-gptbert:dims ok no strict profile (act= eps=None rope=None ln=None); mixlab-gptbert-masked-focus-replica:no standard dims (h=384 L=0 nh=0); gpt-bert-babylm-base:dims ok no strict profile (act= eps=None rope=None ln=None)"
+ },
+ "gptjx": {
+  "candidates": [
+   "KnutJaegersberg/GPT-JX-3b"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "GPT-JX-3b:dims ok no strict profile (act=swiglu eps=None rope=None ln=1e-05)"
+ },
+ "gptjxmoe": {
+  "candidates": [],
+  "ckpts": 11,
+  "decision": "NO_CANDIDATE"
+ },
+ "graniteswitch": {
+  "candidates": [
+   "ibm-granite/granite-switch-4.1-8b-preview",
+   "ibm-granite/granite-switch-4.1-30b-preview",
+   "ibm-granite/granite-switch-4.1-3b-preview"
+  ],
+  "ckpts": 10,
+  "decision": "UNKNOWN",
+  "evidence": "granite-switch-4.1-8b-preview:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None); granite-switch-4.1-30b-preview:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None); granite-switch-4.1-3b-preview:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None)"
+ },
+ "hgrn": {
+  "candidates": [
+   "opennlplab/hgrn-1b",
+   "opennlplab/hgrn-355m",
+   "opennlplab/hgrn-150m"
+  ],
+  "ckpts": 19,
+  "decision": "UNKNOWN",
+  "evidence": "hgrn-1b:new family hgrn (no native token); hgrn-355m:new family hgrn (no native token); hgrn-150m:new family hgrn (no native token)"
+ },
+ "hgrnbit": {
+  "candidates": [
+   "dhanesh123in/hgrnbitcausallm",
+   "dhanesh123in/HGRNBitConfig",
+   "dhanesh123in/HGRNBitCausalLM"
+  ],
+  "ckpts": 11,
+  "decision": "UNKNOWN",
+  "evidence": "hgrnbitcausallm:new family hgrn_bit (no native token); HGRNBitCausalLM:new family hgrn_bit (no native token)"
+ },
+ "hyenadna": {
+  "candidates": [
+   "longsafari/hyenadna-small-32k-seqlen-hf",
+   "longsafari/hyenadna-medium-160k-seqlen-hf",
+   "longsafari/hyenadna-medium-450k-seqlen-hf"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "hyenadna-small-32k-seqlen-hf:no standard dims (h=0 L=4 nh=0); hyenadna-medium-160k-seqlen-hf:no standard dims (h=0 L=8 nh=0); hyenadna-medium-450k-seqlen-hf:no standard dims (h=0 L=8 nh=0)"
+ },
+ "industryslm": {
+  "candidates": [],
+  "ckpts": 12,
+  "decision": "NO_CANDIDATE"
+ },
+ "jais": {
+  "candidates": [
+   "inceptionai/jais-2-70b-chat",
+   "inceptionai/jais-2-8b-chat-gguf",
+   "inceptionai/jais-13b"
+  ],
+  "ckpts": 91,
+  "decision": "FETCH_FAIL"
+ },
+ "japanesestablelmalpha": {
+  "candidates": [
+   "HachiML/japanese-stablelm-alpha-7b-instruct-ja-qlora-2ep",
+   "HachiML/japanese-stablelm-alpha-7b-instruct-ja-qlora-2ep-v2",
+   "HachiML/japanese-stablelm-alpha-7b-hh-rlhf-49k-ja-qlora-v1-2ep"
+  ],
+  "ckpts": 10,
+  "decision": "FETCH_FAIL"
+ },
+ "keuralmoecausallm": {
+  "candidates": [],
+  "ckpts": 11,
+  "decision": "NO_CANDIDATE"
+ },
+ "kimik25": {
+  "candidates": [
+   "PrimeIntellect/kimi-k25-tiny",
+   "AQ-MedAI/Kimi-K25-eagle3",
+   "pratiknarola/Kimi-K25-eagle3-2L-48K"
+  ],
+  "ckpts": 36,
+  "decision": "DISAGREE",
+  "evidence": "kimi-k25-tiny:model_type kimi_k25; Kimi-K25-eagle3:model_type llama; Kimi-K25-eagle3-2L-48K:model_type llama"
+ },
+ "kormo": {
+  "candidates": [
+   "kormo-lm/dclm_fullcausal_1b",
+   "kormo-lm/kormo_1b_ultrafineweb_60bt",
+   "kormo-lm/kormo_1b_ultrafineweb_60bt_sliding_causal"
+  ],
+  "ckpts": 72,
+  "decision": "FETCH_FAIL"
+ },
+ "lightningtransformermodel": {
+  "candidates": [],
+  "ckpts": 16,
+  "decision": "NO_CANDIDATE"
+ },
+ "llada2moemodellm": {
+  "candidates": [],
+  "ckpts": 34,
+  "decision": "NO_CANDIDATE"
+ },
+ "llama4": {
+  "candidates": [
+   "teja2022/samllama44",
+   "owoowo/dumbo-llama4",
+   "saishf/llama4some-sovl-4x8b-l3-v1"
+  ],
+  "ckpts": 109,
+  "decision": "DISAGREE",
+  "evidence": "dumbo-llama4:model_type llama; llama4some-sovl-4x8b-l3-v1:model_type mixtral"
+ },
+ "llamamoe": {
+  "candidates": [
+   "llama-moe/LLaMA-MoE-v1-3_0B-2_16",
+   "llama-moe/LLaMA-MoE-v1-3_5B-4_16",
+   "llama-moe/LLaMA-MoE-v1-3_5B-2_8"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "LLaMA-MoE-v1-3_0B-2_16:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None); LLaMA-MoE-v1-3_5B-4_16:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None); LLaMA-MoE-v1-3_5B-2_8:dims ok no strict profile (act=silu eps=1e-05 rope=None ln=None)"
+ },
+ "looplm": {
+  "candidates": [
+   "wmertens/bitlooplm-small",
+   "harims95/looplm-135m-naive",
+   "harims95/looplm-135m-naive-sft"
+  ],
+  "ckpts": 34,
+  "decision": "UNKNOWN",
+  "evidence": "looplm-135m-naive:no standard dims (h=0 L=0 nh=0); looplm-135m-naive-sft:no standard dims (h=0 L=0 nh=0)"
+ },
+ "mfuyu": {
+  "candidates": [
+   "mantis-vl/mfuyu_llava50k",
+   "mantis-vl/mfuyu_v1_no_nlvr2",
+   "mantis-vl/mfuyu_v2_8192_720p"
+  ],
+  "ckpts": 18,
+  "decision": "UNKNOWN",
+  "evidence": "mfuyu_llava50k:dims ok no strict profile (act=relu2 eps=None rope=25000.0 ln=None); mfuyu_v1_no_nlvr2:dims ok no strict profile (act=relu2 eps=None rope=25000.0 ln=None); mfuyu_v2_8192_720p:dims ok no strict profile (act=relu2 eps=None rope=25000.0 ln=None)"
+ },
+ "minimaxm3sparse": {
+  "candidates": [
+   "shagunsd/tiny-random-MiniMaxM3SparseForConditionalGeneration",
+   "hf-tiny-v2/tiny-random-MiniMaxM3SparseForConditionalGeneration"
+  ],
+  "ckpts": 15,
+  "decision": "UNKNOWN",
+  "evidence": "tiny-random-MiniMaxM3SparseForConditionalGeneration:vision tower present (VLM)"
+ },
+ "modeling_sparsetral.mistral": {
+  "candidates": [],
+  "ckpts": 10,
+  "decision": "NO_CANDIDATE"
+ },
+ "modernbertdecoder": {
+  "candidates": [
+   "onnx-internal-testing/tiny-random-modernbertdecoderforcausallm",
+   "onnx-internal-testing/tiny-random-ModernBertDecoderForCausalLM",
+   "hf-tiny-v2/tiny-random-ModernBertDecoderForSequenceClassification"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "tiny-random-modernbertdecoderforcausallm:dims ok no strict profile (act= eps=None rope=None ln=None); tiny-random-ModernBertDecoderForCausalLM:dims ok no strict profile (act= eps=None rope=None ln=None); tiny-random-ModernBertDecoderForSequenceClassification:dims ok no strict profile (act= eps=None rope=None ln=None)"
+ },
+ "motif": {
+  "candidates": [
+   "motif-technologies/motif-3",
+   "motif-technologies/motif-3-base",
+   "motif-technologies/motif-3-nvfp4"
+  ],
+  "ckpts": 20,
+  "decision": "UNKNOWN",
+  "evidence": "motif-3:dims ok no strict profile (act=poly_norm eps=1e-05 rope=10000.0 ln=None); motif-3-base:dims ok no strict profile (act=poly_norm eps=1e-05 rope=10000.0 ln=None); motif-3-nvfp4:dims ok no strict profile (act=poly_norm eps=1e-05 rope=10000.0 ln=None)"
+ },
+ "multiscale": {
+  "candidates": [
+   "johko/mobilesal-multiscale",
+   "espnet/speechlm_tts_ls_giga_mlsen_amuse_speech_multiscale",
+   "manbeast3b/_low46_multiscale_temp_500"
+  ],
+  "ckpts": 26,
+  "decision": "UNKNOWN",
+  "evidence": "mobilesal-multiscale:no standard dims (h=0 L=0 nh=0)"
+ },
+ "museglimmer": {
+  "candidates": [
+   "meta-models/Muse-Glimmer-30B",
+   "unsloth/Muse-Glimmer-30B-GGUF",
+   "meta-models/Muse-Glimmer-30B-GGUF"
+  ],
+  "ckpts": 10,
+  "decision": "UNKNOWN",
+  "evidence": "Muse-Glimmer-30B:vision tower present (VLM)"
+ },
+ "nmmaskmoellavaqwen3": {
+  "candidates": [],
+  "ckpts": 56,
+  "decision": "NO_CANDIDATE"
+ },
+ "orkhon": {
+  "candidates": [
+   "korkmazumut/orkhon-bumin",
+   "korkmazumut/orkhon-bengu",
+   "korkmazumut/orkhon-bengu-gokturk"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "orkhon-bumin:no standard dims (h=0 L=0 nh=0); orkhon-bengu:no standard dims (h=0 L=0 nh=0); orkhon-bengu-gokturk:no standard dims (h=0 L=0 nh=0)"
+ },
+ "prot2text": {
+  "candidates": [
+   "habdine/prot2text-small-v1-1",
+   "habdine/prot2text-base-v1-1",
+   "habdine/prot2text-medium-v1-1"
+  ],
+  "ckpts": 10,
+  "decision": "UNKNOWN",
+  "evidence": "prot2text-small-v1-1:no standard dims (h=0 L=0 nh=0); prot2text-base-v1-1:no standard dims (h=0 L=0 nh=0); prot2text-medium-v1-1:no standard dims (h=0 L=0 nh=0)"
+ },
+ "quasar": {
+  "candidates": [
+   "devquasar-3/meta-llama.llama-3.2-1b-gguf",
+   "devquasar-7/deepseek-ai.deepseek-r1-distill-qwen-1.5b-gguf",
+   "devquasar/nvidia.opencodereasoning-nemotron-7b-gguf"
+  ],
+  "ckpts": 20,
+  "decision": "FETCH_FAIL"
+ },
+ "qwen3omnimoe": {
+  "candidates": [
+   "hf-tiny-v2/tiny-random-Qwen3OmniMoeThinkerForConditionalGeneration"
+  ],
+  "ckpts": 10,
+  "decision": "UNKNOWN",
+  "evidence": "tiny-random-Qwen3OmniMoeThinkerForConditionalGeneration:vision tower present (VLM)"
+ },
+ "raven": {
+  "candidates": [
+   "deadbydawn101/ravenx-cyberagent-qwen3.6-35b-a3b-opus-4.7-openmythos-pentester-bughunter-rath-gguf",
+   "deadbydawn101/ravenx-cyberagent-qwen3.6-35b-a3b-opus-4.7-openmythos-pentester-bughunter-rath-mlx",
+   "deadbydawn101/ravenx-openfable-coderagent-gemma-4-12b-coder-fable5-composer-soulinfused-remastered-gguf"
+  ],
+  "ckpts": 37,
+  "decision": "UNKNOWN",
+  "evidence": "ravenx-cyberagent-qwen3.6-35b-a3b-opus-4.7-openmythos-pentester-bughunter-rath-mlx:no standard dims (h=0 L=0 nh=0)"
+ },
+ "recurrentgemma": {
+  "candidates": [
+   "google/recurrentgemma-2b",
+   "google/recurrentgemma-2b-it",
+   "google/recurrentgemma-2b-flax"
+  ],
+  "ckpts": 17,
+  "decision": "FETCH_FAIL"
+ },
+ "reformermodelwithlmhead": {
+  "candidates": [],
+  "ckpts": 10,
+  "decision": "NO_CANDIDATE"
+ },
+ "retnet": {
+  "candidates": [
+   "parsee-mizuhashi/retnet-tiny-wikitext-undertrained",
+   "jploski/retnet-mini-shakespeare",
+   "isek-ai/lightnovel-intro-retnet-400m"
+  ],
+  "ckpts": 18,
+  "decision": "UNKNOWN",
+  "evidence": "retnet-mini-shakespeare:new family retnet (no native token); lightnovel-intro-retnet-400m:new family retnet (no native token)"
+ },
+ "roformer": {
+  "candidates": [
+   "junnyu/roformer_chinese_sim_char_base",
+   "junnyu/roformer_chinese_sim_char_ft_base",
+   "junnyu/roformer_chinese_sim_char_ft_small"
+  ],
+  "ckpts": 12,
+  "decision": "UNKNOWN",
+  "evidence": "roformer_chinese_sim_char_base:dims ok no strict profile (act=gelu eps=None rope=None ln=None); roformer_chinese_sim_char_ft_base:dims ok no strict profile (act=gelu eps=None rope=None ln=None); roformer_chinese_sim_char_ft_small:dims ok no strict profile (act=gelu eps=None rope=None ln=None)"
+ },
+ "roleslm": {
+  "candidates": [],
+  "ckpts": 41,
+  "decision": "NO_CANDIDATE"
+ },
+ "rwkv7": {
+  "candidates": [
+   "blinkdl/rwkv7-g1",
+   "rwkv/rwkv7-goose-world3-2.9b-hf",
+   "rwkv/rwkv7-2.9b-20260805"
+  ],
+  "ckpts": 53,
+  "decision": "RWKV",
+  "evidence": "rwkv7-goose-world3-2.9b-hf:model_type rwkv7; rwkv7-2.9b-20260805:model_type rwkv7"
+ },
+ "sarvammla": {
+  "candidates": [],
+  "ckpts": 15,
+  "decision": "NO_CANDIDATE"
+ },
+ "sarvammoe": {
+  "candidates": [],
+  "ckpts": 48,
+  "decision": "NO_CANDIDATE"
+ },
+ "skipmiddle": {
+  "candidates": [
+   "tim-lawson/skip-middle-fineweb-baseline-12-layers",
+   "tim-lawson/skip-middle-fineweb-baseline-4-layers",
+   "tim-lawson/skip-middle-fineweb-baseline-8-layers"
+  ],
+  "ckpts": 21,
+  "decision": "UNKNOWN",
+  "evidence": "skip-middle-fineweb-baseline-12-layers:no standard dims (h=0 L=0 nh=0); skip-middle-fineweb-baseline-4-layers:no standard dims (h=0 L=0 nh=0); skip-middle-fineweb-baseline-8-layers:no standard dims (h=0 L=0 nh=0)"
+ },
+ "spikewhalelm": {
+  "candidates": [],
+  "ckpts": 14,
+  "decision": "NO_CANDIDATE"
+ },
+ "step3p5": {
+  "candidates": [
+   "TerneForge/step3p5_4800",
+   "TerneForge/step3p5_6200",
+   "TerneForge/step3p5_7200"
+  ],
+  "ckpts": 28,
+  "decision": "FETCH_FAIL"
+ },
+ "stl": {
+  "candidates": [
+   "doses-ai/pestle-27b-ternary-gguf",
+   "tartunlp/apertus-estllm-8b-instruct-0326",
+   "rostlab/prot_t5_base_mt_uniref50"
+  ],
+  "ckpts": 14,
+  "decision": "UNKNOWN",
+  "evidence": "apertus-estllm-8b-instruct-0326:dims ok no strict profile (act=xielu eps=1e-05 rope=12000000 ln=None); prot_t5_base_mt_uniref50:is_encoder_decoder"
+ },
+ "stripedhyenamodel": {
+  "candidates": [],
+  "ckpts": 12,
+  "decision": "NO_CANDIDATE"
+ },
+ "talkie": {
+  "candidates": [
+   "abstract4700/frankentalkie-20b",
+   "zimengxiong/talkie-1930-13b-it-mlx",
+   "lewtun/talkie-1930-13b-it-hf"
+  ],
+  "ckpts": 35,
+  "decision": "UNKNOWN",
+  "evidence": "frankentalkie-20b:new family talkie (no native token); talkie-1930-13b-it-mlx:new family talkie (no native token); talkie-1930-13b-it-hf:new family talkie (no native token)"
+ },
+ "transformerlm": {
+  "candidates": [
+   "wcnegentropy/bittransformerlm",
+   "trixyl/transformerlm-ar-8k-simplestories",
+   "trixyl/transformerlm-ar-4k-simplestories"
+  ],
+  "ckpts": 34,
+  "decision": "FETCH_FAIL"
+ },
+ "xpertgpt": {
+  "candidates": [
+   "anonym5035/xpertgpt-babylm2026-strict-small",
+   "anonym5035/xpertgpt-babylm2026-strict",
+   "anonym5035/XpertGPT-BabyLM2026-Strict-Small"
+  ],
+  "ckpts": 14,
+  "decision": "UNKNOWN",
+  "evidence": "xpertgpt-babylm2026-strict-small:no standard dims (h=256 L=0 nh=0); xpertgpt-babylm2026-strict:no standard dims (h=256 L=6 nh=0); XpertGPT-BabyLM2026-Strict-Small:no standard dims (h=256 L=0 nh=0)"
+ },
+ "yatgpt": {
+  "candidates": [],
+  "ckpts": 13,
+  "decision": "NO_CANDIDATE"
+ }
+}

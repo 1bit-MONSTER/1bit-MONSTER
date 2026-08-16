@@ -6,9 +6,20 @@
 
 #include "backend.h"
 
+// Portable half — the HIP headers that normally provide `half` don't exist on
+// macOS; __fp16 is the native Apple equivalent (same storage, same conversions).
+#ifndef __HIP__
+using half = __fp16;
+#endif
+
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
+
+// MPSNDArray enforces a minimum buffer footprint (observed floor = 2×hidden,
+// scaling with dims). Round every device buffer up to 16 KiB so GEMV/MPS
+// operands never trip it — real 2K-hidden models need 8 KiB already.
+static NSUInteger mps_round(NSUInteger n) { return ((n + 16383) / 16384) * 16384; }
 
 #include <cstdio>
 #include <cstdlib>
@@ -121,6 +132,8 @@ struct MetalBackend : Backend {
     id<MTLBuffer> d_hs = nil;
     id<MTLBuffer> d_ao = nil;
     id<MTLBuffer> d_tmp = nil;
+    id<MTLBuffer> d_gate = nil;
+    id<MTLBuffer> d_ffn = nil;
     id<MTLBuffer> d_fnw = nil;
     id<MTLBuffer> d_embed = nil;
     id<MTLBuffer> d_kcache = nil;
@@ -231,21 +244,26 @@ struct MetalBackend : Backend {
         MPSMatrixMultiplication* mm = [[MPSMatrixMultiplication alloc]
             initWithDevice:device resultRows:M resultColumns:N interiorColumns:K];
         
+        // CPU-side ops between gemvs read these buffers — the MPS kernel must
+        // complete before they do. Each gemv gets its own command buffer,
+        // committed + waited here (synchronous, correct-first).
         [mm encodeToCommandBuffer:cb leftMatrix:mat_a rightMatrix:mat_b resultMatrix:mat_c];
+        [cb commit];
+        [cb waitUntilCompleted];
     }
 
     // GEMV: out[M] = in[K] @ wt[K, M] using MPS as GeMM with N=1
-    void metal_gemv(id<MTLCommandBuffer> cb,
-                    id<MTLBuffer> out, const id<MTLBuffer> in_vec,
+    void metal_gemv(id<MTLBuffer> out, const id<MTLBuffer> in_vec,
                     const id<MTLBuffer> wt, int M, int K) {
+        // Fresh command buffer per gemv — a committed buffer cannot be reused.
+        id<MTLCommandBuffer> cb = [cmd_queue commandBuffer];
         metal_matmul(cb, out, in_vec, wt, 1, M, K);
     }
 
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override {
         this->cfg = cfg;
         
-        hidden = cfg.hidden_size > 0 ? cfg.hidden_size : cfg.hidden;
-        n_layers = cfg.num_layers > 0 ? cfg.num_layers : cfg.n_layers;
+        hidden = cfg.hidden_size > 0 ? cfg.hidden_size : cfg.hidden;        n_layers = cfg.num_layers > 0 ? cfg.num_layers : cfg.n_layers;
         n_heads = cfg.num_heads > 0 ? cfg.num_heads : cfg.n_heads;
         n_kv_heads = cfg.num_kv_heads > 0 ? cfg.num_kv_heads : cfg.n_kv_heads;
         head_dim = cfg.head_dim;
@@ -272,12 +290,17 @@ struct MetalBackend : Backend {
             return d;
         };
         
-        auto to_half_buffer = [&](const std::vector<float>& src) -> id<MTLBuffer> {
+        // Weights come from torch as [out, in] row-major; the MPS gemv treats
+        // the buffer as [K, N] = [in, out] row-major. Transpose at load so the
+        // matmul is mathematically correct: B[k][n] = w[n][k].
+        auto to_half_buffer = [&](const std::vector<float>& src, int rows, int cols) -> id<MTLBuffer> {
             if (src.empty()) return nil;
-            std::vector<half> h(src.size());
-            for (size_t i = 0; i < src.size(); i++) h[i] = half(src[i]);
+            std::vector<half> h((size_t)rows * cols);
+            for (int r = 0; r < rows; r++)
+                for (int c = 0; c < cols; c++)
+                    h[(size_t)c * rows + r] = half(src[(size_t)r * cols + c]);
             return [device newBufferWithBytes:h.data()
-                                       length:src.size() * sizeof(half)
+                                       length:h.size() * sizeof(half)
                                       options:MTLResourceStorageModeShared];
         };
 
@@ -293,24 +316,29 @@ struct MetalBackend : Backend {
 
         // Allocate buffers
         int buf_size = hidden * sizeof(half);
-        d_hs = [device newBufferWithLength:buf_size options:MTLResourceStorageModeShared];
-        d_ao = [device newBufferWithLength:buf_size options:MTLResourceStorageModeShared];
-        d_tmp = [device newBufferWithLength:std::max(hidden, 2 * n_ff) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_fnw = to_half_buffer(fnorm);
-        d_embed = to_half_buffer(embed);
-        d_ibias = to_half_buffer(ibias);
-        d_iscale = to_half_buffer(iscale);
+        d_hs = [device newBufferWithLength:mps_round(buf_size) options:MTLResourceStorageModeShared];
+        d_ao = [device newBufferWithLength:mps_round(buf_size) options:MTLResourceStorageModeShared];
+        d_tmp = [device newBufferWithLength:mps_round(std::max(hidden, 2 * n_ff) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_gate = [device newBufferWithLength:mps_round(n_ff * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_ffn = [device newBufferWithLength:mps_round(hidden * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_fnw = to_half_buffer(fnorm, hidden, 1);
+        d_embed = to_half_buffer(embed, vocab, hidden);  // [V,H] → transposed [H,V] for lm_head B
+        d_ibias = to_half_buffer(ibias, hidden, 1);
+        d_iscale = to_half_buffer(iscale, hidden, 1);
         
         int kv_elem = n_layers * max_seq * n_kv_heads * head_dim;
         d_kcache = [device newBufferWithLength:kv_elem * sizeof(half) options:MTLResourceStorageModeShared];
         d_vcache = [device newBufferWithLength:kv_elem * sizeof(half) options:MTLResourceStorageModeShared];
         
-        d_qout = [device newBufferWithLength:(n_heads * head_dim) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_kout = [device newBufferWithLength:(n_kv_heads * head_dim) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_vout = [device newBufferWithLength:(n_kv_heads * head_dim) * sizeof(half) options:MTLResourceStorageModeShared];
-        d_lm_vocab = [device newBufferWithLength:vocab * sizeof(float) options:MTLResourceStorageModeShared];
+        d_qout = [device newBufferWithLength:mps_round((n_heads * head_dim) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_kout = [device newBufferWithLength:mps_round((n_kv_heads * head_dim) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_vout = [device newBufferWithLength:mps_round((n_kv_heads * head_dim) * sizeof(half)) options:MTLResourceStorageModeShared];
+        d_lm_vocab = [device newBufferWithLength:mps_round(vocab * sizeof(float)) options:MTLResourceStorageModeShared];
         d_argmax_idx = [device newBufferWithLength:sizeof(int) options:MTLResourceStorageModeShared];
         d_argmax_val = [device newBufferWithLength:sizeof(float) options:MTLResourceStorageModeShared];
+
+        size_t qd = n_heads * head_dim;
+        size_t kd = n_kv_heads * head_dim;
 
         // Load per-layer weights
         for (int il = 0; il < n_layers; il++) {
@@ -325,15 +353,15 @@ struct MetalBackend : Backend {
             auto rms_a = load(p + "input_layernorm.weight.bin");
             auto rms_f = load(p + "post_attention_layernorm.weight.bin");
 
-            layer_wq.push_back(to_half_buffer(wq));
-            layer_wk.push_back(to_half_buffer(wk));
-            layer_wv.push_back(to_half_buffer(wv));
-            layer_wo.push_back(to_half_buffer(wo));
-            layer_w1.push_back(to_half_buffer(w1));
-            layer_w2.push_back(to_half_buffer(w2));
-            layer_w3.push_back(to_half_buffer(w3));
-            layer_rms_a.push_back(to_half_buffer(rms_a));
-            layer_rms_f.push_back(to_half_buffer(rms_f));
+            layer_wq.push_back(to_half_buffer(wq, qd, hidden));
+            layer_wk.push_back(to_half_buffer(wk, kd, hidden));
+            layer_wv.push_back(to_half_buffer(wv, kd, hidden));
+            layer_wo.push_back(to_half_buffer(wo, hidden, qd));
+            layer_w1.push_back(to_half_buffer(w1, n_ff, hidden));
+            layer_w2.push_back(to_half_buffer(w2, hidden, n_ff));
+            layer_w3.push_back(to_half_buffer(w3, n_ff, hidden));
+            layer_rms_a.push_back(to_half_buffer(rms_a, hidden, 1));
+            layer_rms_f.push_back(to_half_buffer(rms_f, hidden, 1));
         }
 
         try {
@@ -386,6 +414,9 @@ struct MetalBackend : Backend {
                 half val = half((raw + ibias[i]) * iscale[i]);
                 ((half*)[d_hs contents])[i] = val;
             }
+            {double m=0;half* dbg=(half*)[d_hs contents];for(int i=0;i<hidden;i++)m+=(double)dbg[i]*(double)dbg[i];
+             fprintf(stderr,"  embed mag=%.4f (embed vec size=%zu)\n",sqrt(m/hidden),embed.size());
+             fprintf(stderr,"  wq0 size=%zu wq1 size=%zu\n", layer_wq.empty()?0:(size_t)layer_wq[0].length, layer_wq.size()>1?(size_t)layer_wq[1].length:0);}
             
             size_t qd = n_heads * head_dim;
             size_t kd = n_kv_heads * head_dim;
@@ -406,13 +437,13 @@ struct MetalBackend : Backend {
                 
                 // QKV projections via MPS
                 if (layer_wq[il]) {
-                    metal_gemv(cb, d_qout, d_tmp, layer_wq[il], qd, hidden);
+                    metal_gemv(d_qout, d_tmp, layer_wq[il], qd, hidden);
                 }
                 if (layer_wk[il]) {
-                    metal_gemv(cb, d_kout, d_tmp, layer_wk[il], kd, hidden);
+                    metal_gemv(d_kout, d_tmp, layer_wk[il], kd, hidden);
                 }
                 if (layer_wv[il]) {
-                    metal_gemv(cb, d_vout, d_tmp, layer_wv[il], kd, hidden);
+                    metal_gemv(d_vout, d_tmp, layer_wv[il], kd, hidden);
                 }
                 
                 // Store KV in cache (host-side for simplicity)
@@ -421,41 +452,59 @@ struct MetalBackend : Backend {
                 memcpy(k_dst, [d_kout contents], kd * sizeof(half));
                 memcpy(v_dst, [d_vout contents], kd * sizeof(half));
                 
-                // Attention (simplified CPU-side for v1)
+                {
+                    double mq=0,mk=0,mv=0;
+                    half* dq=(half*)[d_qout contents]; half* dk=(half*)[d_kout contents]; half* dv=(half*)[d_vout contents];
+                    for(int i=0;i<qd;i++)mq+=(double)dq[i]*(double)dq[i];
+                    for(int i=0;i<kd;i++)mk+=(double)dk[i]*(double)dk[i];
+                    for(int i=0;i<kd;i++)mv+=(double)dv[i]*(double)dv[i];
+                    fprintf(stderr,"  L0 qkv mag: q=%.4f k=%.4f v=%.4f\n",sqrt(mq/qd),sqrt(mk/kd),sqrt(mv/kd));
+                }
+                // Attention (CPU-side accumulation; Metal kernel for production)
                 int seq_len = pos + 1;
                 float scale = 1.0f / sqrtf((float)head_dim);
+                half* ao_out = (half*)[d_ao contents];
+                int heads_per_kv = n_kv_heads > 0 ? n_heads / n_kv_heads : 1;
                 for (int h = 0; h < n_heads; h++) {
-                    float max_score = -1e38f;
-                    float exp_sum = 0;
-                    float acc = 0;
-                    
+                    int kh = h / heads_per_kv;  // GQA: query head h shares KV head kh
+                    // scores[t] = q·k_t * scale
+                    std::vector<float> scores(seq_len);
                     for (int t = 0; t < seq_len; t++) {
                         float s = 0;
                         for (int d = 0; d < head_dim; d++) {
                             s += (float)((half*)[d_qout contents])[h * head_dim + d] *
-                                 (float)((half*)[d_kcache contents])[(size_t)il * max_seq * kd + (size_t)t * kd + h * head_dim + d];
+                                 (float)((half*)[d_kcache contents])[(size_t)il * max_seq * kd + (size_t)t * kd + kh * head_dim + d];
                         }
-                        s *= scale;
-                        
-                        float new_max = fmax(max_score, s);
-                        float e = expf(s - new_max);
-                        float e_old = expf(max_score - new_max);
-                        exp_sum = exp_sum * e_old + e;
-                        max_score = new_max;
-                        
-                        float v = (float)((half*)[d_vcache contents])[(size_t)il * max_seq * kd + (size_t)t * kd + h * head_dim + 0];
-                        // Simplified: just take first element of V for the weighted sum
-                        // Full implementation accumulates all dimensions
+                        scores[t] = s * scale;
+                    }
+                    // softmax over scores
+                    float mx = *std::max_element(scores.begin(), scores.end());
+                    float esum = 0;
+                    for (int t = 0; t < seq_len; t++) esum += expf(scores[t] - mx);
+                    // weighted V sum: out[d] = Σ_t softmax(t) * V[t][h][d]
+                    for (int d = 0; d < head_dim; d++) {
+                        float acc = 0;
+                        for (int t = 0; t < seq_len; t++) {
+                            float w = expf(scores[t] - mx) / esum;
+                            acc += w * (float)((half*)[d_vcache contents])[(size_t)il * max_seq * kd + (size_t)t * kd + kh * head_dim + d];
+                        }
+                        ao_out[h * head_dim + d] = half(acc);
                     }
                 }
+                if (il==0){double m=0;for(int i=0;i<qd;i++)m+=(double)ao_out[i]*(double)ao_out[i];fprintf(stderr,"  L0 attn-out mag=%.4f\n",sqrt(m/qd));}
                 
-                // Output projection via MPS
+                // Output projection via MPS → d_ffn, then residual: hs += Wo·attn
                 if (layer_wo[il]) {
-                    metal_gemv(cb, d_hs, d_ao, layer_wo[il], hidden, qd);
+                    metal_gemv(d_ffn, d_ao, layer_wo[il], hidden, qd);
+                    if (il==0){double m=0;half* dbg=(half*)[d_ffn contents];for(int i=0;i<hidden;i++)m+=(double)dbg[i]*(double)dbg[i];fprintf(stderr,"  L0 Wo mag=%.4f\n",sqrt(m/hidden));}
+                    half* hs_in = (half*)[d_hs contents];
+                    half* attn_out = (half*)[d_ffn contents];
+                    for (int i = 0; i < hidden; i++) hs_in[i] = half((float)hs_in[i] + (float)attn_out[i]);
+                    if (il==0){double m=0;for(int i=0;i<hidden;i++)m+=(double)hs_in[i]*(double)hs_in[i];fprintf(stderr,"  L0 after attn-resid mag=%.4f\n",sqrt(m/hidden));}
                 }
                 
                 // FFN
-                // RMS norm
+                // RMS norm of the residual hs → tmp
                 ss = 0;
                 for (int i = 0; i < hidden; i++) ss += (float)hs[i] * (float)hs[i];
                 rms = sqrtf(ss / hidden + 1e-5f);
@@ -463,25 +512,28 @@ struct MetalBackend : Backend {
                 rms_w = (half*)[layer_rms_f[il] contents];
                 for (int i = 0; i < hidden; i++) tmp[i] = half((float)hs[i] * inv_rms * (float)rms_w[i]);
                 
-                // Gate and up projections via MPS
+                // gate = W1·norm → d_gate ; up = W3·norm → d_ao (separate buffers!)
                 if (layer_w1[il]) {
-                    metal_gemv(cb, d_tmp, d_tmp, layer_w1[il], n_ff, hidden);
+                    metal_gemv(d_gate, d_tmp, layer_w1[il], n_ff, hidden);
                 }
                 if (layer_w3[il]) {
-                    metal_gemv(cb, d_ao, d_tmp, layer_w3[il], n_ff, hidden);
+                    metal_gemv(d_ao, d_tmp, layer_w3[il], n_ff, hidden);
                 }
                 
-                // SiLU(gate) * up
-                half* gate = (half*)[d_tmp contents];
+                // tmp = silu(gate) * up  (reuse d_tmp as the product buffer)
+                half* gate = (half*)[d_gate contents];
                 half* up = (half*)[d_ao contents];
                 for (int i = 0; i < n_ff; i++) {
                     float v = (float)gate[i];
-                    gate[i] = half((v / (1.0f + expf(-v))) * (float)up[i]);
+                    tmp[i] = half((v / (1.0f + expf(-v))) * (float)up[i]);
                 }
                 
-                // Down projection via MPS
+                // Down projection → d_ffn, then residual: hs += W2·product
                 if (layer_w2[il]) {
-                    metal_gemv(cb, d_hs, d_tmp, layer_w2[il], hidden, n_ff);
+                    metal_gemv(d_ffn, d_tmp, layer_w2[il], hidden, n_ff);
+                    half* hs_in = (half*)[d_hs contents];
+                    half* ffn_out = (half*)[d_ffn contents];
+                    for (int i = 0; i < hidden; i++) hs_in[i] = half((float)hs_in[i] + (float)ffn_out[i]);
                 }
             }
             
@@ -495,17 +547,19 @@ struct MetalBackend : Backend {
             for (int i = 0; i < hidden; i++) hs[i] = half((float)hs[i] * inv_rms * (float)fnw[i]);
             
             // 4. LM head via MPS
-            metal_gemv(cb, d_lm_vocab, d_hs, d_embed, vocab, hidden);
+            metal_gemv(d_lm_vocab, d_hs, d_embed, vocab, hidden);
             
             [cb commit];
             [cb waitUntilCompleted];
             
-            // 5. Argmax on CPU
-            float* logits = (float*)[d_lm_vocab contents];
+            // 5. Argmax on CPU — MPS wrote fp16 into d_lm_vocab (desc is
+            // MPSDataTypeFloat16), so read it as half, not float.
+            half* logits_h = (half*)[d_lm_vocab contents];
             int next_token = 0;
-            float best_val = logits[0];
+            float best_val = (float)logits_h[0];
             for (int i = 1; i < vocab; i++) {
-                if (logits[i] > best_val) { best_val = logits[i]; next_token = i; }
+                float v = (float)logits_h[i];
+                if (v > best_val) { best_val = v; next_token = i; }
             }
             
             pos++;
@@ -539,6 +593,8 @@ struct MetalBackend : Backend {
         METAL_RELEASE(d_hs);
         METAL_RELEASE(d_ao);
         METAL_RELEASE(d_tmp);
+        METAL_RELEASE(d_gate);
+        METAL_RELEASE(d_ffn);
         METAL_RELEASE(d_fnw);
         METAL_RELEASE(d_embed);
         METAL_RELEASE(d_kcache);

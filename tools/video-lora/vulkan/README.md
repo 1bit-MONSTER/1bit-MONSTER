@@ -2,7 +2,7 @@
 
 Low-level Vulkan compute inference for SD1.5/AnimateDiff video generation.
 **Pure C++ — no Python, no Zig, no runtime interpreter.** Built into the
-single `zaya_server` binary ("One Binary to rule them all").
+single `zaya_server` binary ("One engine. Every model. Any chip.").
 
 ## Ops (GLSL compute → SPIR-V at build time)
 

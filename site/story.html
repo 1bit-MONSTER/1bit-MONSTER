@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KV5N1VSM2S"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-KV5N1VSM2S');
+</script>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The story — 1bit MONSTER</title>
+<meta name="description" content="22 proprietary libraries, 209 bitstreams, zero documentation — reverse-engineered in 4 days.">
+<link rel="icon" href="assets/favicon.svg?v=2" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/1bm.css">
+<link rel="canonical" href="https://1bit.monster/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="1bit MONSTER">
+<meta property="og:title" content="The story — 1bit MONSTER">
+<meta property="og:description" content="22 proprietary libraries, 209 bitstreams, zero documentation — reverse-engineered in 4 days.">
+<meta property="og:url" content="https://1bit.monster/">
+<meta property="og:image" content="https://1bit.monster/assets/og-default.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The story — 1bit MONSTER">
+<meta name="twitter:description" content="22 proprietary libraries, 209 bitstreams, zero documentation — reverse-engineered in 4 days.">
+<meta name="twitter:image" content="https://1bit.monster/assets/og-default.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "The story \u2014 1bit MONSTER",
+  "description": "22 proprietary libraries, 209 bitstreams, zero documentation \u2014 reverse-engineered in 4 days.",
+  "author": {
+    "@type": "Person",
+    "name": "bong-water-water-bong"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "1bit.monster"
+  }
+}
+</script>
+
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div>
+      <span class="mark">1bm</span>
+      <span class="wordmark">1bit<br>MONSTER</span>
+      <p class="quote">"Sorry but not sorry." <span>— bong-water-water-bong</span></p>
+    </div>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="models.html">models</a>
+      <a href="benchmarks.html">benchmarks</a>
+      <a href="docs.html">docs</a>
+      <a href="story.html" aria-current="page">the story</a>
+      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
+    </nav>
+    <div class="status"><span class="dot"></span>engine online</div>
+    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
+  </aside>
+  <main>
+    <div class="topbar"><span>94% HF coverage · any hardware · one engine</span><span>// the hard truth</span></div>
+    <div class="hero">
+      <span class="eyebrow">// the hard truth</span>
+      <h1>22 libraries. 209 bitstreams. <span style="color:var(--lime)">Zero docs.</span></h1>
+      <p class="lead">AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime: 22 proprietary <code>.so</code> files, 209 bitstreams, no documentation. Nothing outside AMD's own tooling could touch that chip.</p>
+      <p class="lead">We reverse-engineered the whole stack in <strong>4 days</strong> and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.</p>
+      <div class="btns">
+        <a class="btn" href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">read the full journey</a>
+      </div>
+      <span class="note">Every crash, breakthrough and bug, documented in real time.</span>
+    </div>
+    <section class="cols">
+      <div>
+        <h3>What it started as</h3>
+        <p class="lead">A laptop, a disassembler, and no documentation. The goal was narrow: get one model running on the NPU without the vendor runtime.</p>
+      </div>
+      <div>
+        <h3>What it became</h3>
+        <p class="lead">An inference engine covering five backends and 19 architecture classes, with a unified control plane, speculative decoding, image generation and a full local voice pipeline on top.</p>
+      </div>
+    </section>
+    <section>
+      <span class="eyebrow">// why it is hard to copy</span>
+      <div class="cols" style="margin-top:18px">
+        <div class="card">
+          <span class="eyebrow">the NPU path exists at all</span>
+          <p class="lead">Recovered from a closed runtime and reimplemented in open C++. The engine is MAX-free by design; the <a href="https://github.com/1bit-systems/max-xdna-backend">max-xdna-backend</a> repo stands as separate evidence that the chip can be driven from outside AMD tooling.</p>
+        </div>
+        <div class="card">
+          <span class="eyebrow">no python in the runtime</span>
+          <p class="lead">Most of the field is a Python stack over vendor kernels. That is a deployment ceiling this engine does not have: one auditable binary, embeddable where a CUDA container cannot go.</p>
+        </div>
+        <div class="card">
+          <span class="eyebrow">coverage compounds</span>
+          <p class="lead">Class-level support means each new architecture is cheaper than the last, and every one widens the catalog permanently — including checkpoints that do not exist yet.</p>
+        </div>
+        <div class="card">
+          <span class="eyebrow">one artifact</span>
+          <p class="lead">A single MIT-licensed engine, no runtime to install. Deployment is copying a file.</p>
+        </div>
+      </div>
+    </section>
+    <footer>
+  <span>© 1bit MONSTER</span>
+  <span style="color:var(--lime)">mit — do whatever you want</span>
+  <span>Metepenagiag Mi&rsquo;kmaq Nation &middot; New Brunswick, Canada &middot; <a href="mailto:admin@1bit.monster" style="color:var(--faint)">admin@1bit.monster</a></span>
+  <span style="text-transform:none;letter-spacing:0">&ldquo;Sorry but not sorry.&rdquo; &mdash; bong-water-water-bong</span>
+</footer>
+  </main>
+</div>
+</body>
+</html>

@@ -326,8 +326,8 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         // Dequantization is not implemented here — these return false
         // from gguf_dequant; callers can use get_tensor_raw() for
         // custom dequant.
-        case GGUF_DTYPE_IQ1_S:  return {256, 206};
-        case GGUF_DTYPE_IQ1_M:  return {256, 230};
+        case GGUF_DTYPE_IQ1_S:  return {256, 50};   // 2 + QK_K/8 + QK_K/16 (gguf-py GGML_QUANT_SIZES)
+        case GGUF_DTYPE_IQ1_M:  return {256, 56};   // QK_K/8 + QK_K/16 + QK_K/32
         case GGUF_DTYPE_IQ2_XXS: return {256, 166};
         case GGUF_DTYPE_IQ2_S:  return {256, 214};
         case GGUF_DTYPE_IQ3_XXS: return {256, 198};
@@ -557,6 +557,30 @@ bool GgufReader::open(const std::string& path) {
     uint64_t rem = data_start % alignment;
     if (rem) data_start += alignment - rem;
     for (auto& name : tensor_order_) tensors_[name].abs_offset += data_start;
+
+    // #1606: validate the tensor table against the actual file size — a
+    // truncated GGUF (header intact, weights cut) must fail loudly instead of
+    // converting to a corrupt .1bp with exit 0.
+    {
+        fseeko(f_, 0, SEEK_END);
+        long long file_size = ftello(f_);
+        fseeko(f_, (off_t)data_start, SEEK_SET);
+        if (file_size > 0) {
+            for (auto& kvp : tensors_) {
+                const GgufTensorInfo& ti = kvp.second;
+                GgufBlockInfo b = gguf_block_info(ti.dtype);
+                uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
+                uint64_t need = n_blocks * (uint64_t)b.block_bytes;
+                if (ti.abs_offset > (uint64_t)file_size || need > (uint64_t)file_size - ti.abs_offset) {
+                    fprintf(stderr, "GGUF truncated: '%s' needs %llu bytes at offset %llu but file is %lld bytes\n",
+                            kvp.first.c_str(), (unsigned long long)need,
+                            (unsigned long long)ti.abs_offset, file_size);
+                    fclose(f_); f_ = nullptr;
+                    return false;
+                }
+            }
+        }
+    }
 
     return true;
 }

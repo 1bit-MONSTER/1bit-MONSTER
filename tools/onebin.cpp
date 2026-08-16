@@ -2,9 +2,9 @@
 //
 // ONE BINARY. Every entry point dispatches on argv[0] (symlink names) or a
 // subcommand, so `1bit zaya`, `1bit unified`, `1bit router`, `1bit lemonade`,
-// `1bit chat`, and the legacy names `zaya_server` / `unified_server` /
-// `unified_router` / `onebitd` / `onebit` (symlinks to this binary) all work
-// without changing a single exec/pkill site in the tools.
+// and the legacy names `zaya_server` / `unified_server` / `unified_router`
+// (symlinks to this binary) all work without changing a single exec/pkill
+// site in the tools.
 //
 // Subcommands:
 //   zaya              → zaya_server (HIP/NPU/CPU multi-backend server)
@@ -13,10 +13,7 @@
 //   lemonade          → unified_server --lemonade (Lemonade's full server)
 //   jarvis, voice     → jarvis_app (clean-slate voice assistant, pure C++)
 //   vision, vl        → vision_server (vision-language server)
-//   gaia, gaia-bash   → gaia-bash (AMD Gaia C++ agent loop — tools/repl/session)
-//   onebitd, daemon   → onebitd (inference daemon)
-//   everything else   → onebit (agent CLI: chat, up, down, status, build,
-//                        config, auth, serve, pull, list, update)
+//   zuna              → zuna_port
 
 #include <cstdio>
 #include <cstring>
@@ -31,13 +28,26 @@ int onebit_main(int argc, char *argv[]);
 int jarvis_app_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
 int zuna_main(int argc, char** argv);
-int gaia_bash_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
     std::string p = argv0 ? argv0 : "1bit";
     auto slash = p.find_last_of('/');
     if (slash != std::string::npos) p = p.substr(slash + 1);
     return p;
+}
+
+static int print_usage() {
+    std::fprintf(stderr,
+        "usage: 1bit <subcommand> [args...]\n\n"
+        "subcommands:\n"
+        "  zaya              multi-backend inference server\n"
+        "  unified           multi-backend server + embedded Lemonade core\n"
+        "  router            NPU/GPU policy routing proxy\n"
+        "  lemonade          Lemonade-compatible server\n"
+        "  jarvis|voice|tts  voice pipeline server\n"
+        "  vision|vl         vision-language server\n"
+        "  zuna              zuna_port\n");
+    return 1;
 }
 
 int main(int argc, char** argv) {
@@ -49,13 +59,6 @@ int main(int argc, char** argv) {
     if (prog == "onebitd")        return onebitd_main(argc, argv);
     if (prog == "jarvis_server")  return jarvis_app_main(argc, argv);  // legacy symlink → JARVIS v2
     if (prog == "vision_server")  return vision_server_main(argc, argv);
-    if (prog == "gaia-bash")      return gaia_bash_main(argc, argv);
-    if (prog == "onebit" || prog == "1bit") {
-        // fall through to subcommand dispatch below
-    } else {
-        // Unknown name: treat as agent CLI anyway (best effort).
-        return onebit_main(argc, argv);
-    }
 
     // ── Subcommand dispatch ──
     if (argc > 1) {
@@ -91,11 +94,9 @@ int main(int argc, char** argv) {
         if (cmd == "zuna") {
             return zuna_main(argc - 1, argv + 1);
         }
-        if (cmd == "gaia" || cmd == "gaia-bash") {
-            return gaia_bash_main(argc - 1, argv + 1);
+        if (cmd == "-h" || cmd == "--help" || cmd == "help") {
+            return print_usage();
         }
-        // Everything else falls through to the agent CLI (chat, up, down,
-        // status, build, config, auth, serve, update, --help).
     }
-    return onebit_main(argc, argv);
+    return print_usage();
 }

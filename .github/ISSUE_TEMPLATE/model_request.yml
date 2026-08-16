@@ -1,0 +1,34 @@
+name: Model or architecture request
+description: Ask for support for a model family
+labels: [model-support]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Coverage is added at the architecture-class level, so a request that names the class is far more likely to land.
+  - type: input
+    id: family
+    attributes:
+      label: Family / architecture
+      placeholder: Zamba2 (Mamba2 SSD hybrid)
+    validations:
+      required: true
+  - type: input
+    id: checkpoints
+    attributes:
+      label: Representative checkpoints
+      placeholder: HuggingFace ids, smallest first
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: Format available
+      options: [GGUF, ONNX, safetensors only, other]
+    validations:
+      required: true
+  - type: textarea
+    id: quirks
+    attributes:
+      label: Known quirks
+      description: Non-standard norm, rope, attention, tokenizer, or anything that makes it not just another Llama.

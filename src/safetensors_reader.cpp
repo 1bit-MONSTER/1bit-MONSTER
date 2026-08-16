@@ -1,6 +1,7 @@
 // safetensors_reader.cpp — method bodies moved out of include/safetensors_reader.h
 // to avoid recompilation cascades (issue #375).
 #include "safetensors_reader.h"
+#include "rocm_cpp/bitnet_model.h"  // rcpp_arch_from_string (model_type fallback)
 #include <cctype>
 #include <climits>
 #include <cstdio>
@@ -26,6 +27,19 @@ bool json_find_string(const std::string& text, const std::string& key, std::stri
     if (end == std::string::npos) return false;
     out = text.substr(pos, end - pos);
     return true;
+}
+
+// json_find_bool: "key": true|false (mirrors json_find_int).
+bool json_find_bool(const std::string& text, const std::string& key, bool& out) {
+    auto pos = text.find("\"" + key + "\"");
+    if (pos == std::string::npos) return false;
+    pos = text.find(':', pos);
+    if (pos == std::string::npos) return false;
+    pos++;
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n')) pos++;
+    if (text.compare(pos, 4, "true") == 0) { out = true; return true; }
+    if (text.compare(pos, 5, "false") == 0) { out = false; return true; }
+    return false;
 }
 
 bool json_find_int(const std::string& text, const std::string& key, int& out) {
@@ -121,7 +135,7 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
             // convention ("qwen2", "llama", version digit kept).
             std::string low = arch;
             for (auto& c : low) c = (char)tolower((unsigned char)c);
-            for (const char* suf : {"forcausallm", "lmheadmodel", "model"}) {
+            for (const char* suf : {"forcausallm", "lmheadmodel", "model", "forconditionalgeneration", "forvisiontext2text"}) {
                 size_t sl = strlen(suf);
                 if (low.size() > sl && low.compare(low.size() - sl, sl, suf) == 0) {
                     low = low.substr(0, low.size() - sl);
@@ -129,16 +143,51 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
                 }
             }
             cfg.architecture = low;
+            // model_type fallback (mirrors census_coverage.py): fine-tune
+            // classes are arbitrary renames; the config's model_type is the
+            // declared layout family. Try as-is, then underscore/dash-
+            // stripped (qwen2_vl -> qwen2vl). 2026-08-15.
+            if (rcpp_arch_from_string(low.c_str()) == RCPP_ARCH_UNKNOWN) {
+                std::string mt;
+                if (json_find_string(config_text, "model_type", mt)) {
+                    for (auto& c : mt) c = (char)tolower((unsigned char)c);
+                    if (rcpp_arch_from_string(mt.c_str()) != RCPP_ARCH_UNKNOWN) {
+                        cfg.architecture = mt;
+                    } else {
+                        std::string n;
+                        n.reserve(mt.size());
+                        for (char c : mt)
+                            if (c != '_' && c != '-') n += c;
+                        if (rcpp_arch_from_string(n.c_str()) != RCPP_ARCH_UNKNOWN)
+                            cfg.architecture = n;
+                    }
+                }
+            }
         }
         int iv;
         if (json_find_int(config_text, "hidden_size", iv)) cfg.hidden = cfg.hidden_size = iv;
+        else if (json_find_int(config_text, "n_embd", iv)) cfg.hidden = cfg.hidden_size = iv;  // GPT-2
+        else if (json_find_int(config_text, "n_embed", iv)) cfg.hidden = cfg.hidden_size = iv;  // Bloom
         if (json_find_int(config_text, "num_hidden_layers", iv)) cfg.n_layers = cfg.num_layers = iv;
+        else if (json_find_int(config_text, "n_layer", iv)) cfg.n_layers = cfg.num_layers = iv;  // GPT-2
+        else if (json_find_int(config_text, "num_layers", iv)) cfg.n_layers = cfg.num_layers = iv;  // EXAONE
         if (json_find_int(config_text, "num_attention_heads", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;
+        else if (json_find_int(config_text, "n_head", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-2
+        else if (json_find_int(config_text, "num_heads", iv)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = iv;  // GPT-Neo
         if (json_find_int(config_text, "num_key_value_heads", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;
+        else if (json_find_int(config_text, "num_attention_groups", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // Step1 GQA key
+        else if (json_find_int(config_text, "n_head", iv)) cfg.n_kv_heads = cfg.num_kv_heads = iv;  // GPT-2: no GQA, kv = heads
         else cfg.n_kv_heads = cfg.num_kv_heads = cfg.n_heads;
+        // Falcon MQA: multi_query=true → exactly 1 kv head (query heads stay).
+        bool mq = false;
+        if (json_find_bool(config_text, "multi_query", mq) && mq) cfg.n_kv_heads = cfg.num_kv_heads = 1;
         if (json_find_int(config_text, "intermediate_size", iv)) cfg.n_ff = cfg.intermediate_size = iv;
+        else if (json_find_int(config_text, "n_inner", iv)) cfg.n_ff = cfg.intermediate_size = iv;  // GPT-2
+        else if (cfg.hidden > 0) cfg.n_ff = cfg.intermediate_size = 4 * cfg.hidden;  // GPT-2/Falcon: no explicit FF dim → 4×
         if (json_find_int(config_text, "vocab_size", iv)) cfg.vocab = cfg.vocab_size = iv;
         if (json_find_int(config_text, "max_position_embeddings", iv)) cfg.max_seq_len = iv;
+        else if (json_find_int(config_text, "n_positions", iv)) cfg.max_seq_len = iv;  // GPT-2
+        else if (json_find_int(config_text, "n_ctx", iv)) cfg.max_seq_len = iv;  // GPT-2
         // MoE: HF keys num_local_experts / num_experts_per_tok (Mixtral/Qwen3/Granite).
         // Absent key = dense model — MUST zero the ModelConfig default (16,
         // the Zaya .bin convention) or every dense checkpoint takes the MoE
@@ -146,12 +195,61 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         cfg.num_experts = cfg.n_experts = 0;
         if (json_find_int(config_text, "num_local_experts", iv)) {
             cfg.num_experts = cfg.n_experts = iv;
-            if (json_find_int(config_text, "num_experts_per_tok", iv))
+            if (json_find_int(config_text, "num_experts_per_tok", iv) ||
+                json_find_int(config_text, "experts_per_token", iv))  // GPT-OSS key name
                 cfg.num_experts_top = iv;
         }
+        // GLM-4-MoE / DeepSeek-style gating keys (n_routed_experts, groups,
+        // shared experts, correction bias, routed scaling).
+        if (json_find_int(config_text, "n_routed_experts", iv)) {
+            cfg.num_experts = cfg.n_experts = iv;
+            if (json_find_int(config_text, "num_experts_per_tok", iv) ||
+                json_find_int(config_text, "experts_per_token", iv))
+                cfg.num_experts_top = iv;
+        }
+        if (json_find_int(config_text, "n_shared_experts", iv)) cfg.n_shared_experts = iv;
+        if (json_find_int(config_text, "first_k_dense_replace", iv)) cfg.first_k_dense = iv;
+        if (json_find_int(config_text, "moe_intermediate_size", iv)) cfg.moe_intermediate = iv;
+        if (json_find_int(config_text, "n_group", iv)) cfg.expert_groups = iv;
+        if (json_find_int(config_text, "topk_group", iv)) cfg.limited_groups = iv;
+        bool bt = false;
+        if (json_find_bool(config_text, "norm_topk_prob", bt)) cfg.norm_topk_prob = bt;
+        float rf = 0.0f;
+        if (json_find_float(config_text, "routed_scaling_factor", rf)) cfg.routed_scaling = rf;
+        if (cfg.routed_scaling <= 0.0f) cfg.routed_scaling = 1.0f;
+        // GPT-OSS (OpenAI): YARN RoPE defaults (GptOssConfig: theta 150000,
+        // factor 32, beta_fast/slow 32/1, original_max 4096) + 128-token
+        // sliding window on sliding layers. MXFP4-packed MoE weights are
+        // loaded as raw U8 blocks+scales (kept packed — per-token dequant).
+        if (cfg.architecture == "gptoss") {
+            cfg.rope_theta = 150000.0f;
+            cfg.rope_yarn = true;
+            cfg.yarn_factor = 32.0f; cfg.yarn_beta_fast = 32.0f;
+            cfg.yarn_beta_slow = 1.0f; cfg.yarn_orig_max = 4096.0f;
+            cfg.rope_attn_scaling = 0.1f * logf(cfg.yarn_factor) + 1.0f;
+            int sw = 0;
+            if (json_find_int(config_text, "sliding_window", sw)) cfg.sliding_window = sw;
+        }
+        // Generic YARN parsing (rope_type: "yarn" — e.g. Ministral3, Llama-4):
+        // theta/factor/beta_fast/beta_slow/original_max_position_embeddings
+        // from rope_parameters; attention scaling 0.1*ln(factor)+1 (mscale 1).
         float fv;
+        if (!cfg.rope_yarn && config_text.find("\"yarn\"") != std::string::npos &&
+            (config_text.find("rope_type") != std::string::npos)) {
+            cfg.rope_yarn = true;
+            cfg.yarn_factor = 32.0f; cfg.yarn_beta_fast = 32.0f;
+            cfg.yarn_beta_slow = 1.0f; cfg.yarn_orig_max = 16384.0f;
+            if (json_find_float(config_text, "factor", fv) && fv > 0) cfg.yarn_factor = fv;
+            if (json_find_float(config_text, "beta_fast", fv) && fv > 0) cfg.yarn_beta_fast = fv;
+            if (json_find_float(config_text, "beta_slow", fv) && fv > 0) cfg.yarn_beta_slow = fv;
+            if (json_find_float(config_text, "original_max_position_embeddings", fv) && fv > 0)
+                cfg.yarn_orig_max = fv;
+            cfg.rope_attn_scaling = 0.1f * logf(cfg.yarn_factor) + 1.0f;
+        }
         if (json_find_float(config_text, "rope_theta", fv)) cfg.rope_theta = fv;
+        else if (json_find_float(config_text, "rotary_emb_base", fv)) cfg.rope_theta = fv;  // GPT-NeoX
         if (json_find_float(config_text, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;
+        if (json_find_float(config_text, "layer_norm_epsilon", fv)) cfg.rms_norm_eps = fv;  // Bloom
         if (json_find_float(config_text, "attention_multiplier", fv)) cfg.attention_multiplier = fv;
         // Gemma-2/3 key attention scaling by query_pre_attn_scalar: the true
         // scale is 1/sqrt(scalar), NOT 1/sqrt(head_dim).
@@ -176,6 +274,42 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
         // head_dim=128) are NOT hidden_size/num_attention_heads.
         if (json_find_int(config_text, "head_dim", iv)) cfg.head_dim = iv;
         else if (cfg.n_heads > 0) cfg.head_dim = cfg.hidden / cfg.n_heads;
+        // GPT-NeoX: rotary_pct — only a fraction of head_dim rotates
+        // (pythia: 0.25 × 64 = 16 dims, confirmed via gguf rope.dimension_count).
+        {
+            float rp = 0;
+            if (json_find_float(config_text, "rotary_pct", rp) && cfg.head_dim > 0)
+                cfg.rope_dim = (int)(rp * cfg.head_dim);
+            else if (json_find_float(config_text, "rope_percent", rp) && cfg.head_dim > 0)
+                cfg.rope_dim = (int)(rp * cfg.head_dim);  // Nemotron
+            else if (cfg.architecture == "gptneox" && cfg.head_dim > 0)
+                cfg.rope_dim = cfg.head_dim / 4;  // GPTNeoXConfig default rotary_pct=0.25
+            if (json_find_int(config_text, "rotary_dim", iv) && iv > 0) cfg.rope_dim = iv;  // CodeGen
+            if (json_find_float(config_text, "partial_rotary_factor", rp) && cfg.head_dim > 0)
+                // HF rotary_dim = 2*ceil(dim/2) (the cat-double in the rotary
+                // embedding: dim = int(hd*partial), emb = cat([freqs, freqs])
+                // doubles to the next even). Odd dims (tiny models) rotate the
+                // FULL head; real GLM-4-MoE (hd 128, partial 0.5) -> 64.
+                cfg.rope_dim = ((int)(rp * cfg.head_dim) + 1) & ~1;  // GLM-4 (partial_rotary_factor 0.5)
+        }
+        // MiniCPM-style per-model scaling flags (absent = defaults):
+        //   scale_emb → embedding_multiplier (embeddings × scale_emb)
+        //   scale_depth + dim_model_base → residual_multiplier
+        //     (layer outputs × scale_depth/√layers before BOTH residual adds)
+        //     and logits_scaling (hidden/dim_model_base — the lm_head input
+        //     is divided; linear so == post-head division, engine convention).
+        {
+            float sf = 0;
+            if (json_find_float(config_text, "scale_emb", sf)) cfg.embedding_multiplier = sf;
+            if (json_find_float(config_text, "scale_depth", sf)) {
+                int dim_base = 0;
+                json_find_int(config_text, "dim_model_base", dim_base);
+                if (dim_base > 0 && cfg.n_layers > 0) {
+                    cfg.residual_multiplier = sf / sqrtf((float)cfg.n_layers);
+                    if (cfg.hidden > 0) cfg.logits_scaling = (float)cfg.hidden / (float)dim_base;
+                }
+            }
+        }
         got_config = true;
     }
 
@@ -232,6 +366,25 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
     // RCPP_ARCH_BITNET regardless of architecture (bug found 2026-08-13 by
     // Testing/discovery_selfcheck.cpp).
     cfg.arch = rcpp_arch_from_string(cfg.architecture.c_str());
+
+    // model_type fallback (extraction 2026-08-15): HF's model_type is the
+    // authoritative family tag that custom class names inherit (e.g.
+    // "MyLlamaForCausalLM" declares model_type="llama", "ChessForCausalLM"
+    // declares model_type="gpt2"). When the class name maps to UNKNOWN, fall
+    // back to model_type — the census showed this catches ~3,900 more
+    // checkpoints than class-name mapping alone (76.7% vs 75.7%).
+    if (cfg.arch == RCPP_ARCH_UNKNOWN) {
+        std::string mt;
+        if (safetensors_detail::json_find_string(config_text, "model_type", mt)) {
+            std::string low = mt;
+            for (auto& c : low) c = (char)tolower((unsigned char)c);
+            rcpp_arch_t mt_arch = rcpp_arch_from_string(low.c_str());
+            if (mt_arch != RCPP_ARCH_UNKNOWN) {
+                cfg.architecture = low;
+                cfg.arch = mt_arch;
+            }
+        }
+    }
 
     // Quantization: dtype of the first tensor found in the safetensors header
     // itself (ground truth for the on-disk data, not config.json's
@@ -466,6 +619,17 @@ bool SafetensorsWeightReader::load_shard(size_t i) const {
         return false;
     }
     sh.loaded = true;
+    return true;
+}
+bool SafetensorsWeightReader::get_tensor_u8(const std::string& name, std::vector<uint8_t>& out) const {
+    const SafetensorsTensor* t = find(name);
+    if (!t) return false;
+    if (strcmp(t->dtype.c_str(), "U8") != 0) return false;
+    const uint8_t* src2 = shards_[name_to_shard_.at(name)].data.data()
+        + shards_[name_to_shard_.at(name)].data_start + t->data_off;
+    size_t elems = 1;
+    for (int64_t d : t->shape) elems *= (size_t)d;
+    out.assign(src2, src2 + elems);
     return true;
 }
 bool SafetensorsWeightReader::get_tensor_f32(const std::string& name, std::vector<float>& out) const {

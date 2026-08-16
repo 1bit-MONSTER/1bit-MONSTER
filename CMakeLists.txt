@@ -384,7 +384,9 @@ set(RCPP_SOURCES
     src/mamba2_kernels.cpp
     src/mamba2_kernels.hip
     src/zamba2_engine.cpp
-    src/zamba2_engine_hip.hip)
+    src/zamba2_engine_hip.hip
+    src/nemotron_h_engine.cpp
+    src/safetensors_reader.cpp)
 if(RCPP_HAVE_CK)
     list(APPEND RCPP_SOURCES src/ck_gemm.cpp)
 endif()
@@ -517,9 +519,13 @@ set(BACKEND_MANAGER_SOURCES
     src/backend_plugin.cpp
     src/backend_cpu.cpp
     src/backend_generic.cpp
+    src/backend_frontier.cpp
     src/backend_mamba1.cpp
     src/deepseek.cpp
     src/deepseek_v4.cpp
+    src/glm_moe_dsa.cpp
+    src/mimo_v2.cpp
+    src/qwen3_5.cpp
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp
@@ -1204,21 +1210,6 @@ if(EMBED_LEMONADE)
     add_subdirectory(third_party/lemonade EXCLUDE_FROM_ALL)
 endif()
 
-# ── Gaia C++ agent framework (AMD official) ────────────────────────────────
-# Vendored from amd/gaia v0.22.0 cpp/ tree (third_party/gaia/UPSTREAM.md):
-# gaia::gaia_core + gaia-bash coding agent. Replaces the hand-rolled agent
-# layer (onebit/jarvis) — the agent talks to the engine through the
-# Lemonade-compatible endpoint (`1bit unified --lemonade serve`, :13305).
-# TUI (FTXUI) off: engine has its own console; flip with -DGAIA_BUILD_TUI=ON.
-# gaia-bash's own standalone binary is off too — its sources are linked
-# into onebin instead (see EMBED_GAIA_CPP block further down); no second
-# binary, matching the zaya_server/unified_server fix above.
-option(EMBED_GAIA_CPP "Build the vendored Gaia C++ agent framework" ON)
-if(EMBED_GAIA_CPP)
-    set(GAIA_BUILD_TUI OFF CACHE BOOL "" FORCE)
-    set(GAIA_BUILD_BASH_AGENT OFF CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/gaia)
-endif()
 # unified_server's remaining link/rpath config (backend_manager, hipblas,
 # ZINC, TheRock rpath) lives on the onebin target only now — see the onebin
 # block further down. No standalone unified_server executable, no
@@ -1336,9 +1327,7 @@ set(ONE_BIN_SOURCES
     tools/jarvis/vad.cpp
 
     tools/vision_server.cpp
-    tools/zuna_port.cpp
-    tools/onebit.cpp
-    tools/onebitd.cpp)
+    tools/zuna_port.cpp)
 
 # zuna_port.cpp has its own main() -> zuna_main via ONE_BIN_DISPATCH; compile as C++.
 set_source_files_properties(tools/zuna_port.cpp PROPERTIES LANGUAGE CXX)
@@ -1352,8 +1341,8 @@ set_source_files_properties(src/backend_hip_1bp.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_npu.cpp src/backend_npu_flm.cpp
     src/unified_pool.cpp src/backend_fused_npu.cpp src/backend_generic.cpp
-    tools/unified_server.cpp tools/unified_router.cpp tools/onebit.cpp
-    tools/onebitd.cpp tools/onebin.cpp PROPERTIES LANGUAGE CXX)
+    tools/unified_server.cpp tools/unified_router.cpp
+    tools/onebin.cpp PROPERTIES LANGUAGE CXX)
 target_include_directories(onebin PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
@@ -1386,23 +1375,6 @@ if(EMBED_LEMONADE)
     target_link_libraries(onebin PRIVATE lemonade-server-core)
     target_compile_definitions(onebin PRIVATE EMBED_LEMONADE=1)
 endif()
-# Gaia C++ agent loop (third_party/gaia) folded into the single ELF instead
-# of shipping gaia-bash as a second binary — see third_party/gaia/UPSTREAM.md
-# local patch #3 for the ONE_BIN_DISPATCH guard on agents/bash/main.cpp.
-if(EMBED_GAIA_CPP)
-    target_sources(onebin PRIVATE
-        third_party/gaia/agents/bash/main.cpp
-        third_party/gaia/agents/bash/bash_agent.cpp
-        third_party/gaia/agents/bash/bash_tools.cpp
-        third_party/gaia/agents/bash/api_server.cpp
-        third_party/gaia/agents/bash/mcp_server.cpp)
-    target_include_directories(onebin PRIVATE third_party/gaia/agents/bash)
-    target_link_libraries(onebin PRIVATE gaia::gaia_core)
-    if(OpenSSL_FOUND)
-        target_compile_definitions(onebin PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
-        target_link_libraries(onebin PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    endif()
-endif()
 target_compile_definitions(onebin PRIVATE
     ONE_BIN_DISPATCH=1
     ROCM_CPP_STATIC_HIP=1
@@ -1427,6 +1399,7 @@ endif()
 # -- onebitd : 1bit inference daemon (spawns backend, proxies HTTP) --------
 # No standalone add_executable — tools/onebitd.cpp compiles into onebin/1bit
 # only; run via `1bit onebitd` / `1bit daemon`.
+
 
 # -- zaya1_vl_demo : ZAYA1-VL-8B vision-language inference demo -------------
 add_executable(zaya1_vl_demo tools/zaya1_vl_demo.cpp)
@@ -1466,11 +1439,6 @@ target_link_libraries(vl_pipeline_test PRIVATE
     vision_encoder backend_manager vl_image dl
     ${CMAKE_DL_LIBS})
 
-
-# -- onebit : NPU-native terminal coding agent CLI -------------------------
-# No standalone add_executable — tools/onebit.cpp compiles into onebin/1bit
-# only; onebit's main() lives inside build/1bit (OUTPUT_NAME "1bit"). Run
-# via `1bit` with no recognized subcommand, or `1bit chat`/`up`/`down`/etc.
 
 add_executable(bitnet_tui tools/bitnet_tui.cpp)
 target_link_libraries(bitnet_tui PRIVATE

@@ -162,9 +162,43 @@ public:
         // Compute data section start = position after all index entries
         uint64_t data_start = (uint64_t)(p - map_);
 
+        // v4 dedup aliases: an entry with total_bytes==0 is an alias whose
+        // file_offset field holds the INDEX of an earlier tensor it shares
+        // data with (dims/quant are repeated in the entry, but data
+        // location comes from the aliased tensor). Resolve BEFORE the
+        // offset fixup — file_offset is still a small index here.
+        for (size_t i = 0; i < tensors_.size(); i++) {
+            auto& t = tensors_[i];
+            if (t.total_bytes != 0) continue;
+            size_t ali = (size_t)t.file_offset;
+            if (ali >= i || ali >= tensors_.size()) {
+                fprintf(stderr, "'%s': bad alias index %zu\n", t.name.c_str(), ali);
+                close();
+                return false;
+            }
+            const TensorEntry& src = tensors_[ali];
+            t.ndim = src.ndim; t.rows = src.rows; t.cols = src.cols;
+            t.num_experts = src.num_experts; t.quant = src.quant;
+            t.file_offset = src.file_offset; t.total_bytes = src.total_bytes;
+        }
+
         // Fix offsets: they are relative to data_start
         for (auto& t : tensors_) {
             t.file_offset += data_start;
+        }
+
+        // #1605: validate the tensor table against the mapped file length — a
+        // truncated file (intact header, partial weights) must fail cleanly
+        // here instead of SIGSEGVing on reads past EOF (ndim==1 memcpy,
+        // dequant_matrix, get_tile_ptr all deref map_ + file_offset).
+        for (auto& t : tensors_) {
+            if (t.file_offset > map_size_ || t.total_bytes > map_size_ - t.file_offset) {
+                fprintf(stderr, "'%s' extends past EOF (off=%llu bytes=%llu > map=%zu) — truncated/corrupt file\n",
+                        t.name.c_str(), (unsigned long long)t.file_offset,
+                        (unsigned long long)t.total_bytes, map_size_);
+                close();
+                return false;
+            }
         }
 
         return true;
@@ -188,6 +222,8 @@ public:
     const TensorEntry* tensor(int i) const {
         return (i >= 0 && i < (int)tensors_.size()) ? &tensors_[i] : nullptr;
     }
+    size_t map_size() const { return map_size_; }
+    const std::vector<TensorEntry>& debug_tensors() const { return tensors_; }
     const TensorEntry* find_tensor(const char* name) const {
         for (auto& t : tensors_)
             if (t.name == name) return &t;

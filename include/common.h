@@ -71,6 +71,7 @@ struct ModelConfig {
 
     // ── CANONICAL LONG-NAME FIELDS ──────────────────────────────
     int head_dim          = 128;   // single field (no duplicate — see issue #358)
+    int rope_dim          = 0;     // rotated dims per head (0 = head_dim; GPT-NeoX: rotary_pct×hd)
     int hidden_size       = 2048;
     int num_heads         = 8;
     int num_kv_heads      = 2;
@@ -79,6 +80,17 @@ struct ModelConfig {
     int intermediate_size = 2048;
     int num_experts       = 16;
     int num_experts_top   = 2;
+    // GLM-4-MoE / DeepSeek-style gating (generic MoE path):
+    int n_shared_experts  = 0;      // fused shared-expert MLP (n_shared × moe_int)
+    int first_k_dense     = 0;      // layers < first_k are DENSE FFN (GLM-4-MoE: 1)
+    int moe_intermediate  = 0;      // per-expert FFN width (0 = intermediate_size)
+    int expert_groups     = 0;      // group-limited top-k (GLM-4-MoE n_group)
+    int limited_groups    = 0;      // groups selected (topk_group)
+    bool norm_topk_prob   = false;  // renormalize top-k weights
+    float routed_scaling  = 1.0f;   // expert output scale
+    // GLM-4-MoE: mlp.gate.e_score_correction_bias [NE] added to router logits
+    // (DeepSeek-V3 convention). 0 experts = absent.
+    int correction_bias   = 0;
     int num_attention_heads = 8;
     int router_hidden     = 256;
     int qkv_dim           = 1280;
@@ -99,6 +111,24 @@ struct ModelConfig {
     // 0.015625; 0 = default 1/sqrt(head_dim)). Found 2026-08-13 via the
     // granite real-prompt torch oracle — the engine was 8x off (1/sqrt(64)).
     float attention_multiplier = 0.0f;
+    // OLMo (allenai): LayerNorm WITHOUT learnable affine params (mean/var only)
+    // + QKV value clipping. Set by the loader for RCPP_ARCH_OLMO.
+    bool norm_is_layernorm = false;   // true: no norm weights, centered norm
+    // Nemotron-3/4 LayerNorm1P: nn.LayerNorm(weight+1, bias) — the stored
+    // weight is w-1, the engine adds +1 at load time (same +1 convention as
+    // gemma). Set for RCPP_ARCH_NEMOTRON (2026-08-16).
+    bool nemotron_layernorm1p = false;
+    float clip_qkv = 0.0f;            // clamp q/k/v to [-clip, clip] before rope (0 = none)
+    // GPT-2 family: learned position embeddings (wpe table added to the
+    // embedding at each position) + LayerNorm with affine weight AND bias +
+    // no RoPE + non-gated gelu FFN. Set by the loader for RCPP_ARCH_GPT2.
+    bool use_learned_pos = false;
+    bool no_rope = false;
+    bool adjacent_rope = false;  // CodeGen: rotate_every_two — pairs (2i, 2i+1), not half-split
+    int pos_offset = 0;  // learned-position base (OPT: 2 padding slots → +2)
+    // Falcon (old arch): parallel attention+FFN — both consume the SAME
+    // layer-norm output and both add to the residual. Set for RCPP_ARCH_FALCON.
+    bool parallel_attn_ffn = false;
     // Gemma-2/3: logit soft-caps from config (0 = none). Gemma3-1b has both
     // None; Gemma-2 has attn=50.0 / final=30.0. The engine must NOT hardcode
     // these on the arch string — gemma3-1b would be wrongly capped.
@@ -110,6 +140,27 @@ struct ModelConfig {
     // rope_theta; the rest are LOCAL with rope_local_base_freq. 0 = none.
     float rope_local_base_freq = 0.0f;
     int sliding_window_pattern = 0;
+    // GPT-OSS (OpenAI): YARN RoPE (theta 150000, factor 32, beta_fast/slow
+    // 32/1, original_max 4096) + attention scaling 0.1*ln(factor)+1 applied
+    // to cos/sin (squared into the score scale by the engine). Sliding
+    // layers (layer_types alternate) use a 128-token window. Set by the
+    // loader for RCPP_ARCH_GPTOSS.
+    bool rope_yarn = false;
+    float yarn_factor = 32.0f, yarn_beta_fast = 32.0f, yarn_beta_slow = 1.0f;
+    float yarn_orig_max = 4096.0f;
+    float rope_attn_scaling = 1.0f;
+    int sliding_window = 0;
+    // Step1 (StepLaw / stepfun Step-Audio): sqrt-ALiBi positional bias —
+    // scores[h, t] -= slope[h] * sqrt(pos - t) for past positions (no RoPE).
+    // Slopes: 2^(-8*h/n) for h in [0,n) with n = 2^floor(log2(heads)), then
+    // 2^(-(2h+1)*4/n) for the remainder (build_alibi_cache convention).
+    bool alibi = false;
+    // Bloom: LINEAR ALiBi — scores[h, t] -= slope[h] * (pos - t). The slope
+    // table is the SAME as step1's (2^(-8(h+1)/n) then 2^(-4(2h+1)/n), the
+    // ggml get_alibi_slope convention); only the distance is linear.
+    bool alibi_linear = false;
+    // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
+    bool embed_ln = false;
     // Per-model residual scaling (granite: residual_multiplier=0.22; the
     // block output is scaled before adding to the residual). 1.0 = none.
     // Found 2026-08-13 via the granite real-prompt torch oracle — the engine
