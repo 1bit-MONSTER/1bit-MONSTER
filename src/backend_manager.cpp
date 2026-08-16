@@ -403,6 +403,31 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 6b. Frontier CPU engines — dedicated safetensors backends for the five
+    // mini-gate-validated families (2026-08-16). Not auto-selectable: the
+    // router picks them by id when the arch matches.
+    struct { const char* id; const char* desc; } frontier[] = {
+        {"cpu_deepseek_v4",  "CPU DeepSeek V4 (mHC + CSA/HCA + FP4 MoE)"},
+        {"cpu_glm_moe_dsa",  "CPU GLM-MoE-DSA (MLA + DSA indexer)"},
+        {"cpu_mimo_v2",      "CPU MiMo-V2 (MoD hybrid SWA+full)"},
+        {"cpu_qwen3_5",      "CPU Qwen3.5 (GatedDeltaNet + gated GQA)"},
+    };
+    for (auto& f : frontier) {
+        BackendInfo info;
+        info.id = f.id;
+        info.type = BackendType::GENERIC;
+        info.tier = BackendTier::T3_CPU;
+        info.description = f.desc;
+        info.priority = tier_priority(info.tier) + 15;
+        info.available = true;
+        info.functional = false;
+        info.auto_selectable = false;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        backends_.push_back(info);
+    }
+
     // Rack 'em
     rank_backends();
     active_idx_ = 0;
@@ -1601,6 +1626,21 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
                     if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_laguna_backend");
                         if (fn) b = fn(); } }
                 return b;
+            }
+            // Frontier CPU engines (mini-gate validated 2026-08-16):
+            // dedicated safetensors engines for DeepSeek V4 / GLM-MoE-DSA /
+            // MiMo-V2 / Qwen3.5. Routed by model_router id.
+            if (info.id == "cpu_deepseek_v4" || info.id == "cpu_glm_moe_dsa" ||
+                info.id == "cpu_mimo_v2" || info.id == "cpu_qwen3_5") {
+                extern Backend* create_frontier_deepseek_v4_backend();
+                extern Backend* create_frontier_glm_moe_dsa_backend();
+                extern Backend* create_frontier_mimo_v2_backend();
+                extern Backend* create_frontier_qwen3_5_backend();
+                if (info.id == "cpu_deepseek_v4") b = create_frontier_deepseek_v4_backend();
+                else if (info.id == "cpu_glm_moe_dsa") b = create_frontier_glm_moe_dsa_backend();
+                else if (info.id == "cpu_mimo_v2") b = create_frontier_mimo_v2_backend();
+                else b = create_frontier_qwen3_5_backend();
+                if (b) return b;
             }
             return create_generic_backend();
         case BackendType::ZINC_GPU:

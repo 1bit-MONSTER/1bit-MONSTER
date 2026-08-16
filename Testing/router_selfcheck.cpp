@@ -93,7 +93,25 @@ int main() {
         ModelConfig c = make_cfg();
         c.arch = RCPP_ARCH_DEEPSEEK_V4;
         c.architecture = "deepseek_v4";
-        expect("deepseek_v4", c, {"hip_gpu", "cpu_generic"});
+        expect("deepseek_v4", c, {"cpu_deepseek_v4", "hip_gpu", "cpu_generic"});
+    }
+    {
+        ModelConfig c = make_cfg();
+        c.arch = RCPP_ARCH_LLAMA;  // census maps glm_moe_dsa -> LLAMA
+        c.architecture = "glmmoedsa";
+        expect("glm_moe_dsa", c, {"cpu_glm_moe_dsa", "hip_gpu", "cpu_generic"});
+    }
+    {
+        ModelConfig c = make_cfg();
+        c.arch = RCPP_ARCH_QWEN2;  // census maps mimo_v2 -> QWEN2
+        c.architecture = "mimov2flash";
+        expect("mimo_v2", c, {"cpu_mimo_v2", "hip_gpu", "cpu_generic"});
+    }
+    {
+        ModelConfig c = make_cfg();
+        c.arch = RCPP_ARCH_QWEN35;
+        c.architecture = "qwen35";
+        expect("qwen3_5", c, {"cpu_qwen3_5", "hip_gpu", "cpu_generic"});
     }
     {
         ModelConfig c = make_cfg();
