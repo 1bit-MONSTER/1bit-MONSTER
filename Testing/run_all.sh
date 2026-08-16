@@ -86,6 +86,7 @@ else
     echo "  - instella: fixtures absent, skipped (cp -r 1bit-systems/models/kl-test/mini-full* /tmp/onebit-instella/)"
 fi
 
+
 # Instella 1bp loader gate (Gate 5): convert mini GGUF -> Q4NX 1bp -> load via
 # DeepSeekModel::load_from_1bp, assert MLA dims + gated/farskip flags round-trip
 # and the forward runs. Golden top1 = the fp16 GGUF engine's own output (mini
@@ -164,6 +165,7 @@ if [ -f "$q35_dir/logits_last.npy" ] && [ -f "$q35_dir/model.safetensors" ]; the
 else
     echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"
 fi
+
 
 echo "======================================"
 echo "$((total-fail))/$total passed"
