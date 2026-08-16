@@ -2,7 +2,7 @@
 
 <img src="site/assets/og-default.png" alt="1bit MONSTER — One engine. Every model. Any chip." width="540">
 
-## One engine. Every model. Any chip.
+## One engine to rule them all
 
 
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
