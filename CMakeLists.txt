@@ -1327,7 +1327,9 @@ set(ONE_BIN_SOURCES
     tools/jarvis/vad.cpp
 
     tools/vision_server.cpp
-    tools/zuna_port.cpp)
+    tools/zuna_port.cpp
+    tools/onebit.cpp
+    tools/onebitd.cpp)
 
 # zuna_port.cpp has its own main() -> zuna_main via ONE_BIN_DISPATCH; compile as C++.
 set_source_files_properties(tools/zuna_port.cpp PROPERTIES LANGUAGE CXX)
