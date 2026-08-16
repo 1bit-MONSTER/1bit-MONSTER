@@ -350,11 +350,11 @@ private:
             }
         }
         int rep = NV / NK;
-        std::vector<float> qh(NK * KHD), kh(NK * KHD), vh(VD);
+        std::vector<float> qh((size_t)NK * KHD), kh((size_t)NK * KHD), vh(VD);
         std::memcpy(qh.data(), conv_out.data(), KD * sizeof(float));
         std::memcpy(kh.data(), conv_out.data() + KD, KD * sizeof(float));
         std::memcpy(vh.data(), conv_out.data() + 2 * KD, VD * sizeof(float));
-        std::vector<float> qr(NV * KHD), kr(NV * KHD);
+        std::vector<float> qr((size_t)NV * KHD), kr((size_t)NV * KHD);
         for (int h = 0; h < NV; h++) {
             int src = (h / rep) * KHD;
             std::memcpy(qr.data() + (size_t)h * KHD, qh.data() + src, KHD * sizeof(float));
@@ -420,14 +420,14 @@ private:
         auto& kcache = attn_k[l];
         auto& vcache = attn_v[l];
         int klen = (int)(kcache.size() / (NKV * HD));
-        std::vector<float> qg(NH * HD * 2), k(NKV * HD), v(NKV * HD);
+        std::vector<float> qg((size_t)NH * HD * 2), k((size_t)NKV * HD), v((size_t)NKV * HD);
         mm(ly.q_proj, xn, H, NH * HD * 2, qg.data());
         mm(ly.k_proj, xn, H, NKV * HD, k.data());
         mm(ly.v_proj, xn, H, NKV * HD, v.data());
         // q_proj out is [NH*HD*2]; torch views [seq, NH, HD*2] then chunks on
         // the LAST dim -> per-head interleaved [q_h | gate_h] pairs, NOT
         // first-half/second-half.
-        std::vector<float> q(NH * HD), gate(NH * HD);
+        std::vector<float> q((size_t)NH * HD), gate((size_t)NH * HD);
         for (int h = 0; h < NH; h++) {
             std::memcpy(q.data() + (size_t)h * HD, qg.data() + (size_t)h * 2 * HD, HD * sizeof(float));
             std::memcpy(gate.data() + (size_t)h * HD, qg.data() + (size_t)h * 2 * HD + HD, HD * sizeof(float));
@@ -494,7 +494,7 @@ private:
             for (int t = 0; t < seq; t++) { float e = std::exp(srow[t] - mx); probs[(size_t)h * seq + t] = e; sum += e; }
             for (int t = 0; t < seq; t++) probs[(size_t)h * seq + t] /= sum;
         }
-        std::vector<float> acc(NH * HD, 0.0f);
+        std::vector<float> acc((size_t)NH * HD, 0.0f);
         for (int h = 0; h < NH; h++) {
             int kh = h / (NH / NKV);
             const float* vv = vcache.data() + (size_t)kh * HD;  // head kh, pos 0

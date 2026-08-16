@@ -94,12 +94,12 @@ static void mhc_forward(const std::vector<std::vector<float>>& streams, int H,
         post[k] = 2.0f / (1.0f + std::exp(-(mixes[hc + k] * scale[1] + base[hc + k])));
     }
     // comb: mixes[2hc:] * scale[2] + base[2hc:]  -> [hc, hc]
-    std::vector<float> comb(hc * hc);
+    std::vector<float> comb((size_t)hc * hc);
     for (int i = 0; i < hc * hc; i++)
         comb[i] = mixes[2 * hc + i] * scale[2] + base[2 * hc + i];
     // softmax over last dim (per row)
     for (int r = 0; r < hc; r++) {
-        float mx = comb[r * hc];
+        float mx = comb[(size_t)r * hc];
         for (int c = 1; c < hc; c++) mx = std::max(mx, comb[r * hc + c]);
         float ssum = 0;
         for (int c = 0; c < hc; c++) { comb[r * hc + c] = std::exp(comb[r * hc + c] - mx); ssum += comb[r * hc + c]; }
@@ -133,7 +133,7 @@ static void mhc_forward(const std::vector<std::vector<float>>& streams, int H,
     post_out = std::move(post);
     comb_out.assign(hc, std::vector<float>(hc));
     for (int r = 0; r < hc; r++)
-        std::copy(comb.begin() + r * hc, comb.begin() + (r + 1) * hc, comb_out[r].begin());
+        std::copy(comb.begin() + (size_t)r * hc, comb.begin() + (size_t)(r + 1) * hc, comb_out[r].begin());
 }
 
 } // namespace ds4math
