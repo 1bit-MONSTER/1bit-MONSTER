@@ -58,7 +58,7 @@ extern "C" {
 // pB: N × K/4 bytes packed codes
 // pS: N × 2 bf16 scales
 // pC: M×N bf16 output
-void ternary_tq2_gemv_aie2(int8_t *pA, uint8_t *pB, bfloat16 *pS, bfloat16 *pC) {
+void ternary_tq2_gemv_aie2(const int8_t *pA, const uint8_t *pB, const bfloat16 *pS, bfloat16 *pC) {
     event0();
 
     // ── tile-major activation tiles: a_tiles[mb][kb], 4×8 int8 contiguous ──
