@@ -9,7 +9,6 @@
         "smollm2",
         "smollm3",
         "openelm",
-        "nemotron",
         "minicpm",
         "baichuan",
         "baichuan2",
@@ -555,6 +554,119 @@
       "status": "validated",
       "tier": "numpy-structural",
       "result": "VALIDATED 2026-08-15 (numpy-structural): engine hidden states corr 0.9999 vs numpy port of modeling_nemotron_h.py 5.14 on tiny-NemotronHForCausalLM-nano. New bespoke CPU backend src/nemotron_h_engine.cpp (per-layer layers_block_type dispatch: Mamba-2 mixer with Euler dB=dt*B discretization + causal depthwise conv (w[0]=oldest tap), NoPE GQA attention, relu2 MLP, sigmoid+correction-bias group-topk MoE with up/down-only experts + shared experts). Final-logit argmax flips on the degenerate random-init checkpoint (logits +/-0.06, pythia-70m situation); clean 20/20 needs a real Nemotron-H-4B/8B checkpoint. Gate: python3 Testing/e2e_numpy_ref_nemotronh.py <dir> <ids> 10"
+    },
+    {
+      "family": "nemotron",
+      "hf_arch_strings": [
+        "nemotron"
+      ],
+      "mapping_target": "NEMOTRON",
+      "quirk_flags": {
+        "rope": "partial-0.5",
+        "rotate_at_load": false,
+        "moe": false,
+        "bias": "qkv+layernorm",
+        "norm": "layernorm1p",
+        "mlp": "relu2-non-gated"
+      },
+      "e2e_model": "mgoin/nemotron-3-8b-chat-4k-sft-hf",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "full"
+    },
+    {
+      "family": "deepseek_v4",
+      "hf_arch_strings": [
+        "deepseek_v4",
+        "deepseek4",
+        "dflash",
+        "deepseek4_dspark",
+        "deepseekv4"
+      ],
+      "mapping_target": "DEEPSEEK_V4",
+      "quirk_flags": {
+        "rope": "partial-0.125-yarn",
+        "rotate_at_load": false,
+        "moe": "hash+sqrtsoftplus-topk",
+        "bias": "none",
+        "norm": "rmsnorm",
+        "attention": "shared-kv-mqa+sinks+grouped-out",
+        "residual": "mhc-sinkhorn"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_deepseek_v4.py)",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 342 == HF oracle, top-20 overlap 20/20. Engine rewritten from fictional arch to real Shared-KV MQA + mHC Sinkhorn + hash-MoE (was MLA-based fiction, audited same day). Compressor branches (CSA/HCA) + Lightning Indexer NOT yet implemented \u2014 mini fixture uses sliding_attention only; real-checkpoint gate on GPU box needs them."
+    },
+    {
+      "family": "glm_moe_dsa",
+      "hf_arch_strings": [
+        "glm_moe_dsa"
+      ],
+      "mapping_target": "GLM",
+      "quirk_flags": {
+        "rope": "interleave-main/halfsplit-indexer",
+        "rotate_at_load": false,
+        "moe": "sigmoid-group-topk",
+        "bias": "none",
+        "norm": "rmsnorm",
+        "attention": "v3-mla+dsa-indexer",
+        "shared_topk": "cross-layer"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_glm_moe_dsa.py)",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 171 == HF oracle, top-20 overlap 20/20. V3-style MLA (q_a/q_b + kv_a/kv_b lora compression) + DSA indexer (relu-scored top-k token selection, cross-layer shared top-k on 'shared' layers) + sigmoid group-topk MoE with e_score_correction_bias + shared experts. Indexer uses NON-interleaved half-split RoPE while main MLA uses interleaved \u2014 both wired. Indexer wk/weights_proj consume the NORMED attention input (decoder feeds input_layernorm into self_attn)."
+    },
+    {
+      "family": "mimo_v2",
+      "hf_arch_strings": [
+        "mimo_v2",
+        "mimo_v2_flash",
+        "mimov2flash",
+        "mimo"
+      ],
+      "mapping_target": "MIMO",
+      "quirk_flags": {
+        "rope": "partial-first-0.334",
+        "rotate_at_load": false,
+        "moe": "sigmoid-group-topk-noaux_tc",
+        "bias": "none",
+        "norm": "rmsnorm",
+        "attention": "gqa-hybrid-swa+full",
+        "sink": "swa-layers-only",
+        "v_scale": "0.707"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_mimo_v2.py, vendored remote modeling)",
+      "oracle": "remote modeling_mimo_v2_flash.py (patched for transformers 5.13)",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 524 == oracle, top-20 overlap 20/20, logit corr 0.99997. MoD hybrid: hybrid_layer_pattern full/SWA attention (separate head dims + swa_rope_theta + sliding window), v_scale on values, attention sink bias on SWA layers, partial RoPE on FIRST dims (rope|nope), sigmoid noaux_tc group-topk MoE with per-expert gate/up/down (not fused). Fixture needed gate.weight init (remote code leaves torch.empty -> garbage) + bias zero + weight scaling for deterministic routing."
+    },
+    {
+      "family": "qwen3_5",
+      "hf_arch_strings": [
+        "qwen3_5",
+        "qwen3_5_text",
+        "qwen3_5_moe"
+      ],
+      "mapping_target": "QWEN35",
+      "quirk_flags": {
+        "rope": "partial-first-0.25",
+        "rotate_at_load": false,
+        "moe": "none",
+        "bias": "none",
+        "norm": "rmsnorm-(1+w)-zeros-init",
+        "attention": "hybrid-gateddelta+full-gated-gqa",
+        "norm_gated": "plain-rmsnorm-then-silu(z)"
+      },
+      "e2e_model": "mini fixture (Testing/make_mini_qwen3_5.py)",
+      "oracle": "transformers bf16 cpu",
+      "status": "validated",
+      "tier": "mini-gate",
+      "result": "VALIDATED 2026-08-16 (mini-gate): engine top1 142 == HF oracle, top-20 overlap 20/20, logit corr 1.0. Text decoder hybrid: GatedDeltaNet linear-attention layers (causal conv1d kernel 4 + l2norm + recurrent gated delta rule + RMSNormGated(z)) interleaved with gated GQA full-attention layers (q_proj emits per-head query|gate, q_norm/k_norm on head dim, attn_out * sigmoid(gate)). Partial RoPE first dims, RMSNorm multiplies (1+w) with weight init ZEROS. Gate-caught bug: q_proj per-head interleaved [query|gate] layout, not two blocks."
     }
   ]
 }

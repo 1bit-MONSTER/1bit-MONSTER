@@ -493,6 +493,13 @@ struct GenericBackend : Backend {
                 for (int r = 0; r < IM; r++) up.insert(up.end(), gu.begin() + (size_t)(IM + r) * H, gu.begin() + (size_t)(IM + r + 1) * H);
                 lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
                 load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_NEMOTRON) {
+                // Nemotron-3/4: NON-gated MLP — up_proj -> relu2 -> down_proj.
+                // (no gate_proj). Load up into w1 (no-gate path uses w1 as
+                // the up projection), leave w2 = SIZE_MAX to select the
+                // non-gated branch, down into w3. HF [out=IM, in=H] layout.
+                load("ffn_up.weight", "mlp.up_proj.weight", lw.w1, IM, H);
+                load("ffn_down.weight", "mlp.down_proj.weight", lw.w3, IM, H);
             } else {
                 load("ffn_gate.weight", "mlp.gate_proj.weight", lw.w1, H, IM);
                 load("ffn_up.weight", "mlp.up_proj.weight", lw.w2, H, IM);
@@ -630,6 +637,19 @@ struct GenericBackend : Backend {
             cfg.clip_qkv = 8.0f;
             cfg.rms_norm_eps = 1e-5f;
         }
+        // Nemotron-3/4 (NVIDIA NemotronForCausalLM, 2026-08-16 gate):
+        //   LayerNorm1P = nn.LayerNorm(weight+1, bias) — weight stored on disk
+        //   is w-1, engine adds +1 at load (gemma_post_norms already does the
+        //   +1 convention; Nemotron uses the same weight+1 trick). relu2 MLP
+        //   (non-gated), partial rope (rope_percent 0.5 -> rope_dim = half
+        //   head_dim), qkv biases, GQA, no gate.
+        if (cfg.arch == RCPP_ARCH_NEMOTRON) {
+            cfg.norm_is_layernorm = true;
+            cfg.nemotron_layernorm1p = true;   // weight stored as w-1
+            cfg.rms_norm_eps = 1e-5f;
+            if (cfg.rope_dim == 0 && cfg.head_dim > 0)
+                cfg.rope_dim = cfg.head_dim / 2;  // rope_percent 0.5
+        }
         // GPT-2: learned position embeddings (wpe), LayerNorm with affine
         // weight+bias, no RoPE, non-gated gelu FFN. Names are h.N.* (no
         // "model." prefix), wte/wpe/ln_f under "transformer.".
@@ -758,10 +778,12 @@ struct GenericBackend : Backend {
             if (!r.get_tensor_f32("gpt_neox.final_layer_norm.bias", final_norm_bias))
                 if (!r.get_tensor_f32("model.decoder.final_layer_norm.bias", final_norm_bias))
                     r.get_tensor_f32("ln_f.bias", final_norm_bias);
+        if (cfg.nemotron_layernorm1p)
+            r.get_tensor_f32("model.norm.bias", final_norm_bias);  // Nemotron LayerNorm1P final norm bias
         // Bloom: LayerNorm on the token embedding (word_embeddings_layernorm).
         r.get_tensor_f32("word_embeddings_layernorm.weight", embed_ln_w);
         r.get_tensor_f32("word_embeddings_layernorm.bias", embed_ln_b);
-        if (gemma_post_norms && !final_norm.empty())
+        if ((gemma_post_norms || cfg.nemotron_layernorm1p) && !final_norm.empty())
             for (auto& v : final_norm) v += 1.0f;
         if (!r.get_tensor_f32("output.weight", output_weight))
             if (!r.get_tensor_f32("lm_head.weight", output_weight))
@@ -1382,19 +1404,25 @@ struct GenericBackend : Backend {
                 for (int r2 = 0; r2 < IM; r2++) up.insert(up.end(), gu.begin() + (size_t)(IM + r2) * H, gu.begin() + (size_t)(IM + r2 + 1) * H);
                 lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
                 load("mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_NEMOTRON) {
+                // Nemotron-3/4: NON-gated relu2 MLP — up_proj -> relu2 -> down_proj
+                // (no gate_proj). w1 = up, w3 = down, w2 stays SIZE_MAX.
+                load("mlp.up_proj.weight", lw.w1, IM, H);
+                load("mlp.down_proj.weight", lw.w3, IM, H);
             } else {
                 load("mlp.gate_proj.weight", lw.w1, H, IM);
                 load("mlp.up_proj.weight", lw.w2, H, IM);
                 load("mlp.down_proj.weight", lw.w3, IM, H);
             }
             }
-            // Norms: gemma2/3/4 need the +1 and post-norm naming.
+            // Norms: gemma2/3/4 need the +1 and post-norm naming; Nemotron
+            // LayerNorm1P also stores weight as w-1 (add +1 at load).
             auto load_norm = [&](const char* hf_name, size_t& idx, int n) {
                 std::vector<float> w;
                 snprintf(buf, sizeof(buf), "model.layers.%d.%s", l, hf_name);
                 if (!r.get_tensor_f32(buf, w)) return;
                 if ((int)w.size() != n) return;
-                if (gemma_post_norms)
+                if (gemma_post_norms || cfg.nemotron_layernorm1p)
                     for (auto& v : w) v += 1.0f;
                 idx = push(std::move(w));
             };
@@ -1424,6 +1452,11 @@ struct GenericBackend : Backend {
             load_bias("self_attn.q_proj.bias", lw.bq, NH * HD);
             load_bias("self_attn.k_proj.bias", lw.bk, NKV * HD);
             load_bias("self_attn.v_proj.bias", lw.bv, NKV * HD);
+            // Nemotron LayerNorm1P: per-layer norm BIASES.
+            if (cfg.nemotron_layernorm1p) {
+                load_bias("input_layernorm.bias", lw.rms_attn_b, H);
+                load_bias("post_attention_layernorm.bias", lw.rms_ffn_b, H);
+            }
 
             if (cfg.n_experts > 0 && lw.moe_gate_inp != SIZE_MAX) {
                 // MoE layer completeness: router + experts (router bias and
@@ -1439,11 +1472,12 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom: non-gated FFN — w2 legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom/Nemotron: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
                            cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN ||
-                           cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM ||
+                           cfg.arch == RCPP_ARCH_NEMOTRON) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -2438,6 +2472,7 @@ struct GenericBackend : Backend {
                 if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
                 if (cfg.arch == RCPP_ARCH_FALCON || cfg.arch == RCPP_ARCH_GPTNEOX) gelu_erf(gate_up, gate_up, FF);
                 else if (cfg.arch == RCPP_ARCH_OPT) { for (int i = 0; i < FF; i++) gate_up[i] = gate_up[i] > 0 ? gate_up[i] : 0.0f; }  // ReLU
+                else if (cfg.arch == RCPP_ARCH_NEMOTRON) { for (int i = 0; i < FF; i++) { float v = gate_up[i]; gate_up[i] = v > 0 ? v * v : 0.0f; } }  // relu2
                 else gelu(gate_up, gate_up, FF);
                 mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
                 if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }

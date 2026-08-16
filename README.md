@@ -47,6 +47,24 @@ The full-catalog end state — 500+ models, HuggingFace-native bring-up — is p
 
 **→ [All families, indexed](docs/model-families/README.md)** · **→ [Combined support SSOT](docs/wiki/models.md)**
 
+## Frontier gates: 5/5 validated against reference implementations
+
+
+
+Every architecture the engine claims to support is held to a **generation gate**: run the engine on a real (or mini) checkpoint and compare logits against the reference implementation. The five newest frontier families were audited, implemented, and gated in one session (2026-08-16) — the gates caught real math bugs each time:
+
+| Family | Arch | Engine | Gate result |
+|--------|------|--------|-------------|
+| **Nemotron 3** | LayerNorm1P + relu2 MLP + partial RoPE | `backend_generic` | ✅ **real** 8B checkpoint, top1 7503 *" Paris"* == HF, logit corr 0.99986 |
+| **DeepSeek V4** | Shared-KV MQA + mHC (Sinkhorn) + hash-MoE | `src/deepseek_v4.cpp` | ✅ mini-gate top1 342 == HF, 20/20 top-20 |
+| **GLM-5.2** | V3-MLA + DSA indexer (cross-layer top-k) | `src/glm_moe_dsa.cpp` | ✅ mini-gate top1 171 == HF, 20/20 |
+| **MiMo V2** | MoD hybrid (SWA+full GQA, sigmoid group-topk) | `src/mimo_v2.cpp` | ✅ mini-gate top1 524 == HF, 20/20 |
+| **Qwen3.5** | GatedDeltaNet + gated GQA hybrid | `src/qwen3_5.cpp` | ✅ mini-gate top1 142 == HF, 20/20, corr 1.0 |
+
+Each gate compares full logits (not just greedy argmax) against the authoritative reference — the HuggingFace modeling source for the exact checkpoint. The audit step proved decisive: two of the five families shipped in our engine **before** the audit were written against fictional architectures (DeepSeek V4 had MLA + a 4×4 "mHC mix matrix" that don't exist; the real thing is Shared-KV MQA + Sinkhorn hyper-connections). The gate suite (`Testing/run_all.sh`) is now **17/17 green**, and the full model census holds **100.00%** coverage of HuggingFace architectures.
+
+**→ [The frontier plan](docs/plans/monster-500-models.md)** — the 5-gate work order, per-family architecture facts, and what each gate proved.
+
 ## Hardware agnostic
 
 The same binary and the same command line, on whatever silicon you have:

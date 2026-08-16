@@ -517,9 +517,13 @@ set(BACKEND_MANAGER_SOURCES
     src/backend_plugin.cpp
     src/backend_cpu.cpp
     src/backend_generic.cpp
+    src/backend_frontier.cpp
     src/backend_mamba1.cpp
     src/deepseek.cpp
     src/deepseek_v4.cpp
+    src/glm_moe_dsa.cpp
+    src/mimo_v2.cpp
+    src/qwen3_5.cpp
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp

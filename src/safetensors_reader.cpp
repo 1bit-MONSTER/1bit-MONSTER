@@ -280,6 +280,8 @@ bool read_safetensors_metadata(const std::string& path, ModelConfig& cfg) {
             float rp = 0;
             if (json_find_float(config_text, "rotary_pct", rp) && cfg.head_dim > 0)
                 cfg.rope_dim = (int)(rp * cfg.head_dim);
+            else if (json_find_float(config_text, "rope_percent", rp) && cfg.head_dim > 0)
+                cfg.rope_dim = (int)(rp * cfg.head_dim);  // Nemotron
             else if (cfg.architecture == "gptneox" && cfg.head_dim > 0)
                 cfg.rope_dim = cfg.head_dim / 4;  // GPTNeoXConfig default rotary_pct=0.25
             if (json_find_int(config_text, "rotary_dim", iv) && iv > 0) cfg.rope_dim = iv;  // CodeGen

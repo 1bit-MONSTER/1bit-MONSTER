@@ -673,12 +673,6 @@ std::vector<float> deepseek_forward(
             }
         }
 
-        if (getenv("DS_DUMP_ALL")) {
-            FILE* df = fopen("/tmp/ds_all.txt", "a");
-            if (df) { fprintf(df, "%s L%d main[0..3]: %.6f %.6f %.6f %.6f  alt[0..3]: %.6f %.6f %.6f %.6f\n",
-                getenv("DS_TAG") ? getenv("DS_TAG") : "?",
-                il, main_x[0],main_x[1],main_x[2],main_x[3], alt_x[0],alt_x[1],alt_x[2],alt_x[3]); fclose(df); }
-        }
         // Hand the stream forward: after a farskip layer the running x for the
         // NEXT layer's non-farskip path is the main stream.
         if (layer_fs) x = main_x;

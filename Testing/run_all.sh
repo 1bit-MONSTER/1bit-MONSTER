@@ -86,6 +86,87 @@ else
     echo "  - instella: fixtures absent, skipped (cp -r 1bit-systems/models/kl-test/mini-full* /tmp/onebit-instella/)"
 fi
 
+
+# Instella 1bp loader gate (Gate 5): convert mini GGUF -> Q4NX 1bp -> load via
+# DeepSeekModel::load_from_1bp, assert MLA dims + gated/farskip flags round-trip
+# and the forward runs. Golden top1 = the fp16 GGUF engine's own output (mini
+# weights are random ~0.01 so quantization drifts top-1 — the STRUCTURE is the
+# gate here; the real-16B Q4NX top1=128804 == fp16 is the manual validation).
+instella_mini=/tmp/onebit-instella/mini-full-f16.gguf
+instella_1bp=/tmp/onebit-instella/mini-full-q4nx.1bp
+if [ -f "$instella_mini" ]; then
+    total=$((total+1))
+    if ! "$CXX" $FLAGS tools/gguf_to_onebp.cpp src/gguf_reader.cpp -o "$BIN/gguf_to_onebp" 2>/dev/null; then
+        echo "✗ instella-1bp: converter COMPILE FAILED"; fail=$((fail+1))
+    else
+        "$BIN/gguf_to_onebp" "$instella_mini" "$instella_1bp" >/dev/null 2>&1
+        if ! "$CXX" $FLAGS Testing/cmp_instella_1bp.cpp src/deepseek.cpp src/gguf_reader.cpp \
+            -o "$BIN/cmp_instella_1bp" 2>/dev/null; then echo "✗ instella-1bp: COMPILE FAILED"; fail=$((fail+1));
+        elif "$BIN/cmp_instella_1bp" "$instella_1bp" /tmp/onebit-instella/ids.txt 178 >/dev/null 2>&1; then
+            echo "✓ instella 1bp loader (MLA dims + gated + farskip round-trip)";
+        else echo "✗ instella 1bp loader: structure/top1 mismatch"; fail=$((fail+1)); fi
+    fi
+else
+    echo "  - instella-1bp: fixture absent, skipped"
+fi
+
+# ── DeepSeek V4 gate (mini fixture, HF safetensors oracle) ──
+total=$((total+1))
+dsv4_dir=/tmp/onebit-dsv4
+if [ -f "$dsv4_dir/logits_last.npy" ] && [ -f "$dsv4_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-dsv4-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_deepseek_v4.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_dsv4" 2>/dev/null; then echo "✗ deepseek_v4: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_dsv4" "$dsv4_dir" /tmp/onebit-dsv4-ids.txt "$dsv4_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ deepseek_v4 engine (Shared-KV MQA + mHC + hash-MoE)";
+    else echo "✗ deepseek_v4 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"
+fi
+
+# ── GLM-MoE-DSA gate (mini fixture, HF safetensors oracle) ──
+total=$((total+1))
+glmdsa_dir=/tmp/onebit-glmdsa
+if [ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-glmdsa-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_glm_moe_dsa.cpp src/glm_moe_dsa.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_glmdsa" 2>/dev/null; then echo "✗ glm_moe_dsa: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_glmdsa" "$glmdsa_dir" /tmp/onebit-glmdsa-ids.txt "$glmdsa_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ glm_moe_dsa engine (V3-MLA + DSA indexer + group-topk MoE)";
+    else echo "✗ glm_moe_dsa engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"
+fi
+
+# ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
+total=$((total+1))
+mimo_dir=/tmp/onebit-mimo
+if [ -f "$mimo_dir/logits_last.npy" ] && [ -f "$mimo_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-mimo-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_mimo_v2.cpp src/mimo_v2.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_mimo" 2>/dev/null; then echo "✗ mimo_v2: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_mimo" "$mimo_dir" /tmp/onebit-mimo-ids.txt "$mimo_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ mimo_v2 engine (MoD hybrid: SWA+full GQA, sigmoid group-topk MoE)";
+    else echo "✗ mimo_v2 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"
+fi
+
+# ── Qwen3_5 text gate (mini fixture, HF oracle) ──
+total=$((total+1))
+q35_dir=/tmp/onebit-q35
+if [ -f "$q35_dir/logits_last.npy" ] && [ -f "$q35_dir/model.safetensors" ]; then
+    echo "5 7 9 11 3" > /tmp/onebit-q35-ids.txt
+    if ! "$CXX" $FLAGS Testing/cmp_qwen3_5.cpp src/qwen3_5.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
+        -o "$BIN/cmp_q35" 2>/dev/null; then echo "✗ qwen3_5: COMPILE FAILED"; fail=$((fail+1));
+    elif "$BIN/cmp_q35" "$q35_dir" /tmp/onebit-q35-ids.txt "$q35_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+        echo "✓ qwen3_5 text engine (GatedDeltaNet + gated GQA hybrid)";
+    else echo "✗ qwen3_5 text engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
+else
+    echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"
+fi
+
+
 echo "======================================"
 echo "$((total-fail))/$total passed"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }

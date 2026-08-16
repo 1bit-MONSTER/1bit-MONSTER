@@ -493,7 +493,11 @@
   "LIGHTBRAINHYBRID": 2,
   "LIGHTNINGTRANSFORMER": 16,
   "LLADA2": 34,
+<<<<<<< HEAD
+  "LLAMA": 114066,
+=======
   "LLAMA": 114128,
+>>>>>>> origin/main
   "LLAMA4": 117,
   "LLAMAMOE": 12,
   "LLAVAMONET": 1,
@@ -580,6 +584,10 @@
   "NEE": 1,
   "NEEDCONVERSATIONAL": 1,
   "NEKOMINDMOE": 2,
+<<<<<<< HEAD
+  "NEMOTRON": 62,
+=======
+>>>>>>> origin/main
   "NEMOTRONH": 442,
   "NEPALEDGE": 1,
   "NEURON": 1,
