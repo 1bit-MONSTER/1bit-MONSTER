@@ -35,6 +35,7 @@ NON_TEXT_GEN = {
     "bert", "roberta", "xlmroberta", "xlnet",  # masked-LM / encoder heads
     "morpht5auto", "morpht5concat", "morpht5sum",  # MorphT5 (encoder-decoder)
     "m2m100",                             # M2M-100 (encoder-decoder seq2seq)
+    "slidingwindow", "blenderbot",         # encoder-decoder (verify is_encoder_decoder)
     "alfredunimodel",  # encoder-decoder / masked-LM variant
     "automodelforseq2seqlm",  # encoder-decoder / masked-LM variant
     "bartencodec",  # encoder-decoder / masked-LM variant
@@ -104,6 +105,23 @@ NON_TEXT_GEN = {
 
     "bertformaskedlm", "distilbertforsequenceclassification", "electra",
     "camembert",  # encoder-only classes (not causal decoders)
+
+    # ── 2026-08-15 pass 2: verify/dump-config-verified encoder-decoder,
+    # diffusion, and audio/TTS classes (not causal text decoders, #1676) ──
+    "audioonlythinker", "av2text", "blenderbot", "cerpt", "cerptmultimodal",
+    "clipvisionmarian", "clipvisionmbart", "codet5pbimodal", "deltalm",
+    "detime", "dicow", "diffusiongemmaforblockdiffusion", "diffusionllm",
+    "discretediffusion", "elastict5", "encoderdecoder",
+    "expivmefordiffusionlmhub", "fairseqt5", "florence2",
+    "giddfordiffusionlm", "granitespeech", "hed", "hftransformer",
+    "locost", "membart", "microloopfordiffusionlm", "mvp", "needle",
+    "nemotronlabsdiffusion", "nort5", "onebittts", "openba",
+    "pathummaaudio", "pix2seq", "qwen2audio", "qwen2audiotime",
+    "rotobart", "sealionaudio", "seamlessm4tv2fortexttotext", "sled",
+    "slidingwindow", "songgendualtrack", "songgenmixed", "speech2text2",
+    "speech2texttransformer", "speechlmm", "speechunit", "stepaudio2",
+    "t5with", "tabletransformerforobjectdetection", "typhoonaudio",
+    "vaswanirope", "visionencoderdecoder", "vitgpt2lm", "whisperaccent",
 }
 
 
@@ -174,6 +192,9 @@ def main():
     if os.path.exists(VERIFY):
         v = json.load(open(VERIFY))
         for s, r in v.items():
+            if r.get("decision") == "NO_CONFIG":
+                continue  # no real config fetched — its model_type is the
+                # aggregate's echo; let the restore/aggregate sources decide
             mt = r.get("model_type")
             if mt:
                 mt_of[s] = (mt, 10)  # high priority: real config evidence
