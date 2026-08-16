@@ -181,17 +181,48 @@ if pip download "rocm-sdk-libraries-gfx1151==${THEROCK_VER}" \
 else
   echo "   not available in nightlies index (log: /tmp/therock-pip.log)"
   echo "   falling back to vendoring the matching build already on this box"
+  # NOTE: only rocm_sdk_libraries_gfx1151 is vendored here, not any
+  # rocm_sdk_device_gfx1151 package. Confirmed against CMakeLists.txt:
+  # the engine's build only ever links _rocm_sdk_libraries_gfx1151 (the
+  # gfx1151 hipblaslt/Tensile kernels this package installs) — a separate
+  # rocm_sdk_device_gfx1151 meta-package, if present locally, belongs to
+  # a differently-structured, newer TheRock packaging generation and is
+  # not something the engine's build references by name. Do not try to
+  # vendor it; chasing a version match for an unused package is wasted
+  # effort and risks bundling irrelevant/mismatched files.
   LOCAL="/opt/rocm-therock/lib/python3.14/site-packages"
-  mapfile -t FOUND < <(find "$LOCAL" -maxdepth 1 \( -iname "rocm_sdk_libraries_gfx1151-${THEROCK_VER}*" -o -iname "rocm_sdk_device_gfx1151-${THEROCK_VER}*" \) 2>/dev/null)
-  if [ "${#FOUND[@]}" -eq 0 ]; then
-    echo "FATAL: ${THEROCK_VER} not found in the nightlies index or locally at ${LOCAL} — cannot vendor a payload for this pinned version." >&2
+  DIST_INFO="${LOCAL}/rocm_sdk_libraries_gfx1151-${THEROCK_VER}.dist-info"
+  CONTENT_DIR="${LOCAL}/_rocm_sdk_libraries_gfx1151"
+  # The real installed files live under the underscore-prefixed content
+  # dir, NOT under the versioned *.dist-info dir (which is only a pip
+  # metadata manifest — RECORD/METADATA/WHEEL, a few KB, no .so/.hsaco
+  # files). A glob anchored on the dist-info's own versioned name can
+  # never match the content dir, since the content dir's name carries no
+  # version at all.
+  if [ ! -d "$DIST_INFO" ] || [ ! -d "$CONTENT_DIR" ]; then
+    echo "FATAL: ${THEROCK_VER} not found in the nightlies index, and the local" >&2
+    echo "       dist-info/content pair for rocm_sdk_libraries_gfx1151 is incomplete" >&2
+    echo "       (dist-info: $([ -d "$DIST_INFO" ] && echo present || echo MISSING)," >&2
+    echo "        content dir: $([ -d "$CONTENT_DIR" ] && echo present || echo MISSING))" >&2
+    echo "       — cannot vendor a payload for this pinned version." >&2
     exit 1
   fi
-  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$LOCAL" $(for f in "${FOUND[@]}"; do basename "$f"; done)
-  echo "   vendored ${#FOUND[@]} local package dir(s) from ${LOCAL}"
-  echo "   WARNING: verify this vendored copy actually loads (import rocm / run a HIP smoke test)"
-  echo "   before trusting it as a clean install payload — it may be leftover dist-info"
-  echo "   from a superseded install rather than a currently-functional copy."
+  # Correlate the content dir to this exact dist-info/version before
+  # trusting it: the dist-info's RECORD manifest lists every file it
+  # installed, content-dir-relative. If the content dir's own basename
+  # doesn't appear as a path prefix in RECORD, this dist-info does not
+  # describe what's currently sitting in the content dir (e.g. a later
+  # install overwrote the content dir without updating this dist-info) —
+  # refuse rather than silently vendor a possibly-mismatched payload.
+  if ! grep -q "^_rocm_sdk_libraries_gfx1151/" "${DIST_INFO}/RECORD"; then
+    echo "FATAL: ${DIST_INFO}/RECORD does not reference _rocm_sdk_libraries_gfx1151/" >&2
+    echo "       — version correlation failed, refusing to vendor a possibly-stale" >&2
+    echo "       or mismatched payload." >&2
+    exit 1
+  fi
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$LOCAL" "_rocm_sdk_libraries_gfx1151"
+  echo "   vendored $(du -sh "$CONTENT_DIR" | cut -f1) from ${CONTENT_DIR}"
+  echo "   (correlated against ${DIST_INFO}/RECORD)"
 fi
 rm -rf "$TMP_PIP"
 
@@ -228,7 +259,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && bash packagi
 Expected: script exits 0, final `ls -la` listing shows all four files:
 `mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `libvulkan1_1.4.341.0-1_amd64.deb`, `bolt_0.9.10-1_amd64.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`.
 
-If the TheRock fetch falls into the local-vendoring branch, follow up manually per its printed warning (attempt loading `librocm_cpp.so` against the vendored payload, e.g. `ldd` it against the tarball's `.so` files) before trusting it — record the outcome in a one-line comment added to the top of `fetch-payload.sh` for whoever runs this next.
+If the TheRock fetch falls into the local-vendoring branch, the script's own existence/correlation checks (dist-info present, content dir present, RECORD cross-reference) are the automated guard against vendoring a metadata-only or mismatched payload — a prior version of this task shipped a fallback that silently tarred up a 16KB `.dist-info` metadata dir instead of the real ~1.9GB library content, which these checks now catch. Additionally verify by hand once: `tar tzvf` the produced tarball and confirm it contains `.so`/`.hsaco` files, not just `RECORD`/`METADATA`/`WHEEL`.
 
 - [ ] **Step 5: Commit**
 
