@@ -621,11 +621,18 @@ rm -f "$DISK"
 qemu-img create -f qcow2 "$DISK" 40G
 
 echo "Booting installer — unattended autoinstall runs now, expect 10-20 min..."
+# -boot once=d (not a persistent -boot d): the CD must only be the boot
+# device for the FIRST boot. After autoinstall finishes, curtin reboots
+# the guest — with a persistent -boot d that reboot would boot the ISO
+# again instead of the freshly-installed disk, sending the VM back into
+# the installer (or worse, re-triggering autoinstall against an
+# already-partitioned disk) instead of ever reaching the installed
+# target system this script is trying to test.
 qemu-system-x86_64 \
   -m 8G -smp 4 -enable-kvm \
   -drive file="$DISK",if=virtio \
   -cdrom "$ISO" \
-  -boot d \
+  -boot once=d \
   -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device virtio-net,netdev=net0 \
   -display none -daemonize -pidfile "$PIDFILE"
 
