@@ -120,11 +120,11 @@ cd 1bit-MONSTER &amp;&amp; cmake -B build &amp;&amp; cmake --build build
         <p class="lead">The same binary and the same command line, on whatever silicon you have. Six hardware targets probed at startup, 12 backend implementations behind them — no rebuild to move a model from NPU to GPU to CPU.</p>
         <table style="margin-top:16px">
           <tr><td>AMD Strix Halo</td><td class="b">XDNA 2 NPU · HIP · Vulkan</td></tr>
-          <tr><td>NVIDIA GPU</td><td class="b">CUDA sm_70+</td></tr>
           <tr><td>Apple Silicon</td><td class="b">Metal</td></tr>
           <tr><td>Any Vulkan 1.2+ GPU</td><td class="b">ZINC · GGML-Vulkan</td></tr>
           <tr><td>x86 CPU</td><td class="b">OpenMP</td></tr>
         </table>
+        <p class="note" style="margin-top:14px">A CUDA backend is implemented but has never been run against real NVIDIA hardware — not listed above until it's validated. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703">Testers wanted →</a></p>
       </div>
     </section>
     <section class="two">
