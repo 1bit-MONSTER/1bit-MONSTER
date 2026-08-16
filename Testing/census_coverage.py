@@ -23,6 +23,14 @@ OUT = os.path.join(ROOT, "Testing", "census_full_summary.json")
 STRIP_SUFFIXES = ("forcausallm", "lmheadmodel", "model",
                   "forconditionalgeneration", "forvisiontext2text")
 
+# Sentinel for unmapped archs — read from the LIVE header, never hardcoded:
+# commit 6ad2947f moved RCPP_ARCH_UNKNOWN 255->988 (255 got claimed by a real
+# family during the tail expansion) and every hardcoded 255 in the tooling
+# silently started treating UNKNOWN as MAPPED. Single source of truth.
+import re as _re
+_HDR = open(os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")).read()
+UNKNOWN = int(_re.search(r"RCPP_ARCH_UNKNOWN\s*=\s*(\d+)", _HDR).group(1))
+
 # #1676 (2026-08-15): NOT causal text decoders — TTS, encoder-decoder, and
 # masked-LM classes sit in the census only because they carry an architectures
 # string. The plan declared encoder-decoders OUT of scope; the engine has no
@@ -361,7 +369,7 @@ def main():
 
     mapper = build_mapper()
     toks = probe(mapper, list(stripped))
-    class_mapped = {s: t != 255 for s, t in zip(stripped, toks)}
+    class_mapped = {s: t != UNKNOWN for s, t in zip(stripped, toks)}
 
     # model_type fallback (mirror the reader): unknown class -> model_type
     # as-is -> underscore/dash-stripped. Batch-probe all distinct model_types.
@@ -384,11 +392,11 @@ def main():
         if not e or e[0] == "<none>":
             continue  # no model_type evidence — stays uncovered
         mt = e[0]
-        if mt_toks.get(mt, 255) != 255:
+        if mt_toks.get(mt, UNKNOWN) != UNKNOWN:
             merged[mt] = merged.get(mt, 0) + c
         else:
             n = mt.replace("_", "").replace("-", "")
-            if mt_toks.get(n, 255) != 255:
+            if mt_toks.get(n, UNKNOWN) != UNKNOWN:
                 merged[n] = merged.get(n, 0) + c
             # else: model_type unknown to registry — stays uncovered
 
@@ -400,12 +408,12 @@ def main():
     import re
     for m in re.finditer(r"RCPP_ARCH_(\w+)\s*=\s*(\d+)", hdr):
         names[int(m.group(2))] = m.group(1)
-    names[255] = "UNKNOWN"
+    names[UNKNOWN] = "UNKNOWN"
 
     family_counts = {}
     covered = 0
     for s, tok in zip(merged, merged_toks):
-        if tok == 255:
+        if tok == UNKNOWN:
             continue
         fam = names.get(tok, f"TOKEN{tok}")
         family_counts[fam] = family_counts.get(fam, 0) + merged[s]

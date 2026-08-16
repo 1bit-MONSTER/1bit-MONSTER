@@ -46,6 +46,11 @@ def strip_arch(a):
 
 
 def main():
+    # sentinel from the LIVE header (moved 255->988 by 6ad2947f; a hardcoded
+    # 255 would silently treat UNKNOWN as MAPPED)
+    import re
+    hdr = open(os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")).read()
+    UNKNOWN = int(re.search(r"RCPP_ARCH_UNKNOWN\s*=\s*(\d+)", hdr).group(1))
     counts = json.load(open(COUNTS))["counts"]
     stripped = {}
     for arch, cnt in counts.items():
@@ -63,7 +68,7 @@ def main():
     out = subprocess.run(["/tmp/ampC"], input="\n".join(stripped), text=True,
                          capture_output=True, check=True)
     toks = [int(t) for t in out.stdout.split()]
-    uncovered = [s for s, t in zip(stripped, toks) if t == 255]
+    uncovered = [s for s, t in zip(stripped, toks) if t == UNKNOWN]
 
     # index the dump by stripped class
     print("indexing dump...", flush=True)

@@ -94,6 +94,9 @@ def load_token_names():
 
 
 TOKEN_NAMES = load_token_names()
+# Sentinel from the LIVE header (moved 255->988 by 6ad2947f; hardcoded 255
+# would silently treat UNKNOWN as MAPPED)
+UNKNOWN = int(next(n for n, name in TOKEN_NAMES.items() if name == "UNKNOWN"))
 
 
 FAMILY_KEYS = ("deepseek", "qwen3", "qwen2", "llama", "mistral", "gemma",
@@ -115,7 +118,7 @@ def double_evidence(s, mt, src):
     if not hit:
         return False
     t = probe(mapper, [norm_mt(hit)])[0]
-    if t == 255:
+    if t == UNKNOWN:
         return False
     fam = TOKEN_NAMES.get(str(t), "TOKEN%d" % t)
     aliases[s] = {"token": fam, "model_type": mt,
@@ -203,14 +206,14 @@ def main():
 
     mapper = build_mapper()
     toks = probe(mapper, list(stripped))
-    uncovered = [s for s, t in zip(stripped, toks) if t == 255]
+    uncovered = [s for s, t in zip(stripped, toks) if t == UNKNOWN]
 
     aliases = json.load(open(OUT_A)) if os.path.exists(OUT_A) else {}
     skipped = json.load(open(OUT_S)) if os.path.exists(OUT_S) else {}
 
     def classify_mt(s, mt, src):
         t = probe(mapper, [norm_mt(mt)])[0]
-        if t == 255:
+        if t == UNKNOWN:
             return False
         fam = TOKEN_NAMES.get(str(t), "TOKEN%d" % t)
         aliases[s] = {"token": fam, "model_type": mt, "source": src,
