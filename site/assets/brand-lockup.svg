@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 230" role="img" aria-label="1bit MONSTER">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 270" role="img" aria-label="1bit MONSTER">
   <title>1bit MONSTER</title>
 
   <!-- mark: 1bm in lime (matches site .mark) -->
@@ -19,4 +19,11 @@
         font-family="'DM Serif Display',Georgia,'Times New Roman',serif"
         font-size="46" font-weight="800" letter-spacing="-0.01em"
         fill="#EDEFEA">MONSTER</text>
+
+  <!-- tagline: "Sorry but not sorry." — bong-water-water-bong (matches site .quote) -->
+  <text x="310" y="252"
+        text-anchor="middle"
+        font-family="'DM Mono','SF Mono',monospace"
+        font-size="15" letter-spacing="0.02em"
+        fill="#A0A599">"Sorry but not sorry." — bong-water-water-bong</text>
 </svg>

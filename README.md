@@ -4,7 +4,7 @@
 
 ## One binary to rule them all
 
-<sub>(bong-water-water-bong "Sorry but not sorry.")</sub>
+<sub>("Sorry but not sorry." — bong-water-water-bong)</sub>
 
 ### 94% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single binary. Model agnostic. Hardware agnostic. Zero Python.
 
