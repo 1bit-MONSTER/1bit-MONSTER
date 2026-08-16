@@ -50,7 +50,7 @@ Against Modular's actual curated `/models` front-page lineup (~18 LLMs, not the 
 | DeepSeek V4 | `DeepseekV4ForCausalLM` | `deepseek_v4` | `DEEPSEEK_V4` (22) | **0** — needs MoE+MLA routing | `deepseek-ai/DeepSeek-V4-Flash` | **159.6 GB** (46 shards) |
 | GLM-5.2 | `GlmMoeDsaForCausalLM` | `glm_moe_dsa` | `GLM` (2, LLAMA-layout) | **0** — needs DSA MoE routing | `zai-org/GLM-4.5` (160-exp MoE) | large |
 | MiMo | `MiMoV2ForCausalLM` | `mimo_v2` | `MIMO` (4) | **0** — needs MoE routing | `XiaomiMiMo/MiMo-V2-Flash` | **313 GB** |
-| Nemotron 3 | (gated, `NemotronForCausalLM`→LLAMA) | — | LLAMA (2) | **0** — needs verify (Ultra-253B) | `nvidia/Nemotron-3-Ultra-253B` | gated/253B |
+| ~~Nemotron 3~~ **DONE** | `NemotronForCausalLM` | `nemotron` | `NEMOTRON` (989) | **validated** — LayerNorm1P, relu2 non-gated MLP, partial rope (2026-08-16, `mgoin/nemotron-3-8b-chat-4k-sft-hf`, top1 7503 ' Paris', corr 0.99986) | `mgoin/nemotron-3-8b-chat-4k-sft-hf` | 17 GB |
 | Qwen3.5 | (Gate-Delta Net) | `qwen3_5` | `QWEN35` (21) | **4** — but **REFUSED** by generic CPU backend ("requires NPU/HIP") | — | — |
 
 **Why none is a free gate.** All 5 are MoE (256 experts), Mamba-hybrid, or Gate-Delta-Net — not dense Llama-layout. The generic backend's default SwiGLU path + the existing `topk_softmax_gating` dispatch (wired for QWEN3/QWEN35/GPTOSS/GRANITE only) do not cover them. Each needs C++ backend work (add to the MoE-routing dispatch + verify that family's gating convention / expert layout / shared experts), and each needs a real checkpoint to validate against — like the gpt_neox gate that found 3 real bugs.
