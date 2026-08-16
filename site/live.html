@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
 <style>
   :root {
-    --bg: #0B0B0B; --text: #EDEFEA; --green: #C6FF3D; --pink: #C6FF3D; --blue: #C6FF3D; --dim: #6B706A;
+    --bg:#021621; --text:#e7f6fd; --green: #00ff00; --pink:#f00fd2; --blue:#12a0ed; --dim:#5d9ec2;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -39,7 +39,7 @@
   .bar { height: 24px; background: rgba(0,255,0,0.08); border: 1px solid rgba(0,255,0,0.15); border-radius: 4px; margin: 1rem 0; overflow: hidden; position: relative; }
   .bar .fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); transition: width 0.5s; display: flex; align-items: center; padding-left: 0.5rem; font-size: 0.7rem; }
   .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
-  .metric { background: rgba(198,255,61,0.06); border: 1px solid rgba(198,255,61,0.15); border-radius: 8px; padding: 1rem; }
+  .metric { background: rgba(18,160,237,0.06); border: 1px solid rgba(18,160,237,0.15); border-radius: 8px; padding: 1rem; }
   .metric .val { font-size: 1.5rem; font-weight: 800; color: var(--green); }
   .metric .lbl { font-size: 0.65rem; color: var(--dim); margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
   .footer { text-align: center; margin-top: 2rem; font-size: 0.7rem; color: var(--dim); }
@@ -50,7 +50,7 @@
   .tab { padding: 0.3rem 0.8rem; border: 1px solid var(--dim); border-radius: 4px; cursor: pointer; font-size: 0.7rem; color: var(--dim); background: transparent; font-family: inherit; }
   .tab.active { border-color: var(--green); color: var(--green); }
   .token-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.5rem 0; }
-  .token { padding: 0.15rem 0.4rem; background: rgba(198,255,61,0.15); color: var(--pink); border-radius: 3px; font-size: 0.7rem; }
+  .token { padding: 0.15rem 0.4rem; background: rgba(240,15,210,0.15); color: var(--pink); border-radius: 3px; font-size: 0.7rem; }
 </style>
 <link rel="canonical" href="https://1bit.monster/">
 <meta property="og:type" content="website">
@@ -81,7 +81,7 @@
 <body>
 <div class="container">
   <header>
-    <svg width="48" height="48" viewBox="0 0 200 200"><circle r="92" cx="100" cy="100" fill="none" stroke="#C6FF3D" stroke-width="6"/><circle r="60" cx="100" cy="100" fill="none" stroke="#C6FF3D" stroke-width="2" opacity="0.3"/><text x="100" y="118" text-anchor="middle" font-family="'DM Serif Display',Georgia,serif" font-size="56" font-weight="800" fill="#C6FF3D">1bm</text></svg>
+    <svg width="48" height="48" viewBox="0 0 200 200"><circle r="92" cx="100" cy="100" fill="none" stroke="#00ff00" stroke-width="6"/><circle r="60" cx="100" cy="100" fill="none" stroke="#00ff00" stroke-width="2" opacity="0.3"/><text x="100" y="118" text-anchor="middle" font-family="'DM Serif Display',Georgia,serif" font-size="56" font-weight="800" fill="#00ff00">1bm</text></svg>
     <h1>1bit.monster <span class="pulse"></span> NPU Live</h1>
   </header>
 

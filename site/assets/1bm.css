@@ -1,7 +1,8 @@
-/* 1bit MONSTER — site styles. Acid lime on black. */
+/* 1bit MONSTER — site styles. Purple/lime/blue-bell on navy. */
 :root{
-  --bg:#0B0B0B; --fg:#EDEFEA; --dim:#B9BEB4; --faint:#A0A599;
-  --line:#232323; --line-soft:#1D1D1D; --lime:#C6FF3D;
+  --bg:#021621; --fg:#e7f6fd; --dim:#a0d9f8; --faint:#5d9ec2;
+  --line:rgba(14,128,190,.42); --line-soft:rgba(14,128,190,.18); --lime:#00ff00;
+  --pink:#f00fd2; --purple:#c00ca8;
   --serif:'DM Serif Display',Georgia,serif;
   --mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
 }
@@ -13,13 +14,13 @@ a:hover{color:var(--fg)}
 .rail{border-right:1px solid var(--line);padding:30px 24px;display:flex;flex-direction:column;gap:26px;position:sticky;top:0;align-self:start;max-height:100vh;overflow-y:auto}
 .mark{font-family:var(--serif);font-size:62px;line-height:.8;letter-spacing:-.04em;color:var(--lime);display:block;margin-bottom:6px}
 .wordmark{font-family:var(--serif);font-size:27px;line-height:1.05;color:var(--fg)}
-.quote{font-size:12px;line-height:1.6;color:var(--lime)}
+.quote{font-size:12px;line-height:1.6;color:var(--pink)}
 .quote span{color:var(--fg)}
 .rail nav{display:flex;flex-direction:column;gap:11px;font-size:13px}
 .rail nav a{color:var(--dim)}
 .rail nav a:hover,.rail nav a[aria-current=page]{color:var(--lime)}
 .status{display:flex;align-items:center;gap:8px;padding:9px 11px;border:1px solid var(--line);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
-.dot{width:7px;height:7px;background:var(--lime);border-radius:999px}
+.dot{width:7px;height:7px;background:var(--pink);border-radius:999px}
 .rail .meta{margin-top:auto;font-size:11px;line-height:1.8;color:var(--faint)}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:13px 44px;border-bottom:1px solid var(--line);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
 main{min-width:0}
@@ -36,10 +37,10 @@ pre{margin:0;padding:16px 18px;border:1px solid var(--line);font-size:13px;line-
 pre .c{color:var(--faint)}
 pre .s{color:var(--lime)}
 .btns{display:flex;gap:12px;flex-wrap:wrap}
-.btn{display:inline-flex;align-items:center;height:50px;padding:0 26px;background:var(--lime);color:#0B0B0B;font-size:12px;letter-spacing:.16em;text-transform:uppercase}
-.btn:hover{background:var(--fg);color:#0B0B0B}
-.btn.ghost{background:none;border:1px solid #3A3A3A;color:var(--fg)}
-.btn.ghost:hover{background:none;border-color:var(--lime);color:var(--lime)}
+.btn{display:inline-flex;align-items:center;height:50px;padding:0 26px;background:var(--lime);color:var(--bg);font-size:12px;letter-spacing:.16em;text-transform:uppercase}
+.btn:hover{background:var(--fg);color:var(--bg)}
+.btn.ghost{background:none;border:1px solid #07405f;color:var(--fg)}
+.btn.ghost:hover{background:none;border-color:var(--purple);color:var(--purple)}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .stats div{padding:24px 32px;border-right:1px solid var(--line)}
 .stats div:last-child{border-right:0}
