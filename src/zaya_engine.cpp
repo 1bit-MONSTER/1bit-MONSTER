@@ -3,6 +3,7 @@
 // No main(), no networking — just the model.
 
 #include <hip/hip_runtime.h>
+#include <chrono>
 #include <hip/hip_fp16.h>
 #include <cstdio>
 #include <cmath>
@@ -124,7 +125,11 @@ static const int RTR_NSPLIT = 8;   // router gate_down K-split blocks
 extern "C" void zaya_set_gemv_mode(int m) { g_zaya_gemv_mask = m; }
 
 // QKV projections — W stored [M,K] row-major, read transposed (mm_k semantics)
-static inline void zaya_qkv_gemv(ZayaState* s, const __half* w, __half* out, int M, int K) {
+static inline void zaya_qkv_gemv(ZayaState* s, const __half* w, const uint8_t* wq4, __half* out, int M, int K) {
+    if (wq4) {  // packed Q4NX path, transposed (interleaved) read matching the bf16 t-kernel
+        zaya_q4nx_t_launch(wq4, s->d_hs, s->d_gemv_scratch, out, M, K, eng.h, 0, s->st);
+        return;
+    }
     if (g_zaya_gemv_mask & 1) {
         zaya_gemv_t_launch(w, s->d_hs, s->d_gemv_scratch, out, M, K, 0, s->st);  // nsplit<=0 -> 8
     } else {
@@ -136,7 +141,11 @@ static inline void zaya_qkv_gemv(ZayaState* s, const __half* w, __half* out, int
 // (legacy fallback uses the WMMA tiled grid: 16 rows/block, 128 threads)
 #define ZAYA_LEGACY_WMMA_M 16
 #define ZAYA_LEGACY_WMMA_THREADS 128
-static inline void zaya_gemv(ZayaState* s, const __half* w, const __half* in, __half* out, int M, int K) {
+static inline void zaya_gemv(ZayaState* s, const __half* w, const uint8_t* wq4, const __half* in, __half* out, int M, int K) {
+    if (wq4) {  // packed Q4NX path (o_proj): file stores [h,qd] row-major
+        zaya_q4nx_launch(wq4, in, s->d_gemv_scratch, out, M, K, zaya_gemv_pick_nsplit(M), s->st);
+        return;
+    }
     if (g_zaya_gemv_mask & 2) {
         zaya_gemv_launch(w, in, s->d_gemv_scratch, out, M, K, zaya_gemv_pick_nsplit(M), s->st);
     } else {
@@ -144,9 +153,31 @@ static inline void zaya_gemv(ZayaState* s, const __half* w, const __half* in, __
         HIP_CHECK(hipGetLastError());
     }
 }
+// ── Q4NX raw-tile upload (avoids the bf16 expansion that OOMs the 74B) ──
+static bool upload_q4nx(const uint8_t* host, size_t bytes, const uint8_t** gpu) {
+    void* p = nullptr;
+    if (hipMalloc(&p, bytes) != hipSuccess) return false;
+    if (hipMemcpy(p, host, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+        (void)hipFree(p); return false;
+    }
+    *gpu = (const uint8_t*)p;
+    // Source is the model mmap; pages are read once, never again. Drop them
+    // so the 44.6GB file doesn't thrash page cache against device allocations
+    // on unified memory (74B load was OOM-thrashing without this).
+    (void)madvise((void*)host, bytes, MADV_DONTNEED);
+    return true;
+}
+
 // gate_up expert FFN — W[expert][2·n_ff, h] · hs
-static inline void zaya_gateup_gemv(ZayaState* s, const __half* gu) {
+static inline void zaya_gateup_gemv(ZayaState* s, const __half* gu, const uint8_t* gu_q) {
     const int M = 2*eng.n_ff, K = eng.h;
+    if (gu_q) {  // packed Q4NX path: dequant in-kernel
+        const int ntr = (M + Q4NX_TILE_ROWS - 1) / Q4NX_TILE_ROWS;
+        const int ntc = (K + Q4NX_TILE_COLS - 1) / Q4NX_TILE_COLS;
+        zaya_q4nx_expert_launch(gu_q, s->d_hs, s->d_expert_idx, s->d_skip_flag,
+            s->d_gemv_scratch, s->d_tmp, M, K, (size_t)ntr * ntc * Q4NX_TILE_BYTES, s->st);
+        return;
+    }
     if (g_zaya_gemv_mask & 4) {
         zaya_gemv_expert_launch(gu, s->d_hs, s->d_expert_idx, s->d_skip_flag,
             s->d_gemv_scratch, s->d_tmp, M, K, 1, (size_t)M*K, s->st);
@@ -157,8 +188,15 @@ static inline void zaya_gateup_gemv(ZayaState* s, const __half* gu) {
     }
 }
 // down expert FFN — W[expert][h, n_ff] · silu(gate_up)
-static inline void zaya_down_gemv(ZayaState* s, const __half* dn) {
+static inline void zaya_down_gemv(ZayaState* s, const __half* dn, const uint8_t* dn_q) {
     const int M = eng.h, K = eng.n_ff;
+    if (dn_q) {  // packed Q4NX path: dequant in-kernel
+        const int ntr = (M + Q4NX_TILE_ROWS - 1) / Q4NX_TILE_ROWS;
+        const int ntc = (K + Q4NX_TILE_COLS - 1) / Q4NX_TILE_COLS;
+        zaya_q4nx_expert_launch(dn_q, s->d_ao, s->d_expert_idx, s->d_skip_flag,
+            s->d_gemv_scratch, s->d_tmp, M, K, (size_t)ntr * ntc * Q4NX_TILE_BYTES, s->st);
+        return;
+    }
     if (g_zaya_gemv_mask & 8) {
         zaya_gemv_expert_launch(dn, s->d_ao, s->d_expert_idx, s->d_skip_flag,
             s->d_gemv_scratch, s->d_tmp, M, K, 1, (size_t)M*K, s->st);
@@ -452,14 +490,19 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
     // Accept both orientations — transpose the GGUF one, take 8B-era dumps
     // ([d, h]) as-is. The old loader took the file as-is → garbage for any
     // GGUF-derived .1bp.
-    auto f16_mm = [&](const char* n, __half*& gpu, int d) {
-        gpu = nullptr;
+    auto f16_mm = [&](const char* n, __half*& gpu, const uint8_t*& gpu_q, int d) {
+        gpu = nullptr; gpu_q = nullptr;
         std::string nm = p + n;
         auto* te = model.find_tensor(nm.c_str());
         int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
         std::vector<float> v;
         if (!model.get_tensor_f32(nm.c_str(), v)) return;  // sublayer absent
         if (rows == d && cols == eng.h && (int)v.size() >= (size_t)d * eng.h) {
+            if (te->quant == ONEBP_Q4NX) {
+                const uint8_t* base = model.raw_tensor(nm.c_str());
+                if (base && upload_q4nx(base, te->total_bytes, &gpu_q)) return;
+                fprintf(stderr, "  onebp: %s Q4NX upload failed — falling back to bf16\n", nm.c_str());
+            }
             fprintf(stderr, "  onebp: %s orientation [%d,%d] (as-is)\n", nm.c_str(), rows, cols);
             if (hipMalloc(&gpu, (size_t)d * eng.h * 2) != hipSuccess) { alloc_fail("qkv proj"); return; }
             upf16(v, gpu, d * eng.h, st);
@@ -477,10 +520,10 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
             ok = false;
         }
     };
-    f16_mm("attn_q.weight", l.wq, eng.qd);
-    f16_mm("attn_k.weight", l.wk, eng.kd);
-    f16_mm("cca_val_proj1.weight", l.wv1, eng.kd / 2);
-    f16_mm("cca_val_proj2.weight", l.wv2, eng.kd / 2);
+    f16_mm("attn_q.weight", l.wq, l.wq_q, eng.qd);
+    f16_mm("attn_k.weight", l.wk, l.wk_q, eng.kd);
+    f16_mm("cca_val_proj1.weight", l.wv1, l.wv1_q, eng.kd / 2);
+    f16_mm("cca_val_proj2.weight", l.wv2, l.wv2_q, eng.kd / 2);
     f16("attn_norm_2.weight", l.pan, eng.h, false);  // .bin-era only; absent in GGUF → null → skipped at use
     f32("cca_k_scale.weight", l.ks, eng.nkv, false);
     f32("res_scale_hs.weight", l.pahss, eng.h, false);
@@ -565,18 +608,25 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
         auto* te = model.find_tensor(nm.c_str());
         int rows = te ? te->rows : 0, cols = te ? te->cols : 0;
         bool found = model.get_tensor_f32(nm.c_str(), v);
-        l.wo = nullptr;
-        if (found && rows == eng.h && cols == eng.qd && (int)v.size() >= eng.h * eng.qd) {
+        l.wo = nullptr; l.wo_q = nullptr;
+        bool wo_q4nx = false;
+        if (found && te->quant == ONEBP_Q4NX && rows == eng.h && cols == eng.qd && (int)v.size() >= eng.h * eng.qd) {
+            // packed path: raw [qd,h] tiles + transposed kernel (no CPU dequant)
+            const uint8_t* base = model.raw_tensor(nm.c_str());
+            if (base && upload_q4nx(base, te->total_bytes, &l.wo_q)) wo_q4nx = true;
+            else fprintf(stderr, "  onebp: '%s' Q4NX upload failed — falling back to bf16\n", nm.c_str());
+        }
+        if (!wo_q4nx && found && rows == eng.h && cols == eng.qd && (int)v.size() >= eng.h * eng.qd) {
             if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) alloc_fail("attn_output");
             else upf16(v, l.wo, eng.h * eng.qd, st);
-        } else if (found && rows == eng.qd && cols == eng.h && (int)v.size() >= eng.h * eng.qd) {
+        } else if (!wo_q4nx && found && rows == eng.qd && cols == eng.h && (int)v.size() >= eng.h * eng.qd) {
             std::vector<float> tr((size_t)eng.h * eng.qd);
             for (int i = 0; i < eng.h; i++)
                 for (int k = 0; k < eng.qd; k++)
                     tr[(size_t)i * eng.qd + k] = v[(size_t)k * eng.h + i];
             if (hipMalloc(&l.wo, (size_t)eng.h * eng.qd * 2) != hipSuccess) alloc_fail("attn_output");
             else upf16(tr, l.wo, eng.h * eng.qd, st);
-        } else if (found) {
+        } else if (found && !wo_q4nx) {
             fprintf(stderr, "  onebp: '%s' dims [%d,%d] size %zu don't match [H=%d,QD=%d] — aborting\n",
                     nm.c_str(), rows, cols, v.size(), eng.h, eng.qd);
             ok = false;
@@ -689,15 +739,23 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
     // traffic per model load; per-expert the peak is rows*cols*(4+2) B and
     // the next expert's dequant overlaps with the previous upload.
     {
-        auto experts = [&](const char* n, __half*& gpu, int rows, int cols) {
+        auto experts = [&](const char* n, __half*& gpu, const uint8_t*& gpu_q, int rows, int cols) {
             std::string nm = p + n;
             auto* te = model.find_tensor(nm.c_str());
-            gpu = nullptr;
+            gpu = nullptr; gpu_q = nullptr;
             if (!te) return;  // sublayer absent
             if (te->ndim != 3 || te->num_experts != eng.n_exp) {
                 fprintf(stderr, "  onebp: '%s' is [%d x %d x %d], want %d-expert ndim=3 — aborting\n",
                         nm.c_str(), te->num_experts, te->rows, te->cols, eng.n_exp);
                 ok = false;
+                return;
+            }
+            if (te->quant == ONEBP_Q4NX) {
+                // Packed path: upload raw Q4NX tiles (32×256, 5120 B each) directly.
+                // Dequant happens in-kernel — no bf16 expansion, 4× less VRAM.
+                const uint8_t* base = model.raw_tensor(nm.c_str());
+                if (!base) { fprintf(stderr, "  onebp: '%s' raw_tensor failed\n", nm.c_str()); ok = false; return; }
+                if (!upload_q4nx(base, te->total_bytes, &gpu_q)) { alloc_fail("experts q4nx"); return; }
                 return;
             }
             if (hipMalloc(&gpu, (size_t)eng.n_exp * rows * cols * 2) != hipSuccess) { alloc_fail("experts"); return; }
@@ -715,8 +773,8 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
                                      (size_t)rows * cols * 2, hipMemcpyHostToDevice, st);
             }
         };
-        experts("ffn_gate_up_exps.weight", l.gu, 2 * eng.n_ff, eng.h);
-        experts("ffn_down_exps.weight", l.dn, eng.h, eng.n_ff);
+        experts("ffn_gate_up_exps.weight", l.gu, l.gu_q, 2 * eng.n_ff, eng.h);
+        experts("ffn_down_exps.weight", l.dn, l.dn_q, eng.h, eng.n_ff);
     }
     if (!ok) return false;
 
@@ -748,10 +806,10 @@ static bool load_layer_onebp(NpuOnebpModel& model, int il, LayerW& l,
     // else means a broken or mismatched file — abort rather than silently
     // run garbage through zeroed weights. res_scale_hs/res are excluded:
     // they exist on EVERY layer in the reference format.
-    const bool attn_any = l.wq || l.wk || l.wv1 || l.wv2 || l.wo || l.cdw || l.cgw || l.ks;
-    const bool attn_all = l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks;
-    const bool moe_any  = l.gdw || l.rfn || l.rf1 || l.rf2 || l.rout || l.gu || l.dn;
-    const bool moe_all  = l.gdw && l.rfn && l.rf1 && l.rf2 && l.rout && l.gu && l.dn;
+    const bool attn_any = (l.wq || l.wq_q) || (l.wk || l.wk_q) || (l.wv1 || l.wv1_q) || (l.wv2 || l.wv2_q) || l.wo || l.wo_q || l.cdw || l.cgw || l.ks;
+    const bool attn_all = (l.wq || l.wq_q) && (l.wk || l.wk_q) && (l.wv1 || l.wv1_q) && (l.wv2 || l.wv2_q) && (l.wo || l.wo_q) && l.cdw && l.cgw && l.ks;
+    const bool moe_any  = l.gdw || l.rfn || l.rf1 || l.rf2 || l.rout || l.gu || l.gu_q || l.dn || l.dn_q;
+    const bool moe_all  = l.gdw && l.rfn && l.rf1 && l.rf2 && l.rout && (l.gu || l.gu_q) && (l.dn || l.dn_q);
     if (attn_any != attn_all) {
         fprintf(stderr, "  onebp: layer %d has PARTIAL attention tensors (some but not all) — broken or mismatched file, aborting\n", il);
         dump_layer_tensors(model, p);
@@ -1165,7 +1223,8 @@ static void zaya_kv_gather(ZayaState* s, int il, int seq_len) {
 // same pattern as the reference tests/zaya_gpu_decode.cpp). The per-layer
 // pre-norm (attn_norm) runs on every layer, matching llama.cpp's graph.
 static inline bool layer_has_attn(const LayerW& l) {
-    return l.wq && l.wk && l.wv1 && l.wv2 && l.wo && l.cdw && l.cgw && l.ks;
+    return (l.wq || l.wq_q) && (l.wk || l.wk_q) && (l.wv1 || l.wv1_q) &&
+           (l.wv2 || l.wv2_q) && (l.wo || l.wo_q) && l.cdw && l.cgw && l.ks;
 }
 
 void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
@@ -1186,13 +1245,13 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
         { int hv2=eng.kd/2;
 
-          zaya_qkv_gemv(s, l.wq, s->d_tmp, eng.qd, eng.h);
+          zaya_qkv_gemv(s, l.wq, l.wq_q, s->d_tmp, eng.qd, eng.h);
 
-          zaya_qkv_gemv(s, l.wk, s->d_tmp+eng.qd, eng.kd, eng.h);
+          zaya_qkv_gemv(s, l.wk, l.wk_q, s->d_tmp+eng.qd, eng.kd, eng.h);
 
-          zaya_qkv_gemv(s, l.wv1, s->d_tmp+eng.qd+eng.kd, hv2, eng.h);
+          zaya_qkv_gemv(s, l.wv1, l.wv1_q, s->d_tmp+eng.qd+eng.kd, hv2, eng.h);
 
-          zaya_qkv_gemv(s, l.wv2, s->d_tmp+eng.qd+eng.kd+hv2, hv2, eng.h); }
+          zaya_qkv_gemv(s, l.wv2, l.wv2_q, s->d_tmp+eng.qd+eng.kd+hv2, hv2, eng.h); }
           nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
@@ -1212,7 +1271,7 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
                 s->d_vcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
                 s->d_ao, s->d_partials, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
         }
-        zaya_gemv(s, l.wo, s->d_ao, s->d_tmp, eng.h, eng.qd);
+        zaya_gemv(s, l.wo, l.wo_q, s->d_ao, s->d_tmp, eng.h, eng.qd);
         copy_k<<<(eng.h+BLK-1)/BLK,BLK,0,s->st>>>(s->d_ao,s->d_tmp,eng.h);
         residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_ao,s->d_hs,l.pahss,l.pahsb,l.parss,l.parsb,eng.h);
         HIP_CHECK(hipGetLastError());
@@ -1223,7 +1282,7 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         HIP_CHECK(hipGetLastError());
         }
         }
-        if(l.gu&&l.dn){
+        if((l.gu||l.gu_q)&&(l.dn||l.dn_q)){
             eda_router_gate_down_kernel<<<RTR_NSPLIT,256,0,s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,s->d_gemv_scratch,RTR_NSPLIT,eng.h,eng.rtr_h);
             eda_router_gate_reduce<<<1,256,0,s->st>>>(s->d_gemv_scratch,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdb,s->d_prev_rs+(size_t)il*eng.rtr_h,RTR_NSPLIT,eng.rtr_h);
             eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
@@ -1236,10 +1295,10 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
             const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
             const int db=(eng.h+WMMA_M-1)/WMMA_M;
             const int sb=(eng.n_ff+BLK-1)/BLK;
-            zaya_gateup_gemv(s, l.gu);
+            zaya_gateup_gemv(s, l.gu, l.gu_q);
             silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
             HIP_CHECK(hipGetLastError());
-            zaya_down_gemv(s, l.dn);
+            zaya_down_gemv(s, l.dn, l.dn_q);
             residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.pmhss,l.pmhsb,l.pmrss,l.pmrsb,eng.h);
             HIP_CHECK(hipGetLastError());
             copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_tmp,eng.h);
@@ -1255,7 +1314,7 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
     // lm_head — tiled GEMV in a single launch; buffer allocated in zaya_init (fixes #59)
     // No sync needed before the lm_head: both the RMSNorm and the lm_head GEMV are on
     // the same stream, so the GEMV waits for the RMSNorm automatically (fixes perf).
-    zaya_gemv(s, s->d_embed, s->d_hs, s->d_lm_vocab, eng.vocab, eng.h);
+    zaya_gemv(s, s->d_embed, nullptr, s->d_hs, s->d_lm_vocab, eng.vocab, eng.h);
     HIP_OK_V(hipStreamSynchronize(s->st));
     std::vector<__half> lh(eng.vocab);
     HIP_OK_V(hipMemcpy(lh.data(),s->d_lm_vocab,(size_t)eng.vocab*2,hipMemcpyDeviceToHost));
@@ -1282,13 +1341,13 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         // Separate Q/K/V1/V2 using mm_k (no warp shuffle, AMD HIP compatible)
         { int hv2=eng.kd/2;
 
-          zaya_qkv_gemv(s, l.wq, s->d_tmp, eng.qd, eng.h);
+          zaya_qkv_gemv(s, l.wq, l.wq_q, s->d_tmp, eng.qd, eng.h);
 
-          zaya_qkv_gemv(s, l.wk, s->d_tmp+eng.qd, eng.kd, eng.h);
+          zaya_qkv_gemv(s, l.wk, l.wk_q, s->d_tmp+eng.qd, eng.kd, eng.h);
 
-          zaya_qkv_gemv(s, l.wv1, s->d_tmp+eng.qd+eng.kd, hv2, eng.h);
+          zaya_qkv_gemv(s, l.wv1, l.wv1_q, s->d_tmp+eng.qd+eng.kd, hv2, eng.h);
 
-          zaya_qkv_gemv(s, l.wv2, s->d_tmp+eng.qd+eng.kd+hv2, hv2, eng.h); }
+          zaya_qkv_gemv(s, l.wv2, l.wv2_q, s->d_tmp+eng.qd+eng.kd+hv2, hv2, eng.h); }
           nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
         cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
             s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
@@ -1308,7 +1367,7 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
                 s->d_vcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
                 s->d_ao, s->d_partials, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
         }
-        zaya_gemv(s, l.wo, s->d_ao, s->d_tmp, eng.h, eng.qd);
+        zaya_gemv(s, l.wo, l.wo_q, s->d_ao, s->d_tmp, eng.h, eng.qd);
         copy_k<<<(eng.h+BLK-1)/BLK,BLK,0,s->st>>>(s->d_ao,s->d_tmp,eng.h);
         residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_ao,s->d_hs,l.pahss,l.pahsb,l.parss,l.parsb,eng.h);
         HIP_CHECK(hipGetLastError());
@@ -1320,7 +1379,7 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         HIP_CHECK(hipGetLastError());
         }
         }
-        if(l.gu&&l.dn){
+        if((l.gu||l.gu_q)&&(l.dn||l.dn_q)){
             eda_router_gate_down_kernel<<<RTR_NSPLIT,256,0,s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,s->d_gemv_scratch,RTR_NSPLIT,eng.h,eng.rtr_h);
             eda_router_gate_reduce<<<1,256,0,s->st>>>(s->d_gemv_scratch,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdb,s->d_prev_rs+(size_t)il*eng.rtr_h,RTR_NSPLIT,eng.rtr_h);
             eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
@@ -1333,10 +1392,10 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
             const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
             const int db=(eng.h+WMMA_M-1)/WMMA_M;
             const int sb=(eng.n_ff+BLK-1)/BLK;
-            zaya_gateup_gemv(s, l.gu);
+            zaya_gateup_gemv(s, l.gu, l.gu_q);
             silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
             HIP_CHECK(hipGetLastError());
-            zaya_down_gemv(s, l.dn);
+            zaya_down_gemv(s, l.dn, l.dn_q);
             residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.pmhss,l.pmhsb,l.pmrss,l.pmrsb,eng.h);
             HIP_CHECK(hipGetLastError());
             copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_tmp,eng.h);
@@ -1348,7 +1407,7 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
     HIP_CHECK(hipGetLastError());
 
     // lm_head + GPU argmax (no full logit copy); buffers allocated in zaya_init (fixes #59)
-    zaya_gemv(s, s->d_embed, s->d_hs, s->d_lm_vocab, eng.vocab, eng.h);
+    zaya_gemv(s, s->d_embed, nullptr, s->d_hs, s->d_lm_vocab, eng.vocab, eng.h);
     argmax_kernel<<<1,256,0,s->st>>>(s->d_lm_vocab,eng.vocab,s->d_argmax_idx,s->d_argmax_val);
     HIP_CHECK(hipGetLastError());
     HIP_OK_R(hipStreamSynchronize(s->st), -1);
@@ -1391,13 +1450,13 @@ int zaya_forward_greedy_n(ZayaState* s, int token_id, int n, int* out_tokens) {
             if (layer_has_attn(l)) {
             { int hv2=eng.kd/2;
 
-              zaya_qkv_gemv(s, l.wq, s->d_tmp, eng.qd, eng.h);
+              zaya_qkv_gemv(s, l.wq, l.wq_q, s->d_tmp, eng.qd, eng.h);
 
-              zaya_qkv_gemv(s, l.wk, s->d_tmp+eng.qd, eng.kd, eng.h);
+              zaya_qkv_gemv(s, l.wk, l.wk_q, s->d_tmp+eng.qd, eng.kd, eng.h);
 
-              zaya_qkv_gemv(s, l.wv1, s->d_tmp+eng.qd+eng.kd, hv2, eng.h);
+              zaya_qkv_gemv(s, l.wv1, l.wv1_q, s->d_tmp+eng.qd+eng.kd, hv2, eng.h);
 
-              zaya_qkv_gemv(s, l.wv2, s->d_tmp+eng.qd+eng.kd+hv2, hv2, eng.h); }
+              zaya_qkv_gemv(s, l.wv2, l.wv2_q, s->d_tmp+eng.qd+eng.kd+hv2, hv2, eng.h); }
               nan_clean_k<<<(eng.qkv+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp,eng.qkv);
             cca_prep_kernel<<<1,256,cca_prep_smem_bytes(eng.nq,eng.nkv,eng.hd,eng.hd/2),s->st>>>(s->d_tmp,s->d_tmp+eng.qd,s->d_tmp+eng.qd+eng.kd,s->d_tmp+eng.qd+eng.kd+eng.kd/2,
                 s->d_conv+(size_t)il*2*eng.qkv, s->d_vrec+(size_t)il*(eng.kd/2),
@@ -1416,7 +1475,7 @@ int zaya_forward_greedy_n(ZayaState* s, int token_id, int n, int* out_tokens) {
                     s->d_vcache + (size_t)il * s->max_seq * eng.nkv * eng.hd,
                     s->d_ao, s->d_partials, eng.nq, eng.nkv, eng.hd, s->pos+1, 1.0f/sqrtf((float)eng.hd), (void*)s->st);
             }
-            zaya_gemv(s, l.wo, s->d_ao, s->d_tmp, eng.h, eng.qd);
+            zaya_gemv(s, l.wo, l.wo_q, s->d_ao, s->d_tmp, eng.h, eng.qd);
             copy_k<<<(eng.h+BLK-1)/BLK,BLK,0,s->st>>>(s->d_ao,s->d_tmp,eng.h);
             residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_ao,s->d_hs,l.pahss,l.pahsb,l.parss,l.parsb,eng.h);
             HIP_CHECK(hipGetLastError());
@@ -1428,7 +1487,7 @@ int zaya_forward_greedy_n(ZayaState* s, int token_id, int n, int* out_tokens) {
             HIP_CHECK(hipGetLastError());
             }
             }
-            if(l.gu&&l.dn){
+            if((l.gu||l.gu_q)&&(l.dn||l.dn_q)){
                 eda_router_gate_down_kernel<<<RTR_NSPLIT,256,0,s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,s->d_gemv_scratch,RTR_NSPLIT,eng.h,eng.rtr_h);
                 eda_router_gate_reduce<<<1,256,0,s->st>>>(s->d_gemv_scratch,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdb,s->d_prev_rs+(size_t)il*eng.rtr_h,RTR_NSPLIT,eng.rtr_h);
                 eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
@@ -1440,10 +1499,10 @@ int zaya_forward_greedy_n(ZayaState* s, int token_id, int n, int* out_tokens) {
                 const int gb=(2*eng.n_ff+WMMA_M-1)/WMMA_M;
                 const int db=(eng.h+WMMA_M-1)/WMMA_M;
                 const int sb=(eng.n_ff+BLK-1)/BLK;
-                zaya_gateup_gemv(s, l.gu);
+                zaya_gateup_gemv(s, l.gu, l.gu_q);
                 silu_mul_k<<<sb,BLK,0,s->st>>>(s->d_ao,s->d_tmp,s->d_tmp+eng.n_ff,eng.n_ff);
                 HIP_CHECK(hipGetLastError());
-                zaya_down_gemv(s, l.dn);
+                zaya_down_gemv(s, l.dn, l.dn_q);
                 residual_scale_k<<<g1,BLK,0,s->st>>>(s->d_tmp,s->d_hs,l.pmhss,l.pmhsb,l.pmrss,l.pmrsb,eng.h);
                 HIP_CHECK(hipGetLastError());
                 copy_k<<<g1,BLK,0,s->st>>>(s->d_hs,s->d_tmp,eng.h);
@@ -1454,7 +1513,7 @@ int zaya_forward_greedy_n(ZayaState* s, int token_id, int n, int* out_tokens) {
         rmsnorm_k<<<1,BLK,0,s->st>>>(s->d_hs,s->d_fnw,eng.h);
         HIP_CHECK(hipGetLastError());
 
-        zaya_gemv(s, s->d_embed, s->d_hs, s->d_lm_vocab, eng.vocab, eng.h);
+        zaya_gemv(s, s->d_embed, nullptr, s->d_hs, s->d_lm_vocab, eng.vocab, eng.h);
         argmax_kernel<<<1,256,0,s->st>>>(s->d_lm_vocab,eng.vocab,s->d_argmax_idx,s->d_argmax_val);
         HIP_CHECK(hipGetLastError());
 
@@ -1877,7 +1936,7 @@ HIP_CHECK(hipGetLastError());
 // ── Destroy ──
 void zaya_destroy(ZayaState* s) {
     if (!s) return;
-    auto safe = [](auto p) { if (p) (void)hipFree(p); };
+    auto safe = [](auto p) { if (p) (void)hipFree(const_cast<void*>((const void*)p)); };
     safe(s->d_hs); safe(s->d_ao); safe(s->d_tmp); safe(s->d_fnw);
     if (s->graph_exec) { (void)hipGraphExecDestroy(s->graph_exec); s->graph_exec = nullptr; }
     if (s->graph) { (void)hipGraphDestroy(s->graph); s->graph = nullptr; }
@@ -1903,6 +1962,8 @@ void zaya_destroy(ZayaState* s) {
         safe(l.gdw); safe(l.gdb); safe(l.rfn); safe(l.rf1); safe(l.rf1b);
         safe(l.rf2); safe(l.rf2b); safe(l.rout); safe(l.bb);
         safe(l.gu); safe(l.dn);
+        safe(l.gu_q); safe(l.dn_q);
+        safe(l.wq_q); safe(l.wk_q); safe(l.wv1_q); safe(l.wv2_q); safe(l.wo_q);
         safe(l.pmhss); safe(l.pmhsb); safe(l.pmrss); safe(l.pmrsb);
     }
     if (s->st) {

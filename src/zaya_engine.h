@@ -90,6 +90,8 @@ struct LayerW {
     float *pahss, *pahsb, *parss, *parsb;
     float *gdw, *gdb, *rfn, *rf1, *rf1b, *rf2, *rf2b, *rout, *bb;
     __half *gu, *dn;
+    const uint8_t *gu_q, *dn_q;   // Q4NX raw expert tiles (no bf16 expansion)
+    const uint8_t *wq_q, *wk_q, *wv1_q, *wv2_q, *wo_q;  // Q4NX raw QKV/o_proj tiles (file coords)
     float *pmhss, *pmhsb, *pmrss, *pmrsb;
 };
 

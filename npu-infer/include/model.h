@@ -57,6 +57,7 @@ typedef struct {
     // Raw file data (mmap)
     uint8_t* file_data;
     uint64_t file_size;
+    uint64_t data_base;   // absolute file offset where tensor data starts (8 + header_size)
 } ModelWeights;
 
 // ========== Model Loader ==========
