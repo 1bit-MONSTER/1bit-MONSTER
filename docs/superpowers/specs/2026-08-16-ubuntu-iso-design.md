@@ -131,10 +131,7 @@ acceleration specifically.
 - Exact recovery path if no SSH key is supplied at ISO-build time
   (console login fallback, one-time password, etc.) — needs a concrete
   answer, not left as "SSH-key-only" with no escape hatch.
-- Confirm spare storage exists on the reference box for real-hardware
-  validation before that step is attempted; if not, decide on an
-  alternative (spare drive purchase, different test machine, etc.)
-  before implementation reaches that point.
+- Spare storage confirmed: sda (250G USB Disk) available as of 2026-08-16 for real-hardware validation.
 - `packaging/iso/build.sh`'s own dependencies (xorriso, an Ubuntu ISO
   extraction tool) need to be confirmed available/installable on the
   strixhalo box, or documented as required on whichever machine runs
