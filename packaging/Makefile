@@ -16,7 +16,7 @@ stage:
 	# legacy names are symlinks — argv[0] dispatch inside the ELF.
 	cp $(BUILD_DIR)/1bit $(STAGE)/usr/bin/1bit
 	chmod +x $(STAGE)/usr/bin/1bit
-	for name in zaya_server unified_server unified_router jarvis_server vision_server onebitd onebit 1bit-server; do \
+	for name in zaya_server unified_server unified_router vision_server onebitd onebit 1bit-server; do \
 		ln -sf 1bit $(STAGE)/usr/bin/$$name; \
 	done
 	# optional sidecars (NPU engine needs XRT; video-lora CLI is a dev tool)

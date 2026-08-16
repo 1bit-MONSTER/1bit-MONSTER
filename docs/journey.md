@@ -2,10 +2,11 @@
 
 > **This is the hero story of 1bit.systems.** It started with a laptop, a disassembler, and no docs: AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime (FastFlowLM) — 22 proprietary `.so` files, 209 xclbin bitstreams, zero documentation. We reverse-engineered the entire stack in 4 days and replaced it with open C++.
 >
-> Every crash, breakthrough, and bug below is documented in real-time. ~1800+ hours of engineering, all open source, MIT.
+> Every crash, breakthrough, and bug below is documented in real-time. ~1800+ hours of engineering, all open source, MIT. Since UPDATE 34 the through-line is one binary (`build/1bit`) and one language direction: C++23 for compute kernels, **Mojo 1.0 as the unified language** for everything around them — servers, converters, tooling, control planes. No interpreter at runtime, anywhere.
 
 ## Table of Contents
 
+- [UPDATE 34: The Burn & the Mojo Shift — one through-line, one unified language](#update-34-2026-08-12-the-burn--the-mojo-shift--one-through-line-one-unified-language)
 - [2026-08-16 — The Frontier Gates: 5/5 Validated, Then the Repo Tried to Eat It](#2026-08-16--the-frontier-gates-55-validated-then-the-repo-tried-to-eat-it)
 - [2026-08-15 — 100% HF Coverage: Every Arch-Bearing Checkpoint Maps to an Engine Token](#2026-08-15--100-hf-coverage-every-arch-bearing-checkpoint-maps-to-an-engine-token)
 - [2026-08-07 — The Unified Control Plane Lands](#2026-08-07--the-unified-control-plane-lands-pool-wired-spec-decode-in-server-zoo-55)
@@ -34,6 +35,38 @@
 - [Session 2026-07-03/04 — Triton-XDNA Eval, memlock Fix, Spec-Decode Reality Check](#session-2026-07-0304--triton-xdna-eval-memlock-fix-spec-decode-reality-check)
 - [Session 2026-07-02/03 — Production Stack, Release, Site Refresh](#session-2026-07-0203--production-stack-release-site-refresh)
 - [Earlier Updates (14–1)](#earlier-updates)
+
+---
+
+## UPDATE 34 (2026-08-12): THE BURN & THE MOJO SHIFT — ONE THROUGH-LINE, ONE UNIFIED LANGUAGE
+
+**We burned the repo down to its through-line and picked the language that will carry it forward. Everything that wasn't the engine or the app that proves it is gone — SaaS, agent stack, voice cloning, the JARVIS v1 side-servers. And the glue language that used to be three (Python for tooling, C++ for the engine, JS for the web) is now one: Mojo 1.0, released this week, is the unified language we're building the control plane in.**
+
+### The burn: what got cut, and why it's not coming back
+
+The roadmap was rewritten around a single sentence — *engine (NPU + GPU + CPU, one binary) → JARVIS (voice assistant, reference app)* — and then the repo was made to match it. One commit, ~19k lines deleted (`cbce9630`):
+
+- **SaaS**: `tools/jarvis/auth.cpp`, `billing.cpp`, `usage.cpp`, `beacon.cpp` — the product layer for a product that doesn't exist yet. Gone. So is the Cloudflare auth worker (`workers/`) and the Zaya Co-Host dashboard (`site/dashboard/`) that talked to those APIs.
+- **Voice cloning**: the whole `zaya_audio/` training stack (codec training, voice packs, RVQ-VAE adapters, ONNX export) — a personal quest, not a product. `src/codec_decoder.cpp` went with it.
+- **Agent stack**: RAG, planner, personas, prompts, skills, the daily-routine/awareness scripts — AMD Gaia's turf, not ours. The engine serves it via Lemonade; it doesn't ship one.
+- **JARVIS v1's HTTP hop + WebSocket side-server**: `jarvis_server.cpp`, `audio_stream.cpp`, and upstream's new `voice_session.cpp`/`ws_proto.cpp` — replaced by the in-process pipeline: `mic → VAD → STT (libwhisper, now HIP-accelerated via `src/whisper_hip.hip`) → LLM (in-process BackendManager) → TTS → speaker`. One process, one pipeline, no WebSocket.
+- **Kept on purpose**: `agent_watchdog.cpp` (engine thermal/strategy, live in unified_server) and the whisper HIP port that the JARVIS blocker (P1) needed.
+
+CI, packaging, and scope-guard were updated in the same pass — `test_auth`/`test_billing` and the WS tests dropped, `jarvis_server` symlinks gone, the ALLOWED path list now reflects the real repo. The Python server for the AMD-gui Adrenalin replica was also burned, but that's the next section.
+
+### The Mojo shift: why we stopped writing glue in three languages
+
+This week Mojo hit 1.0. We'd been watching it since the 0.x betas — a language that is to Python what C++23 is to C, with first-class GPU/NPU kernels and the ability to call C libraries directly — and the 1.0 release is the moment we committed: **from here on, new non-kernel code is written in Mojo, not Python.**
+
+- **The AMD-gui Adrenalin replica backend** (a stdlib-Python sysfs/HTTP server for the Radeon Software control surface on Linux) is being rewritten in Mojo 1.0 as a single self-contained binary — same wire contract, zero Python at runtime. Hand-rolled libc HTTP over `external_call` (the stdlib's own mechanism), hand-rolled JSON (the payloads are fixed-shape), zero community packages (the ecosystem's pins are pre-1.0; `mojo==1.0.0` is the only pin we need). It replaces a Python interpreter dependency with one ELF, the same move we made for the NPU stack with C++.
+- **The pattern is the point**: every layer of this project now follows the same rule — one binary, no interpreter at runtime, sysfs/PCI/proc access from the metal. C++23 stays for the compute kernels where it's earned its place; Mojo becomes the unified language for everything around them: servers, converters, tooling, control planes.
+- **Why it's safe this time**: Mojo 1.0's stdlib was verified against the `v1.0.0` tag before we pinned it (no `std.net` yet — hence the libc sockets; no regex — hence the fixed-pattern parsers; `Process` API has no SIGTERM — hence the lazy-reap design). The version pin is the discipline: `mojo==1.0.0`, no `max==25.2`-style beta pins anywhere.
+
+### Status
+
+- **Repo**: one through-line (engine → JARVIS), one binary (`build/1bit`), one language direction (C++23 for kernels, Mojo 1.0 for everything else). Rebased onto 333 commits of upstream (`3f507b07`) with the burn on top — builds clean.
+- **JARVIS P1** (whisper on the engine): `whisper_hip.hip` wired into the forward pass; scalar fallback retained; `WHISPER_GPU=0` escape hatch.
+- **Next**: land the Mojo rewrite of the Adrenalin control plane (M0–M2: toolchain, JSON+sysfs, HTTP+GETs), then WS-09 (the single router) and the WS-11 NVMe expert streaming work from the roadmap.
 
 ---
 

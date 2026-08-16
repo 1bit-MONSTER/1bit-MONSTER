@@ -33,7 +33,7 @@ cmake -B build -G Ninja && cmake --build build --target unified_server -j$(nproc
 
 # Start the audio + Jarvis server (ONNX Runtime optional for codec TTS)
 # cmake -B build -DONNXRUNTIME_ROOT_DIR=/path/to/onnxruntime  # optional, for voice cloning
-# ./build/jarvis_server --port 8090
+# ./build/1bit jarvis --port 8090
 ```
 
 ## Available Nodes
@@ -83,7 +83,7 @@ ComfyUI (Python nodes)
     │
     ├── HTTP POST /v1/chat/completions  ──►  unified_server (C++, port 8088)
     ├── HTTP POST /v1/images/generations ──►  image_server   (C++, port 8089)
-    └── HTTP POST /v1/audio/speech      ──►  jarvis_server  (C++, port 8090)
+    └── HTTP POST /v1/audio/speech      ──►  1bit jarvis  (C++, port 8090)
 ```
 
 All heavy computation happens in the C++ backends (HIP CUDA Vulkan NPU CPU).
