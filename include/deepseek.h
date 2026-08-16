@@ -147,6 +147,7 @@ struct DeepSeekModel {
     std::vector<DeepSeekLayerWeights> layers;
     
     bool load_from_gguf(const std::string& path, const DeepSeekConfig* override_cfg = nullptr);
+    bool load_from_1bp(const std::string& path, const DeepSeekConfig* override_cfg = nullptr);
     void clear();
 };
 

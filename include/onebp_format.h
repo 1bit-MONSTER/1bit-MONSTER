@@ -207,7 +207,18 @@ struct OnebpHeader {
     uint32_t rope_freq_base_swa_f;  // SWA layer RoPE freq base * 1000
     uint32_t n_rot_swa;             // SWA layer RoPE dimension count
     uint32_t n_rot_full;            // FULL attention layer RoPE dim count (0 = use head_dim)
-    uint8_t  reserved[44];          // remaining pad to 256 bytes
+
+    // ── DeepSeek2/Instella MLA fields (arch == ONEBP_DEEPSEEK2, 2026-08-16) ──
+    // Zero when not a DeepSeek2 MLA model (the dense GQA path ignores them).
+    uint32_t mla_qk_nope_dim;       // per-head dim WITHOUT RoPE (nope)
+    uint32_t mla_qk_rope_dim;       // per-head dim WITH RoPE (rope)
+    uint32_t mla_v_dim;             // per-head value dim
+    uint32_t mla_kv_lora_rank;      // compressed KV latent dim
+    uint32_t mla_gated_attn;        // bool: gated MLA (attn_gate tensor present)
+    uint32_t mla_farskip;           // bool: FarSkip dual-residual
+    uint32_t mla_farskip_start;     // first farskip layer idx
+    uint32_t mla_farskip_end;       // last farskip layer idx
+    uint8_t  reserved[12];          // remaining pad to 256 bytes
     char     model_tag[64];         // model identifier string
     
     // validity: core dims always required; attention heads are optional

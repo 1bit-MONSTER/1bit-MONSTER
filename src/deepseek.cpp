@@ -14,6 +14,7 @@
 
 #include "deepseek.h"
 #include "gguf_reader.h"
+#include "../engine/npu/src/onebp_loader.cpp"
 #include <cstring>
 
 static inline float f16_to_f32(uint16_t h) {
@@ -236,6 +237,154 @@ bool DeepSeekModel::load_from_gguf(const std::string& path, const DeepSeekConfig
     fprintf(stderr, "[deepseek] loaded: %s (%d layers, H=%d, MLA kv_lora=%d rope=%d, experts=%d top_k=%d shared=%d dense_first=%d)\n",
             r.architecture().c_str(), cfg.num_layers, H, cfg.kv_lora_rank, cfg.qk_rope_dim,
             cfg.n_routed_experts, cfg.top_k, cfg.n_shared_experts, cfg.first_k_dense);
+    return true;
+}
+
+bool DeepSeekModel::load_from_1bp(const std::string& path, const DeepSeekConfig* override_cfg) {
+    // Load the same tensor set as load_from_gguf, but from a .1bp ternary file.
+    // The 1bp loader (NpuOnebpModel) dequantizes tiles to f32; ndim==3 MLA
+    // tensors (attn_k_b/attn_v_b) are stored as per-head "expert" stacks in
+    // the converter (ne = shape[0]) — read them back and renormalize to the
+    // fused 2D layout exactly like the GGUF split path.
+    NpuOnebpModel m;
+    if (!m.open(path.c_str())) {
+        fprintf(stderr, "[deepseek] FAIL: could not open %s\n", path.c_str());
+        return false;
+    }
+    const auto& h = m.header();
+    if (h.arch != ONEBP_DEEPSEEK2) {
+        fprintf(stderr, "[deepseek] %s: arch=%u (want ONEBP_DEEPSEEK2=20)\n", path.c_str(), (unsigned)h.arch);
+        return false;
+    }
+    if (override_cfg) cfg = *override_cfg;
+    else {
+        cfg.hidden_size       = h.hidden_size;
+        cfg.num_layers        = h.num_layers;
+        cfg.num_heads         = h.num_attention_heads;
+        cfg.num_kv_heads      = h.num_kv_heads ? h.num_kv_heads : h.num_attention_heads;
+        cfg.head_dim          = h.head_dim;
+        cfg.vocab_size        = h.vocab_size;
+        cfg.max_seq_len       = h.max_seq_len ? h.max_seq_len : 4096;
+        cfg.qk_nope_dim       = h.mla_qk_nope_dim;
+        cfg.qk_rope_dim       = h.mla_qk_rope_dim;
+        cfg.v_dim             = h.mla_v_dim;
+        cfg.kv_lora_rank      = h.mla_kv_lora_rank;
+        cfg.q_lora_rank       = 0;  // Instella/DeepSeek-V2-Lite: uncompressed Q
+        cfg.n_routed_experts  = h.num_experts;
+        cfg.n_shared_experts  = 1;  // refined from the fused shexp tensor below
+        cfg.top_k             = h.n_expert_used;
+        cfg.moe_intermediate  = h.n_ff_exp;   // per-expert FFN width (not intermediate_size)
+        cfg.first_k_dense     = h.n_layer_dense_lead;
+        cfg.rms_norm_eps      = 1e-6f;
+        cfg.gated_attention   = h.mla_gated_attn;
+        cfg.farskip           = h.mla_farskip;
+        cfg.farskip_start     = h.mla_farskip_start;
+        cfg.farskip_end       = h.mla_farskip_end;
+        cfg.score_func        = h.expert_gating_func;  // llama enum: 2=sigmoid
+        cfg.norm_topk_prob    = h.expert_weights_norm;
+        cfg.routed_scaling    = h.expert_weights_scale();
+        // shared experts: n_ff_shexp is the FUSED intermediate (n_shared * moe_int)
+        if (h.n_ff_shexp > 0 && cfg.moe_intermediate > 0)
+            cfg.n_shared_experts = std::max(1, (int)h.n_ff_shexp / cfg.moe_intermediate);
+    }
+    int H = cfg.hidden_size, NH = cfg.num_heads;
+    int QKD = cfg.qk_nope_dim + cfg.qk_rope_dim;
+    int KVB = cfg.qk_nope_dim + cfg.v_dim;
+
+    auto get = [&](const char* name, std::vector<float>& dst, size_t expect) -> bool {
+        if (!m.get_tensor_f32(name, dst)) { fprintf(stderr, "  [deepseek] missing: %s\n", name); return false; }
+        if (expect > 0 && dst.size() != expect) { fprintf(stderr, "  [deepseek] %s: expected %zu, got %zu\n", name, expect, dst.size()); return false; }
+        return true;
+    };
+
+    if (!get("token_embd.weight", token_emb, (size_t)cfg.vocab_size * H)) return false;
+    get("output_norm.weight", final_norm_w, (size_t)H);
+    if (final_norm_w.empty()) final_norm_w.resize(H, 1.0f);
+    get("output.weight", output_w, (size_t)cfg.vocab_size * H);
+
+    layers.resize(cfg.num_layers);
+    for (int il = 0; il < cfg.num_layers; il++) {
+        auto& l = layers[il];
+        std::string p = "blk." + std::to_string(il) + ".";
+        bool ok = true;
+        ok &= get((p + "attn_norm.weight").c_str(), l.rms_attn_w, (size_t)H);
+        ok &= get((p + "ffn_norm.weight").c_str(),  l.rms_ffn_w,  (size_t)H);
+        ok &= get((p + "attn_q.weight").c_str(), l.w_q, (size_t)H * NH * QKD);
+        ok &= get((p + "attn_kv_a_mqa.weight").c_str(), l.w_kv_a, (size_t)H * (cfg.kv_lora_rank + cfg.qk_rope_dim));
+        ok &= get((p + "attn_kv_a_norm.weight").c_str(), l.w_kv_a_norm, (size_t)cfg.kv_lora_rank);
+        // kv_b: stored as 2D flat [shape[0], shape[1]*shape[2]] (ne0-contiguous,
+        // same order as the GGUF reader — verified 2026-08-16). Normalize to
+        // the fused [kv_lora, NH*(nope+v)] layout.
+        {
+            size_t kvb_n = (size_t)cfg.kv_lora_rank * NH * KVB;
+            if (!get((p + "attn_kv_b.weight").c_str(), l.w_kv_b, kvb_n)) {
+                std::vector<float> kb, vb;
+                bool okb = true;
+                okb &= get((p + "attn_k_b.weight").c_str(), kb, (size_t)cfg.qk_nope_dim * cfg.kv_lora_rank * NH);
+                okb &= get((p + "attn_v_b.weight").c_str(), vb, (size_t)cfg.v_dim * cfg.kv_lora_rank * NH);
+                if (okb) {
+                    l.w_kv_b.assign(kvb_n, 0.0f);
+                    // kb flat = ne0-contiguous [qk_nope, kv_lora, NH]: element
+                    // (d, j, h) at d + qk_nope*j + qk_nope*kv_lora*h.
+                    for (int h = 0; h < NH; h++)
+                        for (int d = 0; d < cfg.qk_nope_dim; d++) {
+                            float* dst = l.w_kv_b.data() + ((size_t)h * KVB + d) * cfg.kv_lora_rank;
+                            for (int j = 0; j < cfg.kv_lora_rank; j++)
+                                dst[j] = kb[(size_t)d + (size_t)cfg.qk_nope_dim * j +
+                                            (size_t)cfg.qk_nope_dim * cfg.kv_lora_rank * h];
+                        }
+                    // vb flat = ne0-contiguous [kv_lora, v_dim, NH]: element
+                    // (j, d, h) at j + kv_lora*d + kv_lora*v_dim*h.
+                    for (int h = 0; h < NH; h++)
+                        for (int d = 0; d < cfg.v_dim; d++) {
+                            float* dst = l.w_kv_b.data() + ((size_t)h * KVB + cfg.qk_nope_dim + d) * cfg.kv_lora_rank;
+                            for (int j = 0; j < cfg.kv_lora_rank; j++)
+                                dst[j] = vb[(size_t)j + (size_t)cfg.kv_lora_rank * d +
+                                            (size_t)cfg.kv_lora_rank * cfg.v_dim * h];
+                        }
+                } else {
+                    ok = false;
+                }
+            }
+        }
+        ok &= get((p + "attn_output.weight").c_str(), l.w_o, (size_t)H * NH * cfg.v_dim);
+        if (cfg.gated_attention)
+            ok &= get((p + "attn_gate.weight").c_str(), l.w_attn_gate, (size_t)NH * cfg.v_dim * H);
+
+        if (il < cfg.first_k_dense) {
+            if (auto* te = m.find_tensor((p + "ffn_gate.weight").c_str())) cfg.dense_intermediate = te->rows;
+            ok &= get((p + "ffn_gate.weight").c_str(), l.d_gate, (size_t)H * cfg.dense_intermediate);
+            ok &= get((p + "ffn_up.weight").c_str(),   l.d_up,   (size_t)H * cfg.dense_intermediate);
+            ok &= get((p + "ffn_down.weight").c_str(), l.d_down, (size_t)cfg.dense_intermediate * H);
+        } else {
+            ok &= get((p + "ffn_gate_inp.weight").c_str(), l.w_gate, (size_t)H * cfg.n_routed_experts);
+            get((p + "exp_probs_b.bias").c_str(), l.w_exp_probs_b, (size_t)cfg.n_routed_experts);
+            ok &= get((p + "ffn_gate_shexp.weight").c_str(), l.w_shared_gate, (size_t)H * cfg.n_shared_experts * cfg.moe_intermediate);
+            ok &= get((p + "ffn_up_shexp.weight").c_str(),   l.w_shared_up,   (size_t)H * cfg.n_shared_experts * cfg.moe_intermediate);
+            ok &= get((p + "ffn_down_shexp.weight").c_str(), l.w_shared_down, (size_t)cfg.n_shared_experts * cfg.moe_intermediate * H);
+            auto load_exps = [&](const char* tname, std::vector<uint16_t>& dst, int A, int B, int NE) -> bool {
+                std::string full = p + tname;
+                auto* te = m.find_tensor(full.c_str());
+                if (!te) { fprintf(stderr, "  [deepseek] missing: %s\n", full.c_str()); return false; }
+                dst.resize((size_t)A * B * NE);
+                for (int e = 0; e < NE; e++) {
+                    std::vector<float> w;
+                    if (!m.get_tensor_f32_expert(full.c_str(), e, w)) { fprintf(stderr, "  [deepseek] expert fail: %s[%d]\n", full.c_str(), e); return false; }
+                    if (w.size() != (size_t)A * B) { fprintf(stderr, "  [deepseek] %s[%d]: %zu elems, want %d\n", full.c_str(), e, w.size(), A * B); return false; }
+                    for (size_t i = 0; i < w.size(); i++) dst[(size_t)e * A * B + i] = f32_to_f16(w[i]);
+                }
+                return true;
+            };
+            ok &= load_exps("ffn_gate_exps.weight", l.exp_gate, H, cfg.moe_intermediate, cfg.n_routed_experts);
+            ok &= load_exps("ffn_up_exps.weight",   l.exp_up,   H, cfg.moe_intermediate, cfg.n_routed_experts);
+            ok &= load_exps("ffn_down_exps.weight", l.exp_down, cfg.moe_intermediate, H, cfg.n_routed_experts);
+        }
+        if (!ok) { fprintf(stderr, "  [deepseek] layer %d incomplete\n", il); return false; }
+    }
+    fprintf(stderr, "[deepseek] loaded 1bp: %s (%d layers, H=%d, MLA kv_lora=%d rope=%d, experts=%d top_k=%d shared=%d dense_first=%d, gated=%d farskip=%d)\n",
+            path.c_str(), cfg.num_layers, H, cfg.kv_lora_rank, cfg.qk_rope_dim,
+            cfg.n_routed_experts, cfg.top_k, cfg.n_shared_experts, cfg.first_k_dense,
+            cfg.gated_attention, cfg.farskip);
     return true;
 }
 
@@ -524,6 +673,12 @@ std::vector<float> deepseek_forward(
             }
         }
 
+        if (getenv("DS_DUMP_ALL")) {
+            FILE* df = fopen("/tmp/ds_all.txt", "a");
+            if (df) { fprintf(df, "%s L%d main[0..3]: %.6f %.6f %.6f %.6f  alt[0..3]: %.6f %.6f %.6f %.6f\n",
+                getenv("DS_TAG") ? getenv("DS_TAG") : "?",
+                il, main_x[0],main_x[1],main_x[2],main_x[3], alt_x[0],alt_x[1],alt_x[2],alt_x[3]); fclose(df); }
+        }
         // Hand the stream forward: after a farskip layer the running x for the
         // NEXT layer's non-farskip path is the main stream.
         if (layer_fs) x = main_x;

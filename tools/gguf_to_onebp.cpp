@@ -360,6 +360,44 @@ int main(int argc, char** argv) {
             hdr.arch = ONEBP_DENSE;  // default is already 0
         } else if (arch_str == "deepseek2" || arch_str == "deepseek3") {
             hdr.arch = ONEBP_DEEPSEEK2;
+            // DeepSeek2/Instella MLA dims (2026-08-16): key_length_mla =
+            // qk_nope+qk_rope; qk_rope = rope.dimension_count; v_dim =
+            // value_length_mla; kv_lora = attention.kv_lora_rank.
+            auto gu32 = [&](const std::string& key, uint32_t def) {
+                uint32_t v;
+                if (reader.get_u32(key, v)) return v;
+                if (reader.get_u32(arch_str + "." + key, v)) return v;
+                return def;
+            };
+            uint32_t kl_mla = gu32("attention.key_length_mla", 0);
+            uint32_t vl_mla = gu32("attention.value_length_mla", 0);
+            uint32_t n_rot  = gu32("rope.dimension_count", 0);
+            hdr.mla_qk_rope_dim = n_rot;
+            hdr.mla_qk_nope_dim = kl_mla >= n_rot ? kl_mla - n_rot : 0;
+            hdr.mla_v_dim       = vl_mla;
+            hdr.mla_kv_lora_rank = gu32("attention.kv_lora_rank", 0);
+            hdr.mla_gated_attn = reader.tensor_info("blk.0.attn_gate.weight") ? 1 : 0;
+            if (reader.get_u32(arch_str + ".instella_farskip", hdr.mla_farskip)) {
+                hdr.mla_farskip_start = gu32("instella_farskip_start", 0);
+                hdr.mla_farskip_end   = gu32("instella_farskip_end", 100000);
+            }
+            printf("  DeepSeek2 MLA: qk_nope=%u qk_rope=%u v_dim=%u kv_lora=%u gated=%u farskip=%u[%u..%u]\n",
+                   hdr.mla_qk_nope_dim, hdr.mla_qk_rope_dim, hdr.mla_v_dim,
+                   hdr.mla_kv_lora_rank, hdr.mla_gated_attn, hdr.mla_farskip,
+                   hdr.mla_farskip_start, hdr.mla_farskip_end);
+            hdr.n_layer_dense_lead = gu32("leading_dense_block_count", 0);
+            hdr.n_ff_exp   = gu32("expert_feed_forward_length", 0);
+            uint32_t n_sh = gu32("expert_shared_count", 0);
+            hdr.n_ff_shexp = n_sh * hdr.n_ff_exp;
+            if (hdr.n_ff_exp) hdr.intermediate_size = hdr.n_ff_exp;  // MoE: expert FFN width
+            hdr.expert_gating_func = gu32("expert_gating_func", 0);
+            hdr.expert_weights_norm = gu32("expert_weights_norm", 0);
+            float ews = 0;
+            if (reader.get_f32("expert_weights_scale", ews) || reader.get_f32(arch_str + ".expert_weights_scale", ews))
+                hdr.set_expert_weights_scale(ews);
+            printf("  DeepSeek2 MoE: experts=%u topk=%u n_ff_exp=%u n_shared=%u dense_lead=%u gating=%u norm_topk=%u scale=%.2f\n",
+                   hdr.num_experts, hdr.n_expert_used, hdr.n_ff_exp, n_sh, hdr.n_layer_dense_lead,
+                   hdr.expert_gating_func, hdr.expert_weights_norm, ews);
         } else if (arch_str == "gemma4") {
             // gemma4: can be dense (31B) or MoE (26B) — auto-detect handles MoE
             hdr.arch = ONEBP_DENSE;
@@ -430,7 +468,8 @@ int main(int argc, char** argv) {
                 tq = ONEBP_Q4NX;
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
             tensors.push_back({tn, 2, r, c, 1, 0, tiled, tq});
-            if (tensors.size() <= 3) printf("  tensor %s: %dx%d tiled=%" PRIu64 " quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
+            if (tensors.size() <= 3 || tn.find("shexp") != std::string::npos)
+                printf("  tensor %s: %dx%d tiled=%" PRIu64 " quant=%d\n", tn.c_str(), r, c, tiled, (int)tq);
         } else {
             // ndim == 3: expert-stacked tensor. Expert tensors (name contains
             // 'exps.'/'shexp') follow the detected layout; non-expert 3D
@@ -439,9 +478,20 @@ int main(int argc, char** argv) {
             bool expert_tensor = (tn.find("exps.") != std::string::npos || tn.find("shexp") != std::string::npos);
             int ne, r, c;
             if (!expert_tensor) {
+                // Non-expert 3D (MLA attn_k_b/attn_v_b): NOT an expert stack.
+                // GGUF 3D is ne0-contiguous; storing as 2D [shape[0],
+                // shape[1]*shape[2]] keeps get_tensor_f32's flat order identical
+                // to the GGUF reader (verified 2026-08-16).
+                OnebpQuant tq2 = quant;
+                if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
+                    (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
+                    tq2 = ONEBP_Q4NX;
                 ne = (int)inf->shape[0];
                 r  = (int)inf->shape[1];
                 c  = (int)inf->shape[2];
+                tensors.push_back({tn, 2, ne, r * c, 1, 0,
+                                   onebp_tiled_size(ne, r*c, tr, tc, gs, tq2), tq2});
+                continue;
             } else if (moe_shape_colmajor) {
                 // column-major [cols, rows, experts] (also zaya's [rows,
                 // cols, experts] read back as cols=shape[0], rows=shape[1])
