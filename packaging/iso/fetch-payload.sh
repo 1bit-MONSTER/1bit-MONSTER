@@ -75,6 +75,48 @@ else
 fi
 rm -rf "$TMP_PIP"
 
+echo "-- TheRock core runtime ${THEROCK_VER}: attempting exact-version pip download --"
+# unified_server dynamically links against libamdhip64/libamd_comgr/libroctx64
+# (HIP runtime + comgr) and libomp — these ship in rocm-sdk-core, a sibling
+# package to rocm-sdk-libraries-gfx1151 fetched above, NOT inside it. Without
+# this, the appliance's API service fails to start at all (dynamic linker
+# can't resolve these at exec time) — found by actually booting a built ISO
+# in QEMU and inspecting the failing systemd unit.
+TMP_PIP="$(mktemp -d)"
+if pip download "rocm-sdk-core==${THEROCK_VER}" \
+    --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+    --no-deps -d "$TMP_PIP" > /tmp/therock-core-pip.log 2>&1; then
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-core.tar.gz" -C "$TMP_PIP" .
+  echo "   fetched from nightlies index"
+else
+  echo "   not available in nightlies index (log: /tmp/therock-core-pip.log)"
+  echo "   falling back to vendoring the matching build already on this box"
+  LOCAL="/opt/rocm-therock/lib/python3.14/site-packages"
+  DIST_INFO="${LOCAL}/rocm_sdk_core-${THEROCK_VER}.dist-info"
+  CONTENT_DIR="${LOCAL}/_rocm_sdk_core"
+  if [ ! -d "$DIST_INFO" ] || [ ! -d "$CONTENT_DIR" ]; then
+    echo "FATAL: ${THEROCK_VER} not found in the nightlies index, and the local" >&2
+    echo "       dist-info/content pair for rocm_sdk_core is incomplete" >&2
+    echo "       (dist-info: $([ -d "$DIST_INFO" ] && echo present || echo MISSING)," >&2
+    echo "        content dir: $([ -d "$CONTENT_DIR" ] && echo present || echo MISSING))" >&2
+    echo "       — cannot vendor a payload for this pinned version. NOTE: if the box's" >&2
+    echo "       local ROCm install has since moved on to a newer nightly, do NOT" >&2
+    echo "       silently vendor a version-mismatched core against the already-pinned" >&2
+    echo "       gfx1151 libraries above — re-pin THEROCK_VER for both instead." >&2
+    exit 1
+  fi
+  if ! grep -q "^_rocm_sdk_core/" "${DIST_INFO}/RECORD"; then
+    echo "FATAL: ${DIST_INFO}/RECORD does not reference _rocm_sdk_core/" >&2
+    echo "       — version correlation failed, refusing to vendor a possibly-stale" >&2
+    echo "       or mismatched payload." >&2
+    exit 1
+  fi
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-core.tar.gz" -C "$LOCAL" "_rocm_sdk_core"
+  echo "   vendored $(du -sh "$CONTENT_DIR" | cut -f1) from ${CONTENT_DIR}"
+  echo "   (correlated against ${DIST_INFO}/RECORD)"
+fi
+rm -rf "$TMP_PIP"
+
 echo ""
 echo "Payload ready in ${PAYLOAD}:"
 ls -la "$PAYLOAD"
