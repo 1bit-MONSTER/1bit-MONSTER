@@ -1451,6 +1451,7 @@ int main(int argc,char**argv){
     // attention; NPU GEMMs run am=B (M=32 kernels amortize the ~4ms
     // per-op driver overhead across the batch). MoE path stays serial.
     int BS=8;
+    if (getenv("NPU_BS")) BS = atoi(getenv("NPU_BS"));
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
     int kv_size=4096*NKV*HD;
     std::vector<std::vector<KVCache>> kv_caches;
@@ -2999,15 +3000,9 @@ int main(int argc,char**argv){
             FLM_QUANTIZE_ASYNC(cq,h_b.data(),batch_size,H,cq_ascale);
             auto r_cq=FLM_SYNC_AND_LAUNCH(cq,l);
 
-            // ── GU GEMM: input (h_b) ready since layer start — launch right
-            //    after QKV; its kernel hides the QKV readback + attention. ──
             int mlp_out=cfg.gu_split?IM:2*IM;
-            float cg_ascale=dynamic_ascale(h_b.data(),batch_size*H);
-            FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
-            FLM_SYNC_A(cg,l);                 // cg.bA sync (MM2S) ∥ QKV kernel
-            auto r_cg=FLM_LAUNCH(cg,l);       // GU queued behind QKV on the NPU
 
-            // ── QKV: wait + readback + dequant (S2MM readback ∥ GU kernel) ──
+            // ── QKV: wait + readback + dequant ──
             FLM_DEQUANTIZE(cq,r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l],l);
             cn(qo_b.data(),batch_size*qkv_n);
 
@@ -3039,42 +3034,45 @@ int main(int argc,char**argv){
             FLM_QUANTIZE_ASYNC(co,at_b.data(),batch_size,NH*HD,co_ascale);
             auto r_co=FLM_SYNC_AND_LAUNCH(co,l);
 
-            // ── GU: wait + readback + dequant (readback ∥ O kernel) ──
-            FLM_WAIT_KERNEL(cg,r_cg);
-            FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
-            cn(gt_b.data(),batch_size*mlp_out);
+            // ── O: wait + readback + dequant + residual + post-attn norm ──
+            FLM_WAIT_KERNEL(co,r_co);
+            FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
+            cn(oo_b.data(),batch_size*H);
+            for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
+            for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
+            for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
+
+            // ── GU GEMM: gate projection MUST see the post-attention hidden
+            //    state (same input as the up projection) — the old launch at
+            //    the top of the layer fed it the PRE-attention input, so the
+            //    gate was wrong and dense decode emitted garbage after the
+            //    first token while boot/prefill were correct (issue #1699).
+            //    cu (gu_split) launches alongside on the same input. ──
+            float cg_ascale=dynamic_ascale(h_b.data(),batch_size*H);
+            FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
+            FLM_SYNC_A(cg,l);
+            auto r_cg=FLM_LAUNCH(cg,l);
 
             // SiLU gate + U GEMM (gu_split) or combined gate*up
             if(cfg.gu_split){
-                // Up-projection needs the post-attention hidden state, so the O
-                // readback + residual + rn must complete before cu launches.
-                FLM_WAIT_KERNEL(co,r_co);
-                FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
-                cn(oo_b.data(),batch_size*H);
-                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
-                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
-                for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
                 FLM_QUANTIZE_ASYNC_PTR(cu_ptr,h_b.data(),batch_size,H,cg_ascale);
                 auto r_cu=FLM_SYNC_AND_LAUNCH_PTR(cu_ptr,l);
+                FLM_WAIT_KERNEL(cg,r_cg);
+                FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
+                cn(gt_b.data(),batch_size*mlp_out);
                 FLM_DEQUANTIZE_PTR(cu_ptr,r_cu,su_b.data(),batch_size,IM,cg_ascale,usc[l],l);
                 cn(su_b.data(),batch_size*IM);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*IM+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[b*IM+i];}}}
-            else{for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
+            else{
+                FLM_WAIT_KERNEL(cg,r_cg);
+                FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
+                cn(gt_b.data(),batch_size*mlp_out);
+                for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
 
-            // ── D GEMM: queued behind O ──
+            // ── D GEMM ──
             float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
             FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
             auto r_cd=FLM_SYNC_AND_LAUNCH(cd,l);
-
-            // ── O: wait + readback + dequant (non-split: readback ∥ D kernel) + residual + rn ──
-            if(!cfg.gu_split){
-                FLM_WAIT_KERNEL(co,r_co);
-                FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
-                cn(oo_b.data(),batch_size*H);
-                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
-                for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
-                for(int b=0;b<batch_size;b++)rn_c(&h_b[b*H],pa_n[l].data(),H);
-            }
 
             // ── Cross-layer boundary (roadmap step 3): fused D-output → l+1 QKV input ──
             if(l+1<NC){
@@ -3110,7 +3108,9 @@ int main(int argc,char**argv){
 
         total_generated+=batch_size;total_verified+=batch_size;sp+=1;n_batches++;
         double batch_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_batch).count();
-        printf("  [%d] batch=%d tok=%d %.0fms (%.0f ms/tok)\n",step,batch_size,top_ids[0],batch_ms,batch_ms/batch_size);
+        printf("  [%d] batch=%d toks:", step, batch_size);
+        for (int tb = 0; tb < batch_size; tb++) printf(" %d", top_ids[tb]);
+        printf("  %.0fms (%.0f ms/tok)\n", batch_ms, batch_ms/batch_size);
         step+=batch_size;
     }
 
