@@ -16,14 +16,13 @@
 <meta name="description" content="100% HF model coverage across 32 architecture tokens. Coverage by class, not by port.">
 <link rel="icon" href="assets/favicon.svg?v=2" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/1bm.css">
-<link rel="canonical" href="https://1bit.monster/">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
+<link rel="canonical" href="https://1bit.monster/models.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="1bit MONSTER">
 <meta property="og:title" content="Models — 1bit MONSTER">
 <meta property="og:description" content="100% HF model coverage across 32 architecture tokens. Coverage by class, not by port.">
-<meta property="og:url" content="https://1bit.monster/">
+<meta property="og:url" content="https://1bit.monster/models.html">
 <meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Models — 1bit MONSTER">
@@ -33,9 +32,9 @@
 {
   "@context": "https://schema.org",
   "@type": "WebPage",
-  "name": "Models \u2014 1bit MONSTER",
+  "name": "Models — 1bit MONSTER",
   "description": "100% HF model coverage across 32 architecture tokens. Coverage by class, not by port.",
-  "url": "https://1bit.monster/",
+  "url": "https://1bit.monster/models.html",
   "about": {
     "@type": "SoftwareApplication",
     "name": "1bit MONSTER"
@@ -44,79 +43,75 @@
 </script>
 
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics -->
+<style>
+  body{margin:0}
+  *{box-sizing:border-box}
+  .bh-nav a:hover{color:#ff9f1c}
+  .bh-cta-ghost:hover{border-color:#00e5ff;color:#00e5ff}
+  .bh-row:hover{background:rgba(0,229,255,.04)}
+</style>
 </head>
 <body>
-<div class="shell">
-  <aside class="rail">
-    <div>
-      <span class="mark">1bm</span>
-      <span class="wordmark">1bit<br>MONSTER</span>
-      <p class="quote">"Sorry but not sorry." <span>— bong-water-water-bong</span></p>
-    </div>
-    <nav>
-      <a href="index.html">overview</a>
-      <a href="models.html" aria-current="page">models</a>
-      <a href="benchmarks.html">benchmarks</a>
-      <a href="docs.html">docs</a>
-      <a href="story.html">the story</a>
-      <a href="jarvis/">jarvis</a>
-      <a href="blog/">blog</a>
-      <a href="store/">store</a>
-      <a href="demo/">demos</a>
-      <a href="live.html">live</a>
-      <a href="analytics/">analytics</a>
-      <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github</a>
-    </nav>
-    <div class="status"><span class="dot"></span>engine online</div>
-    <div class="meta">MIT<br>pure C++23<br>no python<br>6 hw targets</div>
-  </aside>
-  <main>
-    <div class="topbar"><span>100% HF coverage · any hardware · one engine</span><span>32 arch tokens · 302,330 / 322,029 checkpoints</span></div>
-    <div class="hero">
-      <h1>100% HF coverage, <span style="color:var(--cyan)">one engine</span></h1>
-      <p class="lead">Coverage is defined at the <strong>architecture class</strong>, not per checkpoint. A class that works brings its whole family with it — including checkpoints that did not exist when the class was written. Roughly 50 classes cover the long tail of what HuggingFace hosts; 19 are live.</p>
-      <p class="lead">Three components make a new class cheap: the <strong>registry</strong> (detection and metadata), the <strong>kernel path</strong> (reused ops, quant-aware), and the <strong>validation harness</strong> (numerical comparison against the reference). All three are proven.</p>
-    </div>
-    <section>
-      <h2>Families</h2>
-      <table>
-        <tr><th>family</th><th>class</th><th>highlight</th></tr>
-        <tr><td>Zyphra</td><td class="b">dense · MoE · Mamba/SSM</td><td class="b">BlackMamba-1.5B — 79.4 tok/s</td></tr>
-        <tr><td>Qwen</td><td class="b">dense · MoE · vision-language</td><td class="b">Qwen3-0.6B — 373 tok/s</td></tr>
-        <tr><td>Llama</td><td class="b">dense</td><td class="b">widest third-party fine-tune surface</td></tr>
-        <tr><td>Mistral</td><td class="b">dense · MoE</td><td class="b">sliding-window attention</td></tr>
-        <tr><td>Gemma</td><td class="b">dense</td><td class="b">GeGLU, distinct norm layout</td></tr>
-        <tr><td>Phi</td><td class="b">dense</td><td class="b">strong draft-model candidate</td></tr>
-        <tr><td>Falcon</td><td class="b">dense</td><td class="b">multi-query attention</td></tr>
-        <tr><td>OLMo</td><td class="b">dense</td><td class="b">clean-room numerics reference</td></tr>
-        <tr><td>Granite</td><td class="b">dense · MoE</td><td class="b">enterprise + code variants</td></tr>
-        <tr><td>SmolLM</td><td class="b">dense</td><td class="b">SmolLM2-135M — 662 tok/s</td></tr>
-        <tr><td>DeepSeek</td><td class="b">dense · MoE</td><td class="b">R1-Distill-Llama-8B — 44 tok/s</td></tr>
-        <tr><td>GPT-OSS</td><td class="b">MoE</td><td class="b">expert routing at scale</td></tr>
-        <tr><td>Laguna</td><td class="b">dense</td><td class="b">shared dense kernel path</td></tr>
-        <tr><td>Kimi</td><td class="b">dense · MoE</td><td class="b">long-context KV residency</td></tr>
-        <tr><td>BitNet / Bonsai</td><td class="b">ternary</td><td class="b">native 1BP TQ2 layouts</td></tr>
-        <tr><td>Whisper</td><td class="b">speech (STT)</td><td class="b">front end of the JARVIS pipeline</td></tr>
-      </table>
-      <p class="note" style="margin-top:14px">Per-family pages, with measured numbers where published: <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/model-families/README.md">docs/model-families →</a></p>
-    </section>
-    <section class="cols">
-      <div>
-        <h3>Formats</h3>
-        <p class="lead">GGUF, ONNX, and the native 1BP format are read directly. Architecture detection is automatic; there is no per-model configuration file and no conversion step to babysit.</p>
-      </div>
-      <div>
-        <h3>Featured: Zyphra</h3>
-        <p class="lead">The one family that spans the entire stack — EEG → LLM (dense, MoE, Mamba) → TTS → voice cloning — all on the same binary. ZAYA1-74B-preview at 17.6 tok/s; BlackMamba-1.5B at 79.4.</p>
-      </div>
-    </section>
-    <footer>
-  <span>© 1bit MONSTER</span>
-  <span style="color:var(--cyan)">mit — do whatever you want</span>
-  <span>Metepenagiag Mi&rsquo;kmaq Nation &middot; New Brunswick, Canada &middot; <a href="mailto:admin@1bit.monster" style="color:var(--faint)">admin@1bit.monster</a></span>
-  <span style="text-transform:none;letter-spacing:0">&ldquo;Sorry but not sorry.&rdquo; &mdash; bong-water-water-bong</span>
-</footer>
-  </main>
+<div style="background:radial-gradient(1200px 600px at 15% -10%, rgba(0,229,255,.12), transparent 60%),radial-gradient(1000px 550px at 90% 0%, rgba(255,159,28,.10), transparent 60%),#021621;color:#e7f6fd;font-family:'DM Mono',ui-monospace,Menlo,monospace;line-height:1.6;min-height:100vh">
+<nav style="display:flex;align-items:center;justify-content:space-between;max-width:1100px;margin:0 auto;padding:28px 24px">
+<a href="index.html" style="font-family:'DM Serif Display',Georgia,serif;font-size:20px;color:#e7f6fd;text-decoration:none"><span style="color:#00e5ff">1bit</span>.MONSTER</a>
+<div class="bh-nav" style="display:flex;gap:28px;font-size:13px;color:#a0d9f8;flex-wrap:wrap;justify-content:flex-end">
+<a href="models.html" style="color:#00e5ff;text-decoration:none">Models</a>
+<a href="benchmarks.html" style="color:inherit;text-decoration:none">Benchmarks</a>
+<a href="docs.html" style="color:inherit;text-decoration:none">Docs</a>
+<a href="jarvis/" style="color:inherit;text-decoration:none">1bit JARVIS</a>
+<a href="blog/" style="color:inherit;text-decoration:none">Blog</a>
+<a href="store/" style="color:inherit;text-decoration:none">Store</a>
+<a href="demo/" style="color:inherit;text-decoration:none">Demos</a>
+<a href="analytics/" style="color:inherit;text-decoration:none">Analytics</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:inherit;text-decoration:none">GitHub</a>
+</div>
+</nav>
+<div style="max-width:920px;margin:60px auto 0;padding:0 24px;text-align:center">
+<div class="bh-badge" style="display:inline-flex;align-items:center;gap:8px;padding:7px 16px;border:1px solid #0e80be;border-radius:999px;font-size:12px;color:#00e5ff;margin-bottom:28px"><span style="width:6px;height:6px;background:#ff9f1c;border-radius:999px"></span>100% HF coverage — 32 arch tokens</div>
+<h1 style="font-family:'DM Serif Display',Georgia,serif;font-weight:400;font-size:clamp(40px,6.5vw,72px);line-height:1.02;margin:0 0 24px;letter-spacing:-.02em">Every family. <span style="color:#00e5ff">One</span> engine.</h1>
+<p style="max-width:64ch;margin:0 auto 40px;font-size:17px;color:#a0d9f8">Coverage is defined at the <strong style="color:#e7f6fd;font-weight:500">architecture class</strong>, not per checkpoint. A class that works brings its whole family with it — including checkpoints that did not exist when the class was written. Roughly 50 classes cover the long tail of what HuggingFace hosts; 19 are live, mapped through 32 arch tokens.</p>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4,1fr);max-width:1000px;margin:0 auto 80px;padding:0 24px">
+<div style="text-align:center;padding:20px 12px"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#00e5ff">100%</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">HF checkpoints</span></div>
+<div style="text-align:center;padding:20px 12px;border-left:1px solid rgba(93,158,194,.2)"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#ff9f1c">302,330</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">/ 322,029 mapped</span></div>
+<div style="text-align:center;padding:20px 12px;border-left:1px solid rgba(93,158,194,.2)"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#0e80be">19</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">classes live today</span></div>
+<div style="text-align:center;padding:20px 12px;border-left:1px solid rgba(93,158,194,.2)"><b style="display:block;font-family:'DM Serif Display',Georgia,serif;font-size:40px;font-weight:400;line-height:1.1;color:#00e5ff">3</b><span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5d9ec2">formats read directly</span></div>
+</div>
+<div style="max-width:920px;margin:0 auto 80px;padding:0 24px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#5d9ec2;border-bottom:1px solid rgba(93,158,194,.24);padding-bottom:12px;margin-bottom:20px"><span>Families</span><span>class → highlight</span></div>
+<div style="border:1px solid rgba(93,158,194,.24);border-radius:12px;overflow:hidden;background:rgba(4,32,47,.6)">
+<div style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#5d9ec2;border-bottom:1px solid rgba(93,158,194,.24)"><span>family</span><span>class</span><span style="text-align:right">highlight</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Zyphra</span><span style="color:#a0d9f8">dense · MoE · Mamba/SSM</span><span style="text-align:right;color:#00e5ff">BlackMamba-1.5B — 79.4 tok/s</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Qwen</span><span style="color:#a0d9f8">dense · MoE · vision-language</span><span style="text-align:right;color:#00e5ff">Qwen3-0.6B — 373 tok/s</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Llama</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#5d9ec2">widest fine-tune surface</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Mistral</span><span style="color:#a0d9f8">dense · MoE</span><span style="text-align:right;color:#5d9ec2">sliding-window attention</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Gemma</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#5d9ec2">GeGLU, distinct norm layout</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Phi</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#5d9ec2">strong draft-model candidate</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Falcon</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#5d9ec2">multi-query attention</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>OLMo</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#5d9ec2">clean-room numerics reference</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Granite</span><span style="color:#a0d9f8">dense · MoE</span><span style="text-align:right;color:#5d9ec2">enterprise + code variants</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>SmolLM</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#00e5ff">SmolLM2-135M — 662 tok/s</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>DeepSeek</span><span style="color:#a0d9f8">dense · MoE</span><span style="text-align:right;color:#5d9ec2">R1-Distill-Llama-8B — 44 tok/s</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>GPT-OSS</span><span style="color:#a0d9f8">MoE</span><span style="text-align:right;color:#5d9ec2">expert routing at scale</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Laguna</span><span style="color:#a0d9f8">dense</span><span style="text-align:right;color:#5d9ec2">shared dense kernel path</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>Kimi</span><span style="color:#a0d9f8">dense · MoE</span><span style="text-align:right;color:#5d9ec2">long-context KV residency</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;border-bottom:1px solid rgba(93,158,194,.16);font-size:13.5px"><span>BitNet / Bonsai</span><span style="color:#a0d9f8">ternary</span><span style="text-align:right;color:#5d9ec2">native 1BP TQ2 layouts</span></div>
+<div class="bh-row" style="display:grid;grid-template-columns:1fr 1.1fr 1.2fr;gap:14px;padding:14px 20px;font-size:13.5px"><span>Whisper</span><span style="color:#a0d9f8">speech (STT)</span><span style="text-align:right;color:#5d9ec2">front end of the 1bit JARVIS pipeline</span></div>
+</div>
+<p style="font-size:13px;color:#5d9ec2;margin:14px 0 0">Per-family pages, with measured numbers where published: <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/model-families/README.md" style="color:#00e5ff;text-decoration:none">docs/model-families →</a></p>
+</div>
+<div style="max-width:920px;margin:0 auto 96px;padding:0 24px;display:grid;grid-template-columns:1fr 1fr;gap:24px">
+<div style="border:1px solid rgba(93,158,194,.24);border-radius:12px;padding:28px;background:rgba(4,32,47,.6)">
+<div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#5d9ec2;margin-bottom:12px">Formats</div>
+<p style="margin:0;font-size:14px;color:#a0d9f8">GGUF, ONNX, and the native 1BP format are read directly. Architecture detection is automatic; there is no per-model configuration file and no conversion step to babysit.</p>
+</div>
+<div style="border:1px solid rgba(255,159,28,.35);border-radius:12px;padding:28px;background:rgba(255,159,28,.05)">
+<div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#5d9ec2;margin-bottom:12px">Featured — Zyphra</div>
+<p style="margin:0;font-size:14px;color:#a0d9f8">The one family that spans the entire stack — EEG → LLM (dense, MoE, Mamba) → TTS → voice cloning — all on the same binary. <strong style="color:#e7f6fd;font-weight:500">ZAYA1-74B-preview at 17.6 tok/s; BlackMamba-1.5B at 79.4.</strong></p>
+</div>
+</div>
+<footer style="text-align:center;padding:30px;font-size:12px;color:#5d9ec2;border-top:1px solid rgba(93,158,194,.2)">MIT License · github.com/1bit-MONSTER · "Sorry but not sorry."</footer>
 </div>
 </body>
 </html>
