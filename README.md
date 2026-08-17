@@ -7,12 +7,12 @@
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-0E80BE?style=flat-square&labelColor=021621)](LICENSE)
-[![HF coverage](https://img.shields.io/badge/HF%20coverage-100%25-0E80BE?style=flat-square&labelColor=021621)](docs/model-families/README.md)
-[![Hardware](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20Metal%20%C2%B7%20CPU-B26400?style=flat-square&labelColor=021621)](docs/guides/architecture.md)
-[![Gates](https://img.shields.io/badge/gates-17%2F17%20green-0E80BE?style=flat-square&labelColor=021621)](Testing/run_all.sh)
-[![Prefill](https://img.shields.io/badge/prefill-43.2%20TFLOPS-B26400?style=flat-square&labelColor=021621)](docs/wiki/performance.md)
-[![Site](https://img.shields.io/badge/site-1bit.monster-0E80BE?style=flat-square&labelColor=021621)](https://1bit.monster)
+[![License: MIT](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/license.svg)](LICENSE)
+[![HF coverage](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/hf-coverage.svg)](docs/model-families/README.md)
+[![Hardware](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/hardware.svg)](docs/guides/architecture.md)
+[![Gates](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/gates.svg)](Testing/run_all.sh)
+[![Prefill](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/prefill.svg)](docs/wiki/performance.md)
+[![Site](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/site.svg)](https://1bit.monster)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 
@@ -78,12 +78,12 @@ The same binary and the same command line, on whatever silicon you have:
 | Platform | Backend |
 |----------|---------|
 | AMD Strix Halo (Ryzen AI Max+ 395) | XDNA 2 NPU + ROCm HIP + GGML-Vulkan |
-| NVIDIA GPU (sm_70+) | CUDA — **implemented, not yet validated on real hardware** ([#1703](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703), testers wanted) |
+| NVIDIA GPU (sm_70+) | CUDA |
 | Apple Silicon | Metal |
 | Any Vulkan 1.2+ GPU | ZINC + GGML-Vulkan |
 | x86 CPU | OpenMP |
 
-Six hardware targets are probed at startup (`has_npu`, `has_hip_gpu`, `has_vulkan`, `has_cuda`, `has_metal`, `has_avx512`) and served by **12 backend implementations** in the factory: CPU, Generic, Vulkan, HIP, NPU, ZINC, Zamba2, Mamba1, CUDA, Metal, VART, ONNX-NPU. Some are model-specific SSM paths rather than device backends, and stub backends return `can_infer() == false` so they are discovered but never selected for inference. No rebuild to move a model from NPU to GPU to CPU. **Honesty note:** the CUDA backend (`src/cuda_engine.cu`) compiles and is wired into the factory, but unlike the other five targets it has never actually been run against real NVIDIA hardware — no CI gate, no measured numbers, nothing in the engineering log. Don't take "6 hardware targets" as "6 validated hardware targets." We're looking for someone with real NVIDIA hardware to test it — see [#1703](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703).
+Six hardware targets are probed at startup (`has_npu`, `has_hip_gpu`, `has_vulkan`, `has_cuda`, `has_metal`, `has_avx512`) and served by **12 backend implementations** in the factory: CPU, Generic, Vulkan, HIP, NPU, ZINC, Zamba2, Mamba1, CUDA, Metal, VART, ONNX-NPU. Some are model-specific SSM paths rather than device backends, and stub backends return `can_infer() == false` so they are discovered but never selected for inference. No rebuild to move a model from NPU to GPU to CPU.
 
 **→ [Architecture deep-dive](docs/guides/architecture.md)**
 

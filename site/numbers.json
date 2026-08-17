@@ -1,7 +1,7 @@
 {
   "_warning": "Site data file. Headline perf numbers synced from benchmarks (source of truth). binary/ repo/ site/ keys are unique to this file.",
   "_missing": [],
-  "_benchmarks_remeasured": "2026-08-01, median of runs on real gfx1151 hardware (bench_sherry, bench_prefill_variants, llama-bench GGML-Vulkan) \u2014 see _sources.",
+  "_benchmarks_remeasured": "2026-08-17, median of 3 runs on real gfx1151 hardware (bench_sherry, bench_prefill_variants) \u2014 see _sources.",
   "binary": {
     "onebin_bytes": 70458416,
     "onebin_kb": 68807,
@@ -16,20 +16,20 @@
     "note": "ONE ELF (build/1bit): zaya_server + unified_server + unified_router + jarvis_server + vision_server + the agent CLI, dispatched by argv[0]/subcommand; legacy names ship as symlinks. zaya/unified entries kept as historical pre-merge sizes."
   },
   "benchmarks": {
-    "halo_gemv_gbps": 156.0,
-    "prefill_tflops_4h": 30.43,
-    "prefill_tflops_i8apre": 43.2,
-    "sherry_gemv_gbps": 157.0,
-    "tq1_gemv_gbps": 201.3,
-    "tflops": 43.2,
-    "note": "prefill_tflops_i8apre now 43.2 (2026-08-01 re-measure); 4h variant 30.43; tq1/sherry essentially unchanged. See benchmarks.json engines.prefill_i8."
+    "halo_gemv_gbps": 158.6,
+    "prefill_tflops_4h": 30.05,
+    "prefill_tflops_i8apre": 41.85,
+    "sherry_gemv_gbps": 155.3,
+    "tq1_gemv_gbps": 184.7,
+    "tflops": 41.85,
+    "note": "Auto re-measured 2026-08-17 by tools/validate_claims.py (bench_sherry, bench_prefill_variants, median of 3 runs, 1 warmup discarded). See benchmarks/latest.json for full history."
   },
   "_sources": {
-    "halo_gemv_gbps": "bench_sherry 6912 2560 256 -- halo baseline kernel",
+    "halo_gemv_gbps": "bench_sherry -- halo baseline kernel",
     "prefill_tflops_4h": "bench_prefill_variants 2560 6912 2560 -- variant 4h (64x64 cached A+B)",
-    "prefill_tflops_i8apre": "bench_prefill_variants 2560 6912 2560 -- variant 4i-I8-APRE (I8 A + tiled B)",
-    "sherry_gemv_gbps": "bench_sherry 6912 2560 256 -- M=6912 K=2560, sherry kernel",
-    "tq1_gemv_gbps": "bench_sherry 6912 2560 256 -- tq1 kernel"
+    "prefill_tflops_i8apre": "bench_prefill_variants 2560 6912 2560 -- variant 4i-I8-APRE (I8 A + tiled B), median of 3",
+    "sherry_gemv_gbps": "bench_sherry -- M=6912 K=2560, sherry kernel, 256 iters",
+    "tq1_gemv_gbps": "bench_sherry -- tq1 kernel, fastest GEMV variant"
   },
   "repo": {
     "forks": 4,
@@ -44,8 +44,8 @@
     "backends": 9,
     "models": 47
   },
-  "prefill_tflops_i8apre": 43.2,
-  "tflops": 43.2,
+  "prefill_tflops_i8apre": 41.85,
+  "tflops": 41.85,
   "blackmamba_1_5b_tok_s": 79.4,
   "blackmamba_2_8b_tok_s": 46.0,
   "engines": {
