@@ -416,3 +416,27 @@ static inline void zaya_q4nx_t_launch(
     int rblocks = (M + 255) / 256;
     gemv_bf16_reduce_kernel<<<rblocks, 256, 0, st>>>(ypart, y, M, nsplit);
 }
+
+// ── Bulk embed dequant: fill bf16 [R,C] from Q4NX tiles on GPU (avoids the
+//    ~1G-value CPU dequant that made 74B init take minutes). ─────────────
+__global__ void q4nx_dequant_embed_kernel(
+    const uint8_t* __restrict__ tiles,   // [R/32, C/256] row-major tile grid
+    __half* __restrict__ out,            // [R*C] bf16
+    int R, int C, int ntc)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (size_t)R * C) return;
+    const int r = (int)(idx / C), c = (int)(idx % C);
+    const int tr = r / Q4NX_TILE_ROWS, rr = r - tr * Q4NX_TILE_ROWS;
+    const int tc = c / Q4NX_TILE_COLS, cc = c - tc * Q4NX_TILE_COLS;
+    const uint8_t* tile = tiles + ((size_t)tr * ntc + tc) * Q4NX_TILE_BYTES;
+    const uint16_t* sc = (const uint16_t*)tile;
+    const uint16_t* zp = (const uint16_t*)(tile + 512);
+    const uint8_t* qd = tile + 1024;
+    const int g = cc / 32;
+    const float scl = q4nx_scale(sc[rr * 8 + g]);
+    const float zpo = q4nx_bf16(zp[rr * 8 + g]);
+    const uint8_t byte = qd[rr * 128 + (cc >> 1)];
+    const int nv = (cc & 1) ? ((byte >> 4) & 0xF) : (byte & 0xF);
+    out[idx] = __float2half((float)nv * scl + zpo);
+}

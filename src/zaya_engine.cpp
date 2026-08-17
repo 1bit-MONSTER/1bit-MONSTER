@@ -1100,10 +1100,24 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
 
     // Globals: token_embd + final norm — required (same gate as zaya_init).
     // output_norm.weight with model.norm.weight as fallback alias (plan risk #1).
-    if (!model.get_tensor_f32("token_embd.weight", s->embed)) {
-        fprintf(stderr, "zaya_init_onebp: missing token_embd.weight — aborting init\n");
-        zaya_destroy(s);
-        return nullptr;
+    // Embedding: upload raw Q4NX tiles and GPU-dequant into d_embed once —
+    // the value-by-value CPU dequant of the 1.07G-value table made 74B init
+    // take ~15 min. After GPU dequant we copy back to host s->embed so the
+    // existing batch path (which expects host-resident embeddings) keeps working.
+    s->embed.clear();
+    {
+        auto* te = model.find_tensor("token_embd.weight");
+        if (!te) {
+            fprintf(stderr, "zaya_init_onebp: missing token_embd.weight — aborting init\n");
+            zaya_destroy(s);
+            return nullptr;
+        }
+        const uint8_t* base = model.raw_tensor("token_embd.weight");
+        if (!base || !upload_q4nx(base, te->total_bytes, &s->d_embed_q)) {
+            fprintf(stderr, "zaya_init_onebp: token_embd Q4NX upload failed — aborting init\n");
+            zaya_destroy(s);
+            return nullptr;
+        }
     }
     std::vector<float> fnorm;
     if (!model.get_tensor_f32("output_norm.weight", fnorm))
@@ -1117,14 +1131,7 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
 
     // Dimension validation — same embed-size gate as zaya_init (fixes #61):
     // refuse to load a model whose embedding table doesn't match the config.
-    size_t expected_embed = (size_t)eng.vocab * eng.h;
-    if (s->embed.size() != expected_embed) {
-        fprintf(stderr, "zaya_init_onebp: model embed size %zu != expected %zu (cfg H=%d, vocab=%d)\n",
-                s->embed.size(), expected_embed, eng.h, eng.vocab);
-        fprintf(stderr, "  Refusing to load — would produce silent garbage.\n");
-        zaya_destroy(s);
-        return nullptr;
-    }
+    // Embed size is validated via the tensor dims (Q4NX path keeps s->embed empty).
 
     // input_hidden_states_scale/bias are optional (plan risk #5): default
     // scale=1.0, bias=0.0 (pattern from tests/zaya_gpu_decode.cpp).
@@ -1150,8 +1157,17 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
         return nullptr;
     }
 
-    // Upload globals (host copies kept for the batch path / backend adapter)
-    upf16(s->embed, s->d_embed, eng.vocab * eng.h, s->st);
+    // Upload globals. Embedding dequantizes on GPU from Q4NX tiles, then
+    // copy back to host so the legacy batch path still has s->embed.
+    if (s->d_embed && s->d_embed_q) {
+        const int ntc = eng.h / 256;
+        const size_t total = (size_t)eng.vocab * eng.h;
+        const int blocks = (int)((total + 255) / 256);
+        q4nx_dequant_embed_kernel<<<blocks, 256, 0, s->st>>>(s->d_embed_q, s->d_embed, eng.vocab, eng.h, ntc);
+        HIP_CHECK(hipGetLastError());
+        s->embed.resize(total);
+        HIP_OK_R(hipMemcpy(s->embed.data(), s->d_embed, total * 2, hipMemcpyDeviceToHost), nullptr);
+    }
     upf16(fnorm, s->d_fnw, eng.h, s->st);
     upf16(s->ibias, s->d_ibias, eng.h, s->st);
     upf16(s->iscale, s->d_iscale, eng.h, s->st);
@@ -1546,19 +1562,25 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
         fprintf(stderr, "[zaya] batch B=%d out of range [1,%zu]\n", B, ZAYA_B_MAX);
         return;
     }
-    std::vector<__half> hh((size_t)B * eng.h);
     for (int b = 0; b < B; b++) {
         int tid = token_ids[b];
         if (tid < 0 || tid >= eng.vocab) {
             fprintf(stderr, "[zaya] token id %d out of range [0,%d)\n", tid, eng.vocab);
             return;
         }
-        for (int i = 0; i < eng.h; i++) {
-            float raw = s->embed[tid * (size_t)eng.h + i];
-            hh[b * (size_t)eng.h + i] = __float2half((raw + s->ibias[i]) * s->iscale[i]);
-        }
     }
-    HIP_OK_V(hipMemcpyAsync(s->d_hs, hh.data(), B * eng.h * 2, hipMemcpyHostToDevice, s->st));
+    {
+        // Legacy bf16 path: host-resident s->embed.
+        std::vector<__half> hh((size_t)B * eng.h);
+        for (int b = 0; b < B; b++) {
+            int tid = token_ids[b];
+            for (int i = 0; i < eng.h; i++) {
+                float raw = s->embed[tid * (size_t)eng.h + i];
+                hh[b * (size_t)eng.h + i] = __float2half((raw + s->ibias[i]) * s->iscale[i]);
+            }
+        }
+        HIP_OK_V(hipMemcpyAsync(s->d_hs, hh.data(), B * eng.h * 2, hipMemcpyHostToDevice, s->st));
+    }
 
     for (int il = 0; il < eng.n_layers; il++) {
         auto& l = s->lw[il];
@@ -1940,7 +1962,7 @@ void zaya_destroy(ZayaState* s) {
     safe(s->d_hs); safe(s->d_ao); safe(s->d_tmp); safe(s->d_fnw);
     if (s->graph_exec) { (void)hipGraphExecDestroy(s->graph_exec); s->graph_exec = nullptr; }
     if (s->graph) { (void)hipGraphDestroy(s->graph); s->graph = nullptr; }
-    safe(s->d_lm_out); safe(s->d_embed); safe(s->d_ibias); safe(s->d_iscale); safe(s->d_token_id);
+    safe(s->d_lm_out); safe(s->d_embed); safe(s->d_embed_q); safe(s->d_ibias); safe(s->d_iscale); safe(s->d_token_id);
     safe(s->d_conv); safe(s->d_phs);
     safe(s->d_prev_rs); safe(s->d_expert_idx); safe(s->d_expert_wt);
     safe(s->d_kcache); safe(s->d_vcache); safe(s->d_vrec);

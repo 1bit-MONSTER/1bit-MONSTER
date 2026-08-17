@@ -99,6 +99,7 @@ struct LayerW {
 struct ZayaState {
     __half *d_hs = nullptr, *d_ao = nullptr, *d_tmp = nullptr;
     __half *d_fnw = nullptr, *d_lm_out = nullptr, *d_embed = nullptr;
+    const uint8_t* d_embed_q = nullptr;  // Q4NX raw embed tiles (GPU-dequant'd to d_embed)
     __half *d_conv = nullptr, *d_phs = nullptr, *d_lm_vocab = nullptr;
     // Device-side embeddings: eliminates per-token H2D copy (#5)
     __half *d_ibias = nullptr, *d_iscale = nullptr;
