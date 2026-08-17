@@ -1180,7 +1180,13 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         }
         }
         if(l.gu&&l.dn){
-            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
+            // Router: score ALL n_exp_t slots (softmax over 17, top-1), matching
+            // the upstream llama.cpp Zaya graph (PR #23112: mlp4 out_proj is
+            // {rtr_h, n_expert+1}, softmax over all slots, topk=1; slot n_exp is
+            // the skip expert, folded to expert 0 + skip_flag by
+            // fixup_skip_expert_kernel). The old router_top_k=2 scoring could
+            // never select experts 2..n_exp-1 (issue #1713 oracle check).
+            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,eng.n_exp_t),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,eng.n_exp_t);
             HIP_CHECK(hipGetLastError());
             encode_expert_cache_kernel<<<1,32,0,s->st>>>(s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,eng.rtr_h);
             HIP_CHECK(hipGetLastError());
@@ -1279,7 +1285,8 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         }
         }
         if(l.gu&&l.dn){
-            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
+            // Same full-slot routing as zaya_forward (issue #1713).
+            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,eng.n_exp_t),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,eng.n_exp_t);
             HIP_CHECK(hipGetLastError());
             encode_expert_cache_kernel<<<1,32,0,s->st>>>(s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,eng.rtr_h);
             HIP_CHECK(hipGetLastError());
@@ -1416,13 +1423,12 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
         // (loads each expert's weights ONCE, avoids L2 thrashing).
         // For B < 4, the fused per-token kernel is simpler and fast enough.
         if (l.gu && l.dn) {
-            // Router slot count: 2, matching the single-token path and the
-            // reference decoder (eda_router_gpu_kernel router_top_k=2,
-            // tests/zaya_gpu_decode.cpp). Scoring all n_exp_t=17 slots selects
-            // different experts for the same input (issue #1713). Experts
-            // 2..n_exp-1 are never selected by either path; the open question
-            // of whether top-2 is right vs the HF reference is tracked there.
-            const int rtk = 2;
+            // Router slot count: ALL n_exp_t slots (softmax over 17, top-1),
+            // matching the single-token path and the upstream llama.cpp Zaya
+            // graph (PR #23112 — issue #1713 oracle check). Slot n_exp is the
+            // skip expert: the sorted path passes it through via
+            // moe_modskip_passthrough_kernel, the fused kernel skips the FFN.
+            const int rtk = eng.n_exp_t;
             if (B >= 4) {
                 // Phase 1: Route all B tokens (GPU-resident)
                 batched_moe_router_kernel<<<B, 256, batched_router_smem_bytes(eng.rtr_h, rtk), s->st>>>(
@@ -1449,9 +1455,12 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
                 HIP_CHECK(hipGetLastError());
 
                 // Phase 4: Handle MOD skip tokens (expert_idx == eng.n_exp = 16)
-                // These skip the expert FFN entirely (out = hs, identity).
+                // These skip the expert FFN entirely (output zeroed — matches the single-token wmma skip).
                 if (s->d_expert_counts) {  // always true, keeps compiler happy
-                    moe_modskip_passthrough_kernel<<<(B + 255) / 256, 256, 0, s->st>>>(
+                    // Grid must cover B*h_dim elements, not B (issue #1713:
+                    // (B+255)/256 only zeroed the first 256 elements — skip
+                    // tokens beyond token 0 kept attention garbage in d_tmp).
+                    moe_modskip_passthrough_kernel<<<(B * eng.h + 255) / 256, 256, 0, s->st>>>(
                         s->d_tmp, s->d_hs, s->d_expert_idx, eng.n_exp, B, eng.h);
                 HIP_CHECK(hipGetLastError());
                 }

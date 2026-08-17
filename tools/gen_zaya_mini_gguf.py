@@ -18,11 +18,12 @@ N_EXP, N_FF, RTR_H, N_EXP_T = 2, 256, 256, 3
 GC = QKV // (NQ + NKV)          # group width for cca_conv_grp (qkv/6)
 NROT = HD // 2
 
-def w(*shape, seed):
+def w(*shape, seed, fan_in=None):
     # Xavier/Glorot-style: std = 1/sqrt(fan_in) keeps activations O(1)
     # through layers (unscaled randoms explode to fp16 inf -> NaN silu).
     rng = np.random.default_rng(seed)
-    fan_in = shape[-1] if len(shape) >= 2 else 1
+    if fan_in is None:
+        fan_in = shape[-1] if len(shape) >= 2 else 1
     return (rng.standard_normal(shape) / np.sqrt(fan_in)).astype(np.float32)
 
 def w1(n, seed):
@@ -72,8 +73,11 @@ for il in range(L):
     wr.add_tensor(p + "attn_output.weight", f16(w(H, QD, seed=seed)), raw_dtype=GGMLQuantizationType.F16); seed += 1
     wr.add_tensor(p + "ssm_conv1d.weight", f32(w(QKV, 2, seed=seed)), raw_dtype=GGMLQuantizationType.F32); seed += 1
     wr.add_tensor(p + "ssm_conv1d.bias", f32(w1(QKV, seed=seed)), raw_dtype=GGMLQuantizationType.F32); seed += 1
-    # cca_conv_grp: 3D [t=2, gc, qkv] (loader wants ndim=3, 2 experts, rows=gc, cols=qkv)
-    wr.add_tensor(p + "cca_conv_grp.weight", f32(w(2, GC, QKV, seed=seed)), raw_dtype=GGMLQuantizationType.F32); seed += 1
+    # cca_conv_grp: real-checkpoint layout numpy (qkv, gc, 2) — GGUF ne
+    # [2, gc, qkv], time-steps interleaved (llama.cpp PR #23112 create_tensor
+    # {d_conv, qkv/n_groups, qkv}). gguf_to_onebp reorders it to the loader's
+    # t-major [2, gc, qkv] blocks.
+    wr.add_tensor(p + "cca_conv_grp.weight", f32(w(QKV, GC, 2, seed=seed, fan_in=2 * GC)), raw_dtype=GGMLQuantizationType.F32); seed += 1
     wr.add_tensor(p + "cca_conv_grp.bias", f32(w1(QKV, seed=seed)), raw_dtype=GGMLQuantizationType.F32); seed += 1
     wr.add_tensor(p + "cca_k_scale.weight", f32(np.ones(NKV, np.float32)), raw_dtype=GGMLQuantizationType.F32); seed += 1
     wr.add_tensor(p + "res_scale_hs.weight", f32(np.full(H, 0.1, np.float32)), raw_dtype=GGMLQuantizationType.F32); seed += 1
