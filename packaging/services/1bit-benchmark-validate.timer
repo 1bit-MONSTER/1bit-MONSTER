@@ -1,0 +1,12 @@
+[Unit]
+Description=Run 1bit.MONSTER benchmark re-validation daily
+
+[Timer]
+# Same slot the old CI cron used (.github/workflows/validate-claims.yml, now
+# retired — see tools/validate_claims.py docstring).
+OnCalendar=*-*-* 04:17:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

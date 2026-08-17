@@ -1,0 +1,18 @@
+[Unit]
+Description=1bit.MONSTER daily benchmark re-validation
+Documentation=https://1bit.monster
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=REPO=__REPO_ROOT__
+Environment=TOOLS_SRC=__TOOLS_SRC__
+# Runs from __TOOLS_SRC__, not the worktree at __REPO_ROOT__: the script's
+# own first step (git checkout -B) resets that worktree to origin/main each
+# run, which would rewrite this very file out from under itself mid-execution
+# if it were the one being interpreted. __TOOLS_SRC__ is plain files, not a
+# git checkout, so it's stable across the reset. Keep the two copies in sync
+# (packaging/services/daily-benchmark-validate.sh here is the checked-in,
+# human-readable reference).
+ExecStart=__TOOLS_SRC__/daily-benchmark-validate.sh
