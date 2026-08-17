@@ -69,6 +69,24 @@ int main(int argc, char** argv) {
     printf("per-tok[:8]: "); for (int i = 0; i < 8 && i < n; i++) printf("%d ", per_tok[i]); printf("\n");
     printf("chain [:8]:  "); for (int i = 0; i < 8 && i < n; i++) printf("%d ", chained[i]); printf("\n");
 
+    // Batch-path sanity check: B=1 and B=2 must match single-token zaya_forward.
+    {
+        std::vector<float> lb1(cfg.vocab), lb2(cfg.vocab * 2), ls(cfg.vocab);
+        zaya_reset(s);
+        zaya_forward(s, seed, ls.data());
+        int ids1[1] = {seed};
+        zaya_forward_batch(s, ids1, lb1.data(), 1);
+        double md1 = 0; for (int v = 0; v < cfg.vocab; v++) md1 = std::max(md1, std::fabs((double)lb1[v] - (double)ls[v]));
+        printf("batch B=1: max logit diff = %.5f %s\n", md1, md1 <= 1e-3 ? "OK" : "MISMATCH");
+
+        zaya_reset(s);
+        zaya_forward(s, seed, ls.data());
+        int ids2[2] = {seed, per_tok[0]};
+        zaya_forward_batch(s, ids2, lb2.data(), 2);
+        double md2 = 0; for (int v = 0; v < cfg.vocab; v++) md2 = std::max(md2, std::fabs((double)lb2[v] - (double)ls[v]));
+        printf("batch B=2 token0: max logit diff = %.5f %s\n", md2, md2 <= 1e-3 ? "OK" : "MISMATCH");
+    }
+
     // A/B: legacy (mask 0) vs mask ab_mask — same seed, logit-level diff
     std::vector<float> lo(cfg.vocab), ln(cfg.vocab);
     if (no_ab) {

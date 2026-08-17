@@ -1569,6 +1569,22 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
             return;
         }
     }
+
+    // Q4NX models: the optimized batched kernels only support bf16 weights.
+    // Fall back to per-token zaya_forward for correctness.
+    bool has_q4nx = false;
+    for (int il = 0; il < eng.n_layers && !has_q4nx; il++) {
+        const auto& l = s->lw[il];
+        if (l.wq_q || l.wk_q || l.wv1_q || l.wv2_q || l.wo_q || l.gu_q || l.dn_q) has_q4nx = true;
+    }
+    if (has_q4nx) {
+        for (int b = 0; b < B; b++) {
+            zaya_reset(s);
+            zaya_forward(s, token_ids[b], logits_out + (size_t)b * eng.vocab);
+        }
+        return;
+    }
+
     {
         // Legacy bf16 path: host-resident s->embed.
         std::vector<__half> hh((size_t)B * eng.h);
