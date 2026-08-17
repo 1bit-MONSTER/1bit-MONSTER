@@ -36,8 +36,11 @@ jobs:
             build-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          submodules: recursive
+      # NOTE: no submodule checkout — all languages use build-mode: none (no
+      # build happens), and analyzing the vendored llama.cpp submodule filed
+      # 20 third-party alerts (ggml-hexagon HTP, kimi/minimax models, mtmd)
+      # in code this repo neither owns nor builds. Excluding it keeps CodeQL
+      # scoped to first-party source.
       - uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           languages: ${{ matrix.language }}
