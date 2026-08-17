@@ -476,8 +476,33 @@ int main(int argc, char** argv) {
             // tensors (zaya's cca_conv_grp.weight [t, qkv/n_groups, qkv]) are
             // NOT expert stacks — always read row-major (issue #1522).
             bool expert_tensor = (tn.find("exps.") != std::string::npos || tn.find("shexp") != std::string::npos);
+            // zaya's cca_conv_grp.weight is a 3D conv kernel: numpy
+            // [t=2, qkv/n_groups, qkv], GGUF ne [qkv, qkv/n_groups, 2]. The
+            // engine loader reads it as an ndim=3 tensor (num_experts=2,
+            // rows=qkv/n_groups, cols=qkv) via get_tensor_f32_expert — the
+            // generic non-expert flatten below emits a 2D blob the loader
+            // rejects (found validating issue #1712; breaks every real Zaya
+            // GGUF conversion). t-blocks are contiguous in GGUF linear order
+            // (leading numpy dim), so per-“expert” blocks work as-is.
+            bool zaya_cca = (tn.find("cca_conv_grp.weight") != std::string::npos);
             int ne, r, c;
-            if (!expert_tensor) {
+            if (zaya_cca) {
+                // Two possible GGUF layouts, both map to the engine loader's
+                // ndim=3 [num_experts=2, rows=qkv/n_groups, cols=qkv] with
+                // t-major per-expert blocks:
+                //  - ne [2, gc, qkv] (real checkpoints, conv time-steps
+                //    interleaved; reordered in maybe_reorder_zaya_cca)
+                //  - ne [qkv, gc, 2] (t-major, as-is)
+                if (inf->shape[0] == 2) {
+                    ne = (int)inf->shape[0];
+                    r  = (int)inf->shape[1];
+                    c  = (int)inf->shape[2];
+                } else {
+                    ne = (int)inf->shape[2];
+                    r  = (int)inf->shape[1];
+                    c  = (int)inf->shape[0];
+                }
+            } else if (!expert_tensor) {
                 // Non-expert 3D (MLA attn_k_b/attn_v_b): NOT an expert stack.
                 // GGUF 3D is ne0-contiguous; storing as 2D [shape[0],
                 // shape[1]*shape[2]] keeps get_tensor_f32's flat order identical
@@ -526,6 +551,24 @@ int main(int argc, char** argv) {
     // a converter, upgrade to full-byte compare if it ever misfires.
     uint64_t data_off = 0;
     struct DedupKey { uint64_t hash; int ndim, rows, cols, num_experts; uint32_t tq; uint64_t tiled; };
+    // Zaya cca_conv_grp reorder: real-checkpoint GGUFs store it as ne
+    // [2, gc, qkv] — numpy (qkv, gc, 2) C-order, i.e. the two conv time-steps
+    // interleaved (index oc*(2*gc)+j*2+t). The engine loader expects
+    // per-time-step blocks [t][j][oc] (t-major). Reorder in place so
+    // dedup-hash and per-expert quantization both see the right slices.
+    auto maybe_reorder_zaya_cca = [&](const TInfo& ti, std::vector<float>& fw) {
+        if (ti.name.find("cca_conv_grp.weight") == std::string::npos) return;
+        auto* inf = reader.tensor_info(ti.name);
+        if (!inf || inf->shape.size() != 3 || inf->shape[0] != 2) return;  // already t-major
+        const int gc = (int)inf->shape[1], qkv = (int)inf->shape[2];
+        std::vector<float> re(fw.size());
+        for (int oc = 0; oc < qkv; oc++)
+            for (int j = 0; j < gc; j++)
+                for (int t = 0; t < 2; t++)
+                    re[(size_t)t * gc * qkv + (size_t)j * qkv + oc] =
+                        fw[(size_t)oc * gc * 2 + (size_t)j * 2 + t];
+        fw.swap(re);
+    };
     std::vector<std::pair<DedupKey,int>> seen;
     for (size_t ti = 0; ti < tensors.size(); ti++) {
         auto& t = tensors[ti];
@@ -534,6 +577,7 @@ int main(int argc, char** argv) {
             fprintf(stderr, "\nFATAL: get_tensor_f32 failed for %s during dedup pass\n", t.name.c_str());
             return 1;
         }
+        maybe_reorder_zaya_cca(t, fw);
         uint64_t h = 1469598103934665603ull;
         const uint8_t* b = (const uint8_t*)fw.data();
         for (size_t i = 0; i < fw.size() * sizeof(float); i++) { h ^= b[i]; h *= 1099511628211ull; }
@@ -627,6 +671,7 @@ int main(int argc, char** argv) {
                     "desync every subsequent offset)\n", ti.name.c_str());
             return 1;
         }
+        maybe_reorder_zaya_cca(ti, fw);
         if (ti.ndim == 1) {
             // Raw, unquantized float32 — no tiling (norm weights, biases).
             fwrite(fw.data(), 4, fw.size(), fout);
