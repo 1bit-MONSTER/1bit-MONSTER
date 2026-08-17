@@ -7,11 +7,11 @@
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-00e5ff?style=flat-square&labelColor=021621)](LICENSE)
+[![License: MIT](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/license.svg)](LICENSE)
 [![HF coverage](https://img.shields.io/badge/HF%20coverage-100%25-00e5ff?style=flat-square&labelColor=021621)](docs/model-families/README.md)
-[![Hardware](https://img.shields.io/badge/hardware-NPU%20%C2%B7%20HIP%20%C2%B7%20Vulkan%20%C2%B7%20CUDA%20%C2%B7%20Metal%20%C2%B7%20CPU-ff9f1c?style=flat-square&labelColor=021621)](docs/guides/architecture.md)
+[![Hardware](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/hardware.svg)](docs/guides/architecture.md)
 [![Gates](https://img.shields.io/badge/gates-17%2F17%20green-00e5ff?style=flat-square&labelColor=021621)](Testing/run_all.sh)
-[![Prefill](https://img.shields.io/badge/prefill-43.2%20TFLOPS-ff9f1c?style=flat-square&labelColor=021621)](docs/wiki/performance.md)
+[![Prefill](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/prefill.svg)](docs/wiki/performance.md)
 [![Site](https://img.shields.io/badge/site-1bit.monster-00e5ff?style=flat-square&labelColor=021621)](https://1bit.monster)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
