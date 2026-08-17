@@ -100,6 +100,10 @@ public:
 
         map_ = (uint8_t*)mmap(nullptr, map_size_, PROT_READ, MAP_PRIVATE, fd_, 0);
         if (map_ == MAP_FAILED) { close(); return false; }
+        // One-time sequential bulk read: avoid page-cache thrash on unified
+        // memory when the 44.6GB file competes with device allocations.
+        (void)posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        (void)posix_fadvise(fd_, 0, 0, POSIX_FADV_WILLNEED);
 #endif
 
         // Read header
@@ -393,6 +397,21 @@ public:
         dequant_matrix(map_ + te->file_offset + expert_idx * per_expert_bytes,
                         te->rows, te->cols, out, te->quant);
         return true;
+    }
+
+    // ── Raw tensor bytes for packed GPU upload (Q4NX path) ──
+    // Returns map_ + file_offset (+ expert slice for ndim==3), i.e. the
+    // contiguous tiled bytes of one tensor / one expert, ready for DMA.
+    const uint8_t* raw_tensor(const char* name, int expert = -1) const {
+        auto* te = find_tensor(name);
+        if (!te) return nullptr;
+        uint64_t off = te->file_offset;
+        if (expert >= 0 && te->num_experts > 0) {
+            uint64_t per = te->total_bytes / (uint64_t)te->num_experts;
+            if ((uint64_t)expert >= te->num_experts) return nullptr;
+            off += (uint64_t)expert * per;
+        }
+        return map_ + off;
     }
 
     // ── Get raw tile pointer for direct NPU DMA (ndim==2 tensors only) ──
