@@ -110,14 +110,21 @@ struct I8Ctx {
         for (int l = 0; l < NL; l++) {
             layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND,
                                                    XRT_BO_FLAGS_HOST_ONLY, grp_w);
-            layerInstrData[l] = ins;
-            layerInstr[l] = std::make_unique<xrt::bo>(
-                d, ins.size() * sizeof(uint32_t),
-                XCL_BO_FLAGS_CACHEABLE, grp_ins);
-            memcpy(layerInstr[l]->map(), ins.data(),
-                   ins.size() * sizeof(uint32_t));
-            layerInstr[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         }
+        // ONE instruction BO per context: the instruction stream is identical
+        // for every layer of the same GEMM (the kernel selects the layer via
+        // layerB[l]), so per-layer BOs multiplied DEV-heap usage (8B:
+        // 36 × 1.5MB) and exhausted the NPU's 48MB SRAM heap on the FLM-free
+        // stack (issue #1699 bring-up).
+        layerInstr.resize(1);
+        layerInstrData.resize(1);
+        layerInstrData[0] = ins;
+        layerInstr[0] = std::make_unique<xrt::bo>(
+            d, ins.size() * sizeof(uint32_t),
+            XCL_BO_FLAGS_CACHEABLE, grp_ins);
+        memcpy(layerInstr[0]->map(), ins.data(),
+               ins.size() * sizeof(uint32_t));
+        layerInstr[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         initialized = true;
         return true;
@@ -136,11 +143,9 @@ struct I8Ctx {
         seq.cmds2seq();
         auto [dp, sz] = seq.dump();
         std::vector<uint32_t> ins(dp, dp + sz / 4);
-        for (int l = 0; l < NL; l++) {
-            layerInstrData[l] = ins;
-            memcpy(layerInstr[l]->map(), ins.data(), ins.size() * sizeof(uint32_t));
-            layerInstr[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        }
+        layerInstrData[0] = ins;
+        memcpy(layerInstr[0]->map(), ins.data(), ins.size() * sizeof(uint32_t));
+        layerInstr[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         return true;
     }
 #else
@@ -198,18 +203,24 @@ struct I8Ctx {
         layerInstrData.resize(NL);
         group_scales.resize(NL);
 
-        // Re-read the instruction file for each layer (same data, separate BO)
         for (int l = 0; l < NL; l++) {
             layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND,
                                                    XRT_BO_FLAGS_HOST_ONLY, grp_w);
-            layerInstrData[l] = ins;  // same instructions for all layers
-            layerInstr[l] = std::make_unique<xrt::bo>(
-                d, ins.size() * sizeof(uint32_t),
-                XCL_BO_FLAGS_CACHEABLE, grp_ins);
-            memcpy(layerInstr[l]->map(), ins.data(),
-                   ins.size() * sizeof(uint32_t));
-            layerInstr[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         }
+        // ONE instruction BO per context: the instruction stream is identical
+        // for every layer of the same GEMM (the kernel selects the layer via
+        // layerB[l]), so per-layer BOs multiplied DEV-heap usage (8B:
+        // 36 × 1.5MB) and exhausted the NPU's 48MB SRAM heap on the FLM-free
+        // stack (issue #1699 bring-up).
+        layerInstr.resize(1);
+        layerInstrData.resize(1);
+        layerInstrData[0] = ins;
+        layerInstr[0] = std::make_unique<xrt::bo>(
+            d, ins.size() * sizeof(uint32_t),
+            XCL_BO_FLAGS_CACHEABLE, grp_ins);
+        memcpy(layerInstr[0]->map(), ins.data(),
+               ins.size() * sizeof(uint32_t));
+        layerInstr[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         initialized = true;
         return true;
@@ -293,16 +304,16 @@ struct I8Ctx {
     // Kernel signature: (opcode, instr_bo, ninstr, bo0, bo1, bo2, bo3, bo4)
     inline xrt::run launch(int l) {
         return (*k)((unsigned)3,
-                    *layerInstr[l],
-                    (unsigned)(layerInstrData[l].size()),
+                    *layerInstr[0],
+                    (unsigned)(layerInstrData[0].size()),
                     *bA, *layerB[l], *bC);
     }
 
     inline xrt::run sync_and_launch(int l) {
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         return (*k)((unsigned)3,
-                    *layerInstr[l],
-                    (unsigned)(layerInstrData[l].size()),
+                    *layerInstr[0],
+                    (unsigned)(layerInstrData[0].size()),
                     *bA, *layerB[l], *bC);
     }
 
