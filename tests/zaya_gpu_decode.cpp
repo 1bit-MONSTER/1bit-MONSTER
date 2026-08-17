@@ -786,12 +786,14 @@ int main(int argc, char** argv) {
             rmsnorm_k<<<1, BLK, 0, stream>>>(d_hs, l.pan, H);
             
             if (l.gu && l.dn && l.gdw && l.rf1 && l.rf2 && l.rout) {
-                eda_router_gpu_kernel<<<1, RTR_H, eda_router_smem_bytes(RTR_H, 2), stream>>>(
+                // Router: score ALL N_EXP_T slots (upstream llama.cpp Zaya graph, PR #23112:
+                // softmax over n_expert+1, topk=1, slot n_exp = skip expert).
+                eda_router_gpu_kernel<<<1, RTR_H, eda_router_smem_bytes(RTR_H, N_EXP_T), stream>>>(
                     d_hs, d_prev_rs + (size_t)il * RTR_H,
                     router_states[il].has_eda ? 1 : 0, router_states[il].eda_scale[0],
                     l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b, l.rf2, l.rf2b, l.rout, l.bb,
                     d_prev_rs + (size_t)il * RTR_H, d_expert_idx, d_expert_wt,
-                    N_EXP, H, RTR_H, 2);
+                    N_EXP, H, RTR_H, N_EXP_T);
                 encode_expert_cache_kernel<<<1, 32, 0, stream>>>(d_prev_rs + (size_t)il * RTR_H, d_expert_idx, RTR_H);
                 {
                     const int gb = (2 * N_FF + 15) / 16, db = (H + 15) / 16, sb = (N_FF + BLK - 1) / BLK;

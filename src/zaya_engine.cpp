@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <chrono>
 #include <fstream>
 #include <algorithm>
 #include <new>
@@ -189,7 +190,11 @@ static bool zaya_alloc_buffers(ZayaState* s) {
     constexpr size_t ZAYA_B_MAX = 8;
     ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h * ZAYA_B_MAX);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h * ZAYA_B_MAX);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp, std::max(eng.h, 2*eng.n_ff));
+    // d_tmp serves both paths: single-token scratch (qkv+kd/2, 2*n_ff) AND
+    // the batch path's MoE output slices d_tmp + b*eng.h for B_MAX tokens
+    // (issue #1264 fixed d_hs/d_lm_vocab but missed d_tmp — B>=3 wrote OOB).
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp,
+        std::max(eng.h * (int)ZAYA_B_MAX, std::max(eng.qkv + eng.kd/2, 2*eng.n_ff)));
     ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_vocab, eng.vocab * ZAYA_B_MAX);
@@ -1043,15 +1048,26 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
     s->lw.assign(eng.n_layers, LayerW{});
     s->has_eda.assign(eng.n_layers, false);
     s->eda_scale.assign(eng.n_layers, 0.0f);
+    // Issue #1715: ZAYA1-74B.1bp load appeared to hang (15-min timeout). Normal
+    // layers take 35-170 ms; only slow layers are printed so the hotspot is
+    // identifiable on the next 74B run instead of a silent wall.
+    auto t_load0 = std::chrono::steady_clock::now();
     for (int il = 0; il < eng.n_layers; il++) {
+        auto t0 = std::chrono::steady_clock::now();
         if (!load_layer_onebp(model, il, s->lw[il], eng, s, s->st)) {
             fprintf(stderr, "zaya_init_onebp: layer %d failed to load (see messages above) — aborting init\n", il);
             zaya_destroy(s);
             return nullptr;
         }
+        long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        if (ms > 2000)
+            fprintf(stderr, "  layer %d: %lld ms\n", il, ms);
     }
     HIP_OK_R(hipStreamSynchronize(s->st), nullptr);
-    fprintf(stderr, "zaya_init_onebp: engine ready (%d layers)\n", eng.n_layers);
+    long long total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_load0).count();
+    fprintf(stderr, "zaya_init_onebp: engine ready (%d layers) in %.1f s\n", eng.n_layers, total_ms / 1000.0);
     return s;
 }
 
@@ -1164,7 +1180,13 @@ void zaya_forward(ZayaState* s, int token_id, float* logits_out) {
         }
         }
         if(l.gu&&l.dn){
-            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
+            // Router: score ALL n_exp_t slots (softmax over 17, top-1), matching
+            // the upstream llama.cpp Zaya graph (PR #23112: mlp4 out_proj is
+            // {rtr_h, n_expert+1}, softmax over all slots, topk=1; slot n_exp is
+            // the skip expert, folded to expert 0 + skip_flag by
+            // fixup_skip_expert_kernel). The old router_top_k=2 scoring could
+            // never select experts 2..n_exp-1 (issue #1713 oracle check).
+            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,eng.n_exp_t),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,eng.n_exp_t);
             HIP_CHECK(hipGetLastError());
             encode_expert_cache_kernel<<<1,32,0,s->st>>>(s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,eng.rtr_h);
             HIP_CHECK(hipGetLastError());
@@ -1263,7 +1285,8 @@ int zaya_forward_greedy(ZayaState* s, int token_id) {
         }
         }
         if(l.gu&&l.dn){
-            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,2),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,2);
+            // Same full-slot routing as zaya_forward (issue #1713).
+            eda_router_gpu_kernel<<<1,eng.rtr_h,eda_router_smem_bytes(eng.rtr_h,eng.n_exp_t),s->st>>>(s->d_hs,s->d_prev_rs+(size_t)il*eng.rtr_h,s->has_eda[il]?1:0,s->eda_scale[il],l.gdw,l.gdb,l.rfn,l.rf1,l.rf1b,l.rf2,l.rf2b,l.rout,l.bb,s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,s->d_expert_wt,eng.n_exp,eng.h,eng.rtr_h,eng.n_exp_t);
             HIP_CHECK(hipGetLastError());
             encode_expert_cache_kernel<<<1,32,0,s->st>>>(s->d_prev_rs+(size_t)il*eng.rtr_h,s->d_expert_idx,eng.rtr_h);
             HIP_CHECK(hipGetLastError());
@@ -1351,17 +1374,25 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
             HIP_CHECK(hipGetLastError());
         }
         if (layer_has_attn(l)) {
-        // CCA attention: per-token Q/K/V proj → V interleave → GQA broadcast → o_proj
+        // CCA attention, pos=0 semantics (issue #1712). The batch path is a
+        // single-position evaluator: it has no KV cache, no conv state, no vrec
+        // delay line, so it is only defined at pos=0 (fresh zaya_reset). At
+        // pos=0 the single-token flash-decode softmaxes over ONE cached element
+        // — output = V exactly, independent of q/k — so cca_prep's conv/group-
+        // conv/norm/rope transforms and the q/k projections do not affect the
+        // result. V_out = concat(V1, 0) (vrec is zeroed by zaya_reset), which
+        // the lean path below reproduces by zeroing the delayed-V source once
+        // per layer: v_interleave then emits concat(V1, 0) for every token.
+        // Matches zaya_forward at pos=0 (checked in tests/zaya_batch_check.cpp).
+        if (s->pos != 0)
+            fprintf(stderr, "[zaya] warning: zaya_forward_batch at pos=%d — batch path is single-position (pos=0 only); logits will NOT match zaya_forward\n", s->pos);
+        HIP_OK_V(hipMemsetAsync(s->d_tmp + eng.qd + eng.kd + eng.kd/2, 0, (size_t)(eng.kd/2) * 2, s->st));
         for (int b = 0; b < B; b++) {
             __half* hs_b = s->d_hs + (size_t)b * eng.h;
             __half* ao_b = s->d_ao + (size_t)b * eng.h;
-            moe_tiled_gemv<<<eng.qd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp, hs_b, l.wq, eng.qd, eng.h);
-            HIP_CHECK(hipGetLastError());
-            moe_tiled_gemv<<<eng.kd/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd, hs_b, l.wk, eng.kd, eng.h);
-            HIP_CHECK(hipGetLastError());
-            moe_tiled_gemv<<<eng.kd/2/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd+eng.kd, hs_b, l.wv1, eng.kd/2, eng.h);
-            HIP_CHECK(hipGetLastError());
-            moe_tiled_gemv<<<eng.kd/2/WMMA_M,WMMA_THREADS,0,s->st>>>(s->d_tmp+eng.qd+eng.kd+eng.kd/2, hs_b, l.wv2, eng.kd/2, eng.h);
+            // Same mm_k kernel as the single-token path so V1 is bit-identical
+            // (moe_tiled_gemv differs by fp16 ulps that o_proj amplifies).
+            mm_k<<<(eng.kd/2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd+eng.kd, hs_b, l.wv1, eng.kd/2, eng.h);
             HIP_CHECK(hipGetLastError());
             v_interleave_kernel<<<(eng.kd/2+BLK-1)/BLK,BLK,0,s->st>>>(s->d_tmp+eng.qd, s->d_tmp+eng.qd+eng.kd, s->d_tmp+eng.qd+eng.kd+eng.kd/2, eng.kd/2);
             HIP_CHECK(hipGetLastError());
@@ -1392,16 +1423,22 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
         // (loads each expert's weights ONCE, avoids L2 thrashing).
         // For B < 4, the fused per-token kernel is simpler and fast enough.
         if (l.gu && l.dn) {
+            // Router slot count: ALL n_exp_t slots (softmax over 17, top-1),
+            // matching the single-token path and the upstream llama.cpp Zaya
+            // graph (PR #23112 — issue #1713 oracle check). Slot n_exp is the
+            // skip expert: the sorted path passes it through via
+            // moe_modskip_passthrough_kernel, the fused kernel skips the FFN.
+            const int rtk = eng.n_exp_t;
             if (B >= 4) {
                 // Phase 1: Route all B tokens (GPU-resident)
-                batched_moe_router_kernel<<<B, 256, batched_router_smem_bytes(eng.rtr_h,eng.n_exp_t), s->st>>>(
+                batched_moe_router_kernel<<<B, 256, batched_router_smem_bytes(eng.rtr_h, rtk), s->st>>>(
                     s->d_hs, s->d_prev_rs + (size_t)il * eng.rtr_h,
                     s->has_eda[il] ? 1 : 0, s->eda_scale[il],
                     l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b,
                     l.rf2, l.rf2b, l.rout, l.bb,
                     s->d_prev_rs + (size_t)il * eng.rtr_h,
                     s->d_expert_idx, s->d_expert_wt,
-                    B, eng.h, eng.rtr_h, eng.n_exp_t);
+                    B, eng.h, eng.rtr_h, rtk);
                 HIP_CHECK(hipGetLastError());
 
                 // Phase 2: Sort token IDs by expert (histogram + prefix sum + scatter);
@@ -1418,14 +1455,17 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
                 HIP_CHECK(hipGetLastError());
 
                 // Phase 4: Handle MOD skip tokens (expert_idx == eng.n_exp = 16)
-                // These skip the expert FFN entirely (out = hs, identity).
+                // These skip the expert FFN entirely (output zeroed — matches the single-token wmma skip).
                 if (s->d_expert_counts) {  // always true, keeps compiler happy
-                    moe_modskip_passthrough_kernel<<<(B + 255) / 256, 256, 0, s->st>>>(
+                    // Grid must cover B*h_dim elements, not B (issue #1713:
+                    // (B+255)/256 only zeroed the first 256 elements — skip
+                    // tokens beyond token 0 kept attention garbage in d_tmp).
+                    moe_modskip_passthrough_kernel<<<(B * eng.h + 255) / 256, 256, 0, s->st>>>(
                         s->d_tmp, s->d_hs, s->d_expert_idx, eng.n_exp, B, eng.h);
                 HIP_CHECK(hipGetLastError());
                 }
             } else {
-                batched_moe_fused_kernel<<<B, 256, batched_fused_smem_bytes(eng.rtr_h,eng.n_exp_t,eng.n_ff), s->st>>>(
+                batched_moe_fused_kernel<<<B, 256, batched_fused_smem_bytes(eng.rtr_h, rtk, eng.n_ff), s->st>>>(
                     s->d_hs, s->d_prev_rs + (size_t)il * eng.rtr_h,
                     s->has_eda[il] ? 1 : 0, s->eda_scale[il],
                     l.gdw, l.gdb, l.rfn, l.rf1, l.rf1b,
@@ -1433,7 +1473,7 @@ void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, i
                     l.gu, l.dn,
                     s->d_prev_rs + (size_t)il * eng.rtr_h,
                     s->d_tmp, s->d_expert_idx, s->d_expert_wt,
-                    B, eng.h, eng.rtr_h, eng.n_exp_t, eng.n_exp, eng.n_ff);
+                    B, eng.h, eng.rtr_h, rtk, eng.n_exp, eng.n_ff);
             HIP_CHECK(hipGetLastError());
             }
 

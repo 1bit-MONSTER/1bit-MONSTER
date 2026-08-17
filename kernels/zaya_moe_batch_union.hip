@@ -413,9 +413,12 @@ __global__ void batched_moe_fused_kernel(
             moe_b[i] = __float2half(s);
         }
     } else {
-        // MOD skip passthrough
+        // MOD skip (slot n_exp won): the single-token path zeroes the expert
+        // output when the skip fires (wmma_gateup/down skip_flag, issue #1713
+        // oracle alignment) — the residual still carries the hidden state.
+        // Match it exactly: output zeros, not an hs passthrough.
         __half* moe_b = moe_out + (size_t)b * h_dim;
-        for (int i = tx; i < h_dim; i += blockDim.x) moe_b[i] = hs_b[i];
+        for (int i = tx; i < h_dim; i += blockDim.x) moe_b[i] = __float2half(0.0f);
     }
 }
 
@@ -591,12 +594,15 @@ __global__ void moe_modskip_passthrough_kernel(
     int B,
     int h_dim)
 {
+    // Zero the expert output for skip tokens (matches the single-token
+    // wmma skip semantics — output zeros, not an hs passthrough; the
+    // post-MLP residual still carries the hidden state). Issue #1713.
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= B * h_dim) return;
     int b = i / h_dim;
     int h = i % h_dim;
     if (expert_idx[b] == skip_expert) {
-        moe_out[b * (size_t)h_dim + h] = hs[b * (size_t)h_dim + h];
+        moe_out[b * (size_t)h_dim + h] = __float2half(0.0f);
     }
 }
 
