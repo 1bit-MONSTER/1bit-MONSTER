@@ -811,6 +811,16 @@ target_compile_options(issue1527_loader_check PRIVATE $<$<COMPILE_LANGUAGE:HIP>:
 target_link_libraries(issue1527_loader_check PRIVATE rocm_cpp hip::host hip::device)
 set_target_properties(issue1527_loader_check PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 
+# Issues #1712/#1713 regression: zaya_forward_batch must match zaya_forward at
+# pos=0 (single-position batch evaluator). Skips when the .1bp model is absent.
+add_executable(zaya_batch_check tests/zaya_batch_check.cpp src/zaya_engine.cpp)
+set_source_files_properties(tests/zaya_batch_check.cpp src/zaya_engine.cpp PROPERTIES LANGUAGE HIP)
+target_include_directories(zaya_batch_check PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/kernels)
+target_compile_options(zaya_batch_check PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-O3 -Wno-unused-result>)
+target_link_libraries(zaya_batch_check PRIVATE rocm_cpp hip::host hip::device)
+set_target_properties(zaya_batch_check PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
+add_test(NAME zaya_batch_check COMMAND zaya_batch_check ${ZAYA_TEST_MODEL})
+
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
 set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
@@ -904,6 +914,7 @@ target_link_libraries(test_backend PRIVATE backend_manager)
 
 set(BONSAI_H1B_MODEL "" CACHE FILEPATH "Path to a Bonsai .h1b model for test_bonsai_e2e (empty = skip)")
 set(SHERRY_H1B_MODEL "" CACHE FILEPATH "Path to a Sherry .h1b model for test_sherry_e2e (empty = skip)")
+set(ZAYA_TEST_MODEL "" CACHE FILEPATH "Path to a ZAYA .1bp model for zaya_batch_check (empty = skip)")
 
 add_test(NAME test_medusa_skeleton         COMMAND test_medusa_skeleton)
 set_tests_properties(test_medusa_skeleton   PROPERTIES LABELS "host")

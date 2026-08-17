@@ -476,8 +476,21 @@ int main(int argc, char** argv) {
             // tensors (zaya's cca_conv_grp.weight [t, qkv/n_groups, qkv]) are
             // NOT expert stacks — always read row-major (issue #1522).
             bool expert_tensor = (tn.find("exps.") != std::string::npos || tn.find("shexp") != std::string::npos);
+            // zaya's cca_conv_grp.weight is a 3D conv kernel: numpy
+            // [t=2, qkv/n_groups, qkv], GGUF ne [qkv, qkv/n_groups, 2]. The
+            // engine loader reads it as an ndim=3 tensor (num_experts=2,
+            // rows=qkv/n_groups, cols=qkv) via get_tensor_f32_expert — the
+            // generic non-expert flatten below emits a 2D blob the loader
+            // rejects (found validating issue #1712; breaks every real Zaya
+            // GGUF conversion). t-blocks are contiguous in GGUF linear order
+            // (leading numpy dim), so per-“expert” blocks work as-is.
+            bool zaya_cca = (tn.find("cca_conv_grp.weight") != std::string::npos);
             int ne, r, c;
-            if (!expert_tensor) {
+            if (zaya_cca) {
+                ne = (int)inf->shape[2];
+                r  = (int)inf->shape[1];
+                c  = (int)inf->shape[0];
+            } else if (!expert_tensor) {
                 // Non-expert 3D (MLA attn_k_b/attn_v_b): NOT an expert stack.
                 // GGUF 3D is ne0-contiguous; storing as 2D [shape[0],
                 // shape[1]*shape[2]] keeps get_tensor_f32's flat order identical
