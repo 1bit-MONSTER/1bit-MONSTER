@@ -8,11 +8,11 @@
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/license.svg)](LICENSE)
-[![HF coverage](https://img.shields.io/badge/HF%20coverage-100%25-00e5ff?style=flat-square&labelColor=021621)](docs/model-families/README.md)
+[![HF coverage](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/hf-coverage.svg)](docs/model-families/README.md)
 [![Hardware](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/hardware.svg)](docs/guides/architecture.md)
-[![Gates](https://img.shields.io/badge/gates-17%2F17%20green-00e5ff?style=flat-square&labelColor=021621)](Testing/run_all.sh)
+[![Gates](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/gates.svg)](Testing/run_all.sh)
 [![Prefill](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/prefill.svg)](docs/wiki/performance.md)
-[![Site](https://img.shields.io/badge/site-1bit.monster-00e5ff?style=flat-square&labelColor=021621)](https://1bit.monster)
+[![Site](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/site.svg)](https://1bit.monster)
 
 **[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 
