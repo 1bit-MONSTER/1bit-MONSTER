@@ -512,7 +512,7 @@ int main(int argc,char**argv){
     #endif
         cfg = parse_q4nx_header(mp,model_tag.c_str());
 
-    if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config\n");return 1;}
+    if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);return 1;}
     int H=cfg.H,NC=cfg.NC,NH=cfg.NH,NKV=cfg.NKV,HD=cfg.HD,IM=cfg.IM,NV=cfg.NV,GQA=cfg.GQA,XM=cfg.XM;
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
