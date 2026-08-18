@@ -83,6 +83,7 @@ struct CudaConfig {
 struct CudaState {
     half *d_hs = nullptr, *d_ao = nullptr, *d_tmp = nullptr;
     half *d_fnw = nullptr, *d_lm_out = nullptr, *d_embed = nullptr;
+    half *d_lm_w = nullptr;   // transposed embed [h][V] for the LM head gemv
     half *d_conv = nullptr, *d_phs = nullptr, *d_lm_vocab = nullptr;
     half *d_ibias = nullptr, *d_iscale = nullptr;
     cudaGraphExec_t graph_exec = nullptr;
@@ -93,6 +94,7 @@ struct CudaState {
     bool use_linear_kv = true;
     half *d_vrec = nullptr;
     half *d_qout = nullptr, *d_kout = nullptr, *d_vout = nullptr;
+    half *d_ffn = nullptr;   // FFN scratch, n_ff-sized (up-proj output; avoids in=out aliasing)
     int *d_skip_flag = nullptr;
     float *d_prev_rs = nullptr;
     int pos = 0, max_seq = 4096;
@@ -117,6 +119,7 @@ struct CudaState {
 
     // Per-layer weight device pointers (owned, freed in cuda_destroy)
     std::vector<half*> layer_wq, layer_wk, layer_wv, layer_wo;
+    std::vector<half*> layer_bq, layer_bk, layer_bv;  // attention biases
     std::vector<half*> layer_w1, layer_w2, layer_w3;
     std::vector<half*> layer_rms_a, layer_rms_f;
 

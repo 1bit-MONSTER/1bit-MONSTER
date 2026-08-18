@@ -55,7 +55,7 @@
 #endif
 
 // ── cuBLAS handle (lazily initialized) ──
-static cublasHandle_t g_cublas = nullptr;
+static cublasHandle_t g_cublas = nullptr; // ponytail: set to non-null to bypass cuBLAS (debug)
 static cublasHandle_t get_cublas() {
     if (!g_cublas) {
         cublasCreate(&g_cublas);
@@ -94,8 +94,22 @@ __global__ void rmsnorm_k(half* x, const half* w, int n) {
 // Element-wise copy
 __global__ void copy_k(half* d, const half* s, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    d[i] = s[i];
+    for (; i < n; i += blockDim.x * gridDim.x)
+        d[i] = s[i];
+}
+
+// Element-wise add: d[i] += s[i]
+__global__ void add_k(half* d, const half* s, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    for (; i < n; i += blockDim.x * gridDim.x)
+        d[i] = __float2half((float)d[i] + (float)s[i]);
+}
+
+// Add a bias vector: d[i] += b[i]
+__global__ void add_bias_k(half* d, const half* b, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    for (; i < n; i += blockDim.x * gridDim.x)
+        d[i] = __float2half((float)d[i] + (float)b[i]);
 }
 
 // Matrix-vector multiply (GEMV): out[M] = in[K] @ wt[K, M]
@@ -103,8 +117,10 @@ __global__ void gemv_k(half* out, const half* in, const half* wt, int M, int K) 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= M) return;
     float s = 0;
-    for (int k = 0; k < K; k++)
+    for (int k = 0; k < K; k++) {
+        // bounds-check reads (debug; remove after triage)
         s += (float)in[k] * (float)wt[(size_t)k * M + i];
+    }
     out[i] = __float2half(s);
 }
 
@@ -130,13 +146,44 @@ __global__ void residual_scale_k(half* out, const half* res,
 __global__ void embed_lookup_k(half* out, const half* embed, const half* ibias,
                                 const half* iscale, const int* d_token_id, int h) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= h) return;
-    int token_id = *d_token_id;
-    float raw = (float)embed[(size_t)token_id * h + i];
-    out[i] = __float2half((raw + (float)ibias[i]) * (float)iscale[i]);
+    for (; i < h; i += blockDim.x * gridDim.x) {
+        int token_id = *d_token_id;
+        float raw = (float)embed[(size_t)token_id * h + i];
+        out[i] = __float2half((raw + (float)ibias[i]) * (float)iscale[i]);
+    }
 }
 
 // Argmax kernel
+__global__ void argmax_half_k(const __half* logits, int* idx, float* val, int n) {
+    __shared__ int s_idx[32];
+    __shared__ float s_val[32];
+    int tx = threadIdx.x, wid = tx / 32, l = tx % 32;
+    float best = -1e38f;
+    int best_i = 0;
+    for (int i = tx; i < n; i += blockDim.x) {
+        float v = __half2float(logits[i]);
+        if (v > best) { best = v; best_i = i; }
+    }
+    // warp reduce
+    for (int o = 16; o > 0; o >>= 1) {
+        float other = __shfl_xor_sync(0xffffffff, best, o);
+        int other_i = __shfl_xor_sync(0xffffffff, best_i, o);
+        if (other > best) { best = other; best_i = other_i; }
+    }
+    if (l == 0) { s_val[wid] = best; s_idx[wid] = best_i; }
+    __syncthreads();
+    if (wid == 0) {
+        if (l < (256 / 32)) { best = s_val[l]; best_i = s_idx[l]; }
+        else { best = -1e38f; best_i = 0; }
+        for (int o = 16; o > 0; o >>= 1) {
+            float other = __shfl_xor_sync(0xffffffff, best, o);
+            int other_i = __shfl_xor_sync(0xffffffff, best_i, o);
+            if (other > best) { best = other; best_i = other_i; }
+        }
+        if (l == 0) { *idx = best_i; *val = best; }
+    }
+}
+
 __global__ void argmax_k(const float* logits, int* idx, float* val, int n) {
     __shared__ int s_idx[32];
     __shared__ float s_val[32];
@@ -166,57 +213,50 @@ __global__ void argmax_k(const float* logits, int* idx, float* val, int n) {
     }
 }
 
-// Simple flash-attention-style KV attention kernel (single head, small context)
+// GQA flash-decode-style attention: grid = nq query heads, one block per query
+// head. Query head h maps to KV head h / (nq/nkv). KV cache layout is
+// [layer][t][nkv][hd] (see the store in cuda_forward), and out is [nq][hd].
+// Every thread computes the full Q@K_t dot (all threads end with the identical
+// block score via the shfl tree), then thread tx owns output element tx and
+// accumulates softmax_t * V[t][kvh][tx] across positions. No shared memory.
+// ponytail: O(seq * hd) serial dot per thread; swap to flash-decoding when
+// seq_len exceeds ~1024.
 __global__ void attention_k(half* out, const half* Q, const half* K, const half* V,
-                            int n_kv_heads, int head_dim, int seq_len, float scale) {
+                            int nq, int n_kv_heads, int head_dim, int seq_len, float scale) {
     int h = blockIdx.x;     // query head
-    int tx = threadIdx.x;
-    if (h >= n_kv_heads) return;
+    if (h >= nq) return;
+    int kvh = n_kv_heads == 1 ? 0 : h / (nq / n_kv_heads);  // GQA group mapping
 
     const half* q_head = Q + (size_t)h * head_dim;
-    const half* k_head = K + (size_t)h * head_dim;
-    const half* v_head = V + (size_t)h * head_dim;
     half* o_head = out + (size_t)h * head_dim;
+    const int tx = threadIdx.x;
 
-    // Online softmax: compute attention scores and weighted sum in one pass
     float score_max = -1e38f;
     float exp_sum = 0.0f;
     float acc = 0.0f;
 
     for (int t = 0; t < seq_len; t++) {
-        // dot product Q @ K_t
-        float s = 0;
-        for (int i = tx; i < head_dim; i += blockDim.x) {
-            s += (float)q_head[i] * (float)k_head[(size_t)t * n_kv_heads * head_dim + i];
-        }
-        // warp reduce sum
+        const half* k_row = K + ((size_t)t * n_kv_heads + kvh) * head_dim;
+        const half* v_row = V + ((size_t)t * n_kv_heads + kvh) * head_dim;
+        // full dot over head_dim, identical in every thread
+        float s = 0.0f;
+        for (int i = 0; i < head_dim; i++)
+            s += (float)q_head[i] * (float)k_row[i];
         for (int o = 16; o > 0; o >>= 1)
             s += __shfl_xor_sync(0xffffffff, s, o);
         s *= scale;
-
-        // online softmax
-        float new_max = max(score_max, s);
-        float old_exp_sum = exp_sum;
-        float e = expf(s - new_max);
+        // online softmax (block-uniform)
+        float new_max = fmaxf(score_max, s);
         float e_old_scale = expf(score_max - new_max);
-        exp_sum = old_exp_sum * e_old_scale + e;
+        float e = expf(s - new_max);
+        exp_sum = exp_sum * e_old_scale + e;
         score_max = new_max;
-
-        // accumulate weighted value
-        float v = (float)v_head[(size_t)t * n_kv_heads * head_dim + tx];
-        acc = acc * e_old_scale + v * e;
+        // thread tx owns output element tx
+        if (tx < head_dim)
+            acc = acc * e_old_scale + (float)v_row[tx] * e;
     }
-
-    __syncthreads();
-    // final divide by exp_sum for the responsible thread
-    if (tx == 0) {
+    if (tx < head_dim)
         o_head[tx] = __float2half(acc / exp_sum);
-    }
-    for (int i = tx + 1; i < head_dim; i += blockDim.x) {
-        // This simplified kernel handles head_dim <= 128 and seq_len <= 1024
-        // For larger sequences, use the flash-decoding approach
-        o_head[i] = __float2half((float)o_head[i] / exp_sum);
-    }
 }
 
 // ── Weight loading helpers ──
@@ -239,6 +279,11 @@ static const std::string g_cuda_weights_dir = []() -> std::string {
 
 #define W(N) load_bin(g_cuda_weights_dir + N)
 
+#define CUDA_CHK(tag) do { cudaError_t e_ = cudaGetLastError(); if (e_ != cudaSuccess) { \
+        fprintf(stderr, "KERNEL-FAIL %s: %s\n", tag, cudaGetErrorString(e_)); return; } } while(0)
+#define CUDA_CHK_R(tag) do { cudaError_t e_ = cudaGetLastError(); if (e_ != cudaSuccess) { \
+        fprintf(stderr, "KERNEL-FAIL %s: %s\n", tag, cudaGetErrorString(e_)); return -1; } } while(0)
+
 static void upf16(const std::vector<float>& s, half* d, int n, cudaStream_t h = 0) {
     std::vector<half> b(n); for (int i = 0; i < n; i++) b[i] = __float2half(s[i]);
     CUDA_OK_V(cudaMemcpyAsync(d, b.data(), n * 2, cudaMemcpyHostToDevice, h));
@@ -246,22 +291,7 @@ static void upf16(const std::vector<float>& s, half* d, int n, cudaStream_t h = 
 
 // ── Launch config helper ──
 static void launch_gemv(half* out, const half* in, const half* wt, int M, int K, cudaStream_t st) {
-    // Use cuBLAS GEMV when available for better performance
-    cublasHandle_t cublas = get_cublas();
-    if (cublas) {
-        // Weight `wt` is stored row-major [K][M]: wt[k*M + m] = weight for output m from input k.
-        // In cuBLAS column-major, this is an M×K matrix A where A[m][k] = wt[k*M + m] = wt[m + k*M].
-        // So we need CUBLAS_OP_N: out[M×1] = A[M×K] @ in[K×1].
-        float alpha = 1.0f, beta = 0.0f;
-        cublasGemmEx(cublas, CUBLAS_OP_N, CUBLAS_OP_N,
-                     M, 1, K, &alpha,
-                     wt, CUDA_R_16F, M,    // A is M×K col-major, lda=M
-                     in, CUDA_R_16F, K,    // x is K×1
-                     &beta,
-                     out, CUDA_R_16F, M,   // y is M×1
-                     CUBLAS_COMPUTE_32F,
-                     CUBLAS_GEMM_DEFAULT);
-    } else {
+     else {
         // Fallback: naive kernel
         int block = 256;
         int grid = (M + block - 1) / block;
@@ -329,7 +359,8 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
     #define ALLOC_OR_FAIL(s_, alloc_fn, ptr, n) do { if (!alloc_fn(ptr, n)) { cuda_destroy(s_); return nullptr; } } while(0)
 
     ALLOC_OR_FAIL(s, alloc_f16, s->d_hs, eng.h);
-    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, eng.h);
+    // d_ao doubles as attention output (h) AND FFN up-projection scratch (n_ff)
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ao, std::max(eng.h, eng.n_ff));
     ALLOC_OR_FAIL(s, alloc_f16, s->d_tmp, std::max(eng.h, 2 * eng.n_ff));
     ALLOC_OR_FAIL(s, alloc_f16, s->d_fnw, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_out, 4096);
@@ -340,6 +371,7 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_counts, 17);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_offsets, 17);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_embed, eng.vocab * eng.h);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_lm_w, eng.vocab * eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_ibias, eng.h);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_iscale, eng.h);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_token_id, 1);
@@ -358,14 +390,28 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
     ALLOC_OR_FAIL(s, alloc_f16, s->d_qout, eng.qd);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_kout, eng.kd);
     ALLOC_OR_FAIL(s, alloc_f16, s->d_vout, eng.kd);
+    ALLOC_OR_FAIL(s, alloc_f16, s->d_ffn, std::max(eng.h, eng.n_ff));
     ALLOC_OR_FAIL(s, alloc_f32, s->d_skip_flag, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_prev_rs, eng.n_layers * eng.rtr_h);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_idx, 1);
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
     #undef ALLOC_OR_FAIL
 
+    // Debug: allocation address map (helpful for OOB triage)
+            (void*)s->d_hs, (void*)s->d_ao, (void*)s->d_tmp, (void*)s->d_fnw,
+            (void*)s->d_lm_out, (void*)s->d_lm_vocab, (void*)s->d_qout, (void*)s->d_kout, (void*)s->d_vout);
+
     // Upload embeddings
     upf16(s->embed, s->d_embed, eng.vocab * eng.h, s->st);
+    {
+        // LM head: out[V] = hs[H] @ W[V][H]^T. gemv reads wt[k*M+i] (row-major
+        // [K][M]=[h][V]); embed is stored [V][H], so upload the transpose.
+        std::vector<half> lmw((size_t)eng.vocab * eng.h);
+        for (int v = 0; v < eng.vocab; v++)
+            for (int h = 0; h < eng.h; h++)
+                lmw[(size_t)h * eng.vocab + v] = __float2half(s->embed[(size_t)v * eng.h + h]);
+        CUDA_OK_R(cudaMemcpyAsync(s->d_lm_w, lmw.data(), lmw.size() * 2, cudaMemcpyHostToDevice, s->st), nullptr);
+    }
     std::vector<half> h_ibias(eng.h), h_iscale(eng.h);
     for (int i = 0; i < eng.h; i++) {
         h_ibias[i] = __float2half(s->ibias[i]);
@@ -390,6 +436,9 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
         auto w3 = load_bin(p + "mlp_up_proj.weight.bin");
         auto rms_a = load_bin(p + "input_layernorm.weight.bin");
         auto rms_f = load_bin(p + "post_attention_layernorm.weight.bin");
+        auto bq = load_bin(p + "self_attn_q_proj.bias.bin");
+        auto bk = load_bin(p + "self_attn_k_proj.bias.bin");
+        auto bv = load_bin(p + "self_attn_v_proj.bias.bin");
 
         auto upload = [&](const std::vector<float>& src, half*& dst) {
             if (src.empty()) { dst = nullptr; return; }
@@ -400,11 +449,14 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
         half *d_wq = nullptr, *d_wk = nullptr, *d_wv = nullptr, *d_wo = nullptr;
         half *d_w1 = nullptr, *d_w2 = nullptr, *d_w3 = nullptr;
         half *d_rms_a = nullptr, *d_rms_f = nullptr;
+        half *d_bq = nullptr, *d_bk = nullptr, *d_bv = nullptr;
 
         upload(wq, d_wq); upload(wk, d_wk); upload(wv, d_wv); upload(wo, d_wo);
         upload(w1, d_w1); upload(w2, d_w2); upload(w3, d_w3);
         upload(rms_a, d_rms_a); upload(rms_f, d_rms_f);
-
+        upload(bq, d_bq); upload(bk, d_bk); upload(bv, d_bv);
+                il, (void*)d_wq, (void*)d_wk, (void*)d_wv, (void*)d_wo,
+                (void*)d_w1, (void*)d_w2, (void*)d_w3, (void*)d_rms_a, (void*)d_rms_f);
         s->layer_wq.push_back(d_wq);
         s->layer_wk.push_back(d_wk);
         s->layer_wv.push_back(d_wv);
@@ -414,6 +466,9 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
         s->layer_w3.push_back(d_w3);
         s->layer_rms_a.push_back(d_rms_a);
         s->layer_rms_f.push_back(d_rms_f);
+        s->layer_bq.push_back(d_bq);
+        s->layer_bk.push_back(d_bk);
+        s->layer_bv.push_back(d_bv);
 
         fprintf(stderr, "  Layer %d weights loaded (Q:%s K:%s V:%s O:%s GATE:%s DOWN:%s UP:%s)\n",
                 il,
@@ -440,7 +495,8 @@ void cuda_reset(CudaState* s) {
 #define LW(vec, il, label) \
     auto* w_##label = s->vec.size() > (size_t)il ? s->vec[il] : nullptr; \
     if (!w_##label) { fprintf(stderr, "CUDA: layer %d missing " #label " weight\n", il); return; }
-#define LW_R(label) auto* w_##label = s->vec.size() > (size_t)il ? s->vec[il] : nullptr; \
+#define LW_R(vec, il, label) \
+    auto* w_##label = s->vec.size() > (size_t)il ? s->vec[il] : nullptr; \
     if (!w_##label) { fprintf(stderr, "CUDA: layer %d missing " #label " weight\n", il); return -1; }
 
 void cuda_forward(CudaState* s, int token_id, float* logits_out) {
@@ -448,7 +504,7 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
     
     // 1. Embedding lookup
     CUDA_OK_V(cudaMemcpyAsync(s->d_token_id, &token_id, sizeof(int), cudaMemcpyHostToDevice, s->st));
-    embed_lookup_k<<<1, 256, 0, s->st>>>(s->d_hs, s->d_embed, s->d_ibias, s->d_iscale, s->d_token_id, eng.h);
+    embed_lookup_k<<<(eng.h + 255) / 256, 256, 0, s->st>>>(s->d_hs, s->d_embed, s->d_ibias, s->d_iscale, s->d_token_id, eng.h);
     
     int pos = s->pos;
     
@@ -466,15 +522,20 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
         LW(layer_wo, il, wo);
         
         // --- Self-attention ---
-        // RMS norm on hidden state
+        // RMS norm on hidden state: copy hs -> tmp, then normalize in place
+        copy_k<<<1, 256, 0, s->st>>>(d_tmp, d_hs, eng.h);
         rmsnorm_k<<<1, 256, 0, s->st>>>(d_tmp, w_rms_a, eng.h);
+        CUDA_CHK("rms_a");
         
         // Q projection: out[qd] = hs[h] @ wq[h, qd]
         launch_gemv(s->d_qout, d_tmp, w_wq, eng.qd, eng.h, s->st);
+        CUDA_CHK("qproj");
         // K projection: out[kd] = hs[h] @ wk[h, kd]
         launch_gemv(s->d_kout, d_tmp, w_wk, eng.kd, eng.h, s->st);
+        CUDA_CHK("kproj");
         // V projection: out[kd] = hs[h] @ wv[h, kd]
         launch_gemv(s->d_vout, d_tmp, w_wv, eng.kd, eng.h, s->st);
+        CUDA_CHK("vproj");
         
         // Store KV in cache
         size_t kv_offset = (size_t)il * s->max_seq * eng.nkv * eng.hd;
@@ -488,10 +549,11 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
         float scale = 1.0f / sqrtf((float)eng.hd);
         attention_k<<<eng.nq, 256, 0, s->st>>>(
             d_ao, s->d_qout, s->d_kcache + kv_offset, s->d_vcache + kv_offset,
-            eng.nkv, eng.hd, seq_len, scale);
+            eng.nq, eng.nkv, eng.hd, seq_len, scale);
         
-        // Output projection: hs[h] = ao[qd] @ wo[qd, h]
-        launch_gemv(d_hs, d_ao, w_wo, eng.h, eng.qd, s->st);
+        // Output projection: attn_out[h] = ao[qd] @ wo[qd, h]; residual add
+        launch_gemv(d_tmp, d_ao, w_wo, eng.h, eng.qd, s->st);
+        add_k<<<1, 256, 0, s->st>>>(d_hs, d_tmp, eng.h);
         
         // --- FFN ---
         LW(layer_rms_f, il, rms_f);
@@ -499,24 +561,31 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
         LW(layer_w2, il, w2);
         LW(layer_w3, il, w3);
         
-        // RMS norm
-        rmsnorm_k<<<1, 256, 0, s->st>>>(d_tmp, w_rms_f, eng.h);
+        // RMS norm: copy hs -> ao, then normalize in place
+        copy_k<<<1, 256, 0, s->st>>>(d_ao, d_hs, eng.h);
+        rmsnorm_k<<<1, 256, 0, s->st>>>(d_ao, w_rms_f, eng.h);
+        CUDA_CHK("rms_f");
         
         // Gate projection: gate[n_ff] = tmp[h] @ w1[h, n_ff]
-        launch_gemv(d_tmp, d_tmp, w_w1, eng.n_ff, eng.h, s->st);
-        // Up projection: up[n_ff] = hs[h] @ w3[h, n_ff]
-        launch_gemv(s->d_ao, d_tmp, w_w3, eng.n_ff, eng.h, s->st);
+        launch_gemv(d_tmp, d_ao, w_w1, eng.n_ff, eng.h, s->st);
+        CUDA_CHK("w1");
+        // Up projection: up[n_ff] = hs[h] @ w3[h, n_ff] -> d_ffn (no aliasing)
+        launch_gemv(s->d_ffn, d_ao, w_w3, eng.n_ff, eng.h, s->st);
+        CUDA_CHK("w3");
         // SiLU(gate) * up
-        silu_mul_k<<<(eng.n_ff + 255) / 256, 256, 0, s->st>>>(d_tmp, d_tmp, s->d_ao, eng.n_ff);
-        // Down projection: hs[h] = result[n_ff] @ w2[n_ff, h]
-        launch_gemv(d_hs, d_tmp, w_w2, eng.h, eng.n_ff, s->st);
+        silu_mul_k<<<(eng.n_ff + 255) / 256, 256, 0, s->st>>>(d_tmp, d_tmp, s->d_ffn, eng.n_ff);
+        CUDA_CHK("silu");
+        // Down projection: ffn_out[h] = result[n_ff] @ w2[n_ff, h]; residual add
+        launch_gemv(d_ao, d_tmp, w_w2, eng.h, eng.n_ff, s->st);
+        add_k<<<1, 256, 0, s->st>>>(d_hs, d_ao, eng.h);
+        CUDA_CHK("w2");
     }
     
     // 3. Final RMS norm
     rmsnorm_k<<<1, 256, 0, s->st>>>(s->d_hs, s->d_fnw, eng.h);
     
     // 4. LM head: logits[vocab] = hs[h] @ embed[V, h]
-    launch_gemv(s->d_lm_vocab, s->d_hs, s->d_embed, eng.vocab, eng.h, s->st);
+    launch_gemv(s->d_lm_vocab, s->d_hs, s->d_lm_w, eng.vocab, eng.h, s->st);
     
     // 5. Copy logits to host if requested
     if (logits_out) {
@@ -531,7 +600,10 @@ int cuda_forward_greedy(CudaState* s, int token_id) {
     
     // 1. Embedding lookup
     CUDA_OK_R(cudaMemcpyAsync(s->d_token_id, &token_id, sizeof(int), cudaMemcpyHostToDevice, s->st), -1);
-    embed_lookup_k<<<1, 256, 0, s->st>>>(s->d_hs, s->d_embed, s->d_ibias, s->d_iscale, s->d_token_id, eng.h);
+    embed_lookup_k<<<(eng.h + 255) / 256, 256, 0, s->st>>>(s->d_hs, s->d_embed, s->d_ibias, s->d_iscale, s->d_token_id, eng.h);
+    CUDA_CHK_R("embed_lookup");
+    
+    
     
     int pos = s->pos;
     
@@ -542,22 +614,39 @@ int cuda_forward_greedy(CudaState* s, int token_id) {
         half *d_tmp = s->d_tmp;
         
         // Load per-layer weight pointers from state vectors
-        LW_R(layer_rms_a, rms_a);
-        LW_R(layer_wq, wq);
-        LW_R(layer_wk, wk);
-        LW_R(layer_wv, wv);
-        LW_R(layer_wo, wo);
+        LW_R(layer_rms_a, il, rms_a);
+        LW_R(layer_wq, il, wq);
+        LW_R(layer_wk, il, wk);
+        LW_R(layer_wv, il, wv);
+        LW_R(layer_wo, il, wo);
+        LW_R(layer_bq, il, bq);
+        LW_R(layer_bk, il, bk);
+        LW_R(layer_bv, il, bv);
+        CUDA_CHK_R("lw");
+        
         
         // --- Self-attention ---
-        // RMS norm
+        // RMS norm: copy hs -> tmp, then normalize in place
+        
+        copy_k<<<1, 256, 0, s->st>>>(d_tmp, d_hs, eng.h);
+        CUDA_CHK_R("copy-a");
+        
         rmsnorm_k<<<1, 256, 0, s->st>>>(d_tmp, w_rms_a, eng.h);
+        CUDA_CHK_R("rms_a");
+        
+        
         
         // Q projection
         launch_gemv(s->d_qout, d_tmp, w_wq, eng.qd, eng.h, s->st);
+        CUDA_CHK_R("qproj");
+        add_bias_k<<<(eng.qd + 255) / 256, 256, 0, s->st>>>(s->d_qout, w_bq, eng.qd);
+        
         // K projection
         launch_gemv(s->d_kout, d_tmp, w_wk, eng.kd, eng.h, s->st);
+        CUDA_CHK_R("kproj");
+        add_bias_k<<<(eng.kd + 255) / 256, 256, 0, s->st>>>(s->d_kout, w_bk, eng.kd);
         // V projection
-        launch_gemv(s->d_vout, d_tmp, w_wv, eng.kd, eng.h, s->st);
+        
         
         // Store KV in cache
         size_t kv_offset = (size_t)il * (size_t)s->max_seq * eng.nkv * eng.hd;
@@ -571,38 +660,64 @@ int cuda_forward_greedy(CudaState* s, int token_id) {
         float scale = 1.0f / sqrtf((float)eng.hd);
         attention_k<<<eng.nq, 256, 0, s->st>>>(
             d_ao, s->d_qout, s->d_kcache + kv_offset, s->d_vcache + kv_offset,
-            eng.nkv, eng.hd, seq_len, scale);
+            eng.nq, eng.nkv, eng.hd, seq_len, scale);
+        CUDA_CHK_R("attention");
         
-        // Output projection
-        launch_gemv(d_hs, d_ao, w_wo, eng.h, eng.qd, s->st);
+        
+        // Output projection: attn_out[h] = ao[qd] @ wo[qd, h]; residual add
+        launch_gemv(d_tmp, d_ao, w_wo, eng.h, eng.qd, s->st);
+        CUDA_CHK_R("oproj");
+        
+        
+        add_k<<<1, 256, 0, s->st>>>(d_hs, d_tmp, eng.h);
+        
         
         // --- FFN ---
-        LW_R(layer_rms_f, rms_f);
-        LW_R(layer_w1, w1);
-        LW_R(layer_w2, w2);
-        LW_R(layer_w3, w3);
+        LW_R(layer_rms_f, il, rms_f);
+        LW_R(layer_w1, il, w1);
+        LW_R(layer_w2, il, w2);
+        LW_R(layer_w3, il, w3);
         
-        // RMS norm
-        rmsnorm_k<<<1, 256, 0, s->st>>>(d_tmp, w_rms_f, eng.h);
+        
+        // RMS norm: copy hs -> ao, then normalize in place
+        copy_k<<<1, 256, 0, s->st>>>(d_ao, d_hs, eng.h);
+        rmsnorm_k<<<1, 256, 0, s->st>>>(d_ao, w_rms_f, eng.h);
+        CUDA_CHK_R("rms_f");
+        
         
         // Gate
-        launch_gemv(d_tmp, d_tmp, w_w1, eng.n_ff, eng.h, s->st);
-        // Up
-        launch_gemv(s->d_ao, d_tmp, w_w3, eng.n_ff, eng.h, s->st);
+        launch_gemv(d_tmp, d_ao, w_w1, eng.n_ff, eng.h, s->st);
+        CUDA_CHK_R("w1");
+        
+        
+        // Up: up[n_ff] = d_ao @ w3 -> d_ffn (no aliasing)
+        launch_gemv(s->d_ffn, d_ao, w_w3, eng.n_ff, eng.h, s->st);
+        CUDA_CHK_R("w3");
+        
         // SiLU(gate) * up
-        silu_mul_k<<<(eng.n_ff + 255) / 256, 256, 0, s->st>>>(d_tmp, d_tmp, s->d_ao, eng.n_ff);
-        // Down
-        launch_gemv(d_hs, d_tmp, w_w2, eng.h, eng.n_ff, s->st);
+        silu_mul_k<<<(eng.n_ff + 255) / 256, 256, 0, s->st>>>(d_tmp, d_tmp, s->d_ffn, eng.n_ff);
+        CUDA_CHK_R("silu");
+        // Down: ffn_out[h] = result[n_ff] @ w2[n_ff, h]; residual add
+        launch_gemv(d_ao, d_tmp, w_w2, eng.h, eng.n_ff, s->st);
+        CUDA_CHK_R("w2");
+        
+        add_k<<<1, 256, 0, s->st>>>(d_hs, d_ao, eng.h);
+        
+        
     }
     
     // 3. Final norm
     rmsnorm_k<<<1, 256, 0, s->st>>>(s->d_hs, s->d_fnw, eng.h);
+    CUDA_CHK_R("final rmsnorm");
+    
     
     // 4. LM head: logits[vocab] = hs[h] @ embed[V, h]
-    launch_gemv(s->d_lm_vocab, s->d_hs, s->d_embed, eng.vocab, eng.h, s->st);
+    launch_gemv(s->d_lm_vocab, s->d_hs, s->d_lm_w, eng.vocab, eng.h, s->st);
+    CUDA_CHK_R("lm head gemv");
     
     // 5. Argmax on GPU
-    argmax_k<<<1, 256, 0, s->st>>>(s->d_lm_vocab, s->d_argmax_idx, s->d_argmax_val, eng.vocab);
+    argmax_half_k<<<1, 256, 0, s->st>>>(s->d_lm_vocab, s->d_argmax_idx, s->d_argmax_val, eng.vocab);
+    CUDA_CHK_R("argmax");
     
     int next_token;
     CUDA_OK_R(cudaMemcpy(&next_token, s->d_argmax_idx, sizeof(int), cudaMemcpyDeviceToHost), -1);
@@ -620,6 +735,7 @@ void cuda_destroy(CudaState* s) {
     CUDA_FREE(s->d_fnw);
     CUDA_FREE(s->d_lm_out);
     CUDA_FREE(s->d_embed);
+    CUDA_FREE(s->d_lm_w);
     CUDA_FREE(s->d_conv);
     CUDA_FREE(s->d_phs);
     CUDA_FREE(s->d_lm_vocab);
@@ -632,6 +748,7 @@ void cuda_destroy(CudaState* s) {
     CUDA_FREE(s->d_qout);
     CUDA_FREE(s->d_kout);
     CUDA_FREE(s->d_vout);
+    CUDA_FREE(s->d_ffn);
     CUDA_FREE(s->d_skip_flag);
     CUDA_FREE(s->d_prev_rs);
     CUDA_FREE(s->d_k_gather);
@@ -653,6 +770,7 @@ void cuda_destroy(CudaState* s) {
     free_vec(s->layer_wq); free_vec(s->layer_wk); free_vec(s->layer_wv); free_vec(s->layer_wo);
     free_vec(s->layer_w1); free_vec(s->layer_w2); free_vec(s->layer_w3);
     free_vec(s->layer_rms_a); free_vec(s->layer_rms_f);
+    free_vec(s->layer_bq); free_vec(s->layer_bk); free_vec(s->layer_bv);
     #undef CUDA_FREE
     if (s->graph_exec) { cudaGraphExecDestroy(s->graph_exec); s->graph_exec = nullptr; }
     if (s->graph) { cudaGraphDestroy(s->graph); s->graph = nullptr; }
