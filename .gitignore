@@ -120,6 +120,7 @@ scripts/.reconvert.lock
 research/ws05-1bp-v2/RECONVERT-REPORT.md.tmp
 
 # ── Local work artifacts (not for VCS) ──
+node_modules/
 .codewhale/
 appimage-build/
 appimagetool
