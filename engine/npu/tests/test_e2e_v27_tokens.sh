@@ -33,12 +33,15 @@ V26DIR=/tmp/v26_xclbins
 V26_35B=/tmp/v26_xclbins_35b
 V26_REF=eee6122b^
 
+# All five non-0.6B models runnable since #1720 (shared instr BO fixed the
+# 48MB SRAM heap exhaustion that had them "mem-blocked"; the dense decode
+# gate fix applies to every dense model, and GDN support covers gemma4).
 MODELS=(
   "qwen3_0_6b|Qwen3-0.6B-NPU2|qwen3_0_6b|Qwen3-0.6B||"
-  "qwen3_8b|Qwen3-8B-NPU2|qwen3_8b||mem-blocked|"
-  "qwen3_vl_4b|Qwen3-VL-4B-Instruct-NPU2|qwen3_vl_4b||mem-blocked|"
-  "gemma4_e2b|Gemma4-E2B-IT-NPU2|gemma4_e2b||gated-hybrid arch unsupported|"
-  "llama|Llama-3.1-8B-NPU2|llama|Llama-3.1-8B|mem-blocked|"
+  "qwen3_8b|Qwen3-8B-NPU2|qwen3_8b|||"
+  "qwen3_vl_4b|Qwen3-VL-4B-Instruct-NPU2|qwen3_vl_4b|||"
+  "gemma4_e2b|Gemma4-E2B-IT-NPU2|gemma4_e2b|||"
+  "llama|Llama-3.1-8B-NPU2|llama|Llama-3.1-8B||"
   "qwen3_6_35b_a3b|Qwen3.6-35B-A3B-NPU2|qwen3_6_moe_35b|||NPU_MOE=1"
 )
 
@@ -77,6 +80,7 @@ declare -A R
 for entry in "${MODELS[@]}"; do
   IFS='|' read -r tag dir bin gguf note extra <<< "$entry"
   q4nx="$HOME/.config/flm/models/$dir/model.q4nx"
+  [ -s "$q4nx" ] || q4nx="$HOME/models/NPU2/$dir/model.q4nx"   # ryzen dev box layout
   [ -s "$q4nx" ] || { echo "SKIP  $tag: missing $q4nx"; skipped=$((skipped+1)); continue; }
   [ -x "$ENG"_"$bin" ] || { echo "SKIP  $tag: binary not built"; skipped=$((skipped+1)); continue; }
   if [ -n "$note" ]; then
@@ -109,12 +113,18 @@ for entry in "${MODELS[@]}"; do
     if [ -n "$gg" ]; then
       timeout 300 third_party/llama.cpp/build/bin/llama-completion -m "$gg" -p '"#$%&' \
         -n $TOKENS --temp 0 --top-k 1 -no-cnv --single-turn 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 > /tmp/e2e_${tag}_ref.txt
-      # engine: decode ids -> text (best-effort with the q4nx tokenizer)
-      python3 - "$tag" <<'PYEOF' > /tmp/e2e_${tag}_decoded.txt 2>/dev/null
+      # engine: decode ids -> text (best-effort; use the model's own
+      # tokenizer.json when present, else fall back to Qwen3-0.6B's)
+      py_tok=""
+      for t in "$HOME/.config/flm/models/$dir/tokenizer.json" "$HOME/models/NPU2/$dir/tokenizer.json"; do
+        [ -f "$t" ] && py_tok="$t" && break
+      done
+      [ -n "$py_tok" ] || py_tok="$HOME/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json"
+      python3 - "$tag" "$py_tok" <<'PYEOF' > /tmp/e2e_${tag}_decoded.txt 2>/dev/null
 import sys, re
 from tokenizers import Tokenizer
 tag = sys.argv[1]
-tok = Tokenizer.from_file(f"{__import__('os').path.expanduser('~/.config/flm/models')}/Qwen3-0.6B-NPU2/tokenizer.json")
+tok = Tokenizer.from_file(sys.argv[2])
 toks = [int(x) for x in re.findall(r'(?:boot|tok)=(\d+)', open(f"/tmp/e2e_{tag}_v27.log").read())]
 print(tok.decode(toks))
 PYEOF
