@@ -48,21 +48,32 @@ jobs:
           head -30 gitnexus-context.md
 
       - name: PR Agent
-        uses: The-PR-Agent/pr-agent@f6af7d77554ff8d26adffded077e6461329e92fa  # v0.42.0
-        with:
-          artifact_path: gitnexus-context.md
-          artifact_instructions: >
+        # Native runner: The-PR-Agent/pr-agent's Docker action is a thin
+        # wrapper around pr_agent.servers.github_action_runner, so we invoke
+        # the identical module directly (pip package pinned to the same
+        # version as the action SHA it replaces, v0.42.0). This removes the
+        # Docker dependency entirely — the job runs on any self-hosted runner.
+        # The venv is created on first use and reused across runs; the pip
+        # install is a fast no-op once the package is present.
+        run: |
+          if [ ! -x "$HOME/pr-agent-venv/bin/python" ]; then
+            python3 -m venv "$HOME/pr-agent-venv"
+          fi
+          "$HOME/pr-agent-venv/bin/pip" install --quiet "pr-agent==0.42.0"
+          "$HOME/pr-agent-venv/bin/python" -m pr_agent.servers.github_action_runner
+        env:
+          OPENAI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          OPENAI_API_BASE: https://api.moonshot.ai/v1
+          # SECURITY: GITHUB_TOKEN with contents:write scope is used by
+          # PR-Agent to post reviews/comments. Mitigation: the job-level `if`
+          # guard above restricts execution to same-repo PRs only; external
+          # forks are never processed. PR-Agent pinned to v0.42.0 (PyPI).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFIG_FILE: .pr_agent.toml
+          ARTIFACT_PATH: gitnexus-context.md
+          ARTIFACT_INSTRUCTIONS: >
             This is a GitNexus knowledge-graph analysis of the PR's changed
             symbols: blast radius (upstream dependants), affected execution
             flows, and risk level. Use it to prioritize review effort on
             high-risk changes and to verify the PR's impact claims against
             the repo's actual call graph.
-        env:
-          OPENAI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-          OPENAI_API_BASE: https://api.moonshot.ai/v1
-          # SECURITY: GITHUB_TOKEN with contents:write scope is passed to the
-          # third-party action The-PR-Agent/pr-agent. Mitigation: the job-level
-          # `if` guard above restricts execution to same-repo PRs only;
-          # external forks are never processed. Action pinned to v0.41.0 SHA.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONFIG_FILE: .pr_agent.toml
