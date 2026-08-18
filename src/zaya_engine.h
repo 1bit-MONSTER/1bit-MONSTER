@@ -90,6 +90,8 @@ struct LayerW {
     float *pahss, *pahsb, *parss, *parsb;
     float *gdw, *gdb, *rfn, *rf1, *rf1b, *rf2, *rf2b, *rout, *bb;
     __half *gu, *dn;
+    const uint8_t *gu_q, *dn_q;   // Q4NX raw expert tiles (no bf16 expansion)
+    const uint8_t *wq_q, *wk_q, *wv1_q, *wv2_q, *wo_q;  // Q4NX raw QKV/o_proj tiles (file coords)
     float *pmhss, *pmhsb, *pmrss, *pmrsb;
 };
 
@@ -133,6 +135,8 @@ struct ZayaState {
     int *d_page_map = nullptr;
     int *d_gather_seq_len = nullptr; // GPU-side counter for gather skip optimization
     int *d_argmax_idx = nullptr;
+    int *d_out_tokens = nullptr;  // #937: N-token greedy chain output (device)
+    float *d_gemv_scratch = nullptr;  // split-K partials [NSPLIT, max M] for the bf16 GEMV path
     float *d_argmax_val = nullptr;
     int *d_expert_idx = nullptr; float *d_expert_wt = nullptr;
     int *d_sorted_ids = nullptr, *d_expert_counts = nullptr, *d_expert_offsets = nullptr;
@@ -156,7 +160,9 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg = nullptr);
 ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg = nullptr);
 int   zaya_apply_lora(ZayaState* s, const char* lora_path);
 void zaya_forward(ZayaState* s, int token_id, float* logits_out);
+void zaya_set_gemv_mode(int m);  // 0=legacy scalar kernels, 1=split-K bf16 GEMV
 int  zaya_forward_greedy(ZayaState* s, int token_id);
+int  zaya_forward_greedy_n(ZayaState* s, int token_id, int n, int* out_tokens);  // #937 device-resident chain
 void zaya_forward_batch(ZayaState* s, const int* token_ids, float* logits_out, int B);
 void zaya_reset(ZayaState* s);
 void zaya_destroy(ZayaState* s);
