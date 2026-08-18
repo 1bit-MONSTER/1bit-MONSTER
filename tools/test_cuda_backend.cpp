@@ -27,23 +27,45 @@ static bool read_model_config(const std::string& path, ModelConfig& cfg) {
     cfg.model_name = path.substr(slash + 1, dot - slash - 1);
 
     uint32_t u32;
-    if (r.get_u32("llama.block_count", u32) || r.get_u32("bert.block_count", u32))
+    // Reset to 0 first — ModelConfig defaults vocab to 262272, which would
+    // otherwise mask the "no vocab key" fallback below.
+    cfg.vocab_size = 0;
+    // Read arch-prefixed keys (llama/bert/qwen2/etc.); GgufReader key lookup
+    // is prefix-agnostic by name, so try all prefixes.
+    if (r.get_u32("llama.block_count", u32) || r.get_u32("bert.block_count", u32) ||
+        r.get_u32("qwen2.block_count", u32) || r.get_u32("qwen3.block_count", u32) ||
+        r.get_u32("zaya.block_count", u32) || r.get_u32("mamba2.block_count", u32))
         cfg.num_layers = u32;
-    if (r.get_u32("llama.embedding_length", u32) || r.get_u32("bert.embedding_length", u32))
+    if (r.get_u32("llama.embedding_length", u32) || r.get_u32("bert.embedding_length", u32) ||
+        r.get_u32("qwen2.embedding_length", u32) || r.get_u32("qwen3.embedding_length", u32))
         cfg.hidden_size = u32;
-    if (r.get_u32("llama.feed_forward_length", u32))
+    if (r.get_u32("llama.feed_forward_length", u32) || r.get_u32("qwen2.feed_forward_length", u32) ||
+        r.get_u32("qwen3.feed_forward_length", u32))
         cfg.intermediate_size = u32;
-    if (r.get_u32("llama.vocab_size", u32) || r.get_u32("bert.vocab_size", u32))
+    if (r.get_u32("llama.vocab_size", u32) || r.get_u32("bert.vocab_size", u32) ||
+        r.get_u32("qwen2.vocab_size", u32) || r.get_u32("qwen3.vocab_size", u32))
         cfg.vocab_size = u32;
-    if (r.get_u32("llama.attention.head_count", u32))
+    if (cfg.vocab_size == 0) {
+        // No explicit vocab_size key: derive from tokenizer.ggml.tokens
+        std::vector<std::string> toks;
+        if (r.get_string_array("tokenizer.ggml.tokens", toks))
+            cfg.vocab_size = (uint32_t)toks.size();
+    }
+    if (r.get_u32("llama.attention.head_count", u32) || r.get_u32("qwen2.attention.head_count", u32) ||
+        r.get_u32("qwen3.attention.head_count", u32))
         cfg.num_heads = u32;
-    if (r.get_u32("llama.attention.head_count_kv", u32))
+    if (r.get_u32("llama.attention.head_count_kv", u32) || r.get_u32("qwen2.attention.head_count_kv", u32) ||
+        r.get_u32("qwen3.attention.head_count_kv", u32))
         cfg.num_kv_heads = u32;
 
     // Fallback: set sensible defaults for common models
     if (cfg.num_heads == 0) cfg.num_heads = 32;
     if (cfg.num_kv_heads == 0) cfg.num_kv_heads = 8;
-    if (cfg.head_dim == 0) cfg.head_dim = 128;
+    // Derive head_dim from heads (qwen2/llama convention: h/heads). Do this
+    // even when head_dim has its 128 default — that default is wrong for
+    // models where hidden_size/heads != 128 (e.g. Qwen2.5-0.5B: 896/14=64).
+    if (cfg.num_heads > 0 && cfg.hidden_size > 0 && cfg.hidden_size % cfg.num_heads == 0)
+        cfg.head_dim = cfg.hidden_size / cfg.num_heads;
 
     fprintf(stderr, "  Model: %s\n", cfg.model_name.c_str());
     fprintf(stderr, "  Arch: %s (enum=%d)\n", cfg.architecture.c_str(), cfg.arch);
