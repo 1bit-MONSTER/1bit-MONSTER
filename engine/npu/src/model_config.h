@@ -171,7 +171,14 @@ static int get_shape_dim1(const char* js, size_t jl, const char* key) {
 inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_tag) {
     ModelConfig cfg;
     cfg.model_tag = model_tag ? model_tag : "unknown";
-    
+
+    // Family-level RoPE base (fix #1699: Llama-3.x trains at freq_base
+    // 500000, not the Qwen 1e6 default — the q4nx JSON carries no rope
+    // metadata, so derive it from the model tag).
+    if (strstr(cfg.model_tag.c_str(), "llama") || strstr(cfg.model_tag.c_str(), "qwen2") ||
+        strstr(cfg.model_tag.c_str(), "nanbeige"))
+        cfg.rope_theta = 500000.0f;
+
     // Extract model_dir from path
     cfg.model_dir = model_path;
     auto slash = cfg.model_dir.rfind('/');

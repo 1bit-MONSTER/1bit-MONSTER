@@ -282,6 +282,67 @@ struct HybridFlmCtx {
         return Am;
     }
 
+    // Per-row activation scales (batched prefill fix, #1699): row m quantized
+    // with 1/ascales[m], so each token keeps its own dynamic range.
+    inline int8_t* quantize_async_rows(const float* A, int am, int ak,
+                                       const float* ascales) {
+        memset(Am, 0, (size_t)am * KD);
+        for (int m = 0; m < am; m++) {
+            float ais = 1.0f / ascales[m];
+            for (int k = 0; k < ak; k++) {
+                float v = A[m * ak + k];
+                if (!std::isfinite(v)) v = 0;
+                int q = (int)roundf(v * ais);
+                if (q > 127) q = 127; else if (q < -127) q = -127;
+                Am[m * KD + k] = (int8_t)q;
+            }
+        }
+        return Am;
+    }
+
+    inline void dequant_only_rows(float* C, int am, int an,
+                                  const float* ascales, float Bscale,
+                                  int layer = -1) {
+        if (layer >= 0 && (size_t)layer < group_scales.size() &&
+            !group_scales[layer].empty()) {
+            float ssum = 0;
+            for (float s : group_scales[layer]) ssum += s;
+            Bscale = ssum / group_scales[layer].size();
+        }
+        for (int m = 0; m < am; m++) {
+            float cs = ascales[m] * Bscale;
+            for (int n = 0; n < an; n++) {
+                float val = (float)Cm[m * ND + n] * cs;
+                C[m * an + n] = std::isfinite(val) ? val : 0.0f;
+            }
+        }
+    }
+
+    inline xrt::run launch_async_rows(int l, const float* A, int am, int ak,
+                                      const float* ascales_q) {
+        quantize_async_rows(A, am, ak, ascales_q);
+        return sync_and_launch(l);
+    }
+
+    inline void finish_async_rows(xrt::run& r, float* C, int am, int an,
+                                  const float* ascales, float Bscale,
+                                  int layer = -1) {
+        r.wait();
+        readback();
+        dequant_only_rows(C, am, an, ascales, Bscale, layer);
+    }
+
+    inline bool go_rows(int l, const float* A, int am, int ak,
+                        const float* ascales_q, const float* ascales_d,
+                        float Bscale, float* C, int an) {
+        quantize_async_rows(A, am, ak, ascales_q);
+        auto r = sync_and_launch(l);
+        r.wait();
+        readback();
+        dequant_only_rows(C, am, an, ascales_d, Bscale, l);
+        return true;
+    }
+
     /// Sync A BO to device.
     inline void sync_A() {
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);

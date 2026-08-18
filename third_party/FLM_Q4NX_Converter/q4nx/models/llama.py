@@ -33,15 +33,26 @@ class Llama(__Q4NX_Converter, model_arch=ModelArch.LLAMA):
             unpacked = gguf_tensor.unpack(self.default_tensor_type)
 
             if "q_proj" in self.forward_name_map[gguf_tensor.name] or "k_proj" in self.forward_name_map[gguf_tensor.name]: # for llama q_proj, the order is special
-                # 0, 1, 2, .... 127
-                # 0, 64, 1, ..., 127
-                DH = self.gguf_reader.fields["llama.rope.dimension_count"].contents()
-                pp = DH // 2
-                d, m, qw = unpacked
-                d = rearrange(d, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
-                m = rearrange(m, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
-                qw = rearrange(qw, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
-                unpacked = (d, m, qw)
+                # Old llama-1/2 (interleaved/GPT-J rotary) stores q/k with the
+                # head dims in 0,64,1,65,... order; the engine's RoPE is
+                # paired (0,1,...,63,64,...,127). The reorder below fixes that.
+                # Llama-3.x (freq_base=500000) already uses the paired/NeoX
+                # layout — applying the reorder there CORRUPTS the weights
+                # (fix #1699: Llama-3.1-8B q4nx decoded with corr 0.005).
+                freq_base = 10000.0
+                try:
+                    if "llama.rope.freq_base" in self.gguf_reader.fields:
+                        freq_base = float(self.gguf_reader.fields["llama.rope.freq_base"].contents())
+                except Exception:
+                    pass
+                if freq_base <= 20000.0:  # llama-1/2 style: interleaved rotary
+                    DH = self.gguf_reader.fields["llama.rope.dimension_count"].contents()
+                    pp = DH // 2
+                    d, m, qw = unpacked
+                    d = rearrange(d, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
+                    m = rearrange(m, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
+                    qw = rearrange(qw, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
+                    unpacked = (d, m, qw)
 
             self.q4nx_tensors[self.forward_name_map[gguf_tensor.name]] = self._pack_q4nx(*unpacked)
 
