@@ -236,7 +236,9 @@ jobs:
           ls -la qwen3-0.6b-q8_0.gguf
       - name: Convert Q8_0 → Q4NX 1BP
         run: |
-          ./build/gguf_to_onebp qwen3-0.6b-q8_0.gguf qwen3-0.6b-q4nx.1bp
+          # Explicit --q4nx: gguf_to_onebp defaults to lossless F16 since #1728;
+          # the gate's (10,40) window is calibrated for Q4NX 1BP output.
+          ./build/gguf_to_onebp qwen3-0.6b-q8_0.gguf qwen3-0.6b-q4nx.1bp --q4nx
       - name: Run perplexity gate (assert 10 < ppl < 40)
         run: |
           ./build/ppl_generic qwen3-0.6b-q4nx.1bp \

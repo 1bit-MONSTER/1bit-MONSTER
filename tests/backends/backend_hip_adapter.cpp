@@ -211,7 +211,10 @@ public:
     bool load_model(const ModelConfig& cfg) override {
         unload_model();
         cfg_ = cfg;
-        if (cfg.format != ModelFormat::ONEBP || cfg.model_path.empty()) return false;
+        // GGUF-direct (lossless f32) or 1BP — the hip backend handles both.
+        bool is_gguf = cfg.model_path.size() > 5 &&
+                       cfg.model_path.substr(cfg.model_path.size()-5) == ".gguf";
+        if ((cfg.format != ModelFormat::ONEBP && !is_gguf) || cfg.model_path.empty()) return false;
         backend_ = create_hip_1bp_backend();
         if (!backend_) return false;
         std::string wd = cfg.weights_dir;

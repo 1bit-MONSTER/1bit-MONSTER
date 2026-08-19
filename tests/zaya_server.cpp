@@ -343,6 +343,13 @@ static bool detect_from_gguf(const std::string& path, ModelConfig& cfg) {
         if (reader.get_u32(arch + ".context_length", max_seq) ||
             reader.get_u32("context_length", max_seq))
             cfg.max_seq_len = (int)max_seq;
+        // RoPE base — the GPU backends otherwise default to 10000, which
+        // silently breaks every model with a different base (Llama-3.2=
+        // 500000, Qwen3=1e6) as soon as pos > 0.
+        float rope = 0.0f;
+        if (!reader.get_f32(arch + ".rope.freq_base", rope))
+            reader.get_f32("rope.freq_base", rope);
+        if (rope > 0.0f) cfg.rope_theta = rope;
         // Cap max_seq_len to prevent excessive KV cache allocation.
         // The backend can dynamically allocate more if needed.
         if (cfg.max_seq_len > 32768) cfg.max_seq_len = 32768;
@@ -402,7 +409,10 @@ static std::string build_chatml(const std::string& body, rcpp_arch_t arch) {
             return std::string("<|im_start|>") + role + "\n";
         };
         auto header_close = [&]() {
-            if (llama_tpl) return std::string("<|eot_id|>\n");
+            // Llama-3 template: content is followed directly by <|eot_id|>
+            // (no trailing newline — the next header starts immediately);
+            // an extra \n shifts every position and changes the output.
+            if (llama_tpl) return std::string("<|eot_id|>");
             return std::string("<|im_end|>\n");
         };
 
@@ -1060,6 +1070,15 @@ int main(int argc, char** argv) {
                 }
             }
             if (found) {
+                // The .htok carries bos/eos but not add_bos — pick it up
+                // from a sibling GGUF so Qwen-family models (add_bos=false)
+                // don't get a spurious BOS prepended at position 0.
+                for (const auto& cand : {cfg.model_path + ".gguf",
+                                         cfg.model_path + ".Q4_K_M.gguf",
+                                         cfg.model_path + ".Q8_0.gguf"}) {
+                    GgufReader r2;
+                    if (r2.open(cand.c_str())) { tok.load_from_gguf(r2); break; }
+                }
                 fprintf(stderr, "  Tokenizer: BOS=%d EOS=%d + BPE(vocab loaded from .htok)\n",
                         tok.bos_id, tok.eos_id);
             } else {
@@ -1108,6 +1127,12 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    // The tokenizer knows the model's real EOS (from the .htok / GGUF
+    // metadata); the 1BP-header path sets it from the file, but the
+    // GGUF-direct path has no 1BP header — sync it so the router stops
+    // generation at the model's actual EOS.
+    cfg.eos_token_id = tok.eos_id > 0 ? tok.eos_id : cfg.eos_token_id;
 
 
     // Coherence probe with a real prompt (raw low ids make every
