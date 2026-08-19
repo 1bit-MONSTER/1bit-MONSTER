@@ -135,6 +135,16 @@ static std::string g_weights_dir = []() -> std::string {
     return "/tmp/zaya_weights/";
 }();
 static int g_port = 8088;
+// Bind address (--host ADDR). Loopback-only by default — the server has no
+// auth unless --api-token is set, so exposing it on the network deliberately
+// requires the operator to opt in and is loudly warned about at startup.
+static std::string g_bind_host = "127.0.0.1";
+// Optional bearer token (--api-token / UNIFIED_API_TOKEN env). Empty =
+// auth disabled; set = every request must send "Authorization: Bearer <token>".
+static std::string g_api_token = []() -> std::string {
+    const char* env = getenv("UNIFIED_API_TOKEN");
+    return (env && env[0]) ? std::string(env) : std::string();
+}();
 
 // ── Speculative decode (--draft-model / --spec-decode) ──
 static Backend* g_draft_backend = nullptr;      // second, small model (ggml-vulkan)
@@ -967,6 +977,17 @@ static json generate_completion(BackendManager& mgr,
         if (next == g_tokenizer.eos_id) break;
     }
 
+    // Drop the EOG token from the visible output: decoding it leaks the raw
+    // marker ("<|eot_id|>") into the returned text. Also drop trailing
+    // whitespace the model emitted just before stopping.
+    if (!output_tokens.empty() && output_tokens.back() == g_tokenizer.eos_id)
+        output_tokens.pop_back();
+    while (!output_tokens.empty()) {
+        std::string tail = g_tokenizer.decode(std::vector<int>{output_tokens.back()});
+        if (tail.find_first_not_of(" \t\r\n") != std::string::npos) break;
+        output_tokens.pop_back();
+    }
+
     float ms = std::chrono::duration<float, std::milli>(
         std::chrono::high_resolution_clock::now() - t0).count();
 
@@ -980,7 +1001,7 @@ static json generate_completion(BackendManager& mgr,
                            std::to_string((int)ms) + "ms";
         result["timed_out"] = true;
     }
-    if (ms > 0) {
+    if (ms > 0 && !output_tokens.empty()) {
         result["tok_s"] = (float)output_tokens.size() / (ms / 1000.0f);
         result["ms_per_tok"] = ms / (float)output_tokens.size();
     } else {
@@ -1189,6 +1210,8 @@ int main(int argc, char** argv) {
             printf("      --draft-model PATH  Small model for speculative decode\n");
             printf("      --spec-decode       Verify draft proposals in batches (needs --draft-model)\n");
             printf("      --pool              Keep all models resident in the unified pool\n");
+            printf("      --host ADDR         Bind address (default: 127.0.0.1; 0.0.0.0 = network)\n");
+            printf("      --api-token TOKEN   Require 'Authorization: Bearer <token>' (env: UNIFIED_API_TOKEN)\n");
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -1210,6 +1233,8 @@ int main(int argc, char** argv) {
         {"draft-model",   required_argument, nullptr, 1001},
         {"spec-decode",   no_argument,       nullptr, 1002},
         {"pool",          no_argument,       nullptr, 1003},
+        {"host",          required_argument, nullptr, 1004},
+        {"api-token",     required_argument, nullptr, 1005},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -1232,6 +1257,8 @@ int main(int argc, char** argv) {
             case 1001: g_draft_model_path = optarg; break;
             case 1002: g_spec_decode = true; break;
             case 1003: g_pool_enabled = true; break;
+            case 1004: g_bind_host = optarg; break;
+            case 1005: g_api_token = optarg; break;
         }
     }
 
@@ -1446,7 +1473,7 @@ int main(int argc, char** argv) {
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
     load_model_tokenizer(cfg.model_path);
-    BackendRoute route = select_backend_route(cfg);
+    BackendRoute route = gpu_only_route(select_backend_route(cfg));
     printf("  Router: %s\n", route.reason.c_str());
     // mgr state is read by /v1/health + /v1/models under g_config_mutex —
     // mutate under the same lock (issue #1271).
@@ -1692,10 +1719,14 @@ int main(int argc, char** argv) {
     // Limit request body size to prevent memory exhaustion from oversized payloads
     svr.set_payload_max_length(16 * 1024 * 1024); // 16 MiB
 
-    // ── CORS middleware (only enabled when --cors-origin is set) ──
-    if (!g_cors_origin.empty()) {
-        svr.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
-            if (req.method == "OPTIONS") {
+    // ── Pre-routing middleware: optional bearer-token auth + CORS ──
+    // Auth is opt-in: when g_api_token is set, every request must carry
+    // "Authorization: Bearer <token>" (401 otherwise). CORS preflight
+    // (OPTIONS) is exempt so browsers can probe before sending credentials.
+    // CORS headers are only added when --cors-origin is set.
+    svr.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
+        if (req.method == "OPTIONS") {
+            if (!g_cors_origin.empty()) {
                 res.set_header("Access-Control-Allow-Origin", g_cors_origin);
                 if (g_cors_origin == "*") {
                     res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -1705,8 +1736,19 @@ int main(int argc, char** argv) {
                 return httplib::Server::HandlerResponse::Handled;
             }
             return httplib::Server::HandlerResponse::Unhandled;
-        });
-    }
+        }
+        if (!g_api_token.empty()) {
+            const std::string expected = "Bearer " + g_api_token;
+            if (req.get_header_value("Authorization") != expected) {
+                res.status = 401;
+                res.set_header("WWW-Authenticate", "Bearer");
+                res.set_content("{\"error\":\"unauthorized: missing or invalid API token\"}",
+                                "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
 
     auto add_cors = [&](httplib::Response& res) {
         if (!g_cors_origin.empty())
@@ -1911,12 +1953,59 @@ int main(int argc, char** argv) {
         // Instruct models need their native template: raw "role: content"
         // text makes Qwen/Llama/Zamba2 instruct models echo the prompt back
         // instead of answering (their chat tokens are special ids, not bytes).
-        // Base models (no "Instruct" in the name) keep the raw format.
+        // A filename "Instruct" heuristic misses instruct models whose file
+        // name omits it (e.g. Qwen3-0.6B-Q4_1.gguf) — trust the GGUF's own
+        // declared tokenizer.chat_template instead; base models that declare
+        // no template keep the raw format.
         bool is_instruct = req_model.find("Instruct") != std::string::npos;
-        if (is_instruct && !chat_msgs.empty()) {
-            bool llama_tpl = false;
+        if (!is_instruct) {
+            auto norm_name = [](std::string s) -> std::string {
+                for (auto& c : s) { if (c == '-' || c == '_') c = ' '; }
+                return s;
+            };
+            std::string req_norm = norm_name(req_model);
             for (auto& dm : discovered) {
-                if (dm.model_name == req_model) {
+                std::string mn = norm_name(dm.model_name);
+                // Match exact or either-side prefix: request name may be the
+                // long quantized file stem ("Meta-Llama-3.1-8B-Instruct-Q4_K_M")
+                // while discovery strips quant markers ("Meta Llama 3.1 8B
+                // Instruct"), or the reverse (short request prefix).
+                bool matches = (mn == req_norm) ||
+                    (mn.size() >= req_norm.size() &&
+                     mn.compare(0, req_norm.size(), req_norm) == 0) ||
+                    (req_norm.size() >= mn.size() &&
+                     req_norm.compare(0, mn.size(), mn) == 0);
+                if (!matches) continue;
+                GgufReader probe;
+                if (probe.open(dm.model_path)) {
+                    std::string tpl;
+                    if (probe.get_string("tokenizer.chat_template", tpl) && !tpl.empty())
+                        is_instruct = true;
+                }
+                break;
+            }
+        }
+        if (is_instruct && !chat_msgs.empty()) {
+            // Template family: llama uses <|start_header_id|>/<|eot_id|>,
+            // everything else ChatML <|im_start|>/<|im_end|>. Match the
+            // discovered model by normalized name (hyphens/underscores →
+            // spaces, prefix allowed) like model selection does, since the
+            // request name ("Meta-Llama-3.1-8B-Instruct-Q4_K_M") rarely
+            // equals the discovery name ("Meta Llama 3.1 8B Instruct").
+            auto normalize = [](std::string s) -> std::string {
+                for (auto& c : s) { if (c == '-' || c == '_') c = ' '; }
+                return s;
+            };
+            bool llama_tpl = false;
+            std::string req_norm = normalize(req_model);
+            for (auto& dm : discovered) {
+                std::string mn = normalize(dm.model_name);
+                bool matches = (mn == req_norm) ||
+                    (mn.size() >= req_norm.size() &&
+                     mn.compare(0, req_norm.size(), req_norm) == 0) ||
+                    (req_norm.size() >= mn.size() &&
+                     req_norm.compare(0, mn.size(), mn) == 0);
+                if (matches) {
                     llama_tpl = (dm.architecture == "llama");
                     break;
                 }
@@ -1974,7 +2063,7 @@ int main(int argc, char** argv) {
         // ── Phase 1b: Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
             load_model_tokenizer(switch_cfg.model_path);
-            BackendRoute swrt = select_backend_route(switch_cfg);
+            BackendRoute swrt = gpu_only_route(select_backend_route(switch_cfg));
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
 
@@ -2194,7 +2283,7 @@ int main(int argc, char** argv) {
         // ── Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
             load_model_tokenizer(switch_cfg.model_path);
-            BackendRoute swrt = select_backend_route(switch_cfg);
+            BackendRoute swrt = gpu_only_route(select_backend_route(switch_cfg));
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
 
@@ -2478,9 +2567,14 @@ int main(int argc, char** argv) {
     printf("  1bit.systems — Agent Inference Server\n");
     printf("──────────────────────────────────────────────\n");
     printf("  Port:    %d\n", g_port);
+    printf("  Host:    %s\n", g_bind_host.c_str());
     printf("  Backend: %s\n", mgr.active_info() ? mgr.active_info()->id.c_str() : "none");
     printf("  Strategy: %s\n", g_strategy_engine.name());
     printf("  Watchdog: %s\n", (g_watchdog && g_watchdog->running()) ? "running" : "stopped");
+    if (!g_api_token.empty())
+        printf("  Auth:    bearer token required (Authorization: Bearer <token>)\n");
+    else
+        printf("  Auth:    NONE — requests are unauthenticated\n");
     printf("──────────────────────────────────────────────\n");
     printf("  Endpoints:\n");
     printf("    GET  /v1/health            — Backend status + metrics\n");
@@ -2502,10 +2596,20 @@ int main(int argc, char** argv) {
     printf("  Press Ctrl+C to stop.\n");
     printf("──────────────────────────────────────────────\n\n");
 
+    if (g_bind_host != "127.0.0.1" && g_bind_host != "localhost" && g_bind_host != "::1") {
+        printf("  *** WARNING: binding to %s — server is network-reachable. ***\n",
+               g_bind_host.c_str());
+        if (g_api_token.empty())
+            printf("  *** No API token set (--api-token) — requests are UNAUTHENTICATED. ***\n"
+                   "  *** Use a reverse proxy / firewall, or set UNIFIED_API_TOKEN. ***\n");
+        else
+            printf("  *** Requests must send 'Authorization: Bearer <token>'. ***\n");
+    }
+
     // SIGINT/SIGTERM set keep_running=false; a watchdog thread stops the
     // server so Ctrl-C / kill actually terminate it (issue #1292).
     std::thread listener([&]() {
-        if (!svr.listen("127.0.0.1", g_port)) {
+        if (!svr.listen(g_bind_host.c_str(), g_port)) {
             fprintf(stderr, "Failed to start server on port %d\n", g_port);
             _exit(1);
         }

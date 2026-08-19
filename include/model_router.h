@@ -26,3 +26,6 @@ struct BackendRoute {
 };
 
 BackendRoute select_backend_route(const ModelConfig& cfg);
+
+// UNIFIED_GPU_ONLY=1 strips CPU backends from a route (see model_router.cpp).
+BackendRoute gpu_only_route(BackendRoute route);

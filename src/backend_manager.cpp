@@ -484,6 +484,11 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
 
     // Preferred ids first (in the order given), then everything else in the
     // usual priority order. Unknown preferred ids are silently skipped.
+    // UNIFIED_GPU_ONLY=1 stops after the preferred ids: the generic CPU
+    // fallback dequantizes the whole model to f32 in RAM (~4x size — an 8B
+    // Q4 GGUF becomes ~32 GB), which OOMs modest-RAM hosts even though the
+    // GPU path works. Only the accelerator route is attempted.
+    bool gpu_only = getenv("UNIFIED_GPU_ONLY") != nullptr;
     std::vector<size_t> order;
     std::vector<bool> used(backends_.size(), false);
     for (const auto& id : preferred_ids) {
@@ -495,7 +500,9 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
             }
         }
     }
-    for (size_t i = 0; i < backends_.size(); i++) if (!used[i]) order.push_back(i);
+    if (!gpu_only) {
+        for (size_t i = 0; i < backends_.size(); i++) if (!used[i]) order.push_back(i);
+    }
 
     return init_in_order(cfg, weights_dir, order);
 }

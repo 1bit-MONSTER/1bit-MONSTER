@@ -177,11 +177,16 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
 
     // Use the ffn_down probe to detect FF size AND check if names are swapped.
     // We read ffn_down.weight once and use its size for both purposes.
+    // Swapped-name detection uses the BIAS shapes, not the weight element
+    // count: [ff,H] and [H,ff] orientations have identical element counts, so
+    // a count-based heuristic misfires on models where intermediate_size is
+    // symmetric-ish (Qwen3-VL mmproj: ffn_down.bias == H when names are
+    // normal). The bias is the ground truth: normal names -> ffn_down.bias is
+    // H-sized, ffn_up.bias is FF-sized; swapped -> the reverse.
     {
         std::vector<float> probe_down;
         size_t n_down = 0;
         if (read_tensor_f32(gguf_path, "v.blk.0.ffn_down.weight", probe_down, &n_down)) {
-            ffn_names_swapped = (n_down == (size_t)config.intermediate_size * H);
             // Auto-detect intermediate_size from ffn_down: if not swapped,
             // shape is [ff, H], so ff = n_down / H.
             // If swapped, shape is [H, ff] (same), so still ff = n_down / H.
@@ -194,9 +199,27 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
                 }
             }
         }
+        // Bias-shape swap detection: read both biases; the one whose size
+        // matches H (hidden) tells us which projection each name really is.
+        std::vector<float> probe_down_bias, probe_up_bias;
+        size_t n_down_bias = 0, n_up_bias = 0;
+        read_tensor_f32(gguf_path, "v.blk.0.ffn_down.bias", probe_down_bias, &n_down_bias);
+        read_tensor_f32(gguf_path, "v.blk.0.ffn_up.bias",   probe_up_bias,   &n_up_bias);
+        if (n_down_bias > 0 && n_up_bias > 0) {
+            // normal: down bias is H, up bias is FF; swapped: the reverse.
+            bool down_is_h = (n_down_bias == (size_t)H);
+            bool up_is_h   = (n_up_bias   == (size_t)H);
+            if (down_is_h && !up_is_h) ffn_names_swapped = false;
+            else if (!down_is_h && up_is_h) ffn_names_swapped = true;
+            else ffn_names_swapped = (n_down == (size_t)config.intermediate_size * H); // fallback
+        } else {
+            ffn_names_swapped = (n_down == (size_t)config.intermediate_size * H); // fallback
+        }
     }
     if (ffn_names_swapped) {
         fprintf(stderr, "  [vit] detected swapped FFN names (llama.cpp clip bug) — auto-correcting\n");
+    } else {
+        fprintf(stderr, "  [vit] FFN names normal (bias-shape verified)\n");
     }
 
     fprintf(stderr, "  [vit] FF=%d H=%d at layer load start\n", FF, H);

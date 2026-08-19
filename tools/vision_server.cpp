@@ -72,6 +72,14 @@ static const char* VL_TMPL_ASSIST    = "<|im_end|>\n<|im_start|>assistant\n";
 static std::atomic<bool> keep_running{true};
 static std::mutex g_inference_mutex;  // serialize backend access (httplib thread pool, issue #1276)
 static int g_port = 8089;
+// Bind address (--host ADDR). Loopback-only by default — no auth unless
+// --api-token is set, so network exposure is opt-in and warned about.
+static std::string g_bind_host = "127.0.0.1";
+// Optional bearer token (--api-token / VISION_API_TOKEN env). Empty = off.
+static std::string g_api_token = []() -> std::string {
+    const char* env = getenv("VISION_API_TOKEN");
+    return (env && env[0]) ? std::string(env) : std::string();
+}();
 static std::string g_mmproj_path;
 static std::string g_model_path;
 static std::string g_tokenizer_path;
@@ -338,6 +346,8 @@ int main(int argc, char** argv) {
         {"mmproj",    required_argument, nullptr, 'm'},
         {"model",     required_argument, nullptr, 'M'},
         {"tokenizer", required_argument, nullptr, 't'},
+        {"host",      required_argument, nullptr, 1001},
+        {"api-token", required_argument, nullptr, 1002},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -348,13 +358,15 @@ int main(int argc, char** argv) {
             case 'm': g_mmproj_path = optarg; break;
             case 'M': g_model_path = optarg; break;
             case 't': g_tokenizer_path = optarg; break;
+            case 1001: g_bind_host = optarg; break;
+            case 1002: g_api_token = optarg; break;
         }
     }
 
     g_start_time = time(nullptr);
 
     if (g_mmproj_path.empty() || g_model_path.empty()) {
-        fprintf(stderr, "Usage: %s --mmproj <mmproj.gguf> --model <text.gguf> [--port 8089]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --mmproj <mmproj.gguf> --model <text.gguf> [--port 8089] [--host 127.0.0.1] [--api-token TOKEN]\n", argv[0]);
         return 1;
     }
 
@@ -436,6 +448,23 @@ int main(int argc, char** argv) {
     // ── HTTP server ──
     httplib::Server svr;
 
+    // Optional bearer-token auth (--api-token / VISION_API_TOKEN). When set,
+    // every request must carry "Authorization: Bearer <token>".
+    svr.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
+        if (req.method == "OPTIONS") return httplib::Server::HandlerResponse::Unhandled;
+        if (!g_api_token.empty()) {
+            const std::string expected = "Bearer " + g_api_token;
+            if (req.get_header_value("Authorization") != expected) {
+                res.status = 401;
+                res.set_header("WWW-Authenticate", "Bearer");
+                res.set_content("{\"error\":\"unauthorized: missing or invalid API token\"}",
+                                "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+
     // Any unexpected exception returns a clean 500 — never the raw exception
     // text in an EXCEPTION_WHAT header (issue #1293).
     svr.set_exception_handler([](const httplib::Request&, httplib::Response& res, std::exception_ptr) {
@@ -502,8 +531,18 @@ int main(int argc, char** argv) {
                     std::string role = msg.value("role", "user");
                     const auto& content = msg["content"];
 
+                    // ChatML (htok) mode: the generate phase feeds the
+                    // <|im_start|>openers itself (VL_TMPL_SYS/USER_OPEN before
+                    // the vision block, VL_TMPL_ASSIST after), so the raw text
+                    // here must NOT carry a "role: " prefix — mixing both
+                    // produced a broken prompt ("user: Say hi\n<|im_end|>...")
+                    // and degenerate output. Without htok, keep the raw
+                    // role-prefixed format the SimpleTokenizer path expects.
+                    const bool chatml = (g_htok != nullptr);
+                    const std::string prefix = chatml ? "" : (role + ": ");
+
                     if (content.is_string()) {
-                        text_prompt += role + ": " + content.get<std::string>() + "\n";
+                        text_prompt += prefix + content.get<std::string>() + (chatml ? "" : "\n");
                     } else if (content.is_array()) {
                         for (const auto& part : content) {
                             if (part.is_string()) {  // OpenAI allows bare strings in content arrays
@@ -683,8 +722,13 @@ int main(int argc, char** argv) {
     fprintf(stderr, "║  1bit.systems — VL Inference Server   ║\n");
     fprintf(stderr, "╚════════════════════════════════════════╝\n");
     fprintf(stderr, "  Port:    %d\n", g_port);
+    fprintf(stderr, "  Host:    %s\n", g_bind_host.c_str());
     fprintf(stderr, "  Model:   %s\n", g_model_path.c_str());
     fprintf(stderr, "  MMProj:  %s\n", g_mmproj_path.c_str());
+    if (!g_api_token.empty())
+        fprintf(stderr, "  Auth:    bearer token required (Authorization: Bearer <token>)\n");
+    else
+        fprintf(stderr, "  Auth:    NONE — requests are unauthenticated\n");
     fprintf(stderr, "  Endpoints:\n");
     fprintf(stderr, "    POST /v1/chat/completions — VL inference\n");
     fprintf(stderr, "    GET  /v1/health           — Status\n");
@@ -696,8 +740,19 @@ int main(int argc, char** argv) {
 
     // SIGINT/SIGTERM set keep_running=false; a watchdog thread stops the
     // server so Ctrl-C / kill actually terminate it (issue #1292).
+    if (g_bind_host != "127.0.0.1" && g_bind_host != "localhost" && g_bind_host != "::1") {
+        fprintf(stderr,
+            "\n  *** WARNING: binding to %s — server is network-reachable. ***\n",
+            g_bind_host.c_str());
+        if (g_api_token.empty())
+            fprintf(stderr,
+                "  *** No API token set (--api-token) — requests are UNAUTHENTICATED. ***\n"
+                "  *** Use a reverse proxy / firewall, or set VISION_API_TOKEN. ***\n\n");
+        else
+            fprintf(stderr, "  *** Requests must send 'Authorization: Bearer <token>'. ***\n\n");
+    }
     std::thread listener([&]() {
-        if (!svr.listen("127.0.0.1", g_port)) {
+        if (!svr.listen(g_bind_host.c_str(), g_port)) {
             fprintf(stderr, "Failed to start server on port %d\n", g_port);
             _exit(1);
         }

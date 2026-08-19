@@ -1,4 +1,5 @@
 #include "model_router.h"
+#include <cstdlib>
 
 // ============================================================
 // Backend Router — architecture-aware dispatch
@@ -172,4 +173,24 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
     }
     // Default: try HIP GPU first, fall back to generic CPU.
     return {{"hip_gpu", "cpu_generic"}, "generic model — HIP GPU, generic CPU fallback"};
+}
+
+// UNIFIED_GPU_ONLY=1 strips every CPU backend from the route before the
+// BackendManager inits: the generic CPU fallback dequantizes the full model
+// to f32 in RAM (~4x size; an 8B Q4 GGUF becomes ~32 GB), which OOMs hosts
+// with modest system RAM even though the accelerator path works fine. The
+// GPU backend (e.g. ggml_vulkan) is the top accelerator and stays, so a
+// healthy GPU deployment loses nothing — only the RAM-heavy CPU copy is
+// skipped.
+BackendRoute gpu_only_route(BackendRoute route) {
+    if (getenv("UNIFIED_GPU_ONLY") == nullptr) return route;
+    std::vector<std::string> kept;
+    for (const auto& id : route.backend_ids_in_order) {
+        if (id.rfind("cpu_", 0) != 0 && id != "cpu_generic")
+            kept.push_back(id);
+    }
+    if (kept.empty()) kept = route.backend_ids_in_order;  // never route to nothing
+    route.backend_ids_in_order = std::move(kept);
+    route.reason += " (UNIFIED_GPU_ONLY)";
+    return route;
 }

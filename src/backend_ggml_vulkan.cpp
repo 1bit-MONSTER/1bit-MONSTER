@@ -86,9 +86,12 @@ struct GGMLVulkanBackend : Backend {
         smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
         llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.8f));
         llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1u));
+        // repeat-penalty 1.1 over the last 64 tokens — without it instruct
+        // models loop (the vendored llama.cpp DOES ship this sampler; the
+        // earlier "not available" note was wrong).
+        llama_sampler_chain_add(smpl,
+            llama_sampler_init_penalties(VOCAB, 64, 1.1f, 0.0f, 0.0f));
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(1u));
-        // NOTE: no repeat-penalty sampler in this vendored llama.cpp (only the
-        // core llama.h samplers); temp+top-p suffices — greedy was the old bug.
 
         gpu_ok = true; initialized = true;
         return true;
