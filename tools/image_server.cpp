@@ -94,6 +94,16 @@ static std::string g_models_dir = "./models";
 static int g_port = 8089;
 static bool g_verbose = false;
 static std::string g_backend_str = "auto";
+// Bind address (--host ADDR). Loopback-only by default — previously this
+// server hardcoded 0.0.0.0 and was unconditionally network-reachable; that
+// was a security hole (no auth existed). Exposing it now requires an
+// explicit --host 0.0.0.0 and is loudly warned about at startup.
+static std::string g_bind_host = "127.0.0.1";
+// Optional bearer token (--api-token / IMAGE_API_TOKEN env). Empty = off.
+static std::string g_api_token = []() -> std::string {
+    const char* env = getenv("IMAGE_API_TOKEN");
+    return (env && env[0]) ? std::string(env) : std::string();
+}();
 
 // ─── Model registry ───────────────────────────────────────────────
 struct DiffusionModelEntry {
@@ -555,6 +565,8 @@ static void print_usage(const char* prog) {
         "Usage: %s [options]\n"
         "  -w, --models-dir DIR    Model directory (default: ./models)\n"
         "  -p, --port PORT         Server port  (default: 8089)\n"
+        "      --host ADDR         Bind address (default: 127.0.0.1; 0.0.0.0 = network)\n"
+        "      --api-token TOKEN   Require 'Authorization: Bearer <token>' (env: IMAGE_API_TOKEN)\n"
         "  --backend BACKEND       Backend: auto|cpu|cuda|vulkan|metal (default: auto)\n"
         "  -v, --verbose           Verbose output\n"
         "  -h, --help              Show this help\n",
@@ -569,6 +581,10 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) g_models_dir = argv[++i];
         } else if (arg == "-p" || arg == "--port") {
             if (i + 1 < argc) g_port = std::stoi(argv[++i]);
+        } else if (arg == "--host") {
+            if (i + 1 < argc) g_bind_host = argv[++i];
+        } else if (arg == "--api-token") {
+            if (i + 1 < argc) g_api_token = argv[++i];
         } else if (arg == "--backend") {
             if (i + 1 < argc) g_backend_str = argv[++i];
         } else if (arg == "-v" || arg == "--verbose") {
@@ -586,7 +602,24 @@ int main(int argc, char** argv) {
     
     // Create HTTP server
     httplib::Server svr;
-    
+
+    // Optional bearer-token auth (--api-token / IMAGE_API_TOKEN). When set,
+    // every request must carry "Authorization: Bearer <token>".
+    svr.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res) {
+        if (req.method == "OPTIONS") return httplib::Server::HandlerResponse::Unhandled;
+        if (!g_api_token.empty()) {
+            const std::string expected = "Bearer " + g_api_token;
+            if (req.get_header_value("Authorization") != expected) {
+                res.status = 401;
+                res.set_header("WWW-Authenticate", "Bearer");
+                res.set_content("{\"error\":\"unauthorized: missing or invalid API token\"}",
+                                "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+
     // Routes
     svr.Get("/health", handle_health);
     svr.Get("/v1/models", handle_list_models);
@@ -602,14 +635,29 @@ int main(int argc, char** argv) {
     });
     
     printf("Starting image server on port %d...\n", g_port);
+    printf("  Host:    %s\n", g_bind_host.c_str());
     printf("  Endpoints:\n");
     printf("    GET  /health\n");
     printf("    GET  /v1/models\n");
     printf("    POST /v1/images/generations\n");
     printf("    POST /v1/images/edits\n");
     printf("    POST /v1/video/generations\n");
-    
-    svr.listen("0.0.0.0", g_port);
+    if (!g_api_token.empty())
+        printf("  Auth:    bearer token required (Authorization: Bearer <token>)\n");
+    else
+        printf("  Auth:    NONE — requests are unauthenticated\n");
+
+    if (g_bind_host != "127.0.0.1" && g_bind_host != "localhost" && g_bind_host != "::1") {
+        printf("\n  *** WARNING: binding to %s — server is network-reachable. ***\n",
+               g_bind_host.c_str());
+        if (g_api_token.empty())
+            printf("  *** No API token set (--api-token) — requests are UNAUTHENTICATED. ***\n"
+                   "  *** Use a reverse proxy / firewall, or set IMAGE_API_TOKEN. ***\n");
+        else
+            printf("  *** Requests must send 'Authorization: Bearer <token>'. ***\n");
+    }
+
+    svr.listen(g_bind_host.c_str(), g_port);
     
     return 0;
 }

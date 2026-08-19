@@ -43,10 +43,38 @@ one of these, e.g. `./build/1bit unified` on its default port.
 | `/v1/models`                 | `127.0.0.1:8088`   | list available models            |
 | `/health`                    | `127.0.0.1:8088`   | liveness check                   |
 
-By default each server binds to **loopback only** (`127.0.0.1`). Expose it on a
-LAN only behind a reverse proxy you control; there is no built-in auth
-(JARVIS's WS voice endpoint is the exception — it supports a bearer token,
-see [`docs/mobile/RUNBOOK.md`](../mobile/RUNBOOK.md)).
+By default each server binds to **loopback only** (`127.0.0.1`).
+
+## Exposing the API on the network
+
+There is **no built-in auth by default** (JARVIS's WS voice endpoint is the
+exception — it supports a bearer token, see
+[`docs/mobile/RUNBOOK.md`](../mobile/RUNBOOK.md)). To let clients on other
+machines reach an API server you have two supported options:
+
+1. **Reverse proxy you control** (nginx/caddy/`onebitd`) — the recommended
+   path. The proxy terminates TLS/auth and forwards to the loopback-bound
+   engine, so the engine itself never faces the network.
+2. **Explicit network bind + optional bearer token.** The API servers accept
+   `--host ADDR` to bind off-loopback (e.g. `--host 0.0.0.0`), and
+   `--api-token TOKEN` to require `Authorization: Bearer <token>` on every
+   request (also settable via env: `UNIFIED_API_TOKEN`, `VISION_API_TOKEN`,
+   `IMAGE_API_TOKEN`). Binding off-loopback prints a loud startup warning;
+   without a token the server is unauthenticated, so only do this behind a
+   firewall/VPN you trust.
+
+| Server (`build/1bit <sub>` / binary) | Flags | Default bind |
+|------------------------------|-------|--------------|
+| `unified` | `--host`, `--api-token` | `127.0.0.1:8088` |
+| `vision` (`vision_server`) | `--host`, `--api-token` | `127.0.0.1:8089` |
+| `image_server` (standalone binary, built with diffusion) | `--host`, `--api-token` | `127.0.0.1:8089` |
+| `router` (`unified_router`) | `--bind` | `127.0.0.1:18181` |
+| `onebitd` | `--host` | `127.0.0.1:13305` |
+| `jarvis` gateway | `JARVIS_BIND_ADDR`, `WS_STREAM_BIND` | `127.0.0.1` |
+
+> Note: `image_server` historically hardcoded `0.0.0.0` (network-reachable
+> with no auth). It now defaults to loopback like every other server; pass
+> `--host 0.0.0.0 --api-token <token>` to expose it deliberately.
 
 ## Backend selection
 

@@ -2748,6 +2748,7 @@ int main(int argc,char**argv){
     }
 
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
+    fprintf(stderr, "PREFILL-START\n");
     printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
     xrt::run pending_gu; bool has_pending=false;
