@@ -43,7 +43,10 @@ test -f "${PAYLOAD}/libvulkan1_${VULKAN1_VER}_amd64.deb" || {
 
 echo "-- TheRock gfx1151 ${THEROCK_VERSION}: downloading the exact-version wheel set --"
 TMP_PIP="$(mktemp -d)"
-WHEELS=( "rocm-sdk-core" "rocm-sdk-devel" "rocm-sdk-libraries" "rocm-sdk-device-gfx1151" )
+# `rocm` is the meta sdist that provides the rocm-sdk CLI (needed for
+# `rocm-sdk init`, which expands the devel tree the engine runs from). The
+# other four are the SDK wheels per ROCm/TheRock RELEASES.md.
+WHEELS=( "rocm" "rocm-sdk-core" "rocm-sdk-devel" "rocm-sdk-libraries" "rocm-sdk-device-gfx1151" )
 OK=1
 for w in "${WHEELS[@]}"; do
   if ! pip download --no-deps -d "$TMP_PIP" "${w}==${THEROCK_VERSION}" \
@@ -54,8 +57,15 @@ for w in "${WHEELS[@]}"; do
   fi
 done
 if [ "$OK" = 1 ] && ls "$TMP_PIP"/*.whl >/dev/null 2>&1; then
+  # Build the rocm meta sdist to a pure wheel now so the appliance install
+  # stays fully offline (no build backend needed at install time).
+  if ls "$TMP_PIP"/*.tar.gz >/dev/null 2>&1; then
+    echo "   building rocm meta sdist -> wheel"
+    pip wheel --no-deps --no-build-isolation -w "$TMP_PIP" "$TMP_PIP"/*.tar.gz >> /tmp/therock-pip.log 2>&1
+    rm -f "$TMP_PIP"/*.tar.gz
+  fi
   tar czf "${PAYLOAD}/therock-${THEROCK_VERSION}-gfx1151.tar.gz" -C "$TMP_PIP" .
-  echo "   fetched ${#WHEELS[@]} wheels from the nightlies index:"
+  echo "   fetched ${#WHEELS[@]} packages from the nightlies index:"
   ls -la "$TMP_PIP"
 else
   echo "   falling back to vendoring the matching build already on this box"
