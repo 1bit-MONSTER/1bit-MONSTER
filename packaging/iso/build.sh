@@ -93,8 +93,14 @@ echo "[6/7] Wiring autoinstall boot entry..."
 GRUB_CFG="${EXTRACT}/boot/grub/grub.cfg"
 [ -f "$GRUB_CFG" ] || { echo "FATAL: ${GRUB_CFG} not found — inspect ${EXTRACT}/boot/grub/ and fix this path" >&2; exit 1; }
 if ! grep -q "autoinstall" "$GRUB_CFG"; then
-  sed -i 's|linux\t/casper/vmlinuz|linux\t/casper/vmlinuz autoinstall ds=nocloud\\;s=/cdrom/|' "$GRUB_CFG"
+  # Ubuntu 26.04's live grub.cfg uses spaces: `linux  /casper/vmlinuz  --- `.
+  # Inject autoinstall as a KERNEL arg (before the `---` initrd-args separator)
+  # and zero the menu timeout so the first entry boots straight through.
+  sed -i -E 's|(linux[[:space:]]+/casper/vmlinuz)[[:space:]]+---|\1 autoinstall ds=nocloud\;s=/cdrom/ ---|' "$GRUB_CFG"
+  sed -i 's|^set timeout=.*|set timeout=0|' "$GRUB_CFG"
 fi
+grep -q "autoinstall" "$GRUB_CFG" || { echo "FATAL: could not wire autoinstall into ${GRUB_CFG}" >&2; exit 1; }
+echo "  autoinstall wired into grub.cfg + menu timeout zeroed"
 
 echo "[7/7] Repacking ISO..."
 OUT_ISO="${OUT_DIR}/1bit-monster-${UBUNTU_VER}-amd64.iso"
