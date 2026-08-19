@@ -68,7 +68,9 @@ chmod -R u+w "$EXTRACT"
 
 echo "[5/7] Building autoinstall seed + staging payload pool..."
 PASSWORD="$(openssl rand -base64 24)"
-PASSWORD_HASH="$(python3 -c "import crypt,sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA512)))" "$PASSWORD")"
+# python3 on Ubuntu 26.04 is 3.14+, which removed the `crypt` module — use
+# openssl's SHA-512 crypt (same $6$ format autoinstall accepts).
+PASSWORD_HASH="$(openssl passwd -6 "$PASSWORD")"
 SSH_PUBKEY="$(cat "$SSH_KEY_PATH")"
 sed \
   -e "s|__PASSWORD_HASH__|${PASSWORD_HASH}|" \
