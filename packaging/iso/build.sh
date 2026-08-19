@@ -48,6 +48,7 @@ bash "${ISO_DIR}/fetch-payload.sh"
 
 echo "[3b/7] Verifying autoinstall seed pins match the shared pin file..."
 for pat in "therock-${THEROCK_VERSION}-gfx1151.tar.gz" \
+           "therock-install.sh" \
            "mesa-vulkan-drivers_${MESA_VER}_amd64.deb" \
            "libvulkan1_${VULKAN1_VER}_amd64.deb"; do
   grep -qF "$pat" "${ISO_DIR}/autoinstall.yaml.tmpl" || {
@@ -81,6 +82,7 @@ mkdir -p "${EXTRACT}/pool"
 cp "$DEB_PATH" "${EXTRACT}/pool/"
 cp "${WORK}/payload/"*.deb "${EXTRACT}/pool/"
 cp "${WORK}/payload/therock-"*.tar.gz "${EXTRACT}/pool/"
+cp "${ISO_DIR}/therock-install.sh" "${EXTRACT}/pool/"
 cp "${REPO_ROOT}/packaging/services/1bit-unified.service" "${EXTRACT}/pool/"
 cp "${REPO_ROOT}/packaging/services/1bit-model-fetch.service" "${EXTRACT}/pool/"
 cp "${REPO_ROOT}/packaging/model-download.sh" "${EXTRACT}/pool/"
