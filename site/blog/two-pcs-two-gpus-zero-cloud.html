@@ -14,10 +14,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware · 1bit.monster</title>
 <meta name="description" content="We ran two DeepSeek Harness agents on two PCs and served both from local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way.">
-<meta name="keywords" content="DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6-35B, Qwen3-VL, multi-agent, self-hosted">
-<meta name="robots" content="index, follow">
+<meta name="keywords" content="DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6-35B, Qwen3-VL, multi-agent, self-hosted, local LLM, OpenAI-compatible server, AMD GPU inference">
+<meta name="author" content="bong-water-water-bong">
+<meta name="date" content="2026-08-19">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<meta name="theme-color" content="#021621">
 <link rel="canonical" href="https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud">
 <link rel="alternate" href="/blog/two-pcs-two-gpus-zero-cloud.html">
+<meta property="og:site_name" content="1bit.monster">
+<meta property="og:locale" content="en_US">
 <meta property="og:title" content="Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware">
 <meta property="og:description" content="Two DeepSeek Harness agents, one LAN, both fed by local 1bit.MONSTER inference: 35B @ 166 tok/s (8060S), 8B @ 96 tok/s (9070 XT), Qwen3-VL vision. Six engine bugs fixed.">
 <meta property="og:url" content="https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud">
@@ -25,12 +30,25 @@
 <meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="1bit MONSTER — one engine. Every model. Any chip.">
+<meta property="article:published_time" content="2026-08-19T00:00:00-03:00">
+<meta property="article:modified_time" content="2026-08-19T00:00:00-03:00">
+<meta property="article:author" content="https://github.com/bong-water-water-bong">
+<meta property="article:section" content="Deployment">
+<meta property="article:tag" content="DeepSeek Harness">
+<meta property="article:tag" content="1bit.MONSTER">
+<meta property="article:tag" content="LAN inference">
+<meta property="article:tag" content="self-hosted">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@1bitmonster">
+<meta name="twitter:creator" content="@1bitmonster">
 <meta name="twitter:title" content="Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware">
 <meta name="twitter:description" content="Two DeepSeek Harness agents, one LAN, both fed by local 1bit.MONSTER inference.">
 <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
+<meta name="twitter:image:alt" content="1bit MONSTER — one engine. Every model. Any chip.">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <style>
   :root{
     --bg:#021621; --panel:#04202f; --tile:#04202f; --inner:#04202f;
@@ -83,28 +101,74 @@
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
-  "@type": "TechArticle",
-  "headline": "Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware",
-  "description": "Two DeepSeek Harness agents on two PCs, one LAN, both fed by local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way.",
-  "author": {
-    "@type": "Person",
-    "name": "bong-water-water-bong",
-    "url": "https://github.com/bong-water-water-bong"
-  },
-  "datePublished": "2026-08-19",
-  "dateModified": "2026-08-19",
-  "publisher": {
-    "@type": "Organization",
-    "name": "1bit.monster",
-    "url": "https://1bit.monster",
-    "logo": "https://1bit.monster/assets/favicon.svg"
-  },
-  "mainEntityOfPage": {
-    "@type": "WebPage",
-    "@id": "https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud"
-  },
-  "image": "https://1bit.monster/assets/og-card.png",
-  "keywords": "DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Qwen3.6-35B, Qwen3-VL"
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "@id": "https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud#article",
+      "headline": "Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware",
+      "description": "Two DeepSeek Harness agents on two PCs, one LAN, both fed by local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way.",
+      "author": {
+        "@type": "Person",
+        "name": "bong-water-water-bong",
+        "url": "https://github.com/bong-water-water-bong"
+      },
+      "datePublished": "2026-08-19",
+      "dateModified": "2026-08-19",
+      "inLanguage": "en",
+      "wordCount": 1888,
+      "timeRequired": "PT8M",
+      "articleSection": "Deployment",
+      "keywords": "DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Qwen3.6-35B, Qwen3-VL, self-hosted",
+      "publisher": {
+        "@type": "Organization",
+        "name": "1bit.monster",
+        "url": "https://1bit.monster",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://1bit.monster/assets/favicon.svg",
+          "width": 64,
+          "height": 64
+        }
+      },
+      "mainEntityOfPage": {
+        "@type": "WebPage",
+        "@id": "https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud"
+      },
+      "image": {
+        "@type": "ImageObject",
+        "url": "https://1bit.monster/assets/og-card.png",
+        "width": 1200,
+        "height": 630
+      },
+      "speakable": {
+        "@type": "SpeakableSpecification",
+        "cssSelector": [".wrap h1", ".wrap h2"]
+      }
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Home",
+          "item": "https://1bit.monster/"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Blog",
+          "item": "https://1bit.monster/blog/"
+        },
+        {
+          "@type": "ListItem",
+          "position": 3,
+          "name": "Two PCs, two GPUs, zero cloud",
+          "item": "https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud"
+        }
+      ]
+    }
+  ]
 }
 </script>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
