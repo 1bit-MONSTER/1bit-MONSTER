@@ -12,22 +12,22 @@
 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Two PCs, Two GPUs, Zero Cloud — the whole AI stack on home hardware · 1bit.monster</title>
-<meta name="description" content="Two independent DeepSeek Harness agents on two PCs, cross-PC relay, and 1bit.MONSTER serving 35B + 8B + vision on the 8060S and 9070 XT. No cloud LLM anywhere.">
-<meta name="keywords" content="DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6, Qwen3-VL, self-hosted, local AI">
+<title>Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware · 1bit.monster</title>
+<meta name="description" content="We ran two DeepSeek Harness agents on two PCs and served both from local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way.">
+<meta name="keywords" content="DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6-35B, Qwen3-VL, multi-agent, self-hosted">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud">
 <link rel="alternate" href="/blog/two-pcs-two-gpus-zero-cloud.html">
-<meta property="og:title" content="Two PCs, Two GPUs, Zero Cloud — the whole AI stack on home hardware">
-<meta property="og:description" content="Two DeepSeek Harness agents on two PCs, a cross-PC relay, and 1bit.MONSTER serving 35B + 8B + vision on the 8060S and 9070 XT. No cloud LLM anywhere.">
+<meta property="og:title" content="Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware">
+<meta property="og:description" content="Two DeepSeek Harness agents, one LAN, both fed by local 1bit.MONSTER inference: 35B @ 166 tok/s (8060S), 8B @ 96 tok/s (9070 XT), Qwen3-VL vision. Six engine bugs fixed.">
 <meta property="og:url" content="https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud">
 <meta property="og:type" content="article">
 <meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Two PCs, Two GPUs, Zero Cloud — the whole AI stack on home hardware">
-<meta name="twitter:description" content="Two DeepSeek Harness agents on two PCs, a cross-PC relay, and 1bit.MONSTER serving 35B + 8B + vision on the 8060S and 9070 XT.">
+<meta name="twitter:title" content="Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware">
+<meta name="twitter:description" content="Two DeepSeek Harness agents, one LAN, both fed by local 1bit.MONSTER inference.">
 <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
@@ -84,8 +84,8 @@
 {
   "@context": "https://schema.org",
   "@type": "TechArticle",
-  "headline": "Two PCs, Two GPUs, Zero Cloud — the whole AI stack on home hardware",
-  "description": "Two independent DeepSeek Harness agents on two PCs, a cross-PC message relay, and 1bit.MONSTER serving 35B + 8B + vision on the 8060S and 9070 XT. No cloud LLM anywhere.",
+  "headline": "Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware",
+  "description": "Two DeepSeek Harness agents on two PCs, one LAN, both fed by local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way.",
   "author": {
     "@type": "Person",
     "name": "bong-water-water-bong",
@@ -104,7 +104,7 @@
     "@id": "https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud"
   },
   "image": "https://1bit.monster/assets/og-card.png",
-  "keywords": "DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6, Qwen3-VL, self-hosted"
+  "keywords": "DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Qwen3.6-35B, Qwen3-VL"
 }
 </script>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
@@ -118,7 +118,7 @@
 <article>
 <div class="wrap">
 
-<h1>Two PCs, Two GPUs, Zero Cloud</h1>
+<h1>Two PCs, two GPUs, zero cloud</h1>
 
 <div class="meta">
   <span class="tag r">HARNESS</span>
@@ -128,110 +128,317 @@
 </div>
 
 <p>
-  <strong>We took the "use your own iron" idea as far as it goes: two independent
-  <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> agent
-  instances on two PCs on one LAN — each with its own web GUI, a cross-PC message
-  relay, and 1bit.MONSTER serving inference on both GPUs. No cloud LLM anywhere in
-  the loop.</strong> This post is the record: the topology, the relay, the engine on
-  both accelerators, the six real bugs we had to fix to get there, and the fully
-  offline step that comes next.
+  <strong>We ran two independent
+  <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>
+  agents on two PCs — each with its own web GUI, connected over one LAN — and fed
+  both from our own 1bit.MONSTER inference: <strong>35B at 166 tok/s</strong> on a
+  Radeon 8060S, <strong>8B at 96 tok/s</strong> on an RX 9070 XT, plus a Qwen3-VL
+  vision endpoint.</strong> No cloud LLM anywhere in the loop. To get there we had to
+  fix six real bugs in the engine. This post is the full record: the topology, the
+  cross-PC relay, the numbers, and each bug.
 </p>
 
-<h2>The hardware</h2>
+<blockquote>
+  Two harnesses, one LAN, both agents served by home GPUs. The interesting part
+  isn't that it works — it's the six bugs we had to fix to make it boring.
+</blockquote>
+
+<h2>The machines</h2>
 
 <table>
-  <tr><th>Machine</th><th>CPU</th><th>Memory</th><th>GPU</th><th>Role</th></tr>
-  <tr><td><strong>strixhalo</strong> (192.168.50.69)</td><td>Ryzen AI MAX+ 395 (16C/32T)</td><td>128 GB unified</td><td>Radeon 8060S</td><td>harness #1, <strong>35B inference</strong>, vision</td></tr>
-  <tr><td><strong>ryzen</strong> (192.168.50.185)</td><td>Ryzen 7 9800X3D (8C/16T)</td><td>48 GB</td><td>RX 9070 XT (16 GB)</td><td>harness #2, relay, <strong>8B inference</strong></td></tr>
+  <tr><th>Machine</th><th>CPU</th><th>Memory</th><th>GPU</th><th>Role in the fleet</th></tr>
+  <tr><td><strong>strixhalo</strong> (192.168.50.69)</td><td>Ryzen AI MAX+ 395 (16C/32T)</td><td>128 GB unified</td><td>Radeon 8060S (gfx1151)</td><td>harness #1, <strong>35B inference</strong>, vision</td></tr>
+  <tr><td><strong>ryzen</strong> (192.168.50.185)</td><td>Ryzen 7 9800X3D (8C/16T)</td><td>48 GB</td><td>RX 9070 XT (gfx1201, 16 GB)</td><td>harness #2, relay, <strong>8B inference</strong></td></tr>
 </table>
 
 <p>
-  Both machines run a <code>dsh web</code> harness bound to <code>127.0.0.1:3080</code>
-  (the CLI deliberately refuses <code>--host 0.0.0.0</code> for safety), exposed to the
-  LAN through a tiny TCP forwarder plus the API's <code>--trusted-host</code> fence.
-  Two harnesses, two GUIs, cross-reachable from either machine's browser.
+  The two machines are deliberately complementary — we benchmarked both with 7-Zip
+  before wiring anything: strixhalo wins total throughput (212k MIPS across 32
+  threads), ryzen wins per-thread efficiency (9,200 vs 7,150 MIPS — the 9800X3D's
+  96 MiB 3D-V-Cache signature). So the fleet is split by workload character: big
+  parallel jobs to strixhalo, fast single-thread work to ryzen.
 </p>
 
-<h2>The relay — two agents talking</h2>
+<p>
+  Each machine runs a <code>dsh web</code> harness bound to loopback
+  (<code>127.0.0.1:3080</code>). The harness CLI <em>deliberately refuses</em>
+  <code>--host 0.0.0.0</code> for safety, so LAN reachability goes through a tiny
+  TCP forwarder plus the API's <code>--trusted-host</code> fence. A browser on either
+  PC can reach either harness; the fence rejects any other Host header with a 403.
+</p>
+
+<h2>The relay — two agents that talk to each other</h2>
 
 <p>
-  <code>dsh-relay</code> (an HTTP mailbox on ryzen <code>:9090</code>) plus
-  <code>dsh-delegate</code> turns the two harnesses into a two-node fleet: send a
-  task, poll for the reply, done.
+  Two harnesses on one LAN is a topology; two agents that can hand each other work is
+  a fleet. The relay is an HTTP mailbox on ryzen (<code>:9090</code>): messages are
+  appended per recipient and <em>drained on read</em>, so a task survives until the
+  other agent polls. The <code>dsh-delegate</code> wrapper turns send + poll into one
+  command:
 </p>
 
 <pre><span class="c"># from either agent's shell</span>
 <span class="g">dsh-delegate</span> ryzen <span class="p">"run the test suite and reply with the results"</span></pre>
 
 <p>
-  Verified end-to-end over the LAN: <code>compute 6*7</code> → <em>"The answer is
-  42."</em> — queued, delivered, drained, exit 0.
+  We verified the round trip end to end before trusting it: <code>compute 6*7</code>
+  → <em>"The answer is 42."</em> — queued, delivered, drained, exit 0. Trivial math,
+  but it proves the ownership model: the sender's mailbox is drained before sending
+  (so stale messages can't masquerade as a reply), and the reply is drained on read
+  (so it's delivered exactly once).
 </p>
 
 <h2>The engine — 1bit.MONSTER on both GPUs</h2>
 
 <p>
-  Your own pure-C++ inference engine, built from source on each machine. Three
-  OpenAI-compatible endpoints, one shared bearer token:
+  Both machines build our engine from source — strixhalo with the TheRock nightly
+  SDK (<code>gfx1151</code>), ryzen with system ROCm 7.2.4 (<code>gfx1201</code>) —
+  and both serve an OpenAI-compatible API with one shared bearer token:
 </p>
 
 <table>
-  <tr><th>Endpoint</th><th>Hardware</th><th>Model</th><th>Throughput</th></tr>
-  <tr><td><strong><code>:8089</code></strong> strixhalo</td><td>Radeon 8060S (unified)</td><td><strong>Qwen3.6-35B-A3B Q8</strong></td><td><strong>~166 tok/s</strong></td></tr>
-  <tr><td><strong><code>:8088</code></strong> ryzen</td><td>RX 9070 XT (16 GB VRAM)</td><td>Llama-3.1-8B Q4_K_M</td><td><strong>~96 tok/s</strong></td></tr>
-  <tr><td><strong><code>:8090</code></strong> strixhalo</td><td>Radeon 8060S (llama.cpp)</td><td>Qwen3-VL-4B + mmproj</td><td>vision (images)</td></tr>
+  <tr><th>Endpoint</th><th>Hardware</th><th>Model</th><th>Throughput</th><th>Status</th></tr>
+  <tr><td><strong><code>:8089</code></strong> strixhalo</td><td>Radeon 8060S, unified mem</td><td><strong>Qwen3.6-35B-A3B Q8</strong></td><td><strong>166 tok/s</strong></td><td>measured, ours (2026-08-19)</td></tr>
+  <tr><td><strong><code>:8088</code></strong> ryzen</td><td>RX 9070 XT, 16 GB VRAM</td><td>Llama-3.1-8B Q4_K_M</td><td><strong>96 tok/s</strong></td><td>measured, ours (2026-08-19)</td></tr>
+  <tr><td><strong><code>:8090</code></strong> strixhalo</td><td>Radeon 8060S (llama.cpp)</td><td>Qwen3-VL-4B + mmproj</td><td>vision (images)</td><td>measured, ours (2026-08-19)</td></tr>
 </table>
 
+<p class="muted">
+  Method: warm decode, <code>max_tokens</code> 200–400 completions, tokens/sec from
+  the server's own timing; GPU engagement confirmed separately via
+  <code>gpu_busy_percent</code> (91–92% peak on the 9070 XT; the 8060S's unified-memory
+  counter doesn't report, so we confirmed via process CPU staying at ~2.5% during
+  decode — the iGPU, not the CPU, is doing the work). Full runbook:
+  <code>LAN-MULTI-PC.md</code> in <a href="https://github.com/bong-water-water-bong/rootchat-ops">rootchat-ops</a>.
+</p>
+
 <p>
-  <code>dsh-llm</code> wraps all three:
+  The 35B number deserves a caveat: Qwen3.6-35B-A3B is a <strong>MoE</strong> — 35B
+  total, ~3B active per token — so 166 tok/s is a 3B-active decode, not a dense 35B.
+  That's exactly why a mid-size iGPU with 128 GB of unified memory can hold it: the
+  whole 35 GB Q8 checkpoint fits, and every token only touches the active experts.
+</p>
+
+<p>
+  <code>dsh-llm</code> wraps all three endpoints on both machines:
 </p>
 
 <pre><span class="g">dsh-llm</span> chat <span class="p">"explain quantum entanglement"</span>         <span class="c"># 35B, strixhalo</span>
 <span class="g">dsh-llm</span> chat -e ryzen <span class="p">"quick question"</span>             <span class="c"># 8B, ryzen</span>
 <span class="g">dsh-llm</span> vision photo.png <span class="p">"what is in this image?"</span> <span class="c"># Qwen3-VL</span></pre>
 
-<h2>What we had to fix to get there</h2>
+<h2>Bug #1: The chat template was guessed from a filename</h2>
 
 <p>
-  Bringing up two machines surfaced six real engine bugs — all committed back to the
-  engine:
+  First request to the 8B server returned <em>garbage that echoed the prompt</em>:
+  <code>User: What is 2+2? Answer in one sentence.</code> on repeat. The engine chose
+  a chat template by checking whether the <em>requested model name</em> contained the
+  substring <code>"Instruct"</code>. Our file is
+  <code>Meta-Llama-3.1-8B-Instruct-Q4_K_M</code> — which contains "Instruct" — so
+  that part passed, but the <em>template family</em> was then looked up by comparing
+  the request name to the discovered name <em>exactly</em>:
+  <code>"Meta-Llama-3.1-8B-Instruct-Q4_K_M"</code> ≠ <code>"Meta Llama 3.1 8B
+  Instruct"</code>. No match → Qwen-style ChatML markers were used for a Llama model,
+  which then echoed them.
 </p>
 
-<ol>
-  <li><strong>Chat-template detection</strong> — inferred from the filename <code>"Instruct"</code> heuristic, which missed models like <code>Qwen3-0.6B</code>; now reads the GGUF's own <code>tokenizer.chat_template</code>, and matches discovered models by normalized bidirectional prefix (<code>Meta-Llama-3.1-8B-Instruct-Q4_K_M</code> vs <code>Meta Llama 3.1 8B Instruct</code>).</li>
-  <li><strong>OOM guard</strong> — the generic-CPU fallback dequantizes the whole model to f32 in RAM (~4× size; 32 GB for the 8B), killing a 45 GB host even though the GPU path worked. <code>UNIFIED_GPU_ONLY=1</code> strips CPU backends from the route.</li>
-  <li><strong>Sampler looping</strong> — the ggml-vulkan backend lacked the repeat-penalty sampler; instruct models echoed the prompt forever. Added <code>llama_sampler_init_penalties</code>.</li>
-  <li><strong>EOG leakage</strong> — <code>&lt;|eot_id|&gt;</code> leaked into responses; the end token and trailing whitespace are now stripped from output.</li>
-  <li><strong>Vision-encoder swap detection</strong> — compared only weight element counts (identical in both FFN orientations); now uses bias shapes as ground truth, unblocking the Qwen3-VL mmproj.</li>
-  <li><strong>VL server template</strong> — raw <code>role: text</code> mixed with ChatML markers produced degenerate output; ChatML mode now omits the role prefix.</li>
-</ol>
+<p>
+  Fix: read the GGUF's own <code>tokenizer.chat_template</code> instead of guessing
+  from the filename, and match discovered models by <em>normalized bidirectional
+  prefix</em> (hyphens/underscores → spaces, either side may be the shorter one). The
+  filename heuristic also silently missed models like <code>Qwen3-0.6B</code> (no
+  "Instruct" in the name) that clearly declare a template in their GGUF.
+</p>
 
-<h2>All your own hardware — and next, none of the network</h2>
+<h2>Bug #2: The "fallback" that OOM'd the machine</h2>
 
 <p>
-  Everything above runs on the two machines in this house: both GPUs, both engine
-  builds, your models, your LAN, one shared token. The fleet is boot-safe (user
-  systemd + linger) and one command reports all of it:
+  The 8B server started, loaded layers to the GPU — and the process was
+  <em>killed by the kernel</em> at 43 GB anon RSS on a 45 GB host. The router's
+  fallback list ends with <code>cpu_generic</code>, and the generic CPU backend
+  <em>dequantizes the entire model to f32 in RAM</em>: an 8B Q4 file is ~5 GB on
+  disk but ~32 GB as f32 floats, plus overhead. The accelerator path had already
+  succeeded; the CPU copy was pure waste — and fatal.
+</p>
+
+<p>
+  Fix: <code>UNIFIED_GPU_ONLY=1</code>. It strips CPU backends from the route and
+  stops <code>BackendManager::init</code> after the preferred ids, so the GPU path is
+  the only thing that loads a full model copy. Skipped backends stay discoverable and
+  still initialize lazily on real failure — the CPU fallback remains for GPU-less
+  hosts, it just never eagerly loads a second full copy alongside a working GPU.
+</p>
+
+<h2>Bug #3: No repeat penalty — instruct models loop forever</h2>
+
+<p>
+  With the template fixed, the 8B answered correctly — then kept going:
+  <code>## Step 1: Multiply 6 by 7 ... ## Step 2: Calculate ... ## Step 3:</code>
+  on repeat until <code>max_tokens</code>. The ggml-vulkan backend's sampler chain
+  was <code>temp → top-p → dist</code> with no repetition penalty, and a comment in
+  the source claimed the vendored llama.cpp "has no repeat-penalty sampler." That
+  comment was wrong — <code>llama_sampler_init_penalties</code> exists right there in
+  the vendored <code>llama.h</code>.
+</p>
+
+<p>
+  Fix: add <code>llama_sampler_init_penalties(VOCAB, 64, 1.1, 0, 0)</code> to the
+  chain (repeat penalty 1.1 over the last 64 tokens). Three consecutive runs:
+  <code>42</code>, <code>42</code>, <code>42</code>.
+</p>
+
+<h2>Bug #4: The end-of-generation token leaked into output</h2>
+
+<p>
+  Every response ended with a literal <code>&lt;|eot_id|&gt;</code> (or
+  <code>&lt;|im_end|&gt;</code> for ChatML models). The loop stops on the EOG token
+  id but then <em>decodes the whole token list including that final token</em>, so the
+  marker became visible text.
+</p>
+
+<p>
+  Fix: pop the EOG token from the output list before decoding, and also strip any
+  trailing whitespace the model emitted just before stopping. Cosmetic — but for an
+  agent that pipes model output into files and diffs, invisible EOG markers are a
+  real footgun.
+</p>
+
+<h2>Bug #5: The vision encoder couldn't tell up from down</h2>
+
+<p>
+  Qwen3-VL needs the separate <code>mmproj</code> vision tower — the local
+  <code>Qwen3-VL-4B-Instruct-Q4_1.gguf</code> is text-decoder only. We pulled the
+  official <a href="https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF">mmproj
+  GGUF from Qwen</a>, and the vision encoder then failed to load with a shape
+  mismatch. Root cause: it decided whether FFN tensor names were "swapped" (a known
+  llama.cpp clip bug) by comparing <em>weight element counts</em> — but the two
+  orientations <code>[ff,H]</code> and <code>[H,ff]</code> have <em>identical</em>
+  element counts, so the heuristic misfired whenever the FF dimension was symmetric
+  enough to collide.
+</p>
+
+<p>
+  Fix: detect swap-ness from the <strong>bias shapes</strong> — that's the ground
+  truth. Normal names mean <code>ffn_down.bias</code> is H-sized and
+  <code>ffn_up.bias</code> is FF-sized; swapped names reverse it. Weight counts can't
+  tell you which is which; bias shapes can.
+</p>
+
+<h2>Bug #6: The VL server mixed two prompt formats</h2>
+
+<p>
+  Even with the vision tower loading, the vision server returned degenerate output —
+  because it built the prompt as raw <code>role: text</code> lines <em>and</em> then
+  wrapped the turn in ChatML markers. The model saw
+  <code>&lt;|im_start|&gt;user\n user: Say hello... &lt;|im_end|&gt;</code> — a hybrid
+  that no model was trained on.
+</p>
+
+<p>
+  Fix: in ChatML mode (htok tokenizer loaded), drop the <code>role: </code> prefix
+  entirely — the generate path already emits the <code>&lt;|im_start|&gt;</code>
+  openers itself. One format, the one the model was trained on.
+</p>
+
+<p>
+  After the fixes, the vision endpoint correctly describes a synthetic test image —
+  "A red square and a blue square on a white background, with a green oval" — and
+  that is exactly what was in the image.
+</p>
+
+<blockquote>
+  None of these six bugs was exotic. Every one was a wrong assumption about naming,
+  formats, or defaults — the kind that only shows up when you run a real model on
+  real hardware through a real deployment.
+</blockquote>
+
+<h2>The honest table</h2>
+
+<p>
+  We publish the numbers the same way we measured them, including the caveats. Our
+  engine's own VL path is not in this fleet's vision row — see the note below.
+</p>
+
+<table>
+  <tr><th>Setup</th><th>Model</th><th>Decode</th><th>Status</th></tr>
+  <tr><td><strong>1bit.MONSTER unified, ggml-vulkan</strong> (strixhalo 8060S)</td><td>Qwen3.6-35B-A3B Q8_0</td><td><strong>166 tok/s</strong></td><td>measured, ours (2026-08-19)</td></tr>
+  <tr><td><strong>1bit.MONSTER unified, ggml-vulkan</strong> (ryzen 9070 XT)</td><td>Llama-3.1-8B Q4_K_M</td><td><strong>96 tok/s</strong></td><td>measured, ours (2026-08-19)</td></tr>
+  <tr><td><strong>llama.cpp llama-server</strong> (strixhalo 8060S)</td><td>Qwen3-VL-4B + mmproj F16</td><td>vision</td><td>measured, ours (2026-08-19)</td></tr>
+  <tr><td><em>1bit.MONSTER vision_server</em> (strixhalo 8060S)</td><td>Qwen3-VL-4B + mmproj</td><td><em>degenerate</em></td><td>blocked — see below</td></tr>
+</table>
+
+<p>
+  <strong>Honest note on the vision row:</strong> the 1bit engine's standalone
+  <code>vision</code> server needs <code>forward_embed</code> on its text backend,
+  and that method only exists on the <em>generic CPU</em> backend — which mangles
+  Qwen3-VL output (the template bug above). The working Vulkan backend doesn't
+  implement <code>forward_embed</code> at all. Rather than ship a CPU-only vision
+  path, the fleet's vision endpoint runs the vendored llama.cpp
+  <code>llama-server</code>, which handles <code>qwen3vl</code> + mmproj natively on
+  the 8060S. Wiring <code>forward_embed</code> into the Vulkan backend is on the
+  list.
+</p>
+
+<h2>Why it matters</h2>
+
+<p>
+  This isn't a benchmark post — it's a deployment post. The interesting number isn't
+  166 or 96; it's that <strong>a multi-agent fleet can run entirely on hardware you
+  already own, with one shared token and no cloud dependency</strong>. The harnesses
+  are boot-safe (user systemd + linger), every endpoint answers cross-PC, and one
+  command reports the whole fleet:
 </p>
 
 <pre><span class="g">dsh-status</span></pre>
 
-<h3>The offline step</h3>
+<pre><span class="c">=== DSH fleet status (2026-08-19 08:18:15) ===</span>
+<span class="g">MACHINE      SERVICES   NOTES</span>
+strixhalo    active active active active  web:8080, llm:8089, vision:8090
+ryzen        active active active active  web:8081, llm:8088, relay:9090
+<span class="c">--- endpoints (HTTP code) ---</span>
+strixhalo web  :8080         200
+strixhalo 35B  :8089         200
+strixhalo vision :8090       200
+ryzen web     :8081          200
+ryzen 8B       :8088         200
+ryzen relay    :9090         200
+<span class="c">--- quick sanity (35B) ---</span>
+fleet ok</pre>
+
+<h2>What's next</h2>
 
 <p>
-  Another agent is now building an <strong>ISO with its own custom kernel and
-  drivers</strong> — a live-USB, fully-offline image so this entire stack (harness +
-  engine + models) runs with <strong>zero network, zero cloud, zero assumptions</strong>.
-  That's the natural end of this thread: home hardware today, self-contained USB
-  stick next. Watch this space.
+  The natural end of this thread is removing the LAN itself from the equation: a
+  fully offline live-USB image — custom kernel, the AMD drivers pinned, models
+  bundled — so the whole fleet (harness + engine + models) boots from a stick with
+  zero network. Home hardware today; a self-contained USB stick next.
 </p>
+
+<h2>Try it</h2>
+
+<p>
+  All of this is committed and public. Engine fixes are on the
+  <code>feat/rocm-therock-7.14-lane-pin</code> branch of
+  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">1bit-MONSTER</a>; the
+  runbook, relay, and fleet scripts are in
+  <a href="https://github.com/bong-water-water-bong/rootchat-ops">rootchat-ops</a>.
+</p>
+
+<pre><span class="c"># build 1bit.MONSTER on any AMD box</span>
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-MONSTER &amp;&amp; cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfxXXXX
+cmake --build build --target onebin
+
+<span class="c"># serve a model on the GPU, OpenAI-compatible, token-protected</span>
+UNIFIED_GPU_ONLY=1 ./build/1bit unified --quick \
+  -w /path/to/models -m Your-Model \
+  --host 0.0.0.0 --port 8088 --api-token $TOKEN</pre>
 
 <hr>
 
 <p class="muted">
-  MIT. Your hardware, your model, your choice of backend. Engine fixes are in the
-  <code>feat/rocm-therock-7.14-lane-pin</code> branch; ops runbook and scripts in
-  <a href="https://github.com/bong-water-water-bong/rootchat-ops">rootchat-ops</a>.
+  MIT. Your hardware, your model, your choice of backend. Benchmarks measured
+  2026-08-19; methodology and logs in the repos above.
 </p>
 
 </div>
