@@ -79,8 +79,8 @@ def og_ops(w, h):
     y = int(440 * s)
     ops += [
         ('txtl', x, y, 'One engine. Every model. Any chip.', 'serif-i', int(48 * s), gm.AMBER, 0),
-        ('txtl', x, y + int(70 * s), '1bit.monster · zero python · one 38 KB binary', 'mono', int(26 * s), gm.MUTED, 3),
-        ('txtl', x, y + int(112 * s), 'NPU + GPU + CPU · MIT · OPEN SOURCE', 'mono-m', int(24 * s), gm.DIM, 4),
+        ('txtl', x, y + int(70 * s), '1bit.monster · zero python · npu + gpu + cpu', 'mono', int(26 * s), gm.MUTED, 3),
+        ('txtl', x, y + int(112 * s), 'MIT · OPEN SOURCE', 'mono-m', int(24 * s), gm.DIM, 4),
     ]
     return ops
 
@@ -88,12 +88,15 @@ def og_ops(w, h):
 def banner_ops(w, h):
     ops = bg_ops(w, h)
     s = w / 2560.0
-    ops += lockup_ops(int(360 * s), int(420 * s), int(230 * s), int(170 * s))
-    x = int(360 * s) + int(230 * s) + int(170 * s * 0.55)
+    mark_cx, cy, mark_r, fs = int(360 * s), int(420 * s), int(230 * s), int(170 * s)
+    ops += lockup_ops(mark_cx, cy, mark_r, fs)
+    x_txt = mark_cx + mark_r + fs * 0.55
+    f = gm.F(gm.SERIF, fs)
+    x_mid = x_txt + (f.getlength('1bit') + fs * 0.04 + f.getlength('.MONSTER')) / 2
     y = int(620 * s)
     ops += [
-        ('txtl', x, y, 'One engine. Every model. Any chip.', 'serif-i', int(84 * s), gm.AMBER, 0),
-        ('txtl', x, y + int(120 * s), 'NPU + GPU + CPU · ZERO PYTHON · 38 KB BINARY', 'mono-m', int(42 * s), gm.MUTED, 5),
+        ('txt', x_mid, y, 'One engine. Every model. Any chip.', 'serif-i', int(84 * s), gm.AMBER, 0),
+        ('txt', x_mid, y + int(120 * s), 'NPU + GPU + CPU · ZERO PYTHON', 'mono-m', int(42 * s), gm.MUTED, 5),
         ('gradh', int(40 * s), h - int(16 * s), w - int(40 * s), h - int(2 * s), gm.CYAN, gm.AMBER),
     ]
     return ops
