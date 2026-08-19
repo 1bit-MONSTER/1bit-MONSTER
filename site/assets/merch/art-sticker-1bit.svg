@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<circle cx="600" cy="400" r="205" fill="#021621" stroke="#ff9f1c" stroke-width="10"/>
+<text x="600" y="400" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="175" fill="#00e5ff" letter-spacing="-8">1bm</text>
+<text x="600" y="700" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="140" fill="#e7f6fd" letter-spacing="0">1bit.MONSTER</text>
+<line x1="380" y1="800" x2="820" y2="800" stroke="#0e80be" stroke-width="3"/>
+<text x="600" y="870" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#a0d9f8" letter-spacing="4">ONE ENGINE · EVERY MODEL · ANY CHIP</text>
+<text x="600" y="945" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="34" fill="#5d9ec2" letter-spacing="4">ZERO PYTHON · MIT · EST. 2026</text>
+</svg>

@@ -3,12 +3,12 @@
   "short_name": "1bit MONSTER",
   "icons": [
     {
-      "src": "/android-chrome-512x512.png",
+      "src": "/assets/favicon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }
   ],
-  "theme_color": "#0B0B0B",
-  "background_color": "#0B0B0B",
+  "theme_color": "#021621",
+  "background_color": "#021621",
   "display": "standalone"
 }

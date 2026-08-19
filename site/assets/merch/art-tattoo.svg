@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000" viewBox="0 0 3000 2000">
+<circle cx="500" cy="600" r="300" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="500" y="520" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="160" fill="#00e5ff" letter-spacing="0">1bit</text>
+<text x="500" y="710" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="56" fill="#ff9f1c" letter-spacing="4">.MONSTER</text>
+<circle cx="1500" cy="600" r="300" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="1500" y="520" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="160" fill="#ff9f1c" letter-spacing="0">94</text>
+<text x="1500" y="710" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="56" fill="#00e5ff" letter-spacing="4">tok/s</text>
+<circle cx="2500" cy="600" r="300" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="2500" y="520" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="160" fill="#e7f6fd" letter-spacing="0">NPU</text>
+<text x="2500" y="710" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="56" fill="#ff9f1c" letter-spacing="4">UNLOCKED</text>
+<circle cx="500" cy="1500" r="300" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="500" y="1420" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="160" fill="#ff9f1c" letter-spacing="0">ZERO</text>
+<text x="500" y="1610" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="56" fill="#00e5ff" letter-spacing="4">PYTHON</text>
+<circle cx="1500" cy="1500" r="300" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="1500" y="1420" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="160" fill="#00e5ff" letter-spacing="0">J</text>
+<text x="1500" y="1610" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="56" fill="#ff9f1c" letter-spacing="4">JARVIS</text>
+<circle cx="2500" cy="1500" r="300" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="2500" y="1420" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="160" fill="#ff9f1c" letter-spacing="0">SORRY</text>
+<text x="2500" y="1610" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="56" fill="#00e5ff" letter-spacing="4">NOT SORRY</text>
+<line x1="400" y1="1720" x2="2600" y2="1720" stroke="#0e80be" stroke-width="5"/>
+<text x="1500" y="1820" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="60" fill="#a0d9f8" letter-spacing="8">1BIT MONSTER · TEMPORARY TATTOO SHEET</text>
+<text x="1500" y="1895" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="42" fill="#5d9ec2" letter-spacing="6">SKIN-SAFE · 3–5 DAYS · WATERPROOF</text>
+</svg>
