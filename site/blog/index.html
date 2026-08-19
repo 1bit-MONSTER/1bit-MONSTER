@@ -44,6 +44,11 @@
   <p class="muted">Public notes on the work. Papers we steal from, benchmarks we run, things we ship.</p>
   <ul class="posts">
     <li>
+      <span class="date">2026-08-19</span> &middot;
+      <a href="/blog/two-pcs-two-gpus-zero-cloud">Two PCs, Two GPUs, Zero Cloud — the whole AI stack on home hardware</a>
+      <p class="muted">Two DeepSeek Harness agents on two PCs, a cross-PC relay, and 1bit.MONSTER serving Qwen3.6-35B (~166 tok/s on the 8060S), Llama-3.1-8B (~96 tok/s on the 9070 XT) and Qwen3-VL vision — plus the six engine bugs we fixed to get there, and the fully-offline ISO next.</p>
+    </li>
+    <li>
       <span class="date">2026-07-30</span> &middot;
       <a href="/blog/qwen35b-a3b-fully-on-npu">Qwen3.6-35B-A3B streams fully on the Ryzen&trade; AI NPU — AMD's official numbers, decoded</a>
       <p class="muted">AMD's official FastFlowLM numbers: 13.65 tok/s decode, 221.96 tok/s prefill for Qwen3.6-35B-A3B fully on the NPU (Kraken Point). Verified against the official Qwen config (256 experts, 262k ctx, byte-identical to Qwen3.5-35B-A3B). Our own first measurement of the 3.6 checkpoint: 75.65 tok/s decode via llama.cpp Vulkan on Strix Halo.</p>
