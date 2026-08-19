@@ -16,7 +16,7 @@ Max+ 395) with ROCm GPU acceleration.
 | **Hardware**  | AMD Ryzen AI Max+ 395 (Strix Halo, gfx1151)                       |
 | **OS**        | Ubuntu 24.04 LTS or later                                         |
 | **Kernel**    | **6.18.22-lts or 7.x** — avoid 6.19.x (see warning below)         |
-| **ROCm**      | TheRock 7.15.0a (HIP runtime + device library)                |
+| **ROCm**      | TheRock 7.14.x — pinned AI-inference SDK (see [rocm-lanes.md](../rocm-lanes.md)) |
 
 > ⚠️ **Kernel warning (issue #1).** On Strix Halo (gfx1151), Linux **6.19.x**
 > kernels have a reproducible `amdgpu` OPTC CRTC hang under sustained NPU/GPU
@@ -39,21 +39,30 @@ cd 1bit-systems
 
 ---
 
-## 2. Install TheRock 7.15.0a
+## 2. Install TheRock (pinned AI-inference SDK)
+
+> Ubuntu installs classic ROCm **7.2.x** by default (`amdgpu-install` — the
+> enterprise-supported line). AMD's **AI-inference SDK** is **TheRock
+> 7.14.x**, and inference must pin it. See
+> [docs/rocm-lanes.md](../rocm-lanes.md).
 
 ```bash
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel,device-gfx1151]"
-export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+sudo bash scripts/setup-therock.sh          # pinned: rocm 7.14.0a20260612, gfx1151
+# or: sudo bash scripts/setup-therock.sh --version 7.14.0a20260612 --gpu gfx1151
 ```
+
+This installs the pinned SDK to `/opt/rocm-therock`, writes the lane env
+(`/etc/profile.d/1bit-rocm-lane.sh`), regenerates the ollama override, and
+installs a daily **verify-only** timer — drift is a visible failure, not a
+silent nightly upgrade.
 
 The CMake build system auto-discovers TheRock automatically:
 `/opt/rocm-therock` → `$THEROCK_PIP_ROOT` → `~/.cache/lemonade/bin/therock`.
 
-Add to `~/.bashrc`:
+Check the lane after setup:
 
 ```bash
-export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+scripts/verify-rocm-lane.sh     # exit 0 = TheRock pin active
 ```
 
 Verify the HIP compiler is reachable:
@@ -338,7 +347,7 @@ expert data fits in VRAM (16 experts × 2 layers = heavy memory pressure).
 
 | Symptom | Likely Fix |
 |---------|-----------|
-| `amdclang++: command not found` | Add ROCm to `PATH`: `export PATH=/opt/rocm/bin:/opt/rocm/lib/llvm/bin:$PATH` |
+| `amdclang++: command not found` | Add TheRock to `PATH`: `source env.sh` (devel bin first — never point PATH at classic `/opt/rocm`; see [rocm-lanes.md](../rocm-lanes.md)) |
 | `hipErrorNoBinaryForGpu` | Set `HSA_OVERRIDE_GFX_VERSION=11.5.1` (done by `source env.sh`) |
 | `Missing: /tmp/zaya_weights/...` | Download and extract weights to `/tmp/zaya_weights/` |
 | `hipMalloc failed` | Not enough GPU memory. Zaya1‑8B needs ~6 GB free. Check `rocm-smi` |

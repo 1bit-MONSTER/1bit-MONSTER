@@ -29,7 +29,7 @@ uname -r          # check your running kernel
 | Hardware  | AMD Ryzen AI Max+ 395 (Strix Halo, gfx1151)    |
 | OS        | Ubuntu 24.04 LTS or later (Arch/CachyOS work)  |
 | Kernel    | 6.18.22-lts or 7.x (not 6.19.x)                |
-| ROCm      | TheRock 7.15.0a (pip)                            |
+| ROCm      | TheRock 7.14.x — pinned AI-inference SDK (see [rocm-lanes.md](../rocm-lanes.md)) |
 
 ## Quick install
 
@@ -53,4 +53,5 @@ step-by-step instructions.
 - [Getting Started](../guides/getting-started.md)
 - [Building from source](../guides/building.md)
 - [Boot Configuration](boot-configuration.md) — 40-column NPU unlock
+- [ROCm lanes](../rocm-lanes.md) — why inference pins TheRock 7.14.x, not Ubuntu's ROCm 7.2.4
 - [Network Topology](Network-Topology.md)

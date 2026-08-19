@@ -3,7 +3,8 @@
 This document covers building **zaya** — a pure C++ inference server with optional
 GPU decoding support, one entry point of the single binary `build/1bit` (run via
 `1bit zaya`). No Rust, no Python at runtime. The host CPU is **AMD Strix Halo**
-(Ryzen AI Max+ 395) and GPU acceleration uses **TheRock 7.15.0a** targeting `gfx1151`.
+(Ryzen AI Max+ 395) and GPU acceleration uses the **pinned TheRock 7.14.x**
+AI-inference SDK targeting `gfx1151` (see [rocm-lanes.md](../rocm-lanes.md)).
 
 > `zaya_server` is no longer a standalone CMake **build target** — its full
 > source list is compiled into `onebin`/`build/1bit` only (see
@@ -20,7 +21,7 @@ GPU decoding support, one entry point of the single binary `build/1bit` (run via
 |--------------------|-----------------------------------------------------|
 | Ubuntu             | 24.04 LTS or later (CachyOS / Arch also works)      |
 | Kernel             | 6.18.22-lts or 7.x — **not** 6.19.x (issue #1 hang) |
-| ROCm               | TheRock 7.15.0a (nightly C++ SDK, native gfx1151) |
+| ROCm               | TheRock 7.14.x pinned (AI-inference SDK; see [rocm-lanes.md](../rocm-lanes.md)) |
 | CMake              | ≥ 3.28                                              |
 | Ninja              | ≥ 1.12                                              |
 | GCC                | ≥ 13 (C++20) or ≥ 14 (C++23)                        |
@@ -35,15 +36,19 @@ sudo apt install -y cmake ninja-build build-essential git
 
 ---
 
-## TheRock 7.15.0a
+## TheRock (pinned AI-inference SDK)
+
+> Ubuntu installs classic ROCm **7.2.x** by default (`amdgpu-install` — the
+> enterprise-supported line). AMD's **AI-inference SDK** is **TheRock
+> 7.14.x**, which 1bit targets. See
+> [docs/rocm-lanes.md](../rocm-lanes.md).
 
 ```bash
-# Install TheRock HIP SDK for gfx1151 (Strix Halo)
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel,device-gfx1151]"
-export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+# Install the pinned TheRock HIP SDK for gfx1151 (Strix Halo)
+sudo bash scripts/setup-therock.sh
 
 # Verify
+scripts/verify-rocm-lane.sh      # exit 0 = TheRock pin active
 which amdclang++
 ```
 
@@ -179,8 +184,8 @@ message at startup confirming GPU decode is active.
 ### `hipErrorNoBinaryForGPU`
 
 The `CMAKE_HIP_ARCHITECTURES` variable was not set, or was set to the wrong target.
-Ensure it is `gfx1151` and that TheRock 7.15.0a is installed (older ROCm releases may
-not include code-objects for gfx1151).
+Ensure it is `gfx1151` and that the pinned TheRock 7.14.x is installed (older ROCm releases may
+not include code-objects for gfx1151; classic 7.2.x userland also lacks them).
 
 ### `cannot find -lamdhip64`
 

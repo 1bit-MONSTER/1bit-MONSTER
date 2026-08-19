@@ -56,7 +56,7 @@ This guide covers how to build, test, and contribute to the project.
 | Binary | `zaya_server` — **~1.5 MB** (1,578,576 B raw / 1,302,736 B stripped) |
 | Language | **C++23** (NPU engine), **C++20 with HIP** (GPU kernels), C++20 (server) |
 | Build system | **CMake** 3.21+ with **Ninja** |
-| GPU compiler | **HIP** via AMD ROCm **7.15.0a** (TheRock `/ amdclang++`) |
+| GPU compiler | **HIP** via AMD ROCm **7.14.x** — pinned TheRock AI-inference SDK (`amdclang++`) |
 | Target GPU | **gfx1151** — AMD Radeon 8060S (Strix Halo) |
 | Target NPU | **XDNA 2** — 32 tiles, INT8, via C++23 engine + XRT 2.21+ |
 | CPU fallback | Any x86-64 with OpenMP |
@@ -103,25 +103,28 @@ See [docs/guides/building.md](docs/guides/building.md) for full prerequisites an
 | Ubuntu | 24.04 LTS or later (kernel 7.0.0+) | Host OS |
 | CMake | ≥ 3.21 | Build system |
 | Ninja | latest | Fast builds |
-| ROCm | **TheRock 7.15.0a** | HIP compiler (pip) |
+| ROCm | **TheRock 7.14.x (pinned)** | HIP compiler — AI-inference SDK, see [docs/rocm-lanes.md](docs/rocm-lanes.md) |
 | GCC | ≥ 13 | C++20 host compiler |
 | AMD XRT | ≥ 2.21 | NPU runtime (`libxrt_coreutil`) |
 | Git LFS | latest | Model file storage |
 
-**TheRock 7.15.0a installation (pip):**
+**TheRock installation (pinned AI-inference SDK — see [docs/rocm-lanes.md](docs/rocm-lanes.md)):**
 ```bash
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-  "rocm[libraries,devel,device-gfx1151]"
-export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+sudo bash scripts/setup-therock.sh
+# pinned: rocm[libraries,devel,device-gfx1151]==7.14.0a20260612
 ```
 
 The project auto-discovers the HIP compiler in this order (see CMakeLists.txt):
-1. TheRock pip SDK (`$HOME/.cache/pip/therock`)
-2. Lemonade cache (`$HOME/.cache/lemonade/bin/therock`)
-3. Legacy TheRock path (`$HOME/therock/build/dist/rocm`)
-4. System ROCm (`/opt/rocm`)
+1. TheRock system install (`/opt/rocm-therock`) — pinned lane
+2. TheRock pip SDK (`$HOME/.cache/pip/therock`)
+3. Lemonade cache (`$HOME/.cache/lemonade/bin/therock`)
+4. Legacy TheRock path (`$HOME/therock/build/dist/rocm`)
+5. System ROCm (`/opt/rocm`) — Ubuntu-default classic line (7.2.x); last resort only
 
-Set `THEROCK_PIP_ROOT` to pin to a specific TheRock installation.
+Classic `/opt/rocm` userland (Ubuntu's `amdgpu-install` default, 7.2.x) must
+never shadow the pinned SDK: `source env.sh` puts TheRock first on
+`PATH`/`LD_LIBRARY_PATH`, and `scripts/verify-rocm-lane.sh` fails loudly if a
+setup resolved to the wrong SDK.
 
 ### Build zaya_server
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=1bit.MONSTER OpenAI-compatible inference API (unified_server)
+Documentation=https://1bit.monster
+After=network.target
+
+[Service]
+Type=simple
+User=monster
+ExecStart=/usr/bin/unified_server --port 8088
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

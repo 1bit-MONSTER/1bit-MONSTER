@@ -6,11 +6,22 @@ warn() { echo -e "${YELLOW}[1bit]${NC} $*"; }
 
 REPO_URL="https://github.com/1bit-systems/1bit-systems.git"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/1bit}"
-SKIP_ROCM=false; WITH_JARVIS=false
-for arg in "$@"; do
-    case "$arg" in
-        --skip-rocm) SKIP_ROCM=true ;;
-        --with-jarvis) WITH_JARVIS=true ;;
+# TheRock 7.14.x pin — see docs/rocm-lanes.md. Ubuntu's default classic ROCm
+# 7.2.x (the amdgpu-install default, enterprise-supported line) is not the
+# SDK inference should run on.
+THEROCK_PIN="${THEROCK_PIN:-7.14.0a20260612}"
+SKIP_ROCM=false; WITH_JARVIS=false; SHOW_HELP=false
+ROCM_VERSION=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --skip-rocm) SKIP_ROCM=true; shift ;;
+        --with-jarvis) WITH_JARVIS=true; shift ;;
+        --rocm-version)
+            ROCM_VERSION="${2:-}"
+            [ -n "$ROCM_VERSION" ] || { warn "--rocm-version needs a value"; exit 2; }
+            shift 2 ;;
+        -h|--help) SHOW_HELP=true; shift ;;
+        *) shift ;;
     esac
 done
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
@@ -28,13 +39,14 @@ if echo "$KERNEL_RELEASE" | grep -q '^6\.19\.'; then
     echo ""
 fi
 
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+if [ "$SHOW_HELP" = true ]; then
     echo "Usage: curl -fsSL https://raw.githubusercontent.com/1bit-systems/1bit-systems/main/install.sh -o install.sh"
     echo "       # Review the script, then:"
-    echo "       bash install.sh [--skip-rocm] [--with-jarvis]"
+    echo "       bash install.sh [--skip-rocm] [--with-jarvis] [--rocm-version <ver>]"
     echo ""
-    echo "  --skip-rocm    Skip kernel build (use pre-build librocm_cpp.so)"
-    echo "  --with-jarvis  Also build JARVIS (voice assistant) and offer to start it"
+    echo "  --skip-rocm        Skip kernel build (use pre-build librocm_cpp.so)"
+    echo "  --with-jarvis      Also build JARVIS (voice assistant) and offer to start it"
+    echo "  --rocm-version     TheRock version to pin (default: $THEROCK_PIN)"
     echo ""
     echo "If a SHA256 checksum file is available, verify before running:"
     echo "       sha256sum -c install.sh.sha256"
@@ -61,6 +73,13 @@ else
     DIR="$INSTALL_DIR"
 fi
 
+# Single source of truth for lane pins (shared with the appliance ISO via
+# packaging/rocm-lane-pin.env). Explicit --rocm-version flags still win.
+if [ -f "$DIR/packaging/rocm-lane-pin.env" ]; then
+    . "$DIR/packaging/rocm-lane-pin.env"
+    THEROCK_PIN="${THEROCK_VERSION:-$THEROCK_PIN}"
+fi
+
 # ── Install deps ──────────────────────────────────────────────────────────────
 install_deps() {
     if command -v apt-get &>/dev/null; then
@@ -78,15 +97,25 @@ install_deps() {
     fi
     command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
     
-    # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151
+    # TheRock — PINNED AI-inference SDK (rocm ${THEROCK_PIN}). Ubuntu's
+    # default classic ROCm 7.2.x (amdgpu-install default) is the
+    # enterprise-supported line — not the SDK inference should run on.
+    # See docs/rocm-lanes.md.
     if ! command -v amdclang++ &>/dev/null; then
-        log "Installing TheRock 7.15.0a SDK..."
-        python3 -m pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-            "rocm[libraries,devel,device-gfx1151]" 2>/dev/null || {
-            warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
-            warn "See: https://github.com/ROCm/TheRock"
-        }
-        export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+        log "Installing TheRock ${ROCM_VERSION:-$THEROCK_PIN} SDK (gfx1151)..."
+        if [ -f "$DIR/scripts/setup-therock.sh" ]; then
+            if ! bash "$DIR/scripts/setup-therock.sh" --gpu gfx1151 ${ROCM_VERSION:+--version "$ROCM_VERSION"}; then
+                warn "TheRock setup failed. Re-run: sudo bash $DIR/scripts/setup-therock.sh --help"
+            fi
+        else
+            warn "scripts/setup-therock.sh missing — falling back to user-space pip install"
+            python3 -m pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+                "rocm[libraries,devel,device-gfx1151]==${ROCM_VERSION:-$THEROCK_PIN}" 2>/dev/null || {
+                warn "TheRock pip install failed. Run: sudo bash scripts/setup-therock.sh"
+                warn "See: https://github.com/ROCm/TheRock"
+            }
+            export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+        fi
     else
         log "amdclang++ found — TheRock SDK already installed"
     fi
@@ -158,9 +187,7 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 log ""
 log "Done. Run:"
-log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
-log "  export HSA_ENABLE_SDMA=0"
-log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
+log "  source $DIR/env.sh   # sets up the ROCm lane (TheRock) + build paths"
 log "  $DIR/build/zaya_server"
 log ""
 log "Then send requests:"

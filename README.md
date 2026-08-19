@@ -14,7 +14,7 @@
 [![Prefill](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/prefill.svg)](docs/wiki/performance.md)
 [![Site](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/site.svg)](https://1bit.monster)
 
-**[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
+**[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)** · **[Appliance ISO](packaging/iso/README.md)**
 
 `engine online` · MIT · pure C++23 · no Python · 6 hardware targets
 

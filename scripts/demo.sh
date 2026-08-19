@@ -20,7 +20,7 @@ echo "" | tee -a "$LOGFILE"
 
 # ── Step 1: System info ──
 echo "=== 1. Hardware ===" | tee -a "$LOGFILE"
-# TheRock 7.15.0a C++ SDK
+# TheRock 7.14.x — pinned AI-inference SDK (see docs/rocm-lanes.md)
 THEROCK_BIN="/opt/rocm-therock/bin"
 if [ ! -f "$THEROCK_BIN/rocminfo" ]; then
     THEROCK_BIN="/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_core/bin"
