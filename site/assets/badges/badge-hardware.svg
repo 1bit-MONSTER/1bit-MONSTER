@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="40" viewBox="0 0 240 40">
+  <defs>
+    <linearGradient id="grad-hardware" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff9f1c;stop-opacity:1"></stop>
+      <stop offset="100%" style="stop-color:#00e5ff;stop-opacity:1"></stop>
+    </linearGradient>
+    
+  </defs>
+  <rect x="0" y="0" width="110" height="40" fill="#021621" stroke="#333" stroke-width="1"></rect>
+  <text x="55" y="26" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#ff9f1c" text-anchor="middle">NPU</text>
+  <rect x="110" y="0" width="130" height="40" fill="url(#grad-hardware)" stroke="#333" stroke-width="1"></rect>
+  <rect class="shimmer-hardware" x="110" y="0" width="130" height="40" opacity="0.5"></rect>
+  <text x="175" y="26" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#fff" text-anchor="middle">GPU • CPU</text>
+</svg>
