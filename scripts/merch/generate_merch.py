@@ -300,7 +300,7 @@ def design_sticker_void():
         ('txt', 600, 620, 'NPU WARRANTY', 'mono-m', 130, AMBER, 8),
         ('line', 380, 760, 820, 760, 3, (14, 128, 190)),
         ('txt', 600, 830, 'PROCEED WITH CONFIDENCE', 'mono-m', 42, MUTED, 4),
-        ('txt', 600, 900, '38 KB BINARY · NO REGRETS', 'mono', 34, DIM, 4),
+        ('txt', 600, 900, 'NO REGRETS · OPEN SOURCE', 'mono', 34, DIM, 4),
     ]
 
 
@@ -345,7 +345,7 @@ def design_sticker_zero_python():
         ('txt', 600, 430, 'ZERO', 'serif', 200, CYAN, 0),
         ('txt', 600, 660, 'PYTHON', 'serif', 200, AMBER, 0),
         ('line', 380, 780, 820, 780, 3, (14, 128, 190)),
-        ('txt', 600, 850, '100% C++23 · ONE 38 KB BINARY', 'mono-m', 44, MUTED, 4),
+        ('txt', 600, 850, '100% C++23 · ONE BINARY · ANY CHIP', 'mono-m', 44, MUTED, 4),
         ('txt', 600, 925, 'NPU + GPU + CPU · SAME BINARY', 'mono', 34, DIM, 4),
     ]
 
@@ -448,7 +448,7 @@ def design_tshirt_npu_back():
     ]
     ops += _tile_grid(760, 1560, 46, 18, 8, 4, [CYAN, AMBER, BLUE, TEXT])
     ops += [
-        ('txt', AW / 2, 2060, 'NPU + GPU + CPU · SAME 38 KB BINARY', 'mono-m', 62, MUTED, 8),
+        ('txt', AW / 2, 2060, 'NPU + GPU + CPU · ONE BINARY', 'mono-m', 62, MUTED, 8),
         ('txt', AW / 2, 2200, 'ZERO PYTHON · MIT · OPEN SOURCE', 'mono', 46, DIM, 6),
     ]
     return ops
@@ -467,7 +467,7 @@ def design_hoodie_back():
         ('txt', AW / 2, 650, 'One engine.', 'serif', 220, CYAN, 0),
         ('txt', AW / 2, 940, 'Every model.', 'serif', 220, TEXT, 0),
         ('txt', AW / 2, 1230, 'Any chip.', 'serif-i', 220, AMBER, 0),
-        ('txt', AW / 2, 1560, 'ZERO DEPENDENCIES · 38 KB · MIT', 'mono-m', 62, MUTED, 8),
+        ('txt', AW / 2, 1560, 'ZERO DEPENDENCIES · MIT · OPEN SOURCE', 'mono-m', 62, MUTED, 8),
         ('txt', AW / 2, 1700, 'THE RUNTIME HAS NO PYTHON. NEITHER DOES THE HOODIE.', 'mono', 44, DIM, 6),
     ]
     return ops
