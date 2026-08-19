@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="3000" viewBox="0 0 2400 3000">
+<text x="1200.0" y="650" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="220" fill="#00e5ff" letter-spacing="0">One engine.</text>
+<text x="1200.0" y="940" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="220" fill="#e7f6fd" letter-spacing="0">Every model.</text>
+<text x="1200.0" y="1230" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif;font-style:italic" font-size="220" fill="#ff9f1c" letter-spacing="0">Any chip.</text>
+<text x="1200.0" y="1560" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="62" fill="#a0d9f8" letter-spacing="8">ZERO DEPENDENCIES · 38 KB · MIT</text>
+<text x="1200.0" y="1700" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#5d9ec2" letter-spacing="6">THE RUNTIME HAS NO PYTHON. NEITHER DOES THE HOODIE.</text>
+</svg>

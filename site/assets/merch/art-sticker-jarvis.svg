@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<circle cx="600.0" cy="600.0" r="545" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<circle cx="600" cy="360" r="120" fill="#04202f" stroke="#ff9f1c" stroke-width="4"/>
+<text x="600" y="360" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="130" fill="#00e5ff" letter-spacing="0">J</text>
+<text x="600" y="590" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="150" fill="#00e5ff" letter-spacing="0">1bit</text>
+<text x="600" y="760" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="150" fill="#ff9f1c" letter-spacing="0">JARVIS</text>
+<line x1="380" y1="850" x2="820" y2="850" stroke="#0e80be" stroke-width="3"/>
+<text x="600" y="915" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="42" fill="#a0d9f8" letter-spacing="4">PRIVATE AI · ON-DEVICE · ZERO CLOUD</text>
+<text x="600" y="980" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="32" fill="#5d9ec2" letter-spacing="4">94 tok/s · VOICE · VISION · RAG</text>
+</svg>

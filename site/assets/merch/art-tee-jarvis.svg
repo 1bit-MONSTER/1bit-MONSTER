@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="3000" viewBox="0 0 2400 3000">
+<circle cx="1200.0" cy="800" r="170" fill="#04202f" stroke="#ff9f1c" stroke-width="6"/>
+<text x="1200.0" y="800" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="200" fill="#00e5ff" letter-spacing="0">J</text>
+<text x="1200.0" y="1150" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="170" fill="#e7f6fd" letter-spacing="0">1bit JARVIS</text>
+<line x1="700" y1="1400" x2="1700" y2="1400" stroke="#0e80be" stroke-width="5"/>
+<text x="1200.0" y="1560" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="60" fill="#ff9f1c" letter-spacing="8">PRIVATE AI · ON-DEVICE · ZERO CLOUD</text>
+<text x="1200.0" y="1700" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#a0d9f8" letter-spacing="6">CHAT · VOICE · VISION · RAG</text>
+</svg>

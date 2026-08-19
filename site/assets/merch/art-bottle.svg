@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2400" viewBox="0 0 1200 2400">
+<text x="600" y="500" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="190" fill="#e7f6fd" letter-spacing="0">100%</text>
+<text x="600" y="760" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="190" fill="#00e5ff" letter-spacing="0">LOCAL AI</text>
+<text x="600" y="1040" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="70" fill="#ff9f1c" letter-spacing="10">1bit.MONSTER</text>
+<line x1="260" y1="1180" x2="940" y2="1180" stroke="#0e80be" stroke-width="5"/>
+<text x="600" y="1300" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="52" fill="#a0d9f8" letter-spacing="6">94 tok/s · STRIX HALO · XDNA 2</text>
+<text x="600" y="1450" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#5d9ec2" letter-spacing="6">ZERO PYTHON IN THE RUNTIME</text>
+</svg>

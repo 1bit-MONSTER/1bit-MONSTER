@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<rect x="380" y="200" width="440" height="440" rx="40" fill="#04202f" stroke="#00e5ff" stroke-width="6"/>
+<rect x="440" y="130" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="440" y="650" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="500" y="130" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="500" y="650" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="560" y="130" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="560" y="650" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="620" y="130" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="620" y="650" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="680" y="130" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="680" y="650" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="740" y="130" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="740" y="650" width="20" height="60" rx="6" fill="#0e80be"/>
+<rect x="310" y="260" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="830" y="260" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="310" y="320" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="830" y="320" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="310" y="380" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="830" y="380" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="310" y="440" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="830" y="440" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="310" y="500" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="830" y="500" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="310" y="560" width="60" height="20" rx="6" fill="#0e80be"/>
+<rect x="830" y="560" width="60" height="20" rx="6" fill="#0e80be"/>
+<text x="600" y="380" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="120" fill="#e7f6fd" letter-spacing="0">AMD</text>
+<text x="600" y="510" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="62" fill="#00e5ff" letter-spacing="10">UNLOCKED</text>
+<line x1="380" y1="780" x2="820" y2="780" stroke="#0e80be" stroke-width="3"/>
+<text x="600" y="850" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="42" fill="#a0d9f8" letter-spacing="4">EDITION · REVERSE-ENGINEERED IN 4 DAYS</text>
+<text x="600" y="925" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="32" fill="#5d9ec2" letter-spacing="4">HOMEBREWED DRIVER · MIT LICENSED</text>
+</svg>

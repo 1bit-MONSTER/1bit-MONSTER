@@ -6,6 +6,7 @@
 
 ## Table of Contents
 
+- [2026-08-19 — The Two-PC Fleet: Harnesses on the LAN, Six Deployment Bugs Fixed](#2026-08-19--the-two-pc-fleet-harnesses-on-the-lan-six-deployment-bugs-fixed)
 - [UPDATE 34: The Burn & the Mojo Shift — one through-line, one unified language](#update-34-2026-08-12-the-burn--the-mojo-shift--one-through-line-one-unified-language)
 - [2026-08-16 — The Frontier Gates: 5/5 Validated, Then the Repo Tried to Eat It](#2026-08-16--the-frontier-gates-55-validated-then-the-repo-tried-to-eat-it)
 - [2026-08-15 — 100% HF Coverage: Every Arch-Bearing Checkpoint Maps to an Engine Token](#2026-08-15--100-hf-coverage-every-arch-bearing-checkpoint-maps-to-an-engine-token)
@@ -2478,3 +2479,77 @@ a gated engine reachable through the router. The registry → engine → gate
 loop is closed end to end; the remaining work is per-family perf and the
 real-checkpoint gates (V4-Flash 87GB smallest GGUF, GLM-4.5, MiMo 313GB)
 that need the GPU box.
+
+## 2026-08-19 — the two-PC fleet: harnesses on the LAN, six deployment bugs fixed
+
+**What happened**: the engine's GPU story left the lab. Two DeepSeek Harness
+agent instances — one on each PC in the house — were wired onto one LAN and
+fed entirely by 1bit.MONSTER inference: **Qwen3.6-35B-A3B at 166 tok/s** on
+the Strix Halo 8060S (128 GB unified), **Llama-3.1-8B at 96 tok/s** on an RX
+9070 XT, plus a Qwen3-VL-4B vision endpoint. Zero cloud LLMs in the loop.
+Getting two machines running the same engine surfaced **six real bugs**, all
+fixed in `feat/rocm-therock-7.14-lane-pin`; the whole deployment (relay,
+fleet scripts, runbook) is public in `bong-water-water-bong/rootchat-ops`.
+
+### The topology
+
+| Machine | GPU | Memory | Job in the fleet |
+|---------|-----|--------|------------------|
+| strixhalo (192.168.50.69) | Radeon 8060S (gfx1151, TheRock) | 128 GB unified | harness #1, **35B**, vision |
+| ryzen (192.168.50.185) | RX 9070 XT (gfx1201, ROCm 7.2.4) | 48 GB | harness #2, relay, **8B** |
+
+Both harnesses bind loopback (the CLI refuses `--host 0.0.0.0` on purpose);
+LAN access runs through a TCP forwarder + the API's `--trusted-host` fence
+(everything else gets a 403). A cross-PC HTTP mailbox (`dsh-relay`) plus a
+`dsh-delegate` wrapper turns the two agents into a fleet: send a task, poll
+for the reply, done — verified round-trip (`6*7` → "42") before trusting it.
+
+### The six bugs
+
+1. **Chat template guessed from a filename.** The engine picked a template
+   by searching the request name for `"Instruct"`, then looked up the
+   *family* by exact string equality — so `Meta-Llama-3.1-8B-Instruct-Q4_K_M`
+   never matched the discovered `Meta Llama 3.1 8B Instruct`, and a Llama
+   model got Qwen ChatML markers (it echoed the prompt forever). Fix: read
+   `tokenizer.chat_template` from the GGUF and match by normalized
+   bidirectional prefix.
+2. **The CPU fallback OOM'd the host.** The router's last-resort
+   `cpu_generic` backend dequantizes the whole model to f32 in RAM (~4×
+   size; 32 GB for the 8B) — the process was kernel-killed at 43 GB anon RSS
+   on a 45 GB box even though the GPU path had already succeeded. Fix:
+   `UNIFIED_GPU_ONLY=1` strips CPU backends from the route and stops
+   `BackendManager::init` after the preferred ids.
+3. **No repeat penalty.** The ggml-vulkan sampler chain was
+   `temp → top-p → dist` with no repetition penalty — and a source comment
+   claimed the vendored llama.cpp lacked one. The comment was wrong:
+   `llama_sampler_init_penalties` exists in the vendored `llama.h`. Added it
+   (1.1 over the last 64 tokens); three consecutive runs: 42, 42, 42.
+4. **EOG token leaked into output.** Every response ended with a literal
+   `<|eot_id|>`: the loop stops on the end token but decodes it into the
+   returned text. Fix: pop the EOG token (and trailing whitespace) before
+   decoding.
+5. **Vision encoder couldn't tell up from down.** Swap detection for the
+   llama.cpp-clip FFN-name bug compared weight *element counts* — but
+   `[ff,H]` and `[H,ff]` have identical counts, so it misfired on the
+   Qwen3-VL mmproj. Fix: use the **bias shapes** (down-bias is H-sized,
+   up-bias is FF-sized) as ground truth.
+6. **VL server mixed two prompt formats.** It built raw `role: text` lines
+   *and* wrapped the turn in ChatML markers — a hybrid no model was trained
+   on, hence degenerate output. Fix: drop the `role: ` prefix in ChatML mode
+   (the generate path emits the openers itself).
+
+### The honest caveats
+
+The 35B number is a 3B-active MoE decode (35B total), which is exactly why
+the mid-size iGPU with 128 GB of unified memory can hold the whole Q8
+checkpoint. The engine's standalone `vision` server still needs
+`forward_embed` on a *working* (Vulkan) backend — today that method only
+exists on the generic-CPU backend, so the fleet's vision endpoint runs the
+vendored llama.cpp `llama-server` instead (native `qwen3vl` + mmproj on
+Vulkan). Wiring `forward_embed` into the Vulkan backend is on the list.
+
+**Status at session end:** both machines serve the same engine behind one
+bearer token, all endpoints answer cross-PC, everything is boot-safe (user
+systemd + linger), and `dsh-status` reports the whole fleet at a glance.
+The fixes are on `feat/rocm-therock-7.14-lane-pin`; the full record
+(including the blog post) is linked from the README.

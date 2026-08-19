@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<circle cx="270" cy="470" r="210" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="270" y="415" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="120" fill="#00e5ff" letter-spacing="0">1bit</text>
+<text x="270" y="545" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#ff9f1c" letter-spacing="4">.MONSTER</text>
+<circle cx="600" cy="470" r="210" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="600" y="415" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="120" fill="#ff9f1c" letter-spacing="0">94</text>
+<text x="600" y="545" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#00e5ff" letter-spacing="4">tok/s</text>
+<circle cx="930" cy="470" r="210" fill="#021621" stroke="#0e80be" stroke-width="4"/>
+<text x="930" y="415" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="120" fill="#e7f6fd" letter-spacing="0">NPU</text>
+<text x="930" y="545" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#ff9f1c" letter-spacing="4">UNLOCKED</text>
+<line x1="300" y1="810" x2="900" y2="810" stroke="#0e80be" stroke-width="3"/>
+<text x="600" y="885" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="52" fill="#a0d9f8" letter-spacing="6">STARTER STICKER PACK</text>
+<text x="600" y="960" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="36" fill="#5d9ec2" letter-spacing="4">3×3" · DIE-CUT VINYL · WEATHERPROOF</text>
+</svg>
