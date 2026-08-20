@@ -905,6 +905,35 @@ int main(int argc,char**argv){
 #define FLM_QUANTIZE_ASYNC_PTR(ctx, ...) (flm_xclbin_available ? h##ctx->quantize_async(__VA_ARGS__) : ctx->quantize_async(__VA_ARGS__))
 #define FLM_IS_READY_PTR(ctx)    (flm_xclbin_available ? h##ctx->isReady() : ctx->isReady())
 
+    // ── WS-11: per-token byte accounting (NPU_BYTE_STATS=1) ────────────────
+    // Where bytes are copied on a q4nx decode: the 4 NPU GEMMs stream every
+    // layer's int8 weight BO (KD×ND incl. 128-padding) per token, activations
+    // go up as int8 A and come back as f32 C, KV is written/read on the host,
+    // and the LM head reads the full f32 embedding matrix per token. Counters
+    // mirror the real transfer sizes at the copy sites; prints are gated by
+    // NPU_BYTE_STATS so default behavior is unchanged (NPU_TIMING precedent).
+    const bool byte_stats = getenv("NPU_BYTE_STATS") != nullptr;
+    struct BStat { uint64_t up = 0, down = 0; };   // int8 A upload / f32 C readback
+    struct {
+        uint64_t qkv = 0, o = 0, gu = 0, u = 0, d = 0;  // weight bytes/token (KD×ND×NC)
+        BStat qkv_a, o_a, gu_a, d_a;
+        uint64_t kv_write = 0, kv_read = 0;         // KV cache bytes/token
+        uint64_t lm = 0;                            // LM head bytes/token
+        uint64_t toks = 0;                          // counted decode tokens (excl. boot)
+    } bs;
+    bs.qkv = (uint64_t)cfg.xclbin_qkv_k * cfg.xclbin_qkv_n * NC;
+    bs.o   = (uint64_t)cfg.xclbin_o_k   * cfg.xclbin_o_n   * NC;
+    if (cfg.gu_split) { bs.gu = (uint64_t)cfg.xclbin_g_k * cfg.xclbin_g_n * NC;
+                        bs.u  = (uint64_t)cfg.xclbin_u_k * cfg.xclbin_u_n * NC; }
+    else                bs.gu = (uint64_t)cfg.xclbin_gu_k * cfg.xclbin_gu_n * NC;
+    bs.d   = (uint64_t)cfg.xclbin_d_k   * cfg.xclbin_d_n   * NC;
+    if (byte_stats) {
+        uint64_t wt = bs.qkv + bs.o + bs.gu + bs.u + bs.d;
+        fprintf(stderr, "[WS-11] weight bytes/token: QKV=%llu O=%llu GU=%llu U=%llu D=%llu total=%llu (%.2f MB)\n",
+                (unsigned long long)bs.qkv, (unsigned long long)bs.o, (unsigned long long)bs.gu,
+                (unsigned long long)bs.u, (unsigned long long)bs.d, (unsigned long long)wt, wt / 1048576.0);
+    }
+
     fprintf(stderr,"Dequant+pack...\n");auto tp=std::chrono::steady_clock::now();
     std::vector<float> qsc(NC),osc(NC),gsc(NC),dsc(NC),usc(NC);
     std::vector<std::vector<float>> cpu_qkv_w, cpu_o_w;  // CPU fallback: saved dequant weights
@@ -3013,6 +3042,7 @@ int main(int argc,char**argv){
             // ── QKV GEMM ──
             FLM_QUANTIZE_ASYNC(cq,h_b.data(),batch_size,H,cq_ascale);
             auto r_cq=FLM_SYNC_AND_LAUNCH(cq,l);
+            if (byte_stats) bs.qkv_a.up += (uint64_t)batch_size * H;   // int8 A upload
 
             int mlp_out=cfg.gu_split?IM:2*IM;
 
@@ -3023,6 +3053,7 @@ int main(int argc,char**argv){
             } else
                 FLM_DEQUANTIZE(cq,r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l],l);
             cn(qo_b.data(),batch_size*qkv_n);
+            if (byte_stats) bs.qkv_a.down += (uint64_t)batch_size * qkv_n * 4;  // f32 C readback
 
             // ── Attention + RoPE + KV cache ──
             float*qn=qn_w[l].data(),*kn=kn_w[l].data();
@@ -3046,15 +3077,19 @@ int main(int argc,char**argv){
             for(int b=0;b<batch_size;b++){kv_caches[l][b].n=sp+1;}
             // Per-sequence causal attention over each sequence's OWN cache.
             for(int b=0;b<batch_size;b++){attn_omp(&qo_b[(size_t)b*qkv_n],&at_b[(size_t)b*NH*HD],kv_caches[l][b].n,kv_caches[l][b].k.data(),kv_caches[l][b].v.data(),NH,NKV,HD,GQA);}
+            if (byte_stats) { bs.kv_write += (uint64_t)batch_size * 2 * NKV * HD * 4;   // k+v f32 per token
+                              bs.kv_read  += (uint64_t)batch_size * (sp + 1) * 2 * NKV * HD * 4; } // full cache scan
 
             // ── O GEMM: queued behind GU; its readback hides behind D later ──
             float co_ascale=dynamic_ascale(at_b.data(),batch_size*NH*HD);
             FLM_QUANTIZE_ASYNC(co,at_b.data(),batch_size,NH*HD,co_ascale);
             auto r_co=FLM_SYNC_AND_LAUNCH(co,l);
+            if (byte_stats) bs.o_a.up += (uint64_t)batch_size * NH * HD;
 
             // ── O: wait + readback + dequant + residual + post-attn norm ──
             FLM_WAIT_KERNEL(co,r_co);
             FLM_SYNC_BACK(co,oo_b.data(),batch_size,H,co_ascale,osc[l],l);
+            if (byte_stats) bs.o_a.down += (uint64_t)batch_size * H * 4;
             cn(oo_b.data(),batch_size*H);
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=sb_data[b*H+i]+oo_b[b*H+i];
             for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)sb_data[b*H+i]=h_b[b*H+i];
@@ -3070,6 +3105,7 @@ int main(int argc,char**argv){
             FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
             FLM_SYNC_A(cg,l);
             auto r_cg=FLM_LAUNCH(cg,l);
+            if (byte_stats) bs.gu_a.up += (uint64_t)batch_size * H;
 
             // SiLU gate + U GEMM (gu_split) or combined gate*up
             if(cfg.gu_split){
@@ -3086,16 +3122,19 @@ int main(int argc,char**argv){
                 FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
                 cn(gt_b.data(),batch_size*mlp_out);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
+            if (byte_stats) bs.gu_a.down += (uint64_t)batch_size * (mlp_out + (cfg.gu_split ? IM : 0)) * 4;  // gate(+up) readback
 
             // ── D GEMM ──
             float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
             FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
             auto r_cd=FLM_SYNC_AND_LAUNCH(cd,l);
+            if (byte_stats) bs.d_a.up += (uint64_t)batch_size * IM;
 
             // ── Cross-layer boundary (roadmap step 3): fused D-output → l+1 QKV input ──
             if(l+1<NC){
                 FLM_WAIT_KERNEL(cd,r_cd);
                 FLM_READBACK(cd);
+                if (byte_stats) bs.d_a.down += (uint64_t)batch_size * H * 4;
                 float cs=cd_ascale*dsc[l];
                 if(flm_xclbin_available){
                     cq_ascale=fused_cross_layer_boundary<int16_t>(hcd->Cm,hcd->ND,cs,
@@ -3107,6 +3146,7 @@ int main(int argc,char**argv){
             }else{
                 // Last layer: keep the final hidden state in h_b for the LM head
                 FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
+                if (byte_stats) bs.d_a.down += (uint64_t)batch_size * H * 4;
                 cn(dw_b.data(),batch_size*H);
 
                 // Residual add
@@ -3123,6 +3163,7 @@ int main(int argc,char**argv){
             memcpy(sb_data.data(),&h_b[(size_t)b*H],H*4);rn_c(sb_data.data(),fin_v.data(),H);
             lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids+b,1,lm_nv,H,lm_emb);
         }
+        if (byte_stats) { bs.lm += (uint64_t)lm_nv * H * 4; bs.toks++; }   // full f32 embedding matrix read per token
 
         total_generated+=batch_size;total_verified+=batch_size;sp+=1;n_batches++;
         double batch_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_batch).count();
@@ -3134,6 +3175,30 @@ int main(int argc,char**argv){
 
     double tts=std::chrono::duration<double>(std::chrono::steady_clock::now()-tgs).count();
     printf("\n=== %.1f ms/tok (%.0f tok/s) | boot=%.0fms batches=%d tokens=%d ===\n",tts*1000/ng,ng/tts,t_boot,n_batches,total_generated);
+
+    // ── WS-11 report: per-token byte accounting (NPU_BYTE_STATS=1) ──
+    if (byte_stats && bs.toks > 0) {
+        uint64_t n = bs.toks;   // counted decode tokens (boot excluded)
+        uint64_t w_qkv = bs.qkv, w_o = bs.o, w_gu = bs.gu, w_u = bs.u, w_d = bs.d;
+        uint64_t w_tot = w_qkv + w_o + w_gu + w_u + w_d;                    // per-token (constant)
+        double a_up = bs.qkv_a.up + bs.o_a.up + bs.gu_a.up + bs.d_a.up;     // accumulated → /n
+        double a_dn = bs.qkv_a.down + bs.o_a.down + bs.gu_a.down + bs.d_a.down;
+        double kv_w = bs.kv_write, kv_r = bs.kv_read, lm = bs.lm;
+        double a_up_t = a_up / n, a_dn_t = a_dn / n, kv_w_t = kv_w / n, kv_r_t = kv_r / n, lm_t = lm / n;
+        double tot = w_tot + a_up_t + a_dn_t + kv_w_t + kv_r_t + lm_t;      // MB-consistent per token
+        double gb_s = tot / 1073741824.0 / (tts / ng);                      // bytes per second at measured tok/s
+        fprintf(stderr, "\n=== WS-11 byte accounting per token (%llu decode tokens, NPU_BYTE_STATS) ===\n",
+                (unsigned long long)n);
+        fprintf(stderr, "  weights : QKV %6.2f + O %6.2f + GU %6.2f + U %6.2f + D %6.2f = %7.2f MB/tok (%4.1f%%)\n",
+                w_qkv/1048576.0, w_o/1048576.0, w_gu/1048576.0, w_u/1048576.0, w_d/1048576.0,
+                w_tot/1048576.0, 100.0 * w_tot / tot);
+        fprintf(stderr, "  activ.  : up %6.1f KB + down %6.1f KB = %7.2f MB/tok (%4.1f%%)\n",
+                a_up_t/1024.0, a_dn_t/1024.0, (a_up_t+a_dn_t)/1048576.0, 100.0 * (a_up_t+a_dn_t) / tot);
+        fprintf(stderr, "  KV      : write %6.2f KB + read %6.2f MB (avg) = %7.2f MB/tok (%4.1f%%)\n",
+                kv_w_t/1024.0, kv_r_t/1048576.0, (kv_w_t+kv_r_t)/1048576.0, 100.0 * (kv_w_t+kv_r_t) / tot);
+        fprintf(stderr, "  LM head : %6.2f MB/tok (%4.1f%%)\n", lm_t/1048576.0, 100.0 * lm_t / tot);
+        fprintf(stderr, "  TOTAL   : %7.2f MB/tok = %6.2f GB/s at %.1f tok/s\n", tot/1048576.0, gb_s, ng/tts);
+    }
 
     // Route statistics dump (NPU_ROUTE_STATS=path): per-layer sorted
     // "expert count" lines, consumed by NPU_WARM_EXPERTS on the next run.
