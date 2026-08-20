@@ -68,6 +68,12 @@ bool dequant_q4_1(const uint8_t* bd, float* out, int count) {
 }
 
 bool dequant_q5_0(const uint8_t* bd, float* out, int count) {
+    // llama.cpp Q5_0 (22 B): d f16 + qh[4] + qs[16], 5th bit of element j+16
+    // at qh bit j+12 (dequantize_row_q5_0 semantics). The vec_dot path reads
+    // bit j+16, but the dequant path (used for these shapes) is j+12 — and
+    // the Qwen GGUFs were quantized to match the j+12 dequant (verified
+    // empirically: j+12 decoding reproduces llama.cpp's logits exactly, j+16
+    // does not).
     int blocks = (count + 31) / 32;
     for (int b = 0; b < blocks; b++) {
         const uint8_t* p = bd + (size_t)b * 22;

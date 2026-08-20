@@ -40,6 +40,17 @@ static inline float bf16_to_f32(uint16_t v) {
     return f;
 }
 
+// ─── Helper: convert IEEE half to float32 ──────────────────────────
+// (prefixed: deepseek.cpp raw-#includes this file and defines its own f16_to_f32)
+static inline float onebp_f16_to_f32(uint16_t h) {
+    uint32_t s = (h >> 15) & 1, e = (h >> 10) & 31, m = h & 1023;
+    if (e == 0) { float v = (m / 1024.0f) * 0.00006103515625f; return s ? -v : v; }
+    if (e == 31) return m ? NAN : (s ? -1.0f : 1.0f) * INFINITY;
+    float r = (1.0f + m / 1024.0f); int exp = (int)e - 15;
+    while (exp > 0) { r *= 2; exp--; } while (exp < 0) { r /= 2; exp++; }
+    return s ? -r : r;
+}
+
 // ─── 1BP Model Loader ──────────────────────────────────────────────
 //
 // Memory-maps the entire 1BP file for zero-copy access.
@@ -317,9 +328,13 @@ public:
         bool is_tq2 = q == ONEBP_TQ2 || q == ONEBP_TQ2NZ || q == ONEBP_TQ2NZ_E4M3;
         bool tq2nz = q == ONEBP_TQ2NZ || q == ONEBP_TQ2NZ_E4M3;
         bool e4m3 = q == ONEBP_TQ2NZ_E4M3;
-        size_t tile_bytes = is_tq2
-            ? (size_t)tr * (tc / gs) * (e4m3 ? 1 : 2) + (size_t)tr * tc / 4
-            : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
+        bool is_f16 = q == ONEBP_F16;
+        bool is_f32 = q == ONEBP_F32;
+        size_t tile_bytes = is_f16 ? (size_t)tr * tc * 2
+                          : is_f32 ? (size_t)tr * tc * 4
+                          : is_tq2
+                            ? (size_t)tr * (tc / gs) * (e4m3 ? 1 : 2) + (size_t)tr * tc / 4
+                            : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
 
         out.resize((size_t)R * C);
         memset(out.data(), 0, out.size() * sizeof(float));
@@ -339,7 +354,17 @@ public:
                 // stride misaligned every row — reading row 2r's data for
                 // row r and corrupting the last 128 cols of every matrix
                 // (caught by the #1243 ppl gate: Gemma-3-1B ppl 5e9).
-                if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, tc, tr, tc, gs, tq2nz, e4m3);
+                if (is_f16) {
+                    const uint16_t* src = (const uint16_t*)base;
+                    for (int r = 0; r < rh; r++)
+                        for (int c = 0; c < cw; c++)
+                            tile_buf[r * tc + c] = onebp_f16_to_f32(src[(size_t)r * tc + c]);
+                } else if (is_f32) {
+                    const float* src = (const float*)base;
+                    for (int r = 0; r < rh; r++)
+                        for (int c = 0; c < cw; c++)
+                            tile_buf[r * tc + c] = src[(size_t)r * tc + c];
+                } else if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, tc, tr, tc, gs, tq2nz, e4m3);
                 else        dequant_tile(base, tile_buf, rh, tc, tr, tc, gs, q);
 
                 for (int r = 0; r < rh; r++)
