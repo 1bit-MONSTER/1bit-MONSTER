@@ -28,8 +28,11 @@ repo now has one through-line: **the engine, and the app that proves it.**
 
 > Status verified 2026-08-20 against `origin/main` and the strixhalo build. Canonical roadmap: [docs/guides/roadmap.md](docs/guides/roadmap.md).
 
-- [ ] WS-11: instrument the NPU weight path — where bytes are copied per
-      token on the Qwen3-0.6B q4nx decode
+- [x] WS-11: instrument the NPU weight path — `NPU_BYTE_STATS=1` per-token
+      byte accounting (#1752), measured on Qwen3-0.6B q4nx decode: LM head
+      593.5 MB/tok (58%) + dense weights 420 MB/tok (41%, QKV 112 + O 56 +
+      GU 168 + D 84) ≈ 1.02 GB/tok; activations/KV < 0.5%. Next: Q8/trim the
+      LM head, then NVMe expert streaming (P1) past the dense weight floor
 - [x] WS-09: land the single router — the `router` subcommand ships in
       `build/1bit` (#1397); the standalone `cascade` router was retired into a
       routing strategy (`src/strategy_engine.cpp`); `unified-router.py` removed
