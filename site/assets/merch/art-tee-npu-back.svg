@@ -34,6 +34,6 @@
 <rect x="1080" y="1752" width="46" height="46" rx="4" fill="#ff9f1c"/>
 <rect x="1144" y="1752" width="46" height="46" rx="4" fill="#0e80be"/>
 <rect x="1208" y="1752" width="46" height="46" rx="4" fill="#e7f6fd"/>
-<text x="1200.0" y="2060" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="62" fill="#a0d9f8" letter-spacing="8">NPU + GPU + CPU · SAME 38 KB BINARY</text>
+<text x="1200.0" y="2060" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="62" fill="#a0d9f8" letter-spacing="8">NPU + GPU + CPU · ONE BINARY</text>
 <text x="1200.0" y="2200" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="46" fill="#5d9ec2" letter-spacing="6">ZERO PYTHON · MIT · OPEN SOURCE</text>
 </svg>

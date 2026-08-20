@@ -4,6 +4,10 @@
 
 > See [Supported Models](models.md) for per-model performance data.
 
+> ⚠️ **Historical claim — not current.** The early "38 KB binary" figure (from the
+> one-engine-every-model writeup) is **historical** and no longer reflects the binary
+> today. Treat it as a record of the early engine, not as current data.
+
 **Single source of truth for 1bit.systems performance claims.** Every number here is
 pulled directly from [`site/benchmarks.json`](../../site/benchmarks.json)
 (`"_authoritative": true`). `README.md` and `site/index.html` link here instead of

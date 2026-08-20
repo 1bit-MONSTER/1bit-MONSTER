@@ -55,13 +55,7 @@
 #endif
 
 // ── cuBLAS handle (lazily initialized) ──
-static cublasHandle_t g_cublas = nullptr; // ponytail: set to non-null to bypass cuBLAS (debug)
-static cublasHandle_t get_cublas() {
-    if (!g_cublas) {
-        cublasCreate(&g_cublas);
-    }
-    return g_cublas;
-}
+static cublasHandle_t g_cublas = nullptr; // debug: set to non-null to route GEMVs through cuBLAS (default: naive kernel)
 
 // ── Runtime config ──
 static constexpr float RMD_EPS = 1e-5f;
@@ -289,9 +283,23 @@ static void upf16(const std::vector<float>& s, half* d, int n, cudaStream_t h = 
     CUDA_OK_V(cudaMemcpyAsync(d, b.data(), n * 2, cudaMemcpyHostToDevice, h));
 }
 
-// ── Launch config helper ──
 static void launch_gemv(half* out, const half* in, const half* wt, int M, int K, cudaStream_t st) {
-     else {
+    // Default: naive kernel (correct on real hardware, no cuBLAS dependency).
+    // Debug opt-in: set g_cublas non-null to route through cuBLAS GEMV instead.
+    if (g_cublas) {
+        // Weight `wt` is stored row-major [K][M]: wt[k*M + m] = weight for output m from input k.
+        // In cuBLAS column-major, this is an M×K matrix A where A[m][k] = wt[k*M + m] = wt[m + k*M].
+        // So we need CUBLAS_OP_N: out[M×1] = A[M×K] @ in[K×1].
+        float alpha = 1.0f, beta = 0.0f;
+        cublasGemmEx(g_cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                     M, 1, K, &alpha,
+                     wt, CUDA_R_16F, M,    // A is M×K col-major, lda=M
+                     in, CUDA_R_16F, K,    // x is K×1
+                     &beta,
+                     out, CUDA_R_16F, M,   // y is M×1
+                     CUBLAS_COMPUTE_32F,
+                     CUBLAS_GEMM_DEFAULT);
+    } else {
         // Fallback: naive kernel
         int block = 256;
         int grid = (M + block - 1) / block;
@@ -397,9 +405,6 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
     ALLOC_OR_FAIL(s, alloc_f32, s->d_expert_wt, 1);
     #undef ALLOC_OR_FAIL
 
-    // Debug: allocation address map (helpful for OOB triage)
-            (void*)s->d_hs, (void*)s->d_ao, (void*)s->d_tmp, (void*)s->d_fnw,
-            (void*)s->d_lm_out, (void*)s->d_lm_vocab, (void*)s->d_qout, (void*)s->d_kout, (void*)s->d_vout);
 
     // Upload embeddings
     upf16(s->embed, s->d_embed, eng.vocab * eng.h, s->st);
@@ -455,8 +460,6 @@ CudaState* cuda_init(const char* weights_dir, const CudaConfig* cfg) {
         upload(w1, d_w1); upload(w2, d_w2); upload(w3, d_w3);
         upload(rms_a, d_rms_a); upload(rms_f, d_rms_f);
         upload(bq, d_bq); upload(bk, d_bk); upload(bv, d_bv);
-                il, (void*)d_wq, (void*)d_wk, (void*)d_wv, (void*)d_wo,
-                (void*)d_w1, (void*)d_w2, (void*)d_w3, (void*)d_rms_a, (void*)d_rms_f);
         s->layer_wq.push_back(d_wq);
         s->layer_wk.push_back(d_wk);
         s->layer_wv.push_back(d_wv);
@@ -520,6 +523,11 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
         LW(layer_wk, il, wk);
         LW(layer_wv, il, wv);
         LW(layer_wo, il, wo);
+        // Q/K/V biases are optional (absent on bias-free models like Llama);
+        // llama.cpp adds them post-projection, pre-RoPE.
+        half* w_bq = s->layer_bq.size() > (size_t)il ? s->layer_bq[il] : nullptr;
+        half* w_bk = s->layer_bk.size() > (size_t)il ? s->layer_bk[il] : nullptr;
+        half* w_bv = s->layer_bv.size() > (size_t)il ? s->layer_bv[il] : nullptr;
         
         // --- Self-attention ---
         // RMS norm on hidden state: copy hs -> tmp, then normalize in place
@@ -530,12 +538,15 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
         // Q projection: out[qd] = hs[h] @ wq[h, qd]
         launch_gemv(s->d_qout, d_tmp, w_wq, eng.qd, eng.h, s->st);
         CUDA_CHK("qproj");
+        if (w_bq) add_bias_k<<<(eng.qd + 255) / 256, 256, 0, s->st>>>(s->d_qout, w_bq, eng.qd);
         // K projection: out[kd] = hs[h] @ wk[h, kd]
         launch_gemv(s->d_kout, d_tmp, w_wk, eng.kd, eng.h, s->st);
         CUDA_CHK("kproj");
+        if (w_bk) add_bias_k<<<(eng.kd + 255) / 256, 256, 0, s->st>>>(s->d_kout, w_bk, eng.kd);
         // V projection: out[kd] = hs[h] @ wv[h, kd]
         launch_gemv(s->d_vout, d_tmp, w_wv, eng.kd, eng.h, s->st);
         CUDA_CHK("vproj");
+        if (w_bv) add_bias_k<<<(eng.kd + 255) / 256, 256, 0, s->st>>>(s->d_vout, w_bv, eng.kd);
         
         // Store KV in cache
         size_t kv_offset = (size_t)il * s->max_seq * eng.nkv * eng.hd;
@@ -550,6 +561,7 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
         attention_k<<<eng.nq, 256, 0, s->st>>>(
             d_ao, s->d_qout, s->d_kcache + kv_offset, s->d_vcache + kv_offset,
             eng.nq, eng.nkv, eng.hd, seq_len, scale);
+        CUDA_CHK("attention");
         
         // Output projection: attn_out[h] = ao[qd] @ wo[qd, h]; residual add
         launch_gemv(d_tmp, d_ao, w_wo, eng.h, eng.qd, s->st);
@@ -587,9 +599,12 @@ void cuda_forward(CudaState* s, int token_id, float* logits_out) {
     // 4. LM head: logits[vocab] = hs[h] @ embed[V, h]
     launch_gemv(s->d_lm_vocab, s->d_hs, s->d_lm_w, eng.vocab, eng.h, s->st);
     
-    // 5. Copy logits to host if requested
+    // 5. Copy logits to host if requested (d_lm_vocab is f16 — convert to f32)
     if (logits_out) {
-        CUDA_OK_V(cudaMemcpyAsync(logits_out, s->d_lm_vocab, eng.vocab * 4, cudaMemcpyDeviceToHost, s->st));
+        std::vector<half> hbuf(eng.vocab);
+        CUDA_OK_V(cudaMemcpyAsync(hbuf.data(), s->d_lm_vocab, eng.vocab * 2, cudaMemcpyDeviceToHost, s->st));
+        CUDA_OK_V(cudaStreamSynchronize(s->st));
+        for (int i = 0; i < eng.vocab; i++) logits_out[i] = __half2float(hbuf[i]);
     }
     
     s->pos = pos + 1;
@@ -619,9 +634,10 @@ int cuda_forward_greedy(CudaState* s, int token_id) {
         LW_R(layer_wk, il, wk);
         LW_R(layer_wv, il, wv);
         LW_R(layer_wo, il, wo);
-        LW_R(layer_bq, il, bq);
-        LW_R(layer_bk, il, bk);
-        LW_R(layer_bv, il, bv);
+        // Q/K/V biases are optional (absent on bias-free models like Llama)
+        half* w_bq = s->layer_bq.size() > (size_t)il ? s->layer_bq[il] : nullptr;
+        half* w_bk = s->layer_bk.size() > (size_t)il ? s->layer_bk[il] : nullptr;
+        half* w_bv = s->layer_bv.size() > (size_t)il ? s->layer_bv[il] : nullptr;
         CUDA_CHK_R("lw");
         
         
@@ -639,14 +655,17 @@ int cuda_forward_greedy(CudaState* s, int token_id) {
         // Q projection
         launch_gemv(s->d_qout, d_tmp, w_wq, eng.qd, eng.h, s->st);
         CUDA_CHK_R("qproj");
-        add_bias_k<<<(eng.qd + 255) / 256, 256, 0, s->st>>>(s->d_qout, w_bq, eng.qd);
+        if (w_bq) add_bias_k<<<(eng.qd + 255) / 256, 256, 0, s->st>>>(s->d_qout, w_bq, eng.qd);
         
         // K projection
         launch_gemv(s->d_kout, d_tmp, w_wk, eng.kd, eng.h, s->st);
         CUDA_CHK_R("kproj");
-        add_bias_k<<<(eng.kd + 255) / 256, 256, 0, s->st>>>(s->d_kout, w_bk, eng.kd);
-        // V projection
-        
+        if (w_bk) add_bias_k<<<(eng.kd + 255) / 256, 256, 0, s->st>>>(s->d_kout, w_bk, eng.kd);
+        // V projection + bias (the V gemv was accidentally dropped — without
+        // it the V cache holds stale data and attention is garbage)
+        launch_gemv(s->d_vout, d_tmp, w_wv, eng.kd, eng.h, s->st);
+        CUDA_CHK_R("vproj");
+        if (w_bv) add_bias_k<<<(eng.kd + 255) / 256, 256, 0, s->st>>>(s->d_vout, w_bv, eng.kd);
         
         // Store KV in cache
         size_t kv_offset = (size_t)il * (size_t)s->max_seq * eng.nkv * eng.hd;

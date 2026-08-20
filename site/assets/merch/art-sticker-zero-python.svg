@@ -3,6 +3,6 @@
 <text x="600" y="430" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="200" fill="#00e5ff" letter-spacing="0">ZERO</text>
 <text x="600" y="660" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="200" fill="#ff9f1c" letter-spacing="0">PYTHON</text>
 <line x1="380" y1="780" x2="820" y2="780" stroke="#0e80be" stroke-width="3"/>
-<text x="600" y="850" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#a0d9f8" letter-spacing="4">100% C++23 · ONE 38 KB BINARY</text>
+<text x="600" y="850" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#a0d9f8" letter-spacing="4">100% C++23 · ONE BINARY · ANY CHIP</text>
 <text x="600" y="925" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="34" fill="#5d9ec2" letter-spacing="4">NPU + GPU + CPU · SAME BINARY</text>
 </svg>

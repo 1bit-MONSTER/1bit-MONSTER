@@ -145,6 +145,12 @@ struct TokenRouter {
             return false;
         }
 
+        // Pick up EOS token ID early so every load path (primary, fallback
+        // chain) stops generation at the model's real EOS — the fallback
+        // returns before the later set, leaving the default 106 (the server
+        // then generates past <|im_end|> into multi-turn echo).
+        eos_token_id = cfg.eos_token_id > 0 ? cfg.eos_token_id : eos_token_id;
+
         fprintf(stderr, "Loading %s (H=%d L=%d V=%d) on %s backend...\n",
             cfg.model_name.c_str(), cfg.hidden_size, cfg.num_layers, cfg.vocab_size, primary->name());
 
@@ -165,8 +171,16 @@ struct TokenRouter {
         // backoff before falling through to another backend.
         // NPU_PROBE_RETRIES / NPU_PROBE_RETRY_DELAY_S tune the budget
         // (defaults: 6 retries, 5s backoff). `be` must already be loaded.
+        // Non-NPU backends get a single probe: a failure there means the
+        // model/backend is genuinely broken, and 6×5s retries would stall
+        // every request (e.g. 30s+ per load) for nothing.
         auto probe_with_retry = [this, &cfg](InferenceBackend* be) -> bool {
-            int prets = getenv("NPU_PROBE_RETRIES") ? atoi(getenv("NPU_PROBE_RETRIES")) : 6;
+            bool npu_contention = be->type() == BackendType::NPU_XRT ||
+                                  be->type() == BackendType::VART ||
+                                  be->type() == BackendType::ONNX_NPU;
+            int prets = npu_contention
+                ? (getenv("NPU_PROBE_RETRIES") ? atoi(getenv("NPU_PROBE_RETRIES")) : 6)
+                : 0;
             int pdelay = getenv("NPU_PROBE_RETRY_DELAY_S") ? atoi(getenv("NPU_PROBE_RETRY_DELAY_S")) : 5;
             for (int i = 0; i <= prets; i++) {
                 if (i > 0) {
