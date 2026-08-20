@@ -24,10 +24,6 @@
 <meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="One binary, all formats — ternary/binary inference on NPU + GPU">
-<meta name="twitter:description" content="Every binary and ternary format now runs on Strix Halo. Q1_0, TQ1, TQ2, IQ, BitNet. One C++ binary.">
-<meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -66,47 +62,29 @@
   "license": "https://opensource.org/licenses/MIT"
 }
 </script>
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
-<style>
-  :root{--bg:#021621;--panel:#04202f;--border:rgba(14,128,190,.42);--text:#e7f6fd;--muted:#a0d9f8;--dim:#5d9ec2;--green:#00e5ff;--pink:#ff9f1c;--blue:#0e80be;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;}
-  a{color:var(--blue);font-weight:600;text-decoration:none;}a:hover{color:var(--green);}
-  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
-  .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
-  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:var(--green);}
-  .wordmark{font-size:15px;font-weight:800;letter-spacing:-.025em;}.wordmark .g{color:var(--green);}.wordmark .p{color:var(--pink);}
-  article{padding:48px 0 64px;}
-  h1{font-size:clamp(26px,3.6vw,42px);font-weight:900;line-height:1.08;margin:16px 0 8px;}
-  .meta{font-family:var(--mono);font-size:13px;color:var(--dim);margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--border);}
-  h2{font-size:clamp(20px,2.4vw,28px);font-weight:800;margin:36px 0 12px;color:var(--green);}
-  p{margin:16px 0;font-size:16px;color:var(--muted);line-height:1.7;}p strong{color:var(--text);}
-  ul{margin:12px 0;padding-left:24px;color:var(--muted);font-size:16px;}li{margin:6px 0;}
-  code{background:var(--panel);padding:2px 7px;border-radius:5px;font-family:var(--mono);font-size:14px;color:var(--green);border:1px solid var(--border);}
-  pre{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;overflow-x:auto;margin:16px 0;font-family:var(--mono);font-size:13px;color:var(--muted);}
-  pre .g{color:var(--green);}pre .c{color:var(--dim);}
-  blockquote{border-left:3px solid var(--pink);padding:12px 18px;margin:20px 0;background:var(--panel);border-radius:0 10px 10px 0;}
-  hr{border:none;border-top:1px solid var(--border);margin:32px 0;}
-  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;}
-  th,td{padding:8px 12px;border:1px solid var(--border);text-align:left;}
-  th{background:var(--panel);color:var(--text);}td{color:var(--muted);}
-  .tag{display:inline-flex;height:22px;padding:0 10px;border-radius:5px;font-size:10px;font-weight:800;text-transform:uppercase;color:var(--bg);margin-right:6px;}
-  .tag.npu{background:var(--pink);}.tag.g{background:var(--green);color:var(--bg);}.tag.b{background:var(--blue);color:var(--bg);}
-  .foot{border-top:1px solid var(--border);padding:24px 0 40px;text-align:center;font-size:13px;color:var(--dim);}
-  blockquote:hover{border-left-color:var(--blue) !important;}
-  pre code{background:transparent;border:none;padding:0;font-size:13px;}
-  .pill{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;margin:0 3px;}
-  .pill.g{background:var(--green);color:var(--bg);}.pill.b{background:var(--blue);color:var(--bg);}.pill.p{background:var(--pink);color:var(--bg);}
-</style>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=3">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="/assets/monster.css?v=1">
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
 <!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00e5ff;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00e5ff;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00e5ff;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
-<nav><div class="nav-in"><a class="mark" href="/">1bm</a><a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
-<article class="wrap">
+<div class="warn-strip"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">the README</a> for current numbers.</div>
+<nav class="site-nav">
+<a class="brand" href="/index.html"><img class="brand-mark" src="/assets/logo-mark.svg" alt="1bit MONSTER"><b>1bit</b>.MONSTER</a>
+<div class="links">
+<a href="/models.html">Models</a>
+<a href="/benchmarks.html">Benchmarks</a>
+<a href="/docs.html">Docs</a>
+<a href="/jarvis/">1bit JARVIS</a>
+<a href="/blog/" class="current">Blog</a>
+<a href="/store/">Store</a>
+<a href="/demo/">Demos</a>
+<a href="/analytics/">Analytics</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
+</div>
+</nav>
+<article class="wrap narrow">
 
 <div class="meta">
   <span class="tag npu">NPU</span> <span class="tag g">GPU</span> <span class="tag b">TERNARY</span>
@@ -222,6 +200,6 @@
 </ul>
 
 </article>
-<div class="foot wrap"><a href="/">← back to 1bit.monster</a> · MIT</div>
+<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."</footer>
 </body>
 </html>

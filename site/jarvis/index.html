@@ -19,127 +19,37 @@
 <meta property="og:image" content="/assets/og-card.png">
 <meta property="og:url" content="https://1bit.monster/jarvis/">
 <meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="1bit JARVIS — 1bit.monster">
-<meta name="twitter:description" content="Private AI on your hardware. 94 tok/s. Chat, voice, vision. Zero cloud.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://1bit.monster/jarvis/">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=3">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-  :root{
-    --bg:#021621; --panel:#04202f; --tile:#04202f; --inner:#04202f;
-    --border:rgba(14,128,190,.42); --border2:rgba(14,128,190,.6);
-    --text:#e7f6fd; --muted:#a0d9f8; --dim:#5d9ec2;
-    --green:#00e5ff; --green-d:#00c853; --pink:#ff9f1c; --blue:#0e80be;
-    --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
-    --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
-    --maxw:1100px;
-  }
-  *{margin:0;padding:0;box-sizing:border-box;}
-  html{scroll-behavior:smooth;scroll-padding-top:72px;}
-  body{background:radial-gradient(1200px 600px at 80% -8%,rgba(255,159,28,.08),transparent 60%),radial-gradient(1000px 500px at 4% 10%,rgba(14,128,190,.08),transparent 60%),var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;min-height:100vh;overflow-x:hidden;}
-  a{color:inherit;text-decoration:none;}
-  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(2,22,33,.82);border-bottom:1px solid var(--border);}
-  .nav-in{max-width:var(--maxw);margin:0 auto;padding:0 24px;height:64px;display:flex;align-items:center;gap:14px;}
-  .brand{display:flex;align-items:center;gap:10px;}
-  .mark{width:36px;height:36px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 16px rgba(255,159,28,.35);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:14px;letter-spacing:-.04em;color:var(--green);flex-shrink:0;}
-  .wordmark{font-size:18px;letter-spacing:-.025em;font-weight:800;}
-  .wordmark .g{color:var(--green);}.wordmark .p{color:var(--pink);}.wordmark .b{color:var(--blue);}
-  .nav-links{flex:1;display:flex;align-items:center;justify-content:center;gap:28px;}
-  .nav-links a{color:var(--muted);font-size:13px;font-weight:600;transition:color .16s;}
-  .nav-links a:hover{color:var(--text);}
-  .nav-cta{display:flex;align-items:center;gap:12px;margin-left:auto;}
-  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--sans);font-weight:700;border-radius:999px;cursor:pointer;white-space:nowrap;transition:all .16s ease;border:1px solid transparent;}
-  .btn:active{transform:scale(.99);}
-  .btn-sm{height:36px;padding:0 16px;font-size:13px;}
-  .btn-md{height:44px;padding:0 22px;font-size:15px;}
-  .btn-lg{height:52px;padding:0 28px;font-size:17px;}
-  .btn-primary{background:var(--green);color:var(--bg);box-shadow:0 2px 6px rgba(16,42,67,.2);}
-  .btn-primary:hover{background:var(--green-d);box-shadow:0 6px 22px rgba(0,229,255,.25);}
-  .btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border2);}
-  .btn-ghost:hover{background:rgba(14,128,190,.08);border-color:var(--blue);}
-  .btn-pink{background:transparent;color:var(--pink);border:1px solid var(--pink);}
-  .btn-pink:hover{background:rgba(255,159,28,.12);}
-  .pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px 0 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap;}
-  .pill .dot{width:7px;height:7px;border-radius:999px;flex:none;}
-  .pill.ok{background:rgba(0,229,255,.12);color:#7dffb0;}.pill.ok .dot{background:var(--green);}
-  .pill.info{background:rgba(14,128,190,.14);color:#7cc8f5;}.pill.info .dot{background:var(--blue);}
-  .pill.warn{background:rgba(255,159,28,.16);color:#f5a3e6;}.pill.warn .dot{background:var(--pink);}
-  .pill.dark{background:rgba(255,255,255,.06);color:var(--text);}.pill.dark .dot{background:var(--green);position:relative;}
-  .pill.dark .dot::after{content:"";position:absolute;inset:0;border-radius:999px;background:var(--green);animation:pulse 1.6s cubic-bezier(.22,1,.36,1) infinite;}
-  @keyframes pulse{0%{transform:scale(1);opacity:.7}70%{transform:scale(2.4);opacity:0}100%{opacity:0}}
-  .eyebrow{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;background:var(--panel);color:var(--text);font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--border);}
-  h2{font-size:clamp(24px,2.8vw,36px);font-weight:800;letter-spacing:-.02em;}
-  .lead{max-width:620px;font-size:16px;line-height:1.55;color:var(--muted);}
-  section{max-width:var(--maxw);margin:0 auto;}
-  .hero{padding:80px 0 48px;text-align:center;}
-  .hero h1{margin-top:20px;font-size:clamp(38px,5.2vw,64px);font-weight:900;line-height:1.04;letter-spacing:-.025em;text-wrap:balance;}
-  .hero h1 .g{color:var(--green);text-shadow:0 0 30px rgba(0,229,255,.2);}
-  .hero h1 .p{color:var(--pink);text-shadow:0 0 30px rgba(255,159,28,.15);}
-  .hero h1 .b{color:var(--blue);}
-  .hero .sub{margin:18px auto 0;max-width:560px;font-size:17px;color:var(--muted);line-height:1.55;}
-  .hero .cta-row{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:28px;}
-  .hero-panel{background:var(--tile);border:1px solid var(--border);border-radius:20px;padding:28px;margin-top:36px;text-align:left;}
-  .card{border-radius:16px;border:1px solid var(--border);background:var(--tile);}
-  .panel-a{border-radius:24px;border:1px solid var(--border);background:linear-gradient(150deg,#062230,#021621);box-shadow:0 18px 40px rgba(5,10,18,.45),inset 0 1px 0 rgba(255,255,255,.04);padding:32px;}
-  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;}
-  .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;}
-  .grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px;}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;}
-  .block{padding:60px 24px;}
-  .check{display:flex;gap:12px;align-items:flex-start;padding:8px 0;}
-  .check .ck{flex:none;width:22px;height:22px;border-radius:999px;background:rgba(0,229,255,.14);color:var(--green);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;margin-top:1px;}
-  .check span.txt{font-size:14px;color:#cfe6ef;line-height:1.5;}
-  .code{background:var(--inner);border:1px solid var(--border);border-radius:12px;font-family:var(--mono);font-size:12.5px;line-height:1.7;padding:16px 18px;overflow-x:auto;white-space:pre;}
-  .code .c{color:var(--dim);}.code .g{color:var(--green);}.code .p{color:var(--pink);}.code .b{color:var(--blue);}.code .t{color:var(--text);}
-  .code .y{color:#ffd700;}
-  .mono{font-family:var(--mono);}
-  .caps{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;}
-  .tag{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:5px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--bg);}
-  .tag.npu{background:var(--pink);}.tag.gpu{background:var(--blue);}.tag.voice{background:var(--green);color:var(--bg);}.tag.vision{background:#ff9500;}.tag.rag{background:var(--pink);}.tag.agent{background:var(--blue);}
-  .stat{padding:18px;border-radius:14px;border:1px solid var(--border);background:var(--tile);}
-  .stat .lbl{color:var(--muted);font-size:11px;}
-  .stat .val{font-family:var(--mono);font-size:32px;font-weight:800;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums;}
-  .stat .val span{font-family:var(--sans);font-size:13px;font-weight:700;color:var(--muted);}
-  .console-hd{display:flex;align-items:center;gap:10px;}
-  .dots{display:flex;gap:6px;}
-  .dots span{width:10px;height:10px;border-radius:999px;}
-  .cta-band{border:1px solid var(--border);border-radius:24px;background:linear-gradient(150deg,#062230,#021621);padding:48px 36px;text-align:center;}
-  .tabs{display:flex;gap:2px;background:var(--inner);border-radius:10px;padding:3px;margin-bottom:20px;}
-  .tab{padding:8px 18px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;color:var(--muted);border:none;background:transparent;font-family:var(--sans);}
-  .tab.active{background:var(--panel);color:var(--green);}
-  .tab:hover{color:var(--text);}
-  footer{border-top:1px solid var(--border);padding:36px 0 48px;margin-top:20px;}
-  .foot-in{display:flex;flex-wrap:wrap;gap:20px;align-items:center;}
-  .foot-links{display:flex;flex-wrap:wrap;gap:16px 20px;}
-  .foot-links a{color:var(--muted);font-size:13px;font-weight:600;transition:color .16s;}
-  .foot-links a:hover{color:var(--blue);}
-  .foot-fine{margin-top:24px;padding-top:20px;border-top:1px solid var(--border);font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--dim);}
-  .foot-fine .p{color:var(--pink);font-style:italic;}
-  @media (max-width:860px){.nav-links{display:none;}.hero{padding:60px 0 32px;}}
-  @media (max-width:560px){.wrap,.nav-in{padding:0 16px;}.block{padding:40px 16px;}.tabs{flex-wrap:wrap;}}
-</style>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/monster.css?v=1">
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
 
 <!-- ─── NAV ─── -->
-<nav>
-  <div class="nav-in">
-    <a class="brand" href="/"><span class="mark">J</span><span class="wordmark">1bit <span class="g">J</span>AR<span class="p">V</span>IS</span></a>
-    <div class="nav-links"><a href="#capabilities">Capabilities</a><a href="#architecture">Architecture</a><a href="#open-knowledge">Knowledge</a><a href="#install">Install</a><a href="https://1bit.monster">1bit.monster</a></div>
-    <div class="nav-cta"><a class="btn btn-ghost btn-sm" href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank">GitHub</a><a class="btn btn-primary btn-sm" href="#install">Get Started</a></div>
-  </div>
+<nav class="site-nav">
+<a class="brand" href="/index.html"><img class="brand-mark" src="/assets/logo-mark.svg" alt="1bit MONSTER"><b>1bit</b>.MONSTER</a>
+<div class="links">
+<a href="/models.html">Models</a>
+<a href="/benchmarks.html">Benchmarks</a>
+<a href="/docs.html">Docs</a>
+<a href="/jarvis/" class="current">1bit JARVIS</a>
+<a href="/blog/">Blog</a>
+<a href="/store/">Store</a>
+<a href="/demo/">Demos</a>
+<a href="/analytics/">Analytics</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
+</div>
 </nav>
 
 <!-- ─── HERO ─── -->
 <section class="hero wrap">
   <span class="eyebrow">Private AI · On-device · Zero Cloud</span>
   <h1>1bit <span class="g">J</span>AR<span class="p">V</span>IS</h1>
-  <h2 style="margin-top:2px;font-size:clamp(20px,2.6vw,32px);font-weight:800;letter-spacing:-.025em;line-height:1.04;"><span class="b">Your Private AI. On Your Hardware.</span></h2>
+  <h2 style="margin-top:2px;font-size:clamp(20px,2.6vw,32px);font-weight:400;letter-spacing:-.02em;line-height:1.1;"><span class="b">Your Private AI. On Your Hardware.</span></h2>
   <p class="sub">Chat, voice, vision, RAG, agents — running entirely on your NPU+GPU+CPU. 94 tok/s on an AMD Strix Halo laptop. No cloud. No subscriptions. No data leaves your machine.</p>
   <div class="cta-row">
     <a class="btn btn-primary btn-md" href="#install">Install 1bit JARVIS →</a>
@@ -188,37 +98,37 @@
   <div class="grid3">
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span class="tag voice">VOICE</span><span class="mono" style="font-size:11px;color:var(--muted);">Whisper-v3 + Piper</span></div>
-      <h3 style="font-size:18px;font-weight:800;color:var(--text);">Speech In & Out</h3>
+      <h3 style="font-size:18px;font-weight:400;color:var(--text);">Speech In & Out</h3>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 14px;line-height:1.55;">Talk to 1bit JARVIS naturally. Whisper-v3 on NPU converts speech to text. Piper TTS reads responses aloud. Push-to-talk from the web UI.</p>
       <div class="pill ok" style="font-size:10px;"><span class="dot"></span>NPU-powered STT</div>
     </div>
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span class="tag vision">VISION</span><span class="mono" style="font-size:11px;color:var(--muted);">Qwen3-VL-4B</span></div>
-      <h3 style="font-size:18px;font-weight:800;color:var(--text);">See & Understand</h3>
+      <h3 style="font-size:18px;font-weight:400;color:var(--text);">See & Understand</h3>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 14px;line-height:1.55;">Upload images, screenshots, or photos. 1bit JARVIS describes, analyzes, and answers questions about what it sees. Runs on NPU at 11 tok/s.</p>
       <div class="pill info" style="font-size:10px;"><span class="dot"></span>11 tok/s on NPU</div>
     </div>
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span class="tag rag">RAG</span><span class="mono" style="font-size:11px;color:var(--muted);">Open Knowledge</span></div>
-      <h3 style="font-size:18px;font-weight:800;color:var(--text);">Document Intelligence</h3>
+      <h3 style="font-size:18px;font-weight:400;color:var(--text);">Document Intelligence</h3>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 14px;line-height:1.55;">Upload PDFs, text files, or notes. 1bit JARVIS indexes them locally and answers questions from your knowledge base. All files are human-readable markdown.</p>
       <div class="pill ok" style="font-size:10px;"><span class="dot"></span>Transparent format</div>
     </div>
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span class="tag agent">AGENTS</span><span class="mono" style="font-size:11px;color:var(--muted);">Tool Calling</span></div>
-      <h3 style="font-size:18px;font-weight:800;color:var(--text);">Tool-Using Agent</h3>
+      <h3 style="font-size:18px;font-weight:400;color:var(--text);">Tool-Using Agent</h3>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 14px;line-height:1.55;">Calculator, Python execution, file operations, system control. 1bit JARVIS decides when to use tools and explains what it found.</p>
       <div class="pill warn" style="font-size:10px;"><span class="dot"></span>Python · calc · files</div>
     </div>
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span class="tag gpu">WEB</span><span class="mono" style="font-size:11px;color:var(--muted);">FastAPI + WebSocket</span></div>
-      <h3 style="font-size:18px;font-weight:800;color:var(--text);">Web UI & API</h3>
+      <h3 style="font-size:18px;font-weight:400;color:var(--text);">Web UI & API</h3>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 14px;line-height:1.55;">Full chat interface with streaming markdown, voice recording, image upload, and drag-drop file upload. Works in any browser. OpenAI-compatible API.</p>
       <div class="pill info" style="font-size:10px;"><span class="dot"></span>Any browser</div>
     </div>
     <div class="card" style="padding:22px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span class="tag voice">MOBILE</span><span class="mono" style="font-size:11px;color:var(--muted);">Flutter · iOS · Android</span></div>
-      <h3 style="font-size:18px;font-weight:800;color:var(--text);">1bit JARVIS on Your Phone</h3>
+      <h3 style="font-size:18px;font-weight:400;color:var(--text);">1bit JARVIS on Your Phone</h3>
       <p style="font-size:13px;color:var(--muted);margin:8px 0 14px;line-height:1.55;">Native Flutter app with the same 1bit JARVIS theme. Connect via ngrok tunnel with QR code pairing. 1bit JARVIS in your pocket.</p>
       <div class="pill ok" style="font-size:10px;"><span class="dot"></span>App Store + Play Store</div>
     </div>
@@ -397,27 +307,27 @@
   <p class="lead" style="margin-bottom:24px;">Prerequisites: AMD Strix Halo (Ryzen AI Max+ 395) with NPU drivers installed.</p>
   <div class="grid2">
     <div class="card" style="padding:24px;">
-      <h3 style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:8px;">1. Start the NPU backend</h3>
+      <h3 style="font-size:17px;font-weight:400;color:var(--text);margin-bottom:8px;">1. Start the NPU backend</h3>
       <div class="code" style="font-size:12px;"><span class="g">sudo flm serve qwen3:0.6b \</span>
 <span class="g">  --port 52625 --pmode turbo</span>
 <span class="b">→ NPU running at 94 tok/s</span></div>
       <p style="font-size:13px;color:var(--muted);margin-top:12px;">The NPU v12 engine runs the model on the XDNA2 NPU. One command, zero config.</p>
     </div>
     <div class="card" style="padding:24px;">
-      <h3 style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:8px;">2. Start the 1bit JARVIS server</h3>
+      <h3 style="font-size:17px;font-weight:400;color:var(--text);margin-bottom:8px;">2. Start the 1bit JARVIS server</h3>
       <div class="code" style="font-size:12px;"><span class="g">source jarvis-env/bin/activate</span>
 <span class="g">cd jarvis && python3 server.py</span>
 <span class="b">→ 1bit JARVIS running on :8080</span></div>
       <p style="font-size:13px;color:var(--muted);margin-top:12px;">Python FastAPI server. Orchestrator, agent, voice I/O, RAG, knowledge base — all in one process.</p>
     </div>
     <div class="card" style="padding:24px;">
-      <h3 style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:8px;">3. Open the web UI</h3>
+      <h3 style="font-size:17px;font-weight:400;color:var(--text);margin-bottom:8px;">3. Open the web UI</h3>
       <div class="code" style="font-size:12px;"><span class="g">open http://localhost:8080/chat</span>
 <span class="b">→ 1bit JARVIS interface loads</span></div>
       <p style="font-size:13px;color:var(--muted);margin-top:12px;">Full chat UI with streaming, voice, vision, and file upload. Works in Chrome, Firefox, Safari.</p>
     </div>
     <div class="card" style="padding:24px;">
-      <h3 style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:8px;">Mobile access</h3>
+      <h3 style="font-size:17px;font-weight:400;color:var(--text);margin-bottom:8px;">Mobile access</h3>
       <div class="code" style="font-size:12px;"><span class="g">curl -fsSL 1bit.monster/mobile.sh | sh</span>
 <span class="b">→ ngrok tunnel + QR code</span></div>
       <p style="font-size:13px;color:var(--muted);margin-top:12px;">Expose 1bit JARVIS via ngrok. Scan the QR code with 1bit JARVIS Mobile (iOS/Android) to chat from anywhere.</p>
@@ -431,7 +341,7 @@
 <!-- ─── CTA ─── -->
 <section class="wrap block" style="padding-top:0;">
   <div class="cta-band">
-    <h2 style="font-weight:900;">Your private 1bit JARVIS. On your machine.</h2>
+    <h2 style="font-weight:400;">Your private 1bit JARVIS. On your machine.</h2>
     <p class="lead" style="margin:14px auto 0;max-width:500px;">94 tok/s. Zero cloud. Zero subscriptions. Full voice, vision, and RAG. Open source.</p>
     <div class="cta-row" style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:24px;">
       <a class="btn btn-primary btn-md" href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank">View on GitHub →</a>
@@ -446,24 +356,10 @@
 </section>
 
 <!-- ─── FOOTER ─── -->
-<footer>
-  <div class="wrap">
-    <div class="foot-in">
-      <a class="brand" href="/"><span class="mark" style="width:32px;height:32px;font-size:12px;">J</span><span class="wordmark" style="font-size:15px;">1bit <span class="g">J</span>AR<span class="p">V</span>IS</span></a>
-      <span style="flex:1"></span>
-      <div class="foot-links">
-        <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" target="_blank">GitHub</a>
-        <a href="https://1bit.monster">1bit.monster</a>
-        <a href="mailto:admin@1bit.monster">Email</a>
-      </div>
-    </div>
-    <div class="foot-fine">
-      <div>Built with DeepSeek v4 (99.9%) · Shipped with Claude (0.1%) · One human.</div>
-      <div>NPU: XDNA2 · GPU: Radeon 8060S · CPU: Zen 5</div>
-      <div style="margin-top:6px;">94 tok/s on a consumer laptop. 50 TOPS INT8. Open source.</div>
-      <div style="margin-top:6px;">—bong-water-water-bong · <span class="p">"Sorry but not Sorry :)"</span></div>
-    </div>
-  </div>
+<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."
+<div class="fine">Built with DeepSeek v4 (99.9%) · Shipped with Claude (0.1%) · One human.<br>
+NPU: XDNA2 · GPU: Radeon 8060S · CPU: Zen 5 · 94 tok/s on a consumer laptop · 50 TOPS INT8 · Open source.<br>
+—bong-water-water-bong · "Sorry but not Sorry :)"</div>
 </footer>
 
 <!-- ─── Benchmark live-loader ─── -->
@@ -499,7 +395,7 @@
         if(!eng) continue;
         html += '<tr><td style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;">' + eng.label + '</td>';
         html += '<td style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);">' + (eng.hw||'') + '</td>';
-        html += '<td style="padding:10px 14px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:18px;font-weight:800;color:var(--green);">' + eng.tok_s + ' <span style="font-size:11px;font-weight:700;color:var(--muted);">tok/s</span></td>';
+        html += '<td style="padding:10px 14px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:18px;font-weight:400;color:var(--green);">' + eng.tok_s + ' <span style="font-size:11px;font-weight:700;color:var(--muted);">tok/s</span></td>';
         html += '<td style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);">' + (eng.model||'') + '</td></tr>';
       }
       table.innerHTML = html;

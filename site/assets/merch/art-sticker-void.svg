@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+<polygon points="600,210 1040,880 160,880" fill="#021621" stroke="#ff9f1c" stroke-width="6"/>
+<text x="600" y="470" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="84" fill="#a0d9f8" letter-spacing="8">I VOIDED MY</text>
+<text x="600" y="620" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="130" fill="#ff9f1c" letter-spacing="8">NPU WARRANTY</text>
+<line x1="380" y1="760" x2="820" y2="760" stroke="#0e80be" stroke-width="3"/>
+<text x="600" y="830" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="42" fill="#a0d9f8" letter-spacing="4">PROCEED WITH CONFIDENCE</text>
+<text x="600" y="900" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="34" fill="#5d9ec2" letter-spacing="4">NO REGRETS · OPEN SOURCE</text>
+</svg>

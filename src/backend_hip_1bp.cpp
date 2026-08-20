@@ -2,6 +2,7 @@
 // Custom GEMV kernel replaces rocBLAS. All ops on-device.
 
 #include "backend.h"
+#include "gguf_reader.h"
 #include "../engine/npu/src/onebp_loader.cpp"
 #include "rocm_cpp/ck_gemm.h"
 #include <hip/hip_runtime_api.h>
@@ -40,7 +41,7 @@ struct Hip1bpBackend : Backend {
 
     // GPU weights
     float *d_embed=nullptr,*d_final_norm=nullptr,*d_output=nullptr;
-    struct GL{float*wq,*wk,*wv,*wo,*w1,*w2,*w3,*pn,*pon,*q_norm,*k_norm;};
+    struct GL{float*wq,*wk,*wv,*wo,*w1,*w2,*w3,*pn,*pon,*q_norm,*k_norm; float* bq,*bk,*bv;};
     std::vector<GL> L;
 
     // Packed 2-bit fast path (TQ2NZ / TQ2NZ_E4M3): tile pointers into the
@@ -52,6 +53,7 @@ struct Hip1bpBackend : Backend {
     std::vector<PL> P;
     int quant2 = 0;               // 0 = f32 path, 1 = TQ2NZ bf16, 2 = TQ2NZ_E4M3, 3 = Q4NX packed
     std::unique_ptr<NpuOnebpModel> model_;
+    std::unique_ptr<GgufReader> gguf_;  // GGUF-direct mode (lossless f32, no 1BP conversion)
 
     // GPU scratch (persistent, device-only)
     float *dh=nullptr,*datt=nullptr,*dgate=nullptr,*dup=nullptr;
@@ -119,7 +121,16 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipMalloc(&dsilu,IM*4)); HIP_CHECK(hipMalloc(&doproj,H*4));
         HIP_CHECK(hipMalloc(&dffn,H*4));
         HIP_CHECK(hipMalloc(&dlogits,VOCAB*4));
-        HIP_CHECK(hipMalloc(&dpart,(size_t)std::max(IM,H)*96*4));  // 32 lanes * 3 warps
+        // dpart = packed-gemv partials scratch (32 lanes * wpr per row). The old
+        // max(IM,H)*96*4 assumed wpr<=3 and N<=max(IM,H) — the LM head launch
+        // (N=VOCAB, K=H) blew past it on real vocabs: illegal memory access on
+        // RX 9070 XT (gfx1201) with Qwen2.5-0.5B (V=151936). Worst case across
+        // every launch_q4nx/launch_tq2nz call: layer w1/w2 N=IM K=H, w3 N=H
+        // K=IM, lm_head N=VOCAB K=H.
+        int h_ntc=(H+255)/256, im_ntc=(IM+255)/256;
+        int h_wpr=(h_ntc+3)>>2, im_wpr=(im_ntc+3)>>2;
+        size_t dpart_rows=(size_t)std::max({IM*h_wpr, H*im_wpr, VOCAB*h_wpr});
+        HIP_CHECK(hipMalloc(&dpart, dpart_rows*32*4));  // 32 lanes/row * f32
         HIP_CHECK(hipMalloc(&d_argmax,4));
         HIP_CHECK(hipMalloc(&d_amx,AMX_MAXB*4));
         HIP_CHECK(hipMalloc(&d_ami,AMX_MAXB*4));
@@ -129,28 +140,46 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipHostMalloc(&h_pos,sizeof(int),hipHostMallocMapped));
         HIP_CHECK(hipHostMalloc(&h_res,sizeof(int),hipHostMallocMapped));
 
-        if(cfg.format!=ModelFormat::ONEBP||cfg.model_path.empty())return false;
+        if(cfg.model_path.empty())return false;
         printf("[hip1bp] Loading: %s\n",cfg.model_path.c_str());
-        model_ = std::make_unique<NpuOnebpModel>();
-        if(!model_->open(cfg.model_path.c_str()))return false;
-        NpuOnebpModel& mdl=*model_;
-        uint32_t q = mdl.header().quant;
+        // GGUF-direct: skip the 1BP conversion entirely — GgufReader gives
+        // the exact dequantized weights (j12 Q5_0, matching llama.cpp), so
+        // there is no Q4NX/F16 repack to lose precision. F32 path only.
+        bool is_gguf = cfg.model_path.size() > 5 &&
+                       cfg.model_path.substr(cfg.model_path.size()-5) == ".gguf";
+        if (is_gguf) {
+            gguf_ = std::make_unique<GgufReader>();
+            if(!gguf_->open(cfg.model_path.c_str()))return false;
+            quant2 = 0;
+        } else {
+            if(cfg.format!=ModelFormat::ONEBP)return false;
+            model_ = std::make_unique<NpuOnebpModel>();
+            if(!model_->open(cfg.model_path.c_str()))return false;
+        }
+        auto get_w=[&](const char* n,std::vector<float>& v)->bool{
+            if(gguf_) return gguf_->get_tensor_f32(n,v);
+            return model_->get_tensor_f32(n,v);
+        };
+        uint32_t q = gguf_ ? (uint32_t)0xFFFFFFFFu : model_->header().quant;
         // #1627: only quants the loader dequantizes (dequant_tile/dequant_tile_tq2)
         // or the packed path (TQ2NZ family) are supported here. TQ1/TQ2BS/I8/F16/F32
         // fall through to the Q4NX-layout dequant -> garbage weights -> NaN logits
         // -> argmax -1 with zero diagnostics. Reject loudly at init instead.
-        if (q != ONEBP_Q4NX && q != ONEBP_TQ2 && q != ONEBP_TQ2NZ && q != ONEBP_TQ2NZ_E4M3) {
-            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3 only). "
-                    "TQ1/TQ2BS/I8/F16/F32 models must be converted first (see gguf_to_onebp --tq2nz).\n", q);
+        if (q != ONEBP_Q4NX && q != ONEBP_TQ2 && q != ONEBP_TQ2NZ && q != ONEBP_TQ2NZ_E4M3 &&
+            q != ONEBP_F16 && q != ONEBP_F32 && q != 0xFFFFFFFFu) {
+            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3/F16/F32). "
+                    "TQ1/TQ2BS/I8 models must be converted first (see gguf_to_onebp --tq2nz).\n", q);
             return false;
         }
         if (q == ONEBP_TQ2NZ) quant2 = 1;
         else if (q == ONEBP_TQ2NZ_E4M3) quant2 = 2;
         else if (q == ONEBP_Q4NX) quant2 = 3;   // #1625: packed Q4NX GEMV
+        // F16/F32 stay on the f32 path (quant2 = 0): the packed GEMV kernels
+        // are 4-bit-only, and lossless weights must not be re-quantized.
         if (getenv("H1BP_F32")) quant2 = 0;   // debug: force f32 path
 
         std::vector<float> emb,fn,out;
-        auto ld=[&](const char* n,std::vector<float>& v){return mdl.get_tensor_f32(n,v);};
+        auto ld=[&](const char* n,std::vector<float>& v){return get_w(n,v);};
         if(!ld("token_embd.weight",emb))return false;
         if(!ld("output_norm.weight",fn))ld("token_embd_norm.weight",fn);
         if(!ld("output.weight",out))ld("lm_head.weight",out);
@@ -169,9 +198,9 @@ struct Hip1bpBackend : Backend {
             auto& ll=L[l];std::vector<float> w;
             auto gr=[&](const char* bk,const char* lg,float*& gp,int n){
                 snprintf(buf,sizeof(buf),"blk.%d.%s",l,bk);w.clear();
-                if(!mdl.get_tensor_f32(buf,w)){
+                if(!get_w(buf,w)){
                     snprintf(buf,sizeof(buf),"model.layers.%d.%s",l,lg);
-                    mdl.get_tensor_f32(buf,w);
+                    get_w(buf,w);
                 }
                 if((int)w.size()==n){HIP_CHECK(hipMalloc(&gp,n*4));HIP_CHECK(hipMemcpy(gp,w.data(),n*4,hipMemcpyHostToDevice));}
                 else gp=nullptr;
@@ -185,6 +214,12 @@ struct Hip1bpBackend : Backend {
             gr("ffn_down.weight","mlp.down_proj.weight",ll.w3,IM*H);
             gr("attn_norm.weight","input_layernorm.weight",ll.pn,H);
             gr("ffn_norm.weight","post_attention_layernorm.weight",ll.pon,H);
+            // Q/K/V biases (present in some Qwen2 GGUFs — the graph adds
+            // them after the projections, before rope; without them the
+            // Q/K gemv outputs are off by up to ±130 → garbage attention).
+            gr("attn_q.bias","self_attn.q_proj.bias",ll.bq,NH*HD);
+            gr("attn_k.bias","self_attn.k_proj.bias",ll.bk,NKV*HD);
+            gr("attn_v.bias","self_attn.v_proj.bias",ll.bv,NKV*HD);
             // Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm on each head's
             // head_dim slice with a shared [head_dim] weight, before RoPE.
             gr("attn_q_norm.weight","self_attn.q_norm.weight",ll.q_norm,HD);
@@ -193,6 +228,7 @@ struct Hip1bpBackend : Backend {
         // Packed fast-path pointers (TQ2NZ family only)
         P.resize(NC);
         if (quant2) {
+            NpuOnebpModel& mdl=*model_;
             for(int l=0;l<NC;l++){
                 auto& pp=P[l];
                 auto gt=[&](const char* bk,const char* lg,const uint8_t*& gp){
@@ -388,6 +424,10 @@ struct Hip1bpBackend : Backend {
                 if(ll.wq) h1bp_gemv_kernel<<<NH_*HD_,256,0,stream>>>(datt,ll.wq,dh,NH_*HD_,H_);
                 if(ll.wk) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dgate,ll.wk,dh,NKV_*HD_,H_);
                 if(ll.wv) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dup,ll.wv,dh,NKV_*HD_,H_);
+                // Q/K/V biases (llama.cpp adds them post-projection, pre-rope)
+                if(ll.bq) h1bp_add_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt,ll.bq,NH_*HD_);
+                if(ll.bk) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dgate,ll.bk,NKV_*HD_);
+                if(ll.bv) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dup,ll.bv,NKV_*HD_);
             }
 
             // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
@@ -591,7 +631,7 @@ struct Hip1bpBackend : Backend {
     void destroy()override{
         auto hf=[](void*p){if(p)HIP_CHECK_D(hipFree(p));};
         hf(d_embed);hf(d_final_norm);hf(d_output);
-        for(auto&ll:L){hf(ll.wq);hf(ll.wk);hf(ll.wv);hf(ll.wo);hf(ll.w1);hf(ll.w2);hf(ll.w3);hf(ll.pn);hf(ll.pon);hf(ll.q_norm);hf(ll.k_norm);}
+        for(auto&ll:L){hf(ll.wq);hf(ll.wk);hf(ll.wv);hf(ll.wo);hf(ll.w1);hf(ll.w2);hf(ll.w3);hf(ll.pn);hf(ll.pon);hf(ll.q_norm);hf(ll.k_norm);hf(ll.bq);hf(ll.bk);hf(ll.bv);}
         for (auto& pd : PD) { hf(pd.pq); hf(pd.pk); hf(pd.pv); hf(pd.po); hf(pd.p1); hf(pd.p2); hf(pd.p3); }
         PD.clear(); hf(d_output_packed);
         L.clear();P.clear();model_.reset();

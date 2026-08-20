@@ -195,11 +195,11 @@
     "tolerance": 0.15
   },
   "benchmarks": {
-    "halo_gemv_gbps": 158.6,
-    "prefill_tflops_4h": 30.05,
-    "prefill_tflops_i8apre": 41.85,
-    "sherry_gemv_gbps": 155.3,
-    "tq1_gemv_gbps": 184.7
+    "halo_gemv_gbps": 149.5,
+    "prefill_tflops_4h": 26.96,
+    "prefill_tflops_i8apre": 38.84,
+    "sherry_gemv_gbps": 154.7,
+    "tq1_gemv_gbps": 184.9
   },
   "repo": {
     "forks": 4,

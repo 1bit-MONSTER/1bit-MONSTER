@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs><radialGradient id="gl" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#ff9f1c" stop-opacity="0.27450980392156865"/><stop offset="1" stop-color="#ff9f1c" stop-opacity="0"/></radialGradient></defs><circle cx="32" cy="32" r="56" fill="url(#gl)"/>
+<circle cx="32" cy="32" r="28.5" fill="#021621" stroke="#ff9f1c" stroke-width="2"/>
+<text x="32" y="32" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#00e5ff" letter-spacing="-1">1bm</text>
+</svg>

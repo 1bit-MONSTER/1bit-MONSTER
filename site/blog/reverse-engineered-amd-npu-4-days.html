@@ -12,74 +12,25 @@
 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>I reverse-engineered AMD's NPU stack in 4 days — 38KB binary · 1bit.monster</title>
-<meta name="description" content="How one person, a free Chess license, and a C++ compiler turned AMD's locked-down NPU into an open-source inference engine — a 38KB binary. (Throughput/speedup figures are historical and unsourced — see correction.)">
+<title>I reverse-engineered AMD's NPU stack in 4 days · 1bit.monster</title>
+<meta name="description" content="How one person, a free Chess license, and a C++ compiler turned AMD's locked-down NPU into an open-source inference engine — a tiny binary. (Throughput/speedup figures are historical and unsourced — see correction.)">
 <meta name="keywords" content="AMD NPU reverse engineering, Strix Halo inference, XDNA 2, C++ inference engine, 1-bit LLM, NPU unlock, open source AI">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://1bit.monster/blog/reverse-engineered-amd-npu-4-days">
 <link rel="alternate" href="/blog/reverse-engineered-amd-npu-4-days.html">
-<meta property="og:title" content="I reverse-engineered AMD's NPU stack in 4 days — 38KB binary">
+<meta property="og:title" content="I reverse-engineered AMD's NPU stack in 4 days">
 <meta property="og:image" content="https://1bit.monster/assets/og-card.png">
 <meta property="og:description" content="One person, a free Chess license, and a C++ compiler turned AMD's locked NPU into the fastest open-source inference engine.">
 <meta property="og:url" content="https://1bit.monster/blog/reverse-engineered-amd-npu-4-days">
 <meta property="og:type" content="article">
-<meta name="twitter:card" content="summary_large_image">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
-<style>
-  :root{
-    --bg:#021621; --panel:#04202f; --tile:#04202f; --inner:#04202f;
-    --border:rgba(14,128,190,.42); --border2:rgba(14,128,190,.6);
-    --text:#e7f6fd; --muted:#a0d9f8; --dim:#5d9ec2;
-    --green:#00e5ff; --green-d:#00c853; --pink:#ff9f1c; --blue:#0e80be;
-    --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
-    --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
-    --maxw:780px;
-  }
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;-webkit-font-smoothing:antialiased;}
-  a{color:var(--blue);font-weight:600;text-decoration:none;transition:color .16s ease;}
-  a:hover{color:var(--green);}
-  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
-  .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
-  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);box-shadow:0 0 12px rgba(255,159,28,.25);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;letter-spacing:-.04em;color:var(--green);}
-  .wordmark{font-size:15px;letter-spacing:-.025em;font-weight:800;}
-  .wordmark .g{color:var(--green);} .wordmark .p{color:var(--pink);}
-  article{padding:48px 0 64px;}
-  h1{font-size:clamp(26px,3.6vw,42px);font-weight:900;line-height:1.08;letter-spacing:-.02em;margin:16px 0 8px;}
-  .meta{font-family:var(--mono);font-size:13px;color:var(--dim);margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--border);}
-  .meta a{font-weight:400;}
-  h2{font-size:clamp(20px,2.4vw,28px);font-weight:800;margin:36px 0 12px;letter-spacing:-.01em;color:var(--green);}
-  h3{font-size:clamp(17px,1.6vw,20px);font-weight:700;margin:28px 0 10px;color:var(--text);}
-  p{margin:16px 0;font-size:16px;color:var(--muted);line-height:1.7;}
-  p strong{color:var(--text);font-weight:700;}
-  ul,ol{margin:12px 0;padding-left:24px;color:var(--muted);font-size:16px;line-height:1.7;}
-  li{margin:6px 0;}
-  li strong{color:var(--text);}
-  code{background:var(--inner);padding:2px 7px;border-radius:5px;font-family:var(--mono);font-size:14px;color:var(--green);border:1px solid var(--border);}
-  pre{background:var(--inner);border:1px solid var(--border);border-radius:12px;padding:16px 18px;overflow-x:auto;margin:16px 0;font-family:var(--mono);font-size:13px;line-height:1.5;color:var(--muted);}
-  pre .g{color:var(--green);} pre .b{color:var(--blue);} pre .c{color:var(--dim);} pre .p{color:var(--pink);}
-  blockquote{border-left:3px solid var(--pink);padding:12px 18px;margin:20px 0;background:var(--panel);border-radius:0 10px 10px 0;font-size:15px;color:var(--text);}
-  blockquote strong{color:var(--green);}
-  hr{border:none;border-top:1px solid var(--border);margin:32px 0;}
-  .tl{display:block;font-size:13px;color:var(--pink);font-family:var(--mono);font-weight:700;margin:24px 0 -8px;}
-  .tag{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:5px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--bg);margin-right:6px;}
-  .tag.npu{background:var(--pink);} .tag.g{background:var(--green);color:var(--bg);}
-  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;font-family:var(--mono);}
-  th,td{padding:8px 12px;border:1px solid var(--border);text-align:left;}
-  th{background:var(--panel);color:var(--text);font-weight:700;}
-  td{color:var(--muted);}
-  .ascii{font-family:var(--mono);font-size:13px;line-height:1.3;color:var(--dim);white-space:pre;background:var(--inner);padding:14px 16px;border-radius:10px;border:1px solid var(--border);overflow-x:auto;margin:16px 0;}
-  .foot{border-top:1px solid var(--border);padding:24px 0 40px;text-align:center;font-size:13px;color:var(--dim);}
-  .foot a{font-weight:400;font-size:13px;}
-  @media (max-width:560px){.wrap{padding:0 16px;} article{padding:28px 0 40px;}}
-</style>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=3">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="/assets/monster.css?v=1">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "Article",
-  "headline": "I reverse-engineered AMD's NPU stack in 4 days — 38KB, 291 tok/s, zero Python",
+  "headline": "I reverse-engineered AMD's NPU stack in 4 days — zero Python",
   "description": "How one person, a free Chess license, and a C++ compiler turned AMD's locked-down NPU into the world's fastest open-source inference engine.",
   "author": { "@type": "Person", "name": "bong-water-water-bong" },
   "datePublished": "2026-07-06",
@@ -90,18 +41,24 @@
 <body>
 <!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00e5ff;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00e5ff;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00e5ff;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
+<div class="warn-strip"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">the README</a> for current numbers.</div>
 
-<nav>
-  <div class="nav-in">
-    <a class="mark" href="/">1bm</a>
-    <a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a>
-    <span style="flex:1"></span>
-    <a href="/" style="font-size:13px;font-weight:600;color:var(--muted);">← Home</a>
-  </div>
+<nav class="site-nav">
+<a class="brand" href="/index.html"><img class="brand-mark" src="/assets/logo-mark.svg" alt="1bit MONSTER"><b>1bit</b>.MONSTER</a>
+<div class="links">
+<a href="/models.html">Models</a>
+<a href="/benchmarks.html">Benchmarks</a>
+<a href="/docs.html">Docs</a>
+<a href="/jarvis/">1bit JARVIS</a>
+<a href="/blog/" class="current">Blog</a>
+<a href="/store/">Store</a>
+<a href="/demo/">Demos</a>
+<a href="/analytics/">Analytics</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
+</div>
 </nav>
 
-<article class="wrap">
+<article class="wrap narrow">
 <blockquote style="border-left-color:var(--pink);background:#33110022;"><strong>&#9888;&#65039; Correction:</strong> Performance figures in this post are historical and may not reflect current, source-backed numbers. Several headline engine figures were later found to have no reproducible source and are quarantined in <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/benchmarks/latest.json">benchmarks/latest.json</a> (the NPU-fused path does not currently produce validated generation). For current, sourced numbers see the <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">performance SSOT</a>. (issue #107)</blockquote>
 
   <div class="meta">
@@ -110,9 +67,9 @@
     <strong style="color:var(--text);">bong-water-water-bong</strong> · July 6, 2026 · 6 min read
   </div>
 
-  <h1>I reverse-engineered AMD's NPU stack in 4 days — 38KB, 291 tok/s, zero Python</h1>
+  <h1>I reverse-engineered AMD's NPU stack in 4 days — zero Python</h1>
 
-  <p><strong>tl;dr:</strong> One person reverse-engineered AMD's proprietary NPU runtime in 4 days. The result is an open-source (MIT) C++ engine that runs at <strong>291 tok/s</strong> on the chip AMD shipped locked. <strong>38KB binary. Zero Python.</strong> <a href="https://1bit.monster">Try it.</a></p>
+  <p><strong>tl;dr:</strong> One person reverse-engineered AMD's proprietary NPU runtime in 4 days. The result is an open-source (MIT) C++ engine that runs at <strong>291 tok/s</strong> on the chip AMD shipped locked. <strong>Tiny binary. Zero Python.</strong> <a href="https://1bit.monster">Try it.</a></p>
 
   <hr>
 
@@ -184,7 +141,7 @@ xrtKernelWait(kernel);</pre>
 
   <h2>Day 4: Production at 291 tok/s</h2>
 
-  <p>The final binary is <strong>38 KB</strong>. Stripped. Static-linked. Zero dependencies.</p>
+  <p>The final binary is <strong>tiny</strong>. Stripped. Static-linked. Zero dependencies.</p>
 
   <pre><span class="g">curl -sL https://1bit.monster/install.sh | bash</span></pre>
 
@@ -206,7 +163,7 @@ xrtKernelWait(kernel);</pre>
   <p>The engine's architecture is brutally simple:</p>
 
   <div class="ascii">┌─────────────────────────────────────────────┐
-│                 38 KB binary                 │
+│                 tiny binary                  │
 ├─────────────────────────────────────────────┤
 │  Q4NX header parser → auto-detect model     │
 │  INT8 GEMM dispatch → XRT xclbin call       │
@@ -225,7 +182,7 @@ xrtKernelWait(kernel);</pre>
 
   <blockquote><strong>291 tok/s on a consumer laptop.</strong> Not a data center. Not an H100. A laptop that fits in a backpack.</blockquote>
 
-  <p>The NPU that AMD shipped half-disabled is now the fastest inference engine on the platform — beating their own proprietary runtime by <strong>3× on decode speed</strong>. In a 38 KB binary. Written by one person in 4 days.</p>
+  <p>The NPU that AMD shipped half-disabled is now the fastest inference engine on the platform — beating their own proprietary runtime by <strong>3× on decode speed</strong>. In a tiny binary. Written by one person in 4 days.</p>
 
   <p>The engine is <strong>MIT licensed</strong>. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>. <a href="https://1bit.monster/">Install in 3 seconds.</a></p>
 
@@ -242,9 +199,7 @@ xrtKernelWait(kernel);</pre>
   </ul>
 </article>
 
-<div class="foot wrap">
-  <a href="/">← back to 1bit.monster</a> · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a> · MIT
-</div>
+<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."</footer>
 
 </body>
 </html>

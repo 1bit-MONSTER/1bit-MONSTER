@@ -21,43 +21,31 @@
 <meta property="og:description" content="Open-source token-level routing for multi-backend LLM inference. NPU draft + GPU verify with real logprobs on AMD Strix Halo.">
 <meta property="og:url" content="https://1bit.monster/blog/token-router">
 <meta property="og:type" content="article">
-<meta name="twitter:card" content="summary_large_image">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
-<style>
-  :root{--bg:#021621;--panel:#04202f;--border:rgba(14,128,190,.42);--text:#e7f6fd;--muted:#a0d9f8;--dim:#5d9ec2;--green:#00e5ff;--pink:#ff9f1c;--blue:#0e80be;--sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;--mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;--maxw:780px;}
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;padding:2rem 1.5rem;}
-  .wrap{max-width:var(--maxw);margin:0 auto;}
-  a{color:var(--blue);text-decoration:none;} a:hover{color:var(--pink);}
-  h1{font-size:1.8rem;font-weight:800;line-height:1.2;margin-bottom:8px;}
-  .meta{color:var(--dim);font-size:14px;margin-bottom:32px;padding-bottom:16px;border-bottom:1px solid var(--border);}
-  h2{font-size:1.3rem;font-weight:700;margin:40px 0 12px;color:var(--green);}
-  h3{font-size:1.05rem;font-weight:600;margin:28px 0 10px;color:var(--blue);}
-  p{margin:0 0 14px;}
-  ul,ol{margin:0 0 14px 24px;}
-  li{margin:0 0 6px;}
-  code{font-family:var(--mono);font-size:.9em;background:var(--panel);padding:2px 6px;border-radius:4px;color:var(--green);}
-  pre{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px;overflow-x:auto;margin:0 0 16px;font-family:var(--mono);font-size:13px;line-height:1.5;}
-  pre code{background:none;padding:0;}
-  table{width:100%;border-collapse:collapse;margin:0 0 20px;font-size:13px;}
-  th,td{border:1px solid var(--border);padding:8px 12px;text-align:left;}
-  th{background:var(--panel);font-weight:600;color:var(--green);}
-  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-family:var(--mono);background:var(--panel);border:1px solid var(--border);color:var(--muted);margin-right:4px;}
-  .tag.g{color:var(--green);border-color:var(--green-d,var(--green));}
-  .tag.p{color:var(--pink);border-color:var(--pink);}
-  .tag.b{color:var(--blue);border-color:var(--blue);}
-  .back{margin-bottom:20px;display:block;color:var(--dim);font-size:14px;}
-  .back:hover{color:var(--blue);}
-</style>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=3">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="/assets/monster.css?v=1">
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1fdeba29ed164ab5bd63abf15e0418f0"}'></script><!-- End Cloudflare Web Analytics --></head>
 <body>
+<nav class="site-nav">
+<a class="brand" href="/index.html"><img class="brand-mark" src="/assets/logo-mark.svg" alt="1bit MONSTER"><b>1bit</b>.MONSTER</a>
+<div class="links">
+<a href="/models.html">Models</a>
+<a href="/benchmarks.html">Benchmarks</a>
+<a href="/docs.html">Docs</a>
+<a href="/jarvis/">1bit JARVIS</a>
+<a href="/blog/" class="current">Blog</a>
+<a href="/store/">Store</a>
+<a href="/demo/">Demos</a>
+<a href="/analytics/">Analytics</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
+</div>
+</nav>
 <!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00e5ff;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00e5ff;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00e5ff;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
-<div class="wrap">
+<div class="warn-strip"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">the README</a> for current numbers.</div>
+<div class="wrap narrow">
 <a class="back" href="/blog/">← research</a>
-<article class="wrap">
+<article class="wrap narrow">
 <h1>TokenRouter: Token-Level Multi-Backend LLM Inference on AMD Strix Halo</h1>
 <div class="meta">
   <span class="tag g">Research</span>
@@ -219,12 +207,7 @@ inference on the same hardware but notes that "FLM's OpenAI API doesn't expose l
 Our custom NPU engine solves this, enabling real rejection-sampled speculative decoding.
 </p>
 
-<div class="footer">
-  <a href="/">← 1bit.monster</a> · 
-  <a href="https://github.com/bong-water-water-bong/token-router">GitHub</a> · 
-  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">1bit Repo</a> ·
-  MIT License
-</div>
+<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."</footer>
 </article>
 </div>
 </body>

@@ -37,57 +37,9 @@
 <meta property="article:tag" content="local AI">
 <meta property="article:tag" content="benchmark comparison">
 <meta property="article:tag" content="NVIDIA RTX Spark">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="What the Ryzen AI Halo reviews didn't tell you — AMD Strix Halo NPU">
-<meta name="twitter:description" content="11 tok/s stock vs the 1bit.monster fused-layer NPU engine. The Ryzen AI Halo story no review covered. 20W. MIT.">
-<meta name="twitter:image" content="https://1bit.monster/assets/og-card.png">
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=2">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap">
-<style>
-  :root{
-    --bg:#021621; --panel:#04202f; --tile:#04202f; --inner:#04202f;
-    --border:rgba(14,128,190,.42); --border2:rgba(14,128,190,.6);
-    --text:#e7f6fd; --muted:#a0d9f8; --dim:#5d9ec2;
-    --green:#00e5ff; --green-d:#00c853; --pink:#ff9f1c; --blue:#0e80be;
-    --sans:'DM Serif Text',ui-serif,Georgia,'Times New Roman',serif;
-    --mono:'DM Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
-    --maxw:780px;
-  }
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;}
-  a{color:var(--blue);font-weight:600;text-decoration:none;}
-  a:hover{color:var(--green);}
-  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
-  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:rgba(11,11,11,.78);border-bottom:1px solid var(--border);}
-  .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;height:60px;display:flex;align-items:center;gap:12px;}
-  .mark{width:32px;height:32px;border-radius:999px;background:var(--bg);border:2px solid var(--pink);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;font-size:10px;color:var(--green);}
-  .wordmark{font-size:15px;font-weight:800;letter-spacing:-.025em;}
-  .wordmark .g{color:var(--green);} .wordmark .p{color:var(--pink);}
-  article{padding:48px 0 64px;}
-  h1{font-size:clamp(26px,3.6vw,42px);font-weight:900;line-height:1.08;letter-spacing:-.02em;margin:16px 0 8px;}
-  .meta{font-family:var(--mono);font-size:13px;color:var(--dim);margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--border);}
-  h2{font-size:clamp(20px,2.4vw,28px);font-weight:800;margin:36px 0 12px;letter-spacing:-.01em;color:var(--green);}
-  h3{font-size:clamp(17px,1.6vw,20px);font-weight:700;margin:28px 0 10px;}
-  p{margin:16px 0;font-size:16px;color:var(--muted);line-height:1.7;}
-  p strong{color:var(--text);}
-  ul,ol{margin:12px 0;padding-left:24px;color:var(--muted);font-size:16px;}
-  li{margin:6px 0;} li strong{color:var(--text);}
-  code{background:var(--inner);padding:2px 7px;border-radius:5px;font-family:var(--mono);font-size:14px;color:var(--green);border:1px solid var(--border);}
-  pre{background:var(--inner);border:1px solid var(--border);border-radius:12px;padding:16px 18px;overflow-x:auto;margin:16px 0;font-family:var(--mono);font-size:13px;line-height:1.5;color:var(--muted);}
-  pre .g{color:var(--green);} pre .b{color:var(--blue);} pre .c{color:var(--dim);} pre .p{color:var(--pink);}
-  blockquote{border-left:3px solid var(--pink);padding:12px 18px;margin:20px 0;background:var(--panel);border-radius:0 10px 10px 0;font-size:15px;color:var(--text);}
-  hr{border:none;border-top:1px solid var(--border);margin:32px 0;}
-  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;}
-  th,td{padding:8px 12px;border:1px solid var(--border);text-align:left;}
-  th{background:var(--panel);color:var(--text);} td{color:var(--muted);}
-  .tag{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:5px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--bg);margin-right:6px;}
-  .tag.amd{background:#ff0000;color:var(--bg);} .tag.g{background:var(--green);color:var(--bg);} .tag.dspark{background:var(--blue);color:var(--bg);}
-  .foot{border-top:1px solid var(--border);padding:24px 0 40px;text-align:center;font-size:13px;color:var(--dim);}
-  .stat{display:inline-block;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin:8px 4px;text-align:center;min-width:120px;}
-  .stat .num{font-size:28px;font-weight:900;color:var(--green);display:block;font-family:var(--mono);}
-  .stat .lbl{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;}
-  @media (max-width:560px){.wrap{padding:0 16px;} article{padding:28px 0 40px;}}
-</style>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=3">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="/assets/monster.css?v=1">
 <script type="application/ld+json">
 {
   "@context":"https://schema.org",
@@ -109,9 +61,22 @@
 <body>
 <!-- ⚠️ HISTORICAL POST --><div style="background:#1a0a0a;border:1px solid #00e5ff;border-radius:10px;padding:14px 18px;margin:12px auto;max-width:780px;font-size:13px;line-height:1.5;"><strong style="color:#00e5ff;">⚠️ Historical post</strong><br>This blog post documents an earlier phase of the project. Benchmarks, numbers, and architecture references may be stale. See <a href="https://1bit.monster/#benchmarks" style="color:#00e5ff;">current benchmarks →</a></div>
 
-<div style="background:#ffd;border:2px solid #ea0;padding:12px 20px;margin:0;text-align:center;font-size:14px;"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER" style="color:#06c;">the README</a> for current numbers.</div>
-<nav><div class="nav-in"><a class="mark" href="/">1bm</a><a class="wordmark" href="/"><span class="g">1</span>bit MONSTER</a><span style="flex:1"></span><a href="/" style="font-size:13px;color:var(--muted);">← Home</a></div></nav>
-<article class="wrap">
+<div class="warn-strip"><strong>⚠️ Benchmarks may be stale</strong> — This post was written before the 2026-07-26 re-measurement. See <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">the README</a> for current numbers.</div>
+<nav class="site-nav">
+<a class="brand" href="/index.html"><img class="brand-mark" src="/assets/logo-mark.svg" alt="1bit MONSTER"><b>1bit</b>.MONSTER</a>
+<div class="links">
+<a href="/models.html">Models</a>
+<a href="/benchmarks.html">Benchmarks</a>
+<a href="/docs.html">Docs</a>
+<a href="/jarvis/">1bit JARVIS</a>
+<a href="/blog/" class="current">Blog</a>
+<a href="/store/">Store</a>
+<a href="/demo/">Demos</a>
+<a href="/analytics/">Analytics</a>
+<a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a>
+</div>
+</nav>
+<article class="wrap narrow">
 <blockquote style="border-left-color:var(--pink);background:#33110022;"><strong>&#9888;&#65039; Correction:</strong> Performance figures in this post are historical and may not reflect current, source-backed numbers. Several headline engine figures were later found to have no reproducible source and are quarantined in <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/benchmarks/latest.json">benchmarks/latest.json</a> (the NPU-fused path does not currently produce validated generation). For current, sourced numbers see the <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/performance.md">performance SSOT</a>. (issue #107)</blockquote>
 
 <div class="meta"><span class="tag amd">AMD</span> <span class="tag dspark">Strix Halo</span> <span class="tag g">Local AI</span><br><br><strong style="color:var(--text);">bong-water-water-bong</strong> · July 6, 2026 · 7 min read</div>
@@ -157,7 +122,7 @@
 <p><em>Details: <a href="/blog/dspark-speculative-decoding-572-tok-per-second">DSpark speculative decoding — the 572 projection, disproven →</a></em></p>
 
 <h3>Layer 3: Multi-backend GPU support</h3>
-<p>The same binary targets Vulkan (Linux default), CUDA (NVIDIA), ROCm (AMD HIP), and Metal (Apple Silicon). On the Radeon 8060S, the Vulkan backend delivers <strong>279 tok/s</strong> with 1-bit ternary kernels — competitive with much larger GPUs at a fraction of the power. The cross-platform design means the same 38 KB engine runs on Strix Halo, NVIDIA RTX Spark, and Apple Silicon Macs.</p>
+<p>The same binary targets Vulkan (Linux default), CUDA (NVIDIA), ROCm (AMD HIP), and Metal (Apple Silicon). On the Radeon 8060S, the Vulkan backend delivers <strong>279 tok/s</strong> with 1-bit ternary kernels — competitive with much larger GPUs at a fraction of the power. The cross-platform design means the same tiny engine runs on Strix Halo, NVIDIA RTX Spark, and Apple Silicon Macs.</p>
 
 <h2>The NPU vs GPU efficiency story</h2>
 <p>The XDA review reported 0.53 tokens per Joule on the stock NPU and 0.8-1.1 tokens per Joule on the GPU. Those numbers flip with the 1bit engine because the <strong>NPU is doing real work instead of polling ioctl timeouts</strong>:</p>
@@ -180,7 +145,7 @@
 <tr><td>Power consumption</td><td>~60W</td><td>~50W</td><td><strong>15W</strong></td></tr>
 <tr><td>Price</td><td>$4,699</td><td>$3,999</td><td>$3,999 + free</td></tr>
 <tr><td>License</td><td>Proprietary</td><td>Proprietary</td><td><strong>MIT</strong></td></tr>
-<tr><td>Binary size</td><td>—</td><td>—</td><td><strong>38 KB</strong></td></tr>
+<tr><td>Binary size</td><td>—</td><td>—</td><td><strong>tiny</strong></td></tr>
 </table>
 
 <h2>One engine. Every platform.</h2>
@@ -192,7 +157,7 @@
 <p>Eight package formats: <code>deb</code>, <code>snap</code>, <code>docker</code>, <code>AUR</code>, <code>homebrew</code>, <code>ollama</code>, <code>AppImage</code>, static binary. OpenAI-compatible API at <code>localhost:8081/v1/chat/completions</code>. The engine auto-detects NPU → GPU → CPU and picks the fastest available path.</p>
 
 <h2>The part the reviews left out</h2>
-<p>Every Ryzen AI Halo review published today told the truth: AMD's unified memory is compelling, the software needs work, and NVIDIA's CUDA moat is still real. What they missed is that the software gap has already been filled — not by AMD, not by a startup with VC funding and a cloud dependency, but by a <strong>38 KB, MIT-licensed binary written by one person in 4 days</strong>.</p>
+<p>Every Ryzen AI Halo review published today told the truth: AMD's unified memory is compelling, the software needs work, and NVIDIA's CUDA moat is still real. What they missed is that the software gap has already been filled — not by AMD, not by a startup with VC funding and a cloud dependency, but by a <strong>tiny, MIT-licensed binary written by one person in 4 days</strong>.</p>
 <blockquote>The Ryzen AI Halo is $4,000 of excellent hardware. 1bit.monster is the 401 KB key that unlocks it. <strong>291 tok/s on the NPU (26× AMD's stock runtime). 20W. MIT. No cloud.</strong> The reviews shipped this morning. The engine was ready last week.</blockquote>
 <p>Try it yourself:</p>
 <pre><span class="g">curl -sL https://1bit.monster/install.sh | bash</span>
@@ -204,6 +169,6 @@ curl localhost:8081/v1/chat/completions \
 <h3>Links</h3>
 <ul><li><a href="https://1bit.monster">1bit.monster</a></li><li><a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a></li><li><a href="https://www.phoronix.com/review/amd-ryzen-ai-halo">Phoronix review</a></li><li><a href="https://www.xda-developers.com/review-amd-ryzen-ai-halo/">XDA review</a></li><li><a href="https://www.servethehome.com/amd-ryzen-ai-halo-developer-system-review-amd-goes-for-local-ai/">ServeTheHome review</a></li></ul>
 </article>
-<div class="foot wrap"><a href="/">← back to 1bit.monster</a> · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub</a> · MIT</div>
+<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."</footer>
 </body>
 </html>

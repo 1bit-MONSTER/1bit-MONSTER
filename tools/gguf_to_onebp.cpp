@@ -1,6 +1,7 @@
 /** gguf_to_onebp.cpp — Convert GGUF models to 1BP format.
  *  Build target: `gguf_to_onebp` (see CMakeLists.txt) — pure C++, no Python.
- *  Run:   ./build/gguf_to_onebp model.gguf output.1bp          (Q4NX 4-bit)
+ *  Run:   ./build/gguf_to_onebp model.gguf output.1bp          (F16 lossless default)
+ *         ./build/gguf_to_onebp model.gguf output.1bp --q4nx   (4-bit — lossy, GPU decode degrades)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq2    (symmetric ternary)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq2nz  (no-zero 2-bit S40)
  *         ./build/gguf_to_onebp model.gguf output.1bp --tq1    (1.58-bit base-3)
@@ -19,6 +20,21 @@
 #include "block_scaled_ternary.h"
 #include <signal.h>
 #include "gguf_reader.h"
+
+// f32 → IEEE half (round-to-nearest-even via the standard bit trick)
+static inline uint16_t f32_to_f16(float f) {
+    uint32_t x; memcpy(&x, &f, 4);
+    uint32_t s = (x >> 16) & 0x8000;
+    int32_t e = (int32_t)((x >> 23) & 0xff) - 127 + 15;
+    uint32_t m = x & 0x7fffff;
+    if (e >= 31) return (uint16_t)(s | 0x7c00);            // inf/nan
+    if (e <= 0) {                                            // subnormal/zero
+        if (e < -10) return (uint16_t)s;
+        m = (m | 0x800000) >> (1 - e);
+        return (uint16_t)(s | (m >> 13));
+    }
+    return (uint16_t)(s | ((uint32_t)e << 10) | (m >> 13));
+}
 
 static void sigfpe_handler(int sig) {
 #ifdef _WIN32
@@ -81,11 +97,14 @@ static bool load_imatrix_dat(const char* path,
 int main(int argc, char** argv) {
     //signal(SIGFPE, sigfpe_handler);
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s input.gguf output.1bp [--tq2 | --tq2nz | --tq2nz-e4m3 | --tq1] [--imatrix file.dat]\n", argv[0]);
+        fprintf(stderr, "Usage: %s input.gguf output.1bp [--q4nx | --tq2 | --tq2nz | --tq2nz-e4m3 | --tq1] [--imatrix file.dat]\n", argv[0]);
+        fprintf(stderr, "  default: F16 (lossless half-precision — required for correct GPU decode;\n");
+        fprintf(stderr, "           the 4-bit Q4NX path loses ~0.998/layer which compounds into\n");
+        fprintf(stderr, "           garbage logits over deep models, e.g. Qwen2.5-0.5B)\n");
         return 1;
     }
-    // --- Parse quant selection (Q4NX default, --tq2 for symmetric ternary, --tq1 for 1.58-bit) ---
-    OnebpQuant quant = ONEBP_Q4NX;
+    // --- Parse quant selection (F16 lossless default; explicit quants opt in to lossy paths) ---
+    OnebpQuant quant = ONEBP_F16;
     std::string imatrix_path;
     for (int ai = 3; ai < argc; ai++) {
         if (strcmp(argv[ai], "--tq2") == 0)       quant = ONEBP_TQ2;
@@ -93,6 +112,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[ai], "--tq2nz-e4m3") == 0) quant = ONEBP_TQ2NZ_E4M3;
         else if (strcmp(argv[ai], "--tq2bs") == 0) quant = ONEBP_TQ2BS;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
+        else if (strcmp(argv[ai], "--f16") == 0)  quant = ONEBP_F16;  // lossless half-precision (no quant)
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
         else if (strcmp(argv[ai], "--imatrix") == 0 && ai + 1 < argc) imatrix_path = argv[++ai];
         else { fprintf(stderr, "Unknown option: %s\n", argv[ai]); return 1; }
@@ -107,6 +127,7 @@ int main(int argc, char** argv) {
                              (quant == ONEBP_TQ2NZ_E4M3) ? "TQ2NZ-E4M3 (no-zero 2-bit, UE4M3 scales)" :
                              (quant == ONEBP_TQ2BS) ? "TQ2BS (block-scaled ternary, FP8 scales)" :
                              (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
+                             (quant == ONEBP_F16) ? "F16 (float16, lossless)" :
                              "Q4NX (4-bit)";
     GgufReader reader;
     if (!reader.open(argv[1])) {
@@ -466,6 +487,12 @@ int main(int argc, char** argv) {
             if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
                 (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
                 tq = ONEBP_Q4NX;
+            // NOTE: 4-bit Q4NX of ANY tensor class (attention or FFN) loses
+            // ~0.99+/layer and compounds into incoherent logits on deep
+            // models — per-tensor F16 routing was tried and still failed
+            // (the FFN alone breaks it). F16 is the correct default;
+            // --q4nx is a compact opt-in for shallow/quantization-tolerant
+            // models only.
             uint64_t tiled = onebp_tiled_size(r, c, tr, tc, gs, tq);
             tensors.push_back({tn, 2, r, c, 1, 0, tiled, tq});
             if (tensors.size() <= 3 || tn.find("shexp") != std::string::npos)
@@ -886,6 +913,24 @@ int main(int argc, char** argv) {
                                 packed += (uint8_t)(code * tq1_pow3[i]);
                             }
                             qd[rr * tq1_grps + g] = packed;
+                        }
+                    }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
+                if (ti.tq == ONEBP_F16) {
+                    // ── F16: lossless half-precision tiles (2 B/elem) ──
+                    // Full f32→f16 round-trip of the source weights: no
+                    // quantization loss, so 24-layer models don't compound
+                    // 4-bit error into garbage logits (issue: Qwen2.5-0.5B
+                    // Q4NX repack ~0.998/layer → incoherent decode).
+                    std::vector<uint8_t> tdata((size_t)tr * tc * 2, 0);
+                    uint16_t* td = (uint16_t*)tdata.data();
+                    for (int rr = 0; rr < tr; rr++) {
+                        for (int cc = 0; cc < tc; cc++) {
+                            int ar = r0 + rr, ac = c0 + cc;
+                            if (ar < R && ac < C)
+                                td[(size_t)rr * tc + cc] = f32_to_f16(fw[expert_off + (size_t)ar * C + ac]);
                         }
                     }
                     fwrite(tdata.data(), 1, tdata.size(), fout);
