@@ -26,11 +26,17 @@ repo now has one through-line: **the engine, and the app that proves it.**
 
 ## Now (P0)
 
+> Status verified 2026-08-20 against `origin/main` and the strixhalo build. Canonical roadmap: [docs/guides/roadmap.md](docs/guides/roadmap.md).
+
 - [ ] WS-11: instrument the NPU weight path — where bytes are copied per
       token on the Qwen3-0.6B q4nx decode
-- [ ] WS-09: land the single router (retire `cascade` + `unified-router.py`)
-- [ ] JARVIS P1: whisper on the engine (`whisper_kernels.hip` wired into
-      the forward pass) — the blocker for JARVIS as a daily driver
+- [x] WS-09: land the single router — the `router` subcommand ships in
+      `build/1bit` (#1397); the standalone `cascade` router was retired into a
+      routing strategy (`src/strategy_engine.cpp`); `unified-router.py` removed
+- [x] JARVIS P1: whisper STT on the engine — GPU path landed 2026-08-06
+      (`src/whisper_hip.hip`); JARVIS NPU STT via the NPU-FLM whisper endpoint
+      2026-08-10; remaining: route whisper through the engine's own NPU
+      backend (see `docs/jarvis.md` P1)
 
 ## Next (P1)
 

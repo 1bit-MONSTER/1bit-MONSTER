@@ -33,7 +33,7 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 
 That is the whole install. One engine, no runtime, no virtualenv, no Python.
 
-| 100% | 32 | 25 | 6 | 0 |
+| 100% | 552 | 32 | 6 | 0 |
 |:---:|:--:|:--:|:-:|:-:|
 | HF checkpoints covered | arch tokens | families in manifest | hardware targets | Python in the runtime |
 
@@ -41,7 +41,7 @@ That is the whole install. One engine, no runtime, no virtualenv, no Python.
 
 Point it at a model and run. The engine reads **GGUF**, **ONNX**, and the native **1BP** format, detects the architecture, and picks a kernel path — no config files, no per-model glue, no conversion step you have to babysit.
 
-Coverage does not come from porting models one at a time. It comes from the architecture class: 32 arch tokens map 120+ HF architecture strings — roughly 50 classes cover the long tail of what HuggingFace hosts, and a class that works brings its whole family with it. The registry is measured against a full HF census: **317,310 / 317,310 arch-bearing text-gen checkpoints (100.00%) map to an engine token** (`Testing/census_coverage.py` regenerates the count from the actual committed mapping).
+Coverage does not come from porting models one at a time. It comes from the architecture class: 552 arch tokens map 1,774 HF architecture strings, grouped into 32 manifest families — a family that works brings its whole arch-string set with it. The registry is measured against a full HF census: **317,310 / 317,310 arch-bearing text-gen checkpoints (100.00%) map to an engine token** (`Testing/census_coverage.py` regenerates the count from the actual committed mapping).
 
 The full-catalog end state — 500+ models, HuggingFace-native bring-up — is planned in **[docs/plans/monster-500-models.md](docs/plans/monster-500-models.md)**. The [models SSOT](docs/wiki/models.md) is the single source of truth for coverage; the [roadmap](docs/guides/roadmap.md) tracks the remaining gap (glm4/cohere2/lfm2 hybrid families, encoder-decoder T5/BART out of scope, ~2,000 one-off custom classes).
 

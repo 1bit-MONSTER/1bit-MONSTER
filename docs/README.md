@@ -18,7 +18,7 @@ Pure C++23, zero Python at runtime, MIT.
 
 ## Model families
 
-1bit auto-detects 19 architectures. Each family has a dedicated page with full data (params, 1BP size, backends, measured perf) — start at the **[model-families index](model-families/README.md)**. The [Zyphra family](model-families/zyphra.md) is the featured end-to-end ecosystem; [wiki/models.md](wiki/models.md) remains the combined support SSOT.
+1bit auto-detects 552 architecture tokens (1,774 HF arch strings in `rcpp_arch_from_string`). Each family has a dedicated page with full data (params, 1BP size, backends, measured perf) — start at the **[model-families index](model-families/README.md)**. The [Zyphra family](model-families/zyphra.md) is the featured end-to-end ecosystem; [wiki/models.md](wiki/models.md) remains the combined support SSOT.
 
 ## Guides & platform
 
