@@ -428,8 +428,11 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
     double sum=0;
     #pragma omp parallel for reduction(+:sum)
     for(int n=0;n<NV;n++){float d=lg[n]-mx;if(d<-80)d=-80;lg[n]=expf(d);sum+=lg[n];}
-    float r=(float)rand()/RAND_MAX*(float)sum,acc=0;
-    for(int n=0;n<NV;n++){acc+=lg[n];if(acc>=r){top_ids[0]=n;break;}}
+    // #1699 diagnostic: NPU_GREEDY=1 forces argmax (skip the rand() sample)
+    if (!getenv("NPU_GREEDY")) {
+        float r=(float)rand()/RAND_MAX*(float)sum,acc=0;
+        for(int n=0;n<NV;n++){acc+=lg[n];if(acc>=r){top_ids[0]=n;break;}}
+    }
     struct TI{int id;float v;};TI top[32];
     for(int b=0;b<K;b++){top[b].id=-1;top[b].v=-1e30f;}
     for(int n=0;n<NV;n++){float v=lg[n];for(int b=0;b<K;b++){if(v>top[b].v){memmove(&top[b+1],&top[b],(K-1-b)*sizeof(TI));top[b].id=n;top[b].v=v;break;}}}
@@ -509,10 +512,10 @@ int main(int argc,char**argv){
     #endif
         cfg = parse_q4nx_header(mp,model_tag.c_str());
 
-    if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config\n");return 1;}
+    if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);return 1;}
     int H=cfg.H,NC=cfg.NC,NH=cfg.NH,NKV=cfg.NKV,HD=cfg.HD,IM=cfg.IM,NV=cfg.NV,GQA=cfg.GQA,XM=cfg.XM;
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
-    fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split);
+    fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
 
     // Open model
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);
@@ -881,6 +884,9 @@ int main(int argc,char**argv){
 #define FLM_PACKB(ctx, ...)      (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx.packB(__VA_ARGS__))
 #define FLM_LAUNCH_ASYNC(ctx, ...)  (flm_xclbin_available ? h##ctx->launch_async(__VA_ARGS__) : ctx.launch_async(__VA_ARGS__))
 #define FLM_FINISH_ASYNC(ctx, ...)  (flm_xclbin_available ? h##ctx->finish_async(__VA_ARGS__) : ctx.finish_async(__VA_ARGS__))
+#define FLM_LAUNCH_ASYNC_ROWS(ctx, ...) (flm_xclbin_available ? h##ctx->launch_async_rows(__VA_ARGS__) : ctx.launch_async_rows(__VA_ARGS__))
+#define FLM_FINISH_ASYNC_ROWS(ctx, ...) (flm_xclbin_available ? h##ctx->finish_async_rows(__VA_ARGS__) : ctx.finish_async_rows(__VA_ARGS__))
+#define FLM_GO_ROWS(ctx, ...) (flm_xclbin_available ? h##ctx->go_rows(__VA_ARGS__) : ctx.go_rows(__VA_ARGS__))
 #define FLM_LAUNCH(ctx, ...)     (flm_xclbin_available ? h##ctx->launch(__VA_ARGS__) : ctx.launch(__VA_ARGS__))
 #define FLM_QUANTIZE_ASYNC(ctx, ...) (flm_xclbin_available ? h##ctx->quantize_async(__VA_ARGS__) : ctx.quantize_async(__VA_ARGS__))
 #define FLM_SYNC_AND_LAUNCH(ctx, ...) (flm_xclbin_available ? h##ctx->sync_and_launch(__VA_ARGS__) : ctx.sync_and_launch(__VA_ARGS__))
@@ -892,6 +898,7 @@ int main(int argc,char**argv){
 #define FLM_IS_READY(ctx)        (flm_xclbin_available ? h##ctx->isReady() : ctx.isReady())
 // Unique_ptr variants (for cu_ptr which uses -> instead of .)
 #define FLM_GO_PTR(ctx, ...)         (flm_xclbin_available ? h##ctx->go(__VA_ARGS__) : ctx->go(__VA_ARGS__))
+#define FLM_GO_ROWS_PTR(ctx, ...)   (flm_xclbin_available ? h##ctx->go_rows(__VA_ARGS__) : ctx->go_rows(__VA_ARGS__))
 #define FLM_PACKB_PTR(ctx, ...)      (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx->packB(__VA_ARGS__))
 #define FLM_SYNC_AND_LAUNCH_PTR(ctx, ...) (flm_xclbin_available ? h##ctx->sync_and_launch(__VA_ARGS__) : ctx->sync_and_launch(__VA_ARGS__))
 #define FLM_DEQUANTIZE_PTR(ctx, ...) (flm_xclbin_available ? h##ctx->dequantize(__VA_ARGS__) : ctx->dequantize(__VA_ARGS__))
@@ -1034,7 +1041,17 @@ int main(int argc,char**argv){
             transpose_pack(qkv_w, qr, H, w.data(), t, 0);          // Q
             transpose_pack(kw, kr, H, w.data(), t, qr);             // K
             transpose_pack(vw, vr, H, w.data(), t, qr + kr);        // V
-            FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+            // Per-section weight scales (fix #1699): llama's v_proj rms is
+            // ~4x smaller than q/k, so one shared scale packs v onto ~10 int8
+            // levels (~5% output error). q/k/v are packed with their own
+            // scales and the QKV dequant applies them per section.
+            if (flm_xclbin_available) {
+                FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+            } else {
+                if ((int)cq.sec_scales.size() < NC) cq.sec_scales.resize(NC);
+                cq.pack_qkv_sec(l, w.data(), H, t, qr, kr, cq.sec_scales[l]);
+                cq.sec_n0 = qr; cq.sec_n1 = kr;
+            }
             free(kw); free(vw);
         } else {
         // Standard layer: q nh×hd + output gate nh×hd fused in q_proj
@@ -2595,8 +2612,9 @@ int main(int argc,char**argv){
                                 double sq = 0;
                                 for (int d = 0; d < HD; d++) sq += (double)fqo[hh * HD + d] * fqo[hh * HD + d];
                                 float iq = 1.0f / sqrtf((float)(sq / HD) + EPS);
-                                for (int d = 0; d < HD; d++)
-                                    fqo[hh * HD + d] *= iq * (cfg.has_q_norm ? qn_w[l][d] : 1.0f);
+                                if (cfg.has_q_norm)  // #1699
+                                    for (int d = 0; d < HD; d++)
+                                        fqo[hh * HD + d] *= iq * qn_w[l][d];
                                 ra(&fqo[hh * HD], HD, fuse_pos[slot]);
                                 if (hh % GQA == 0) {
                                     int kvh = hh / GQA;
@@ -2604,8 +2622,9 @@ int main(int argc,char**argv){
                                     double sk = 0;
                                     for (int d = 0; d < HD; d++) sk += (double)ks[d] * ks[d];
                                     float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
-                                    for (int d = 0; d < HD; d++)
-                                        ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
+                                    if (cfg.has_k_norm)  // #1699
+                                        for (int d = 0; d < HD; d++)
+                                            ks[d] *= ik * kn_w[l][d];
                                     ra(ks, HD, fuse_pos[slot]);
                                     float* vs = &fqo[cfg.qkv_v_offset + kvh * HD];
                                     memcpy(&fuse_kv[slot][l].k[(size_t)fuse_pos[slot] * NKV * HD + (size_t)kvh * HD], ks, HD * 4);
@@ -2737,11 +2756,21 @@ int main(int argc,char**argv){
         // Save pre-norm residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l].data(),H);
-        // Phase 1: Launch QKV on NPU
-        float qkv_ascale=dynamic_ascale(h_b.data(),npt*H);
-        auto r_qkv=FLM_LAUNCH_ASYNC(cq,l,h_b.data(),npt,H,qkv_ascale);
-        // Phase 2: Wait QKV + dequant (CPU attention runs after)
-        FLM_FINISH_ASYNC(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascale,qsc[l],l);cn(qo_b.data(),npt*qkv_n);
+        // Phase 1: Launch QKV on NPU with PER-TOKEN ascales (fix #1699: the
+        // shared batch scale let one large-magnitude token zero-out the others
+        // through int8 quantization — 0.6B prefill: pos0 su max ~3671 vs
+        // pos1-3 max ~5 -> rows 1-3 became all-zero int8 and the D GEMM
+        // emitted zeros, destroying every non-first prompt position).
+        std::vector<float> qkv_ascales(npt);
+        for (int pi = 0; pi < npt; pi++) qkv_ascales[pi] = dynamic_ascale(&h_b[pi * H], H);
+        auto r_qkv=FLM_LAUNCH_ASYNC_ROWS(cq,l,h_b.data(),npt,H,qkv_ascales.data());
+        // Phase 2: Wait QKV + dequant (CPU attention runs after) — per-section
+        // scales when the QKV ctx was packed that way
+        if (!flm_xclbin_available && l < (int)cq.sec_scales.size() && cq.sec_scales[l].size() == 3)
+            cq.dequant_qkv_rows(r_qkv, qo_b.data(), npt, qkv_n, qkv_ascales.data(), l);
+        else
+            FLM_FINISH_ASYNC_ROWS(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascales.data(),qsc[l],l);
+        cn(qo_b.data(),npt*qkv_n);
         fprintf(stderr,"q");fflush(stderr);
         // ── per-layer attention (#1472): GDN is sequential (conv + delta rule);
         // full-attn layers use CPU k/v + per-layer dims; other models keep the
@@ -2766,8 +2795,9 @@ int main(int argc,char**argv){
                     double s = 0;
                     for (int d = 0; d < HD; d++) s += (double)qo_b[pi * qkv_n + hh * HD + d] * qo_b[pi * qkv_n + hh * HD + d];
                     float iq = 1.0f / sqrtf((float)(s / HD) + EPS);
-                    for (int d = 0; d < HD; d++)
-                        qo_b[pi * qkv_n + hh * HD + d] *= iq * (cfg.has_q_norm ? qn_w[l][d] : 1.0f);
+                    if (cfg.has_q_norm)  // #1699: RMS-normalize q only when the arch has q_norm (Qwen/Gemma); llama does not
+                        for (int d = 0; d < HD; d++)
+                            qo_b[pi * qkv_n + hh * HD + d] *= iq * qn_w[l][d];
                     ra(&qo_b[pi * qkv_n + hh * HD], HD, sp + pi);
                 }
                 for (int kvh = 0; kvh < NKV; kvh++) {
@@ -2776,7 +2806,8 @@ int main(int argc,char**argv){
                     double sk = 0;
                     for (int d = 0; d < HD; d++) sk += (double)ks[d] * ks[d];
                     float ik = 1.0f / sqrtf((float)(sk / HD) + EPS);
-                    for (int d = 0; d < HD; d++) ks[d] *= ik * (cfg.has_k_norm ? kn_w[l][d] : 1.0f);
+                    if (cfg.has_k_norm)  // #1699: same as q_norm — skip for llama
+                        for (int d = 0; d < HD; d++) ks[d] *= ik * kn_w[l][d];
                     ra(ks, HD, sp + pi);
                     memcpy(&kv_caches[l][0].k[(sp + pi) * NKV * HD + kvh * HD], ks, HD * 4);
                     memcpy(&kv_caches[l][0].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
@@ -2789,9 +2820,10 @@ int main(int argc,char**argv){
                          kv_caches[l][0].k.data(), kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
             }
         }
-        // O GEMM (batched) + residual
-        float o_ascale=dynamic_ascale(at_b.data(),npt*NH*HD);
-        FLM_GO(co,l,at_b.data(),npt,NH*HD,o_ascale,osc[l],oo_b.data(),H);
+        // O GEMM (batched) + residual — per-token ascales
+        std::vector<float> o_ascales(npt);
+        for (int pi = 0; pi < npt; pi++) o_ascales[pi] = dynamic_ascale(&at_b[pi * NH * HD], NH * HD);
+        FLM_GO_ROWS(co,l,at_b.data(),npt,NH*HD,o_ascales.data(),o_ascales.data(),osc[l],oo_b.data(),H);
         cn(oo_b.data(),npt*H);
         fprintf(stderr,"o");fflush(stderr);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
@@ -2825,14 +2857,18 @@ int main(int argc,char**argv){
             for (int pi = 0; pi < npt; pi++) cn(&dw_b[pi * H], H);
         } else {
         int mlp_out=cfg.gu_split?IM:2*IM;
-        float gu_ascale=dynamic_ascale(h_b.data(),npt*H);
-        auto r_gu=FLM_LAUNCH_ASYNC(cg,l,h_b.data(),npt,H,gu_ascale);
-        FLM_FINISH_ASYNC(cg,r_gu,gt_b.data(),npt,mlp_out,gu_ascale,gsc[l],l);cn(gt_b.data(),npt*mlp_out);
+        std::vector<float> gu_ascales(npt);
+        for (int pi = 0; pi < npt; pi++) gu_ascales[pi] = dynamic_ascale(&h_b[pi * H], H);
+        auto r_gu=FLM_LAUNCH_ASYNC_ROWS(cg,l,h_b.data(),npt,H,gu_ascales.data());
+        FLM_FINISH_ASYNC_ROWS(cg,r_gu,gt_b.data(),npt,mlp_out,gu_ascales.data(),gsc[l],l);cn(gt_b.data(),npt*mlp_out);
         fprintf(stderr,"g");fflush(stderr);
-        if(cfg.gu_split){FLM_GO_PTR(cu_ptr,l,h_b.data(),npt,H,dynamic_ascale(h_b.data(),npt*H),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
+        if(cfg.gu_split){FLM_GO_ROWS_PTR(cu_ptr,l,h_b.data(),npt,H,gu_ascales.data(),gu_ascales.data(),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
         else{for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[pi*mlp_out+IM+i];}}}
-        fprintf(stderr,"d");fflush(stderr);FLM_GO(cd,l,su_b.data(),npt,IM,dynamic_ascale(su_b.data(),npt*IM),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
+        fprintf(stderr,"d");fflush(stderr);
+        std::vector<float> d_ascales(npt);
+        for (int pi = 0; pi < npt; pi++) d_ascales[pi] = dynamic_ascale(&su_b[pi * IM], IM);
+        FLM_GO_ROWS(cd,l,su_b.data(),npt,IM,d_ascales.data(),d_ascales.data(),dsc[l],dw_b.data(),H);cn(dw_b.data(),npt*H);
         }
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
@@ -2840,7 +2876,7 @@ int main(int argc,char**argv){
         // position) after every layer, appended (40 x H floats).
         if (const char* dh = getenv("NPU_DUMP_HIDDEN")) {
             FILE* df = fopen(dh, "ab");
-            if (df) { fwrite(h_b.data(), 4, H, df); fclose(df); }
+            if (df) { fwrite(h_b.data(), 4, (size_t)npt * H, df); fclose(df); }
         }
         fprintf(stderr,"\n");fflush(stderr);
     }sp+=npt;memcpy(h_data.data(),&h_b[(npt-1)*H],H*4);
@@ -2858,55 +2894,26 @@ int main(int argc,char**argv){
     // (fixes #95). total_verified tracks all tokens processed.
     std::vector<int> top_ids_v(BS, 0);int* top_ids=top_ids_v.data();int total_generated=0,total_verified=0,n_batches=0;double t_boot=0;
 
-    // Boot: single-token decode → top-32 token IDs
+    // Boot: first generated token — predicted directly from the prefill's
+    // final hidden (the last prompt position), i.e. standard causal-LM decode.
+    // (fix for #1699: the old code re-ran a phantom position-N forward with
+    // the previous hidden as input, which predicts the SECOND next token as
+    // the first and emits garbage while prefill logits were already correct.)
     {
         auto ts_boot=std::chrono::steady_clock::now();
-        float h0[H];memcpy(h0,h_data.data(),H*4);
-        for(int l=0;l<NC;l++){
-            memcpy(sb_data.data(),h0,H*4);rn_c(h0,in_n[l].data(),H);
-            FLM_GO(cq,l,h0,1,H,dynamic_ascale(h0,H),qsc[l],qo_data.data(),qkv_n);cn(qo_data.data(),qkv_n);
-            // per-layer attention (#1472): GDN / full-attn (MoE) / global-dims
-            if (is_gdn_layer[l]) {
-                gdn_attn_step(l, h0, qo_data.data(),
-                              dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
-                              dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
-                              at_data.data());
-            } else if (has_moe) {
-                int pos = sp;
-                std_attn_step(l, h0, qo_data.data(), kv_caches[l][0], pos, at_data.data());
-            } else {
-                memcpy(ko_data.data(),&qo_data[cfg.qkv_k_offset],(size_t)NKV*HD*4);memcpy(vo_data.data(),&qo_data[cfg.qkv_v_offset],(size_t)NKV*HD*4);
-                float*qn=qn_w[l].data(),*kn=kn_w[l].data();
-                for(int hh=0;hh<NH;hh++){double sq=0;for(int d=0;d<HD;d++)sq+=(double)qo_data[hh*HD+d]*qo_data[hh*HD+d];float iq=1.0f/sqrtf((float)(sq/HD)+EPS);
-                    for(int d=0;d<HD;d++)qo_data[hh*HD+d]*=iq*(cfg.has_q_norm?qn[d]:1.0f);ra(&qo_data[(size_t)hh*HD],HD,sp);
-                    if(hh%GQA==0){int kvh=hh/GQA;double sk=0;for(int d=0;d<HD;d++)sk+=(double)ko_data[kvh*HD+d]*ko_data[kvh*HD+d];float ik=1.0f/sqrtf((float)(sk/HD)+EPS);
-                    for(int d=0;d<HD;d++)ko_data[kvh*HD+d]*=ik*(cfg.has_k_norm?kn[d]:1.0f);ra(&ko_data[(size_t)kvh*HD],HD,sp);
-                    memcpy(&kv_caches[l][0].k[sp*NKV*HD+kvh*HD],&ko_data[(size_t)kvh*HD],HD*4);memcpy(&kv_caches[l][0].v[sp*NKV*HD+kvh*HD],&vo_data[(size_t)kvh*HD],HD*4);}}
-                kv_caches[l][0].n=sp+1;
-                attn_omp(qo_data.data(),at_data.data(),kv_caches[l][0].n,kv_caches[l][0].k.data(),kv_caches[l][0].v.data(),NH,NKV,HD,GQA);
-            }
-            FLM_GO(co,l,at_data.data(),1,NH*HD,dynamic_ascale(at_data.data(),NH*HD),osc[l],oo_data.data(),H);cn(oo_data.data(),H);for(int i=0;i<H;i++)h0[i]=sb_data[i]+oo_data[i];
-            memcpy(sb_data.data(),h0,H*4);rn_c(h0,pa_n[l].data(),H);
-            if (has_moe && exp_off[l].gate) {
-                if (use_npu_moe && mgu && mgu->isReady()) moe_ffn_npu(h0, dwo_data.data(), l);
-                else moe_ffn_cpu(h0, dwo_data.data(), l);
-                cn(dwo_data.data(), H);
-            } else {
-            int mlp_out=cfg.gu_split?IM:2*IM;
-            FLM_GO(cg,l,h0,1,H,dynamic_ascale(h0,H),gsc[l],gt_data.data(),mlp_out);cn(gt_data.data(),mlp_out);
-            if(cfg.gu_split){FLM_GO_PTR(cu_ptr,l,h0,1,H,dynamic_ascale(h0,H),usc[l],su_data.data(),IM);cn(su_data.data(),IM);
-                for(int i=0;i<IM;i++){float gv=gt_data[i];if(!std::isfinite(gv))gv=0;su_data[i]=(gv/(1.0f+expf(-gv)))*su_data[i];}}
-            else{for(int i=0;i<IM;i++){float gv=gt_data[i];if(!std::isfinite(gv))gv=0;su_data[i]=(gv/(1.0f+expf(-gv)))*gt_data[IM+i];}}
-            FLM_GO(cd,l,su_data.data(),1,IM,dynamic_ascale(su_data.data(),IM),dsc[l],dwo_data.data(),H);cn(dwo_data.data(),H);
-            }
-            for(int i=0;i<H;i++)h0[i]=sb_data[i]+dwo_data[i];
-        }
-        memcpy(sb_data.data(),h0,H*4);rn_c(sb_data.data(),fin_v.data(),H);
+        memcpy(sb_data.data(),h_data.data(),H*4);rn_c(sb_data.data(),fin_v.data(),H);
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
-        memcpy(h_data.data(),h0,H*4);sp++;total_generated++;
+        if (getenv("NPU_DEBUG_BOOT")) {
+            fprintf(stderr, "  [boot-debug] top-5 ids:");
+            for (int b = 0; b < 5 && b < BS; b++) fprintf(stderr, " %d", top_ids[b]);
+            fprintf(stderr, "\n");
+        }
+        total_generated++;
         t_boot=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ts_boot).count();
-        // True batch: replicate the prompt+boot KV and first token to all
+        // True batch: replicate the prompt KV and first token to all
         // sequences (identical shared prompt -> identical first tokens).
+        // sp stays at npt — the first batch decode writes the boot token at
+        // position npt (the prefill KV holds positions 0..npt-1).
         for (int l = 0; l < NC; l++)
             for (int b = 1; b < BS; b++) kv_caches[l][b] = kv_caches[l][0];
         for (int b = 1; b < BS; b++) top_ids[b] = top_ids[0];
@@ -2916,8 +2923,15 @@ int main(int argc,char**argv){
     int step=1;
     while(step<ng){
         auto ts_batch=std::chrono::steady_clock::now();
-        int batch_size=std::min(BS,ng-step);
-        for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=emb_f32[(size_t)top_ids[b]*H+i];
+        // #1699: sequential decode — one token per step. The old
+        // batch_size=min(BS,ng-step) decoded every candidate at the SAME
+        // position from identical contexts (all sequences replicate the boot
+        // token), so with greedy it emitted the same token 7 times and with
+        // sampling it emitted 7 independent samples of one distribution —
+        // neither is a valid token stream. Each step embeds the previous
+        // token and advances the position by one.
+        int batch_size=1;
+        for(int b=0;b<batch_size;b++)for(int i=0;i<H;i++)h_b[b*H+i]=emb_f32[(size_t)top_ids[0]*H+i];
         if (has_moe) {
             // Serial per-layer path for MoE models (#1472): the pipelined
             // QKV∥GU∥D structure assumes the standard MLP; the MoE FFN is
@@ -3003,7 +3017,11 @@ int main(int argc,char**argv){
             int mlp_out=cfg.gu_split?IM:2*IM;
 
             // ── QKV: wait + readback + dequant ──
-            FLM_DEQUANTIZE(cq,r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l],l);
+            if (!flm_xclbin_available && l < (int)cq.sec_scales.size() && cq.sec_scales[l].size() == 3) {
+                std::vector<float> dsc_b(batch_size, cq_ascale);
+                cq.dequant_qkv_rows(r_cq, qo_b.data(), batch_size, qkv_n, dsc_b.data(), l);
+            } else
+                FLM_DEQUANTIZE(cq,r_cq,qo_b.data(),batch_size,qkv_n,cq_ascale,qsc[l],l);
             cn(qo_b.data(),batch_size*qkv_n);
 
             // ── Attention + RoPE + KV cache ──

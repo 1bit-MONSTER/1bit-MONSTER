@@ -319,6 +319,67 @@ struct I8Ctx {
 
     inline void wait_kernel(xrt::run& r) { r.wait(); }
 
+    // Per-section output scales for the fused QKV GEMM (fix #1699: llama
+    // v_proj rms ~0.007 vs q/k ~0.02-0.03 — a single weight scale packs the
+    // small v section onto ~10 int8 levels, ~5% output error that compounds
+    // over 32 layers and flips the final token). When sec_scales is set
+    // (size 3: [ts_q, ts_k, ts_v]), dequant_qkv_rows applies each section's
+    // scale; sec_n0/sec_n1 are the q/k output lengths.
+    std::vector<std::vector<float>> sec_scales;  // per-layer [ts_q, ts_k, ts_v]
+    int sec_n0 = 0, sec_n1 = 0;
+
+    inline bool pack_qkv_sec(int l, const float* w, int K, int N,
+                             int nq, int nk, std::vector<float>& out_scales) {
+        auto* Bm = (int8_t*)layerB[l]->map();
+        memset(Bm, 0, (size_t)KD * ND);
+        auto pack_sec = [&](int j0, int j1, float& ts) {
+            float amax = 0;
+            for (int j = j0; j < j1; j++)
+                for (int i = 0; i < K; i++) {
+                    float a = fabsf(w[(size_t)i * N + j]);
+                    if (std::isfinite(a) && a > amax) amax = a;
+                }
+            if (amax < 1e-12f) amax = 1.0f;
+            ts = amax / 127.0f;
+            float tis = 127.0f / amax;
+            for (int j = j0; j < j1; j++)
+                for (int i = 0; i < K; i++) {
+                    float v = w[(size_t)i * N + j];
+                    if (!std::isfinite(v)) v = 0;
+                    int x = (int)roundf(v * tis);
+                    if (x > 127) x = 127;
+                    else if (x < -127) x = -127;
+                    Bm[(size_t)i * ND + j] = (int8_t)x;
+                }
+        };
+        float tsq = 0, tsk = 0, tsv = 0;
+        pack_sec(0, nq, tsq);
+        pack_sec(nq, nq + nk, tsk);
+        pack_sec(nq + nk, N, tsv);
+        layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        out_scales = { tsq, tsk, tsv };
+        return true;
+    }
+
+    inline void dequant_qkv_rows(xrt::run& r, float* C, int am, int an,
+                                 const float* ascales, int layer = -1) {
+        r.wait();
+        readback();
+        if (layer >= 0 && (size_t)layer < sec_scales.size() && sec_scales[layer].size() == 3 && sec_n0 + sec_n1 < an) {
+            const std::vector<float>& ss = sec_scales[layer];
+            for (int m = 0; m < am; m++) {
+                float cs = ascales[m];
+                const int32_t* src = Cm + (size_t)m * ND;
+                float* dst = C + (size_t)m * an;
+                for (int n = 0; n < sec_n0; n++) dst[n] = (float)src[n] * (cs * ss[0]);
+                for (int n = 0; n < sec_n1; n++) dst[sec_n0 + n] = (float)src[sec_n0 + n] * (cs * ss[1]);
+                for (int n = sec_n0 + sec_n1; n < an; n++) dst[n] = (float)src[n] * (cs * ss[2]);
+            }
+        } else {
+            dequant_only_rows(C, am, an, ascales, 0, layer);
+        }
+    }
+
     // ── Readback + dequantize output ──
     inline void readback() { bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE); }
 
@@ -413,6 +474,26 @@ struct I8Ctx {
                                  float ascale) {
         quantize_async(A, am, ak, ascale);
         return sync_and_launch(l);
+    }
+
+    // Async launch with per-row activation scales (batched prefill fix,
+    // #1699): row m quantized with ascales_q[m]. Dequant must use the same
+    // per-row scales (finish_async_rows). Prevents the shared-batch ascale
+    // from zeroing low-magnitude rows when one token's activations dwarf the
+    // rest (Qwen3-0.6B: pos0 su max ~3671 vs pos1-3 max ~5 -> rows 1-3 were
+    // quantized to all-zero int8 and the D GEMM emitted zeros).
+    inline xrt::run launch_async_rows(int l, const float* A, int am, int ak,
+                                      const float* ascales_q) {
+        quantize_async_rows(A, am, ak, ascales_q);
+        return sync_and_launch(l);
+    }
+
+    inline void finish_async_rows(xrt::run& r, float* C, int am, int an,
+                                  const float* ascales, float Bscale,
+                                  int layer = -1) {
+        r.wait();
+        readback();
+        dequant_only_rows(C, am, an, ascales, Bscale, layer);
     }
 
     inline void finish_async(xrt::run& r, float* C, int am, int an,

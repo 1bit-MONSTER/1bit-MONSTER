@@ -195,10 +195,19 @@ class GGUFTensor:
         return w
 
     def get_used_quantization_type(self, default_tensor_type: GGMLQuantizationType) -> GGMLQuantizationType:
-        if self.tensor_type in [GGMLQuantizationType.F32, GGMLQuantizationType.F16, GGMLQuantizationType.BF16, GGMLQuantizationType.Q4_0, GGMLQuantizationType.Q4_1, GGMLQuantizationType.Q8_0, GGMLQuantizationType.MXFP4]:
+        # NOTE (1bit-MONSTER #1699): Q8_0 and Q4_0 are NOT safe to repack
+        # losslessly into Q4NX. The Q4NX tile is unsigned-asymmetric
+        # (value = nibble*scale + zp, nibble in [0,15]); Q8_0 int8 values
+        # truncate to their low 4 bits (garbage) and Q4_0 is signed-symmetric.
+        # Only Q4_1 repacks losslessly; everything else must be dequantized
+        # and re-quantized to the default type (Q4_1).
+        if self.tensor_type in [GGMLQuantizationType.F32, GGMLQuantizationType.F16,
+                                GGMLQuantizationType.BF16, GGMLQuantizationType.Q4_1,
+                                GGMLQuantizationType.MXFP4]:
             return self.tensor_type
         else:
-            # For unsupported types, we will dequantize and then quantize to default_tensor_type
+            # For unsupported types (incl. Q8_0/Q4_0), dequantize and re-quantize
+            # to default_tensor_type (Q4_1) so the Q4NX repack is correct.
             return default_tensor_type
 
     def unpack(self, default_tensor_type: GGMLQuantizationType) -> np.ndarray:
@@ -213,13 +222,13 @@ class GGUFTensor:
             return self.unpack_q4_0(self.data, self.shape[0])
         elif self.tensor_type == GGMLQuantizationType.Q4_1:
             return self.unpack_q4_1(self.data, self.shape[0])
-        elif self.tensor_type == GGMLQuantizationType.Q8_0:
-            return self.unpack_q8_0(self.data, self.shape[0])
         elif self.tensor_type == GGMLQuantizationType.MXFP4:
             return self.unpack_mxfp4(self.data, self.shape[0])
         else:
             """
-                If the tensor type is not supported, try to dequantize it and then quantize it back to Q4_1
+                If the tensor type is not supported (including Q8_0/Q4_0, whose
+                values cannot be losslessly repacked into the unsigned Q4NX
+                tile), dequantize it and then quantize it back to Q4_1.
                 This is a workaround for the fact that the GGUF format does not support all tensor types
                 and we need to convert it to a supported type before converting to Q4NX
             """
