@@ -91,7 +91,7 @@ jobs:
         run: |
           mkdir -p dist/bin dist/lib
           # One binary: every server + CLI (zaya, unified, router, jarvis,
-          # vision, gaia, onebitd, onebit) dispatched by subcommand.
+          # vision, onebitd, onebit) dispatched by subcommand.
           cp build/1bit dist/bin/
           # TUI frontend (separate binary, not folded into onebin)
           cp build/bitnet_tui dist/bin/ 2>/dev/null || true
@@ -180,7 +180,7 @@ jobs:
               - `1bit zaya` — C++ HIP inference engine + OpenAI-compatible server; `--lemonade` runs the embedded Lemonade server core in-process
               - `1bit unified` — multi-backend server with the **embedded Lemonade server core** (llama.cpp, FastFlowLM, whisper.cpp, stable-diffusion.cpp, kokoro, ryzenai-llm, vllm backends + policy router); `--lemonade` runs Lemonade's full server in-process
               - `1bit router` — NPU+GPU routing proxy; decisions run through Lemonade's policy engine (keyword classifier → GPU, default → NPU)
-              - `1bit jarvis` / `1bit vision` / `1bit gaia` / `1bit onebitd` — agent server, vision-language server, Gaia C++ agent loop, inference daemon
+              - `1bit jarvis` / `1bit vision` / `1bit onebitd` — agent server, vision-language server, inference daemon
             - `bitnet_tui` — C++ FTXUI terminal chat UI (separate binary)
             - `librocm_cpp.so` — ternary GEMV/GEMM HIP kernels
             - install script, docs, license

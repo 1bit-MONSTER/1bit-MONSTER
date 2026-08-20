@@ -6,7 +6,7 @@ engine (NPU + GPU + CPU, one binary)  →  JARVIS (voice assistant, reference ap
 
 Everything else was cut. Voice cloning (training, voice packs, marketplace,
 billing) was a personal quest — gutted from the repo. The agent stack
-(coding agent, RAG, planners, personas) is AMD Gaia's turf — gutted. The
+(coding agent, RAG, planners, personas) is a product layer, not the engine — gutted. The
 repo now has one through-line: **the engine, and the app that proves it.**
 
 ## Pillars
@@ -61,7 +61,7 @@ repo now has one through-line: **the engine, and the app that proves it.**
 |-----|--------|
 | Voice cloning: codec training, voice packs, `zaya_audio/` | personal quest — kept out of the repo; stock codec voice may return as an engine artifact (P2) |
 | SaaS: auth, billing, usage, beacon | product layer, no product |
-| Agent stack: onebit agent, RAG, planner, personas, tools, watchdog | AMD Gaia owns that space; the engine serves it via Lemonade |
+| Agent stack: onebit agent, RAG, planner, personas, tools, watchdog | product layer, no product — the engine serves it via Lemonade |
 | JARVIS v1's HTTP hop + WebSocket side-server | one process, one pipeline |
 
 *Engine first. Everything else is a tenant, not a co-owner.*

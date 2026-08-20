@@ -49,7 +49,7 @@ The roadmap was rewritten around a single sentence — *engine (NPU + GPU + CPU,
 
 - **SaaS**: `tools/jarvis/auth.cpp`, `billing.cpp`, `usage.cpp`, `beacon.cpp` — the product layer for a product that doesn't exist yet. Gone. So is the Cloudflare auth worker (`workers/`) and the Zaya Co-Host dashboard (`site/dashboard/`) that talked to those APIs.
 - **Voice cloning**: the whole `zaya_audio/` training stack (codec training, voice packs, RVQ-VAE adapters, ONNX export) — a personal quest, not a product. `src/codec_decoder.cpp` went with it.
-- **Agent stack**: RAG, planner, personas, prompts, skills, the daily-routine/awareness scripts — AMD Gaia's turf, not ours. The engine serves it via Lemonade; it doesn't ship one.
+- **Agent stack**: RAG, planner, personas, prompts, skills, the daily-routine/awareness scripts — a product layer, not ours. The engine serves it via Lemonade; it doesn't ship one.
 - **JARVIS v1's HTTP hop + WebSocket side-server**: `jarvis_server.cpp`, `audio_stream.cpp`, and upstream's new `voice_session.cpp`/`ws_proto.cpp` — replaced by the in-process pipeline: `mic → VAD → STT (libwhisper, now HIP-accelerated via `src/whisper_hip.hip`) → LLM (in-process BackendManager) → TTS → speaker`. One process, one pipeline, no WebSocket.
 - **Kept on purpose**: `agent_watchdog.cpp` (engine thermal/strategy, live in unified_server) and the whisper HIP port that the JARVIS blocker (P1) needed.
 
