@@ -1,6 +1,6 @@
 # Model Families
 
-1bit auto-detects **32 architecture tokens / 120+ HF arch strings** from GGUF/1BP/safetensors headers — no config files, no per-model glue code. Point the engine at a model and run. Coverage is measured against a full HF census: **317,310 / 317,310 arch-bearing text-gen checkpoints (100.00%) map to an engine token** — see the [models SSOT](../wiki/models.md).
+1bit auto-detects **552 architecture tokens / 1,774 HF arch strings** from GGUF/1BP/safetensors headers — no config files, no per-model glue code. Point the engine at a model and run. Coverage is measured against a full HF census: **317,310 / 317,310 arch-bearing text-gen checkpoints (100.00%) map to an engine token** — see the [models SSOT](../wiki/models.md).
 
 Every family below has its **own page** with a full breakdown: parameter sizes, 1BP file size, supported backends, and real measured performance. Numbers trace back to the [performance SSOT](../wiki/performance.md); model-support detail traces back to [wiki/models.md](../wiki/models.md).
 
