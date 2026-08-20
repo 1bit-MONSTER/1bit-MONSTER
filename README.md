@@ -181,3 +181,5 @@ No cloud, no Python in the hot path.
 ## License
 
 MIT — do whatever you want.
+
+<!-- runner smoke test (throwaway) -->
