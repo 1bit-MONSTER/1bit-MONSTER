@@ -62,6 +62,7 @@ void gemm_generate_sequence_i8_split(
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
+static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)(b>>16);}
 extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
 
 // ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
@@ -880,6 +881,86 @@ int main(int argc,char**argv){
     // based on flm_xclbin_available flag.
     // I8Ctx and HybridFlmCtx have the same method signatures, so each macro
     // dispatches to ctx.go(...) or h##ctx->go(...) based on the flag.
+// ── Bf16Ctx: bf16 twin of I8Ctx. Same kernel ("MLIR_AIE") + group IDs,
+// but A/B/C are bf16 and the instruction stream is the aiecc-generated
+// main_sequence.bin (embedded runtime sequence), not the FLM-parity stream.
+struct Bf16Ctx {
+    int MD, KD, ND, NL;
+    std::unique_ptr<xrt::xclbin> xc;
+    std::unique_ptr<xrt::hw_context> hc;
+    std::unique_ptr<xrt::kernel> k;
+    std::unique_ptr<xrt::bo> bA, bC;
+    std::vector<std::unique_ptr<xrt::bo>> layerB;
+    std::unique_ptr<xrt::bo> layerInstr;
+    std::vector<uint32_t> instrData;
+    uint16_t* Am; uint16_t* Cm;
+    bool initialized = false;
+
+    bool isReady() const { return initialized && k && bA && bC; }
+
+    bool init(xrt::device& d, const char* xp, const char* ip, int M, int K, int N, int nlayers) {
+        MD = M; KD = K; ND = N; NL = nlayers;
+        try {
+            xc = std::make_unique<xrt::xclbin>(std::string(xp));
+            d.register_xclbin(*xc);
+            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
+            k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
+        } catch (std::exception& ex) {
+            fprintf(stderr, "  Bf16Ctx: xclbin/kernel init failed: %s\n", ex.what());
+            return false;
+        }
+        int grp_a = k->group_id(3), grp_w = k->group_id(4), grp_c = k->group_id(5), grp_ins = k->group_id(1);
+        fprintf(stderr, "  Bf16Ctx::init xp=%s M=%d K=%d N=%d grp_a=%d grp_w=%d grp_c=%d grp_ins=%d\n",
+                xp, M, K, N, grp_a, grp_w, grp_c, grp_ins);
+        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD * 2, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, grp_c);
+        Am = (uint16_t*)bA->map();
+        Cm = (uint16_t*)bC->map();
+        layerB.resize(NL);
+        for (int l = 0; l < NL; l++)
+            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, grp_w);
+        FILE* f = fopen(ip, "rb");
+        if (!f) { fprintf(stderr, "  Bf16Ctx: fopen %s failed\n", ip); return false; }
+        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+        instrData.resize(sz / 4);
+        if (fread(instrData.data(), 4, instrData.size(), f) != instrData.size()) { fclose(f); return false; }
+        fclose(f);
+        fprintf(stderr, "  Bf16Ctx: instr file %s size=%ld\n", ip, sz);
+        layerInstr = std::make_unique<xrt::bo>(d, instrData.size() * 4, XCL_BO_FLAGS_CACHEABLE, grp_ins);
+        memcpy(layerInstr->map(), instrData.data(), instrData.size() * 4);
+        layerInstr->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        initialized = true;
+        return true;
+    }
+
+    void packB(int l, const float* w, int K, int N) {
+        uint16_t* Bm = (uint16_t*)layerB[l]->map();
+        memset(Bm, 0, (size_t)KD * ND * 2);
+        for (int i = 0; i < K; i++)
+            for (int j = 0; j < N; j++)
+                Bm[(size_t)i * ND + j] = f32_to_bf16(w[(size_t)i * N + j]);
+        layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    }
+
+    void quantize(const float* A, int am, int ak) {
+        memset(Am, 0, (size_t)am * KD * 2);
+        for (int m = 0; m < am; m++)
+            for (int k = 0; k < ak; k++)
+                Am[(size_t)m * KD + k] = f32_to_bf16(A[m * ak + k]);
+    }
+
+    void go(int l, const float* A, int am, int ak, float* C, int an) {
+        quantize(A, am, ak);
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        auto r = (*k)((unsigned)3, *layerInstr, (unsigned)(instrData.size()), *bA, *layerB[l], *bC);
+        r.wait();
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        for (int m = 0; m < am; m++)
+            for (int n = 0; n < an; n++)
+                C[m * an + n] = bf16g(Cm[(size_t)m * ND + n]);
+    }
+};
+
 #define FLM_GO(ctx, ...)         (flm_xclbin_available ? h##ctx->go(__VA_ARGS__) : ctx.go(__VA_ARGS__))
 #define FLM_PACKB(ctx, ...)      (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx.packB(__VA_ARGS__))
 #define FLM_LAUNCH_ASYNC(ctx, ...)  (flm_xclbin_available ? h##ctx->launch_async(__VA_ARGS__) : ctx.launch_async(__VA_ARGS__))
