@@ -74,10 +74,19 @@ struct I8Ctx {
         npu_sequence seq(device_npu2);
         gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)K, (uint32_t)N,
                                   0, 0, false, 0, 0, 0);
-        seq.cmds2seq();
-        auto [dp, sz] = seq.dump();
-        std::vector<uint32_t> ins(dp, dp + sz / 4);
-        fprintf(stderr, "  generated %zu instr bytes (%zu words)\n", sz, ins.size());
+        // FLM-parity header (tools/gen_npu_insts.cpp): never cmds2seq() here —
+        // it appends a stale header AFTER the raw payload (bug S13).
+        std::vector<uint32_t>& raw = seq.raw_seq();
+        uint32_t ncmds = raw.back(); raw.pop_back();
+        std::vector<uint32_t> ins;
+        ins.reserve(raw.size() + 4);
+        ins.push_back(0x06040100);
+        ins.push_back(0x00000108);
+        ins.push_back(ncmds);
+        ins.push_back((uint32_t)(raw.size() * 4 + 16));
+        ins.insert(ins.end(), raw.begin(), raw.end());
+        fprintf(stderr, "  generated %zu instr bytes (%zu words)\n",
+                ins.size() * sizeof(uint32_t), ins.size());
 
         // Register xclbin
         try {
@@ -140,9 +149,15 @@ struct I8Ctx {
         npu_sequence seq(device_npu2);
         gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)KD, (uint32_t)ND,
                                   0, 0, false, 0, 0, 0);
-        seq.cmds2seq();
-        auto [dp, sz] = seq.dump();
-        std::vector<uint32_t> ins(dp, dp + sz / 4);
+        std::vector<uint32_t>& raw = seq.raw_seq();
+        uint32_t ncmds = raw.back(); raw.pop_back();
+        std::vector<uint32_t> ins;
+        ins.reserve(raw.size() + 4);
+        ins.push_back(0x06040100);
+        ins.push_back(0x00000108);
+        ins.push_back(ncmds);
+        ins.push_back((uint32_t)(raw.size() * 4 + 16));
+        ins.insert(ins.end(), raw.begin(), raw.end());
         layerInstrData[0] = ins;
         memcpy(layerInstr[0]->map(), ins.data(), ins.size() * sizeof(uint32_t));
         layerInstr[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
