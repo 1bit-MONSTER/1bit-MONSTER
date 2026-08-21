@@ -274,16 +274,9 @@ int main(int argc, char** argv) {
                 // CCA attention (CPU)
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
-                // Q/K/V1/V2 projections: each output row is an independent
-                // dot product over H, so parallelizing over the row index keeps
-                // every reduction sequential (bit-identical to the scalar loop).
-                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < qd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wq[i*H+j]*residual[j]; q[i]=a; }
-                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < kd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wk[i*H+j]*residual[j]; k[i]=a; }
-                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < hv2; i++){ float a=0; for (int j=0;j<H;j++) a += w.cw.wv1[i*H+j]*residual[j]; vc[i]=a; }
-                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < hv2; i++){ float a=0; for (int j=0;j<H;j++) a += w.cw.wv2[i*H+j]*residual[j]; vd[i]=a; }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
                 zaya_cca::cca_prep(d, w.cw, w.cs, q.data(), k.data(), vc.data(), vd.data(),
@@ -301,7 +294,6 @@ int main(int argc, char** argv) {
                     float sm=0; for (int t=0;t<seq;t++){sc[t]=expf(sc[t]-mx);sm+=sc[t];}
                     for (int dd=0;dd<d.hd;dd++){float a=0; for(int t=0;t<seq;t++)a+=sc[t]*lv[(size_t)t*d.nkv*d.hd+kv*d.hd+dd]; ao[hh*d.hd+dd]=a/(sm+1e-12f);}
                 }
-                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
                 attn_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             } else {
