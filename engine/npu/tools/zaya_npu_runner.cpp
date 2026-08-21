@@ -274,10 +274,31 @@ int main(int argc, char** argv) {
                 // CCA attention (CPU)
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
-                for (int i = 0; i < qd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wq[i*H+j]*residual[j]; q[i]=a; }
-                for (int i = 0; i < kd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wk[i*H+j]*residual[j]; k[i]=a; }
-                for (int i = 0; i < hv2; i++){ float a=0; for (int j=0;j<H;j++) a += w.cw.wv1[i*H+j]*residual[j]; vc[i]=a; }
-                for (int i = 0; i < hv2; i++){ float a=0; for (int j=0;j<H;j++) a += w.cw.wv2[i*H+j]*residual[j]; vd[i]=a; }
+                // Q/K/V1/V2 are four independent GEMVs over the same input;
+                // fuse them into one parallel region (uniform 2048-MAC work per
+                // row) so the fork/join cost is paid once, not 4x. Memory-bound
+                // (streams ~20MB/layer of cold weights) -> threads win bandwidth.
+                const int nproj = qd + kd + hv2 + hv2;
+                #pragma omp parallel for schedule(static)
+                for (int ii = 0; ii < nproj; ii++) {
+                    float a = 0;
+                    if (ii < qd) {
+                        for (int j = 0; j < H; j++) a += w.cw.wq[(size_t)ii * H + j] * residual[j];
+                        q[ii] = a;
+                    } else if (ii < qd + kd) {
+                        int i = ii - qd;
+                        for (int j = 0; j < H; j++) a += w.cw.wk[(size_t)i * H + j] * residual[j];
+                        k[i] = a;
+                    } else if (ii < qd + kd + hv2) {
+                        int i = ii - qd - kd;
+                        for (int j = 0; j < H; j++) a += w.cw.wv1[(size_t)i * H + j] * residual[j];
+                        vc[i] = a;
+                    } else {
+                        int i = ii - qd - kd - hv2;
+                        for (int j = 0; j < H; j++) a += w.cw.wv2[(size_t)i * H + j] * residual[j];
+                        vd[i] = a;
+                    }
+                }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
                 zaya_cca::cca_prep(d, w.cw, w.cs, q.data(), k.data(), vc.data(), vd.data(),
                                    qo.data(), ko.data(), vo.data(), pos);
@@ -294,6 +315,7 @@ int main(int argc, char** argv) {
                     float sm=0; for (int t=0;t<seq;t++){sc[t]=expf(sc[t]-mx);sm+=sc[t];}
                     for (int dd=0;dd<d.hd;dd++){float a=0; for(int t=0;t<seq;t++)a+=sc[t]*lv[(size_t)t*d.nkv*d.hd+kv*d.hd+dd]; ao[hh*d.hd+dd]=a/(sm+1e-12f);}
                 }
+                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
                 attn_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             } else {
@@ -319,12 +341,9 @@ int main(int argc, char** argv) {
                     gu_c[l].s[e] = gu_sc; cache_misses++;
                 }
                 float ag = dynamic_ascale(residual.data(), d.H);
-                gu_ctx.go(l, residual.data(), 1, d.H, ag, gu_sc, gu_out.data(), 2 * m.n_ff);
-                for (int i = 0; i < m.n_ff; i++) {
-                    float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
-                    silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
-                }
-                // D: cache lookup
+                auto gu_run = gu_ctx.launch_async(l, residual.data(), 1, d.H, ag);
+                // D: cache lookup — upload its weights NOW so the BO DMA overlaps
+                // the in-flight GU GEMM on the NPU (different BO, different queue).
                 float d_sc = 0;
                 auto d_it = d_c[l].w.find(e);
                 if (d_it != d_c[l].w.end()) {
@@ -340,6 +359,11 @@ int main(int argc, char** argv) {
                     int8_t* bm = (int8_t*)d_ctx.layerB[l]->map();
                     d_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)d_ctx.KD * d_ctx.ND);
                     d_c[l].s[e] = d_sc; cache_misses++;
+                }
+                gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, gu_sc, l);
+                for (int i = 0; i < m.n_ff; i++) {
+                    float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
+                    silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
                 }
                 float ad = dynamic_ascale(silu.data(), m.n_ff);
                 d_ctx.go(l, silu.data(), 1, m.n_ff, ad, d_sc, moe_out.data(), d.H);
