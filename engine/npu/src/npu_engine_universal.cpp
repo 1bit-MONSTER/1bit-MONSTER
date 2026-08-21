@@ -63,6 +63,40 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)(b>>16);}
+// bfp16ebs8: 8 f32 -> 1 shared exponent byte + 8 x 7-bit mantissa bytes (9B/8vals)
+static inline void f32_to_bfp16ebs8(const float* in, int n, uint8_t* out){
+    for(int b=0;b<n/8;b++){
+        const float* v=in+b*8; uint8_t* o=out+b*9;
+        uint32_t maxExp=0;
+        for(int i=0;i<8;i++){uint32_t bits;memcpy(&bits,&v[i],4);uint32_t e=(bits>>23)&0xFF;if(e>maxExp)maxExp=e;}
+        for(int i=0;i<8;i++){
+            uint32_t bits;memcpy(&bits,&v[i],4);
+            uint32_t sign=bits&0x80000000, e=(bits>>23)&0xFF, m=bits&0x7FFFFF;
+            if(e) m|=0x800000;
+            m=sign?(~m+1):m;
+            uint8_t val=(uint8_t)(m>>(23-7+1));
+            if(maxExp-e>=32) val=sign?0xFF:0x00;
+            else val=(uint8_t)((int8_t)val>>(maxExp-e));
+            o[1+i]=val;
+        }
+        o[0]=(uint8_t)maxExp;
+    }
+}
+// B shuffle: layout_transpose_L1_1x2_8x8block (column-major L1 tiles, 1x2 8x8 col-major sub-blocks)
+static void shuffle_B_atb(const float* in, int K, int N, int l1k, int l1n, float* out){
+    int L1r=K/l1k, L1c=N/l1n, o=0;
+    for(int l1c=0;l1c<L1c;l1c++)
+        for(int l1r=0;l1r<L1r;l1r++){
+            for(int sbc=0;sbc<l1n/8;sbc+=2)
+                for(int sbr=0;sbr<l1k/8;sbr++)
+                    for(int bis=0;bis<2;bis++){
+                        int cb=sbc+bis;
+                        for(int cib=0;cib<8;cib++)
+                            for(int rib=0;rib<8;rib++)
+                                out[o++] = in[(l1r*l1k+sbr*8+rib)*N + (l1c*l1n+cb*8+cib)];
+                    }
+        }
+}
 extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
 
 // ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
@@ -891,7 +925,7 @@ struct Bf16Ctx {
     std::unique_ptr<xrt::kernel> k;
     std::unique_ptr<xrt::bo> bA, bC;
     std::vector<std::unique_ptr<xrt::bo>> layerB;
-    std::unique_ptr<xrt::bo> layerInstr;
+    std::unique_ptr<xrt::bo> layerInstr, ctrlpkts, trace;
     std::vector<uint32_t> instrData;
     uint16_t* Am; uint16_t* Cm;
     bool initialized = false;
@@ -899,65 +933,59 @@ struct Bf16Ctx {
     bool isReady() const { return initialized && k && bA && bC; }
 
     bool init(xrt::device& d, const char* xp, const char* ip, int M, int K, int N, int nlayers) {
-        MD = M; KD = K; ND = N; NL = nlayers;
+        MD=M; KD=K; ND=N; NL=nlayers;
         try {
-            xc = std::make_unique<xrt::xclbin>(std::string(xp));
+            xc=std::make_unique<xrt::xclbin>(std::string(xp));
             d.register_xclbin(*xc);
-            hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
-            k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
-        } catch (std::exception& ex) {
-            fprintf(stderr, "  Bf16Ctx: xclbin/kernel init failed: %s\n", ex.what());
-            return false;
-        }
-        int grp_a = k->group_id(3), grp_w = k->group_id(4), grp_c = k->group_id(5), grp_ins = k->group_id(1);
-        fprintf(stderr, "  Bf16Ctx::init xp=%s M=%d K=%d N=%d grp_a=%d grp_w=%d grp_c=%d grp_ins=%d\n",
-                xp, M, K, N, grp_a, grp_w, grp_c, grp_ins);
-        bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD * 2, XRT_BO_FLAGS_HOST_ONLY, grp_a);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, grp_c);
-        Am = (uint16_t*)bA->map();
-        Cm = (uint16_t*)bC->map();
+            hc=std::make_unique<xrt::hw_context>(d, xc->get_uuid());
+            k=std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");
+        } catch(std::exception& ex){ fprintf(stderr,"  Bf16Ctx: xclbin init failed: %s\n",ex.what()); return false; }
+        int ga=k->group_id(3), gw=k->group_id(4), gc=k->group_id(5), gi=k->group_id(1);
+        int g6=k->group_id(6), g7=k->group_id(7);
+        fprintf(stderr,"  Bf16Ctx::init xp=%s M=%d K=%d N=%d grp a=%d w=%d c=%d ins=%d\n",xp,M,K,N,ga,gw,gc,gi);
+        bA=std::make_unique<xrt::bo>(d,(size_t)MD*KD*2, XRT_BO_FLAGS_HOST_ONLY, ga);
+        bC=std::make_unique<xrt::bo>(d,(size_t)MD*ND*2, XRT_BO_FLAGS_HOST_ONLY, gc);
+        Am=(uint16_t*)bA->map(); Cm=(uint16_t*)bC->map();
+        ctrlpkts=std::make_unique<xrt::bo>(d,8,XRT_BO_FLAGS_HOST_ONLY,g6);
+        trace=std::make_unique<xrt::bo>(d,1,XRT_BO_FLAGS_HOST_ONLY,g7);
         layerB.resize(NL);
-        for (int l = 0; l < NL; l++)
-            layerB[l] = std::make_unique<xrt::bo>(d, (size_t)KD * ND * 2, XRT_BO_FLAGS_HOST_ONLY, grp_w);
-        FILE* f = fopen(ip, "rb");
-        if (!f) { fprintf(stderr, "  Bf16Ctx: fopen %s failed\n", ip); return false; }
-        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-        instrData.resize(sz / 4);
-        if (fread(instrData.data(), 4, instrData.size(), f) != instrData.size()) { fclose(f); return false; }
+        for(int l=0;l<NL;l++) layerB[l]=std::make_unique<xrt::bo>(d,(size_t)(KD*ND/8*9), XRT_BO_FLAGS_HOST_ONLY, gw);
+        FILE* f=fopen(ip,"rb");
+        if(!f){ fprintf(stderr,"  Bf16Ctx: fopen %s failed\n",ip); return false; }
+        fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+        instrData.resize(sz/4);
+        if(fread(instrData.data(),4,instrData.size(),f)!=(size_t)instrData.size()){ fclose(f); return false; }
         fclose(f);
-        fprintf(stderr, "  Bf16Ctx: instr file %s size=%ld\n", ip, sz);
-        layerInstr = std::make_unique<xrt::bo>(d, instrData.size() * 4, XCL_BO_FLAGS_CACHEABLE, grp_ins);
-        memcpy(layerInstr->map(), instrData.data(), instrData.size() * 4);
+        fprintf(stderr,"  Bf16Ctx: instr %s %ld bytes (%zu words, header incl)\n",ip,sz,instrData.size());
+        layerInstr=std::make_unique<xrt::bo>(d,instrData.size()*4,XCL_BO_FLAGS_CACHEABLE,gi);
+        memcpy(layerInstr->map(),instrData.data(),instrData.size()*4);
         layerInstr->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        initialized = true;
-        return true;
+        initialized=true; return true;
     }
 
+    // pack weights: f32 [K,N] -> shuffled -> bfp16ebs8 (K*N/8*9 bytes)
     void packB(int l, const float* w, int K, int N) {
-        uint16_t* Bm = (uint16_t*)layerB[l]->map();
-        memset(Bm, 0, (size_t)KD * ND * 2);
-        for (int i = 0; i < K; i++)
-            for (int j = 0; j < N; j++)
-                Bm[(size_t)i * ND + j] = f32_to_bf16(w[(size_t)i * N + j]);
+        uint8_t* Bm=(uint8_t*)layerB[l]->map();
+        static std::vector<float> shuf;
+        shuf.resize((size_t)K*N);
+        shuffle_B_atb(w, K, N, 64, 128, shuf.data());
+        f32_to_bfp16ebs8(shuf.data(), K*N, Bm);
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
 
     void quantize(const float* A, int am, int ak) {
-        memset(Am, 0, (size_t)am * KD * 2);
-        for (int m = 0; m < am; m++)
-            for (int k = 0; k < ak; k++)
-                Am[(size_t)m * KD + k] = f32_to_bf16(A[m * ak + k]);
+        memset(Am,0,(size_t)am*KD*2);
+        for(int m=0;m<am;m++) for(int k=0;k<ak;k++) Am[(size_t)m*KD+k]=f32_to_bf16(A[m*ak+k]);
     }
 
     void go(int l, const float* A, int am, int ak, float* C, int an) {
-        quantize(A, am, ak);
+        quantize(A,am,ak);
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        auto r = (*k)((unsigned)3, *layerInstr, (unsigned)(instrData.size()), *bA, *layerB[l], *bC);
+        ctrlpkts->sync(XCL_BO_SYNC_BO_TO_DEVICE); trace->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        auto r=(*k)((unsigned)3, *layerInstr, (unsigned)(instrData.size()), *bA, *layerB[l], *bC, *ctrlpkts, *trace);
         r.wait();
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        for (int m = 0; m < am; m++)
-            for (int n = 0; n < an; n++)
-                C[m * an + n] = bf16g(Cm[(size_t)m * ND + n]);
+        for(int m=0;m<am;m++) for(int n=0;n<an;n++) C[m*an+n]=bf16g(Cm[(size_t)m*ND+n]);
     }
 };
 
