@@ -41,11 +41,15 @@ def main():
     
     # Determine output folder (prioritize flag, then positional)
     output_folder = args.output_flag or args.output_folder
-    
+
     # Check if input file exists
     if not os.path.exists(input_path):
         parser.error(f'Input file does not exist: {input_path}')
-    
+
+    # Default output to the input file's directory (matches the help text).
+    if not output_folder:
+        output_folder = os.path.dirname(os.path.abspath(input_path))
+
     # Create output directory if it doesn't exist
     output_dir = os.path.dirname(output_folder)
     if output_dir and not os.path.exists(output_dir):

@@ -115,7 +115,9 @@ class GGUFTensor:
         scales = np.ascontiguousarray(scales).reshape(-1, columns // Q8_block_size)
         data = np.ascontiguousarray(data).reshape(-1, columns)
         
-        return torch.from_numpy(scales.copy()), torch.from_numpy(scales.copy()), torch.from_numpy(data.copy())
+        # Q8_0 has no zero-point/min: return zeros for the min field so the
+        # packed Q8NX tensor decodes symmetric values (PR-Agent review #1766).
+        return torch.from_numpy(scales.copy()), torch.zeros_like(torch.from_numpy(scales.copy())), torch.from_numpy(data.copy())
         
         
     
