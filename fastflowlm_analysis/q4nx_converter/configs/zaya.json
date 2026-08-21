@@ -1,0 +1,168 @@
+{
+    "_notes": [
+        "Reconstructed Zaya Q4NX converter config (issue #1763).",
+        "GGUF names follow the canonical llama.cpp ZAYA mapping (upstream PR #23112),",
+        "mirrored in tools/convert_zaya_safetensors_to_gguf.py.",
+        "Q4NX names match the manifest keys read by engine/npu/tools/zaya_cpu_runner.cpp.",
+        "default_tensor_type=Q4_0 (signed symmetric, mins=0): the Zaya Q4NX packs",
+        "value=(q-8)*scale (two's-complement nibble) with zero mins, per the research",
+        "log (research/ws01-npu-attention/ZAYA-CCA-CPU-PORT.md session 9/13).",
+        "CAVEAT: the actual zaya1-8b.q4nx was produced by tools/convert_float32_bins_to_q4nx.py",
+        "(scale=abs_max/7, zp=0, ROW-major scales scales[row*8+group]). This GGUF converter's",
+        "model_converter.py packs scales GROUP-major (group*32+row), so the scale byte order",
+        "differs from that artifact; nibble/lane layout (parallel_size=16) matches."
+    ],
+    "q4nx_config": {
+        "row_block_size": 32,
+        "col_block_size": 256,
+        "parallel_size": 16,
+        "keep_block_in_2D": false
+    },
+    "default_tensor_type": "Q4_0",
+    "name_map": {
+        "embedding": {
+            "gguf_name": "token_embd.weight",
+            "q4nx_name": "model.embed_tokens.weight"
+        },
+        "input_scale": {
+            "gguf_name": "input_hidden_states_scale.weight",
+            "q4nx_name": "model.input_hidden_states_scale"
+        },
+        "input_bias": {
+            "gguf_name": "input_hidden_states_scale.bias",
+            "q4nx_name": "model.input_hidden_states_bias"
+        },
+        "q_proj": {
+            "gguf_name": "blk.{bid}.attn_q.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.q_proj.weight"
+        },
+        "k_proj": {
+            "gguf_name": "blk.{bid}.attn_k.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.k_proj.weight"
+        },
+        "v_proj_current": {
+            "gguf_name": "blk.{bid}.cca_val_proj1.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.v_proj_current.weight"
+        },
+        "v_proj_delayed": {
+            "gguf_name": "blk.{bid}.cca_val_proj2.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.v_proj_delayed.weight"
+        },
+        "o_proj": {
+            "gguf_name": "blk.{bid}.attn_output.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.o_proj.weight"
+        },
+        "conv_qk_depthwise_weight": {
+            "gguf_name": "blk.{bid}.ssm_conv1d.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.conv_qk_depthwise.weight"
+        },
+        "conv_qk_depthwise_bias": {
+            "gguf_name": "blk.{bid}.ssm_conv1d.bias",
+            "q4nx_name": "model.layers.{bid}.self_attn.conv_qk_depthwise.bias"
+        },
+        "conv_qk_grouped_weight": {
+            "gguf_name": "blk.{bid}.cca_conv_grp.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.conv_qk_grouped.weight"
+        },
+        "conv_qk_grouped_bias": {
+            "gguf_name": "blk.{bid}.cca_conv_grp.bias",
+            "q4nx_name": "model.layers.{bid}.self_attn.conv_qk_grouped.bias"
+        },
+        "qk_norm_temp": {
+            "gguf_name": "blk.{bid}.cca_k_scale.weight",
+            "q4nx_name": "model.layers.{bid}.self_attn.qk_norm.temp"
+        },
+        "input_layernorm": {
+            "gguf_name": "blk.{bid}.attn_norm.weight",
+            "q4nx_name": "model.layers.{bid}.input_layernorm.weight"
+        },
+        "post_attention_layernorm": {
+            "gguf_name": "blk.{bid}.post_attention_norm.weight",
+            "q4nx_name": "model.layers.{bid}.post_attention_layernorm.weight"
+        },
+        "post_attn_res_hs_scale": {
+            "gguf_name": "blk.{bid}.res_scale_hs.weight",
+            "q4nx_name": "model.layers.{bid}.post_attention_residual_scale.hidden_states_scale"
+        },
+        "post_attn_res_hs_bias": {
+            "gguf_name": "blk.{bid}.res_scale_hs.bias",
+            "q4nx_name": "model.layers.{bid}.post_attention_residual_scale.hidden_states_bias"
+        },
+        "post_attn_res_res_scale": {
+            "gguf_name": "blk.{bid}.res_scale_res.weight",
+            "q4nx_name": "model.layers.{bid}.post_attention_residual_scale.residual_scale"
+        },
+        "post_attn_res_res_bias": {
+            "gguf_name": "blk.{bid}.res_scale_res.bias",
+            "q4nx_name": "model.layers.{bid}.post_attention_residual_scale.residual_bias"
+        },
+        "post_mlp_res_hs_scale": {
+            "gguf_name": "blk.{bid}.res_scale_hs_mlp.weight",
+            "q4nx_name": "model.layers.{bid}.post_mlp_residual_scale.hidden_states_scale"
+        },
+        "post_mlp_res_hs_bias": {
+            "gguf_name": "blk.{bid}.res_scale_hs_mlp.bias",
+            "q4nx_name": "model.layers.{bid}.post_mlp_residual_scale.hidden_states_bias"
+        },
+        "post_mlp_res_res_scale": {
+            "gguf_name": "blk.{bid}.res_scale_res_mlp.weight",
+            "q4nx_name": "model.layers.{bid}.post_mlp_residual_scale.residual_scale"
+        },
+        "post_mlp_res_res_bias": {
+            "gguf_name": "blk.{bid}.res_scale_res_mlp.bias",
+            "q4nx_name": "model.layers.{bid}.post_mlp_residual_scale.residual_bias"
+        },
+        "gate_down_proj": {
+            "gguf_name": "blk.{bid}.ffn_gate_inp.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.down_proj.weight"
+        },
+        "gate_down_proj_bias": {
+            "gguf_name": "blk.{bid}.ffn_gate_inp.bias",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.down_proj.bias"
+        },
+        "router_norm": {
+            "gguf_name": "blk.{bid}.ffn_norm.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_mlp.norm.weight"
+        },
+        "router_fc1": {
+            "gguf_name": "blk.{bid}.ffn_gate.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_mlp.fc1.weight"
+        },
+        "router_fc1_bias": {
+            "gguf_name": "blk.{bid}.ffn_gate.bias",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_mlp.fc1.bias"
+        },
+        "router_fc2": {
+            "gguf_name": "blk.{bid}.zaya_router_mlp2.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_mlp.fc2.weight"
+        },
+        "router_fc2_bias": {
+            "gguf_name": "blk.{bid}.zaya_router_mlp2.bias",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_mlp.fc2.bias"
+        },
+        "router_out_proj": {
+            "gguf_name": "blk.{bid}.zaya_router_mlp4.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_mlp.out_proj.weight"
+        },
+        "balancing_biases": {
+            "gguf_name": "blk.{bid}.zaya_router_biases.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.balancing_biases"
+        },
+        "router_states_scale": {
+            "gguf_name": "blk.{bid}.zaya_router_eda.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.gate.router_states_scale"
+        },
+        "experts_gate_up_proj": {
+            "gguf_name": "blk.{bid}.ffn_gate_up_exps.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.experts.gate_up_proj.weight"
+        },
+        "experts_down_proj": {
+            "gguf_name": "blk.{bid}.ffn_down_exps.weight",
+            "q4nx_name": "model.layers.{bid}.mlp.experts.down_proj.weight"
+        },
+        "final_norm": {
+            "gguf_name": "output_norm.weight",
+            "q4nx_name": "model.norm.weight"
+        }
+    }
+}
