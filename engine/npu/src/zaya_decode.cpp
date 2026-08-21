@@ -213,7 +213,7 @@ int zaya_decode_main(int argc, char** argv) {
 
     // Expert pack cache: per MoE layer, expert -> packed int8 weight + scale.
     // A hit skips the dequant-transpose-quantize and only memcpys the BO.
-    struct ExpCache { std::unordered_map<int, std::vector<int8_t>> w; std::unordered_map<int, float> s; };
+    struct ExpCache { std::unordered_map<int, std::vector<int8_t>> w; std::unordered_map<int, float> s; std::unordered_map<int, std::vector<float>> cs; };
     std::vector<ExpCache> gu_c(NC), d_c(NC);
     size_t cache_hits = 0, cache_misses = 0;
 
@@ -234,6 +234,7 @@ int zaya_decode_main(int argc, char** argv) {
                 int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
                 gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
                 gu_c[l].s[e] = gu_sc;
+                gu_c[l].cs[e] = gu_ctx.group_scales[l];
                 const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
                 #pragma omp parallel for schedule(static)
                 for (int j = 0; j < m.n_ff; j++)
@@ -244,6 +245,7 @@ int zaya_decode_main(int argc, char** argv) {
                 int8_t* bm2 = (int8_t*)d_ctx.layerB[l]->map();
                 d_c[l].w[e] = std::vector<int8_t>(bm2, bm2 + (size_t)d_ctx.KD * d_ctx.ND);
                 d_c[l].s[e] = d_sc;
+                d_c[l].cs[e] = d_ctx.group_scales[l];
             }
         }
         fprintf(stderr, "expert cache pre-warmed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
@@ -323,6 +325,7 @@ int zaya_decode_main(int argc, char** argv) {
                 if (gu_it != gu_c[l].w.end()) {
                     memcpy(gu_ctx.layerB[l]->map(), gu_it->second.data(), (size_t)gu_ctx.KD * gu_ctx.ND);
                     gu_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                    gu_ctx.group_scales[l] = gu_c[l].cs[e];
                     gu_sc = gu_c[l].s[e]; cache_hits++;
                 } else {
                     const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
@@ -332,7 +335,8 @@ int zaya_decode_main(int argc, char** argv) {
                     gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
                     int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
                     gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
-                    gu_c[l].s[e] = gu_sc; cache_misses++;
+                    gu_c[l].s[e] = gu_sc;
+                    gu_c[l].cs[e] = gu_ctx.group_scales[l]; cache_misses++;
                 }
                 float ag = dynamic_ascale(residual.data(), d.H);
                 auto gu_run = gu_ctx.launch_async(l, residual.data(), 1, d.H, ag);
@@ -342,6 +346,7 @@ int zaya_decode_main(int argc, char** argv) {
                 if (d_it != d_c[l].w.end()) {
                     memcpy(d_ctx.layerB[l]->map(), d_it->second.data(), (size_t)d_ctx.KD * d_ctx.ND);
                     d_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                    d_ctx.group_scales[l] = d_c[l].cs[e];
                     d_sc = d_c[l].s[e]; cache_hits++;
                 } else {
                     const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
@@ -351,7 +356,8 @@ int zaya_decode_main(int argc, char** argv) {
                     d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
                     int8_t* bm = (int8_t*)d_ctx.layerB[l]->map();
                     d_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)d_ctx.KD * d_ctx.ND);
-                    d_c[l].s[e] = d_sc; cache_misses++;
+                    d_c[l].s[e] = d_sc;
+                    d_c[l].cs[e] = d_ctx.group_scales[l]; cache_misses++;
                 }
                 gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, gu_sc, l);
                 for (int i = 0; i < m.n_ff; i++) {
