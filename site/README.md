@@ -25,7 +25,7 @@ Apps / SDKs -> 1bit-proxy :13306/v1 or :13306/api/v1
                  -> toolbox llama-server or Lemonade :13305/v1
 
 Open WebUI :3000 -> 1bit-proxy :13306/v1
-Control plane    -> target: 1bit CLI + GAIA + systemd/toolbox lifecycle
+Control plane    -> target: 1bit CLI + systemd/toolbox lifecycle
 ```
 
 The finished single control plane is not shipping yet. Public copy should say

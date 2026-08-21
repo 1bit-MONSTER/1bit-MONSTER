@@ -36,7 +36,7 @@ The `qwen3.5:4b` short-prompt run was a false alarm for regression tracking: the
 
 After the isolated probes restored services, the single control-plane endpoint was verified through `1bit-proxy`:
 
-- `1bit status` reported FLM on `:52625`, proxy on `http://127.0.0.1:13306`, GAIA on `:41995`, and 57 unified models.
+- `1bit status` reported FLM on `:52625`, proxy on `http://127.0.0.1:13306`, and 57 unified models.
 - `GET http://127.0.0.1:13306/v1/models` returned FLM-owned models including `qwen3:1.7b`, `qwen3.5:4b`, `deepseek-r1:8b`, and `embed-gemma:300m`.
 - `POST http://127.0.0.1:13306/v1/chat/completions` with `model=qwen3:1.7b` returned FLM usage fields:
   - prompt tokens: 24

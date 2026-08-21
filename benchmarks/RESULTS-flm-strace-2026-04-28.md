@@ -92,6 +92,6 @@ Per decoded token: ~30 CREATE_BO + ~30 GET_BO_INFO + ~30 GEM_CLOSE + ~3 EXEC_CMD
 ## Notes / caveats
 
 - `bpftrace` is not installed on this box, so the DRM-tracepoint cross-check was skipped. The strace numbers are consistent across two independent runs (3879 and 3877 ioctls) so I trust them.
-- `lemond` was already inactive when probing started (PPL sweep had stopped it); restarted at the end. `open-webui` and `gaia` were untouched and remained active throughout.
+- `lemond` was already inactive when probing started (PPL sweep had stopped it); restarted at the end. `open-webui` was untouched and remained active throughout.
 - `flm serve` was killed cleanly after the probe; nothing else holds `/dev/accel/accel0`.
 - Raw artifacts: `/tmp/flm-probe/strace-decode.txt` (-c summary), `/tmp/flm-probe/strace-decode-full.txt` (full trace), `/tmp/flm-probe/strace-tt.txt` (timestamped), `/tmp/flm-probe/strace-verbose.txt` (verbose w/ struct bytes), `/tmp/flm-probe/decode-response.json` (model output + timing).
