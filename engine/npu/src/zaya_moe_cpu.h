@@ -60,13 +60,21 @@ struct RouterWeights {
     std::vector<float> rf2b;  // [rtr_h]
     std::vector<float> rout;  // [n_exp_t, rtr_h]
     std::vector<float> bb;    // [n_exp_t]
+    std::vector<float> eda;   // [rtr_h] recurrent router-state scale
 };
 
-// EDA router. Returns the selected expert slot and updates prev_rs (the
-// recurrent router state). Ported from eda_router_gate_down/reduce + gpu.
+// EDA router (Zaya, from llama.cpp zaya.cpp graph).
+//   rs = down_proj(hs) + bias
+//   if has_eda: rs += prev_router * eda_scale (element-wise, before norm)
+//   prev_router = rs (stored BEFORE norm)
+//   rs = rmsnorm(rs); fc1 GELU; fc2 GELU
+//   logits = out_proj(rs)  (17 slots, NO balancing bias)
+//   probs = softmax(logits)
+//   exp_probs = probs[0:16] + bb[0:16]  (skip expert dropped)
+//   return top-1 expert (0..n_exp-1)
 inline int router(const MoeDims& d, const RouterWeights& w,
-                  const float* hs, std::vector<float>& prev_rs,
-                  bool has_eda, float eda_scale, float* expert_wt) {
+                  const float* hs, std::vector<float>& prev_router,
+                  float* expert_wt) {
     const int H = d.H, rtr_h = d.rtr_h, n_exp = d.n_exp, n_exp_t = d.n_exp_t;
 
     // 1. gate_down: rs[i] = gdb[i] + sum_j hs[j]*gdw[j*rtr_h + i]
@@ -76,16 +84,17 @@ inline int router(const MoeDims& d, const RouterWeights& w,
         for (int j = 0; j < H; j++) s += hs[j] * w.gdw[(size_t)j * rtr_h + i];
         rs[i] = s;
     }
-    // EDA: rs += prev_rs * eda_scale
-    if (has_eda && !prev_rs.empty())
-        for (int i = 0; i < rtr_h; i++) rs[i] += prev_rs[i] * eda_scale;
+    // 2. EDA (recurrent, before norm): rs += prev_router * eda
+    if (!prev_router.empty())
+        for (int i = 0; i < rtr_h; i++) rs[i] += prev_router[i] * w.eda[i];
+    prev_router = rs;  // store BEFORE norm
 
-    // 2. RMSNorm
+    // 3. RMSNorm
     float ss = 0; for (int i = 0; i < rtr_h; i++) ss += rs[i] * rs[i];
     float rr = 1.0f / std::sqrt(ss / (float)rtr_h + 1e-5f);
     for (int i = 0; i < rtr_h; i++) rs[i] = rs[i] * rr * w.rfn[i];
 
-    // 3. fc1 + GELU (tanh)
+    // 4. fc1 + GELU (tanh)
     auto gelu = [](float x){ float t = std::tanh(0.79788456f * (x + 0.044715f * x * x * x)); return 0.5f * x * (1.0f + t); };
     std::vector<float> r2(rtr_h);
     for (int i = 0; i < rtr_h; i++) {
@@ -93,31 +102,31 @@ inline int router(const MoeDims& d, const RouterWeights& w,
         for (int j = 0; j < rtr_h; j++) s += rs[j] * w.rf1[(size_t)i * rtr_h + j];
         r2[i] = gelu(s);
     }
-    // 4. fc2 + GELU
+    // 5. fc2 + GELU
     for (int i = 0; i < rtr_h; i++) {
         float s = w.rf2b[i];
         for (int j = 0; j < rtr_h; j++) s += r2[j] * w.rf2[(size_t)i * rtr_h + j];
         rs[i] = gelu(s);
     }
-    // 5. out_proj → scores + balancing biases
-    std::vector<float> probs(n_exp_t);
+    // 6. out_proj → logits (17, NO balancing bias)
+    std::vector<float> logits(n_exp_t);
     for (int i = 0; i < n_exp_t; i++) {
-        float s = w.bb[i];
+        float s = 0;
         for (int j = 0; j < rtr_h; j++) s += rs[j] * w.rout[(size_t)i * rtr_h + j];
-        probs[i] = s;
+        logits[i] = s;
     }
-    // 6. softmax over n_exp_t slots
-    float mx = probs[0]; for (int i = 1; i < n_exp_t; i++) mx = std::max(mx, probs[i]);
-    float sv = 0; for (int i = 0; i < n_exp_t; i++) { probs[i] = std::exp(probs[i] - mx); sv += probs[i]; }
+    // 7. softmax over n_exp_t
+    float mx = logits[0]; for (int i = 1; i < n_exp_t; i++) mx = std::max(mx, logits[i]);
+    float sv = 0; for (int i = 0; i < n_exp_t; i++) { logits[i] = std::exp(logits[i] - mx); sv += logits[i]; }
     float is = 1.0f / (sv + 1e-10f);
-    for (int i = 0; i < n_exp_t; i++) probs[i] *= is;
+    for (int i = 0; i < n_exp_t; i++) logits[i] *= is;
 
-    // 7. argmax (top-1 over slots; slot n_exp is the skip expert).
-    int best = 0; float bv = probs[0];
-    for (int i = 1; i < n_exp_t; i++) if (probs[i] > bv) { bv = probs[i]; best = i; }
-    // Return n_exp for the skip expert (caller zeros the FFN output).
-
-    prev_rs = rs;  // store router state (recurrent)
+    // 8. exp_probs = probs[0:16] + balancing_biases[0:16]; top-1 over 16
+    int best = 0; float bv = logits[0] + w.bb[0];
+    for (int i = 1; i < n_exp; i++) {
+        float v = logits[i] + w.bb[i];
+        if (v > bv) { bv = v; best = i; }
+    }
     if (expert_wt) *expert_wt = bv;
     return best;
 }

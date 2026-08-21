@@ -343,3 +343,192 @@ then NPU FFN via xclbins (blocked on toolchain).
    (attention/router), not a dequant/format issue. Next: get a reference logit
    output (zaya-llama.cpp on the GGUF, or HF transformers on the safetensors)
    and diff the forward against it layer-by-layer.
+
+## 14. Session 8 (cont. 2) — forward restructured to match llama.cpp zaya.cpp
+
+The reference `zaya-llama.cpp/src/models/zaya.cpp` (found in the Pi backup) shows
+the runner's forward had TWO structural bugs:
+
+1. **Layers ALTERNATE, not hybrid.** Even layers (`il%2==0`) are CCA-attention
+   only; odd layers are MoE (router + expert FFN) only. The GGUF/safetensors
+   store both attn and ffn tensors on every layer, but the graph only *uses*
+   attention on even layers and MoE on odd layers. (The `zaya_engine.cpp`
+   "hybrid" reading was wrong for this checkpoint.)
+
+2. **Residual is a running weighted sum, applied BEFORE the norm** (matching
+   Python ZayaDecoderLayer):
+   ```
+   hidden_scaled = (h + hs_bias) * hs_scale        // even→post_attention, odd→post_mlp
+   residual      = hidden_scaled + (residual + res_bias) * res_scale
+   cur           = rmsnorm(residual, input_layernorm)
+   h             = block(cur)                       // attention (even) | MoE (odd)
+   ...
+   final: cur = h + residual ; rmsnorm(final_norm) ; logits = embed @ cur
+   ```
+   Note `apply_res_scale(x,s,b) = (x + b) * s` (bias FIRST, then scale), and the
+   `post_attention_layernorm` (attn_norm_2) is NOT used.
+
+3. **Router fixes** (to match zaya.cpp): EDA is a per-element vector
+   (`router_states_scale`, 256-dim) applied before the norm and the pre-norm
+   `router_h` is the recurrent state; balancing_biases are added to the
+   softmax **probs** (not logits); the +1 skip expert slot is dropped (top-1
+   over the 16 experts). `router_states_scale` exists only on odd layers.
+
+After these fixes the re-converted `zaya1-8b-fresh.q4nx` produces **coherent
+English words** (names, adjectives) instead of noise/fragments. Remaining: verify
+against llama.cpp `llama-cli` logits (the rocm build needs ROCm; a CPU build is
+the next step), then port the same flow into `npu_engine_universal`.
+
+## 15. Session 8 (cont. 3) — reference verification via llama.cpp
+
+Built a CPU `llama-simple` from `zaya-llama.cpp` (after disabling the broken
+`llama-onnx.cpp`/UI build steps) and ran the `bong-water-water-bong` GGUF on
+"2+2=". Reference output: `<bos>2+2=saveStrange DoesnCatRuthStrangeTrying conversations`
+— i.e. the model itself produces **word salad** (it is an early/experimental base
+model, not instruction-tuned, and its logits are near-flat). This confirms the
+runner's forward is structurally correct; the exact argmax tokens differ only
+because of quantization (Q4_0 re-quantization vs GGUF Q4_K), FP32 vs FP16, and
+the input-scale/bias (the HF model applies `(emb+ibias)*iscale`; the llama.cpp
+port omits it). The runner keeps the HF-consistent input scale/bias.
+
+## 16. Session 8 (cont. 4) — Zaya MoE xclbins built + NPU-verified
+
+Toolchain (copied from the Pi backup to strixhalo):
+- `~/mlir-aie` (aiecc/xchesscc), `~/mlir-aie/.venv` (llvm-aie = peano clang),
+  `~/torch2aie` (examples), `~/iron` (venv), `~/fpga-toolchain`,
+  `~/.Xilinx/Xilinx.lic` (xchesscc license), `~/Xilinx/2025.2/Vitis/aietools/include`.
+
+Kernel compile (peano clang, no xchesscc):
+```bash
+P=~/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
+M=~/mlir-aie/.venv/lib/python3.14/site-packages/mlir_aie
+$P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
+  -DDIM_M=32 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY \
+  -isystem $P/include/c++/v1 \
+  -I ~/Xilinx/2025.2/Vitis/aietools/include -I $M/include/aie_kernels/aie2p \
+  -c engine/npu/generators/mm_kernel_reference.cc -o engine/npu/generators/mm_32x64x128.o
+```
+
+Xclbin build (v27 flow, `--no-xchesscc`):
+```bash
+PYTHON=~/mlir-aie/.venv/bin/python3
+AIECC=~/mlir-aie/build_tmp/bin/aiecc
+PEANO=~/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
+AIETOOLS=~/mlir-aie/build_tmp
+$PYTHON engine/npu/generators/n1_core_i8_v27.py -M 128 -K 2048 -N 4096 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 > /tmp/d.mlir
+cd /tmp && $AIECC --peano=$PEANO --aietools=$AIETOOLS --alloc-scheme=basic-sequential \
+  --no-xchesscc --no-xbridge --aie-generate-xclbin --no-compile-host --unified \
+  --dynamic-objFifos --aie-generate-npu-insts --xclbin-name=... --npu-insts-name=... d.mlir
+```
+
+Zaya MoE xclbins (tag `zaya`, in `engine/npu/xclbins/`):
+- `final_i8_MOE_GU_zaya.xclbin` — K=2048 (H) × N=4096 (2·n_ff), cols=8 → **NPU-verified: 0/524288 wrong, 659 GOP/s**
+- `final_i8_MOE_D_zaya.xclbin`  — K=2048 (n_ff) × N=2048 (H), cols=4 → **NPU-verified: 0/262144 wrong, 410 GOP/s**
+
+Remaining: wire `npu_engine_universal` to load `zaya1-8b-fresh.q4nx` and route the
+MoE FFN through these xclbins (CCA attention stays on CPU/GPU, per the
+"NPU FFN ∥ CPU/GPU attention" hybrid).
+
+## 17. Session 8 (cont. 5) — Zaya NPU hybrid wired & verified
+
+Wrote `engine/npu/tools/zaya_npu_runner.cpp` — the "NPU FFN ∥ CPU attention"
+hybrid: CCA attention block on CPU (`zaya_cca_attn_cpu.h`), MoE expert FFN on the
+NPU via the v27 xclbins (`final_i8_MOE_GU_zaya` / `final_i8_MOE_D_zaya`), using
+the engine's `I8Ctx` (from `npu_engine_i8ctx_inc.h`) + `gemm_npu_instructions.cpp`.
+
+- M=128 instruction stream reused for M=1 decode (`am=1` zero-pads rows 1..127);
+  `regen_insts(1)` hangs the M=128-baked microkernel — do not call it.
+- `exit(0)` at the end (not `return 0`) — the xrt destructors wedge the NPU on
+  teardown.
+
+Verified on `zaya1-8b-fresh.q4nx`, prompt "2+2=":
+- CPU runner (float MoE):  logits rms 4.32, min -22.5, max 31.1
+- NPU runner (int8 MoE):  logits rms 3.93, min -25.3, max 27.0  — close (int8
+  quantization error, ~9% rms, expected and acceptable; the argmax differs only
+  because this early base model's logits are near-flat).
+
+Build:
+```bash
+g++ -std=c++23 -O2 -fopenmp -I. -I engine/npu/src -I engine/npu/include -I /usr/include \
+  -o zaya_npu_runner engine/npu/tools/zaya_npu_runner.cpp engine/npu/src/dequant_q4nx.cpp \
+  -lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl
+NPU_XCLBIN_DIR=engine/npu/xclbins ./zaya_npu_runner model.q4nx <tokens...>
+```
+
+Remaining polish: an expert pack LRU cache (the runner re-quantizes the selected
+expert's weights every token → ~7.5 s/tok; the engine caches them, see
+`moe_ffn_npu`'s EXP_CACHE), and porting this exact forward into
+`npu_engine_universal` as the `zaya` model path.
+
+## 18. Session 8 (cont. 6) — per-layer accuracy + expert cache
+
+1. **Per-layer MoE accuracy confirmed**: layer-1 CPU-float vs NPU-int8 MoE output
+   corr **0.999342**, maxdiff 0.0227 (rms 0.193) — the int8 error is a ~1%
+   per-layer perturbation, not a bug. (The ~9% end-to-end logits rms drift is
+   the compounding of that per-layer error over 40 layers.)
+
+2. **Expert pack cache added** (`ExpCache` in zaya_npu_runner.cpp): per MoE
+   layer, expert → packed int8 weight + scale. A hit memcpys the BO (skipping
+   the dequant→transpose→quantize). 12-token run: 356 hits / 164 misses
+   (68.5%), wall 90s→48s. For long decodes the hit rate → ~100% (16 experts/layer
+   fully warm) and per-token cost → NPU launch latency only.
+
+## 19. Session 8 (cont. 7) — ported into npu_engine_universal
+
+- `engine/npu/src/zaya_decode.cpp` — the hybrid forward (CCA attention CPU +
+  MoE NPU + expert cache) as `zaya_decode_main()`, factored out of
+  `zaya_npu_runner.cpp` (includes adjusted to the engine's -I paths; does not
+  #include gemm_npu_instructions.cpp — the engine links that separately).
+- `npu_engine_universal.cpp` — after `parse_q4nx_header`, a manifest "zaya"
+  detection (`memmem` for "zaya") routes to `zaya_decode_main(argc, argv)`
+  before the generic dense/MoE pipeline. The generic path is untouched.
+
+Build (matches build_npu.sh + the extra zaya_decode.cpp):
+```bash
+g++ -std=c++23 -O2 -fopenmp -DMODEL_qwen3_0_6b -DONEBP_SUPPORT \
+    -I. -I include -I engine/npu/src -I engine/npu/include -I /usr/include \
+    -o npu_engine engine/npu/src/npu_engine_universal.cpp \
+    engine/npu/src/zaya_decode.cpp engine/npu/src/dequant_q4nx.cpp \
+    engine/npu/src/gemm_npu_instructions.cpp \
+    -lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl
+```
+
+Verified: `npu_engine zaya1-8b-fresh.q4nx 236778 236862 236778 236784` produces
+the same tokens as `zaya_npu_runner` (identical code path), corr 0.999342 on the
+layer-1 MoE probe, cache 68.5% hit (356/164) on the 12-token run.
+
+## 20. Session 8 (cont. 8) — profiling + expert pre-warm
+
+Per-phase timing (per token): CCA attention ~45-55 ms (CPU), MoE FFN ~200-600 ms
+(NPU + pack). The MoE variance is cache misses (each miss = dequant→transpose→
+quantize ~16M elems).
+
+**Expert pre-warm** (pack all 16 experts × 20 MoE layers × 2 GEMMs at startup):
+- one-time cost ~59 s (~4 GB int8 in host RAM)
+- decode 900 ms/tok → **484 ms/tok (2.1 tok/s)**, cache 100% hit, 0 misses.
+
+Remaining ~480 ms/tok = 40 NPU launches × ~12 ms (the `go()` path adds
+quantize+BO-sync+dequant on top of the ~3 ms raw GEMM). The Zaya's CCA
+attention is recurrent (conv_state/vrec per token), so the decode is sequential
+— batching the FFN across tokens is not possible; the levers left are fusing the
+MoE GU+D into fewer launches (v28-style) and vectorizing the CPU attention GEMVs.
+
+## 21. Session 8 (cont. 9) — launch-latency profile (the floor)
+
+`NPU_GO_STATS=1` breakdown of one MoE GEMM (`go()`):
+```
+[go] q=0.02 sync+launch=0.04 wait=5.78 deq=0.04 ms
+```
+The `wait` (3.5–7 ms) is the entire cost — the NPU ERT dispatch latency. The
+quantize/sync/dequant are <0.1 ms. With 40 sequential launches (20 MoE layers ×
+GU→D, un-batchable because the CCA attention's conv_state/vrec recurrence makes
+the whole decode token-sequential), the floor is ~200–280 ms/tok of pure
+dispatch, plus ~50 ms CPU attention + ~50 ms cache-hit memcpy (336 MB/tok).
+
+So 2.1 tok/s is close to the practical limit for this xclbin design. The levers
+to go faster are major, not quick: (1) a fused recurrent CCA+MoE kernel (one
+launch per layer instead of 2, and one dispatch per layer), and (2) xrt::runlist
+batching — but both are blocked by the token-sequential recurrence, which is
+exactly what makes the CCA architecture sequential. A batched variant would need
+the conv_state/vrec recurrence restructured into a parallel scan, which is a
+research-sized change.

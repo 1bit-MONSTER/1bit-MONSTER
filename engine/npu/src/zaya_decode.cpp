@@ -1,32 +1,46 @@
-// zaya_cpu_runner.cpp — correctness-first CPU bring-up for ZAYA1-8B (q4nx).
+// zaya_npu_runner.cpp — Zaya1-8B NPU hybrid decode.
 //
-// Ties together the existing pieces:
-//   engine/npu/src/dequant_q4nx.cpp     (Q4NX int4 tile dequant, verified)
-//   engine/npu/src/zaya_cca_attn_cpu.h  (CCA attention port)
-//   engine/npu/src/zaya_moe_cpu.h       (EDA router + expert FFN port)
+// "NPU FFN ∥ CPU/GPU attention": the CCA attention block (q/k/v proj, conv_qk,
+// qk_means, L2, RoPE, GQA) runs on the CPU (zaya_cca_attn_cpu.h), and the MoE
+// expert FFN (gate_up + down GEMMs) streams through the NPU via the v27 INT8
+// xclbins built for Zaya (final_i8_MOE_GU_zaya / final_i8_MOE_D_zaya).
 //
-// Forward (every layer has BOTH blocks — verified on zaya1-8b.q4nx):
-//   h = input_layernorm(h)
-//   attn = CCA_attention(h)                     q/k/v1/v2 -> conv_qk -> ... -> o_proj
-//   h    = attn*hs_s + hs_b + h_old*res_s + res_b      (post_attention_residual_scale)
-//   h    = post_attention_layernorm(h)
-//   moe  = router(h) -> expert_ffn(h)
-//   h    = moe*hs_s + hs_b + h_old*res_s + res_b       (post_mlp_residual_scale)
-//   logits = embed @ norm(h)                    (lm_head tied)
+// Forward (matches llama.cpp zaya.cpp — alternating layers + running residual):
+//   even layer: hidden_scaled=(h+hb)*hs; residual=hidden_scaled+(residual+rb)*rs
+//               cur=rmsnorm(residual);  attn=CCA(cur);  h=attn
+//   odd  layer: same residual; cur=rmsnorm(residual);  moe=router+FFN;  h=moe
+//   final: cur = rmsnorm(h + residual); logits = embed @ cur
 //
-// NOTE: v_proj_delayed reads the CURRENT hidden state (wv2 @ h); the one-token
-// delay is implemented by the vrec state inside cca_prep (v_out = [v_cur, vrec]).
+// This is the ground-truth reference the full npu_engine_universal Zaya path
+// must match. Usage: zaya_npu_runner model.q4nx [token_ids...]
 
-#include "engine/npu/src/model_config.h"
-#include "engine/npu/src/dequant_q4nx.h"
-#include "engine/npu/src/zaya_cca_attn_cpu.h"
-#include "engine/npu/src/zaya_moe_cpu.h"
+#include "model_config.h"
+#include "dequant_q4nx.h"
+#include "zaya_cca_attn_cpu.h"
+#include "zaya_moe_cpu.h"
+#include "npu_engine_i8ctx_inc.h"
+
+#include <xrt/xrt_device.h>
+#include <xrt/xrt_bo.h>
+#include <xrt/xrt_kernel.h>
 
 #include <cstdio>
 #include <cstring>
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+static inline float dynamic_ascale(const float* x, int n) {
+    float amax = 0;
+    for (int i = 0; i < n; i++) { float a = std::fabs(x[i]); if (std::isfinite(a) && a > amax) amax = a; }
+    if (amax < 1e-12f) amax = 1.0f;
+    return amax / 127.0f;
+}
 
 static bool get_offsets(const char* js, size_t jl, const char* key,
                         uint64_t* off, uint64_t* size) {
@@ -62,9 +76,6 @@ static std::vector<float> load_bf16(const uint8_t* data, uint64_t off, uint64_t 
     return v;
 }
 
-// Dequant a Q4NX int4 tile tensor. i8_rows = shape[0] of the packed tensor;
-// in_features = the GGUF column dim (the tile's K). Zaya Q4NX stores the GGUF
-// [in, out] layout (NOT PyTorch [out, in]); transpose swaps to [out, in].
 static std::vector<float> load_i8(const uint8_t* data, uint64_t off, uint64_t size,
                                   int i8_rows, int in_features, bool transpose = false) {
     int rows = 0, cols = 0;
@@ -87,8 +98,8 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
     for (int i = 0; i < n; i++) h[i] = h[i] * r * w[i];
 }
 
-int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id]\n", argv[0]); return 1; }
+int zaya_decode_main(int argc, char** argv) {
+    if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id...]\n", argv[0]); return 1; }
     int token_id = argc > 2 ? atoi(argv[2]) : 0;
 
     int fd = open(argv[1], O_RDONLY);
@@ -113,16 +124,14 @@ int main(int argc, char** argv) {
     auto m = zaya_moe::MoeDims::zaya1_8b();
     m.H = d.H; m.n_ff = get_top_int(js, jl, "intermediate_size");
     m.n_exp = get_top_int(js, jl, "num_experts"); m.n_exp_t = m.n_exp + 1;
-    int rtr_h = 256; m.rtr_h = rtr_h;
-    fprintf(stderr, "H=%d NC=%d NV=%d nq=%d nkv=%d hd=%d n_ff=%d n_exp=%d rtr_h=%d\n",
-            d.H, NC, NV, d.nq, d.nkv, d.hd, m.n_ff, m.n_exp, rtr_h);
+    m.rtr_h = 256;
+    fprintf(stderr, "H=%d NC=%d NV=%d nq=%d nkv=%d hd=%d n_ff=%d n_exp=%d\n",
+            d.H, NC, NV, d.nq, d.nkv, d.hd, m.n_ff, m.n_exp);
 
-    // embeddings (tied lm_head) + input scale/bias
     uint64_t off, size;
     get_offsets(js, jl, "model.embed_tokens.weight", &off, &size);
     int emb_rows = (int)(size / 5120);
-    auto embed = load_i8(D, off, size, emb_rows, d.H);   // [NV, H]
-    fprintf(stderr, "embed: %zu floats (%d x %d)\n", embed.size(), NV, d.H);
+    auto embed = load_i8(D, off, size, emb_rows, d.H);
     uint64_t so, ss; get_offsets(js, jl, "model.input_hidden_states_scale", &so, &ss);
     auto iscale = load_bf16(D, so, ss);
     uint64_t bo, bs; get_offsets(js, jl, "model.input_hidden_states_bias", &bo, &bs);
@@ -131,8 +140,7 @@ int main(int argc, char** argv) {
     struct Layer {
         zaya_cca::CcaWeights cw; zaya_cca::CcaState cs;
         zaya_moe::RouterWeights rw;
-        std::vector<float> gu, dn, nw, pan;
-        std::vector<float> pahss, pahsb, parss, parsb, pmhss, pmhsb, pmrss, pmrsb;
+        std::vector<float> gu, dn, nw, pahss, pahsb, parss, parsb, pmhss, pmhsb, pmrss, pmrsb;
     };
     std::vector<Layer> L(NC);
     char key[256];
@@ -141,12 +149,7 @@ int main(int argc, char** argv) {
         w.cs.reset(d.qkv, d.kd / 2);
         #define GET(name, dst) do { uint64_t o_, s_; if (get_offsets(js, jl, name, &o_, &s_)) dst = load_bf16(D, o_, s_); } while(0)
         #define GETI8(name, dst, rows, ifeat) do { uint64_t o_, s_; if (get_offsets(js, jl, name, &o_, &s_)) dst = load_i8(D, o_, s_, rows, ifeat); } while(0)
-        #define GETI8T(name, dst, rows, ifeat) do { uint64_t o_, s_; if (get_offsets(js, jl, name, &o_, &s_)) dst = load_i8(D, o_, s_, rows, ifeat, true); } while(0)
-
         snprintf(key, sizeof key, "model.layers.%d.input_layernorm.weight", l); GET(key, w.nw);
-        snprintf(key, sizeof key, "model.layers.%d.post_attention_layernorm.weight", l); GET(key, w.pan);
-        // CCA attention. The converter's unpack produces qs[ne1, ne0] = [out, in]
-        // (forward layout), quantized over ne0 (in_features). No transpose.
         snprintf(key, sizeof key, "model.layers.%d.self_attn.q_proj.weight", l); GETI8(key, w.cw.wq, 256, d.H);
         snprintf(key, sizeof key, "model.layers.%d.self_attn.k_proj.weight", l); GETI8(key, w.cw.wk, 64, d.H);
         snprintf(key, sizeof key, "model.layers.%d.self_attn.v_proj_current.weight", l); GETI8(key, w.cw.wv1, 32, d.H);
@@ -165,7 +168,6 @@ int main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.hidden_states_bias", l); GET(key, w.pmhsb);
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_scale", l); GET(key, w.pmrss);
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_bias", l); GET(key, w.pmrsb);
-        // MoE router
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.weight", l); GET(key, w.rw.gdw);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.bias", l); GET(key, w.rw.gdb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.norm.weight", l); GET(key, w.rw.rfn);
@@ -176,54 +178,66 @@ int main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.out_proj.weight", l); GET(key, w.rw.rout);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.balancing_biases", l); GET(key, w.rw.bb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_states_scale", l); GET(key, w.rw.eda);
-        // experts. gate_up: [n_exp*2*n_ff, H]; down: [n_exp*H, n_ff].
         snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l); GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
         snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
         #undef GET
         #undef GETI8
-        #undef GETI8T
-        if (l == 0)
-            fprintf(stderr, "layer0: wq=%zu wk=%zu wv1=%zu wo=%zu cdw=%zu cgw=%zu ks=%zu gu=%zu dn=%zu rf1=%zu rout=%zu\n",
-                    w.cw.wq.size(), w.cw.wk.size(), w.cw.wv1.size(), w.cw.wo.size(),
-                    w.cw.cdw.size(), w.cw.cgw.size(), w.cw.ks.size(),
-                    w.gu.size(), w.dn.size(), w.rw.rf1.size(), w.rw.rout.size());
     }
 
-    // final norm weight (loaded once)
     uint64_t no, ns; get_offsets(js, jl, "model.norm.weight", &no, &ns);
     auto fnw = load_bf16(D, no, ns);
 
-    // ── forward (lambda): one token through 40 layers -> argmax ──
-    std::vector<std::vector<float>> kv_k(NC), kv_v(NC);   // per-layer KV cache [seq * nkv * hd]
-    std::vector<float> attn_out(d.H), moe_out(d.H), tmp(d.H), h(d.H);
+    // ── NPU contexts: GU (K=H, N=2·n_ff) and D (K=n_ff, N=H) ──
+    xrt::device dev(0);
+    I8Ctx gu_ctx, d_ctx;
+    gu_ctx.MD = 128; gu_ctx.KD = d.H;      gu_ctx.ND = 2 * m.n_ff;
+    d_ctx.MD  = 128; d_ctx.KD  = m.n_ff;   d_ctx.ND  = d.H;
+    const char* xd = getenv("NPU_XCLBIN_DIR") ? getenv("NPU_XCLBIN_DIR") : "engine/npu/xclbins";
+    char gu_xp[512], gu_ip[512], d_xp[512], d_ip[512];
+    snprintf(gu_xp, sizeof gu_xp, "%s/final_i8_MOE_GU_zaya.xclbin", xd);
+    snprintf(gu_ip, sizeof gu_ip, "%s/insts_i8_MOE_GU_zaya.txt", xd);
+    snprintf(d_xp,  sizeof d_xp,  "%s/final_i8_MOE_D_zaya.xclbin", xd);
+    snprintf(d_ip,  sizeof d_ip,  "%s/insts_i8_MOE_D_zaya.txt", xd);
+    if (!gu_ctx.init(dev, gu_xp, gu_ip, 0, NC)) { fprintf(stderr, "GU ctx init failed\n"); return 1; }
+    if (!d_ctx.init(dev, d_xp, d_ip, 0, NC))   { fprintf(stderr, "D ctx init failed\n");  return 1; }
+    // NOTE: do NOT regen_insts(1) — the microkernel is M=128-baked (4×32-row
+    // slices). Single-token decode reuses the M=128 instruction stream; am=1
+    // zero-pads rows 1..127 so only row 0 is valid (same as npu_engine_universal).
+    fprintf(stderr, "NPU contexts ready (GU %dx%d, D %dx%d)\n", gu_ctx.KD, gu_ctx.ND, d_ctx.KD, d_ctx.ND);
+
+    // ── forward ──
+    std::vector<std::vector<float>> kv_k(NC), kv_v(NC);
+    std::vector<float> h(d.H), tmp(d.H), moe_out(d.H);
+    std::vector<float> gu_T((size_t)2 * m.n_ff * d.H), dn_T((size_t)m.n_ff * d.H);
+    std::vector<float> gu_out(2 * m.n_ff), silu(m.n_ff);
+
+    // Expert pack cache: per MoE layer, expert -> packed int8 weight + scale.
+    // A hit skips the dequant-transpose-quantize and only memcpys the BO.
+    struct ExpCache { std::unordered_map<int, std::vector<int8_t>> w; std::unordered_map<int, float> s; };
+    std::vector<ExpCache> gu_c(NC), d_c(NC);
+    size_t cache_hits = 0, cache_misses = 0;
+
     auto forward = [&](int tok, int pos) -> int {
-        // reference embed_lookup_k: (raw + ibias) * iscale
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
         std::vector<float> residual(d.H, 0.0f);
         bool has_res = false;
-        std::vector<float> prev_router;  // recurrent router state (shared across MoE layers)
+        std::vector<float> prev_router;
         for (int l = 0; l < NC; l++) {
             auto& w = L[l];
-            auto& lk = kv_k[l];
-            auto& lv = kv_v[l];
-            // ── residual scaling (current layer's own weights) ──
-            // even = attention layer (post_attention scales); odd = MoE (post_mlp scales)
+            auto& lk = kv_k[l]; auto& lv = kv_v[l];
             const float* hs; const float* hb; const float* rs; const float* rb;
             if (l % 2 == 0) { hs = w.pahss.data(); hb = w.pahsb.data(); rs = w.parss.data(); rb = w.parsb.data(); }
             else            { hs = w.pmhss.data(); hb = w.pmhsb.data(); rs = w.pmrss.data(); rb = w.pmrsb.data(); }
-            // hidden_scaled = (h + hb) * hs
             for (int i = 0; i < d.H; i++) tmp[i] = (h[i] + hb[i]) * hs[i];
-            // residual = hidden_scaled + (residual + rb) * rs
             if (has_res) {
                 for (int i = 0; i < d.H; i++) residual[i] = tmp[i] + (residual[i] + rb[i]) * rs[i];
             } else {
                 for (int i = 0; i < d.H; i++) residual[i] = tmp[i];
                 has_res = true;
             }
-            // cur = rmsnorm(residual, input_layernorm)
             rmsnorm(residual.data(), w.nw.data(), d.H);
             if (l % 2 == 0) {
-                // ── CCA attention block (even layers) ──
+                // CCA attention (CPU)
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
                 for (int i = 0; i < qd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wq[i*H+j]*residual[j]; q[i]=a; }
@@ -248,35 +262,78 @@ int main(int argc, char** argv) {
                 }
                 for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
             } else {
-                // ── MoE block (odd layers) ──
-                std::vector<float> rsv; float wt;
+                // MoE FFN (NPU): router on CPU, GEMMs on NPU
+                float wt;
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
-                zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), moe_out.data());
+                // GU: cache lookup
+                float gu_sc = 0;
+                auto gu_it = gu_c[l].w.find(e);
+                if (gu_it != gu_c[l].w.end()) {
+                    memcpy(gu_ctx.layerB[l]->map(), gu_it->second.data(), (size_t)gu_ctx.KD * gu_ctx.ND);
+                    gu_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                    gu_sc = gu_c[l].s[e]; cache_hits++;
+                } else {
+                    const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                    for (int j = 0; j < d.H; j++)
+                        for (int i = 0; i < 2 * m.n_ff; i++)
+                            gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
+                    gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
+                    int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
+                    gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
+                    gu_c[l].s[e] = gu_sc; cache_misses++;
+                }
+                float ag = dynamic_ascale(residual.data(), d.H);
+                gu_ctx.go(l, residual.data(), 1, d.H, ag, gu_sc, gu_out.data(), 2 * m.n_ff);
+                for (int i = 0; i < m.n_ff; i++) {
+                    float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
+                    silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
+                }
+                // D: cache lookup
+                float d_sc = 0;
+                auto d_it = d_c[l].w.find(e);
+                if (d_it != d_c[l].w.end()) {
+                    memcpy(d_ctx.layerB[l]->map(), d_it->second.data(), (size_t)d_ctx.KD * d_ctx.ND);
+                    d_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                    d_sc = d_c[l].s[e]; cache_hits++;
+                } else {
+                    const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                    for (int j = 0; j < m.n_ff; j++)
+                        for (int i = 0; i < d.H; i++)
+                            dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                    d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
+                    int8_t* bm = (int8_t*)d_ctx.layerB[l]->map();
+                    d_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)d_ctx.KD * d_ctx.ND);
+                    d_c[l].s[e] = d_sc; cache_misses++;
+                }
+                float ad = dynamic_ascale(silu.data(), m.n_ff);
+                d_ctx.go(l, silu.data(), 1, m.n_ff, ad, d_sc, moe_out.data(), d.H);
+                // layer-1 per-layer accuracy probe: CPU float MoE vs NPU int8 MoE
+                if (l == 1 && pos == 0) {
+                    std::vector<float> cpu_out(d.H);
+                    zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
+                    double num=0, d1=0, d2=0; float maxd=0;
+                    for (int i = 0; i < d.H; i++) {
+                        num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
+                        maxd = std::max(maxd, std::fabs(cpu_out[i]-moe_out[i]));
+                    }
+                    fprintf(stderr, "[MoE L1 dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f)\n",
+                        num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H));
+                }
                 for (int i = 0; i < d.H; i++) h[i] = moe_out[i];
             }
         }
-        // final: cur = h + residual; rmsnorm(final_norm); lm_head
         for (int i = 0; i < d.H; i++) tmp[i] = h[i] + residual[i];
         rmsnorm(tmp.data(), fnw.data(), d.H);
         std::vector<float> logits(NV);
         for (int v = 0; v < NV; v++) { float a=0; for (int j=0;j<d.H;j++) a += embed[(size_t)v*d.H+j]*tmp[j]; logits[v]=a; }
         if (pos == 0) {
-            float mn=1e30, mx=-1e30, ss=0, hm=0, hmx=0;
+            float mn=1e30, mx=-1e30, ss=0;
             for (int v=0; v<NV; v++){ mn=std::min(mn,logits[v]); mx=std::max(mx,logits[v]); ss+=logits[v]*logits[v]; }
-            for (int j=0;j<d.H;j++){ hm+=tmp[j]; hmx=std::max(hmx,std::fabs(tmp[j])); }
-            float mean=0; for(int v=0;v<NV;v++) mean+=logits[v]; mean/=NV;
-            fprintf(stderr, "[dbg] logits: min=%.4f max=%.4f mean=%.4f rms=%.4f | h: mean=%.4f maxabs=%.4f\n", mn, mx, mean, sqrtf(ss/NV), hm/d.H, hmx);
-            // top-5 logits
-            std::vector<int> idx(NV); for(int v=0;v<NV;v++) idx[v]=v;
-            std::partial_sort(idx.begin(), idx.begin()+5, idx.end(), [&](int a,int b){return logits[a]>logits[b];});
-            for(int k=0;k<5;k++) fprintf(stderr, "  top%d: tok=%d val=%.4f\n", k, idx[k], logits[idx[k]]);
-            fprintf(stderr, "  [tok2=%.4f tok4=%.4f tokeq=%.4f tokBOS=%.4f]\n", logits[236778], logits[236812], logits[236862], logits[2]);
+            fprintf(stderr, "[NPU dbg] logits min=%.4f max=%.4f rms=%.4f\n", mn, mx, sqrtf(ss/NV));
         }
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     };
 
-    // prompt tokens from argv (space-separated ids), else single token.
-    // BOS token (2) is auto-prepended, matching llama.cpp decode behavior.
     std::vector<int> prompt;
     prompt.push_back(2);  // <bos>
     for (int i = 2; i < argc; i++) prompt.push_back(atoi(argv[i]));
@@ -292,5 +349,8 @@ int main(int argc, char** argv) {
         cur = arg;
     }
     printf("\n");
-    return 0;
+    fflush(stdout);
+    fprintf(stderr, "[cache] hits=%zu misses=%zu (%.1f%% hit)\n", cache_hits, cache_misses,
+            cache_hits + cache_misses ? 100.0 * cache_hits / (cache_hits + cache_misses) : 0.0);
+    exit(0);  // skip xrt destructors (NPU wedges on teardown)
 }
