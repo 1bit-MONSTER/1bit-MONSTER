@@ -5,14 +5,11 @@
 //   engine/npu/src/zaya_cca_attn_cpu.h  (CCA attention port)
 //   engine/npu/src/zaya_moe_cpu.h       (EDA router + expert FFN port)
 //
-// Forward (every layer has BOTH blocks — verified on zaya1-8b.q4nx):
-//   h = input_layernorm(h)
-//   attn = CCA_attention(h)                     q/k/v1/v2 -> conv_qk -> ... -> o_proj
-//   h    = attn*hs_s + hs_b + h_old*res_s + res_b      (post_attention_residual_scale)
-//   h    = post_attention_layernorm(h)
-//   moe  = router(h) -> expert_ffn(h)
-//   h    = moe*hs_s + hs_b + h_old*res_s + res_b       (post_mlp_residual_scale)
-//   logits = embed @ norm(h)                    (lm_head tied)
+// Forward (matches llama.cpp zaya.cpp — alternating layers + running residual):
+//   even layer: hidden_scaled=(h+hb)*hs; residual=hidden_scaled+(residual+rb)*rs
+//               cur=rmsnorm(residual);  attn=CCA(cur);  h=attn
+//   odd  layer: same residual; cur=rmsnorm(residual);  moe=router+FFN;  h=moe
+//   final: cur = rmsnorm(h + residual); logits = embed @ cur
 //
 // NOTE: v_proj_delayed reads the CURRENT hidden state (wv2 @ h); the one-token
 // delay is implemented by the vrec state inside cca_prep (v_out = [v_cur, vrec]).

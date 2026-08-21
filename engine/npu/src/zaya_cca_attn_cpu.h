@@ -227,14 +227,19 @@ inline void cca_attention(const CcaDims& d, const CcaWeights& w, CcaState& st,
     }
 }
 
-// Post-attention residual scaling (residual_scale_k, src/zaya_engine.cpp:77):
-//   out[i] = attn_out[i]*hs_s[i] + hs_b[i] + residual[i]*res_s[i] + res_b[i]
-inline void residual_scale(int H, const float* attn_out, const float* residual,
+// Running residual update (matches llama.cpp zaya.cpp — Session 14).
+// Applied BEFORE the per-layer rmsnorm, using the pre-norm hidden state h:
+//   hidden_scaled = (h + hs_bias) * hs_scale
+//   residual      = hidden_scaled + (residual + res_bias) * res_scale
+// The block then runs on rmsnorm(residual). This supersedes the old post-block
+// "attn*hs_s + hs_b + h_old*res_s + res_b" form, which used the wrong
+// multiply-before-bias order and a post-normalized hidden state.
+inline void residual_scale(int H, const float* h, const float* residual,
                            const float* hs_s, const float* hs_b,
                            const float* res_s, const float* res_b,
                            float* out) {
     for (int i = 0; i < H; i++)
-        out[i] = attn_out[i] * hs_s[i] + hs_b[i] + residual[i] * res_s[i] + res_b[i];
+        out[i] = (h[i] + hs_b[i]) * hs_s[i] + (residual[i] + res_b[i]) * res_s[i];
 }
 
 } // namespace zaya_cca
