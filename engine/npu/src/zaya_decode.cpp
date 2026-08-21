@@ -217,6 +217,38 @@ int zaya_decode_main(int argc, char** argv) {
     std::vector<ExpCache> gu_c(NC), d_c(NC);
     size_t cache_hits = 0, cache_misses = 0;
 
+    // Pre-warm the expert cache: pack all 16 experts for every MoE (odd) layer
+    // up-front, so decode never pays the dequant-transpose-quantize on a miss
+    // (matches zaya_npu_runner.cpp; ~59s one-time, 100% cache hit in decode).
+    {
+        for (int l = 1; l < NC; l += 2) {
+            auto& w = L[l];
+            for (int e = 0; e < m.n_exp; e++) {
+                const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                #pragma omp parallel for schedule(static)
+                for (int j = 0; j < d.H; j++)
+                    for (int i = 0; i < 2 * m.n_ff; i++)
+                        gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
+                float gu_sc = 0;
+                gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
+                int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
+                gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
+                gu_c[l].s[e] = gu_sc;
+                const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                #pragma omp parallel for schedule(static)
+                for (int j = 0; j < m.n_ff; j++)
+                    for (int i = 0; i < d.H; i++)
+                        dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                float d_sc = 0;
+                d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
+                int8_t* bm2 = (int8_t*)d_ctx.layerB[l]->map();
+                d_c[l].w[e] = std::vector<int8_t>(bm2, bm2 + (size_t)d_ctx.KD * d_ctx.ND);
+                d_c[l].s[e] = d_sc;
+            }
+        }
+        fprintf(stderr, "expert cache pre-warmed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
+    }
+
     auto forward = [&](int tok, int pos) -> int {
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
         std::vector<float> residual(d.H, 0.0f);

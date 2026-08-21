@@ -226,6 +226,7 @@ int main(int argc, char** argv) {
             auto& w = L[l];
             for (int e = 0; e < m.n_exp; e++) {
                 const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                #pragma omp parallel for schedule(static)
                 for (int j = 0; j < d.H; j++)
                     for (int i = 0; i < 2 * m.n_ff; i++)
                         gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
@@ -235,6 +236,7 @@ int main(int argc, char** argv) {
                 gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
                 gu_c[l].s[e] = gu_sc;
                 const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                #pragma omp parallel for schedule(static)
                 for (int j = 0; j < m.n_ff; j++)
                     for (int i = 0; i < d.H; i++)
                         dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
