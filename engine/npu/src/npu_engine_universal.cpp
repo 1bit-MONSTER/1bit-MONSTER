@@ -62,7 +62,7 @@ void gemm_generate_sequence_i8_split(
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
-static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)(b>>16);}
+static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
 // bfp16ebs8: 8 f32 -> 1 shared exponent byte + 8 x 7-bit mantissa bytes (9B/8vals)
 static inline void f32_to_bfp16ebs8(const float* in, int n, uint8_t* out){
     for(int b=0;b<n/8;b++){
@@ -753,6 +753,10 @@ int main(int argc,char**argv){
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
     auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
+    // bf16 path (n1_core_placed.py: bf16 activations + v8bfp16ebs8 weights)
+    bool bf16_mode = getenv("NPU_BF16") != nullptr;
+    auto xpb=[&](const char*t, int K, int N){return xd+"/final_bf16_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
+    auto ipb=[&](const char*t, int K, int N){return xd+"/insts_bf16_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";};
 
     // FLM xclbin path: respect NPU_FLM_XCLBIN_DIR env var for explicit path,
     // or NPU_FLM_XCLBINS_ROOT for the root directory containing model subdirectories.
@@ -964,7 +968,9 @@ struct Bf16Ctx {
     }
 
     // pack weights: f32 [K,N] -> shuffled -> bfp16ebs8 (K*N/8*9 bytes)
-    void packB(int l, const float* w, int K, int N) {
+    // drop-in for FLM_PACKB: sout is unused (bf16 needs no per-group scale)
+    void packB(int l, const float* w, int K, int N, float& sout) {
+        sout = 1.0f;
         uint8_t* Bm=(uint8_t*)layerB[l]->map();
         static std::vector<float> shuf;
         shuf.resize((size_t)K*N);
@@ -973,46 +979,119 @@ struct Bf16Ctx {
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
 
-    void quantize(const float* A, int am, int ak) {
+    inline int8_t* quantize_async(const float* A, int am, int ak, float ascale) {
         memset(Am,0,(size_t)am*KD*2);
         for(int m=0;m<am;m++) for(int k=0;k<ak;k++) Am[(size_t)m*KD+k]=f32_to_bf16(A[m*ak+k]);
+        return (int8_t*)Am;
     }
 
-    void go(int l, const float* A, int am, int ak, float* C, int an) {
-        quantize(A,am,ak);
+    inline xrt::run launch(int l) {
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         ctrlpkts->sync(XCL_BO_SYNC_BO_TO_DEVICE); trace->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        auto r=(*k)((unsigned)3, *layerInstr, (unsigned)(instrData.size()), *bA, *layerB[l], *bC, *ctrlpkts, *trace);
+        return (*k)((unsigned)3, *layerInstr, (unsigned)(instrData.size()), *bA, *layerB[l], *bC, *ctrlpkts, *trace);
+    }
+
+    inline void dequant_only(float* C, int am, int an, float ascale, float Bscale, int layer = -1) {
+        for(int m=0;m<am;m++) for(int n=0;n<an;n++) C[m*an+n]=bf16g(Cm[(size_t)m*ND+n]);
+        if(getenv("NPU_BF16_DEBUG")){
+            double mx=0,ss=0; for(int i=0;i<am*an;i++){double v=C[i];ss+=v;if(v>mx)mx=v;}
+            fprintf(stderr,"[bf16-deq] am=%d an=%d C0..7=%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f sum=%.2f max=%.2f\n",
+                am,an,C[0],C[1],C[2],C[3],C[4],C[5],C[6],C[7],ss,mx);
+        }
+    }
+
+    inline bool go(int l, const float* A, int am, int ak, float ascale, float Bscale, float* C, int an) {
+        quantize_async(A,am,ak,ascale);
+        auto r=launch(l);
         r.wait();
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        dequant_only(C,am,an,ascale,Bscale,l);
+        return true;
+    }
+
+    inline void sync_A(int) { bA->sync(XCL_BO_SYNC_BO_TO_DEVICE); }
+    inline xrt::run sync_and_launch(int l) { bA->sync(XCL_BO_SYNC_BO_TO_DEVICE); return launch(l); }
+    inline void wait_kernel(xrt::run& r) { r.wait(); }
+    inline void readback() { bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE); }
+    inline int8_t* quantize_async_rows(const float* A, int am, int ak, const float* ascales) {
+        memset(Am,0,(size_t)am*KD*2);
+        for(int m=0;m<am;m++) for(int k=0;k<ak;k++) Am[(size_t)m*KD+k]=f32_to_bf16(A[m*ak+k]);
+        return (int8_t*)Am;
+    }
+    inline void dequant_only_rows(float* C, int am, int an, const float* ascales, float Bscale, int layer = -1) {
         for(int m=0;m<am;m++) for(int n=0;n<an;n++) C[m*an+n]=bf16g(Cm[(size_t)m*ND+n]);
+    }
+    inline void dequantize(xrt::run& r, float* C, int am, int an, float ascale, float Bscale, int layer = -1) {
+        r.wait(); readback(); dequant_only(C,am,an,ascale,Bscale,layer);
+    }
+    inline void sync_back_and_dequant(float* C, int am, int an, float ascale, float Bscale, int layer = -1) {
+        readback(); dequant_only(C,am,an,ascale,Bscale,layer);
+    }
+    inline bool go_rows(int l, const float* A, int am, int ak, const float* ascales_q, const float* ascales_d, float Bscale, float* C, int an) {
+        quantize_async_rows(A,am,ak,ascales_q);
+        auto r=sync_and_launch(l);
+        r.wait(); readback(); dequant_only_rows(C,am,an,ascales_d,Bscale,l);
+        return true;
+    }
+    inline xrt::run launch_async(int l, const float* A, int am, int ak, float ascale) {
+        quantize_async(A,am,ak,ascale); return sync_and_launch(l);
+    }
+    inline xrt::run launch_async_rows(int l, const float* A, int am, int ak, const float* ascales_q) {
+        quantize_async_rows(A,am,ak,ascales_q); return sync_and_launch(l);
+    }
+    inline void finish_async_rows(xrt::run& r, float* C, int am, int an, const float* ascales, float Bscale, int layer = -1) {
+        r.wait(); readback(); dequant_only_rows(C,am,an,ascales,Bscale,layer);
+    }
+    inline void finish_async(xrt::run& r, float* C, int am, int an, float ascale, float Bscale, int layer = -1) {
+        r.wait(); dequantize(r,C,am,an,ascale,Bscale,layer);
     }
 };
 
-#define FLM_GO(ctx, ...)         (flm_xclbin_available ? h##ctx->go(__VA_ARGS__) : ctx.go(__VA_ARGS__))
-#define FLM_PACKB(ctx, ...)      (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx.packB(__VA_ARGS__))
-#define FLM_LAUNCH_ASYNC(ctx, ...)  (flm_xclbin_available ? h##ctx->launch_async(__VA_ARGS__) : ctx.launch_async(__VA_ARGS__))
-#define FLM_FINISH_ASYNC(ctx, ...)  (flm_xclbin_available ? h##ctx->finish_async(__VA_ARGS__) : ctx.finish_async(__VA_ARGS__))
-#define FLM_LAUNCH_ASYNC_ROWS(ctx, ...) (flm_xclbin_available ? h##ctx->launch_async_rows(__VA_ARGS__) : ctx.launch_async_rows(__VA_ARGS__))
-#define FLM_FINISH_ASYNC_ROWS(ctx, ...) (flm_xclbin_available ? h##ctx->finish_async_rows(__VA_ARGS__) : ctx.finish_async_rows(__VA_ARGS__))
-#define FLM_GO_ROWS(ctx, ...) (flm_xclbin_available ? h##ctx->go_rows(__VA_ARGS__) : ctx.go_rows(__VA_ARGS__))
-#define FLM_LAUNCH(ctx, ...)     (flm_xclbin_available ? h##ctx->launch(__VA_ARGS__) : ctx.launch(__VA_ARGS__))
-#define FLM_QUANTIZE_ASYNC(ctx, ...) (flm_xclbin_available ? h##ctx->quantize_async(__VA_ARGS__) : ctx.quantize_async(__VA_ARGS__))
-#define FLM_SYNC_AND_LAUNCH(ctx, ...) (flm_xclbin_available ? h##ctx->sync_and_launch(__VA_ARGS__) : ctx.sync_and_launch(__VA_ARGS__))
-#define FLM_SYNC_A(ctx, ...)     (flm_xclbin_available ? h##ctx->sync_A(__VA_ARGS__) : ctx.sync_A(__VA_ARGS__))
-#define FLM_WAIT_KERNEL(ctx, ...) (flm_xclbin_available ? h##ctx->wait_kernel(__VA_ARGS__) : ctx.wait_kernel(__VA_ARGS__))
-#define FLM_DEQUANTIZE(ctx, ...) (flm_xclbin_available ? h##ctx->dequantize(__VA_ARGS__) : ctx.dequantize(__VA_ARGS__))
-#define FLM_READBACK(ctx)        (flm_xclbin_available ? h##ctx->readback() : ctx.readback())
-#define FLM_SYNC_BACK(ctx, ...)  (flm_xclbin_available ? h##ctx->sync_back_and_dequant(__VA_ARGS__) : ctx.sync_back_and_dequant(__VA_ARGS__))
-#define FLM_IS_READY(ctx)        (flm_xclbin_available ? h##ctx->isReady() : ctx.isReady())
+#define FLM_GO(ctx, ...)         (bf16_mode ? b##ctx->go(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->go(__VA_ARGS__) : ctx.go(__VA_ARGS__)))
+#define FLM_PACKB(ctx, ...)      (bf16_mode ? b##ctx->packB(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx.packB(__VA_ARGS__)))
+#define FLM_LAUNCH_ASYNC(ctx, ...)  (bf16_mode ? b##ctx->launch_async(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->launch_async(__VA_ARGS__) : ctx.launch_async(__VA_ARGS__)))
+#define FLM_FINISH_ASYNC(ctx, ...)  (bf16_mode ? b##ctx->finish_async(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->finish_async(__VA_ARGS__) : ctx.finish_async(__VA_ARGS__)))
+#define FLM_LAUNCH_ASYNC_ROWS(ctx, ...) (bf16_mode ? b##ctx->launch_async_rows(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->launch_async_rows(__VA_ARGS__) : ctx.launch_async_rows(__VA_ARGS__)))
+#define FLM_FINISH_ASYNC_ROWS(ctx, ...) (bf16_mode ? b##ctx->finish_async_rows(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->finish_async_rows(__VA_ARGS__) : ctx.finish_async_rows(__VA_ARGS__)))
+#define FLM_GO_ROWS(ctx, ...) (bf16_mode ? b##ctx->go_rows(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->go_rows(__VA_ARGS__) : ctx.go_rows(__VA_ARGS__)))
+#define FLM_LAUNCH(ctx, ...)     (bf16_mode ? b##ctx->launch(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->launch(__VA_ARGS__) : ctx.launch(__VA_ARGS__)))
+#define FLM_QUANTIZE_ASYNC(ctx, ...) (bf16_mode ? b##ctx->quantize_async(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->quantize_async(__VA_ARGS__) : ctx.quantize_async(__VA_ARGS__)))
+#define FLM_SYNC_AND_LAUNCH(ctx, ...) (bf16_mode ? b##ctx->sync_and_launch(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->sync_and_launch(__VA_ARGS__) : ctx.sync_and_launch(__VA_ARGS__)))
+#define FLM_SYNC_A(ctx, ...)     (bf16_mode ? b##ctx->sync_A(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->sync_A(__VA_ARGS__) : ctx.sync_A(__VA_ARGS__)))
+#define FLM_WAIT_KERNEL(ctx, ...) (bf16_mode ? b##ctx->wait_kernel(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->wait_kernel(__VA_ARGS__) : ctx.wait_kernel(__VA_ARGS__)))
+#define FLM_DEQUANTIZE(ctx, ...) (bf16_mode ? b##ctx->dequantize(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->dequantize(__VA_ARGS__) : ctx.dequantize(__VA_ARGS__)))
+#define FLM_READBACK(ctx)        (bf16_mode ? b##ctx->readback() : (flm_xclbin_available ? h##ctx->readback() : ctx.readback()))
+#define FLM_SYNC_BACK(ctx, ...)  (bf16_mode ? b##ctx->sync_back_and_dequant(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->sync_back_and_dequant(__VA_ARGS__) : ctx.sync_back_and_dequant(__VA_ARGS__)))
+#define FLM_IS_READY(ctx)        (bf16_mode ? b##ctx->isReady() : (flm_xclbin_available ? h##ctx->isReady() : ctx.isReady()))
 // Unique_ptr variants (for cu_ptr which uses -> instead of .)
-#define FLM_GO_PTR(ctx, ...)         (flm_xclbin_available ? h##ctx->go(__VA_ARGS__) : ctx->go(__VA_ARGS__))
-#define FLM_GO_ROWS_PTR(ctx, ...)   (flm_xclbin_available ? h##ctx->go_rows(__VA_ARGS__) : ctx->go_rows(__VA_ARGS__))
-#define FLM_PACKB_PTR(ctx, ...)      (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx->packB(__VA_ARGS__))
-#define FLM_SYNC_AND_LAUNCH_PTR(ctx, ...) (flm_xclbin_available ? h##ctx->sync_and_launch(__VA_ARGS__) : ctx->sync_and_launch(__VA_ARGS__))
-#define FLM_DEQUANTIZE_PTR(ctx, ...) (flm_xclbin_available ? h##ctx->dequantize(__VA_ARGS__) : ctx->dequantize(__VA_ARGS__))
-#define FLM_QUANTIZE_ASYNC_PTR(ctx, ...) (flm_xclbin_available ? h##ctx->quantize_async(__VA_ARGS__) : ctx->quantize_async(__VA_ARGS__))
-#define FLM_IS_READY_PTR(ctx)    (flm_xclbin_available ? h##ctx->isReady() : ctx->isReady())
+#define FLM_GO_PTR(ctx, ...)         (bf16_mode ? b##ctx->go(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->go(__VA_ARGS__) : ctx->go(__VA_ARGS__)))
+#define FLM_GO_ROWS_PTR(ctx, ...)   (bf16_mode ? b##ctx->go_rows(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->go_rows(__VA_ARGS__) : ctx->go_rows(__VA_ARGS__)))
+#define FLM_PACKB_PTR(ctx, ...)      (bf16_mode ? b##ctx->packB(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->packB(__VA_ARGS__) : ctx->packB(__VA_ARGS__)))
+#define FLM_SYNC_AND_LAUNCH_PTR(ctx, ...) (bf16_mode ? b##ctx->sync_and_launch(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->sync_and_launch(__VA_ARGS__) : ctx->sync_and_launch(__VA_ARGS__)))
+#define FLM_DEQUANTIZE_PTR(ctx, ...) (bf16_mode ? b##ctx->dequantize(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->dequantize(__VA_ARGS__) : ctx->dequantize(__VA_ARGS__)))
+#define FLM_QUANTIZE_ASYNC_PTR(ctx, ...) (bf16_mode ? b##ctx->quantize_async(__VA_ARGS__) : (flm_xclbin_available ? h##ctx->quantize_async(__VA_ARGS__) : ctx->quantize_async(__VA_ARGS__)))
+#define FLM_IS_READY_PTR(ctx)    (bf16_mode ? b##ctx->isReady() : (flm_xclbin_available ? h##ctx->isReady() : ctx->isReady()))
+
+    // ── bf16 contexts (n1_core_placed.py xclbins) ──
+    std::unique_ptr<Bf16Ctx> bcq, bco, bcg, bcd, bcu_ptr;
+    if (bf16_mode) {
+        fprintf(stderr, "  === BF16 mode (n1_core_placed.py) ===\n");
+        auto init_bf16=[&](std::unique_ptr<Bf16Ctx>& c, const char* t, int K, int N) -> bool {
+            std::string xps=xpb(t,K,N), ips=ipb(t,K,N);
+            c=std::make_unique<Bf16Ctx>();
+            return c->init(dev, xps.c_str(), ips.c_str(), XM, K, N, NC);
+        };
+        if(!init_bf16(bcq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){fprintf(stderr,"FAIL bf16 QKV\n");return 1;}
+        if(!init_bf16(bco,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL bf16 O\n");return 1;}
+        if(cfg.gu_split){
+            if(!init_bf16(bcg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL bf16 G\n");return 1;}
+            if(!init_bf16(bcu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL bf16 U\n");return 1;}
+        } else {
+            if(!init_bf16(bcg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL bf16 GU\n");return 1;}
+        }
+        if(!init_bf16(bcd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL bf16 D\n");return 1;}
+        fprintf(stderr, "  bf16 contexts ready\n");
+    }
 
     // ── WS-11: per-token byte accounting (NPU_BYTE_STATS=1) ────────────────
     // Where bytes are copied on a q4nx decode: the 4 NPU GEMMs stream every
@@ -1183,7 +1262,7 @@ struct Bf16Ctx {
             // ~4x smaller than q/k, so one shared scale packs v onto ~10 int8
             // levels (~5% output error). q/k/v are packed with their own
             // scales and the QKV dequant applies them per section.
-            if (flm_xclbin_available) {
+            if (flm_xclbin_available || bf16_mode) {
                 FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             } else {
                 if ((int)cq.sec_scales.size() < NC) cq.sec_scales.resize(NC);
@@ -2904,7 +2983,7 @@ struct Bf16Ctx {
         auto r_qkv=FLM_LAUNCH_ASYNC_ROWS(cq,l,h_b.data(),npt,H,qkv_ascales.data());
         // Phase 2: Wait QKV + dequant (CPU attention runs after) — per-section
         // scales when the QKV ctx was packed that way
-        if (!flm_xclbin_available && l < (int)cq.sec_scales.size() && cq.sec_scales[l].size() == 3)
+        if (!bf16_mode && !flm_xclbin_available && l < (int)cq.sec_scales.size() && cq.sec_scales[l].size() == 3)
             cq.dequant_qkv_rows(r_qkv, qo_b.data(), npt, qkv_n, qkv_ascales.data(), l);
         else
             FLM_FINISH_ASYNC_ROWS(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascales.data(),qsc[l],l);
@@ -3156,7 +3235,7 @@ struct Bf16Ctx {
             int mlp_out=cfg.gu_split?IM:2*IM;
 
             // ── QKV: wait + readback + dequant ──
-            if (!flm_xclbin_available && l < (int)cq.sec_scales.size() && cq.sec_scales[l].size() == 3) {
+            if (!bf16_mode && !flm_xclbin_available && l < (int)cq.sec_scales.size() && cq.sec_scales[l].size() == 3) {
                 std::vector<float> dsc_b(batch_size, cq_ascale);
                 cq.dequant_qkv_rows(r_cq, qo_b.data(), batch_size, qkv_n, dsc_b.data(), l);
             } else
