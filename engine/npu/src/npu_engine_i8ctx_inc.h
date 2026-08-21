@@ -74,10 +74,19 @@ struct I8Ctx {
         npu_sequence seq(device_npu2);
         gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)K, (uint32_t)N,
                                   0, 0, false, 0, 0, 0);
-        seq.cmds2seq();
-        auto [dp, sz] = seq.dump();
-        std::vector<uint32_t> ins(dp, dp + sz / 4);
-        fprintf(stderr, "  generated %zu instr bytes (%zu words)\n", sz, ins.size());
+        // FLM-parity header (tools/gen_npu_insts.cpp): never cmds2seq() here —
+        // it appends a stale header AFTER the raw payload (bug S13).
+        std::vector<uint32_t>& raw = seq.raw_seq();
+        uint32_t ncmds = raw.back(); raw.pop_back();
+        std::vector<uint32_t> ins;
+        ins.reserve(raw.size() + 4);
+        ins.push_back(0x06040100);
+        ins.push_back(0x00000108);
+        ins.push_back(ncmds);
+        ins.push_back((uint32_t)(raw.size() * 4 + 16));
+        ins.insert(ins.end(), raw.begin(), raw.end());
+        fprintf(stderr, "  generated %zu instr bytes (%zu words)\n",
+                ins.size() * sizeof(uint32_t), ins.size());
 
         // Register xclbin
         try {
@@ -140,9 +149,15 @@ struct I8Ctx {
         npu_sequence seq(device_npu2);
         gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)KD, (uint32_t)ND,
                                   0, 0, false, 0, 0, 0);
-        seq.cmds2seq();
-        auto [dp, sz] = seq.dump();
-        std::vector<uint32_t> ins(dp, dp + sz / 4);
+        std::vector<uint32_t>& raw = seq.raw_seq();
+        uint32_t ncmds = raw.back(); raw.pop_back();
+        std::vector<uint32_t> ins;
+        ins.reserve(raw.size() + 4);
+        ins.push_back(0x06040100);
+        ins.push_back(0x00000108);
+        ins.push_back(ncmds);
+        ins.push_back((uint32_t)(raw.size() * 4 + 16));
+        ins.insert(ins.end(), raw.begin(), raw.end());
         layerInstrData[0] = ins;
         memcpy(layerInstr[0]->map(), ins.data(), ins.size() * sizeof(uint32_t));
         layerInstr[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -230,24 +245,24 @@ struct I8Ctx {
     // K×N are the logical (unpadded) weight dims; the BO is KD×ND (padded to 128).
     // Zero-init ensures padded regions contribute zero to the GEMM output.
     void packB(int l, const float* w, int K, int N, float& sout) {
-        // Single per-tensor scale: the host dequant (dequant_only) applies ONE
-        // scalar to every output column, so the weight quantization must use
-        // that same single scale. Per-32-group scales were a precision attempt
-        // that broke correctness: dequant used mean(s_g) for all columns while
-        // weights were divided by s_g per group, distorting activations per
-        // K-channel by up to mean(s)/s_g (measured 0.53x-1.66x on Qwen3-0.6B).
+        // Per-output-column weight scales: each column j is quantized with its
+        // own amax_j/127 and dequantized with group_scales[l][j]. A single
+        // per-tensor scale packed low-magnitude columns (Qwen3 v_proj rms
+        // ~0.007 vs q/k ~0.02-0.03) onto ~10 int8 levels -> ~5% output error
+        // that compounds over 28 layers and flips the final token.
         auto* Bm = (int8_t*)layerB[l]->map();
         memset(Bm, 0, (size_t)KD * ND);
-        float t_amax = 0;
-        for (int j = 0; j < N; j++)
+        std::vector<float> col(N);
+        double ssum = 0;
+        for (int j = 0; j < N; j++) {
+            float amax = 0;
             for (int i = 0; i < K; i++) {
                 float a = fabsf(w[(size_t)i * N + j]);
-                if (std::isfinite(a) && a > t_amax) t_amax = a;
+                if (std::isfinite(a) && a > amax) amax = a;
             }
-        if (t_amax < 1e-12f) t_amax = 1.0f;
-        float ts = t_amax / 127.0f;
-        float tis = 127.0f / t_amax;
-        for (int j = 0; j < N; j++)
+            if (amax < 1e-12f) amax = 1.0f;
+            float ts = amax / 127.0f;
+            float tis = 127.0f / amax;
             for (int i = 0; i < K; i++) {
                 float v = w[(size_t)i * N + j];
                 if (!std::isfinite(v)) v = 0;
@@ -256,9 +271,12 @@ struct I8Ctx {
                 else if (x < -127) x = -127;
                 Bm[(size_t)i * ND + j] = (int8_t)x;
             }
+            col[j] = ts;
+            ssum += ts;
+        }
         layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        group_scales[l].assign((K + 31) / 32, ts);  // uniform: dequant mean == ts
-        sout = ts;
+        group_scales[l] = std::move(col);
+        sout = (float)(ssum / N);
     }
 
     // ── Quantize activations into bA ──
@@ -385,15 +403,13 @@ struct I8Ctx {
 
     inline void dequant_only(float* C, int am, int an, float ascale,
                              float Bscale, int layer = -1) {
+        const float* gs = nullptr;
         if (layer >= 0 && (size_t)layer < group_scales.size() &&
-            !group_scales[layer].empty()) {
-            float ssum = 0;
-            for (float s : group_scales[layer]) ssum += s;
-            Bscale = ssum / group_scales[layer].size();
-        }
-        float cs = ascale * Bscale;
+            (int)group_scales[layer].size() == an)
+            gs = group_scales[layer].data();
         for (int m = 0; m < am; m++)
             for (int n = 0; n < an; n++) {
+                float cs = ascale * (gs ? gs[n] : Bscale);
                 float val = (float)((int32_t)Cm[m * ND + n]) * cs;
                 if (!std::isfinite(val)) val = 0;
                 C[m * an + n] = val;
@@ -404,15 +420,13 @@ struct I8Ctx {
     inline void dequant_only_rows(float* C, int am, int an,
                                   const float* ascales, float Bscale,
                                   int layer = -1) {
+        const float* gs = nullptr;
         if (layer >= 0 && (size_t)layer < group_scales.size() &&
-            !group_scales[layer].empty()) {
-            float ssum = 0;
-            for (float s : group_scales[layer]) ssum += s;
-            Bscale = ssum / group_scales[layer].size();
-        }
+            (int)group_scales[layer].size() == an)
+            gs = group_scales[layer].data();
         for (int m = 0; m < am; m++) {
-            float cs = ascales[m] * Bscale;
             for (int n = 0; n < an; n++) {
+                float cs = ascales[m] * (gs ? gs[n] : Bscale);
                 float val = (float)((int32_t)Cm[m * ND + n]) * cs;
                 if (!std::isfinite(val)) val = 0;
                 C[m * an + n] = val;
