@@ -629,7 +629,7 @@ struct Hip1bpBackend : Backend {
     }
 
     void destroy()override{
-        auto hf=[](void*p){if(p)HIP_CHECK_D(hipFree(p));};
+        auto hf=[](auto*&p){if(p){HIP_CHECK_D(hipFree(p));p=nullptr;}};
         hf(d_embed);hf(d_final_norm);hf(d_output);
         for(auto&ll:L){hf(ll.wq);hf(ll.wk);hf(ll.wv);hf(ll.wo);hf(ll.w1);hf(ll.w2);hf(ll.w3);hf(ll.pn);hf(ll.pon);hf(ll.q_norm);hf(ll.k_norm);hf(ll.bq);hf(ll.bk);hf(ll.bv);}
         for (auto& pd : PD) { hf(pd.pq); hf(pd.pk); hf(pd.pv); hf(pd.po); hf(pd.p1); hf(pd.p2); hf(pd.p3); }

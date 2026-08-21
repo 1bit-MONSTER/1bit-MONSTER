@@ -44,7 +44,7 @@ jobs:
           ALLOWED='
             AGENTS.md AGENTS-WORKTREES.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
             CMakeLists_windows.txt CODE_OF_CONDUCT.md CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
-            Makefile.zamba2 PLAN-GAIA.md README.md ROADMAP.md SECURITY.md
+            Makefile.zamba2 PLAN-GAIA.md README.md ROADMAP.md SECURITY.md  # PLAN-GAIA.md removal-only (superseded Gaia plan, deleted 2026-08)
             SHERRY-FILES.txt TODO_TRACKING.md VERSION env.sh install.sh
             package.json replace_i8ctx.py
             .github
@@ -61,7 +61,7 @@ jobs:
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations themes
             npu_smoke.py  # pyxrt NPU engine smoke test (CI/bench harness on strix-halo runner) — engine scope
-            .gitmodules .gitignore .gitnexusignore PLAN-GAIA.md third_party  # embedded Lemonade server core + vendored Gaia (zero-Python agent layer) — engine scope; .gitnexusignore = GitNexus index exclusions (agent tooling, like .gitignore)
+            .gitmodules .gitignore .gitnexusignore third_party  # embedded Lemonade server core — engine scope; .gitnexusignore = GitNexus index exclusions (agent tooling, like .gitignore)
             pixi.toml pixi.lock  # Mojo 1.0 toolchain pin (build tooling, like install.sh) — engine scope
             .rocm-stub  # ROCm stub headers/lib for build machines without a full ROCm install (whisper HIP port) — engine scope
             personas prompts skills workers zaya_audio  # burn-era deletions (UPDATE 34 cut) — removal-only, see docs/wiki/decisions.md

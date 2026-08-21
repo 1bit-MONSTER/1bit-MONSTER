@@ -2,7 +2,7 @@
 set -euo pipefail
 #!/usr/bin/env bash
 set -euo pipefail
-# 1bit.monster bootstrap — GAIA + Lemonade + FastFlowLM on Strix Halo.
+# 1bit.monster bootstrap — Lemonade + FastFlowLM on Strix Halo.
 #
 # Usage: curl -fsSL https://1bit.monster/install.sh | bash
 #
@@ -23,7 +23,7 @@ banner() {
   printf '\n'
   printf '%b╔══════════════════════════════════════════════════════════════╗%b\n' "$C" "$N"
   printf '%b║                                                              ║%b\n' "$C" "$N"
-  printf '%b║   %b1bit.monster · GAIA + Lemonade + FastFlowLM%b        %b║%b\n' "$C" "$B" "$N" "$C" "$N"
+  printf '%b║   %b1bit.monster · Lemonade + FastFlowLM%b        %b║%b\n' "$C" "$B" "$N" "$C" "$N"
   printf '%b║   %bgfx1151 iGPU · XDNA NPU · local OpenAI endpoints%b      %b║%b\n' "$C" "$D" "$N" "$C" "$N"
   printf '%b║                                                              ║%b\n' "$C" "$N"
   printf '%b╚══════════════════════════════════════════════════════════════╝%b\n\n' "$C" "$N"
