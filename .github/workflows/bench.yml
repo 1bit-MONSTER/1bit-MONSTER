@@ -1,0 +1,122 @@
+name: NPU Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: 'Path to Q4NX model file'
+        required: false
+        default: ''
+      decode_tokens:
+        description: 'Decode tokens to generate'
+        required: false
+        default: '32'
+  push:
+    paths:
+      - '.github/workflows/bench.yml'
+      - 'engine/npu/src/**'
+      - 'engine/npu/kernel/**'
+      - 'engine/npu/xclbins/**'
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: self-hosted
+    timeout-minutes: 60
+    if: github.event.repository.owner.login == '1bit-systems'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check NPU driver
+        run: |
+          if ! ls /dev/accel/accel* >/dev/null 2>&1; then
+            echo "::warning::NPU device not found — driver may need reload"
+            echo "DRIVER_OK=false" >> $GITHUB_ENV
+          else
+            echo "NPU device present"
+            echo "DRIVER_OK=true" >> $GITHUB_ENV
+          fi
+
+      - name: Check XRT
+        run: |
+          if ! ldconfig -p | grep -q xrt_coreutil; then
+            echo "::warning::XRT not found in ldconfig — NPU benchmarks unavailable on this runner"
+            echo "XRT_OK=false" >> $GITHUB_ENV
+          else
+            echo "XRT found"
+            echo "XRT_OK=true" >> $GITHUB_ENV
+          fi
+
+      - name: Build dequantizer
+        if: env.XRT_OK == 'true'
+        run: |
+          mkdir -p engine/npu/build
+          g++ -c -O3 -std=c++23 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.cpp
+
+      - name: Build engine (continuous batch)
+        if: env.XRT_OK == 'true'
+        run: |
+          # npu_engine_v12.cpp is a struct-only header — the actual engine
+          # with main() is npu_engine_all.cpp
+          g++ -std=c++23 -O3 -march=native -fopenmp -ffast-math \
+            -o engine/npu/build/npu_engine_v12 \
+            engine/npu/src/npu_engine_universal.cpp engine/npu/build/dequant_q4nx.o \
+            engine/npu/src/gemm_npu_instructions.cpp \
+            npu-infer/src/flm_bridge.cpp \
+            -Iengine/npu/include -Inpu-infer/include -Iinclude \
+            -I/opt/xrt/include -Iengine/npu -I. \
+            -L/opt/xrt/lib -lxrt_coreutil -luuid -lm -ldl -lpthread -laiebu
+
+      - name: Benchmark
+        if: env.DRIVER_OK == 'true'
+        env:
+          MODEL_PATH: ${{ github.event.inputs.model_path || '' }}
+          DEC: ${{ github.event.inputs.decode_tokens || '32' }}
+        run: |
+          # Auto-detect model if not specified
+          if [ -z "$MODEL_PATH" ]; then
+            for candidate in \
+              "$HOME/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx" \
+              "$HOME/.config/flm/models/Qwen3-1.7B-NPU2/model.q4nx" \
+              "$HOME/.config/flm/models/Qwen3-4B-NPU2/model.q4nx" \
+              "$HOME/models/qwen3-0.6b.q4nx" \
+              "$HOME/models/zaya1-8b.q4nx"; do
+              if [ -f "$candidate" ]; then
+                MODEL_PATH="$candidate"
+                echo "Auto-detected model: $MODEL_PATH"
+                break
+              fi
+            done
+          fi
+          if [ -z "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH" ]; then
+            echo "::error::No Q4NX model found. Pass model_path via workflow_dispatch or place a .q4nx model on the runner."
+            exit 1
+          fi
+          # Validate user-supplied decode_tokens: must be a positive integer
+          case "$DEC" in
+            ''|*[!0-9]*) echo "::error::decode_tokens must be a positive integer, got '$DEC'"; exit 1 ;;
+          esac
+          echo "=== NPU Benchmark $(date -u) ==="
+          echo "Model: $MODEL_PATH"
+          echo "Decode tokens: $DEC"
+          cd engine/npu/build
+          OMP_NUM_THREADS=16 ./npu_engine_v12 "$MODEL_PATH" "$DEC" 2>&1 | tee benchmark.log
+          echo "---"
+          grep "ms/tok" benchmark.log || echo "::warning::No ms/tok line found"
+
+      - name: Upload benchmark log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: benchmark-log
+          path: engine/npu/build/benchmark.log
+          retention-days: 30
+
+      - name: Update BENCHMARKS.md timestamp
+        if: env.DRIVER_OK == 'true'
+        run: |
+          NOW=$(date -u +"%Y-%m-%d %H:%M UTC")
+          sed -i "s/^\*Benchmarks run.*/*Benchmarks run $NOW — CI-verified./" engine/npu/BENCHMARKS.md

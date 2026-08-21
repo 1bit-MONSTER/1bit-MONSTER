@@ -474,6 +474,7 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
     for(int b=0;b<K;b++)top_ids[b]=top[b].id;
 }
 
+int zaya_decode_main(int argc, char** argv);
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
     // issue #1431: sampling was deterministic
@@ -548,6 +549,24 @@ int main(int argc,char**argv){
         cfg = parse_q4nx_header(mp,model_tag.c_str());
 
     if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);return 1;}
+    // Zaya (CCA attention + TQ1 MoE, alternating layers + running residual) is
+    // decoded by the dedicated hybrid path in zaya_decode.cpp — CCA attention on
+    // CPU, MoE expert FFN on the NPU via final_i8_MOE_GU/D_zaya.xclbin.
+    {
+        int fdz = open(mp, O_RDONLY);
+        if (fdz >= 0) {
+            struct stat stz; fstat(fdz, &stz);
+            void* hdrz = mmap(nullptr, stz.st_size, PROT_READ, MAP_PRIVATE, fdz, 0);
+            close(fdz);
+            if (hdrz != MAP_FAILED) {
+                uint64_t hszz; memcpy(&hszz, hdrz, 8);
+                const char* jz = (const char*)hdrz + 8;
+                const char* zz = (const char*)memmem(jz, (size_t)hszz, "zaya", 4);
+                munmap(hdrz, stz.st_size);
+                if (zz) return zaya_decode_main(argc, argv);
+            }
+        }
+    }
     int H=cfg.H,NC=cfg.NC,NH=cfg.NH,NKV=cfg.NKV,HD=cfg.HD,IM=cfg.IM,NV=cfg.NV,GQA=cfg.GQA,XM=cfg.XM;
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
