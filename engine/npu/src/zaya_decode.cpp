@@ -29,6 +29,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <unordered_map>
 #include <fcntl.h>
 #include <unistd.h>
@@ -400,8 +401,9 @@ int zaya_decode_main(int argc, char** argv) {
     if (prompt.size() == 1) prompt.push_back(token_id);
     for (int i = 0; i < (int)prompt.size(); i++) forward(prompt[i], i);
 
-    const int N_GEN = 8;
+    const int N_GEN = getenv("NPU_N_GEN") ? atoi(getenv("NPU_N_GEN")) : 8;
     int cur = prompt.back();
+    auto tgen0 = std::chrono::steady_clock::now();
     for (int step = 0; step < N_GEN; step++) {
         int arg = forward(cur, (int)prompt.size() + step);
         printf("%d ", arg);
@@ -410,6 +412,8 @@ int zaya_decode_main(int argc, char** argv) {
     }
     printf("\n");
     fflush(stdout);
+    double gen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgen0).count();
+    fprintf(stderr, "[perf] %d tokens in %.0f ms (%.1f ms/tok, %.1f tok/s)\n", N_GEN, gen_ms, gen_ms / N_GEN, 1000.0 * N_GEN / gen_ms);
     fprintf(stderr, "[cache] hits=%zu misses=%zu (%.1f%% hit)\n", cache_hits, cache_misses,
             cache_hits + cache_misses ? 100.0 * cache_hits / (cache_hits + cache_misses) : 0.0);
     exit(0);  // skip xrt destructors (NPU wedges on teardown)
