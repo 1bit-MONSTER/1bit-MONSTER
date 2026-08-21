@@ -212,15 +212,17 @@ int zaya_decode_main(int argc, char** argv) {
     std::vector<float> gu_T((size_t)2 * m.n_ff * d.H), dn_T((size_t)m.n_ff * d.H);
     std::vector<float> gu_out(2 * m.n_ff), silu(m.n_ff);
 
-    // Expert pack cache: per MoE layer, expert -> packed int8 weight + scale.
-    // A hit skips the dequant-transpose-quantize and only memcpys the BO.
-    struct ExpCache { std::unordered_map<int, std::vector<int8_t>> w; std::unordered_map<int, float> s; std::unordered_map<int, std::vector<float>> cs; };
-    std::vector<ExpCache> gu_c(NC), d_c(NC);
-    size_t cache_hits = 0, cache_misses = 0;
+    // Resident-expert weights: one packed weight BO per (MoE layer, expert).
+    // Decode passes the BO handle directly (zero per-token weight memcpy/sync);
+    // per-column dequant scales are stored alongside each expert.
+    std::vector<std::vector<std::unique_ptr<xrt::bo>>> gu_bo(NC), d_bo(NC);
+    std::vector<std::vector<std::vector<float>>> gu_cs(NC), d_cs(NC);
+    for (int l = 1; l < NC; l += 2) {
+        gu_bo[l].resize(m.n_exp); d_bo[l].resize(m.n_exp);
+        gu_cs[l].resize(m.n_exp); d_cs[l].resize(m.n_exp);
+    }
 
-    // Pre-warm the expert cache: pack all 16 experts for every MoE (odd) layer
-    // up-front, so decode never pays the dequant-transpose-quantize on a miss
-    // (matches zaya_npu_runner.cpp; ~59s one-time, 100% cache hit in decode).
+    // Pack all 16 experts for every MoE (odd) layer into resident BOs at startup.
     {
         for (int l = 1; l < NC; l += 2) {
             auto& w = L[l];
@@ -230,26 +232,20 @@ int zaya_decode_main(int argc, char** argv) {
                 for (int j = 0; j < d.H; j++)
                     for (int i = 0; i < 2 * m.n_ff; i++)
                         gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
+                gu_bo[l][e] = gu_ctx.make_weight_bo(dev);
                 float gu_sc = 0;
-                gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
-                int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
-                gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
-                gu_c[l].s[e] = gu_sc;
-                gu_c[l].cs[e] = gu_ctx.group_scales[l];
+                gu_ctx.packB_into(*gu_bo[l][e], gu_T.data(), d.H, 2 * m.n_ff, gu_sc, gu_cs[l][e]);
                 const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
                 #pragma omp parallel for schedule(static)
                 for (int j = 0; j < m.n_ff; j++)
                     for (int i = 0; i < d.H; i++)
                         dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                d_bo[l][e] = d_ctx.make_weight_bo(dev);
                 float d_sc = 0;
-                d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
-                int8_t* bm2 = (int8_t*)d_ctx.layerB[l]->map();
-                d_c[l].w[e] = std::vector<int8_t>(bm2, bm2 + (size_t)d_ctx.KD * d_ctx.ND);
-                d_c[l].s[e] = d_sc;
-                d_c[l].cs[e] = d_ctx.group_scales[l];
+                d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
             }
         }
-        fprintf(stderr, "expert cache pre-warmed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
+        fprintf(stderr, "resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
     }
 
     auto forward = [&](int tok, int pos) -> int {
@@ -317,56 +313,21 @@ int zaya_decode_main(int argc, char** argv) {
                 #pragma omp parallel for schedule(static)
                 for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
             } else {
-                // MoE FFN (NPU): router on CPU, GEMMs on NPU
+                // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
-                // GU: cache lookup
-                float gu_sc = 0;
-                auto gu_it = gu_c[l].w.find(e);
-                if (gu_it != gu_c[l].w.end()) {
-                    memcpy(gu_ctx.layerB[l]->map(), gu_it->second.data(), (size_t)gu_ctx.KD * gu_ctx.ND);
-                    gu_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-                    gu_ctx.group_scales[l] = gu_c[l].cs[e];
-                    gu_sc = gu_c[l].s[e]; cache_hits++;
-                } else {
-                    const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
-                    for (int j = 0; j < d.H; j++)
-                        for (int i = 0; i < 2 * m.n_ff; i++)
-                            gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
-                    gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
-                    int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
-                    gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
-                    gu_c[l].s[e] = gu_sc;
-                    gu_c[l].cs[e] = gu_ctx.group_scales[l]; cache_misses++;
-                }
+                gu_ctx.group_scales[l] = gu_cs[l][e];
+                d_ctx.group_scales[l] = d_cs[l][e];
                 float ag = dynamic_ascale(residual.data(), d.H);
-                auto gu_run = gu_ctx.launch_async(l, residual.data(), 1, d.H, ag);
-                // D: upload weights NOW so its BO DMA overlaps the in-flight GU GEMM.
-                float d_sc = 0;
-                auto d_it = d_c[l].w.find(e);
-                if (d_it != d_c[l].w.end()) {
-                    memcpy(d_ctx.layerB[l]->map(), d_it->second.data(), (size_t)d_ctx.KD * d_ctx.ND);
-                    d_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-                    d_ctx.group_scales[l] = d_c[l].cs[e];
-                    d_sc = d_c[l].s[e]; cache_hits++;
-                } else {
-                    const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
-                    for (int j = 0; j < m.n_ff; j++)
-                        for (int i = 0; i < d.H; i++)
-                            dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
-                    d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
-                    int8_t* bm = (int8_t*)d_ctx.layerB[l]->map();
-                    d_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)d_ctx.KD * d_ctx.ND);
-                    d_c[l].s[e] = d_sc;
-                    d_c[l].cs[e] = d_ctx.group_scales[l]; cache_misses++;
-                }
-                gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, gu_sc, l);
+                auto gu_run = gu_ctx.launch_async_with_bo(*gu_bo[l][e], residual.data(), 1, d.H, ag);
+                gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, 0.0f, l);
                 for (int i = 0; i < m.n_ff; i++) {
                     float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
                     silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
                 }
                 float ad = dynamic_ascale(silu.data(), m.n_ff);
-                d_ctx.go(l, silu.data(), 1, m.n_ff, ad, d_sc, moe_out.data(), d.H);
+                auto d_run = d_ctx.launch_async_with_bo(*d_bo[l][e], silu.data(), 1, m.n_ff, ad);
+                d_ctx.finish_async(d_run, moe_out.data(), 1, d.H, ad, 0.0f, l);
                 // layer-1 per-layer accuracy probe: CPU float MoE vs NPU int8 MoE
                 if (l == 1 && pos == 0) {
                     std::vector<float> cpu_out(d.H);
@@ -414,7 +375,5 @@ int zaya_decode_main(int argc, char** argv) {
     fflush(stdout);
     double gen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgen0).count();
     fprintf(stderr, "[perf] %d tokens in %.0f ms (%.1f ms/tok, %.1f tok/s)\n", N_GEN, gen_ms, gen_ms / N_GEN, 1000.0 * N_GEN / gen_ms);
-    fprintf(stderr, "[cache] hits=%zu misses=%zu (%.1f%% hit)\n", cache_hits, cache_misses,
-            cache_hits + cache_misses ? 100.0 * cache_hits / (cache_hits + cache_misses) : 0.0);
     exit(0);  // skip xrt destructors (NPU wedges on teardown)
 }

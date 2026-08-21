@@ -241,6 +241,60 @@ struct I8Ctx {
         return true;
     }
 
+    // ── Resident-expert (MoE) helpers: pack/launch against an arbitrary BO ──
+    // Decode is M=1 with top-1 routing; re-streaming the selected expert's
+    // weights into a shared per-layer BO every token costs a memcpy + sync on
+    // the critical path (~30ms/tok for 20 layers). Instead allocate one
+    // weight BO per (layer, expert) at startup, pack+sync once, and pass the
+    // BO handle directly at decode.
+    std::unique_ptr<xrt::bo> make_weight_bo(xrt::device& d) {
+        int grp_w = k->group_id(4);
+        return std::make_unique<xrt::bo>(d, (size_t)KD * ND,
+                                          XRT_BO_FLAGS_HOST_ONLY, grp_w);
+    }
+
+    // Pack weights into an arbitrary (already-allocated) weight BO.
+    void packB_into(xrt::bo& bo, const float* w, int K, int N,
+                    float& sout, std::vector<float>& col_out) {
+        auto* Bm = (int8_t*)bo.map();
+        memset(Bm, 0, (size_t)KD * ND);
+        std::vector<float> col(N);
+        double ssum = 0;
+        for (int j = 0; j < N; j++) {
+            float amax = 0;
+            for (int i = 0; i < K; i++) {
+                float a = fabsf(w[(size_t)i * N + j]);
+                if (std::isfinite(a) && a > amax) amax = a;
+            }
+            if (amax < 1e-12f) amax = 1.0f;
+            float ts = amax / 127.0f;
+            float tis = 127.0f / amax;
+            for (int i = 0; i < K; i++) {
+                float v = w[(size_t)i * N + j];
+                if (!std::isfinite(v)) v = 0;
+                int x = (int)roundf(v * tis);
+                if (x > 127) x = 127;
+                else if (x < -127) x = -127;
+                Bm[(size_t)i * ND + j] = (int8_t)x;
+            }
+            col[j] = ts;
+            ssum += ts;
+        }
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        col_out = std::move(col);
+        sout = (float)(ssum / N);
+    }
+
+    // Async launch with an arbitrary weight BO (resident-expert path).
+    inline xrt::run launch_async_with_bo(xrt::bo& wbo, const float* A,
+                                         int am, int ak, float ascale) {
+        quantize_async(A, am, ak, ascale);
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        return (*k)((unsigned)3, *layerInstr[0],
+                    (unsigned)(layerInstrData[0].size()),
+                    *bA, wbo, *bC);
+    }
+
     // ── Pack weights for layer l into contiguous BO ──
     // K×N are the logical (unpadded) weight dims; the BO is KD×ND (padded to 128).
     // Zero-init ensures padded regions contribute zero to the GEMM output.
