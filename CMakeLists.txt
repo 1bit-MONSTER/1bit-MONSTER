@@ -1123,6 +1123,23 @@ set_source_files_properties(src/backend_npu_flm.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/unified_pool.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
 set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
+
+# -- mesh : self-aware network substrate (peer discovery + /v1/mesh/* API) --
+# Pure C++ (POSIX sockets + nlohmann), no model weights required. Compiled
+# into onebin via UNIFIED_SERVER_SOURCES AND exposed as the standalone
+# mesh_peer demo binary (two instances discover each other out of the box).
+set(MESH_SOURCES
+    src/mesh/node_identity.cpp
+    src/mesh/peer_discovery.cpp
+    src/mesh/peer_api.cpp
+    src/mesh/mesh_agent.cpp
+    src/mesh/dispatch.cpp)
+list(APPEND UNIFIED_SERVER_SOURCES ${MESH_SOURCES})
+
+add_executable(mesh_peer tools/mesh_peer.cpp ${MESH_SOURCES})
+target_include_directories(mesh_peer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(mesh_peer PRIVATE -O2 -Wall -Wno-unused-result -std=c++23)
+target_link_libraries(mesh_peer PRIVATE httplib::httplib nlohmann_json::nlohmann_json)
 # FastFlowLM (flm) is now an official AMD/ROCm project, shipped prebuilt:
 #   - built into the TheRock dist (7.14 / 7.15a) at <therock-root>/bin/flm
 #   - as the fastflowlm .deb (github.com/FastFlowLM/FastFlowLM releases — the
@@ -1355,7 +1372,10 @@ set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
 set_source_files_properties(src/backend_npu.cpp src/backend_npu_flm.cpp
     src/unified_pool.cpp src/backend_fused_npu.cpp src/backend_generic.cpp
     tools/unified_server.cpp tools/unified_router.cpp
-    tools/onebin.cpp PROPERTIES LANGUAGE CXX)
+    tools/onebin.cpp tools/jarvis/jarvis_app.cpp PROPERTIES LANGUAGE CXX)
+# mesh module is pure C++ — keep it out of the HIP path (onebin's default
+# linker language would otherwise compile these as HIP).
+set_source_files_properties(${MESH_SOURCES} PROPERTIES LANGUAGE CXX)
 target_include_directories(onebin PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src

@@ -166,6 +166,26 @@ else
     echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"
 fi
 
+# ── Mesh: self-aware network substrate (optional — needs the CMake build) ──
+total=$((total+1))
+if [ -x build/mesh_peer ]; then
+    if bash Testing/mesh_smoke.sh build/mesh_peer >/dev/null 2>&1; then
+        echo "✓ mesh (peer discovery + ask/answer)";
+    else echo "✗ mesh (peer discovery + ask/answer)"; fail=$((fail+1)); fi
+else
+    echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"
+fi
+
+# ── JARVIS fleet dispatch (optional — needs build/1bit + build/mesh_peer) ──
+total=$((total+1))
+if [ -x build/1bit ] && [ -x build/mesh_peer ]; then
+    if bash Testing/jarvis_mesh_smoke.sh build/1bit build/mesh_peer >/dev/null 2>&1; then
+        echo "✓ jarvis fleet dispatch (mesh-aware, DSH brain path)";
+    else echo "✗ jarvis fleet dispatch (mesh-aware, DSH brain path)"; fail=$((fail+1)); fi
+else
+    echo "  - jarvis fleet: binaries absent, skipped (cmake --build build --target onebin mesh_peer)"
+fi
+
 
 echo "======================================"
 echo "$((total-fail))/$total passed"

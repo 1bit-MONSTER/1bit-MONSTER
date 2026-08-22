@@ -33,6 +33,11 @@
 #include "simple_tokenizer.h"
 #include "vl_processor.h"
 #include "vision_encoder.h"
+#include "mesh/mesh.hpp"
+#include "mesh/node_identity.hpp"
+#include "mesh/peer_discovery.hpp"
+#include "mesh/peer_api.hpp"
+#include "mesh/mesh_agent.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -135,6 +140,13 @@ static std::string g_weights_dir = []() -> std::string {
     return "/tmp/zaya_weights/";
 }();
 static int g_port = 8088;
+
+// ── Mesh: self-aware network presence (peer discovery, /v1/mesh/*) ──
+// On by default — a 1bit-MONSTER install announces itself on the LAN and
+// starts integration conversations with sibling installs out of the box.
+static int g_mesh_port = -1;           // multicast port override (0 = default)
+static std::string g_mesh_name;        // friendly node name (default: hostname)
+static bool g_mesh_enabled = true;     // --no-mesh disables
 
 // ── Speculative decode (--draft-model / --spec-decode) ──
 static Backend* g_draft_backend = nullptr;      // second, small model (ggml-vulkan)
@@ -1189,6 +1201,9 @@ int main(int argc, char** argv) {
             printf("      --draft-model PATH  Small model for speculative decode\n");
             printf("      --spec-decode       Verify draft proposals in batches (needs --draft-model)\n");
             printf("      --pool              Keep all models resident in the unified pool\n");
+            printf("      --mesh-port PORT    Mesh multicast port (default: 42424)\n");
+            printf("      --mesh-name NAME    Mesh node friendly name (default: hostname)\n");
+            printf("      --no-mesh           Disable mesh peer discovery (on by default)\n");
             printf("  -h, --help              Show this help and exit\n");
             exit(0);
         }
@@ -1210,6 +1225,9 @@ int main(int argc, char** argv) {
         {"draft-model",   required_argument, nullptr, 1001},
         {"spec-decode",   no_argument,       nullptr, 1002},
         {"pool",          no_argument,       nullptr, 1003},
+        {"mesh-port",     required_argument, nullptr, 2001},
+        {"mesh-name",     required_argument, nullptr, 2002},
+        {"no-mesh",       no_argument,       nullptr, 2003},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -1232,6 +1250,9 @@ int main(int argc, char** argv) {
             case 1001: g_draft_model_path = optarg; break;
             case 1002: g_spec_decode = true; break;
             case 1003: g_pool_enabled = true; break;
+            case 2001: g_mesh_port = atoi(optarg); break;
+            case 2002: g_mesh_name = optarg; break;
+            case 2003: g_mesh_enabled = false; break;
         }
     }
 
@@ -2473,6 +2494,46 @@ int main(int argc, char** argv) {
         add_cors(res);
     });
 
+    // ── Mesh: self-aware network presence ────────────────────────────────
+    // Out of the box (unless --no-mesh): announce this install on the LAN
+    // multicast group, discover sibling 1bit-MONSTER installs, expose the
+    // /v1/mesh/* API, and run the self-awareness agent that starts
+    // integration conversations with new peers. No config required.
+    std::unique_ptr<mesh::PeerDiscovery> mesh_disc;
+    std::unique_ptr<mesh::MeshAgent> mesh_agent;
+    if (g_mesh_enabled) {
+        mesh::MeshConfig mesh_cfg;
+        mesh_cfg.http_port = static_cast<uint16_t>(g_port);
+        mesh_cfg.name      = g_mesh_name;
+        if (g_mesh_port > 0) mesh_cfg.mesh_port = static_cast<uint16_t>(g_mesh_port);
+        mesh_cfg.state_dir = mesh::default_state_dir();
+
+        mesh::NodeIdentity me = mesh::load_or_create_identity(mesh_cfg);
+        me.host = mesh::detect_local_ip();  // reachable LAN address, not loopback
+        me.api_base = mesh::make_api_base(me.host, me.port);
+        if (!g_model_name.empty()) {  // advertise the model we're serving
+            mesh::MeshModelInfo mi;
+            mi.name    = g_model_name;
+            mi.backend = "auto";
+            me.caps.models.push_back(mi);
+        }
+
+        mesh_disc = std::make_unique<mesh::PeerDiscovery>(mesh_cfg, me);
+        if (mesh_disc->start()) {
+            mesh_agent = std::make_unique<mesh::MeshAgent>(*mesh_disc, mesh_cfg);
+            mesh_agent->start();
+            mesh::register_mesh_handlers(svr, *mesh_disc, mesh_agent.get());
+            printf("  Mesh: node '%s' (%s) announcing on %s:%u\n",
+                   me.name.c_str(), me.id.substr(0, 8).c_str(),
+                   mesh_cfg.mesh_group.c_str(), mesh_cfg.mesh_port);
+        } else {
+            mesh_disc.reset();
+            printf("  Mesh: disabled (multicast socket unavailable)\n");
+        }
+    } else {
+        printf("  Mesh: disabled (--no-mesh)\n");
+    }
+
     // ── Start server ──
     printf("\n──────────────────────────────────────────────\n");
     printf("  1bit.systems — Agent Inference Server\n");
@@ -2492,6 +2553,12 @@ int main(int argc, char** argv) {
     printf("    POST /v1/strategy/select   — Change strategy at runtime\n");
     printf("    POST /v1/backend/select    — Select specific backend\n");
     printf("    GET  /v1/backend/status    — Full backend report\n");
+    printf("    GET  /v1/mesh/me           — Mesh node identity card\n");
+    printf("    GET  /v1/mesh/peers        — Sibling installs on the network\n");
+    printf("    POST /v1/mesh/handshake    — Hook up with a peer (capability exchange)\n");
+    printf("    POST /v1/mesh/ask          — Deliver a question to this node\n");
+    printf("    POST /v1/mesh/answer       — Reply to a peer's question\n");
+    printf("    GET  /v1/mesh/asks         — Conversation log\n");
     printf("──────────────────────────────────────────────\n");
     printf("\n  Try it:\n");
     printf("    curl http://127.0.0.1:%d/v1/router\n", g_port);
@@ -2514,6 +2581,10 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     svr.stop();
     listener.join();
+
+    // ── Mesh cleanup (stop beacons, leave the multicast group) ──
+    if (mesh_agent) mesh_agent->stop();
+    if (mesh_disc)  mesh_disc->stop();
 
     // ── Cleanup ──
     printf("\nShutting down...\n");
