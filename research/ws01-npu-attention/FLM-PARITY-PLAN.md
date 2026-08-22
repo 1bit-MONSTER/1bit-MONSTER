@@ -76,8 +76,9 @@ token-sequential, so this batches *within* a token, not across tokens.
 | baseline (M=128, cache, CPU scalar) | 2.2 | done |
 | + CPU parallelization (lm_head + attention OpenMP) | 3.9 | done |
 | + resident-expert BOs (no per-token memcpy/sync) | 4.3 | done |
-| + **M=16 decode xclbins** (`build_zaya_m16.sh`) | **6.2** | **done** |
-| + M=1 scalar decode xclbin (needs m=1 DMA tap) | ~7 | next |
+| + M=16 decode xclbins (`build_zaya_m16.sh`) | **6.2** | **done** |
+| + M=1 scalar decode xclbin | — | **dead end** (scalar kernel reads B row-major vs microtiled B-DMA → corr~0; also slower than M=16) |
+| + vectorized GEMV kernel (fast M=1) | ~7 | next |
 | + fused GU+D (on-NPU SiLU, RTP 0x100c) | ~7.5 | next |
 | + attention on NPU + runlist | ~15–20 | later |
 
