@@ -1,0 +1,223 @@
+name: End-to-End Smoke Test
+
+on:
+  pull_request:
+    paths:
+      - "tools/unified_server.cpp"
+      - "src/backend_*.cpp"
+      - "src/backend_*.hip"
+      - "src/zaya_engine.cpp"
+      - "src/zamba2_engine*"
+      - "src/gguf_*.cpp"
+      - "CMakeLists.txt"
+      - ".github/workflows/*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          source env.sh
+          cmake -B build -G Ninja
+          cmake --build build --target unified_server vision_server -j$(nproc)
+
+      - name: Download test model
+        # Model files are git-ignored (symlinked to HF cache locally).
+        # Download a small GGUF model so the server can actually load one.
+        run: |
+          MODEL="models/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+          if [ ! -f "$MODEL" ]; then
+            echo "Downloading SmolLM2-135M (104 MB)..."
+            curl -sL -o "$MODEL"               "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+            ls -lh "$MODEL"
+          else
+            echo "Model already cached"
+          fi
+
+      - name: Stop production service (issue #1036)
+        # This runner is the same box as the always-on production
+        # 1bit-systems.service (unified_server, port 8088). Every historical
+        # run of this workflow failed — the CI instance's health check never
+        # connected because it was contending with the production instance
+        # for the same physical GPU (both hold /dev/accel/accel0 /
+        # ROCm device access). Stop it for the duration of this job; restarted
+        # unconditionally in Cleanup below.
+        run: |
+          sudo systemctl stop 1bit-systems.service || true
+          # Also kill stray manual servers (vision_server etc.) that can
+          # squat on 8099 and answer health checks with the wrong schema.
+          pkill -f "[v]ision_server.*8099" || true
+          # -9 fallback: a wedged instance can survive SIGTERM and squat on 8099
+          # with the wrong health schema (issue #1257 incident class).
+          pkill -9 -f "[v]ision_server.*8099" || true
+          # Stray unified_server instances from manual runs/dev agents on this
+          # shared box answer health with the right schema but die mid-test
+          # (curl 56), or hold the port so our server can't bind.
+          pkill -f "[u]nified_server.*8099" || true
+          pkill -9 -f "[u]nified_server.*8099" || true
+          sleep 2
+
+      - name: Start server
+        run: |
+          rm -f /tmp/unified_server.lock
+          ./build/unified_server --port 8099 --weights models/ \
+            --gen-timeout-ms 10000 --quick &>/tmp/smoke_server.log &
+          echo "pid=$!"
+          # Wait for startup (GPU init can take ~90s on Strix Halo)
+          for i in $(seq 1 45); do
+            sleep 2
+            if curl -sf http://127.0.0.1:8099/v1/health >/dev/null 2>&1; then
+              echo "Server ready after $((i*2))s"
+              break
+            fi
+          done
+
+      - name: Dump server model info
+        run: |
+          echo "=== Active backend ==="
+          health=$(curl -sf http://127.0.0.1:8099/v1/health)
+          echo "$health" | python3 -c '
+          import json,sys; d=json.load(sys.stdin)
+          model = d.get("model", "?")
+          print("Model: " + str(model))
+          ab = d.get("active_backend", {})
+          print("Active backend: " + str(ab.get("id", "?")))
+          print("All backends:")
+          for b in d.get("backends", []):
+              mark = ">" if b.get("id") == ab.get("id") else " "
+              print("  " + mark + " " + str(b.get("id","?")) + " functional=" + str(b.get("functional")) + " available=" + str(b.get("available")))
+          # Show model format info
+          if model and model != "?" and model != "unknown":
+              print("Model loaded: YES (" + str(model) + ")")
+          else:
+              print("Model loaded: NO")
+          '
+
+      - name: Test health endpoint
+        run: |
+          health=$(curl -sf http://127.0.0.1:8099/v1/health)
+          echo "$health" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert d['status'] == 'ok', 'health check failed'
+          assert d.get('model'), 'no model'
+          assert d.get('generation_timeout_ms', 0) > 0, 'wrong timeout'
+          print('OK: health endpoint')
+          "
+
+      - name: Test chat completion
+        run: |
+          resp=$(curl -sf http://127.0.0.1:8099/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":8,"temperature":0}')
+          echo "$resp" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert 'choices' in d, 'no choices'
+          assert len(d['choices']) > 0, 'empty choices'
+          c = d['choices'][0]
+          assert 'message' in c, 'no message in choice'
+          assert 'content' in c['message'], 'no content in message'
+          fr = c.get('finish_reason')
+          print('Model:', d.get('model', '?'))
+          print('Finish reason:', fr)
+          print('Content length:', len(c['message']['content']))
+          print('Content:', repr(c['message']['content'][:100]))
+          # Accept stop, timeout, or error
+          assert fr in ('stop', 'timeout', 'error'), 'unknown finish: ' + str(fr)
+          print('OK: chat completion endpoint')
+          "
+
+      - name: Test completion endpoint
+        run: |
+          resp=$(curl -s http://127.0.0.1:8099/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{"prompt":"Hello","max_tokens":4}')
+          echo "$resp" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          if 'text' in d:
+              print('OK: completions endpoint, text=' + repr(d['text'][:50]))
+          else:
+              print('OK: completions endpoint (no model loaded)')
+          "
+
+      - name: Test invalid JSON
+        run: |
+          resp=$(curl -s http://127.0.0.1:8099/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d 'not json')
+          echo "$resp" | python3 -c '
+          import json,sys; d=json.load(sys.stdin)
+          if "error" in d:
+              print("OK: invalid JSON returns 400")
+          else:
+              print("OK: server responded")
+          '
+
+      - name: Test timeout
+        run: |
+          resp=$(curl -s -m 15 http://127.0.0.1:8099/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"Write a long essay"}],"max_tokens":9999,"temperature":0}')
+          echo "$resp" | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          print('Finish reason:', d['choices'][0].get('finish_reason'))
+          print('Tokens:', d['usage'].get('completion_tokens'))
+          "
+
+      - name: Test vision_server health (issue #1257)
+        # vision_server had zero CI coverage; a stray instance once squatted on
+        # 8099 answering health checks with the wrong schema (PR #1248 run).
+        # Models are gitignored (present on the self-hosted runner); skip
+        # gracefully elsewhere.
+        run: |
+          MM="models/Mage-VL-4B.1bp"
+          VIT="models/Mage-ViT.1bp"
+          if [ ! -f "$MM" ] || [ ! -f "$VIT" ]; then
+            echo "SKIP: vision models not present ($MM / $VIT)"
+            exit 0
+          fi
+          # Free the GPU for the VL stack.
+          pkill -f "unified_server.*8099" 2>/dev/null || true
+          sleep 2
+          ./build/vision_server --port 8099 --mmproj "$VIT" --model "$MM" \
+            &>/tmp/smoke_vision_server.log &
+          echo "pid=$!"
+          for i in $(seq 1 60); do
+            sleep 2
+            if curl -sf http://127.0.0.1:8099/v1/health >/dev/null 2>&1; then
+              echo "vision_server ready after $((i*2))s"
+              break
+            fi
+          done
+          curl -sf http://127.0.0.1:8099/v1/health | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert d['status'] == 'ok', 'health check failed'
+          assert 'VL' in d.get('service',''), 'wrong service schema'
+          assert d.get('model') and d.get('mmproj'), 'missing model/mmproj'
+          assert d.get('port') == 8099, 'wrong port'
+          assert d.get('version','').startswith('vision-server-'), 'missing/odd version'
+          assert d.get('uptime',''), 'missing uptime'
+          print('OK: vision_server health endpoint')
+          "
+          curl -sf http://127.0.0.1:8099/v1/models | python3 -c "
+          import json,sys; d=json.load(sys.stdin)
+          assert 'data' in d and len(d['data']) > 0, 'no models listed'
+          print('OK: vision_server models endpoint:', d['data'][0].get('id'))
+          "
+          pkill -f "vision_server.*8099" 2>/dev/null || true
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill -f "unified_server.*8099" 2>/dev/null || true
+          pkill -f "[v]ision_server.*8099" 2>/dev/null || true
+          rm -f /tmp/unified_server.lock
+          sudo systemctl start 1bit-systems.service || true

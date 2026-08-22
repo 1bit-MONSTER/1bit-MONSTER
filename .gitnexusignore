@@ -1,2 +1,3 @@
 engine/gpu/src/shaders/cuda/kernels.cu
 stb_image.h
+include/rocm_cpp/bitnet_model.h

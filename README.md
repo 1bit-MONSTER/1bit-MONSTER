@@ -2,6 +2,8 @@
 
 <img src="site/assets/banner.png" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
+[![1bit.MONSTER](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/badge-amber.svg)](https://github.com/1bit-MONSTER)
+
 ## One engine to rule them all
 
 ### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.

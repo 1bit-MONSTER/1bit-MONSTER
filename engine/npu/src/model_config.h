@@ -167,6 +167,30 @@ static int get_shape_dim1(const char* js, size_t jl, const char* key) {
     return 0;
 }
 
+// Parse a top-level scalar integer field (e.g. "hidden_size": 2048).
+// Q4NX-JSON manifests written by the converter carry authoritative model dims
+// at the top level; the packed/tiled tensor shapes are NOT the logical dims
+// (Zaya CCA stores embed_tokens as [vocab/4, 2.5*H] INT8 tiles, not [NV, H]).
+static int get_top_int(const char* js, size_t jl, const char* field) {
+    size_t fl = strlen(field);
+    const char* p = js;
+    const char* e = js + jl;
+    while (p < e) {
+        auto q = (const char*)memmem(p, e - p, field, fl);
+        if (!q) return 0;
+        // Exact key match: "field" followed by ':'
+        if ((q == js || *(q - 1) == '"') && *(q + fl) == '"') {
+            auto colon = strchr(q + fl, ':');
+            if (colon) {
+                while (*colon == ':' || *colon == ' ') colon++;
+                return (int)strtoul(colon, nullptr, 10);
+            }
+        }
+        p = q + fl;
+    }
+    return 0;
+}
+
 // Parse Q4NX JSON header and derive ModelConfig
 inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_tag) {
     ModelConfig cfg;
@@ -428,6 +452,41 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
                     cfg.N_EXPERTS, cfg.TOP_K, cfg.IM_EXP, cfg.N_SHARED, (int)cfg.has_gated_delta_net);
         }
     }
+
+    // Step 7b: Authoritative top-level manifest fields (Zaya-class models).
+    // The converter writes hidden_size / vocab_size / num_hidden_layers /
+    // num_attention_heads / num_key_value_heads / head_dim / intermediate_size /
+    // num_experts / num_experts_per_tok at the top of the Q4NX JSON. For packed
+    // or tiled layouts (Zaya CCA + TQ1 MoE) the tensor-shape derivation above
+    // is wrong, so trust the manifest when present.
+    int top_H   = get_top_int(js, jl, "hidden_size");
+    int top_NV  = get_top_int(js, jl, "vocab_size");
+    int top_NC  = get_top_int(js, jl, "num_hidden_layers");
+    int top_NH  = get_top_int(js, jl, "num_attention_heads");
+    int top_NKV = get_top_int(js, jl, "num_key_value_heads");
+    int top_HD  = get_top_int(js, jl, "head_dim");
+    int top_IM  = get_top_int(js, jl, "intermediate_size");
+    int top_NE  = get_top_int(js, jl, "num_experts");
+    int top_TK  = get_top_int(js, jl, "num_experts_per_tok");
+    if (top_H   > 0) cfg.H  = top_H;
+    if (top_NV  > 0) cfg.NV = top_NV;
+    if (top_NC  > 0) cfg.NC = top_NC;
+    if (top_NH  > 0) cfg.NH = top_NH;
+    if (top_NKV > 0) cfg.NKV = top_NKV;
+    if (top_HD  > 0) cfg.HD = top_HD;
+    if (top_IM  > 0) cfg.IM = top_IM;
+    if (top_NE  > 0 && !cfg.has_moe) { cfg.N_EXPERTS = top_NE; cfg.has_moe = true; cfg.IM_EXP = cfg.IM; }
+    else if (top_NE > 0) { cfg.N_EXPERTS = top_NE; }  // keep tile-derived IM_EXP for Qwen3.5/3.6-class
+    if (top_TK  > 0) cfg.TOP_K = top_TK;
+    if (cfg.NH > 0 && cfg.NKV > 0) {
+        cfg.GQA = cfg.NH / cfg.NKV;
+        while (cfg.AW > 1 && (cfg.NH % cfg.AW != 0 || cfg.NKV % cfg.AW != 0)) cfg.AW--;
+        cfg.WQH  = cfg.AW > 0 ? cfg.NH  / cfg.AW : cfg.NH;
+        cfg.WKVH = cfg.AW > 0 ? cfg.NKV / cfg.AW : cfg.NKV;
+    }
+    if (top_NE > 0)
+        fprintf(stderr, "[ModelConfig] manifest: H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d experts=%d top_k=%d\n",
+                cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.HD, cfg.IM, cfg.NV, cfg.N_EXPERTS, cfg.TOP_K);
 
     // Recompute xclbin dimensions (may have been updated by MoE detection)
     // All xclbin dims padded to multiples of 128 (AIE tile size) so models with
