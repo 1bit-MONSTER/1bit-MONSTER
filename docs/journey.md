@@ -49,7 +49,7 @@ The roadmap was rewritten around a single sentence — *engine (NPU + GPU + CPU,
 
 - **SaaS**: `tools/jarvis/auth.cpp`, `billing.cpp`, `usage.cpp`, `beacon.cpp` — the product layer for a product that doesn't exist yet. Gone. So is the Cloudflare auth worker (`workers/`) and the Zaya Co-Host dashboard (`site/dashboard/`) that talked to those APIs.
 - **Voice cloning**: the whole `zaya_audio/` training stack (codec training, voice packs, RVQ-VAE adapters, ONNX export) — a personal quest, not a product. `src/codec_decoder.cpp` went with it.
-- **Agent stack**: RAG, planner, personas, prompts, skills, the daily-routine/awareness scripts — a product layer, not ours. The engine serves it via Lemonade; it doesn't ship one.
+- **Agent stack**: RAG, planner, personas, prompts, skills, the daily-routine/awareness scripts — AMD Gaia's turf, not ours. The engine serves it via Lemonade; it doesn't ship one.
 - **JARVIS v1's HTTP hop + WebSocket side-server**: `jarvis_server.cpp`, `audio_stream.cpp`, and upstream's new `voice_session.cpp`/`ws_proto.cpp` — replaced by the in-process pipeline: `mic → VAD → STT (libwhisper, now HIP-accelerated via `src/whisper_hip.hip`) → LLM (in-process BackendManager) → TTS → speaker`. One process, one pipeline, no WebSocket.
 - **Kept on purpose**: `agent_watchdog.cpp` (engine thermal/strategy, live in unified_server) and the whisper HIP port that the JARVIS blocker (P1) needed.
 
@@ -2553,3 +2553,100 @@ bearer token, all endpoints answer cross-PC, everything is boot-safe (user
 systemd + linger), and `dsh-status` reports the whole fleet at a glance.
 The fixes are on `feat/rocm-therock-7.14-lane-pin`; the full record
 (including the blog post) is linked from the README.
+
+## 2026-08-19/20 — the mesh: installs wake up, find each other, JARVIS gets a fleet brain
+
+**What happened**: the two-PC fleet got a nervous system. We built
+**1bit-MONSTER Mesh (mesh/1.0)** — every install announces itself on the LAN
+(UDP multicast `239.255.42.42:42424`), discovers sibling installs, and
+exposes `/v1/mesh/*` for handshakes and conversations — then gave JARVIS
+DSH awareness: `1bit jarvis --mesh-dispatch` runs with **no local model**
+and dispatches every LLM turn to whichever machine serves the requested
+model. Deployed live to three machines: strixhalo, ryzen, and pi (ARM64,
+compiled on-device with g++ 14). All three discovered each other over real
+LAN multicast with capability cards; JARVIS on strixhalo dispatched turns
+to pi and ryzen across the wire.
+
+### The stack
+
+| Piece | Where | What it does |
+|-------|-------|--------------|
+| node identity | `src/mesh/node_identity` | persistent UUID + capability card (models/backends/features/api_base) |
+| peer discovery | `src/mesh/peer_discovery` | UDP multicast beacons, listen loop, TTL registry + expiry sweeper |
+| peer API | `src/mesh/peer_api` | `/v1/mesh/me \| peers \| handshake \| ask \| answer \| asks` |
+| self-awareness loop | `src/mesh/mesh_agent` | greets new peers ("want to hook up and integrate?"), auto-answers |
+| fleet dispatch | `src/mesh/dispatch` | capability routing: local → model match → any chat peer |
+| JARVIS fleet mode | `tools/jarvis/jarvis_app.cpp` | `--mesh-dispatch`, `/v1/jarvis/turn` (the DSH brain socket) |
+| DSH brains | `integrations/dsh/` | `mesh-brain.js`, `jarvis-brain.js`, two DSH skills |
+| demo node | `tools/mesh_peer.cpp` | standalone node; `--stub-chat` = hardware-free chat server |
+
+Mesh is **on by default** in `1bit unified` (`--no-mesh` to opt out); the
+whole substrate is pure C++ — no Python, no Node, no model weights needed
+for the network to come alive.
+
+### The bugs — this time they were ours
+
+1. **httplib::Client drops the URL path.** `Client("http://host:18089/v1")`
+   silently discards the `/v1` — every ask went to `/mesh/ask` → 404 → the
+   agent failed quietly. Fix: split the base path off `api_base` and prepend
+   it to request paths (C++ and JS clients both).
+2. **A dangling-reference lambda capture.** The API handlers captured
+   `[&]` — which captures the *parameter slot* of the registration helper,
+   dead once it returns; the `MeshAgent*` then read garbage and `std::mutex`
+   threw `system_error` on a stack address. Fix: capture the pointer by
+   value.
+3. **A node could become its own peer.** The ask handler upserted the
+   sender's card without excluding the sender itself — a brain that asked
+   its own node registered it as a neighbor. Fix: skip `sender.id == self`.
+4. **`api_base` advertised `127.0.0.1`.** Correct for single-box tests,
+   wrong for a real LAN: peers would dial their *own* loopback. Fix:
+   `detect_local_ip()` (UDP-connect trick, no packets sent) in both
+   `mesh_peer` and `unified_server`.
+5. **JS field names.** Identity cards carry `api_base` (snake_case); the
+   JS brain read `apiBase` — every peer dispatch fetched `undefined/...`
+   and died in the catch. Fix: normalize in the candidate builder.
+
+### The deployment (real hardware, real LAN)
+
+`ryzen` and `pi` run `mesh_peer` from this repo (pi compiled its own
+aarch64 binary from bundled headers — httplib is header-only, nlohmann is a
+single include); strixhalo runs the local build. Stub chat stands in for
+real servers so the demo needs no GPU.
+
+| Node sees → | ryzen | pi | strixhalo |
+|---|---|---|---|
+| **ryzen** (192.168.50.185:18088, ZAYA1-74B) | — | ✅ | ✅ |
+| **pi** (192.168.50.216:18089, Qwen3-4B) | ✅ | — | ✅ |
+| **strixhalo** (192.168.50.69:18090, SmolLM2-135M) | ✅ | ✅ | — |
+
+### The JARVIS moment
+
+```text
+$ curl -X POST localhost:18081/v1/jarvis/turn -d '{"text":"hello pi, this is strixhalo calling over the mesh"}'
+{"model":"Qwen3-4B","node":"pi","ok":true,
+ "reply":"[stub:pi:Qwen3-4B] re: \"hello pi, this is strixhalo calling over the mesh\""}
+
+$ node integrations/dsh/jarvis-brain.js --node http://127.0.0.1:18081 --say "hello ryzen" --model ZAYA1-74B
+💬 [ryzen/ZAYA1-74B] [stub:ryzen:ZAYA1-74B] re: "hello ryzen from the fleet brain"
+```
+
+JARVIS with `--mesh-dispatch` boots with **no local model and no engine
+init** — the mic/STT/TTS stay local, the brain lives on the fleet, and the
+dispatcher picks the machine that actually has the model.
+
+### The honest caveats
+
+- The stub nodes stand in for real model servers; swap `--stub-chat` for a
+  real `1bit unified` per machine to get actual weights answering.
+- **minisforum (Windows) is not on the mesh** — the substrate is POSIX
+  sockets today; Windows support is an open follow-up.
+- The full `1bit unified` runtime path couldn't be end-to-end exercised in
+  the sandbox (HIP needs `/dev/kfd`); `mesh_peer` runs the identical mesh
+  code and is the verified surface.
+
+**Status at session end:** three machines self-discovered on real hardware,
+JARVIS dispatched across the LAN by capability, both smoke tests green
+(`mesh` 3/3, `jarvis fleet` 4/4), and the whole foundation committed on
+`feat/mesh-self-aware-fleet`. Next: real models on the stub nodes, Windows
+support, WAN discovery, and `forward_embed` on Vulkan (the vision gap from
+the previous session).

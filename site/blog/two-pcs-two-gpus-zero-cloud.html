@@ -12,9 +12,9 @@
 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware · 1bit.monster</title>
-<meta name="description" content="We ran two DeepSeek Harness agents on two PCs and served both from local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way.">
-<meta name="keywords" content="DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6-35B, Qwen3-VL, multi-agent, self-hosted, local LLM, OpenAI-compatible server, AMD GPU inference">
+<title>Two PCs, two GPUs, zero cloud — a self-aware agent fleet on home hardware · 1bit.monster</title>
+<meta name="description" content="We ran two DeepSeek Harness agents on two PCs and served both from local 1bit.MONSTER inference: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed — then the fleet woke up: Part 2 adds the self-aware mesh, so every install finds its neighbors and JARVIS dispatches across the LAN with no local model.">
+<meta name="keywords" content="DeepSeek Harness, 1bit.MONSTER, LAN inference, RX 9070 XT, Radeon 8060S, Strix Halo, Qwen3.6-35B, Qwen3-VL, multi-agent, self-hosted, local LLM, OpenAI-compatible server, AMD GPU inference, mesh, peer discovery, self-aware, JARVIS">
 <meta name="author" content="bong-water-water-bong">
 <meta name="date" content="2026-08-19">
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
@@ -23,8 +23,8 @@
 <link rel="alternate" href="/blog/two-pcs-two-gpus-zero-cloud.html">
 <meta property="og:site_name" content="1bit.monster">
 <meta property="og:locale" content="en_US">
-<meta property="og:title" content="Two PCs, two GPUs, zero cloud — a two-node agent fleet on home hardware">
-<meta property="og:description" content="Two DeepSeek Harness agents, one LAN, both fed by local 1bit.MONSTER inference: 35B @ 166 tok/s (8060S), 8B @ 96 tok/s (9070 XT), Qwen3-VL vision. Six engine bugs fixed.">
+<meta property="og:title" content="Two PCs, two GPUs, zero cloud — a self-aware agent fleet on home hardware">
+<meta property="og:description" content="Two DeepSeek Harness agents, one LAN, both fed by local 1bit.MONSTER inference: 35B @ 166 tok/s (8060S), 8B @ 96 tok/s (9070 XT), Qwen3-VL vision. Six engine bugs fixed — then Part 2: the self-aware mesh, three machines that find each other with zero config, and a JARVIS that dispatches across the LAN.">
 <meta property="og:url" content="https://1bit.monster/blog/two-pcs-two-gpus-zero-cloud">
 <meta property="og:type" content="article">
 <meta property="og:image" content="https://1bit.monster/assets/og-card.png">
@@ -32,13 +32,16 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="1bit MONSTER — one engine. Every model. Any chip.">
 <meta property="article:published_time" content="2026-08-19T00:00:00-03:00">
-<meta property="article:modified_time" content="2026-08-19T00:00:00-03:00">
+<meta property="article:modified_time" content="2026-08-19T18:00:00-03:00">
 <meta property="article:author" content="https://github.com/bong-water-water-bong">
 <meta property="article:section" content="Deployment">
 <meta property="article:tag" content="DeepSeek Harness">
 <meta property="article:tag" content="1bit.MONSTER">
 <meta property="article:tag" content="LAN inference">
 <meta property="article:tag" content="self-hosted">
+<meta property="article:tag" content="mesh">
+<meta property="article:tag" content="self-aware">
+<meta property="article:tag" content="JARVIS">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v=3">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -152,7 +155,10 @@
   Radeon 8060S, <strong>8B at 96 tok/s</strong> on an RX 9070 XT, plus a Qwen3-VL
   vision endpoint.</strong> No cloud LLM anywhere in the loop. To get there we had to
   fix six real bugs in the engine. This post is the full record: the topology, the
-  cross-PC relay, the numbers, and each bug.
+  cross-PC relay, the numbers, and each bug — then <strong>Part 2</strong>: we
+  shipped the self-aware mesh, added a third machine (an ARM64 Pi compiled on
+  device), and turned JARVIS into a fleet citizen that dispatches across the LAN
+  with no local model.
 </p>
 
 <blockquote>
@@ -208,7 +214,7 @@
 <h2>The engine — 1bit.MONSTER on both GPUs</h2>
 
 <p>
-  Both machines build our engine from source — strixhalo with the TheRock 7.14 stable
+  Both machines build our engine from source — strixhalo with the TheRock nightly
   SDK (<code>gfx1151</code>), ryzen with system ROCm 7.2.4 (<code>gfx1201</code>) —
   and both serve an OpenAI-compatible API with one shared bearer token:
 </p>
@@ -422,22 +428,157 @@ ryzen relay    :9090         200
 <span class="c">--- quick sanity (35B) ---</span>
 fleet ok</pre>
 
+<h2>Part 2 — the fleet woke up: self-aware nodes, zero config</h2>
+
+<p>
+  The relay in Part 1 was a handshake — two agents told about each other by a
+  human with a config file. This is the difference a day makes: today every
+  1bit.MONSTER install wakes up, <strong>announces itself on the LAN, sees the
+  other installs, and starts asking questions</strong>. JARVIS doesn't need a
+  model on its own machine anymore — it asks the fleet.
+</p>
+
+<blockquote>
+  Two PCs was a topology. Three machines that find each other and dispatch by
+  capability is a fleet — and the interesting part is that nobody configured
+  anything.
+</blockquote>
+
+<h3>The mesh — mesh/1.0, on by default</h3>
+
+<p>
+  Every install is a node. On boot it generates a persistent UUID, broadcasts a
+  beacon over UDP multicast (<code>239.255.42.42:42424</code>) carrying a
+  capability card — who it is, which models it serves, its API base — and listens
+  for everyone else's. Peers live in a registry with a TTL (a machine that stops
+  announcing drops off in ~15 s). On top sits a small HTTP surface:
+  <code>/v1/mesh/peers</code> (who's alive), <code>/v1/mesh/handshake</code>
+  (hook up), <code>/v1/mesh/ask</code> + <code>/v1/mesh/answer</code> (talk), and
+  <code>/v1/mesh/asks</code> (the conversation log). Pure C++, zero model weights
+  needed for the network to come alive — the out-of-the-box guarantee.
+</p>
+
+<p>
+  The self-awareness agent rides on top: when a new node appears, this node
+  reaches out first —
+</p>
+
+<pre><span class="g">💬 alice → bob</span>: Hi bob! I'm alice, a 1bit-MONSTER node.
+  I serve Qwen3-4B@npu_flm. You serve ZAYA1-74B@ggml_vulkan.
+  Want to hook up and integrate?
+<span class="g">✅ bob</span>: Yes! I'm bob. I serve ZAYA1-74B@ggml_vulkan.
+  Hook me up — route my requests through yours and vice versa.</pre>
+
+<h3>The fleet — three machines, one mesh</h3>
+
+<p>
+  We added a third machine to yesterday's two: <strong>pi</strong>, an ARM64
+  Raspberry Pi. No prebuilt binary — we shipped the sources and one header-only
+  HTTP library, and pi compiled its own node with g++ 14. Then we started one node
+  per machine, on the real LAN, and waited. No config, no central server:
+</p>
+
+<table>
+  <tr><th>Node sees →</th><th>ryzen</th><th>pi</th><th>strixhalo</th></tr>
+  <tr><td><strong>ryzen</strong> · 192.168.50.185:18088 · ZAYA1-74B</td><td>—</td><td>✅</td><td>✅</td></tr>
+  <tr><td><strong>pi</strong> · 192.168.50.216:18089 · Qwen3-4B</td><td>✅</td><td>—</td><td>✅</td></tr>
+  <tr><td><strong>strixhalo</strong> · 192.168.50.69:18090 · SmolLM2-135M</td><td>✅</td><td>✅</td><td>—</td></tr>
+</table>
+
+<p>
+  Every machine sees every other, with each one's capability card, inside a few
+  beacon cycles. This is the part that feels like cheating: <em>no</em> install
+  was told where the others live.
+</p>
+
+<h3>JARVIS gets DSH awareness — brain on the fleet, voice at home</h3>
+
+<p>
+  <code>1bit jarvis --mesh-dispatch</code> turns the voice assistant into a
+  <strong>thin fleet client</strong>: mic, VAD, STT and TTS stay local, but the
+  LLM turn is dispatched to whichever machine serves the requested model. No local
+  model, no engine init — JARVIS boots anywhere and asks the fleet. It also
+  announces itself as a node, so the DSH harness can drive it from outside via
+  <code>POST /v1/jarvis/turn</code>:
+</p>
+
+<pre><span class="c"># from strixhalo, no model loaded locally — the answer came from pi, over the wire</span>
+<span class="g">$</span> curl -X POST localhost:18081/v1/jarvis/turn \
+    -d <span class="p">'{"text":"hello pi, this is strixhalo calling over the mesh"}'</span>
+{<span class="p">"model"</span>:"Qwen3-4B", <span class="p">"node"</span>:"pi", <span class="p">"ok"</span>:true,
+ <span class="p">"reply"</span>:"[stub:pi:Qwen3-4B] re: \"hello pi, this is strixhalo calling over the mesh\""}
+
+<span class="c"># the DSH brain routes by capability — ZAYA1-74B lives on ryzen</span>
+<span class="g">$</span> node integrations/dsh/jarvis-brain.js --node http://127.0.0.1:18081 \
+    --say <span class="p">"hello ryzen from the fleet brain"</span> --model ZAYA1-74B
+<span class="g">💬 [ryzen/ZAYA1-74B]</span> [stub:ryzen:ZAYA1-74B] re: "hello ryzen from the fleet brain"</pre>
+
+<p>
+  That's the dispatch model in one line: <em>send it to the machine that has the
+  model</em>. Local node first, then the peer whose capability card matches, then
+  any node that speaks chat. The mesh made the fleet more than the sum of its
+  PCs.
+</p>
+
+<h3>Part 2's bugs — this time they were ours</h3>
+
+<p>
+  Part 1's bugs came from the engine fighting us. Part 2's came from our own new
+  code — same honesty, shorter list:
+</p>
+
+<ol>
+  <li><strong>The HTTP client dropped the URL path.</strong>
+    <code>httplib::Client("http://host:18089/v1")</code> silently discards
+    <code>/v1</code>, so every ask hit <code>/mesh/ask</code> → 404 → the agent
+    failed <em>quietly</em>. Fix: split the base path off and prepend it.</li>
+  <li><strong>A dangling-reference lambda.</strong> The API handlers captured
+    <code>[&amp;]</code> — which captured the registration helper's parameter
+    slot, dead after it returned — so the agent pointer read garbage and
+    <code>std::mutex</code> threw <code>system_error</code>. gdb caught it on the
+    stack address. Fix: capture the pointer by value.</li>
+  <li><strong>A node could become its own peer.</strong> The ask handler upserted
+    the sender's card without excluding the sender. Fix: skip self.</li>
+  <li><strong><code>api_base</code> advertised <code>127.0.0.1</code>.</strong>
+    Perfect on one machine, wrong on a real LAN — peers would dial their own
+    loopback. Fix: detect the reachable LAN IP (UDP-connect trick, no packets
+    sent).</li>
+  <li><strong>JS field names.</strong> The identity cards carry
+    <code>api_base</code> (snake_case); the JS brain read <code>apiBase</code> —
+    every peer dispatch fetched <code>undefined/…</code>. Fix: normalize.</li>
+</ol>
+
+<h3>What it means</h3>
+
+<p>
+  Part 1 proved a fleet can run on hardware you own. Part 2 removed the
+  bookkeeping: installs find each other, announce what they can do, and dispatch
+  work to whoever can do it — JARVIS included. The three nodes above are still
+  running on stub chat; swap <code>--stub-chat</code> for a real
+  <code>1bit unified</code> per machine and the same wire carries real model
+  traffic.
+</p>
+
 <h2>What's next</h2>
 
 <p>
-  The natural end of this thread is removing the LAN itself from the equation: a
-  fully offline live-USB image — custom kernel, the AMD drivers pinned, models
-  bundled — so the whole fleet (harness + engine + models) boots from a stick with
-  zero network. Home hardware today; a self-contained USB stick next.
+  The mesh foundation is in (<code>src/mesh/</code>, on by default in
+  <code>1bit unified</code>). Next on the list: real models on the fleet nodes
+  (the stub chat comes out), <strong>Windows support</strong> so minisforum joins
+  the mesh (it's POSIX sockets today), WAN discovery (a rendezvous transport for
+  the mesh protocol, designed for but not built yet), and the natural end of this
+  thread — a fully offline live-USB image with the whole fleet (harness + engine +
+  models + mesh) so it boots from a stick with zero network. Home hardware today;
+  a self-contained USB stick next.
 </p>
 
 <h2>Try it</h2>
 
 <p>
-  All of this is committed and public. Engine fixes are on the
-  <code>feat/rocm-therock-7.14-lane-pin</code> branch of
-  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">1bit-MONSTER</a>; the
-  runbook, relay, and fleet scripts are in
+  All of this is committed and public on the
+  <code>feat/mesh-self-aware-fleet</code> branch of
+  <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">1bit-MONSTER</a>;
+  Part 1's runbook, relay, and fleet scripts are in
   <a href="https://github.com/bong-water-water-bong/rootchat-ops">rootchat-ops</a>.
 </p>
 
@@ -449,13 +590,24 @@ cmake --build build --target onebin
 <span class="c"># serve a model on the GPU, OpenAI-compatible, token-protected</span>
 UNIFIED_GPU_ONLY=1 ./build/1bit unified --quick \
   -w /path/to/models -m Your-Model \
-  --host 0.0.0.0 --port 8088 --api-token $TOKEN</pre>
+  --host 0.0.0.0 --port 8088 --api-token $TOKEN
+
+<span class="c"># or: a zero-config mesh node (no model needed) — run one per machine</span>
+cmake --build build --target mesh_peer
+./build/mesh_peer --name mybox --port 18088 --stub-chat --models "Qwen3-4B:stub"
+curl http://localhost:18088/v1/mesh/peers     <span class="c"># the neighbors, live</span>
+
+<span class="c"># JARVIS with no local model — brain on the mesh</span>
+./build/1bit jarvis --mesh-dispatch --model Qwen3-4B --port 18081
+curl -X POST localhost:18081/v1/jarvis/turn -d <span class="p">'{"text":"what can you do?"}'</span></pre>
 
 <hr>
 
 <p class="muted">
   MIT. Your hardware, your model, your choice of backend. Benchmarks measured
-  2026-08-19; methodology and logs in the repos above.
+  2026-08-19; methodology and logs in the repos above. Fleet dispatch verified
+  live across strixhalo, ryzen, and pi on 2026-08-19 — <code>mesh</code> 3/3 and
+  <code>jarvis fleet</code> 4/4 smoke tests green.
 </p>
 
 </div>
