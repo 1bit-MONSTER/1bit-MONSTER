@@ -73,7 +73,7 @@ pass "alice asked bob to hook up, bob auto-answered"
 
 # ── 3. Hooked up: both sides mark the peer integrated ──────────────────
 echo "== phase 3: integration =="
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
     B_PEERS=$(curl -sf "http://127.0.0.1:$BOB_PORT/v1/mesh/peers" 2>/dev/null || echo "")
     INTEGRATED=$(echo "$B_PEERS" | grep -q '"integrated":true' && echo yes || echo no)
     [ "$INTEGRATED" = yes ] && break

@@ -89,7 +89,7 @@ pass "jarvis-brain routed ZAYA1-74B to bob"
 
 # ── 4. JARVIS announced itself on the mesh (other installs see it) ─────
 echo "== phase 4: JARVIS is a fleet citizen =="
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
     A_PEERS=$(curl -sf "http://127.0.0.1:$ALICE_PORT/v1/mesh/peers" 2>/dev/null || echo "")
     # JARVIS advertises the "jarvis" feature — that's its fingerprint.
     JARVIS_SEEN=$(echo "$A_PEERS" | grep -q '"features":\[[^]]*"jarvis"' && echo yes || echo no)
