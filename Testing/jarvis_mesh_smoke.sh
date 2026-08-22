@@ -55,7 +55,7 @@ PIDS+=($!)
 
 # ── 1. JARVIS is on the mesh and sees the fleet ─────────────────────────
 echo "== phase 1: discovery =="
-for i in $(seq 1 15); do
+for _ in $(seq 1 15); do
     J_STATUS=$(curl -sf "http://127.0.0.1:$JARVIS_PORT/v1/jarvis/status" 2>/dev/null || echo "")
     SAW_ALICE=$(echo "$J_STATUS" | grep -q '"name":"alice"' && echo yes || echo no)
     SAW_BOB=$(echo "$J_STATUS" | grep -q '"name":"bob"' && echo yes || echo no)
@@ -68,7 +68,7 @@ pass "JARVIS discovered both fleet installs"
 
 # ── 2. Dispatch via the DSH brain path (/v1/jarvis/turn) ────────────────
 echo "== phase 2: dispatch =="
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
     TURN=$(curl -sf -X POST "http://127.0.0.1:$JARVIS_PORT/v1/jarvis/turn" \
         -H "Content-Type: application/json" \
         -d '{"text":"what can you do?"}' 2>/dev/null || echo "")

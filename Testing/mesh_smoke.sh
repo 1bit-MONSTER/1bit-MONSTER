@@ -46,7 +46,7 @@ PIDS+=($!)
 
 # ── 1. Discovery: each node sees the other (multicast) ─────────────────
 echo "== phase 1: discovery =="
-for i in $(seq 1 15); do
+for _ in $(seq 1 15); do
     A_PEERS=$(curl -sf "http://127.0.0.1:$ALICE_PORT/v1/mesh/peers" 2>/dev/null || echo "")
     B_PEERS=$(curl -sf "http://127.0.0.1:$BOB_PORT/v1/mesh/peers" 2>/dev/null || echo "")
     A_SAW_B=$(echo "$A_PEERS" | grep -q '"name":"bob"' && echo yes || echo no)
@@ -60,7 +60,7 @@ pass "alice and bob discovered each other via multicast"
 
 # ── 2. Self-awareness: agent sent an intro ask, peer auto-answered ─────
 echo "== phase 2: ask / answer =="
-for i in $(seq 1 15); do
+for _ in $(seq 1 15); do
     B_ASKS=$(curl -sf "http://127.0.0.1:$BOB_PORT/v1/mesh/asks" 2>/dev/null || echo "")
     HAS_ASK=$(echo "$B_ASKS" | grep -q '"from_name":"alice"' && echo yes || echo no)
     ANSWERED=$(echo "$B_ASKS" | grep -q '"answered":true' && echo yes || echo no)
