@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
 
     auto forward = [&](int tok, int pos) -> int {
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
-        double attn_ms = 0, moe_ms = 0;
+        double attn_ms = 0, moe_ms = 0, gu_ms = 0, d_ms = 0;
         std::vector<float> residual(d.H, 0.0f);
         bool has_res = false;
         std::vector<float> prev_router;
@@ -331,15 +331,19 @@ int main(int argc, char** argv) {
                 gu_ctx.group_scales[l] = gu_cs[l][e];
                 d_ctx.group_scales[l] = d_cs[l][e];
                 float ag = dynamic_ascale(residual.data(), d.H);
+                auto tgu = std::chrono::steady_clock::now();
                 auto gu_run = gu_ctx.launch_async_with_bo(*gu_bo[l][e], residual.data(), 1, d.H, ag);
                 gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, 0.0f, l);
+                gu_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgu).count();
                 for (int i = 0; i < m.n_ff; i++) {
                     float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
                     silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
                 }
                 float ad = dynamic_ascale(silu.data(), m.n_ff);
+                auto td = std::chrono::steady_clock::now();
                 auto d_run = d_ctx.launch_async_with_bo(*d_bo[l][e], silu.data(), 1, m.n_ff, ad);
                 d_ctx.finish_async(d_run, moe_out.data(), 1, d.H, ad, 0.0f, l);
+                d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - td).count();
                 // layer-1 per-layer accuracy probe: CPU float MoE vs NPU int8 MoE
                 if (l == 1 && pos == 0) {
                     std::vector<float> cpu_out(d.H);
@@ -361,7 +365,7 @@ int main(int argc, char** argv) {
         std::vector<float> logits(NV);
         #pragma omp parallel for schedule(static)
         for (int v = 0; v < NV; v++) { float a=0; for (int j=0;j<d.H;j++) a += embed[(size_t)v*d.H+j]*tmp[j]; logits[v]=a; }
-        fprintf(stderr, "[perf] tok %d: attn=%.0f ms moe=%.0f ms\n", pos, attn_ms, moe_ms);
+        fprintf(stderr, "[perf] tok %d: attn=%.0f ms moe=%.0f ms (gu=%.0f d=%.0f)\n", pos, attn_ms, moe_ms, gu_ms, d_ms);
         if (pos == 0) {
             float mn=1e30, mx=-1e30, ss=0;
             for (int v=0; v<NV; v++){ mn=std::min(mn,logits[v]); mx=std::max(mx,logits[v]); ss+=logits[v]*logits[v]; }

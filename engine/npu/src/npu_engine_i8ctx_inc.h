@@ -249,8 +249,17 @@ struct I8Ctx {
     // BO handle directly at decode.
     std::unique_ptr<xrt::bo> make_weight_bo(xrt::device& d) {
         int grp_w = k->group_id(4);
-        return std::make_unique<xrt::bo>(d, (size_t)KD * ND,
-                                          XRT_BO_FLAGS_HOST_ONLY, grp_w);
+        // Weight BOs are written once (packB_into) and read every token by the
+        // shim DMA. HOST_ONLY forces the device through the slow cache-coherent
+        // path (~3.6 GB/s measured); try normal/cacheable/svm for faster reads.
+        uint32_t fl = XRT_BO_FLAGS_HOST_ONLY;
+        if (const char* f = getenv("NPU_WBO_FLAGS")) {
+            int v = atoi(f);
+            if (v == 0) fl = 0;
+            else if (v == 1) fl = XRT_BO_FLAGS_CACHEABLE;
+            else if (v == 2) fl = XRT_BO_FLAGS_SVM;
+        }
+        return std::make_unique<xrt::bo>(d, (size_t)KD * ND, fl, grp_w);
     }
 
     // Pack weights into an arbitrary (already-allocated) weight BO.
