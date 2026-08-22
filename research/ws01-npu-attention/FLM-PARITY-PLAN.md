@@ -69,6 +69,34 @@ Once per-layer is a single stream, batch the whole token's layer streams into
 one runlist dispatch (FLM-style). Note the CCA recurrence (conv_state/vrec) is
 token-sequential, so this batches *within* a token, not across tokens.
 
+## Fused GU→SiLU→D design (option 1)
+
+The MoE FFN per layer is `D @ (silu(gate) ⊙ up)` where `[gate|up] = GU @ h`.
+Fusing GU and D into one launch saves the D launch's fixed overhead (~0.85 ms)
+and the intermediate C writeback — ~27 ms/tok (6.2 → ~7.5 tok/s).
+
+**Cross-tile SiLU is the crux.** GU output `[2*n_ff]` is tiled across 8 cols:
+gate lands on cols 0–3, up on cols 4–7, so `silu(gate[i])·up[i]` needs gate from
+tile i and up from tile i+4 — cross-tile. Fix: **interleave gate/up rows in the
+packed weights** (row 2i = gate[i], row 2i+1 = up[i]) so each tile holds the
+(gate, up) pair it needs and the SiLU is tile-local.
+
+**Sigmoid on-NPU.** No HW sigmoid. Since the D GEMM quantizes to int8 anyway,
+a coarse fixed-point sigmoid (polynomial or 256-entry LUT indexed by the top
+bits of the int32 gate) is sufficient. RTP `0x100c` is FLM's activation selector
+(0=none, 1=GeLU, 2=SiLU).
+
+**Stages:**
+1. Interleave gate/up in `packB_into` (host-side, needs the fused kernel to
+   consume it).
+2. New kernel: GEMM1 (GU, mmul) → SiLU (fixed-point sigmoid + gate·up) →
+   GEMM2 (D, mmul), intermediate held in tile SRAM.
+3. New MLIR generator chaining the two GEMMs + activation on one core row.
+4. aiecc build + NPU-verify (tokens + corr vs the CPU-SiLU path).
+
+Note: the fused SiLU is fixed-point, so it will NOT be bit-identical to the
+float CPU SiLU — the bar here is token parity / corr ~0.999, not bit-exact.
+
 ## Key finding (2026-08-21): compute is solved; the wall is launch overhead
 
 Measured decode launch wait by M:
