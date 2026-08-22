@@ -60,8 +60,15 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
 - The ~4ms/launch is the kernel executing its **fixed M=128 stream** (the FLM
   mm.xclbin is baked for XM=128). The generated stream has the SAME word count
   for any M (M is baked into descriptor values, not the stream length).
-- regen_insts(M<XM) DEADLOCKS (~2048ms/launch, kernel never completes): REG_M
-  cannot resize the baked kernel's tiling. M=1 and M=8 both hang.
+- **M is always 128.** The generated stream is a pure function of (K, N):
+  `gemm_generate_sequence_i8` voids its M argument (the v27 microkernel is
+  M=128-baked: 4 × 32-row slices, BD-rotation schedule covers exactly 4 slices).
+  Pre-rework generators wrote M into REG_M/descriptor offsets — regen_insts(M<XM)
+  DEADLOCKED (~2048ms/launch, kernel never completes) because REG_M cannot
+  resize the baked kernel's tiling (M=1 and M=8 both hung; issue #1761). The
+  misleading `regen_insts(int M)` path was removed; smaller batches MUST reuse
+  the M=128 stream with `am` = real row count (quantize_async zero-pads rows
+  [am, 128)).
 - Pre-compiled `_v` streams are WORSE: 99-150K words → ~154ms/launch → 16.4s/token
   (the npu_engine_cb path). The runtime generator's 32K-word streams are the
   good path (35x faster).

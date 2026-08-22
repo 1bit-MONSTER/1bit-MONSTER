@@ -283,14 +283,36 @@ then NPU FFN via xclbins (blocked on toolchain).
    interpretation tried (in_features 1024/2048, transpose, row/col-pair
    interleave, tile reorder). std is 0.77× the source.
 
-5. **Root cause — FLM converter `unpack` bug for non-square tensors.** The
-   gguf-py tensor `shape` is the *reversed* GGUF dims (`(ne1, ne0)` = `[out,in]`),
-   and `gguf.quantize` quantizes over `shape[-1]` (= `ne0`, the in dim). But the
-   converter passes `columns = self.shape[0]` (= `ne1`, the OUT dim) to
-   `unpack_q4_0`. For the square Qwen3 tensors the FLM converter was written for
-   this is harmless; for Zaya's non-square `q_proj [2048,1024]`, `k_proj
-   [2048,256]`, `o_proj [1024,2048]` it permutes the weights. The correct
-   `unpack` decode is a column-pair interleave: `w[r][c] = qs[2r + c//in][c%in]`.
+5. **~~Root cause~~ FLM converter `unpack` columns — NOT a bug (issue #1760 resolved).**
+   The in-tree FLM converter `gguf_tensor.py::unpack` passes `columns =
+   self.shape[0]` to `unpack_q4_0/1`. Issue #1760 proposed changing that to
+   `self.shape[-1]` claiming `shape` is the reversed GGUF dims `[out,in]` — that
+   claim is backwards, verified against gguf-py source + real Zaya dims:
+
+   - `GGUFReader` sets `ReaderTensor.shape = dims` (the **raw file dims**,
+     `[in,out]` for a linear weight) while the numpy `data` array is reshaped to
+     `reversed(dims)` (`[out,in]`). Hence `shape[0] == data.shape[-1]` is a
+     tautology, and `gguf.quantize`/`dequantize` operate along the **last numpy
+     dim** (`quant_shape_to_byte_shape` divides `shape[-1]`; `_apply_over_grouped_rows`
+     reshapes to `(-1, arr.shape[-1])`).
+   - `unpack_q4_0/1(data, columns)` reproduces `gguf.dequantize(data)` **iff**
+     `columns == data.shape[-1]` — which is exactly `self.shape[0]`. Empirically
+     (both non-square orientations, Q8_0 + Q4_K GGUF types through the real
+     else-branch): `columns=shape[0]` → exact match (max diff 0.0), and the full
+     `unpack → _pack_q4nx → engine dequant` round-trip holds corr 0.997 vs the
+     source weights. `columns=shape[-1]` instead produces the **column-pair
+     interleave scramble** `w[r][c] -> qs[2r + c//in][c%in]` — precisely the
+     broken layout this session observed in the HF `zaya1-8b.q4nx` artifact. So
+     the #1760 fix would *introduce* the bug it claims to fix; the current code
+     is correct (regression test:
+     `third_party/FLM_Q4NX_Converter/tests/test_gguf_tensor_nonsquare.py`).
+   - Zaya's real shapes are file dims `[in,out]` (hidden 2048, 8×128 q-dim,
+     2×128 k-dim): `attn_q [2048,1024]`, `attn_k [2048,256]`, `attn_output
+     [1024,2048]` — `shape[0]` = the in dim `quantize` operates over.
+
+   The scrambled HF artifact therefore comes from the *actual* Zaya conversion
+   path (see §13: `tools/convert_float32_bins_to_q4nx.py`; the FLM converter has
+   no `zaya.json` and was never used for it), not from this `unpack` call.
 
 6. **Residual mystery: positive scale + zero min + 0.77× std.** The Q4NX scales
    are *all positive* (0/65536 negative) and mins are all 0 — but the current
