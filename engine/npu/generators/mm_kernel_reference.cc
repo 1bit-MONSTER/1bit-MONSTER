@@ -17,6 +17,12 @@
 
 #include "zero.cc"
 
+// Fused GU→SiLU→D on-core arithmetic (issue #1759) — dual-compiled with the
+// host CPU reference (engine/npu/src/zaya_moe_cpu.h) so the exact bit-level
+// contract is verified on x86 before the NPU round-trip. No libm: pure
+// float/int scalar ops the AIE2P scalar unit lowers to hardware instructions.
+#include "silu_quant.h"
+
 template <typename T_in, typename T_out, int rowA, int colA, int colB,
           bool b_row_maj = true, bool c_row_maj = true>
 static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
@@ -651,5 +657,17 @@ extern "C" void zero_i32(int32_t *c_out) {
     zero_vectorized<int32_t, DIM_M, DIM_N>(c_out);
 }
 #endif
+
+// ── Fused GU→SiLU→D (issue #1759): the on-core SiLU+quant step ──
+// Called between the GU and D GEMM phases of the fused kernel. Each tile's C1
+// (DIM_M × DIM_N int32, cols 2p/2p+1 = (gate, up) pair p, interleaved pack)
+// is reduced to h2 (DIM_M × DIM_N/2 int8) via the fixed-point LUT SiLU with
+// the host-folded per-column header gs' (ag·gs_g | ag·qn_s·gs_u). Rows 1-7
+// are zero for decode M=1 (rows 1-7 of C1 are zero → h2 = 0), which keeps the
+// D-phase A-DMA (8×64 tiles) consistent.
+extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
+    for (unsigned r = 0; r < DIM_M; r++)
+        silu_quant_i8(c1 + r * DIM_N, gs, h2 + r * (DIM_N / 2), DIM_N / 2);
+}
 
 } // extern "C"

@@ -97,6 +97,30 @@ bits of the int32 gate) is sufficient. RTP `0x100c` is FLM's activation selector
 Note: the fused SiLU is fixed-point, so it will NOT be bit-identical to the
 float CPU SiLU — the bar here is token parity / corr ~0.999, not bit-exact.
 
+### Fused contract — implemented & CPU-verified (2026-08-21, issue #1759)
+
+The exact kernel arithmetic is pinned in `engine/npu/generators/silu_quant.h`
+(dual-compiled: AIE kernel + host reference; no libm) and validated on REAL
+zaya1-8b.q4nx data by `engine/npu/tests/test_fused_silu.cpp`:
+
+- **Per-token qn_s is required.** A fixed scale (qn0) caps corr at ~0.96–0.99
+  because |h2/ag| spans ~16× across tokens (p50≈90 → p99≈1472 on real data).
+  The fused kernel gets qn_s = 127/max|h2| from a **host amax pass**: the host
+  recomputes the GU GEMM from the same int8 inputs (integer accumulation is
+  order-independent → bit-identical c1 to the NPU; ~8.4M MACs ≈ 0.1–0.3 ms
+  AVX2 per layer) and folds qn_s into the per-token gs' header.
+- **Measured: fused corr 0.99931–0.99958 vs the float reference — statistically
+  identical to the two-launch NPU path (0.99932–0.99958); argmax parity 5/5
+  tokens; maxdiff/p50/p95/p99 match the two-launch path.**
+- LUT: 256-entry sigmoid over [-4, 4] (real gate_f ∈ [-3.4, 3.4]).
+- Kernel topology (n1_core_fused_gu_silu_d.py): single core row, M=8 1x4 mmul;
+  C1 held in tile SRAM (produce-only fifo); h2 → DDR (2 KB) → D-phase A
+  broadcast; one merged B stream per column [gs tile | GU 128 | D 64].
+- **UNVERIFIED (needs strixhalo)**: aiecc build + NPU-verify per
+  `build_zaya_fused.sh`'s checklist — the produce-only C1 fifo lowering and the
+  shim S2MM channel pressure are the two build-time risks (Design J — C1 DDR
+  round trip — is the documented fallback).
+
 ## Key finding (2026-08-21): compute is solved; the wall is launch overhead
 
 Measured decode launch wait by M:
@@ -126,7 +150,7 @@ are therefore, in order:
 | + M=16 decode xclbins (`build_zaya_m16.sh`) | **6.2** | **done** |
 | + vectorized M=8 xclbin (1x4 mmul, `build_zaya_m8.sh`) | 6.3 | **done — bit-perfect; confirms compute is NOT the bottleneck** |
 | + M=1 scalar decode xclbin | — | **dead end** (scalar kernel reads B row-major vs microtiled B-DMA → corr~0; also slower than M=16) |
-| + fused GU+D (on-NPU SiLU, RTP 0x100c) — halves the 40 launches | ~7.5 | next |
+| + fused GU+D (on-NPU SiLU, RTP 0x100c) — halves the 40 launches | ~7.5 | **implemented (contract CPU-verified; kernel/generator/build written — aiecc + NPU-verify pending on strixhalo)** |
 | + attention on NPU + runlist | ~15–20 | later |
 | + attention on NPU + runlist | ~15–20 | later |
 

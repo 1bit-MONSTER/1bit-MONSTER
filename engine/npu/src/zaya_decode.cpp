@@ -211,6 +211,61 @@ int zaya_decode_main(int argc, char** argv) {
     // zero-pads rows 1..127 so only row 0 is valid (same as npu_engine_universal).
     fprintf(stderr, "NPU contexts ready (GU %dx%d, D %dx%d)\n", gu_ctx.KD, gu_ctx.ND, d_ctx.KD, d_ctx.ND);
 
+    // ── Fused GU→SiLU→D mode (issue #1759): ONE launch per MoE layer ──
+    // NPU_FUSED=1 selects the fused xclbin (build_zaya_fused.sh). The on-core
+    // SiLU (silu_quant.h) halves the 40 launches/token; per-token qn_s comes
+    // from the host amax pass (zaya_moe::host_h2_amax_qn_s) folded into the
+    // gu BO header. Contract validated on x86 (test_fused_silu.cpp): corr
+    // 0.9993–0.9996 vs float, argmax parity.
+    const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
+    I8Ctx fused_ctx;
+    std::vector<std::vector<std::unique_ptr<xrt::bo>>> fgu_bo, fd_bo;
+    std::vector<std::vector<std::vector<float>>> fgu_cs, fd_cs;
+    std::unique_ptr<xrt::bo> h2_bo;
+    if (FUSED) {
+        fused_ctx.MD = 8; fused_ctx.KD = d.H; fused_ctx.ND = d.H;
+        char fx[512], fi[512];
+        snprintf(fx, sizeof fx, "%s/final_i8_MOE_FUSED_zaya.xclbin", xd);
+        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_FUSED_zaya.txt", xd);
+        if (getenv("NPU_FUSED_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_XCLBIN"));
+        if (getenv("NPU_FUSED_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_INSTS"));
+        if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED ctx init failed\n"); return 1; }
+        h2_bo = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
+        fgu_bo.resize(NC); fd_bo.resize(NC); fgu_cs.resize(NC); fd_cs.resize(NC);
+        for (int l = 1; l < NC; l += 2) {
+            fgu_bo[l].resize(m.n_exp); fd_bo[l].resize(m.n_exp);
+            fgu_cs[l].resize(m.n_exp); fd_cs[l].resize(m.n_exp);
+        }
+        std::vector<float> guI((size_t)d.H * 2 * m.n_ff), dn_T((size_t)m.n_ff * d.H);
+        for (int l = 1; l < NC; l += 2) {
+            auto& w = L[l];
+            for (int e = 0; e < m.n_exp; e++) {
+                const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                // interleaved transpose: B[j][2p] = gate[p·H+j], B[j][2p+1] = up[p·H+j]
+                #pragma omp parallel for schedule(static)
+                for (int j = 0; j < d.H; j++) {
+                    const float* gb = gup;                    // gate block
+                    const float* ub = gup + (size_t)m.n_ff * d.H;  // up block
+                    for (int p = 0; p < m.n_ff; p++) {
+                        guI[(size_t)j * 2 * m.n_ff + 2 * p]     = gb[(size_t)p * d.H + j];
+                        guI[(size_t)j * 2 * m.n_ff + 2 * p + 1] = ub[(size_t)p * d.H + j];
+                    }
+                }
+                fgu_bo[l][e] = fused_ctx.make_fused_weight_bo(dev, 2 * m.n_ff);
+                fused_ctx.packB_into_fused(*fgu_bo[l][e], guI.data(), d.H, 2 * m.n_ff, fgu_cs[l][e]);
+                const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                #pragma omp parallel for schedule(static)
+                for (int j = 0; j < m.n_ff; j++)
+                    for (int i = 0; i < d.H; i++)
+                        dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                fd_bo[l][e] = fused_ctx.make_weight_bo(dev);
+                float d_sc = 0;
+                fused_ctx.packB_into(*fd_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, fd_cs[l][e]);
+            }
+        }
+        fprintf(stderr, "fused resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
+    }
+
     // ── forward ──
     std::vector<std::vector<float>> kv_k(NC), kv_v(NC);
     std::vector<float> h(d.H), tmp(d.H), moe_out(d.H);
@@ -228,7 +283,9 @@ int zaya_decode_main(int argc, char** argv) {
     }
 
     // Pack all 16 experts for every MoE (odd) layer into resident BOs at startup.
-    {
+    // Skipped in fused mode (NPU_FUSED=1) — the fused kernel packs its own
+    // interleaved GU + D BOs above.
+    if (!FUSED) {
         for (int l = 1; l < NC; l += 2) {
             auto& w = L[l];
             for (int e = 0; e < m.n_exp; e++) {
@@ -321,29 +378,54 @@ int zaya_decode_main(int argc, char** argv) {
                 // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
-                gu_ctx.group_scales[l] = gu_cs[l][e];
-                d_ctx.group_scales[l] = d_cs[l][e];
-                float ag = dynamic_ascale(residual.data(), d.H);
-                auto gu_run = gu_ctx.launch_async_with_bo(*gu_bo[l][e], residual.data(), 1, d.H, ag);
-                gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, 0.0f, l);
-                for (int i = 0; i < m.n_ff; i++) {
-                    float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
-                    silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
-                }
-                float ad = dynamic_ascale(silu.data(), m.n_ff);
-                auto d_run = d_ctx.launch_async_with_bo(*d_bo[l][e], silu.data(), 1, m.n_ff, ad);
-                d_ctx.finish_async(d_run, moe_out.data(), 1, d.H, ad, 0.0f, l);
-                // layer-1 per-layer accuracy probe: CPU float MoE vs NPU int8 MoE
-                if (l == 1 && pos == 0) {
-                    std::vector<float> cpu_out(d.H);
-                    zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
-                    double num=0, d1=0, d2=0; float maxd=0;
-                    for (int i = 0; i < d.H; i++) {
-                        num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
-                        maxd = std::max(maxd, std::fabs(cpu_out[i]-moe_out[i]));
+                if (FUSED) {
+                    // ── fused GU→SiLU→D: one launch ──
+                    fused_ctx.group_scales[l] = fd_cs[l][e];
+                    float ag = dynamic_ascale(residual.data(), d.H);
+                    fused_ctx.quantize_async(residual.data(), 1, d.H, ag);   // Am for the amax pass
+                    float qn_s = zaya_moe::host_h2_amax_qn_s(
+                        fused_ctx.Am, (const int8_t*)fgu_bo[l][e]->map(),
+                        fgu_cs[l][e].data(), d.H, m.n_ff, ag);
+                    fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
+                    auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo,
+                                                       residual.data(), 1, d.H, ag);
+                    fused_ctx.dequant_fused(frun, moe_out.data(), 1, d.H, qn_s, l);
+                    if (l == 1 && pos == 0) {
+                        std::vector<float> cpu_out(d.H);
+                        zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
+                        double num=0, d1=0, d2=0; float maxd=0;
+                        for (int i = 0; i < d.H; i++) {
+                            num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
+                            maxd = std::max(maxd, std::fabs(cpu_out[i]-moe_out[i]));
+                        }
+                        fprintf(stderr, "[MoE L1 fused dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f) qn_s=%.4f\n",
+                            num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s);
                     }
-                    fprintf(stderr, "[MoE L1 dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f)\n",
-                        num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H));
+                } else {
+                    gu_ctx.group_scales[l] = gu_cs[l][e];
+                    d_ctx.group_scales[l] = d_cs[l][e];
+                    float ag = dynamic_ascale(residual.data(), d.H);
+                    auto gu_run = gu_ctx.launch_async_with_bo(*gu_bo[l][e], residual.data(), 1, d.H, ag);
+                    gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, 0.0f, l);
+                    for (int i = 0; i < m.n_ff; i++) {
+                        float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
+                        silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
+                    }
+                    float ad = dynamic_ascale(silu.data(), m.n_ff);
+                    auto d_run = d_ctx.launch_async_with_bo(*d_bo[l][e], silu.data(), 1, m.n_ff, ad);
+                    d_ctx.finish_async(d_run, moe_out.data(), 1, d.H, ad, 0.0f, l);
+                    // layer-1 per-layer accuracy probe: CPU float MoE vs NPU int8 MoE
+                    if (l == 1 && pos == 0) {
+                        std::vector<float> cpu_out(d.H);
+                        zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
+                        double num=0, d1=0, d2=0; float maxd=0;
+                        for (int i = 0; i < d.H; i++) {
+                            num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
+                            maxd = std::max(maxd, std::fabs(cpu_out[i]-moe_out[i]));
+                        }
+                        fprintf(stderr, "[MoE L1 dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f)\n",
+                            num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H));
+                    }
                 }
                 for (int i = 0; i < d.H; i++) h[i] = moe_out[i];
             }

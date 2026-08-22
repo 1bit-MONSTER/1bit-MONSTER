@@ -578,4 +578,146 @@ struct I8Ctx {
         r.wait();
         dequantize(r, C, am, an, ascale, Bscale, layer);
     }
+
+    // ── Fused GU→SiLU→D (issue #1759): one launch per MoE layer ──
+    //
+    // The fused kernel takes FIVE BOs:
+    //   bo0 = bA      residual int8 (quantized with ag)
+    //   bo1 = gu_bo   interleaved GU weights + per-column header (see below)
+    //   bo2 = bC      C2 int32 output [M × H]
+    //   bo3 = d_bo    D weights (per-column scales in group_scales[layer])
+    //   bo4 = h2_bo   h2 int8 scratch [M × K] — GU-phase SiLU output, read
+    //                 back as the D-phase A operand (DDR round trip, 2 KB)
+    //
+    // gu_bo layout (packed once at startup, header rewritten per token):
+    //   [0, W)                    interleaved weights: col 2p = gate[p],
+    //                             col 2p+1 = up[p], [H × 2·n_ff] int8, packed
+    //                             with per-column scales (packB_into_fused)
+    //   [W + c·8KB, +512B)        gs' header slice for AIE column c (float32,
+    //                             cols [128c, 128c+128)), host-folded per
+    //                             token: gs'[2p] = ag·gs_g[2p],
+    //                             gs'[2p+1] = ag·qn_s·gs_u[2p+1]
+    //   where ag = per-token A scale, qn_s = 127/max|h2| (host_h2_amax_qn_s
+    //   in zaya_moe_cpu.h — the host recomputes the GU GEMM's amax from the
+    //   same int8 inputs; integer accumulation is order-independent so the
+    //   NPU and host c1 agree bit-for-bit). Dequant: out[j] = C2[j]·gs_d[j]/qn_s
+    //   (ag cancels — see silu_quant.h contract). The 8KB-per-column stride
+    //   matches the fused kernel's B-stream gs-header tile (n1_core_fused_
+    //   gu_silu_d.py).
+    static constexpr size_t FUSED_AIE_COLS = 8;
+    static constexpr size_t FUSED_GS_TILE   = 8192;    // (64×128) int8 tile
+    static constexpr size_t FUSED_GS_SLICE  = 512;     // 128 gs' floats
+
+    // Weight BO for the fused kernel: KD·n_cols int8 (n_cols = 2·n_ff for the
+    // interleaved GU; note this is NOT the ctx's ND, which is the D output
+    // width H) + per-column gs tiles.
+    std::unique_ptr<xrt::bo> make_fused_weight_bo(xrt::device& d, size_t n_cols) {
+        int grp_w = k->group_id(4);
+        uint32_t fl = XRT_BO_FLAGS_HOST_ONLY;
+        if (const char* f = getenv("NPU_WBO_FLAGS")) {
+            int v = atoi(f);
+            if (v == 0) fl = 0;
+            else if (v == 1) fl = XRT_BO_FLAGS_CACHEABLE;
+            else if (v == 2) fl = XRT_BO_FLAGS_SVM;
+        }
+        size_t sz = (size_t)KD * n_cols + FUSED_AIE_COLS * FUSED_GS_TILE;
+        return std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+    }
+
+    // h2 scratch BO for the fused kernel (bo4; D-phase A source — same memory
+    // group as bA, since the A2 shim DMA reads it like an activation).
+    std::unique_ptr<xrt::bo> make_scratch_bo(xrt::device& d, size_t bytes) {
+        int grp_a = k->group_id(3);
+        return std::make_unique<xrt::bo>(d, bytes, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+    }
+
+    // Pack the INTERLEAVED GU weights (already transposed to [H, 2·n_ff] with
+    // col 2p = gate[p], col 2p+1 = up[p] — see zaya_moe::pack_gu_interleaved)
+    // with per-column scales, and write the unfolded gs into each column's
+    // header slice (the per-token update_fused_header folds ag/qn_s in).
+    // The BO layout is KD×N contiguous (no ND padding — 2048/4096 are 128-
+    // multiples); N = 2·n_ff, the interleaved GU width.
+    void packB_into_fused(xrt::bo& bo, const float* w, int K, int N,
+                          std::vector<float>& col_out) {
+        auto* Bm = (int8_t*)bo.map();
+        memset(Bm, 0, (size_t)K * N);
+        std::vector<float> col(N);
+        double ssum = 0;
+        for (int j = 0; j < N; j++) {
+            float amax = 0;
+            for (int i = 0; i < K; i++) {
+                float a = fabsf(w[(size_t)i * N + j]);
+                if (std::isfinite(a) && a > amax) amax = a;
+            }
+            if (amax < 1e-12f) amax = 1.0f;
+            float ts = amax / 127.0f;
+            float tis = 127.0f / amax;
+            for (int i = 0; i < K; i++) {
+                float v = w[(size_t)i * N + j];
+                if (!std::isfinite(v)) v = 0;
+                int x = (int)roundf(v * tis);
+                if (x > 127) x = 127;
+                else if (x < -127) x = -127;
+                Bm[(size_t)i * N + j] = (int8_t)x;
+            }
+            col[j] = ts;
+            ssum += ts;
+        }
+        // unfolded gs into each column's header slice (per-token update folds)
+        const size_t n_per_col = N / FUSED_AIE_COLS;
+        for (size_t c = 0; c < FUSED_AIE_COLS; c++)
+            memcpy(Bm + (size_t)K * N + c * FUSED_GS_TILE,
+                   &col[c * n_per_col], FUSED_GS_SLICE);
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        col_out = std::move(col);
+    }
+
+    // Fold ag and qn_s into the per-column header slices
+    // (gs' = [ag·gs_g | ag·qn_s·gs_u]) and sync only the header region.
+    // Called per token, per MoE layer, before launch_fused. N = 2·n_ff.
+    void update_fused_header(xrt::bo& bo, const std::vector<float>& gs,
+                             int n_ff, float ag, float qn_s, int N) {
+        float* base = (float*)((int8_t*)bo.map() + (size_t)KD * N);
+        const size_t n_per_col = (size_t)N / FUSED_AIE_COLS;
+        for (size_t c = 0; c < FUSED_AIE_COLS; c++) {
+            float* hdr = (float*)((int8_t*)base + c * FUSED_GS_TILE);
+            for (int p = 0; p < (int)n_per_col / 2; p++) {
+                hdr[2 * p]     = ag * gs[c * n_per_col + 2 * p];
+                hdr[2 * p + 1] = ag * qn_s * gs[c * n_per_col + 2 * p + 1];
+            }
+        }
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
+                FUSED_AIE_COLS * FUSED_GS_TILE, (size_t)KD * N);
+    }
+
+    // One-launch fused MoE FFN (issue #1759): GU → on-core SiLU → D.
+    inline xrt::run launch_fused(xrt::bo& gu_bo, xrt::bo& d_bo, xrt::bo& h2_bo,
+                                 const float* A, int am, int ak, float ascale) {
+        quantize_async(A, am, ak, ascale);
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        return (*k)((unsigned)3, *layerInstr[0],
+                    (unsigned)(layerInstrData[0].size()),
+                    *bA, gu_bo, *bC, d_bo, h2_bo);
+    }
+
+    // Fused D dequant: out[j] = C2[j] · (gs_d[j] / qn_s)  (ag cancels).
+    inline void dequant_fused(xrt::run& r, float* C, int am, int an,
+                              float qn_s, int layer = -1) {
+        r.wait();
+        readback();
+        const float* gs = nullptr;
+        if (layer >= 0 && (size_t)layer < group_scales.size() &&
+            (int)group_scales[layer].size() == an)
+            gs = group_scales[layer].data();
+        float iq = 1.0f / qn_s;
+        for (int m = 0; m < am; m++) {
+            const int32_t* src = Cm + (size_t)m * ND;
+            float* dst = C + (size_t)m * an;
+            for (int n = 0; n < an; n++) {
+                float val = (float)src[n] * (gs ? gs[n] : 1.0f) * iq;
+                if (!std::isfinite(val)) val = 0;
+                dst[n] = val;
+            }
+        }
+    }
 };
