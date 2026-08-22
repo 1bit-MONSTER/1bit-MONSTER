@@ -438,8 +438,10 @@ the engine's `I8Ctx` (from `npu_engine_i8ctx_inc.h`) + `gemm_npu_instructions.cp
 
 - M=128 instruction stream reused for M=1 decode (`am=1` zero-pads rows 1..127);
   `regen_insts(1)` hangs the M=128-baked microkernel — do not call it.
-- `exit(0)` at the end (not `return 0`) — the xrt destructors wedge the NPU on
-  teardown.
+- `_exit(0)` at the end by default (not `return 0`) — the xrt destructors wedge
+  the NPU on teardown (firmware-fatal family, journey.md UPDATE 32/33: the
+  hwctx/BO release path mailboxes a dead firmware; reboot-only recovery — issue
+  #1762). `NPU_CLEAN_TEARDOWN=1` runs the real destructor chain instead.
 
 Verified on `zaya1-8b-fresh.q4nx`, prompt "2+2=":
 - CPU runner (float MoE):  logits rms 4.32, min -22.5, max 31.1
