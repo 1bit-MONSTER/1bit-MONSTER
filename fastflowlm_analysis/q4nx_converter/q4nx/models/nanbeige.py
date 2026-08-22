@@ -34,15 +34,29 @@ class Nanbeige(__Q4NX_Converter, model_arch=ModelArch.NANBEIGE):
             unpacked = gguf_tensor.unpack(self.default_tensor_type)
 
             if "q_proj" in self.forward_name_map[gguf_tensor.name] or "k_proj" in self.forward_name_map[gguf_tensor.name]: # for llama q_proj, the order is special
-                # 0, 1, 2, .... 127
-                # 0, 64, 1, ..., 127
-                DH = self.gguf_reader.fields["llama.rope.dimension_count"].contents()
-                pp = DH // 2
-                d, m, qw = unpacked
-                d = rearrange(d, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
-                m = rearrange(m, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
-                qw = rearrange(qw, '(g p q) c -> (g q p) c', p = pp, q = 2).contiguous()
-                unpacked = (d, m, qw)
+                # Old llama-1/2 (interleaved/GPT-J rotary) stores q/k with the
+                # head dims in 0,64,1,65,... order; the engine's RoPE is
+                # paired (0,1,...,63,64,...,127). The reorder below fixes that.
+                # Newer archs (freq_base > 20000) already use the paired/NeoX
+                # layout — applying the reorder there CORRUPTS the weights
+                # (see llama.py fix #1699).
+                freq_base = 10000.0
+                try:
+                    freq_key = "nanbeige.rope.freq_base" if "nanbeige.rope.freq_base" in self.gguf_reader.fields else "llama.rope.freq_base"
+                    if freq_key in self.gguf_reader.fields:
+                        freq_base = float(self.gguf_reader.fields[freq_key].contents())
+                except Exception:
+                    pass
+                if freq_base <= 20000.0:  # interleaved rotary — reorder required
+                    dim_key = "nanbeige.rope.dimension_count" if "nanbeige.rope.dimension_count" in self.gguf_reader.fields else "llama.rope.dimension_count"
+                    if dim_key in self.gguf_reader.fields:
+                        DH = self.gguf_reader.fields[dim_key].contents()
+                        pp = DH // 2
+                        d, m, qw = unpacked
+                        d = rearrange(d, '(g p q) c -> (g q p) c', p=pp, q=2).contiguous()
+                        m = rearrange(m, '(g p q) c -> (g q p) c', p=pp, q=2).contiguous()
+                        qw = rearrange(qw, '(g p q) c -> (g q p) c', p=pp, q=2).contiguous()
+                        unpacked = (d, m, qw)
 
             if "ffn_down.weight" in gguf_tensor.name: # special padding to multiple of 512
                 d, m, q = unpacked
