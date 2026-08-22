@@ -234,6 +234,8 @@ static float* dequant_q8_0(const uint8_t* data, int i8_rows, int in_features,
 
 
 static constexpr float EPS=1e-6f;
+static inline bool npu_dbg(){static const bool v=getenv("NPU_DBG")!=nullptr;return v;}
+static inline void dbg(const char*tag,const float*x,int n){if(npu_dbg()){fprintf(stderr,"%s",tag);for(int i=0;i<n;i++)fprintf(stderr," %.6g",x[i]);fprintf(stderr,"\n");fflush(stderr);}}
 static inline void cn(float*x,int n){for(int i=0;i<n;i++)if(!std::isfinite(x[i]))x[i]=0.0f;}
 static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
     for(int i=1;i<n;i++)if(sc[i]>mx)mx=sc[i];double s=0;
@@ -809,6 +811,8 @@ int main(int argc,char**argv){
         if (env_flm_xd) {
             // Direct path: user specified the exact directory
             flm_mm_path = std::string(env_flm_xd) + "/mm.xclbin";
+            FILE* f = fopen(flm_mm_path.c_str(), "rb");
+            if (f) { fclose(f); flm_xclbin_available = true; }
         } else {
             // Try to find the right model directory under root
             // The model tag (e.g., "qwen3_0_6b") doesn't directly map to FLM's
@@ -2986,12 +2990,14 @@ struct Bf16Ctx {
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
     printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
+    if(npu_dbg()){fprintf(stderr,"EMB0:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",emb_f32[(size_t)pt_vec[0]*H+i]);fprintf(stderr,"\n");}
     xrt::run pending_gu; bool has_pending=false;
     for(int l=0;l<NC;l++){
         fprintf(stderr,"  L%d",l);fflush(stderr);
         // Save pre-norm residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],in_n[l].data(),H);
+        if(npu_dbg()&&l==0)dbg("RN0:",h_b.data(),8);
         // Phase 1: Launch QKV on NPU with PER-TOKEN ascales (fix #1699: the
         // shared batch scale let one large-magnitude token zero-out the others
         // through int8 quantization — 0.6B prefill: pos0 su max ~3671 vs
@@ -3007,6 +3013,16 @@ struct Bf16Ctx {
         else
             FLM_FINISH_ASYNC_ROWS(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascales.data(),qsc[l],l);
         cn(qo_b.data(),npt*qkv_n);
+        if(npu_dbg()&&l==0){
+            dbg("QKV0q:",qo_b.data(),8);
+            dbg("QKV0k:",qo_b.data()+cfg.qkv_k_offset,8);
+            dbg("QKV0v:",qo_b.data()+cfg.qkv_v_offset,8);
+            if(npt>7){
+                dbg("QKV7q:",qo_b.data()+7*qkv_n,8);
+                dbg("QKV7k:",qo_b.data()+7*qkv_n+cfg.qkv_k_offset,8);
+                dbg("QKV7v:",qo_b.data()+7*qkv_n+cfg.qkv_v_offset,8);
+            }
+        }
         fprintf(stderr,"q");fflush(stderr);
         // ── per-layer attention (#1472): GDN is sequential (conv + delta rule);
         // full-attn layers use CPU k/v + per-layer dims; other models keep the
@@ -3056,6 +3072,7 @@ struct Bf16Ctx {
                          kv_caches[l][0].k.data(), kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
             }
         }
+        if(npu_dbg()&&l==0){dbg("ATN0:",at_b.data(),8); if(npt>7)dbg("ATN7:",at_b.data()+7*NH*HD,8);}
         // O GEMM (batched) + residual — per-token ascales
         std::vector<float> o_ascales(npt);
         for (int pi = 0; pi < npt; pi++) o_ascales[pi] = dynamic_ascale(&at_b[pi * NH * HD], NH * HD);
@@ -3063,6 +3080,7 @@ struct Bf16Ctx {
         cn(oo_b.data(),npt*H);
         fprintf(stderr,"o");fflush(stderr);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
+        if(npu_dbg()&&l==0)dbg("O0:",h_b.data(),8);
         // Save pre-FFN residuals
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)sb_data[pi*H+i]=h_b[pi*H+i];
         for(int pi=0;pi<npt;pi++)rn_c(&h_b[pi*H],pa_n[l].data(),H);
@@ -3097,6 +3115,7 @@ struct Bf16Ctx {
         for (int pi = 0; pi < npt; pi++) gu_ascales[pi] = dynamic_ascale(&h_b[pi * H], H);
         auto r_gu=FLM_LAUNCH_ASYNC_ROWS(cg,l,h_b.data(),npt,H,gu_ascales.data());
         FLM_FINISH_ASYNC_ROWS(cg,r_gu,gt_b.data(),npt,mlp_out,gu_ascales.data(),gsc[l],l);cn(gt_b.data(),npt*mlp_out);
+        if(npu_dbg()&&l==0)dbg("GU0:",gt_b.data(),8);
         fprintf(stderr,"g");fflush(stderr);
         if(cfg.gu_split){FLM_GO_ROWS_PTR(cu_ptr,l,h_b.data(),npt,H,gu_ascales.data(),gu_ascales.data(),usc[l],su_b.data(),IM);cn(su_b.data(),npt*IM);
             for(int pi=0;pi<npt;pi++){for(int i=0;i<IM;i++){float gv=gt_b[pi*IM+i];if(!std::isfinite(gv))gv=0;su_b[pi*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[pi*IM+i];}}}
@@ -3108,6 +3127,7 @@ struct Bf16Ctx {
         }
         // Residual add: use saved pre-FFN values
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+dw_b[pi*H+i];
+        if(npu_dbg()&&l==0)dbg("D0:",h_b.data(),8);
         // #1471 bisect: NPU_DUMP_HIDDEN=<path> dumps h_b[0] (first prompt
         // position) after every layer, appended (40 x H floats).
         if (const char* dh = getenv("NPU_DUMP_HIDDEN")) {
