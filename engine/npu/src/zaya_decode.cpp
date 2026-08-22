@@ -195,10 +195,15 @@ int zaya_decode_main(int argc, char** argv) {
     d_ctx.MD  = 128; d_ctx.KD  = m.n_ff;   d_ctx.ND  = d.H;
     const char* xd = getenv("NPU_XCLBIN_DIR") ? getenv("NPU_XCLBIN_DIR") : "engine/npu/xclbins";
     char gu_xp[512], gu_ip[512], d_xp[512], d_ip[512];
-    snprintf(gu_xp, sizeof gu_xp, "%s/final_i8_MOE_GU_zaya.xclbin", xd);
-    snprintf(gu_ip, sizeof gu_ip, "%s/insts_i8_MOE_GU_zaya.txt", xd);
-    snprintf(d_xp,  sizeof d_xp,  "%s/final_i8_MOE_D_zaya.xclbin", xd);
-    snprintf(d_ip,  sizeof d_ip,  "%s/insts_i8_MOE_D_zaya.txt", xd);
+    snprintf(gu_xp, sizeof gu_xp, "%s/final_i8_MOE_GU_zaya_m16.xclbin", xd);
+    snprintf(gu_ip, sizeof gu_ip, "%s/insts_i8_MOE_GU_zaya_m16.txt", xd);
+    snprintf(d_xp,  sizeof d_xp,  "%s/final_i8_MOE_D_zaya_m16.xclbin", xd);
+    snprintf(d_ip,  sizeof d_ip,  "%s/insts_i8_MOE_D_zaya_m16.txt", xd);
+    // Env overrides for A/B-testing alternative xclbin/instruction-stream shapes.
+    if (getenv("NPU_GU_XCLBIN")) snprintf(gu_xp, sizeof gu_xp, "%s", getenv("NPU_GU_XCLBIN"));
+    if (getenv("NPU_GU_INSTS")) snprintf(gu_ip, sizeof gu_ip, "%s", getenv("NPU_GU_INSTS"));
+    if (getenv("NPU_D_XCLBIN"))  snprintf(d_xp,  sizeof d_xp,  "%s", getenv("NPU_D_XCLBIN"));
+    if (getenv("NPU_D_INSTS"))  snprintf(d_ip,  sizeof d_ip,  "%s", getenv("NPU_D_INSTS"));
     if (!gu_ctx.init(dev, gu_xp, gu_ip, 0, NC)) { fprintf(stderr, "GU ctx init failed\n"); return 1; }
     if (!d_ctx.init(dev, d_xp, d_ip, 0, NC))   { fprintf(stderr, "D ctx init failed\n");  return 1; }
     // NOTE: do NOT regen_insts(1) — the microkernel is M=128-baked (4×32-row
