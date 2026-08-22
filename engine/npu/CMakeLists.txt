@@ -16,7 +16,13 @@ set(NPU_ENGINE_SOURCES
     ${NPU_SRC_DIR}/npu_engine_universal.cpp
     ${NPU_SRC_DIR}/dequant_q4nx.cpp
     ${NPU_SRC_DIR}/gemm_npu_instructions.cpp
+    ${NPU_SRC_DIR}/zaya_decode.cpp
 )
+# zaya_decode.cpp — the Zaya decode path (CCA attention on CPU, MoE FFN on
+# NPU, NPU_FUSED=1 fused GU->SiLU->D mode). npu_engine_universal dispatches
+# to zaya_decode_main when the model header contains "zaya", so it must be
+# linked in. Needs the generators/ include dir (silu_quant.h, the dual-
+# compiled fused-kernel contract) and -mavx2 (zaya_moe_cpu.h AVX2 host amax).
 # flm_bridge.cpp (FLM dlopen wrapper) was removed 2026-08-15: no engine code
 # calls FlmBridge — HybridFlmCtx generates instructions via the open-source
 # gemm_generate_sequence_i8_split(), and the pre-compiled .txt streams load
@@ -26,6 +32,7 @@ add_executable(npu_engine_universal ${NPU_ENGINE_SOURCES})
 
 target_include_directories(npu_engine_universal PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/generators
     ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include   # npu_instr.hpp, npu_app.hpp
 )
@@ -59,7 +66,7 @@ target_link_libraries(npu_engine_universal
 )
 
 target_compile_options(npu_engine_universal PRIVATE
-    -O3 -ffast-math -march=native -funroll-loops -fno-math-errno
+    -O3 -ffast-math -march=native -funroll-loops -fno-math-errno -mavx2
     -Wno-unused-parameter -Wno-unused-variable -Wno-nan-infinity-disabled -Wno-implicit-const-int-float-conversion
 )
 
