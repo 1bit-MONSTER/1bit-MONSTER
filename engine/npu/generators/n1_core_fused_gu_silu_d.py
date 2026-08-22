@@ -220,10 +220,18 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                         dma_start_task(at); at_list.append(at)
                         for c in range(n_aie_cols):
                             n_tile = cg * n_aie_cols + c
+                            # LINEAR tap: the host packs each (64,128) B tile
+                            # CONTIGUOUSLY in the mmul chunk order (byte s =
+                            # i0*1024 + i1*64 + i2*8 + i3), so one tile is one
+                            # 8 KB linear DMA — the row-major 4D tap read
+                            # 8-byte bursts at 4096-byte strides (cache-line
+                            # waste -> ~2.4 GB/s effective; measured 5.1 ms
+                            # wait for the 12.4 MB/launch weight stream).
                             bt = shim_dma_single_bd_task(
-                                B_s[c], B_gu, offset=ki * k * N_GU + n_tile * n,
-                                sizes=[k // 8, n // 8, 8, 8],
-                                strides=[8 * N_GU, 8, N_GU, 1], issue_token=True)
+                                B_s[c], B_gu,
+                                offset=(ki * (N_GU // n) + n_tile) * (k * n),
+                                sizes=[1, 1, 1, k * n],
+                                strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)
                     dma_await_task(*at_list, *bt_list)
                     dma_free_task(*at_list, *bt_list)
@@ -240,11 +248,16 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                 # span reads OOB into neighbours, which the kernel ignores.
                 gs_tasks = []
                 for c in range(n_aie_cols):
+                    # LINEAR gs tile: 8 KB contiguous from the 32 KB header
+                    # slice; the host packs the 8-float section header at the
+                    # slice start (v0 = ag*gsec[cg] at byte 0, v4 =
+                    # ag*qn_s*gsec[cg] at byte 16) — the kernel reads only
+                    # gs[0] and gs[4] (the reliably delivered 32 bytes).
                     gt = shim_dma_single_bd_task(
                         B_s[c], B_gu,
                         offset=(K * N_GU) + c * (4 * 32768) + cg * 32768,
-                        sizes=[k // 8, n // 8, 8, 8],
-                        strides=[8 * N_GU, 8, N_GU, 1],
+                        sizes=[1, 1, 1, k * n],
+                        strides=[1, 1, 1, 1],
                         issue_token=True)
                     dma_start_task(gt); gs_tasks.append(gt)
                 dma_await_task(*gs_tasks)
@@ -284,9 +297,10 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                         for c in range(n_aie_cols):
                             n_tile = cg2 * n_aie_cols + c
                             bt = shim_dma_single_bd_task(
-                                B_s[c], B_d, offset=ki * k * N_D + n_tile * n,
-                                sizes=[k // 8, n // 8, 8, 8],
-                                strides=[8 * N_D, 8, N_D, 1], issue_token=True)
+                                B_s[c], B_d,
+                                offset=(ki * (N_D // n) + n_tile) * (k * n),
+                                sizes=[1, 1, 1, k * n],
+                                strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)
                     dma_await_task(*at_list, *bt_list)
                     dma_free_task(*at_list, *bt_list)

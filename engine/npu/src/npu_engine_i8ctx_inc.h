@@ -661,8 +661,37 @@ struct I8Ctx {
     // header slice (the per-token update_fused_header folds ag/qn_s in).
     // The BO layout is KD×N contiguous (no ND padding — 2048/4096 are 128-
     // multiples); N = 2·n_ff, the interleaved GU width.
+    // ── Tile-contiguous pack helpers (issue #1759 perf) ──
+    // The fused xclbin's B taps are LINEAR (one 8 KB tile per DMA — the
+    // row-major 4D tap read 8-byte bursts at 4096-byte strides, ~2.4 GB/s
+    // effective, ~5 ms of the 5.1 ms fused wait). Each tile (ki, n_tile) is
+    // packed CONTIGUOUSLY in the mmul chunk order: byte s = i0*1024 + i1*64 +
+    // i2*8 + i3 holds B[ki*64 + i0*8 + i2][n_tile*128 + i1*8 + i3], so the
+    // linear DMA delivers the tile exactly as the mmul reads it. A ROW-MAJOR
+    // shadow (row_out) is kept for the host amax pass / host emulation.
+    static inline void pack_tile_chunk(int8_t* dst, const float* w, int K, int N,
+                                       int ki, int nt, int n_tiles_k, float tis) {
+        size_t tbase = ((size_t)ki * n_tiles_k + nt) * (64 * 128);
+        for (int i0 = 0; i0 < 8; i0++)
+            for (int i1 = 0; i1 < 16; i1++)
+                for (int i2 = 0; i2 < 8; i2++) {
+                    const float* src = w + (size_t)(ki * 64 + i0 * 8 + i2) * N
+                                       + nt * 128 + i1 * 8;
+                    int8_t* d = dst + tbase + (size_t)i0 * 1024 + i1 * 64 + i2 * 8;
+                    for (int i3 = 0; i3 < 8; i3++) {
+                        float v = src[i3];
+                        if (!std::isfinite(v)) v = 0;
+                        int x = (int)roundf(v * tis);
+                        if (x > 127) x = 127;
+                        else if (x < -127) x = -127;
+                        d[i3] = (int8_t)x;
+                    }
+                }
+    }
+
     void packB_into_fused(xrt::bo& bo, const float* w, int K, int N,
-                          std::vector<float>& col_out) {
+                          std::vector<float>& col_out,
+                          std::vector<int8_t>& row_out) {
         auto* Bm = (int8_t*)bo.map();
         memset(Bm, 0, (size_t)K * N);
         std::vector<float> col(N);
@@ -671,6 +700,8 @@ struct I8Ctx {
         // scales gsec[0..3] are the kernel's 8-float header (with ag and qn_s
         // folded per token). Measured corr 0.99906 vs float (per-column: 0.99967).
         const size_t sec = N / FUSED_NSEC;               // 1024 cols per section
+        const int n_tiles_k = N / 128;
+        const int n_k = K / 64;
         std::vector<float> smax(FUSED_NSEC, 0.0f);
         for (int j = 0; j < N; j++)
             for (int i = 0; i < K; i++) {
@@ -680,35 +711,94 @@ struct I8Ctx {
         for (int k = 0; k < FUSED_NSEC; k++) if (smax[k] < 1e-12f) smax[k] = 1.0f;
         double ssum = 0;
         for (int j = 0; j < N; j++) {
-            float ts = smax[j / sec] / 127.0f;
-            float tis = 127.0f / smax[j / sec];
-            for (int i = 0; i < K; i++) {
-                float v = w[(size_t)i * N + j];
-                if (!std::isfinite(v)) v = 0;
-                int x = (int)roundf(v * tis);
-                if (x > 127) x = 127;
-                else if (x < -127) x = -127;
-                Bm[(size_t)i * N + j] = (int8_t)x;
-            }
-            col[j] = ts;
-            ssum += ts;
+            col[j] = smax[j / sec] / 127.0f;
+            ssum += col[j];
         }
-        // The 8-float section header: [gsec[0..3] | qn_s-neutral] — the
-        // kernel's silu reads gs[0..7] = the FIRST 32 delivered bytes of the
-        // gs tile. The full-tile B-tap delivers those bytes from the SCATTERED
-        // offsets fused_gs_off(0..7) = 0, 4, 4096, 4100, 8192, 8196, 12288,
-        // 12292, so the host scatters the 8 floats there (identical for every
-        // (col, col_group) slice; the per-token ag/qn_s folding happens in
-        // update_fused_header).
+        row_out.resize((size_t)K * N);
+        for (int ki = 0; ki < n_k; ki++)
+            for (int nt = 0; nt < n_tiles_k; nt++) {
+                float tis = 127.0f / smax[(nt * 128) / sec];
+                pack_tile_chunk(Bm, w, K, N, ki, nt, n_tiles_k, tis);
+            }
+        // row-major shadow (host amax pass + host emulation read row-major)
+        for (int ki = 0; ki < n_k; ki++)
+            for (int nt = 0; nt < n_tiles_k; nt++) {
+                size_t tbase = ((size_t)ki * n_tiles_k + nt) * (64 * 128);
+                float tis = 127.0f / smax[(nt * 128) / sec];
+                for (int i0 = 0; i0 < 8; i0++)
+                    for (int i1 = 0; i1 < 16; i1++)
+                        for (int i2 = 0; i2 < 8; i2++)
+                            for (int i3 = 0; i3 < 8; i3++) {
+                                int k = ki * 64 + i0 * 8 + i2;
+                                int j = nt * 128 + i1 * 8 + i3;
+                                size_t s = (size_t)i0 * 1024 + i1 * 64 + i2 * 8 + i3;
+                                float v = w[(size_t)k * N + j];
+                                if (!std::isfinite(v)) v = 0;
+                                int x = (int)roundf(v * tis);
+                                if (x > 127) x = 127;
+                                else if (x < -127) x = -127;
+                                row_out[(size_t)k * N + j] = (int8_t)x;
+                            }
+            }
+        // 4-section header, LINEAR gs tap: v0 (gsec[cg]) at slice byte 0,
+        // v4 (gsec[cg], qn_s folded per token) at slice byte 16 — the kernel
+        // reads only gs[0]/gs[4] from the 32 delivered bytes.
         const float gsec0[FUSED_NSEC] = { smax[0]/127.0f, smax[1]/127.0f, smax[2]/127.0f, smax[3]/127.0f };
         for (size_t c = 0; c < FUSED_AIE_COLS; c++)
             for (size_t cg = 0; cg < 4; cg++)
-                for (int j = 0; j < FUSED_NSEC; j++)
-                    memcpy(Bm + (size_t)K * N + c * FUSED_GS_TILE
-                                + cg * FUSED_GS_SLICE + fused_gs_off(j),
-                           &gsec0[j], 4);
+                memcpy(Bm + (size_t)K * N + c * FUSED_GS_TILE
+                            + cg * FUSED_GS_SLICE, &gsec0[cg], 4);
         bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         col_out = std::move(col);
+    }
+
+    // Fused D weights: per-column quant (like packB_into) but tile-contiguous
+    // (linear B tap in the D phase). K = n_ff, N = H (both 2048).
+    void packB_into_fused_d(xrt::bo& bo, const float* w, int K, int N,
+                            float& sout, std::vector<float>& col_out,
+                            std::vector<int8_t>& row_out) {
+        auto* Bm = (int8_t*)bo.map();
+        memset(Bm, 0, (size_t)K * N);
+        const int n_tiles_k = N / 128;
+        const int n_k = K / 64;
+        std::vector<float> col(N);
+        double ssum = 0;
+        for (int j = 0; j < N; j++) {
+            float amax = 0;
+            for (int i = 0; i < K; i++) {
+                float a = fabsf(w[(size_t)i * N + j]);
+                if (std::isfinite(a) && a > amax) amax = a;
+            }
+            if (amax < 1e-12f) amax = 1.0f;
+            col[j] = amax / 127.0f;
+            ssum += col[j];
+        }
+        row_out.resize((size_t)K * N);
+        for (int ki = 0; ki < n_k; ki++)
+            for (int nt = 0; nt < n_tiles_k; nt++) {
+                size_t tbase = ((size_t)ki * n_tiles_k + nt) * (64 * 128);
+                for (int i0 = 0; i0 < 8; i0++)
+                    for (int i1 = 0; i1 < 16; i1++)
+                        for (int i2 = 0; i2 < 8; i2++) {
+                            const int k = ki * 64 + i0 * 8 + i2;
+                            const float* src = w + (size_t)k * N + nt * 128 + i1 * 8;
+                            int8_t* d = Bm + tbase + (size_t)i0 * 1024 + i1 * 64 + i2 * 8;
+                            for (int i3 = 0; i3 < 8; i3++) {
+                                int j = nt * 128 + i1 * 8 + i3;
+                                float tis = 127.0f / (col[j] * 127.0f);  // per-column
+                                float v = src[i3];
+                                if (!std::isfinite(v)) v = 0;
+                                int x = (int)roundf(v * tis);
+                                if (x > 127) x = 127;
+                                else if (x < -127) x = -127;
+                                d[i3] = (int8_t)x;
+                                row_out[(size_t)k * N + j] = (int8_t)x;
+                            }
+                        }
+            }
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        col_out = std::move(col);
+        sout = (float)(ssum / N);
     }
 
     // Fold ag and qn_s into the per-column header slices
@@ -721,11 +811,11 @@ struct I8Ctx {
         // The kernel's silu reads gs[0..3] (gate sections) and gs[4..7]
         // (up sections = gate x qn_s).
         float* base = (float*)((int8_t*)bo.map() + (size_t)KD * N);
-        // Per-col_group section header: the kernel reads only gs[0] and gs[4]
-        // of its gs tile (= slots fused_gs_off(0)/fused_gs_off(4) of the
-        // slice), and tile (c, cg) covers exactly ONE GU section — index cg
-        // of the interleaved matrix (cols [cg·1024, (cg+1)·1024), gate AND
-        // up). So each (c, cg) slice's slots 0/4 carry that cg's scales:
+        // Per-col_group section header (LINEAR gs tap): the kernel reads only
+        // gs[0] and gs[4] of its gs tile = the first 32 delivered bytes =
+        // slice bytes 0..31. Tile (c, cg) covers exactly ONE GU section —
+        // index cg (cols [cg·1024, (cg+1)·1024), gate AND up), so each
+        // (c, cg) slice carries that cg's scales at bytes 0 and 16:
         //   gs[0] = ag·gsec[cg], gs[4] = ag·qn_s·gsec[cg].
         for (size_t c = 0; c < FUSED_AIE_COLS; c++)
             for (size_t cg = 0; cg < FUSED_NSEC; cg++) {
@@ -733,8 +823,8 @@ struct I8Ctx {
                 float v4 = ag * qn_s * gs[(size_t)cg * 1024];
                 int8_t* sl = (int8_t*)base + c * FUSED_GS_TILE
                              + cg * FUSED_GS_SLICE;
-                memcpy(sl + fused_gs_off(0), &v0, 4);
-                memcpy(sl + fused_gs_off(4), &v4, 4);
+                memcpy(sl + 0, &v0, 4);
+                memcpy(sl + 16, &v4, 4);
             }
         bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
                 FUSED_AIE_COLS * FUSED_GS_TILE, (size_t)KD * N);

@@ -221,6 +221,7 @@ int zaya_decode_main(int argc, char** argv) {
     I8Ctx fused_ctx;
     std::vector<std::vector<std::unique_ptr<xrt::bo>>> fgu_bo, fd_bo;
     std::vector<std::vector<std::vector<float>>> fgu_cs, fd_cs;
+    std::vector<std::vector<std::vector<int8_t>>> fgu_row, fd_row;   // row-major shadows (host amax / emulation)
     std::unique_ptr<xrt::bo> h2_bo;
     if (FUSED) {
         fused_ctx.MD = 8; fused_ctx.KD = d.H; fused_ctx.ND = d.H;
@@ -232,9 +233,11 @@ int zaya_decode_main(int argc, char** argv) {
         if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED ctx init failed\n"); return 1; }
         h2_bo = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
         fgu_bo.resize(NC); fd_bo.resize(NC); fgu_cs.resize(NC); fd_cs.resize(NC);
+        fgu_row.resize(NC); fd_row.resize(NC);
         for (int l = 1; l < NC; l += 2) {
             fgu_bo[l].resize(m.n_exp); fd_bo[l].resize(m.n_exp);
             fgu_cs[l].resize(m.n_exp); fd_cs[l].resize(m.n_exp);
+            fgu_row[l].resize(m.n_exp); fd_row[l].resize(m.n_exp);
         }
         std::vector<float> guI((size_t)d.H * 2 * m.n_ff), dn_T((size_t)m.n_ff * d.H);
         for (int l = 1; l < NC; l += 2) {
@@ -252,7 +255,7 @@ int zaya_decode_main(int argc, char** argv) {
                     }
                 }
                 fgu_bo[l][e] = fused_ctx.make_fused_weight_bo(dev, 2 * m.n_ff);
-                fused_ctx.packB_into_fused(*fgu_bo[l][e], guI.data(), d.H, 2 * m.n_ff, fgu_cs[l][e]);
+                fused_ctx.packB_into_fused(*fgu_bo[l][e], guI.data(), d.H, 2 * m.n_ff, fgu_cs[l][e], fgu_row[l][e]);
                 const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
                 #pragma omp parallel for schedule(static)
                 for (int j = 0; j < m.n_ff; j++)
@@ -260,7 +263,7 @@ int zaya_decode_main(int argc, char** argv) {
                         dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
                 fd_bo[l][e] = fused_ctx.make_weight_bo(dev);
                 float d_sc = 0;
-                fused_ctx.packB_into(*fd_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, fd_cs[l][e]);
+                fused_ctx.packB_into_fused_d(*fd_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, fd_cs[l][e], fd_row[l][e]);
             }
         }
         fprintf(stderr, "fused resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
@@ -384,12 +387,21 @@ int zaya_decode_main(int argc, char** argv) {
                     float ag = dynamic_ascale(residual.data(), d.H);
                     fused_ctx.quantize_async(residual.data(), 1, d.H, ag);   // Am for the amax pass
                     float qn_s = zaya_moe::host_h2_amax_qn_s(
-                        fused_ctx.Am, (const int8_t*)fgu_bo[l][e]->map(),
+                        fused_ctx.Am, fgu_row[l][e].data(),
                         fgu_cs[l][e].data(), d.H, m.n_ff, ag);
+                    auto tb0 = std::chrono::steady_clock::now();
                     fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
+                    auto tb1 = std::chrono::steady_clock::now();
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo,
                                                        residual.data(), 1, d.H, ag);
+                    auto tb2 = std::chrono::steady_clock::now();
                     fused_ctx.dequant_fused(frun, moe_out.data(), 1, d.H, qn_s, l);
+                    auto tb3 = std::chrono::steady_clock::now();
+                    if (getenv("NPU_TIMING") && pos == 0 && l == 3)
+                        fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f wait+deq=%.3f ms\n", l,
+                                std::chrono::duration<double, std::milli>(tb1 - tb0).count(),
+                                std::chrono::duration<double, std::milli>(tb2 - tb1).count(),
+                                std::chrono::duration<double, std::milli>(tb3 - tb2).count());
                     if (getenv("NPU_FUSED_DBG") && l == 1 && pos == 0) {
                         // ── minimal debug: h2 + host emulation comparison ──
                         h2_bo->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
@@ -405,10 +417,8 @@ int zaya_decode_main(int argc, char** argv) {
                                             // ── host emulation of the SAME fused path ──
                         {
                             std::vector<float> hout(d.H); float hqn = 0;
-                            std::vector<int8_t> guBv(fgu_bo[l][e]->map() ? (const int8_t*)fgu_bo[l][e]->map() : nullptr,
-                                                     (const int8_t*)fgu_bo[l][e]->map() + (size_t)d.H * 2 * m.n_ff);
-                            std::vector<int8_t> dnBv((const int8_t*)fd_bo[l][e]->map(),
-                                                     (const int8_t*)fd_bo[l][e]->map() + (size_t)m.n_ff * d.H);
+                            std::vector<int8_t> guBv = fgu_row[l][e];
+                            std::vector<int8_t> dnBv = fd_row[l][e];
                             zaya_moe::fused_ffn_int8(m, residual.data(), guBv, fgu_cs[l][e],
                                                      dnBv, fd_cs[l][e], hout.data(), &hqn);
                             double num=0, d1=0, d2=0;
