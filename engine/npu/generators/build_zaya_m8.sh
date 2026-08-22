@@ -23,27 +23,35 @@ GENERATOR_DIR="$(cd "$(dirname "$0")" && pwd)"
 XCLBIN_DIR="$GENERATOR_DIR/../xclbins"
 mkdir -p "$XCLBIN_DIR"
 
+# PID-unique workdir (issue #1777): a fixed /tmp path for the design OR the
+# kernel .o could be clobbered by a co-tenant process between generation and
+# aiecc, and the build would silently consume the stale file. $$ = PID.
+workdir="/tmp/zaya_m8_build.$$"
+mkdir -p "$workdir"
+trap 'rm -rf "$workdir"' EXIT
+
 # 1. Compile the DIM_M=8 kernel (1x4 mmul expansion; M8_VECTORIZED bypasses the
-#    DIM_M < 16 scalar alias).
+#    DIM_M < 16 scalar alias) INTO the workdir.
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
-    -c "$GENERATOR_DIR/mm_kernel_reference.cc" -o /tmp/mm_8x64x128.o
+    -c "$GENERATOR_DIR/mm_kernel_reference.cc" -o "$workdir/mm_8x64x128.o"
 
 # The MLIR references the kernel object by the fixed name mm_32x64x128.o.
-cp /tmp/mm_8x64x128.o /tmp/mm_32x64x128.o
+cp "$workdir/mm_8x64x128.o" "$workdir/mm_32x64x128.o"
 
 build_one() {
     local proj="$1" K="$2" N="$3"
-    local design="/tmp/design_${proj}_m8.mlir"
+    local design="$workdir/design_${proj}_m8.mlir"
     local xclbin="$XCLBIN_DIR/final_i8_MOE_${proj}_zaya_m8.xclbin"
     local insts="$XCLBIN_DIR/insts_i8_MOE_${proj}_zaya_m8.txt"
     echo "═══ ${proj} M=8 K=${K} N=${N} ═══"
     $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" -M 8 -K "$K" -N "$N" \
         -m 8 -k 64 -n 128 -c 8 -r 1 -b 5 2>/dev/null > "$design"
-    cd /tmp
+    [ -s "$design" ] || { echo "ERROR: ${proj}: design generation produced an empty file" >&2; exit 1; }
+    cd "$workdir"
     $AIECC --peano="$P" --aietools="$AIETOOLS" \
         --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
         --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \

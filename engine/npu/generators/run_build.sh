@@ -57,7 +57,14 @@ SHAPES=(
 
 build_one() {
     local tag="$1" proj="$2" K="$3" N="$4" cols="$5"
-    local design="/tmp/design_${proj}_${tag}.mlir"
+    # PID-unique workdir (issue #1777): a fixed /tmp path for the design OR
+    # the kernel .o could be clobbered by a co-tenant process between
+    # generation and aiecc, and the build would silently consume the stale
+    # file. $$ = PID. aiecc needs the kernel .o in its CWD, so the design and
+    # the kernel are staged together here.
+    local workdir="/tmp/build_${proj}_${tag}.$$"
+    mkdir -p "$workdir"
+    local design="$workdir/design.mlir"
     local xclbin="$XCLBIN_DIR/final_i8_${proj}_${tag}.xclbin"
     local insts_dir="$XCLBIN_DIR"   # engine reads insts_i8_<op>_<tag>.txt from the xclbin dir
     mkdir -p "$insts_dir"
@@ -73,9 +80,12 @@ build_one() {
     $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" \
         -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -r 4 -b 5 \
         2>/dev/null > "$design"
+    if [ ! -s "$design" ]; then
+        echo "  ❌ ${proj} ${tag}: design generation produced an empty file" >&2
+        rm -rf "$workdir"
+        return 1
+    fi
     
-    # aiecc needs kernel .o in CWD and runs from the design directory
-    local workdir; workdir=$(dirname "$design")
     cp "$KERNEL_O" "$workdir/mm_32x64x128.o" 2>/dev/null || true
     
     cd "$workdir"
@@ -87,6 +97,7 @@ build_one() {
         --npu-insts-name="$insts_dir/insts_i8_${proj}_${tag}.txt" \
         "$design" 2>&1 | tail -1
     cd "$GENERATOR_DIR"
+    rm -rf "$workdir"
     
     if [ -f "$xclbin" ]; then
         local size; size=$(stat -c%s "$xclbin" 2>/dev/null)
