@@ -69,7 +69,26 @@ Once per-layer is a single stream, batch the whole token's layer streams into
 one runlist dispatch (FLM-style). Note the CCA recurrence (conv_state/vrec) is
 token-sequential, so this batches *within* a token, not across tokens.
 
-## Expected trajectory
+## Key finding (2026-08-21): compute is solved; the wall is launch overhead
+
+Measured decode launch wait by M:
+
+| M | moe (40 launches) | per-launch |
+|---|------------------:|-----------:|
+| 128 | 200 ms | 5.0 ms |
+| 16 | 126 ms | 3.15 ms |
+| 8 | 126 ms | 3.15 ms |
+
+M=16 → M=8 is a no-op: the GEMM compute is now negligible (~0.1-0.3 ms/launch),
+and **~2.9 ms/launch of fixed overhead + weight DMA dominates** (40 x 2.9 = 116
+ms). Reducing M further (vectorized M=1 GEMV) saves only ~5-10 ms. The levers
+are therefore, in order:
+
+1. **Fuse GU+D** — one launch per MoE layer (40 → 20), amortizing the pipeline
+   fill + TCT sync + intermediate C writeback. Needs in-kernel SiLU (RTP 0x100c).
+2. **Faster weight DMA** — 12.6 MB/layer streamed per token from host-resident
+   BOs; DEVICE-only (uncached) BOs may cut the DMA latency.
+3. **CCA attention on NPU + runlist** — the FLM architectural gap.
 
 | Milestone | tok/s | status |
 |-----------|------:|--------|
@@ -77,9 +96,10 @@ token-sequential, so this batches *within* a token, not across tokens.
 | + CPU parallelization (lm_head + attention OpenMP) | 3.9 | done |
 | + resident-expert BOs (no per-token memcpy/sync) | 4.3 | done |
 | + M=16 decode xclbins (`build_zaya_m16.sh`) | **6.2** | **done** |
+| + vectorized M=8 xclbin (1x4 mmul, `build_zaya_m8.sh`) | 6.3 | **done — bit-perfect; confirms compute is NOT the bottleneck** |
 | + M=1 scalar decode xclbin | — | **dead end** (scalar kernel reads B row-major vs microtiled B-DMA → corr~0; also slower than M=16) |
-| + vectorized GEMV kernel (fast M=1) | ~7 | next |
-| + fused GU+D (on-NPU SiLU, RTP 0x100c) | ~7.5 | next |
+| + fused GU+D (on-NPU SiLU, RTP 0x100c) — halves the 40 launches | ~7.5 | next |
+| + attention on NPU + runlist | ~15–20 | later |
 | + attention on NPU + runlist | ~15–20 | later |
 
 ## Owner / log

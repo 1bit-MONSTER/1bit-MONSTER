@@ -271,6 +271,71 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
   event1();
 }
 
+// 1x4 mmul expansion (M=8 decode). The 2x4 wrapper above needs m % 16 == 0;
+// M=8 (m % 8 == 0, but not % 16) uses this single-mmul-row variant. Same
+// 8x8x8 mmul accumulation -> bit-identical to the M=16/M=128 kernels.
+template <unsigned m, unsigned k, unsigned n>
+static inline void matmul_vectorized_8x8x8_i8_i32_m8(const int8 *__restrict pA,
+                                                     const int8 *__restrict pB,
+                                                     int32 *__restrict pC) {
+  constexpr int r = 8, s = 8, t = 8;
+  static_assert(m % r == 0 && k % s == 0 && n % (4 * t) == 0);
+  using MMUL = aie::mmul<r, s, t, int8, int8, accauto>;
+  constexpr unsigned rowA = m / r, colA = k / s, colB = n / t;
+
+  event0();
+  for (unsigned z = 0; z < rowA; z += 1) {
+    int32 *__restrict pC1 = pC + (z * colB) * MMUL::size_C;
+    for (unsigned j = 0; j < colB; j += 4) {
+      const int8 *__restrict pA1 = pA + (z * colA) * MMUL::size_A;
+      const int8 *__restrict pB1 = pB + (j)     * MMUL::size_B;
+      const int8 *__restrict pB2 = pB + (j + 1) * MMUL::size_B;
+      const int8 *__restrict pB3 = pB + (j + 2) * MMUL::size_B;
+      const int8 *__restrict pB4 = pB + (j + 3) * MMUL::size_B;
+
+      aie::vector<int8, MMUL::size_A> A0;
+      aie::vector<int8, MMUL::size_B> B0, B1, B2, B3;
+
+      aie::vector<int32, MMUL::size_C> acc_C00 = aie::load_v<MMUL::size_C>(pC1);
+      aie::vector<int32, MMUL::size_C> acc_C01 = aie::load_v<MMUL::size_C>(pC1 + MMUL::size_C);
+      aie::vector<int32, MMUL::size_C> acc_C02 = aie::load_v<MMUL::size_C>(pC1 + 2 * MMUL::size_C);
+      aie::vector<int32, MMUL::size_C> acc_C03 = aie::load_v<MMUL::size_C>(pC1 + 3 * MMUL::size_C);
+
+      MMUL C00(acc_C00);
+      MMUL C01(acc_C01);
+      MMUL C02(acc_C02);
+      MMUL C03(acc_C03);
+
+      for (unsigned i = 0; i < colA; ++i) {
+        A0 = aie::load_v<MMUL::size_A>(pA1);
+        pA1 += MMUL::size_A;
+        B0 = aie::load_v<MMUL::size_B>(pB1);
+        pB1 += MMUL::size_B * colB;
+        B1 = aie::load_v<MMUL::size_B>(pB2);
+        pB2 += MMUL::size_B * colB;
+        B2 = aie::load_v<MMUL::size_B>(pB3);
+        pB3 += MMUL::size_B * colB;
+        B3 = aie::load_v<MMUL::size_B>(pB4);
+        pB4 += MMUL::size_B * colB;
+        C00.mac(A0, B0);
+        C01.mac(A0, B1);
+        C02.mac(A0, B2);
+        C03.mac(A0, B3);
+      }
+
+      aie::store_v(pC1, C00.template to_vector<int32>());
+      pC1 += MMUL::size_C;
+      aie::store_v(pC1, C01.template to_vector<int32>());
+      pC1 += MMUL::size_C;
+      aie::store_v(pC1, C02.template to_vector<int32>());
+      pC1 += MMUL::size_C;
+      aie::store_v(pC1, C03.template to_vector<int32>());
+      pC1 += MMUL::size_C;
+    }
+  }
+  event1();
+}
+
 #ifdef B_COL_MAJ
 constexpr bool is_b_row_maj = false;
 #else
@@ -569,12 +634,21 @@ combos(zero_scalar_c_func)
 // names). For decode-optimized microkernels (DIM_M < 16, e.g. M=1) the
 // vectorized path can't instantiate (mmul needs m % 16 == 0), so alias the
 // names to the scalar implementations. Added 2026-08-15 for the M=1 kernels.
-#if DIM_M < 16
+#if DIM_M < 16 && !defined(M8_VECTORIZED)
 extern "C" void matmul_i8_i32(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
     matmul_scalar<int8_t, int32_t, DIM_M, DIM_K, DIM_N, true, true>(a_in, b_in, c_out);
 }
 extern "C" void zero_i32(int32_t *c_out) {
     zero_scalar<int32_t, DIM_M, DIM_N>(c_out);
+}
+#endif
+
+#ifdef M8_VECTORIZED
+extern "C" void matmul_i8_i32(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
+    matmul_vectorized_8x8x8_i8_i32_m8<DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);
+}
+extern "C" void zero_i32(int32_t *c_out) {
+    zero_vectorized<int32_t, DIM_M, DIM_N>(c_out);
 }
 #endif
 
