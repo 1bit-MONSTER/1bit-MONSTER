@@ -83,6 +83,10 @@
             "gguf_name": "v.post_ln.weight",
             "q4nx_name": "model.visual.merger.ln_q.weight"
         },
+        "vision_merger_ln_q_bias":{
+            "gguf_name": "v.post_ln.bias",
+            "q4nx_name": "model.visual.merger.ln_q.bias"
+        },
         "vision_merger_mlp_fc1_weight":{
             "gguf_name": "mm.0.weight",
             "q4nx_name": "model.visual.merger.mlp.0.weight"
