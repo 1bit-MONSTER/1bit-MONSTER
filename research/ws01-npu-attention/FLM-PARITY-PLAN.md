@@ -4,12 +4,12 @@
 
 ## Measured baseline (strixhalo, Zaya1-8B q4nx, NPU FFN ∥ CPU attention)
 
-| Phase | ms/tok |
-|-------|-------:|
-| MoE (40 NPU launches: 20×GU + 20×D) | ~200 |
-| CCA attention (CPU, parallelized) | ~11 |
-| lm_head matvec (memory-bound floor) | ~17 |
-| residual/router/silu | ~5 |
+| Phase | ms/tok (M=128) | ms/tok (M=16) |
+|-------|---------------:|--------------:|
+| MoE (40 NPU launches: 20×GU + 20×D) | ~200 | ~126 |
+| CCA attention (CPU, parallelized) | ~11 | ~11 |
+| lm_head matvec (memory-bound floor) | ~17 | ~17 |
+| residual/router/silu | ~5 | ~8 |
 
 ## FLM's numbers (the target)
 
@@ -71,12 +71,15 @@ token-sequential, so this batches *within* a token, not across tokens.
 
 ## Expected trajectory
 
-| Milestone | tok/s |
-|-----------|------:|
-| now (resident experts + CPU parallelization) | 4.2 |
-| + small-M xclbins (M=1 decode) | ~7–10 |
-| + fused GU+D (on-NPU SiLU) | ~10–12 |
-| + attention on NPU + runlist | ~15–20 |
+| Milestone | tok/s | status |
+|-----------|------:|--------|
+| baseline (M=128, cache, CPU scalar) | 2.2 | done |
+| + CPU parallelization (lm_head + attention OpenMP) | 3.9 | done |
+| + resident-expert BOs (no per-token memcpy/sync) | 4.3 | done |
+| + **M=16 decode xclbins** (`build_zaya_m16.sh`) | **6.2** | **done** |
+| + M=1 scalar decode xclbin (needs m=1 DMA tap) | ~7 | next |
+| + fused GU+D (on-NPU SiLU, RTP 0x100c) | ~7.5 | next |
+| + attention on NPU + runlist | ~15–20 | later |
 
 ## Owner / log
 
