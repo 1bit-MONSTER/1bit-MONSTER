@@ -10,7 +10,12 @@
         "CAVEAT: the actual zaya1-8b.q4nx was produced by tools/convert_float32_bins_to_q4nx.py",
         "(scale=abs_max/7, zp=0, ROW-major scales scales[row*8+group]). This GGUF converter's",
         "model_converter.py packs scales GROUP-major (group*32+row), so the scale byte order",
-        "differs from that artifact; nibble/lane layout (parallel_size=16) matches."
+        "differs from that artifact; nibble/lane layout (parallel_size=16) matches.",
+        "lm_head is TIED to token_embd.weight — the ZAYA GGUF has no separate",
+        "output.weight (verified in tools/convert_zaya_safetensors_to_gguf.py: only",
+        "token_embd.weight + output_norm.weight are global tensors). zaya.py writes",
+        "lm_head.weight from the embedding via _has_lm_head() fallback, so no",
+        "lm_head/output.weight entry is needed here (PR-Agent review #1766)."
     ],
     "q4nx_config": {
         "row_block_size": 32,
