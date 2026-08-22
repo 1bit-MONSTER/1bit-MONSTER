@@ -3121,9 +3121,11 @@ struct Bf16Ctx {
     // ===== v12: M=32 BATCHED DECODE =====
     // NOTE (2026-08-13, perf diagnosis): decode = 112 launches/token × ~4ms.
     // The ~4ms is the kernel (FLM mm.xclbin) executing its fixed M=128 stream:
-    // regen_insts(M<XM) deadlocks (REG_M can't resize the baked kernel), so
-    // the fix is per-shape small-M xclbins (build_xclbins.sh Peano path) or
-    // fused layer streams — not a runtime regen. See engine/npu/AIE2P-FACTS.md.
+    // the microkernel is M=128-baked and the generator voids M (regen_insts for
+    // M<XM deadlocked before the 2026-08-15 rework — REG_M can't resize the
+    // baked kernel), so the fix is per-shape small-M xclbins (build_xclbins.sh
+    // Peano path) or fused layer streams — not a runtime regen. See
+    // engine/npu/AIE2P-FACTS.md.
     printf("=== M=%d Batch Decode (%d tokens) ===\n",BS,ng);
     auto tgs=std::chrono::steady_clock::now();
     // NOTE: greedy batched decode — runs batch_size tokens per step, no draft verification.

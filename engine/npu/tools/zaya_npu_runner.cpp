@@ -201,9 +201,11 @@ int main(int argc, char** argv) {
     snprintf(d_ip,  sizeof d_ip,  "%s/insts_i8_MOE_D_zaya.txt", xd);
     if (!gu_ctx.init(dev, gu_xp, gu_ip, 0, NC)) { fprintf(stderr, "GU ctx init failed\n"); return 1; }
     if (!d_ctx.init(dev, d_xp, d_ip, 0, NC))   { fprintf(stderr, "D ctx init failed\n");  return 1; }
-    // NOTE: do NOT regen_insts(1) — the microkernel is M=128-baked (4×32-row
-    // slices). Single-token decode reuses the M=128 instruction stream; am=1
-    // zero-pads rows 1..127 so only row 0 is valid (same as npu_engine_universal).
+    // NOTE: M is always 128 — the v27 microkernel is M=128-baked (4×32-row
+    // slices) and the instruction stream is a pure function of (K, N); there is
+    // no valid M=1 stream (issue #1761). Single-token decode reuses the M=128
+    // instruction stream; am=1 zero-pads rows 1..127 so only row 0 is valid
+    // (same as npu_engine_universal).
     fprintf(stderr, "NPU contexts ready (GU %dx%d, D %dx%d)\n", gu_ctx.KD, gu_ctx.ND, d_ctx.KD, d_ctx.ND);
 
     // ── forward ──
