@@ -57,7 +57,10 @@ SHAPES=(
 
 build_one() {
     local tag="$1" proj="$2" K="$3" N="$4" cols="$5"
-    local design="/tmp/design_${proj}_${tag}.mlir"
+    # PID-unique design path (issue #1777): a fixed /tmp path could be
+    # clobbered by a co-tenant process between generation and aiecc, and the
+    # build would silently consume the stale file.
+    local design="/tmp/design_${proj}_${tag}.$$.mlir"
     local xclbin="$XCLBIN_DIR/final_i8_${proj}_${tag}.xclbin"
     local insts_dir="$XCLBIN_DIR"   # engine reads insts_i8_<op>_<tag>.txt from the xclbin dir
     mkdir -p "$insts_dir"
@@ -73,6 +76,7 @@ build_one() {
     $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" \
         -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -r 4 -b 5 \
         2>/dev/null > "$design"
+    [ -s "$design" ] || { echo "  ❌ ${proj} ${tag}: design generation produced an empty file"; return 1; }
     
     # aiecc needs kernel .o in CWD and runs from the design directory
     local workdir; workdir=$(dirname "$design")
@@ -87,6 +91,7 @@ build_one() {
         --npu-insts-name="$insts_dir/insts_i8_${proj}_${tag}.txt" \
         "$design" 2>&1 | tail -1
     cd "$GENERATOR_DIR"
+    rm -f "$design"; rm -rf "$design.prj"
     
     if [ -f "$xclbin" ]; then
         local size; size=$(stat -c%s "$xclbin" 2>/dev/null)

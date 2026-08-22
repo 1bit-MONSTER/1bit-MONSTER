@@ -35,12 +35,16 @@ cp /tmp/mm_16x64x128.o /tmp/mm_32x64x128.o
 
 build_one() {
     local proj="$1" K="$2" N="$3"
-    local design="/tmp/design_${proj}_m16.mlir"
+    # PID-unique design path (issue #1777): a fixed /tmp path could be
+    # clobbered by a co-tenant process between generation and aiecc, and the
+    # build would silently consume the stale file.
+    local design="/tmp/design_${proj}_m16.$$.mlir"
     local xclbin="$XCLBIN_DIR/final_i8_MOE_${proj}_zaya_m16.xclbin"
     local insts="$XCLBIN_DIR/insts_i8_MOE_${proj}_zaya_m16.txt"
     echo "═══ ${proj} M=16 K=${K} N=${N} ═══"
     $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" -M 16 -K "$K" -N "$N" \
         -m 16 -k 64 -n 128 -c 8 -r 1 -b 5 2>/dev/null > "$design"
+    [ -s "$design" ] || { echo "ERROR: ${proj}: design generation produced an empty file" >&2; exit 1; }
     cd /tmp
     $AIECC --peano="$P" --aietools="$AIETOOLS" \
         --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
@@ -50,6 +54,7 @@ build_one() {
         "$design" 2>&1 | tail -1
     cd "$GENERATOR_DIR"
     ls -la "$xclbin" "$insts"
+    rm -f "$design"; rm -rf "$design.prj"
 }
 
 build_one GU 2048 4096

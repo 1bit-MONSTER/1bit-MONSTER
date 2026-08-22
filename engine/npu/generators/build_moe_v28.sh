@@ -18,11 +18,15 @@ TAG=qwen3.6-moe_35b
 
 build_one() {
     local proj="$1" K="$2" N="$3" cols="$4"
-    local design="/tmp/design_${proj}_moe.mlir"
+    # PID-unique design path (issue #1777): a fixed /tmp path could be
+    # clobbered by a co-tenant process between generation and aiecc, and the
+    # build would silently consume the stale file.
+    local design="/tmp/design_${proj}_moe.$$.mlir"
     local xclbin="$XCLBIN_DIR/final_i8_${proj}_${TAG}.xclbin"
     echo "═══ ${proj} K=${K} N=${N} cols=${cols} ═══"
     $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" -M 128 -K "$K" -N "$N" \
         -m 32 -k 64 -n 128 -c "$cols" -r 4 -b 5 2>/dev/null > "$design"
+    [ -s "$design" ] || { echo "ERROR: ${proj}: design generation produced an empty file" >&2; exit 1; }
     cp "$KERNEL_O" /tmp/mm_32x64x128.o
     cd /tmp
     $AIECC --peano="$PEANO" --aietools="$AIETOOLS" \
@@ -37,6 +41,7 @@ build_one() {
     ln -sf "final_i8_${proj}_${TAG}.xclbin" "$XCLBIN_DIR/final_i8_${proj}_qwen3_6_35b_a3b.xclbin"
     ln -sf "insts_i8_${proj}_${TAG}.txt"   "$XCLBIN_DIR/insts_i8_${proj}_qwen3_6_35b_a3b.txt"
     ls -la "$xclbin" "$XCLBIN_DIR/insts_i8_${proj}_${TAG}.txt"
+    rm -f "$design"; rm -rf "$design.prj"
 }
 
 build_one MOE_GUSGU 2048 9216 8

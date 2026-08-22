@@ -7,6 +7,15 @@
 # Shape: A = residual [1×2048], GU [2048×4096 interleaved], D [2048×2048].
 # Single core row (r=1), M=8 1x4 vectorized mmul (bit-identical to M=16/128).
 #
+# Stale-design hardening (issue #1777): the design is written to a PID-unique
+# /tmp path (no fixed path a co-tenant process can clobber between generation
+# and aiecc), byte-compared against a fresh regeneration (the generator is
+# deterministic), and content-checked for the fused-kernel markers + the
+# exact h2-writeback [8K, K, 8, 1] and B-tile (ki·32 + n_tile)·8192 DMA
+# signatures BEFORE aiecc consumes it. Any mismatch fails the build loudly
+# instead of silently emitting a corrupt xclbin (the 08-22 incident: stale
+# file → wrong B offsets / h2-writeback strides, corr 0.374).
+#
 # REQUIRES the mlir-aie toolchain (aiecc) + an NPU2 device for verification —
 # this machine only has the CPU-side contract validation
 # (engine/npu/tests/test_fused_silu.cpp).
@@ -40,11 +49,155 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
 cp /tmp/mm_8x64x128_fused.o /tmp/mm_32x64x128.o
 
 echo "═══ fused GU→SiLU→D  M=8 K=2048 N_GU=4096 N_D=2048 ═══"
-design="/tmp/design_fused_gu_silu_d.mlir"
+
+# 2. Generate the design to a PID-unique path (issue #1777 fix #2). The old
+#    fixed /tmp/design_fused_gu_silu_d.mlir could be overwritten by a
+#    co-tenant process (or a leftover build) between generation and aiecc,
+#    and the build silently consumed whatever was there. $$ = this shell's
+#    PID, so no two builds share a path; the trap removes our files on exit
+#    so no stale /tmp designs accumulate.
+design="/tmp/design_fused_gu_silu_d.$$.mlir"
+design_ref="/tmp/design_fused_gu_silu_d.$$.ref.mlir"
+# aiecc also creates <design>.prj/ beside the design; the trap removes
+# everything we own so no stale /tmp artifacts accumulate.
+trap 'rm -f "$design" "$design_ref"; rm -rf "$design.prj" "$design_ref.prj"' EXIT
+
+gen_design() {  # $1 = output path
+    $PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d.py" -M 8 -K 2048 \
+        -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 2 2>/dev/null > "$1"
+}
+
+gen_design "$design"
+[ -s "$design" ] || { echo "ERROR: design generation produced an empty file" >&2; exit 1; }
+
+# 3. Verify BEFORE aiecc (issue #1777 fix #1). The generator is deterministic
+#    — a fresh run always yields the correct design — so:
+#    (a) the design must be byte-identical to a fresh regeneration (catches a
+#        stale/tampered file, the exact 08-22 failure mode);
+#    (b) the design must carry the fused-kernel markers and the exact DMA
+#        signatures the stale file got wrong (B offsets (ki·32+n_tile)·8192,
+#        h2-writeback strides [8K, K, 8, 1] = [16384, 2048, 8, 1]).
+gen_design "$design_ref"
+if ! cmp -s "$design" "$design_ref"; then
+    echo "ERROR: design differs from a fresh regeneration — stale/tampered design or" >&2
+    echo "       nondeterministic generator. Refusing to build (issue #1777)." >&2
+    diff -u "$design_ref" "$design" | head -40 >&2 || true
+    exit 1
+fi
+
+"$PYTHON" - "$design" <<'PYEOF' || { echo "ERROR: design verification FAILED — refusing to build (issue #1777)" >&2; exit 1; }
+import re, sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8", errors="replace").read()
+K = 2048  # build_zaya_fused.sh fixed shape
+errors = []
+
+# Fused-design markers: a stale GU/D-only or moe design lacks these.
+for marker in ("silu_quant_i8_fused", "mm_32x64x128.o"):
+    if marker not in text:
+        errors.append(f"missing marker {marker!r} — not the fused design?")
+
+ops = []  # (fifo, offset, sizes, strides)
+
+# Format A — this repo's mlir-aie version (verified on strixhalo):
+#   %N = aiex.dma_configure_task_for @FIFO {
+#     aie.dma_bd(%mem : memref<16384xi8>, 0, 512, [<size = 1, stride = 16384>, ...]) {burst_length = 0 : i32}
+for m in re.finditer(r"aiex\.dma_configure_task_for @(\w+)\s*\{\s*aie\.dma_bd\(([^)]*)\)", text):
+    fifo = m.group(1)
+    body = m.group(2)
+    mm = re.match(r"%\w+\s*:\s*memref<[^>]*>,\s*(\d+),\s*(\d+),\s*\[(.*)\]", body)
+    if not mm:
+        continue
+    offset = int(mm.group(1))
+    sizes, strides = [], []
+    for dm in re.finditer(r"<size\s*=\s*(\d+),\s*stride\s*=\s*(\d+)>", mm.group(3)):
+        sizes.append(int(dm.group(1)))
+        strides.append(int(dm.group(2)))
+    ops.append((fifo, offset, sizes, strides))
+
+# Format B — newer mlir-aie main fallback:
+#   aiex.npu.dma_memcpy_nd (%mem[offsets][sizes][strides]) {metadata = @fifo} : memref<...>
+if not ops:
+    for m in re.finditer(r"aiex\.npu\.dma_memcpy_nd\s*\(([^)]*)\)\s*\{([^}]*)\}", text):
+        body, attrs = m.group(1), m.group(2)
+        fm = re.search(r"metadata\s*=\s*@(\w+)", attrs)
+        fifo = fm.group(1) if fm else ""
+        groups = re.findall(r"\[([^\]]*)\]", body)
+        if len(groups) < 3:
+            continue
+
+        def nums(group):
+            out = []
+            for tok in group.split(","):
+                tok = tok.strip()
+                cm = re.match(r"%c(\d+)", tok)   # SSA constant ref, e.g. %c16384_i64
+                if cm:
+                    out.append(int(cm.group(1)))
+                elif re.match(r"\d+$", tok):    # inline literal
+                    out.append(int(tok))
+                else:
+                    out.append(None)
+            return out
+
+        offs, sizes, strides = (nums(g) for g in groups[-3:])
+        if None in offs or None in sizes or None in strides:
+            continue
+        ops.append((fifo, (offs[0] if offs else 0), sizes, strides))
+
+if not ops:
+    errors.append("no DMA bd ops found — design empty or printer format changed")
+
+h2_ok = a_ok = b_ok = False
+n_b_off_bad = 0
+seen = set()
+for fifo, offset, sizes, strides in ops:
+    if fifo.startswith("H2_S"):  # h2 writeback — the bug signature
+        if strides == [8 * K, K, 8, 1]:
+            h2_ok = True
+        else:
+            msg = f"H2_S tap strides {strides}, expected [8K, K, 8, 1] = {[8*K, K, 8, 1]}"
+            if msg not in seen:
+                errors.append(msg); seen.add(msg)
+    elif fifo.startswith("A_C"):  # A broadcast tap
+        if strides == [8 * K, 8, K, 1]:
+            a_ok = True
+        else:
+            msg = f"A_C tap strides {strides}, expected [8K, 8, K, 1] = {[8*K, 8, K, 1]}"
+            if msg not in seen:
+                errors.append(msg); seen.add(msg)
+    elif fifo.startswith("B_S"):  # linear B tiles: (ki*32 + n_tile)*8192
+        if sizes == [1, 1, 1, 8192] and strides == [1, 1, 1, 1]:
+            b_ok = True
+            if offset % 8192 != 0:
+                n_b_off_bad += 1
+                msg = f"B_S tap offset {offset} not a multiple of 8192 (expected (ki*32+n_tile)*8192)"
+                if msg not in seen:
+                    errors.append(msg); seen.add(msg)
+        else:
+            msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-byte tile"
+            if msg not in seen:
+                errors.append(msg); seen.add(msg)
+
+if not h2_ok:
+    errors.append("no H2_S writeback with strides [8K, K, 8, 1] — the h2-writeback bug signature")
+if not a_ok:
+    errors.append("no A tap with strides [8K, 8, K, 1]")
+if not b_ok:
+    errors.append("no linear B tile (sizes [1,1,1,8192], strides [1,1,1,1])")
+if n_b_off_bad:
+    errors.append(f"{n_b_off_bad} B-tile offset(s) not 8192-multiples")
+
+if errors:
+    print("fused design verification FAILED:", file=sys.stderr)
+    for e in errors:
+        print("  - " + e, file=sys.stderr)
+    sys.exit(1)
+print(f"fused design verification OK: {len(ops)} DMA bd ops, h2 [8K,K,8,1] + A [8K,8,K,1] + B 8192-step tiles")
+PYEOF
+
 xclbin="$XCLBIN_DIR/final_i8_MOE_FUSED_zaya.xclbin"
 insts="$XCLBIN_DIR/insts_i8_MOE_FUSED_zaya.txt"
-$PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d.py" -M 8 -K 2048 \
-    -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 2 2>/dev/null > "$design"
 cd /tmp
 $AIECC --peano="$P" --aietools="$AIETOOLS" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
