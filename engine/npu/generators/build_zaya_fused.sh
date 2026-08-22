@@ -36,31 +36,33 @@ GENERATOR_DIR="$(cd "$(dirname "$0")" && pwd)"
 XCLBIN_DIR="$GENERATOR_DIR/../xclbins"
 mkdir -p "$XCLBIN_DIR"
 
+# 2. PID-unique workdir (issue #1777). The old build used fixed /tmp paths
+#    (/tmp/design_fused_gu_silu_d.mlir AND /tmp/mm_32x64x128.o) that a
+#    co-tenant process or leftover build could overwrite between generation
+#    and aiecc, silently producing a corrupt xclbin (wrong B offsets /
+#    h2-writeback strides, corr 0.374). $$ = this shell's PID, so no two
+#    builds share a workdir; the trap removes it on exit so no stale /tmp
+#    artifacts accumulate (design, <design>.prj/, kernel .o included).
+workdir="/tmp/zaya_fused_build.$$"
+mkdir -p "$workdir"
+trap 'rm -rf "$workdir"' EXIT
+
 # 1. Compile the DIM_M=8 kernel (1x4 mmul + the fused silu_quant_i8_fused
-#    entry from silu_quant.h — the on-core SiLU+quant step).
+#    entry from silu_quant.h — the on-core SiLU+quant step) INTO the workdir.
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
-    -c "$GENERATOR_DIR/mm_kernel_reference.cc" -o /tmp/mm_8x64x128_fused.o
+    -c "$GENERATOR_DIR/mm_kernel_reference.cc" -o "$workdir/mm_8x64x128_fused.o"
 
 # The MLIR references the kernel object by the fixed name mm_32x64x128.o.
-cp /tmp/mm_8x64x128_fused.o /tmp/mm_32x64x128.o
+cp "$workdir/mm_8x64x128_fused.o" "$workdir/mm_32x64x128.o"
 
 echo "═══ fused GU→SiLU→D  M=8 K=2048 N_GU=4096 N_D=2048 ═══"
 
-# 2. Generate the design to a PID-unique path (issue #1777 fix #2). The old
-#    fixed /tmp/design_fused_gu_silu_d.mlir could be overwritten by a
-#    co-tenant process (or a leftover build) between generation and aiecc,
-#    and the build silently consumed whatever was there. $$ = this shell's
-#    PID, so no two builds share a path; the trap removes our files on exit
-#    so no stale /tmp designs accumulate.
-design="/tmp/design_fused_gu_silu_d.$$.mlir"
-design_ref="/tmp/design_fused_gu_silu_d.$$.ref.mlir"
-# aiecc also creates <design>.prj/ beside the design; the trap removes
-# everything we own so no stale /tmp artifacts accumulate.
-trap 'rm -f "$design" "$design_ref"; rm -rf "$design.prj" "$design_ref.prj"' EXIT
+design="$workdir/design_fused_gu_silu_d.mlir"
+design_ref="$workdir/design_fused_gu_silu_d.ref.mlir"
 
 gen_design() {  # $1 = output path
     $PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d.py" -M 8 -K 2048 \
@@ -98,23 +100,38 @@ for marker in ("silu_quant_i8_fused", "mm_32x64x128.o"):
     if marker not in text:
         errors.append(f"missing marker {marker!r} — not the fused design?")
 
-ops = []  # (fifo, offset, sizes, strides)
+ops = []  # (fifo, offset, sizes, strides) — one entry per aie.dma_bd
 
 # Format A — this repo's mlir-aie version (verified on strixhalo):
 #   %N = aiex.dma_configure_task_for @FIFO {
 #     aie.dma_bd(%mem : memref<16384xi8>, 0, 512, [<size = 1, stride = 16384>, ...]) {burst_length = 0 : i32}
-for m in re.finditer(r"aiex\.dma_configure_task_for @(\w+)\s*\{\s*aie\.dma_bd\(([^)]*)\)", text):
+#     ...
+#   }
+# A task may carry several aie.dma_bd descriptors; capture the whole
+# brace-balanced task body and inspect EVERY descriptor (a wrong offset or
+# stride hidden in a later BD must not slip through).
+for m in re.finditer(r"aiex\.dma_configure_task_for @(\w+)\s*\{", text):
     fifo = m.group(1)
-    body = m.group(2)
-    mm = re.match(r"%\w+\s*:\s*memref<[^>]*>,\s*(\d+),\s*(\d+),\s*\[(.*)\]", body)
-    if not mm:
-        continue
-    offset = int(mm.group(1))
-    sizes, strides = [], []
-    for dm in re.finditer(r"<size\s*=\s*(\d+),\s*stride\s*=\s*(\d+)>", mm.group(3)):
-        sizes.append(int(dm.group(1)))
-        strides.append(int(dm.group(2)))
-    ops.append((fifo, offset, sizes, strides))
+    start = m.end()
+    depth, i = 1, start
+    while depth and i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    task_body = text[start:i - 1] if depth == 0 else text[start:]
+    for bdm in re.finditer(r"aie\.dma_bd\(([^)]*)\)", task_body):
+        body = bdm.group(1)
+        mm = re.match(r"%\w+\s*:\s*memref<[^>]*>,\s*(\d+),\s*(\d+),\s*\[(.*)\]", body)
+        if not mm:
+            continue
+        offset = int(mm.group(1))
+        sizes, strides = [], []
+        for dm in re.finditer(r"<size\s*=\s*(\d+),\s*stride\s*=\s*(\d+)>", mm.group(3)):
+            sizes.append(int(dm.group(1)))
+            strides.append(int(dm.group(2)))
+        ops.append((fifo, offset, sizes, strides))
 
 # Format B — newer mlir-aie main fallback:
 #   aiex.npu.dma_memcpy_nd (%mem[offsets][sizes][strides]) {metadata = @fifo} : memref<...>
@@ -143,7 +160,9 @@ if not ops:
         offs, sizes, strides = (nums(g) for g in groups[-3:])
         if None in offs or None in sizes or None in strides:
             continue
-        ops.append((fifo, (offs[0] if offs else 0), sizes, strides))
+        # B-tile offset may be spread over several offset dims; verify EVERY
+        # dim is an 8192-multiple so a 512-step offset in any dim is caught.
+        ops.append((fifo, offs, sizes, strides))
 
 if not ops:
     errors.append("no DMA bd ops found — design empty or printer format changed")
@@ -169,9 +188,13 @@ for fifo, offset, sizes, strides in ops:
     elif fifo.startswith("B_S"):  # linear B tiles: (ki*32 + n_tile)*8192
         if sizes == [1, 1, 1, 8192] and strides == [1, 1, 1, 1]:
             b_ok = True
-            if offset % 8192 != 0:
-                n_b_off_bad += 1
-                msg = f"B_S tap offset {offset} not a multiple of 8192 (expected (ki*32+n_tile)*8192)"
+            # Format A passes offset as a scalar (int); Format B as a list.
+            # Normalize to a list and verify EVERY offset dim is an 8192-multiple.
+            offs = offset if isinstance(offset, list) else [offset]
+            bad = [o for o in offs if o % 8192 != 0]
+            if bad:
+                n_b_off_bad += len(bad)
+                msg = f"B_S tap offset(s) {bad} not 8192-multiples (expected (ki*32+n_tile)*8192)"
                 if msg not in seen:
                     errors.append(msg); seen.add(msg)
         else:
@@ -198,7 +221,7 @@ PYEOF
 
 xclbin="$XCLBIN_DIR/final_i8_MOE_FUSED_zaya.xclbin"
 insts="$XCLBIN_DIR/insts_i8_MOE_FUSED_zaya.txt"
-cd /tmp
+cd "$workdir"
 $AIECC --peano="$P" --aietools="$AIETOOLS" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
     --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
