@@ -393,5 +393,27 @@ int main(int argc, char** argv) {
     fflush(stdout);
     fprintf(stderr, "[cache] hits=%zu misses=%zu (%.1f%% hit)\n", cache_hits, cache_misses,
             cache_hits + cache_misses ? 100.0 * cache_hits / (cache_hits + cache_misses) : 0.0);
-    exit(0);  // skip xrt destructors (NPU wedges on teardown)
+
+    // ── Teardown (issue #1762) ──────────────────────────────────────────────
+    // Root cause: the xrt destructors wedge the NPU — NOT a BO sync on destroy
+    // (every launch is r.wait()ed before the next and xrt::bo never syncs on
+    // destruction; sync is always explicit) and NOT an ordering bug (reverse-
+    // declaration order is correct: BOs -> kernel -> hw_context -> device). The
+    // wedge is the same firmware-fatal family as journey.md UPDATE 32/33: after
+    // a decode session's hundreds of DPU executions the AIE firmware context is
+    // degraded/fatal (DPU PC stuck at 0xffffffff), and the hwctx/BO release
+    // path issues mailbox calls to the dead firmware that never return. The
+    // driver's aie2_hw_reset() self-heal only fires on job timeouts, not
+    // release-path ioctl hangs — recovery is reboot-only.
+    //
+    // Default: _exit(0) — flush explicitly, skip the destructor chain, let the
+    // OS reclaim everything (same pattern as npu_engine_universal and the #1426
+    // _exit() fix; exit(0) also runs atexit/static dtors and double-flushes).
+    // NPU_CLEAN_TEARDOWN=1: run the real destructors and return normally — use
+    // only when the driver/firmware is known healthy (e.g. a fresh boot).
+    fflush(stdout);
+    fflush(stderr);
+    if (getenv("NPU_CLEAN_TEARDOWN") && atoi(getenv("NPU_CLEAN_TEARDOWN")) == 1)
+        return 0;
+    _exit(0);
 }
