@@ -92,15 +92,17 @@ class Qwen2VL(__Q4NX_Converter, model_arch=ModelArch.QWEN2VL):
                 
             
             # now, we first do special case for merge two patch_embd weights 
-            combined_patched_embeding= torch.stack(
-                [self.q4nx_tensors["model.visual.patch_embed.proj.weight"],
-                         self.q4nx_tensors["model.visual.patch_embed.proj.weight.1"]
-                 ], dim=2
-            )
-            # delete the two original weights
-            del self.q4nx_tensors["model.visual.patch_embed.proj.weight"]
-            del self.q4nx_tensors["model.visual.patch_embed.proj.weight.1"]
-            self.q4nx_tensors["model.visual.patch_embed.proj.weight"] = combined_patched_embeding
+            patch_proj_keys = [
+                "model.visual.patch_embed.proj.weight",
+                "model.visual.patch_embed.proj.weight.1",
+            ]
+            if all(k in self.q4nx_tensors for k in patch_proj_keys):
+                combined_patched_embeding = torch.stack(
+                    [self.q4nx_tensors[k] for k in patch_proj_keys], dim=2
+                )
+                for k in patch_proj_keys:
+                    del self.q4nx_tensors[k]
+                self.q4nx_tensors["model.visual.patch_embed.proj.weight"] = combined_patched_embeding
             
             
             
