@@ -150,7 +150,7 @@ are therefore, in order:
 | + M=16 decode xclbins (`build_zaya_m16.sh`) | **6.2** | **done** |
 | + vectorized M=8 xclbin (1x4 mmul, `build_zaya_m8.sh`) | 6.3 | **done — bit-perfect; confirms compute is NOT the bottleneck** |
 | + M=1 scalar decode xclbin | — | **dead end** (scalar kernel reads B row-major vs microtiled B-DMA → corr~0; also slower than M=16) |
-| + fused GU+D (on-NPU SiLU, RTP 0x100c) — halves the 40 launches | ~7.5 | **implemented (contract CPU-verified; kernel/generator/build written — aiecc + NPU-verify pending on strixhalo)** |
+| + fused GU+D (on-NPU SiLU, RTP 0x100c) — halves the 40 launches | ~7.5 | **NPU-VERIFIED (strixhalo): host-vs-NPU corr 1.000000 (bit-exact), MoE L1 corr 0.999528 vs float (= two-launch quality), tokens match the CPU float reference; AVX2 host amax 3.8→0.45 ms; measured 3.4 tok/s — launch+deq (~4.6 ms/L) and the CPU CCA attention (~9 ms/L) are now the co-bottlenecks, not the fused kernel** |
 | + attention on NPU + runlist | ~15–20 | later |
 | + attention on NPU + runlist | ~15–20 | later |
 

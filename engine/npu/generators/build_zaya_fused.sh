@@ -44,7 +44,7 @@ design="/tmp/design_fused_gu_silu_d.mlir"
 xclbin="$XCLBIN_DIR/final_i8_MOE_FUSED_zaya.xclbin"
 insts="$XCLBIN_DIR/insts_i8_MOE_FUSED_zaya.txt"
 $PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d.py" -M 8 -K 2048 \
-    -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 5 2>/dev/null > "$design"
+    -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 2 2>/dev/null > "$design"
 cd /tmp
 $AIECC --peano="$P" --aietools="$AIETOOLS" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \

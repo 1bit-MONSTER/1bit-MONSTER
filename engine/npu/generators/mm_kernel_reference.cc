@@ -666,8 +666,23 @@ extern "C" void zero_i32(int32_t *c_out) {
 // are zero for decode M=1 (rows 1-7 of C1 are zero → h2 = 0), which keeps the
 // D-phase A-DMA (8×64 tiles) consistent.
 extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
-    for (unsigned r = 0; r < DIM_M; r++)
-        silu_quant_i8(c1 + r * DIM_N, gs, h2 + r * (DIM_N / 2), DIM_N / 2);
+    // Section-quant contract (issue #1759): the gs tile's only reliably
+    // delivered bytes are the 8-float section header — gs[0] = ag·gsec[cg]
+    // (gate scale), gs[4] = ag·qn_s·gsec[cg] (up scale) for THIS tile's
+    // col_group (the host writes per-col_group headers into the 32 KB
+    // slices). Tile (c, cg) covers exactly one GU section (index cg).
+    // C1 is the mmul MICROTILED layout: element (r,c) at (c/8)·64 + r·8 +
+    // (c%8) — MEASURED via c1 dump vs host GEMM (exact match to sat8).
+    // Decode M=1: only row 0 is valid (rows 1-7 of C1 are zero → h2 = 0).
+    for (unsigned p = 0; p < DIM_N / 2; p++) {
+        unsigned go = ((2 * p) / 8) * 64 + ((2 * p) % 8);
+        unsigned uo = ((2 * p + 1) / 8) * 64 + ((2 * p + 1) % 8);
+        float g = (float)c1[go] * gs[0];
+        float u = (float)c1[uo] * gs[4];
+        float h = silu_lut(g) * u;
+        h2[p] = silu_sat8(silu_roundf(h));
+    }
+    for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
 }
 
 } // extern "C"

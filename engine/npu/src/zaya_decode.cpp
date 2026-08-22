@@ -390,6 +390,35 @@ int zaya_decode_main(int argc, char** argv) {
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo,
                                                        residual.data(), 1, d.H, ag);
                     fused_ctx.dequant_fused(frun, moe_out.data(), 1, d.H, qn_s, l);
+                    if (getenv("NPU_FUSED_DBG") && l == 1 && pos == 0) {
+                        // ── minimal debug: h2 + host emulation comparison ──
+                        h2_bo->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                        fprintf(stderr, "  [fused-dbg Am] ");
+                        for (int i = 0; i < 8; i++) fprintf(stderr, "%d ", fused_ctx.Am[i]);
+                        fprintf(stderr, "\n  [fused-dbg guB k0 c0..15] ");
+                        const int8_t* wb = (const int8_t*)fgu_bo[l][e]->map();
+                        for (int i = 0; i < 16; i++) fprintf(stderr, "%d ", wb[i]);
+                        fprintf(stderr, "\n  [fused-dbg gsec-hdr(host)] ");
+                        const float* hb2 = (const float*)((const int8_t*)fgu_bo[l][e]->map() + (size_t)2048 * 4096);
+                        for (int i = 0; i < 8; i++) fprintf(stderr, "%.4e ", hb2[i]);
+                        fprintf(stderr, "\n");
+                                            // ── host emulation of the SAME fused path ──
+                        {
+                            std::vector<float> hout(d.H); float hqn = 0;
+                            std::vector<int8_t> guBv(fgu_bo[l][e]->map() ? (const int8_t*)fgu_bo[l][e]->map() : nullptr,
+                                                     (const int8_t*)fgu_bo[l][e]->map() + (size_t)d.H * 2 * m.n_ff);
+                            std::vector<int8_t> dnBv((const int8_t*)fd_bo[l][e]->map(),
+                                                     (const int8_t*)fd_bo[l][e]->map() + (size_t)m.n_ff * d.H);
+                            zaya_moe::fused_ffn_int8(m, residual.data(), guBv, fgu_cs[l][e],
+                                                     dnBv, fd_cs[l][e], hout.data(), &hqn);
+                            double num=0, d1=0, d2=0;
+                            for (int i = 0; i < d.H; i++) {
+                                num += (double)hout[i]*moe_out[i]; d1 += (double)hout[i]*hout[i]; d2 += (double)moe_out[i]*moe_out[i];
+                            }
+                            fprintf(stderr, "  [fused-dbg] host-vs-NPU corr=%.6f (host rms=%.4f npu rms=%.4f) qn_s=%f hqn=%f\n",
+                                    num/std::sqrt(d1*d2), std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s, hqn);
+                        }
+                    }
                     if (l == 1 && pos == 0) {
                         std::vector<float> cpu_out(d.H);
                         zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());

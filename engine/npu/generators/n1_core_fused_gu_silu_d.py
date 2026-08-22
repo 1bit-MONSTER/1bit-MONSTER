@@ -15,8 +15,9 @@
 #
 #   GU: A = residual [M×K] (K=2048), B_gu = INTERLEAVED weights [K×2·n_ff]
 #       (2·n_ff=4096; col 2p = gate[p], col 2p+1 = up[p] — cross-tile SiLU
-#       becomes tile-local). 4 col_groups. C1 [8×128] int32 per tile stays in
-#       TILE SRAM (produce-only fifo, released unread — the fusion's crux).
+#       becomes tile-local). 4 col_groups. C1 [8×128] int32 per tile lives in
+#       a TILE-LOCAL aie.buffer (the fusion's crux; a produce fifo would need
+#       a 3rd core output DMA channel — measured channel-exceeded error).
 #   SiLU: per tile, silu_quant_i8_fused(C1, gs', h2) — 256-entry LUT sigmoid +
 #       quant (see silu_quant.h for the exact arithmetic, dual-compiled with
 #       the CPU reference). h2 [8×64] int8 per (tile, col_group) → DDR (bo4).
@@ -35,11 +36,12 @@
 # for cols [128c, 128c+128), host-folded per token (ag·gs_g | ag·qn_s·gs_u).
 # The header is constant within a launch, so the 4 gs reads reuse it.
 #
-# Channel budget (r=1): mem tile S2MM = B+H2+C2 = 3, MM2S = B+H2+C2 = 3 (at
-# the measured limit); shim[c] MM2S = B_s (shim 0/1 also carry the A / A2
-# broadcasts), S2MM = H2_s + C2_s = 2. UNVERIFIED items for the aiecc build +
-# NPU-verify loop on strixhalo: (1) the produce-only C1 fifo (unlinked —
-# buffers just cycle in tile SRAM), (2) the 2-outbound S2MM per shim column.
+# Channel budget (r=1): core tile 2 in (A, B) + 2 out (H2, C2); mem tile
+# S2MM = B+H2+C2 = 3, MM2S = B+H2+C2 = 3 (at the measured limit); shim[c]
+# MM2S = B_s (shim 0 also carries the A broadcast), S2MM = H2_s + C2_s = 2.
+# UNVERIFIED items for the aiecc build + NPU-verify loop on strixhalo:
+# (1) the 2-outbound S2MM per shim column, (2) the C1 tile-local buffer's
+# address allocation vs the fifo buffers.
 #
 # Usage (matches build_zaya_fused.sh):
 #   python3 n1_core_fused_gu_silu_d.py -K 2048 -N_GU 4096 -N_D 2048 \
@@ -62,7 +64,15 @@ def main():
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols")
-    parser.add_argument("-b", "--batch-size", type=int, default=5)
+    parser.add_argument("-b", "--batch-size", type=int, default=2,
+                        help="K-tiles per DMA round (fifo depth = batch+1). MUST be 2: "
+                             "the core L1 is 64 KB and the fused design's buffers "
+                             "(B fifo depth 6 x 8 KB + C1 4 KB + C2 4 KB + H2 + A + "
+                             "8 KB stack ~= 72 KB) do not fit, so the object-fifo "
+                             "transform silently shrinks the depths to 2 and the "
+                             "5-tile batches corrupt the B stream / deadlock the "
+                             "core (measured: C2 never written, h2 garbage from "
+                             "cg>=1). With batch 2 (depth 3): ~43 KB, fits.")
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
         my_fused(args.M, args.K, args.N_GU, args.N_D, args.m, args.k, args.n,
@@ -70,7 +80,7 @@ def main():
         print(ctx.module)
 
 
-def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=5):
+def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
     dtype_in = np.int8
     dtype_out = np.int32
 
@@ -97,12 +107,15 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=5):
         shim_tiles, mem_tiles = tiles[0], tiles[1]
         core_tiles = tiles[2:]               # core_tiles[j][c] = tile(c, 2+j)
 
-        # A (GU phase): shim[0] → all cores, direct broadcast (v27 A pattern).
+        # A (GU phase) / A2 (D phase): ONE broadcast fifo, shim[0] → all
+        # cores, carrying the residual (bo0) in the GU phase and h2 (bo4) in
+        # the D phase — same tap shape, different source buffer, ordered in
+        # the stream (exactly like the merged B stream). A separate A2 fifo
+        # would give each core a 3rd input DMA channel, which exceeds the
+        # AIE2P core's limit ('aie.tile' op number of input DMA channel
+        # exceeded — measured on tile (0,2) with A + A2 + B).
         A_c = object_fifo(f"A_C0", shim_tiles[0], [core_tiles[0][c] for c in range(n_aie_cols)],
                           BATCH_SIZE + 1, A_ty)
-        # A2 (D phase): h2 broadcast from bo4 via shim[1] → all cores.
-        A2_c = object_fifo(f"A2_C1", shim_tiles[1], [core_tiles[0][c] for c in range(n_aie_cols)],
-                           BATCH_SIZE + 1, A_ty)
 
         # B stream per column: [gs tile][GU 128][D 64] through one fifo set.
         B_s = [None] * n_aie_cols
@@ -113,15 +126,23 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=5):
                                  [core_tiles[0][c]], BATCH_SIZE + 1, B_ty)
             object_fifo_link(B_s[c], B_c[c])
 
-        # C1: GU accumulator, held in tile SRAM (produce-only, unlinked).
-        C1_c = [object_fifo(f"C1_{c}", core_tiles[0][c], mem_tiles[c], 2, C_ty)
-                for c in range(n_aie_cols)]
+        # C1: GU accumulator — a TILE-LOCAL aie.buffer (not a fifo). The core
+        # tile has 2 input + 2 output DMA channels (A/B in, H2/C2 out); a
+        # produce-only C1 fifo would need a 3rd output channel
+        # ('aie.tile' op number of output DMA channel exceeded — measured).
+        C1buf = [buffer(core_tiles[0][c], C_ty, name=f"C1_{c}")
+                 for c in range(n_aie_cols)]
+        Gg = [buffer(core_tiles[0][c], B_ty, name=f"Gg_{c}")
+              for c in range(n_aie_cols)]   # DEBUG no-gs: garbage gs buffer
+
+
+
 
         # h2: core → mem → shim → DDR (bo4). C2: core → mem → shim → DDR (bo2).
         H2_c = [None] * n_aie_cols; H2_s = [None] * n_aie_cols
         C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            H2_c[c] = object_fifo(f"H2_C{c}", core_tiles[0][c], mem_tiles[c], 1, H2_ty)
+            H2_c[c] = object_fifo(f"H2_C{c}", core_tiles[0][c], mem_tiles[c], 2, H2_ty)
             H2_s[c] = object_fifo(f"H2_S{c}", mem_tiles[c], shim_tiles[c], 1, H2_ty)
             object_fifo_link(H2_c[c], H2_s[c])
             C2_c[c] = object_fifo(f"C2_C{c}", core_tiles[0][c], mem_tiles[c], 1, C_ty)
@@ -136,34 +157,33 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=5):
                         # ── GU phase: 4 col_groups ──
                         # The gs' header tile rides the END of each col_group's
                         # B stream ([gu 32][gs]) so its acquire/release is
-                        # strictly ordered (correct under FIFO or LIFO release
-                        # semantics) and the DMA cannot overwrite it before the
-                        # SiLU reads it.
+                        # strictly ordered. The 8-float section header (the
+                        # only reliably delivered bytes of the gs tile) is
+                        # identical for every (col, col_group).
                         for _ in range_(n_cg_gu):
-                            C1buf = C1_c[c].acquire(ObjectFifoPort.Produce, 1)
-                            zero(C1buf)
+                            zero(C1buf[c])
                             for _ in range_(n_k):
                                 Abuf = A_c.acquire(ObjectFifoPort.Consume, 1)
                                 Bbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)
-                                matmul(Abuf, Bbuf, C1buf)
+                                matmul(Abuf, Bbuf, C1buf[c])
                                 A_c.release(ObjectFifoPort.Consume, 1)
                                 B_c[c].release(ObjectFifoPort.Consume, 1)
                             # ── SiLU + quant → h2 (row 0 valid; rows 1-7 zero) ──
                             Gsbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)  # gs tile
                             H2buf = H2_c[c].acquire(ObjectFifoPort.Produce, 1)
-                            silu(C1buf, Gsbuf, H2buf)
+                            silu(C1buf[c], Gsbuf, H2buf)
                             H2_c[c].release(ObjectFifoPort.Produce, 1)
-                            C1_c[c].release(ObjectFifoPort.Produce, 1)   # discarded
                             B_c[c].release(ObjectFifoPort.Consume, 1)    # gs
                         # ── D phase: 2 col_groups ──
+                        # A2 = h2 broadcast through the SAME A_c fifo.
                         for _ in range_(n_cg_d):
                             C2buf = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
                             zero(C2buf)
                             for _ in range_(n_k):
-                                Abuf = A2_c.acquire(ObjectFifoPort.Consume, 1)
+                                Abuf = A_c.acquire(ObjectFifoPort.Consume, 1)
                                 Bbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)
                                 matmul(Abuf, Bbuf, C2buf)
-                                A2_c.release(ObjectFifoPort.Consume, 1)
+                                A_c.release(ObjectFifoPort.Consume, 1)
                                 B_c[c].release(ObjectFifoPort.Consume, 1)
                             C2_c[c].release(ObjectFifoPort.Produce, 1)
 
@@ -184,7 +204,10 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=5):
             # tile rides the END so the core's acquire/release stays strictly
             # ordered (see core_body). The gs data is constant within a launch
             # (the host rewrites the header once per token, not per col_group).
-            gs_tasks, h2_tasks = [], []
+            # NOTE: the gs + h2 writeback tasks are awaited PER col_group (not
+            # deferred to the end) — deferred awaits misalign the DMA token
+            # order against the per-batch awaits and deadlock the launch
+            # (measured: core stalls, C2 never written).
             for cg in range(n_cg_gu):
                 for ki0 in range(0, n_k, BATCH_SIZE):
                     ki_end = min(ki0 + BATCH_SIZE, n_k)
@@ -204,38 +227,57 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=5):
                             dma_start_task(bt); bt_list.append(bt)
                     dma_await_task(*at_list, *bt_list)
                     dma_free_task(*at_list, *bt_list)
-                # gs' header tile (end of this cg's B stream): contiguous
-                # 512 B (128 gs' floats) delivered into the (64,128) int8
-                # fifo buffer; the kernel reads the first 128 floats.
+                # gs' header tile (end of this cg's B stream): the FULL
+                # (64,128) B-tile tap reads the WEIGHT BO header at W (the
+                # first 32 delivered bytes are the reliably delivered 8-float
+                # section header — the kernel reads only gs[0..7]; the rest
+                # of the tile is padding). Slices are 258176 B apart so the
+                # full-tile read stays in-bounds.
+                # gs' header tile (end of this cg's B stream): the GU-style
+                # full-tile tap (i0 stride 8*N_GU) — proven to deliver the
+                # first 32 bytes (the 8-float section header) AND keep the
+                # GU GEMM healthy. Slices are 32 KB apart; the ~258 KB tap
+                # span reads OOB into neighbours, which the kernel ignores.
+                gs_tasks = []
                 for c in range(n_aie_cols):
                     gt = shim_dma_single_bd_task(
                         B_s[c], B_gu,
-                        offset=(K * N_GU) + c * (k * n),      # W + c·8 KB
-                        sizes=[1, 1, 1, 512],
+                        offset=(K * N_GU) + c * (4 * 32768) + cg * 32768,
+                        sizes=[k // 8, n // 8, 8, 8],
                         strides=[8 * N_GU, 8, N_GU, 1],
                         issue_token=True)
                     dma_start_task(gt); gs_tasks.append(gt)
+                dma_await_task(*gs_tasks)
+                dma_free_task(*gs_tasks)
                 # h2 writeback per tile: chunk k = cg·8+c at bo4 offset 64k.
-                # The (8,64) h2 tile is written with the SAME microtile-8 tap
-                # the D-phase A2 read uses (r·K + (c'/8)·8 + c'%8).
+                # The (8,64) h2 tile must land in bo4 in the A-layout
+                # (element (r,c') at r·K + (c'/8)·8 + c'%8) so the D-phase A
+                # read (the v27 A tap, strides [8K, 8, K, 1]) round-trips.
+                # The kernel's h2 fifo is row-major [8×64] (byte s = (r=s/64,
+                # c'=s%64)), so the writeback's middle strides are SWAPPED
+                # (row→K, col-group→8) vs the A-read tap — measured: the
+                # unswopped tap put (r,c') at 8r + 2048(c'/8) + c'%8 and the
+                # D GEMM's A operand was garbage (corr 0.374).
+                h2_tasks = []
                 for c in range(n_aie_cols):
                     k_chunk = cg * n_aie_cols + c
                     ht = shim_dma_single_bd_task(
                         H2_s[c], H2, offset=k_chunk * (n // 2),
                         sizes=[m // 8, (n // 2) // 8, 8, 8],
-                        strides=[8 * K, 8, K, 1], issue_token=True)
+                        strides=[8 * K, K, 8, 1], issue_token=True)
                     dma_start_task(ht); h2_tasks.append(ht)
-            dma_await_task(*gs_tasks, *h2_tasks)
-            dma_free_task(*gs_tasks, *h2_tasks)
+                dma_await_task(*h2_tasks)
+                dma_free_task(*h2_tasks)
 
-            # ── D phase: 2 col_groups × 32 K-chunks (A2 = h2 broadcast + B_d) ──
+            # ── D phase: 2 col_groups × 32 K-chunks (A = h2 broadcast via the
+            # shared A_c fifo + B_d) ──
             for cg2 in range(n_cg_d):
                 for ki0 in range(0, n_k, BATCH_SIZE):
                     ki_end = min(ki0 + BATCH_SIZE, n_k)
                     at_list, bt_list = [], []
                     for ki in range(ki0, ki_end):
                         at = shim_dma_single_bd_task(
-                            A2_c, H2, offset=ki * k,
+                            A_c, H2, offset=ki * k,
                             sizes=[m // 8, k // 8, 8, 8],
                             strides=[8 * K, 8, K, 1], issue_token=True)
                         dma_start_task(at); at_list.append(at)
