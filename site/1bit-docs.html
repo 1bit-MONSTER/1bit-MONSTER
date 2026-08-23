@@ -122,6 +122,8 @@
     .hub-card:hover { border-color: var(--accent); transform: translateY(-2px); }
     .hub-card .k { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
     .hub-card h3 { font-size: 18px; font-family: var(--font-display); font-weight: 600; letter-spacing: -0.01em; margin: 10px 0 6px; color: var(--fg); }
+    .hub-card h3.with-logo { display: inline-flex; align-items: center; gap: 9px; }
+    .hub-card .fluxer-mark { width: 20px; height: 20px; flex: none; }
     .hub-card p { margin: 0; font-size: 14px; color: var(--muted-strong); }
     .hub-card:hover h3 { color: var(--accent); }
     @media (max-width: 720px) { .hub-cards { grid-template-columns: 1fr; } }
@@ -199,6 +201,11 @@
             <h3>Benchmarks</h3>
             <p>Kernel-level and end-to-end numbers, with honest labels and the gaps called out.</p>
           </a>
+          <a class="hub-card" data-od-id="card-support" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">
+            <span class="k">Community · Support</span>
+            <h3 class="with-logo"><img src="assets/fluxer-icon.png" alt="" width="20" height="20" class="fluxer-mark" loading="lazy" />Ask the team</h3>
+            <p>Official 1bit.MONSTER support live on Fluxer. Post a question, get an answer from the engine team.</p>
+          </a>
         </div>
 
         <p class="meta" style="margin-top: var(--gap-2xl);">The operational wiki also covers installation, NPU architecture, boot configuration, and network topology. Goals and vision live separately, kept out of the engine narrative.</p>
@@ -209,6 +216,7 @@
   <footer class="pagefoot" data-od-id="footer">
     <div class="container row-between">
       <span>© 2026 1bit.MONSTER · MIT License</span>
+      <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support ↗</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
     <div class="container">
