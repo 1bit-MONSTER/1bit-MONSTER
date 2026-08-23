@@ -85,8 +85,18 @@ inline int router(const MoeDims& d, const RouterWeights& w,
         rs[i] = s;
     }
     // 2. EDA (recurrent, before norm): rs += prev_router * eda
-    if (!prev_router.empty())
-        for (int i = 0; i < rtr_h; i++) rs[i] += prev_router[i] * w.eda[i];
+    // Issue #1799 root cause: the q4nx manifest declares router_states_scale
+    // as shape [1] (2 bytes) although the blob holds the full rtr_h=256
+    // per-channel scale — a 2-byte load left w.eda with 1 element and this
+    // loop read OOB heap (run-to-run expert flips at layers 3+). Bound by the
+    // smallest of the three so a short eda can never read OOB; the load-side
+    // fix (load_eda_size correction in each caller) restores the full tensor.
+    if (!prev_router.empty() && !w.eda.empty()) {
+        int n = rtr_h;
+        if ((int)prev_router.size() < n) n = (int)prev_router.size();
+        if ((int)w.eda.size() < n) n = (int)w.eda.size();
+        for (int i = 0; i < n; i++) rs[i] += prev_router[i] * w.eda[i];
+    }
     prev_router = rs;  // store BEFORE norm
 
     // 3. RMSNorm
