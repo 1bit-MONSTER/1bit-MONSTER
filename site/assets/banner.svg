@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 840" width="2560" height="840" role="img" aria-label="1bit.MONSTER — One engine, any model, zero Python.">
+  <style>
+    /* relay mark — ported verbatim from site/index.html's .topnav .logo animation:
+       one block solid at a time, slow (80s cycle), matches the live site exactly. */
+    .relay { fill: #010202; stroke: #f5f8fa; stroke-opacity: 0.28; stroke-width: 11px; animation: logo-relay 80s ease-in-out infinite; }
+    .r1 { animation-delay: 0s; }
+    .r2 { animation-delay: 20s; }
+    .r3 { animation-delay: 40s; }
+    .r4 { animation-delay: 60s; }
+    @keyframes logo-relay {
+      0%   { fill: #010202; }
+      13%  { fill: #f5f8fa; }
+      14%  { fill: #f5f8fa; }
+      25%  { fill: #010202; }
+      100% { fill: #010202; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .relay { animation: none; }
+      .r1 { fill: #f5f8fa; }
+    }
+    .wordmark { font-family: Arial, Helvetica, sans-serif; font-weight: 900; fill: #f5f8fa; }
+    .tagline  { font-family: Arial, Helvetica, sans-serif; font-weight: 400; fill: #a8b0b8; }
+  </style>
+
+  <rect width="2560" height="840" fill="#010202"/>
+  <rect x="2" y="2" width="2556" height="836" fill="none" stroke="#282c32" stroke-width="3"/>
+
+  <rect class="relay r1" x="405"   y="235"   width="112.5" height="112.5" rx="25"/>
+  <rect class="relay r2" x="542.5" y="235"   width="112.5" height="112.5" rx="25"/>
+  <rect class="relay r3" x="405"   y="372.5" width="112.5" height="112.5" rx="25"/>
+  <rect class="relay r4" x="542.5" y="372.5" width="112.5" height="112.5" rx="25"/>
+
+  <text class="wordmark" x="790" y="430" font-size="190">1bit.MONSTER</text>
+  <text class="tagline" x="380" y="625" font-size="56">One engine, any model, zero Python.</text>
+  <text class="tagline" x="380" y="695" font-size="56">A model-agnostic, hardware-agnostic pure-C++ inference engine.</text>
+</svg>

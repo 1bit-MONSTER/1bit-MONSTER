@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="site/assets/banner.png" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
+<img src="site/assets/banner.svg" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
