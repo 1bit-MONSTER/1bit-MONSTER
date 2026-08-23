@@ -271,6 +271,12 @@ extern "C" void rcpp_tokenizer_free(rcpp_tokenizer_t* t) { delete t; }
 extern "C" int rcpp_tokenizer_bos_id(const rcpp_tokenizer_t* t) { return t ? t->bos_id : -1; }
 extern "C" int rcpp_tokenizer_eos_id(const rcpp_tokenizer_t* t) { return t ? t->eos_id : -1; }
 
+extern "C" int rcpp_tokenizer_id_for_token(const rcpp_tokenizer_t* t, const char* token) {
+    if (!t || !token) return -1;
+    auto it = t->bytes_to_id.find(token);
+    return it != t->bytes_to_id.end() ? it->second : -1;
+}
+
 // ── Logprob API — merge-rank-based token frequency scoring (fixes #81) ──
 
 /// Return the merge-rank-based pseudo-logprob for a single token ID.

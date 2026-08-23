@@ -208,10 +208,18 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
         std::string p = "v.blk." + std::to_string(il) + ".";
         bool ok = true;
 
+        bool ln1_has_bias = get_opt(p + "ln1.bias", l.ln1_b, (size_t)H);  // Qwen2-VL mmprojs use RMSNorm (no bias)
         ok &= get(p + "ln1.weight", l.ln1_w, (size_t)H);
-        ok &= get(p + "ln1.bias",   l.ln1_b, (size_t)H);
         ok &= get(p + "ln2.weight", l.ln2_w, (size_t)H);
-        ok &= get(p + "ln2.bias",   l.ln2_b, (size_t)H);
+        bool ln2_has_bias = get_opt(p + "ln2.bias", l.ln2_b, (size_t)H);
+        if (!ln1_has_bias && !l.ln1_w.empty()) l.ln1_b.resize(H, 0.0f);
+        if (!ln2_has_bias && !l.ln2_w.empty()) l.ln2_b.resize(H, 0.0f);
+        // Qwen2-VL mmprojs have RMSNorm (no ln bias) — the layer norm must not
+        // subtract a mean. Detect on the first layer and apply to the whole net.
+        if (il == 0 && !ln1_has_bias && !ln2_has_bias) {
+            config.use_rmsnorm = true;
+            fprintf(stderr, "  [vit] RMSNorm layer norms detected (no ln bias) — using rmsnorm\n");
+        }
 
         if (has_fused_qkv) {
             // Fused QKV: attn_qkv.weight [H, 3*H] — split into Q, K, V
@@ -252,14 +260,41 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
             // Names are swapped: "ffn_down.weight" is really the up-projection (H->ff)
             // and "ffn_up.weight" is really the down-projection (ff->H)
             ok &= get(p + "ffn_down.weight", l.ffn_up_w,   (size_t)FF * H);
-            ok &= get(p + "ffn_down.bias",   l.ffn_up_b,   (size_t)FF);
             ok &= get(p + "ffn_up.weight",   l.ffn_down_w, (size_t)H * FF);
-            ok &= get(p + "ffn_up.bias",     l.ffn_down_b, (size_t)H);
         } else {
             ok &= get(p + "ffn_up.weight",   l.ffn_up_w,   (size_t)FF * H);
-            ok &= get(p + "ffn_up.bias",     l.ffn_up_b,   (size_t)FF);
             ok &= get(p + "ffn_down.weight", l.ffn_down_w, (size_t)H * FF);
-            ok &= get(p + "ffn_down.bias",   l.ffn_down_b, (size_t)H);
+        }
+
+        // FFN biases: Qwen2-VL mmprojs (llama.cpp clip) name the biases crossed
+        // — ffn_up.bias may be [H] (down output) and ffn_down.bias [FF] (up
+        // output), or correctly named. Assign by shape: size FF -> up output
+        // bias, size H -> down output bias. Missing bias = zeros.
+        {
+            std::vector<float> up_b, down_b;
+            bool has_up_b   = read_tensor_f32(gguf_path, p + "ffn_up.bias",   up_b,   nullptr);
+            bool has_down_b = read_tensor_f32(gguf_path, p + "ffn_down.bias", down_b, nullptr);
+            auto sized = [](const std::vector<float>& v, size_t want) {
+                return !v.empty() && v.size() == want;
+            };
+            if (sized(up_b, FF))       { l.ffn_up_b = std::move(up_b); }
+            else if (sized(down_b, FF)){ l.ffn_up_b = std::move(down_b); }
+            else if (has_up_b || has_down_b) {
+                fprintf(stderr, "  [vit] %sffn bias sizes unexpected (up=%zu down=%zu, want FF=%d) — zeroing\n",
+                        p.c_str(), up_b.size(), down_b.size(), FF);
+                l.ffn_up_b.assign(FF, 0.0f);
+            } else {
+                l.ffn_up_b.assign(FF, 0.0f);
+            }
+            if (sized(down_b, H))       { l.ffn_down_b = std::move(down_b); }
+            else if (sized(up_b, H))    { l.ffn_down_b = std::move(up_b); }
+            else if (has_up_b || has_down_b) {
+                fprintf(stderr, "  [vit] %sffn bias sizes unexpected (up=%zu down=%zu, want H=%d) — zeroing\n",
+                        p.c_str(), up_b.size(), down_b.size(), H);
+                l.ffn_down_b.assign(H, 0.0f);
+            } else {
+                l.ffn_down_b.assign(H, 0.0f);
+            }
         }
 
         if (!ok) {
@@ -268,9 +303,10 @@ bool VisionWeights::load_from_gguf(const std::string& gguf_path, const VitConfig
         }
     }
 
-    // Post-LN
+    // Post-LN (bias optional — RMSNorm mmprojs have none)
     if (!get("v.post_ln.weight", post_ln_w, (size_t)H)) return false;
-    if (!get("v.post_ln.bias",   post_ln_b, (size_t)H)) return false;
+    get_opt("v.post_ln.bias", post_ln_b, (size_t)H);
+    if (post_ln_b.empty() && !post_ln_w.empty()) post_ln_b.resize(H, 0.0f);
     
     // Debug: print first few patch_embd values
     if (!patch_embd0.empty()) {
@@ -497,11 +533,14 @@ std::vector<float> vit_forward(const VisionWeights& weights, const float* img,
     for (int il = 0; il < cfg.num_layers; il++) {
         const auto& l = weights.layers[il];
 
+
         // Pre-attention LayerNorm
         for (int t = 0; t < n_positions; t++) {
             float* xt = &seq[(size_t)t * H];
 
-            if (cfg.use_bias) {
+            if (cfg.use_rmsnorm) {
+                rmsnorm(x2.data(), xt, l.ln1_w.data(), H, cfg.layer_norm_eps);
+            } else if (cfg.use_bias) {
                 layernorm(x2.data(), xt, l.ln1_w.data(), l.ln1_b.data(), H, cfg.layer_norm_eps);
             } else {
                 rmsnorm(x2.data(), xt, l.ln1_w.data(), H, cfg.layer_norm_eps);
@@ -586,7 +625,9 @@ std::vector<float> vit_forward(const VisionWeights& weights, const float* img,
             float* xt = &seq[(size_t)t * H];
 
             // Pre-FFN LayerNorm
-            if (cfg.use_bias) {
+            if (cfg.use_rmsnorm) {
+                rmsnorm(x2.data(), xt, l.ln2_w.data(), H, cfg.layer_norm_eps);
+            } else if (cfg.use_bias) {
                 layernorm(x2.data(), xt, l.ln2_w.data(), l.ln2_b.data(), H, cfg.layer_norm_eps);
             } else {
                 rmsnorm(x2.data(), xt, l.ln2_w.data(), H, cfg.layer_norm_eps);
@@ -616,7 +657,9 @@ std::vector<float> vit_forward(const VisionWeights& weights, const float* img,
     // Post-LN
     for (int t = 0; t < n_positions; t++) {
         float* xt = &seq[(size_t)t * H];
-        if (cfg.use_bias) {
+        if (cfg.use_rmsnorm) {
+            rmsnorm(x2.data(), xt, weights.post_ln_w.data(), H, cfg.layer_norm_eps);
+        } else if (cfg.use_bias) {
             layernorm(x2.data(), xt, weights.post_ln_w.data(), weights.post_ln_b.data(), H, cfg.layer_norm_eps);
         } else {
             rmsnorm(x2.data(), xt, weights.post_ln_w.data(), H, cfg.layer_norm_eps);

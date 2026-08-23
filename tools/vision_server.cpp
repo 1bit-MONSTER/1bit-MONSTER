@@ -55,9 +55,12 @@ using json = nlohmann::json;
 
 // ── Constants for Qwen2-VL ──
 static const int VL_INPUT_SIZE  = 224;   // 16x16 patches
-static const int VL_VISION_START = 151652;
-static const int VL_VISION_END   = 151653;
-static const int VL_EOS_ID       = 151645; // Qwen2 <|im_end|>
+// Vision / EOS token IDs. Defaults are the Qwen2.5-VL-3B vocab; when an
+// .htok tokenizer is loaded we resolve the real IDs by name (the hardcoded
+// IDs only matched Qwen2.5-VL-3B — Qwen2-VL-2B and Mage-VL differ).
+static int VL_VISION_START = 151652;
+static int VL_VISION_END   = 151653;
+static int VL_EOS_ID       = 151645; // Qwen2 <|im_end|>
 
 // Qwen3/Mage-VL chat template (applied when the .htok tokenizer is loaded,
 // i.e. the special tokens exist in vocab) — matches chat_template.jinja:
@@ -363,11 +366,21 @@ int main(int argc, char** argv) {
     // GGUF-embedded vocab fallback.
     if (g_tokenizer_path.size() >= 5 &&
         g_tokenizer_path.substr(g_tokenizer_path.size() - 5) == ".htok") {
-        if (rcpp_tokenizer_load(g_tokenizer_path.c_str(), &g_htok) == 0 && g_htok)
+        if (rcpp_tokenizer_load(g_tokenizer_path.c_str(), &g_htok) == 0 && g_htok) {
             fprintf(stderr, "Loaded htok tokenizer %s (BOS=%d EOS=%d)\n",
                     g_tokenizer_path.c_str(), rcpp_tokenizer_bos_id(g_htok),
                     rcpp_tokenizer_eos_id(g_htok));
-        else
+            // Resolve vision/EOS token IDs from the actual vocab — the
+            // Qwen2.5-VL-3B hardcoded defaults differ across Qwen2-VL models.
+            int vs = rcpp_tokenizer_id_for_token(g_htok, "<|vision_start|>");
+            int ve = rcpp_tokenizer_id_for_token(g_htok, "<|vision_end|>");
+            int ie = rcpp_tokenizer_id_for_token(g_htok, "<|im_end|>");
+            if (vs > 0) VL_VISION_START = vs;
+            if (ve > 0) VL_VISION_END   = ve;
+            if (ie > 0) VL_EOS_ID       = ie;
+            fprintf(stderr, "  vision_start=%d vision_end=%d im_end=%d\n",
+                    VL_VISION_START, VL_VISION_END, VL_EOS_ID);
+        } else
             fprintf(stderr, "WARNING: failed to load htok %s — falling back\n",
                     g_tokenizer_path.c_str());
     }
