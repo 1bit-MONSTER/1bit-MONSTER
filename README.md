@@ -2,11 +2,11 @@
 
 <img src="site/assets/banner.png" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
-[![1bit.MONSTER](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/badge-amber.svg)](https://github.com/1bit-MONSTER)
+# 1bit.MONSTER
 
-## One engine to rule them all
+### *One engine. Any model. Zero Python.*
 
-### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
+#### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
 
 [![CI](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/badge-ci-pass.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/site/assets/badges/badge-license.svg)](LICENSE)
@@ -57,8 +57,6 @@ Every architecture the engine detects has its own page — params, 1BP size, bac
 
 ## Frontier gates: 5/5 validated against reference implementations
 
-
-
 Every architecture the engine claims to support is held to a **generation gate**: run the engine on a real (or mini) checkpoint and compare logits against the reference implementation. The five newest frontier families were audited, implemented, and gated in one session (2026-08-16) — the gates caught real math bugs each time:
 
 | Family | Arch | Engine | Gate result |
@@ -69,7 +67,7 @@ Every architecture the engine claims to support is held to a **generation gate**
 | **MiMo V2** | MoD hybrid (SWA+full GQA, sigmoid group-topk) | `src/mimo_v2.cpp` | ✅ mini-gate top1 524 == HF, 20/20 |
 | **Qwen3.5** | GatedDeltaNet + gated GQA hybrid | `src/qwen3_5.cpp` | ✅ mini-gate top1 142 == HF, 20/20, corr 1.0 |
 
-Each gate compares full logits (not just greedy argmax) against the authoritative reference — the HuggingFace modeling source for the exact checkpoint. The audit step proved decisive: two of the five families shipped in our engine **before** the audit were written against fictional architectures (DeepSeek V4 had MLA + a 4×4 "mHC mix matrix" that don't exist; the real thing is Shared-KV MQA + Sinkhorn hyper-connections). The gate suite (`Testing/run_all.sh`) is now **17/17 green**, and the full model census holds **100.00%** coverage of HuggingFace architectures.
+Each gate compares full logits (not just greedy argmax) against the authoritative reference — the HuggingFace modeling source for the exact checkpoint. The audit step proved decisive: two of the five families shipped in our engine **before** the audit were written against fictional architectures (DeepSeek V4 had MLA + a 4x4 "mHC mix matrix" that don't exist; the real thing is Shared-KV MQA + Sinkhorn hyper-connections). The gate suite (`Testing/run_all.sh`) is now **17/17 green**, and the full model census holds **100.00%** coverage of HuggingFace architectures.
 
 **→ [The frontier plan](docs/plans/monster-500-models.md)** — the 5-gate work order, per-family architecture facts, and what each gate proved.
 
@@ -95,7 +93,7 @@ Six hardware targets are probed at startup (`has_npu`, `has_hip_gpu`, `has_vulka
 
 AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind a closed-source runtime. Nothing else could touch that chip. We reverse-engineered the whole stack in 4 days and replaced it with open C++ — one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU.
 
-**As of 2026-08-15, the last proprietary dependency is gone.** The engine's own instruction-stream generator emits **byte-identical** output to the closed-source runtime's own dumps (verified `cmp`-exact on every op), builds xclbins with the fully open `aiecc`/`peano-clang` toolchain, and now **beats** the proprietary stack's own kernels by 11-15% — 2× on a 35B MoE model. Not just replicated: outperformed, with nothing closed-source left in the loop.
+**As of 2026-08-15, the last proprietary dependency is gone.** The engine's own instruction-stream generator emits **byte-identical** output to the closed-source runtime's own dumps (verified `cmp`-exact on every op), builds xclbins with the fully open `aiecc`/`peano-clang` toolchain, and now **beats** the proprietary stack's own kernels by 11-15% — 2x on a 35B MoE model. Not just replicated: outperformed, with nothing closed-source left in the loop.
 
 **→ [Read the full journey](docs/journey.md)** — every crash, breakthrough, and bug, documented in real time.
 **→ [The Audit Trail](docs/audit-trail.md)** — 1.5 TB of raw evidence, archived nightly on the Raspberry Pi backup server.
@@ -172,13 +170,7 @@ No cloud, no Python in the hot path.
 
 ## The Mesh — self-aware installs, out of the box
 
-Every install is a network node: it announces itself on the LAN (UDP
-multicast), discovers sibling 1bit-MONSTER installs, and **starts asking
-questions** — *"want to hook up and integrate?"* — then handshakes and
-federates (shared routing, model exchange, load sharing). Zero config, zero
-model weights required for the network to come alive; a DSH brain
-(`integrations/dsh/`) upgrades the questions from templates to your local
-model's own words.
+Every install is a network node: it announces itself on the LAN (UDP multicast), discovers sibling 1bit-MONSTER installs, and **starts asking questions** — *"want to hook up and integrate?"* — then handshakes and federates (shared routing, model exchange, load sharing). Zero config, zero model weights required for the network to come alive; a DSH brain (`integrations/dsh/`) upgrades the questions from templates to your local model's own words.
 
 ```bash
 cmake --build build --target mesh_peer -j     # or: 1bit unified (mesh on by default)
