@@ -507,9 +507,6 @@ int zaya_decode_main(int argc, char** argv) {
     fflush(stdout);
     double gen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgen0).count();
     fprintf(stderr, "[perf] %d tokens in %.0f ms (%.1f ms/tok, %.1f tok/s)\n", N_GEN, gen_ms, gen_ms / N_GEN, 1000.0 * N_GEN / gen_ms);
-    fprintf(stderr, "[cache] hits=%zu misses=%zu (%.1f%% hit)\n", cache_hits, cache_misses,
-            cache_hits + cache_misses ? 100.0 * cache_hits / (cache_hits + cache_misses) : 0.0);
-
     // ── Teardown (issue #1762) ──────────────────────────────────────────────
     // Root cause: the xrt destructors wedge the NPU — NOT a BO sync on destroy
     // (every launch is r.wait()ed before the next and xrt::bo never syncs on
