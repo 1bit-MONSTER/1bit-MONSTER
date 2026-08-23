@@ -276,6 +276,13 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
             } else {
                 // ── MoE block (odd layers) ──
+                if (const char* dump = getenv("NPU_DUMP_MOE_INPUT")) {
+                    if (l == atoi(getenv("NPU_DUMP_LAYER") ? getenv("NPU_DUMP_LAYER") : "1")) {
+                        FILE* f = fopen(dump, "wb");
+                        if (f) { fwrite(residual.data(), 4, d.H, f); fclose(f);
+                                 fprintf(stderr, "[dump] layer %d MoE input -> %s\n", l, dump); }
+                    }
+                }
                 std::vector<float> rsv; float wt;
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
                 zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), moe_out.data());
