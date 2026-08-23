@@ -67,7 +67,7 @@ jobs:
             engine/npu/src/zaya_decode.cpp \
             engine/npu/src/gemm_npu_instructions.cpp \
             npu-infer/src/flm_bridge.cpp \
-            -Iengine/npu/include -Inpu-infer/include -Iinclude \
+            -Iengine/npu/include -Iengine/npu/generators -Inpu-infer/include -Iinclude \
             -I/opt/xrt/include -Iengine/npu -I. \
             -L/opt/xrt/lib -lxrt_coreutil -luuid -lm -ldl -lpthread -laiebu
 
