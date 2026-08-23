@@ -685,4 +685,33 @@ extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
     for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
 }
 
+// ---- int4 weight unpack (issue #1769, Phase-1 hardware round) ----
+// AIE2P-native unpack for nibble-paired B tiles (i4_pack.h contract): byte
+// s' = i0*512 + i1*32 + i2*4 + i3/2, EVEN element in the LOW nibble. The
+// vldb.unpack intrinsic loads 32 bytes as 64 sign-extended int4 (sign=1);
+// four vector adds double it x16 so the mmul consumes the SAME int8 values
+// the host reference unpacks (q4<<4, scale unchanged) — bit-identical C1,
+// zero contract drift. Cost: 1 unpack + 4 vector adds per 64 elements
+// (~7 instructions) vs the ~4 KB of DMA saved per (64,128) tile.
+//
+// VERIFIED on strixhalo with a minimal probe xclbin (2026-08-23): a known
+// packed pattern unpacks byte-exact (even=low nibble, sign-extended, x16),
+// and the fused-decode GU GEMM is bit-identical to the host int4 emulation
+// (corr 1.000000). The remaining #1769 blocker is NOT the unpack — it is
+// quantization accuracy: per-column int4 re-quantization of the Q4NX weights
+// (scale uniform over K=2048) caps the MoE-FFN corr at ~0.972 vs float
+// (int8 fused: 0.9995), flipping tokens. The fused kernel's C1 accumulator
+// sums over K with a single scale, so it cannot carry the Q4NX per-
+// (32-col,row) scales a 4-bit grid needs; a per-group-scale kernel
+// restructure would be required.
+extern "C" void unpack_i4_b(const int8_t *__restrict packed,
+                            int8_t *__restrict out, unsigned n_bytes) {
+    for (unsigned i = 0; i + 32 <= n_bytes; i += 32) {
+        const v64int4 *p = (const v64int4 *)(packed + i);
+        v64int8 u = __builtin_aie2p_unpack_I512_I8_I4(*p, 1);  // sign-extend nibbles
+        u = u + u; u = u + u; u = u + u; u = u + u;            // x16 (fold-free)
+        *((v64int8 *)(out + 2 * i)) = u;
+    }
+}
+
 } // extern "C"
