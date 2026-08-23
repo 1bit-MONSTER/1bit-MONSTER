@@ -1,6 +1,6 @@
-# Contributing to 1bit.systems
+# Contributing to 1bit.MONSTER
 
-**One engine. Every model. Any chip.** A pure C++ LLM inference server that auto-detects every supported model architecture and dispatches tokens to the fastest available backend — NPU fused, GPU HIP, Vulkan, or CPU — from a single ~67 MB ELF (`build/1bit`; zaya_server core ~1.5 MB, 1,578,576 B raw / 1,302,736 B stripped, auto-tracked in site/numbers.json). No Python at runtime. No Rust at runtime. Zero configuration files.
+**One engine. Any model. Zero Python.** A pure C++ LLM inference server that auto-detects every supported model architecture and dispatches tokens to the fastest available backend — NPU fused, GPU HIP, Vulkan, or CPU — from a single ~67 MB ELF (`build/1bit`; zaya_server core ~1.5 MB, 1,578,576 B raw / 1,302,736 B stripped, auto-tracked in site/numbers.json). No Python at runtime. No Rust at runtime. Zero configuration files.
 
 This guide covers how to build, test, and contribute to the project.
 
@@ -71,8 +71,8 @@ This guide covers how to build, test, and contribute to the project.
 
 ```bash
 # Fork & clone
-git clone https://github.com/YOUR_USERNAME/1bit-systems
-cd 1bit-systems
+git clone https://github.com/YOUR_USERNAME/1bit-monster
+cd 1bit-monster
 
 # Build zaya_server (the one binary)
 cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151
@@ -193,7 +193,7 @@ cmake --build build -j$(nproc)
 ## Codebase Map
 
 ```
-1bit-systems/
+1bit-monster/
 ├── tests/
 │   └── zaya_server.cpp       ← THE ONE BINARY — ~1.5 MB
 ├── src/                       HIP C++ kernels (ternary GEMV/GEMM, prefill, KV cache)
@@ -225,7 +225,7 @@ cmake --build build -j$(nproc)
 │   └── homebrew/              Homebrew formula
 ├── .github/workflows/         CI/CD pipelines
 ├── docs/                      Architecture, build guide, roadmap
-├── site/                      1bit.systems website (Cloudflare Pages)
+├── site/                      1bit.MONSTER website (Cloudflare Pages)
 ├── tools/                     Model converters, benchmark scripts
 └── benchmarks/                Historical benchmark data
 ```
@@ -277,7 +277,7 @@ cmake --build build -j$(nproc)
 | `[packaging]` | deb, snap, AppImage, AUR, Homebrew, Docker |
 | `[ci]` | GitHub Actions, workflows, CI infrastructure |
 | `[docs]` | Documentation, README, guides |
-| `[site]` | 1bit.systems website |
+| `[site]` | 1bit.MONSTER website |
 | `[tools]` | Model converters, benchmark scripts |
 
 **Examples:**
@@ -456,6 +456,6 @@ This project is MIT-licensed. Sherry-specific kernels in `src/sherry_*.hip` are 
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/1bit-systems/1bit-systems/discussions)
+- Open a [GitHub Discussion](https://github.com/1bit-MONSTER/1bit-MONSTER/discussions)
 - Read the [architecture docs](docs/guides/architecture.md)
 - See the [roadmap](docs/guides/roadmap.md)

@@ -28,7 +28,7 @@ Same architecture (Qwen3.5 35B MoE, A3B = 3B active params per token). Same Lemo
 
 ## Why this matters
 
-The 1bit-systems brand is "1bit" because that's the *floor* — Bonsai-1.7B at IQ1_S hits 280 tok/s on this hardware (`benchmarks/RESULTS-1bit-2026-04-26.md`, `benchmarks/RESULTS-stack-2026-04-28.md`). But for a real 35B-class assistant that answers real questions, **sub-2-bit on MoE is the daily driver**. Half the disk, 35% faster decode, runs on a single APU. 1-bit is the headline; 2-bit is what you'll keep open.
+The 1bit-monster brand is "1bit" because that's the *floor* — Bonsai-1.7B at IQ1_S hits 280 tok/s on this hardware (`benchmarks/RESULTS-1bit-2026-04-26.md`, `benchmarks/RESULTS-stack-2026-04-28.md`). But for a real 35B-class assistant that answers real questions, **sub-2-bit on MoE is the daily driver**. Half the disk, 35% faster decode, runs on a single APU. 1-bit is the headline; 2-bit is what you'll keep open.
 
 ## Reproduce
 

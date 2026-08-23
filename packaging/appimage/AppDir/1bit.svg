@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" role="img" aria-label="1bit.systems">
-  <title>1bit.systems</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" role="img" aria-label="1bit.MONSTER">
+  <title>1bit.MONSTER</title>
   <defs>
     <radialGradient id="ringGlow" cx="50%" cy="50%" r="55%">
       <stop offset="0%" stop-color="#f00fd2" stop-opacity="0.42"/>
@@ -25,7 +25,7 @@
           font-size="56" font-weight="800" fill="#00ff00" letter-spacing="-0.04em">1bs</text>
   </g>
 
-  <!-- wordmark: 1bit.systems -->
+  <!-- wordmark: 1bit.MONSTER -->
   <g transform="translate(220,118)">
     <text x="0" y="0"
           font-family="'Inter','Helvetica Neue',Helvetica,Arial,sans-serif"

@@ -265,9 +265,9 @@ static const std::string g_cuda_weights_dir = []() -> std::string {
     const char* env = getenv("CUDA_WEIGHTS_DIR");
     if (env && env[0]) return env;
     const char* xdg = getenv("XDG_DATA_HOME");
-    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-systems/weights/";
+    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-monster/weights/";
     const char* home = getenv("HOME");
-    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/weights/";
+    if (home && home[0]) return std::string(home) + "/.local/share/1bit-monster/weights/";
     return "/tmp/cuda_weights/";
 }();
 

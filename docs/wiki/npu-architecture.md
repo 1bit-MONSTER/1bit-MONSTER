@@ -333,7 +333,7 @@ export PYTHONPATH=~/mlir-aie/install/python:$PYTHONPATH
 export LD_LIBRARY_PATH=~/torch2aie/toolchain/xrt/lib64:$LD_LIBRARY_PATH
 
 # Universal engine test
-cd ~/projects/1bit-systems
+cd ~/projects/1bit-monster
 ./engine/npu/build/npu_engine_universal \
     --model ~/weights/qwen3_0.6b.npu \
     --tokens 128

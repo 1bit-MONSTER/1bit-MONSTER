@@ -90,7 +90,7 @@ if(EXISTS "${_1BIT_ROCM_STUB}")
         CACHE PATH "HIP ROCm root (local stub)" FORCE)
 endif()
 
-project(1bit-systems LANGUAGES C CXX HIP)
+project(1bit-monster LANGUAGES C CXX HIP)
 
 # ── Optional: CUDA (NVIDIA GPU) backend ──
 option(USE_CUDA "Build the CUDA GPU backend for NVIDIA GPUs" OFF)
@@ -134,6 +134,23 @@ if(USE_VART)
         message(WARNING "USE_VART=ON but VART libraries not found — skipping VART backend. "
             "Install Vitis AI or set VART_RUNNER_LIB/XIR_LIB manually.")
     endif()
+endif()
+
+# ── Optional: sanitizers (ASan + UBSan) — issue #1775 ──
+# The Zaya decode nondeterminism investigation (issue #1775) called for
+# ASan/UBSan runs of the engine; none existed. Enable with:
+#   cmake -B build-san -DSANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
+# NOTES: (1) build WITHOUT -ffast-math — it implies -ffinite-math-only and
+# reassociation, hiding the float-UB class UBSan is meant to catch (see the
+# #1243 gate comment); (2) ASan only instruments host code — xrt BO memory
+# (bA/bC) is opaque to it, so a sanitizer-clean run does not prove the
+# NPU-side buffers are clean (that needs the strixhalo verification recipe);
+# (3) HIP targets may still add their own -ffast-math flags.
+option(SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+if(SANITIZE)
+    message(STATUS "SANITIZE=ON — adding -fsanitize=address,undefined -fno-sanitize-recover=all")
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -427,7 +444,7 @@ target_link_libraries(tf_gemv PRIVATE gguf_reader)
 target_compile_options(tf_gemv PRIVATE -O3 -std=c++23)
 
 # -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
-#   tools/zuna_port.cpp (vendored from github.com/1bit-systems/eeg-medical, the
+#   tools/zuna_port.cpp (vendored from github.com/1bit-MONSTER/eeg-medical, the
 #   canonical home) compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
 #   the parity harness + EDF tooling live in eeg-medical/tools/.
 

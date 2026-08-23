@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 1bit.systems — mobile setup: ngrok + QR + 1bit-mobile
-# curl -fsSL https://1bit.systems/mobile.sh | sh
+# 1bit.MONSTER — mobile setup: ngrok + QR + 1bit-mobile
+# curl -fsSL https://1bit.monster/mobile.sh | sh
 set -euo pipefail
 
 echo "╔══════════════════════════════════════════════════╗"
@@ -100,7 +100,7 @@ if [ -n "$NGROK_URL" ]; then
 fi
 echo ""
 echo "  To reconnect later:"
-echo "    curl -fsSL https://1bit.systems/mobile.sh | sh"
+echo "    curl -fsSL https://1bit.monster/mobile.sh | sh"
 echo ""
 echo "  To kill tunnel:"
 echo "    pkill ngrok"

@@ -1,7 +1,7 @@
 # vLLM Toolbox Integration
 #
 # This directory contains companion services and integration glue
-# that connects the 1bit-systems NPU/GPU kernels with the 
+# that connects the 1bit-monster NPU/GPU kernels with the 
 # kyuz0/amd-strix-halo-vllm-toolboxes container.
 #
 # Files:

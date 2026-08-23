@@ -1,4 +1,4 @@
-// zamba2_engine.h — Zamba2 inference engine for 1bit.systems
+// zamba2_engine.h — Zamba2 inference engine for 1bit.MONSTER
 //
 // Zamba2 is a hybrid Mamba2 + shared-attention architecture:
 //   - 45 Mamba2 SSM layers (Mamba2 blocks)

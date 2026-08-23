@@ -3,7 +3,7 @@
 from gguf import GGUFReader, dequantize
 import numpy as np, struct
 
-r = GGUFReader("/home/bcloud/1bit-systems/models/ZAYA1-8B-Q4_K_M.gguf")
+r = GGUFReader("/home/bcloud/1bit-monster/models/ZAYA1-8B-Q4_K_M.gguf")
 for t in r.tensors:
     if t.name == "blk.0.attn_k.weight":
         w = dequantize(t.data, t.tensor_type)
@@ -42,7 +42,7 @@ for t in r.tensors:
         print(f"Packed byte[64]={packed.flat[64]} byte[65]={packed.flat[65]}")
         
         # Now compare with file
-        with open("/home/bcloud/1bit-systems/models/ZAYA1-8B.1bp", "rb") as f:
+        with open("/home/bcloud/1bit-monster/models/ZAYA1-8B.1bp", "rb") as f:
             f.seek(256)
             nl = struct.unpack("<I", f.read(4))[0]
             f.read(nl+1)

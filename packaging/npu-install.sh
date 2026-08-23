@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# 1bit.systems — NPU Engine Install
+# 1bit.MONSTER — NPU Engine Install
 # Pure NPU inference engine. No Python. No Node. No Docker. No dependencies.
 #
 # Usage:
-#   curl -sL https://1bit.systems/npu-install.sh | bash
+#   curl -sL https://1bit.monster/npu-install.sh | bash
 #   # or from a release tarball:
-#   tar xzf 1bit-systems-*.tar.gz && cd 1bit-systems-* && bash npu-install.sh
+#   tar xzf 1bit-monster-*.tar.gz && cd 1bit-monster-* && bash npu-install.sh
 #
 # Requires: Linux on AMD Strix Halo (Ryzen AI Max+ 395), XRT 2.21+
 # Optional: g++ for building from source
@@ -19,7 +19,7 @@ die()  { printf "${RED}✗${NC} %s\n" "$*"; exit 1; }
 
 echo ""
 printf "${GREEN}╔══════════════════════════════════════════════╗${NC}\n"
-printf "${GREEN}║  1bit.systems — NPU Inference Engine        ║${NC}\n"
+printf "${GREEN}║  1bit.MONSTER — NPU Inference Engine        ║${NC}\n"
 printf "${GREEN}║  ~400 KB · 35 models · 9 backends · Zero deps  ║${NC}\n"
 printf "${GREEN}╚══════════════════════════════════════════════╝${NC}\n"
 echo ""
@@ -58,7 +58,7 @@ if [ -f "${SCRIPT_DIR}/bin/1bit-npu" ]; then
   cp "${SCRIPT_DIR}/lib/"*.o          "${INSTALL_DIR}/lib/" 2>/dev/null || true
 else
   # Download latest release from GitHub
-  REPO="1bit-systems/1bit-systems"
+  REPO="1bit-MONSTER/1bit-MONSTER"
   say "Downloading latest release from ${REPO}..."
   DOWNLOAD_URL=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep "browser_download_url.*runtime.tar.gz" | head -1 | cut -d'"' -f4)
@@ -111,7 +111,7 @@ echo "  │        engine/npu/build/dequant_q4nx.o -lxrt_coreutil          │"
 echo "  │                                                               │"
 echo "  └───────────────────────────────────────────────────────────────┘"
 echo ""
-echo "  Docs:  https://1bit.systems"
-echo "  Repo:  https://github.com/1bit-systems/1bit-systems"
+echo "  Docs:  https://1bit.monster"
+echo "  Repo:  https://github.com/1bit-MONSTER/1bit-MONSTER"
 echo "  Help:  1bit-npu --help"
 echo ""

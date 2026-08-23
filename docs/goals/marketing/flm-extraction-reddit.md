@@ -50,9 +50,9 @@ Drop a Q4NX file onto our single C++ binary (~1.5 MB). It reads the Q4NX header,
 
 **Why this matters:**
 
-The 1bit-systems engine is 18 model architectures, 46+ 1BP models, 4 backends (NPU, GPU HIP, GPU Vulkan, CPU), MIT licensed. One binary. No config. Every Strix Halo owner can now use their NPU without AMD's proprietary stack.
+The 1bit-monster engine is 18 model architectures, 46+ 1BP models, 4 backends (NPU, GPU HIP, GPU Vulkan, CPU), MIT licensed. One binary. No config. Every Strix Halo owner can now use their NPU without AMD's proprietary stack.
 
-Blog: https://1bit.systems/blog/flm-37-models-extracted
-GitHub: https://github.com/1bit-systems/1bit-systems
-Full model catalog: https://1bit.systems/wiki/models
-Benchmark methodology: https://1bit.systems/wiki/performance
+Blog: https://1bit.monster/blog/flm-37-models-extracted
+GitHub: https://github.com/1bit-MONSTER/1bit-MONSTER
+Full model catalog: https://1bit.monster/wiki/models
+Benchmark methodology: https://1bit.monster/wiki/performance

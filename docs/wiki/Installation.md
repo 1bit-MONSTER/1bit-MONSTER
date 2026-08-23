@@ -34,8 +34,8 @@ uname -r          # check your running kernel
 ## Quick install
 
 ```bash
-git clone https://github.com/1bit-systems/1bit-systems
-cd 1bit-systems
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-monster
 ./install.sh          # warns on a 6.19.x kernel; use --skip-rocm to reuse prebuilt libs
 ```
 

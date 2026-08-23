@@ -584,10 +584,10 @@ class LlamaCppServer(ServerHandle):
 
 
 # ---------------------------------------------------------------------------
-# 1bit-systems zaya_server
+# 1bit-monster zaya_server
 # ---------------------------------------------------------------------------
 class ZayaServer(ServerHandle):
-    """1bit-systems zaya_server: `--model <gguf|1bp> --port <port>`.
+    """1bit-monster zaya_server: `--model <gguf|1bp> --port <port>`.
 
     Serves OpenAI /v1/chat/completions (non-streaming + SSE) and emits the
     llama.cpp-compatible `timings` block (`predicted_per_second`), so decode

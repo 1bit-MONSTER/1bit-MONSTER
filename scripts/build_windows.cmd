@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 REM ──────────────────────────────────────────────────────────
-REM build_windows.cmd — Build 1bit-systems for Windows
+REM build_windows.cmd — Build 1bit-monster for Windows
 REM ──────────────────────────────────────────────────────────
 REM Builds portable C++23 targets with MSVC.
 REM Requires: Visual Studio 2022 BuildTools
@@ -14,7 +14,7 @@ set BUILD_DIR=%REPO_DIR%\build_windows
 set ALT_CMAKE=%REPO_DIR%\CMakeLists_windows.txt
 
 echo ╔══════════════════════════════════════════╗
-echo ║  1bit-systems Windows Build              ║
+echo ║  1bit-monster Windows Build              ║
 echo ╚══════════════════════════════════════════╝
 echo.
 
@@ -95,6 +95,6 @@ echo.
 echo Binaries:
 for %%f in ("%BUILD_DIR%\Release\*.exe") do echo   %%~nxf
 echo.
-echo Package: %BUILD_DIR%\1bit-systems-*-windows-x64.zip
+echo Package: %BUILD_DIR%\1bit-monster-*-windows-x64.zip
 
 exit /b 0

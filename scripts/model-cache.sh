@@ -12,10 +12,10 @@
 #   model-cache.sh cache                       # print the cache dir
 #
 # Env: ONEBIT_MODELS_CACHE overrides the cache dir
-#       (default: $HOME/.cache/1bit-systems/models)
+#       (default: $HOME/.cache/1bit-monster/models)
 set -euo pipefail
 
-CACHE="${ONEBIT_MODELS_CACHE:-$HOME/.cache/1bit-systems/models}"
+CACHE="${ONEBIT_MODELS_CACHE:-$HOME/.cache/1bit-monster/models}"
 mkdir -p "$CACHE"
 
 ensure() {  # ensure <name> <url> -> prints canonical path

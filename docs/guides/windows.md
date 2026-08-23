@@ -1,7 +1,7 @@
 # Windows Support
 
 The AMD XDNA 2 NPU exists on Windows too (Ryzen AI 300 series, Strix Halo).
-Here's the path to get 1bit.systems running there.
+Here's the path to get 1bit.MONSTER running there.
 
 ## Current Status
 
@@ -50,7 +50,7 @@ $installDir = "$env:LOCALAPPDATA\1bit-npu"
 $binDir = "$env:USERPROFILE\.local\bin"
 
 # Download latest release from GitHub
-$release = Invoke-RestMethod "https://api.github.com/repos/1bit-systems/1bit-systems/releases/latest"
+$release = Invoke-RestMethod "https://api.github.com/repos/1bit-monster/1bit-monster/releases/latest"
 # ... extract and install
 ```
 
@@ -76,8 +76,8 @@ If you have a Strix Halo machine running Windows and want to help:
 ```powershell
 # 1. Open "Developer PowerShell" (as admin)
 # 2. Clone the repo
-git clone https://github.com/1bit-systems/1bit-systems
-cd 1bit-systems
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-monster
 
 # 3. Try building the HTTP server (most portable component)
 cl /std:c++23 /O2 /EHsc packaging\binary\server.cpp /Fe:1bit-server.exe

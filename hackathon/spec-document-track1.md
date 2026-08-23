@@ -3,8 +3,8 @@
 # AMD AI DevMaster Hackathon — Track 1 Submission
 ## AI Development & Fine-Tuning
 
-**Team**: 1bit.systems  
-**Project**: 1bit.systems — Zero-Python LoRA Fine-Tuning on AMD Strix Halo  
+**Team**: 1bit.MONSTER  
+**Project**: 1bit.MONSTER — Zero-Python LoRA Fine-Tuning on AMD Strix Halo  
 **Date**: August 2026  
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo) — Radeon 8060S GPU (gfx1151) + 128 GB unified LPDDR5X
 
@@ -12,7 +12,7 @@
 
 ## 1. Application Scenarios
 
-1bit.systems enables **full-stack LLM fine-tuning on consumer AMD hardware** — no NVIDIA GPU required, no cloud dependency. All training runs locally on Strix Halo's Radeon 8060S GPU using ROCm HIP via TheRock 7.15.0a.
+1bit.MONSTER enables **full-stack LLM fine-tuning on consumer AMD hardware** — no NVIDIA GPU required, no cloud dependency. All training runs locally on Strix Halo's Radeon 8060S GPU using ROCm HIP via TheRock 7.15.0a.
 
 | Scenario | Description |
 |----------|-------------|
@@ -128,20 +128,20 @@
 
 ## 6. Project Links
 
-- **Source**: https://github.com/1bit-systems/1bit-systems
+- **Source**: https://github.com/1bit-MONSTER/1bit-MONSTER
 - **LoRA training code**: `tools/lora/train.cpp`, `tools/lora/lora_layer.h`
 - **Q4NX format spec**: `docs/research/fastflowlm-analysis/Q4NX_FORMAT.md`
 - **1BP format**: `include/onebp_format.h`
 - **Model catalog**: `models/catalog/README.md`
-- **Site**: https://1bit.systems
+- **Site**: https://1bit.monster
 
 ---
 
 ## 7. Setup
 
 ```bash
-git clone https://github.com/1bit-systems/1bit-systems
-cd 1bit-systems
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-monster
 # Install TheRock 7.15.0a
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"
 export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"

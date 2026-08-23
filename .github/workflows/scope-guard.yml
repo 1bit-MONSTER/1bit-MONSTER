@@ -62,6 +62,8 @@ jobs:
             integrations themes
             npu_smoke.py  # pyxrt NPU engine smoke test (CI/bench harness on strix-halo runner) — engine scope
             .gitmodules .gitignore .gitnexusignore third_party  # embedded Lemonade server core — engine scope; .gitnexusignore = GitNexus index exclusions (agent tooling, like .gitignore)
+            .clang-format  # engine C++23 style config — engine scope
+            .superpowers  # agent-tooling task docs (SDD dispatch/brief/report) — same category as .claude/.abacusai
             pixi.toml pixi.lock  # Mojo 1.0 toolchain pin (build tooling, like install.sh) — engine scope
             .rocm-stub  # ROCm stub headers/lib for build machines without a full ROCm install (whisper HIP port) — engine scope
             personas prompts skills workers zaya_audio  # burn-era deletions (UPDATE 34 cut) — removal-only, see docs/wiki/decisions.md

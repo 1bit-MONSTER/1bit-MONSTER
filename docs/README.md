@@ -1,4 +1,4 @@
-# 1bit.systems — Documentation
+# 1bit.MONSTER — Documentation
 
 Model-agnostic **NPU + GPU + CPU** inference engine for AMD Strix Halo.
 Pure C++23, zero Python at runtime, MIT.

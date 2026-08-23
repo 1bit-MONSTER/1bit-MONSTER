@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert ZAYA safetensors → GGUF for the 1bit-systems llama.cpp runtime.
+"""Convert ZAYA safetensors → GGUF for the 1bit-monster llama.cpp runtime.
 
 Handles both naming eras:
   - ZAYA1-base (Nov 2025): alternating layers (even=CCA attn, odd=MoE),

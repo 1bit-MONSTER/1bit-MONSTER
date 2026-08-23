@@ -1,10 +1,10 @@
 You are implementing Task 1: Scaffold — package.json, tsconfig, CLI bin, shim
 
-Read your task brief first: /home/bcloud/1bit-systems/.superpowers/sdd/task-1-brief.md
+Read your task brief first: /home/bcloud/1bit-monster/.superpowers/sdd/task-1-brief.md
 
 ## Context
 
-This is the root task for building the 1bit CLI — a cloned/rebranded pi.dev agent harness. All subsequent tasks depend on this one working. The project lives at /home/bcloud/1bit-systems/.
+This is the root task for building the 1bit CLI — a cloned/rebranded pi.dev agent harness. All subsequent tasks depend on this one working. The project lives at /home/bcloud/1bit-monster/.
 
 ## Your Job
 
@@ -16,8 +16,8 @@ This is the root task for building the 1bit CLI — a cloned/rebranded pi.dev ag
 6. Verify tsc compilation: npm run build compiles without errors
 7. Verify node bin/1bit help works after build
 8. Commit your work with a meaningful message
-9. Write your report to /home/bcloud/1bit-systems/.superpowers/sdd/task-1-report.md
+9. Write your report to /home/bcloud/1bit-monster/.superpowers/sdd/task-1-report.md
 
-Work from: /home/bcloud/1bit-systems
+Work from: /home/bcloud/1bit-monster
 
 Important: src/cli.ts must use dynamic imports for every command module (chat, up, down, status, build, install, remove, list, update, config). Each command module resolves to ./commands/<name>.js (the .js extension is required for ESM). The default command when no args provided is "chat".

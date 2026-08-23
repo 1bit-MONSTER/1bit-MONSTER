@@ -2,7 +2,7 @@
 
 Video generation with LoRA support on Strix Halo. Supports **Wan2.2**, **LTX-Video**, **AnimateDiff**, and **CogVideoX** — pure C++ inference, no Python, no Zig.
 
-> Vendored into [1bit.systems](../../README.md) at `tools/video-lora/` from
+> Vendored into [1bit.MONSTER](../../README.md) at `tools/video-lora/` from
 > [bong-water-water-bong/video-lora](https://github.com/bong-water-water-bong/video-lora).
 > CI runs from the repo root via `.github/workflows/video-lora-ci.yml` (C++ build + GPU selftest).
 

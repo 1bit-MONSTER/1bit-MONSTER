@@ -6,9 +6,9 @@ export PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
 export AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
 export PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 export AIETOOLS=/home/bcloud/mlir-aie/build_tmp
-export KERNEL=/home/bcloud/1bit-systems/engine/npu/generators/mm_32x64x128.o
-export XDIR=/home/bcloud/1bit-systems/engine/npu/xclbins
-export GEN=/home/bcloud/1bit-systems/engine/npu/generators
+export KERNEL=/home/bcloud/1bit-monster/engine/npu/generators/mm_32x64x128.o
+export XDIR=/home/bcloud/1bit-monster/engine/npu/xclbins
+export GEN=/home/bcloud/1bit-monster/engine/npu/generators
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
 

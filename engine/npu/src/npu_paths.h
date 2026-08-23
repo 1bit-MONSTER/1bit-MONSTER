@@ -54,8 +54,8 @@ inline std::string npu_xclbin_dir() {
     // fixes #1338: use install path instead of relative ./ path
     // fixes #1347: guard against HOME set-but-empty ("" + path → /…, wrong)
     const char* home = getenv("HOME");
-    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/xclbins/";
-    return "/usr/local/share/1bit-systems/xclbins/";
+    if (home && home[0]) return std::string(home) + "/.local/share/1bit-monster/xclbins/";
+    return "/usr/local/share/1bit-monster/xclbins/";
 }
 
 // ── Instruction file paths ─────────────────────────────────────

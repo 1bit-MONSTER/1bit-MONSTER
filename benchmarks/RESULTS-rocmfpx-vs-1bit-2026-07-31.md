@@ -1,4 +1,4 @@
-# ROCmFPX vs 1bit-systems — Qwen3.6-35B-A3B head-to-head (Strix Halo)
+# ROCmFPX vs 1bit-monster — Qwen3.6-35B-A3B head-to-head (Strix Halo)
 
 _2026-07-31, strixhalo (Ryzen AI MAX+ 395, gfx1151, 122 GB UMA). ROCmFPX fork
 @ b41ce12 built with Vulkan + HIP (rocm-therock amdclang++, gfx1151)._
@@ -9,7 +9,7 @@ _2026-07-31, strixhalo (Ryzen AI MAX+ 395, gfx1151, 122 GB UMA). ROCmFPX fork
   fork's own `llama-quantize`.
 - `llama-bench -ngl 99 -t 8 -r 2 -p 512 -n 128` (pp512+tg128, ~640 ctx — the
   README's shape) on Vulkan0 and ROCm0.
-- Cross-check: 1bit-systems' own Q4_K_M baseline file (llama.cpp 5f55650a7,
+- Cross-check: 1bit-monster' own Q4_K_M baseline file (llama.cpp 5f55650a7,
   Vulkan): 75.65 t/s decode — this fork measures 72.15 t/s on the same file
   (~5% build-to-build delta, so compare percentages, not absolutes).
 

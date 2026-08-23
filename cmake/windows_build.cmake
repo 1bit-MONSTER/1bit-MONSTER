@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# windows_build.cmake — Windows MSVC build for 1bit-systems
+# windows_build.cmake — Windows MSVC build for 1bit-monster
 # ─────────────────────────────────────────────────────────────
 # This is included by the root CMakeLists.txt when building on
 # Windows with MSVC. It overrides the Linux/ROCm-specific paths

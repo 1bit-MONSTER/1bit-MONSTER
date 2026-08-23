@@ -432,7 +432,7 @@ Note: no Bosgame BIOS release (0.x–1.06, per `Release_Note.txt`) ever mentions
 
 #### Traced the EINVAL crash all the way to its actual root cause
 
-Reproduced the "all-zero tokens, hangs" bug from `1bit-systems`' README — it does not hang. It crashes cleanly with `SIGABRT`:
+Reproduced the "all-zero tokens, hangs" bug from `1bit-monster`' README — it does not hang. It crashes cleanly with `SIGABRT`:
 ```
 DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed (err=-22): Invalid argument
 ```

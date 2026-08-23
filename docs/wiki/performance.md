@@ -8,7 +8,7 @@
 > one-engine-every-model writeup) is **historical** and no longer reflects the binary
 > today. Treat it as a record of the early engine, not as current data.
 
-**Single source of truth for 1bit.systems performance claims.** Every number here is
+**Single source of truth for 1bit.MONSTER performance claims.** Every number here is
 pulled directly from [`site/benchmarks.json`](../../site/benchmarks.json)
 (`"_authoritative": true`). `README.md` and `site/index.html` link here instead of
 restating tables — if you change a number, change it in `benchmarks.json` first, then
@@ -33,7 +33,7 @@ weeks out of date the last time it was hand-maintained (see git history).
 > bit-exact against a CPU reference. They exclude KV-cache attention, softmax, RoPE,
 > non-GEMM FFN ops, sampler, tokenizer, and host↔device transfers — **not** an
 > end-to-end decode number. See the End-to-End table below and
-> [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235).
+> [issue #235](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/235).
 
 | Kernel | Value | Backend | Status |
 |--------|:-----:|---------|--------|
@@ -76,8 +76,8 @@ This is a device-level number, not a model-inference tok/s figure.
 | Qwen3.6-35B-A3B Q4_K_M | **75.65 tok/s** | llama.cpp Vulkan (RADV) | Measured 2026-08-01: tg64=75.65, tg128@8k ctx=75.95, pp512=1105.71 tok/s. 21.2 GB Q4_K_M — see `site/benchmarks.json` |
 | Qwen3.6-35B-A3B (FLM) | **11.66 tok/s** | NPU XDNA 2 (FastFlowLM v0.9.46) | Measured: decode 11.66@1k → 8.82@32k; prefill 98.05@1k → 239.79@32k tok/s. 8 iters/ctx — see `site/benchmarks.json` |
 | BlackMamba 1.5B | **79.4 tok/s** | Mamba1 HIP (Strix Halo) | Full decode, alternating SSM/MoE dispatch. Re-validated 2026-07-26 after `__shfl_xor_sync` kernel fixes. |
-| llama.cpp ROCm (PrismML, third-party) | **229 tok/s** | Same hardware | Comparison point, not our engine. See [issue #235](https://github.com/1bit-systems/1bit-systems/issues/235). |
-| BlackMamba 2.8B | **46.0 tok/s** | Mamba1 HIP (Strix Halo) | Full decode. Re-validated 2026-07-26. Reachable today only via the server's internal benchmark thread — `POST /v1/completions` hangs, see [issue #922](https://github.com/1bit-systems/1bit-systems/issues/922). |
+| llama.cpp ROCm (PrismML, third-party) | **229 tok/s** | Same hardware | Comparison point, not our engine. See [issue #235](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/235). |
+| BlackMamba 2.8B | **46.0 tok/s** | Mamba1 HIP (Strix Halo) | Full decode. Re-validated 2026-07-26. Reachable today only via the server's internal benchmark thread — `POST /v1/completions` hangs, see [issue #922](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/922). |
 | zaya_server (Qwen 27B Q4_K) | **30 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |
 | ZR1-1.5B (Zyphra) | **26 tok/s** | Vulkan ZINC | Reasoning-tuned dense transformer, Qwen2 arch |
 | zaya_server (Qwen 35B MoE Q4_K) | **20 tok/s** | ROCm HIP | Full decode, speculative MTP, Strix Halo |

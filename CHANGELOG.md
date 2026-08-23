@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
+All notable changes to 1bit.MONSTER. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
 ## 2026.08.10 — JARVIS ships NPU-FLM STT + SSE, amdxdna driver regression fixed, eeg-medical archived 🎙️
@@ -291,7 +291,7 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
 
 # Changelog
 
-All notable changes to 1bit.systems. Versioning is **date-based** (`YYYY.MM.DD`),
+All notable changes to 1bit.MONSTER. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
 ## 1.0.0 — 2026.07.26 — First Stable Release 🎉
@@ -345,7 +345,7 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
 | Bug fixes | 33 |
 | Performance | 1 |
 
-**Full changelog**: [v2026.07.24...v2026.07.26](https://github.com/1bit-systems/1bit/compare/v2026.07.24...v2026.07.26)
+**Full changelog**: [v2026.07.24...v2026.07.26](https://github.com/1bit-MONSTER/1bit-MONSTER/compare/v2026.07.24...v2026.07.26)
 
 ---
 

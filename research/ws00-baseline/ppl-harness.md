@@ -5,7 +5,7 @@
 ## What exists
 
 - `~/zaya_ppl3.py` — torch/transformers perplexity for Zaya-family models (Alpaca/GSM8K/MATH eval sets). Runs in `~/venv-hf` (torch + safetensors + gguf + transformers confirmed).
-- `~/1bit-systems/tools/bench_1bp_cpu.cpp` etc. — kernel-level tok/s benches (WS-00 runner).
+- `~/1bit-monster/tools/bench_1bp_cpu.cpp` etc. — kernel-level tok/s benches (WS-00 runner).
 
 ## The gap
 

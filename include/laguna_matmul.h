@@ -12,13 +12,13 @@
 // (bf16 << 16) bit pattern. x86 and AMD GPU are little-endian.
 // NOTE: This is a practical constraint, not a theoretical limitation.
 // On big-endian hosts, a manual sign/exp/mantissa reconstruction would be needed.
-// Byte-order guard — 1bit-systems requires little-endian host
+// Byte-order guard — 1bit-monster requires little-endian host
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     // little-endian (x86, AMD64) — OK
 #elif defined(_MSC_VER) || defined(__i386__) || defined(__x86_64__) || defined(__amd64__)
     // MSVC or x86 target — always little-endian
 #else
-    #error "1bit-systems requires little-endian host (x86/AMD64). Big-endian not supported."
+    #error "1bit-monster requires little-endian host (x86/AMD64). Big-endian not supported."
 #endif
 
 inline uint16_t laguna_bf16(const uint8_t* b) { return (uint16_t)b[0]|((uint16_t)b[1]<<8); }

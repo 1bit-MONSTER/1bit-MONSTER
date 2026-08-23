@@ -1,4 +1,4 @@
-# Engine comparison benchmark — 1bit-systems zaya_server vs reference engines
+# Engine comparison benchmark — 1bit-monster zaya_server vs reference engines
 
 Same GGUF files, same host, one uniform OpenAI `/v1/chat/completions` surface, across text / image / audio / video / single-turn / multi-turn / function-call / structured-output scenarios on the selected compute backends (ggml_cuda / ggml_vulkan / ggml_metal / ggml_cpu / cpu / ...).
 
@@ -8,8 +8,8 @@ Numbers are tokens/second (higher is better). `—` = not applicable / skipped, 
 
 | Component | Version / detail |
 |---|---|
-| 1bit-systems zaya_server | git `05ee30a05` (backends: ) |
-| llama.cpp | `/home/bcloud/1bit-systems/third_party/llama.cpp/build/bin/Release/llama-server` |
+| 1bit-monster zaya_server | git `05ee30a05` (backends: ) |
+| llama.cpp | `/home/bcloud/1bit-monster/third_party/llama.cpp/build/bin/Release/llama-server` |
 | vLLM | endpoint `http://127.0.0.1:8000` (connect-only) |
 | GPU | unknown |
 
@@ -22,17 +22,17 @@ Numbers are tokens/second (higher is better). `—` = not applicable / skipped, 
 - Greedy sampling (`temperature=0`); one warmup request per server is discarded.
 - The headline per-engine tables are the **single-stream, MTP-off** baseline. MTP on/off and parallel-request scaling are reported in their own sections below.
 
-## Performance ratio — 1bit-systems zaya_server vs reference engines
+## Performance ratio — 1bit-monster zaya_server vs reference engines
 
-Geomean of 1bit-systems zaya_server's per-scenario speedup over each reference engine on the **same backend**, across every scenario both engines ran (single-stream, MTP-off). A value **> 1.0× means the hero engine is faster** (for decode / prefill throughput) or lower-latency (for TTFT); `—` = no overlapping cells. Per-scenario ratios are in each model's section below.
+Geomean of 1bit-monster zaya_server's per-scenario speedup over each reference engine on the **same backend**, across every scenario both engines ran (single-stream, MTP-off). A value **> 1.0× means the hero engine is faster** (for decode / prefill throughput) or lower-latency (for TTFT); `—` = no overlapping cells. Per-scenario ratios are in each model's section below.
 
-_No overlapping 1bit-systems zaya_server / reference cells to compare._
+_No overlapping 1bit-monster zaya_server / reference cells to compare._
 
 ## qwen3-06b  (`qwen3-06b`)
 
 **Decode throughput (tok/s)**
 
-| Scenario | 1bit-systems zaya_server · gpu | llama.cpp · gpu |
+| Scenario | 1bit-monster zaya_server · gpu | llama.cpp · gpu |
 |---|---:|---:|
 | text_short | — | 253.4 |
 | prefill_128 | 0.2 | 357.6 |
@@ -40,7 +40,7 @@ _No overlapping 1bit-systems zaya_server / reference cells to compare._
 
 **Prefill throughput (tok/s)**
 
-| Scenario | 1bit-systems zaya_server · gpu | llama.cpp · gpu |
+| Scenario | 1bit-monster zaya_server · gpu | llama.cpp · gpu |
 |---|---:|---:|
 | text_short | 1.8 | 9744.6 |
 | prefill_128 | 3.8 | 1972.2 |
@@ -48,13 +48,13 @@ _No overlapping 1bit-systems zaya_server / reference cells to compare._
 
 **Time to first token (ms, lower is better)**
 
-| Scenario | 1bit-systems zaya_server · gpu | llama.cpp · gpu |
+| Scenario | 1bit-monster zaya_server · gpu | llama.cpp · gpu |
 |---|---:|---:|
 | text_short | 1097495.1 | 203.4 |
 | prefill_128 | 48217.5 | 91.3 |
 | prefill_512 | 172695.1 | 70.8 |
 
-**Performance ratio — 1bit-systems zaya_server vs reference (> 1.0× = {HERO_DISPLAY} faster)**
+**Performance ratio — 1bit-monster zaya_server vs reference (> 1.0× = {HERO_DISPLAY} faster)**
 
 _Decode throughput_
 
@@ -72,7 +72,7 @@ _Prefill throughput_
 | prefill_128 | 0.00× |
 | prefill_512 | 0.00× |
 
-_Time to first token (latency; > 1.0× = 1bit-systems zaya_server lower)_
+_Time to first token (latency; > 1.0× = 1bit-monster zaya_server lower)_
 
 | Scenario | vs llama.cpp · gpu |
 |---|---:|
@@ -80,7 +80,7 @@ _Time to first token (latency; > 1.0× = 1bit-systems zaya_server lower)_
 | prefill_128 | 0.00× |
 | prefill_512 | 0.00× |
 
-## Output quality — 1bit-systems zaya_server vs llama.cpp
+## Output quality — 1bit-monster zaya_server vs llama.cpp
 
 Both engines decode the **same GGUF greedily** (temperature=0) on the same backend, so their outputs should agree closely. `similarity` is a whitespace-normalized SequenceMatcher ratio between the two outputs (1.00 = identical); low similarity, an invalid JSON object in `json_mode`, or a missing tool call in `function_call` flags an output-quality problem on one side. Prefill scenarios (8-token outputs) are excluded. Side-by-side excerpts follow the table, lowest agreement first.
 

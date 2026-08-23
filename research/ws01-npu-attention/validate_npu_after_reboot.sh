@@ -16,7 +16,7 @@ BEFORE=$(sudo dmesg | grep -c IO_PAGE_FAULT || true)
 echo "faults in ring before run: $BEFORE"
 
 echo "=== 3. engine run (32 tokens) ==="
-cd ~/1bit-systems
+cd ~/1bit-monster
 stdbuf -o0 timeout 300 env OMP_NUM_THREADS=16 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
   ./build/npu_engine_overlap_fd models/qwen3_0_6b.q4nx 32 2>&1 | tee /tmp/npu_validation_run.log | grep -E "Prefill|tok=" | head -12
 

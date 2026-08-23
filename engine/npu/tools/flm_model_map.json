@@ -1,5 +1,5 @@
 {
-  "comment": "FLM model tag → Q4NX path mapping for 1bit-systems engine auto-discovery",
+  "comment": "FLM model tag → Q4NX path mapping for 1bit-monster engine auto-discovery",
   "generated": "2026-07-29",
   "source": "fastflowlm-build/src/xclbins/ (209 xclbins, 37 models)",
   "models": {

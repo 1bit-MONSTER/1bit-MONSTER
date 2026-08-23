@@ -2,7 +2,7 @@
 
 Sweep via academia-mcp (arXiv + Semantic Scholar). Focus: NPU inference, LLM
 quantization, 1-bit models, EEG foundation models. All directly relevant to
-the 1bit.systems stack (Strix Halo XDNA NPU, Q4NX pivot, spec-decode, TUH EEG).
+the 1bit.MONSTER stack (Strix Halo XDNA NPU, Q4NX pivot, spec-decode, TUH EEG).
 
 ## NPU / on-device inference
 

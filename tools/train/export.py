@@ -49,7 +49,7 @@ def find_latest_checkpoint(output_dir: str) -> Optional[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export trained model to GGUF for 1bit.systems C++ binary"
+        description="Export trained model to GGUF for 1bit.MONSTER C++ binary"
     )
     parser.add_argument(
         "checkpoint",

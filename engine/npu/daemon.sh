@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# 1bit.systems live daemon — runs NPU engine and serves output for live dashboard
+# 1bit.MONSTER live daemon — runs NPU engine and serves output for live dashboard
 # Usage: ./daemon.sh [port]  (default: 8001)
 
 PORT="${1:-8001}"
@@ -65,7 +65,7 @@ case "${1:-serve}" in
         run_engine "${2:-9}" "${3:-8}"
         ;;
     serve)
-        echo "1bit.systems live daemon on :$PORT"
+        echo "1bit.MONSTER live daemon on :$PORT"
         echo "State: $STATEDIR"
         serve
         ;;

@@ -1,9 +1,9 @@
-# 1bit.systems — build & package. Version is read from the root VERSION file
+# 1bit.MONSTER — build & package. Version is read from the root VERSION file
 # (single source of truth — see issue #117); do not hardcode it here.
 # One binary. All backends. Zero Python at runtime.
 VERSION := $(shell [ -f ../VERSION ] && tr -d '[:space:]' < ../VERSION || echo "0.0.0")
 BUILD_DIR := ../build
-STAGE := build/stage/1bit-systems-$(VERSION)
+STAGE := build/stage/1bit-monster-$(VERSION)
 .PHONY: all stage package-deb package-tarball package-appimage clean
 
 all: stage
@@ -39,12 +39,12 @@ package-deb: stage
 	mkdir -p build/stage/deb
 	cp -r ../packaging/deb/DEBIAN build/stage/deb/
 	cp -r $(STAGE)/usr build/stage/deb/
-	dpkg-deb --build --root-owner-group build/stage/deb build/1bit-systems_$(VERSION)_amd64.deb
-	@echo "deb: build/1bit-systems_$(VERSION)_amd64.deb"
+	dpkg-deb --build --root-owner-group build/stage/deb build/1bit-monster_$(VERSION)_amd64.deb
+	@echo "deb: build/1bit-monster_$(VERSION)_amd64.deb"
 
 package-tarball: stage
-	tar czf build/1bit-systems-$(VERSION)-linux-amd64.tar.gz -C build/stage 1bit-systems-$(VERSION)
-	@echo "tarball: build/1bit-systems-$(VERSION)-linux-amd64.tar.gz"
+	tar czf build/1bit-monster-$(VERSION)-linux-amd64.tar.gz -C build/stage 1bit-monster-$(VERSION)
+	@echo "tarball: build/1bit-monster-$(VERSION)-linux-amd64.tar.gz"
 
 package-appimage: stage
 	mkdir -p $(STAGE)/usr/share/applications
@@ -54,4 +54,4 @@ package-appimage: stage
 	@echo "AppDir staged at $(STAGE) — run appimagetool to bundle"
 
 clean:
-	rm -rf build/stage build/1bit-systems_$(VERSION)_amd64.deb build/1bit-systems-$(VERSION)-linux-amd64.tar.gz
+	rm -rf build/stage build/1bit-monster_$(VERSION)_amd64.deb build/1bit-monster-$(VERSION)-linux-amd64.tar.gz

@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
-    {name = "1bit.systems contributors"},
+    {name = "1bit.MONSTER contributors"},
     {name = "Rapid-MLX contributors"}
 ]
 keywords = ["llm", "api", "inference", "tool-calling", "openai-api"]

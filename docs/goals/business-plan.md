@@ -247,4 +247,4 @@ Just AMD silicon already sitting on your desk.
 
 ---
 
-*Built on 1bit.systems · AMD Strix Halo · Radeon 8060S · ZAYA-8B · Agnostic codec decoder*
+*Built on 1bit.MONSTER · AMD Strix Halo · Radeon 8060S · ZAYA-8B · Agnostic codec decoder*

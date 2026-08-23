@@ -531,8 +531,15 @@ int main(int argc,char**argv){
     const char*sfxs[]={"_npu2","_instruct","_it","_it_npu2"};
     for(auto sf:sfxs){size_t sl=strlen(sf);if(model_tag.size()>sl&&model_tag.substr(model_tag.size()-sl)==sf)model_tag=model_tag.substr(0,model_tag.size()-sl);}
 
+    // is_onebp is declared unconditionally: the Q4NX-JSON guard below (line
+    // ~585) uses it OUTSIDE the ONEBP_SUPPORT block, so a build without
+    // -DONEBP_SUPPORT (e.g. the bench.yml direct g++ compile) hit
+    // "'is_onebp' was not declared in this scope". The suffix test itself is
+    // harmless when ONEBP_SUPPORT is off — is_onebp just stays false and the
+    // guarded 1BP branches are compiled out.
+    bool is_onebp = false;
 #ifdef ONEBP_SUPPORT
-    bool is_onebp = strlen(mp) > 4 && strcmp(mp + strlen(mp) - 4, ".1bp") == 0;
+    is_onebp = strlen(mp) > 4 && strcmp(mp + strlen(mp) - 4, ".1bp") == 0;
     NpuOnebpModel onebp_model;
 #endif
     // Parse config

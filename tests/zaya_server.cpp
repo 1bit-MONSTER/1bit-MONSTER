@@ -273,7 +273,7 @@ static bool detect_from_manifest(const std::string& path, ModelConfig& cfg) {
         }
         if (cfg.weights_dir.empty()) {
             const char* home = getenv("HOME");
-            cfg.weights_dir = (home && home[0]) ? std::string(home) + "/.local/share/1bit-systems/weights/" : "/tmp/zaya_weights/";
+            cfg.weights_dir = (home && home[0]) ? std::string(home) + "/.local/share/1bit-monster/weights/" : "/tmp/zaya_weights/";
         }
         fprintf(stderr, "  Loaded manifest: %s\n", cfg.model_name.c_str());
         fprintf(stderr, "    hidden=%d layers=%d heads=%d vocab=%d\n",
@@ -631,12 +631,12 @@ struct SimpleTokenizer {
 
 static std::string a2a_agent_card(const ModelConfig& cfg, int port) {
     json card = {
-        {"name", "1bit-systems Inference Agent"},
+        {"name", "1bit-monster Inference Agent"},
         {"description", "Multi-backend AI inference server with auto-detection (ROCm HIP > Vulkan > NPU > CPU). Supports text generation, speculative decoding, cascade routing, and MoE parallel pipeline across heterogeneous hardware."},
         {"version", "1.0.0"},
         {"protocolVersion", "1.0"},
-        {"documentationUrl", "https://github.com/1bit-systems/1bit-systems"},
-        {"provider", {{"organization", "1bit.systems"}, {"url", "https://1bit.systems"}}},
+        {"documentationUrl", "https://github.com/1bit-MONSTER/1bit-MONSTER"},
+        {"provider", {{"organization", "1bit.MONSTER"}, {"url", "https://1bit.monster"}}},
         {"capabilities", {{"streaming", true}, {"pushNotifications", false}}},
         {"securitySchemes", json::object()},
         {"defaultInputModes", json::array({"application/json", "text/plain"})},
@@ -881,7 +881,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int port = 8088;
     const char* home_default = getenv("HOME");
-    std::string default_weights = (home_default && home_default[0]) ? std::string(home_default) + "/.local/share/1bit-systems/weights/" : "/tmp/zaya_weights/";
+    std::string default_weights = (home_default && home_default[0]) ? std::string(home_default) + "/.local/share/1bit-monster/weights/" : "/tmp/zaya_weights/";
     std::string model_arg, manifest_arg, draft_model_arg, weights_dir = default_weights, lora_path;
     RouteStrategy strategy = RouteStrategy::AUTO;
     A2AClient a2a;
@@ -1053,9 +1053,9 @@ int main(int argc, char** argv) {
             }
             // Priority 4: XDG/HOME fallback
             const char* xdg = getenv("XDG_DATA_HOME");
-            if (xdg && xdg[0]) htok_candidates.push_back(std::string(xdg) + "/1bit-systems/weights/tokenizer.htok");
+            if (xdg && xdg[0]) htok_candidates.push_back(std::string(xdg) + "/1bit-monster/weights/tokenizer.htok");
             const char* home = getenv("HOME");
-            if (home && home[0]) htok_candidates.push_back(std::string(home) + "/.local/share/1bit-systems/weights/tokenizer.htok");
+            if (home && home[0]) htok_candidates.push_back(std::string(home) + "/.local/share/1bit-monster/weights/tokenizer.htok");
 
             bool found = false;
             for (const auto& htok_path : htok_candidates) {
@@ -1240,7 +1240,7 @@ int main(int argc, char** argv) {
         std::string resp = "{\"object\":\"list\",\"data\":[";
         for (size_t i = 0; i < router.loaded_models.size(); i++) {
             if (i) resp += ",";
-            resp += "{\"id\":\"" + json_escape(router.loaded_models[i].model_name) + "\",\"object\":\"model\",\"owned_by\":\"1bit-systems\"}";
+            resp += "{\"id\":\"" + json_escape(router.loaded_models[i].model_name) + "\",\"object\":\"model\",\"owned_by\":\"1bit-monster\"}";
         }
         resp += "]}";
         res.set_content(resp, "application/json");

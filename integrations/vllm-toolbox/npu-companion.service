@@ -1,5 +1,5 @@
 [Unit]
-Description=1bit-systems NPU Companion — Speculative Decoding Draft Model
+Description=1bit-monster NPU Companion — Speculative Decoding Draft Model
 After=network.target
 
 # Requires a dedicated non-root service user with NPU/GPU device access, e.g.:
@@ -9,7 +9,7 @@ After=network.target
 Type=simple
 User=npu-companion
 Group=render
-ExecStart=/usr/bin/python3 /opt/1bit-systems/integrations/vllm-toolbox/npu-companion.py
+ExecStart=/usr/bin/python3 /opt/1bit-monster/integrations/vllm-toolbox/npu-companion.py
 Restart=always
 RestartSec=5
 Environment=OMP_NUM_THREADS=16

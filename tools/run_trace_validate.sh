@@ -39,7 +39,7 @@ echo ""
 echo ""
 echo "=== Step 1: Generating HuggingFace FP32 reference ==="
 rm -rf "$REF_DIR"
-cd "$HOME/1bit-systems"
+cd "$HOME/1bit-monster"
 "$HOME/venv-hf/bin/python3" tools/hf_ref_forward.py \
     --model "$HF_MODEL" \
     --prompt "$PROMPT" \
@@ -74,7 +74,7 @@ echo "NPU trace saved to: $NPU_DIR"
 # ── Step 4: Compare hidden states ──
 echo ""
 echo "=== Step 4: Comparing hidden states ==="
-cd "$HOME/1bit-systems"
+cd "$HOME/1bit-monster"
 
 # Compare per-layer hidden states
 echo ""
