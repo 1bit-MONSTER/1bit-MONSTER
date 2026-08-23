@@ -181,7 +181,15 @@ int zaya_decode_main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.fc2.bias", l); GET(key, w.rw.rf2b);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.out_proj.weight", l); GET(key, w.rw.rout);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.balancing_biases", l); GET(key, w.rw.bb);
-        snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_states_scale", l); GET(key, w.rw.eda);
+        snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_states_scale", l);
+        { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) {
+            // Issue #1799 root cause: the manifest declares this tensor as
+            // shape [1] (2 bytes) but the blob holds the full rtr_h=256
+            // per-channel EDA scale; the 2-byte load left the router's EDA
+            // loop reading OOB heap (run-to-run expert flips at layers 3+).
+            if (s_ == 2) s_ = (uint64_t)m.rtr_h * 2;
+            w.rw.eda = load_bf16(D, o_, s_);
+        } }
         snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l); GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
         snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
         #undef GET
