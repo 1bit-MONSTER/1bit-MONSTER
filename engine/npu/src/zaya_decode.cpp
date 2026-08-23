@@ -16,6 +16,7 @@
 
 #include "model_config.h"
 #include "dequant_q4nx.h"
+#include "q4nx_raw.h"
 #include "zaya_cca_attn_cpu.h"
 #include "zaya_moe_cpu.h"
 #include "npu_engine_i8ctx_inc.h"
@@ -146,6 +147,8 @@ int zaya_decode_main(int argc, char** argv) {
         zaya_cca::CcaWeights cw; zaya_cca::CcaState cs;
         zaya_moe::RouterWeights rw;
         std::vector<float> gu, dn, nw, pahss, pahsb, parss, parsb, pmhss, pmhsb, pmrss, pmrsb;
+        uint64_t gu_off = 0, gu_size = 0;   // raw Q4NX bytes (NPU_FUSED_I4)
+        int gu_i8_rows = 0;
     };
     std::vector<Layer> L(NC);
     char key[256];
@@ -191,7 +194,9 @@ int zaya_decode_main(int argc, char** argv) {
             if (s_ == 2) s_ = (uint64_t)m.rtr_h * 2;
             w.rw.eda = load_bf16(D, o_, s_);
         } }
-        snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l); GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
+        snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
+        GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
+        { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) { w.gu_off = o_; w.gu_size = s_; w.gu_i8_rows = (m.n_exp*2*m.n_ff/32)*(d.H/256); } }
         snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
         #undef GET
         #undef GETI8
@@ -232,6 +237,10 @@ int zaya_decode_main(int argc, char** argv) {
     // gu BO header. Contract validated on x86 (test_fused_silu.cpp): corr
     // 0.9993–0.9996 vs float, argmax parity.
     const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
+    // Fused int4 GU (issue #1769, ws09): pack from the RAW Q4NX bytes (halved
+    // weight DMA). Requires the kernel's B-path dequant stage — build with
+    // the ws09 int4 xclbins; until then this is host-side only.
+    const bool FUSED_I4 = FUSED && getenv("NPU_FUSED_I4") && atoi(getenv("NPU_FUSED_I4")) == 1;
     I8Ctx fused_ctx, fused_ctx_p2;   // split launch (issue #1775): p1 GU->SiLU->h2, p2 D-from-h2
     std::vector<std::vector<std::unique_ptr<xrt::bo>>> fgu_bo, fd_bo;
     std::vector<std::vector<std::vector<float>>> fgu_cs, fd_cs;
@@ -281,7 +290,15 @@ int zaya_decode_main(int argc, char** argv) {
                     }
                 }
                 fgu_bo[l][e] = fused_ctx.make_fused_weight_bo(dev, 2 * m.n_ff);
-                fused_ctx.packB_into_fused(*fgu_bo[l][e], guI.data(), d.H, 2 * m.n_ff, fgu_cs[l][e], fgu_row[l][e]);
+                if (FUSED_I4) {
+                    // Raw-Q4NX int4 pack (regions A/B/C, see gu_i4_pack.h).
+                    auto raw_gu = read_q4nx_raw(D, w.gu_off, w.gu_i8_rows, d.H);
+                    fgu_bo[l][e] = fused_ctx.make_fused_weight_bo_i4(dev, d.H, 2 * m.n_ff);
+                    fused_ctx.packB_into_fused_i4(*fgu_bo[l][e], raw_gu, e, d.H, m.n_ff,
+                                                  fgu_cs[l][e], fgu_row[l][e]);
+                } else {
+                    fused_ctx.packB_into_fused(*fgu_bo[l][e], guI.data(), d.H, 2 * m.n_ff, fgu_cs[l][e], fgu_row[l][e]);
+                }
                 const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
                 #pragma omp parallel for schedule(static)
                 for (int j = 0; j < m.n_ff; j++)
@@ -417,7 +434,10 @@ int zaya_decode_main(int argc, char** argv) {
                         fused_ctx.Am, fgu_row[l][e].data(),
                         fgu_cs[l][e].data(), d.H, m.n_ff, ag);
                     auto tb0 = std::chrono::steady_clock::now();
-                    fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
+                    if (FUSED_I4)
+                        fused_ctx.update_fused_header_i4(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
+                    else
+                        fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
                     // P1: GU->SiLU->h2 writeback.
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],

@@ -120,6 +120,22 @@ contract for the kernel round.
   hooks to dump real MoE inputs for the gate.
 - Existing (already merged): `i4_pack.h` (#1793), `unpack_i4_b` (#1813).
 
+## Kernel interface (for the strixhalo round)
+
+1. **B-tile loads**: replace the int8 B tap with (a) the int4 nibble tile
+   (region A, stride 4096 B) + (b) the row-scale tap (region B, 512 B/tile) →
+   on-chip dequant `B'' = sat8(round(q4·s_row/S_col[j]))` → the existing mmul.
+   `unpack_i4_b` (#1813) already proved the nibble load.
+2. **S_col taps**: region C carries the STATIC per-column scale (for the B
+   dequant). The per-token folded header (ag for gate, ag·qn_s for up — the
+   same fold `update_fused_header` does today, at per-column granularity) is
+   what the SiLU stage reads: `g = C1[2p]·S'[2p], u = C1[2p+1]·S'[2p+1]`.
+3. **silu stage**: replaces the gs[0]/gs[4] per-section reads with per-column
+   S'[j] — the only arithmetic change to `silu_quant_i8_fused`.
+4. **amax pass unchanged**: `host_h2_amax_qn_s` works with
+   `guB = pack.B_shadow` (the exact int8 reconstruction) + `guGs = pack.scol`.
+5. **#1777 signatures**: B-tile stride 8192 → 4096 + the region B/C tap offsets.
+
 ## Risks / next steps
 
 - **aiecc lowering** of the scale-multiply + requant in the B path (the #1813

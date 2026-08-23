@@ -587,6 +587,20 @@ int main(int argc, char** argv) {
             }
         fprintf(stderr, "  [packer] B'' byte-identity vs B_shadow: %d/%d exact\n", neq, ntot);
         if (neq != ntot) { fprintf(stderr, "FAIL: packer/kernel-dequant mismatch\n"); return 1; }
+        // BO layout writer roundtrip: write regions A/B/C, read back, verify
+        // the region offsets and content.
+        size_t bo_sz = gu_i4_bo_size(H, (int)Np);
+        std::vector<uint8_t> bo(bo_sz);
+        write_gu_i4_bo(bo.data(), pack);
+        size_t a = pack.nibbles.size(), b = pack.row_scales.size() * 2;
+        int bo_ok = 1;
+        if (std::memcmp(bo.data(), pack.nibbles.data(), a) != 0) bo_ok = 0;
+        if (std::memcmp(bo.data() + a, pack.row_scales.data(), b) != 0) bo_ok = 0;
+        if (std::memcmp(bo.data() + a + b, pack.scol_bf16.data(), (size_t)Np * 2) != 0) bo_ok = 0;
+        if (bo_sz != a + b + (size_t)Np * 2) bo_ok = 0;
+        fprintf(stderr, "  [packer] BO layout writer regions A/B/C: %s (size %zu)\n",
+                bo_ok ? "exact" : "MISMATCH", bo_sz);
+        if (!bo_ok) { fprintf(stderr, "FAIL: BO layout writer\n"); return 1; }
     }
     if (getenv("NPU_I4_DBG")) {
         {
