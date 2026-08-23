@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-<defs><radialGradient id="gl" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#ff9f1c" stop-opacity="0.27450980392156865"/><stop offset="1" stop-color="#ff9f1c" stop-opacity="0"/></radialGradient></defs><circle cx="16" cy="16" r="28" fill="url(#gl)"/>
-<circle cx="16" cy="16" r="14.2" fill="#021621" stroke="#ff9f1c" stroke-width="2"/>
-<text x="16" y="16" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="13" fill="#00e5ff" letter-spacing="-1">1bm</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" role="img" aria-label="1bit.MONSTER">
+  <title>1bit.MONSTER</title>
+  <rect x="2" y="2" width="9" height="9" rx="2" fill="#ffffff" stroke="#010202" stroke-opacity="0.28"/>
+  <rect x="13" y="2" width="9" height="9" rx="2" fill="#ffffff" stroke="#010202" stroke-opacity="0.28"/>
+  <rect x="2" y="13" width="9" height="9" rx="2" fill="#ffffff" stroke="#010202" stroke-opacity="0.28"/>
+  <rect x="13" y="13" width="9" height="9" rx="2" fill="#0230c0"/>
 </svg>
