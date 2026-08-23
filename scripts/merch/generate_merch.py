@@ -11,6 +11,7 @@ DM Serif Display + DM Mono) and emits three artifacts per product:
 
 Run from the repo root:  python3 scripts/merch/generate_merch.py
 """
+import math
 import os
 import xml.sax.saxutils as sax
 
@@ -24,8 +25,11 @@ SERIF = 'DMSerifDisplay-Regular.ttf'
 SERIF_I = 'DMSerifDisplay-Italic.ttf'
 MONO = 'DMMono-Regular.ttf'
 MONO_M = 'DMMono-Medium.ttf'
+SANS = 'Inter-Regular.ttf'
+SANS_B = 'Inter-Bold.ttf'
+SANS_BK = 'Inter-Black.ttf'
 
-# palette — home page
+# palette — home page (legacy navy theme, still used by apparel)
 CYAN = (0, 229, 255)
 AMBER = (255, 159, 28)
 BLUE = (14, 128, 190)
@@ -36,10 +40,19 @@ NAVY = (2, 22, 33)
 PANEL = (4, 32, 47)
 GREEN = (0, 200, 83)
 RED = (255, 92, 92)
+STEEL = (23, 84, 110)      # dim engraved lines / tick marks
+
+# palette — live 1-bit identity (oklch tokens from 1bit.monster, converted)
+PAPER = (255, 255, 255)      # surface  oklch(100% 0 0)
+INK = (14, 18, 23)           # fg       oklch(18% 0.012 250)
+GRAY = (106, 111, 118)       # muted    oklch(54% 0.012 250)
+HAIR = (226, 229, 232)       # border   oklch(92% 0.005 240)
+SOFT = (246, 247, 248)       # preview bg (fg-soft)
 
 C = lambda rgb: '#%02x%02x%02x' % rgb
 FAM_SERIF = "'DM Serif Display', Georgia, serif"
 FAM_MONO = "'DM Mono', ui-monospace, Menlo, monospace"
+FAM_SANS = "'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
 
 _fonts = {}
 
@@ -67,12 +80,41 @@ def F(name, size):
 def _text_font(font):
     return {
         'serif': SERIF, 'serif-i': SERIF_I, 'mono': MONO, 'mono-m': MONO_M,
+        'sans': SANS, 'sans-b': SANS_B, 'sans-bk': SANS_BK,
     }[font]
 
 
 def _text_family(font, italic=False):
-    return {'serif': FAM_SERIF, 'serif-i': FAM_SERIF + ';font-style:italic',
-            'mono': FAM_MONO, 'mono-m': FAM_MONO}[font]
+    fam = {'serif': FAM_SERIF, 'serif-i': FAM_SERIF + ';font-style:italic',
+           'mono': FAM_MONO, 'mono-m': FAM_MONO, 'sans': FAM_SANS,
+           'sans-b': FAM_SANS, 'sans-bk': FAM_SANS}[font]
+    return fam
+
+
+def _text_weight(font):
+    return {'sans-b': ' font-weight="700"', 'sans-bk': ' font-weight="900"'}.get(font, '')
+
+
+def _tick_ring(cx, cy, r, n, color, w=2, r0=None, r1=None):
+    """radial tick marks around a circle — engraved die-cut edge."""
+    r0 = r - 16 if r0 is None else r0
+    r1 = r if r1 is None else r1
+    ops = []
+    for i in range(n):
+        a = math.radians(360 * i / n)
+        ops.append(('line',
+                    cx + r0 * math.cos(a), cy + r0 * math.sin(a),
+                    cx + r1 * math.cos(a), cy + r1 * math.sin(a), w, color))
+    return ops
+
+
+def _lockup(cx, cy, a, b, size, col_a, col_b, fam_a='serif', fam_b='serif'):
+    """two-tone centered wordmark (e.g. cyan '1bit' + white '.MONSTER')."""
+    wa = F(_text_font(fam_a), size).getlength(a)
+    wb = F(_text_font(fam_b), size).getlength(b)
+    total = wa + wb
+    return [('txt', cx - total / 2 + wa / 2, cy, a, fam_a, size, col_a, 0),
+            ('txt', cx - total / 2 + wa + wb / 2, cy, b, fam_b, size, col_b, 0)]
 
 
 def render_png(ops, w, h):
@@ -147,6 +189,22 @@ def render_png(ops, w, h):
         elif k == 'arc':
             x1, y1, x2, y2, start, end, w, fill = op[1:]
             d.arc([x1, y1, x2, y2], start, end, fill=fill + (255,), width=w)
+        elif k == 'arcpoly':
+            cx, cy, r, a0, a1, w, fill = op[1:]
+            if a1 < a0:
+                a1 += 360
+            n = max(2, int((a1 - a0) / 4))
+            pts = []
+            for i in range(n + 1):
+                a = math.radians(a0 + (a1 - a0) * i / n)
+                pts.append((cx + r * math.cos(a), cy - r * math.sin(a)))
+            d.line(pts, fill=fill + (255,), width=w, joint='curve')
+        elif k == 'dotring':
+            cx, cy, r, n, dot, color = op[1:]
+            for i in range(n):
+                a = math.radians(360 * i / n)
+                x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+                d.ellipse([x - dot, y - dot, x + dot, y + dot], fill=color + (255,))
     return img
 
 
@@ -174,12 +232,12 @@ def svg_doc(ops, w, h):
             cx, cy, text, font, size, fill, tracking = op[1:]
             parts.append(f'<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" '
                         f'font-family="{_text_family(font)}" font-size="{size}" fill="{C(fill)}" '
-                        f'letter-spacing="{tracking}">{sax.escape(text)}</text>')
+                        f'letter-spacing="{tracking}"{_text_weight(font)}>{sax.escape(text)}</text>')
         elif k == 'txtl':
             x, y, text, font, size, fill, tracking = op[1:]
             parts.append(f'<text x="{x}" y="{y}" text-anchor="start" dominant-baseline="central" '
                         f'font-family="{_text_family(font)}" font-size="{size}" fill="{C(fill)}" '
-                        f'letter-spacing="{tracking}">{sax.escape(text)}</text>')
+                        f'letter-spacing="{tracking}"{_text_weight(font)}>{sax.escape(text)}</text>')
         elif k == 'line':
             x1, y1, x2, y2, w, fill = op[1:]
             parts.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C(fill)}" stroke-width="{w}"/>')
@@ -205,6 +263,25 @@ def svg_doc(ops, w, h):
             parts.append(f'<ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" fill="none" stroke="{C(fill)}" '
                         f'stroke-width="{w}" stroke-dasharray="{(end - start) / 360 * 6.283 * rx} {(6.283 * rx)}" '
                         f'transform="rotate(0 {cx} {cy})"/>')
+        elif k == 'arcpoly':
+            cx, cy, r, a0, a1, w, fill = op[1:]
+            if a1 < a0:
+                a1 += 360
+            n = max(2, int((a1 - a0) / 4))
+            pts = []
+            for i in range(n + 1):
+                a = math.radians(a0 + (a1 - a0) * i / n)
+                pts.append(f'{cx + r * math.cos(a):.2f},{cy - r * math.sin(a):.2f}')
+            parts.append(f'<path d="M {" L ".join(pts)}" fill="none" stroke="{C(fill)}" '
+                        f'stroke-width="{w}" stroke-linejoin="round" stroke-linecap="round"/>')
+        elif k == 'dotring':
+            cx, cy, r, n, dot, color = op[1:]
+            dots = []
+            for i in range(n):
+                a = math.radians(360 * i / n)
+                dots.append(f'<circle cx="{cx + r * math.cos(a):.2f}" cy="{cy + r * math.sin(a):.2f}" '
+                            f'r="{dot}" fill="{C(color)}"/>')
+            parts.append(''.join(dots))
     parts.append('</svg>')
     return '\n'.join(parts)
 
@@ -219,16 +296,14 @@ def emit(name, ops, art_size, preview=True, art=True):
             f.write(svg_doc(ops, w, h))
     if preview:
         pw, ph = 900, 600
-        base = Image.new('RGBA', (pw, ph), (0, 0, 0, 0))
-        # navy gradient + glows (home-page look)
-        base = render_png([
-            ('grad', 0, 0, pw, ph, (8, 44, 60), NAVY),
-            ('glow', 120, 40, 420, CYAN, 26),
-            ('glow', 800, 60, 380, AMBER, 22),
-            ('glow', 450, 620, 460, BLUE, 18),
-        ], pw, ph)
+        base = Image.new('RGBA', (pw, ph), SOFT + (255,))
         bd = ImageDraw.Draw(base)
-        bd.rounded_rectangle([14, 14, pw - 14, ph - 14], radius=20, outline=DIM + (80,), width=1)
+        # faint dot grid (store-tile halftone look, fg at ~14%)
+        DOTS = (213, 215, 216)
+        for gy in range(8, ph, 22):
+            for gx in range(8, pw, 22):
+                bd.ellipse([gx - 2, gy - 2, gx + 2, gy + 2], fill=DOTS + (255,))
+        bd.rounded_rectangle([14, 14, pw - 14, ph - 14], radius=20, outline=HAIR + (255,), width=1)
         # crop tall/wide artwork to its content for a focused card image
         src = art_img
         if art_img:
@@ -245,9 +320,9 @@ def emit(name, ops, art_size, preview=True, art=True):
             src = src.resize((aw, ah), Image.LANCZOS)
             alpha = src.split()[3]
             shadow = Image.new('RGBA', (aw + 40, ah + 40), (0, 0, 0, 0))
-            sa = alpha.resize((aw + 40, ah + 40), Image.LANCZOS).point(lambda a: int(a * 0.5))
-            shadow.putalpha(sa.filter(ImageFilter.GaussianBlur(14)))
-            base.alpha_composite(shadow, (int((pw - aw) / 2) - 20 + 8, int((ph - ah) / 2) - 20 + 10))
+            sa = alpha.resize((aw + 40, ah + 40), Image.LANCZOS).point(lambda a: int(a * 0.35))
+            shadow.putalpha(sa.filter(ImageFilter.GaussianBlur(16)))
+            base.alpha_composite(shadow, (int((pw - aw) / 2) - 20 + 6, int((ph - ah) / 2) - 20 + 12))
             base.alpha_composite(src, (int((pw - aw) / 2), int((ph - ah) / 2)))
         base.convert('RGB').save(os.path.join(OUT, f'preview-{name}.png'), quality=92)
     print(f'  {name}: art={art} preview={preview}')
@@ -257,155 +332,220 @@ def emit(name, ops, art_size, preview=True, art=True):
 S = 1200  # sticker canvas
 
 def die_cut_round():
-    """white-ish backing circle (die-cut) — transparent bg outside."""
-    return [('circ', S / 2, S / 2, 545, (2, 22, 33), 4, (14, 128, 190))]
+    """white die-cut circle (1-bit identity) — transparent bg outside."""
+    return [('circ', S / 2, S / 2, 545, PAPER, 4, INK)]
+
+
+def _roundel():
+    """roundel + fine perforation dot ring (1-bit halftone)."""
+    return die_cut_round() + [('dotring', 600, 600, 500, 72, 4.5, GRAY)]
+
+
+def _relay_mark(cx, cy, s, fill='top-left'):
+    """the 2x2 relay block mark from the live logo — one block solid at a time."""
+    gap = int(s * 0.18)
+    x0, y0 = cx - s - gap / 2, cy - s - gap / 2
+    rects = []
+    for i, (dx, dy) in enumerate([(0, 0), (1, 0), (0, 1), (1, 1)]):
+        solid = (fill == 'top-left' and i == 0)
+        rects.append(('rect', x0 + dx * (s + gap), y0 + dy * (s + gap),
+                      s, s, int(s * 0.22), INK if solid else None, 8, INK))
+    return rects
 
 
 def design_sticker_1bit():
-    """the logo mark itself — navy circle, amber ring, 1bm."""
-    return [
-        ('circ', 600, 400, 205, NAVY, 10, AMBER),
-        ('txt', 600, 400, '1bm', 'mono-m', 175, CYAN, -8),
-        ('txt', 600, 700, '1bit.MONSTER', 'serif', 140, TEXT, 0),
-        ('line', 380, 800, 820, 800, 3, (14, 128, 190)),
-        ('txt', 600, 870, 'ONE ENGINE · EVERY MODEL · ANY CHIP', 'mono-m', 44, MUTED, 4),
-        ('txt', 600, 945, 'ZERO PYTHON · MIT · EST. 2026', 'mono', 34, DIM, 4),
+    """the logo itself — white roundel, relay block mark, 1bit.MONSTER lockup."""
+    return _roundel() + _relay_mark(600, 330, 138) + \
+        _lockup(600, 590, '1bit', '.MONSTER', 150, INK, GRAY, 'sans-bk', 'sans-bk') + [
+        ('line', 330, 722, 870, 722, 3, INK),
+        ('circ', 600, 722, 6, INK, 0, None),
+        ('txt', 600, 802, 'ONE ENGINE · EVERY MODEL · ANY CHIP', 'mono-m', 38, INK, 2),
+        ('txt', 600, 872, 'ZERO PYTHON · MIT · EST. 2026', 'mono', 28, GRAY, 4),
     ]
 
 
 def design_sticker_94toks():
-    return die_cut_round() + [
-        ('txt', 600, 440, '94', 'mono-m', 330, CYAN, 0),
-        ('txt', 600, 660, 'tok/s', 'mono-m', 120, AMBER, 10),
-        ('line', 380, 760, 820, 760, 3, (14, 128, 190)),
-        ('txt', 600, 830, 'STRIX HALO · XDNA 2 · 50 TOPS', 'mono-m', 44, MUTED, 4),
-        ('txt', 600, 905, 'MEASURED, NOT MARKETED', 'mono', 34, DIM, 4),
+    """the measured number — speed lines, giant 94."""
+    speed = [
+        ('line', 460, 262, 740, 262, 5, INK),
+        ('line', 500, 240, 700, 240, 5, INK),
+        ('line', 530, 218, 670, 218, 5, INK),
+        ('line', 552, 196, 648, 196, 5, INK),
+    ]
+    return _roundel() + speed + [
+        ('txt', 600, 432, '94', 'sans-bk', 330, INK, 0),
+        ('txt', 600, 645, 'tok/s', 'mono-m', 100, INK, 10),
+        ('line', 380, 762, 820, 762, 3, INK),
+        ('txt', 600, 835, 'STRIX HALO · XDNA 2 · 50 TOPS', 'mono-m', 40, INK, 4),
+        ('txt', 600, 905, 'MEASURED, NOT MARKETED', 'mono', 30, GRAY, 4),
     ]
 
 
 def design_sticker_npu():
-    return die_cut_round() + [
-        ('txt', 600, 470, 'NPU', 'serif', 280, TEXT, 0),
-        ('txt', 600, 700, 'UNLOCKED', 'mono-m', 100, AMBER, 14),
-        ('line', 380, 800, 820, 800, 3, (14, 128, 190)),
-        ('txt', 600, 865, 'XDNA 2 · 32 TILES · INT8', 'mono-m', 44, MUTED, 4),
-        ('txt', 600, 940, 'REVERSE-ENGINEERED · OPEN SOURCE', 'mono', 32, DIM, 4),
+    """hex die — 32-tile matrix, black NPU, mono UNLOCKED."""
+    return [('poly', [(1145, 600), (872, 1072), (328, 1072),
+                      (55, 600), (328, 128), (872, 128)], PAPER, 5, INK)] + \
+        _tile_grid(464, 200, 26, 8, 8, 4, [INK, GRAY]) + [
+        ('txt', 600, 525, 'NPU', 'sans-bk', 200, INK, 0),
+        ('txt', 600, 665, 'UNLOCKED', 'mono-m', 70, INK, 12),
+        ('line', 340, 752, 860, 752, 3, INK),
+        ('txt', 600, 822, 'XDNA 2 · 32 TILES · INT8', 'mono-m', 34, INK, 4),
+        ('txt', 600, 892, 'REVERSE-ENGINEERED · OPEN SOURCE', 'mono', 26, GRAY, 4),
     ]
 
 
 def design_sticker_void():
-    pts = [(600, 210), (1040, 880), (160, 880)]
-    return [('poly', pts, (2, 22, 33), 6, AMBER)] + [
-        ('txt', 600, 470, 'I VOIDED MY', 'mono-m', 84, MUTED, 8),
-        ('txt', 600, 620, 'NPU WARRANTY', 'mono-m', 130, AMBER, 8),
-        ('line', 380, 760, 820, 760, 3, (14, 128, 190)),
-        ('txt', 600, 830, 'PROCEED WITH CONFIDENCE', 'mono-m', 42, MUTED, 4),
-        ('txt', 600, 900, 'NO REGRETS · OPEN SOURCE', 'mono', 34, DIM, 4),
+    """warning triangle — for the brave."""
+    pts = [(600, 160), (1060, 920), (140, 920)]
+    return [('poly', pts, PAPER, 7, INK),
+            ('poly', [(600, 270), (650, 382), (550, 382)], None, 4, INK),
+            ('txt', 600, 356, '!', 'mono-m', 52, INK, 0)] + [
+        ('txt', 600, 530, 'I VOIDED MY', 'mono-m', 52, INK, 6),
+        ('txt', 600, 652, 'NPU WARRANTY', 'mono-m', 68, INK, 4),
+        ('line', 340, 770, 860, 770, 3, INK),
+        ('txt', 600, 840, 'PROCEED WITH CONFIDENCE', 'mono-m', 32, INK, 4),
+        ('txt', 600, 902, 'NO REGRETS · OPEN SOURCE', 'mono', 26, GRAY, 4),
     ]
 
 
 def design_sticker_amd():
+    """chip card — die-cut plate, pinned die, black AMD."""
+    plate = [('rect', 230, 90, 740, 920, 56, PAPER, 6, INK),
+             ('rect', 262, 122, 676, 856, 42, None, 2, HAIR)]
     cx, cy = 600, 420
-    chip = [
-        ('rect', cx - 220, cy - 220, 440, 440, 40, PANEL, 6, CYAN),
-    ]
-    for i in range(6):  # pins top/bottom
-        x = cx - 150 + i * 60
-        chip += [('rect', x - 10, cy - 290, 20, 60, 6, BLUE, 0, None),
-                 ('rect', x - 10, cy + 230, 20, 60, 6, BLUE, 0, None)]
-    for i in range(6):  # pins left/right
+    chip = [('rect', cx - 220, cy - 200, 440, 440, 40, SOFT, 5, INK)]
+    for i in range(9):  # pins top / bottom
+        x = cx - 176 + i * 44
+        chip += [('rect', x - 10, cy - 262, 20, 52, 6, INK, 0, None),
+                 ('rect', x - 10, cy + 210, 20, 52, 6, INK, 0, None)]
+    for i in range(6):  # pins left / right
         y = cy - 150 + i * 60
-        chip += [('rect', cx - 290, y - 10, 60, 20, 6, BLUE, 0, None),
-                 ('rect', cx + 230, y - 10, 60, 20, 6, BLUE, 0, None)]
+        chip += [('rect', cx - 272, y - 10, 52, 20, 6, INK, 0, None),
+                 ('rect', cx + 220, y - 10, 52, 20, 6, INK, 0, None)]
     chip += [
-        ('txt', cx, cy - 40, 'AMD', 'serif', 120, TEXT, 0),
-        ('txt', cx, cy + 90, 'UNLOCKED', 'mono-m', 62, CYAN, 10),
+        ('rect', cx - 180, cy - 160, 360, 360, 16, PAPER, 2, INK),
+        ('txt', cx, cy - 30, 'AMD', 'sans-bk', 120, INK, 0),
+        ('txt', cx, cy + 75, 'UNLOCKED', 'mono-m', 48, INK, 10),
+        ('txt', cx, cy + 140, 'EDITION 001 · XDNA 2', 'mono', 22, GRAY, 2),
     ]
-    return chip + [
-        ('line', 380, 780, 820, 780, 3, (14, 128, 190)),
-        ('txt', 600, 850, 'EDITION · REVERSE-ENGINEERED IN 4 DAYS', 'mono-m', 42, MUTED, 4),
-        ('txt', 600, 925, 'HOMEBREWED DRIVER · MIT LICENSED', 'mono', 32, DIM, 4),
+    return plate + chip + [
+        ('line', 340, 812, 860, 812, 3, INK),
+        ('txt', 600, 878, 'REVERSE-ENGINEERED IN 4 DAYS', 'mono-m', 32, INK, 2),
+        ('txt', 600, 942, 'HOMEBREWED DRIVER · MIT LICENSED', 'mono', 24, GRAY, 2),
     ]
 
 
 def design_sticker_jarvis():
-    return die_cut_round() + [
-        ('circ', 600, 360, 120, PANEL, 4, AMBER),
-        ('txt', 600, 360, 'J', 'mono-m', 130, CYAN, 0),
-        ('txt', 600, 590, '1bit', 'serif', 150, CYAN, 0),
-        ('txt', 600, 760, 'JARVIS', 'serif', 150, AMBER, 0),
-        ('line', 380, 850, 820, 850, 3, (14, 128, 190)),
-        ('txt', 600, 915, 'PRIVATE AI · ON-DEVICE · ZERO CLOUD', 'mono-m', 42, MUTED, 4),
-        ('txt', 600, 980, '94 tok/s · VOICE · VISION · RAG', 'mono', 32, DIM, 4),
+    """on-device AI — orbiting satellites around the J monogram."""
+    sat = []
+    for a in (45, 165, 285):
+        sat.append(('circ', 600 + 430 * math.cos(math.radians(a)),
+                    600 + 430 * math.sin(math.radians(a)), 9, INK, 0, None))
+    return _roundel() + [
+        ('circ', 600, 600, 432, None, 2, GRAY),
+    ] + sat + [
+        ('circ', 600, 330, 120, PAPER, 4, INK),
+        ('txt', 600, 330, 'J', 'mono-m', 108, INK, 0),
+        ('txt', 600, 560, '1bit', 'sans-bk', 128, INK, 0),
+        ('txt', 600, 690, 'JARVIS', 'sans-bk', 128, INK, 0),
+        ('line', 380, 790, 820, 790, 3, INK),
+        ('txt', 600, 860, 'PRIVATE AI · ON-DEVICE · ZERO CLOUD', 'mono-m', 36, INK, 2),
+        ('txt', 600, 930, '94 tok/s · VOICE · VISION · RAG', 'mono', 26, GRAY, 4),
     ]
 
 
 def design_sticker_zero_python():
-    return die_cut_round() + [
-        ('txt', 600, 430, 'ZERO', 'serif', 200, CYAN, 0),
-        ('txt', 600, 660, 'PYTHON', 'serif', 200, AMBER, 0),
-        ('line', 380, 780, 820, 780, 3, (14, 128, 190)),
-        ('txt', 600, 850, '100% C++23 · ONE BINARY · ANY CHIP', 'mono-m', 44, MUTED, 4),
-        ('txt', 600, 925, 'NPU + GPU + CPU · SAME BINARY', 'mono', 34, DIM, 4),
+    """octagon — ZERO / PYTHON, black slash through the P-word."""
+    return [('poly', [(600, 55), (985, 215), (1145, 600), (985, 985),
+                      (600, 1145), (215, 985), (55, 600), (215, 215)],
+             PAPER, 5, INK)] + [
+        ('txt', 600, 420, 'ZERO', 'sans-bk', 185, INK, 0),
+        ('txt', 600, 600, 'PYTHON', 'sans-bk', 185, INK, 0),
+        ('line', 452, 692, 748, 508, 16, INK),
+        ('line', 340, 792, 860, 792, 3, INK),
+        ('txt', 600, 862, '100% C++23 · ONE BINARY · ANY CHIP', 'mono-m', 32, INK, 2),
+        ('txt', 600, 932, 'NPU + GPU + CPU · SAME BINARY', 'mono', 26, GRAY, 4),
     ]
 
 
 def design_sticker_sorry():
-    return die_cut_round() + [
-        ('txt', 600, 430, 'Sorry but', 'serif-i', 170, AMBER, 0),
-        ('txt', 600, 650, 'not Sorry', 'serif-i', 170, AMBER, 0),
-        ('line', 380, 780, 820, 780, 3, (14, 128, 190)),
-        ('txt', 600, 860, '1bit.MONSTER', 'mono-m', 64, CYAN, 8),
-        ('txt', 600, 950, 'WE UNLOCKED AMD\u2019S NPU', 'mono', 38, MUTED, 4),
+    """italic serif apology — zero sincerity, all ink."""
+    return _roundel() + [
+        ('txt', 600, 400, 'Sorry but', 'serif-i', 152, INK, 0),
+        ('txt', 600, 568, 'not Sorry', 'serif-i', 152, INK, 0),
+        ('line', 360, 690, 840, 690, 3, INK),
+        ('circ', 600, 690, 6, INK, 0, None),
+        ('txt', 600, 790, '1bit.MONSTER', 'mono-m', 58, INK, 6),
+        ('txt', 600, 865, 'WE UNLOCKED AMD\u2019S NPU', 'mono', 32, INK, 4),
+        ('txt', 600, 932, 'THEN WE MADE STICKERS', 'mono', 24, GRAY, 4),
     ]
 
 
-def _sticker_collage(parts):
-    """overlapping mini stickers composition for pack previews"""
-    ops = []
-    y = 0
-    for label, cy, x0, x1, w0, w1 in parts:
-        ops += [('line', x0, cy + 80, x1, cy + 80, 3, (14, 128, 190))]
-    return ops
+def design_sticker_50tops():
+    """the number everyone quotes — ink spark star, 50 TOPS."""
+    spark = [('poly', [(600, 190), (632, 258), (710, 280), (632, 302),
+                       (600, 370), (568, 302), (490, 280), (568, 258)], INK, 0, None)]
+    return _roundel() + spark + [
+        ('txt', 600, 560, '50', 'sans-bk', 300, INK, 0),
+        ('txt', 600, 720, 'TOPS', 'mono-m', 104, INK, 12),
+        ('line', 340, 812, 860, 812, 3, INK),
+        ('txt', 600, 882, 'STRIX HALO · XDNA 2 · INT8', 'mono-m', 38, INK, 4),
+        ('txt', 600, 948, 'LOCAL TOPS, NOT CLOUD TOPS', 'mono', 28, GRAY, 4),
+    ]
+
+
+def design_sticker_local_ai():
+    """house + chip — your data never leaves the building."""
+    return _roundel() + [
+        ('poly', [(600, 230), (750, 330), (750, 480), (450, 480), (450, 330)],
+         None, 5, INK),
+        ('rect', 566, 424, 68, 56, 4, INK, 0, None),
+        ('txt', 600, 600, 'LOCAL', 'sans-bk', 148, INK, 0),
+        ('txt', 600, 742, 'AI', 'sans-bk', 148, INK, 0),
+        ('line', 360, 832, 840, 832, 3, INK),
+        ('txt', 600, 902, 'YOUR CHIP. YOUR DATA.', 'mono-m', 40, INK, 4),
+        ('txt', 600, 968, 'NO CLOUD · PRIVATE BY DEFAULT', 'mono', 28, GRAY, 4),
+    ]
 
 
 def design_sticker_3pack():
-    """three mini round badges side by side"""
+    """three mini round badges side by side — the starter pack."""
     ops = []
-    r = 210
-    for i, (t1, t2, col) in enumerate([
-            ('1bit', '.MONSTER', CYAN),
-            ('94', 'tok/s', AMBER),
-            ('NPU', 'UNLOCKED', TEXT)]):
+    r = 200
+    for i, (t1, t2) in enumerate([
+            ('1bit', '.MONSTER'),
+            ('94', 'tok/s'),
+            ('NPU', 'UNLOCKED')]):
         cx = 600 + (i - 1) * 330
-        cy = 470
-        ops += [('circ', cx, cy, r, NAVY, 4, BLUE),
-                ('txt', cx, cy - 55, t1, 'serif', 120, col, 0),
-                ('txt', cx, cy + 75, t2, 'mono-m', 44, AMBER if col != AMBER else CYAN, 4)]
+        cy = 440
+        ops += [('circ', cx, cy, r, PAPER, 4, INK),
+                ('dotring', cx, cy, r - 20, 40, 4, GRAY),
+                ('txt', cx, cy - 55, t1, 'sans-bk', 108, INK, 0),
+                ('txt', cx, cy + 75, t2, 'mono-m', 42, INK, 4)]
     ops += [
-        ('line', 300, 810, 900, 810, 3, (14, 128, 190)),
-        ('txt', 600, 885, 'STARTER STICKER PACK', 'mono-m', 52, MUTED, 6),
-        ('txt', 600, 960, '3\u00d73" · DIE-CUT VINYL · WEATHERPROOF', 'mono', 36, DIM, 4),
+        ('line', 300, 812, 900, 812, 3, INK),
+        ('txt', 600, 885, 'STARTER STICKER PACK', 'mono-m', 52, INK, 6),
+        ('txt', 600, 958, '3\u00d73" · DIE-CUT VINYL · WEATHERPROOF', 'mono', 34, GRAY, 4),
     ]
     return ops
 
 
 def design_sticker_mega():
-    """10-up grid — the mega pack card"""
+    """10-up grid — the mega pack card."""
     ops = []
     labels = ['1bit', '94 tok/s', 'NPU', 'VOID', 'AMD',
               'JARVIS', 'PYTHON', 'SORRY', '50 TOPS', 'LOCAL AI']
     for i, lab in enumerate(labels):
-        r = 120
+        r = 118
         cx = 300 + (i % 5) * 150
         cy = 300 + (i // 5) * 340
-        col = [CYAN, AMBER, TEXT, AMBER, BLUE, CYAN, AMBER, AMBER, CYAN, BLUE][i]
-        ops += [('circ', cx, cy, r, NAVY, 3, BLUE),
-                ('txt', cx, cy, lab, 'mono-m', 34, col, 0)]
+        ops += [('circ', cx, cy, r, PAPER, 3, INK),
+                ('dotring', cx, cy, r - 14, 24, 3.5, GRAY),
+                ('txt', cx, cy, lab, 'mono-m', 30, INK, 0)]
     ops += [
-        ('line', 300, 950, 900, 950, 3, (14, 128, 190)),
-        ('txt', 600, 1010, 'LAPTOP STICKER MEGA PACK · 10', 'mono-m', 52, MUTED, 6),
-        ('txt', 600, 1085, 'DIE-CUT · WEATHERPROOF · 3\u00d73"', 'mono', 36, DIM, 4),
+        ('line', 300, 950, 900, 950, 3, INK),
+        ('txt', 600, 1010, 'LAPTOP STICKER MEGA PACK · 10', 'mono-m', 52, INK, 6),
+        ('txt', 600, 1085, 'DIE-CUT · WEATHERPROOF · 3\u00d73"', 'mono', 34, GRAY, 4),
     ]
     return ops
 
@@ -528,8 +668,11 @@ def design_tattoo():
 
 
 def main():
+    import sys
     os.makedirs(OUT, exist_ok=True)
-    print('generating merch into', OUT)
+    stickers_only = '--stickers' in sys.argv
+    scope = 'stickers' if stickers_only else 'full'
+    print(f'generating merch ({scope}) into', OUT)
 
     emit('sticker-1bit', design_sticker_1bit(), (S, S))
     emit('sticker-94toks', design_sticker_94toks(), (S, S))
@@ -539,8 +682,14 @@ def main():
     emit('sticker-jarvis', design_sticker_jarvis(), (S, S))
     emit('sticker-zero-python', design_sticker_zero_python(), (S, S))
     emit('sticker-sorry', design_sticker_sorry(), (S, S))
+    emit('sticker-50tops', design_sticker_50tops(), (S, S))
+    emit('sticker-local-ai', design_sticker_local_ai(), (S, S))
     emit('sticker-3pack', design_sticker_3pack(), (S, S))
     emit('sticker-mega', design_sticker_mega(), (S, S))
+
+    if stickers_only:
+        print('done (stickers only)')
+        return
 
     emit('tee-sorry', design_tshirt_sorry(), (AW, AH))
     emit('tee-npu-front', design_tshirt_npu_front(), (AW, AH))

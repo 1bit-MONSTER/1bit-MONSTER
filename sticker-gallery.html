@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1bit MONSTER — Sticker Designs</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --navy:#021621; --panel:#04202f; --cyan:#00e5ff; --amber:#ff9f1c; --text:#e7f6fd; --muted:#a0d9f8; --dim:#5d9ec2; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: radial-gradient(1200px 600px at 70% -10%, #0a2c3c 0%, var(--navy) 55%) fixed; color: var(--text); font-family: 'DM Mono', ui-monospace, monospace; min-height: 100vh; }
+  header { text-align: center; padding: 56px 24px 12px; }
+  header .eyebrow { font-size: 12px; letter-spacing: 6px; color: var(--dim); text-transform: uppercase; }
+  header h1 { font-family: 'DM Serif Display', Georgia, serif; font-weight: 400; font-size: clamp(34px, 5vw, 54px); margin: 14px 0 6px; }
+  header h1 span { color: var(--cyan); }
+  header p.sub { color: var(--muted); font-size: 14px; letter-spacing: 1px; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 30px 24px 90px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 26px; }
+  .card { background: rgba(4,32,47,.55); border: 1px solid rgba(93,158,194,.24); border-radius: 14px; overflow: hidden; transition: border-color .15s; }
+  .card:hover { border-color: rgba(0,229,255,.5); }
+  .card img { width: 100%; display: block; aspect-ratio: 3/2; object-fit: cover; }
+  .card .body { padding: 14px 16px 16px; }
+  .card h3 { font-size: 15px; font-weight: 500; }
+  .card .tag { font-size: 11px; color: var(--cyan); letter-spacing: 2px; text-transform: uppercase; margin: 6px 0 10px; }
+  .card .files { font-size: 11px; color: var(--dim); display: flex; gap: 14px; flex-wrap: wrap; }
+  .card .files a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted rgba(160,217,248,.4); }
+  .card .files a:hover { color: var(--cyan); }
+  .section-title { font-family: 'DM Serif Display', Georgia, serif; font-size: 26px; margin: 46px 0 18px; font-weight: 400; }
+  .section-title span { color: var(--amber); }
+  .note { text-align: center; color: var(--dim); font-size: 12px; margin-top: 40px; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="eyebrow">Merch design line · 10 die-cut stickers · 1-bit identity</div>
+  <h1>1bit<span>.MONSTER</span> Stickers</h1>
+  <p class="sub">paper #ffffff · ink #0e1217 · gray #6a6f76 · Inter + DM Mono — live 1bit.monster tokens</p>
+</header>
+
+<div class="wrap">
+  <div class="section-title">The <span>10</span> sticker designs</div>
+  <div class="grid" id="single"></div>
+
+  <div class="section-title">Pack <span>sheets</span></div>
+  <div class="grid" id="packs"></div>
+
+  <p class="note">preview-*.png = store cards (900×600) · art-*.png = print-ready 1200×1200 transparent · art-*.svg = vector masters</p>
+</div>
+
+<script>
+const single = [
+  ['1bit','1bit MONSTER','White roundel — relay block mark, black 1bit.MONSTER lockup'],
+  ['94toks','94 tok/s','Measured, not marketed — speed lines + giant 94'],
+  ['npu','NPU UNLOCKED','Hex die with the black 32-tile matrix'],
+  ['void','I Voided My NPU Warranty','Warning triangle. For the brave.'],
+  ['amd','AMD Unlocked Edition','Chip-card plate, pinned die, edition 001'],
+  ['jarvis','1bit JARVIS','Orbit ring + satellites around the J'],
+  ['zero-python','Zero Python','Octagon, black slash through the P-word'],
+  ['sorry','Sorry but not Sorry','Italic serif apology. Zero sincerity.'],
+  ['50tops','50 TOPS','The number everyone quotes'],
+  ['local-ai','LOCAL AI','Your chip. Your data.'],
+];
+const packs = [
+  ['3pack','Starter Sticker Pack','3×3" die-cut vinyl — 1bit, 94 tok/s, NPU'],
+  ['mega','Laptop Sticker Mega Pack','10 die-cut vinyl stickers, weatherproof'],
+];
+function card(name, title, desc){
+  return `<div class="card"><img src="site/assets/merch/preview-sticker-${name}.png" alt="${title}">
+    <div class="body"><h3>${title}</h3><div class="tag">${desc}</div>
+    <div class="files">
+      <a href="site/assets/merch/preview-sticker-${name}.png" target="_blank">preview</a>
+      <a href="site/assets/merch/art-sticker-${name}.png" target="_blank">print png</a>
+      <a href="site/assets/merch/art-sticker-${name}.svg" target="_blank">svg</a>
+    </div></div></div>`;
+}
+document.getElementById('single').innerHTML = single.map(([n,t,d]) => card(n,t,d)).join('');
+document.getElementById('packs').innerHTML = packs.map(([n,t,d]) => card(n,t,d)).join('');
+</script>
+</body>
+</html>
