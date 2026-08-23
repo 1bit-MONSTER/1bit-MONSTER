@@ -1,6 +1,6 @@
 [Unit]
 Description=1bit NPU-native coding agent
-Documentation=https://1bit.systems
+Documentation=https://1bit.monster
 After=network.target
 
 [Service]

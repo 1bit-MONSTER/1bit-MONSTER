@@ -1,6 +1,6 @@
 > **📜 Hackathon submission** — This document was created for the AMD Radeon Hackathon 2026-07 and reflects the project state at that time (August 2026). All figures are validated measurements from `site/benchmarks.json` / `benchmarks/` — see the [README](../README.md) and [current benchmarks](../docs/wiki/performance.md) for up-to-date data.
 >
-# Demo Video Script — 1bit.systems
+# Demo Video Script — 1bit.MONSTER
 ## AMD AI DevMaster Hackathon — Track 2 Submission
 
 **Target duration**: 4 minutes
@@ -85,12 +85,12 @@ Show a comparison chart or table.
 
 **Visual**: GitHub repo URL on screen.
 ```
-github.com/1bit-systems/1bit-systems
-1bit.systems
+github.com/1bit-MONSTER/1bit-MONSTER
+1bit.MONSTER
 ```
 
 **Narration**:
-> "One engine. Every model. Any chip.. Check out the repo at github.com/1bit-systems/1bit-systems. Try it on your Strix Halo. Thank you."
+> "One engine. Every model. Any chip.. Check out the repo at github.com/1bit-MONSTER/1bit-MONSTER. Try it on your Strix Halo. Thank you."
 
 ---
 

@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 Status: Approved (brainstorming complete)
-Owner: 1bit.systems
+Owner: 1bit.MONSTER
 
 ## Goal
 
@@ -20,7 +20,7 @@ The reference product is "Lemonade mobile": a mobile app that connects to a loca
 
 ## Architecture
 
-All code lives in the `1bit-systems/1bit-systems` repo (single repo, single CI):
+All code lives in the `1bit-monster/1bit-monster` repo (single repo, single CI):
 
 ```
 phone (Flutter, Android)                  Strix Halo box

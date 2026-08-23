@@ -1,7 +1,7 @@
 {
-  "name": "1bit-systems",
+  "name": "1bit-monster",
   "version": "2026.08.04",
-  "description": "1bit.systems — open-source, pure-C++ inference engine that runs LLMs on NPU + GPU + CPU from a single binary. Reverse-engineered AMD's XDNA 2 NPU. Zero Python, MIT.",
+  "description": "1bit.MONSTER — open-source, pure-C++ inference engine that runs LLMs on NPU + GPU + CPU from a single binary. Reverse-engineered AMD's XDNA 2 NPU. Zero Python, MIT.",
   "keywords": ["1bit", "inference-engine", "llm-inference", "npu", "xdna2", "amd-strix-halo", "rocm", "vulkan", "gguf", "1bp", "local-ai", "cpp"],
   "license": "MIT",
   "_deprecated": "The TypeScript/Node.js wrapper has been replaced by pure C++ binaries (tools/onebit.cpp, tools/onebitd.cpp). package.json kept for reference only. See docs/archive/rust-DEPRECATED.md for Rust → C++ migration details."

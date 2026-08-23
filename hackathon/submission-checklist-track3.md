@@ -3,8 +3,8 @@
 # AMD AI DevMaster Hackathon — Track 3
 ## Submission Checklist: AI Acceleration & Performance
 
-Team: **1bit.systems**
-Project: **1bit.systems — Open-Source AMD XDNA 2 NPU + ROCm GPU Kernels**
+Team: **1bit.MONSTER**
+Project: **1bit.MONSTER — Open-Source AMD XDNA 2 NPU + ROCm GPU Kernels**
 Track: **Track 3 — AI Acceleration & Performance**
 
 ---
@@ -14,7 +14,7 @@ Track: **Track 3 — AI Acceleration & Performance**
 | # | Deliverable | Status | File/Link |
 |---|------------|--------|-----------|
 | 1 | Project Specification Document | ✅ Complete | `hackathon/spec-document-track3.md` |
-| 2 | Project Source Code | ✅ Complete | https://github.com/1bit-systems/1bit-systems |
+| 2 | Project Source Code | ✅ Complete | https://github.com/1bit-MONSTER/1bit-MONSTER |
 | 3 | Demo Video | ⬜ To record | See `hackathon/demo-script-track3.md` |
 | 4 | PPT / Poster | ✅ Below | Key slides in this document |
 
@@ -22,7 +22,7 @@ Track: **Track 3 — AI Acceleration & Performance**
 
 ## Project Summary
 
-**1bit.systems — Open-Source AMD XDNA 2 NPU Stack + Custom ROCm GPU Kernels**
+**1bit.MONSTER — Open-Source AMD XDNA 2 NPU Stack + Custom ROCm GPU Kernels**
 
 Full reverse-engineering of AMD's proprietary XDNA 2 NPU stack + custom ROCm HIP kernels for LLM inference.
 

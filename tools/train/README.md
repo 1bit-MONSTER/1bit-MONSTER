@@ -1,4 +1,4 @@
-# 1bit.systems Training Pipeline
+# 1bit.MONSTER Training Pipeline
 
 Train and export models for 1bit's C++ inference engine — completely Python-free at runtime.
 

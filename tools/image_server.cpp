@@ -191,7 +191,7 @@ static void discover_models(const std::string& dir) {
 static void handle_health(const httplib::Request& req, httplib::Response& res) {
     json resp = {
         {"status", "ok"},
-        {"engine", "1bit-systems image server"},
+        {"engine", "1bit-monster image server"},
         {"model_loaded", g_engine && g_engine->is_loaded()},
         {"models_available", g_models.size()},
     };
@@ -205,7 +205,7 @@ static void handle_list_models(const httplib::Request& req, httplib::Response& r
             {"id", m.id},
             {"object", "model"},
             {"created", 0},
-            {"owned_by", "1bit-systems"},
+            {"owned_by", "1bit-monster"},
             {"description", m.description},
         });
     }

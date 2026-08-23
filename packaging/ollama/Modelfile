@@ -1,4 +1,4 @@
-# 1bit.systems NPU backend for Ollama
+# 1bit.MONSTER NPU backend for Ollama
 # Usage: ollama create qwen3-npu -f Modelfile
 # Then:   ollama run qwen3-npu
 

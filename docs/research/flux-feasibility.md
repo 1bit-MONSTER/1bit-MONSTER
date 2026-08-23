@@ -2,7 +2,7 @@
 
 ## Summary
 
-Adding image generation (FLUX, Stable Diffusion) to the 1bit-systems engine is feasible but requires significant new infrastructure. This document outlines the architecture, effort, and design decisions.
+Adding image generation (FLUX, Stable Diffusion) to the 1bit-monster engine is feasible but requires significant new infrastructure. This document outlines the architecture, effort, and design decisions.
 
 ## Why Add Image Generation?
 

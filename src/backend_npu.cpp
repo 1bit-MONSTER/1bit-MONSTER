@@ -358,7 +358,7 @@ struct NPUBackend : Backend {
             // Auto-discovery: search common paths for model.q4nx (#444)
             // 1. Current dir + common paths
             const char* home_model = getenv("HOME");
-            static std::string home_model_path = (home_model && home_model[0]) ? std::string(home_model) + "/.local/share/1bit-systems/weights/model.q4nx" : "";
+            static std::string home_model_path = (home_model && home_model[0]) ? std::string(home_model) + "/.local/share/1bit-monster/weights/model.q4nx" : "";
             static const char* search_paths[] = {
                 "model.q4nx",
                 "models/model.q4nx",

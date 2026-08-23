@@ -13,7 +13,7 @@ Sherry sources from 2026-04-26 onward.
 Commercial use of Sherry requires a separate license. Contact
 bong-water-water-bong@users.noreply.github.com for terms.
 
-Required Notice: Copyright 2026 bong-water-water-bong (https://1bit.systems)
+Required Notice: Copyright 2026 bong-water-water-bong (https://1bit.monster)
 
 ---
 

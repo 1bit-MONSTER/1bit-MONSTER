@@ -1,4 +1,4 @@
-// hip_check.h — Shared HIP error-checking macro for the 1bit-systems codebase.
+// hip_check.h — Shared HIP error-checking macro for the 1bit-monster codebase.
 //
 // Replaces the 12+ independent per-file HIP_CHECK definitions with one canonical
 // version.  Does NOT call abort() — errors are logged and propagated so a

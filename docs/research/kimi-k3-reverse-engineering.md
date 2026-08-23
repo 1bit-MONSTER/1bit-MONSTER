@@ -2,7 +2,7 @@
 
 **Model**: Moonshot AI Kimi K3 (2.8T params, open-weight, July 27 2026)
 **Source**: https://github.com/MoonshotAI/Kimi-K3 + https://huggingface.co/moonshotai/Kimi-K3
-**Target**: 1bit-systems inference engine (AMD Strix Halo NPU + GPU + CPU)
+**Target**: 1bit-monster inference engine (AMD Strix Halo NPU + GPU + CPU)
 **Status**: Architecture analyzed, converter pipeline built. Full inference pending model quantization to fit 32GB.
 
 ## Architecture Overview
@@ -113,9 +113,9 @@ Where `alpha` and `beta` are **learned scalars** (one per layer).
 - **Heads**: 16
 - **Output**: 1024-dim visual tokens → MLP projector → 7168-dim LLM input
 
-## Comparison with Existing 1bit-systems Support
+## Comparison with Existing 1bit-monster Support
 
-| Feature | Kimi K3 Requires | 1bit-systems Has |
+| Feature | Kimi K3 Requires | 1bit-monster Has |
 |---------|-----------------|-----------------|
 | MLA attention | Yes (24/93 layers) | ✅ `deepseek.h` (full MLA) |
 | MoE routing | Latent centroid-based (896 experts) | ✅ `deepseek.h` + `zaya_moe.h` |

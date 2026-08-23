@@ -1,6 +1,6 @@
 // audio_bridge.cpp — audio.cpp integration layer
 //
-// Bridges 1bit-systems with the audio.cpp framework for TTS, STT,
+// Bridges 1bit-monster with the audio.cpp framework for TTS, STT,
 // music generation, voice cloning, VAD, and source separation.
 // Requires the audio.cpp submodule at third_party/audio.cpp/.
 
@@ -130,7 +130,7 @@ AudioResult AudioEngine::transcribe(const std::string& audio_path,
     }
     
     // In production: run STT model (Qwen3-ASR, Nemotron, etc.)
-    // Currently using the existing whisper.cpp in 1bit-systems
+    // Currently using the existing whisper.cpp in 1bit-monster
     // as a fallback, or audio.cpp's ASR models when available.
     
     result.transcription = "[transcription via audio.cpp ASR]";

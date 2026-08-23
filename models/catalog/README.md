@@ -1,4 +1,4 @@
-# 1bit.systems Model Catalog — 47+ Models (Q4NX + 1BP + Documented)
+# 1bit.MONSTER Model Catalog — 47+ Models (Q4NX + 1BP + Documented)
 
 **Q4NX is the canonical format (q4nx pivot, 2026-08-08)** — every zoo model
 that maps to an official ROCm converter config ships as Q4NX, produced with

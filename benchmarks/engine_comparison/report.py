@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 # The engine under test - the numerator of every performance ratio. This fork
-# defaults to 1bit-systems' zaya_server; override with BENCH_HERO_ENGINE.
+# defaults to 1bit-monster' zaya_server; override with BENCH_HERO_ENGINE.
 HERO_ENGINE = os.environ.get("BENCH_HERO_ENGINE", "zaya")
 
 

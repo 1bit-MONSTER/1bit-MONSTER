@@ -1,4 +1,4 @@
-# 1bit-systems C++ style
+# 1bit-monster C++ style
 # Based on LLVM style with 100-column width and 4-space indent
 ---
 BasedOnStyle: LLVM

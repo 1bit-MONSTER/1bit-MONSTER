@@ -22,8 +22,8 @@ Wants=network-online.target
 Type=simple
 User=bcloud
 Group=bcloud
-WorkingDirectory=/home/bcloud/1bit-systems
-ExecStart=/home/bcloud/1bit-systems/build/1bit zaya --port 8088 --model /home/bcloud/.config/flm/models/Llama-3.2-1B-NPU2/model.q4nx
+WorkingDirectory=/home/bcloud/1bit-monster
+ExecStart=/home/bcloud/1bit-monster/build/1bit zaya --port 8088 --model /home/bcloud/.config/flm/models/Llama-3.2-1B-NPU2/model.q4nx
 Environment=FLM_CONFIG_PATH=/home/bcloud/.config/flm/model_list.json
 Restart=on-failure
 RestartSec=5

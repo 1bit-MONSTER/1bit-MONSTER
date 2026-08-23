@@ -102,7 +102,7 @@ AMD shipped the Ryzen AI Max+ 395 with a 50 TOPS XDNA 2 NPU and locked it behind
 
 ## What it is
 
-1bit MONSTER is an **inference engine** — the thing that actually runs the model. It is not a chat app; bring your own frontend.
+1bit.MONSTER is an **inference engine** — the thing that actually runs the model. It is not a chat app; bring your own frontend.
 
 - **One engine, every target.** `build/1bit` holds every server and the CLI, dispatched by subcommand (`zaya`, `unified`, `jarvis`, `vision`, `chat`, …).
 - **OpenAI-compatible API.** `POST /v1/chat/completions` against the `unified` server; pooled models, per-request routing.

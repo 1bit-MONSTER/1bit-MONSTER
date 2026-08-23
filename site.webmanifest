@@ -1,14 +1,14 @@
 {
-  "name": "1bit MONSTER",
-  "short_name": "1bit MONSTER",
+  "name": "1bit.MONSTER",
+  "short_name": "1bit.MONSTER",
   "icons": [
     {
-      "src": "/assets/favicon-512.png",
+      "src": "/assets/android-chrome-512x512.png",
       "sizes": "512x512",
       "type": "image/png"
     }
   ],
-  "theme_color": "#021621",
-  "background_color": "#021621",
+  "theme_color": "#f5f8fa",
+  "background_color": "#f5f8fa",
   "display": "standalone"
 }

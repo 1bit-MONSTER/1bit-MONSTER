@@ -1,5 +1,5 @@
 {
-  "_comment": "1bit-systems fork of the cross-engine inference benchmark. EVERY setting (host paths, model / scenario / engine / backend registries, and run defaults) lives here rather than in code. The harness compares engines on the *same* GGUF files through one uniform OpenAI /v1/chat/completions surface. The primary engine is 1bit-systems' zaya_server (build/zaya_server); llama.cpp (the vendored third_party/llama.cpp llama-server) is the reference. Paths may use ${repo_root}, ${here}, ${model_root} placeholders; a path may also be written as {\"path\": \"...\", \"env\": \"BENCH_X\"} so the named environment variable can override it for host retargeting.",
+  "_comment": "1bit-monster fork of the cross-engine inference benchmark. EVERY setting (host paths, model / scenario / engine / backend registries, and run defaults) lives here rather than in code. The harness compares engines on the *same* GGUF files through one uniform OpenAI /v1/chat/completions surface. The primary engine is 1bit-monster' zaya_server (build/zaya_server); llama.cpp (the vendored third_party/llama.cpp llama-server) is the reference. Paths may use ${repo_root}, ${here}, ${model_root} placeholders; a path may also be written as {\"path\": \"...\", \"env\": \"BENCH_X\"} so the named environment variable can override it for host retargeting.",
 
   "paths": {
     "model_root": "${repo_root}/models",
@@ -49,7 +49,7 @@
   },
 
   "engines": {
-    "zaya": {"display": "1bit-systems zaya_server", "transport": "server", "backends": []},
+    "zaya": {"display": "1bit-monster zaya_server", "transport": "server", "backends": []},
     "llamacpp": {"display": "llama.cpp", "transport": "server", "backends": []}
   },
 

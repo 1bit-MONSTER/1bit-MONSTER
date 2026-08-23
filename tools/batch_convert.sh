@@ -3,7 +3,7 @@
 #
 # Converts any GGUF model that maps to a supported architecture
 # (llama, qwen2, qwen3, gemma, phi, mistral, falcon, olmo, etc.)
-# into the 1BP format for the 1bit-systems inference engine.
+# into the 1BP format for the 1bit-monster inference engine.
 #
 # Usage:
 #   bash tools/batch_convert.sh                    # Convert all local GGUF files

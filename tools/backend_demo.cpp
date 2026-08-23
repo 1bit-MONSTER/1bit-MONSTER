@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
     // For the demo, we check if any backend can init.
     ModelConfig cfg;
     const char* home = getenv("HOME");
-    std::string weights_dir = (home && home[0]) ? std::string(home) + "/.local/share/1bit-systems/weights" : "/tmp/zaya_weights";
+    std::string weights_dir = (home && home[0]) ? std::string(home) + "/.local/share/1bit-monster/weights" : "/tmp/zaya_weights";
 
     bool inited = mgr.init(cfg, weights_dir);
     if (!inited) {

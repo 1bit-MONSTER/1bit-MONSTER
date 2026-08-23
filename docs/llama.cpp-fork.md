@@ -33,7 +33,7 @@ sync record. Bump it whenever the fork moves.
 | `de538c0` | `PRId64` in ZAYA_DEBUG fprintf (macOS `-Werror=format`) |
 | `a8576f5` | test-llama-archs: zaya skipped with FIXME (see #1357) |
 
-### Known issues (tracked in 1bit-systems)
+### Known issues (tracked in 1bit-monster)
 - **#1357** — zaya CCA conv graph produces invalid shapes (`ggml_ssm_conv` + `conv_1d_grouped` yield `n-4` outputs vs `n` expected; 1-token/seq reserve graphs abort). Arch never ran in llama.cpp; test excluded pending a fix with the intended conv semantics.
 - **#1358** — macOS `test-thread-safety` leaks 231MB under `leaks -atExit` (only remaining red check; needs a macOS box).
 

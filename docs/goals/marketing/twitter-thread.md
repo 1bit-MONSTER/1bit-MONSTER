@@ -2,7 +2,7 @@
 >
 One C++ binary. 35 models. 7 backends. Zero Python. Zero config.
 
-1bit.systems — the NPU inference engine for AMD Strix Halo — just got NPU attention on silicon and Mamba2 HIP GPU kernels. Here's what that means:
+1bit.MONSTER — the NPU inference engine for AMD Strix Halo — just got NPU attention on silicon and Mamba2 HIP GPU kernels. Here's what that means:
 
 ---
 
@@ -29,8 +29,8 @@ The full stack in one binary (~400 KB):
 
 ---
 
-curl -sL https://1bit.systems/install.sh | bash
+curl -sL https://1bit.monster/install.sh | bash
 
 MIT. Open source. No Python. No Docker. No BS.
 
-https://github.com/1bit-systems/1bit-systems
+https://github.com/1bit-MONSTER/1bit-MONSTER

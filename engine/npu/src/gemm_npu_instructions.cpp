@@ -22,7 +22,7 @@
 #include <climits>
 #include <stdexcept>
 
-// FastFlowLM open-source headers (included in the 1bit-systems repo)
+// FastFlowLM open-source headers (included in the 1bit-monster repo)
 #include "npu_utils/npu_instr_utils.hpp"
 
 // ─── Constants (from reverse-engineered libgemm.so) ────────────────────

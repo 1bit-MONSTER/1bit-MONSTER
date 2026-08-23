@@ -3,8 +3,8 @@
 # AMD AI DevMaster Hackathon — Track 3 Submission
 ## AI Acceleration & Performance
 
-**Team**: 1bit.systems  
-**Project**: 1bit.systems — Open-Source AMD XDNA 2 NPU Stack + ROCm GPU Kernels  
+**Team**: 1bit.MONSTER  
+**Project**: 1bit.MONSTER — Open-Source AMD XDNA 2 NPU Stack + ROCm GPU Kernels  
 **Date**: August 2026  
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo) — Radeon 8060S GPU (gfx1151) + 32 XDNA 2 NPU tiles + 128 GB unified LPDDR5X
 
@@ -12,7 +12,7 @@
 
 ## 1. Application Scenarios
 
-1bit.systems delivers **maximum inference performance on consumer AMD hardware** by reverse-engineering the XDNA 2 NPU stack from binary and building custom ROCm HIP kernels — all open-source, zero proprietary code.
+1bit.MONSTER delivers **maximum inference performance on consumer AMD hardware** by reverse-engineering the XDNA 2 NPU stack from binary and building custom ROCm HIP kernels — all open-source, zero proprietary code.
 
 | Scenario | Description |
 |----------|-------------|
@@ -27,7 +27,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    1bit.systems Acceleration Stack           │
+│                    1bit.MONSTER Acceleration Stack           │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              Token Router (per-layer dispatch)        │   │
@@ -144,22 +144,22 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 
 ## 6. Project Links
 
-- **Source**: https://github.com/1bit-systems/1bit-systems
+- **Source**: https://github.com/1bit-MONSTER/1bit-MONSTER
 - **NPU engine**: `engine/npu/src/npu_engine_v12.cpp`
 - **Mamba1 GPU backend**: `src/mamba1_engine.hip`
 - **NPU ISA docs**: `docs/research/fastflowlm-analysis/NPU_ISA.md` (274 lines)
 - **Q4NX format spec**: `docs/research/fastflowlm-analysis/Q4NX_FORMAT.md`
 - **FLM reverse-engineering audit**: `docs/journey.md` (1800+ lines)
 - **Performance SSOT**: `docs/wiki/performance.md`
-- **Site**: https://1bit.systems
+- **Site**: https://1bit.monster
 
 ---
 
 ## 7. Setup
 
 ```bash
-git clone https://github.com/1bit-systems/1bit-systems
-cd 1bit-systems
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-monster
 # Install TheRock 7.15.0a — native gfx1151 HIP SDK
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "rocm[libraries,devel,device-gfx1151]"
 # Build

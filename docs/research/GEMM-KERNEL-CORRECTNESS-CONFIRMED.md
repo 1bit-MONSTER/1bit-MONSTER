@@ -43,7 +43,7 @@ Qwen3 tokenizer to garbage: `<|endoftext|>user\nems<|im_start|>\n<|endoftext|>as
 stray fragment "ems". **Fixed**: replaced with the real tokenization of
 `<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n`
 (`{151644,872,198,13048,151645,198,151644,77091,198}`), verified against the actual
-Qwen3-0.6B tokenizer. Landed in both files, on `1bit-systems` PR #32.
+Qwen3-0.6B tokenizer. Landed in both files, on `1bit-monster` PR #32.
 
 **This did not fix the repeated-token symptom.** Re-ran with the corrected prompt;
 decode still collapsed to a single token with the exact same near-100%-confidence
@@ -296,7 +296,7 @@ ref = Am.astype(np.int64) @ Bm.astype(np.int64)
 - ✅ **Single-core xclbins verified CORRECT on real hardware!** All four production
   xclbins (QKV, O, GU, D) pass the INT32 oracle with 0 errors across 10000+ elements.
   Built using AMD's reference `single_core.py` generator from mlir-aie.
-- ✅ Landed on `1bit-systems`: int16/int32 width fix, prompt fix, RMSNorm weight clip.
+- ✅ Landed on `1bit-monster`: int16/int32 width fix, prompt fix, RMSNorm weight clip.
 - ✅ `backend_manager.cpp`: `npu_xrt` backend re-enabled (`auto_selectable = true`).
 - 🔧 **Multi-core 8-tile data distribution still buggy.** The 8-core (`n1_core_i8_v2.py`)
   xclbins produce wrong output due to a DMA `dims_to_stream` / kernel micro-tile layout

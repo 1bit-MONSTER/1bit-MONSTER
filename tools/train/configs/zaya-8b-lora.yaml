@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# ZAYA-8B LoRA — main production model for 1bit.systems
+# ZAYA-8B LoRA — main production model for 1bit.MONSTER
 model: "unsloth/Qwen3-8B"     # ZAYA is Qwen3-based; adjust if custom ZAYA HF path
 load_in_4bit: true
 

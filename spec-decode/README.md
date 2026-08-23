@@ -81,7 +81,7 @@ cd ~/DeepSpec
 pip install -r requirements.txt
 
 # Train Eagle3 draft (1 layer — recommended for NPU)
-cd ~/1bit-systems/spec-decode
+cd ~/1bit-monster/spec-decode
 python train_draft.py --arch eagle3 --epochs 10 --num-gpus 8
 
 # Or train DFlash for higher acceptance (5 layers)
@@ -101,7 +101,7 @@ python eval/eval_draft.py \
 
 ```bash
 # Build with NPU support (requires XRT toolchain)
-cd ~/1bit-systems/spec-decode
+cd ~/1bit-monster/spec-decode
 mkdir -p build && cd build
 cmake .. -DENABLE_NPU=ON -DXRT_DIR=/home/bcloud/torch2aie/toolchain
 make -j$(nproc)

@@ -11,7 +11,7 @@
 #include <cmath>
 #include <numeric>
 
-// ─── Read tensor via GgufReader (uses 1bit-systems' built-in GGUF reader) ──
+// ─── Read tensor via GgufReader (uses 1bit-monster' built-in GGUF reader) ──
 #include "gguf_reader.h"
 
 static bool read_tensor_f32(const std::string& gguf_path, const std::string& name,
