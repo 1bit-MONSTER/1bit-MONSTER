@@ -25,7 +25,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site --project-name=1bit-monster
+          command: pages deploy site --project-name=1bit-systems
 
   deploy-github-pages:
     runs-on: ubuntu-latest
