@@ -160,6 +160,26 @@ static bool read_gguf_metadata(const std::string& path, ModelConfig& cfg) {
             if (r.get_u32(key, u32v)) cfg.hidden = cfg.hidden_size = u32v;
         } else if (ends_with(key, ".rope.freq_base")) {
             if (r.get_f32(key, f32v)) cfg.rope_theta = f32v;
+        } else if (ends_with(key, ".rope.dimension_sections")) {
+            // Qwen2-VL / Qwen3-VL M-RoPE: [temporal, height, width] pair counts
+            // (e.g. [16,24,24]). llama.cpp GGUFs store a single-element array
+            // [16] (read back as a scalar); the canonical sections are 16/24/24.
+            uint32_t sec0 = 0;
+            std::vector<uint32_t> sec;
+            if (r.get_u32_array(key, sec) && !sec.empty()) {
+                sec0 = sec[0];
+            } else if (r.get_u32(key, sec0)) {
+                // single-element array stored as scalar
+            }
+            if (sec0 > 0) {
+                cfg.mrope_enabled = true;
+                cfg.mrope_section[0] = (int)sec0;
+                cfg.mrope_section[1] = sec.size() > 1 ? (int)sec[1] : 24;
+                cfg.mrope_section[2] = sec.size() > 2 ? (int)sec[2] : 24;
+            }
+        } else if (ends_with(key, ".rope.scaling.type")) {
+            std::string st;
+            if (r.get_string(key, st) && st == "mrope") cfg.mrope_enabled = true;
         } else if (ends_with(key, ".expert_count")) {
             if (r.get_u32(key, u32v)) cfg.n_experts = cfg.num_experts = u32v;
         } else if (ends_with(key, ".expert_used_count")) {

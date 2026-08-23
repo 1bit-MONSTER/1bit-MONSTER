@@ -126,6 +126,12 @@ struct ModelConfig {
     bool no_rope = false;
     bool adjacent_rope = false;  // CodeGen: rotate_every_two — pairs (2i, 2i+1), not half-split
     int pos_offset = 0;  // learned-position base (OPT: 2 padding slots → +2)
+    // Qwen2-VL / Qwen3-VL M-RoPE (multimodal RoPE): head_dim is split into
+    // three sections (temporal / height / width in PAIRS, e.g. [16,24,24]).
+    // Text tokens use pos for all three; vision tokens use (frame, row, col).
+    // Set by the loader when rope_scaling.type == "mrope"; 0 = disabled.
+    bool mrope_enabled = false;
+    int mrope_section[3] = {0, 0, 0};  // pair counts per section (sum = head_dim/2)
     // Falcon (old arch): parallel attention+FFN — both consume the SAME
     // layer-norm output and both add to the residual. Set for RCPP_ARCH_FALCON.
     bool parallel_attn_ffn = false;

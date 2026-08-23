@@ -53,6 +53,11 @@ struct Backend {
     /// -1 if unsupported by this backend.
     virtual int forward_embed(const float* embedding) { (void)embedding; return -1; }
 
+    /// Set the M-RoPE (t, h, w) positions for the NEXT forward_embed call's
+    /// KV slot. Only meaningful when the model uses M-RoPE (Qwen2-VL etc.);
+    /// no-op for other backends. Text tokens use (pos, pos, pos) by default.
+    virtual void set_mrope_position(int /*t*/, int /*h*/, int /*w*/) {}
+
     /// Compute lm_head: logits[vocab] = hidden[hidden] @ embed[vocab×hidden]^T
     virtual bool lm_head(const float* hidden, float* logits, int* argmax) = 0;
 

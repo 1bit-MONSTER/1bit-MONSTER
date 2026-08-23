@@ -427,6 +427,9 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "Text model loaded: hidden=%d layers=%d vocab=%d\n",
             cfg.hidden, cfg.n_layers, cfg.vocab);
+    fprintf(stderr, "[vision] mrope_enabled=%d section=[%d,%d,%d] arch=%s\n",
+            (int)cfg.mrope_enabled, cfg.mrope_section[0], cfg.mrope_section[1],
+            cfg.mrope_section[2], cfg.architecture.c_str());
 
     // ── Load vision encoder weights (issue #1244) ──
     // .1bp -> Mage-ViT 1BP container (reserved[0..5] carry ViT dims);
@@ -603,9 +606,16 @@ int main(int argc, char** argv) {
             int n_tiles = (int)(embs.size() / th);
             fprintf(stderr, "[vision] ViT: %d embeddings x %d dims through decoder\n",
                     n_tiles, th);
+            // M-RoPE positions for the merged vision tokens. The 2x2 merger
+            // emits row-major blocks (mage_vit_forward: di = mr*mpw + mc);
+            // each block (mr, mc) gets (t=0, h=mr, w=mc) — Qwen2-VL uses the
+            // merged block indices (0..7 for 224px) directly, NOT scaled.
+            int mpw = (VL_INPUT_SIZE / vit.config.patch_size) / 2;  // 224/14/2 = 8
+            if (mpw < 1) mpw = 8;
             std::vector<float> tok(th);
             for (int i = 0; i < n_tiles; i++) {
                 const float* e = embs.data() + (size_t)i * th;
+                be->set_mrope_position(0, i / mpw, i % mpw);
                 // forward_embed wants cfg.hidden floats — pad/truncate on mismatch
                 if (th == cfg.hidden) {
                     be->forward_embed(e);

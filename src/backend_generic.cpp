@@ -84,6 +84,10 @@ struct GenericBackend : Backend {
     std::vector<float> rope_freqs;     // precomputed RoPE frequencies (1/theta^(2i/rot_dim))
     std::vector<float> rope_freqs_local; // gemma3 hybrid: local-layer theta table (0 = same)
     std::vector<float> alibi_slopes;   // Step1 sqrt-ALiBi: per-head slope (build_alibi_cache convention)
+    // Qwen2-VL M-RoPE: per-position (t, h, w) triplets, one per KV slot.
+    // Text tokens set all three to pos (handled inline); vision tokens get
+    // (frame, row, col) injected via set_mrope_position before forward_embed.
+    std::vector<int> mrope_t, mrope_h, mrope_w;
     float inv_sqrt_hd_ = 0.0f;         // cached 1/sqrt(head_dim)
     bool scratch_allocated_ = false;
     int cached_debug_ops_ = -1;  // cached getenv("CPU_DEBUG_OPS") — checked once
@@ -282,6 +286,12 @@ struct GenericBackend : Backend {
         v_cache.resize(cfg.n_layers);
         for (auto& k : k_cache) k.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
         for (auto& v : v_cache) v.resize((size_t)cfg.max_seq_len * cfg.n_kv_heads * cfg.head_dim);
+        // M-RoPE position triplets, one per KV slot. Default: all == index
+        // (text tokens); vision_server overrides via set_mrope_position().
+        mrope_t.assign((size_t)cfg.max_seq_len, 0);
+        mrope_h.assign((size_t)cfg.max_seq_len, 0);
+        mrope_w.assign((size_t)cfg.max_seq_len, 0);
+        for (int i = 0; i < cfg.max_seq_len; i++) { mrope_t[i] = i; mrope_h[i] = i; mrope_w[i] = i; }
 
         // Pre-allocate scratch buffers (avoid per-token heap allocations)
         int H = cfg.hidden, NH = cfg.n_heads, NKV = cfg.n_kv_heads, HD = cfg.head_dim, FF = cfg.intermediate_size;
@@ -1696,6 +1706,13 @@ struct GenericBackend : Backend {
         pos = 0;
         for (auto& k : k_cache) std::fill(k.begin(), k.end(), 0.0f);
         for (auto& v : v_cache) std::fill(v.begin(), v.end(), 0.0f);
+        // Reset M-RoPE positions to identity (all == index) so a new sequence
+        // doesn't inherit the previous request's vision-token positions.
+        if (cfg.mrope_enabled && !mrope_t.empty()) {
+            for (size_t i = 0; i < mrope_t.size(); i++) {
+                mrope_t[i] = (int)i; mrope_h[i] = (int)i; mrope_w[i] = (int)i;
+            }
+        }
         return true;
     }
 
@@ -1782,6 +1799,44 @@ struct GenericBackend : Backend {
                 float t = pos * freqs[p];
                 float cosv = cosf(t), sinv = sinf(t);
                 int i0 = h * hd + 2 * p, i1 = h * hd + 2 * p + 1;
+                float k0 = k[i0], k1 = k[i1];
+                k[i0] = k0 * cosv - k1 * sinv;
+                k[i1] = k0 * sinv + k1 * cosv;
+            }
+        }
+    }
+
+    // Qwen2-VL / Qwen3-VL M-RoPE: head_dim pairs are split into three
+    // sections (temporal / height / width) per cfg.mrope_section; each
+    // section uses its own position. Text tokens pass pos_t=pos_h=pos_w=pos;
+    // vision tokens pass (frame, row, col). Pair p uses section S(p):
+    //   S = 0 (temporal)  for p < sec[0]
+    //   S = 1 (height)    for sec[0] <= p < sec[0]+sec[1]
+    //   S = 2 (width)     otherwise
+    static void rope_mrope(float* q, float* k,
+                           int pos_t, int pos_h, int pos_w,
+                           int n_heads, int n_kv, int hd, int rot_dim,
+                           float theta, const float* freqs, const int* section) {
+        int half = (rot_dim + 1) / 2;
+        int pairs = rot_dim - half;
+        int b0 = section[0], b1 = section[0] + section[1];
+        for (int h = 0; h < n_heads; h++) {
+            for (int i = 0; i < pairs; i++) {
+                int pos = (i < b0) ? pos_t : (i < b1 ? pos_h : pos_w);
+                float t = pos * freqs[i];
+                float cosv = cosf(t), sinv = sinf(t);
+                int i0 = h * hd + i, i1 = h * hd + i + half;
+                float q0 = q[i0], q1 = q[i1];
+                q[i0] = q0 * cosv - q1 * sinv;
+                q[i1] = q0 * sinv + q1 * cosv;
+            }
+        }
+        for (int h = 0; h < n_kv; h++) {
+            for (int i = 0; i < pairs; i++) {
+                int pos = (i < b0) ? pos_t : (i < b1 ? pos_h : pos_w);
+                float t = pos * freqs[i];
+                float cosv = cosf(t), sinv = sinf(t);
+                int i0 = h * hd + i, i1 = h * hd + i + half;
                 float k0 = k[i0], k1 = k[i1];
                 k[i0] = k0 * cosv - k1 * sinv;
                 k[i1] = k0 * sinv + k1 * cosv;
@@ -2064,6 +2119,13 @@ struct GenericBackend : Backend {
     // embedding vector directly instead of doing a token_embd lookup —
     // the splice point for injecting vision embeddings (mm.2 output) at
     // image-placeholder positions instead of a text token's row.
+    void set_mrope_position(int t, int h, int w) override {
+        if (!cfg.mrope_enabled) return;
+        if (pos >= 0 && (size_t)pos < mrope_t.size()) {
+            mrope_t[pos] = t; mrope_h[pos] = h; mrope_w[pos] = w;
+        }
+    }
+
      int forward_embed(const float* x_in) override {
         // Bounds-check KV cache position before writing (fixes OOB/overflow)
         if (pos >= cfg.max_seq_len) {
@@ -2156,7 +2218,16 @@ struct GenericBackend : Backend {
             if (!rope_freqs_local.empty() && il % cfg.sliding_window_pattern != cfg.sliding_window_pattern - 1)
                 freqs = rope_freqs_local.data();
             if (!cfg.no_rope) {
-                if (cfg.adjacent_rope) rope_adjacent(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
+                if (cfg.mrope_enabled) {
+                    // M-RoPE: per-position (t,h,w). Vision tokens injected via
+                    // set_mrope_position (forward_embed); text tokens (generate)
+                    // have all three == pos.
+                    int pt = pos, ph = pos, pw = pos;
+                    if (pos >= 0 && (size_t)pos < mrope_t.size()) {
+                        pt = mrope_t[pos]; ph = mrope_h[pos]; pw = mrope_w[pos];
+                    }
+                    rope_mrope(q, k, pt, ph, pw, NH, NKV, HD, rot_dim, theta, freqs, cfg.mrope_section);
+                } else if (cfg.adjacent_rope) rope_adjacent(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
                 else rope(q, k, pos, NH, NKV, HD, rot_dim, theta, freqs);
             }
             if (_dbg_ops) fprintf(stderr, "[cpu] L0 q_post=[%g %g %g] k_post=[%g %g %g]\n",
