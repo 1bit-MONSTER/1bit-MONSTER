@@ -1,6 +1,6 @@
 # 1BP Catalog Re-conversion Report (issue #1243)
 Run: 2026-08-02T13:57Z — converter @ 77ab04bb9
-Gate: Qwen-vocab → ppl_generic /home/bcloud/projects/1bit-systems/research/ws00-baseline/samples/ppl-gate-48.jsonl; others → structural only
+Gate: Qwen-vocab → ppl_generic /home/bcloud/projects/1bit-monster/research/ws00-baseline/samples/ppl-gate-48.jsonl; others → structural only
 
 | Model | Source GGUF | PPL (Qwen gate) | verify_1bp | token_embd | Status |
 |---|---|---|---|---|---|

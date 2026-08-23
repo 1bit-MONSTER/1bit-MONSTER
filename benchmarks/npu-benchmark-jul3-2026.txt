@@ -1,4 +1,4 @@
-1bit.systems — ZINC GPU (Vulkan) — Comprehensive Benchmarks — July 3, 2026
+1bit.MONSTER — ZINC GPU (Vulkan) — Comprehensive Benchmarks — July 3, 2026
 =============================================================================
 
 Hardware: AMD Ryzen AI Max+ 395 (Strix Halo)

@@ -79,7 +79,7 @@ struct A2AClient {
         // Build & send request
         std::string req = method + " " + path + " HTTP/1.1\r\n"
             "Host: " + host + "\r\n"
-            "User-Agent: 1bit-systems-a2a/1.0\r\n"
+            "User-Agent: 1bit-monster-a2a/1.0\r\n"
             "Connection: close\r\n";
         if (!body.empty()) {
             req += "Content-Type: " + (content_type.empty() ? "application/a2a+json" : content_type) + "\r\n";

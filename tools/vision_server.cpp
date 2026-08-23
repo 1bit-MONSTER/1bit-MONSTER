@@ -447,7 +447,7 @@ int main(int argc, char** argv) {
     svr.Get("/v1/health", [&](const httplib::Request&, httplib::Response& res) {
         json j;
         j["status"] = "ok";
-        j["service"] = "1bit-systems VL inference server";
+        j["service"] = "1bit-monster VL inference server";
         j["version"] = "vision-server-1.0";
         j["model"] = g_model_path;
         j["mmproj"] = g_mmproj_path;
@@ -464,7 +464,7 @@ int main(int argc, char** argv) {
         json info;
         info["id"] = "zaya-vl";
         info["object"] = "model";
-        info["owned_by"] = "1bit-systems";
+        info["owned_by"] = "1bit-monster";
         info["description"] = "Vision-language model (Qwen2-VL compatible)";
         models.push_back(info);
         j["data"] = models;
@@ -680,7 +680,7 @@ int main(int argc, char** argv) {
     // ── Start ──
     fprintf(stderr, "\n");
     fprintf(stderr, "╔════════════════════════════════════════╗\n");
-    fprintf(stderr, "║  1bit.systems — VL Inference Server   ║\n");
+    fprintf(stderr, "║  1bit.MONSTER — VL Inference Server   ║\n");
     fprintf(stderr, "╚════════════════════════════════════════╝\n");
     fprintf(stderr, "  Port:    %d\n", g_port);
     fprintf(stderr, "  Model:   %s\n", g_model_path.c_str());

@@ -34,7 +34,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Modifications for 1bit.systems integration:
+ * Modifications for 1bit.MONSTER integration:
  *   - Extracted from c/glm.c into standalone header
  *   - Added extern "C" guard for C++ usage
  *   - Added colibri_quantize_q4/q2 helpers

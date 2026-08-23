@@ -90,7 +90,7 @@ if(EXISTS "${_1BIT_ROCM_STUB}")
         CACHE PATH "HIP ROCm root (local stub)" FORCE)
 endif()
 
-project(1bit-systems LANGUAGES C CXX HIP)
+project(1bit-monster LANGUAGES C CXX HIP)
 
 # ── Optional: CUDA (NVIDIA GPU) backend ──
 option(USE_CUDA "Build the CUDA GPU backend for NVIDIA GPUs" OFF)
@@ -427,7 +427,7 @@ target_link_libraries(tf_gemv PRIVATE gguf_reader)
 target_compile_options(tf_gemv PRIVATE -O3 -std=c++23)
 
 # -- zuna_format : EEG autoencoder lives in onebin as the `zuna` subcommand. -----
-#   tools/zuna_port.cpp (vendored from github.com/1bit-systems/eeg-medical, the
+#   tools/zuna_port.cpp (vendored from github.com/1bit-MONSTER/eeg-medical, the
 #   canonical home) compiles into onebin (ONE_BIN_SOURCES) with ONE_BIN_DISPATCH;
 #   the parity harness + EDF tooling live in eeg-medical/tools/.
 

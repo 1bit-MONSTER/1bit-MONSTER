@@ -239,4 +239,4 @@ See [business-plan.md](business-plan.md) for full economics.
 
 ---
 
-*Built on 1bit.systems · AMD Strix Halo · NPU + GPU + CPU · Zaya inference engine · Jarvis audio server · MI300X scale*
+*Built on 1bit.MONSTER · AMD Strix Halo · NPU + GPU + CPU · Zaya inference engine · Jarvis audio server · MI300X scale*

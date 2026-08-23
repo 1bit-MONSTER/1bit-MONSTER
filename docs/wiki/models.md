@@ -2,7 +2,7 @@
 
 # Supported Models & Performance
 
-The 1bit-systems engine auto-detects 552 architecture tokens from GGUF/1BP/safetensors headers — no config files needed. We reverse-engineered AMD's NPU stack, extracted 37 FLM models with 209 pre-compiled XDNA 2 xclbins, and created our own 1BP ternary format to make AMD's open-source models run at maximum throughput on NPU + GPU.
+The 1bit-monster engine auto-detects 552 architecture tokens from GGUF/1BP/safetensors headers — no config files needed. We reverse-engineered AMD's NPU stack, extracted 37 FLM models with 209 pre-compiled XDNA 2 xclbins, and created our own 1BP ternary format to make AMD's open-source models run at maximum throughput on NPU + GPU.
 
 ## HF-Native coverage (measured 2026-08-14)
 

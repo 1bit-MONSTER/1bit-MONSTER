@@ -28,8 +28,8 @@ static std::string zinc_locate_spv(const std::string& filename) {
                           "build/zinc_cpp_build/shaders",
                           "engine/gpu/zinc_cpp/build/shaders",
                           "engine/gpu/shaders",
-                          "/usr/share/1bit-systems/shaders",
-                          "/usr/local/share/1bit-systems/shaders"})
+                          "/usr/share/1bit-monster/shaders",
+                          "/usr/local/share/1bit-monster/shaders"})
         dirs.emplace_back(c);
     for (const auto& d : dirs) {
         std::string p = d + "/" + filename;

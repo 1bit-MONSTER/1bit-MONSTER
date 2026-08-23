@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
     const char* q4nx_path = argc > 1 ? argv[1]
         : "/home/bcloud/.config/flm/models/Qwen3.6-35B-A3B-NPU2/model.q4nx";
     int layer = argc > 2 ? atoi(argv[2]) : 0;
-    std::string xd = argc > 3 ? argv[3] : "/home/bcloud/projects/1bit-systems/engine/npu/xclbins";
+    std::string xd = argc > 3 ? argv[3] : "/home/bcloud/projects/1bit-monster/engine/npu/xclbins";
 
     // ── open model ──
     int fd = open(q4nx_path, O_RDONLY);

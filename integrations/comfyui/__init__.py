@@ -1,7 +1,7 @@
 """
-1bit-systems ComfyUI Integration
+1bit-monster ComfyUI Integration
 
-Custom nodes that expose 1bit-systems's NPU-accelerated inference engine
+Custom nodes that expose 1bit-monster's NPU-accelerated inference engine
 to ComfyUI workflows. Supports:
 
 - LLM text generation (via 1BP models on NPU/GPU)
@@ -15,7 +15,7 @@ Architecture:
     ComfyUI (Python)  <->  HTTP  <->  image_server / jarvis_server (C++)
 
 Requirements:
-    - 1bit-systems servers running (unified_server, image_server, jarvis_server)
+    - 1bit-monster servers running (unified_server, image_server, jarvis_server)
     - httpx (pip install httpx)
 """
 import json
@@ -80,7 +80,7 @@ def pil_to_base64(img: Image.Image, format: str = "PNG") -> str:
 class OneBP_LLM_Generate:
     """Generate text using a 1BP model via the unified_server."""
     
-    CATEGORY = "1bit-systems/LLM"
+    CATEGORY = "1bit-monster/LLM"
     FUNCTION = "generate"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("text",)
@@ -133,7 +133,7 @@ class OneBP_LLM_Generate:
 class OneBP_VLM_Understand:
     """Analyze an image using a 1BP VLM."""
     
-    CATEGORY = "1bit-systems/Vision"
+    CATEGORY = "1bit-monster/Vision"
     FUNCTION = "analyze"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("description",)
@@ -201,7 +201,7 @@ class OneBP_VLM_Understand:
 class OneBP_Image_Generate:
     """Generate images using the 1bit diffusion server."""
     
-    CATEGORY = "1bit-systems/Image"
+    CATEGORY = "1bit-monster/Image"
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
@@ -285,7 +285,7 @@ class OneBP_Image_Generate:
 class OneBP_TTS:
     """Generate speech from text via the jarvis_server (audio.cpp)."""
     
-    CATEGORY = "1bit-systems/Audio"
+    CATEGORY = "1bit-monster/Audio"
     FUNCTION = "synthesize"
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
@@ -339,7 +339,7 @@ class OneBP_Video_Generate:
     selects MJPG AVI (video/x-msvideo).
     """
 
-    CATEGORY = "1bit-systems/Video"
+    CATEGORY = "1bit-monster/Video"
     FUNCTION = "generate"
     RETURN_TYPES = ()
     OUTPUT_NODE = True
@@ -426,7 +426,7 @@ class OneBP_Video_Generate:
 class OneBP_LoRA_Loader:
     """Hot-load a LoRA adapter into the 1bit inference engine."""
     
-    CATEGORY = "1bit-systems/LoRA"
+    CATEGORY = "1bit-monster/LoRA"
     FUNCTION = "load_lora"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("status",)

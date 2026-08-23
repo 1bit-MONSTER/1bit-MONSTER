@@ -78,9 +78,9 @@ outputs = model.generate(**inputs, max_new_tokens=128)
 print(tokenizer.decode(outputs[0]))
 ```
 
-## About 1bit.systems
+## About 1bit.MONSTER
 
-This model is part of the [1bit.systems](https://github.com/1bit-systems/1bit-systems)
+This model is part of the [1bit.MONSTER](https://github.com/1bit-MONSTER/1bit-MONSTER)
 model catalog for AMD Strix Halo — an open-source inference engine optimized
 for AMD Ryzen AI Max+ processors.
 EOF

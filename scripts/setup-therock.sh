@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 1bit.systems — ROCm TheRock C++ SDK Setup
+# 1bit.MONSTER — ROCm TheRock C++ SDK Setup
 # Installs + configures the TheRock nightly ROCm for Strix Halo (gfx1151)
 # Run: sudo bash scripts/setup-therock.sh
 set -euo pipefail
@@ -9,7 +9,7 @@ NIGHTLY_INDEX="https://rocm.nightlies.amd.com/whl-multi-arch/"
 GPU_TARGET="gfx1151"
 
 echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║  1bit.systems — ROCm TheRock C++ SDK Setup              ║"
+echo "║  1bit.MONSTER — ROCm TheRock C++ SDK Setup              ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 
 # ── Install packages ──

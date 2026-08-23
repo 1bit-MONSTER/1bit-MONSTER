@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# CMakeLists_windows.txt — Windows MSVC build for 1bit-systems
+# CMakeLists_windows.txt — Windows MSVC build for 1bit-monster
 # ─────────────────────────────────────────────────────────────
 # Builds portable C++23 targets: CPU inference, Vulkan GPU,
 # GGUF/1BP loaders, HTTP server, CLI tools.
@@ -14,7 +14,7 @@
 # ─────────────────────────────────────────────────────────────
 
 cmake_minimum_required(VERSION 3.21)
-project(1bit-systems-windows LANGUAGES CXX)
+project(1bit-monster-windows LANGUAGES CXX)
 
 # ── C++23 ──
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -233,11 +233,11 @@ add_test(NAME gguf_reader_dequant COMMAND test_gguf_reader_dequant)
 
 # ── CPack packaging ──
 # Produces a self-contained ZIP with the binaries + DLLs
-set(CPACK_PACKAGE_NAME "1bit-systems-windows")
+set(CPACK_PACKAGE_NAME "1bit-monster-windows")
 set(CPACK_PACKAGE_VERSION "2026.07.26")
-set(CPACK_PACKAGE_VENDOR "1bit.systems")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "1bit-systems NPU+GPU+CPU inference engine — Windows build")
-set(CPACK_PACKAGE_FILE_NAME "1bit-systems-${CPACK_PACKAGE_VERSION}-windows-x64")
+set(CPACK_PACKAGE_VENDOR "1bit.MONSTER")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "1bit-monster NPU+GPU+CPU inference engine — Windows build")
+set(CPACK_PACKAGE_FILE_NAME "1bit-monster-${CPACK_PACKAGE_VERSION}-windows-x64")
 set(CPACK_RESOURCE_FILE_LICENSE "${REPO_ROOT}/LICENSE")
 set(CPACK_GENERATOR "ZIP")
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)

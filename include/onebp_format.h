@@ -1,7 +1,7 @@
 #ifndef ONEBP_FORMAT_H
 #define ONEBP_FORMAT_H
 
-/** 1BP — 1bit-systems binary package format.
+/** 1BP — 1bit-monster binary package format.
  *
  *  Unified model format combining Q4NX NPU-tiled layout with self-contained
  *  metadata. One file, no external config.json needed. Memory-mappable.

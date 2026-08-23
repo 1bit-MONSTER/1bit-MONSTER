@@ -6,7 +6,7 @@
 //
 // usage: cmp_instella <model.gguf> <ids.txt> <hf_logits.npy> [topN] [min-overlap]
 //
-// Fixtures live in 1bit-systems/models/kl-test/ (mini-full-f16.gguf +
+// Fixtures live in 1bit-monster/models/kl-test/ (mini-full-f16.gguf +
 // mini-full-hf.pt): mini dims, real tokenizer, gated_attention + farskip.
 #include <cstdio>
 #include <fstream>

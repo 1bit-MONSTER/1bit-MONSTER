@@ -23,7 +23,7 @@ rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
 
 1. `CMAKE_SOURCE_DIR` → `CMAKE_CURRENT_SOURCE_DIR` everywhere — no-op when
    built standalone, fixes packaging paths when built as a subdirectory of
-   the 1bit-systems repo via `add_subdirectory`.
+   the 1bit-monster repo via `add_subdirectory`.
 2. PUBLIC include dirs on `lemonade-server-core` so parent targets
    (`unified_server`, `unified_router`) linking the OBJECT library see
    `lemon/` headers + generated headers (upstream uses a subdirectory-local

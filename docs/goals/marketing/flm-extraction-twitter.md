@@ -1,6 +1,6 @@
 # FLM 37-Model Extraction — Twitter/X Thread
 
-Thread: 6 tweets. Link blog post: https://1bit.systems/blog/flm-37-models-extracted
+Thread: 6 tweets. Link blog post: https://1bit.monster/blog/flm-37-models-extracted
 
 ---
 
@@ -22,6 +22,6 @@ What's broken: 22 xclbin shapes need Peano compilation. Qwen3.5 Omni source extr
 
 6/6
 Every Strix Halo APU (~48M shipped) has a 50 TOPS NPU gathering dust. Our binary makes it usable. MIT licensed.
-Blog: https://1bit.systems/blog/flm-37-models-extracted
-GitHub: https://github.com/1bit-systems/1bit-systems
-Models: https://1bit.systems/wiki/models
+Blog: https://1bit.monster/blog/flm-37-models-extracted
+GitHub: https://github.com/1bit-MONSTER/1bit-MONSTER
+Models: https://1bit.monster/wiki/models

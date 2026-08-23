@@ -1,8 +1,8 @@
-name: 1bit-systems
+name: 1bit-monster
 version: '2026.08.04'
 summary: Model-agnostic NPU+GPU+CPU inference engine for AMD Strix Halo
 description: |
-  1bit.systems is a pure native inference stack for the AMD Ryzen AI Max+ 395.
+  1bit.MONSTER is a pure native inference stack for the AMD Ryzen AI Max+ 395.
   Model-agnostic engine (GGUF/ONNX/1BP auto-detect) across NPU, GPU, and CPU
   backends. Zero Python at runtime. Zero pip. Zero Docker. Just g++ and run.
 
@@ -20,9 +20,9 @@ apps:
     plugs: [network-bind, xrt, hardware-observe]
 
 parts:
-  1bit-systems:
+  1bit-monster:
     plugin: make
-    source: https://github.com/1bit-systems/1bit-systems.git
+    source: https://github.com/1bit-MONSTER/1bit-MONSTER.git
     source-tag: v2026.07.20
     build-packages: [g++, libxrt-dev]
     stage-packages: [libxrt2, libxrt-npu2]

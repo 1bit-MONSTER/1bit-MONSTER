@@ -1,6 +1,6 @@
-# .github/hiero-bot.yml — Hiero Maintainer Bot config for 1bit-systems
+# .github/hiero-bot.yml — Hiero Maintainer Bot config for 1bit-monster
 # Self-hosted on the Pi (bcloud@192.168.50.216:8000), webhook via cloudflared tunnel.
-repo: "1bit-systems/1bit-systems"
+repo: "1bit-MONSTER/1bit-MONSTER"
 
 workflows:
   # PR quality gates: DCO + tests, auto-label

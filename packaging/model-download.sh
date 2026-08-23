@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# 1bit.systems — Model Downloader
+# 1bit.MONSTER — Model Downloader
 # Downloads supported Q4NX models for the NPU engine.
 #
 # Usage:

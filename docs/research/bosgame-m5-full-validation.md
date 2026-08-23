@@ -79,11 +79,11 @@
 | Backend | Qwen3-4B PP (512) | Status |
 |---------|-------------------|--------|
 | **Vulkan** (Mesa 26.0.3) | **2,176 t/s** | ✅ Production-ready |
-| **ROCm HIP** (1bit-systems) | ~64 t/s (est.) | ✅ Detected but not fully benchmarked |
+| **ROCm HIP** (1bit-monster) | ~64 t/s (est.) | ✅ Detected but not fully benchmarked |
 | **CPU** (16 threads) | 362 t/s | ⚠️ Fallback only |
 | **NPU FLM** | ~57 t/s (est.) | ✅ Available for hybrid mode |
 
-**Note:** The ROCm llama.cpp build failed to load `libhipblas.so.3`. The 1bit-systems own engine has its own ROCm stack at `/opt/rocm-therock` which works correctly.
+**Note:** The ROCm llama.cpp build failed to load `libhipblas.so.3`. The 1bit-monster own engine has its own ROCm stack at `/opt/rocm-therock` which works correctly.
 
 ---
 
@@ -111,7 +111,7 @@
 - Auto-start on boot, auto-restart on crash
 - Wrapper: `/home/bcloud/llama-server-gpu.sh`
 
-**1bit-systems stack (also built):**
+**1bit-monster stack (also built):**
 - `zaya_server` — HIP inference + HTTP server (port 8088)
 - `onebitd` — daemon with NPU+GPU hybrid routing
 - `onebit` — CLI agent
@@ -124,7 +124,7 @@
 1. **IOMMU off is mandatory** for Strix Halo inference — +34-38% dense PP (per Frontier Lab)
 2. **Vulkan** is the production backend on Mesa 26.0.3 — proven stable at 982 t/s @ 8K ctx
 3. **Flash attention** helps dense at shallow ctx, hurts MoE at shallow ctx — use selectively
-4. **ROCm HIP** works via 1bit-systems' own stack (TheRock) but not via standard llama.cpp build
+4. **ROCm HIP** works via 1bit-monster' own stack (TheRock) but not via standard llama.cpp build
 5. **System is rock solid** — zero GPU errors across hundreds of benchmark runs
 6. **Systemd production service** is deployed and verified on port 8080
 
@@ -170,7 +170,7 @@ All auto-start on boot, auto-restart on crash.
 ## 8. NPU+GPU Hybrid Inference
 
 Despite IOMMU being off (which disables SVA), the NPU is fully operational.
-The 1bit-systems engine uses explicit DMA instead of SVA, enabling zero-copy
+The 1bit-monster engine uses explicit DMA instead of SVA, enabling zero-copy
 GPU↔NPU cooperation through unified LPDDR5X memory.
 
 ### NPU Status
@@ -180,7 +180,7 @@ GPU↔NPU cooperation through unified LPDDR5X memory.
 | Hardware detected | ✅ `c6:00.1 AMD Strix Halo NPU` |
 | Driver loaded | ✅ `amdxdna` |
 | Device node | ✅ `/dev/accel/accel0` |
-| 1bit-systems backend | ✅ NPU FLM ready (~57 t/s est.) |
+| 1bit-monster backend | ✅ NPU FLM ready (~57 t/s est.) |
 | GPU+NPU Hybrid pipeline | ✅ Active — zero-copy DMA |
 | Pipeline strategy | GPU→attention layers, NPU→expert FFNs |
 | Estimated speedup | 1.4× (pipeline overlap + zero-copy) |
@@ -188,7 +188,7 @@ GPU↔NPU cooperation through unified LPDDR5X memory.
 ### How it works without IOMMU
 
 The amdxdna SVA bind errors in dmesg are from other processes, not the
-1bit-systems engine. The engine uses explicit DMA transfers via the
+1bit-monster engine. The engine uses explicit DMA transfers via the
 unified memory pool, bypassing the need for IOMMU-mediated SVA.
 
 ### Production Setup
@@ -198,7 +198,7 @@ unified memory pool, bypassing the need for IOMMU-mediated SVA.
 | `llama-server-gpu.service` | Qwen3-4B | ROCm HIP | 8080 |
 | `llama-server-74b.service` | ZAYA1-74B | Vulkan | 8081 |
 | nginx gateway | Routing | Lua | 80 |
-| 1bit-systems zaya_server | Hybrid | NPU+GPU | (manual) |
+| 1bit-monster zaya_server | Hybrid | NPU+GPU | (manual) |
 
 ### Model Routing (nginx on port 80)
 

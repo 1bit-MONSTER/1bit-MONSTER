@@ -1,6 +1,6 @@
-# Ollama + 1bit.systems NPU
+# Ollama + 1bit.MONSTER NPU
 
-Point Ollama at the 1bit.systems NPU server for local INT8 inference.
+Point Ollama at the 1bit.MONSTER NPU server for local INT8 inference.
 
 ## Setup
 

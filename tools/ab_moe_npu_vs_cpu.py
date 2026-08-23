@@ -15,11 +15,11 @@ import sys
 import os
 
 MODEL = "/home/bcloud/.config/flm/models/Qwen3.6-35B-A3B-NPU2/model.q4nx"
-ENGINE = "/home/bcloud/projects/1bit-systems/engine/npu/build-fresh/npu_engine_universal"
+ENGINE = "/home/bcloud/projects/1bit-monster/engine/npu/build-fresh/npu_engine_universal"
 PROMPT = [151644, 872, 198, 13048, 151645, 198, 151644, 77091, 198]  # default seq
 STEPS = 4
 
-XCLBIN_DIR = "/home/bcloud/projects/1bit-systems/engine/npu/xclbins"  # overrides stale shell NPU_XCLBIN_DIR
+XCLBIN_DIR = "/home/bcloud/projects/1bit-monster/engine/npu/xclbins"  # overrides stale shell NPU_XCLBIN_DIR
 
 
 def run(npu_moe: int, timeout=1800):

@@ -1,17 +1,17 @@
 [Unit]
-Description=1bit-systems Vision-Language Inference Server
-Documentation=https://1bit.systems
+Description=1bit-monster Vision-Language Inference Server
+Documentation=https://1bit.monster
 After=network.target
 
 [Service]
 Type=simple
 User=1bit
 Group=render
-ExecStart=/opt/1bit-systems/build/1bit vision \
+ExecStart=/opt/1bit-monster/build/1bit vision \
     --port 8099 \
-    --model /opt/1bit-systems/models/Mage-VL-4B.1bp \
-    --mmproj /opt/1bit-systems/models/Mage-ViT.1bp \
-    --tokenizer /opt/1bit-systems/models/qwen3-vl.htok
+    --model /opt/1bit-monster/models/Mage-VL-4B.1bp \
+    --mmproj /opt/1bit-monster/models/Mage-ViT.1bp \
+    --tokenizer /opt/1bit-monster/models/qwen3-vl.htok
 Restart=on-failure
 RestartSec=10
 Environment=OMP_NUM_THREADS=16
@@ -31,8 +31,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 CapabilityBoundingSet=
 # ReadWritePaths needed for ProtectSystem=strict
-ReadWritePaths=/opt/1bit-systems/build
-ReadWritePaths=/opt/1bit-systems/models
+ReadWritePaths=/opt/1bit-monster/build
+ReadWritePaths=/opt/1bit-monster/models
 
 [Install]
 WantedBy=multi-user.target

@@ -34,7 +34,7 @@ if(NOT ZINC_CPP_AVAILABLE)
         message(STATUS "zinc-cpp: using gguf_reader from ${ZINC_REPO_ROOT}")
     else()
         # Try common local paths for development
-        foreach(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../.. /home/bcloud/1bit-systems)
+        foreach(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../.. /home/bcloud/1bit-monster)
             if(EXISTS ${ROOT}/src/gguf_reader.cpp)
                 list(APPEND ZINC_SOURCES ${ROOT}/src/gguf_reader.cpp)
                 list(APPEND ZINC_INCLUDE_DIRS ${ROOT}/include ${ROOT}/src)

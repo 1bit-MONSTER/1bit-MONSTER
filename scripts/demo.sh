@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 1bit.systems — One Binary Demo
+# 1bit.MONSTER — One Binary Demo
 # Run: bash scripts/demo.sh
 # Records terminal session showing: build, model load, inference, watchdog
 set -euo pipefail
@@ -13,7 +13,7 @@ LOGFILE="/tmp/1bit-demo-${TIMESTAMP}.log"
 MODEL="${DEMO_MODEL:-$HOME/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx}"
 
 echo "═══════════════════════════════════════════════" | tee -a "$LOGFILE"
-echo "  1bit.systems — One Binary Demo" | tee -a "$LOGFILE"
+echo "  1bit.MONSTER — One Binary Demo" | tee -a "$LOGFILE"
 echo "  $(date)" | tee -a "$LOGFILE"
 echo "═══════════════════════════════════════════════" | tee -a "$LOGFILE"
 echo "" | tee -a "$LOGFILE"

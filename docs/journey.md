@@ -1,6 +1,6 @@
 # Engineering Journey — Reverse-Engineering the XDNA 2 NPU
 
-> **This is the hero story of 1bit.systems.** It started with a laptop, a disassembler, and no docs: AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime (FastFlowLM) — 22 proprietary `.so` files, 209 xclbin bitstreams, zero documentation. We reverse-engineered the entire stack in 4 days and replaced it with open C++.
+> **This is the hero story of 1bit.MONSTER.** It started with a laptop, a disassembler, and no docs: AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime (FastFlowLM) — 22 proprietary `.so` files, 209 xclbin bitstreams, zero documentation. We reverse-engineered the entire stack in 4 days and replaced it with open C++.
 >
 > Every crash, breakthrough, and bug below is documented in real-time. ~1800+ hours of engineering, all open source, MIT. Since UPDATE 34 the through-line is one binary (`build/1bit`) and one language direction: C++23 for compute kernels, **Mojo 1.0 as the unified language** for everything around them — servers, converters, tooling, control planes. No interpreter at runtime, anywhere.
 
@@ -164,7 +164,7 @@ The CHANGELOG's "reboot.sh watchdog EBUSY fix" entry is correct about the code c
 
 ### eeg-medical archived — redundant with ZUNA1.1
 
-`tools/zuna_port.cpp` (the ZUNA1.1 C++ port, hyperparameters verified against the paper: dim=1024, 16 layers, 8 heads, 382.1M weights) already existed in this engine before this session started — an earlier session had missed that and begun redundant work. Investigating further: **ZUNA1.1 is confirmed trained on the TUH EEG corpus** (per its paper, arXiv 2607.27308, and its predecessor ZUNA1, arXiv 2602.18478) — meaning the project's own TUH→B2 sync (5TB, running since UPDATE 31) would produce duplicate data toward a duplicate objective. Decision executed, fully reversible: `github.com/1bit-systems/eeg-medical` archived — its shipped work (retraining EEG foundation models on data ZUNA1.1 already trained on) was redundant, and its README's core claim ("ZUNA1.1 trained on research data, not clinical") is factually wrong — TUH is clinical data. `tools/zuna_port.cpp` stays in 1bit-systems as the canonical copy; the TUH→B2 sync was killed ~2 days into a ~17-day run. The `eeg-medical.1bit.systems` DNS record was deleted, though the underlying Cloudflare Pages project itself couldn't be (the API token lacked `Pages:Edit` scope) — that token should be rotated.
+`tools/zuna_port.cpp` (the ZUNA1.1 C++ port, hyperparameters verified against the paper: dim=1024, 16 layers, 8 heads, 382.1M weights) already existed in this engine before this session started — an earlier session had missed that and begun redundant work. Investigating further: **ZUNA1.1 is confirmed trained on the TUH EEG corpus** (per its paper, arXiv 2607.27308, and its predecessor ZUNA1, arXiv 2602.18478) — meaning the project's own TUH→B2 sync (5TB, running since UPDATE 31) would produce duplicate data toward a duplicate objective. Decision executed, fully reversible: `github.com/1bit-MONSTER/eeg-medical` archived — its shipped work (retraining EEG foundation models on data ZUNA1.1 already trained on) was redundant, and its README's core claim ("ZUNA1.1 trained on research data, not clinical") is factually wrong — TUH is clinical data. `tools/zuna_port.cpp` stays in 1bit-MONSTER as the canonical copy; the TUH→B2 sync was killed ~2 days into a ~17-day run. The `eeg-medical.1bit.systems` DNS record was deleted, though the underlying Cloudflare Pages project itself couldn't be (the API token lacked `Pages:Edit` scope) — that token should be rotated.
 
 ### Housekeeping: issue triage, repo audit, PR #1573 consolidation
 
@@ -211,7 +211,7 @@ A self-contained track: nextpnr-xilinx + prjxray + openFPGALoader built from scr
 
 ### Scope decisions: JARVIS stays, ZUNA moves out
 
-JARVIS stays in the `1bit-systems` repo (it's an application of the engine, not a separate product — unlike ZUNA, extracted to its own `~/zuna` repo, itself flagged as an open scope-boundary question that gets resolved by archiving eeg-medical entirely in UPDATE 33).
+JARVIS stays in the `1bit-MONSTER` repo (it's an application of the engine, not a separate product — unlike ZUNA, extracted to its own `~/zuna` repo, itself flagged as an open scope-boundary question that gets resolved by archiving eeg-medical entirely in UPDATE 33).
 
 ---
 
@@ -643,7 +643,7 @@ Combined with M=32: ~4ms/tok effective = matches FLM.
 - M=4→8→16 batched decode: dispatch amortization
 - 15.2× total speedup
 - CI pipeline on self-hosted runner
-- All numbers on https://1bit.systems
+- All numbers on https://1bit.monster
 
 ---
 
@@ -717,8 +717,8 @@ matmul. Then we're at ~10 ms/tok.
 ### Live Production Stack
 
 ```
-https://1bit.systems          → 50 TOPS landing page (Cloudflare Pages)
-https://github.com/.../1bit-systems → Full source, benchmarks, journey
+https://1bit.monster          → 50 TOPS landing page (Cloudflare Pages)
+https://github.com/.../1bit-monster → Full source, benchmarks, journey
 PR-Agent: The-PR-Agent v0.41 (DeepSeek) + GitNexus impact reports → auto-review on every PR
 ```
 
@@ -2049,7 +2049,7 @@ The Jun 21-22 clone spike (492 in one day) looks like a scraper or bot. Organic 
 
 - **Production**: FLM proxy on port 9090, pmode=turbo, 94.7 tok/s
 - **C++ engine**: 5 models, 28 tok/s (ALL) / 97 tok/s (v12), auto-detect
-- **Site**: Live at https://1bit.systems, all numbers current
+- **Site**: Live at https://1bit.monster, all numbers current
 - **Release**: 2 tarballs on GitHub, clean install flow
 - **Build**: `npm run build` exits clean
 - **Next**: Fused xclbin port (blocked by IRON Python API)
@@ -2057,7 +2057,7 @@ The Jun 21-22 clone spike (492 in one day) looks like a scraper or bot. Organic 
 
 ### Repos
 
-- `https://github.com/1bit-systems/1bit-systems` — This repo (source of truth)
+- `https://github.com/1bit-MONSTER/1bit-MONSTER` — This repo (source of truth)
 - `https://github.com/bong-water-water-bong/npu-infer` — INT8 engine + xclbin generators
 - `https://github.com/bong-water-water-bong/npu-gpu-cpu` — Handoff docs + unified control plane
 
@@ -2232,7 +2232,7 @@ into one shared, verified module instead of several divergent per-file copies.
 **1BP's own namesake feature had never actually shipped.** `ONEBP_TQ1`/`ONEBP_TQ2`
 existed in the format's `OnebpQuant` enum since it was designed, but every model
 converted so far — including genuinely ternary-trained ones — went through the
-4-bit `Q4NX` path regardless of source precision, for a project called "1bit.systems."
+4-bit `Q4NX` path regardless of source precision, for a project called "1bit.MONSTER."
 TQ2 (symmetric 2-bit ternary, one BF16 scale per 32-element group, no zero-point,
 half of Q4NX's tile size) is now implemented end-to-end: converter, loader,
 on-disk layout. Verified against Bonsai-1.7B (genuinely ternary-trained, Apache-2.0)

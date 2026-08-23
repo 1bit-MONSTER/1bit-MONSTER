@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# tools/train/Makefile — Training pipeline for 1bit.systems
+# tools/train/Makefile — Training pipeline for 1bit.MONSTER
 #
 # Integrates with the rest of 1bit's build system.
 # Training runs in Docker; the Rust binary never touches Python.

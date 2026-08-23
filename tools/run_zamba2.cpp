@@ -6,7 +6,7 @@
 // Run:   ./run_zamba2 /path/to/zamba2.gguf "Hello, world!"
 //
 // This is a minimal test that loads a Zamba2 model from GGUF and
-// generates text. It does not depend on the 1bit.systems engine,
+// generates text. It does not depend on the 1bit.MONSTER engine,
 // making it safe to compile on any machine with a C++17 compiler.
 
 #include "../src/zamba2_engine.h"

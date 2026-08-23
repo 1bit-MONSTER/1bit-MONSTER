@@ -1,4 +1,4 @@
-# 1bit.systems NPU Benchmarks
+# 1bit.MONSTER NPU Benchmarks
 
 > **Status as of 2026-07-20**: This file is historical below this notice —
 > most of it dates to July 3 and predates several architectural changes.
@@ -107,11 +107,11 @@ These are the open-source C++ engine numbers — no FLM, no proprietary code. Si
 
 ---
 
-## What 1bit.systems Has That FLM Doesn't
+## What 1bit.MONSTER Has That FLM Doesn't
 
 *Historical comparison table (July 3 data) — "Production engine" row is now stale; see status notice at top.*
 
-| Feature | 1bit.systems | FastFlowLM |
+| Feature | 1bit.MONSTER | FastFlowLM |
 |---------|-------------|------------|
 | Production engine | ✅ native `npu_xrt` (default since 2026-07-20), FLM proxy kept as fallback (was 94.7 tok/s) | ✅ FLM native |
 | Open-source engine | ✅ C++23, MIT, 69 tok/s (see correction note above) | ❌ |
@@ -316,7 +316,7 @@ iGPU inference tier vs NPU:
 
 ---
 
-## What 1bit.systems Could Run — July 3, 2026 snapshot [HISTORICAL]
+## What 1bit.MONSTER Could Run — July 3, 2026 snapshot [HISTORICAL]
 
 *Superseded by the current model catalog (`models/catalog/README.md`), which now includes the full Zyphra family, 1BP ternary conversions, BlackMamba, and Bonsai — not reproduced here since re-measuring all of it is a separate pass.*
 
@@ -347,7 +347,7 @@ Build ZINC: `cd ~/zinc && /path/to/zig-0.15.2/zig build -Dbackend=vulkan -Doptim
 ---
 
 *Most benchmarks below run July 3, 2026 — historical, see status notice at top for what's current. All numbers verified on-device on Strix Halo at the time.*  
-*git: https://github.com/1bit-systems/1bit-systems*  
+*git: https://github.com/1bit-MONSTER/1bit-MONSTER*  
 *ZINC: https://github.com/deepseek-ai/zinc*  
 *FLM benchmarks: https://fastflowlm.com/docs/benchmarks/*
 

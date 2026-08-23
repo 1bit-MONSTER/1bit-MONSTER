@@ -57,7 +57,7 @@ Priority order (existing momentum first):
 ## Phase 3 — Platform fold (1bit in the Modular ecosystem)
 
 - [ ] **Publish Mojo-built tooling as conda packages** on `modular-community` (prefix.dev) via `github.com/modular/modular-community` PRs (rattler-build `recipe.yaml`). First package: the converter set (`1bit-tools`).
-- [ ] **Agent skills repo** `github.com/1bit-systems/skills` (agentskills.io SKILL.md format, `modular/skills` pattern): engine runbook, 1bit-format converter skills, NPU bring-up. Zero gate to publish.
+- [ ] **Agent skills repo** `github.com/1bit-MONSTER/skills` (agentskills.io SKILL.md format, `modular/skills` pattern): engine runbook, 1bit-format converter skills, NPU bring-up. Zero gate to publish.
 - [ ] **Contribute a `mojo-cpp-interop` skill upstream** — `modular/skills` has none; we own the hard-won knowledge (ffi_bridge pattern, dlopen + OwnedDLHandle). Good-faith platform citizenship, fits the fold.
 - [ ] **Validation via `max benchmark`** — external-server mode measures our server alongside vllm/sglang/trtllm; wire into CI.
 - [ ] **Optional later**: export 1bit NPU kernels as MAX Graph `CustomOp`s (Mojo) so MAX pipelines can use them; only if a concrete consumer appears (YAGNI until then).

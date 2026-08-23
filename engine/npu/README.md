@@ -37,7 +37,7 @@ $ $HOME/torch2aie/toolchain/bin/aiecc --version
 # Expected: aiecc (MLIR-AIE) version 0.3.x
 ```
 
-> **Note:** The MLIR-AIE commit hash is version-locked inside the toolchain tarball. Run `./toolchain/download.sh` to get the one verified against the build scripts. If you update torch2aie independently, xclbin PDI reproducibility is not guaranteed (see [#1076](https://github.com/1bit-systems/1bit-systems/issues/1076)).
+> **Note:** The MLIR-AIE commit hash is version-locked inside the toolchain tarball. Run `./toolchain/download.sh` to get the one verified against the build scripts. If you update torch2aie independently, xclbin PDI reproducibility is not guaranteed (see [#1076](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1076)).
 
 ### Compiler: Peano vs Chess
 
@@ -46,7 +46,7 @@ $ $HOME/torch2aie/toolchain/bin/aiecc --version
 | **Peano** (LLVM-based, shipped with MLIR-AIE toolchain) | INT8 GEMM xclbins | ✅ **Produces correct xclbins.** Recommended for all GEMM builds. |
 | **Chess** (AMD Xilinx proprietary) | Attention kernel (`kernel/edge_attention.cc`) | ✅ Required for NPU attention xclbins. Not needed for GEMM. |
 
-> ⚠️ **Known issue:** xclbins compiled with Peano vs Chess produce different PDI binaries even from the same MLIR source. The shipping xclbins in `xclbins/` were built with **Peano**. If you rebuild with Chess (e.g., via the FastFlowLM pipeline), the resulting PDI will differ and may cause runtime failures. See [#1075](https://github.com/1bit-systems/1bit-systems/issues/1075), [#1076](https://github.com/1bit-systems/1bit-systems/issues/1076).
+> ⚠️ **Known issue:** xclbins compiled with Peano vs Chess produce different PDI binaries even from the same MLIR source. The shipping xclbins in `xclbins/` were built with **Peano**. If you rebuild with Chess (e.g., via the FastFlowLM pipeline), the resulting PDI will differ and may cause runtime failures. See [#1075](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1075), [#1076](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1076).
 
 ### Python Dependencies
 
@@ -217,7 +217,7 @@ This builds and runs the verification harness after compilation.
 
 **Cause:** The MLIR-AIE toolchain embeds build metadata (LLVM version, timestamps) in the PDI. The Peano compiler version and LLVM opaque pointer representation also affect binary output.
 
-**Status:** This is a [known issue](https://github.com/1bit-systems/1bit-systems/issues/1076). The shipped xclbins are verified correct on hardware — they pass GEMM correctness tests and produce coherent decode. A rebuild that produces a different PDI is NOT necessarily wrong, but must be validated against the reference.
+**Status:** This is a [known issue](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1076). The shipped xclbins are verified correct on hardware — they pass GEMM correctness tests and produce coherent decode. A rebuild that produces a different PDI is NOT necessarily wrong, but must be validated against the reference.
 
 **Resolution:**
 1. Verify functional correctness using `bench_gemm` (see Verification section)
@@ -271,7 +271,7 @@ export XRT=/opt/xilinx/xrt
 
 ## Fallback Method: Template-Based Generation
 
-When the MLIR-AIE toolchain build does not reproduce shipping xclbins (see [#1076](https://github.com/1bit-systems/1bit-systems/issues/1076)), use the template-based generator. This clones GEMM xclbins by closest-matching shape, which is functionally correct because the xclbin format is parameterized by RTP registers at runtime.
+When the MLIR-AIE toolchain build does not reproduce shipping xclbins (see [#1076](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1076)), use the template-based generator. This clones GEMM xclbins by closest-matching shape, which is functionally correct because the xclbin format is parameterized by RTP registers at runtime.
 
 ### Using `gen_xclbins.sh`
 
@@ -316,9 +316,9 @@ The xclbins in `engine/npu/xclbins/` ARE verified correct:
 
 | Issue | Description |
 |-------|-------------|
-| [#1052](https://github.com/1bit-systems/1bit-systems/issues/1052) | MLIR-AIE toolchain version pinning for reproducible builds |
-| [#1075](https://github.com/1bit-systems/1bit-systems/issues/1075) | Chess vs Peano compiler PDI divergence |
-| [#1076](https://github.com/1bit-systems/1bit-systems/issues/1076) | xclbin build reproducibility (this document) |
+| [#1052](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1052) | MLIR-AIE toolchain version pinning for reproducible builds |
+| [#1075](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1075) | Chess vs Peano compiler PDI divergence |
+| [#1076](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1076) | xclbin build reproducibility (this document) |
 
 ## Architecture
 

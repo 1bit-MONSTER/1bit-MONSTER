@@ -346,7 +346,7 @@ int main() {
     printf("  gate:    y = y * silu(z)\n");
     printf("  out:     W_out @ y\n");
     printf("\nShared memory: 4*di floats = %.0f KB (Zamba-7B, di=7424)\n", 4*7424.0*4/1024);
-    printf("\nBuilt as part of 1bit-systems — kernels wired into CMake build.\n");
+    printf("\nBuilt as part of 1bit-monster — kernels wired into CMake build.\n");
     return 0;
 }
 #endif

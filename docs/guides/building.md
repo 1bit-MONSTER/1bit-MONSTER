@@ -210,4 +210,4 @@ after cold boot. The hang is intermittent (~1 in 5 boots).
 ```bash
 export HSA_ENABLE_SDMA=0   # avoids the triggering OPTC code path
 ```
-See [issue #1](https://github.com/1bit-systems/1bit-systems/issues/1) for details.
+See [issue #1](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1) for details.

@@ -54,12 +54,12 @@ sync_file packaging/aur/PKGBUILD \
   "^pkgver=${VERSION}$"
 
 # Homebrew formula  ->  version "<VERSION>"
-sync_file packaging/homebrew/1bit-systems.rb \
+sync_file packaging/homebrew/1bit-monster.rb \
   "s/^(  version \")[^\"]*(\")/\1${VERSION}\2/" \
   "^  version \"${VERSION}\"$"
 
 # Homebrew url tag  ->  tags/v<VERSION>.tar.gz
-sync_file packaging/homebrew/1bit-systems.rb \
+sync_file packaging/homebrew/1bit-monster.rb \
   "s|(tags/v)[0-9]{4}\.[0-9]{2}\.[0-9]{2}[A-Za-z0-9.-]*|\1${VERSION}|" \
   "tags/v${VERSION}"
 

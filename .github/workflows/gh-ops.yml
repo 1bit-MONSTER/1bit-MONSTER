@@ -1,6 +1,6 @@
 name: GitHub Ops
 
-# Intent: host-side health report for 1bit-systems built entirely on the
+# Intent: host-side health report for 1bit-monster built entirely on the
 # preinstalled gh CLI — the "onus back to GitHub" workflow, no local runner,
 # no extra actions (not even checkout; everything is API reads).
 # Surfaces code scanning / dependabot / secret scanning alert counts, recent

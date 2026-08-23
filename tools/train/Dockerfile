@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# tools/train/Dockerfile — Training container for 1bit.systems
+# tools/train/Dockerfile — Training container for 1bit.MONSTER
 #
 # Build:   docker build -f tools/train/Dockerfile -t 1bit-train tools/train/
 # Run:     docker run --rm --device /dev/kfd --device /dev/dri \

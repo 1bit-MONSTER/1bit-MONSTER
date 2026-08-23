@@ -83,7 +83,7 @@ void usage(const char* argv0) {
         "JARVIS v2 — voice assistant on the 1bit engine (pure C++).\n\n"
         "usage: %s --model <name> [options]\n\n"
         "  --model NAME        model name (default: first Zyphra model found)\n"
-        "  --weights-dir DIR   default: ./models or $HOME/.local/share/1bit-systems/weights\n"
+        "  --weights-dir DIR   default: ./models or $HOME/.local/share/1bit-monster/weights\n"
         "  --text              chat over stdin instead of the mic\n"
         "  --whisper PATH      whisper GGUF model (voice mode)\n"
         "  --piper PATH        piper binary (default: piper on PATH)\n"
@@ -106,7 +106,7 @@ std::string default_weights_dir() {
     if (env && *env) return env;
     if (std::filesystem::is_directory("models")) return "models";
     const char* home = getenv("HOME");
-    if (home && *home) return std::string(home) + "/.local/share/1bit-systems/weights";
+    if (home && *home) return std::string(home) + "/.local/share/1bit-monster/weights";
     return "/tmp";
 }
 

@@ -150,7 +150,7 @@ def prepare_dataset(dataset_name: str, split: str):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Unsloth GRPO training for 1bit.systems")
+    parser = argparse.ArgumentParser(description="Unsloth GRPO training for 1bit.MONSTER")
     parser.add_argument("--config", type=str, help="YAML config file path")
     parser.add_argument("--model", type=str, help="Override: model name/path")
     parser.add_argument("--dataset", type=str, help="Override: dataset name/path")
