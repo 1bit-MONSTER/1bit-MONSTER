@@ -68,9 +68,13 @@ static bool get_offsets(const char* js, size_t jl, const char* key,
 
 static std::vector<float> load_bf16(const uint8_t* data, uint64_t off, uint64_t size) {
     std::vector<float> v(size / 2);
-    const uint16_t* p = (const uint16_t*)(data + off);
+    // The .q4nx data section starts at an odd file offset (8 + JSON-header
+    // size is odd), so (const uint16_t*)(data+off) is a misaligned load —
+    // UB flagged by the issue #1775 UBSan run, and a hard fault on
+    // ARM/AIE targets. Read the two bytes explicitly (little-endian).
+    const uint8_t* p = data + off;
     for (size_t i = 0; i < v.size(); i++) {
-        uint32_t bits = (uint32_t)p[i] << 16;
+        uint32_t bits = (uint32_t)((uint16_t)p[2 * i] | ((uint16_t)p[2 * i + 1] << 8)) << 16;
         float f; memcpy(&f, &bits, 4); v[i] = f;
     }
     return v;
