@@ -31,6 +31,15 @@ static inline float bf16_to_float(uint16_t v) {
     float f; std::memcpy(&f, &bits, sizeof(f)); return f;
 }
 
+// The .q4nx tile buffer is not guaranteed 2-byte aligned (tensor data can
+// start at an odd byte in the mapped file), so reading the bf16 scales/zps
+// through a (const uint16_t*) cast is a misaligned load — UB flagged by
+// UBSan and a hard fault on ARM/AIE targets (issue #1775 sanitizer run).
+// Read the two bytes explicitly instead.
+static inline uint16_t load_bf16_bytes(const uint8_t* p) {
+    return (uint16_t)(p[0]) | ((uint16_t)(p[1]) << 8);
+}
+
 /**
  * Dequantize an I8 tensor (torch2aie Q4NX chunk format) to float.
  * Output: [out_rows, out_cols] row-major float array (caller must free).
@@ -68,8 +77,8 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
         int tile_row = ir / n_tile_cols;
         int tile_col = ir % n_tile_cols;
 
-        const uint16_t* scales = (const uint16_t*)(rd);
-        const uint16_t* zeros  = (const uint16_t*)(rd + 512);
+        const uint8_t* scales = rd;
+        const uint8_t* zeros  = rd + 512;
         const uint8_t* packed  = rd + 1024;
 
         for (int lr = 0; lr < TILE_ROWS; lr++) {
@@ -82,8 +91,8 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
 
             for (int col = 0; col < TILE_COLS; col++) {
                 int group = col / 32;
-                float scale = bf16_to_float(scales[group * 32 + lr]);
-                float zp = bf16_to_float(zeros[group * 32 + lr]);
+                float scale = bf16_to_float(load_bf16_bytes(scales + (group * 32 + lr) * 2));
+                float zp = bf16_to_float(load_bf16_bytes(zeros + (group * 32 + lr) * 2));
                 if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
                 if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
 
@@ -125,8 +134,8 @@ extern "C" float* dequant_i8_signed_to_float_ex(const uint8_t* data, int i8_rows
         const uint8_t* rd = data + ir * 5120;
         int tile_row = ir / n_tile_cols;
         int tile_col = ir % n_tile_cols;
-        const uint16_t* scales = (const uint16_t*)(rd);
-        const uint16_t* zeros  = (const uint16_t*)(rd + 512);
+        const uint8_t* scales = rd;
+        const uint8_t* zeros  = rd + 512;
         const uint8_t* packed  = rd + 1024;
         for (int lr = 0; lr < TILE_ROWS; lr++) {
             int lane = lr / 16;
@@ -138,8 +147,8 @@ extern "C" float* dequant_i8_signed_to_float_ex(const uint8_t* data, int i8_rows
                 int group = col / 32;
                 // Zaya converter (convert_float32_bins_to_q4nx.py) stores scales
                 // row-major: scales_flat[row*8 + group] (NOT group-major g*32+r).
-                float scale = bf16_to_float(scales[lr * 8 + group]);
-                float zp = bf16_to_float(zeros[lr * 8 + group]);
+                float scale = bf16_to_float(load_bf16_bytes(scales + (lr * 8 + group) * 2));
+                float zp = bf16_to_float(load_bf16_bytes(zeros + (lr * 8 + group) * 2));
                 if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
                 if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
                 // nibble layout (parallel_size=16): byte = lane*2048 + col*8 + (row%16)/2, low nibble = even row
@@ -173,13 +182,13 @@ extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int
         int tile_row = ir / n_tile_cols;
         int tile_col = ir % n_tile_cols;
 
-        const uint16_t* scales = (const uint16_t*)(rd);
+        const uint8_t* scales = rd;
         const int8_t*   values = (const int8_t*)(rd + 512);  // signed INT8
 
         for (int lr = 0; lr < TILE_ROWS; lr++) {
             for (int col = 0; col < TILE_COLS; col++) {
                 int group = col / 32;
-                float scale = bf16_to_float(scales[group * 32 + lr]);
+                float scale = bf16_to_float(load_bf16_bytes(scales + (group * 32 + lr) * 2));
                 if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
 
                 // Signed INT8: row-major layout
