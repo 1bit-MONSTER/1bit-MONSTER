@@ -8,6 +8,7 @@ Pure C++23, zero Python at runtime, MIT.
 | Doc | What it covers |
 |-----|----------------|
 | [journey.md](journey.md) | **The hero story** — reverse-engineering the XDNA 2 NPU in 4 days; full timeline 2026-04-28 → today |
+| [CODEBASE.md](CODEBASE.md) | **Code-level reference** — directory map, build targets, backend catalog, engines, kernels, tools |
 | [audit-trail.md](audit-trail.md) | **1.5 TB of evidence** — where the raw data lives, how to verify any claim, repo↔archive mapping |
 | [guides/getting-started.md](guides/getting-started.md) | Install, build, first inference |
 | [guides/building.md](guides/building.md) | Full build guide (CMake, ROCm/TheRock, targets) |

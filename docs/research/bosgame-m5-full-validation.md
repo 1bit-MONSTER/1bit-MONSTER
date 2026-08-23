@@ -1,4 +1,4 @@
-> **📜 Historical reference** — This document references the closed-source FastFlowLM runtime which has since been fully reverse-engineered and replaced. See [The story](../../README.md#the-story) for the current state.
+> **📜 Historical reference** — This document references the closed-source FastFlowLM runtime which has since been fully reverse-engineered and replaced. See [The story](../../docs/journey.md) for the current state.
 >
 # Bosgame M5 — Full System Validation & Tuning Report
 
