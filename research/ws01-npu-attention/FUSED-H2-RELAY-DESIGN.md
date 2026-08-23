@@ -50,3 +50,30 @@ Channel/buffer budget:
 - f8cd4187 per-MoE-layer h2 BOs — kills the hang mode.
 - f4b74476 split GU→SiLU + D launches with host h2 sync — correct output, the
   #1767 partial-fusion milestone; the fallback if the stream relay stalls.
+
+## Implementation attempt result (stream relay)
+
+The core-stream relay v2 generator (n1_core_fused_gu_silu_d_v2.py) was
+implemented and generates valid MLIR (42 stream ops + 8 flows), but BOTH
+the strixhalo mlir-aie and the dump's npu2_40_toolchain REJECT it at the
+aiecc verifier stage:
+
+    error: 'aie.put_stream' op expects parent op 'aie.core'
+
+The verifier requires `aie.put_stream`/`aie.get_stream` to have `aie.core`
+as their IMMEDIATE parent — stream ops inside `scf.for` loops are not
+accepted. The relay needs 128 stream beats per 512 B chunk × ~56 chunk
+transfers per core per layer; without loops that is ~7k unrolled stream
+ops per core (AIE core code-size limit exceeded). The iron API
+(CascadeFlow, aie.iron) is the remaining path — worker-to-worker streams
+are a different (dataflow-level) lowering that may route around the
+verifier, but it is a complete paradigm rewrite of the generator
+(multi-day, uncertain).
+
+CONCLUSION: the single-launch h2 broadcast cannot be built with the
+available toolchains' core-stream abstraction. The definitive fix options
+are (a) iron-API generator rewrite, (b) a toolchain whose verifier allows
+stream ops in loops, or (c) a hardware mechanism outside these
+abstractions. The committed two-launch split (f4b74476) remains the
+reliable interim; note the shared-path token flips (two-launch included)
+still need the S2MM-visibility investigation.

@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+#
+# n1_core_fused_gu_silu_d_v2.py — fused GU→SiLU→D with core-stream h2 relay
+# (issue #1775 real fix).
+#
+# The single-launch design keeps h2 in CORE TILE-LOCAL buffers and broadcasts
+# it across the 8 cores via core-to-core STREAMS (aie.put_stream/get_stream +
+# aie.flow) — NO DDR round-trip. This eliminates the cross-shim S2MM→MM2S
+# visibility race (TCT≠DDR-visibility on this stack) that made the v1 design
+# run-to-run nondeterministic at MoE layers 3+.
+#
+# ONE launch per MoE layer: GEMM1 (gate_up) → on-core fixed-point SiLU →
+# GEMM2 (down). Halves the 40 decode launches/token (20×GU + 20×D → 20),
+# saving the D launch's fixed overhead (~0.85 ms) + the C1 DDR writeback/
+# readback + the CPU SiLU + the intermediate requant — the FLM-PARITY-PLAN
+# "fused GU+D" milestone (~6.2 → ~7.5 tok/s).
+#
+# Topology: ONE core row (r=1, 8 tiles), M=8 (1x4 vectorized mmul — bit-
+# identical to M=16/M=128), tile (m=8, k=64, n=128). Same object-fifo
+# machinery as n1_core_i8_v27.py (verified on hardware for the M=8 zaya
+# xclbins) — the new pieces are the SiLU phase and the extra streams.
+#
+#   GU: A = residual [M×K] (K=2048), B_gu = INTERLEAVED weights [K×2·n_ff]
+#       (2·n_ff=4096; col 2p = gate[p], col 2p+1 = up[p] — cross-tile SiLU
+#       becomes tile-local). 4 col_groups. C1 [8×128] int32 per tile lives in
+#       a TILE-LOCAL aie.buffer (the fusion's crux; a produce fifo would need
+#       a 3rd core output DMA channel — measured channel-exceeded error).
+#   SiLU: per tile, silu_quant_i8_fused(C1, gs', h2) — 256-entry LUT sigmoid +
+#       quant (see silu_quant.h for the exact arithmetic, dual-compiled with
+#       the CPU reference). h2 [8×64] int8 per (tile, col_group) → DDR (bo4).
+#   D:   A = h2 [M×K] (broadcast from bo4, same tap shape as GU's A),
+#       B_d = [K×H] (H=2048), 2 col_groups. C2 [8×128] int32 → DDR (bo2).
+#
+# BO args (kernel signature (opcode, instr, ninstr, bo0..bo4)):
+#   bo0 = A (residual int8)   bo1 = B_gu (interleaved + gs' header)
+#   bo2 = C2 (int32)          bo3 = B_d   bo4 = h2 scratch [M×K]
+#
+# B stream (per column, ONE fifo set): per GU col_group [gu 32 tiles][gs
+# tile], then D phase [d 32 tiles] × 2 = 196 tiles/launch. The gs tile rides
+# the END of each col_group so its acquire/release is strictly ordered (safe
+# under FIFO or LIFO fifo-release semantics); it is 8 KB (64×128 int8) at bo1
+# offset W + c·8192 (W = K·2·n_ff = 8 MB), its first 512 B the 128 gs' floats
+# for cols [128c, 128c+128), host-folded per token (ag·gs_g | ag·qn_s·gs_u).
+# The header is constant within a launch, so the 4 gs reads reuse it.
+#
+# Channel budget (r=1): core tile 2 in (A, B) + 2 out (H2, C2); mem tile
+# S2MM = B+H2+C2 = 3, MM2S = B+H2+C2 = 3 (at the measured limit); shim[c]
+# MM2S = B_s (shim 0 also carries the A broadcast), S2MM = H2_s + C2_s = 2.
+# UNVERIFIED items for the aiecc build + NPU-verify loop on strixhalo:
+# (1) the 2-outbound S2MM per shim column, (2) the C1 tile-local buffer's
+# address allocation vs the fifo buffers.
+#
+# Usage (matches build_zaya_fused.sh):
+#   python3 n1_core_fused_gu_silu_d.py -K 2048 -N_GU 4096 -N_D 2048 \
+#       -m 8 -k 64 -n 128 -c 8 -b 5 > design.mlir
+import argparse
+import numpy as np
+from aie.extras.context import mlir_mod_ctx
+from aie.dialects.aie import *
+from aie.dialects.aiex import *
+from aie.helpers.dialects.scf import _for as range_
+from aie.dialects.arith import constant as arith_constant
+from aie.extras.types import index
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-M", type=int, default=8)
+    parser.add_argument("-K", type=int, default=2048)
+    parser.add_argument("-N_GU", type=int, default=4096, help="GU output cols (2·n_ff)")
+    parser.add_argument("-N_D", type=int, default=2048, help="D output cols (H)")
+    parser.add_argument("-m", type=int, default=8)
+    parser.add_argument("-k", type=int, default=64)
+    parser.add_argument("-n", type=int, default=128)
+    parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols")
+    parser.add_argument("-b", "--batch-size", type=int, default=2,
+                        help="K-tiles per DMA round (fifo depth = batch+1). MUST be 2: "
+                             "the core L1 is 64 KB and the fused design's buffers "
+                             "(B fifo depth 6 x 8 KB + C1 4 KB + C2 4 KB + H2 + A + "
+                             "8 KB stack ~= 72 KB) do not fit, so the object-fifo "
+                             "transform silently shrinks the depths to 2 and the "
+                             "5-tile batches corrupt the B stream / deadlock the "
+                             "core (measured: C2 never written, h2 garbage from "
+                             "cg>=1). With batch 2 (depth 3): ~43 KB, fits.")
+    args = parser.parse_args()
+    with mlir_mod_ctx() as ctx:
+        my_fused(args.M, args.K, args.N_GU, args.N_D, args.m, args.k, args.n,
+                 args.cols, args.batch_size)
+        print(ctx.module)
+
+
+def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
+    dtype_in = np.int8
+    dtype_out = np.int32
+
+    assert M % m == 0 and K % k == 0 and N_GU % n == 0 and N_D % n == 0
+    assert (N_GU // n) % n_aie_cols == 0 and (N_D // n) % n_aie_cols == 0
+    n_aie_rows = 1
+    n_k = K // k
+    n_cg_gu = N_GU // n // n_aie_cols        # 4 col_groups (GU)
+    n_cg_d = N_D // n // n_aie_cols          # 2 col_groups (D)
+
+    @device(AIEDevice.npu2)
+    def device_body():
+        A_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
+        B_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
+        C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
+        H2_ty = np.ndarray[(m, n // 2), np.dtype[dtype_in]]   # h2 chunk (8×64)
+
+        kernel_o = "mm_32x64x128.o"          # M8_VECTORIZED build (build_zaya_fused.sh)
+        zero = external_func("zero_i32", inputs=[C_ty], link_with=kernel_o)
+        matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
+        silu = external_func("silu_quant_i8_fused", inputs=[C_ty, B_ty, H2_ty], link_with=kernel_o)
+
+        tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + n_aie_rows)]
+        shim_tiles, mem_tiles = tiles[0], tiles[1]
+        core_tiles = tiles[2:]               # core_tiles[j][c] = tile(c, 2+j)
+
+        # A (GU phase) / A2 (D phase): ONE broadcast fifo, shim[0] → all
+        # cores, carrying the residual (bo0) in the GU phase and h2 (bo4) in
+        # the D phase — same tap shape, different source buffer, ordered in
+        # the stream (exactly like the merged B stream). A separate A2 fifo
+        # would give each core a 3rd input DMA channel, which exceeds the
+        # AIE2P core's limit ('aie.tile' op number of input DMA channel
+        # exceeded — measured on tile (0,2) with A + A2 + B).
+        A_c = object_fifo(f"A_C0", shim_tiles[0], [core_tiles[0][c] for c in range(n_aie_cols)],
+                          BATCH_SIZE + 1, A_ty)
+
+        # B stream per column: [gs tile][GU 128][D 64] through one fifo set.
+        B_s = [None] * n_aie_cols
+        B_c = [None] * n_aie_cols
+        for c in range(n_aie_cols):
+            B_s[c] = object_fifo(f"B_S{c}", shim_tiles[c], mem_tiles[c], BATCH_SIZE + 1, B_ty)
+            B_c[c] = object_fifo(f"B_C{c}", mem_tiles[c],
+                                 [core_tiles[0][c]], BATCH_SIZE + 1, B_ty)
+            object_fifo_link(B_s[c], B_c[c])
+
+        # C1: GU accumulator — a TILE-LOCAL aie.buffer (not a fifo). The core
+        # tile has 2 input + 2 output DMA channels (A/B in, H2/C2 out); a
+        # produce-only C1 fifo would need a 3rd output channel
+        # ('aie.tile' op number of output DMA channel exceeded — measured).
+        C1buf = [buffer(core_tiles[0][c], C_ty, name=f"C1_{c}")
+                 for c in range(n_aie_cols)]
+        # Full h2 lives in a CORE TILE-LOCAL buffer (issue #1775): the D phase
+        # reads it directly; the core-stream relay distributes each core's
+        # chunks to all cores (no DDR round-trip, no cross-shim visibility).
+        H2buf = [buffer(core_tiles[0][c], np.ndarray[(m, K), np.dtype[dtype_in]], name=f"H2B_{c}")
+                 for c in range(n_aie_cols)]
+        H2scr = [buffer(core_tiles[0][c], H2_ty, name=f"H2S_{c}")
+                 for c in range(n_aie_cols)]   # silu output staging (8x64)
+        A2scr = [buffer(core_tiles[0][c], H2_ty, name=f"A2S_{c}")
+                 for c in range(n_aie_cols)]   # D-phase A operand staging
+        Gg = [buffer(core_tiles[0][c], B_ty, name=f"Gg_{c}")
+              for c in range(n_aie_cols)]   # DEBUG no-gs: garbage gs buffer
+
+
+
+
+        # h2: core → mem → shim → DDR (bo4). C2: core → mem → shim → DDR (bo2).
+        H2_c = [None] * n_aie_cols; H2_s = [None] * n_aie_cols
+        C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
+        for c in range(n_aie_cols):
+            C2_c[c] = object_fifo(f"C2_C{c}", core_tiles[0][c], mem_tiles[c], 1, C_ty)
+            C2_s[c] = object_fifo(f"C2_S{c}", mem_tiles[c], shim_tiles[c], 1, C_ty)
+            object_fifo_link(C2_c[c], C2_s[c])
+
+        # Core-to-core stream flows (issue #1775 relay). F = forward
+        # (c -> c+1), B = backward (c -> c-1). Stream ports: F_IN/F_OUT on
+        # the switch; the flow routes core[c]'s port to core[c+1]'s port.
+        F_IN, F_OUT, B_IN, B_OUT = 0, 1, 2, 3
+        for c in range(n_aie_cols - 1):
+            flow(core_tiles[0][c], WireBundle.Core, F_OUT,
+                 core_tiles[0][c + 1], WireBundle.Core, F_IN)
+        for c in range(1, n_aie_cols):
+            flow(core_tiles[0][c], WireBundle.Core, B_OUT,
+                 core_tiles[0][c - 1], WireBundle.Core, B_IN)
+
+        for j in range(n_aie_rows):
+            for c in range(n_aie_cols):
+                @core(core_tiles[j][c], stack_size=0x2000)
+                def core_body():
+                    for _ in range_(0xFFFFFFFF):
+                        # ── GU phase: 4 col_groups ──
+                        # The gs' header tile rides the END of each col_group's
+                        # B stream ([gu 32][gs]) so its acquire/release is
+                        # strictly ordered. The 8-float section header (the
+                        # only reliably delivered bytes of the gs tile) is
+                        # identical for every (col, col_group).
+                        for cg in range_(n_cg_gu):
+                            zero(C1buf[c])
+                            for _ in range_(n_k):
+                                Abuf = A_c.acquire(ObjectFifoPort.Consume, 1)
+                                Bbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                matmul(Abuf, Bbuf, C1buf[c])
+                                A_c.release(ObjectFifoPort.Consume, 1)
+                                B_c[c].release(ObjectFifoPort.Consume, 1)
+                            # ── SiLU + quant → h2 (row 0 valid; rows 1-7 zero) ──
+                            Gsbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)  # gs tile
+                            silu(C1buf[c], Gsbuf, H2scr[c])
+                            B_c[c].release(ObjectFifoPort.Consume, 1)    # gs
+                            # copy the (8x64) chunk into H2buf at chunk (cg,c):
+                            # chunk index ki = cg*n_aie_cols + c -> cols
+                            # [ki*64, (ki+1)*64) of the full 8xK h2.
+                            for i_ in range_(m):
+                                for j_ in range_(n // 2):
+                                    H2buf[c][i_, cg * (n // 2) * n_aie_cols + c * (n // 2) + j_] = H2scr[c][i_, j_]
+                        # ── Relay: broadcast the h2 chunks across cores via
+                        # core-to-core STREAMS (issue #1775 real fix: no DDR) ──
+                        # Pass 1 (forward c->c+1): core c receives chunks from
+                        # cores 0..c-1 (via F-in), then sends cores 0..c (via
+                        # F-out). Pass 2 (backward c->c-1): core c sends cores
+                        # c..7 (via B-out); receives cores c+1..7 (via B-in).
+                        # Each chunk = m*(n//2) int8 = 512 B = 128 stream beats.
+                        if c > 0:
+                            for rc in range_(c):          # receive cores 0..c-1
+                                for cg4 in range_(n_cg_gu):
+                                    for b in range_(128):
+                                        v = get_stream(index(), arith_constant(index(), F_IN))
+                                        H2buf[c][b // (n // 2), rc * (n // 2) * n_cg_gu + cg4 * (n // 2) + (b % (n // 2))] = v
+                        if c < n_aie_cols - 1:
+                            for rc in range_(c + 1):      # send cores 0..c
+                                for cg4 in range_(n_cg_gu):
+                                    for b in range_(128):
+                                        put_stream(arith_constant(index(), F_OUT), H2buf[c][b // (n // 2), rc * (n // 2) * n_cg_gu + cg4 * (n // 2) + (b % (n // 2))])
+                        if c < n_aie_cols - 1:
+                            for rc in range_(c + 1, n_aie_cols):   # receive cores c+1..7
+                                for cg4 in range_(n_cg_gu):
+                                    for b in range_(128):
+                                        v = get_stream(index(), arith_constant(index(), B_IN))
+                                        H2buf[c][b // (n // 2), rc * (n // 2) * n_cg_gu + cg4 * (n // 2) + (b % (n // 2))] = v
+                        if c > 0:
+                            for rc in range_(c, n_aie_cols):        # send cores c..7
+                                for cg4 in range_(n_cg_gu):
+                                    for b in range_(128):
+                                        put_stream(arith_constant(index(), B_OUT), H2buf[c][b // (n // 2), rc * (n // 2) * n_cg_gu + cg4 * (n // 2) + (b % (n // 2))])
+
+                        # ── D phase: 2 col_groups; A2 = local H2buf k-slice ──
+                        for _ in range_(n_cg_d):
+                            C2buf = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                            zero(C2buf)
+                            for ki in range_(n_k):
+                                Bbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                # stage A2 = H2buf[:, ki*64:(ki+1)*64] into A2scr
+                                for i_ in range_(m):
+                                    for j_ in range_(n // 2):
+                                        A2scr[c][i_, j_] = H2buf[c][i_, ki * (n // 2) + j_]
+                                matmul(A2scr[c], Bbuf, C2buf)
+                                B_c[c].release(ObjectFifoPort.Consume, 1)
+                            C2_c[c].release(ObjectFifoPort.Produce, 1)
+
+        @runtime_sequence(
+            np.ndarray[(M * K,), np.dtype[dtype_in]],       # A   (bo0, residual)
+            np.ndarray[(K * N_GU,), np.dtype[dtype_in]],    # B_gu (bo1, + gs header)
+            np.ndarray[(M * N_D,), np.dtype[dtype_out]],    # C2  (bo2)
+            np.ndarray[(K * N_D,), np.dtype[dtype_in]],     # B_d (bo3)
+            np.ndarray[(M * K,), np.dtype[dtype_in]],       # H2  (bo4, scratch)
+        )
+        def seq(A, B_gu, C2, B_d, H2):
+            # Microtile layout (v27): element (r, c) of a tile at offset
+            # r·K + (c/8)·8 + (c%8) for A/H2; r·N + (c/8)·8 + (c%8) for C.
+            # B tile (ki, n_tile): sizes [k/8, n/8, 8, 8] strides [8N, 8, N, 1].
+
+            # ── GU phase: 4 col_groups × (32 K-chunks + gs tile) ──
+            # Per col_group the B stream is [gu 32 tiles][gs tile] — the gs
+            # tile rides the END so the core's acquire/release stays strictly
+            # ordered (see core_body). The gs data is constant within a launch
+            # (the host rewrites the header once per token, not per col_group).
+            # NOTE: the gs + h2 writeback tasks are awaited PER col_group (not
+            # deferred to the end) — deferred awaits misalign the DMA token
+            # order against the per-batch awaits and deadlock the launch
+            # (measured: core stalls, C2 never written).
+            for cg in range(n_cg_gu):
+                for ki0 in range(0, n_k, BATCH_SIZE):
+                    ki_end = min(ki0 + BATCH_SIZE, n_k)
+                    at_list, bt_list = [], []
+                    for ki in range(ki0, ki_end):
+                        at = shim_dma_single_bd_task(
+                            A_c, A, offset=ki * k,
+                            sizes=[m // 8, k // 8, 8, 8],
+                            strides=[8 * K, 8, K, 1], issue_token=True)
+                        dma_start_task(at); at_list.append(at)
+                        for c in range(n_aie_cols):
+                            n_tile = cg * n_aie_cols + c
+                            # LINEAR tap: the host packs each (64,128) B tile
+                            # CONTIGUOUSLY in the mmul chunk order (byte s =
+                            # i0*1024 + i1*64 + i2*8 + i3), so one tile is one
+                            # 8 KB linear DMA — the row-major 4D tap read
+                            # 8-byte bursts at 4096-byte strides (cache-line
+                            # waste -> ~2.4 GB/s effective; measured 5.1 ms
+                            # wait for the 12.4 MB/launch weight stream).
+                            bt = shim_dma_single_bd_task(
+                                B_s[c], B_gu,
+                                offset=(ki * (N_GU // n) + n_tile) * (k * n),
+                                sizes=[1, 1, 1, k * n],
+                                strides=[1, 1, 1, 1], issue_token=True)
+                            dma_start_task(bt); bt_list.append(bt)
+                    dma_await_task(*at_list, *bt_list)
+                    dma_free_task(*at_list, *bt_list)
+                # gs' header tile (end of this cg's B stream): the FULL
+                # (64,128) B-tile tap reads the WEIGHT BO header at W (the
+                # first 32 delivered bytes are the reliably delivered 8-float
+                # section header — the kernel reads only gs[0..7]; the rest
+                # of the tile is padding). Slices are 258176 B apart so the
+                # full-tile read stays in-bounds.
+                # gs' header tile (end of this cg's B stream): the GU-style
+                # full-tile tap (i0 stride 8*N_GU) — proven to deliver the
+                # first 32 bytes (the 8-float section header) AND keep the
+                # GU GEMM healthy. Slices are 32 KB apart; the ~258 KB tap
+                # span reads OOB into neighbours, which the kernel ignores.
+                gs_tasks = []
+                for c in range(n_aie_cols):
+                    # LINEAR gs tile: 8 KB contiguous from the 32 KB header
+                    # slice; the host packs the 8-float section header at the
+                    # slice start (v0 = ag*gsec[cg] at byte 0, v4 =
+                    # ag*qn_s*gsec[cg] at byte 16) — the kernel reads only
+                    # gs[0] and gs[4] (the reliably delivered 32 bytes).
+                    gt = shim_dma_single_bd_task(
+                        B_s[c], B_gu,
+                        offset=(K * N_GU) + c * (4 * 32768) + cg * 32768,
+                        sizes=[1, 1, 1, k * n],
+                        strides=[1, 1, 1, 1],
+                        issue_token=True)
+                    dma_start_task(gt); gs_tasks.append(gt)
+                dma_await_task(*gs_tasks)
+                dma_free_task(*gs_tasks)
+            # ── D phase: 2 col_groups × 32 K-chunks (A = h2 broadcast via the
+            # shared A_c fifo + B_d) ──
+            for cg2 in range(n_cg_d):
+                for ki0 in range(0, n_k, BATCH_SIZE):
+                    ki_end = min(ki0 + BATCH_SIZE, n_k)
+                    at_list, bt_list = [], []
+                    for ki in range(ki0, ki_end):
+                        at = shim_dma_single_bd_task(
+                            A_c, H2, offset=ki * k,
+                            sizes=[m // 8, k // 8, 8, 8],
+                            strides=[8 * K, 8, K, 1], issue_token=True)
+                        dma_start_task(at); at_list.append(at)
+                        for c in range(n_aie_cols):
+                            n_tile = cg2 * n_aie_cols + c
+                            bt = shim_dma_single_bd_task(
+                                B_s[c], B_d,
+                                offset=(ki * (N_D // n) + n_tile) * (k * n),
+                                sizes=[1, 1, 1, k * n],
+                                strides=[1, 1, 1, 1], issue_token=True)
+                            dma_start_task(bt); bt_list.append(bt)
+                    dma_await_task(*at_list, *bt_list)
+                    dma_free_task(*at_list, *bt_list)
+                # C2 writeback (v27 C tap; N_D = the C buffer's col stride)
+                c_tasks = []
+                for c in range(n_aie_cols):
+                    n_tile = cg2 * n_aie_cols + c
+                    ct = shim_dma_single_bd_task(
+                        C2_s[c], C2, offset=n_tile * n,
+                        sizes=[m // 8, n // 8, 8, 8],
+                        strides=[8 * N_D, 8, N_D, 1], issue_token=True)
+                    dma_start_task(ct); c_tasks.append(ct)
+                dma_await_task(*c_tasks)
+                dma_free_task(*c_tasks)
+
+
+main()
