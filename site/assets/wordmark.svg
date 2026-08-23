@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-label="1bit.MONSTER">
-  <title>1bit.MONSTER</title>
-  <rect width="1200" height="300" fill="#f5f8fa"/>
-  <text x="600" y="185" text-anchor="middle"
-        font-family="'DM Serif Display',Georgia,'Times New Roman',serif"
-        font-size="150" letter-spacing="-0.02em">
-    <tspan fill="#010202">1bit</tspan><tspan fill="#0230c0">.MONSTER</tspan>
-  </text>
-</svg>
