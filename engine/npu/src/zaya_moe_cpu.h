@@ -30,8 +30,17 @@
 // shapes, not the manifest "shape" field.
 #pragma once
 
+#include <immintrin.h>
+
 #include <cmath>
 #include <vector>
+
+// Fused GU→SiLU→D on-core arithmetic (issue #1759) — dual-compiled with the
+// AIE kernel (mm_kernel_reference.cc) so the exact bit-level contract is
+// verified on the host before the NPU round-trip. Keep OUTSIDE the namespace:
+// it includes <cstdint>, which must not be pulled into a namespace scope.
+// Build with -I engine/npu/generators.
+#include "silu_quant.h"
 
 namespace zaya_moe {
 
@@ -169,6 +178,190 @@ inline void expert_ffn(const MoeDims& d, int expert,
         for (int i = 0; i < n_ff; i++) a += down[j * n_ff + i] * g[i];
         out[j] = a;
     }
+}
+
+// ── Fused GU→SiLU→D int8 contract (issue #1759, one launch per MoE layer) ──
+//
+// The fused NPU kernel computes per layer in ONE launch:
+//   C1[j]     = Σ_i A[i]·B_gu[i][j]        int8×int8→int32, interleaved B_gu
+//               (col 2p = gate[p], col 2p+1 = up[p]; per-column scales gs_g/gs_u)
+//   gate_f    = C1[2p]   · gs'[2p]         gs' = ag·gs_g        (host header)
+//   up_f·qn_s = C1[2p+1] · gs'[2p+1]       gs' = ag·qn_s·gs_u    (host header)
+//   A2[p]     = sat8(round(silu_lut(gate_f)·(up_f·qn_s)))
+//   C2[j]     = Σ_p A2[p]·B_d[p][j]        int8×int8→int32
+//   out[j]    = C2[j] · (gs_d[j] / qn_s)   (host dequant; ag cancels)
+//
+// qn_s = 127/max|h2| is per-token: the host computes it from the SAME int8 GU
+// GEMM (integer accumulation is order-independent → bit-identical c1 to the
+// NPU), which reproduces the two-launch path's per-token adaptation. Measured
+// on zaya1-8b.q4nx: fused corr 0.9993–0.9996 vs float, argmax parity — equal
+// to the current two-launch NPU path. See engine/npu/generators/silu_quant.h
+// for the exact on-core arithmetic (dual-compiled with this reference).
+
+// Per-column int8 pack of one expert's GU weights, TRANSPOSED to the GEMM's
+// B layout [H, 2·n_ff] with the gate/up rows INTERLEAVED (col 2p = gate[p],
+// col 2p+1 = up[p]) so the fused kernel's SiLU is tile-local.
+//   gu  [n_exp, 2·n_ff, H] float (gate block rows [0,n_ff), up [n_ff, 2n_ff))
+//   B   out [H, 2·n_ff] int8,  gs out [2·n_ff] per-column scales
+inline void pack_gu_interleaved(const MoeDims& d, int expert,
+                                const std::vector<float>& gu,
+                                std::vector<int8_t>& B, std::vector<float>& gs) {
+    const int H = d.H, n_ff = d.n_ff;
+    const size_t N = 2 * (size_t)n_ff;
+    B.assign((size_t)H * N, 0);
+    gs.assign(N, 0);
+    const float* gup = &gu[(size_t)expert * N * H];
+    for (size_t j = 0; j < N; j++) {
+        const float* src = gup + (j / 2) * H;          // gate block [0, n_ff)
+        if (j & 1) src += (size_t)n_ff * H;            // up block
+        float amax = 0;
+        for (int i = 0; i < H; i++) { float a = std::fabs(src[i]); if (a > amax) amax = a; }
+        if (amax < 1e-12f) amax = 1.0f;
+        float ts = amax / 127.0f, tis = 127.0f / amax;
+        for (int i = 0; i < H; i++) {
+            float v = src[i];
+            int x = (int)std::roundf(v * tis);
+            B[(size_t)i * N + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+        }
+        gs[j] = ts;
+    }
+}
+
+// Per-column int8 pack of one expert's D weights [H, n_ff] (out, in) → B [n_ff, H].
+inline void pack_d_percol(const MoeDims& d, int expert,
+                          const std::vector<float>& dn,
+                          std::vector<int8_t>& B, std::vector<float>& gs) {
+    const int H = d.H, n_ff = d.n_ff;
+    B.assign((size_t)n_ff * H, 0);
+    gs.assign(H, 0);
+    const float* dnp = &dn[(size_t)expert * H * n_ff];
+    for (int j = 0; j < H; j++) {
+        float amax = 0;
+        for (int i = 0; i < n_ff; i++) { float a = std::fabs(dnp[(size_t)j * n_ff + i]); if (a > amax) amax = a; }
+        if (amax < 1e-12f) amax = 1.0f;
+        float ts = amax / 127.0f, tis = 127.0f / amax;
+        for (int i = 0; i < n_ff; i++) {
+            float v = dnp[(size_t)j * n_ff + i];
+            int x = (int)std::roundf(v * tis);
+            B[(size_t)i * H + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+        }
+        gs[j] = ts;
+    }
+}
+
+// Host-side amax pass for the fused kernel (issue #1759): qn_s = 127/max|h2|.
+//
+// The fused kernel cannot know amax(h2) on-chip without a cross-tile reduction,
+// so the HOST recomputes the GU GEMM's amax from the SAME int8 inputs the NPU
+// uses (A int8 × interleaved B int8; integer accumulation is order-independent
+// → bit-identical c1). qn_s is folded into the per-token gs' header and the
+// D GEMM's int8 A range is adapted per token exactly like the two-launch path.
+// Cost: H·2·n_ff ≈ 8.4M int8 MACs per MoE layer (~0.1–0.3 ms with AVX2, or
+// ~1–2 ms scalar) vs ~2.9 ms saved dispatch per layer. The i-outer loop keeps
+// B access row-major (cache-friendly) — this runs on the decode critical path.
+inline float host_h2_amax_qn_s(const int8_t* A, const int8_t* guB,
+                               const float* guGs, int H, int n_ff, float ag) {
+    const size_t N = 2 * (size_t)n_ff;
+    // AVX2: the interleaved pack (col 2p = gate[p], 2p+1 = up[p]) makes the
+    // even/odd byte lanes the gate/up pairs. Sign-extend 16 bytes, blend the
+    // even (gate) / odd (up) int16 lanes, then _mm256_madd_epi16 sums
+    // adjacent lanes (partner lane = 0) -> 8 int32 per 16 bytes. int32
+    // accumulation is order-independent, so this is bit-identical to the
+    // scalar loop (measured: 3.8 ms -> ~0.3 ms per MoE layer).
+    const int nv = n_ff / 8;   // 8 pairs per vector group (16 bytes)
+    std::vector<__m256i> sgv(nv, _mm256_setzero_si256());
+    std::vector<__m256i> suv(nv, _mm256_setzero_si256());
+    const __m256i ZERO = _mm256_setzero_si256();
+    for (int i = 0; i < H; i++) {
+        int8_t ai = A[i];
+        const __m256i ai16 = _mm256_set1_epi16((short)ai);
+        const int8_t* row = guB + (size_t)i * N;
+        for (int v = 0; v < nv; v++) {
+            const int8_t* rp = row + (size_t)v * 16;
+            __m256i lanes = _mm256_cvtepi8_epi16(
+                _mm_loadu_si128((const __m128i*)rp));   // [g0,u0,...,g7,u7]
+            __m256i gate = _mm256_blend_epi16(lanes, ZERO, 0xAA);
+            __m256i up   = _mm256_blend_epi16(lanes, ZERO, 0x55);
+            sgv[v] = _mm256_add_epi32(sgv[v], _mm256_madd_epi16(gate, ai16));
+            suv[v] = _mm256_add_epi32(suv[v], _mm256_madd_epi16(up, ai16));
+        }
+    }
+    float amax = 0;
+    for (int v = 0; v < nv; v++) {
+        int32_t sg8[8], su8[8];
+        _mm256_storeu_si256((__m256i*)sg8, sgv[v]);
+        _mm256_storeu_si256((__m256i*)su8, suv[v]);
+        for (int k = 0; k < 8; k++) {
+            int p = v * 8 + k;
+            float g = (float)sg8[k] * guGs[2 * p]     * ag;
+            float u = (float)su8[k] * guGs[2 * p + 1] * ag;
+            float h = silu_lut(g) * u;
+            float a = std::fabs(h);
+            if (a > amax) amax = a;
+        }
+    }
+    return amax < 1e-12f ? 1.0f : 127.0f / amax;
+}
+
+// The fused kernel's full forward, emulated on the host — the ground truth for
+// what the NPU fused path must produce. Mirrors silu_quant.h exactly.
+//   A        float hidden state [H] (the router/FFN input, pre-rmsnorm output)
+//   guB,guGs packed interleaved GU (pack_gu_interleaved)
+//   dnB,dnGs packed D (pack_d_percol)
+//   out      float [H]
+//   qn_s_out per-token quantization scale used (127/amax|h2|)
+inline void fused_ffn_int8(const MoeDims& d, const float* A,
+                           const std::vector<int8_t>& guB, const std::vector<float>& guGs,
+                           const std::vector<int8_t>& dnB, const std::vector<float>& dnGs,
+                           float* out, float* qn_s_out) {
+    const int H = d.H, n_ff = d.n_ff;
+    const size_t N = 2 * (size_t)n_ff;
+    // quantize A
+    float ag = 0; for (int i = 0; i < H; i++) ag = std::max(ag, std::fabs(A[i]));
+    ag = ag < 1e-12f ? 1.0f : ag / 127.0f;
+    std::vector<int8_t> Ai(H);
+    for (int i = 0; i < H; i++) {
+        int x = (int)std::roundf(A[i] / ag);
+        Ai[i] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+    }
+    // GU GEMM (int8 → int32; identical arithmetic to the NPU mmul)
+    std::vector<int32_t> C1(N);
+    for (int j = 0; j < (int)N; j++) {
+        int32_t s = 0;
+        for (int i = 0; i < H; i++) s += (int32_t)Ai[i] * guB[(size_t)i * N + j];
+        C1[j] = s;
+    }
+    // host amax pass: h2 = silu_lut(gate_f)·up_f with per-column scales
+    float amax = 0;
+    for (int p = 0; p < n_ff; p++) {
+        float g = (float)C1[2 * p]     * guGs[2 * p]     * ag;
+        float u = (float)C1[2 * p + 1] * guGs[2 * p + 1] * ag;
+        float h = silu_lut(g) * u;
+        amax = std::max(amax, std::fabs(h));
+    }
+    float qn_s = amax < 1e-12f ? 1.0f : 127.0f / amax;
+    // folded header (what the host writes into the kernel's gs' region)
+    std::vector<float> gsH(N);
+    for (int p = 0; p < n_ff; p++) {
+        gsH[2 * p]     = ag * guGs[2 * p];
+        gsH[2 * p + 1] = ag * qn_s * guGs[2 * p + 1];
+    }
+    // kernel SiLU+quant (silu_quant_i8) + D GEMM
+    std::vector<int8_t> A2(n_ff);
+    std::vector<int32_t> C2(H);
+    for (int p = 0; p < n_ff; p++) {
+        float g = (float)C1[2 * p]     * gsH[2 * p];
+        float u = (float)C1[2 * p + 1] * gsH[2 * p + 1];
+        float h = silu_lut(g) * u;
+        A2[p] = silu_sat8((int)std::roundf(h));
+    }
+    for (int j = 0; j < H; j++) {
+        int32_t s = 0;
+        for (int p = 0; p < n_ff; p++) s += (int32_t)A2[p] * dnB[(size_t)p * H + j];
+        C2[j] = s;
+    }
+    for (int j = 0; j < H; j++) out[j] = (float)C2[j] * (dnGs[j] / qn_s);
+    if (qn_s_out) *qn_s_out = qn_s;
 }
 
 } // namespace zaya_moe

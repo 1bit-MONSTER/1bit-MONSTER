@@ -471,9 +471,11 @@ Verified on `zaya1-8b-fresh.q4nx`, prompt "2+2=":
   quantization error, ~9% rms, expected and acceptable; the argmax differs only
   because this early base model's logits are near-flat).
 
-Build:
+Build (needs -I engine/npu/generators for silu_quant.h, included by
+zaya_moe_cpu.h):
 ```bash
-g++ -std=c++23 -O2 -fopenmp -I. -I engine/npu/src -I engine/npu/include -I /usr/include \
+g++ -std=c++23 -O2 -fopenmp -I. -I engine/npu/src -I engine/npu/include -I engine/npu/generators \
+  -I /usr/include \
   -o zaya_npu_runner engine/npu/tools/zaya_npu_runner.cpp engine/npu/src/dequant_q4nx.cpp \
   -lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl
 NPU_XCLBIN_DIR=engine/npu/xclbins ./zaya_npu_runner model.q4nx <tokens...>
@@ -507,10 +509,12 @@ expert's weights every token → ~7.5 s/tok; the engine caches them, see
   detection (`memmem` for "zaya") routes to `zaya_decode_main(argc, argv)`
   before the generic dense/MoE pipeline. The generic path is untouched.
 
-Build (matches build_npu.sh + the extra zaya_decode.cpp):
+Build (matches build_npu.sh + the extra zaya_decode.cpp; -I engine/npu/generators
+is needed for silu_quant.h, the fused-kernel arithmetic included by zaya_moe_cpu.h):
 ```bash
 g++ -std=c++23 -O2 -fopenmp -DMODEL_qwen3_0_6b -DONEBP_SUPPORT \
-    -I. -I include -I engine/npu/src -I engine/npu/include -I /usr/include \
+    -I. -I include -I engine/npu/src -I engine/npu/include -I engine/npu/generators \
+    -I /usr/include \
     -o npu_engine engine/npu/src/npu_engine_universal.cpp \
     engine/npu/src/zaya_decode.cpp engine/npu/src/dequant_q4nx.cpp \
     engine/npu/src/gemm_npu_instructions.cpp \
@@ -554,5 +558,30 @@ to go faster are major, not quick: (1) a fused recurrent CCA+MoE kernel (one
 launch per layer instead of 2, and one dispatch per layer), and (2) xrt::runlist
 batching — but both are blocked by the token-sequential recurrence, which is
 exactly what makes the CCA architecture sequential. A batched variant would need
-the conv_state/vrec recurrence restructured into a parallel scan, which is a
-research-sized change.
+the conv_state/vrec recurrence restructured into a parallel scan (research-sized).
+
+## 22. Session 8 (cont. 10) — fused GU→SiLU→D (issue #1759): contract implemented
+
+The fused kernel (one launch per MoE layer: GU → on-core fixed-point SiLU → D)
+is implemented across the branch:
+
+- `engine/npu/generators/silu_quant.h` — the EXACT on-core arithmetic
+  (256-entry LUT sigmoid over [-4,4] + per-column gs' header + per-token qn_s),
+  dual-compiled into the AIE kernel and the host CPU reference; no libm.
+- `engine/npu/src/zaya_moe_cpu.h` — `pack_gu_interleaved`, `pack_d_percol`,
+  `host_h2_amax_qn_s` (the per-token amax pass), `fused_ffn_int8` (full host
+  emulation of the fused path).
+- `engine/npu/tests/test_fused_silu.cpp` — CPU contract validation on REAL
+  zaya1-8b.q4nx weights + layer-1 residuals: **fused corr 0.99931–0.99958 vs
+  float (identical to the two-launch path), argmax parity 5/5**.
+- `engine/npu/generators/n1_core_fused_gu_silu_d.py` + `build_zaya_fused.sh` —
+  the fused MLIR generator (single core row, M=8) and xclbin build.
+- `engine/npu/src/npu_engine_i8ctx_inc.h` — `packB_into_fused`,
+  `update_fused_header`, `launch_fused`, `dequant_fused` (5-BO kernel call).
+- `engine/npu/src/zaya_decode.cpp` — `NPU_FUSED=1` decode mode (one launch per
+  MoE layer; host amax pass + header fold per token).
+
+**UNVERIFIED on this machine (no NPU/toolchain)**: the aiecc build + NPU-verify
+loop on strixhalo — see the checklist in `build_zaya_fused.sh` (produce-only
+C1 fifo lowering, shim S2MM channel pressure; Design J = C1 DDR round trip is
+the fallback).

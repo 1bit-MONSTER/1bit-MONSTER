@@ -207,10 +207,15 @@ int main(int argc, char** argv) {
     d_ctx.MD  = 128; d_ctx.KD  = m.n_ff;   d_ctx.ND  = d.H;
     const char* xd = getenv("NPU_XCLBIN_DIR") ? getenv("NPU_XCLBIN_DIR") : "engine/npu/xclbins";
     char gu_xp[512], gu_ip[512], d_xp[512], d_ip[512];
-    snprintf(gu_xp, sizeof gu_xp, "%s/final_i8_MOE_GU_zaya.xclbin", xd);
-    snprintf(gu_ip, sizeof gu_ip, "%s/insts_i8_MOE_GU_zaya.txt", xd);
-    snprintf(d_xp,  sizeof d_xp,  "%s/final_i8_MOE_D_zaya.xclbin", xd);
-    snprintf(d_ip,  sizeof d_ip,  "%s/insts_i8_MOE_D_zaya.txt", xd);
+    snprintf(gu_xp, sizeof gu_xp, "%s/final_i8_MOE_GU_zaya_m16.xclbin", xd);
+    snprintf(gu_ip, sizeof gu_ip, "%s/insts_i8_MOE_GU_zaya_m16.txt", xd);
+    snprintf(d_xp,  sizeof d_xp,  "%s/final_i8_MOE_D_zaya_m16.xclbin", xd);
+    snprintf(d_ip,  sizeof d_ip,  "%s/insts_i8_MOE_D_zaya_m16.txt", xd);
+    // Env overrides for A/B-testing alternative xclbin/instruction-stream shapes.
+    if (getenv("NPU_GU_XCLBIN")) snprintf(gu_xp, sizeof gu_xp, "%s", getenv("NPU_GU_XCLBIN"));
+    if (getenv("NPU_GU_INSTS")) snprintf(gu_ip, sizeof gu_ip, "%s", getenv("NPU_GU_INSTS"));
+    if (getenv("NPU_D_XCLBIN"))  snprintf(d_xp,  sizeof d_xp,  "%s", getenv("NPU_D_XCLBIN"));
+    if (getenv("NPU_D_INSTS"))  snprintf(d_ip,  sizeof d_ip,  "%s", getenv("NPU_D_INSTS"));
     if (!gu_ctx.init(dev, gu_xp, gu_ip, 0, NC)) { fprintf(stderr, "GU ctx init failed\n"); return 1; }
     if (!d_ctx.init(dev, d_xp, d_ip, 0, NC))   { fprintf(stderr, "D ctx init failed\n");  return 1; }
     // NOTE: M is always 128 — the v27 microkernel is M=128-baked (4×32-row
@@ -226,46 +231,46 @@ int main(int argc, char** argv) {
     std::vector<float> gu_T((size_t)2 * m.n_ff * d.H), dn_T((size_t)m.n_ff * d.H);
     std::vector<float> gu_out(2 * m.n_ff), silu(m.n_ff);
 
-    // Expert pack cache: per MoE layer, expert -> packed int8 weight + scale.
-    // A hit skips the dequant-transpose-quantize and only memcpys the BO.
-    struct ExpCache { std::unordered_map<int, std::vector<int8_t>> w; std::unordered_map<int, float> s; };
-    std::vector<ExpCache> gu_c(NC), d_c(NC);
-    size_t cache_hits = 0, cache_misses = 0;
+    // Resident-expert weights: one packed weight BO per (MoE layer, expert).
+    // Decode passes the BO handle directly (zero per-token weight memcpy/sync).
+    std::vector<std::vector<std::unique_ptr<xrt::bo>>> gu_bo(NC), d_bo(NC);
+    std::vector<std::vector<std::vector<float>>> gu_cs(NC), d_cs(NC);
+    for (int l = 1; l < NC; l += 2) {
+        gu_bo[l].resize(m.n_exp); d_bo[l].resize(m.n_exp);
+        gu_cs[l].resize(m.n_exp); d_cs[l].resize(m.n_exp);
+    }
 
-    // Pre-warm the expert cache: pack all 16 experts for every MoE (odd) layer
-    // up-front, so decode never pays the dequant-transpose-quantize on a miss.
+    // Pack all 16 experts for every MoE (odd) layer into resident BOs at startup.
     {
         auto tp0 = std::chrono::steady_clock::now();
         for (int l = 1; l < NC; l += 2) {
             auto& w = L[l];
             for (int e = 0; e < m.n_exp; e++) {
                 const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                #pragma omp parallel for schedule(static)
                 for (int j = 0; j < d.H; j++)
                     for (int i = 0; i < 2 * m.n_ff; i++)
                         gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
+                gu_bo[l][e] = gu_ctx.make_weight_bo(dev);
                 float gu_sc = 0;
-                gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
-                int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
-                gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
-                gu_c[l].s[e] = gu_sc;
+                gu_ctx.packB_into(*gu_bo[l][e], gu_T.data(), d.H, 2 * m.n_ff, gu_sc, gu_cs[l][e]);
                 const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                #pragma omp parallel for schedule(static)
                 for (int j = 0; j < m.n_ff; j++)
                     for (int i = 0; i < d.H; i++)
                         dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                d_bo[l][e] = d_ctx.make_weight_bo(dev);
                 float d_sc = 0;
-                d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
-                int8_t* bm2 = (int8_t*)d_ctx.layerB[l]->map();
-                d_c[l].w[e] = std::vector<int8_t>(bm2, bm2 + (size_t)d_ctx.KD * d_ctx.ND);
-                d_c[l].s[e] = d_sc;
+                d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
             }
         }
-        fprintf(stderr, "expert cache pre-warmed in %.0f ms\n",
+        fprintf(stderr, "resident experts packed in %.0f ms\n",
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp0).count());
     }
 
     auto forward = [&](int tok, int pos) -> int {
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
-        double attn_ms = 0, moe_ms = 0;
+        double attn_ms = 0, moe_ms = 0, gu_ms = 0, d_ms = 0;
         std::vector<float> residual(d.H, 0.0f);
         bool has_res = false;
         std::vector<float> prev_router;
@@ -288,10 +293,31 @@ int main(int argc, char** argv) {
                 // CCA attention (CPU)
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
-                for (int i = 0; i < qd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wq[i*H+j]*residual[j]; q[i]=a; }
-                for (int i = 0; i < kd; i++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wk[i*H+j]*residual[j]; k[i]=a; }
-                for (int i = 0; i < hv2; i++){ float a=0; for (int j=0;j<H;j++) a += w.cw.wv1[i*H+j]*residual[j]; vc[i]=a; }
-                for (int i = 0; i < hv2; i++){ float a=0; for (int j=0;j<H;j++) a += w.cw.wv2[i*H+j]*residual[j]; vd[i]=a; }
+                // Q/K/V1/V2 are four independent GEMVs over the same input;
+                // fuse them into one parallel region (uniform 2048-MAC work per
+                // row) so the fork/join cost is paid once, not 4x. Memory-bound
+                // (streams ~20MB/layer of cold weights) -> threads win bandwidth.
+                const int nproj = qd + kd + hv2 + hv2;
+                #pragma omp parallel for schedule(static)
+                for (int ii = 0; ii < nproj; ii++) {
+                    float a = 0;
+                    if (ii < qd) {
+                        for (int j = 0; j < H; j++) a += w.cw.wq[(size_t)ii * H + j] * residual[j];
+                        q[ii] = a;
+                    } else if (ii < qd + kd) {
+                        int i = ii - qd;
+                        for (int j = 0; j < H; j++) a += w.cw.wk[(size_t)i * H + j] * residual[j];
+                        k[i] = a;
+                    } else if (ii < qd + kd + hv2) {
+                        int i = ii - qd - kd;
+                        for (int j = 0; j < H; j++) a += w.cw.wv1[(size_t)i * H + j] * residual[j];
+                        vc[i] = a;
+                    } else {
+                        int i = ii - qd - kd - hv2;
+                        for (int j = 0; j < H; j++) a += w.cw.wv2[(size_t)i * H + j] * residual[j];
+                        vd[i] = a;
+                    }
+                }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
                 zaya_cca::cca_prep(d, w.cw, w.cs, q.data(), k.data(), vc.data(), vd.data(),
                                    qo.data(), ko.data(), vo.data(), pos);
@@ -308,55 +334,30 @@ int main(int argc, char** argv) {
                     float sm=0; for (int t=0;t<seq;t++){sc[t]=expf(sc[t]-mx);sm+=sc[t];}
                     for (int dd=0;dd<d.hd;dd++){float a=0; for(int t=0;t<seq;t++)a+=sc[t]*lv[(size_t)t*d.nkv*d.hd+kv*d.hd+dd]; ao[hh*d.hd+dd]=a/(sm+1e-12f);}
                 }
+                #pragma omp parallel for schedule(static)
                 for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
                 attn_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             } else {
                 auto t0 = std::chrono::steady_clock::now();
-                // MoE FFN (NPU): router on CPU, GEMMs on NPU
+                // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
-                // GU: cache lookup
-                float gu_sc = 0;
-                auto gu_it = gu_c[l].w.find(e);
-                if (gu_it != gu_c[l].w.end()) {
-                    memcpy(gu_ctx.layerB[l]->map(), gu_it->second.data(), (size_t)gu_ctx.KD * gu_ctx.ND);
-                    gu_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-                    gu_sc = gu_c[l].s[e]; cache_hits++;
-                } else {
-                    const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
-                    for (int j = 0; j < d.H; j++)
-                        for (int i = 0; i < 2 * m.n_ff; i++)
-                            gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
-                    gu_ctx.packB(l, gu_T.data(), d.H, 2 * m.n_ff, gu_sc);
-                    int8_t* bm = (int8_t*)gu_ctx.layerB[l]->map();
-                    gu_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)gu_ctx.KD * gu_ctx.ND);
-                    gu_c[l].s[e] = gu_sc; cache_misses++;
-                }
+                gu_ctx.group_scales[l] = gu_cs[l][e];
+                d_ctx.group_scales[l] = d_cs[l][e];
                 float ag = dynamic_ascale(residual.data(), d.H);
-                gu_ctx.go(l, residual.data(), 1, d.H, ag, gu_sc, gu_out.data(), 2 * m.n_ff);
+                auto tgu = std::chrono::steady_clock::now();
+                auto gu_run = gu_ctx.launch_async_with_bo(*gu_bo[l][e], residual.data(), 1, d.H, ag);
+                gu_ctx.finish_async(gu_run, gu_out.data(), 1, 2 * m.n_ff, ag, 0.0f, l);
+                gu_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgu).count();
                 for (int i = 0; i < m.n_ff; i++) {
                     float g = gu_out[i]; if (!std::isfinite(g)) g = 0;
                     silu[i] = (g / (1.0f + expf(-g))) * gu_out[m.n_ff + i];
                 }
-                // D: cache lookup
-                float d_sc = 0;
-                auto d_it = d_c[l].w.find(e);
-                if (d_it != d_c[l].w.end()) {
-                    memcpy(d_ctx.layerB[l]->map(), d_it->second.data(), (size_t)d_ctx.KD * d_ctx.ND);
-                    d_ctx.layerB[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-                    d_sc = d_c[l].s[e]; cache_hits++;
-                } else {
-                    const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
-                    for (int j = 0; j < m.n_ff; j++)
-                        for (int i = 0; i < d.H; i++)
-                            dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
-                    d_ctx.packB(l, dn_T.data(), m.n_ff, d.H, d_sc);
-                    int8_t* bm = (int8_t*)d_ctx.layerB[l]->map();
-                    d_c[l].w[e] = std::vector<int8_t>(bm, bm + (size_t)d_ctx.KD * d_ctx.ND);
-                    d_c[l].s[e] = d_sc; cache_misses++;
-                }
                 float ad = dynamic_ascale(silu.data(), m.n_ff);
-                d_ctx.go(l, silu.data(), 1, m.n_ff, ad, d_sc, moe_out.data(), d.H);
+                auto td = std::chrono::steady_clock::now();
+                auto d_run = d_ctx.launch_async_with_bo(*d_bo[l][e], silu.data(), 1, m.n_ff, ad);
+                d_ctx.finish_async(d_run, moe_out.data(), 1, d.H, ad, 0.0f, l);
+                d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - td).count();
                 // layer-1 per-layer accuracy probe: CPU float MoE vs NPU int8 MoE
                 if (l == 1 && pos == 0) {
                     std::vector<float> cpu_out(d.H);
@@ -376,8 +377,9 @@ int main(int argc, char** argv) {
         for (int i = 0; i < d.H; i++) tmp[i] = h[i] + residual[i];
         rmsnorm(tmp.data(), fnw.data(), d.H);
         std::vector<float> logits(NV);
+        #pragma omp parallel for schedule(static)
         for (int v = 0; v < NV; v++) { float a=0; for (int j=0;j<d.H;j++) a += embed[(size_t)v*d.H+j]*tmp[j]; logits[v]=a; }
-        fprintf(stderr, "[perf] tok %d: attn=%.0f ms moe=%.0f ms\n", pos, attn_ms, moe_ms);
+        fprintf(stderr, "[perf] tok %d: attn=%.0f ms moe=%.0f ms (gu=%.0f d=%.0f)\n", pos, attn_ms, moe_ms, gu_ms, d_ms);
         if (pos == 0) {
             float mn=1e30, mx=-1e30, ss=0;
             for (int v=0; v<NV; v++){ mn=std::min(mn,logits[v]); mx=std::max(mx,logits[v]); ss+=logits[v]*logits[v]; }
@@ -405,9 +407,6 @@ int main(int argc, char** argv) {
     double gen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgen0).count();
     fprintf(stderr, "[perf] %d tokens in %.0f ms (%.1f ms/tok, %.1f tok/s)\n", N_GEN, gen_ms, gen_ms / N_GEN, 1000.0 * N_GEN / gen_ms);
     fflush(stdout);
-    fprintf(stderr, "[cache] hits=%zu misses=%zu (%.1f%% hit)\n", cache_hits, cache_misses,
-            cache_hits + cache_misses ? 100.0 * cache_hits / (cache_hits + cache_misses) : 0.0);
-
     // ── Teardown (issue #1762) ──────────────────────────────────────────────
     // Root cause: the xrt destructors wedge the NPU — NOT a BO sync on destroy
     // (every launch is r.wait()ed before the next and xrt::bo never syncs on
