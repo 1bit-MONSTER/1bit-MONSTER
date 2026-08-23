@@ -2527,6 +2527,7 @@
     <div class="container row-between">
       <span>© 2026 1bit.MONSTER · MIT License</span>
       <a class="meta" href="mailto:sales@1bit.monster">sales@1bit.monster</a>
+      <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support &#8599;</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
     <div class="container">
@@ -2604,12 +2605,6 @@
 
       function money(v) { return '$' + v.toFixed(2); }
 
-      function esc(v) {
-        return String(v).replace(/[&<>"']/g, function (c) {
-          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-        });
-      }
-
       function open() { document.body.classList.add('cart-open'); }
       function close() { document.body.classList.remove('cart-open'); }
 
@@ -2628,11 +2623,11 @@
           var line = prod.p * it.q;
           total += line;
           var meta = it.size ? 'size ' + it.size : '';
-          html += '<div class="cart-item" data-key="' + esc(keyFor(it.id, it.size)) + '">' +
+          html += '<div class="cart-item" data-key="' + keyFor(it.id, it.size) + '">' +
             '<div class="cart-item-tile"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2" y="2" width="9" height="9" rx="2" fill="currentColor"/><rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" stroke-opacity="0.4"/><rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" stroke-opacity="0.4"/><rect x="13" y="13" width="9" height="9" rx="2" stroke="currentColor" stroke-opacity="0.4"/></svg></div>' +
             '<div class="cart-item-info">' +
-              '<p class="cart-item-name">' + esc(prod.n) + '</p>' +
-              (meta ? '<p class="cart-item-meta">' + esc(meta) + '</p>' : '') +
+              '<p class="cart-item-name">' + prod.n + '</p>' +
+              (meta ? '<p class="cart-item-meta">' + meta + '</p>' : '') +
               '<div class="cart-item-foot">' +
                 '<span class="cart-qty">' +
                   '<button type="button" data-dec aria-label="decrease">-</button>' +
