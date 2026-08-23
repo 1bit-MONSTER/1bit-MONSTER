@@ -228,7 +228,7 @@ int zaya_decode_main(int argc, char** argv) {
     std::vector<std::vector<std::unique_ptr<xrt::bo>>> fgu_bo, fd_bo;
     std::vector<std::vector<std::vector<float>>> fgu_cs, fd_cs;
     std::vector<std::vector<std::vector<int8_t>>> fgu_row, fd_row;   // row-major shadows (host amax / emulation)
-    std::unique_ptr<xrt::bo> h2_bo;
+    std::vector<std::unique_ptr<xrt::bo>> h2_bo(NC);  // per-MoE-layer scratch (issue #1775 hang probe)
     if (FUSED) {
         fused_ctx.MD = 8; fused_ctx.KD = d.H; fused_ctx.ND = d.H;
         char fx[512], fi[512];
@@ -237,7 +237,8 @@ int zaya_decode_main(int argc, char** argv) {
         if (getenv("NPU_FUSED_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_XCLBIN"));
         if (getenv("NPU_FUSED_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_INSTS"));
         if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED ctx init failed\n"); return 1; }
-        h2_bo = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
+        for (int l = 1; l < NC; l += 2)
+            h2_bo[l] = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
         fgu_bo.resize(NC); fd_bo.resize(NC); fgu_cs.resize(NC); fd_cs.resize(NC);
         fgu_row.resize(NC); fd_row.resize(NC);
         for (int l = 1; l < NC; l += 2) {
@@ -398,7 +399,7 @@ int zaya_decode_main(int argc, char** argv) {
                     auto tb0 = std::chrono::steady_clock::now();
                     fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
-                    auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo,
+                    auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     auto tb2 = std::chrono::steady_clock::now();
                     fused_ctx.dequant_fused(frun, moe_out.data(), 1, d.H, qn_s, l);
@@ -410,7 +411,7 @@ int zaya_decode_main(int argc, char** argv) {
                                 std::chrono::duration<double, std::milli>(tb3 - tb2).count());
                     if (getenv("NPU_FUSED_DBG") && l == 1 && pos == 0) {
                         // ── minimal debug: h2 + host emulation comparison ──
-                        h2_bo->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                        h2_bo[1]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
                         fprintf(stderr, "  [fused-dbg Am] ");
                         for (int i = 0; i < 8; i++) fprintf(stderr, "%d ", fused_ctx.Am[i]);
                         fprintf(stderr, "\n  [fused-dbg guB k0 c0..15] ");
