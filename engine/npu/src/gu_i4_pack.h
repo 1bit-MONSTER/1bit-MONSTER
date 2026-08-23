@@ -56,6 +56,20 @@ static inline uint16_t f32_to_bf16(float f) {
 //   raw   full gate_up tensor [n_exp*2*n_ff, H] raw (expert rows
 //         [E*2*n_ff, (E+1)*2*n_ff): gate rows [0,n_ff), up rows [n_ff, 2n_ff))
 //   H     hidden (K reduction), n_ff per-expert FFN width
+// ── BO layout writer (regions A/B/C; D = gs header follows, unchanged) ──
+static inline size_t gu_i4_bo_size(int K, int N) {
+    return (size_t)K * N / 2 + (size_t)(K / 32) * N * 2 + (size_t)N * 2;
+}
+
+static inline void write_gu_i4_bo(uint8_t* bo, const GuI4Pack& p) {
+    size_t a = p.nibbles.size();
+    size_t b = p.row_scales.size() * 2;
+    size_t c = p.scol_bf16.size() * 2;
+    std::memcpy(bo, p.nibbles.data(), a);
+    std::memcpy(bo + a, p.row_scales.data(), b);
+    std::memcpy(bo + a + b, p.scol_bf16.data(), c);
+}
+
 static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                                         int H, int n_ff) {
     const size_t N = 2 * (size_t)n_ff;

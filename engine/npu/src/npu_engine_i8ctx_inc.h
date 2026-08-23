@@ -23,6 +23,10 @@
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
 
+// Raw Q4NX + int4 fused GU packing (issue #1769, ws09).
+#include "q4nx_raw.h"
+#include "gu_i4_pack.h"
+
 // Include npu_sequence for init_with_generator (may already be included by caller)
 #if __has_include("npu_utils/npu_instr_utils.hpp")
 #include "npu_utils/npu_instr_utils.hpp"
@@ -746,6 +750,60 @@ struct I8Ctx {
                             + cg * FUSED_GS_SLICE, &gsec0[cg], 4);
         bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         col_out = std::move(col);
+    }
+
+    // ── Fused int4 GU (issue #1769, ws09): raw-Q4NX packing ──
+    // Regions A/B/C are the int4 layout (gu_i4_pack.h): nibbles [0, K*N/2),
+    // row scales [(K/32)*N*2), S_col [N*2) — then the gs-header region
+    // (unchanged, per-token ag/qn_s fold). The kernel's B-path dequant stage
+    // consumes A/B/C and feeds the unchanged int8 mmul.
+    std::unique_ptr<xrt::bo> make_fused_weight_bo_i4(xrt::device& d, int K, size_t n_cols) {
+        int grp_w = k->group_id(4);
+        uint32_t fl = XRT_BO_FLAGS_HOST_ONLY;
+        if (const char* f = getenv("NPU_WBO_FLAGS")) {
+            int v = atoi(f);
+            if (v == 0) fl = 0;
+            else if (v == 1) fl = XRT_BO_FLAGS_CACHEABLE;
+            else if (v == 2) fl = XRT_BO_FLAGS_SVM;
+        }
+        size_t sz = gu_i4_bo_size(K, (int)n_cols) + FUSED_AIE_COLS * FUSED_GS_TILE + FUSED_GS_SLACK;
+        return std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+    }
+
+    // Pack one expert's interleaved GU from RAW Q4NX into the int4 regions.
+    // col_out = S_col (per-column int8 scales — the amax pass's guGs),
+    // row_out = B_shadow (exact int8 reconstruction — the amax pass's guB).
+    void packB_into_fused_i4(xrt::bo& bo, const RawQ4Tensor& raw, int expert,
+                             int H, int n_ff, std::vector<float>& col_out,
+                             std::vector<int8_t>& row_out) {
+        auto pack = pack_gu_fused_i4(raw, expert, H, n_ff);
+        uint8_t* Bm = (uint8_t*)bo.map();
+        write_gu_i4_bo(Bm, pack);
+        // gs-header region: the int4 path's SiLU uses the per-token folded
+        // per-column scales (region C rewritten per token); the legacy
+        // section header region is unused — zero it for determinism.
+        memset(Bm + gu_i4_bo_size(H, 2 * n_ff), 0,
+               FUSED_AIE_COLS * FUSED_GS_TILE + FUSED_GS_SLACK);
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        col_out = pack.scol;
+        row_out = std::move(pack.B_shadow);
+    }
+
+    // Per-token fold of the int4 SiLU scales (the int4 analogue of
+    // update_fused_header): S'[2p] = ag*S_col[2p] (gate), S'[2p+1] =
+    // ag*qn_s*S_col[2p+1] (up), written into the gs-header region (unused by
+    // the int4 path — its 1 MB is plenty for the 16 KB per-column array).
+    // Region C keeps the STATIC S_col for the kernel's B-path dequant. The
+    // kernel's silu stage reads S'[j] per column instead of gs[0]/gs[4].
+    void update_fused_header_i4(xrt::bo& bo, const std::vector<float>& scol,
+                                int n_ff, float ag, float qn_s, int N) {
+        size_t a = (size_t)KD * N / 2 + (size_t)(KD / 32) * N * 2;  // regions A+B
+        float* dst = (float*)((uint8_t*)bo.map() + a + (size_t)N * 2);
+        for (int p = 0; p < n_ff; p++) {
+            dst[2 * p]     = ag * scol[2 * p];
+            dst[2 * p + 1] = ag * qn_s * scol[2 * p + 1];
+        }
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)N * 4, a + (size_t)N * 2);
     }
 
     // Fused D weights: per-column quant (like packB_into) but tile-contiguous
