@@ -66,12 +66,12 @@ const packs = [
   ['mega','Laptop Sticker Mega Pack','10 die-cut vinyl stickers, weatherproof'],
 ];
 function card(name, title, desc){
-  return `<div class="card"><img src="site/assets/merch/preview-sticker-${name}.png" alt="${title}">
+  return `<div class="card"><img src="assets/merch/preview-sticker-${name}.png" alt="${title}">
     <div class="body"><h3>${title}</h3><div class="tag">${desc}</div>
     <div class="files">
-      <a href="site/assets/merch/preview-sticker-${name}.png" target="_blank">preview</a>
-      <a href="site/assets/merch/art-sticker-${name}.png" target="_blank">print png</a>
-      <a href="site/assets/merch/art-sticker-${name}.svg" target="_blank">svg</a>
+      <a href="assets/merch/preview-sticker-${name}.png" target="_blank">preview</a>
+      <a href="assets/merch/art-sticker-${name}.png" target="_blank">print png</a>
+      <a href="assets/merch/art-sticker-${name}.svg" target="_blank">svg</a>
     </div></div></div>`;
 }
 document.getElementById('single').innerHTML = single.map(([n,t,d]) => card(n,t,d)).join('');
