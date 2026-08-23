@@ -77,3 +77,25 @@ stream ops in loops, or (c) a hardware mechanism outside these
 abstractions. The committed two-launch split (f4b74476) remains the
 reliable interim; note the shared-path token flips (two-launch included)
 still need the S2MM-visibility investigation.
+
+## iron-API rewrite (complete generator rewrite — issue #1775)
+
+n1_core_fused_gu_silu_d_iron.py: the ENTIRE fused GU→SiLU→D generator
+rewritten in aie.iron:
+- 8 CoreWorkers (one per column), fused core fn: GU mmul -> on-core SiLU ->
+  h2 held in a CORE-LOCAL buffer -> D GEMM as a CASCADE REDUCE (partial
+  C2 per k-slice summed down the cascade; core 7 writes the output).
+- No h2 DDR round-trip -> the cross-shim S2MM->MM2S visibility race is
+  structurally eliminated.
+- Dataflow: A broadcast fifo (shim0 -> 8 cores), per-column B fifos, per-
+  column C2 writeback fifos, 7 CascadeFlow edges (core c -> c+1).
+- Generates valid MLIR (972 lines: 8 aie.core, 7 aie.cascade_flow, 24
+  kernel calls).
+
+Open item blocking the build+verify: the cascade-reduce kernels
+(cascade_d_first/mid/last, ~40 lines each: partial = A2@B; get_scd/add/
+put_mcd) need the AIE2P cascade intrinsics, which the installed Vitis
+2025.2 aie2p headers do NOT expose (put_mcd/get_scd exist only for aie2
+in adf/stream/me/accessors.h). Options: a Vitis/newer-toolchain aie2p
+cascade intrinsic, or lowering the cascade to the switch-stream path once
+a stream-loop-capable toolchain exists.
