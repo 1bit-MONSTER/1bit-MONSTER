@@ -89,10 +89,32 @@ coherent host-DMA, that's ~30 ms/tok saved ≈ the 6.2 → 8–10 tok/s target f
 issue. D weights (2048×2048 int8) could follow the same trick later (their corr
 propagates linearly — the h2 amplification is GU-specific).
 
+## Host packer (validated, byte-pinned)
+
+`engine/npu/src/gu_i4_pack.h` (`pack_gu_fused_i4`) + `q4nx_raw.h`. BO regions
+per expert (K = H = 2048, N = 2·n_ff = 4096 interleaved):
+
+- **Region A — nibbles [K·N/2 = 4 MB]**: tiles (ki·32 + nt)·4096 B; tile byte
+  s4 = i0·512 + i1·32 + i2·4 + i3/2, row = ki·64+i0·8+i2, col = nt·128+i1·8+i3,
+  even element (i3 even) in the LOW nibble (i4_pack.h contract).
+- **Region B — row scales [(K/32)·N·2 = 512 KB]**: per (K-colgroup i/32, col j)
+  bf16 = scl[gate/up row of j][i/32] — the exact per-element scale, stored as
+  bf16 (what the kernel sees). Index `row_scales[i/32][j]`.
+- **Region C — S_col [N·2 = 8 KB]**: per-column int8 scale amax/127 (bf16).
+- **Region D — gs header** (existing, per-token ag/qn_s fold, unchanged).
+
+Total ~4.52 MB vs 8.4 MB int8 (−46%). The CPU gate's variant E emulates the
+kernel dequant from THESE regions and verifies **byte-identity vs the packer's
+B_shadow: 8,388,608/8,388,608 exact** on every sampled (layer, expert), with
+FFN corr 0.9995–0.9997 (matches variant D). The packer layout is the pinned
+contract for the kernel round.
+
 ## Files
 
-- `engine/npu/tests/test_i4_grouped_fused.cpp` — the CPU gate (raw Q4NX reader,
-  four variants, real activation). Build:
+- `engine/npu/src/q4nx_raw.h` — raw Q4NX accessor (nibbles + per-row scales + zp).
+- `engine/npu/src/gu_i4_pack.h` — the int4 fused GU packer (regions A/B/C).
+- `engine/npu/tests/test_i4_grouped_fused.cpp` — the CPU gate (variants A–E,
+  real activation; variant E = packer roundtrip + byte-identity). Build:
   `g++ -std=c++20 -O2 -I engine/npu/generators -I engine/npu/src ... -o /tmp/t && /tmp/t zaya1-8b.q4nx [layer] [expert] [activation.bin]`
 - `engine/npu/tools/zaya_cpu_runner.cpp` — `NPU_DUMP_MOE_INPUT`/`NPU_DUMP_LAYER`
   hooks to dump real MoE inputs for the gate.
