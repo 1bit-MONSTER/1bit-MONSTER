@@ -63,7 +63,43 @@ cmake --build build --target jarvis_app    # build/jarvis
 ```
 
 Flags: `--model` (required), `--weights-dir`, `--text`, `--whisper`,
-`--piper` / `--piper-model`, `--mic DEVICE`, `--system`, `--max-tokens`.
+`--piper` / `--piper-model`, `--mic DEVICE`, `--system`, `--max-tokens`,
+plus fleet mode: `--mesh-dispatch`, `--mesh-name`, `--port`, `--mesh-port`.
+
+## Fleet mode — JARVIS with a DSH brain on the mesh
+
+`--mesh-dispatch` gives JARVIS **DSH awareness**: no local model, no engine
+init — JARVIS becomes a thin fleet node that dispatches every LLM turn to
+the sibling install that serves the requested model.
+
+```
+user speaks → mic → VAD → STT → [dispatch over the mesh] → TTS → speaker
+                                   │
+                discovers: who serves what? (UDP multicast)
+                decides:    local → best model match → any chat peer
+                posts:      OpenAI-compatible /v1/chat/completions
+```
+
+```bash
+# a fleet node serving the model:
+./build/mesh_peer --name alice --port 18088 --stub-chat --models "Qwen3-4B:stub"
+# JARVIS with no local model, brain on the mesh:
+./build/1bit jarvis --mesh-dispatch --model Qwen3-4B --port 18081
+curl -X POST localhost:18081/v1/jarvis/turn -d '{"text":"what can you do?"}'
+```
+
+- JARVIS **announces itself** on the mesh (`/v1/mesh/*` + `/v1/jarvis/*`),
+  so sibling installs and DSH brains can find it and route to it.
+- `POST /v1/jarvis/turn` is the DSH brain's socket: text in → dispatched
+  reply out (spoken if a piper voice is loaded).
+- The DSH brain (`integrations/dsh/jarvis-brain.js`) does the capability
+  routing: `--say "..." --model ZAYA1-74B` dispatches to the machine that
+  serves that model. Run it as a DSH skill (`jarvis-fleet-brain`) to make
+  DSH the heart and soul of the pipeline.
+- Cold start: JARVIS retries dispatch briefly until neighbors are
+  discovered. Test: `Testing/jarvis_mesh_smoke.sh` (4/4).
+
+**→ [Mesh protocol](mesh-protocol.md)** · **→ [DSH brain](integrations/dsh/README.md)**
 
 ## Status & known limits (honest)
 

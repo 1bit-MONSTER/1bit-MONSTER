@@ -139,30 +139,21 @@ struct I8Ctx {
         return true;
     }
 
-    // ── Regenerate the instruction stream for a different batch M (decode
-    // runs at M=1; init_with_generator bakes M=XM, so every decode launch
-    // executes 128 rows of DMA/compute for 1 row of data). The generated
-    // stream has the same word count for any M (M is baked into descriptor
-    // sizes), so the per-layer insts BOs fit without reallocation. ──
-    bool regen_insts(int M) {
-        if (!initialized || M < 1 || M > MD) return false;
-        npu_sequence seq(device_npu2);
-        gemm_generate_sequence_i8(&seq, (uint32_t)M, (uint32_t)KD, (uint32_t)ND,
-                                  0, 0, false, 0, 0, 0);
-        std::vector<uint32_t>& raw = seq.raw_seq();
-        uint32_t ncmds = raw.back(); raw.pop_back();
-        std::vector<uint32_t> ins;
-        ins.reserve(raw.size() + 4);
-        ins.push_back(0x06040100);
-        ins.push_back(0x00000108);
-        ins.push_back(ncmds);
-        ins.push_back((uint32_t)(raw.size() * 4 + 16));
-        ins.insert(ins.end(), raw.begin(), raw.end());
-        layerInstrData[0] = ins;
-        memcpy(layerInstr[0]->map(), ins.data(), ins.size() * sizeof(uint32_t));
-        layerInstr[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        return true;
-    }
+    // ── M is ALWAYS 128 — there is no valid M<128 instruction stream ──
+    // The v27 microkernel is M=128-baked (4 × 32-row slices; the BD-rotation
+    // schedule covers exactly 4 slices), so gemm_generate_sequence_i8 voids
+    // its M argument: the stream is a pure function of (K, N) and is always
+    // the M=128 stream.  Pre-rework generators wrote M into REG_M / descriptor
+    // offsets, which DEADLOCKED for M<128 (~2 s/launch, kernel never completes:
+    // REG_M cannot resize the baked tiling — issue #1761, AIE2P-FACTS.md §3b).
+    //
+    // Smaller batches MUST reuse the M=128 stream and pass the real row count
+    // as `am` to go()/launch_*: quantize_async zero-pads rows [am, 128) so only
+    // rows [0, am) are valid. That is what npu_engine_universal, zaya_decode
+    // and zaya_npu_runner do for single-token decode. Real small-M streams
+    // require per-shape small-M xclbins (build_xclbins.sh Peano path), not a
+    // runtime regen. (A former regen_insts(int M) re-uploaded an identical
+    // M=128 stream and claimed to resize the batch — removed as misleading.)
 #else
     // Stub: npu_instr_utils.hpp not available — use init() with pre-gen'd files
     bool init_with_generator(xrt::device&, const char*, int, int, int, int) {
@@ -345,7 +336,12 @@ struct I8Ctx {
     // ── Quantize activations into bA ──
     inline int8_t* quantize_async(const float* A, int am, int ak, float ascale) {
         float ais = 1.0f / ascale;
-        memset(Am, 0, (size_t)am * KD);
+        // Zero-pad ALL MD rows (issue #1775): the M=128 stream reads rows
+        // [am, MD) every launch; zeroing only rows [0, am) left stale BO
+        // memory (the previous launch's A) in [am, MD) — an
+        // uninitialized-read-class hazard for any kernel with cross-row
+        // interaction.
+        memset(Am, 0, (size_t)MD * KD);
         for (int m = 0; m < am; m++)
             for (int k = 0; k < ak; k++) {
                 float v = A[m * ak + k];
@@ -363,7 +359,7 @@ struct I8Ctx {
     // use the matching per-row scale (dequant_only_rows).
     inline int8_t* quantize_async_rows(const float* A, int am, int ak,
                                        const float* ascales) {
-        memset(Am, 0, (size_t)am * KD);
+        memset(Am, 0, (size_t)MD * KD);
         for (int m = 0; m < am; m++) {
             float ais = 1.0f / ascales[m];
             for (int k = 0; k < ak; k++) {

@@ -60,8 +60,15 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
 - The ~4ms/launch is the kernel executing its **fixed M=128 stream** (the FLM
   mm.xclbin is baked for XM=128). The generated stream has the SAME word count
   for any M (M is baked into descriptor values, not the stream length).
-- regen_insts(M<XM) DEADLOCKS (~2048ms/launch, kernel never completes): REG_M
-  cannot resize the baked kernel's tiling. M=1 and M=8 both hang.
+- **M is always 128.** The generated stream is a pure function of (K, N):
+  `gemm_generate_sequence_i8` voids its M argument (the v27 microkernel is
+  M=128-baked: 4 × 32-row slices, BD-rotation schedule covers exactly 4 slices).
+  Pre-rework generators wrote M into REG_M/descriptor offsets — regen_insts(M<XM)
+  DEADLOCKED (~2048ms/launch, kernel never completes) because REG_M cannot
+  resize the baked kernel's tiling (M=1 and M=8 both hung; issue #1761). The
+  misleading `regen_insts(int M)` path was removed; smaller batches MUST reuse
+  the M=128 stream with `am` = real row count (quantize_async zero-pads rows
+  [am, 128)).
 - Pre-compiled `_v` streams are WORSE: 99-150K words → ~154ms/launch → 16.4s/token
   (the npu_engine_cb path). The runtime generator's 32K-word streams are the
   good path (35x faster).
@@ -75,6 +82,25 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
 - Correctness caveat: the generated path's output was never oracle-validated
   (the single-core-row vs multi-row WARN). Verify tokens vs the CPU engine
   before trusting any speedup.
+
+## 3c. Teardown wedge (issue #1762) — xrt destructors hang after decode
+
+- `zaya_decode.cpp` / `zaya_npu_runner.cpp` end with `_exit(0)` (was `exit(0)`)
+  because running the xrt destructor chain after a decode session wedges the NPU
+  (process hangs after the last token). Same family as journey.md UPDATE 32/33.
+- Root cause: NOT a BO sync on destroy (every launch is `r.wait()`ed before the
+  next; `xrt::bo` never syncs on destruction — sync is always explicit) and NOT
+  an ordering bug (reverse-declaration order BOs → kernel → hw_context → device
+  is correct). After a session's hundreds of DPU executions the AIE firmware
+  context is degraded/fatal (DPU PC stuck at 0xffffffff; "every mailbox call
+  fails"), and the hwctx/BO release path (dma-buf/IOMMU free + context teardown)
+  issues mailbox calls to the dead firmware that never return. The driver's
+  `aie2_hw_reset()` self-heal only fires on job timeouts, not release-path ioctl
+  hangs — recovery is reboot-only.
+- Fix: default teardown flushes stdio explicitly then `_exit(0)` (no atexit /
+  static dtors — same pattern as npu_engine_universal and the #1426 fix). Set
+  `NPU_CLEAN_TEARDOWN=1` to run the real destructors and return normally (safe
+  on a fresh boot with a healthy driver; will hang if the firmware is degraded).
 
 ## 4. XRT dispatch protocol (matches what engine/npu already does)
 

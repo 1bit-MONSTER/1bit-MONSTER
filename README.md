@@ -170,6 +170,25 @@ No cloud, no Python in the hot path.
 
 **→ [How the JARVIS pipeline works](docs/jarvis.md)**
 
+## The Mesh — self-aware installs, out of the box
+
+Every install is a network node: it announces itself on the LAN (UDP
+multicast), discovers sibling 1bit-MONSTER installs, and **starts asking
+questions** — *"want to hook up and integrate?"* — then handshakes and
+federates (shared routing, model exchange, load sharing). Zero config, zero
+model weights required for the network to come alive; a DSH brain
+(`integrations/dsh/`) upgrades the questions from templates to your local
+model's own words.
+
+```bash
+cmake --build build --target mesh_peer -j     # or: 1bit unified (mesh on by default)
+./build/mesh_peer --name alice --port 18088
+./build/mesh_peer --name bob   --port 18089   # they find each other immediately
+curl http://127.0.0.1:18088/v1/mesh/peers     # 👋 there's bob
+```
+
+**→ [Mesh protocol](docs/mesh-protocol.md)** · **→ [DSH brain](integrations/dsh/README.md)**
+
 ## Learn more
 
 - **[Documentation index](docs/README.md)** — start here
@@ -178,7 +197,7 @@ No cloud, no Python in the hot path.
 - **[The engineering journey](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 - **[Contributing](CONTRIBUTING.md)**
 
-> **[MAX XDNA backend](https://github.com/1bit-systems/max-xdna-backend)** — secondary evidence repo (MIT): proves the XDNA 2 NPU can be driven from outside AMD tooling. The engine itself is MAX-free by design.
+> **XDNA 2 NPU, driven from outside AMD tooling** — the measured evidence lives in-repo: [AIE2P hardware facts](engine/npu/AIE2P-FACTS.md) (bf16 RNI rounding, dispatch costs) and the [NPU backend](engine/npu/). The engine itself is MAX-free by design.
 
 ## License
 
