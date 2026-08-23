@@ -1,8 +1,40 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
-<circle cx="600.0" cy="600.0" r="545" fill="#021621" stroke="#0e80be" stroke-width="4"/>
-<text x="600" y="470" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="280" fill="#e7f6fd" letter-spacing="0">NPU</text>
-<text x="600" y="700" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="100" fill="#ff9f1c" letter-spacing="14">UNLOCKED</text>
-<line x1="380" y1="800" x2="820" y2="800" stroke="#0e80be" stroke-width="3"/>
-<text x="600" y="865" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#a0d9f8" letter-spacing="4">XDNA 2 · 32 TILES · INT8</text>
-<text x="600" y="940" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="32" fill="#5d9ec2" letter-spacing="4">REVERSE-ENGINEERED · OPEN SOURCE</text>
+<polygon points="1145,600 872,1072 328,1072 55,600 328,128 872,128" fill="#ffffff" stroke="#0e1217" stroke-width="5"/>
+<rect x="464" y="200" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="498" y="200" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="532" y="200" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="566" y="200" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="600" y="200" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="634" y="200" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="668" y="200" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="702" y="200" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="464" y="234" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="498" y="234" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="532" y="234" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="566" y="234" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="600" y="234" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="634" y="234" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="668" y="234" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="702" y="234" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="464" y="268" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="498" y="268" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="532" y="268" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="566" y="268" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="600" y="268" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="634" y="268" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="668" y="268" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="702" y="268" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="464" y="302" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="498" y="302" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="532" y="302" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="566" y="302" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="600" y="302" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="634" y="302" width="26" height="26" rx="4" fill="#6a6f76"/>
+<rect x="668" y="302" width="26" height="26" rx="4" fill="#0e1217"/>
+<rect x="702" y="302" width="26" height="26" rx="4" fill="#6a6f76"/>
+<text x="600" y="525" text-anchor="middle" dominant-baseline="central" font-family="'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="200" fill="#0e1217" letter-spacing="0" font-weight="900">NPU</text>
+<text x="600" y="665" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="70" fill="#0e1217" letter-spacing="12">UNLOCKED</text>
+<line x1="340" y1="752" x2="860" y2="752" stroke="#0e1217" stroke-width="3"/>
+<text x="600" y="822" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="34" fill="#0e1217" letter-spacing="4">XDNA 2 · 32 TILES · INT8</text>
+<text x="600" y="892" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#6a6f76" letter-spacing="4">REVERSE-ENGINEERED · OPEN SOURCE</text>
 </svg>

@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
-<circle cx="600.0" cy="600.0" r="545" fill="#021621" stroke="#0e80be" stroke-width="4"/>
-<text x="600" y="430" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="200" fill="#00e5ff" letter-spacing="0">ZERO</text>
-<text x="600" y="660" text-anchor="middle" dominant-baseline="central" font-family="'DM Serif Display', Georgia, serif" font-size="200" fill="#ff9f1c" letter-spacing="0">PYTHON</text>
-<line x1="380" y1="780" x2="820" y2="780" stroke="#0e80be" stroke-width="3"/>
-<text x="600" y="850" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="44" fill="#a0d9f8" letter-spacing="4">100% C++23 · ONE BINARY · ANY CHIP</text>
-<text x="600" y="925" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="34" fill="#5d9ec2" letter-spacing="4">NPU + GPU + CPU · SAME BINARY</text>
+<polygon points="600,55 985,215 1145,600 985,985 600,1145 215,985 55,600 215,215" fill="#ffffff" stroke="#0e1217" stroke-width="5"/>
+<text x="600" y="420" text-anchor="middle" dominant-baseline="central" font-family="'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="185" fill="#0e1217" letter-spacing="0" font-weight="900">ZERO</text>
+<text x="600" y="600" text-anchor="middle" dominant-baseline="central" font-family="'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="185" fill="#0e1217" letter-spacing="0" font-weight="900">PYTHON</text>
+<line x1="452" y1="692" x2="748" y2="508" stroke="#0e1217" stroke-width="16"/>
+<line x1="340" y1="792" x2="860" y2="792" stroke="#0e1217" stroke-width="3"/>
+<text x="600" y="862" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="32" fill="#0e1217" letter-spacing="2">100% C++23 · ONE BINARY · ANY CHIP</text>
+<text x="600" y="932" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#6a6f76" letter-spacing="4">NPU + GPU + CPU · SAME BINARY</text>
 </svg>
