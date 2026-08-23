@@ -28,6 +28,8 @@
 #include "silu_quant.h"
 #include "i4_pack.h"
 #include "dequant_q4nx.h"
+#include "q4nx_raw.h"
+#include "gu_i4_pack.h"
 
 #include <cstdio>
 #include <cstring>
@@ -62,55 +64,6 @@ static bool get_offsets(const char* js, size_t jl, const char* key,
         p = q + kl;
     }
     return false;
-}
-
-// Raw Q4NX accessor for one [rows, cols] tensor (torch2aie chunk layout,
-// dequant_q4nx.cpp): per 5120-byte I8 row:
-//   [0..511]    256 bf16 scales, Zaya layout scales[lr*8+g] (g = col/32)
-//   [512..1023] 256 bf16 zero points (0 for Zaya)
-//   [1024..]    packed int4: lane = row/16; byte = lane*2048 + col*8 +
-//               (row%16)/2; low nibble = even row, two's-complement int4.
-struct RawQ4Tensor {
-    int rows = 0, cols = 0;
-    std::vector<int8_t>  q4;    // [rows, cols] signed int4
-    std::vector<float>   scl;   // [rows, cols/32] bf16 scales
-};
-
-static RawQ4Tensor read_q4nx_raw(const uint8_t* D, uint64_t off, int i8_rows, int cols) {
-    // Each 5120-byte I8 row is ONE 32x256 tile (dequant_q4nx.cpp); the tensor
-    // is a tile grid with n_tile_cols = cols/256.
-    const int n_tc = cols / 256;
-    RawQ4Tensor t;
-    t.rows = i8_rows * 32;   // 32 rows per I8 row
-    t.cols = cols;
-    t.q4.assign((size_t)t.rows * cols, 0);
-    t.scl.assign((size_t)t.rows * (cols / 32), 0.0f);
-    const uint8_t* rd = D + off;
-    for (int ir = 0; ir < i8_rows; ir++) {
-        int tile_row = ir / n_tc, tile_col = ir % n_tc;
-        const uint8_t* scales = rd + (size_t)ir * 5120;
-        const uint8_t* packed = rd + (size_t)ir * 5120 + 1024;
-        for (int lr = 0; lr < 32; lr++) {
-            int lane = lr / 16, lane_row = lr % 16;
-            int byte_idx = lane_row / 2, nib = lr % 2;
-            const uint8_t* lane_data = packed + lane * (256 * 8);
-            int row = tile_row * 32 + lr;
-            for (int c = 0; c < 256; c++) {
-                int col = tile_col * 256 + c;
-                uint8_t b = lane_data[c * 8 + byte_idx];
-                int q = nib == 0 ? (b & 0x0F) : ((b >> 4) & 0x0F);
-                t.q4[(size_t)row * cols + col] = (int8_t)(q < 8 ? q : q - 16);
-            }
-            for (int g = 0; g < 8; g++) {
-                uint16_t v = (uint16_t)scales[(lr * 8 + g) * 2] |
-                             ((uint16_t)scales[(lr * 8 + g) * 2 + 1] << 8);
-                uint32_t bits = (uint32_t)v << 16;
-                float f; memcpy(&f, &bits, 4);
-                t.scl[(size_t)row * (cols / 32) + tile_col * 8 + g] = f;
-            }
-        }
-    }
-    return t;
 }
 
 static int get_top_int(const char* js, size_t jl, const char* key) {
@@ -155,7 +108,7 @@ struct FusedOut {
 // A: current fused — int8 GU, per-section (1024-col) scales.
 // B: int4 per-column scale (uniform over K).
 // C: int4 per-(32-row, 32-col-group) scales (the proposal).
-enum class GuMode { I8_SECTION, I4_PERCOL, I4_GROUP, I4_ONCHIP_DEQ, GU_NOISE };
+enum class GuMode { I8_SECTION, I4_PERCOL, I4_GROUP, I4_ONCHIP_DEQ, GU_NOISE, PACKER_RT };
 
 // GU weight [H, 2*n_ff] float (gate cols [0,n_ff), up [n_ff, 2n_ff)), the
 // GEMM B operand. n_ff = 2048, H = 2048.
@@ -165,7 +118,8 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
                              const std::vector<float>& dnGs,     // [H] per-col D scales
                              int H, int n_ff, GuMode mode,
                              const RawQ4Tensor* raw = nullptr,   // Q4NX nibbles+scales
-                             const std::vector<float>* scol = nullptr) {
+                             const std::vector<float>* scol = nullptr,
+                             const GuI4Pack* pack = nullptr) {   // packer roundtrip
     const size_t N = 2 * (size_t)n_ff;
     FusedOut fo;
     fo.out.assign(H, 0.0f);
@@ -189,6 +143,33 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
     std::vector<float>   sc_grp;    // per-(32-row, 32-col-group) [H/32, N/32]
     const int G_R = H / 32, G_C = (int)(N / 32);
 
+    // PACKER_RT: consume the packer's actual byte layout (nibbles +
+    // row_scales + scol) exactly as the kernel will — validates that the
+    // packer and the on-chip dequant agree byte-for-byte (B_shadow).
+    if (mode == GuMode::PACKER_RT) {
+        B_i8.assign((size_t)H * N, 0);
+        const size_t CG = N / 32;
+        for (int i = 0; i < H; i++)
+            for (size_t j = 0; j < N; j++) {
+                // tile (ki, nt), element (i0,i1,i2,i3): row = ki*64+i0*8+i2,
+                // col = nt*128+i1*8+i3. Nibble byte s4 = i0*512+i1*32+i2*4+i3/2.
+                int ki = i / 64, i0 = (i % 64) / 8, i2 = (i % 8);
+                size_t nt = j / 128, i1 = (j % 128) / 8, i3 = j % 8;
+                size_t tbase = ((size_t)ki * (N / 128) + nt) * GuI4Pack::TILE_BYTES;
+                size_t byte_off = tbase + (size_t)i0 * 512 + i1 * 32 + i2 * 4 + i3 / 2;
+                uint8_t b = pack->nibbles[byte_off];
+                int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
+                if (q4 >= 8) q4 -= 16;
+                // row scale from region B: [i][j/32] bf16
+                uint16_t sb = pack->row_scales[(size_t)(i / 32) * N + j];
+                uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
+                float w = (float)q4 * srow;
+                float v = w / pack->scol[j];
+                int x = (int)std::roundf(v);
+                B_i8[(size_t)i * N + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+            }
+        fo.bytes_per_layer = (double)H * N / 2 + (double)H * (N / 32) * 2 + (double)N * 2;
+    }
     // I4_ONCHIP_DEQ: B'' = round(q4 * s_row * 127 / S_col) — the exact int8
     // values the host int8 path packs, computed on-chip from Q4NX int4 +
     // per-row scales. No re-quantization: q4/s are the raw Q4NX data, so the
@@ -328,16 +309,16 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
             for (int i = 0; i < H; i++) s += (int64_t)Aq[i] * B_i8[(size_t)i * N + j];
             gu_out[j] = (float)s * ag * sc_sec[j / 1024];
         }
-    } else if (mode == GuMode::I4_ONCHIP_DEQ) {
+    } else if (mode == GuMode::I4_ONCHIP_DEQ || mode == GuMode::PACKER_RT) {
         // int8 B'' with per-column scales (streamed as dequant metadata):
         // identical to the two-launch per-column int8 path.
         for (size_t j = 0; j < N; j++) {
             int64_t s = 0;
             for (int i = 0; i < H; i++) s += (int64_t)Aq[i] * B_i8[(size_t)i * N + j];
-            gu_out[j] = (float)s * ag * scol->at(j);
+            gu_out[j] = (float)s * ag * (scol ? scol->at(j) : pack->scol[j]);
             if (getenv("NPU_I4_DBG") && j < 3)
                 fprintf(stderr, "[D] gemm j=%zu C1=%lld gu=%.4e (ag=%.4e scol=%.4e)\n",
-                        j, (long long)s, gu_out[j], ag, scol->at(j));
+                        j, (long long)s, gu_out[j], ag, scol ? scol->at(j) : pack->scol[j]);
         }
     } else if (mode == GuMode::I4_PERCOL) {
         for (size_t j = 0; j < N; j++) {
@@ -521,6 +502,15 @@ int main(int argc, char** argv) {
     // host streams per-column int8 scales S_col[j] = max_i |W[i][j]| as
     // dequant metadata (the same values the current int8 pack computes).
     auto raw_all = read_q4nx_raw(D, gu_off, gu_i8_rows, H);
+    {
+        float zpmax = 0; int zpn = 0;
+        for (size_t k = 0; k < raw_all.zp.size(); k++) {
+            float a = std::fabs(raw_all.zp[k]);
+            if (a > zpmax) zpmax = a;
+            if (raw_all.zp[k] != 0.0f) zpn++;
+        }
+        fprintf(stderr, "[zp] nonzero=%d/%zu max|zp|=%g\n", zpn, raw_all.zp.size(), zpmax);
+    }
     // Slice to expert E: rows [E*2n_ff, (E+1)*2n_ff) — gate block [0,n_ff),
     // up block [n_ff, 2n_ff) in expert-relative row space.
     RawQ4Tensor raw_gu;
@@ -567,6 +557,37 @@ int main(int argc, char** argv) {
     auto vb = fused_ffn_gu(A, W, dnB, dnGs, H, n_ff, GuMode::I4_PERCOL);
     auto vc = fused_ffn_gu(A, W, dnB, dnGs, H, n_ff, GuMode::I4_GROUP);
     auto vd = fused_ffn_gu(A, W, dnB, dnGs, H, n_ff, GuMode::I4_ONCHIP_DEQ, &raw_gu, &scol_gu);
+
+    // ── Packer roundtrip (variant E): pack via gu_i4_pack.h, emulate the
+    //    kernel dequant from the packed layout, verify byte-identity vs
+    //    B_shadow and corr vs float. ──
+    auto pack = pack_gu_fused_i4(raw_all, E, H, n_ff);
+    auto ve = fused_ffn_gu(A, W, dnB, dnGs, H, n_ff, GuMode::PACKER_RT, nullptr, nullptr, &pack);
+    // byte-identity: the packer's B_shadow vs the emulated B'' — recompute
+    // B'' the same way (emulate again on the pack layout) and compare.
+    {
+        const size_t Np = 2 * (size_t)n_ff, CGp = Np / 32;
+        int neq = 0, ntot = H * (int)Np;
+        for (int i = 0; i < H; i++)
+            for (size_t j = 0; j < Np; j++) {
+                int ki = i / 64, i0 = (i % 64) / 8, i2 = (i % 8);
+                size_t nt = j / 128, i1 = (j % 128) / 8, i3 = j % 8;
+                size_t tbase = ((size_t)ki * (Np / 128) + nt) * GuI4Pack::TILE_BYTES;
+                size_t byte_off = tbase + (size_t)i0 * 512 + i1 * 32 + i2 * 4 + i3 / 2;
+                uint8_t b = pack.nibbles[byte_off];
+                int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
+                if (q4 >= 8) q4 -= 16;
+                uint16_t sb = pack.row_scales[(size_t)(i / 32) * Np + j];
+                uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
+                float w = (float)q4 * srow;
+                float v = w / pack.scol[j];
+                int x = (int)std::roundf(v);
+                int8_t bpp = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                if (bpp == pack.B_shadow[(size_t)i * Np + j]) neq++;
+            }
+        fprintf(stderr, "  [packer] B'' byte-identity vs B_shadow: %d/%d exact\n", neq, ntot);
+        if (neq != ntot) { fprintf(stderr, "FAIL: packer/kernel-dequant mismatch\n"); return 1; }
+    }
     if (getenv("NPU_I4_DBG")) {
         {
             uint16_t v0 = (uint16_t)D[off] | ((uint16_t)D[off+1] << 8);
@@ -608,13 +629,18 @@ int main(int argc, char** argv) {
             corr(vc.out, ref), corr(vc.gu, ref_gu), corr(vc.h2, ref_h2), vc.bytes_per_layer / 1e6);
     fprintf(stderr, "  D. int4 on-chip deq  FFN corr=%.6f  GU corr=%.6f  h2 corr=%.6f  bytes=%.1f MB (RAW Q4NX + on-chip dequant)\n",
             corr(vd.out, ref), corr(vd.gu, ref_gu), corr(vd.h2, ref_h2), vd.bytes_per_layer / 1e6);
+    fprintf(stderr, "  E. packer roundtrip  FFN corr=%.6f  GU corr=%.6f  h2 corr=%.6f  bytes=%.1f MB (gu_i4_pack.h layout)\n",
+            corr(ve.out, ref), corr(ve.gu, ref_gu), corr(ve.h2, ref_h2), ve.bytes_per_layer / 1e6);
     fprintf(stderr, "  (float reference rms=%.4f)\n", std::sqrt(ss / H) * 1.0);
 
     // Gate: the on-chip-dequant proposal must beat per-column int4 and reach
     // >= 0.999 (two-launch/fused int8 quality) at HALF the GU bytes.
     double cb = corr(vb.out, ref), ca = corr(va.out, ref);
     double cd = corr(vd.out, ref);
+    double ce = corr(ve.out, ref);
     int fail = 0;
+    if (!(ce >= 0.999)) { fprintf(stderr, "FAIL: packer roundtrip corr %.4f < 0.999\n", ce); fail++; }
+    if (!(ce >= cd - 0.001)) { fprintf(stderr, "FAIL: packer (%.4f) below direct on-chip deq (%.4f)\n", ce, cd); fail++; }
     if (!(cd >= 0.999)) { fprintf(stderr, "FAIL: on-chip-dequant corr %.4f < 0.999\n", cd); fail++; }
     if (!(cd > cb + 0.005)) { fprintf(stderr, "FAIL: on-chip-dequant (%.4f) does not beat per-column (%.4f)\n", cd, cb); fail++; }
     if (!(cd >= ca - 0.002)) { fprintf(stderr, "FAIL: on-chip-dequant (%.4f) below int8 baseline (%.4f)\n", cd, ca); fail++; }
