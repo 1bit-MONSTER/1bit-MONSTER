@@ -109,6 +109,8 @@ struct VitConfig {
     // MLP activation
     bool use_gelu    = true;     // true = GELU (CLIP, SigLIP), false = ReLU
     bool use_bias    = true;     // whether attention/FFN use bias
+    bool use_rmsnorm = false;    // pre/post layer norms are RMSNorm (no bias) —
+                                 // Qwen2-VL mmprojs; set when ln bias is absent
     bool use_pre_ln  = false;    // whether there's a pre-LN layer before the transformer
 
     // Qwen2-VL style: apply per-head 2D (M-RoPE vision-mode) rotation to Q/K at

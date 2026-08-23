@@ -68,6 +68,10 @@ rcpp_tokenizer_decode(const rcpp_tokenizer_t* tok,
 int rcpp_tokenizer_bos_id(const rcpp_tokenizer_t* tok);
 int rcpp_tokenizer_eos_id(const rcpp_tokenizer_t* tok);
 
+/// Look up a token string's ID from the vocab (e.g. "<|vision_start|>").
+/// Returns -1 if the token is not in the vocab.
+int rcpp_tokenizer_id_for_token(const rcpp_tokenizer_t* tok, const char* token);
+
 // ── Logprob API — merge-rank-based token frequency scoring (fixes #81) ──
 
 /// Return the pseudo-logprob for a single token ID.
