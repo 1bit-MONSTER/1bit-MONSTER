@@ -70,6 +70,7 @@ jobs:
             .abacusai .claude  # agent-tooling files removed from repo (2026-08) — removal-only, machine-local agent config + GitNexus skill docs
             .nojekyll CNAME apple-touch-icon.png assets favicon.ico favicon.svg
             index.html site.webmanifest  # 1bit.monster landing page, served via GitHub Pages from repo root — public-facing site scope
+            community  # Fluxer community ops scripts (Discord #support + role theming) — 1bit.MONSTER community operations, product-adjacent ops tooling (see PR #1797)
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"

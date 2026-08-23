@@ -70,14 +70,17 @@ async function api(method, path, body) {
     try { data = JSON.parse(text); } catch { data = text; }
   }
   if (!res.ok) {
-    throw new Error(`${method} ${path} -> HTTP ${res.status}: ${JSON.stringify(data)}`);
+    // Never embed the token or IDs in errors: log method + status + a short
+    // response snippet only (the request path can carry env-derived IDs).
+    const snippet = String(data ?? '').replace(/\s+/g, ' ').slice(0, 200);
+    throw new Error(`${method} -> HTTP ${res.status}: ${snippet}`);
   }
   return data;
 }
 
 async function main() {
   const fresh = process.argv.includes('--fresh');
-  console.log(`Preparing #${SUPPORT_NAME} in guild ${GUILD_ID} ...`);
+  console.log(`Preparing #${SUPPORT_NAME} ...`);
 
   const channels = await api('GET', `/guilds/${GUILD_ID}/channels`);
   let support = channels.find((c) => c.name.toLowerCase() === SUPPORT_NAME && c.type === 0);
@@ -109,7 +112,7 @@ async function main() {
     console.log(`• channel already has messages; not re-seeding`);
   }
 
-  console.log(`\nDone. #${SUPPORT_NAME} is ready in guild ${GUILD_ID}.`);
+  console.log(`\nDone. #${SUPPORT_NAME} is ready.`);
 }
 
 main().catch((e) => {
