@@ -224,7 +224,7 @@ int zaya_decode_main(int argc, char** argv) {
     // gu BO header. Contract validated on x86 (test_fused_silu.cpp): corr
     // 0.9993–0.9996 vs float, argmax parity.
     const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
-    I8Ctx fused_ctx;
+    I8Ctx fused_ctx, fused_ctx_p2;   // split launch (issue #1775): p1 GU->SiLU->h2, p2 D-from-h2
     std::vector<std::vector<std::unique_ptr<xrt::bo>>> fgu_bo, fd_bo;
     std::vector<std::vector<std::vector<float>>> fgu_cs, fd_cs;
     std::vector<std::vector<std::vector<int8_t>>> fgu_row, fd_row;   // row-major shadows (host amax / emulation)
@@ -232,11 +232,22 @@ int zaya_decode_main(int argc, char** argv) {
     if (FUSED) {
         fused_ctx.MD = 8; fused_ctx.KD = d.H; fused_ctx.ND = d.H;
         char fx[512], fi[512];
-        snprintf(fx, sizeof fx, "%s/final_i8_MOE_FUSED_zaya.xclbin", xd);
-        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_FUSED_zaya.txt", xd);
+        // Split launch (issue #1775): p1 = GU->SiLU->h2 writeback, p2 = D
+        // reading h2 from bo4. A host-side h2_bo sync between the launches
+        // provides the cross-shim write->read visibility barrier the
+        // single-launch design lacked (run-to-run nondeterminism at MoE
+        // layers 3+; reproduced on strixhalo).
+        snprintf(fx, sizeof fx, "%s/final_i8_MOE_GUSILU_zaya.xclbin", xd);
+        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_GUSILU_zaya.txt", xd);
         if (getenv("NPU_FUSED_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_XCLBIN"));
         if (getenv("NPU_FUSED_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_INSTS"));
-        if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED ctx init failed\n"); return 1; }
+        if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p1 ctx init failed\n"); return 1; }
+        fused_ctx_p2.MD = 8; fused_ctx_p2.KD = d.H; fused_ctx_p2.ND = d.H;
+        snprintf(fx, sizeof fx, "%s/final_i8_MOE_D_zaya_m8h2.xclbin", xd);
+        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_D_zaya_m8h2.txt", xd);
+        if (getenv("NPU_FUSED_D_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_D_XCLBIN"));
+        if (getenv("NPU_FUSED_D_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_D_INSTS"));
+        if (!fused_ctx_p2.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p2 ctx init failed\n"); return 1; }
         for (int l = 1; l < NC; l += 2)
             h2_bo[l] = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
         fgu_bo.resize(NC); fd_bo.resize(NC); fgu_cs.resize(NC); fd_cs.resize(NC);
@@ -391,6 +402,7 @@ int zaya_decode_main(int argc, char** argv) {
                 if (FUSED) {
                     // ── fused GU→SiLU→D: one launch ──
                     fused_ctx.group_scales[l] = fd_cs[l][e];
+                    fused_ctx_p2.group_scales[l] = fd_cs[l][e];
                     float ag = dynamic_ascale(residual.data(), d.H);
                     fused_ctx.quantize_async(residual.data(), 1, d.H, ag);   // Am for the amax pass
                     float qn_s = zaya_moe::host_h2_amax_qn_s(
@@ -399,10 +411,31 @@ int zaya_decode_main(int argc, char** argv) {
                     auto tb0 = std::chrono::steady_clock::now();
                     fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
+                    // P1: GU->SiLU->h2 writeback.
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     auto tb2 = std::chrono::steady_clock::now();
-                    fused_ctx.dequant_fused(frun, moe_out.data(), 1, d.H, qn_s, l);
+                    frun.wait();
+                    // Visibility barrier (issue #1775 fix): the h2 S2MM
+                    // writeback (shim[c] -> DDR) must be globally visible
+                    // before the P2 D-phase MM2S read (shim[0]). The host
+                    // sync forces the write path to drain.
+                    h2_bo[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                    // Force the coherent write path to drain: actually read a
+                    // few h2 bytes host-side (the P1 S2MM writes go through
+                    // the coherent host path; a sync alone can be a no-op for
+                    // HOST_ONLY BOs, but a real read must observe the data).
+                    {
+                        const volatile int8_t* h2m =
+                            (const volatile int8_t*)h2_bo[l]->map();
+                        volatile int sink = 0;
+                        for (int i = 0; i < 64; i++) sink += h2m[i];
+                        (void)sink;
+                    }
+                    // P2: D GEMM reading h2 from bo4.
+                    auto frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                           residual.data(), 1, d.H, ag);
+                    fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
                     auto tb3 = std::chrono::steady_clock::now();
                     if (getenv("NPU_TIMING") && pos == 0 && l == 3)
                         fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f wait+deq=%.3f ms\n", l,
