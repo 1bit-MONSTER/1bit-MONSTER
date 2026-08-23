@@ -68,8 +68,7 @@ jobs:
             .rocm-stub  # ROCm stub headers/lib for build machines without a full ROCm install (whisper HIP port) — engine scope
             personas prompts skills workers zaya_audio  # burn-era deletions (UPDATE 34 cut) — removal-only, see docs/wiki/decisions.md
             .abacusai .claude  # agent-tooling files removed from repo (2026-08) — removal-only, machine-local agent config + GitNexus skill docs
-            .nojekyll CNAME apple-touch-icon.png assets favicon.ico favicon.svg
-            index.html site.webmanifest  # 1bit.monster landing page, served via GitHub Pages from repo root — public-facing site scope
+            .nojekyll CNAME  # GitHub Pages custom-domain markers; actual site is deployed from site/ via deploy.yml (build_type=workflow), not repo root — root-level index.html/assets/favicons/site.webmanifest were a stale pre-Actions duplicate, removed 2026-08
             community  # Fluxer community ops scripts (Discord #support + role theming) — 1bit.MONSTER community operations, product-adjacent ops tooling (see PR #1797)
           '
 
