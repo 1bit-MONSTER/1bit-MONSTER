@@ -44,6 +44,7 @@ def main():
 def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
     dtype_in = np.int8
     dtype_out = np.int32
+    K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
     assert M % m == 0 and K % k == 0 and N % n == 0
     n_k = K // k            # QK^T K-chunks (hd/64 = 2)
     n_n = N // n            # QK^T N-tiles (MAX_SEQ/128 = 2)
@@ -121,11 +122,11 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                     C2_c[c].release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
-            np.ndarray[(16 * K,), np.dtype[dtype_in]],       # q (bo0)
+            np.ndarray[(16 * K_FRAME,), np.dtype[dtype_in]],  # q (bo0, fused A-frame)
             np.ndarray[(nkv * K * N,), np.dtype[dtype_in]],  # K^T (bo1)
             np.ndarray[(M * K,), np.dtype[dtype_out]],       # C2 (bo2)
             np.ndarray[(nkv * N * K,), np.dtype[dtype_in]],  # V (bo3)
-            np.ndarray[(8 + M * N,), np.dtype[dtype_in]],    # scratch (bo4)
+            np.ndarray[(32 + n_aie_cols * M * N,), np.dtype[dtype_in]],  # scratch (bo4)
         )
         def seq(Q, KT, C2, V, SCR):
             # QK^T phase: per (ki, nt): A = q row c chunk ki (offset c*K+ki*k,
@@ -135,9 +136,12 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                 for nt in range(n_n):
                     at_list, bt_list = [], []
                     for c in range(n_aie_cols):
+                        # A in the fused M×Kframe layout: K_frame=2048 (the
+                        # small-K 4D tap pattern does not deliver on AIE2P).
                         at = shim_dma_single_bd_task(
-                            A_s[c], Q, offset=c * K + ki * k,
-                            sizes=[1, k // 8, 8, 8], strides=[8 * K, 8, K, 1], issue_token=True)
+                            A_s[c], Q, offset=c * K_FRAME + ki * k,
+                            sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
+                            issue_token=True)
                         dma_start_task(at); at_list.append(at)
                     for cc in range(n_aie_cols):
                         kvv = cc // 4
@@ -152,15 +156,17 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
             # tile — the floats in the first 32 bytes (A-layout row 0).
             pt_list = []
             for c in range(n_aie_cols):
-                pt = shim_dma_single_bd_task(A_s[c], SCR, offset=0,
-                                             sizes=[1, 1, 1, 64], strides=[1, 1, 1, 1],
+                # params ride the A stream from the q BO's padding (row 15
+                # of the A-frame — never read by the head taps).
+                pt = shim_dma_single_bd_task(A_s[c], Q, offset=15 * K_FRAME,
+                                             sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
                                              issue_token=True)
                 dma_start_task(pt); pt_list.append(pt)
             # A2 writeback: core A2 (A-layout, r*N + (t/8)*8 + t%8) → bo4[64..]
             a2_list = []
             for c in range(n_aie_cols):
                 a2t = shim_dma_single_bd_task(
-                    A2o_s[c], SCR, offset=8 + c * (M * N // 8),
+                    A2o_s[c], SCR, offset=32 + c * (M * N),
                     sizes=[1, 1, 1, M * N], strides=[1, 1, 1, 1], issue_token=True)
                 dma_start_task(a2t); a2_list.append(a2t)
             # the PV reads the A2 back — the writebacks MUST be visible first.
@@ -171,7 +177,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                 at_list, bt_list = [], []
                 for c in range(n_aie_cols):
                     at = shim_dma_single_bd_task(
-                        A_s[c], SCR, offset=8 + c * (M * N // 8) + ki * k,
+                        A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
                         sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
                     dma_start_task(at); at_list.append(at)
                 for cc in range(n_aie_cols):
