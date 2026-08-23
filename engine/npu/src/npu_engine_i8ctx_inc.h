@@ -273,7 +273,12 @@ struct I8Ctx {
     // ── Quantize activations into bA ──
     inline int8_t* quantize_async(const float* A, int am, int ak, float ascale) {
         float ais = 1.0f / ascale;
-        memset(Am, 0, (size_t)am * KD);
+        // Zero-pad ALL MD rows (issue #1775): the M=128 stream reads rows
+        // [am, MD) every launch; zeroing only rows [0, am) left stale BO
+        // memory (the previous launch's A) in [am, MD) — an
+        // uninitialized-read-class hazard for any kernel with cross-row
+        // interaction.
+        memset(Am, 0, (size_t)MD * KD);
         for (int m = 0; m < am; m++)
             for (int k = 0; k < ak; k++) {
                 float v = A[m * ak + k];
@@ -291,7 +296,7 @@ struct I8Ctx {
     // use the matching per-row scale (dequant_only_rows).
     inline int8_t* quantize_async_rows(const float* A, int am, int ak,
                                        const float* ascales) {
-        memset(Am, 0, (size_t)am * KD);
+        memset(Am, 0, (size_t)MD * KD);
         for (int m = 0; m < am; m++) {
             float ais = 1.0f / ascales[m];
             for (int k = 0; k < ak; k++) {
