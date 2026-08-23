@@ -1,20 +1,20 @@
-# Maintainer: bong-water-water-bong <admin@1bit.systems>
-pkgname=1bit-systems-bin
+# Maintainer: bong-water-water-bong <admin@1bit.monster>
+pkgname=1bit-monster-bin
 pkgver=2026.08.04
 pkgrel=1
 pkgdesc="50 TOPS INT8 NPU inference engine for AMD Strix Halo"
 arch=('x86_64')
-url="https://1bit.systems"
+url="https://1bit.monster"
 license=('MIT')
 depends=('libxrt' 'gcc-libs')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/1bit-systems/1bit-systems/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/1bit-MONSTER/1bit-MONSTER/archive/refs/tags/v$pkgver.tar.gz")
 # sha256 of the v$pkgver release tarball — must be regenerated on every
 # pkgver bump (`curl -fsSL <source URL> | sha256sum`). #1008: 'SKIP' was
 # previously used, which disables integrity verification entirely.
 sha256sums=('d0660ea9f6e31995299354c222e975d53483d25caa057209eb257c048004bda1')
 
 package() {
-  cd "$srcdir/1bit-systems-$pkgver"
+  cd "$srcdir/1bit-MONSTER-$pkgver"
   mkdir -p engine/npu/build
   gcc -c -O3 -o engine/npu/build/dequant_q4nx.o engine/npu/src/dequant_q4nx.c
   # engine/npu/src/npu_engine_all.cpp was removed in the orphaned-variant

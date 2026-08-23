@@ -1,4 +1,4 @@
-# bit1-mlx — Extracted Rapid-MLX Components for 1bit.systems
+# bit1-mlx — Extracted Rapid-MLX Components for 1bit.MONSTER
 
 > Extracted pure-Python API layer, tool parsers, middleware, and model registry from [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Zero MLX dependency.
 

@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
     }
     
     printf("╔══════════════════════════════════════════════╗\n");
-    printf("║  1bit.systems LoRA Trainer  (C++23 + TRG)   ║\n");
+    printf("║  1bit.MONSTER LoRA Trainer  (C++23 + TRG)   ║\n");
     printf("╚══════════════════════════════════════════════╝\n");
     printf("  Dataset: %s\n", dataset_path.c_str());
     printf("  Rank:    %d\n", rank);

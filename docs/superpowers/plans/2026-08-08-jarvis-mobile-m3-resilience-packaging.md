@@ -13,7 +13,7 @@
 
 ## Global Constraints
 
-- **Repo:** `~/1bit-systems`, branch `feat/jarvis-mobile`. Spec: `docs/superpowers/specs/2026-08-08-jarvis-mobile-design.md` (M3 milestone + error table). M1/M2 wire protocol is FROZEN — no protocol changes in this plan.
+- **Repo:** `~/1bit-monster`, branch `feat/jarvis-mobile`. Spec: `docs/superpowers/specs/2026-08-08-jarvis-mobile-design.md` (M3 milestone + error table). M1/M2 wire protocol is FROZEN — no protocol changes in this plan.
 - **User WIP** files (engine/npu/*, tools/bitnet_decode.cpp, third_party/FastFlowLM, etc.) are uncommitted — NEVER commit them. Commits contain only their listed paths.
 - **Tests:** `flutter test` via `/home/bcloud/flutter/bin/flutter` from `mobile/`; server compile check via the established g++ -c include set.
 - **No new dependencies.** No new server features beyond the stop() fix.
@@ -101,7 +101,7 @@ testWidgets('Reconnect reconnects and starts a new session', (tester) async {
 - Produces: deployable unit + human runbook.
 
 - [ ] **Step 1: Verify env vars** — grep `tools/jarvis_server.cpp` for the exact environment variable names the gateway reads (WS_STREAM_PORT, JARVIS_WS_TOKEN, WHISPER_MODEL_PATH, VOICE_PACKS_DIR, any persona/voice defaults) and the unified-server port; record them in the report.
-- [ ] **Step 2: Write `scripts/jarvis-gateway.service`** — systemd unit: `ExecStart=/home/<user>/1bit-systems/build/1bit jarvis` (user-adjustable), `Environment=` lines for the verified vars (commented defaults), `Restart=on-failure`, `After=network-online.target`, `WantedBy=multi-user.target`. Keep it a template with comments, not a hardcoded deploy.
+- [ ] **Step 2: Write `scripts/jarvis-gateway.service`** — systemd unit: `ExecStart=/home/<user>/1bit-monster/build/1bit jarvis` (user-adjustable), `Environment=` lines for the verified vars (commented defaults), `Restart=on-failure`, `After=network-online.target`, `WantedBy=multi-user.target`. Keep it a template with comments, not a hardcoded deploy.
 - [ ] **Step 3: Write `docs/mobile/RUNBOOK.md`** — sections:
   1. **Box setup (Strix Halo):** build the engine (`cmake -B build && cmake --build build --target onebin`), start `unified` (port 8080) + `jarvis` (WS on 8082), set `JARVIS_WS_TOKEN`, whisper model path, voice packs; install the systemd unit (paths to adjust).
   2. **Phone setup:** VPN (WireGuard/Tailscale) to the home network, install the app (flutter build on the Mac per M2, or a dev build), connect screen values (ws://<box-lan-ip>:8082, token).

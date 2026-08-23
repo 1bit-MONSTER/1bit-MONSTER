@@ -26,8 +26,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Adjust <user> to the deploy user.
-ExecStart=/home/<user>/1bit-systems/build/1bit jarvis
-WorkingDirectory=/home/<user>/1bit-systems
+ExecStart=/home/<user>/1bit-monster/build/1bit jarvis
+WorkingDirectory=/home/<user>/1bit-monster
 
 # ── Environment ───────────────────────────────────────────────────────────
 # All names verified against tools/jarvis_server.cpp. Uncomment and set the

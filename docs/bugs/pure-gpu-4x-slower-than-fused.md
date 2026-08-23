@@ -127,7 +127,7 @@ than the `bench_hip_1bp` binary's own code objects (compiled with `-O2`).
 ## Reproduction
 
 ```bash
-cd /home/bcloud/1bit-systems
+cd /home/bcloud/1bit-monster
 cmake --build build --target bench_fused bench_hip_1bp
 
 # Fast (185 tok/s)

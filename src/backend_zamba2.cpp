@@ -1,4 +1,4 @@
-// backend_zamba2.cpp — Zamba2 backend for 1bit.systems Backend interface
+// backend_zamba2.cpp — Zamba2 backend for 1bit.MONSTER Backend interface
 //
 // Implements the Backend interface for Zamba2 models using the CPU reference
 // Mamba2 engine. Provides:

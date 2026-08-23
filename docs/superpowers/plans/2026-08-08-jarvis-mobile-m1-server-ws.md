@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Repo:** `~/1bit-systems`, branch `feat/jarvis-mobile` (created). Spec: `docs/superpowers/specs/2026-08-08-jarvis-mobile-design.md`.
+- **Repo:** `~/1bit-monster`, branch `feat/jarvis-mobile` (created). Spec: `docs/superpowers/specs/2026-08-08-jarvis-mobile-design.md`.
 - **Dirty tree:** The user has uncommitted WIP (e.g. `CMakeLists.txt`, `engine/npu/*`, `src/onnx_loader.cpp`). NEVER commit those. For CMakeLists.txt edits, commit only your hunks: `git add -p CMakeLists.txt`.
 - **GitNexus (AGENTS.md):** Before editing any symbol in `tools/jarvis/audio_stream.cpp`/`.h` run impact analysis first: `node .gitnexus/run.cjs impact --target WebSocketServer` (if the CLI lacks that flag, use `node .gitnexus/run.cjs --help` and the query tool; if the index is stale run `node .gitnexus/run.cjs analyze`). Report HIGH/CRITICAL risk to the user before editing. Before committing run `node .gitnexus/run.cjs detect-changes`.
 - **No new dependencies.** No libopus, no boost. Existing: httplib, nlohmann::json, ffmpeg (exec), `jarvis::VAD`, `jarvis::AuthManager` (tools/jarvis/auth.h).
@@ -102,7 +102,7 @@ int main() {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd ~/1bit-systems && g++ -std=c++23 -I. -o /tmp/vs_test tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp 2>&1 | head -5
+cd ~/1bit-monster && g++ -std=c++23 -I. -o /tmp/vs_test tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp 2>&1 | head -5
 ```
 Expected: FAIL — `voice_session.h: No such file or directory`.
 
@@ -240,14 +240,14 @@ void VoiceSession::tick(int ms_elapsed) {
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd ~/1bit-systems && g++ -std=c++23 -I. -o /tmp/vs_test tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp && /tmp/vs_test
+cd ~/1bit-monster && g++ -std=c++23 -I. -o /tmp/vs_test tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.cpp tools/jarvis/vad.cpp && /tmp/vs_test
 ```
 Expected: `PASS voice_session_test (1 utterances, N states)`
 
 - [ ] **Step 5: Commit** (test first, then sources)
 
 ```bash
-cd ~/1bit-systems
+cd ~/1bit-monster
 git add tests/jarvis_voice_session_test.cpp tools/jarvis/voice_session.h tools/jarvis/voice_session.cpp
 git commit -m "feat(jarvis): VoiceSession state machine (VAD utterance detection)"
 ```
@@ -307,7 +307,7 @@ int main() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd ~/1bit-systems && g++ -std=c++23 -I. -o /tmp/ws_test tests/jarvis_ws_proto_test.cpp 2>&1 | head -3
+cd ~/1bit-monster && g++ -std=c++23 -I. -o /tmp/ws_test tests/jarvis_ws_proto_test.cpp 2>&1 | head -3
 ```
 Expected: FAIL — `ws_proto.h: No such file or directory`.
 
@@ -378,7 +378,7 @@ std::string ws_state_json(SessionState st) {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd ~/1bit-systems && g++ -std=c++23 -I. -o /tmp/ws_test tests/jarvis_ws_proto_test.cpp tools/jarvis/ws_proto.cpp && /tmp/ws_test
+cd ~/1bit-monster && g++ -std=c++23 -I. -o /tmp/ws_test tests/jarvis_ws_proto_test.cpp tools/jarvis/ws_proto.cpp && /tmp/ws_test
 ```
 Expected: `PASS ws_proto_test`
 
@@ -413,14 +413,14 @@ In `audio_stream.cpp`:
 - [ ] **Step 6: Rebuild + manual smoke**
 
 ```bash
-cd ~/1bit-systems && cmake -B build >/dev/null 2>&1; cmake --build build --target onebin -j$(nproc) 2>&1 | tail -3
+cd ~/1bit-monster && cmake -B build >/dev/null 2>&1; cmake --build build --target onebin -j$(nproc) 2>&1 | tail -3
 ```
 Expected: build succeeds. (Full protocol smoke happens in Task 3's integration script.)
 
 - [ ] **Step 7: Commit** (use `git add -p CMakeLists.txt` for the test target hunk only)
 
 ```bash
-cd ~/1bit-systems
+cd ~/1bit-monster
 git add tools/jarvis/ws_proto.h tools/jarvis/ws_proto.cpp tools/jarvis/audio_stream.h tools/jarvis/audio_stream.cpp tests/jarvis_ws_proto_test.cpp
 git add -p CMakeLists.txt   # only the jarvis_ws_proto_test target hunk
 git commit -m "feat(jarvis): WS /v1/voice/session full-duplex path with auth hook"
@@ -536,7 +536,7 @@ ws.onerror = (e) => { console.log('WS ERROR', e.message || e); process.exit(1); 
 - [ ] **Step 5: Run the smoke test**
 
 ```bash
-cd ~/1bit-systems && cmake --build build --target onebin -j$(nproc) && bash scripts/ws_session_fixture.sh /tmp/jarvis_fixture.pcm16
+cd ~/1bit-monster && cmake --build build --target onebin -j$(nproc) && bash scripts/ws_session_fixture.sh /tmp/jarvis_fixture.pcm16
 # start jarvis-server WITHOUT models (whisper unavailable path is still exercised):
 # find the run command in the repo (onebin dispatch: build/1bit jarvis --help)
 # with a stub WHISPER_MODEL_PATH unset, the session must send an error frame
@@ -548,7 +548,7 @@ Expected: meta + state frames arrive, an error/end frame arrives (transcription 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/1bit-systems
+cd ~/1bit-monster
 git add tools/jarvis_server.cpp scripts/ws_session_fixture.sh scripts/ws_session_smoke.js
 git add -p CMakeLists.txt   # if the task touched it
 git commit -m "feat(jarvis): wire VoiceSession to Whisper/LLM/TTS, WS token auth, smoke script"

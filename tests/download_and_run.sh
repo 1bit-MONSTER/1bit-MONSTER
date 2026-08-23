@@ -30,7 +30,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "=== 1bit-systems Inference Smoke Test ==="
+echo "=== 1bit-monster Inference Smoke Test ==="
 echo "Hardware: $(uname -m)"
 if command -v xrt-smi &>/dev/null; then
   echo "NPU: $(xrt-smi examine -r 2>/dev/null | grep -oP 'RyzenAI-\S+' || echo 'N/A')"

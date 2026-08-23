@@ -1,7 +1,7 @@
 """Check where weight data actually starts in the 1BP file"""
 import struct
 
-with open('/home/bcloud/1bit-systems/models/ZAYA1-8B.1bp', 'rb') as f:
+with open('/home/bcloud/1bit-monster/models/ZAYA1-8B.1bp', 'rb') as f:
     f.seek(256)
     for i in range(400):
         nl = struct.unpack('<I', f.read(4))[0]

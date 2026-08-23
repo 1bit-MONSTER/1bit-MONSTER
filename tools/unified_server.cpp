@@ -134,9 +134,9 @@ static std::string g_weights_dir = []() -> std::string {
     const char* env = getenv("ZAYA_WEIGHTS_DIR");
     if (env && env[0]) { std::string s(env); if (s.back()!='/') s+='/'; return s; }
     const char* xdg = getenv("XDG_DATA_HOME");
-    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-systems/weights/";
+    if (xdg && xdg[0]) return std::string(xdg) + "/1bit-monster/weights/";
     const char* home = getenv("HOME");
-    if (home && home[0]) return std::string(home) + "/.local/share/1bit-systems/weights/";
+    if (home && home[0]) return std::string(home) + "/.local/share/1bit-monster/weights/";
     return "/tmp/zaya_weights/";
 }();
 static int g_port = 8088;
@@ -371,7 +371,7 @@ static json model_info_json(const BackendInfo* active, const std::string& model_
     j["id"] = model_name;
     j["object"] = "model";
     j["created"] = time(nullptr);
-    j["owned_by"] = "1bit-systems";
+    j["owned_by"] = "1bit-monster";
     if (active) {
         j["backend"] = active->id;
         j["backend_type"] = backend_name(active->type);
@@ -383,7 +383,7 @@ static json model_info_json(const BackendInfo* active, const std::string& model_
 static json health_json(BackendManager& mgr) {
     json j;
     j["status"] = "ok";
-    j["service"] = "1bit-systems unified inference server";
+    j["service"] = "1bit-monster unified inference server";
 
     auto* active = mgr.active_info();
     if (active) {
@@ -1271,7 +1271,7 @@ int main(int argc, char** argv) {
     printf("\n");
     printf("╔═══════════════════════════════════════════════╗\n");
     printf("║                                               ║\n");
-    printf("║   1bit.systems — Unified Inference Server    ║\n");
+    printf("║   1bit.MONSTER — Unified Inference Server    ║\n");
     printf("║   One binary, all backends, auto-failover    ║\n");
     printf("║                                               ║\n");
     printf("╚═══════════════════════════════════════════════╝\n");
@@ -1766,7 +1766,7 @@ int main(int argc, char** argv) {
             info["id"] = m.model_name;
             info["object"] = "model";
             info["created"] = 0;
-            info["owned_by"] = "1bit-systems";
+            info["owned_by"] = "1bit-monster";
             info["backend"] = "auto";
             info["pooled"] = g_pool_enabled && g_pool.has_path(m.model_path);
             info["details"] = {{
@@ -2471,7 +2471,7 @@ int main(int argc, char** argv) {
     // ---- GET / --- Root health check ----
     svr.Get("/", [&](const httplib::Request&, httplib::Response& res) {
         json j;
-        j["service"] = "1bit.systems --- One binary, all backends, intelligent routing";
+        j["service"] = "1bit.MONSTER --- One binary, all backends, intelligent routing";
         j["version"] = "1.0";
         // See /v1/backend/status above: mgr.active_backend() needs
         // g_config_mutex, not just g_strategy_mutex (fixes #2/#364).
@@ -2536,7 +2536,7 @@ int main(int argc, char** argv) {
 
     // ── Start server ──
     printf("\n──────────────────────────────────────────────\n");
-    printf("  1bit.systems — Agent Inference Server\n");
+    printf("  1bit.MONSTER — Agent Inference Server\n");
     printf("──────────────────────────────────────────────\n");
     printf("  Port:    %d\n", g_port);
     printf("  Backend: %s\n", mgr.active_info() ? mgr.active_info()->id.c_str() : "none");

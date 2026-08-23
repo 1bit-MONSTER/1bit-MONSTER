@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ── Operational MLIR-AIE / xclbin build environment for 1bit-systems INT8 GEMMs ──
+# ── Operational MLIR-AIE / xclbin build environment for 1bit-monster INT8 GEMMs ──
 # AMD Xilinx IP toolchain (Chess compiler).  License required.
 #
 #   source ${HOME}/npu-sandbox/npu-infer/bf16_kernel_dev/toolchain-env.sh

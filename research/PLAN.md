@@ -1,4 +1,4 @@
-# 1bit-systems Research → Implementation Plan
+# 1bit-monster Research → Implementation Plan
 
 **Date:** 2026-07-31 · **Status:** Draft v1 — scaffolding + first P0 probes complete (WS-05, WS-08 ✅)
 **Inputs:** 65-paper archive (`~/research-papers/`, see `RESEARCH-BRIEF-2026-07-31.md` + `SYNTHESIS.md`), stack audit (`~/STATE-OF-THE-STACK-2026-07-14.md`), project research notes (`docs/research/*`, `validation-gaps.md`), live kernel state (2026-07-25 NPU benchmarks).

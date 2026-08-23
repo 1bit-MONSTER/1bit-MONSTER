@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
     if (argc > 1) {
         weights_dir = argv[1];
     } else if (const char* home = getenv("HOME")) {
-        weights_dir = std::string(home) + "/.local/share/1bit-systems/weights";
+        weights_dir = std::string(home) + "/.local/share/1bit-monster/weights";
     } else {
         weights_dir = "/tmp/zaya_weights";
     }

@@ -11,7 +11,7 @@
 
 This is a small open-source project. If you find a security issue:
 
-1. **Do not open a public GitHub issue** — email `admin@1bit.systems`
+1. **Do not open a public GitHub issue** — email `admin@1bit.monster`
 2. Include:
    - Description of the issue
    - Steps to reproduce (hardware, XRT version, command)

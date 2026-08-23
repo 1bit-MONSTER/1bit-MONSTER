@@ -3,8 +3,8 @@
 # AMD AI DevMaster Hackathon — Track 2
 ## Submission Checklist
 
-Team: **1bit.systems**
-Project: **1bit.systems — One Binary, All Backends, Zero Cloud**
+Team: **1bit.MONSTER**
+Project: **1bit.MONSTER — One Binary, All Backends, Zero Cloud**
 Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 
 ---
@@ -14,7 +14,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 | # | Deliverable | Status | File/Link |
 |---|------------|--------|-----------|
 | 1 | Project Specification Document | ✅ Complete | `hackathon/spec-document.md` |
-| 2 | Project Source Code | ✅ Complete | https://github.com/1bit-systems/1bit-systems |
+| 2 | Project Source Code | ✅ Complete | https://github.com/1bit-MONSTER/1bit-MONSTER |
 | 3 | Demo Video | ✅ Complete | `hackathon/demo-video.mp4` (2 min, real commands against the live server — see `hackathon/demo-script.md` for the shot list) |
 | 4 | PPT / Poster | ✅ Below | Key slides in this document |
 
@@ -22,7 +22,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 
 ## Project Summary (for PR description)
 
-**1bit.systems** is an open-source, single-binary C++ inference engine for AMD Strix Halo (Ryzen AI Max+ 395). It runs private AI agents entirely on-device — no cloud, no API keys, no data exfiltration.
+**1bit.MONSTER** is an open-source, single-binary C++ inference engine for AMD Strix Halo (Ryzen AI Max+ 395). It runs private AI agents entirely on-device — no cloud, no API keys, no data exfiltration.
 
 **Key features:**
 - **One C++23 binary** — zero Python, zero Docker, zero config
@@ -43,7 +43,7 @@ Track: **Track 2 — Development & Local Deployment of Private AI Agents**
 ```
 ╔══════════════════════════════════════════════════════════╗
 ║                                                          ║
-║                   1bit.systems                           ║
+║                   1bit.MONSTER                           ║
 ║        One engine. Every model. Any chip.                       ║
 ║                                                          ║
 ║     Pure C++ inference engine · 400 KB · Zero Python     ║
@@ -144,7 +144,7 @@ One command:
 
 That's it.
 
-  github.com/1bit-systems/1bit-systems
-  1bit.systems
+  github.com/1bit-MONSTER/1bit-MONSTER
+  1bit.MONSTER
   MIT License
 ```

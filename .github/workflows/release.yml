@@ -126,13 +126,13 @@ jobs:
           rm -rf deb-build
           cp -r packaging/deb deb-build
 
-          mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-systems deb-build/etc/ld.so.conf.d
+          mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-monster deb-build/etc/ld.so.conf.d
           cp dist/bin/* deb-build/usr/bin/
-          cp dist/lib/* deb-build/usr/lib/1bit-systems/
-          echo "/usr/lib/1bit-systems" > deb-build/etc/ld.so.conf.d/1bit-systems.conf
+          cp dist/lib/* deb-build/usr/lib/1bit-monster/
+          echo "/usr/lib/1bit-monster" > deb-build/etc/ld.so.conf.d/1bit-monster.conf
 
           chmod 755 deb-build/DEBIAN/postinst
-          dpkg-deb --build --root-owner-group deb-build "1bit-systems_${VERSION}_amd64.deb"
+          dpkg-deb --build --root-owner-group deb-build "1bit-monster_${VERSION}_amd64.deb"
 
       - name: Build AppImage
         run: |
@@ -151,7 +151,7 @@ jobs:
           # appimagetool needs FUSE, unavailable in most CI containers —
           # extract-and-run avoids mounting a FUSE filesystem.
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run appimage-build \
-            "1bit-systems-${VERSION}-x86_64.AppImage"
+            "1bit-monster-${VERSION}-x86_64.AppImage"
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')   # only on real tag pushes; skip manual workflow_dispatch runs
@@ -159,8 +159,8 @@ jobs:
         with:
           files: |
             1bit-linux-x86_64.tar.gz
-            1bit-systems_*_amd64.deb
-            1bit-systems-*-x86_64.AppImage
+            1bit-monster_*_amd64.deb
+            1bit-monster-*-x86_64.AppImage
           generate_release_notes: true
           prerelease: false
           body: |
@@ -171,7 +171,7 @@ jobs:
 
             ### Formats
             - **Tarball** (`1bit-linux-x86_64.tar.gz`) — extract anywhere, `./run.sh chat`
-            - **Debian package** (`.deb`) — `sudo dpkg -i 1bit-systems_*_amd64.deb`, binaries land on `PATH`
+            - **Debian package** (`.deb`) — `sudo dpkg -i 1bit-monster_*_amd64.deb`, binaries land on `PATH`
             - **AppImage** (`.AppImage`) — `chmod +x`, run directly, no install needed
 
             ### Includes

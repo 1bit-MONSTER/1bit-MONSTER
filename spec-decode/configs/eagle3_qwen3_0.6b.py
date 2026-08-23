@@ -55,7 +55,7 @@ logging = dict(
 )
 
 data = dict(
-    target_cache_path="/home/bcloud/1bit-systems/spec-decode/target_cache/eagle3_qwen3_0.6b_v2",
+    target_cache_path="/home/bcloud/1bit-monster/spec-decode/target_cache/eagle3_qwen3_0.6b_v2",
     chat_template="qwen",
     max_length=4096,
     num_workers=4,

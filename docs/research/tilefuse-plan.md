@@ -1,4 +1,4 @@
-# TileFuse → 1bit.systems Q4NX plan (2026-08-08)
+# TileFuse → 1bit.MONSTER Q4NX plan (2026-08-08)
 
 Paper: arXiv 2606.11357 (full text: docs/research/papers/tilefuse-xdna2-mixed-precision-kernels.md).
 TileFuse = fused mixed-precision (W4A16/W8A16) GEMM/GEMV kernels on AMD XDNA2,

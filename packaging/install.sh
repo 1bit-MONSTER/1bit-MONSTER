@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# 1bit.systems — one-binary install
-# curl -sL https://1bit.systems/install.sh | bash
-# Or: tar xzf 1bit-systems-*.tar.gz && bash install.sh
+# 1bit.MONSTER — one-binary install
+# curl -sL https://1bit.monster/install.sh | bash
+# Or: tar xzf 1bit-monster-*.tar.gz && bash install.sh
 set -euo pipefail
 
 say() { printf "✓ %s\n" "$*"; }
 die() { printf "✗ %s\n" "$*" >&2; exit 1; }
 
-INSTALL_DIR="${HOME}/.local/1bit-systems"
+INSTALL_DIR="${HOME}/.local/1bit-monster"
 BIN_DIR="${HOME}/.local/bin"
 
 # 1. Binary already staged next to us (tarball layout: usr/bin/1bit)?
@@ -18,7 +18,7 @@ if [ -x "$(dirname "$0")/usr/bin/1bit" ]; then
 else
   # 2. Fetch the latest release tarball from GitHub.
   say "Fetching latest release metadata…"
-  URL=$(curl -fsSL https://api.github.com/repos/1bit-systems/1bit-systems/releases/latest \
+  URL=$(curl -fsSL https://api.github.com/repos/1bit-monster/1bit-monster/releases/latest \
         | grep -o 'https://[^"]*linux-amd64.tar.gz' | head -1)
   [ -n "$URL" ] || die "No release tarball found on GitHub."
   TMP=$(mktemp -d)
@@ -58,4 +58,4 @@ echo "    1bit zaya -m model.1bp -p 'Hello world'   # serve/infer"
 echo "    1bit jarvis              # TTS/voice server"
 echo "    1bit vision --mmproj …   # vision-language server"
 echo ""
-echo "  Docs: https://1bit.systems · Repo: https://github.com/1bit-systems/1bit-systems"
+echo "  Docs: https://1bit.monster · Repo: https://github.com/1bit-MONSTER/1bit-MONSTER"

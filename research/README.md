@@ -1,6 +1,6 @@
 # research/ — Research-to-Implementation Workspace
 
-This directory turns the 65-paper research archive (`~/research-papers/`) into workstreams against the 1bit-systems codebase.
+This directory turns the 65-paper research archive (`~/research-papers/`) into workstreams against the 1bit-monster codebase.
 
 ```
 research/

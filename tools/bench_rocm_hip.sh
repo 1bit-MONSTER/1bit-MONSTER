@@ -11,8 +11,8 @@ set -euo pipefail
 # tools/gguf_to_h1b.
 set -euo pipefail
 
-MODEL="${ROCM_HIP_MODEL:-$HOME/work/1bit-systems/models/bonsai.h1b}"
-BINDIR="${ROCM_HIP_BINDIR:-$HOME/work/1bit-systems/build}"
+MODEL="${ROCM_HIP_MODEL:-$HOME/work/1bit-monster/models/bonsai.h1b}"
+BINDIR="${ROCM_HIP_BINDIR:-$HOME/work/1bit-monster/build}"
 N="${ROCM_HIP_N:-128}"
 HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
 

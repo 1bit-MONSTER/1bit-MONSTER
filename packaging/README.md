@@ -1,23 +1,23 @@
-# Packaging — 1bit.systems v2026.08.04
+# Packaging — 1bit.MONSTER v2026.08.04
 
 **One binary. 47 1BP models. Auto-detect.** Zero Python. Zero pip. No Docker required.
 The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain, anything that hits `/v1/chat/completions` just works.
 
 | Format | Status | Command |
 |--------|--------|---------|
-| **GitHub Release** | ✅ [Latest](https://github.com/1bit-systems/1bit-systems/releases/latest) | `gh release download` |
-| **One-liner install** | ✅ | `curl -sL https://1bit.systems/install.sh \| bash` |
-| **Debian (.deb)** | ✅ Built by CI on every tagged release | `sudo dpkg -i 1bit-systems_*_amd64.deb` |
-| **AppImage** | ✅ Built by CI on every tagged release | `chmod +x 1bit-systems-*.AppImage && ./1bit-systems-*.AppImage` |
+| **GitHub Release** | ✅ [Latest](https://github.com/1bit-MONSTER/1bit-MONSTER/releases/latest) | `gh release download` |
+| **One-liner install** | ✅ | `curl -sL https://1bit.monster/install.sh \| bash` |
+| **Debian (.deb)** | ✅ Built by CI on every tagged release | `sudo dpkg -i 1bit-monster_*_amd64.deb` |
+| **AppImage** | ✅ Built by CI on every tagged release | `chmod +x 1bit-monster-*.AppImage && ./1bit-monster-*.AppImage` |
 | **Binary tarball** | ✅ | `make package-tarball` |
-| **Docker** | ✅ Dockerfile ready | `docker run 1bit-systems/npu` |
+| **Docker** | ✅ Dockerfile ready | `docker run 1bit-monster/npu` |
 | **Ollama** | ✅ Modelfile | `ollama create qwen3-npu -f Modelfile` |
 | **OpenAI SDK** | ✅ Drop-in | `client = OpenAI(base_url="http://localhost:8081/v1")` |
 | **Open WebUI** | ✅ Compatible | Point `OPENAI_API_BASE` at the NPU server |
 | **LangChain** | ✅ Compatible | `ChatOpenAI(openai_api_base="http://localhost:8081/v1")` |
-| **Arch (AUR)** | 📋 PKGBUILD ready | `yay -S 1bit-systems-bin` |
-| **Homebrew** | 📋 Formula ready | `brew install 1bit-systems` |
-| **Snap** | 📋 snapcraft.yaml ready | `snap install 1bit-systems` |
+| **Arch (AUR)** | 📋 PKGBUILD ready | `yay -S 1bit-monster-bin` |
+| **Homebrew** | 📋 Formula ready | `brew install 1bit-monster` |
+| **Snap** | 📋 snapcraft.yaml ready | `snap install 1bit-monster` |
 
 ### Model coverage
 
@@ -54,8 +54,8 @@ make package-tarball
 make package-deb
 
 # Docker image
-docker build -t 1bit-systems/npu:2026.08.04 -f packaging/docker/Dockerfile .
-docker run --device /dev/accel/accel0 -p 8081:8081 1bit-systems/npu:2026.08.04
+docker build -t 1bit-monster/npu:2026.08.04 -f packaging/docker/Dockerfile .
+docker run --device /dev/accel/accel0 -p 8081:8081 1bit-monster/npu:2026.08.04
 
 # Snap
 make package-snap

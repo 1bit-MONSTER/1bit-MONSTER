@@ -45,7 +45,7 @@ user uploads image (base64 / URL)
 To rebase this on upstream changes:
 
 ```bash
-# From the 1bit-systems repo root:
+# From the 1bit-monster repo root:
 git fetch upstream main
 
 # The additive files clobber-free cherry-pick:

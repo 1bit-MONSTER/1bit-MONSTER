@@ -3,7 +3,7 @@
 **Model**: DeepSeek-V4-Flash-0731 (284B total / 13B active parameters)
 **Source**: https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
 **Release**: July 31, 2026 · MIT license · ~166.9 GB weights
-**Target**: 1bit-systems inference engine (AMD Strix Halo NPU + GPU + CPU)
+**Target**: 1bit-monster inference engine (AMD Strix Halo NPU + GPU + CPU)
 **Status**: Architecture fully analyzed, CPU reference forward pass implemented. GPU kernel path and GGUF tensor name validation pending hardware test.
 
 ---

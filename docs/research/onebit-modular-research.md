@@ -62,7 +62,7 @@ docs.modular.com blog listing shows **Qualcomm completed its acquisition of Modu
 
 ## 5. One Bit Systems dispatch audit (2026-08-13) — you're already 80% there
 
-Audited `/home/bcloud/1bit-systems` (one-bin C++ stack). Findings:
+Audited `/home/bcloud/1bit-monster` (one-bin C++ stack). Findings:
 
 **Already MAX-style (present):**
 - **Arch registry:** `rcpp_arch_t` enum in `include/rocm_cpp/bitnet_model.h` — 23 arch tokens (BITNET, QWEN3, LLAMA, MISTRAL, QWEN2, GEMMA, PHI, ZAMBA2, ZAMBA, MAMBA, LAGUNA, FALCON, OLMO, ZAYA, QWEN2VL, WHISPER, DEEPSEEK, QWEN3VL, KIMI_K3, MOONLIGHT, KIMI_VL, QWEN35, DEEPSEEK_V4), mapped from GGUF `general.architecture` via `rcpp_arch_from_string` with variant grouping (gemma/gemma2/3/4 → GEMMA; GEMMA covers Granite; llama covers many).

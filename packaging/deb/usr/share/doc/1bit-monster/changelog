@@ -5,7 +5,7 @@
 40 models across 16 families in the native 1BP format, direct GGUF execution,
 NPU (XDNA 2) + GPU (ROCm HIP / Vulkan / CUDA / Metal) + CPU backends in one
 C++23 binary. Jarvis local agent (RAG, tool-calling, planner, permission
-gate, voice). Full details: https://github.com/1bit-systems/1bit-systems/blob/main/CHANGELOG.md
+gate, voice). Full details: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/CHANGELOG.md
 
 ---
 
@@ -34,8 +34,8 @@ superseded by the multi-backend 1.0.0 release above.
 - Models verified on-disk at /home/bcloud/models/bonsai-1.7b/
 
 ### Infrastructure
-- Landing page at https://1bit.systems (Cloudflare Pages)
-- Live NPU dashboard at https://1bit.systems/live.html
+- Landing page at https://1bit.monster (Cloudflare Pages)
+- Live NPU dashboard at https://1bit.monster/live.html
 - PR-Agent: The-PR-Agent v0.41 + DeepSeek + GitNexus auto-review
 - Debian packaging template
 - Full audit trail: docs/journey.md (1,184+ lines, 15 updates)

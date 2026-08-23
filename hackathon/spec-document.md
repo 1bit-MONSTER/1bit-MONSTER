@@ -3,8 +3,8 @@
 # AMD AI DevMaster Hackathon — Track 2 Submission
 ## Development & Local Deployment of Private AI Agents
 
-**Team**: 1bit.systems  
-**Project**: 1bit.systems — One Binary, All Backends, Zero Cloud  
+**Team**: 1bit.MONSTER  
+**Project**: 1bit.MONSTER — One Binary, All Backends, Zero Cloud  
 **Date**: August 2026  
 **Hardware**: AMD Ryzen AI Max+ 395 (Strix Halo) — Radeon 8060S GPU + 32 XDNA 2 NPU tiles + 128 GB unified LPDDR5X
 
@@ -20,7 +20,7 @@
 
 ## 1. Application Scenarios
 
-1bit.systems enables **fully private, on-device AI agents** on consumer AMD hardware. No cloud, no API keys, no data leaving the machine. Target scenarios:
+1bit.MONSTER enables **fully private, on-device AI agents** on consumer AMD hardware. No cloud, no API keys, no data leaving the machine. Target scenarios:
 
 | Scenario | Description |
 |----------|-------------|
@@ -216,9 +216,9 @@
 
 | Engine | Hardware | tok/s (Qwen3-0.6B) | Status |
 |--------|----------|-------------------:|--------|
-| **1bit-systems GPU 1-bit** | Radeon 8060S (ROCm HIP) | **417** | Fused Q1 GEMV kernel |
-| **1bit-systems GPU ternary** | Radeon 8060S (Vulkan) | **318** | TQ2 1.58-bit packing |
-| **1bit-systems NPU (FLM)** | XDNA 2 (32 tiles) | **11.66** (Qwen3.6-35B-A3B) | FastFlowLM v0.9.46, measured 2026-08-01 |
+| **1bit-monster GPU 1-bit** | Radeon 8060S (ROCm HIP) | **417** | Fused Q1 GEMV kernel |
+| **1bit-monster GPU ternary** | Radeon 8060S (Vulkan) | **318** | TQ2 1.58-bit packing |
+| **1bit-monster NPU (FLM)** | XDNA 2 (32 tiles) | **11.66** (Qwen3.6-35B-A3B) | FastFlowLM v0.9.46, measured 2026-08-01 |
 | llama.cpp ROCm (PrismML) | Same hardware | 229 | Reference baseline |
 | FastFlowLM | — | — | Removed — zero proprietary code |
 
@@ -226,7 +226,7 @@
 
 ## 6. Project Source Code
 
-- **Repository**: https://github.com/1bit-systems/1bit-systems
+- **Repository**: https://github.com/1bit-MONSTER/1bit-MONSTER
 - **License**: MIT
 - **Language**: C++23 (server, agent CLI, proxy), HIP C++ (GPU kernels), Python (converters/benchmarks)
 - **Build**: CMake + Ninja, `cmake -B build -G Ninja && ninja -C build zaya_server`
@@ -234,7 +234,7 @@
 
 ### Repository Structure
 ```
-1bit-systems/
+1bit-monster/
 ├── tests/zaya_server.cpp      ← HTTP server (OpenAI API)
 ├── tools/unified_server.cpp   ← Unified server with auto-discovery
 ├── src/                       ← HIP GPU kernels (ternary, Q1, Mamba1)
@@ -246,7 +246,7 @@
 ├── scripts/                    ← Converters, benchmarks, CI
 ├── hackathon/                  ← Submission materials
 ├── models/                     ← 46+ 1BP models across 17 families on HuggingFace (+12 documented Zyphra non-LLM)
-└── site/                       ← https://1bit.systems
+└── site/                       ← https://1bit.monster
 ```
 
 ---

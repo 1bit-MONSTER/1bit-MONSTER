@@ -37,7 +37,7 @@ static const std::string& weights_dir() {
         const char* d = getenv("ZAYA_WEIGHTS_DIR");
         if (d && d[0]) return std::string(d);
         const char* home = getenv("HOME");
-        return (home && home[0]) ? std::string(home) + "/.local/share/1bit-systems/weights/" : "/tmp/zaya_weights/";
+        return (home && home[0]) ? std::string(home) + "/.local/share/1bit-monster/weights/" : "/tmp/zaya_weights/";
     }();
     return dir;
 }

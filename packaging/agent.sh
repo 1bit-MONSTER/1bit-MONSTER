@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 1bit.systems — /1bit coding agent install + NPU model registration
-# curl -fsSL https://1bit.systems/agent.sh | sh
+# 1bit.MONSTER — /1bit coding agent install + NPU model registration
+# curl -fsSL https://1bit.monster/agent.sh | sh
 set -euo pipefail
 
 echo "╔══════════════════════════════════════════════════╗"
@@ -94,5 +94,5 @@ echo "  1bit -c              # continue last session"
 echo "  /model               # switch models in TUI"
 echo ""
 echo "Models: qwen3-0.6b · gemma4-e2b · qwen3-vl-4b · llama-3.1-8b · qwen3-8b"
-echo "Docs:   https://1bit.systems"
+echo "Docs:   https://1bit.monster"
 echo "Repo:   https://github.com/bong-water-water-bong/1bit-agent"

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use supo-subagent-driven-development (recommended) or supo-executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A Flutter app (`mobile/` in the 1bit-systems repo) that connects to the M1 gateway's `/v1/voice/session` WebSocket: tap-to-start voice-active conversation, status lights, transcript log. No data stored on the device. iOS simulator is the first build target (cloud Mac provisioned); Android follows.
+**Goal:** A Flutter app (`mobile/` in the 1bit-monster repo) that connects to the M1 gateway's `/v1/voice/session` WebSocket: tap-to-start voice-active conversation, status lights, transcript log. No data stored on the device. iOS simulator is the first build target (cloud Mac provisioned); Android follows.
 
 **Architecture:** Three service layers + UI, all under `mobile/`:
 - `lib/ws/protocol.dart` — pure Dart protocol constants + frame parsing (no plugins) — fully unit-testable.
@@ -15,7 +15,7 @@
 
 ## Global Constraints
 
-- **Repo:** `~/1bit-systems`, branch `feat/jarvis-mobile`. Spec: `docs/superpowers/specs/2026-08-08-jarvis-mobile-design.md`. M1 (gateway) is DONE — the wire protocol below is implemented server-side; DO NOT change server behavior.
+- **Repo:** `~/1bit-monster`, branch `feat/jarvis-mobile`. Spec: `docs/superpowers/specs/2026-08-08-jarvis-mobile-design.md`. M1 (gateway) is DONE — the wire protocol below is implemented server-side; DO NOT change server behavior.
 - **Wire protocol (from M1 — verbatim):**
   - URL: `ws://<host>:8082/v1/voice/session` (port overridable via `WS_STREAM_PORT`); handshake header `Authorization: Bearer <token>` (token optional when the server runs without `JARVIS_WS_TOKEN`).
   - Server → client text frames:
@@ -64,7 +64,7 @@
 - [ ] **Step 1: Scaffold + write the failing tests**
 
 ```bash
-cd ~/1bit-systems && flutter create --platforms=ios,android --org systems.onebit --project-name jarvis_mobile mobile
+cd ~/1bit-monster && flutter create --platforms=ios,android --org systems.onebit --project-name jarvis_mobile mobile
 ```
 
 Then replace `mobile/test/widget_test.dart` with two real test files:
@@ -382,7 +382,7 @@ class SessionController extends ChangeNotifier {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd ~/1bit-systems/mobile && ~/flutter/bin/flutter pub get >/dev/null && ~/flutter/bin/flutter test
+cd ~/1bit-monster/mobile && ~/flutter/bin/flutter pub get >/dev/null && ~/flutter/bin/flutter test
 ```
 Expected: FAIL — `protocol.dart` / `session_controller.dart` missing (compile errors).
 
@@ -391,14 +391,14 @@ Expected: FAIL — `protocol.dart` / `session_controller.dart` missing (compile 
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd ~/1bit-systems/mobile && ~/flutter/bin/flutter test
+cd ~/1bit-monster/mobile && ~/flutter/bin/flutter test
 ```
 Expected: all protocol + controller tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/1bit-systems && git add mobile && git commit -m "feat(jarvis-mobile): app scaffold + protocol layer + session controller"
+cd ~/1bit-monster && git add mobile && git commit -m "feat(jarvis-mobile): app scaffold + protocol layer + session controller"
 ```
 Verify `git show --stat HEAD`: only `mobile/` paths.
 
@@ -480,7 +480,7 @@ Verify `git show --stat HEAD`: only `mobile/` paths.
 - [ ] **Step 5: iOS simulator proof on the Mac:**
   ```bash
   # on EPYC box:
-  rsync -a --exclude build --exclude .dart_tool ~/1bit-systems/mobile/ rentamac@<mac>:/tmp/  # via the Mac SSH creds
+  rsync -a --exclude build --exclude .dart_tool ~/1bit-monster/mobile/ rentamac@<mac>:/tmp/  # via the Mac SSH creds
   # on Mac (PATH as per Global Constraints):
   cd mobile && flutter pub get && flutter build ios --simulator --debug
   xcrun simctl boot <udid> && xcrun simctl install <udid> build/ios/iphonesimulator/Runner.app

@@ -1,4 +1,4 @@
-# Cross-Engine Inference Benchmark (1bit-systems fork)
+# Cross-Engine Inference Benchmark (1bit-monster fork)
 
 A reproducible benchmark harness that compares inference engines on the
 **same GGUF files**, the **same host**, through **one uniform OpenAI
@@ -7,7 +7,7 @@ A reproducible benchmark harness that compares inference engines on the
 **This directory is vendored from [zhongkaifu/TensorSharp](https://github.com/zhongkaifu/TensorSharp)
 (`benchmarks/engine_comparison/`), Copyright (c) 2026 Zhongkai Fu, BSD 3-Clause
 License (see upstream `LICENSE`). Upstream's copyright notice is retained here;
-modifications are the 1bit-systems additions listed below.
+modifications are the 1bit-monster additions listed below.
 
 - the **`zaya` engine** (`engines.py` → `ZayaServer`): launches
   `build/zaya_server` against any model the harness can point at,

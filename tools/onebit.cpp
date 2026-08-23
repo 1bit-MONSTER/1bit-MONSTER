@@ -624,7 +624,7 @@ static void cmd_update(bool check_only) {
     headers.emplace("User-Agent", "1bit-cli/" + std::string(kVersion));
     headers.emplace("Accept", "application/vnd.github.v3+json");
 
-    auto res = cli.Get("/repos/1bit-systems/1bit-systems/releases/latest", headers);
+    auto res = cli.Get("/repos/1bit-monster/1bit-monster/releases/latest", headers);
     if (!res || res->status != 200) {
         std::cout << "  ⚠️  Could not check for updates.\n";
         return;
@@ -718,7 +718,7 @@ static void cmd_list() {
 }
 
 static void print_usage() {
-    std::cout << R"(1bit — NPU-native coding agent for 1bit.systems
+    std::cout << R"(1bit — NPU-native coding agent for 1bit.MONSTER
 
 Usage: 1bit [COMMAND] [ARGS]
 

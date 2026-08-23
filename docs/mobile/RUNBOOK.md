@@ -2,7 +2,7 @@
 
 Deploy and manually verify the JARVIS voice gateway on the Strix Halo box with
 the mobile app (M1–M3). All paths assume the repo lives at
-`/home/<user>/1bit-systems`; adjust for your box.
+`/home/<user>/1bit-monster`; adjust for your box.
 
 ## Architecture (ports, verified in code)
 
@@ -20,7 +20,7 @@ The gateway routes every LLM call to `UNIFIED_URL` (default
 
 1. Build the engine (single `build/1bit` binary, all subcommands):
    ```sh
-   cd /home/<user>/1bit-systems
+   cd /home/<user>/1bit-monster
    cmake -B build
    cmake --build build --target onebin
    ```

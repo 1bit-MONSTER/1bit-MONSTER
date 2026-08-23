@@ -883,9 +883,9 @@ static void resolve_weights_dir(const char* weights_dir) {
     const char* env = getenv("ZAYA_WEIGHTS_DIR");
     if (env && env[0]) { g_weights_dir = ensure_trailing_slash(env); return; }
     const char* xdg = getenv("XDG_DATA_HOME");
-    if (xdg && xdg[0]) { g_weights_dir = std::string(xdg) + "/1bit-systems/weights/"; return; }
+    if (xdg && xdg[0]) { g_weights_dir = std::string(xdg) + "/1bit-monster/weights/"; return; }
     const char* home = getenv("HOME");
-    if (home && home[0]) { g_weights_dir = std::string(home) + "/.local/share/1bit-systems/weights/"; return; }
+    if (home && home[0]) { g_weights_dir = std::string(home) + "/.local/share/1bit-monster/weights/"; return; }
     fprintf(stderr, "ERROR: No weights directory found — set ZAYA_WEIGHTS_DIR or ensure HOME is set\n");
     g_weights_dir.clear();  // fixes #1332: never default to /tmp
 }

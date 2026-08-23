@@ -1,8 +1,8 @@
 > **📜 Historical launch post** — This was written at project launch (July 2026). Binary size, model counts, and tok/s figures are from the early NPU-only phase. Current numbers are significantly different. See [README](../README.md) for up-to-date data.
 >
-# Launch Plan — 1bit.systems
+# Launch Plan — 1bit.MONSTER
 
-> The Show HN post that makes 1bit.systems the reference standard for NPU inference.
+> The Show HN post that makes 1bit.MONSTER the reference standard for NPU inference.
 
 ## One-Liner Pitch
 
@@ -37,7 +37,7 @@
 *Alternative titles:*
 - *120 KB binary. 94 tok/s on AMD NPU. Zero deps. Open source.*
 - *I beat AMD's proprietary NPU runtime with a 120 KB open-source binary*
-- *Show HN: 1bit.systems — 120 KB NPU inference engine, 94 tok/s, MIT*
+- *Show HN: 1bit.MONSTER — 120 KB NPU inference engine, 94 tok/s, MIT*
 
 ### Body
 
@@ -57,7 +57,7 @@ it's 120 KB, MIT-licensed, and compiles with one g++ command.
 No Python. No pip. No Docker. No MLIR toolchain. Just g++ and run.
 
 ```
-curl -sL https://1bit.systems/install.sh | bash
+curl -sL https://1bit.monster/install.sh | bash
 ```
 
 What I learned reverse-engineering the NPU:
@@ -95,11 +95,11 @@ If you have a Ryzen AI Max+ 395 (Strix Halo), you can run this
 right now:
 
 ```
-curl -sL https://1bit.systems/npu-install.sh | bash
+curl -sL https://1bit.monster/npu-install.sh | bash
 1bit-npu model.q4nx 16
 ```
 
-The repo: https://github.com/1bit-systems/1bit-systems
+The repo: https://github.com/1bit-MONSTER/1bit-MONSTER
 
 I've been working on this for 2.5 months. Happy to answer questions
 about the NPU, XRT, INT8 quantization, or why I chose C++ over
@@ -114,13 +114,13 @@ everything else.
 - [ ] Ensure GitHub Actions release workflow is ready
 - [ ] Tag and push a release with .deb + tarball attached
 - [ ] Smoke-test the install on a clean machine:
-  - `curl -sL https://1bit.systems/npu-install.sh | bash`
+  - `curl -sL https://1bit.monster/npu-install.sh | bash`
   - `1bit pull qwen3-0.6b`
   - `1bit status`
 - [ ] Test the HTTP API:
   - `1bit serve 8081`
   - `curl http://localhost:8081/v1/chat/completions -d '{"messages":[{"role":"user","content":"hi"}]}'`
-- [ ] Verify 1bit.systems landing page loads fast
+- [ ] Verify 1bit.MONSTER landing page loads fast
 - [ ] Remove robots.txt if present (already done)
 - [ ] Post to Hacker News
 - [ ] Monitor comments and reply

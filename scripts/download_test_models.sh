@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # Set 1BIT_MODELS_DIR to override the default destination.
 
-MODELS_DIR="${1BIT_MODELS_DIR:-$HOME/.cache/1bit-systems/test-models}"
+MODELS_DIR="${1BIT_MODELS_DIR:-$HOME/.cache/1bit-monster/test-models}"
 mkdir -p "$MODELS_DIR"
 
 echo "Downloading test models to $MODELS_DIR ..."

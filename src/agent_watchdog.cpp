@@ -1,6 +1,6 @@
 // agent_watchdog.cpp — The "true agent" background watcher implementation
 //
-// This is the closed-loop that makes 1bit.systems an agent rather than
+// This is the closed-loop that makes 1bit.MONSTER an agent rather than
 // just a router. It observes real hardware conditions and adapts the
 // strategy in real-time — no human in the loop.
 

@@ -76,11 +76,11 @@ Until 1-3 land, **HIP stays the production lane.**
 
 ```bash
 # HIP (default)
-cd /home/bcloud/repos/1bit-systems/rocm-cpp/build
+cd /home/bcloud/repos/1bit-monster/rocm-cpp/build
 ./bitnet_decode /home/bcloud/halo-ai/models/halo-1bit-2b.h1b \
     --max-tokens 1024 --prompt "The future of compute is"
 
 # NPU leaf doctests
-cd /home/bcloud/repos/1bit-systems/cpp
+cd /home/bcloud/repos/1bit-monster/cpp
 ONEBIT_REAL_BACKEND=1 ctest --preset release-strix -R onebit_aie
 ```

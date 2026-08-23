@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
     addr.sin_port = htons(port);
     bind(sock, (struct sockaddr*)&addr, sizeof(addr));
     listen(sock, 5);
-    printf("1bit.systems NPU API -> http://localhost:%d/v1/chat/completions\n", port);
+    printf("1bit.MONSTER NPU API -> http://localhost:%d/v1/chat/completions\n", port);
     printf("  Model: Qwen3-0.6B INT8\n\n");
     while (true) {
         int client = accept(sock, nullptr, nullptr);

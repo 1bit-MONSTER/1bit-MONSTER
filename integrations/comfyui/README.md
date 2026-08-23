@@ -1,4 +1,4 @@
-# 1bit-systems ComfyUI Integration
+# 1bit-monster ComfyUI Integration
 
 Custom nodes that expose the 1bit inference engine to ComfyUI workflows,
 giving you NPU-accelerated LLM inference, image generation, vision-language
@@ -8,7 +8,7 @@ understanding, and audio synthesis — all from ComfyUI's visual graph editor.
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes/
-git clone https://github.com/1bit-systems/1bit-systems comfyui_1bit_systems
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER comfyui_1bit_systems
 pip install httpx Pillow numpy
 
 # Also install submodule dependencies
@@ -23,7 +23,7 @@ as systemd services):
 
 ```bash
 # Start the LLM + VLM inference server
-cd /path/to/1bit-systems
+cd /path/to/1bit-monster
 cmake -B build -G Ninja && cmake --build build --target unified_server -j$(nproc)
 ./build/unified_server -w /path/to/models/ -p 8088
 

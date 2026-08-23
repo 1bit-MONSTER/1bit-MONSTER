@@ -39,9 +39,9 @@ snapshot_download(
 )
 ```
 
-## Compatibility with 1bit.systems
+## Compatibility with 1bit.MONSTER
 
-UD GGUFs are standard GGUF files under the hood. The 1bit.systems GGUF loader
+UD GGUFs are standard GGUF files under the hood. The 1bit.MONSTER GGUF loader
 auto-detects architecture from GGUF metadata — no special handling needed.
 
 ## Where to Find Them

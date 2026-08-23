@@ -38,7 +38,7 @@ from typing import Optional
 # Locate + load the config file
 # ---------------------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[1]                      # .../1bit-systems
+REPO_ROOT = HERE.parents[1]                      # .../1bit-monster
 ASSETS_DIR = HERE / "assets"
 
 CONFIG_PATH = Path(os.environ.get("BENCH_CONFIG") or (HERE / "benchmark_config.json"))
@@ -136,7 +136,7 @@ SDCPP_EXE = (
 VLLM_BASE_URL = str(_env_or("BENCH_VLLM_URL",
                             _paths.get("vllm_base_url", "http://127.0.0.1:8000")))
 
-# 1bit-systems zaya_server (the primary engine in this fork of the harness).
+# 1bit-monster zaya_server (the primary engine in this fork of the harness).
 # Built from the repo root with:  cmake --build build --target zaya_server
 ZAYA_SERVER_EXE = (
     _path(_paths.get("zaya_server_exe"), "BENCH_ZAYA_SERVER")
@@ -345,7 +345,7 @@ class BackendSpec:
     sdcpp_exe: Optional[Path] = None
     sdcpp_extra_args: tuple = ()
     sdcpp_env: dict = field(default_factory=dict)
-    # 1bit-systems zaya_server mapping (zaya_enabled None/False = zaya cannot
+    # 1bit-monster zaya_server mapping (zaya_enabled None/False = zaya cannot
     # run this backend). `exe` overrides paths.zaya_server_exe (e.g. a per-
     # backend build); extra_args are appended to `--model <file> --port <port>`.
     zaya_enabled: bool = False
@@ -578,7 +578,7 @@ def applies(engine: str, backend: str, model: ModelSpec,
     if engine == "llamacpp" and scenario.kind == "video":
         return False, "llama.cpp has no video input path"
 
-    # 1bit-systems zaya_server: text-only today (no multimodal, no tools /
+    # 1bit-monster zaya_server: text-only today (no multimodal, no tools /
     # structured-output handling in /v1/chat/completions). Gate the cells it
     # cannot answer correctly instead of letting the checkers fail them.
     if engine == "zaya":

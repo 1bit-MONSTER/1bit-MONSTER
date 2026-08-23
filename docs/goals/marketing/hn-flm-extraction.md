@@ -1,6 +1,6 @@
 # Show HN: We extracted AMD's entire NPU model zoo — 37 models, 209 xclbins, zero config
 
-https://1bit.systems/blog/flm-37-models-extracted
+https://1bit.monster/blog/flm-37-models-extracted
 
 AMD shipped 48M Strix Halo APUs this year — every one has a 32-tile XDNA 2 NPU sitting idle because the proprietary FastFlowLM stack requires a specific driver and license chain most users never set up.
 
@@ -22,5 +22,5 @@ We reverse-engineered that stack in 4 days, then pulled every pre-built model fr
 
 **Why this matters:** every Strix Halo laptop has a 50 TOPS NPU. Our binary works with the mainline `amdxdna` driver. Extract the xclbins once, they run forever.
 
-GitHub: https://github.com/1bit-systems/1bit-systems
-Full models page: https://1bit.systems/wiki/models
+GitHub: https://github.com/1bit-MONSTER/1bit-MONSTER
+Full models page: https://1bit.monster/wiki/models

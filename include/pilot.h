@@ -8,7 +8,7 @@
 // matmul (O(hidden × n_experts)) that finishes well before the current
 // layer's expert FFN. This overlaps disk I/O with compute.
 //
-// For 1bit.systems, the analogy is:
+// For 1bit.MONSTER, the analogy is:
 //   colibrì →  predict which experts →  preload from disk
 //   1bit    →  predict which backend  →  pre-upload weights to GPU/NPU
 //
@@ -30,7 +30,7 @@
 //       // ... actual compute ...
 //       pilot.on_layer_done(layer, backend, ms);  // record latency
 //
-// License: MIT (same as 1bit.systems)
+// License: MIT (same as 1bit.MONSTER)
 
 #ifndef PILOT_H
 #define PILOT_H
