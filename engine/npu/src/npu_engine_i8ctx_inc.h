@@ -811,12 +811,37 @@ struct I8Ctx {
         for (size_t t = 0; t < n_tiles; t++) {
             int nt = (int)(t % (size_t)n_tiles_n);
             uint8_t* fb = Bm + t * GuI4Pack::TILE_TOTAL + 4096 + 512 + 256;
+            // v38: the silu's fold also precomputed as int32 Q22 in the tile
+            // PAD [6656 + j*4] (= round(S'*2^22)) — the aie2p backend
+            // mis-compiles the float silu loop AND int64 math, so the silu
+            // is pure int32 fixed-point.
+            uint8_t* fq = Bm + t * GuI4Pack::TILE_TOTAL + 6656;
             for (int j = 0; j < 128; j++) {
                 int p = nt * 128 + j;                  // GU col
                 float sv = (p & 1) ? ag * qn_s * scol[p] : ag * scol[p];
                 uint16_t b = f32_to_bf16_impl(sv);
                 fb[2 * j]     = (uint8_t)(b & 0xFF);
                 fb[2 * j + 1] = (uint8_t)(b >> 8);
+                int32_t q = (int32_t)std::roundf(sv * 4194304.0f);   // Q22
+                fq[4 * j]     = (uint8_t)(q & 0xFF);
+                fq[4 * j + 1] = (uint8_t)((q >> 8) & 0xFF);
+                fq[4 * j + 2] = (uint8_t)((q >> 16) & 0xFF);
+                fq[4 * j + 3] = (uint8_t)((q >> 24) & 0xFF);
+            }
+            // v48: SECTION scales for the working int8-silu fallback: the
+            // per-cg section max S_col, folded as gs[0]=ag*gsec / gs[4]=
+            // ag*qn_s*gsec (float bits) at [7168..7184). Tile (ki, nt) with
+            // nt = cg*8+c belongs to GU section cg = nt/8.
+            {
+                int cg = nt / 8;
+                float gsec = 0;
+                for (int cc = cg * 1024; cc < cg * 1024 + 1024; cc++)
+                    gsec = std::max(gsec, scol[(size_t)cc]);
+                float v0 = ag * gsec;
+                float v4 = ag * qn_s * gsec;
+                uint8_t* sg = Bm + t * GuI4Pack::TILE_TOTAL + 7168;
+                memcpy(sg + 0, &v0, 4);
+                memcpy(sg + 16, &v4, 4);
             }
         }
         bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
