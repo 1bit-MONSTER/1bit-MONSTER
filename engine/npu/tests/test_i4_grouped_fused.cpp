@@ -437,7 +437,7 @@ int main(int argc, char** argv) {
     const uint64_t gu_off = off, gu_size = size;
     int gu_i8_rows = (n_exp * 2 * n_ff / 32) * (H / 256);
     auto gu = load_i8(D, off, size, gu_i8_rows, H);   // [n_exp*2*n_ff, H] float
-    fprintf(stderr, "GU dequant rows=%zu cols=%zu\n", gu.size() / H, H);
+    fprintf(stderr, "GU dequant rows=%zu cols=%zu\n", gu.size() / H, (size_t)H);
 
     // Expert E's GU block: gate = rows [E*2n_ff, E*2n_ff+n_ff), up = +n_ff.
     const float* gblk = &gu[(size_t)E * 2 * n_ff * H];
