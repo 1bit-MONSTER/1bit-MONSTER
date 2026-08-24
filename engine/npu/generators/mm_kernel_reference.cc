@@ -783,6 +783,20 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     event1();
 }
 
+// Zero the tile-local C1buf (HARDCODED local 0xE000 = C1_0, verified against
+// input_with_addresses.mlir — issue #1842) before each col_group's
+// accumulation. The generic zero_i32 takes its target as an arg, which the
+// aiecc does not deliver reliably (issue #1837 — the arg is emitted after the
+// call); the C1buf's boot content is nonzero, so an un-zeroed C1buf corrupts
+// the first matmul's accumulation (measured: C1 = garbage). 0-arg extern
+// calls have no arg setup the aiecc could drop. Each core's local address
+// space is private, so the same constant addresses each core's own C1buf
+// (the established hardcoded-address pattern — the silu's 0x7F000 h2 target).
+extern "C" void zero_c1(void) {
+    int32_t *d = (int32_t *)0xE000;
+    for (unsigned i = 0; i < DIM_M * DIM_N; i++) d[i] = 0;
+}
+
 
 // ── Fused GU→SiLU→D (issue #1759): the on-core SiLU+quant step ──
 // Called between the GU and D GEMM phases of the fused kernel. Each tile's C1

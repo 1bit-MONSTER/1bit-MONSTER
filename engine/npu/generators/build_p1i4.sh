@@ -34,7 +34,7 @@ $P/bin/ld.lld -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
 # (the old checked-in generators/mm_32x64x128.o contained only zero_i32)
 # fails here loudly instead of surfacing as random aiecc "undefined symbol"
 # errors that look like kernel bugs.
-for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32; do
+for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32 zero_c1; do
     if ! $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -qE " T $sym\$"; then
         echo "ERROR: merged kernel object missing symbol '$sym' — stale/partial build?" >&2
         exit 1
@@ -95,7 +95,8 @@ def have(name_pat, want):
 ok = True
 # v59-critical hardcoded addresses (verified against this map on 2026-08-24):
 #   Gg_0 @ 0x6000 (the silu metadata stash — the 0x76000 incident missed it
-#                  by 458 KB -> h2 all-+127), C1 accumulator @ 0xE000.
+#                  by 458 KB -> h2 all-+127), C1 accumulator @ 0xE000 (the
+#                  zero_c1 target — issue #1769 integration).
 # The H2 fifo is not an aie.buffer (objectfifos are absent from this map), so
 # its 0x7F000 wrap is not verifiable here.
 for pat, want, what in (("Gg_0", 0x6000, "silu metadata stash (0x6000)"),
