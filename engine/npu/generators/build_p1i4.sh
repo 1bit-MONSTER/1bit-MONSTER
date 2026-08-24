@@ -34,6 +34,7 @@ $PYTHON "$G/n1_core_fused_gu_silu_d_p1_i4.py" -M 8 -K 2048 -N_GU 4096 -N_D 2048 
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
+cd "$W"   # aiecc resolves link_with objects relative to the CWD (stale generators/mm_32x64x128.o bug)
 /home/bcloud/mlir-aie/build_tmp/bin/aiecc --peano="$P" --aietools="$M" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
     --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \

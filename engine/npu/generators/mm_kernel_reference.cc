@@ -762,17 +762,10 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // there (the 33rd B object per col_group never delivered). The LAST
     // matmul's stash wins before the silu runs.
     {
-        const uint8_t* fbp = pB4 + 4096 + 512 + 256;
-        for (int j = 0; j < 128; j++) {
-            uint16_t b = (uint16_t)fbp[2 * j] | ((uint16_t)fbp[2 * j + 1] << 8);
-            uint32_t bits = (uint32_t)b << 16;
-            // v22: stash the fold CONTIGUOUSLY at 0x76000 (the generator's
-            // unused Gg_0 region) so the silu can walk it with post-increment
-            // loads (the aie2p backend mis-compiles register-offset loads
-            // in the float loop; constant-offset/post-increment loads match
-            // the WORKING int8 silu's pattern).
-            ((int32_t *)0x76000)[j] = (int32_t)bits;
-        }
+        // v51: stash the foldQ22 (host-precomputed int32 at [6656 + j*4])
+        // CONTIGUOUSLY at 0x76000 — the fixed-point silu consumes it.
+        const int32_t* fq = (const int32_t*)(pB4 + 6656);
+        for (int j = 0; j < 128; j++) ((int32_t *)0x6000)[j] = fq[j];
     }
     event1();
 }
@@ -869,24 +862,78 @@ static inline int64_t fold_q32(uint32_t bits) {
     return sh >= 0 ? (v << sh) : (v >> (-sh));
 }
 
+
+// v50: Q22 sigmoid LUT over [-4, 4] (256 entries): round(sigmoid(-4+i*8/255)*2^22)
+static const int32_t silu_sigmoid_q22[256] = {
+    75440, 77799, 80231, 82738, 85321, 87983, 90727, 93553,
+    96466, 99468, 102560, 105747, 109029, 112411, 115894, 119483,
+    123179, 126985, 130906, 134944, 139102, 143384, 147792, 152331,
+    157004, 161815, 166767, 171864, 177110, 182509, 188064, 193781,
+    199663, 205714, 211939, 218342, 224927, 231699, 238664, 245824,
+    253185, 260753, 268531, 276525, 284739, 293179, 301851, 310758,
+    319906, 329301, 338948, 348852, 359018, 369452, 380159, 391145,
+    402414, 413974, 425827, 437981, 450441, 463211, 476297, 489704,
+    503438, 517502, 531904, 546646, 561734, 577173, 592967, 609120,
+    625637, 642522, 659778, 677409, 695418, 713809, 732585, 751748,
+    771300, 791244, 811582, 832314, 853442, 874968, 896890, 919209,
+    941925, 965038, 988545, 1012445, 1036735, 1061415, 1086479, 1111926,
+    1137750, 1163948, 1190514, 1217442, 1244727, 1272363, 1300341, 1328655,
+    1357297, 1386257, 1415526, 1445096, 1474955, 1505094, 1535501, 1566164,
+    1597072, 1628212, 1659571, 1691136, 1722893, 1754829, 1786928, 1819177,
+    1851560, 1884063, 1916669, 1949363, 1982130, 2014953, 2047816, 2080704,
+    2113600, 2146488, 2179351, 2212174, 2244941, 2277635, 2310241, 2342744,
+    2375127, 2407376, 2439475, 2471411, 2503168, 2534733, 2566092, 2597232,
+    2628140, 2658803, 2689210, 2719349, 2749208, 2778778, 2808047, 2837007,
+    2865649, 2893963, 2921941, 2949577, 2976862, 3003790, 3030356, 3056554,
+    3082378, 3107825, 3132889, 3157569, 3181859, 3205759, 3229266, 3252379,
+    3275095, 3297414, 3319336, 3340862, 3361990, 3382722, 3403060, 3423004,
+    3442556, 3461719, 3480495, 3498886, 3516895, 3534526, 3551782, 3568667,
+    3585184, 3601337, 3617131, 3632570, 3647658, 3662400, 3676802, 3690866,
+    3704600, 3718007, 3731093, 3743863, 3756323, 3768477, 3780330, 3791890,
+    3803159, 3814145, 3824852, 3835286, 3845452, 3855356, 3865003, 3874398,
+    3883546, 3892453, 3901125, 3909565, 3917779, 3925773, 3933551, 3941119,
+    3948480, 3955640, 3962605, 3969377, 3975962, 3982365, 3988590, 3994641,
+    4000523, 4006240, 4011795, 4017194, 4022440, 4027537, 4032489, 4037300,
+    4041973, 4046512, 4050920, 4055202, 4059360, 4063398, 4067319, 4071125,
+    4074821, 4078410, 4081893, 4085275, 4088557, 4091744, 4094836, 4097838,
+    4100751, 4103577, 4106321, 4108983, 4111566, 4114073, 4116505, 4118864,
+};
+
 extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2) {
-    // v22: fold walked with post-increment loads from 0x76000 (contiguous).
-    // The aiecc emits the 3-arg extern call with only p0 (c1) set, so the
-    // h2 writeback target is c1 + 4096 == the H2 fifo slot.
-    int8_t *h2w = (int8_t *)c1 + 4096;
-    const float *fp = (const float *)0x76000;
+    // v50: PURE int32 fixed-point silu — the aie2p backend mis-compiles the
+    // float loop (correct g/u, wrong h for p>=1) AND int64 math. The foldQ22
+    // is host-precomputed in the tile pad and stashed by the matmul at
+    // 0x76000; the h2 writeback target is the hardcoded H2 fifo slot 0x7F000
+    // (depth-1 fifo, identical on all cores).
+    static const int gos[64] = {
+        0, 2, 4, 6, 64, 66, 68, 70, 128, 130, 132, 134, 192, 194, 196, 198,
+        256, 258, 260, 262, 320, 322, 324, 326, 384, 386, 388, 390, 448, 450, 452, 454,
+        512, 514, 516, 518, 576, 578, 580, 582, 640, 642, 644, 646, 704, 706, 708, 710,
+        768, 770, 772, 774, 832, 834, 836, 838, 896, 898, 900, 902, 960, 962, 964, 966 };
+    const int32_t *fold = (const int32_t *)0x6000;   // foldQ22 (the Gg_0 region)
+    int8_t *h2w = (int8_t *)0x7F000;
     for (unsigned p = 0; p < DIM_N / 2; p++) {
-        unsigned go = ((2 * p) / 8) * 64 + ((2 * p) % 8);
-        unsigned uo = ((2 * p + 1) / 8) * 64 + ((2 * p + 1) % 8);
-        float sfg = *fp++;
-        float sfu = *fp++;
-        float g = (float)c1[go] * sfg;
-        float u = (float)c1[uo] * sfu;
-        float h = silu_lut(g) * u;
-        h2w[p] = silu_sat8(silu_roundf(h));
+        int go = gos[p];
+        int uo = gos[p] + 1;
+        int gQ22 = c1[go] * fold[2 * p];              // g * 2^22
+        int uQ22 = c1[uo] * fold[2 * p + 1];          // u * 2^22
+        if (gQ22 < -(1 << 24)) gQ22 = -(1 << 24);
+        else if (gQ22 > (1 << 24)) gQ22 = (1 << 24);
+        int idx = ((((gQ22 + (1 << 24)) >> 8) * 255) + (1 << 16)) >> 17;
+        if (idx < 0) idx = 0;
+        else if (idx > 255) idx = 255;
+        int gLUTQ22 = (gQ22 >> 11) * (silu_sigmoid_q22[idx] >> 11);
+        int hQ12 = (gLUTQ22 >> 16) * (uQ22 >> 16);    // == h*2^12
+        int ha = hQ12 < 0 ? -hQ12 : hQ12;
+        int h = (ha + (1 << 11)) >> 12;               // round-half-away
+        h = hQ12 < 0 ? -h : h;
+        h2w[p] = silu_sat8(h);
     }
     for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2w[i] = 0;
 }
+
+
+
 
 
 
