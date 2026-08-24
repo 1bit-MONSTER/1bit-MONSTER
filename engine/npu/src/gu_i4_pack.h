@@ -69,6 +69,52 @@ static inline float i4p_bf16_to_f32(uint16_t b) {
     return f;
 }
 
+// ── v59 silu pad metadata (issue #1844) ────────────────────────────────────
+// Writes ONE tile's per-token silu metadata into the 8192-B tile pad. Shared
+// by the packer's first-launch init (ag=1, qn_s=1) and by
+// update_fused_header_i4 (per token) so the host math cannot drift:
+//   [6144, 6148)  Q       per-tile fold Q (22 - s, s from the tile MIN |S'|)
+//   [6656, 7168)  foldG   128 int32 = round(S'*2^Q)
+//   [7168, 7680)  boundG  128 int32 = (2^31-1)/|foldG|
+//   [7680, 8192)  boundU  128 int32 = 4*((2^31-1)/|foldG|)+3
+// plus the bf16 fold at [4864, 5120) (kept for the int8-fallback path).
+// The kernel's matmul stashes these at 0x6000 for silu_quant_i8_fused_i4.
+static inline void write_silu_pad_meta(uint8_t* tile, const float* scol,
+                                       int nt, float ag, float qn_s, int N) {
+    float sv[128];
+    float minS = 1e30f;
+    for (int j = 0; j < 128; j++) {
+        int p = nt * 128 + j;                 // GU col
+        sv[j] = (p & 1) ? ag * qn_s * scol[p] : ag * scol[p];
+        float a = sv[j] < 0 ? -sv[j] : sv[j];
+        if (a < minS) minS = a;
+    }
+    int s = 0;
+    if (minS > 0) {
+        s = 15 + (int)std::ceil(std::log2(minS));   // ceil(log2(minS))
+        if (s < 0) s = 0;
+        if (s > 22) s = 22;
+    }
+    int Q = 22 - s;
+    *(int32_t*)(tile + 6144) = Q;
+    for (int j = 0; j < 128; j++) {
+        uint16_t b = f32_to_bf16_impl(sv[j]);
+        tile[4096 + 512 + 256 + 2 * j]     = (uint8_t)(b & 0xFF);
+        tile[4096 + 512 + 256 + 2 * j + 1] = (uint8_t)(b >> 8);
+        int32_t q = (int32_t)std::roundf(sv[j] * (float)(1 << Q));
+        int32_t aq = q < 0 ? -q : q;
+        if (aq < 1) aq = 1;                         // foldG >= 1 (|S'|>0)
+        if (aq > 1073741823) aq = 1073741823;       // keep |fold| <= 2^30
+        q = q < 0 ? -aq : aq;
+        int32_t f = q < 0 ? -q : q;
+        int32_t boundg = (int32_t)((2147483647LL) / (int64_t)f);
+        int32_t boundu = 4 * (int32_t)((2147483647LL) / (int64_t)f) + 3;
+        ((int32_t*)(tile + 6656))[j] = q;
+        ((int32_t*)(tile + 7168))[j] = boundg;
+        ((int32_t*)(tile + 7680))[j] = boundu;
+    }
+}
+
 // Pack one expert's interleaved GU weights from raw Q4NX.
 //   raw   full gate_up tensor [n_exp*2*n_ff, H] raw (expert rows
 //         [E*2*n_ff, (E+1)*2*n_ff): gate rows [0,n_ff), up rows [n_ff, 2n_ff))
@@ -120,18 +166,15 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
         p.scol[j] = amax < 1e-12f ? 1.0f : amax / 127.0f;
         p.scol_bf16[j] = f32_to_bf16_impl(p.scol[j]);
     }
-    // Fold region (per-token, rewritten by update_fused_header_i4): initialize
-    // with the static S' = S_col (ag=1, qn_s=1) so the first launch (before
-    // any header update) still dequantizes sanely. Tile (ki, nt) covers cols
-    // [nt*128, nt*128+128).
+    // Silu pad metadata (per-token, rewritten by update_fused_header_i4):
+    // initialize with the static S' = S_col (ag=1, qn_s=1) so the first
+    // launch (before any header update) still dequantizes sanely. Tile
+    // (ki, nt) covers cols [nt*128, nt*128+128).
     {
         for (size_t i = 0; i < p.tiles.size(); i += GuI4Pack::TILE_TOTAL) {
             int nt = (int)((i / GuI4Pack::TILE_TOTAL) % n_tiles_n);
-            for (int j = 0; j < 128; j++) {
-                uint16_t fb = f32_to_bf16_impl(p.scol[(size_t)nt * 128 + j]);
-                p.tiles[i + 4096 + 512 + 256 + 2 * j]     = (uint8_t)(fb & 0xFF);
-                p.tiles[i + 4096 + 512 + 256 + 2 * j + 1] = (uint8_t)(fb >> 8);
-            }
+            write_silu_pad_meta(p.tiles.data() + i, p.scol.data(), nt,
+                                1.0f, 1.0f, (int)N);
         }
     }
 

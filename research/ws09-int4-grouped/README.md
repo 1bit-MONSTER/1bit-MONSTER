@@ -280,3 +280,29 @@ v48 section-scale floats that used to live at [7168,7184) were vestigial
    range of the ws09 design instead of -0.02), then tok/s.
 2. The dequant (`matmul_i8_i32_i4`) is still the scalar variant — the bf16
    vectorization (README §kernel-round status) is the perf follow-up.
+
+### v59 build/test hardening (follow-ups from the kernel round)
+
+- **`gu_i4_pack.h`**: the pad metadata writer is now the shared
+  `write_silu_pad_meta` (Q/foldG/boundG/boundU + the bf16 fold) — the
+  packer's first-launch init (ag=1, qn_s=1) and `update_fused_header_i4`
+  (per token) call the SAME function, so the host math cannot drift. The
+  first launch before any header update now dequantizes sanely (Q=22,
+  folds = S_col).
+- **`test_i4_silu_q22.cpp`** gained the real-data mode: it loads a real
+  zaya1-8b.q4nx (manifest + `read_q4nx_raw`), slices an expert, packs via
+  `pack_gu_fused_i4` (kernel-exact B_shadow + S_col), computes the int8 GU
+  GEMM c1, the per-token qn_s, and gates the kernel-vs-float silu on the
+  real weight/scale distribution:
+  `g++ -std=c++20 -O2 -I engine/npu/generators -I engine/npu/src
+   engine/npu/tests/test_i4_silu_q22.cpp -o /tmp/t
+   && /tmp/t zaya1-8b.q4nx [layer] [expert] [activation.bin]`
+- **`build_p1i4.sh`**: post-build symbol check on the merged kernel object
+  (`matmul_i8_i32_i4`, `silu_quant_i8_fused_i4`, `unpack_i4_b`, `zero_i32`
+  must all be present — a stale/partial object fails loudly, issue #1841);
+  duplicate-definition check (the kernel .cc must not define
+  `silu_sigmoid_q22`, issue #1845); and the #1842 build-time address check
+  that parses `input_with_addresses.mlir` for Gg_0 @ 0x6000, C1 @ 0xE000 and
+  the H2 fifo @ 0xF000 (warns if the aiecc version emits no address map).
+- The stale on-disk `generators/mm_32x64x128.o` (only `zero_i32`) was
+  removed — it is `.gitignore`d and the build regenerates it in the workdir.

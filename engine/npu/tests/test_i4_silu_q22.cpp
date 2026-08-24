@@ -18,7 +18,7 @@
 // Usage:
 //   g++ -std=c++20 -O2 -I engine/npu/generators -I engine/npu/src \
 //       engine/npu/tests/test_i4_silu_q22.cpp -o /tmp/t && /tmp/t
-//   (optional real-data mode, mirroring test_i4_grouped_fused.cpp:
+//   (real-data mode, mirroring test_i4_grouped_fused.cpp:
 //    /tmp/t zaya1-8b.q4nx [layer] [expert] [activation.bin])
 //
 // Gates (must hold on the synthetic set AND on the real weights):
@@ -26,11 +26,18 @@
 //   >= 98% of pairs within |dH2| <= 1; max |dH2| <= 8
 
 #include "silu_quant.h"
+#include "gu_i4_pack.h"   // write_silu_pad_meta — the REAL host pad writer
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <vector>
+#include <string>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 // ── float reference: h2 = sat8(round(silu_lut(g)·u)), g = c1g·sg, u = c1u·su
 static int ref_pair_float(int32_t c1g, int32_t c1u, float sg, float su) {
@@ -40,48 +47,45 @@ static int ref_pair_float(int32_t c1g, int32_t c1u, float sg, float su) {
     return silu_sat8(silu_roundf(h));
 }
 
-// ── host fold math (mirrors update_fused_header_i4, v59) ──
-// Per 64-pair tile: Q = 22 - s, s from the tile MIN |S'|; then per column
-// foldG = round(S'·2^Q), boundG = (2^31-1)/|foldG|,
-// boundU = 4·((2^31-1)/|foldG|)+3 (the (c1u>>2) pre-shift: (c1u>>2) <= (2^31-1)/|fold|
-//  <=>  c1u <= 4·((2^31-1)/|fold|)+3).
+// ── host fold math (the REAL host code: write_silu_pad_meta) ──
+// Per 64-pair tile the host writes, into each tile's pad:
+// Q (22 - s, s from the tile MIN |S'|), foldG = round(S'·2^Q),
+// boundG = (2^31-1)/|foldG|, boundU = 4·((2^31-1)/|foldG|)+3. The test calls
+// the shared gu_i4_pack.h writer on a dummy tile and reads the int32s back,
+// so it gates the ACTUAL host math, not a copy.
 struct TileMeta {
     int Q;
     std::vector<int32_t> foldg, foldu, boundg, boundu;
 };
 static TileMeta host_tile_meta(const std::vector<float>& sg,
                                const std::vector<float>& su, int t0, int n) {
+    // interleave gate/up scales into the N-col scol layout the host sees:
+    // col 2p = gate[p], col 2p+1 = up[p] (write_silu_pad_meta folds ag/qn_s
+    // itself; pass ag=1, qn_s=1 and pre-fold here).
+    static thread_local uint8_t tile[8192];
+    static thread_local std::vector<float> scol;
+    static thread_local int scolN = 0;
+    int N = 2 * n;
+    if (scolN < N) { scol.resize(N); scolN = N; }
+    for (int i = 0; i < n; i++) {
+        scol[2 * i]     = sg[t0 + i];
+        scol[2 * i + 1] = su[t0 + i];
+    }
+    write_silu_pad_meta(tile, scol.data(), 0, 1.0f, 1.0f, N);
     TileMeta m;
+    m.Q = *(int32_t*)(tile + 6144);
+    const int32_t* fq = (const int32_t*)(tile + 6656);
+    const int32_t* bg = (const int32_t*)(tile + 7168);
+    const int32_t* bu = (const int32_t*)(tile + 7680);
+    // the pad layout is per GU COLUMN (interleaved): col 2i = gate of pair i,
+    // col 2i+1 = up of pair i.
     m.foldg.resize(n); m.foldu.resize(n);
     m.boundg.resize(n); m.boundu.resize(n);
-    float minS = 1e30f;
     for (int i = 0; i < n; i++) {
-        float a = sg[t0 + i] < 0 ? -sg[t0 + i] : sg[t0 + i];
-        float b = su[t0 + i] < 0 ? -su[t0 + i] : su[t0 + i];
-        if (a < minS) minS = a;
-        if (b < minS) minS = b;
-    }
-    int s = 0;
-    if (minS > 0) {
-        s = 15 + (int)std::ceil(std::log2(minS));
-        if (s < 0) s = 0;
-        if (s > 22) s = 22;
-    }
-    m.Q = 22 - s;
-    for (int i = 0; i < n; i++) {
-        auto fold = [&](float sv) {
-            int32_t q = (int32_t)std::roundf(sv * (float)(1 << m.Q));
-            int32_t aq = q < 0 ? -q : q;
-            if (aq < 1) aq = 1;
-            if (aq > 1073741823) aq = 1073741823;
-            return q < 0 ? -aq : aq;
-        };
-        m.foldg[i] = fold(sg[t0 + i]);
-        m.foldu[i] = fold(su[t0 + i]);
-        int64_t f = (int64_t)(m.foldg[i] < 0 ? -m.foldg[i] : m.foldg[i]);
-        m.boundg[i] = (int32_t)(2147483647LL / f);
-        f = (int64_t)(m.foldu[i] < 0 ? -m.foldu[i] : m.foldu[i]);
-        m.boundu[i] = 4 * (int32_t)(2147483647LL / f) + 3;
+        m.foldg[i] = fq[2 * i];
+        m.foldu[i] = fq[2 * i + 1];
+        m.boundg[i] = bg[2 * i];
+        m.boundu[i] = bu[2 * i + 1];
     }
     return m;
 }
@@ -141,21 +145,131 @@ static int run_gate(const char* name, const std::vector<int32_t>& c1g,
     return fails;
 }
 
+
+// ── real-data mode (mirrors test_i4_grouped_fused.cpp) ──
+static int get_top_int(const char* js, size_t jl, const char* key) {
+    char pat[128]; snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char* q = strstr(js, pat);
+    if (!q) return 0;
+    q = strchr(q, ':');
+    if (!q) return 0;
+    return atoi(q + 1);
+}
+static bool get_offsets(const char* js, size_t jl, const char* key,
+                        uint64_t* off, uint64_t* size) {
+    size_t kl = strlen(key);
+    const char* p = js, *e = js + jl;
+    while (p < e) {
+        auto q = (const char*)memmem(p, e - p, key, kl);
+        if (!q) return false;
+        if ((q == js || *(q-1) == '"') && *(q + kl) == '"') {
+            auto o = strstr(q, "\"data_offsets\"");
+            if (o) {
+                auto b = strchr(o, '[');
+                if (b) {
+                    *off  = (uint64_t)strtoull(b + 1, nullptr, 10);
+                    auto c = strchr(b + 1, ',');
+                    if (c) *size = (uint64_t)strtoull(c + 1, nullptr, 10) - *off;
+                    return *size > 0;
+                }
+            }
+        }
+        p = q + kl;
+    }
+    return false;
+}
+static int run_real_gate(const char* q4nx_path, int L, int E, const char* actfile) {
+    int fd = open(q4nx_path, O_RDONLY);
+    if (fd < 0) { perror("open"); return 1; }
+    struct stat st; fstat(fd, &st);
+    uint8_t* md = (uint8_t*)mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (md == MAP_FAILED) { perror("mmap"); return 1; }
+    uint64_t hsz; memcpy(&hsz, md, 8);
+    const char* js = (const char*)(md + 8);
+    const uint8_t* D = md + 8 + hsz;
+    int H = get_top_int(js, hsz, "hidden_size");
+    int NC = get_top_int(js, hsz, "num_hidden_layers");
+    int n_ff = get_top_int(js, hsz, "intermediate_size");
+    int n_exp = get_top_int(js, hsz, "num_experts");
+    if (L % 2 == 0 || L >= NC) { fprintf(stderr, "layer %d is not MoE (NC=%d)\n", L, NC); return 1; }
+    char key[256];
+    snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", L);
+    uint64_t off, size;
+    if (!get_offsets(js, hsz, key, &off, &size)) { fprintf(stderr, "no GU tensor\n"); return 1; }
+    int gu_i8_rows = (n_exp * 2 * n_ff / 32) * (H / 256);
+    auto raw_all = read_q4nx_raw(D, off, gu_i8_rows, H);
+    // slice to expert E (rows [E*2n_ff, (E+1)*2n_ff): gate [0,n_ff), up [n_ff,2n_ff))
+    RawQ4Tensor raw_gu;
+    raw_gu.rows = 2 * n_ff; raw_gu.cols = H;
+    raw_gu.q4.assign((size_t)raw_gu.rows * H, 0);
+    raw_gu.scl.assign((size_t)raw_gu.rows * (H / 32), 0.0f);
+    const size_t gbase = (size_t)E * 2 * n_ff;
+    for (int r = 0; r < 2 * n_ff; r++) {
+        memcpy(&raw_gu.q4[(size_t)r * H], &raw_all.q4[(gbase + r) * H], sizeof(int8_t) * H);
+        memcpy(&raw_gu.scl[(size_t)r * (H / 32)], &raw_all.scl[(gbase + r) * (H / 32)],
+               sizeof(float) * (H / 32));
+    }
+    auto pack = pack_gu_fused_i4(raw_gu, 0, H, n_ff);   // kernel-exact B_shadow + S_col
+    // A activation (raw floats, unit-RMS like the grouped test)
+    std::vector<float> A(H);
+    if (actfile) {
+        FILE* f = fopen(actfile, "rb");
+        if (!f || fread(A.data(), 4, H, f) != (size_t)H) {
+            fprintf(stderr, "cannot read activation %s\n", actfile ? actfile : ""); return 1;
+        }
+        if (f) fclose(f);
+    } else {
+        std::mt19937 rng(1); std::normal_distribution<float> nd(0.0f, 1.0f);
+        for (int i = 0; i < H; i++) A[i] = nd(rng);
+    }
+    double ss = 0; for (int i = 0; i < H; i++) ss += A[i] * A[i];
+    float rms = std::sqrt(ss / H); if (rms < 1e-9f) rms = 1;
+    for (int i = 0; i < H; i++) A[i] /= rms;
+    float ag = 0; for (int i = 0; i < H; i++) ag = std::max(ag, std::fabs(A[i]));
+    if (ag < 1e-9f) ag = 1;
+    // c1 = Aq^T * B_shadow (the kernel's int8 GU GEMM; grouped-test Aq = round(A/ag))
+    const size_t N = 2 * (size_t)n_ff;
+    std::vector<int32_t> c1(N, 0);
+    for (int i = 0; i < H; i++) {
+        int aq = (int)std::roundf(A[i] / ag);
+        const int8_t* b = pack.B_shadow.data() + (size_t)i * N;
+        for (size_t j = 0; j < N; j++) c1[j] += (int32_t)aq * b[j];
+    }
+    // float h2 (pre-qn_s) and the per-token qn_s (the host's fold factor)
+    std::vector<float> h2f(n_ff);
+    for (int p = 0; p < n_ff; p++) {
+        float g = (float)c1[2 * p] * ag * pack.scol[2 * p];
+        float u = (float)c1[2 * p + 1] * ag * pack.scol[2 * p + 1];
+        h2f[p] = silu_lut(g) * u;
+    }
+    float mx = 0; for (int p = 0; p < n_ff; p++) mx = std::max(mx, std::fabs(h2f[p]));
+    float qn_s = mx > 0 ? 127.0f / mx : 1.0f;
+    fprintf(stderr, "real: H=%d n_ff=%d n_exp=%d expert=%d ag=%.4f qn_s=%.3f max|h2f|=%g\n",
+            H, n_ff, n_exp, E, ag, qn_s, mx);
+    std::vector<int32_t> c1g(n_ff), c1u(n_ff);
+    std::vector<float> sg(n_ff), su(n_ff);
+    for (int p = 0; p < n_ff; p++) {
+        c1g[p] = c1[2 * p];
+        c1u[p] = c1[2 * p + 1];
+        sg[p] = ag * pack.scol[2 * p];            // S' gate
+        su[p] = ag * qn_s * pack.scol[2 * p + 1]; // S' up (qn_s folded)
+    }
+    munmap(md, st.st_size);
+    return run_gate("real-zaya", c1g, c1u, sg, su);
+}
+
 int main(int argc, char** argv) {
     int fails = 0;
     if (argc > 1) {
-        // Real-data mode: load the Q4NX weights and a real MoE input, compute
-        // the int4 GU GEMM c1 (B_shadow, the exact on-chip dequant) and the
-        // per-column S' fold, then gate kernel-vs-float silu on it.
-        // (Mirrors test_i4_grouped_fused.cpp's real-data loading.)
-        std::fprintf(stderr, "real-data mode: %s\n", argv[1]);
-        std::fprintf(stderr, "NOTE: run with the synthetic gate for the "
-                             "no-dependency check; real-data verification is "
-                             "the strixhalo kernel round's next step.\n");
-        // TODO(1769): wire q4nx_raw.h + activation.bin into this gate once the
-        // host BO writer layout is final; the synthetic gate above already
-        // reproduces the realistic magnitude envelope.
-        return 1;
+        // Real-data mode: load the Q4NX weights + a (real or synthetic) MoE
+        // input, compute the int4 GU GEMM c1 from the packer's kernel-exact
+        // B_shadow and the per-column S' fold, then gate kernel-vs-float silu
+        // on the REAL weight/scale distribution (the strixhalo round's gate).
+        const int L = argc > 2 ? atoi(argv[2]) : 1;   // odd = MoE layer
+        const int E = argc > 3 ? atoi(argv[3]) : 0;   // expert
+        const char* actfile = argc > 4 ? argv[4] : nullptr;
+        return run_real_gate(argv[1], L, E, actfile);
     }
 
     // ── Synthetic realistic envelope ──
