@@ -1,6 +1,8 @@
 // test_i4_dequant.cpp — kernel-round gate for the ws09 int4 GU dequant
-// (issue #1769). Consumes the packed regions A/B/C exactly as the kernel
-// will and verifies the dequant reproduces B_shadow byte-identically.
+// (issue #1769). Consumes the packed v2 per-tile 4864-B chunks (gu_i4_pack.h:
+// [nibbles 4096][s 512 (2 groups x 128 cols bf16)][S_col 256 (128 cols bf16)])
+// exactly as matmul_i8_i32_i4 will and verifies the dequant reproduces
+// B_shadow byte-identically.
 //
 // Build (CPU only):
 //   g++ -std=c++23 -O2 -I engine/npu/src -I engine/npu/generators \
@@ -18,7 +20,6 @@
 
 #include "q4nx_raw.h"
 #include "gu_i4_pack.h"
-#include "i4_dequant.h"
 
 // ── manifest parsing (same pattern as zaya_decode.cpp) ──
 static int get_top_int(const char* js, size_t jl, const char* field) {
@@ -59,6 +60,19 @@ static int get_offsets(const char* js, size_t jl, const char* key,
     return 0;
 }
 
+static float bf16_to_f32(uint16_t b) {
+    uint32_t u = (uint32_t)b << 16;
+    float f; memcpy(&f, &u, 4);
+    return f;
+}
+
+// The kernel's per-(8,8)-chunk dequant (matmul_i8_i32_i4, byte-pinned): within
+// a chunk all 8 rows share one K-group, so the ratio collapses to 8 per-column
+// values read as bf16 FROM THE TILE:
+//   ratio[c] = (bf16_to_f32(s[group][col]) * 0.0625f) / bf16_to_f32(S_col[col])
+//   B''[r][c] = sat8(round((q4<<4)[r][c] * ratio[c]))
+static inline int8_t i4d_sat8(int x) { return (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x); }
+
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s zaya1-8b.q4nx [layer] [expert]\n", argv[0]); return 1; }
     int L = argc > 2 ? atoi(argv[2]) : 1;
@@ -84,38 +98,43 @@ int main(int argc, char** argv) {
     auto raw_all = read_q4nx_raw(M, gu_off, gu_i8_rows, H);
     auto pack = pack_gu_fused_i4(raw_all, E, H, n_ff);
 
-    // Kernel consumption: for each tile, extract the nibbles + the 2
-    // colgroup scale rows + S_col, run the dequant, compare with B_shadow.
+    // Kernel consumption: per (64,128) tile, read the ONE linear 4864-B chunk
+    // exactly as matmul_i8_i32_i4 does — nibbles [0,4096), s [4096,4608),
+    // S_col [4608,4864) — run the dequant, compare with B_shadow.
     const size_t N = 2 * (size_t)n_ff;
     const int n_tiles_k = H / 64, n_tiles_n = (int)(N / 128);
     int neq = 0, ntot = H * (int)N;
     for (int ki = 0; ki < n_tiles_k; ki++)
         for (int nt = 0; nt < n_tiles_n; nt++) {
-            // unpack the tile's nibbles (the kernel's vldb.unpack output)
-            int8_t q4[64 * 128];
-            size_t tbase = ((size_t)ki * n_tiles_n + nt) * GuI4Pack::TILE_BYTES;
-            for (int s4 = 0; s4 < 64 * 64; s4++) {
-                uint8_t b = pack.nibbles[tbase + s4];
-                int lo = b & 0x0F, hi = (b >> 4) & 0x0F;
-                // byte s4 = i0*512+i1*32+i2*4+i3/2; element (i2, i3): 2*s4 = ...
-                // the flat unpacked position 2*s4 = the (i0,i1,i2,i3) row-major
-                q4[2 * s4] = (int8_t)(lo >= 8 ? lo - 16 : lo);
-                q4[2 * s4 + 1] = (int8_t)(hi >= 8 ? hi - 16 : hi);
-            }
-            // the tile's scale rows (region B): (i/32)*N + j for the tile
-            float row_scl[2 * 128], scol_inv[128];
-            for (int cg = 0; cg < 2; cg++)
-                for (int j = 0; j < 128; j++) {
-                    int i = ki * 64 + cg * 32;   // any row of the colgroup
-                    uint16_t sb = pack.row_scales[(size_t)(i / 32) * N + nt * 128 + j];
-                    uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
-                    row_scl[cg * 128 + j] = srow;
-                }
-            for (int j = 0; j < 128; j++)
-                scol_inv[j] = pack.scol[nt * 128 + j];
-            // dequant (the kernel's function)
+            const size_t tbase = ((size_t)ki * n_tiles_n + nt) * GuI4Pack::TILE_TOTAL;
+            const uint8_t* tile = pack.tiles.data() + tbase;
             int8_t bpp[64 * 128];
-            dequant_i4_b_ref(bpp, q4, row_scl, scol_inv);
+            // per (8,8) chunk at (k-step i0, col-tile i1): nibbles at
+            // i0*512+i1*32 (32 B), s at 4096+(i0/4)*256+i1*16 (8 bf16),
+            // S_col at 4608+i1*16 (8 bf16)
+            for (int i0 = 0; i0 < 8; i0++)
+                for (int i1 = 0; i1 < 16; i1++) {
+                    const uint8_t* nib = tile + i0 * 512 + i1 * 32;
+                    const uint8_t* rsp = tile + 4096 + (i0 / 4) * 256 + i1 * 16;
+                    const uint8_t* scp = tile + 4608 + i1 * 16;
+                    float ratio[8];
+                    for (int c = 0; c < 8; c++) {
+                        uint16_t sb = (uint16_t)(rsp[2*c]) | ((uint16_t)rsp[2*c+1] << 8);
+                        uint16_t sc = (uint16_t)(scp[2*c]) | ((uint16_t)scp[2*c+1] << 8);
+                        ratio[c] = (bf16_to_f32(sb) * 0.0625f) / bf16_to_f32(sc);
+                    }
+                    // unpack 32 nibble bytes -> 64 q4 (sign-extended), q4<<4,
+                    // then ONE multiply by the column ratio (kernel arithmetic)
+                    for (int i2 = 0; i2 < 8; i2++)
+                        for (int i3 = 0; i3 < 8; i3++) {
+                            uint8_t b = nib[i2 * 4 + i3 / 2];
+                            int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
+                            if (q4 >= 8) q4 -= 16;
+                            float v = (float)(q4 << 4) * ratio[i3];
+                            bpp[i0 * 1024 + i1 * 64 + i2 * 8 + i3] =
+                                i4d_sat8((int)std::roundf(v));
+                        }
+                }
             // compare with B_shadow (bpp is the microtiled mmul layout)
             for (int i = 0; i < 64; i++)
                 for (int j = 0; j < 128; j++) {

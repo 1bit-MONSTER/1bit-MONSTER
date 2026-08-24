@@ -35,23 +35,27 @@
 #include <vector>
 
 struct GuI4Pack {
-    std::vector<uint8_t>  nibbles;      // Region A [K*N/2] int4 tiles
-    std::vector<uint16_t> ratio;        // Region B' per-tile [n_tiles][2][128]
-                                        // bf16: s[group][c]/(16*S_col[c]) —
-                                        // the v2 kernel multiply
-    std::vector<uint16_t> scol_bf16;    // Region C [N] bf16 bits
+    std::vector<uint8_t>  tiles;        // [n_tiles][4864]: nibbles + s + S_col
+    std::vector<uint16_t> scol_bf16;    // [N] bf16 bits
     std::vector<float>    scol;         // [N] float (host math / amax pass)
     std::vector<int8_t>   B_shadow;     // [K*N] row-major B'' (exact, for the
                                         // host amax pass + emulation)
-    static constexpr size_t TILE_BYTES = 64 * 128 / 2;   // int4 tile (4096)
+    static constexpr size_t TILE_BYTES = 64 * 128 / 2;   // nibbles (4096)
+    static constexpr size_t TILE_TOTAL = 4096 + 512 + 256;  // 4864
 };
 
-static inline uint16_t f32_to_bf16(float f) {
+static inline uint16_t f32_to_bf16_impl(float f) {
     uint32_t bits; std::memcpy(&bits, &f, 4);
     // round-to-nearest-even to bf16
     uint32_t lsb = (bits >> 16) & 1u;
     bits += 0x7FFFu + lsb;
     return (uint16_t)(bits >> 16);
+}
+
+static inline float i4p_bf16_to_f32(uint16_t b) {
+    uint32_t u = (uint32_t)b << 16;
+    float f; std::memcpy(&f, &u, 4);
+    return f;
 }
 
 // Pack one expert's interleaved GU weights from raw Q4NX.
@@ -61,16 +65,11 @@ static inline uint16_t f32_to_bf16(float f) {
 // ── BO layout writer (regions A/B/C; D = gs header follows, unchanged) ──
 static inline size_t gu_i4_bo_size(int K, int N) {
     size_t n_tiles = (size_t)(K / 64) * (N / 128);
-    return (size_t)K * N / 2 + n_tiles * 512 + (size_t)N * 2;
+    return n_tiles * GuI4Pack::TILE_TOTAL;
 }
 
 static inline void write_gu_i4_bo(uint8_t* bo, const GuI4Pack& p) {
-    size_t a = p.nibbles.size();
-    size_t b = p.ratio.size() * 2;
-    size_t c = p.scol_bf16.size() * 2;
-    std::memcpy(bo, p.nibbles.data(), a);
-    std::memcpy(bo + a, p.ratio.data(), b);
-    std::memcpy(bo + a + b, p.scol_bf16.data(), c);
+    std::memcpy(bo, p.tiles.data(), p.tiles.size());
 }
 
 static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
@@ -82,8 +81,7 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
     const int n_tiles_k = H / 64, n_tiles_n = (int)(N / 128);
 
     GuI4Pack p;
-    p.nibbles.assign((size_t)H * N / 2, 0);
-    p.ratio.assign((size_t)(H / 64) * (N / 128) * 512, 0);
+    p.tiles.assign((size_t)(H / 64) * (N / 128) * GuI4Pack::TILE_TOTAL, 0);
     p.scol_bf16.assign(N, 0);
     p.scol.assign(N, 0.0f);
     p.B_shadow.assign((size_t)H * N, 0);
@@ -95,7 +93,7 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
         int pp = (int)(j / 2);
         size_t r = gbase + (size_t)pp;
         if (j & 1) r = gbase + (size_t)n_ff + pp;
-        uint16_t s16 = f32_to_bf16(raw.scl[r * RC + i / 32]);
+        uint16_t s16 = f32_to_bf16_impl(raw.scl[r * RC + i / 32]);
         uint32_t sbits = (uint32_t)s16 << 16; float srow; memcpy(&srow, &sbits, 4);
         return (float)raw.q4[r * H + i] * srow + raw.zp[r * RC + i / 32];
     };
@@ -109,13 +107,13 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
             if (a > amax) amax = a;
         }
         p.scol[j] = amax < 1e-12f ? 1.0f : amax / 127.0f;
-        p.scol_bf16[j] = f32_to_bf16(p.scol[j]);
+        p.scol_bf16[j] = f32_to_bf16_impl(p.scol[j]);
     }
 
     // Tile loop: nibbles (Region A) + B_shadow (exact on-chip dequant).
     for (int ki = 0; ki < n_tiles_k; ki++)
         for (int nt = 0; nt < n_tiles_n; nt++) {
-            size_t tbase = ((size_t)ki * n_tiles_n + nt) * GuI4Pack::TILE_BYTES;
+            size_t tbase = ((size_t)ki * n_tiles_n + nt) * GuI4Pack::TILE_TOTAL;
             for (int i0 = 0; i0 < 8; i0++)
                 for (int i1 = 0; i1 < 16; i1++)
                     for (int i2 = 0; i2 < 8; i2++) {
@@ -127,30 +125,38 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                             size_t r = gbase + (size_t)pp;
                             if (j & 1) r = gbase + (size_t)n_ff + pp;
                             int q4 = raw.q4[r * H + i];
-                            uint16_t s16 = f32_to_bf16(raw.scl[r * RC + (i / 32)]);
+                            uint16_t s16 = f32_to_bf16_impl(raw.scl[r * RC + (i / 32)]);
                             uint32_t sbits = (uint32_t)s16 << 16; float srow; memcpy(&srow, &sbits, 4);
                             // Canonical kernel dequant (byte-pinned):
                             //   w16 = q4<<4 (exact); ratio = (s/16)/S_col;
                             //   B'' = sat8(round(w16 * ratio))
+                            // The kernel reads S_col as bf16 FROM THE TILE
+                            // (matmul_i8_i32_i4: scp at [4608 + col*2]), so
+                            // B_shadow must use the SAME bf16-rounded S_col —
+                            // the full-precision float causes ±1 byte flips at
+                            // round boundaries (measured: 292,796/8,388,608).
+                            uint16_t scb = f32_to_bf16_impl(p.scol[j]);
                             float w16 = (float)(q4 << 4);
-                            float ratio = (srow * 0.0625f) / p.scol[j];
+                            float ratio = (srow * 0.0625f) / i4p_bf16_to_f32(scb);
                             float v = w16 * ratio;
                             // nibble pair along i3: byte holds (i3 even, i3 odd)
                             size_t byte_off = tbase + (size_t)i0 * 512 + i1 * 32 + i2 * 4 + i3 / 2;
                             if (i3 % 2 == 0)
-                                p.nibbles[byte_off] = (uint8_t)((p.nibbles[byte_off] & 0xF0) | (q4 & 0x0F));
+                                p.tiles[byte_off] = (uint8_t)((p.tiles[byte_off] & 0xF0) | (q4 & 0x0F));
                             else
-                                p.nibbles[byte_off] = (uint8_t)((p.nibbles[byte_off] & 0x0F) | ((q4 & 0x0F) << 4));
+                                p.tiles[byte_off] = (uint8_t)((p.tiles[byte_off] & 0x0F) | ((q4 & 0x0F) << 4));
                             int x = (int)std::roundf(v);
                             p.B_shadow[(size_t)i * N + j] =
                                 (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
-                            // v2 region B': per-tile ratio
-                            // ratio = s / (16 * S_col) — the kernel's
-                            // one-multiply dequant (q4<<4 * ratio)
-                            float ratio_f = srow / (16.0f * p.scol[j]);
-                            p.ratio[(size_t)(ki * n_tiles_n + nt) * 512 +
-                                    (size_t)((i0 * 8 + i2) / 32) * 128 +
-                                    (size_t)(i1 * 8 + i3)] = f32_to_bf16(ratio_f);
+                            // per-tile s at [4096 + group*256 + col*2] (bf16)
+                            size_t s_off = tbase + 4096 + (size_t)((i0 * 8 + i2) / 32) * 256
+                                          + (i1 * 8 + i3) * 2;
+                            p.tiles[s_off]     = (uint8_t)(s16 & 0xFF);
+                            p.tiles[s_off + 1] = (uint8_t)(s16 >> 8);
+                            // per-tile S_col at [4608 + col*2] (bf16)
+                            size_t c_off = tbase + 4608 + (size_t)(i1 * 8 + i3) * 2;
+                            p.tiles[c_off]     = (uint8_t)(scb & 0xFF);
+                            p.tiles[c_off + 1] = (uint8_t)(scb >> 8);
                         }
                     }
         }

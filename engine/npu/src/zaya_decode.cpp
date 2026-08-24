@@ -254,8 +254,13 @@ int zaya_decode_main(int argc, char** argv) {
         // provides the cross-shim write->read visibility barrier the
         // single-launch design lacked (run-to-run nondeterminism at MoE
         // layers 3+; reproduced on strixhalo).
-        snprintf(fx, sizeof fx, "%s/final_i8_MOE_GUSILU_zaya.xclbin", xd);
-        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_GUSILU_zaya.txt", xd);
+        if (FUSED_I4) {   // issue #1769 ws09: int4 GU (GUSILU) xclbin
+            snprintf(fx, sizeof fx, "%s/final_i8_MOE_GUSILU_i4_zaya.xclbin", xd);
+            snprintf(fi, sizeof fi, "%s/insts_i8_MOE_GUSILU_i4_zaya.txt", xd);
+        } else {
+            snprintf(fx, sizeof fx, "%s/final_i8_MOE_GUSILU_zaya.xclbin", xd);
+            snprintf(fi, sizeof fi, "%s/insts_i8_MOE_GUSILU_zaya.txt", xd);
+        }
         if (getenv("NPU_FUSED_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_XCLBIN"));
         if (getenv("NPU_FUSED_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_INSTS"));
         if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p1 ctx init failed\n"); return 1; }

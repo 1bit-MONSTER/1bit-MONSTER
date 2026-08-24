@@ -765,6 +765,28 @@ extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
     for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
 }
 
+// ── Fused GU→SiLU→D, INT4 path (issue #1769, ws09): per-column scales ──
+// Identical structure to silu_quant_i8_fused, but the gs operand is the
+// per-column fold S'[j] (host-written per token, update_fused_header_i4):
+//   S'[2p]   = ag·S_col[2p]     (gate scale)
+//   S'[2p+1] = ag·qn_s·S_col[2p+1]  (up scale, qn_s folded)
+// so the per-pair dequant uses gs[2p]/gs[2p+1] instead of the section
+// header's gs[0]/gs[4]. The int4 B-path (matmul_i8_i32_i4) consumes the
+// raw Q4NX nibbles + on-chip dequant; the per-column int8 scales are finer
+// than the int8 path's per-section pack, so this silu is MORE accurate
+// (CPU gate: FFN corr 0.9996 vs 0.9978) at half the GU DMA.
+extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2) {
+    for (unsigned p = 0; p < DIM_N / 2; p++) {
+        unsigned go = ((2 * p) / 8) * 64 + ((2 * p) % 8);
+        unsigned uo = ((2 * p + 1) / 8) * 64 + ((2 * p + 1) % 8);
+        float g = (float)c1[go] * gs[2 * p];       // gate_f (ag·S_col[2p])
+        float u = (float)c1[uo] * gs[2 * p + 1];   // up_f·qn_s
+        float h = silu_lut(g) * u;
+        h2[p] = silu_sat8(silu_roundf(h));
+    }
+    for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
+}
+
 // ---- int4 weight unpack (issue #1769, Phase-1 hardware round) ----
 // AIE2P-native unpack for nibble-paired B tiles (i4_pack.h contract): byte
 // s' = i0*512 + i1*32 + i2*4 + i3/2, EVEN element in the LOW nibble. The

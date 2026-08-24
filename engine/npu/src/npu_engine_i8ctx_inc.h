@@ -797,13 +797,16 @@ struct I8Ctx {
     // kernel's silu stage reads S'[j] per column instead of gs[0]/gs[4].
     void update_fused_header_i4(xrt::bo& bo, const std::vector<float>& scol,
                                 int n_ff, float ag, float qn_s, int N) {
-        size_t a = (size_t)KD * N / 2 + (size_t)(KD / 32) * N * 2;  // regions A+B
-        float* dst = (float*)((uint8_t*)bo.map() + a + (size_t)N * 2);
+        // v2 per-tile BO (gu_i4_pack.h): the fold rides AFTER the 4864-B
+        // tile chunks, at gu_i4_bo_size (the generator's gs tap reads it at
+        // tiles_end + (cg*1024 + c*128)*4).
+        size_t a = gu_i4_bo_size(KD, N);
+        float* dst = (float*)((uint8_t*)bo.map() + a);
         for (int p = 0; p < n_ff; p++) {
             dst[2 * p]     = ag * scol[2 * p];
             dst[2 * p + 1] = ag * qn_s * scol[2 * p + 1];
         }
-        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)N * 4, a + (size_t)N * 2);
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)N * 4, a);
     }
 
     // Fused D weights: per-column quant (like packB_into) but tile-contiguous

@@ -171,10 +171,31 @@ stride-8 ratio broadcast (cheap vs the mmul MACs; keeps the kernel DMA-bound).
   vs the gate's `roundf` (the gate pins `w16 = q4<<4` exact,
   `ratio = (s*0.0625f)/S_col`, `round(w16*ratio)` — a bf16 path must match
   within ±1 int8 at round boundaries; corr gate tolerates that).
-- **Generator**: `n1_core_fused_gu_silu_d_p1_i4.py` (WIP) wires the nibble
-  taps (region A 4096 B) + scale taps (region B per-tile 512 B) + `unpack_i4_b`
-  → `dequant_i4_b` → `matmul_i8_i32`. Next: bf16-vectorize the dequant, build
-  the xclbin, NPU corr + tok/s.
+- **Generator**: `n1_core_fused_gu_silu_d_p1_i4.py` (WIP) wires the per-tile
+  4864-B taps (nibbles + s + S_col, ONE linear chunk per (64,128) tile) →
+  `matmul_i8_i32_i4` (inline unpack+dequant+mmul) + the per-column fold silu
+  `silu_quant_i8_fused_i4`. Next: bf16-vectorize the dequant, build the
+  xclbin, NPU corr + tok/s.
+
+## CPU contract fixes (2026-08-24, after #1824) — gates GREEN
+
+- **`B_shadow` byte-identity is now kernel-exact**: `B_shadow` is computed with
+  the bf16-rounded S_col read from the tile (`matmul_i8_i32_i4` taps
+  `scp = tile + 4608 + col*2`), NOT the full-precision float — the float
+  version caused 292,796/8,388,608 ±1 flips at round boundaries. The kernel
+  arithmetic (`ratio = (bf16(s)*0.0625f)/bf16(S_col)`) is pinned by
+  `test_i4_dequant.cpp`: **8,388,608/8,388,608 byte-identity** on real
+  zaya1-8b.q4nx weights, layers 1/3/5/9, multiple experts.
+- **`test_i4_dequant.cpp` + `test_i4_grouped_fused.cpp`** consume the v2
+  per-tile 4864-B chunk layout (packer `tiles`, `TILE_TOTAL`) exactly as the
+  kernel does; variant E FFN corr 0.9991–0.9997, `GATE PASSED`.
+- **`silu_quant_i8_fused_i4`** added (per-column fold S'[2p]/S'[2p+1] instead
+  of the section header gs[0]/gs[4]) — parity-pinned against the CPU gate.
+- **Host wiring**: `update_fused_header_i4` writes the per-token fold at
+  `gu_i4_bo_size` (after the per-tile chunks, matching the generator's gs
+  tap), and `zaya_decode.cpp` selects the `final_i8_MOE_GUSILU_i4_zaya`
+  xclbin under `NPU_FUSED_I4=1`. `build_zaya_fused.sh` gained an int4 mode
+  (`NPU_FUSED_I4=1`) with the 4864-byte B-tile #1777 signature checks.
 
 ## Risks / next steps
 

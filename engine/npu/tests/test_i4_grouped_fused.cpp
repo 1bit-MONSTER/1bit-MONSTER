@@ -143,9 +143,9 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
     std::vector<float>   sc_grp;    // per-(32-row, 32-col-group) [H/32, N/32]
     const int G_R = H / 32, G_C = (int)(N / 32);
 
-    // PACKER_RT: consume the packer's actual byte layout (nibbles +
-    // row_scales + scol) exactly as the kernel will — validates that the
-    // packer and the on-chip dequant agree byte-for-byte (B_shadow).
+    // PACKER_RT: consume the packer's actual byte layout (v2 per-tile 4864-B
+    // chunks: nibbles + s + S_col) exactly as the kernel will — validates
+    // that the packer and the on-chip dequant agree byte-for-byte (B_shadow).
     if (mode == GuMode::PACKER_RT) {
         B_i8.assign((size_t)H * N, 0);
         const size_t CG = N / 32;
@@ -155,21 +155,27 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
                 // col = nt*128+i1*8+i3. Nibble byte s4 = i0*512+i1*32+i2*4+i3/2.
                 int ki = i / 64, i0 = (i % 64) / 8, i2 = (i % 8);
                 size_t nt = j / 128, i1 = (j % 128) / 8, i3 = j % 8;
-                size_t tbase = ((size_t)ki * (N / 128) + nt) * GuI4Pack::TILE_BYTES;
+                size_t tbase = ((size_t)ki * (N / 128) + nt) * GuI4Pack::TILE_TOTAL;
                 size_t byte_off = tbase + (size_t)i0 * 512 + i1 * 32 + i2 * 4 + i3 / 2;
-                uint8_t b = pack->nibbles[byte_off];
+                uint8_t b = pack->tiles[byte_off];
                 int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
                 if (q4 >= 8) q4 -= 16;
-                // row scale from region B: [i][j/32] bf16
-                uint16_t sb = pack->row_scales[(size_t)(i / 32) * N + j];
-                uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
+                // kernel arithmetic: ratio = (bf16(s)/16)/bf16(S_col), both
+                // read FROM THE TILE (matmul_i8_i32_i4 taps)
+                size_t group = (i % 64) / 32, col = j % 128;
+                uint16_t sb = (uint16_t)(pack->tiles[tbase + 4096 + group * 256 + col * 2])
+                              | ((uint16_t)pack->tiles[tbase + 4096 + group * 256 + col * 2 + 1] << 8);
+                uint16_t sc = (uint16_t)(pack->tiles[tbase + 4608 + col * 2])
+                              | ((uint16_t)pack->tiles[tbase + 4608 + col * 2 + 1] << 8);
+                uint32_t sbits = (uint32_t)sb << 16, cbits = (uint32_t)sc << 16;
+                float srow, scc; memcpy(&srow, &sbits, 4); memcpy(&scc, &cbits, 4);
                 float w16 = (float)(q4 << 4);
-                float ratio = (srow * 0.0625f) / pack->scol[j];
+                float ratio = (srow * 0.0625f) / scc;
                 float v = w16 * ratio;
                 int x = (int)std::roundf(v);
                 B_i8[(size_t)i * N + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
             }
-        fo.bytes_per_layer = (double)H * N / 2 + (double)H * (N / 32) * 2 + (double)N * 2;
+        fo.bytes_per_layer = (double)(H / 64) * (N / 128) * GuI4Pack::TILE_TOTAL;
     }
     // I4_ONCHIP_DEQ: B'' = round(q4 * s_row * 127 / S_col) — the exact int8
     // values the host int8 path packs, computed on-chip from Q4NX int4 +
@@ -573,15 +579,22 @@ int main(int argc, char** argv) {
             for (size_t j = 0; j < Np; j++) {
                 int ki = i / 64, i0 = (i % 64) / 8, i2 = (i % 8);
                 size_t nt = j / 128, i1 = (j % 128) / 8, i3 = j % 8;
-                size_t tbase = ((size_t)ki * (Np / 128) + nt) * GuI4Pack::TILE_BYTES;
+                size_t tbase = ((size_t)ki * (Np / 128) + nt) * GuI4Pack::TILE_TOTAL;
                 size_t byte_off = tbase + (size_t)i0 * 512 + i1 * 32 + i2 * 4 + i3 / 2;
-                uint8_t b = pack.nibbles[byte_off];
+                uint8_t b = pack.tiles[byte_off];
                 int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
                 if (q4 >= 8) q4 -= 16;
-                uint16_t sb = pack.row_scales[(size_t)(i / 32) * Np + j];
-                uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
+                // kernel arithmetic: ratio = (bf16(s)/16)/bf16(S_col), both
+                // read FROM THE TILE (matmul_i8_i32_i4 taps)
+                size_t group = (i % 64) / 32, col = j % 128;
+                uint16_t sb = (uint16_t)(pack.tiles[tbase + 4096 + group * 256 + col * 2])
+                              | ((uint16_t)pack.tiles[tbase + 4096 + group * 256 + col * 2 + 1] << 8);
+                uint16_t sc = (uint16_t)(pack.tiles[tbase + 4608 + col * 2])
+                              | ((uint16_t)pack.tiles[tbase + 4608 + col * 2 + 1] << 8);
+                uint32_t sbits = (uint32_t)sb << 16, cbits = (uint32_t)sc << 16;
+                float srow, scc; memcpy(&srow, &sbits, 4); memcpy(&scc, &cbits, 4);
                 float w16 = (float)(q4 << 4);
-                float ratio = (srow * 0.0625f) / pack.scol[j];
+                float ratio = (srow * 0.0625f) / scc;
                 float v = w16 * ratio;
                 int x = (int)std::roundf(v);
                 int8_t bpp = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
@@ -589,18 +602,15 @@ int main(int argc, char** argv) {
             }
         fprintf(stderr, "  [packer] B'' byte-identity vs B_shadow: %d/%d exact\n", neq, ntot);
         if (neq != ntot) { fprintf(stderr, "FAIL: packer/kernel-dequant mismatch\n"); return 1; }
-        // BO layout writer roundtrip: write regions A/B/C, read back, verify
-        // the region offsets and content.
+        // BO layout writer roundtrip: write the v2 per-tile chunks, read back,
+        // verify the BO is byte-identical to the packer's tiles.
         size_t bo_sz = gu_i4_bo_size(H, (int)Np);
         std::vector<uint8_t> bo(bo_sz);
         write_gu_i4_bo(bo.data(), pack);
-        size_t a = pack.nibbles.size(), b = pack.row_scales.size() * 2;
         int bo_ok = 1;
-        if (std::memcmp(bo.data(), pack.nibbles.data(), a) != 0) bo_ok = 0;
-        if (std::memcmp(bo.data() + a, pack.row_scales.data(), b) != 0) bo_ok = 0;
-        if (std::memcmp(bo.data() + a + b, pack.scol_bf16.data(), (size_t)Np * 2) != 0) bo_ok = 0;
-        if (bo_sz != a + b + (size_t)Np * 2) bo_ok = 0;
-        fprintf(stderr, "  [packer] BO layout writer regions A/B/C: %s (size %zu)\n",
+        if (bo_sz != pack.tiles.size()) bo_ok = 0;
+        if (std::memcmp(bo.data(), pack.tiles.data(), pack.tiles.size()) != 0) bo_ok = 0;
+        fprintf(stderr, "  [packer] BO layout writer per-tile chunks: %s (size %zu)\n",
                 bo_ok ? "exact" : "MISMATCH", bo_sz);
         if (!bo_ok) { fprintf(stderr, "FAIL: BO layout writer\n"); return 1; }
     }
