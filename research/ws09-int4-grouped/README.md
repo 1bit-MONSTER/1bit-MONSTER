@@ -152,6 +152,30 @@ stride-8 ratio broadcast (cheap vs the mmul MACs; keeps the kernel DMA-bound).
    `guGs = pack.scol`.
 5. **#1777 signatures**: B-tile stride 8192 → 4864 + the fold-header tap.
 
+## Kernel-round status (2026-08-24) — scalar dequant works, bf16 vector is the path
+
+- **Scalar dequant kernels exist and compile** (aiecc aie2p): #1822's separate
+  pass (`i4_dequant_kernel.cc`) and the inline variant `matmul_i8_i32_i4`
+  (PR #1824, same canonical arithmetic). Both are CORRECT but ~6–8 ms/launch
+  scalar compute — that eats the DMA win, so vectorization is mandatory.
+- **Critical toolchain finding (#1822)**: fp32 vector FMUL is NOT legalizable
+  by peano (`G_FMUL on <N x s32>` fails). The vectorized dequant must use
+  **bf16 arithmetic**.
+- **Verified on strixhalo (2026-08-24)**: `aie::vector<bfloat16,64> va*vb`
+  COMPILES clean through peano; `aie::to_fixed<int8>(v, shift)` exists
+  (bf16→fixed with rounding+saturation); `aie::to_float<float>(v)` compiles at
+  the call site (the fp32-mult blocker is the FMUL, not the conversion).
+- **Remaining vector-API details to pin**: int8→bf16 conversion (no
+  `from_vector`; `cast_to`/`to_float`+bf16 paths), the stride-8 per-column
+  ratio broadcast (`insert` signature), and rounding parity of `to_fixed`
+  vs the gate's `roundf` (the gate pins `w16 = q4<<4` exact,
+  `ratio = (s*0.0625f)/S_col`, `round(w16*ratio)` — a bf16 path must match
+  within ±1 int8 at round boundaries; corr gate tolerates that).
+- **Generator**: `n1_core_fused_gu_silu_d_p1_i4.py` (WIP) wires the nibble
+  taps (region A 4096 B) + scale taps (region B per-tile 512 B) + `unpack_i4_b`
+  → `dequant_i4_b` → `matmul_i8_i32`. Next: bf16-vectorize the dequant, build
+  the xclbin, NPU corr + tok/s.
+
 ## Risks / next steps
 
 - **aiecc lowering** of the scale-multiply + requant in the B path (the #1813
