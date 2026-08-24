@@ -106,14 +106,20 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         B_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
         Bp_ty = np.ndarray[(k, n // 2), np.dtype[np.uint8]]   # packed nibble tile
         Bs_ty = np.ndarray[(k, n), np.dtype[np.uint8]]        # scale element
+        B4_ty = np.ndarray[(64, 128), np.dtype[np.int8]]  # 8192-B padded int4 tile (matches int8 B_ty for the silu call codegen)
+        # (B fifo element MUST equal the 4864-B BD length: the object-fifo
+        # token accounting races otherwise — zeros/deadlock, issue #1769.)
+        # int8 = 8192-B element, the 4864-B BDs under-fill each slot: the core
+        # read zeros (C1 = 0, h2 = 0) or deadlocked in frun.wait() (measured
+        # 2026-08-24, issue #1769 bring-up).
         C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
         H2_ty = np.ndarray[(m, n // 2), np.dtype[dtype_in]]   # h2 chunk (8×64)
 
         kernel_o = "mm_32x64x128.o"          # M8_VECTORIZED build (build_zaya_fused.sh)
         zero = external_func("zero_i32", inputs=[C_ty], link_with=kernel_o)
         matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
-        silu = external_func("silu_quant_i8_fused_i4", inputs=[C_ty, B_ty, H2_ty], link_with=kernel_o)
-        matmul_i4 = external_func("matmul_i8_i32_i4", inputs=[A_ty, B_ty, C_ty],
+        silu = external_func("silu_quant_i8_fused_i4", inputs=[C_ty, B4_ty, H2_ty], link_with=kernel_o)
+        matmul_i4 = external_func("matmul_i8_i32_i4", inputs=[A_ty, B4_ty, C_ty],
                                   link_with=kernel_o)   # (A, B4864, C1)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + n_aie_rows)]
@@ -134,9 +140,9 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         B_s = [None] * n_aie_cols
         B_c = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            B_s[c] = object_fifo(f"B_S{c}", shim_tiles[c], mem_tiles[c], BATCH_SIZE + 1, B_ty)
+            B_s[c] = object_fifo(f"B_S{c}", shim_tiles[c], mem_tiles[c], BATCH_SIZE + 1, B4_ty)
             B_c[c] = object_fifo(f"B_C{c}", mem_tiles[c],
-                                 [core_tiles[0][c]], BATCH_SIZE + 1, B_ty)
+                                 [core_tiles[0][c]], BATCH_SIZE + 1, B4_ty)
             object_fifo_link(B_s[c], B_c[c])
         # scales + S_col ride the B stream (4096-B elements, first 512 B used)
         # — the core has only 2 input DMA channels.
@@ -147,23 +153,24 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         # ('aie.tile' op number of output DMA channel exceeded — measured).
         C1buf = [buffer(core_tiles[0][c], C_ty, name=f"C1_{c}")
                  for c in range(n_aie_cols)]
+        # dummy buffer for the silu's unused 2nd arg (passing C1buf twice
+        # broke the h2 writeback path in the aiecc — measured 2026-08-24)
         Gg = [buffer(core_tiles[0][c], B_ty, name=f"Gg_{c}")
-              for c in range(n_aie_cols)]   # DEBUG no-gs: garbage gs buffer
+              for c in range(n_aie_cols)]
         Btmp = [buffer(core_tiles[0][c], B_ty, name=f"Btmp_{c}")
                 for c in range(n_aie_cols)]
         Scol = [buffer(core_tiles[0][c], B_ty, name=f"Scol_{c}")
                 for c in range(n_aie_cols)]
         Srow = [buffer(core_tiles[0][c], B_ty, name=f"Srow_{c}")
                 for c in range(n_aie_cols)]
-
-
-
+        # TEST: re-add the v1 debug buffers to restore the pre-v3 core
+        # memory layout (the h2 writeback broke when they were removed).
 
         # h2: core → mem → shim → DDR (bo4). C2: core → mem → shim → DDR (bo2).
         H2_c = [None] * n_aie_cols; H2_s = [None] * n_aie_cols
         C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            H2_c[c] = object_fifo(f"H2_C{c}", core_tiles[0][c], mem_tiles[c], 2, H2_ty)
+            H2_c[c] = object_fifo(f"H2_C{c}", core_tiles[0][c], mem_tiles[c], 1, H2_ty)  # DEPTH-1 TEST: single H2 slot
             H2_s[c] = object_fifo(f"H2_S{c}", mem_tiles[c], shim_tiles[c], 1, H2_ty)
             object_fifo_link(H2_c[c], H2_s[c])
 
@@ -187,14 +194,20 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                                 A_c.release(ObjectFifoPort.Consume, 1)
                                 B_c[c].release(ObjectFifoPort.Consume, 1)
                             # ── SiLU + quant → h2 (row 0 valid; rows 1-7 zero) ──
-                            Gsbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)  # gs tile
+                            # v4: the fold S' rides in the LAST B tile (stashed
+                            # into C1 row 1 by matmul_i4). The gs fifo object
+                            # is acquired ONLY to keep the aiecc's 3-arg extern
+                            # call codegen healthy (it drops the arg setup for
+                            # 2-arg/plain-buffer-arg2 calls — measured
+                            # 2026-08-24); its (stale) data is unused.
+                            Gsbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)  # gs tile (unused)
                             H2buf = H2_c[c].acquire(ObjectFifoPort.Produce, 1)
                             silu(C1buf[c], Gsbuf, H2buf)
                             H2_c[c].release(ObjectFifoPort.Produce, 1)
                             B_c[c].release(ObjectFifoPort.Consume, 1)    # gs
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[dtype_in]],       # A   (bo0, residual)
-            np.ndarray[((K // 64) * (N_GU // 128) * (4096 + 512 + 256),), np.dtype[dtype_in]],  # bo1: 4864-B per-tile chunks
+            np.ndarray[(((K // 64) * (N_GU // 128)) * (8192),), np.dtype[dtype_in]],  # bo1: 5120-B per-tile chunks
             np.ndarray[(M * N_D,), np.dtype[dtype_out]],    # C2  (bo2)
             np.ndarray[(K * N_D,), np.dtype[dtype_in]],     # B_d (bo3)
             np.ndarray[(M * K,), np.dtype[dtype_in]],       # H2  (bo4, scratch)
@@ -228,36 +241,22 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                             # int4 nibble tile (region A, 4096 B)
                             bt = shim_dma_single_bd_task(
                                 B_s[c], B_gu,
-                                offset=(ki * (N_GU // n) + n_tile) * (4096 + 512 + 256),
-                                sizes=[1, 1, 1, 4096 + 512 + 256],
+                                offset=(ki * (N_GU // n) + n_tile) * (8192),
+                                sizes=[1, 1, 1, 8192],
                                 strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)
                     dma_await_task(*at_list, *bt_list)
                     dma_free_task(*at_list, *bt_list)
-                # gs' header tile (end of this cg's B stream): the FULL
-                # (64,128) B-tile tap reads the WEIGHT BO header at W (the
-                # first 32 delivered bytes are the reliably delivered 8-float
-                # section header — the kernel reads only gs[0..7]; the rest
-                # of the tile is padding). Slices are 258176 B apart so the
-                # full-tile read stays in-bounds.
-                # gs' header tile (end of this cg's B stream): the GU-style
-                # full-tile tap (i0 stride 8*N_GU) — proven to deliver the
-                # first 32 bytes (the 8-float section header) AND keep the
-                # GU GEMM healthy. Slices are 32 KB apart; the ~258 KB tap
-                # span reads OOB into neighbours, which the kernel ignores.
+                # gs' header tile (end of this cg's B stream): acquired ONLY
+                # to keep the aiecc's 3-arg extern call codegen healthy; its
+                # (stale) data is unused — the fold rides in the B tiles.
                 gs_tasks = []
                 for c in range(n_aie_cols):
-                    # LINEAR gs tile: 8 KB contiguous from the 32 KB header
-                    # slice; the host packs the 8-float section header at the
-                    # slice start (v0 = ag*gsec[cg] at byte 0, v4 =
-                    # ag*qn_s*gsec[cg] at byte 16) — the kernel reads only
-                    # gs[0] and gs[4] (the reliably delivered 32 bytes).
-                    # v2 per-column S' header: the tile (c, cg) reads its
-                    # 128 cols' folded floats at tiles_end + (cg*1024 + c*128)*4
                     gt = shim_dma_single_bd_task(
                         B_s[c], B_gu,
-                        offset=((K // 64) * (N_GU // 128)) * (4096 + 512 + 256) + (cg * 1024 + c * n) * 4,
-                        sizes=[1, 1, 1, n * 4],
+                        offset=((K // 64) * (N_GU // 128)) * (8192)
+                               + (cg * n_aie_cols + c) * (8192),
+                        sizes=[1, 1, 1, 8192],
                         strides=[1, 1, 1, 1],
                         issue_token=True)
                     dma_start_task(gt); gs_tasks.append(gt)

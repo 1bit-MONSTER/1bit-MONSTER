@@ -797,16 +797,30 @@ struct I8Ctx {
     // kernel's silu stage reads S'[j] per column instead of gs[0]/gs[4].
     void update_fused_header_i4(xrt::bo& bo, const std::vector<float>& scol,
                                 int n_ff, float ag, float qn_s, int N) {
-        // v2 per-tile BO (gu_i4_pack.h): the fold rides AFTER the 4864-B
-        // tile chunks, at gu_i4_bo_size (the generator's gs tap reads it at
-        // tiles_end + (cg*1024 + c*128)*4).
-        size_t a = gu_i4_bo_size(KD, N);
-        float* dst = (float*)((uint8_t*)bo.map() + a);
-        for (int p = 0; p < n_ff; p++) {
-            dst[2 * p]     = ag * scol[2 * p];
-            dst[2 * p + 1] = ag * qn_s * scol[2 * p + 1];
+        // v3 per-tile BO (gu_i4_pack.h, TILE_TOTAL 5120): the per-token fold
+        // S' rides INSIDE each 5120-B tile at [4864, 5120) as 128 bf16
+        // (S'[p] = ag*S_col[p] for gate cols, ag*qn_s*S_col[p] for up cols).
+        // The kernel's matmul stashes the tile's fold into C1 row 1 for the
+        // silu — NO gs tile in the B stream (the 33rd B object per col_group
+        // never delivered — stale fold, measured 2026-08-24). Tile (ki, nt)
+        // covers GU cols [nt*128, nt*128+128); the host rewrites the fold
+        // region of every tile (redundant but keeps the DMA streams uniform).
+        const size_t n_tiles = gu_i4_bo_size(KD, N) / GuI4Pack::TILE_TOTAL;
+        const int n_tiles_n = N / 128;
+        uint8_t* Bm = (uint8_t*)bo.map();
+        for (size_t t = 0; t < n_tiles; t++) {
+            int nt = (int)(t % (size_t)n_tiles_n);
+            uint8_t* fb = Bm + t * GuI4Pack::TILE_TOTAL + 4096 + 512 + 256;
+            for (int j = 0; j < 128; j++) {
+                int p = nt * 128 + j;                  // GU col
+                float sv = (p & 1) ? ag * qn_s * scol[p] : ag * scol[p];
+                uint16_t b = f32_to_bf16_impl(sv);
+                fb[2 * j]     = (uint8_t)(b & 0xFF);
+                fb[2 * j + 1] = (uint8_t)(b >> 8);
+            }
         }
-        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)N * 4, a);
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
+                (size_t)gu_i4_bo_size(KD, N), 0);
     }
 
     // Fused D weights: per-column quant (like packB_into) but tile-contiguous

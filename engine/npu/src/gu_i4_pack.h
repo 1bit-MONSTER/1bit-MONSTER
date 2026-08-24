@@ -41,7 +41,18 @@ struct GuI4Pack {
     std::vector<int8_t>   B_shadow;     // [K*N] row-major B'' (exact, for the
                                         // host amax pass + emulation)
     static constexpr size_t TILE_BYTES = 64 * 128 / 2;   // nibbles (4096)
-    static constexpr size_t TILE_TOTAL = 4096 + 512 + 256;  // 4864
+    static constexpr size_t TILE_TOTAL = 8192;  // 4096 + 512 + 256 + 256 data + 3072 pad
+    // NOTE: padded to 8192 B so the B fifo element type (64,128) int8 matches
+    // the WORKING int8 design exactly — the aiecc's extern-call codegen for
+    // the silu differs by the subview type (measured 2026-08-24: the 5120-B
+    // ui8 element broke the h2 writeback). Data = [nibbles 4096][s 512]
+    // [S_col 256][fold 256]; [5120..8192) padding.
+    // [nibbles 4096][s 512][S_col 256][fold 256] — the last 256 B hold the
+    // PER-TOKEN folded S' (128 bf16: S'[j] = ag*S_col[j] gate / ag*qn_s*S_col[j]
+    // up), written by update_fused_header_i4. The kernel stashes it into C1
+    // row 1 for the silu — eliminating the broken 33rd-B-object gs tile
+    // (issue #1769 bring-up, measured 2026-08-24: the 33rd B task per
+    // col_group never delivered — stale 0x7f data regardless of source).
 };
 
 static inline uint16_t f32_to_bf16_impl(float f) {
@@ -109,6 +120,20 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
         p.scol[j] = amax < 1e-12f ? 1.0f : amax / 127.0f;
         p.scol_bf16[j] = f32_to_bf16_impl(p.scol[j]);
     }
+    // Fold region (per-token, rewritten by update_fused_header_i4): initialize
+    // with the static S' = S_col (ag=1, qn_s=1) so the first launch (before
+    // any header update) still dequantizes sanely. Tile (ki, nt) covers cols
+    // [nt*128, nt*128+128).
+    {
+        for (size_t i = 0; i < p.tiles.size(); i += GuI4Pack::TILE_TOTAL) {
+            int nt = (int)((i / GuI4Pack::TILE_TOTAL) % n_tiles_n);
+            for (int j = 0; j < 128; j++) {
+                uint16_t fb = f32_to_bf16_impl(p.scol[(size_t)nt * 128 + j]);
+                p.tiles[i + 4096 + 512 + 256 + 2 * j]     = (uint8_t)(fb & 0xFF);
+                p.tiles[i + 4096 + 512 + 256 + 2 * j + 1] = (uint8_t)(fb >> 8);
+            }
+        }
+    }
 
     // Tile loop: nibbles (Region A) + B_shadow (exact on-chip dequant).
     for (int ki = 0; ki < n_tiles_k; ki++)
@@ -153,6 +178,17 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                                           + (i1 * 8 + i3) * 2;
                             p.tiles[s_off]     = (uint8_t)(s16 & 0xFF);
                             p.tiles[s_off + 1] = (uint8_t)(s16 >> 8);
+                            // v30: ratioQ22 in the PAD [5120 + group*512 + col*4]
+                            // (int32, = round((s*0.0625/S_col)*2^32)) — the
+                            // on-chip dequant uses PURE int32 loads (int16
+                            // loads are also mis-compiled by the aie2p backend).
+                            int rq = (int)std::roundf(ratio * 4194304.0);   // Q22 (2^22): Q32 overflowed for ratio>0.5 (measured 93.6% wrap)
+                            size_t r_off = tbase + 5120 + (size_t)((i0 * 8 + i2) / 32) * 512
+                                           + (i1 * 8 + i3) * 4;
+                            p.tiles[r_off]     = (uint8_t)(rq & 0xFF);
+                            p.tiles[r_off + 1] = (uint8_t)((rq >> 8) & 0xFF);
+                            p.tiles[r_off + 2] = (uint8_t)((rq >> 16) & 0xFF);
+                            p.tiles[r_off + 3] = (uint8_t)((rq >> 24) & 0xFF);
                             // per-tile S_col at [4608 + col*2] (bf16)
                             size_t c_off = tbase + 4608 + (size_t)(i1 * 8 + i3) * 2;
                             p.tiles[c_off]     = (uint8_t)(scb & 0xFF);

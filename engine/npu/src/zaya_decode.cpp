@@ -445,13 +445,10 @@ int zaya_decode_main(int argc, char** argv) {
                         fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
                     // P1: GU->SiLU->h2 writeback.
-                    fprintf(stderr, "[step] l=%d P1 launch\n", l);
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     auto tb2 = std::chrono::steady_clock::now();
-                    fprintf(stderr, "[step] l=%d P1 wait\n", l);
                     frun.wait();
-                    fprintf(stderr, "[step] l=%d P1 done\n", l);
                     // Visibility barrier (issue #1775 fix): the h2 S2MM
                     // writeback (shim[c] -> DDR) must be globally visible
                     // before the P2 D-phase MM2S read (shim[0]). The host
@@ -478,33 +475,6 @@ int zaya_decode_main(int argc, char** argv) {
                                 std::chrono::duration<double, std::milli>(tb1 - tb0).count(),
                                 std::chrono::duration<double, std::milli>(tb2 - tb1).count(),
                                 std::chrono::duration<double, std::milli>(tb3 - tb2).count());
-                    if (getenv("NPU_FUSED_DBG") && l == 1 && pos == 0) {
-                        // ── minimal debug: h2 + host emulation comparison ──
-                        h2_bo[1]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-                        fprintf(stderr, "  [fused-dbg Am] ");
-                        for (int i = 0; i < 8; i++) fprintf(stderr, "%d ", fused_ctx.Am[i]);
-                        fprintf(stderr, "\n  [fused-dbg guB k0 c0..15] ");
-                        const int8_t* wb = (const int8_t*)fgu_bo[l][e]->map();
-                        for (int i = 0; i < 16; i++) fprintf(stderr, "%d ", wb[i]);
-                        fprintf(stderr, "\n  [fused-dbg gsec-hdr(host)] ");
-                        const float* hb2 = (const float*)((const int8_t*)fgu_bo[l][e]->map() + (size_t)2048 * 4096);
-                        for (int i = 0; i < 8; i++) fprintf(stderr, "%.4e ", hb2[i]);
-                        fprintf(stderr, "\n");
-                                            // ── host emulation of the SAME fused path ──
-                        {
-                            std::vector<float> hout(d.H); float hqn = 0;
-                            std::vector<int8_t> guBv = fgu_row[l][e];
-                            std::vector<int8_t> dnBv = fd_row[l][e];
-                            zaya_moe::fused_ffn_int8(m, residual.data(), guBv, fgu_cs[l][e],
-                                                     dnBv, fd_cs[l][e], hout.data(), &hqn);
-                            double num=0, d1=0, d2=0;
-                            for (int i = 0; i < d.H; i++) {
-                                num += (double)hout[i]*moe_out[i]; d1 += (double)hout[i]*hout[i]; d2 += (double)moe_out[i]*moe_out[i];
-                            }
-                            fprintf(stderr, "  [fused-dbg] host-vs-NPU corr=%.6f (host rms=%.4f npu rms=%.4f) qn_s=%f hqn=%f\n",
-                                    num/std::sqrt(d1*d2), std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s, hqn);
-                        }
-                    }
                     if (l == 1 && pos == 0) {
                         std::vector<float> cpu_out(d.H);
                         zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
