@@ -38,7 +38,7 @@ jobs:
             echo "== creating RUM site for 1bit.monster =="
             CREATE=$(api -X POST -H "Content-Type: application/json" \
               "https://api.cloudflare.com/client/v4/accounts/$ACCT/rum/site_info" \
-              -d '{"domain":"1bit.monster"}')
+              -d '{"host":"1bit.monster"}')
             echo "$CREATE" | jq .
             TOKEN=$(echo "$CREATE" | jq -r '.result.site_token // empty')
             SCRIPT=$(echo "$CREATE" | jq -r '.result.script // empty')
