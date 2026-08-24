@@ -462,6 +462,21 @@ int main(int argc, char** argv) {
     std::vector<TInfo> tensors;
     int tr = 32, tc = 256, gs = 32;
 
+    // ── Per-tensor quant routing ──
+    // Embedding / output / lm_head must stay high-precision: their low-rank
+    // structure is destroyed by coarse codebooks (TQ2NZ model collapse test;
+    // ROCmFP4's 10-value codebook likewise corrupts token rows — the very
+    // first hidden state diverges and every downstream token is garbage).
+    // TQ2NZ-family -> Q4NX (asymmetric, 16 levels); ROCmFP4 -> lossless F16.
+    auto route_quant = [&](OnebpQuant q, const std::string& tn) -> OnebpQuant {
+        if (getenv("ONEBP_NO_ROUTE")) return q;
+        bool is_emb = (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight");
+        if (!is_emb) return q;
+        if (q == ONEBP_TQ2NZ || q == ONEBP_TQ2NZ_E4M3) return ONEBP_Q4NX;
+        if (q == ONEBP_Q4_ROCMFP4 || q == ONEBP_Q4_ROCMFP4_FAST) return ONEBP_F16;
+        return q;
+    };
+
     if (moe_shape_colmajor) {
         printf("  MoE shape: column-major [cols, rows, experts] (experts=%d from 3rd dim)\n", 0);
     } else {
@@ -487,10 +502,7 @@ int main(int argc, char** argv) {
             // Tensor routing (ROCmFPX recipe mining): no-zero 2-bit codebooks
             // destroy sparse/embedding tensors (TQ2NZ model collapse test).
             // Keep token embeddings + lm_head on asymmetric Q4NX.
-            OnebpQuant tq = quant;
-            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
-                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
-                tq = ONEBP_Q4NX;
+            OnebpQuant tq = route_quant(quant, tn);
             // NOTE: 4-bit Q4NX of ANY tensor class (attention or FFN) loses
             // ~0.99+/layer and compounds into incoherent logits on deep
             // models — per-tensor F16 routing was tried and still failed
@@ -538,10 +550,7 @@ int main(int argc, char** argv) {
                 // GGUF 3D is ne0-contiguous; storing as 2D [shape[0],
                 // shape[1]*shape[2]] keeps get_tensor_f32's flat order identical
                 // to the GGUF reader (verified 2026-08-16).
-                OnebpQuant tq2 = quant;
-                if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
-                    (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
-                    tq2 = ONEBP_Q4NX;
+                OnebpQuant tq2 = route_quant(quant, tn);
                 ne = (int)inf->shape[0];
                 r  = (int)inf->shape[1];
                 c  = (int)inf->shape[2];
@@ -561,10 +570,7 @@ int main(int argc, char** argv) {
                 c  = (int)inf->shape[2];
             }
             if (ne <= 0 || r <= 0 || c <= 0) continue;
-            OnebpQuant tq = quant;
-            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
-                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
-                tq = ONEBP_Q4NX;
+            OnebpQuant tq = route_quant(quant, tn);
             uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, tq);
             uint64_t total_tiled = (uint64_t)ne * per_expert;
             tensors.push_back({tn, 3, r, c, ne, 0, total_tiled, tq});
@@ -1127,6 +1133,19 @@ int main(int argc, char** argv) {
     fseek(fout, 0, SEEK_SET);
     fwrite(&hdr, sizeof(hdr), 1, fout);
     fclose(fout);
+    // Write a sibling .htok (BPE tokenizer) next to the .1bp so the serving
+    // path can decode real text. Without it, non-GGUF models fall to the
+    // character-level fallback and emit raw [token_id] brackets (#1570 family).
+    {
+        std::string htok = argv[2];
+        auto dot = htok.find_last_of('.');
+        if (dot != std::string::npos) htok = htok.substr(0, dot);
+        htok += ".htok";
+        if (reader.write_htok(htok))
+            printf("  [tok] wrote BPE tokenizer -> %s\n", htok.c_str());
+        else
+            fprintf(stderr, "  [tok] write_htok failed — serving will use char fallback\n");
+    }
     FILE* fc = fopen(argv[2], "rb"); fseek(fc, 0, SEEK_END);
     long fsz = ftell(fc); fclose(fc);
     auto t1 = std::chrono::steady_clock::now();

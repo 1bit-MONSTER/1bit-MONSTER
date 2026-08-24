@@ -444,11 +444,15 @@ struct Hip1bpBackend : Backend {
                 if(ll.wq) h1bp_gemv_kernel<<<NH_*HD_,256,0,stream>>>(datt,ll.wq,dh,NH_*HD_,H_);
                 if(ll.wk) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dgate,ll.wk,dh,NKV_*HD_,H_);
                 if(ll.wv) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dup,ll.wv,dh,NKV_*HD_,H_);
-                // Q/K/V biases (llama.cpp adds them post-projection, pre-rope)
-                if(ll.bq) h1bp_add_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt,ll.bq,NH_*HD_);
-                if(ll.bk) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dgate,ll.bk,NKV_*HD_);
-                if(ll.bv) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dup,ll.bv,NKV_*HD_);
             }
+            // Q/K/V biases (llama.cpp adds them post-projection, pre-rope).
+            // Applied after EVERY gemv path (packed Q4NX/TQ2NZ/ROCmFP4 and f32)
+            // — the packed kernels only do W@x; without this, Qwen2.5's large
+            // attention biases are dropped and attention scores collapse
+            // (the f32-only placement silently skipped packed paths).
+            if(ll.bq) h1bp_add_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt,ll.bq,NH_*HD_);
+            if(ll.bk) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dgate,ll.bk,NKV_*HD_);
+            if(ll.bv) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dup,ll.bv,NKV_*HD_);
 
             // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
             // head_dim slice with the shared [head_dim] weight, before RoPE.
