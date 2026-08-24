@@ -708,57 +708,40 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     event1();
     return;
 #endif
-    // 4 accumulators per col-tile group (C00..C03 pattern of the m8 kernel);
-    // iterate col-tiles in groups of 4.
-    for (unsigned jg = 0; jg < nct; jg += 4) {
-        int32_t *pC1 = pC + jg * MMUL::size_C;
-        if (jg == 0) for (unsigned t = 0; t < 64; t++) g_i4_trace_b0[t] = pB4[t];   // col-tile j at j*64 (microtiled C1)
-        aie::vector<int32, 64> acc0 = aie::load_v<64>(pC1);
-        aie::vector<int32, 64> acc1 = aie::load_v<64>(pC1 + 64);
-        aie::vector<int32, 64> acc2 = aie::load_v<64>(pC1 + 128);
-        aie::vector<int32, 64> acc3 = aie::load_v<64>(pC1 + 192);
-        MMUL C00(acc0), C01(acc1), C02(acc2), C03(acc3);
-        for (unsigned i = 0; i < nk; ++i) {
-            aie::vector<int8, 64> A0 = aie::load_v<64>(pA + i * 64);
-            int8_t Bb[4][64];
-            for (unsigned jt = 0; jt < 4; ++jt) {
-                unsigned j = jg + jt;   // col-tile index 0..15
-                const uint8_t* nib = pB4 + i * 512 + j * 32;
-                // v29: the RATIO is host-precomputed as int32 Q32 in the tile
-                // PAD [5120 + (i/4)*512 + j*32] (= round((s*0.0625/S_col)*2^32)).
-                // The aie2p backend mis-compiles the float (sf*0.0625)/scc
-                // ratio (measured: NaN on the NPU), so the dequant is PURE
-                // int32: B'' = sat8(round(q4*16*ratio)) = sat8(round(q4*rq/2^28)).
-                const int32_t* rq = (const int32_t*)(pB4 + 5120 + (i / 4) * 512 + j * 32);
-                // v52: VECTORIZED q4 unpack (aie2p intrinsic) + scalar int32
-                // ratio multiply — B'' = sat8(round(q4*16*ratio)).
-                v64int8 q16 = __builtin_aie2p_unpack_I512_I8_I4(
-                    *(const v64int4 *)(pB4 + i * 512 + j * 32), 1);   // sign-extended q4
-                q16 = q16 + q16; q16 = q16 + q16;
-                q16 = q16 + q16; q16 = q16 + q16;                     // x16 (q4<<4)
-                int8_t qs[64];
-                *(v64int8 *)qs = q16;
-                for (int e = 0; e < 64; e++) {
-                    int x = (int)qs[e] * rq[e & 7];       // q4*16 * ratioQ22/2^18
-                    int ax = x < 0 ? -x : x;
-                    int r = (ax + (1 << 17)) >> 18;          // round-half-away
-                    r = x < 0 ? -r : r;
-                    Bb[jt][e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
-                }
+    // ── SCALAR row-0 C1 (issue #1769) ──
+    // The mmul-based accumulation's C-store comes out SCRAMBLED in this
+    // toolchain build (the C1buf holds the correct full-K dots of the cols
+    // =4-7 mod 8 at shifted positions, the other halves garbage — measured
+    // on hardware, rounds 2-3). The decode is M=1: only row 0 of the C1 is
+    // nonzero, so
+    //   C1[0][j] = sum_{k=0..63} A[0][k] * B''[k][j]
+    // per (64,128) tile — computed SCALAR (correctness-first; the row-0 dot
+    // is immune to the mmul C-layout). The A tile's row-0 is its first 64
+    // bytes (the A-layout (0,c) at (c/8)*8 + c%8 is contiguous within the
+    // tile); the C1 row-0 element (0, j) sits at (j/8)*64 + j%8 (the
+    // microtile layout, matching the verified C1buf).
+    for (unsigned i = 0; i < nk; ++i) {          // 8 k-steps
+        for (unsigned j = 0; j < nct; ++j) {     // 16 col-tiles
+            const uint8_t* nib = pB4 + i * 512 + j * 32;
+            const int32_t* rq = (const int32_t*)(pB4 + 5120 + (i / 4) * 512 + j * 32);
+            for (int e = 0; e < 64; e++) {
+                int k = e / 8, c = e % 8;
+                uint8_t b = nib[(e / 8) * 4 + (e % 8) / 2];
+                int q4 = (e % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
+                if (q4 >= 8) q4 -= 16;
+                int x = q4 * rq[e & 7];          // q4 * ratioQ22 (int32)
+                int ax = x < 0 ? -x : x;
+                int r = (ax + (1 << 17)) >> 18;  // round-half-away
+                r = x < 0 ? -r : r;
+                int8_t bv = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
+                int col = (int)j * 8 + c;
+                // A-layout (0, i*8+k) at the tap byte i*64+k: the row-0's
+                // k-cols of the i-th 8-col group sit at the 64-byte microtile
+                // strides ((c/8)*8 + c%8 is contiguous within each 8-col
+                // group, and the tap's linear byte order is (c%8) + 64*(c/8)).
+                pC[(col / 8) * 64 + (col % 8)] += (int32_t)pA[i * 64 + k] * (int32_t)bv;
             }
-            aie::vector<int8, 64> B0 = aie::load_v<64>(Bb[0]);
-            aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);
-            aie::vector<int8, 64> B2 = aie::load_v<64>(Bb[2]);
-            aie::vector<int8, 64> B3 = aie::load_v<64>(Bb[3]);
-            C00.mac(A0, B0);
-            C01.mac(A0, B1);
-            C02.mac(A0, B2);
-            C03.mac(A0, B3);
         }
-        aie::store_v(pC1, C00.template to_vector<int32>());
-        aie::store_v(pC1 + 64, C01.template to_vector<int32>());
-        aie::store_v(pC1 + 128, C02.template to_vector<int32>());
-        aie::store_v(pC1 + 192, C03.template to_vector<int32>());
     }
     // v53-v59: stash this tile's per-token silu metadata CONTIGUOUSLY at
     // 0x6000 (the Gg_0 buffer — address verified against
