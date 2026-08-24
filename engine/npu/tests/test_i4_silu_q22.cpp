@@ -204,6 +204,7 @@ static int run_real_gate(const char* q4nx_path, int L, int E, const char* actfil
     raw_gu.rows = 2 * n_ff; raw_gu.cols = H;
     raw_gu.q4.assign((size_t)raw_gu.rows * H, 0);
     raw_gu.scl.assign((size_t)raw_gu.rows * (H / 32), 0.0f);
+    raw_gu.zp.assign((size_t)raw_gu.rows * (H / 32), 0.0f);   // Zaya symmetric: zeros
     const size_t gbase = (size_t)E * 2 * n_ff;
     for (int r = 0; r < 2 * n_ff; r++) {
         memcpy(&raw_gu.q4[(size_t)r * H], &raw_all.q4[(gbase + r) * H], sizeof(int8_t) * H);
