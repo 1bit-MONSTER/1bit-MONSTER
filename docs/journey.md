@@ -2,44 +2,93 @@
 
 > **This is the hero story of 1bit.MONSTER.** It started with a laptop, a disassembler, and no docs: AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime (FastFlowLM) — 22 proprietary `.so` files, 209 xclbin bitstreams, zero documentation. We reverse-engineered the entire stack in 4 days and replaced it with open C++.
 >
-> Every crash, breakthrough, and bug below is documented in real-time. ~1800+ hours of engineering, all open source, MIT. Since UPDATE 34 the through-line is one binary (`build/1bit`) and one language direction: C++23 for compute kernels, **Mojo 1.0 as the unified language** for everything around them — servers, converters, tooling, control planes. No interpreter at runtime, anywhere.
+> Every crash, breakthrough, and bug below is documented in real-time. ~600 hours of engineering, all open source, MIT. Since UPDATE 34 the through-line is one binary (`build/1bit`) and one language direction: C++23 for compute kernels, **Mojo 1.0 as the unified language** for everything around them — servers, converters, tooling, control planes. No interpreter at runtime, anywhere.
 
-## Table of Contents
+## 2026-04-16 → 2026-06-27 — GENESIS: the ROCm burn, before the NPU
 
-- [2026-08-19 — The Two-PC Fleet: Harnesses on the LAN, Six Deployment Bugs Fixed](#2026-08-19--the-two-pc-fleet-harnesses-on-the-lan-six-deployment-bugs-fixed)
-- [UPDATE 34: The Burn & the Mojo Shift — one through-line, one unified language](#update-34-2026-08-12-the-burn--the-mojo-shift--one-through-line-one-unified-language)
-- [2026-08-16 — The Frontier Gates: 5/5 Validated, Then the Repo Tried to Eat It](#2026-08-16--the-frontier-gates-55-validated-then-the-repo-tried-to-eat-it)
-- [2026-08-15 — 100% HF Coverage: Every Arch-Bearing Checkpoint Maps to an Engine Token](#2026-08-15--100-hf-coverage-every-arch-bearing-checkpoint-maps-to-an-engine-token)
-- [2026-08-07 — The Unified Control Plane Lands](#2026-08-07--the-unified-control-plane-lands-pool-wired-spec-decode-in-server-zoo-55)
-- [UPDATE 34: FLM Is Fully Gone — Byte-Identical Streams, True Batch, 2× on the 35B](#update-34-2026-08-15-flm-is-fully-gone--byte-identical-streams-true-batch-2×-on-the-35b)
-- [UPDATE 33: NPU Firmware RE via Raw ioctls, Driver Regression Fixed, JARVIS Ships](#update-33-2026-08-10-npu-firmware-re-via-raw-ioctls-driver-regression-fixed-jarvis-ships)
-- [UPDATE 32: amdxdna Wedge Saga, 35B MoE Goes Live, Vivado-Free FPGA Toolchain](#update-32-2026-08-09-amdxdna-wedge-saga-35b-moe-goes-live-vivado-free-fpga-toolchain)
-- [UPDATE 31: The TileFuse Day — NPU Kernel From Scratch, Q4NX Pivot, Converter Ladder](#update-31-2026-08-08-the-tilefuse-day--npu-kernel-from-scratch-q4nx-pivot-converter-ladder)
-- [UPDATE 30: The One-Heap Pool — all models resident, spec-decode in-server](#update-30-2026-08-07-the-one-heap-pool--all-models-resident-spec-decode-in-server)
-- [UPDATE 29: Memory Campaign — arena-frag leak fixed, top-1 backend init](#update-29-2026-08-03-memory-campaign--arena-frag-leak-fixed-top-1-backend-init-10-bug-audit)
-- [UPDATE 28: Mamba1 GPU Backend — 79.4 tok/s](#update-28-2026-07-20-mamba1-gpu-backend--794-toks-9-bugs-killed)
-- [UPDATE 27: Fused Layer Engine — 291 tok/s](#update-27-2026-07-06-fused-layer-engine-goes-production--291-toks-3×-v12)
-- [UPDATE 26: All 3 Bugs Confirmed Fixed](#update-26-2026-07-05-all-3-bugs-confirmed-fixed--aie-micro-tiling-root-cause-resolved)
-- [UPDATE 25: v12 Was Never Output-Validated](#update-25-2026-07-03-v12-was-never-output-validated--3-real-bugs-found-still-incoherent)
-- [UPDATE 24: Fused XCLBIN Resumed](#update-24-2026-07-03-fused-xclbin-resumed--schedule-fixed-deadlock-isolated-new-kernel-bug-found)
-- [UPDATE 23: Production Release](#update-23-2026-07-02-1532-adt-production-release--v20260702-all5models)
-- [UPDATE 22: All 5 Models at v12 Batch Speed](#update-22-2026-07-02-1513-adt-all-5-models-at-v12-batch-speed-0-crashes)
-- [UPDATE 21: Full NPU Engine State](#update-21-2026-07-02-1201-adt-session-close--full-npu-engine-state)
-- [UPDATE 20: Fused XCLBIN — First Attempt](#update-20-2026-07-02-0517-0727-adt-fused-xclbin--first-attempt-q4nx-blocker)
-- [UPDATE 19: Multi-Model XCLBINs](#update-19-2026-07-02-0624-0627-adt-multi-model-xclbins-model-agnostic-engine)
-- [UPDATE 18: M=32 Target, NPU LM Head](#update-18-2026-07-02-0401-adt-m32-target-npu-lm-head-flm-comparison)
-- [UPDATE 17: M=16 Batch Decode — 16 ms/tok](#update-17-2026-07-02-0300-adt-m16-batch-decode--16-mstok-152×-speedup)
-- [UPDATE 16: Full Profile + 50 ms/tok Batch-4](#update-16-2026-07-02-0200-adt-full-profile--50-mstok-batch-4-decode)
-- [UPDATE 15: PR-Agent Live, Landing Page](#update-15-2026-07-01-1500-adt-pr-agent-live-landing-page-deployed-242-mstok-verified)
-- [Session 2026-07-16/20 — FLM Fully Replaced, Model-Agnostic Broadening, TQ2 Ternary](#session-2026-07-1620--flm-fully-replaced-model-agnostic-broadening-tq2-ternary)
-- [Session 2026-07-05/06 — Q4NX/GGUF Fully Decoded, NPU GEMM Root-Caused, First Validated 1-Bit Number, DSpark](#session-2026-07-0506--q4nxgguf-fully-decoded-npu-gemm-root-caused-first-validated-1-bit-number-dspark)
-- [Session 2026-07-03/04 — Triton-XDNA Eval, memlock Fix, Spec-Decode Reality Check](#session-2026-07-0304--triton-xdna-eval-memlock-fix-spec-decode-reality-check)
-- [Session 2026-07-02/03 — Production Stack, Release, Site Refresh](#session-2026-07-0203--production-stack-release-site-refresh)
-- [Earlier Updates (14–1)](#earlier-updates)
+
+
+**Before the NPU there was the iGPU, and before the iGPU there was a bet: that 1-bit LLM inference could be made real on consumer silicon. This is where the timeline starts — the repo was born from this first burn, and the receipts are still in the git history.**
+
+### 2026-04-16 — the first burn
+
+The machine was a Ryzen AI Max+ 395 (Strix Halo): 16 Zen 5 cores, a Radeon 8060S iGPU (gfx1151), 128 GB of unified LPDDR5x — and a 50 TOPS XDNA 2 NPU that AMD had locked behind a closed-source runtime. Nobody had written public 1-bit kernels for this hardware. So we did:
+
+- **Q1_0 HIP kernel lands** — 24–33× faster prompt processing on Bonsai-1.7B, the first 1-bit kernel on gfx1151 (`5484308c`).
+- **Full 1-bit burn: 7 models, 4,172 t/s prompt** on Bonsai-1.7B (`bfe6c5fc`).
+- **Native Tensile GEMM + fused Wave32 ternary kernel** — first on gfx1151 (`908a5e7f`).
+- **CK-prefill** and **librocm_cpp** (a drop-in C API for 1-bit backends) take shape; the 55.36 TFLOPS WMMA ceiling gets measured and we're honest about hovering at 56% of it.
+
+### 2026-04-19 — the repo is born
+
+`1bit-systems` is created on GitHub. Everything that follows is public from day one — every failure, every 3 AM realization, every reboot-only NPU wedge.
+
+### 2026-04-28 — the public debut
+
+The repo goes fully public: PPL sweeps (IQ2_XXS vs Q4_K_XL on Qwen3.5-35B-A3B), shellcheck/lychee/HTML CI, AMD HF zoo + Bonsai paper notes — and the **NPU-gate receipts**: the Reddit post that got strikethrough'd for claiming a consumer NPU could run LLMs, committed to the repo so it could never be memory-holed. We'd promised the chip could be cracked. The clock started ticking.
+
+### May 2026 — the long quiet month
+
+Validation harness for Q2_0 on Strix Halo (05-06), site branding refresh (05-11), CodeRabbit review stack (05-18), PR-Agent/DeepSeek review workflows (05-24), the wiki refactor (05-24). Infrastructure while the big problem waits: **the NPU is still a black box.**
+
+### June 2026 — first contact
+
+- **06-23/26** — `strixhalo-npu-setup`: the step-by-step unlock guide for IRON + Peano + Chess + FastFlowLM, plus the clean-room Chess replacement research spec. The 22 proprietary `.so` files and 209 xclbin bitstreams start getting catalogued.
+- **06-28, 00:00-ish** — the night that everything changed. The FastFlowLM stack gets taken apart, and what follows is documented blow-by-blow in the raw session logs below. **Four days later the entire closed stack is replaced with open C++.**
+
+> **The pain, in one paragraph:** nothing about this was guaranteed. The firmware is RSA-2048 signed and unmodifiable. The driver is GPL but the firmware mailbox protocol had to be decoded by hand. The bitstreams are opaque. The only thing we had was a disassembler, `dynamic_debug`, ftrace, bpftrace — and the refusal to accept "you can't" as an answer. The sessions below are the unedited record of that refusal.
 
 ---
 
-## UPDATE 34 (2026-08-12): THE BURN & THE MOJO SHIFT — ONE THROUGH-LINE, ONE UNIFIED LANGUAGE
+## Table of Contents
+
+- [2026-04-16 → 2026-06-27 — GENESIS: the ROCm burn, before the NPU](#2026-04-16--2026-06-27--genesis-the-rocm-burn-before-the-npu)
+- [UPDATE 34 (2026-08-12): The Burn & the Mojo Shift — One Through-Line, One Unified Language](#update-34-2026-08-12-the-burn--the-mojo-shift--one-through-line-one-unified-language)
+- [UPDATE 35 (2026-08-15): FLM Is Fully Gone — Byte-Identical Streams, True Batch, 2× on the 35B](#update-35-2026-08-15-flm-is-fully-gone--byte-identical-streams-true-batch-2-on-the-35b)
+- [UPDATE 33 (2026-08-10): NPU Firmware RE via Raw IOCTLs, Driver Regression Fixed, JARVIS Ships](#update-33-2026-08-10-npu-firmware-re-via-raw-ioctls-driver-regression-fixed-jarvis-ships)
+- [UPDATE 32 (2026-08-09): amdxdna Wedge Saga, 35B MoE Goes Live, Vivado-Free FPGA Toolchain](#update-32-2026-08-09-amdxdna-wedge-saga-35b-moe-goes-live-vivado-free-fpga-toolchain)
+- [UPDATE 31 (2026-08-08): The TileFuse Day — NPU Kernel from Scratch, Q4NX Pivot, Converter Ladder](#update-31-2026-08-08-the-tilefuse-day--npu-kernel-from-scratch-q4nx-pivot-converter-ladder)
+- [UPDATE 30 (2026-08-07): The One-Heap Pool — All Models Resident, Spec-Decode In-Server](#update-30-2026-08-07-the-one-heap-pool--all-models-resident-spec-decode-in-server)
+- [UPDATE 29 (2026-08-03): Memory Campaign — Arena-Frag Leak Fixed, Top-1 Backend Init, 10-Bug Audit](#update-29-2026-08-03-memory-campaign--arena-frag-leak-fixed-top-1-backend-init-10-bug-audit)
+- [UPDATE 28 (2026-07-20): Mamba1 GPU Backend — 79.4 Tok/s, 9 Bugs Killed](#update-28-2026-07-20-mamba1-gpu-backend--794-toks-9-bugs-killed)
+- [UPDATE 27 (2026-07-06): Fused Layer Engine Goes Production — 291 Tok/s (3× v12)](#update-27-2026-07-06-fused-layer-engine-goes-production--291-toks-3-v12)
+- [UPDATE 26 (2026-07-05): All 3 Bugs Confirmed Fixed — AIE Micro-Tiling Root Cause Resolved](#update-26-2026-07-05-all-3-bugs-confirmed-fixed--aie-micro-tiling-root-cause-resolved)
+- [UPDATE 25 (2026-07-03): v12 Was Never Output-Validated — 3 Real Bugs Found, Still Incoherent](#update-25-2026-07-03-v12-was-never-output-validated--3-real-bugs-found-still-incoherent)
+- [UPDATE 24 (2026-07-03): Fused XCLBIN Resumed — Schedule Fixed, Deadlock Isolated, New Kernel Bug Found](#update-24-2026-07-03-fused-xclbin-resumed--schedule-fixed-deadlock-isolated-new-kernel-bug-found)
+- [UPDATE 23 (2026-07-02 15:32 ADT): Production Release — v2026.07.02-all5models](#update-23-2026-07-02-1532-adt-production-release--v20260702-all5models)
+- [UPDATE 22 (2026-07-02 15:13 ADT): All 5 Models at v12 Batch Speed, 0 Crashes](#update-22-2026-07-02-1513-adt-all-5-models-at-v12-batch-speed-0-crashes)
+- [UPDATE 21 (2026-07-02 12:01 ADT): Session Close — Full NPU Engine State](#update-21-2026-07-02-1201-adt-session-close--full-npu-engine-state)
+- [UPDATE 21b (2026-07-02): Merged with Remote Auto-Detect Engine](#update-21b-2026-07-02-merged-with-remote-auto-detect-engine)
+- [UPDATE 20 (2026-07-02 05:17–07:27 ADT): Fused XCLBIN — First Attempt, Q4NX Blocker](#update-20-2026-07-02-05170727-adt-fused-xclbin--first-attempt-q4nx-blocker)
+- [UPDATE 19 (2026-07-02 06:24–06:27 ADT): Multi-Model XCLBINs, Model-Agnostic Engine](#update-19-2026-07-02-06240627-adt-multi-model-xclbins-model-agnostic-engine)
+- [UPDATE 18 (2026-07-02 04:01 ADT): M=32 Target, NPU LM Head, FLM Comparison](#update-18-2026-07-02-0401-adt-m32-target-npu-lm-head-flm-comparison)
+- [UPDATE 17 (2026-07-02 03:00 ADT): M=16 Batch Decode — 16 ms/tok, 15.2× Speedup](#update-17-2026-07-02-0300-adt-m16-batch-decode--16-mstok-152-speedup)
+- [UPDATE 16 (2026-07-02 02:00 ADT): Full Profile + 50 ms/tok Batch-4 Decode](#update-16-2026-07-02-0200-adt-full-profile--50-mstok-batch-4-decode)
+- [UPDATE 15 (2026-07-01 15:00 ADT): PR-Agent Live, Landing Page Deployed, 242 ms/tok Verified](#update-15-2026-07-01-1500-adt-pr-agent-live-landing-page-deployed-242-mstok-verified)
+- [UPDATE 14 (2026-07-01 08:30 ADT): 1bit-systems Rebuilt — 246 ms/tok Production Engine](#update-14-2026-07-01-0830-adt-1bit-systems-rebuilt--246-mstok-production-engine)
+- [UPDATE 13 (2026-07-01 04:00 ADT): INT8 Engine Complete — 219 ms/tok, Context Pool](#update-13-2026-07-01-0400-adt-int8-engine-complete--219-mstok-context-pool)
+- [Session 2026-06-28 — early sprint: first GEMMs, peak TFLOPS, stress tests](#session-2026-06-28--early-sprint-first-gemms-peak-tflops-stress-tests)
+- [Session 2025-06-28 Findings](#session-2025-06-28-findings)
+- [Session 2025-06-28 Late Testing — FLM HTTP Single-Connection Limit](#session-2025-06-28-late-testing--flm-http-single-connection-limit)
+- [Session 2025-06-28 Late Testing — `cmds2seq()` Discovery & Instruction Pipeline](#session-2025-06-28-late-testing--cmds2seq-discovery--instruction-pipeline)
+- [Session 2026-06-28 Deep Research — Definitive Findings](#session-2026-06-28-deep-research--definitive-findings)
+- [Session 2026-06-28 — Q4NX Format Fully Reverse-Engineered](#session-2026-06-28--q4nx-format-fully-reverse-engineered)
+- [Session 2026-06-28 — NaN debugging + Fused engine rewrite](#session-2026-06-28--nan-debugging--fused-engine-rewrite)
+- [Session 2026-06-29 — Full Optimization Sprint](#session-2026-06-29--full-optimization-sprint)
+- [Session 2026-07-02/03 — Production Stack, Release, Site Refresh](#session-2026-07-0203--production-stack-release-site-refresh)
+- [Session 2026-07-03/04 — Triton-XDNA Eval, memlock Fix, Spec-Decode Reality Check](#session-2026-07-0304--triton-xdna-eval-memlock-fix-spec-decode-reality-check)
+- [Session 2026-07-05/06 — Q4NX/GGUF fully decoded, NPU GEMM root-caused, first validated 1-bit number, DSpark](#session-2026-07-0506--q4nxgguf-fully-decoded-npu-gemm-root-caused-first-validated-1-bit-number-dspark)
+- [Session 2026-07-16/20 — FLM fully replaced, model-agnostic broadening, TQ2 ternary](#session-2026-07-1620--flm-fully-replaced-model-agnostic-broadening-tq2-ternary)
+- [2026-08-07 — the unified control plane lands (pool wired, spec decode in-server, zoo 5/5)](#2026-08-07--the-unified-control-plane-lands-pool-wired-spec-decode-in-server-zoo-55)
+- [2026-08-15 — 100% HF Coverage: every arch-bearing checkpoint maps to an engine token](#2026-08-15--100-hf-coverage-every-arch-bearing-checkpoint-maps-to-an-engine-token)
+- [2026-08-16 — the frontier gates: 5/5 validated, then the repo tried to eat it](#2026-08-16--the-frontier-gates-55-validated-then-the-repo-tried-to-eat-it)
+- [2026-08-19 — the two-PC fleet: harnesses on the LAN, six deployment bugs fixed](#2026-08-19--the-two-pc-fleet-harnesses-on-the-lan-six-deployment-bugs-fixed)
+- [2026-08-19/20 — the mesh: installs wake up, find each other, JARVIS gets a fleet brain](#2026-08-1920--the-mesh-installs-wake-up-find-each-other-jarvis-gets-a-fleet-brain)
+- [2026-08-24 — Lemonade v11.7.0 re-vendored: the SDK sync loop, made repeatable](#2026-08-24--lemonade-v1170-re-vendored-the-sdk-sync-loop-made-repeatable)
+
+---
+
+## UPDATE 34 (2026-08-12): The Burn & the Mojo Shift — One Through-Line, One Unified Language
 
 **We burned the repo down to its through-line and picked the language that will carry it forward. Everything that wasn't the engine or the app that proves it is gone — SaaS, agent stack, voice cloning, the JARVIS v1 side-servers. And the glue language that used to be three (Python for tooling, C++ for the engine, JS for the web) is now one: Mojo 1.0, released this week, is the unified language we're building the control plane in.**
 
@@ -71,7 +120,7 @@ This week Mojo hit 1.0. We'd been watching it since the 0.x betas — a language
 
 ---
 
-## UPDATE 34 (2026-08-15): FLM IS FULLY GONE — BYTE-IDENTICAL STREAMS, TRUE BATCH, 2× ON THE 35B
+## UPDATE 35 (2026-08-15): FLM Is Fully Gone — Byte-Identical Streams, True Batch, 2× on the 35B
 
 **The last FLM artifact is dead. The open instruction generator now emits byte-identical streams to FLM's proprietary dumps (verified with `cmp` on all 4 ops), the open aiecc toolchain builds the xclbins (microkernel compiled with peano clang — no xchesscc), and true batch decode replaces the invalid fake-batch that had inflated our "-B 8" numbers. Validated head-to-head: we match FLM exactly at M=128 and beat it 11-15% with M=32 kernels on the 0.6B, and 2× on the 35B-A3B.**
 
@@ -93,7 +142,7 @@ This week Mojo hit 1.0. We'd been watching it since the 0.x betas — a language
 
 Also shipped: 1BP v4 dedup (shared Zamba blocks stored once, alias index entries), IQ1_S/IQ1_M block-size fixes (206/230 → 50/56 — every IQ1 file offset was wrong), spec-decode draft-vocab overflow fix (was segfaulting), fused-engine port to the validated execution model (fixing a shared-weight-BO bug), symlink model cache.
 
-## UPDATE 33 (2026-08-10): NPU FIRMWARE RE VIA RAW IOCTLS, DRIVER REGRESSION FIXED, JARVIS SHIPS
+## UPDATE 33 (2026-08-10): NPU Firmware RE via Raw IOCTLs, Driver Regression Fixed, JARVIS Ships
 
 **Raw ioctls now drive the NPU directly and produce bit-exact GEMM output — the first compute outside FLM's own stack. A driver regression that made the 35B MoE model spit garbage was root-caused to amdxdna 0.16.0 and fixed by reverting to the in-tree 0.7.0 build. JARVIS shipped NPU-FLM speech-to-text, SSE streaming, and a loopback-trusted web UI (PR #1576), plus a deadlock fix that had been hanging every chat request. eeg-medical was archived — its foundation-model retraining was redundant with ZUNA1.1, which already trains on the same TUH-EEG corpus.**
 
@@ -175,7 +224,7 @@ The CHANGELOG's "reboot.sh watchdog EBUSY fix" entry is correct about the code c
 
 ---
 
-## UPDATE 32 (2026-08-09): AMDXDNA WEDGE SAGA, 35B MOE GOES LIVE, VIVADO-FREE FPGA TOOLCHAIN
+## UPDATE 32 (2026-08-09): amdxdna Wedge Saga, 35B MoE Goes Live, Vivado-Free FPGA Toolchain
 
 **The NPU driver's wedge-and-hang problem is root-caused to a firmware fatal error with no recovery path, and fixed with a new hardware-reset primitive wired into the scheduler timeout — signed and running as amdxdna 0.16.0. The 35B MoE model goes end-to-end for the first time, warming up to 44-70 tok/s. A Vivado-free open-source FPGA bitstream toolchain is built and verified round-trip bit-exact.**
 
@@ -215,7 +264,7 @@ JARVIS stays in the `1bit-MONSTER` repo (it's an application of the engine, not 
 
 ---
 
-## UPDATE 31 (2026-08-08): THE TILEFUSE DAY — NPU KERNEL FROM SCRATCH, Q4NX PIVOT, CONVERTER LADDER
+## UPDATE 31 (2026-08-08): The TileFuse Day — NPU Kernel from Scratch, Q4NX Pivot, Converter Ladder
 
 **The single busiest day in the window: an original NPU int4 GEMV kernel built from scratch (inspired by, but not copied from, the TileFuse paper — its actual kernel code was never public), a pivot to official Q4NX weights after community GGUF conversions proved unusable, a 15× serve-mode speedup, MoE expert ops running on the real 22GB 35B model for the first time, a from-scratch ONNX INT8 pipeline, and a four-rung Qwen2.5 converter debugging ladder (1.5B → 3B → 7B) that found a different silent corruption bug at every rung.**
 
@@ -291,7 +340,7 @@ Four rungs, each hiding a different silent corruption bug:
 
 ---
 
-## UPDATE 30 (2026-08-07): THE ONE-HEAP POOL — ALL MODELS RESIDENT, SPEC-DECODE IN-SERVER
+## UPDATE 30 (2026-08-07): The One-Heap Pool — All Models Resident, Spec-Decode In-Server
 
 **The unified server now boots with every model in the zoo resident in one mmap'd pool (11 slots, ~6 GB on Strix), runs lossless speculative decoding in-process (`--draft-model`), and finally produces coherent answers from all 9 models end-to-end — Zamba2, the NPU FLM path, and the HIP 1BP backends all fixed. 13 commits landed on main via PR #1535.**
 
@@ -330,7 +379,7 @@ The HIP 1BP backend is wired into the router chain with logits-based sampling (t
 
 ---
 
-## UPDATE 29 (2026-08-03): MEMORY CAMPAIGN — ARENA-FRAG LEAK FIXED, TOP-1 BACKEND INIT, 10-BUG AUDIT
+## UPDATE 29 (2026-08-03): Memory Campaign — Arena-Frag Leak Fixed, Top-1 Backend Init, 10-Bug Audit
 
 **The long-unexplained host-RSS creep in `unified_server` is root-caused and fixed, the multi-backend memory bloat is cut by ~10 GB, and the 10-bug audit (#1429–#1438) landed. Release v2026.08.03 shipped and the memory fixes are deployed on the live service.**
 
@@ -367,7 +416,7 @@ For weeks the server's host RSS crept ~0.1–1.7 MB per generation request — m
 
 ---
 
-## UPDATE 28 (2026-07-20): MAMBA1 GPU BACKEND — 79.4 TOK/S, 9 BUGS KILLED
+## UPDATE 28 (2026-07-20): Mamba1 GPU Backend — 79.4 Tok/s, 9 Bugs Killed
 
 **The Mamba1 GPU backend (`mamba1_engine.hip` + `backend_mamba1.cpp`) is now fully built, linked, and validated end-to-end on Strix Halo. BlackMamba 1.5B: 79.4 tok/s. BlackMamba 2.8B: 46.1 tok/s.**
 
@@ -384,7 +433,7 @@ What was delivered:
 
 ---
 
-## UPDATE 27 (2026-07-06): FUSED LAYER ENGINE GOES PRODUCTION — 291 TOK/S (3× V12)
+## UPDATE 27 (2026-07-06): Fused Layer Engine Goes Production — 291 Tok/s (3× v12)
 
 **The fused layer engine now ships at 291 tok/s (3.4 ms/tok), 3× the v12 baseline, in a 38 KB binary.**
 
@@ -399,7 +448,7 @@ What was delivered:
 
 ---
 
-## UPDATE 26 (2026-07-05): ALL 3 BUGS CONFIRMED FIXED — AIE MICRO-TILING ROOT CAUSE RESOLVED
+## UPDATE 26 (2026-07-05): All 3 Bugs Confirmed Fixed — AIE Micro-Tiling Root Cause Resolved
 
 **v12 is now coherent. 97 tok/s verified. GEMM kernel bit-exact.**
 
@@ -428,7 +477,7 @@ All 6 fixes cherry-picked onto main as `232db025`..`bffe5a2e`.
 
 ---
 
-## UPDATE 25 (2026-07-03): v12 WAS NEVER OUTPUT-VALIDATED — 3 REAL BUGS FOUND, STILL INCOHERENT
+## UPDATE 25 (2026-07-03): v12 Was Never Output-Validated — 3 Real Bugs Found, Still Incoherent
 
 Set out to swap the production daemon's NPU backend from FLM (proprietary, closed-source)
 to v12 (our own C++ engine, "97 tok/s, beats FLM's 94, Zero Python"). Before wiring it in,
@@ -471,7 +520,7 @@ is resolved and re-verified against real chat prompts, not just dispatch speed.
 
 ---
 
-## UPDATE 24 (2026-07-03): FUSED XCLBIN RESUMED — SCHEDULE FIXED, DEADLOCK ISOLATED, NEW KERNEL BUG FOUND
+## UPDATE 24 (2026-07-03): Fused XCLBIN Resumed — Schedule Fixed, Deadlock Isolated, New Kernel Bug Found
 
 Picked back up the fused-transformer-xclbin effort flagged as "next" at the end of Update 17
 (the intervening Updates 18-23 covering the fused-xclbin dead end, the pivot to the universal
@@ -510,7 +559,7 @@ v12 (97 tok/s, standalone INT8 GEMM, zero Python) stays production. Full details
 
 ---
 
-## UPDATE 23 (2026-07-02 15:32 ADT): PRODUCTION RELEASE — v2026.07.02-all5models
+## UPDATE 23 (2026-07-02 15:32 ADT): Production Release — v2026.07.02-all5models
 
 Shipped: tag `v2026.07.02-all5models`, site updated to "One engine. Every model. Any chip.." 5 model
 families verified, 0 crashes, 28 tok/s on Qwen3-0.6B (all-models auto-detect binary). vs FLM: 2.4×
@@ -519,7 +568,7 @@ flagged as the path to close the gap (picked back up in Update 24, three session
 
 ---
 
-## UPDATE 22 (2026-07-02 15:13 ADT): ALL 5 MODELS AT V12 BATCH SPEED, 0 CRASHES
+## UPDATE 22 (2026-07-02 15:13 ADT): All 5 Models at v12 Batch Speed, 0 Crashes
 
 Model-agnostic engine (`npu_engine_all.cpp`) verified across the full catalog:
 
@@ -537,7 +586,7 @@ families verified working.
 
 ---
 
-## UPDATE 21 (2026-07-02 12:01 ADT): SESSION CLOSE — FULL NPU ENGINE STATE
+## UPDATE 21 (2026-07-02 12:01 ADT): Session Close — Full NPU Engine State
 
 *(Reconstructed from git history — commits in this window didn't carry explicit UPDATE numbers;
 assigned 20/21 here to keep the sequence readable.)*
@@ -552,7 +601,27 @@ routing).
 
 ---
 
-## UPDATE 20 (2026-07-02 05:17–07:27 ADT): FUSED XCLBIN — FIRST ATTEMPT, Q4NX BLOCKER
+## UPDATE 21b (2026-07-02): Merged with Remote Auto-Detect Engine
+
+### Merge
+- Merged with `origin/main` which had a completely refactored `npu_engine_universal.cpp`
+- New engine: auto-detects model dimensions from Q4NX header (no more preprocessor flags)
+- M=32 batched decode, OpenMP attention, OpenMP LM head, f32 embeddings
+- Our token-file input feature (`argv[3]`) applied on top of new engine
+- Added `model_config.h` (from npu-sandbox) to make the new engine compilable
+
+### Files Changed Post-Merge
+| File | Action |
+|------|--------|
+| `engine/npu/src/model_config.h` | Created (was missing from remote) |
+| `engine/npu/src/npu_engine_universal.cpp` | Merged — remote's auto-detect + our argv[3] |
+| `engine/npu/build_npu.sh` | Switched to auto-detect universal binary |
+
+---
+
+---
+
+## UPDATE 20 (2026-07-02 05:17–07:27 ADT): Fused XCLBIN — First Attempt, Q4NX Blocker
 
 The first full attempt at the fused-transformer-xclbin idea flagged in Update 18. Contract
 established for Qwen3-0.6B dimensions, 5 kernels recompiled with Chess for the smaller model.
@@ -571,7 +640,7 @@ quantization theory reached here. See `docs/archive/WEIGHT-STREAM-BLOCKER.md` fo
 
 ---
 
-## UPDATE 19 (2026-07-02 06:24–06:27 ADT): MULTI-MODEL XCLBINS, MODEL-AGNOSTIC ENGINE
+## UPDATE 19 (2026-07-02 06:24–06:27 ADT): Multi-Model XCLBINs, Model-Agnostic Engine
 
 Two parallel threads landed close together:
 
@@ -588,7 +657,7 @@ Two parallel threads landed close together:
 
 ---
 
-## UPDATE 18 (2026-07-02 04:01 ADT): M=32 TARGET, NPU LM HEAD, FLM COMPARISON
+## UPDATE 18 (2026-07-02 04:01 ADT): M=32 Target, NPU LM Head, FLM Comparison
 
 FLM Kraken Point benchmark for reference: 66.5 tok/s on weaker hardware than ours. Engine evolution
 recap v3→v10: 244→16 ms/tok (15.2×, same numbers as Update 17). NPU LM head landed on-chip: 4ms
@@ -599,7 +668,7 @@ that Update 20 picks up.
 
 ---
 
-## UPDATE 17 (2026-07-02 03:00 ADT): M=16 BATCH DECODE — 16 ms/tok, 15.2× SPEEDUP
+## UPDATE 17 (2026-07-02 03:00 ADT): M=16 Batch Decode — 16 ms/tok, 15.2× Speedup
 
 ### 244→16 ms/tok in One Session
 
@@ -647,7 +716,7 @@ Combined with M=32: ~4ms/tok effective = matches FLM.
 
 ---
 
-## UPDATE 16 (2026-07-02 02:00 ADT): FULL PROFILE + 50 ms/tok BATCH-4 DECODE
+## UPDATE 16 (2026-07-02 02:00 ADT): Full Profile + 50 ms/tok Batch-4 Decode
 
 ### NPU Dispatch: The Root Cause
 
@@ -712,7 +781,7 @@ matmul. Then we're at ~10 ms/tok.
 
 ---
 
-## UPDATE 15 (2026-07-01 15:00 ADT): PR-AGENT LIVE, LANDING PAGE DEPLOYED, 242 ms/tok VERIFIED
+## UPDATE 15 (2026-07-01 15:00 ADT): PR-Agent Live, Landing Page Deployed, 242 ms/tok Verified
 
 ### Live Production Stack
 
@@ -764,9 +833,105 @@ Config: 3 AI reviewers, INT8-focused review instructions, automatic review on PR
 
 ---
 
-## UPDATE 13 (2026-07-01 04:00 ADT): INT8 ENGINE COMPLETE — 219 ms/tok, CONTEXT POOL
+## UPDATE 14 (2026-07-01 08:30 ADT): 1bit-systems Rebuilt — 246 ms/tok Production Engine
 
-## 🏆 Peak Achievement: 31.0 TFLOPS on NPU (config2 design)
+### 1bit-systems Repo Rebuilt
+
+Old Rust/benchmarks/wiki stripped. New structure:
+
+```
+1bit-systems/
+├── engine/src/npu_engine_i8.cpp     # 145-line C++23 inference engine
+├── engine/src/dequant_q4nx.c        # Q4NX weight dequantizer
+├── engine/kernel/edge_attention.cc  # NPU attention kernel (Chess C++)
+├── engine/xclbins/n1_core_i8_v2.py  # INT8 MLIR generator (K-interleave fixed)
+├── engine/build/dequant_q4nx.o      # Pre-compiled dequantizer
+├── engine/build/edge_attention.o    # Pre-compiled attention kernel
+├── docs/journey.md                  # This audit trail
+├── docs/architecture.md             # NPU context + INT8 quantization
+├── docs/building.md                 # Build guide
+├── docs/roadmap.md                  # INT8 → 1-bit plan
+├── site/index.html                  # Landing page (brand-lockup)
+├── .pr_agent.toml                   # DeepSeek PR review
+└── .github/workflows/               # CI benchmark + PR agent
+```
+
+### Production Engine: 246 ms/tok
+
+```
+=== NPU Engine i8 + Attention ===
+Init 8 contexts (4 GEMM + 4 attention). Dequant+pack: 4.3s
+
+Prefill 9: Done
+Generate:
+  [0] 92850   [1] 26686   [2] 111383  [3] 104068
+  [4] 126203  [5] 2541    [6] 90103   [7] 87567
+
+=== 246 ms/tok ===
+```
+
+| Component | Status |
+|-----------|--------|
+| 4 INT8 GEMM contexts | ✅ All alive, no swapping |
+| 4 NPU attention contexts | ✅ Loaded, deferred to CPU at <100 tokens |
+| Pre-loaded per-layer BOs | ✅ Zero-copy weight access |
+| Cached norm weights | ✅ BF16→float pre-converted |
+| Token quality | ✅ Diverse tokens on every step |
+| Build | ✅ One g++ command, one binary |
+
+### Engine Evolution (3 Days)
+
+| Date | Engine | Speed | Tokens | Key Milestone |
+|------|--------|-------|--------|---------------|
+| Jun 28 | v7 BFP16 Peano | 1930 ms/tok | Diverse ✅ | First working decode |
+| Jun 30 | v8 BFP16 Chess | 1335 ms/tok | 198×8 ❌ | BFP16 precision collapse discovered |
+| Jun 30 | v10 BFP16 single | 3560 ms/tok | 198×8 ❌ | Single-xclbin dead end |
+| Jul 1 | i8 Q4NX swap | 446 ms/tok | Diverse ✅ | K-interleaving fixed, INT8 working |
+| Jul 1 | i8 4-live | 249 ms/tok | Diverse ✅ | Context pooling breakthrough |
+| Jul 1 | i8 4-live + attn | **246 ms/tok** | Diverse ✅ | NPU attention wired, repo rebuilt |
+
+**Net: 7.8× faster in 3 days (1930 → 246 ms/tok).**
+
+### NPU2 Context Architecture Confirmed
+
+**NPU2 supports 8+ simultaneous hw_contexts on firmware 1.1.2.65.**
+The earlier "1 context at a time" limitation was stale — caused by
+a firmware bug in older releases, not a hardware constraint. XRT
+hw_context objects can coexist as long as kernel invocations are
+serialized via `run.wait()`.
+
+### Lessons Learned
+
+1. **BFP16 double quantization kills diversity.** Q4NX→BFP16→NPU loses
+   too much precision. INT8 via symmetric per-tensor quantization works.
+2. **K-interleaving is silent corruption.** All-1s tests pass. Random
+   data fails with 394% error. Fixed by `dataReuse` on ObjectFifo.
+3. **4-live > swap.** Pre-loading all weight BOs and keeping all contexts
+   alive eliminates 60% of decoding latency.
+4. **NPU attention is context-dependent.** At 10 tokens, CPU softmax wins.
+   At 1000 tokens, NPU online rescaling will dominate. The kernel is
+   loaded and ready — the threshold just needs tuning.
+5. **The Chess compiler is the unlock.** 31.4 TFLOPS proven. Without the
+   license, none of this works. AMD's EA portal delivers it free.
+
+### What's Next
+
+- NPU attention dispatch at high context (>100 tokens)
+- GGUF Q8_0 direct weight loading (bypass Q4NX completely)
+- 1-bit / BitNet b1.58 ternary kernels
+- Target: <50 ms/tok on Strix Halo NPU
+
+---
+
+---
+
+---
+
+## UPDATE 13 (2026-07-01 04:00 ADT): INT8 Engine Complete — 219 ms/tok, Context Pool
+
+## Session 2026-06-28 — early sprint: first GEMMs, peak TFLOPS, stress tests
+
+### 🏆 Peak Achievement: 31.0 TFLOPS on NPU (config2 design)
 
 **Verified at `/home/bcloud/torch2aie/examples/gemm_asymmetric_tile_buffering/config2/`**
 ```
@@ -831,7 +996,7 @@ g++ -std=c++23 -O3 -o build/npu_engine_v7 src/npu_engine_v7.cpp build/dequant_q4
 LD_LIBRARY_PATH=.../xrt/lib64:.../mlir_aie.libs:.../sysroot/usr/lib64 ./build/npu_engine_v7
 
 
-## BREAKTHROUGH — Full GEMM Pipeline Running! (2026-06-28)
+### BREAKTHROUGH — Full GEMM Pipeline Running! (2026-06-28)
 
 ### Current Status: 5 GEMM runs on mm.xclbin in 3.6ms ✅
 - All 4 xclbins loaded successfully
@@ -862,7 +1027,7 @@ cmake .. && make -j4
 ./npu_infer
 ```
 
-## Final Benchmark Summary (2026-06-28)
+### Final Benchmark Summary (2026-06-28)
 
 ### GEMM Compute
 | dtype | TFLOPS | % Peak | % Chess | Config |
@@ -901,7 +1066,7 @@ cmake .. && make -j4
 - https://github.com/bong-water-water-bong/strixhalo-npu-setup
 - https://github.com/bong-water-water-bong/npu-gpu-cpu
 
-## Max Context Stress Test (Turbo Mode)
+### Max Context Stress Test (Turbo Mode)
 
 | Metric | Value |
 |--------|-------|
@@ -919,6 +1084,11 @@ KV cache has room for ~6,000 more tokens within 16,384 ctx-len.
 Multi-turn conversation: KV cache persists correctly across requests.
 
 ## Session 2025-06-28 Findings
+
+> *Note: the `2025-06-28` datestamps on several early session titles are a typo
+> from the white-heat of the moment, preserved verbatim. They are all
+> 2026-06-28 sessions — the four days that cracked the NPU.*
+
 
 ### Weight Format Breakthrough
 Q4NX `dtype=I8` is MISLEADING. The data is ACTUALLY BF16 stored as pairs of bytes:
@@ -971,7 +1141,7 @@ Q4NX `dtype=I8` is MISLEADING. The data is ACTUALLY BF16 stored as pairs of byte
 - Maybe use mmap on NPU tile memory directly
 - NPU has shared virtual memory feature
 
-## Key Discoveries from 2025-06-28 Late Session
+### Key Discoveries from 2025-06-28 Late Session
 
 ### Architecture: Weight DMA via libgemm instruction generation
 - **ALL 4 xclbins opcode=3 is IDENTITY** — none read from weight BOs directly
@@ -1025,7 +1195,7 @@ Q4NX `dtype=I8` is MISLEADING. The data is ACTUALLY BF16 stored as pairs of byte
   - args 3-7: BOs (HOST group 65536)
 - **XRT sync bug**: `bo.sync(dir, 0, size)` treats sz=0 as flag meaning "use size from third param" — `sync(dir, 0, 4MB)` crashes but `sync(dir, sz, 0)` with non-zero sz works
 
-## Full Pipeline Results
+### Full Pipeline Results
 
 All 7 FLM pipeline functions successfully loaded and called:
 - `_send_rope_rms_weights` ✅
@@ -1618,7 +1788,7 @@ INSTS:  /home/bcloud/npu-sandbox/npu-infer/build/qwen3_gemm/design_1024_bfp16.in
    O (1024), D (3072 K-dims → K-tile clipped to 1024)
 - ⚠️ Output token differs from old engine (55120 vs 4739) due to N-tiling
 
-## Fusion Level #0 — Custom M=128 decode xclbins
+### Fusion Level #0 — Custom M=128 decode xclbins
 
 **Status: Complete** — 5 xclbins built and individually verified.
 
@@ -1744,7 +1914,7 @@ Achieved through iterative optimizations on the torch2aie M=128 xclbin infrastru
 
 ---
 
-## INT8 on NPU2 — FINAL ARCHITECTURAL VERDICT (2026-06-28/29)
+### INT8 on NPU2 — FINAL ARCHITECTURAL VERDICT (2026-06-28/29)
 
 INT8 xclbins BUILD and RUN for all 5 matrix shapes, but produce **394% mean relative error** with random input data on the NPU2 8-core design. The root cause is architecturally unfixable within the MLIR-AIE ObjectFifo abstraction.
 
@@ -2495,8 +2665,8 @@ fleet scripts, runbook) is public in `bong-water-water-bong/rootchat-ops`.
 
 | Machine | GPU | Memory | Job in the fleet |
 |---------|-----|--------|------------------|
-| strixhalo (192.168.50.69) | Radeon 8060S (gfx1151, TheRock) | 128 GB unified | harness #1, **35B**, vision |
-| ryzen (192.168.50.185) | RX 9070 XT (gfx1201, ROCm 7.2.4) | 48 GB | harness #2, relay, **8B** |
+| strixhalo (192.168.50.110) | Radeon 8060S (gfx1151, TheRock) | 128 GB unified | harness #1, **35B**, vision |
+| ryzen (192.168.50.100) | RX 9070 XT (gfx1201, ROCm 7.2.4) | 48 GB | harness #2, relay, **8B** |
 
 Both harnesses bind loopback (the CLI refuses `--host 0.0.0.0` on purpose);
 LAN access runs through a TCP forwarder + the API's `--trusted-host` fence
@@ -2615,9 +2785,9 @@ real servers so the demo needs no GPU.
 
 | Node sees → | ryzen | pi | strixhalo |
 |---|---|---|---|
-| **ryzen** (192.168.50.185:18088, ZAYA1-74B) | — | ✅ | ✅ |
+| **ryzen** (192.168.50.100:18088, ZAYA1-74B) | — | ✅ | ✅ |
 | **pi** (192.168.50.216:18089, Qwen3-4B) | ✅ | — | ✅ |
-| **strixhalo** (192.168.50.69:18090, SmolLM2-135M) | ✅ | ✅ | — |
+| **strixhalo** (192.168.50.110:18090, SmolLM2-135M) | ✅ | ✅ | — |
 
 ### The JARVIS moment
 
@@ -2650,3 +2820,61 @@ JARVIS dispatched across the LAN by capability, both smoke tests green
 `feat/mesh-self-aware-fleet`. Next: real models on the stub nodes, Windows
 support, WAN discovery, and `forward_embed` on Vulkan (the vision gap from
 the previous session).
+
+## 2026-08-24 — Lemonade v11.7.0 re-vendored: the SDK sync loop, made repeatable
+
+**What happened**: the embedded Lemonade server core moved from v11.5.1
+(`fc4f2439`) to v11.7.0 (`2b6a7d77`), and the re-vendor loop itself got
+formalized so the next upstream release is a mechanical step instead of a
+re-discovery. Engine-facing API surface survived intact; two embed-only CMake
+additions were required; one pre-existing dispatch bug was found and fixed.
+
+### The re-vendor (285 files, +26.6k / −5.9k)
+
+- **New models & backends**: Qwen3.8-27B and NVIDIA Nemotron 3.5 Lightning
+  30B-A3B GGUF (hot, MTP-capable); Z-Image-Turbo via the new TheNoise
+  backend; FastFlowLM NPU backend v1.0.1.
+- **New API**: `POST /v1/models/register`, `GET/POST/DELETE
+  /v1/models/{id}/options`, `GET /v1/stats`, Prometheus `/metrics`.
+- **Behavior**: deployment-mode validation (400 instead of silent repair),
+  native reasoning controls for "disable thinking", cancel-mid-prefill,
+  `no_broadcast` → `broadcast` inversion (auto-migrated on load).
+
+### The embed patch, adapted to v11.7.0's CMake restructure
+
+v11.7.0 rewrote the CMake (new `DetectSystemHttplib.cmake`, a
+single-source-of-truth `lemonade-httplib`, an `add_cpp_ci_test` test
+framework). The local patch was updated accordingly, plus two new
+embed-only guards:
+
+1. **`add_test()` police guarded by `BUILD_TESTING`** — v11.7.0 added a
+   fatal-error override for direct `add_test()` calls; unguarded it leaked
+   into the parent scope via `add_subdirectory` and broke the engine's own
+   tests. Now only installed when testing is on.
+2. **`copy_resources` tied to `lemonade-server-core`** — lemond's POST_BUILD
+   resource copy never fires when embedded, so `1bit` shipped without
+   `build/resources/`. The object library now depends on the copy target.
+
+### The pre-existing bug that was blocking everything
+
+`run_embedded_lemonade` in `tools/unified_server.cpp` passed the injected
+`--lemonade` dispatch flag through to Lemonade's own CLI parser, which
+rejected it — so `1bit lemonade` / `1bit unified --lemonade` could never
+start the embedded core (verified broken on v11.5.1 too). The flag is now
+stripped before the handoff. GitNexus impact: LOW, single caller, 0 flows.
+
+### Verified on strixhalo (TheRock ROCm 7.16, gfx1151)
+
+- Full `onebin` build: all 14 backends incl. the new `thenoise`.
+- `lemond version 11.7.0` served; `/v1/models` (vendored registry: 211
+  entries), `/v1/stats`, `/metrics` (`lemonade_server_info{version="11.7.0"}`),
+  `/v1/models/register` + `/{id}/options` all responding; `--broadcast`
+  inverted flag live.
+- The engine's own HF coverage is unaffected and still 100%: 552
+  architecture tokens, 1,774 HF arch strings, 317,310/317,310 checkpoints
+  mapped (census re-confirmed).
+
+**Status at session end:** committed on `chore/lemonade-v11.7.0`, PR #1826
+open, branch auto-pushed. The loop is documented in
+`third_party/lemonade/UPSTREAM.md`; release notes:
+github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0.

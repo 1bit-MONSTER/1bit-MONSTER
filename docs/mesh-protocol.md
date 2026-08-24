@@ -30,9 +30,9 @@ Every message carries a node object:
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "strixhalo",
-  "host": "192.168.50.69",
+  "host": "192.168.50.110",
   "port": 8088,
-  "api_base": "http://192.168.50.69:8088/v1",
+  "api_base": "http://192.168.50.110:8088/v1",
   "version": "1bit-MONSTER (mesh/1.0)",
   "proto": "mesh/1.0",
   "caps": {
