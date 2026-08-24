@@ -79,12 +79,13 @@ if not cands:
     print("WARN: input_with_addresses.mlir not found; skipped kernel-address check (#1842)")
     sys.exit(0)
 text = open(cands[0], encoding="utf-8", errors="replace").read()
-# tolerant parse: any "name ... address = N" / "address = N" allocation
+# tolerant parse of the aie.buffer allocations, e.g.
+#   %Gg_0 = aie.buffer(%tile_0_2) {address = 24576 : i32, sym_name = "Gg_0"}
 addrs = {}   # name -> set(addresses)
-for m in re.finditer(r"@?(\w+)[^=]{0,60}?address\s*=\s*(\d+)\s*:?\s*i\d*", text):
+for m in re.finditer(r"%(\w+)\s*=\s*aie\.buffer\([^)]*\)\s*\{[^}]*?\baddress\s*=\s*(\d+)", text):
     addrs.setdefault(m.group(1), set()).add(int(m.group(2)))
 if not addrs:
-    print("WARN: no 'address = N' allocations found in %s; skipped (#1842)" % cands[0])
+    print("WARN: no 'aie.buffer' allocations found in %s; skipped (#1842)" % cands[0])
     sys.exit(0)
 def have(name_pat, want):
     for n, s in addrs.items():
@@ -92,10 +93,13 @@ def have(name_pat, want):
             return True
     return False
 ok = True
-# Gg_0 @ 0x6000 (the silu metadata stash), C1 @ 0xE000, H2 fifo wraps to 0xF000
+# v59-critical hardcoded addresses (verified against this map on 2026-08-24):
+#   Gg_0 @ 0x6000 (the silu metadata stash — the 0x76000 incident missed it
+#                  by 458 KB -> h2 all-+127), C1 accumulator @ 0xE000.
+# The H2 fifo is not an aie.buffer (objectfifos are absent from this map), so
+# its 0x7F000 wrap is not verifiable here.
 for pat, want, what in (("Gg_0", 0x6000, "silu metadata stash (0x6000)"),
-                        ("C1", 0xE000, "C1 accumulator (0xE000)"),
-                        ("H2", 0xF000, "H2 fifo (0x7F000 wrap -> 0xF000)")):
+                        ("C1", 0xE000, "C1 accumulator (0xE000)")):
     if not have(pat, want):
         print("ERROR: no buffer %r at %s (%s) in %s" % (pat, hex(want), what, cands[0]))
         for n, s in addrs.items():
