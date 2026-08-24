@@ -35,8 +35,10 @@
 #include <vector>
 
 struct GuI4Pack {
-    std::vector<uint8_t>  nibbles;      // Region A [K*N/2]
-    std::vector<uint16_t> row_scales;   // Region B [(K/32)*N] bf16 bits
+    std::vector<uint8_t>  nibbles;      // Region A [K*N/2] int4 tiles
+    std::vector<uint16_t> ratio;        // Region B' per-tile [n_tiles][2][128]
+                                        // bf16: s[group][c]/(16*S_col[c]) —
+                                        // the v2 kernel multiply
     std::vector<uint16_t> scol_bf16;    // Region C [N] bf16 bits
     std::vector<float>    scol;         // [N] float (host math / amax pass)
     std::vector<int8_t>   B_shadow;     // [K*N] row-major B'' (exact, for the
@@ -58,15 +60,16 @@ static inline uint16_t f32_to_bf16(float f) {
 //   H     hidden (K reduction), n_ff per-expert FFN width
 // ── BO layout writer (regions A/B/C; D = gs header follows, unchanged) ──
 static inline size_t gu_i4_bo_size(int K, int N) {
-    return (size_t)K * N / 2 + (size_t)(K / 32) * N * 2 + (size_t)N * 2;
+    size_t n_tiles = (size_t)(K / 64) * (N / 128);
+    return (size_t)K * N / 2 + n_tiles * 512 + (size_t)N * 2;
 }
 
 static inline void write_gu_i4_bo(uint8_t* bo, const GuI4Pack& p) {
     size_t a = p.nibbles.size();
-    size_t b = p.row_scales.size() * 2;
+    size_t b = p.ratio.size() * 2;
     size_t c = p.scol_bf16.size() * 2;
     std::memcpy(bo, p.nibbles.data(), a);
-    std::memcpy(bo + a, p.row_scales.data(), b);
+    std::memcpy(bo + a, p.ratio.data(), b);
     std::memcpy(bo + a + b, p.scol_bf16.data(), c);
 }
 
@@ -80,7 +83,7 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
 
     GuI4Pack p;
     p.nibbles.assign((size_t)H * N / 2, 0);
-    p.row_scales.assign((size_t)(H / 32) * N, 0);
+    p.ratio.assign((size_t)(H / 64) * (N / 128) * 512, 0);
     p.scol_bf16.assign(N, 0);
     p.scol.assign(N, 0.0f);
     p.B_shadow.assign((size_t)H * N, 0);
@@ -126,20 +129,28 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                             int q4 = raw.q4[r * H + i];
                             uint16_t s16 = f32_to_bf16(raw.scl[r * RC + (i / 32)]);
                             uint32_t sbits = (uint32_t)s16 << 16; float srow; memcpy(&srow, &sbits, 4);
-                            float w = (float)q4 * srow + raw.zp[r * RC + (i / 32)];
+                            // Canonical kernel dequant (byte-pinned):
+                            //   w16 = q4<<4 (exact); ratio = (s/16)/S_col;
+                            //   B'' = sat8(round(w16 * ratio))
+                            float w16 = (float)(q4 << 4);
+                            float ratio = (srow * 0.0625f) / p.scol[j];
+                            float v = w16 * ratio;
                             // nibble pair along i3: byte holds (i3 even, i3 odd)
                             size_t byte_off = tbase + (size_t)i0 * 512 + i1 * 32 + i2 * 4 + i3 / 2;
                             if (i3 % 2 == 0)
                                 p.nibbles[byte_off] = (uint8_t)((p.nibbles[byte_off] & 0xF0) | (q4 & 0x0F));
                             else
                                 p.nibbles[byte_off] = (uint8_t)((p.nibbles[byte_off] & 0x0F) | ((q4 & 0x0F) << 4));
-                            // exact on-chip dequant: B'' = round(w / S_col[j])
-                            float v = w / p.scol[j];
                             int x = (int)std::roundf(v);
                             p.B_shadow[(size_t)i * N + j] =
                                 (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
-                            // region B index: [i/32][j]
-                            p.row_scales[(size_t)(i / 32) * N + j] = s16;
+                            // v2 region B': per-tile ratio
+                            // ratio = s / (16 * S_col) — the kernel's
+                            // one-multiply dequant (q4<<4 * ratio)
+                            float ratio_f = srow / (16.0f * p.scol[j]);
+                            p.ratio[(size_t)(ki * n_tiles_n + nt) * 512 +
+                                    (size_t)((i0 * 8 + i2) / 32) * 128 +
+                                    (size_t)(i1 * 8 + i3)] = f32_to_bf16(ratio_f);
                         }
                     }
         }
