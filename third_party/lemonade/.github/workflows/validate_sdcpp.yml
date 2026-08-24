@@ -12,17 +12,8 @@ on:
         required: false
         type: string
   pull_request:
-    paths:
-      - ".github/workflows/validate_sdcpp.yml"
-      - ".github/scripts/update_sdcpp_versions.py"
-      - ".github/scripts/render_sdcpp_pr_body.py"
-      - "test/validate_sdcpp.py"
-      - "src/cpp/resources/backend_versions.json"
-      - "src/cpp/resources/server_models.json"
-      - "src/cpp/server/backends/sd_server.cpp"
-      - "src/cpp/server/backend_manager.cpp"
-      - "src/cpp/server/runtime_config.cpp"
-      - "src/cpp/server/system_info.cpp"
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
   schedule:
     # Sunday at 17:20 UTC, staggered after the llama.cpp auto-update workflow.
     - cron: "20 17 * * 0"
@@ -35,6 +26,7 @@ env:
   LEMONADE_CI_MODE: "True"
   PYTHONIOENCODING: utf-8
   HF_TOKEN: ${{ secrets.HUGGINGFACE_ACCESS_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   SDCPP_REPO: leejet/stable-diffusion.cpp
   SDCPP_CUDA_REPO: lemonade-sdk/stable-diffusion.cpp
   # Non-CUDA assets are published by leejet. CUDA assets are published by the
@@ -50,12 +42,14 @@ env:
   LEMONADE_VALIDATE_SD_TIMEOUT: "7200"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   discover-release:
     name: Discover stable-diffusion.cpp releases
+    # Label a PR `ci:upgrades` to opt it back in.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:upgrades')
     runs-on: ubuntu-latest
     outputs:
       base_release: ${{ steps.release.outputs.base_release }}
@@ -79,7 +73,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # Only the auto-update runs resolve upstream releases. Everywhere else
+          # the build validates the pins committed in backend_versions.json, so a
+          # bad upstream release can't fail a merge or hide a broken pin.
+          UPDATE_RUN=false
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            UPDATE_RUN=true
+          fi
+
+          if [ "$UPDATE_RUN" = "false" ]; then
             read -r BASE_RELEASE CUDA_RELEASE < <(python3 - <<'PY'
           import json
           with open('src/cpp/resources/backend_versions.json', encoding='utf-8') as f:
@@ -128,11 +130,7 @@ jobs:
           PY
 
           cat release_outputs.env >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "is_update_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_update_run=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "is_update_run=$UPDATE_RUN" >> "$GITHUB_OUTPUT"
 
           echo "Using base stable-diffusion.cpp release: ${BASE_RELEASE}"
           echo "Using CUDA stable-diffusion.cpp release: ${CUDA_RELEASE}"
@@ -162,7 +160,7 @@ jobs:
 
           checks = {
               'cpu': [
-                  (base_assets, rf'^sd-{re.escape(base_short)}-bin-win-avx2-x64\.zip$'),
+                  (base_assets, rf'^sd-{re.escape(base_short)}-bin-win-cpu-x64\.zip$'),
                   (base_assets, rf'^sd-{re.escape(base_short)}-bin-Linux-Ubuntu-24\.04-x86_64\.zip$'),
               ],
               'vulkan': [
@@ -200,9 +198,23 @@ jobs:
   build:
     name: Build Lemonade with sd-cpp pins
     needs: discover-release
-    if: always() && !failure() && !cancelled()
+    # Label a PR `ci:upgrades` to opt it back in.
+    if: (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:upgrades')) && always() && !failure() && !cancelled()
     runs-on: windows-latest
     steps:
+      - name: Prepare Windows runner for long paths and stale workspace caches
+        if: runner.os == 'Windows'
+        shell: PowerShell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          # 1. Kill any running/orphaned processes to release file locks
+          $patterns = @("lemonade", "lemond", "llama-server", "llama", "flm", "ort-server", "moonshine-server", "wscript", "LemonadeServer")
+          foreach ($p in $patterns) {
+              Get-Process | Where-Object { $_.ProcessName -like "*$p*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
+
       - uses: actions/checkout@v5
         with:
           clean: true
@@ -220,15 +232,20 @@ jobs:
             --release "${{ needs.discover-release.outputs.cuda_release }}" `
             --backends "${{ needs.discover-release.outputs.cuda_update_backends }}"
 
-      - name: Build C++ Server with CMake
+      - name: Build lemond and the CLI
         shell: PowerShell
         run: |
           $ErrorActionPreference = "Stop"
           Write-Host "Building Lemonade server binaries..." -ForegroundColor Cyan
           if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-          cmake --preset vs18
+          # BUILD_WEB_APP=OFF skips the configure-time CONFIGURE_DEPENDS glob
+          # over src/app; the web-app target is not in this build graph anyway.
+          cmake --preset vs18 -DBUILD_WEB_APP=OFF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build build --config Release --target lemond lemonade
+          # /m:2 goes straight to MSBuild rather than through --parallel, which
+          # makes CMake set CL_MPCount=1 and cancel the /MP in CMakeLists.txt.
+          # Capped at 2 because /MP already spawns one cl.exe per core.
+          cmake --build build --config Release --target lemond lemonade -- /m:2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "build\Release\lemond.exe")) {
               Write-Host "ERROR: lemond.exe not found!" -ForegroundColor Red
@@ -256,21 +273,24 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 420
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'merge_group' }}
       matrix:
+        # SDCPP_TEST_MODELS peaks at ~18 GB resident, so these legs never needed
+        # the 128gb runner; the sd-cpp suite in cpp_server_build_test_release.yml
+        # already runs on hosts with no size label at all.
         include:
           - label: cpu
             backend: cpu
             channel: ""
-            runner: [self-hosted, Windows, 128gb, vulkan]
+            runner: [self-hosted, Windows, stx-halo, vulkan, lemon-prod]
           - label: vulkan
             backend: vulkan
             channel: ""
-            runner: [self-hosted, Windows, 128gb, vulkan]
+            runner: [self-hosted, Windows, stx-halo, vulkan, lemon-prod]
           - label: rocm-stable
             backend: rocm
             channel: stable
-            runner: [self-hosted, Windows, 128gb, rocm]
+            runner: [self-hosted, Windows, stx-halo, rocm, lemon-prod]
           # CUDA is pinned by the updater and its assets are required by the
           # verify-cuda-assets job after this validation matrix completes.
           # Validation stays disabled until a matching runner exists.
@@ -279,6 +299,19 @@ jobs:
           #   channel: ""
           #   runner: [self-hosted, Windows, 128gb, cuda]
     steps:
+      - name: Prepare Windows runner for long paths and stale workspace caches
+        if: runner.os == 'Windows'
+        shell: PowerShell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          # 1. Kill any running/orphaned processes to release file locks
+          $patterns = @("lemonade", "lemond", "llama-server", "llama", "flm", "ort-server", "moonshine-server", "wscript", "LemonadeServer")
+          foreach ($p in $patterns) {
+              Get-Process | Where-Object { $_.ProcessName -like "*$p*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
+
       - uses: actions/checkout@v5
         with:
           clean: true
@@ -662,4 +695,33 @@ jobs:
               --body-file pr_body.md \
               --base main \
               --head "$BRANCH"
+          fi
+
+  # Gate job that ensures: 1. in the merge queue, all jobs in `needs:` ran
+  # successfully (otherwise the merge is blocked), and 2. these jobs do not need
+  # to run on ordinary pull request pushes.
+  validation-gate:
+    name: stable-diffusion.cpp validation
+    needs: [discover-release, build, validate, verify-cuda-assets]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check gated jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          # $NEEDS: {"job-id": {"result": "success|failure|skipped|cancelled"}, ...}
+          # Fail if any job broke. In the merge queue, also fail if any never ran.
+          echo "$NEEDS"
+          broke=$(jq -r 'to_entries[]|select(.value.result=="failure" or .value.result=="cancelled")|.key' <<<"$NEEDS")
+          if [ -n "$broke" ]; then
+            echo "FAILED: $broke"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            absent=$(jq -r 'to_entries[]|select(.value.result!="success")|.key' <<<"$NEEDS")
+            if [ -n "$absent" ]; then
+              echo "DID NOT RUN IN MERGE QUEUE: $absent"
+              exit 1
+            fi
           fi
