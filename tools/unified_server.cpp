@@ -1132,8 +1132,19 @@ static void acquire_singleton_lock() {}
 #include <memory>
 
 static int run_embedded_lemonade(int argc, char** argv) {
+    // Strip the --lemonade dispatch flag (injected by onebin's `1bit lemonade`
+    // subcommand or passed explicitly as `1bit unified --lemonade`) before
+    // handing argv to Lemonade's own CLI parser — lemond does not know the
+    // flag and would reject it as an unexpected argument.
+    static std::vector<char*> clean_argv;  // kept alive for the call
+    clean_argv.clear();
+    clean_argv.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--lemonade") == 0) continue;
+        clean_argv.push_back(argv[i]);
+    }
     lemon::CLIParser parser;
-    parser.parse(argc, argv);
+    parser.parse(static_cast<int>(clean_argv.size()), clean_argv.data());
     if (!parser.should_continue()) {
         return parser.get_exit_code();
     }

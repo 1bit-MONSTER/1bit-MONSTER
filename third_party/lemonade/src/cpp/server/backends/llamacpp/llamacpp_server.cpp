@@ -9,6 +9,7 @@
 #include "lemon/gguf_reader.h"
 #include "lemon/model_manager.h"
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <regex>
 #include <system_error>
@@ -50,9 +51,6 @@ using namespace lemon::utils;
 namespace lemon {
 namespace backends {
 
-static const int EMBEDDING_BATCH_SIZE = 8192;
-static const int EMBEDDING_UBATCH_SIZE = 8192;
-
 // Helper to push reserved flags and their aliases
 static void push_reserved(std::set<std::string>& reserved,
                     const std::string& key,
@@ -93,7 +91,8 @@ static void push_overridable_arg(std::vector<std::string>& args,
         anti_key = "--no-" + key.substr(2); //remove -- prefix
     }
 
-    if ((custom_args.find(key) == std::string::npos) && (custom_args.find(anti_key) == std::string::npos)) {
+    const std::vector<std::string> tokens = parse_custom_args(custom_args);
+    if (!custom_args_has_flag(tokens, key) && !custom_args_has_flag(tokens, anti_key)) {
         args.push_back(key);
     }
 }
@@ -102,8 +101,17 @@ static void push_overridable_arg(std::vector<std::string>& args,
 static void push_overridable_arg(std::vector<std::string>& args,
                     const std::string& custom_args,
                     const std::string& key,
-                    const std::string& value) {
-    if (custom_args.find(key) == std::string::npos) {
+                    const std::string& value,
+                    const std::vector<std::string>& aliases = {}) {
+    const std::vector<std::string> tokens = parse_custom_args(custom_args);
+
+    for (const auto& alias : aliases) {
+        if (custom_args_has_flag(tokens, alias)) {
+            return;
+        }
+    }
+
+    if (!custom_args_has_flag(tokens, key)) {
         args.push_back(key);
         args.push_back(value);
     }
@@ -127,6 +135,16 @@ static bool is_llamacpp_rocm_backend(const std::string& backend) {
 
 static bool is_llamacpp_cuda_backend(const std::string& backend) {
     return backend == "cuda";
+}
+
+static bool is_dflash_draft_checkpoint(std::string checkpoint) {
+    std::transform(checkpoint.begin(), checkpoint.end(), checkpoint.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    size_t separator = checkpoint.find_last_of("/:\\");
+    std::string filename = separator == std::string::npos
+                               ? checkpoint
+                               : checkpoint.substr(separator + 1);
+    return filename.rfind("dflash-", 0) == 0 || filename == "dflash.gguf";
 }
 
 static std::string trim_version_prefix(const std::string& version) {
@@ -189,16 +207,6 @@ InstallParams LlamaCppServer::get_install_params(const std::string& backend, con
         params.filename = "llama-" + version + "-ubuntu-rocm-" + target_arch + "-x64.zip";
 #else
         throw std::runtime_error("ROCm nightly llamacpp only supported on Windows and Linux");
-#endif
-    } else if (resolved_backend == "rocm-stable") {
-        params.repo = "lemonade-sdk/llama.cpp";
-        std::string therock_ver = get_therock_version();
-#ifdef _WIN32
-        params.filename = "llama-" + version + "-bin-win-rocm-" + therock_ver + "-x64.zip";
-#elif defined(__linux__)
-        params.filename = "llama-" + version + "-bin-ubuntu-rocm-" + therock_ver + "-x64.tar.gz";
-#else
-        throw std::runtime_error("ROCm stable llamacpp is currently supported on Windows and Linux only");
 #endif
     } else if (resolved_backend == "cuda") {
         params.repo = "lemonade-sdk/llama.cpp";
@@ -340,7 +348,8 @@ void LlamaCppServer::load(const std::string& model_name,
     }
     push_arg(args, reserved_flags, "--ctx-size", std::to_string(ctx_size), std::vector<std::string>{"-c"});
 
-    if (llamacpp_device != "") {
+    if (!llamacpp_device.empty()) {
+        BackendUtils::validate_device_backend_match(llamacpp_backend, llamacpp_device);
         push_arg(args, reserved_flags, "--device", llamacpp_device);
     }
     push_reserved(reserved_flags, "--device", std::vector<std::string>{"-dev"});
@@ -361,9 +370,16 @@ void LlamaCppServer::load(const std::string& model_name,
             push_arg(args, reserved_flags, "--no-mmproj-offload");
         }
     }
-    push_reserved(reserved_flags, "--mmproj", std::vector<std::string>{"-mm", "-mmu", "--mmproj-url", "--no-mmproj", "--mmproj-auto", "--no-mmproj-auto", "--mmproj-offload", "--no-mmproj-offload"});
+    push_reserved(reserved_flags, "--mmproj", std::vector<std::string>{"-mm", "-mmu", "--mmproj-url", "--no-mmproj", "--mmproj-auto", "--no-mmproj-auto"});
 
-    if (!draft_path.empty()) {
+    const bool has_dflash_label =
+        std::find(model_info.labels.begin(), model_info.labels.end(), "dflash") != model_info.labels.end();
+    const bool is_dflash_draft =
+        !draft_path.empty() && is_dflash_draft_checkpoint(model_info.checkpoint("draft"));
+    const bool use_draft_checkpoint =
+        !draft_path.empty() && (!is_dflash_draft || has_dflash_label);
+
+    if (use_draft_checkpoint) {
         push_arg(args, reserved_flags, "--model-draft", draft_path);
     }
     push_reserved(reserved_flags, "--model-draft", std::vector<std::string>{"-md", "--spec-draft-model"});
@@ -371,19 +387,23 @@ void LlamaCppServer::load(const std::string& model_name,
     // Use legacy reasoning formatting
     push_overridable_arg(args, llamacpp_args, "--reasoning-format", "auto");
 
-    if (std::find(model_info.labels.begin(), model_info.labels.end(), "mtp") != model_info.labels.end()) {
+    const bool uses_mtp =
+        std::find(model_info.labels.begin(), model_info.labels.end(), "mtp") != model_info.labels.end();
+
+    if (is_dflash_draft && has_dflash_label) {
+        LOG(INFO, "LlamaCpp") << "Model uses DFlash, adding draft decoding defaults" << std::endl;
+        push_overridable_arg(args, llamacpp_args, "--spec-type", "draft-dflash");
+    } else if (uses_mtp) {
         LOG(INFO, "LlamaCpp") << "Model uses MTP, adding draft decoding defaults" << std::endl;
         push_overridable_arg(args, llamacpp_args, "--spec-type", "draft-mtp");
-        push_overridable_arg(args, llamacpp_args, "--spec-draft-n-max", "3");
-        push_overridable_arg(args, llamacpp_args, "--spec-draft-p-min", "0.75");
     }
 
     // Disable llamacpp webui by default
-    push_overridable_arg(args, llamacpp_args, "--no-webui");
+    push_overridable_arg(args, llamacpp_args, "--no-ui");
 
     // Disable mmap on iGPU
     if (SystemInfo::get_has_igpu()) {
-        push_overridable_arg(args, llamacpp_args, "--no-mmap");
+        push_overridable_arg(args, llamacpp_args, "--load-mode", "none", {"--direct-io", "--no-direct-io", "-dio", "-ndio", "--mmap", "--no-mmap", "--mlock", "-lm"});
     }
 
     // Add embeddings support if the model supports it
@@ -427,9 +447,10 @@ void LlamaCppServer::load(const std::string& model_name,
         if (llamacpp_backend == "rocm-stable") {
             std::string rocm_arch = SystemInfo::get_rocm_arch();
             if (!rocm_arch.empty()) {
-                std::string therock_lib = BackendUtils::get_therock_lib_path(rocm_arch);
-                if (!therock_lib.empty()) {
-                    lib_path = therock_lib + ":" + lib_path;
+                std::string therock_dirs = BackendUtils::join_runtime_dirs(
+                    BackendUtils::get_therock_lib_paths(rocm_arch));
+                if (!therock_dirs.empty()) {
+                    lib_path = therock_dirs + ":" + lib_path;
                 }
             }
         }
@@ -466,9 +487,12 @@ void LlamaCppServer::load(const std::string& model_name,
         if (llamacpp_backend == "rocm-stable") {
             std::string rocm_arch = SystemInfo::get_rocm_arch();
             if (!rocm_arch.empty()) {
-                std::string therock_bin = BackendUtils::get_therock_lib_path(rocm_arch);
-                if (!therock_bin.empty()) {
-                    new_path = path_to_utf8(fs::absolute(path_from_utf8(therock_bin)));
+                // Prepend ALL TheRock runtime dirs (not just _rocm_sdk_core/bin) so
+                // HIP + BLAS DLLs resolve; _rocm_sdk_core/bin alone → STATUS_DLL_NOT_FOUND.
+                std::string therock_dirs = BackendUtils::join_runtime_dirs(
+                    BackendUtils::get_therock_lib_paths(rocm_arch));
+                if (!therock_dirs.empty()) {
+                    new_path = therock_dirs;
                 }
             }
         }
@@ -479,6 +503,17 @@ void LlamaCppServer::load(const std::string& model_name,
                 new_path += ";" + std::string(existing_path);
             }
             env_vars.push_back({"PATH", new_path});
+        }
+
+        // Windows DLL search order checks System32 BEFORE PATH, so a stale
+        // System32 amdhip64_7.dll shadows the TheRock runtime on PATH. Copying
+        // to the exe directory overrides both.
+        if (llamacpp_backend == "rocm-stable") {
+            std::string rocm_arch = SystemInfo::get_rocm_arch();
+            if (!rocm_arch.empty()) {
+                BackendUtils::stage_therock_hip_runtime(
+                    rocm_arch, fs::path(executable).parent_path());
+            }
         }
 
         std::string arch = lemon::SystemInfo::get_rocm_arch();
@@ -503,8 +538,8 @@ void LlamaCppServer::load(const std::string& model_name,
 #endif
 
     if (is_llamacpp_cuda_backend(llamacpp_backend)) {
-        const char* existing_llama_device = std::getenv("LLAMA_ARG_DEVICE");
-        const bool has_llama_device_override = existing_llama_device && existing_llama_device[0] != '\0';
+        std::string existing_llama_device = utils::get_environment_variable_utf8("LLAMA_ARG_DEVICE");
+        const bool has_llama_device_override = !existing_llama_device.empty();
 
         bool skip_visible_devices = false;
         if (!llamacpp_device.empty()) {
