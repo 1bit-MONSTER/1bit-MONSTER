@@ -330,3 +330,60 @@ __global__ void h1bp_copy_kernel(float* __restrict__ dst,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < N) dst[i] = src[i];
 }
+
+// ═══ ROCmFP4 packed-decode GEMV (Codebook10 4-bit + UE4M3 scales) ═══
+// Tile = 32 rows × 256 cols = 8 blocks of 32/row. Block layout:
+//   dual: [16 code bytes][e0][e1] = 18 B/32 el (4.50 bpw)
+//   fast: [16 code bytes][e]     = 17 B/32 el (4.25 bpw)
+// Packing (fork-exact): element j (0..15) = code[j] low nibble, scale e0;
+// element j+16 = code[j] high nibble, scale e1 (or the single e for FAST).
+// Codebook10: mag = (q&7)<=4 ? (q&7) : 2*(q&7)-4 ; bit3 = sign.
+// UE4M3 scale: exp==0 -> mant*2^-10; else (8+mant)*2^(exp-11). 127 finite.
+// Same warp/part/sum structure as the Q4NX kernel: one lane per 32-col
+// group, 4 warps per block, partials reduced by h1bp_tq2nz_sum_kernel.
+__global__ void h1bp_rocmfp4_part_kernel(const uint8_t* __restrict__ w,
+                                         const float* __restrict__ x,
+                                         float* __restrict__ part,
+                                         int N, int ntc, bool fast) {
+    const int lane = threadIdx.x & 31;
+    const int wpr  = (ntc + 3) >> 2;
+    const int warp = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    const int row  = warp / wpr;
+    if (row >= N) return;
+    const int tw = (warp % wpr) * 4 + (lane >> 3);   // tile-column group
+    const int g  = lane & 7;                          // 32-col block within group
+    if (tw >= ntc) { part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = 0.0f; return; }
+
+    // per-tile bytes: 32 rows × 8 blocks × block_bytes
+    const int block_bytes = fast ? 17 : 18;
+    const int tile_bytes  = 32 * 8 * block_bytes;
+    const int rri = row & 31;
+    const uint8_t* blk = w + (size_t)((row >> 5) * ntc + tw) * tile_bytes
+                           + (size_t)rri * 8 * block_bytes + (size_t)g * block_bytes;
+
+    // decode UE4M3 scale(s)
+    auto ue4m3 = [](uint8_t e) -> float {
+        if (e > 0x7e) return 0.0f;
+        uint32_t exp = e >> 3, mant = e & 7;
+        return exp == 0 ? (float)mant * 0.0009765625f
+                        : (8.0f + mant) * exp2f((float)(int)exp - 11);
+    };
+    float d0 = ue4m3(blk[16]);
+    float d1 = fast ? d0 : ue4m3(blk[17]);
+    const uint8_t* codes = blk;                       // 16 code bytes
+    const float*   xp    = x + tw * 256 + g * 32;
+    float acc = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        // element i (0..15): low nibble of codes[i], scale d0
+        // element i+16: high nibble of codes[i], scale d1
+        uint8_t q0 = codes[i] & 0x0f, q1 = codes[i] >> 4;
+        int m0 = (q0 & 7) <= 4 ? (q0 & 7) : 2 * (q0 & 7) - 4;
+        int m1 = (q1 & 7) <= 4 ? (q1 & 7) : 2 * (q1 & 7) - 4;
+        float v0 = (q0 & 8 ? -m0 : m0) * d0;
+        float v1 = (q1 & 8 ? -m1 : m1) * d1;
+        acc += v0 * xp[i];
+        acc += v1 * xp[i + 16];
+    }
+    part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = acc;
+}
