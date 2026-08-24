@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER</title>
-  <meta name="description" content="A laptop, a disassembler and no docs: a 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries and 209 xclbins, replaced with open C++ in four days. The hero story, with the honest corrections." />
+  <title>Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER</title>
+  <meta name="description" content="The embedded Lemonade server core is re-vendored to v11.7.0: 14 backends (incl. the new TheNoise), register/options/stats/metrics endpoints live, and a repeatable re-vendor loop so every upstream release lands fast." />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
@@ -126,54 +126,56 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-npu-reversal">
+    <article class="art container" data-od-id="post-lemonade-v1170">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-07-06</span>
-        <span class="tag">reverse-engineer</span>
-        <span class="tag corr">contains corrections</span>
+        <span>2026-08-24</span>
+        <span class="tag">lemonade</span>
+        <span class="tag">upstream</span>
+        <span class="tag">sdk</span>
       </div>
-      <h1>I reverse-engineered AMD's NPU stack in 4 days</h1>
-      <p class="lead">A laptop, a disassembler, and no docs. AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime: 22 proprietary libraries, 209 xclbin bitstreams, zero documentation. We took it apart and replaced it with open C++. This is the story, and the unavoidable corrections.</p>
+      <h1>Lemonade v11.7.0, and how we stay current with the SDK</h1>
+      <p class="lead">The embedded Lemonade server core is re-vendored to v11.7.0 — new models, a register/options/stats/metrics API, and a repeatable re-vendor loop so every upstream release lands without touching engine code.</p>
 
       <div class="prose" data-od-id="body">
 
-        <h2>The wall</h2>
-        <p>The machine arrives with a 50 TOPS NPU that is, for all practical purposes, a paperweight unless you have the keys. The only way to drive it is <b>FastFlowLM</b>, a closed-source runtime. That runtime is 22 <span class="mono">.so</span> files. Behind it sit <b>209 xclbin bitstreams</b>, pre-compiled kernels for architectures we are not allowed to see. And there is <b>zero documentation</b>. No ISA. No register map. No example. Nothing.</p>
-        <p>So the question is not "is it fast," but "can anyone other than AMD make it go at all." We decided the honest answer should be yes.</p>
+        <h2>Why we track Lemonade at all</h2>
+        <p>The 1bit engine embeds <b>Lemonade's server core</b> in-process — all 14 backends and the policy router, compiled into the same <span class="mono">build/1bit</span> binary. That means upstream's release cadence is our release cadence: every time <span class="mono">lemonade-sdk/lemonade</span> ships, the engine inherits its new models, backends, and API surface the day we re-vendor. The relationship is documented in <code>docs/guides/Lemonade-Compat.md</code> and the vendoring rules live in <code>third_party/lemonade/UPSTREAM.md</code>.</p>
 
-        <h2>The dismantling</h2>
-        <p>The whole thing came apart in four days: each proprietary layer disassembled, each dispatch traced, each xclbin decoded until the operation it performed was obvious. Point the disassembler at the runtime, then point a C++ compiler at the result. Around <span class="mono">~600</span> hours of engineering, all of it open source and MIT.</p>
-        <p>The thing that came out the other side is a single small binary that drives the NPU without FastFlowLM. It is not just a re-implementation but the better half of an engine, and it is the reason the rest of this site exists.</p>
-
-        <h2>The sprint: 244 ms/tok to 3.4 ms/tok</h2>
-        <p>The first usable version was slow, and the path down was a series of measured steps, not one lucky leap. Each number below is on-device.</p>
+        <h2>v11.7.0: what came in</h2>
+        <p>This release brought new models, a management API, and observability — all now live in the embedded core. (The engine's own HF coverage is separate and larger: <b>552 architecture tokens / 1,774 HF arch strings, 317,310 of 317,310 arch-bearing text-gen checkpoints mapped — 100% of HuggingFace</b>. The numbers below are what the Lemonade core itself gained.)</p>
         <table>
-          <thead><tr><th>Version</th><th>ms/tok</th><th>what changed</th></tr></thead>
+          <thead><tr><th>Area</th><th>What landed</th></tr></thead>
           <tbody>
-            <tr><td>v3</td><td>244</td><td>baseline</td></tr>
-            <tr><td>v6</td><td>50</td><td>batch-4 decode + OpenMP LM head</td></tr>
-            <tr><td>v8</td><td>27</td><td>M=8 batch decode</td></tr>
-            <tr><td>v9</td><td>16</td><td>M=16 batch decode</td></tr>
-            <tr><td>v12</td><td>10</td><td>97 tok/s, 24x</td></tr>
-            <tr><td>fused engine</td><td>3.4</td><td>291 tok/s, 38 KB binary</td></tr>
+            <tr><td>Models</td><td>Qwen3.8-27B, NVIDIA Nemotron 3.5 Lightning 30B-A3B, Z-Image-Turbo (TheNoise), FastFlowLM NPU backend v1.0.1</td></tr>
+            <tr><td>Management API</td><td><span class="mono">POST /v1/models/register</span>, <span class="mono">GET/POST/DELETE /v1/models/{id}/options</span></td></tr>
+            <tr><td>Observability</td><td><span class="mono">GET /v1/stats</span> (prefix-cache + route-switch counters), Prometheus <span class="mono">/metrics</span></td></tr>
+            <tr><td>Behavior</td><td>Deployment-mode validation (400 instead of silent repair), native reasoning controls for "disable thinking", cancel-mid-prefill, <code>no_broadcast</code> → <code>broadcast</code> inversion</td></tr>
           </tbody>
         </table>
-        <p>The breakthrough is in the footnote, not the headline. A microsecond probe showed that <span class="mono">1363 µs</span> of every <span class="mono">1363 µs</span> GEMM dispatch is spent in launch-and-wait; only <span class="mono">0.5-5 µs</span> is the actual multiply. The NPU is 99% idle in the batch dimension at M=1, and every single token pays it. So we stopped dispatching one token at a time.</p>
-        <p>Generate the top-16 candidates from the LM head logits, then run them through <b>one</b> batched forward pass: same 1334 µs compute, sixteen times the work. That single idea is the whole 15x.</p>
 
-        <h2>One dispatch per layer</h2>
-        <p>Summing, attention, and feed-forward were still separate round-trips. The fused layer engine chains QKV, attention, and FFN into a <b>single</b> xclbin dispatch: <span class="mono">1</span> call per transformer layer instead of <span class="mono">5/6</span>. That is the difference between a working engine and a fast one, and it is the architecture this site ships today.</p>
+        <h2>Verified on real hardware</h2>
+        <p>Re-vendored at <span class="mono">2b6a7d77</span> (tag v11.7.0) and built with TheRock ROCm 7.16 on Strix Halo (gfx1151). The full <span class="mono">onebin</span> target compiles — all 14 backends including the new <b>thenoise</b> image backend — and the embedded core serves <span class="mono">lemond version 11.7.0</span>:</p>
+        <ul>
+          <li><span class="mono">/v1/models</span> — the vendored Lemonade registry now carries 211 entries (up from v11.5.1), incl. the new Qwen 27B GGUF variants, Nemotron-3-Nano-30B-A3B-GGUF, and Z-Image-Turbo; the engine's own coverage is the <b>317,310/317,310 (100%)</b> HF census above</li>
+          <li><span class="mono">/v1/stats</span> + <span class="mono">/metrics</span> — serving (<code>lemonade_server_info{version="11.7.0"}</code>)</li>
+          <li><span class="mono">/v1/models/register</span> and <span class="mono">/{id}/options</span> — live and validating</li>
+          <li><span class="mono">--broadcast/--no-broadcast</span> — the inverted flag, working</li>
+        </ul>
 
-        <h2>The corrections</h2>
-        <p>This is the part most projects quietly skip, and it is the reason to trust the rest of these numbers. A lot of the early figures were real <em>process</em> and wrong <em>evidence</em>. We quarantined them rather than pretend.</p>
+        <h2>The re-vendor loop (how we stay current)</h2>
+        <p>The engine vendors Lemonade as a plain tree (not a submodule) because the embedded core needs a small local CMake patch that only exists here. The loop is scripted in <code>UPSTREAM.md</code> and stays boring on purpose:</p>
+        <ol>
+          <li><b>Pin</b> — checkout the upstream tag (<code>git checkout 2b6a7d77</code>).</li>
+          <li><b>Re-apply the embed patch</b> — a <code>CMAKE_CURRENT_SOURCE_DIR</code> sweep plus parent-target short-circuits so the tree builds as a subdirectory without colliding with the engine's own dependency fetches.</li>
+          <li><b>Build + verify</b> — full <span class="mono">onebin</span> build, then a live smoke test of the API surface on strixhalo.</li>
+          <li><b>Ship</b> — commit on a chore branch, open the PR, let CI and the merge queue do the rest.</li>
+        </ol>
+        <p>The patch is small and documented; when upstream adopts any of it, the diff shrinks further. Two v11.7.0 additions needed new embed-side handling: a <code>BUILD_TESTING</code> guard around the new <code>add_test()</code> police function (it leaked into the parent scope via <code>add_subdirectory</code>), and the <code>copy_resources</code> target tied to the object library so the embedded binary ships its <span class="mono">resources/</span> dir. Plus a pre-existing engine bug fixed along the way: <span class="mono">1bit lemonade</span> was passing the injected <code>--lemonade</code> flag into lemond's own CLI parser, which rejected it — the flag is now stripped before the handoff.</p>
+
         <div class="callout">
-          <p>Several historical throughput and speedup figures were later found unsourced and are quarantined in <span class="mono">benchmarks/latest.json _unverified</span>. The "NPU is 132x more efficient than the GPU" claim was <b>retracted</b>. The projected DSpark 572 tok/s was <b>disproven</b> end-to-end: it measured 0.1-0.2 tok/s at 0% draft acceptance. And the celebrated 97 tok/s was a real number with garbage behind it: three silent bugs (LM head substitution, weight transpose, activation clipping) were producing nonsense output.</p>
+          <p>Release notes: <a href="https://github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0">github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0</a></p>
         </div>
-        <p>That is not a disclaimer tacked on to be safe. It is the record: what we measured, what it actually meant, and when we got it wrong. An engine you can trust is worth more than a story that always wins.</p>
-
-        <h2>The point</h2>
-        <p>Four days, a disassembler, and a C++ compiler turned a locked-down NPU into an open-source engine. The number that matters is not the tok/s but the fact that the keys exist now, and nobody is holding them.</p>
 
       </div>
     </article>
@@ -185,10 +187,8 @@
       <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support &#8599;</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
-    <div class="container">
-      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
-      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
-    </div>
+    <p class="place" data-od-id="footer-place">Metepenagiag Mi'kmaq Nation, New Brunswick, Canada</p>
+    <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
   </footer>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # The Audit Trail — 1.5 TB of Evidence
 
-> Every claim in [journey.md](journey.md) is backed by preserved artifacts. This document is the map: where the data lives, what it contains, how it maps to this repo's structure, and how to verify any number in the journey. **This is not for the weak** — it is the unedited record of ~1,800+ hours of engineering, archived nightly since 2026-08-05 and kept append-only forever.
+> Every claim in [journey.md](journey.md) is backed by preserved artifacts. This document is the map: where the data lives, what it contains, how it maps to this repo's structure, and how to verify any number in the journey. **This is not for the weak** — it is the unedited record of ~600 hours of engineering, archived nightly since 2026-08-05 and kept append-only forever.
 
 ## At a glance
 
@@ -40,8 +40,8 @@
 
 | Job | Time | Source → Destination |
 |-----|------|----------------------|
-| `backup-strixhalo.sh` | 03:30 daily | `bcloud@192.168.50.69:/home/bcloud/` → `ZFSPool/backups/strixhalo/home/bcloud/` |
-| `backup-ryzen.sh` | 03:45 daily | `bcloud@192.168.50.185:/home/bcloud/` → `ZFSPool/backups/ryzen/home/bcloud/` |
+| `backup-strixhalo.sh` | 03:30 daily | `bcloud@192.168.50.110:/home/bcloud/` → `ZFSPool/backups/strixhalo/home/bcloud/` |
+| `backup-ryzen.sh` | 03:45 daily | `bcloud@192.168.50.100:/home/bcloud/` → `ZFSPool/backups/ryzen/home/bcloud/` |
 | `backup-minisforum.sh` | 04:00 daily | Windows SMB `//192.168.50.61/C$/Users/bcloud` → `ZFSPool/backups/minisforum/home/bcloud/` |
 
 - **Append-only by design** — rsync runs have no `--delete`; the backup server never auto-deletes.
