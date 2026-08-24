@@ -194,13 +194,13 @@ static inline int8_t silu_pair_q22(int32_t c1g, int32_t c1u,
     int idx = ((base * 255) + 512) >> 10;
     idx = idx < 0 ? 0 : (idx > 255 ? 255 : idx);
     int sig = silu_sigmoid_q22[idx];
-    // |gQ| < 2048: the split product gQ*(sig>>11) fits int32 and keeps full
-    // precision for small gates. |gQ| >= 2048: the >>11 split avoids the
-    // int32 overflow (a bare gQ < 2048 test wrongly routes large NEGATIVE gQ
-    // into the small-gate branch, whose gQ*(sig>>11) wraps — caught by the
-    // test_i4_silu_q22 CPU gate; Python's unbounded ints masked it).
-    int siluQ = (gQ > -2048 && gQ < 2048) ? ((gQ * (sig >> 11)) >> 11)
-                                          : ((gQ >> 11) * (sig >> 11));
+    // |gQ| < 2^20: gQ*(sig>>11) fits int32 ((2^20-1)*(2^11-1) < 2^31) and
+    // keeps full gate precision — the >>11 split (gQ>>11)*(sig>>11) loses the
+    // low bits of g*2^(Q-11) and measured ~5% LOW on the real zaya weights
+    // for gQ in [2048, 2^20) (the old v51 threshold was 2048). |gQ| >= 2^20:
+    // the split's relative truncation error is <= ~2^-10, negligible.
+    int siluQ = (gQ > -(1 << 20) && gQ < (1 << 20)) ? ((gQ * (sig >> 11)) >> 11)
+                                                    : ((gQ >> 11) * (sig >> 11));
     if (Q < 11) {
         int lim = 1 << (20 + Q);
         if (siluQ > lim) siluQ = lim;
