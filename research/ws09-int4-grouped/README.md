@@ -120,21 +120,37 @@ contract for the kernel round.
   hooks to dump real MoE inputs for the gate.
 - Existing (already merged): `i4_pack.h` (#1793), `unpack_i4_b` (#1813).
 
-## Kernel interface (for the strixhalo round)
+## Kernel interface (for the strixhalo round) — v2, per-tile contiguous
 
-1. **B-tile loads**: replace the int8 B tap with (a) the int4 nibble tile
-   (region A, stride 4096 B) + (b) the row-scale tap (region B, 512 B/tile) →
-   on-chip dequant `B'' = sat8(round(q4·s_row/S_col[j]))` → the existing mmul.
-   `unpack_i4_b` (#1813) already proved the nibble load.
-2. **S_col taps**: region C carries the STATIC per-column scale (for the B
-   dequant). The per-token folded header (ag for gate, ag·qn_s for up — the
-   same fold `update_fused_header` does today, at per-column granularity) is
-   what the SiLU stage reads: `g = C1[2p]·S'[2p], u = C1[2p+1]·S'[2p+1]`.
-3. **silu stage**: replaces the gs[0]/gs[4] per-section reads with per-column
-   S'[j] — the only arithmetic change to `silu_quant_i8_fused`.
-4. **amax pass unchanged**: `host_h2_amax_qn_s` works with
-   `guB = pack.B_shadow` (the exact int8 reconstruction) + `guGs = pack.scol`.
-5. **#1777 signatures**: B-tile stride 8192 → 4096 + the region B/C tap offsets.
+**Region B is now per-tile contiguous** (validated: byte-identity 8,388,608/8,388,608,
+BO writer exact): tile (ki, nt) at `(ki·32+nt)·512`, `[group_in_tile 2][col-in-tile 128]`
+bf16. The kernel reads ONE linear 4864 B tile = `[nibbles 4096][row scales 512][S_col 256]`
+(gu_i4_bo_size now returns K·N/2 + n_tiles·512 + N·2 = 4 MB + 512 KB + 8 KB).
+
+**Key simplification — per (8,8) mmul chunk**: nibble bytes are contiguous
+(`byte_off = i·512 + jt·32 + i2·4 + i3/2` → chunk = 32 B), and within a chunk
+all 8 rows share one K-group → the row scales reduce to 8 values (one per col)
+and the dequant becomes:
+
+```
+ratio[c] = s[group][c] / (16 · S_col[c])     // 8 precomputed bf16 per chunk
+B''[r][c] = sat8(round( (q4<<4)[r][c] · ratio[c] ))     // ONE bf16 mult/element
+```
+
+64 contiguous bytes per chunk (32 nibbles + 16 row scales + 16 S_col) — a
+single linear DMA, and the dequant is a bf16 vector multiply with a
+stride-8 ratio broadcast (cheap vs the mmul MACs; keeps the kernel DMA-bound).
+
+1. **B-tile loads**: linear 4864 B per tile; kernel dequantizes per (8,8) chunk
+   as above (reuse `unpack_i4_b`'s vldb.unpack for the nibble→q4<<4 stage).
+2. **S_col/ratio**: computed host-side per tile into region B' — the packer
+   writes `ratio` instead of `s` (bf16) so the kernel has zero divisions.
+3. **silu stage**: per-column S'[j] read (per-token fold, region D'), replacing
+   the gs[0]/gs[4] per-section reads — the only arithmetic change to
+   `silu_quant_i8_fused`.
+4. **amax pass unchanged**: `host_h2_amax_qn_s` with `guB = pack.B_shadow`,
+   `guGs = pack.scol`.
+5. **#1777 signatures**: B-tile stride 8192 → 4864 + the fold-header tap.
 
 ## Risks / next steps
 
