@@ -43,8 +43,7 @@ $P/bin/ld.lld -r "$W/mm.o" "$W/softmax.o" -o "$W/attn_kernel.o"
 # 2. design
 $PYTHON "$G/n1_core_attn.py" -M 8 -K 128 -N 256 -m 8 -k 64 -n 128 -c 8 -b 2 \
     > "$W/design.mlir" 2>/dev/null
-cp "$W/attn_kernel.o" "$W/attn_kernel.o"  # link_with resolves from CWD
-cd "$W" && cp attn_kernel.o attn_kernel.o
+cd "$W"  # link_with resolves attn_kernel.o from CWD
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
