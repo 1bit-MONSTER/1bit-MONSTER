@@ -164,3 +164,6 @@ x86simulator_output/
 Work/
 build-1715/
 .gitnexus/
+
+# ── 1bit-LLM FPGA (hw/1bit-llm) ──
+hw/1bit-llm/sim/
