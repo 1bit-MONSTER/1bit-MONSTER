@@ -97,6 +97,12 @@ static inline void write_silu_pad_meta(uint8_t* tile, const float* scol,
     }
     int Q = 22 - s;
     *(int32_t*)(tile + 6144) = Q;
+    // v60: the per-tile shift counts (shG = Q-11, shU = Q-7) are precomputed
+    // here (and in update_fused_header_i4) because the aie2p backend
+    // miscompiles register-computed shift counts (measured 2026-08-24); the
+    // kernel stashes them to 0x6000 and the silu loads them from memory.
+    *(int32_t*)(tile + 6148) = Q - 11;   // shG
+    *(int32_t*)(tile + 6152) = Q - 7;    // shU
     for (int j = 0; j < 128; j++) {
         uint16_t b = f32_to_bf16_impl(sv[j]);
         tile[4096 + 512 + 256 + 2 * j]     = (uint8_t)(b & 0xFF);

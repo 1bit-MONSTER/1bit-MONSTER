@@ -55,6 +55,7 @@ static int ref_pair_float(int32_t c1g, int32_t c1u, float sg, float su) {
 // so it gates the ACTUAL host math, not a copy.
 struct TileMeta {
     int Q;
+    int shg, shu;   // v60: Q-11, Q-7 (host-precomputed; aie2p miscompiles register shifts)
     std::vector<int32_t> foldg, foldu, boundg, boundu;
 };
 static TileMeta host_tile_meta(const std::vector<float>& sg,
@@ -74,6 +75,8 @@ static TileMeta host_tile_meta(const std::vector<float>& sg,
     write_silu_pad_meta(tile, scol.data(), 0, 1.0f, 1.0f, N);
     TileMeta m;
     m.Q = *(int32_t*)(tile + 6144);
+    m.shg = *(int32_t*)(tile + 6148);   // Q - 11
+    m.shu = *(int32_t*)(tile + 6152);   // Q - 7
     const int32_t* fq = (const int32_t*)(tile + 6656);
     const int32_t* bg = (const int32_t*)(tile + 7168);
     const int32_t* bu = (const int32_t*)(tile + 7680);
@@ -121,7 +124,7 @@ static int run_gate(const char* name, const std::vector<int32_t>& c1g,
             size_t idx = t0 + i;
             hr[idx] = ref_pair_float(c1g[idx], c1u[idx], sg[idx], su[idx]);
             hk[idx] = silu_pair_q22(c1g[idx], c1u[idx], m.foldg[i], m.foldu[i],
-                                    m.boundg[i], m.boundu[i], m.Q);
+                                    m.boundg[i], m.boundu[i], m.Q, m.shg, m.shu);
             if (hr[idx] != 0 && hk[idx] == 0) nzero++;
             int d = std::abs(hr[idx] - hk[idx]);
             if (d > 1) nbad++;

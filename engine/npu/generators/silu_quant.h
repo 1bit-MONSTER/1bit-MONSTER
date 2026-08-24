@@ -176,9 +176,15 @@ static const int32_t silu_sigmoid_q22[256] = {
 
 // One (gate, up) pair of the fixed-point silu (v59). CPU-emulated
 // bit-exactly by test_i4_silu_q22.cpp.
+// v60: shG (= Q-11) and shU (= Q-7) are HOST-PRECOMPUTED and passed in —
+// the aie2p backend miscompiles register-computed shift counts (measured
+// 2026-08-24: siluQ >> (Q-11) compiled to shift-by-garbage, corr ~0.017;
+// memory-loaded shift counts are honored). The CPU gate passes the same
+// values so the contract is unchanged.
 static inline int8_t silu_pair_q22(int32_t c1g, int32_t c1u,
                                    int32_t foldg, int32_t foldu,
-                                   int32_t boundg, int32_t boundu, int Q) {
+                                   int32_t boundg, int32_t boundu, int Q,
+                                   int shG, int shU) {
     int ag_ = c1g < 0 ? -c1g : c1g;
     if (ag_ > boundg) ag_ = boundg;
     c1g = c1g < 0 ? -ag_ : ag_;
@@ -206,13 +212,13 @@ static inline int8_t silu_pair_q22(int32_t c1g, int32_t c1u,
         if (siluQ > lim) siluQ = lim;
         else if (siluQ < -lim) siluQ = -lim;
     }
-    int siluF = Q >= 11 ? (siluQ >> (Q - 11)) : (siluQ << (11 - Q));
+    int siluF = shG >= 0 ? (siluQ >> shG) : (siluQ << (-shG));   // shG = Q-11, host-precomputed
     if (Q < 7) {
         int lim = 1 << (24 + Q);
         if (uQ > lim) uQ = lim;
         else if (uQ < -lim) uQ = -lim;
     }
-    int uF = Q >= 7 ? (uQ >> (Q - 7)) : (uQ << (7 - Q));
+    int uF = shU >= 0 ? (uQ >> shU) : (uQ << (-shU));           // shU = Q-7, host-precomputed
     int as = siluF < 0 ? -siluF : siluF;
     int aus = uF < 0 ? -uF : uF;
     if (as > 1) {

@@ -761,7 +761,16 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
         for (int j = 0; j < 128; j++) st[j] = fq[j];
         for (int j = 0; j < 128; j++) st[128 + j] = bg[j];
         for (int j = 0; j < 128; j++) st[256 + j] = bu[j];
-        st[384] = ((const int32_t*)(pB4 + 6144))[0];
+        st[384] = ((const int32_t*)(pB4 + 6144))[0];   // Q
+        // v60: the per-tile shift amounts (Q-11 for siluF, Q-7 for uF) are
+        // HOST-PRECOMPUTED and stashed here because the aie2p backend
+        // MISCOMPILES register-computed shift counts (measured 2026-08-24:
+        // corr 0.017 -> the variable siluQ >> (Q-11) compiled to shift-by-
+        // garbage; memory-loaded shift counts are honored). The silu reads
+        // them from this stash (0x6000[385]/[386]) instead of computing
+        // Q-11/Q-7 in registers.
+        st[385] = ((const int32_t*)(pB4 + 6148))[0];  // shG = Q - 11
+        st[386] = ((const int32_t*)(pB4 + 6152))[0];  // shU = Q - 7
     }
     event1();
 }
@@ -847,12 +856,16 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     const int32_t *bndg = (const int32_t *)0x6000 + 128;    // boundG[128]
     const int32_t *bndu = (const int32_t *)0x6000 + 256;    // boundU[128]
     const int Q = ((const int32_t *)0x6000)[384];           // per-tile fold Q
+    // v60: shift counts from the stash (host-precomputed — the aie2p backend
+    // miscompiles register-computed shift counts, measured 2026-08-24).
+    const int shG = ((const int32_t *)0x6000)[385];        // Q - 11
+    const int shU = ((const int32_t *)0x6000)[386];        // Q - 7
     int8_t *h2w = (int8_t *)0x7F000;
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
         h2w[p] = silu_pair_q22(c1[go], c1[go + 1],
                                fold[2 * p], fold[2 * p + 1],
-                               bndg[2 * p], bndu[2 * p + 1], Q);
+                               bndg[2 * p], bndu[2 * p + 1], Q, shG, shU);
     }
     for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2w[i] = 0;
 }
