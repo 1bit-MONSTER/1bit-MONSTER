@@ -445,10 +445,13 @@ int zaya_decode_main(int argc, char** argv) {
                         fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
                     // P1: GU->SiLU->h2 writeback.
+                    fprintf(stderr, "[step] l=%d P1 launch\n", l);
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     auto tb2 = std::chrono::steady_clock::now();
+                    fprintf(stderr, "[step] l=%d P1 wait\n", l);
                     frun.wait();
+                    fprintf(stderr, "[step] l=%d P1 done\n", l);
                     // Visibility barrier (issue #1775 fix): the h2 S2MM
                     // writeback (shim[c] -> DDR) must be globally visible
                     // before the P2 D-phase MM2S read (shim[0]). The host

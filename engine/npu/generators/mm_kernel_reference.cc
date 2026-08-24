@@ -716,7 +716,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                 u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
                 for (int e = 0; e < 64; e++) {
                     float v = (float)(int8_t)u[e] * ratio[e & 7];
-                    int x = (int)std::roundf(v);
+                    int x = silu_roundf(v);   // libm-free (bare-metal aiecc has no roundf)
                     Bb[jt][e] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
                 }
             }
