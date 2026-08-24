@@ -730,13 +730,16 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                 // ratio (measured: NaN on the NPU), so the dequant is PURE
                 // int32: B'' = sat8(round(q4*16*ratio)) = sat8(round(q4*rq/2^28)).
                 const int32_t* rq = (const int32_t*)(pB4 + 5120 + (i / 4) * 512 + j * 32);
+                // v52: VECTORIZED q4 unpack (aie2p intrinsic) + scalar int32
+                // ratio multiply — B'' = sat8(round(q4*16*ratio)).
+                v64int8 q16 = __builtin_aie2p_unpack_I512_I8_I4(
+                    *(const v64int4 *)(pB4 + i * 512 + j * 32), 1);   // sign-extended q4
+                q16 = q16 + q16; q16 = q16 + q16;
+                q16 = q16 + q16; q16 = q16 + q16;                     // x16 (q4<<4)
+                int8_t qs[64];
+                *(v64int8 *)qs = q16;
                 for (int e = 0; e < 64; e++) {
-                    // CPU-style unpack (test_i4_dequant.cpp): byte
-                    // (e/8)*4 + (e%8)/2, low nibble when e%2==0, sign-extend.
-                    uint8_t b = nib[(e / 8) * 4 + (e % 8) / 2];
-                    int q4 = (e % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
-                    if (q4 >= 8) q4 -= 16;
-                    int x = q4 * rq[e & 7];               // q4 * ratioQ22 (int32)
+                    int x = (int)qs[e] * rq[e & 7];       // q4*16 * ratioQ22/2^18
                     int ax = x < 0 ? -x : x;
                     int r = (ax + (1 << 17)) >> 18;          // round-half-away
                     r = x < 0 ? -r : r;
