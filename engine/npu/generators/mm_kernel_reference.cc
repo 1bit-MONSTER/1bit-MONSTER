@@ -658,6 +658,86 @@ extern "C" void zero_i32(int32_t *c_out) {
 }
 #endif
 
+// ── int4 B-path GU mmul (issue #1769, ws09) ────────────────────────────────
+// B tile (64 x 128) arrives as ONE linear 4864-byte chunk (gu_i4_pack.h):
+//   [0, 4096)     nibbles, tile bytes s4 = i0*512 + i1*32 + i2*4 + i3/2
+//                 (row = i0*8+i2, col = i1*8+i3; even element LOW nibble)
+//   [4096, 4608)  row scales bf16, per tile: [group_in_tile (i/4)][col-in-tile]
+//   [4608, 4864)  S_col bf16, per col-in-tile
+// Per (8,8) chunk at (k-step i, col-tile jt) the nibbles are CONTIGUOUS
+// (32 B at i*512+jt*32) and all 8 rows share one K-group, so the dequant
+// collapses to 8 per-column ratios:
+//   ratio[c] = (s[group][c] * 1/16) / S_col[c]
+//   B''[r][c] = sat8(round( (q4<<4)[r][c] * ratio[c] ))
+// byte-pinned against the host B_shadow by the ws09 CPU gate (canonical
+// arithmetic: w16 = q4<<4 exact; ratio = (s*0.0625f)/S_col).
+//
+// First cut: scalar dequant (correctness-first; vectorization = measured
+// optimization once the corr gate passes on NPU).
+extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
+                                 const uint8_t *__restrict pB4,
+                                 int32_t *__restrict pC) {
+    constexpr unsigned nk = DIM_K / 8;    // 8 k-steps
+    constexpr unsigned nct = DIM_N / 8;   // 16 col-tiles... but the m8 kernel
+                                          // handles 4 col-tiles per pass; here
+                                          // DIM_N=128 -> 16; the fused design
+                                          // calls this per (64,128) tile -> 4.
+    // NOTE: the fused generator calls matmul ONCE per (A(8,64), B(64,128))
+    // tile, so DIM_N=128 and this function processes the whole 128-wide tile
+    // (16 col-tiles -> 4 passes of 4, mirroring matmul_vectorized_8x8x8_i8_i32_m8).
+    using MMUL = aie::mmul<8, 8, 8, int8, int8, accauto>;
+    event0();
+    // 4 accumulators per col-tile group (C00..C03 pattern of the m8 kernel);
+    // iterate col-tiles in groups of 4.
+    for (unsigned jg = 0; jg < nct; jg += 4) {
+        int32_t *pC1 = pC + jg * 8;
+        aie::vector<int32, 64> acc0 = aie::load_v<64>(pC1);
+        aie::vector<int32, 64> acc1 = aie::load_v<64>(pC1 + 64);
+        aie::vector<int32, 64> acc2 = aie::load_v<64>(pC1 + 128);
+        aie::vector<int32, 64> acc3 = aie::load_v<64>(pC1 + 192);
+        MMUL C00(acc0), C01(acc1), C02(acc2), C03(acc3);
+        for (unsigned i = 0; i < nk; ++i) {
+            aie::vector<int8, 64> A0 = aie::load_v<64>(pA + i * 64);
+            int8_t Bb[4][64];
+            for (unsigned jt = 0; jt < 4; ++jt) {
+                unsigned j = jg + jt;   // col-tile index 0..15
+                const uint8_t* nib = pB4 + i * 512 + j * 32;
+                const uint8_t* rsp = pB4 + 4096 + (i / 4) * 256 + j * 16;
+                const uint8_t* scp = pB4 + 4608 + j * 16;
+                float ratio[8];
+                for (int c = 0; c < 8; c++) {
+                    uint32_t rb = (uint32_t)((uint16_t)rsp[2*c] | ((uint16_t)rsp[2*c+1] << 8)) << 16;
+                    uint32_t sb = (uint32_t)((uint16_t)scp[2*c] | ((uint16_t)scp[2*c+1] << 8)) << 16;
+                    float sf, scc; memcpy(&sf, &rb, 4); memcpy(&scc, &sb, 4);
+                    ratio[c] = (sf * 0.0625f) / scc;
+                }
+                const v64int4* pv = (const v64int4*)nib;
+                v64int8 u = __builtin_aie2p_unpack_I512_I8_I4(*pv, 1);
+                u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
+                for (int e = 0; e < 64; e++) {
+                    float v = (float)(int8_t)u[e] * ratio[e & 7];
+                    int x = (int)std::roundf(v);
+                    Bb[jt][e] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                }
+            }
+            aie::vector<int8, 64> B0 = aie::load_v<64>(Bb[0]);
+            aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);
+            aie::vector<int8, 64> B2 = aie::load_v<64>(Bb[2]);
+            aie::vector<int8, 64> B3 = aie::load_v<64>(Bb[3]);
+            C00.mac(A0, B0);
+            C01.mac(A0, B1);
+            C02.mac(A0, B2);
+            C03.mac(A0, B3);
+        }
+        aie::store_v(pC1, C00.template to_vector<int32>());
+        aie::store_v(pC1 + 64, C01.template to_vector<int32>());
+        aie::store_v(pC1 + 128, C02.template to_vector<int32>());
+        aie::store_v(pC1 + 192, C03.template to_vector<int32>());
+    }
+    event1();
+}
+
+
 // ── Fused GU→SiLU→D (issue #1759): the on-core SiLU+quant step ──
 // Called between the GU and D GEMM phases of the fused kernel. Each tile's C1
 // (DIM_M × DIM_N int32, cols 2p/2p+1 = (gate, up) pair p, interleaved pack)

@@ -163,8 +163,9 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
                 // row scale from region B: [i][j/32] bf16
                 uint16_t sb = pack->row_scales[(size_t)(i / 32) * N + j];
                 uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
-                float w = (float)q4 * srow;
-                float v = w / pack->scol[j];
+                float w16 = (float)(q4 << 4);
+                float ratio = (srow * 0.0625f) / pack->scol[j];
+                float v = w16 * ratio;
                 int x = (int)std::roundf(v);
                 B_i8[(size_t)i * N + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
             }
@@ -579,8 +580,9 @@ int main(int argc, char** argv) {
                 if (q4 >= 8) q4 -= 16;
                 uint16_t sb = pack.row_scales[(size_t)(i / 32) * Np + j];
                 uint32_t sbits = (uint32_t)sb << 16; float srow; memcpy(&srow, &sbits, 4);
-                float w = (float)q4 * srow;
-                float v = w / pack.scol[j];
+                float w16 = (float)(q4 << 4);
+                float ratio = (srow * 0.0625f) / pack.scol[j];
+                float v = w16 * ratio;
                 int x = (int)std::roundf(v);
                 int8_t bpp = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
                 if (bpp == pack.B_shadow[(size_t)i * Np + j]) neq++;
