@@ -349,6 +349,11 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         case GGUF_DTYPE_TQ2_0_G128: return {128, 34};
         // Q1_0: fp16 scale (2) + 1-bit sign codes (128/8=16) = 18 bytes
         case GGUF_DTYPE_Q1_0: return {128, 18};
+        // ROCmFP4: Codebook10 4-bit packed 2/byte + UE4M3 scales.
+        //   Q4_0_ROCMFP4      : 16 code bytes + 2 scale bytes = 18 B/32 el
+        //   Q4_0_ROCMFP4_FAST : 16 code bytes + 1 scale byte  = 17 B/32 el
+        case GGUF_DTYPE_Q4_0_ROCMFP4:      return {32, 18};
+        case GGUF_DTYPE_Q4_0_ROCMFP4_FAST: return {32, 17};
         default: return {0, 0};
     }
 }
@@ -408,6 +413,44 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
                 if (c == 0) out[i] = -sc;
                 else if (c == 2) out[i] = sc;
                 else out[i] = 0.0f;
+            }
+            return true;
+        }
+        case GGUF_DTYPE_Q4_0_ROCMFP4:
+        case GGUF_DTYPE_Q4_0_ROCMFP4_FAST: {
+            // ROCmFP4: Codebook10 4-bit values (0,±1,±2,±3,±4,±6,±8,±10) packed
+            // 2/byte + finite-unsigned-UE4M3 scale(s). Packing (fork-exact):
+            //   element j (0..15)  = qs[j] & 0x0f, scale d0
+            //   element j+16       = qs[j] >> 4,  scale d1 (or d for FAST)
+            // Dual-scale layout: [16 code bytes][e0][e1] (18 B/32 el);
+            // FAST: [16 code bytes][e] (17 B/32 el).
+            const bool fast = (dtype == GGUF_DTYPE_Q4_0_ROCMFP4_FAST);
+            const int block_bytes = fast ? 17 : 18;
+            // finite unsigned E4M3 → float (same codec as 1BP TQ2NZ_E4M3)
+            auto ue4m3 = [](uint8_t e) -> float {
+                if (e > 0x7e) return 0.0f;
+                uint32_t exp = e >> 3, mant = e & 7;
+                return exp == 0 ? (float)mant * 0.0009765625f
+                                : (8.0f + mant) * ldexpf(1.0f, (int)exp - 11);
+            };
+            // Codebook10: mag = q&7≤4 ? q&7 : 2*(q&7)-4 ; bit3 = sign
+            auto cb10 = [](uint8_t q) -> int8_t {
+                uint8_t mag3 = q & 0x07;
+                int mag = mag3 <= 4 ? mag3 : 2*mag3 - 4;
+                return (q & 0x08) ? (int8_t)-mag : (int8_t)mag;
+            };
+            for (int i = 0; i < count; i++) {
+                int bi = i / 32, ei = i % 32;
+                int j = ei & 15;              // which of the 16 packed bytes
+                const uint8_t* blk = data + (size_t)bi * block_bytes;
+                uint8_t q = blk[j];
+                uint8_t nib = ei < 16 ? (q & 0x0f) : (q >> 4);
+                if (fast) {
+                    out[i] = (float)cb10(nib) * ue4m3(blk[16]);
+                } else {
+                    float d0 = ue4m3(blk[16]), d1 = ue4m3(blk[17]);
+                    out[i] = (float)cb10(nib) * (ei < 16 ? d0 : d1);
+                }
             }
             return true;
         }

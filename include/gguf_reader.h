@@ -69,6 +69,9 @@ enum GgufDtype : uint32_t {
     // llama.cpp native ternary block types (GGML_TYPE values from ggml.h)
     GGUF_DTYPE_TQ1_0_LLAMA = 34,  // GGML_TYPE_TQ1_0 — 1.6875 bpw base-3 ternary
     GGUF_DTYPE_TQ2_0_LLAMA = 35,  // GGML_TYPE_TQ2_0 — 2.0625 bpw 2-bit ternary
+    // ROCmFP4 experimental formats (GGML_TYPE values from the ROCmFP4 fork)
+    GGUF_DTYPE_Q4_0_ROCMFP4      = 100,  // Codebook10 4-bit, dual UE4M3 scales (4.50 bpw)
+    GGUF_DTYPE_Q4_0_ROCMFP4_FAST = 101,  // Codebook10 4-bit, single UE4M3 scale (4.25 bpw)
 };
 
 // Block size (elements) and bytes-per-block for a dtype. Returns {0,0} for

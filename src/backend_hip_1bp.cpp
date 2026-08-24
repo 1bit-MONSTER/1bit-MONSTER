@@ -166,8 +166,9 @@ struct Hip1bpBackend : Backend {
         // fall through to the Q4NX-layout dequant -> garbage weights -> NaN logits
         // -> argmax -1 with zero diagnostics. Reject loudly at init instead.
         if (q != ONEBP_Q4NX && q != ONEBP_TQ2 && q != ONEBP_TQ2NZ && q != ONEBP_TQ2NZ_E4M3 &&
+            q != ONEBP_Q4_ROCMFP4 && q != ONEBP_Q4_ROCMFP4_FAST &&
             q != ONEBP_F16 && q != ONEBP_F32 && q != 0xFFFFFFFFu) {
-            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3/F16/F32). "
+            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3/ROCmFP4/F16/F32). "
                     "TQ1/TQ2BS/I8 models must be converted first (see gguf_to_onebp --tq2nz).\n", q);
             return false;
         }

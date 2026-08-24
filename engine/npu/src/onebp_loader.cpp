@@ -319,6 +319,47 @@ public:
         }
     }
 
+    // ── Dequantize a single ROCmFP4 tile (32×256) to float32 ──
+    // Codebook10 4-bit values (0,±1,±2,±3,±4,±6,±8,±10) packed 2/byte +
+    // finite-unsigned-UE4M3 scales per 32-el block. Layout per row:
+    //   [block0: 16 code B + e0 + e1][block1: ...]  (dual, 18 B/32)
+    //   [block0: 16 code B + e]                    (FAST, 17 B/32)
+    // Packing (fork-exact): element j (0..15) = code[j] low nibble, scale e0;
+    // element j+16 = code[j] high nibble, scale e1 (or the single e for FAST).
+    static void dequant_tile_rocmfp4(const uint8_t* tile_data, float* output,
+                                     int out_rows, int out_cols,
+                                     int tile_rows = 32, int tile_cols = 256,
+                                     bool fast = false) {
+        auto ue4m3 = [](uint8_t e) -> float {
+            if (e > 0x7e) return 0.0f;
+            uint32_t exp = e >> 3, mant = e & 7;
+            return exp == 0 ? (float)mant * 0.0009765625f
+                            : (8.0f + mant) * ldexpf(1.0f, (int)exp - 11);
+        };
+        auto cb10 = [](uint8_t q) -> int8_t {
+            uint8_t mag3 = q & 0x07;
+            int mag = mag3 <= 4 ? mag3 : 2 * mag3 - 4;
+            return (q & 0x08) ? (int8_t)-mag : (int8_t)mag;
+        };
+        const int block_bytes = fast ? 17 : 18;
+        const int nb = (tile_cols + 31) / 32;
+        for (int r = 0; r < tile_rows && r < out_rows; r++) {
+            const uint8_t* row = tile_data + (size_t)r * nb * block_bytes;
+            for (int b = 0; b < nb; b++) {
+                const uint8_t* blk = row + (size_t)b * block_bytes;
+                float d0 = ue4m3(blk[16]);
+                float d1 = fast ? d0 : ue4m3(blk[17]);
+                for (int i = 0; i < 32; i++) {
+                    int col = b * 32 + i;
+                    if (col >= out_cols) break;
+                    int j = i & 15;
+                    uint8_t nib = (i < 16) ? (blk[j] & 0x0f) : (blk[j] >> 4);
+                    output[r * out_cols + col] = (float)cb10(nib) * ((i < 16) ? d0 : d1);
+                }
+            }
+        }
+    }
+
     // ── Dequantize a tiled 2D matrix starting at `base` into `out` ──
     // Dispatches on hdr_.quant — Q4NX (4-bit, default) or TQ2 (2-bit ternary).
     void dequant_matrix(const uint8_t* base, int R, int C, std::vector<float>& out, OnebpQuant q = (OnebpQuant)0xFFFFFFFFu) const {
@@ -330,11 +371,14 @@ public:
         bool e4m3 = q == ONEBP_TQ2NZ_E4M3;
         bool is_f16 = q == ONEBP_F16;
         bool is_f32 = q == ONEBP_F32;
+        bool is_rocmfp4 = q == ONEBP_Q4_ROCMFP4 || q == ONEBP_Q4_ROCMFP4_FAST;
         size_t tile_bytes = is_f16 ? (size_t)tr * tc * 2
                           : is_f32 ? (size_t)tr * tc * 4
-                          : is_tq2
-                            ? (size_t)tr * (tc / gs) * (e4m3 ? 1 : 2) + (size_t)tr * tc / 4
-                            : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
+                          : is_rocmfp4
+                            ? (size_t)tr * ((tc + 31) / 32) * (q == ONEBP_Q4_ROCMFP4_FAST ? 17 : 18)
+                            : is_tq2
+                              ? (size_t)tr * (tc / gs) * (e4m3 ? 1 : 2) + (size_t)tr * tc / 4
+                              : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
 
         out.resize((size_t)R * C);
         memset(out.data(), 0, out.size() * sizeof(float));
@@ -365,6 +409,7 @@ public:
                         for (int c = 0; c < cw; c++)
                             tile_buf[r * tc + c] = src[(size_t)r * tc + c];
                 } else if (is_tq2) dequant_tile_tq2(base, tile_buf, rh, tc, tr, tc, gs, tq2nz, e4m3);
+                else if (is_rocmfp4) dequant_tile_rocmfp4(base, tile_buf, rh, tc, tr, tc, q == ONEBP_Q4_ROCMFP4_FAST);
                 else        dequant_tile(base, tile_buf, rh, tc, tr, tc, gs, q);
 
                 for (int r = 0; r < rh; r++)
@@ -450,7 +495,9 @@ public:
         size_t tile_bytes = (te->quant == ONEBP_TQ2 || te->quant == ONEBP_TQ2NZ ||
                               te->quant == ONEBP_TQ2NZ_E4M3)
             ? (size_t)tr * (tc / gs) * (te->quant == ONEBP_TQ2NZ_E4M3 ? 1 : 2) + (size_t)tr * tc / 4
-            : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
+            : (te->quant == ONEBP_Q4_ROCMFP4 || te->quant == ONEBP_Q4_ROCMFP4_FAST)
+              ? (size_t)tr * ((tc + 31) / 32) * (te->quant == ONEBP_Q4_ROCMFP4_FAST ? 17 : 18)
+              : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
 
         uint64_t off = te->file_offset + (uint64_t)(tile_row * ntc + tile_col) * tile_bytes;
         if (off + tile_bytes > map_size_) return nullptr;
@@ -469,7 +516,9 @@ public:
         size_t tile_bytes = (te->quant == ONEBP_TQ2 || te->quant == ONEBP_TQ2NZ ||
                               te->quant == ONEBP_TQ2NZ_E4M3)
             ? (size_t)tr * (tc / gs) * (te->quant == ONEBP_TQ2NZ_E4M3 ? 1 : 2) + (size_t)tr * tc / 4
-            : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
+            : (te->quant == ONEBP_Q4_ROCMFP4 || te->quant == ONEBP_Q4_ROCMFP4_FAST)
+              ? (size_t)tr * ((tc + 31) / 32) * (te->quant == ONEBP_Q4_ROCMFP4_FAST ? 17 : 18)
+              : (size_t)tr * (tc / gs) * 4 + (size_t)tr * tc / 2;
         uint64_t per_expert_bytes = te->total_bytes / (uint64_t)te->num_experts;
 
         uint64_t off = te->file_offset + expert_idx * per_expert_bytes
