@@ -1,11 +1,14 @@
 #!/bin/bash
 # Build the GQA flash-attention xclbin (issue #1776).
 #
-# STATUS (2026-08-23): the design BUILDS (aiecc) and the kernel contract is
-# verified on x86 (test_attn.cpp), but the hardware run hangs in the multi-
-# phase core (QK^T → softmax → PV with the A2 round-trip through DDR). The
-# no-QK^T variant runs in 0.4 ms, isolating the hang to the QK^T A/B fifo
-# phase. Next debugging step: the A/B fifo sync or the A2O writeback timing.
+# STATUS (2026-08-24): the design BUILDS (aiecc) and the kernel contract is
+# verified on x86 (test_attn.cpp — run it: g++ .../test_attn.cpp; PASS).
+# The generator is the FULL multi-phase core (QK^T → params → softmax → A2O →
+# PV → C2) with producer/consumer fifo counts balanced (9 A + 8 B per column,
+# both sides — see the core_body comment). Open on hardware: the last strixhalo
+# session measured C1 == 0 (QK^T mmul reads zero A/B fifo data) while every
+# pattern works in isolation — the next debugging step is the multi-fifo core
+# phase sequencing (per issue #1776 comment 2026-08-23).
 #
 # Usage: bash build_attn.sh
 set -euo pipefail
