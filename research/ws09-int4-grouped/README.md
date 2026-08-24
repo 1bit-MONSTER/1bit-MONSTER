@@ -203,3 +203,80 @@ stride-8 ratio broadcast (cheap vs the mmul MACs; keeps the kernel DMA-bound).
   `vldb.unpack` proved the nibble load; the per-element float mult + round is new).
 - **Rounding parity** host-vs-kernel at the int8 boundary (CPU gate pins it).
 - Verify on strixhalo: corr gate vs the host emulation, then tok/s.
+
+## v59 silu kernel round (2026-08-24, issue #1844) — the v50/v51 Q22 silu was broken; fixed + CPU-gated
+
+**Blocker #1844 reproduced and root-caused on CPU** (test_i4_silu_q22.cpp —
+the missing gate: the v50/v51 fixed-point silu was NEVER CPU-tested against
+the float reference; it went straight to strixhalo and measured corr ≈ -0.02).
+
+### Root cause of the corr ≈ -0.02 / "host h2=12 → NPU (0,0)" zero pairs
+
+The v51 `silu_quant_i8_fused_i4` computed `gQ22 = c1*fold` and
+`uQ22 = c1*fold` at a fixed Q22 with a per-tile fold from the tile MAX scale:
+
+1. **int32 overflow**: `uQ22 = c1*fold` wraps for `|u| > 512`. The up
+   pre-activations reach ±600-2000 (h2 = silu(g)·u saturates only at
+   |h| ≥ 127.5, so |u| = |h|/silu(g) is unbounded for small gates). The
+   wrapped `uQ22` produced garbage — including the exact reported pattern
+   `host pair (-12,-7) → npu (0,0)` (reproduced in the gate: g=0.03,
+   u≈800 → host h2=12, v51 h2=0).
+2. **Fold-range zeroing**: the per-tile Q was chosen from the tile MAX scale,
+   so the "small weights majority" columns (S' a decade+ below the max)
+   rounded to `fold = 0` → `gQ = 0` → `h2 = 0` for every pair of those
+   columns, whatever the true gate.
+
+### The fix (v59) — overflow-free, precision-bounded, pure int32
+
+- **Per-tile fold Q from the tile MIN scale** (`Q = 22 - s`,
+  `s = max(0, 15+ceil(log2(minS')))`): the smallest fold keeps ≥ ~64 bits,
+  the fold range inside a tile no longer rounds to zero.
+- **Exact per-column c1 bounds, host-precomputed** (no kernel division):
+  `boundG[j] = (2^31-1)/|fold[j]|` and
+  `boundU[j] = 4·((2^31-1)/|fold[j]|)+3` (the +3/×4 is the (c1u>>2)
+  pre-shift: `uQ = (c1u>>2)·fold` covers |u| ≤ 2^(33-Q)). The kernel clamps
+  `c1` to these → every product is overflow-free by construction.
+- **Saturating hQ16 product**: `h·2^16 = siluF·uF` with a per-pair
+  power-of-2 clamp of |uF| against |siluF|; clamped pairs always have
+  h ≥ 2^14 → the sat8 output is exactly the float reference's.
+- **Full-precision silu for small gates**: `siluQ` uses the split
+  `(gQ>>11)·(σQ22>>11)` only for |gQ| ≥ 2048; the small-|gQ| branch
+  `(gQ·(σQ22>>11))>>11` keeps the gate precision (the old code tested
+  `gQ < 2048`, wrongly routing large NEGATIVE gQ into the small branch whose
+  `gQ·(σQ22>>11)` overflowed — Python's unbounded ints masked it; the C++
+  gate caught it).
+- **Shared dual-compiled arithmetic**: `silu_pair_q22` + the Q22 σ LUT moved
+  into `silu_quant.h` (kernel + CPU gate include the same header — no drift,
+  and it removes the #1845 duplicate-LUT hazard).
+
+### CPU gate (`engine/npu/tests/test_i4_silu_q22.cpp`, runs on x86, no NPU)
+
+- `g++ -std=c++20 -O2 -I engine/npu/generators -I engine/npu/src \
+  engine/npu/tests/test_i4_silu_q22.cpp -o /tmp/t && /tmp/t`
+- Emulates the kernel bit-exactly vs the float silu_quant reference on the
+  realistic envelope (gate g ~ N(0,1.2), up u ~ ±10^U(-0.5,2.8), S' log-
+  uniform over ~5 decades, c1 = g/S') + an adversarial corner sweep at the
+  old overflow boundary (|u| ~ 550-2000, tiny gates).
+- Results: synthetic corr **0.999970**, 99.07% within ±1, worst |Δh2| = 5;
+  adversarial corr **0.999956**, 98.0% within ±1, worst 4. (v51 measured:
+  corr ~ 0.75 on the same set, worst 254.)
+
+### Pad layout (per 8192-B tile, written per token by `update_fused_header_i4`)
+
+```
+[6144, 6148)  Q        int32 per-tile fold Q
+[6656, 7168)  foldG    128 int32 = round(S'*2^Q)
+[7168, 7680)  boundG   128 int32 = (2^31-1)/|foldG|
+[7680, 8192)  boundU   128 int32 = 4*((2^31-1)/|foldG|)+3
+```
+stashed by the last `matmul_i8_i32_i4` at 0x6000 (Gg_0) for the silu; the
+v48 section-scale floats that used to live at [7168,7184) were vestigial
+(nothing read them; the int8-fallback silu reads the B-stream gs object).
+
+### Remaining for the strixhalo kernel round
+
+1. Build `n1_core_fused_gu_silu_d_p1_i4.py` with the v59 kernel, run the
+   on-NPU corr gate vs the host emulation (expect the h2 corr ≈ 0.9995-0.9999
+   range of the ws09 design instead of -0.02), then tok/s.
+2. The dequant (`matmul_i8_i32_i4`) is still the scalar variant — the bf16
+   vectorization (README §kernel-round status) is the perf follow-up.

@@ -797,51 +797,74 @@ struct I8Ctx {
     // kernel's silu stage reads S'[j] per column instead of gs[0]/gs[4].
     void update_fused_header_i4(xrt::bo& bo, const std::vector<float>& scol,
                                 int n_ff, float ag, float qn_s, int N) {
-        // v3 per-tile BO (gu_i4_pack.h, TILE_TOTAL 5120): the per-token fold
-        // S' rides INSIDE each 5120-B tile at [4864, 5120) as 128 bf16
-        // (S'[p] = ag*S_col[p] for gate cols, ag*qn_s*S_col[p] for up cols).
-        // The kernel's matmul stashes the tile's fold into C1 row 1 for the
-        // silu — NO gs tile in the B stream (the 33rd B object per col_group
-        // never delivered — stale fold, measured 2026-08-24). Tile (ki, nt)
-        // covers GU cols [nt*128, nt*128+128); the host rewrites the fold
-        // region of every tile (redundant but keeps the DMA streams uniform).
+        // v59 per-tile BO (gu_i4_pack.h, TILE_TOTAL 8192): the per-token fold
+        // S' rides INSIDE each 8192-B tile's pad, rewritten every token
+        // (redundant but keeps the DMA streams uniform). Tile (ki, nt)
+        // covers GU cols [nt*128, nt*128+128). Pad layout (v59, issue #1844):
+        //   [6144, 6148)  Q      (int32) — fold Q = 22 - s, s from the tile
+        //                              MIN |S'| (small scales keep bits —
+        //                              the fixed Q22 fold rounded them to 0)
+        //   [6656, 7168)  foldG  (128 int32 = round(S'*2^Q))
+        //   [7168, 7680)  boundG (128 int32 = (2^31-1)/|foldG| — the kernel
+        //                              clamps c1g to this: gQ never overflows)
+        //   [7680, 8192)  boundU (128 int32 = 4*((2^31-1)/|foldG|)+3 — c1u
+        //                              clamp for uQ = (c1u>>2)*foldG: the
+        //                              v50/v51 uQ = c1u*fold overflowed for
+        //                              |u|>512, producing the zero pairs)
+        // The bf16 fold at [4864, 5120) is kept for the int8-fallback path.
         const size_t n_tiles = gu_i4_bo_size(KD, N) / GuI4Pack::TILE_TOTAL;
         const int n_tiles_n = N / 128;
         uint8_t* Bm = (uint8_t*)bo.map();
         for (size_t t = 0; t < n_tiles; t++) {
             int nt = (int)(t % (size_t)n_tiles_n);
             uint8_t* fb = Bm + t * GuI4Pack::TILE_TOTAL + 4096 + 512 + 256;
-            // v38: the silu's fold also precomputed as int32 Q22 in the tile
-            // PAD [6656 + j*4] (= round(S'*2^22)) — the aie2p backend
-            // mis-compiles the float silu loop AND int64 math, so the silu
-            // is pure int32 fixed-point.
             uint8_t* fq = Bm + t * GuI4Pack::TILE_TOTAL + 6656;
+            uint8_t* bg = Bm + t * GuI4Pack::TILE_TOTAL + 7168;
+            uint8_t* bu = Bm + t * GuI4Pack::TILE_TOTAL + 7680;
+            float sv[128];
+            float minS = 1e30f;
             for (int j = 0; j < 128; j++) {
                 int p = nt * 128 + j;                  // GU col
-                float sv = (p & 1) ? ag * qn_s * scol[p] : ag * scol[p];
-                uint16_t b = f32_to_bf16_impl(sv);
+                sv[j] = (p & 1) ? ag * qn_s * scol[p] : ag * scol[p];
+                float a = sv[j] < 0 ? -sv[j] : sv[j];
+                if (a < minS) minS = a;
+            }
+            // fold Q from the tile MIN scale (>= ~64 bits at the min; the
+            // max fold stays well inside int32 for realistic S' ranges).
+            int s = 0;
+            if (minS > 0) {
+                int lg = (int)std::ceil(std::log2(minS));   // ceil(log2(minS))
+                s = 15 + lg;
+                if (s < 0) s = 0;
+                if (s > 22) s = 22;
+            }
+            int Q = 22 - s;
+            int32_t* qp = (int32_t*)(Bm + t * GuI4Pack::TILE_TOTAL + 6144);
+            qp[0] = Q;
+            for (int j = 0; j < 128; j++) {
+                uint16_t b = f32_to_bf16_impl(sv[j]);
                 fb[2 * j]     = (uint8_t)(b & 0xFF);
                 fb[2 * j + 1] = (uint8_t)(b >> 8);
-                int32_t q = (int32_t)std::roundf(sv * 4194304.0f);   // Q22
+                int32_t q = (int32_t)std::roundf(sv[j] * (float)(1 << Q));
+                int32_t aq = q < 0 ? -q : q;
+                if (aq < 1) aq = 1;                     // foldG >= 1 (|S'|>0)
+                if (aq > 1073741823) aq = 1073741823;   // keep |fold| <= 2^30
+                q = q < 0 ? -aq : aq;
+                int32_t f = q < 0 ? -q : q;
+                int32_t boundg = (int32_t)((2147483647LL) / (int64_t)f);
+                int32_t boundu = 4 * (int32_t)((2147483647LL) / (int64_t)f) + 3;
                 fq[4 * j]     = (uint8_t)(q & 0xFF);
                 fq[4 * j + 1] = (uint8_t)((q >> 8) & 0xFF);
                 fq[4 * j + 2] = (uint8_t)((q >> 16) & 0xFF);
                 fq[4 * j + 3] = (uint8_t)((q >> 24) & 0xFF);
-            }
-            // v48: SECTION scales for the working int8-silu fallback: the
-            // per-cg section max S_col, folded as gs[0]=ag*gsec / gs[4]=
-            // ag*qn_s*gsec (float bits) at [7168..7184). Tile (ki, nt) with
-            // nt = cg*8+c belongs to GU section cg = nt/8.
-            {
-                int cg = nt / 8;
-                float gsec = 0;
-                for (int cc = cg * 1024; cc < cg * 1024 + 1024; cc++)
-                    gsec = std::max(gsec, scol[(size_t)cc]);
-                float v0 = ag * gsec;
-                float v4 = ag * qn_s * gsec;
-                uint8_t* sg = Bm + t * GuI4Pack::TILE_TOTAL + 7168;
-                memcpy(sg + 0, &v0, 4);
-                memcpy(sg + 16, &v4, 4);
+                bg[4 * j]     = (uint8_t)(boundg & 0xFF);
+                bg[4 * j + 1] = (uint8_t)((boundg >> 8) & 0xFF);
+                bg[4 * j + 2] = (uint8_t)((boundg >> 16) & 0xFF);
+                bg[4 * j + 3] = (uint8_t)((boundg >> 24) & 0xFF);
+                bu[4 * j]     = (uint8_t)(boundu & 0xFF);
+                bu[4 * j + 1] = (uint8_t)((boundu >> 8) & 0xFF);
+                bu[4 * j + 2] = (uint8_t)((boundu >> 16) & 0xFF);
+                bu[4 * j + 3] = (uint8_t)((boundu >> 24) & 0xFF);
             }
         }
         bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
