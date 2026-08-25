@@ -107,3 +107,129 @@ static inline void silu_quant_i8(const int32_t* c1, const float* gs,
         h2[p] = silu_sat8(silu_roundf(h));
     }
 }
+
+// ── Fixed-point Q22 silu for the int4 fused path (issue #1769, #1844) ──────
+// The aie2p backend mis-compiles the float silu loop (correct g/u, wrong h
+// for p>=1 — #1836) and int64 math (#1843), so the on-core silu is PURE
+// int32. v50/v51 used gQ22 = c1*fold (single Q22 fold): it overflowed int32
+// for |g|>512 / |u|>512 (the reported "host h2=12 -> NPU 0" zero pairs) and
+// the fixed Q22 fold rounded small per-column scales to zero. The v59
+// contract (CPU-gated by test_i4_silu_q22.cpp, corr 0.99997 vs the float
+// silu_quant reference on realistic data):
+//
+//   fold[j]   : int32 = round(S'[j] * 2^Q), Q per TILE from the tile's MIN
+//               |S'| (Q = 22 - s, s = max(0, 15+ceil(log2(minS')))) so small
+//               scales keep >= ~64 bits of fold (no rounding to zero).
+//   boundG[j] : int32 = (2^31-1) / |fold[j]|      -> |c1g| <= boundG keeps
+//               gQ = c1g*fold[j] overflow-free.
+//   boundU[j] : int32 = 4*((2^31-1)/|fold[j]|) + 3 -> uQ = (c1u>>2)*fold[j]
+//               = u*2^(Q-2) stays overflow-free for |u| <= 2^(33-Q)
+//               ((c1u>>2) <= (2^31-1)/fold  <=>  c1u <= 4*((2^31-1)/fold)+3).
+//   h2        : sat8(round(silu(g)*u)) with g = c1g*S'[2p],
+//               u = c1u*S'[2p+1] — the FLOAT reference's exact semantics.
+//
+// Arithmetic (all int32, no division, no libcalls — AIE2P-safe):
+//   gQ  = c1g*foldg                  (|gQ|  <= 2^31)
+//   uQ  = (c1u>>2)*foldu             (|uQ|  <= 2^31; u*2^(Q-2))
+//   gc  = clamp(gQ, +-4*2^Q)         (LUT clamp)
+//   idx = round((gc + 4*2^Q)*255 / 2^(Q+3))   -> [0,255]
+//   siluQ  = silu(g)*2^Q  = (gQ*sigma_lut[idx]) via an 11-bit split so the
+//            small-gQ pairs keep full precision (no truncate-to-zero)
+//   siluF  = silu*2^11 ; uF = u*2^5   -> hQ = siluF*uF = h*2^16
+//   hQ saturating: clamp |uF| to the largest power of two with
+//            siluF*cap <= 2^31; clamped pairs ALWAYS have h >= 2^14 -> the
+//            sat8 output is exactly the float reference's (both 127).
+static const int32_t silu_sigmoid_q22[256] = {
+    75440, 77799, 80231, 82738, 85321, 87983, 90727, 93553,
+    96466, 99468, 102560, 105747, 109029, 112411, 115894, 119483,
+    123179, 126985, 130906, 134944, 139102, 143384, 147792, 152331,
+    157004, 161815, 166767, 171864, 177110, 182509, 188064, 193781,
+    199663, 205714, 211939, 218342, 224927, 231699, 238664, 245824,
+    253185, 260753, 268531, 276525, 284739, 293179, 301851, 310758,
+    319906, 329301, 338948, 348852, 359018, 369452, 380159, 391145,
+    402414, 413974, 425827, 437981, 450441, 463211, 476297, 489704,
+    503438, 517502, 531904, 546646, 561734, 577173, 592967, 609120,
+    625637, 642522, 659778, 677409, 695418, 713809, 732585, 751748,
+    771300, 791244, 811582, 832314, 853442, 874968, 896890, 919209,
+    941925, 965038, 988545, 1012445, 1036735, 1061415, 1086479, 1111926,
+    1137750, 1163948, 1190514, 1217442, 1244727, 1272363, 1300341, 1328655,
+    1357297, 1386257, 1415526, 1445096, 1474955, 1505094, 1535501, 1566164,
+    1597072, 1628212, 1659571, 1691136, 1722893, 1754829, 1786928, 1819177,
+    1851560, 1884063, 1916669, 1949363, 1982130, 2014953, 2047816, 2080704,
+    2113600, 2146488, 2179351, 2212174, 2244941, 2277635, 2310241, 2342744,
+    2375127, 2407376, 2439475, 2471411, 2503168, 2534733, 2566092, 2597232,
+    2628140, 2658803, 2689210, 2719349, 2749208, 2778778, 2808047, 2837007,
+    2865649, 2893963, 2921941, 2949577, 2976862, 3003790, 3030356, 3056554,
+    3082378, 3107825, 3132889, 3157569, 3181859, 3205759, 3229266, 3252379,
+    3275095, 3297414, 3319336, 3340862, 3361990, 3382722, 3403060, 3423004,
+    3442556, 3461719, 3480495, 3498886, 3516895, 3534526, 3551782, 3568667,
+    3585184, 3601337, 3617131, 3632570, 3647658, 3662400, 3676802, 3690866,
+    3704600, 3718007, 3731093, 3743863, 3756323, 3768477, 3780330, 3791890,
+    3803159, 3814145, 3824852, 3835286, 3845452, 3855356, 3865003, 3874398,
+    3883546, 3892453, 3901125, 3909565, 3917779, 3925773, 3933551, 3941119,
+    3948480, 3955640, 3962605, 3969377, 3975962, 3982365, 3988590, 3994641,
+    4000523, 4006240, 4011795, 4017194, 4022440, 4027537, 4032489, 4037300,
+    4041973, 4046512, 4050920, 4055202, 4059360, 4063398, 4067319, 4071125,
+    4074821, 4078410, 4081893, 4085275, 4088557, 4091744, 4094836, 4097838,
+    4100751, 4103577, 4106321, 4108983, 4111566, 4114073, 4116505, 4118864,
+};
+
+// One (gate, up) pair of the fixed-point silu (v59). CPU-emulated
+// bit-exactly by test_i4_silu_q22.cpp.
+// v60: shG (= Q-11) and shU (= Q-7) are HOST-PRECOMPUTED and passed in —
+// the aie2p backend miscompiles register-computed shift counts (measured
+// 2026-08-24: siluQ >> (Q-11) compiled to shift-by-garbage, corr ~0.017;
+// memory-loaded shift counts are honored). The CPU gate passes the same
+// values so the contract is unchanged.
+static inline int8_t silu_pair_q22(int32_t c1g, int32_t c1u,
+                                   int32_t foldg, int32_t foldu,
+                                   int32_t boundg, int32_t boundu, int Q,
+                                   int shG, int shU) {
+    int ag_ = c1g < 0 ? -c1g : c1g;
+    if (ag_ > boundg) ag_ = boundg;
+    c1g = c1g < 0 ? -ag_ : ag_;
+    int au_ = c1u < 0 ? -c1u : c1u;
+    if (au_ > boundu) au_ = boundu;
+    c1u = c1u < 0 ? -au_ : au_;
+    int gQ = c1g * foldg;                  // g*2^Q, |gQ| <= 2^31
+    int uQ = (c1u >> 2) * foldu;           // u*2^(Q-2), |uQ| <= 2^31
+    int CL = 4 << Q;
+    int gc = gQ < -CL ? -CL : (gQ > CL ? CL : gQ);
+    int sh = Q - 7;
+    int base = sh >= 0 ? ((gc + CL) >> sh) : ((gc + CL) << (-sh));
+    int idx = ((base * 255) + 512) >> 10;
+    idx = idx < 0 ? 0 : (idx > 255 ? 255 : idx);
+    int sig = silu_sigmoid_q22[idx];
+    // |gQ| < 2^20: gQ*(sig>>11) fits int32 ((2^20-1)*(2^11-1) < 2^31) and
+    // keeps full gate precision — the >>11 split (gQ>>11)*(sig>>11) loses the
+    // low bits of g*2^(Q-11) and measured ~5% LOW on the real zaya weights
+    // for gQ in [2048, 2^20) (the old v51 threshold was 2048). |gQ| >= 2^20:
+    // the split's relative truncation error is <= ~2^-10, negligible.
+    int siluQ = (gQ > -(1 << 20) && gQ < (1 << 20)) ? ((gQ * (sig >> 11)) >> 11)
+                                                    : ((gQ >> 11) * (sig >> 11));
+    if (Q < 11) {
+        int lim = 1 << (20 + Q);
+        if (siluQ > lim) siluQ = lim;
+        else if (siluQ < -lim) siluQ = -lim;
+    }
+    int siluF = shG >= 0 ? (siluQ >> shG) : (siluQ << (-shG));   // shG = Q-11, host-precomputed
+    if (Q < 7) {
+        int lim = 1 << (24 + Q);
+        if (uQ > lim) uQ = lim;
+        else if (uQ < -lim) uQ = -lim;
+    }
+    int uF = shU >= 0 ? (uQ >> shU) : (uQ << (-shU));           // shU = Q-7, host-precomputed
+    int as = siluF < 0 ? -siluF : siluF;
+    int aus = uF < 0 ? -uF : uF;
+    if (as > 1) {
+        int v = as; int cap = 1 << 30;
+        while (v > 1) { v >>= 1; cap >>= 1; }
+        if (aus > cap) aus = cap;
+    }
+    uF = uF < 0 ? -aus : aus;
+    int hQ = siluF * uF;                   // h*2^16, |hQ| <= 2^31
+    int ha = hQ < 0 ? -hQ : hQ;
+    int h = (ha + (1 << 15)) >> 16;        // round-half-away
+    h = hQ < 0 ? -h : h;
+    return silu_sat8(h);
+}

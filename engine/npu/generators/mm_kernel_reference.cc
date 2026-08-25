@@ -692,7 +692,6 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // tile, so DIM_N=128 and this function processes the whole 128-wide tile
     // (16 col-tiles -> 4 passes of 4, mirroring matmul_vectorized_8x8x8_i8_i32_m8).
     using MMUL = aie::mmul<8, 8, 8, int8, int8, accauto>;
-    event0();
 #ifdef I4_SUM_A
     // probe: C1 = sum of the A tile (64 values), same for every col — if the
     // A stream delivers Am correctly this stays small (~±800); if A arrives
@@ -708,70 +707,83 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     event1();
     return;
 #endif
-    // ── SCALAR row-0 C1 (issue #1769) ──
-    // The mmul-based accumulation's C-store comes out SCRAMBLED in this
-    // toolchain build (the C1buf holds the correct full-K dots of the cols
-    // =4-7 mod 8 at shifted positions, the other halves garbage — measured
-    // on hardware, rounds 2-3). The decode is M=1: only row 0 of the C1 is
-    // nonzero, so
-    //   C1[0][j] = sum_{k=0..63} A[0][k] * B''[k][j]
-    // per (64,128) tile — computed SCALAR (correctness-first; the row-0 dot
-    // is immune to the mmul C-layout). The A tile's row-0 is its first 64
-    // bytes (the A-layout (0,c) at (c/8)*8 + c%8 is contiguous within the
-    // tile); the C1 row-0 element (0, j) sits at (j/8)*64 + j%8 (the
-    // microtile layout, matching the verified C1buf).
-    for (unsigned i = 0; i < nk; ++i) {          // 8 k-steps
-        for (unsigned j = 0; j < nct; ++j) {     // 16 col-tiles
-            const uint8_t* nib = pB4 + i * 512 + j * 32;
-            const int32_t* rq = (const int32_t*)(pB4 + 5120 + (i / 4) * 512 + j * 32);
-            for (int e = 0; e < 64; e++) {
-                int k = e / 8, c = e % 8;
-                uint8_t b = nib[(e / 8) * 4 + (e % 8) / 2];
-                int q4 = (e % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
-                if (q4 >= 8) q4 -= 16;
-                int x = q4 * rq[e & 7];          // q4 * ratioQ22 (int32)
-                int ax = x < 0 ? -x : x;
-                int r = (ax + (1 << 17)) >> 18;  // round-half-away
-                r = x < 0 ? -r : r;
-                int8_t bv = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
-                int col = (int)j * 8 + c;
-                // A-layout (0, i*8+k) at the tap byte i*64+k: the row-0's
-                // k-cols of the i-th 8-col group sit at the 64-byte microtile
-                // strides ((c/8)*8 + c%8 is contiguous within each 8-col
-                // group, and the tap's linear byte order is (c%8) + 64*(c/8)).
-                pC[(col / 8) * 64 + (col % 8)] += (int32_t)pA[i * 64 + k] * (int32_t)bv;
+    // v66: ratio g0/g1 ride [4096..5120) of the B tile (the fifo delivers
+    // only [0..5632); group-1 dequant read never-delivered bytes). The rq
+    // pointer `rqb + j*32` miscompiled for j>=8 (col 96's ratio read as 0)
+    // — the two-group base rqb (a precomputed register) plus a computed
+    // offset breaks; computing `pB4 + gbase + (j<<5)` from the tile base
+    // directly (the nib pointer's pattern) reads correctly. SCALAR row-0 C1.
+    // NOTE (2026-08-25): the aie2p backend miscompiles the scalar int32
+    // multiply ap32*av32 (|op|<=127) for some (k-step, call) — the stashed
+    // product is the correct one shifted left 8 bits (byte1 == true low
+    // byte); the dequant's q4*rq[cc] (rq ~2^22) compiles to the working
+    // 32-bit path. A mmul-based C1 (dequant into Btmp @ 0x8000, then the
+    // native aie::mmul) and -O0 both fail (Btmp stores mostly dropped /
+    // backend immediate-range crash) — open.
+    const int32_t* rq_g0 = (const int32_t*)(pB4 + 4096);
+    const int32_t* rq_g1 = (const int32_t*)(pB4 + 4096 + 512);
+    for (unsigned ig = 0; ig < 2; ++ig) {
+        const unsigned i0 = ig * 4;
+        const unsigned gbase = (ig == 0) ? 4096u : 4608u;
+        for (unsigned ii = 0; ii < 4; ++ii) {
+            const unsigned i = i0 + ii;
+            for (unsigned j = 0; j < nct; ++j) {     // 16 col-tiles
+                const uint8_t* nib = pB4 + i * 512 + j * 32;
+                const int32_t* rq = (const int32_t*)(pB4 + gbase + (j << 5));   // v66: rqb+j32 miscompiled; compute from pB4
+                for (int kk = 0; kk < 8; kk++)
+                    for (int cc = 0; cc < 8; cc++) {
+                        uint8_t b = nib[kk * 4 + cc / 2];
+                        int q4 = (cc % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
+                        if (q4 >= 8) q4 -= 16;
+                        int x = q4 * rq[cc];          // q4 * ratioQ22 (int32)
+                        int ax = x < 0 ? -x : x;
+                        int r = (ax + (1 << 17)) >> 18;  // round-half-away
+                        r = x < 0 ? -r : r;
+                        int32_t av32 = r > 127 ? 127 : r < -127 ? -127 : r;
+                        int col = (int)j * 8 + cc;
+                        pC[(col / 8) * 64 + (col % 8)] += (int32_t)pA[i * 64 + kk] * av32;
+                    }
             }
         }
     }
-    // v53-v59: stash this tile's per-token silu metadata CONTIGUOUSLY at
-    // 0x6000 (the Gg_0 buffer — address verified against
-    // input_with_addresses.mlir, issue #1842). The LAST matmul's stash wins
-    // before the silu runs:
-    //   [0..127]   foldG  (S'*2^Q int32, per column; Q per tile from the
-    //                      tile MIN scale — small folds keep bits)
-    //   [128..255] boundG ((2^31-1)/|foldG| — exact c1g clamp)
-    //   [256..383] boundU (4*((2^31-1)/|foldG|)+3 — c1u clamp for
-    //                      uQ = (c1u>>2)*fold, u <= 2^(33-Q))
-    //   [384]      Q      (per-tile fold Q)
-    {
-        const int32_t* fq = (const int32_t*)(pB4 + 6656);
-        const int32_t* bg = (const int32_t*)(pB4 + 7168);
-        const int32_t* bu = (const int32_t*)(pB4 + 7680);
-        int32_t* st = (int32_t *)0x6000;
-        for (int j = 0; j < 128; j++) st[j] = fq[j];
-        for (int j = 0; j < 128; j++) st[128 + j] = bg[j];
-        for (int j = 0; j < 128; j++) st[256 + j] = bu[j];
-        st[384] = ((const int32_t*)(pB4 + 6144))[0];   // Q
-        // v60: the per-tile shift amounts (Q-11 for siluF, Q-7 for uF) are
-        // HOST-PRECOMPUTED and stashed here because the aie2p backend
-        // MISCOMPILES register-computed shift counts (measured 2026-08-24:
-        // corr 0.017 -> the variable siluQ >> (Q-11) compiled to shift-by-
-        // garbage; memory-loaded shift counts are honored). The silu reads
-        // them from this stash (0x6000[385]/[386]) instead of computing
-        // Q-11/Q-7 in registers.
-        st[385] = ((const int32_t*)(pB4 + 6148))[0];  // shG = Q - 11
-        st[386] = ((const int32_t*)(pB4 + 6152))[0];  // shU = Q - 7
-    }
+    // v65: assemble the per-token silu metadata into C1 rows 1-4 from
+        // the CHUNKED [META_BASE..META_BASE+512) region of the k-tiles (the
+        // ONLY reliably-delivered tile region — the old pad at [6144..8192)
+        // was never delivered, so the v63 folds were stale). Each col_group's
+        // n_k = H/64 k-tiles carry a 512-B chunk; ki%4==0 -> foldG into C1
+        // row 1, ki%4==1 -> boundG into row 2, ki%4==2 -> boundU into row 3,
+        // ki%4==3 -> Q/shG/shU into row 4 cols 0-2. Only ki%4 is used, so
+        // the per-core static call counter (one matmul call per k-tile,
+        // strictly sequential per col_group) only needs n_k % 4 == 0 — the
+        // HOST GUARANTEES this (pack_gu_fused_i4 aborts otherwise; zaya1-8b
+        // has n_k = 32). The silu reads (st[go+8/+9/+16/+25], st[32..34])
+        // are pinned by the CPU gate's kernel-indexing emulation. C1buf is
+        // (8,128) int32 MICROTILED: element (r,c) at (c/8)*64 + r*8 + c%8,
+        // so row r col c = row-0 position + r*8.
+        {
+            static unsigned call = 0;
+            unsigned ki = call % 32;   // only ki%4 is used (== call%4 since 32%4==0)
+            const int32_t* mq = (const int32_t*)(pB4 + 5120);
+
+
+
+
+
+
+            if (ki % 4 == 3) {
+                pC[32] = mq[0];   // Q   (row 4 col 0)
+                pC[33] = mq[1];   // shG (row 4 col 1)
+                pC[34] = mq[2];   // shU (row 4 col 2)
+            }
+            if (ki % 4 <= 2) {
+                const unsigned rowoff = 8 + (ki % 4) * 8;   // row 1/2/3 col j
+                for (int j = 0; j < 128; j++) {
+                    unsigned p0 = (j / 8) * 64 + (j % 8);
+                    pC[p0 + rowoff] = mq[j];
+                }
+            }
+            call++;
+        }
     event1();
 }
 
@@ -852,20 +864,35 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
         256, 258, 260, 262, 320, 322, 324, 326, 384, 386, 388, 390, 448, 450, 452, 454,
         512, 514, 516, 518, 576, 578, 580, 582, 640, 642, 644, 646, 704, 706, 708, 710,
         768, 770, 772, 774, 832, 834, 836, 838, 896, 898, 900, 902, 960, 962, 964, 966 };
-    const int32_t *fold = (const int32_t *)0x6000;          // foldG[128] (Gg_0 region)
-    const int32_t *bndg = (const int32_t *)0x6000 + 128;    // boundG[128]
-    const int32_t *bndu = (const int32_t *)0x6000 + 256;    // boundU[128]
-    const int Q = ((const int32_t *)0x6000)[384];           // per-tile fold Q
-    // v60: shift counts from the stash (host-precomputed — the aie2p backend
-    // miscompiles register-computed shift counts, measured 2026-08-24).
-    const int shG = ((const int32_t *)0x6000)[385];        // Q - 11
-    const int shU = ((const int32_t *)0x6000)[386];        // Q - 7
+    // v65/v66: metadata from C1 rows 1-4 at the SAME microtile positions as
+    // the row-0 C1 dot (row r col c = row-0 pos + r*8), delivered via the c1
+    // ARG (the only reliable mechanism on this aie2p build — the 0x6000 stash
+    // was DCE'd). Per-pair reads (pinned by the CPU gate's kernel-indexing
+    // emulation in test_i4_silu_q22.cpp):
+    //   foldG[2p]     = c1[gos[p]+8]    (row 1, gate col)
+    //   foldG[2p+1]   = c1[gos[p]+9]    (row 1, up col)
+    //   boundG[2p]    = c1[gos[p]+16]   (row 2, gate col — clamps c1g)
+    //   boundU[2p+1]  = c1[gos[p]+25]   (row 3, UP col — clamps c1u; boundU
+    //                                    is per column (4·boundG[j]+3 for
+    //                                    foldu = foldG[2p+1]), so the UP
+    //                                    col's bound is 2p+1, NOT 2p — v66
+    //                                    fixes the v65 +24 off-by-one)
+    //   Q/shG/shU at c1[32..34] (row 4 cols 0-2).
+    const int32_t *st = c1;                                // C1buf (microtiled)
+    const int Q = st[32];                                  // per-tile fold Q
+    const int shG = st[33];                                // Q - 11 (host-precomputed)
+    const int shU = st[34];                                // Q - 7
     int8_t *h2w = (int8_t *)0x7F000;
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
+#ifdef NPU_C1_DUMP
+        h2w[p] = (int8_t)(c1[gos[p]] >> 5);   // C1 gate col 2p (full-K dot)
+#else
         h2w[p] = silu_pair_q22(c1[go], c1[go + 1],
-                               fold[2 * p], fold[2 * p + 1],
-                               bndg[2 * p], bndu[2 * p + 1], Q, shG, shU);
+                               st[go + 8], st[go + 9],        // foldg, foldu (row 1)
+                               st[go + 16], st[go + 25],      // boundg (row 2), boundu (row 3, UP col)
+                               Q, shG, shU);
+#endif
     }
     for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2w[i] = 0;
 }

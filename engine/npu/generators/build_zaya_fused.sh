@@ -61,12 +61,24 @@ cp "$workdir/mm_8x64x128_fused.o" "$workdir/mm_32x64x128.o"
 
 echo "═══ fused GU→SiLU→D  M=8 K=2048 N_GU=4096 N_D=2048 ═══"
 
+# int4 GU mode (issue #1769, ws09): NPU_FUSED_I4=1 selects the raw-Q4NX
+# generator (n1_core_fused_gu_silu_d_p1_i4.py) whose B stream is ONE linear
+# 4864-B chunk per (64,128) tile (nibbles 4096 + s 512 + S_col 256) consumed
+# by matmul_i8_i32_i4, plus the per-column fold silu (silu_quant_i8_fused_i4).
+I4=0
+if [ "${NPU_FUSED_I4:-0}" = "1" ]; then I4=1; fi
+
 design="$workdir/design_fused_gu_silu_d.mlir"
 design_ref="$workdir/design_fused_gu_silu_d.ref.mlir"
 
 gen_design() {  # $1 = output path
-    $PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d.py" -M 8 -K 2048 \
-        -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 2 2>/dev/null > "$1"
+    if [ "$I4" = "1" ]; then
+        $PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d_p1_i4.py" -M 8 -K 2048 \
+            -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 2 2>/dev/null > "$1"
+    else
+        $PYTHON "$GENERATOR_DIR/n1_core_fused_gu_silu_d.py" -M 8 -K 2048 \
+            -N_GU 4096 -N_D 2048 -m 8 -k 64 -n 128 -c 8 -b 2 2>/dev/null > "$1"
+    fi
 }
 
 gen_design "$design"
@@ -87,18 +99,26 @@ if ! cmp -s "$design" "$design_ref"; then
     exit 1
 fi
 
-"$PYTHON" - "$design" <<'PYEOF' || { echo "ERROR: design verification FAILED — refusing to build (issue #1777)" >&2; exit 1; }
+"$PYTHON" - "$design" "$I4" <<'PYEOF' || { echo "ERROR: design verification FAILED — refusing to build (issue #1777)" >&2; exit 1; }
 import re, sys
 
 path = sys.argv[1]
+I4 = sys.argv[2] == "1"
 text = open(path, encoding="utf-8", errors="replace").read()
 K = 2048  # build_zaya_fused.sh fixed shape
 errors = []
 
-# Fused-design markers: a stale GU/D-only or moe design lacks these.
-for marker in ("silu_quant_i8_fused", "mm_32x64x128.o"):
-    if marker not in text:
-        errors.append(f"missing marker {marker!r} — not the fused design?")
+# Fused-design markers: a stale GU/D-only or moe design lacks these. The
+# int4 design (issue #1769 ws09) wires matmul_i8_i32_i4 + the per-column
+# fold silu (silu_quant_i8_fused_i4); the int8 design the section silu.
+if I4:
+    for marker in ("silu_quant_i8_fused_i4", "matmul_i8_i32_i4", "mm_32x64x128.o"):
+        if marker not in text:
+            errors.append(f"missing marker {marker!r} — not the int4 fused design?")
+else:
+    for marker in ("silu_quant_i8_fused", "mm_32x64x128.o"):
+        if marker not in text:
+            errors.append(f"missing marker {marker!r} — not the fused design?")
 
 ops = []  # (fifo, offset, sizes, strides) — one entry per aie.dma_bd
 
@@ -185,42 +205,66 @@ for fifo, offset, sizes, strides in ops:
             msg = f"A_C tap strides {strides}, expected [8K, 8, K, 1] = {[8*K, 8, K, 1]}"
             if msg not in seen:
                 errors.append(msg); seen.add(msg)
-    elif fifo.startswith("B_S"):  # linear B tiles: (ki*32 + n_tile)*8192
-        if sizes == [1, 1, 1, 8192] and strides == [1, 1, 1, 1]:
-            b_ok = True
-            # Format A passes offset as a scalar (int); Format B as a list.
-            # Normalize to a list and verify EVERY offset dim is an 8192-multiple.
-            offs = offset if isinstance(offset, list) else [offset]
-            bad = [o for o in offs if o % 8192 != 0]
-            if bad:
-                n_b_off_bad += len(bad)
-                msg = f"B_S tap offset(s) {bad} not 8192-multiples (expected (ki*32+n_tile)*8192)"
+    elif fifo.startswith("B_S"):  # linear B tiles
+        if I4:
+            # int4 (issue #1769 ws09): ONE linear 4864-B chunk per (64,128)
+            # tile = [nibbles 4096][s 512][S_col 256], at (ki*32 + n_tile)*4864
+            if sizes == [1, 1, 1, 4864] and strides == [1, 1, 1, 1]:
+                b_ok = True
+                offs = offset if isinstance(offset, list) else [offset]
+                bad = [o for o in offs if o % 4864 != 0]
+                if bad:
+                    n_b_off_bad += len(bad)
+                    msg = f"B_S tap offset(s) {bad} not 4864-multiples (expected (ki*32+n_tile)*4864)"
+                    if msg not in seen:
+                        errors.append(msg); seen.add(msg)
+            else:
+                msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 4864-byte int4 tile"
                 if msg not in seen:
                     errors.append(msg); seen.add(msg)
         else:
-            msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-byte tile"
-            if msg not in seen:
-                errors.append(msg); seen.add(msg)
+            if sizes == [1, 1, 1, 8192] and strides == [1, 1, 1, 1]:
+                b_ok = True
+                # Format A passes offset as a scalar (int); Format B as a list.
+                # Normalize to a list and verify EVERY offset dim is an 8192-multiple.
+                offs = offset if isinstance(offset, list) else [offset]
+                bad = [o for o in offs if o % 8192 != 0]
+                if bad:
+                    n_b_off_bad += len(bad)
+                    msg = f"B_S tap offset(s) {bad} not 8192-multiples (expected (ki*32+n_tile)*8192)"
+                    if msg not in seen:
+                        errors.append(msg); seen.add(msg)
+            else:
+                msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-byte tile"
+                if msg not in seen:
+                    errors.append(msg); seen.add(msg)
 
 if not h2_ok:
     errors.append("no H2_S writeback with strides [8K, K, 8, 1] — the h2-writeback bug signature")
 if not a_ok:
     errors.append("no A tap with strides [8K, 8, K, 1]")
 if not b_ok:
-    errors.append("no linear B tile (sizes [1,1,1,8192], strides [1,1,1,1])")
+    if I4:
+        errors.append("no linear B tile (sizes [1,1,1,4864], strides [1,1,1,1])")
+    else:
+        errors.append("no linear B tile (sizes [1,1,1,8192], strides [1,1,1,1])")
 if n_b_off_bad:
-    errors.append(f"{n_b_off_bad} B-tile offset(s) not 8192-multiples")
+    errors.append(f"{n_b_off_bad} B-tile offset(s) not {'4864' if I4 else '8192'}-multiples")
 
 if errors:
     print("fused design verification FAILED:", file=sys.stderr)
     for e in errors:
         print("  - " + e, file=sys.stderr)
     sys.exit(1)
-print(f"fused design verification OK: {len(ops)} DMA bd ops, h2 [8K,K,8,1] + A [8K,8,K,1] + B 8192-step tiles")
+print(f"fused design verification OK: {len(ops)} DMA bd ops, h2 [8K,K,8,1] + A [8K,8,K,1] + B {'4864' if I4 else '8192'}-step tiles")
 PYEOF
 
-xclbin="$XCLBIN_DIR/final_i8_MOE_FUSED_zaya.xclbin"
-insts="$XCLBIN_DIR/insts_i8_MOE_FUSED_zaya.txt"
+xclbin="$XCLBIN_DIR/final_i8_MOE_GUSILU_i4_zaya.xclbin"
+insts="$XCLBIN_DIR/insts_i8_MOE_GUSILU_i4_zaya.txt"
+if [ "$I4" != "1" ]; then
+    xclbin="$XCLBIN_DIR/final_i8_MOE_GUSILU_zaya.xclbin"
+    insts="$XCLBIN_DIR/insts_i8_MOE_GUSILU_zaya.txt"
+fi
 cd "$workdir"
 $AIECC --peano="$P" --aietools="$AIETOOLS" \
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
@@ -242,6 +286,8 @@ cat <<'EOF'
    - token parity vs the two-launch M=16 path.
 3. perf: 40 → 20 launches/token; expect ~6.2 → ~7.5 tok/s if the ~0.85 ms
    per-launch fixed overhead is the binding cost.
+   int4 GU (NPU_FUSED_I4=1): expect the ~30 ms/tok DMA halving → 8–10 tok/s
+   once the kernel dequant passes corr on NPU (issue #1769).
 Fallbacks if the C1 produce-only fifo misbehaves:
    - Design J: write C1 to bo4 via the v27 C path and read it back for the
      SiLU phase (adds ~16 KB/token DDR traffic; needs a 4th outbound stream
