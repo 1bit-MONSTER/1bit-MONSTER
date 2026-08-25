@@ -150,7 +150,12 @@
       clearTimeout(t);
       t = setTimeout(async () => { const idx = await indexPromise; search(idx, q.value.trim()); }, 120);
     });
-    window.addEventListener("load", async () => { const idx = await indexPromise; search(idx, q.value.trim()); });
+    window.addEventListener("load", async () => {
+      const idx = await indexPromise;
+      const qp = new URLSearchParams(location.search).get("q") || "";
+      if (qp.trim()) q.value = qp.trim();
+      search(idx, q.value.trim());
+    });
   </script>
 </body>
 </html>
