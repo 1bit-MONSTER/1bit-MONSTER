@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>One binary, all formats | 1bit.MONSTER</title>
-  <meta name="description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
+  <title>Local RAG with our own embeddings | 1bit.MONSTER</title>
+  <meta name="description" content="The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta property="og:description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-binary-formats.html" />
+  <meta property="og:title" content="Local RAG with our own embeddings | 1bit.MONSTER" />
+  <meta property="og:description" content="The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-local-rag.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
+  <meta name="twitter:title" content="Local RAG with our own embeddings | 1bit.MONSTER" />
+  <meta name="twitter:description" content="The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-binary-formats.html" />
-  <style>
+  <link rel="canonical" href="https://1bit.monster/1bit-post-local-rag.html" />
+<style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
     :root {
@@ -114,7 +114,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One binary, all formats | 1bit.MONSTER", "description": "Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files.", "url": "https://1bit.monster/1bit-post-binary-formats.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-binary-formats.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Local RAG with our own embeddings | 1bit.MONSTER", "description": "The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate.", "url": "https://1bit.monster/1bit-post-local-rag.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-local-rag.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -140,51 +140,36 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-binary-formats">
+    <article class="art container" data-od-id="1bit-post-local-rag">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-07-24</span>
-        <span class="tag">formats</span>
-        <span class="tag">quantization</span>
-        <span class="tag">npu</span>
+        <span class="tag">engine</span>
+        <span>2026-08-25</span>
       </div>
-      <h1>One binary, all formats</h1>
-      <p class="lead">Ternary and binary inference from a single engine, on both sides of the split: GPU and NPU. Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF all run on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, and the whole thing fits in 4,200 lines across 31 files.</p>
-
-      <div class="prose" data-od-id="body">
-
-        <h2>The format matrix</h2>
-        <p>One binary in the 1bit engine now covers the ternary and binary quantization range, and it does it on both sides of the split: GPU and NPU. Here is the full matrix as it stands.</p>
-        <table>
-          <thead><tr><th>Format</th><th>Class</th><th>Backends</th></tr></thead>
-          <tbody>
-            <tr><td>Q1_0</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>TQ1</td><td>ternary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>TQ2</td><td>ternary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>IQ1_S / IQ1_M</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>BitNet GGUF</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-          </tbody>
-        </table>
-
-        <h2>Same code, both sides</h2>
-        <p>This is not two implementations sharing a name. Each format runs on the GPU path through <span class="mono">HIP</span> and <span class="mono">Vulkan</span> and on the NPU path through <span class="mono">XDNA 2</span>, and the loader and the format logic are shared. When a format behaves, it behaves everywhere.</p>
-
-        <h2>Exact, not approximate</h2>
-        <p>Every format in the matrix is verified <b>exact</b> on real Strix Halo hardware. We do not count a format as done when it produces tokens; we count it when its output matches the reference, and the verification stays on the record rather than in a comment.</p>
-
-        <h2>The size of it</h2>
-        <p>All of it fits in <span class="mono">4,200 lines</span> across <span class="mono">31 files</span>. That is the number worth sitting with: a full ternary and binary format stack, two backends, and exact verification, without growing into a framework.</p>
-
-        <h2>The record</h2>
-        <p>One binary in the toolbox, every ternary and binary format it ships, and the same verified behavior on GPU and NPU. That is the definition of done for this pass, and the harness is in the repo for anyone who wants to rerun it.</p>
-
+      <h1>Local RAG with our own embeddings</h1>
+      <p class="lead">The engine now serves /v1/embeddings. Full local RAG — embed, index, retrieve, generate — on one binary, no cloud, no Python.</p>
+      <div class="prose">
+        <h2>Embeddings, in the engine</h2>
+        <p>The engine's server now exposes <span class="mono">/v1/embeddings</span> alongside <span class="mono">/v1/chat/completions</span>. Load an embedding model — <span class="mono">nomic-embed-text-v1-GGUF</span> is one command away — and the same binary that generates tokens also produces 768-dim vectors. No second server, no Python, no cloud API.</p>
+        <p>This site's own semantic search runs on exactly this: every page is chunked, embedded, and indexed. The search box on 1bit.monster is the engine's embeddings in production.</p>
+        <h2>The pipeline</h2>
+        <pre># embed a corpus
+curl http://127.0.0.1:8088/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"input": ["doc one", "doc two"], "model": "nomic-embed-text-v1-GGUF"}'</pre>
+        <p>Normalize the vectors, store them (a SQLite table or a JSON file), and retrieval is a dot product. For 10,000 chunks it's milliseconds in any language; for a million, a vector index or an ANN library slots in behind the same API.</p>
+        <h2>Why local matters</h2>
+        <p>Your documents never leave the machine. A legal review, a codebase, medical notes, a personal vault — embed and retrieve them with an engine that runs entirely on your hardware. The privacy argument isn't a feature pitch, it's the default.</p>
+        <p>And it's fast: the embedding model runs on the same NPU/ROCm/CPU backends as generation. Batch embedding 57 chunks of this website took well under a minute on a mid-range machine.</p>
+        <h2>RAG end to end</h2>
+        <p>The pattern: embed the query with the same model, take the top-k chunks by cosine similarity, stuff them into the system prompt, generate. That's it. One binary, one port, three API calls. We ship the search half as this site's <span class="mono">search.html</span>, and the generation half is the same <span class="mono">build/1bit</span> you already run.</p>
       </div>
     
     <section class="related">
       <h2>Related</h2>
+      <a href="https://1bit.monster/1bit-post-1775-models.html">One engine, 1,775 models</a>
       <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
-      <a href="https://1bit.monster/1bit-post-fleet.html">Two PCs, two GPUs, zero cloud</a>
-      <a href="https://1bit.monster/1bit-post-halo-reviews.html">What the Ryzen AI Halo reviews didn't tell you</a>
+      <a href="https://1bit.monster/docs-getting-started.html">1bit.MONSTER: Getting started</a>
     </section>
   </article>
   </main>
@@ -201,5 +186,7 @@
     </div>
   </footer>
 <script src="analytics.js"></script>
+
+  <script src="analytics.js"></script>
 </body>
 </html>

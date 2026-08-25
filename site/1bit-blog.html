@@ -218,6 +218,42 @@
         </div>
 
         <div>
+          <article class="log-row" data-od-id="post-1775-models">
+            <span class="log-date">2026-08-25</span>
+            <div class="log-body">
+              <h3><a href="1bit-post-1775-models.html" class="log-link">One engine, 1,775 models</a></h3>
+              <p>Every architecture token on HuggingFace — 552 of them — resolves to one binary. 317,310 checkpoints map to a single 1-bit engine. The census, the token catalog, and the formats: GGUF native, Q4NX 1-bit, INT8.</p>
+              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">census</span><span class="log-tag">models</span></div>
+            </div>
+          </article>
+
+          <article class="log-row" data-od-id="post-local-rag">
+            <span class="log-date">2026-08-25</span>
+            <div class="log-body">
+              <h3><a href="1bit-post-local-rag.html" class="log-link">Local RAG with our own embeddings</a></h3>
+              <p>The engine now serves /v1/embeddings. Full local RAG — embed, index, retrieve, generate — on one binary, no cloud, no Python. This site's semantic search runs on it.</p>
+              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">embeddings</span><span class="log-tag">rag</span></div>
+            </div>
+          </article>
+
+          <article class="log-row" data-od-id="post-1bit-explained">
+            <span class="log-date">2026-08-25</span>
+            <div class="log-body">
+              <h3><a href="1bit-post-1bit-explained.html" class="log-link">What 1-bit actually does to a model</a></h3>
+              <p>1-bit isn't a gimmick and it isn't free. The real trade of ternary quantization: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions — measured, not projected.</p>
+              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">quantization</span><span class="log-tag">explainer</span></div>
+            </div>
+          </article>
+
+          <article class="log-row" data-od-id="post-rocm-vs-cuda">
+            <span class="log-date">2026-08-25</span>
+            <div class="log-body">
+              <h3><a href="1bit-post-rocm-vs-cuda.html" class="log-link">ROCm vs CUDA, from the 1-bit trenches</a></h3>
+              <p>We ship on ROCm, not CUDA, on purpose. Kernel-level comparison from the engine's logs: 1-bit matmuls, NPU offload, and why AMD's stack wins for local inference.</p>
+              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">rocm</span><span class="log-tag">amd</span></div>
+            </div>
+          </article>
+
           <article class="log-row" data-od-id="post-lemonade-v1170">
             <span class="log-date">2026-08-24</span>
             <div class="log-body">
@@ -407,7 +443,7 @@
     <div class="container">
       <div class="row-between">
         <span>© 2026 1bit.MONSTER · MIT License</span>
-        <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support &#8599;</a>
+        <a class="meta" href="https://fluxer.gg/sJiQqrmE" target="_blank" rel="noopener">Community support &#8599;</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
       </div>
       <p class="place" data-od-id="footer-place">Metepenagiag Mi'kmaq Nation, New Brunswick, Canada</p>

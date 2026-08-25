@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>One binary, all formats | 1bit.MONSTER</title>
-  <meta name="description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
+  <title>What 1-bit actually does to a model | 1bit.MONSTER</title>
+  <meta name="description" content="1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions. The real numbers from the 1bit.MONSTER engine, measured not projected." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta property="og:description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-binary-formats.html" />
+  <meta property="og:title" content="What 1-bit actually does to a model | 1bit.MONSTER" />
+  <meta property="og:description" content="1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions. The real numbers from the 1bit.MONSTER engine, measured not projected." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-1bit-explained.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
+  <meta name="twitter:title" content="What 1-bit actually does to a model | 1bit.MONSTER" />
+  <meta name="twitter:description" content="1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions. The real numbers from the 1bit.MONSTER engine, measured not projected." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-binary-formats.html" />
-  <style>
+  <link rel="canonical" href="https://1bit.monster/1bit-post-1bit-explained.html" />
+<style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
     :root {
@@ -114,7 +114,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One binary, all formats | 1bit.MONSTER", "description": "Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files.", "url": "https://1bit.monster/1bit-post-binary-formats.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-binary-formats.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "What 1-bit actually does to a model | 1bit.MONSTER", "description": "1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16\u00d7, matmuls become additions. The real numbers from the 1bit.MONSTER engine, measured not projected.", "url": "https://1bit.monster/1bit-post-1bit-explained.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1bit-explained.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -140,51 +140,32 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-binary-formats">
+    <article class="art container" data-od-id="1bit-post-1bit-explained">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-07-24</span>
-        <span class="tag">formats</span>
-        <span class="tag">quantization</span>
-        <span class="tag">npu</span>
+        <span class="tag">engine</span>
+        <span>2026-08-25</span>
       </div>
-      <h1>One binary, all formats</h1>
-      <p class="lead">Ternary and binary inference from a single engine, on both sides of the split: GPU and NPU. Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF all run on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, and the whole thing fits in 4,200 lines across 31 files.</p>
-
-      <div class="prose" data-od-id="body">
-
-        <h2>The format matrix</h2>
-        <p>One binary in the 1bit engine now covers the ternary and binary quantization range, and it does it on both sides of the split: GPU and NPU. Here is the full matrix as it stands.</p>
-        <table>
-          <thead><tr><th>Format</th><th>Class</th><th>Backends</th></tr></thead>
-          <tbody>
-            <tr><td>Q1_0</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>TQ1</td><td>ternary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>TQ2</td><td>ternary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>IQ1_S / IQ1_M</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>BitNet GGUF</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-          </tbody>
-        </table>
-
-        <h2>Same code, both sides</h2>
-        <p>This is not two implementations sharing a name. Each format runs on the GPU path through <span class="mono">HIP</span> and <span class="mono">Vulkan</span> and on the NPU path through <span class="mono">XDNA 2</span>, and the loader and the format logic are shared. When a format behaves, it behaves everywhere.</p>
-
-        <h2>Exact, not approximate</h2>
-        <p>Every format in the matrix is verified <b>exact</b> on real Strix Halo hardware. We do not count a format as done when it produces tokens; we count it when its output matches the reference, and the verification stays on the record rather than in a comment.</p>
-
-        <h2>The size of it</h2>
-        <p>All of it fits in <span class="mono">4,200 lines</span> across <span class="mono">31 files</span>. That is the number worth sitting with: a full ternary and binary format stack, two backends, and exact verification, without growing into a framework.</p>
-
-        <h2>The record</h2>
-        <p>One binary in the toolbox, every ternary and binary format it ships, and the same verified behavior on GPU and NPU. That is the definition of done for this pass, and the harness is in the repo for anyone who wants to rerun it.</p>
-
+      <h1>What 1-bit actually does to a model</h1>
+      <p class="lead">1-bit isn't a gimmick and it isn't free. Here's the real trade: what quantization to 1.58-bit does to weights, memory, and quality — measured, not projected.</p>
+      <div class="prose">
+        <h2>The idea: weights that fit in 2 bits</h2>
+        <p>A standard fp16 weight is 16 bits. A 4-bit quantized weight (GGUF Q4) is 4 bits. A 1-bit model pushes further: weights become ternary — <span class="mono">{-1, 0, +1}</span> — which needs just 1.58 bits on average. Memory drops roughly 16× vs fp16, 2.5× vs Q4.</p>
+        <p>The bigger win is arithmetic. Multiplying by a ternary weight is an addition or subtraction — no multiply needed at all. The matmul becomes pure accumulation, which is exactly what NPU hardware is built for. That's the 1-bit engine's core bet.</p>
+        <h2>The cost, honestly</h2>
+        <p>Ternary weights lose information. A model that's trained to be ternary (like BitNet-style training) absorbs the constraint during training and keeps quality high. One that's simply converted after the fact loses more. That's why the engine supports a spectrum — GGUF native, Q4NX 1BP, INT8 — and lets the model tell you which it wants.</p>
+        <h2>The measured numbers</h2>
+        <table><thead><tr><th>Path</th><th>Format</th><th>Measured</th></tr></thead><tbody><tr><td>NPU decode</td><td>Q4NX 1BP</td><td>3.4 ms/tok</td></tr><tr><td>NPU decode (start)</td><td>Q4NX 1BP</td><td>244 ms/tok</td></tr><tr><td>CPU prefill</td><td>GGUF</td><td>bit-exact vs llama.cpp</td></tr></tbody></table>
+        <p>The 70× NPU improvement across the sprint (244 → 3.4 ms/tok) is the same silicon, the same weights — the gain is dispatch, fusion, and the 1-bit arithmetic path, not a hardware upgrade.</p>
+        <h2>Where it lands</h2>
+        <p>1-bit is the laptop-class story: models that should need a datacenter running on the NPU you already own. It's also the <span class="mono">gguf_to_q4nx</span> one-liner: take any GGUF, pack it to 1-bit, and load it in the same binary. The conversion is part of the engine, not a separate tool.</p>
       </div>
     
     <section class="related">
       <h2>Related</h2>
+      <a href="https://1bit.monster/1bit-post-1775-models.html">One engine, 1,775 models</a>
       <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
-      <a href="https://1bit.monster/1bit-post-fleet.html">Two PCs, two GPUs, zero cloud</a>
-      <a href="https://1bit.monster/1bit-post-halo-reviews.html">What the Ryzen AI Halo reviews didn't tell you</a>
+      <a href="https://1bit.monster/docs-models.html">1bit.MONSTER: Model families</a>
     </section>
   </article>
   </main>
@@ -201,5 +182,7 @@
     </div>
   </footer>
 <script src="analytics.js"></script>
+
+  <script src="analytics.js"></script>
 </body>
 </html>
