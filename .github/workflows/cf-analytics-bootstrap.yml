@@ -1,0 +1,88 @@
+name: CF Web Analytics Bootstrap
+
+# One-time + re-runnable: create the Cloudflare Web Analytics (RUM) site for
+# 1bit.monster, fetch its beacon token, and inject it into site/analytics.js
+# (replacing the __CF_ANALYTICS_TOKEN__ placeholder). The deploy workflow then
+# ships the beacon with the site, and the analytics workflow can query RUM
+# totals + referrers per campaign/team.
+#
+# Why a workflow: the CF API token is a repo secret (not readable locally),
+# and rulesets block direct pushes to main — so this opens an auto-merge PR
+# with the token baked in, like the other ops workflows.
+#
+# Safe to re-run: if the RUM site already exists it just refreshes the token
+# in analytics.js (idempotent).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create/fetch Web Analytics site + token
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        id: rum
+        run: |
+          API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID"
+          H="Authorization: Bearer $CF_API_TOKEN"
+
+          echo "=== Existing RUM sites ==="
+          SITES=$(curl -sf -H "$H" "$API/rum/site_info/list")
+          echo "$SITES" | jq -r '.result[]? | "\(.domain) \(.site_token)"' | head -20
+          TOKEN=$(echo "$SITES" | jq -r '.result[]? | select(.domain == "1bit.monster") | .site_token // empty')
+
+          if [ -z "$TOKEN" ]; then
+            echo "=== Creating RUM site for 1bit.monster ==="
+            R=$(curl -sf -X POST -H "$H" -H "Content-Type: application/json" \
+              -d '{"auto_install": false, "domain": "1bit.monster"}' \
+              "$API/rum/site_info")
+            echo "$R" | jq .
+            TOKEN=$(echo "$R" | jq -r '.result.site_token // empty')
+          fi
+
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not create or find RUM site token"
+            exit 1
+          fi
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "Web Analytics token ready (len ${#TOKEN})"
+
+      - name: Inject token into analytics.js
+        env:
+          TOKEN: ${{ steps.rum.outputs.token }}
+        run: |
+          # Replace the placeholder with the real token (sed-safe: token is hex)
+          sed -i "s|__CF_ANALYTICS_TOKEN__|$TOKEN|" site/analytics.js
+          grep -c "CF_ANALYTICS_TOKEN" site/analytics.js || echo "placeholder replaced"
+          # sanity: beacon should now reference the real token
+          grep -o 'data-cf-beacon' site/analytics.js | head -1
+
+      - name: Open auto-merge PR (rulesets block direct main push)
+        run: |
+          BR="ops/cf-web-analytics-token"
+          git config user.name "ops-bot"
+          git config user.email "ops@1bit.monster"
+          git checkout -b "$BR" || git checkout "$BR"
+          git add site/analytics.js
+          if git diff --cached --quiet; then
+            echo "no diff (token unchanged) — nothing to PR"
+            exit 0
+          fi
+          git commit -m "ops: enable Cloudflare Web Analytics beacon (RUM) for 1bit.monster"
+          git push -u origin "$BR"
+          gh pr create --base main --head "$BR" \
+            --title "ops: enable Cloudflare Web Analytics beacon (RUM)" \
+            --body "Bootstraps CF Web Analytics for 1bit.monster: creates the RUM site, injects the beacon token into site/analytics.js. Once merged, the analytics workflow can report per-campaign/team referrers." \
+            || gh pr edit "$(gh pr list --head "$BR" --json number -q '.[0].number')" --body "re-run"
