@@ -87,7 +87,7 @@
   }
 
   // ── 2. Web Analytics beacon ────────────────────────────────────────
-  var TOKEN = "__CF_ANALYTICS_TOKEN__";  // rewritten at deploy by bootstrap
+  var TOKEN = "33fb8448bfe84a56b1b06bbfea9f2032";  // rewritten at deploy by bootstrap
   if (TOKEN && TOKEN.indexOf("CF_ANALYTICS") < 0 && TOKEN.length > 10) {
     var s = document.createElement("script");
     s.defer = true;
