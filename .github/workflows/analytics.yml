@@ -18,12 +18,21 @@ jobs:
       - name: Fetch Cloudflare analytics
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_WA_TOKEN: ${{ secrets.CLOUDFLARE_WA_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           TOKEN="$CLOUDFLARE_API_TOKEN"
           ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
           H="Authorization: Bearer $TOKEN"
           api() { curl -s -H "$H" "$@"; }
+
+          # RUM data queries need a token with the Web Analytics permission
+          # group. Prefer the dedicated CLOUDFLARE_WA_TOKEN when it is set;
+          # otherwise fall back to the Pages token (which fails with a clear
+          # error message).
+          RUM_TOKEN="${CLOUDFLARE_WA_TOKEN:-$TOKEN}"
+          H_RUM="Authorization: Bearer $RUM_TOKEN"
+          api_rum() { curl -s -H "$H_RUM" "$@"; }
 
           echo "=== Cloudflare Pages: 1bit-monster ==="
           api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/1bit-monster" | \
@@ -54,15 +63,15 @@ jobs:
 
           echo ""
           echo "--- Totals ---"
-          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/totals?dateFrom=$FROM&dateTo=$TODAY" | \
-            jq '{ visits: .result.totals.visits, visitors: .result.totals.visitors, pageviews: .result.totals.pageviews, success: .success }'
+          api_rum "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/totals?dateFrom=$FROM&dateTo=$TODAY" | \
+            jq '{ visits: .result.totals.visits, visitors: .result.totals.visitors, pageviews: .result.totals.pageviews, success: .success, error: (.errors[0].message // null) }'
 
           echo ""
           echo "--- Top pages ---"
-          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/aggregate?dateFrom=$FROM&dateTo=$TODAY&dimensions=path" | \
-            jq -r '[.result.dimensions.path[]? | { path: .key, views: .value }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.path)"'
+          api_rum "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/aggregate?dateFrom=$FROM&dateTo=$TODAY&dimensions=path" | \
+            jq -r 'if .success then ([.result.dimensions.path[]? | { path: .key, views: .value }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.path)") else "RUM query failed: \(.errors[0].message // "unknown") — set the CLOUDFLARE_WA_TOKEN secret (Web Analytics: Edit) for RUM data" end'
 
           echo ""
           echo "--- Top referrers (how people got here) ---"
-          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/aggregate?dateFrom=$FROM&dateTo=$TODAY&dimensions=referer" | \
-            jq -r '[.result.dimensions.referer[]? | { referer: .key, views: .value }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)"'
+          api_rum "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/aggregate?dateFrom=$FROM&dateTo=$TODAY&dimensions=referer" | \
+            jq -r 'if .success then ([.result.dimensions.referer[]? | { referer: .key, views: .value }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
