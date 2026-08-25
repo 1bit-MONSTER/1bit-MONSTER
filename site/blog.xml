@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>1bit.MONSTER — Blog</title>
+    <link>https://1bit.monster/1bit-blog.html</link>
+    <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
+    <language>en</language>
+    <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Tue, 25 Aug 2026 16:57:04 +0000</lastBuildDate>
+    <item>
+      <title>Lemonade v11.7.0, and how we stay current with the SDK</title>
+      <link>https://1bit.monster/1bit-post-lemonade-v1170.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1170.html</guid>
+      <pubDate>Mon, 24 Aug 2026 00:00:00 +0000</pubDate>
+      <description>The embedded Lemonade server core is re-vendored to v11.7.0: 14 backends (incl. the new TheNoise), register/options/stats/metrics endpoints live, and a repeatable re-vendor loop so every upstream release lands fast.</description>
+    </item>
+    <item>
+      <title>Two PCs, two GPUs, zero cloud</title>
+      <link>https://1bit.monster/1bit-post-fleet.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-fleet.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Two DeepSeek Harness agents on one LAN, both fed by 1bit.MONSTER: 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way, with the methodology that caught them.</description>
+    </item>
+    <item>
+      <title>Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU</title>
+      <link>https://1bit.monster/1bit-post-qwen36.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-qwen36.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>AMD&#x27;s official FastFlowLM numbers for Qwen3.6-35B-A3B on the Ryzen AI NPU, decoded. 13.65 tok/s decode and 221.96 tok/s prefill on Kraken Point, verified against the official Qwen config, with our independent first pass at 75.65 tok/s via llama.cpp Vulkan on Strix Halo.</description>
+    </item>
+    <item>
+      <title>37 FLM models, 209 xclbins, zero config files</title>
+      <link>https://1bit.monster/1bit-post-flm-zoo.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-flm-zoo.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>AMD&#x27;s entire pre-built NPU model zoo extracted from ROCm/FastFlowLM v0.9.46: all 37 FLM models and 209 xclbin bitstreams with zero config files, including Qwen3.5 Omni multi-modal C++ source and Qwen3.6-MoE-35B with 256 experts, auto-detected straight from the Q4NX header.</description>
+    </item>
+    <item>
+      <title>Zyphra family complete</title>
+      <link>https://1bit.monster/1bit-post-zyphra.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-zyphra.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>All four Zyphra models at 1BP, converted and validated end to end on the ZINC GPU: Zamba2 1.2B, 2.7B and 7B (Mamba2-hybrid) plus ZR1-1.5B reasoning, 26 tok/s on Strix Halo. Two architectures, one engine.</description>
+    </item>
+    <item>
+      <title>One binary, all formats</title>
+      <link>https://1bit.monster/1bit-post-binary-formats.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-binary-formats.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files.</description>
+    </item>
+    <item>
+      <title>Unsloth for AMD</title>
+      <link>https://1bit.monster/1bit-post-unsloth.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-unsloth.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Training, fine-tuning and RL land on Radeon, Instinct and Ryzen AI. Native AMD support, stated plainly: 2x faster, 70% less VRAM, runs in 3GB. Complementary to our inference side.</description>
+    </item>
+    <item>
+      <title>TokenRouter: token-level multi-backend inference</title>
+      <link>https://1bit.monster/1bit-post-tokenrouter.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-tokenrouter.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Open-source token-level routing for multi-backend LLM inference on AMD Strix Halo. NPU drafts, GPU verifies, and real logprobs ride on the wire.</description>
+    </item>
+    <item>
+      <title>What the Ryzen AI Halo reviews didn&#x27;t tell you</title>
+      <link>https://1bit.monster/1bit-post-halo-reviews.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-halo-reviews.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Strix Halo ships a 50 TOPS NPU and the reviews quote it like a fact. AMD&#x27;s FLM runtime delivers 11 tok/s, ROCm delivers 41 tok/s, and we drive the same NPU through a fused-layer engine. A review of the reviews, with the unsourced throughput figures quarantined.</description>
+    </item>
+    <item>
+      <title>DSpark speculative decoding, disproven</title>
+      <link>https://1bit.monster/1bit-post-dspark.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-dspark.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>DSpark was projected to hit 572 tok/s on Strix Halo. End-to-end measurement on the NPU disproved it: 0.1 to 0.2 tok/s at 0% draft acceptance. How and why, what it would take to fix, and why these figures are historical and unsourced.</description>
+    </item>
+    <item>
+      <title>Three bugs that broke 97 tok/s</title>
+      <link>https://1bit.monster/1bit-post-three-bugs.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-three-bugs.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>The 97 tok/s number was real. The output behind it never was. Three silent bugs, LM head substitution, weight transpose, and activation clipping, produced garbage at full speed. The classic story of a fast number with wrong output, and the discipline of not shipping it.</description>
+    </item>
+    <item>
+      <title>One engine. Every model. Any chip.</title>
+      <link>https://1bit.monster/1bit-post-one-engine.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-one-engine.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>A single tiny C++ binary auto-detects 73+ models across six backends, from NPU to CPU, from one Q4NX header parse. No per-backend builds, no per-model config.</description>
+    </item>
+    <item>
+      <title>244 to 3.4 ms/tok: the NPU optimization sprint</title>
+      <link>https://1bit.monster/1bit-post-sprint.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-sprint.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Seven engine versions in four days took NPU inference from 1,930 ms/tok to 3.4 ms/tok, a 72x speedup through batch decode, fused dispatch, and INT8 GEMM. The record of that sprint, with the throughput figures historical and unsourced.</description>
+    </item>
+    <item>
+      <title>50 TOPS on a laptop</title>
+      <link>https://1bit.monster/1bit-post-50t.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-50t.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Benchmarking the XDNA 2 NPU: historical NPU benchmark notes from the first month of the project. Figures quarantined as unsourced.</description>
+    </item>
+    <item>
+      <title>The fused layer engine</title>
+      <link>https://1bit.monster/1bit-post-fused.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-fused.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced.</description>
+    </item>
+    <item>
+      <title>I reverse-engineered AMD&#x27;s NPU stack in 4 days</title>
+      <link>https://1bit.monster/1bit-post-npu-reversal.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-npu-reversal.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>A laptop, a disassembler and no docs: a 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries and 209 xclbins, replaced with open C++ in four days. The hero story, with the honest corrections.</description>
+    </item>
+    <item>
+      <title>1bit Coding Agent released</title>
+      <link>https://1bit.monster/1bit-post-coding-agent.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-coding-agent.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>A pi.dev-compatible coding agent CLI with 7 commands, NPU-native inference, package management, extensions, skills, themes and a systemd service, shipping in the 1bit MONSTER monorepo.</description>
+    </item>
+    <item>
+      <title>NPU v12: M=32 batch decode at 97 tok/s</title>
+      <link>https://1bit.monster/1bit-post-npu-v12.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-npu-v12.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>A 24x speedup in one session, from 244 to 10 ms/tok, beating FLM Kraken Point by 46%. OpenMP attention plus LM head. Full C++23, zero Python.</description>
+    </item>
+    <item>
+      <title>Historical benchmark: both lanes green</title>
+      <link>https://1bit.monster/1bit-post-historical.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-historical.html</guid>
+      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <description>An early local run with one Lemonade endpoint over two compute lanes, iGPU llama.cpp ROCm plus NPU FLM, on Linux. Historical local run, kept for the record.</description>
+    </item>
+  </channel>
+</rss>
