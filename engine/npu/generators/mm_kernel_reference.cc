@@ -692,7 +692,6 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // tile, so DIM_N=128 and this function processes the whole 128-wide tile
     // (16 col-tiles -> 4 passes of 4, mirroring matmul_vectorized_8x8x8_i8_i32_m8).
     using MMUL = aie::mmul<8, 8, 8, int8, int8, accauto>;
-    event0();
 #ifdef I4_SUM_A
     // probe: C1 = sum of the A tile (64 values), same for every col — if the
     // A stream delivers Am correctly this stays small (~±800); if A arrives
@@ -708,54 +707,41 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     event1();
     return;
 #endif
-    // ── SCALAR row-0 C1 (issue #1769) ──
-    // The mmul-based accumulation's C-store comes out SCRAMBLED in this
-    // toolchain build (the C1buf holds the correct full-K dots of the cols
-    // =4-7 mod 8 at shifted positions, the other halves garbage — measured
-    // on hardware, rounds 2-3). The decode is M=1: only row 0 of the C1 is
-    // nonzero, so
-    //   C1[0][j] = sum_{k=0..63} A[0][k] * B''[k][j]
-    // per (64,128) tile — computed SCALAR (correctness-first; the row-0 dot
-    // is immune to the mmul C-layout). The A tile's row-0 is its first 64
-    // bytes (the A-layout (0,c) at (c/8)*8 + c%8 is contiguous within the
-    // tile); the C1 row-0 element (0, j) sits at (j/8)*64 + j%8 (the
-    // microtile layout, matching the verified C1buf).
-    // v64/v65: ratio g0/g1 ride [4096..5120) of the B tile (v65: the aie2p
-    // object-fifo delivers only [0..5632) of each 8192-B tile — the old
-    // [5120..6144) ratio region straddled the boundary, so group-1 dequant
-    // read never-delivered bytes; measured 2026-08-24: group-0 B'' byte-
-    // exact, group-1 garbage). Precompute the two group bases with CONSTANT
-    // offsets and unroll the k-loop per group.
+    // v66: ratio g0/g1 ride [4096..5120) of the B tile (the fifo delivers
+    // only [0..5632); group-1 dequant read never-delivered bytes). The rq
+    // pointer `rqb + j*32` miscompiled for j>=8 (col 96's ratio read as 0)
+    // — the two-group base rqb (a precomputed register) plus a computed
+    // offset breaks; computing `pB4 + gbase + (j<<5)` from the tile base
+    // directly (the nib pointer's pattern) reads correctly. SCALAR row-0 C1.
+    // NOTE (2026-08-25): the aie2p backend miscompiles the scalar int32
+    // multiply ap32*av32 (|op|<=127) for some (k-step, call) — the stashed
+    // product is the correct one shifted left 8 bits (byte1 == true low
+    // byte); the dequant's q4*rq[cc] (rq ~2^22) compiles to the working
+    // 32-bit path. A mmul-based C1 (dequant into Btmp @ 0x8000, then the
+    // native aie::mmul) and -O0 both fail (Btmp stores mostly dropped /
+    // backend immediate-range crash) — open.
     const int32_t* rq_g0 = (const int32_t*)(pB4 + 4096);
     const int32_t* rq_g1 = (const int32_t*)(pB4 + 4096 + 512);
     for (unsigned ig = 0; ig < 2; ++ig) {
-        const int32_t* rqb = (ig == 0) ? rq_g0 : rq_g1;
         const unsigned i0 = ig * 4;
+        const unsigned gbase = (ig == 0) ? 4096u : 4608u;
         for (unsigned ii = 0; ii < 4; ++ii) {
             const unsigned i = i0 + ii;
             for (unsigned j = 0; j < nct; ++j) {     // 16 col-tiles
                 const uint8_t* nib = pB4 + i * 512 + j * 32;
-                const int32_t* rq = rqb + j * 32;
+                const int32_t* rq = (const int32_t*)(pB4 + gbase + (j << 5));   // v66: rqb+j32 miscompiled; compute from pB4
                 for (int kk = 0; kk < 8; kk++)
                     for (int cc = 0; cc < 8; cc++) {
                         uint8_t b = nib[kk * 4 + cc / 2];
-                        if (j == 12 && cc == 0) {
-                            static unsigned dbg96 = 0;
-                            if (dbg96 < 16) pC[96 + dbg96] = b;   // nibble bytes col 96 (rows 0..15)
-                            dbg96++;
-                        }
                         int q4 = (cc % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
                         if (q4 >= 8) q4 -= 16;
                         int x = q4 * rq[cc];          // q4 * ratioQ22 (int32)
                         int ax = x < 0 ? -x : x;
                         int r = (ax + (1 << 17)) >> 18;  // round-half-away
                         r = x < 0 ? -r : r;
-                        int8_t bv = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
+                        int32_t av32 = r > 127 ? 127 : r < -127 ? -127 : r;
                         int col = (int)j * 8 + cc;
-                        int32_t av32 = (int32_t)bv;
-                        int32_t ap32 = (int32_t)pA[i * 64 + kk];
-                        pC[(col / 8) * 64 + (col % 8)] += ap32 * av32;
-
+                        pC[(col / 8) * 64 + (col % 8)] += (int32_t)pA[i * 64 + kk] * av32;
                     }
             }
         }
@@ -778,6 +764,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
             static unsigned call = 0;
             unsigned ki = call % 32;   // only ki%4 is used (== call%4 since 32%4==0)
             const int32_t* mq = (const int32_t*)(pB4 + 5120);
+
 
 
 
@@ -899,7 +886,7 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
 #ifdef NPU_C1_DUMP
-        h2w[p] = (int8_t)(c1[gos[p]] >> 5);   // C1 gate col 2p (constant-accumulate test)
+        h2w[p] = (int8_t)(c1[gos[p]] >> 5);   // C1 gate col 2p (full-K dot)
 #else
         h2w[p] = silu_pair_q22(c1[go], c1[go + 1],
                                st[go + 8], st[go + 9],        // foldg, foldu (row 1)
