@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Fetch Cloudflare analytics
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -34,15 +36,17 @@ jobs:
 
           echo ""
           echo "=== Web Analytics (RUM) ==="
-          SITES=$(api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/site_info/list")
-          echo "$SITES" | jq -r '.result[]? | "site: \(.domain)  token: \(.site_token)"'
-
-          SITE_TOKEN=$(echo "$SITES" | jq -r '.result[]? | select(.domain == "1bit.monster") | .site_token // empty')
+          # The RUM site token is public by design (it ships inside the beacon on
+          # every page), so read it from the committed beacon loader instead of the
+          # rum/site_info/list API (which needs a token with the Web Analytics
+          # permission group that the Pages deploy token does not have).
+          SITE_TOKEN=$(sed -n 's/.*var TOKEN = "\([0-9a-f]\{32\}\)".*/\1/p' site/analytics.js | head -1)
 
           if [ -z "$SITE_TOKEN" ]; then
-            echo "No Web Analytics site for 1bit.monster yet — run the 'CF Web Analytics Bootstrap' workflow."
+            echo "No beacon token found in site/analytics.js — inject it first (see the CF Web Analytics Bootstrap workflow)."
             exit 0
           fi
+          echo "Site token: ${SITE_TOKEN:0:8}… (read from site/analytics.js)"
 
           TODAY=$(date -u +%Y-%m-%d)
           FROM=$(date -u -d "7 days ago" +%Y-%m-%d)
