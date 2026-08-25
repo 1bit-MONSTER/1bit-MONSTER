@@ -12,6 +12,12 @@ name: CF Web Analytics Bootstrap
 #
 # Safe to re-run: if the RUM site already exists it just refreshes the token
 # in analytics.js (idempotent).
+#
+# Diagnostics: the "Preflight" step verifies the token against the CF API and
+# prints which permission groups it carries, so a permission failure is
+# self-explanatory. The RUM site create endpoint (POST .../rum/site_info)
+# requires the token to have the account-scoped "Web Analytics: Edit"
+# permission — Read/List is NOT enough.
 
 on:
   workflow_dispatch:
@@ -29,26 +35,65 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Preflight — verify token + account + permissions
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -u
+          H="Authorization: Bearer $CF_API_TOKEN"
+
+          echo "=== 1. Token verify ==="
+          V=$(curl -s -H "$H" "https://api.cloudflare.com/client/v4/user/tokens/verify")
+          echo "$V" | jq -r '"status: \(.result.status)  id: \(.result.id)  issued: \(.result.issued_on)"'
+          if [ "$(echo "$V" | jq -r '.success')" != "true" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN rejected by Cloudflare — check the secret value / token status at https://dash.cloudflare.com/profile/api-tokens"
+            echo "$V" | jq .
+            exit 1
+          fi
+
+          echo "=== 2. Accounts visible to token ==="
+          ACCTS=$(curl -s -H "$H" "https://api.cloudflare.com/client/v4/accounts")
+          echo "$ACCTS" | jq -r '.result[]? | "\(.id)  \(.name)"'
+          if ! echo "$ACCTS" | jq -e --arg id "$CF_ACCOUNT_ID" '.result[]? | select(.id == $id)' >/dev/null 2>&1; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID ($CF_ACCOUNT_ID) is not visible to this token — wrong account ID or token scoped to another account"
+            exit 1
+          fi
+          echo "account $CF_ACCOUNT_ID OK"
+
+          echo "=== 3. Token permission groups ==="
+          TID=$(echo "$V" | jq -r '.result.id')
+          curl -s -H "$H" "https://api.cloudflare.com/client/v4/user/tokens/$TID" | \
+            jq -r '.result.policies[]? | .permission_groups[]? | "\(.id)  \(.name)"' | sort -u
+          echo "(RUM site create requires a permission group named 'Web Analytics: Edit'; Read/List is not enough)"
+
       - name: Create/fetch Web Analytics site + token
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         id: rum
         run: |
+          set -u
           API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID"
           H="Authorization: Bearer $CF_API_TOKEN"
 
           echo "=== Existing RUM sites ==="
-          SITES=$(curl -sf -H "$H" "$API/rum/site_info/list")
+          SITES=$(curl -s -H "$H" "$API/rum/site_info/list")
           echo "$SITES" | jq -r '.result[]? | "\(.domain) \(.site_token)"' | head -20
           TOKEN=$(echo "$SITES" | jq -r '.result[]? | select(.domain == "1bit.monster") | .site_token // empty')
 
           if [ -z "$TOKEN" ]; then
             echo "=== Creating RUM site for 1bit.monster ==="
-            R=$(curl -sf -X POST -H "$H" -H "Content-Type: application/json" \
-              -d '{"auto_install": false, "domain": "1bit.monster"}' \
+            R=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" \
+              -d '{"auto_install": false, "host": "1bit.monster"}' \
               "$API/rum/site_info")
             echo "$R" | jq .
+            if [ "$(echo "$R" | jq -r '.success')" != "true" ]; then
+              echo "::error::Cloudflare refused to create the Web Analytics site:"
+              echo "$R" | jq -r '.errors[]? | "  \(.code) \(.message)"'
+              echo "::error::The API token needs the 'Web Analytics: Edit' permission (account-scoped) — add it at https://dash.cloudflare.com/profile/api-tokens, update the CLOUDFLARE_API_TOKEN secret, and re-run this workflow."
+              exit 1
+            fi
             TOKEN=$(echo "$R" | jq -r '.result.site_token // empty')
           fi
 
