@@ -63,16 +63,7 @@ jobs:
             if grep -q "cloudflareinsights.com/beacon.min.js" "$f"; then
               echo "already has beacon: $f"
             else
-              python3 - "$f" "$SCRIPT" <<'PYEOF'
-import sys
-path, script = sys.argv[1], sys.argv[2]
-html = open(path, encoding="utf-8").read()
-if "</head>" in html:
-    html = html.replace("</head>", script + "\n</head>", 1)
-else:
-    html = script + "\n" + html
-open(path, "w", encoding="utf-8").write(html)
-PYEOF
+              python3 -c 'import sys; p,s=sys.argv[1],sys.argv[2]; h=open(p,encoding="utf-8").read(); h=h.replace("</head>", s+"\n</head>",1) if "</head>" in h else s+"\n"+h; open(p,"w",encoding="utf-8").write(h)' "$f" "$SCRIPT"
               echo "beacon injected: $f"
               COUNT=$((COUNT+1))
             fi
