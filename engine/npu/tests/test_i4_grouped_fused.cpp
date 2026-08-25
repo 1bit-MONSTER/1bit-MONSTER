@@ -160,20 +160,18 @@ static FusedOut fused_ffn_gu(const std::vector<float>& A,        // [H] float
                 uint8_t b = pack->tiles[byte_off];
                 int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
                 if (q4 >= 8) q4 -= 16;
-                // kernel arithmetic: ratio = (bf16(s)/16)/bf16(S_col), both
-                // read FROM THE TILE (matmul_i8_i32_i4 taps)
+                // v65 kernel arithmetic: B'' = sat8(round(q4 * rq / 2^18))
+                // where rq = ratioQ22 (int32) at [4096 + group*512 + col*4]
+                // — the s/S_col bf16 bytes are overwritten by the ratio on
+                // this toolchain (the fifo delivers only [0..5632) of the
+                // tile, and the kernel dequants via the ratio alone).
                 size_t group = (i % 64) / 32, col = j % 128;
-                uint16_t sb = (uint16_t)(pack->tiles[tbase + 4096 + group * 256 + col * 2])
-                              | ((uint16_t)pack->tiles[tbase + 4096 + group * 256 + col * 2 + 1] << 8);
-                uint16_t sc = (uint16_t)(pack->tiles[tbase + 4608 + col * 2])
-                              | ((uint16_t)pack->tiles[tbase + 4608 + col * 2 + 1] << 8);
-                uint32_t sbits = (uint32_t)sb << 16, cbits = (uint32_t)sc << 16;
-                float srow, scc; memcpy(&srow, &sbits, 4); memcpy(&scc, &cbits, 4);
-                float w16 = (float)(q4 << 4);
-                float ratio = (srow * 0.0625f) / scc;
-                float v = w16 * ratio;
-                int x = (int)std::roundf(v);
-                B_i8[(size_t)i * N + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                int32_t rq = *(const int32_t*)(&pack->tiles[tbase + 4096 + group * 512 + col * 4]);
+                int xq = q4 * rq;
+                int ax = xq < 0 ? -xq : xq;
+                int rr = (ax + (1 << 17)) >> 18;
+                rr = xq < 0 ? -rr : rr;
+                B_i8[(size_t)i * N + j] = (int8_t)(rr > 127 ? 127 : rr < -127 ? -127 : rr);
             }
         fo.bytes_per_layer = (double)(H / 64) * (N / 128) * GuI4Pack::TILE_TOTAL;
     }
@@ -584,20 +582,18 @@ int main(int argc, char** argv) {
                 uint8_t b = pack.tiles[byte_off];
                 int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
                 if (q4 >= 8) q4 -= 16;
-                // kernel arithmetic: ratio = (bf16(s)/16)/bf16(S_col), both
-                // read FROM THE TILE (matmul_i8_i32_i4 taps)
+                // v66 kernel arithmetic: B'' = sat8(round(q4 * rq / 2^18))
+                // with rq = ratioQ22 at [4096 + group*512 + col*4] — and
+                // B_shadow is now computed from the SAME rq (gu_i4_pack.h),
+                // so this gate is byte-identity by construction. Any drift
+                // between the packer's tile bytes and B_shadow fails here.
                 size_t group = (i % 64) / 32, col = j % 128;
-                uint16_t sb = (uint16_t)(pack.tiles[tbase + 4096 + group * 256 + col * 2])
-                              | ((uint16_t)pack.tiles[tbase + 4096 + group * 256 + col * 2 + 1] << 8);
-                uint16_t sc = (uint16_t)(pack.tiles[tbase + 4608 + col * 2])
-                              | ((uint16_t)pack.tiles[tbase + 4608 + col * 2 + 1] << 8);
-                uint32_t sbits = (uint32_t)sb << 16, cbits = (uint32_t)sc << 16;
-                float srow, scc; memcpy(&srow, &sbits, 4); memcpy(&scc, &cbits, 4);
-                float w16 = (float)(q4 << 4);
-                float ratio = (srow * 0.0625f) / scc;
-                float v = w16 * ratio;
-                int x = (int)std::roundf(v);
-                int8_t bpp = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                int32_t rq = *(const int32_t*)(&pack.tiles[tbase + 4096 + group * 512 + col * 4]);
+                int xq = q4 * rq;
+                int ax = xq < 0 ? -xq : xq;
+                int rr = (ax + (1 << 17)) >> 18;
+                rr = xq < 0 ? -rr : rr;
+                int8_t bpp = (int8_t)(rr > 127 ? 127 : rr < -127 ? -127 : rr);
                 if (bpp == pack.B_shadow[(size_t)i * Np + j]) neq++;
             }
         fprintf(stderr, "  [packer] B'' byte-identity vs B_shadow: %d/%d exact\n", neq, ntot);

@@ -63,7 +63,7 @@ static TileMeta host_tile_meta(const std::vector<float>& sg,
     // interleave gate/up scales into the N-col scol layout the host sees:
     // col 2p = gate[p], col 2p+1 = up[p] (write_silu_pad_meta folds ag/qn_s
     // itself; pass ag=1, qn_s=1 and pre-fold here).
-    static thread_local uint8_t tile[8192];
+    static thread_local uint8_t tile[4][8192];
     static thread_local std::vector<float> scol;
     static thread_local int scolN = 0;
     int N = 2 * n;
@@ -72,14 +72,22 @@ static TileMeta host_tile_meta(const std::vector<float>& sg,
         scol[2 * i]     = sg[t0 + i];
         scol[2 * i + 1] = su[t0 + i];
     }
-    write_silu_pad_meta(tile, scol.data(), 0, 1.0f, 1.0f, N);
+    // v65: the silu metadata is CHUNKED across the col_group's k-tiles at
+    // [META_BASE..META_BASE+512): ki%4==0 foldG, 1 boundG, 2 boundU,
+    // 3 Q/shG/shU — one 512-B chunk per k-tile, assembled by the kernel
+    // into C1 rows 1-4 (the silu reads foldG/boundG/boundU/Q/shG/shU from
+    // there). Write the four chunks into separate dummy tiles (each chunk
+    // lives in a DIFFERENT k-tile in the real BO).
+    for (int kchunk = 0; kchunk < 4; kchunk++)
+        write_silu_pad_meta(tile[kchunk], scol.data(), 0, kchunk, 1.0f, 1.0f, N);
     TileMeta m;
-    m.Q = *(int32_t*)(tile + 6144);
-    m.shg = *(int32_t*)(tile + 6148);   // Q - 11
-    m.shu = *(int32_t*)(tile + 6152);   // Q - 7
-    const int32_t* fq = (const int32_t*)(tile + 6656);
-    const int32_t* bg = (const int32_t*)(tile + 7168);
-    const int32_t* bu = (const int32_t*)(tile + 7680);
+    const int32_t* qm = (const int32_t*)(tile[3] + GuI4Pack::META_BASE);
+    m.Q = qm[0];     // ki%4==3 chunk: Q at [0]
+    m.shg = qm[1];   // shG
+    m.shu = qm[2];   // shU
+    const int32_t* fq = (const int32_t*)(tile[0] + GuI4Pack::META_BASE);   // foldG
+    const int32_t* bg = (const int32_t*)(tile[1] + GuI4Pack::META_BASE);   // boundG
+    const int32_t* bu = (const int32_t*)(tile[2] + GuI4Pack::META_BASE);   // boundU
     // the pad layout is per GU COLUMN (interleaved): col 2i = gate of pair i,
     // col 2i+1 = up of pair i.
     m.foldg.resize(n); m.foldu.resize(n);
@@ -125,6 +133,110 @@ static int run_gate(const char* name, const std::vector<int32_t>& c1g,
             hr[idx] = ref_pair_float(c1g[idx], c1u[idx], sg[idx], su[idx]);
             hk[idx] = silu_pair_q22(c1g[idx], c1u[idx], m.foldg[i], m.foldu[i],
                                     m.boundg[i], m.boundu[i], m.Q, m.shg, m.shu);
+            if (hr[idx] != 0 && hk[idx] == 0) nzero++;
+            int d = std::abs(hr[idx] - hk[idx]);
+            if (d > 1) nbad++;
+            if (d > worst) worst = d;
+            rms_r += (double)hr[idx] * hr[idx];
+            rms_k += (double)hk[idx] * hk[idx];
+        }
+    }
+    rms_r = std::sqrt(rms_r / N);
+    rms_k = std::sqrt(rms_k / N);
+    double c = corr(hr, hk);
+    double within = 100.0 * (double)(N - nbad) / (double)N;
+    std::printf("[%s] pairs=%zu corr=%.6f within+/-1=%.2f%% zero-pairs=%d "
+                "worst|dH2|=%d rms(ref)=%.2f rms(kern)=%.2f\n",
+                name, N, c, within, nzero, worst, rms_r, rms_k);
+    int fails = 0;
+    if (!(c >= 0.999)) { std::fprintf(stderr, "FAIL: corr %.4f < 0.999\n", c); fails++; }
+    if (!(within >= 98.0)) { std::fprintf(stderr, "FAIL: %.2f%% within +-1 < 98%%\n", within); fails++; }
+    if (!(worst <= 8)) { std::fprintf(stderr, "FAIL: worst |dH2| %d > 8\n", worst); fails++; }
+    if (fails == 0) std::printf("[%s] PASS\n", name);
+    return fails;
+}
+
+// ── kernel-indexing gate (v66) ──
+// run_gate validates the silu_pair_q22 ARITHMETIC with semantic values. This
+// gate additionally emulates the KERNEL's exact C1-row metadata assembly and
+// extraction so the INDEXING contract (where each value lives in the
+// microtiled C1buf) is pinned on x86, not discovered on strixhalo:
+//   - the four chunk tiles (ki%4 = foldG / boundG / boundU / Q+shG+shU) come
+//     from the REAL host writer (write_silu_pad_meta), exactly as the
+//     col_group's k-tile stream carries them;
+//   - the kernel assembles them into C1buf rows 1-4 at the row-0 microtile
+//     positions + r*8 (row r col c sits at (c/8)*64 + r*8 + c%8);
+//   - the silu extracts per pair p at gos[p]: folds at +8/+9 (row 1),
+//     boundG at +16 (row 2), boundU at +25 (row 3, the UP column — the v65
+//     +24 off-by-one used the GATE col's boundU and FAILS here: the up-clamp
+//     threshold then belongs to foldg, not foldu), Q/shG/shU at C1[32..34].
+// A drift in ANY of these indices (or in the assembly offsets) fails this
+// gate before the kernel is ever flashed.
+static const int gos_table[64] = {
+    0, 2, 4, 6, 64, 66, 68, 70, 128, 130, 132, 134, 192, 194, 196, 198,
+    256, 258, 260, 262, 320, 322, 324, 326, 384, 386, 388, 390, 448, 450, 452, 454,
+    512, 514, 516, 518, 576, 578, 580, 582, 640, 642, 644, 646, 704, 706, 708, 710,
+    768, 770, 772, 774, 832, 834, 836, 838, 896, 898, 900, 902, 960, 962, 964, 966 };
+static int run_kernel_index_gate(const char* name,
+                                 const std::vector<int32_t>& c1g,
+                                 const std::vector<int32_t>& c1u,
+                                 const std::vector<float>& sg,
+                                 const std::vector<float>& su) {
+    const size_t N = c1g.size();
+    const int T = 64;
+    std::vector<int> hr(N), hk(N);
+    int nzero = 0, nbad = 0, worst = 0;
+    double rms_r = 0, rms_k = 0;
+    static thread_local uint8_t tile[4][8192];
+    static thread_local std::vector<float> scol;
+    static thread_local int scolN = 0;
+    for (size_t t0 = 0; t0 < N; t0 += T) {
+        int n = (int)std::min<size_t>(T, N - t0);
+        int Ncol = 2 * n;
+        if (scolN < Ncol) { scol.resize(Ncol); scolN = Ncol; }
+        for (int i = 0; i < n; i++) {
+            scol[2 * i]     = sg[t0 + i];
+            scol[2 * i + 1] = su[t0 + i];
+        }
+        // 1) the four chunk tiles, exactly as the k-tile stream carries them
+        for (int kchunk = 0; kchunk < 4; kchunk++)
+            write_silu_pad_meta(tile[kchunk], scol.data(), 0, kchunk, 1.0f, 1.0f, Ncol);
+        // 2) kernel assembly into a (8,128) int32 microtiled C1buf
+        int32_t C1[8 * 128];
+        std::memset(C1, 0, sizeof C1);
+        for (int kchunk = 0; kchunk < 4; kchunk++) {
+            const int32_t* mq = (const int32_t*)(tile[kchunk] + GuI4Pack::META_BASE);
+            if (kchunk == 3) {
+                C1[32] = mq[0];   // Q   (row 4 col 0)
+                C1[33] = mq[1];   // shG (row 4 col 1)
+                C1[34] = mq[2];   // shU (row 4 col 2)
+            } else {
+                const unsigned rowoff = 8 + (unsigned)kchunk * 8;   // row 1/2/3
+                for (int j = 0; j < 128; j++) {
+                    unsigned p0 = (j / 8) * 64 + (j % 8);
+                    C1[p0 + rowoff] = mq[j];
+                }
+            }
+        }
+        // 3) row-0 C1 dots (the real GU GEMM values for this tile's cols;
+        // pairs >= n of the partial last tile have no reference and are never
+        // read by the extraction below, so leave their dots zero)
+        for (int j = 0; j < 128; j++) {
+            unsigned p0 = (j / 8) * 64 + (j % 8);
+            int pair = j / 2;
+            if (pair < n)
+                C1[p0] = (j % 2 == 0) ? c1g[t0 + pair] : c1u[t0 + pair];
+        }
+        const int Q = C1[32], shG = C1[33], shU = C1[34];
+        // 4) kernel extraction per pair (the EXACT indices the kernel uses)
+        for (int i = 0; i < n; i++) {
+            size_t idx = t0 + i;
+            int go = gos_table[i];
+            hr[idx] = ref_pair_float(c1g[idx], c1u[idx], sg[idx], su[idx]);
+            hk[idx] = silu_pair_q22(C1[go], C1[go + 1],
+                                    C1[go + 8], C1[go + 9],     // foldg, foldu (row 1)
+                                    C1[go + 16], C1[go + 25],   // boundg (row 2), boundu (row 3, UP col)
+                                    Q, shG, shU);
             if (hr[idx] != 0 && hk[idx] == 0) nzero++;
             int d = std::abs(hr[idx] - hk[idx]);
             if (d > 1) nbad++;
@@ -260,7 +372,10 @@ static int run_real_gate(const char* q4nx_path, int L, int E, const char* actfil
         su[p] = ag * qn_s * pack.scol[2 * p + 1]; // S' up (qn_s folded)
     }
     munmap(md, st.st_size);
-    return run_gate("real-zaya", c1g, c1u, sg, su);
+    // kernel-indexing gate too: the real-data set must satisfy BOTH the
+    // arithmetic contract and the kernel's exact C1-row extraction indices.
+    return run_gate("real-zaya", c1g, c1u, sg, su)
+         + run_kernel_index_gate("kernidx-real-zaya", c1g, c1u, sg, su);
 }
 
 int main(int argc, char** argv) {
@@ -307,6 +422,7 @@ int main(int argc, char** argv) {
         c1u[i] = clamp_c1(u / su[i]);
     }
     fails += run_gate("synthetic-v59", c1g, c1u, sg, su);
+    fails += run_kernel_index_gate("kernidx-synthetic", c1g, c1u, sg, su);
 
     // ── adversarial corners ──
     // the reported failure class: small gate (silu ~ 0.15..0.02) with up
@@ -340,6 +456,7 @@ int main(int argc, char** argv) {
         }
     }
     fails += run_gate("adversarial-u600", a1g, a1u, a1sg, a1su);
+    fails += run_kernel_index_gate("kernidx-adversarial", a1g, a1u, a1sg, a1su);
 
     if (fails == 0) {
         std::printf("ALL GATES PASS\n");

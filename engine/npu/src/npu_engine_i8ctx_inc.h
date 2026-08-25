@@ -797,28 +797,22 @@ struct I8Ctx {
     // kernel's silu stage reads S'[j] per column instead of gs[0]/gs[4].
     void update_fused_header_i4(xrt::bo& bo, const std::vector<float>& scol,
                                 int n_ff, float ag, float qn_s, int N) {
-        // v59 per-tile BO (gu_i4_pack.h, TILE_TOTAL 8192): the per-token fold
-        // S' rides INSIDE each 8192-B tile's pad, rewritten every token
-        // (redundant but keeps the DMA streams uniform). Tile (ki, nt)
-        // covers GU cols [nt*128, nt*128+128). The pad layout math is the
-        // shared write_silu_pad_meta (gu_i4_pack.h) — the same code the
-        // packer's first-launch init uses, so the host cannot drift:
-        //   [6144, 6148)  Q      fold Q = 22 - s, s from the tile MIN |S'|
-        //                          (the fixed Q22 fold rounded small scales
-        //                          to zero)
-        //   [6656, 7168)  foldG  round(S'*2^Q)
-        //   [7168, 7680)  boundG (2^31-1)/|foldG| — c1g clamp, gQ safe
-        //   [7680, 8192)  boundU 4*((2^31-1)/|foldG|)+3 — c1u clamp for
-        //                          uQ=(c1u>>2)*foldG (v51 uQ = c1u*fold
-        //                          overflowed for |u|>512 -> zero pairs)
-        // The bf16 fold at [4864, 5120) is kept for the int8-fallback path.
+        // v65 per-tile BO (gu_i4_pack.h, TILE_TOTAL 8192): the aie2p
+        // object-fifo delivers only [0..5632) of each 8192-B tile, so the
+        // per-token silu metadata rides the CHUNKED [5120..5632) region
+        // (META_BASE): each col_group's 32 k-tiles carry a 512-B chunk
+        // (ki%4: foldG/boundG/boundU/Q+shG+shU), assembled by the kernel
+        // into C1 rows 1-4. The shared write_silu_pad_meta (gu_i4_pack.h)
+        // computes the fold — the same code the packer's first-launch init
+        // uses, so the host cannot drift.
         const size_t n_tiles = gu_i4_bo_size(KD, N) / GuI4Pack::TILE_TOTAL;
         const int n_tiles_n = N / 128;
         uint8_t* Bm = (uint8_t*)bo.map();
         for (size_t t = 0; t < n_tiles; t++) {
             int nt = (int)(t % (size_t)n_tiles_n);
+            int ki = (int)(t / (size_t)n_tiles_n);
             write_silu_pad_meta(Bm + t * GuI4Pack::TILE_TOTAL, scol.data(),
-                                nt, ag, qn_s, N);
+                                nt, ki, ag, qn_s, N);
         }
         bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
                 (size_t)gu_i4_bo_size(KD, N), 0);
