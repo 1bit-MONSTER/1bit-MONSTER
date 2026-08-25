@@ -67,8 +67,10 @@ jobs:
 
           echo ""
           echo "--- Totals ---"
-          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { sum { visits } } } } }" | \
-            jq '{ visits: (.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].sum.visits // 0), success: (.errors == null), error: (.errors[0].message // null) }'
+          TOTAL_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { sum { visits } } } } }")
+          TOTAL_VISITS=$(echo "$TOTAL_JSON" | jq -r '.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].sum.visits // 0')
+          echo "Total visits: $TOTAL_VISITS (window $FROM .. $TODAY)"
+          echo "$TOTAL_JSON" | jq -r 'if .errors then "query errors: \(.errors[0].message)" else empty end'
 
           echo ""
           echo "--- Top pages ---"
@@ -79,3 +81,52 @@ jobs:
           echo "--- Top referrers (how people got here) ---"
           gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { refererHost } sum { visits } } } } }" | \
             jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { referer: .dimensions.refererHost, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
+
+          echo ""
+          echo "--- Attribution: who shared what (share.html links) ---"
+          # share.html links carry utm_source=share, utm_medium=<app>, share=<handle>
+          # and team=<team>. requestQuery captures the query string, so each visit
+          # can be attributed back to a sharer + team + medium.
+          ATTRIBUTION_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 50, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath requestQuery } sum { visits } } } } }")
+          ATTRIBUTED=$(echo "$ATTRIBUTION_JSON" | jq -r '
+            if .data then
+              ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[]
+                | select(.dimensions.requestQuery != null)
+                | select(.dimensions.requestQuery | test("(^|[?&])(utm_source|share|team|ref)="))
+                | .sum.visits] | add // 0)
+            else -1 end')
+          if [ "$ATTRIBUTED" = "-1" ]; then
+            echo "Attribution query failed: $(echo "$ATTRIBUTION_JSON" | jq -r '.errors[0].message // "unknown"')"
+          else
+            echo "Attributed visits: $ATTRIBUTED of ${TOTAL_VISITS:-0} total (came through tracked share.html links)"
+            echo -e "views\tsharer\tteam\tmedium\tpath"
+            echo "$ATTRIBUTION_JSON" | jq -r '
+              if .data then
+                ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[]
+                  | select(.dimensions.requestQuery != null)
+                  | select(.dimensions.requestQuery | test("(^|[?&])(utm_source|share|team|ref)="))
+                  | . as $r
+                  | ($r.dimensions.requestQuery | ltrimstr("?") | split("&") | map(select(contains("=")) | split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries) as $q
+                  | { views: $r.sum.visits,
+                      sharer: ($q.share // "-"),
+                      team: ($q.team // "-"),
+                      medium: ($q.utm_medium // $q.utm_source // "-"),
+                      path: $r.dimensions.requestPath }]
+                 | sort_by(-.views) | .[:25][])
+                | "\(.views)\t\(.sharer)\t\(.team)\t\(.medium)\t\(.path)"
+              else empty end'
+          fi
+
+          echo ""
+          echo "--- Attribution summary (also on the Actions run page) ---"
+          if [ "${ATTRIBUTED:-0}" -gt 0 ] 2>/dev/null; then
+            {
+              echo "### 🎉 Attributed shares this window"
+              echo "**$ATTRIBUTED** of ${TOTAL_VISITS:-0} visits came through tracked share.html links — see the run log for who / team / medium."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### 📡 Attribution status"
+              echo "No attributed clicks yet — the RUM beacon is still aggregating (< 24h live). Once people use share.html links, this report names the sharer + team + medium."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
