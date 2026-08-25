@@ -1,0 +1,84 @@
+name: SEO Sync
+
+# Daily SEO refresh for the 1bit.MONSTER site. Runs scripts/seo_sync.py,
+# which derives the engine's CURRENT numbers offline (HF arch strings, arch
+# tokens, checkpoint coverage, vendored lemonade version) and diffs them
+# against what site/*.html claims. When something changed (a new HF arch
+# alias landed, a family token was added, the census re-swept, or the
+# vendored lemonade version bumped) it updates the SEO tags / stats / blog
+# card and opens a PR so the change ships to GitHub Pages + Cloudflare Pages.
+# No drift -> the run exits quietly and nothing is opened.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 5 * * *'   # 05:30 UTC, before the 06:00 analytics run
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  seo-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run SEO sync
+        id: sync
+        run: |
+          set -euo pipefail
+          OUT="$(python3 scripts/seo_sync.py)"
+          echo "$OUT"
+          echo "$OUT" > /tmp/seo_sync_out.txt
+          if echo "$OUT" | grep -qE '^(CHANGED|NEW):'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR when drift found
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DATE="$(date -u +%Y%m%d)"
+          BRANCH="seo/daily-$DATE"
+          if gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' | grep -q .; then
+            echo "PR for $BRANCH already open — nothing to do"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add site/ scripts/seo_sync.py
+          git commit -m "seo: daily sync $DATE — refresh site claims to current engine state"
+          git push origin "$BRANCH"
+
+          BODY="$(cat /tmp/seo_sync_out.txt)"
+          if echo "$BODY" | grep -q '^NEW:'; then
+            # Generated lemonade post: release specifics need a human/PR-agent pass.
+            {
+              echo "Automated daily SEO refresh (scripts/seo_sync.py). **Draft**: the generated lemonade post carries unverified release specifics — review before merge."
+              echo
+              echo '```'
+              echo "$BODY"
+              echo '```'
+            } > /tmp/seo_pr_body.md
+            gh pr create --base main --head "$BRANCH" --draft \
+              --title "seo: daily sync $DATE (lemonade bump)" \
+              --body-file /tmp/seo_pr_body.md
+          else
+            {
+              echo "Automated daily SEO refresh (scripts/seo_sync.py). Changes detected:"
+              echo
+              echo '```'
+              echo "$BODY"
+              echo '```'
+            } > /tmp/seo_pr_body.md
+            gh pr create --base main --head "$BRANCH" \
+              --title "seo: daily sync $DATE" \
+              --body-file /tmp/seo_pr_body.md
+          fi
