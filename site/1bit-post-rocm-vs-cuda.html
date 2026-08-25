@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>One binary, all formats | 1bit.MONSTER</title>
-  <meta name="description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
+  <title>ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER</title>
+  <meta name="description" content="ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD's stack." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta property="og:description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-binary-formats.html" />
+  <meta property="og:title" content="ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER" />
+  <meta property="og:description" content="ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD's stack." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-rocm-vs-cuda.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files." />
+  <meta name="twitter:title" content="ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER" />
+  <meta name="twitter:description" content="ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD's stack." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-binary-formats.html" />
-  <style>
+  <link rel="canonical" href="https://1bit.monster/1bit-post-rocm-vs-cuda.html" />
+<style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
     :root {
@@ -114,7 +114,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One binary, all formats | 1bit.MONSTER", "description": "Ternary and binary inference on NPU and GPU from a single engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, in 4,200 lines across 31 files.", "url": "https://1bit.monster/1bit-post-binary-formats.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-binary-formats.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER", "description": "ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine \u2014 1-bit matmuls, NPU offload, and why we bet on AMD's stack.", "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-rocm-vs-cuda.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -140,51 +140,32 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-binary-formats">
+    <article class="art container" data-od-id="1bit-post-rocm-vs-cuda">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-07-24</span>
-        <span class="tag">formats</span>
-        <span class="tag">quantization</span>
-        <span class="tag">npu</span>
+        <span class="tag">engine</span>
+        <span>2026-08-25</span>
       </div>
-      <h1>One binary, all formats</h1>
-      <p class="lead">Ternary and binary inference from a single engine, on both sides of the split: GPU and NPU. Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF all run on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, and the whole thing fits in 4,200 lines across 31 files.</p>
-
-      <div class="prose" data-od-id="body">
-
-        <h2>The format matrix</h2>
-        <p>One binary in the 1bit engine now covers the ternary and binary quantization range, and it does it on both sides of the split: GPU and NPU. Here is the full matrix as it stands.</p>
-        <table>
-          <thead><tr><th>Format</th><th>Class</th><th>Backends</th></tr></thead>
-          <tbody>
-            <tr><td>Q1_0</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>TQ1</td><td>ternary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>TQ2</td><td>ternary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>IQ1_S / IQ1_M</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-            <tr><td>BitNet GGUF</td><td>binary</td><td>HIP, Vulkan, XDNA 2</td></tr>
-          </tbody>
-        </table>
-
-        <h2>Same code, both sides</h2>
-        <p>This is not two implementations sharing a name. Each format runs on the GPU path through <span class="mono">HIP</span> and <span class="mono">Vulkan</span> and on the NPU path through <span class="mono">XDNA 2</span>, and the loader and the format logic are shared. When a format behaves, it behaves everywhere.</p>
-
-        <h2>Exact, not approximate</h2>
-        <p>Every format in the matrix is verified <b>exact</b> on real Strix Halo hardware. We do not count a format as done when it produces tokens; we count it when its output matches the reference, and the verification stays on the record rather than in a comment.</p>
-
-        <h2>The size of it</h2>
-        <p>All of it fits in <span class="mono">4,200 lines</span> across <span class="mono">31 files</span>. That is the number worth sitting with: a full ternary and binary format stack, two backends, and exact verification, without growing into a framework.</p>
-
-        <h2>The record</h2>
-        <p>One binary in the toolbox, every ternary and binary format it ships, and the same verified behavior on GPU and NPU. That is the definition of done for this pass, and the harness is in the repo for anyone who wants to rerun it.</p>
-
+      <h1>ROCm vs CUDA, from the 1-bit trenches</h1>
+      <p class="lead">We ship on ROCm, not CUDA, on purpose. Real kernels, real benchmarks, and the 1-bit reason AMD's stack wins for our use case.</p>
+      <div class="prose">
+        <h2>The setup</h2>
+        <p>The engine's backends run on the Ryzen AI NPU (Strix Halo, Kraken Point) and ROCm GPUs — with Vulkan and CPU as the fallback layer. We've shipped to real silicon on both AMD stacks, so the comparison below is from our kernel logs, not a vendor deck.</p>
+        <h2>Where ROCm wins for us</h2>
+        <p><b>1-bit arithmetic.</b> Our packed Q4NX path is addition-dominated — the kind of kernel NPU silicon is literally built for. The measured sprint on the NPU (244 → 3.4 ms/tok) came from matching dispatch to what the silicon does natively, and ROCm gives us the same direct-to-hardware access on dGPUs without a translation layer.</p>
+        <p><b>No cloud tax.</b> CUDA is the default because the datacenter is NVIDIA's. Local inference has no such gravity — the machine on your desk is more likely AMD, and the NPU in it is AMD silicon with first-class support in the engine.</p>
+        <p><b>One binary, both paths.</b> The engine detects the backend at load: <span class="mono">hip_1bp_gpu</span> for the 1-bit GPU path, <span class="mono">backend_npu</span> for the NPU, <span class="mono">cpu_generic</span> when neither is present. Same weights, same API.</p>
+        <h2>Where CUDA still leads (and we don't care)</h2>
+        <p>For training at scale, CUDA's ecosystem is unmatched — but the engine doesn't train. For inference on hardware you own, the gap is a story about datacenters, not about your laptop. 100% of HuggingFace models load either way; we'd rather run on the chip you have.</p>
+        <h2>The numbers that matter</h2>
+        <p>Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU: 13.65 tok/s decode and 221.96 tok/s prefill per AMD's official FastFlowLM figures, with our independent first pass at 75.65 tok/s via the Vulkan path on Strix Halo. That's a 35B-class model on a laptop's built-in NPU — the ROCm world's answer to 'CUDA only'.</p>
       </div>
     
     <section class="related">
       <h2>Related</h2>
+      <a href="https://1bit.monster/1bit-post-qwen36.html">Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU</a>
       <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
-      <a href="https://1bit.monster/1bit-post-fleet.html">Two PCs, two GPUs, zero cloud</a>
-      <a href="https://1bit.monster/1bit-post-halo-reviews.html">What the Ryzen AI Halo reviews didn't tell you</a>
+      <a href="https://1bit.monster/1bit-post-1775-models.html">One engine, 1,775 models</a>
     </section>
   </article>
   </main>
@@ -201,5 +182,7 @@
     </div>
   </footer>
 <script src="analytics.js"></script>
+
+  <script src="analytics.js"></script>
 </body>
 </html>
