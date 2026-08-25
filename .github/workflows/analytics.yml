@@ -18,12 +18,25 @@ jobs:
       - name: Fetch Cloudflare analytics
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_WA_TOKEN: ${{ secrets.CLOUDFLARE_WA_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           TOKEN="$CLOUDFLARE_API_TOKEN"
           ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
           H="Authorization: Bearer $TOKEN"
           api() { curl -s -H "$H" "$@"; }
+
+          # RUM data queries go through the GraphQL Analytics API, which
+          # authenticates with the Account Analytics: Read permission (a
+          # standard token permission). Prefer the dedicated
+          # CLOUDFLARE_WA_TOKEN when it is set; otherwise fall back to the
+          # Pages token (which fails with a clear error message).
+          RUM_TOKEN="${CLOUDFLARE_WA_TOKEN:-$TOKEN}"
+          gql() {
+            curl -s -X POST "https://api.cloudflare.com/client/v4/graphql" \
+              -H "Authorization: Bearer $RUM_TOKEN" -H "Content-Type: application/json" \
+              -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"
+          }
 
           echo "=== Cloudflare Pages: 1bit-monster ==="
           api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/1bit-monster" | \
@@ -54,15 +67,15 @@ jobs:
 
           echo ""
           echo "--- Totals ---"
-          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/totals?dateFrom=$FROM&dateTo=$TODAY" | \
-            jq '{ visits: .result.totals.visits, visitors: .result.totals.visitors, pageviews: .result.totals.pageviews, success: .success }'
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { sum { visits } } } } }" | \
+            jq '{ visits: (.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].sum.visits // 0), success: (.errors == null), error: (.errors[0].message // null) }'
 
           echo ""
           echo "--- Top pages ---"
-          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/aggregate?dateFrom=$FROM&dateTo=$TODAY&dimensions=path" | \
-            jq -r '[.result.dimensions.path[]? | { path: .key, views: .value }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.path)"'
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }" | \
+            jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { path: .dimensions.requestPath, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.path)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
 
           echo ""
           echo "--- Top referrers (how people got here) ---"
-          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/rum/v2/$SITE_TOKEN/aggregate?dateFrom=$FROM&dateTo=$TODAY&dimensions=referer" | \
-            jq -r '[.result.dimensions.referer[]? | { referer: .key, views: .value }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)"'
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { refererHost } sum { visits } } } } }" | \
+            jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { referer: .dimensions.refererHost, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
