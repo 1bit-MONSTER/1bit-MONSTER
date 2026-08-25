@@ -193,7 +193,11 @@ def main():
         print(f"  ? UNVERIFIABLE {mid} ({why}) — gated repos need a token; "
               f"retried next run")
 
-    return 1 if (uncovered or unverifiable) else 0
+    # Only uncovered classes are a real alert. Unverifiable (gated/no-config)
+    # models are expected — HF gates repos without a token, and a missing
+    # config is not a coverage breach. Returning 1 on unverifiable made the
+    # daily systemd timer fail on routine gated uploads.
+    return 1 if uncovered else 0
 
 
 if __name__ == "__main__":
