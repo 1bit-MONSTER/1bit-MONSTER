@@ -68,20 +68,22 @@
     <label>Shareable link</label>
     <textarea id="url" readonly></textarea>
     <span class="copy" onclick="copy()">copy</span>
-    <div class="hint">The <code>utm_source</code>/<code>team</code> params let analytics attribute this share back to you. Share the whole link as-is.</div>
+    <div class="hint">The <code>/s/&lt;you&gt;/&lt;team&gt;/&lt;medium&gt;</code> path lets analytics attribute this share back to you. Share the whole link as-is.</div>
   </div>
 
   <script src="analytics.js"></script>
   <script>
     function build() {
+      // Path-based attribution: /s/<sharer>/<team>/<medium>?next=<target>
+      // Cloudflare Web Analytics does not log query strings, so the sharer,
+      // team and medium live in the PATH (recorded by RUM via requestPath);
+      // the target travels in ?next= and 404.html redirects to it.
+      var s = encodeURIComponent(document.getElementById("sharer").value.trim() || "-");
+      var t = encodeURIComponent(document.getElementById("team").value.trim() || "-");
+      var m = encodeURIComponent(document.getElementById("medium").value || "link");
       var base = document.getElementById("page").value;
-      var u = new URL(base);
-      u.searchParams.set("utm_source", "share");
-      u.searchParams.set("utm_medium", document.getElementById("medium").value || "link");
-      var s = document.getElementById("sharer").value.trim();
-      var t = document.getElementById("team").value.trim();
-      if (s) u.searchParams.set("share", s);
-      if (t) u.searchParams.set("team", t);
+      var u = new URL("https://1bit.monster/s/" + s + "/" + t + "/" + m);
+      u.searchParams.set("next", base);
       document.getElementById("url").value = u.toString();
       document.getElementById("out").style.display = "block";
     }
