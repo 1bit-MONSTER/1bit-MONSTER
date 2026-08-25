@@ -28,6 +28,15 @@
       var v = p.get(k);
       if (v) out[k] = v;
     });
+    // Path-based attribution: /s/<sharer>/<team>/<medium> (share.html links).
+    // Cloudflare Web Analytics does not log query strings, so the attribution
+    // travels in the path; 404.html redirects to the target afterwards.
+    var seg = (window.location.pathname || "").split("/").filter(Boolean);
+    if (seg[0] === "s" && seg.length >= 4) {
+      if (!out.share) out.share = decodeURIComponent(seg[1]);
+      if (!out.team) out.team = decodeURIComponent(seg[2]);
+      if (!out.utm_medium) out.utm_medium = decodeURIComponent(seg[3]);
+    }
     return out;
   }
 

@@ -84,36 +84,40 @@ jobs:
 
           echo ""
           echo "--- Attribution: who shared what (share.html links) ---"
-          # share.html links carry utm_source=share, utm_medium=<app>, share=<handle>
-          # and team=<team>. requestQuery captures the query string, so each visit
-          # can be attributed back to a sharer + team + medium.
-          ATTRIBUTION_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 50, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath requestQuery } sum { visits } } } } }")
+          # share.html links carry the attribution in the PATH (/s/<sharer>/<team>/<medium>)
+          # because Cloudflare Web Analytics does not log query strings (documented
+          # limitation). 404.html fires the RUM beacon on the /s/ URL, so requestPath
+          # records the full attribution before redirecting to the target.
+          ATTRIBUTION_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 50, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }")
           ATTRIBUTED=$(echo "$ATTRIBUTION_JSON" | jq -r '
             if .data then
               ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[]
-                | select(.dimensions.requestQuery != null)
-                | select(.dimensions.requestQuery | test("(^|[?&])(utm_source|share|team|ref)="))
+                | select(.dimensions.requestPath != null and (.dimensions.requestPath | startswith("/s/")))
                 | .sum.visits] | add // 0)
             else -1 end')
           if [ "$ATTRIBUTED" = "-1" ]; then
             echo "Attribution query failed: $(echo "$ATTRIBUTION_JSON" | jq -r '.errors[0].message // "unknown"')"
           else
             echo "Attributed visits: $ATTRIBUTED of ${TOTAL_VISITS:-0} total (came through tracked share.html links)"
-            echo -e "views\tsharer\tteam\tmedium\tpath"
+            echo -e "views\tsharer\tteam\tmedium"
             echo "$ATTRIBUTION_JSON" | jq -r '
               if .data then
                 ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[]
-                  | select(.dimensions.requestQuery != null)
-                  | select(.dimensions.requestQuery | test("(^|[?&])(utm_source|share|team|ref)="))
+                  | select(.dimensions.requestPath != null and (.dimensions.requestPath | startswith("/s/")))
                   | . as $r
-                  | ($r.dimensions.requestQuery | ltrimstr("?") | split("&") | map(select(contains("=")) | split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries) as $q
+                  | ($r.dimensions.requestPath | split("/") | map(select(length > 0))) as $seg
                   | { views: $r.sum.visits,
-                      sharer: ($q.share // "-"),
-                      team: ($q.team // "-"),
-                      medium: ($q.utm_medium // $q.utm_source // "-"),
-                      path: $r.dimensions.requestPath }]
+                      sharer: $seg[1],
+                      team: $seg[2],
+                      medium: ($seg[3]
+                        | if . == "teams" then "Teams"
+                          elif . == "discord" then "Discord"
+                          elif . == "slack" then "Slack"
+                          elif . == "email" then "Email"
+                          elif . == "social" then "Social"
+                          else . end) }]
                  | sort_by(-.views) | .[:25][])
-                | "\(.views)\t\(.sharer)\t\(.team)\t\(.medium)\t\(.path)"
+                | "\(.views)\t\(.sharer)\t\(.team)\t\(.medium)"
               else empty end'
           fi
 
