@@ -13,49 +13,69 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Fetch Cloudflare analytics
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_WA_TOKEN: ${{ secrets.CLOUDFLARE_WA_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           TOKEN="$CLOUDFLARE_API_TOKEN"
           ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
+          H="Authorization: Bearer $TOKEN"
+          api() { curl -s -H "$H" "$@"; }
 
-          echo "=== Project Info ==="
-          curl -s -H "Authorization: Bearer $TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/1bit-systems" | \
+          # RUM data queries go through the GraphQL Analytics API, which
+          # authenticates with the Account Analytics: Read permission (a
+          # standard token permission). Prefer the dedicated
+          # CLOUDFLARE_WA_TOKEN when it is set; otherwise fall back to the
+          # Pages token (which fails with a clear error message).
+          RUM_TOKEN="${CLOUDFLARE_WA_TOKEN:-$TOKEN}"
+          gql() {
+            curl -s -X POST "https://api.cloudflare.com/client/v4/graphql" \
+              -H "Authorization: Bearer $RUM_TOKEN" -H "Content-Type: application/json" \
+              -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"
+          }
+
+          echo "=== Cloudflare Pages: 1bit-monster ==="
+          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/1bit-monster" | \
             jq '{ name: .result.name, domains: .result.domains }'
 
           echo ""
-          echo "=== Deployments (last 5) ==="
-          curl -s -H "Authorization: Bearer $TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/1bit-systems/deployments?per_page=5" | \
+          echo "=== Deployments (last 3) ==="
+          api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/1bit-monster/deployments?per_page=3" | \
             jq '[.result[]? | { created_on, url, latest_stage: ([.stages[]? | select(.ended_on == null) | .name] | first // "done") }]'
 
           echo ""
-          echo "=== Web Analytics (last 7d) ==="
-          # Find zone ID for 1bit.monster
-          ZONE_ID=$(curl -s -H "Authorization: Bearer $TOKEN" \
-            "https://api.cloudflare.com/client/v4/zones?name=1bit.monster" | \
-            jq -r '.result[0].id // empty')
+          echo "=== Web Analytics (RUM) ==="
+          # The RUM site token is public by design (it ships inside the beacon on
+          # every page), so read it from the committed beacon loader instead of the
+          # rum/site_info/list API (which needs a token with the Web Analytics
+          # permission group that the Pages deploy token does not have).
+          SITE_TOKEN=$(sed -n 's/.*var TOKEN = "\([0-9a-f]\{32\}\)".*/\1/p' site/analytics.js | head -1)
 
-          if [ -n "$ZONE_ID" ]; then
-            echo "Zone: 1bit.monster (ID: $ZONE_ID)"
-            curl -s -H "Authorization: Bearer $TOKEN" \
-              "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/analytics/dashboard?since=-2592000&continuous=true" | \
-              jq '{ 
-                visitors: .result.totals.uniques.all, 
-                page_views: .result.totals.pageviews.all, 
-                requests: .result.totals.requests.all,
-                bandwidth: .result.totals.bandwidth.all,
-                threats: .result.totals.threats.all
-              }'
-          else
-            echo "No zone found for 1bit.monster — analytics only on Cloudflare dashboard"
+          if [ -z "$SITE_TOKEN" ]; then
+            echo "No beacon token found in site/analytics.js — inject it first (see the CF Web Analytics Bootstrap workflow)."
+            exit 0
           fi
+          echo "Site token: ${SITE_TOKEN:0:8}… (read from site/analytics.js)"
+
+          TODAY=$(date -u +%Y-%m-%d)
+          FROM=$(date -u -d "7 days ago" +%Y-%m-%d)
+          echo "Window: $FROM .. $TODAY"
 
           echo ""
-          echo "=== Account-level summary ==="
-          curl -s -H "Authorization: Bearer $TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects" | \
-            jq '[.result[]? | { name, subdomain, pages: (.pages // 0) }]'
+          echo "--- Totals ---"
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { sum { visits } } } } }" | \
+            jq '{ visits: (.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].sum.visits // 0), success: (.errors == null), error: (.errors[0].message // null) }'
+
+          echo ""
+          echo "--- Top pages ---"
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }" | \
+            jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { path: .dimensions.requestPath, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.path)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
+
+          echo ""
+          echo "--- Top referrers (how people got here) ---"
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { refererHost } sum { visits } } } } }" | \
+            jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { referer: .dimensions.refererHost, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)") else "RUM query failed: \(.errors[0].message // "unknown")" end'

@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER</title>
   <meta name="description" content="A laptop, a disassembler and no docs: a 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries and 209 xclbins, replaced with open C++ in four days. The hero story, with the honest corrections." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER" />
+  <meta property="og:description" content="A laptop, a disassembler and no docs: a 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries and 209 xclbins, replaced with open C++ in four days. The hero story, with the honest corrections." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-npu-reversal.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER" />
+  <meta name="twitter:description" content="A laptop, a disassembler and no docs: a 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries and 209 xclbins, replaced with open C++ in four days. The hero story, with the honest corrections." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-npu-reversal.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
@@ -102,6 +113,9 @@
       .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
     }
   </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER", "description": "A laptop, a disassembler and no docs: a 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries and 209 xclbins, replaced with open C++ in four days. The hero story, with the honest corrections.", "url": "https://1bit.monster/1bit-post-npu-reversal.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-npu-reversal.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
 </head>
 <body>
   <header class="topnav" data-od-id="topnav">
@@ -143,7 +157,7 @@
         <p>So the question is not "is it fast," but "can anyone other than AMD make it go at all." We decided the honest answer should be yes.</p>
 
         <h2>The dismantling</h2>
-        <p>The whole thing came apart in four days: each proprietary layer disassembled, each dispatch traced, each xclbin decoded until the operation it performed was obvious. Point the disassembler at the runtime, then point a C++ compiler at the result. Around <span class="mono">~1,800+</span> hours of engineering, all of it open source and MIT.</p>
+        <p>The whole thing came apart in four days: each proprietary layer disassembled, each dispatch traced, each xclbin decoded until the operation it performed was obvious. Point the disassembler at the runtime, then point a C++ compiler at the result. Around <span class="mono">~600</span> hours of engineering, all of it open source and MIT.</p>
         <p>The thing that came out the other side is a single small binary that drives the NPU without FastFlowLM. It is not just a re-implementation but the better half of an engine, and it is the reason the rest of this site exists.</p>
 
         <h2>The sprint: 244 ms/tok to 3.4 ms/tok</h2>
@@ -190,5 +204,6 @@
       <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
     </div>
   </footer>
+<script src="analytics.js"></script>
 </body>
 </html>

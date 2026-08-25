@@ -1,6 +1,8 @@
 name: NPU Driver Reset + Benchmark
 on:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   reset-and-bench:
     runs-on: [self-hosted, strix-halo]
