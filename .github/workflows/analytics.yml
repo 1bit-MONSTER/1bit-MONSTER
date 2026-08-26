@@ -83,6 +83,25 @@ jobs:
             jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { referer: .dimensions.refererHost, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
 
           echo ""
+          echo "--- RUM health check (token drift detection) ---"
+          # If the beacon token reports no data but the account has RUM data, the
+          # site token in analytics.js has drifted from the real RUM site. Discover
+          # the actual siteTag(s) so the report keeps working (2026-08-26: the
+          # beacon was serving a stale token 33fb8448… while the real RUM site
+          # 87349337… collected the data).
+          if [ "${TOTAL_VISITS:-0}" -eq 0 ] 2>/dev/null; then
+            echo "⚠ Site token ${SITE_TOKEN:0:8}… has NO data in this window — checking for token drift:"
+            gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { siteTag requestPath } sum { visits } } } } }" | \
+              jq -r 'if .data then
+                       ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] |
+                         { tag: .dimensions.siteTag, path: .dimensions.requestPath, views: .sum.visits }]
+                        | .[] | "\(.tag[0:8])…\t\(.views)\t\(.path)")
+                     else "health query failed: \(.errors[0].message // \"unknown\")" end'
+          else
+            echo "Site token has data — no drift detected."
+          fi
+
+          echo ""
           echo "--- Attribution: who shared what (share.html links) ---"
           # share.html links carry the attribution in the PATH (/s/<sharer>/<team>/<medium>)
           # because Cloudflare Web Analytics does not log query strings (documented
@@ -119,6 +138,21 @@ jobs:
                  | sort_by(-.views) | .[:25][])
                 | "\(.views)\t\(.sharer)\t\(.team)\t\(.medium)"
               else empty end'
+          fi
+
+          echo ""
+          echo "=== Zone analytics (1bit.monster — real edge traffic, independent of RUM) ==="
+          ZONE_ID=$(curl -s -H "Authorization: Bearer $RUM_TOKEN" "https://api.cloudflare.com/client/v4/zones?name=1bit.monster" | jq -r '.result[0].id // empty')
+          if [ -n "$ZONE_ID" ]; then
+            echo "Zone: 1bit.monster ($ZONE_ID)"
+            gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequests1dGroups(limit: 10, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [date_ASC]) { dimensions { date } sum { requests pageViews } } } } }" | \
+              jq -r 'if .data then
+                       ([.data.viewer.zones[0].httpRequests1dGroups[] |
+                         { date: .dimensions.date, requests: .sum.requests, pageViews: .sum.pageViews }]
+                        | .[] | "\(.date)\t\(.requests) req\t\(.pageViews) pv")
+                     else "zone analytics query failed: \(.errors[0].message // \"unknown\")" end'
+          else
+            echo "Zone 1bit.monster not visible to the analytics token (need Zone: Read on the WA token)."
           fi
 
           echo ""
