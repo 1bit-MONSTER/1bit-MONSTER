@@ -163,4 +163,6 @@ build-asan/
 x86simulator_output/
 Work/
 build-1715/
+# ── hw/1bit-llm generated sim/build outputs (DESIGN.md §6: gitignored) ──
+hw/1bit-llm/sim/
 .gitnexus/
