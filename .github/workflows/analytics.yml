@@ -96,7 +96,7 @@ jobs:
                        ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] |
                          { tag: .dimensions.siteTag, path: .dimensions.requestPath, views: .sum.visits }]
                         | .[] | "\(.tag[0:8])…\t\(.views)\t\(.path)")
-                     else "health query failed: \(.errors[0].message // \"unknown\")" end'
+                     else "health query failed: \(.errors[0].message // "unknown")" end'
           else
             echo "Site token has data — no drift detected."
           fi
@@ -150,7 +150,7 @@ jobs:
                        ([.data.viewer.zones[0].httpRequests1dGroups[] |
                          { date: .dimensions.date, requests: .sum.requests, pageViews: .sum.pageViews }]
                         | .[] | "\(.date)\t\(.requests) req\t\(.pageViews) pv")
-                     else "zone analytics query failed: \(.errors[0].message // \"unknown\")" end'
+                     else "zone analytics query failed: \(.errors[0].message // "unknown")" end'
           else
             echo "Zone 1bit.monster not visible to the analytics token (need Zone: Read on the WA token)."
           fi
