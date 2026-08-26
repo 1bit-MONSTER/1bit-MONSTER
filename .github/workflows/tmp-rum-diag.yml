@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 10
     if: github.event.pull_request.head.repo.full_name == '1bit-MONSTER/1bit-MONSTER'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825fa76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: RUM + zone diagnostic
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
