@@ -9,6 +9,11 @@ set -euo pipefail
 ISO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD="${ISO_DIR}/build/payload"
 mkdir -p "$PAYLOAD"
+# All scratch space (pip staging, wheel unzip, nested-tar extraction) lives
+# under the payload dir, which is on the big disk — /tmp is often a small
+# tmpfs and the extracted TheRock wheel alone is ~5 GB.
+export TMPDIR="${PAYLOAD}/.tmp"
+mkdir -p "$TMPDIR"
 
 THEROCK_VER="10.1.0a20260822"
 # Where to look for a local TheRock pip-SDK install when the exact pinned
@@ -59,9 +64,6 @@ vendor_therock() {
   local tmp_pip tmp_unzip whl
 
   tmp_pip="$(mktemp -d)"
-  # pip stages downloads/unpacks under $TMPDIR; point it at the payload dir
-  # (usually on the big disk) so a full /tmp tmpfs can't break the fetch.
-  mkdir -p "${PAYLOAD}/.pip-tmp"
   if TMPDIR="${PAYLOAD}/.pip-tmp" pip download "${pip_pkg}==${THEROCK_VER}" \
       --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
       --no-deps -d "$tmp_pip" > /tmp/therock-pip.log 2>&1; then
