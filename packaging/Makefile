@@ -31,6 +31,11 @@ stage:
 	cp $(BUILD_DIR)/libgguf_reader.a    $(STAGE)/usr/lib/1bit/
 	cp $(BUILD_DIR)/libvl_image.a       $(STAGE)/usr/lib/1bit/
 	cp -r $(BUILD_DIR)/tools/video-lora/vulkan/shaders $(STAGE)/usr/share/1bit/shaders 2>/dev/null || true
+	# ZINC Vulkan shaders (embed.spv, flash_attn.spv, rms_norm_mul.spv, …) —
+	# the Vulkan backend resolves them at runtime from /usr/share/1bit-monster/shaders
+	# (see src/backend_zinc.cpp zinc_resolve_shader_dir). Without them the Vulkan
+	# backend fails shader load and any Vulkan-routed model can't run.
+	cp -r $(BUILD_DIR)/zinc_cpp_build/shaders $(STAGE)/usr/share/1bit-monster/shaders 2>/dev/null || true
 	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/ 2>/dev/null || true
 	@echo "staged $(VERSION) -> $(STAGE)"
 
