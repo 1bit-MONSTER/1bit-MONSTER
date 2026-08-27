@@ -64,10 +64,9 @@ package-tarball: stage
 	@echo "tarball: build/1bit-monster-$(VERSION)-linux-amd64.tar.gz"
 
 package-appimage: stage
-	mkdir -p $(STAGE)/usr/share/applications
+	mkdir -p $(STAGE)/usr/share/applications $(STAGE)/usr/share/icons
 	cp ../packaging/appimage/AppDir/1bit.desktop $(STAGE)/usr/share/applications/
 	cp ../packaging/appimage/AppDir/1bit.svg $(STAGE)/usr/share/icons/
-	mkdir -p $(STAGE)/usr/share/icons
 	@echo "AppDir staged at $(STAGE) — run appimagetool to bundle"
 
 package-rpm: stage
