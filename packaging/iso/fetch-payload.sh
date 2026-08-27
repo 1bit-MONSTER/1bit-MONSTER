@@ -138,12 +138,18 @@ vendor_therock() {
 
 echo "-- TheRock runtime libs ${THEROCK_VER}: rocm-sdk-devel --"
 # unified_server dynamically links against libhipblas/libamdhip64/libamd_comgr/
-# libroctx64 (HIP runtime + comgr) and libomp — these ship in rocm-sdk-devel
-# and rocm-sdk-core, the two payloads fetched below. Without them the
-# appliance's API service fails to start at all (dynamic linker can't resolve
-# these at exec time) — found by actually booting a built ISO in QEMU and
-# inspecting the failing systemd unit.
+# libroctx64 (HIP runtime + comgr) and libomp — these ship in rocm-sdk-devel,
+# rocm-sdk-libraries and rocm-sdk-core, the three payloads fetched below.
+# Without them the appliance's API service fails to start at all (dynamic
+# linker can't resolve these at exec time) — found by actually booting a
+# built ISO in QEMU and inspecting the failing systemd unit. NOTE: in the
+# 10.x nightly scheme rocm-sdk-devel's lib/*.so.N entries are RELATIVE
+# SYMLINKS into ../../_rocm_sdk_libraries/lib/ — the real files live in
+# rocm-sdk-libraries, so all three packages must ship together or the
+# symlinks dangle and the API service dies on missing libhipblas.so.3.
 vendor_therock "rocm-sdk-devel" "_rocm_sdk_devel" "therock-${THEROCK_VER}-devel.tar.gz"
+
+vendor_therock "rocm-sdk-libraries" "_rocm_sdk_libraries" "therock-${THEROCK_VER}-libraries.tar.gz"
 
 echo "-- TheRock core runtime ${THEROCK_VER}: rocm-sdk-core --"
 vendor_therock "rocm-sdk-core" "_rocm_sdk_core" "therock-${THEROCK_VER}-core.tar.gz"
