@@ -2433,6 +2433,19 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "zzjrabbit22") == 0) return RCPP_ARCH_ZZJRABBIT22;
     if (strcmp(s, "zzjrabbit3") == 0) return RCPP_ARCH_ZZJRABBIT3;
     if (strcmp(s, "zzjrabbitmodel") == 0) return RCPP_ARCH_ZZJRABBIT;
+    // ── 2026-08-27 census watcher first-run findings ──
+    // Testing/hf_new_models.py flagged these classes as UNCOVERED on its
+    // first CI run; each is a variant of an already-mapped family (class
+    // names verified against live HF configs 2026-08-27). baretorch is
+    // intentionally NOT mapped — cs_lrad chunked-state linear-recurrent is
+    // a genuinely new architecture (engine work, not an alias).
+    if (strcmp(s, "glm5next") == 0) return RCPP_ARCH_LLAMA;            // Glm5NextForConditionalGeneration (GLM-5.3-Flash)
+    if (strcmp(s, "glm5_next") == 0) return RCPP_ARCH_LLAMA;           // HF model_type
+    if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
+    if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
+    if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
+    if (strcmp(s, "qwen4exp") == 0) return RCPP_ARCH_QWEN3NEXT;        // Qwen4ExpForConditionalGeneration (Qwen3.8-Flash-Next, GDN)
+    if (strcmp(s, "qwen4_exp") == 0) return RCPP_ARCH_QWEN3NEXT;       // HF model_type
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
 }
