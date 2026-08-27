@@ -53,6 +53,22 @@ Boots the ISO in headless QEMU/KVM (`-enable-kvm -cpu host`, needs the
 SSH that the engine, driver holds, kernel cmdline, Thunderbolt daemon, and
 API health endpoint all came up correctly. **Status: PASS** (2026-08-27,
 `1bit-monster-26.04-amd64.iso` built from `feat/appliance-iso-finish`).
+Re-verified 2026-08-27: rebuilt from the cached payload and booted again in
+QEMU — PASS, `/v1/health` returned `unified-server-1.0` with the full backend
+list (packaging/iso untouched since the original PASS commit `4aca2306`).
+
+## Branch lineage / consolidation (2026-08-27)
+
+- `feat/appliance-iso-finish` — keeper lineage; all ISO/Flatpak/RPM work
+  lives here (plan Tasks 1–8 all `- [x]`).
+- `rebuild/iso-appliance` — strixhalo's rebuild continuation; its only
+  commit (`96578e2c`, `packaging/AppRun` launcher) was a byte-identical
+  duplicate of the existing `packaging/appimage/AppDir/AppRun` and was
+  self-reverted (`d137a50e`), so the branch nets to **zero** content vs this
+  one — close/archive it.
+- `feature/appliance-iso` — original generation (TheRock 7.14 era), fully
+  superseded; lineage assessment recommending closure:
+  `docs/iso-lineage-assessment-2026-08-27.md` (on that branch).
 
 ## Real-hardware validation
 
