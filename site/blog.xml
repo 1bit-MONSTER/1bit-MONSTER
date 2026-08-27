@@ -6,7 +6,42 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Tue, 25 Aug 2026 16:57:04 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 27 Aug 2026 03:02:48 +0000</lastBuildDate>
+    <item>
+      <title>Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</title>
+      <link>https://1bit.monster/1bit-post-lemonade-v1180.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1180.html</guid>
+      <pubDate>Thu, 27 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Lemonade v11.8.0 re-vendored into the 1bit.MONSTER engine: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume + rate limits, cloud wire_format passthrough, and our own merged PR in the changelog.</description>
+    </item>
+    <item>
+      <title>One engine, 1,775 models</title>
+      <link>https://1bit.monster/1bit-post-1775-models.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-1775-models.html</guid>
+      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <description>One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. The 1-bit engine that runs every model you can download.</description>
+    </item>
+    <item>
+      <title>Local RAG with our own embeddings</title>
+      <link>https://1bit.monster/1bit-post-local-rag.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-local-rag.html</guid>
+      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <description>The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate.</description>
+    </item>
+    <item>
+      <title>What 1-bit actually does to a model</title>
+      <link>https://1bit.monster/1bit-post-1bit-explained.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-1bit-explained.html</guid>
+      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <description>1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions. The real numbers from the 1bit.MONSTER engine, measured not projected.</description>
+    </item>
+    <item>
+      <title>ROCm vs CUDA, from the 1-bit trenches</title>
+      <link>https://1bit.monster/1bit-post-rocm-vs-cuda.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-rocm-vs-cuda.html</guid>
+      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <description>ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD&#x27;s stack.</description>
+    </item>
     <item>
       <title>Lemonade v11.7.0, and how we stay current with the SDK</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1170.html</link>

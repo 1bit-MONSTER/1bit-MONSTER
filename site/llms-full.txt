@@ -304,6 +304,24 @@ The embedded Lemonade server core is re-vendored to v11.7.0 — new models, a re
 
 ---
 
+# Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER
+
+Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo
+
+The release that takes the SDK to 15 backends
+
+ds4: DwarfStar, DeepSeek V4 Flash, Strix Halo only
+
+What else landed
+
+The re-vendor, repeatable
+
+Run it
+
+AMD shipped the 15-backend Lemonade SDK — and the new one is literally built for our hardware. DwarfStar (ds4) runs DeepSeek V4 Flash on Strix Halo's gfx1151, and the whole release is now compiled into the same binary as our engine. On August 26 AMD shipped Lemonade v11.8.0 — the release that pushes the SDK to 15 backends — and the 1bit.MONSTER engine re-vendored its embedded server core the same day. Because we embed Lemonade's server core as a library (compiled into build/1bit , no subprocess, no wrappers), every feature in the release arrived in our binary the moment the re-vendor landed: all 15 backends, the router, the full API surface, and every breaking change. It was also a notably personal release for this project: the changelog credits @bong-water-water-bong — our PR #2462, cancelling model downloads on Ctrl+C via a libcurl progress callback, shipped upstream and now runs inside our own embed. The headline backend is ds4 (DwarfStar4) — antirez's self-contained DeepSeek V4 inference engine with an OpenAI-compatible ds4-server . The Lemonade catalog entry is DeepSeek-V4-Flash-IQ2XXS-DS4 (chat, reasoning, tool-calling), and the support row is refreshingly specific: Linux, ROCm, gfx1151 only — "Prebuilt ds4 for AMD Strix Halo" . That is exactly the silicon our inference box runs. The build is pinned ( b0001 ) from lemonade-sdk/ds4-rocm , which compiles a pinned upstream commit and bundles the ROCm runtime alongside the binary — so ds4 needs no system ROCm install, and it stays out of the way on machines without a Strix Halo GPU. Experimental for now, chat-mode only, but it is compiled into our server core and ready to surface on strixhalo. New catalog models: RPG-HaloTales-V2, Flux-2-Klein-4B/9B, and new OpenMOSS voice-design and sound-effect models — all verified live in our 124-model registry. Cloud providers gained custom auth header names/prefixes and byte-for-byte Anthropic Messages passthrough via wire_format . Downloads can be cancelled with Ctrl+C and resumed, capped by a new download_rate_limit config key, with TCP keepalive and streaming heartbeats keeping long connections alive. A lemonade update-models command plus global and per-model auto-update settings keep installed models current. The breaking changes are all server-side and all in our binary: --port / --host are now ephemeral overrides, custom *_args precedence was reworked, llama.cpp defaults to --parallel 1 , telemetry attributes moved to the standard session.id / user.id keys, whisper transcription defaults to auto-detected language, and the undocumented /v1/params routes are gone. This was the second run of the loop we formalized with v11.7.0: pull the pinned commit, re-apply the embeddability patch, fix any engine-facing API drift, build, smoke-test. v11.8.0 changed the Server constructor (new config_dir parameter) — both of our embed call sites were updated in the same commit. The local patch (CMAKE_CURRENT_SOURCE_DIR, system json/httplib reuse, PUBLIC include dirs, guarded test police) applied clean with no new guards needed. One behavior change worth knowing: /v1/models now hides backends with no runnable models on the host — the full registry is behind ?show_all=true . On a non-Strix-Halo machine ds4 quietly filters itself out; on strixhalo it appears automatically. 15 backends in one ELF, the 15th built for the exact GPU we own. The SDK sync loop keeps it that way after every upstream release. build/1bit unified --lemonade --port 8088 — the same binary serves all 15 backends through the OpenAI-compatible API. On a Strix Halo box, DeepSeek-V4-Flash-IQ2XXS-DS4 is one /v1/chat/completions call away, ROCm runtime bundled, no system install.
+
+---
+
 # Local RAG with our own embeddings | 1bit.MONSTER
 
 Local RAG with our own embeddings
@@ -537,6 +555,14 @@ Made on demand. Priced in dollars.
 Merch aside, the engine is free.
 
 Cart 0 1bit.MONSTER · physical Printed hardware for the people who run it. Every item below is made on demand and priced in real dollars. Every order ships with a free 1bit lanyard, a three-pack of stickers, and a mystery sticker we never sell separately. catalog · in stock Premium cotton, black. The words that started it all, printed italic serif across the chest, 1bit.MONSTER lockup on the left. Unisex S-3XL. Navy cotton, edition print. "SORRY" in italic serif with an AMD chip mark, for the people who read the xclbins. Unisex S-3XL. Black tee, chest print. The number on the box, worn on the body. XDNA 2 · 32 tiles. Unisex S-3XL. Black tee, chest print. XDNA 2 chips are not supposed to do this. Unisex S-3XL. Private AI, public drip. JARVIS lockup on chest. Unisex S-3XL. Heavyweight fleece, black. 1bit.MONSTER on chest, "One engine. Every model. Any chip." across the back. S-3XL. Matte black ceramic. "1bit MONSTER" up front, "94 tok/s · zero cloud" around the side. Dishwasher safe. 20oz vacuum-insulated stainless steel. "100% LOCAL AI" plus the 1bit lockup. 24 hours cold, zero cloud. Ten die-cut vinyl stickers in the full design language. Weatherproof, 3×3. Every pack includes a bonus mystery sticker. The 1bit mark, "94 tok/s", and "NPU UNLOCKED". Die-cut vinyl, 3×3, weatherproof. Six sheets in the design language. Lasts 3-5 days, waterproof. Flex your NPU at the next conference. single stickers SKU 1BT-STK-001 Round die-cut. "One engine. Every model. Any chip." SKU 1BT-STK-002 Round die-cut. Measured, not marketed. SKU 1BT-STK-003 Round die-cut. XDNA 2 · 32 tiles. SKU 1BT-STK-004 Warning-triangle die-cut. For the brave. SKU 1BT-STK-005 Die-cut chip. Reverse-engineered in 4 days. SKU 1BT-STK-006 Round die-cut. Private AI, on-device, zero cloud. SKU 1BT-STK-007 Round die-cut. 100% C++23 · one binary, any chip. SKU 1BT-STK-008 Round die-cut. We unlocked the NPU, then made stickers. No minimum, no fine print. Three things ride along on every shipment, no matter what you buy. Die-cut vinyl. The 1bit mark, "94 tok/s", and "NPU UNLOCKED". Black polyester with a repeating "1bit.monster" weave and a metal clip. Limited edition, never sold separately. You get what you get. the fine print Everything is printed to order, so allow about a week between ordering and shipping. Tracking lands by email. Calculated at checkout. The exact rate is worked out from your address and shown before you pay. Once production pays for itself, everything else funds the engine. MIT license stays MIT. Nothing here is required to run the thing. Clone, cmake, run.
+
+---
+
+# Redirecting… — 1bit.MONSTER
+
+Taking you there…
+
+Redirecting to the shared page. ← Back to 1bit.monster
 
 ---
 
