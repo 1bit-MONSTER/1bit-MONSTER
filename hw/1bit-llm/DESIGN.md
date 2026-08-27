@@ -1,6 +1,6 @@
 # 1bit-LLM — Ternary LLM Decode Accelerator (RTL)
 
-**Status:** wiring pass 1 — skeleton datapath, simulation-verified
+**Status:** wiring pass 1 — skeleton datapath; sim + yosys-synth + place-and-route verified (2026-08-27, §6)
 **Target:** open-source 7-series flow (iverilog sim → yosys synth_xilinx → nextpnr-xilinx + prjxray)
 **Portability note:** the Alveo U250 (the eventual box per journey UPDATE 32) is UltraScale+ and has
 no open-source bitstream path, so the RTL is written in portable Verilog-2001 with **no vendor
@@ -153,7 +153,9 @@ IDLE → CHECK → ADDR ⇄ MAC (×K) → DRAIN1 → DRAIN2 → (next g | DONE) 
                 └─ invalid config → ERR
 ```
 
-- **CHECK** — validates `K ≥ 1`, `N % 4 == 0`, `(N/4)·K ≤ WMEM_DEPTH`; clears done/err; asserts busy.
+- **CHECK** — validates `K ≥ 1`, `N % 4 == 0`, `(N/4)·K ≤ WMEM_DEPTH`, `K ≤ XBUF_DEPTH`,
+  `N/2 ≤ YBUF_DEPTH`, and `shift ≤ 15` (the scale_unit contract, added 2026-08-27);
+  clears done/err; asserts busy.
 - **ADDR** — drives `wmem.b_addr = g·K + k`, `xbuf.b_addr = k`; asserts `clr_acc` on `k == 0`.
 - **MAC** — one cycle later the registered BRAM data is valid; asserts `mac_en` and samples
   `w_in/xb_rdata`. Increments `k`; on `k == K-1` goes to drain.
@@ -172,16 +174,55 @@ systolic/tiled engine.
 
 ## 6. Verification
 
-- `tools/gen_golden.py <case>` generates golden vectors (hex files) for two randomized cases:
-  - case 0: `K=8,  N=16`  (wmem 32 entries, ybuf 8 words; positive scale + rounding path)
-  - case 1: `K=16, N=8`   (wmem 32 entries, ybuf 4 words; negative scale + sign path)
-- `tb/tb_top.v` drives the design **through the host interface only** (write cfg → write wmem →
-  write xbuf → start → poll status → read ybuf), compares against the golden files, and also
-  exercises the FSM error path (invalid `N` → `STATUS.err` latched, then cleared via
-  `clr_status`). `make sim` must print `=== TB: ALL PASS ===`.
-- `make synth` runs yosys `synth_xilinx` as a synthesizability gate (no place-and-route in CI;
-  the full nextpnr/prjxray flow lives in `synth/xc7_flow.sh` and runs on the box with the
-  toolchain).
+**What is verified (all actually run, 2026-08-27):**
+
+- `make sim` — iverilog 12.0, bit-exact vs `tools/gen_golden.py`:
+  - case 0 (`K=8, N=16`, positive scale + rounding path) — PASS
+  - case 1 (`K=16, N=8`, negative scale + sign path) — PASS
+  - error paths — `N=6` rejected with `STATUS.err` latched, `shift=16` rejected
+    (scale-unit contract), `clr_status` clears the latch twice — all PASS
+  - prints `=== TB: ALL PASS ===` with no warnings.
+- `make synth` — yosys 0.52 `synth_xilinx` gate: 0 errors, no latches; inferred
+  BRAMs (wmem 2×RAMB36E1, xbuf 1×RAMB36E1, ybuf 4×RAMB36E1), LUT/CARRY4 logic.
+- Place & route on the Strix box (`ssh strixhalo`, toolchain per journey UPDATE 32):
+  - part `xc7a35tcsg324` (Arty A7-35T — IDCODE `0x0362d093` read off real hardware
+    in UPDATE 32), chipdb `nextpnr-xilinx/xilinx/xc7a35t.bin` (92 MB)
+  - yosys 0.68 `synth_xilinx -nodsp` → JSON, then nextpnr-xilinx 8f178fc:
+    **placed + routed all 102 hif pads**, 8680 LUT (13%), 405 FF, 7 RAMB36E1,
+    102 PAD, fmax **79.4 MHz**; outputs `t1llm_top.routed.json` + `t1llm_top.fasm`.
+  - `-nodsp` is a workaround for a nextpnr-xilinx 8f178fc crash
+    (`std::out_of_range`) while packing the inferred DSP48E1s for the 32×16
+    scale multiplies; LUT mapping is equivalent logic.
+
+**Not verified / known blockers (honest list):**
+
+- fasm → frames → bitstream: `fasm2frames` aborts with `FasmLookupError`
+  (`LIOI3.IOI_IMUX_RC1.IOI_BYP4_0` not in `segbits_lioi3.db`). Root cause is
+  toolchain db skew, not RTL: the prebuilt chipdb (built 2026-08-09) emits
+  LIOI3/RIOI3 IO-mux features that the on-disk prjxray-db (shallow clone
+  `0a0adde`, vendored under `nextpnr-xilinx/xilinx/external/prjxray-db`) does
+  not carry; blinky (UPDATE 32) never exercised those muxes, which is why its
+  round-trip passed. Fix: rebuild the chipdb from the on-disk db via the
+  nextpnr-xilinx bba/bbasm flow (arch generator @ 8f178fc), or restore the
+  db snapshot the Aug-9 chipdb was built from. Re-run `synth/xc7_flow.sh` after.
+- Hardware load: no board+cable on the box at the time of writing; additionally
+  `synth/board.xdc` currently constrains IOSTANDARD only (pads auto-placed) —
+  real Arty pin mapping (PACKAGE_PIN) is TODO(board) before driving the hif
+  from physical pins.
+- Timing: 79.4 MHz fmax is informational; no real clock-timing closure work
+  (this pass is a host-bus-rate correctness slice, not a throughput engine).
+
+**What synthesis/verification requires (reproduce on the Strix box):**
+
+```
+# sim + synth gate (any box with iverilog + yosys):
+cd hw/1bit-llm && make sim && make synth
+
+# P&R (Strix box, toolchain at /home/bcloud/fpga-toolchain per UPDATE 32):
+rsync -a --exclude sim hw/1bit-llm/ strixhalo:1bit-hw-pnr/     # scratch dir
+ssh strixhalo 'cd ~/1bit-hw-pnr && ./synth/xc7_flow.sh'        # steps 1-2 verified
+#   step 3+ needs the chipdb/db-consistency fix described above.
+```
 
 ## 7. File map
 
@@ -200,7 +241,8 @@ hw/1bit-llm/
 │   └── scale_unit.v    4× saturating q15·acc >> shift
 ├── tb/tb_top.v
 ├── tools/gen_golden.py Python bit-exact reference + golden vectors
-├── synth/xc7_flow.sh   yosys → nextpnr-xilinx → prjxray → openFPGALoader (stub)
+├── synth/xc7_flow.sh   yosys → nextpnr-xilinx → prjxray → openFPGALoader
+├── synth/board.xdc     Arty A7-35T starter constraints (IOSTANDARD-only; pins TODO)
 └── sim/                build + generated vectors (gitignored)
 ```
 
