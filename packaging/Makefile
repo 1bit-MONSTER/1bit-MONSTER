@@ -83,6 +83,10 @@ package-rpm: stage
 package-flatpak:
 	bash ../packaging/flatpak/build-flatpak.sh
 
+package-snap:
+	# snapcraft pulls the pinned source-tag itself (packaging/snap/snapcraft.yaml);
+	# needs snapcraft (Ubuntu: snap install snapcraft; others: see snapcraft.io)
+	cd ../packaging/snap && snapcraft
 
 clean:
 	rm -rf build/stage build/1bit-monster_$(VERSION)_amd64.deb build/1bit-monster-$(VERSION)-linux-amd64.tar.gz build/rpmbuild
