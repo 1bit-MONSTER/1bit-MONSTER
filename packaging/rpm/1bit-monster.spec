@@ -59,9 +59,10 @@ install -D -m 0755 usr/lib/x86_64-linux-gnu/librocm_cpp.so %{buildroot}%{_libdir
 for f in libbackend_manager.a libgguf_reader.a libvl_image.a; do
     install -D -m 0644 usr/lib/1bit/$f %{buildroot}%{_libdir}/1bit/$f
 done
-# video-lora + ZINC Vulkan shaders
-cp -a usr/share/1bit %{buildroot}%{_datadir}/
-cp -a usr/share/1bit-monster %{buildroot}%{_datadir}/
+# video-lora + ZINC Vulkan shaders (present when the build produced them)
+mkdir -p %{buildroot}%{_datadir}/1bit %{buildroot}%{_datadir}/1bit-monster
+[ -d usr/share/1bit ] && cp -a usr/share/1bit/. %{buildroot}%{_datadir}/1bit/
+[ -d usr/share/1bit-monster ] && cp -a usr/share/1bit-monster/. %{buildroot}%{_datadir}/1bit-monster/
 
 %post -p /sbin/ldconfig
 %postun -p /sbin/ldconfig
@@ -84,5 +85,5 @@ cp -a usr/share/1bit-monster %{buildroot}%{_datadir}/
 %{_datadir}/1bit-monster
 
 %changelog
-* Wed Aug 27 2026 1bit.MONSTER <admin@1bit.monster> - 2026.08.04-1
+* Thu Aug 27 2026 1bit.MONSTER <admin@1bit.monster> - 2026.08.04-1
 - Initial RPM packaging of the prebuilt 1bit.MONSTER engine.

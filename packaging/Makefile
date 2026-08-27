@@ -4,7 +4,9 @@
 VERSION := $(shell [ -f ../VERSION ] && tr -d '[:space:]' < ../VERSION || echo "0.0.0")
 BUILD_DIR := ../build
 STAGE := build/stage/1bit-monster-$(VERSION)
-.PHONY: all stage package-deb package-tarball package-appimage clean
+# Non-root rpmbuild needs a writable rpm db (Ubuntu's /var/lib/rpm is root-owned)
+RPM_DB ?= $(HOME)/.rpmdb
+.PHONY: all stage package-deb package-tarball package-appimage package-rpm package-flatpak clean
 
 all: stage
 
@@ -63,9 +65,10 @@ package-rpm: stage
 	# .rpm from the same staged tree as the .deb — see packaging/rpm/1bit-monster.spec
 	rm -rf build/rpmbuild
 	mkdir -p build/rpmbuild/BUILD build/rpmbuild/RPMS build/rpmbuild/SOURCES build/rpmbuild/SPECS build/rpmbuild/SRPMS
+	rpm --initdb --dbpath $(RPM_DB) 2>/dev/null || true
 	tar czf build/rpmbuild/SOURCES/1bit-monster-$(VERSION).tar.gz -C build/stage 1bit-monster-$(VERSION)
 	sed 's|^Version: .*|Version: $(VERSION)|' ../packaging/rpm/1bit-monster.spec > build/rpmbuild/SPECS/1bit-monster.spec
-	rpmbuild --define "_topdir $(abspath build/rpmbuild)" -bb build/rpmbuild/SPECS/1bit-monster.spec
+	rpmbuild --define "_topdir $(abspath build/rpmbuild)" --define "_dbpath $(RPM_DB)" -bb build/rpmbuild/SPECS/1bit-monster.spec
 	@echo "rpm: build/rpmbuild/RPMS/x86_64/1bit-monster-$(VERSION)-1.*.rpm"
 
 package-flatpak:

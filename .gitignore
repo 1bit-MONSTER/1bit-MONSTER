@@ -171,3 +171,11 @@ hw/1bit-llm/sim/
 # packaging/iso build output (multi-GB, never committed)
 packaging/iso/build/
 *.iso
+
+# packaging/flatpak build output (sources staged by build-flatpak.sh)
+packaging/flatpak/xrt-libs/
+packaging/flatpak/repo/
+packaging/flatpak/build-dir/
+packaging/flatpak/.flatpak-builder/
+packaging/flatpak/*.flatpak
+packaging/flatpak/glibc-libs/
