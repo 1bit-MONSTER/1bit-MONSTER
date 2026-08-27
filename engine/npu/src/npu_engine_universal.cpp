@@ -3167,7 +3167,10 @@ struct Bf16Ctx {
     {
         auto ts_boot=std::chrono::steady_clock::now();
         memcpy(sb_data.data(),h_data.data(),H*4);rn_c(sb_data.data(),fin_v.data(),H);
+        if(npu_dbg()){fprintf(stderr,"BOOT h_data:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",h_data[i]);fprintf(stderr,"\n");}
+        if(npu_dbg()){fprintf(stderr,"BOOT fin_v:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",fin_v[i]);fprintf(stderr,"\n");}
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
+        if(npu_dbg()){fprintf(stderr,"BOOT lg:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",lg_buf[i]);fprintf(stderr,"\n");}
         if (getenv("NPU_DEBUG_BOOT")) {
             fprintf(stderr, "  [boot-debug] top-5 ids:");
             for (int b = 0; b < 5 && b < BS; b++) fprintf(stderr, " %d", top_ids[b]);

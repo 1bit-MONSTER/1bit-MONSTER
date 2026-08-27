@@ -15,7 +15,7 @@ pure C++23 · no Python · MIT
 
 ## Why this exists
 
-**AMD's XDNA 2 NPU shipped closed.** 22 proprietary `.so` files, 209 xclbin bitstreams, zero public documentation. One person reverse-engineered the entire stack in four days — no docs, just a disassembler, `strace`/`ftrace`, and a C++ compiler — and kept building from there. Every crash and breakthrough since is logged in the open, ~1800+ hours in. **[Read the story →](docs/journey.md)**
+**AMD's XDNA 2 NPU shipped closed.** 22 proprietary `.so` files, 209 xclbin bitstreams, zero public documentation. One person reverse-engineered the entire stack in four days — no docs, just a disassembler, `strace`/`ftrace`, and a C++ compiler — and kept building from there. Every crash and breakthrough since is logged in the open, ~600 hours in. **[Read the story →](docs/journey.md)**
 
 **One engine. Every model.** 100% of HuggingFace's architecture-bearing text-generation checkpoints (317,310 of them) map to a token this engine knows how to run — Llama, Qwen, DeepSeek, GLM, Mamba/SSM, MoE, vision, ternary/1-bit, all of it. Reads GGUF, ONNX, and native 1BP. Same binary, no config file, on NPU, GPU, or CPU. **[Model families →](docs/model-families/README.md)**
 

@@ -1567,6 +1567,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "rwkv7") == 0) return RCPP_ARCH_RWKV7;                                // RWKV-7 Goose (data-dependent recurrence)
     // ── Moonshot Kimi family ──
     if (strcmp(s, "kimi_k3")   == 0) return RCPP_ARCH_KIMI_K3;
+    if (strcmp(s, "kimik3")    == 0) return RCPP_ARCH_KIMI_K3;  // HF model_type (no underscore)
     if (strcmp(s, "kimi")      == 0) return RCPP_ARCH_KIMI_K3;
     if (strcmp(s, "moonlight") == 0) return RCPP_ARCH_MOONLIGHT;
     if (strcmp(s, "kimi_vl")   == 0) return RCPP_ARCH_KIMI_VL;

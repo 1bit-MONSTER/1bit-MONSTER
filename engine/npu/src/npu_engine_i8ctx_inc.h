@@ -40,6 +40,11 @@ void gemm_generate_sequence_i8(
 
 struct I8Ctx {
     int MD, KD, ND, NL;
+    int bC_nd = 0;   // bo2 (C2) size override: MD*bC_nd*4 bytes when > 0.
+                     // The int4 P1 launch writes the FULL C1 (32 chunks x
+                     // 4 KB = 128 KB) to bo2 (issue #1769 CPU-silu fallback),
+                     // while ND is the logical D output width (2048) — set
+                     // bC_nd = 2*n_ff (4096) so the writeback fits.
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
     std::unique_ptr<xrt::kernel> k;
@@ -201,8 +206,9 @@ struct I8Ctx {
         fprintf(stderr, "  creating bA size=%zu (MD=%d KD=%d)\n", (size_t)MD * KD, MD, KD);
         bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD,
                                        XRT_BO_FLAGS_HOST_ONLY, grp_a);
-        fprintf(stderr, "  creating bC size=%zu (MD=%d ND=%d)\n", (size_t)MD * ND * 4, MD, ND);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4,
+        size_t bc_bytes = bC_nd > 0 ? (size_t)MD * bC_nd * 4 : (size_t)MD * ND * 4;
+        fprintf(stderr, "  creating bC size=%zu (MD=%d ND=%d bC_nd=%d)\n", bc_bytes, MD, ND, bC_nd);
+        bC = std::make_unique<xrt::bo>(d, bc_bytes,
                                        XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
         Cm = (int32_t*)bC->map();
@@ -797,13 +803,25 @@ struct I8Ctx {
     // kernel's silu stage reads S'[j] per column instead of gs[0]/gs[4].
     void update_fused_header_i4(xrt::bo& bo, const std::vector<float>& scol,
                                 int n_ff, float ag, float qn_s, int N) {
-        size_t a = (size_t)KD * N / 2 + (size_t)(KD / 32) * N * 2;  // regions A+B
-        float* dst = (float*)((uint8_t*)bo.map() + a + (size_t)N * 2);
-        for (int p = 0; p < n_ff; p++) {
-            dst[2 * p]     = ag * scol[2 * p];
-            dst[2 * p + 1] = ag * qn_s * scol[2 * p + 1];
+        // v65 per-tile BO (gu_i4_pack.h, TILE_TOTAL 8192): the aie2p
+        // object-fifo delivers only [0..5632) of each 8192-B tile, so the
+        // per-token silu metadata rides the CHUNKED [5120..5632) region
+        // (META_BASE): each col_group's 32 k-tiles carry a 512-B chunk
+        // (ki%4: foldG/boundG/boundU/Q+shG+shU), assembled by the kernel
+        // into C1 rows 1-4. The shared write_silu_pad_meta (gu_i4_pack.h)
+        // computes the fold — the same code the packer's first-launch init
+        // uses, so the host cannot drift.
+        const size_t n_tiles = gu_i4_bo_size(KD, N) / GuI4Pack::TILE_TOTAL;
+        const int n_tiles_n = N / 128;
+        uint8_t* Bm = (uint8_t*)bo.map();
+        for (size_t t = 0; t < n_tiles; t++) {
+            int nt = (int)(t % (size_t)n_tiles_n);
+            int ki = (int)(t / (size_t)n_tiles_n);
+            write_silu_pad_meta(Bm + t * GuI4Pack::TILE_TOTAL, scol.data(),
+                                nt, ki, ag, qn_s, N);
         }
-        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)N * 4, a + (size_t)N * 2);
+        bo.sync(XCL_BO_SYNC_BO_TO_DEVICE,
+                (size_t)gu_i4_bo_size(KD, N), 0);
     }
 
     // Fused D weights: per-column quant (like packB_into) but tile-contiguous

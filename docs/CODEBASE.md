@@ -20,7 +20,7 @@ and [`docs/README.md`](README.md) (documentation index).
 | Metric | Value |
 |---|---|
 | Version | `2026.08.04` (date-based, from `VERSION`) |
-| License | MIT (`LICENSE`) + `LICENSE-SHERRY.md` (SHERRY ternary format license) |
+| License | MIT (`LICENSE`) |
 | Language | C++23 + HIP, zero Python at runtime |
 | First-party code | ~155.5k lines (`.cpp`/`.h`/`.hpp`/`.hip` excl. `third_party/`) |
 | Total code (all langs) | ~204k lines |

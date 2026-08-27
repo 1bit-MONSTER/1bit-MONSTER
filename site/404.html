@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Redirecting… — 1bit.MONSTER</title>
+  <meta name="robots" content="noindex" />
+  <link rel="canonical" href="https://1bit.monster/" />
+  <style>
+    body { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; max-width: 560px; margin: 80px auto; padding: 0 20px; background: #fafafa; color: #222; text-align: center; }
+    h1 { font-size: 20px; }
+    p { font-size: 14px; color: #555; }
+    a { color: #1a56db; }
+  </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "Redirecting\u2026 \u2014 1bit.MONSTER", "description": "", "url": "https://1bit.monster/404.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+</head>
+<body>
+  <h1>Taking you there…</h1>
+  <p id="msg">Redirecting to the shared page.</p>
+  <p><a href="https://1bit.monster/">← Back to 1bit.monster</a></p>
+
+  <script src="analytics.js"></script>
+  <script>
+    // Attribution redirect for /s/<sharer>/<team>/<medium>?next=<target>
+    // GitHub Pages serves this 404 page for any unknown path, so an
+    // attribution link's /s/... URL lands here. analytics.js above fires the
+    // Cloudflare Web Analytics beacon, which records THIS URL's path — the
+    // sharer / team / medium — before we redirect to the real target.
+    (function () {
+      var seg = (location.pathname || "").split("/").filter(Boolean);
+      if (seg[0] === "s" && seg.length >= 4) {
+        var params = new URLSearchParams();
+        params.set("utm_source", "share");
+        params.set("utm_medium", decodeURIComponent(seg[3]));
+        params.set("share", decodeURIComponent(seg[1]));
+        params.set("team", decodeURIComponent(seg[2]));
+        // Only ever redirect to a real http(s) URL: rejects javascript:/data:/vbscript:
+        // and other scheme tricks coming from the untrusted ?next= query param.
+        var raw = new URLSearchParams(location.search).get("next") || "https://1bit.monster/";
+        var target;
+        try {
+          var u = new URL(raw, location.href);
+          if (u.protocol !== "https:" && u.protocol !== "http:") {
+            u = new URL("https://1bit.monster/");
+          }
+          target = u.href;
+        } catch (e) {
+          target = "https://1bit.monster/";
+        }
+        document.getElementById("msg").textContent = "Redirecting to: " + target;
+        // Give the beacon a moment to report this page load, then redirect.
+        setTimeout(function () {
+          var sep = target.indexOf("?") >= 0 ? "&" : "?";
+          location.replace(target + sep + params.toString());
+        }, 1000);
+      } else {
+        document.getElementById("msg").textContent = "That page doesn't exist.";
+      }
+    })();
+  </script>
+</body>
+</html>

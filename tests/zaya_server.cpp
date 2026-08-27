@@ -872,7 +872,7 @@ int main(int argc, char** argv) {
             lemon::RuntimeConfig::set_global(config.get());
             lemon::configure_application_logging(config->log_level(),
                                                  lemon::LoggingMode::direct_server);
-            lemon::Server server(config, cli_config.cache_dir);
+            lemon::Server server(config, cli_config.cache_dir, cli_config.config_dir);
             server.run();
             return 0;
         }

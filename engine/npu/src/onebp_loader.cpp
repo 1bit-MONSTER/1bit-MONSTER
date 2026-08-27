@@ -530,7 +530,6 @@ public:
 
 // ─── Example usage ─────────────────────────────────────────────────
 #ifdef ONEBP_LOADER_MAIN
-#ifdef ONEBP_LOADER_MAIN
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s model.1bp [tensor_name]\n", argv[0]);
@@ -579,6 +578,5 @@ int main(int argc, char** argv) {
         printf("    ... and %d more\n", model.tensor_count() - 10);
 
     return 0;
-#endif
 }
 #endif

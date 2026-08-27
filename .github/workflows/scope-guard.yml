@@ -43,9 +43,9 @@ jobs:
           # Anything else (new dirs, unrelated apps/services) fails the PR.
           ALLOWED='
             AGENTS.md AGENTS-WORKTREES.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
-            CMakeLists_windows.txt CODE_OF_CONDUCT.md CONTRIBUTING.md LICENSE LICENSE-SHERRY.md
+            CMakeLists_windows.txt CODE_OF_CONDUCT.md CONTRIBUTING.md LICENSE LICENSE-SHERRY.md  # LICENSE-SHERRY.md removal-only (Sherry relicensed MIT 2026-08-27, PR #1894)
             Makefile.zamba2 PLAN-GAIA.md README.md ROADMAP.md SECURITY.md  # PLAN-GAIA.md removal-only (superseded Gaia plan, deleted 2026-08)
-            SHERRY-FILES.txt TODO_TRACKING.md VERSION env.sh install.sh
+            SHERRY-FILES.txt TODO_TRACKING.md VERSION env.sh install.sh  # SHERRY-FILES.txt removal-only (Sherry relicensed MIT 2026-08-27, PR #1894)
             package.json replace_i8ctx.py
             .github
             .pr_agent.toml
@@ -61,6 +61,7 @@ jobs:
             experimental research hackathon fastflowlm_analysis npu-infer
             integrations themes
             npu_smoke.py  # pyxrt NPU engine smoke test (CI/bench harness on strix-halo runner) — engine scope
+            hw  # 1bit-LLM FPGA accelerator RTL (ternary GEMV decode engine for the 1-bit box) — engine hardware scope, see hw/1bit-llm/DESIGN.md
             .gitmodules .gitignore .gitnexusignore third_party  # embedded Lemonade server core — engine scope; .gitnexusignore = GitNexus index exclusions (agent tooling, like .gitignore)
             .clang-format  # engine C++23 style config — engine scope
             .superpowers  # agent-tooling task docs (SDD dispatch/brief/report) — same category as .claude/.abacusai
