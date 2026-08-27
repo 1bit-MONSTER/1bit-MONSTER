@@ -12,10 +12,10 @@
 
 ## Global Constraints
 
-- **All work happens on the remote box, not the local machine.** The repo lives at `~/1bit-MONSTER` on `bcloud@192.168.50.69` (hostname `strix`, Ubuntu 26.04 LTS). Every command in this plan is written to run over SSH: `ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '<command>'`. There is no local checkout — files are drafted locally by the executor's tools, then `scp`'d to the box and moved into place inside the repo, exactly like the spec doc was delivered.
+- **All work happens on the remote box, not the local machine.** The repo lives at `~/1bit-MONSTER` on `bcloud@192.168.50.110` (hostname `strix`, Ubuntu 26.04 LTS). Every command in this plan is written to run over SSH: `ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '<command>'`. There is no local checkout — files are drafted locally by the executor's tools, then `scp`'d to the box and moved into place inside the repo, exactly like the spec doc was delivered.
 - Ubuntu base: **26.04 LTS "resolute"**, ISO `ubuntu-26.04-live-server-amd64.iso` from `https://releases.ubuntu.com/26.04/`.
 - Driver pins (exact, never resolved from Ubuntu's live apt repo at install time):
-  - TheRock (ROCm/HIP, gfx1151): `7.14.0a20260612`
+  - TheRock (ROCm/HIP, gfx1151): `10.1.0a20260822`
   - `mesa-vulkan-drivers`: `26.0.3-1ubuntu1`
   - `libvulkan1`: `1.4.341.0-1`
   - Held via `apt-mark hold` post-install (not an apt-preferences pin file) so `apt upgrade` on the running appliance can't drift them, alongside the kernel meta-packages (`linux-image-generic`, `linux-headers-generic`, `linux-generic`).
@@ -38,7 +38,7 @@
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 which xorriso qemu-system-x86_64 qemu-img openssl python3 curl apt-get 2>&1
 echo "--- installing anything missing ---"
 sudo apt-get update -qq
@@ -52,7 +52,7 @@ Expected: the final `which` line prints all three paths with no "not found" erro
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'lsblk -d -o NAME,SIZE,MODEL,MOUNTPOINT'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'lsblk -d -o NAME,SIZE,MODEL,MOUNTPOINT'
 ```
 Read the output. If a device exists that is *not* mounted at `/` or `/home` (i.e. not the live system's disk), note its device path — Task 8's real-hardware validation step targets that device. If no such device exists, Task 8's real-hardware step is deferred (documented, not skipped silently) until spare storage is available; the QEMU test in Task 7 remains the plan's actual automated gate either way.
 
@@ -62,14 +62,14 @@ Edit `docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md` on the box, replac
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && git diff docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git diff docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md'
 ```
 Expected: diff shows only that one bullet changed.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && git add docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md && git commit -m "docs(specs): record build-prereq and spare-storage findings"'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git add docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md && git commit -m "docs(specs): record build-prereq and spare-storage findings"'
 ```
 
 ---
@@ -87,7 +87,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && git add docs
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 mkdir -p ~/1bit-MONSTER/packaging/iso
 touch ~/1bit-MONSTER/packaging/iso/.gitkeep
 tail -20 ~/1bit-MONSTER/.gitignore
@@ -98,7 +98,7 @@ tail -20 ~/1bit-MONSTER/.gitignore
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cat >> ~/1bit-MONSTER/.gitignore << 'EOF'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cat >> ~/1bit-MONSTER/.gitignore << 'EOF'
 
 # packaging/iso build output (multi-GB, never committed)
 packaging/iso/build/
@@ -110,14 +110,14 @@ EOF"
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && git status --short && tail -5 .gitignore'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git status --short && tail -5 .gitignore'
 ```
 Expected: `packaging/iso/.gitkeep` and `.gitignore` show as changed; no other files listed.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/iso/.gitkeep .gitignore && git commit -m 'chore(iso): scaffold packaging/iso, ignore build output'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/.gitkeep .gitignore && git commit -m 'chore(iso): scaffold packaging/iso, ignore build output'"
 ```
 
 ---
@@ -129,7 +129,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add pack
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `packaging/iso/build/payload/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `packaging/iso/build/payload/libvulkan1_1.4.341.0-1_amd64.deb`, `packaging/iso/build/payload/therock-7.14.0a20260612-gfx1151.tar.gz` — Task 6's `build.sh` copies these three files into the ISO's `/pool/`.
+- Produces: `packaging/iso/build/payload/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `packaging/iso/build/payload/libvulkan1_1.4.341.0-1_amd64.deb`, `packaging/iso/build/payload/therock-10.1.0a20260822-devel.tar.gz` — Task 6's `build.sh` copies these three files into the ISO's `/pool/`.
 
 - [ ] **Step 1: Write the script locally**
 
@@ -148,7 +148,7 @@ ISO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD="${ISO_DIR}/build/payload"
 mkdir -p "$PAYLOAD"
 
-THEROCK_VER="7.14.0a20260612"
+THEROCK_VER="10.1.0a20260822"
 MESA_VER="26.0.3-1ubuntu1"
 VULKAN1_VER="1.4.341.0-1"
 
@@ -167,7 +167,7 @@ test -f "${PAYLOAD}/libvulkan1_${VULKAN1_VER}_amd64.deb" || {
 
 echo "-- TheRock gfx1151 ${THEROCK_VER}: attempting exact-version pip download --"
 TMP_PIP="$(mktemp -d)"
-if pip download "rocm-sdk-libraries-gfx1151==${THEROCK_VER}" \
+if pip download "rocm-sdk-devel==${THEROCK_VER}" \
     --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
     --no-deps -d "$TMP_PIP" > /tmp/therock-pip.log 2>&1; then
   tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$TMP_PIP" .
@@ -177,7 +177,7 @@ else
   echo "   falling back to vendoring the matching build already on this box"
   # NOTE: only rocm_sdk_libraries_gfx1151 is vendored here, not any
   # rocm_sdk_device_gfx1151 package. Confirmed against CMakeLists.txt:
-  # the engine's build only ever links _rocm_sdk_libraries_gfx1151 (the
+  # the engine's build only ever links _rocm_sdk_devel (the
   # gfx1151 hipblaslt/Tensile kernels this package installs) — a separate
   # rocm_sdk_device_gfx1151 meta-package, if present locally, belongs to
   # a differently-structured, newer TheRock packaging generation and is
@@ -186,7 +186,7 @@ else
   # effort and risks bundling irrelevant/mismatched files.
   LOCAL="/opt/rocm-therock/lib/python3.14/site-packages"
   DIST_INFO="${LOCAL}/rocm_sdk_libraries_gfx1151-${THEROCK_VER}.dist-info"
-  CONTENT_DIR="${LOCAL}/_rocm_sdk_libraries_gfx1151"
+  CONTENT_DIR="${LOCAL}/_rocm_sdk_devel"
   # The real installed files live under the underscore-prefixed content
   # dir, NOT under the versioned *.dist-info dir (which is only a pip
   # metadata manifest — RECORD/METADATA/WHEEL, a few KB, no .so/.hsaco
@@ -208,13 +208,13 @@ else
   # describe what's currently sitting in the content dir (e.g. a later
   # install overwrote the content dir without updating this dist-info) —
   # refuse rather than silently vendor a possibly-mismatched payload.
-  if ! grep -q "^_rocm_sdk_libraries_gfx1151/" "${DIST_INFO}/RECORD"; then
-    echo "FATAL: ${DIST_INFO}/RECORD does not reference _rocm_sdk_libraries_gfx1151/" >&2
+  if ! grep -q "^_rocm_sdk_devel/" "${DIST_INFO}/RECORD"; then
+    echo "FATAL: ${DIST_INFO}/RECORD does not reference _rocm_sdk_devel/" >&2
     echo "       — version correlation failed, refusing to vendor a possibly-stale" >&2
     echo "       or mismatched payload." >&2
     exit 1
   fi
-  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$LOCAL" "_rocm_sdk_libraries_gfx1151"
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$LOCAL" "_rocm_sdk_devel"
   echo "   vendored $(du -sh "$CONTENT_DIR" | cut -f1) from ${CONTENT_DIR}"
   echo "   (correlated against ${DIST_INFO}/RECORD)"
 fi
@@ -229,8 +229,8 @@ ls -la "$PAYLOAD"
 
 Run:
 ```bash
-scp -i ~/.ssh/id_ed25519 <local-scratch-path>/fetch-payload.sh bcloud@192.168.50.69:/tmp/fetch-payload.sh
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+scp -i ~/.ssh/id_ed25519 <local-scratch-path>/fetch-payload.sh bcloud@192.168.50.110:/tmp/fetch-payload.sh
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 cp /tmp/fetch-payload.sh ~/1bit-MONSTER/packaging/iso/fetch-payload.sh
 chmod +x ~/1bit-MONSTER/packaging/iso/fetch-payload.sh
 '
@@ -240,7 +240,7 @@ chmod +x ~/1bit-MONSTER/packaging/iso/fetch-payload.sh
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'bash -n ~/1bit-MONSTER/packaging/iso/fetch-payload.sh && echo SYNTAX_OK'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'bash -n ~/1bit-MONSTER/packaging/iso/fetch-payload.sh && echo SYNTAX_OK'
 ```
 Expected: `SYNTAX_OK`.
 
@@ -248,17 +248,17 @@ Expected: `SYNTAX_OK`.
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && bash packaging/iso/fetch-payload.sh'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && bash packaging/iso/fetch-payload.sh'
 ```
 Expected: script exits 0, final `ls -la` listing shows all three files:
-`mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `libvulkan1_1.4.341.0-1_amd64.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`.
+`mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `libvulkan1_1.4.341.0-1_amd64.deb`, `therock-10.1.0a20260822-devel.tar.gz`.
 
 If the TheRock fetch falls into the local-vendoring branch, the script's own existence/correlation checks (dist-info present, content dir present, RECORD cross-reference) are the automated guard against vendoring a metadata-only or mismatched payload — a prior version of this task shipped a fallback that silently tarred up a 16KB `.dist-info` metadata dir instead of the real ~1.9GB library content, which these checks now catch. Additionally verify by hand once: `tar tzvf` the produced tarball and confirm it contains `.so`/`.hsaco` files, not just `RECORD`/`METADATA`/`WHEEL`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/iso/fetch-payload.sh && git commit -m 'feat(iso): add pinned driver payload fetcher'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/fetch-payload.sh && git commit -m 'feat(iso): add pinned driver payload fetcher'"
 ```
 
 ---
@@ -315,8 +315,8 @@ WantedBy=multi-user.target
 - [ ] **Step 3: scp both to the box and place them in the repo**
 
 ```bash
-scp -i ~/.ssh/id_ed25519 <local>/1bit-unified.service <local>/1bit-model-fetch.service bcloud@192.168.50.69:/tmp/
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+scp -i ~/.ssh/id_ed25519 <local>/1bit-unified.service <local>/1bit-model-fetch.service bcloud@192.168.50.110:/tmp/
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 cp /tmp/1bit-unified.service /tmp/1bit-model-fetch.service ~/1bit-MONSTER/packaging/services/
 '
 ```
@@ -325,7 +325,7 @@ cp /tmp/1bit-unified.service /tmp/1bit-model-fetch.service ~/1bit-MONSTER/packag
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 systemd-analyze verify ~/1bit-MONSTER/packaging/services/1bit-unified.service 2>&1
 systemd-analyze verify ~/1bit-MONSTER/packaging/services/1bit-model-fetch.service 2>&1
 '
@@ -335,7 +335,7 @@ Expected: warnings about `/usr/bin/unified_server` or the model-download script 
 - [ ] **Step 5: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/services/1bit-unified.service packaging/services/1bit-model-fetch.service && git commit -m 'feat(iso): add system units for the API server and first-boot model fetch'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/services/1bit-unified.service packaging/services/1bit-model-fetch.service && git commit -m 'feat(iso): add system units for the API server and first-boot model fetch'"
 ```
 
 ---
@@ -347,7 +347,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add pack
 
 **Interfaces:**
 - Consumes: `__SSH_PUBLIC_KEY__` and `__PASSWORD_HASH__` placeholders, substituted by Task 6's `build.sh`.
-- Produces: the autoinstall seed that Task 6 copies (post-substitution) to the extracted ISO root as `autoinstall.yaml`; references filenames from Task 3's payload and Task 4's unit files by name (`1bit-monster_*.deb`, `mesa-vulkan-drivers_*.deb`, `libvulkan1_*.deb`, `therock-7.14.0a20260612-gfx1151.tar.gz`, `1bit-unified.service`, `1bit-model-fetch.service`, `model-download.sh`).
+- Produces: the autoinstall seed that Task 6 copies (post-substitution) to the extracted ISO root as `autoinstall.yaml`; references filenames from Task 3's payload and Task 4's unit files by name (`1bit-monster_*.deb`, `mesa-vulkan-drivers_*.deb`, `libvulkan1_*.deb`, `therock-10.1.0a20260822-devel.tar.gz`, `1bit-unified.service`, `1bit-model-fetch.service`, `model-download.sh`).
 
 - [ ] **Step 1: Write the template locally**
 
@@ -389,7 +389,7 @@ autoinstall:
     - "curtin in-target --target=/target -- dpkg -i /opt/1bit-iso-pool/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb /opt/1bit-iso-pool/libvulkan1_1.4.341.0-1_amd64.deb"
     - "curtin in-target --target=/target -- apt-mark hold mesa-vulkan-drivers libvulkan1 linux-image-generic linux-headers-generic linux-generic"
     - "curtin in-target --target=/target -- mkdir -p /opt/rocm-therock"
-    - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-7.14.0a20260612-gfx1151.tar.gz -C /opt/rocm-therock"
+    - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-10.1.0a20260822-devel.tar.gz -C /opt/rocm-therock"
     - "curtin in-target --target=/target -- mkdir -p /etc/default/grub.d"
     - "curtin in-target --target=/target -- sh -c \"printf 'GRUB_CMDLINE_LINUX_DEFAULT=\\\"\\$GRUB_CMDLINE_LINUX_DEFAULT ttm.pages_limit=31457280 amdgpu.no_system_mem_limit=1\\\"\\n' > /etc/default/grub.d/1bit.cfg\""
     - "curtin in-target --target=/target -- update-grub"
@@ -411,15 +411,15 @@ Note for the executor: the `GRUB_CMDLINE_LINUX_DEFAULT` line's shell quoting is 
 - [ ] **Step 2: scp it to the box and place it in the repo**
 
 ```bash
-scp -i ~/.ssh/id_ed25519 <local>/autoinstall.yaml.tmpl bcloud@192.168.50.69:/tmp/autoinstall.yaml.tmpl
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cp /tmp/autoinstall.yaml.tmpl ~/1bit-MONSTER/packaging/iso/autoinstall.yaml.tmpl'
+scp -i ~/.ssh/id_ed25519 <local>/autoinstall.yaml.tmpl bcloud@192.168.50.110:/tmp/autoinstall.yaml.tmpl
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cp /tmp/autoinstall.yaml.tmpl ~/1bit-MONSTER/packaging/iso/autoinstall.yaml.tmpl'
 ```
 
 - [ ] **Step 3: YAML syntax check**
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 sed -e "s/__PASSWORD_HASH__/x/" -e "s/__SSH_PUBLIC_KEY__/ssh-ed25519 AAAAtest/" \
   ~/1bit-MONSTER/packaging/iso/autoinstall.yaml.tmpl | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin); print(\"YAML_OK\")"
 '
@@ -429,7 +429,7 @@ Expected: `YAML_OK`. If `cloud-init` is installed on the box, additionally run `
 - [ ] **Step 4: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/iso/autoinstall.yaml.tmpl && git commit -m 'feat(iso): add autoinstall seed template'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/autoinstall.yaml.tmpl && git commit -m 'feat(iso): add autoinstall seed template'"
 ```
 
 ---
@@ -447,7 +447,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add pack
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER/packaging && make package-deb && ls -la build/*.deb'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER/packaging && make package-deb && ls -la build/*.deb'
 ```
 Expected: a file matching `build/1bit-systems_*_amd64.deb`. This is the exact glob pattern `autoinstall.yaml.tmpl`'s `late-commands` already `dpkg -i`s — if the Makefile's output ever changes name (e.g. if the stale-branding cleanup mentioned in the spec's non-goals happens later), `autoinstall.yaml.tmpl`'s glob and this step both need updating together.
 
@@ -551,8 +551,8 @@ echo "Built: ${OUT_ISO}"
 - [ ] **Step 3: scp `build.sh` to the box and place it in the repo**
 
 ```bash
-scp -i ~/.ssh/id_ed25519 <local>/build.sh bcloud@192.168.50.69:/tmp/build.sh
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+scp -i ~/.ssh/id_ed25519 <local>/build.sh bcloud@192.168.50.110:/tmp/build.sh
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 cp /tmp/build.sh ~/1bit-MONSTER/packaging/iso/build.sh
 chmod +x ~/1bit-MONSTER/packaging/iso/build.sh
 '
@@ -561,14 +561,14 @@ chmod +x ~/1bit-MONSTER/packaging/iso/build.sh
 - [ ] **Step 4: Syntax-check**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'bash -n ~/1bit-MONSTER/packaging/iso/build.sh && echo SYNTAX_OK'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'bash -n ~/1bit-MONSTER/packaging/iso/build.sh && echo SYNTAX_OK'
 ```
 
 - [ ] **Step 5: Generate a disposable test SSH key and run the real build**
 
 Run (this downloads a multi-GB ISO the first time — expect it to take a while depending on the box's link):
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 ssh-keygen -t ed25519 -N "" -f /tmp/1bit-iso-test-key
 cd ~/1bit-MONSTER && bash packaging/iso/build.sh --ssh-key /tmp/1bit-iso-test-key.pub
 '
@@ -578,7 +578,7 @@ Expected: script exits 0, prints `Built: .../1bit-monster-26.04-amd64.iso`. If t
 - [ ] **Step 6: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/iso/build.sh && git commit -m 'feat(iso): add ISO build script'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/build.sh && git commit -m 'feat(iso): add ISO build script'"
 ```
 (If Step 1 required fixing the `.deb` filename reference in `autoinstall.yaml.tmpl`, include that fix in this commit or a preceding small one — don't leave it uncommitted.)
 
@@ -673,8 +673,8 @@ fi
 - [ ] **Step 2: scp it to the box and place it in the repo**
 
 ```bash
-scp -i ~/.ssh/id_ed25519 <local>/test-qemu.sh bcloud@192.168.50.69:/tmp/test-qemu.sh
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+scp -i ~/.ssh/id_ed25519 <local>/test-qemu.sh bcloud@192.168.50.110:/tmp/test-qemu.sh
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 cp /tmp/test-qemu.sh ~/1bit-MONSTER/packaging/iso/test-qemu.sh
 chmod +x ~/1bit-MONSTER/packaging/iso/test-qemu.sh
 '
@@ -683,14 +683,14 @@ chmod +x ~/1bit-MONSTER/packaging/iso/test-qemu.sh
 - [ ] **Step 3: Syntax-check**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'bash -n ~/1bit-MONSTER/packaging/iso/test-qemu.sh && echo SYNTAX_OK'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'bash -n ~/1bit-MONSTER/packaging/iso/test-qemu.sh && echo SYNTAX_OK'
 ```
 
 - [ ] **Step 4: Run the full boot test**
 
 Run (this is the plan's longest step — real unattended install inside QEMU):
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 '
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 '
 cd ~/1bit-MONSTER
 bash packaging/iso/test-qemu.sh packaging/iso/build/1bit-monster-26.04-amd64.iso /tmp/1bit-iso-test-key
 '
@@ -700,7 +700,7 @@ Expected: final line `PASS`. If any check fails, the fix belongs in whichever ta
 - [ ] **Step 5: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/iso/test-qemu.sh && git commit -m 'test(iso): add automated QEMU boot smoke test'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/test-qemu.sh && git commit -m 'test(iso): add automated QEMU boot smoke test'"
 ```
 
 ---
@@ -785,8 +785,8 @@ correctness gate in the meantime.
 - [ ] **Step 2: scp it to the box and place it in the repo**
 
 ```bash
-scp -i ~/.ssh/id_ed25519 <local>/iso-README.md bcloud@192.168.50.69:/tmp/iso-README.md
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cp /tmp/iso-README.md ~/1bit-MONSTER/packaging/iso/README.md'
+scp -i ~/.ssh/id_ed25519 <local>/iso-README.md bcloud@192.168.50.110:/tmp/iso-README.md
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cp /tmp/iso-README.md ~/1bit-MONSTER/packaging/iso/README.md'
 ```
 
 - [ ] **Step 3: Add a link from the top-level README**
@@ -795,19 +795,19 @@ In `README.md` at the repo root, find the line block containing the existing `**
 
 Run:
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'grep -n "\[JARVIS\]" ~/1bit-MONSTER/README.md'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'grep -n "\[JARVIS\]" ~/1bit-MONSTER/README.md'
 ```
 Take the returned line, add the new link segment to it via `sed` or a direct edit, matching the existing markdown link style exactly.
 
 - [ ] **Step 4: Verify**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 'cd ~/1bit-MONSTER && git diff README.md'
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git diff README.md'
 ```
 Expected: diff shows exactly one new link segment added, nothing else changed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.69 "cd ~/1bit-MONSTER && git add packaging/iso/README.md README.md && git commit -m 'docs(iso): add ISO build/test/validation docs, link from top-level README'"
+ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/README.md README.md && git commit -m 'docs(iso): add ISO build/test/validation docs, link from top-level README'"
 ```

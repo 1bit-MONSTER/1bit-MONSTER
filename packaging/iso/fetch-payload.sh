@@ -10,7 +10,7 @@ ISO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD="${ISO_DIR}/build/payload"
 mkdir -p "$PAYLOAD"
 
-THEROCK_VER="7.14.0a20260612"
+THEROCK_VER="10.1.0a20260822"
 MESA_VER="26.0.3-1ubuntu1"
 VULKAN1_VER="1.4.341.0-1"
 BOLT_VER="0.9.10-1"
@@ -34,17 +34,17 @@ test -f "${PAYLOAD}/bolt_${BOLT_VER}_amd64.deb" || {
 
 echo "-- TheRock gfx1151 ${THEROCK_VER}: attempting exact-version pip download --"
 TMP_PIP="$(mktemp -d)"
-if pip download "rocm-sdk-libraries-gfx1151==${THEROCK_VER}" \
+if pip download "rocm-sdk-devel==${THEROCK_VER}" \
     --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
     --no-deps -d "$TMP_PIP" > /tmp/therock-pip.log 2>&1; then
-  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$TMP_PIP" .
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-devel.tar.gz" -C "$TMP_PIP" .
   echo "   fetched from nightlies index"
 else
   echo "   not available in nightlies index (log: /tmp/therock-pip.log)"
   echo "   falling back to vendoring the matching build already on this box"
   LOCAL="/opt/rocm-therock/lib/python3.14/site-packages"
   DIST_INFO="${LOCAL}/rocm_sdk_libraries_gfx1151-${THEROCK_VER}.dist-info"
-  CONTENT_DIR="${LOCAL}/_rocm_sdk_libraries_gfx1151"
+  CONTENT_DIR="${LOCAL}/_rocm_sdk_devel"
   # The real installed files live under the underscore-prefixed content dir, NOT under
   # the versioned *.dist-info dir (which is only a pip metadata manifest — RECORD/METADATA/WHEEL,
   # a few KB, no .so/.hsaco files). A glob anchored on the dist-info's own versioned name
@@ -63,13 +63,13 @@ else
   # dist-info does not describe what's currently sitting in the content dir (e.g. a later
   # install overwrote the content dir without updating this dist-info) — refuse rather than
   # silently vendor a possibly-mismatched payload.
-  if ! grep -q "^_rocm_sdk_libraries_gfx1151/" "${DIST_INFO}/RECORD"; then
-    echo "FATAL: ${DIST_INFO}/RECORD does not reference _rocm_sdk_libraries_gfx1151/" >&2
+  if ! grep -q "^_rocm_sdk_devel/" "${DIST_INFO}/RECORD"; then
+    echo "FATAL: ${DIST_INFO}/RECORD does not reference _rocm_sdk_devel/" >&2
     echo "       — version correlation failed, refusing to vendor a possibly-stale" >&2
     echo "       or mismatched payload." >&2
     exit 1
   fi
-  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-gfx1151.tar.gz" -C "$LOCAL" "_rocm_sdk_libraries_gfx1151"
+  tar czf "${PAYLOAD}/therock-${THEROCK_VER}-devel.tar.gz" -C "$LOCAL" "_rocm_sdk_devel"
   echo "   vendored $(du -sh "$CONTENT_DIR" | cut -f1) from ${CONTENT_DIR}"
   echo "   (correlated against ${DIST_INFO}/RECORD)"
 fi
@@ -78,7 +78,7 @@ rm -rf "$TMP_PIP"
 echo "-- TheRock core runtime ${THEROCK_VER}: attempting exact-version pip download --"
 # unified_server dynamically links against libamdhip64/libamd_comgr/libroctx64
 # (HIP runtime + comgr) and libomp — these ship in rocm-sdk-core, a sibling
-# package to rocm-sdk-libraries-gfx1151 fetched above, NOT inside it. Without
+# package to rocm-sdk-devel fetched above, NOT inside it. Without
 # this, the appliance's API service fails to start at all (dynamic linker
 # can't resolve these at exec time) — found by actually booting a built ISO
 # in QEMU and inspecting the failing systemd unit.

@@ -28,7 +28,7 @@ mkdir -p "$WORK" "$OUT_DIR"
 
 echo "[1/7] Building the .deb..."
 ( cd "${REPO_ROOT}/packaging" && make package-deb )
-DEB_PATH="$(ls "${REPO_ROOT}"/packaging/build/1bit-systems_*_amd64.deb | head -1)"
+DEB_PATH="$(ls "${REPO_ROOT}"/packaging/build/1bit-monster_*_amd64.deb | head -1)"
 [ -f "$DEB_PATH" ] || { echo "FATAL: no .deb produced by 'make package-deb'" >&2; exit 1; }
 
 echo "[2/7] Fetching base Ubuntu ${UBUNTU_VER} ISO..."

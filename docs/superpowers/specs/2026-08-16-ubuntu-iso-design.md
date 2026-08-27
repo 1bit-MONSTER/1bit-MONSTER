@@ -46,7 +46,7 @@ rootfs. It:
    - A `/pool/` directory on the ISO containing:
      - The built `1bit-MONSTER` `.deb` (from `packaging/deb`, current
        `VERSION`).
-     - The pinned driver payload (TheRock `7.14.0a20260612` gfx1151 libs
+     - The pinned driver payload (TheRock `10.1.0a20260822` gfx1151 libs
        package; cached `mesa-vulkan-drivers=26.0.3-1ubuntu1`,
        `libvulkan1=1.4.341.0-1`, and `bolt=0.9.10-1` `.deb`s — the last one
        is the Thunderbolt/USB4 userspace daemon; see the new bullet below).
@@ -64,7 +64,7 @@ update story — no separate rootfs to maintain.
 
 ## Driver/runtime stack baked in (no Ubuntu-default drift)
 
-- **ROCm/HIP (GPU compute)**: TheRock `7.14.0a20260612` (gfx1151 device
+- **ROCm/HIP (GPU compute)**: TheRock `10.1.0a20260822` (gfx1151 device
   libs) — bundled as a payload on the ISO, installed via `late-commands`,
   never sourced from any Ubuntu apt ROCm package.
 - **Vulkan**: `mesa-vulkan-drivers=26.0.3-1ubuntu1` + `libvulkan1=1.4.341.0-1`
@@ -152,7 +152,7 @@ acceleration specifically.
    hardware risk. Verify: autoinstall completes fully unattended, SSH
    key access works, both new systemd units come up, model download
    completes, `POST /v1/chat/completions` returns a real completion.
-2. Real-hardware validation on the Strix Halo box (`192.168.50.69`) —
+2. Real-hardware validation on the Strix Halo box (`192.168.50.110`) —
    **not** by overwriting its current root disk. Requires confirming
    available spare storage (second drive/USB) before this step; if none
    exists, this step needs a separate decision before it can happen.
