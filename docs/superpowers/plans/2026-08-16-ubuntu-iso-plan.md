@@ -1,6 +1,6 @@
 # 1bit.MONSTER Appliance ISO Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build `packaging/iso/build.sh`, a script that produces a fully-unattended Ubuntu Server 26.04 installer ISO (`1bit-monster-26.04-amd64.iso`) that boots into a working 1bit.MONSTER OpenAI-compatible inference API on Strix Halo (or any x86_64) hardware, with a pinned, non-default driver stack baked in.
 
@@ -34,7 +34,7 @@
 **Interfaces:**
 - Produces: confirmation that `xorriso`, `qemu-system-x86_64`, `qemu-img` are installed on the box; a recorded answer to "is there spare storage for real-hardware validation" that Task 8's runbook depends on.
 
-- [ ] **Step 1: Check for required tools, install what's missing**
+- [x] **Step 1: Check for required tools, install what's missing**
 
 Run:
 ```bash
@@ -48,7 +48,7 @@ which xorriso qemu-system-x86_64 qemu-img
 ```
 Expected: the final `which` line prints all three paths with no "not found" errors.
 
-- [ ] **Step 2: List block devices to check for spare storage**
+- [x] **Step 2: List block devices to check for spare storage**
 
 Run:
 ```bash
@@ -56,7 +56,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'lsblk -d -o NAME,SIZE,MODEL,MOUN
 ```
 Read the output. If a device exists that is *not* mounted at `/` or `/home` (i.e. not the live system's disk), note its device path — Task 8's real-hardware validation step targets that device. If no such device exists, Task 8's real-hardware step is deferred (documented, not skipped silently) until spare storage is available; the QEMU test in Task 7 remains the plan's actual automated gate either way.
 
-- [ ] **Step 3: Record the finding in the spec's open items**
+- [x] **Step 3: Record the finding in the spec's open items**
 
 Edit `docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md` on the box, replacing the "Confirm spare storage exists..." bullet under "Open items carried into the implementation plan" with the concrete finding (device path found, or "none found as of `<date>` — real-hardware validation deferred").
 
@@ -66,7 +66,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git diff do
 ```
 Expected: diff shows only that one bullet changed.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git add docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md && git commit -m "docs(specs): record build-prereq and spare-storage findings"'
@@ -83,7 +83,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git add doc
 **Interfaces:**
 - Produces: `packaging/iso/` directory that Tasks 3-7 write real files into; `.gitignore` rules so the multi-GB downloaded ISO, driver payload, and QEMU test disk never get committed.
 
-- [ ] **Step 1: Create the directory and check current .gitignore**
+- [x] **Step 1: Create the directory and check current .gitignore**
 
 Run:
 ```bash
@@ -94,7 +94,7 @@ tail -20 ~/1bit-MONSTER/.gitignore
 '
 ```
 
-- [ ] **Step 2: Append ISO-build ignore rules**
+- [x] **Step 2: Append ISO-build ignore rules**
 
 Run:
 ```bash
@@ -106,7 +106,7 @@ packaging/iso/build/
 EOF"
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 ```bash
@@ -114,7 +114,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git status 
 ```
 Expected: `packaging/iso/.gitkeep` and `.gitignore` show as changed; no other files listed.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/.gitkeep .gitignore && git commit -m 'chore(iso): scaffold packaging/iso, ignore build output'"
@@ -131,7 +131,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add pac
 - Consumes: nothing from earlier tasks.
 - Produces: `packaging/iso/build/payload/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb`, `packaging/iso/build/payload/libvulkan1_1.4.341.0-1_amd64.deb`, `packaging/iso/build/payload/therock-10.1.0a20260822-devel.tar.gz` — Task 6's `build.sh` copies these three files into the ISO's `/pool/`.
 
-- [ ] **Step 1: Write the script locally**
+- [x] **Step 1: Write the script locally**
 
 Write to local scratch path, content:
 
@@ -225,7 +225,7 @@ echo "Payload ready in ${PAYLOAD}:"
 ls -la "$PAYLOAD"
 ```
 
-- [ ] **Step 2: scp it to the box and place it in the repo**
+- [x] **Step 2: scp it to the box and place it in the repo**
 
 Run:
 ```bash
@@ -236,7 +236,7 @@ chmod +x ~/1bit-MONSTER/packaging/iso/fetch-payload.sh
 '
 ```
 
-- [ ] **Step 3: Syntax-check**
+- [x] **Step 3: Syntax-check**
 
 Run:
 ```bash
@@ -244,7 +244,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'bash -n ~/1bit-MONSTER/packaging
 ```
 Expected: `SYNTAX_OK`.
 
-- [ ] **Step 4: Run it for real and verify the payload lands**
+- [x] **Step 4: Run it for real and verify the payload lands**
 
 Run:
 ```bash
@@ -255,7 +255,7 @@ Expected: script exits 0, final `ls -la` listing shows all three files:
 
 If the TheRock fetch falls into the local-vendoring branch, the script's own existence/correlation checks (dist-info present, content dir present, RECORD cross-reference) are the automated guard against vendoring a metadata-only or mismatched payload — a prior version of this task shipped a fallback that silently tarred up a 16KB `.dist-info` metadata dir instead of the real ~1.9GB library content, which these checks now catch. Additionally verify by hand once: `tar tzvf` the produced tarball and confirm it contains `.so`/`.hsaco` files, not just `RECORD`/`METADATA`/`WHEEL`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/fetch-payload.sh && git commit -m 'feat(iso): add pinned driver payload fetcher'"
@@ -273,7 +273,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add pac
 - Consumes: nothing.
 - Produces: two unit files that Task 6's `build.sh` copies onto the ISO's `/pool/`, and that the autoinstall `late-commands` (Task 5) installs to `/etc/systemd/system/` and enables.
 
-- [ ] **Step 1: Write `1bit-unified.service` locally**
+- [x] **Step 1: Write `1bit-unified.service` locally**
 
 ```ini
 [Unit]
@@ -292,7 +292,7 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 2: Write `1bit-model-fetch.service` locally**
+- [x] **Step 2: Write `1bit-model-fetch.service` locally**
 
 ```ini
 [Unit]
@@ -312,7 +312,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 3: scp both to the box and place them in the repo**
+- [x] **Step 3: scp both to the box and place them in the repo**
 
 ```bash
 scp -i ~/.ssh/id_ed25519 <local>/1bit-unified.service <local>/1bit-model-fetch.service bcloud@192.168.50.110:/tmp/
@@ -321,7 +321,7 @@ cp /tmp/1bit-unified.service /tmp/1bit-model-fetch.service ~/1bit-MONSTER/packag
 '
 ```
 
-- [ ] **Step 4: Verify unit syntax**
+- [x] **Step 4: Verify unit syntax**
 
 Run:
 ```bash
@@ -332,7 +332,7 @@ systemd-analyze verify ~/1bit-MONSTER/packaging/services/1bit-model-fetch.servic
 ```
 Expected: warnings about `/usr/bin/unified_server` or the model-download script not existing on *this* box's root filesystem are fine (they're not installed here — this box uses source builds, not the packaged paths) — treat those specific "file does not exist" warnings as expected. Any unit-syntax parse error (`Failed to parse`, unrecognized directive) is a real failure to fix.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/services/1bit-unified.service packaging/services/1bit-model-fetch.service && git commit -m 'feat(iso): add system units for the API server and first-boot model fetch'"
@@ -349,7 +349,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add pac
 - Consumes: `__SSH_PUBLIC_KEY__` and `__PASSWORD_HASH__` placeholders, substituted by Task 6's `build.sh`.
 - Produces: the autoinstall seed that Task 6 copies (post-substitution) to the extracted ISO root as `autoinstall.yaml`; references filenames from Task 3's payload and Task 4's unit files by name (`1bit-monster_*.deb`, `mesa-vulkan-drivers_*.deb`, `libvulkan1_*.deb`, `therock-10.1.0a20260822-devel.tar.gz`, `1bit-unified.service`, `1bit-model-fetch.service`, `model-download.sh`).
 
-- [ ] **Step 1: Write the template locally**
+- [x] **Step 1: Write the template locally**
 
 ```yaml
 #cloud-config
@@ -408,14 +408,14 @@ autoinstall:
 
 Note for the executor: the `GRUB_CMDLINE_LINUX_DEFAULT` line's shell quoting is the single trickiest part of this file — curtin's `late-commands` entries are plain strings passed to `sh -c`, and nested quoting through `curtin in-target -- sh -c "..."` is easy to get subtly wrong. **Do not trust this by inspection** — Task 7's QEMU boot test is what actually proves this file is correct; if `cat /proc/cmdline` in that test doesn't show `ttm.pages_limit=31457280`, fix the quoting here first.
 
-- [ ] **Step 2: scp it to the box and place it in the repo**
+- [x] **Step 2: scp it to the box and place it in the repo**
 
 ```bash
 scp -i ~/.ssh/id_ed25519 <local>/autoinstall.yaml.tmpl bcloud@192.168.50.110:/tmp/autoinstall.yaml.tmpl
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cp /tmp/autoinstall.yaml.tmpl ~/1bit-MONSTER/packaging/iso/autoinstall.yaml.tmpl'
 ```
 
-- [ ] **Step 3: YAML syntax check**
+- [x] **Step 3: YAML syntax check**
 
 Run:
 ```bash
@@ -426,7 +426,7 @@ sed -e "s/__PASSWORD_HASH__/x/" -e "s/__SSH_PUBLIC_KEY__/ssh-ed25519 AAAAtest/" 
 ```
 Expected: `YAML_OK`. If `cloud-init` is installed on the box, additionally run `cloud-init schema --config-file <substituted-copy>` for a stricter check and fix any reported errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/autoinstall.yaml.tmpl && git commit -m 'feat(iso): add autoinstall seed template'"
@@ -443,7 +443,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add pac
 - Consumes: `packaging/iso/fetch-payload.sh` (Task 3), `packaging/services/1bit-unified.service` + `1bit-model-fetch.service` (Task 4), `packaging/iso/autoinstall.yaml.tmpl` (Task 5, already wired to the real `1bit-systems_*_amd64.deb` glob emitted by `packaging/Makefile`'s `package-deb` target — confirmed during design, see the spec's non-goals re: stale branding), `packaging/model-download.sh` (existing).
 - Produces: `packaging/iso/build/1bit-monster-26.04-amd64.iso`, `packaging/iso/build/console-recovery-password.txt` — both consumed by Task 7's QEMU test.
 
-- [ ] **Step 1: Build the `.deb` and confirm the emitted filename matches what `autoinstall.yaml.tmpl` expects**
+- [x] **Step 1: Build the `.deb` and confirm the emitted filename matches what `autoinstall.yaml.tmpl` expects**
 
 Run:
 ```bash
@@ -451,7 +451,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER/packaging && m
 ```
 Expected: a file matching `build/1bit-systems_*_amd64.deb`. This is the exact glob pattern `autoinstall.yaml.tmpl`'s `late-commands` already `dpkg -i`s — if the Makefile's output ever changes name (e.g. if the stale-branding cleanup mentioned in the spec's non-goals happens later), `autoinstall.yaml.tmpl`'s glob and this step both need updating together.
 
-- [ ] **Step 2: Write `build.sh` locally**:
+- [x] **Step 2: Write `build.sh` locally**:
 
 ```bash
 #!/usr/bin/env bash
@@ -548,7 +548,7 @@ echo "Built: ${OUT_ISO}"
 
 **Note for the executor:** the exact `-b`/`-e` El Torito paths in the final `xorriso -as mkisofs` call are Ubuntu-ISO-layout-specific and may not match reality — Step 4's extraction is the way to find the real paths (`find "$EXTRACT" -iname "eltorito.img" -o -iname "bootx64.efi"`) if the repack step fails or produces a non-bootable image. Fix the paths here based on what's actually found before moving to Task 7; don't guess a second time; verify by inspection of the extracted tree.
 
-- [ ] **Step 3: scp `build.sh` to the box and place it in the repo**
+- [x] **Step 3: scp `build.sh` to the box and place it in the repo**
 
 ```bash
 scp -i ~/.ssh/id_ed25519 <local>/build.sh bcloud@192.168.50.110:/tmp/build.sh
@@ -558,13 +558,13 @@ chmod +x ~/1bit-MONSTER/packaging/iso/build.sh
 '
 ```
 
-- [ ] **Step 4: Syntax-check**
+- [x] **Step 4: Syntax-check**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'bash -n ~/1bit-MONSTER/packaging/iso/build.sh && echo SYNTAX_OK'
 ```
 
-- [ ] **Step 5: Generate a disposable test SSH key and run the real build**
+- [x] **Step 5: Generate a disposable test SSH key and run the real build**
 
 Run (this downloads a multi-GB ISO the first time — expect it to take a while depending on the box's link):
 ```bash
@@ -575,7 +575,7 @@ cd ~/1bit-MONSTER && bash packaging/iso/build.sh --ssh-key /tmp/1bit-iso-test-ke
 ```
 Expected: script exits 0, prints `Built: .../1bit-monster-26.04-amd64.iso`. If the El Torito boot-path guess from Step 2's note is wrong, fix `build.sh` per that note and re-run — this step isn't done until it exits 0 with a real ISO on disk.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/build.sh && git commit -m 'feat(iso): add ISO build script'"
@@ -593,7 +593,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add pac
 - Consumes: the ISO from Task 6 Step 5, `/tmp/1bit-iso-test-key` (private half of the test key baked into that ISO).
 - Produces: pass/fail verdict on the whole pipeline — this is the plan's real correctness gate for Tasks 3-6.
 
-- [ ] **Step 1: Write the script locally**
+- [x] **Step 1: Write the script locally**
 
 ```bash
 #!/usr/bin/env bash
@@ -670,7 +670,7 @@ else
 fi
 ```
 
-- [ ] **Step 2: scp it to the box and place it in the repo**
+- [x] **Step 2: scp it to the box and place it in the repo**
 
 ```bash
 scp -i ~/.ssh/id_ed25519 <local>/test-qemu.sh bcloud@192.168.50.110:/tmp/test-qemu.sh
@@ -680,13 +680,13 @@ chmod +x ~/1bit-MONSTER/packaging/iso/test-qemu.sh
 '
 ```
 
-- [ ] **Step 3: Syntax-check**
+- [x] **Step 3: Syntax-check**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'bash -n ~/1bit-MONSTER/packaging/iso/test-qemu.sh && echo SYNTAX_OK'
 ```
 
-- [ ] **Step 4: Run the full boot test**
+- [x] **Step 4: Run the full boot test**
 
 Run (this is the plan's longest step — real unattended install inside QEMU):
 ```bash
@@ -697,7 +697,7 @@ bash packaging/iso/test-qemu.sh packaging/iso/build/1bit-monster-26.04-amd64.iso
 ```
 Expected: final line `PASS`. If any check fails, the fix belongs in whichever task produced the broken piece (`autoinstall.yaml.tmpl` for install-time steps, the `.service` files for unit issues, `build.sh` for boot/repack issues) — go fix it there, re-run Task 6 Step 5 to rebuild the ISO, then re-run this step. Don't consider this task done until `PASS` prints from a build produced by the final, committed versions of every upstream file.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/test-qemu.sh && git commit -m 'test(iso): add automated QEMU boot smoke test'"
@@ -715,7 +715,7 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add pac
 - Consumes: Task 1's spare-storage finding.
 - Produces: nothing further downstream — this is the plan's terminal documentation task.
 
-- [ ] **Step 1: Write `packaging/iso/README.md` locally**
+- [x] **Step 1: Write `packaging/iso/README.md` locally**
 
 ```markdown
 # 1bit.MONSTER appliance ISO
@@ -782,14 +782,14 @@ available; the QEMU boot test above is this project's automated
 correctness gate in the meantime.
 ```
 
-- [ ] **Step 2: scp it to the box and place it in the repo**
+- [x] **Step 2: scp it to the box and place it in the repo**
 
 ```bash
 scp -i ~/.ssh/id_ed25519 <local>/iso-README.md bcloud@192.168.50.110:/tmp/iso-README.md
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cp /tmp/iso-README.md ~/1bit-MONSTER/packaging/iso/README.md'
 ```
 
-- [ ] **Step 3: Add a link from the top-level README**
+- [x] **Step 3: Add a link from the top-level README**
 
 In `README.md` at the repo root, find the line block containing the existing `**[Website]... · **[JARVIS]... · **[The story]...` link row (per the file read during design) and add one more link: `· **[Appliance ISO](packaging/iso/README.md)**`.
 
@@ -799,14 +799,14 @@ ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'grep -n "\[JARVIS\]" ~/1bit-MONS
 ```
 Take the returned line, add the new link segment to it via `sed` or a direct edit, matching the existing markdown link style exactly.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 'cd ~/1bit-MONSTER && git diff README.md'
 ```
 Expected: diff shows exactly one new link segment added, nothing else changed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 bcloud@192.168.50.110 "cd ~/1bit-MONSTER && git add packaging/iso/README.md README.md && git commit -m 'docs(iso): add ISO build/test/validation docs, link from top-level README'"

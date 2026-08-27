@@ -5,7 +5,7 @@
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
+**[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)** · **[Appliance ISO](packaging/iso/README.md)**
 
 pure C++23 · no Python · MIT
 
