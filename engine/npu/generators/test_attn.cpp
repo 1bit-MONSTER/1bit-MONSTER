@@ -96,7 +96,8 @@ static void run_trial(std::mt19937& rng, int trial) {
         }
         float params[4] = { scale, (float)seq, (float)MAX_SEQ, 0.0f };
         int8_t a2[8 * MAX_SEQ]; memset(a2, 0x5A, sizeof(a2));   // poison
-        attn_softmax_contract(c1a, c1b, params, a2);
+        const int32_t* c1p[2] = { c1a, c1b };
+        attn_softmax_contract(c1p, params, a2);
 
         // ── A2 exactness: max=127, [0,127], true-argmax→127, causal,
         //    rows 1-7=0. (Strict argmax EQUALITY is not the contract — the

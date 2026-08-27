@@ -40,6 +40,11 @@ void gemm_generate_sequence_i8(
 
 struct I8Ctx {
     int MD, KD, ND, NL;
+    int bC_nd = 0;   // bo2 (C2) size override: MD*bC_nd*4 bytes when > 0.
+                     // The int4 P1 launch writes the FULL C1 (32 chunks x
+                     // 4 KB = 128 KB) to bo2 (issue #1769 CPU-silu fallback),
+                     // while ND is the logical D output width (2048) — set
+                     // bC_nd = 2*n_ff (4096) so the writeback fits.
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
     std::unique_ptr<xrt::kernel> k;
@@ -201,8 +206,9 @@ struct I8Ctx {
         fprintf(stderr, "  creating bA size=%zu (MD=%d KD=%d)\n", (size_t)MD * KD, MD, KD);
         bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD,
                                        XRT_BO_FLAGS_HOST_ONLY, grp_a);
-        fprintf(stderr, "  creating bC size=%zu (MD=%d ND=%d)\n", (size_t)MD * ND * 4, MD, ND);
-        bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4,
+        size_t bc_bytes = bC_nd > 0 ? (size_t)MD * bC_nd * 4 : (size_t)MD * ND * 4;
+        fprintf(stderr, "  creating bC size=%zu (MD=%d ND=%d bC_nd=%d)\n", bc_bytes, MD, ND, bC_nd);
+        bC = std::make_unique<xrt::bo>(d, bc_bytes,
                                        XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
         Cm = (int32_t*)bC->map();
