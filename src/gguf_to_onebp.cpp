@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <inttypes.h>
 #include <cstring>
 #include <cmath>
@@ -57,6 +58,23 @@ static void sigfpe_handler(int sig) {
 static inline uint16_t f32b(float v) {
 
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
+}
+
+// ── Checked output write ──
+// Every byte of the .1bp goes through this. A short fwrite (ENOSPC, I/O
+// error) silently truncates the file: the index already reserved the bytes,
+// so every subsequent offset desyncs and the artifact is corrupt with zero
+// diagnostics — the converter would still print "=== DONE". Found in the
+// wild on the ZAYA-8B run: /tmp (tmpfs) filled mid-conversion, the output
+// came back 163 MB short, exit code was 0. Fail loudly instead.
+static bool wf(FILE* f, const void* p, size_t sz) {
+    if (fwrite(p, 1, sz, f) != sz) {
+        fprintf(stderr, "\nFATAL: write failed at byte %lld (disk full / I/O error: %s) — "
+                        "output .1bp is truncated and CORRUPT; aborting\n",
+                (long long)ftell(f), strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 // ── Legacy imatrix (.dat) loader — llama.cpp format ──
@@ -636,7 +654,7 @@ int main(int argc, char** argv) {
     fflush(stdout);
     hdr.tensor_count = (uint32_t)tensors.size();
     // Write header NOW with correct tensor_count
-    fwrite(&hdr, sizeof(hdr), 1, fout);
+    if (!wf(fout, &hdr, sizeof(hdr))) return 1;
 
     // Offsets are written RELATIVE to the start of the data section — do NOT
     // add header+index size here. OnebpModel's reader (onebp_loader.cpp)
@@ -663,25 +681,25 @@ int main(int argc, char** argv) {
     // Write tensor index — ndim==2 (dense) or ndim==3 (MoE expert stack)
     for (auto& t : tensors) {
         uint32_t nl = std::min((uint32_t)t.name.size(), (uint32_t)63);
-        fwrite(&nl, 4, 1, fout);
-        fwrite(t.name.data(), 1, nl, fout);
-        fwrite("\0", 1, 1, fout);
+        if (!wf(fout, &nl, 4)) return 1;
+        if (!wf(fout, t.name.data(), nl)) return 1;
+        if (!wf(fout, "\0", 1)) return 1;
         uint32_t nd = (uint32_t)t.ndim;
-        fwrite(&nd, 4, 1, fout);
+        if (!wf(fout, &nd, 4)) return 1;
         if (t.ndim == 1) {
             uint32_t d1 = (uint32_t)t.cols;  // length
-            fwrite(&d1, 4, 1, fout);
+            if (!wf(fout, &d1, 4)) return 1;
         } else if (t.ndim == 2) {
             uint32_t d[2] = {(uint32_t)t.rows, (uint32_t)t.cols};
-            fwrite(d, 8, 1, fout);
+            if (!wf(fout, d, 8)) return 1;
         } else {
             uint32_t d[3] = {(uint32_t)t.num_experts, (uint32_t)t.rows, (uint32_t)t.cols};
-            fwrite(d, 12, 1, fout);
+            if (!wf(fout, d, 12)) return 1;
         }
-        fwrite(&t.offset, 8, 1, fout);
-        fwrite(&t.tiled, 8, 1, fout);
+        if (!wf(fout, &t.offset, 8)) return 1;
+        if (!wf(fout, &t.tiled, 8)) return 1;
         uint32_t tq = (uint32_t)t.tq;
-        fwrite(&tq, 4, 1, fout);   // v2: per-tensor quant
+        if (!wf(fout, &tq, 4)) return 1;   // v2: per-tensor quant
     }
 
     printf("Quantizing %zu tensors as %s...\n", tensors.size(), quant_name);
@@ -711,7 +729,7 @@ int main(int argc, char** argv) {
         maybe_reorder_zaya_cca(ti, fw);
         if (ti.ndim == 1) {
             // Raw, unquantized float32 — no tiling (norm weights, biases).
-            fwrite(fw.data(), 4, fw.size(), fout);
+            if (!wf(fout, fw.data(), (size_t)4 * fw.size())) return 1;
             printf("  %-50s %4d     (raw f32) -> %zu KB\n", ti.name.c_str(), (int)fw.size(), ti.tiled / 1024);
             continue;
         }
@@ -769,7 +787,7 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    if (!wf(fout, tdata.data(), tdata.size())) return 1;
                     continue;
                 }
                 if (ti.tq == ONEBP_TQ2BS) {
@@ -787,7 +805,7 @@ int main(int argc, char** argv) {
                         block_scaled_ternary_pack_row(
                             fw.data() + expert_off + (size_t)ar * C + c0, blocks, cw);
                     }
-                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    if (!wf(fout, tdata.data(), tdata.size())) return 1;
                     continue;
                 }
                 if (ti.tq == ONEBP_TQ2NZ || ti.tq == ONEBP_TQ2NZ_E4M3) {
@@ -878,7 +896,7 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    if (!wf(fout, tdata.data(), tdata.size())) return 1;
                     continue;
                 }
                 if (ti.tq == ONEBP_Q4_ROCMFP4 || ti.tq == ONEBP_Q4_ROCMFP4_FAST) {
@@ -1013,7 +1031,7 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    if (!wf(fout, tdata.data(), tdata.size())) return 1;
                     continue;
                 }
                 if (ti.tq == ONEBP_TQ1) {
@@ -1060,7 +1078,7 @@ int main(int argc, char** argv) {
                             qd[rr * tq1_grps + g] = packed;
                         }
                     }
-                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    if (!wf(fout, tdata.data(), tdata.size())) return 1;
                     continue;
                 }
                 if (ti.tq == ONEBP_F16) {
@@ -1078,7 +1096,7 @@ int main(int argc, char** argv) {
                                 td[(size_t)rr * tc + cc] = f32_to_f16(fw[expert_off + (size_t)ar * C + ac]);
                         }
                     }
-                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    if (!wf(fout, tdata.data(), tdata.size())) return 1;
                     continue;
                 }
                 // ── Q4NX: asymmetric 4-bit (min + scale per group) ──
@@ -1123,7 +1141,7 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-                fwrite(tdata.data(), 1, tdata.size(), fout);
+                if (!wf(fout, tdata.data(), tdata.size())) return 1;
             }
         }
         }  // end expert loop
@@ -1131,7 +1149,25 @@ int main(int argc, char** argv) {
     }
 
     fseek(fout, 0, SEEK_SET);
-    fwrite(&hdr, sizeof(hdr), 1, fout);
+    if (!wf(fout, &hdr, sizeof(hdr))) return 1;
+    // Final integrity gate: the file must be exactly header + index + data.
+    // index_size was computed above; data_off is the reserved data extent.
+    // A mismatch here means the converter's accounting diverged from what it
+    // wrote (or a write failed) — report it instead of shipping a corrupt .1bp.
+    if (fflush(fout) != 0 || ferror(fout)) {
+        fprintf(stderr, "FATAL: flush failed — output .1bp is truncated and CORRUPT\n");
+        return 1;
+    }
+    fseek(fout, 0, SEEK_END);
+    long written = ftell(fout);
+    uint64_t expect = (uint64_t)sizeof(OnebpHeader) + index_size + data_off;
+    if ((uint64_t)written != expect) {
+        fprintf(stderr, "FATAL: wrote %ld bytes but index+header+data account for %llu "
+                        "— output .1bp is truncated and CORRUPT\n",
+                written, (unsigned long long)expect);
+        fclose(fout);
+        return 1;
+    }
     fclose(fout);
     // Write a sibling .htok (BPE tokenizer) next to the .1bp so the serving
     // path can decode real text. Without it, non-GGUF models fall to the
