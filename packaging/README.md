@@ -60,6 +60,12 @@ docker run --device /dev/accel/accel0 -p 8081:8081 1bit-monster/npu:2026.08.04
 # Snap
 make package-snap
 
+# RPM (needs rpmbuild: Fedora `dnf install rpm-build`, Ubuntu `apt install rpm`)
+make package-rpm
+
+# Flatpak (needs flatpak + flatpak-builder; installs the Freedesktop runtime --user)
+make package-flatpak
+
 # AUR
 cd packaging/aur && makepkg -si
 ```

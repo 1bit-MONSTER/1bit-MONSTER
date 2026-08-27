@@ -1,0 +1,39 @@
+# 1bit-census-watch.service — run the daily HF new-model census watcher
+#
+# One-shot unit that runs Testing/hf_new_models.py through
+# scripts/census-watch.sh. Exit 1 (an uncovered architecture class) is the
+# ALERT: systemd marks the unit as failed, which a journald watch / health
+# check can surface, and the run's full log lands in
+# ~/.1bit/logs/census-watch-*.log. Exit 0 means the newest HF models are all
+# covered — silent, as intended.
+#
+# Schedules via scripts/1bit-census-watch.timer (04:30 daily, persistent);
+# can also be triggered manually:
+#     systemctl --user start 1bit-census-watch
+#
+# ── Install (user units, no sudo) ─────────────────────────────────────────
+#     install -d ~/.config/systemd/user
+#     install -m644 scripts/1bit-census-watch.{service,timer} ~/.config/systemd/user/
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now 1bit-census-watch.timer
+#     systemctl --user list-timers 1bit-census-watch
+#     journalctl --user -u 1bit-census-watch -f
+#
+# ── Paths ─────────────────────────────────────────────────────────────────
+# %h/1bit-monster must match your checkout (repo root). Change if the clone
+# lives elsewhere. Logs go to ~/.1bit/logs (override with CENSUS_WATCH_LOG_DIR).
+
+[Unit]
+Description=1bit census: watch HF for new model classes the registry doesn't map
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/1bit-monster
+ExecStart=%h/1bit-monster/scripts/census-watch.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -205,7 +205,7 @@ endif()
 
 # gguf_to_onebp : GGUF → 1BP converter
 add_executable(gguf_to_onebp
-    ${REPO_ROOT}/tools/gguf_to_onebp.cpp)
+    ${REPO_ROOT}/src/gguf_to_onebp.cpp)
 target_include_directories(gguf_to_onebp PRIVATE ${INCLUDE_DIR})
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE /O2)

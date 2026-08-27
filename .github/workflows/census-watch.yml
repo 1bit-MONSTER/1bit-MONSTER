@@ -1,0 +1,94 @@
+name: Census watch
+
+# Intent: run the daily HF new-model watcher (Testing/hf_new_models.py, via
+# scripts/census-watch.sh) and alert when a newly-published model carries an
+# architecture class the engine registry (include/rocm_cpp/bitnet_model.h)
+# does not map. That is the one thing that silently breaks the census 100%
+# claim — this workflow turns it into a red check + a deduped alert issue.
+#
+# The same entry point backs the 04:30 systemd timer on ryzen
+# (scripts/1bit-census-watch.{service,timer}); CI here is the second,
+# self-hosted-free alert path (ubuntu-latest, stdlib python + g++ only).
+#
+# NOTE: scheduled runs only fire on the default branch. workflow_dispatch is
+# the manual trigger for feature branches; the pull_request path re-checks
+# when the registry or watcher changes.
+#
+# Gated/no-config models do NOT fail the run — they are unverifiable without
+# an HF token and expected; only genuinely uncovered classes alert.
+
+on:
+  schedule:
+    - cron: "30 4 * * *"   # 04:30 UTC daily
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Testing/hf_new_models.py"
+      - "Testing/census_*.py"
+      - "include/rocm_cpp/bitnet_model.h"
+      - "scripts/census-watch.sh"
+      - "scripts/1bit-census-watch.*"
+      - ".github/workflows/census-watch.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: census-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: New HF model classes are covered
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # census_coverage.build_mapper() compiles a small C++ probe against the
+      # real bitnet_model.h with g++ — preinstalled on ubuntu-latest. The
+      # state file (seen model ids) is tracked; CI reads it but never commits
+      # updates (no write token on schedule runs), so the newest models are
+      # re-checked every run — harmless, and the issue side dedupes.
+      - name: Run the new-model watcher
+        id: watch
+        run: |
+          bash scripts/census-watch.sh --limit 120 2>&1 | tee /tmp/census-watch.log
+          exit ${PIPESTATUS[0]}
+
+      # Only alert on scheduled/manual runs — on PRs the red check itself is
+      # the signal. Guard on the watch step specifically so a checkout/setup
+      # failure doesn't file a misleading issue.
+      - name: File an alert issue on uncovered classes
+        if: failure() && steps.watch.conclusion == 'failure' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grep -E "UNCOVERED|UNVERIFIABLE" /tmp/census-watch.log || true
+          gh label create census-watch 2>/dev/null || true
+          EXISTING=$(gh issue list --label census-watch --state open --json number --jq 'length')
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "census-watch issue already open — skipping"
+            exit 0
+          fi
+          {
+            echo "## Census coverage breach"
+            echo ""
+            echo "The daily new-model watcher found HF models whose architecture class is not mapped by the engine registry:"
+            echo ""
+            echo '```'
+            grep -E "UNCOVERED|UNVERIFIABLE" /tmp/census-watch.log || true
+            echo '```'
+            echo ""
+            echo "Fix: add the missing mapping in \`include/rocm_cpp/bitnet_model.h\` (alias if it is a known family, otherwise a real implementation), then re-run \`python3 Testing/census_coverage.py\`."
+            echo ""
+            echo "Report: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > /tmp/census_issue.md
+          gh issue create \
+            --title "census: new HF model class uncovered by the registry" \
+            --label census-watch \
+            --body-file /tmp/census_issue.md

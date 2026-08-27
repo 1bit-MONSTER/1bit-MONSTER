@@ -27,8 +27,12 @@ extern "C" {
 // and the host x86 reference (test_attn.cpp) — verified on x86 before the
 // NPU round-trip. This wrapper is the AIE entry point the generator links.
 extern "C" void attn_softmax_i8(const int32_t* c1a, const int32_t* c1b,
+                                const int32_t* c1c, const int32_t* c1d,
                                 const float* params, int8_t* a2) {
-    attn_softmax_contract(c1a, c1b, params, a2);
+    // c1[0..n_half-1] hold the N/128 half-tiles; the extra pointers are
+    // unused for N < 4*128 (the contract reads only c1[t>>7]).
+    const int32_t* c1[4] = { c1a, c1b, c1c, c1d };
+    attn_softmax_contract(c1, params, a2);
 }
 
 } // extern "C"
