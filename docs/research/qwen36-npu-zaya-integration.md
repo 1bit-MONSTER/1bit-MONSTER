@@ -89,7 +89,7 @@ libqwen3_6_moe_npu.so):
   flatten-ordering illusion — the actual layout is the stride-8 interleave.)
 - **Expert FFN tensors (5120-byte rows, dtype 2/4, INT4)**: structure =
   [512 B][512 B][4096 B packed] = [scales][mins][row-major nibbles], and the
-  1BP converter (`tools/gguf_to_onebp.cpp`, Q4NX branch) writes exactly this
+  1BP converter (`src/gguf_to_onebp.cpp`, Q4NX branch) writes exactly this
   layout: `value = q*scale + min`, scale=(max-min)/15, `qd[(rr*256+c)/2]` low
   nibble = even col. The dequant value DISTRIBUTION matches the GGUF ground
   truth (rms 0.0108 vs 0.0069 for the TQ2-quantized GGUF twin), but the value

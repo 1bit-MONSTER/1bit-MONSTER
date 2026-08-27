@@ -9,7 +9,7 @@ granite, deepseek2/3) stay on their native backends (HIP 1BP / GGML-Vulkan).
 
 Also available in **1BP format** — single-file, zero-config, memory-mappable —
 plus documented models from the Zyphra ecosystem (EEG, TTS) that aren't convertible to 1BP.
-Converted via C++ toolchain (`tools/gguf_to_onebp.cpp`), zero Python at runtime.
+Converted via C++ toolchain (`src/gguf_to_onebp.cpp`), zero Python at runtime.
 
 **Legend:**
 - ✅ = Converted to 1BP, published on HuggingFace
@@ -179,14 +179,14 @@ here for completeness of the Zyphra ecosystem reference.
 
 ## Total: 47 1BP models + 12 documented = 59 entries
 
-Zyphra LLMs converted via C++ toolchain (`tools/gguf_to_onebp`).
+Zyphra LLMs converted via C++ toolchain (`src/gguf_to_onebp`).
 Zyphra EEG/TTS models documented as ecosystem reference (not 1BP convertible).
 
 ## Conversion Pipeline (C++ only)
 ```bash
 # Build converter
 g++ -std=c++17 -O3 -mavx2 -I include -I src \
-    tools/gguf_to_onebp.cpp src/gguf_reader.cpp src/gguf_zamba2_loader.cpp \
+    src/gguf_to_onebp.cpp src/gguf_reader.cpp src/gguf_zamba2_loader.cpp \
     -o build/gguf_to_onebp -lpthread
 
 # Convert model

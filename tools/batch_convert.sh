@@ -12,7 +12,7 @@
 #   bash tools/batch_convert.sh model.gguf         # Convert one file
 #
 # Dependencies:
-#   - build/gguf_to_onebp (built from tools/gguf_to_onebp.cpp)
+#   - build/gguf_to_onebp (built from src/gguf_to_onebp.cpp)
 #   - curl / wget (for --download)
 #   - huggingface-cli (optional, for --download)
 
