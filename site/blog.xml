@@ -6,12 +6,12 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Thu, 27 Aug 2026 02:29:05 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 27 Aug 2026 03:02:48 +0000</lastBuildDate>
     <item>
       <title>Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1180.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1180.html</guid>
-      <pubDate></pubDate>
+      <pubDate>Thu, 27 Aug 2026 00:00:00 +0000</pubDate>
       <description>Lemonade v11.8.0 re-vendored into the 1bit.MONSTER engine: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume + rate limits, cloud wire_format passthrough, and our own merged PR in the changelog.</description>
     </item>
     <item>
