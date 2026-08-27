@@ -43,9 +43,9 @@ jobs:
           # Anything else (new dirs, unrelated apps/services) fails the PR.
           ALLOWED='
             AGENTS.md AGENTS-WORKTREES.md AUDIT_ISSUES.md CHANGELOG.md CLAUDE.md CMakeLists.txt
-            CMakeLists_windows.txt CODE_OF_CONDUCT.md CONTRIBUTING.md LICENSE
+            CMakeLists_windows.txt CODE_OF_CONDUCT.md CONTRIBUTING.md LICENSE LICENSE-SHERRY.md  # LICENSE-SHERRY.md removal-only (Sherry relicensed MIT 2026-08-27, PR #1894)
             Makefile.zamba2 PLAN-GAIA.md README.md ROADMAP.md SECURITY.md  # PLAN-GAIA.md removal-only (superseded Gaia plan, deleted 2026-08)
-            TODO_TRACKING.md VERSION env.sh install.sh
+            SHERRY-FILES.txt TODO_TRACKING.md VERSION env.sh install.sh  # SHERRY-FILES.txt removal-only (Sherry relicensed MIT 2026-08-27, PR #1894)
             package.json replace_i8ctx.py
             .github
             .pr_agent.toml
