@@ -267,6 +267,10 @@ int zaya_decode_main(int argc, char** argv) {
         uint64_t gu_off = 0, gu_size = 0;   // raw Q4NX bytes (NPU_FUSED_I4)
         int gu_i8_rows = 0;
     };
+    // Flags must be computed before the layer-weight load loop (the gu/dn
+    // fp32 loads are gated on them, issue #1776 memory fix).
+    const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
+    const bool FUSED_I4 = FUSED && getenv("NPU_FUSED_I4") && atoi(getenv("NPU_FUSED_I4")) == 1;
     std::vector<Layer> L(NC);
     char key[256];
     for (int l = 0; l < NC; l++) {
@@ -311,10 +315,15 @@ int zaya_decode_main(int argc, char** argv) {
             if (s_ == 2) s_ = (uint64_t)m.rtr_h * 2;
             w.rw.eda = load_bf16(D, o_, s_);
         } }
-        snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
-        GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
-        { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) { w.gu_off = o_; w.gu_size = s_; w.gu_i8_rows = (m.n_exp*2*m.n_ff/32)*(d.H/256); } }
-        snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+        if (l % 2 == 1) {   // MoE layers only (zaya: even = attention-only)
+            snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
+            // FUSED_I4: fp32 gu only needed for l==1 (CPU reference diag);
+            // packing uses the raw q4nx bytes (read_q4nx_raw).
+            if (!(FUSED && FUSED_I4 && l != 1))
+                GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
+            { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) { w.gu_off = o_; w.gu_size = s_; w.gu_i8_rows = (m.n_exp*2*m.n_ff/32)*(d.H/256); } }
+            snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+        }
         #undef GET
         #undef GETI8
     }
@@ -353,11 +362,7 @@ int zaya_decode_main(int argc, char** argv) {
     // from the host amax pass (zaya_moe::host_h2_amax_qn_s) folded into the
     // gu BO header. Contract validated on x86 (test_fused_silu.cpp): corr
     // 0.9993–0.9996 vs float, argmax parity.
-    const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
-    // Fused int4 GU (issue #1769, ws09): pack from the RAW Q4NX bytes (halved
-    // weight DMA). Requires the kernel's B-path dequant stage — build with
-    // the ws09 int4 xclbins; until then this is host-side only.
-    const bool FUSED_I4 = FUSED && getenv("NPU_FUSED_I4") && atoi(getenv("NPU_FUSED_I4")) == 1;
+
     I8Ctx fused_ctx, fused_ctx_p2;   // split launch (issue #1775): p1 GU->SiLU->h2, p2 D-from-h2
     std::vector<std::vector<std::unique_ptr<xrt::bo>>> fgu_bo, fd_bo;
     std::vector<std::vector<std::vector<float>>> fgu_cs, fd_cs;
@@ -400,19 +405,21 @@ int zaya_decode_main(int argc, char** argv) {
             fgu_cs[l].resize(m.n_exp); fd_cs[l].resize(m.n_exp);
             fgu_row[l].resize(m.n_exp); fd_row[l].resize(m.n_exp);
         }
-        std::vector<float> guI((size_t)d.H * 2 * m.n_ff), dn_T((size_t)m.n_ff * d.H);
+        std::vector<float> guI(FUSED_I4 ? 0 : (size_t)d.H * 2 * m.n_ff), dn_T((size_t)m.n_ff * d.H);
         for (int l = 1; l < NC; l += 2) {
             auto& w = L[l];
             for (int e = 0; e < m.n_exp; e++) {
-                const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
-                // interleaved transpose: B[j][2p] = gate[p·H+j], B[j][2p+1] = up[p·H+j]
-                #pragma omp parallel for schedule(static)
-                for (int j = 0; j < d.H; j++) {
-                    const float* gb = gup;                    // gate block
-                    const float* ub = gup + (size_t)m.n_ff * d.H;  // up block
-                    for (int p = 0; p < m.n_ff; p++) {
-                        guI[(size_t)j * 2 * m.n_ff + 2 * p]     = gb[(size_t)p * d.H + j];
-                        guI[(size_t)j * 2 * m.n_ff + 2 * p + 1] = ub[(size_t)p * d.H + j];
+                if (!FUSED_I4) {
+                    const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                    // interleaved transpose: B[j][2p] = gate[p·H+j], B[j][2p+1] = up[p·H+j]
+                    #pragma omp parallel for schedule(static)
+                    for (int j = 0; j < d.H; j++) {
+                        const float* gb = gup;                    // gate block
+                        const float* ub = gup + (size_t)m.n_ff * d.H;  // up block
+                        for (int p = 0; p < m.n_ff; p++) {
+                            guI[(size_t)j * 2 * m.n_ff + 2 * p]     = gb[(size_t)p * d.H + j];
+                            guI[(size_t)j * 2 * m.n_ff + 2 * p + 1] = ub[(size_t)p * d.H + j];
+                        }
                     }
                 }
                 fgu_bo[l][e] = fused_ctx.make_fused_weight_bo(dev, 2 * m.n_ff);
@@ -954,6 +961,49 @@ int zaya_decode_main(int argc, char** argv) {
                     }
                     }
                     // P2: D GEMM reading h2 from bo4.
+                    if (getenv("NPU_I4_HOSTH2") && l == 1) {
+                        // Inject the HOST q22 h2 (all 2048 cols, row 0) into
+                        // bo4 so P2 sees a KNOWN-CORRECT h2 — isolates the
+                        // D phase from the P1 h2 writeback.
+                        std::vector<int8_t> h2host(8 * d.H, 0);
+                        {
+                            // C1h from Am + B_shadow (full K)
+                            const int8_t* Amh = fused_ctx.Am;
+                            const int8_t* Bsh = fgu_row[l][e].data();
+                            const int N2 = 2 * m.n_ff;
+                            std::vector<int32_t> C1h(N2, 0);
+                            for (int j = 0; j < N2; j++)
+                                for (int i = 0; i < d.H; i++)
+                                    C1h[j] += (int32_t)Amh[i] * Bsh[(size_t)i * N2 + j];
+                            std::vector<uint8_t> dummy(GuI4Pack::TILE_TOTAL, 0);
+                            std::vector<int32_t> fq(128), bg(128), bu(128), qq(3);
+                            for (int nt = 0; nt < N2 / 128; nt++) {
+                                write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), nt, 0, ag, qn_s, N2);
+                                std::memcpy(fq.data(), dummy.data() + GuI4Pack::META_BASE, 512);
+                                write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), nt, 1, ag, qn_s, N2);
+                                std::memcpy(bg.data(), dummy.data() + GuI4Pack::META_BASE, 512);
+                                write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), nt, 2, ag, qn_s, N2);
+                                std::memcpy(bu.data(), dummy.data() + GuI4Pack::META_BASE, 512);
+                                write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), nt, 3, ag, qn_s, N2);
+                                qq[0] = ((const int32_t*)(dummy.data() + GuI4Pack::META_BASE))[0];
+                                qq[1] = ((const int32_t*)(dummy.data() + GuI4Pack::META_BASE))[1];
+                                qq[2] = ((const int32_t*)(dummy.data() + GuI4Pack::META_BASE))[2];
+                                for (int p = 0; p < 64; p++) {
+                                    int g = nt * 128 + 2 * p, u = g + 1;
+                                    h2host[p + nt * 64] = silu_pair_q22(C1h[g], C1h[u],
+                                                                        fq[2 * p], fq[2 * p + 1],
+                                                                        bg[2 * p], bu[2 * p + 1],
+                                                                        qq[0], qq[1], qq[2]);
+                                }
+                            }
+                        }
+                        int8_t* h2m3 = (int8_t*)h2_bo[l]->map();
+                        for (int i = 0; i < d.H; i++) h2m3[i] = h2host[i];
+                        h2_bo[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                        fprintf(stderr, "[i4hosth2] injected %d cols (h2[0..7]=%d %d %d %d %d %d %d %d)\n",
+                                d.H, h2host[0], h2host[1], h2host[2], h2host[3],
+                                h2host[4], h2host[5], h2host[6], h2host[7]);
+                    }
                     auto frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                            residual.data(), 1, d.H, ag);
                     fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
@@ -989,51 +1039,12 @@ int zaya_decode_main(int argc, char** argv) {
                             for (int j = 0; j < N2; j++)
                                 for (int i = 0; i < d.H; i++)
                                     C1h[j] += (int32_t)Ai[i] * guBv2[(size_t)i * N2 + j];
-                            // v86 (ported): host unscaled C1 = Am . (q4*16) under 3
-                            // unpack-order interpretations (nt=0, full K): NAT, INT
-                            // (low nibbles first), TRN (kk/cc swapped)
-                            {
-                                const uint8_t* Bm5 = (const uint8_t*)fgu_bo[l][e]->map();
-                                const int nt0 = 0;
-                                fprintf(stderr, "\n[c1unscNAT] ");
-                                fprintf(stderr, "\n[c1unscINT] ");
-                                fprintf(stderr, "\n[c1unscTRN] ");
-                                for (int c = 0; c < 128; c += 2) {
-                                    long long aN = 0, aI = 0, aT = 0;
-                                    for (int ki = 0; ki < 32; ki++)
-                                        for (int k = 0; k < 64; k++) {
-                                            int gk = ki * 64 + k;
-                                            size_t off = (size_t)(ki * 32 + nt0) * GuI4Pack::TILE_TOTAL
-                                                + (size_t)((k % 64) / 8) * 512 + (size_t)(c / 8) * 32
-                                                + (size_t)(k % 8) * 4 + (size_t)((c % 8) / 2);
-                                            int b = (int)Bm5[off];
-                                            int lo = b & 0x0F, hi = (b >> 4) & 0x0F;
-                                            if (lo >= 8) lo -= 16;
-                                            if (hi >= 8) hi -= 16;
-                                            int cc = c % 8, kk = k % 8;
-                                            int qN = (cc % 2 == 0) ? lo : hi;
-                                            int e = kk * 8 + cc;
-                                            int qI = (e / 32 == 0) ? lo : hi;
-                                            size_t offT = (size_t)(ki * 32 + nt0) * GuI4Pack::TILE_TOTAL
-                                                + (size_t)((k % 64) / 8) * 512 + (size_t)(cc) * 32
-                                                + (size_t)((c / 8) % 8) * 4 + (size_t)((kk) / 2);
-                                            int bT = (int)Bm5[offT];
-                                            int loT = bT & 0x0F, hiT = (bT >> 4) & 0x0F;
-                                            if (loT >= 8) loT -= 16;
-                                            if (hiT >= 8) hiT -= 16;
-                                            int qT = (kk % 2 == 0) ? loT : hiT;
-                                            aN += (long long)fused_ctx.Am[gk] * (qN * 16);
-                                            aI += (long long)fused_ctx.Am[gk] * (qI * 16);
-                                            aT += (long long)fused_ctx.Am[gk] * (qT * 16);
-                                        }
-                                    fprintf(stderr, "%lld %lld %lld ", (long long)(aN / 32),
-                                            (long long)(aI / 32), (long long)(aT / 32));
-                                }
-                                fprintf(stderr, "\n");
-                            }
-
                             const int32_t* c1m = fused_ctx.Cm;
-                            {   // DIAG: host h2 (row 0) vs reference h2
+                            {   // DIAG: host h2 vs kernel h2 (row 0).
+                                // q22 reference (the i4 contract): C1h + the
+                                // SAME per-tile metadata the host packs
+                                // (write_silu_pad_meta) — the i8 silu_quant_i8
+                                // below was the WRONG reference for i4.
                                 std::vector<float> fold2(2 * m.n_ff);
                                 for (int p = 0; p < m.n_ff; p++) {
                                     fold2[2 * p]     = ag * fgu_cs[l][e][2 * p];
@@ -1041,37 +1052,228 @@ int zaya_decode_main(int argc, char** argv) {
                                 }
                                 std::vector<int8_t> h2r(m.n_ff), h2n(m.n_ff);
                                 silu_quant_i8(C1h.data(), fold2.data(), h2r.data(), m.n_ff);
-                                const int8_t* h2m2 = (const int8_t*)h2_bo[l]->map();
-                                for (int p = 0; p < 16; p++) h2n[p] = h2m2[(p >> 3) * 8 + (p & 7)];
-                                fprintf(stderr, "[h2ref] ");
-                                for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2r[p]);
-                                fprintf(stderr, "\n[h2npu] ");
-                                for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2n[p]);
-                                fprintf(stderr, "\n");
-                                {   // D-chain host reference: C2h = h2r . D_int8(shadow)
-                                    std::vector<int32_t> C2h(d.H, 0);
-                                    for (int j = 0; j < d.H; j++) {
-                                        long long acc = 0;
-                                        for (int i = 0; i < m.n_ff; i++)
-                                            acc += (long long)h2r[i] * fd_row[l][e][(size_t)i * d.H + j];
-                                        C2h[j] = (int32_t)acc;
+                                // q22 reference via the host pad writer (nt=0,
+                                // ki%4 chunks: 0->foldG, 1->boundG, 2->boundU,
+                                // 3->Q/shG/shU). COPY each chunk out between
+                                // calls — the writer overwrites META_BASE.
+                                {
+                                    std::vector<uint8_t> dummy(GuI4Pack::TILE_TOTAL, 0);
+                                    std::vector<int32_t> fq(128), bg(128), bu(128), qq(3);
+                                    write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), 0, 0, ag, qn_s, (int)(2 * m.n_ff));
+                                    std::memcpy(fq.data(), dummy.data() + GuI4Pack::META_BASE, 512);
+                                    write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), 0, 1, ag, qn_s, (int)(2 * m.n_ff));
+                                    std::memcpy(bg.data(), dummy.data() + GuI4Pack::META_BASE, 512);
+                                    write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), 0, 2, ag, qn_s, (int)(2 * m.n_ff));
+                                    std::memcpy(bu.data(), dummy.data() + GuI4Pack::META_BASE, 512);
+                                    write_silu_pad_meta(dummy.data(), fgu_cs[l][e].data(), 0, 3, ag, qn_s, (int)(2 * m.n_ff));
+                                    qq[0] = ((const int32_t*)(dummy.data() + GuI4Pack::META_BASE))[0];
+                                    qq[1] = ((const int32_t*)(dummy.data() + GuI4Pack::META_BASE))[1];
+                                    qq[2] = ((const int32_t*)(dummy.data() + GuI4Pack::META_BASE))[2];
+                                    std::vector<int8_t> h2q(m.n_ff);
+                                    for (int p = 0; p < m.n_ff; p++) {
+                                        int g = 2 * p, u = 2 * p + 1;
+                                        h2q[p] = silu_pair_q22(C1h[g], C1h[u],
+                                                               fq[g], fq[u], bg[g], bu[u],
+                                                               qq[0], qq[1], qq[2]);
                                     }
-                                    fprintf(stderr, "[Dhost] ");
-                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%.4f ", (float)C2h[j] * fd_cs[l][e][j] / qn_s);
-                                    fprintf(stderr, "\n[Dnpu ] ");
-                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%.4f ", moe_out[j]);
-                                    fprintf(stderr, "\n[Da   ] ");
-                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%.4f ", cpu_out[j]);
+                                    const int8_t* h2m2 = (const int8_t*)h2_bo[l]->map();
+                                    for (int p = 0; p < 16; p++) h2n[p] = h2m2[(p >> 3) * 8 + (p & 7)];
+                                    if (getenv("NPU_DIAG_H2")) {
+                                        // host q22 reference at the SAME k_chunk
+                                        // boundaries as the h2c64/128/256/512 dumps
+                                        for (int cb = 0; cb < 4; cb++) {
+                                            int c0 = (cb == 0) ? 64 : (cb == 1 ? 128 : (cb == 2 ? 256 : 512));
+                                            int nt = c0 / 128;
+                                            int p0 = (c0 % 128) / 2;
+                                            fprintf(stderr, "[h2q%d] ", c0);
+                                            for (int pp = 0; pp < 16; pp++) {
+                                                int p = p0 + pp;
+                                                int g = nt * 128 + 2 * p, u = g + 1;
+                                                fprintf(stderr, "%d ", (int)silu_pair_q22(
+                                                    C1h[g], C1h[u], fq[2 * p], fq[2 * p + 1],
+                                                    bg[2 * p], bu[2 * p + 1], qq[0], qq[1], qq[2]));
+                                            }
+                                            fprintf(stderr, "\n");
+                                        }
+                                    }
+                                    if (getenv("NPU_DIAG_H2")) {
+                                        // h2 A-layout: element (r,c) at r*K + (c/8)*8 + c%8
+                                        // (K = d.H row stride). Print rows 0-3 of
+                                        // k_chunk 0 = offsets r*2048 + [0,64).
+                                        for (int r = 0; r < 4; r++) {
+                                            fprintf(stderr, "[h2row%d] ", r);
+                                            for (int cc = 0; cc < 64; cc++)
+                                                fprintf(stderr, "%d ", (int)h2m2[(size_t)r * d.H + cc]);
+                                            fprintf(stderr, "\n");
+                                        }
+                                        // tile 1 row 0 (h2m2[64..127]) for
+                                        // cross-check vs [h2q64] host ref
+                                        fprintf(stderr, "[h2t1r0] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(64 + cc)]);
+                                        fprintf(stderr, "\n");
+                                        // cg1 tile 0 = k_chunk 8 at offset 512
+                                        // (C12 dump: row0 = C1>>12 cols 0-63,
+                                        //  row1 = cols 64-127, row2 = meta,
+                                        //  row3 = Q/shG/shU)
+                                        fprintf(stderr, "[cg1c12] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)512 + cc]);
+                                        // cg0 tile 0 C1>>12 (h2 rows 0-1 of k_chunk 0,
+                                        // A-layout: (r,c) at r*K + (c/8)*8 + c%8)
+                                        fprintf(stderr, "\n[cg0c12] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(0 * d.H + (cc / 8) * 8 + (cc % 8))]);
+                                        fprintf(stderr, "\n[cg0c12b] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(d.H + (cc / 8) * 8 + (cc % 8))]);
+                                        fprintf(stderr, "\n[cg1h2] ");
+                                        for (int cc = 0; cc < 16; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(512 + cc)]);
+                                        fprintf(stderr, "\n");
+                                        // C12-dump extras: tile-8 row 4 = cg1 A
+                                        // capture, row 5 = cg1 B'' chunk (0,0) dequant
+                                        // capture. A-layout: element (r,c') at
+                                        // r*K + (c'/8)*8 + c'%8, tile base 512.
+                                        fprintf(stderr, "[cg1a] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(512 + 4 * d.H + (cc / 8) * 8 + (cc % 8))]);
+                                        fprintf(stderr, "\n[cg1b0] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(512 + 5 * d.H + (cc / 8) * 8 + (cc % 8))]);
+                                        fprintf(stderr, "\n");
+                                        // row-7 markers: fired flag, call counter
+                                        fprintf(stderr, "[cap] fired=%d call=%d c1pre=",
+                                                (int)h2m2[(size_t)(512 + 7 * d.H)],
+                                                (int)h2m2[(size_t)(512 + 7 * d.H + 1)]
+                                                    | ((int)h2m2[(size_t)(512 + 7 * d.H + 2)] << 8));
+                                        for (int e = 0; e < 8; e++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(512 + 7 * d.H + 3 + e)]);
+                                        fprintf(stderr, "pc=%d zero=%d\n",
+                                                (int)h2m2[(size_t)(512 + 7 * d.H + 11)]
+                                                    | ((int)h2m2[(size_t)(512 + 7 * d.H + 12)] << 8)
+                                                    | ((int)h2m2[(size_t)(512 + 7 * d.H + 13)] << 16),
+                                                (int)h2m2[(size_t)(512 + 7 * d.H + 14)]
+                                                    | ((int)h2m2[(size_t)(512 + 7 * d.H + 15)] << 8));
+                                        // B'' chunk(0,0) at call 33 (row 6) and
+                                        // call 63 (row 7 cols 16+), A-layout.
+                                        fprintf(stderr, "[cg1b33] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(512 + 6 * d.H + (cc / 8) * 8 + (cc % 8))]);
+                                        fprintf(stderr, "\n[cg1b63] ");
+                                        for (int cc = 0; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)h2m2[(size_t)(512 + 7 * d.H + 16 + (cc / 8) * 8 + (cc % 8))]);
+                                        fprintf(stderr, "\n");
+                                        // full-row sweep: kernel h2 row 0 vs host q22
+                                        // reference. h2 is PAIR-indexed: value p =
+                                        // silu_pair_q22(C1h[2p], C1h[2p+1], meta of
+                                        // tile p/64). Compare all 2048 pairs.
+                                        {
+                                            int first_bad = -1, nbad = 0, worst = 0;
+                                            for (int p = 0; p < d.H; p++) {
+                                                int nt = p / 64;
+                                                int g = nt * 128 + 2 * (p % 64), u = g + 1;
+                                                int ref = silu_pair_q22(
+                                                    C1h[g], C1h[u], fq[2 * (p % 64)], fq[2 * (p % 64) + 1],
+                                                    bg[2 * (p % 64)], bu[2 * (p % 64) + 1], qq[0], qq[1], qq[2]);
+                                                int got = (int)h2m2[(size_t)p];
+                                                int dd = got - ref; if (dd < 0) dd = -dd;
+                                                if (dd > worst) worst = dd;
+                                                if (got != ref) { nbad++; if (first_bad < 0) first_bad = p; }
+                                            }
+                                            fprintf(stderr, "[h2sweep] nbad=%d first_bad=%d worst=%d\n", nbad, first_bad, worst);
+                                            // per-64-pair-tile summary
+                                            for (int nt = 0; nt < d.H / 64; nt++) {
+                                                int tb = 0, tw = 0;
+                                                for (int pp = 0; pp < 64; pp++) {
+                                                    int p = nt * 64 + pp;
+                                                    int g = nt * 128 + 2 * pp, u = g + 1;
+                                                    int ref = silu_pair_q22(C1h[g], C1h[u],
+                                                        fq[2 * pp], fq[2 * pp + 1], bg[2 * pp], bu[2 * pp + 1],
+                                                        qq[0], qq[1], qq[2]);
+                                                    int got = (int)h2m2[(size_t)p];
+                                                    int dd = got - ref; if (dd < 0) dd = -dd;
+                                                    if (got != ref) tb++;
+                                                    if (dd > tw) tw = dd;
+                                                }
+                                                fprintf(stderr, "[h2tile %2d] nbad=%d worst=%d got0=%d ref0=%d\n",
+                                                        nt, tb, tw, (int)h2m2[(size_t)(nt * 64)],
+                                                        (int)silu_pair_q22(C1h[nt*128], C1h[nt*128+1],
+                                                            fq[0], fq[1], bg[0], bu[1], qq[0], qq[1], qq[2]));
+                                            }
+                                        }
+                                    }
+                                    fprintf(stderr, "[h2q22] ");
+                                    for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2q[p]);
+                                    fprintf(stderr, "\n[h2npu] ");
+                                    for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2n[p]);
+                                    fprintf(stderr, "\n[h2i8r] ");
+                                    for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2r[p]);
                                     fprintf(stderr, "\n");
-                                    fprintf(stderr, "[C2host] ");
-                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", C2h[j]);
-                                    fprintf(stderr, "\n[C2npu ] ");
-                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", fused_ctx_p2.Cm[j]);
+                                    // B_shadow probe: host B'' for tile 0,
+                                    // rows 0-7 cols 0-7 (row-major [K*N]).
+                                    const int8_t* bsh = fgu_row[l][e].data();
+                                    fprintf(stderr, "[bshadow] ");
+                                    for (int rr = 0; rr < 8; rr++)
+                                        for (int cc = 0; cc < 8; cc++)
+                                            fprintf(stderr, "%d ", (int)bsh[(size_t)rr * (2 * m.n_ff) + cc]);
                                     fprintf(stderr, "\n");
+                                    // chunk (i=1, jt=3): rows 8-15, cols 24-31
+                                    fprintf(stderr, "[b13] ");
+                                    for (int rr = 8; rr < 16; rr++)
+                                        for (int cc = 24; cc < 32; cc++)
+                                            fprintf(stderr, "%d ", (int)bsh[(size_t)rr * (2 * m.n_ff) + cc]);
+                                    fprintf(stderr, "\n");
+                                    // chunk (i=3, jt=7): rows 24-31, cols 56-63
+                                    fprintf(stderr, "[b37] ");
+                                    for (int rr = 24; rr < 32; rr++)
+                                        for (int cc = 56; cc < 64; cc++)
+                                            fprintf(stderr, "%d ", (int)bsh[(size_t)rr * (2 * m.n_ff) + cc]);
+                                    fprintf(stderr, "\n");
+                                    // Dump the first 8 KB of the GU BO (tile 0:
+                                    // nibbles + ratioQ22) for the host dequant probe.
+                                    {
+                                        const uint8_t* Bm0 = (const uint8_t*)fgu_bo[l][e]->map();
+                                        FILE* bf = fopen("/tmp/gu_tile0.bin", "wb");
+                                        if (bf) {
+                                            fwrite(Bm0, 1, 8192, bf);
+                                            fclose(bf);
+                                            fprintf(stderr, "[guTile0] dumped 8192 B\n");
+                                        }
+                                        // also dump the cg1 tile (ki=0, nt=8) at
+                                        // offset 8*8192 and its ratio region
+                                        {
+                                            const uint8_t* t8 = Bm0 + 8 * 8192;
+                                            FILE* bf2 = fopen("/tmp/gu_tile8.bin", "wb");
+                                            if (bf2) { fwrite(t8, 1, 8192, bf2); fclose(bf2); }
+                                            fprintf(stderr, "[guTile8] dumped 8192 B (nt=8)\n");
+                                            fprintf(stderr, "[t8nib0] ");
+                                            for (int i = 0; i < 32; i++) fprintf(stderr, "%02x ", t8[i]);
+                                            fprintf(stderr, "\n[t8rq0] ");
+                                            for (int i = 0; i < 8; i++)
+                                                fprintf(stderr, "%d ", ((const int32_t*)(t8 + 4096))[i]);
+                                            fprintf(stderr, "\n");
+                                        }
+                                        // Also dump the FULL GU BO (8 MB) + the
+                                        // full Am (2048) for a host-side C1 check
+                                        {
+                                            FILE* bf2 = fopen("/tmp/gu_full.bin", "wb");
+                                            if (bf2) {
+                                                size_t sz = gu_i4_bo_size(fused_ctx.KD, (int)(2 * m.n_ff));
+                                                fwrite(Bm0, 1, sz, bf2);
+                                                fclose(bf2);
+                                                fprintf(stderr, "[guFull] dumped %zu B\n", sz);
+                                            }
+                                            FILE* bf3 = fopen("/tmp/am_full.bin", "wb");
+                                            if (bf3) {
+                                                fwrite(fused_ctx.Am, 1, (size_t)d.H, bf3);
+                                                fclose(bf3);
+                                                fprintf(stderr, "[amFull] dumped %d B\n", d.H);
+                                            }
+                                        }
+                                    }
                                 }
                             }
-
-
                             fprintf(stderr, "[c1cmp] cpu: ");
                             if (getenv("NPU_C1_TEST"))
                                 for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", 260096 * (j % 16));
