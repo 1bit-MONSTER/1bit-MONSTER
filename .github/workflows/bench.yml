@@ -18,6 +18,9 @@ on:
       - 'engine/npu/kernel/**'
       - 'engine/npu/xclbins/**'
 
+permissions:
+  contents: read
+
 concurrency:
   group: bench-${{ github.ref }}
   cancel-in-progress: true

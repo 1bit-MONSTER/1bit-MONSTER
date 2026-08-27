@@ -99,8 +99,8 @@ Effective throughput per byte: **2.9× rocBLAS**
 | 6912×2560 (LM head) | **27.0** | ~700 | **7.8×** | 1/16 |
 | 4096×11008 | ~200 | 1468 | **7.3×** | 1/16 |
 
-**sherry** (3:4 N:M sparse, PolyForm NC): 18.7 µs = 1.45× halo  
-**tq1** (PolyForm NC): 18.7 µs = 1.44× halo
+**sherry** (3:4 N:M sparse): 18.7 µs = 1.45× halo  
+**tq1**: 18.7 µs = 1.44× halo
 
 ### llama.cpp Q1_0 Full Burn (7 models)
 

@@ -102,6 +102,8 @@ enum OnebpQuant : uint32_t {
     ONEBP_TQ2NZ= 6,   // No-zero 2-bit S40 {-4,-1,+1,+4} (ROCmFPX-FP2-style)
     ONEBP_TQ2NZ_E4M3 = 7, // TQ2NZ with 1-byte UE4M3 scales (2.25 bpw)
     ONEBP_TQ2BS = 8,      // Block-scaled ternary, per-16 FP8 E4M3 scales (5 B/block)
+    ONEBP_Q4_ROCMFP4 = 9, // Codebook10 4-bit + dual UE4M3 scales (ROCmFP4, 4.50 bpw)
+    ONEBP_Q4_ROCMFP4_FAST = 10, // Codebook10 4-bit + single UE4M3 scale (4.25 bpw)
 };
 
 // ─── Scale types ───────────────────────────────────────────────────
@@ -325,6 +327,15 @@ static inline uint64_t onebp_tiled_size(
             uint32_t tq1_grps = (tile_cols + 4) / 5;
             tile_bytes = (uint64_t)tile_rows * tq1_grps * 2  // bf16 scales
                        + (uint64_t)tile_rows * tq1_grps;      // packed codes
+            break;
+        }
+        case ONEBP_Q4_ROCMFP4:
+        case ONEBP_Q4_ROCMFP4_FAST: {
+            // Codebook10 4-bit packed 2/byte + UE4M3 scales, 32-el blocks.
+            // dual: 16 code B + 2 scale B = 18 B/block; fast: 16 + 1 = 17 B.
+            uint32_t blocks_per_row = (tile_cols + 31) / 32;
+            tile_bytes = (uint64_t)tile_rows * blocks_per_row *
+                         (quant == ONEBP_Q4_ROCMFP4_FAST ? 17 : 18);
             break;
         }
         case ONEBP_F16:

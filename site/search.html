@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Search | 1bit.MONSTER</title>
+  <meta name="description" content="Search every page, post, benchmark and doc on 1bit.MONSTER — the 1-bit inference engine with 552 architecture tokens, 1,775 HF arch strings and 100% HuggingFace coverage." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Search | 1bit.MONSTER" />
+  <meta property="og:description" content="Search every page, post, benchmark and doc on 1bit.MONSTER." />
+  <meta property="og:url" content="https://1bit.monster/search.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="canonical" href="https://1bit.monster/search.html" />
+  <style>
+    :root {
+      --bg: oklch(99% 0.002 240); --surface: oklch(100% 0 0);
+      --fg: oklch(18% 0.012 250); --muted: oklch(54% 0.012 250);
+      --border: oklch(92% 0.005 250); --accent: oklch(58% 0.18 255);
+      --accent-soft: color-mix(in oklch, var(--accent) 10%, transparent);
+      --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body { background: var(--bg); color: var(--fg); font-family: var(--font); line-height: 1.5; padding: 48px 20px; }
+    .wrap { max-width: 760px; margin: 0 auto; }
+    header { margin-bottom: 28px; }
+    header a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    h1 { font-size: 34px; margin: 6px 0 4px; }
+    .sub { color: var(--muted); font-size: 15px; }
+    input[type="search"] {
+      width: 100%; font-size: 18px; padding: 14px 16px; border: 1px solid var(--border);
+      border-radius: 10px; background: var(--surface); color: var(--fg);
+      font-family: var(--font);
+    }
+    input[type="search"]:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    .meta { color: var(--muted); font-size: 13px; margin: 10px 2px; }
+    .result { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+    .result h3 { font-size: 16px; margin-bottom: 4px; }
+    .result h3 a { color: var(--fg); text-decoration: none; }
+    .result h3 a:hover { color: var(--accent); }
+    .result p { color: var(--muted); font-size: 14px; }
+    .result .url { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+    .badge { display: inline-block; font-size: 11px; background: var(--accent-soft); color: var(--accent); border-radius: 20px; padding: 2px 9px; margin-left: 8px; vertical-align: 2px; }
+    .related h2 { font-size: 15px; color: var(--muted); margin: 26px 0 8px; }
+    .related a { display: inline-block; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 6px 13px; margin: 4px 6px 0 0; color: var(--fg); text-decoration: none; font-size: 13px; }
+    .related a:hover { border-color: var(--accent); color: var(--accent); }
+    .empty { color: var(--muted); padding: 30px 0; text-align: center; }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 14px; }
+    mark { background: color-mix(in oklch, var(--accent) 22%, transparent); border-radius: 3px; padding: 0 2px; }
+  </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "Search | 1bit.MONSTER", "description": "Search every page, post, benchmark and doc on 1bit.MONSTER \u2014 the 1-bit inference engine with 552 architecture tokens, 1,775 HF arch strings and 100% HuggingFace coverage.", "url": "https://1bit.monster/search.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <a href="/">← 1bit.MONSTER</a>
+      <h1>Search</h1>
+      <p class="sub">Every page, post, benchmark and doc — indexed with the engine's own embeddings.</p>
+    </header>
+
+    <input type="search" id="q" placeholder="try “NPU”, “ROCm”, “speculative decoding”, “1-bit format”…" autofocus autocomplete="off" />
+    <div class="meta" id="meta"></div>
+    <div id="results"></div>
+
+    <div class="related" id="related">
+      <h2>Related content (semantic)</h2>
+      <div id="relatedLinks"></div>
+    </div>
+
+    <p class="hint" id="hint"></p>
+  </div>
+
+  <script src="analytics.js"></script>
+  <script>
+    const STOP = new Set("the a an and or but of to in on for with at by from as is are was were be been it its this that these those not no if then than so such all any how what when where which who whom your you we they he she their our".split(" "));
+
+    async function load() {
+      const [idx, rel] = await Promise.all([
+        fetch("search-index.json").then(r => r.json()),
+        fetch("related.json").then(r => r.json()).catch(() => null),
+      ]);
+      if (rel) {
+        const list = Object.values(rel.related).flat().sort((a, b) => b.score - a.score);
+        const seen = new Set(); const links = [];
+        for (const r of list) {
+          if (!seen.has(r.url) && !r.url.includes("index.html")) { seen.add(r.url); links.push(r); }
+          if (links.length >= 12) break;
+        }
+        document.getElementById("relatedLinks").innerHTML = links
+          .map(r => `<a href="${r.url}">${r.title.replace(/\s*\|\s*1bit\.MONSTER\s*$/, "")}</a>`).join("");
+      } else {
+        document.getElementById("related").style.display = "none";
+      }
+      return idx;
+    }
+
+    function tokenize(s) {
+      return (s.toLowerCase().match(/[a-z0-9]+(?:[-'][a-z0-9]+)*/g) || []).filter(t => t.length > 1 && !STOP.has(t));
+    }
+
+    function scoreChunk(chunk, terms) {
+      const text = chunk.text.toLowerCase();
+      let s = 0, matched = 0;
+      for (const t of terms) {
+        const n = (text.match(new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+        if (n > 0) { s += 1 + Math.log2(1 + n); matched++; }
+      }
+      // slight boost for title hits
+      const title = chunk.title.toLowerCase();
+      for (const t of terms) if (title.includes(t)) s += 2;
+      return { s, matched };
+    }
+
+    function esc(s) {
+      return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    async function search(idx, query) {
+      const terms = tokenize(query);
+      const root = document.getElementById("results");
+      const meta = document.getElementById("meta");
+      if (!terms.length) { root.innerHTML = ""; meta.textContent = `${idx.chunks.length} chunks indexed — type to search.`; return; }
+      const scored = idx.chunks.map(c => ({ ...c, ...scoreChunk(c, terms) }))
+        .filter(c => c.matched > 0)
+        .sort((a, b) => b.s - a.s)
+        .slice(0, 12);
+      meta.textContent = `“${esc(query)}” — ${scored.length} hits`;
+      if (!scored.length) { root.innerHTML = `<div class="empty">Nothing found — try “NPU”, “GGUF”, “benchmarks”, “ROCm”.</div>`; return; }
+      root.innerHTML = scored.map(c => {
+        const i = c.text.toLowerCase().indexOf(terms[0]);
+        const from = Math.max(0, i - 90);
+        const snip = (from > 0 ? "…" : "") + esc(c.text.slice(from, from + 240)) + (from + 240 < c.text.length ? "…" : "");
+        const url = c.page === "index.html" ? "/" : `/${c.page}`;
+        return `<div class="result">
+          <h3><a href="${url}">${esc(c.title.replace(/\s*\|\s*1bit\.MONSTER\s*$/, ""))}</a><span class="badge">${c.matched}/${terms.length} terms</span></h3>
+          <p>${snip}</p>
+          <span class="url">${url}</span>
+        </div>`;
+      }).join("");
+    }
+
+    let indexPromise = load();
+    const q = document.getElementById("q");
+    let t;
+    q.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(async () => { const idx = await indexPromise; search(idx, q.value.trim()); }, 120);
+    });
+    window.addEventListener("load", async () => {
+      const idx = await indexPromise;
+      const qp = new URLSearchParams(location.search).get("q") || "";
+      if (qp.trim()) q.value = qp.trim();
+      search(idx, q.value.trim());
+    });
+  </script>
+</body>
+</html>

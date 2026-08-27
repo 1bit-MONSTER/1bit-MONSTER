@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>The fused layer engine | 1bit.MONSTER</title>
   <meta name="description" content="How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="The fused layer engine | 1bit.MONSTER" />
+  <meta property="og:description" content="How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-fused.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="The fused layer engine | 1bit.MONSTER" />
+  <meta name="twitter:description" content="How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-fused.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
@@ -102,6 +113,9 @@
       .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
     }
   </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The fused layer engine | 1bit.MONSTER", "description": "How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced.", "url": "https://1bit.monster/1bit-post-fused.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-fused.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
 </head>
 <body>
   <header class="topnav" data-od-id="topnav">
@@ -161,13 +175,20 @@
         <h2>The pattern</h2>
         <p>Fusing was the difference between a working engine and a fast one. It is the architecture the site ships today, and the discipline of marking which parts of a claim are still standing.</p>
       </div>
-    </article>
+    
+    <section class="related">
+      <h2>Related</h2>
+      <a href="https://1bit.monster/1bit-post-npu-reversal.html">I reverse-engineered AMD's NPU stack in 4 days</a>
+      <a href="https://1bit.monster/1bit-post-sprint.html">244 to 3.4 ms/tok: the NPU optimization sprint</a>
+      <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
+    </section>
+  </article>
   </main>
 
   <footer class="pagefoot" data-od-id="footer">
     <div class="container row-between" style="max-width: 1000px;">
       <span>© 2026 1bit.MONSTER · MIT License</span>
-      <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support &#8599;</a>
+      <a class="meta" href="https://fluxer.gg/sJiQqrmE" target="_blank" rel="noopener">Community support &#8599;</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
     <div class="container">
@@ -175,5 +196,6 @@
       <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
     </div>
   </footer>
+<script src="analytics.js"></script>
 </body>
 </html>

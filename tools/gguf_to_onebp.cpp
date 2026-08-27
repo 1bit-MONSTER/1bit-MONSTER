@@ -111,6 +111,8 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[ai], "--tq2nz") == 0) quant = ONEBP_TQ2NZ;
         else if (strcmp(argv[ai], "--tq2nz-e4m3") == 0) quant = ONEBP_TQ2NZ_E4M3;
         else if (strcmp(argv[ai], "--tq2bs") == 0) quant = ONEBP_TQ2BS;
+        else if (strcmp(argv[ai], "--rocmfp4") == 0) quant = ONEBP_Q4_ROCMFP4;
+        else if (strcmp(argv[ai], "--rocmfp4-fast") == 0) quant = ONEBP_Q4_ROCMFP4_FAST;
         else if (strcmp(argv[ai], "--tq1") == 0)  quant = ONEBP_TQ1;
         else if (strcmp(argv[ai], "--f16") == 0)  quant = ONEBP_F16;  // lossless half-precision (no quant)
         else if (strcmp(argv[ai], "--q4nx") == 0) quant = ONEBP_Q4NX;
@@ -126,6 +128,8 @@ int main(int argc, char** argv) {
                              (quant == ONEBP_TQ2NZ) ? "TQ2NZ (no-zero 2-bit S40)" :
                              (quant == ONEBP_TQ2NZ_E4M3) ? "TQ2NZ-E4M3 (no-zero 2-bit, UE4M3 scales)" :
                              (quant == ONEBP_TQ2BS) ? "TQ2BS (block-scaled ternary, FP8 scales)" :
+                             (quant == ONEBP_Q4_ROCMFP4) ? "Q4 ROCmFP4 (Codebook10 + dual UE4M3 scales)" :
+                             (quant == ONEBP_Q4_ROCMFP4_FAST) ? "Q4 ROCmFP4-FAST (Codebook10 + single UE4M3 scale)" :
                              (quant == ONEBP_TQ1) ? "TQ1 (ternary 1.58-bit)" :
                              (quant == ONEBP_F16) ? "F16 (float16, lossless)" :
                              "Q4NX (4-bit)";
@@ -458,6 +462,21 @@ int main(int argc, char** argv) {
     std::vector<TInfo> tensors;
     int tr = 32, tc = 256, gs = 32;
 
+    // ── Per-tensor quant routing ──
+    // Embedding / output / lm_head must stay high-precision: their low-rank
+    // structure is destroyed by coarse codebooks (TQ2NZ model collapse test;
+    // ROCmFP4's 10-value codebook likewise corrupts token rows — the very
+    // first hidden state diverges and every downstream token is garbage).
+    // TQ2NZ-family -> Q4NX (asymmetric, 16 levels); ROCmFP4 -> lossless F16.
+    auto route_quant = [&](OnebpQuant q, const std::string& tn) -> OnebpQuant {
+        if (getenv("ONEBP_NO_ROUTE")) return q;
+        bool is_emb = (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight");
+        if (!is_emb) return q;
+        if (q == ONEBP_TQ2NZ || q == ONEBP_TQ2NZ_E4M3) return ONEBP_Q4NX;
+        if (q == ONEBP_Q4_ROCMFP4 || q == ONEBP_Q4_ROCMFP4_FAST) return ONEBP_F16;
+        return q;
+    };
+
     if (moe_shape_colmajor) {
         printf("  MoE shape: column-major [cols, rows, experts] (experts=%d from 3rd dim)\n", 0);
     } else {
@@ -483,10 +502,7 @@ int main(int argc, char** argv) {
             // Tensor routing (ROCmFPX recipe mining): no-zero 2-bit codebooks
             // destroy sparse/embedding tensors (TQ2NZ model collapse test).
             // Keep token embeddings + lm_head on asymmetric Q4NX.
-            OnebpQuant tq = quant;
-            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
-                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
-                tq = ONEBP_Q4NX;
+            OnebpQuant tq = route_quant(quant, tn);
             // NOTE: 4-bit Q4NX of ANY tensor class (attention or FFN) loses
             // ~0.99+/layer and compounds into incoherent logits on deep
             // models — per-tensor F16 routing was tried and still failed
@@ -534,10 +550,7 @@ int main(int argc, char** argv) {
                 // GGUF 3D is ne0-contiguous; storing as 2D [shape[0],
                 // shape[1]*shape[2]] keeps get_tensor_f32's flat order identical
                 // to the GGUF reader (verified 2026-08-16).
-                OnebpQuant tq2 = quant;
-                if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
-                    (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
-                    tq2 = ONEBP_Q4NX;
+                OnebpQuant tq2 = route_quant(quant, tn);
                 ne = (int)inf->shape[0];
                 r  = (int)inf->shape[1];
                 c  = (int)inf->shape[2];
@@ -557,10 +570,7 @@ int main(int argc, char** argv) {
                 c  = (int)inf->shape[2];
             }
             if (ne <= 0 || r <= 0 || c <= 0) continue;
-            OnebpQuant tq = quant;
-            if (!getenv("ONEBP_NO_ROUTE") && (quant == ONEBP_TQ2NZ || quant == ONEBP_TQ2NZ_E4M3) &&
-                (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight"))
-                tq = ONEBP_Q4NX;
+            OnebpQuant tq = route_quant(quant, tn);
             uint64_t per_expert = onebp_tiled_size(r, c, tr, tc, gs, tq);
             uint64_t total_tiled = (uint64_t)ne * per_expert;
             tensors.push_back({tn, 3, r, c, ne, 0, total_tiled, tq});
@@ -871,6 +881,141 @@ int main(int argc, char** argv) {
                     fwrite(tdata.data(), 1, tdata.size(), fout);
                     continue;
                 }
+                if (ti.tq == ONEBP_Q4_ROCMFP4 || ti.tq == ONEBP_Q4_ROCMFP4_FAST) {
+                    // ── Q4 ROCmFP4: Codebook10 4-bit + UE4M3 scales ──
+                    // Values 0,±1,±2,±3,±4,±6,±8,±10 (code = q&7 mag, bit3 sign)
+                    // packed 2/byte; dual-scale (FAST: single) UE4M3 per 32-block.
+                    //   dual: [16 code bytes][e0][e1] = 18 B/32 el (4.50 bpw)
+                    //   fast: [16 code bytes][e]     = 17 B/32 el (4.25 bpw)
+                    // Scale s = max|v|/10 so code ±10 covers the block max; then
+                    // MSE-search the nearest UE4M3 (optionally imatrix-weighted),
+                    // matching the TQ2NZ_E4M3 scale-search discipline.
+                    const bool rfp4_fast = (ti.tq == ONEBP_Q4_ROCMFP4_FAST);
+                    const int block_bytes = rfp4_fast ? 17 : 18;
+                    const int nb = (tc + 31) / 32;  // per-row 32-element blocks
+                    std::vector<uint8_t> tdata((size_t)tr * nb * block_bytes, 0);
+                    for (int rr = 0; rr < tr; rr++) {
+                        int ar = r0 + rr;
+                        if (ar >= R) break;
+                        int cw = std::min(tc, C - c0);
+                        for (int b = 0; b < nb; b++) {
+                            uint8_t* blk = tdata.data() + ((size_t)rr * nb + b) * block_bytes;
+                            int c0b = c0 + b * 32;
+                            // two half-block scales (dual) or one (fast)
+                            for (int half = 0; half < (rfp4_fast ? 1 : 2); half++) {
+                                int hs = c0b + half * 16;
+                                float maxabs = 0.0f;
+                                for (int i = 0; i < 16; i++) {
+                                    int ac = hs + i;
+                                    if (ar < R && ac < C) {
+                                        float v = fw[expert_off + (size_t)ar * C + ac];
+                                        if (std::isfinite(v)) { float a = fabsf(v); if (a > maxabs) maxabs = a; }
+                                    }
+                                }
+                                float s = maxabs * 0.1f;  // outer code ±10 covers max
+                                uint8_t scale_byte = 0;
+                                if (s >= 1e-20f) {
+                                    const std::vector<float>* imw = nullptr;
+                                    if (!imatrix.empty()) {
+                                        auto it = imatrix.find(ti.name);
+                                        if (it != imatrix.end() && (int)it->second.size() == C) imw = &it->second;
+                                    }
+                                    uint8_t start_e = onebp_nearest_ue4m3(s);
+                                    // Exhaustive MSE search over all 127 UE4M3
+                                    // scales (fork rocmfp4_choose_scale_ue4m3
+                                    // behavior), with the same early-exit when
+                                    // smaller scales can no longer represent
+                                    // the block max. Weighted by --imatrix when
+                                    // provided (mean-normalized per group).
+                                    float best_err = INFINITY;
+                                    bool lower_done = false;
+                                    for (int delta = 0; delta <= 125; delta++) {
+                                        int e0 = (int)start_e - delta;
+                                        if (!lower_done && e0 >= 1 && e0 <= 126) {
+                                            float scv0 = onebp_ue4m3_to_f32((uint8_t)e0);
+                                            float clip0 = maxabs - 10.0f * scv0;
+                                            if (clip0 > 0.0f && clip0 * clip0 > best_err) {
+                                                lower_done = true;
+                                            } else {
+                                                float inv0 = 1.0f / scv0, err = 0.0f, wsum = 0.0f;
+                                                for (int i = 0; i < 16; i++) {
+                                                    int ac = hs + i;
+                                                    if (ar >= R || ac >= C) continue;
+                                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                                    if (!std::isfinite(v)) continue;
+                                                    float q = v * inv0;
+                                                    float aq = fabsf(q);
+                                                    float code = aq <= 0.5f ? 0.0f : aq <= 1.5f ? 1.0f : aq <= 2.5f ? 2.0f
+                                                              : aq <= 3.5f ? 3.0f : aq <= 5.0f ? 4.0f : aq <= 7.0f ? 6.0f
+                                                              : aq <= 9.0f ? 8.0f : 10.0f;
+                                                    code = (v < 0.0f) ? -code : code;
+                                                    float dv = v - code * scv0;
+                                                    float w = imw ? (*imw)[ac] : 1.0f;
+                                                    err += w * dv * dv;
+                                                    wsum += w;
+                                                }
+                                                if (imw && wsum > 0.0f) err /= wsum;
+                                                if (err < best_err) { best_err = err; scale_byte = (uint8_t)e0; }
+                                            }
+                                        }
+                                        int e1 = (int)start_e + delta;
+                                        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+                                            float scv1 = onebp_ue4m3_to_f32((uint8_t)e1);
+                                            float inv1 = 1.0f / scv1, err = 0.0f, wsum = 0.0f;
+                                            for (int i = 0; i < 16; i++) {
+                                                int ac = hs + i;
+                                                if (ar >= R || ac >= C) continue;
+                                                float v = fw[expert_off + (size_t)ar * C + ac];
+                                                if (!std::isfinite(v)) continue;
+                                                float q = v * inv1;
+                                                float aq = fabsf(q);
+                                                float code = aq <= 0.5f ? 0.0f : aq <= 1.5f ? 1.0f : aq <= 2.5f ? 2.0f
+                                                          : aq <= 3.5f ? 3.0f : aq <= 5.0f ? 4.0f : aq <= 7.0f ? 6.0f
+                                                          : aq <= 9.0f ? 8.0f : 10.0f;
+                                                code = (v < 0.0f) ? -code : code;
+                                                float dv = v - code * scv1;
+                                                float w = imw ? (*imw)[ac] : 1.0f;
+                                                err += w * dv * dv;
+                                                wsum += w;
+                                            }
+                                            if (imw && wsum > 0.0f) err /= wsum;
+                                            if (err < best_err) { best_err = err; scale_byte = (uint8_t)e1; }
+                                        }
+                                        if ((lower_done || e0 <= 1) && e1 >= 126) break;
+                                    }
+                                }
+                                blk[rfp4_fast ? 16 : 16 + half] = scale_byte;
+                            }
+                            // pack codes: element j (0..15) = blk[j] low nibble,
+                            // element j+16 = blk[j] high nibble
+                            float d0 = onebp_ue4m3_to_f32(blk[16]);
+                            float d1 = rfp4_fast ? d0 : onebp_ue4m3_to_f32(blk[17]);
+                            for (int i = 0; i < 32; i++) {
+                                int ac = c0b + i;
+                                uint8_t code = 0;
+                                if (ar < R && ac < C) {
+                                    float v = fw[expert_off + (size_t)ar * C + ac];
+                                    float d = (i < 16) ? d0 : d1;
+                                    if (std::isfinite(v) && d > 0.0f) {
+                                        float q = v / d;
+                                        float aq = fabsf(q);
+                                        int mag = aq <= 0.5f ? 0 : aq <= 1.5f ? 1 : aq <= 2.5f ? 2
+                                                      : aq <= 3.5f ? 3 : aq <= 5.0f ? 4 : aq <= 7.0f ? 6
+                                                      : aq <= 9.0f ? 8 : 10;
+                                        // Codebook10 index: mag<=4 -> mag; else (mag+4)/2
+                                        int idx = mag <= 4 ? mag : (mag + 4) / 2;
+                                        code = (uint8_t)(idx | (q < 0.0f ? 0x08 : 0));
+                                    }
+                                }
+                                int j = i & 15;
+                                if (i < 16) blk[j] = (uint8_t)((blk[j] & 0xf0) | (code & 0x0f));
+                                else        blk[j] = (uint8_t)((blk[j] & 0x0f) | ((code & 0x0f) << 4));
+                            }
+                        }
+                    }
+                    fwrite(tdata.data(), 1, tdata.size(), fout);
+                    continue;
+                }
                 if (ti.tq == ONEBP_TQ1) {
                     // ── TQ1: 1.58-bit base-3 ternary (5 codes/byte) ──
                     // Groups of 5 elements: bf16 scale + 1 byte with 5 base-3 codes.
@@ -988,6 +1133,19 @@ int main(int argc, char** argv) {
     fseek(fout, 0, SEEK_SET);
     fwrite(&hdr, sizeof(hdr), 1, fout);
     fclose(fout);
+    // Write a sibling .htok (BPE tokenizer) next to the .1bp so the serving
+    // path can decode real text. Without it, non-GGUF models fall to the
+    // character-level fallback and emit raw [token_id] brackets (#1570 family).
+    {
+        std::string htok = argv[2];
+        auto dot = htok.find_last_of('.');
+        if (dot != std::string::npos) htok = htok.substr(0, dot);
+        htok += ".htok";
+        if (reader.write_htok(htok))
+            printf("  [tok] wrote BPE tokenizer -> %s\n", htok.c_str());
+        else
+            fprintf(stderr, "  [tok] write_htok failed — serving will use char fallback\n");
+    }
     FILE* fc = fopen(argv[2], "rb"); fseek(fc, 0, SEEK_END);
     long fsz = ftell(fc); fclose(fc);
     auto t1 = std::chrono::steady_clock::now();

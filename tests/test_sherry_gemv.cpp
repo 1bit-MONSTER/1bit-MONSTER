@@ -1,6 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
-// Sherry — see LICENSE-SHERRY.md and SHERRY-FILES.txt at the repo root.
-// Commercial use requires a separate license.
+// SPDX-License-Identifier: MIT
 //
 // test_sherry_gemv.cpp — differential test for the Sherry 1.25-bpw GEMV.
 //

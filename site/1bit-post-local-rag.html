@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local RAG with our own embeddings | 1bit.MONSTER</title>
+  <meta name="description" content="The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="Local RAG with our own embeddings | 1bit.MONSTER" />
+  <meta property="og:description" content="The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-local-rag.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Local RAG with our own embeddings | 1bit.MONSTER" />
+  <meta name="twitter:description" content="The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-local-rag.html" />
+<style>
+    /* ─── tokens ─────────────────────────────────────────────────────────
+       Bound verbatim to the locked light modern-minimal + 1-bit identity. */
+    :root {
+      --bg:      oklch(99% 0.002 240);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(18% 0.012 250);
+      --muted:   oklch(54% 0.012 250);
+      --border:  oklch(92% 0.005 250);
+      --accent:  oklch(58% 0.18 255);
+      --status:  oklch(52% 0.14 158);
+
+      --accent-soft:   color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft:       color-mix(in oklch, var(--fg) 5%, transparent);
+      --muted-strong:  color-mix(in oklch, var(--muted) 76%, var(--fg));
+      --hairblock:     color-mix(in oklch, var(--fg) 7%, transparent);
+
+      --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      --font-mono:    ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+      --fs-h1: clamp(38px, 5vw, 64px);
+      --fs-h2: clamp(26px, 3vw, 34px);
+      --fs-lead: 19px;
+      --fs-body: 17px;
+      --fs-meta: 13px;
+      --radius: 10px;
+      --radius-lg: 16px;
+      --gap-sm: 12px; --gap-md: 20px; --gap-lg: 32px; --gap-xl: 48px; --gap-2xl: 80px;
+      --container: 760px; --gutter: 32px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.7; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    p { text-wrap: pretty; }
+    h1, h2, h3, h4 { text-wrap: balance; }
+    ::selection { background: var(--accent-soft); color: var(--fg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+
+    .topnav { position: sticky; top: 0; z-index: 10; background: color-mix(in oklch, var(--bg) 92%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
+    .topnav .logo { display: inline-flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+    .topnav .logo svg { width: 26px; height: 26px; color: var(--fg); }
+    /* header logo: 1bit relay mark - one block solid at a time, slow */
+    .topnav .logo .relay { fill: var(--surface); stroke: currentColor; stroke-opacity: 0.28; animation: logo-relay 80s ease-in-out infinite; }
+    .topnav .logo .r1 { animation-delay: 0s; }
+    .topnav .logo .r2 { animation-delay: 20s; }
+    .topnav .logo .r3 { animation-delay: 40s; }
+    .topnav .logo .r4 { animation-delay: 60s; }
+    @keyframes logo-relay {
+      0%       { fill: var(--surface); }
+      13%      { fill: var(--fg); }
+      14%      { fill: var(--fg); }
+      25%      { fill: var(--surface); }
+      100%     { fill: var(--surface); }
+    }
+    @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
+
+    .topnav nav { display: flex; gap: var(--gap-lg); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a:hover { color: var(--fg); }
+    .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
+    .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
+    .pagefoot .place { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-lg) auto 0; }
+    .pagefoot .quote { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-sm) auto 0; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: var(--radius); border: 1px solid transparent; font-size: 14px; font-weight: 500; letter-spacing: -0.005em; transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+    .btn-ghost { background: transparent; color: var(--fg); padding-inline: 8px; }
+    .btn-ghost:hover { color: var(--accent); }
+
+    .art { padding-block: clamp(48px, 7vw, 96px) clamp(40px, 6vw, 72px); }
+    .art .back { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted-strong); display: inline-flex; gap: 6px; margin-bottom: var(--gap-lg); }
+    .art .back a:hover { color: var(--fg); }
+    .art-meta { display: flex; flex-wrap: wrap; gap: var(--gap-md); align-items: center; margin-bottom: var(--gap-md); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; color: var(--muted-strong); }
+    .art-meta .tag { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; }
+    .art-meta .tag.corr { border-color: color-mix(in oklch, var(--accent) 40%, transparent); border-style: dashed; color: color-mix(in oklch, var(--muted) 62%, var(--fg)); }
+    .art h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.08; letter-spacing: -0.02em; font-weight: 600; margin: 0 0 var(--gap-md); }
+    .art .lead { font-size: var(--fs-lead); line-height: 1.6; color: var(--muted-strong); max-width: 64ch; margin: 0 0 var(--gap-2xl); }
+
+    .prose h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.16; letter-spacing: -0.015em; font-weight: 600; margin: var(--gap-2xl) 0 var(--gap-md); }
+    .prose p { margin: 0 0 var(--gap-md); }
+    .prose b { font-weight: 600; }
+    .prose .mono { font-family: var(--font-mono); font-size: 0.92em; }
+    .prose code { font-family: var(--font-mono); font-size: 0.9em; background: var(--hairblock); padding: 2px 6px; border-radius: 4px; }
+    .prose pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.85; margin: 0 0 var(--gap-lg); }
+    .prose table { width: 100%; border-collapse: collapse; margin: 0 0 var(--gap-lg); font-size: 15px; }
+    .prose th, .prose td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+    .prose th { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-strong); font-weight: 500; }
+    .prose td { font-family: var(--font-mono); font-size: 14px; }
+    .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
+    @media (max-width: 720px) {
+      .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+    }
+  </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Local RAG with our own embeddings | 1bit.MONSTER", "description": "The 1bit.MONSTER engine now serves embeddings over its OpenAI-compatible API. Build a fully local RAG pipeline on one C++ binary: embed with nomic-embed-text, index, retrieve, generate.", "url": "https://1bit.monster/1bit-post-local-rag.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-local-rag.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner" style="max-width: 1000px;">
+      <a href="index.html" class="logo">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect class="relay r1" x="2" y="2" width="9" height="9" rx="2"/><rect class="relay r2" x="13" y="2" width="9" height="9" rx="2"/><rect class="relay r3" x="2" y="13" width="9" height="9" rx="2"/><rect class="relay r4" x="13" y="13" width="9" height="9" rx="2"/>
+        </svg>
+        <span>1bit.MONSTER</span>
+      </a>
+      <nav>
+        <a href="1bit-monster-v2.html">Engine</a>
+        <a href="1bit-models.html">Models</a>
+        <a href="1bit-jarvis.html">1bit JARVIS</a>
+        <a href="1bit-blog.html" aria-current="page">Blog</a>
+        <a href="1bit-store.html">Store</a>
+        <a href="1bit-docs.html">Docs</a>
+        <a href="1bit-benchmarks.html">Benchmarks</a>
+      </nav>
+      <a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main id="content">
+    <article class="art container" data-od-id="1bit-post-local-rag">
+      <a class="back" href="1bit-blog.html">&larr; all posts</a>
+      <div class="art-meta">
+        <span class="tag">engine</span>
+        <span>2026-08-25</span>
+      </div>
+      <h1>Local RAG with our own embeddings</h1>
+      <p class="lead">The engine now serves /v1/embeddings. Full local RAG — embed, index, retrieve, generate — on one binary, no cloud, no Python.</p>
+      <div class="prose">
+        <h2>Embeddings, in the engine</h2>
+        <p>The engine's server now exposes <span class="mono">/v1/embeddings</span> alongside <span class="mono">/v1/chat/completions</span>. Load an embedding model — <span class="mono">nomic-embed-text-v1-GGUF</span> is one command away — and the same binary that generates tokens also produces 768-dim vectors. No second server, no Python, no cloud API.</p>
+        <p>This site's own semantic search runs on exactly this: every page is chunked, embedded, and indexed. The search box on 1bit.monster is the engine's embeddings in production.</p>
+        <h2>The pipeline</h2>
+        <pre># embed a corpus
+curl http://127.0.0.1:8088/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"input": ["doc one", "doc two"], "model": "nomic-embed-text-v1-GGUF"}'</pre>
+        <p>Normalize the vectors, store them (a SQLite table or a JSON file), and retrieval is a dot product. For 10,000 chunks it's milliseconds in any language; for a million, a vector index or an ANN library slots in behind the same API.</p>
+        <h2>Why local matters</h2>
+        <p>Your documents never leave the machine. A legal review, a codebase, medical notes, a personal vault — embed and retrieve them with an engine that runs entirely on your hardware. The privacy argument isn't a feature pitch, it's the default.</p>
+        <p>And it's fast: the embedding model runs on the same NPU/ROCm/CPU backends as generation. Batch embedding 57 chunks of this website took well under a minute on a mid-range machine.</p>
+        <h2>RAG end to end</h2>
+        <p>The pattern: embed the query with the same model, take the top-k chunks by cosine similarity, stuff them into the system prompt, generate. That's it. One binary, one port, three API calls. We ship the search half as this site's <span class="mono">search.html</span>, and the generation half is the same <span class="mono">build/1bit</span> you already run.</p>
+      </div>
+    
+    <section class="related">
+      <h2>Related</h2>
+      <a href="https://1bit.monster/1bit-post-1775-models.html">One engine, 1,775 models</a>
+      <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
+      <a href="https://1bit.monster/docs-getting-started.html">1bit.MONSTER: Getting started</a>
+    </section>
+  </article>
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between" style="max-width: 1000px;">
+      <span>© 2026 1bit.MONSTER · MIT License</span>
+      <a class="meta" href="https://fluxer.gg/sJiQqrmE" target="_blank" rel="noopener">Community support &#8599;</a>
+      <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
+    </div>
+    <div class="container">
+      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
+      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    </div>
+  </footer>
+<script src="analytics.js"></script>
+
+  <script src="analytics.js"></script>
+</body>
+</html>

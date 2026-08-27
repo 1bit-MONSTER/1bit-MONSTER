@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Share 1bit.MONSTER — trackable links</title>
+  <meta name="description" content="Generate attribution-tagged share links for the 1bit.MONSTER community. Every link carries the sharer and team so we can see what spreads." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Share 1bit.MONSTER — trackable links" />
+  <meta property="og:description" content="Generate attribution-tagged share links for the 1bit.MONSTER community. Every link carries the sharer and team so we can see what spreads." />
+  <meta property="og:url" content="https://1bit.monster/share.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Share 1bit.MONSTER — trackable links" />
+  <meta name="twitter:description" content="Generate attribution-tagged share links for the 1bit.MONSTER community. Every link carries the sharer and team so we can see what spreads." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/share.html" />
+  <style>
+    body { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; max-width: 720px; margin: 40px auto; padding: 0 20px; background: #fafafa; color: #222; }
+    h1 { font-size: 24px; }
+    label { display: block; margin: 16px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #555; }
+    input, select { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; background: #fff; }
+    button { margin-top: 20px; padding: 11px 22px; font-size: 14px; border: none; border-radius: 6px; background: #1a56db; color: #fff; cursor: pointer; }
+    button:hover { background: #1646b0; }
+    #out { margin-top: 24px; display: none; }
+    #out textarea { width: 100%; height: 80px; font-size: 13px; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+    .copy { font-size: 12px; color: #1a56db; cursor: pointer; margin-top: 6px; display: inline-block; }
+    .hint { font-size: 12px; color: #888; margin-top: 4px; }
+  </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "Share 1bit.MONSTER \u2014 trackable links", "description": "Generate attribution-tagged share links for the 1bit.MONSTER community. Every link carries the sharer and team so we can see what spreads.", "url": "https://1bit.monster/share.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+</head>
+<body>
+  <h1>Share 1bit.MONSTER</h1>
+  <p style="font-size:14px;color:#555">Generate an attribution-tagged link. When someone clicks it, the analytics record shows <b>who</b> shared it and from <b>which team</b> — so we can see what spreads.</p>
+
+  <label>Target page</label>
+  <select id="page">
+    <option value="https://1bit.monster/">Home</option>
+    <option value="https://1bit.monster/1bit-models.html">Models</option>
+    <option value="https://1bit.monster/1bit-blog.html">Blog</option>
+    <option value="https://1bit.monster/1bit-post-lemonade-v1170.html">Lemonade v11.7.0 post</option>
+    <option value="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub repo</option>
+    <option value="https://1bit.monster/1bit-monster-v2.html">Engine</option>
+  </select>
+
+  <label>Your name / handle</label>
+  <input id="sharer" placeholder="e.g. bong-water-water-bong" />
+
+  <label>Team (optional)</label>
+  <input id="team" placeholder="e.g. community, npu, quant, docs" />
+
+  <label>Medium (how you're sharing)</label>
+  <select id="medium">
+    <option value="teams">Microsoft Teams</option>
+    <option value="discord">Discord</option>
+    <option value="slack">Slack</option>
+    <option value="email">Email</option>
+    <option value="social">Social</option>
+    <option value="link">Direct link</option>
+  </select>
+
+  <button onclick="build()">Generate link</button>
+
+  <div id="out">
+    <label>Shareable link</label>
+    <textarea id="url" readonly></textarea>
+    <span class="copy" onclick="copy()">copy</span>
+    <div class="hint">The <code>/s/&lt;you&gt;/&lt;team&gt;/&lt;medium&gt;</code> path lets analytics attribute this share back to you. Share the whole link as-is.</div>
+  </div>
+
+  <script src="analytics.js"></script>
+  <script>
+    function build() {
+      // Path-based attribution: /s/<sharer>/<team>/<medium>?next=<target>
+      // Cloudflare Web Analytics does not log query strings, so the sharer,
+      // team and medium live in the PATH (recorded by RUM via requestPath);
+      // the target travels in ?next= and 404.html redirects to it.
+      var s = encodeURIComponent(document.getElementById("sharer").value.trim() || "-");
+      var t = encodeURIComponent(document.getElementById("team").value.trim() || "-");
+      var m = encodeURIComponent(document.getElementById("medium").value || "link");
+      var base = document.getElementById("page").value;
+      var u = new URL("https://1bit.monster/s/" + s + "/" + t + "/" + m);
+      u.searchParams.set("next", base);
+      document.getElementById("url").value = u.toString();
+      document.getElementById("out").style.display = "block";
+    }
+    function copy() {
+      var el = document.getElementById("url");
+      el.select();
+      document.execCommand("copy");
+    }
+  </script>
+</body>
+</html>

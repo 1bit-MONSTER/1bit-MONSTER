@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
 
     GgufReader gg;
     if (!gg.open(gg_path.c_str())) { fprintf(stderr, "cannot open GGUF %s\n", gg_path.c_str()); return 2; }
-    OnebpModel bp;
+    NpuOnebpModel bp;
     if (!bp.open(bp_path.c_str())) { fprintf(stderr, "cannot open 1BP %s\n", bp_path.c_str()); return 2; }
 
     int bad = 0, checked = 0;
