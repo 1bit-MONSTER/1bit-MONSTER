@@ -166,14 +166,17 @@ struct Hip1bpBackend : Backend {
         // fall through to the Q4NX-layout dequant -> garbage weights -> NaN logits
         // -> argmax -1 with zero diagnostics. Reject loudly at init instead.
         if (q != ONEBP_Q4NX && q != ONEBP_TQ2 && q != ONEBP_TQ2NZ && q != ONEBP_TQ2NZ_E4M3 &&
+            q != ONEBP_Q4_ROCMFP4 && q != ONEBP_Q4_ROCMFP4_FAST &&
             q != ONEBP_F16 && q != ONEBP_F32 && q != 0xFFFFFFFFu) {
-            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3/F16/F32). "
+            fprintf(stderr, "[hip1bp] unsupported quant %u for GPU backend (Q4NX/TQ2/TQ2NZ/TQ2NZ_E4M3/ROCmFP4/F16/F32). "
                     "TQ1/TQ2BS/I8 models must be converted first (see gguf_to_onebp --tq2nz).\n", q);
             return false;
         }
         if (q == ONEBP_TQ2NZ) quant2 = 1;
         else if (q == ONEBP_TQ2NZ_E4M3) quant2 = 2;
         else if (q == ONEBP_Q4NX) quant2 = 3;   // #1625: packed Q4NX GEMV
+        else if (q == ONEBP_Q4_ROCMFP4) quant2 = 4;      // packed ROCmFP4 dual
+        else if (q == ONEBP_Q4_ROCMFP4_FAST) quant2 = 5; // packed ROCmFP4 FAST
         // F16/F32 stay on the f32 path (quant2 = 0): the packed GEMV kernels
         // are 4-bit-only, and lossless weights must not be re-quantized.
         if (getenv("H1BP_F32")) quant2 = 0;   // debug: force f32 path
@@ -247,7 +250,8 @@ struct Hip1bpBackend : Backend {
             // lm_head packed path only when it shares the TQ2NZ-family quant
             auto* out_t = mdl.find_tensor("output.weight");
             if (!out_t) out_t = mdl.find_tensor("lm_head.weight");
-            if (out_t && (out_t->quant == ONEBP_TQ2NZ || out_t->quant == ONEBP_TQ2NZ_E4M3 || out_t->quant == ONEBP_Q4NX))
+            if (out_t && (out_t->quant == ONEBP_TQ2NZ || out_t->quant == ONEBP_TQ2NZ_E4M3 || out_t->quant == ONEBP_Q4NX ||
+                          out_t->quant == ONEBP_Q4_ROCMFP4 || out_t->quant == ONEBP_Q4_ROCMFP4_FAST))
                 d_output_packed = (uint8_t*)mdl.get_tile_ptr(out_t->name.c_str(),0,0);
             // Device copies of the packed tiles (kernel cannot read the mmap)
             PD.resize(NC);
@@ -278,6 +282,8 @@ struct Hip1bpBackend : Backend {
             }
             if (quant2 == 2) printf("[hip1bp] packed fast path: TQ2NZ_E4M3 (%d layers)\n", NC);
             else if (quant2 == 3) printf("[hip1bp] packed fast path: Q4NX (%d layers)\n", NC);
+            else if (quant2 == 4) printf("[hip1bp] packed fast path: ROCmFP4 dual (%d layers)\n", NC);
+            else if (quant2 == 5) printf("[hip1bp] packed fast path: ROCmFP4 FAST (%d layers)\n", NC);
             else printf("[hip1bp] packed fast path: TQ2NZ bf16 (%d layers)\n", NC);
         }
 
@@ -319,6 +325,7 @@ struct Hip1bpBackend : Backend {
                 if (ok) {
                     if (quant2 && d_output_packed) {
                         if (quant2 == 3) launch_q4nx(d_output_packed, dh, dlogits, VOCAB, H);
+                        else if (quant2 == 4 || quant2 == 5) launch_rocmfp4(d_output_packed, dh, dlogits, VOCAB, H, quant2==5);
                         else launch_tq2nz(d_output_packed, dh, dlogits, VOCAB, H);
                     } else h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits, d_output?d_output:d_embed, dh, VOCAB, H);
                     int nblk = std::min(AMX_MAXB, (VOCAB + 255) / 256);
@@ -373,6 +380,14 @@ struct Hip1bpBackend : Backend {
         h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
     }
 
+    void launch_rocmfp4(const uint8_t* w, const float* x, float* out, int N, int K, bool fast) {
+        int ntc = (K + 255) / 256;
+        int wpr = (ntc + 3) >> 2;
+        int blocks = (N * wpr + 3) / 4;
+        h1bp_rocmfp4_part_kernel<<<blocks,128,0,stream>>>(w,x,dpart,N,ntc,fast);
+        h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
+    }
+
     // Device-resident layer loop: runs the full forward, leaves the final
     // hidden state in dh. No D2H copies, no pos++ — caller decides.
     // with_dumps=false when capturing (H1BP_DUMP does host I/O — not capturable).
@@ -415,6 +430,11 @@ struct Hip1bpBackend : Backend {
                     launch_q4nx(PD[l].pq,dh,datt,NH_*HD_,H_);
                     launch_q4nx(PD[l].pk,dh,dgate,NKV_*HD_,H_);
                     launch_q4nx(PD[l].pv,dh,dup,NKV_*HD_,H_);
+                } else if (quant2 == 4 || quant2 == 5) {
+                    const bool rfp4f = (quant2 == 5);
+                    launch_rocmfp4(PD[l].pq,dh,datt,NH_*HD_,H_,rfp4f);
+                    launch_rocmfp4(PD[l].pk,dh,dgate,NKV_*HD_,H_,rfp4f);
+                    launch_rocmfp4(PD[l].pv,dh,dup,NKV_*HD_,H_,rfp4f);
                 } else {
                     launch_tq2nz(PD[l].pq,dh,datt,NH_*HD_,H_);
                     launch_tq2nz(PD[l].pk,dh,dgate,NKV_*HD_,H_);
@@ -424,11 +444,15 @@ struct Hip1bpBackend : Backend {
                 if(ll.wq) h1bp_gemv_kernel<<<NH_*HD_,256,0,stream>>>(datt,ll.wq,dh,NH_*HD_,H_);
                 if(ll.wk) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dgate,ll.wk,dh,NKV_*HD_,H_);
                 if(ll.wv) h1bp_gemv_kernel<<<NKV_*HD_,256,0,stream>>>(dup,ll.wv,dh,NKV_*HD_,H_);
-                // Q/K/V biases (llama.cpp adds them post-projection, pre-rope)
-                if(ll.bq) h1bp_add_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt,ll.bq,NH_*HD_);
-                if(ll.bk) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dgate,ll.bk,NKV_*HD_);
-                if(ll.bv) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dup,ll.bv,NKV_*HD_);
             }
+            // Q/K/V biases (llama.cpp adds them post-projection, pre-rope).
+            // Applied after EVERY gemv path (packed Q4NX/TQ2NZ/ROCmFP4 and f32)
+            // — the packed kernels only do W@x; without this, Qwen2.5's large
+            // attention biases are dropped and attention scores collapse
+            // (the f32-only placement silently skipped packed paths).
+            if(ll.bq) h1bp_add_kernel<<<(NH_*HD_+255)/256,256,0,stream>>>(datt,ll.bq,NH_*HD_);
+            if(ll.bk) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dgate,ll.bk,NKV_*HD_);
+            if(ll.bv) h1bp_add_kernel<<<(NKV_*HD_+255)/256,256,0,stream>>>(dup,ll.bv,NKV_*HD_);
 
             // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
             // head_dim slice with the shared [head_dim] weight, before RoPE.
@@ -480,6 +504,7 @@ struct Hip1bpBackend : Backend {
                 }
                 if(quant2&&PD[l].po){
                     if (quant2 == 3) launch_q4nx(PD[l].po,datt2,doproj,H_,NH_*HD_);
+                    else if (quant2 == 4 || quant2 == 5) launch_rocmfp4(PD[l].po,datt2,doproj,H_,NH_*HD_,quant2==5);
                     else launch_tq2nz(PD[l].po,datt2,doproj,H_,NH_*HD_);
                 } else {
                     h1bp_gemv_kernel<<<H_,256,0,stream>>>(doproj,ll.wo,datt2,H_,NH_*HD_);
@@ -510,6 +535,12 @@ struct Hip1bpBackend : Backend {
                         launch_q4nx(PD[l].p2,dh,dup,IM_,H_);
                         h1bp_silu_kernel<<<(IM_+255)/256,256,0,stream>>>(dsilu,dgate,dup,IM_);
                         launch_q4nx(PD[l].p3,dsilu,dffn,H_,IM_);
+                    } else if (quant2 == 4 || quant2 == 5) {
+                        const bool rfp4f = (quant2 == 5);
+                        launch_rocmfp4(PD[l].p1,dh,dgate,IM_,H_,rfp4f);
+                        launch_rocmfp4(PD[l].p2,dh,dup,IM_,H_,rfp4f);
+                        h1bp_silu_kernel<<<(IM_+255)/256,256,0,stream>>>(dsilu,dgate,dup,IM_);
+                        launch_rocmfp4(PD[l].p3,dsilu,dffn,H_,IM_,rfp4f);
                     } else {
                         // K=1024: 1 warp/row, no atomics; K=3072 (down): 3 warps/row + atomics
                         launch_tq2nz(PD[l].p1,dh,dgate,IM_,H_);
@@ -578,6 +609,7 @@ struct Hip1bpBackend : Backend {
         if(!d_output&&!d_embed){pos++;return 0;}
         if(quant2&&d_output_packed){
             if (quant2 == 3) launch_q4nx(d_output_packed,dh,dlogits,VOCAB,H);
+            else if (quant2 == 4 || quant2 == 5) launch_rocmfp4(d_output_packed,dh,dlogits,VOCAB,H,quant2==5);
             else launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
         } else {
             h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);
@@ -602,6 +634,7 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipMemcpy(dh,hidden,H*4,hipMemcpyHostToDevice));
         if(quant2&&d_output_packed){
             if (quant2 == 3) launch_q4nx(d_output_packed,dh,dlogits,VOCAB,H);
+            else if (quant2 == 4 || quant2 == 5) launch_rocmfp4(d_output_packed,dh,dlogits,VOCAB,H,quant2==5);
             else launch_tq2nz(d_output_packed,dh,dlogits,VOCAB,H);
         } else {
             h1bp_gemv_kernel<<<VOCAB,256,0,stream>>>(dlogits,d_output?d_output:d_embed,dh,VOCAB,H);

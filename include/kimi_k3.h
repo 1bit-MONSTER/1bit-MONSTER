@@ -897,7 +897,7 @@ static inline std::vector<float> kimi_k3_forward(
 //
 // For Strix Halo, the practical path is:
 //   a. Download Moonshot safetensors (~1.4TB)
-//   b. Quantize to 2-bit TQ2 via tools/gguf_to_onebp
+//   b. Quantize to 2-bit TQ2 via gguf_to_onebp (src/gguf_to_onebp.cpp)
 //   c. Prune/merge experts to fit in 32GB (e.g., 896→16 experts, ~110GB→~2.8GB)
 //   d. Distill to target architecture
 //

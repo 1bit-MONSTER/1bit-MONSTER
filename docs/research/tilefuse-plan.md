@@ -36,7 +36,7 @@ weights required; community GGUF → q4nx conversions degenerate).
 
 | TileFuse piece | Our counterpart | Action |
 |---|---|---|
-| Pre-tiling + metadata packing | `tools/gguf_to_onebp.cpp` + q4nx manifest (d/m packed per tile) | Extend converter to emit TileFuse-style interleaved column-major layout + packed scales/zp (W4A16/W8A16, group 128). The q4nx I8/Q4_1 pack is ~this already — reuse the pack, add interleave. |
+| Pre-tiling + metadata packing | `src/gguf_to_onebp.cpp` + q4nx manifest (d/m packed per tile) | Extend converter to emit TileFuse-style interleaved column-major layout + packed scales/zp (W4A16/W8A16, group 128). The q4nx I8/Q4_1 pack is ~this already — reuse the pack, add interleave. |
 | Fused GEMM/GEMV kernels | FLM's `dequant.xclbin` / `generate_dequant_q4_1_seq` (open in third_party/FastFlowLM src/include/modules/dequant.hpp) | Build our own fused kernel via Vitis 2026.1 + aiebu (installed). Consume the pre-tiled layout directly. |
 | GEMV full-array dataflow | `backend_npu_flm.cpp` per-request/serve path | Replace FLM's GEMV with our kernel for decode. |
 | Hybrid split | `tests/backends/backend_npu.cpp` + GPU backends (attention on iGPU) | Keep; wire our kernel into the same dispatch. |

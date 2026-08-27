@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>1bit.MONSTER: Store</title>
   <meta name="description" content="The 1bit.MONSTER store. Printed hardware for the engine: tees, hoodies, mugs, bottles, and the full sticker line. Priced in real dollars, made on demand." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="1bit.MONSTER: Store" />
+  <meta property="og:description" content="The 1bit.MONSTER store. Printed hardware for the engine: tees, hoodies, mugs, bottles, and the full sticker line. Priced in real dollars, made on demand." />
+  <meta property="og:url" content="https://1bit.monster/1bit-store.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="1bit.MONSTER: Store" />
+  <meta name="twitter:description" content="The 1bit.MONSTER store. Printed hardware for the engine: tees, hoodies, mugs, bottles, and the full sticker line. Priced in real dollars, made on demand." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-store.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim from `1bit-monster-v2.html` (modern-minimal + the
@@ -261,6 +272,9 @@
       .cart-scrim, .cart-drawer { transition: none; }
     }
   </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: Store", "description": "The 1bit.MONSTER store. Printed hardware for the engine: tees, hoodies, mugs, bottles, and the full sticker line. Priced in real dollars, made on demand.", "url": "https://1bit.monster/1bit-store.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
 </head>
 <body>
   <header class="topnav" data-od-id="topnav">
@@ -2527,7 +2541,7 @@
     <div class="container row-between">
       <span>© 2026 1bit.MONSTER · MIT License</span>
       <a class="meta" href="mailto:sales@1bit.monster">sales@1bit.monster</a>
-      <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support &#8599;</a>
+      <a class="meta" href="https://fluxer.gg/sJiQqrmE" target="_blank" rel="noopener">Community support &#8599;</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
     <div class="container">
@@ -2637,7 +2651,7 @@
               '<div class="cart-item-foot">' +
                 '<span class="cart-qty">' +
                   '<button type="button" data-dec aria-label="decrease">-</button>' +
-                  '<span>' + it.q + '</span>' +
+                  '<span>' + esc(it.q) + '</span>' +
                   '<button type="button" data-inc aria-label="increase">+</button>' +
                 '</span>' +
                 '<span class="cart-item-price">' + money(line) + '</span>' +
@@ -2717,5 +2731,6 @@
       render();
     })();
   </script>
+<script src="analytics.js"></script>
 </body>
 </html>

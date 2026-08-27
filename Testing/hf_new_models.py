@@ -8,7 +8,8 @@ the REAL engine registry (rcpp_arch_from_string via the compiled probe). Any
 new class the registry doesn't map is what silently breaks the 100% claim —
 that is the alert.
 
-Run daily (see scripts/jarvis-daily-routine.sh step 4):
+Run daily via scripts/census-watch.sh (systemd timer 04:30 + GitHub Actions
+census-watch workflow):
     python3 Testing/hf_new_models.py [--limit N]   # N newest to check, default 120
 
 Exit 0: no uncovered classes among the new batch. Exit 1: found some (alert).
@@ -193,7 +194,11 @@ def main():
         print(f"  ? UNVERIFIABLE {mid} ({why}) — gated repos need a token; "
               f"retried next run")
 
-    return 1 if (uncovered or unverifiable) else 0
+    # Only uncovered classes are a real alert. Unverifiable (gated/no-config)
+    # models are expected — HF gates repos without a token, and a missing
+    # config is not a coverage breach. Returning 1 on unverifiable made the
+    # daily systemd timer fail on routine gated uploads.
+    return 1 if uncovered else 0
 
 
 if __name__ == "__main__":

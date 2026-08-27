@@ -1,0 +1,65 @@
+#cloud-config
+autoinstall:
+  version: 1
+  refresh-installer:
+    update: false
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  network:
+    version: 2
+    ethernets:
+      alleth:
+        match:
+          name: "en*"
+        dhcp4: true
+  apt:
+    preserve_sources_list: true
+  storage:
+    layout:
+      name: direct
+  identity:
+    hostname: monster
+    username: monster
+    password: "__PASSWORD_HASH__"
+  ssh:
+    install-server: true
+    allow-pw: false
+    authorized-keys:
+      - "__SSH_PUBLIC_KEY__"
+  # unified_server (from the 1bit-monster .deb) dynamically links against
+  # XRT (NPU runtime) and libwebsockets, neither of which the .deb declares
+  # as a Depends and neither of which TheRock/ROCm vendors — both are
+  # ordinary Ubuntu universe packages. Without these the API service fails
+  # to exec at all (dynamic linker can't resolve them) — found by actually
+  # booting a built ISO in QEMU and inspecting the failing systemd unit.
+  packages:
+    - libxrt2
+    - libxrt-npu2
+    - libwebsockets19t64
+  late-commands:
+    - "mkdir -p /target/opt/1bit-iso-pool"
+    - "cp -r /cdrom/pool/. /target/opt/1bit-iso-pool/"
+    - "curtin in-target --target=/target -- sh -c \"env DEBIAN_FRONTEND=noninteractive apt-get install -y /opt/1bit-iso-pool/1bit-monster_*_amd64.deb\""
+    - "curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install -y /opt/1bit-iso-pool/mesa-vulkan-drivers_26.0.3-1ubuntu1_amd64.deb /opt/1bit-iso-pool/libvulkan1_1.4.341.0-1_amd64.deb /opt/1bit-iso-pool/bolt_0.9.10-1_amd64.deb"
+    - "curtin in-target --target=/target -- apt-mark hold mesa-vulkan-drivers libvulkan1 bolt linux-image-generic linux-headers-generic linux-generic"
+    - "curtin in-target --target=/target -- mkdir -p /opt/rocm-therock"
+    - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-10.1.0a20260822-devel.tar.gz -C /opt/rocm-therock"
+    - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-10.1.0a20260822-libraries.tar.gz -C /opt/rocm-therock"
+    - "curtin in-target --target=/target -- tar xzf /opt/1bit-iso-pool/therock-10.1.0a20260822-core.tar.gz -C /opt/rocm-therock"
+    - "curtin in-target --target=/target -- sh -c \"printf '/opt/rocm-therock/_rocm_sdk_devel/lib\\n/opt/rocm-therock/_rocm_sdk_libraries/lib\\n/opt/rocm-therock/_rocm_sdk_core/lib\\n/opt/rocm-therock/_rocm_sdk_core/lib/llvm/lib\\n' > /etc/ld.so.conf.d/rocm-therock.conf\""
+    - "curtin in-target --target=/target -- ldconfig"
+    - "curtin in-target --target=/target -- mkdir -p /etc/default/grub.d"
+    - "curtin in-target --target=/target -- sh -c \"printf 'GRUB_CMDLINE_LINUX_DEFAULT=\\\"\\$GRUB_CMDLINE_LINUX_DEFAULT ttm.pages_limit=31457280 amdgpu.no_system_mem_limit=1\\\"\\n' > /etc/default/grub.d/1bit.cfg\""
+    - "curtin in-target --target=/target -- update-grub"
+    - "curtin in-target --target=/target -- cp /opt/1bit-iso-pool/1bit-unified.service /etc/systemd/system/1bit-unified.service"
+    - "curtin in-target --target=/target -- cp /opt/1bit-iso-pool/1bit-model-fetch.service /etc/systemd/system/1bit-model-fetch.service"
+    - "curtin in-target --target=/target -- mkdir -p /usr/share/1bit"
+    - "curtin in-target --target=/target -- cp /opt/1bit-iso-pool/model-download.sh /usr/share/1bit/model-download.sh"
+    - "curtin in-target --target=/target -- chmod +x /usr/share/1bit/model-download.sh"
+    - "curtin in-target --target=/target -- systemctl enable 1bit-unified.service"
+    - "curtin in-target --target=/target -- systemctl enable 1bit-model-fetch.service"
+    - "sh -c 'lspci | grep -qi xdna && curtin in-target --target=/target -- sh -c \"echo NPU_DETECTED=1 > /etc/1bit-monster-motd\" || curtin in-target --target=/target -- sh -c \"echo NPU_DETECTED=0 > /etc/1bit-monster-motd\"'"
+    - "curtin in-target --target=/target -- sh -c \"printf '1bit.MONSTER appliance — API on :8088. NPU status: see /etc/1bit-monster-motd\\n' > /etc/motd\""
+  user-data:
+    disable_root: true
