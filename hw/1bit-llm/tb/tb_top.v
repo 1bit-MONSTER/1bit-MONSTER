@@ -34,10 +34,12 @@ module tb_top;
         .hif_ready   (hif_ready)
     );
 
-    // ---- golden memories (loaded per case)
-    reg [7:0]  tb_wmem  [0:8191];
-    reg [7:0]  tb_act   [0:4095];
-    reg [31:0] tb_ygold [0:4095];
+    // ---- golden memories (loaded per case; sized to the largest case so
+    // $readmemh has no leftover-array warnings: case0 K=8 N=16 → wmem 32,
+    // act 8, ygold 8; case1 K=16 N=8 → wmem 32, act 16, ygold 4)
+    reg [7:0]  tb_wmem  [0:31];
+    reg [7:0]  tb_act   [0:15];
+    reg [31:0] tb_ygold [0:7];
 
     reg global_fail = 0;
 
@@ -95,16 +97,17 @@ module tb_top;
             rst_n = 1;
             repeat (2) @(posedge clk);
 
-            // ---- load golden data for this case
+            // ---- load golden data for this case (explicit ranges keep
+            // $readmemh warning-free: file length == range length)
             if (cid == 0) begin
-                $readmemh("case0_wmem.hex", tb_wmem);
-                $readmemh("case0_act.hex",  tb_act);
-                $readmemh("case0_ygold.hex",tb_ygold);
+                $readmemh("case0_wmem.hex", tb_wmem, 0, 31);
+                $readmemh("case0_act.hex",  tb_act,  0, 7);
+                $readmemh("case0_ygold.hex",tb_ygold,0, 7);
                 fd = $fopen("case0_cfg.txt", "r");
             end else begin
-                $readmemh("case1_wmem.hex", tb_wmem);
-                $readmemh("case1_act.hex",  tb_act);
-                $readmemh("case1_ygold.hex",tb_ygold);
+                $readmemh("case1_wmem.hex", tb_wmem, 0, 31);
+                $readmemh("case1_act.hex",  tb_act,  0, 15);
+                $readmemh("case1_ygold.hex",tb_ygold,0, 3);
                 fd = $fopen("case1_cfg.txt", "r");
             end
             if (fd == 0) begin
@@ -216,6 +219,37 @@ module tb_top;
                 $display("clr-status: PASS (ERR cleared)");
             else begin
                 $display("clr-status: FAIL (ERR still set)");
+                global_fail = 1;
+            end
+
+            // second invalid config: shift out of the 0..15 contract
+            // (scale_unit's arithmetic-shift path is undefined past the
+            // 48-bit accumulator width, so CHECK must reject it)
+            hif_write(16'h0002, 32'd8);              // K = 8
+            hif_write(16'h0003, 32'd8);              // N = 8  (valid)
+            hif_write(16'h0004, 32'h10_9000);        // shift = 16 → invalid
+            hif_write(16'h0000, 32'd1);              // start
+
+            timeout = 0;
+            rdata = 0;
+            while (!rdata[1] && !rdata[2] && timeout <= 10000) begin
+                hif_read(16'h0001, rdata);           // STATUS
+                timeout = timeout + 1;
+            end
+            if (rdata[2])
+                $display("shift-case: PASS (shift=16 rejected, ERR latched)");
+            else begin
+                $display("shift-case: FAIL (expected ERR; got busy=%0d done=%0d)",
+                         rdata[0], rdata[1]);
+                global_fail = 1;
+            end
+
+            hif_write(16'h0000, 32'h4);              // CTRL.clr_status
+            hif_read(16'h0001, rdata);
+            if (!rdata[2])
+                $display("clr-status2: PASS (ERR cleared)");
+            else begin
+                $display("clr-status2: FAIL (ERR still set)");
                 global_fail = 1;
             end
         end

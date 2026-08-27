@@ -102,7 +102,8 @@ module ctrl_fsm #(
                         cfg_n[1:0] != 2'b00                || // N % 4 == 0
                         k_max > XBUF_DEPTH                 || // K fits xbuf
                         (cfg_n >> 1) > YBUF_DEPTH          || // N/2 fits ybuf
-                        (k_max * groups) > WMEM_DEPTH) begin // entries fit wmem
+                        (k_max * groups) > WMEM_DEPTH      || // entries fit wmem
+                        scale_shift > 8'd15) begin           // shift in 0..15 (scale_unit contract)
                         busy  <= 1'b0;
                         err   <= 1'b1;
                         state <= S_IDLE;
@@ -173,12 +174,12 @@ module ctrl_fsm #(
             end
             S_DRAIN1: begin
                 yw_wen  = 1'b1;
-                yw_addr = g[10:0] << 1;                      // ybuf[2g]
+                yw_addr = g << 1;                            // ybuf[2g]  (g bounded by CHECK: 2g+1 <= N/2-1 <= YBUF_DEPTH-1)
                 yw_data = {ysat[31:16], ysat[15:0]};         // {y1, y0}
             end
             S_DRAIN2: begin
                 yw_wen  = 1'b1;
-                yw_addr = (g[10:0] << 1) + 1'b1;             // ybuf[2g+1]
+                yw_addr = (g << 1) + 1'b1;                   // ybuf[2g+1]
                 yw_data = {ysat[63:48], ysat[47:32]};        // {y3, y2}
             end
             default: ;
