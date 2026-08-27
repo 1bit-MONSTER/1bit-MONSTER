@@ -11,6 +11,12 @@ PAYLOAD="${ISO_DIR}/build/payload"
 mkdir -p "$PAYLOAD"
 
 THEROCK_VER="10.1.0a20260822"
+# Where to look for a local TheRock pip-SDK install when the exact pinned
+# version is no longer in the nightlies index. Defaults to the reference
+# box's /opt/rocm-therock (see docs/superpowers/plans/...); override with
+# THEROCK_PIP_ROOT=<venv-root> to vendor from a different TheRock install
+# (e.g. ~/.cache/pip/therock).
+THEROCK_PIP_ROOT="${THEROCK_PIP_ROOT:-/opt/rocm-therock}"
 MESA_VER="26.0.3-1ubuntu1"
 VULKAN1_VER="1.4.341.0-1"
 BOLT_VER="0.9.10-1"
@@ -42,7 +48,7 @@ if pip download "rocm-sdk-devel==${THEROCK_VER}" \
 else
   echo "   not available in nightlies index (log: /tmp/therock-pip.log)"
   echo "   falling back to vendoring the matching build already on this box"
-  LOCAL="/opt/rocm-therock/lib/python3.14/site-packages"
+  LOCAL="${THEROCK_PIP_ROOT}/lib/python3.14/site-packages"
   DIST_INFO="${LOCAL}/rocm_sdk_libraries_gfx1151-${THEROCK_VER}.dist-info"
   CONTENT_DIR="${LOCAL}/_rocm_sdk_devel"
   # The real installed files live under the underscore-prefixed content dir, NOT under
@@ -91,7 +97,7 @@ if pip download "rocm-sdk-core==${THEROCK_VER}" \
 else
   echo "   not available in nightlies index (log: /tmp/therock-core-pip.log)"
   echo "   falling back to vendoring the matching build already on this box"
-  LOCAL="/opt/rocm-therock/lib/python3.14/site-packages"
+  LOCAL="${THEROCK_PIP_ROOT}/lib/python3.14/site-packages"
   DIST_INFO="${LOCAL}/rocm_sdk_core-${THEROCK_VER}.dist-info"
   CONTENT_DIR="${LOCAL}/_rocm_sdk_core"
   if [ ! -d "$DIST_INFO" ] || [ ! -d "$CONTENT_DIR" ]; then
