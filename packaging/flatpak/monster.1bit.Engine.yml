@@ -1,0 +1,76 @@
+# monster.1bit.Engine — Flatpak manifest for the 1bit.MONSTER inference engine
+#
+# Builds the prebuilt engine (build/1bit + librocm_cpp.so + ZINC shaders) plus
+# the pinned TheRock runtime payloads (produced by packaging/iso/fetch-payload.sh)
+# into a user-space Flatpak. The engine runs headless — no GUI — and is driven
+# over its OpenAI-compatible HTTP API:
+#
+#     flatpak run monster.1bit.Engine unified --port 8088
+#
+# finish-args rationale:
+#   --device=all        GPU (/dev/dri) + NPU (/dev/accel) device access
+#   --share=network     API listener + first-boot model downloads
+#   --persist=...       model cache survives sandbox restarts
+#   --nosocket=x11      headless server; no display needed
+#
+# The `1bit` command is a tiny wrapper (installed by the 1bit module) that
+# sets LD_LIBRARY_PATH to the bundled TheRock tree and /app/lib, then execs
+# the real binary — deterministic library resolution inside the sandbox.
+#
+# Build:  bash build-flatpak.sh   (or packaging/Makefile: package-flatpak)
+# Needs:  flatpak, flatpak-builder, org.freedesktop.Platform runtime:
+#         flatpak install --user flathub org.freedesktop.Platform//25.08
+app-id: monster.1bit.Engine
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: 1bit
+
+finish-args:
+  - --share=network
+  - --device=all
+  - --nosocket=x11
+  - --nosocket=wayland
+  - --persist=.local/share/1bit
+  - --persist=.cache/1bit
+
+modules:
+  # TheRock (AMD ROCm 10.x) runtime — extracted payload tarballs produced by
+  # packaging/iso/fetch-payload.sh; unpacked under /app/therock in the same
+  # layout the appliance ISO installs to /opt/rocm-therock.
+  - name: therock
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/therock
+      - tar xzf therock-10.1.0a20260822-devel.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260822-libraries.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260822-core.tar.gz -C /app/therock
+    sources:
+      - type: archive
+        path: ../iso/build/payload/therock-10.1.0a20260822-devel.tar.gz
+      - type: archive
+        path: ../iso/build/payload/therock-10.1.0a20260822-libraries.tar.gz
+      - type: archive
+        path: ../iso/build/payload/therock-10.1.0a20260822-core.tar.gz
+
+  # The engine: prebuilt onebin + shared HIP kernel lib + ZINC shaders.
+  # Sources are staged into this directory by build-flatpak.sh (build/ is a
+  # symlink to the repo root's build tree).
+  - name: 1bit
+    buildsystem: simple
+    build-commands:
+      - install -D -m 0755 1bit /app/bin/1bit.bin
+      - install -D -m 0755 1bit-wrapper.sh /app/bin/1bit
+      - for s in zaya_server unified_server unified_router vision_server jarvis_server onebitd onebit 1bit-server; do ln -s 1bit /app/bin/$s; done
+      - install -D -m 0755 librocm_cpp.so /app/lib/librocm_cpp.so
+      - mkdir -p /app/share/1bit-monster
+      - cp -a shaders /app/share/1bit-monster/shaders
+    sources:
+      - type: file
+        path: 1bit-wrapper.sh
+      - type: file
+        path: build/1bit
+      - type: file
+        path: build/librocm_cpp.so
+      - type: dir
+        path: build/zinc_cpp_build/shaders

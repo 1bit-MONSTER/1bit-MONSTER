@@ -59,5 +59,17 @@ package-appimage: stage
 	mkdir -p $(STAGE)/usr/share/icons
 	@echo "AppDir staged at $(STAGE) — run appimagetool to bundle"
 
+package-rpm: stage
+	# .rpm from the same staged tree as the .deb — see packaging/rpm/1bit-monster.spec
+	rm -rf build/rpmbuild
+	mkdir -p build/rpmbuild/BUILD build/rpmbuild/RPMS build/rpmbuild/SOURCES build/rpmbuild/SPECS build/rpmbuild/SRPMS
+	tar czf build/rpmbuild/SOURCES/1bit-monster-$(VERSION).tar.gz -C build/stage 1bit-monster-$(VERSION)
+	sed 's|^Version: .*|Version: $(VERSION)|' ../packaging/rpm/1bit-monster.spec > build/rpmbuild/SPECS/1bit-monster.spec
+	rpmbuild --define "_topdir $(abspath build/rpmbuild)" -bb build/rpmbuild/SPECS/1bit-monster.spec
+	@echo "rpm: build/rpmbuild/RPMS/x86_64/1bit-monster-$(VERSION)-1.*.rpm"
+
+package-flatpak:
+	bash ../packaging/flatpak/build-flatpak.sh
+
 clean:
-	rm -rf build/stage build/1bit-monster_$(VERSION)_amd64.deb build/1bit-monster-$(VERSION)-linux-amd64.tar.gz
+	rm -rf build/stage build/1bit-monster_$(VERSION)_amd64.deb build/1bit-monster-$(VERSION)-linux-amd64.tar.gz build/rpmbuild
