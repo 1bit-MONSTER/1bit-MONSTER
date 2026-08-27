@@ -36,7 +36,19 @@
         params.set("utm_medium", decodeURIComponent(seg[3]));
         params.set("share", decodeURIComponent(seg[1]));
         params.set("team", decodeURIComponent(seg[2]));
-        var target = new URLSearchParams(location.search).get("next") || "https://1bit.monster/";
+        // Only ever redirect to a real http(s) URL: rejects javascript:/data:/vbscript:
+        // and other scheme tricks coming from the untrusted ?next= query param.
+        var raw = new URLSearchParams(location.search).get("next") || "https://1bit.monster/";
+        var target;
+        try {
+          var u = new URL(raw, location.href);
+          if (u.protocol !== "https:" && u.protocol !== "http:") {
+            u = new URL("https://1bit.monster/");
+          }
+          target = u.href;
+        } catch (e) {
+          target = "https://1bit.monster/";
+        }
         document.getElementById("msg").textContent = "Redirecting to: " + target;
         // Give the beacon a moment to report this page load, then redirect.
         setTimeout(function () {
