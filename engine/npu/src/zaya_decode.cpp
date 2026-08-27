@@ -20,6 +20,7 @@
 #include "zaya_cca_attn_cpu.h"
 #include "zaya_moe_cpu.h"
 #include "npu_engine_i8ctx_inc.h"
+#include "npu_attn_ctx.h"
 
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
@@ -98,6 +99,109 @@ static std::vector<float> load_i8(const uint8_t* data, uint64_t off, uint64_t si
     return v;
 }
 
+// ── int8 embed logits (issue #1776 perf) ───────────────────────────────────
+// The embed is stored int4 (nibble-packed, per-(row,32-col) bf16 scale +
+// zero-point — the torch2aie format dequant_i8_signed_to_float_ex reads:
+// each 5120-B file row = a 32×256 tile: [512 B scales][512 B zeros][4096 B
+// packed]). Expand it ONCE at startup to a signed int8 embed (1.07 GB) +
+// per-(row,group) float scales/zero-points, then compute the logits with
+// AVX2 int8→float dots. Streaming 1.07 GB instead of the 2.15 GB float
+// embed cuts the ~21 ms logits floor toward ~8 ms. The math is
+// algebraically the float path:
+//   logits[v] = Σ_tc Σ_g ( scale·Σ_c q4·tmp + zp·Σ_c tmp )
+// — only the summation order differs (float rounding ~1e-6).
+// NPU_EMB_INT8=1 selects it; the float path stays the default.
+struct Int8Embed {
+    std::vector<int8_t> e8;        // [NV × H] expanded int8
+    std::vector<float> scales;     // [NV × 64] bf16→float per (tc,g)
+    std::vector<float> zps;        // [NV × 64]
+    int NV = 0, H = 0, TC = 0;     // vocab rows, hidden size, H/256 col tiles
+};
+
+static inline int8_t q4_extract(uint8_t byte, int nib) {
+    int q = (nib == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+    return (int8_t)(q < 8 ? q : q - 16);
+}
+
+static Int8Embed expand_embed_int8(const uint8_t* raw, int NV, int H) {
+    Int8Embed e;
+    e.NV = NV; e.H = H; e.TC = H / 256;
+    e.e8.assign((size_t)NV * H, 0);
+    e.scales.assign((size_t)NV * 64, 0.0f);
+    e.zps.assign((size_t)NV * 64, 0.0f);
+    for (int v = 0; v < NV; v++) {
+        const int rblock = v / 32, lr = v % 32;
+        const int lane = lr / 16, byte_idx = (lr % 16) / 2, nib = lr % 2;
+        const uint8_t* prow = raw + (size_t)rblock * e.TC * 5120;
+        int8_t* erow = &e.e8[(size_t)v * H];
+        float* srow = &e.scales[(size_t)v * 64];
+        float* zrow = &e.zps[(size_t)v * 64];
+        for (int tc = 0; tc < e.TC; tc++) {
+            const uint8_t* row = prow + (size_t)tc * 5120;
+            const uint8_t* packed = row + 1024 + (size_t)lane * 2048;
+            const uint8_t* scales = row;
+            const uint8_t* zeros = row + 512;
+            for (int g = 0; g < 8; g++) {
+                uint32_t sb = (uint32_t)((uint16_t)scales[(lr * 8 + g) * 2] |
+                                         ((uint16_t)scales[(lr * 8 + g) * 2 + 1] << 8)) << 16;
+                uint32_t zb = (uint32_t)((uint16_t)zeros[(lr * 8 + g) * 2] |
+                                         ((uint16_t)zeros[(lr * 8 + g) * 2 + 1] << 8)) << 16;
+                float scale, zp; memcpy(&scale, &sb, 4); memcpy(&zp, &zb, 4);
+                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
+                if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
+                srow[tc * 8 + g] = scale;
+                zrow[tc * 8 + g] = zp;
+                for (int c = 0; c < 32; c++) {
+                    uint8_t b = packed[(g * 32 + c) * 8 + byte_idx];
+                    erow[tc * 256 + g * 32 + c] = q4_extract(b, nib);
+                }
+            }
+        }
+    }
+    return e;
+}
+
+// AVX2: per (tc,g) group, dot the 32 int8 values against tmp in 8-wide
+// float chunks, apply the per-group scale + zero-point, accumulate.
+static void embed_logits_i8_avx2(const Int8Embed& e, const float* tmp,
+                                 float* logits, float* S_t) {
+    for (int tc = 0; tc < e.TC; tc++)
+        for (int g = 0; g < 8; g++) {
+            float s = 0;
+            for (int c = 0; c < 32; c++) s += tmp[(size_t)tc * 256 + g * 32 + c];
+            S_t[tc * 8 + g] = s;
+        }
+    #pragma omp parallel for schedule(static)
+    for (int v = 0; v < e.NV; v++) {
+        const int8_t* row = &e.e8[(size_t)v * e.H];
+        const float* srow = &e.scales[(size_t)v * 64];
+        const float* zrow = &e.zps[(size_t)v * 64];
+        float lv = 0;
+        for (int tc = 0; tc < e.TC; tc++) {
+            const float* tmpc = tmp + (size_t)tc * 256;
+            for (int g = 0; g < 8; g++) {
+                const int8_t* r8 = row + (size_t)tc * 256 + g * 32;
+                const float* t8 = tmpc + g * 32;
+                __m256 acc = _mm256_setzero_ps();
+                for (int c = 0; c < 32; c += 8) {
+                    // 8 int8 -> 8 int32 -> 8 floats (cvtepi8_epi32 reads the
+                    // low 64 bits only, so load exactly 8 bytes)
+                    __m128i b = _mm_loadl_epi64((const __m128i*)(r8 + c));
+                    __m256 f = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(b));
+                    acc = _mm256_add_ps(acc,
+                          _mm256_mul_ps(f, _mm256_loadu_ps(t8 + c)));
+                }
+                float dot = ((float*)&acc)[0] + ((float*)&acc)[1] + ((float*)&acc)[2]
+                          + ((float*)&acc)[3] + ((float*)&acc)[4] + ((float*)&acc)[5]
+                          + ((float*)&acc)[6] + ((float*)&acc)[7];
+                int gi = tc * 8 + g;
+                lv += srow[gi] * dot + zrow[gi] * S_t[gi];
+            }
+        }
+        logits[v] = lv;
+    }
+}
+
 static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
     float ss = 0; for (int i = 0; i < n; i++) ss += h[i] * h[i];
     float r = 1.0f / sqrtf(ss / n + eps);
@@ -138,6 +242,19 @@ int zaya_decode_main(int argc, char** argv) {
     get_offsets(js, jl, "model.embed_tokens.weight", &off, &size);
     int emb_rows = (int)(size / 5120);
     auto embed = load_i8(D, off, size, emb_rows, d.H);
+    // int8 view of the same region (issue #1776 perf: 2x less logits traffic
+    // with AVX2 int8 dots; expanded once at startup)
+    Int8Embed emb8;
+    emb8.NV = emb_rows * 4;
+    emb8.H = d.H;
+    emb8.TC = d.H / 256;
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        emb8 = expand_embed_int8(D + off, emb8.NV, d.H);
+        auto t1 = std::chrono::steady_clock::now();
+        fprintf(stderr, "embed int8 expansion (NV=%d H=%d): %.1f ms\n", emb8.NV, d.H,
+                std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
     uint64_t so, ss; get_offsets(js, jl, "model.input_hidden_states_scale", &so, &ss);
     auto iscale = load_bf16(D, so, ss);
     uint64_t bo, bs; get_offsets(js, jl, "model.input_hidden_states_bias", &bo, &bs);
@@ -248,6 +365,10 @@ int zaya_decode_main(int argc, char** argv) {
     std::vector<std::unique_ptr<xrt::bo>> h2_bo(NC);  // per-MoE-layer scratch (issue #1775 hang probe)
     if (FUSED) {
         fused_ctx.MD = 8; fused_ctx.KD = d.H; fused_ctx.ND = d.H;
+        // The int4 P1 kernel writes the FULL C1 (32 chunks x 4 KB = 128 KB)
+        // to bo2 (CPU-silu fallback, issue #1769) while ND is the D output
+        // width (2048) — enlarge bC via bC_nd (npu_engine_i8ctx_inc.h).
+        fused_ctx.bC_nd = 2 * m.n_ff;
         char fx[512], fi[512];
         // Split launch (issue #1775): p1 = GU->SiLU->h2 writeback, p2 = D
         // reading h2 from bo4. A host-side h2_bo sync between the launches
@@ -301,6 +422,34 @@ int zaya_decode_main(int argc, char** argv) {
                     fgu_bo[l][e] = fused_ctx.make_fused_weight_bo_i4(dev, d.H, 2 * m.n_ff);
                     fused_ctx.packB_into_fused_i4(*fgu_bo[l][e], raw_gu, e, d.H, m.n_ff,
                                                   fgu_cs[l][e], fgu_row[l][e]);
+                    if (getenv("NPU_C1_TEST") && l == 1) {
+                        // C1-layout test: override B'' = q4 = (GU col) mod 16
+                        // (nibbles = col-mod-16, ratio = 2^18 -> B'' = q4).
+                        // With the residual=1.0 (A=127) the C1[j] =
+                        // 127*2048*(j mod 16) = 260096*(j mod 16) — the
+                        // C1buf's positions reveal the true storage layout.
+                        uint8_t* Bm = (uint8_t*)fgu_bo[l][e]->map();
+                        const size_t n_tiles = (size_t)(d.H / 64) * ((2 * m.n_ff) / 128);
+                        for (size_t t = 0; t < n_tiles; t++) {
+                            uint8_t* tb = Bm + t * GuI4Pack::TILE_TOTAL;
+                            for (int i1 = 0; i1 < 16; i1++)
+                                for (int k = 0; k < 4; k++) {
+                                    int q0 = ((i1 * 8 + 2 * k) % 16);
+                                    int q1 = ((i1 * 8 + 2 * k + 1) % 16);
+                                    uint8_t b = (uint8_t)(q0 | (q1 << 4));
+                                    for (int i0 = 0; i0 < 8; i0++)
+                                        for (int i2 = 0; i2 < 8; i2++)
+                                            tb[i0 * 512 + i1 * 32 + i2 * 4 + k] = b;
+                                }
+                            for (int g = 0; g < 2; g++)
+                                for (int c = 0; c < 128; c++) {
+                                    int32_t rq = 1 << 18;
+                                    uint8_t* rp = tb + 5120 + g * 512 + c * 4;
+                                    memcpy(rp, &rq, 4);
+                                }
+                        }
+                        fgu_bo[l][e]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                    }
                 } else {
                     fused_ctx.packB_into_fused(*fgu_bo[l][e], guI.data(), d.H, 2 * m.n_ff, fgu_cs[l][e], fgu_row[l][e]);
                 }
@@ -315,6 +464,81 @@ int zaya_decode_main(int argc, char** argv) {
             }
         }
         fprintf(stderr, "fused resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
+    }
+
+    // ── Attention on NPU (issue #1776): NPU_ATTN=1 replaces the CPU GQA
+    // sequence-attention scan (QK^T + softmax + PV, O(seq) per token) with the
+    // hardware-verified flash-attention kernel (attn.xclbin, build_attn.sh).
+    // The q/k/v projections, cca_prep and o_proj stay on CPU (they are the
+    // next milestone — resident-weight int8 GEMMs + runlist). Falls back to
+    // the CPU scan when the flag is off or the xclbin is missing.
+    const bool NPU_ATTN = getenv("NPU_ATTN") && atoi(getenv("NPU_ATTN")) == 1;
+    const bool ATTN_DIAG = getenv("NPU_ATTN_DIAG") && atoi(getenv("NPU_ATTN_DIAG")) == 1;
+    AttnCtx attn_ctx;
+    if (NPU_ATTN) {
+        char ax[512], ai[512];
+        snprintf(ax, sizeof ax, "%s/attn.xclbin", xd);
+        snprintf(ai, sizeof ai, "%s/attn_insts.txt", xd);
+        if (getenv("NPU_ATTN_XCLBIN")) snprintf(ax, sizeof ax, "%s", getenv("NPU_ATTN_XCLBIN"));
+        if (getenv("NPU_ATTN_INSTS"))  snprintf(ai, sizeof ai, "%s", getenv("NPU_ATTN_INSTS"));
+        if (!attn_ctx.init(dev, ax, ai, d.nq, d.nkv, d.hd)) {
+            fprintf(stderr, "ATTN ctx init failed — falling back to CPU attention\n");
+        }
+    }
+    if (NPU_ATTN && attn_ctx.ready)
+        fprintf(stderr, "NPU attention ready (attn.xclbin, %d layers, MAX_SEQ=%d)\n",
+                NC / 2, attn_ctx.MAX_SEQ);
+
+    // ── Attention projections on NPU (issue #1776 resident weights): the 4
+    // q/k/v1/v2 projections share the input h — one QKV-concat GEMM (K=H,
+    // N = qd+kd+hv2+hv2 = 2048) — and o_proj is a K=qd GEMM (padded to
+    // KD=2048). Both reuse the M16 D xclbin shape (K=2048, N=2048, M=128).
+    // Weights packed once at startup (resident); per-token A quant + launch
+    // + dequant. NPU_PROJ=1 selects it; the CPU GEMVs stay the default.
+    const bool NPU_PROJ = getenv("NPU_PROJ") && atoi(getenv("NPU_PROJ")) == 1;
+    const bool PROJ_DIAG = getenv("NPU_PROJ_DIAG") && atoi(getenv("NPU_PROJ_DIAG")) == 1;
+    I8Ctx proj_ctx;
+    if (NPU_PROJ) {
+        proj_ctx.MD = 128; proj_ctx.KD = d.H; proj_ctx.ND = d.H;
+        char px[512], pi[512];
+        snprintf(px, sizeof px, "%s/final_i8_MOE_D_zaya_m16.xclbin", xd);
+        snprintf(pi, sizeof pi, "%s/insts_i8_MOE_D_zaya_m16.txt", xd);
+        if (getenv("NPU_PROJ_XCLBIN")) snprintf(px, sizeof px, "%s", getenv("NPU_PROJ_XCLBIN"));
+        if (getenv("NPU_PROJ_INSTS"))  snprintf(pi, sizeof pi, "%s", getenv("NPU_PROJ_INSTS"));
+        if (proj_ctx.init(dev, px, pi, 0, 2 * NC)) {
+            const int qkvN = d.qd + 2 * d.kd;            // 1536 = qd + kd + hv2 + hv2
+            // packB_into wants [K_in x N_out]: transpose the concat rows
+            std::vector<float> wqkvT((size_t)qkvN * d.H, 0.0f);
+            std::vector<float> woT((size_t)d.qd * d.H, 0.0f);
+            for (int l = 0; l < NC; l += 2) {
+                auto& w = L[l].cw;
+                const int hv2 = d.kd / 2;
+                for (int j = 0; j < d.H; j++) {
+                    for (int ii = 0; ii < d.qd; ii++)
+                        wqkvT[(size_t)j * qkvN + ii] = w.wq[(size_t)ii * d.H + j];
+                    for (int ii = 0; ii < d.kd; ii++)
+                        wqkvT[(size_t)j * qkvN + d.qd + ii] = w.wk[(size_t)ii * d.H + j];
+                    for (int ii = 0; ii < hv2; ii++)
+                        wqkvT[(size_t)j * qkvN + d.qd + d.kd + ii] = w.wv1[(size_t)ii * d.H + j];
+                    for (int ii = 0; ii < hv2; ii++)
+                        wqkvT[(size_t)j * qkvN + d.qd + d.kd + hv2 + ii] = w.wv2[(size_t)ii * d.H + j];
+                }
+                float qs = 0;
+                proj_ctx.packB_into(*proj_ctx.layerB[2 * l], wqkvT.data(), d.H, qkvN,
+                                    qs, proj_ctx.group_scales[2 * l]);
+                // o_proj: B[j][i] = wo[i][j]  (out i over H, in j over qd)
+                for (int i = 0; i < d.H; i++)
+                    for (int j = 0; j < d.qd; j++)
+                        woT[(size_t)j * d.H + i] = w.wo[(size_t)i * d.qd + j];
+                float os = 0;
+                proj_ctx.packB_into(*proj_ctx.layerB[2 * l + 1], woT.data(), d.qd, d.H,
+                                    os, proj_ctx.group_scales[2 * l + 1]);
+            }
+            fprintf(stderr, "NPU projections ready (QKV-concat + o_proj, %d layers, D-m16 xclbin)\n",
+                    NC / 2);
+        } else {
+            fprintf(stderr, "PROJ ctx init failed — falling back to CPU projections\n");
+        }
     }
 
     // ── forward ──
@@ -381,30 +605,68 @@ int zaya_decode_main(int argc, char** argv) {
             }
             rmsnorm(residual.data(), w.nw.data(), d.H);
             if (l % 2 == 0) {
-                // CCA attention (CPU)
+                // CCA attention — q/k/v projections: CPU GEMVs or the NPU
+                // QKV-concat GEMM (NPU_PROJ=1, resident weights).
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
-                // Q/K/V1/V2 fused into one parallel region (uniform 2048-MAC work
-                // per row); memory-bound weight streaming -> threads win bandwidth.
-                const int nproj = qd + kd + hv2 + hv2;
-                #pragma omp parallel for schedule(static)
-                for (int ii = 0; ii < nproj; ii++) {
-                    float a = 0;
-                    if (ii < qd) {
-                        for (int j = 0; j < H; j++) a += w.cw.wq[(size_t)ii * H + j] * residual[j];
-                        q[ii] = a;
-                    } else if (ii < qd + kd) {
-                        int i = ii - qd;
-                        for (int j = 0; j < H; j++) a += w.cw.wk[(size_t)i * H + j] * residual[j];
-                        k[i] = a;
-                    } else if (ii < qd + kd + hv2) {
-                        int i = ii - qd - kd;
-                        for (int j = 0; j < H; j++) a += w.cw.wv1[(size_t)i * H + j] * residual[j];
-                        vc[i] = a;
-                    } else {
-                        int i = ii - qd - kd - hv2;
-                        for (int j = 0; j < H; j++) a += w.cw.wv2[(size_t)i * H + j] * residual[j];
-                        vd[i] = a;
+                if (NPU_PROJ && proj_ctx.isReady()) {
+                    float ag = dynamic_ascale(residual.data(), d.H);
+                    auto rq = proj_ctx.launch_async_with_bo(*proj_ctx.layerB[2 * l],
+                                                            residual.data(), 1, d.H, ag);
+                    // full concat width (qd + 2*kd = 1536 = the pack N) so the
+                    // dequant's group_scales size check matches
+                    std::vector<float> qkv(qd + 2 * kd);
+                    proj_ctx.finish_async(rq, qkv.data(), 1, qd + 2 * kd, ag, 0.0f, 2 * l);
+                    memcpy(q.data(), qkv.data(), (size_t)qd * 4);
+                    memcpy(k.data(), qkv.data() + qd, (size_t)kd * 4);
+                    memcpy(vc.data(), qkv.data() + qd + kd, (size_t)hv2 * 4);
+                    memcpy(vd.data(), qkv.data() + qd + kd + hv2, (size_t)hv2 * 4);
+                    if (PROJ_DIAG && l == 0 && pos == 0) {
+                        // NPU-projected q/k/v vs the CPU float projections
+                        std::vector<float> cq(qd), ck(kd), cvc(hv2), cvd(hv2);
+                        for (int ii = 0; ii < qd; ii++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wq[(size_t)ii*H+j]*residual[j]; cq[ii]=a; }
+                        for (int ii = 0; ii < kd; ii++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wk[(size_t)ii*H+j]*residual[j]; ck[ii]=a; }
+                        for (int ii = 0; ii < hv2; ii++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wv1[(size_t)ii*H+j]*residual[j]; cvc[ii]=a; }
+                        for (int ii = 0; ii < hv2; ii++) { float a=0; for (int j=0;j<H;j++) a += w.cw.wv2[(size_t)ii*H+j]*residual[j]; cvd[ii]=a; }
+                        auto corr = [](const std::vector<float>& a, const std::vector<float>& b) {
+                            double n=0, d1=0, d2=0; for (size_t i=0;i<a.size();i++){ n+=(double)a[i]*b[i]; d1+=(double)a[i]*a[i]; d2+=(double)b[i]*b[i]; }
+                            return n/std::sqrt(d1*d2);
+                        };
+                        fprintf(stderr, "[PROJ L0 dbg] corr q=%.6f k=%.6f v1=%.6f v2=%.6f\n",
+                                corr(q, cq), corr(k, ck), corr(vc, cvc), corr(vd, cvd));
+                        fprintf(stderr, "[PROJ dump] ag=%.6f gs[0..3]=%.6e %.6e %.6e %.6e | npu q[0..3]=%.5f %.5f %.5f %.5f cpu=%.5f %.5f %.5f %.5f | Cm[0..7]=%d %d %d %d %d %d %d %d | gsSize=%zu an=%d direct=%f\n",
+                                ag, proj_ctx.group_scales[0][0], proj_ctx.group_scales[0][1],
+                                proj_ctx.group_scales[0][2], proj_ctx.group_scales[0][3],
+                                q[0], q[1], q[2], q[3], cq[0], cq[1], cq[2], cq[3],
+                                (int)proj_ctx.Cm[0], (int)proj_ctx.Cm[1], (int)proj_ctx.Cm[2],
+                                (int)proj_ctx.Cm[3], (int)proj_ctx.Cm[4], (int)proj_ctx.Cm[5],
+                                (int)proj_ctx.Cm[6], (int)proj_ctx.Cm[7],
+                                proj_ctx.group_scales[0].size(), qd + 2 * kd,
+                                (double)proj_ctx.Cm[0] * ag * proj_ctx.group_scales[0][0]);
+                    }
+                } else {
+                    // Q/K/V1/V2 fused into one parallel region (uniform 2048-MAC
+                    // work per row); memory-bound weight streaming -> threads win.
+                    const int nproj = qd + kd + hv2 + hv2;
+                    #pragma omp parallel for schedule(static)
+                    for (int ii = 0; ii < nproj; ii++) {
+                        float a = 0;
+                        if (ii < qd) {
+                            for (int j = 0; j < H; j++) a += w.cw.wq[(size_t)ii * H + j] * residual[j];
+                            q[ii] = a;
+                        } else if (ii < qd + kd) {
+                            int i = ii - qd;
+                            for (int j = 0; j < H; j++) a += w.cw.wk[(size_t)i * H + j] * residual[j];
+                            k[i] = a;
+                        } else if (ii < qd + kd + hv2) {
+                            int i = ii - qd - kd;
+                            for (int j = 0; j < H; j++) a += w.cw.wv1[(size_t)i * H + j] * residual[j];
+                            vc[i] = a;
+                        } else {
+                            int i = ii - qd - kd - hv2;
+                            for (int j = 0; j < H; j++) a += w.cw.wv2[(size_t)i * H + j] * residual[j];
+                            vd[i] = a;
+                        }
                     }
                 }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
@@ -416,15 +678,78 @@ int zaya_decode_main(int argc, char** argv) {
                 int seq = (int)old + 1;
                 int gqa = d.nq / d.nkv;
                 std::vector<float> ao(qd);
-                for (int hh = 0; hh < d.nq; hh++) {
-                    int kv = hh / gqa;
-                    std::vector<float> sc(seq); float mx = -1e30f;
-                    for (int t = 0; t < seq; t++) { float s=0; const float* kt=&lk[(size_t)t*d.nkv*d.hd + kv*d.hd]; for (int dd=0;dd<d.hd;dd++) s+=qo[hh*d.hd+dd]*kt[dd]; s*=1.0f/sqrtf((float)d.hd); sc[t]=s; mx=std::max(mx,s); }
-                    float sm=0; for (int t=0;t<seq;t++){sc[t]=expf(sc[t]-mx);sm+=sc[t];}
-                    for (int dd=0;dd<d.hd;dd++){float a=0; for(int t=0;t<seq;t++)a+=sc[t]*lv[(size_t)t*d.nkv*d.hd+kv*d.hd+dd]; ao[hh*d.hd+dd]=a/(sm+1e-12f);}
+                // GQA sequence attention over the KV cache: CPU scan
+                // (fallback / diag reference) or the NPU flash-attention
+                // kernel (NPU_ATTN=1, issue #1776).
+                auto cpu_attn_scan = [&](std::vector<float>& aout) {
+                    for (int hh = 0; hh < d.nq; hh++) {
+                        int kv = hh / gqa;
+                        std::vector<float> sc(seq); float mx = -1e30f;
+                        for (int t = 0; t < seq; t++) { float s=0; const float* kt=&lk[(size_t)t*d.nkv*d.hd + kv*d.hd]; for (int dd=0;dd<d.hd;dd++) s+=qo[hh*d.hd+dd]*kt[dd]; s*=1.0f/sqrtf((float)d.hd); sc[t]=s; mx=std::max(mx,s); }
+                        float sm=0; for (int t=0;t<seq;t++){sc[t]=expf(sc[t]-mx);sm+=sc[t];}
+                        for (int dd=0;dd<d.hd;dd++){float a=0; for(int t=0;t<seq;t++)a+=sc[t]*lv[(size_t)t*d.nkv*d.hd+kv*d.hd+dd]; aout[hh*d.hd+dd]=a/(sm+1e-12f);}
+                    }
+                };
+                if (NPU_ATTN && attn_ctx.ready) {
+                    attn_ctx.run(qo.data(), lk.data(), lv.data(), seq, ao.data());
+                    // comma list of positions to probe (default 0)
+                    // comma list of positions to probe (default 0)
+                    int ATTN_DIAG_POS = 0;
+                    if (getenv("NPU_ATTN_DIAG_POS")) {
+                        std::string pl = getenv("NPU_ATTN_DIAG_POS");
+                        size_t p0 = 0, p1 = pl.find(',' );
+                        while (true) {
+                            std::string tok = pl.substr(p0, p1 == std::string::npos ? std::string::npos : p1 - p0);
+                            if (pos == atoi(tok.c_str())) { ATTN_DIAG_POS = pos; break; }
+                            if (p1 == std::string::npos) break;
+                            p0 = p1 + 1; p1 = pl.find(',' , p0);
+                        }
+                    }
+                    if (ATTN_DIAG && l == 0 && pos == ATTN_DIAG_POS) {
+                        // Per-layer accuracy probe: NPU ao vs the CPU float scan.
+                        std::vector<float> cpu_ao(qd);
+                        cpu_attn_scan(cpu_ao);
+                        double num=0, d1=0, d2=0; float maxd=0;
+                        for (int i = 0; i < qd; i++) {
+                            num += (double)cpu_ao[i]*ao[i]; d1 += (double)cpu_ao[i]*cpu_ao[i]; d2 += (double)ao[i]*ao[i];
+                            maxd = std::max(maxd, std::fabs(cpu_ao[i]-ao[i]));
+                        }
+                        fprintf(stderr, "[ATTN L%d dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f)\n", l,
+                                num/std::sqrt(d1*d2), maxd, std::sqrt(d1/qd), std::sqrt(d2/qd));
+                        if (getenv("NPU_ATTN_DIAG")) {
+                            for (int hh = 0; hh < d.nq; hh++) {
+                                double hn=0, h1=0, h2=0;
+                                for (int dd = 0; dd < d.hd; dd++) {
+                                    double x = cpu_ao[hh*d.hd+dd], y = ao[hh*d.hd+dd];
+                                    hn += x*y; h1 += x*x; h2 += y*y;
+                                }
+                                fprintf(stderr, "  [ATTN h%d] corr=%.4f ao[0..3]=%.3f %.3f %.3f %.3f cpu=%.3f %.3f %.3f %.3f\n",
+                                        hh, hn/std::sqrt(h1*h2),
+                                        ao[hh*d.hd+0], ao[hh*d.hd+1], ao[hh*d.hd+2], ao[hh*d.hd+3],
+                                        cpu_ao[hh*d.hd+0], cpu_ao[hh*d.hd+1], cpu_ao[hh*d.hd+2], cpu_ao[hh*d.hd+3]);
+                            }
+                        }
+                    }
+                } else {
+                    cpu_attn_scan(ao);
                 }
-                #pragma omp parallel for schedule(static)
-                for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
+                // o_proj: NPU GEMM (NPU_PROJ=1, resident wo^T, K=qd padded) or CPU.
+                if (NPU_PROJ && proj_ctx.isReady()) {
+                    float ag2 = dynamic_ascale(ao.data(), qd);
+                    auto ro = proj_ctx.launch_async_with_bo(*proj_ctx.layerB[2 * l + 1],
+                                                            ao.data(), 1, qd, ag2);
+                    proj_ctx.finish_async(ro, h.data(), 1, d.H, ag2, 0.0f, 2 * l + 1);
+                    if (PROJ_DIAG && l == 0 && pos == 0) {
+                        std::vector<float> ch(d.H);
+                        for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; ch[i]=a; }
+                        double n=0, d1=0, d2=0; for (int i=0;i<d.H;i++){ n+=(double)ch[i]*h[i]; d1+=(double)ch[i]*ch[i]; d2+=(double)h[i]*h[i]; }
+                        fprintf(stderr, "[PROJ o_proj L0 dbg] corr=%.6f (npu rms=%.4f cpu rms=%.4f)\n",
+                                n/std::sqrt(d1*d2), std::sqrt(d2/d.H), std::sqrt(d1/d.H));
+                    }
+                } else {
+                    #pragma omp parallel for schedule(static)
+                    for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
+                }
             } else {
                 // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
@@ -433,6 +758,9 @@ int zaya_decode_main(int argc, char** argv) {
                     // ── fused GU→SiLU→D: one launch ──
                     fused_ctx.group_scales[l] = fd_cs[l][e];
                     fused_ctx_p2.group_scales[l] = fd_cs[l][e];
+                    if (getenv("NPU_C1_TEST") && l == 1 && pos == 0) {
+                        for (int i = 0; i < d.H; i++) residual[i] = 1.0f;  // A = all-127
+                    }
                     float ag = dynamic_ascale(residual.data(), d.H);
                     fused_ctx.quantize_async(residual.data(), 1, d.H, ag);   // Am for the amax pass
                     float qn_s = zaya_moe::host_h2_amax_qn_s(
@@ -444,7 +772,11 @@ int zaya_decode_main(int argc, char** argv) {
                     else
                         fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
-                    // P1: GU->SiLU->h2 writeback.
+                    // P1: GU GEMM → C1 writeback to bo2 (the CPU-silu
+                    // fallback, issue #1769/#1836: the on-core silu is
+                    // mis-compiled by the aie2p backend, so the P1 kernel
+                    // only writes the C1 — 32 chunks x 4 KB — and the HOST
+                    // computes the silu from the verified bit-exact C1).
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     auto tb2 = std::chrono::steady_clock::now();
@@ -500,6 +832,52 @@ int zaya_decode_main(int argc, char** argv) {
                                 C1h[j] += (int32_t)Am[i] * Bs[(size_t)i * (2 * m.n_ff) + j];
                         fprintf(stderr, "\n[c1host40] ");
                         for (int j = 0; j < 64; j++) fprintf(stderr, "%d ", (int)(C1h[2 * j] / 32));
+                        // v86: host unscaled C1 = Am . (q4*16) under 3 unpack-order
+                        // interpretations (nt=0, full K): NAT, INT (low nibbles first),
+                        // TRN (kk/cc swapped)
+                        {
+                            const uint8_t* Bm5 = (const uint8_t*)fgu_bo[l][e]->map();
+                            const int nt0 = 0;
+                            fprintf(stderr, "\n[c1unscNAT] ");
+                            fprintf(stderr, "\n[c1unscINT] ");
+                            fprintf(stderr, "\n[c1unscTRN] ");
+                            for (int c = 0; c < 128; c += 2) {
+                                long long aN = 0, aI = 0, aT = 0;
+                                for (int ki = 0; ki < 32; ki++)
+                                    for (int k = 0; k < 64; k++) {
+                                        int gk = ki * 64 + k;
+                                        size_t off = (size_t)(ki * 32 + nt0) * GuI4Pack::TILE_TOTAL
+                                            + (size_t)((k % 64) / 8) * 512 + (size_t)(c / 8) * 32
+                                            + (size_t)(k % 8) * 4 + (size_t)((c % 8) / 2);
+                                        int b = (int)Bm5[off];
+                                        int lo = b & 0x0F, hi = (b >> 4) & 0x0F;
+                                        if (lo >= 8) lo -= 16;
+                                        if (hi >= 8) hi -= 16;
+                                        int cc = c % 8, kk = k % 8;
+                                        // NAT: element (kk,cc) = byte kk*4+cc/2, nibble cc%2
+                                        int qN = (cc % 2 == 0) ? lo : hi;
+                                        // INT: element e = byte e%32, nibble e/32
+                                        //      e = kk*8+cc -> byte kk*4+cc/2, nibble (kk*8+cc)/32
+                                        int e = kk * 8 + cc;
+                                        int qI = (e / 32 == 0) ? lo : hi;
+                                        // TRN: element (kk,cc) = q4[cc][kk] -> byte cc*4+kk/2, nibble kk%2
+                                        size_t offT = (size_t)(ki * 32 + nt0) * GuI4Pack::TILE_TOTAL
+                                            + (size_t)((k % 64) / 8) * 512 + (size_t)(cc) * 32
+                                            + (size_t)((c / 8) % 8) * 4 + (size_t)((kk) / 2);
+                                        int bT = (int)Bm5[offT];
+                                        int loT = bT & 0x0F, hiT = (bT >> 4) & 0x0F;
+                                        if (loT >= 8) loT -= 16;
+                                        if (hiT >= 8) hiT -= 16;
+                                        int qT = (kk % 2 == 0) ? loT : hiT;
+                                        aN += (long long)fused_ctx.Am[gk] * (qN * 16);
+                                        aI += (long long)fused_ctx.Am[gk] * (qI * 16);
+                                        aT += (long long)fused_ctx.Am[gk] * (qT * 16);
+                                    }
+                                fprintf(stderr, "%lld %lld %lld ", (long long)(aN / 32),
+                                        (long long)(aI / 32), (long long)(aT / 32));
+                            }
+                            fprintf(stderr, "\n");
+                        }
                         {
                             const uint8_t* Bm2 = (const uint8_t*)fgu_bo[l][e]->map();
                             // kernel's call-2 nibble bytes: 176 16 243 251 209 238 5 239 at [X*8192 + k*4 + 1]
@@ -541,12 +919,39 @@ int zaya_decode_main(int argc, char** argv) {
                     // few h2 bytes host-side (the P1 S2MM writes go through
                     // the coherent host path; a sync alone can be a no-op for
                     // HOST_ONLY BOs, but a real read must observe the data).
-                    {
-                        const volatile int8_t* h2m =
-                            (const volatile int8_t*)h2_bo[l]->map();
-                        volatile int sink = 0;
-                        for (int i = 0; i < 64; i++) sink += h2m[i];
-                        (void)sink;
+                    // 1769 cpu-contract CPU-silu fallback (consolidation): the on-core
+                    // silu is mis-compiled by this aie2p build (#1836), so with
+                    // NPU_FUSED_I4_CPUSILU=1 the host reads the kernel's C1_out (via
+                    // c1_emit) and computes h2 (silu_quant.h) into bo4 for the D read.
+                    if (FUSED_I4 && getenv("NPU_FUSED_I4_CPUSILU") && atoi(getenv("NPU_FUSED_I4_CPUSILU")) == 1) {
+                        {
+                        fused_ctx.bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                        const int32_t* c1m = fused_ctx.Cm;
+                        const int H2n = m.n_ff;                     // 2048
+                        const std::vector<float>& scol = fgu_cs[l][e];  // S_col
+                        std::vector<float> fold(2 * H2n);           // S' per GU col
+                        for (int p = 0; p < H2n; p++) {
+                            fold[2 * p]     = ag * scol[2 * p];          // gate
+                            fold[2 * p + 1] = ag * qn_s * scol[2 * p + 1]; // up
+                        }
+                        int8_t* h2m = (int8_t*)h2_bo[l]->map();
+                        std::vector<int32_t> C1row(2 * H2n);
+                        std::vector<int8_t> h2row(H2n);
+                        for (int r = 0; r < 8; r++) {
+                            // Microtiled C1: element (r, c) of chunk kc at
+                            // kc·1024 + (c/8)·64 + r·8 + (c%8) → row-major.
+                            for (int p = 0; p < H2n; p++) {
+                                for (int t = 0; t < 2; t++) {
+                                    int j = 2 * p + t, kc = j >> 7, c = j & 127;
+                                    C1row[j] = c1m[kc * 1024 + (c >> 3) * 64 + r * 8 + (c & 7)];
+                                }
+                            }
+                            silu_quant_i8(C1row.data(), fold.data(), h2row.data(), H2n);
+                            for (int p = 0; p < H2n; p++)
+                                h2m[(size_t)r * H2n + (p >> 3) * 8 + (p & 7)] = h2row[p];
+                        }
+                        h2_bo[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                    }
                     }
                     // P2: D GEMM reading h2 from bo4.
                     auto frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
@@ -626,6 +1031,7 @@ int zaya_decode_main(int argc, char** argv) {
                                 }
                                 fprintf(stderr, "\n");
                             }
+
                             const int32_t* c1m = fused_ctx.Cm;
                             {   // DIAG: host h2 (row 0) vs reference h2
                                 std::vector<float> fold2(2 * m.n_ff);
@@ -665,6 +1071,7 @@ int zaya_decode_main(int argc, char** argv) {
                                 }
                             }
 
+
                             fprintf(stderr, "[c1cmp] cpu: ");
                             if (getenv("NPU_C1_TEST"))
                                 for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", 260096 * (j % 16));
@@ -680,6 +1087,11 @@ int zaya_decode_main(int argc, char** argv) {
                         }
                         fprintf(stderr, "[MoE L1 fused dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f) qn_s=%.4f\n",
                             num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s);
+                        fprintf(stderr, "[moecmp] cpu: ");
+                        for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", cpu_out[i]);
+                        fprintf(stderr, "\n[moecmp] npu: ");
+                        for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", moe_out[i]);
+                        fprintf(stderr, "\n");
                     }
                 } else {
                     gu_ctx.group_scales[l] = gu_cs[l][e];
@@ -713,12 +1125,42 @@ int zaya_decode_main(int argc, char** argv) {
         for (int i = 0; i < d.H; i++) tmp[i] = h[i] + residual[i];
         rmsnorm(tmp.data(), fnw.data(), d.H);
         std::vector<float> logits(NV);
-        #pragma omp parallel for schedule(static)
-        for (int v = 0; v < NV; v++) { float a=0; for (int j=0;j<d.H;j++) a += embed[(size_t)v*d.H+j]*tmp[j]; logits[v]=a; }
+        // int8 logits (NPU_EMB_INT8=1): AVX2 dots over the expanded int8
+        // embed (1.07 GB stream) + bf16 scales instead of the 2.15 GB float
+        // embed — same math, only the summation order differs. Falls back to
+        // the float GEMV.
+        static const bool EMB_INT8 = getenv("NPU_EMB_INT8") && atoi(getenv("NPU_EMB_INT8")) == 1;
+        auto t_e0 = std::chrono::steady_clock::now();
+        if (EMB_INT8 && !emb8.e8.empty()) {
+            std::vector<float> S_t((size_t)emb8.TC * 8);
+            embed_logits_i8_avx2(emb8, tmp.data(), logits.data(), S_t.data());
+        } else {
+            #pragma omp parallel for schedule(static)
+            for (int v = 0; v < NV; v++) { float a=0; for (int j=0;j<d.H;j++) a += embed[(size_t)v*d.H+j]*tmp[j]; logits[v]=a; }
+        }
+        auto t_e1 = std::chrono::steady_clock::now();
+        if (getenv("NPU_EMB_TIMING") && pos == 0)
+            fprintf(stderr, "[EMB-t] %s logits %.2f ms\n", EMB_INT8 ? "int8" : "float",
+                    std::chrono::duration<double, std::milli>(t_e1 - t_e0).count());
         if (pos == 0) {
             float mn=1e30, mx=-1e30, ss=0;
             for (int v=0; v<NV; v++){ mn=std::min(mn,logits[v]); mx=std::max(mx,logits[v]); ss+=logits[v]*logits[v]; }
             fprintf(stderr, "[NPU dbg] logits min=%.4f max=%.4f rms=%.4f\n", mn, mx, sqrtf(ss/NV));
+            if (EMB_INT8 && !emb8.e8.empty()) {
+                // direct int8-vs-float corr at the first token
+                std::vector<float> fl(NV);
+                #pragma omp parallel for schedule(static)
+                for (int v = 0; v < NV; v++) { float a=0; for (int j=0;j<d.H;j++) a += embed[(size_t)v*d.H+j]*tmp[j]; fl[v]=a; }
+                double num=0, d1=0, d2=0; float maxd=0;
+                for (int v = 0; v < NV; v++) {
+                    num += (double)fl[v]*logits[v]; d1 += (double)fl[v]*fl[v]; d2 += (double)logits[v]*logits[v];
+                    maxd = std::max(maxd, std::fabs(fl[v]-logits[v]));
+                }
+                int a1 = (int)(std::max_element(fl.begin(), fl.end()) - fl.begin());
+                int a2 = (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+                fprintf(stderr, "[EMB dbg] corr=%.7f maxdiff=%.6f argmax %d vs %d (%s)\n",
+                        num/std::sqrt(d1*d2), maxd, a1, a2, a1 == a2 ? "SAME" : "DIFF");
+            }
         }
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     };

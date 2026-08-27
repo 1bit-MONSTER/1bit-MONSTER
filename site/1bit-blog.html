@@ -5,17 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>1bit.MONSTER: Blog</title>
   <meta name="description" content="The 1bit.MONSTER blog. Notes on reverse-engineering a closed NPU stack, mapping 317,310 checkpoints, and building an engine with zero Python." />
-  <meta property="og:site_name" content="1bit.MONSTER" />
-  <meta property="og:type" content="website" />
-  <meta property="og:title" content="1bit.MONSTER: Blog" />
-  <meta property="og:description" content="The 1bit.MONSTER blog. Notes on reverse-engineering a closed NPU stack, mapping 317,310 checkpoints, and building an engine with zero Python." />
-  <meta property="og:url" content="https://1bit.monster/1bit-blog.html" />
-  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
-  <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="1bit.MONSTER: Blog" />
-  <meta name="twitter:description" content="The 1bit.MONSTER blog. Notes on reverse-engineering a closed NPU stack, mapping 317,310 checkpoints, and building an engine with zero Python." />
-  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-blog.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim from `1bit-monster-v2.html` (modern-minimal + the
@@ -169,10 +158,6 @@
       .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
     }
   </style>
-  <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: Blog", "description": "The 1bit.MONSTER blog. Notes on reverse-engineering a closed NPU stack, mapping 317,310 checkpoints, and building an engine with zero Python.", "url": "https://1bit.monster/1bit-blog.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
-  </script>
-  <link rel="alternate" type="application/rss+xml" title="1bit.MONSTER — Blog" href="https://1bit.monster/blog.xml" />
 </head>
 <body>
   <header class="topnav" data-od-id="topnav">
@@ -219,56 +204,11 @@
         </div>
 
         <div>
-          <article class="log-row" data-od-id="post-lemonade-v1180">
-            <span class="log-date">2026-08-27</span>
-            <div class="log-body">
-              <h3><a href="1bit-post-lemonade-v1180.html" class="log-link">Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</a></h3>
-              <p>AMD's 15-backend Lemonade release is now compiled into our engine — and the new one is built for our hardware: DwarfStar (ds4) runs DeepSeek V4 Flash on Strix Halo's gfx1151, ROCm runtime bundled, no system install. Plus download resume + rate limits, cloud wire_format passthrough, and our own merged PR in the changelog.</p>
-              <div class="log-tags"><span class="log-tag">lemonade</span><span class="log-tag">ds4</span><span class="log-tag">upstream</span><span class="log-tag">sdk</span></div>
-            </div>
-          </article>
-
-          <article class="log-row" data-od-id="post-1775-models">
-            <span class="log-date">2026-08-25</span>
-            <div class="log-body">
-              <h3><a href="1bit-post-1775-models.html" class="log-link">One engine, 1,775 models</a></h3>
-              <p>Every architecture token on HuggingFace — 552 of them — resolves to one binary. 317,310 checkpoints map to a single 1-bit engine. The census, the token catalog, and the formats: GGUF native, Q4NX 1-bit, INT8.</p>
-              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">census</span><span class="log-tag">models</span></div>
-            </div>
-          </article>
-
-          <article class="log-row" data-od-id="post-local-rag">
-            <span class="log-date">2026-08-25</span>
-            <div class="log-body">
-              <h3><a href="1bit-post-local-rag.html" class="log-link">Local RAG with our own embeddings</a></h3>
-              <p>The engine now serves /v1/embeddings. Full local RAG — embed, index, retrieve, generate — on one binary, no cloud, no Python. This site's semantic search runs on it.</p>
-              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">embeddings</span><span class="log-tag">rag</span></div>
-            </div>
-          </article>
-
-          <article class="log-row" data-od-id="post-1bit-explained">
-            <span class="log-date">2026-08-25</span>
-            <div class="log-body">
-              <h3><a href="1bit-post-1bit-explained.html" class="log-link">What 1-bit actually does to a model</a></h3>
-              <p>1-bit isn't a gimmick and it isn't free. The real trade of ternary quantization: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions — measured, not projected.</p>
-              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">quantization</span><span class="log-tag">explainer</span></div>
-            </div>
-          </article>
-
-          <article class="log-row" data-od-id="post-rocm-vs-cuda">
-            <span class="log-date">2026-08-25</span>
-            <div class="log-body">
-              <h3><a href="1bit-post-rocm-vs-cuda.html" class="log-link">ROCm vs CUDA, from the 1-bit trenches</a></h3>
-              <p>We ship on ROCm, not CUDA, on purpose. Kernel-level comparison from the engine's logs: 1-bit matmuls, NPU offload, and why AMD's stack wins for local inference.</p>
-              <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">rocm</span><span class="log-tag">amd</span></div>
-            </div>
-          </article>
-
           <article class="log-row" data-od-id="post-lemonade-v1170">
             <span class="log-date">2026-08-24</span>
             <div class="log-body">
               <h3><a href="1bit-post-lemonade-v1170.html" class="log-link">Lemonade v11.7.0, and how we stay current with the SDK</a></h3>
-              <p>The embedded Lemonade server core is re-vendored to v11.7.0 — new models, register/options/stats/metrics endpoints live, and a repeatable re-vendor loop so every upstream release lands without touching engine code. The engine's own HF coverage stays at 100%: 552 architecture tokens, 1,775 HF arch strings, 317,310/317,310 checkpoints mapped.</p>
+              <p>The embedded Lemonade server core is re-vendored to v11.7.0 — new models, register/options/stats/metrics endpoints live, and a repeatable re-vendor loop so every upstream release lands without touching engine code. The engine's own HF coverage stays at 100%: 552 architecture tokens, 1,774 HF arch strings, 317,310/317,310 checkpoints mapped.</p>
               <div class="log-tags"><span class="log-tag">lemonade</span><span class="log-tag">upstream</span><span class="log-tag">sdk</span></div>
             </div>
           </article>
@@ -453,14 +393,12 @@
     <div class="container">
       <div class="row-between">
         <span>© 2026 1bit.MONSTER · MIT License</span>
-        <a class="meta" href="blog.xml">RSS feed</a>
-        <a class="meta" href="https://fluxer.gg/sJiQqrmE" target="_blank" rel="noopener">Community support &#8599;</a>
+        <a class="meta" href="https://fluxer.gg/USDRI0qz" target="_blank" rel="noopener">Community support &#8599;</a>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
       </div>
       <p class="place" data-od-id="footer-place">Metepenagiag Mi'kmaq Nation, New Brunswick, Canada</p>
       <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
     </div>
   </footer>
-<script src="analytics.js"></script>
 </body>
 </html>
