@@ -1,7 +1,7 @@
 # Vendored: lemonade-sdk/lemonade (embedded server core)
 
 Vendored from https://github.com/lemonade-sdk/lemonade at commit
-`2b6a7d77c71e551736f6cc8473dc46f479cd156b` (tag `v11.7.0`).
+`e1b3168370e8b2472acdbe08298267a4b556cf9e` (tag `v11.8.0`).
 
 Vendored (instead of a submodule) because the embedded server core needs a
 patch that only exists locally, and CI can't fetch unpublished submodule
@@ -10,7 +10,7 @@ SHAs. Re-vendor on upstream sync:
 ```sh
 git clone https://github.com/lemonade-sdk/lemonade /tmp/lemonade
 cd /tmp/lemonade
-git checkout 2b6a7d77c71e551736f6cc8473dc46f479cd156b  # v11.7.0
+git checkout e1b3168370e8b2472acdbe08298267a4b556cf9e  # v11.8.0
 # re-apply the embeddability patch below
 rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
 ```
@@ -33,5 +33,10 @@ rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
    (`unified_server`, `unified_router`) linking the OBJECT library see
    `lemon/` headers + generated headers (upstream uses a subdirectory-local
    `include_directories()` that does not propagate to consumers).
+4. `add_test()` police guarded by `BUILD_TESTING` so it does not leak into
+   the parent scope when embedded via `add_subdirectory()`.
+5. `add_dependencies(lemonade-server-core copy_resources)` so the resource
+   copy fires even though `lemond` (whose POST_BUILD would trigger it) is
+   never built in the embed.
 
 Drop the patch when upstream adopts any of these changes.
