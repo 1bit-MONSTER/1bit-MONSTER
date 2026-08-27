@@ -101,7 +101,6 @@ jobs:
           cp install.sh dist/
           cp README.md dist/
           cp LICENSE dist/
-          cp LICENSE-SHERRY.md dist/
           cp site/assets/logo.png dist/
           # A loader script so binaries find librocm_cpp.so
           # next to the tarball without the user hand-setting LD_LIBRARY_PATH.
