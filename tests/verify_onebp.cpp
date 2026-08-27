@@ -238,7 +238,10 @@ int main(int argc, char** argv) {
             printf("  [skip] %s (absent from GGUF — converter-filtered)\n", t.name.c_str());
             continue;
         }
-        uint32_t q = t.quant ? t.quant : mdl.header.quant;
+        // Per-tensor quant is authoritative for v2+ files even when it is 0
+        // (ONEBP_Q4NX == 0 — a routed Q4NX tensor must NOT fall back to the
+        // header quant; the engine loader reads it the same way).
+        uint32_t q = mdl.header.version >= 2 ? t.quant : mdl.header.quant;
         std::vector<float> src;
         if (!reader.get_tensor_f32(t.name, src)) {
             fprintf(stderr, "  [FAIL] get_tensor_f32 %s\n", t.name.c_str());
@@ -297,10 +300,17 @@ int main(int argc, char** argv) {
             }
         }
         // Lossless F16: error is pure f32->f16 rounding (<= 2^-10 * |v|).
-        // Lossy quants: error is bounded by the group quantization step
-        // (<= ~range/30); layout corruption would give errors on the order of
-        // the weight magnitudes themselves (issue #1522 was ~100%+).
-        double bound = (q == ONEBP_F16) ? 2e-3 : 0.35 * src_maxabs + 1e-6;
+        // Lossy quants: worst case is bounded by the group quantization
+        // step — symmetric-ternary/codebook modes (TQ2/TQ2NZ/TQ1/TQ2BS) have
+        // group scale = group max, so error <= max|v|/2; Q4NX/ROCmFP4 use
+        // finer steps (<= ~range/30). Layout corruption (issue #1522) sits at
+        // ~100%+ of the weight magnitudes, so these bounds are all tight
+        // enough to catch it.
+        double bound;
+        if (q == ONEBP_F16) bound = 2e-3;
+        else if (q == ONEBP_TQ2 || q == ONEBP_TQ2NZ || q == ONEBP_TQ2NZ_E4M3 ||
+                 q == ONEBP_TQ1 || q == ONEBP_TQ2BS) bound = 0.6 * src_maxabs + 1e-6;
+        else bound = 0.35 * src_maxabs + 1e-6;   // Q4NX / ROCmFP4 family
         bool pass = tmax_abs <= bound;
         if (tmax_abs > global_max_abs) global_max_abs = tmax_abs;
         if (tmax_rel > global_max_rel) global_max_rel = tmax_rel;
