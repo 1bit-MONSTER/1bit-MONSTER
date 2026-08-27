@@ -6,12 +6,17 @@ BUILD_DIR := ../build
 STAGE := build/stage/1bit-monster-$(VERSION)
 # Non-root rpmbuild needs a writable rpm db (Ubuntu's /var/lib/rpm is root-owned)
 RPM_DB ?= $(HOME)/.rpmdb
-.PHONY: all stage package-deb package-tarball package-appimage package-rpm package-flatpak clean
+.PHONY: all stage package-deb package-tarball package-appimage package-rpm package-snap package-flatpak clean
 
 all: stage
 
 # ── Stage the real release binaries into the package tree ──
 stage:
+	# Start from a pristine tree every run: stage is pure generated output and
+	# several targets (package-rpm, package-deb) re-invoke it, so an incremental
+	# re-run could otherwise leave stale/corrupted subtrees behind (previously:
+	# a second cp -r of the ZINC shaders nested them one level deeper).
+	rm -rf $(STAGE)
 	mkdir -p $(STAGE)/usr/share/1bit
 	mkdir -p $(STAGE)/usr/bin $(STAGE)/usr/lib/1bit $(STAGE)/usr/lib/x86_64-linux-gnu $(STAGE)/usr/share/1bit
 	# ONE BINARY: every server + the CLI live in a single ELF (build/1bit);
@@ -32,13 +37,17 @@ stage:
 	cp $(BUILD_DIR)/libbackend_manager.a $(STAGE)/usr/lib/1bit/
 	cp $(BUILD_DIR)/libgguf_reader.a    $(STAGE)/usr/lib/1bit/
 	cp $(BUILD_DIR)/libvl_image.a       $(STAGE)/usr/lib/1bit/
-	cp -r $(BUILD_DIR)/tools/video-lora/vulkan/shaders $(STAGE)/usr/share/1bit/shaders 2>/dev/null || true
+	# Idempotent shader staging: cp -r SRC DEST nests SRC inside DEST when DEST
+	# already exists (a second `make stage`, e.g. from package-rpm's dependency,
+	# produced usr/share/1bit-monster/shaders/shaders/ and doubled the .spv files
+	# in the RPM). Copy the CONTENTS into a pre-created dir instead.
+	cp -r $(BUILD_DIR)/tools/video-lora/vulkan/shaders/. $(STAGE)/usr/share/1bit/shaders/ 2>/dev/null || true
 	# ZINC Vulkan shaders (embed.spv, flash_attn.spv, rms_norm_mul.spv, …) —
 	# the Vulkan backend resolves them at runtime from /usr/share/1bit-monster/shaders
 	# (see src/backend_zinc.cpp zinc_resolve_shader_dir). Without them the Vulkan
 	# backend fails shader load and any Vulkan-routed model can't run.
-	mkdir -p $(STAGE)/usr/share/1bit-monster
-	cp -r $(BUILD_DIR)/zinc_cpp_build/shaders $(STAGE)/usr/share/1bit-monster/shaders 2>/dev/null || true
+	mkdir -p $(STAGE)/usr/share/1bit-monster/shaders
+	cp -r $(BUILD_DIR)/zinc_cpp_build/shaders/. $(STAGE)/usr/share/1bit-monster/shaders/ 2>/dev/null || true
 	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/ 2>/dev/null || true
 	@echo "staged $(VERSION) -> $(STAGE)"
 
@@ -73,6 +82,7 @@ package-rpm: stage
 
 package-flatpak:
 	bash ../packaging/flatpak/build-flatpak.sh
+
 
 clean:
 	rm -rf build/stage build/1bit-monster_$(VERSION)_amd64.deb build/1bit-monster-$(VERSION)-linux-amd64.tar.gz build/rpmbuild
