@@ -1,0 +1,26 @@
+# 1bit-census-watch.timer — daily trigger for the census new-model watcher
+#
+# Fires 1bit-census-watch.service every day at 04:30. Persistent=true: if the
+# machine was off at 04:30, the run fires at the next boot instead of being
+# skipped — a missed day would otherwise silently hide a coverage breach.
+# An uncovered class makes the service unit fail (exit 1), so a failed timer
+# turn == "new arch dropped on HF" alert; see scripts/census-watch.sh.
+#
+# ── Install ───────────────────────────────────────────────────────────────
+#     install -d ~/.config/systemd/user
+#     install -m644 scripts/1bit-census-watch.{service,timer} ~/.config/systemd/user/
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now 1bit-census-watch.timer
+#     systemctl --user list-timers 1bit-census-watch
+
+[Unit]
+Description=Daily HF new-model census watch (04:30)
+After=network-online.target
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+Unit=1bit-census-watch.service
+
+[Install]
+WantedBy=timers.target
