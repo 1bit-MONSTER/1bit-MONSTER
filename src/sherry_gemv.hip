@@ -1,6 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
-// Sherry — see LICENSE-SHERRY.md and SHERRY-FILES.txt at the repo root.
-// Commercial use requires a separate license.
+// SPDX-License-Identifier: MIT
 //
 // sherry_gemv.hip — Clean-room Sherry 1.25-bit ternary GEMV for gfx1151.
 //
