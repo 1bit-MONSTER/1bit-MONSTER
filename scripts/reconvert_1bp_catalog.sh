@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # reconvert_1bp_catalog.sh — batch re-conversion + gate for the legacy 1BP
 # catalog (issue #1243). Re-converts broken artifacts with the current C++
-# converter (tools/gguf_to_onebp, post-5f407bea2 tensor-cap fix) from Q8_0
+# converter (src/gguf_to_onebp, post-5f407bea2 tensor-cap fix) from Q8_0
 # GGUF sources, then gates every output:
 #   - qwen-vocab models: ppl_generic on the Qwen gate set (48 samples/708 tok)
 #   - other families: per-vocab ppl — gguf_htok exports the model's own vocab

@@ -13,7 +13,7 @@ HF_REPO="${4:-$MODEL_NAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="$SCRIPT_DIR/models"
-# C++ twin (tools/gguf_to_onebp.cpp) — v3 header with GGUF metadata; the
+# C++ converter (src/gguf_to_onebp.cpp) — v3 header with GGUF metadata; the
 # .py legacy converter was cut in the Mojo fold (P2.2). Same CLI contract.
 CONVERTER="$SCRIPT_DIR/build/gguf_to_onebp"
 HF_TOKEN="${HF_TOKEN:-$(cat ~/.cache/huggingface/token)}"
