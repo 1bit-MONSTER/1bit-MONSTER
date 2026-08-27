@@ -1,0 +1,104 @@
+--- /home/bcloud/1bit-MONSTER/engine/npu/src/gu_i4_pack.h	2026-08-24 11:02:34.736512213 -0300
++++ src/gu_i4_pack.h	2026-08-25 20:32:12.861349248 -0300
+@@ -173,26 +173,19 @@
+                             int x = (int)std::roundf(v);
+                             p.B_shadow[(size_t)i * N + j] =
+                                 (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+-                            // per-tile s at [4096 + group*256 + col*2] (bf16)
+-                            size_t s_off = tbase + 4096 + (size_t)((i0 * 8 + i2) / 32) * 256
+-                                          + (i1 * 8 + i3) * 2;
+-                            p.tiles[s_off]     = (uint8_t)(s16 & 0xFF);
+-                            p.tiles[s_off + 1] = (uint8_t)(s16 >> 8);
+-                            // v30: ratioQ22 in the PAD [5120 + group*512 + col*4]
+-                            // (int32, = round((s*0.0625/S_col)*2^32)) — the
+-                            // on-chip dequant uses PURE int32 loads (int16
+-                            // loads are also mis-compiled by the aie2p backend).
+-                            int rq = (int)std::roundf(ratio * 4194304.0);   // Q22 (2^22): Q32 overflowed for ratio>0.5 (measured 93.6% wrap)
+-                            size_t r_off = tbase + 5120 + (size_t)((i0 * 8 + i2) / 32) * 512
++                            // DELIVERY FIX: ratioQ22 g0/g1 at [4096 + group*512 + col*4]
++                            // (int32) — BOTH groups in the reliably-delivered
++                            // [0..5632) region. The old s/S_col bf16 tile bytes
++                            // are REMOVED (they clobbered the ratio region with
++                            // their 2-B stride; the rq-based dequant never reads
++                            // them). The host B_shadow (p.B_shadow) is unaffected.
++                            int rq = (int)std::roundf(ratio * 4194304.0);   // Q22 (2^22)
++                            size_t r_off = tbase + 4096 + (size_t)((i0 * 8 + i2) / 32) * 512
+                                            + (i1 * 8 + i3) * 4;
+                             p.tiles[r_off]     = (uint8_t)(rq & 0xFF);
+                             p.tiles[r_off + 1] = (uint8_t)((rq >> 8) & 0xFF);
+                             p.tiles[r_off + 2] = (uint8_t)((rq >> 16) & 0xFF);
+                             p.tiles[r_off + 3] = (uint8_t)((rq >> 24) & 0xFF);
+-                            // per-tile S_col at [4608 + col*2] (bf16)
+-                            size_t c_off = tbase + 4608 + (size_t)(i1 * 8 + i3) * 2;
+-                            p.tiles[c_off]     = (uint8_t)(scb & 0xFF);
+-                            p.tiles[c_off + 1] = (uint8_t)(scb >> 8);
+                         }
+                     }
+         }
+--- /home/bcloud/1bit-MONSTER/engine/npu/src/npu_engine_i8ctx_inc.h	2026-08-24 12:23:31.659246431 -0300
++++ src/npu_engine_i8ctx_inc.h	2026-08-25 20:26:23.514410220 -0300
+@@ -821,7 +821,7 @@
+             // PAD [6656 + j*4] (= round(S'*2^22)) — the aie2p backend
+             // mis-compiles the float silu loop AND int64 math, so the silu
+             // is pure int32 fixed-point.
+-            uint8_t* fq = Bm + t * GuI4Pack::TILE_TOTAL + 6656;
++            uint8_t* fq = Bm + t * GuI4Pack::TILE_TOTAL + 5120;   // DELIVERY FIX: fold Q22 in [5120..5632), delivered
+             for (int j = 0; j < 128; j++) {
+                 int p = nt * 128 + j;                  // GU col
+                 float sv = (p & 1) ? ag * qn_s * scol[p] : ag * scol[p];
+--- /home/bcloud/1bit-MONSTER/engine/npu/generators/mm_kernel_reference.cc	2026-08-24 14:46:42.971066433 -0300
++++ generators/mm_kernel_reference.cc	2026-08-25 21:14:48.985951914 -0300
+@@ -714,10 +714,17 @@
+     // bytes (the A-layout (0,c) at (c/8)*8 + c%8 is contiguous within the
+     // tile); the C1 row-0 element (0, j) sits at (j/8)*64 + j%8 (the
+     // microtile layout, matching the verified C1buf).
+-    for (unsigned i = 0; i < nk; ++i) {          // 8 k-steps
+-        for (unsigned j = 0; j < nct; ++j) {     // 16 col-tiles
+-            const uint8_t* nib = pB4 + i * 512 + j * 32;
+-            const int32_t* rq = (const int32_t*)(pB4 + 5120 + (i / 4) * 512 + j * 32);
++    // v91: ig-loop gbase (the v66 pattern that reads correctly for ALL j)
++    // + the j*32 col offset (the parallel agent's pattern that compiles to
++    // correct products) + the for(e)/e%2 inner.
++    for (unsigned ig = 0; ig < 2; ++ig) {
++        const unsigned i0 = ig * 4;
++        const unsigned gbase = (ig == 0) ? 4096u : 4608u;
++        for (unsigned ii = 0; ii < 4; ++ii) {
++            const unsigned i = i0 + ii;
++            const uint8_t* nib = pB4 + i * 512;      // incremental pointer advance
++            const int32_t* rq = (const int32_t*)(pB4 + gbase);
++            for (unsigned j = 0; j < nct; ++j) {     // 16 col-tiles
+             for (int e = 0; e < 64; e++) {
+                 int k = e / 8, c = e % 8;
+                 uint8_t b = nib[(e / 8) * 4 + (e % 8) / 2];
+@@ -729,13 +736,26 @@
+                 r = x < 0 ? -r : r;
+                 int8_t bv = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
+                 int col = (int)j * 8 + c;
+-                // A-layout (0, i*8+k) at the tap byte i*64+k: the row-0's
+-                // k-cols of the i-th 8-col group sit at the 64-byte microtile
+-                // strides ((c/8)*8 + c%8 is contiguous within each 8-col
+-                // group, and the tap's linear byte order is (c%8) + 64*(c/8)).
+-                pC[(col / 8) * 64 + (col % 8)] += (int32_t)pA[i * 64 + k] * (int32_t)bv;
++                // DIAG: store ONLY the j=1 dots at the SMALL indices (col%8)
++                // to isolate the store-index vs the dot-computation.
++                if (j == 1) pC[c] += (int32_t)pA[i * 64 + k] * (int32_t)bv;
+             }
++                nib += 32;
++                rq += 32;
++            }
++        }
++    }
++    // fold stash (DELIVERY FIX): the silu reads the foldQ22 from the hardcoded
++    // Gg_0 (0x6000). Copy the tile's fold Q22 ([5120..5632), 128 int32 — now
++    // delivered) on the LAST call of each col_group (fc % 32 == 31).
++    {
++        static unsigned fc = 0;
++        if (fc % 32 == 31) {
++            const int32_t* fs = (const int32_t*)(pB4 + 5120);
++            int32_t* fd = (int32_t*)0x6000;
++            for (int j = 0; j < 128; j++) { *fd = *fs; fd += 1; fs += 1; }
+         }
++        fc++;
+     }
+     event1();
+ }

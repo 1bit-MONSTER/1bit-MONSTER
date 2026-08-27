@@ -2,19 +2,6 @@
 #
 # INT8 MLIR generator for M=1 decode GEMM (single core row, 1-row tiles).
 #
-# INCOMPLETE / BROKEN — do not use as-is. Two findings from the 2026-08-21
-# build:
-#   1. CORRECTNESS: the DIM_M=1 scalar matmul_i8_i32 reads B as naive row-major
-#      (b[i*colB+col]), but the B-DMA writes B in the 8x8 microtiled layout the
-#      vectorized mmul expects. Result: corr ~0 (garbage). Fix = give M=1 its
-#      own naive-row-major B-DMA (sizes=[1,1,64,128] strides=[1,1,N,1]), or a
-#      B-layout-aware kernel.
-#   2. PERFORMANCE: even with the layout fixed, the scalar kernel (no SIMD) is
-#      SLOWER than the M=16 vectorized mmul (measured moe 145ms vs 126ms). A
-#      fast M=1 needs a proper vectorized GEMV kernel, not the scalar alias.
-#
-# Kept as a starting point for a future vectorized GEMV kernel.
-#
 # v27 bakes M=128 (4 slices x 32 rows). Decode is M=1, so every launch runs a
 # fixed 128-row stream for 1 row of data. This generator emits a single-core-
 # row design with m=1 tiles so decode runs a true 1-row stream.

@@ -66,7 +66,11 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         kernel_o = "attn_kernel.o"
         zero = external_func("zero_i32", inputs=[C_ty], link_with=kernel_o)
         matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
-        softmax = external_func("attn_softmax_i8", inputs=[C_ty, C_ty, A_ty, A2_ty], link_with=kernel_o)
+        # attn_softmax_i8 takes 4 C1 half-tiles + params + a2 (extra halves
+        # unused for N < 512 — the contract reads only c1[t>>7]).
+        softmax = external_func("attn_softmax_i8",
+                                inputs=[C_ty, C_ty, C_ty, C_ty, A_ty, A2_ty],
+                                link_with=kernel_o)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + 1)]
         shim_tiles, mem_tiles = tiles[0], tiles[1]
@@ -99,42 +103,36 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
             C2_s[c] = object_fifo(f"C2_S{c}", mem_tiles[c], shim_tiles[c], 1, C_ty)
             object_fifo_link(C2_c[c], C2_s[c])
 
-        C1a = [buffer(core_tiles[0][c], C_ty, name=f"C1a_{c}") for c in range(n_aie_cols)]
-        C1b = [buffer(core_tiles[0][c], C_ty, name=f"C1b_{c}") for c in range(n_aie_cols)]
+        # One (8,128) int32 C1 half-tile per N/128 chunk (2 for N=256, 4 for N=512)
+        C1 = [[buffer(core_tiles[0][c], C_ty, name=f"C1_{c}_{nt}")
+               for nt in range(n_n)] for c in range(n_aie_cols)]
         A2buf = [buffer(core_tiles[0][c], A2_ty, name=f"A2_{c}") for c in range(n_aie_cols)]
 
         for c in range(n_aie_cols):
             @core(core_tiles[0][c], stack_size=0x1000)
             def core_body():
                 for _ in range_(0xFFFFFFFF):
-                    zero(C1a[c]); zero(C1b[c])
-                    # ── QK^T phase: n_k K-chunks × 2 N-tiles. Per (ki, nt)
+                    for nt in range(n_n):   # python-unrolled (C1 is a python list)
+                        zero(C1[c][nt])
+                    # ── QK^T phase: n_k K-chunks × n_n N-tiles. Per (ki, nt)
                     # the seq feeds one A-tile (q row c chunk ki — the SAME
-                    # tile for nt=0 and nt=1) + one B-tile (K^T (ki,nt)).
-                    # Consumer order MUST mirror the seq order exactly:
-                    #   (ki=0,nt=0) → C1a (t ∈ [0,128))
-                    #   (ki=0,nt=1) → C1b (t ∈ [128,256))
-                    #   (ki=1,nt=0) → C1a +=
-                    #   (ki=1,nt=1) → C1b +=
-                    # (fifo producer/consumer counts: 4 A + 4 B per column
-                    # here, +1 A params, +4 A +4 B PV = 9 A + 8 B — matches
-                    # the seq's feed exactly; a mismatch hangs the launch.)
+                    # tile for every nt) + one B-tile (K^T (ki,nt)); the core
+                    # consumes in the same (ki, nt) order into C1[nt]. Fifo
+                    # counts: n_k·n_n A + n_k·n_n B (QK^T) + 1 A (params)
+                    # + n_k_pv A + n_k_pv B (PV) — matches the seq feed.
                     for ki in range_(n_k):
-                        Ab0 = A_c[c].acquire(ObjectFifoPort.Consume, 1)
-                        Bb0 = B_c[c].acquire(ObjectFifoPort.Consume, 1)
-                        matmul(Ab0, Bb0, C1a[c])
-                        A_c[c].release(ObjectFifoPort.Consume, 1)
-                        B_c[c].release(ObjectFifoPort.Consume, 1)
-                        Ab1 = A_c[c].acquire(ObjectFifoPort.Consume, 1)
-                        Bb1 = B_c[c].acquire(ObjectFifoPort.Consume, 1)
-                        matmul(Ab1, Bb1, C1b[c])
-                        A_c[c].release(ObjectFifoPort.Consume, 1)
-                        B_c[c].release(ObjectFifoPort.Consume, 1)
+                        for nt in range(n_n):   # python-unrolled (C1 is a python list)
+                            Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            matmul(Ab, Bb, C1[c][nt])
+                            A_c[c].release(ObjectFifoPort.Consume, 1)
+                            B_c[c].release(ObjectFifoPort.Consume, 1)
                     # params tile (rides the A stream)
                     Par = A_c[c].acquire(ObjectFifoPort.Consume, 1)
                     A_c[c].release(ObjectFifoPort.Consume, 1)
                     A2o = A2o_c[c].acquire(ObjectFifoPort.Produce, 1)
-                    softmax(C1a[c], C1b[c], Par, A2o)
+                    softmax(C1[c][0], C1[c][1], C1[c][2 if n_n > 2 else 0],
+                            C1[c][3 if n_n > 3 else 0], Par, A2o)
                     A2o_c[c].release(ObjectFifoPort.Produce, 1)
                     Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
                     zero(Cb)

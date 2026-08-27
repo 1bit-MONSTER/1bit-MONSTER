@@ -71,14 +71,16 @@ static const float att_exp_lut[ATT_EXP_N] = {
 // Row 0 is the only valid row; rows 1-7 of A2 are zeroed so the PV C2 rows
 // 1-7 stay zero (decode convention). This is the exact bit-level contract
 // shared by the AIE kernel (attn_kernel_reference.cc) and test_attn.cpp.
-static inline void attn_softmax_contract(const int32_t* c1a, const int32_t* c1b,
+static inline void attn_softmax_contract(const int32_t* const c1[],
                                          const float* params, int8_t* a2) {
+    // c1[] = one (8,128) int32 half-tile per N/128 chunk (c1[t>>7]); the
+    // caller supplies n_half = max_seq/128 pointers (2 for N=256, 4 for
+    // N=512 — N comes from params[2]).
     const int max_seq = (int)params[2];
     int seq = (int)params[1];
     float scale = params[0];
     if (seq < 0) seq = 0;
     if (seq > max_seq) seq = max_seq;
-    const int32_t* c1[2] = { c1a, c1b };
     float mx = -1e30f;
     for (int t = 0; t < seq; t++) {
         const int32_t* ct = c1[t >> 7];
