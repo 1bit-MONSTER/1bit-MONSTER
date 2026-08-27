@@ -566,6 +566,118 @@ int zaya_decode_main(int argc, char** argv) {
                             num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
                             maxd = std::max(maxd, std::fabs(cpu_out[i]-moe_out[i]));
                         }
+                        {
+                            // CPU-silu fallback probe: the P1 C1 readback
+                            // (chunk 0, row 0 = GU cols 0..7) vs the CPU
+                            // reference C1h from the int8 shadow.
+                            float ag2 = 0;
+                            for (int i = 0; i < d.H; i++) ag2 = std::max(ag2, std::fabs(residual[i]));
+                            ag2 = ag2 < 1e-12f ? 1.0f : ag2 / 127.0f;
+                            std::vector<int8_t> Ai(d.H);
+                            for (int i = 0; i < d.H; i++) {
+                                int x = (int)std::roundf(residual[i] / ag2);
+                                Ai[i] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                            }
+                            const int N2 = 2 * m.n_ff;
+                            std::vector<int32_t> C1h(N2, 0);
+                            const std::vector<int8_t>& guBv2 = fgu_row[l][e];
+                            for (int j = 0; j < N2; j++)
+                                for (int i = 0; i < d.H; i++)
+                                    C1h[j] += (int32_t)Ai[i] * guBv2[(size_t)i * N2 + j];
+                            // v86 (ported): host unscaled C1 = Am . (q4*16) under 3
+                            // unpack-order interpretations (nt=0, full K): NAT, INT
+                            // (low nibbles first), TRN (kk/cc swapped)
+                            {
+                                const uint8_t* Bm5 = (const uint8_t*)fgu_bo[l][e]->map();
+                                const int nt0 = 0;
+                                fprintf(stderr, "\n[c1unscNAT] ");
+                                fprintf(stderr, "\n[c1unscINT] ");
+                                fprintf(stderr, "\n[c1unscTRN] ");
+                                for (int c = 0; c < 128; c += 2) {
+                                    long long aN = 0, aI = 0, aT = 0;
+                                    for (int ki = 0; ki < 32; ki++)
+                                        for (int k = 0; k < 64; k++) {
+                                            int gk = ki * 64 + k;
+                                            size_t off = (size_t)(ki * 32 + nt0) * GuI4Pack::TILE_TOTAL
+                                                + (size_t)((k % 64) / 8) * 512 + (size_t)(c / 8) * 32
+                                                + (size_t)(k % 8) * 4 + (size_t)((c % 8) / 2);
+                                            int b = (int)Bm5[off];
+                                            int lo = b & 0x0F, hi = (b >> 4) & 0x0F;
+                                            if (lo >= 8) lo -= 16;
+                                            if (hi >= 8) hi -= 16;
+                                            int cc = c % 8, kk = k % 8;
+                                            int qN = (cc % 2 == 0) ? lo : hi;
+                                            int e = kk * 8 + cc;
+                                            int qI = (e / 32 == 0) ? lo : hi;
+                                            size_t offT = (size_t)(ki * 32 + nt0) * GuI4Pack::TILE_TOTAL
+                                                + (size_t)((k % 64) / 8) * 512 + (size_t)(cc) * 32
+                                                + (size_t)((c / 8) % 8) * 4 + (size_t)((kk) / 2);
+                                            int bT = (int)Bm5[offT];
+                                            int loT = bT & 0x0F, hiT = (bT >> 4) & 0x0F;
+                                            if (loT >= 8) loT -= 16;
+                                            if (hiT >= 8) hiT -= 16;
+                                            int qT = (kk % 2 == 0) ? loT : hiT;
+                                            aN += (long long)fused_ctx.Am[gk] * (qN * 16);
+                                            aI += (long long)fused_ctx.Am[gk] * (qI * 16);
+                                            aT += (long long)fused_ctx.Am[gk] * (qT * 16);
+                                        }
+                                    fprintf(stderr, "%lld %lld %lld ", (long long)(aN / 32),
+                                            (long long)(aI / 32), (long long)(aT / 32));
+                                }
+                                fprintf(stderr, "\n");
+                            }
+                            const int32_t* c1m = fused_ctx.Cm;
+                            {   // DIAG: host h2 (row 0) vs reference h2
+                                std::vector<float> fold2(2 * m.n_ff);
+                                for (int p = 0; p < m.n_ff; p++) {
+                                    fold2[2 * p]     = ag * fgu_cs[l][e][2 * p];
+                                    fold2[2 * p + 1] = ag * qn_s * fgu_cs[l][e][2 * p + 1];
+                                }
+                                std::vector<int8_t> h2r(m.n_ff), h2n(m.n_ff);
+                                silu_quant_i8(C1h.data(), fold2.data(), h2r.data(), m.n_ff);
+                                const int8_t* h2m2 = (const int8_t*)h2_bo[l]->map();
+                                for (int p = 0; p < 16; p++) h2n[p] = h2m2[(p >> 3) * 8 + (p & 7)];
+                                fprintf(stderr, "[h2ref] ");
+                                for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2r[p]);
+                                fprintf(stderr, "\n[h2npu] ");
+                                for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2n[p]);
+                                fprintf(stderr, "\n");
+                                {   // D-chain host reference: C2h = h2r . D_int8(shadow)
+                                    std::vector<int32_t> C2h(d.H, 0);
+                                    for (int j = 0; j < d.H; j++) {
+                                        long long acc = 0;
+                                        for (int i = 0; i < m.n_ff; i++)
+                                            acc += (long long)h2r[i] * fd_row[l][e][(size_t)i * d.H + j];
+                                        C2h[j] = (int32_t)acc;
+                                    }
+                                    fprintf(stderr, "[Dhost] ");
+                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%.4f ", (float)C2h[j] * fd_cs[l][e][j] / qn_s);
+                                    fprintf(stderr, "\n[Dnpu ] ");
+                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%.4f ", moe_out[j]);
+                                    fprintf(stderr, "\n[Da   ] ");
+                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%.4f ", cpu_out[j]);
+                                    fprintf(stderr, "\n");
+                                    fprintf(stderr, "[C2host] ");
+                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", C2h[j]);
+                                    fprintf(stderr, "\n[C2npu ] ");
+                                    for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", fused_ctx_p2.Cm[j]);
+                                    fprintf(stderr, "\n");
+                                }
+                            }
+
+                            fprintf(stderr, "[c1cmp] cpu: ");
+                            if (getenv("NPU_C1_TEST"))
+                                for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", 260096 * (j % 16));
+                            else
+                                for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", C1h[j]);
+                            fprintf(stderr, "\n[c1cmp] npu: ");
+                            for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", c1m[j]);
+                            fprintf(stderr, "\n");
+                            if (getenv("NPU_C1_TEST")) {
+                                FILE* f = fopen("/tmp/c1_layout.bin", "wb");
+                                fwrite(c1m, 4, 1024, f); fclose(f);
+                            }
+                        }
                         fprintf(stderr, "[MoE L1 fused dbg] corr=%.6f maxdiff=%.6f (cpu rms=%.4f npu rms=%.4f) qn_s=%.4f\n",
                             num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H), qn_s);
                     }
