@@ -24,6 +24,7 @@ Environment:
   CENSUS_SKIP_PR=1 — never open PRs (alert only).
 """
 import json, os, re, subprocess, sys, difflib
+from urllib.parse import urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENGINE = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
@@ -142,8 +143,15 @@ def _open_draft_pr(arch, target, models):
                 continue
             print(f"[autopr] cmd failed: {' '.join(cmd)}\n{r.stderr[:300]}", file=sys.stderr)
             return None
-    # return the PR url from the last command
-    return r.stdout.strip() if "github.com" in r.stdout else None
+    # return the PR url from the last command — only accept a real github.com https URL
+    out = r.stdout.strip()
+    if not out:
+        return None
+    try:
+        parsed = urlparse(out)
+    except ValueError:
+        return None
+    return out if parsed.scheme == "https" and parsed.netloc == "github.com" else None
 
 
 def maybe_file_draft_pr(uncovered, models=None, dry_run=None):

@@ -228,7 +228,7 @@ jobs:
       - name: Build gguf_to_onebp
         run: |
           g++ -O3 -std=c++23 -I src -I include -I engine/npu/src \
-            tools/gguf_to_onebp.cpp src/gguf_reader.cpp -o build/gguf_to_onebp
+            src/gguf_to_onebp.cpp src/gguf_reader.cpp -o build/gguf_to_onebp
       - name: Download Qwen3-0.6B Q8_0 GGUF (converter source)
         run: |
           curl -fL --retry 3 -o qwen3-0.6b-q8_0.gguf \

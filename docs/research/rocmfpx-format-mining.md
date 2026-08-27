@@ -2,7 +2,7 @@
 
 _Source: charlie12345/ROCmFPX @ b41ce12 (llama.cpp fork, AMD-focused GGUF weight
 formats). Mined 2026-07-31. Goal: actionable ideas for the 1BP converter
-(`tools/gguf_to_onebp.cpp`) and the native NPU/GPU engines._
+(`src/gguf_to_onebp.cpp`) and the native NPU/GPU engines._
 
 ## 1. ROCmFP2 (Q2_0_ROCMFPX) — 2.50 bpw, "optimized and validated"
 

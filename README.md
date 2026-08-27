@@ -47,6 +47,23 @@ That's the whole install. One engine, no runtime, no virtualenv, no Python.
 |:---:|:--:|:--:|:-:|:-:|
 | HF checkpoints covered | arch tokens | families in manifest | hardware targets | Python in the runtime |
 
+## Convert a GGUF model to 1BP
+
+```bash
+cmake --build build --target gguf_to_onebp          # pure C++23, no Python
+./build/gguf_to_onebp model.gguf model.1bp          # F16 lossless (default)
+./build/gguf_to_onebp model.gguf model.1bp --q4nx   # 4-bit — lossy, compact
+```
+
+- **Default is lossless F16** (f32→f16 round-trip, 2 B/elem). 4-bit Q4NX loses
+  ~0.998/layer and compounds into garbage logits on deep models — F16 is the
+  only mode guaranteed correct for GPU/NPU decode. `--q4nx`/`--tq2`/`--tq2nz`/
+  `--tq1` opt in to the lossy paths; `--tq2bs`/`--rocmfp4`/`--rocmfp4-fast`
+  add block-scaled-ternary and ROCmFP4 codebook modes.
+- Emits a sibling `.htok` (BPE tokenizer) next to the `.1bp` so the engine can
+  decode real text. Converter lives at `src/gguf_to_onebp.cpp`; batch wrappers:
+  `tools/batch_convert.sh`, `scripts/build_1bp.sh`.
+
 ## What it is
 
 An **inference engine** — the thing that actually runs the model. Not a chat app; bring your own frontend.
