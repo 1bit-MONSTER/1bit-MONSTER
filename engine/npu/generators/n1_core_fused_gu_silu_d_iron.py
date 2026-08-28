@@ -12,7 +12,7 @@
 #      acquires (the co-worker filled only 32).
 #   2. D uses the two-phase cascade, not the per-k-slice cascade_d (deadlock).
 import numpy as np
-from aie.iron import ObjectFifo, Program, Runtime, Worker, CascadeFlow
+from aie.iron import ObjectFifo, Program, Runtime, Worker, CascadeFlow, TaskGroup
 from aie.iron.controlflow import range_
 from aie.iron.device import NPU2, Tile
 from aie.iron.kernel import Kernel
@@ -21,7 +21,8 @@ from aie.helpers.taplib.tap import TensorAccessPattern
 from aie.dialects._aie_enum_gen import AIETileType
 
 
-def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
+def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
+             no_gu=False, h2_const=None):
     n_k = K // k                                  # 32 GU k-tiles
     n_cg_gu = N_GU // n // n_aie_cols             # 4
     assert K == n_cg_gu * (n // 2) * n_aie_cols, "GU h2 width must equal K"
@@ -75,10 +76,15 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                     mm_k(a, b, c1b)
                     a_in.release(1)
                     b_in.release(1)
-                silu_k(c1b, c1b, h2s)
-                for i_ in range_(m):
-                    for j_ in range_(n // 2):
-                        h2b[i_, cg * (n // 2) + j_] = h2s[i_, j_]
+                if h2_const is not None:
+                    for i_ in range_(m):
+                        for j_ in range_(n // 2):
+                            h2b[i_, cg * (n // 2) + j_] = h2_const
+                else:
+                    silu_k(c1b, c1b, h2s)
+                    for i_ in range_(m):
+                        for j_ in range_(n // 2):
+                            h2b[i_, cg * (n // 2) + j_] = h2s[i_, j_]
             # ── D phase: accumulate c2scr over this core's OWN ki-slices, then
             # ONE cascade_reduce pass (col 7 writes the full C2). ──
             for i_ in range_(m):
@@ -125,13 +131,27 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
     b_per_core_bytes = n_b_total * k * n      # 132*8192
 
     def sequence(a_bo, b_bo, c2_bo, a_h, b_h, c2_h):
-        a_h.fill(a_bo)                        # A broadcast: shim0 -> all cores
+        # Per-element fills, each scoped in a TaskGroup (finish() frees the BD
+        # so the 16-BD-per-shim limit is not exceeded).
+        for tile in range(n_cg_gu * n_k):
+            tg = TaskGroup()
+            a_h.fill(a_bo,
+                     tap=TensorAccessPattern((1, n_cg_gu * M * K), tile * m * k,
+                                             [1, 1, 1, m * k], [0, 0, 0, 1]),
+                     group=tg)
+            tg.finish()
         for c in range(n_aie_cols):
-            b_h[c].fill(b_bo,
-                        tap=TensorAccessPattern((1, n_aie_cols * b_per_core_bytes),
-                                                c * b_per_core_bytes,
-                                                [1, 1, 1, b_per_core_bytes], [0, 0, 0, 1]))
-        c2_h.drain(c2_bo, wait=True)
+            for tile in range(n_b_total):
+                tg = TaskGroup()
+                b_h[c].fill(b_bo,
+                            tap=TensorAccessPattern((1, n_aie_cols * n_b_total * k * n),
+                                                    (c * n_b_total + tile) * k * n,
+                                                    [1, 1, 1, k * n], [0, 0, 0, 1]),
+                            group=tg)
+                tg.finish()
+        tg = TaskGroup()
+        c2_h.drain(c2_bo, wait=True, group=tg)
+        tg.finish()
 
     rt = Runtime(sequence, [A_bo, B_bo, C2_bo, of_a.prod(),
                             [of_b[c].prod() for c in range(n_aie_cols)],
@@ -152,9 +172,11 @@ def main():
     p.add_argument("-n", type=int, default=128)
     p.add_argument("-c", "--cols", type=int, default=8)
     p.add_argument("-b", "--batch-size", type=int, default=2)
+    p.add_argument("--no-gu", action="store_true")
+    p.add_argument("--h2-const", type=int, default=None)
     args = p.parse_args()
     prog = my_fused(args.M, args.K, args.N_GU, args.N_D, args.m, args.k, args.n,
-                    args.cols, args.batch_size)
+                    args.cols, args.batch_size, args.no_gu, args.h2_const)
     print(prog)
 
 
