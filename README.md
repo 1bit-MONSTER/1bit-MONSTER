@@ -1,210 +1,44 @@
 <div align="center">
 
-<img src="site/assets/banner.png" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
-
-# <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:0.72em;height:0.72em;display:inline-block;vertical-align:-0.06em;margin-right:0.18em;"><rect x="2" y="2" width="9" height="9" rx="2" style="fill:#f5f8fa;stroke:#010202;stroke-opacity:0.28;"/><rect x="13" y="2" width="9" height="9" rx="2" style="fill:#f5f8fa;stroke:#010202;stroke-opacity:0.28;"/><rect x="2" y="13" width="9" height="9" rx="2" style="fill:#f5f8fa;stroke:#010202;stroke-opacity:0.28;"/><rect x="13" y="13" width="9" height="9" rx="2" style="fill:#0230c0;"/></svg> 1bit.MONSTER
-
-### *One engine. Any model. Zero Python.*
-
-#### 100% HF model coverage. Any hardware. One open-source, pure-C++ inference engine — NPU + GPU + CPU in a single engine. Model agnostic. Hardware agnostic. Zero Python.
+<img src="site/assets/banner.svg" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **[Website](https://1bit.monster)** · **[Community (Fluxer)](https://fluxer.gg/7wqCREKi)** · **[Join Discord](https://discord.gg/Qy38d4Xu2h)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 
-`engine online` · MIT · pure C++23 · no Python · 6 hardware targets
+pure C++23 · no Python · MIT
 
 </div>
 
 ---
 
-## Why this exists
+**One engine. Any model. Zero Python.**
 
-**AMD's XDNA 2 NPU shipped closed.** 22 proprietary `.so` files, 209 xclbin bitstreams, zero public documentation. One person reverse-engineered the entire stack in four days — no docs, just a disassembler, `strace`/`ftrace`, and a C++ compiler — and kept building from there. Every crash and breakthrough since is logged in the open, ~600 hours in. **[Read the story →](docs/journey.md)**
-
-**One engine. Every model.** 100% of HuggingFace's architecture-bearing text-generation checkpoints (317,310 of them) map to a token this engine knows how to run — Llama, Qwen, DeepSeek, GLM, Mamba/SSM, MoE, vision, ternary/1-bit, all of it. Reads GGUF, ONNX, and native 1BP. Same binary, no config file, on NPU, GPU, or CPU. **[Model families →](docs/model-families/README.md)**
-
-**JARVIS, out of the box.** A fully local voice assistant ships with the engine, not bolted on: mic → VAD → STT → LLM → TTS → speaker, one process, pure C++, zero cloud calls. `./build/1bit jarvis` and it's listening. **[JARVIS docs →](docs/jarvis.md)**
-
-**22 proprietary libraries. 209 bitstreams. Zero documentation.** That was the state of AMD's Ryzen AI Max+ 395 — a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime that nothing else could touch. We replaced it with open C++: one MIT-licensed engine that runs LLMs on the NPU, on AMD / NVIDIA / Apple GPUs, or on plain CPU. **As of 2026-08-15, the last proprietary dependency is gone.** The engine's own instruction-stream generator emits **byte-identical** output to the closed-source runtime's own dumps (verified `cmp`-exact on every op), builds xclbins with the fully open `aiecc`/`peano-clang` toolchain, and now **beats** the proprietary stack's own kernels by 11-15% — 2x on a 35B MoE model. Not just replicated: outperformed, with nothing closed-source left in the loop.
-
-**→ [Read the full journey](docs/journey.md)** — every crash, breakthrough, and bug, documented in real time.
-**→ [The Audit Trail](docs/audit-trail.md)** — 1.5 TB of raw evidence, archived nightly on the Raspberry Pi backup server.
+A pure-C++23 inference engine that runs 100% of HuggingFace's text-generation checkpoints on NPU, GPU, or CPU — with the Lemonade SDK side by side, in sync with upstream.
 
 ## Quick start
 
 ```bash
-# build from source — no installer yet
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-MONSTER && cmake -B build && cmake --build build
 ./build/1bit zaya -m model.1bp -p "Hello world"
 ```
 
-That's the whole install. One engine, no runtime, no virtualenv, no Python.
+That's the whole install. No runtime, no virtualenv, no Python.
 
-| 100% | 552 | 32 | 6 | 0 |
-|:---:|:--:|:--:|:-:|:-:|
-| HF checkpoints covered | arch tokens | families in manifest | hardware targets | Python in the runtime |
+## For the real nerds
 
-## Convert a GGUF model to 1BP
+All the technical stuff lives in the docs and wiki:
 
-```bash
-cmake --build build --target gguf_to_onebp          # pure C++23, no Python
-./build/gguf_to_onebp model.gguf model.1bp          # F16 lossless (default)
-./build/gguf_to_onebp model.gguf model.1bp --q4nx   # 4-bit — lossy, compact
-```
+- **[Docs index](docs/README.md)** · **[Getting started](docs/guides/getting-started.md)** · **[Build guide](docs/guides/building.md)**
+- **Deep dives:** [architecture](docs/guides/architecture.md) · [model families](docs/model-families/README.md) · [benchmarks](docs/wiki/performance.md) · [Lemonade compat](docs/guides/Lemonade-Compat.md) · [JARVIS](docs/jarvis.md) · [The Mesh](docs/mesh-protocol.md) · [the full journey](docs/journey.md)
 
-- **Default is lossless F16** (f32→f16 round-trip, 2 B/elem). 4-bit Q4NX loses
-  ~0.998/layer and compounds into garbage logits on deep models — F16 is the
-  only mode guaranteed correct for GPU/NPU decode. `--q4nx`/`--tq2`/`--tq2nz`/
-  `--tq1` opt in to the lossy paths; `--tq2bs`/`--rocmfp4`/`--rocmfp4-fast`
-  add block-scaled-ternary and ROCmFP4 codebook modes.
-- Emits a sibling `.htok` (BPE tokenizer) next to the `.1bp` so the engine can
-  decode real text. Converter lives at `src/gguf_to_onebp.cpp`; batch wrappers:
-  `tools/batch_convert.sh`, `scripts/build_1bp.sh`.
+## Community
 
-## What it is
-
-An **inference engine** — the thing that actually runs the model. Not a chat app; bring your own frontend.
-
-- **Model agnostic.** Reads GGUF, ONNX, and native 1BP. Detects the architecture, picks a kernel path. No config files.
-- **Hardware agnostic.** Same binary, same command, on any silicon: AMD Strix Halo NPU + GPU, NVIDIA (CUDA — [needs testers](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703)), Apple Silicon, any Vulkan 1.2+ GPU, x86 CPU. No rebuild to move a model ([architecture](docs/guides/architecture.md)).
-- **One binary, every server.** `build/1bit` holds the CLI and all servers, dispatched by subcommand (`zaya`, `unified`, `jarvis`, `vision`, `chat`, …). OpenAI-compatible `POST /v1/chat/completions`, speculative decoding, image/video/voice generation.
-- **Speculative decoding, in-process.** `--draft-model` + `--spec-decode`, lossless vs greedy — no extra server.
-- **Beyond text.** Stable-Diffusion-family image and video generation via `image_server`; Whisper STT and codec TTS for voice.
-
-## Model agnostic
-
-Point it at a model and run. The engine reads **GGUF**, **ONNX**, and the native **1BP** format, detects the architecture, and picks a kernel path — no config files, no per-model glue, no conversion step you have to babysit.
-
-Coverage does not come from porting models one at a time. It comes from the architecture class: 552 arch tokens map 1,774 HF architecture strings, grouped into 32 manifest families — a family that works brings its whole arch-string set with it. The registry is measured against a full HF census: **317,310 / 317,310 arch-bearing text-gen checkpoints (100.00%) map to an engine token** (`Testing/census_coverage.py` regenerates the count from the actual committed mapping).
-
-The full-catalog end state — 500+ models, HuggingFace-native bring-up — is planned in **[docs/plans/monster-500-models.md](docs/plans/monster-500-models.md)**. The [models SSOT](docs/wiki/models.md) is the single source of truth for coverage; the [roadmap](docs/guides/roadmap.md) tracks the remaining gap (glm4/cohere2/lfm2 hybrid families, encoder-decoder T5/BART out of scope, ~2,000 one-off custom classes).
-
-**→ [All families, indexed](docs/model-families/README.md)** · **→ [Combined support SSOT](docs/wiki/models.md)**
-
-### Model families
-
-Every architecture the engine detects has its own page — params, 1BP size, backends, measured perf. 500+ HuggingFace-native bring-up is the end-state goal ([roadmap](docs/plans/monster-500-models.md)); today's manifest already spans:
-
-[Zyphra](docs/model-families/zyphra.md) · [Qwen](docs/model-families/qwen.md) · [Llama](docs/model-families/llama.md) · [Mistral](docs/model-families/mistral.md) · [Gemma](docs/model-families/gemma.md) · [Phi](docs/model-families/phi.md) · [Falcon](docs/model-families/falcon.md) · [OLMo](docs/model-families/olmo.md) · [Granite](docs/model-families/granite.md) · [SmolLM](docs/model-families/smollm.md) · [DeepSeek](docs/model-families/deepseek.md) · [GPT-OSS](docs/model-families/gpt-oss.md) · [Laguna](docs/model-families/laguna.md) · [Kimi](docs/model-families/kimi.md) · [BitNet / Bonsai](docs/model-families/bitnet-bonsai.md) · [Whisper](docs/model-families/whisper.md)
-
-## Frontier gates: 5/5 validated against reference implementations
-
-Every architecture the engine claims to support is held to a **generation gate**: run the engine on a real (or mini) checkpoint and compare logits against the reference implementation. The five newest frontier families were audited, implemented, and gated in one session (2026-08-16) — the gates caught real math bugs each time:
-
-| Family | Arch | Engine | Gate result |
-|--------|------|--------|-------------|
-| **Nemotron 3** | LayerNorm1P + relu2 MLP + partial RoPE | `backend_generic` | ✅ **real** 8B checkpoint, top1 7503 *" Paris"* == HF, logit corr 0.99986 |
-| **DeepSeek V4** | Shared-KV MQA + mHC (Sinkhorn) + hash-MoE | `src/deepseek_v4.cpp` | ✅ mini-gate top1 342 == HF, 20/20 top-20 |
-| **GLM-5.2** | V3-MLA + DSA indexer (cross-layer top-k) | `src/glm_moe_dsa.cpp` | ✅ mini-gate top1 171 == HF, 20/20 |
-| **MiMo V2** | MoD hybrid (SWA+full GQA, sigmoid group-topk) | `src/mimo_v2.cpp` | ✅ mini-gate top1 524 == HF, 20/20 |
-| **Qwen3.5** | GatedDeltaNet + gated GQA hybrid | `src/qwen3_5.cpp` | ✅ mini-gate top1 142 == HF, 20/20, corr 1.0 |
-
-Each gate compares full logits (not just greedy argmax) against the authoritative reference — the HuggingFace modeling source for the exact checkpoint. The audit step proved decisive: two of the five families shipped in our engine **before** the audit were written against fictional architectures (DeepSeek V4 had MLA + a 4x4 "mHC mix matrix" that don't exist; the real thing is Shared-KV MQA + Sinkhorn hyper-connections). The gate suite ([`Testing/run_all.sh`](Testing/run_all.sh)) is now **17/17 green**, and the full model census holds **100.00%** coverage of HuggingFace architectures.
-
-**→ [The frontier plan](docs/plans/monster-500-models.md)** — the 5-gate work order, per-family architecture facts, and what each gate proved.
-
-## Hardware agnostic
-
-The same binary and the same command line, on whatever silicon you have:
-
-| Platform | Backend |
-|----------|---------|
-| AMD Strix Halo (Ryzen AI Max+ 395) | XDNA 2 NPU + ROCm HIP + GGML-Vulkan |
-| NVIDIA GPU (sm_70+) | CUDA — **implemented, not yet validated on real hardware** ([#1703](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703), testers wanted) |
-| Apple Silicon | Metal |
-| Any Vulkan 1.2+ GPU | ZINC + GGML-Vulkan |
-| x86 CPU | OpenMP |
-
-Six hardware targets are probed at startup (`has_npu`, `has_hip_gpu`, `has_vulkan`, `has_cuda`, `has_metal`, `has_avx512`) and served by **12 backend implementations** in the factory: CPU, Generic, Vulkan, HIP, NPU, ZINC, Zamba2, Mamba1, CUDA, Metal, VART, ONNX-NPU. Some are model-specific SSM paths rather than device backends, and stub backends return `can_infer() == false` so they are discovered but never selected for inference. No rebuild to move a model from NPU to GPU to CPU. **Honesty note:** the CUDA backend (`src/cuda_engine.cu`) compiles and is wired into the factory, but unlike the other five targets it has never actually been run against real NVIDIA hardware — no CI gate, no measured numbers, nothing in the engineering log. Don't take "6 hardware targets" as "6 validated hardware targets." We're looking for someone with real NVIDIA hardware to test it — see [#1703](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703).
-
-**→ [Architecture deep-dive](docs/guides/architecture.md)**
-
-## Benchmarks
-
-Headline end-to-end decode, measured **2026-08-01** on an AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA):
-
-| Model | Gen tok/s (e2e) | Backend |
-|-------|:---------------:|---------|
-| SmolLM2-135M | **662** | GGML-Vulkan |
-| Qwen3-0.6B | **373** | GGML-Vulkan |
-| Qwen2.5-VL-3B | **100** | GGML-Vulkan |
-| BlackMamba-1.5B | **79.4** | Mamba1 HIP |
-| BlackMamba-2.8B | **46.0** | Mamba1 HIP |
-| Qwen3.5-4B | **65** | GGML-Vulkan |
-| DeepSeek-R1-Distill-Llama-8B | **44** | GGML-Vulkan |
-| ZAYA1-74B-preview | **17.6** | GGML-Vulkan |
-
-Plus **38.84 TFLOPS** INT8 prefill (WMMA, variant I8-APRE) — the canonical figure, re-measured 2026-08-18 as the median of 3 runs with 1 warmup discarded; earlier single-run passes were 39.4 / 40.5 (colder-GPU) and 43.2 TFLOPS (re-measured 2026-08-01). Measured, not projected — full numbers and methodology: **[docs/wiki/performance.md](docs/wiki/performance.md)**.
-
-BlackMamba figures re-measured 2026-07-26 after the `__shfl_xor_sync` kernel fixes. Numbers in this file are checked against `site/numbers.json` in CI:
-
-```bash
-python3 scripts/generate_readme_numbers.py --check
-```
-
-Kernel-level GEMV figures (Q1 433, TQ2 420, ternary 318 tok/s) are **isolated throughput, bit-exact vs CPU reference — not end-to-end decode**, and are deliberately kept out of the headline table.
-
-### Unified control plane — measured 2026-08-07
-
-All five zoo models served from **one** `unified` process (`--pool` keeps every model resident), one OpenAI-compatible endpoint, measured end-to-end through `POST /v1/chat/completions` including per-request model routing:
-
-| Model | tok/s (e2e) | Backend |
-|-------|:-----------:|---------|
-| Qwen3-4B | **20.8** | NPU FLM (XDNA) |
-| Qwen3-0.6B Instruct | **12.4** | GGML-Vulkan |
-| Llama-3.2-1B Instruct | **12.4** | GGML-Vulkan |
-| Bonsai-1.7B-TQ2 | **3.1** | HIP 1BP |
-| Zamba2-1.2B-Instruct-v2 | **2.2** | HIP (Mamba2 SSD) |
-
-`scripts/zoo-smoke.sh` (5/5 PASS) runs the same path; `POST /v1/pool` reports residency.
-
-**→ [Full performance SSOT](docs/wiki/performance.md)**
-
-## Adoption
-
-From `site/numbers.json` (repo telemetry, synced):
-
-| 6,113 | 783 | 47 | 14 |
-|:-----:|:---:|:--:|:--:|
-| total clones | unique cloners | models shipping | open issues |
-
-## Flagship pipeline: JARVIS
-
-A fully local voice assistant where every stage runs on the engine:
-
-```
-mic → VAD → STT (Whisper) → router → LLM → TTS (codec) → cloned voice → speaker
-```
-
-No cloud, no Python in the hot path.
-
-**→ [How the JARVIS pipeline works](docs/jarvis.md)**
-
-## The Mesh — self-aware installs, out of the box
-
-Every install is a network node: it announces itself on the LAN (UDP multicast), discovers sibling 1bit-MONSTER installs, and **starts asking questions** — *"want to hook up and integrate?"* — then handshakes and federates (shared routing, model exchange, load sharing). Zero config, zero model weights required for the network to come alive; a DSH brain (`integrations/dsh/`) upgrades the questions from templates to your local model's own words.
-
-```bash
-cmake --build build --target mesh_peer -j     # or: 1bit unified (mesh on by default)
-./build/mesh_peer --name alice --port 18088
-./build/mesh_peer --name bob   --port 18089   # they find each other immediately
-curl http://127.0.0.1:18088/v1/mesh/peers     # 👋 there's bob
-```
-
-**→ [Mesh protocol](docs/mesh-protocol.md)** · **→ [DSH brain](integrations/dsh/README.md)**
-
-## Learn more
-
-- **[Documentation index](docs/README.md)** — start here
-- **[Getting started](docs/guides/getting-started.md)** · **[Build guide](docs/guides/building.md)**
-- **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)**
-- **[The engineering journey](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
-- **[Contributing](CONTRIBUTING.md)**
-
-> **XDNA 2 NPU, driven from outside AMD tooling** — the measured evidence lives in-repo: [AIE2P hardware facts](engine/npu/AIE2P-FACTS.md) (bf16 RNI rounding, dispatch costs) and the [NPU backend](engine/npu/). The engine itself is MAX-free by design.
+- **Discord** (community support & hangout) → https://discord.gg/Qy38d4Xu2h
+- **Fluxer** (official support) → https://fluxer.gg/7wqCREKi
+- **Issues & feature requests** → https://github.com/1bit-MONSTER/1bit-MONSTER/issues
 
 ## License
 
