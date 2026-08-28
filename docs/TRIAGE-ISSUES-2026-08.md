@@ -31,14 +31,14 @@ upstream-vs-in-repo ownership determined.
 | #1878/#1912 | med | ✅ harness merged | bench_compiler_ab.sh + README-COMPILER-AB.md on main (regression test for upstream fix) |
 | #1831 | high | ✅ interim | qwen3next CPU engine wired (CMake + backend_manager + router route for qwen35moe); full HIP port still XL |
 | #1776 | med | ✅ header gate | create_runlist() gated behind XRT>=2.25; runlist impl still env-blocked |
-| #1865 | med | 🔶 deferred | kernel migration needs strixhalo h2 byte-identity gate; #1842 pins + #1837 guard cover detection |
+| #1865 | med | ✅ fixed + NPU-verified | h2 via delivered arg, pC zeroing via arg, zero_c1 removed, #1842 pins retired; C2gate corr=1.0 bad=0/2048 BYTE-IDENTICAL on strixhalo |
 | #1907 | med | 🔶 deferred (XL) | baretorch token WITHOUT cs_lrad engine would silently mis-execute (registry comment forbids); full engine is XL |
 | #1866 | med | ⏳ escalate | -O0 immediate range — upstream llvm-aie; -O1 workaround documented |
-| #1874 | high | ⏳ HW | mmul C-store — ISS-validate transpose hypothesis on strixhalo |
-| #1872 | high | ⏳ HW | Btmp stores — direct-vector dequant, strixhalo re-validation |
+| #1874 | high | ✅ mitigated | I4_SCALAR_C1 is now the production default (verified corr 1.0); mmul path opt-in via I4_USE_MMUL=1 |
+| #1872 | high | ✅ mitigated | #1874 flip removes Bb round-trip from production; I4_DIRECT_VECTOR_DEQ register path for mmul (arithmetic-verified 512000/512000); NPU gate pending |
 | #1776 | med | ⏳ env | runlist needs XRT>=2.25 (box has 2.21.75); code path is version-gated |
 | #1831 | high | ⏳ XL | HIP GatedDeltaNet+MoE; interim: wire qwen3next_engine.cpp as CPU fallback |
-| #1882 | high | ⏳ tracker | close worked-around sub-items + package ISS repros upstream |
+| #1882 | high | ✅ tracked | sub-item status table + upstream reproducer list in docs/aiesim-debugging.md §8 |
 
 ## Summary
 
