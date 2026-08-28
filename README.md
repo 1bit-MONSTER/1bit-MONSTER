@@ -5,7 +5,7 @@
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**[Website](https://1bit.monster)** · **[Community (Fluxer)](https://fluxer.gg/7wqCREKi)** · **[Join Discord](https://discord.gg/Qy38d4Xu2h)** · **[Docs](docs/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
+**[Website](https://1bit.monster)** · **[Docs](docs/README.md)** · **[Community (Fluxer)](https://fluxer.gg/7wqCREKi)** · **[Join Discord](https://discord.gg/Qy38d4Xu2h)** · **[Roadmap](docs/guides/roadmap.md)**
 
 pure C++23 · no Python · MIT
 
@@ -13,15 +13,9 @@ pure C++23 · no Python · MIT
 
 ---
 
-## Why this exists
+**One engine. Any model. Zero Python.**
 
-**AMD's XDNA 2 NPU shipped closed.** 22 proprietary `.so` files, 209 xclbin bitstreams, zero public documentation. One person reverse-engineered the entire stack in four days — no docs, just a disassembler, `strace`/`ftrace`, and a C++ compiler — and kept building from there. As of 2026-08-15 the last proprietary dependency is gone: the engine's own instruction-stream generator is verified `cmp`-exact against the closed runtime's dumps, and beats its kernels by 11–15%. **[Read the story →](docs/journey.md)**
-
-**One engine. Every model.** 100% of HuggingFace's architecture-bearing text-generation checkpoints (317,310 of them) map to a token this engine knows how to run — Llama, Qwen, DeepSeek, GLM, Mamba/SSM, MoE, vision, ternary/1-bit, all of it. Reads GGUF, ONNX, and native 1BP. Same binary, no config file, on NPU, GPU, or CPU. **[Model families →](docs/model-families/README.md)**
-
-**Lemonade, side by side — and in sync with upstream.** The full Lemonade SDK is vendored at `third_party/lemonade` (pinned to upstream, re-vendored on each release) and compiles into the same binary as the engine's own kernels — one ELF, no wrappers, no subprocess. `unified_server --lemonade` runs all 15 Lemonade backends in-process alongside native ones. **[Lemonade compat →](docs/guides/Lemonade-Compat.md)**
-
-**JARVIS, out of the box.** A fully local voice assistant ships with the engine, not bolted on: mic → VAD → STT → LLM → TTS → speaker, one process, pure C++, zero cloud calls. `./build/1bit jarvis` and it's listening. **[JARVIS docs →](docs/jarvis.md)**
+A pure-C++23 inference engine that runs 100% of HuggingFace's text-generation checkpoints on NPU, GPU, or CPU — with the Lemonade SDK side by side, in sync with upstream.
 
 ## Quick start
 
@@ -33,38 +27,18 @@ cd 1bit-MONSTER && cmake -B build && cmake --build build
 
 That's the whole install. No runtime, no virtualenv, no Python.
 
-## What it is
+## For the real nerds
 
-An **inference engine** — the thing that actually runs the model. Not a chat app; bring your own frontend.
+All the technical stuff lives in the docs and wiki:
 
-- **Model agnostic.** Reads GGUF, ONNX, and native 1BP. Detects the architecture, picks a kernel path. No config files.
-- **Hardware agnostic.** Same binary, same command, on any silicon: AMD Strix Halo NPU + GPU, NVIDIA (CUDA — [needs testers](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1703)), Apple Silicon, any Vulkan 1.2+ GPU, x86 CPU. No rebuild to move a model ([architecture](docs/guides/architecture.md)).
-- **One binary, every server.** `build/1bit` holds the CLI and all servers, dispatched by subcommand (`zaya`, `unified`, `jarvis`, `vision`, `chat`, …). OpenAI-compatible `POST /v1/chat/completions`, speculative decoding, image/video/voice generation.
+- **[Docs index](docs/README.md)** · **[Getting started](docs/guides/getting-started.md)** · **[Build guide](docs/guides/building.md)**
+- **Deep dives:** [architecture](docs/guides/architecture.md) · [model families](docs/model-families/README.md) · [benchmarks](docs/wiki/performance.md) · [Lemonade compat](docs/guides/Lemonade-Compat.md) · [JARVIS](docs/jarvis.md) · [The Mesh](docs/mesh-protocol.md) · [the full journey](docs/journey.md)
 
-## Benchmarks
+## Community
 
-Headline end-to-end decode on an AMD Ryzen AI MAX+ 395 (Radeon 8060S, 32 GB UMA):
-
-| Model | Gen tok/s (e2e) | Backend |
-|-------|:---------------:|---------|
-| SmolLM2-135M | **662** | GGML-Vulkan |
-| Qwen3-0.6B | **373** | GGML-Vulkan |
-| Qwen3.5-4B | **65** | GGML-Vulkan |
-| BlackMamba-2.8B | **46.0** | Mamba1 HIP |
-| DeepSeek-R1-Distill-Llama-8B | **44** | GGML-Vulkan |
-| ZAYA1-74B-preview | **17.6** | GGML-Vulkan |
-
-Plus **38.84 TFLOPS** INT8 prefill. Measured, not projected — full numbers and methodology: **[docs/wiki/performance.md](docs/wiki/performance.md)**.
-
-## Also in the box
-
-- **The Mesh** — installs self-discover on the LAN and federate: shared routing, model exchange, load sharing. Zero config. ([docs/mesh-protocol.md](docs/mesh-protocol.md))
-
-## Learn more
-
-- **[Documentation index](docs/README.md)** · **[Getting started](docs/guides/getting-started.md)** · **[Build guide](docs/guides/building.md)**
-- **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[Roadmap](docs/guides/roadmap.md)**
-- **[The engineering journey](docs/journey.md)** · **[Contributing](CONTRIBUTING.md)**
+- **Discord** (community support & hangout) → https://discord.gg/Qy38d4Xu2h
+- **Fluxer** (official support) → https://fluxer.gg/7wqCREKi
+- **Issues & feature requests** → https://github.com/1bit-MONSTER/1bit-MONSTER/issues
 
 ## License
 
