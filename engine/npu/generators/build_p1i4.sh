@@ -9,8 +9,20 @@ W=/tmp/p1i4_build.$$
 mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
 
 # kernel: matmul + silu + unpack + dequant in one object
+# Issue #1874: I4_SCALAR_C1 is the PRODUCTION DEFAULT — the aie::mmul C1
+# store is miscompiled on this toolchain (scrambled for non-uniform B), and
+# the v66 scalar-C1 path is the verified-correct fallback (corr 1.0 via the
+# #1897 h2/C2 byte-identity gate). Set I4_USE_MMUL=1 to go back to the mmul
+# path (experimental: the C-store scramble makes C1 wrong for data-dependent
+# B). Requires I4_SCALAR_C1_ACK_1864 (the scalar RMW pattern is #1864-flagged;
+# the ack is verified by the CPU + NPU gates on every toolchain bump).
+I4_FLAGS=(-DI4_SCALAR_C1 -DI4_SCALAR_C1_ACK_1864)
+if [ "${I4_USE_MMUL:-0}" = "1" ]; then
+    I4_FLAGS=()
+fi
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
+    "${I4_FLAGS[@]}" \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
