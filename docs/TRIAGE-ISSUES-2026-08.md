@@ -1,6 +1,7 @@
 # 1bit-MONSTER — Issue Triage Report (2026-08-27/28)
 
-> **Status: fixes for 12 issues landed in commit `1b4f468b`** (main).
+> **Status: fixes for 14 issues landed** in commits `1b4f468b`, `e038c9cb`,
+> `dafee20c`, `3985f14f` (main).
 > Remaining: HW-verification-dependent kernel changes, upstream escalations,
 > and XL engine features (see "Completion status" below).
 
@@ -28,6 +29,8 @@ upstream-vs-in-repo ownership determined.
 | #1864 | high | ✅ fixed | #error guard + I4_SCALAR_C1_ACK_1864 in build_zaya_fused.sh |
 | #1832 | high | ✅ fixed | backend_npu_universal.cpp + format-aware routing (HW-verify decode) |
 | #1878/#1912 | med | ✅ harness merged | bench_compiler_ab.sh + README-COMPILER-AB.md on main (regression test for upstream fix) |
+| #1831 | high | ✅ interim | qwen3next CPU engine wired (CMake + backend_manager + router route for qwen35moe); full HIP port still XL |
+| #1776 | med | ✅ header gate | create_runlist() gated behind XRT>=2.25; runlist impl still env-blocked |
 | #1865 | med | 🔶 deferred | kernel migration needs strixhalo h2 byte-identity gate; #1842 pins + #1837 guard cover detection |
 | #1907 | med | 🔶 deferred (XL) | baretorch token WITHOUT cs_lrad engine would silently mis-execute (registry comment forbids); full engine is XL |
 | #1866 | med | ⏳ escalate | -O0 immediate range — upstream llvm-aie; -O1 workaround documented |
