@@ -455,11 +455,16 @@ public:
     ///@brief Create a runlist
     ///@return a runlist object
     ///@see xrt::runlist
+    // Issue #1776 (perf milestone): runlist launch batching needs XRT >= 2.25;
+    // this helper is dead code and its ctor is unavailable on older XRT —
+    // gated behind __has_include so the header builds on XRT 2.21.75.
+#if __has_include(<xrt_runlist.h>)
     xrt::runlist create_runlist(){
         assert(this->xclbin_valid);
         assert(this->enable_preemption == false); // preemption is not supported for runlist
         return xrt::runlist(*this->context);
     }
+#endif
 };
 
 ///@brief npu_xclbin_manager
