@@ -23,6 +23,29 @@
 // float/int scalar ops the AIE2P scalar unit lowers to hardware instructions.
 #include "silu_quant.h"
 
+// Portable 64×4-bit → 64×int8 sign-extended nibble unpack. Peano/llvm-aie
+// exposes __builtin_aie2p_unpack_I512_I8_I4; chess (xchesscc) does not — the
+// scalar fallback keeps the same lane order (element e = byte e/2, even e =
+// low nibble), so the SAME source compiles under both compilers (A/B harness:
+// tests/bench_compiler_ab.sh). Peano builds take the builtin branch unchanged.
+static inline auto unpack_i4_sx(const v64int4 *p) {
+#ifdef __chess__
+    // chess: v64int8 has no subscript operator — go through aie::vector
+    // (same lane order: element e = byte e/2, even e = low nibble).
+    const uint8_t *nib = (const uint8_t *)p;
+    aie::vector<int8, 64> u;
+    for (int e = 0; e < 64; e++) {
+        int q = (nib[e >> 1] >> ((e & 1) ? 4 : 0)) & 0x0F;
+        if (q >= 8) q -= 16;
+        u[e] = (int8_t)q;
+    }
+    return u;
+#else
+    // peano/llvm-aie: raw builtin — unchanged from the original kernel.
+    return __builtin_aie2p_unpack_I512_I8_I4(*p, 1);
+#endif
+}
+
 template <typename T_in, typename T_out, int rowA, int colA, int colB,
           bool b_row_maj = true, bool c_row_maj = true>
 static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
@@ -525,6 +548,7 @@ static inline void matmul_vectorized_8x8x8_i8_i32(const int8 *__restrict pA,
                                                                       pC);
 }
 
+#ifndef WIDE_DIM_N   // base GU/int4 kernels — NOT emitted in the wide D object
 extern "C" {
 
 // If you want to compile microkernels with different inner tile sizes,
@@ -655,6 +679,16 @@ extern "C" void matmul_i8_i32(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
 }
 extern "C" void zero_i32(int32_t *c_out) {
     zero_vectorized<int32_t, DIM_M, DIM_N>(c_out);
+}
+
+// Combined A|B GU microkernel: reads a SINGLE packed element
+//   [ A (m*k) | B (k*n) ]  (a at offset 0, b at offset m*k)
+// so the GU needs only ONE input DMA channel (A no longer broadcast on its
+// own channel). This is required because the AIE2P core tile has only TWO
+// input DMA channels, and the fused GU(A+B_gu) + D(B_d) = 3 streams would
+// otherwise exceed it.
+extern "C" void matmul_i8_i32_ab(const int8_t *__restrict ab, int32_t *__restrict c_out) {
+    matmul_vectorized_8x8x8_i8_i32_m8<DIM_M, DIM_K, DIM_N>(ab, ab + DIM_M * DIM_K, c_out);
 }
 #endif
 
@@ -834,7 +868,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                 const int32_t* rq = (const int32_t*)(pB4 + 4096 + (size_t)(i / 4) * 512
                                                      + (size_t)j * 32);
                 const v64int4* pv = (const v64int4*)nib;
-                v64int8 u = __builtin_aie2p_unpack_I512_I8_I4(*pv, 1);
+                auto u = unpack_i4_sx(pv);
                 u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
                 for (int e = 0; e < 64; e++) {
                     // B'' = sat8(round((q4<<4) * ratioQ22 / 2^22))
@@ -1043,6 +1077,34 @@ extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
     for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
 }
 
+// ── Q22 fixed-point int8 silu (#1836 float-miscompile fix) ──────────────────
+// The int8 GU path: C1 = A @ B_gu (raw int8, scale already folded). h = round(
+// silu_lut(C1[go]) * C1[uo]). The float silu_lut (silu_quant_i8_fused) is
+// MIS-COMPILED by the aie2p backend (#1836 — faults/hangs the core). This
+// PURE-int32 version uses the Q22 sigmoid LUT (silu_sigmoid_q22) and matches
+// the float silu_lut semantics: idx from the clamped gate, silu(g) = g *
+// sigmoid(g), h = sat8(round(silu(g) * u)). No float, no fold metadata.
+extern "C" void silu_quant_i8_fused_q22(int32_t *c1, int32_t *gs_dummy, int8_t *h2) {
+    (void)gs_dummy;   // int8 path: scale folded into c1; the 2nd arg is a dummy
+    for (unsigned p = 0; p < DIM_N / 2; p++) {
+        unsigned go = ((2 * p) / 8) * 64 + ((2 * p) % 8);
+        unsigned uo = ((2 * p + 1) / 8) * 64 + ((2 * p + 1) % 8);
+        int c1g = c1[go];
+        int c1u = c1[uo];
+        // sigmoid LUT index from the gate clamped to [-4,4] (matches float)
+        int gc = c1g < -4 ? -4 : (c1g > 4 ? 4 : c1g);
+        int idx = ((gc + 4) * 255 + 4) / 8;      // round((gc+4)*31.875)
+        if (idx < 0) idx = 0;
+        if (idx > 255) idx = 255;
+        int sig = silu_sigmoid_q22[idx];          // Q22 sigmoid(g)
+        int64_t silu = ((int64_t)c1g * sig) >> 22; // silu(g) = g*sigmoid(g)
+        int64_t h = silu * c1u;                    // silu(g)*u
+        int hv = h > 127 ? 127 : (h < -127 ? -127 : (int)h);   // sat8 (int64-safe)
+        h2[p] = (int8_t)hv;
+    }
+    for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
+}
+
 // ── Fused GU→SiLU→D, INT4 path (issue #1769, ws09): per-column scales ──
 // Identical structure to silu_quant_i8_fused, but the gs operand is the
 // per-column fold S'[j] (host-written per token, update_fused_header_i4):
@@ -1211,16 +1273,238 @@ extern "C" void unpack_i4_b(const int8_t *__restrict packed,
                             int8_t *__restrict out, unsigned n_bytes) {
     for (unsigned i = 0; i + 32 <= n_bytes; i += 32) {
         const v64int4 *p = (const v64int4 *)(packed + i);
-        v64int8 u = __builtin_aie2p_unpack_I512_I8_I4(*p, 1);  // sign-extend nibbles
+        auto u = unpack_i4_sx(p);  // sign-extend nibbles
         u = u + u; u = u + u; u = u + u; u = u + u;            // x16 (fold-free)
+#ifdef __chess__
+        aie::store_v(out + 2 * i, u);
+#else
         *((v64int8 *)(out + 2 * i)) = u;
+#endif
     }
 }
 
-} // extern "C"
+} // extern "C" (int4 + misc kernels)
+#endif  // !WIDE_DIM_N
 
+// ── D-phase cascade-reduce kernels (issue #1775, iron generator) ───────────
+// Single-launch fused GU→SiLU→D: h2 stays core-local; the D GEMM partial
+// products are summed down the AIE2P hardware cascade (col c → col c+1, row 2)
+// so there is NO h2 DDR round-trip and the cross-shim S2MM→MM2S visibility
+// race is structurally eliminated.
+//
+// The cascade stream accessors (get_scd/put_mcd) for aie2p are NOT in the
+// Vitis aietools adf/stream/me headers (those only expose the __AIE_ARCH__<20
+// variants) — they are provided by the PEANO toolchain's aie2p_streams.h
+// (__builtin_aie2p_scd_read_acc32 / __builtin_aie2p_mcd_write_vec, 512-bit
+// words = v16int32). The iron design builds with --no-xchesscc, so these
+// kernels are peano-only (guard below); chess lacks the aie2p intrinsics.
+//
+// Call contract (matches n1_core_fused_gu_silu_d_iron.py): one call per
+// k-slice with a2s = h2 chunk (DIM_M x DIM_K int8), b = B_d tile
+// (DIM_K x DIM_N int8), c2 = C2 accum/scratch (DIM_M x DIM_N int32,
+// row-major; the generator zeroes it once before the k-slice loop).
+//   first (col 0) : partial = a2s@b;                    put_mcd(partial)
+//   mid  (cols 1-6): total = get_scd() + partial;       put_mcd(total)
+//   last (col 7)  : c2 += get_scd() + partial           (writes the output)
+// Cascade word order = each 8x8 mmul block's to_vector<int32> split into
+// 4 x 512-bit chunks (block-major flat layout, IDENTICAL to the existing
+// matmul_vectorized_8x8x8_i8_i32_m8 C store so the host-side CPU gate for
+// the D GEMM validates this output unchanged).
+#ifndef __chess__
+
+// One k-slice of the D GEMM: partial = a2s(8x64) @ b(64x128) → 8x128 int32.
+// kCascade: 0 = first (put only), 1 = mid (get+add+put), 2 = last (accumulate).
+//
+// SIMPLE one-mmul-per-block form (matches the proven aie2 cascade_mm.cc).
+// Each 8x8 mmul block's to_vector<int32> (64 elems) is split into 4 x
+// 512-bit (16-int32) chunks; the chunk order is BLOCK-major then chunk-within-
+// block, so block b's chunks are [b*64, b*64+16)... IDENTICAL on every core
+// (the cascade carries them verbatim). flat block index = b*64. The aie2p
+// backend mis-compiles the register-array (V[4]) + nested inner-loop form
+// (blocks 4-15 unwritten + block-2 row-corruption measured 2026-08-27); this
+// single-acc form uses no array and no inner get_scd/put_mcd nesting.
+template <unsigned kCascade>
+static inline void cascade_d_i8_i32_slice(const int8_t *__restrict pA,
+                                           const int8_t *__restrict pB,
+                                           int32_t *__restrict pC) {
+    static_assert(DIM_M == 8 && DIM_N % 8 == 0, "cascade D slice is 8xN");
+    using MMUL = aie::mmul<8, 8, 8, int8, int8, accauto>;
+    constexpr unsigned rowA = DIM_M / 8;    // 1 for the iron design
+    constexpr unsigned colB = DIM_N / 8;    // 16 for N=128
+
+    event0();
+    for (unsigned z = 0; z < rowA; z++) {
+        const int8_t *pA1 = pA + z * (DIM_K / 8) * MMUL::size_A;
+        int32_t *pC1 = pC + z * colB * MMUL::size_C;   // block-major C
+        for (unsigned b = 0; b < colB; b++) {          // ONE block at a time
+            const int8_t *pA1b = pA + z * (DIM_K / 8) * MMUL::size_A;  // reset A per block
+            const int8_t *pB1 = pB + b * MMUL::size_B;
+            aie::vector<int8, MMUL::size_A> A0;
+            aie::vector<int8, MMUL::size_B> B0;
+            MMUL C0;
+            for (unsigned i = 0; i < DIM_K / 8; ++i) {
+                A0 = aie::load_v<MMUL::size_A>(pA1b);
+                pA1b += MMUL::size_A;
+                B0 = aie::load_v<MMUL::size_B>(pB1);
+                pB1 += MMUL::size_B * colB;
+                C0.mac(A0, B0);
+            }
+            aie::vector<int32, MMUL::size_C> vec = C0.to_vector<int32>();
+            for (unsigned e = 0; e < 4; e++) {
+                aie::vector<int32, 16> loc = vec.template extract<16>(e);
+                int32_t *base = pC1 + b * MMUL::size_C + e * 16;
+                if constexpr (kCascade == 0) {          // first: put only
+                    put_mcd((v16int32)loc);
+                } else if constexpr (kCascade == 1) {   // mid: get+add+put
+                    v16int32 inc = get_scd_v16int32();
+                    put_mcd((v16int32)(loc + (aie::vector<int32, 16>)inc));
+                } else {                                // last: accumulate
+                    v16int32 inc = get_scd_v16int32();
+                    aie::vector<int32, 16> acc =
+                        aie::load_v<16>(base) + loc + (aie::vector<int32, 16>)inc;
+                    aie::store_v(base, acc);
+                }
+            }
+        }
+    }
+    event1();
+}
+
+#ifndef WIDE_DIM_N   // base cascade kernels — NOT emitted in the wide D object
+extern "C" {
+
+extern "C" void cascade_d_first_i8_i32(const int8_t *__restrict a2s,
+                                        const int8_t *__restrict b,
+                                        int32_t *__restrict c2) {
+    cascade_d_i8_i32_slice<0>(a2s, b, c2);
+}
+extern "C" void cascade_d_mid_i8_i32(const int8_t *__restrict a2s,
+                                      const int8_t *__restrict b,
+                                      int32_t *__restrict c2) {
+    cascade_d_i8_i32_slice<1>(a2s, b, c2);
+}
+extern "C" void cascade_d_last_i8_i32(const int8_t *__restrict a2s,
+                                       const int8_t *__restrict b,
+                                       int32_t *__restrict c2) {
+    cascade_d_i8_i32_slice<2>(a2s, b, c2);
+}
+
+} // extern "C" (cascade wrappers - a2s@b kernel)
+
+// ── Partial-merge cascade kernels (the aie2p multi-call fix) ────────────────
+// The aie2p hardware cascade is a CONTINUOUS stream: calling the a2s@b
+// cascade kernel more than once per core (per k-slice) deadlocks (measured
+// 2026-08-27: 2 calls hang at N=128, all-zeros at N=64). The fix is a
+// TWO-PHASE D reduce: (1) each core accumulates its OWN partial with the
+// proven matmul_i8_i32 over the streamed B k-slices (no cascade — B doesn't
+// fit L1, so it is chunked via the fifo), then (2) ONE cascade pass merges
+// the 8 cores' accumulated partials. These kernels are that ONE pass — they
+// stream a core-local (DIM_M x DIM_N int32) partial through the cascade.
+//
+// Chunk protocol (IDENTICAL on every core): the partial is 8x128 int32 =
+// 512-bit chunks, block-major flat order (block b at b*64, chunk e at
+// b*64 + e*16). first puts src; mid get+add+put; last get+add+accumulate
+// into dst.
+//   first:                    put_mcd(src[chunk])
+//   mid  :                    put_mcd(get_scd() + src[chunk])
+//   last : dst[chunk] += get_scd() + src[chunk]
+template <unsigned kCascade>
+static inline void cascade_reduce_i32(const int32_t *__restrict src,
+                                      int32_t *__restrict dst) {
+    constexpr unsigned nChunk = DIM_M * DIM_N / 16;
+    static_assert(DIM_M * DIM_N % 16 == 0, "partial must be 512-bit aligned");
+    event0();
+    for (unsigned c = 0; c < nChunk; c++) {
+        aie::vector<int32, 16> loc = aie::load_v<16>(src + c * 16);
+        if constexpr (kCascade == 0) {          // first: put only
+            put_mcd((v16int32)loc);
+        } else if constexpr (kCascade == 1) {   // mid: get+add+put
+            v16int32 inc = get_scd_v16int32();
+            put_mcd((v16int32)(loc + (aie::vector<int32, 16>)inc));
+        } else {                                // last: accumulate
+            v16int32 inc = get_scd_v16int32();
+            aie::vector<int32, 16> acc =
+                aie::load_v<16>(dst + c * 16) + loc + (aie::vector<int32, 16>)inc;
+            aie::store_v(dst + c * 16, acc);
+        }
+    }
+    event1();
+}
+
+extern "C" {
+
+extern "C" void cascade_reduce_first_i32(const int32_t *__restrict partial,
+                                          int32_t *__restrict c2) {
+    cascade_reduce_i32<0>(partial, c2);
+}
+extern "C" void cascade_reduce_mid_i32(const int32_t *__restrict partial,
+                                        int32_t *__restrict c2) {
+    cascade_reduce_i32<1>(partial, c2);
+}
+extern "C" void cascade_reduce_last_i32(const int32_t *__restrict partial,
+                                         int32_t *__restrict c2) {
+    cascade_reduce_i32<2>(partial, c2);
+}
+
+} // extern "C" (cascade_reduce wrappers)
+#endif  // !WIDE_DIM_N
+
+// ── WIDE-N D GEMM microkernels (issue #1775 partial-merge fix) ──────────────
+// The cascade may ONLY be called ONCE per launch, so the D reduce must be a
+// single pass over the FULL (8 x N_D) partial. That requires the mm to produce
+// an (8 x N_D) tile and the cascade_reduce to stream DIM_M*N_D/16 chunks. We
+// compile a separate object with -DWIDE_DIM_N=<N_D>; these use DISTINCT
+// symbol names (_wide) so they coexist with the n=128 GU object.
+#ifdef WIDE_DIM_N
+extern "C" void matmul_i8_i32_wide(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
+    matmul_vectorized_8x8x8_i8_i32_m8<DIM_M, DIM_K, WIDE_DIM_N>(a_in, b_in, c_out);
+}
+extern "C" void zero_i32_wide(int32_t *c_out) {
+    zero_vectorized<int32_t, DIM_M, WIDE_DIM_N>(c_out);
+}
+
+template <int kCascade, unsigned CN>
+static inline void cascade_reduce_i32_n(const int32_t *__restrict src,
+                                        int32_t *__restrict dst) {
+    constexpr unsigned nChunk = DIM_M * CN / 16;
+    static_assert(DIM_M * CN % 16 == 0, "wide partial must be 512-bit aligned");
+    event0();
+    for (unsigned c = 0; c < nChunk; c++) {
+        aie::vector<int32, 16> loc = aie::load_v<16>(src + c * 16);
+        if constexpr (kCascade == 0) {          // first: put only
+            put_mcd((v16int32)loc);
+        } else if constexpr (kCascade == 1) {   // mid: get+add+put
+            v16int32 inc = get_scd_v16int32();
+            put_mcd((v16int32)(loc + (aie::vector<int32, 16>)inc));
+        } else {                                // last: accumulate
+            v16int32 inc = get_scd_v16int32();
+            aie::vector<int32, 16> acc =
+                aie::load_v<16>(dst + c * 16) + loc + (aie::vector<int32, 16>)inc;
+            aie::store_v(dst + c * 16, acc);
+        }
+    }
+    event1();
+}
+extern "C" void cascade_reduce_first_i32_wide(const int32_t *__restrict partial,
+                                               int32_t *__restrict c2) {
+    cascade_reduce_i32_n<0, WIDE_DIM_N>(partial, c2);
+}
+extern "C" void cascade_reduce_mid_i32_wide(const int32_t *__restrict partial,
+                                             int32_t *__restrict c2) {
+    cascade_reduce_i32_n<1, WIDE_DIM_N>(partial, c2);
+}
+extern "C" void cascade_reduce_last_i32_wide(const int32_t *__restrict partial,
+                                              int32_t *__restrict c2) {
+    cascade_reduce_i32_n<2, WIDE_DIM_N>(partial, c2);
+}
+#endif  // WIDE_DIM_N
+
+#endif  // !__chess__
+
+#ifndef WIDE_DIM_N
 extern "C" void c1_emit(const int32_t *src, const uint8_t *unused, int32_t *dst) {
     const int32_t *s = (const int32_t *)0x7d000;
     int32_t *d = (int32_t *)0x7c000;
     for (unsigned i = 0; i < DIM_M * DIM_N; i++) d[i] = s[i];
 }
+#endif  // !WIDE_DIM_N
