@@ -55,6 +55,9 @@ trap 'rm -rf "$workdir"' EXIT
 I4_SCALAR_FLAGS=(-DI4_SCALAR_C1 -DI4_SCALAR_C1_ACK_1864)
 if [ "${I4_USE_MMUL:-0}" = "1" ]; then
     I4_SCALAR_FLAGS=()
+    # #1872: the mmul path uses the register-only direct-vector dequant (the
+    # B'' memory round-trip is unsafe on this toolchain). Inject the define.
+    I4_SCALAR_FLAGS+=(-DI4_DIRECT_VECTOR_DEQ)
 fi
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \

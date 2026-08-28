@@ -913,13 +913,19 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                 aie::vector<int32, 8> r8 = aie::load_v<8>(rq);
                 aie::vector<int32, 64> rq64;
                 for (int e = 0; e < 64; e++) rq64[e] = r8[e & 7];
-                auto acc = aie::mul(rq64, aie::to_vector<int32>(u));
-                aie::vector<int32, 64> shifted;
+                // #1872 register-only dequant: B''[e] = sat8(round((q4<<4)[e]
+                // * ratioQ22[e] >> 22)) in int64 scalar math — NO Bb[4][64]
+                // memory round-trip. (The original used aie::mul + to_vector,
+                // but aie::to_vector only accepts an accumulator and aie::mul
+                // for 64-wide int32 yields a 32-lane accum on this toolchain
+                // — a different aie API than the code was written against.)
+                aie::vector<int8, 64> bv;
                 for (int e = 0; e < 64; e++) {
-                    int r = (int)((acc[e] + (1 << 21)) >> 22);
-                    shifted[e] = r > 127 ? 127 : r < -127 ? -127 : r;
+                    int64_t prod = (int64_t)rq64[e] * (int64_t)(int8_t)u[e];
+                    int r = (int)((prod + (1LL << 21)) >> 22);
+                    bv[e] = (int8_t)(r > 127 ? 127 : (r < -127 ? -127 : r));
                 }
-                Bv[jt] = aie::to_vector<int8>(shifted);
+                Bv[jt] = bv;
             }
             aie::vector<int8, 64> B0 = Bv[0], B1 = Bv[1], B2 = Bv[2], B3 = Bv[3];
 #else
