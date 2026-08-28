@@ -36,6 +36,16 @@ dequant, #1878/#1912 unpack_i4_sx shim) AND the strixhalo agent's `silu_quant_i8
 + `cascade_reduce_*_i32` single-pass forms. Verified: 0 syntax errors with the cascade
 defines (`-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED`).
 
+**#1872 BUILD GATE — does NOT compile on the repo toolchain (2026-08-28).** Building the
+`I4_DIRECT_VECTOR_DEQ` int4 mmul path (`I4_USE_MMUL=1`) with the repo's mlir-aie
+(`/home/bcloud/mlir-aie/.venv`) fails: the path uses `aie::to_vector<int8/int32>` on plain
+`aie::vector`s (only valid on accumulators), subscripts an `aie::accum` (`acc[e]` — no
+`operator[]`), and `aie::mul(rq64, u32)` for 64-wide int32 yields a **32-lane** accum so the
+64-lane extraction is invalid. The commit message "compile-verified on peano 2026-08-28"
+does not hold on this toolchain. So the #1872 NPU-corr gate is BLOCKED at build; it needs
+either a matching aie.hpp/toolchain or a kernel rewrite to the current API. See
+`mm_kernel_reference.cc` ~L895-925.
+
 **Rule for this file:** pull/merge before touching it; never overwrite the other side's
 functions; if a conflict appears, preserve BOTH sides and note it in the merge commit.
 
