@@ -99,8 +99,14 @@ check_toolchain() {
     # aiecc with an LLVM-21/22 peano on the box fails peano discovery and the
     # libclang_rt.builtins.a lookup at kernel link. Fail loudly on --check.
     local aie_llvm="" peano_llvm=""
+    # aiecc's LLVM version: prefer the shipped llc; fall back to `aiecc
+    # --version` (build_tmp installs carry aiecc but not llc — observed on
+    # strixhalo with the LLVM-23 NPU2-40 toolchain).
     if [ -x "$AIE_TOOLS_DIR/bin/llc" ]; then
         aie_llvm=$("$AIE_TOOLS_DIR/bin/llc" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        aie_llvm=${aie_llvm%%.*}
+    elif [ -x "$AIE_TOOLS_DIR/bin/aiecc" ]; then
+        aie_llvm=$("$AIE_TOOLS_DIR/bin/aiecc" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
         aie_llvm=${aie_llvm%%.*}
     fi
     if [ -x "$PEANO_DIR/bin/clang" ]; then
