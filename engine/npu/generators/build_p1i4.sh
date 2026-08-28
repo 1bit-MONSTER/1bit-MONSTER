@@ -105,17 +105,38 @@ checked = 0
 for elf in elvs:
     try:
         out = subprocess.run([objdump, "-d", elf], capture_output=True, text=True, timeout=120).stdout
+        syms = subprocess.run([objdump, "-t", elf], capture_output=True, text=True, timeout=120).stdout
     except Exception as e:
         print("WARN (#1837): objdump %s failed: %s" % (elf, e))
         continue
     lines = out.splitlines()
+    # FIX (2026-08-28, verified against main_core_*_2.elf): the first version
+    # matched ANY line containing "silu_quant_i8_fused_i4" — including the
+    # function DEFINITION label ('00000b10 <silu_quant_i8_fused_i4>:') — and
+    # then inspected the PREVIOUS function's tail (the window showed 'ret lr'
+    # and stores that belong to matmul), producing a false "p1/p2 dropped".
+    # The real call is a direct branch: 'jl #0xb10' (AIE2P has no indirect
+    # calls here), with p0 (c1) set before and p2 (h2) set in the jl delay
+    # slot — verified both ARE delivered. Only match actual jl targets:
+    # resolve the silu symbol's address from the symbol table (-t) first.
+    sym_addr = None
+    for ln in syms.splitlines():
+        # '00000b10 g F .text 000003c0 silu_quant_i8_fused_i4'
+        m = re.search(r"^([0-9a-f]+)\s+g\s+F\s+\.text\s+[0-9a-f]+\s+silu_quant_i8_fused_i4\s*$", ln.strip())
+        if m:
+            sym_addr = int(m.group(1), 16)
+            break
+    if sym_addr is None:
+        print("WARN (#1837): silu_quant_i8_fused_i4 symbol not found in %s — guard skipped" % elf)
+        continue
     for i, ln in enumerate(lines):
-        if "silu_quant_i8_fused_i4" not in ln:
+        # a jl to the silu address, e.g. '414: 04 01 00 88 05 00 jl #0xb10'
+        if not re.search(r"\bjl\s+#0x%x\b" % sym_addr, ln):
             continue
-        # call site found — inspect the window before it for arg-reg writes
-        win = lines[max(0, i - 8):i]
-        # AIE2P arg regs: p0..p3 (pointers) / r0..r3 (scalars); look for
-        # writes to registers other than the first arg reg.
+        # real call site — inspect the window around it for arg-reg writes
+        # (AIE2P: p0/p1/p2/p3 pointer args; the jl delay slot may hold the
+        # last arg mov — include up to 4 instructions after the jl too).
+        win = lines[max(0, i - 10):i + 5]
         writes = set()
         for w in win:
             m = re.search(r"\b([pr][0-3])\b", w)
@@ -124,16 +145,16 @@ for elf in elvs:
         if len(writes) < 2:
             print("%s (#1837): call to silu_quant_i8_fused_i4 in %s at line %d" % ("ERROR" if strict else "WARNING", elf, i + 1))
             print("  window: " + " | ".join(x.strip() for x in win))
-            print("  distinct arg-reg writes found: %s (< 2 -> p1/p2 setup likely dropped)" % sorted(writes))
+            print("  distinct arg-reg writes found: %s (< 2 -> arg setup may be dropped)" % sorted(writes))
             bad += 1
         checked += 1
 if bad:
     if strict:
-        print("FATAL (#1837): %d silu call site(s) lack p1/p2 arg setup — the aiecc" % bad)
-        print("  3-arg extern lowering dropped args; the silu reads stale regs. Fix upstream,")
+        print("FATAL (#1837): %d silu call site(s) lack arg setup — the aiecc" % bad)
+        print("  extern lowering dropped args; the silu reads stale regs. Fix upstream,")
         print("  or collapse the extern ABI to a single context-buffer arg.")
     else:
-        print("NOTE (#1837): %d silu call site(s) lack p1/p2 arg setup (see above)." % bad)
+        print("NOTE (#1837): %d silu call site(s) lack arg setup (see above)." % bad)
         print("  This is the KNOWN worked-around aiecc extern-call defect (generator keeps")
         print("  a dummy Gg/gs fifo; kernel reads metadata via the reliable c1-arg). Set")
         print("  NPU_STRICT_1837=1 to make this a hard failure.")
