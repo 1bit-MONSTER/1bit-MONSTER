@@ -39,21 +39,20 @@ defines (`-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED`).
 **Rule for this file:** pull/merge before touching it; never overwrite the other side's
 functions; if a conflict appears, preserve BOTH sides and note it in the merge commit.
 
-## Status snapshot (2026-08-28, fully synced)
+## Status snapshot (2026-08-28, fully synced — resolution)
 
-- **Sync complete**: `main` now contains ALL co-worker work (fork state + the 16 newest
+- **Sync complete**: `main` contains ALL co-worker work (fork state + the 16 newest
   commits from upstream `fix/triage-round` @ 954dc298) + strixhalo agent's cascade work
-  (aecfad54) + upstream main. Merge commits: 88de972c, 5c78007b.
-- Co-worker: 27 issues triaged; 14+ fixed; remaining = HW-verify on strixhalo
-  (#1865 h2 byte-identity gate, #1872 direct-vector dequant re-validation, #1874 mmul
-  transpose ISS validation, #1832 q4nx decode on real NPU) + XL features (#1907 baretorch,
-  #1831 HIP GatedDeltaNet+MoE) + upstream escalations.
+  (aecfad54) + upstream main. Merge commits: 88de972c, 5c78007b. Open PR #1917 (MERGEABLE).
+- Co-worker: 27 issues triaged; 14+ fixed; HW-verified on strixhalo (#1865 byte-identical,
+  #1874 corr 1.0, #1832 live q4nx decode, #1872 arithmetic-verified 512000/512000; NPU gate
+  on #1872 pending) + XL features (#1907 baretorch, #1831 HIP) + upstream escalations.
 - Strixhalo agent: fused-cascade work committed (aecfad54) + bug reports BUG-001..011;
   BUG-011 decision: single-launch zero-DMA premise REJECTED — p1/p2 two-launch (h2 via
-  DDR) is the production path; D GEMM must be one cascade pass, per-core partial fits L1
-  (N_D ≤ 256 verified).
-- **Handoff**: strixhalo agent will HW-verify the co-worker's pending NPU items on
-  `/dev/accel0` and report results here.
+  DDR) is the production path.
+- **RESOLUTION (zero-h2-DMA single launch): PROVEN BLOCKED** — see next section. The
+  objective's "prove which blocker is fatal" branch is satisfied with controlled silicon
+  evidence; production path = p1/p2 two-launch.
 
 ## Zero-h2-DMA single-launch: PROVEN BLOCKED (2026-08-28)
 
