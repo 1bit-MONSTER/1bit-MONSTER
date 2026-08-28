@@ -27,7 +27,7 @@ upstream-vs-in-repo ownership determined.
 | #1870 | med | ✅ fixed | fix_toolchain.sh LLVM-version match gate + libclang_rt check |
 | #1837 | high | ✅ fixed | build_p1i4.sh call-site arg-setup guard (NPU_STRICT_1837 opt-in) |
 | #1864 | high | ✅ fixed | #error guard + I4_SCALAR_C1_ACK_1864 in build_zaya_fused.sh |
-| #1832 | high | ✅ fixed | backend_npu_universal.cpp + format-aware routing (HW-verify decode) |
+| #1832 | high | ✅ fixed + verified | backend_npu_universal.cpp + format-aware routing + manifest format fix; verified live on strixhalo (2026-08-28): q4nx routes to NPU universal backend, zaya diverts correctly to FLM, onebin links with amdclang++ |
 | #1878/#1912 | med | ✅ harness merged | bench_compiler_ab.sh + README-COMPILER-AB.md on main (regression test for upstream fix) |
 | #1831 | high | ✅ interim | qwen3next CPU engine wired (CMake + backend_manager + router route for qwen35moe); full HIP port still XL |
 | #1776 | med | ✅ header gate | create_runlist() gated behind XRT>=2.25; runlist impl still env-blocked |
