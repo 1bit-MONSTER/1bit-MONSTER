@@ -166,18 +166,22 @@ $(echo "$line" | grep -o '[0-9.]* GOP/s' | tr -d ' GOP/s')"
 
 # ── Structural comparison of the two .o files ────────────────────────────────
 # AIE2P objects are not x86 ELF — use the llvm-aie objdump with the aie2p triple.
+# Peano emits per-function .text.<fn> sections; chess emits anonymous .text
+# sections + a large .symtab/.strtab/.rodata, so report TOTAL code bytes (.text*)
+# as the honest apples-to-apples metric.
 report_objects() { # $1 = peano dir, $2 = chess dir
   local OD="$MLIR_AIE/.venv/lib/python3.14/site-packages/llvm-aie/bin/llvm-objdump"
   echo "── object comparison ───────────────────────────────────────────"
-  printf "  %-28s %10s %14s\n" "arm" "size(B)" "insns(.text)"
+  printf "  %-28s %10s %14s\n" "arm" "size(B)" "code(B)"
   for arm in peano chess; do
     local d; [ "$arm" = peano ] && d=$1 || d=$2
-    local sz insns
+    local sz code
     sz=$(stat -c%s "$d/$KERNEL_O")
-    insns=$("$OD" -d --triple=aie2p "$d/$KERNEL_O" 2>/dev/null | grep -cE '^\s+[0-9a-f]+:' || true)
-    printf "  %-28s %10s %14s\n" "$arm ($KERNEL_O)" "$sz" "$insns"
+    code=$("$OD" --section-headers --triple=aie2p "$d/$KERNEL_O" 2>/dev/null \
+      | awk '$2 ~ /^\.text/ {s += strtonum("0x" $3)} END {print s+0}')
+    printf "  %-28s %10s %14s\n" "$arm ($KERNEL_O)" "$sz" "$code"
   done
-  echo "  (insns = llvm-objdump aie2p disasm lines of .text)"
+  echo "  (code = sum of .text* section sizes, hex→dec via llvm-objdump)"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

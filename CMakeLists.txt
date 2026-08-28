@@ -426,12 +426,23 @@ target_include_directories(gguf_reader PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
-# -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (Q4NX + TQ2 ternary) -------
+# -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (F16 lossless default; --q4nx/--tq2/--tq2nz/--tq1) --
 # Replaces the old tools/gguf_to_onebp.py. No Python anywhere in the convert
-# path. `--tq2` emits symmetric 2-bit ternary (half the size of Q4NX).
-add_executable(gguf_to_onebp tools/gguf_to_onebp.cpp)
+# path. Default is lossless F16 (4-bit Q4NX loses ~0.998/layer and compounds
+# into garbage logits on deep models — see issue #1728); `--q4nx`/`--tq2`/
+# `--tq2nz`/`--tq1` opt in to the lossy quant paths.
+add_executable(gguf_to_onebp src/gguf_to_onebp.cpp)
 target_link_libraries(gguf_to_onebp PRIVATE gguf_reader)
 target_compile_options(gguf_to_onebp PRIVATE -O3 -std=c++23)
+
+# -- verify_onebp : round-trip gate for gguf_to_onebp output (host-only) ------
+# Dequantizes a converted .1bp back to f32 via the production loader parse
+# (OnebpModel) + the converter's tile math, and compares against the source
+# GGUF. Usage: verify_onebp model.gguf model.1bp  (exit 0 = every tensor
+# round-trips within quantization tolerance; catches truncated/corrupt files).
+add_executable(verify_onebp tests/verify_onebp.cpp)
+target_link_libraries(verify_onebp PRIVATE gguf_reader onebp_model)
+target_compile_options(verify_onebp PRIVATE -O3 -std=c++23)
 
 # -- gguf_to_tilefuse : GGUF -> TileFuse pre-tiled int4 layout (arXiv 2606.11357)
 add_executable(gguf_to_tilefuse tools/gguf_to_tilefuse.cpp)
@@ -543,6 +554,7 @@ set(BACKEND_MANAGER_SOURCES
     src/glm_moe_dsa.cpp
     src/mimo_v2.cpp
     src/qwen3_5.cpp
+    src/qwen3next_engine.cpp   # Qwen3-Next (GatedDeltaNet) CPU engine — #1831 interim fallback
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp
@@ -840,7 +852,7 @@ add_test(NAME zaya_batch_check COMMAND zaya_batch_check ${ZAYA_TEST_MODEL})
 
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
-set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
+set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_npu_universal.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
 
 # ── Speculative decode demo: draft + target llama.cpp contexts, batched
 # verification with KV rollback (roadmap Phase 2 core loop) ──

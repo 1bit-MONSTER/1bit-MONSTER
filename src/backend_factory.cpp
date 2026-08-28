@@ -174,51 +174,34 @@ bool is_zamba2_architecture(const ModelConfig& cfg) {
 
 // ── Auto-detect available backends ──
 bool has_hip_gpu() {
+    // A HIP-capable GPU is present only when an AMD render node exists.
     // Check lightweight indicators first — avoid dlopen("librocm_cpp.so")
     // which triggers HSA runtime init that opens /dev/accel/accel0 on
     // Strix Halo, preventing standalone NPU tools from accessing the device
     // even when the GPU backend isn't actively inferring. See issue #1029.
+    //
+    // NOTE: in the monolithic onebin build the HIP backend is always a
+    // static symbol (and librocm_cpp.so is always installed), so a
+    // symbol/library check alone would report a GPU on machines that have
+    // none — causing the HIP backend to be created and abort() on
+    // hipErrorNoDevice (found via the appliance ISO's QEMU boot test).
+    // Hardware presence is the render node; require it.
     struct stat st;
     if (stat("/dev/dri/renderD128", &st) == 0) return true;
     if (stat("/dev/dri/renderD129", &st) == 0) return true;
     if (stat("/dev/dri/renderD130", &st) == 0) return true;
-    if (has_static_symbol("create_hip_backend")) return true;
-    // Last resort: probe the shared library (will trigger HSA init)
-    void* lib = dlopen("librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
-    if (lib) { dlclose(lib); return true; }
     return false;
 }
 
 bool has_vulkan() {
-    // Check lightweight indicators first — avoid dlopen("librocm_cpp.so")
-    // which triggers HSA runtime init on Strix Halo. See issue #1029.
-    // 1. Static symbol check (fast, no library load)
-    if (has_static_symbol("create_vulkan_backend")) return true;
-
-    // 2. Check render nodes first — fast stat() call, no library load.
-    //    On systems with a GPU (Strix Halo, dGPU), this succeeds instantly.
+    // Same principle as has_hip_gpu(): a usable Vulkan device requires a
+    // render node. dlopen("libvulkan.so") succeeding only proves the loader
+    // is installed, not that any physical device exists — on GPU-less boxes
+    // (VMs, headless Intel) that false positive made the probe select a
+    // Vulkan backend whose init then failed at runtime.
     struct stat st;
     if (stat("/dev/dri/renderD128", &st) == 0) return true;
     if (stat("/dev/dri/renderD129", &st) == 0) return true;
-
-    // 3. Probe via libvulkan — lightweight symbol check only.
-    //    dlopen("libvulkan.so") can hang on some systems if the Vulkan
-    //    loader tries to initialize GPU drivers, so only do this if
-    //    render nodes weren't found (headless/VM fallback).
-    void* lib = dlopen("libvulkan.so.1", RTLD_LAZY);
-    if (!lib) lib = dlopen("libvulkan.so", RTLD_LAZY);
-    if (lib) {
-        bool has_syms =
-            dlsym(lib, "vkCreateInstance") &&
-            dlsym(lib, "vkEnumeratePhysicalDevices") &&
-            dlsym(lib, "vkDestroyInstance");
-        dlclose(lib);
-        if (has_syms) return true;
-    }
-
-    // 4. Last resort: probe the full shared library (will trigger HSA init)
-    lib = dlopen("librocm_cpp.so", RTLD_NOW | RTLD_LOCAL);
-    if (lib) { dlclose(lib); return true; }
     return false;
 }
 

@@ -1167,30 +1167,46 @@ int zaya_decode_main(int argc, char** argv) {
                                         // full-row sweep: kernel h2 row 0 vs host q22
                                         // reference. h2 is PAIR-indexed: value p =
                                         // silu_pair_q22(C1h[2p], C1h[2p+1], meta of
-                                        // tile p/64). Compare all 2048 pairs.
+                                        // tile p/64). Compare all 2048 pairs. The meta
+                                        // (foldG/boundG/boundU/Q+shG+shU) is read from the
+                                        // PACKED BO (per-(ki,nt) tile, ki%4 selects the
+                                        // word) — the exact bytes the kernel consumes; the
+                                        // old nt=0-only extraction was wrong for tiles >= 1.
                                         {
+                                            const uint8_t* gub = (const uint8_t*)fgu_bo[l][e]->map();
+                                            const int n_tn = (int)((2 * m.n_ff) / 128);
+                                            auto meta_for = [&](int nt, int ki, int j) -> int32_t {
+                                                size_t off = ((size_t)(ki % 4) * n_tn + nt)
+                                                             * GuI4Pack::TILE_TOTAL + GuI4Pack::META_BASE;
+                                                return ((const int32_t*)(gub + off))[j];
+                                            };
                                             int first_bad = -1, nbad = 0, worst = 0;
                                             for (int p = 0; p < d.H; p++) {
-                                                int nt = p / 64;
-                                                int g = nt * 128 + 2 * (p % 64), u = g + 1;
+                                                int nt = p / 64, pp = p % 64;
+                                                int g = nt * 128 + 2 * pp, u = g + 1;
                                                 int ref = silu_pair_q22(
-                                                    C1h[g], C1h[u], fq[2 * (p % 64)], fq[2 * (p % 64) + 1],
-                                                    bg[2 * (p % 64)], bu[2 * (p % 64) + 1], qq[0], qq[1], qq[2]);
+                                                    C1h[g], C1h[u],
+                                                    meta_for(nt, 0, 2 * pp), meta_for(nt, 0, 2 * pp + 1),
+                                                    meta_for(nt, 1, 2 * pp), meta_for(nt, 2, 2 * pp + 1),
+                                                    meta_for(nt, 3, 0), meta_for(nt, 3, 1), meta_for(nt, 3, 2));
                                                 int got = (int)h2m2[(size_t)p];
                                                 int dd = got - ref; if (dd < 0) dd = -dd;
                                                 if (dd > worst) worst = dd;
                                                 if (got != ref) { nbad++; if (first_bad < 0) first_bad = p; }
                                             }
-                                            fprintf(stderr, "[h2sweep] nbad=%d first_bad=%d worst=%d\n", nbad, first_bad, worst);
+                                            fprintf(stderr, "[h2sweep] nbad=%d first_bad=%d worst=%d %s\n", nbad, first_bad, worst,
+                                                    nbad ? "MISMATCH" : "BYTE-IDENTICAL corr=1.0");
                                             // per-64-pair-tile summary
                                             for (int nt = 0; nt < d.H / 64; nt++) {
                                                 int tb = 0, tw = 0;
                                                 for (int pp = 0; pp < 64; pp++) {
                                                     int p = nt * 64 + pp;
                                                     int g = nt * 128 + 2 * pp, u = g + 1;
-                                                    int ref = silu_pair_q22(C1h[g], C1h[u],
-                                                        fq[2 * pp], fq[2 * pp + 1], bg[2 * pp], bu[2 * pp + 1],
-                                                        qq[0], qq[1], qq[2]);
+                                                    int ref = silu_pair_q22(
+                                                        C1h[g], C1h[u],
+                                                        meta_for(nt, 0, 2 * pp), meta_for(nt, 0, 2 * pp + 1),
+                                                        meta_for(nt, 1, 2 * pp), meta_for(nt, 2, 2 * pp + 1),
+                                                        meta_for(nt, 3, 0), meta_for(nt, 3, 1), meta_for(nt, 3, 2));
                                                     int got = (int)h2m2[(size_t)p];
                                                     int dd = got - ref; if (dd < 0) dd = -dd;
                                                     if (got != ref) tb++;
@@ -1199,7 +1215,9 @@ int zaya_decode_main(int argc, char** argv) {
                                                 fprintf(stderr, "[h2tile %2d] nbad=%d worst=%d got0=%d ref0=%d\n",
                                                         nt, tb, tw, (int)h2m2[(size_t)(nt * 64)],
                                                         (int)silu_pair_q22(C1h[nt*128], C1h[nt*128+1],
-                                                            fq[0], fq[1], bg[0], bu[1], qq[0], qq[1], qq[2]));
+                                                            meta_for(nt, 0, 0), meta_for(nt, 0, 1),
+                                                            meta_for(nt, 1, 0), meta_for(nt, 2, 1),
+                                                            meta_for(nt, 3, 0), meta_for(nt, 3, 1), meta_for(nt, 3, 2)));
                                             }
                                         }
                                     }
@@ -1210,6 +1228,35 @@ int zaya_decode_main(int argc, char** argv) {
                                     fprintf(stderr, "\n[h2i8r] ");
                                     for (int p = 0; p < 16; p++) fprintf(stderr, "%d ", h2r[p]);
                                     fprintf(stderr, "\n");
+                                    // ── C2 byte-identity gate (issue #1769): exact int32
+                                    // emulation of the p2 D GEMM using the NPU's OWN
+                                    // h2 readback (h2m2, row 0 — A-layout == linear for
+                                    // row 0) × the int8 D shadow (fd_row) vs the NPU's
+                                    // raw int32 C2. Isolates the D GEMM from any
+                                    // h2-reference question. All-integer: MUST be exact. ──
+                                    {
+                                        const int32_t* c2n = fused_ctx_p2.Cm;
+                                        long long num = 0, d1 = 0, d2 = 0, bad = 0, worst = 0;
+                                        fprintf(stderr, "[C2host] ");
+                                        for (int j = 0; j < d.H; j++) {
+                                            long long acc = 0;
+                                            for (int i = 0; i < m.n_ff; i++)
+                                                acc += (long long)h2m2[i] * fd_row[l][e][(size_t)i * d.H + j];
+                                            int32_t c2h = (int32_t)acc;
+                                            long long dd = (long long)c2h - c2n[j];
+                                            if (dd < 0) dd = -dd;
+                                            if (dd) { bad++; if (dd > worst) worst = dd; }
+                                            num += (long long)c2h * c2n[j];
+                                            d1 += (long long)c2h * c2h; d2 += (long long)c2n[j] * c2n[j];
+                                            if (j < 8) fprintf(stderr, "%d ", (int)c2h);
+                                        }
+                                        double cr = (d1 && d2) ? (double)num / std::sqrt((double)d1 * d2) : 1.0;
+                                        fprintf(stderr, "\n[C2npu ] ");
+                                        for (int j = 0; j < 8; j++) fprintf(stderr, "%d ", (int)c2n[j]);
+                                        fprintf(stderr, "\n[C2gate] corr=%.9f bad=%lld/%d worst=%lld %s\n",
+                                                cr, bad, d.H, worst,
+                                                bad ? "MISMATCH" : "BYTE-IDENTICAL corr=1.0");
+                                    }
                                     // B_shadow probe: host B'' for tile 0,
                                     // rows 0-7 cols 0-7 (row-major [K*N]).
                                     const int8_t* bsh = fgu_row[l][e].data();

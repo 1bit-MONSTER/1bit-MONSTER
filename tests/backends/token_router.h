@@ -7,6 +7,7 @@
 #include <string>
 #include <set>
 #include <cstdio>
+#include <cstring>   // strstr (issue #1832 Q4NX routing)
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -134,6 +135,28 @@ struct TokenRouter {
     }
 
     bool load_model(const ModelConfig& cfg) {
+        // Issue #1832: format-aware backend preference. A .q4nx model must go
+        // to an NPU worker (npu_engine_universal / FLM), NOT the GGUF-only
+        // Universal loader — select_best_backend() ranks by estimated tok/s
+        // and is format-blind. Prefer the Q4NX-capable NPU backends first,
+        // then the normal selection order.
+        if (cfg.format == ModelFormat::Q4NX) {
+            for (auto* b : backends) {
+                // NPU universal worker accepts Q4NX by contract
+                if (strstr(b->name(), "universal") && b->is_available()) {
+                    primary = b;
+                    break;
+                }
+            }
+            if (!primary || (strstr(primary->name(), "universal") == nullptr)) {
+                for (auto* b : backends) {
+                    if (b != primary && b->type() == BackendType::NPU_XRT && b->is_available()) {
+                        primary = b;
+                        break;
+                    }
+                }
+            }
+        }
         if (!primary || !primary->is_available()) {
             // Fall back to first available
             for (auto* b : backends) {

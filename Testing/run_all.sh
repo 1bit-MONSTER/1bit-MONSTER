@@ -36,7 +36,7 @@ run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
 if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
-   "$CXX" $FLAGS tools/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
+   "$CXX" $FLAGS src/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
        -o "$BIN/g2o" 2>/dev/null; then
     conv_out=$("$BIN/g2o" "$DEDUP_DIR/mini.gguf" "$DEDUP_DIR/mini.1bp" 2>&1)
     if [ $? -eq 0 ] && printf '%s' "$conv_out" | grep -q 'dedup: blk.1.attn_q.weight'; then
@@ -96,7 +96,7 @@ instella_mini=/tmp/onebit-instella/mini-full-f16.gguf
 instella_1bp=/tmp/onebit-instella/mini-full-q4nx.1bp
 if [ -f "$instella_mini" ]; then
     total=$((total+1))
-    if ! "$CXX" $FLAGS tools/gguf_to_onebp.cpp src/gguf_reader.cpp -o "$BIN/gguf_to_onebp" 2>/dev/null; then
+    if ! "$CXX" $FLAGS src/gguf_to_onebp.cpp src/gguf_reader.cpp -o "$BIN/gguf_to_onebp" 2>/dev/null; then
         echo "✗ instella-1bp: converter COMPILE FAILED"; fail=$((fail+1))
     else
         "$BIN/gguf_to_onebp" "$instella_mini" "$instella_1bp" >/dev/null 2>&1

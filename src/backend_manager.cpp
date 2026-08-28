@@ -1631,14 +1631,17 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
             // dedicated safetensors engines for DeepSeek V4 / GLM-MoE-DSA /
             // MiMo-V2 / Qwen3.5. Routed by model_router id.
             if (info.id == "cpu_deepseek_v4" || info.id == "cpu_glm_moe_dsa" ||
-                info.id == "cpu_mimo_v2" || info.id == "cpu_qwen3_5") {
+                info.id == "cpu_mimo_v2" || info.id == "cpu_qwen3_5" ||
+                info.id == "cpu_qwen3_next") {
                 extern Backend* create_frontier_deepseek_v4_backend();
                 extern Backend* create_frontier_glm_moe_dsa_backend();
                 extern Backend* create_frontier_mimo_v2_backend();
                 extern Backend* create_frontier_qwen3_5_backend();
+                extern Backend* create_qwen3next_backend();  // #1831 interim
                 if (info.id == "cpu_deepseek_v4") b = create_frontier_deepseek_v4_backend();
                 else if (info.id == "cpu_glm_moe_dsa") b = create_frontier_glm_moe_dsa_backend();
                 else if (info.id == "cpu_mimo_v2") b = create_frontier_mimo_v2_backend();
+                else if (info.id == "cpu_qwen3_next") b = create_qwen3next_backend();
                 else b = create_frontier_qwen3_5_backend();
                 if (b) return b;
             }

@@ -1,0 +1,15 @@
+[Unit]
+Description=1bit.MONSTER first-boot default model fetch (qwen3-0.6b)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/home/monster/.local/share/1bit/models/qwen3-0.6b.q4nx
+
+[Service]
+Type=oneshot
+User=monster
+Environment=HOME=/home/monster
+ExecStart=/usr/share/1bit/model-download.sh qwen3-0.6b
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

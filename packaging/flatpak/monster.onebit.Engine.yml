@@ -1,0 +1,94 @@
+# monster.onebit.Engine — Flatpak manifest for the 1bit.MONSTER inference engine
+#
+# Builds the prebuilt engine (build/1bit + librocm_cpp.so + ZINC shaders) plus
+# the pinned TheRock runtime payloads (produced by packaging/iso/fetch-payload.sh)
+# into a user-space Flatpak. The engine runs headless — no GUI — and is driven
+# over its OpenAI-compatible HTTP API:
+#
+#     flatpak run monster.onebit.Engine unified --port 8088
+#
+# finish-args rationale:
+#   --device=all        GPU (/dev/dri) + NPU (/dev/accel) device access
+#   --share=network     API listener + first-boot model downloads
+#   --persist=...       model cache survives sandbox restarts
+#   --nosocket=x11      headless server; no display needed
+#
+# The `1bit` command is a tiny wrapper (installed by the 1bit module) that
+# sets LD_LIBRARY_PATH to the bundled TheRock tree and /app/lib, then execs
+# the real binary — deterministic library resolution inside the sandbox.
+#
+# Build:  bash build-flatpak.sh   (or packaging/Makefile: package-flatpak)
+# Needs:  flatpak, flatpak-builder, org.freedesktop.Platform runtime:
+#         flatpak install --user flathub org.freedesktop.Platform//25.08
+app-id: monster.onebit.Engine
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: 1bit
+
+# The FDO SDK's finish phase strips/debuginfo-processes every ELF it ships;
+# that mangles AMD's rocsolver/rocblas libraries ("object file has no
+# loadable segments" at runtime). No debuginfo is needed for this appliance —
+# skip the processing entirely.
+build-options:
+  no-debuginfo: true
+
+finish-args:
+  - --share=network
+  - --device=all
+  - --nosocket=x11
+  - --nosocket=wayland
+  - --persist=.local/share/1bit
+  - --persist=.cache/1bit
+
+modules:
+  # TheRock (AMD ROCm 10.x) runtime — extracted payload tarballs produced by
+  # packaging/iso/fetch-payload.sh; unpacked under /app/therock in the same
+  # layout the appliance ISO installs to /opt/rocm-therock.
+  - name: therock
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/therock
+      - tar xzf therock-10.1.0a20260822-devel.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260822-libraries.tar.gz -C /app/therock
+      - tar xzf therock-10.1.0a20260822-core.tar.gz -C /app/therock
+    sources:
+      - type: file
+        path: ../iso/build/payload/therock-10.1.0a20260822-devel.tar.gz
+      - type: file
+        path: ../iso/build/payload/therock-10.1.0a20260822-libraries.tar.gz
+      - type: file
+        path: ../iso/build/payload/therock-10.1.0a20260822-core.tar.gz
+
+  # The engine: prebuilt onebin + shared HIP kernel lib + ZINC shaders.
+  # Sources are staged into this directory by build-flatpak.sh (build/ is a
+  # symlink to the repo root's build tree; xrt-libs/ holds the XRT .so.2
+  # files extracted from the distro's libxrt2/libxrt-npu2 packages — the
+  # engine links libxrt_core/libxrt_coreutil at load time; glibc-libs/ holds
+  # the host's glibc 2.43 + libstdc++ because the Freedesktop runtime's
+  # glibc is older than the Ubuntu 26.04 the engine is built on).
+  - name: 1bit
+    buildsystem: simple
+    build-commands:
+      - install -D -m 0755 1bit /app/bin/1bit.bin
+      - install -D -m 0755 1bit-wrapper.sh /app/bin/1bit
+      - for s in zaya_server unified_server unified_router vision_server jarvis_server onebitd onebit 1bit-server; do ln -s 1bit /app/bin/$s; done
+      - install -D -m 0755 librocm_cpp.so /app/lib/librocm_cpp.so
+      - install -D -m 0755 libxrt_core.so.2 libxrt_coreutil.so.2 libxrt_driver_xdna.so.2 libxrt_hip.so.2 libxilinxopencl.so.2 /app/lib/
+      - mkdir -p /app/glibc
+      - cp -a libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libresolv.so.2 libgcc_s.so.1 libstdc++.so.6 libnss_dns.so.2 libnss_files.so.2 ld-linux-x86-64.so.2 /app/glibc/
+      - mkdir -p /app/share/1bit-monster/shaders
+      - cp *.spv /app/share/1bit-monster/shaders/
+    sources:
+      - type: file
+        path: 1bit-wrapper.sh
+      - type: file
+        path: build/1bit
+      - type: file
+        path: build/librocm_cpp.so
+      - type: dir
+        path: build/zinc_cpp_build/shaders
+      - type: dir
+        path: xrt-libs
+      - type: dir
+        path: glibc-libs

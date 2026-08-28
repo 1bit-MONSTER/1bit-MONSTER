@@ -8,7 +8,8 @@ the REAL engine registry (rcpp_arch_from_string via the compiled probe). Any
 new class the registry doesn't map is what silently breaks the 100% claim —
 that is the alert.
 
-Run daily (see scripts/jarvis-daily-routine.sh step 4):
+Run daily via scripts/census-watch.sh (systemd timer 04:30 + GitHub Actions
+census-watch workflow):
     python3 Testing/hf_new_models.py [--limit N]   # N newest to check, default 120
 
 Exit 0: no uncovered classes among the new batch. Exit 1: found some (alert).

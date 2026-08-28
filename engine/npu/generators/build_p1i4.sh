@@ -48,6 +48,17 @@ if grep -q "silu_sigmoid_q22\[256\]" "$G/mm_kernel_reference.cc"; then
     echo "ERROR: mm_kernel_reference.cc must NOT define silu_sigmoid_q22 (it lives in silu_quant.h — issue #1845)" >&2
     exit 1
 fi
+# .bss lint (issue #1838): the aiecc-generated bare-metal ld.script maps only
+# .text/.data — zero-init statics land in .bss, which is DROPPED from the
+# kernel ELF, so kernel reads of them return garbage (observed in the #1769
+# round). mm_kernel_reference.cc forces every mutable static into .data via
+# KERNEL_STATIC; fail loudly if any .bss symbol survives in the merged object
+# (a future kernel edit that forgets the attribute regresses silently on NPU).
+if $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -E ' [bB] ' >/dev/null; then
+    echo "ERROR: kernel object has .bss symbols (issue #1838) — add KERNEL_STATIC:" >&2
+    $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -E ' [bB] ' >&2 || true
+    exit 1
+fi
 
 $PYTHON "$G/n1_core_fused_gu_silu_d_p1_i4.py" -M 8 -K 2048 -N_GU 4096 -N_D 2048 \
     -m 8 -k 64 -n 128 -c 8 -b 2 > "$W/design.mlir" 2>/dev/null
@@ -69,6 +80,68 @@ cd "$W"   # aiecc resolves link_with objects relative to the CWD (stale generato
 # design.mlir.prj/input_with_addresses.mlir; any generator change that moves
 # those buffers silently corrupts the silu (the 2026-08-24 incident: the
 # stash at 0x76000 missed Gg_0 @ 0x6000 by 458 KB -> h2 all-+127, 0.3 tok/s).
+
+# Issue #1837 guard: the aiecc extern-call lowering has dropped p1/p2 setup
+# for 3-arg calls (only p0 delivered) — the fused silu call is exactly a
+# 3-arg extern (c1, b4, h2). Disassemble the emitted core ELFs and check
+# every call site of silu_quant_i8_fused_i4: the instructions before the
+# call must set up at least two distinct argument registers. The current
+# tree works around the defect (generator keeps a dummy Gg/gs fifo "to keep
+# the aiecc's 3-arg extern call codegen healthy"; the kernel reads metadata
+# via the reliable c1-arg), so by default this prints a LOUD WARNING listing
+# affected call sites in every build log; set NPU_STRICT_1837=1 to turn the
+# same detection into a hard build failure.
+if [ -d "$W/design.mlir.prj" ]; then
+  NPU_STRICT_1837="${NPU_STRICT_1837:-0}" "$PYTHON" - "$W" "$P/bin/llvm-objdump" <<'PYEOF' || { [ "${NPU_STRICT_1837:-0}" = "1" ] && { echo "ERROR: extern-call arg-setup verification FAILED (issue #1837, NPU_STRICT_1837=1)" >&2; exit 1; }; }
+import glob, os, re, subprocess, sys
+wd, objdump = sys.argv[1], sys.argv[2]
+strict = os.environ.get("NPU_STRICT_1837", "0") == "1"
+elvs = glob.glob(os.path.join(wd, "design.mlir.prj", "**", "*.elf"), recursive=True)
+if not elvs:
+    print("WARN (#1837): no core ELFs under %s/design.mlir.prj — guard skipped" % wd)
+    sys.exit(0)
+bad = 0
+checked = 0
+for elf in elvs:
+    try:
+        out = subprocess.run([objdump, "-d", elf], capture_output=True, text=True, timeout=120).stdout
+    except Exception as e:
+        print("WARN (#1837): objdump %s failed: %s" % (elf, e))
+        continue
+    lines = out.splitlines()
+    for i, ln in enumerate(lines):
+        if "silu_quant_i8_fused_i4" not in ln:
+            continue
+        # call site found — inspect the window before it for arg-reg writes
+        win = lines[max(0, i - 8):i]
+        # AIE2P arg regs: p0..p3 (pointers) / r0..r3 (scalars); look for
+        # writes to registers other than the first arg reg.
+        writes = set()
+        for w in win:
+            m = re.search(r"\b([pr][0-3])\b", w)
+            if m:
+                writes.add(m.group(1))
+        if len(writes) < 2:
+            print("%s (#1837): call to silu_quant_i8_fused_i4 in %s at line %d" % ("ERROR" if strict else "WARNING", elf, i + 1))
+            print("  window: " + " | ".join(x.strip() for x in win))
+            print("  distinct arg-reg writes found: %s (< 2 -> p1/p2 setup likely dropped)" % sorted(writes))
+            bad += 1
+        checked += 1
+if bad:
+    if strict:
+        print("FATAL (#1837): %d silu call site(s) lack p1/p2 arg setup — the aiecc" % bad)
+        print("  3-arg extern lowering dropped args; the silu reads stale regs. Fix upstream,")
+        print("  or collapse the extern ABI to a single context-buffer arg.")
+    else:
+        print("NOTE (#1837): %d silu call site(s) lack p1/p2 arg setup (see above)." % bad)
+        print("  This is the KNOWN worked-around aiecc extern-call defect (generator keeps")
+        print("  a dummy Gg/gs fifo; kernel reads metadata via the reliable c1-arg). Set")
+        print("  NPU_STRICT_1837=1 to make this a hard failure.")
+    sys.exit(1 if strict else 0)
+print("OK (#1837): %d silu call site(s) checked, arg-reg setup present" % checked)
+PYEOF
+fi
+
 "$PYTHON" - "$W" <<'PYEOF' || { echo "ERROR: kernel address verification FAILED (issue #1842)" >&2; exit 1; }
 import glob, os, re, sys
 wd = sys.argv[1]

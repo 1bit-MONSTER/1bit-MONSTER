@@ -51,7 +51,7 @@ trap 'rm -rf "$workdir"' EXIT
 #    entry from silu_quant.h — the on-core SiLU+quant step) INTO the workdir.
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
-    ${NPU_C1_DUMP:+-DNPU_C1_DUMP} ${I4_SCALAR_C1:+-DI4_SCALAR_C1} ${I4_SUM_A:+-DI4_SUM_A} ${I4_B_DUMP:+-DI4_B_DUMP} ${I4_C1_DUMP:+-DI4_C1_DUMP} ${I4_A_DUMP:+-DI4_A_DUMP} ${I4_REF_DUMP:+-DI4_REF_DUMP} ${I4_C12_DUMP:+-DI4_C12_DUMP} ${I4_B4_DUMP:+-DI4_B4_DUMP} ${I4_NO_ZERO_TAIL:+-DI4_NO_ZERO_TAIL} ${I4_C00_DUMP:+-DI4_C00_DUMP} \
+    ${NPU_C1_DUMP:+-DNPU_C1_DUMP} ${I4_SCALAR_C1:+-DI4_SCALAR_C1} ${I4_SCALAR_C1:+-DI4_SCALAR_C1_ACK_1864} ${I4_SUM_A:+-DI4_SUM_A} ${I4_B_DUMP:+-DI4_B_DUMP} ${I4_C1_DUMP:+-DI4_C1_DUMP} ${I4_A_DUMP:+-DI4_A_DUMP} ${I4_REF_DUMP:+-DI4_REF_DUMP} ${I4_C12_DUMP:+-DI4_C12_DUMP} ${I4_B4_DUMP:+-DI4_B4_DUMP} ${I4_NO_ZERO_TAIL:+-DI4_NO_ZERO_TAIL} ${I4_C00_DUMP:+-DI4_C00_DUMP} \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \

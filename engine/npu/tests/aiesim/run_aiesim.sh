@@ -10,7 +10,20 @@
 #   2. copies the arm's insts.txt next to the sim as insts.txt
 #   3. runs aiesimulator --pkg-dir=<prj>/sim, prints the PASS/FAIL + C stats
 #
-# Needs: strixhalo (Vitis 2026.1 aietools + mlir-aie + license), g++.
+# Issue guards:
+#   #1911  aiecc --aiesim silently skips ps.so generation when clang++ is not
+#          on PATH (exit 0, unusable workdir). This script builds ps.so by hand
+#          with system g++ — and FAILS LOUDLY below if the build did not
+#          actually produce a ps.so.
+#   #1909  aiecc --aie-mlir-to-shim-solution emits an EMPTY aieshim_solution
+#          .aiesol ("Placement": []) for every npu2 design, which would make
+#          aiesimulator silently useless. We warn loudly when that is detected
+#          (the TXN-replay ps.so below is the workaround that makes such
+#          designs sim-able).
+#   #1908  Vitis 2026.1's aie2psimmsm segfaults on ANY npu2 design; 2025.2
+#          works. Default VITIS to 2025.2 and refuse 2026.1 unless forced.
+#
+# Needs: strixhalo (Vitis aietools + mlir-aie + license), g++.
 # NOTE: aiesimulator is slow on the full 128x2048x8192 design (millions of
 # cycles); start with WAIT_US small / a shrunk design to validate plumbing.
 set -euo pipefail
@@ -19,9 +32,16 @@ AISIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS="$(dirname "$AISIM_DIR")"
 REPO="$(cd "$AISIM_DIR/../../../.." && pwd)"
 MLIR_AIE="${MLIR_AIE:-$HOME/mlir-aie}"
-# 2025.2 is the WORKING aiesimulator for aie2p — 2026.1's aie2psimmsm
-# segfaults at startup on any npu2 design (empty aiesol).
+# Issue #1908: 2025.2 is the WORKING aiesimulator for aie2p — 2026.1's
+# aie2psimmsm segfaults at startup on any npu2 design (empty aiesol + missing
+# aie2p_8x4_device.json). Override with VITIS=~/Xilinx/2026.1 at your own risk.
 VITIS="${VITIS:-$HOME/Xilinx/2025.2}"
+case "$VITIS" in
+  *2026.1*)
+    echo "WARNING (#1908): Vitis 2026.1 aie2psimmsm segfaults on npu2 designs;" >&2
+    echo "  2025.2 is the verified-working aiesimulator. Forcing 2026.1 anyway." >&2
+    ;;
+esac
 AIETOOLS="$VITIS/Vitis/aietools"
 TL_INC="$MLIR_AIE/.venv/lib/python3.14/site-packages/mlir_aie/runtime_lib/x86_64/test_lib/include"
 TL_LIB="$MLIR_AIE/.venv/lib/python3.14/site-packages/mlir_aie/runtime_lib/x86_64/test_lib/lib"
@@ -42,6 +62,18 @@ for p in "$GENWRAP" "$PRJ/aie_inc.cpp" "$AIETOOLS/bin/aiesimulator"; do
   [ -e "$p" ] || { echo "ERROR: missing $p" >&2; exit 1; }
 done
 [ -e "$PRJ_DIR/$INSTS" ] || { echo "ERROR: $PRJ_DIR/$INSTS not found" >&2; exit 1; }
+
+# Issue #1909: detect the empty aieshim_solution.aiesol ({"Placement": []})
+# that aiecc emits for every npu2 design. Without the TXN-replay ps.so this
+# workdir is unusable — warn loudly so nobody mistakes it for a real sim.
+if [ -f "$PRJ/aieshim_solution.aiesol" ]; then
+    if grep -q '"Placement"[[:space:]]*:[[:space:]]*\[\]' "$PRJ/aieshim_solution.aiesol"; then
+        echo "WARNING (#1909): $PRJ/aieshim_solution.aiesol has EMPTY Placement —" >&2
+        echo "  aiecc --aie-mlir-to-shim-solution cannot place this npu2 design." >&2
+        echo "  The TXN-replay ps.so below drives it anyway; do NOT use the" >&2
+        echo "  aiesol alone (it would make aiesimulator silently useless)." >&2
+    fi
+fi
 
 export PATH="$AIETOOLS/bin:/opt/xilinx/xrt/bin:$PATH"
 export XILINXD_LICENSE_FILE="$HOME/.Xilinx/Xilinx.lic"
@@ -71,6 +103,16 @@ g++ -O2 -shared -fPIC -fpermissive \
   -L "$AIETOOLS/data/osci_systemc/lib/lnx64" \
   -Wl,--as-needed -lsystemc -lxtlm \
   -o "$PRJ/sim/ps/ps.so" 2>&1 | tail -15
+# Issue #1911: the aiecc --aiesim flow silently exits 0 with NO ps.so when
+# clang++ is missing. Here g++ builds it by hand — but verify the artifact
+# actually exists and is non-empty (a failed compile above must not slip
+# through as a "successful" sim workdir).
+if [ ! -s "$PRJ/sim/ps/ps.so" ]; then
+    echo "ERROR (#1911): ps.so was not produced — the g++ ps.so build failed above." >&2
+    echo "  Check the compiler diagnostics (aiecc --aiesim silently skips ps.so" >&2
+    echo "  generation when clang++ is missing from PATH; this harness must not)." >&2
+    exit 1
+fi
 echo "  OK: $PRJ/sim/ps/ps.so ($(stat -c%s "$PRJ/sim/ps/ps.so") B)"
 
 echo "== 2/3 stage insts =="

@@ -313,6 +313,10 @@ extern std::vector<InferenceBackend*> detect_backends_hip1bp();
 // Weak stubs for optional backends (real impls in backend_vulkan.cpp / backend_npu.cpp)
 __attribute__((weak)) std::vector<InferenceBackend*> detect_backends_vulkan() { return {}; }
 __attribute__((weak)) std::vector<InferenceBackend*> detect_backends_npu() { return {}; }
+// Issue #1832: npu_engine_universal (the open NPU worker) as an
+// InferenceBackend — real impl in backend_npu_universal.cpp. Registered so
+// .q4nx models route to it instead of the GGUF-only Universal loader.
+__attribute__((weak)) std::vector<InferenceBackend*> detect_backends_npu_universal() { return {}; }
 extern std::vector<InferenceBackend*> detect_backends_generic();
 __attribute__((weak)) std::vector<InferenceBackend*> detect_backends_zinc() { return {}; }
 extern std::vector<InferenceBackend*> detect_backends_zamba2();
@@ -333,6 +337,12 @@ std::vector<InferenceBackend*> detect_backends() {
 
     auto npu_backends = detect_backends_npu();
     for (auto* b : npu_backends) backends.push_back(b);
+
+    // Issue #1832: the open npu_engine_universal worker backend — must be
+    // registered BEFORE the GGUF-only generic loader so a .q4nx model is
+    // routed to the NPU instead of being treated as GGUF.
+    auto npu_univ_backends = detect_backends_npu_universal();
+    for (auto* b : npu_univ_backends) backends.push_back(b);
 
     // Zamba2 GPU backend (tried before generic CPU)
     auto zamba2_backends = detect_backends_zamba2();
