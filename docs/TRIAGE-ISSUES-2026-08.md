@@ -13,7 +13,7 @@ upstream-vs-in-repo ownership determined.
 
 | Issue | Sev | Status | Where |
 |-------|-----|--------|-------|
-| #1838 | med | ✅ fixed | KERNEL_STATIC .data + build_p1i4.sh .bss lint (HW-verify rebuild) |
+| #1838 | med | ✅ fixed + silicon-verified | KERNEL_STATIC .data; final fused kernel ELF has .data@0x7f60c/0x7f610 (g_i4_call, call counter), ZERO .bss; CPU gates ALL PASS (2026-08-28) |
 | #1834 | high | ✅ fixed | mm_binary_q1.cc union bit-casts + g_counter .data (HW-verify rebuild) |
 | #1913 | med | ✅ fixed | check_chess_aietools.sh guard + USE_XCHESSCC=1 + docs §2 |
 | #1908 | med | ✅ fixed | run_aiesim.sh 2025.2 default + 2026.1 warning |
@@ -27,7 +27,7 @@ upstream-vs-in-repo ownership determined.
 | #1870 | med | ✅ fixed | fix_toolchain.sh LLVM-version match gate + libclang_rt check |
 | #1837 | high | ✅ fixed | build_p1i4.sh call-site arg-setup guard (NPU_STRICT_1837 opt-in) |
 | #1864 | high | ✅ fixed | #error guard + I4_SCALAR_C1_ACK_1864 in build_zaya_fused.sh |
-| #1832 | high | ✅ fixed + verified | backend_npu_universal.cpp + format-aware routing + manifest format fix; verified live on strixhalo (2026-08-28): q4nx routes to NPU universal backend, zaya diverts correctly to FLM, onebin links with amdclang++ |
+| #1832 | high | ✅ fixed + live-verified | NPU universal backend loads 35B-A3B q4nx on real NPU ("worker ready" ~35s); handshake timeout 10s→300s (model pack); manifest format fix; zaya→FLM diversion; onebin links amdclang++ |
 | #1878/#1912 | med | ✅ harness merged | bench_compiler_ab.sh + README-COMPILER-AB.md on main (regression test for upstream fix) |
 | #1831 | high | ✅ interim | qwen3next CPU engine wired (CMake + backend_manager + router route for qwen35moe); full HIP port still XL |
 | #1776 | med | ✅ header gate | create_runlist() gated behind XRT>=2.25; runlist impl still env-blocked |
