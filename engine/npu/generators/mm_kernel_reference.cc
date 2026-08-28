@@ -23,11 +23,12 @@
 // float/int scalar ops the AIE2P scalar unit lowers to hardware instructions.
 #include "silu_quant.h"
 
-// Portable 64×4-bit → 64×int8 sign-extended nibble unpack. Peano/llvm-aie
-// exposes __builtin_aie2p_unpack_I512_I8_I4; chess (xchesscc) does not — the
-// scalar fallback keeps the same lane order (element e = byte e/2, even e =
-// low nibble), so the SAME source compiles under both compilers (A/B harness:
-// tests/bench_compiler_ab.sh). Peano builds take the builtin branch unchanged.
+// Portable 64×4-bit → 64×int8 sign-extended nibble unpack (A/B harness:
+// tests/bench_compiler_ab.sh, issues #1878/#1912). Peano/llvm-aie exposes
+// __builtin_aie2p_unpack_I512_I8_I4; chess (xchesscc) does not — the scalar
+// fallback keeps the same lane order (element e = byte e/2, even e = low
+// nibble), so the SAME source compiles under both compilers. Peano builds
+// take the builtin branch unchanged.
 static inline auto unpack_i4_sx(const v64int4 *p) {
 #ifdef __chess__
     // chess: v64int8 has no subscript operator — go through aie::vector
@@ -870,7 +871,16 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // ── 1769 int4 mmul path (default, HEAD/1776): 4-accumulator m8
     //    with the silu_roundf no-libm fix; the v66 scalar (pi) is the
     //    I4_SCALAR_C1 fallback (aie2p C-store/ratio miscompiles, #1869).
-    
+    // Issue #1865: zero pC through the DELIVERED pC arg at the start of each
+    // col_group (g_i4_call % 32 == 0, matching the generator's n_k=32 calls
+    // per col_group) — replaces the hardcoded-address zero_c1() (0xE000),
+    // which did NOT reliably hit the compiler-assigned C1buf (the scalar
+    // path's proven f59d8027 BUGFIX pattern, issue #1776). g_i4_call
+    // increments at the END of this function, so call 0 and call 32 both hit
+    // %32==0 here.
+    if (g_i4_call % 32 == 0) {
+        for (unsigned z = 0; z < DIM_M * DIM_N; z++) pC[z] = 0;
+    }
     // 4 accumulators per col-tile group (C00..C03 pattern of the m8 kernel);
     // iterate col-tiles in groups of 4.
     for (unsigned jg = 0; jg < nct; jg += 4) {
@@ -882,6 +892,37 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
         MMUL C00(acc0), C01(acc1), C02(acc2), C03(acc3);
         for (unsigned i = 0; i < nk; ++i) {
             aie::vector<int8, 64> A0 = aie::load_v<64>(pA + i * 64);
+#ifdef I4_DIRECT_VECTOR_DEQ
+            // Issue #1872 workaround: the Bb[4][64] memory round-trip is
+            // PROVABLY unsafe on this toolchain — computed-value byte-stores
+            // into tile-local memory are dropped/misplaced (measured 2026-08:
+            // dequant B'' diverged from the host byte-exact reference). This
+            // path keeps B'' in registers: aie::mul (q4<<4 int8 x ratioQ22
+            // int32 -> acc32), round-half-away >> 22, saturate, to_vector
+            // int8 — no computed byte-store at all. Compile-verified on
+            // peano (2026-08-28); NPU corr gate still required.
+            aie::vector<int8, 64> Bv[4];
+            for (unsigned jt = 0; jt < 4; ++jt) {
+                unsigned j = jg + jt;
+                const uint8_t* nib = pB4 + i * 512 + j * 32;
+                const int32_t* rq = (const int32_t*)(pB4 + 4096 + (size_t)(i / 4) * 512
+                                                     + (size_t)j * 32);
+                const v64int4* pv = (const v64int4*)nib;
+                auto u = unpack_i4_sx(pv);
+                u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
+                aie::vector<int32, 8> r8 = aie::load_v<8>(rq);
+                aie::vector<int32, 64> rq64;
+                for (int e = 0; e < 64; e++) rq64[e] = r8[e & 7];
+                auto acc = aie::mul(rq64, aie::to_vector<int32>(u));
+                aie::vector<int32, 64> shifted;
+                for (int e = 0; e < 64; e++) {
+                    int r = (int)((acc[e] + (1 << 21)) >> 22);
+                    shifted[e] = r > 127 ? 127 : r < -127 ? -127 : r;
+                }
+                Bv[jt] = aie::to_vector<int8>(shifted);
+            }
+            aie::vector<int8, 64> B0 = Bv[0], B1 = Bv[1], B2 = Bv[2], B3 = Bv[3];
+#else
             int8_t Bb[4][64];
             for (unsigned jt = 0; jt < 4; ++jt) {
                 unsigned j = jg + jt;   // col-tile index 0..15
@@ -906,6 +947,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
             aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);
             aie::vector<int8, 64> B2 = aie::load_v<64>(Bb[2]);
             aie::vector<int8, 64> B3 = aie::load_v<64>(Bb[3]);
+#endif
 #ifdef I4_B_DUMP
             if (g_i4_dq_once) {
                 g_i4_dq_once = 0;
@@ -1070,6 +1112,11 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
 }
 
 extern "C" void zero_c1(void) {
+    // Issue #1865: no longer called — the mmul path zeroes pC through the
+    // delivered pC arg (g_i4_call % 32 == 0) and the scalar path has its own
+    // pC zeroing (f59d8027). Kept as a stub so stale generators that still
+    // reference the symbol link; it must not write the hardcoded 0xE000
+    // (that address is not guaranteed to be the compiler-assigned C1buf).
     int32_t *d = (int32_t *)0xE000;
     for (unsigned i = 0; i < DIM_M * DIM_N; i++) d[i] = 0;
 }
@@ -1158,8 +1205,8 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     // The per-pair arithmetic lives in silu_quant.h (silu_pair_q22), CPU-
     // gated bit-exactly by test_i4_silu_q22.cpp (corr 0.99997 vs the float
     // silu_quant reference on realistic data). The h2 writeback target is
-    // the hardcoded H2 fifo slot 0x7F000 (depth-1 fifo, identical on all
-    // cores; wraps to the fifo @ 0xF000 — issue #1842).
+    // the DELIVERED h2 arg (the H2 objectFifo buffer) — issue #1865 (the
+    // old hardcoded 0x7F000 fifo slot is gone; see h2w below).
     static const int gos[64] = {
         0, 2, 4, 6, 64, 66, 68, 70, 128, 130, 132, 134, 192, 194, 196, 198,
         256, 258, 260, 262, 320, 322, 324, 326, 384, 386, 388, 390, 448, 450, 452, 454,
@@ -1183,7 +1230,15 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     const int Q = st[32];                                  // per-tile fold Q
     const int shG = st[33];                                // Q - 11 (host-precomputed)
     const int shU = st[34];                                // Q - 7
-    int8_t *h2w = (int8_t *)0x7F000;
+    // Issue #1865: write h2 through the DELIVERED h2 arg (the H2 objectFifo
+    // buffer the generator passes), NOT the hardcoded 0x7F000 tile-local
+    // address. Verified in the core ELF disassembly (2026-08-28): the call
+    // site is 'jl #0xb10' with p2 (h2) set in the jl delay slot — the arg IS
+    // delivered and points at the compiler-assigned H2 buffer. Hardcoding
+    // 0x7F000 broke whenever the allocator moved the fifo (the 2026-08-24
+    // 0x76000 incident: h2 all-+127); using the arg is robust to any
+    // relocation.
+    int8_t *h2w = h2;
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
 #ifdef I4_C00_DUMP
@@ -1302,7 +1357,7 @@ extern "C" void unpack_i4_b(const int8_t *__restrict packed,
                             int8_t *__restrict out, unsigned n_bytes) {
     for (unsigned i = 0; i + 32 <= n_bytes; i += 32) {
         const v64int4 *p = (const v64int4 *)(packed + i);
-        auto u = unpack_i4_sx(p);  // sign-extend nibbles
+        auto u = unpack_i4_sx(p);  // sign-extend nibbles (chess-compatible, #1878)
         u = u + u; u = u + u; u = u + u; u = u + u;            // x16 (fold-free)
 #ifdef __chess__
         aie::store_v(out + 2 * i, u);

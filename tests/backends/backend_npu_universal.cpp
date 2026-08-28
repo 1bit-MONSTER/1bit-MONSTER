@@ -104,8 +104,17 @@ struct NpuWorker {
         char ready_buf[6];
         int ready_bytes = 0;
         auto t0 = std::chrono::steady_clock::now();
+        // READY timeout: model pack scales with size — the 35B-A3B q4nx takes
+        // ~45-60s to dequant+pack+init before emitting READY (measured on
+        // strixhalo 2026-08-28). The 10s limit (copied from src/backend_npu.cpp)
+        // killed big models; NPU_WORKER_READY_TIMEOUT_S overrides (default 300s).
+        int ready_timeout = 300;
+        if (const char* e = getenv("NPU_WORKER_READY_TIMEOUT_S")) {
+            int v = atoi(e);
+            if (v > 0) ready_timeout = v;
+        }
         while (ready_bytes < 6 && std::chrono::duration_cast<std::chrono::seconds>(
-                   std::chrono::steady_clock::now() - t0).count() < 10) {
+                   std::chrono::steady_clock::now() - t0).count() < ready_timeout) {
             fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd, &fds);
             struct timeval tv = {1, 0};
             if (select(stdout_fd + 1, &fds, nullptr, nullptr, &tv) > 0) {
@@ -202,6 +211,21 @@ public:
         model_path_ = (mp && mp[0]) ? mp : cfg.model_path;
         if (model_path_.empty()) {
             fprintf(stderr, "NPU(univ): no model path (set NPU_MODEL_PATH or pass a .q4nx path)\n");
+            return false;
+        }
+        // VERIFIED on strixhalo (2026-08-28): npu_engine_universal DIVERTS
+        // zaya-named models to zaya_decode_main via q4nx manifest sniffing
+        // (npu_engine_universal.cpp ~line 575) — that path has NO --worker
+        // protocol (runs the decode self-test and exits), so the READY
+        // handshake never fires. The production FLM backend owns zaya q4nx
+        // (backend_npu_flm.cpp maps zaya1-8b etc.); reject here so the router
+        // falls through to FLM instead of hanging 10s on the handshake.
+        // This backend serves the non-zaya q4nx family (e.g. qwen3.6-moe 35B).
+        if (model_path_.find("zaya") != std::string::npos) {
+            fprintf(stderr, "NPU(univ): zaya q4nx models are served by the FLM backend"
+                    " (npu_engine_universal diverts them to zaya_decode_main,"
+                    " which has no --worker protocol) — rejecting %s\n",
+                    model_path_.c_str());
             return false;
         }
         // npu_engine_universal needs the model dims in env; derive them from

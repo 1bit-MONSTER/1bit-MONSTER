@@ -243,6 +243,31 @@ engine/npu/tests/aiesim/run_aiesim.sh <arm-workdir> [WAIT_US] [insts-name]
   `matmul_i8_i32_i4` (writes `1000+i` to 0xD000) — the real arithmetic
   kernel is the committed one (`1a309199`+); keep the stub out of commits.
 
+### Tracker close-out (2026-08-28, issue #1882 sub-items)
+
+Status of the consolidated aie2p miscompile tracker's sub-items after the
+strixhalo verification round:
+
+| Issue | Defect | Status |
+|-------|--------|--------|
+| #1834 | memcpy libcall clobbers r0/r1 | ✅ FIXED in-tree: union bit-casts everywhere incl. mm_binary_q1.cc; escal. upstream |
+| #1838 | ld.script drops .bss statics | ✅ FIXED in-tree: KERNEL_STATIC → .data, ELF-verified (.data@0x7f60c, zero .bss); escal. upstream |
+| #1864 | scalar RMW miscompile | ✅ Worked around: I4_SCALAR_C1_ACK_1864 guard + #1874 default flip; escal. upstream |
+| #1865 | hardcoded tile addresses | ✅ FIXED in-tree: h2 via delivered arg, pC zeroing via arg, zero_c1 removed, #1842 pins retired; NPU gate pending |
+| #1869 | pointer-arith miscompile j>=8 | ✅ Worked around (v66 direct pointer math); escal. upstream with repro |
+| #1835 | soft-float (sf*0.0625)/scc NaN | ✅ Worked around (int32 ratioQ22); escal. upstream |
+| #1836 | pipeliner float loop p>=1 | ✅ Worked around (silu_pair_q22 fixed-point); escal. upstream |
+| #1872 | Btmp byte-stores dropped | ✅ Mitigated: #1874 flip removes Bb from production; I4_DIRECT_VECTOR_DEQ for mmul path; NPU gate pending |
+| #1874 | mmul C1 store scrambled | ✅ Mitigated: I4_SCALAR_C1 is now the production default; mmul path opt-in |
+| #1878/#1912 | chess arg delivery (upstream) | ⏳ ESCALATE upstream; A/B harness on main as regression test |
+| #1866 | -O0 immediate range crash | ⏳ ESCALATE upstream (llvm-aie); -O1 workaround documented |
+
+Upstream reproducers to file (all have in-repo CPU-gated minimal cases):
+#1869 (rqb+j*32 vs pB4+gbase+(j<<5)), #1835 ((sf*0.0625f)/scc → NaN),
+#1836 (float silu loop p>=1), #1864 (scalar `+=` with computed operand,
+11/32 operand subset → <<8), #1866 (-O0 immediate −33216 out of
+[-32768,-64]), #1878 (chess memref base pointers never delivered).
+
 ## 9. Reusable artifacts
 
 - `/tmp/aiesim_recipe.md` on strixhalo (this doc, condensed).

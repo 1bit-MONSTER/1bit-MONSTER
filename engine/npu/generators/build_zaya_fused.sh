@@ -49,9 +49,17 @@ trap 'rm -rf "$workdir"' EXIT
 
 # 1. Compile the DIM_M=8 kernel (1x4 mmul + the fused silu_quant_i8_fused
 #    entry from silu_quant.h — the on-core SiLU+quant step) INTO the workdir.
+# Issue #1874: I4_SCALAR_C1 is the PRODUCTION DEFAULT (mmul C1 store
+# miscompiled for non-uniform B; scalar path verified corr 1.0 via #1897).
+# I4_USE_MMUL=1 reverts to the experimental mmul path.
+I4_SCALAR_FLAGS=(-DI4_SCALAR_C1 -DI4_SCALAR_C1_ACK_1864)
+if [ "${I4_USE_MMUL:-0}" = "1" ]; then
+    I4_SCALAR_FLAGS=()
+fi
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
-    ${NPU_C1_DUMP:+-DNPU_C1_DUMP} ${I4_SCALAR_C1:+-DI4_SCALAR_C1} ${I4_SCALAR_C1:+-DI4_SCALAR_C1_ACK_1864} ${I4_SUM_A:+-DI4_SUM_A} ${I4_B_DUMP:+-DI4_B_DUMP} ${I4_C1_DUMP:+-DI4_C1_DUMP} ${I4_A_DUMP:+-DI4_A_DUMP} ${I4_REF_DUMP:+-DI4_REF_DUMP} ${I4_C12_DUMP:+-DI4_C12_DUMP} ${I4_B4_DUMP:+-DI4_B4_DUMP} ${I4_NO_ZERO_TAIL:+-DI4_NO_ZERO_TAIL} ${I4_C00_DUMP:+-DI4_C00_DUMP} \
+    "${I4_SCALAR_FLAGS[@]}" \
+    ${NPU_C1_DUMP:+-DNPU_C1_DUMP} ${I4_SUM_A:+-DI4_SUM_A} ${I4_B_DUMP:+-DI4_B_DUMP} ${I4_C1_DUMP:+-DI4_C1_DUMP} ${I4_A_DUMP:+-DI4_A_DUMP} ${I4_REF_DUMP:+-DI4_REF_DUMP} ${I4_C12_DUMP:+-DI4_C12_DUMP} ${I4_B4_DUMP:+-DI4_B4_DUMP} ${I4_NO_ZERO_TAIL:+-DI4_NO_ZERO_TAIL} ${I4_C00_DUMP:+-DI4_C00_DUMP} \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \

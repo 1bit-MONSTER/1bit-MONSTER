@@ -275,6 +275,33 @@ static bool detect_from_manifest(const std::string& path, ModelConfig& cfg) {
             const char* home = getenv("HOME");
             cfg.weights_dir = (home && home[0]) ? std::string(home) + "/.local/share/1bit-monster/weights/" : "/tmp/zaya_weights/";
         }
+        // Issue #1832: set the format so the router can prefer the Q4NX NPU
+        // backend. Accept an explicit "format" field ("q4nx"/"gguf"/"h1b"/
+        // "onebp") OR derive it from the model_path extension — a manifest
+        // that leaves format UNKNOWN makes every format-aware backend
+        // (NPU universal, FLM) reject the model and it falls into the GGUF
+        // loader, which was the original bug. Mirrors the .1bp path
+        // (detect_from_1bp sets Q4NX/ONEBP from the extension).
+        {
+            std::string fmt = j.value("format", std::string());
+            std::string mp = cfg.model_path;
+            if (!fmt.empty()) {
+                std::string f = fmt;
+                for (auto& c : f) c = (char)tolower(c);
+                if (f == "q4nx") cfg.format = ModelFormat::Q4NX;
+                else if (f == "gguf") cfg.format = ModelFormat::GGUF;
+                else if (f == "h1b") cfg.format = ModelFormat::H1B;
+                else if (f == "onebp" || f == "1bp") cfg.format = ModelFormat::ONEBP;
+                else if (f == "safetensors") cfg.format = ModelFormat::SAFETENSORS;
+            } else if (mp.size() > 5 &&
+                       mp.substr(mp.size() - 5) == ".q4nx") {
+                cfg.format = ModelFormat::Q4NX;
+            } else if (mp.size() > 5 &&
+                       mp.substr(mp.size() - 5) == ".gguf") {
+                cfg.format = ModelFormat::GGUF;
+            }
+            fprintf(stderr, "  Manifest format: %d (%s)\n", (int)cfg.format, cfg.model_path.c_str());
+        }
         fprintf(stderr, "  Loaded manifest: %s\n", cfg.model_name.c_str());
         fprintf(stderr, "    hidden=%d layers=%d heads=%d vocab=%d\n",
                 cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.vocab_size);
