@@ -49,7 +49,7 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -c "$G/mm_kernel_reference.cc" -o "$W/wide.o" 2>/dev/null
 $P/bin/ld.lld -r "$W/wide.o" -o "$W/wide_d.o"
 
-for sym in matmul_i8_i32 silu_quant_i8_fused_q22 matmul_i8_i32_wide \
+for sym in matmul_i8_i32_ab silu_quant_i8_fused_q22 matmul_i8_i32_wide \
            cascade_reduce_first_i32_wide cascade_reduce_mid_i32_wide \
            cascade_reduce_last_i32_wide; do
     obj="$W/mm_32x64x128.o"; [[ "$sym" == *wide ]] && obj="$W/wide_d.o"
@@ -58,10 +58,9 @@ for sym in matmul_i8_i32 silu_quant_i8_fused_q22 matmul_i8_i32_wide \
     fi
 done
 
-# 3. design.mlir (iron API) — EXTRA_ARGS passed through for probe variants
-EXTRA_ARGS="${EXTRA_ARGS:-}"
+# 3. design.mlir (iron API)
 $PYTHON "$G/n1_core_fused_gu_silu_d_iron.py" -M 8 -K 2048 -N_GU 4096 -N_D "$N_D" \
-    -m 8 -k 64 -n 128 -c 8 -b 2 $EXTRA_ARGS > "$W/design.mlir" 2>/dev/null
+    -m 8 -k 64 -n 128 -c 8 -b 2 > "$W/design.mlir" 2>/dev/null
 grep -q "cascade_flow" "$W/design.mlir" || { echo "ERROR: no cascade_flow in design" >&2; exit 1; }
 
 # 4. aiecc → xclbin (peano flow; the cascade kernels are peano-only)

@@ -1,121 +1,157 @@
-# n1_core_fused_gu_silu_d_iron.py — fused GU→SiLU→D, ZERO-h2-DMA single launch.
+# n1_core_fused_gu_silu_d_iron.py — fused GU→SiLU→D generator (aie.iron API).
 #
-# SYNTHESIS (2026-08-28): the co-worker's #3580 launch fix + broadcast-A (ONE
-# ObjectFifo shim0→all-cores, NOT per-core) + the new aie.iron Runtime/Program
-# API, combined with the SILICON-VERIFIED TWO-PHASE cascade (accumulate c2scr
-# per core via matmul_i8_i32_wide, then ONE cascade_reduce_{first,mid,last}
-# _i32_wide pass — the per-k-slice cascade_d form deadlocks, BUG-004).
-# N_D=128 (single col-group; single-pass cascade + L1 bound, BUG-009).
+# ZERO h2 DMA copy: h2 stays in each core's L1. The D GEMM is a SINGLE-PASS
+# CASCADE REDUCE (the aie2p cascade is a continuous stream and may only be
+# called ONCE per launch).
 #
-# Fixes over the co-worker's ca9cd2ab (which launched state=4 but C2=0):
-#   1. A broadcast provides 128 tiles (4 cg x 32 ki) to match the GU's 128
-#      acquires (the co-worker filled only 32).
-#   2. D uses the two-phase cascade, not the per-k-slice cascade_d (deadlock).
+# SILICON-VERIFIED 2026-08-28 (the two fixes that made the FULL fused design
+# fire; the D-only probe had passed before, hiding both):
+#   1. wait=True on EVERY fill (AB + B_d): with 132 fills per shim column and
+#      the default wait=False, dma_free_task frees the BD ID while the previous
+#      DMA may still be in flight (only 16 BDs/shim) → the launch deadlocks
+#      (state=8 timeout). wait=True awaits each single-BD task before freeing.
+#   2. silu_quant_i8_fused_q22 must compute ALL DIM_M rows: the original
+#      row-0-only loop (a decode-M=1 leftover) zeroed h2 rows 1-7, so C2's
+#      logical rows 1-7 came out 0 (measured C2 = 260096 only at microtiled
+#      row-0 positions). Fixed in mm_kernel_reference.cc (r*8 row offset).
+#   Verified: M=8 K=2048 N_D=128 all-ones → C2 = 260096 everywhere,
+#   bad=0/1024, launch state=4 (fused_ab_probe.cpp).
+#
+# CHANNEL BUDGET (the hard AIE2P constraint): each core tile has only TWO
+# input DMA channels. The fused design reads A(x) + B_gu (GU) + B_d (D) = 3
+# streams. Fix: pack the GU's A-tile and B_gu-tile into ONE combined stream
+# per core (matmul_i8_i32_ab reads [A | B] from a single element), so the GU
+# uses ONE channel and the D's B_d uses the other — 2 channels total.
+#
+# CORRECTED D DATAFLOW (the K+N cross-distribution flaw): the hardware cascade
+# ONLY reduces the K-partitions of a SINGLE column. So each core reads BOTH:
+#   (1) its OWN h2 K-slice (ki = cg*8 + col — the only k-slices its GU wrote),
+#   (2) the FULL-N_D B_d rows for those ki (all N_D output columns).
+# Each core accumulates c2scr = Σ_{cg} a2s(ki=cg*8+col) @ B_d[ki-slice, 0:N_D]
+# with matmul_i8_i32_wide (n=N_D), then the 8 partials sum via ONE cascade
+# pass (cascade_reduce_{first,mid,last}_i32_wide); col 7 writes the FULL
+# (8×N_D) C2 linearly. The previous per-column of_b[c] distributed N across
+# cores so the cascade summed DIFFERENT columns (wrong).
+#
+# Kernels:
+#   mm_32x64x128.o (n=128) : matmul_i8_i32_ab (combined A|B), silu_quant_i8_fused_q22
+#   wide_d.o      (n=N_D)  : matmul_i8_i32_wide, cascade_reduce_{first,mid,last}_i32_wide
+#
+# Host buffers:
+#   AB_gu_bo[c] (per core)  : element-major (ki, cg): [A-tile(ki) 8x64 | B_gu-tile(ki, cg*8+c) 64x128]
+#   B_d_bo                  : (K×N_D) row-major
+#   C2_bo                   : (M×N_D) int32, tail writes the FULL output
 import numpy as np
-from aie.iron import ObjectFifo, Program, Runtime, Worker, CascadeFlow, TaskGroup
+from aie.iron import ObjectFifo, Program, Runtime, Worker, CascadeFlow
 from aie.iron.controlflow import range_
 from aie.iron.device import NPU2, Tile
 from aie.iron.kernel import Kernel
 from aie.iron.buffer import Buffer
-from aie.helpers.taplib.tap import TensorAccessPattern
+from aie.helpers.taplib import TensorAccessPattern
 from aie.dialects._aie_enum_gen import AIETileType
 
 
 def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
-             no_gu=False, h2_const=None):
+             h2_const=None, silu_const=None, no_gu=False):
     n_k = K // k                                  # 32 GU k-tiles
     n_cg_gu = N_GU // n // n_aie_cols             # 4
     assert K == n_cg_gu * (n // 2) * n_aie_cols, "GU h2 width must equal K"
-    assert N_D == n, "single-pass cascade bounded to N_D==n (128)"
-    A_ty = np.ndarray[(m, k), np.dtype[np.int8]]       # (8,64) A tile
-    B_ty = np.ndarray[(k, n), np.dtype[np.int8]]       # (64,128) B tile (B_gu + B_d)
-    C_ty = np.ndarray[(m, n), np.dtype[np.int32]]      # (8,128) GU accumulator
-    H2_ty = np.ndarray[(m, n // 2), np.dtype[np.int8]] # (8,64) silu staging
-    H2F_ty = np.ndarray[(m, n_cg_gu * (n // 2)), np.dtype[np.int8]]  # (8,256) h2 core-local
-    C_W_ty = np.ndarray[(m, N_D), np.dtype[np.int32]]  # (8,128) D partial
+    assert N_D % n == 0 and N_D % 32 == 0, "wide mm needs N_D % 32 == 0"
+    AB_tile = m * k + k * n                       # 512 + 8192 = 8704
+    A_ty = np.ndarray[(m, k), np.dtype[np.int8]]       # (unused directly; A lives in AB)
+    AB_ty = np.ndarray[(AB_tile,), np.dtype[np.int8]]  # combined [A|B] GU element
+    C_ty = np.ndarray[(m, n), np.dtype[np.int32]]      # GU accumulator (8x128)
+    H2_ty = np.ndarray[(m, n // 2), np.dtype[np.int8]] # silu staging (8x64)
+    # h2buf holds ONLY the core's own n_cg_gu 64-wide chunks (the GU writes
+    # chunk cg at local col cg*(n//2)); this is 2 KB for n_cg_gu=4 vs a full
+    # (8xK) 16 KB — the 64 KB core L1 cannot also hold the wide B_d element.
+    H2F_ty = np.ndarray[(m, n_cg_gu * (n // 2)), np.dtype[np.int8]]
+    B_W_ty = np.ndarray[(k, N_D), np.dtype[np.int8]]   # wide D B tile (64xN_D)
+    C_W_ty = np.ndarray[(m, N_D), np.dtype[np.int32]]  # wide D partial (8xN_D)
 
     cores = [Tile(c, 2, tile_type=AIETileType.CoreTile) for c in range(n_aie_cols)]
     shims = [Tile(c, 0, tile_type=AIETileType.ShimNOCTile) for c in range(n_aie_cols)]
 
-    matmul = Kernel("matmul_i8_i32", "mm_32x64x128.o", [A_ty, B_ty, C_ty])
+    matmul_ab = Kernel("matmul_i8_i32_ab", "mm_32x64x128.o", [AB_ty, C_ty])
     silu = Kernel("silu_quant_i8_fused_q22", "mm_32x64x128.o", [C_ty, C_ty, H2_ty])
-    mm_w = Kernel("matmul_i8_i32_wide", "wide_d.o", [A_ty, B_ty, C_W_ty])
-    crf = Kernel("cascade_reduce_first_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
-    crm = Kernel("cascade_reduce_mid_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
-    crl = Kernel("cascade_reduce_last_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
+    mm_w = Kernel("matmul_i8_i32_wide", "wide_d.o", [A_ty, B_W_ty, C_W_ty])
+    crf_w = Kernel("cascade_reduce_first_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
+    crm_w = Kernel("cascade_reduce_mid_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
+    crl_w = Kernel("cascade_reduce_last_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
 
-    # A broadcast: ONE fifo, shim0 -> all 8 cores (multicast).
-    of_a = [ObjectFifo(A_ty, depth=BATCH_SIZE + 1, name=f"A{c}") for c in range(n_aie_cols)]
-    # per-core B: B_gu tiles (GU) then B_d tiles (D) — the 2nd input channel.
-    of_b = [ObjectFifo(B_ty, depth=1, name=f"B{c}") for c in range(n_aie_cols)]
-    # single C2 tail (col 7 writes the full C2).
+    # depth=1: the AB element is 8.5 KB each and 3 slots (26 KB) would overflow the
+    # 64 KB core L1 alongside the wide B_d element + c2scr. A ping-pong depth=1
+    # is correct (the GU acquire/release per k-slice handshakes with the producer).
+    of_ab = [ObjectFifo(AB_ty, depth=1, name=f"AB{c}") for c in range(n_aie_cols)]
+    of_b_d = [ObjectFifo(B_W_ty, depth=1, name=f"Bd{c}") for c in range(n_aie_cols)]
     of_c2 = ObjectFifo(C_W_ty, depth=1, name="C2_tail")
-
-    n_b_gu = n_cg_gu * n_k             # 128 GU B_gu tiles
-    n_b_total = n_b_gu + n_cg_gu       # 132 (128 B_gu + 4 B_d)
 
     workers = []
     for c in range(n_aie_cols):
         h2buf = Buffer(H2F_ty, tile=cores[c])
         h2scr = Buffer(H2_ty, tile=cores[c])
         c1buf = Buffer(C_ty, tile=cores[c])
-        c2scr = Buffer(C_W_ty, tile=cores[c])
-        a2scr = Buffer(A_ty, tile=cores[c])
+        c2scr = Buffer(C_W_ty, tile=cores[c])      # (8xN_D) D partial
+        a2scr = Buffer(A_ty, tile=cores[c])        # (8x64) D A staging
         is_tail = c == n_aie_cols - 1
 
-        def core_fn(a_in, b_in, c2_out, c2s, h2b, h2s, c1b, a2s, col,
-                    mm_k, silu_k, mm_w, crf_k, crm_k, crl_k):
-            # ── GU phase: A (broadcast) + B_gu (per-core) → h2 core-local ──
-            for cg in range_(n_cg_gu):
+        def core_fn(ab_in, bd_in, c2_out, c2scr_b, h2b, h2s, c1b, a2s, col,
+                    mmab_k, silu_k, mm_w, crf_w, crm_w, crl_w):
+            # ── GU phase (ONE combined A|B channel per core) ──
+            if no_gu:
                 for i_ in range_(m):
-                    for j_ in range_(n):
-                        c1b[i_, j_] = 0
-                for _ in range_(n_k):
-                    a = a_in.acquire(1)
-                    b = b_in.acquire(1)
-                    mm_k(a, b, c1b)
-                    a_in.release(1)
-                    b_in.release(1)
-                if h2_const is not None:
+                    for j_ in range_(n_cg_gu * (n // 2)):
+                        h2b[i_, j_] = h2_const
+            else:
+                for cg in range_(n_cg_gu):
                     for i_ in range_(m):
-                        for j_ in range_(n // 2):
-                            h2b[i_, cg * (n // 2) + j_] = h2_const
-                else:
+                        for j_ in range_(n):
+                            c1b[i_, j_] = 0
+                    for _ in range_(n_k):
+                        ab = ab_in.acquire(1)
+                        mmab_k(ab, c1b)
+                        ab_in.release(1)
                     silu_k(c1b, c1b, h2s)
+                    if silu_const is not None:
+                        for i_ in range_(m):
+                            for j_ in range_(n // 2):
+                                h2s[i_, j_] = silu_const
+                    # store chunk cg at the LOCAL slice h2b[:, cg*(n//2)]
                     for i_ in range_(m):
                         for j_ in range_(n // 2):
                             h2b[i_, cg * (n // 2) + j_] = h2s[i_, j_]
-            # ── D phase: accumulate c2scr over this core's OWN ki-slices, then
-            # ONE cascade_reduce pass (col 7 writes the full C2). ──
+            # ── D phase: ONE cascade-reduce over the (8xN_D) partial ──
             for i_ in range_(m):
                 for j_ in range_(N_D):
-                    c2s[i_, j_] = 0
+                    c2scr_b[i_, j_] = 0
             for cg in range_(n_cg_gu):
-                b = b_in.acquire(1)            # B_d tile (64,N_D) — same of_b fifo
+                ki = cg * n_aie_cols + col               # the ONLY valid k-slice
+                b = bd_in.acquire(1)
                 for kstep in range_(8):
                     for r_ in range_(8):
                         for c_ in range_(8):
-                            a2s[kstep, r_ * 8 + c_] = h2b[r_, cg * (n // 2) + kstep * 8 + c_]
-                mm_w(a2s, b, c2s)
-                b_in.release(1)
+                            a2s[kstep, r_ * 8 + c_] = \
+                                h2b[r_, cg * (n // 2) + kstep * 8 + c_]
+                mm_w(a2s, b, c2scr_b)
+                bd_in.release(1)
             if col == n_aie_cols - 1:
                 c2 = c2_out.acquire(1)
                 for i_ in range_(m):
                     for j_ in range_(N_D):
                         c2[i_, j_] = 0
-                crl_k(c2s, c2)
+                crl_w(c2scr_b, c2)
                 c2_out.release(1)
             elif col == 0:
-                crf_k(c2s, c2s)
+                crf_w(c2scr_b, c2scr_b)
             else:
-                crm_k(c2s, c2s)
+                crm_w(c2scr_b, c2scr_b)
 
         workers.append(Worker(
             core_fn,
-            fn_args=[of_a[c].cons(), of_b[c].cons(),
+            fn_args=[of_ab[c].cons(), of_b_d[c].cons(),
                      of_c2.prod() if is_tail else c1buf,
                      c2scr, h2buf, h2scr, c1buf, a2scr, c,
-                     matmul, silu, mm_w, crf, crm, crl],
+                     matmul_ab, silu, mm_w, crf_w, crm_w, crl_w],
             tile=cores[c],
         ))
 
@@ -123,42 +159,48 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
         CascadeFlow(workers[c], workers[c + 1])
 
     dev = NPU2()
-    # A broadcast provides 128 tiles (4 cg x 32 ki) to match the GU's 128 acquires.
-    A_bo = np.ndarray[(n_cg_gu * M * K,), np.dtype[np.int8]]
+    rt = Runtime()
+    # The MLIR_AIE XRT kernel exposes only FIVE data buffers (groups 3-7), so
+    # the 8 per-core AB streams must live in ONE buffer laid out [core][ki][cg]
+    # and each core's fill taps its own region. Sequence = (AB, C2, B_d) = 3 groups.
+    AB_total = n_aie_cols * n_cg_gu * n_k * AB_tile
+    AB_gu_bo = np.ndarray[(AB_total,), np.dtype[np.int8]]
     C2_bo = np.ndarray[(M * N_D,), np.dtype[np.int32]]
-    B_bo = np.ndarray[(n_aie_cols * n_b_total * k * n,), np.dtype[np.int8]]
-    a_per_core_tiles = n_cg_gu * n_k          # 128
-    b_per_core_bytes = n_b_total * k * n      # 132*8192
-
-    def sequence(a_bo, b_bo, c2_bo, a_h, b_h, c2_h):
-        # Per-element fills, each scoped in a TaskGroup (finish() frees the BD
-        # so the 16-BD-per-shim limit is not exceeded).
+    B_d_bo = np.ndarray[(K * N_D,), np.dtype[np.int8]]
+    with rt.sequence(AB_gu_bo, C2_bo, B_d_bo) as (ab_bo, c2_bo, bd_bo):
+        rt.start(*workers)
+        # ── GU: per-core combined [A-tile | B_gu-tile] feed (ki, cg) element-major ──
+        # All cores read from the ONE AB_gu_bo, each at region c. In no_gu the GU
+        # consumes nothing; fill ONE element so the prod endpoint exists (a single
+        # element completes without blocking on a full fifo).
+        n_fill = 1 if no_gu else (n_cg_gu * n_k)
         for c in range(n_aie_cols):
-            for tile in range(n_cg_gu * n_k):
-                tg = TaskGroup()
-                a_h[c].fill(a_bo,
-                            tap=TensorAccessPattern((1, n_cg_gu * M * K), tile * m * k,
-                                                    [1, 1, 1, m * k], [0, 0, 0, 1]),
-                            group=tg)
-                tg.finish()
-        for c in range(n_aie_cols):
-            for tile in range(n_b_total):
-                tg = TaskGroup()
-                b_h[c].fill(b_bo,
-                            tap=TensorAccessPattern((1, n_aie_cols * n_b_total * k * n),
-                                                    (c * n_b_total + tile) * k * n,
-                                                    [1, 1, 1, k * n], [0, 0, 0, 1]),
-                            group=tg)
-                tg.finish()
-        tg = TaskGroup()
-        c2_h.drain(c2_bo, wait=True, group=tg)
-        tg.finish()
-
-    rt = Runtime(sequence, [A_bo, B_bo, C2_bo, [of_a[c].prod() for c in range(n_aie_cols)],
-                            [of_b[c].prod() for c in range(n_aie_cols)],
-                            of_c2.cons()])
-    prog = Program(dev, rt, workers=workers)
-    return prog.resolve_program()
+            base = c * n_cg_gu * n_k * AB_tile
+            for fi in range(n_fill):
+                tg = rt.task_group()
+                rt.fill(of_ab[c].prod(), ab_bo,
+                        tap=TensorAccessPattern((AB_total,),
+                                                base + fi * AB_tile,
+                                                [1, 1, 1, AB_tile], [1, 1, 1, 1]),
+                        tile=shims[c], task_group=tg, wait=True)
+                rt.finish_task_group(tg)
+        # ── D: FULL-WIDTH B_d tiles, each core its OWN ki-set (same ALL columns) ──
+        for cg in range(n_cg_gu):
+            for c in range(n_aie_cols):
+                ki = cg * n_aie_cols + c
+                tg = rt.task_group()
+                rt.fill(of_b_d[c].prod(), bd_bo,
+                        tap=TensorAccessPattern((K * N_D,),
+                                                ki * k * N_D,
+                                                [1, 1, 1, k * N_D], [1, 1, 1, 1]),
+                        tile=shims[c], task_group=tg, wait=True)
+                rt.finish_task_group(tg)
+        # ── C2 writeback: the tail's FULL (8xN_D) → C2_bo (linear) ──
+        tg = rt.task_group()
+        rt.drain(of_c2.cons(), c2_bo, wait=True,
+                 tile=shims[n_aie_cols - 1], task_group=tg)
+        rt.finish_task_group(tg)
+    return Program(dev, rt)
 
 
 def main():
@@ -173,12 +215,13 @@ def main():
     p.add_argument("-n", type=int, default=128)
     p.add_argument("-c", "--cols", type=int, default=8)
     p.add_argument("-b", "--batch-size", type=int, default=2)
-    p.add_argument("--no-gu", action="store_true")
     p.add_argument("--h2-const", type=int, default=None)
+    p.add_argument("--silu-const", type=int, default=None)
+    p.add_argument("--no-gu", action="store_true")
     args = p.parse_args()
     prog = my_fused(args.M, args.K, args.N_GU, args.N_D, args.m, args.k, args.n,
-                    args.cols, args.batch_size, args.no_gu, args.h2_const)
-    print(prog)
+                    args.cols, args.batch_size, args.h2_const, args.silu_const, args.no_gu)
+    print(prog.resolve_program())
 
 
 if __name__ == "__main__":

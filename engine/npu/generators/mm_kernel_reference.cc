@@ -23,12 +23,11 @@
 // float/int scalar ops the AIE2P scalar unit lowers to hardware instructions.
 #include "silu_quant.h"
 
-// Portable 64×4-bit → 64×int8 sign-extended nibble unpack (A/B harness:
-// tests/bench_compiler_ab.sh, issues #1878/#1912). Peano/llvm-aie exposes
-// __builtin_aie2p_unpack_I512_I8_I4; chess (xchesscc) does not — the scalar
-// fallback keeps the same lane order (element e = byte e/2, even e = low
-// nibble), so the SAME source compiles under both compilers. Peano builds
-// take the builtin branch unchanged.
+// Portable 64×4-bit → 64×int8 sign-extended nibble unpack. Peano/llvm-aie
+// exposes __builtin_aie2p_unpack_I512_I8_I4; chess (xchesscc) does not — the
+// scalar fallback keeps the same lane order (element e = byte e/2, even e =
+// low nibble), so the SAME source compiles under both compilers (A/B harness:
+// tests/bench_compiler_ab.sh). Peano builds take the builtin branch unchanged.
 static inline auto unpack_i4_sx(const v64int4 *p) {
 #ifdef __chess__
     // chess: v64int8 has no subscript operator — go through aie::vector
@@ -46,16 +45,6 @@ static inline auto unpack_i4_sx(const v64int4 *p) {
     return __builtin_aie2p_unpack_I512_I8_I4(*p, 1);
 #endif
 }
-
-// Issue #1838: the aiecc-generated bare-metal linker script maps ONLY
-// .text/.data — zero-init file-scope statics land in .bss, which gets no
-// writable tile-DM region, so kernel reads of them return garbage (observed
-// in the #1769 round: .bss statics silently dropped from the kernel ELF).
-// Force every mutable kernel static into .data (the section IS mapped and
-// its zero bytes are materialized by the ELF loader). The load-bearing ones
-// are g_i4_call (col_group pC-zeroing + dump gating) and the function-local
-// `call` counter in matmul_i8_i32_i4 (silu metadata folding).
-#define KERNEL_STATIC __attribute__((section(".data")))
 
 template <typename T_in, typename T_out, int rowA, int colA, int colB,
           bool b_row_maj = true, bool c_row_maj = true>
@@ -721,38 +710,35 @@ extern "C" void matmul_i8_i32_ab(const int8_t *__restrict ab, int32_t *__restric
 // optimization once the corr gate passes on NPU).
 // bring-up trace (issue #1769): first nibble bytes of the int4 B tile,
 // the dequantized B'' and the raw scale bytes the kernel read
-// KERNEL_STATIC forces .data placement (issue #1838): aiecc's bare-metal
-// ld.script maps only .text/.data — zero-init statics in .bss are dropped
-// from the ELF, so their reads return garbage.
-static KERNEL_STATIC uint8_t g_i4_trace_b[64];   // last matmul (ki=31) nibbles
-static KERNEL_STATIC uint8_t g_i4_trace_b0[64];  // first matmul (ki=0) nibbles
-static KERNEL_STATIC uint8_t g_i4_trace_dq[64];
-static KERNEL_STATIC uint8_t g_i4_trace_sc[32];
-static KERNEL_STATIC int8_t g_i4_dq_dump[64];    // dequantized B'' of chunk (i=0, jt=0) — I4_B_DUMP
-static KERNEL_STATIC int32_t g_i4_rq_dump[8];    // ratioQ22 read for chunk (i=0, jt=0)
-static KERNEL_STATIC int g_i4_dq_once = 1;       // one-shot: capture the FIRST matmul call only
-static KERNEL_STATIC int8_t g_i4_dq_dump2[64];   // chunk (i=7, jt=15) — the LAST k-step/col-tile
-static KERNEL_STATIC int32_t g_i4_rq_dump2[8];
-static KERNEL_STATIC int8_t g_i4_dq_dump3[64];   // chunk (i=1, jt=3) of the first tile
-static KERNEL_STATIC unsigned g_i4_cap_fired = 0; // scalar-path capture fired (call 32)
-static KERNEL_STATIC unsigned g_i4_cap_call = 0;  // call counter at capture time
-static KERNEL_STATIC int32_t g_i4_c1pre[8];       // C1buf cols 0-7 BEFORE cg1 first accumulate
-static KERNEL_STATIC unsigned g_i4_pc_addr = 0;   // (unsigned)pC at call 32
-static KERNEL_STATIC unsigned g_i4_zero_addr = 0xE000; // zero_c1 hardcoded address
-static KERNEL_STATIC int8_t g_i4_dq_dump7[64];    // B'' chunk(0,0) at call 33 (cg1 ki=1)
-static KERNEL_STATIC int8_t g_i4_dq_dump8[64];    // B'' chunk(0,0) at call 63 (cg1 ki=31)
-static KERNEL_STATIC int8_t g_i4_a_dump2[64];     // A row0 at call 33
-static KERNEL_STATIC int8_t g_i4_dq_dump4[64];   // chunk (i=3, jt=7) of the first tile
-static KERNEL_STATIC int32_t g_i4_rq_dump3[8];   // ratios for chunk (i=1, jt=3)
-static KERNEL_STATIC int32_t g_i4_rq_dump4[8];   // ratios for chunk (i=3, jt=7)
-static KERNEL_STATIC int8_t g_i4_dq_dump5[64];   // chunk (i=0, jt=3) — same col-tile, i=0
-static KERNEL_STATIC int8_t g_i4_dq_dump6[64];   // chunk (i=1, jt=0) — same k-step, jt=0
-static KERNEL_STATIC int32_t g_i4_c00_tile[64];  // full (8,8) C00 accumulator after call 0
-static KERNEL_STATIC unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
-static KERNEL_STATIC int g_cap5 = 1, g_cap6 = 1, g_cap3 = 1, g_cap4 = 1;
-static KERNEL_STATIC int8_t g_i4_a_dump[512];    // A tile (8,64) all bytes — I4_A_DUMP
-static KERNEL_STATIC int32_t g_i4_ref_c1[8];    // scalar reference C1 row-0 cols 0-7 (mmul vs scalar)
-static KERNEL_STATIC int32_t g_i4_mmul_c1[8];   // mmul's C1 row-0 cols 0-7 (read back after store)
+static uint8_t g_i4_trace_b[64];   // last matmul (ki=31) nibbles
+static uint8_t g_i4_trace_b0[64];  // first matmul (ki=0) nibbles
+static uint8_t g_i4_trace_dq[64];
+static uint8_t g_i4_trace_sc[32];
+static int8_t g_i4_dq_dump[64];    // dequantized B'' of chunk (i=0, jt=0) — I4_B_DUMP
+static int32_t g_i4_rq_dump[8];    // ratioQ22 read for chunk (i=0, jt=0)
+static int g_i4_dq_once = 1;       // one-shot: capture the FIRST matmul call only
+static int8_t g_i4_dq_dump2[64];   // chunk (i=7, jt=15) — the LAST k-step/col-tile
+static int32_t g_i4_rq_dump2[8];
+static int8_t g_i4_dq_dump3[64];   // chunk (i=1, jt=3) of the first tile
+static unsigned g_i4_cap_fired = 0; // scalar-path capture fired (call 32)
+static unsigned g_i4_cap_call = 0;  // call counter at capture time
+static int32_t g_i4_c1pre[8];       // C1buf cols 0-7 BEFORE cg1 first accumulate
+static unsigned g_i4_pc_addr = 0;   // (unsigned)pC at call 32
+static unsigned g_i4_zero_addr = 0xE000; // zero_c1 hardcoded address
+static int8_t g_i4_dq_dump7[64];    // B'' chunk(0,0) at call 33 (cg1 ki=1)
+static int8_t g_i4_dq_dump8[64];    // B'' chunk(0,0) at call 63 (cg1 ki=31)
+static int8_t g_i4_a_dump2[64];     // A row0 at call 33
+static int8_t g_i4_dq_dump4[64];   // chunk (i=3, jt=7) of the first tile
+static int32_t g_i4_rq_dump3[8];   // ratios for chunk (i=1, jt=3)
+static int32_t g_i4_rq_dump4[8];   // ratios for chunk (i=3, jt=7)
+static int8_t g_i4_dq_dump5[64];   // chunk (i=0, jt=3) — same col-tile, i=0
+static int8_t g_i4_dq_dump6[64];   // chunk (i=1, jt=0) — same k-step, jt=0
+static int32_t g_i4_c00_tile[64];  // full (8,8) C00 accumulator after call 0
+static unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
+static int g_cap5 = 1, g_cap6 = 1, g_cap3 = 1, g_cap4 = 1;
+static int8_t g_i4_a_dump[512];    // A tile (8,64) all bytes — I4_A_DUMP
+static int32_t g_i4_ref_c1[8];    // scalar reference C1 row-0 cols 0-7 (mmul vs scalar)
+static int32_t g_i4_mmul_c1[8];   // mmul's C1 row-0 cols 0-7 (read back after store)
 extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                                  const uint8_t *__restrict pB4,
                                  int32_t *__restrict pC) {
@@ -764,18 +750,6 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     using MMUL = aie::mmul<8, 8, 8, int8, int8, accauto>;
     event0();
 #ifdef I4_SCALAR_C1
-// Issue #1864 guard: this fallback accumulates C1 with the scalar pattern
-//   pC[...] += (int32_t)pA[i*64+kk] * av32;
-// which is EXACTLY the load-alu-store RMW construct that llvm-aie/peano
-// miscompiles (product lands <<8 for a deterministic subset of operand
-// values; reproduced on LLVM 21 and 22). The v66 scalar path is only known
-// to pass because build_zaya_fused.sh re-validates it against the CPU gate
-// (test_i4_dequant.cpp / test_i4_silu_q22.cpp) on every toolchain bump.
-// Require an explicit acknowledgment so a silent rebuild on a different
-// toolchain cannot ship the broken RMW unnoticed. Cross-ref: tracker #1882.
-#if !defined(I4_SCALAR_C1_ACK_1864)
-#error "I4_SCALAR_C1 uses the #1864-flagged scalar RMW pattern. Define I4_SCALAR_C1_ACK_1864 (via build_zaya_fused.sh) only after re-validating the C1 corr gate on the exact toolchain in use."
-#endif
 #ifdef I4_SUM_A
     // probe: C1 = sum of the A tile (64 values), same for every col — if the
     // A stream delivers Am correctly this stays small (~±800); if A arrives
@@ -871,16 +845,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // ── 1769 int4 mmul path (default, HEAD/1776): 4-accumulator m8
     //    with the silu_roundf no-libm fix; the v66 scalar (pi) is the
     //    I4_SCALAR_C1 fallback (aie2p C-store/ratio miscompiles, #1869).
-    // Issue #1865: zero pC through the DELIVERED pC arg at the start of each
-    // col_group (g_i4_call % 32 == 0, matching the generator's n_k=32 calls
-    // per col_group) — replaces the hardcoded-address zero_c1() (0xE000),
-    // which did NOT reliably hit the compiler-assigned C1buf (the scalar
-    // path's proven f59d8027 BUGFIX pattern, issue #1776). g_i4_call
-    // increments at the END of this function, so call 0 and call 32 both hit
-    // %32==0 here.
-    if (g_i4_call % 32 == 0) {
-        for (unsigned z = 0; z < DIM_M * DIM_N; z++) pC[z] = 0;
-    }
+    
     // 4 accumulators per col-tile group (C00..C03 pattern of the m8 kernel);
     // iterate col-tiles in groups of 4.
     for (unsigned jg = 0; jg < nct; jg += 4) {
@@ -892,43 +857,6 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
         MMUL C00(acc0), C01(acc1), C02(acc2), C03(acc3);
         for (unsigned i = 0; i < nk; ++i) {
             aie::vector<int8, 64> A0 = aie::load_v<64>(pA + i * 64);
-#ifdef I4_DIRECT_VECTOR_DEQ
-            // Issue #1872 workaround: the Bb[4][64] memory round-trip is
-            // PROVABLY unsafe on this toolchain — computed-value byte-stores
-            // into tile-local memory are dropped/misplaced (measured 2026-08:
-            // dequant B'' diverged from the host byte-exact reference). This
-            // path keeps B'' in registers: aie::mul (q4<<4 int8 x ratioQ22
-            // int32 -> acc32), round-half-away >> 22, saturate, to_vector
-            // int8 — no computed byte-store at all. Compile-verified on
-            // peano (2026-08-28); NPU corr gate still required.
-            aie::vector<int8, 64> Bv[4];
-            for (unsigned jt = 0; jt < 4; ++jt) {
-                unsigned j = jg + jt;
-                const uint8_t* nib = pB4 + i * 512 + j * 32;
-                const int32_t* rq = (const int32_t*)(pB4 + 4096 + (size_t)(i / 4) * 512
-                                                     + (size_t)j * 32);
-                const v64int4* pv = (const v64int4*)nib;
-                auto u = unpack_i4_sx(pv);
-                u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
-                aie::vector<int32, 8> r8 = aie::load_v<8>(rq);
-                aie::vector<int32, 64> rq64;
-                for (int e = 0; e < 64; e++) rq64[e] = r8[e & 7];
-                // #1872 register-only dequant: B''[e] = sat8(round((q4<<4)[e]
-                // * ratioQ22[e] >> 22)) in int64 scalar math — NO Bb[4][64]
-                // memory round-trip. (The original used aie::mul + to_vector,
-                // but aie::to_vector only accepts an accumulator and aie::mul
-                // for 64-wide int32 yields a 32-lane accum on this toolchain
-                // — a different aie API than the code was written against.)
-                aie::vector<int8, 64> bv;
-                for (int e = 0; e < 64; e++) {
-                    int64_t prod = (int64_t)rq64[e] * (int64_t)(int8_t)u[e];
-                    int r = (int)((prod + (1LL << 21)) >> 22);
-                    bv[e] = (int8_t)(r > 127 ? 127 : (r < -127 ? -127 : r));
-                }
-                Bv[jt] = bv;
-            }
-            aie::vector<int8, 64> B0 = Bv[0], B1 = Bv[1], B2 = Bv[2], B3 = Bv[3];
-#else
             int8_t Bb[4][64];
             for (unsigned jt = 0; jt < 4; ++jt) {
                 unsigned j = jg + jt;   // col-tile index 0..15
@@ -953,7 +881,6 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
             aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);
             aie::vector<int8, 64> B2 = aie::load_v<64>(Bb[2]);
             aie::vector<int8, 64> B3 = aie::load_v<64>(Bb[3]);
-#endif
 #ifdef I4_B_DUMP
             if (g_i4_dq_once) {
                 g_i4_dq_once = 0;
@@ -1094,11 +1021,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // (8,128) int32 MICROTILED: element (r,c) at (c/8)*64 + r*8 + c%8,
     // so row r col c = row-0 position + r*8.
     {
-        // KERNEL_STATIC (issue #1838): this counter is load-bearing — it
-        // drives the silu metadata folding (ki = call % 32). Zero-init in
-        // .bss is dropped by the aiecc ld.script; force .data so the ELF
-        // materializes the zero and the counter starts at 0.
-        static KERNEL_STATIC unsigned call = 0;
+        static unsigned call = 0;
         const unsigned ki = call % 32;   // only ki%4 is used (== call%4 since 32%4==0)
         const int32_t* mq = (const int32_t*)(pB4 + 5120);
         if (ki % 4 == 3) {
@@ -1118,11 +1041,6 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
 }
 
 extern "C" void zero_c1(void) {
-    // Issue #1865: no longer called — the mmul path zeroes pC through the
-    // delivered pC arg (g_i4_call % 32 == 0) and the scalar path has its own
-    // pC zeroing (f59d8027). Kept as a stub so stale generators that still
-    // reference the symbol link; it must not write the hardcoded 0xE000
-    // (that address is not guaranteed to be the compiler-assigned C1buf).
     int32_t *d = (int32_t *)0xE000;
     for (unsigned i = 0; i < DIM_M * DIM_N; i++) d[i] = 0;
 }
@@ -1168,23 +1086,30 @@ extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
 // sigmoid(g), h = sat8(round(silu(g) * u)). No float, no fold metadata.
 extern "C" void silu_quant_i8_fused_q22(int32_t *c1, int32_t *gs_dummy, int8_t *h2) {
     (void)gs_dummy;   // int8 path: scale folded into c1; the 2nd arg is a dummy
-    for (unsigned p = 0; p < DIM_N / 2; p++) {
-        unsigned go = ((2 * p) / 8) * 64 + ((2 * p) % 8);
-        unsigned uo = ((2 * p + 1) / 8) * 64 + ((2 * p + 1) % 8);
-        int c1g = c1[go];
-        int c1u = c1[uo];
-        // sigmoid LUT index from the gate clamped to [-4,4] (matches float)
-        int gc = c1g < -4 ? -4 : (c1g > 4 ? 4 : c1g);
-        int idx = ((gc + 4) * 255 + 4) / 8;      // round((gc+4)*31.875)
-        if (idx < 0) idx = 0;
-        if (idx > 255) idx = 255;
-        int sig = silu_sigmoid_q22[idx];          // Q22 sigmoid(g)
-        int64_t silu = ((int64_t)c1g * sig) >> 22; // silu(g) = g*sigmoid(g)
-        int64_t h = silu * c1u;                    // silu(g)*u
-        int hv = h > 127 ? 127 : (h < -127 ? -127 : (int)h);   // sat8 (int64-safe)
-        h2[p] = (int8_t)hv;
+    // C1 is the mmul MICROTILED layout: element (r,c) at (c/8)·64 + r·8 +
+    // (c%8). h2 (DIM_M × DIM_N/2) gets ONE int8 per (gate,up) pair: row r,
+    // pair p reads C1 row r cols (2p, 2p+1) at r*8 offset. The original
+    // row-0-only loop was a decode-M=1 leftover (rows 1-7 of C1 zero → h2=0);
+    // the M=8 fused cascade (iron generator) needs ALL rows — zeroing rows
+    // 1-7 of h2 produced C2 rows 1-7 == 0 (measured on silicon 2026-08-28).
+    for (unsigned r = 0; r < DIM_M; r++) {
+        for (unsigned p = 0; p < DIM_N / 2; p++) {
+            unsigned go = ((2 * p) / 8) * 64 + r * 8 + ((2 * p) % 8);
+            unsigned uo = ((2 * p + 1) / 8) * 64 + r * 8 + ((2 * p + 1) % 8);
+            int c1g = c1[go];
+            int c1u = c1[uo];
+            // sigmoid LUT index from the gate clamped to [-4,4] (matches float)
+            int gc = c1g < -4 ? -4 : (c1g > 4 ? 4 : c1g);
+            int idx = ((gc + 4) * 255 + 4) / 8;      // round((gc+4)*31.875)
+            if (idx < 0) idx = 0;
+            if (idx > 255) idx = 255;
+            int sig = silu_sigmoid_q22[idx];          // Q22 sigmoid(g)
+            int64_t silu = ((int64_t)c1g * sig) >> 22; // silu(g) = g*sigmoid(g)
+            int64_t h = silu * c1u;                    // silu(g)*u
+            int hv = h > 127 ? 127 : (h < -127 ? -127 : (int)h);   // sat8 (int64-safe)
+            h2[r * (DIM_N / 2) + p] = (int8_t)hv;
+        }
     }
-    for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
 }
 
 // ── Fused GU→SiLU→D, INT4 path (issue #1769, ws09): per-column scales ──
@@ -1211,8 +1136,8 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     // The per-pair arithmetic lives in silu_quant.h (silu_pair_q22), CPU-
     // gated bit-exactly by test_i4_silu_q22.cpp (corr 0.99997 vs the float
     // silu_quant reference on realistic data). The h2 writeback target is
-    // the DELIVERED h2 arg (the H2 objectFifo buffer) — issue #1865 (the
-    // old hardcoded 0x7F000 fifo slot is gone; see h2w below).
+    // the hardcoded H2 fifo slot 0x7F000 (depth-1 fifo, identical on all
+    // cores; wraps to the fifo @ 0xF000 — issue #1842).
     static const int gos[64] = {
         0, 2, 4, 6, 64, 66, 68, 70, 128, 130, 132, 134, 192, 194, 196, 198,
         256, 258, 260, 262, 320, 322, 324, 326, 384, 386, 388, 390, 448, 450, 452, 454,
@@ -1236,15 +1161,7 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     const int Q = st[32];                                  // per-tile fold Q
     const int shG = st[33];                                // Q - 11 (host-precomputed)
     const int shU = st[34];                                // Q - 7
-    // Issue #1865: write h2 through the DELIVERED h2 arg (the H2 objectFifo
-    // buffer the generator passes), NOT the hardcoded 0x7F000 tile-local
-    // address. Verified in the core ELF disassembly (2026-08-28): the call
-    // site is 'jl #0xb10' with p2 (h2) set in the jl delay slot — the arg IS
-    // delivered and points at the compiler-assigned H2 buffer. Hardcoding
-    // 0x7F000 broke whenever the allocator moved the fifo (the 2026-08-24
-    // 0x76000 incident: h2 all-+127); using the arg is robust to any
-    // relocation.
-    int8_t *h2w = h2;
+    int8_t *h2w = (int8_t *)0x7F000;
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
 #ifdef I4_C00_DUMP
@@ -1363,7 +1280,7 @@ extern "C" void unpack_i4_b(const int8_t *__restrict packed,
                             int8_t *__restrict out, unsigned n_bytes) {
     for (unsigned i = 0; i + 32 <= n_bytes; i += 32) {
         const v64int4 *p = (const v64int4 *)(packed + i);
-        auto u = unpack_i4_sx(p);  // sign-extend nibbles (chess-compatible, #1878)
+        auto u = unpack_i4_sx(p);  // sign-extend nibbles
         u = u + u; u = u + u; u = u + u; u = u + u;            // x16 (fold-free)
 #ifdef __chess__
         aie::store_v(out + 2 * i, u);
