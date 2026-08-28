@@ -388,3 +388,37 @@ element. Both are real engineering (not a 1-line fix). The validated, correct
 architecture (K+N cross-distribution fix, q22 silu) stands and is silicon-verified
 for the D at N_D=128; the GU single-launch integration is the hard, presently-
 unsolved remainder. p1/p2 two-launch remains the production-correct path.
+
+## Option (a) BUILD ACHIEVED but silicon-REGRESSED — 2026-08-28 (agent attempt)
+
+Implemented option (a): **split A/B into two separate 2-D single-stream fifos**
+so no merged element (which deadlocks at count≥4, BUG-006):
+- ch0 = `of_a[c]` (8,64) A-tile, per core, from a shared A_bo
+- ch1 = `of_b[c]` (64,128) B-tile, per core — carries B_gu tiles (GU) THEN
+  B_d tiles (D) sequentially (132 slots), so 2 input channels total
+- GU kernel switched `matmul_i8_i32_ab` → `matmul_i8_i32` (separate A/B);
+  the D cascade + q22 silu + K+N fix unchanged.
+
+**Status:** the design **compiles** (`build_iron_cascade.sh`, 76 KB xclbin, 17
+fifos A0-7/B0-7/C2_tail, 8 cores, 7 cascade flows), and the MLIR is structurally
+correct (buffer mapping A=16384, B=8650752, C2=1024 → groups 3/4/5). But the
+**silicon run returns C2=0x5A** (tails never write C2): the shared `of_b` fifo's
+D-cascade writeback does NOT fire, even for a `--no-gu --h2-const 42` D-only
+probe (expected 86016).
+
+**Isolated control (same toolchain, same day):** the ORIGINAL generator
+(combined-AB GU + dedicated `of_b_d` fifo) D-only design **is verified exact** on
+silicon (C2=2048 everywhere, bad=0) with the same aiecc/XRT/`/dev/accel0`
+environment. So the regression is the **shared-B fifo**, not the D math or the
+environment. A dedicated-`of_b_d` + separate-`of_a`/`of_b` (3 fifos for
+GU+D) **fails to place** (3 input streams > AIE2P 2-input-DMA limit, BUG-007).
+
+**Conclusion:** option (a) as implemented (B_gu and B_d on ONE `of_b` fifo)
+builds but does not silicon-verify; making it work needs either a different way
+to sequence B_gu/B_d on one channel, or a dedicated-B_d that fits the 2-channel
+budget (e.g., moving `A` to a broadcast fifo with a single prod endpoint so the
+GU uses 1 channel and B_d gets its own — untested). The hard blocker from the
+verdict stands and is now pinned to a concrete, reproducible 2-channel attempt.
+The split-A/B generator (uncommitted candidate) + probes
+(`npu_fused_smoke.cpp`, `orig_d_probe.cpp`) are in the tree for the next round.
+p1/p2 two-launch remains the production path.
