@@ -18,7 +18,11 @@ mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
 # the ack is verified by the CPU + NPU gates on every toolchain bump).
 I4_FLAGS=(-DI4_SCALAR_C1 -DI4_SCALAR_C1_ACK_1864)
 if [ "${I4_USE_MMUL:-0}" = "1" ]; then
-    I4_FLAGS=()
+    # Experimental mmul path: B'' dequant must avoid the Bb memory round-trip
+    # (#1872 — computed byte-stores dropped/misplaced). I4_DIRECT_VECTOR_DEQ
+    # keeps B'' in registers (aie::mul -> acc32 -> sat8); without it the mmul
+    # path falls back to the Bb round-trip (unsafe on this toolchain).
+    I4_FLAGS=(-DI4_DIRECT_VECTOR_DEQ)
 fi
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \

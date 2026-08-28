@@ -881,6 +881,37 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
         MMUL C00(acc0), C01(acc1), C02(acc2), C03(acc3);
         for (unsigned i = 0; i < nk; ++i) {
             aie::vector<int8, 64> A0 = aie::load_v<64>(pA + i * 64);
+#ifdef I4_DIRECT_VECTOR_DEQ
+            // Issue #1872 workaround: the Bb[4][64] memory round-trip is
+            // PROVABLY unsafe on this toolchain — computed-value byte-stores
+            // into tile-local memory are dropped/misplaced (measured 2026-08:
+            // dequant B'' diverged from the host byte-exact reference). This
+            // path keeps B'' in registers: aie::mul (q4<<4 int8 x ratioQ22
+            // int32 -> acc32), round-half-away >> 22, saturate, to_vector
+            // int8 — no computed byte-store at all. Compile-verified on
+            // peano (2026-08-28); NPU corr gate still required.
+            aie::vector<int8, 64> Bv[4];
+            for (unsigned jt = 0; jt < 4; ++jt) {
+                unsigned j = jg + jt;
+                const uint8_t* nib = pB4 + i * 512 + j * 32;
+                const int32_t* rq = (const int32_t*)(pB4 + 4096 + (size_t)(i / 4) * 512
+                                                     + (size_t)j * 32);
+                const v64int4* pv = (const v64int4*)nib;
+                auto u = unpack_i4_sx(pv);
+                u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
+                aie::vector<int32, 8> r8 = aie::load_v<8>(rq);
+                aie::vector<int32, 64> rq64;
+                for (int e = 0; e < 64; e++) rq64[e] = r8[e & 7];
+                auto acc = aie::mul(rq64, aie::to_vector<int32>(u));
+                aie::vector<int32, 64> shifted;
+                for (int e = 0; e < 64; e++) {
+                    int r = (int)((acc[e] + (1 << 21)) >> 22);
+                    shifted[e] = r > 127 ? 127 : r < -127 ? -127 : r;
+                }
+                Bv[jt] = aie::to_vector<int8>(shifted);
+            }
+            aie::vector<int8, 64> B0 = Bv[0], B1 = Bv[1], B2 = Bv[2], B3 = Bv[3];
+#else
             int8_t Bb[4][64];
             for (unsigned jt = 0; jt < 4; ++jt) {
                 unsigned j = jg + jt;   // col-tile index 0..15
@@ -905,6 +936,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
             aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);
             aie::vector<int8, 64> B2 = aie::load_v<64>(Bb[2]);
             aie::vector<int8, 64> B3 = aie::load_v<64>(Bb[3]);
+#endif
 #ifdef I4_B_DUMP
             if (g_i4_dq_once) {
                 g_i4_dq_once = 0;
