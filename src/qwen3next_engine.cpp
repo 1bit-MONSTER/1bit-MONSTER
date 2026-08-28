@@ -564,4 +564,8 @@ private:
     float benchmark(int tokens = 10) override { return 0.0f; }
 };
 
-extern "C" Backend* create_qwen3next_backend() { return new Qwen3NextBackend(); }
+// C++ linkage, matching the frontier factory convention
+// (backend_frontier.cpp create_frontier_*_backend — NOT extern "C"); the
+// declaration in backend_manager.cpp is also plain C++ so the symbols must
+// agree (mangled). Verified by the strixhalo onebin link (2026-08-28).
+Backend* create_qwen3next_backend() { return new Qwen3NextBackend(); }
