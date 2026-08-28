@@ -204,6 +204,21 @@ public:
             fprintf(stderr, "NPU(univ): no model path (set NPU_MODEL_PATH or pass a .q4nx path)\n");
             return false;
         }
+        // VERIFIED on strixhalo (2026-08-28): npu_engine_universal DIVERTS
+        // zaya-named models to zaya_decode_main via q4nx manifest sniffing
+        // (npu_engine_universal.cpp ~line 575) — that path has NO --worker
+        // protocol (runs the decode self-test and exits), so the READY
+        // handshake never fires. The production FLM backend owns zaya q4nx
+        // (backend_npu_flm.cpp maps zaya1-8b etc.); reject here so the router
+        // falls through to FLM instead of hanging 10s on the handshake.
+        // This backend serves the non-zaya q4nx family (e.g. qwen3.6-moe 35B).
+        if (model_path_.find("zaya") != std::string::npos) {
+            fprintf(stderr, "NPU(univ): zaya q4nx models are served by the FLM backend"
+                    " (npu_engine_universal diverts them to zaya_decode_main,"
+                    " which has no --worker protocol) — rejecting %s\n",
+                    model_path_.c_str());
+            return false;
+        }
         // npu_engine_universal needs the model dims in env; derive them from
         // the config (hidden/n_heads/n_kv/n_layers/head_dim/intermediate/vocab).
         if (!worker.spawn(model_path_,
