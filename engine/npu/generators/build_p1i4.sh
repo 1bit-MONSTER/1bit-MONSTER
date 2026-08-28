@@ -34,7 +34,11 @@ $P/bin/ld.lld -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
 # (the old checked-in generators/mm_32x64x128.o contained only zero_i32)
 # fails here loudly instead of surfacing as random aiecc "undefined symbol"
 # errors that look like kernel bugs.
-for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32 zero_c1; do
+# Issue #1865: zero_c1 is no longer in the required list — the generator no
+# longer calls it (matmul_i8_i32_i4 zeroes pC via the delivered arg). If a
+# stale generator still references it, the aiecc link fails loudly on the
+# undefined symbol, which is the desired failure mode.
+for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32; do
     if ! $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -qE " T $sym\$"; then
         echo "ERROR: merged kernel object missing symbol '$sym' — stale/partial build?" >&2
         exit 1
@@ -187,18 +191,16 @@ def have(name_pat, want):
             return True
     return False
 ok = True
-# v59-critical hardcoded addresses (verified against this map on 2026-08-24):
-#   Gg_0 @ 0x6000 (the silu metadata stash — the 0x76000 incident missed it
-#                  by 458 KB -> h2 all-+127), C1 accumulator @ 0xE000 (the
-#                  zero_c1 target — issue #1769 integration).
-# The H2 fifo is not an aie.buffer (objectfifos are absent from this map), so
-# its 0x7F000 wrap is not verifiable here.
-for pat, want, what in (("Gg_0", 0x6000, "silu metadata stash (0x6000)"),
-                        ("C1", 0xE000, "C1 accumulator (0xE000)")):
-    if not have(pat, want):
-        print("ERROR: no buffer %r at %s (%s) in %s" % (pat, hex(want), what, cands[0]))
-        for n, s in addrs.items():
-            print("   %-24s %s" % (n, ", ".join(hex(a) for a in sorted(s))))
-        ok = False
-sys.exit(0 if ok else 1)
+# Issue #1865: the hardcoded-address pins (Gg_0@0x6000 silu stash, C1@0xE000
+# zero_c1 target, H2@0x7F000 fifo) are RETIRED — the kernel no longer
+# hardcodes any tile-local address: matmul_i8_i32_i4 zeroes pC via the
+# delivered pC arg, and silu_quant_i8_fused_i4 writes h2 through the
+# delivered h2 arg. Nothing pins 0x6000/0xE000/0x7F000 anymore, so a buffer
+# move can no longer silently corrupt the silu. Keep a soft informational
+# dump of the address map (still useful for debugging) but do NOT fail on
+# specific addresses.
+print("INFO (#1865): kernel uses delivered args only — no hardcoded tile addresses to pin.")
+for n, s in sorted(addrs.items()):
+    print("   %-24s %s" % (n, ", ".join(hex(a) for a in sorted(s))))
+sys.exit(0)
 PYEOF

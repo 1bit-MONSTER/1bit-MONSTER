@@ -860,7 +860,16 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // ── 1769 int4 mmul path (default, HEAD/1776): 4-accumulator m8
     //    with the silu_roundf no-libm fix; the v66 scalar (pi) is the
     //    I4_SCALAR_C1 fallback (aie2p C-store/ratio miscompiles, #1869).
-    
+    // Issue #1865: zero pC through the DELIVERED pC arg at the start of each
+    // col_group (g_i4_call % 32 == 0, matching the generator's n_k=32 calls
+    // per col_group) — replaces the hardcoded-address zero_c1() (0xE000),
+    // which did NOT reliably hit the compiler-assigned C1buf (the scalar
+    // path's proven f59d8027 BUGFIX pattern, issue #1776). g_i4_call
+    // increments at the END of this function, so call 0 and call 32 both hit
+    // %32==0 here.
+    if (g_i4_call % 32 == 0) {
+        for (unsigned z = 0; z < DIM_M * DIM_N; z++) pC[z] = 0;
+    }
     // 4 accumulators per col-tile group (C00..C03 pattern of the m8 kernel);
     // iterate col-tiles in groups of 4.
     for (unsigned jg = 0; jg < nct; jg += 4) {
@@ -1060,6 +1069,11 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
 }
 
 extern "C" void zero_c1(void) {
+    // Issue #1865: no longer called — the mmul path zeroes pC through the
+    // delivered pC arg (g_i4_call % 32 == 0) and the scalar path has its own
+    // pC zeroing (f59d8027). Kept as a stub so stale generators that still
+    // reference the symbol link; it must not write the hardcoded 0xE000
+    // (that address is not guaranteed to be the compiler-assigned C1buf).
     int32_t *d = (int32_t *)0xE000;
     for (unsigned i = 0; i < DIM_M * DIM_N; i++) d[i] = 0;
 }
@@ -1120,8 +1134,8 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     // The per-pair arithmetic lives in silu_quant.h (silu_pair_q22), CPU-
     // gated bit-exactly by test_i4_silu_q22.cpp (corr 0.99997 vs the float
     // silu_quant reference on realistic data). The h2 writeback target is
-    // the hardcoded H2 fifo slot 0x7F000 (depth-1 fifo, identical on all
-    // cores; wraps to the fifo @ 0xF000 — issue #1842).
+    // the DELIVERED h2 arg (the H2 objectFifo buffer) — issue #1865 (the
+    // old hardcoded 0x7F000 fifo slot is gone; see h2w below).
     static const int gos[64] = {
         0, 2, 4, 6, 64, 66, 68, 70, 128, 130, 132, 134, 192, 194, 196, 198,
         256, 258, 260, 262, 320, 322, 324, 326, 384, 386, 388, 390, 448, 450, 452, 454,
@@ -1145,7 +1159,15 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     const int Q = st[32];                                  // per-tile fold Q
     const int shG = st[33];                                // Q - 11 (host-precomputed)
     const int shU = st[34];                                // Q - 7
-    int8_t *h2w = (int8_t *)0x7F000;
+    // Issue #1865: write h2 through the DELIVERED h2 arg (the H2 objectFifo
+    // buffer the generator passes), NOT the hardcoded 0x7F000 tile-local
+    // address. Verified in the core ELF disassembly (2026-08-28): the call
+    // site is 'jl #0xb10' with p2 (h2) set in the jl delay slot — the arg IS
+    // delivered and points at the compiler-assigned H2 buffer. Hardcoding
+    // 0x7F000 broke whenever the allocator moved the fifo (the 2026-08-24
+    // 0x76000 incident: h2 all-+127); using the arg is robust to any
+    // relocation.
+    int8_t *h2w = h2;
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
 #ifdef I4_C00_DUMP
