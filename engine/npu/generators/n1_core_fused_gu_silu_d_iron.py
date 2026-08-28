@@ -45,7 +45,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
     crl = Kernel("cascade_reduce_last_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
 
     # A broadcast: ONE fifo, shim0 -> all 8 cores (multicast).
-    of_a = ObjectFifo(A_ty, depth=BATCH_SIZE + 1, name="A_bcast")
+    of_a = [ObjectFifo(A_ty, depth=BATCH_SIZE + 1, name=f"A{c}") for c in range(n_aie_cols)]
     # per-core B: B_gu tiles (GU) then B_d tiles (D) — the 2nd input channel.
     of_b = [ObjectFifo(B_ty, depth=1, name=f"B{c}") for c in range(n_aie_cols)]
     # single C2 tail (col 7 writes the full C2).
@@ -112,7 +112,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
 
         workers.append(Worker(
             core_fn,
-            fn_args=[of_a.cons(), of_b[c].cons(),
+            fn_args=[of_a[c].cons(), of_b[c].cons(),
                      of_c2.prod() if is_tail else c1buf,
                      c2scr, h2buf, h2scr, c1buf, a2scr, c,
                      matmul, silu, mm_w, crf, crm, crl],
@@ -133,13 +133,14 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
     def sequence(a_bo, b_bo, c2_bo, a_h, b_h, c2_h):
         # Per-element fills, each scoped in a TaskGroup (finish() frees the BD
         # so the 16-BD-per-shim limit is not exceeded).
-        for tile in range(n_cg_gu * n_k):
-            tg = TaskGroup()
-            a_h.fill(a_bo,
-                     tap=TensorAccessPattern((1, n_cg_gu * M * K), tile * m * k,
-                                             [1, 1, 1, m * k], [0, 0, 0, 1]),
-                     group=tg)
-            tg.finish()
+        for c in range(n_aie_cols):
+            for tile in range(n_cg_gu * n_k):
+                tg = TaskGroup()
+                a_h[c].fill(a_bo,
+                            tap=TensorAccessPattern((1, n_cg_gu * M * K), tile * m * k,
+                                                    [1, 1, 1, m * k], [0, 0, 0, 1]),
+                            group=tg)
+                tg.finish()
         for c in range(n_aie_cols):
             for tile in range(n_b_total):
                 tg = TaskGroup()
@@ -153,7 +154,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
         c2_h.drain(c2_bo, wait=True, group=tg)
         tg.finish()
 
-    rt = Runtime(sequence, [A_bo, B_bo, C2_bo, of_a.prod(),
+    rt = Runtime(sequence, [A_bo, B_bo, C2_bo, [of_a[c].prod() for c in range(n_aie_cols)],
                             [of_b[c].prod() for c in range(n_aie_cols)],
                             of_c2.cons()])
     prog = Program(dev, rt, workers=workers)
