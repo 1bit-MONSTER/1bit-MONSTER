@@ -30,7 +30,6 @@ set -euo pipefail
 
 AISIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS="$(dirname "$AISIM_DIR")"
-REPO="$(cd "$AISIM_DIR/../../../.." && pwd)"
 MLIR_AIE="${MLIR_AIE:-$HOME/mlir-aie}"
 # Issue #1908: 2025.2 is the WORKING aiesimulator for aie2p — 2026.1's
 # aie2psimmsm segfaults at startup on any npu2 design (empty aiesol + missing
