@@ -36,15 +36,15 @@ dequant, #1878/#1912 unpack_i4_sx shim) AND the strixhalo agent's `silu_quant_i8
 + `cascade_reduce_*_i32` single-pass forms. Verified: 0 syntax errors with the cascade
 defines (`-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED`).
 
-**#1872 BUILD GATE — does NOT compile on the repo toolchain (2026-08-28).** Building the
-`I4_DIRECT_VECTOR_DEQ` int4 mmul path (`I4_USE_MMUL=1`) with the repo's mlir-aie
-(`/home/bcloud/mlir-aie/.venv`) fails: the path uses `aie::to_vector<int8/int32>` on plain
-`aie::vector`s (only valid on accumulators), subscripts an `aie::accum` (`acc[e]` — no
-`operator[]`), and `aie::mul(rq64, u32)` for 64-wide int32 yields a **32-lane** accum so the
-64-lane extraction is invalid. The commit message "compile-verified on peano 2026-08-28"
-does not hold on this toolchain. So the #1872 NPU-corr gate is BLOCKED at build; it needs
-either a matching aie.hpp/toolchain or a kernel rewrite to the current API. See
-`mm_kernel_reference.cc` ~L895-925.
+**#1872 BUILD — now compiles (ported 2026-08-28, strixhalo agent).** The committed
+`I4_DIRECT_VECTOR_DEQ` path did NOT compile on the repo toolchain (aie API mismatches:
+`aie::to_vector` on plain vectors, `acc[e]` on an accum, and `aie::mul` for 64-wide
+int32 yielding a 32-lane accum). `69973241` rewrote the dequant as register-only scalar
+int64 math (`B''[e]=sat8(round(q4<<4*ratioQ22>>22))` — still NO Bb memory round-trip),
+so it compiles (0 errors) and the int4 fused xclbin builds
+(`final_i8_MOE_GUSILU_i4_zaya.xclbin`). **NPU corr gate still open**: the `npu_engine_universal`
+decode ran >13 min at ~850% CPU without reaching the per-layer corr/byte-identity gates
+(host CPU-bound at the reference; needs investigation or a longer/bounded run).
 
 **Rule for this file:** pull/merge before touching it; never overwrite the other side's
 functions; if a conflict appears, preserve BOTH sides and note it in the merge commit.
