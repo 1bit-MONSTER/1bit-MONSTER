@@ -422,3 +422,28 @@ verdict stands and is now pinned to a concrete, reproducible 2-channel attempt.
 The split-A/B generator (uncommitted candidate) + probes
 (`npu_fused_smoke.cpp`, `orig_d_probe.cpp`) are in the tree for the next round.
 p1/p2 two-launch remains the production path.
+
+## Shared-B regression ROOT-CAUSED to a placement/DMA descriptor issue (2026-08-28)
+
+Re-verified on a CLEAN device (rmmod+modprobe amdxdna, 0 procs, no IO_PAGE_FAULTs):
+the shared-B design (of_b carrying B_gu then B_d) returns C2=0x5A in `--no-gu --h2-const 42`
+D-only, while the ORIGINAL dedicated-`of_b_d` design returns C2=2048 exact (h2=1) on the SAME
+clean device. So the regression is real, not a device-state false negative.
+
+**Diff of the two generated `design.mlir` (orig working vs shared broken):** the D path is
+**byte-identical** — `@Bd`≡`@B` (same `memref<64x128xi8>`, same shim ports 14-21, same depth 1),
+the cascade_reduce calls and the C2_tail drain are identical (the drain reads `%arg2: memref<1024xi32>`
+flat in both, just a different arg index from the sequence reorder). The ONLY differences are:
+(1) the GU fifo element `@AB`(8704B) vs `@A`(512B, 8×64), (2) the GU kernel decl
+`matmul_i8_i32_ab` vs `matmul_i8_i32`, (3) the sequence buffer order/sizes (AB/C2/B_d vs A/B/C2).
+So the regression is a SILICON-LEVEL placement/DMA-descriptor difference triggered by the smaller
+512B A fifo (or the sequence reorder), NOT a logic error in the D.
+
+**Fix attempts (all FAILED — C2 stays 0x5A):** `--alloc-scheme=bank-aware`, `--placer=sa_placer`,
+B_d fill 2-D→1-D flat tap, B_gu fill 2-D→1-D flat, A fill 2-D→1-D flat. None moves C2 off 0x5A.
+
+**Next to crack it:** (a) make the cascade aiesim-able (BUG-010 — the chess `--aiesim` rejects the
+peano cascade object) so the D writeback can be cycle-debugged, or (b) diff the aiecc-emitted
+XCLBIN DMA descriptors between the two designs (needs a newer `xclbinutil`), or (c) co-worker
+fusion expertise on the 2-channel multiplex. The cascade math itself is silicon-verified (dedicated-B
+D is exact); only the 2-channel GU+D integration is blocked.
