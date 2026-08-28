@@ -554,6 +554,7 @@ set(BACKEND_MANAGER_SOURCES
     src/glm_moe_dsa.cpp
     src/mimo_v2.cpp
     src/qwen3_5.cpp
+    src/qwen3next_engine.cpp   # Qwen3-Next (GatedDeltaNet) CPU engine — #1831 interim fallback
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp
