@@ -180,3 +180,4 @@ packaging/flatpak/.flatpak-builder/
 packaging/flatpak/*.flatpak
 packaging/flatpak/glibc-libs/
 packaging/flatpak/build
+.triage/
