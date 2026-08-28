@@ -23,6 +23,30 @@
 // float/int scalar ops the AIE2P scalar unit lowers to hardware instructions.
 #include "silu_quant.h"
 
+// Portable 64×4-bit → 64×int8 sign-extended nibble unpack (A/B harness:
+// tests/bench_compiler_ab.sh, issues #1878/#1912). Peano/llvm-aie exposes
+// __builtin_aie2p_unpack_I512_I8_I4; chess (xchesscc) does not — the scalar
+// fallback keeps the same lane order (element e = byte e/2, even e = low
+// nibble), so the SAME source compiles under both compilers. Peano builds
+// take the builtin branch unchanged.
+static inline auto unpack_i4_sx(const v64int4 *p) {
+#ifdef __chess__
+    // chess: v64int8 has no subscript operator — go through aie::vector
+    // (same lane order: element e = byte e/2, even e = low nibble).
+    const uint8_t *nib = (const uint8_t *)p;
+    aie::vector<int8, 64> u;
+    for (int e = 0; e < 64; e++) {
+        int q = (nib[e >> 1] >> ((e & 1) ? 4 : 0)) & 0x0F;
+        if (q >= 8) q -= 16;
+        u[e] = (int8_t)q;
+    }
+    return u;
+#else
+    // peano/llvm-aie: raw builtin — unchanged from the original kernel.
+    return __builtin_aie2p_unpack_I512_I8_I4(*p, 1);
+#endif
+}
+
 // Issue #1838: the aiecc-generated bare-metal linker script maps ONLY
 // .text/.data — zero-init file-scope statics land in .bss, which gets no
 // writable tile-DM region, so kernel reads of them return garbage (observed
@@ -859,7 +883,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                 const int32_t* rq = (const int32_t*)(pB4 + 4096 + (size_t)(i / 4) * 512
                                                      + (size_t)j * 32);
                 const v64int4* pv = (const v64int4*)nib;
-                v64int8 u = __builtin_aie2p_unpack_I512_I8_I4(*pv, 1);
+                auto u = unpack_i4_sx(pv);
                 u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
                 for (int e = 0; e < 64; e++) {
                     // B'' = sat8(round((q4<<4) * ratioQ22 / 2^22))
@@ -1240,7 +1264,7 @@ extern "C" void unpack_i4_b(const int8_t *__restrict packed,
                             int8_t *__restrict out, unsigned n_bytes) {
     for (unsigned i = 0; i + 32 <= n_bytes; i += 32) {
         const v64int4 *p = (const v64int4 *)(packed + i);
-        v64int8 u = __builtin_aie2p_unpack_I512_I8_I4(*p, 1);  // sign-extend nibbles
+        auto u = unpack_i4_sx(p);  // sign-extend nibbles (chess-compatible, #1878)
         u = u + u; u = u + u; u = u + u; u = u + u;            // x16 (fold-free)
         *((v64int8 *)(out + 2 * i)) = u;
     }
