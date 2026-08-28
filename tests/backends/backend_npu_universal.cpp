@@ -104,8 +104,17 @@ struct NpuWorker {
         char ready_buf[6];
         int ready_bytes = 0;
         auto t0 = std::chrono::steady_clock::now();
+        // READY timeout: model pack scales with size — the 35B-A3B q4nx takes
+        // ~45-60s to dequant+pack+init before emitting READY (measured on
+        // strixhalo 2026-08-28). The 10s limit (copied from src/backend_npu.cpp)
+        // killed big models; NPU_WORKER_READY_TIMEOUT_S overrides (default 300s).
+        int ready_timeout = 300;
+        if (const char* e = getenv("NPU_WORKER_READY_TIMEOUT_S")) {
+            int v = atoi(e);
+            if (v > 0) ready_timeout = v;
+        }
         while (ready_bytes < 6 && std::chrono::duration_cast<std::chrono::seconds>(
-                   std::chrono::steady_clock::now() - t0).count() < 10) {
+                   std::chrono::steady_clock::now() - t0).count() < ready_timeout) {
             fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd, &fds);
             struct timeval tv = {1, 0};
             if (select(stdout_fd + 1, &fds, nullptr, nullptr, &tv) > 0) {
