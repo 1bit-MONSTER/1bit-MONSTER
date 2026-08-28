@@ -177,11 +177,20 @@ report_objects() { # $1 = peano dir, $2 = chess dir
     local d; [ "$arm" = peano ] && d=$1 || d=$2
     local sz code
     sz=$(stat -c%s "$d/$KERNEL_O")
-    code=$("$OD" --section-headers --triple=aie2p "$d/$KERNEL_O" 2>/dev/null \
-      | awk '$2 ~ /^\.text/ {s += strtonum("0x" $3)} END {print s+0}')
+    # .text* sizes: llvm-objdump prints e.g. ' 2 .text 0000000000000f40 ...';
+    # sum them in shell arithmetic (mawk has no strtonum — bench on strixhalo
+    # hit 'function strtonum never defined', 2026-08-28).
+    code=0
+    # llvm-objdump line: ' 2 .text.matmul_scalar_i8_i32 000001f0 00000000 TEXT'
+    # -> $1=Idx $2=Name $3=Size $4=VMA $5=Type (size is hex without 0x prefix)
+    while read -r _idx _name _sz _vma _typ; do
+      case "$_name" in
+        .text*) code=$((code + 0x$_sz));;
+      esac
+    done < <("$OD" --section-headers --triple=aie2p "$d/$KERNEL_O" 2>/dev/null)
     printf "  %-28s %10s %14s\n" "$arm ($KERNEL_O)" "$sz" "$code"
   done
-  echo "  (code = sum of .text* section sizes, hex→dec via llvm-objdump)"
+  echo "  (code = sum of .text* section sizes, hex→dec via shell arithmetic)"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
