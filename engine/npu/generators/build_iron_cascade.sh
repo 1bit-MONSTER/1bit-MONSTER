@@ -49,10 +49,10 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -c "$G/mm_kernel_reference.cc" -o "$W/wide.o" 2>/dev/null
 $P/bin/ld.lld -r "$W/wide.o" -o "$W/wide_d.o"
 
-for sym in matmul_i8_i32_ab silu_quant_i8_fused_q22 matmul_i8_i32_wide \
+for sym in matmul_i8_i32_ab silu_quant_i8_fused_q22 matmul_i8_i32_wide matmul_i8_i32_wide_k8 \
            cascade_reduce_first_i32_wide cascade_reduce_mid_i32_wide \
-           cascade_reduce_last_i32_wide; do
-    obj="$W/mm_32x64x128.o"; [[ "$sym" == *wide ]] && obj="$W/wide_d.o"
+           cascade_reduce_last_i32_wide cascade_reduce_last_i32_wide_add; do
+    obj="$W/mm_32x64x128.o"; [[ "$sym" == *wide* ]] && obj="$W/wide_d.o"
     if ! $P/bin/llvm-nm "$obj" 2>/dev/null | grep -qE " T $sym\$"; then
         echo "ERROR: missing symbol '$sym' in $obj" >&2; exit 1
     fi

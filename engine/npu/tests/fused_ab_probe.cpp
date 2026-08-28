@@ -15,16 +15,17 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
-static constexpr int M=8,K=2048,N_GU=4096,N_D=128,m=8,k=64,n=128;
+static constexpr int M=8,K=2048,N_GU=4096,m=8,k=64,n=128;
 static constexpr int n_k=K/k, n_cg_gu=N_GU/n/8;          // 32, 4
 static constexpr int AB_tile=m*k+k*n;                     // 8704
 static constexpr long AB_BYTES=(long)8*n_cg_gu*n_k*AB_tile; // 8.9 MB
-static constexpr int C2_ELEMS=M*N_D;
 static constexpr long EXPECT=127L*K;                      // 260096
 int main(int ac,char**av){
-  if(ac<3){printf("usage: %s <xclbin> <insts.txt> [expect]\n",av[0]);return 2;}
+  if(ac<4){printf("usage: %s <xclbin> <insts.txt> <N_D> [expect]\n",av[0]);return 2;}
   const char*xc=av[1],*insts=av[2];
-  long expect=EXPECT; if(ac>3) expect=atol(av[3]);
+  const int N_D=atoi(av[3]);
+  const int C2_ELEMS=M*N_D;
+  long expect=EXPECT; if(ac>4) expect=atol(av[4]);
   FILE*f=fopen(insts,"rb"); fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
   std::vector<uint32_t> ins(sz/4); fread(ins.data(),4,ins.size(),f); fclose(f);
   FILE*xf=fopen(xc,"rb"); fseek(xf,0,SEEK_END); long xsz=ftell(xf); fseek(xf,0,SEEK_SET);

@@ -67,6 +67,8 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
     # (8xK) 16 KB — the 64 KB core L1 cannot also hold the wide B_d element.
     H2F_ty = np.ndarray[(m, n_cg_gu * (n // 2)), np.dtype[np.int8]]
     B_W_ty = np.ndarray[(k, N_D), np.dtype[np.int8]]   # wide D B tile (64xN_D)
+    A8_ty = np.ndarray[(8, 8), np.dtype[np.int8]]      # k-sliced A staging (8x8)
+    B8_ty = np.ndarray[(8, N_D), np.dtype[np.int8]]    # k-sliced B_d element (8xN_D)
     C_W_ty = np.ndarray[(m, N_D), np.dtype[np.int32]]  # wide D partial (8xN_D)
 
     cores = [Tile(c, 2, tile_type=AIETileType.CoreTile) for c in range(n_aie_cols)]
@@ -75,15 +77,20 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
     matmul_ab = Kernel("matmul_i8_i32_ab", "mm_32x64x128.o", [AB_ty, C_ty])
     silu = Kernel("silu_quant_i8_fused_q22", "mm_32x64x128.o", [C_ty, C_ty, H2_ty])
     mm_w = Kernel("matmul_i8_i32_wide", "wide_d.o", [A_ty, B_W_ty, C_W_ty])
+    mm_wk8 = Kernel("matmul_i8_i32_wide_k8", "wide_d.o", [A8_ty, B8_ty, C_W_ty])
     crf_w = Kernel("cascade_reduce_first_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
     crm_w = Kernel("cascade_reduce_mid_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
     crl_w = Kernel("cascade_reduce_last_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
+    crla_w = Kernel("cascade_reduce_last_i32_wide_add", "wide_d.o", [C_W_ty, C_W_ty])
 
     # depth=1: the AB element is 8.5 KB each and 3 slots (26 KB) would overflow the
     # 64 KB core L1 alongside the wide B_d element + c2scr. A ping-pong depth=1
     # is correct (the GU acquire/release per k-slice handshakes with the producer).
     of_ab = [ObjectFifo(AB_ty, depth=1, name=f"AB{c}") for c in range(n_aie_cols)]
-    of_b_d = [ObjectFifo(B_W_ty, depth=1, name=f"Bd{c}") for c in range(n_aie_cols)]
+    # B_d is streamed in 8 k-slices of (8,N_D) so the fifo element is 8xN_D
+    # bytes (not 64xN_D) — this is what lets N_D scale to 1024 within the
+    # 64 KB core L1 (c2scr 32 KB + B8 fifo 8 KB + AB 8.5 KB + staging ~55 KB).
+    of_b8 = [ObjectFifo(B8_ty, depth=1, name=f"B8{c}") for c in range(n_aie_cols)]
     of_c2 = ObjectFifo(C_W_ty, depth=1, name="C2_tail")
 
     workers = []
@@ -91,12 +98,16 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
         h2buf = Buffer(H2F_ty, tile=cores[c])
         h2scr = Buffer(H2_ty, tile=cores[c])
         c1buf = Buffer(C_ty, tile=cores[c])
-        c2scr = Buffer(C_W_ty, tile=cores[c])      # (8xN_D) D partial
-        a2scr = Buffer(A_ty, tile=cores[c])        # (8x64) D A staging
+        # Tail core: accumulate the D partial DIRECTLY in the C2 fifo element
+        # (of_c2.prod()), so it needs no separate (8xN_D) int32 c2scr — the
+        # 64 KB L1 can then hold one 32 KB (8x1024) int32 buffer @ N_D=1024
+        # instead of two. Non-tail cores keep their own c2scr Buffer.
+        a8scr = Buffer(A8_ty, tile=cores[c])       # (8x8) k-sliced A staging
         is_tail = c == n_aie_cols - 1
+        c2scr = (of_c2.prod() if is_tail else Buffer(C_W_ty, tile=cores[c]))
 
-        def core_fn(ab_in, bd_in, c2_out, c2scr_b, h2b, h2s, c1b, a2s, col,
-                    mmab_k, silu_k, mm_w, crf_w, crm_w, crl_w):
+        def core_fn(ab_in, bd8_in, c2_out, c2scr_b, h2b, h2s, c1b, a8s,
+                    col, mmab_k, silu_k, mm_wk8, crf_w, crm_w, crl_w, crla_w):
             # ── GU phase (ONE combined A|B channel per core) ──
             if no_gu:
                 for i_ in range_(m):
@@ -121,37 +132,47 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
                         for j_ in range_(n // 2):
                             h2b[i_, cg * (n // 2) + j_] = h2s[i_, j_]
             # ── D phase: ONE cascade-reduce over the (8xN_D) partial ──
+            # Tail core: the accumulator IS the acquired C2 fifo element (so
+            # the own partial is written in place and the upstream stream is
+            # ADDED into it — one (8xN_D) int32 buffer, not two). Non-tail
+            # cores use their private c2scr_b Buffer.
+            if col == n_aie_cols - 1:
+                acc = c2_out.acquire(1)
+            else:
+                acc = c2scr_b
             for i_ in range_(m):
                 for j_ in range_(N_D):
-                    c2scr_b[i_, j_] = 0
+                    acc[i_, j_] = 0
             for cg in range_(n_cg_gu):
                 ki = cg * n_aie_cols + col               # the ONLY valid k-slice
-                b = bd_in.acquire(1)
-                for kstep in range_(8):
-                    for r_ in range_(8):
+                # B_d arrives as 8 k-slices of (8,N_D); the mm accumulates
+                # into acc (kernel loads acc_C from pC), so the full
+                # (64,N_D) @ (N_D) product is identical to the old single
+                # (64,N_D) element but the fifo is 8x smaller (L1 scaling).
+                for ks in range_(8):
+                    b8 = bd8_in.acquire(1)
+                    for kstep in range_(8):
                         for c_ in range_(8):
-                            a2s[kstep, r_ * 8 + c_] = \
-                                h2b[r_, cg * (n // 2) + kstep * 8 + c_]
-                mm_w(a2s, b, c2scr_b)
-                bd_in.release(1)
+                            a8s[kstep, c_] = \
+                                h2b[ks, cg * (n // 2) + kstep * 8 + c_]
+                    mm_wk8(a8s, b8, acc)
+                    bd8_in.release(1)
             if col == n_aie_cols - 1:
-                c2 = c2_out.acquire(1)
-                for i_ in range_(m):
-                    for j_ in range_(N_D):
-                        c2[i_, j_] = 0
-                crl_w(c2scr_b, c2)
+                # Tail: own partial already in the fifo element; the add-only
+                # cascade merges the upstream stream into it.
+                crla_w(acc, acc)
                 c2_out.release(1)
             elif col == 0:
-                crf_w(c2scr_b, c2scr_b)
+                crf_w(acc, acc)
             else:
-                crm_w(c2scr_b, c2scr_b)
+                crm_w(acc, acc)
 
         workers.append(Worker(
             core_fn,
-            fn_args=[of_ab[c].cons(), of_b_d[c].cons(),
+            fn_args=[of_ab[c].cons(), of_b8[c].cons(),
                      of_c2.prod() if is_tail else c1buf,
-                     c2scr, h2buf, h2scr, c1buf, a2scr, c,
-                     matmul_ab, silu, mm_w, crf_w, crm_w, crl_w],
+                     c2scr, h2buf, h2scr, c1buf, a8scr, c,
+                     matmul_ab, silu, mm_wk8, crf_w, crm_w, crl_w, crla_w],
             tile=cores[c],
         ))
 
@@ -184,17 +205,19 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
                                                 [1, 1, 1, AB_tile], [1, 1, 1, 1]),
                         tile=shims[c], task_group=tg, wait=True)
                 rt.finish_task_group(tg)
-        # ── D: FULL-WIDTH B_d tiles, each core its OWN ki-set (same ALL columns) ──
+        # ── D: FULL-WIDTH B_d tiles, each core its OWN ki-set (same ALL
+        # columns), streamed as 8 k-slices of (8,N_D) per (cg, core) ──
         for cg in range(n_cg_gu):
             for c in range(n_aie_cols):
                 ki = cg * n_aie_cols + c
-                tg = rt.task_group()
-                rt.fill(of_b_d[c].prod(), bd_bo,
-                        tap=TensorAccessPattern((K * N_D,),
-                                                ki * k * N_D,
-                                                [1, 1, 1, k * N_D], [1, 1, 1, 1]),
-                        tile=shims[c], task_group=tg, wait=True)
-                rt.finish_task_group(tg)
+                for ks in range(8):
+                    tg = rt.task_group()
+                    rt.fill(of_b8[c].prod(), bd_bo,
+                            tap=TensorAccessPattern((K * N_D,),
+                                                    (ki * k + ks * 8) * N_D,
+                                                    [1, 1, 1, 8 * N_D], [1, 1, 1, 1]),
+                            tile=shims[c], task_group=tg, wait=True)
+                    rt.finish_task_group(tg)
         # ── C2 writeback: the tail's FULL (8xN_D) → C2_bo (linear) ──
         tg = rt.task_group()
         rt.drain(of_c2.cons(), c2_bo, wait=True,

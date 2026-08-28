@@ -1469,6 +1469,14 @@ extern "C" void matmul_i8_i32_wide(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
 extern "C" void zero_i32_wide(int32_t *c_out) {
     zero_vectorized<int32_t, DIM_M, WIDE_DIM_N>(c_out);
 }
+// K-sliced wide mm (DIM_K=8): streams B_d as (8, N_D) fifo elements so the
+// per-core L1 footprint of the B_d fifo is 8×N_D bytes instead of 64×N_D.
+// Called 8× per col-group, accumulating into c_out (the kernel loads acc_C
+// from pC), which shrinks the fifo enough to scale N_D to 1024 (L1: c2scr
+// 32 KB + B_d8 8 KB + AB 8.5 KB + staging ≈ 55 KB < 64 KB).
+extern "C" void matmul_i8_i32_wide_k8(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
+    matmul_vectorized_8x8x8_i8_i32_m8<DIM_M, 8, WIDE_DIM_N>(a_in, b_in, c_out);
+}
 
 template <int kCascade, unsigned CN>
 static inline void cascade_reduce_i32_n(const int32_t *__restrict src,
@@ -1503,6 +1511,25 @@ extern "C" void cascade_reduce_mid_i32_wide(const int32_t *__restrict partial,
 extern "C" void cascade_reduce_last_i32_wide(const int32_t *__restrict partial,
                                               int32_t *__restrict c2) {
     cascade_reduce_i32_n<2, WIDE_DIM_N>(partial, c2);
+}
+// L1-scaling variant: dst already holds the tail core's OWN accumulated
+// partial (the mm wrote into the C2 fifo element directly), so the cascade
+// only ADDS the incoming upstream stream: dst[chunk] += get_scd(). This
+// removes the separate (8xN_D) int32 c2scr on the tail core, which is what
+// lets N_D reach 1024 inside the 64 KB L1 (one 32 KB (8x1024) int32 buffer
+// instead of two).
+extern "C" void cascade_reduce_last_i32_wide_add(const int32_t *__restrict partial,
+                                                 int32_t *__restrict c2) {
+    constexpr unsigned nChunk = DIM_M * WIDE_DIM_N / 16;
+    (void)partial;
+    event0();
+    for (unsigned c = 0; c < nChunk; c++) {
+        v16int32 inc = get_scd_v16int32();
+        aie::vector<int32, 16> acc =
+            aie::load_v<16>(c2 + c * 16) + (aie::vector<int32, 16>)inc;
+        aie::store_v(c2 + c * 16, acc);
+    }
+    event1();
 }
 #endif  // WIDE_DIM_N
 
