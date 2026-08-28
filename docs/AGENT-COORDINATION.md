@@ -29,16 +29,21 @@
 ## Shared file guard
 
 **`engine/npu/generators/mm_kernel_reference.cc` is edited by BOTH agents.** It has been
-merged once (2026-08-28, merge commit 88de972c): the file now contains the co-worker's
-`KERNEL_STATIC` (.data) + #1865 arg-based h2/pC + #1874 I4_SCALAR_C1 default + #1872
-direct-vector dequant AND the strixhalo agent's `unpack_i4_sx` shim + `silu_quant_i8_fused_q22`
-+ `cascade_reduce_*_i32` single-pass forms. Both sides are syntax-verified.
+merged (2026-08-28, merge commits 88de972c + 5c78007b — full sync): the file now contains
+the co-worker's complete `fix/triage-round` work (KERNEL_STATIC .data, #1865 arg-based
+h2/pC + retired #1842 pins, #1874 I4_SCALAR_C1 production default, #1872 direct-vector
+dequant, #1878/#1912 unpack_i4_sx shim) AND the strixhalo agent's `silu_quant_i8_fused_q22`
++ `cascade_reduce_*_i32` single-pass forms. Verified: 0 syntax errors with the cascade
+defines (`-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED`).
 
 **Rule for this file:** pull/merge before touching it; never overwrite the other side's
 functions; if a conflict appears, preserve BOTH sides and note it in the merge commit.
 
-## Status snapshot (2026-08-28)
+## Status snapshot (2026-08-28, fully synced)
 
+- **Sync complete**: `main` now contains ALL co-worker work (fork state + the 16 newest
+  commits from upstream `fix/triage-round` @ 954dc298) + strixhalo agent's cascade work
+  (aecfad54) + upstream main. Merge commits: 88de972c, 5c78007b.
 - Co-worker: 27 issues triaged; 14+ fixed; remaining = HW-verify on strixhalo
   (#1865 h2 byte-identity gate, #1872 direct-vector dequant re-validation, #1874 mmul
   transpose ISS validation, #1832 q4nx decode on real NPU) + XL features (#1907 baretorch,
@@ -47,6 +52,8 @@ functions; if a conflict appears, preserve BOTH sides and note it in the merge c
   BUG-011 decision: single-launch zero-DMA premise REJECTED — p1/p2 two-launch (h2 via
   DDR) is the production path; D GEMM must be one cascade pass, per-core partial fits L1
   (N_D ≤ 256 verified).
+- **Handoff**: strixhalo agent will HW-verify the co-worker's pending NPU items on
+  `/dev/accel0` and report results here.
 
 ## Sync protocol (both agents)
 
