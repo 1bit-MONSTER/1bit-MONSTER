@@ -23,6 +23,16 @@
 // float/int scalar ops the AIE2P scalar unit lowers to hardware instructions.
 #include "silu_quant.h"
 
+// Issue #1838: the aiecc-generated bare-metal linker script maps ONLY
+// .text/.data — zero-init file-scope statics land in .bss, which gets no
+// writable tile-DM region, so kernel reads of them return garbage (observed
+// in the #1769 round: .bss statics silently dropped from the kernel ELF).
+// Force every mutable kernel static into .data (the section IS mapped and
+// its zero bytes are materialized by the ELF loader). The load-bearing ones
+// are g_i4_call (col_group pC-zeroing + dump gating) and the function-local
+// `call` counter in matmul_i8_i32_i4 (silu metadata folding).
+#define KERNEL_STATIC __attribute__((section(".data")))
+
 template <typename T_in, typename T_out, int rowA, int colA, int colB,
           bool b_row_maj = true, bool c_row_maj = true>
 static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
@@ -676,35 +686,38 @@ extern "C" void zero_i32(int32_t *c_out) {
 // optimization once the corr gate passes on NPU).
 // bring-up trace (issue #1769): first nibble bytes of the int4 B tile,
 // the dequantized B'' and the raw scale bytes the kernel read
-static uint8_t g_i4_trace_b[64];   // last matmul (ki=31) nibbles
-static uint8_t g_i4_trace_b0[64];  // first matmul (ki=0) nibbles
-static uint8_t g_i4_trace_dq[64];
-static uint8_t g_i4_trace_sc[32];
-static int8_t g_i4_dq_dump[64];    // dequantized B'' of chunk (i=0, jt=0) — I4_B_DUMP
-static int32_t g_i4_rq_dump[8];    // ratioQ22 read for chunk (i=0, jt=0)
-static int g_i4_dq_once = 1;       // one-shot: capture the FIRST matmul call only
-static int8_t g_i4_dq_dump2[64];   // chunk (i=7, jt=15) — the LAST k-step/col-tile
-static int32_t g_i4_rq_dump2[8];
-static int8_t g_i4_dq_dump3[64];   // chunk (i=1, jt=3) of the first tile
-static unsigned g_i4_cap_fired = 0; // scalar-path capture fired (call 32)
-static unsigned g_i4_cap_call = 0;  // call counter at capture time
-static int32_t g_i4_c1pre[8];       // C1buf cols 0-7 BEFORE cg1 first accumulate
-static unsigned g_i4_pc_addr = 0;   // (unsigned)pC at call 32
-static unsigned g_i4_zero_addr = 0xE000; // zero_c1 hardcoded address
-static int8_t g_i4_dq_dump7[64];    // B'' chunk(0,0) at call 33 (cg1 ki=1)
-static int8_t g_i4_dq_dump8[64];    // B'' chunk(0,0) at call 63 (cg1 ki=31)
-static int8_t g_i4_a_dump2[64];     // A row0 at call 33
-static int8_t g_i4_dq_dump4[64];   // chunk (i=3, jt=7) of the first tile
-static int32_t g_i4_rq_dump3[8];   // ratios for chunk (i=1, jt=3)
-static int32_t g_i4_rq_dump4[8];   // ratios for chunk (i=3, jt=7)
-static int8_t g_i4_dq_dump5[64];   // chunk (i=0, jt=3) — same col-tile, i=0
-static int8_t g_i4_dq_dump6[64];   // chunk (i=1, jt=0) — same k-step, jt=0
-static int32_t g_i4_c00_tile[64];  // full (8,8) C00 accumulator after call 0
-static unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
-static int g_cap5 = 1, g_cap6 = 1, g_cap3 = 1, g_cap4 = 1;
-static int8_t g_i4_a_dump[512];    // A tile (8,64) all bytes — I4_A_DUMP
-static int32_t g_i4_ref_c1[8];    // scalar reference C1 row-0 cols 0-7 (mmul vs scalar)
-static int32_t g_i4_mmul_c1[8];   // mmul's C1 row-0 cols 0-7 (read back after store)
+// KERNEL_STATIC forces .data placement (issue #1838): aiecc's bare-metal
+// ld.script maps only .text/.data — zero-init statics in .bss are dropped
+// from the ELF, so their reads return garbage.
+static KERNEL_STATIC uint8_t g_i4_trace_b[64];   // last matmul (ki=31) nibbles
+static KERNEL_STATIC uint8_t g_i4_trace_b0[64];  // first matmul (ki=0) nibbles
+static KERNEL_STATIC uint8_t g_i4_trace_dq[64];
+static KERNEL_STATIC uint8_t g_i4_trace_sc[32];
+static KERNEL_STATIC int8_t g_i4_dq_dump[64];    // dequantized B'' of chunk (i=0, jt=0) — I4_B_DUMP
+static KERNEL_STATIC int32_t g_i4_rq_dump[8];    // ratioQ22 read for chunk (i=0, jt=0)
+static KERNEL_STATIC int g_i4_dq_once = 1;       // one-shot: capture the FIRST matmul call only
+static KERNEL_STATIC int8_t g_i4_dq_dump2[64];   // chunk (i=7, jt=15) — the LAST k-step/col-tile
+static KERNEL_STATIC int32_t g_i4_rq_dump2[8];
+static KERNEL_STATIC int8_t g_i4_dq_dump3[64];   // chunk (i=1, jt=3) of the first tile
+static KERNEL_STATIC unsigned g_i4_cap_fired = 0; // scalar-path capture fired (call 32)
+static KERNEL_STATIC unsigned g_i4_cap_call = 0;  // call counter at capture time
+static KERNEL_STATIC int32_t g_i4_c1pre[8];       // C1buf cols 0-7 BEFORE cg1 first accumulate
+static KERNEL_STATIC unsigned g_i4_pc_addr = 0;   // (unsigned)pC at call 32
+static KERNEL_STATIC unsigned g_i4_zero_addr = 0xE000; // zero_c1 hardcoded address
+static KERNEL_STATIC int8_t g_i4_dq_dump7[64];    // B'' chunk(0,0) at call 33 (cg1 ki=1)
+static KERNEL_STATIC int8_t g_i4_dq_dump8[64];    // B'' chunk(0,0) at call 63 (cg1 ki=31)
+static KERNEL_STATIC int8_t g_i4_a_dump2[64];     // A row0 at call 33
+static KERNEL_STATIC int8_t g_i4_dq_dump4[64];   // chunk (i=3, jt=7) of the first tile
+static KERNEL_STATIC int32_t g_i4_rq_dump3[8];   // ratios for chunk (i=1, jt=3)
+static KERNEL_STATIC int32_t g_i4_rq_dump4[8];   // ratios for chunk (i=3, jt=7)
+static KERNEL_STATIC int8_t g_i4_dq_dump5[64];   // chunk (i=0, jt=3) — same col-tile, i=0
+static KERNEL_STATIC int8_t g_i4_dq_dump6[64];   // chunk (i=1, jt=0) — same k-step, jt=0
+static KERNEL_STATIC int32_t g_i4_c00_tile[64];  // full (8,8) C00 accumulator after call 0
+static KERNEL_STATIC unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
+static KERNEL_STATIC int g_cap5 = 1, g_cap6 = 1, g_cap3 = 1, g_cap4 = 1;
+static KERNEL_STATIC int8_t g_i4_a_dump[512];    // A tile (8,64) all bytes — I4_A_DUMP
+static KERNEL_STATIC int32_t g_i4_ref_c1[8];    // scalar reference C1 row-0 cols 0-7 (mmul vs scalar)
+static KERNEL_STATIC int32_t g_i4_mmul_c1[8];   // mmul's C1 row-0 cols 0-7 (read back after store)
 extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                                  const uint8_t *__restrict pB4,
                                  int32_t *__restrict pC) {
@@ -716,6 +729,18 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     using MMUL = aie::mmul<8, 8, 8, int8, int8, accauto>;
     event0();
 #ifdef I4_SCALAR_C1
+// Issue #1864 guard: this fallback accumulates C1 with the scalar pattern
+//   pC[...] += (int32_t)pA[i*64+kk] * av32;
+// which is EXACTLY the load-alu-store RMW construct that llvm-aie/peano
+// miscompiles (product lands <<8 for a deterministic subset of operand
+// values; reproduced on LLVM 21 and 22). The v66 scalar path is only known
+// to pass because build_zaya_fused.sh re-validates it against the CPU gate
+// (test_i4_dequant.cpp / test_i4_silu_q22.cpp) on every toolchain bump.
+// Require an explicit acknowledgment so a silent rebuild on a different
+// toolchain cannot ship the broken RMW unnoticed. Cross-ref: tracker #1882.
+#if !defined(I4_SCALAR_C1_ACK_1864)
+#error "I4_SCALAR_C1 uses the #1864-flagged scalar RMW pattern. Define I4_SCALAR_C1_ACK_1864 (via build_zaya_fused.sh) only after re-validating the C1 corr gate on the exact toolchain in use."
+#endif
 #ifdef I4_SUM_A
     // probe: C1 = sum of the A tile (64 values), same for every col — if the
     // A stream delivers Am correctly this stays small (~±800); if A arrives
@@ -987,7 +1012,11 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // (8,128) int32 MICROTILED: element (r,c) at (c/8)*64 + r*8 + c%8,
     // so row r col c = row-0 position + r*8.
     {
-        static unsigned call = 0;
+        // KERNEL_STATIC (issue #1838): this counter is load-bearing — it
+        // drives the silu metadata folding (ki = call % 32). Zero-init in
+        // .bss is dropped by the aiecc ld.script; force .data so the ELF
+        // materializes the zero and the counter starts at 0.
+        static KERNEL_STATIC unsigned call = 0;
         const unsigned ki = call % 32;   // only ki%4 is used (== call%4 since 32%4==0)
         const int32_t* mq = (const int32_t*)(pB4 + 5120);
         if (ki % 4 == 3) {

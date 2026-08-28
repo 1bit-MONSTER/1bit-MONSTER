@@ -851,7 +851,7 @@ add_test(NAME zaya_batch_check COMMAND zaya_batch_check ${ZAYA_TEST_MODEL})
 
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
-set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
+set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_npu_universal.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
 
 # ── Speculative decode demo: draft + target llama.cpp contexts, batched
 # verification with KV rollback (roadmap Phase 2 core loop) ──

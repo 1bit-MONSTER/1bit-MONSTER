@@ -42,6 +42,20 @@ aiecc --peano=.../llvm-aie --aietools=~/Xilinx/2025.2/Vitis/aietools \
 # -> aie.mlir.prj/  with main_core_<col>_<row>.elf per core
 ```
 
+> **`--aietools` MUST be the Vitis aietools ROOT for the chess arm (issue
+> #1913).** With `--xchesscc`, aiecc looks for chess-llvm-link at
+> `<aietools>/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link`. Pointing
+> `--aietools` at mlir-aie's own `build_tmp` (which the **peano** arm
+> tolerates — e.g. `check_mm_kernel_2x4.sh`'s `AIETOOLS=~/mlir-aie/build_tmp`
+> default) makes aiecc **silently skip** the chess-llvm-link step (logged only
+> under `-v`) and fail later with a confusing `main_input.chesslinked.ll`
+> missing error at `xchesscc_wrapper`. Related gotcha: an
+> `~/mlir-aie/install/bin/xchesscc` symlink shadowing the Vitis launcher on
+> PATH makes `getAietoolsDir()` derive the wrong root the same way — the Vitis
+> `aietools/bin` must be found first. `engine/npu/generators/check_chess_aietools.sh`
+> implements this check as a reusable pre-flight guard (`check_mm_kernel_2x4.sh`
+> uses it; `USE_XCHESSCC=1` there exercises the chess arm).
+
 ## 3. Launcher fixes (Vitis install bugs — 2025.2 & 2026.1)
 
 All three fixes were re-verified against **both** installed toolchains on
@@ -178,6 +192,47 @@ The llvm-aie clang++ is a full x86-64 host compiler (not just aie2p cross),
 so it builds `ps.so` correctly. This is the sanctioned path to close the gap
 once a matching `--vaiml-memdump` lib (or a host↔chess DM base-offset
 config) is available.
+
+## 7d. TXN-driven designs: the hand-written ps.so TXN-replay harness (#1908/#1909/#1910/#1911)
+
+For **npu-instruction-driven** designs (external objectFifos + external_func,
+e.g. the v27 GEMM / n1_core_i8_v27.py), the classic aiecc `--aiesim` flow is
+broken in four independent ways, each tracked separately:
+
+| Issue | Failure |
+|-------|---------|
+| #1908 | Vitis 2026.1 `aie2psimmsm` segfaults on ANY npu2 design (2025.2 works) |
+| #1909 | `--aie-mlir-to-shim-solution` emits an EMPTY `aieshim_solution.aiesol` (`"Placement": []`) for every npu2 design |
+| #1910 | `--aie-generate-xaie` emits empty `configure_*`/`start_cores` stubs — the sim has nothing to drive |
+| #1911 | `aiecc --aiesim` silently exits 0 with NO `ps.so` when `clang++` is not on PATH |
+
+The checked-in harness **`engine/npu/tests/aiesim/`** (`run_aiesim.sh` +
+`txn_replay_main.cpp`) works around all four: it builds a hand-written
+`ps.so` with system `g++` (no clang++ needed — fixes #1911), refuses/clearly
+warns on the empty aiesol (#1909), drives the design by **replaying the TXN
+instruction stream** (`insts.txt` — the same file XRT loads on hardware)
+through XAie instead of relying on generated stubs (#1910), and defaults
+`VITIS` to 2025.2 with a loud warning on 2026.1 (#1908).
+
+TXN opcode format (mlir-aie `include/aie/Runtime/TxnEncoding.h`, verified
+against the file; tile addresses are folded absolute `col<<25 | row<<20 |
+offset`, sim base is 0x20000000000 — see `txn_replay_main.cpp` header):
+
+```
+0x00 WRITE       6 words  [opc, 0, addr, 0, val, sizeB]
+0x01 BLOCKWRITE  4+c      [opc, col|row<<8, addr, sizeB, data(c)]
+0x03 MASKWRITE   7 words  [opc, 0, addr, 0, val, mask, sizeB]
+0x80 TCT         4 words  [opc, sizeB, ...]  (flow control — no-op here)
+0x81 DDR_PATCH   12 words [opc, sizeB, 0,0,0, act, bdaddr, 0, argidx, 0, plus, 0]
+                        -> BD address field += devbuf[arg]+plus
+```
+
+Usage (after producing an `--aiesim` workdir with `insts.txt`):
+
+```bash
+engine/npu/tests/aiesim/run_aiesim.sh <arm-workdir> [WAIT_US] [insts-name]
+# VITIS defaults to ~/Xilinx/2025.2 (verified-working aiesimulator).
+```
 
 ## 8. Findings recorded on the tracker
 
