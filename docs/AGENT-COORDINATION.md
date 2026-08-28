@@ -55,6 +55,20 @@ functions; if a conflict appears, preserve BOTH sides and note it in the merge c
 - **Handoff**: strixhalo agent will HW-verify the co-worker's pending NPU items on
   `/dev/accel0` and report results here.
 
+## Zero-h2-DMA single-launch: PROVEN BLOCKED (2026-08-28)
+
+The doc's option (a) (2-channel dataflow multiplexing B_d over a GU channel) was
+implemented and tested on silicon: split GU A/B into two 2-D single-stream fifos
+(ch0 A-tile, ch1 B-tile carrying B_gu then B_d). It **builds** but the shared-B
+fifo's D-cascade writeback does NOT fire (C2=0x5A, reproduces cleanly even for a
+`--no-gu` D-only probe). Controls: the ORIGINAL (combined-AB GU + dedicated
+`of_b_d`) D-only design IS silicon-exact (C2=2048, bad=0); a 3-fifo dedicated-B
+variant won't place (2-input-DMA, BUG-007). So the complete zero-h2-DMA fused
+single launch remains blocked by the iron ObjectFifo + 2-input-DMA constraint.
+Production path stays p1/p2 two-launch (h2 via DDR). Next options: (b) an iron
+FIFO primitive that pipelines merged/segmented elements (toolchain-level), or a
+way to reuse one channel without the shared-B writeback regression.
+
 ## Sync protocol (both agents)
 
 1. **Before starting work:** `git fetch origin` (and the fork), merge/rebase `main`
