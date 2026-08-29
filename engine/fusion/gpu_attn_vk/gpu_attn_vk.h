@@ -104,12 +104,13 @@ private:
     // pon_ [NC][H].
     vkrt::GpuBuffer gu_, w3_, pon_;
 
-    vkrt::Pipeline p_rms_, p_qkv_, p_decode_, p_post_, p_embed_;
+    vkrt::Pipeline p_rms_, p_qkv_, p_qkns_, p_decode_, p_post_, p_embed_;
     vkrt::Pipeline p_zero_;
     vkrt::Pipeline p_ffn_rms_, p_ffn_gu_, p_ffn_silu_, p_ffn_down_, p_ffn_add_;
     // One shared descriptor set per pipeline (weights packed, pc.layer picks).
     VkDescriptorSet ds_rms_ = VK_NULL_HANDLE, ds_qkv_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_post_ = VK_NULL_HANDLE;
+    VkDescriptorSet ds_qkns_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_decode_ = VK_NULL_HANDLE, ds_embed_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_zero_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_ffn_rms_ = VK_NULL_HANDLE, ds_ffn_gu_ = VK_NULL_HANDLE;
@@ -117,7 +118,8 @@ private:
     VkDescriptorSet ds_ffn_add_ = VK_NULL_HANDLE;
     vkrt::GpuBuffer* buf_zero_[1] = {nullptr};
     vkrt::GpuBuffer* buf_rms_[3] = {nullptr, nullptr, nullptr};
-    vkrt::GpuBuffer* buf_qkv_[11] = {nullptr};
+    vkrt::GpuBuffer* buf_qkv_[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    vkrt::GpuBuffer* buf_qkns_[7] = {nullptr};
     vkrt::GpuBuffer* buf_decode_[4] = {nullptr, nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_post_[3] = {nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_embed_[2] = {nullptr, nullptr};

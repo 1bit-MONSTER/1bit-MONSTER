@@ -1,29 +1,21 @@
-// attn_qkv.comp — Q/K/V GEMVs from the RMSNorm'd hidden state, with per-head
-// QK-norm, RoPE, and the KV-cache store.  One block per Q head (b < NH) and
-// one block per KV head (b < NKV, computes K and V).  Mirrors the fused
-// backend exactly: gemv(W[out,in], x) with y[o] = sum_k x[k]*W[o*H+k]; per-head
-// QK-norm (rsqrt(mean^2+eps) with the shared q_norm/k_norm weights); RoPE pairs
-// (d, d+hd/2) with f = 1/theta^(d/(hd/2)), c=cos(pos*f), s=sin(pos*f).
+// attn_qkv.comp — Q/K/V GEMVs from the RMSNorm'd hidden state (GEMV ONLY;
+// the per-head QK-norm/RoPE/KV-store now live in attn_qkns.comp).
 //
-// KV cache is stored as FP16 bits (uint), matching the fused backend's
-// fused_f2h_kernel + fused_kv_store_kernel — the fused HIP attention runs the
-// decode in FP16, so the VK path must quantize K/V to FP16 too for token
-// parity (the NPU FFN is int8 and amplifies f16-vs-f32 KV differences into
-// borderline-token flips).
+// ONE BLOCK PER OUTPUT ROW, 256 threads reading k = tid (contiguous 1 KB per
+// load round — fully coalesced; the old one-block-per-head 2-lane/row pattern
+// read each thread's element from a DIFFERENT row (stride H apart) and capped
+// at ~69 GB/s).  Rows: [0, NH*HD) = Q, [NH*HD, +NKV*HD) = K, then V.
+// Mirrors the fused backend's gemv: y[o] = sum_k x[k]*W[o*H+k].
 #version 450
 layout(local_size_x = 256) in;
 
-layout(set = 0, binding =  0, std430) buffer HNorm { float hn[]; };  // [H]
-layout(set = 0, binding =  1, std430) buffer QOut  { float q[]; };   // [NH*HD]
-layout(set = 0, binding =  2, std430) buffer KOut  { float k[]; };   // [NKV*HD]
-layout(set = 0, binding =  3, std430) buffer VOut  { float v[]; };   // [NKV*HD]
-layout(set = 0, binding =  4, std430) buffer Wq    { float wq[]; };  // [NH*HD][H]
-layout(set = 0, binding =  5, std430) buffer Wk    { float wk[]; };  // [NKV*HD][H]
-layout(set = 0, binding =  6, std430) buffer Wv    { float wv[]; };  // [NKV*HD][H]
-layout(set = 0, binding =  7, std430) buffer Qn    { float qn[]; };  // [HD]
-layout(set = 0, binding =  8, std430) buffer Kn    { float kn[]; };  // [HD]
-layout(set = 0, binding =  9, std430) buffer KC    { uint kc[]; };   // [NKV*max_seq*HD] f16 bits
-layout(set = 0, binding = 10, std430) buffer VC    { uint vc[]; };   // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 0, std430) buffer HNorm { float hn[]; };  // [H]
+layout(set = 0, binding = 1, std430) buffer QOut  { float q[]; };   // [NH*HD]
+layout(set = 0, binding = 2, std430) buffer KOut  { float k[]; };   // [NKV*HD]
+layout(set = 0, binding = 3, std430) buffer VOut  { float v[]; };   // [NKV*HD]
+layout(set = 0, binding = 4, std430) buffer Wq    { float wq[]; };  // [NH*HD][H]
+layout(set = 0, binding = 5, std430) buffer Wk    { float wk[]; };  // [NKV*HD][H]
+layout(set = 0, binding = 6, std430) buffer Wv    { float wv[]; };  // [NKV*HD][H]
 
 layout(push_constant) uniform PC {
     int  H; int NH; int NKV; int HD; int IM;
@@ -31,130 +23,41 @@ layout(push_constant) uniform PC {
     float eps; float rope_theta; float scale;
 } pc;
 
-shared float val[256];   // raw Q (or K) values for this head
-shared float vraw[256];  // raw V values
-shared float rsh[256];   // reduction scratch
-
-// FP32 -> FP16 bits (exact hardware conversion, same as __float2half).
-// packHalf2x16 packs two f16 into a uint — low 16 bits are the first value.
-uint f16bits(float x) {
-    return packHalf2x16(vec2(x, 0.0)) & 0xFFFFu;
-}
+shared float sdata[256];
 
 void main() {
-    uint b = gl_GlobalInvocationID.x / 256;
+    uint row = gl_WorkGroupID.x;   // one block per output row
     uint tid = gl_LocalInvocationID.x;
-    if (b >= uint(pc.NH + pc.NKV)) return;   // blocks: [0,NH) Q, [NH,NH+NKV) KV
-    bool isQ = b < uint(pc.NH);
-    uint hd = uint(pc.HD);
+    uint nq = uint(pc.NH) * uint(pc.HD);
+    uint nkv = uint(pc.NKV) * uint(pc.HD);
+    uint rows = nq + 2u * nkv;
+    if (row >= rows) return;
 
-    if (isQ) {
-        // ---- Q head b: GEMV ----
-        // All layers share one buffer: wq packed [layer][NH*HD][H].
-        // Parallel reduction: 2 threads cooperate per output row (tid = r*2+l,
-        // r in [0,hd), lane l in {0,1}), each accumulating half of the H dim,
-        // then a 1-step add.  (The old serial per-thread loop — 128 threads ×
-        // 1024 iterations — was ~12x slower than HIP's gemv.)
-        uint wq_off = uint(pc.layer) * uint(pc.NH) * hd * uint(pc.H);
-        uint qn_off = uint(pc.layer) * hd;
-        uint r = tid >> 1, l = tid & 1u;
-        if (r < hd) {
-            uint o = b * hd + r;
-            float acc = 0.0;
-            for (int k = int(l); k < pc.H; k += 2) acc += hn[k] * wq[wq_off + o * uint(pc.H) + uint(k)];
-            val[tid] = acc;   // per-lane slot (2 per row)
-        }
-        barrier();
-        // 2-lane add: lane 0 computes the Q row sum, broadcasts via rsh.
-        if (r < hd && l == 0u) rsh[r * 2u] = val[r * 2u] + val[r * 2u + 1u];
-        barrier();
-        if (r < hd) val[tid] = rsh[r * 2u];
-        barrier();
-        // Head-wide QK-norm: sum of q^2 over all hd rows (same as original).
-        // Square lane 0's slot only (both lanes hold the row sum).
-        rsh[tid] = (l == 0u && r < hd) ? val[tid] * val[tid] : 0.0;
-        barrier();
-        for (int s2 = 128; s2 > 0; s2 >>= 1) {
-            if (tid < uint(s2)) rsh[tid] += rsh[tid + uint(s2)];
-            barrier();
-        }
-        float inv = inversesqrt(rsh[0] / float(pc.HD) + pc.eps);
-        // RoPE + scale + write.  val[tid] holds row r's sum in both lanes; the
-        // RoPE pair row r+hd/2 lives at slot (r+hd/2)*2 = r*2+hd.
-        if (r < hd) {
-            uint o = b * hd + r;
-            if (r < hd / 2) {
-                uint d = r;
-                float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
-                float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
-                float a = val[tid] * inv * qn[qn_off + r];
-                float bb = val[r * 2u + hd] * inv * qn[qn_off + r + hd / 2];
-                q[o] = a * c - bb * sn;
-                q[b * hd + r + hd / 2] = a * sn + bb * c;
-            }
-        }
+    float acc = 0.0;
+    if (row < nq) {
+        uint off = uint(pc.layer) * nq * uint(pc.H);       // [layer][row][H]
+        for (int k = int(tid); k < pc.H; k += 256)
+            acc += hn[k] * wq[off + row * uint(pc.H) + uint(k)];
+    } else if (row < nq + nkv) {
+        uint kr = row - nq;
+        uint off = uint(pc.layer) * nkv * uint(pc.H);
+        for (int k = int(tid); k < pc.H; k += 256)
+            acc += hn[k] * wk[off + kr * uint(pc.H) + uint(k)];
     } else {
-        // ---- KV head (b - NH): K and V GEMVs ----
-        uint kv = b - uint(pc.NH);
-        uint wk_off = uint(pc.layer) * uint(pc.NKV) * hd * uint(pc.H);
-        uint kn_off = uint(pc.layer) * hd;
-        // Parallel GEMV (2 lanes/row, strided halves) for both K and V.
-        // Per-lane slots: val[tid]/vraw[tid] hold each lane's partial (256
-        // entries; the old code indexed by row, so both lanes clobbered one
-        // slot and K came out zero).
-        uint r = tid >> 1, l = tid & 1u;
-        if (r < hd) {
-            uint o = kv * hd + r;
-            float ak = 0.0, av = 0.0;
-            for (int k = int(l); k < pc.H; k += 2) {
-                ak += hn[k] * wk[wk_off + o * uint(pc.H) + uint(k)];
-                av += hn[k] * wv[wk_off + o * uint(pc.H) + uint(k)];
-            }
-            val[tid] = ak;      // K raw, per-lane slot
-            vraw[tid] = av;     // V raw, per-lane slot
-        }
+        uint vr = row - nq - nkv;
+        uint off = uint(pc.layer) * nkv * uint(pc.H);
+        for (int k = int(tid); k < pc.H; k += 256)
+            acc += hn[k] * wv[off + vr * uint(pc.H) + uint(k)];
+    }
+    sdata[tid] = acc;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) sdata[tid] += sdata[tid + uint(s)];
         barrier();
-        // 2-lane add: lane 0 computes K and V row sums, broadcasts via rsh.
-        if (r < hd && l == 0u) {
-            rsh[r * 2u] = val[r * 2u] + val[r * 2u + 1u];        // K sum
-            rsh[r * 2u + 1u] = vraw[r * 2u] + vraw[r * 2u + 1u];  // V sum
-        }
-        barrier();
-        if (r < hd) {
-            val[tid] = rsh[r * 2u];       // K row result (both lanes)
-            vraw[tid] = rsh[r * 2u + 1u]; // V row result (both lanes)
-        }
-        barrier();
-        // per-head K-norm reduction (over val, head-wide sum of K^2).
-        // val[tid] holds the row sum in BOTH lanes; square lane 0's slot only.
-        rsh[tid] = (l == 0u && r < hd) ? val[tid] * val[tid] : 0.0;
-        barrier();
-        for (int s2 = 128; s2 > 0; s2 >>= 1) {
-            if (tid < uint(s2)) rsh[tid] += rsh[tid + uint(s2)];
-            barrier();
-        }
-        float kinv = inversesqrt(rsh[0] / float(pc.HD) + pc.eps);
-        if (r < hd) {
-            uint o = kv * hd + r;
-            float kk = val[tid] * kinv * kn[kn_off + r];
-            if (r < hd / 2) {
-                uint d = r;
-                float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
-                float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
-                float a = kk, bb = val[r * 2u + hd] * kinv * kn[kn_off + r + hd / 2];
-                k[o] = a * c - bb * sn;
-                k[kv * hd + r + hd / 2] = a * sn + bb * c;
-            }
-            v[o] = vraw[tid];   // V: raw, no norm, no rope
-        }
-        barrier();   // make the paired k[] writes visible before the store reads
-        if (r < hd) {
-            uint o = kv * hd + r;
-            // KV cache store (f16 bits), layout [layer][pos][NKV][HD]
-            uint base = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd
-                      + uint(pc.pos) * uint(pc.NKV) * hd + o;
-            kc[base] = f16bits(k[o]);
-            vc[base] = f16bits(v[o]);
-        }
+    }
+    if (tid == 0u) {
+        if (row < nq) q[row] = sdata[0];
+        else if (row < nq + nkv) k[row - nq] = sdata[0];
+        else v[row - nq - nkv] = sdata[0];
     }
 }

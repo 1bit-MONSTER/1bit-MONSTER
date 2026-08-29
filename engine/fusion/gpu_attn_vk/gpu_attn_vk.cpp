@@ -77,7 +77,8 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
         return p.pipeline != VK_NULL_HANDLE;
     };
     if (!load(p_rms_, "attn_rms.spv", 3, sizeof(VkAttnPC)) ||
-        !load(p_qkv_, "attn_qkv.spv", 11, sizeof(VkAttnPC)) ||
+        !load(p_qkv_, "attn_qkv.spv", 7, sizeof(VkAttnPC)) ||
+        !load(p_qkns_, "attn_qkns.spv", 7, sizeof(VkAttnPC)) ||
         !load(p_decode_, "attn_decode.spv", 4, sizeof(VkAttnPC)) ||
         !load(p_post_, "attn_post.spv", 3, sizeof(VkAttnPC)) ||
         !load(p_embed_, "attn_embed.spv", 2, sizeof(VkAttnPC)) ||
@@ -95,8 +96,10 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     ds_rms_ = vkrt::createDescriptorSet(vk_, p_rms_, buf_rms_, 3);
     buf_qkv_[0] = &hn_; buf_qkv_[1] = &q_; buf_qkv_[2] = &k_; buf_qkv_[3] = &v_;
     buf_qkv_[4] = &wq_; buf_qkv_[5] = &wk_; buf_qkv_[6] = &wv_;
-    buf_qkv_[7] = &qn_; buf_qkv_[8] = &kn_; buf_qkv_[9] = &kc_; buf_qkv_[10] = &vc_;
-    ds_qkv_ = vkrt::createDescriptorSet(vk_, p_qkv_, buf_qkv_, 11);
+    ds_qkv_ = vkrt::createDescriptorSet(vk_, p_qkv_, buf_qkv_, 7);
+    buf_qkns_[0] = &q_; buf_qkns_[1] = &k_; buf_qkns_[2] = &qn_;
+    buf_qkns_[3] = &kn_; buf_qkns_[4] = &kc_; buf_qkns_[5] = &vc_; buf_qkns_[6] = &v_;
+    ds_qkns_ = vkrt::createDescriptorSet(vk_, p_qkns_, buf_qkns_, 7);
     buf_post_[0] = &ao_; buf_post_[1] = &wo_; buf_post_[2] = &pages_buf_;
     ds_post_ = vkrt::createDescriptorSet(vk_, p_post_, buf_post_, 3);
     buf_decode_[0] = &q_; buf_decode_[1] = &kc_; buf_decode_[2] = &vc_; buf_decode_[3] = &ao_;
@@ -117,7 +120,7 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     buf_ffn_add_[0] = &pages_buf_; buf_ffn_add_[1] = &hn_; buf_ffn_add_[2] = &ao_;
     ds_ffn_add_ = vkrt::createDescriptorSet(vk_, p_ffn_add_, buf_ffn_add_, 3);
     if (ds_rms_ == VK_NULL_HANDLE || ds_qkv_ == VK_NULL_HANDLE ||
-        ds_post_ == VK_NULL_HANDLE || ds_decode_ == VK_NULL_HANDLE ||
+        ds_qkns_ == VK_NULL_HANDLE || ds_post_ == VK_NULL_HANDLE || ds_decode_ == VK_NULL_HANDLE ||
         ds_zero_ == VK_NULL_HANDLE || ds_ffn_rms_ == VK_NULL_HANDLE ||
         ds_ffn_gu_ == VK_NULL_HANDLE || ds_ffn_silu_ == VK_NULL_HANDLE ||
         ds_ffn_down_ == VK_NULL_HANDLE || ds_ffn_add_ == VK_NULL_HANDLE) {
@@ -197,12 +200,13 @@ bool VkAttention::layer(int l, int pos) {
     // slower than the HIP single-stream path; batching collapses 4 syncs to 1.
     // All layers share the SAME descriptor sets (weights packed, pc.layer
     // selects) — no per-layer descriptor rebuilds.
-    vkrt::DispatchStage stages[4];
+    vkrt::DispatchStage stages[5];
     stages[0] = {&p_rms_,   ds_rms_,   1, 1, 1, &pc};
-    stages[1] = {&p_qkv_,   ds_qkv_,   (uint32_t)(NH_ + NKV_), 1, 1, &pc};
-    stages[2] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
-    stages[3] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 31) / 32), 1, 1, &pc};
-    vkrt::dispatchBatchOnce(vk_, stages, 4);
+    stages[1] = {&p_qkv_,   ds_qkv_,   (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), 1, 1, &pc};
+    stages[2] = {&p_qkns_,  ds_qkns_,  (uint32_t)(NH_ + NKV_), 1, 1, &pc};
+    stages[3] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
+    stages[4] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 31) / 32), 1, 1, &pc};
+    vkrt::dispatchBatchOnce(vk_, stages, 5);
     return true;
 }
 
@@ -248,7 +252,8 @@ bool VkAttention::record_forward(int token_id, int pos) {
     for (int l = 0; l < NC_; l++) {
         const VkAttnPC* pc = &pcs[(size_t)l + 1];
         stages.push_back({&p_rms_,     ds_rms_,     1, 1, 1, pc});
-        stages.push_back({&p_qkv_,     ds_qkv_,     (uint32_t)(NH_ + NKV_), 1, 1, pc});
+        stages.push_back({&p_qkv_,     ds_qkv_,     (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), 1, 1, pc});
+        stages.push_back({&p_qkns_,    ds_qkns_,    (uint32_t)(NH_ + NKV_), 1, 1, pc});
         stages.push_back({&p_decode_,  ds_decode_,  (uint32_t)NH_, 1, 1, pc});
         stages.push_back({&p_post_,    ds_post_,    (uint32_t)((H_ + 31) / 32), 1, 1, pc});
         stages.push_back({&p_ffn_rms_, ds_ffn_rms_, 1, 1, 1, pc});
@@ -300,7 +305,7 @@ void VkAttention::debug_kvcache(std::vector<float>* kc, std::vector<float>* vc) 
 
 void VkAttention::destroy() {
     p_rms_.destroy(vk_.dev); p_qkv_.destroy(vk_.dev); p_decode_.destroy(vk_.dev);
-    p_post_.destroy(vk_.dev); p_embed_.destroy(vk_.dev); p_zero_.destroy(vk_.dev);
+    p_post_.destroy(vk_.dev); p_qkns_.destroy(vk_.dev); p_embed_.destroy(vk_.dev); p_zero_.destroy(vk_.dev);
     p_ffn_rms_.destroy(vk_.dev); p_ffn_gu_.destroy(vk_.dev);
     p_ffn_silu_.destroy(vk_.dev); p_ffn_down_.destroy(vk_.dev); p_ffn_add_.destroy(vk_.dev);
     auto free = [&](vkrt::GpuBuffer& b) { if (b.mem) b.destroy(); };
