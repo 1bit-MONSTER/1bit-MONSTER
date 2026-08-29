@@ -98,9 +98,17 @@ int main(int argc, char** argv) {
     auto raw_all = read_q4nx_raw(M, gu_off, gu_i8_rows, H);
     auto pack = pack_gu_fused_i4(raw_all, E, H, n_ff);
 
-    // Kernel consumption: per (64,128) tile, read the ONE linear 4864-B chunk
-    // exactly as matmul_i8_i32_i4 does — nibbles [0,4096), s [4096,4608),
-    // S_col [4608,4864) — run the dequant, compare with B_shadow.
+    // Kernel consumption: per (64,128) tile, read the ONE linear 8192-B tile
+    // exactly as matmul_i8_i32_i4 does — nibbles [0,4096), ratioQ22 int32
+    // [4096,5120) — run the dequant, compare with B_shadow.
+    //
+    // v65/v66 contract (gu_i4_pack.h): the on-chip dequant reads ONLY the
+    // ratioQ22 int32 at [4096 + group*512 + col*4] (group = k/32, col within
+    // the 128-wide tile). The old bf16 s/S_col bytes at [4096..4864) were
+    // REMOVED in v65 (they overlapped this region), and B_shadow is the
+    // kernel's EXACT B'': sat8(round-half-away(q4*rq / 2^18)) — NOT the old
+    // float ratio path. This test was stale against the v65 pack (read the
+    // old bf16 layout -> ~12% matches); updated to the v66 contract.
     const size_t N = 2 * (size_t)n_ff;
     const int n_tiles_k = H / 64, n_tiles_n = (int)(N / 128);
     int neq = 0, ntot = H * (int)N;
@@ -110,29 +118,30 @@ int main(int argc, char** argv) {
             const uint8_t* tile = pack.tiles.data() + tbase;
             int8_t bpp[64 * 128];
             // per (8,8) chunk at (k-step i0, col-tile i1): nibbles at
-            // i0*512+i1*32 (32 B), s at 4096+(i0/4)*256+i1*16 (8 bf16),
-            // S_col at 4608+i1*16 (8 bf16)
+            // i0*512+i1*32 (32 B), ratioQ22 at 4096+(i0*8+i2)/32*512+(i1*8+i3)*4
+            // — one int32 per (col-in-tile), group = (k)/32 within the tile.
             for (int i0 = 0; i0 < 8; i0++)
                 for (int i1 = 0; i1 < 16; i1++) {
                     const uint8_t* nib = tile + i0 * 512 + i1 * 32;
-                    const uint8_t* rsp = tile + 4096 + (i0 / 4) * 256 + i1 * 16;
-                    const uint8_t* scp = tile + 4608 + i1 * 16;
-                    float ratio[8];
-                    for (int c = 0; c < 8; c++) {
-                        uint16_t sb = (uint16_t)(rsp[2*c]) | ((uint16_t)rsp[2*c+1] << 8);
-                        uint16_t sc = (uint16_t)(scp[2*c]) | ((uint16_t)scp[2*c+1] << 8);
-                        ratio[c] = (bf16_to_f32(sb) * 0.0625f) / bf16_to_f32(sc);
-                    }
-                    // unpack 32 nibble bytes -> 64 q4 (sign-extended), q4<<4,
-                    // then ONE multiply by the column ratio (kernel arithmetic)
+                    // ratioQ22 row for this k-step: group = (i0*8+i2)/32, but
+                    // within an (8,8) chunk all 8 rows share one k-group
+                    // (i0*8+i2 in [i0*8, i0*8+8) -> group = i0/4).
+                    const int32_t* rq = (const int32_t*)(tile + 4096 + (i0 / 4) * 512 + i1 * 32);
+                    // unpack 32 nibble bytes -> 64 q4 (sign-extended), then
+                    // ONE int32 multiply by the ratioQ22 (kernel arithmetic:
+                    // sat8(round-half-away(q4*rq / 2^18)) — identical to
+                    // matmul_i8_i32_i4 and the v66 B_shadow)
                     for (int i2 = 0; i2 < 8; i2++)
                         for (int i3 = 0; i3 < 8; i3++) {
                             uint8_t b = nib[i2 * 4 + i3 / 2];
                             int q4 = (i3 % 2 == 0) ? (int)(b & 0x0F) : (int)((b >> 4) & 0x0F);
                             if (q4 >= 8) q4 -= 16;
-                            float v = (float)(q4 << 4) * ratio[i3];
+                            int x = q4 * rq[i3];
+                            int ax = x < 0 ? -x : x;
+                            int rr = (ax + (1 << 17)) >> 18;   // round-half-away
+                            rr = x < 0 ? -rr : rr;
                             bpp[i0 * 1024 + i1 * 64 + i2 * 8 + i3] =
-                                i4d_sat8((int)std::roundf(v));
+                                i4d_sat8(rr);
                         }
                 }
             // compare with B_shadow (bpp is the microtiled mmul layout)
@@ -144,7 +153,7 @@ int main(int argc, char** argv) {
                         neq++;
                 }
         }
-    fprintf(stderr, "  [kernel-dequant] B'' byte-identity vs B_shadow: %d/%d exact\n", neq, ntot);
+    fprintf(stderr, "  [kernel-dequant] B'' byte-identity vs B_shadow (v66 ratioQ22 contract): %d/%d exact\n", neq, ntot);
     if (neq != ntot) { fprintf(stderr, "FAIL\n"); return 1; }
     fprintf(stderr, "PASS\n");
     return 0;

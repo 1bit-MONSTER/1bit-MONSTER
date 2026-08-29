@@ -9,8 +9,24 @@ W=/tmp/p1i4_build.$$
 mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
 
 # kernel: matmul + silu + unpack + dequant in one object
+# Issue #1874: I4_SCALAR_C1 is the PRODUCTION DEFAULT — the aie::mmul C1
+# store is miscompiled on this toolchain (scrambled for non-uniform B), and
+# the v66 scalar-C1 path is the verified-correct fallback (corr 1.0 via the
+# #1897 h2/C2 byte-identity gate). Set I4_USE_MMUL=1 to go back to the mmul
+# path (experimental: the C-store scramble makes C1 wrong for data-dependent
+# B). Requires I4_SCALAR_C1_ACK_1864 (the scalar RMW pattern is #1864-flagged;
+# the ack is verified by the CPU + NPU gates on every toolchain bump).
+I4_FLAGS=(-DI4_SCALAR_C1 -DI4_SCALAR_C1_ACK_1864)
+if [ "${I4_USE_MMUL:-0}" = "1" ]; then
+    # Experimental mmul path: B'' dequant must avoid the Bb memory round-trip
+    # (#1872 — computed byte-stores dropped/misplaced). I4_DIRECT_VECTOR_DEQ
+    # keeps B'' in registers (aie::mul -> acc32 -> sat8); without it the mmul
+    # path falls back to the Bb round-trip (unsafe on this toolchain).
+    I4_FLAGS=(-DI4_DIRECT_VECTOR_DEQ)
+fi
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
+    "${I4_FLAGS[@]}" \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
@@ -34,7 +50,11 @@ $P/bin/ld.lld -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
 # (the old checked-in generators/mm_32x64x128.o contained only zero_i32)
 # fails here loudly instead of surfacing as random aiecc "undefined symbol"
 # errors that look like kernel bugs.
-for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32 zero_c1; do
+# Issue #1865: zero_c1 is no longer in the required list — the generator no
+# longer calls it (matmul_i8_i32_i4 zeroes pC via the delivered arg). If a
+# stale generator still references it, the aiecc link fails loudly on the
+# undefined symbol, which is the desired failure mode.
+for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32; do
     if ! $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -qE " T $sym\$"; then
         echo "ERROR: merged kernel object missing symbol '$sym' — stale/partial build?" >&2
         exit 1
@@ -46,6 +66,17 @@ done
 # the compile error, surfacing as unrelated "undefined symbol" failures).
 if grep -q "silu_sigmoid_q22\[256\]" "$G/mm_kernel_reference.cc"; then
     echo "ERROR: mm_kernel_reference.cc must NOT define silu_sigmoid_q22 (it lives in silu_quant.h — issue #1845)" >&2
+    exit 1
+fi
+# .bss lint (issue #1838): the aiecc-generated bare-metal ld.script maps only
+# .text/.data — zero-init statics land in .bss, which is DROPPED from the
+# kernel ELF, so kernel reads of them return garbage (observed in the #1769
+# round). mm_kernel_reference.cc forces every mutable static into .data via
+# KERNEL_STATIC; fail loudly if any .bss symbol survives in the merged object
+# (a future kernel edit that forgets the attribute regresses silently on NPU).
+if $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -E ' [bB] ' >/dev/null; then
+    echo "ERROR: kernel object has .bss symbols (issue #1838) — add KERNEL_STATIC:" >&2
+    $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -E ' [bB] ' >&2 || true
     exit 1
 fi
 
@@ -69,6 +100,89 @@ cd "$W"   # aiecc resolves link_with objects relative to the CWD (stale generato
 # design.mlir.prj/input_with_addresses.mlir; any generator change that moves
 # those buffers silently corrupts the silu (the 2026-08-24 incident: the
 # stash at 0x76000 missed Gg_0 @ 0x6000 by 458 KB -> h2 all-+127, 0.3 tok/s).
+
+# Issue #1837 guard: the aiecc extern-call lowering has dropped p1/p2 setup
+# for 3-arg calls (only p0 delivered) — the fused silu call is exactly a
+# 3-arg extern (c1, b4, h2). Disassemble the emitted core ELFs and check
+# every call site of silu_quant_i8_fused_i4: the instructions before the
+# call must set up at least two distinct argument registers. The current
+# tree works around the defect (generator keeps a dummy Gg/gs fifo "to keep
+# the aiecc's 3-arg extern call codegen healthy"; the kernel reads metadata
+# via the reliable c1-arg), so by default this prints a LOUD WARNING listing
+# affected call sites in every build log; set NPU_STRICT_1837=1 to turn the
+# same detection into a hard build failure.
+if [ -d "$W/design.mlir.prj" ]; then
+  NPU_STRICT_1837="${NPU_STRICT_1837:-0}" "$PYTHON" - "$W" "$P/bin/llvm-objdump" <<'PYEOF' || { [ "${NPU_STRICT_1837:-0}" = "1" ] && { echo "ERROR: extern-call arg-setup verification FAILED (issue #1837, NPU_STRICT_1837=1)" >&2; exit 1; }; }
+import glob, os, re, subprocess, sys
+wd, objdump = sys.argv[1], sys.argv[2]
+strict = os.environ.get("NPU_STRICT_1837", "0") == "1"
+elvs = glob.glob(os.path.join(wd, "design.mlir.prj", "**", "*.elf"), recursive=True)
+if not elvs:
+    print("WARN (#1837): no core ELFs under %s/design.mlir.prj — guard skipped" % wd)
+    sys.exit(0)
+bad = 0
+checked = 0
+for elf in elvs:
+    try:
+        out = subprocess.run([objdump, "-d", elf], capture_output=True, text=True, timeout=120).stdout
+        syms = subprocess.run([objdump, "-t", elf], capture_output=True, text=True, timeout=120).stdout
+    except Exception as e:
+        print("WARN (#1837): objdump %s failed: %s" % (elf, e))
+        continue
+    lines = out.splitlines()
+    # FIX (2026-08-28, verified against main_core_*_2.elf): the first version
+    # matched ANY line containing "silu_quant_i8_fused_i4" — including the
+    # function DEFINITION label ('00000b10 <silu_quant_i8_fused_i4>:') — and
+    # then inspected the PREVIOUS function's tail (the window showed 'ret lr'
+    # and stores that belong to matmul), producing a false "p1/p2 dropped".
+    # The real call is a direct branch: 'jl #0xb10' (AIE2P has no indirect
+    # calls here), with p0 (c1) set before and p2 (h2) set in the jl delay
+    # slot — verified both ARE delivered. Only match actual jl targets:
+    # resolve the silu symbol's address from the symbol table (-t) first.
+    sym_addr = None
+    for ln in syms.splitlines():
+        # '00000b10 g F .text 000003c0 silu_quant_i8_fused_i4'
+        m = re.search(r"^([0-9a-f]+)\s+g\s+F\s+\.text\s+[0-9a-f]+\s+silu_quant_i8_fused_i4\s*$", ln.strip())
+        if m:
+            sym_addr = int(m.group(1), 16)
+            break
+    if sym_addr is None:
+        print("WARN (#1837): silu_quant_i8_fused_i4 symbol not found in %s — guard skipped" % elf)
+        continue
+    for i, ln in enumerate(lines):
+        # a jl to the silu address, e.g. '414: 04 01 00 88 05 00 jl #0xb10'
+        if not re.search(r"\bjl\s+#0x%x\b" % sym_addr, ln):
+            continue
+        # real call site — inspect the window around it for arg-reg writes
+        # (AIE2P: p0/p1/p2/p3 pointer args; the jl delay slot may hold the
+        # last arg mov — include up to 4 instructions after the jl too).
+        win = lines[max(0, i - 10):i + 5]
+        writes = set()
+        for w in win:
+            m = re.search(r"\b([pr][0-3])\b", w)
+            if m:
+                writes.add(m.group(1))
+        if len(writes) < 2:
+            print("%s (#1837): call to silu_quant_i8_fused_i4 in %s at line %d" % ("ERROR" if strict else "WARNING", elf, i + 1))
+            print("  window: " + " | ".join(x.strip() for x in win))
+            print("  distinct arg-reg writes found: %s (< 2 -> arg setup may be dropped)" % sorted(writes))
+            bad += 1
+        checked += 1
+if bad:
+    if strict:
+        print("FATAL (#1837): %d silu call site(s) lack arg setup — the aiecc" % bad)
+        print("  extern lowering dropped args; the silu reads stale regs. Fix upstream,")
+        print("  or collapse the extern ABI to a single context-buffer arg.")
+    else:
+        print("NOTE (#1837): %d silu call site(s) lack arg setup (see above)." % bad)
+        print("  This is the KNOWN worked-around aiecc extern-call defect (generator keeps")
+        print("  a dummy Gg/gs fifo; kernel reads metadata via the reliable c1-arg). Set")
+        print("  NPU_STRICT_1837=1 to make this a hard failure.")
+    sys.exit(1 if strict else 0)
+print("OK (#1837): %d silu call site(s) checked, arg-reg setup present" % checked)
+PYEOF
+fi
+
 "$PYTHON" - "$W" <<'PYEOF' || { echo "ERROR: kernel address verification FAILED (issue #1842)" >&2; exit 1; }
 import glob, os, re, sys
 wd = sys.argv[1]
@@ -93,18 +207,16 @@ def have(name_pat, want):
             return True
     return False
 ok = True
-# v59-critical hardcoded addresses (verified against this map on 2026-08-24):
-#   Gg_0 @ 0x6000 (the silu metadata stash — the 0x76000 incident missed it
-#                  by 458 KB -> h2 all-+127), C1 accumulator @ 0xE000 (the
-#                  zero_c1 target — issue #1769 integration).
-# The H2 fifo is not an aie.buffer (objectfifos are absent from this map), so
-# its 0x7F000 wrap is not verifiable here.
-for pat, want, what in (("Gg_0", 0x6000, "silu metadata stash (0x6000)"),
-                        ("C1", 0xE000, "C1 accumulator (0xE000)")):
-    if not have(pat, want):
-        print("ERROR: no buffer %r at %s (%s) in %s" % (pat, hex(want), what, cands[0]))
-        for n, s in addrs.items():
-            print("   %-24s %s" % (n, ", ".join(hex(a) for a in sorted(s))))
-        ok = False
-sys.exit(0 if ok else 1)
+# Issue #1865: the hardcoded-address pins (Gg_0@0x6000 silu stash, C1@0xE000
+# zero_c1 target, H2@0x7F000 fifo) are RETIRED — the kernel no longer
+# hardcodes any tile-local address: matmul_i8_i32_i4 zeroes pC via the
+# delivered pC arg, and silu_quant_i8_fused_i4 writes h2 through the
+# delivered h2 arg. Nothing pins 0x6000/0xE000/0x7F000 anymore, so a buffer
+# move can no longer silently corrupt the silu. Keep a soft informational
+# dump of the address map (still useful for debugging) but do NOT fail on
+# specific addresses.
+print("INFO (#1865): kernel uses delivered args only — no hardcoded tile addresses to pin.")
+for n, s in sorted(addrs.items()):
+    print("   %-24s %s" % (n, ", ".join(hex(a) for a in sorted(s))))
+sys.exit(0)
 PYEOF

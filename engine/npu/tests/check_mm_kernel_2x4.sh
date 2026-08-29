@@ -18,6 +18,19 @@ PYTHON=~/mlir-aie/.venv/bin/python3
 AIECC=~/mlir-aie/build_tmp/bin/aiecc
 PEANO=~/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 AIETOOLS=~/mlir-aie/build_tmp
+# Issue #1913 guard: AIETOOLS=~/mlir-aie/build_tmp is only valid because this
+# script defaults to --no-xchesscc. Set USE_XCHESSCC=1 to enable the chess arm
+# (--xchesscc --xbridge) — then --aietools MUST be the Vitis aietools root, or
+# aiecc silently skips chess-llvm-link and fails later with a confusing
+# 'main_input.chesslinked.ll' missing error. The guard fails loudly instead.
+# shellcheck source=../generators/check_chess_aietools.sh
+# shellcheck disable=SC1091
+source "$GEN/check_chess_aietools.sh"
+USE_XCHESSCC="${USE_XCHESSCC:-0}"
+XCHESS_ARGS=("--no-xchesscc" "--no-xbridge")
+if [ "$USE_XCHESSCC" = "1" ]; then
+    XCHESS_ARGS=("--xchesscc" "--xbridge")
+fi
 export PATH=/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
 export PYTHONPATH=~/mlir-aie/install_tmp/python:~/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=~/mlir-aie/install_tmp/python/aie/_mlir_libs
@@ -35,10 +48,14 @@ echo "== 1/4 compile kernel (i8_i32, 32x64x128) =="
 
 echo "== 2/4 generate design + build xclbin (QKV 128x2048x8192) =="
 cd "$W"
+if ! check_chess_aietools "$AIETOOLS" "$([ "$USE_XCHESSCC" = "1" ] && echo true || echo false)" \
+    "/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin"; then
+    exit 1
+fi
 "$PYTHON" "$GEN/n1_core_i8_v27.py" -M 128 -K 2048 -N 8192 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 \
   2>/dev/null > design.mlir
 "$AIECC" --peano="$PEANO" --aietools="$AIETOOLS" \
-  --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
+  --alloc-scheme=basic-sequential "${XCHESS_ARGS[@]}" \
   --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
   --aie-generate-npu-insts \
   --xclbin-name="$W/final.xclbin" --npu-insts-name="$W/insts.txt" \

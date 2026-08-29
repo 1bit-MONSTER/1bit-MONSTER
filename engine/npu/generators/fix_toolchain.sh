@@ -93,6 +93,49 @@ check_toolchain() {
         warn "  https://github.com/Xilinx/llvm-aie/releases"
     fi
 
+    # ── Issue #1870: aiecc ↔ peano LLVM-version match gate ──────────────
+    # mlir-aie (aiecc) and llvm-aie (peano) are separate upstream repos that
+    # must be built from version-matched LLVM snapshots. The NPU2-40 (LLVM 23)
+    # aiecc with an LLVM-21/22 peano on the box fails peano discovery and the
+    # libclang_rt.builtins.a lookup at kernel link. Fail loudly on --check.
+    local aie_llvm="" peano_llvm=""
+    # aiecc's LLVM version: prefer the shipped llc; fall back to `aiecc
+    # --version` (build_tmp installs carry aiecc but not llc — observed on
+    # strixhalo with the LLVM-23 NPU2-40 toolchain).
+    if [ -x "$AIE_TOOLS_DIR/bin/llc" ]; then
+        aie_llvm=$("$AIE_TOOLS_DIR/bin/llc" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        aie_llvm=${aie_llvm%%.*}
+    elif [ -x "$AIE_TOOLS_DIR/bin/aiecc" ]; then
+        aie_llvm=$("$AIE_TOOLS_DIR/bin/aiecc" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        aie_llvm=${aie_llvm%%.*}
+    fi
+    if [ -x "$PEANO_DIR/bin/clang" ]; then
+        peano_llvm=$("$PEANO_DIR/bin/clang" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        peano_llvm=${peano_llvm%%.*}
+    fi
+    if [ -n "$aie_llvm" ] && [ -n "$peano_llvm" ]; then
+        if [ "$aie_llvm" != "$peano_llvm" ]; then
+            error "Issue #1870: aiecc (LLVM $aie_llvm) and peano (LLVM $peano_llvm) MAJOR-VERSION MISMATCH"
+            error "  mlir-aie and llvm-aie must be built from version-matched LLVM snapshots."
+            error "  aiecc peano discovery + libclang_rt.builtins.a lookup will fail at kernel link."
+            error "  Build a matching peano from Xilinx/llvm-aie at mlir-aie's LLVM commit."
+            errors=$((errors + 1))
+        else
+            ok "aiecc ↔ peano LLVM major-version match (LLVM $aie_llvm) [#1870]"
+        fi
+    else
+        warn "Could not extract LLVM versions (aiecc=$aie_llvm, peano=$peano_llvm); #1870 gate skipped"
+    fi
+    # libclang_rt.builtins.a presence (the second #1870 failure mode): aiecc
+    # looks it up under <peano>/lib/clang/<ver>/lib/aie2p-none-unknown-elf/.
+    if [ -d "$PEANO_DIR/lib/clang" ]; then
+        if ! find "$PEANO_DIR/lib/clang" -name 'libclang_rt.builtins.a' 2>/dev/null | grep -q .; then
+            warn "Issue #1870: no libclang_rt.builtins.a under $PEANO_DIR/lib/clang — aiecc kernel link may fail"
+        else
+            ok "libclang_rt.builtins.a present under $PEANO_DIR/lib/clang [#1870]"
+        fi
+    fi
+
     # Check for opaque pointer issues
     if [ -x "$AIE_TOOLS_DIR/bin/llc" ]; then
         if "$AIE_TOOLS_DIR/bin/llc" --version 2>/dev/null | grep -qi "opaque\|typed"; then

@@ -1,0 +1,118 @@
+_entry_point _main_init
+_symbol core_7_4 _after _main_init
+_symbol _main_init 0
+_reserved DMb 0x00000 0x40000 // Don't put data in code memory
+_stack DM_stack 0x70000 0x2000 // stack for core
+
+// mapping neighbors tile memory
+// south -------------------------------------------------
+_reserved DMb 0x40000 0x10000  // Don't allocate variables in south neighbor
+
+_symbol C_C7_1_buff_0 0x42000 16384
+_extern C_C7_1_buff_0
+_reserved DMb 0x42000 16384
+
+_symbol B_C7_1_cons_buff_0 0x46000 8192
+_extern B_C7_1_cons_buff_0
+_reserved DMb 0x46000 8192
+
+_symbol B_C7_1_cons_buff_1 0x48000 8192
+_extern B_C7_1_cons_buff_1
+_reserved DMb 0x48000 8192
+
+_symbol A_C1_7_cons_buff_0 0x4A000 2048
+_extern A_C1_7_cons_buff_0
+_reserved DMb 0x4A000 2048
+
+_symbol A_C1_7_cons_buff_1 0x4A800 2048
+_extern A_C1_7_cons_buff_1
+_reserved DMb 0x4A800 2048
+
+_symbol _anonymous15 0x4B000 12
+_extern _anonymous15
+_reserved DMb 0x4B000 12
+
+// west -------------------------------------------------
+_reserved DMb 0x50000 0x10000  // Don't allocate variables in west neighbor
+
+_symbol C_C6_2_buff_0 0x52000 16384
+_extern C_C6_2_buff_0
+_reserved DMb 0x52000 16384
+
+_symbol B_C6_2_cons_buff_0 0x56000 8192
+_extern B_C6_2_cons_buff_0
+_reserved DMb 0x56000 8192
+
+_symbol B_C6_2_cons_buff_1 0x58000 8192
+_extern B_C6_2_cons_buff_1
+_reserved DMb 0x58000 8192
+
+_symbol A_C2_6_cons_buff_0 0x5A000 2048
+_extern A_C2_6_cons_buff_0
+_reserved DMb 0x5A000 2048
+
+_symbol A_C2_6_cons_buff_1 0x5A800 2048
+_extern A_C2_6_cons_buff_1
+_reserved DMb 0x5A800 2048
+
+_symbol _anonymous22 0x5B000 12
+_extern _anonymous22
+_reserved DMb 0x5B000 12
+
+// north -------------------------------------------------
+_reserved DMb 0x60000 0x10000  // Don't allocate variables in north neighbor
+
+_symbol C_C7_3_buff_0 0x62000 16384
+_extern C_C7_3_buff_0
+_reserved DMb 0x62000 16384
+
+_symbol B_C7_3_cons_buff_0 0x66000 8192
+_extern B_C7_3_cons_buff_0
+_reserved DMb 0x66000 8192
+
+_symbol B_C7_3_cons_buff_1 0x68000 8192
+_extern B_C7_3_cons_buff_1
+_reserved DMb 0x68000 8192
+
+_symbol A_C3_7_cons_buff_0 0x6A000 2048
+_extern A_C3_7_cons_buff_0
+_reserved DMb 0x6A000 2048
+
+_symbol A_C3_7_cons_buff_1 0x6A800 2048
+_extern A_C3_7_cons_buff_1
+_reserved DMb 0x6A800 2048
+
+_symbol _anonymous31 0x6B000 12
+_extern _anonymous31
+_reserved DMb 0x6B000 12
+
+// east -------------------------------------------------
+_symbol C_C7_2_buff_0 0x72000 16384
+_extern C_C7_2_buff_0
+_reserved DMb 0x72000 16384
+
+_symbol B_C7_2_cons_buff_0 0x76000 8192
+_extern B_C7_2_cons_buff_0
+_reserved DMb 0x76000 8192
+
+_symbol B_C7_2_cons_buff_1 0x78000 8192
+_extern B_C7_2_cons_buff_1
+_reserved DMb 0x78000 8192
+
+_symbol A_C2_7_cons_buff_0 0x7A000 2048
+_extern A_C2_7_cons_buff_0
+_reserved DMb 0x7A000 2048
+
+_symbol A_C2_7_cons_buff_1 0x7A800 2048
+_extern A_C2_7_cons_buff_1
+_reserved DMb 0x7A800 2048
+
+_symbol _anonymous23 0x7B000 12
+_extern _anonymous23
+_reserved DMb 0x7B000 12
+
+// end mapping neighbors tile memory
+
+_reserved DMb 0x80000 0x80000 // And everything else the core can't see
+_include _file mm_32x64x128.o
+_resolve _main core_7_4

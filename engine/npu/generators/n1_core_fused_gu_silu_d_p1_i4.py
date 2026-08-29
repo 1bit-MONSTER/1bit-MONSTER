@@ -121,10 +121,10 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         silu = external_func("silu_quant_i8_fused_i4", inputs=[C_ty, B4_ty, H2_ty], link_with=kernel_o)
         matmul_i4 = external_func("matmul_i8_i32_i4", inputs=[A_ty, B4_ty, C_ty],
                                   link_with=kernel_o)   # (A, B4864, C1)
-        # zero_c1: zero the C1buf via a HARDCODED local address (0-arg — no
-        # arg setup the aiecc could drop; the generic zero_i32's target arg
-        # is not delivered reliably, issue #1837 — measured: C1 = garbage).
-        zero_c1 = external_func("zero_c1", inputs=[], link_with=kernel_o)
+        # Issue #1865: zero_c1 is GONE — matmul_i8_i32_i4 zeroes its own pC
+        # through the delivered pC arg at each col_group start (g_i4_call % 32
+        # == 0, the f59d8027 pattern). The old 0-arg hardcoded-0xE000 zero_c1
+        # did not reliably hit the compiler-assigned C1buf (issue #1837/#1865).
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + n_aie_rows)]
         shim_tiles, mem_tiles = tiles[0], tiles[1]
@@ -190,7 +190,9 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                         # only reliably delivered bytes of the gs tile) is
                         # identical for every (col, col_group).
                         for _ in range_(n_cg_gu):
-                            zero_c1()
+                            # Issue #1865: NO zero_c1() call — matmul_i8_i32_i4
+                            # zeroes its own pC via the delivered pC arg at
+                            # each col_group start (g_i4_call % 32 == 0).
                             for _ in range_(n_k):
                                 Abuf = A_c.acquire(ObjectFifoPort.Consume, 1)
                                 Bbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)

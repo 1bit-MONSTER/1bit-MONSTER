@@ -13,6 +13,15 @@
 #include "aie_kernel_utils.h"
 #include <aie_api/aie.hpp>
 
+// Issue #1834: the aie2p/chess bare-metal toolchains lower memcpy() to a
+// <memcpy> libcall that clobbers caller r0/r1 — never bit-cast via memcpy in
+// a kernel. Use union bit-casts (the proven workaround, mm_kernel_reference.cc
+// commit 5cdc89bd).
+// Issue #1838: zero-init statics land in .bss, which the bare-metal ld.script
+// does not map — force .data so the ELF materializes the zero (g_counter is
+// load-bearing: it selects the output tile block).
+#define KERNEL_STATIC __attribute__((section(".data")))
+
 constexpr int M_TILE = 32;
 constexpr int K_TILE = 64;
 constexpr int N_TILE = 128;
@@ -25,7 +34,7 @@ constexpr int Q1_BYTES_PER_COL = (K_TILE + Q1_BLOCK_K - 1) / Q1_BLOCK_K * Q1_BLO
 
 extern "C" {
 
-static int g_counter = 0;
+static KERNEL_STATIC int g_counter = 0;
 
 void binary_q1_gemv(bfloat16 *pA, uint8_t *pB,
                      bfloat16 *pS, bfloat16 *pC) {
@@ -41,8 +50,11 @@ void binary_q1_gemv(bfloat16 *pA, uint8_t *pB,
         // One 128-bit block (K=64 < 128, so one block with 64 valid bits)
         // fp16 scale at offset Q1_SIGN_BYTES
         // We process the first 64 bits
-        uint16_t scale_bits;
-        __builtin_memcpy(&scale_bits, src + Q1_SIGN_BYTES, 2);
+        // Issue #1834: union bit-cast (memcpy libcall clobbers r0/r1 on AIE2P)
+        union { uint16_t u; uint8_t b[2]; } sb;
+        sb.b[0] = src[Q1_SIGN_BYTES + 0];
+        sb.b[1] = src[Q1_SIGN_BYTES + 1];
+        uint16_t scale_bits = sb.u;
         float scale = [](uint16_t h) {
             uint32_t s = (h >> 15) & 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
             float sign = s ? -1.0f : 1.0f;
@@ -51,8 +63,10 @@ void binary_q1_gemv(bfloat16 *pA, uint8_t *pB,
             return sign * (1.0f + (float)m / 1024.0f) * (float)(1 << (e - 15));
         }(scale_bits);
         // Load 8 bytes of sign bits (64 bits for K=64)
-        uint64_t bits;
-        __builtin_memcpy(&bits, src, 8);
+        // Issue #1834: union bit-cast (memcpy libcall clobbers r0/r1 on AIE2P)
+        union { uint64_t u; uint8_t b[8]; } bb;
+        for (int e = 0; e < 8; e++) bb.b[e] = src[e];
+        uint64_t bits = bb.u;
         for (int i = 0; i < K_TILE; i++) {
             dst[i] = (bits & ((uint64_t)1 << i)) ? (int8_t)(scale) : (int8_t)(-scale);
         }

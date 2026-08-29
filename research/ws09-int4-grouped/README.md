@@ -177,6 +177,32 @@ stride-8 ratio broadcast (cheap vs the mmul MACs; keeps the kernel DMA-bound).
   `silu_quant_i8_fused_i4`. Next: bf16-vectorize the dequant, build the
   xclbin, NPU corr + tok/s.
 
+### AIE2P codegen constraint catalog (issue #1843, consolidated under tracker #1882)
+
+Each constraint below is an **upstream toolchain codegen defect** (this repo
+only invokes the toolchain via `engine/npu/generators/build_*.sh`); the
+shipped kernel carries the workaround. "Reproducing toolchain" = the install
+on strixhalo where the defect was first measured; the workaround is the
+in-tree code path that avoids the broken construct.
+
+| # | Defect (upstream) | Reproducing toolchain | In-tree workaround | Status |
+|---|-------------------|-----------------------|--------------------|--------|
+| 1 | `G_FMUL on <N x s32>` not legalizable (fp32 vector FMUL) | peano/llvm-aie (venv LLVM 21) via Vitis aiecc | bf16 vector arithmetic only (no fp32 vector FMUL) | worked around |
+| 2 | scalar float `(sf*0.0625f)/scc` soft-float libcalls → NaN (#1835) | peano/llvm-aie (LLVM 21/22) | int32 `ratioQ22` dequant, no float libcalls in shipped kernels | worked around (issue #1835, close-out pending) |
+| 3 | software-pipelined float loop: p=0 ok, p>=1 wrong (#1836) | peano/llvm-aie (LLVM 21/22) | fixed-point `silu_pair_q22` (pure int32), v70 h2 byte-identical | worked around (issue #1836, close-out pending) |
+| 4 | scalar memory RMW `+=` with computed operand miscompiles (#1864) | peano/llvm-aie (LLVM 21 + LLVM 22) | `I4_SCALAR_C1` overwrite-store fallback; vectorized mmul is the default | worked around (issue #1864, tracked #1882) |
+| 5 | scalar pointer arithmetic, precomputed base + computed offset, j>=8 reads 0 (#1869) | peano/llvm-aie (LLVM 21/22) | direct `pB4 + gbase + (j<<5)` pointer math (mm_kernel_reference.cc:786) | worked around (issue #1869) |
+| 6 | mmul C-store scrambled for non-uniform B (#1874) | Vitis chesscc / peano aie2p | `I4_SCALAR_C1` fallback keeps shipped corr ≥0.9995 | open (tracked #1882) |
+| 7 | 3-arg extern call drops p1/p2 setup (#1837) | mlir-aie aiecc | 0-arg `zero_c1` + single reliable c1-arg metadata path | open (tracked #1882) |
+| 8 | bare-metal linker drops `.bss` statics (#1838) | mlir-aie aiecc ld.script generation | `KERNEL_STATIC` → `.data` placement + build-time `.bss` lint | fixed in-tree (issue #1838) |
+| 9 | `memcpy()` libcall clobbers caller r0/r1 (#1834) | peano/llvm-aie aie2p | union bit-casts, no memcpy in kernels (mm_binary_q1.cc too) | fixed in-tree (issue #1834) |
+
+> Version capture: rebuild logs should record `aiecc --version` and the
+> peano/llvm-aie commit (`llvm-aie/bin/clang++ --version`); the table above
+> reflects the 2026-08-24/25 strixhalo installs (llvm-aie venv c9c5ecb7,
+> IRON cb664e8c, HEAD 4e567bd91 — LLVM 21/22; Vitis 2025.2 chesscc
+> V-2024.06, 2026.1 chesscc X-2025.06).
+
 ## CPU contract fixes (2026-08-24, after #1824) — gates GREEN
 
 - **`B_shadow` byte-identity is now kernel-exact**: `B_shadow` is computed with

@@ -455,11 +455,18 @@ public:
     ///@brief Create a runlist
     ///@return a runlist object
     ///@see xrt::runlist
+    // Issue #1776 (perf milestone): runlist launch batching (amortize the
+    // ~50 XRT launches/token in zaya_decode) needs XRT >= 2.25. This helper
+    // is dead code today (no caller) and its xrt::runlist ctor is unavailable
+    // on older XRT — gate it behind __has_include so the header still builds
+    // on the current box (XRT 2.21.75) and the milestone path is explicit.
+#if __has_include(<xrt_runlist.h>)
     xrt::runlist create_runlist(){
         assert(this->xclbin_valid);
         assert(this->enable_preemption == false); // preemption is not supported for runlist
         return xrt::runlist(*this->context);
     }
+#endif
 };
 
 ///@brief npu_xclbin_manager

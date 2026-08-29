@@ -600,6 +600,7 @@ set(BACKEND_MANAGER_SOURCES
     src/glm_moe_dsa.cpp
     src/mimo_v2.cpp
     src/qwen3_5.cpp
+    src/qwen3next_engine.cpp   # Qwen3-Next (GatedDeltaNet) CPU engine — #1831 interim fallback
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp
@@ -770,7 +771,7 @@ target_include_directories(rocm_cpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_include_directories(rocm_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/kernels)
-target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCM_ROOT}/include")
+target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCM_INCLUDE_DIR}")
 target_compile_definitions(rocm_cpp PRIVATE MAMBA1_ENGINE_AS_LIB=1)
 target_compile_options(rocm_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -ffast-math -munsafe-fp-atomics
@@ -897,7 +898,7 @@ add_test(NAME zaya_batch_check COMMAND zaya_batch_check ${ZAYA_TEST_MODEL})
 
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
-set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
+set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_npu_universal.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
 
 # ── Speculative decode demo: draft + target llama.cpp contexts, batched
 # verification with KV rollback (roadmap Phase 2 core loop) ──

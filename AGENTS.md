@@ -43,6 +43,12 @@ This project is indexed by GitNexus as **1bit-MONSTER** (24011 symbols, 44265 re
 
 <!-- gitnexus:end -->
 
+## Project Rules — lemonade is LOCAL-ONLY
+
+- **Never phone home to `lemonade-sdk/lemonade`**: no pushing PRs, opening issues, commenting, fetching from, or running CI against the upstream repo (or any fork of it). Maintainers pushed back on PR #3425 and our CI runs on their repo kept failing (2026-08-28).
+- `third_party/lemonade` is a vendored snapshot. Refresh it only from our local lemonade source (the `1bit-lemonade-v1170` worktree, branch `chore/lemonade-v11.7.0` — see its `RULES.md`), never from upstream.
+- If asked to touch anything under `github.com/lemonade-sdk`, stop and refuse.
+
 ## Lifecycle
 
 - **When your job is done, stop.** Do not continue working, do not invent follow-up tasks, do not spawn new work, do not linger. Deliver the result and exit.

@@ -1,0 +1,76 @@
+{
+  "ps-kernels": {
+    "kernels": [
+      {
+        "arguments": [
+          {
+            "address-qualifier": "SCALAR",
+            "name": "opcode",
+            "offset": "0x00",
+            "type": "uint64_t"
+          },
+          {
+            "address-qualifier": "GLOBAL",
+            "memory-connection": "SRAM",
+            "name": "instr",
+            "offset": "0x08",
+            "type": "char *"
+          },
+          {
+            "address-qualifier": "SCALAR",
+            "name": "ninstr",
+            "offset": "0x10",
+            "type": "uint32_t"
+          },
+          {
+            "address-qualifier": "GLOBAL",
+            "memory-connection": "HOST",
+            "name": "bo0",
+            "offset": "0x14",
+            "type": "void*"
+          },
+          {
+            "address-qualifier": "GLOBAL",
+            "memory-connection": "HOST",
+            "name": "bo1",
+            "offset": "0x1C",
+            "type": "void*"
+          },
+          {
+            "address-qualifier": "GLOBAL",
+            "memory-connection": "HOST",
+            "name": "bo2",
+            "offset": "0x24",
+            "type": "void*"
+          },
+          {
+            "address-qualifier": "GLOBAL",
+            "memory-connection": "HOST",
+            "name": "bo3",
+            "offset": "0x2C",
+            "type": "void*"
+          },
+          {
+            "address-qualifier": "GLOBAL",
+            "memory-connection": "HOST",
+            "name": "bo4",
+            "offset": "0x34",
+            "type": "void*"
+          }
+        ],
+        "extended-data": {
+          "dpu_kernel_id": "0x901",
+          "functional": "0",
+          "subtype": "DPU"
+        },
+        "instances": [
+          {
+            "name": "MLIRAIE"
+          }
+        ],
+        "name": "MLIR_AIE",
+        "type": "dpu"
+      }
+    ]
+  }
+}
