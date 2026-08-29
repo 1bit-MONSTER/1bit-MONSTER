@@ -26,10 +26,15 @@ namespace fusion {
 
 // Per-layer attention weights in the fused backend's [out, in] layout
 // (y[o] = sum_k W[o*H+k] * x[k]).  qn/kn are the per-head QK-norm weights [HD].
+// w1/w2/w3/pon are the FFN weights ([IM][H] gate/up, [H][IM] down, [H] norm)
+// for the on-pages FFN shaders (ffn()) — the GPU FFN without any pages->dh
+// round trip.
 struct VkLayerW {
     std::vector<float> wq, wk, wv, wo;   // [NH*HD][H], [NKV*HD][H], [NKV*HD][H], [H][NH*HD]
     std::vector<float> pn;               // [H] attn RMSNorm
     std::vector<float> qn, kn;           // [HD] each
+    std::vector<float> w1, w2, w3;       // [IM][H], [IM][H], [H][IM] (f32, [out,in])
+    std::vector<float> pon;              // [H] FFN RMSNorm
 };
 
 // Matches the GLSL push_constant block in every .comp shader (11 ints + 3
@@ -52,6 +57,10 @@ public:
     // Hidden state lives in pages() (the imported SharedBO).
     bool embed(int token_id);
     bool layer(int l, int pos);       // in-place attention layer
+    // On-pages FFN: rms -> gate/up gemv -> silu -> down gemv -> residual add,
+    // all in place on the pages (no pages->dh round trip).  Requires the
+    // FFN weights (VkLayerW::w1/w2/w3/pon) uploaded via upload_layer.
+    bool ffn(int l);
     void zero_cache();                // clear the f32 KV caches (backend reset)
     fusion::SharedBO* pages() { return pages_; }
     size_t h_bytes() const { return (size_t)H_ * sizeof(float); }
@@ -76,6 +85,7 @@ private:
     bool ok_ = false;
 
     vkrt::GpuBuffer hn_, q_, k_, v_, ao_;        // scratch
+    vkrt::GpuBuffer ffn_gu_;                     // FFN gate/up scratch [2*IM]
     vkrt::GpuBuffer kc_, vc_;                    // f32 KV caches [NKV*max_seq*HD]
     vkrt::GpuBuffer emb_;                        // embedding [VOCAB*H]
     // Packed per-type weight buffers: [NC][rows][H] for wq/wk/wv/wo, [NC][H]
@@ -84,20 +94,32 @@ private:
     // descriptor sets made RADV rebuild 11-binding sets every layer, ~460 us
     // of the per-layer dispatch cost; packing removes it entirely.)
     vkrt::GpuBuffer wq_, wk_, wv_, wo_, pn_, qn_, kn_;
+    // FFN weights: gu_ [NC][2*IM][H] (w1 rows then w2 rows), w3_ [NC][H][IM],
+    // pon_ [NC][H].
+    vkrt::GpuBuffer gu_, w3_, pon_;
 
     vkrt::Pipeline p_rms_, p_qkv_, p_decode_, p_post_, p_embed_;
     vkrt::Pipeline p_zero_;
+    vkrt::Pipeline p_ffn_rms_, p_ffn_gu_, p_ffn_silu_, p_ffn_down_, p_ffn_add_;
     // One shared descriptor set per pipeline (weights packed, pc.layer picks).
     VkDescriptorSet ds_rms_ = VK_NULL_HANDLE, ds_qkv_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_post_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_decode_ = VK_NULL_HANDLE, ds_embed_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_zero_ = VK_NULL_HANDLE;
+    VkDescriptorSet ds_ffn_rms_ = VK_NULL_HANDLE, ds_ffn_gu_ = VK_NULL_HANDLE;
+    VkDescriptorSet ds_ffn_silu_ = VK_NULL_HANDLE, ds_ffn_down_ = VK_NULL_HANDLE;
+    VkDescriptorSet ds_ffn_add_ = VK_NULL_HANDLE;
     vkrt::GpuBuffer* buf_zero_[1] = {nullptr};
     vkrt::GpuBuffer* buf_rms_[3] = {nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_qkv_[11] = {nullptr};
     vkrt::GpuBuffer* buf_decode_[4] = {nullptr, nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_post_[3] = {nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_embed_[2] = {nullptr, nullptr};
+    vkrt::GpuBuffer* buf_ffn_rms_[3] = {nullptr, nullptr, nullptr};
+    vkrt::GpuBuffer* buf_ffn_gu_[3] = {nullptr, nullptr, nullptr};
+    vkrt::GpuBuffer* buf_ffn_silu_[1] = {nullptr};
+    vkrt::GpuBuffer* buf_ffn_down_[3] = {nullptr, nullptr, nullptr};
+    vkrt::GpuBuffer* buf_ffn_add_[3] = {nullptr, nullptr, nullptr};
 };
 
 } // namespace fusion

@@ -49,6 +49,7 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     if (!mk(hn_, (size_t)H * 4) || !mk(q_, (size_t)NH * HD * 4) ||
         !mk(k_, (size_t)NKV * HD * 4) || !mk(v_, (size_t)NKV * HD * 4) ||
         !mk(ao_, (size_t)NH * HD * 4) ||
+        !mk(ffn_gu_, (size_t)2 * IM * 4) ||
         !mk(kc_, (size_t)NC_ * max_seq * NKV * HD * 4) ||
         !mk(vc_, (size_t)NC_ * max_seq * NKV * HD * 4)) {
         fprintf(stderr, "[vk_attn] scratch alloc failed\n");
@@ -62,7 +63,10 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
         !mk(wo_, (size_t)NC_ * H * NH * HD * 4) ||
         !mk(pn_, (size_t)NC_ * H * 4) ||
         !mk(qn_, (size_t)NC_ * HD * 4) ||
-        !mk(kn_, (size_t)NC_ * HD * 4)) {
+        !mk(kn_, (size_t)NC_ * HD * 4) ||
+        !mk(gu_, (size_t)NC_ * 2 * IM * H * 4) ||
+        !mk(w3_, (size_t)NC_ * H * IM * 4) ||
+        !mk(pon_, (size_t)NC_ * H * 4)) {
         fprintf(stderr, "[vk_attn] packed-weight alloc failed\n");
         return false;
     }
@@ -77,7 +81,12 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
         !load(p_decode_, "attn_decode.spv", 4, sizeof(VkAttnPC)) ||
         !load(p_post_, "attn_post.spv", 3, sizeof(VkAttnPC)) ||
         !load(p_embed_, "attn_embed.spv", 2, sizeof(VkAttnPC)) ||
-        !load(p_zero_, "attn_zero.spv", 1, 0)) {
+        !load(p_zero_, "attn_zero.spv", 1, 0) ||
+        !load(p_ffn_rms_, "ffn_rms.spv", 3, sizeof(VkAttnPC)) ||
+        !load(p_ffn_gu_, "ffn_gu.spv", 3, sizeof(VkAttnPC)) ||
+        !load(p_ffn_silu_, "ffn_silu.spv", 1, sizeof(VkAttnPC)) ||
+        !load(p_ffn_down_, "ffn_down.spv", 3, sizeof(VkAttnPC)) ||
+        !load(p_ffn_add_, "ffn_add.spv", 3, sizeof(VkAttnPC))) {
         fprintf(stderr, "[vk_attn] pipeline load failed (run the shader build first)\n");
         return false;
     }
@@ -95,9 +104,23 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     buf_zero_[0] = &kc_;
     ds_zero_ = vkrt::createDescriptorSet(vk_, p_zero_, buf_zero_, 1);
     buf_embed_[0] = &emb_; buf_embed_[1] = &pages_buf_;
+    // FFN descriptor sets: the residual uses the hn_ scratch, the down
+    // output uses the ao_ scratch (both free during the FFN).
+    buf_ffn_rms_[0] = &pages_buf_; buf_ffn_rms_[1] = &pon_; buf_ffn_rms_[2] = &hn_;
+    ds_ffn_rms_ = vkrt::createDescriptorSet(vk_, p_ffn_rms_, buf_ffn_rms_, 3);
+    buf_ffn_gu_[0] = &pages_buf_; buf_ffn_gu_[1] = &gu_; buf_ffn_gu_[2] = &ffn_gu_;
+    ds_ffn_gu_ = vkrt::createDescriptorSet(vk_, p_ffn_gu_, buf_ffn_gu_, 3);
+    buf_ffn_silu_[0] = &ffn_gu_;
+    ds_ffn_silu_ = vkrt::createDescriptorSet(vk_, p_ffn_silu_, buf_ffn_silu_, 1);
+    buf_ffn_down_[0] = &ffn_gu_; buf_ffn_down_[1] = &w3_; buf_ffn_down_[2] = &ao_;
+    ds_ffn_down_ = vkrt::createDescriptorSet(vk_, p_ffn_down_, buf_ffn_down_, 3);
+    buf_ffn_add_[0] = &pages_buf_; buf_ffn_add_[1] = &hn_; buf_ffn_add_[2] = &ao_;
+    ds_ffn_add_ = vkrt::createDescriptorSet(vk_, p_ffn_add_, buf_ffn_add_, 3);
     if (ds_rms_ == VK_NULL_HANDLE || ds_qkv_ == VK_NULL_HANDLE ||
         ds_post_ == VK_NULL_HANDLE || ds_decode_ == VK_NULL_HANDLE ||
-        ds_zero_ == VK_NULL_HANDLE) {
+        ds_zero_ == VK_NULL_HANDLE || ds_ffn_rms_ == VK_NULL_HANDLE ||
+        ds_ffn_gu_ == VK_NULL_HANDLE || ds_ffn_silu_ == VK_NULL_HANDLE ||
+        ds_ffn_down_ == VK_NULL_HANDLE || ds_ffn_add_ == VK_NULL_HANDLE) {
         fprintf(stderr, "[vk_attn] descriptor set alloc failed\n");
         return false;
     }
@@ -136,6 +159,19 @@ bool VkAttention::upload_layer(int l, const VkLayerW& w) {
         !up_slice(qn_, w.qn, (size_t)HD_) ||
         !up_slice(kn_, w.kn, (size_t)HD_))
         return false;
+    // FFN weights: gu_ = [w1 rows; w2 rows] packed [2*IM][H]; w3_ [H][IM]; pon_ [H].
+    if (!w.w1.empty() && !w.w2.empty() && !w.w3.empty() && !w.pon.empty()) {
+        const size_t imh = (size_t)IM_ * H_;
+        if (w.w1.size() != imh || w.w2.size() != imh || w.w3.size() != (size_t)H_ * IM_ ||
+            w.pon.size() != (size_t)H_) return false;
+        std::vector<float> gu(2 * imh);
+        memcpy(gu.data(), w.w1.data(), imh * 4);
+        memcpy(gu.data() + imh, w.w2.data(), imh * 4);
+        if (!up_slice(gu_, gu, 2 * imh) ||
+            !up_slice(w3_, w.w3, (size_t)H_ * IM_) ||
+            !up_slice(pon_, w.pon, (size_t)H_))
+            return false;
+    }
     return true;
 }
 
@@ -167,6 +203,30 @@ bool VkAttention::layer(int l, int pos) {
     stages[2] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
     stages[3] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 31) / 32), 1, 1, &pc};
     vkrt::dispatchBatchOnce(vk_, stages, 4);
+    return true;
+}
+
+bool VkAttention::ffn(int l) {
+    if (!ok_ || l < 0 || l >= NC_ ||
+        ds_ffn_rms_ == VK_NULL_HANDLE || ds_ffn_gu_ == VK_NULL_HANDLE ||
+        ds_ffn_silu_ == VK_NULL_HANDLE || ds_ffn_down_ == VK_NULL_HANDLE ||
+        ds_ffn_add_ == VK_NULL_HANDLE)
+        return false;
+    VkAttnPC pc{};
+    pc.H = H_; pc.NH = NH_; pc.NKV = NKV_; pc.HD = HD_; pc.IM = IM_;
+    pc.pos = 0; pc.layer = l; pc.max_seq = max_seq_;
+    pc.eps = 1e-6f; pc.rope_theta = rope_theta_; pc.scale = 1.0f;
+
+    // On-pages FFN: rms (pages + residual->hn_) -> gate/up gemv (pages->ffn_gu_)
+    // -> silu (ffn_gu_ in place) -> down gemv (ffn_gu_->ao_) -> residual add
+    // (hn_ + ao_ -> pages).  All serially dependent — one batched submit.
+    vkrt::DispatchStage stages[5];
+    stages[0] = {&p_ffn_rms_,   ds_ffn_rms_,   1, 1, 1, &pc};
+    stages[1] = {&p_ffn_gu_,    ds_ffn_gu_,    (uint32_t)(2 * IM_), 1, 1, &pc};
+    stages[2] = {&p_ffn_silu_,  ds_ffn_silu_,  (uint32_t)((IM_ + 255) / 256), 1, 1, &pc};
+    stages[3] = {&p_ffn_down_,  ds_ffn_down_,  (uint32_t)H_, 1, 1, &pc};
+    stages[4] = {&p_ffn_add_,   ds_ffn_add_,   (uint32_t)((H_ + 255) / 256), 1, 1, &pc};
+    vkrt::dispatchBatchOnce(vk_, stages, 5);
     return true;
 }
 
@@ -210,6 +270,8 @@ void VkAttention::debug_kvcache(std::vector<float>* kc, std::vector<float>* vc) 
 void VkAttention::destroy() {
     p_rms_.destroy(vk_.dev); p_qkv_.destroy(vk_.dev); p_decode_.destroy(vk_.dev);
     p_post_.destroy(vk_.dev); p_embed_.destroy(vk_.dev); p_zero_.destroy(vk_.dev);
+    p_ffn_rms_.destroy(vk_.dev); p_ffn_gu_.destroy(vk_.dev);
+    p_ffn_silu_.destroy(vk_.dev); p_ffn_down_.destroy(vk_.dev); p_ffn_add_.destroy(vk_.dev);
     auto free = [&](vkrt::GpuBuffer& b) { if (b.mem) b.destroy(); };
     free(wq_); free(wk_); free(wv_); free(wo_); free(pn_); free(qn_); free(kn_);
     free(hn_); free(q_); free(k_); free(v_); free(ao_); free(kc_); free(vc_); free(emb_);

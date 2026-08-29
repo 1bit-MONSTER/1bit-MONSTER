@@ -375,6 +375,22 @@ __global__ void fused_kv_store_kernel(__half* __restrict__ dK, __half* __restric
     dV[off] = __float2half(v[(size_t)h * HD + d]);
 }
 
+// ── Batched KV store: grid (NKV, B), per-sequence stride ──
+// Same __float2half conversions as fused_kv_store_kernel per (s,h) —
+// bit-identical; one launch for all B sequences.
+__global__ void fused_kv_store_batch_kernel(__half* __restrict__ dK, __half* __restrict__ dV,
+                                            const float* __restrict__ k, const float* __restrict__ v,
+                                            int pos, int NKV, int HD, int max_seq,
+                                            int seq_stride, int k_stride) {
+    int h = blockIdx.x, s = blockIdx.y;
+    if (h >= NKV) return;
+    int d = threadIdx.x;
+    if (d >= HD) return;
+    size_t off = (size_t)s * seq_stride + (size_t)pos * NKV * HD + (size_t)h * HD + d;
+    dK[off] = __float2half(k[(size_t)s * k_stride + (size_t)h * HD + d]);
+    dV[off] = __float2half(v[(size_t)s * k_stride + (size_t)h * HD + d]);
+}
+
 // ── Output projection: y[H] = Wo[NH*HD, H]^T @ attn[NH*HD] ──
 __global__ void fused_out_proj_kernel(float* __restrict__ y,
                                        const float* __restrict__ Wo,
@@ -474,6 +490,7 @@ struct FusedBackend : Backend {
     fusion::VkAttention va_;
     bool vk_attn_ = false;
     bool vk_attn_ready_ = false;    // lazy va_ init attempted (once)
+    bool vk_ffn_ready_ = false;     // on-pages FFN shaders uploaded (va_.ffn)
     // Retained f32 copies for the lazy va_ upload (only when FUSED_VK_ATTN).
     std::vector<float> vk_embed_;
     std::vector<fusion::VkLayerW> vk_layers_;
@@ -724,6 +741,10 @@ struct FusedBackend : Backend {
                 vk_layers_[l].wv = t.wv; vk_layers_[l].wo = t.wo;
                 vk_layers_[l].pn = t.pn;
                 vk_layers_[l].qn = t.q_norm; vk_layers_[l].kn = t.k_norm;
+                // FFN weights for the on-pages FFN shaders (va_.ffn) — the GPU
+                // FFN without the pages->dh->pages round trip.
+                vk_layers_[l].w1 = t.w1; vk_layers_[l].w2 = t.w2;
+                vk_layers_[l].w3 = t.w3; vk_layers_[l].pon = t.pon;
             }
         }
 
@@ -874,10 +895,14 @@ struct FusedBackend : Backend {
                 return;
             }
         }
+        // The on-pages FFN (va_.ffn) is available iff the FFN weights were
+        // retained + uploaded (vk_layers_[0].w1 non-empty before the clear).
+        vk_ffn_ready_ = !vk_layers_.empty() && !vk_layers_[0].w1.empty();
         vk_embed_.clear(); vk_embed_.shrink_to_fit();
         vk_layers_.clear(); vk_layers_.shrink_to_fit();
         printf("[fused] FUSED_VK_ATTN: Vulkan in-place attention active on "
-               "the NPU pages (dma-buf import)\n");
+               "the NPU pages (dma-buf import)%s\n",
+               vk_ffn_ready_ ? " + on-pages FFN shaders" : "");
     }
 
     bool forward(int token_id, float* hidden_out) override {
@@ -942,6 +967,35 @@ struct FusedBackend : Backend {
                                     std::chrono::duration<double, std::micro>(t1 - t0).count());
                         return ok;
                     });
+                } else if (vk_ffn_ready_) {
+                    // On-pages FFN shaders: the whole FFN runs as Vulkan
+                    // compute directly on the pages (no pages->dh->pages
+                    // round trip, no HIP).  Mirrors the HIP GPU-FFN math.
+                    auto t_f0 = std::chrono::steady_clock::now();
+                    if (!va_.ffn(l)) {
+                        fprintf(stderr, "[fused] va_.ffn l=%d failed — HIP FFN from now\n", l);
+                        vk_ffn_ready_ = false;
+                        auto& gl = L[l];
+                        HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                            H_ * sizeof(float), hipMemcpyHostToDevice));
+                        fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                        if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
+                        else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                        if (gl.w1 && gl.w2 && gl.w3) {
+                            gemv(dgate, gl.w1, dh, IM_, H_, stream);
+                            gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                            fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                            gemv(dh, gl.w3, datt, H_, IM_, stream);
+                            fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                        }
+                        HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
+                                            H_ * sizeof(float), hipMemcpyDeviceToHost));
+                    } else {
+                        auto t_f1 = std::chrono::steady_clock::now();
+                        if (getenv("VK_ATTN_TIMING"))
+                            fprintf(stderr, "[fused] layer %2d: va_.ffn  %8.1f us\n", l,
+                                    std::chrono::duration<double, std::micro>(t_f1 - t_f0).count());
+                    }
                 } else {                    // GPU FFN fallback (needs GPU dh; pages round-trip).
                     auto& gl = L[l];
                     HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
@@ -1229,16 +1283,17 @@ struct FusedBackend : Backend {
             if (gl.wo) {
                 fused_f2h_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ_batch, datt_batch, B_*s1);
                 float scl = 1.0f / sqrtf((float)HD_);
-                for (int s = 0; s < B_; s++) {
-                    float* kk = dgate_batch + (size_t)s * s2;
-                    float* vv = dup_batch + (size_t)s * s2;
-                    __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-                    __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-                    int pos_s = batch_pos[s];
-                    fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(lk, lv, kk, vv, pos_s, NKV_, HD_, max_seq);
-                    rcpp_kv_cache_attn_decode(dQ_batch + (size_t)s*s1, lk, lv, dAttn_batch + (size_t)s*s1,
-                                              NH_, NKV_, HD_, pos_s+1, scl, (void*)stream);
-                }
+                fused_kv_store_batch_kernel<<<dim3(NKV_, B_), HD_, 0, stream>>>(
+                    devK + (size_t)l * max_seq * NKV_ * HD_, devV + (size_t)l * max_seq * NKV_ * HD_,
+                    dgate_batch, dup_batch, batch_pos[0], NKV_, HD_, max_seq,
+                    (int)((size_t)NC_ * max_seq * NKV_ * HD_), s2);
+                fprintf(stderr, "[batch] decode l=%d: NH=%d NKV=%d HD=%d seq=%d scl=%.4f B=%d stride=%d Koff=%lld\n",
+                        l, NH_, NKV_, HD_, batch_pos[0]+1, scl, B_, (int)((size_t)NC_ * max_seq * NKV_ * HD_),
+                        (long long)((size_t)l * max_seq * NKV_ * HD_));
+                rcpp_kv_cache_attn_decode_batch(dQ_batch,
+                    devK + (size_t)l * max_seq * NKV_ * HD_, devV + (size_t)l * max_seq * NKV_ * HD_,
+                    dAttn_batch, NH_, NKV_, HD_, batch_pos[0]+1, scl, B_,
+                    (int)((size_t)NC_ * max_seq * NKV_ * HD_), (void*)stream);
                 fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)

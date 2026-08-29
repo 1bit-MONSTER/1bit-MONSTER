@@ -1,0 +1,33 @@
+// ffn_down.comp — down GEMV: down[H] = w3[H][IM] @ silu[IM].  One block per
+// output row, 256 threads, k = tid contiguous (coalesced, HIP-gemv structure).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer Silu  { float sil[]; };  // [IM]
+layout(set = 0, binding = 1, std430) buffer W3    { float w3[]; };   // [NC][H][IM]
+layout(set = 0, binding = 2, std430) buffer Down  { float d[]; };    // [H]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float sdata[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    if (row >= uint(pc.H)) return;
+    uint woff = uint(pc.layer) * uint(pc.H) * uint(pc.IM);
+    float acc = 0.0;
+    for (int k = int(tid); k < pc.IM; k += 256)
+        acc += sil[k] * w3[woff + row * uint(pc.IM) + uint(k)];
+    sdata[tid] = acc;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) sdata[tid] += sdata[tid + uint(s)];
+        barrier();
+    }
+    if (tid == 0u) d[row] = sdata[0];
+}

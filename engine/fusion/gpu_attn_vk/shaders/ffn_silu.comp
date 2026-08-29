@@ -1,0 +1,20 @@
+// ffn_silu.comp — SiLU fusion in place: go[i] = sigmoid(go[i]) * go[IM+i]
+// for i < IM (gate in [0,IM), up in [IM,2*IM)).  Mirrors the fused backend's
+// fused_silu_kernel: out[i] = (g/(1+exp(-g))) * u.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer GuOut { float go[]; };  // [2*IM]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.IM)) return;
+    float g = go[i], u = go[uint(pc.IM) + i];
+    go[i] = (g / (1.0 + exp(-g))) * u;
+}
