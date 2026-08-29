@@ -181,3 +181,8 @@ packaging/flatpak/*.flatpak
 packaging/flatpak/glibc-libs/
 packaging/flatpak/build
 .triage/
+
+# GC probe scratch from the zero-DMA hang investigation (see docs/bug-reports/) — keep out of the repo
+/gc.mlir
+/gc_run
+/gc_run.cpp

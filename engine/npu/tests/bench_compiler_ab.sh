@@ -54,7 +54,7 @@ M_T=32; K_T=64; N_T=128
 COLS=8; ROWS=4; BATCH=5
 KERNEL_SRC="$GEN/mm_kernel_reference.cc"
 KERNEL_O="mm_32x64x128.o"
-DIMS=(-DDIM_M=$M_T -DDIM_K=$K_T -DDIM_N=$N_T -Di8_i32_ONLY)
+DIMS=(-DDIM_M="$M_T" -DDIM_K="$K_T" -DDIM_N="$N_T" -Di8_i32_ONLY)
 
 ROUNDS=3; ITERS=200; KEEP=0; NO_RUN=0
 while [ $# -gt 0 ]; do

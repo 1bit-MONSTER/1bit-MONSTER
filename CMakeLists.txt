@@ -217,6 +217,50 @@ _find_therock_sdk_base(THEROCK_SDK_BASE)
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 
+# TheRock pip/venv SDKs keep headers under
+# lib/python*/site-packages/_rocm_sdk_devel/include and leave the
+# top-level ${ROCM_ROOT}/include empty. Falling through to the system
+# ROCm headers (e.g. Ubuntu /usr/include/hip, 7.1) breaks amdclang++
+# builds: amd_hip_bf16.h references __ocml_* builtins that TheRock's
+# clang does not declare (smoke-test failure, 2026-08-28). Resolve the
+# include root that actually contains hip/; guarded so classic ROCm
+# installs keep ${ROCM_ROOT}/include unchanged.
+set(ROCM_INCLUDE_DIR "${ROCM_ROOT}/include")
+if(THEROCK_SDK_BASE AND NOT EXISTS "${ROCM_INCLUDE_DIR}/hip")
+    set(ROCM_INCLUDE_DIR "${THEROCK_SDK_BASE}/include")
+    message(STATUS "rocm-cpp: ROCm include root = ${ROCM_INCLUDE_DIR} (TheRock SDK layout)")
+endif()
+
+# HIP-language objects (amdclang++ -x hip) do not inherit SYSTEM include
+# dirs from target_include_directories / hip::host usage requirements
+# (observed with CMake 4.2's HIP rules — .hip objects compile without any
+# -isystem, fall back to the system ROCm 7.1 headers under /usr/include and
+# fail on __ocml_* builtins). Apply the resolved ROCm include to every HIP
+# compile via CMAKE_HIP_FLAGS. Guarded so repeated evaluation in one
+# configure does not duplicate the flag; on classic ROCm installs
+# ROCM_INCLUDE_DIR == ${ROCM_ROOT}/include, i.e. the same include the
+# explicit SYSTEM include lines already provided.
+if(ROCM_INCLUDE_DIR AND NOT CMAKE_HIP_FLAGS MATCHES "isystem${ROCM_INCLUDE_DIR}")
+    # Plain (normal) variable: the HIP rules expand CMAKE_HIP_FLAGS at
+    # generate time from the project-scope variable, not from the cache
+    # (a CACHE FORCE set would be shadowed by the variable project()
+    # created when the HIP language was enabled).
+    set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -isystem${ROCM_INCLUDE_DIR}")
+    message(STATUS "rocm-cpp: HIP flags += -isystem${ROCM_INCLUDE_DIR}")
+endif()
+
+# TheRock pip/venv SDKs ship their own hip-config under
+# <sdk>/lib/cmake/hip; without pinning hip_DIR the CONFIG search below
+# resolves the SYSTEM hip package first (/usr/...), whose HIP_INCLUDE_DIRS
+# point at the Ubuntu ROCm 7.1 headers (/usr/include/hip) — those reference
+# __ocml_* builtins that TheRock's clang does not declare, breaking every
+# bf16/fp8 kernel (smoke-test failure, 2026-08-28). Pin to TheRock's config
+# when present; classic ROCm installs (no SDK config) keep default detection.
+if(THEROCK_SDK_BASE AND EXISTS "${THEROCK_SDK_BASE}/lib/cmake/hip/hip-config.cmake")
+    set(hip_DIR "${THEROCK_SDK_BASE}/lib/cmake/hip" CACHE PATH "HIP config (TheRock SDK)")
+    message(STATUS "rocm-cpp: pinning hip_DIR to TheRock SDK: ${hip_DIR}")
+endif()
+
 find_package(hip REQUIRED CONFIG
     PATHS "${ROCM_ROOT}"
     # System-wide HIP runtime (hip-runtime-amd package)
@@ -237,7 +281,9 @@ foreach(_rc_base "${_RC_PIP_PATH}" "${_RC_THEROCK_DIR}" "${_RC_THEROCK_LEGACY}" 
 endforeach()
 
 if(NOT ROCWMMA_FOUND)
-    file(GLOB_RECURSE _RC_ROCWMMA_HPP "$ENV{HOME}/.local/lib/python*/site-packages/_rocm_sdk_devel/include/rocwmma/rocwmma.hpp")
+    file(GLOB_RECURSE _RC_ROCWMMA_HPP
+        "$ENV{HOME}/.local/lib/python*/site-packages/_rocm_sdk_devel/include/rocwmma/rocwmma.hpp"
+        "${_RC_THEROCK_OPT}/lib/python*/site-packages/_rocm_sdk_devel/include/rocwmma/rocwmma.hpp")
     list(LENGTH _RC_ROCWMMA_HPP _RC_ROCWMMA_N)
     if(_RC_ROCWMMA_N GREATER 0)
         list(GET _RC_ROCWMMA_HPP 0 _RC_ROCWMMA_PATH)
@@ -655,7 +701,7 @@ target_include_directories(backend_manager PUBLIC
     $<INSTALL_INTERFACE:include>)
 target_include_directories(backend_manager PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
-target_include_directories(backend_manager PRIVATE "${ROCM_ROOT}/include")
+target_include_directories(backend_manager PRIVATE "${ROCM_INCLUDE_DIR}")
 target_compile_definitions(backend_manager PRIVATE __HIP_PLATFORM_AMD__=1)
 target_link_libraries(backend_manager PUBLIC dl rocm_cpp hip::host hip::device)
 if(RCPP_HAVE_CUDA)
