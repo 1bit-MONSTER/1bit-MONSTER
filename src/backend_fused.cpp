@@ -98,11 +98,11 @@ __global__ void fused_gemv_batch_kernel(float* __restrict__ y, const float* __re
     int row = blockIdx.x;
     if (row >= M) return;
     const float* Wrow = W + (size_t)row * N;
-    __shared__ double sdata[BLOCK];
+    __shared__ float sdata[BLOCK];
     for (int b = 0; b < B; b++) {
-        double sum = 0.0;
+        float sum = 0.0;
         const float* xrow = x + (size_t)b * N;
-        for (int k = threadIdx.x; k < N; k += BLOCK) sum += (double)xrow[k] * Wrow[k];
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * Wrow[k];
         __syncthreads();
         sdata[threadIdx.x] = sum;
         __syncthreads();
@@ -110,7 +110,7 @@ __global__ void fused_gemv_batch_kernel(float* __restrict__ y, const float* __re
             if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
             __syncthreads();
         }
-        if (threadIdx.x == 0) y[(size_t)b * M + row] = (float)sdata[0];
+        if (threadIdx.x == 0) y[(size_t)b * M + row] = sdata[0];
         __syncthreads();
     }
 }
@@ -127,19 +127,19 @@ __global__ void fused_gemv_v4_kernel(float* __restrict__ y, const float* __restr
     const float4* W4 = (const float4*)(W + (size_t)row * N);
     const float4* x4 = (const float4*)x;
     int N4 = N >> 2;
-    double sum = 0;
+    float sum = 0;
     for (int k = threadIdx.x; k < N4; k += BLOCK) {
         float4 w = W4[k], xv = x4[k];
-        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
     }
-    __shared__ double sdata[BLOCK];
+    __shared__ float sdata[BLOCK];
     sdata[threadIdx.x] = sum;
     __syncthreads();
     for (int s = BLOCK/2; s > 0; s >>= 1) {
         if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
         __syncthreads();
     }
-    if (threadIdx.x == 0) y[row] = (float)sdata[0];
+    if (threadIdx.x == 0) y[row] = sdata[0];
 }
 
 // ── Fused QKV GEMV: yq[s1], yk[s2], yv[s2] = W @ x in ONE launch ──
@@ -160,19 +160,19 @@ __global__ void fused_qkv_v4_kernel(float* __restrict__ yq, float* __restrict__ 
     const float4* W4 = (const float4*)Wr;
     const float4* x4 = (const float4*)x;
     int N4 = N >> 2;
-    double sum = 0;
+    float sum = 0;
     for (int k = threadIdx.x; k < N4; k += BLOCK) {
         float4 w = W4[k], xv = x4[k];
-        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
     }
-    __shared__ double sdata[BLOCK];
+    __shared__ float sdata[BLOCK];
     sdata[threadIdx.x] = sum;
     __syncthreads();
     for (int s = BLOCK/2; s > 0; s >>= 1) {
         if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
         __syncthreads();
     }
-    if (threadIdx.x == 0) *yr = (float)sdata[0];
+    if (threadIdx.x == 0) *yr = sdata[0];
 }
 
 // ── Fused GU GEMV: y1[IM], y2[IM] = W1, W2 @ x in ONE launch ──
@@ -189,19 +189,19 @@ __global__ void fused_gu_v4_kernel(float* __restrict__ y1, float* __restrict__ y
     const float4* W4 = (const float4*)Wr;
     const float4* x4 = (const float4*)x;
     int N4 = N >> 2;
-    double sum = 0;
+    float sum = 0;
     for (int k = threadIdx.x; k < N4; k += BLOCK) {
         float4 w = W4[k], xv = x4[k];
-        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
     }
-    __shared__ double sdata[BLOCK];
+    __shared__ float sdata[BLOCK];
     sdata[threadIdx.x] = sum;
     __syncthreads();
     for (int s = BLOCK/2; s > 0; s >>= 1) {
         if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
         __syncthreads();
     }
-    if (threadIdx.x == 0) *yr = (float)sdata[0];
+    if (threadIdx.x == 0) *yr = sdata[0];
 }
 
 // ── Fused save-residual + RMSNorm: dffn = x (pre-norm), x = norm(x) ──
@@ -232,23 +232,23 @@ __global__ void fused_wo_h2v4_kernel(float* __restrict__ y, const float* __restr
     if (row >= M) return;
     const float4* W4 = (const float4*)(W + (size_t)row * N);
     int N4 = N >> 2;
-    double sum = 0;
+    float sum = 0;
     for (int k = threadIdx.x; k < N4; k += BLOCK) {
         float4 w = W4[k];
         const __half2* hx = (const __half2*)x + 2 * k;
         float4 xv;
         xv.x = __half2float(hx[0].x); xv.y = __half2float(hx[0].y);
         xv.z = __half2float(hx[1].x); xv.w = __half2float(hx[1].y);
-        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
     }
-    __shared__ double sdata[BLOCK];
+    __shared__ float sdata[BLOCK];
     sdata[threadIdx.x] = sum;
     __syncthreads();
     for (int s = BLOCK/2; s > 0; s >>= 1) {
         if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
         __syncthreads();
     }
-    if (threadIdx.x == 0) y[row] = (float)sdata[0];
+    if (threadIdx.x == 0) y[row] = sdata[0];
 }
 
 // ── Fused residual: dh = y + res (replaces add(y,res) + copy(dh,y)) ──
