@@ -15,6 +15,21 @@ gemv shader efficiency (~69 GB/s vs the HIP GEMVs' ~180) — the concurrent
 agent's one-block-per-row FFN gemv pattern (676 -> 250 us/layer) is the
 template for the qkv shader.
 
+## 2026-08-29 (round 13) — coalesced VK gemv shaders: VK+GPU-FFN 22.1 -> 14.6 ms
+
+The VK qkv shader was rewritten to ONE BLOCK PER OUTPUT ROW (4096 rows: Q
+2048 + K/V 1024 each), 256 threads reading k=tid contiguous — the old
+one-block-per-head 2-lane/row pattern read each thread's element from a
+different row (stride H apart), capping at ~69 GB/s.  The per-head QK-norm +
+RoPE + f16 KV-store moved to a new attn_qkns.comp (`9f8d18d7`).  VK+GPU-FFN
+22.1 -> 14.6 ms (45 -> 68 tok/s), parity 15 13 15 15 ... .
+
+PARITY LESSON: a one-block-per-row rewrite of the post (wo) shader flipped
+the VK+NPU tokens (15 13 -> 15 15) — the post's output h feeds the int8 NPU
+FFN directly, and the accumulation-order change shifted h by ~1e-7 across an
+int8 quantization boundary.  The q/k/v rewrites are safe (the f16 KV
+quantization absorbs the differences).  The post was reverted (`55334169`).
+
 ## 2026-08-29 (round 11) — the batch decode is now FULLY batched: 208 tok/s
 
 The round-10 batched-decode fault was a VARIABLE SHADOWING bug: the batch

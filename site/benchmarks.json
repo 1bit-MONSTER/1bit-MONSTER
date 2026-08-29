@@ -310,13 +310,13 @@
    "notes": "forward_batch: per-layer batched attention (fused_gemv_batch_kernel reads each W row once per batch) + ONE batched NPU FFN for all 8 rows (B weight DMA read once, 7.6x, bit-identical per row) + batched lm_head (622 MB vocab weight read once). 222.6 ms/batch, 36 tok/s aggregate (5.5x the 6.5 tok/s single-stream); every sequence's token stream is the parity stream 15 13 15 15 ... . Scaling: B=2 12, B=4 22, B=8 35-36 tok/s aggregate. The batched NPU FFN (~5 ms/layer) now dominates; the D kernel DMA (~1.7 GB/s vs GU 3.1) is the next target."
   },
   "fused_vk_attn_gpu_ffn": {
-   "tok_s": 45.0,
+   "tok_s": 68.0,
    "status": "validated",
    "label": "Qwen3-0.6B 1BP \u2014 Vulkan in-place attention + GPU-FFN (on-pages attention, HIP FFN on dh)",
    "table": "engine",
    "display_name": "Fused VK attn + GPU FFN",
    "backend": "fused",
-   "notes": "22.1 ms/token (45 tok/s) with the async VK dispatch (record_forward: embed + 28 layers' attention + on-pages FFN in ONE command buffer, one submit+waitIdle per token instead of 56 per-layer waits). Parity 15 13 15 15 ... . The residual gap vs HIP+GPU-FFN (11.4 ms) is the VK gemv shader efficiency (~69 GB/s vs HIP's ~180)."
+   "notes": "14.6 ms/token (68 tok/s) with the async VK dispatch (record_forward) + coalesced one-block-per-row QKV gemv shader (the qk-norm/rope/store moved to a separate attn_qkns pass). Parity 15 13 15 15 ... on all paths. (A one-block-per-row post rewrite was reverted \u2014 it flipped the VK+NPU tokens: h feeds the int8 FFN directly.) The residual ~3 ms gap vs HIP+GPU-FFN (11.7 ms) is the post/decode stages."
   }
  },
  "table_kernel": [
