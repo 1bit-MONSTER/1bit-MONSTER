@@ -210,39 +210,43 @@ int main(int argc, char** argv) {
               shown++;
           }
     }
-    // D: SILICON-PINNED contraction (layout probes j0=0/1/2 + solver):
-    //  a8s[kstep][c_] = h2b[ks][cg*64 + ks*8 + c_]  (slice = ks; the C2 dump
-    //    carries the ACC ROW 0 at positions with n_row%64 < 8)
+    // D: SILICON-PINNED contraction (layout probes j0=0/1/2 + the h2r per-pair
+    // reads — CORRECTED: the slice is the ACC ROW (kstep), per the source):
+    //  a8s[kstep][c_] = h2b[ks][cg*64 + kstep*8 + c_]   ← the source's literal
+    //  → the acc row t reads the h2 at (cg*64 + t*8 + c_) — the h2r per-pair
+    //    probes show the rows DIFFER (row t = the pair t*8+c_*), so the D is
+    //    the kstep-slice, NOT the ks-slice.
     //  bd read: the mmul's B tile (k, n) = b8[(n/64)][64*((n/8)%8) + k*8 + n%8]
     //    → bd ROW = ki*64 + ks*8 + n/64, bd COL = rh*512 + 64*((n/8)%8) +
     //    c_*8 + n%8  (n = the half-col nn%512)
-    //  C2_bo[r*512 + kstep*1024 + n_row] = (n_row%64 < 8) ?
-    //      c2[0][r*512 + (8*kstep + n_row/64)*8 + n_row%8] : 0
+    //  C2_bo[r*512 + kstep*1024 + n_row] = the FULL microtile dump: the acc
+    //    row (p/8)%8 at the col (p/64)*8 + p%8, p = kstep*512 + n_row.
     std::vector<int> c2_ref((size_t)M * N_D);
-    for (int nn = 0; nn < N_D; nn++) {
-        int rh = nn / 512, n = nn % 512;
-        long acc = 0;
-        for (int col = 0; col < n_cols; col++)
-            for (int cg = 0; cg < n_cg; cg++) {
-                int ki = cg * n_cols + col;
-                int ks_max = rep ? 8 : 1;
-                for (int ks = 0; ks < ks_max; ks++)
-                    for (int c_ = 0; c_ < 8; c_++) {
-                        int h2 = h2s[col * (n_cg * 64) + cg * 64 + ks * 8 + c_];
-                        int kk = ki * 64 + ks * 8 + n / 64;
-                        int bcol = rh * 512 + 64 * ((n / 8) % 8) + c_ * 8 + n % 8;
-                        acc += (long)h2 * bd[(size_t)kk * N_D + bcol];
-                    }
-            }
-        c2_ref[nn] = (int)acc;   // row 0 only (the dump carries only the acc row 0)
-    }
+    for (int t = 0; t < M; t++)
+        for (int nn = 0; nn < N_D; nn++) {
+            int rh = nn / 512, n = nn % 512;
+            long acc = 0;
+            for (int col = 0; col < n_cols; col++)
+                for (int cg = 0; cg < n_cg; cg++) {
+                    int ki = cg * n_cols + col;
+                    int ks_max = rep ? 8 : 1;
+                    for (int ks = 0; ks < ks_max; ks++)
+                        for (int c_ = 0; c_ < 8; c_++) {
+                            int h2 = h2s[col * (n_cg * 64) + cg * 64 + t * 8 + c_];
+                            int kk = ki * 64 + ks * 8 + n / 64;
+                            int bcol = rh * 512 + 64 * ((n / 8) % 8) + c_ * 8 + n % 8;
+                            acc += (long)h2 * bd[(size_t)kk * N_D + bcol];
+                        }
+                }
+            c2_ref[(size_t)t * N_D + nn] = (int)acc;
+        }
     std::vector<int> scr((size_t)M * N_D, 0);
     for (int kstep = 0; kstep < M; kstep++)
         for (int r = 0; r < 2; r++)
             for (int n_row = 0; n_row < 512; n_row++) {
-                if (n_row % 64 < 8)
-                    scr[(size_t)r * 512 + kstep * 1024 + n_row] =
-                        c2_ref[(size_t)r * 512 + (8 * kstep + n_row / 64) * 8 + n_row % 8];
+                int p = kstep * 512 + n_row;
+                scr[(size_t)r * 512 + kstep * 1024 + n_row] =
+                    c2_ref[(size_t)((p / 8) % 8) * N_D + r * 512 + (p / 64) * 8 + p % 8];
             }
     fprintf(stderr, "CPU mirror C2[0..7] ="); for (int i = 0; i < 8; i++) fprintf(stderr, " %d", c2_ref[i]); fprintf(stderr, "\n");
 
@@ -318,25 +322,23 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "NPU   C2[0..7] ="); for (int i = 0; i < 8; i++) fprintf(stderr, " %d", C2[i]); fprintf(stderr, "\n");
     if (h2r) {
-        // The NPU's occupied positions should all equal the pair's h2; compare
-        // against the mirror's h2s[h2r_idx].
-        int expect = h2s[h2r_idx];
-        long bad = 0, nz = 0;
+        // The h2r bd isolates the pairs t*8+hc_ into the acc rows; compare the
+        // FULL microtile expectation (scr) against the NPU per position — a
+        // match pins the GU h2s for the 8 pairs (t*8+hc_, t=0..7).
+        long bad = 0; long nz = 0; double maxrel = 0;
         for (int i = 0; i < M * N_D; i++) {
             if (C2[i] != 0) nz++;
-            if (C2[i] != expect && C2[i] != 0) bad++;
+            if (C2[i] != scr[i]) bad++;
+            double rel = std::fabs((double)C2[i] - scr[i]) / (std::fabs((double)scr[i]) + 1.0);
+            if (rel > maxrel) maxrel = rel;
         }
-        printf("h2r[%d]: mirror h2s=%d  NPU reads=%ld positions (first=%d)  %s (bad=%ld)\n",
-               h2r_idx, expect, nz, nz ? C2[0] : -999, bad == 0 ? "MATCH" : "MISMATCH", bad);
-        // distinct values + the first bad positions
-        int hist[256] = {0};
-        for (int i = 0; i < M * N_D; i++) { int v = C2[i] + 128; if (v >= 0 && v < 256) hist[v]++; }
-        for (int v = 0; v < 256; v++) if (hist[v] > 0) fprintf(stderr, "  val %d x%d\n", v - 128, hist[v]);
-        for (int i = 0, shown = 0; i < M * N_D && shown < 8; i++)
-            if (C2[i] != expect && C2[i] != 0) {
-                fprintf(stderr, "  bad i=%d(k%d,r%d,n%d) NPU=%d\n", i, i / 1024, (i % 1024) / 512, i % 512, C2[i]);
-                shown++;
-            }
+        printf("h2r[%d]: mirror pairs t*8+%d =", h2r_idx, h2r_idx % 8);
+        for (int t = 0; t < 8; t++) {
+            int pidx = (h2r_idx / 384) * 384 + (h2r_idx % 384 / 64) * 64 + t * 8 + h2r_idx % 8;
+            fprintf(stderr, " %d", pidx < 3072 ? h2s[pidx] : -999);
+        }
+        fprintf(stderr, "  %s (bad=%ld/8192 nz=%ld maxrel=%.2f)\n",
+                bad == 0 ? "EXACT" : "MISMATCH", bad, nz, maxrel);
         return bad == 0 ? 0 : 1;
     }
     fprintf(stderr, "mirror C2[0..7] ="); for (int i = 0; i < 8; i++) fprintf(stderr, " %d", scr[i]); fprintf(stderr, " (untiled c2[0]=%d)\n", c2_ref[0]);
