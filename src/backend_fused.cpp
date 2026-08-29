@@ -1287,12 +1287,10 @@ struct FusedBackend : Backend {
                     devK + (size_t)l * max_seq * NKV_ * HD_, devV + (size_t)l * max_seq * NKV_ * HD_,
                     dgate_batch, dup_batch, batch_pos[0], NKV_, HD_, max_seq,
                     (int)((size_t)NC_ * max_seq * NKV_ * HD_), s2);
-                for (int s = 0; s < B_; s++) {
-                    __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-                    __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-                    rcpp_kv_cache_attn_decode(dQ_batch + (size_t)s*s1, lk, lv, dAttn_batch + (size_t)s*s1,
-                                              NH_, NKV_, HD_, batch_pos[s]+1, scl, (void*)stream);
-                }
+                rcpp_kv_cache_attn_decode_batch(dQ_batch,
+                    devK + (size_t)l * max_seq * NKV_ * HD_, devV + (size_t)l * max_seq * NKV_ * HD_,
+                    dAttn_batch, NH_, NKV_, HD_, batch_pos[0]+1, scl, B_,
+                    (int)((size_t)NC_ * max_seq * NKV_ * HD_), (void*)stream);
                 fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)
