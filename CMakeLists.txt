@@ -771,7 +771,7 @@ target_include_directories(rocm_cpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_include_directories(rocm_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/kernels)
-target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCM_ROOT}/include")
+target_include_directories(rocm_cpp SYSTEM PRIVATE "${ROCM_INCLUDE_DIR}")
 target_compile_definitions(rocm_cpp PRIVATE MAMBA1_ENGINE_AS_LIB=1)
 target_compile_options(rocm_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3 -ffast-math -munsafe-fp-atomics
