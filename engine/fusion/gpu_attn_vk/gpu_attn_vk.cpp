@@ -205,7 +205,7 @@ bool VkAttention::layer(int l, int pos) {
     stages[1] = {&p_qkv_,   ds_qkv_,   (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), 1, 1, &pc};
     stages[2] = {&p_qkns_,  ds_qkns_,  (uint32_t)(NH_ + NKV_), 1, 1, &pc};
     stages[3] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
-    stages[4] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 31) / 32), 1, 1, &pc};
+    stages[4] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 15) / 16), 1, 1, &pc};
     vkrt::dispatchBatchOnce(vk_, stages, 5);
     return true;
 }
@@ -255,7 +255,7 @@ bool VkAttention::record_forward(int token_id, int pos) {
         stages.push_back({&p_qkv_,     ds_qkv_,     (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), 1, 1, pc});
         stages.push_back({&p_qkns_,    ds_qkns_,    (uint32_t)(NH_ + NKV_), 1, 1, pc});
         stages.push_back({&p_decode_,  ds_decode_,  (uint32_t)NH_, 1, 1, pc});
-        stages.push_back({&p_post_,    ds_post_,    (uint32_t)((H_ + 31) / 32), 1, 1, pc});
+        stages.push_back({&p_post_,    ds_post_,    (uint32_t)((H_ + 15) / 16), 1, 1, pc});
         stages.push_back({&p_ffn_rms_, ds_ffn_rms_, 1, 1, 1, pc});
         stages.push_back({&p_ffn_gu_,  ds_ffn_gu_,  (uint32_t)(2 * IM_), 1, 1, pc});
         stages.push_back({&p_ffn_silu_, ds_ffn_silu_, (uint32_t)((IM_ + 255) / 256), 1, 1, pc});
