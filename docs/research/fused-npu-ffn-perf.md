@@ -3,6 +3,36 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 7) — M=8 vectorized FFN: the m1 scalar stream was COMPUTE-bound
+
+The m1 "DMA wall" (~1.46 GB/s) was actually the scalar matmul throttling the
+DMA: `matmul_scalar` consumes B at ~1 GB/s (1 MAC/cycle), so the fifo
+backpressure stalls the shim.  The M=8 vectorized 8x8x8 mmul
+(`M8_VECTORIZED`, same recipe as `build_zaya_m8.sh`) consumes B at ~8 GB/s,
+so the launch drops to the DMA rate.  Committed `b1699d70`:
+
+| xclbin family | GU r.wait (6.3 MB B) | note |
+|---|---|---|
+| M=128-baked (FLM parity) | 2.76 ms | vectorized but 4-slice stream |
+| m1 scalar (`n1_core_i8_m1.py`) | 4.32 ms | compute-bound (1 GB/s) |
+| **m8 vectorized (`v27 -M 8`)** | **2.06 ms (3.1 GB/s)** | fastest; oracle bit-identical |
+
+Measured: FFN 8.46 -> 7.93 (m1) -> **4.42 ms/layer (m8)**; VK+NPU 272.7 ->
+258.6 -> **153.1 ms**, HIP+NPU ~275 -> 256.6 -> **156.3 ms** (VK now ahead).
+Token parity `15 13 15 15 ...` verified on VK + HIP clean runs (oracle cosine
+0.997791, bit-identical to the 128-row baseline).
+
+**Multi-sequence amortization (the server win)**: am=8 through the same m8
+kernel runs **2045 us total for 8 rows** (256 us/row) — the B DMA is read once
+for all rows.  A batched decode (8 sequences per launch) puts the per-layer
+FFN at ~2.05 ms for all 8 sequences -> ~7.2 ms/sequence-token FFN, an 8x
+aggregate throughput win for multi-token workloads.  Requires batched
+attention (next step).
+
+Tile-size experiments (n=256 GU, k=128 D) both produced numerically WRONG
+output (the C writeback layout does not generalize beyond 64x128 tiles in
+n1_core_i8_v27.py) — reverted; the committed m8 stays 64x128.
+
 ## 2026-08-29 (round 6) — true M=1 single-row FFN xclbins + DMA-wall map
 
 ### The M=1 win (committed `85021e4c`)
