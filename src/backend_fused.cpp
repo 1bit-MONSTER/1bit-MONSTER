@@ -613,7 +613,9 @@ struct FusedBackend : Backend {
     static void gemv(float* y, const float* W, const float* x, int M, int N, hipStream_t s) {
         if (!W) return;
         // One block per output row — each block's 256 threads reduce the dot
-        // product.  float4 loads (v4) when N%4==0: 1.27x on large-M shapes.
+        // product.  float4 loads (v4) when N%4==0: 1.41x end-to-end.
+        // (A 4-rows-per-block variant with x in shared was measured SLOWER —
+        // the shared round-trip costs more than the x re-read traffic.)
         if ((N & 3) == 0) fused_gemv_v4_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
         else              fused_gemv_plain_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
     }
