@@ -122,7 +122,6 @@ void kv_cache_attn_decode_kernel(
         }
     }
 }
-
 }  // namespace
 
 extern "C" rcpp_status_t
