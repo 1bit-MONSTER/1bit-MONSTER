@@ -274,13 +274,13 @@
    "notes": "11.4 ms/token (88 tok/s) with float-accumulation GEMVs (was 14.5/69; the double accumulate runs at ~1/8 rate on RDNA). Parity 15 13 15 15 ... ."
   },
   "fused_batch_decode_gpu_ffn": {
-   "tok_s": 201.0,
+   "tok_s": 208.0,
    "status": "validated",
    "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences, GPU FFN (FUSED_BATCH=8, no NPU)",
    "table": "engine",
    "display_name": "Fused batch decode B=8 (GPU FFN)",
    "backend": "fused",
-   "notes": "~40 ms/batch, 199-201 tok/s aggregate (18x the 11.4 ms single-stream) with the batched GPU FFN (W read once for all 8 rows) + batched attention GEMVs + batched elementwise kernels (rmsnorm/qk-norm+rope/f2h/silu/residual/kv_store); per-sequence decode only remains. Parity 15 13 15 15 ... on all 8 sequences."
+   "notes": "38.4 ms/batch, 208 tok/s aggregate (18x the 11.4 ms single-stream) with the batched GPU FFN + batched attention GEMVs + batched elementwise kernels + batched decode (the decode's variable-shadowing fault fixed: the online-softmax score named 's' shadowed the batch index in the V_row offset). Parity 15 13 15 15 ... on all 8 sequences."
   },
   "fused_vk_attn_npu_ffn": {
    "tok_s": 6.5,
