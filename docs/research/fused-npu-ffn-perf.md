@@ -3,6 +3,22 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 11) — the batch decode is now FULLY batched: 208 tok/s
+
+The round-10 batched-decode fault was a VARIABLE SHADOWING bug: the batch
+kernel copied the single's online-softmax body where the attention score is
+named `s` — the batch's V_row offset `(size_t)s * seq_stride` then used the
+FLOAT score (cast to size_t, ~7 for typical scores) instead of the batch
+index, reading ~7 sequence-strides past the KV end at the last layer.  The
+K_row sits before the score's declaration (correct), which is why every
+isolated test passed.  Fixed by renaming the batch index to `sb` (`f1d24b50`).
+
+Batch (B=8, GPU FFN) is now fully batched: attention GEMVs + elementwise
+(rmsnorm/qk-norm+rope/f2h/silu/residual) + kv_store + decode + FFN + lm_head
+all read the weight matrices once per batch.  **38.4 ms/batch = 208 tok/s
+aggregate (18x the 11.4 ms single-stream)**, parity 15 13 15 15 ... on all 8
+sequences.  Single-stream unchanged: HIP+GPU-FFN 11.4 ms (88 tok/s).
+
 ## 2026-08-29 (round 9) — the GPU FFN wins; the fused backend's real state of the art
 
 The round-8 reframe held and was pushed: the GPU FFN (weights at DRAM
