@@ -84,10 +84,15 @@ from aie.dialects._aie_enum_gen import AIETileType
 
 
 def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
-             h2_const=None, silu_const=None, no_gu=False):
-    n_k = K // k                                  # 32 GU k-tiles
-    n_cg_gu = N_GU // n // n_aie_cols             # 4
-    assert K == n_cg_gu * (n // 2) * n_aie_cols, "GU h2 width must equal K"
+             h2_const=None, silu_const=None, no_gu=False, K_GU=None):
+    # K = the D-phase input width (the silu'd GU output = n_cg_gu*(n/2)*cols);
+    # K_GU = the GU input (h2) width, which differs when the GU is NOT 2:1
+    # (Qwen3: K_GU=1024, GU 1024→6144 = 1:6, silu → D K=3072).  n_k is the
+    # GU's k-slice count over K_GU.
+    K_GU = K_GU if K_GU else K
+    n_k = K_GU // k                               # GU k-tiles (Qwen3: 16)
+    n_cg_gu = N_GU // n // n_aie_cols
+    assert K == n_cg_gu * (n // 2) * n_aie_cols, "D input width (K) must equal the silu'd GU output"
     assert N_D % n == 0 and N_D % 32 == 0, "wide mm needs N_D % 32 == 0"
     assert N_D % n_aie_rows == 0, "N_D must split evenly across core rows"
     N_D_row = N_D // n_aie_rows                   # columns per row (multi-row)
@@ -365,11 +370,12 @@ def main():
     p.add_argument("--h2-const", type=int, default=None)
     p.add_argument("--silu-const", type=int, default=None)
     p.add_argument("--no-gu", action="store_true")
+    p.add_argument("--K_GU", type=int, default=None)
     args = p.parse_args()
     prog = my_fused(args.M, args.K, args.N_GU, args.N_D, args.m, args.k, args.n,
                     n_aie_cols=args.cols, n_aie_rows=args.rows,
                     h2_const=args.h2_const, silu_const=args.silu_const,
-                    no_gu=args.no_gu)
+                    no_gu=args.no_gu, K_GU=args.K_GU)
     print(prog.resolve_program())
 
 

@@ -17,6 +17,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <vector>
 #include <memory>
@@ -39,6 +40,43 @@ static constexpr int  BLOCK = 256;
          if (_hip_e != hipSuccess) { \
              fprintf(stderr, "HIP error (dtor) %s at %s:%d\n", \
                      hipGetErrorString(_hip_e), __FILE__, __LINE__); } } while(0)
+
+// ── NPU stability gate (out-of-process) ────────────────────────────────────
+// The XRT/amdxdna user-space driver can segfault after repeated AIE GEMM
+// executions (GP fault in libxrt_driver_xdna.so — reproduced with a minimal
+// GU->D loop, no HIP/Vulkan involved) and can wedge the NPU.  Before trusting
+// USE_NPU_FFN, run the npu_stability_probe binary, which performs FFN-shaped
+// GEMMs in its OWN process: if it dies, the crash happened in the probe, and
+// this server disables the NPU path instead of crashing.  Returns true when
+// the probe passes OR the binary cannot be found (best-effort gate — an
+// installed server without the probe binary stays permissive).
+static bool npu_stability_gate_ok() {
+    const char* bin = getenv("NPU_PROBE_BIN");
+    std::string cmd = (bin && *bin) ? bin : "";
+    if (cmd.empty()) {
+        char exe[4096] = {0};
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        std::string dir = n > 0 ? std::string(exe, (size_t)n) : ".";
+        auto slash = dir.find_last_of('/');
+        dir = slash == std::string::npos ? "." : dir.substr(0, slash);
+        std::vector<std::string> candidates = {
+            dir + "/npu_stability_probe",
+            "build/npu_stability_probe",
+            "npu_stability_probe",
+        };
+        for (auto& c : candidates) {
+            if (access(c.c_str(), X_OK) == 0) { cmd = c; break; }
+        }
+    }
+    if (cmd.empty()) {
+        fprintf(stderr, "[fused] NPU probe binary not found — stability gate skipped\n");
+        return true;
+    }
+    int rc = system(cmd.c_str());
+    bool ok = (rc == 0);
+    fprintf(stderr, "[fused] NPU stability probe %s (exit %d)\n", ok ? "PASS" : "FAIL", rc);
+    return ok;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Device kernels (all use "fused_" prefix — no conflict with hip_1bp_kernels)
@@ -604,11 +642,14 @@ struct FusedBackend : Backend {
     NpuState* npu = nullptr;
     bool npu_ok = false;
     fusion::SharedBO* slot[2] = {};
+    bool slots_ok_ = false;   // NPU-owned SharedBO pages allocated (VK path + NPU-FFN handoff)
 
-    // FUSED_VK_ATTN=1: the attention math runs as Vulkan compute directly on
-    // the NPU SharedBO pages (dma-buf import in VkAttention) instead of the
-    // HIP kernels below — the per-token attention-output→pages host-view copy
-    // disappears.  The NPU FFN still reads/writes the SAME pages in place.
+    // FUSED_VK_ATTN (default ON): the attention math runs as Vulkan compute
+    // directly on the NPU SharedBO pages (dma-buf import in VkAttention)
+    // instead of the HIP kernels below — the per-token attention-output→pages
+    // host-view copy disappears.  The on-pages FFN shaders read/write the SAME
+    // pages in place, so the HIP handoff memcpys are eliminated entirely.
+    // Opt out with FUSED_HIP_ATTN=1 (HIP attention + host_ptr handoff).
     fusion::VkAttention va_;
     bool vk_attn_ = false;
     bool vk_attn_ready_ = false;    // lazy va_ init attempted (once)
@@ -754,21 +795,30 @@ struct FusedBackend : Backend {
         npu_ok = (npu != nullptr);
         if (!npu_ok) printf("[fused] NPU unavailable — GPU-only\n");
 
-        if (!load_1bp(cfg.model_path)) return false;
-        // rope_theta may have been corrected from the 1BP header by load_1bp
-        // (Qwen3 = 1e6; the ModelConfig default is 500000).
-        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
-               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
+        // Stability gate: only trust the NPU FFN path if the probe GEMMs in a
+        // child process survive (the XRT/amdxdna driver can crash after
+        // repeated AIE GEMMs).  A failed probe disables the NPU path so the
+        // crash can never take down the server.
+        if (npu_ok && getenv("USE_NPU_FFN") && !npu_stability_gate_ok()) {
+            fprintf(stderr, "[fused] NPU stability probe FAILED — NPU FFN "
+                    "disabled (GPU-only)\n");
+            npu_ok = false;
+        }
 
-        if (npu_ok) {
-            // SharedBO needs a persistent xrt::device ref — create once outside
+        // SharedBO pages: needed by BOTH the VK path (attention + on-pages FFN
+        // run as Vulkan compute straight in the pages) and the NPU-FFN
+        // handoff.  The VK path only needs the NPU DEVICE (a HOST_ONLY BO
+        // allocation), NOT the FFN xclbins — so create the slots whenever the
+        // device opens, independent of npu_ok.  A wedged/failed BO allocation
+        // just means no on-pages path (HIP attention + GPU FFN instead).
+        {
             size_t sb = (size_t)H * sizeof(float) * 2;
             xrt::device npu_for_bo(0);
             slot[0] = fusion::SharedBO::create(npu_for_bo, sb);
             slot[1] = fusion::SharedBO::create(npu_for_bo, sb);
-            if (!slot[0] || !slot[1]) {
-                fprintf(stderr,"[fused] SharedBO alloc fail — GPU-only\n");
-                npu_ok = false;
+            slots_ok_ = slot[0] && slot[1];
+            if (!slots_ok_) {
+                fprintf(stderr,"[fused] SharedBO alloc fail — no on-pages path\n");
             } else {
                 // GPU view via the PRODUCTION dma-buf route (issue #1217):
                 // import each slot's exported dma-buf fd as Vulkan device
@@ -795,13 +845,22 @@ struct FusedBackend : Backend {
                             "Vulkan import disabled (host_ptr() path)\n");
                 else
                     printf("[fused] SharedBO slots ready (Vulkan dma-buf "
-                           "import deferred to first NPU-FFN use)\n");
+                           "import deferred to first use)\n");
             }
         }
 
+        if (!load_1bp(cfg.model_path)) return false;
+        // rope_theta may have been corrected from the 1BP header by load_1bp
+        // (Qwen3 = 1e6; the ModelConfig default is 500000).
+        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
+               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
+
         h_stage.resize(H); logit_stage.resize(VOCAB);
         gpu_ok = true; initialized = true;
-        printf(npu_ok ? "[fused] ✅ Fused GPU+NPU\n" : "[fused] ✅ GPU-only\n");
+        if (vk_attn_)
+            printf("[fused] ✅ Fused (Vulkan on-pages attention + FFN — zero host copies)\n");
+        else
+            printf(npu_ok ? "[fused] ✅ Fused GPU+NPU\n" : "[fused] ✅ GPU-only\n");
         return true;
     }
 
@@ -826,7 +885,15 @@ struct FusedBackend : Backend {
         struct Tmp { std::vector<float> wq,wk,wv,wo,w1,w2,w3,pn,pon,q_norm,k_norm; };
         std::vector<Tmp> tmp(NC);
         cpu_L.resize(NC);
-        bool want_vk = npu_ok && getenv("FUSED_VK_ATTN") != nullptr;
+        // VK is the DEFAULT on-pages path: attention + on-pages FFN run as
+        // Vulkan compute straight in the SharedBO pages (zero host copies).
+        // It needs only the pages (slots_ok_), NOT the FFN xclbins (npu_ok).
+        // Opt out with FUSED_HIP_ATTN=1 (HIP attention + host_ptr handoff) or
+        // FUSED_VK_ATTN=0.
+        bool vk_default = getenv("FUSED_HIP_ATTN") == nullptr;
+        const char* vk_env = getenv("FUSED_VK_ATTN");
+        bool vk_enabled = vk_default && (!vk_env || strcmp(vk_env, "0") != 0);
+        bool want_vk = slots_ok_ && vk_enabled;
         if (want_vk) {
             vk_attn_ = true;   // enable the Vulkan in-place attention path
             vk_layers_.resize(NC);
@@ -1050,7 +1117,7 @@ struct FusedBackend : Backend {
         //    data through the pages themselves.  Only the final readback
         //    pages→dh (for lm_head) touches the CPU per token.
         if (vk_attn_) {
-            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+            bool use_npu = (npu && npu_ok && slots_ok_ && getenv("USE_NPU_FFN"));
             auto t_ent = std::chrono::steady_clock::now();
 
             // Async VK dispatch: the WHOLE per-token forward (embed + every
@@ -1199,7 +1266,7 @@ struct FusedBackend : Backend {
         for (int l = 0; l < NC_; l++) {
             auto& gl = L[l];
             int s1 = NH_ * HD_, s2 = NKV_ * HD_;
-            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+            bool use_npu = (npu && npu_ok && slots_ok_ && getenv("USE_NPU_FFN"));
 
             // ── NPU PIPELINE PHASE A: await FFN(L-1) result BEFORE attention(L).
             //    attention(L) consumes the hidden state produced by FFN(L-1), so
@@ -1393,7 +1460,7 @@ struct FusedBackend : Backend {
             return false;
         }
         const int B_ = batch_, H_ = H, NH_ = NH, NKV_ = NKV, HD_ = this->HD_, IM_ = IM, NC_ = NC;
-        bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+        bool use_npu = (npu && npu_ok && slots_ok_ && getenv("USE_NPU_FFN"));
 
         auto embed_one = [&](int s, int tid) {
             float* hs = dh_batch + (size_t)s * H_;
