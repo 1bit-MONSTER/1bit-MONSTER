@@ -459,12 +459,19 @@ if(NOT USE_SYSTEM_HTTPLIB)
         GIT_TAG fe332fa06bac76a1c6d402c08f414052999347da  # v0.47.0
         GIT_SHALLOW TRUE
     )
-    set(HTTPLIB_REQUIRE_OPENSSL OFF CACHE INTERNAL "")
-    set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE INTERNAL "")
-    set(HTTPLIB_REQUIRE_ZSTD OFF CACHE INTERNAL "")
-    set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE INTERNAL "")
-    set(HTTPLIB_IS_USING_ZSTD ON CACHE INTERNAL "")
-    set(HTTPLIB_INSTALL OFF CACHE INTERNAL "")
+    # Scope these to lemonade's own httplib subproject: FetchContent
+    # subdirectories inherit normal variables from the caller, so plain set()
+    # is sufficient.  Writing them CACHE INTERNAL leaks into the global CMake
+    # cache and breaks the *root* project's separate cpp_httplib FetchContent
+    # at generate time — "link interface of target httplib contains
+    # zstd::libzstd but the target was not found" on every configure once
+    # lemonade has run (cache INTERNAL vars persist across runs).
+    set(HTTPLIB_REQUIRE_OPENSSL OFF)
+    set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF)
+    set(HTTPLIB_REQUIRE_ZSTD OFF)
+    set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF)
+    set(HTTPLIB_IS_USING_ZSTD ON)
+    set(HTTPLIB_INSTALL OFF)
     FetchContent_MakeAvailable(httplib)
     if(NOT USE_SYSTEM_ZSTD)
         target_include_directories(httplib INTERFACE
