@@ -132,6 +132,10 @@ public:
     // ── Inference ──
     /// Run one token — returns token ID, with automatic failover
     int generate(int token_id);
+    /// Text-level whole-prompt generation, with automatic failover: tries the
+    /// active backend's generate_text(); on failure (empty result or throw)
+    /// it cascades to the next backend in the route, exactly like generate().
+    std::string generate_text(const std::string& prompt, int max_tokens);
     /// Forward pass with hidden state output
     bool forward(int token_id, float* hidden_out);
     /// LM head

@@ -27,16 +27,17 @@
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
-| WS-12 | HRX/Loom platform transition | 🔎 | 🔲 | 🔲 | researched 2026-08-28; lands with next lemonade re-vendor |
+| WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f 2026-08-29; `llamacpp-hrx` registered + runs in onebin on gfx1151 |
 
 ## Task detail
 
 ### ws12-hrx-loom
-- [ ] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verify onebin registers `llamacpp-hrx` on gfx1151
-- [ ] P0: Smoke-test HRX recipe end-to-end on gfx1151 (Qwen3-30B-A3B chat or record fail-closed)
+- [x] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verified onebin registers `llamacpp-hrx` on gfx1151 (2026-08-29)
+- [x] P0: Smoke-test HRX recipe end-to-end on gfx1151 — `Qwen3-30B-A3B-Instruct-2507-HRX` loaded + chat completed ("Paris"; prompt 130.8 tok/s, gen 35.2 tok/s) via `1bit unified --lemonade` (2026-08-29)
 - [ ] P1: Track llama.cpp RFC #27218; watch ggml-hrx move from AMD staging to upstream releases
 - [ ] P1: Audit hrx-v2 branch (179 commits ahead) — decide fork track: HRX vs HIP/Vulkan
-- [ ] P1: Benchmark HRX vs HIP baseline on gfx1151 (RFC claims 30–50% prefill)
+- [x] P1: Benchmark HRX vs HIP baseline on gfx1151 (RFC claims 30–50% prefill) — **NOT reproduced**: HIP wins large prefill (1227–1313 tok/s); HRX fails closed on `GET_ROWS` for large prompts; HRX wins warm decode (~175 vs ~70 tok/s). See `ws12-hrx-loom/BENCHMARK.md` (2026-08-29)
+- [x] P2: Native `HRX_GPU` backend in the engine — `BackendType::HRX_GPU` + `backend_hrx.h/.cpp` (subprocess HRX llama-server, LSE-style), wired into `backend_manager` + `backend_factory`, `hrx_gpu` first in the GGUF/H1B + qwen3-GGUF routes, `src/backend_hrx.cpp` in `UNIFIED_SERVER_SOURCES`. Verified: selfcheck 10/10 + engine selects `hrx_gpu` functional on gfx1151. **Decode-time failover closed 2026-08-29**: HRX decode fail-closed (GET_ROWS) now re-routes to another backend (`BackendManager::generate_text` failover + `DynamicRouter::generate` retry/pick_backend_excluding) instead of 500. See `docs/research/hrx-backend.md` (2026-08-29)
 - [ ] P2: Evaluate Loom (`loomc` C API) as an authoring surface for 1bit kernels
 
 ### WS-00 — Baseline & measurement

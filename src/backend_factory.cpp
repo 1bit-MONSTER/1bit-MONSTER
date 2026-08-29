@@ -178,6 +178,20 @@ static Backend* try_create_lse() {
     return nullptr;
 }
 
+// HRX GPU backend — subprocess HRX llama-server (fused GGUF lane). Availability
+// decided at init() by whether the HRX llama-server can spawn (HRX_ROOT /
+// HRX_MODEL_BIN / PATH). No compile-time dependency on ROCm/HRX.
+static Backend* try_create_hrx() {
+    if (has_static_symbol("create_hrx_backend")) {
+        void* h = dlopen(nullptr, RTLD_LAZY);
+        if (h) {
+            auto* fn = (Backend*(*)())dlsym(h, "create_hrx_backend");
+            if (fn) return fn();
+        }
+    }
+    return nullptr;
+}
+
 // ── Mamba1 detection ──
 bool is_mamba1_architecture(const ModelConfig& cfg) {
     return cfg.arch == RCPP_ARCH_MAMBA || cfg.arch == RCPP_ARCH_ZAMBA;
@@ -424,6 +438,12 @@ Backend* create_backend(BackendType type) {
             auto* b = try_create_lse();
             if (b) { printf("  Created LSE backend (MLX via lse-server)\n"); return b; }
             printf("  LSE backend unavailable (no create_lse_backend symbol)\n");
+            return nullptr;
+        }
+        case BackendType::HRX_GPU: {
+            auto* b = try_create_hrx();
+            if (b) { printf("  Created HRX backend (fused GGUF via hrx llama-server)\n"); return b; }
+            printf("  HRX backend unavailable (no create_hrx_backend symbol)\n");
             return nullptr;
         }
         case BackendType::CPU_AVX512:

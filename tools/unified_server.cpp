@@ -712,7 +712,9 @@ static json generate_completion(BackendManager& mgr,
                 if (text.empty()) cont = false;  // continuation failed → full reset retry
             }
             if (!cont) {
-                text = active->generate_text(raw_prompt, max_tokens);
+                // Manager-level text generation: cascades to the next backend in
+                // the route on failure (e.g. HRX GET_ROWS fail-closed → ggml_vulkan).
+                text = mgr.generate_text(raw_prompt, max_tokens);
                 if (!text.empty()) {  // only record the baseline on success
                     std::lock_guard<std::mutex> lock(g_flm_session_mutex);
                     g_flm_session_id = session_id;
@@ -940,10 +942,15 @@ static json generate_completion(BackendManager& mgr,
         }
 
         if (next < 0) {
-            // Backend failed — try fallback with generate()
+            // Backend failed — try fallback with generate(). Skip the backend
+            // that just failed so a functional-but-incompatible backend (e.g.
+            // a text-level HRX that can't run the token loop, or a graph that
+            // fails at decode) doesn't get retried forever; land on the next
+            // real backend (ggml_vulkan/zinc/cpu) in the route.
+            std::string failed_id = active_backend_id;
             if (mgr.backends().size() > 1) {
                 for (auto& b : mgr.backends()) {
-                    if (b.available && b.functional && b.instance) {
+                    if (b.available && b.functional && b.instance && b.id != failed_id) {
                         mgr.select_backend(b.id);
                         active_backend_id = b.id;
                         next = mgr.generate(last_token);

@@ -1,8 +1,8 @@
 # ws12-hrx-loom — HRX / Loom platform transition watch
 
-**Status:** 🔎 researched (2026-08-28) — AMD's HRX/Loom stack is landing in
-lemonade-sdk/lemonade main (`7953d7f`, PR #3374, merged 2026-08-28) and will
-arrive in our vendored core on the next re-vendor. Findings below.
+**Status:** ✅ vendored + validated (2026-08-29) — lemonade re-vendored to
+`7953d7f6` (HRX commit) and the `llamacpp-hrx` backend now registers and runs
+a real model in `onebin` on gfx1151. See "Validation" below.
 **Papers:** none (platform-intelligence workstream — sources are the
 lemonade/llama.cpp/ROCm repos and https://rocm.github.io/hrx-system/loom/).
 **Owner:** bong-water-water-bong
@@ -71,11 +71,15 @@ and what breaks if the upstream RFC stalls.
 ## Validation
 
 - Re-vendor builds clean on gfx1151, `onebin` links, `hrx` backend listed in
-  `--help`/registry — harness: `cmake --build build --target onebin`.
+  `--help`/registry — harness: `cmake --build build --target onebin`. ✅
+  2026-08-29: `onebin` built with the vendored HRX backend
+  (`lemonade-server-core` compiles `backends/hrx/`).
 - `Qwen3-30B-A3B-Instruct-2507-HRX` chat completion returns tokens (validated)
   or fails closed with `unsupported HRX node N: <op>` (correct per contract).
+  ✅ 2026-08-29: served via `1bit unified --lemonade` — "Paris" at 130.8 tok/s
+  prompt / 35.2 tok/s gen on `HRX0` (gfx1151).
 - Checksum of downloaded `hrx-b59` asset == `sha256:d2fe01...` from
-  `backend_versions.json` (validated on 2026-08-28).
+  `backend_versions.json` (validated on 2026-08-28). ✅
 
 ## Notes
 

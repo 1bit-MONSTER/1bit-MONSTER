@@ -1167,6 +1167,7 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_npu_flm.cpp
     src/backend_generic.cpp
     src/backend_lse.cpp
+    src/backend_hrx.cpp
 )
 
 # ggml_vulkan backend needs llama.cpp's static libs (GGML_BUILD_DIR); only

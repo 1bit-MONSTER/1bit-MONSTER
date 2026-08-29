@@ -130,8 +130,18 @@ private:
     static constexpr int WINDOW_SIZE = 10;
 
     BackendEntry* pick_backend();
+    // Choose a backend per strategy, skipping `exclude_id` (empty = none).
+    // Used by the failover path to avoid retrying a backend that just failed.
+    BackendEntry* pick_backend_excluding(const std::string& exclude_id);
+    // generate() with a bounded decode-time failover (depth 0 tries once,
+    // depth 1 retries on a different backend after the first failed).
+    int generate_with_failover(int token_id, int depth);
     void record_latency(BackendEntry* entry, double ms, bool success);
     double window_avg(const BackendEntry* entry) const;
+
+    // Id of the backend that failed on the last decode, so the failover pass
+    // can exclude it. Guarded by mtx_. Cleared after a successful retry.
+    std::string last_failed_id_;
 };
 
 // Strategy name helpers

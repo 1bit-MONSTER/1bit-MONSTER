@@ -167,14 +167,20 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
             return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
         // GGUF/H1B qwen3: npu_flm only speaks Q4NX and its token-level
         // forward()/generate() are text-level-only stubs (backend_npu_flm.cpp
-        // returns false) — route to the llama.cpp Vulkan path like every
-        // other GGUF, not the NPU. (FLM init "succeeds" on any model tag but
-        // then loads FLM's own q4nx model, never the requested file.)
-        return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"},
-                "qwen3 GGUF — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};
+        // returns false) — route to the HRX GPU first, then the llama.cpp
+        // Vulkan path like every other GGUF, not the NPU. (FLM init "succeeds"
+        // on any model tag but then loads FLM's own q4nx model, never the
+        // requested file.)
+        return {{"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"},
+                "qwen3 GGUF — HRX GPU (fused) → GGML-Vulkan → ZINC GPU → CPU"};
     }
     if (cfg.format == ModelFormat::GGUF || cfg.format == ModelFormat::H1B) {
-        return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"}, "GGUF/H1B model — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};
+        // HRX-first: HRX is tried before ggml_vulkan/zinc/cpu. HRX init()
+        // succeeds only when the HRX llama-server can spawn AND the graph is
+        // inside the fused node set; otherwise it fails fast and the caller
+        // cascades down the list (GET_ROWS fail-closed → ggml_vulkan, etc.).
+        return {{"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"},
+                "GGUF/H1B model — HRX GPU (fused) → GGML-Vulkan → ZINC GPU → CPU"};
     }
     if (cfg.format == ModelFormat::ONEBP) {
         // fused_gpu_npu first (fixed 2026-08-29), then hip_1bp (bit-correct

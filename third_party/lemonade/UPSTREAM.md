@@ -1,7 +1,11 @@
 # Vendored: lemonade-sdk/lemonade (embedded server core)
 
 Vendored from https://github.com/lemonade-sdk/lemonade at commit
-`e1b3168370e8b2472acdbe08298267a4b556cf9e` (tag `v11.8.0`).
+`7953d7f6feat(backends): hrx backend [experimental] (#3374)` (`7953d7f6`).
+This brings the `llamacpp-hrx` backend (see `src/cpp/server/backends/hrx/`).
+
+Re-vendored 2026-08-29 from the previous pin `e1b31683` (tag `v11.8.0`) to pick
+up the HRX backend merged upstream 2026-08-28.
 
 Vendored (instead of a submodule) because the embedded server core needs a
 patch that only exists locally, and CI can't fetch unpublished submodule
@@ -10,7 +14,7 @@ SHAs. Re-vendor on upstream sync:
 ```sh
 git clone https://github.com/lemonade-sdk/lemonade /tmp/lemonade
 cd /tmp/lemonade
-git checkout e1b3168370e8b2472acdbe08298267a4b556cf9e  # v11.8.0
+git checkout 7953d7f6  # feat(backends): hrx backend [experimental] (#3374)
 # re-apply the embeddability patch below
 rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
 ```

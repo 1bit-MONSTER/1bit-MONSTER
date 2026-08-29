@@ -6,6 +6,7 @@
 #include "backend_detect.h"
 #include "backend.h"
 #include "backend_lse.h"   // create_lse_backend (LSE_GPU factory)
+#include "backend_hrx.h"   // create_hrx_backend (HRX_GPU factory)
 #include "model_router.h"
 #include "dynamic_router.h"
 #include <cstdio>
@@ -449,6 +450,29 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         printf("  %-25s %s\n", "LSE GPU (MLX)", "✅ registered (lse-server at runtime)");
+        backends_.push_back(info);
+    }
+
+    // HRX GPU — fused GGUF lane on AMD GPU via the bundled HRX llama-server.
+    // Mirrors LSE: availability is decided at init() by whether the HRX
+    // llama-server can be spawned (HRX_ROOT / HRX_MODEL_BIN / PATH). The router
+    // puts hrx_gpu FIRST in the GGUF route; init() fails fast when the binary
+    // is absent or the graph isn't fused (GET_ROWS fail-closed), and the
+    // discovery/init loop cascades to ggml_vulkan → zinc_gpu → cpu_generic.
+    {
+        BackendInfo info;
+        info.id = "hrx_gpu";
+        info.type = BackendType::HRX_GPU;
+        info.tier = BackendTier::T2_GPU;  // AMD GPU via fused HRX llama-server
+        info.description = "HRX GPU (fused GGUF via hrx llama-server subprocess)";
+        info.priority = tier_priority(info.tier) + 62;  // above ggml_vulkan/zinc/HIP
+        info.available = true;
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "HRX GPU (fused GGUF)", "✅ registered (hrx llama-server at runtime)");
         backends_.push_back(info);
     }
 
@@ -917,6 +941,75 @@ int BackendManager::generate(int token_id) {
 
     fprintf(stderr, "BackendManager: ALL BACKENDS FAILED\n");
     return -1;
+}
+
+std::string BackendManager::generate_text(const std::string& prompt, int max_tokens) {
+    // Text-level whole-prompt generation with the same automatic failover as
+    // generate(int). Some backends (HRX, LSE, FLM) are text-level only and
+    // cannot be driven by the token loop; a compute error at generation (e.g.
+    // HRX's GET_ROWS fail-closed) surfaces as an empty return or a throw here.
+    // Cascade to the next backend in the route so the request still completes.
+    if (!initialized_ || backends_.empty()) return "";
+
+    // Router-active backends own text generation themselves (token routing is
+    // a separate path); delegate so we never double-failover.
+    auto rt_stats = router_.stats();
+    if (!rt_stats.empty()) {
+        if (auto* b = active_backend(); b) return b->generate_text(prompt, max_tokens);
+    }
+
+    // Phase 1: snapshot under lock (shared_ptr keeps the Backend alive).
+    std::shared_ptr<Backend> snap;
+    std::shared_ptr<std::mutex> compute_mtx;
+    size_t snap_idx = 0;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (active_idx_ >= backends_.size()) return "";
+        snap_idx = active_idx_;
+        auto& info = backends_[active_idx_];
+        if (info.functional && info.instance) {
+            snap = info.instance;
+            compute_mtx = info.compute_mtx;
+        }
+    }
+
+    auto try_generate = [&](Backend* b) -> std::string {
+        try {
+            return b->generate_text(prompt, max_tokens);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "BackendManager: %s threw in generate_text() (%s) — failing over\n",
+                    backends_[snap_idx].id.c_str(), e.what());
+            return "";
+        } catch (...) { return ""; }
+    };
+
+    if (snap) {
+        {
+            std::lock_guard<std::mutex> compute_lock(*compute_mtx);
+            std::string text = try_generate(snap.get());
+            if (!text.empty()) return text;
+            // Failed — mark non-functional and fall through to failover.
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (snap_idx < backends_.size()) {
+                backends_[snap_idx].functional = false;
+                monitor_.record_failure(backends_[snap_idx].id, "generate_text() returned empty");
+            }
+        }
+    }
+
+    // Phase 2: failover cascade over the route / priority order.
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (!failover()) { fprintf(stderr, "BackendManager: text-level failover found no backend\n"); return ""; }
+        std::string text = try_generate(backends_[active_idx_].instance.get());
+        if (!text.empty()) {
+            if (backends_[active_idx_].id != backends_[snap_idx].id)
+                monitor_.record_fallback(backends_[snap_idx].id, backends_[active_idx_].id);
+            return text;
+        }
+        fprintf(stderr, "BackendManager: ALL BACKENDS FAILED (text-level)\n");
+    }
+    return "";
 }
 
 bool BackendManager::forward(int token_id, float* hidden_out) {
@@ -1652,6 +1745,18 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
             if (!b) b = try_load_backend("liblse_backend.so", "create_lse_backend");
             if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
                 if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_lse_backend");
+                    if (fn) b = fn(); } }
+            return b;
+        case BackendType::HRX_GPU:
+            // HRX backend lives in backend_hrx.cpp (UNIFIED_SERVER_SOURCES,
+            // always compiled into onebin; create_hrx_backend declared in
+            // backend_hrx.h). extern "C" so plugin builds can dlsym it too.
+            b = create_hrx_backend();
+            if (b) return b;
+            b = try_load_backend("librocm_cpp.so", "create_hrx_backend");
+            if (!b) b = try_load_backend("libhrx_backend.so", "create_hrx_backend");
+            if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_hrx_backend");
                     if (fn) b = fn(); } }
             return b;
         case BackendType::GENERIC:
