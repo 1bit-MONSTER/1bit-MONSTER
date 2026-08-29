@@ -258,6 +258,55 @@ __global__ void fused_residual_kernel(float* __restrict__ dst, const float* __re
     if (i < N) dst[i] = y[i] + res[i];
 }
 
+// ── Batched save-residual + RMSNorm: grid (B,), one block per row ──
+// Same math as fused_copy_norm_kernel per row (bit-identical reductions).
+__global__ void fused_copy_norm_batch_kernel(float* __restrict__ dffn, float* __restrict__ x,
+                                             const float* __restrict__ w, int N, float eps) {
+    int row = blockIdx.x;
+    float* xr = x + (size_t)row * N;
+    float* dr = dffn + (size_t)row * N;
+    int tid = threadIdx.x;
+    float local = 0.0f;
+    for (int i = tid; i < N; i += blockDim.x) local += xr[i] * xr[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = local;
+    for (int s = BLOCK/2; s > 0; s >>= 1) { __syncthreads(); if (tid < s) sdata[tid] += sdata[tid + s]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / N + eps);
+    for (int i = tid; i < N; i += blockDim.x) { dr[i] = xr[i]; xr[i] = xr[i] * inv * (w ? w[i] : 1.0f); }
+}
+
+// ── Batched per-head QK-norm + RoPE: grid (B*NH,), single pos ──
+// Same math as fused_head_rmsnorm_kernel then fused_rope_kernel per row/head.
+// pos is the COMMON sequence position (the batch advances all sequences
+// together; per-sequence divergence would need a device pos array).
+__global__ void fused_head_norm_rope_batch_kernel(float* __restrict__ x, const float* __restrict__ w,
+                                                  int head_dim, float eps, int pos,
+                                                  float theta_base, int nh) {
+    int sh = blockIdx.x;
+    int h = sh % nh, s = sh / nh;
+    float* hx = x + (size_t)s * nh * head_dim + (size_t)h * head_dim;
+    int tid = threadIdx.x;
+    float local = 0.0f;
+    for (int i = tid; i < head_dim; i += blockDim.x) local += hx[i] * hx[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = 0.0f;
+    __syncthreads();
+    sdata[tid] = local;
+    for (int s2 = BLOCK/2; s2 > 0; s2 >>= 1) { __syncthreads(); if (tid < s2) sdata[tid] += sdata[tid + s2]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / head_dim + eps);
+    for (int i = tid; i < head_dim; i += blockDim.x) hx[i] = hx[i] * inv * w[i];
+    __syncthreads();
+    if (tid < head_dim/2) {
+        int d = tid;
+        float f = 1.0f / powf(theta_base, (float)d / (float)(head_dim/2));
+        float c = cosf(pos * f), sn = sinf(pos * f);
+        float a = hx[d], b = hx[d + head_dim/2];
+        hx[d] = a*c - b*sn; hx[d + head_dim/2] = a*sn + b*c;
+    }
+}
+
 // ── RMSNorm (in-place) ──
 __global__ void fused_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
                                       int N, float eps) {
@@ -464,6 +513,7 @@ struct FusedBackend : Backend {
     int batch_ = 0;                       // 0 = batch mode off
     float* dh_batch = nullptr;            // [B, H] hidden states
     __half *devKb = nullptr, *devVb = nullptr;  // [B, NC*max_seq*NKV*HD] KV
+    __half *dQ_batch = nullptr, *dAttn_batch = nullptr;   // [B, s1] halves
     float *datt_batch = nullptr, *dgate_batch = nullptr;   // [B, s1] / [B, s2]
     float *dup_batch = nullptr, *doproj_batch = nullptr;   // [B, s2] / [B, H]
     float *dffn_batch = nullptr;          // [B, H] residual saves
@@ -548,7 +598,9 @@ struct FusedBackend : Backend {
                 hipMalloc(&dup_batch, (size_t)batch_ * s2b * 4) != hipSuccess ||
                 hipMalloc(&doproj_batch, (size_t)batch_ * H * 4) != hipSuccess ||
                 hipMalloc(&dffn_batch, (size_t)batch_ * H * 4) != hipSuccess ||
-                hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess) return false;
+                hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess ||
+                hipMalloc(&dQ_batch, (size_t)batch_ * s1 * 2) != hipSuccess ||
+                hipMalloc(&dAttn_batch, (size_t)batch_ * s1 * 2) != hipSuccess) return false;
             host_batch.resize((size_t)batch_ * H);
             batch_pos.assign(batch_, 0);
             printf("[fused] batch decode: %d sequences (NPU FFN batched, B DMA amortized)\n", batch_);
@@ -1161,69 +1213,52 @@ struct FusedBackend : Backend {
         auto attn_batched = [&](int l) {
             auto& gl = L[l];
             int s1 = NH_ * HD_, s2 = NKV_ * HD_;
-            // 1. residual save + RMSNorm per sequence
-            for (int s = 0; s < B_; s++) {
-                float* hs = dh_batch + (size_t)s * H_;
-                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn_batch + (size_t)s*H_, hs, H_);
-                if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pn, H_, EPS);
-                else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
-            }
+            // 1. residual save + RMSNorm (one batched launch, grid B)
+            fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pn, H_, EPS);
             // 2. batched QKV GEMVs (W read once)
             if (gl.wq) fused_gemv_batch_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
             if (gl.wk) fused_gemv_batch_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
             if (gl.wv) fused_gemv_batch_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
-            // 3. per-sequence: QK-norm, RoPE, KV store, decode, h2f
-            for (int s = 0; s < B_; s++) {
-                float* q = datt_batch + (size_t)s * s1;
-                float* kk = dgate_batch + (size_t)s * s2;
-                float* vv = dup_batch + (size_t)s * s2;
-                __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-                __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-                int pos_s = batch_pos[s];
-                if (gl.q_norm) fused_head_rmsnorm_kernel<<<NH_, BLOCK, 0, stream>>>(q, gl.q_norm, HD_, EPS);
-                if (gl.k_norm) fused_head_rmsnorm_kernel<<<NKV_, BLOCK, 0, stream>>>(kk, gl.k_norm, HD_, EPS);
-                if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(q, HD_, pos_s, rope_theta, NH_);
-                if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(kk, HD_, pos_s, rope_theta, NKV_);
-                if (gl.wo) {
-                    fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, q, s1);
+            // 3. batched QK-norm + RoPE (one launch per projection; the batch
+            //    advances all sequences together, so pos is common)
+            if (gl.q_norm) fused_head_norm_rope_batch_kernel<<<B_*NH_, BLOCK, 0, stream>>>(
+                datt_batch, gl.q_norm, HD_, EPS, batch_pos[0], rope_theta, NH_);
+            if (gl.k_norm) fused_head_norm_rope_batch_kernel<<<B_*NKV_, BLOCK, 0, stream>>>(
+                dgate_batch, gl.k_norm, HD_, EPS, batch_pos[0], rope_theta, NKV_);
+            // 4. batched Q f2h; per-sequence KV store + decode (KV slices)
+            if (gl.wo) {
+                fused_f2h_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ_batch, datt_batch, B_*s1);
+                float scl = 1.0f / sqrtf((float)HD_);
+                for (int s = 0; s < B_; s++) {
+                    float* kk = dgate_batch + (size_t)s * s2;
+                    float* vv = dup_batch + (size_t)s * s2;
+                    __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
+                    __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
+                    int pos_s = batch_pos[s];
                     fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(lk, lv, kk, vv, pos_s, NKV_, HD_, max_seq);
-                    float scl = 1.0f / sqrtf((float)HD_);
-                    rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos_s+1, scl, (void*)stream);
-                    fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(q, dAttn, s1);
+                    rcpp_kv_cache_attn_decode(dQ_batch + (size_t)s*s1, lk, lv, dAttn_batch + (size_t)s*s1,
+                                              NH_, NKV_, HD_, pos_s+1, scl, (void*)stream);
                 }
+                fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)
             if (gl.wo) fused_gemv_batch_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
-            // 5. residual add + write back per sequence
+            // 5. residual (flat): dh = attn_out + saved
             if (gl.wo)
-                for (int s = 0; s < B_; s++) {
-                    float* hs = dh_batch + (size_t)s * H_;
-                    fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj_batch + (size_t)s*H_, dffn_batch + (size_t)s*H_, H_);
-                    fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj_batch + (size_t)s*H_, H_);
-                }
+                fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
         };
         // Batched GPU FFN for all B rows: the w1/w2/w3 weight matrices are
         // read ONCE per layer (fused_gemv_batch_kernel) instead of once per
         // sequence — the per-sequence loop read 37.7 MB x B per layer.
         auto ffn_gpu_batch = [&](int l) {
             auto& gl = L[l];
-            for (int s = 0; s < B_; s++) {
-                float* hs = dh_batch + (size_t)s * H_;
-                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn_batch + (size_t)s*H_, hs, H_);
-                if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pon, H_, EPS);
-                else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
-            }
+            fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pon, H_, EPS);
             if (gl.w1 && gl.w2 && gl.w3) {
                 fused_gemv_batch_kernel<<<IM_, BLOCK, 0, stream>>>(dgate_batch, gl.w1, dh_batch, IM_, H_, B_);
                 fused_gemv_batch_kernel<<<IM_, BLOCK, 0, stream>>>(dup_batch, gl.w2, dh_batch, IM_, H_, B_);
-                for (int s = 0; s < B_; s++)
-                    fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(
-                        datt_batch + (size_t)s*IM_, dgate_batch + (size_t)s*IM_, dup_batch + (size_t)s*IM_, IM_);
+                fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
                 fused_gemv_batch_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
-                for (int s = 0; s < B_; s++) {
-                    float* hs = dh_batch + (size_t)s * H_;
-                    fused_residual_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj_batch + (size_t)s*H_, dffn_batch + (size_t)s*H_, H_);
-                }
+                fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
             }
         };
 
@@ -1331,6 +1366,8 @@ struct FusedBackend : Backend {
         if (doproj_batch) { HIP_CHECK_D(hipFree(doproj_batch)); doproj_batch = nullptr; }
         if (dffn_batch) { HIP_CHECK_D(hipFree(dffn_batch)); dffn_batch = nullptr; }
         if (dlogits_batch) { HIP_CHECK_D(hipFree(dlogits_batch)); dlogits_batch = nullptr; }
+        if (dQ_batch) { HIP_CHECK_D(hipFree(dQ_batch)); dQ_batch = nullptr; }
+        if (dAttn_batch) { HIP_CHECK_D(hipFree(dAttn_batch)); dAttn_batch = nullptr; }
         if (vk_attn_) va_.destroy();
         vk_embed_.clear(); vk_embed_.shrink_to_fit();
         vk_layers_.clear(); vk_layers_.shrink_to_fit();
