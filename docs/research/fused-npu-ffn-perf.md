@@ -57,3 +57,28 @@ dropping BOTH VK+NPU and HIP+NPU by ~125 ms/token. That changes the absolute
 numbers but not the VK-vs-HIP delta — the goal of "VK faster than HIP" needs
 the attention-side cold-start solved, which the APU's shared-DRAM design
 blocks for this workload.
+
+## 2026-08-29 (round 5) — parallel GEMV shaders + quantize analysis
+
+5. **Parallel GEMV shaders (committed `4d92eef5`)**: the qkv/post GEMVs were
+   one-thread-per-row with serial inner loops (~12x slower than HIP's gemv).
+   Rewrote with shared-memory reductions (2 lanes/row qkv, 8 lanes/row post):
+   post 173→57 us; va_.layer in bench 1.2-1.7 ms → 0.86-0.93 ms (cold-start is
+   multiplicative on shader work, so shrinking the work shrinks the cold
+   penalty). VK+NPU 299 → 283-290 ms; gap to HIP narrowed 25 → ~13 ms.
+
+6. **CPU quantize is a large FFN component**: the GU quantize alone is
+   1.57 ms/layer (6.3M float→int8), plus ~0.8 ms for D — ~2.4 ms of the
+   8.46 ms FFN wall is pure CPU serialization.  But for single-stream the
+   serialization is unavoidable (GU needs attention output, D needs GU's silu),
+   and moving quantize to the GPU would shrink the wall for BOTH paths equally
+   (the AIE kernel time is ~3.76 ms/layer; CPU burn does not contend with the
+   AIE — measured FFN unchanged with a CPU-burning thread).
+
+7. **Final A/B (committed state)**: VK+NPU 287-289 ms vs HIP+NPU 275 ms
+   (delta ~13 ms).  The residual gap is GPU cold-start after each 8.7 ms FFN
+   gap: VK's per-layer submit+waitIdle pays ~0.86 ms/layer vs HIP's async
+   stream at ~25 us/layer.  Both share the ~237 ms FFN wall.  VK's theoretical
+   floor ≈ 282 ms vs HIP ≈ 258 ms — VK cannot beat HIP on this workload/hardware
+   through shader or buffer changes; only a fundamentally different attention
+   dispatch model (async stream, not per-layer waitIdle) could close it.
