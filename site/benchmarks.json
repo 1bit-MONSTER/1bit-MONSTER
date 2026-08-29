@@ -274,7 +274,7 @@
    "notes": "11.4 ms/token (88 tok/s) with float-accumulation GEMVs (was 14.5/69; the double accumulate runs at ~1/8 rate on RDNA). Parity 15 13 15 15 ... ."
   },
   "fused_batch_decode_gpu_ffn": {
-   "tok_s": 231.0,
+   "tok_s": 243.0,
    "status": "validated",
    "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences, GPU FFN (FUSED_BATCH=8, no NPU)",
    "table": "engine",
@@ -301,7 +301,7 @@
    "notes": "Same NPU-FFN pipeline as the VK path but HIP attention: 156.3 ms/token (6.4 tok/s) with the M=8 vectorized FFN xclbins (was ~275 ms). VK path is now marginally ahead (153.1 ms)."
   },
   "fused_batch_decode_8": {
-   "tok_s": 36.0,
+   "tok_s": 243.0,
    "status": "validated",
    "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences (FUSED_BATCH=8 USE_NPU_FFN=1, batched NPU FFN + batched GEMVs)",
    "table": "engine",

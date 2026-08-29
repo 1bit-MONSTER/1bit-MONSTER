@@ -276,3 +276,48 @@ blocks for this workload.
    floor ≈ 282 ms vs HIP ≈ 258 ms — VK cannot beat HIP on this workload/hardware
    through shader or buffer changes; only a fundamentally different attention
    dispatch model (async stream, not per-layer waitIdle) could close it.
+
+## 2026-08-29 (round 15) — VK fusion + batch root-cause (both candidates at parity limit)
+
+**VK single-token (record_forward 9 -> 7 stages/layer, commit 32f8bd8c):**
+Per-stage GPU timestamps (new `VkAttention::profile_forward`) show the old
+"~43 us/dispatch floor" was a TIMESTAMP ARTIFACT — with barriers restored the
+true per-stage costs are: attn_rms 2.9 us, attn_qkv ~96 (16 MB @ ~184 GB/s),
+attn_qkns+decode 17 (fused), attn_post ~92 (8 MB @ ~87 GB/s — parity-locked
+8-lane strided pattern), ffn_rms 2.9, ffn_gu ~141 (24 MB), ffn_silu+down+add
+74 (fused).  The gemvs are DRAM-bandwidth-bound at ~170-184 GB/s — the old
+"69 GB/s" was the pre-coalescing qkv (fixed in 9f8d18d7).  Fusing the two
+pairs that win (qkns+decode, silu+down+add) saves ~0.2-0.3 ms; the
+redundant-RMS fusions (rms+qkv, rms+gu) measured neutral-to-slower and were
+dropped.  FAILED experiments (measured, reverted):
+  * no inter-stage barriers: races through L1 — 2.9e-1 pages diff (AMD
+    global writes are NOT coherent across dispatches; the HIP path needs no
+    barriers only because it never re-reads same-stream scratch).
+  * scoped VkBufferMemoryBarrier: same cost as the full barrier on
+    device-local, 5 ms WORSE on the dma-buf pages (RADV).
+  * coalesced float4 attn_post (HIP wo order): token stream flips
+    `15 13 15 15` -> `16 17 17` — the post's accumulation order is locked by
+    the int8 FFN boundaries.
+VK remains 14.6-14.7 ms/token (HIP 11.5); the residual gap is the required
+barriers (~2.1 ms) + the parity-locked post pattern (~1.3 ms).
+
+**Batch decode (commit ad53584e):** the ~20 ms/batch "launch overhead" is
+root-caused to the ws gemv kernels' per-(row,batch) sequential-tree
+structure — NOT launch overhead.  Each (row,b) does a 256-thread tree with 10
+syncs; B=8 rows x M blocks re-reads the full x from L2 (lm_head: 152K blocks
+x 32 KB = 4.9 GB of L2 traffic).  The structure is parity-locked: the sr
+single-reduction variant and three new kernels (x-staged-in-shared 48 KB LDS
+-> 1 block/CU; x-in-registers 4x fewer blocks; coalesced float4) all measured
+SLOWER or flipped tokens.  Safe wins, bit-identical end-to-end:
+  * argmax_rows_kernel: lm_head's host scan of 8x152K logits -> GPU
+    (first-max semantics), 4.9 MB D2H kept for API compat.
+  * the ws kernels' sync before the sdata write and after the y write are
+    provably redundant (per-thread sdata slots; the tree's own syncs order the
+    reduction) — 10 -> 8 syncs per (row,batch).
+forward_batch 25.7 -> 24.7 ms, lm_head 9.1 -> 8.1 ms; 230 -> 243-244 tok/s
+aggregate.  Parity held on all six paths: HIP 11.5 ms, VK 14.6, batch 243
+tok/s, VK+NPU 150 ms, batch NPU 44 tok/s, HIP+NPU unchanged.
+
+Both user candidates are now at their parity-safe limits: the VK residual is
+barrier cost + a parity-locked post; the batch residual is the parity-locked
+ws reduction structure + the lm_head W stream.
