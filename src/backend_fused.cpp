@@ -115,6 +115,36 @@ __global__ void fused_gemv_batch_kernel(float* __restrict__ y, const float* __re
     }
 }
 
+// ── Batched GEMV with the W row in SHARED (read once per block) ──
+// The plain batched kernel re-read the W row (and the full x) once per
+// batch; the W row in shared is loaded once and reused across all B batches
+// (measured 1.01-1.74x; the x re-reads stay L2-served).  Per-(row,batch)
+// accumulation order is IDENTICAL to the plain kernel (k = tid, tid+BLOCK
+// ...) — bit-identical results.
+__global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                           const float* __restrict__ x, int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    __shared__ float ws[3072];          // max N (w3: 3072)
+    __shared__ float sdata[BLOCK];
+    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = W[(size_t)row * N + i];
+    __syncthreads();
+    for (int b = 0; b < B; b++) {
+        const float* xrow = x + (size_t)b * N;
+        float sum = 0.0f;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
+        __syncthreads();
+        sdata[threadIdx.x] = sum;
+        __syncthreads();
+        for (int s = BLOCK/2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) y[(size_t)b * M + row] = sdata[0];
+        __syncthreads();
+    }
+}
+
 // ── Vectorized GEMV: float4 loads (N%4==0) — 1.27x on large-M shapes ──
 // Same double-accumulation; accumulation order differs from
 // fused_gemv_plain_kernel (4 consecutive k per step vs stride-BLOCK), so
@@ -1243,7 +1273,7 @@ struct FusedBackend : Backend {
         HIP_CHECK(hipMemcpy(dh_batch, hidden, (size_t)am * H * sizeof(float), hipMemcpyHostToDevice));
         const float* W = d_output ? d_output : d_embed;
         if (!W) return false;
-        fused_gemv_batch_kernel<<<VOCAB, BLOCK, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
+        fused_gemv_batch_ws_kernel<<<VOCAB, BLOCK, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
         HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
         if (argmaxs)
             for (int s = 0; s < am; s++) {
@@ -1289,9 +1319,9 @@ struct FusedBackend : Backend {
             // 1. residual save + RMSNorm (one batched launch, grid B)
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pn, H_, EPS);
             // 2. batched QKV GEMVs (W read once)
-            if (gl.wq) fused_gemv_batch_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
-            if (gl.wk) fused_gemv_batch_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
-            if (gl.wv) fused_gemv_batch_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+            if (gl.wq) fused_gemv_batch_ws_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
+            if (gl.wk) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
+            if (gl.wv) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
             // 3. batched QK-norm + RoPE (one launch per projection; the batch
             //    advances all sequences together, so pos is common)
             if (gl.q_norm) fused_head_norm_rope_batch_kernel<<<B_*NH_, BLOCK, 0, stream>>>(
@@ -1313,7 +1343,7 @@ struct FusedBackend : Backend {
                 fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)
-            if (gl.wo) fused_gemv_batch_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
+            if (gl.wo) fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
             // 5. residual (flat): dh = attn_out + saved
             if (gl.wo)
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
@@ -1325,10 +1355,10 @@ struct FusedBackend : Backend {
             auto& gl = L[l];
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pon, H_, EPS);
             if (gl.w1 && gl.w2 && gl.w3) {
-                fused_gemv_batch_kernel<<<IM_, BLOCK, 0, stream>>>(dgate_batch, gl.w1, dh_batch, IM_, H_, B_);
-                fused_gemv_batch_kernel<<<IM_, BLOCK, 0, stream>>>(dup_batch, gl.w2, dh_batch, IM_, H_, B_);
+                fused_gemv_batch_ws_kernel<<<IM_, BLOCK, 0, stream>>>(dgate_batch, gl.w1, dh_batch, IM_, H_, B_);
+                fused_gemv_batch_ws_kernel<<<IM_, BLOCK, 0, stream>>>(dup_batch, gl.w2, dh_batch, IM_, H_, B_);
                 fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
-                fused_gemv_batch_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
+                fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
             }
         };
