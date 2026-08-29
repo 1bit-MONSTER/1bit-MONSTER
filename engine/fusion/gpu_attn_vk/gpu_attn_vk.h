@@ -57,6 +57,12 @@ public:
     // Hidden state lives in pages() (the imported SharedBO).
     bool embed(int token_id);
     bool layer(int l, int pos);       // in-place attention layer
+    // Async VK dispatch: the WHOLE per-token forward (embed + every layer's
+    // attention + the on-pages FFN) recorded into ONE command buffer — one
+    // submit + one waitIdle per token instead of 56 per-layer host waits.
+    // The GPU stays continuously busy (no per-layer stall, no cold-start).
+    // Stages are identical to embed()/layer()/ffn() (bit-identical math).
+    bool record_forward(int token_id, int pos);
     // On-pages FFN: rms -> gate/up gemv -> silu -> down gemv -> residual add,
     // all in place on the pages (no pages->dh round trip).  Requires the
     // FFN weights (VkLayerW::w1/w2/w3/pon) uploaded via upload_layer.

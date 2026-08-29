@@ -929,6 +929,25 @@ struct FusedBackend : Backend {
             bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
             auto t_ent = std::chrono::steady_clock::now();
 
+            // Async VK dispatch: the WHOLE per-token forward (embed + every
+            // layer's attention + the on-pages FFN) in ONE command buffer —
+            // one submit + one waitIdle per token instead of 56 per-layer
+            // host waits.  The GPU stays continuously busy end-to-end.  On
+            // failure (e.g. the on-pages FFN not uploaded) fall through to
+            // the per-layer path below.
+            if (!use_npu && vk_ffn_ready_) {
+                if (va_.record_forward(token_id, pos)) {
+                    HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                        H_ * sizeof(float), hipMemcpyHostToDevice));
+                    fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
+                    HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));  // blocking
+                    pos++;
+                    return true;
+                }
+                fprintf(stderr, "[fused] record_forward failed — per-layer fallback\n");
+                vk_ffn_ready_ = false;
+            }
+
             // 0) embed → pages (Vulkan writes the NPU pages directly)
             if (token_id >= 0 && token_id < VOCAB)
                 va_.embed(token_id);

@@ -230,6 +230,37 @@ bool VkAttention::ffn(int l) {
     return true;
 }
 
+bool VkAttention::record_forward(int token_id, int pos) {
+    if (!ok_ || ds_embed_ == VK_NULL_HANDLE || ds_ffn_rms_ == VK_NULL_HANDLE)
+        return false;
+    // Per-layer push constants (the stages hold POINTERS — each layer needs
+    // its own pc value; pc.layer selects the packed per-layer weights).
+    std::vector<VkAttnPC> pcs((size_t)NC_ + 1);
+    for (int l = 0; l <= NC_; l++) {
+        pcs[(size_t)l] = VkAttnPC{ H_, NH_, NKV_, HD_, IM_,
+                                   (l == 0) ? token_id : pos,
+                                   (l == 0) ? 0 : l - 1,
+                                   max_seq_, 1e-6f, rope_theta_, 1.0f };
+    }
+    std::vector<vkrt::DispatchStage> stages;
+    stages.reserve((size_t)1 + (size_t)NC_ * 9);
+    stages.push_back({&p_embed_, ds_embed_, (uint32_t)((H_ + 255) / 256), 1, 1, &pcs[0]});
+    for (int l = 0; l < NC_; l++) {
+        const VkAttnPC* pc = &pcs[(size_t)l + 1];
+        stages.push_back({&p_rms_,     ds_rms_,     1, 1, 1, pc});
+        stages.push_back({&p_qkv_,     ds_qkv_,     (uint32_t)(NH_ + NKV_), 1, 1, pc});
+        stages.push_back({&p_decode_,  ds_decode_,  (uint32_t)NH_, 1, 1, pc});
+        stages.push_back({&p_post_,    ds_post_,    (uint32_t)((H_ + 31) / 32), 1, 1, pc});
+        stages.push_back({&p_ffn_rms_, ds_ffn_rms_, 1, 1, 1, pc});
+        stages.push_back({&p_ffn_gu_,  ds_ffn_gu_,  (uint32_t)(2 * IM_), 1, 1, pc});
+        stages.push_back({&p_ffn_silu_, ds_ffn_silu_, (uint32_t)((IM_ + 255) / 256), 1, 1, pc});
+        stages.push_back({&p_ffn_down_, ds_ffn_down_, (uint32_t)H_, 1, 1, pc});
+        stages.push_back({&p_ffn_add_,  ds_ffn_add_,  (uint32_t)((H_ + 255) / 256), 1, 1, pc});
+    }
+    vkrt::dispatchBatchOnce(vk_, stages.data(), (uint32_t)stages.size());
+    return true;
+}
+
 void VkAttention::zero_cache() {
     if (!ok_ || ds_zero_ == VK_NULL_HANDLE) return;
     size_t n = (size_t)NC_ * max_seq_ * NKV_ * HD_;
