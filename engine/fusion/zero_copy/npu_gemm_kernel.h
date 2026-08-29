@@ -83,6 +83,9 @@ public:
             bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
             bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(4));
             bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, k->group_id(5));
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[npu_gemm] %s init failed: %s\n", xp, e.what());
+            return false;
         } catch (...) { return false; }
         memset(bA->map(), 0, (size_t)MD * KD);
         memset(bC->map(), 0, (size_t)MD * ND * 4);

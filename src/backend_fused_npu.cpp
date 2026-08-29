@@ -21,6 +21,7 @@ struct NpuState {
     std::vector<float> gu_scale, d_scale;  // per-layer scales
     std::vector<std::vector<float>> ffn_norm;  // per-layer FFN RMSNorm weights (H)
     int H = 0, IM = 0, NC = 0;
+    int xm = 0;   // AIE tile row count (1 = m1 single-row family, 128 = default)
     bool ok = false;
 };
 
@@ -33,31 +34,44 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
     s->H = H; s->IM = IM; s->NC = NC;
     try { s->dev = xrt::device(0); } catch (...) { delete s; return nullptr; }
 
-    auto find_xclbin = [&](const char* tag) -> std::pair<std::string,std::string> {
+    auto find_xclbin = [&](const char* tag) -> std::tuple<std::string,std::string,int> {
         std::string xd(xclbin_dir ? xclbin_dir : "engine/npu/xclbins");
         std::string b = xd + "/final_i8_" + tag;
         std::string i = xd + "/insts_i8_" + tag;
+        // True M=1 single-row decode xclbins (n1_core_i8_m1.py) — preferred:
+        // the 128-row-baked stream runs a fixed M=128 tile per launch even
+        // for 1-row decode (~3.4-4.9 ms kernel wait); the m1 stream is a
+        // genuine 1-row launch (build_qwen3_0_6b_m1.sh).
+        std::string m1b = b + "_qwen3_0_6b_m1.xclbin", m1i = i + "_qwen3_0_6b_m1.txt";
+        if (access(m1b.c_str(), F_OK) == 0 && access(m1i.c_str(), F_OK) == 0) return {m1b, m1i, 1};
         std::string ms = b + "_qwen3_0_6b.xclbin", mi = i + "_qwen3_0_6b.txt";
-        if (access(ms.c_str(), F_OK) == 0 && access(mi.c_str(), F_OK) == 0) return {ms, mi};
+        if (access(ms.c_str(), F_OK) == 0 && access(mi.c_str(), F_OK) == 0) return {ms, mi, 128};
         std::string ts = b + "_v.xclbin", ti = i + "_v.txt";
-        if (access(ts.c_str(), F_OK) == 0 && access(ti.c_str(), F_OK) == 0) return {ts, ti};
-        return {"", ""};
+        if (access(ts.c_str(), F_OK) == 0 && access(ti.c_str(), F_OK) == 0) return {ts, ti, 128};
+        return {"", "", 0};
     };
 
-    auto [xgu, igu] = find_xclbin("GU");
-    auto [xdd, idd] = find_xclbin("D");
-    if (xgu.empty()) { delete s; return nullptr; }
+    auto [xgu, igu, xm] = find_xclbin("GU");
+    auto [xdd, idd, xmd] = find_xclbin("D");
+    // Both kernels must come from the same family (both m1 or both 128-row);
+    // a mixed/partial install is broken — fail and let the caller run GPU-only.
+    if (xgu.empty() || xdd.empty() || xm != xmd) { delete s; return nullptr; }
+    s->xm = xm;
 
     s->gu = std::make_unique<fusion::NpuGemmKernel>();
     s->d  = std::make_unique<fusion::NpuGemmKernel>();
-    // These precompiled per-model xclbins (final_i8_{GU,D}_qwen3_0_6b) expect a
+    // The precompiled per-model xclbins (final_i8_{GU,D}_qwen3_0_6b) expect a
     // FIXED 128-row AIE tile buffer regardless of the active row count (the
     // passing reference — engine/fusion/zero_copy/test_npu_ffn_real_weights.cpp
     // and test_pipeline_real.cpp — uses XM=128).  A smaller MD reads/writes the
     // wrong tile region of bA/bC and the FFN output comes back garbage — the
-    // #1207 all-zeros symptom (hidden state collapses to zeros).
-    if (!s->gu->init(s->dev, xgu.c_str(), igu.c_str(), 128, H, 2*IM) ||
-        !s->d->init(s->dev, xdd.c_str(), idd.c_str(), 128, IM, H)) {
+    // #1207 all-zeros symptom (hidden state collapses to zeros).  The _m1
+    // family is the exception: it is BUILT for M=1 (MD=1) — a true single-row
+    // stream, bit-identical integer math (n1_core_i8_m1.py header).
+    printf("[npu] FFN xclbins: %s (XM=%d, %s)\n", xgu.c_str(), xm,
+           xm == 1 ? "true single-row decode" : "fixed 128-row tile");
+    if (!s->gu->init(s->dev, xgu.c_str(), igu.c_str(), xm, H, 2*IM) ||
+        !s->d->init(s->dev, xdd.c_str(), idd.c_str(), xm, IM, H)) {
         delete s; return nullptr;
     }
 
@@ -106,6 +120,9 @@ void npu_state_pack_layer(NpuState* s, int layer,
     if (!s->d_b[layer])
         s->d_b[layer] = std::make_unique<xrt::bo>(s->dev, (size_t)IM * H,
                                                   XRT_BO_FLAGS_HOST_ONLY, s->d->k->group_id(4));
+    // Row-major [K,N] for both families (the m1 descriptor gathers 8x8 blocks
+    // from row-major; a microtiled source was measured no faster — the
+    // single-launch DMA path is ~1.4 GB/s regardless of source layout).
     s->gu->packB_into(*s->gu_b[layer], gu.data(), H, 2*IM, s->gu_scale[layer]);
     s->d->packB_into(*s->d_b[layer], dw.data(), IM, H, s->d_scale[layer]);
 }

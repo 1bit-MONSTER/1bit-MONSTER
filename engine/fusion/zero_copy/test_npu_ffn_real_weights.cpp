@@ -112,13 +112,17 @@ int main(int argc, char** argv) {
 
     xrt::device npu(0);
     const char* xd = getenv("NPU_XCLBIN_DIR") ?: "engine/npu/xclbins";
-    auto xp = [&](const char* t) { static char b[256]; snprintf(b, 256, "%s/final_i8_%s_qwen3_0_6b.xclbin", xd, t); return b; };
-    auto ip = [&](const char* t) { static char b[256]; snprintf(b, 256, "%s/insts_i8_%s_qwen3_0_6b.txt", xd, t); return b; };
-
-    // MD=128 matches test_pipeline_real.cpp's XM: these precompiled per-model
-    // xclbins expect a fixed 128-row AIE tile buffer regardless of how many
-    // rows are actually active in a given go() call (am=1 below).
-    const int XM = 128;
+    // xclbin selection: NPU_XCLBIN_SUFFIX picks the file family (default
+    // "_qwen3_0_6b" = the fixed 128-row-tile xclbins; "_qwen3_0_6b_m1" = the
+    // true M=1 single-row decode xclbins) and NPU_XCLBIN_XM overrides the
+    // AIE tile row count passed to init() (128 for the M=128-baked xclbins,
+    // 1 for the m1 builds).
+    const char* suf_env = getenv("NPU_XCLBIN_SUFFIX");
+    std::string suf = suf_env ? suf_env : "_qwen3_0_6b";
+    const int XM = getenv("NPU_XCLBIN_XM") ? atoi(getenv("NPU_XCLBIN_XM")) : 128;
+    auto xp = [&](const char* t) { static char b[256]; snprintf(b, 256, "%s/final_i8_%s%s.xclbin", xd, t, suf.c_str()); return b; };
+    auto ip = [&](const char* t) { static char b[256]; snprintf(b, 256, "%s/insts_i8_%s%s.txt", xd, t, suf.c_str()); return b; };
+    fprintf(stderr, "  xclbins: %s  (XM=%d)\n", suf.c_str(), XM);
     fusion::NpuGemmKernel cg, cd;
     if (!cg.init(npu, xp("GU"), ip("GU"), XM, H, 2 * IM)) { fprintf(stderr, "FAIL NPU GU init\n"); return 1; }
     if (!cd.init(npu, xp("D"), ip("D"), XM, IM, H)) { fprintf(stderr, "FAIL NPU D init\n"); return 1; }

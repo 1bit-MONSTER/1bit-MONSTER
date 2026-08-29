@@ -137,6 +137,15 @@ def my_matmul(K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
                         for c in range(n_aie_cols):
                             n_tile = col_group * n_aie_cols + c
+                            # Row-major [K,N] source (packB_into in
+                            # npu_gemm_kernel.h).  A microtiled [K/8][N/8][8][8]
+                            # source + contiguous 64-byte reads was measured
+                            # NO faster (~4.05 vs ~4.36 ms for 6.3 MB — the
+                            # single-launch DMA path is ~1.4-1.5 GB/s
+                            # regardless of source layout, BD count, or tile
+                            # size), and the packed descriptor was subtly
+                            # wrong (oracle cosine 0.9865 vs 0.9978), so the
+                            # row-major source stays.
                             b_off = ki * k * N + n_tile * n
                             bt = shim_dma_single_bd_task(
                                 B_s[c], B,
