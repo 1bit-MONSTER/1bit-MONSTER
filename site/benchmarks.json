@@ -265,12 +265,22 @@
    "backend": "lse"
   },
   "fused_hip_attn_gpu_ffn": {
-   "tok_s": 44.0,
+   "tok_s": 47.0,
    "status": "validated",
-   "label": "Qwen3-0.6B 1BP \u2014 fused HIP attention + GPU FFN (all-GPU, dh in device mem)",
+   "label": "Qwen3-0.6B 1BP \u2014 fused HIP attention + GPU FFN (all-GPU, dh in device mem) \u2014 THE FASTEST fused config",
    "table": "engine",
    "display_name": "Fused HIP attn + GPU FFN",
-   "backend": "fused"
+   "backend": "fused",
+   "notes": "21.2 ms/token (47 tok/s), re-measured 2026-08-29. The GPU FFN (gemv on the HIP stream, weights at DRAM bandwidth ~270 GB/s) is 5.5-7.4x faster than ANY NPU-FFN config \u2014 the NPU's per-launch DMA (~3 GB/s) + hw_context alternation makes the NPU FFN a structural regression for this workload. Parity 15 13 15 15 ... ."
+  },
+  "fused_batch_decode_gpu_ffn": {
+   "tok_s": 59.0,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences, GPU FFN (FUSED_BATCH=8, no NPU)",
+   "table": "engine",
+   "display_name": "Fused batch decode B=8 (GPU FFN)",
+   "backend": "fused",
+   "notes": "134.7 ms/batch, 59 tok/s aggregate (9x the 6.5 tok/s single-stream), parity 15 13 15 15 ... on all 8 sequences. The batched NPU FFN (36 tok/s) is SLOWER than the batched GPU FFN \u2014 the NPU's DMA bandwidth loses to the GPU's DRAM bandwidth even with the B-DMA amortization."
   },
   "fused_vk_attn_npu_ffn": {
    "tok_s": 6.5,
@@ -300,13 +310,13 @@
    "notes": "forward_batch: per-layer batched attention (fused_gemv_batch_kernel reads each W row once per batch) + ONE batched NPU FFN for all 8 rows (B weight DMA read once, 7.6x, bit-identical per row) + batched lm_head (622 MB vocab weight read once). 222.6 ms/batch, 36 tok/s aggregate (5.5x the 6.5 tok/s single-stream); every sequence's token stream is the parity stream 15 13 15 15 ... . Scaling: B=2 12, B=4 22, B=8 35-36 tok/s aggregate. The batched NPU FFN (~5 ms/layer) now dominates; the D kernel DMA (~1.7 GB/s vs GU 3.1) is the next target."
   },
   "fused_vk_attn_gpu_ffn": {
-   "tok_s": 20.0,
+   "tok_s": 36.0,
    "status": "validated",
-   "label": "Qwen3-0.6B 1BP \u2014 Vulkan attention + GPU-FFN (parallel GEMV shaders)",
+   "label": "Qwen3-0.6B 1BP \u2014 Vulkan in-place attention + GPU-FFN (on-pages attention, HIP FFN on dh)",
    "table": "engine",
    "display_name": "Fused VK attn + GPU FFN",
    "backend": "fused",
-   "notes": "Fallback config (GPU FFN needs dh): pages round-trip per layer. ~51ms/token after all perf passes."
+   "notes": "28.1 ms/token (36 tok/s), re-measured 2026-08-29 after the parallel-GEMV shader pass (was ~51 ms). The pages->dh->pages round trip per layer (2 syncs x 28) is the gap vs HIP+GPU-FFN (21.2 ms). On-pages FFN shaders (Vulkan compute FFN directly on the SharedBO pages) would close it."
   }
  },
  "table_kernel": [
