@@ -180,25 +180,30 @@ the real pattern (interleave or fewer iterations) — until then the bypass
   Zaya smoke (C2 = 127·K). The K_GU generator split produced a CORRECT design.
 - **Real-weight calibration — D-side contract PINNED on silicon.** The layout
   probes in `engine/npu/tests/cascade_real_weight_probe.cpp` (modes `lay` +
-  `bd1`/`bd1p`/`rep`/`pad`) established the D-phase contract EXACTLY
-  (bad=0/8192 for the one-hot probes at j0=0/1/2):
-  - **h2 slice pairing**: `a8s[kstep][c_] = h2b[ks][cg·64 + ks·8 + c_]` — the
-    slice index is **ks** (pairs with the b8 slice), NOT the source's kstep.
-    The acc rows all get the same values; the C2 dump carries **only the acc
-    row 0**, at positions with `n_row%64 < 8`:
-    `C2_bo[r·512 + kstep·1024 + n_row] = c2[0][r·512 + (8·kstep + n_row/64)·8 + n_row%8]`.
+  `bd1`/`bd1p`/`rep`/`pad`/`h2r`) established the D-phase contract EXACTLY
+  (bad=0/8192 for the one-hot probes at j0=0/1/2, and the new `h2r` per-pair
+  reads confirm the structure):
+  - **h2 slice pairing**: `a8s[kstep][c_] = h2b[ks][cg·64 + kstep·8 + c_]` —
+    the slice is the **ACC ROW (kstep)**, per the generator source. The h2r
+    per-pair reads prove it: the acc row t reads the pair `t·8 + c_` (the rows
+    differ; the earlier ks-slice reading was an artifact of the one-hot lay
+    probes, which zero the rows 1..7).
+  - **C2 layout = FULL microtile dump**: `C2_bo[r·512 + kstep·1024 + n_row]`
+    holds the acc row `(p/8)%8` at the col `(p/64)·8 + p%8`, p = kstep·512 +
+    n_row (all 8 acc rows are dumped, not just row 0 — the h2r rows prove it).
   - **bd read (mmul B-tile reindex)**: `B(k, n) = b8[(n/64)][64·((n/8)%8) + k·8 + n%8]`
     → bd ROW = `ki·64 + ks·8 + n/64`, bd COL = `rh·512 + 64·((n/8)%8) + c_·8 + n%8`
-    (n = the half-col nn%512). This is the same tile structure as the scalar
+    (n = the half-col nn%512). Same tile structure as the scalar
     `matmul_i8_i32` reference (`b[((kb_·nb+nb_)·8+rr)·8+cc]`).
-  - The remaining open item is the **GU-side h2 values**: the closest GU
-    hypothesis (reindexed-read mirror of the packed B-tile: the kernel's
-    `B(i·8+k', n) = B_tile[8i + n/16, 64·((n/8)%2) + k'·8 + n%8]` — same tile
-    structure as the D-side) reproduces the h2 sum to within ONE ±127 pair
-    (bd1: NPU 3810 = 30·127 vs mirror 3683 = 29·127; the SAME Δ for every GU
-    hypothesis tried — the residual is likely a single sat-pair sign flip in
-    the GU C1 dots). Next step: a per-pair h2 read (bd one-hot per D row) to
-    isolate the pair.
+  - **The h2r per-pair oracle + guread one-hot-A probes: GU read structure
+    FULLY PINNED (64/64).** The one-hot-A probes across the A-tile rows 0 AND 1
+    (A[i·64+k0] = 127 → C1[0][n] = 127·B(i·8+k0, n)) confirmed BOTH the B read
+    `B(K, n) = B_tile[n/16 + 8·(K/8)][64·((n/8)%2) + (K%8)·8 + n%8]` and the
+    A-tile layout (row i = the K-slice). The `bread` one-hot-B probes showed
+    the A-values saturate through the silu's sat8 (h2 = silu(A)·A = +127 for
+    BOTH A signs) — the A-value semantics cannot be read directly and remain
+    the last unknown (the h2 mirror reproduces ~50% of the silicon h2 pairs).
+    This is the persistent blocker for the real-weight C2 comparison.
 - GPU-vs-NPU logits parity (real prompts): tokens match for ~50 steps then the
   int8 FFN quantization accumulates and diverges (worst |Δlogit| 14 at step 8;
   19 token mismatches) — the parity harness quantifies the NPU-vs-GPU gap.
