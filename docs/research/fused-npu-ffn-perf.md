@@ -3,6 +3,25 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 7) — multi-sequence batch decode (FUSED_BATCH=N)
+
+The batched FFN (`npu_state_ffn_batch`, committed `da33e028`) + batched
+decode in the fused backend (`f1dd8b27` + `d8d4c628`):
+
+- **Batched FFN**: `goB_rows` (per-row activation scales) + `npu_state_ffn_batch`
+  process N rows in ONE GU + ONE D launch — the B weight DMA is read once.
+  Measured 7.6x vs per-row calls, BIT-IDENTICAL per row (test_npu_ffn_batch).
+- **forward_batch**: N sequences advance one token per call.  Per layer:
+  batched attention (fused_gemv_batch_kernel reads each W row once for all
+  N rows — qkv/wo), per-sequence elementwise kernels (rmsnorm/qk-norm/rope/
+  kv-store/decode) on the stream, then ONE batched NPU FFN.  Batched lm_head
+  reads the 622 MB vocab weight once.
+- **Measured** (FUSED_BATCH=8 USE_NPU_FFN=1, 10 tokens): 222.6 ms/batch,
+  **36 tok/s aggregate (5.5x single-stream)**, every sequence's stream is the
+  parity stream `15 13 15 15 ...`.  Scaling: B=2 → 12, B=4 → 22, B=8 → 35
+  tok/s aggregate.  The batched NPU FFN (~5 ms/layer) now dominates the
+  batch; the D kernel's DMA (~1.7 GB/s vs the GU's 3.1) is the next target.
+
 ## 2026-08-29 (round 7) — M=8 vectorized FFN: the m1 scalar stream was COMPUTE-bound
 
 The m1 "DMA wall" (~1.46 GB/s) was actually the scalar matmul throttling the
