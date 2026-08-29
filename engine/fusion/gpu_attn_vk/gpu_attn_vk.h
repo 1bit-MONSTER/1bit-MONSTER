@@ -56,6 +56,7 @@ public:
     fusion::SharedBO* pages() { return pages_; }
     size_t h_bytes() const { return (size_t)H_ * sizeof(float); }
     bool ok() const { return ok_; }
+    vkrt::VkCtx& vk_ctx() { return vk_; }   // for probes/tools
 
     // Debug: download the stage scratch buffers (host-visible) for parity checks.
     bool debug_snapshot(std::vector<float>* hn, std::vector<float>* q,
