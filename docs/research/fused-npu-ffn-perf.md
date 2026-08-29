@@ -3,6 +3,57 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 6) — true M=1 single-row FFN xclbins + DMA-wall map
+
+### The M=1 win (committed `85021e4c`)
+
+The shipped `final_i8_{GU,D}_qwen3_0_6b` xclbins bake a fixed M=128 AIE tile
+stream — every decode launch runs a 128-row stream for 1 row of data.
+`n1_core_i8_m1.py` emits a genuine single-core-row M=1 stream (linear 1-row
+A/C DMA taps, same 8x8-microtile B gather).  Two correctness fixes were
+required to land it:
+
+- **The M=1 microkernel must index the microtiled L1 B layout.**  The DMA
+  delivers B as [kb][nb][8][8] block-major (the only DMA-legal int8 form —
+  the toolchain rejects byte-granular strides).  `matmul_scalar`'s row-major
+  `b[i*colB+col]` indexing produced uncorrelated output (oracle cosine 0.04);
+  the `DIM_M<16` alias now reindexes `[((kb*nb+nb)*8+r)*8+c]` — bit-identical
+  values to the vectorized mmul accumulation (cosine 0.9978, same as the
+  M=128 baseline, token parity `15 13 15 15 ...` on all four paths).
+- **`cascade_d_first/mid/last_i8_i32` need `#if DIM_M == 8`** — the a2s@b
+  cascade slice static_asserts `DIM_M == 8` and broke every non-8 build
+  (M=1, M=16, M=128) since the cascade kernels landed.
+
+Measured: FFN 8.46 → 7.93 ms/layer; VK+NPU 272.7 → 258.6 ms, HIP+NPU ~275 →
+256.6 ms.  The m1 family is auto-selected by `npu_state_create` (MD=1) when
+`final_i8_{GU,D}_qwen3_0_6b_m1.{xclbin,txt}` are present.
+
+### The FFN wall is single-launch DMA-bound (~1.4-1.5 GB/s)
+
+The M=1 stream did NOT deliver the ~50 µs/launch the older docs hoped for:
+`r.wait` is still ~4.3 ms for the GU (6.3 MB B).  Per-step micro-benchmark of
+`goB` (m1 GU): quantize 1 µs, bA sync 1 µs, bI sync 4 µs, launch 46 µs,
+**r.wait 4320 µs**, bC sync 4 µs, dequant 2 µs.  The kernel time is the wall.
+
+Exhaustive probes (all leave `r.wait` ~4.0-4.4 ms for the 6.3 MB GU B):
+
+| Probe | Change | r.wait |
+|---|---|---|
+| baseline m1 (n=128, b=5) | — | 4.36 ms |
+| n=256 tiles | half the BDs/commands (384 vs 768), same bytes | 4.32 ms |
+| microtiled-packed B source | contiguous 64-byte block reads instead of strided 8-byte runs | 4.05 ms (and subtly wrong — cosine 0.9865; reverted) |
+| 2x concurrent half-N kernels | 2 launches in flight | 1.11x vs serial (no bandwidth sharing) |
+| CACHEABLE bB BO | vs HOST_ONLY | identical |
+
+Conclusion: the single-launch NPU DMA path delivers ~1.4-1.5 GB/s regardless
+of BD count, tile size, source layout, concurrency, or BO flags.  With int8
+B weights the per-layer FFN floor is 9.4 MB (GU 6.3 + D 3.1) / 1.4 GB/s ≈
+6.7 ms DMA + ~1.3 ms host glue ≈ 7.9 ms/layer — exactly where we are.  (The
+28-independent-FFN pipeline's 3.76 ms/layer aggregate ~2.5 GB/s is the only
+faster DMA regime, and it is unusable for single-stream autoregressive
+decode.)  The only remaining byte-level lever is int4/ternary B (0.59x /
+0.25x bytes → ~5.2 / ~3 ms per layer).
+
 ## Measured
 
 | Item | Time | Note |
