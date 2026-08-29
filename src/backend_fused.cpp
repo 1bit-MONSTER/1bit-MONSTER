@@ -1471,13 +1471,13 @@ struct FusedBackend : Backend {
                                     (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
             }
         }
-        // final RMSNorm + readback per row
-        for (int s = 0; s < B_; s++) {
-            float* hs = dh_batch + (size_t)s * H_;
-            fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(hs, hs, d_final_norm, H_, EPS);
-            HIP_CHECK(hipMemcpy(hidden_out + (size_t)s * H_, hs, H_*4, hipMemcpyDeviceToHost));  // blocking
-            batch_pos[s]++;
-        }
+        // final RMSNorm per row (8 launches), then ONE blocking readback (the
+        // rows are contiguous in dh_batch and hidden_out — 8 separate blocking
+        // hipMemcpy would each pay a stream sync).
+        for (int s = 0; s < B_; s++)
+            fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh_batch + (size_t)s * H_, dh_batch + (size_t)s * H_, d_final_norm, H_, EPS);
+        HIP_CHECK(hipMemcpy(hidden_out, dh_batch, (size_t)B_ * H_ * 4, hipMemcpyDeviceToHost));  // blocking
+        for (int s = 0; s < B_; s++) batch_pos[s]++;
         return true;
     }
 
