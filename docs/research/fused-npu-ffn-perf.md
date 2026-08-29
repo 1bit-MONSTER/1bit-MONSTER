@@ -3,6 +3,24 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 8) — the FFN's real hidden cost: hw_context alternation
+
+The m8 GU (2.06 ms) and D (0.93 ms) kernels are fast in isolation, but the
+FFN's GU→D alternation runs them at 2.97 ms + 1.69 ms — **~0.8-0.9 ms per
+context switch** (measured: GU-only with both contexts loaded = 2.15 ms;
+alternating = 2.97; D 0.93 -> 1.69).  The FFN therefore pays ~1.6 ms/layer
+of ERT hw_context alternation (two xclbins -> two contexts; the kernel name
+"MLIR_AIE" is hardcoded in aiecc, so one xclbin cannot hold both kernels;
+the zaya "fused" GUSILU is also two xclbins).  bI re-sync, BO flags, and BD
+scheduling are all innocent (measured).  ~28 x 1.6 = ~44 ms of the 153.9 ms
+single-stream token is this switch.
+
+Eliminating it needs a SINGLE-LAUNCH fused GU→SiLU→D kernel (the zaya
+cascade-grade workstream: the silu's gate×up needs per-core col pairing, so
+the GU weights must interleave gate/up columns; the D's A then needs the
+cross-core redistribution of the 3072 silu'd values).  Projection if it
+lands: single-stream ~110 ms, batch ~175 ms/batch (46 tok/s at B=8).
+
 ## 2026-08-29 (round 7) — multi-sequence batch decode (FUSED_BATCH=N)
 
 The batched FFN (`npu_state_ffn_batch`, committed `da33e028`) + batched
