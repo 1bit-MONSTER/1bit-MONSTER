@@ -77,12 +77,18 @@ private:
     vkrt::GpuBuffer hn_, q_, k_, v_, ao_;        // scratch
     vkrt::GpuBuffer kc_, vc_;                    // f32 KV caches [NKV*max_seq*HD]
     vkrt::GpuBuffer emb_;                        // embedding [VOCAB*H]
-    std::vector<vkrt::GpuBuffer> wq_, wk_, wv_, wo_, pn_, qn_, kn_;
+    // Packed per-type weight buffers: [NC][rows][H] for wq/wk/wv/wo, [NC][H]
+    // for pn, [NC][HD] for qn/kn.  ALL layers share one buffer + one
+    // descriptor set per pipeline — the shader indexes by pc.layer.  (Per-layer
+    // descriptor sets made RADV rebuild 11-binding sets every layer, ~460 us
+    // of the per-layer dispatch cost; packing removes it entirely.)
+    vkrt::GpuBuffer wq_, wk_, wv_, wo_, pn_, qn_, kn_;
 
     vkrt::Pipeline p_rms_, p_qkv_, p_decode_, p_post_, p_embed_;
     vkrt::Pipeline p_zero_;
-    // Per-layer descriptor sets (each points at its own weight buffers).
-    std::vector<VkDescriptorSet> ds_rms_, ds_qkv_, ds_post_;
+    // One shared descriptor set per pipeline (weights packed, pc.layer picks).
+    VkDescriptorSet ds_rms_ = VK_NULL_HANDLE, ds_qkv_ = VK_NULL_HANDLE;
+    VkDescriptorSet ds_post_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_decode_ = VK_NULL_HANDLE, ds_embed_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_zero_ = VK_NULL_HANDLE;
     vkrt::GpuBuffer* buf_zero_[1] = {nullptr};

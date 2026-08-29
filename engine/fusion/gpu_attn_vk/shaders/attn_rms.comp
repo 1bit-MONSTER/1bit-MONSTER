@@ -27,5 +27,7 @@ void main() {
         barrier();
     }
     float inv = inversesqrt(red[0] / float(pc.H) + pc.eps);
-    for (int i = int(tid); i < pc.H; i += 256) hn[i] = h[i] * inv * pn[i];
+    // pn is packed [layer][H] — all layers share one buffer/descriptor set.
+    uint pn_off = uint(pc.layer) * uint(pc.H);
+    for (int i = int(tid); i < pc.H; i += 256) hn[i] = h[i] * inv * pn[pn_off + uint(i)];
 }

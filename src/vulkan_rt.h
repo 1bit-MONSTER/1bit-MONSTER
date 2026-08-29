@@ -489,6 +489,58 @@ inline void GpuBuffer::download_staged(VkCtx& ctx, void* data) const {
     }
 }
 
+// Upload one slice (bytes at offset) of a DEVICE_LOCAL buffer via a staging
+// copy.  Used to fill packed per-layer weight buffers without re-uploading
+// the whole thing.  Host-visible buffers use a direct memcpy into the map.
+inline bool uploadSliceStaged(VkCtx& ctx, GpuBuffer& b, const void* data,
+                              size_t byte_off, size_t byte_len) {
+    if (b.mem == VK_NULL_HANDLE) return false;
+    if (byte_off + byte_len > b.size) return false;
+    try {
+        vk::Device vd(ctx.dev);
+        if (!b.device_local()) {
+            void* p = vd.mapMemory(b.mem, byte_off, byte_len, {});
+            memcpy(p, data, byte_len);
+            vd.unmapMemory(b.mem);
+            return true;
+        }
+        vk::BufferCreateInfo sbi;
+        sbi.size = byte_len;
+        sbi.usage = vk::BufferUsageFlagBits::eTransferSrc;
+        vk::Buffer staging = vd.createBuffer(sbi);
+        vk::MemoryRequirements smr = vd.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo sai;
+        sai.allocationSize = smr.size;
+        sai.memoryTypeIndex = findMemType(ctx.memProps, smr.memoryTypeBits,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DeviceMemory smem = vd.allocateMemory(sai);
+        vd.bindBufferMemory(staging, smem, 0);
+        void* sp = vd.mapMemory(smem, 0, byte_len, {});
+        memcpy(sp, data, byte_len);
+        vd.unmapMemory(smem);
+
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        vk::BufferCopy bc(0, byte_off, byte_len);
+        cmd.copyBuffer(staging, b.buf, {bc});
+        cmd.end();
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+        vd.destroyBuffer(staging);
+        vd.freeMemory(smem);
+        return true;
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR uploadSliceStaged: %s\n", e.what());
+        return false;
+    }
+}
+
 struct Pipeline {
     vk::PipelineLayout layout;
     vk::Pipeline pipeline;

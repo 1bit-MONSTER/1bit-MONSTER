@@ -15,11 +15,10 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     shader_dir_ = dir ? dir : "engine/fusion/gpu_attn_vk/shaders";
     npu_dev_ = &npu_dev;
 
-    // Per-layer descriptor sets (rms+qkv+post per layer) plus embed/decode/
-    // zero: size the pool for the worst case (num_layers × 17 bindings +
-    // scratch).  The default VkCtx pool is only 64 descriptors / 32 sets.
-    vk_.dpool_descriptors = (uint32_t)((size_t)num_layers * 17 + 16);
-    vk_.dpool_max_sets    = (uint32_t)((size_t)num_layers * 3 + 8);
+    // ONE descriptor set per pipeline now (weights packed; the shader indexes
+    // by pc.layer) — the pool only needs the scratch sets + a handful.
+    vk_.dpool_descriptors = 64;
+    vk_.dpool_max_sets    = 16;
     vk_.init();
     if (!vk_.dev || !vk_.ext_mem_fd) {
         fprintf(stderr, "[vk_attn] no Vulkan/dma-buf exts — disabled\n");
@@ -56,6 +55,18 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
         return false;
     }
 
+    // Packed weight buffers, one per type, sized for ALL layers up front.
+    if (!mk(wq_, (size_t)NC_ * NH * HD * H * 4) ||
+        !mk(wk_, (size_t)NC_ * NKV * HD * H * 4) ||
+        !mk(wv_, (size_t)NC_ * NKV * HD * H * 4) ||
+        !mk(wo_, (size_t)NC_ * H * NH * HD * 4) ||
+        !mk(pn_, (size_t)NC_ * H * 4) ||
+        !mk(qn_, (size_t)NC_ * HD * 4) ||
+        !mk(kn_, (size_t)NC_ * HD * 4)) {
+        fprintf(stderr, "[vk_attn] packed-weight alloc failed\n");
+        return false;
+    }
+
     auto load = [&](vkrt::Pipeline& p, const char* name, int nb, size_t pcsz) {
         std::string spv = shader_dir_ + "/" + name;
         p.create(vk_, spv.c_str(), nb, (uint32_t)pcsz);
@@ -70,23 +81,26 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
         fprintf(stderr, "[vk_attn] pipeline load failed (run the shader build first)\n");
         return false;
     }
-    buf_rms_[0] = &pages_buf_; buf_rms_[1] = &hn_;
+    // Shared descriptor sets: rms/qkv/post bind the packed weights once.
+    buf_rms_[0] = &pages_buf_; buf_rms_[1] = &hn_; buf_rms_[2] = &pn_;
+    ds_rms_ = vkrt::createDescriptorSet(vk_, p_rms_, buf_rms_, 3);
     buf_qkv_[0] = &hn_; buf_qkv_[1] = &q_; buf_qkv_[2] = &k_; buf_qkv_[3] = &v_;
-    buf_qkv_[9] = &kc_; buf_qkv_[10] = &vc_;
+    buf_qkv_[4] = &wq_; buf_qkv_[5] = &wk_; buf_qkv_[6] = &wv_;
+    buf_qkv_[7] = &qn_; buf_qkv_[8] = &kn_; buf_qkv_[9] = &kc_; buf_qkv_[10] = &vc_;
+    ds_qkv_ = vkrt::createDescriptorSet(vk_, p_qkv_, buf_qkv_, 11);
+    buf_post_[0] = &ao_; buf_post_[1] = &wo_; buf_post_[2] = &pages_buf_;
+    ds_post_ = vkrt::createDescriptorSet(vk_, p_post_, buf_post_, 3);
     buf_decode_[0] = &q_; buf_decode_[1] = &kc_; buf_decode_[2] = &vc_; buf_decode_[3] = &ao_;
     ds_decode_ = vkrt::createDescriptorSet(vk_, p_decode_, buf_decode_, 4);
-    if (ds_decode_ == VK_NULL_HANDLE) {
-        fprintf(stderr, "[vk_attn] decode descriptor set alloc failed\n");
-        return false;
-    }
     buf_zero_[0] = &kc_;
     ds_zero_ = vkrt::createDescriptorSet(vk_, p_zero_, buf_zero_, 1);
-    if (ds_zero_ == VK_NULL_HANDLE) {
-        fprintf(stderr, "[vk_attn] zero descriptor set alloc failed\n");
+    buf_embed_[0] = &emb_; buf_embed_[1] = &pages_buf_;
+    if (ds_rms_ == VK_NULL_HANDLE || ds_qkv_ == VK_NULL_HANDLE ||
+        ds_post_ == VK_NULL_HANDLE || ds_decode_ == VK_NULL_HANDLE ||
+        ds_zero_ == VK_NULL_HANDLE) {
+        fprintf(stderr, "[vk_attn] descriptor set alloc failed\n");
         return false;
     }
-    buf_post_[0] = &ao_; buf_post_[2] = &pages_buf_;
-    buf_embed_[0] = &emb_; buf_embed_[1] = &pages_buf_;
     ok_ = true;
     return true;
 }
@@ -102,32 +116,27 @@ bool VkAttention::upload_embed(const std::vector<float>& embed) {
 }
 
 bool VkAttention::upload_layer(int l, const VkLayerW& w) {
-    if (!ok_) return false;
-    if ((int)wq_.size() <= l) {
-        wq_.resize(l + 1); wk_.resize(l + 1); wv_.resize(l + 1);
-        wo_.resize(l + 1); pn_.resize(l + 1); qn_.resize(l + 1); kn_.resize(l + 1);
-        ds_rms_.resize(l + 1); ds_qkv_.resize(l + 1); ds_post_.resize(l + 1);
-    }
-    auto up = [&](vkrt::GpuBuffer& b, const std::vector<float>& data) {
-        // Weights are re-read by the GPU every token — VRAM (staged upload).
-        b.create_device_local(vk_.dev, vk_.memProps, data.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        if (b.mem == VK_NULL_HANDLE) return false;
-        b.upload_staged(vk_, data.data());
-        return true;
+    if (!ok_ || l < 0 || l >= NC_) return false;
+    // Staged upload of THIS layer's slice into the packed buffer.  Slices are
+    // [layer][rows][H] — the shaders index by pc.layer, so descriptor sets
+    // never change between layers.
+    auto up_slice = [&](vkrt::GpuBuffer& b, const std::vector<float>& data, size_t stride) {
+        if (data.size() != stride) return false;
+        size_t byte_off = (size_t)l * stride * 4;
+        size_t byte_len = stride * 4;
+        // host staging copy into the device-local buffer's slot: re-upload the
+        // full buffer is wasteful; do a staged copy of just the slice.
+        return vkrt::uploadSliceStaged(vk_, b, data.data(), byte_off, byte_len);
     };
-    if (!up(wq_[l], w.wq) || !up(wk_[l], w.wk) || !up(wv_[l], w.wv) ||
-        !up(wo_[l], w.wo) || !up(pn_[l], w.pn) || !up(qn_[l], w.qn) || !up(kn_[l], w.kn))
+    if (!up_slice(wq_, w.wq, (size_t)NH_ * HD_ * H_) ||
+        !up_slice(wk_, w.wk, (size_t)NKV_ * HD_ * H_) ||
+        !up_slice(wv_, w.wv, (size_t)NKV_ * HD_ * H_) ||
+        !up_slice(wo_, w.wo, (size_t)H_ * NH_ * HD_) ||
+        !up_slice(pn_, w.pn, (size_t)H_) ||
+        !up_slice(qn_, w.qn, (size_t)HD_) ||
+        !up_slice(kn_, w.kn, (size_t)HD_))
         return false;
-
-    // Per-layer descriptor sets (each points at this layer's weights).
-    buf_rms_[2] = &pn_[l];
-    ds_rms_[l] = vkrt::createDescriptorSet(vk_, p_rms_, buf_rms_, 3);
-    buf_qkv_[4] = &wq_[l]; buf_qkv_[5] = &wk_[l]; buf_qkv_[6] = &wv_[l];
-    buf_qkv_[7] = &qn_[l]; buf_qkv_[8] = &kn_[l];
-    ds_qkv_[l] = vkrt::createDescriptorSet(vk_, p_qkv_, buf_qkv_, 11);
-    buf_post_[1] = &wo_[l];
-    ds_post_[l] = vkrt::createDescriptorSet(vk_, p_post_, buf_post_, 3);
-    return ds_rms_[l] != VK_NULL_HANDLE && ds_qkv_[l] != VK_NULL_HANDLE && ds_post_[l] != VK_NULL_HANDLE;
+    return true;
 }
 
 bool VkAttention::embed(int token_id) {
@@ -139,7 +148,7 @@ bool VkAttention::embed(int token_id) {
 }
 
 bool VkAttention::layer(int l, int pos) {
-    if (!ok_ || (int)wq_.size() <= l) return false;
+    if (!ok_ || l < 0 || l >= NC_) return false;
     VkAttnPC pc{};
     pc.H = H_; pc.NH = NH_; pc.NKV = NKV_; pc.HD = HD_; pc.IM = IM_;
     pc.pos = pos; pc.layer = l; pc.max_seq = max_seq_;
@@ -150,11 +159,13 @@ bool VkAttention::layer(int l, int pos) {
     // memory barriers between stages and submit+waitIdle once.  dispatchOnce
     // per stage paid a queue waitIdle each (~1.8 ms on RADV) — measured 25x
     // slower than the HIP single-stream path; batching collapses 4 syncs to 1.
+    // All layers share the SAME descriptor sets (weights packed, pc.layer
+    // selects) — no per-layer descriptor rebuilds.
     vkrt::DispatchStage stages[4];
-    stages[0] = {&p_rms_,   ds_rms_[l],   1, 1, 1, &pc};
-    stages[1] = {&p_qkv_,   ds_qkv_[l],   (uint32_t)(NH_ + NKV_), 1, 1, &pc};
+    stages[0] = {&p_rms_,   ds_rms_,   1, 1, 1, &pc};
+    stages[1] = {&p_qkv_,   ds_qkv_,   (uint32_t)(NH_ + NKV_), 1, 1, &pc};
     stages[2] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
-    stages[3] = {&p_post_,  ds_post_[l],  (uint32_t)((H_ + 255) / 256), 1, 1, &pc};
+    stages[3] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 255) / 256), 1, 1, &pc};
     vkrt::dispatchBatchOnce(vk_, stages, 4);
     return true;
 }
@@ -200,9 +211,7 @@ void VkAttention::destroy() {
     p_rms_.destroy(vk_.dev); p_qkv_.destroy(vk_.dev); p_decode_.destroy(vk_.dev);
     p_post_.destroy(vk_.dev); p_embed_.destroy(vk_.dev); p_zero_.destroy(vk_.dev);
     auto free = [&](vkrt::GpuBuffer& b) { if (b.mem) b.destroy(); };
-    for (auto& b : wq_) free(b); for (auto& b : wk_) free(b); for (auto& b : wv_) free(b);
-    for (auto& b : wo_) free(b); for (auto& b : pn_) free(b); for (auto& b : qn_) free(b);
-    for (auto& b : kn_) free(b);
+    free(wq_); free(wk_); free(wv_); free(wo_); free(pn_); free(qn_); free(kn_);
     free(hn_); free(q_); free(k_); free(v_); free(ao_); free(kc_); free(vc_); free(emb_);
     if (pages_buf_.mem) pages_buf_.destroy();
     if (vk_.dev) { vk_.destroy(); vk_.dev = VK_NULL_HANDLE; }

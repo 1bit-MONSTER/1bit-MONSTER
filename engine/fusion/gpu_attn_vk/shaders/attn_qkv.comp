@@ -50,10 +50,13 @@ void main() {
 
     if (isQ) {
         // ---- Q head b: GEMV ----
+        // All layers share one buffer: wq packed [layer][NH*HD][H].
+        uint wq_off = uint(pc.layer) * uint(pc.NH) * hd * uint(pc.H);
+        uint qn_off = uint(pc.layer) * hd;
         if (tid < hd) {
             uint o = b * hd + tid;
             float acc = 0.0;
-            for (int k = 0; k < pc.H; k++) acc += hn[k] * wq[o * uint(pc.H) + uint(k)];
+            for (int k = 0; k < pc.H; k++) acc += hn[k] * wq[wq_off + o * uint(pc.H) + uint(k)];
             val[tid] = acc;
         }
         barrier();
@@ -72,8 +75,8 @@ void main() {
                 uint d = tid;
                 float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
                 float c = cos(float(pc.pos) * f), s = sin(float(pc.pos) * f);
-                float a = val[tid] * inv * qn[tid];
-                float bb = val[tid + hd / 2] * inv * qn[tid + hd / 2];
+                float a = val[tid] * inv * qn[qn_off + tid];
+                float bb = val[tid + hd / 2] * inv * qn[qn_off + tid + hd / 2];
                 q[o] = a * c - bb * s;
                 q[b * hd + tid + hd / 2] = a * s + bb * c;
             }
@@ -81,12 +84,14 @@ void main() {
     } else {
         // ---- KV head (b - NH): K and V GEMVs ----
         uint kv = b - uint(pc.NH);
+        uint wk_off = uint(pc.layer) * uint(pc.NKV) * hd * uint(pc.H);
+        uint kn_off = uint(pc.layer) * hd;
         if (tid < hd) {
             uint o = kv * hd + tid;
             float ak = 0.0, av = 0.0;
             for (int k = 0; k < pc.H; k++) {
-                ak += hn[k] * wk[o * uint(pc.H) + uint(k)];
-                av += hn[k] * wv[o * uint(pc.H) + uint(k)];
+                ak += hn[k] * wk[wk_off + o * uint(pc.H) + uint(k)];
+                av += hn[k] * wv[wk_off + o * uint(pc.H) + uint(k)];
             }
             val[tid] = ak;      // K raw
             vraw[tid] = av;     // V raw
@@ -102,12 +107,12 @@ void main() {
         float kinv = inversesqrt(rsh[0] / float(pc.HD) + pc.eps);
         if (tid < hd) {
             uint o = kv * hd + tid;
-            float kk = val[tid] * kinv * kn[tid];
+            float kk = val[tid] * kinv * kn[kn_off + tid];
             if (tid < hd / 2) {
                 uint d = tid;
                 float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
                 float c = cos(float(pc.pos) * f), s = sin(float(pc.pos) * f);
-                float a = kk, bb = val[tid + hd / 2] * kinv * kn[tid + hd / 2];
+                float a = kk, bb = val[tid + hd / 2] * kinv * kn[kn_off + tid + hd / 2];
                 k[o] = a * c - bb * s;
                 k[kv * hd + tid + hd / 2] = a * s + bb * c;
             }

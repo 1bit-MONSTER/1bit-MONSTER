@@ -20,7 +20,9 @@ void main() {
     if (i >= uint(pc.H)) return;
     float acc = 0.0;
     int n = pc.NH * pc.HD;
+    // wo is packed [layer][H][NH*HD] — all layers share one buffer.
+    uint wo_off = uint(pc.layer) * uint(pc.H) * uint(n);
     for (int j = 0; j < n; j++)
-        acc += wo[i * uint(n) + uint(j)] * ao[uint(j)];
+        acc += wo[wo_off + i * uint(n) + uint(j)] * ao[uint(j)];
     h[i] = acc + h[i];   // residual add, back into the pages
 }
