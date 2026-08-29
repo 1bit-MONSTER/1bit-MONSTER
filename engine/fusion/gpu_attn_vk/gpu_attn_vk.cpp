@@ -40,7 +40,11 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     // fd consumed by the driver on success.
 
     auto mk = [&](vkrt::GpuBuffer& b, size_t bytes) {
-        b.create(vk_.dev, vk_.memProps, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        // GPU-only scratch (hn/q/k/v/ao/kc/vc): allocate in VRAM. The
+        // host-visible default is GTT/system memory — the GPU reads scratch
+        // and weights over a slow path, measured ~25x slower than HIP's
+        // device-local intermediates on Strix Halo.
+        b.create_device_local(vk_.dev, vk_.memProps, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         return b.mem != VK_NULL_HANDLE;
     };
     if (!mk(hn_, (size_t)H * 4) || !mk(q_, (size_t)NH * HD * 4) ||
@@ -89,9 +93,10 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
 
 bool VkAttention::upload_embed(const std::vector<float>& embed) {
     if (!ok_) return false;
-    emb_.create(vk_.dev, vk_.memProps, embed.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    // Embedding is read by the GPU every token — VRAM (staged one-time upload).
+    emb_.create_device_local(vk_.dev, vk_.memProps, embed.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (emb_.mem == VK_NULL_HANDLE) return false;
-    emb_.upload(embed.data());
+    emb_.upload_staged(vk_, embed.data());
     ds_embed_ = vkrt::createDescriptorSet(vk_, p_embed_, buf_embed_, 2);
     return ds_embed_ != VK_NULL_HANDLE;
 }
@@ -104,9 +109,10 @@ bool VkAttention::upload_layer(int l, const VkLayerW& w) {
         ds_rms_.resize(l + 1); ds_qkv_.resize(l + 1); ds_post_.resize(l + 1);
     }
     auto up = [&](vkrt::GpuBuffer& b, const std::vector<float>& data) {
-        b.create(vk_.dev, vk_.memProps, data.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        // Weights are re-read by the GPU every token — VRAM (staged upload).
+        b.create_device_local(vk_.dev, vk_.memProps, data.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         if (b.mem == VK_NULL_HANDLE) return false;
-        b.upload(data.data());
+        b.upload_staged(vk_, data.data());
         return true;
     };
     if (!up(wq_[l], w.wq) || !up(wk_[l], w.wk) || !up(wv_[l], w.wv) ||
@@ -139,14 +145,17 @@ bool VkAttention::layer(int l, int pos) {
     pc.pos = pos; pc.layer = l; pc.max_seq = max_seq_;
     pc.eps = 1e-6f; pc.rope_theta = rope_theta_; pc.scale = 1.0f;
 
-    // 1) RMSNorm(pages) -> hn
-    vkrt::dispatchOnce(vk_, p_rms_, ds_rms_[l], 1, 1, 1, &pc);
-    // 2) QKV + QK-norm + RoPE + KV store
-    vkrt::dispatchOnce(vk_, p_qkv_, ds_qkv_[l], (uint32_t)(NH_ + NKV_), 1, 1, &pc);
-    // 3) causal decode attention -> ao
-    vkrt::dispatchOnce(vk_, p_decode_, ds_decode_, (uint32_t)NH_, 1, 1, &pc);
-    // 4) out-proj + residual -> pages (in place)
-    vkrt::dispatchOnce(vk_, p_post_, ds_post_[l], (uint32_t)((H_ + 255) / 256), 1, 1, &pc);
+    // The 4 stage dispatches are serially dependent (rms→hn, qkv→q/k/kc/vc,
+    // decode→ao, post→pages), so record them into ONE command buffer with
+    // memory barriers between stages and submit+waitIdle once.  dispatchOnce
+    // per stage paid a queue waitIdle each (~1.8 ms on RADV) — measured 25x
+    // slower than the HIP single-stream path; batching collapses 4 syncs to 1.
+    vkrt::DispatchStage stages[4];
+    stages[0] = {&p_rms_,   ds_rms_[l],   1, 1, 1, &pc};
+    stages[1] = {&p_qkv_,   ds_qkv_[l],   (uint32_t)(NH_ + NKV_), 1, 1, &pc};
+    stages[2] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
+    stages[3] = {&p_post_,  ds_post_[l],  (uint32_t)((H_ + 255) / 256), 1, 1, &pc};
+    vkrt::dispatchBatchOnce(vk_, stages, 4);
     return true;
 }
 
@@ -171,7 +180,7 @@ bool VkAttention::debug_snapshot(std::vector<float>* hn, std::vector<float>* q,
     auto dl = [&](const vkrt::GpuBuffer& b, std::vector<float>* out) {
         if (!out) return;
         out->resize(b.size / 4);
-        b.download(out->data());
+        b.download_staged(const_cast<vkrt::VkCtx&>(vk_), out->data());
     };
     dl(hn_, hn); dl(q_, q); dl(k_, k); dl(v_, v); dl(ao_, ao);
     return true;
@@ -182,7 +191,7 @@ void VkAttention::debug_kvcache(std::vector<float>* kc, std::vector<float>* vc) 
     auto dl = [&](const vkrt::GpuBuffer& b, std::vector<float>* out) {
         if (!out) return;
         out->resize(b.size / 4);
-        b.download(out->data());
+        b.download_staged(const_cast<vkrt::VkCtx&>(vk_), out->data());
     };
     dl(kc_, kc); dl(vc_, vc);
 }

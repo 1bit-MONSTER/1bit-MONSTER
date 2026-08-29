@@ -630,6 +630,7 @@ struct FusedBackend : Backend {
         //    pages→dh (for lm_head) touches the CPU per token.
         if (vk_attn_) {
             bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+            auto t_ent = std::chrono::steady_clock::now();
 
             // 0) embed → pages (Vulkan writes the NPU pages directly)
             if (token_id >= 0 && token_id < VOCAB)
@@ -640,18 +641,34 @@ struct FusedBackend : Backend {
             for (int l = 0; l < NC_; l++) {
                 // await FFN(l-1): its output is already IN the pages (the NPU
                 // FFN writes in place) — nothing to copy.
+                auto t_w0 = std::chrono::steady_clock::now();
                 if (use_npu && l > 0) {
                     if (!npu_future_.get()) {
                         fprintf(stderr, "[fused] NPU FFN l=%d failed — GPU FFN from now\n", l - 1);
                         npu_ok = false; use_npu = false;
                     }
                 }
+                auto t_w1 = std::chrono::steady_clock::now();
+                if (getenv("VK_ATTN_TIMING") && l > 0)
+                    fprintf(stderr, "[fused] layer %2d: awaitFFN %7.1f us\n", l,
+                            std::chrono::duration<double, std::micro>(t_w1 - t_w0).count());
                 // in-place attention: pages -> rms/qkv/decode/post -> pages
+                auto t_l0 = std::chrono::steady_clock::now();
                 va_.layer(l, pos);
+                auto t_l1 = std::chrono::steady_clock::now();
+                double us_attn = std::chrono::duration<double, std::micro>(t_l1 - t_l0).count();
+                if (getenv("VK_ATTN_TIMING"))
+                    fprintf(stderr, "[fused] layer %2d: va_.layer %8.1f us\n", l, us_attn);
                 if (use_npu) {
                     float* pg = (float*)va_.pages()->host_ptr();
                     npu_future_ = std::async(std::launch::async, [this, l, pg, H_]() {
-                        return npu_state_ffn(npu, l, pg, H_);
+                        auto t0 = std::chrono::steady_clock::now();
+                        bool ok = npu_state_ffn(npu, l, pg, H_);
+                        auto t1 = std::chrono::steady_clock::now();
+                        if (getenv("VK_ATTN_TIMING"))
+                            fprintf(stderr, "[fused] NPU FFN l=%2d: %8.1f us\n", l,
+                                    std::chrono::duration<double, std::micro>(t1 - t0).count());
+                        return ok;
                     });
                 } else {                    // GPU FFN fallback (needs GPU dh; pages round-trip).
                     auto& gl = L[l];
@@ -695,6 +712,11 @@ struct FusedBackend : Backend {
             HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
                                 H_ * sizeof(float), hipMemcpyHostToDevice));
             fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
+            if (getenv("VK_ATTN_TIMING")) {
+                auto t_ex = std::chrono::steady_clock::now();
+                fprintf(stderr, "[fused] vk_attn block total: %8.1f us\n",
+                        std::chrono::duration<double, std::micro>(t_ex - t_ent).count());
+            }
             HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));  // blocking
             pos++;
             return true;
@@ -867,9 +889,16 @@ struct FusedBackend : Backend {
     }
 
     int generate(int token_id) override {
+        auto g0 = std::chrono::steady_clock::now();
         if (!forward(token_id, h_stage.data())) return -1;
+        auto g1 = std::chrono::steady_clock::now();
         int n = -1;
         if (!lm_head(h_stage.data(), logit_stage.data(), &n)) return -1;
+        auto g2 = std::chrono::steady_clock::now();
+        if (getenv("VK_ATTN_TIMING"))
+            fprintf(stderr, "[fused] generate: forward %7.1f us, lm_head %7.1f us\n",
+                    std::chrono::duration<double, std::micro>(g1 - g0).count(),
+                    std::chrono::duration<double, std::micro>(g2 - g1).count());
         return n;
     }
 

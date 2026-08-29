@@ -67,12 +67,17 @@ inline uint32_t findMemTypeOr(const vk::PhysicalDeviceMemoryProperties& mp, uint
     return VK_MAX_MEMORY_TYPES;
 }
 
+struct VkCtx;  // defined below (GpuBuffer staging helpers take it by ref)
+
 struct GpuBuffer {
     vk::Buffer buf;
     vk::DeviceMemory mem;
     size_t size = 0;
     VkDevice dev = VK_NULL_HANDLE;
     bool imported_ = false;  // true when memory was imported (not owned by us)
+    bool device_local_ = false;  // true when allocated in VRAM (not host-visible)
+
+    bool device_local() const { return device_local_; }
 
     void create(VkDevice d, const vk::PhysicalDeviceMemoryProperties& mp, size_t sz, VkBufferUsageFlags usage) {
         dev = d;
@@ -92,6 +97,44 @@ struct GpuBuffer {
             vd.bindBufferMemory(buf, mem, 0);
         } catch (const vk::SystemError& e) {
             fprintf(stderr, "vulkan_rt FATAL: create: %s\n", e.what());
+            destroy();
+        }
+    }
+
+    // Allocate in VRAM (DEVICE_LOCAL) instead of host-visible system memory.
+    // GPU-only buffers (weights, shader scratch) MUST live here — a
+    // host-visible allocation is GTT/system memory that the GPU reads over a
+    // slow path (~9 MB of weights per attention layer per token measured
+    // 25x slower than HIP's device-local intermediates on Strix Halo).
+    // Falls back to host-visible when no device-local type exists.  The
+    // buffer gets TRANSFER_DST so staged uploads (upload_staged) can copy
+    // into it.
+    void create_device_local(VkDevice d, const vk::PhysicalDeviceMemoryProperties& mp,
+                             size_t sz, VkBufferUsageFlags usage) {
+        dev = d;
+        size = sz;
+        device_local_ = true;
+        try {
+            vk::Device vd(d);
+            vk::BufferCreateInfo bi;
+            bi.size = sz;
+            bi.usage = vk::BufferUsageFlags(usage) | vk::BufferUsageFlagBits::eTransferDst;
+            buf = vd.createBuffer(bi);
+            vk::MemoryRequirements mr = vd.getBufferMemoryRequirements(buf);
+            vk::MemoryAllocateInfo ai;
+            ai.allocationSize = mr.size;
+            ai.memoryTypeIndex = findMemTypeOr(mp, mr.memoryTypeBits,
+                vk::MemoryPropertyFlagBits::eDeviceLocal);
+            if (ai.memoryTypeIndex == VK_MAX_MEMORY_TYPES) {
+                // No VRAM type for this buffer — fall back to host-visible.
+                device_local_ = false;
+                ai.memoryTypeIndex = findMemType(mp, mr.memoryTypeBits,
+                    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            }
+            mem = vd.allocateMemory(ai);
+            vd.bindBufferMemory(buf, mem, 0);
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt FATAL: create_device_local: %s\n", e.what());
             destroy();
         }
     }
@@ -177,12 +220,20 @@ struct GpuBuffer {
         memcpy(p, data, size);
         vk::Device(dev).unmapMemory(mem);
     }
+    // Upload into a DEVICE_LOCAL buffer via a host-visible staging buffer +
+    // one copy command (device-local memory can't be mapped). No-op for
+    // host-visible buffers (uses plain upload). Defined after VkCtx.
+    void upload_staged(VkCtx& ctx, const void* data);
     void download(void* data) const {
         void* p;
         if (!map_mem(p)) return;
         memcpy(data, p, size);
         vk::Device(dev).unmapMemory(mem);
     }
+    // Read back a DEVICE_LOCAL buffer via a staging copy (mirror of
+    // upload_staged). Used by debug/inspection paths; no-op for host-visible.
+    // Defined after VkCtx.
+    void download_staged(VkCtx& ctx, void* data) const;
 
 private:
     // Map host-visible memory; returns false (and logs) on failure.
@@ -357,6 +408,87 @@ struct VkCtx {
     }
 };
 
+// ── GpuBuffer staging helpers (need the complete VkCtx) ─────────────────────
+inline void GpuBuffer::upload_staged(VkCtx& ctx, const void* data) {
+    if (!device_local_) { upload(data); return; }
+    try {
+        vk::Device vd(ctx.dev);
+        // Staging: host-visible coherent buffer, same size.
+        vk::BufferCreateInfo sbi;
+        sbi.size = size;
+        sbi.usage = vk::BufferUsageFlagBits::eTransferSrc;
+        vk::Buffer staging = vd.createBuffer(sbi);
+        vk::MemoryRequirements smr = vd.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo sai;
+        sai.allocationSize = smr.size;
+        sai.memoryTypeIndex = findMemType(ctx.memProps, smr.memoryTypeBits,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DeviceMemory smem = vd.allocateMemory(sai);
+        vd.bindBufferMemory(staging, smem, 0);
+        void* sp = vd.mapMemory(smem, 0, size, {});
+        memcpy(sp, data, size);
+        vd.unmapMemory(smem);
+
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        vk::BufferCopy bc(0, 0, size);
+        cmd.copyBuffer(staging, buf, {bc});
+        cmd.end();
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+        vd.destroyBuffer(staging);
+        vd.freeMemory(smem);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR upload_staged: %s\n", e.what());
+    }
+}
+
+inline void GpuBuffer::download_staged(VkCtx& ctx, void* data) const {
+    if (!device_local_) { download(data); return; }
+    try {
+        vk::Device vd(ctx.dev);
+        vk::BufferCreateInfo sbi;
+        sbi.size = size;
+        sbi.usage = vk::BufferUsageFlagBits::eTransferDst;
+        vk::Buffer staging = vd.createBuffer(sbi);
+        vk::MemoryRequirements smr = vd.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo sai;
+        sai.allocationSize = smr.size;
+        sai.memoryTypeIndex = findMemType(ctx.memProps, smr.memoryTypeBits,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DeviceMemory smem = vd.allocateMemory(sai);
+        vd.bindBufferMemory(staging, smem, 0);
+
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        vk::BufferCopy bc(0, 0, size);
+        cmd.copyBuffer(buf, staging, {bc});
+        cmd.end();
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+
+        void* sp = vd.mapMemory(smem, 0, size, {});
+        memcpy(data, sp, size);
+        vd.unmapMemory(smem);
+        vd.destroyBuffer(staging);
+        vd.freeMemory(smem);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR download_staged: %s\n", e.what());
+    }
+}
+
 struct Pipeline {
     vk::PipelineLayout layout;
     vk::Pipeline pipeline;
@@ -482,6 +614,67 @@ inline void dispatchOnce(VkCtx& ctx, Pipeline& p, VkDescriptorSet ds, uint32_t g
         vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
     } catch (const vk::SystemError& e) {
         fprintf(stderr, "vulkan_rt VK_ERR dispatchOnce: %s\n", e.what());
+    }
+}
+
+// One dispatch stage: pipeline + descriptor set + group counts + push constants.
+struct DispatchStage {
+    Pipeline*    pipe = nullptr;
+    VkDescriptorSet ds  = VK_NULL_HANDLE;
+    uint32_t gx = 1, gy = 1, gz = 1;
+    const void* pc = nullptr;
+};
+
+// Batch of DEPENDENT compute dispatches, recorded into ONE command buffer with
+// a full compute memory barrier between stages, submitted once and waited to
+// idle once.  This is the throughput path: dispatchOnce() pays a queue
+// waitIdle + command-buffer alloc/free per dispatch (~1.8 ms each on RADV),
+// which dominates the attention layer's 4-stage pipeline (rms→qkv→decode→post)
+// — measured 25x slower than the equivalent HIP single-stream path purely from
+// that per-dispatch host sync.  Batching collapses 4 syncs into 1.
+//   `barrier_between[i]` is inserted BEFORE stage i (i>=1); stages are
+//   assumed ordered and each barrier flushes prior shader writes so the next
+//   stage sees them (buffer memory barrier would need per-buffer ranges; a
+//   global compute barrier is correct and cheap at this dispatch count).
+inline void dispatchBatchOnce(VkCtx& ctx, const DispatchStage* stages, uint32_t nStages) {
+    if (nStages == 0) return;
+    try {
+        vk::Device vd(ctx.dev);
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        for (uint32_t i = 0; i < nStages; i++) {
+            const DispatchStage& s = stages[i];
+            if (!s.pipe) continue;
+            if (i > 0) {
+                // Full compute-stage barrier: prior stage's shader writes
+                // visible to this stage's shader reads.
+                vk::MemoryBarrier mb(vk::AccessFlagBits::eShaderWrite,
+                                     vk::AccessFlagBits::eShaderRead);
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::DependencyFlags(0), {mb}, {}, {});
+            }
+            cmd.bindPipeline(vk::PipelineBindPoint::eCompute, s.pipe->pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, s.pipe->layout, 0,
+                                   {vk::DescriptorSet(s.ds)}, {});
+            if (s.pc && s.pipe->pcSize > 0)
+                cmd.pushConstants(s.pipe->layout, vk::ShaderStageFlagBits::eCompute, 0,
+                                  s.pipe->pcSize, s.pc);
+            cmd.dispatch(s.gx, s.gy, s.gz);
+        }
+        cmd.end();
+
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR dispatchBatchOnce: %s\n", e.what());
     }
 }
 
