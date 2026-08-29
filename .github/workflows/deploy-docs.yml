@@ -8,9 +8,8 @@ name: Deploy Docs Site
 # subdomain independently of the main `1bit.monster` marketing site.
 #
 # ── One-time Cloudflare setup (done by the repo owner, not this workflow) ──
-#   1. Create the Pages project named `1bit-monster-docs`
-#      (either in the dashboard or via the Pages API; deploy below will also
-#       auto-create it if it does not exist yet).
+#   1. (Optional — the workflow below auto-creates the project if missing.)
+#      The Pages project `1bit-monster-docs` is created/ensured before deploy.
 #   2. Add a custom domain `docs.1bit.monster` to that project and point the
 #      `docs` CNAME at the Cloudflare Pages hostname. Both Cloudflare API token
 #      (`CLOUDFLARE_API_TOKEN`) and account id (`CLOUDFLARE_ACCOUNT_ID`) are
@@ -51,6 +50,12 @@ jobs:
 
       - name: Generate docs site
         run: python3 scripts/gen_docs_site.py --out docs-site
+
+      - name: Ensure Pages project exists
+        run: npx wrangler pages project create 1bit-monster-docs --production-branch main || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
