@@ -3,6 +3,29 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 9) — the GPU FFN wins; the fused backend's real state of the art
+
+The round-8 reframe held and was pushed: the GPU FFN (weights at DRAM
+bandwidth) beats the NPU FFN by ~10x, so the GPU-FFN configs are now the
+optimization target.  Commits `3fb0bc0b` (float4 GEMV), `d79c3777` (fused
+QKV+GU), `eb9fc6b0` (elementwise fusions):
+
+| Config (single-stream) | time | tok/s |
+|---|---|---|
+| **HIP attn + GPU FFN** | **14.4 ms** | **69** |
+| VK attn + GPU FFN | 24.3 ms | 41 |
+| HIP/VK attn + NPU FFN | 151-153 ms | 6.5 |
+
+Batch (B=8, GPU FFN): ~113 ms/batch, **72 tok/s aggregate** (11x
+single-stream).  Parity `15 13 15 15 ...` on all paths.
+
+The float4 GEMV (21.2 -> 15.0 ms) was the big win — the v4 loads + double
+accumulation (parity by construction).  The fused QKV/GU (15.0 -> 14.5) and
+the elementwise fusions (14.5 -> 14.4) were smaller.  The per-layer ~0.36 ms
+is now gemv-bound (the small shapes run at ~100 GB/s vs the 270 available —
+the 1-iteration-per-thread N=1024 gemvs are reduction-dominated; warp-shuffle
+and multi-row variants measured NO faster and were reverted).
+
 ## 2026-08-29 (round 8) — the FFN's real hidden cost: hw_context alternation
 
 The m8 GU (2.06 ms) and D (0.93 ms) kernels are fast in isolation, but the
