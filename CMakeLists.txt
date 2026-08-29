@@ -1706,6 +1706,21 @@ if(_RC_HAVE_FUSED_BACKEND)
         set_source_files_properties(engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp PROPERTIES LANGUAGE CXX)
         target_include_directories(bench_fused PRIVATE src include engine/fusion/zero_copy engine/fusion/gpu_attn_vk engine/npu/src ${Vulkan_INCLUDE_DIRS})
 
+        # bench_fused_batch: multi-sequence batch decode (FUSED_BATCH=N)
+        add_executable(bench_fused_batch tools/bench_fused_batch.cpp src/backend_fused.cpp src/backend_fused_npu.cpp src/kv_cache_attn.hip engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp)
+        set_source_files_properties(tools/bench_fused_batch.cpp PROPERTIES LANGUAGE CXX)
+        set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
+        set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
+        set_source_files_properties(src/kv_cache_attn.hip PROPERTIES LANGUAGE HIP)
+        set_source_files_properties(engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp PROPERTIES LANGUAGE CXX)
+        target_include_directories(bench_fused_batch PRIVATE src include engine/fusion/zero_copy engine/fusion/gpu_attn_vk engine/npu/src ${Vulkan_INCLUDE_DIRS})
+        target_compile_options(bench_fused_batch PRIVATE -O2 -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
+        target_link_libraries(bench_fused_batch PRIVATE fusion_zero_copy hip::host hip::device hipblas rocm_cpp pthread Vulkan::Vulkan)
+        if(GLSLC_EXECUTABLE)
+            add_dependencies(bench_fused_batch gpu_attn_vk_shaders)
+        endif()
+        set_target_properties(bench_fused_batch PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
         # gpu_attn_vk GLSL shaders → SPIR-V into the build tree; the backend
         # loads them from VK_ATTN_SHADER_DIR (compile-time default below).
         find_program(GLSLC_EXECUTABLE glslc)

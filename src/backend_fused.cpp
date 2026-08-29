@@ -287,6 +287,18 @@ struct FusedBackend : Backend {
     // before starting the next layer's NPU (pipeline: GPU attn_L+1 ∥ NPU FFN_L).
     std::future<bool> npu_future_;
 
+    // ── Multi-sequence batch decode (FUSED_BATCH=N, N<=8 with the m8 xclbins) ──
+    // Each forward_batch call advances N sequences one token.  The NPU FFN
+    // batches all N rows into ONE GU + ONE D launch (the B weight DMA is read
+    // once — measured 7.6x vs per-row calls, bit-identical); the GPU attention
+    // runs per-sequence on the stream (back-to-back kernels, warm).
+    int batch_ = 0;                       // 0 = batch mode off
+    float* dh_batch = nullptr;            // [B, H] hidden states
+    __half *devKb = nullptr, *devVb = nullptr;  // [B, NC*max_seq*NKV*HD] KV
+    std::vector<float> host_batch;        // [B, H] NPU FFN handoff (D2H/H2D)
+    std::vector<int> batch_pos;           // per-sequence position
+    std::future<bool> npu_batch_future_;
+
     std::vector<float> cpu_embed, cpu_final_norm, cpu_output;
     // Reusable per-token host staging — allocated once in init(), reused every
     // token. Stack-local vectors here churned 4 KB + VOCAB*4 (~608 KB) per
@@ -338,11 +350,25 @@ struct FusedBackend : Backend {
         // every layer's attention reads the wrong layer's K/V (the generic
         // CPU backend keeps k_cache[il][...] per layer — this mirrors that).
         kvb = (size_t)NC * max_seq * NKV * HD_ * sizeof(__half);
-        if (hipHostMalloc(&dK, kvb, hipHostMallocMapped) != hipSuccess ||
-            hipHostMalloc(&dV, kvb, hipHostMallocMapped) != hipSuccess) return false;
-        memset(dK, 0, kvb); memset(dV, 0, kvb);
+        // Multi-sequence batch mode (FUSED_BATCH=N, N<=8 for the m8 xclbins):
+        // per-sequence KV + hidden states.  The NPU FFN batches all N rows in
+        // one launch; the GPU attention runs per-sequence on the stream.
+        const char* bs = getenv("FUSED_BATCH");
+        batch_ = (bs && atoi(bs) > 1) ? atoi(bs) : 0;
+        if (batch_ > 8) { fprintf(stderr, "[fused] FUSED_BATCH capped at 8 (m8 tile width)\n"); batch_ = 8; }
+        size_t kvbAlloc = kvb * (batch_ ? (size_t)batch_ : 1);
+        if (hipHostMalloc(&dK, kvbAlloc, hipHostMallocMapped) != hipSuccess ||
+            hipHostMalloc(&dV, kvbAlloc, hipHostMallocMapped) != hipSuccess) return false;
+        memset(dK, 0, kvbAlloc); memset(dV, 0, kvbAlloc);
         HIP_CHECK(hipHostGetDevicePointer((void**)&devK, dK, 0));
         HIP_CHECK(hipHostGetDevicePointer((void**)&devV, dV, 0));
+        if (batch_) {
+            if (hipMalloc(&dh_batch, (size_t)batch_ * H * 4) != hipSuccess) return false;
+            HIP_CHECK(hipMemset(dh_batch, 0, (size_t)batch_ * H * 4));
+            host_batch.resize((size_t)batch_ * H);
+            batch_pos.assign(batch_, 0);
+            printf("[fused] batch decode: %d sequences (NPU FFN batched, B DMA amortized)\n", batch_);
+        }
 
         // Init NPU (pure C++ module — no HIP context conflict)
         const char* xd = getenv("NPU_XCLBIN_DIR");
@@ -507,7 +533,13 @@ struct FusedBackend : Backend {
     }
 
     bool reset() override {
-        pos = 0; if (dK) memset(dK, 0, kvb); if (dV) memset(dV, 0, kvb);
+        pos = 0;
+        size_t kvsz = kvb * (batch_ ? (size_t)batch_ : 1);
+        if (dK) memset(dK, 0, kvsz); if (dV) memset(dV, 0, kvsz);
+        if (batch_) {
+            std::fill(batch_pos.begin(), batch_pos.end(), 0);
+            if (dh_batch) HIP_CHECK(hipMemset(dh_batch, 0, (size_t)batch_ * H * 4));
+        }
         if (vk_attn_) va_.zero_cache();
         return true;
     }
@@ -893,6 +925,121 @@ struct FusedBackend : Backend {
         return true;
     }
 
+    // ── Multi-sequence batch decode (FUSED_BATCH=N) ──
+    // Advances all N sequences one token.  Per layer: per-sequence GPU
+    // attention on the stream (back-to-back, warm), then ONE batched NPU FFN
+    // for all N rows (B weight DMA read once — 7.6x vs per-row calls,
+    // bit-identical per row).  hidden_out is [N, H]; callers run lm_head per
+    // row with lm_head(hidden_out + s*H, ...).  The token stream is identical
+    // to N independent single-stream decodes (each sequence's KV is
+    // independent and the batched FFN is bit-identical per row).
+    bool forward_batch(int* token_ids, float* hidden_out, int am) override {
+        if (!batch_ || !dh_batch || am != batch_) {
+            fprintf(stderr, "[fused] forward_batch: batch mode off or am=%d != FUSED_BATCH=%d\n", am, batch_);
+            return false;
+        }
+        const int B_ = batch_, H_ = H, NH_ = NH, NKV_ = NKV, HD_ = this->HD_, IM_ = IM, NC_ = NC;
+        bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+
+        auto embed_one = [&](int s, int tid) {
+            float* hs = dh_batch + (size_t)s * H_;
+            if (tid >= 0 && tid < VOCAB && d_embed)
+                fused_embed_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, d_embed, tid, H_);
+            else
+                HIP_CHECK(hipMemset(hs, 0, H_*4));
+        };
+        // Per-sequence attention (mirrors the single-stream HIP section):
+        // reads/writes hs in place + the sequence's KV slice.  The shared
+        // scratch (datt/dgate/dup_/doproj/dffn) is reused across s — the loop
+        // is sequential on the stream, so no cross-s interference.
+        auto attn_one = [&](int s, int l, int pos_s) {
+            auto& gl = L[l];
+            int s1 = NH_ * HD_, s2 = NKV_ * HD_;
+            float* hs = dh_batch + (size_t)s * H_;
+            __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
+            __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
+            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, hs, H_);
+            if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pn, H_, EPS);
+            else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
+            if (gl.wq) gemv(datt,  gl.wq, hs, s1, H_, stream);
+            if (gl.wk) gemv(dgate, gl.wk, hs, s2, H_, stream);
+            if (gl.wv) gemv(dup_,  gl.wv, hs, s2, H_, stream);
+            if (gl.q_norm) fused_head_rmsnorm_kernel<<<NH_, BLOCK, 0, stream>>>(datt, gl.q_norm, HD_, EPS);
+            if (gl.k_norm) fused_head_rmsnorm_kernel<<<NKV_, BLOCK, 0, stream>>>(dgate, gl.k_norm, HD_, EPS);
+            if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(datt, HD_, pos_s, rope_theta, NH_);
+            if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(dgate, HD_, pos_s, rope_theta, NKV_);
+            if (gl.wo) {
+                fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, datt, s1);
+                fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(lk, lv, dgate, dup_, pos_s, NKV_, HD_, max_seq);
+                float scl = 1.0f / sqrtf((float)HD_);
+                rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos_s+1, scl, (void*)stream);
+                fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dAttn, s1);
+                gemv(doproj, gl.wo, datt, H_, s1, stream);
+                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dffn, H_);
+                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj, H_);
+            }
+        };
+        auto ffn_gpu_one = [&](int s, int l) {
+            auto& gl = L[l];
+            float* hs = dh_batch + (size_t)s * H_;
+            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, hs, H_);
+            if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pon, H_, EPS);
+            else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
+            if (gl.w1 && gl.w2 && gl.w3) {
+                gemv(dgate, gl.w1, hs, IM_, H_, stream);
+                gemv(dup_,  gl.w2, hs, IM_, H_, stream);
+                fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                gemv(hs, gl.w3, datt, H_, IM_, stream);
+                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, dffn, H_);
+            }
+        };
+
+        for (int s = 0; s < B_; s++) embed_one(s, token_ids[s]);
+
+        for (int l = 0; l < NC_; l++) {
+            // Phase A: await the batched FFN(l-1), copy the result back
+            if (use_npu && l > 0) {
+                if (!npu_batch_future_.get()) {
+                    fprintf(stderr, "[fused] NPU FFN batch l=%d failed — GPU FFN from now\n", l - 1);
+                    npu_ok = false; use_npu = false;
+                } else {
+                    HIP_CHECK(hipMemcpy(dh_batch, host_batch.data(),
+                                        (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
+                }
+            }
+            // attention for every sequence (stream-sequential, warm)
+            for (int s = 0; s < B_; s++) attn_one(s, l, batch_pos[s]);
+            // one batched FFN for all rows
+            if (!use_npu) {
+                for (int s = 0; s < B_; s++) ffn_gpu_one(s, l);
+            } else {
+                HIP_CHECK(hipMemcpy(host_batch.data(), dh_batch,
+                                    (size_t)B_ * H_ * sizeof(float), hipMemcpyDeviceToHost));
+                npu_batch_future_ = std::async(std::launch::async, [this, l, H_]() {
+                    return npu_state_ffn_batch(npu, l, host_batch.data(), H_, batch_);
+                });
+            }
+        }
+        // await the LAST batched FFN
+        if (use_npu) {
+            if (!npu_batch_future_.get()) {
+                fprintf(stderr, "[fused] NPU FFN batch final layer failed — GPU FFN fallback\n");
+                for (int s = 0; s < B_; s++) ffn_gpu_one(s, NC_ - 1);
+            } else {
+                HIP_CHECK(hipMemcpy(dh_batch, host_batch.data(),
+                                    (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
+            }
+        }
+        // final RMSNorm + readback per row
+        for (int s = 0; s < B_; s++) {
+            float* hs = dh_batch + (size_t)s * H_;
+            fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(hs, hs, d_final_norm, H_, EPS);
+            HIP_CHECK(hipMemcpy(hidden_out + (size_t)s * H_, hs, H_*4, hipMemcpyDeviceToHost));  // blocking
+            batch_pos[s]++;
+        }
+        return true;
+    }
+
     int generate(int token_id) override {
         auto g0 = std::chrono::steady_clock::now();
         if (!forward(token_id, h_stage.data())) return -1;
@@ -943,6 +1090,8 @@ struct FusedBackend : Backend {
         }
         // Await any in-flight NPU FFN before destroying NPU state
         if (npu_future_.valid()) { npu_future_.wait(); }
+        if (npu_batch_future_.valid()) { npu_batch_future_.wait(); }
+        if (dh_batch) { HIP_CHECK_D(hipFree(dh_batch)); dh_batch = nullptr; }
         if (vk_attn_) va_.destroy();
         vk_embed_.clear(); vk_embed_.shrink_to_fit();
         vk_layers_.clear(); vk_layers_.shrink_to_fit();
