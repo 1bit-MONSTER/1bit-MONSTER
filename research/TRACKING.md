@@ -27,7 +27,7 @@
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
-| WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f 2026-08-29; `llamacpp-hrx` registered + runs in onebin on gfx1151 |
+| WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f + native `HRX_GPU` backend + decode-time failover (commits 43b38b4e, cc4fd23d, 2026-08-29) |
 
 ## Task detail
 
@@ -39,6 +39,9 @@
 - [x] P1: Benchmark HRX vs HIP baseline on gfx1151 (RFC claims 30–50% prefill) — **NOT reproduced**: HIP wins large prefill (1227–1313 tok/s); HRX fails closed on `GET_ROWS` for large prompts; HRX wins warm decode (~175 vs ~70 tok/s). See `ws12-hrx-loom/BENCHMARK.md` (2026-08-29)
 - [x] P2: Native `HRX_GPU` backend in the engine — `BackendType::HRX_GPU` + `backend_hrx.h/.cpp` (subprocess HRX llama-server, LSE-style), wired into `backend_manager` + `backend_factory`, `hrx_gpu` first in the GGUF/H1B + qwen3-GGUF routes, `src/backend_hrx.cpp` in `UNIFIED_SERVER_SOURCES`. Verified: selfcheck 10/10 + engine selects `hrx_gpu` functional on gfx1151. **Decode-time failover closed 2026-08-29**: HRX decode fail-closed (GET_ROWS) now re-routes to another backend (`BackendManager::generate_text` failover + `DynamicRouter::generate` retry/pick_backend_excluding) instead of 500. See `docs/research/hrx-backend.md` (2026-08-29)
 - [ ] P2: Evaluate Loom (`loomc` C API) as an authoring surface for 1bit kernels
+- [ ] P2: HRX fallback quality — a model HRX can't fuse falls back to whatever backend is next in the DynamicRouter (often `cpu_generic`), and output quality can be poor for that model. Consider forcing the next candidate to `ggml_vulkan` (the intended fused-free GPU lane) rather than CPU when HRX fail-closes.
+- [ ] P2: The native `HRX_GPU` backend and lemonade's `llamacpp-hrx` recipe are two independent HRX paths — document which is preferred for a given deployment (engine-native `1bit unified` vs `1bit unified --lemonade`).
+- [ ] P2: Context7 library health — `context7.json` / `context7-config-full.json` show two duplicate `/1bit-monster/1bit-monster` entries (5,985 vs 5,441 snippets) and `parseFailures: 37`; reconcile the duplicates and review the failing docs.
 
 ### WS-00 — Baseline & measurement
 - [x] P0: `run_benchmarks.sh` — runs all `build/bench_*` binaries → JSON + tagged summary (tested 2026-07-31: bench_kv_fd, 30.1 GB/s fd vs 4.4 fp16 at L=1024)

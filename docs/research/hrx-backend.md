@@ -80,3 +80,21 @@ Caveat: the fallback is a *different* backend, so output quality depends on
 that backend's support for the model (a `cpu_generic` fallback on a model HRX
 can't fuse may produce lower-quality or mismatched-session output). HRX remains
 the preferred path for models inside its fused node set.
+
+## Committed
+
+- `43b38b4e` — feat(hrx): native HRX_GPU backend + decode-time failover
+  (backend, failover, routing, docs/tracker, lemonade re-vendor to 7953d7f).
+- `cc4fd23d` — feat(npu): fused GU/SiLU cascade + GUSILU_i4 kernels, parity &
+  stability gates (separate NPU-fusion workstream, committed alongside).
+
+## Open follow-ups (tracked in research/TRACKING.md ws12-hrx-loom)
+
+1. **Fallback quality** — a model HRX can't fuse falls to whichever backend is
+   next in the DynamicRouter (often `cpu_generic`); output can be poor. Prefer
+   routing the fallback to `ggml_vulkan` (the intended GPU lane) over CPU.
+2. **Two HRX paths** — native `HRX_GPU` (engine) vs lemonade `llamacpp-hrx`
+   (`1bit unified --lemonade`); document which a deployment should prefer.
+3. **Llama.cpp RFC #27218 / ggml-hrx upstreaming** — when it lands upstream,
+   HRX becomes a general GGUF backend; re-benchmark the prefill claim.
+4. **Loom authoring** (`loomc` C API) — evaluate for 1bit-specific kernels.
