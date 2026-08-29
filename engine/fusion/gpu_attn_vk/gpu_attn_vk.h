@@ -61,8 +61,15 @@ public:
     // attention + the on-pages FFN) recorded into ONE command buffer — one
     // submit + one waitIdle per token instead of 56 per-layer host waits.
     // The GPU stays continuously busy (no per-layer stall, no cold-start).
-    // Stages are identical to embed()/layer()/ffn() (bit-identical math).
+    // Stages are fused 9 -> 5 per layer (attn_rms+qkv, attn_qkns+decode,
+    // post, ffn_rms+gu, ffn_silu+down) — each fused shader keeps the exact
+    // per-stage arithmetic, so the math is identical to embed()/layer()/ffn().
     bool record_forward(int token_id, int pos);
+    // Diagnostic: record the SAME stage list as record_forward with a GPU
+    // timestamp pair per stage (dedicated query pool), one submit + waitIdle,
+    // and print a per-stage-type breakdown + wall/GPU/host split to stderr.
+    // The production path is untouched (separate method, profile-only).
+    bool profile_forward(int token_id, int pos);
     // On-pages FFN: rms -> gate/up gemv -> silu -> down gemv -> residual add,
     // all in place on the pages (no pages->dh round trip).  Requires the
     // FFN weights (VkLayerW::w1/w2/w3/pon) uploaded via upload_layer.
@@ -107,6 +114,8 @@ private:
     vkrt::Pipeline p_rms_, p_qkv_, p_qkns_, p_decode_, p_post_, p_embed_;
     vkrt::Pipeline p_zero_;
     vkrt::Pipeline p_ffn_rms_, p_ffn_gu_, p_ffn_silu_, p_ffn_down_, p_ffn_add_;
+    // Fused record_forward pipelines (9 -> 7 stages/layer).
+    vkrt::Pipeline p_qknsdecode_, p_ffnsiluadd_;
     // One shared descriptor set per pipeline (weights packed, pc.layer picks).
     VkDescriptorSet ds_rms_ = VK_NULL_HANDLE, ds_qkv_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_post_ = VK_NULL_HANDLE;
@@ -116,6 +125,7 @@ private:
     VkDescriptorSet ds_ffn_rms_ = VK_NULL_HANDLE, ds_ffn_gu_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_ffn_silu_ = VK_NULL_HANDLE, ds_ffn_down_ = VK_NULL_HANDLE;
     VkDescriptorSet ds_ffn_add_ = VK_NULL_HANDLE;
+    VkDescriptorSet ds_qknsdecode_ = VK_NULL_HANDLE, ds_ffnsiluadd_ = VK_NULL_HANDLE;
     vkrt::GpuBuffer* buf_zero_[1] = {nullptr};
     vkrt::GpuBuffer* buf_rms_[3] = {nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_qkv_[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -128,6 +138,8 @@ private:
     vkrt::GpuBuffer* buf_ffn_silu_[1] = {nullptr};
     vkrt::GpuBuffer* buf_ffn_down_[3] = {nullptr, nullptr, nullptr};
     vkrt::GpuBuffer* buf_ffn_add_[3] = {nullptr, nullptr, nullptr};
+    vkrt::GpuBuffer* buf_qknsdecode_[8] = {nullptr};
+    vkrt::GpuBuffer* buf_ffnsiluadd_[5] = {nullptr};
 };
 
 } // namespace fusion

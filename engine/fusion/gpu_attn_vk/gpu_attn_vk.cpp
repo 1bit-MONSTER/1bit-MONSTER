@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <unistd.h>
 
 namespace fusion {
@@ -87,7 +88,9 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
         !load(p_ffn_gu_, "ffn_gu.spv", 3, sizeof(VkAttnPC)) ||
         !load(p_ffn_silu_, "ffn_silu.spv", 1, sizeof(VkAttnPC)) ||
         !load(p_ffn_down_, "ffn_down.spv", 3, sizeof(VkAttnPC)) ||
-        !load(p_ffn_add_, "ffn_add.spv", 3, sizeof(VkAttnPC))) {
+        !load(p_ffn_add_, "ffn_add.spv", 3, sizeof(VkAttnPC)) ||
+        !load(p_qknsdecode_, "attn_qkns_decode.spv", 8, sizeof(VkAttnPC)) ||
+        !load(p_ffnsiluadd_, "ffn_silu_down_add.spv", 5, sizeof(VkAttnPC))) {
         fprintf(stderr, "[vk_attn] pipeline load failed (run the shader build first)\n");
         return false;
     }
@@ -119,11 +122,23 @@ bool VkAttention::init(xrt::device& npu_dev, int H, int NH, int NKV, int HD,
     ds_ffn_down_ = vkrt::createDescriptorSet(vk_, p_ffn_down_, buf_ffn_down_, 3);
     buf_ffn_add_[0] = &pages_buf_; buf_ffn_add_[1] = &hn_; buf_ffn_add_[2] = &ao_;
     ds_ffn_add_ = vkrt::createDescriptorSet(vk_, p_ffn_add_, buf_ffn_add_, 3);
+    // Fused record_forward descriptor sets (9 -> 7 stages/layer):
+    //   qkns_decode : q, k, qn, kn, kc, vc, v, ao
+    //   ffn_silu_add: go, w3, d(ao_), res(hn_), pages
+    buf_qknsdecode_[0] = &q_; buf_qknsdecode_[1] = &k_;
+    buf_qknsdecode_[2] = &qn_; buf_qknsdecode_[3] = &kn_;
+    buf_qknsdecode_[4] = &kc_; buf_qknsdecode_[5] = &vc_;
+    buf_qknsdecode_[6] = &v_; buf_qknsdecode_[7] = &ao_;
+    ds_qknsdecode_ = vkrt::createDescriptorSet(vk_, p_qknsdecode_, buf_qknsdecode_, 8);
+    buf_ffnsiluadd_[0] = &ffn_gu_; buf_ffnsiluadd_[1] = &w3_;
+    buf_ffnsiluadd_[2] = &ao_; buf_ffnsiluadd_[3] = &hn_; buf_ffnsiluadd_[4] = &pages_buf_;
+    ds_ffnsiluadd_ = vkrt::createDescriptorSet(vk_, p_ffnsiluadd_, buf_ffnsiluadd_, 5);
     if (ds_rms_ == VK_NULL_HANDLE || ds_qkv_ == VK_NULL_HANDLE ||
         ds_qkns_ == VK_NULL_HANDLE || ds_post_ == VK_NULL_HANDLE || ds_decode_ == VK_NULL_HANDLE ||
         ds_zero_ == VK_NULL_HANDLE || ds_ffn_rms_ == VK_NULL_HANDLE ||
         ds_ffn_gu_ == VK_NULL_HANDLE || ds_ffn_silu_ == VK_NULL_HANDLE ||
-        ds_ffn_down_ == VK_NULL_HANDLE || ds_ffn_add_ == VK_NULL_HANDLE) {
+        ds_ffn_down_ == VK_NULL_HANDLE || ds_ffn_add_ == VK_NULL_HANDLE ||
+        ds_qknsdecode_ == VK_NULL_HANDLE || ds_ffnsiluadd_ == VK_NULL_HANDLE) {
         fprintf(stderr, "[vk_attn] descriptor set alloc failed\n");
         return false;
     }
@@ -247,22 +262,159 @@ bool VkAttention::record_forward(int token_id, int pos) {
                                    max_seq_, 1e-6f, rope_theta_, 1.0f };
     }
     std::vector<vkrt::DispatchStage> stages;
-    stages.reserve((size_t)1 + (size_t)NC_ * 9);
+    stages.reserve((size_t)1 + (size_t)NC_ * 7);
+    // The stages' data flow (for reference): rms<-pages, qkv<-hn,
+    // qkns_decode<-q/k/v, post<-ao+pages, ffn_rms<-pages, ffn_gu<-pages,
+    // silu_add<-go+hn.  Barriers between them are full compute barriers —
+    // scoped VkBufferMemoryBarrier variants measured the SAME cost for
+    // device-local buffers and were 5 ms SLOWER on the dma-buf pages (RADV),
+    // and removing them entirely races through L1 (stale reads).
     stages.push_back({&p_embed_, ds_embed_, (uint32_t)((H_ + 255) / 256), 1, 1, &pcs[0]});
     for (int l = 0; l < NC_; l++) {
         const VkAttnPC* pc = &pcs[(size_t)l + 1];
-        stages.push_back({&p_rms_,     ds_rms_,     1, 1, 1, pc});
-        stages.push_back({&p_qkv_,     ds_qkv_,     (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), 1, 1, pc});
-        stages.push_back({&p_qkns_,    ds_qkns_,    (uint32_t)(NH_ + NKV_), 1, 1, pc});
-        stages.push_back({&p_decode_,  ds_decode_,  (uint32_t)NH_, 1, 1, pc});
-        stages.push_back({&p_post_,    ds_post_,    (uint32_t)((H_ + 15) / 16), 1, 1, pc});
-        stages.push_back({&p_ffn_rms_, ds_ffn_rms_, 1, 1, 1, pc});
-        stages.push_back({&p_ffn_gu_,  ds_ffn_gu_,  (uint32_t)(2 * IM_), 1, 1, pc});
-        stages.push_back({&p_ffn_silu_, ds_ffn_silu_, (uint32_t)((IM_ + 255) / 256), 1, 1, pc});
-        stages.push_back({&p_ffn_down_, ds_ffn_down_, (uint32_t)H_, 1, 1, pc});
-        stages.push_back({&p_ffn_add_,  ds_ffn_add_,  (uint32_t)((H_ + 255) / 256), 1, 1, pc});
+        // 7 stages/layer: the qkns+decode and silu+down+add fusions are pure
+        // wins (~40 us/dispatch floor); the redundant-RMS fusions were
+        // measured slower (extra per-block rms work > dispatch savings), so
+        // rms stays a separate 1-block dispatch.  Per-stage math unchanged.
+        // Scoped buffer barriers (dep) replace the full-L2 MemoryBarrier —
+        // each stage flushes only the small scratch the PREVIOUS stage wrote
+        // and THIS stage reads (~9-10 us/stage saved on RADV).
+        vkrt::DispatchStage st;
+        st = {&p_rms_,        ds_rms_,        1, 1, 1, pc};
+        stages.push_back(st);
+        st = {&p_qkv_,        ds_qkv_,        (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), 1, 1, pc};
+        stages.push_back(st);
+        st = {&p_qknsdecode_, ds_qknsdecode_, (uint32_t)NH_, 1, 1, pc};
+        stages.push_back(st);
+        st = {&p_post_,       ds_post_,       (uint32_t)((H_ + 15) / 16), 1, 1, pc};
+        stages.push_back(st);
+        st = {&p_ffn_rms_,    ds_ffn_rms_,    1, 1, 1, pc};
+        stages.push_back(st);
+        st = {&p_ffn_gu_,     ds_ffn_gu_,     (uint32_t)(2 * IM_), 1, 1, pc};
+        stages.push_back(st);
+        st = {&p_ffnsiluadd_, ds_ffnsiluadd_, (uint32_t)H_, 1, 1, pc};
+        stages.push_back(st);
     }
+    // NOTE: inter-stage barriers are REQUIRED — the no-barrier experiment
+    // (dispatchBatchOnce noBarriers=true) races through L1 (stale reads,
+    // 2.9e-1 pages diff); AMD global writes are not coherent across
+    // dispatches.  Scoped buffer barriers cost the same as the full barrier
+    // (~13 us/stage drain-wait on RADV), so use the full barrier path.
     vkrt::dispatchBatchOnce(vk_, stages.data(), (uint32_t)stages.size());
+    return true;
+}
+
+bool VkAttention::profile_forward(int token_id, int pos) {
+    if (!ok_ || ds_embed_ == VK_NULL_HANDLE || ds_ffn_rms_ == VK_NULL_HANDLE)
+        return false;
+    try {
+        vk::Device vd(vk_.dev);
+        // Identical stage list to record_forward (embed + 9 stages/layer).
+        std::vector<VkAttnPC> pcs((size_t)NC_ + 1);
+        for (int l = 0; l <= NC_; l++) {
+            pcs[(size_t)l] = VkAttnPC{ H_, NH_, NKV_, HD_, IM_,
+                                       (l == 0) ? token_id : pos,
+                                       (l == 0) ? 0 : l - 1,
+                                       max_seq_, 1e-6f, rope_theta_, 1.0f };
+        }
+        const uint32_t nStages = 1 + (uint32_t)NC_ * 7;
+        const uint32_t nq = 2 * nStages;
+
+        vk::QueryPoolCreateInfo qpci;
+        qpci.queryType = vk::QueryType::eTimestamp;
+        qpci.queryCount = nq;
+        vk::QueryPool qpool = vd.createQueryPool(qpci);
+
+        vk::CommandBufferAllocateInfo cba(vk_.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        cmd.resetQueryPool(qpool, 0, nq);
+
+        uint32_t qi = 0;
+        auto addStage = [&](vkrt::Pipeline& p, VkDescriptorSet ds, uint32_t gx,
+                            const VkAttnPC* pc, bool barrier) {
+            if (barrier) {
+                vk::MemoryBarrier mb(vk::AccessFlagBits::eShaderWrite,
+                                     vk::AccessFlagBits::eShaderRead);
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::DependencyFlags(0), {mb}, {}, {});
+            }
+            cmd.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, qpool, qi);
+            cmd.bindPipeline(vk::PipelineBindPoint::eCompute, p.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, p.layout, 0,
+                                   {vk::DescriptorSet(ds)}, {});
+            if (pc && p.pcSize > 0)
+                cmd.pushConstants(p.layout, vk::ShaderStageFlagBits::eCompute, 0,
+                                  p.pcSize, pc);
+            cmd.dispatch(gx, 1, 1);
+            cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, qpool, qi + 1);
+            qi += 2;
+        };
+
+        addStage(p_embed_, ds_embed_, (uint32_t)((H_ + 255) / 256), &pcs[0], false);
+        for (int l = 0; l < NC_; l++) {
+            const VkAttnPC* pc = &pcs[(size_t)l + 1];
+            addStage(p_rms_,        ds_rms_,        1, pc, true);
+            addStage(p_qkv_,        ds_qkv_,        (uint32_t)(NH_ * HD_ + 2 * NKV_ * HD_), pc, true);
+            addStage(p_qknsdecode_, ds_qknsdecode_, (uint32_t)NH_, pc, true);
+            addStage(p_post_,       ds_post_,       (uint32_t)((H_ + 15) / 16), pc, true);
+            addStage(p_ffn_rms_,    ds_ffn_rms_,    1, pc, true);
+            addStage(p_ffn_gu_,     ds_ffn_gu_,     (uint32_t)(2 * IM_), pc, true);
+            addStage(p_ffnsiluadd_, ds_ffnsiluadd_, (uint32_t)H_, pc, true);
+        }
+        cmd.end();
+
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        vk_.queue.submit(si, nullptr);
+        vk_.queue.waitIdle();
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double wall_ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
+                         (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+
+        std::vector<uint64_t> ts(nq);
+        vk::Result r = vd.getQueryPoolResults(qpool, 0, nq, nq * sizeof(uint64_t),
+                                              ts.data(), sizeof(uint64_t),
+                                              vk::QueryResultFlagBits::e64);
+        vd.freeCommandBuffers(vk_.cmdPool, 1, &cmd);
+        vd.destroyQueryPool(qpool);
+
+        if (r != vk::Result::eSuccess) {
+            fprintf(stderr, "[vk_attn] profile: query results unavailable (res %d)\n", (int)r);
+            return true;
+        }
+
+        static const char* names[7] = { "attn_rms",  "attn_qkv",  "attn_qkns_decode",
+                                        "attn_post", "ffn_rms",   "ffn_gu",
+                                        "ffn_silu_add" };
+        double us_per_ns = vk_.timestampPeriodNs / 1e3;   // ns -> us
+        double embed_us = (double)(ts[1] - ts[0]) * us_per_ns;
+        double sum[7] = {};
+        for (int l = 0; l < NC_; l++) {
+            for (int s = 0; s < 7; s++) {
+                uint32_t b = 2 + (uint32_t)(l * 7 + s) * 2;
+                sum[s] += (double)(ts[b + 1] - ts[b]) * us_per_ns;
+            }
+        }
+        double gpu_us = (double)(ts[nq - 1] - ts[0]) * us_per_ns;
+        double sum9 = 0;
+        for (int s = 0; s < 7; s++) sum9 += sum[s];
+        fprintf(stderr, "[vk_attn] profile pos=%d: embed %7.1f us\n", pos, embed_us);
+        for (int s = 0; s < 7; s++)
+            fprintf(stderr, "  %-16s %9.1f us/28 (%4.1f%%)\n", names[s], sum[s],
+                    100.0 * sum[s] / (sum9 > 0 ? sum9 : 1.0));
+        fprintf(stderr, "  %-10s %9.1f us  (stage sum)\n", "Σ stages", sum9);
+        fprintf(stderr, "  wall %.2f ms | gpu-span %.2f ms | host+gap %.2f ms\n",
+                wall_ms, gpu_us / 1e3, wall_ms - gpu_us / 1e3);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR profile_forward: %s\n", e.what());
+        return false;
+    }
     return true;
 }
 
@@ -308,6 +460,7 @@ void VkAttention::destroy() {
     p_post_.destroy(vk_.dev); p_qkns_.destroy(vk_.dev); p_embed_.destroy(vk_.dev); p_zero_.destroy(vk_.dev);
     p_ffn_rms_.destroy(vk_.dev); p_ffn_gu_.destroy(vk_.dev);
     p_ffn_silu_.destroy(vk_.dev); p_ffn_down_.destroy(vk_.dev); p_ffn_add_.destroy(vk_.dev);
+    p_qknsdecode_.destroy(vk_.dev); p_ffnsiluadd_.destroy(vk_.dev);
     auto free = [&](vkrt::GpuBuffer& b) { if (b.mem) b.destroy(); };
     free(wq_); free(wk_); free(wv_); free(wo_); free(pn_); free(qn_); free(kn_);
     free(hn_); free(q_); free(k_); free(v_); free(ao_); free(kc_); free(vc_); free(emb_);

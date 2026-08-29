@@ -13,12 +13,12 @@
 
 // ── CPU reference (mirrors the .comp shaders exactly, f32) ──
 struct CpuRef {
-    int H, NH, NKV, HD;
+    int H, NH, NKV, HD, IM;
     float rope_theta;
     std::vector<float> kc, vc;   // [NKV*max_seq*HD]
 
-    CpuRef(int H, int NH, int NKV, int HD, float rope) : H(H), NH(NH), NKV(NKV),
-        HD(HD), rope_theta(rope), kc((size_t)NKV * 64 * HD), vc((size_t)NKV * 64 * HD) {}
+    CpuRef(int H, int NH, int NKV, int HD, int IM, float rope) : H(H), NH(NH), NKV(NKV),
+        HD(HD), IM(IM), rope_theta(rope), kc((size_t)NKV * 64 * HD), vc((size_t)NKV * 64 * HD) {}
 
     void rmsnorm(const float* h, const float* pn, float* hn) {
         double ss = 0;
@@ -68,6 +68,36 @@ struct CpuRef {
             for (int k = 0; k < H; k++) acc += x[k] * W[o * H + k];
             y[o] = acc;
         }
+    }
+
+    // On-pages FFN (mirrors ffn_rms/gu/silu/down/add): res = h;
+    // h = rmsnorm(h, pon); go = silu(w1@h) * (w2@h); out = res + w3@go.
+    void ffn(const float* h_in, const fusion::VkLayerW& w, float* h_out) {
+        std::vector<float> res(H);
+        for (int i = 0; i < H; i++) res[i] = h_in[i];
+        double ss = 0;
+        for (int i = 0; i < H; i++) ss += (double)h_in[i] * h_in[i];
+        float inv = 1.0f / sqrtf((float)(ss / H) + 1e-6f);
+        std::vector<float> hn(H);
+        for (int i = 0; i < H; i++) hn[i] = h_in[i] * inv * w.pon[i];
+        std::vector<float> go(IM);
+        for (int o = 0; o < IM; o++) {
+            float a = 0, b = 0;
+            for (int k = 0; k < H; k++) { a += hn[k] * w.w1[o * H + k]; b += hn[k] * w.w2[o * H + k]; }
+            go[o] = (a / (1.0f + expf(-a))) * b;   // silu(gate) * up
+        }
+        for (int i = 0; i < H; i++) {
+            float acc = 0;
+            for (int k = 0; k < IM; k++) acc += go[k] * w.w3[i * IM + k];
+            h_out[i] = res[i] + acc;
+        }
+    }
+
+    // Full layer = attention then FFN (what record_forward does in one buffer).
+    void full_layer(const float* h_in, int pos, int layer, const fusion::VkLayerW& w, float* h_out) {
+        std::vector<float> att(H);
+        this->layer(h_in, pos, layer, w, att.data());
+        ffn(att.data(), w, h_out);
     }
 
     void layer(const float* pages_in, int pos, int layer, const fusion::VkLayerW& w,
@@ -147,9 +177,16 @@ int main() {
     const int H = 1024, NH = 16, NKV = 8, HD = 128, IM = 3072, MAXSEQ = 64;
     const float ROPE = 1000000.0f;
 
+    // VK_PROFILE_FORWARD=1: profile-only mode — init the REAL 28-layer
+    // pipeline (same stage list as record_forward), upload synthetic weights
+    // for every layer, then print the per-stage GPU-timestamp breakdown at a
+    // mid-context position (pos 16).  Skips the correctness checks.
+    const bool profile = getenv("VK_PROFILE_FORWARD") != nullptr;
+    const int num_layers = profile ? 28 : 1;
+
     xrt::device npu(0);
     fusion::VkAttention va;
-    if (!va.init(npu, H, NH, NKV, HD, IM, MAXSEQ, 1, ROPE, "shaders")) {
+    if (!va.init(npu, H, NH, NKV, HD, IM, MAXSEQ, num_layers, ROPE, "shaders")) {
         fprintf(stderr, "FAIL: VkAttention init\n"); return 1;
     }
 
@@ -160,6 +197,8 @@ int main() {
     w.wq.resize((size_t)NH * HD * H); w.wk.resize((size_t)NKV * HD * H);
     w.wv.resize((size_t)NKV * HD * H); w.wo.resize((size_t)H * NH * HD);
     w.pn.resize(H); w.qn.resize(HD); w.kn.resize(HD);
+    w.w1.resize((size_t)IM * H); w.w2.resize((size_t)IM * H);
+    w.w3.resize((size_t)H * IM); w.pon.resize(H);
     for (auto& x : w.wq) x = rnd() * 0.02f;
     for (auto& x : w.wk) x = rnd() * 0.02f;
     for (auto& x : w.wv) x = rnd() * 0.02f;
@@ -167,14 +206,30 @@ int main() {
     for (auto& x : w.pn) x = 0.5f + rnd() * 0.1f;
     for (auto& x : w.qn) x = 0.8f + rnd() * 0.2f;
     for (auto& x : w.kn) x = 0.8f + rnd() * 0.2f;
+    for (auto& x : w.w1) x = rnd() * 0.02f;
+    for (auto& x : w.w2) x = rnd() * 0.02f;
+    for (auto& x : w.w3) x = rnd() * 0.02f;
+    for (auto& x : w.pon) x = 0.5f + rnd() * 0.1f;
     std::vector<float> emb((size_t)2 * H);
     for (auto& x : emb) x = rnd() * 0.05f;
 
-    if (!va.upload_embed(emb) || !va.upload_layer(0, w)) {
-        fprintf(stderr, "FAIL: upload\n"); return 1;
+    if (!va.upload_embed(emb)) {
+        fprintf(stderr, "FAIL: embed upload\n"); return 1;
+    }
+    for (int l = 0; l < num_layers; l++)
+        if (!va.upload_layer(l, w)) {
+            fprintf(stderr, "FAIL: layer %d upload\n", l); return 1;
+        }
+
+    if (profile) {
+        va.zero_cache();
+        va.profile_forward(0, 0);   // warmup (also fills KV row 0)
+        va.profile_forward(0, 16);  // measured: decode scans 0..16
+        va.destroy();
+        return 0;
     }
 
-    CpuRef ref(H, NH, NKV, HD, ROPE);
+    CpuRef ref(H, NH, NKV, HD, IM, ROPE);
 
     // Token 0 at pos 0, then the next token at pos 1 (KV persists).
     for (int pos = 0; pos < 2; pos++) {
@@ -219,6 +274,30 @@ int main() {
         double d = max_abs_diff(pages_vk2, h_out);
         fprintf(stderr, "pos %d: pages diff = %.3e %s\n", pos, d, d < 5e-3 ? "PASS" : "FAIL");
         if (!ok_all || d >= 5e-3) return 1;
+
+        // ── FFN (old path) + fused record_forward parity ──
+        va.ffn(0);   // old-path on-pages FFN on the current post-attention pages
+        std::vector<float> pages_old(H);
+        memcpy(pages_old.data(), va.pages()->host_ptr(), H * 4);
+        std::vector<float> h_full(H);
+        ref.full_layer(h_in.data(), pos, 0, w, h_full.data());
+        double dfull = max_abs_diff(pages_old, h_full);
+        fprintf(stderr, "pos %d: ffn vs CPU = %.3e %s\n", pos, dfull, dfull < 5e-3 ? "ok" : "MISMATCH");
+        // Fused record_forward: fresh embed + attention + FFN in ONE command
+        // buffer.  Must reproduce the old-path pages BIT-IDENTICALLY (the
+        // fused 5-stage list keeps the exact per-stage arithmetic).
+        va.embed(pos);
+        if (!va.record_forward(pos, pos)) {
+            fprintf(stderr, "record_forward FAIL\n"); return 1;
+        }
+        std::vector<float> pages_new(H);
+        memcpy(pages_new.data(), va.pages()->host_ptr(), H * 4);
+        double drf_old = max_abs_diff(pages_new, pages_old);
+        double drf_cpu = max_abs_diff(pages_new, h_full);
+        fprintf(stderr, "pos %d: record_forward vs old-path = %.3e %s | vs CPU = %.3e %s\n",
+                pos, drf_old, drf_old < 1e-6 ? "PASS" : "DIFF",
+                drf_cpu, drf_cpu < 5e-3 ? "ok" : "MISMATCH");
+        if (dfull >= 5e-3 || drf_old >= 1e-6 || drf_cpu >= 5e-3) return 1;
     }
     fprintf(stderr, "\n=== VK IN-PLACE ATTENTION LAYER MATCHES CPU REFERENCE ===\n");
     va.destroy();
