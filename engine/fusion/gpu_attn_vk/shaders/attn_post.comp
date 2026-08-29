@@ -2,11 +2,6 @@
 // NPU SharedBO pages (the hidden state never leaves them).  out[i] = sum_j
 // Wo[i*NHHD + j] * attn[j] + h[i], where h is read from the pages (still the
 // pre-attention residual) and the result overwrites the pages.
-//
-// ONE BLOCK PER OUTPUT ROW, 256 threads reading j = tid (contiguous 1 KB per
-// load round — fully coalesced; the old 8-lane/row 32-rows/block pattern read
-// 8-apart elements and ran only 32 blocks — underutilized on 40 CUs).
-// Mirrors the fused backend's wo gemv: y[o] = sum_k x[k]*W[o*N+k].
 #version 450
 layout(local_size_x = 256) in;
 
@@ -20,22 +15,32 @@ layout(push_constant) uniform PC {
     float eps; float rope_theta; float scale;
 } pc;
 
-shared float part[256];
+shared float part[256];   // part[r*8+s] = row r partial from lane s
 
 void main() {
-    uint row = gl_WorkGroupID.x;   // one block per output row
     uint tid = gl_LocalInvocationID.x;
     int n = pc.NH * pc.HD;
-    if (row >= uint(pc.H)) return;
+    // wo is packed [layer][H][NH*HD].  8 threads cooperate per output row:
+    // lane s accumulates the strided j = s, s+8, ... slice of the n dim, then
+    // a 3-step tree reduction over the 8 lanes.  Block covers 32 rows
+    // (256/8); grid strides over all H rows.  (Old: one thread per row, serial
+    // n=2048 loop — ~12x slower than HIP's gemv.)
     uint wo_off = uint(pc.layer) * uint(pc.H) * uint(n);
+    uint gid = gl_GlobalInvocationID.x;
+    uint r = (gid >> 3) & 31u;          // row within this block's 32
+    uint s = gid & 7u;                  // lane
+    uint base_row = (gl_WorkGroupID.x << 5);
+    uint row = base_row + r;
+    if (row >= uint(pc.H)) return;
     float acc = 0.0;
-    for (int j = int(tid); j < n; j += 256)
+    for (int j = int(s); j < n; j += 8)
         acc += wo[wo_off + row * uint(n) + uint(j)] * ao[uint(j)];
-    part[tid] = acc;
+    part[r * 8u + s] = acc;
     barrier();
-    for (int st = 128; st > 0; st >>= 1) {
-        if (tid < uint(st)) part[tid] += part[tid + uint(st)];
+    // 8-lane tree reduction per row: lane 0 of each row gets the sum.
+    for (int st = 4; st > 0; st >>= 1) {
+        if ((s & uint(st)) == 0u && s < uint(st)) part[r * 8u + s] += part[r * 8u + s + uint(st)];
         barrier();
     }
-    if (tid == 0u) h[row] = part[0] + h[row];   // residual add, in place
+    if (s == 0u) h[row] = part[r * 8u] + h[row];   // residual add, in place
 }
