@@ -120,6 +120,39 @@ public:
         goB(A, am, ak, as_, Bs, C, an, *bB);
     }
 
+    // Multi-row variant with PER-ROW activation scales (batched multi-sequence
+    // decode: each sequence's hidden state has its own dynamic range, so each
+    // row quantizes with its own ascale — the single-scale goB would bias
+    // quiet sequences).  The M=8 xclbins run 8 rows per launch (MD=8, am<=8);
+    // the M=128 family runs up to 128.  B (the weights) is read ONCE for all
+    // rows, so the launch time is ~row-count-independent (measured: 2045 us
+    // for 8 rows vs 2056 us for 1 on the m8 GU — the B DMA amortizes).
+    void goB_rows(const float* A, int am, int ak, const float* ascales,
+                  float Bs, float* C, int an, xrt::bo& B) {
+        memset(Am, 0, (size_t)MD * KD);
+        for (int mi = 0; mi < am; mi++) {
+            float ais = 1.0f / ascales[mi];
+            for (int ki = 0; ki < ak; ki++) {
+                float v = A[mi * ak + ki]; if (!std::isfinite(v)) v = 0;
+                int q = (int)roundf(v * ais); if (q > 127) q = 127; else if (q < -127) q = -127;
+                Am[mi * KD + ki] = (int8_t)q;
+            }
+        }
+        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        unsigned ninstr = (ins.size() > 4 && ins[0] == 0x06040100u) ? ins[2] : (unsigned)ins.size();
+        auto r = (*k)((unsigned)3, *bI, ninstr, *bA, B, *bC);
+        r.wait();
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        for (int m = 0; m < am; m++) {
+            float cs = ascales[m] * Bs;
+            for (int n = 0; n < an; n++) {
+                float val = (float)Cm[m * ND + n] * cs;
+                C[m * an + n] = std::isfinite(val) ? val : 0.0f;
+            }
+        }
+    }
+
     // go() with a caller-provided B buffer (see packB_into).
     void goB(const float* A, int am, int ak, float as_, float Bs, float* C, int an, xrt::bo& B) {
         float ais = 1.0f / as_;

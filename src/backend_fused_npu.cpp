@@ -183,3 +183,68 @@ bool npu_state_ffn(NpuState* s, int layer, float* h, int H) {
         return false;
     }
 }
+
+bool npu_state_ffn_batch(NpuState* s, int layer, float* h, int H, int am) {
+    if (!s || !s->ok || layer >= (int)s->gu_scale.size() || am <= 0) return false;
+    if (am > s->xm) {
+        fprintf(stderr, "[npu_ffn] batch am=%d exceeds tile width %d\n", am, s->xm);
+        return false;
+    }
+    int IM = s->IM;
+    try {
+        if (layer >= (int)s->gu_b.size() || !s->gu_b[layer] || !s->d_b[layer]) return false;
+
+        // Per-row FFN RMSNorm + activation scale (each sequence has its own
+        // dynamic range — the batched kernel quantizes per row).
+        std::vector<float> hnorm((size_t)am * H);
+        std::vector<float> ascales(am), dscales(am);
+        const auto& nw = s->ffn_norm[layer];
+        for (int m = 0; m < am; m++) {
+            const float* hm = h + (size_t)m * H;
+            float* hn = hnorm.data() + (size_t)m * H;
+            if (!nw.empty()) {
+                double ss = 0;
+                for (int i = 0; i < H; i++) ss += (double)hm[i] * hm[i];
+                float inv = 1.0f / sqrtf((float)(ss / H) + 1e-6f);
+                for (int i = 0; i < H; i++) hn[i] = hm[i] * inv * nw[i];
+            } else {
+                memcpy(hn, hm, (size_t)H * sizeof(float));
+            }
+            float a = 0;
+            for (int i = 0; i < H; i++) { float f = fabsf(hn[i]); if (f > a) a = f; }
+            ascales[m] = (a < 1e-12f) ? 1.0f : a / 127.0f;
+        }
+
+        std::vector<float> gu((size_t)am * 2 * IM);
+        s->gu->goB_rows(hnorm.data(), am, H, ascales.data(), s->gu_scale[layer], gu.data(), 2*IM, *s->gu_b[layer]);
+        for (int m = 0; m < am; m++)
+            for (int i = 0; i < IM; i++) {
+                float g = gu[(size_t)m * 2 * IM + i], u = gu[(size_t)m * 2 * IM + IM + i];
+                gu[(size_t)m * 2 * IM + i] = (g / (1.0f + expf(-g))) * u;
+            }
+        for (int m = 0; m < am; m++) {
+            float a = 0;
+            for (int i = 0; i < IM; i++) { float f = fabsf(gu[(size_t)m * 2 * IM + i]); if (f > a) a = f; }
+            dscales[m] = (a < 1e-12f) ? 1.0f : a / 127.0f;
+        }
+        // The D kernel's A is [am, IM] contiguous — compact the silu'd first
+        // half of each gu row (gu is [am, 2*IM]; goB_rows would read row m at
+        // m*IM, i.e. the wrong stride, without this).
+        std::vector<float> silu_in((size_t)am * IM);
+        for (int m = 0; m < am; m++)
+            memcpy(silu_in.data() + (size_t)m * IM, gu.data() + (size_t)m * 2 * IM,
+                   (size_t)IM * sizeof(float));
+
+        std::vector<float> ffn_out((size_t)am * H);
+        s->d->goB_rows(silu_in.data(), am, IM, dscales.data(), s->d_scale[layer], ffn_out.data(), H, *s->d_b[layer]);
+        for (int m = 0; m < am; m++)
+            for (int i = 0; i < H; i++) h[(size_t)m * H + i] += ffn_out[(size_t)m * H + i];
+        return true;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[npu_ffn] batch l=%d exception: %s\n", layer, e.what());
+        return false;
+    } catch (...) {
+        fprintf(stderr, "[npu_ffn] batch l=%d unknown exception\n", layer);
+        return false;
+    }
+}
