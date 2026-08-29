@@ -14,7 +14,7 @@ permissions:
 jobs:
   pr_agent:
     runs-on: [self-hosted, pr-agent]
-    timeout-minutes: 20
+    timeout-minutes: 30
     # Only run for same-repo PRs and trusted commenters (not external forks)
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
@@ -27,7 +27,7 @@ jobs:
 
       # GitNexus: build/refresh the local knowledge-graph index (incremental),
       # then map the PR diff to indexed symbols + affected execution flows.
-      # The report is injected into the review via artifact_path below.
+      # The report is injected into the review via the artifacts override below.
       # Only on pull_request events: comment-triggered runs have no
       # pull_request.base.sha for the cache key (PR agent still runs).
       # NOTE: self-hosted runner — the GitNexus index persists in the work
@@ -36,6 +36,12 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           set +e  # GitNexus is context-only; infra hiccups must not block the review
+          # The self-hosted runners install node/npm/gitnexus via nvm (crontab
+          # @reboot env has no nvm on PATH). Bootstrap PATH; no-op elsewhere.
+          export NVM_DIR="$HOME/.nvm"
+          if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh" >/dev/null 2>&1; fi
+          _node_bin="$(ls "$HOME/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$_node_bin" ]; then export PATH="$HOME/.nvm/versions/node/$_node_bin/bin:$PATH"; fi
           npm install -g gitnexus@1.6.10-rc.204 2>/dev/null || true  # pre-installed on the self-hosted runner; no-op here
           # Register a restored cache index (no-op if absent), then refresh
           # incrementally. rc.204 pins the #2432 native-worker abort fix
@@ -47,25 +53,54 @@ jobs:
           echo "--- gitnexus report (first 30 lines) ---"
           head -30 gitnexus-context.md
 
-      - name: PR Agent
-        uses: The-PR-Agent/pr-agent@4ebd5c5333c6ef21509e7304d27969eb825e6f22  # v0.43.0
-        with:
-          artifact_path: gitnexus-context.md
-          artifact_instructions: >
-            This is a GitNexus knowledge-graph analysis of the PR's changed
-            symbols: blast radius (upstream dependants), affected execution
-            flows, and risk level. Use it to prioritize review effort on
-            high-risk changes and to verify the PR's impact claims against
-            the repo's actual call graph.
+      # PR Agent — native pip CLI (no docker), so the loop runs on any
+      # self-hosted runner (strixhalo has no docker; the docker action cannot
+      # run there). The CLI auto-loads the repo-local .pr_agent.toml (DeepSeek
+      # v4-flash via litellm); the git provider token is passed via the
+      # GITHUB__USER_TOKEN env var (dynaconf, envvar_prefix=false).
+      - name: PR Agent (CLI)
         env:
-          # PR-Agent talks to DeepSeek via litellm's deepseek provider
-          # (model deepseek/deepseek-v4-flash in .pr_agent.toml). The
-          # provider default base (https://api.deepseek.com) is used, so no
-          # OPENAI_API_BASE override is needed here.
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          # SECURITY: GITHUB_TOKEN with contents:write scope is passed to the
-          # third-party action The-PR-Agent/pr-agent. Mitigation: the job-level
-          # `if` guard above restricts execution to same-repo PRs only;
-          # external forks are never processed. Action pinned to v0.41.0 SHA.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONFIG_FILE: .pr_agent.toml
+          # Passed via env (not inlined into the script) so multiline/quoting
+          # comment bodies cannot break the dispatch shell.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -e
+          # Pre-installed at ~/pr-agent-venv on the self-hosted runners;
+          # bootstrap on first use (or on runners without a pre-install).
+          export PATH="$HOME/pr-agent-venv/bin:$PATH"
+          if ! command -v pr-agent >/dev/null 2>&1; then
+            python3 -m venv "$HOME/pr-agent-venv"
+            "$HOME/pr-agent-venv/bin/pip" install -q "pr-agent==0.43.0"
+            export PATH="$HOME/pr-agent-venv/bin:$PATH"
+          fi
+          # PR-Agent reads the git token from settings[github].user_token;
+          # with envvar_prefix=false the env var is the dotted path in caps.
+          export GITHUB__USER_TOKEN="$GITHUB_TOKEN"
+
+          PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number }}"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Automated loop on PR events: review (+ GitNexus context), then describe.
+            # GitNexus context is best-effort; fall back to a plain review if absent.
+            if [ -f gitnexus-context.md ]; then
+              pr-agent --pr_url "$PR_URL" review \
+                --artifacts.enable=true \
+                --artifacts.artifact_path=gitnexus-context.md \
+                --artifacts.artifact_instructions="This is a GitNexus knowledge-graph analysis of the PR's changed symbols: blast radius (upstream dependants), affected execution flows, and risk level. Use it to prioritize review effort on high-risk changes and to verify the PR's impact claims against the repo's actual call graph."
+            else
+              pr-agent --pr_url "$PR_URL" review
+            fi
+            pr-agent --pr_url "$PR_URL" describe
+          else
+            # Comment-triggered: dispatch the PR-Agent command from the comment.
+            BODY="$COMMENT_BODY"
+            CMD=$(printf '%s' "$BODY" | sed -E 's/@[A-Za-z0-9_-]+//g; s/^[[:space:]]*\/{0,1}//; s/[[:space:]].*//' | tr '[:upper:]' '[:lower:]')
+            case "$CMD" in
+              describe) pr-agent --pr_url "$PR_URL" describe ;;
+              improve)  pr-agent --pr_url "$PR_URL" improve ;;
+              ask)      pr-agent --pr_url "$PR_URL" ask "$BODY" ;;
+              *)        pr-agent --pr_url "$PR_URL" review ;;
+            esac
+          fi
