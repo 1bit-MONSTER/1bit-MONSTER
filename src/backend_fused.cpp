@@ -539,11 +539,13 @@ struct FusedBackend : Backend {
             if (hipMalloc(&dh_batch, (size_t)batch_ * H * 4) != hipSuccess) return false;
             HIP_CHECK(hipMemset(dh_batch, 0, (size_t)batch_ * H * 4));
             // Batch scratch for the batched attention GEMVs (W read once per
-            // batch instead of once per sequence): [B, s1/s2/H] each.
-            int s1 = NH * HD_, s2 = NKV * HD_;
+            // batch instead of once per sequence): [B, s1/s2/H] each.  s2b:
+            // dgate/dup also carry the FFN's gate/up output (IM wide) — size
+            // for max(NKV*HD, IM) like the single path's scratch.
+            int s1 = NH * HD_, s2 = NKV * HD_, s2b = std::max(s2, IM);
             if (hipMalloc(&datt_batch, (size_t)batch_ * s1 * 4) != hipSuccess ||
-                hipMalloc(&dgate_batch, (size_t)batch_ * s2 * 4) != hipSuccess ||
-                hipMalloc(&dup_batch, (size_t)batch_ * s2 * 4) != hipSuccess ||
+                hipMalloc(&dgate_batch, (size_t)batch_ * s2b * 4) != hipSuccess ||
+                hipMalloc(&dup_batch, (size_t)batch_ * s2b * 4) != hipSuccess ||
                 hipMalloc(&doproj_batch, (size_t)batch_ * H * 4) != hipSuccess ||
                 hipMalloc(&dffn_batch, (size_t)batch_ * H * 4) != hipSuccess ||
                 hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess) return false;
@@ -1200,17 +1202,28 @@ struct FusedBackend : Backend {
                     fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj_batch + (size_t)s*H_, H_);
                 }
         };
-        auto ffn_gpu_one = [&](int s, int l) {
+        // Batched GPU FFN for all B rows: the w1/w2/w3 weight matrices are
+        // read ONCE per layer (fused_gemv_batch_kernel) instead of once per
+        // sequence — the per-sequence loop read 37.7 MB x B per layer.
+        auto ffn_gpu_batch = [&](int l) {
             auto& gl = L[l];
-            float* hs = dh_batch + (size_t)s * H_;
-            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, hs, H_);
-            if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pon, H_, EPS);
-            else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
+            for (int s = 0; s < B_; s++) {
+                float* hs = dh_batch + (size_t)s * H_;
+                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn_batch + (size_t)s*H_, hs, H_);
+                if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pon, H_, EPS);
+                else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
+            }
             if (gl.w1 && gl.w2 && gl.w3) {
-                fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, hs, IM_, H_);
-                fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                gemv(hs, gl.w3, datt, H_, IM_, stream);
-                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, dffn, H_);
+                fused_gemv_batch_kernel<<<IM_, BLOCK, 0, stream>>>(dgate_batch, gl.w1, dh_batch, IM_, H_, B_);
+                fused_gemv_batch_kernel<<<IM_, BLOCK, 0, stream>>>(dup_batch, gl.w2, dh_batch, IM_, H_, B_);
+                for (int s = 0; s < B_; s++)
+                    fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(
+                        datt_batch + (size_t)s*IM_, dgate_batch + (size_t)s*IM_, dup_batch + (size_t)s*IM_, IM_);
+                fused_gemv_batch_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
+                for (int s = 0; s < B_; s++) {
+                    float* hs = dh_batch + (size_t)s * H_;
+                    fused_residual_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj_batch + (size_t)s*H_, dffn_batch + (size_t)s*H_, H_);
+                }
             }
         };
 
@@ -1231,7 +1244,7 @@ struct FusedBackend : Backend {
             attn_batched(l);
             // one batched FFN for all rows
             if (!use_npu) {
-                for (int s = 0; s < B_; s++) ffn_gpu_one(s, l);
+                ffn_gpu_batch(l);
             } else {
                 HIP_CHECK(hipMemcpy(host_batch.data(), dh_batch,
                                     (size_t)B_ * H_ * sizeof(float), hipMemcpyDeviceToHost));
@@ -1244,7 +1257,7 @@ struct FusedBackend : Backend {
         if (use_npu) {
             if (!npu_batch_future_.get()) {
                 fprintf(stderr, "[fused] NPU FFN batch final layer failed — GPU FFN fallback\n");
-                for (int s = 0; s < B_; s++) ffn_gpu_one(s, NC_ - 1);
+                ffn_gpu_batch(NC_ - 1);
             } else {
                 HIP_CHECK(hipMemcpy(dh_batch, host_batch.data(),
                                     (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
