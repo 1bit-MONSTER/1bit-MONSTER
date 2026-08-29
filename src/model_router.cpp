@@ -62,6 +62,17 @@
 // ============================================================
 
 BackendRoute select_backend_route(const ModelConfig& cfg) {
+    // MLX format (lemonade/MLX group-affine checkpoints: Qwen3.5/3.6/3.8
+    // family + lemonseed): LSE (lse-server subprocess) is the ONLY backend in
+    // this tree that can read MLX — additive capability, no existing route is
+    // displaced. Route lse first, generic CPU fallback for a box without
+    // lse-server. Checked before arch/MoE branches because MLX checkpoints
+    // carry qwen3_5_moe etc. arch strings that would otherwise match other
+    // routes.
+    if (cfg.format == ModelFormat::MLX) {
+        return {{"lse", "cpu_generic"},
+                "MLX model — LSE GPU (lse-server) → generic CPU"};
+    }
     // Zaya-style MoE: any model with expert routing that's NOT a Mamba1 MoE
     // (BlackMamba) uses the CCA/MoE kernel path.
     if (cfg.num_experts > 0 && cfg.arch != RCPP_ARCH_MAMBA && cfg.arch != RCPP_ARCH_LAGUNA) {

@@ -40,6 +40,102 @@ static bool ends_with(const std::string& s, const std::string& suffix) {
     return s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+// Read a small text file (config.json etc.) into a string; "" on failure.
+static std::string read_small_text(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return "";
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 8L * 1024 * 1024) { fclose(f); return ""; }
+    fseek(f, 0, SEEK_SET);
+    std::string s((size_t)sz, '\0');
+    size_t got = fread(&s[0], 1, (size_t)sz, f);
+    fclose(f);
+    s.resize(got);
+    return s;
+}
+
+// ── MLX group-affine checkpoint detection ──────────────────────────────────
+// MLX checkpoints (the lemonade/MLX ecosystem: Qwen3.5/3.6/3.8 family +
+// lemonseed) are DIRECTORIES: config.json + model*.safetensors + tokenizer.json.
+// They are the native lane of the LSE backend (lse-server), the only reader of
+// MLX in this tree. Markers (per docs/plans/lse-backend-integration.md §3):
+//   - config.json quantization.mode == "affine" (MLX group-affine 4-bit)
+//   - or model_type qwen3_5*/qwen3_6*/qwen3_8* (GDN hybrid family)
+//   - or the lemonseed structural signature (full_attention_interval +
+//     gdn_qk_heads — lemonseed has no model_type/quantization keys)
+// Returns true and fills cfg when the directory is an MLX checkpoint.
+static bool read_mlx_metadata(const std::string& dir, ModelConfig& cfg) {
+    std::string config_text = read_small_text(dir + "/config.json");
+    if (config_text.empty()) return false;
+
+    // The checkpoint must be complete: config.json + at least one
+    // model*.safetensors shard + tokenizer.json (what lse-server needs).
+    bool has_shards = false, has_tokenizer = false;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::string n = it->path().filename().string();
+        if (ends_with(n, ".safetensors") && n.rfind("model", 0) == 0) has_shards = true;
+        if (n == "tokenizer.json") has_tokenizer = true;
+    }
+    if (!has_shards || !has_tokenizer) return false;
+
+    using namespace safetensors_detail;
+    std::string model_type;
+    json_find_string(config_text, "model_type", model_type);
+    bool affine = false;
+    // quantization.mode == "affine" — nested object, so scan the text for the
+    // "mode" field whose value is "affine" (flat scan is fine for config.json).
+    {
+        size_t pos = 0;
+        while ((pos = config_text.find("\"mode\"", pos)) != std::string::npos) {
+            size_t colon = config_text.find(':', pos);
+            if (colon != std::string::npos) {
+                size_t v = colon + 1;
+                while (v < config_text.size() && (config_text[v] == ' ' || config_text[v] == '\t' || config_text[v] == '\n' || config_text[v] == '\r')) v++;
+                if (config_text.compare(v, 8, "\"affine\"") == 0) { affine = true; break; }
+            }
+            pos += 6;
+        }
+    }
+    bool gdn_family = model_type.rfind("qwen3_5", 0) == 0 ||
+                      model_type.rfind("qwen3_6", 0) == 0 ||
+                      model_type.rfind("qwen3_8", 0) == 0 ||
+                      model_type.rfind("lemonseed", 0) == 0;
+    // lemonseed structural signature: no model_type/quantization, but the
+    // GDN+MoD hybrid keys it is defined by.
+    int full_attn_interval = 0, gdn_qk_heads = 0;
+    bool lemonseed_shape = json_find_int(config_text, "full_attention_interval", full_attn_interval) &&
+                           json_find_int(config_text, "gdn_qk_heads", gdn_qk_heads) &&
+                           full_attn_interval > 0 && gdn_qk_heads > 0;
+
+    if (!affine && !gdn_family && !lemonseed_shape) return false;
+
+    // Populate the config: format + model identity + dims for the router.
+    cfg.format = ModelFormat::MLX;
+    cfg.model_path = dir;
+    auto slash = dir.find_last_of('/');
+    cfg.model_name = dir.substr(slash == std::string::npos ? 0 : slash + 1);
+    cfg.quantization = "MLX group-affine";
+    if (model_type.empty()) model_type = "lemonseed";  // structural signature
+    cfg.architecture = model_type;
+    if (model_type.find("moe") != std::string::npos) {
+        // Qwen3.5/3.6 MoE — mark experts so the router treats it as MoE-capable.
+        int n_experts = 0;
+        if (json_find_int(config_text, "num_experts", n_experts) && n_experts > 0)
+            cfg.n_experts = cfg.num_experts = n_experts;
+    }
+    // Dims (best-effort — the LSE backend is text-level and doesn't need them,
+    // but /v1/models and the router benefit from real numbers).
+    int v;
+    if (json_find_int(config_text, "hidden_size", v)) cfg.hidden = cfg.hidden_size = v;
+    if (json_find_int(config_text, "num_layers", v)) cfg.n_layers = cfg.num_layers = v;
+    if (json_find_int(config_text, "attn_q_heads", v)) cfg.n_heads = cfg.num_heads = cfg.num_attention_heads = v;
+    if (json_find_int(config_text, "attn_kv_heads", v)) cfg.n_kv_heads = cfg.num_kv_heads = v;
+    if (json_find_int(config_text, "vocab_size", v)) cfg.vocab = cfg.vocab_size = v;
+    return true;
+}
+
 static bool read_h1b_metadata(const std::string& path, ModelConfig& cfg) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -407,6 +503,21 @@ std::vector<ModelConfig> discover_models(const std::string& dir) {
     }
 
     for (const auto& dirent_entry : dir_it) {
+        // MLX checkpoints are directories (config.json + model*.safetensors +
+        // tokenizer.json). Check each subdirectory for the MLX signature
+        // before the regular-file scan below.
+        if (dirent_entry.is_directory(ec)) {
+            std::string sub = dirent_entry.path().string();
+            ModelConfig mcfg;
+            if (read_mlx_metadata(sub, mcfg)) {
+                models.push_back(mcfg);
+                printf("  📦 %-30s %s — %s/%s/%s\n",
+                       mcfg.model_name.c_str(), "(MLX dir)",
+                       "safetensors", mcfg.architecture.c_str(),
+                       mcfg.quantization.c_str());
+            }
+            continue;
+        }
         if (!dirent_entry.is_regular_file(ec)) continue;
         std::string name = dirent_entry.path().filename().string();
 

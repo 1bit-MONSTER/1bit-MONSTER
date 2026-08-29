@@ -5,6 +5,7 @@
 #include "backend_plugin.h"
 #include "backend_detect.h"
 #include "backend.h"
+#include "backend_lse.h"   // create_lse_backend (LSE_GPU factory)
 #include "model_router.h"
 #include "dynamic_router.h"
 #include <cstdio>
@@ -428,6 +429,29 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 6c. LSE (Lemon Seed Engine) — text-level MLX lane via lse-server
+    // subprocess (backend_lse.cpp). The router sends ModelFormat::MLX here;
+    // availability is decided at init() by whether an lse-server binary can
+    // be spawned (LSE_SERVER_BIN / PATH), so it is auto_selectable like
+    // npu_flm: init() fails fast when the binary is absent and the loop moves
+    // on (mirrors backend_npu_flm.cpp's guard style).
+    {
+        BackendInfo info;
+        info.id = "lse";
+        info.type = BackendType::LSE_GPU;
+        info.tier = BackendTier::T2_GPU;  // AMD GPU via lse-server (HRX runtime)
+        info.description = "LSE GPU (MLX via lse-server subprocess)";
+        info.priority = tier_priority(info.tier) + 10;
+        info.available = true;
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        printf("  %-25s %s\n", "LSE GPU (MLX)", "✅ registered (lse-server at runtime)");
+        backends_.push_back(info);
+    }
+
     // Rack 'em
     rank_backends();
     active_idx_ = 0;
@@ -447,9 +471,12 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
         return false;
     }
 
-    // Validate model_path exists and is a regular file before passing to backends
-    // (prevents arch-specific backends from crashing when given a directory instead of a file)
-    if (!cfg.model_path.empty()) {
+    // Validate model_path exists and is a regular file before passing to
+    // backends (prevents arch-specific backends from crashing when given a
+    // directory instead of a file). MLX checkpoints are directories
+    // (config.json + model*.safetensors + tokenizer.json) — the model_path IS
+    // the checkpoint dir, so allow it for ModelFormat::MLX.
+    if (!cfg.model_path.empty() && cfg.format != ModelFormat::MLX) {
         struct stat st;
         if (stat(cfg.model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
             fprintf(stderr, "BackendManager: model_path '%s' is not a regular file — clearing\n", cfg.model_path.c_str());
@@ -473,8 +500,10 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
         return false;
     }
 
-    // Validate model_path exists and is a regular file before passing to backends
-    if (!cfg.model_path.empty()) {
+    // Validate model_path exists and is a regular file before passing to
+    // backends. MLX checkpoints are directories — allow those (see the
+    // two-arg init() overload above).
+    if (!cfg.model_path.empty() && cfg.format != ModelFormat::MLX) {
         struct stat st;
         if (stat(cfg.model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
             fprintf(stderr, "BackendManager: model_path '%s' is not a regular file — clearing\n", cfg.model_path.c_str());
@@ -1613,6 +1642,18 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
         case BackendType::CPU_AVX512:
         case BackendType::CPU_SCALAR:
             return create_cpu_backend();
+        case BackendType::LSE_GPU:
+            // LSE backend lives in backend_lse.cpp (UNIFIED_SERVER_SOURCES,
+            // always compiled into onebin; create_lse_backend declared in
+            // backend_lse.h). extern "C" so plugin builds can dlsym it too.
+            b = create_lse_backend();
+            if (b) return b;
+            b = try_load_backend("librocm_cpp.so", "create_lse_backend");
+            if (!b) b = try_load_backend("liblse_backend.so", "create_lse_backend");
+            if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_lse_backend");
+                    if (fn) b = fn(); } }
+            return b;
         case BackendType::GENERIC:
             if (info.id == "laguna_gpu") {
 #ifdef ROCM_CPP_STATIC_HIP
