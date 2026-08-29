@@ -1,0 +1,67 @@
+// attn_decode.comp — single-query-position attention decode over a KV cache
+// held in the NPU-owned SharedBO pages (imported as Vulkan device memory via
+// dma-buf, issue #1217).  This is the zero-copy GPU-attention slice: the
+// shader reads K/V directly from the NPU pages — no CPU staging, no copy.
+//
+// Layouts (std430, float32):
+//   binding 0 q  : [NH * HD]            query, one row per attention head
+//   binding 1 kv : [NKV * SEQ * HD]     K/V interleaved per position:
+//                                        element (kvh,s,i) = K at index i,
+//                                        (kvh,s,HD+i) = V at index i
+//   binding 2 o  : [NH * HD]            output, one row per head
+//   push constants: NH, NKV, HD, SEQ (int32)
+//
+// GQA: query head h reads KV head h*NKV/NH.  Single query position (decode).
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer QBuf { float q[]; };
+layout(set = 0, binding = 1, std430) buffer KVBuf { float kv[]; };
+layout(set = 0, binding = 2, std430) buffer OBuf { float o[]; };
+
+layout(push_constant) uniform PC {
+    int NH;
+    int NKV;
+    int HD;
+    int SEQ;
+} pc;
+
+void main() {
+    uint h = gl_GlobalInvocationID.x;
+    if (h >= uint(pc.NH)) return;
+    uint kvh = h * uint(pc.NKV) / uint(pc.NH);
+    float scale = 1.0 / sqrt(float(pc.HD));
+
+    // 1) max score (numerical stability)
+    float mx = -1e30;
+    for (int s = 0; s < pc.SEQ; s++) {
+        float d = 0.0;
+        for (int i = 0; i < pc.HD; i++)
+            d += q[h * uint(pc.HD) + uint(i)]
+               * kv[(kvh * uint(pc.SEQ) + uint(s)) * uint(pc.HD) + uint(i)];
+        mx = max(mx, d * scale);
+    }
+    // 2) softmax denominator
+    float sum = 0.0;
+    for (int s = 0; s < pc.SEQ; s++) {
+        float d = 0.0;
+        for (int i = 0; i < pc.HD; i++)
+            d += q[h * uint(pc.HD) + uint(i)]
+               * kv[(kvh * uint(pc.SEQ) + uint(s)) * uint(pc.HD) + uint(i)];
+        sum += exp(d * scale - mx);
+    }
+    // 3) weighted sum of V
+    for (int i = 0; i < pc.HD; i++) {
+        float acc = 0.0;
+        for (int s = 0; s < pc.SEQ; s++) {
+            float d = 0.0;
+            for (int j = 0; j < pc.HD; j++)
+                d += q[h * uint(pc.HD) + uint(j)]
+                   * kv[(kvh * uint(pc.SEQ) + uint(s)) * uint(pc.HD) + uint(j)];
+            float w = exp(d * scale - mx) / sum;
+            acc += w * kv[(kvh * uint(pc.SEQ) + uint(s)) * uint(pc.HD) + uint(pc.HD) + uint(i)];
+        }
+        o[h * uint(pc.HD) + uint(i)] = acc;
+    }
+}
