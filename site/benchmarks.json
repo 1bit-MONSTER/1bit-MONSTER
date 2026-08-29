@@ -279,7 +279,7 @@
    "table": "engine",
    "display_name": "Fused VK attn + NPU FFN (zero-copy)",
    "backend": "fused",
-   "notes": "Zero-copy design: Vulkan attention reads/writes the NPU SharedBO pages in place (dma-buf import), NPU FFN reads them in place \u2014 no per-layer hipMemcpy. 2026-08-29 perf pass: the decode shader was pathologically serial (recomputed Q\u00b7K 3x, every thread ran the full loop) at 2.7ms/layer; rewritten thread-parallel with shared-memory softmax (76x faster, ~36us/layer). Also batched the 4 layer dispatches into one submit (dispatchBatchOnce) and moved weights/scratch to DEVICE_LOCAL VRAM (create_device_local + staged upload). 580ms -> ~300ms/token; the residual is the NPU FFN wall (~244ms/token, identical in the HIP+NPU path). Tokens still bit-match all other paths."
+   "notes": "Zero-copy design: Vulkan attention reads/writes the NPU SharedBO pages in place (dma-buf import), NPU FFN reads them in place \u2014 no per-layer hipMemcpy. Perf pass 2026-08-29: (1) decode shader rewritten thread-parallel (was recomputing Q\u00b7K 3x serially, 2.7ms/layer -> 36us), (2) 4 layer dispatches batched into one submit (dispatchBatchOnce), (3) weights/scratch moved to DEVICE_LOCAL VRAM (create_device_local + staged upload), (4) per-layer weights packed into shared buffers indexed by pc.layer (one descriptor set per pipeline). 580 -> ~300 ms/token. Residual vs HIP+NPU (273ms): NPU FFN wall (~244ms, identical in both) + GPU clock ramp during the 8.7ms FFN gap (~700us/layer; HIP pays it too but its attention is async-streamed at 25-90us/layer vs VK's submit+waitIdle). Cross-token pipelining (token t FFN || token t+1 attention) is the remaining structural lever."
   },
   "fused_hip_attn_npu_ffn": {
    "tok_s": 4.0,
@@ -297,7 +297,7 @@
    "table": "engine",
    "display_name": "Fused VK attn + GPU FFN",
    "backend": "fused",
-   "notes": "Fallback config (GPU FFN needs dh): pages round-trip per layer. 330ms -> 51ms/token after the decode-shader + dispatch-batching + device-local pass."
+   "notes": "Fallback config (GPU FFN needs dh): pages round-trip per layer. 330ms -> 51ms/token after the decode-shader + dispatch-batching + device-local + packed-weights pass."
   }
  },
  "table_kernel": [
