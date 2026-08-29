@@ -81,15 +81,23 @@ int main(int argc, char** argv) {
     std::vector<std::vector<int>> streams(B);
     t0 = std::chrono::steady_clock::now();
     int ok = 0;
+    double t_fwd = 0, t_lm = 0;
     for (int i = 0; i < tokens; i++) {
+        auto ta = std::chrono::steady_clock::now();
         if (!b->forward_batch(ids.data(), hidden.data(), B)) { fprintf(stderr, "FAIL forward_batch\n"); break; }
+        auto tb = std::chrono::steady_clock::now();
         if (!lm_head_loop(have_batch_lm)) break;
+        auto tc = std::chrono::steady_clock::now();
+        t_fwd += std::chrono::duration<double, std::milli>(tb - ta).count();
+        t_lm += std::chrono::duration<double, std::milli>(tc - tb).count();
         for (int s = 0; s < B; s++) {
             if (toks[s] >= 0) { streams[s].push_back(toks[s]); ids[s] = toks[s]; ok++; }
         }
     }
     t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double,std::milli>(t1-t0).count();
+    fprintf(stderr, "[batch] split: forward_batch %.1f ms | lm_head %.1f ms per %d-iter\n",
+            t_fwd, t_lm, tokens);
     printf("╔══════════════════════════════════════════╗\n");
     printf("║           RESULTS (B=%d)                 ║\n", B);
     printf("╚══════════════════════════════════════════╝\n");

@@ -111,7 +111,6 @@ __global__ void fused_gemv_batch_kernel(float* __restrict__ y, const float* __re
             __syncthreads();
         }
         if (threadIdx.x == 0) y[(size_t)b * M + row] = sdata[0];
-        __syncthreads();
     }
 }
 
@@ -133,7 +132,6 @@ __global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* _
         const float* xrow = x + (size_t)b * N;
         float sum = 0.0f;
         for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
-        __syncthreads();
         sdata[threadIdx.x] = sum;
         __syncthreads();
         for (int s = BLOCK/2; s > 0; s >>= 1) {
@@ -143,6 +141,34 @@ __global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* _
         if (threadIdx.x == 0) y[(size_t)b * M + row] = sdata[0];
         __syncthreads();
     }
+}
+
+// ── Row-wise argmax on the GPU (first-max, matches the host loop) ──
+// out[b] = argmax_v logits[b*V+v], first (lowest) index on ties.  Avoids the
+// host-side scan of B*V logits (~1 ms on 8x152K) — the token selection is
+// unchanged (same values, same comparison semantics).
+__global__ void argmax_rows_kernel(const float* __restrict__ logits, int* __restrict__ out,
+                                   int M, int V) {
+    int b = blockIdx.x;
+    if (b >= M) return;
+    const float* lg = logits + (size_t)b * V;
+    int tid = threadIdx.x;
+    float best = -1e30f; int besti = -1;
+    for (int v = tid; v < V; v += BLOCK)
+        if (lg[v] > best) { best = lg[v]; besti = v; }
+    __shared__ float sb[BLOCK];
+    __shared__ int si[BLOCK];
+    sb[tid] = best; si[tid] = besti;
+    __syncthreads();
+    for (int s = BLOCK / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            if (sb[tid + s] > sb[tid] || (sb[tid + s] == sb[tid] && si[tid + s] < si[tid])) {
+                sb[tid] = sb[tid + s]; si[tid] = si[tid + s];
+            }
+        }
+        __syncthreads();
+    }
+    if (tid == 0) out[b] = si[0];
 }
 
 // ── Fused batched QKV: yq[B,s1], yk[B,s2], yv[B,s2] in ONE launch ──
@@ -178,7 +204,6 @@ __global__ void fused_qkv_batch_ws_kernel(float* __restrict__ yq, float* __restr
             else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = sdata[0];
             else yv[(size_t)b * s2 + (row - s1 - s2)] = sdata[0];
         }
-        __syncthreads();
     }
 }
 
@@ -209,7 +234,6 @@ __global__ void fused_gu_batch_ws_kernel(float* __restrict__ y1, float* __restri
             if (row < IM) y1[(size_t)b * IM + row] = sdata[0];
             else y2[(size_t)b * IM + (row - IM)] = sdata[0];
         }
-        __syncthreads();
     }
 }
 
@@ -633,6 +657,7 @@ struct FusedBackend : Backend {
     float *dup_batch = nullptr, *doproj_batch = nullptr;   // [B, s2] / [B, H]
     float *dffn_batch = nullptr;          // [B, H] residual saves
     float *dlogits_batch = nullptr;       // [B, VOCAB] batched lm_head
+    int* dargmaxs = nullptr;              // [B] GPU argmax scratch
     std::vector<float> host_batch;        // [B, H] NPU FFN handoff (D2H/H2D)
     std::vector<int> batch_pos;           // per-sequence position
     std::future<bool> npu_batch_future_;
@@ -714,6 +739,7 @@ struct FusedBackend : Backend {
                 hipMalloc(&doproj_batch, (size_t)batch_ * H * 4) != hipSuccess ||
                 hipMalloc(&dffn_batch, (size_t)batch_ * H * 4) != hipSuccess ||
                 hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess ||
+                hipMalloc(&dargmaxs, (size_t)batch_ * sizeof(int)) != hipSuccess ||
                 hipMalloc(&dQ_batch, (size_t)batch_ * s1 * 2) != hipSuccess ||
                 hipMalloc(&dAttn_batch, (size_t)batch_ * s1 * 2) != hipSuccess) return false;
             host_batch.resize((size_t)batch_ * H);
@@ -1343,13 +1369,13 @@ struct FusedBackend : Backend {
         if (!W) return false;
         fused_gemv_batch_ws_kernel<<<VOCAB, BLOCK, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
         HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
-        if (argmaxs)
-            for (int s = 0; s < am; s++) {
-                const float* lg = logits + (size_t)s * VOCAB;
-                int b = 0; float mv = lg[0];
-                for (int v = 1; v < VOCAB; v++) if (lg[v] > mv) { mv = lg[v]; b = v; }
-                argmaxs[s] = b;
-            }
+        if (argmaxs) {
+            // GPU argmax (first-max, same semantics as the old host loop) —
+            // the D2H copy of the full logits is kept for API compat, but the
+            // host-side scan of am*VOCAB floats (~1 ms) is removed.
+            argmax_rows_kernel<<<am, BLOCK, 0, stream>>>(dlogits_batch, dargmaxs, am, VOCAB);
+            HIP_CHECK(hipMemcpy(argmaxs, dargmaxs, (size_t)am * sizeof(int), hipMemcpyDeviceToHost));
+        }
         return true;
     }
 
@@ -1437,6 +1463,19 @@ struct FusedBackend : Backend {
 
         for (int s = 0; s < B_; s++) embed_one(s, token_ids[s]);
 
+        // VK_ATTN_TIMING: per-layer GPU timing via stream events (no syncs
+        // added — the final readback is the only sync).
+        bool btim = getenv("VK_ATTN_TIMING") != nullptr;
+        std::vector<hipEvent_t> ev_attn, ev_ffn, ev_emb;
+        if (btim) {
+            ev_attn.resize(NC_); ev_ffn.resize(NC_); ev_emb.resize(1);
+            hipEventCreate(&ev_emb[0]);
+            hipEventRecord(ev_emb[0], stream);
+            for (int l = 0; l < NC_; l++) {
+                hipEventCreate(&ev_attn[l]); hipEventCreate(&ev_ffn[l]);
+            }
+        }
+
         for (int l = 0; l < NC_; l++) {
             // Phase A: await the batched FFN(l-1), copy the result back
             if (use_npu && l > 0) {
@@ -1449,7 +1488,9 @@ struct FusedBackend : Backend {
                 }
             }
             // attention for every sequence (batched GEMVs, W read once per batch)
+            if (btim) hipEventRecord(ev_attn[l], stream);
             attn_batched(l);
+            if (btim) hipEventRecord(ev_ffn[l], stream);
             // one batched FFN for all rows
             if (!use_npu) {
                 ffn_gpu_batch(l);
@@ -1477,6 +1518,22 @@ struct FusedBackend : Backend {
         for (int s = 0; s < B_; s++)
             fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh_batch + (size_t)s * H_, dh_batch + (size_t)s * H_, d_final_norm, H_, EPS);
         HIP_CHECK(hipMemcpy(hidden_out, dh_batch, (size_t)B_ * H_ * 4, hipMemcpyDeviceToHost));  // blocking
+        if (btim) {
+            // Elapsed per layer (events completed: the readback synced).
+            fprintf(stderr, "[fused] batch l  attn(us)  ffn(us)\n");
+            for (int l = 0; l < NC_; l++) {
+                float a = 0, f = 0;
+                hipEventElapsedTime(&a, ev_emb[0], ev_attn[l]);
+                hipEventElapsedTime(&f, ev_attn[l], ev_ffn[l]);
+                if (l > 0) {
+                    float prev = 0;
+                    hipEventElapsedTime(&prev, ev_ffn[l - 1], ev_attn[l]);
+                    fprintf(stderr, "[fused] batch %2d  %7.1f  %7.1f  (gap %.1f)\n", l, a, f, prev);
+                } else {
+                    fprintf(stderr, "[fused] batch %2d  %7.1f  %7.1f\n", l, a, f);
+                }
+            }
+        }
         for (int s = 0; s < B_; s++) batch_pos[s]++;
         return true;
     }
@@ -1539,6 +1596,7 @@ struct FusedBackend : Backend {
         if (doproj_batch) { HIP_CHECK_D(hipFree(doproj_batch)); doproj_batch = nullptr; }
         if (dffn_batch) { HIP_CHECK_D(hipFree(dffn_batch)); dffn_batch = nullptr; }
         if (dlogits_batch) { HIP_CHECK_D(hipFree(dlogits_batch)); dlogits_batch = nullptr; }
+        if (dargmaxs) { HIP_CHECK_D(hipFree(dargmaxs)); dargmaxs = nullptr; }
         if (dQ_batch) { HIP_CHECK_D(hipFree(dQ_batch)); dQ_batch = nullptr; }
         if (dAttn_batch) { HIP_CHECK_D(hipFree(dAttn_batch)); dAttn_batch = nullptr; }
         if (vk_attn_) va_.destroy();
