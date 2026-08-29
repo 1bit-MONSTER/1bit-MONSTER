@@ -194,3 +194,6 @@ packaging/flatpak/build
 /engine/fusion/gpu_attn_vk/test_vk_attn_layer
 /engine/fusion/gpu_attn_vk/comp.spv
 build100/
+
+# ── Generated docs site (built by scripts/gen_docs_site.py) ──
+/docs-site/
