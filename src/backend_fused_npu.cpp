@@ -38,10 +38,16 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
         std::string xd(xclbin_dir ? xclbin_dir : "engine/npu/xclbins");
         std::string b = xd + "/final_i8_" + tag;
         std::string i = xd + "/insts_i8_" + tag;
-        // True M=1 single-row decode xclbins (n1_core_i8_m1.py) — preferred:
-        // the 128-row-baked stream runs a fixed M=128 tile per launch even
-        // for 1-row decode (~3.4-4.9 ms kernel wait); the m1 stream is a
-        // genuine 1-row launch (build_qwen3_0_6b_m1.sh).
+        // Preference order (all silicon-verified, oracle bit-identical):
+        // 1. _m8 (n1_core_i8_v27.py -M 8 + M8_VECTORIZED mmul): the fastest
+        //    single-stream launch — 2.06 ms for the 6.3 MB GU B (3.1 GB/s)
+        //    vs 4.32 ms for the m1 scalar stream (the scalar matmul throttles
+        //    the DMA to ~1 GB/s) and 2.76 ms for the M=128-baked stream.
+        //    am=8 also amortizes the B DMA across 8 sequences (2045 us total).
+        // 2. _m1 (n1_core_i8_m1.py, DIM_M=1 scalar): correct but compute-bound.
+        // 3. default (M=128-baked FLM-parity streams).
+        std::string m8b = b + "_qwen3_0_6b_m8.xclbin", m8i = i + "_qwen3_0_6b_m8.txt";
+        if (access(m8b.c_str(), F_OK) == 0 && access(m8i.c_str(), F_OK) == 0) return {m8b, m8i, 8};
         std::string m1b = b + "_qwen3_0_6b_m1.xclbin", m1i = i + "_qwen3_0_6b_m1.txt";
         if (access(m1b.c_str(), F_OK) == 0 && access(m1i.c_str(), F_OK) == 0) return {m1b, m1i, 1};
         std::string ms = b + "_qwen3_0_6b.xclbin", mi = i + "_qwen3_0_6b.txt";
@@ -65,10 +71,11 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
     // passing reference — engine/fusion/zero_copy/test_npu_ffn_real_weights.cpp
     // and test_pipeline_real.cpp — uses XM=128).  A smaller MD reads/writes the
     // wrong tile region of bA/bC and the FFN output comes back garbage — the
-    // #1207 all-zeros symptom (hidden state collapses to zeros).  The _m1
-    // family is the exception: it is BUILT for M=1 (MD=1) — a true single-row
-    // stream, bit-identical integer math (n1_core_i8_m1.py header).
+    // #1207 all-zeros symptom (hidden state collapses to zeros).  The _m1 and
+    // _m8 families are the exceptions: they are BUILT for those tile widths
+    // (MD = xm) with bit-identical integer math.
     printf("[npu] FFN xclbins: %s (XM=%d, %s)\n", xgu.c_str(), xm,
+           xm == 8 ? "vectorized M=8 decode" :
            xm == 1 ? "true single-row decode" : "fixed 128-row tile");
     if (!s->gu->init(s->dev, xgu.c_str(), igu.c_str(), xm, H, 2*IM) ||
         !s->d->init(s->dev, xdd.c_str(), idd.c_str(), xm, IM, H)) {
