@@ -31,8 +31,9 @@ This directory contains the **correct, empirically-verified zero-copy substrate*
        (coherent, system RAM)           → HIP hipHostRegister() (test)
                                         → Vulkan VK_KHR_external_memory_fd
                                           (production — only API that works
-                                           on ROCm 7.2.4, which lacks HIP
-                                           DmaBuf external memory)
+                                           on the installed TheRock HIP
+                                           (7.16), which lacks HIP DmaBuf
+                                           external memory)
                  │                              │
                  └──────────┬───────────────────┘
                             ▼
@@ -56,9 +57,9 @@ The state-of-the-stack doc (2026-07-14) hypothesized that `npu_engine_universal.
 
 **The fix**: Use xclbins whose `num_col` the driver accepts. The `xclbin_health` tool validates this at startup so the engine diagnoses (not SIGABRTs) bad xclbins.
 
-### 2. `hipExternalMemoryHandleTypeDmaBuf` → DOES NOT EXIST in ROCm 7.2.4
+### 2. `hipExternalMemoryHandleTypeDmaBuf` → DOES NOT EXIST in the installed TheRock HIP (7.16)
 
-The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExternalMemoryHandleTypeDmaBuf` never compiled. ROCm 7.2.4's HIP lacks that enum value. The only Linux handle type is `OpaqueFd` (inter-ROCm internal), which doesn't accept cross-device dma-buf fds from other drivers.
+The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExternalMemoryHandleTypeDmaBuf` never compiled. The installed TheRock HIP (7.16 — the "7.2.4" figure in older copies of this note was a stale attribution) genuinely lacks that enum value: `hipExternalMemoryHandleType` is `{OpaqueFd, OpaqueWin32, OpaqueWin32Kmt, D3D12Heap, D3D12Resource, D3D11Resource, D3D11ResourceKmt, NvSciBuf}` (compile-verified), and the newer mem-pool sharing enum (`hipMemAllocationHandleType`) is `{None, PosixFileDescriptor, Win32, Win32Kmt, Fabric}` — no dma-buf either. The only dma-buf API present is the EXPORT-only `hipMemGetHandleForAddressRange(hipMemRangeHandleTypeDmaBufFd)` (HIP allocation → fd); there is no import counterpart that turns an external dma-buf fd into a HIP device pointer.
 
 **The production GPU import path must be Vulkan** (`VK_KHR_external_memory_fd`), matching `engine/fusion/gpu_attn.zig` and the stub in `interop.zig`.
 
@@ -85,7 +86,7 @@ The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExter
 
 ## Next Steps for Production
 
-1. **Vulkan dma-buf import** (replaces the `hipHostRegister` test idiom): wire `xrt::bo::export_buffer()` fd → `VK_KHR_external_memory_fd` in `interop.zig`. This gives the production GPU path (matching `gpu_attn.zig`).
+1. ✅ **Vulkan dma-buf import — DONE for the C++ fused backend** (`src/backend_fused.cpp`, issue #1217): each SharedBO's exported dma-buf fd is now imported as Vulkan device memory (`vkrt::GpuBuffer::create_from_dma_buf`, `VK_KHR_external_memory_fd` + `VK_EXT_external_memory_dma_buf`) — the `hipHostRegister` test idiom is gone from the production path. **Silicon findings (2026-08-29, RADV/Strix Halo):** the imported dma-buf is *not* CPU-mappable — `vkMapMemory` succeeds but touching the mapping SIGBUSes — so the HIP side of the fused backend talks to the NPU pages through the XRT CPU view (`host_ptr()`), and the Vulkan import is held as the GPU-side handle. **Zero-copy GPU attention PROVEN** by `test_vk_attn_slice.cpp`: a Vulkan compute shader reads the KV cache straight out of NPU SharedBO pages via the dma-buf import and matches a CPU reference (max rel err 2e-4) — the substrate for a full Vulkan-compute attention path (`gpu_attn.zig` / `interop.zig` are not yet present in this tree).
 2. **Replace pipeline dummy callbacks**: inject real HIP-attention kernel launches and real XRT-FFN kernel launches into the 2-slot pipeline.
 3. **xclbin column-count**: build/reuse xclbins with `num_col` ≤8 (what the driver accepts) for the 1bit engine, or build a generic instruction-driven xclbin (like FastFlowLM's `mvm_i8`) that handles all shapes from one context.
 4. **Integrate `xclbin_health`** into the NPU engine startup as a graceful validation gate before any `CREATE_HWCTX`.

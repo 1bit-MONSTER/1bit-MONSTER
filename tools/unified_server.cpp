@@ -1243,7 +1243,7 @@ int main(int argc, char** argv) {
     };
 
     bool quick_mode = false;
-    bool free_npu = false; (void)free_npu;
+    bool free_npu = false;
     std::string g_cors_origin;
     std::string g_model_name;
     int opt;
@@ -1535,14 +1535,23 @@ int main(int argc, char** argv) {
                active ? active->id.c_str() : "?",
                active ? active->description.c_str() : "?");
 #ifndef _WIN32
-        // Release /dev/accel/accel0 if the NPU backend is not active.
-        // The HSA runtime opens this device during GPU backend init (even
-        // for non-NPU backends like Mamba1) as a side effect of accelerator
-        // enumeration on Strix Halo. When the NPU isn't being used, close
-        // any spurious fds so standalone tools (npu_engine_universal) can
-        // access the NPU. The GPU backends don't need it for compute.
-        // See issue #1029.
-        if (!active || active->type != BackendType::NPU_XRT) {
+        // Release /dev/accel/accel0 if the active backend doesn't use the
+        // NPU.  The HSA runtime opens this device during GPU backend init
+        // (even for non-NPU backends like Mamba1) as a side effect of
+        // accelerator enumeration on Strix Halo.  When the NPU isn't being
+        // used, close any spurious fds so standalone tools
+        // (npu_engine_universal) can access the NPU.
+        //
+        // NOTE: the fused backend (fused_gpu_npu) is typed HIP_GPU but holds
+        // its OWN NPU device (xrt::device(0)) + SharedBO + GEMM BOs.  The old
+        // gate (type != NPU_XRT) released the NPU out from under it — closing
+        // its fds and munmap'ing its live mappings caused a use-after-unmap
+        // SIGSEGV whenever fused was the active backend (2026-08-29: server
+        // crashed with fused active; hip_1bp — which never touches the NPU —
+        // was clean).  See issue #1029.
+        bool active_uses_npu = active &&
+            (active->type == BackendType::NPU_XRT || active->id == "fused_gpu_npu");
+        if (!active_uses_npu) {
             // Step 1: Close any open /dev/accel/accel* file descriptors.
             // These are opened by the HSA runtime during GPU backend init
             // as a side effect of accelerator enumeration on Strix Halo.
@@ -1580,29 +1589,31 @@ int main(int argc, char** argv) {
             // "in use" while any process has it mmap'd. Force-unmap those
             // regions so the device is truly free for standalone tools.
             // See issue #1029.
-            FILE* maps = fopen("/proc/self/maps", "r");
-            if (maps) {
-                char line[512];
-                while (fgets(line, sizeof(line), maps)) {
-                    // Parse: "7c2f74000000-7c2f78000000 rw-s ... /dev/accel/accel0"
-                    unsigned long start = 0, end = 0;
-                    char perms[8] = {0}, path[256] = {0};
-                    if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %255s",
-                               &start, &end, perms, path) >= 3) {
-                        if (strstr(path, "/dev/accel/accel") == path) {
-                            size_t len = end - start;
-                            if (munmap((void*)start, len) == 0) {
-                                n_closed++;
-                                printf("  ✓  Unmapped NPU region 0x%lx-0x%lx (%zu MB) — device %s freed\n",
-                                       start, end, len / (1024*1024), path);
-                            } else {
-                                fprintf(stderr, "  ⚠  munmap of 0x%lx failed: %s\n",
-                                        start, strerror(errno));
+            if (free_npu) {
+                FILE* maps = fopen("/proc/self/maps", "r");
+                if (maps) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), maps)) {
+                        // Parse: "7c2f74000000-7c2f78000000 rw-s ... /dev/accel/accel0"
+                        unsigned long start = 0, end = 0;
+                        char perms[8] = {0}, path[256] = {0};
+                        if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %255s",
+                                   &start, &end, perms, path) >= 3) {
+                            if (strstr(path, "/dev/accel/accel") == path) {
+                                size_t len = end - start;
+                                if (munmap((void*)start, len) == 0) {
+                                    n_closed++;
+                                    printf("  ✓  Unmapped NPU region 0x%lx-0x%lx (%zu MB) — device %s freed\n",
+                                           start, end, len / (1024*1024), path);
+                                } else {
+                                    fprintf(stderr, "  ⚠  munmap of 0x%lx failed: %s\n",
+                                            start, strerror(errno));
+                                }
                             }
                         }
                     }
+                    fclose(maps);
                 }
-                fclose(maps);
             }
 
             if (n_closed > 0) {

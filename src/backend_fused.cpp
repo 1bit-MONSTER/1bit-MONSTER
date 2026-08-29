@@ -9,8 +9,10 @@
 
 #include "backend.h"
 #include "backend_fused_npu.h"
+#include "vulkan_rt.h"
 #include "../engine/npu/src/onebp_loader.cpp"
 #include "../engine/fusion/zero_copy/shared_bo.h"
+#include "../engine/fusion/gpu_attn_vk/gpu_attn_vk.h"
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
@@ -246,11 +248,39 @@ struct FusedBackend : Backend {
     NpuState* npu = nullptr;
     bool npu_ok = false;
     fusion::SharedBO* slot[2] = {};
-    // GPU-accessible device pointers into the SharedBO pages.
-    // hipHostRegister(host_ptr, hipHostRegisterDefault) exposes the NPU-owned
-    // XRT HOST_ONLY pages to the HIP runtime so hipMemcpy can use them as the
-    // destination/source without an intermediate CPU bounce buffer (issue #1215).
-    void* slot_dev[2] = {};
+
+    // FUSED_VK_ATTN=1: the attention math runs as Vulkan compute directly on
+    // the NPU SharedBO pages (dma-buf import in VkAttention) instead of the
+    // HIP kernels below — the per-token attention-output→pages host-view copy
+    // disappears.  The NPU FFN still reads/writes the SAME pages in place.
+    fusion::VkAttention va_;
+    bool vk_attn_ = false;
+    bool vk_attn_ready_ = false;    // lazy va_ init attempted (once)
+    // Retained f32 copies for the lazy va_ upload (only when FUSED_VK_ATTN).
+    std::vector<float> vk_embed_;
+    std::vector<fusion::VkLayerW> vk_layers_;
+    // GPU view of the SharedBO slots via the PRODUCTION dma-buf route (issue
+    // #1217): each NPU-owned HOST_ONLY BO exports a dma-buf fd, imported here
+    // as Vulkan device memory (VK_KHR_external_memory_fd +
+    // VK_EXT_external_memory_dma_buf).  The installed TheRock HIP (7.16) has
+    // no DmaBuf external-memory handle type, so hipHostRegister (the old "test idiom"
+    // from engine/fusion/zero_copy) is not the production path; the Vulkan
+    // import is the route that works and is the handle a Vulkan-compute GPU
+    // attention path would bind.
+    //
+    // NOTE (silicon-verified on RADV/Strix Halo 2026-08-29, see
+    // engine/fusion/zero_copy/test_vkrt_dma_buf_import.cpp): the NPU's
+    // exported dma-buf is NOT CPU-mappable — vkMapMemory of the import
+    // succeeds but touching the mapping SIGBUSes.  So THIS HIP backend never
+    // maps it: dh<->slot traffic goes through slot[i]->host_ptr() (the XRT
+    // CPU view of the SAME pages — the SharedBO "three views" design), which
+    // is proven working.  The import is held as the GPU-side handle for the
+    // Vulkan-compute route and to validate the dma-buf path at init.
+    vkrt::VkCtx vk_ctx_;
+    bool vk_ok_ = false;
+    bool vk_ready_ = false;      // lazy import attempted (once)
+    vkrt::GpuBuffer vk_slot_[2]; // Vulkan device memory imported from NPU dma-buf
+    int vk_fds_[2] = {-1, -1};   // dup'd dma-buf fds held until lazy import
 
     // CPU weights (for NPU pack + lm_head)
     // NPU async future — tracks the in-flight NPU FFN so we can await it
@@ -262,7 +292,7 @@ struct FusedBackend : Backend {
     // token. Stack-local vectors here churned 4 KB + VOCAB*4 (~608 KB) per
     // token, fragmenting the glibc arena into unbounded RSS creep (issue #1428).
     std::vector<float> h_stage, logit_stage;
-    struct CpuL { std::vector<float> w1, w2, w3; };
+    struct CpuL { std::vector<float> w1, w2, w3, pon; };
     std::vector<CpuL> cpu_L;
     int pos = 0;
 
@@ -277,8 +307,6 @@ struct FusedBackend : Backend {
         VOCAB = cfg.vocab_size;
         rope_theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
         if (NKV == 0) NKV = NH; if (HD_ == 0) HD_ = 128;
-        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
-               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
         int nd = 0;
         if (hipGetDeviceCount(&nd) != hipSuccess || nd == 0) return false;
         HIP_CHECK(hipSetDevice(0));
@@ -324,6 +352,10 @@ struct FusedBackend : Backend {
         if (!npu_ok) printf("[fused] NPU unavailable — GPU-only\n");
 
         if (!load_1bp(cfg.model_path)) return false;
+        // rope_theta may have been corrected from the 1BP header by load_1bp
+        // (Qwen3 = 1e6; the ModelConfig default is 500000).
+        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
+               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
 
         if (npu_ok) {
             // SharedBO needs a persistent xrt::device ref — create once outside
@@ -335,29 +367,32 @@ struct FusedBackend : Backend {
                 fprintf(stderr,"[fused] SharedBO alloc fail — GPU-only\n");
                 npu_ok = false;
             } else {
-                // Register the NPU-owned pages with HIP so hipMemcpy can use them
-                // directly without a bounce buffer.  hipHostRegisterDefault works on
-                // Strix Halo (unified memory, APU); hipHostRegisterMapped is not needed
-                // because hipMemcpy with these pointers already avoids the CPU copy.
-                // On failure we fall back to the vector<float> bounce path (no assert).
-                for (int i = 0; i < 2; i++) {
-                    void* hp = slot[i]->host_ptr();
-                    size_t sz = slot[i]->size();
-                    hipError_t reg_err = hipHostRegister(hp, sz, hipHostRegisterDefault);
-                    if (reg_err == hipSuccess) {
-                        hipError_t gdp_err = hipHostGetDevicePointer(&slot_dev[i], hp, 0);
-                        if (gdp_err != hipSuccess) {
-                            fprintf(stderr, "[fused] SharedBO hipHostGetDevicePointer slot[%d]: %s\n",
-                                    i, hipGetErrorString(gdp_err));
-                            (void)hipHostUnregister(hp);
-                            slot_dev[i] = nullptr;
-                        }
-                    } else {
-                        fprintf(stderr, "[fused] SharedBO hipHostRegister slot[%d]: %s "
-                                "(will use bounce buffer)\n", i, hipGetErrorString(reg_err));
-                        slot_dev[i] = nullptr;
-                    }
-                }
+                // GPU view via the PRODUCTION dma-buf route (issue #1217):
+                // import each slot's exported dma-buf fd as Vulkan device
+                // memory.  hipHostRegister is NOT used here — the installed TheRock HIP
+                // (7.16) lacks a DmaBuf external-memory handle type, so the
+                // register idiom stays a test-only proof.  The import is NOT
+                // vkMapMemory'd (silicon-verified SIGBUS on RADV); the HIP
+                // transfers below use slot[i]->host_ptr() — the XRT CPU view
+                // of the same pages.  On any failure the backend still works
+                // GPU-only or via the host_ptr() path (no assert).
+                //
+                // The import is DEFERRED to first use (ensure_vk_import):
+                // the unified server creates and tears down OTHER Vulkan
+                // instances (vulkan_hpp backend, llama.cpp ggml-vulkan)
+                // during boot, and holding this backend's dma-buf import
+                // alive across that teardown raced RADV and segfaulted the
+                // server.  We only dup the fds here; the Vulkan ctx is
+                // created lazily on the first forward() call, by which time
+                // the other instances are gone.
+                for (int i = 0; i < 2; i++)
+                    vk_fds_[i] = dup(slot[i]->dma_buf_fd());
+                if (vk_fds_[0] < 0 || vk_fds_[1] < 0)
+                    fprintf(stderr, "[fused] SharedBO dma-buf fd dup failed — "
+                            "Vulkan import disabled (host_ptr() path)\n");
+                else
+                    printf("[fused] SharedBO slots ready (Vulkan dma-buf "
+                           "import deferred to first NPU-FFN use)\n");
             }
         }
 
@@ -371,6 +406,15 @@ struct FusedBackend : Backend {
         printf("[fused] Loading: %s\n", path.c_str());
         NpuOnebpModel mdl;
         if (!mdl.open(path.c_str())) { fprintf(stderr,"[fused] open fail\n"); return false; }
+        // The 1BP header carries the authoritative rope_theta (v1 fixed-point
+        // x1000, or raw f32 for v3).  Prefer it over the ModelConfig default
+        // (500000), which is wrong for Qwen3 (1e6) — the generic backend's
+        // discovery already does this; the fused backend must too.
+        float hdr_rope = mdl.header().rope_theta();
+        if (hdr_rope > 0.0f && hdr_rope != rope_theta) {
+            printf("[fused] 1BP header rope_theta=%.0f (config had %.0f)\n", hdr_rope, rope_theta);
+            rope_theta = hdr_rope;
+        }
         auto ld = [&](const char* n, std::vector<float>& v){ return mdl.get_tensor_f32(n,v); };
         ld("token_embd.weight", cpu_embed);
         if (!ld("output_norm.weight", cpu_final_norm)) ld("token_embd_norm.weight", cpu_final_norm);
@@ -379,6 +423,12 @@ struct FusedBackend : Backend {
         struct Tmp { std::vector<float> wq,wk,wv,wo,w1,w2,w3,pn,pon,q_norm,k_norm; };
         std::vector<Tmp> tmp(NC);
         cpu_L.resize(NC);
+        bool want_vk = npu_ok && getenv("FUSED_VK_ATTN") != nullptr;
+        if (want_vk) {
+            vk_attn_ = true;   // enable the Vulkan in-place attention path
+            vk_layers_.resize(NC);
+            vk_embed_ = cpu_embed;   // retain for the lazy Vulkan upload
+        }
         char buf[128];
         for (int l = 0; l < NC; l++) {
             auto& t = tmp[l];
@@ -404,7 +454,15 @@ struct FusedBackend : Backend {
             // flat logits (Generic CPU applies this; GPU paths must too).
             gr("attn_q_norm.weight","self_attn.q_norm.weight", t.q_norm, HD_);
             gr("attn_k_norm.weight","self_attn.k_norm.weight", t.k_norm, HD_);
-            cpu_L[l].w1 = t.w1; cpu_L[l].w2 = t.w2; cpu_L[l].w3 = t.w3;
+            cpu_L[l].w1 = t.w1; cpu_L[l].w2 = t.w2; cpu_L[l].w3 = t.w3; cpu_L[l].pon = t.pon;
+            if (want_vk) {
+                // Retain the attention weights (f32, [out,in] fused layout) for
+                // the lazy VkAttention upload at first forward().
+                vk_layers_[l].wq = t.wq; vk_layers_[l].wk = t.wk;
+                vk_layers_[l].wv = t.wv; vk_layers_[l].wo = t.wo;
+                vk_layers_[l].pn = t.pn;
+                vk_layers_[l].qn = t.q_norm; vk_layers_[l].kn = t.k_norm;
+            }
         }
 
         auto up = [&](const std::vector<float>& c, float*& g) {
@@ -426,7 +484,8 @@ struct FusedBackend : Backend {
             for (int l = 0; l < NC; l++) {
                 auto& cl = cpu_L[l];
                 if (cl.w1.empty() || cl.w2.empty()) continue;
-                npu_state_pack_layer(npu, l, cl.w1.data(), cl.w2.data(), cl.w3.data());
+                npu_state_pack_layer(npu, l, cl.w1.data(), cl.w2.data(), cl.w3.data(),
+                                     cl.pon.empty() ? nullptr : cl.pon.data());
             }
             printf("[fused] NPU weights packed via C++ module\n");
         }
@@ -448,7 +507,9 @@ struct FusedBackend : Backend {
     }
 
     bool reset() override {
-        pos = 0; if (dK) memset(dK, 0, kvb); if (dV) memset(dV, 0, kvb); return true;
+        pos = 0; if (dK) memset(dK, 0, kvb); if (dV) memset(dV, 0, kvb);
+        if (vk_attn_) va_.zero_cache();
+        return true;
     }
 
     static void gemv(float* y, const float* W, const float* x, int M, int N, hipStream_t s) {
@@ -460,6 +521,93 @@ struct FusedBackend : Backend {
     // ══════════════════════════════════════
     // forward — PURE GPU LOOP
     // ══════════════════════════════════════
+
+    // Lazily create the Vulkan dma-buf import of the SharedBO slots (issue
+    // #1217).  Deferred from init() because the unified server creates and
+    // tears down OTHER Vulkan instances (vulkan_hpp backend, llama.cpp's
+    // ggml-vulkan) during boot — holding this backend's import alive across
+    // that teardown raced RADV and segfaulted the server (measured 2026-08-29:
+    // server crashed when fused was the kept backend; clean once the import
+    // is created at first use, after the other instances are gone).  The
+    // import is a GPU-side handle only — transfers still go through
+    // host_ptr() (the imported dma-buf is not CPU-mappable on RADV).
+    void ensure_vk_import() {
+        if (vk_ready_ || !npu_ok) return;
+        vk_ready_ = true;  // attempt once, even on failure
+        const size_t sb = (size_t)H * sizeof(float) * 2;
+        vk_ctx_.init();
+        vk_ok_ = vk_ctx_.dev != VK_NULL_HANDLE && vk_ctx_.ext_mem_fd;
+        if (!vk_ok_) {
+            fprintf(stderr, "[fused] Vulkan dma-buf import unavailable%s — "
+                    "SharedBO via host_ptr() bounce\n",
+                    vk_ctx_.dev ? " (driver lacks external-memory exts)"
+                                : " (no Vulkan device)");
+            return;
+        }
+        for (int i = 0; i < 2 && vk_ok_; i++) {
+            if (vk_fds_[i] < 0) { vk_ok_ = false; break; }
+            if (!vk_slot_[i].create_from_dma_buf(
+                    vk_ctx_.dev, vk_ctx_.memProps, sb, vk_fds_[i],
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+                close(vk_fds_[i]);  // import failed — we still own the fd
+                vk_fds_[i] = -1;
+                vk_ok_ = false;
+                break;
+            }
+            vk_fds_[i] = -1;  // fd consumed by the driver — do NOT close
+        }
+        if (!vk_ok_) {
+            for (int i = 0; i < 2; i++)
+                if (vk_slot_[i].mem) vk_slot_[i].destroy();
+        } else {
+            printf("[fused] SharedBO slots GPU-imported via Vulkan "
+                   "dma-buf (%s) — zero-copy NPU<->GPU handoff\n",
+                   vk_ctx_.deviceName);
+        }
+    }
+
+    // Lazily initialize the Vulkan in-place attention engine (FUSED_VK_ATTN=1)
+    // on the first forward() call.  Deferred for the same reason as
+    // ensure_vk_import: the unified server creates/tears down other Vulkan
+    // instances during boot; creating ours too early raced RADV.
+    void ensure_vk_attn() {
+        if (vk_attn_ready_ || !vk_attn_) return;
+        vk_attn_ready_ = true;   // attempt once, even on failure
+        const char* shdir = getenv("VK_ATTN_SHADER_DIR");
+        if (!shdir) {
+#ifdef VK_ATTN_SHADER_DIR
+            shdir = VK_ATTN_SHADER_DIR;
+#else
+            shdir = "engine/fusion/gpu_attn_vk/shaders";
+#endif
+        }
+        xrt::device npu_dev(0);
+        if (!va_.init(npu_dev, H, NH, NKV, HD_, IM, max_seq, NC, rope_theta, shdir)) {
+            fprintf(stderr, "[fused] FUSED_VK_ATTN: VkAttention init failed — "
+                            "falling back to HIP attention\n");
+            vk_attn_ = false;
+            return;
+        }
+        if (!vk_embed_.empty() && !va_.upload_embed(vk_embed_)) {
+            fprintf(stderr, "[fused] FUSED_VK_ATTN: embed upload failed\n");
+            vk_attn_ = false;
+            return;
+        }
+        for (int l = 0; l < NC; l++) {
+            if (!va_.upload_layer(l, vk_layers_[l])) {
+                fprintf(stderr, "[fused] FUSED_VK_ATTN: layer %d upload failed\n", l);
+                vk_attn_ = false;
+                return;
+            }
+        }
+        vk_embed_.clear(); vk_embed_.shrink_to_fit();
+        vk_layers_.clear(); vk_layers_.shrink_to_fit();
+        printf("[fused] FUSED_VK_ATTN: Vulkan in-place attention active on "
+               "the NPU pages (dma-buf import)\n");
+    }
+
     bool forward(int token_id, float* hidden_out) override {
         // KV cache holds max_seq positions; the store kernel never compares
         // (issue #1267) — refuse instead of writing OOB.
@@ -468,6 +616,89 @@ struct FusedBackend : Backend {
             return false;
         }
         const int H_ = H, NH_ = NH, NKV_ = NKV, HD_ = this->HD_, IM_ = IM, NC_ = NC;
+
+        // Lazy Vulkan dma-buf import (see ensure_vk_import) — first forward
+        // call creates it, after the server's boot-time Vulkan teardown.
+        ensure_vk_import();
+        ensure_vk_attn();
+
+        // ── FUSED_VK_ATTN path: the whole attention runs as Vulkan compute
+        //    IN PLACE on the NPU SharedBO pages (dma-buf import).  The NPU
+        //    FFN reads/writes the same pages directly.  Zero per-layer host
+        //    copies: embed→pages, per-layer attention, and the FFN all move
+        //    data through the pages themselves.  Only the final readback
+        //    pages→dh (for lm_head) touches the CPU per token.
+        if (vk_attn_) {
+            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+
+            // 0) embed → pages (Vulkan writes the NPU pages directly)
+            if (token_id >= 0 && token_id < VOCAB)
+                va_.embed(token_id);
+            else
+                memset(va_.pages()->host_ptr(), 0, (size_t)H_ * sizeof(float));
+
+            for (int l = 0; l < NC_; l++) {
+                // await FFN(l-1): its output is already IN the pages (the NPU
+                // FFN writes in place) — nothing to copy.
+                if (use_npu && l > 0) {
+                    if (!npu_future_.get()) {
+                        fprintf(stderr, "[fused] NPU FFN l=%d failed — GPU FFN from now\n", l - 1);
+                        npu_ok = false; use_npu = false;
+                    }
+                }
+                // in-place attention: pages -> rms/qkv/decode/post -> pages
+                va_.layer(l, pos);
+                if (use_npu) {
+                    float* pg = (float*)va_.pages()->host_ptr();
+                    npu_future_ = std::async(std::launch::async, [this, l, pg, H_]() {
+                        return npu_state_ffn(npu, l, pg, H_);
+                    });
+                } else {                    // GPU FFN fallback (needs GPU dh; pages round-trip).
+                    auto& gl = L[l];
+                    HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                        H_ * sizeof(float), hipMemcpyHostToDevice));
+                    fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                    if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
+                    else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                    if (gl.w1 && gl.w2 && gl.w3) {
+                        gemv(dgate, gl.w1, dh, IM_, H_, stream);
+                        gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                        fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                        gemv(dh, gl.w3, datt, H_, IM_, stream);
+                        fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                    }
+                    HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
+                                        H_ * sizeof(float), hipMemcpyDeviceToHost));
+                }
+            }
+            // await the LAST NPU FFN (its output is in the pages)
+            if (use_npu) {
+                if (!npu_future_.get()) {
+                    fprintf(stderr, "[fused] NPU FFN final layer failed — GPU FFN fallback\n");
+                    auto& gll = L[NC_ - 1];
+                    HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                        H_ * sizeof(float), hipMemcpyHostToDevice));
+                    fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                    if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
+                    else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                    if (gll.w1 && gll.w2 && gll.w3) {
+                        gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                        gemv(dup_,  gll.w2, dh, IM_, H_, stream);
+                        fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                        gemv(dh, gll.w3, datt, H_, IM_, stream);
+                        fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                    }
+                }
+            }
+
+            // Final: read the pages back once (for lm_head), final RMSNorm.
+            HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                H_ * sizeof(float), hipMemcpyHostToDevice));
+            fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
+            HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));  // blocking
+            pos++;
+            return true;
+        }
 
         // Embedding → GPU
         if (token_id >= 0 && token_id < VOCAB && d_embed)
@@ -493,14 +724,14 @@ struct FusedBackend : Backend {
                     npu_ok = false;
                     use_npu = false;
                 } else {
-                    // Copy NPU result from SharedBO slot back to GPU dh
-                    if (slot_dev[prev_si]) {
-                        HIP_CHECK(hipMemcpy(dh, slot_dev[prev_si], H_*sizeof(float),
-                                            hipMemcpyDeviceToDevice));
-                    } else {
-                        HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(), H_*sizeof(float),
-                                            hipMemcpyHostToDevice));
-                    }
+                    // Copy NPU result from SharedBO slot back to GPU dh.  The
+                    // slot's GPU view is the Vulkan dma-buf import (issue
+                    // #1217), but the import is not CPU-mappable (SIGBUS on
+                    // RADV) and HIP has no dma-buf import API, so this H2D
+                    // copy reads the NPU FFN output through the XRT CPU view
+                    // of the same pages.
+                    HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(),
+                                        H_*sizeof(float), hipMemcpyHostToDevice));
                 }
             }
 
@@ -576,13 +807,12 @@ struct FusedBackend : Backend {
                 float* host_buf = (float*)slot[si]->host_ptr();
                 // Copy post-attention hidden state to the slot.  dh holds the
                 // post-attention + residual output (copied from doproj above).
-                if (slot_dev[si]) {
-                    HIP_CHECK(hipMemcpy(slot_dev[si], dh, H_*sizeof(float),
-                                        hipMemcpyDeviceToDevice));
-                } else {
-                    HIP_CHECK(hipMemcpy(host_buf, dh, H_*sizeof(float),
-                                        hipMemcpyDeviceToHost));
-                }
+                // Destination is the XRT CPU view of the NPU pages (the
+                // Vulkan dma-buf import is the GPU-side handle but is not
+                // CPU-mappable on RADV) — the NPU reads its FFN input from
+                // these pages.
+                HIP_CHECK(hipMemcpy(host_buf, dh, H_*sizeof(float),
+                                    hipMemcpyDeviceToHost));
                 // Launch NPU FFN async.  The next iteration's Phase A wait
                 // collects the result before attention(L+1) reads dh.
                 npu_future_ = std::async(std::launch::async, [this, l, host_buf, H_]() {
@@ -596,13 +826,8 @@ struct FusedBackend : Backend {
             int last_si = (NC_ - 1) & 1;
             bool ok = npu_future_.get();
             if (ok) {
-                if (slot_dev[last_si]) {
-                    HIP_CHECK(hipMemcpy(dh, slot_dev[last_si], H_*sizeof(float),
-                                        hipMemcpyDeviceToDevice));
-                } else {
-                    HIP_CHECK(hipMemcpy(dh, slot[last_si]->host_ptr(), H_*sizeof(float),
-                                        hipMemcpyHostToDevice));
-                }
+                HIP_CHECK(hipMemcpy(dh, slot[last_si]->host_ptr(),
+                                    H_*sizeof(float), hipMemcpyHostToDevice));
             } else {
                 // GPU FFN fallback for the last layer — dh still holds the
                 // post-attention hidden state (input to FFN).
@@ -671,14 +896,22 @@ struct FusedBackend : Backend {
         hfhst(dK); hfhst(dV);
         devK = devV = nullptr;
         for (int i = 0; i < 2; i++) {
-            if (slot_dev[i] && slot[i]) {
-                HIP_CHECK_D(hipHostUnregister(slot[i]->host_ptr()));
-                slot_dev[i] = nullptr;
-            }
+            if (vk_slot_[i].mem) vk_slot_[i].destroy();
+            if (vk_fds_[i] >= 0) { close(vk_fds_[i]); vk_fds_[i] = -1; }  // un-imported dup
             delete slot[i]; slot[i] = nullptr;
+        }
+        // Tear down the Vulkan context that imported the slots.  Guarded on
+        // dev so a failed init (no device ever created) is a no-op; nulled so
+        // a second destroy() pass (unload + dtor) is also a no-op.
+        if (vk_ctx_.dev) {
+            vk_ctx_.destroy();
+            vk_ctx_.dev = VK_NULL_HANDLE;
         }
         // Await any in-flight NPU FFN before destroying NPU state
         if (npu_future_.valid()) { npu_future_.wait(); }
+        if (vk_attn_) va_.destroy();
+        vk_embed_.clear(); vk_embed_.shrink_to_fit();
+        vk_layers_.clear(); vk_layers_.shrink_to_fit();
         if (stream) { HIP_CHECK_D(hipStreamDestroy(stream)); stream = nullptr; }
         npu_state_destroy(npu); npu = nullptr;
         cpu_L.clear(); cpu_embed.clear(); cpu_final_norm.clear(); cpu_output.clear();

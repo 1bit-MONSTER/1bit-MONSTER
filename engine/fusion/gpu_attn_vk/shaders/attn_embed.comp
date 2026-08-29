@@ -1,0 +1,19 @@
+// attn_embed.comp — token embedding lookup written directly into the NPU
+// SharedBO pages.  pages[i] = embed[token*H + i].
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer Embed { float emb[]; };  // [VOCAB*H]
+layout(set = 0, binding = 1, std430) buffer Pages { float h[]; };    // NPU pages [H]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.H)) return;
+    h[i] = emb[uint(pc.pos) * uint(pc.H) + i];   // pos carries the token id here
+}

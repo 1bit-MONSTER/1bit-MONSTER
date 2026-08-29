@@ -142,14 +142,15 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"vision_encoder", "hip_gpu", "cpu_generic"}, "Qwen3-VL — vision encoder + Qwen3 text decoder"};
     }
     if (cfg.architecture == "qwen3" || cfg.arch == RCPP_ARCH_QWEN3) {
-        // For 1BP models: GPU engine first, then NPU, then CPU. npu_flm is
-        // Q4NX-only (init rejects other formats), so it's not in this route.
+        // For 1BP models: fused GPU+NPU first (crash + NPU-FFN numerics fixed
+        // 2026-08-29 — tokens bit-match the GPU-only baseline; see
+        // engine/fusion/zero_copy/npu_gemm_kernel.h ninstr fix), then HIP 1BP
+        // (bit-correct reference), then Vulkan-Hpp, then CPU.  NPU FFN is
+        // opt-in per token via USE_NPU_FFN=1 (the hybrid); without it the
+        // fused backend is GPU-only attention+FFN.
         if (cfg.format == ModelFormat::ONEBP)
-            // hip_1bp first: bit-correct vs exact-f32 reference; fused_gpu_npu
-            // loops/degenerates on some models and vulkan_hpp_gpu segfaults in
-            // the RADV driver on first dispatch (both stay as fallbacks).
-            return {{"hip_1bp_gpu", "fused_gpu_npu", "vulkan_hpp_gpu", "cpu_generic"},
-                    "qwen3 1BP — HIP 1BP → Fused GPU+NPU → Vulkan-Hpp → CPU"};
+            return {{"fused_gpu_npu", "hip_1bp_gpu", "vulkan_hpp_gpu", "cpu_generic"},
+                    "qwen3 1BP — Fused GPU+NPU → HIP 1BP → Vulkan-Hpp → CPU"};
         // Q4NX: FLM NPU engine is the native format owner (67.5 tok/s)
         if (cfg.format == ModelFormat::Q4NX)
             return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
@@ -164,24 +165,11 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
     if (cfg.format == ModelFormat::GGUF || cfg.format == ModelFormat::H1B) {
         return {{"ggml_vulkan", "zinc_gpu", "cpu_generic"}, "GGUF/H1B model — GGML-Vulkan (357 tok/s) → ZINC GPU → CPU"};
     }
-    // Qwen3.5-MoE (35B-A3B, GatedDeltaNet + full attn + gated MoE) —
-    // issue #1831: the HIP 1BP backend cannot run it yet. Interim route to
-    // the validated qwen3next CPU engine (src/qwen3next_engine.cpp, corr
-    // 0.9997 vs the numpy reference) until the HIP port lands, so the arch
-    // has a working non-NPU path. NPU FLM also speaks it (npu_flm maps
-    // qwen35moe -> qwen3.6-moe:35b-a3b) — tried after CPU per issue #1830's
-    // FLM decode defect; reorder once that is fixed.
-    // Scoped to the qwen35moe arch strings ONLY — RCPP_ARCH_QWEN3NEXT also
-    // covers qwen3next/gateddeltanet/qwen4exp, whose routing is unchanged.
-    if (cfg.architecture == "qwen3_5_moe_text" || cfg.architecture == "qwen35moe") {
-        return {{"cpu_qwen3_next", "npu_flm", "cpu_generic"},
-                "Qwen3.5-MoE — qwen3next CPU engine → FLM NPU → generic CPU (#1831)"};
-    }
     if (cfg.format == ModelFormat::ONEBP) {
-        // hip_1bp first — proven bit-correct; fused/vulkan are experimental
-        // (fused degenerates on some models, vulkan_hpp crashes RADV).
-        return {{"hip_1bp_gpu", "fused_gpu_npu", "vulkan_hpp_gpu", "hip_gpu", "cpu_generic"},
-                "1BP model — HIP 1BP → Fused GPU+NPU → Vulkan-Hpp → HIP → CPU fallback"};
+        // fused_gpu_npu first (fixed 2026-08-29), then hip_1bp (bit-correct
+        // reference), then Vulkan-Hpp, then HIP, then CPU.
+        return {{"fused_gpu_npu", "hip_1bp_gpu", "vulkan_hpp_gpu", "hip_gpu", "cpu_generic"},
+                "1BP model — Fused GPU+NPU → HIP 1BP → Vulkan-Hpp → HIP → CPU fallback"};
     }
     // Default: try HIP GPU first, fall back to generic CPU.
     return {{"hip_gpu", "cpu_generic"}, "generic model — HIP GPU, generic CPU fallback"};

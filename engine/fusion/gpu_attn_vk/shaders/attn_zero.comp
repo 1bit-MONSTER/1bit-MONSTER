@@ -1,0 +1,12 @@
+// attn_zero.comp — fill a storage buffer with zeros.  Used to reset the f32
+// KV caches on backend reset() (the fused backend memsets its HIP caches;
+// the VK path must clear its own).  Dispatch gx = ceil(size/256).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer Buf { float b[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    b[i] = 0.0;
+}

@@ -27,8 +27,17 @@
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
+| WS-12 | HRX/Loom platform transition | 🔎 | 🔲 | 🔲 | researched 2026-08-28; lands with next lemonade re-vendor |
 
 ## Task detail
+
+### ws12-hrx-loom
+- [ ] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verify onebin registers `llamacpp-hrx` on gfx1151
+- [ ] P0: Smoke-test HRX recipe end-to-end on gfx1151 (Qwen3-30B-A3B chat or record fail-closed)
+- [ ] P1: Track llama.cpp RFC #27218; watch ggml-hrx move from AMD staging to upstream releases
+- [ ] P1: Audit hrx-v2 branch (179 commits ahead) — decide fork track: HRX vs HIP/Vulkan
+- [ ] P1: Benchmark HRX vs HIP baseline on gfx1151 (RFC claims 30–50% prefill)
+- [ ] P2: Evaluate Loom (`loomc` C API) as an authoring surface for 1bit kernels
 
 ### WS-00 — Baseline & measurement
 - [x] P0: `run_benchmarks.sh` — runs all `build/bench_*` binaries → JSON + tagged summary (tested 2026-07-31: bench_kv_fd, 30.1 GB/s fd vs 4.4 fp16 at L=1024)

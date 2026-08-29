@@ -8,32 +8,19 @@
 // compares the NPU's int8-quantized GEMM output against a float32 CPU
 // reference computed from the same real, dequantized weights.
 //
-// CURRENT STATUS: FAILS (cosine similarity ~0, not the expected >0.95).
-// Investigated and ruled out:
-//   - Tile size: fixed (these xclbins need MD=128, not MD=1 — was crashing).
-//   - Kernel invocation API: switched from the experimental aiebu_assembler/
-//     xrt::module/xrt::elf/xrt::ext::kernel path (used by the original demo)
-//     to the plain xrt::kernel + explicit instruction-bo path documented in
-//     engine/npu/README.md as "verified correct on hardware"
-//     (engine/npu/src/bench_gemm.cpp) — output was byte-identical either way,
-//     so this wasn't the bug, but it's still the right API to use going
-//     forward (no experimental-API dependency, matches this repo's own
-//     validated reference).
-//   - int16 accumulator overflow: tested with quantization clamped to +/-8
-//     instead of +/-127 (rules out overflow-since-K=1024 saturating an int16
-//     accumulator) — output shrank proportionally but the failure pattern
-//     (near-zero cosine, alternating exact-zero output elements) persisted.
-//   - Weight transpose convention: tried both GGUF-native [out,in] and the
-//     transposed [in,out] packB expects — same failure pattern either way.
-// The alternating-zero pattern in the NPU output (every other element
-// exactly 0.0/-0.0) is structural and independent of input data, which
-// points to something in how this specific xclbin/instruction pair encodes
-// its output — likely needs the MLIR/kernel-generation source or the
-// original author's documentation to resolve, not further guessing at the
-// host-side calling convention. bench_gemm.cpp's own "verified correct"
-// claim used trivial all-ones inputs (products of 1, no realistic dynamic
-// range) — this may be the first time this xclbin has been checked against
-// real, full-dynamic-range quantized data.
+// CURRENT STATUS: PASSES (cosine ~0.998 vs the float32 CPU reference) after
+// #1756's xclbin/insts rebuild + the #1207 fixes in the fused NPU path
+// (src/backend_fused_npu.cpp):
+//   - the final_i8_{GU,D}_qwen3_0_6b xclbins need MD=128 (a fixed 128-row AIE
+//     tile), not MD=16;
+//   - each layer's packed B must live in its OWN buffer — the kernels share
+//     one bB, so packing every layer left the LAST layer's weights in bB for
+//     every FFN call (see goB/packB_into);
+//   - the FFN RMSNorm (gl.pon) must be applied to the FFN input — the GPU FFN
+//     normalizes; without it the int8 GEMMs amplify the raw input and the
+//     hidden state diverges to ±inf (all-zero tokens).
+// The notes below document the pre-#1756 investigation (cosine ~0,
+// alternating exact-zero output elements) for history.
 //
 // Usage: ./test_npu_ffn_real_weights [path/to/Qwen3-0.6B.1bp]
 

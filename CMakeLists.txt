@@ -600,7 +600,6 @@ set(BACKEND_MANAGER_SOURCES
     src/glm_moe_dsa.cpp
     src/mimo_v2.cpp
     src/qwen3_5.cpp
-    src/qwen3next_engine.cpp   # Qwen3-Next (GatedDeltaNet) CPU engine — #1831 interim fallback
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/simple_tokenizer.cpp
@@ -898,7 +897,7 @@ add_test(NAME zaya_batch_check COMMAND zaya_batch_check ${ZAYA_TEST_MODEL})
 
 # -- zaya_server : multi-model multi-backend inference server (main binary,
 #    NOT a test — not registered with add_test(), see install() below) ------
-set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_npu_universal.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
+set(ZAYA_SERVER_SRC tests/zaya_server.cpp tests/backends/backend_cpu.cpp tests/backends/backend_npu.cpp tests/backends/backend_generic.cpp tests/backends/backend_zamba2_adapter.cpp src/backend_zamba2.cpp)
 
 # ── Speculative decode demo: draft + target llama.cpp contexts, batched
 # verification with KV rollback (roadmap Phase 2 core loop) ──
@@ -977,6 +976,18 @@ if(THEROCK_HIPBLAS_LIB)
     get_filename_component(_l "${THEROCK_HIPBLAS_LIB}" DIRECTORY)
     set_property(TARGET bench_hip_1bp APPEND PROPERTY LINK_OPTIONS "-Wl,-rpath,${_l}")
 endif()
+
+# -- bench_cpu: f32 CPU-generic token ground truth (attention is pure f32) --
+add_executable(bench_cpu
+    tools/bench_cpu.cpp src/backend_generic.cpp
+    src/model_discovery.cpp src/gguf_reader.cpp
+    src/q4nx_reader.cpp src/safetensors_reader.cpp)
+target_include_directories(bench_cpu PRIVATE src include engine/npu/src)
+target_compile_options(bench_cpu PRIVATE -O3 -march=native -std=c++23)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(bench_cpu PRIVATE OpenMP::OpenMP_CXX)
+endif()
+target_link_libraries(bench_cpu PRIVATE rocm_cpp)
 set_source_files_properties(tools/bench_hip_1bp.cpp PROPERTIES LANGUAGE CXX)
 set_target_properties(bench_hip_1bp PROPERTIES
     HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
@@ -1154,6 +1165,7 @@ set(UNIFIED_SERVER_SOURCES
     src/backend_npu.cpp
     src/backend_npu_flm.cpp
     src/backend_generic.cpp
+    src/backend_lse.cpp
 )
 
 # ggml_vulkan backend needs llama.cpp's static libs (GGML_BUILD_DIR); only
@@ -1171,15 +1183,21 @@ endif()
 # backend just registers as unavailable at runtime — safe to exclude.
 find_package(xrt QUIET)
 find_package(aiebu QUIET)
+# The fused backend imports the NPU SharedBO dma-buf as Vulkan device memory
+# (issue #1217) — vulkan_rt.h needs the Vulkan headers and libvulkan at link.
+find_package(Vulkan QUIET)
 include(CheckIncludeFile)
 check_include_file("xrt/xrt_bo.h" _RC_XRT_BO_H)
 set(_RC_HAVE_FUSED_BACKEND FALSE)
-if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND AND _RC_XRT_BO_H)
+if(hip_FOUND AND xrt_FOUND AND aiebu_FOUND AND _RC_XRT_BO_H AND Vulkan_FOUND)
     set(_RC_HAVE_FUSED_BACKEND TRUE)
-    list(APPEND UNIFIED_SERVER_SOURCES src/backend_fused.cpp src/backend_fused_npu.cpp)
-    message(STATUS "rocm-cpp: fused GPU+NPU backend enabled (XRT + AIEBU headers present)")
+    list(APPEND UNIFIED_SERVER_SOURCES
+        src/backend_fused.cpp src/backend_fused_npu.cpp
+        engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp)
+    set_source_files_properties(engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp PROPERTIES LANGUAGE CXX)
+    message(STATUS "rocm-cpp: fused GPU+NPU backend enabled (XRT + AIEBU + Vulkan present)")
 else()
-    message(STATUS "rocm-cpp: fused GPU+NPU backend disabled (XRT headers or AIEBU missing)")
+    message(STATUS "rocm-cpp: fused GPU+NPU backend disabled (XRT/AIEBU headers or Vulkan missing)")
 endif()
 
 # unified_server sources (UNIFIED_SERVER_SOURCES, kept above) compile into
@@ -1670,20 +1688,70 @@ if(_RC_HAVE_FUSED_BACKEND)
             target_link_libraries(onebin PRIVATE fusion_zero_copy)
             target_include_directories(onebin PRIVATE engine/fusion/zero_copy)
             target_compile_definitions(onebin PRIVATE RCPP_HAVE_FUSION_ZERO_COPY=1)
+            # backend_fused.cpp (compiled into onebin) imports the SharedBO
+            # dma-bufs via Vulkan (issue #1217) — give it the loader + headers.
+            target_link_libraries(onebin PRIVATE Vulkan::Vulkan)
+            target_include_directories(onebin PRIVATE ${Vulkan_INCLUDE_DIRS})
+            # gpu_attn_vk.cpp (Vulkan in-place attention on the NPU pages).
+            target_include_directories(onebin PRIVATE engine/fusion/gpu_attn_vk)
         endif()
 
         # bench_fused: Fused GPU attn ∥ NPU FFN benchmark
-        add_executable(bench_fused tools/bench_fused.cpp src/backend_fused.cpp src/backend_fused_npu.cpp src/kv_cache_attn.hip)
+        # gpu_attn_vk.cpp = Vulkan in-place attention on the NPU pages (pure C++).
+        add_executable(bench_fused tools/bench_fused.cpp src/backend_fused.cpp src/backend_fused_npu.cpp src/kv_cache_attn.hip engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp)
         set_source_files_properties(src/backend_fused.cpp PROPERTIES LANGUAGE HIP)
         set_source_files_properties(src/backend_fused_npu.cpp PROPERTIES LANGUAGE CXX)
         set_source_files_properties(src/kv_cache_attn.hip PROPERTIES LANGUAGE HIP)
-        target_include_directories(bench_fused PRIVATE src include engine/fusion/zero_copy engine/npu/src)
+        set_source_files_properties(engine/fusion/gpu_attn_vk/gpu_attn_vk.cpp PROPERTIES LANGUAGE CXX)
+        target_include_directories(bench_fused PRIVATE src include engine/fusion/zero_copy engine/fusion/gpu_attn_vk engine/npu/src ${Vulkan_INCLUDE_DIRS})
+
+        # gpu_attn_vk GLSL shaders → SPIR-V into the build tree; the backend
+        # loads them from VK_ATTN_SHADER_DIR (compile-time default below).
+        find_program(GLSLC_EXECUTABLE glslc)
+        if(GLSLC_EXECUTABLE)
+            set(VK_ATTN_SHADER_DIR "${CMAKE_BINARY_DIR}/gpu_attn_vk_shaders")
+            file(MAKE_DIRECTORY "${VK_ATTN_SHADER_DIR}")
+            set(VK_ATTN_SPVS "")
+            file(GLOB VK_ATTN_COMP "${CMAKE_SOURCE_DIR}/engine/fusion/gpu_attn_vk/shaders/*.comp")
+            foreach(_comp ${VK_ATTN_COMP})
+                get_filename_component(_name "${_comp}" NAME_WE)
+                set(_spv "${VK_ATTN_SHADER_DIR}/${_name}.spv")
+                add_custom_command(OUTPUT "${_spv}"
+                    COMMAND "${GLSLC_EXECUTABLE}" --target-env=vulkan1.2 -O -o "${_spv}" "${_comp}"
+                    DEPENDS "${_comp}"
+                    COMMENT "glslc ${_name}.comp -> ${_name}.spv")
+                list(APPEND VK_ATTN_SPVS "${_spv}")
+            endforeach()
+            add_custom_target(gpu_attn_vk_shaders DEPENDS ${VK_ATTN_SPVS})
+            add_dependencies(bench_fused gpu_attn_vk_shaders)
+            if(TARGET onebin)
+                add_dependencies(onebin gpu_attn_vk_shaders)
+                target_compile_definitions(onebin PRIVATE
+                    VK_ATTN_SHADER_DIR="${VK_ATTN_SHADER_DIR}")
+            endif()
+        else()
+            set(VK_ATTN_SHADER_DIR "${CMAKE_SOURCE_DIR}/engine/fusion/gpu_attn_vk/shaders")
+            if(TARGET onebin)
+                target_compile_definitions(onebin PRIVATE
+                    VK_ATTN_SHADER_DIR="${VK_ATTN_SHADER_DIR}")
+            endif()
+        endif()
+        target_compile_definitions(bench_fused PRIVATE
+            VK_ATTN_SHADER_DIR="${VK_ATTN_SHADER_DIR}")
         target_compile_options(bench_fused PRIVATE -O2 -std=c++23 -D__HIP_PLATFORM_AMD__ -DRCPP_HAVE_FUSION_ZERO_COPY)
-        target_link_libraries(bench_fused PRIVATE fusion_zero_copy hip::host hip::device hipblas rocm_cpp pthread)
+        target_link_libraries(bench_fused PRIVATE fusion_zero_copy hip::host hip::device hipblas rocm_cpp pthread Vulkan::Vulkan)
         set_source_files_properties(tools/bench_fused.cpp PROPERTIES LANGUAGE CXX)
         set_target_properties(bench_fused PROPERTIES
             HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}"
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
+        # Resolve HIP/hipblas at runtime from the SAME TheRock tree it was
+        # built against — without this the loader falls back to the apt system
+        # libamdhip64 at /usr/lib (bench_fused linked but crashed at startup).
+        set_property(TARGET bench_fused APPEND PROPERTY LINK_OPTIONS "-Wl,-rpath,\$ORIGIN")
+        if(THEROCK_HIPBLAS_LIB)
+            set_property(TARGET bench_fused APPEND PROPERTY
+                LINK_OPTIONS "-Wl,-rpath,${THEROCK_LIB_DIR}")
+        endif()
     endif()
 endif()
 

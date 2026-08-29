@@ -1,0 +1,66 @@
+// attn_decode.comp — causal decode attention over the FP16 KV caches.
+// One block per Q head; GQA: kv_head = h / (NH/NKV).  Online softmax over
+// positions [0, pos] (causal), scale = 1/sqrt(HD).  Mirrors the fused
+// backend's flash decode (f16 KV — same math, same quantization).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer QBuf { float q[]; };    // [NH*HD]
+layout(set = 0, binding = 1, std430) buffer KBuf { uint kc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 2, std430) buffer VBuf { uint vc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 3, std430) buffer OBuf { float o[]; };    // [NH*HD]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+// FP16 bits -> FP32 (exact hardware conversion).
+// unpackHalf2x16 reads the low 16 bits as the first f16.
+float f16tof(uint x) {
+    return unpackHalf2x16(x & 0xFFFFu).x;
+}
+
+void main() {
+    uint h = gl_GlobalInvocationID.x / 256;
+    if (h >= uint(pc.NH)) return;
+    uint kvh = h * uint(pc.NKV) / uint(pc.NH);
+    uint hd = uint(pc.HD);
+    float scale = 1.0 / sqrt(float(pc.HD));
+    // KV caches are indexed [layer][pos][NKV][HD] — the layer term must be
+    // added so multi-layer runs read THIS layer's keys/values.
+    uint lay = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd;
+
+    // 1) max score over [0, pos]
+    float mx = -1e30;
+    for (int s = 0; s <= pc.pos; s++) {
+        float d = 0.0;
+        uint base = lay + (uint(s) * uint(pc.NKV) + kvh) * hd;
+        for (uint i = 0; i < hd; i++)
+            d += q[h * hd + i] * f16tof(kc[base + i]);
+        mx = max(mx, d * scale);
+    }
+    // 2) softmax denominator
+    float sum = 0.0;
+    for (int s = 0; s <= pc.pos; s++) {
+        float d = 0.0;
+        uint base = lay + (uint(s) * uint(pc.NKV) + kvh) * hd;
+        for (uint i = 0; i < hd; i++)
+            d += q[h * hd + i] * f16tof(kc[base + i]);
+        sum += exp(d * scale - mx);
+    }
+    // 3) weighted sum of V
+    for (uint i = 0; i < hd; i++) {
+        float acc = 0.0;
+        for (int s = 0; s <= pc.pos; s++) {
+            float d = 0.0;
+            uint base = lay + (uint(s) * uint(pc.NKV) + kvh) * hd;
+            for (uint j = 0; j < hd; j++)
+                d += q[h * hd + j] * f16tof(kc[base + j]);
+            float w = exp(d * scale - mx) / sum;
+            acc += w * f16tof(vc[base + i]);
+        }
+        o[h * hd + i] = acc;
+    }
+}

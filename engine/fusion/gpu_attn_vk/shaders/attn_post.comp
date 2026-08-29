@@ -1,0 +1,26 @@
+// attn_post.comp — out-projection + residual, written IN PLACE back into the
+// NPU SharedBO pages (the hidden state never leaves them).  out[i] = sum_j
+// Wo[i*NHHD + j] * attn[j] + h[i], where h is read from the pages (still the
+// pre-attention residual) and the result overwrites the pages.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer AttnOut { float ao[]; };  // [NH*HD]
+layout(set = 0, binding = 1, std430) buffer Wo     { float wo[]; };   // [H][NH*HD]
+layout(set = 0, binding = 2, std430) buffer Pages  { float h[]; };    // NPU pages [H] (in-place)
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.H)) return;
+    float acc = 0.0;
+    int n = pc.NH * pc.HD;
+    for (int j = 0; j < n; j++)
+        acc += wo[i * uint(n) + uint(j)] * ao[uint(j)];
+    h[i] = acc + h[i];   // residual add, back into the pages
+}

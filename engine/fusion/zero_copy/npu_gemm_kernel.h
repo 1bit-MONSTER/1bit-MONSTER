@@ -91,20 +91,34 @@ public:
 
     // `w` must be [K,N] row-major (see file header re: transpose from GGUF layout).
     void packB(const float* w, int K, int N, float& sout) {
+        packB_into(*bB, w, K, N, sout);
+    }
+
+    // packB into a caller-provided B buffer (per-layer weights: a kernel has
+    // ONE shared bB, so multi-layer callers must give each layer its own BO
+    // and load it right before that layer's go() — see npu_state_ffn, issue
+    // #1207: packing every layer into the shared bB left the LAST packed
+    // layer's weights in bB for every FFN call, collapsing the hidden state).
+    void packB_into(xrt::bo& B, const float* w, int K, int N, float& sout) {
         float amax = 0;
         for (int i = 0; i < K * N; i++) { float a = fabsf(w[i]); if (std::isfinite(a) && a > amax) amax = a; }
         sout = (amax < 1e-12f) ? 1.0f : amax / 127.0f;
         float is = 127.0f / (amax < 1e-12f ? 1.0f : amax);
-        auto* Bm = (int8_t*)bB->map();
+        auto* Bm = (int8_t*)B.map();
         for (int i = 0; i < K * N; i++) {
             float v = w[i]; if (!std::isfinite(v)) v = 0;
             int q = (int)roundf(v * is); if (q > 127) q = 127; else if (q < -127) q = -127;
             Bm[i] = (int8_t)q;
         }
-        bB->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
 
     void go(const float* A, int am, int ak, float as_, float Bs, float* C, int an) {
+        goB(A, am, ak, as_, Bs, C, an, *bB);
+    }
+
+    // go() with a caller-provided B buffer (see packB_into).
+    void goB(const float* A, int am, int ak, float as_, float Bs, float* C, int an, xrt::bo& B) {
         float ais = 1.0f / as_;
         memset(Am, 0, (size_t)MD * KD);
         for (int mi = 0; mi < am; mi++) for (int ki = 0; ki < ak; ki++) {
@@ -115,7 +129,15 @@ public:
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         // Re-sync instruction buffer — XDNA AIE hardware consumes it on each run
         bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        auto r = (*k)((unsigned)3, *bI, (unsigned)ins.size(), *bA, *bB, *bC);
+        // ninstr: the insts file is a 4-word FLM-parity header
+        // {magic 0x06040100, ver, ncmds, nbytes} followed by the payload — the
+        // kernel wants the COMMAND COUNT (ncmds = ins[2]), NOT the full file
+        // word count.  Passing ins.size() made the AIE read ~8x too many
+        // "instructions", executing garbage → DMA to wild addresses → heap
+        // corruption / GP fault in libxrt_driver_xdna.so (measured 30-40%
+        // crash → 1/10 with ncmds on the GU kernel repro).
+        unsigned ninstr = (ins.size() > 4 && ins[0] == 0x06040100u) ? ins[2] : (unsigned)ins.size();
+        auto r = (*k)((unsigned)3, *bI, ninstr, *bA, B, *bC);
         r.wait();
         bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         float cs = as_ * Bs;

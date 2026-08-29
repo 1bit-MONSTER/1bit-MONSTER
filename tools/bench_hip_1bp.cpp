@@ -51,10 +51,13 @@ int main(int argc, char** argv) {
     tok = 1;
     t0 = std::chrono::steady_clock::now();
     int generated = 0;
+    fprintf(stderr, "[bench_hip_1bp] tokens:");
     for (int i = 0; i < tokens && tok >= 0; i++) {
         tok = b->generate(tok);
+        fprintf(stderr, " %d", tok);
         if (tok >= 0) generated++;
     }
+    fprintf(stderr, "\n");
     t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double,std::milli>(t1-t0).count();
 

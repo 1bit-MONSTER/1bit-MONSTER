@@ -247,7 +247,15 @@ struct OnebpHeader {
         if (version >= 3) { float t; memcpy(&t, &rope_theta_f, 4); return t; }
         return (float)rope_theta_f / 1000.0f;
     }
-    void set_rope_theta(float v) { memcpy(&rope_theta_f, &v, 4); }  // v3: raw f32 bits
+    void set_rope_theta(float v) {
+        // v3+: rope_theta_f holds raw f32 bits (mirrors the versioned
+        // rope_theta() getter); v1/v2: fixed-point theta*1000.  Writing raw
+        // bits into a v1 header made every reader divide the value by 1000
+        // (1e6 -> 1000), scrambling RoPE — Qwen3-0.6B 1BP regression,
+        // 2026-08-29.
+        if (version >= 3) memcpy(&rope_theta_f, &v, 4);
+        else rope_theta_f = (uint32_t)llroundf(v * 1000.0f);
+    }
     float expert_weights_scale() const { return (float)expert_weights_scale_f / 1000.0f; }
     void set_expert_weights_scale(float v) { expert_weights_scale_f = (uint32_t)(v * 1000.0f); }
     float rope_freq_base_swa() const {
