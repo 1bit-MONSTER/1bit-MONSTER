@@ -186,3 +186,6 @@ packaging/flatpak/build
 /gc.mlir
 /gc_run
 /gc_run.cpp
+
+# ── Generated docs site (built by scripts/gen_docs_site.py) ──
+/docs-site/
