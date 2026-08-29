@@ -1,5 +1,5 @@
 {
- "updated": "2026-08-29T13:55:28Z",
+ "updated": "2026-08-29T15:19:25Z",
  "_updated_note": "2026-08-05: NPU engine multi-core (v27, 4 core rows / 32 cores) \u2014 kernel 5.6x, qwen3_0_6b e2e decode 435 ms/tok (2.4x). NPU attention made opt-in (55x prefill regression). 2026-07-28: NPU engine replaced FLM-based v12 path with native npu_engine_universal (INT8 GEMM, Peano-compiled xclbins). All 22 GEMM shapes across 5 models verified 0/10000 errors on real hardware. NPU attention fixed (xrt::ext::bo overload resolution). NPU end-to-end prefill/decode now functional. Chess toolchain permanently deprecated (multi-dim BD repeat descriptors hang NPU2 DMA). Mamba1 GPU numbers: 79.4/46.0 tok/s re-validated 2026-07-26.",
  "source": "validated on real Strix Halo NPU hardware (single-agent, no contention), GPU numbers from cold GPU",
  "engines": {
@@ -273,13 +273,13 @@
    "backend": "fused"
   },
   "fused_vk_attn_npu_ffn": {
-   "tok_s": 3.3,
+   "tok_s": 3.5,
    "status": "validated",
-   "label": "Qwen3-0.6B 1BP \u2014 Vulkan in-place attention on NPU SharedBO pages + NPU FFN (zero-copy design; parallel decode shader)",
+   "label": "Qwen3-0.6B 1BP \u2014 Vulkan in-place attention + NPU FFN (parallel GEMV shaders)",
    "table": "engine",
    "display_name": "Fused VK attn + NPU FFN (zero-copy)",
    "backend": "fused",
-   "notes": "Zero-copy design: Vulkan attention reads/writes the NPU SharedBO pages in place (dma-buf import), NPU FFN reads them in place \u2014 no per-layer hipMemcpy. Perf pass 2026-08-29: (1) decode shader rewritten thread-parallel (was recomputing Q\u00b7K 3x serially, 2.7ms/layer -> 36us), (2) 4 layer dispatches batched into one submit (dispatchBatchOnce), (3) weights/scratch moved to DEVICE_LOCAL VRAM (create_device_local + staged upload), (4) per-layer weights packed into shared buffers indexed by pc.layer (one descriptor set per pipeline). 580 -> ~300 ms/token. Residual vs HIP+NPU (273ms): NPU FFN wall (~244ms, identical in both) + GPU clock ramp during the 8.7ms FFN gap (~700us/layer; HIP pays it too but its attention is async-streamed at 25-90us/layer vs VK's submit+waitIdle). Cross-token pipelining (token t FFN || token t+1 attention) is the remaining structural lever."
+   "notes": "Zero-copy design: Vulkan attention reads/writes the NPU SharedBO pages in place (dma-buf import), NPU FFN reads them in place. Perf pass 2026-08-29: parallel decode shader (76x), dispatch batching, device-local buffers, packed weights, and parallel GEMV shaders (2 lanes/row qkv, 8 lanes/row post) \u2014 580ms -> ~286ms/token. Residual gap vs HIP+NPU is the NPU FFN wall (~237ms, identical in both) + GPU cold-start after each FFN gap (cold-start is multiplicative on shader work; qkv remains memory-bound at ~116us reading 8MB weights/layer)."
   },
   "fused_hip_attn_npu_ffn": {
    "tok_s": 4.0,
@@ -291,13 +291,13 @@
    "notes": "Same NPU-FFN pipeline as the VK path but HIP attention; the ~4 tok/s is dominated by the NPU FFN pipeline, not attention."
   },
   "fused_vk_attn_gpu_ffn": {
-   "tok_s": 19.6,
+   "tok_s": 20.0,
    "status": "validated",
-   "label": "Qwen3-0.6B 1BP \u2014 Vulkan attention + GPU-FFN (parallel decode shader)",
+   "label": "Qwen3-0.6B 1BP \u2014 Vulkan attention + GPU-FFN (parallel GEMV shaders)",
    "table": "engine",
    "display_name": "Fused VK attn + GPU FFN",
    "backend": "fused",
-   "notes": "Fallback config (GPU FFN needs dh): pages round-trip per layer. 330ms -> 51ms/token after the decode-shader + dispatch-batching + device-local + packed-weights pass."
+   "notes": "Fallback config (GPU FFN needs dh): pages round-trip per layer. ~51ms/token after all perf passes."
   }
  },
  "table_kernel": [
@@ -388,7 +388,7 @@
   "qwen35_4b_q4km_tok_s": 65,
   "deepseek_r1_distill_llama_8b_q4km_tok_s": 44
  },
- "commit": "e59219aba85124205db9866dfd057e37c83663e4",
+ "commit": "4d92eef50b197a7b52fed3753208615ae78d5af7",
  "_notes": {
   "prior_numbers": "Prior published numbers (79.8/46.4 tok/s, 39.4/40.5 TFLOPS) were from single cold-GPU passes. Re-validated across 3 runs each: sustained throughput is 79.4/46.0 tok/s; prefill re-measured 2026-08-01 at 43.2 TFLOPS."
  },
