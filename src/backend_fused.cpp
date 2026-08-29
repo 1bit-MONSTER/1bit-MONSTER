@@ -145,6 +145,74 @@ __global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* _
     }
 }
 
+// ── Fused batched QKV: yq[B,s1], yk[B,s2], yv[B,s2] in ONE launch ──
+// The three projections share x and each row's W row is loaded into shared
+// once (per (row,batch) accumulation identical to the ws kernel — bit-
+// identical).  Rows: [0,s1) -> q, [s1,s1+s2) -> k, [s1+s2, +s2) -> v.
+__global__ void fused_qkv_batch_ws_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                          const float* __restrict__ Wq, const float* __restrict__ Wk,
+                                          const float* __restrict__ Wv, const float* __restrict__ x,
+                                          int s1, int s2, int N, int B) {
+    int row = blockIdx.x;
+    int rows = s1 + 2 * s2;
+    if (row >= rows) return;
+    const float* Wr; float* yr;
+    if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq; }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk; }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv; }
+    __shared__ float ws[3072];
+    __shared__ float sdata[BLOCK];
+    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = Wr[i];
+    __syncthreads();
+    for (int b = 0; b < B; b++) {
+        const float* xrow = x + (size_t)b * N;
+        float sum = 0.0f;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
+        __syncthreads(); sdata[threadIdx.x] = sum; __syncthreads();
+        for (int st = BLOCK/2; st > 0; st >>= 1) {
+            if (threadIdx.x < st) sdata[threadIdx.x] += sdata[threadIdx.x + st];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            if (row < s1) yq[(size_t)b * s1 + row] = sdata[0];
+            else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = sdata[0];
+            else yv[(size_t)b * s2 + (row - s1 - s2)] = sdata[0];
+        }
+        __syncthreads();
+    }
+}
+
+// ── Fused batched GU: y1[B,IM], y2[B,IM] = W1, W2 @ x in ONE launch ──
+__global__ void fused_gu_batch_ws_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                         const float* __restrict__ W1, const float* __restrict__ W2,
+                                         const float* __restrict__ x, int IM, int N, int B) {
+    int row = blockIdx.x;
+    int rows = 2 * IM;
+    if (row >= rows) return;
+    const float* Wr; float* yr;
+    if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1; }
+    else { Wr = W2 + (size_t)(row - IM) * N; yr = y2; }
+    __shared__ float ws[3072];
+    __shared__ float sdata[BLOCK];
+    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = Wr[i];
+    __syncthreads();
+    for (int b = 0; b < B; b++) {
+        const float* xrow = x + (size_t)b * N;
+        float sum = 0.0f;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
+        __syncthreads(); sdata[threadIdx.x] = sum; __syncthreads();
+        for (int st = BLOCK/2; st > 0; st >>= 1) {
+            if (threadIdx.x < st) sdata[threadIdx.x] += sdata[threadIdx.x + st];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            if (row < IM) y1[(size_t)b * IM + row] = sdata[0];
+            else y2[(size_t)b * IM + (row - IM)] = sdata[0];
+        }
+        __syncthreads();
+    }
+}
+
 // ── Vectorized GEMV: float4 loads (N%4==0) — 1.27x on large-M shapes ──
 // Same double-accumulation; accumulation order differs from
 // fused_gemv_plain_kernel (4 consecutive k per step vs stride-BLOCK), so
@@ -1319,9 +1387,14 @@ struct FusedBackend : Backend {
             // 1. residual save + RMSNorm (one batched launch, grid B)
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pn, H_, EPS);
             // 2. batched QKV GEMVs (W read once)
-            if (gl.wq) fused_gemv_batch_ws_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
-            if (gl.wk) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
-            if (gl.wv) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+            if (gl.wq && gl.wk && gl.wv)
+                fused_qkv_batch_ws_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(
+                    datt_batch, dgate_batch, dup_batch, gl.wq, gl.wk, gl.wv, dh_batch, s1, s2, H_, B_);
+            else {
+                if (gl.wq) fused_gemv_batch_ws_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
+                if (gl.wk) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
+                if (gl.wv) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+            }
             // 3. batched QK-norm + RoPE (one launch per projection; the batch
             //    advances all sequences together, so pos is common)
             if (gl.q_norm) fused_head_norm_rope_batch_kernel<<<B_*NH_, BLOCK, 0, stream>>>(
@@ -1355,8 +1428,7 @@ struct FusedBackend : Backend {
             auto& gl = L[l];
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pon, H_, EPS);
             if (gl.w1 && gl.w2 && gl.w3) {
-                fused_gemv_batch_ws_kernel<<<IM_, BLOCK, 0, stream>>>(dgate_batch, gl.w1, dh_batch, IM_, H_, B_);
-                fused_gemv_batch_ws_kernel<<<IM_, BLOCK, 0, stream>>>(dup_batch, gl.w2, dh_batch, IM_, H_, B_);
+                fused_gu_batch_ws_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate_batch, dup_batch, gl.w1, gl.w2, dh_batch, IM_, H_, B_);
                 fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
                 fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
