@@ -30,6 +30,16 @@ FFN directly, and the accumulation-order change shifted h by ~1e-7 across an
 int8 quantization boundary.  The q/k/v rewrites are safe (the f16 KV
 quantization absorbs the differences).  The post was reverted (`55334169`).
 
+## 2026-08-29 (round 13b) — batch gemv efficiency: 208 -> 229 tok/s
+
+The batched gemv's per-layer cost was dominated by re-reading the W row (and
+the full [B,N] x) once per batch — up to M*B*N of L2 traffic.  The W row in
+shared (read once per block, reused across the B batches; bit-identical
+accumulation order) gave 208 -> 223 tok/s (`99fe489a`); fusing the 3 qkv
+launches and the w1/w2 launches into fused_qkv_batch_ws / fused_gu_batch_ws
+(3 fewer launches/layer) gave 223 -> 229 tok/s (`3e1012c8`).  34.9 ms/batch,
+parity 15 13 15 15 ... on all 8 sequences.
+
 ## 2026-08-29 (round 11) — the batch decode is now FULLY batched: 208 tok/s
 
 The round-10 batched-decode fault was a VARIABLE SHADOWING bug: the batch
