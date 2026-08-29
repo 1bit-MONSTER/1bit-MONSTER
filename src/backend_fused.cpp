@@ -204,6 +204,60 @@ __global__ void fused_gu_v4_kernel(float* __restrict__ y1, float* __restrict__ y
     if (threadIdx.x == 0) *yr = (float)sdata[0];
 }
 
+// ── Fused save-residual + RMSNorm: dffn = x (pre-norm), x = norm(x) ──
+// One launch instead of copy + rmsnorm; the math is identical (the save is a
+// plain copy of the pre-transform values).
+__global__ void fused_copy_norm_kernel(float* __restrict__ dffn, float* __restrict__ x,
+                                       const float* __restrict__ w, int N, float eps) {
+    int tid = threadIdx.x;
+    float local = 0.0f;
+    for (int i = tid; i < N; i += blockDim.x) local += x[i] * x[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = local;
+    for (int s = BLOCK/2; s > 0; s >>= 1) { __syncthreads(); if (tid < s) sdata[tid] += sdata[tid + s]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / N + eps);
+    for (int i = tid; i < N; i += blockDim.x) {
+        dffn[i] = x[i];
+        x[i] = x[i] * inv * (w ? w[i] : 1.0f);
+    }
+}
+
+// ── Fused h2f + output-projection GEMV: y[H] = Wo[NH*HD, H]^T @ half(attn) ──
+// The h2f conversion (__half2float, exact) folds into the gemv's load — one
+// launch instead of h2f + gemv.  Per-row accumulation matches the v4 gemv.
+__global__ void fused_wo_h2v4_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                     const __half* __restrict__ x, int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const float4* W4 = (const float4*)(W + (size_t)row * N);
+    int N4 = N >> 2;
+    double sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k];
+        const __half2* hx = (const __half2*)x + 2 * k;
+        float4 xv;
+        xv.x = __half2float(hx[0].x); xv.y = __half2float(hx[0].y);
+        xv.z = __half2float(hx[1].x); xv.w = __half2float(hx[1].y);
+        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+    }
+    __shared__ double sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = (float)sdata[0];
+}
+
+// ── Fused residual: dh = y + res (replaces add(y,res) + copy(dh,y)) ──
+__global__ void fused_residual_kernel(float* __restrict__ dst, const float* __restrict__ y,
+                                      const float* __restrict__ res, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) dst[i] = y[i] + res[i];
+}
+
 // ── RMSNorm (in-place) ──
 __global__ void fused_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
                                       int N, float eps) {
@@ -928,9 +982,7 @@ struct FusedBackend : Backend {
             //    residual add norm(x) instead of x (flat-logits bug on every
             //    model with this path). dffn is free during attention and is
             //    re-saved by the FFN section before its own residual add.
-            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
-            if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pn, H_, EPS);
-            else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+            fused_copy_norm_kernel<<<1, BLOCK, 0, stream>>>(dffn, dh, gl.pn, H_, EPS);
 
             // 2. QKV GEMV (all async on stream)
             if (gl.wq && gl.wk && gl.wv)
@@ -963,13 +1015,10 @@ struct FusedBackend : Backend {
                 rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos+1, scl, (void*)stream);
 
                 // 6. attn half→f32 + output projection
-                fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dAttn, s1);
-                gemv(doproj, gl.wo, datt, H_, s1, stream);
+                fused_wo_h2v4_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo, dAttn, H_, s1);
 
-                // 7. Residual: doproj += saved input (dffn, pre-RMSNorm)
-                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dffn, H_);
-                // doproj = attn_out now. Copy back to dh for FFN.
-                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, H_);
+                // 7. Residual: dh = attn_out + saved input (dffn, pre-RMSNorm)
+                fused_residual_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, dffn, H_);
             }
             if (getenv("VK_ATTN_TIMING"))
                 fprintf(stderr, "[fused] HIP attn+FFN l=%2d: %7.1f us\n", l,
