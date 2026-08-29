@@ -142,6 +142,68 @@ __global__ void fused_gemv_v4_kernel(float* __restrict__ y, const float* __restr
     if (threadIdx.x == 0) y[row] = (float)sdata[0];
 }
 
+// ── Fused QKV GEMV: yq[s1], yk[s2], yv[s2] = W @ x in ONE launch ──
+// The three projections read the same x — one launch + the x re-reads gone.
+// Each output row's accumulation is IDENTICAL to fused_gemv_v4_kernel (same
+// float4 product sequence per thread), so results are bit-identical to the
+// separate v4 gemvs.
+__global__ void fused_qkv_v4_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                    const float* __restrict__ Wq, const float* __restrict__ Wk,
+                                    const float* __restrict__ Wv, const float* __restrict__ x,
+                                    int s1, int s2, int N) {
+    int row = blockIdx.x;
+    const float* Wr;
+    float* yr;
+    if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq + row; }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk + (row - s1); }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv + (row - s1 - s2); }
+    const float4* W4 = (const float4*)Wr;
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    double sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k], xv = x4[k];
+        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+    }
+    __shared__ double sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *yr = (float)sdata[0];
+}
+
+// ── Fused GU GEMV: y1[IM], y2[IM] = W1, W2 @ x in ONE launch ──
+// The FFN gate/up projections share x (the FFN input) — one launch instead
+// of two.  Per-row accumulation matches fused_gemv_v4_kernel bit-for-bit.
+__global__ void fused_gu_v4_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                   const float* __restrict__ W1, const float* __restrict__ W2,
+                                   const float* __restrict__ x, int IM, int N) {
+    int row = blockIdx.x;
+    const float* Wr;
+    float* yr;
+    if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1 + row; }
+    else { Wr = W2 + (size_t)(row - IM) * N; yr = y2 + (row - IM); }
+    const float4* W4 = (const float4*)Wr;
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    double sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k], xv = x4[k];
+        sum += (double)w.x*xv.x + (double)w.y*xv.y + (double)w.z*xv.z + (double)w.w*xv.w;
+    }
+    __shared__ double sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *yr = (float)sdata[0];
+}
+
 // ── RMSNorm (in-place) ──
 __global__ void fused_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
                                       int N, float eps) {
@@ -780,8 +842,7 @@ struct FusedBackend : Backend {
                     if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                     else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                     if (gl.w1 && gl.w2 && gl.w3) {
-                        gemv(dgate, gl.w1, dh, IM_, H_, stream);
-                        gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                        fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                         gemv(dh, gl.w3, datt, H_, IM_, stream);
                         fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
@@ -872,9 +933,13 @@ struct FusedBackend : Backend {
             else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
 
             // 2. QKV GEMV (all async on stream)
-            if (gl.wq) gemv(datt,  gl.wq, dh, s1, H_, stream);
-            if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
-            if (gl.wv) gemv(dup_,  gl.wv, dh, s2, H_, stream);
+            if (gl.wq && gl.wk && gl.wv)
+                fused_qkv_v4_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq, gl.wk, gl.wv, dh, s1, s2, H_);
+            else {
+                if (gl.wq) gemv(datt,  gl.wq, dh, s1, H_, stream);
+                if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
+                if (gl.wv) gemv(dup_,  gl.wv, dh, s2, H_, stream);
+            }
 
             // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
             // head_dim slice with the shared [head_dim] weight, before RoPE.
@@ -924,8 +989,7 @@ struct FusedBackend : Backend {
                 if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                 else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                 if (gl.w1 && gl.w2 && gl.w3) {
-                    gemv(dgate, gl.w1, dh, IM_, H_, stream);
-                    gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                    fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                     gemv(dh, gl.w3, datt, H_, IM_, stream);
                     fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
@@ -1094,8 +1158,7 @@ struct FusedBackend : Backend {
             if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pon, H_, EPS);
             else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
             if (gl.w1 && gl.w2 && gl.w3) {
-                gemv(dgate, gl.w1, hs, IM_, H_, stream);
-                gemv(dup_,  gl.w2, hs, IM_, H_, stream);
+                fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, hs, IM_, H_);
                 fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                 gemv(hs, gl.w3, datt, H_, IM_, stream);
                 fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, dffn, H_);
