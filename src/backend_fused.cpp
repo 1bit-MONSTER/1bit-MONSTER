@@ -758,6 +758,7 @@ struct FusedBackend : Backend {
             }
 
             // ── ATTENTION ──────────────────────────────────
+            auto t_hip0 = std::chrono::steady_clock::now();
             // 1. RMSNorm (in-place on dh, destroys input — save residual first).
             //    Save into dffn, NOT doproj: the output-projection GEMV below
             //    writes doproj and would clobber the saved input, making the
@@ -803,6 +804,10 @@ struct FusedBackend : Backend {
                 // doproj = attn_out now. Copy back to dh for FFN.
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, H_);
             }
+            if (getenv("VK_ATTN_TIMING"))
+                fprintf(stderr, "[fused] HIP attn+FFN l=%2d: %7.1f us\n", l,
+                        std::chrono::duration<double, std::micro>(
+                            std::chrono::steady_clock::now() - t_hip0).count());
 
             // ── FFN (NPU backfill with GPU fallback) ──
             // With USE_NPU_FFN=1 the NPU computes FFN for layer L on a worker
