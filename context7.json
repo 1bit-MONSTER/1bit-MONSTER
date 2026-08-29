@@ -1,4 +1,8 @@
 {
   "url": "https://context7.com/1bit-monster/1bit-monster",
-  "public_key": "pk_0KNup27JMOiyXo5acwmQ8"
+  "public_key": "pk_0KNup27JMOiyXo5acwmQ8",
+  "folders": ["docs"],
+  "excludeFolders": ["third_party", ".superpowers", "docs/superpowers", "docs/archive", "docs/plans", "docs/goals", "docs/bugs", "docs/bug-reports", "docs/research", "benchmarks", "Testing", "tools", "site"],
+  "excludeFiles": ["AGENTS.md", "AGENTS-WORKTREES.md", "CLAUDE.md", "TODO_TRACKING.md", "AUDIT_ISSUES.md", "CHANGELOG.md", "ROADMAP.md", "AGENT-COORDINATION.md", "TRIAGE-ISSUES-2026-08.md", "agent-role-prompts.md", "audit-trail.md", "journey.md", "validation-gaps.md", "reddit-zaya-dflash-draft.md", "search-console-setup.md", "seo-gap-analysis.md", "e2e-token-verify-1699.md", "zyphra-handoff-2026-08-05.md"],
+  "rules": ["1bit.MONSTER is a pure C++23 engine: no Python at runtime; Python files under tools/ are offline conversion/debug helpers only", "The canonical model format is .1bp; GGUF is also supported through a GGUF-native 1-bit pipeline", "The engine runs on NPU (Ryzen AI), GPU (ROCm/Vulkan/CUDA), and CPU", "Build with: cmake -B build && cmake --build build; the engine binary is ./build/1bit", "The Lemonade SDK under third_party/lemonade is vendored for compatibility only and is not part of the engine"]
 }
