@@ -3,6 +3,18 @@
 **Box:** Strix Halo (gfx1151, AI MAX+ 395) · **Toolchain:** TheRock
 **Model:** Qwen3-0.6B-1BP (H=1024, NH=16, NKV=8, HD=128, IM=3072, NC=28)
 
+## 2026-08-29 (round 12) — async VK dispatch (objective item 1)
+
+The VK path's 56 per-layer submit+waitIdle (attention + FFN each layer) are
+collapsed into ONE command buffer per token: `VkAttention::record_forward`
+records the embed + all 28 layers' 4-stage attention + 5-stage on-pages FFN
+(253 stages, per-layer push constants) and submits once.  The GPU stays
+continuously busy end-to-end.  VK+GPU-FFN: 23.4 -> 22.1 ms (45 tok/s),
+parity 15 13 15 15 ... (`f8b89744`).  The remaining VK-vs-HIP gap is the VK
+gemv shader efficiency (~69 GB/s vs the HIP GEMVs' ~180) — the concurrent
+agent's one-block-per-row FFN gemv pattern (676 -> 250 us/layer) is the
+template for the qkv shader.
+
 ## 2026-08-29 (round 11) — the batch decode is now FULLY batched: 208 tok/s
 
 The round-10 batched-decode fault was a VARIABLE SHADOWING bug: the batch
