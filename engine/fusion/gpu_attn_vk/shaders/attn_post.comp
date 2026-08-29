@@ -15,14 +15,32 @@ layout(push_constant) uniform PC {
     float eps; float rope_theta; float scale;
 } pc;
 
+shared float part[256];   // part[r*8+s] = row r partial from lane s
+
 void main() {
-    uint i = gl_GlobalInvocationID.x;
-    if (i >= uint(pc.H)) return;
-    float acc = 0.0;
+    uint tid = gl_LocalInvocationID.x;
     int n = pc.NH * pc.HD;
-    // wo is packed [layer][H][NH*HD] — all layers share one buffer.
+    // wo is packed [layer][H][NH*HD].  8 threads cooperate per output row:
+    // lane s accumulates the strided j = s, s+8, ... slice of the n dim, then
+    // a 3-step tree reduction over the 8 lanes.  Block covers 32 rows
+    // (256/8); grid strides over all H rows.  (Old: one thread per row, serial
+    // n=2048 loop — ~12x slower than HIP's gemv.)
     uint wo_off = uint(pc.layer) * uint(pc.H) * uint(n);
-    for (int j = 0; j < n; j++)
-        acc += wo[wo_off + i * uint(n) + uint(j)] * ao[uint(j)];
-    h[i] = acc + h[i];   // residual add, back into the pages
+    uint gid = gl_GlobalInvocationID.x;
+    uint r = (gid >> 3) & 31u;          // row within this block's 32
+    uint s = gid & 7u;                  // lane
+    uint base_row = (gl_WorkGroupID.x << 5);
+    uint row = base_row + r;
+    if (row >= uint(pc.H)) return;
+    float acc = 0.0;
+    for (int j = int(s); j < n; j += 8)
+        acc += wo[wo_off + row * uint(n) + uint(j)] * ao[uint(j)];
+    part[r * 8u + s] = acc;
+    barrier();
+    // 8-lane tree reduction per row: lane 0 of each row gets the sum.
+    for (int st = 4; st > 0; st >>= 1) {
+        if ((s & uint(st)) == 0u && s < uint(st)) part[r * 8u + s] += part[r * 8u + s + uint(st)];
+        barrier();
+    }
+    if (s == 0u) h[row] = part[r * 8u] + h[row];   // residual add, in place
 }

@@ -165,7 +165,7 @@ bool VkAttention::layer(int l, int pos) {
     stages[0] = {&p_rms_,   ds_rms_,   1, 1, 1, &pc};
     stages[1] = {&p_qkv_,   ds_qkv_,   (uint32_t)(NH_ + NKV_), 1, 1, &pc};
     stages[2] = {&p_decode_, ds_decode_,  (uint32_t)NH_, 1, 1, &pc};
-    stages[3] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 255) / 256), 1, 1, &pc};
+    stages[3] = {&p_post_,  ds_post_,  (uint32_t)((H_ + 31) / 32), 1, 1, &pc};
     vkrt::dispatchBatchOnce(vk_, stages, 4);
     return true;
 }

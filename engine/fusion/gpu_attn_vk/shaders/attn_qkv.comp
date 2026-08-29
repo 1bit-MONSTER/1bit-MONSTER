@@ -51,34 +51,46 @@ void main() {
     if (isQ) {
         // ---- Q head b: GEMV ----
         // All layers share one buffer: wq packed [layer][NH*HD][H].
+        // Parallel reduction: 2 threads cooperate per output row (tid = r*2+l,
+        // r in [0,hd), lane l in {0,1}), each accumulating half of the H dim,
+        // then a 1-step add.  (The old serial per-thread loop — 128 threads ×
+        // 1024 iterations — was ~12x slower than HIP's gemv.)
         uint wq_off = uint(pc.layer) * uint(pc.NH) * hd * uint(pc.H);
         uint qn_off = uint(pc.layer) * hd;
-        if (tid < hd) {
-            uint o = b * hd + tid;
+        uint r = tid >> 1, l = tid & 1u;
+        if (r < hd) {
+            uint o = b * hd + r;
             float acc = 0.0;
-            for (int k = 0; k < pc.H; k++) acc += hn[k] * wq[wq_off + o * uint(pc.H) + uint(k)];
-            val[tid] = acc;
+            for (int k = int(l); k < pc.H; k += 2) acc += hn[k] * wq[wq_off + o * uint(pc.H) + uint(k)];
+            val[tid] = acc;   // per-lane slot (2 per row)
         }
         barrier();
-        // per-head QK-norm reduction
-        rsh[tid] = (tid < hd) ? val[tid] * val[tid] : 0.0;
+        // 2-lane add: lane 0 computes the Q row sum, broadcasts via rsh.
+        if (r < hd && l == 0u) rsh[r * 2u] = val[r * 2u] + val[r * 2u + 1u];
+        barrier();
+        if (r < hd) val[tid] = rsh[r * 2u];
+        barrier();
+        // Head-wide QK-norm: sum of q^2 over all hd rows (same as original).
+        // Square lane 0's slot only (both lanes hold the row sum).
+        rsh[tid] = (l == 0u && r < hd) ? val[tid] * val[tid] : 0.0;
         barrier();
         for (int s2 = 128; s2 > 0; s2 >>= 1) {
             if (tid < uint(s2)) rsh[tid] += rsh[tid + uint(s2)];
             barrier();
         }
         float inv = inversesqrt(rsh[0] / float(pc.HD) + pc.eps);
-        // RoPE + scale + write
-        if (tid < hd) {
-            uint o = b * hd + tid;
-            if (tid < hd / 2) {
-                uint d = tid;
+        // RoPE + scale + write.  val[tid] holds row r's sum in both lanes; the
+        // RoPE pair row r+hd/2 lives at slot (r+hd/2)*2 = r*2+hd.
+        if (r < hd) {
+            uint o = b * hd + r;
+            if (r < hd / 2) {
+                uint d = r;
                 float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
-                float c = cos(float(pc.pos) * f), s = sin(float(pc.pos) * f);
-                float a = val[tid] * inv * qn[qn_off + tid];
-                float bb = val[tid + hd / 2] * inv * qn[qn_off + tid + hd / 2];
-                q[o] = a * c - bb * s;
-                q[b * hd + tid + hd / 2] = a * s + bb * c;
+                float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
+                float a = val[tid] * inv * qn[qn_off + r];
+                float bb = val[r * 2u + hd] * inv * qn[qn_off + r + hd / 2];
+                q[o] = a * c - bb * sn;
+                q[b * hd + r + hd / 2] = a * sn + bb * c;
             }
         }
     } else {
@@ -86,41 +98,58 @@ void main() {
         uint kv = b - uint(pc.NH);
         uint wk_off = uint(pc.layer) * uint(pc.NKV) * hd * uint(pc.H);
         uint kn_off = uint(pc.layer) * hd;
-        if (tid < hd) {
-            uint o = kv * hd + tid;
+        // Parallel GEMV (2 lanes/row, strided halves) for both K and V.
+        // Per-lane slots: val[tid]/vraw[tid] hold each lane's partial (256
+        // entries; the old code indexed by row, so both lanes clobbered one
+        // slot and K came out zero).
+        uint r = tid >> 1, l = tid & 1u;
+        if (r < hd) {
+            uint o = kv * hd + r;
             float ak = 0.0, av = 0.0;
-            for (int k = 0; k < pc.H; k++) {
+            for (int k = int(l); k < pc.H; k += 2) {
                 ak += hn[k] * wk[wk_off + o * uint(pc.H) + uint(k)];
                 av += hn[k] * wv[wk_off + o * uint(pc.H) + uint(k)];
             }
-            val[tid] = ak;      // K raw
-            vraw[tid] = av;     // V raw
+            val[tid] = ak;      // K raw, per-lane slot
+            vraw[tid] = av;     // V raw, per-lane slot
         }
         barrier();
-        // per-head K-norm reduction (over val)
-        rsh[tid] = (tid < hd) ? val[tid] * val[tid] : 0.0;
+        // 2-lane add: lane 0 computes K and V row sums, broadcasts via rsh.
+        if (r < hd && l == 0u) {
+            rsh[r * 2u] = val[r * 2u] + val[r * 2u + 1u];        // K sum
+            rsh[r * 2u + 1u] = vraw[r * 2u] + vraw[r * 2u + 1u];  // V sum
+        }
+        barrier();
+        if (r < hd) {
+            val[tid] = rsh[r * 2u];       // K row result (both lanes)
+            vraw[tid] = rsh[r * 2u + 1u]; // V row result (both lanes)
+        }
+        barrier();
+        // per-head K-norm reduction (over val, head-wide sum of K^2).
+        // val[tid] holds the row sum in BOTH lanes; square lane 0's slot only.
+        rsh[tid] = (l == 0u && r < hd) ? val[tid] * val[tid] : 0.0;
         barrier();
         for (int s2 = 128; s2 > 0; s2 >>= 1) {
             if (tid < uint(s2)) rsh[tid] += rsh[tid + uint(s2)];
             barrier();
         }
         float kinv = inversesqrt(rsh[0] / float(pc.HD) + pc.eps);
-        if (tid < hd) {
-            uint o = kv * hd + tid;
-            float kk = val[tid] * kinv * kn[kn_off + tid];
-            if (tid < hd / 2) {
-                uint d = tid;
+        if (r < hd) {
+            uint o = kv * hd + r;
+            float kk = val[tid] * kinv * kn[kn_off + r];
+            if (r < hd / 2) {
+                uint d = r;
                 float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
-                float c = cos(float(pc.pos) * f), s = sin(float(pc.pos) * f);
-                float a = kk, bb = val[tid + hd / 2] * kinv * kn[kn_off + tid + hd / 2];
-                k[o] = a * c - bb * s;
-                k[kv * hd + tid + hd / 2] = a * s + bb * c;
+                float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
+                float a = kk, bb = val[r * 2u + hd] * kinv * kn[kn_off + r + hd / 2];
+                k[o] = a * c - bb * sn;
+                k[kv * hd + r + hd / 2] = a * sn + bb * c;
             }
             v[o] = vraw[tid];   // V: raw, no norm, no rope
         }
         barrier();   // make the paired k[] writes visible before the store reads
-        if (tid < hd) {
-            uint o = kv * hd + tid;
+        if (r < hd) {
+            uint o = kv * hd + r;
             // KV cache store (f16 bits), layout [layer][pos][NKV][HD]
             uint base = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd
                       + uint(pc.pos) * uint(pc.NKV) * hd + o;
