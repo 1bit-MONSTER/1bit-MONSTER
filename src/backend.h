@@ -69,6 +69,13 @@ struct Backend {
     /// Compute lm_head: logits[vocab] = hidden[hidden] @ embed[vocab×hidden]^T
     virtual bool lm_head(const float* hidden, float* logits, int* argmax) = 0;
 
+    /// Batched lm_head: logits[am, vocab] = hidden[am, hidden] @ W^T with W
+    /// (vocab×hidden) read ONCE for all am rows.  Default: unsupported.
+    virtual bool lm_head_batch(const float* /*hidden*/, float* /*logits*/,
+                               int* /*argmaxs*/, int /*am*/) {
+        return false;
+    }
+
     /// Generate one token (forward + lm_head in one call).
     /// Returns the predicted token ID, -1 on error.
     virtual int generate(int token_id) = 0;

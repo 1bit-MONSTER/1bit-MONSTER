@@ -89,6 +89,32 @@ __global__ void fused_gemv_plain_kernel(float* y, const float* W, const float* x
     if (threadIdx.x == 0) y[row] = (float)sdata[0];
 }
 
+// ── Batched GEMV: y[B, M] = W[M, N] @ x[B, N] ──
+// One block per output row; the W row (N floats) is read ONCE and reused
+// across all B batches — the multi-sequence decode win (8 sequences would
+// otherwise read each weight matrix 8x; the W read drops to 1x per batch).
+__global__ void fused_gemv_batch_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                        const float* __restrict__ x, int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const float* Wrow = W + (size_t)row * N;
+    __shared__ double sdata[BLOCK];
+    for (int b = 0; b < B; b++) {
+        double sum = 0.0;
+        const float* xrow = x + (size_t)b * N;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += (double)xrow[k] * Wrow[k];
+        __syncthreads();
+        sdata[threadIdx.x] = sum;
+        __syncthreads();
+        for (int s = BLOCK/2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) y[(size_t)b * M + row] = (float)sdata[0];
+        __syncthreads();
+    }
+}
+
 // ── RMSNorm (in-place) ──
 __global__ void fused_rmsnorm_kernel(float* __restrict__ x, const float* __restrict__ w,
                                       int N, float eps) {
@@ -295,6 +321,10 @@ struct FusedBackend : Backend {
     int batch_ = 0;                       // 0 = batch mode off
     float* dh_batch = nullptr;            // [B, H] hidden states
     __half *devKb = nullptr, *devVb = nullptr;  // [B, NC*max_seq*NKV*HD] KV
+    float *datt_batch = nullptr, *dgate_batch = nullptr;   // [B, s1] / [B, s2]
+    float *dup_batch = nullptr, *doproj_batch = nullptr;   // [B, s2] / [B, H]
+    float *dffn_batch = nullptr;          // [B, H] residual saves
+    float *dlogits_batch = nullptr;       // [B, VOCAB] batched lm_head
     std::vector<float> host_batch;        // [B, H] NPU FFN handoff (D2H/H2D)
     std::vector<int> batch_pos;           // per-sequence position
     std::future<bool> npu_batch_future_;
@@ -365,6 +395,15 @@ struct FusedBackend : Backend {
         if (batch_) {
             if (hipMalloc(&dh_batch, (size_t)batch_ * H * 4) != hipSuccess) return false;
             HIP_CHECK(hipMemset(dh_batch, 0, (size_t)batch_ * H * 4));
+            // Batch scratch for the batched attention GEMVs (W read once per
+            // batch instead of once per sequence): [B, s1/s2/H] each.
+            int s1 = NH * HD_, s2 = NKV * HD_;
+            if (hipMalloc(&datt_batch, (size_t)batch_ * s1 * 4) != hipSuccess ||
+                hipMalloc(&dgate_batch, (size_t)batch_ * s2 * 4) != hipSuccess ||
+                hipMalloc(&dup_batch, (size_t)batch_ * s2 * 4) != hipSuccess ||
+                hipMalloc(&doproj_batch, (size_t)batch_ * H * 4) != hipSuccess ||
+                hipMalloc(&dffn_batch, (size_t)batch_ * H * 4) != hipSuccess ||
+                hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess) return false;
             host_batch.resize((size_t)batch_ * H);
             batch_pos.assign(batch_, 0);
             printf("[fused] batch decode: %d sequences (NPU FFN batched, B DMA amortized)\n", batch_);
@@ -925,6 +964,26 @@ struct FusedBackend : Backend {
         return true;
     }
 
+    bool lm_head_batch(const float* hidden, float* logits, int* argmaxs, int am) override {
+        if (!batch_ || !dh_batch || am != batch_) return false;
+        // Batched GEMV: the 622 MB vocab×hidden weight is read ONCE for all
+        // am rows instead of am times (the per-sequence lm_head was ~5.5 ms x
+        // am — now the dominant batch cost after the FFN batching).
+        HIP_CHECK(hipMemcpy(dh_batch, hidden, (size_t)am * H * sizeof(float), hipMemcpyHostToDevice));
+        const float* W = d_output ? d_output : d_embed;
+        if (!W) return false;
+        fused_gemv_batch_kernel<<<VOCAB, BLOCK, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
+        HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
+        if (argmaxs)
+            for (int s = 0; s < am; s++) {
+                const float* lg = logits + (size_t)s * VOCAB;
+                int b = 0; float mv = lg[0];
+                for (int v = 1; v < VOCAB; v++) if (lg[v] > mv) { mv = lg[v]; b = v; }
+                argmaxs[s] = b;
+            }
+        return true;
+    }
+
     // ── Multi-sequence batch decode (FUSED_BATCH=N) ──
     // Advances all N sequences one token.  Per layer: per-sequence GPU
     // attention on the stream (back-to-back, warm), then ONE batched NPU FFN
@@ -948,36 +1007,54 @@ struct FusedBackend : Backend {
             else
                 HIP_CHECK(hipMemset(hs, 0, H_*4));
         };
-        // Per-sequence attention (mirrors the single-stream HIP section):
-        // reads/writes hs in place + the sequence's KV slice.  The shared
-        // scratch (datt/dgate/dup_/doproj/dffn) is reused across s — the loop
-        // is sequential on the stream, so no cross-s interference.
-        auto attn_one = [&](int s, int l, int pos_s) {
+        // Batched attention: the weight GEMVs (qkv, wo) read each weight
+        // matrix ONCE per batch (fused_gemv_batch_kernel reuses the W row
+        // across all B rows) instead of once per sequence; the per-sequence
+        // elementwise kernels (rmsnorm, qk-norm, rope, kv-store, decode) run
+        // on the batch rows.  Residual saves land in dffn_batch.
+        auto attn_batched = [&](int l) {
             auto& gl = L[l];
             int s1 = NH_ * HD_, s2 = NKV_ * HD_;
-            float* hs = dh_batch + (size_t)s * H_;
-            __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-            __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
-            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, hs, H_);
-            if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pn, H_, EPS);
-            else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
-            if (gl.wq) gemv(datt,  gl.wq, hs, s1, H_, stream);
-            if (gl.wk) gemv(dgate, gl.wk, hs, s2, H_, stream);
-            if (gl.wv) gemv(dup_,  gl.wv, hs, s2, H_, stream);
-            if (gl.q_norm) fused_head_rmsnorm_kernel<<<NH_, BLOCK, 0, stream>>>(datt, gl.q_norm, HD_, EPS);
-            if (gl.k_norm) fused_head_rmsnorm_kernel<<<NKV_, BLOCK, 0, stream>>>(dgate, gl.k_norm, HD_, EPS);
-            if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(datt, HD_, pos_s, rope_theta, NH_);
-            if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(dgate, HD_, pos_s, rope_theta, NKV_);
-            if (gl.wo) {
-                fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, datt, s1);
-                fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(lk, lv, dgate, dup_, pos_s, NKV_, HD_, max_seq);
-                float scl = 1.0f / sqrtf((float)HD_);
-                rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos_s+1, scl, (void*)stream);
-                fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dAttn, s1);
-                gemv(doproj, gl.wo, datt, H_, s1, stream);
-                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dffn, H_);
-                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj, H_);
+            // 1. residual save + RMSNorm per sequence
+            for (int s = 0; s < B_; s++) {
+                float* hs = dh_batch + (size_t)s * H_;
+                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn_batch + (size_t)s*H_, hs, H_);
+                if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, gl.pn, H_, EPS);
+                else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(hs, nullptr, H_, EPS);
             }
+            // 2. batched QKV GEMVs (W read once)
+            if (gl.wq) fused_gemv_batch_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
+            if (gl.wk) fused_gemv_batch_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
+            if (gl.wv) fused_gemv_batch_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+            // 3. per-sequence: QK-norm, RoPE, KV store, decode, h2f
+            for (int s = 0; s < B_; s++) {
+                float* q = datt_batch + (size_t)s * s1;
+                float* kk = dgate_batch + (size_t)s * s2;
+                float* vv = dup_batch + (size_t)s * s2;
+                __half* lk = devK + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
+                __half* lv = devV + ((size_t)s * NC_ + l) * max_seq * NKV_ * HD_;
+                int pos_s = batch_pos[s];
+                if (gl.q_norm) fused_head_rmsnorm_kernel<<<NH_, BLOCK, 0, stream>>>(q, gl.q_norm, HD_, EPS);
+                if (gl.k_norm) fused_head_rmsnorm_kernel<<<NKV_, BLOCK, 0, stream>>>(kk, gl.k_norm, HD_, EPS);
+                if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(q, HD_, pos_s, rope_theta, NH_);
+                if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(kk, HD_, pos_s, rope_theta, NKV_);
+                if (gl.wo) {
+                    fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, q, s1);
+                    fused_kv_store_kernel<<<NKV_, HD_, 0, stream>>>(lk, lv, kk, vv, pos_s, NKV_, HD_, max_seq);
+                    float scl = 1.0f / sqrtf((float)HD_);
+                    rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos_s+1, scl, (void*)stream);
+                    fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(q, dAttn, s1);
+                }
+            }
+            // 4. batched output projection (W read once)
+            if (gl.wo) fused_gemv_batch_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
+            // 5. residual add + write back per sequence
+            if (gl.wo)
+                for (int s = 0; s < B_; s++) {
+                    float* hs = dh_batch + (size_t)s * H_;
+                    fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj_batch + (size_t)s*H_, dffn_batch + (size_t)s*H_, H_);
+                    fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, doproj_batch + (size_t)s*H_, H_);
+                }
         };
         auto ffn_gpu_one = [&](int s, int l) {
             auto& gl = L[l];
@@ -1007,8 +1084,8 @@ struct FusedBackend : Backend {
                                         (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
                 }
             }
-            // attention for every sequence (stream-sequential, warm)
-            for (int s = 0; s < B_; s++) attn_one(s, l, batch_pos[s]);
+            // attention for every sequence (batched GEMVs, W read once per batch)
+            attn_batched(l);
             // one batched FFN for all rows
             if (!use_npu) {
                 for (int s = 0; s < B_; s++) ffn_gpu_one(s, l);
@@ -1092,6 +1169,12 @@ struct FusedBackend : Backend {
         if (npu_future_.valid()) { npu_future_.wait(); }
         if (npu_batch_future_.valid()) { npu_batch_future_.wait(); }
         if (dh_batch) { HIP_CHECK_D(hipFree(dh_batch)); dh_batch = nullptr; }
+        if (datt_batch) { HIP_CHECK_D(hipFree(datt_batch)); datt_batch = nullptr; }
+        if (dgate_batch) { HIP_CHECK_D(hipFree(dgate_batch)); dgate_batch = nullptr; }
+        if (dup_batch) { HIP_CHECK_D(hipFree(dup_batch)); dup_batch = nullptr; }
+        if (doproj_batch) { HIP_CHECK_D(hipFree(doproj_batch)); doproj_batch = nullptr; }
+        if (dffn_batch) { HIP_CHECK_D(hipFree(dffn_batch)); dffn_batch = nullptr; }
+        if (dlogits_batch) { HIP_CHECK_D(hipFree(dlogits_batch)); dlogits_batch = nullptr; }
         if (vk_attn_) va_.destroy();
         vk_embed_.clear(); vk_embed_.shrink_to_fit();
         vk_layers_.clear(); vk_layers_.shrink_to_fit();

@@ -50,14 +50,29 @@ int main(int argc, char** argv) {
     std::vector<float> logits((size_t)B * cfg.vocab_size);
     std::vector<int> toks(B, 1);
 
+    // batched lm_head when the backend supports it (W read once per batch)
+    auto lm_head_loop = [&](bool use_batch) {
+        if (use_batch) {
+            if (!b->lm_head_batch(hidden.data(), logits.data(), toks.data(), B)) {
+                fprintf(stderr, "FAIL lm_head_batch\n"); return false;
+            }
+        } else {
+            for (int s = 0; s < B; s++) {
+                if (!b->lm_head(hidden.data() + (size_t)s*cfg.hidden_size,
+                                logits.data() + (size_t)s*cfg.vocab_size, &toks[s])) return false;
+            }
+        }
+        return true;
+    };
+    bool have_batch_lm = b->lm_head_batch(hidden.data(), logits.data(), toks.data(), B);
+    if (have_batch_lm) fprintf(stderr, "[batch] using batched lm_head\n");
+    else fprintf(stderr, "[batch] lm_head_batch unsupported — per-row lm_head\n");
+
     // warmup
     for (int i = 0; i < warmup; i++) {
         if (!b->forward_batch(ids.data(), hidden.data(), B)) { fprintf(stderr, "FAIL warmup forward_batch\n"); return 1; }
-        for (int s = 0; s < B; s++) {
-            b->lm_head(hidden.data() + (size_t)s*cfg.hidden_size,
-                       logits.data() + (size_t)s*cfg.vocab_size, &toks[s]);
-            ids[s] = toks[s];
-        }
+        if (!lm_head_loop(have_batch_lm)) return 1;
+        for (int s = 0; s < B; s++) ids[s] = toks[s];
     }
     fprintf(stderr, "[batch] warmup done\n");
     b->reset();
@@ -68,9 +83,8 @@ int main(int argc, char** argv) {
     int ok = 0;
     for (int i = 0; i < tokens; i++) {
         if (!b->forward_batch(ids.data(), hidden.data(), B)) { fprintf(stderr, "FAIL forward_batch\n"); break; }
+        if (!lm_head_loop(have_batch_lm)) break;
         for (int s = 0; s < B; s++) {
-            b->lm_head(hidden.data() + (size_t)s*cfg.hidden_size,
-                       logits.data() + (size_t)s*cfg.vocab_size, &toks[s]);
             if (toks[s] >= 0) { streams[s].push_back(toks[s]); ids[s] = toks[s]; ok++; }
         }
     }
