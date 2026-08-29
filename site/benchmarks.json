@@ -265,16 +265,16 @@
    "backend": "lse"
   },
   "fused_hip_attn_gpu_ffn": {
-   "tok_s": 67.0,
+   "tok_s": 69.0,
    "status": "validated",
    "label": "Qwen3-0.6B 1BP \u2014 fused HIP attention + GPU FFN (all-GPU, dh in device mem) \u2014 THE FASTEST fused config",
    "table": "engine",
    "display_name": "Fused HIP attn + GPU FFN",
    "backend": "fused",
-   "notes": "15.0 ms/token (67 tok/s), re-measured 2026-08-29 after the float4-vectorized GEMV (was 21.2 ms / 47 tok/s). The GPU FFN beats ANY NPU-FFN config by 10x (NPU per-launch DMA ~3 GB/s + hw_context alternation). Parity 15 13 15 15 ... ."
+   "notes": "14.5 ms/token (69 tok/s) with fused QKV+GU GEMVs (was 15.0/67). The GPU FFN beats ANY NPU-FFN config by ~10x (NPU per-launch DMA ~3 GB/s + hw_context alternation). Parity 15 13 15 15 ... ."
   },
   "fused_batch_decode_gpu_ffn": {
-   "tok_s": 71.0,
+   "tok_s": 72.0,
    "status": "validated",
    "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences, GPU FFN (FUSED_BATCH=8, no NPU)",
    "table": "engine",
