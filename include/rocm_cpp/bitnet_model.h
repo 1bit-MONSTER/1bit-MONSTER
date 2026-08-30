@@ -588,6 +588,7 @@ typedef enum {
     RCPP_ARCH_MUSE = 987,            // Muse-Glimmer (VLM — causal multimodal decoder)
     RCPP_ARCH_NEMOTRON = 989,        // Nemotron-3/4 — LayerNorm1P (weight+1, bias), relu2 non-GLU MLP, partial rope
     RCPP_ARCH_BARETORCH = 990,       // baretorch — cs_lrad chunked-state linear-recurrent (issue #1907: registry token only; engine support XL, generic loader refuses)
+    RCPP_ARCH_QU_SSM = 991,          // qu_ssm — Quamba-style linear-recurrent SSM (d_state/d_ff/d_model; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2446,6 +2447,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "glm5_next") == 0) return RCPP_ARCH_LLAMA;           // HF model_type
     if (strcmp(s, "baretorch") == 0) return RCPP_ARCH_BARETORCH;       // BaretorchForCausalLM (issue #1907, registry token)
     if (strcmp(s, "cs_lrad") == 0) return RCPP_ARCH_BARETORCH;         // cs_lrad chunked-state linear-recurrent (model_type)
+    if (strcmp(s, "qu_ssm") == 0) return RCPP_ARCH_QU_SSM;             // QUSSMForCausalLM (Quamba-style SSM, registry token)
+    if (strcmp(s, "qussm") == 0) return RCPP_ARCH_QU_SSM;              // stripped arch name (census)
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
