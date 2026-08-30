@@ -28,9 +28,11 @@ and what breaks if the upstream RFC stalls.
 2. HRX is IREE-derived (Ben Vanik; `# Copyright 2026 The IREE Authors`), a real
    compiler with hand-written model kernels (q6/q8 SwiGLU fusion in
    `loom/src/loom/test/corpus/authoring/`).
-3. The `hrx-b59` binary is checksum-pinned in `backend_versions.json`, works on
-   our gfx1151 (Strix Halo) today — live-verified on this machine — but is
-   built from fork commit `f749e1390` (NOT on upstream master).
+3. The `hrx-b66` binary (updated from `hrx-b59`, 2026-08-30) is
+   checksum-pinned in `backend_versions.json`, works on our gfx1151 (Strix
+   Halo) today — live-verified on this machine (+17% decode vs b59: 79.6 vs
+   67.8 tok/s on the 30B-A3B qualified model) — but is built from an AMD
+   staging fork commit (NOT on upstream master).
 4. The official llama.cpp-oracle doc is a **porting playbook**: GGUF/GGML are
    "physical contracts", llama.cpp is the oracle to port *from*. That's the
    replacement endgame, documented.
