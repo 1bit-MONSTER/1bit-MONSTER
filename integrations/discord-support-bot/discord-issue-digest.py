@@ -23,6 +23,7 @@ from post_issue import (  # noqa: E402
     TAG_SEVERITY,
     _load_dotenv,
     forum_tags,
+    forum_threads,
     severity,
     type_tag,
 )
@@ -125,6 +126,13 @@ def main() -> int:
             pass
 
     day = time.strftime("%Y-%m-%d")
+    # Idempotency: a re-run (manual or scheduler double-fire) must not create
+    # a second "Issue digest <day>" post with identical content.
+    existing = [t for t in forum_threads()
+                if (t.get("name") or "").startswith(f"Issue digest {day}")]
+    if existing:
+        print(f"digest for {day} already posted ({existing[0]['id']}) — skipping")
+        return 0
     digest_channel = os.getenv("ISSUE_DIGEST_CHANNEL", "")
     if digest_channel.isdigit():
         mid = _post_message(digest_channel, content)

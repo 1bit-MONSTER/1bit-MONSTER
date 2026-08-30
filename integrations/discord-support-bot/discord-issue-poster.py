@@ -102,6 +102,32 @@ def _is_gone(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 404 or "404" in str(exc)
 
 
+def _drop_dead_post(state: dict, number: int) -> None:
+    """A tracked post no longer exists (deleted / config change).
+
+    Drop it from the map, and if the issue is STILL OPEN, re-queue the
+    number so it is mirrored again on the next run — otherwise it would
+    silently vanish from the triage board (the number is below the
+    last_issue cursor, so job 1 would never revisit it).
+    """
+    state["posts"].pop(str(number), None)
+    try:
+        issue = gh_issue(REPO, number)
+        if (issue.get("state") or "").lower() != "closed":
+            failed = state.setdefault("failed", [])
+            if number not in failed:
+                failed.append(number)
+            print(f"sync #{number}: post gone (404), issue open — re-queued for re-post")
+        else:
+            print(f"sync #{number}: post gone (404), issue closed — dropped")
+    except Exception:  # noqa: BLE001 — unknown state; re-queue, closed-skip guard protects
+        failed = state.setdefault("failed", [])
+        if number not in failed:
+            failed.append(number)
+        print(f"sync #{number}: post gone (404), issue state unknown — re-queued (closed-skip guard)")
+    save_state(state)
+
+
 def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
     """Reconcile one tracked post with the live issue; PATCH only on change.
 
@@ -124,9 +150,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
             update_post(rec["thread"], applied_tags=ids)
         except Exception as exc:  # noqa: BLE001
             if _is_gone(exc):
-                print(f"sync #{number}: post {rec['thread']} gone (404) — dropping from state")
-                state["posts"].pop(str(number), None)
-                save_state(state)
+                _drop_dead_post(state, number)
             else:
                 print(f"sync #{number}: tag PATCH failed (will retry): "
                       f"{type(exc).__name__}: {exc}")
@@ -139,8 +163,11 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
         try:
             update_post(rec["thread"], archived=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"sync #{number}: archive failed (will retry): "
-                  f"{type(exc).__name__}: {exc}")
+            if _is_gone(exc):
+                _drop_dead_post(state, number)
+            else:
+                print(f"sync #{number}: archive failed (will retry): "
+                      f"{type(exc).__name__}: {exc}")
             return
         rec["archived"] = True
         changed = True
@@ -149,8 +176,11 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
         try:
             update_post(rec["thread"], archived=False)
         except Exception as exc:  # noqa: BLE001
-            print(f"sync #{number}: unarchive failed (will retry): "
-                  f"{type(exc).__name__}: {exc}")
+            if _is_gone(exc):
+                _drop_dead_post(state, number)
+            else:
+                print(f"sync #{number}: unarchive failed (will retry): "
+                      f"{type(exc).__name__}: {exc}")
             return
         rec["archived"] = False
         changed = True
