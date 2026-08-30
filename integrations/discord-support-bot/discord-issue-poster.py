@@ -62,10 +62,15 @@ def save_state(state: dict) -> None:
 
 
 def new_open_issues(after: int) -> list[dict]:
-    """Open issues with number > after, oldest first."""
+    """Open issues with number > after, oldest first.
+
+    --limit 1000 (gh paginates internally): with >100 open issues, a
+    --limit 100 payload would silently drop older issues and the
+    last_issue cursor could skip them forever.
+    """
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
-         "--limit", "100", "--json", "number,title,createdAt"],
+         "--limit", "1000", "--json", "number,title,createdAt"],
         capture_output=True, text=True, check=True).stdout
     issues = [i for i in json.loads(out) if i["number"] > after]
     return sorted(issues, key=lambda i: i["number"])

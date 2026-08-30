@@ -203,10 +203,13 @@ class DocsSlash(discord.Client):
             return
         labels = ", ".join(l["name"] for l in d.get("labels", [])) or "none"
         closed = (d.get("state") or "").lower() == "closed"
+        # Issue titles are untrusted public-repo input — never allow a
+        # "@everyone"/role mention in them to ping the server.
         await interaction.followup.send(
             f"{'✅' if closed else '🟡'} **#{d['number']}** {d['title']}\n"
             f"State: {d.get('state', '?')} · Labels: {labels}\n"
-            f"Created: {(d.get('createdAt') or '?')[:10]}\n{d['url']}"
+            f"Created: {(d.get('createdAt') or '?')[:10]}\n{d['url']}",
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
 

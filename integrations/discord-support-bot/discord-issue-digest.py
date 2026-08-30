@@ -42,7 +42,7 @@ UA = "1bit-docsbot (issue-digest, 1.0)"
 def open_issues() -> list[dict]:
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
-         "--limit", "100", "--json", "number,title,labels,body,createdAt"],
+         "--limit", "1000", "--json", "number,title,labels,body,createdAt"],
         capture_output=True, text=True, check=True).stdout
     return json.loads(out)
 
@@ -50,7 +50,7 @@ def open_issues() -> list[dict]:
 def _post_message(channel_id: str, content: str) -> str:
     req = urllib.request.Request(
         API + f"/channels/{channel_id}/messages",
-        data=json.dumps({"content": content}).encode(),
+        data=json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode(),
         headers={"Authorization": "Bot " + TOKEN, "Content-Type": "application/json",
                  "User-Agent": UA},
     )
@@ -61,7 +61,7 @@ def _post_message(channel_id: str, content: str) -> str:
 def _post_forum(name: str, content: str, tag_ids: list[str]) -> str:
     body = {
         "name": name,
-        "message": {"content": content},
+        "message": {"content": content, "allowed_mentions": {"parse": []}},
         "applied_tags": tag_ids,
         "auto_archive_duration": 10080,
         "type": 11,

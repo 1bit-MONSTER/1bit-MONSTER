@@ -243,7 +243,10 @@ def post_issue_post(issue: dict) -> str:
 
     post = _api("POST", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/threads", {
         "name": name,
-        "message": {"content": starter},
+        # allowed_mentions parse:[] — issue titles/bodies are untrusted
+        # public-repo input; "@everyone"/role mentions in them must not
+        # ping the server.
+        "message": {"content": starter, "allowed_mentions": {"parse": []}},
         "applied_tags": applied,
         "auto_archive_duration": 10080,  # 7 days — issues stay triageable
         "type": 11,                      # GUILD_PUBLIC_THREAD
