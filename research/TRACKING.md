@@ -1,13 +1,13 @@
 # Workstream Tracking
 
-> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed. Updated: 2026-07-31.
+> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed. Updated: 2026-08-29.
 
 ## Phase 0 — Stabilize the floor
 
 | ID | Item | Status | Notes |
 |----|------|:------:|-------|
 | P0.1 | NPU exec fault path (IO_PAGE_FAULT per exec, ~10 s/layer) | 🔄 | Fix staged: amd_iommu=off in grub (backup grub.bak-20260731-1418); reboot + validate_npu_after_reboot.sh | Diagnosed: not a hang — 1000x-slow faulting exec; engine works e2e at 0.1 tok/s; see P01-DIG-FINDINGS.md |
-| P0.2 | One router, retire the other two | 🔲 | cascade vs `tools/token_router.cpp` vs `unified-router.py` |
+| P0.2 | One router, retire the other two | 🔄 | cascade vs `tools/token_router.cpp` vs `unified-router.py` — those two tools are no longer in this tree (2026-08-29 triage); remaining work: failover order now follows the model route (`BackendManager::fallback_order()`, G1a), DynamicRouter per-token strategy still separate |
 | P0.3 | 40-column decision in writing | 🔲 | NPU2-40 compiler or formally closed |
 | P0.4 | Re-baseline raw numbers (HIP 113, DSpark 0.8, fusion 291) | 🔲 | After WS-00 harness lands |
 | P0.5 | Kill CPU attention stub (8.4 ms/layer) | ✅ | Swap done: 53-248x kernel-level (FINDINGS.md); e2e measurable now (240s run reaches decode) |
@@ -34,13 +34,16 @@
 ### ws12-hrx-loom
 - [x] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verified onebin registers `llamacpp-hrx` on gfx1151 (2026-08-29)
 - [x] P0: Smoke-test HRX recipe end-to-end on gfx1151 — `Qwen3-30B-A3B-Instruct-2507-HRX` loaded + chat completed ("Paris"; prompt 130.8 tok/s, gen 35.2 tok/s) via `1bit unified --lemonade` (2026-08-29)
-- [ ] P1: Track llama.cpp RFC #27218; watch ggml-hrx move from AMD staging to upstream releases
+- [x] P1: Track llama.cpp RFC #27218 / ggml-hrx upstream — **PR #27218 "ggml-hrx: add AMD ROCm HRX native ggml backend" exists upstream** (2026-08-29); Vulkan's GET_ROWS CPU-fallback (PR #26854) validates the hybrid pattern. Re-benchmark when it lands.
 - [ ] P1: Audit hrx-v2 branch (179 commits ahead) — decide fork track: HRX vs HIP/Vulkan
 - [x] P1: Benchmark HRX vs HIP baseline on gfx1151 (RFC claims 30–50% prefill) — **NOT reproduced**: HIP wins large prefill (1227–1313 tok/s); HRX fails closed on `GET_ROWS` for large prompts; HRX wins warm decode (~175 vs ~70 tok/s). See `ws12-hrx-loom/BENCHMARK.md` (2026-08-29)
 - [x] P2: Native `HRX_GPU` backend in the engine — `BackendType::HRX_GPU` + `backend_hrx.h/.cpp` (subprocess HRX llama-server, LSE-style), wired into `backend_manager` + `backend_factory`, `hrx_gpu` first in the GGUF/H1B + qwen3-GGUF routes, `src/backend_hrx.cpp` in `UNIFIED_SERVER_SOURCES`. Verified: selfcheck 10/10 + engine selects `hrx_gpu` functional on gfx1151. **Decode-time failover closed 2026-08-29**: HRX decode fail-closed (GET_ROWS) now re-routes to another backend (`BackendManager::generate_text` failover + `DynamicRouter::generate` retry/pick_backend_excluding) instead of 500. See `docs/research/hrx-backend.md` (2026-08-29)
 - [ ] P2: Evaluate Loom (`loomc` C API) as an authoring surface for 1bit kernels
-- [ ] P2: HRX fallback quality — a model HRX can't fuse falls back to whatever backend is next in the DynamicRouter (often `cpu_generic`), and output quality can be poor for that model. Consider forcing the next candidate to `ggml_vulkan` (the intended fused-free GPU lane) rather than CPU when HRX fail-closes.
-- [ ] P2: The native `HRX_GPU` backend and lemonade's `llamacpp-hrx` recipe are two independent HRX paths — document which is preferred for a given deployment (engine-native `1bit unified` vs `1bit unified --lemonade`).
+- [x] P2: HRX fallback quality — a model HRX can't fuse falls back to whatever backend is next in the DynamicRouter (often `cpu_generic`), and output quality can be poor for that model. **FIXED 2026-08-29 (G1a):** failover now follows the model route — `BackendManager::fallback_order()` (route order, then registration as last resort) drives `failover()` and unified_server's token-loop fallback, so HRX fail-closed lands on `ggml_vulkan` → `zinc_gpu` → `cpu_generic`, never on a registration-order NPU lane. Built + graph-analyzed (risk low); see `docs/research/hrx-engine-goal.md`.
+- [x] P2: Lemonade × HRX data step (P3, 2026-08-29) — `third_party/lemonade/tools/gen_hrx_model_entries.py` + **43 `*-HRX` entries** in server_models.json (44 total; excludes embeddings/reranking + vision models — HRX chat-only). Validated: parses, recipe pinned, no dups. **lemond ModelManager cache 150 → 193 total (+43, zero errors); full pull+serve PASS on Qwen3-30B-A3B-Instruct-2507-HRX ("Paris", hrx-b59 bundle spawned)**. Engine-native path already routes all GGUF HRX-first.
+- [x] P2: HF coverage tool (P5, 2026-08-29) — `tools/hf_coverage.py`: HF model id → coverage-lane verdict (L1 llama.cpp 263 archs extracted live from the vendored converter, L2 engine-specialized, L3 FLM, L4 lemonade) or the 5-step add-model checklist. Verified: Qwen3 → COVERED (L1), Zamba2 → COVERED (L2), fake arch → BLOCKED + checklist.
+- [x] P2: In-process HRX engine (fork A, 2026-08-29) — `src/hrx_inprocess.{h,cpp}` (dlopen `libllama.so` RTLD_DEEPBIND, token-level decode on HRX0, 30B MoE GGUF served through `1bit unified`, `backend: hrx_gpu`). Engine fixes: MoE-GGUF route (MoE GGUFs no longer misrouted to the CCA/HIP path), router-registration refinement (only npu_flm excluded), router-exhaust recovery (fall through to manager failover with on-demand route init). **Bench: in-process ~80–87 tok/s warm decode — ~2× the same-day fresh subprocess (38.2 tok/s); beats HIP (~70)**. See `docs/research/hrx-engine-goal.md` P2.
+- [x] P2: The native `HRX_GPU` backend and lemonade's `llamacpp-hrx` recipe are two independent HRX paths — **documented 2026-08-29 (engine-native primary; lemonade entries = UX complement); see `docs/research/hrx-engine-goal.md` §Deployment preference.**
 - [ ] P2: Context7 library health — `context7.json` / `context7-config-full.json` show two duplicate `/1bit-monster/1bit-monster` entries (5,985 vs 5,441 snippets) and `parseFailures: 37`; reconcile the duplicates and review the failing docs.
 
 ### WS-00 — Baseline & measurement

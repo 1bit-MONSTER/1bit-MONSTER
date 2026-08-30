@@ -6,6 +6,7 @@
 // device. The HRX bundle is self-contained (libhrx/libloomc/libggml-hrx ship
 // next to llama-server), so NO ROCm install is needed on target.
 #include "backend_hrx.h"
+#include "hrx_inprocess.h"
 
 #include <nlohmann/json.hpp>
 
@@ -67,6 +68,10 @@ HrxBackend::HrxBackend() {
     server_bin_ = locate_hrx_server();
 }
 
+HrxBackend::~HrxBackend() {
+    destroy();
+}
+
 bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     // HRX is a GGUF/H1B fused GPU lane. The discovery path may pass format 0
     // (UNKNOWN) before the model is classified, so accept both GGUF/H1B and the
@@ -85,6 +90,28 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     }
     model_path_ = !cfg.model_path.empty() ? cfg.model_path : weights_dir;
     this->cfg = cfg;
+
+    // Fork-A in-process path (default on; HRX_INPROCESS=0 forces the
+    // subprocess): dlopen the bundle's libllama.so, offload weights to the HRX
+    // device, and serve token-level generate() in-process. On any failure fall
+    // back to the subprocess llama-server spawn below.
+    if (env_or("HRX_INPROCESS", "1") != "0") {
+        inprocess_ = std::make_unique<hrx::Inprocess>();
+        int n_gpu_layers = std::atoi(env_or("HRX_N_GPU_LAYERS", "-1").c_str());
+        uint32_t ctx = (uint32_t)std::atoi(ctx_size_.c_str());
+        if (ctx == 0) ctx = 4096;
+        if (inprocess_->init() && inprocess_->load_model(model_path_, n_gpu_layers, ctx)) {
+            inprocess_mode_ = true;
+            initialized_ = true;
+            fprintf(stderr, "HRX: in-process engine active (token-level, %s)\n",
+                    inprocess_->has_hrx_device() ? inprocess_->hrx_device_name()
+                                                 : "default device order");
+            return true;
+        }
+        fprintf(stderr, "HRX: in-process init failed — falling back to subprocess llama-server\n");
+        inprocess_.reset();
+        inprocess_mode_ = false;
+    }
 
     // Fail fast when the HRX llama-server binary is absent — otherwise every
     // non-HRX model pays the spawn-retry cost.
@@ -236,18 +263,25 @@ void HrxBackend::kill_server() {
 }
 
 void HrxBackend::destroy() {
+    if (inprocess_) inprocess_->unload();
+    inprocess_.reset();
+    inprocess_mode_ = false;
     kill_server();
     initialized_ = false;
 }
 
-bool HrxBackend::reset() { return true; }
+bool HrxBackend::reset() {
+    if (inprocess_mode_ && inprocess_) return inprocess_->reset();
+    return true;
+}
 
 bool HrxBackend::forward(int, float*) {
-    fprintf(stderr, "HRX: forward() not supported — use generate_text() (text-level)\n");
+    fprintf(stderr, "HRX: forward() not supported — use generate() (in-process) or generate_text() (subprocess)\n");
     return false;
 }
 
-int HrxBackend::generate(int) {
+int HrxBackend::generate(int token_id) {
+    if (inprocess_mode_ && inprocess_) return inprocess_->generate(token_id);
     fprintf(stderr, "HRX: use generate_text() for text-level inference\n");
     return -1;
 }

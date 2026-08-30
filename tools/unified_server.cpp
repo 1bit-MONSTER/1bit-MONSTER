@@ -693,6 +693,28 @@ static json generate_completion(BackendManager& mgr,
     // FLM tokenizes internally, so the token loop below can't drive it.
     // The strategy engine already selected the initial backend above.
     if (!raw_prompt.empty()) {
+        // G1b — large-prefill policy: HRX fail-closes once the decode graph
+        // needs a GET_ROWS (measured ≥~1815 prompt tokens at n_batch=2048).
+        // For prompts over HRX_MAX_PREFILL_TOKENS, skip HRX and start on the
+        // next lane in the model route (ggml_vulkan) — HRX would fail on the
+        // first decode batch anyway, so skip the guaranteed-failed round trip.
+        // 0 disables the policy.
+        const char* hmax_env = getenv("HRX_MAX_PREFILL_TOKENS");
+        long hrx_max_prefill = hmax_env ? atol(hmax_env) : 2048;
+        if (hrx_max_prefill > 0 && (long)prompt_tokens.size() > hrx_max_prefill) {
+            const BackendInfo* ai = mgr.active_info();
+            if (ai && ai->id == "hrx_gpu") {
+                for (const auto& bid : mgr.fallback_order()) {
+                    if (bid == "hrx_gpu") continue;
+                    std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+                    if (mgr.select_backend(bid)) {
+                        fprintf(stderr, "[hrx] prompt %zu tok > HRX_MAX_PREFILL_TOKENS (%ld) — starting on %s\n",
+                                prompt_tokens.size(), hrx_max_prefill, bid.c_str());
+                        break;
+                    }
+                }
+            }
+        }
         auto* active = mgr.active_backend();
         if (active) {
             // Multi-turn KV reuse: when this request continues the live
@@ -946,33 +968,39 @@ static json generate_completion(BackendManager& mgr,
             // that just failed so a functional-but-incompatible backend (e.g.
             // a text-level HRX that can't run the token loop, or a graph that
             // fails at decode) doesn't get retried forever; land on the next
-            // real backend (ggml_vulkan/zinc/cpu) in the route.
+            // real backend in MODEL ROUTE order (GGUF: hrx_gpu → ggml_vulkan →
+            // zinc_gpu → cpu_generic) via fallback_order() — not on whatever
+            // backend discovery happened to register next, which for a GGUF
+            // model could be an NPU lane that loads the wrong model (G1a).
             std::string failed_id = active_backend_id;
             if (mgr.backends().size() > 1) {
-                for (auto& b : mgr.backends()) {
-                    if (b.available && b.functional && b.instance && b.id != failed_id) {
-                        mgr.select_backend(b.id);
-                        active_backend_id = b.id;
-                        next = mgr.generate(last_token);
-                        if (next >= 0) {
-                            // Compute actual logprob for cascade/adaptive strategy
-                            std::vector<float> hb(hs);
-                            std::vector<float> lb(vs);
-                            if (need_logprobs && mgr.forward(next, hb.data())) {
-                                int argmax;
-                                if (mgr.lm_head(hb.data(), lb.data(), &argmax)) {
-                                    float max_l = -1e30f;
-                                    for (int v = 0; v < vs; v++) if (lb[v] > max_l) max_l = lb[v];
-                                    double sum_exp = 0.0;
-                                    for (int v = 0; v < vs; v++) sum_exp += exp((double)(lb[v] - max_l));
-                                    if (sum_exp > 0 && next >= 0 && next < vs)
-                                        token_logprob = (double)(lb[next] - max_l) - log(sum_exp);
-                                }
-                            } else {
-                                token_logprob = -10.0;  // uncertain
+                for (const auto& bid : mgr.fallback_order()) {
+                    if (bid == failed_id) continue;
+                    const BackendInfo* cand = nullptr;
+                    for (const auto& b : mgr.backends())
+                        if (b.id == bid && b.available && b.functional && b.instance) { cand = &b; break; }
+                    if (!cand) continue;
+                    mgr.select_backend(cand->id);
+                    active_backend_id = cand->id;
+                    next = mgr.generate(last_token);
+                    if (next >= 0) {
+                        // Compute actual logprob for cascade/adaptive strategy
+                        std::vector<float> hb(hs);
+                        std::vector<float> lb(vs);
+                        if (need_logprobs && mgr.forward(next, hb.data())) {
+                            int argmax;
+                            if (mgr.lm_head(hb.data(), lb.data(), &argmax)) {
+                                float max_l = -1e30f;
+                                for (int v = 0; v < vs; v++) if (lb[v] > max_l) max_l = lb[v];
+                                double sum_exp = 0.0;
+                                for (int v = 0; v < vs; v++) sum_exp += exp((double)(lb[v] - max_l));
+                                if (sum_exp > 0 && next >= 0 && next < vs)
+                                    token_logprob = (double)(lb[next] - max_l) - log(sum_exp);
                             }
-                            break;
+                        } else {
+                            token_logprob = -10.0;  // uncertain
                         }
+                        break;
                     }
                 }
             }

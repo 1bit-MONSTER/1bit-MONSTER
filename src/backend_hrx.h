@@ -20,12 +20,17 @@
 //   HRX_CTX_SIZE       context size (default 4096)
 #pragma once
 #include "backend.h"
+#include <memory>
 #include <string>
+
+namespace hrx {
+class Inprocess;
+}
 
 class HrxBackend : public Backend {
 public:
     HrxBackend();
-    ~HrxBackend() override { destroy(); }
+    ~HrxBackend() override;
 
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override;
     bool reset() override;
@@ -35,7 +40,7 @@ public:
     std::string generate_text(const std::string& prompt, int max_tokens) override;
     void destroy() override;
     float benchmark(int tokens = 10) override;
-    bool can_infer() const override { return initialized_ && pid_ > 0; }
+    bool can_infer() const override { return initialized_ && (pid_ > 0 || inprocess_); }
 
 private:
     bool spawn_server();
@@ -47,6 +52,8 @@ private:
 
     pid_t pid_ = -1;
     bool initialized_ = false;
+    bool inprocess_mode_ = false;
+    std::unique_ptr<hrx::Inprocess> inprocess_;
     std::string server_bin_;
     std::string model_path_;
     std::string port_;

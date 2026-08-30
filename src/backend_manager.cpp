@@ -662,13 +662,28 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             auto* pm = monitor_.for_backend(info.id);
             if (pm) pm->healthy = true;
 
-            // Register with DynamicRouter for per-token routing
+            // Register with DynamicRouter for per-token routing. Only
+            // npu_flm is excluded when outside the loaded model's route: its
+            // init() "succeeds" on any model tag but loads FLM's own q4nx
+            // model, never the requested file — it must never be picked
+            // per-token for a GGUF/1BP model or it generates from the wrong
+            // model (G1a/G1b). Every other initialized backend registers
+            // (format may be UNKNOWN during early init, so route membership
+            // is not a reliable filter for the rest).
             DynamicRouter::Strategy ds = DynamicRouter::Strategy::FASTEST;
             if (info.id.find("npu") != std::string::npos)
                 ds = DynamicRouter::Strategy::NPU_BACKFILL;
             else if (info.id.find("gpu") != std::string::npos || info.id.find("hip") != std::string::npos)
                 ds = DynamicRouter::Strategy::GPU_BACKFILL;
-            router_.add_backend(info.id, info.instance, ds);
+            const BackendRoute route = select_backend_route(cfg_);
+            const bool in_route = std::find(route.backend_ids_in_order.begin(),
+                                            route.backend_ids_in_order.end(),
+                                            info.id) != route.backend_ids_in_order.end();
+            if (info.id == "npu_flm" && !in_route && info.tier != BackendTier::T3_CPU) {
+                printf("  → not registered with per-token router (npu_flm outside model route)\n");
+            } else {
+                router_.add_backend(info.id, info.instance, ds);
+            }
 
             // PILOT for first GPU-tier backend
             if (!pilot_active_ && info.tier <= BackendTier::T2_GPU && raw) {
@@ -821,7 +836,17 @@ int BackendManager::generate(int token_id) {
     // If DynamicRouter has active backends, use it for per-token routing
     auto rt_stats = router_.stats();
     if (!rt_stats.empty()) {
-        return router_.generate(token_id);
+        int r = router_.generate(token_id);
+        if (r >= 0) return r;
+        // Router exhausted: both the primary and the failover candidate failed
+        // (e.g. HRX is the only accelerator and fail-closed at decode, and the
+        // CPU entry could not serve either). Retire the router for this
+        // session and fall through to the manager-level path below, whose
+        // failover() on-demand-inits the next backend in the model route
+        // (GGUF: ggml_vulkan → zinc → cpu) — init policy #1427 keeps only the
+        // top accelerator + CPU live, so without this the request stalls.
+        fprintf(stderr, "BackendManager: router exhausted — switching to manager-level failover\n");
+        router_.clear();
     }
 
     if (!initialized_ || backends_.empty()) return -1;
@@ -1082,6 +1107,29 @@ FallbackPolicy BackendManager::fallback_policy() const {
     return fallback_policy_;
 }
 
+std::vector<std::string> BackendManager::fallback_order() const {
+    // Model route first (the declared preference order for this model's
+    // format/arch — select_backend_route), then every remaining discovered
+    // backend in registration order as a last resort. Route ids that have no
+    // corresponding backend are dropped; the result covers all of backends_
+    // exactly once.
+    std::vector<std::string> order;
+    std::vector<bool> used(backends_.size(), false);
+    BackendRoute route = select_backend_route(cfg_);
+    for (const auto& id : route.backend_ids_in_order) {
+        for (size_t i = 0; i < backends_.size(); i++) {
+            if (!used[i] && backends_[i].id == id) {
+                order.push_back(id);
+                used[i] = true;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < backends_.size(); i++)
+        if (!used[i]) order.push_back(backends_[i].id);
+    return order;
+}
+
 bool BackendManager::failover() {
     if (fallback_policy_ == FallbackPolicy::NONE) return false;
 
@@ -1090,10 +1138,18 @@ bool BackendManager::failover() {
         backends_[active_idx_].functional = false;
     }
 
-    // Try each remaining backend in priority order
-    for (size_t i = 0; i < backends_.size(); i++) {
-        size_t idx = (active_idx_ + 1 + i) % backends_.size();
-        if (idx == active_idx_) continue;
+    // Cascade in model-route order (then registration order): a decode failure
+    // lands on the intended next lane (GGUF: hrx_gpu → ggml_vulkan → zinc_gpu
+    // → cpu_generic), never on a backend discovery happened to register next
+    // (e.g. an NPU lane that would load the wrong model for a GGUF — G1a).
+    const std::string failed_id =
+        (active_idx_ < backends_.size()) ? backends_[active_idx_].id : "";
+    for (const auto& id : fallback_order()) {
+        if (id == failed_id) continue;
+        size_t idx = backends_.size();
+        for (size_t i = 0; i < backends_.size(); i++)
+            if (backends_[i].id == id) { idx = i; break; }
+        if (idx == backends_.size()) continue;
         auto& info = backends_[idx];
         if (!info.available) continue;
 

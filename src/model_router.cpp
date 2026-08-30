@@ -74,8 +74,13 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
                 "MLX model — LSE GPU (lse-server) → generic CPU"};
     }
     // Zaya-style MoE: any model with expert routing that's NOT a Mamba1 MoE
-    // (BlackMamba) uses the CCA/MoE kernel path.
-    if (cfg.num_experts > 0 && cfg.arch != RCPP_ARCH_MAMBA && cfg.arch != RCPP_ARCH_LAGUNA) {
+    // (BlackMamba) uses the CCA/MoE kernel path. The CCA/MoE HIP kernels
+    // expect 1BP weights, so a GGUF/H1B MoE (e.g. Qwen3-30B-A3B Q4_K_M) must
+    // NOT take this route — it falls through to the generic GGUF lane below
+    // (hrx_gpu first), otherwise an MoE GGUF skipped HRX entirely.
+    if (cfg.num_experts > 0 && cfg.format != ModelFormat::GGUF &&
+        cfg.format != ModelFormat::H1B &&
+        cfg.arch != RCPP_ARCH_MAMBA && cfg.arch != RCPP_ARCH_LAGUNA) {
         return {{"hip_gpu", "cpu_scalar"}, "MoE model — CCA/MoE kernel path"};
     }
 
