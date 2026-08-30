@@ -222,6 +222,7 @@ def main() -> int:
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
     posts = state.setdefault("posts", {})
     failed = state.setdefault("failed", [])
+    issues: list[dict] = []
     if not listing_ok:
         # Fail closed: without a forum listing the idempotency map is
         # empty, so posting OR retrying `failed` could duplicate a post
