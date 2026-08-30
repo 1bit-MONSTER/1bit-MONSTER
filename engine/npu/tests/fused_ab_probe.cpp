@@ -20,11 +20,18 @@
 // the probe still takes file paths, but falls back to the baked-in copies
 // when the files are absent — zero runtime files for the silicon recipe.
 #include "npu_embedded.h"
-static constexpr int M=8,K=2048,N_GU=4096,m=8,k=64,n=128;
-static constexpr int n_k=K/k, n_cg_gu=N_GU/n/8;          // 32, 4
+// Geometry is runtime-parameterized (issue #1935): K = D input width
+// (= silu'd GU output), N_GU = GU output width. Zaya: K=2048, N_GU=4096.
+// Qwen3: K=3072 (D input), N_GU=6144. The GU input width K_GU = N_GU/2
+// in the 2:1 design; the Qwen3 1:6 GU still feeds the same silu contract.
+static constexpr int M=8, m=8, k=64, n=128;
+static constexpr int DEF_K=2048, DEF_N_GU=4096;           // Zaya geometry
 static constexpr int AB_tile=m*k+k*n;                     // 8704
-static constexpr long AB_BYTES=(long)8*n_cg_gu*n_k*AB_tile; // 8.9 MB
-static constexpr long EXPECT=127L*K;                      // 260096
+static long ab_bytes(int K,int N_GU){                     // per-geometry
+    const int n_k=K/k, n_cg_gu=N_GU/n/8;                  // 32, 4 (Zaya)
+    return (long)8*n_cg_gu*n_k*AB_tile;                   // 8.9 MB (Zaya)
+}
+static long expect_for(int K){ return 127L*K; }           // 260096 (K=2048)
 
 // Load insts words: file first, embedded #embed fallback.
 static bool load_insts(const char* path, std::vector<uint32_t>& ins) {
@@ -102,11 +109,16 @@ int main(int ac,char**av){
     printf("--embed-dump: %d resource(s) written to %s\n",n,outdir);
     return n>0?0:1;
   }
-  if(ac<4){printf("usage: %s <xclbin> <insts.txt> <N_D> [expect]\n",av[0]);return 2;}
+  if(ac<4){printf("usage: %s <xclbin> <insts.txt> <N_D> [expect] [K] [N_GU]\n",av[0]);return 2;}
   const char*xc=av[1],*insts=av[2];
   const int N_D=atoi(av[3]);
+  // Optional geometry (issue #1935): K = D input width, N_GU = GU output
+  // width. Zaya defaults (K=2048, N_GU=4096); Qwen3 = (3072, 6144).
+  const int K  = (ac>5)?atoi(av[5]):DEF_K;
+  const int N_GU=(ac>6)?atoi(av[6]):DEF_N_GU;
+  const long AB=ab_bytes(K,N_GU);
   const int C2_ELEMS=M*N_D;
-  long expect=EXPECT; if(ac>4) expect=atol(av[4]);
+  long expect=expect_for(K); if(ac>4) expect=atol(av[4]);
   std::vector<uint32_t> ins;
   if(!load_insts(insts,ins)){fprintf(stderr,"fused_ab_probe: cannot load insts (%s)\n",insts);return 2;}
   std::vector<char>xbuf;
@@ -119,13 +131,13 @@ int main(int ac,char**av){
   xrt::device dev(0); xrt::xclbin x{xbuf}; dev.register_xclbin(x);
   xrt::hw_context hw(dev,x.get_uuid()); xrt::kernel k(hw,"MLIR_AIE");
   auto bI=xrt::bo(dev,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k.group_id(1));
-  auto bA=xrt::bo(dev,AB_BYTES,XRT_BO_FLAGS_HOST_ONLY,k.group_id(3)); // AB
+  auto bA=xrt::bo(dev,AB,XRT_BO_FLAGS_HOST_ONLY,k.group_id(3)); // AB
   auto bB=xrt::bo(dev,(size_t)C2_ELEMS*4,XRT_BO_FLAGS_HOST_ONLY,k.group_id(4)); // C2
   auto bC=xrt::bo(dev,(size_t)K*N_D,XRT_BO_FLAGS_HOST_ONLY,k.group_id(5)); // B_d
   memcpy(bI.map(),ins.data(),ins.size()*4); bI.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  memset(bA.map(),1,AB_BYTES); memset(bB.map(),0x5A,(size_t)C2_ELEMS*4); memset(bC.map(),1,(size_t)K*N_D);
+  memset(bA.map(),1,AB); memset(bB.map(),0x5A,(size_t)C2_ELEMS*4); memset(bC.map(),1,(size_t)K*N_D);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE); bB.sync(XCL_BO_SYNC_BO_TO_DEVICE); bC.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  printf("launching fused (AB=%ld,C2=%d,B_d=%d)\n",AB_BYTES,C2_ELEMS*4,K*N_D);
+  printf("launching fused (K=%d N_GU=%d AB=%ld,C2=%d,B_d=%d)\n",K,N_GU,AB,C2_ELEMS*4,K*N_D);
   auto r=k((unsigned)3,bI,(unsigned)ins.size(),bA,bB,bC);
   auto t0=std::chrono::steady_clock::now();
   r.wait();
